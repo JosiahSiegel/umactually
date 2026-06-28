@@ -14,8 +14,7 @@ declare global {
 
 globalThis.__umactually_action_entry__ = true;
 
-console.error("DEBUG src/index.ts loaded");
-console.error("DEBUG isMainEntry check starting");
+console.error("DEBUG src/index.ts loaded; argv1=" + process.argv[1] + "; import.meta.url=" + import.meta.url + "; GITHUB_ACTIONS=" + process.env.GITHUB_ACTIONS + "; INPUT_DRY_RUN=" + process.env.INPUT_DRY_RUN);
 
 export async function main(): Promise<void> {
   try {
