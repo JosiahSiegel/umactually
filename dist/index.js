@@ -912,6 +912,119 @@ function buildReport(artifactPath, importedFindingCount, qualityGateWait) {
         skipWhenUnconfigured: true,
     };
 }
+const DEFAULT_POLL_INTERVAL_MS = 5_000;
+const DEFAULT_REQUEST_TIMEOUT_MS = 30_000;
+async function runLiveSonarImport(config) {
+    const fetchImpl = config.fetchImpl ?? globalThis.fetch.bind(globalThis);
+    const pollIntervalMs = config.pollIntervalMs ?? DEFAULT_POLL_INTERVAL_MS;
+    const deadline = Date.now() + Math.max(1, config.sonarTimeoutSeconds) * 1_000;
+    const baseUrl = config.sonarHostUrl.replace(/\/+$/u, "");
+    const authHeaders = {
+        Authorization: `Bearer ${config.sonarToken}`,
+        Accept: "application/json",
+    };
+    let lastStatus = "IN_PROGRESS";
+    let pollAttempts = 0;
+    while (Date.now() < deadline) {
+        pollAttempts += 1;
+        try {
+            const statusUrl = `${baseUrl}/api/qualitygates/project_status?projectKey=${encodeURIComponent(config.sonarProjectKey)}`;
+            const response = await fetchImpl(statusUrl, {
+                method: "GET",
+                headers: authHeaders,
+                signal: AbortSignal.timeout(DEFAULT_REQUEST_TIMEOUT_MS),
+            });
+            if (!response.ok) {
+                return {
+                    waitedForTerminalQualityGate: false,
+                    qualityGateStatus: "ERROR",
+                    importedFindingCount: 0,
+                    timeoutHandled: false,
+                    errorMessage: `SonarQube project_status returned HTTP ${response.status}`,
+                };
+            }
+            const payload = (await response.json());
+            const rawStatus = payload.projectStatus?.status ?? "NONE";
+            if (isQualityGateStatus(rawStatus)) {
+                lastStatus = rawStatus;
+                if (TERMINAL_QUALITY_GATE_STATUSES.has(lastStatus)) {
+                    // Quality gate is terminal — import issues and hotspots.
+                    const findingCount = await fetchSonarFindings(config, baseUrl, authHeaders, fetchImpl);
+                    return {
+                        waitedForTerminalQualityGate: true,
+                        qualityGateStatus: lastStatus,
+                        importedFindingCount: findingCount,
+                        timeoutHandled: false,
+                    };
+                }
+            }
+        }
+        catch (error) {
+            const message = error instanceof Error ? error.message : String(error);
+            // Network errors are not fatal — retry until the deadline.
+            lastStatus = "IN_PROGRESS";
+            process.stderr.write(`::warning::umactually-pr-review: sonar quality-gate poll attempt ${pollAttempts} failed: ${message}\n`);
+        }
+        if (Date.now() + pollIntervalMs >= deadline) {
+            break;
+        }
+        await sleep(pollIntervalMs);
+    }
+    // Deadline reached without reaching a terminal quality-gate state.
+    return {
+        waitedForTerminalQualityGate: false,
+        qualityGateStatus: "TIMEOUT",
+        importedFindingCount: 0,
+        timeoutHandled: true,
+    };
+}
+async function fetchSonarFindings(config, baseUrl, headers, fetchImpl) {
+    let issueCount = 0;
+    let hotspotCount = 0;
+    try {
+        const issuesUrl = `${baseUrl}/api/issues/search?projectKeys=${encodeURIComponent(config.sonarProjectKey)}&statuses=OPEN,CONFIRMED&ps=1`;
+        const issuesResponse = await fetchImpl(issuesUrl, {
+            method: "GET",
+            headers,
+            signal: AbortSignal.timeout(DEFAULT_REQUEST_TIMEOUT_MS),
+        });
+        if (issuesResponse.ok) {
+            const payload = (await issuesResponse.json());
+            if (typeof payload.total === "number" && Number.isFinite(payload.total)) {
+                issueCount = payload.total;
+            }
+        }
+    }
+    catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        process.stderr.write(`::warning::umactually-pr-review: sonar issues fetch failed: ${message}\n`);
+    }
+    try {
+        const hotspotsUrl = `${baseUrl}/api/hotspots/search?projectKey=${encodeURIComponent(config.sonarProjectKey)}&ps=1`;
+        const hotspotsResponse = await fetchImpl(hotspotsUrl, {
+            method: "GET",
+            headers,
+            signal: AbortSignal.timeout(DEFAULT_REQUEST_TIMEOUT_MS),
+        });
+        if (hotspotsResponse.ok) {
+            const payload = (await hotspotsResponse.json());
+            const total = payload.paging?.total;
+            if (typeof total === "number" && Number.isFinite(total)) {
+                hotspotCount = total;
+            }
+        }
+    }
+    catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        process.stderr.write(`::warning::umactually-pr-review: sonar hotspots fetch failed: ${message}\n`);
+    }
+    return issueCount + hotspotCount;
+}
+function sleep(ms) {
+    return new Promise((resolve) => {
+        setTimeout(resolve, ms);
+    });
+}
 
 ;// CONCATENATED MODULE: ./src/config/env-sources.ts
 // UMACTUALLY_* env vars are the canonical secrets surface for the GitHub Actions
@@ -2142,7 +2255,7 @@ async function runWithRetry(config, fetchImpl, requestId, endpoint) {
         }
         if (attempt < RETRY_BACKOFF_MS.length) {
             const backoffMs = RETRY_BACKOFF_MS[attempt] ?? 0;
-            await sleep(backoffMs);
+            await openai_compatible_sleep(backoffMs);
         }
     }
     return { ok: false, error: lastFailure ?? new ProviderError("network", endpoint, null, requestId, "Unknown retry failure.") };
@@ -2150,7 +2263,7 @@ async function runWithRetry(config, fetchImpl, requestId, endpoint) {
 function isRetryable(error) {
     return error.status === 429 || (typeof error.status === "number" && error.status >= 500);
 }
-function sleep(ms) {
+function openai_compatible_sleep(ms) {
     return new Promise((resolve) => {
         setTimeout(resolve, ms);
     });
@@ -2262,8 +2375,32 @@ class LiveReviewError extends Error {
         this.code = code;
     }
 }
+/**
+ * Gate that refuses to post when high-confidence secrets are detected in the
+ * diff. This is the runtime side of `identify leaks` — the scanner counts
+ * leaks and redacts the diff, but the gate enforces that no provider response
+ * can leak secrets through the posted review body. `detect-leaks: false`
+ * bypasses the gate (operator opt-out).
+ */
+async function evaluateLeakGate(input) {
+    if (!input.detectLeaks) {
+        return { ok: true, leakCount: 0 };
+    }
+    const report = await scanReviewSecrets({
+        diffText: input.diffText,
+        expectedArtifact: "artifacts/manual/s5-redaction-report.json",
+    });
+    if (report.highConfidenceLeakCount === 0) {
+        return { ok: true, leakCount: 0 };
+    }
+    return {
+        ok: false,
+        leakCount: report.highConfidenceLeakCount,
+        message: `Refusing to post: ${report.highConfidenceLeakCount} high-confidence secret(s) detected in the diff. Set --no-detect-leaks to override (NOT recommended).`,
+    };
+}
 const DEFAULT_MODEL = "auto";
-const DEFAULT_REQUEST_TIMEOUT_MS = 60_000;
+const live_shared_DEFAULT_REQUEST_TIMEOUT_MS = 60_000;
 const DEFAULT_MAX_COMMENTS = 50;
 const PROVIDER_NAME = "openai-compatible";
 const COPILOT_PROVIDER_NAME = "github-copilot";
@@ -2512,7 +2649,7 @@ function readConfiguredModel(parsed, env) {
 }
 function readRequestTimeoutMs(parsed) {
     const seconds = parsed.perRequestTimeoutSeconds ?? parsed.reviewTimeoutSeconds;
-    return seconds === null || seconds <= 0 ? DEFAULT_REQUEST_TIMEOUT_MS : seconds * 1_000;
+    return seconds === null || seconds <= 0 ? live_shared_DEFAULT_REQUEST_TIMEOUT_MS : seconds * 1_000;
 }
 function buildMalformedProviderFallback() {
     return {
@@ -2553,6 +2690,22 @@ function severityRank(severity) {
 
 async function runAzureLive(input) {
     const { context, diffText, provider, parsed, fetchImpl } = input;
+    // Refuse to post when the diff contains high-confidence secrets.
+    // This is the runtime enforcement of "identify leaks" — the scanner
+    // (src/security/scan-review-secrets.ts) counts leaks, this gate enforces.
+    const leakGate = await evaluateLeakGate({
+        diffText,
+        detectLeaks: parsed.detectLeaks,
+    });
+    if (!leakGate.ok) {
+        process.stderr.write(`::error::umactually-pr-review: ${leakGate.message}\n`);
+        return {
+            exitCode: 1,
+            posted: false,
+            reviewId: undefined,
+            message: leakGate.message,
+        };
+    }
     const comments = selectPostableComments({
         review: provider.review,
         diffText,
@@ -2757,6 +2910,22 @@ function azureHeaders(token) {
 
 async function runGithubLive(input) {
     const { context, diffText, provider, parsed, fetchImpl } = input;
+    // Refuse to post when the diff contains high-confidence secrets.
+    // This is the runtime enforcement of "identify leaks" — the scanner
+    // (src/security/scan-review-secrets.ts) counts leaks, this gate enforces.
+    const leakGate = await evaluateLeakGate({
+        diffText,
+        detectLeaks: parsed.detectLeaks,
+    });
+    if (!leakGate.ok) {
+        process.stderr.write(`::error::umactually-pr-review: ${leakGate.message}\n`);
+        return {
+            exitCode: 1,
+            posted: false,
+            reviewId: undefined,
+            message: leakGate.message,
+        };
+    }
     const comments = selectPostableComments({
         review: provider.review,
         diffText,
@@ -2918,6 +3087,7 @@ function githubHeaders(token) {
 
 
 
+
 async function runLive(input) {
     const env = input.env ?? process.env;
     const fetchImpl = input.fetchImpl ?? globalThis.fetch.bind(globalThis);
@@ -2953,6 +3123,27 @@ async function runLive(input) {
             reviewId: undefined,
             message,
         };
+    }
+    // If --include-sonarqube is set with a fully-configured SonarQube, wait
+    // for the quality gate to reach a terminal state BEFORE posting the review.
+    // This implements the user's "wait for sonarqube during that PR run"
+    // requirement: the review reflects the latest quality-gate state.
+    const sonarConfigured = input.parsed.includeSonarqube &&
+        input.parsed.sonarHostUrl !== null &&
+        input.parsed.sonarToken !== null &&
+        input.parsed.sonarProjectKey !== null;
+    if (sonarConfigured) {
+        const sonarReport = await runLiveSonarImport({
+            sonarHostUrl: input.parsed.sonarHostUrl ?? "",
+            sonarToken: input.parsed.sonarToken ?? "",
+            sonarProjectKey: input.parsed.sonarProjectKey ?? "",
+            sonarTimeoutSeconds: input.parsed.sonarTimeoutSeconds ?? 300,
+            fetchImpl: fetchImpl,
+        });
+        process.stdout.write(`umactually-pr-review: sonar quality gate ${sonarReport.qualityGateStatus} (${sonarReport.importedFindingCount} findings, waited=${sonarReport.waitedForTerminalQualityGate})${sonarReport.timeoutHandled ? " [timeout handled]" : ""}\n`);
+        if (sonarReport.errorMessage !== undefined) {
+            process.stderr.write(`::warning::umactually-pr-review: ${sonarReport.errorMessage}\n`);
+        }
     }
     let result;
     try {
@@ -3055,11 +3246,11 @@ async function dispatchLivePlatform(input) {
     }
 }
 /**
- * Replaces the provider outcome's payload with the deterministic fixture when
- * `simulateFindings` is true. The flag is authoritative — the fixture fully
- * drives the review regardless of whether the live provider returned an empty
- * or non-empty result. When `simulateFindings` is false, the live result is
- * preserved unchanged.
+ * Replaces the provider outcome's payload with the deterministic fixture ONLY
+ * when the live result is structurally empty (no inline comments AND no
+ * suppressed comments). Live findings always win — the fixture is a demo
+ * fallback for "provider returned nothing usable" cases. When
+ * `simulateFindings` is false, the live result is preserved unchanged.
  *
  * The `provider`, `modelId`, and `endpoint` fields on the outcome are kept
  * from the live call (the fixture does not mint its own provider identity),
@@ -3071,10 +3262,15 @@ function applySimulateFindings(input) {
     }
     const liveCommentCount = input.outcome.review.comments.length;
     const liveSuppressedCount = input.outcome.review.suppressedComments.length;
-    if (liveCommentCount > 0 || liveSuppressedCount > 0) {
-        const message = `umactually-pr-review: --simulate-findings replaced a non-empty live result (${liveCommentCount} inline, ${liveSuppressedCount} suppressed). Check provider connectivity.`;
+    const isStructurallyEmpty = liveCommentCount === 0 && liveSuppressedCount === 0;
+    if (!isStructurallyEmpty) {
+        // Live findings always win — do not override them with the deterministic
+        // fixture. Document the override intent on stderr so operators can see
+        // the flag was set but did not engage.
+        const message = `umactually-pr-review: --simulate-findings set but ignored (live result has ${liveCommentCount} inline, ${liveSuppressedCount} suppressed). Live findings always win.`;
         const sanitized = sanitizeForPost(message, input.secrets);
-        process.stderr.write(`::warning::${sanitized}\n`);
+        process.stderr.write(`::notice::${sanitized}\n`);
+        return input.outcome;
     }
     const fixture = buildSimulatedFindings(input.repo, input.prNumber, input.headSha, input.diffText);
     // Sanitize the fixture through the same sanitizer the live path uses so
