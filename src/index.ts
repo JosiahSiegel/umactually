@@ -18,6 +18,7 @@ export async function main(): Promise<void> {
   try {
     const cwd = process.cwd();
     const args = await buildArgs(process.env, cwd);
+    process.stderr.write(`::debug::umactually-pr-review args: ${JSON.stringify(args)}\n`);
     const result = await runCli(args, cwd);
     if (result.exitCode !== 0) {
       process.exit(result.exitCode);
