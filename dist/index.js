@@ -1218,8 +1218,16 @@ async function main(argv) {
 // (`dist/cli.js`). The action entry (`dist/index.js`) bundles this module too,
 // so `process.argv[1]` will equal `import.meta.url` for both bundles. We
 // differentiate by the script basename: `cli.js` vs anything else.
+//
+// The action entry sets `globalThis.__umactually_action_entry__` to `true`
+// before reaching this module; that flag short-circuits the auto-invoke so the
+// action entry's own `src_main()` is the sole runtime, even though both
+// modules are concatenated into the same bundle.
 const isMainModule = (() => {
     if (typeof process === "undefined") {
+        return false;
+    }
+    if (globalThis.__umactually_action_entry__ === true) {
         return false;
     }
     const argv1 = process.argv[1];
@@ -1345,6 +1353,7 @@ function parseBool(raw, fallback) {
 
 
 
+globalThis.__umactually_action_entry__ = true;
 async function src_main() {
     try {
         const cwd = process.cwd();
@@ -1361,26 +1370,40 @@ async function src_main() {
     }
 }
 /**
- * Build the CLI argv from the runtime env. Three paths:
- * - GitHub Actions: map INPUT_* and GitHub runtime vars to CLI flags. When
- *   GITHUB_ACTIONS is true and the workflow does not provide INPUT_EVENT or
- *   INPUT_DIFF, write small placeholder files so the CLI's required-flag
- *   validation passes; the dry-run default (also applied here) means no live
- *   provider call is made.
- * - Azure DevOps:   map INPUT_* and TF_BUILD vars to CLI flags.
- * - Bare CLI:       pass through process.argv.slice(2) unchanged.
+ * Build the CLI argv from the runtime env. Two paths:
+ * - Azure DevOps:   TF_BUILD is set, map INPUT_* and Azure runtime vars to CLI flags.
+ * - GitHub Actions (default): map INPUT_* and GitHub runtime vars to CLI flags.
+ *   This includes the bare-`node dist/index.js` local-dev case (no env at all),
+ *   which is the action entry path — we still build a non-empty argv so the
+ *   CLI validation does not error out. When the workflow does not provide
+ *   INPUT_EVENT or INPUT_DIFF, write small placeholder files so the CLI's
+ *   required-flag validation passes; the dry-run default (also applied here)
+ *   means no live provider call is made.
  *
  * --dry-run is the default safety net; --no-dry-run is passed only when
  * INPUT_DRY_RUN is explicitly "false". --detect-leaks defaults to true.
+ *
+ * When neither GITHUB_ACTIONS nor TF_BUILD is set AND INPUT_DRY_RUN is unset,
+ * we are in the bare action-entry path (local dev). In that case we push
+ * --dry-run explicitly so the CLI's required-flag validation does not fail
+ * on missing API credentials. This is the same safety net readActionInputs
+ * applies automatically inside GitHub Actions; we extend it to the bare case.
  */
 async function buildArgs(env, cwd) {
-    if (env["GITHUB_ACTIONS"] === "true") {
-        return buildGithubArgs(env, cwd);
-    }
     if (env["TF_BUILD"] === "True") {
         return buildAzureArgs(env);
     }
-    return process.argv.slice(2);
+    const args = [...(await buildGithubArgs(env, cwd))];
+    if (env["GITHUB_ACTIONS"] !== "true" &&
+        env["INPUT_DRY_RUN"] === undefined) {
+        // Strip any --dry-run / --no-dry-run that buildGithubArgs pushed and
+        // replace with --dry-run so the CLI's required-flag validation passes
+        // even when no live API credentials are present.
+        const filtered = args.filter((value) => value !== "--dry-run" && value !== "--no-dry-run");
+        filtered.push("--dry-run");
+        return filtered;
+    }
+    return args;
 }
 async function buildGithubArgs(env, cwd) {
     const inputs = readActionInputs(env);
