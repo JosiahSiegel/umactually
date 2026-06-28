@@ -39,27 +39,58 @@ export async function runAzureLive(input: {
   });
   const existingThreads = await listAzureThreads(context, fetchImpl);
   const postedIds: number[] = [];
-  for (const comment of comments) {
+  const failedIndices: number[] = [];
+  for (let index = 0; index < comments.length; index += 1) {
+    const comment = comments[index];
+    if (comment === undefined) continue;
     if (hasDuplicateThread(existingThreads, comment)) {
       continue;
     }
-    const threadId = await postAzureThread({ context, fetchImpl, comment, body });
-    if (threadId !== undefined) {
-      postedIds.push(threadId);
+    try {
+      const threadId = await postAzureThread({ context, fetchImpl, comment, body });
+      if (threadId !== undefined) {
+        postedIds.push(threadId);
+      }
+    } catch (error) {
+      failedIndices.push(index);
+      const message = error instanceof Error ? error.message : String(error);
+      process.stderr.write(
+        `::warning::umactually-pr-review: Azure thread ${index + 1}/${comments.length} failed (${comment.path}:${comment.line}): ${message}; continuing with remaining threads.\n`,
+      );
     }
   }
+
+  if (postedIds.length === 0 && failedIndices.length > 0) {
+    const failed = failedIndices.length;
+    const message = `Azure review failed: 0 threads posted, ${failed} failed`;
+    process.stderr.write(
+      `::error::umactually-pr-review: ${message}\n`,
+    );
+    return {
+      exitCode: 1,
+      posted: false,
+      reviewId: undefined,
+      message,
+    };
+  }
+
+  // At least one thread landed — post the PR status.
   await postAzureStatus({
     context,
     fetchImpl,
     state: mapReviewVerdictToAzureStatus(provider.review.verdict),
     description: provider.review.summary,
   });
+
   const firstPostedId = postedIds[0];
+  const successMessage = failedIndices.length > 0
+    ? `posted Azure review (${postedIds.length} threads, ${failedIndices.length} failed)`
+    : `posted Azure review (${postedIds.length} threads)`;
   return {
     exitCode: 0,
     posted: true,
     reviewId: firstPostedId,
-    message: `posted Azure review (${postedIds.length} threads)`,
+    message: successMessage,
   };
 }
 
@@ -93,20 +124,21 @@ async function listAzureThreads(context: AzureContext, fetchImpl: FetchImpl): Pr
   return value.map(parseAzureThread).filter((thread): thread is AzureThread => thread !== null);
 }
 
+const AZURE_OPEN_STATUSES: ReadonlySet<string> = new Set(["active", "pending"]);
+const AZURE_RESOLVED_STATUSES: ReadonlySet<string> = new Set(["closed", "fixed", "wontFix", "byDesign"]);
+
 function hasDuplicateThread(threads: readonly AzureThread[], comment: LiveReviewComment): boolean {
-  const azurePath = `/${comment.path}`;
-  for (const thread of threads) {
-    const firstComment = thread.comments[0];
-    if (
-      thread.status === "active" &&
-      thread.threadContext.filePath === azurePath &&
-      thread.threadContext.rightFileStart.line === comment.line &&
-      firstComment?.content.includes(REVIEW_MARKER) === true
-    ) {
-      return true;
+  const azurePath = `/${comment.path}`.replace(/\/+/gu, "/");
+  const targetLine = comment.line;
+  return threads.some((thread) => {
+    if (thread.threadContext.filePath !== azurePath) return false;
+    if (thread.threadContext.rightFileStart.line !== targetLine) return false;
+    if (AZURE_RESOLVED_STATUSES.has(thread.status)) return true;
+    if (AZURE_OPEN_STATUSES.has(thread.status)) {
+      return thread.comments.some((c) => c.content.includes(REVIEW_MARKER));
     }
-  }
-  return false;
+    return false;
+  });
 }
 
 async function postAzureThread(input: {
@@ -161,21 +193,31 @@ function parseAzureThread(value: unknown): AzureThread | null {
     return null;
   }
   const status = value["status"];
-  const context = value["threadContext"];
   const comments = value["comments"];
-  if (typeof status !== "string" || !isRecord(context) || !Array.isArray(comments)) {
+  if (typeof status !== "string" || !Array.isArray(comments)) {
     return null;
   }
-  const start = readRightFileStart(context);
-  const filePath = context["filePath"];
-  if (typeof filePath !== "string" || start === null) {
+  const nestedContext = value["threadContext"];
+  const threadContext = isRecord(nestedContext)
+    ? readThreadContext(nestedContext)
+    : readThreadContext(value);
+  if (threadContext === null) {
     return null;
   }
   return {
     status,
-    threadContext: { filePath, rightFileStart: start },
+    threadContext,
     comments: comments.map(parseAzureComment).filter((comment): comment is { readonly content: string } => comment !== null),
   };
+}
+
+function readThreadContext(record: Record<string, unknown>): AzureThread["threadContext"] | null {
+  const start = readRightFileStart(record);
+  const filePath = record["filePath"];
+  if (typeof filePath !== "string" || start === null) {
+    return null;
+  }
+  return { filePath, rightFileStart: start };
 }
 
 function readRightFileStart(context: Record<string, unknown>): AzureThread["threadContext"]["rightFileStart"] | null {
