@@ -1431,18 +1431,31 @@ async function runGithubLive(input) {
         secrets: [context.token],
     });
     const existing = await findExistingMarkerReview(context, fetchImpl);
-    if (existing !== null && postableComments.length === 0) {
+    // When simulate-findings is set the demo path must ALWAYS replace the
+    // existing review via DELETE+POST — even when the new payload carries 0
+    // inline comments. PUT only works on PENDING reviews, but an action's
+    // submitted review is COMMENTED, so PUT is silently dropped by GitHub.
+    // The DELETE+POST path produces a fully populated review body that
+    // replaces whatever was on the PR before.
+    const forceReplace = parsed.simulateFindings === true;
+    if (existing !== null && !forceReplace && postableComments.length === 0) {
         const reviewId = await updateExistingReview({ context, fetchImpl, review: existing, body });
         return { exitCode: 0, posted: true, reviewId, message: "updated existing GitHub review" };
     }
     if (existing !== null) {
         await deleteExistingReview({ context, fetchImpl, review: existing });
     }
+    // simulate-findings is a demo of a populated review — keep the event neutral
+    // regardless of the underlying verdict so we never block the PR with a
+    // REQUEST_CHANGES from synthetic data.
+    const event = forceReplace
+        ? "COMMENT"
+        : mapReviewVerdictToGithubEvent(provider.review.verdict);
     const reviewId = await createGithubReview({
         context,
         fetchImpl,
         body,
-        event: mapReviewVerdictToGithubEvent(provider.review.verdict),
+        event,
         comments: postableComments,
     });
     return {
