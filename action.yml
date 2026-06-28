@@ -6,8 +6,8 @@ description: >
   the GitHub or Azure DevOps review contract.
 
 inputs:
-  github-token:
-    description: GitHub token used to read the workflow event payload.
+  github_token:
+    description: GitHub token used to read the workflow event payload and post the review.
     required: false
     default: ""
   api-key:

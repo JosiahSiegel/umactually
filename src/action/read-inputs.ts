@@ -78,7 +78,7 @@ export function readActionInputs(env: NodeJS.ProcessEnv = process.env): ActionIn
   };
 
   return {
-    githubToken: get("github-token"),
+    githubToken: getWithFallback("github_token", ["GITHUB_TOKEN"]),
     apiKey: getWithFallback("api-key", ["UMACTUALLY_API_KEY", "REVIEW_PROVIDER_API_KEY"]),
     apiUrl: getWithFallback("api-url", ["UMACTUALLY_API_URL", "REVIEW_PROVIDER_URL"]),
     model: get("model"),
