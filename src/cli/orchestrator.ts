@@ -191,6 +191,15 @@ function applySimulateFindings(input: {
   if (!input.simulateFindings) {
     return input.outcome;
   }
+
+  const liveCommentCount = input.outcome.review.comments.length;
+  const liveSuppressedCount = input.outcome.review.suppressedComments.length;
+  if (liveCommentCount > 0 || liveSuppressedCount > 0) {
+    const message = `umactually-pr-review: --simulate-findings replaced a non-empty live result (${liveCommentCount} inline, ${liveSuppressedCount} suppressed). Check provider connectivity.`;
+    const sanitized = sanitizeForPost(message, input.secrets);
+    process.stderr.write(`::warning::${sanitized}\n`);
+  }
+
   const fixture = buildSimulatedFindings(input.repo, input.prNumber, input.headSha, input.diffText);
   // Sanitize the fixture through the same sanitizer the live path uses so
   // bodies cannot accidentally carry the API key or auth headers.
