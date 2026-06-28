@@ -3,6 +3,7 @@ import { readAzureContext } from "../platform/azure/context.js";
 import { fetchGithubPrDiff } from "../platform/github/api.js";
 import { readGithubContext } from "../platform/github/context.js";
 import { buildSimulatedFindings } from "../review/simulated-findings.js";
+import { runLiveSonarImport } from "../sonar/run-sonar-import.js";
 import { runAzureLive } from "./live-azure.js";
 import { runGithubLive } from "./live-github.js";
 import {
@@ -58,6 +59,31 @@ export async function runLive(input: RunLiveInput): Promise<LiveRunResult> {
       reviewId: undefined,
       message,
     };
+  }
+
+  // If --include-sonarqube is set with a fully-configured SonarQube, wait
+  // for the quality gate to reach a terminal state BEFORE posting the review.
+  // This implements the user's "wait for sonarqube during that PR run"
+  // requirement: the review reflects the latest quality-gate state.
+  const sonarConfigured =
+    input.parsed.includeSonarqube &&
+    input.parsed.sonarHostUrl !== null &&
+    input.parsed.sonarToken !== null &&
+    input.parsed.sonarProjectKey !== null;
+  if (sonarConfigured) {
+    const sonarReport = await runLiveSonarImport({
+      sonarHostUrl: input.parsed.sonarHostUrl ?? "",
+      sonarToken: input.parsed.sonarToken ?? "",
+      sonarProjectKey: input.parsed.sonarProjectKey ?? "",
+      sonarTimeoutSeconds: input.parsed.sonarTimeoutSeconds ?? 300,
+      fetchImpl: fetchImpl as typeof fetch,
+    });
+    process.stdout.write(
+      `umactually-pr-review: sonar quality gate ${sonarReport.qualityGateStatus} (${sonarReport.importedFindingCount} findings, waited=${sonarReport.waitedForTerminalQualityGate})${sonarReport.timeoutHandled ? " [timeout handled]" : ""}\n`,
+    );
+    if (sonarReport.errorMessage !== undefined) {
+      process.stderr.write(`::warning::umactually-pr-review: ${sonarReport.errorMessage}\n`);
+    }
   }
 
   let result: LiveRunResult;

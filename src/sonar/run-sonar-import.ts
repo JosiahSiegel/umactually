@@ -191,3 +191,169 @@ function buildReport(
     skipWhenUnconfigured: true,
   };
 }
+
+/* ──────────────────────────────────────────────────────────────────────────
+ * Live SonarQube poller
+ * ──────────────────────────────────────────────────────────────────────────
+ * The fixture-driven `runSonarImport` above is used by the dry-run path and
+ * by RED tests. The live path needs a real HTTP poller that:
+ *   1. Waits for the SonarQube quality gate to reach a terminal state
+ *      (OK | ERROR | WARN) by polling
+ *      `${sonarHostUrl}/api/qualitygates/project_status?projectKey=${projectKey}`
+ *      with `Authorization: Bearer ${sonarToken}`.
+ *   2. Sleeps `pollIntervalMs` between attempts (default 5s).
+ *   3. Bails after `sonarTimeoutSeconds` total wall-clock, returning a
+ *      timeout-shaped report so the calling run can decide whether to
+ *      block the PR.
+ *   4. On terminal status, fetches `/api/issues/search` and
+ *      `/api/hotspots/search` and returns the combined finding count.
+ */
+
+export type LiveSonarConfig = {
+  readonly sonarHostUrl: string;
+  readonly sonarToken: string;
+  readonly sonarProjectKey: string;
+  readonly sonarTimeoutSeconds: number;
+  readonly pollIntervalMs?: number;
+  readonly fetchImpl?: typeof fetch;
+};
+
+export type LiveSonarReport = {
+  readonly waitedForTerminalQualityGate: boolean;
+  readonly qualityGateStatus: QualityGateStatus | "TIMEOUT" | "ERROR";
+  readonly importedFindingCount: number;
+  readonly timeoutHandled: boolean;
+  readonly errorMessage?: string;
+};
+
+const DEFAULT_POLL_INTERVAL_MS = 5_000;
+const DEFAULT_REQUEST_TIMEOUT_MS = 30_000;
+
+export async function runLiveSonarImport(config: LiveSonarConfig): Promise<LiveSonarReport> {
+  const fetchImpl = config.fetchImpl ?? globalThis.fetch.bind(globalThis);
+  const pollIntervalMs = config.pollIntervalMs ?? DEFAULT_POLL_INTERVAL_MS;
+  const deadline = Date.now() + Math.max(1, config.sonarTimeoutSeconds) * 1_000;
+  const baseUrl = config.sonarHostUrl.replace(/\/+$/u, "");
+  const authHeaders: Record<string, string> = {
+    Authorization: `Bearer ${config.sonarToken}`,
+    Accept: "application/json",
+  };
+
+  let lastStatus: QualityGateStatus = "IN_PROGRESS";
+  let pollAttempts = 0;
+
+  while (Date.now() < deadline) {
+    pollAttempts += 1;
+    try {
+      const statusUrl = `${baseUrl}/api/qualitygates/project_status?projectKey=${encodeURIComponent(config.sonarProjectKey)}`;
+      const response = await fetchImpl(statusUrl, {
+        method: "GET",
+        headers: authHeaders,
+        signal: AbortSignal.timeout(DEFAULT_REQUEST_TIMEOUT_MS),
+      });
+      if (!response.ok) {
+        return {
+          waitedForTerminalQualityGate: false,
+          qualityGateStatus: "ERROR",
+          importedFindingCount: 0,
+          timeoutHandled: false,
+          errorMessage: `SonarQube project_status returned HTTP ${response.status}`,
+        };
+      }
+      const payload = (await response.json()) as { projectStatus?: { status?: string } };
+      const rawStatus = payload.projectStatus?.status ?? "NONE";
+      if (isQualityGateStatus(rawStatus)) {
+        lastStatus = rawStatus;
+        if (TERMINAL_QUALITY_GATE_STATUSES.has(lastStatus)) {
+          // Quality gate is terminal — import issues and hotspots.
+          const findingCount = await fetchSonarFindings(config, baseUrl, authHeaders, fetchImpl);
+          return {
+            waitedForTerminalQualityGate: true,
+            qualityGateStatus: lastStatus,
+            importedFindingCount: findingCount,
+            timeoutHandled: false,
+          };
+        }
+      }
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      // Network errors are not fatal — retry until the deadline.
+      lastStatus = "IN_PROGRESS";
+      process.stderr.write(
+        `::warning::umactually-pr-review: sonar quality-gate poll attempt ${pollAttempts} failed: ${message}\n`,
+      );
+    }
+
+    if (Date.now() + pollIntervalMs >= deadline) {
+      break;
+    }
+    await sleep(pollIntervalMs);
+  }
+
+  // Deadline reached without reaching a terminal quality-gate state.
+  return {
+    waitedForTerminalQualityGate: false,
+    qualityGateStatus: "TIMEOUT",
+    importedFindingCount: 0,
+    timeoutHandled: true,
+  };
+}
+
+async function fetchSonarFindings(
+  config: LiveSonarConfig,
+  baseUrl: string,
+  headers: Record<string, string>,
+  fetchImpl: typeof fetch,
+): Promise<number> {
+  let issueCount = 0;
+  let hotspotCount = 0;
+
+  try {
+    const issuesUrl = `${baseUrl}/api/issues/search?projectKeys=${encodeURIComponent(config.sonarProjectKey)}&statuses=OPEN,CONFIRMED&ps=1`;
+    const issuesResponse = await fetchImpl(issuesUrl, {
+      method: "GET",
+      headers,
+      signal: AbortSignal.timeout(DEFAULT_REQUEST_TIMEOUT_MS),
+    });
+    if (issuesResponse.ok) {
+      const payload = (await issuesResponse.json()) as { total?: number };
+      if (typeof payload.total === "number" && Number.isFinite(payload.total)) {
+        issueCount = payload.total;
+      }
+    }
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    process.stderr.write(
+      `::warning::umactually-pr-review: sonar issues fetch failed: ${message}\n`,
+    );
+  }
+
+  try {
+    const hotspotsUrl = `${baseUrl}/api/hotspots/search?projectKey=${encodeURIComponent(config.sonarProjectKey)}&ps=1`;
+    const hotspotsResponse = await fetchImpl(hotspotsUrl, {
+      method: "GET",
+      headers,
+      signal: AbortSignal.timeout(DEFAULT_REQUEST_TIMEOUT_MS),
+    });
+    if (hotspotsResponse.ok) {
+      const payload = (await hotspotsResponse.json()) as { paging?: { total?: number } };
+      const total = payload.paging?.total;
+      if (typeof total === "number" && Number.isFinite(total)) {
+        hotspotCount = total;
+      }
+    }
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    process.stderr.write(
+      `::warning::umactually-pr-review: sonar hotspots fetch failed: ${message}\n`,
+    );
+  }
+
+  return issueCount + hotspotCount;
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => {
+    setTimeout(resolve, ms);
+  });
+}
