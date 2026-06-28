@@ -48,6 +48,8 @@ export function readActionInputs(env: NodeJS.ProcessEnv = process.env): ActionIn
   const getDryRun = (): boolean => {
     const raw = get("dry-run");
     if (raw.length > 0) return parseBool(raw, false);
+    const rawAlt = get("dry_run");
+    if (rawAlt.length > 0) return parseBool(rawAlt, false);
     // GitHub Actions self-review defaults to dry-run so validation can pass
     // when no live API credentials are available in the workflow environment.
     return inGitHubActions;

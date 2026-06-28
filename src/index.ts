@@ -17,9 +17,7 @@ globalThis.__umactually_action_entry__ = true;
 export async function main(): Promise<void> {
   try {
     const cwd = process.cwd();
-    process.stdout.write(`DEBUG INPUT_DRY_RUN=${JSON.stringify(process.env["INPUT_DRY_RUN"])} GITHUB_ACTIONS=${JSON.stringify(process.env["GITHUB_ACTIONS"])}\n`);
     const args = await buildArgs(process.env, cwd);
-    process.stdout.write(`DEBUG argv=${JSON.stringify(args)}\n`);
     const result = await runCli(args, cwd);
     if (result.exitCode !== 0) {
       process.exit(result.exitCode);

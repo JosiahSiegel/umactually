@@ -50,6 +50,10 @@ inputs:
     description: Generate review output without posting comments or status.
     required: false
     default: "false"
+  dry_run:
+    description: Synonym for dry-run; some runners require an underscore key for boolean inputs.
+    required: false
+    default: "false"
   debug-raw-response:
     description: Echo the raw provider response into the workflow log.
     required: false

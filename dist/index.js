@@ -1449,6 +1449,9 @@ function readActionInputs(env = process.env) {
         const raw = get("dry-run");
         if (raw.length > 0)
             return parseBool(raw, false);
+        const rawAlt = get("dry_run");
+        if (rawAlt.length > 0)
+            return parseBool(rawAlt, false);
         // GitHub Actions self-review defaults to dry-run so validation can pass
         // when no live API credentials are available in the workflow environment.
         return inGitHubActions;
@@ -1529,9 +1532,7 @@ globalThis.__umactually_action_entry__ = true;
 async function src_main() {
     try {
         const cwd = process.cwd();
-        process.stdout.write(`DEBUG INPUT_DRY_RUN=${JSON.stringify(process.env["INPUT_DRY_RUN"])} GITHUB_ACTIONS=${JSON.stringify(process.env["GITHUB_ACTIONS"])}\n`);
         const args = await buildArgs(process.env, cwd);
-        process.stdout.write(`DEBUG argv=${JSON.stringify(args)}\n`);
         const result = await runCli(args, cwd);
         if (result.exitCode !== 0) {
             process.exit(result.exitCode);
