@@ -142,11 +142,15 @@ async function readGithubContext(env) {
     };
 }
 function readGithubToken(env) {
-    const token = env["GITHUB_TOKEN"];
-    if (token === undefined || token.length === 0) {
-        throw new GithubContextError("GITHUB_TOKEN_MISSING", "GitHub Actions GITHUB_TOKEN must be set.");
+    const fromEnv = env["GITHUB_TOKEN"];
+    if (typeof fromEnv === "string" && fromEnv.length > 0) {
+        return fromEnv;
     }
-    return token;
+    const fromInput = env["INPUT_GITHUB_TOKEN"];
+    if (typeof fromInput === "string" && fromInput.length > 0) {
+        return fromInput;
+    }
+    throw new GithubContextError("GITHUB_TOKEN_MISSING", "GitHub Actions GITHUB_TOKEN must be set.");
 }
 function readGithubRepo(env, fallback) {
     const repository = env["GITHUB_REPOSITORY"] ?? fallback ?? "";
