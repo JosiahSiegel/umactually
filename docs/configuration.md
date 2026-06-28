@@ -21,11 +21,15 @@ These entries mirror `action.yml`.
 | `api-url` | `UMACTUALLY_API_URL` | `""` | HTTPS URL | Review API base URL. Required for hosted review API use. Prefer env/secret over a literal input. |
 | `api-key` | `UMACTUALLY_API_KEY` | `""` | Secret string | Review API key. Must come from a secret store. Never log or echo it. |
 | `model` | `UMACTUALLY_MODEL` | `auto` | `auto`, `review-model-synthetic` | `review-model-synthetic` is intended for fixtures and deterministic tests. |
-| `effort` | `UMACTUALLY_EFFORT` | `medium` | `low`, `medium`, `high` | Current runtime normalizes this to `medium`; keep the input for forward compatibility. |
+| `effort` | `UMACTUALLY_EFFORT` | `medium` | `low`, `medium`, `high` | Reasoning effort hint. Forwarded as `reasoning.effort` to providers that support it. |
+| `provider` | `UMACTUALLY_PROVIDER` | `openai-compatible` | `openai-compatible`, `copilot` | Provider family. Set to `copilot` to use GitHub Copilot (requires a GitHub PAT as `UMACTUALLY_API_KEY`). |
+| `github-api-base` | `UMACTUALLY_GITHUB_API_BASE` | `""` | HTTPS URL | GitHub API base URL for Copilot token exchange. Set to `https://<tenant>.ghe.com` for GitHub Enterprise Server. |
 | `review-timeout-seconds` | `UMACTUALLY_REVIEW_TIMEOUT_SECONDS` | `300` | Positive integer seconds | Overall review wall-clock budget. Current runtime default is 300 seconds. |
 | `stall-seconds` | `UMACTUALLY_STALL_SECONDS` | `270` | Positive integer seconds | Provider-output stall budget. Current runtime default is 270 seconds. |
 | `max-output-tokens` | `UMACTUALLY_MAX_OUTPUT_TOKENS` | `16000` | Positive integer | Provider output budget. |
 | `ignore-minor` | `UMACTUALLY_IGNORE_MINOR` | `false` | `true`, `false` | Suppresses minor non-security findings only. Leaks and security findings are still reported. |
+| `prompt` | `UMACTUALLY_PROMPT` | `""` | String | Inline system prompt override. Wins over `prompt-file`. |
+| `additional-prompt` | `UMACTUALLY_ADDITIONAL_PROMPT` | `""` | String | Inline additional prompt override. Wins over `additional-prompt-file`. |
 | `prompt-file` | `UMACTUALLY_PROMPT_FILE` | `""` | Repository-relative path | Optional prompt instructions file. Absolute paths and `..` traversal are rejected. |
 | `additional-prompt-file` | `UMACTUALLY_ADDITIONAL_PROMPT_FILE` | `""` | Repository-relative path | Optional additional prompt file. Absolute paths and `..` traversal are rejected. |
 | `detect-leaks` | `UMACTUALLY_DETECT_LEAKS` | `true` | `true`, `false` | Run secret-leak detection on the diff before posting. Disable with `--no-detect-leaks` on the CLI or by setting the input/env to `false`. |
@@ -110,12 +114,23 @@ To fetch the PR diff programmatically, use the Azure DevOps REST API with the OA
 
 If `SYSTEM_PULLREQUEST_PULLREQUESTID` is empty, verify the pipeline is running as a PR validation build. In Azure Repos, create a branch policy build validation pipeline; do not rely on a plain CI trigger to populate PR variables.
 
+## Provider families
+
+The action supports two provider families:
+
+- **`openai-compatible`** (default): posts to any OpenAI-compatible `/responses` or `/chat/completions` endpoint. The `UMACTUALLY_API_URL` must be the base URL (e.g. `https://api.openai.com/v1`). Set `UMACTUALLY_API_KEY` to the provider key. Forwards `max_output_tokens` and `reasoning.effort` when supported by the endpoint.
+
+- **`copilot`**: exchanges the `UMACTUALLY_API_KEY` value (a GitHub PAT) for a short-lived session token at `${UMACTUALLY_GITHUB_API_BASE}/copilot_internal/v2/token` using `Authorization: token <githubToken>`, then dispatches to the plan-routed host returned in the token envelope (`endpoints.api` — typically `api.individual.githubcopilot.com`, `api.business.githubcopilot.com`, or `api.enterprise.githubcopilot.com` depending on the user's Copilot plan). Sends the required `Editor-Version`, `Editor-Plugin-Version`, `Copilot-Integration-Id`, and `User-Agent` headers. Only `/chat/completions` is used (Copilot does not expose `/responses`).
+
+The provider family is selected via `--provider` (CLI), `provider` (action input), or `UMACTUALLY_PROVIDER` env var. Default `openai-compatible`. For GitHub Enterprise Server data residency, set `UMACTUALLY_GITHUB_API_BASE=https://<tenant>.ghe.com` so the token exchange targets the tenant's API.
+
 ## Defaults and normalization
 
 Current runtime defaults are intentionally conservative:
 
 - `model`: `auto`
-- `effort`: normalized to `medium`
+- `effort`: `medium`
+- `provider`: `openai-compatible`
 - `review-timeout-seconds`: `300`
 - `stall-seconds`: `270`
 - `ignore-minor`: `false`

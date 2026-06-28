@@ -25,12 +25,16 @@ These inputs mirror `action.yml`.
 | `api-url` | No | `""` | UmActually review API base URL. Prefer `UMACTUALLY_API_URL` in `env` for reusable workflows. |
 | `api-key` | No | `""` | UmActually review API key. Prefer `UMACTUALLY_API_KEY` in `env` or a platform secret; never hard-code it. |
 | `model` | No | `auto` | Review model to request. Use `auto` unless a maintainer asks for a pinned synthetic test model. |
-| `effort` | No | `medium` | Review effort hint. Current runtime normalizes this to `medium`. |
+| `effort` | No | `medium` | Reasoning effort hint (low\|medium\|high). Forwarded as `reasoning.effort` to providers that support it. |
+| `provider` | No | `openai-compatible` | Provider family. Set to `copilot` to use GitHub Copilot (requires a GitHub PAT as `UMACTUALLY_API_KEY`). |
+| `github-api-base` | No | `""` | GitHub API base URL for Copilot token exchange. Defaults to `https://api.github.com`. Set to `https://<tenant>.ghe.com` for GitHub Enterprise Server. |
 | `review-timeout-seconds` | No | `300` | Maximum review wall-clock time in seconds. |
 | `stall-seconds` | No | `270` | Seconds without provider output before the review is considered stalled. |
 | `max-output-tokens` | No | `16000` | Maximum provider output token budget. |
 | `ignore-minor` | No | `false` | Suppress minor non-security findings. Leaks and security findings are never suppressed by this option. |
 | `detect-leaks` | No | `true` | Run secret-leak detection on the diff. Disable with the `--no-detect-leaks` CLI flag. |
+| `prompt` | No | `""` | Inline system prompt override. Wins over `prompt-file`. |
+| `additional-prompt` | No | `""` | Inline additional prompt override. Wins over `additional-prompt-file`. |
 | `prompt-file` | No | `""` | Optional repository-relative prompt file. Absolute paths and path traversal are rejected. |
 | `dry-run` | No | `false` | Generate review output without posting comments or status. |
 
