@@ -56,8 +56,18 @@ function parseCliArgs(args) {
     let sonarHostUrl = null;
     let sonarToken = null;
     let sonarProjectKey = null;
+    let sonarTimeoutSeconds = null;
     let ignoreMinor = false;
+    let minimumSeverity = null;
+    let maxComments = null;
     let detectLeaks = true;
+    let walkthrough = false;
+    let diagnostic = false;
+    let debugRawResponse = false;
+    let reviewTimeoutSeconds = null;
+    let stallSeconds = null;
+    let perRequestTimeoutSeconds = null;
+    let maxOutputTokens = null;
     let dryRun = false;
     let outputArtifact = null;
     for (let index = 0; index < args.length; index += 1) {
@@ -118,6 +128,9 @@ function parseCliArgs(args) {
             case "--include-sonarqube":
                 includeSonarqube = true;
                 break;
+            case "--no-include-sonarqube":
+                includeSonarqube = false;
+                break;
             case "--sonar-host-url":
                 sonarHostUrl = readValue(args, index, "sonar-host-url");
                 index += 1;
@@ -130,14 +143,63 @@ function parseCliArgs(args) {
                 sonarProjectKey = readValue(args, index, "sonar-project-key");
                 index += 1;
                 break;
+            case "--sonar-timeout-seconds":
+                sonarTimeoutSeconds = readIntValue(args, index, "sonar-timeout-seconds");
+                index += 1;
+                break;
             case "--ignore-minor":
                 ignoreMinor = true;
+                break;
+            case "--no-ignore-minor":
+                ignoreMinor = false;
+                break;
+            case "--minimum-severity":
+                minimumSeverity = readMinimumSeverity(args, index);
+                index += 1;
+                break;
+            case "--max-comments":
+                maxComments = readIntValue(args, index, "max-comments");
+                index += 1;
                 break;
             case "--detect-leaks":
                 detectLeaks = true;
                 break;
             case "--no-detect-leaks":
                 detectLeaks = false;
+                break;
+            case "--walkthrough":
+                walkthrough = true;
+                break;
+            case "--no-walkthrough":
+                walkthrough = false;
+                break;
+            case "--diagnostic":
+                diagnostic = true;
+                break;
+            case "--no-diagnostic":
+                diagnostic = false;
+                break;
+            case "--debug-raw-response":
+                debugRawResponse = true;
+                break;
+            case "--no-debug-raw-response":
+                debugRawResponse = false;
+                break;
+            case "--review-timeout-seconds":
+                reviewTimeoutSeconds = readIntValue(args, index, "review-timeout-seconds");
+                index += 1;
+                break;
+            case "--stall-seconds":
+                stallSeconds = readIntValue(args, index, "stall-seconds");
+                index += 1;
+                break;
+            case "--per-request-timeout-seconds":
+                perRequestTimeoutSeconds = readIntValue(args, index, "per-request-timeout-seconds");
+                index += 1;
+                break;
+            case "--max-output-tokens":
+                maxOutputTokens = readIntValue(args, index, "max-output-tokens");
+                index += 1;
                 break;
             case "--dry-run":
                 dryRun = true;
@@ -173,8 +235,18 @@ function parseCliArgs(args) {
         sonarHostUrl,
         sonarToken,
         sonarProjectKey,
+        sonarTimeoutSeconds,
         ignoreMinor,
+        minimumSeverity,
+        maxComments,
         detectLeaks,
+        walkthrough,
+        diagnostic,
+        debugRawResponse,
+        reviewTimeoutSeconds,
+        stallSeconds,
+        perRequestTimeoutSeconds,
+        maxOutputTokens,
         dryRun,
         outputArtifact,
     };
@@ -194,11 +266,31 @@ function readValue(args, index, flag) {
     }
     return next;
 }
+function readIntValue(args, index, flag) {
+    const raw = readValue(args, index, flag);
+    const parsed = Number.parseInt(raw, 10);
+    if (!Number.isSafeInteger(parsed)) {
+        throw new CliUsageError(`flag --${flag} requires an integer value`);
+    }
+    return parsed;
+}
+function readMinimumSeverity(args, index) {
+    const raw = readValue(args, index, "minimum-severity");
+    switch (raw) {
+        case "low":
+        case "medium":
+        case "high":
+            return raw;
+        default:
+            throw new CliUsageError(`invalid --minimum-severity value: ${raw}`);
+    }
+}
 function readPlatform(value) {
     switch (value) {
         case "auto":
+            return "auto";
         case "github":
-            return value;
+            return "github";
         case "azure":
         case "azure-devops":
             return "azure";

@@ -1,4 +1,5 @@
 export type CliPlatform = "auto" | "github" | "azure";
+export type CliMinimumSeverity = "low" | "medium" | "high";
 
 export type ParsedCliArgs = {
   readonly platform: CliPlatform;
@@ -17,8 +18,18 @@ export type ParsedCliArgs = {
   readonly sonarHostUrl: string | null;
   readonly sonarToken: string | null;
   readonly sonarProjectKey: string | null;
+  readonly sonarTimeoutSeconds: number | null;
   readonly ignoreMinor: boolean;
+  readonly minimumSeverity: CliMinimumSeverity | null;
+  readonly maxComments: number | null;
   readonly detectLeaks: boolean;
+  readonly walkthrough: boolean;
+  readonly diagnostic: boolean;
+  readonly debugRawResponse: boolean;
+  readonly reviewTimeoutSeconds: number | null;
+  readonly stallSeconds: number | null;
+  readonly perRequestTimeoutSeconds: number | null;
+  readonly maxOutputTokens: number | null;
   readonly dryRun: boolean;
   readonly outputArtifact: string | null;
 };
@@ -44,8 +55,18 @@ export function parseCliArgs(args: readonly string[]): ParsedCliArgs {
   let sonarHostUrl: string | null = null;
   let sonarToken: string | null = null;
   let sonarProjectKey: string | null = null;
+  let sonarTimeoutSeconds: number | null = null;
   let ignoreMinor = false;
+  let minimumSeverity: CliMinimumSeverity | null = null;
+  let maxComments: number | null = null;
   let detectLeaks = true;
+  let walkthrough = false;
+  let diagnostic = false;
+  let debugRawResponse = false;
+  let reviewTimeoutSeconds: number | null = null;
+  let stallSeconds: number | null = null;
+  let perRequestTimeoutSeconds: number | null = null;
+  let maxOutputTokens: number | null = null;
   let dryRun = false;
   let outputArtifact: string | null = null;
 
@@ -107,6 +128,9 @@ export function parseCliArgs(args: readonly string[]): ParsedCliArgs {
       case "--include-sonarqube":
         includeSonarqube = true;
         break;
+      case "--no-include-sonarqube":
+        includeSonarqube = false;
+        break;
       case "--sonar-host-url":
         sonarHostUrl = readValue(args, index, "sonar-host-url");
         index += 1;
@@ -119,14 +143,63 @@ export function parseCliArgs(args: readonly string[]): ParsedCliArgs {
         sonarProjectKey = readValue(args, index, "sonar-project-key");
         index += 1;
         break;
+      case "--sonar-timeout-seconds":
+        sonarTimeoutSeconds = readIntValue(args, index, "sonar-timeout-seconds");
+        index += 1;
+        break;
       case "--ignore-minor":
         ignoreMinor = true;
+        break;
+      case "--no-ignore-minor":
+        ignoreMinor = false;
+        break;
+      case "--minimum-severity":
+        minimumSeverity = readMinimumSeverity(args, index);
+        index += 1;
+        break;
+      case "--max-comments":
+        maxComments = readIntValue(args, index, "max-comments");
+        index += 1;
         break;
       case "--detect-leaks":
         detectLeaks = true;
         break;
       case "--no-detect-leaks":
         detectLeaks = false;
+        break;
+      case "--walkthrough":
+        walkthrough = true;
+        break;
+      case "--no-walkthrough":
+        walkthrough = false;
+        break;
+      case "--diagnostic":
+        diagnostic = true;
+        break;
+      case "--no-diagnostic":
+        diagnostic = false;
+        break;
+      case "--debug-raw-response":
+        debugRawResponse = true;
+        break;
+      case "--no-debug-raw-response":
+        debugRawResponse = false;
+        break;
+      case "--review-timeout-seconds":
+        reviewTimeoutSeconds = readIntValue(args, index, "review-timeout-seconds");
+        index += 1;
+        break;
+      case "--stall-seconds":
+        stallSeconds = readIntValue(args, index, "stall-seconds");
+        index += 1;
+        break;
+      case "--per-request-timeout-seconds":
+        perRequestTimeoutSeconds = readIntValue(args, index, "per-request-timeout-seconds");
+        index += 1;
+        break;
+      case "--max-output-tokens":
+        maxOutputTokens = readIntValue(args, index, "max-output-tokens");
+        index += 1;
         break;
       case "--dry-run":
         dryRun = true;
@@ -163,8 +236,18 @@ export function parseCliArgs(args: readonly string[]): ParsedCliArgs {
     sonarHostUrl,
     sonarToken,
     sonarProjectKey,
+    sonarTimeoutSeconds,
     ignoreMinor,
+    minimumSeverity,
+    maxComments,
     detectLeaks,
+    walkthrough,
+    diagnostic,
+    debugRawResponse,
+    reviewTimeoutSeconds,
+    stallSeconds,
+    perRequestTimeoutSeconds,
+    maxOutputTokens,
     dryRun,
     outputArtifact,
   };
@@ -193,11 +276,33 @@ function readValue(args: readonly string[], index: number, flag: string): string
   return next;
 }
 
+function readIntValue(args: readonly string[], index: number, flag: string): number {
+  const raw = readValue(args, index, flag);
+  const parsed = Number.parseInt(raw, 10);
+  if (!Number.isSafeInteger(parsed)) {
+    throw new CliUsageError(`flag --${flag} requires an integer value`);
+  }
+  return parsed;
+}
+
+function readMinimumSeverity(args: readonly string[], index: number): CliMinimumSeverity {
+  const raw = readValue(args, index, "minimum-severity");
+  switch (raw) {
+    case "low":
+    case "medium":
+    case "high":
+      return raw;
+    default:
+      throw new CliUsageError(`invalid --minimum-severity value: ${raw}`);
+  }
+}
+
 function readPlatform(value: string): CliPlatform {
   switch (value) {
     case "auto":
+      return "auto";
     case "github":
-      return value;
+      return "github";
     case "azure":
     case "azure-devops":
       return "azure";
