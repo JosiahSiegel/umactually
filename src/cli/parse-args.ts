@@ -1,5 +1,7 @@
 export type CliPlatform = "auto" | "github" | "azure";
 export type CliMinimumSeverity = "low" | "medium" | "high";
+export type CliEffort = "low" | "medium" | "high";
+export type CliProvider = "openai-compatible" | "copilot";
 
 export type ParsedCliArgs = {
   readonly platform: CliPlatform;
@@ -14,6 +16,11 @@ export type ParsedCliArgs = {
   readonly model: string | null;
   readonly promptFile: string | null;
   readonly additionalPromptFile: string | null;
+  readonly prompt: string | null;
+  readonly additionalPrompt: string | null;
+  readonly effort: CliEffort | null;
+  readonly provider: CliProvider | null;
+  readonly githubApiBase: string | null;
   readonly includeSonarqube: boolean;
   readonly sonarHostUrl: string | null;
   readonly sonarToken: string | null;
@@ -52,6 +59,11 @@ export function parseCliArgs(args: readonly string[]): ParsedCliArgs {
   let model: string | null = null;
   let promptFile: string | null = null;
   let additionalPromptFile: string | null = null;
+  let prompt: string | null = null;
+  let additionalPrompt: string | null = null;
+  let effort: CliEffort | null = null;
+  let provider: CliProvider | null = null;
+  let githubApiBase: string | null = null;
   let includeSonarqube = false;
   let sonarHostUrl: string | null = null;
   let sonarToken: string | null = null;
@@ -125,6 +137,27 @@ export function parseCliArgs(args: readonly string[]): ParsedCliArgs {
         break;
       case "--additional-prompt-file":
         additionalPromptFile = readValue(args, index, "additional-prompt-file");
+        index += 1;
+        break;
+      case "--prompt":
+        prompt = readValue(args, index, "prompt");
+        index += 1;
+        break;
+      case "--additional-prompt":
+        additionalPrompt = readValue(args, index, "additional-prompt");
+        index += 1;
+        break;
+      case "--effort":
+        effort = readEffort(args, index);
+        index += 1;
+        break;
+      case "--provider":
+        index = consumeValue(args, index, "provider", (value) => {
+          provider = readProvider(value);
+        });
+        break;
+      case "--github-api-base":
+        githubApiBase = readValue(args, index, "github-api-base");
         index += 1;
         break;
       case "--include-sonarqube":
@@ -240,6 +273,11 @@ export function parseCliArgs(args: readonly string[]): ParsedCliArgs {
     model,
     promptFile,
     additionalPromptFile,
+    prompt,
+    additionalPrompt,
+    effort,
+    provider,
+    githubApiBase,
     includeSonarqube,
     sonarHostUrl,
     sonarToken,
@@ -317,5 +355,28 @@ function readPlatform(value: string): CliPlatform {
       return "azure";
     default:
       throw new CliUsageError(`invalid --platform value: ${value}`);
+  }
+}
+
+function readEffort(args: readonly string[], index: number): CliEffort {
+  const raw = readValue(args, index, "effort");
+  switch (raw) {
+    case "low":
+    case "medium":
+    case "high":
+      return raw;
+    default:
+      throw new CliUsageError(`invalid --effort value: ${raw}`);
+  }
+}
+
+function readProvider(value: string): CliProvider {
+  switch (value) {
+    case "openai-compatible":
+      return "openai-compatible";
+    case "copilot":
+      return "copilot";
+    default:
+      throw new CliUsageError(`invalid --provider value: ${value}`);
   }
 }

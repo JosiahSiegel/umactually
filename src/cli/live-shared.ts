@@ -1,6 +1,7 @@
 import { readFile } from "node:fs/promises";
 
 import { parseDiffPositions } from "../diff/parse-positions.js";
+import { runCopilotRequest } from "../provider/copilot.js";
 import { runProviderRequest, type ProviderReviewPayload } from "../provider/openai-compatible.js";
 import { REVIEW_MARKER } from "../review/run-review.js";
 import { scanReviewSecrets } from "../security/scan-review-secrets.js";
@@ -60,6 +61,7 @@ const DEFAULT_MODEL = "auto";
 const DEFAULT_REQUEST_TIMEOUT_MS = 60_000;
 const DEFAULT_MAX_COMMENTS = 50;
 const PROVIDER_NAME = "openai-compatible";
+const COPILOT_PROVIDER_NAME = "github-copilot";
 
 export async function requestLiveReview(input: {
   readonly parsed: ParsedCliArgs;
@@ -78,6 +80,38 @@ export async function requestLiveReview(input: {
   const providerApiKey = readRequiredConfig(input.parsed.apiKey ?? input.env["UMACTUALLY_API_KEY"], "UMACTUALLY_API_KEY");
   const modelId = readConfiguredModel(input.parsed, input.env);
   const prompts = await buildProviderPrompts(input);
+
+  if (input.parsed.provider === "copilot") {
+    const result = await runCopilotRequest({
+      githubToken: providerApiKey,
+      apiBase: input.parsed.githubApiBase ?? input.env["UMACTUALLY_GITHUB_API_BASE"] ?? "https://api.github.com",
+      system: prompts.system,
+      user: prompts.user,
+      model: modelId,
+      requestTimeoutMs: readRequestTimeoutMs(input.parsed),
+      ...(input.parsed.maxOutputTokens !== null ? { maxOutputTokens: input.parsed.maxOutputTokens } : {}),
+      ...(input.parsed.effort !== null ? { reasoningEffort: input.parsed.effort } : {}),
+      fetchImpl: input.fetchImpl as typeof fetch,
+    });
+    if (result.ok) {
+      return {
+        review: normalizeProviderReview(result.review, [providerApiKey, input.platformToken]),
+        endpoint: result.endpoint,
+        provider: COPILOT_PROVIDER_NAME,
+        modelId,
+      };
+    }
+    if (result.error.code === "parse") {
+      return {
+        review: buildMalformedProviderFallback(),
+        endpoint: result.error.endpoint,
+        provider: COPILOT_PROVIDER_NAME,
+        modelId,
+      };
+    }
+    throw new LiveReviewError("PROVIDER_REQUEST_FAILED", result.error.message, { cause: result.error });
+  }
+
   const result = await runProviderRequest({
     baseUrl: providerUrl,
     apiKey: providerApiKey,
@@ -85,6 +119,8 @@ export async function requestLiveReview(input: {
     system: prompts.system,
     user: prompts.user,
     requestTimeoutMs: readRequestTimeoutMs(input.parsed),
+    ...(input.parsed.maxOutputTokens !== null ? { maxOutputTokens: input.parsed.maxOutputTokens } : {}),
+    ...(input.parsed.effort !== null ? { reasoningEffort: input.parsed.effort } : {}),
     fetchImpl: input.fetchImpl,
   });
 
@@ -244,12 +280,7 @@ async function buildProviderPrompts(input: {
 }): Promise<{ readonly system: string; readonly user: string }> {
   const additionalPrompt = await readAdditionalPrompt(input);
   return {
-    system: [
-      "You are UmActually, a precise pull request reviewer.",
-      "Return strict JSON only with this schema:",
-      "{\"summary\":string,\"verdict\":\"COMMENT\"|\"APPROVED\"|\"NEEDS_FIX\",\"comments\":[{\"path\":string,\"line\":number,\"body\":string,\"severity\":string,\"category\":string}],\"suppressed_comments\":[{\"path\":string,\"line\":number,\"body\":string,\"severity\":string,\"category\":string}]}",
-      "Anchor comments only to changed or context lines present in the diff. Do not include secrets.",
-    ].join("\n"),
+    system: pickSystemPrompt(input.parsed.prompt),
     user: [
       `Platform: ${input.platform}`,
       additionalPrompt.length > 0 ? `Additional instructions:\n${additionalPrompt}` : "Additional instructions: none",
@@ -259,11 +290,27 @@ async function buildProviderPrompts(input: {
   };
 }
 
+function pickSystemPrompt(inline: string | null): string {
+  if (typeof inline === "string" && inline.length > 0) {
+    return inline;
+  }
+  return [
+    "You are UmActually, a precise pull request reviewer.",
+    "Return strict JSON only with this schema:",
+    "{\"summary\":string,\"verdict\":\"COMMENT\"|\"APPROVED\"|\"NEEDS_FIX\",\"comments\":[{\"path\":string,\"line\":number,\"body\":string,\"severity\":string,\"category\":string}],\"suppressed_comments\":[{\"path\":string,\"line\":number,\"body\":string,\"severity\":string,\"category\":string}]}",
+    "Anchor comments only to changed or context lines present in the diff. Do not include secrets.",
+  ].join("\n");
+}
+
 async function readAdditionalPrompt(input: {
   readonly parsed: ParsedCliArgs;
   readonly cwd: string;
   readonly env: NodeJS.ProcessEnv;
 }): Promise<string> {
+  const inline = input.parsed.additionalPrompt;
+  if (typeof inline === "string" && inline.length > 0) {
+    return inline;
+  }
   const filePath = input.parsed.additionalPromptFile ?? input.env["UMACTUALLY_ADDITIONAL_PROMPT_FILE"];
   if (filePath === undefined || filePath.length === 0) {
     return "";

@@ -24,11 +24,11 @@ import type {
   TimeoutControls,
 } from "./types.js";
 
+export const DEFAULT_MAX_COMMENTS = 50;
 const DEFAULT_REVIEW_SECONDS = 300;
 const DEFAULT_STALL_SECONDS = 270;
 const DEFAULT_PER_REQUEST_SECONDS = 60;
 const DEFAULT_SONAR_TIMEOUT_SECONDS = 60;
-const DEFAULT_MAX_COMMENTS = 50;
 const DEFAULT_MINIMUM_SEVERITY: Severity = "minor";
 const DEFAULT_PLATFORM: Platform = "auto";
 const DEFAULT_PROVIDER_URL = "https://api.openai.com/v1";

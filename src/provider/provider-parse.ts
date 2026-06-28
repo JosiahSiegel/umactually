@@ -25,28 +25,46 @@ export function buildResponsesBody(config: {
   readonly model: string;
   readonly system: string;
   readonly user: string;
+  readonly maxOutputTokens?: number;
+  readonly reasoningEffort?: "low" | "medium" | "high";
 }): RequestBody {
-  return {
+  const body: Record<string, unknown> = {
     model: config.model,
     input: [
       { role: "system", content: config.system },
       { role: "user", content: config.user },
     ],
   };
+  if (config.maxOutputTokens !== undefined) {
+    body["max_output_tokens"] = config.maxOutputTokens;
+  }
+  if (config.reasoningEffort !== undefined) {
+    body["reasoning"] = { effort: config.reasoningEffort };
+  }
+  return body;
 }
 
 export function buildChatBody(config: {
   readonly model: string;
   readonly system: string;
   readonly user: string;
+  readonly maxOutputTokens?: number;
+  readonly reasoningEffort?: "low" | "medium" | "high";
 }): RequestBody {
-  return {
+  const body: Record<string, unknown> = {
     model: config.model,
     messages: [
       { role: "system", content: config.system },
       { role: "user", content: config.user },
     ],
   };
+  if (config.maxOutputTokens !== undefined) {
+    body["max_tokens"] = config.maxOutputTokens;
+  }
+  if (config.reasoningEffort !== undefined) {
+    body["reasoning_effort"] = config.reasoningEffort;
+  }
+  return body;
 }
 
 export function extractTextPayload(endpoint: ProviderEndpoint, rawText: string): string {

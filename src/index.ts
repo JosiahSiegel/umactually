@@ -88,7 +88,9 @@ async function buildGithubArgs(env: NodeJS.ProcessEnv, cwd: string): Promise<rea
   pushFlagValue(args, "--api-url", inputs.apiUrl);
   pushFlagValue(args, "--api-key", inputs.apiKey);
   pushFlagValue(args, "--model", inputs.model);
+  pushFlagValue(args, "--prompt", inputs.prompt);
   pushFlagValue(args, "--prompt-file", inputs.promptFile);
+  pushFlagValue(args, "--additional-prompt", inputs.additionalPrompt);
   pushFlagValue(args, "--additional-prompt-file", inputs.additionalPromptFile);
   pushFlagValue(args, "--sonar-host-url", inputs.sonarHostUrl);
   pushFlagValue(args, "--sonar-token", inputs.sonarToken);
@@ -132,7 +134,9 @@ function buildAzureArgs(env: NodeJS.ProcessEnv): readonly string[] {
   pushFlagValue(args, "--api-url", inputs.apiUrl);
   pushFlagValue(args, "--api-key", inputs.apiKey);
   pushFlagValue(args, "--model", inputs.model);
+  pushFlagValue(args, "--prompt", inputs.prompt);
   pushFlagValue(args, "--prompt-file", inputs.promptFile);
+  pushFlagValue(args, "--additional-prompt", inputs.additionalPrompt);
   pushFlagValue(args, "--additional-prompt-file", inputs.additionalPromptFile);
   pushFlagValue(args, "--pr-number", inputs.prNumber);
   pushFlagValue(args, "--repo", inputs.repo);

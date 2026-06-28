@@ -4,6 +4,8 @@ import { expectNotImplementedExport } from "../helpers/assert-red-module.js";
 
 type CliPlatform = "auto" | "github" | "azure";
 type CliMinimumSeverity = "low" | "medium" | "high";
+type CliEffort = "low" | "medium" | "high";
+type CliProvider = "openai-compatible" | "copilot";
 
 type ParsedCliArgs = {
   readonly platform: CliPlatform;
@@ -18,6 +20,11 @@ type ParsedCliArgs = {
   readonly model: string | null;
   readonly promptFile: string | null;
   readonly additionalPromptFile: string | null;
+  readonly prompt: string | null;
+  readonly additionalPrompt: string | null;
+  readonly effort: CliEffort | null;
+  readonly provider: CliProvider | null;
+  readonly githubApiBase: string | null;
   readonly includeSonarqube: boolean;
   readonly sonarHostUrl: string | null;
   readonly sonarToken: string | null;
@@ -107,6 +114,11 @@ describe("CLI flag parsing RED contract", () => {
       model: "review-model-synthetic",
       promptFile: "prompts/review.md",
       additionalPromptFile: "prompts/extra.md",
+      prompt: null,
+      additionalPrompt: null,
+      effort: null,
+      provider: null,
+      githubApiBase: null,
       includeSonarqube: true,
       sonarHostUrl: "https://sonar.example.test",
       sonarToken: "sonar-token",
@@ -163,6 +175,11 @@ describe("CLI flag parsing: action.yml inputs coverage", () => {
     "--no-include-sonarqube",
     "--simulate-findings",
     "--no-simulate-findings",
+    "--prompt",
+    "--additional-prompt",
+    "--effort",
+    "--provider",
+    "--github-api-base",
   ];
 
   const valueFlags: ReadonlySet<string> = new Set([
@@ -179,6 +196,11 @@ describe("CLI flag parsing: action.yml inputs coverage", () => {
     "--sonar-timeout-seconds",
     "--prompt-file",
     "--additional-prompt-file",
+    "--prompt",
+    "--additional-prompt",
+    "--effort",
+    "--provider",
+    "--github-api-base",
   ]);
 
   it("every action.yml input flag is accepted by parseCliArgs (no 'unknown flag' crash)", async () => {
@@ -327,6 +349,18 @@ function safePlaceholder(flag: string): string {
   }
   if (flag === "--platform") {
     return "auto";
+  }
+  if (flag === "--effort") {
+    return "medium";
+  }
+  if (flag === "--provider") {
+    return "openai-compatible";
+  }
+  if (flag === "--prompt" || flag === "--additional-prompt") {
+    return "text";
+  }
+  if (flag === "--github-api-base") {
+    return "https://api.github.com";
   }
   if (
     flag === "--review-timeout-seconds" ||

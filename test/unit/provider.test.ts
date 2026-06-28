@@ -321,4 +321,101 @@ describe("openai-compatible provider client", () => {
       expect(result.error.code).toBe("aborted");
     }
   });
+
+  it("PROV-UNIT-010 emits max_output_tokens on /responses body when maxOutputTokens is configured", async () => {
+    // Given: a /responses success stub and a caller-provided maxOutputTokens of 16_000.
+    const stub = makeFetchStub([{ status: 200, body: RESPONSES_SUCCESS_BODY }]);
+
+    // When: the client posts with the token budget set.
+    const result = await runProviderRequest({
+      ...BASE_CONFIG,
+      maxOutputTokens: 16_000,
+      fetchImpl: stub.fetch,
+    });
+
+    // Then: the /responses body carries max_output_tokens at the top level (snake_case wire shape).
+    expect(result.ok).toBe(true);
+    const recordedBody = stub.calls[0]?.body as Record<string, unknown> | null;
+    expect(recordedBody).not.toBeNull();
+    expect(recordedBody?.["max_output_tokens"]).toBe(16_000);
+  });
+
+  it("PROV-UNIT-011 emits max_tokens on /chat/completions body when maxOutputTokens is configured (fallback path)", async () => {
+    // Given: /responses 404 forces fallback to /chat/completions, and maxOutputTokens is configured.
+    const stub = makeFetchStub([
+      { status: 404, body: "{}" },
+      { status: 200, body: CHAT_SUCCESS_BODY },
+    ]);
+
+    // When: the client posts with the token budget set.
+    const result = await runProviderRequest({
+      ...BASE_CONFIG,
+      maxOutputTokens: 16_000,
+      fetchImpl: stub.fetch,
+    });
+
+    // Then: the /chat/completions body carries max_tokens at the top level (snake_case wire shape).
+    expect(result.ok).toBe(true);
+    expect(stub.calls).toHaveLength(2);
+    const chatBody = stub.calls[1]?.body as Record<string, unknown> | null;
+    expect(chatBody).not.toBeNull();
+    expect(chatBody?.["max_tokens"]).toBe(16_000);
+  });
+
+  it('PROV-UNIT-012 emits reasoning: { effort: "medium" } (nested object) on /responses body when reasoningEffort is configured', async () => {
+    // Given: a /responses success stub and a caller-provided reasoningEffort of "medium".
+    const stub = makeFetchStub([{ status: 200, body: RESPONSES_SUCCESS_BODY }]);
+
+    // When: the client posts with the reasoning effort set.
+    const result = await runProviderRequest({
+      ...BASE_CONFIG,
+      reasoningEffort: "medium",
+      fetchImpl: stub.fetch,
+    });
+
+    // Then: the /responses body carries reasoning as a nested object with an effort key.
+    expect(result.ok).toBe(true);
+    const recordedBody = stub.calls[0]?.body as Record<string, unknown> | null;
+    expect(recordedBody).not.toBeNull();
+    const reasoning = recordedBody?.["reasoning"];
+    expect(reasoning).toEqual({ effort: "medium" });
+    expect((reasoning as Record<string, unknown> | null)?.["effort"]).toBe("medium");
+  });
+
+  it('PROV-UNIT-013 emits reasoning_effort: "high" (top-level string) on /chat/completions body when reasoningEffort is configured', async () => {
+    // Given: /responses 404 forces fallback to /chat/completions, and reasoningEffort is configured.
+    const stub = makeFetchStub([
+      { status: 404, body: "{}" },
+      { status: 200, body: CHAT_SUCCESS_BODY },
+    ]);
+
+    // When: the client posts with the reasoning effort set.
+    const result = await runProviderRequest({
+      ...BASE_CONFIG,
+      reasoningEffort: "high",
+      fetchImpl: stub.fetch,
+    });
+
+    // Then: the /chat/completions body carries reasoning_effort as a top-level string.
+    expect(result.ok).toBe(true);
+    expect(stub.calls).toHaveLength(2);
+    const chatBody = stub.calls[1]?.body as Record<string, unknown> | null;
+    expect(chatBody).not.toBeNull();
+    expect(chatBody?.["reasoning_effort"]).toBe("high");
+  });
+
+  it("PROV-UNIT-014 omits max_output_tokens and reasoning from /responses body when neither is configured", async () => {
+    // Given: a /responses success stub and BASE_CONFIG (no token budget, no reasoning effort).
+    const stub = makeFetchStub([{ status: 200, body: RESPONSES_SUCCESS_BODY }]);
+
+    // When: the client posts with defaults only.
+    const result = await runProviderRequest({ ...BASE_CONFIG, fetchImpl: stub.fetch });
+
+    // Then: the /responses body does NOT carry max_output_tokens nor reasoning.
+    expect(result.ok).toBe(true);
+    const recordedBody = stub.calls[0]?.body as Record<string, unknown> | null;
+    expect(recordedBody).not.toBeNull();
+    expect(recordedBody).not.toHaveProperty("max_output_tokens");
+    expect(recordedBody).not.toHaveProperty("reasoning");
+  });
 });
