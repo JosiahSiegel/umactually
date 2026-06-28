@@ -50,6 +50,10 @@ export async function main(argv: readonly string[]): Promise<number> {
   }
 }
 
+// Only auto-invoke `main` when this module is the canonical CLI entry
+// (`dist/cli.js`). The action entry (`dist/index.js`) bundles this module too,
+// so `process.argv[1]` will equal `import.meta.url` for both bundles. We
+// differentiate by the script basename: `cli.js` vs anything else.
 const isMainModule = (() => {
   if (typeof process === "undefined") {
     return false;
@@ -58,7 +62,10 @@ const isMainModule = (() => {
   if (argv1 === undefined) {
     return false;
   }
-  return import.meta.url === pathToFileUrl(argv1);
+  if (import.meta.url !== pathToFileUrl(argv1)) {
+    return false;
+  }
+  return /(^|[\\/])cli\.js$/u.test(argv1);
 })();
 
 if (isMainModule) {

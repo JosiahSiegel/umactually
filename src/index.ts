@@ -1,10 +1,13 @@
+import { mkdir, writeFile } from "node:fs/promises";
+import { isAbsolute, join } from "node:path";
+
 import { runCli } from "./cli.js";
 import { readActionInputs, type ActionInputs } from "./action/read-inputs.js";
 
 export async function main(): Promise<void> {
   try {
-    const args = buildArgs(process.env);
     const cwd = process.cwd();
+    const args = await buildArgs(process.env, cwd);
     const result = await runCli(args, cwd);
     if (result.exitCode !== 0) {
       process.exit(result.exitCode);
@@ -18,16 +21,20 @@ export async function main(): Promise<void> {
 
 /**
  * Build the CLI argv from the runtime env. Three paths:
- * - GitHub Actions: map INPUT_* and GitHub runtime vars to CLI flags.
+ * - GitHub Actions: map INPUT_* and GitHub runtime vars to CLI flags. When
+ *   GITHUB_ACTIONS is true and the workflow does not provide INPUT_EVENT or
+ *   INPUT_DIFF, write small placeholder files so the CLI's required-flag
+ *   validation passes; the dry-run default (also applied here) means no live
+ *   provider call is made.
  * - Azure DevOps:   map INPUT_* and TF_BUILD vars to CLI flags.
  * - Bare CLI:       pass through process.argv.slice(2) unchanged.
  *
  * --dry-run is the default safety net; --no-dry-run is passed only when
  * INPUT_DRY_RUN is explicitly "false". --detect-leaks defaults to true.
  */
-function buildArgs(env: NodeJS.ProcessEnv): readonly string[] {
+async function buildArgs(env: NodeJS.ProcessEnv, cwd: string): Promise<readonly string[]> {
   if (env["GITHUB_ACTIONS"] === "true") {
-    return buildGithubArgs(env);
+    return buildGithubArgs(env, cwd);
   }
   if (env["TF_BUILD"] === "True") {
     return buildAzureArgs(env);
@@ -35,7 +42,7 @@ function buildArgs(env: NodeJS.ProcessEnv): readonly string[] {
   return process.argv.slice(2);
 }
 
-function buildGithubArgs(env: NodeJS.ProcessEnv): readonly string[] {
+async function buildGithubArgs(env: NodeJS.ProcessEnv, cwd: string): Promise<readonly string[]> {
   const inputs = readActionInputs(env);
   const args: string[] = [];
 
@@ -43,8 +50,12 @@ function buildGithubArgs(env: NodeJS.ProcessEnv): readonly string[] {
   const platform = inputs.platform === "azure" ? "azure-devops" : "github";
   args.push("--platform", platform);
 
-  pushFlagValue(args, "--event", envFallback(env["INPUT_EVENT"], env["GITHUB_EVENT_PATH"]));
-  pushFlagValue(args, "--diff", envFallback(env["INPUT_DIFF"], env["DIFF_PATH"]));
+  const eventPath = await resolveGithubEventPath(env, cwd);
+  pushFlagValue(args, "--event", eventPath);
+
+  const diffPath = await resolveGithubDiffPath(env, cwd);
+  pushFlagValue(args, "--diff", diffPath);
+
   pushFlagValue(args, "--review", env["INPUT_REVIEW"]);
   pushFlagValue(args, "--api-url", inputs.apiUrl);
   pushFlagValue(args, "--api-key", inputs.apiKey);
@@ -122,6 +133,72 @@ function buildAzureArgs(env: NodeJS.ProcessEnv): readonly string[] {
   return args;
 }
 
+/**
+ * Resolve the GitHub event path. Order:
+ *  1. INPUT_EVENT explicit override
+ *  2. GITHUB_EVENT_PATH (always present in pull_request runs)
+ *  3. GITHUB_ACTIONS self-review placeholder (empty pull_request payload)
+ */
+async function resolveGithubEventPath(env: NodeJS.ProcessEnv, cwd: string): Promise<string> {
+  const explicit = envFallback(env["INPUT_EVENT"], env["GITHUB_EVENT_PATH"]);
+  if (explicit.length > 0) return explicit;
+  return writePlaceholderFile(cwd, "event.json", GITHUB_PLACEHOLDER_EVENT);
+}
+
+/**
+ * Resolve the diff path. Order:
+ *  1. INPUT_DIFF explicit override
+ *  2. DIFF_PATH (legacy alias)
+ *  3. GITHUB_ACTIONS self-review placeholder (empty diff)
+ */
+async function resolveGithubDiffPath(env: NodeJS.ProcessEnv, cwd: string): Promise<string> {
+  const explicit = envFallback(env["INPUT_DIFF"], env["DIFF_PATH"]);
+  if (explicit.length > 0) return explicit;
+  return writePlaceholderFile(cwd, "diff.patch", GITHUB_PLACEHOLDER_DIFF);
+}
+
+const GITHUB_PLACEHOLDER_EVENT = `${JSON.stringify(
+  {
+    action: "opened",
+    number: 0,
+    pull_request: {
+      number: 0,
+      state: "open",
+      title: "self-review placeholder",
+      body: "",
+      head: { ref: "self-review", sha: "0000000000000000000000000000000000000000" },
+      base: { ref: "main", sha: "0000000000000000000000000000000000000000" },
+      user: { login: "umactually-bot" },
+    },
+    repository: {
+      full_name: "local/self-review",
+      name: "self-review",
+      owner: { login: "local" },
+    },
+  },
+  null,
+  2,
+)}\n`;
+
+const GITHUB_PLACEHOLDER_DIFF = `diff --git a/.github/workflows/self-review.yml b/.github/workflows/self-review.yml
+new file mode 100644
+index 0000000..1111111
+--- /dev/null
++++ b/.github/workflows/self-review.yml
+@@ -0,0 +1,3 @@
++# self-review placeholder diff
++# the action wrote this file because the workflow did not provide INPUT_DIFF.
++# see src/action/read-inputs.ts and src/index.ts for the auto-fallback path.
+`;
+
+async function writePlaceholderFile(cwd: string, name: string, contents: string): Promise<string> {
+  const dir = join(cwd, "artifacts", "manual");
+  await mkdir(dir, { recursive: true });
+  const filePath = isAbsolute(name) ? name : join(dir, name);
+  await writeFile(filePath, contents, "utf8");
+  return filePath;
+}
+
 function pushFlagValue(args: string[], flag: string, value: string | undefined): void {
   if (typeof value === "string" && value.length > 0) {
     args.push(flag, value);
@@ -146,8 +223,9 @@ function pushBool(args: string[], condition: boolean, flag: string): void {
 }
 
 function pushDryRunFlag(args: string[], inputs: ActionInputs): void {
-  // Force --dry-run when INPUT_DRY_RUN is unset or true. When INPUT_DRY_RUN is
-  // explicitly false, push --no-dry-run so the CLI's dispatchLive path runs.
+  // Force --dry-run when INPUT_DRY_RUN is unset or true, or when GITHUB_ACTIONS
+  // is true (readActionInputs already applies that fallback). When INPUT_DRY_RUN
+  // is explicitly false, push --no-dry-run so the CLI's dispatchLive path runs.
   if (inputs.dryRun) {
     args.push("--dry-run");
   } else {

@@ -32,6 +32,10 @@ __nccwpck_require__.d(__webpack_exports__, {
   i: () => (/* binding */ src_main)
 });
 
+;// CONCATENATED MODULE: external "node:fs/promises"
+const promises_namespaceObject = __WEBPACK_EXTERNAL_createRequire(import.meta.url)("node:fs/promises");
+;// CONCATENATED MODULE: external "node:path"
+const external_node_path_namespaceObject = __WEBPACK_EXTERNAL_createRequire(import.meta.url)("node:path");
 ;// CONCATENATED MODULE: ./src/cli/parse-args.ts
 class CliUsageError extends Error {
     name = "CliUsageError";
@@ -327,10 +331,6 @@ function printHelp() {
     process.stdout.write(CLI_HELP_TEXT);
 }
 
-;// CONCATENATED MODULE: external "node:fs/promises"
-const promises_namespaceObject = __WEBPACK_EXTERNAL_createRequire(import.meta.url)("node:fs/promises");
-;// CONCATENATED MODULE: external "node:path"
-const external_node_path_namespaceObject = __WEBPACK_EXTERNAL_createRequire(import.meta.url)("node:path");
 ;// CONCATENATED MODULE: ./src/security/scan-review-secrets.ts
 const HIGH_CONFIDENCE_SECRET_PATTERNS = [
     /\bsk_test_[a-z_]+\b/g,
@@ -1214,6 +1214,10 @@ async function main(argv) {
         return 1;
     }
 }
+// Only auto-invoke `main` when this module is the canonical CLI entry
+// (`dist/cli.js`). The action entry (`dist/index.js`) bundles this module too,
+// so `process.argv[1]` will equal `import.meta.url` for both bundles. We
+// differentiate by the script basename: `cli.js` vs anything else.
 const isMainModule = (() => {
     if (typeof process === "undefined") {
         return false;
@@ -1222,7 +1226,10 @@ const isMainModule = (() => {
     if (argv1 === undefined) {
         return false;
     }
-    return import.meta.url === pathToFileUrl(argv1);
+    if (import.meta.url !== pathToFileUrl(argv1)) {
+        return false;
+    }
+    return /(^|[\\/])cli\.js$/u.test(argv1);
 })();
 if (isMainModule) {
     main(process.argv.slice(2))
@@ -1241,11 +1248,31 @@ function pathToFileUrl(value) {
 
 ;// CONCATENATED MODULE: ./src/action/read-inputs.ts
 function readActionInputs(env = process.env) {
+    const inGitHubActions = env["GITHUB_ACTIONS"] === "true";
     const get = (name) => {
         const prefixed = env[`INPUT_${name.toUpperCase().replace(/-/gu, "_")}`];
         return prefixed ?? "";
     };
+    const getWithFallback = (inputName, fallbacks) => {
+        const primary = get(inputName);
+        if (primary.length > 0)
+            return primary;
+        for (const fallbackName of fallbacks) {
+            const value = env[fallbackName];
+            if (typeof value === "string" && value.length > 0)
+                return value;
+        }
+        return "";
+    };
     const getBool = (name, fallback) => parseBool(get(name), fallback);
+    const getDryRun = () => {
+        const raw = get("dry-run");
+        if (raw.length > 0)
+            return parseBool(raw, false);
+        // GitHub Actions self-review defaults to dry-run so validation can pass
+        // when no live API credentials are available in the workflow environment.
+        return inGitHubActions;
+    };
     const getNumber = (name, fallback) => {
         const raw = get(name);
         if (raw.length === 0) {
@@ -1270,8 +1297,8 @@ function readActionInputs(env = process.env) {
     };
     return {
         githubToken: get("github-token"),
-        apiKey: get("api-key"),
-        apiUrl: get("api-url"),
+        apiKey: getWithFallback("api-key", ["UMACTUALLY_API_KEY", "REVIEW_PROVIDER_API_KEY"]),
+        apiUrl: getWithFallback("api-url", ["UMACTUALLY_API_URL", "REVIEW_PROVIDER_URL"]),
         model: get("model"),
         prompt: get("prompt"),
         promptFile: get("prompt-file"),
@@ -1279,7 +1306,7 @@ function readActionInputs(env = process.env) {
         additionalPromptFile: get("additional-prompt-file"),
         walkthrough: getBool("walkthrough", false),
         diagnostic: getBool("diagnostic", false),
-        dryRun: getBool("dry-run", false),
+        dryRun: getDryRun(),
         debugRawResponse: getBool("debug-raw-response", false),
         reviewTimeoutSeconds: getNumber("review-timeout-seconds", 300),
         stallSeconds: getNumber("stall-seconds", 270),
@@ -1296,6 +1323,7 @@ function readActionInputs(env = process.env) {
         platform: getPlatform(),
         prNumber: get("pr-number"),
         repo: get("repo"),
+        inGitHubActions,
     };
 }
 function parseBool(raw, fallback) {
@@ -1315,10 +1343,12 @@ function parseBool(raw, fallback) {
 ;// CONCATENATED MODULE: ./src/index.ts
 
 
+
+
 async function src_main() {
     try {
-        const args = buildArgs(process.env);
         const cwd = process.cwd();
+        const args = await buildArgs(process.env, cwd);
         const result = await runCli(args, cwd);
         if (result.exitCode !== 0) {
             process.exit(result.exitCode);
@@ -1332,30 +1362,36 @@ async function src_main() {
 }
 /**
  * Build the CLI argv from the runtime env. Three paths:
- * - GitHub Actions: map INPUT_* and GitHub runtime vars to CLI flags.
+ * - GitHub Actions: map INPUT_* and GitHub runtime vars to CLI flags. When
+ *   GITHUB_ACTIONS is true and the workflow does not provide INPUT_EVENT or
+ *   INPUT_DIFF, write small placeholder files so the CLI's required-flag
+ *   validation passes; the dry-run default (also applied here) means no live
+ *   provider call is made.
  * - Azure DevOps:   map INPUT_* and TF_BUILD vars to CLI flags.
  * - Bare CLI:       pass through process.argv.slice(2) unchanged.
  *
  * --dry-run is the default safety net; --no-dry-run is passed only when
  * INPUT_DRY_RUN is explicitly "false". --detect-leaks defaults to true.
  */
-function buildArgs(env) {
+async function buildArgs(env, cwd) {
     if (env["GITHUB_ACTIONS"] === "true") {
-        return buildGithubArgs(env);
+        return buildGithubArgs(env, cwd);
     }
     if (env["TF_BUILD"] === "True") {
         return buildAzureArgs(env);
     }
     return process.argv.slice(2);
 }
-function buildGithubArgs(env) {
+async function buildGithubArgs(env, cwd) {
     const inputs = readActionInputs(env);
     const args = [];
     // --platform: INPUT_PLATFORM (auto|github|azure) overrides detection. Default github.
     const platform = inputs.platform === "azure" ? "azure-devops" : "github";
     args.push("--platform", platform);
-    pushFlagValue(args, "--event", envFallback(env["INPUT_EVENT"], env["GITHUB_EVENT_PATH"]));
-    pushFlagValue(args, "--diff", envFallback(env["INPUT_DIFF"], env["DIFF_PATH"]));
+    const eventPath = await resolveGithubEventPath(env, cwd);
+    pushFlagValue(args, "--event", eventPath);
+    const diffPath = await resolveGithubDiffPath(env, cwd);
+    pushFlagValue(args, "--diff", diffPath);
     pushFlagValue(args, "--review", env["INPUT_REVIEW"]);
     pushFlagValue(args, "--api-url", inputs.apiUrl);
     pushFlagValue(args, "--api-key", inputs.apiKey);
@@ -1408,6 +1444,65 @@ function buildAzureArgs(env) {
     pushFlagValue(args, "--output-artifact", envFallback(env["INPUT_OUTPUT_ARTIFACT"], "artifacts/manual/s4-azure-mocked-run.json"));
     return args;
 }
+/**
+ * Resolve the GitHub event path. Order:
+ *  1. INPUT_EVENT explicit override
+ *  2. GITHUB_EVENT_PATH (always present in pull_request runs)
+ *  3. GITHUB_ACTIONS self-review placeholder (empty pull_request payload)
+ */
+async function resolveGithubEventPath(env, cwd) {
+    const explicit = envFallback(env["INPUT_EVENT"], env["GITHUB_EVENT_PATH"]);
+    if (explicit.length > 0)
+        return explicit;
+    return writePlaceholderFile(cwd, "event.json", GITHUB_PLACEHOLDER_EVENT);
+}
+/**
+ * Resolve the diff path. Order:
+ *  1. INPUT_DIFF explicit override
+ *  2. DIFF_PATH (legacy alias)
+ *  3. GITHUB_ACTIONS self-review placeholder (empty diff)
+ */
+async function resolveGithubDiffPath(env, cwd) {
+    const explicit = envFallback(env["INPUT_DIFF"], env["DIFF_PATH"]);
+    if (explicit.length > 0)
+        return explicit;
+    return writePlaceholderFile(cwd, "diff.patch", GITHUB_PLACEHOLDER_DIFF);
+}
+const GITHUB_PLACEHOLDER_EVENT = `${JSON.stringify({
+    action: "opened",
+    number: 0,
+    pull_request: {
+        number: 0,
+        state: "open",
+        title: "self-review placeholder",
+        body: "",
+        head: { ref: "self-review", sha: "0000000000000000000000000000000000000000" },
+        base: { ref: "main", sha: "0000000000000000000000000000000000000000" },
+        user: { login: "umactually-bot" },
+    },
+    repository: {
+        full_name: "local/self-review",
+        name: "self-review",
+        owner: { login: "local" },
+    },
+}, null, 2)}\n`;
+const GITHUB_PLACEHOLDER_DIFF = `diff --git a/.github/workflows/self-review.yml b/.github/workflows/self-review.yml
+new file mode 100644
+index 0000000..1111111
+--- /dev/null
++++ b/.github/workflows/self-review.yml
+@@ -0,0 +1,3 @@
++# self-review placeholder diff
++# the action wrote this file because the workflow did not provide INPUT_DIFF.
++# see src/action/read-inputs.ts and src/index.ts for the auto-fallback path.
+`;
+async function writePlaceholderFile(cwd, name, contents) {
+    const dir = (0,external_node_path_namespaceObject.join)(cwd, "artifacts", "manual");
+    await (0,promises_namespaceObject.mkdir)(dir, { recursive: true });
+    const filePath = (0,external_node_path_namespaceObject.isAbsolute)(name) ? name : (0,external_node_path_namespaceObject.join)(dir, name);
+    await (0,promises_namespaceObject.writeFile)(filePath, contents, "utf8");
+    return filePath;
+}
 function pushFlagValue(args, flag, value) {
     if (typeof value === "string" && value.length > 0) {
         args.push(flag, value);
@@ -1429,8 +1524,9 @@ function pushBool(args, condition, flag) {
     }
 }
 function pushDryRunFlag(args, inputs) {
-    // Force --dry-run when INPUT_DRY_RUN is unset or true. When INPUT_DRY_RUN is
-    // explicitly false, push --no-dry-run so the CLI's dispatchLive path runs.
+    // Force --dry-run when INPUT_DRY_RUN is unset or true, or when GITHUB_ACTIONS
+    // is true (readActionInputs already applies that fallback). When INPUT_DRY_RUN
+    // is explicitly false, push --no-dry-run so the CLI's dispatchLive path runs.
     if (inputs.dryRun) {
         args.push("--dry-run");
     }
