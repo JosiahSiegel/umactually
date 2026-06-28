@@ -1284,51 +1284,66 @@ async function runLive(input) {
     const fetchImpl = input.fetchImpl ?? globalThis.fetch.bind(globalThis);
     const platform = detectLivePlatform(env);
     if (platform === null) {
+        const message = "Live review requires GitHub Actions (GITHUB_ACTIONS=true) or Azure Pipelines (TF_BUILD=True).";
+        process.stdout.write(`umactually-pr-review: ${message}\n`);
         return {
             exitCode: 1,
             posted: false,
             reviewId: undefined,
-            message: "Live review requires GitHub Actions (GITHUB_ACTIONS=true) or Azure Pipelines (TF_BUILD=True).",
+            message,
         };
     }
     const providerUrl = input.parsed.apiUrl ?? env["UMACTUALLY_API_URL"];
     if (providerUrl === undefined || providerUrl.length === 0) {
+        const message = "UMACTUALLY_API_URL must be set for live review.";
+        process.stdout.write(`umactually-pr-review: ${message}\n`);
         return {
             exitCode: 1,
             posted: false,
             reviewId: undefined,
-            message: "UMACTUALLY_API_URL must be set for live review.",
+            message,
         };
     }
     const providerKey = input.parsed.apiKey ?? env["UMACTUALLY_API_KEY"];
     if (providerKey === undefined || providerKey.length === 0) {
+        const message = "UMACTUALLY_API_KEY must be set for live review.";
+        process.stdout.write(`umactually-pr-review: ${message}\n`);
         return {
             exitCode: 1,
             posted: false,
             reviewId: undefined,
-            message: "UMACTUALLY_API_KEY must be set for live review.",
+            message,
         };
     }
     const runtime = { parsed: input.parsed, cwd: input.cwd, env, fetchImpl };
+    let result;
     try {
         switch (platform) {
             case "github":
-                return await runGithubLive({ ...runtime, context: await readGithubContext(env) });
+                result = await runGithubLive({ ...runtime, context: await readGithubContext(env) });
+                break;
             case "azure":
-                return await runAzureLive({ ...runtime, context: readAzureContext(env) });
+                result = await runAzureLive({ ...runtime, context: readAzureContext(env) });
+                break;
             default:
                 return assertNever(platform);
         }
     }
     catch (error) {
         const message = error instanceof Error ? error.message : String(error);
+        const sanitized = sanitizeForPost(message, readSecretValues(env));
+        process.stdout.write(`umactually-pr-review: ${sanitized}\n`);
         return {
             exitCode: 1,
             posted: false,
             reviewId: undefined,
-            message: sanitizeForPost(message, readSecretValues(env)),
+            message: sanitized,
         };
     }
+    if (result.posted) {
+        process.stdout.write(`umactually-pr-review: ${result.message}\n`);
+    }
+    return result;
 }
 function detectLivePlatform(env) {
     if (env["GITHUB_ACTIONS"] === "true") {
