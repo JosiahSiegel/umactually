@@ -34,8 +34,9 @@ jobs:
       - name: Run UmActually self review
         uses: ./
         with:
-          dry_run: 'false'
-          github_token: ${{ secrets.GITHUB_TOKEN }}
+          dry-run: 'false'
+          simulate-findings: 'true'
+          github-token: ${{ secrets.GITHUB_TOKEN }}
         env:
           UMACTUALLY_API_URL: ${{ secrets.UMACTUALLY_API_URL }}
           UMACTUALLY_API_KEY: ${{ secrets.UMACTUALLY_API_KEY }}
