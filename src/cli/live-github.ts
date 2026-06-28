@@ -1,6 +1,7 @@
 import { type GithubContext } from "../platform/github/context.js";
 import { REVIEW_MARKER } from "../review/run-review.js";
 import {
+  LiveReviewError,
   buildReviewBody,
   countSuppressedComments,
   ensureHttpOk,
@@ -49,9 +50,17 @@ export async function runGithubLive(input: {
   // The DELETE+POST path produces a fully populated review body that
   // replaces whatever was on the PR before.
   const forceReplace = parsed.simulateFindings === true;
-  if (existing !== null && !forceReplace && postableComments.length === 0) {
+  if (
+    existing !== null &&
+    !forceReplace &&
+    existing.state === "PENDING" &&
+    postableComments.length === 0
+  ) {
     const reviewId = await updateExistingReview({ context, fetchImpl, review: existing, body });
-    return { exitCode: 0, posted: true, reviewId, message: "updated existing GitHub review" };
+    if (reviewId !== null) {
+      return { exitCode: 0, posted: true, reviewId, message: "updated existing GitHub review" };
+    }
+    // PUT failed (e.g., 422 because submitted) — fall through to DELETE+POST below.
   }
   if (existing !== null) {
     await deleteExistingReview({ context, fetchImpl, review: existing });
@@ -80,6 +89,7 @@ export async function runGithubLive(input: {
 type ExistingGithubReview = {
   readonly id: number;
   readonly body: string;
+  readonly state: string;
 };
 
 type GithubReviewCommentRequest = {
@@ -108,7 +118,7 @@ async function findExistingMarkerReview(context: GithubContext, fetchImpl: Fetch
   }
   for (const entry of json) {
     const review = parseExistingReview(entry);
-    if (review !== null && review.body.includes(REVIEW_MARKER)) {
+    if (review !== null && review.body.includes(REVIEW_MARKER) && review.state !== "DISMISSED") {
       return review;
     }
   }
@@ -120,14 +130,24 @@ async function updateExistingReview(input: {
   readonly fetchImpl: FetchImpl;
   readonly review: ExistingGithubReview;
   readonly body: string;
-}): Promise<number> {
-  const response = await input.fetchImpl(`${githubReviewsUrl(input.context)}/${input.review.id}`, {
-    method: "PUT",
-    headers: githubHeaders(input.context.token),
-    body: JSON.stringify({ body: input.body }),
-  });
-  ensureHttpOk(response, "GITHUB_UPDATE_REVIEW_FAILED", "GitHub update review");
-  return input.review.id;
+}): Promise<number | null> {
+  try {
+    const response = await input.fetchImpl(`${githubReviewsUrl(input.context)}/${input.review.id}`, {
+      method: "PUT",
+      headers: githubHeaders(input.context.token),
+      body: JSON.stringify({ body: input.body }),
+    });
+    ensureHttpOk(response, "GITHUB_UPDATE_REVIEW_FAILED", "GitHub update review");
+    return input.review.id;
+  } catch (error) {
+    if (error instanceof LiveReviewError && error.code === "GITHUB_UPDATE_REVIEW_FAILED") {
+      process.stderr.write(
+        `::warning::umactually-pr-review: failed to update existing GitHub review ${input.review.id} (likely already submitted); falling back to DELETE+POST.\n`,
+      );
+      return null;
+    }
+    throw error;
+  }
 }
 
 async function deleteExistingReview(input: {
@@ -176,8 +196,13 @@ function parseExistingReview(value: unknown): ExistingGithubReview | null {
   const record = value as Record<string, unknown>;
   const id = record["id"];
   const body = record["body"];
-  if (typeof id === "number" && Number.isSafeInteger(id) && typeof body === "string") {
-    return { id, body };
+  const state = record["state"];
+  if (
+    typeof id === "number" && Number.isSafeInteger(id) &&
+    typeof body === "string" &&
+    typeof state === "string"
+  ) {
+    return { id, body, state };
   }
   return null;
 }

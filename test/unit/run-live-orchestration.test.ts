@@ -169,7 +169,7 @@ function githubRoutesWithExistingMarkerReview(
     {
       match: (url, method) => method === "GET" && url.endsWith("/pulls/42/reviews"),
       response: makeJsonResponse([
-        { id: options.existingReviewId, body: EXISTING_MARKER_REVIEW_BODY },
+        { id: options.existingReviewId, body: EXISTING_MARKER_REVIEW_BODY, state: "PENDING" },
       ]),
     },
     {
