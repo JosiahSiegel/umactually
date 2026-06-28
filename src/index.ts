@@ -17,7 +17,14 @@ globalThis.__umactually_action_entry__ = true;
 export async function main(): Promise<void> {
   try {
     const cwd = process.cwd();
+    // TEMP DEBUG
+    process.stderr.write(`::debug::simulate-findings env raw=[${process.env["INPUT_SIMULATE_FINDINGS"]}] ` +
+      `hyphen=[${process.env["INPUT_SIMULATE-FINDINGS"]}] ` +
+      `GITHUB_ACTIONS=[${process.env["GITHUB_ACTIONS"]}] ` +
+      `INPUT_DRY_RUN=[${process.env["INPUT_DRY_RUN"]}]\n`);
     const args = await buildArgs(process.env, cwd);
+    process.stderr.write(`::debug::argv has simulate-findings=${args.includes("--simulate-findings")} ` +
+      `has dry-run=${args.includes("--dry-run")} has no-dry-run=${args.includes("--no-dry-run")}\n`);
     const result = await runCli(args, cwd);
     if (result.exitCode !== 0) {
       process.exit(result.exitCode);
