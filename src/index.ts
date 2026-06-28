@@ -14,6 +14,9 @@ declare global {
 
 globalThis.__umactually_action_entry__ = true;
 
+console.error("DEBUG src/index.ts loaded");
+console.error("DEBUG isMainEntry check starting");
+
 export async function main(): Promise<void> {
   try {
     const cwd = process.cwd();
