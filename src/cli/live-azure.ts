@@ -4,6 +4,7 @@ import {
   buildReviewBody,
   countSuppressedComments,
   ensureHttpOk,
+  evaluateLeakGate,
   isRecord,
   mapReviewVerdictToAzureStatus,
   readJsonResponse,
@@ -23,6 +24,24 @@ export async function runAzureLive(input: {
   readonly fetchImpl: FetchImpl;
 }): Promise<LiveRunResult> {
   const { context, diffText, provider, parsed, fetchImpl } = input;
+
+  // Refuse to post when the diff contains high-confidence secrets.
+  // This is the runtime enforcement of "identify leaks" — the scanner
+  // (src/security/scan-review-secrets.ts) counts leaks, this gate enforces.
+  const leakGate = await evaluateLeakGate({
+    diffText,
+    detectLeaks: parsed.detectLeaks,
+  });
+  if (!leakGate.ok) {
+    process.stderr.write(`::error::umactually-pr-review: ${leakGate.message}\n`);
+    return {
+      exitCode: 1,
+      posted: false,
+      reviewId: undefined,
+      message: leakGate.message,
+    };
+  }
+
   const comments = selectPostableComments({
     review: provider.review,
     diffText,

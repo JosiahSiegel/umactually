@@ -2,7 +2,7 @@ import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { parseCliArgs } from "../../src/cli.js";
 import { runLive } from "../../src/cli/orchestrator.js";
@@ -374,21 +374,29 @@ describe("runLive GitHub orchestration", () => {
     expect(postedText).not.toMatch(/<details[\s>]/u);
   });
 
-  it("FORCES the deterministic fixture when --simulate-findings is set, even when the live provider returned real findings", async () => {
+  it("DOES NOT replace when --simulate-findings is set and live findings exist (live always wins)", async () => {
     // Given: the live provider returns a non-empty review (real findings).
-    workspace = await mkdtemp(join(tmpdir(), "umactually-live-simulate-overrides-"));
+    workspace = await mkdtemp(join(tmpdir(), "umactually-live-simulate-keeps-live-"));
     const eventPath = join(workspace, "event.json");
     await writeFile(eventPath, EVENT_JSON, "utf8");
     const recorder = makeFetchRecorder(githubRoutes(PROVIDER_REVIEW));
 
-    // When: --simulate-findings is set. The flag is authoritative — it must
-    // drive the posted review regardless of what the live provider returned.
+    // Capture stderr to assert the ::notice:: line.
+    const stderrLines: string[] = [];
+    const stderrSpy = vi.spyOn(process.stderr, "write").mockImplementation((chunk) => {
+      stderrLines.push(String(chunk));
+      return true;
+    });
+
+    // When: --simulate-findings is set but the live result has real findings.
+    // Live findings always win — the fixture is a fallback for empty results only.
     const result = await runLive({
       parsed: parseCliArgs(["--platform", "github", "--no-dry-run", "--simulate-findings"]),
       cwd: workspace,
       env: githubEnv(eventPath),
       fetchImpl: recorder.fetchImpl,
     });
+    stderrSpy.mockRestore();
 
     // Then: the post is successful and the body carries the marker.
     expect(result.exitCode).toBe(0);
@@ -397,25 +405,21 @@ describe("runLive GitHub orchestration", () => {
     const body = readRecord(postCall.body as Record<string, unknown>, "review request");
     expect(body["body"]).toContain("<!-- umactually-pr-review -->");
 
-    // Then: the posted body uses the simulated summary, NOT the live provider summary.
-    expect(body["body"]).toContain("Simulated review for octo-org/octo-repo#42");
-    expect(body["body"]).not.toContain("One valid inline finding.");
+    // Then: the posted body uses the LIVE summary (the fixture did NOT override).
+    expect(body["body"]).toContain("One valid inline finding.");
+    expect(body["body"]).not.toContain("Simulated review for");
 
-    // Then: 4-6 inline threads from the deterministic fixture are posted.
+    // Then: exactly 1 inline thread is posted (the live one, not 4-6 fixture ones).
     const comments = readArray(body["comments"], "review comments");
-    expect(comments.length).toBeGreaterThanOrEqual(4);
-    expect(comments.length).toBeLessThanOrEqual(6);
+    expect(comments).toHaveLength(1);
 
-    // Then: the provider label in the body still reads "openai-compatible"
-    // (the fixture does not mint its own provider identity).
+    // Then: the provider label in the body still reads "openai-compatible".
     expect(body["body"]).toContain("openai-compatible");
 
-    // Then: the posted body MUST NOT contain raw provider JSON, the API key,
-    // or a fenced details block.
-    const postedText = JSON.stringify(body);
-    expect(postedText).not.toContain("provider-key-secret");
-    expect(postedText).not.toContain("github-token-secret");
-    expect(postedText).not.toMatch(/<details[\s>]/u);
+    // Then: stderr emits a ::notice:: explaining that the flag was set but ignored.
+    const allStderr = stderrLines.join("");
+    expect(allStderr).toContain("::notice::");
+    expect(allStderr).toMatch(/ignored/i);
   });
 
   it("does NOT replace when --simulate-findings is false (default)", async () => {

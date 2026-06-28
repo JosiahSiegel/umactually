@@ -170,10 +170,12 @@ describe("simulate-findings debug log", () => {
     });
 
     // Then: stderr receives at least one line containing the GitHub Actions
-    // ::warning:: annotation and a reference to "simulate-findings" so the
-    // user can correlate the override with their flag.
+    // ::notice:: annotation and a reference to "simulate-findings" so the
+    // user can correlate the override with their flag. Live findings always
+    // win — the fixture is a fallback for empty results only.
     const allCalls = stderrSpy.mock.calls.map((args) => String(args[0] ?? "")).join("");
-    expect(allCalls).toContain("::warning::");
+    expect(allCalls).toContain("::notice::");
     expect(allCalls).toMatch(/simulate-findings/i);
+    expect(allCalls).toMatch(/ignored/i);
   });
 });

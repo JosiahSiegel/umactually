@@ -35,7 +35,6 @@ jobs:
         uses: ./
         with:
           dry-run: 'false'
-          simulate-findings: 'true'
           github_token: ${{ secrets.GITHUB_TOKEN }}
         env:
           UMACTUALLY_API_URL: ${{ secrets.UMACTUALLY_API_URL }}

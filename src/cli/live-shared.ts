@@ -57,6 +57,38 @@ export class LiveReviewError extends Error {
   }
 }
 
+export type LeakGateResult =
+  | { readonly ok: true; readonly leakCount: 0 }
+  | { readonly ok: false; readonly leakCount: number; readonly message: string };
+
+/**
+ * Gate that refuses to post when high-confidence secrets are detected in the
+ * diff. This is the runtime side of `identify leaks` — the scanner counts
+ * leaks and redacts the diff, but the gate enforces that no provider response
+ * can leak secrets through the posted review body. `detect-leaks: false`
+ * bypasses the gate (operator opt-out).
+ */
+export async function evaluateLeakGate(input: {
+  readonly diffText: string;
+  readonly detectLeaks: boolean;
+}): Promise<LeakGateResult> {
+  if (!input.detectLeaks) {
+    return { ok: true, leakCount: 0 };
+  }
+  const report = await scanReviewSecrets({
+    diffText: input.diffText,
+    expectedArtifact: "artifacts/manual/s5-redaction-report.json",
+  });
+  if (report.highConfidenceLeakCount === 0) {
+    return { ok: true, leakCount: 0 };
+  }
+  return {
+    ok: false,
+    leakCount: report.highConfidenceLeakCount,
+    message: `Refusing to post: ${report.highConfidenceLeakCount} high-confidence secret(s) detected in the diff. Set --no-detect-leaks to override (NOT recommended).`,
+  };
+}
+
 const DEFAULT_MODEL = "auto";
 const DEFAULT_REQUEST_TIMEOUT_MS = 60_000;
 const DEFAULT_MAX_COMMENTS = 50;

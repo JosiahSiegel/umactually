@@ -169,11 +169,11 @@ async function dispatchLivePlatform(input: {
 }
 
 /**
- * Replaces the provider outcome's payload with the deterministic fixture when
- * `simulateFindings` is true. The flag is authoritative — the fixture fully
- * drives the review regardless of whether the live provider returned an empty
- * or non-empty result. When `simulateFindings` is false, the live result is
- * preserved unchanged.
+ * Replaces the provider outcome's payload with the deterministic fixture ONLY
+ * when the live result is structurally empty (no inline comments AND no
+ * suppressed comments). Live findings always win — the fixture is a demo
+ * fallback for "provider returned nothing usable" cases. When
+ * `simulateFindings` is false, the live result is preserved unchanged.
  *
  * The `provider`, `modelId`, and `endpoint` fields on the outcome are kept
  * from the live call (the fixture does not mint its own provider identity),
@@ -194,10 +194,16 @@ function applySimulateFindings(input: {
 
   const liveCommentCount = input.outcome.review.comments.length;
   const liveSuppressedCount = input.outcome.review.suppressedComments.length;
-  if (liveCommentCount > 0 || liveSuppressedCount > 0) {
-    const message = `umactually-pr-review: --simulate-findings replaced a non-empty live result (${liveCommentCount} inline, ${liveSuppressedCount} suppressed). Check provider connectivity.`;
+  const isStructurallyEmpty = liveCommentCount === 0 && liveSuppressedCount === 0;
+
+  if (!isStructurallyEmpty) {
+    // Live findings always win — do not override them with the deterministic
+    // fixture. Document the override intent on stderr so operators can see
+    // the flag was set but did not engage.
+    const message = `umactually-pr-review: --simulate-findings set but ignored (live result has ${liveCommentCount} inline, ${liveSuppressedCount} suppressed). Live findings always win.`;
     const sanitized = sanitizeForPost(message, input.secrets);
-    process.stderr.write(`::warning::${sanitized}\n`);
+    process.stderr.write(`::notice::${sanitized}\n`);
+    return input.outcome;
   }
 
   const fixture = buildSimulatedFindings(input.repo, input.prNumber, input.headSha, input.diffText);
