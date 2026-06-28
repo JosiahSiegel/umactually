@@ -1,4 +1,3 @@
-import { fetchGithubPrDiff } from "../platform/github/api.js";
 import { type GithubContext } from "../platform/github/context.js";
 import { REVIEW_MARKER } from "../review/run-review.js";
 import {
@@ -8,29 +7,25 @@ import {
   mapReviewVerdictToGithubEvent,
   readJsonResponse,
   readResponseId,
-  requestLiveReview,
   selectPostableComments,
   type FetchImpl,
+  type LiveProviderOutcome,
   type LiveRunResult,
-  type LiveRuntimeConfig,
 } from "./live-shared.js";
 
-export async function runGithubLive(config: LiveRuntimeConfig & { readonly context: GithubContext }): Promise<LiveRunResult> {
-  const diffText = await fetchGithubPrDiff(config.context, config.fetchImpl);
-  const provider = await requestLiveReview({
-    parsed: config.parsed,
-    cwd: config.cwd,
-    env: config.env,
-    fetchImpl: config.fetchImpl,
-    platform: "github",
-    diffText,
-    platformToken: config.context.token,
-  });
+export async function runGithubLive(input: {
+  readonly context: GithubContext;
+  readonly diffText: string;
+  readonly provider: LiveProviderOutcome;
+  readonly parsed: Parameters<typeof selectPostableComments>[0]["parsed"];
+  readonly fetchImpl: FetchImpl;
+}): Promise<LiveRunResult> {
+  const { context, diffText, provider, parsed, fetchImpl } = input;
   const comments = selectPostableComments({
     review: provider.review,
     diffText,
-    parsed: config.parsed,
-    secrets: [config.context.token],
+    parsed,
+    secrets: [context.token],
   });
   const body = buildReviewBody({
     review: provider.review,
@@ -38,16 +33,16 @@ export async function runGithubLive(config: LiveRuntimeConfig & { readonly conte
     modelId: provider.modelId,
     validCommentCount: comments.length,
     suppressedCommentCount: countSuppressedComments(provider.review, diffText),
-    secrets: [config.context.token],
+    secrets: [context.token],
   });
-  const existing = await findExistingMarkerReview(config.context, config.fetchImpl);
+  const existing = await findExistingMarkerReview(context, fetchImpl);
   if (existing !== null) {
-    const reviewId = await updateExistingReview({ context: config.context, fetchImpl: config.fetchImpl, review: existing, body });
+    const reviewId = await updateExistingReview({ context, fetchImpl, review: existing, body });
     return { exitCode: 0, posted: true, reviewId, message: "updated existing GitHub review" };
   }
   const reviewId = await createGithubReview({
-    context: config.context,
-    fetchImpl: config.fetchImpl,
+    context,
+    fetchImpl,
     body,
     event: mapReviewVerdictToGithubEvent(provider.review.verdict),
     comments: comments.map((comment) => ({

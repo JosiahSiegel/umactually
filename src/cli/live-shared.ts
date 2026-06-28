@@ -32,18 +32,20 @@ export type LiveReview = {
   readonly suppressedComments: readonly LiveReviewComment[];
 };
 
+/**
+ * A provider outcome is structurally empty when it carries no inline comments
+ * AND no suppressed comments. Used by `simulate-findings` to decide whether
+ * the live result should be replaced with the deterministic fixture.
+ */
+export function isStructurallyEmptyReview(review: LiveReview): boolean {
+  return review.comments.length === 0 && review.suppressedComments.length === 0;
+}
+
 export type LiveProviderOutcome = {
   readonly review: LiveReview;
   readonly endpoint: string;
   readonly provider: string;
   readonly modelId: string;
-};
-
-export type LiveRuntimeConfig = {
-  readonly parsed: ParsedCliArgs;
-  readonly cwd: string;
-  readonly env: NodeJS.ProcessEnv;
-  readonly fetchImpl: FetchImpl;
 };
 
 export class LiveReviewError extends Error {

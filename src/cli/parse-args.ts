@@ -26,6 +26,7 @@ export type ParsedCliArgs = {
   readonly walkthrough: boolean;
   readonly diagnostic: boolean;
   readonly debugRawResponse: boolean;
+  readonly simulateFindings: boolean;
   readonly reviewTimeoutSeconds: number | null;
   readonly stallSeconds: number | null;
   readonly perRequestTimeoutSeconds: number | null;
@@ -63,6 +64,7 @@ export function parseCliArgs(args: readonly string[]): ParsedCliArgs {
   let walkthrough = false;
   let diagnostic = false;
   let debugRawResponse = false;
+  let simulateFindings = false;
   let reviewTimeoutSeconds: number | null = null;
   let stallSeconds: number | null = null;
   let perRequestTimeoutSeconds: number | null = null;
@@ -185,6 +187,12 @@ export function parseCliArgs(args: readonly string[]): ParsedCliArgs {
       case "--no-debug-raw-response":
         debugRawResponse = false;
         break;
+      case "--simulate-findings":
+        simulateFindings = true;
+        break;
+      case "--no-simulate-findings":
+        simulateFindings = false;
+        break;
       case "--review-timeout-seconds":
         reviewTimeoutSeconds = readIntValue(args, index, "review-timeout-seconds");
         index += 1;
@@ -244,6 +252,7 @@ export function parseCliArgs(args: readonly string[]): ParsedCliArgs {
     walkthrough,
     diagnostic,
     debugRawResponse,
+    simulateFindings,
     reviewTimeoutSeconds,
     stallSeconds,
     perRequestTimeoutSeconds,

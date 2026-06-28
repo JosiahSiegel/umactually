@@ -58,6 +58,10 @@ inputs:
     description: Echo the raw provider response into the workflow log.
     required: false
     default: "false"
+  simulate-findings:
+    description: Replace an empty live provider payload with a deterministic multi-finding fixture. Live results are always preferred when the provider returns real findings.
+    required: false
+    default: "false"
   review-timeout-seconds:
     description: Hard ceiling for the full model-call retry budget.
     required: false

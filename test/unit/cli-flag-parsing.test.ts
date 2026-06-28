@@ -30,6 +30,7 @@ type ParsedCliArgs = {
   readonly walkthrough: boolean;
   readonly diagnostic: boolean;
   readonly debugRawResponse: boolean;
+  readonly simulateFindings: boolean;
   readonly reviewTimeoutSeconds: number | null;
   readonly stallSeconds: number | null;
   readonly perRequestTimeoutSeconds: number | null;
@@ -118,6 +119,7 @@ describe("CLI flag parsing RED contract", () => {
       walkthrough: false,
       diagnostic: false,
       debugRawResponse: false,
+      simulateFindings: false,
       reviewTimeoutSeconds: null,
       stallSeconds: null,
       perRequestTimeoutSeconds: null,

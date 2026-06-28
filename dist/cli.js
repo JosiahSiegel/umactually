@@ -461,6 +461,7 @@ function parseCliArgs(args) {
     let walkthrough = false;
     let diagnostic = false;
     let debugRawResponse = false;
+    let simulateFindings = false;
     let reviewTimeoutSeconds = null;
     let stallSeconds = null;
     let perRequestTimeoutSeconds = null;
@@ -582,6 +583,12 @@ function parseCliArgs(args) {
             case "--no-debug-raw-response":
                 debugRawResponse = false;
                 break;
+            case "--simulate-findings":
+                simulateFindings = true;
+                break;
+            case "--no-simulate-findings":
+                simulateFindings = false;
+                break;
             case "--review-timeout-seconds":
                 reviewTimeoutSeconds = readIntValue(args, index, "review-timeout-seconds");
                 index += 1;
@@ -640,6 +647,7 @@ function parseCliArgs(args) {
         walkthrough,
         diagnostic,
         debugRawResponse,
+        simulateFindings,
         reviewTimeoutSeconds,
         stallSeconds,
         perRequestTimeoutSeconds,
@@ -720,6 +728,7 @@ const CLI_HELP_TEXT = [
     "  --ignore-minor",
     "  --detect-leaks | --no-detect-leaks",
     "  --dry-run               Write artifact JSON only, no provider calls",
+    "  --simulate-findings     Replace empty live findings with deterministic fixture",
     "  --output-artifact <path>",
     "",
 ].join("\n");
@@ -1021,6 +1030,7 @@ const ENV_KEYS = [
     ["diagnostic", ["UMACTUALLY_DIAGNOSTIC", "REVIEW_DIAGNOSTIC"]],
     ["dryRun", ["UMACTUALLY_DRY_RUN", "REVIEW_DRY_RUN"]],
     ["debugRawResponse", ["REVIEW_DEBUG_RAW_RESPONSE"]],
+    ["simulateFindings", ["UMACTUALLY_SIMULATE_FINDINGS", "REVIEW_SIMULATE_FINDINGS"]],
     ["reviewTimeoutSeconds", ["UMACTUALLY_REVIEW_TIMEOUT_SECONDS", "REVIEW_TIMEOUT_SECONDS"]],
     ["stallTimeoutSeconds", ["UMACTUALLY_STALL_SECONDS", "REVIEW_STALL_SECONDS"]],
     ["perRequestTimeoutSeconds", ["REVIEW_PER_REQUEST_TIMEOUT_SECONDS"]],
@@ -1274,7 +1284,7 @@ function dispatchLive(parsed, cwd, env) {
     // Live orchestration lives in src/cli/orchestrator.ts so the dry-run path
     // keeps a single-responsibility surface. This thin wrapper exists only to
     // preserve the public CLI module exports expected by existing tests.
-    return __nccwpck_require__.e(/* import() */ 126).then(__nccwpck_require__.bind(__nccwpck_require__, 126)).then(({ runLive }) => runLive({ parsed, cwd, env }).then((result) => ({
+    return __nccwpck_require__.e(/* import() */ 98).then(__nccwpck_require__.bind(__nccwpck_require__, 98)).then(({ runLive }) => runLive({ parsed, cwd, env }).then((result) => ({
         exitCode: result.exitCode,
     })));
 }

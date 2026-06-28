@@ -15,6 +15,7 @@ const ENV_KEYS: ReadonlyArray<readonly [keyof EnvSources, readonly string[]]> = 
   ["diagnostic", ["UMACTUALLY_DIAGNOSTIC", "REVIEW_DIAGNOSTIC"]],
   ["dryRun", ["UMACTUALLY_DRY_RUN", "REVIEW_DRY_RUN"]],
   ["debugRawResponse", ["REVIEW_DEBUG_RAW_RESPONSE"]],
+  ["simulateFindings", ["UMACTUALLY_SIMULATE_FINDINGS", "REVIEW_SIMULATE_FINDINGS"]],
   ["reviewTimeoutSeconds", ["UMACTUALLY_REVIEW_TIMEOUT_SECONDS", "REVIEW_TIMEOUT_SECONDS"]],
   ["stallTimeoutSeconds", ["UMACTUALLY_STALL_SECONDS", "REVIEW_STALL_SECONDS"]],
   ["perRequestTimeoutSeconds", ["REVIEW_PER_REQUEST_TIMEOUT_SECONDS"]],

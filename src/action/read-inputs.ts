@@ -11,6 +11,7 @@ export type ActionInputs = {
   readonly diagnostic: boolean;
   readonly dryRun: boolean;
   readonly debugRawResponse: boolean;
+  readonly simulateFindings: boolean;
   readonly reviewTimeoutSeconds: number;
   readonly stallSeconds: number;
   readonly maxOutputTokens: number;
@@ -90,6 +91,7 @@ export function readActionInputs(env: NodeJS.ProcessEnv = process.env): ActionIn
     diagnostic: getBool("diagnostic", false),
     dryRun: getDryRun(),
     debugRawResponse: getBool("debug-raw-response", false),
+    simulateFindings: getBool("simulate-findings", false),
     reviewTimeoutSeconds: getNumber("review-timeout-seconds", 300),
     stallSeconds: getNumber("stall-seconds", 270),
     maxOutputTokens: getNumber("max-output-tokens", 16_000),

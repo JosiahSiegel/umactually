@@ -1,4 +1,3 @@
-import { fetchAzurePrDiff } from "../platform/azure/api.js";
 import { type AzureContext } from "../platform/azure/context.js";
 import { REVIEW_MARKER } from "../review/run-review.js";
 import {
@@ -9,30 +8,26 @@ import {
   mapReviewVerdictToAzureStatus,
   readJsonResponse,
   readResponseId,
-  requestLiveReview,
   selectPostableComments,
   type FetchImpl,
+  type LiveProviderOutcome,
   type LiveReviewComment,
   type LiveRunResult,
-  type LiveRuntimeConfig,
 } from "./live-shared.js";
 
-export async function runAzureLive(config: LiveRuntimeConfig & { readonly context: AzureContext }): Promise<LiveRunResult> {
-  const diffText = await fetchAzurePrDiff(config.context, config.fetchImpl);
-  const provider = await requestLiveReview({
-    parsed: config.parsed,
-    cwd: config.cwd,
-    env: config.env,
-    fetchImpl: config.fetchImpl,
-    platform: "azure",
-    diffText,
-    platformToken: config.context.token,
-  });
+export async function runAzureLive(input: {
+  readonly context: AzureContext;
+  readonly diffText: string;
+  readonly provider: LiveProviderOutcome;
+  readonly parsed: Parameters<typeof selectPostableComments>[0]["parsed"];
+  readonly fetchImpl: FetchImpl;
+}): Promise<LiveRunResult> {
+  const { context, diffText, provider, parsed, fetchImpl } = input;
   const comments = selectPostableComments({
     review: provider.review,
     diffText,
-    parsed: config.parsed,
-    secrets: [config.context.token],
+    parsed,
+    secrets: [context.token],
   });
   const body = buildReviewBody({
     review: provider.review,
@@ -40,22 +35,22 @@ export async function runAzureLive(config: LiveRuntimeConfig & { readonly contex
     modelId: provider.modelId,
     validCommentCount: comments.length,
     suppressedCommentCount: countSuppressedComments(provider.review, diffText),
-    secrets: [config.context.token],
+    secrets: [context.token],
   });
-  const existingThreads = await listAzureThreads(config.context, config.fetchImpl);
+  const existingThreads = await listAzureThreads(context, fetchImpl);
   const postedIds: number[] = [];
   for (const comment of comments) {
     if (hasDuplicateThread(existingThreads, comment)) {
       continue;
     }
-    const threadId = await postAzureThread({ context: config.context, fetchImpl: config.fetchImpl, comment, body });
+    const threadId = await postAzureThread({ context, fetchImpl, comment, body });
     if (threadId !== undefined) {
       postedIds.push(threadId);
     }
   }
   await postAzureStatus({
-    context: config.context,
-    fetchImpl: config.fetchImpl,
+    context,
+    fetchImpl,
     state: mapReviewVerdictToAzureStatus(provider.review.verdict),
     description: provider.review.summary,
   });

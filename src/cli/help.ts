@@ -21,6 +21,7 @@ export const CLI_HELP_TEXT = [
   "  --ignore-minor",
   "  --detect-leaks | --no-detect-leaks",
   "  --dry-run               Write artifact JSON only, no provider calls",
+  "  --simulate-findings     Replace empty live findings with deterministic fixture",
   "  --output-artifact <path>",
   "",
 ].join("\n");

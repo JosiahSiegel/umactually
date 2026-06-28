@@ -275,6 +275,107 @@ describe("runLive GitHub orchestration", () => {
     expect(postedText).not.toContain("Authorization:");
     expect(postedText).not.toContain("Bearer ");
   });
+
+  it("replaces an empty provider result with the deterministic fixture when --simulate-findings is set", async () => {
+    // Given: the provider returns a structurally empty review (no comments, no suppressed_comments).
+    workspace = await mkdtemp(join(tmpdir(), "umactually-live-simulate-replace-"));
+    const eventPath = join(workspace, "event.json");
+    await writeFile(eventPath, EVENT_JSON, "utf8");
+    const emptyReview = JSON.stringify({
+      summary: "Live provider returned an empty payload.",
+      verdict: "COMMENT",
+      comments: [],
+      suppressed_comments: [],
+    });
+    const recorder = makeFetchRecorder(githubRoutes(emptyReview));
+
+    // When: --simulate-findings is set on the live path.
+    const result = await runLive({
+      parsed: parseCliArgs(["--platform", "github", "--no-dry-run", "--simulate-findings"]),
+      cwd: workspace,
+      env: githubEnv(eventPath),
+      fetchImpl: recorder.fetchImpl,
+    });
+
+    // Then: the post is successful and the body carries the marker.
+    expect(result.exitCode).toBe(0);
+    expect(result.posted).toBe(true);
+    const postCall = findCall(recorder.calls, "POST", "/pulls/42/reviews");
+    const body = readRecord(postCall.body as Record<string, unknown>, "review request");
+    expect(body["body"]).toContain("<!-- umactually-pr-review -->");
+
+    // Then: the posted comments include the deterministic fixture findings (4-6 inline threads).
+    const comments = readArray(body["comments"], "review comments");
+    expect(comments.length).toBeGreaterThanOrEqual(4);
+    expect(comments.length).toBeLessThanOrEqual(6);
+
+    // Then: the simulated summary replaces the live "empty" summary.
+    expect(body["body"]).toContain("Simulated review for octo-org/octo-repo#42");
+
+    // Then: the posted body MUST NOT contain raw provider JSON, the API key,
+    // or a fenced details block (the marker is appended by the posting layer,
+    // not by the fixture itself).
+    const postedText = JSON.stringify(body);
+    expect(postedText).not.toContain("provider-key-secret");
+    expect(postedText).not.toContain("github-token-secret");
+    expect(postedText).not.toContain("RAW_PROVIDER_JSON");
+    expect(postedText).not.toMatch(/<details[\s>]/u);
+  });
+
+  it("does NOT replace a non-empty provider result when --simulate-findings is set (live wins)", async () => {
+    // Given: the provider returns a real finding.
+    workspace = await mkdtemp(join(tmpdir(), "umactually-live-simulate-noop-"));
+    const eventPath = join(workspace, "event.json");
+    await writeFile(eventPath, EVENT_JSON, "utf8");
+    const recorder = makeFetchRecorder(githubRoutes(PROVIDER_REVIEW));
+
+    // When: --simulate-findings is set but the live provider already returned a comment.
+    const result = await runLive({
+      parsed: parseCliArgs(["--platform", "github", "--no-dry-run", "--simulate-findings"]),
+      cwd: workspace,
+      env: githubEnv(eventPath),
+      fetchImpl: recorder.fetchImpl,
+    });
+
+    // Then: the live result is preserved and the simulated summary is NOT used.
+    expect(result.exitCode).toBe(0);
+    expect(result.posted).toBe(true);
+    const postCall = findCall(recorder.calls, "POST", "/pulls/42/reviews");
+    const body = readRecord(postCall.body as Record<string, unknown>, "review request");
+    expect(body["body"]).toContain("One valid inline finding.");
+    expect(body["body"]).not.toContain("Simulated review for octo-org/octo-repo#42");
+  });
+
+  it("does NOT replace when --simulate-findings is false (default)", async () => {
+    // Given: the provider returns an empty review and simulate-findings is off.
+    workspace = await mkdtemp(join(tmpdir(), "umactually-live-simulate-off-"));
+    const eventPath = join(workspace, "event.json");
+    await writeFile(eventPath, EVENT_JSON, "utf8");
+    const emptyReview = JSON.stringify({
+      summary: "Live provider returned an empty payload.",
+      verdict: "COMMENT",
+      comments: [],
+      suppressed_comments: [],
+    });
+    const recorder = makeFetchRecorder(githubRoutes(emptyReview));
+
+    // When: live orchestration runs without the simulate-findings flag.
+    const result = await runLive({
+      parsed: parseCliArgs(["--platform", "github", "--no-dry-run"]),
+      cwd: workspace,
+      env: githubEnv(eventPath),
+      fetchImpl: recorder.fetchImpl,
+    });
+
+    // Then: the live empty payload is honored — no simulated findings appear.
+    expect(result.exitCode).toBe(0);
+    expect(result.posted).toBe(true);
+    const postCall = findCall(recorder.calls, "POST", "/pulls/42/reviews");
+    const body = readRecord(postCall.body as Record<string, unknown>, "review request");
+    const comments = readArray(body["comments"], "review comments");
+    expect(comments).toHaveLength(0);
+    expect(body["body"]).not.toContain("Simulated review for");
+  });
 });
 
 function githubEnv(eventPath: string): NodeJS.ProcessEnv {

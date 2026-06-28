@@ -77,6 +77,7 @@ export type CliArgs = {
   readonly diagnostic?: boolean;
   readonly dryRun?: boolean;
   readonly debugRawResponse?: boolean;
+  readonly simulateFindings?: boolean;
   readonly reviewTimeoutSeconds?: number;
   readonly stallTimeoutSeconds?: number;
   readonly perRequestTimeoutSeconds?: number;
@@ -112,6 +113,7 @@ export type ActionInputs = {
   readonly diagnostic?: string | boolean;
   readonly dryRun?: string | boolean;
   readonly debugRawResponse?: string | boolean;
+  readonly simulateFindings?: string | boolean;
   readonly reviewTimeoutSeconds?: string | number;
   readonly stallTimeoutSeconds?: string | number;
   readonly perRequestTimeoutSeconds?: string | number;
@@ -145,6 +147,7 @@ export type EnvSources = {
   readonly diagnostic?: string;
   readonly dryRun?: string;
   readonly debugRawResponse?: string;
+  readonly simulateFindings?: string;
   readonly reviewTimeoutSeconds?: string;
   readonly stallTimeoutSeconds?: string;
   readonly perRequestTimeoutSeconds?: string;
