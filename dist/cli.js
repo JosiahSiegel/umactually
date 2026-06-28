@@ -467,6 +467,11 @@ function parseCliArgs(args) {
     let model = null;
     let promptFile = null;
     let additionalPromptFile = null;
+    let prompt = null;
+    let additionalPrompt = null;
+    let effort = null;
+    let provider = null;
+    let githubApiBase = null;
     let includeSonarqube = false;
     let sonarHostUrl = null;
     let sonarToken = null;
@@ -539,6 +544,27 @@ function parseCliArgs(args) {
                 break;
             case "--additional-prompt-file":
                 additionalPromptFile = readValue(args, index, "additional-prompt-file");
+                index += 1;
+                break;
+            case "--prompt":
+                prompt = readValue(args, index, "prompt");
+                index += 1;
+                break;
+            case "--additional-prompt":
+                additionalPrompt = readValue(args, index, "additional-prompt");
+                index += 1;
+                break;
+            case "--effort":
+                effort = readEffort(args, index);
+                index += 1;
+                break;
+            case "--provider":
+                index = consumeValue(args, index, "provider", (value) => {
+                    provider = readProvider(value);
+                });
+                break;
+            case "--github-api-base":
+                githubApiBase = readValue(args, index, "github-api-base");
                 index += 1;
                 break;
             case "--include-sonarqube":
@@ -653,6 +679,11 @@ function parseCliArgs(args) {
         model,
         promptFile,
         additionalPromptFile,
+        prompt,
+        additionalPrompt,
+        effort,
+        provider,
+        githubApiBase,
         includeSonarqube,
         sonarHostUrl,
         sonarToken,
@@ -719,6 +750,27 @@ function readPlatform(value) {
             return "azure";
         default:
             throw new CliUsageError(`invalid --platform value: ${value}`);
+    }
+}
+function readEffort(args, index) {
+    const raw = readValue(args, index, "effort");
+    switch (raw) {
+        case "low":
+        case "medium":
+        case "high":
+            return raw;
+        default:
+            throw new CliUsageError(`invalid --effort value: ${raw}`);
+    }
+}
+function readProvider(value) {
+    switch (value) {
+        case "openai-compatible":
+            return "openai-compatible";
+        case "copilot":
+            return "copilot";
+        default:
+            throw new CliUsageError(`invalid --provider value: ${value}`);
     }
 }
 
@@ -1302,7 +1354,7 @@ function dispatchLive(parsed, cwd, env) {
     // Live orchestration lives in src/cli/orchestrator.ts so the dry-run path
     // keeps a single-responsibility surface. This thin wrapper exists only to
     // preserve the public CLI module exports expected by existing tests.
-    return __nccwpck_require__.e(/* import() */ 696).then(__nccwpck_require__.bind(__nccwpck_require__, 696)).then(({ runLive }) => runLive({ parsed, cwd, env }).then((result) => ({
+    return __nccwpck_require__.e(/* import() */ 738).then(__nccwpck_require__.bind(__nccwpck_require__, 738)).then(({ runLive }) => runLive({ parsed, cwd, env }).then((result) => ({
         exitCode: result.exitCode,
     })));
 }
