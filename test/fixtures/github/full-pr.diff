@@ -19,3 +19,17 @@ index 3333333..4444444 100644
  
  Existing text.
 +Added reviewer guidance.
+diff --git a/src/cli/orchestrator.ts b/src/cli/orchestrator.ts
+index 5555555..6666666 100644
+--- a/src/cli/orchestrator.ts
++++ b/src/cli/orchestrator.ts
+@@ -10,6 +10,8 @@ export function applySimulateFindings(
+   }
+   const simulated = buildSimulatedFindings(repo, prNumber, headSha, diffText);
+   const positions = parseDiffPositions(diffText);
++  const enumerated = positions.enumerate();
++  if (enumerated.length === 0) return simulated;
+   return simulated;
+ }
++
++export const liveOrchestrationEnabled = true;

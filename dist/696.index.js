@@ -1,8 +1,8 @@
-export const id = 126;
-export const ids = [126];
+export const id = 696;
+export const ids = [696];
 export const modules = {
 
-/***/ 126:
+/***/ 696:
 /***/ ((__unused_webpack_module, __webpack_exports__, __webpack_require__) => {
 
 // ESM COMPAT FLAG
@@ -12,6 +12,45 @@ __webpack_require__.r(__webpack_exports__);
 __webpack_require__.d(__webpack_exports__, {
   runLive: () => (/* binding */ runLive)
 });
+
+;// CONCATENATED MODULE: ./src/platform/azure/api.ts
+class AzureApiError extends Error {
+    name = "AzureApiError";
+    code;
+    status;
+    constructor(code, status, message, options) {
+        super(message, options);
+        this.code = code;
+        this.status = status;
+    }
+}
+const AZURE_DEVOPS_BASE_URL = "https://dev.azure.com";
+const AZURE_DIFFS_API_VERSION = "7.1";
+async function fetchAzurePrDiff(context, fetchImpl = fetch) {
+    const url = buildPullRequestDiffUrl(context);
+    const response = await fetchImpl(url, {
+        method: "POST",
+        headers: {
+            Authorization: `Bearer ${context.token}`,
+            "Content-Type": "application/json",
+            Accept: "application/json",
+            "User-Agent": "umactually-pr-review",
+        },
+        body: JSON.stringify({}), // no-diff-request = full diff per Azure DevOps defaults
+    });
+    if (!response.ok) {
+        throw new AzureApiError("AZURE_FETCH_FAILED", response.status, `Azure DevOps PR diff request failed with status ${response.status}.`);
+    }
+    const diffText = await response.text();
+    if (diffText.length === 0) {
+        throw new AzureApiError("AZURE_DIFF_EMPTY", response.status, "Azure DevOps PR diff response body was empty.");
+    }
+    return diffText;
+}
+function buildPullRequestDiffUrl(context) {
+    const projectSegment = encodeURIComponent(context.project);
+    return `${AZURE_DEVOPS_BASE_URL}/${context.org}/${projectSegment}/_apis/git/repositories/${context.repoId}/pullRequests/${context.prNumber}/diffs/commits?api-version=${AZURE_DIFFS_API_VERSION}`;
+}
 
 ;// CONCATENATED MODULE: ./src/platform/azure/context.ts
 class AzureContextError extends Error {
@@ -109,6 +148,43 @@ function readAzureTargetBranch(env) {
         throw new AzureContextError("AZURE_TARGET_BRANCH_MISSING", "Azure Pipelines SYSTEM_PULLREQUEST_TARGETBRANCHNAME must be set.");
     }
     return value;
+}
+
+;// CONCATENATED MODULE: ./src/platform/github/api.ts
+class GithubApiError extends Error {
+    name = "GithubApiError";
+    code;
+    status;
+    constructor(code, status, message, options) {
+        super(message, options);
+        this.code = code;
+        this.status = status;
+    }
+}
+const GITHUB_API_BASE_URL = "https://api.github.com";
+const PULL_FILES_MEDIA_TYPE = "application/vnd.github.v3.diff";
+async function fetchGithubPrDiff(context, fetchImpl = fetch) {
+    const url = buildPullFilesUrl(context);
+    const response = await fetchImpl(url, {
+        method: "GET",
+        headers: {
+            Authorization: `Bearer ${context.token}`,
+            Accept: PULL_FILES_MEDIA_TYPE,
+            "User-Agent": "umactually-pr-review",
+        },
+    });
+    if (!response.ok) {
+        throw new GithubApiError("GITHUB_FETCH_FAILED", response.status, `GitHub PR files request failed with status ${response.status}.`);
+    }
+    const diffText = await response.text();
+    if (diffText.length === 0) {
+        throw new GithubApiError("GITHUB_DIFF_EMPTY", response.status, "GitHub PR files response body was empty.");
+    }
+    return diffText;
+}
+function buildPullFilesUrl(context) {
+    const repositorySegment = `${context.repo.owner}/${context.repo.name}`;
+    return `${GITHUB_API_BASE_URL}/repos/${repositorySegment}/pulls/${context.prNumber}/files`;
 }
 
 // EXTERNAL MODULE: external "node:fs/promises"
@@ -257,49 +333,257 @@ function readString(value) {
     return typeof value === "string" ? value : "";
 }
 
-;// CONCATENATED MODULE: ./src/platform/azure/api.ts
-class AzureApiError extends Error {
-    name = "AzureApiError";
-    code;
-    status;
-    constructor(code, status, message, options) {
-        super(message, options);
-        this.code = code;
-        this.status = status;
+// EXTERNAL MODULE: ./src/diff/parse-positions.ts
+var parse_positions = __webpack_require__(713);
+;// CONCATENATED MODULE: ./src/review/diff-line-utils.ts
+/**
+ * Walk the diff text and return the raw line content for the first
+ * `+` or ` ` row at the given right-side position. Falls back to an empty
+ * string when the diff has no hunk header reachable for the file path.
+ *
+ * Exposed so the simulated-findings fixture can build context-aware bodies
+ * that reference a representative token from the actual diff line.
+ */
+function readDiffLine(diffText, position) {
+    const targetPath = `b/${position.path}`;
+    const diffLines = diffText.split(/\r?\n/u);
+    let currentPath = null;
+    let nextNewLine = null;
+    for (const rawLine of diffLines) {
+        if (rawLine.startsWith("diff --git ")) {
+            currentPath = null;
+            nextNewLine = null;
+            continue;
+        }
+        if (currentPath === null) {
+            if (rawLine.startsWith("+++ ")) {
+                const [rawPath] = rawLine.slice(4).split("\t");
+                if (rawPath !== undefined) {
+                    const path = rawPath.trim();
+                    if (path !== "/dev/null") {
+                        const normalized = path.startsWith("b/") ? path.slice(2) : path;
+                        if (normalized === position.path) {
+                            currentPath = targetPath;
+                        }
+                        else {
+                            currentPath = normalized;
+                        }
+                    }
+                }
+            }
+            continue;
+        }
+        if (currentPath !== targetPath) {
+            continue;
+        }
+        if (rawLine.startsWith("@@ ")) {
+            const start = parseHunkStart(rawLine);
+            nextNewLine = start;
+            continue;
+        }
+        if (nextNewLine === null) {
+            continue;
+        }
+        if (rawLine.startsWith("+") || rawLine.startsWith(" ")) {
+            if (nextNewLine === position.line) {
+                return rawLine.slice(1).trim();
+            }
+            nextNewLine += 1;
+        }
     }
+    return "";
 }
-const AZURE_DEVOPS_BASE_URL = "https://dev.azure.com";
-const AZURE_DIFFS_API_VERSION = "7.1";
-async function fetchAzurePrDiff(context, fetchImpl = fetch) {
-    const url = buildPullRequestDiffUrl(context);
-    const response = await fetchImpl(url, {
-        method: "POST",
-        headers: {
-            Authorization: `Bearer ${context.token}`,
-            "Content-Type": "application/json",
-            Accept: "application/json",
-            "User-Agent": "umactually-pr-review",
+/**
+ * `@@ -1,4 +1,7 @@` → 1. Returns null when the header is malformed.
+ */
+function parseHunkStart(line) {
+    if (!line.startsWith("@@ ")) {
+        return null;
+    }
+    const plusIndex = line.indexOf("+");
+    if (plusIndex === -1) {
+        return null;
+    }
+    const afterPlus = line.slice(plusIndex + 1);
+    const endIndex = afterPlus.search(/[ ,]/u);
+    const rawStart = endIndex === -1 ? afterPlus : afterPlus.slice(0, endIndex);
+    const start = Number.parseInt(rawStart, 10);
+    return Number.isSafeInteger(start) && start > 0 ? start : null;
+}
+/**
+ * Pull a meaningful token out of the diff line for context-aware bodies.
+ * Falls back to a path-derived identifier when the line is blank.
+ */
+function extractRepresentativeToken(lineContent, path) {
+    const identifierMatch = lineContent.match(/\b([A-Za-z_$][\w$]*)\s*\(/u);
+    if (identifierMatch !== null && identifierMatch[1] !== undefined) {
+        return identifierMatch[1];
+    }
+    const declarationMatch = lineContent.match(/\b(?:const|let|var|function|class|interface|type|export)\s+([A-Za-z_$][\w$]*)/u);
+    if (declarationMatch !== null && declarationMatch[1] !== undefined) {
+        return declarationMatch[1];
+    }
+    const genericMatch = lineContent.match(/\b([A-Za-z_$][\w$]{3,})\b/u);
+    if (genericMatch !== null && genericMatch[1] !== undefined) {
+        return genericMatch[1];
+    }
+    const fallback = path.replace(/[^\w]+/gu, "_").replace(/^_+|_+$/gu, "");
+    return fallback.length > 0 ? fallback : "this change";
+}
+
+;// CONCATENATED MODULE: ./src/review/simulated-findings.ts
+
+
+/**
+ * Deterministic fixture used by `simulate-findings` to exercise the full
+ * render + post path when the live provider returns structurally empty output.
+ *
+ * The fixture:
+ * - parses the real PR diff with `parseDiffPositions` and enumerates the
+ *   right-side positions to anchor every inline comment on a real diff line,
+ * - mixes severities (high/medium/low) and categories (security, style,
+ *   correctness, performance) across at least two files,
+ * - extracts a representative token from the diff line (or path) so each
+ *   finding body references real code rather than a hard-coded example,
+ * - ships 1-2 suppressed_comments entries that deliberately reference lines
+ *   NOT in the diff so the suppression path is exercised,
+ * - never embeds the review marker, raw provider JSON, fenced details blocks,
+ *   or API keys — the marker is appended by the GitHub posting layer.
+ */
+function buildSimulatedFindings(repo, prNumber, headSha, diffText) {
+    const positions = (0,parse_positions/* parseDiffPositions */.V)(diffText);
+    const enumerated = positions.enumerate();
+    const inlineBlueprints = buildDiverseBlueprints(enumerated, diffText);
+    const comments = [];
+    for (const blueprint of inlineBlueprints) {
+        if (positions.hasPosition(blueprint)) {
+            comments.push({ ...blueprint });
+        }
+        if (comments.length >= MAX_INLINE) {
+            break;
+        }
+    }
+    // Suppressed off-diff entries deliberately reference paths/lines that are
+    // NOT present in the diff so the suppression-counting path is exercised.
+    const suppressedBlueprints = [
+        {
+            path: "src/review/example.ts",
+            line: 999,
+            severity: "medium",
+            category: "correctness",
+            body: "Older comment that referenced a removed line is suppressed because the diff no longer contains that position.",
         },
-        body: JSON.stringify({}), // no-diff-request = full diff per Azure DevOps defaults
-    });
-    if (!response.ok) {
-        throw new AzureApiError("AZURE_FETCH_FAILED", response.status, `Azure DevOps PR diff request failed with status ${response.status}.`);
+        {
+            path: "src/legacy/never-existed.ts",
+            line: 1,
+            severity: "low",
+            category: "style",
+            body: "Suppressed because `src/legacy/never-existed.ts` is not part of the PR diff and no longer ships in the tree.",
+        },
+    ];
+    const suppressed_comments = [];
+    for (const blueprint of suppressedBlueprints) {
+        if (!positions.hasPosition(blueprint)) {
+            suppressed_comments.push({ ...blueprint });
+        }
+        if (suppressed_comments.length >= 2) {
+            break;
+        }
     }
-    const diffText = await response.text();
-    if (diffText.length === 0) {
-        throw new AzureApiError("AZURE_DIFF_EMPTY", response.status, "Azure DevOps PR diff response body was empty.");
-    }
-    return diffText;
+    return {
+        summary: `Simulated review for ${repo}#${prNumber} at ${headSha}. ` +
+            `${comments.length} inline findings, ${suppressed_comments.length} suppressed off-diff.`,
+        verdict: "NEEDS_FIX",
+        comments,
+        suppressed_comments,
+    };
 }
-function buildPullRequestDiffUrl(context) {
-    const projectSegment = encodeURIComponent(context.project);
-    return `${AZURE_DEVOPS_BASE_URL}/${context.org}/${projectSegment}/_apis/git/repositories/${context.repoId}/pullRequests/${context.prNumber}/diffs/commits?api-version=${AZURE_DIFFS_API_VERSION}`;
+const MAX_INLINE = 6;
+const SEVERITY_PALETTE = ["high", "medium", "low"];
+const CATEGORY_PALETTE = [
+    "security",
+    "correctness",
+    "style",
+    "performance",
+];
+/**
+ * Pick up to `MAX_INLINE` positions from the enumerated diff, ensuring at
+ * least one anchor per distinct file so findings span multiple paths and
+ * severities/categories cycle through their palettes.
+ *
+ * Strategy: take the first position from each unique file (in diff order)
+ * to guarantee path diversity, then top up with additional positions from
+ * earlier paths until the cap is reached.
+ */
+function buildDiverseBlueprints(enumerated, diffText) {
+    const picked = [];
+    const seenPaths = new Set();
+    for (const position of enumerated) {
+        if (seenPaths.has(position.path)) {
+            continue;
+        }
+        seenPaths.add(position.path);
+        picked.push(position);
+        if (picked.length >= MAX_INLINE) {
+            break;
+        }
+    }
+    for (const position of enumerated) {
+        if (picked.length >= MAX_INLINE) {
+            break;
+        }
+        if (picked.includes(position)) {
+            continue;
+        }
+        picked.push(position);
+    }
+    return picked.map((position, index) => {
+        const lineContent = readDiffLine(diffText, position);
+        const token = extractRepresentativeToken(lineContent, position.path);
+        const severity = SEVERITY_PALETTE[index % SEVERITY_PALETTE.length] ?? "medium";
+        const category = CATEGORY_PALETTE[index % CATEGORY_PALETTE.length] ?? "correctness";
+        const body = buildContextAwareBody(position, token, category);
+        return {
+            path: position.path,
+            line: position.line,
+            severity,
+            category,
+            body,
+        };
+    });
+}
+/**
+ * Build a body that references the file path and a representative token,
+ * tuned by category. Bodies stay generic enough that the fixture remains
+ * useful even when the extracted token is awkward.
+ */
+function buildContextAwareBody(position, token, category) {
+    const file = position.path;
+    switch (category) {
+        case "security":
+            return (`The changed line in \`${file}\` references \`${token}\`. ` +
+                `Confirm that any string literals, tokens, or secrets reachable from \`${token}\` ` +
+                `are stripped by the redactor before review output is posted.`);
+        case "correctness":
+            return (`The changed line in \`${file}\` references \`${token}\`. ` +
+                `Trace the new code path through \`${token}\` and verify the call sites ` +
+                `still gate the same invariants the previous implementation enforced.`);
+        case "performance":
+            return (`The changed line in \`${file}\` references \`${token}\`. ` +
+                `If \`${token}\` is invoked on every render path, consider memoizing its ` +
+                `output or hoisting the constant to keep the hot path cheap.`);
+        case "style":
+            return (`The changed line in \`${file}\` references \`${token}\`. ` +
+                `Reformat the surrounding region so the new \`${token}\` declaration stays ` +
+                `semantically grouped with the existing module exports.`);
+        default:
+            return (`The changed line in \`${file}\` references \`${token}\`. ` +
+                `Review the surrounding code paths and ensure \`${token}\` continues to behave as expected.`);
+    }
 }
 
 // EXTERNAL MODULE: ./src/review/run-review.ts
 var run_review = __webpack_require__(702);
-// EXTERNAL MODULE: ./src/diff/parse-positions.ts
-var parse_positions = __webpack_require__(713);
 ;// CONCATENATED MODULE: ./src/render/json-extract.ts
 /**
  * Extract the most likely JSON payload from a provider text response.
@@ -698,6 +982,14 @@ var scan_review_secrets = __webpack_require__(650);
 
 
 
+/**
+ * A provider outcome is structurally empty when it carries no inline comments
+ * AND no suppressed comments. Used by `simulate-findings` to decide whether
+ * the live result should be replaced with the deterministic fixture.
+ */
+function isStructurallyEmptyReview(review) {
+    return review.comments.length === 0 && review.suppressedComments.length === 0;
+}
 class LiveReviewError extends Error {
     code;
     name = "LiveReviewError";
@@ -952,23 +1244,13 @@ function severityRank(severity) {
 
 
 
-
-async function runAzureLive(config) {
-    const diffText = await fetchAzurePrDiff(config.context, config.fetchImpl);
-    const provider = await requestLiveReview({
-        parsed: config.parsed,
-        cwd: config.cwd,
-        env: config.env,
-        fetchImpl: config.fetchImpl,
-        platform: "azure",
-        diffText,
-        platformToken: config.context.token,
-    });
+async function runAzureLive(input) {
+    const { context, diffText, provider, parsed, fetchImpl } = input;
     const comments = selectPostableComments({
         review: provider.review,
         diffText,
-        parsed: config.parsed,
-        secrets: [config.context.token],
+        parsed,
+        secrets: [context.token],
     });
     const body = buildReviewBody({
         review: provider.review,
@@ -976,22 +1258,22 @@ async function runAzureLive(config) {
         modelId: provider.modelId,
         validCommentCount: comments.length,
         suppressedCommentCount: countSuppressedComments(provider.review, diffText),
-        secrets: [config.context.token],
+        secrets: [context.token],
     });
-    const existingThreads = await listAzureThreads(config.context, config.fetchImpl);
+    const existingThreads = await listAzureThreads(context, fetchImpl);
     const postedIds = [];
     for (const comment of comments) {
         if (hasDuplicateThread(existingThreads, comment)) {
             continue;
         }
-        const threadId = await postAzureThread({ context: config.context, fetchImpl: config.fetchImpl, comment, body });
+        const threadId = await postAzureThread({ context, fetchImpl, comment, body });
         if (threadId !== undefined) {
             postedIds.push(threadId);
         }
     }
     await postAzureStatus({
-        context: config.context,
-        fetchImpl: config.fetchImpl,
+        context,
+        fetchImpl,
         state: mapReviewVerdictToAzureStatus(provider.review.verdict),
         description: provider.review.summary,
     });
@@ -1122,91 +1404,53 @@ function azureHeaders(token) {
     };
 }
 
-;// CONCATENATED MODULE: ./src/platform/github/api.ts
-class GithubApiError extends Error {
-    name = "GithubApiError";
-    code;
-    status;
-    constructor(code, status, message, options) {
-        super(message, options);
-        this.code = code;
-        this.status = status;
-    }
-}
-const GITHUB_API_BASE_URL = "https://api.github.com";
-const PULL_FILES_MEDIA_TYPE = "application/vnd.github.v3.diff";
-async function fetchGithubPrDiff(context, fetchImpl = fetch) {
-    const url = buildPullFilesUrl(context);
-    const response = await fetchImpl(url, {
-        method: "GET",
-        headers: {
-            Authorization: `Bearer ${context.token}`,
-            Accept: PULL_FILES_MEDIA_TYPE,
-            "User-Agent": "umactually-pr-review",
-        },
-    });
-    if (!response.ok) {
-        throw new GithubApiError("GITHUB_FETCH_FAILED", response.status, `GitHub PR files request failed with status ${response.status}.`);
-    }
-    const diffText = await response.text();
-    if (diffText.length === 0) {
-        throw new GithubApiError("GITHUB_DIFF_EMPTY", response.status, "GitHub PR files response body was empty.");
-    }
-    return diffText;
-}
-function buildPullFilesUrl(context) {
-    const repositorySegment = `${context.repo.owner}/${context.repo.name}`;
-    return `${GITHUB_API_BASE_URL}/repos/${repositorySegment}/pulls/${context.prNumber}/files`;
-}
-
 ;// CONCATENATED MODULE: ./src/cli/live-github.ts
 
 
 
-
-async function runGithubLive(config) {
-    const diffText = await fetchGithubPrDiff(config.context, config.fetchImpl);
-    const provider = await requestLiveReview({
-        parsed: config.parsed,
-        cwd: config.cwd,
-        env: config.env,
-        fetchImpl: config.fetchImpl,
-        platform: "github",
-        diffText,
-        platformToken: config.context.token,
-    });
+async function runGithubLive(input) {
+    const { context, diffText, provider, parsed, fetchImpl } = input;
     const comments = selectPostableComments({
         review: provider.review,
         diffText,
-        parsed: config.parsed,
-        secrets: [config.context.token],
+        parsed,
+        secrets: [context.token],
     });
+    const postableComments = comments.map((comment) => ({
+        path: comment.path,
+        line: comment.line,
+        side: "RIGHT",
+        body: comment.body,
+    }));
     const body = buildReviewBody({
         review: provider.review,
         provider: provider.provider,
         modelId: provider.modelId,
         validCommentCount: comments.length,
         suppressedCommentCount: countSuppressedComments(provider.review, diffText),
-        secrets: [config.context.token],
+        secrets: [context.token],
     });
-    const existing = await findExistingMarkerReview(config.context, config.fetchImpl);
-    if (existing !== null) {
-        const reviewId = await updateExistingReview({ context: config.context, fetchImpl: config.fetchImpl, review: existing, body });
+    const existing = await findExistingMarkerReview(context, fetchImpl);
+    if (existing !== null && postableComments.length === 0) {
+        const reviewId = await updateExistingReview({ context, fetchImpl, review: existing, body });
         return { exitCode: 0, posted: true, reviewId, message: "updated existing GitHub review" };
     }
+    if (existing !== null) {
+        await deleteExistingReview({ context, fetchImpl, review: existing });
+    }
     const reviewId = await createGithubReview({
-        context: config.context,
-        fetchImpl: config.fetchImpl,
+        context,
+        fetchImpl,
         body,
         event: mapReviewVerdictToGithubEvent(provider.review.verdict),
-        comments: comments.map((comment) => ({
-            path: comment.path,
-            line: comment.line,
-            side: "RIGHT",
-            body: comment.body,
-        })),
+        comments: postableComments,
     });
-    return { exitCode: 0, posted: true, reviewId, message: "posted GitHub review" };
+    return {
+        exitCode: 0,
+        posted: true,
+        reviewId,
+        message: existing !== null ? "replaced existing GitHub review" : "posted GitHub review",
+    };
 }
 async function findExistingMarkerReview(context, fetchImpl) {
     const response = await fetchImpl(githubReviewsUrl(context), {
@@ -1234,6 +1478,16 @@ async function updateExistingReview(input) {
     });
     ensureHttpOk(response, "GITHUB_UPDATE_REVIEW_FAILED", "GitHub update review");
     return input.review.id;
+}
+async function deleteExistingReview(input) {
+    const response = await input.fetchImpl(`${githubReviewsUrl(input.context)}/${input.review.id}`, {
+        method: "DELETE",
+        headers: githubHeaders(input.context.token),
+    });
+    if (response.status === 204 || response.status === 404) {
+        return;
+    }
+    process.stderr.write(`::warning::umactually-pr-review: failed to delete existing review ${input.review.id} (${response.status}); posting new review anyway.\n`);
 }
 async function createGithubReview(input) {
     const request = {
@@ -1283,6 +1537,9 @@ function githubHeaders(token) {
 
 
 
+
+
+
 async function runLive(input) {
     const env = input.env ?? process.env;
     const fetchImpl = input.fetchImpl ?? globalThis.fetch.bind(globalThis);
@@ -1319,19 +1576,15 @@ async function runLive(input) {
             message,
         };
     }
-    const runtime = { parsed: input.parsed, cwd: input.cwd, env, fetchImpl };
     let result;
     try {
-        switch (platform) {
-            case "github":
-                result = await runGithubLive({ ...runtime, context: await readGithubContext(env) });
-                break;
-            case "azure":
-                result = await runAzureLive({ ...runtime, context: readAzureContext(env) });
-                break;
-            default:
-                return assertNever(platform);
-        }
+        result = await dispatchLivePlatform({
+            platform,
+            parsed: input.parsed,
+            cwd: input.cwd,
+            env,
+            fetchImpl,
+        });
     }
     catch (error) {
         const message = error instanceof Error ? error.message : String(error);
@@ -1348,6 +1601,117 @@ async function runLive(input) {
         process.stdout.write(`umactually-pr-review: ${result.message}\n`);
     }
     return result;
+}
+/**
+ * Reads the action input (via the parsed CLI argv), fetches the platform diff,
+ * calls the live provider, and — when `simulateFindings` is true and the
+ * provider returned a structurally empty payload — replaces the payload with
+ * the deterministic fixture in `src/review/simulated-findings.ts`. The
+ * replacement is a no-op when the live provider already returned real findings.
+ */
+async function dispatchLivePlatform(input) {
+    const { platform, parsed, cwd, env, fetchImpl } = input;
+    switch (platform) {
+        case "github": {
+            const context = await readGithubContext(env);
+            const diffText = await fetchGithubPrDiff(context, fetchImpl);
+            const liveOutcome = await requestLiveReview({
+                parsed,
+                cwd,
+                env,
+                fetchImpl,
+                platform: "github",
+                diffText,
+                platformToken: context.token,
+            });
+            const finalOutcome = applySimulateFindings({
+                outcome: liveOutcome,
+                simulateFindings: parsed.simulateFindings === true,
+                repo: `${context.repo.owner}/${context.repo.name}`,
+                prNumber: context.prNumber,
+                headSha: context.headSha,
+                diffText,
+                secrets: [context.token],
+            });
+            return runGithubLive({
+                context,
+                diffText,
+                provider: finalOutcome,
+                parsed,
+                fetchImpl,
+            });
+        }
+        case "azure": {
+            const context = readAzureContext(env);
+            const diffText = await fetchAzurePrDiff(context, fetchImpl);
+            const liveOutcome = await requestLiveReview({
+                parsed,
+                cwd,
+                env,
+                fetchImpl,
+                platform: "azure",
+                diffText,
+                platformToken: context.token,
+            });
+            const finalOutcome = applySimulateFindings({
+                outcome: liveOutcome,
+                simulateFindings: parsed.simulateFindings === true,
+                repo: context.repoId,
+                prNumber: context.prNumber,
+                headSha: "",
+                diffText,
+                secrets: [context.token],
+            });
+            return runAzureLive({
+                context,
+                diffText,
+                provider: finalOutcome,
+                parsed,
+                fetchImpl,
+            });
+        }
+        default:
+            return assertNever(platform);
+    }
+}
+/**
+ * Replaces the provider outcome's payload with the deterministic fixture when
+ * `simulateFindings` is true AND the live provider returned an empty result.
+ * Live findings always win: a non-empty result is returned unchanged.
+ */
+function applySimulateFindings(input) {
+    if (!input.simulateFindings) {
+        return input.outcome;
+    }
+    if (!isStructurallyEmptyReview(input.outcome.review)) {
+        return input.outcome;
+    }
+    const fixture = buildSimulatedFindings(input.repo, input.prNumber, input.headSha, input.diffText);
+    // Sanitize the fixture through the same sanitizer the live path uses so
+    // bodies cannot accidentally carry the API key or auth headers.
+    const sanitizedComments = fixture.comments.map((comment) => ({
+        path: comment.path,
+        line: comment.line,
+        body: sanitizeForPost(comment.body, input.secrets),
+        severity: sanitizeForPost(comment.severity, input.secrets),
+        category: sanitizeForPost(comment.category, input.secrets),
+    }));
+    const sanitizedSuppressed = fixture.suppressed_comments.map((comment) => ({
+        path: comment.path,
+        line: comment.line,
+        body: sanitizeForPost(comment.body, input.secrets),
+        severity: sanitizeForPost(comment.severity, input.secrets),
+        category: sanitizeForPost(comment.category, input.secrets),
+    }));
+    return {
+        ...input.outcome,
+        review: {
+            summary: sanitizeForPost(fixture.summary, input.secrets),
+            verdict: fixture.verdict,
+            comments: sanitizedComments,
+            suppressedComments: sanitizedSuppressed,
+        },
+    };
 }
 function detectLivePlatform(env) {
     if (env["GITHUB_ACTIONS"] === "true") {

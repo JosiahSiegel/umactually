@@ -5,10 +5,16 @@ export type DiffPosition = {
 
 export type DiffPositionIndex = {
   readonly hasPosition: (position: DiffPosition) => boolean;
+  readonly enumerate: () => ReadonlyArray<DiffPosition>;
 };
 
 export function parseDiffPositions(diffText: string): DiffPositionIndex {
   const linesByPath = new Map<string, Set<number>>();
+  // preserve the order in which right-side positions were first observed so
+  // callers (e.g. simulated-findings) can pick the first N anchor points
+  // deterministically.
+  const orderedPositions: Array<DiffPosition> = [];
+  const seenPositions = new Set<string>();
   let currentPath: string | null = null;
   let nextNewLine: number | null = null;
 
@@ -39,12 +45,14 @@ export function parseDiffPositions(diffText: string): DiffPositionIndex {
 
     if (line.startsWith("+")) {
       addLine(linesByPath, currentPath, nextNewLine);
+      recordPosition(orderedPositions, seenPositions, currentPath, nextNewLine);
       nextNewLine += 1;
       continue;
     }
 
     if (line.startsWith(" ")) {
       addLine(linesByPath, currentPath, nextNewLine);
+      recordPosition(orderedPositions, seenPositions, currentPath, nextNewLine);
       nextNewLine += 1;
     }
   }
@@ -53,7 +61,24 @@ export function parseDiffPositions(diffText: string): DiffPositionIndex {
     hasPosition(position: DiffPosition): boolean {
       return linesByPath.get(position.path)?.has(position.line) ?? false;
     },
+    enumerate(): ReadonlyArray<DiffPosition> {
+      return orderedPositions.slice();
+    },
   };
+}
+
+function recordPosition(
+  ordered: Array<DiffPosition>,
+  seen: Set<string>,
+  path: string,
+  line: number,
+): void {
+  const key = `${path}\u0000${line}`;
+  if (seen.has(key)) {
+    return;
+  }
+  seen.add(key);
+  ordered.push({ path, line });
 }
 
 function parseNewFilePath(line: string): string | null {

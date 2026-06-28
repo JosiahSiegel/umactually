@@ -17,7 +17,7 @@ async function readFullPrDiff(): Promise<string> {
 
 describe("buildSimulatedFindings", () => {
   it("returns a deterministic ProviderReviewPayload when the diff has anchor points", async () => {
-    // Given: the canonical full-PR diff fixture with two changed files.
+    // Given: the canonical full-PR diff fixture with three changed files.
     const diffText = await readFullPrDiff();
     const positions = parseDiffPositions(diffText);
 
@@ -86,18 +86,95 @@ describe("buildSimulatedFindings", () => {
     expect(offDiffFound).toBe(true);
   });
 
-  it("references the actual code structure in finding bodies", async () => {
+  it("anchors inline comments on positions actually present in the diff", async () => {
     // Given: the canonical full-PR diff fixture.
+    const diffText = await readFullPrDiff();
+    const positions = parseDiffPositions(diffText);
+
+    // When: the fixture is built.
+    const payload = buildSimulatedFindings(FIXTURE_REPO, FIXTURE_PR_NUMBER, FIXTURE_HEAD_SHA, diffText);
+
+    // Then: every inline comment is anchored on a real diff position (not a
+    // hard-coded example path that exists only in old fixtures).
+    const enumerated = positions.enumerate();
+    expect(enumerated.length).toBeGreaterThanOrEqual(4);
+    for (const comment of payload.comments) {
+      expect(positions.hasPosition(comment)).toBe(true);
+    }
+
+    // Then: at least one inline comment targets the orchestrator file added to the fixture.
+    const orchestratorAnchor = payload.comments.find(
+      (comment) => comment.path === "src/cli/orchestrator.ts",
+    );
+    expect(orchestratorAnchor).toBeDefined();
+  });
+
+  it("produces body text that references a real symbol from the diff", async () => {
+    // Given: the canonical full-PR diff fixture (which contains renderReview and applySimulateFindings).
     const diffText = await readFullPrDiff();
 
     // When: the fixture is built.
     const payload = buildSimulatedFindings(FIXTURE_REPO, FIXTURE_PR_NUMBER, FIXTURE_HEAD_SHA, diffText);
 
     // Then: at least one finding body references a real symbol from the diff.
-    const bodies = payload.comments.map((comment) => comment.body);
-    const allBodies = bodies.join("\n");
-    // The fixture diff changes a function named "renderReview" — fixture must reference it.
-    expect(allBodies).toContain("renderReview");
+    const allBodies = payload.comments.map((comment) => comment.body).join("\n");
+    expect(
+      allBodies.includes("renderReview") || allBodies.includes("applySimulateFindings"),
+    ).toBe(true);
+  });
+
+  it("produces at least 4 inline comments when given any diff with >= 4 right-side lines", async () => {
+    // Given: a synthetic large diff with plenty of right-side positions.
+    const syntheticDiff = [
+      "diff --git a/src/a.ts b/src/a.ts",
+      "--- a/src/a.ts",
+      "+++ b/src/a.ts",
+      "@@ -1,3 +1,5 @@",
+      " export function alpha(): string {",
+      "-  return \"a\";",
+      "+  const secretA = \"leak-a\";",
+      "+  return `a-${secretA}`;",
+      " }",
+      "+",
+      "+export const changedA = true;",
+      "diff --git a/src/b.ts b/src/b.ts",
+      "--- a/src/b.ts",
+      "+++ b/src/b.ts",
+      "@@ -1,3 +1,5 @@",
+      " export function beta(): string {",
+      "-  return \"b\";",
+      "+  const secretB = \"leak-b\";",
+      "+  return `b-${secretB}`;",
+      " }",
+      "+",
+      "+export const changedB = true;",
+      "diff --git a/src/c.ts b/src/c.ts",
+      "--- a/src/c.ts",
+      "+++ b/src/c.ts",
+      "@@ -1,3 +1,5 @@",
+      " export function gamma(): string {",
+      "-  return \"c\";",
+      "+  const secretC = \"leak-c\";",
+      "+  return `c-${secretC}`;",
+      " }",
+      "+",
+      "+export const changedC = true;",
+      "",
+    ].join("\n");
+
+    // When: the fixture is built.
+    const payload = buildSimulatedFindings(FIXTURE_REPO, FIXTURE_PR_NUMBER, FIXTURE_HEAD_SHA, syntheticDiff);
+
+    // Then: at least 4 inline comments and at least 1 suppressed comment.
+    expect(payload.comments.length).toBeGreaterThanOrEqual(4);
+    expect(payload.suppressed_comments.length).toBeGreaterThanOrEqual(1);
+
+    // Then: each comment body references one of the diff symbols.
+    const symbols = ["alpha", "beta", "gamma"];
+    for (const symbol of symbols) {
+      const referenced = payload.comments.some((comment) => comment.body.includes(symbol));
+      expect(referenced).toBe(true);
+    }
   });
 
   it("is deterministic — repeated calls produce identical payloads", async () => {

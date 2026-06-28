@@ -9,6 +9,11 @@ import { createRequire as __WEBPACK_EXTERNAL_createRequire } from "module";
 /* harmony export */ });
 function parseDiffPositions(diffText) {
     const linesByPath = new Map();
+    // preserve the order in which right-side positions were first observed so
+    // callers (e.g. simulated-findings) can pick the first N anchor points
+    // deterministically.
+    const orderedPositions = [];
+    const seenPositions = new Set();
     let currentPath = null;
     let nextNewLine = null;
     for (const line of diffText.split(/\r?\n/u)) {
@@ -34,11 +39,13 @@ function parseDiffPositions(diffText) {
         }
         if (line.startsWith("+")) {
             addLine(linesByPath, currentPath, nextNewLine);
+            recordPosition(orderedPositions, seenPositions, currentPath, nextNewLine);
             nextNewLine += 1;
             continue;
         }
         if (line.startsWith(" ")) {
             addLine(linesByPath, currentPath, nextNewLine);
+            recordPosition(orderedPositions, seenPositions, currentPath, nextNewLine);
             nextNewLine += 1;
         }
     }
@@ -46,7 +53,18 @@ function parseDiffPositions(diffText) {
         hasPosition(position) {
             return linesByPath.get(position.path)?.has(position.line) ?? false;
         },
+        enumerate() {
+            return orderedPositions.slice();
+        },
     };
+}
+function recordPosition(ordered, seen, path, line) {
+    const key = `${path}\u0000${line}`;
+    if (seen.has(key)) {
+        return;
+    }
+    seen.add(key);
+    ordered.push({ path, line });
 }
 function parseNewFilePath(line) {
     if (!line.startsWith("+++ ")) {
@@ -1281,7 +1299,7 @@ function dispatchLive(parsed, cwd, env) {
     // Live orchestration lives in src/cli/orchestrator.ts so the dry-run path
     // keeps a single-responsibility surface. This thin wrapper exists only to
     // preserve the public CLI module exports expected by existing tests.
-    return __nccwpck_require__.e(/* import() */ 98).then(__nccwpck_require__.bind(__nccwpck_require__, 98)).then(({ runLive }) => runLive({ parsed, cwd, env }).then((result) => ({
+    return __nccwpck_require__.e(/* import() */ 696).then(__nccwpck_require__.bind(__nccwpck_require__, 696)).then(({ runLive }) => runLive({ parsed, cwd, env }).then((result) => ({
         exitCode: result.exitCode,
     })));
 }
