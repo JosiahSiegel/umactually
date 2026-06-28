@@ -374,14 +374,15 @@ describe("runLive GitHub orchestration", () => {
     expect(postedText).not.toMatch(/<details[\s>]/u);
   });
 
-  it("does NOT replace a non-empty provider result when --simulate-findings is set (live wins)", async () => {
-    // Given: the provider returns a real finding.
-    workspace = await mkdtemp(join(tmpdir(), "umactually-live-simulate-noop-"));
+  it("FORCES the deterministic fixture when --simulate-findings is set, even when the live provider returned real findings", async () => {
+    // Given: the live provider returns a non-empty review (real findings).
+    workspace = await mkdtemp(join(tmpdir(), "umactually-live-simulate-overrides-"));
     const eventPath = join(workspace, "event.json");
     await writeFile(eventPath, EVENT_JSON, "utf8");
     const recorder = makeFetchRecorder(githubRoutes(PROVIDER_REVIEW));
 
-    // When: --simulate-findings is set but the live provider already returned a comment.
+    // When: --simulate-findings is set. The flag is authoritative — it must
+    // drive the posted review regardless of what the live provider returned.
     const result = await runLive({
       parsed: parseCliArgs(["--platform", "github", "--no-dry-run", "--simulate-findings"]),
       cwd: workspace,
@@ -389,13 +390,32 @@ describe("runLive GitHub orchestration", () => {
       fetchImpl: recorder.fetchImpl,
     });
 
-    // Then: the live result is preserved and the simulated summary is NOT used.
+    // Then: the post is successful and the body carries the marker.
     expect(result.exitCode).toBe(0);
     expect(result.posted).toBe(true);
     const postCall = findCall(recorder.calls, "POST", "/pulls/42/reviews");
     const body = readRecord(postCall.body as Record<string, unknown>, "review request");
-    expect(body["body"]).toContain("One valid inline finding.");
-    expect(body["body"]).not.toContain("Simulated review for octo-org/octo-repo#42");
+    expect(body["body"]).toContain("<!-- umactually-pr-review -->");
+
+    // Then: the posted body uses the simulated summary, NOT the live provider summary.
+    expect(body["body"]).toContain("Simulated review for octo-org/octo-repo#42");
+    expect(body["body"]).not.toContain("One valid inline finding.");
+
+    // Then: 4-6 inline threads from the deterministic fixture are posted.
+    const comments = readArray(body["comments"], "review comments");
+    expect(comments.length).toBeGreaterThanOrEqual(4);
+    expect(comments.length).toBeLessThanOrEqual(6);
+
+    // Then: the provider label in the body still reads "openai-compatible"
+    // (the fixture does not mint its own provider identity).
+    expect(body["body"]).toContain("openai-compatible");
+
+    // Then: the posted body MUST NOT contain raw provider JSON, the API key,
+    // or a fenced details block.
+    const postedText = JSON.stringify(body);
+    expect(postedText).not.toContain("provider-key-secret");
+    expect(postedText).not.toContain("github-token-secret");
+    expect(postedText).not.toMatch(/<details[\s>]/u);
   });
 
   it("does NOT replace when --simulate-findings is false (default)", async () => {

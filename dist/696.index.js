@@ -1617,10 +1617,12 @@ async function runLive(input) {
 }
 /**
  * Reads the action input (via the parsed CLI argv), fetches the platform diff,
- * calls the live provider, and — when `simulateFindings` is true and the
- * provider returned a structurally empty payload — replaces the payload with
- * the deterministic fixture in `src/review/simulated-findings.ts`. The
- * replacement is a no-op when the live provider already returned real findings.
+ * calls the live provider, and — when `simulateFindings` is true — replaces the
+ * provider outcome with the deterministic fixture in
+ * `src/review/simulated-findings.ts`. The flag is authoritative: even when the
+ * live provider returns a non-empty review, the fixture fully drives the
+ * posted payload so the demo always shows 4-6 inline threads + suppressed
+ * off-diff count regardless of what the live API actually returned.
  */
 async function dispatchLivePlatform(input) {
     const { platform, parsed, cwd, env, fetchImpl } = input;
@@ -1689,14 +1691,17 @@ async function dispatchLivePlatform(input) {
 }
 /**
  * Replaces the provider outcome's payload with the deterministic fixture when
- * `simulateFindings` is true AND the live provider returned an empty result.
- * Live findings always win: a non-empty result is returned unchanged.
+ * `simulateFindings` is true. The flag is authoritative — the fixture fully
+ * drives the review regardless of whether the live provider returned an empty
+ * or non-empty result. When `simulateFindings` is false, the live result is
+ * preserved unchanged.
+ *
+ * The `provider`, `modelId`, and `endpoint` fields on the outcome are kept
+ * from the live call (the fixture does not mint its own provider identity),
+ * so the posted review body still shows "openai-compatible" as the provider.
  */
 function applySimulateFindings(input) {
     if (!input.simulateFindings) {
-        return input.outcome;
-    }
-    if (!isStructurallyEmptyReview(input.outcome.review)) {
         return input.outcome;
     }
     const fixture = buildSimulatedFindings(input.repo, input.prNumber, input.headSha, input.diffText);
@@ -1717,7 +1722,9 @@ function applySimulateFindings(input) {
         category: sanitizeForPost(comment.category, input.secrets),
     }));
     return {
-        ...input.outcome,
+        endpoint: input.outcome.endpoint,
+        provider: input.outcome.provider,
+        modelId: input.outcome.modelId,
         review: {
             summary: sanitizeForPost(fixture.summary, input.secrets),
             verdict: fixture.verdict,
