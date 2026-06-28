@@ -518,6 +518,73 @@ describe("runLive GitHub orchestration", () => {
     expect(recorder.calls.some((call) => call.method === "PUT")).toBe(false);
   });
 
+  it("replaces an existing marker review via DELETE+POST when --simulate-findings is set", async () => {
+    // Given: a marker review already exists on PR #42 (the previous demo run
+    // submitted a review and is in the COMMENTED state — PUT would 422).
+    // The live provider returns an empty payload, so simulate-findings will
+    // inject the deterministic fixture (which produces 4-6 inline comments).
+    workspace = await mkdtemp(join(tmpdir(), "umactually-live-simulate-replace-existing-"));
+    const eventPath = join(workspace, "event.json");
+    await writeFile(eventPath, EVENT_JSON, "utf8");
+    const emptyReview = JSON.stringify({
+      summary: "Live provider returned an empty payload.",
+      verdict: "COMMENT",
+      comments: [],
+      suppressed_comments: [],
+    });
+    const recorder = makeFetchRecorder(
+      githubRoutesWithExistingMarkerReview(emptyReview, {
+        existingReviewId: 4242,
+        deleteResponse: new Response(null, { status: 204 }),
+        postResponse: makeJsonResponse({ id: 9100, body: "" }, 201),
+      }),
+    );
+
+    // When: live orchestration runs with --simulate-findings.
+    const result = await runLive({
+      parsed: parseCliArgs(["--platform", "github", "--no-dry-run", "--simulate-findings"]),
+      cwd: workspace,
+      env: githubEnv(eventPath),
+      fetchImpl: recorder.fetchImpl,
+    });
+
+    // Then: the existing review is DELETEd and a new fully populated review is POSTed.
+    expect(result.exitCode).toBe(0);
+    expect(result.posted).toBe(true);
+    expect(result.reviewId).toBe(9100);
+    expect(result.message).toBe("replaced existing GitHub review");
+
+    // PUT must NOT be used under simulate-findings, even though the live
+    // provider payload had 0 inline comments — PUT is silently dropped on
+    // a COMMENTED review and the demo body would never replace the old one.
+    const puts = recorder.calls.filter(
+      (call) => call.method === "PUT" && call.url.endsWith("/reviews/4242"),
+    );
+    expect(puts).toHaveLength(0);
+
+    const deletes = recorder.calls.filter(
+      (call) => call.method === "DELETE" && call.url.endsWith("/reviews/4242"),
+    );
+    expect(deletes).toHaveLength(1);
+
+    const reviewPosts = recorder.calls.filter(
+      (call) => call.method === "POST" && call.url.endsWith("/pulls/42/reviews"),
+    );
+    expect(reviewPosts).toHaveLength(1);
+    const postBody = readRecord(reviewPosts[0]!.body as Record<string, unknown>, "review request");
+
+    // Then: the new POST carries the simulate-findings summary + 4-6 inline threads.
+    expect(postBody["body"]).toContain("<!-- umactually-pr-review -->");
+    expect(postBody["body"]).toContain("Simulated review for octo-org/octo-repo#42");
+    const postedComments = readArray(postBody["comments"], "review comments");
+    expect(postedComments.length).toBeGreaterThanOrEqual(4);
+    expect(postedComments.length).toBeLessThanOrEqual(6);
+
+    // Then: simulate-findings always posts a neutral COMMENT event so the
+    // synthetic data never blocks the PR with REQUEST_CHANGES.
+    expect(postBody["event"]).toBe("COMMENT");
+  });
+
   it("still POSTs the new review when the DELETE of the existing marker review returns 404", async () => {
     // Given: a marker review exists, but DELETE returns 404 (review already gone / race).
     workspace = await mkdtemp(join(tmpdir(), "umactually-live-existing-delete-404-"));
