@@ -120,7 +120,7 @@ function readArray(value: unknown, label: string): readonly unknown[] {
 function githubRoutes(providerBody: string): readonly FetchRoute[] {
   return [
     {
-      match: (url, method) => method === "GET" && url.endsWith("/pulls/42/files"),
+      match: (url, method) => method === "GET" && url.endsWith("/pulls/42"),
       response: new Response(DIFF_TEXT, { status: 200 }),
     },
     {
@@ -159,7 +159,7 @@ function githubRoutesWithExistingMarkerReview(
 ): readonly FetchRoute[] {
   return [
     {
-      match: (url, method) => method === "GET" && url.endsWith("/pulls/42/files"),
+      match: (url, method) => method === "GET" && url.endsWith("/pulls/42"),
       response: new Response(DIFF_TEXT, { status: 200 }),
     },
     {

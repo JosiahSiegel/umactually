@@ -126,8 +126,11 @@ describe("GitHub platform unit contract", () => {
     // When: the GitHub API adapter requests the diff.
     const diffText = await fetchGithubPrDiff(context, fetchImpl);
 
-    // Then: the adapter uses the pull files endpoint with diff media type and bearer token.
-    expect(observedUrl).toBe("https://api.github.com/repos/octo-org/octo-repo/pulls/42/files");
+    // Then: the adapter uses the pull endpoint (not /files) with the diff
+    // media type and bearer token. /files always returns JSON listing the
+    // files regardless of Accept header; /pulls/{pr} with the diff media
+    // type is the endpoint that returns the unified diff body.
+    expect(observedUrl).toBe("https://api.github.com/repos/octo-org/octo-repo/pulls/42");
     expect(observedAuthorization).toBe("Bearer github-token-123");
     expect(observedAccept).toBe("application/vnd.github.v3.diff");
     expect(diffText).toBe("diff --git a/src/file.ts b/src/file.ts\n");

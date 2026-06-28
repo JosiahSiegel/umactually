@@ -15,15 +15,15 @@ export class GithubApiError extends Error {
 }
 
 const GITHUB_API_BASE_URL = "https://api.github.com";
-const PULL_FILES_MEDIA_TYPE = "application/vnd.github.v3.diff";
+const PULL_DIFF_MEDIA_TYPE = "application/vnd.github.v3.diff";
 
 export async function fetchGithubPrDiff(context: GithubContext, fetchImpl: FetchImpl = fetch): Promise<string> {
-  const url = buildPullFilesUrl(context);
+  const url = buildPullUrl(context);
   const response = await fetchImpl(url, {
     method: "GET",
     headers: {
       Authorization: `Bearer ${context.token}`,
-      Accept: PULL_FILES_MEDIA_TYPE,
+      Accept: PULL_DIFF_MEDIA_TYPE,
       "User-Agent": "umactually-pr-review",
     },
   });
@@ -32,19 +32,19 @@ export async function fetchGithubPrDiff(context: GithubContext, fetchImpl: Fetch
     throw new GithubApiError(
       "GITHUB_FETCH_FAILED",
       response.status,
-      `GitHub PR files request failed with status ${response.status}.`,
+      `GitHub PR diff request failed with status ${response.status}.`,
     );
   }
 
   const diffText = await response.text();
   if (diffText.length === 0) {
-    throw new GithubApiError("GITHUB_DIFF_EMPTY", response.status, "GitHub PR files response body was empty.");
+    throw new GithubApiError("GITHUB_DIFF_EMPTY", response.status, "GitHub PR diff response body was empty.");
   }
 
   return diffText;
 }
 
-function buildPullFilesUrl(context: GithubContext): string {
+function buildPullUrl(context: GithubContext): string {
   const repositorySegment = `${context.repo.owner}/${context.repo.name}`;
-  return `${GITHUB_API_BASE_URL}/repos/${repositorySegment}/pulls/${context.prNumber}/files`;
+  return `${GITHUB_API_BASE_URL}/repos/${repositorySegment}/pulls/${context.prNumber}`;
 }
