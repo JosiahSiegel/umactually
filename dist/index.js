@@ -1532,11 +1532,8 @@ globalThis.__umactually_action_entry__ = true;
 async function src_main() {
     try {
         const cwd = process.cwd();
-        process.stdout.write('DEBUG MAIN START\n');
         const args = await buildArgs(process.env, cwd);
-        process.stdout.write(`DEBUG args=${JSON.stringify(args)}\n`);
         const result = await runCli(args, cwd);
-        process.stdout.write(`DEBUG result=${JSON.stringify(result)}\n`);
         if (result.exitCode !== 0) {
             process.exit(result.exitCode);
         }

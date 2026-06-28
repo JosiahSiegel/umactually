@@ -14,7 +14,6 @@ export type RunLiveInput = {
 
 export async function runLive(input: RunLiveInput): Promise<LiveRunResult> {
   const env = input.env ?? process.env;
-  process.stdout.write(`DEBUG env GITHUB_TOKEN=${env["GITHUB_TOKEN"] ? "set" : "unset"} INPUT_GITHUB_TOKEN=${env["INPUT_GITHUB_TOKEN"] ? "set" : "unset"} TF_BUILD=${env["TF_BUILD"] ?? "unset"}\n`);
   const fetchImpl = input.fetchImpl ?? globalThis.fetch.bind(globalThis);
   const platform = detectLivePlatform(env);
   if (platform === null) {
