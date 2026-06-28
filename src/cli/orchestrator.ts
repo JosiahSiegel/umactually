@@ -25,44 +25,58 @@ export async function runLive(input: RunLiveInput): Promise<LiveRunResult> {
     };
   }
 
-  const providerUrl = input.parsed.apiUrl ?? env["UMACTUALLY_API_URL"];
+    const providerUrl = input.parsed.apiUrl ?? env["UMACTUALLY_API_URL"];
   if (providerUrl === undefined || providerUrl.length === 0) {
+    const message = "UMACTUALLY_API_URL must be set for live review.";
+    process.stderr.write(`umactually-pr-review: ${message}\n`);
     return {
       exitCode: 1,
       posted: false,
       reviewId: undefined,
-      message: "UMACTUALLY_API_URL must be set for live review.",
+      message,
     };
   }
   const providerKey = input.parsed.apiKey ?? env["UMACTUALLY_API_KEY"];
   if (providerKey === undefined || providerKey.length === 0) {
+    const message = "UMACTUALLY_API_KEY must be set for live review.";
+    process.stderr.write(`umactually-pr-review: ${message}\n`);
     return {
       exitCode: 1,
       posted: false,
       reviewId: undefined,
-      message: "UMACTUALLY_API_KEY must be set for live review.",
+      message,
     };
   }
 
   const runtime: LiveRuntimeConfig = { parsed: input.parsed, cwd: input.cwd, env, fetchImpl };
+  let result: LiveRunResult;
   try {
     switch (platform) {
       case "github":
-        return await runGithubLive({ ...runtime, context: await readGithubContext(env) });
+        result = await runGithubLive({ ...runtime, context: await readGithubContext(env) });
+        break;
       case "azure":
-        return await runAzureLive({ ...runtime, context: readAzureContext(env) });
+        result = await runAzureLive({ ...runtime, context: readAzureContext(env) });
+        break;
       default:
         return assertNever(platform);
     }
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
+    const sanitized = sanitizeForPost(message, readSecretValues(env));
+    process.stderr.write(`umactually-pr-review: ${sanitized}\n`);
     return {
       exitCode: 1,
       posted: false,
       reviewId: undefined,
-      message: sanitizeForPost(message, readSecretValues(env)),
+      message: sanitized,
     };
   }
+
+  if (result.posted) {
+    process.stderr.write(`umactually-pr-review: ${result.message}\n`);
+  }
+  return result;
 }
 
 function detectLivePlatform(env: NodeJS.ProcessEnv): "github" | "azure" | null {
