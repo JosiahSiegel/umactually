@@ -138,6 +138,58 @@ function githubRoutes(providerBody: string): readonly FetchRoute[] {
   ];
 }
 
+const EXISTING_MARKER_REVIEW_BODY = `<!-- umactually-pr-review -->
+
+old summary
+
+auto (openai-compatible)
+
+Findings: 0 inline, 0 suppressed.`;
+
+type GithubExistingReviewRouteOptions = {
+  readonly existingReviewId: number;
+  readonly deleteResponse: Response;
+  readonly postResponse: Response;
+  readonly putResponse?: Response;
+};
+
+function githubRoutesWithExistingMarkerReview(
+  providerBody: string,
+  options: GithubExistingReviewRouteOptions,
+): readonly FetchRoute[] {
+  return [
+    {
+      match: (url, method) => method === "GET" && url.endsWith("/pulls/42/files"),
+      response: new Response(DIFF_TEXT, { status: 200 }),
+    },
+    {
+      match: (url, method) => method === "POST" && url === "https://provider.example/v1/responses",
+      response: makeJsonResponse({ output_text: providerBody }),
+    },
+    {
+      match: (url, method) => method === "GET" && url.endsWith("/pulls/42/reviews"),
+      response: makeJsonResponse([
+        { id: options.existingReviewId, body: EXISTING_MARKER_REVIEW_BODY },
+      ]),
+    },
+    {
+      match: (url, method) =>
+        method === "PUT" &&
+        url === `https://api.github.com/repos/octo-org/octo-repo/pulls/42/reviews/${options.existingReviewId}`,
+      response: options.putResponse ?? new Response(null, { status: 200 }),
+    },
+    {
+      match: (url, method) =>
+        method === "DELETE" && url === `https://api.github.com/repos/octo-org/octo-repo/pulls/42/reviews/${options.existingReviewId}`,
+      response: options.deleteResponse,
+    },
+    {
+      match: (url, method) => method === "POST" && url.endsWith("/pulls/42/reviews"),
+      response: options.postResponse,
+    },
+  ];
+}
+
 describe("runLive GitHub orchestration", () => {
   let workspace = "";
 
@@ -375,6 +427,130 @@ describe("runLive GitHub orchestration", () => {
     const comments = readArray(body["comments"], "review comments");
     expect(comments).toHaveLength(0);
     expect(body["body"]).not.toContain("Simulated review for");
+  });
+
+  it("updates the existing marker review in-place via PUT when the new payload has no inline comments", async () => {
+    // Given: a marker review already exists on PR #42 and the provider returned an empty payload.
+    workspace = await mkdtemp(join(tmpdir(), "umactually-live-existing-put-only-"));
+    const eventPath = join(workspace, "event.json");
+    await writeFile(eventPath, EVENT_JSON, "utf8");
+    const emptyReview = JSON.stringify({
+      summary: "Live provider returned an empty payload.",
+      verdict: "COMMENT",
+      comments: [],
+      suppressed_comments: [],
+    });
+    const recorder = makeFetchRecorder(
+      githubRoutesWithExistingMarkerReview(emptyReview, {
+        existingReviewId: 4242,
+        deleteResponse: new Response(null, { status: 204 }),
+        postResponse: makeJsonResponse({ id: 9001, body: "" }, 201),
+      }),
+    );
+
+    // When: live orchestration runs (simulate-findings is OFF so no fixture is injected).
+    const result = await runLive({
+      parsed: parseCliArgs(["--platform", "github", "--no-dry-run"]),
+      cwd: workspace,
+      env: githubEnv(eventPath),
+      fetchImpl: recorder.fetchImpl,
+    });
+
+    // Then: it issues a single PUT to update the existing review body — no DELETE, no new POST.
+    expect(result.exitCode).toBe(0);
+    expect(result.posted).toBe(true);
+    expect(result.reviewId).toBe(4242);
+    expect(result.message).toBe("updated existing GitHub review");
+    const methods = recorder.calls.map((call) => `${call.method} ${call.url}`);
+    expect(methods).toContain("PUT https://api.github.com/repos/octo-org/octo-repo/pulls/42/reviews/4242");
+    expect(methods.some((m) => m.startsWith("DELETE "))).toBe(false);
+    expect(methods.filter((m) => m.startsWith("POST ")).filter((m) => m.endsWith("/pulls/42/reviews"))).toHaveLength(0);
+  });
+
+  it("DELETEs the existing marker review then POSTs a new review with inline comments", async () => {
+    // Given: a marker review already exists and the new payload has 1+ inline comments.
+    workspace = await mkdtemp(join(tmpdir(), "umactually-live-existing-replace-"));
+    const eventPath = join(workspace, "event.json");
+    await writeFile(eventPath, EVENT_JSON, "utf8");
+    const recorder = makeFetchRecorder(
+      githubRoutesWithExistingMarkerReview(PROVIDER_REVIEW, {
+        existingReviewId: 4242,
+        deleteResponse: new Response(null, { status: 204 }),
+        postResponse: makeJsonResponse({ id: 9002, body: "" }, 201),
+      }),
+    );
+
+    // When: live orchestration runs with a non-empty provider payload.
+    const result = await runLive({
+      parsed: parseCliArgs(["--platform", "github", "--no-dry-run"]),
+      cwd: workspace,
+      env: githubEnv(eventPath),
+      fetchImpl: recorder.fetchImpl,
+    });
+
+    // Then: the existing review is deleted and a new review with inline threads is posted.
+    expect(result.exitCode).toBe(0);
+    expect(result.posted).toBe(true);
+    expect(result.reviewId).toBe(9002);
+    expect(result.message).toBe("replaced existing GitHub review");
+    const reviewPosts = recorder.calls.filter(
+      (call) => call.method === "POST" && call.url.endsWith("/pulls/42/reviews"),
+    );
+    expect(reviewPosts).toHaveLength(1);
+    const postBody = readRecord(reviewPosts[0]!.body as Record<string, unknown>, "review request");
+    const postedComments = readArray(postBody["comments"], "review comments");
+    expect(postedComments).toHaveLength(1);
+    expect(postedComments[0]).toEqual({
+      path: "src/review/example.ts",
+      line: 3,
+      side: "RIGHT",
+      body: "**high correctness**\n\nTighten this changed line.",
+    });
+    expect(postBody["body"]).toContain("<!-- umactually-pr-review -->");
+    expect(postBody["event"]).toBe("REQUEST_CHANGES");
+    expect(postBody["commit_id"]).toBe("1111111111111111111111111111111111111111");
+
+    const deletes = recorder.calls.filter(
+      (call) => call.method === "DELETE" && call.url.endsWith("/reviews/4242"),
+    );
+    expect(deletes).toHaveLength(1);
+    // PUT must NOT be used when we are replacing the review.
+    expect(recorder.calls.some((call) => call.method === "PUT")).toBe(false);
+  });
+
+  it("still POSTs the new review when the DELETE of the existing marker review returns 404", async () => {
+    // Given: a marker review exists, but DELETE returns 404 (review already gone / race).
+    workspace = await mkdtemp(join(tmpdir(), "umactually-live-existing-delete-404-"));
+    const eventPath = join(workspace, "event.json");
+    await writeFile(eventPath, EVENT_JSON, "utf8");
+    const recorder = makeFetchRecorder(
+      githubRoutesWithExistingMarkerReview(PROVIDER_REVIEW, {
+        existingReviewId: 4242,
+        deleteResponse: makeJsonResponse({ message: "Not Found" }, 404),
+        postResponse: makeJsonResponse({ id: 9003, body: "" }, 201),
+      }),
+    );
+
+    // When: live orchestration runs.
+    const result = await runLive({
+      parsed: parseCliArgs(["--platform", "github", "--no-dry-run"]),
+      cwd: workspace,
+      env: githubEnv(eventPath),
+      fetchImpl: recorder.fetchImpl,
+    });
+
+    // Then: the POST still succeeds — the 404 is treated as "already gone" and does not block.
+    expect(result.exitCode).toBe(0);
+    expect(result.posted).toBe(true);
+    expect(result.reviewId).toBe(9003);
+    expect(result.message).toBe("replaced existing GitHub review");
+    const reviewPosts = recorder.calls.filter(
+      (call) => call.method === "POST" && call.url.endsWith("/pulls/42/reviews"),
+    );
+    expect(reviewPosts).toHaveLength(1);
+    const postBody = readRecord(reviewPosts[0]!.body as Record<string, unknown>, "review request");
+    const postedComments = readArray(postBody["comments"], "review comments");
+    expect(postedComments).toHaveLength(1);
   });
 });
 

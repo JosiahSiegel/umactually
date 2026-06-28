@@ -1276,6 +1276,12 @@ async function runGithubLive(input) {
         parsed,
         secrets: [context.token],
     });
+    const postableComments = comments.map((comment) => ({
+        path: comment.path,
+        line: comment.line,
+        side: "RIGHT",
+        body: comment.body,
+    }));
     const body = buildReviewBody({
         review: provider.review,
         provider: provider.provider,
@@ -1285,23 +1291,26 @@ async function runGithubLive(input) {
         secrets: [context.token],
     });
     const existing = await findExistingMarkerReview(context, fetchImpl);
-    if (existing !== null) {
+    if (existing !== null && postableComments.length === 0) {
         const reviewId = await updateExistingReview({ context, fetchImpl, review: existing, body });
         return { exitCode: 0, posted: true, reviewId, message: "updated existing GitHub review" };
+    }
+    if (existing !== null) {
+        await deleteExistingReview({ context, fetchImpl, review: existing });
     }
     const reviewId = await createGithubReview({
         context,
         fetchImpl,
         body,
         event: mapReviewVerdictToGithubEvent(provider.review.verdict),
-        comments: comments.map((comment) => ({
-            path: comment.path,
-            line: comment.line,
-            side: "RIGHT",
-            body: comment.body,
-        })),
+        comments: postableComments,
     });
-    return { exitCode: 0, posted: true, reviewId, message: "posted GitHub review" };
+    return {
+        exitCode: 0,
+        posted: true,
+        reviewId,
+        message: existing !== null ? "replaced existing GitHub review" : "posted GitHub review",
+    };
 }
 async function findExistingMarkerReview(context, fetchImpl) {
     const response = await fetchImpl(githubReviewsUrl(context), {
@@ -1329,6 +1338,16 @@ async function updateExistingReview(input) {
     });
     ensureHttpOk(response, "GITHUB_UPDATE_REVIEW_FAILED", "GitHub update review");
     return input.review.id;
+}
+async function deleteExistingReview(input) {
+    const response = await input.fetchImpl(`${githubReviewsUrl(input.context)}/${input.review.id}`, {
+        method: "DELETE",
+        headers: githubHeaders(input.context.token),
+    });
+    if (response.status === 204 || response.status === 404) {
+        return;
+    }
+    process.stderr.write(`::warning::umactually-pr-review: failed to delete existing review ${input.review.id} (${response.status}); posting new review anyway.\n`);
 }
 async function createGithubReview(input) {
     const request = {
