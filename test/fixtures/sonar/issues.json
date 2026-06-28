@@ -1,0 +1,13 @@
+{
+  "issues": [
+    {
+      "key": "synthetic-issue-1",
+      "component": "example_umactually-fixture:src/review/example.ts",
+      "line": 3,
+      "rule": "typescript:S2068",
+      "message": "Credentials should not be hard-coded.",
+      "severity": "CRITICAL",
+      "type": "VULNERABILITY"
+    }
+  ]
+}

@@ -1,0 +1,16 @@
+{
+  "id": "resp_synthetic_001",
+  "model": "review-model-synthetic",
+  "output_text": "{\"summary\":\"Synthetic responses review.\",\"verdict\":\"DISCUSS\",\"comments\":[],\"suppressed_comments\":[]}",
+  "output": [
+    {
+      "type": "message",
+      "content": [
+        {
+          "type": "output_text",
+          "text": "{\"summary\":\"Synthetic responses review.\",\"verdict\":\"DISCUSS\",\"comments\":[],\"suppressed_comments\":[]}"
+        }
+      ]
+    }
+  ]
+}

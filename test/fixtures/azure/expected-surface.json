@@ -1,0 +1,11 @@
+{
+  "artifacts": {
+    "manualReport": "artifacts/manual/s4-azure-mocked-run.json"
+  },
+  "expectedThreadSurface": {
+    "method": "POST",
+    "route": "/_apis/git/repositories/{repositoryId}/pullRequests/{pullRequestId}/threads",
+    "statusRoute": "/_apis/git/repositories/{repositoryId}/pullRequests/{pullRequestId}/statuses",
+    "marker": "<!-- umactually-pr-review -->"
+  }
+}

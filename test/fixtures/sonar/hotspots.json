@@ -1,0 +1,13 @@
+{
+  "hotspots": [
+    {
+      "key": "synthetic-hotspot-1",
+      "component": "example_umactually-fixture:src/review/example.ts",
+      "line": 3,
+      "ruleKey": "typescript:S6437",
+      "message": "Review this synthetic security-sensitive code path.",
+      "securityCategory": "secrets",
+      "vulnerabilityProbability": "HIGH"
+    }
+  ]
+}
