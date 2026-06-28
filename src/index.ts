@@ -18,8 +18,10 @@ export async function main(): Promise<void> {
   try {
     const cwd = process.cwd();
     const args = await buildArgs(process.env, cwd);
-    process.stderr.write(`::debug::umactually-pr-review args: ${JSON.stringify(args)}\n`);
+    process.stderr.write(`DEBUG umactually-pr-review args: ${JSON.stringify(args)}\n`);
+    process.stderr.write(`DEBUG umactually-pr-review env keys: INPUT_DRY_RUN=${JSON.stringify(process.env.INPUT_DRY_RUN)} GITHUB_ACTIONS=${JSON.stringify(process.env.GITHUB_ACTIONS)}\n`);
     const result = await runCli(args, cwd);
+    process.stderr.write(`DEBUG umactually-pr-review result: ${JSON.stringify(result)}\n`);
     if (result.exitCode !== 0) {
       process.exit(result.exitCode);
     }
