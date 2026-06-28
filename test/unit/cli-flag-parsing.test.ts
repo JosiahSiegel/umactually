@@ -161,6 +161,8 @@ describe("CLI flag parsing: action.yml inputs coverage", () => {
     "--no-dry-run",
     "--no-ignore-minor",
     "--no-include-sonarqube",
+    "--simulate-findings",
+    "--no-simulate-findings",
   ];
 
   const valueFlags: ReadonlySet<string> = new Set([

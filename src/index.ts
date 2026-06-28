@@ -103,6 +103,7 @@ async function buildGithubArgs(env: NodeJS.ProcessEnv, cwd: string): Promise<rea
   pushBool(args, inputs.walkthrough, "--walkthrough");
   pushBool(args, inputs.diagnostic, "--diagnostic");
   pushBool(args, inputs.debugRawResponse, "--debug-raw-response");
+  pushBool(args, inputs.simulateFindings, "--simulate-findings");
 
   args.push(inputs.detectLeaks ? "--detect-leaks" : "--no-detect-leaks");
   pushDryRunFlag(args, inputs);
@@ -148,6 +149,7 @@ function buildAzureArgs(env: NodeJS.ProcessEnv): readonly string[] {
   pushBool(args, inputs.walkthrough, "--walkthrough");
   pushBool(args, inputs.diagnostic, "--diagnostic");
   pushBool(args, inputs.debugRawResponse, "--debug-raw-response");
+  pushBool(args, inputs.simulateFindings, "--simulate-findings");
 
   args.push(inputs.detectLeaks ? "--detect-leaks" : "--no-detect-leaks");
   pushDryRunFlag(args, inputs);

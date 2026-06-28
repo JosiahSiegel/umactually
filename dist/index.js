@@ -1636,6 +1636,7 @@ async function buildGithubArgs(env, cwd) {
     pushBool(args, inputs.walkthrough, "--walkthrough");
     pushBool(args, inputs.diagnostic, "--diagnostic");
     pushBool(args, inputs.debugRawResponse, "--debug-raw-response");
+    pushBool(args, inputs.simulateFindings, "--simulate-findings");
     args.push(inputs.detectLeaks ? "--detect-leaks" : "--no-detect-leaks");
     pushDryRunFlag(args, inputs);
     pushFlagValue(args, "--output-artifact", envFallback(env["INPUT_OUTPUT_ARTIFACT"], "artifacts/manual/s1-github-self-review.md"));
@@ -1666,6 +1667,7 @@ function buildAzureArgs(env) {
     pushBool(args, inputs.walkthrough, "--walkthrough");
     pushBool(args, inputs.diagnostic, "--diagnostic");
     pushBool(args, inputs.debugRawResponse, "--debug-raw-response");
+    pushBool(args, inputs.simulateFindings, "--simulate-findings");
     args.push(inputs.detectLeaks ? "--detect-leaks" : "--no-detect-leaks");
     pushDryRunFlag(args, inputs);
     pushFlagValue(args, "--output-artifact", envFallback(env["INPUT_OUTPUT_ARTIFACT"], "artifacts/manual/s4-azure-mocked-run.json"));

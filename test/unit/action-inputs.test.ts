@@ -134,3 +134,32 @@ describe("readActionInputs: dryRun defaulting", () => {
     expect(inputs.inGitHubActions).toBe(false);
   });
 });
+
+describe("readActionInputs: simulateFindings defaulting", () => {
+  it("simulateFindings defaults to false when INPUT_SIMULATE_FINDINGS is unset", () => {
+    // Given: a GitHub Actions runtime without the simulate-findings input.
+    const env = {
+      GITHUB_ACTIONS: "true",
+    } satisfies NodeJS.ProcessEnv;
+
+    // When: readActionInputs resolves the flag.
+    const inputs = readActionInputs(env);
+
+    // Then: simulateFindings is false so the live path runs untouched.
+    expect(inputs.simulateFindings).toBe(false);
+  });
+
+  it("simulateFindings honors INPUT_SIMULATE_FINDINGS=true", () => {
+    // Given: a GitHub Actions runtime with the simulate-findings input enabled.
+    const env = {
+      GITHUB_ACTIONS: "true",
+      INPUT_SIMULATE_FINDINGS: "true",
+    } satisfies NodeJS.ProcessEnv;
+
+    // When: readActionInputs resolves the flag.
+    const inputs = readActionInputs(env);
+
+    // Then: simulateFindings is true so the orchestrator can inject the fixture.
+    expect(inputs.simulateFindings).toBe(true);
+  });
+});
