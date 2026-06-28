@@ -1,0 +1,30 @@
+{
+  "scenario": "S2",
+  "command": "node --experimental-transform-types .omo/manual-qa-surfaces.mjs s2",
+  "source": "src/config/review-config.ts",
+  "function": "parseReviewConfig",
+  "input": {
+    "model": "auto",
+    "effort": "high",
+    "reviewTimeoutSeconds": 600,
+    "stallSeconds": 120,
+    "maxOutputTokens": 8192,
+    "minorFindings": "post",
+    "dryRun": true
+  },
+  "parsed": {
+    "model": "auto",
+    "effort": "medium",
+    "reviewTimeoutSeconds": 300,
+    "stallSeconds": 270,
+    "minorFindings": "suppress",
+    "dryRunArtifact": "artifacts/manual/s2-config-dry-run.json"
+  },
+  "notes": [
+    "parseReviewConfig normalizes effort to 'medium' regardless of input.",
+    "parseReviewConfig clamps reviewTimeoutSeconds to the 300s ceiling/floor.",
+    "parseReviewConfig forces stallSeconds to 270s.",
+    "parseReviewConfig forces minorFindings to 'suppress'.",
+    "parseReviewConfig pins dryRunArtifact to artifacts/manual/s2-config-dry-run.json."
+  ]
+}

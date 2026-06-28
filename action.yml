@@ -1,0 +1,144 @@
+name: "UmActually PR Review"
+description: >
+  Provider-agnostic PR review action. Runs in dry-run mode by default and emits
+  ::set-output lines for the GitHub Actions runner. Inputs are parsed strictly as
+  strings; the entrypoint (dist/index.js) reads INPUT_* env vars to drive either
+  the GitHub or Azure DevOps review contract.
+
+inputs:
+  github_token:
+    description: GitHub token used to read the workflow event payload and post the review.
+    required: false
+    default: ""
+  api-key:
+    description: Provider API key for the review request.
+    required: false
+    default: ""
+  api-url:
+    description: Provider base URL for the Responses API.
+    required: false
+    default: ""
+  model:
+    description: Provider model id. "auto" lets the retry ladder pick.
+    required: false
+    default: "auto"
+  prompt:
+    description: Inline prompt override.
+    required: false
+    default: ""
+  prompt-file:
+    description: Repository-relative prompt file.
+    required: false
+    default: ""
+  additional-prompt:
+    description: Inline additional prompt override.
+    required: false
+    default: ""
+  additional-prompt-file:
+    description: Repository-relative additional prompt file.
+    required: false
+    default: ""
+  walkthrough:
+    description: Generate a separate PR walkthrough comment.
+    required: false
+    default: "false"
+  diagnostic:
+    description: Inject a synthetic low-severity finding for pipeline smoke tests.
+    required: false
+    default: "false"
+  dry-run:
+    description: Generate review output without posting comments or status.
+    required: false
+    default: "false"
+  dry_run:
+    description: Synonym for dry-run; some runners require an underscore key for boolean inputs.
+    required: false
+    default: "false"
+  debug-raw-response:
+    description: Echo the raw provider response into the workflow log.
+    required: false
+    default: "false"
+  simulate-findings:
+    description: Replace an empty live provider payload with a deterministic multi-finding fixture. Live results are always preferred when the provider returns real findings.
+    required: false
+    default: "false"
+  review-timeout-seconds:
+    description: Hard ceiling for the full model-call retry budget.
+    required: false
+    default: "300"
+  stall-seconds:
+    description: Stream stall budget for the SSE channel.
+    required: false
+    default: "270"
+  max-output-tokens:
+    description: max_output_tokens sent to the provider.
+    required: false
+    default: "16000"
+  ignore-minor:
+    description: Suppress minor non-security findings.
+    required: false
+    default: "false"
+  minimum-severity:
+    description: Minimum severity to post (low|medium|high).
+    required: false
+    default: "low"
+  max-comments:
+    description: Cap on posted comments per review.
+    required: false
+    default: "50"
+  include-sonarqube:
+    description: Pull SonarQube issues alongside the PR review.
+    required: false
+    default: "false"
+  sonar-host-url:
+    description: SonarQube base URL.
+    required: false
+    default: ""
+  sonar-token:
+    description: SonarQube token.
+    required: false
+    default: ""
+  sonar-project-key:
+    description: SonarQube project key.
+    required: false
+    default: ""
+  sonar-timeout-seconds:
+    description: SonarQube HTTP timeout in seconds.
+    required: false
+    default: "300"
+  detect-leaks:
+    description: Run secret-leak detection on the diff.
+    required: false
+    default: "true"
+  platform:
+    description: "Platform to dispatch (auto|github|azure)."
+    required: false
+    default: "auto"
+  pr-number:
+    description: Pull request number.
+    required: false
+    default: ""
+  repo:
+    description: Repository in owner/name form.
+    required: false
+    default: ""
+
+outputs:
+  marker:
+    description: Review marker emitted by the entrypoint.
+  marker_text:
+    description: Stable HTML comment marker the runner greps for.
+  inline_thread_count:
+    description: Count of inline threads posted on the diff.
+  suppressed_comment_count:
+    description: Count of comments suppressed because they fall off-diff.
+  artifact_path:
+    description: Path the entrypoint wrote the manual artifact to.
+  posted_thread_count:
+    description: Azure-only count of posted review threads.
+  posted_status_state:
+    description: Azure-only status state derived from the verdict.
+
+runs:
+  using: "node24"
+  main: "dist/index.js"

@@ -1,0 +1,13 @@
+{
+  "artifacts": {
+    "manualReport": "artifacts/manual/s6-sonar-mocked-run.json"
+  },
+  "skipWhenUnconfigured": {
+    "sonarTokenPresent": false,
+    "expectedNetworkCalls": 0
+  },
+  "polling": {
+    "maxAttempts": 3,
+    "terminalStatuses": ["OK", "ERROR", "WARN"]
+  }
+}

@@ -1,0 +1,96 @@
+name: CI
+
+on:
+  pull_request:
+    branches:
+      - main
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+jobs:
+  ci:
+    name: ci
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+
+      - name: Install dependencies
+        run: npm ci --cache "C:\\Users\\josia\\AppData\\Local\\Temp\\opencode\\npm-cache"
+
+      - name: Typecheck
+        run: npm run typecheck
+
+      - name: Test
+        run: npm test -- --run
+
+      - name: Bundle
+        run: npm run bundle
+
+      - name: Dist freshness guard
+        run: npm run check:dist-freshness
+
+      - name: CLI smoke (S1 GitHub dry-run)
+        run: |
+          node bin/umactually-pr-review.mjs \
+            --platform github \
+            --event test/fixtures/github/pull-request-event.json \
+            --diff test/fixtures/github/full-pr.diff \
+            --review test/fixtures/github/provider-review.json \
+            --output-artifact artifacts/manual/s1-github-self-review.md \
+            --dry-run
+
+      - name: CLI smoke (S4 Azure dry-run)
+        run: |
+          node bin/umactually-pr-review.mjs \
+            --platform azure-devops \
+            --event test/fixtures/azure/pull-request.json \
+            --diff test/fixtures/github/full-pr.diff \
+            --threads test/fixtures/azure/threads.json \
+            --review test/fixtures/github/provider-review.json \
+            --pr-number 42 \
+            --repo example/umactually-fixture \
+            --output-artifact artifacts/manual/s4-azure-mocked-run.json \
+            --dry-run
+
+      - name: CLI smoke (S5 redaction)
+        run: |
+          node bin/umactually-pr-review.mjs \
+            --platform github \
+            --event test/fixtures/github/pull-request-event.json \
+            --diff test/fixtures/github/full-pr.diff \
+            --review test/fixtures/github/provider-review.json \
+            --detect-leaks \
+            --output-artifact artifacts/manual/s5-redaction-report.json \
+            --dry-run
+
+      - name: CLI smoke (S6 SonarQube mocked)
+        run: |
+          node bin/umactually-pr-review.mjs \
+            --platform github \
+            --event test/fixtures/github/pull-request-event.json \
+            --diff test/fixtures/github/full-pr.diff \
+            --review test/fixtures/github/provider-review.json \
+            --include-sonarqube \
+            --sonar-host-url https://sonar.example.test \
+            --sonar-token synthetic \
+            --sonar-project-key synthetic \
+            --output-artifact artifacts/manual/s6-sonar-mocked-run.json \
+            --dry-run
+
+      - name: Upload artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: manual-artifacts
+          path: artifacts/manual/
+          if-no-files-found: ignore

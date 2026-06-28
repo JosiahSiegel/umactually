@@ -1,0 +1,13 @@
+{
+  "id": "chatcmpl_synthetic_001",
+  "model": "review-model-synthetic",
+  "choices": [
+    {
+      "message": {
+        "role": "assistant",
+        "content": "{\"summary\":\"Synthetic chat fallback review.\",\"verdict\":\"SHIP\",\"comments\":[],\"suppressed_comments\":[]}"
+      },
+      "finish_reason": "stop"
+    }
+  ]
+}

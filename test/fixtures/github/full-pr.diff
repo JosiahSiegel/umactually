@@ -1,0 +1,35 @@
+diff --git a/src/review/example.ts b/src/review/example.ts
+index 1111111..2222222 100644
+--- a/src/review/example.ts
++++ b/src/review/example.ts
+@@ -1,4 +1,7 @@
+ export function renderReview(): string {
+-  return "old";
++  const syntheticSecret = "sk_test_synthetic_fixture_value_do_not_use";
++  return `new ${syntheticSecret}`;
+ }
++
++export const changedLine = true;
+diff --git a/docs/review.md b/docs/review.md
+index 3333333..4444444 100644
+--- a/docs/review.md
++++ b/docs/review.md
+@@ -1,3 +1,4 @@
+ # Review
+ 
+ Existing text.
++Added reviewer guidance.
+diff --git a/src/cli/orchestrator.ts b/src/cli/orchestrator.ts
+index 5555555..6666666 100644
+--- a/src/cli/orchestrator.ts
++++ b/src/cli/orchestrator.ts
+@@ -10,6 +10,8 @@ export function applySimulateFindings(
+   }
+   const simulated = buildSimulatedFindings(repo, prNumber, headSha, diffText);
+   const positions = parseDiffPositions(diffText);
++  const enumerated = positions.enumerate();
++  if (enumerated.length === 0) return simulated;
+   return simulated;
+ }
++
++export const liveOrchestrationEnabled = true;

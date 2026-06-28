@@ -1,2 +1,4 @@
 .omo
 .reference
+node_modules/
+artifacts/scratch/

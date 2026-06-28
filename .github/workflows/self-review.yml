@@ -1,0 +1,55 @@
+name: UmActually Self Review
+
+# Runs the in-tree UmActually PR review action against pull requests opened on
+# this repository. This workflow consumes the action via ./, which means each
+# PR is reviewed by the version of the action checked out with the PR head.
+# Do NOT switch this workflow to pull_request_target: doing so would execute
+# PR head-branch code with write permissions and could expose secrets.
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pull-requests: write
+
+jobs:
+  self-review:
+    name: self-review
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Run UmActually self review
+        uses: ./
+        with:
+          dry-run: 'false'
+          simulate-findings: 'true'
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+        env:
+          UMACTUALLY_API_URL: ${{ secrets.UMACTUALLY_API_URL }}
+          UMACTUALLY_API_KEY: ${{ secrets.UMACTUALLY_API_KEY }}
+
+# Verifying the action posted a review
+# -----------------------------------
+# 1. Open the pull request that triggered this workflow.
+# 2. Look for comments or review feedback containing the marker:
+#        <!-- umactually-pr-review -->
+# 3. On the PR conversation tab, the action posts a single pull request review
+#    with inline threads on files in the diff. On the Files changed tab the
+#    inline threads are visible per file.
+# 4. If the workflow ran via workflow_dispatch, the run summary lists the
+#    number of inline threads and suppressed comments for the PR whose number
+#    was passed through the runtime; if no PR number is available, the run is
+#    treated as a no-op by the runtime.

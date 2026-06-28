@@ -1,0 +1,19 @@
+{
+  "count": 1,
+  "value": [
+    {
+      "id": 7,
+      "status": "active",
+      "threadContext": {
+        "filePath": "/src/review/example.ts",
+        "rightFileStart": { "line": 3, "offset": 1 },
+        "rightFileEnd": { "line": 3, "offset": 40 }
+      },
+      "comments": [
+        {
+          "content": "<!-- umactually-pr-review -->\nSynthetic existing Azure thread."
+        }
+      ]
+    }
+  ]
+}

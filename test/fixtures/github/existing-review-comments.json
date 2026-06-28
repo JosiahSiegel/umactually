@@ -1,0 +1,14 @@
+[
+  {
+    "id": 1001,
+    "body": "<!-- auto-pr-review -->\nPrevious legacy auto review body."
+  },
+  {
+    "id": 1002,
+    "body": "<!-- umactually-pr-review -->\nPrevious umactually review body."
+  },
+  {
+    "id": 1003,
+    "body": "Human review comment that must remain untouched."
+  }
+]
