@@ -34,11 +34,11 @@ export class GithubContextError extends Error {
 
 export async function readGithubContext(env: NodeJS.ProcessEnv): Promise<GithubContext> {
   const token = readGithubToken(env);
-  const repo = readGithubRepo(env);
-  const prNumber = readGithubPrNumber(env);
-  const headSha = readGithubSha(env, "GITHUB_HEAD_SHA");
-  const baseSha = readGithubSha(env, "GITHUB_BASE_SHA");
   const eventPayload = await readGithubPullRequestPayload(env);
+  const repo = readGithubRepo(env, eventPayload.repoFullName);
+  const prNumber = readGithubPrNumber(env, eventPayload.prNumber);
+  const headSha = readGithubSha(env, "GITHUB_HEAD_SHA", eventPayload.headSha);
+  const baseSha = readGithubSha(env, "GITHUB_BASE_SHA", eventPayload.baseSha);
 
   return {
     token,
@@ -60,9 +60,9 @@ function readGithubToken(env: NodeJS.ProcessEnv): string {
   return token;
 }
 
-function readGithubRepo(env: NodeJS.ProcessEnv): GithubRepoRef {
-  const repository = env["GITHUB_REPOSITORY"];
-  if (repository === undefined) {
+function readGithubRepo(env: NodeJS.ProcessEnv, fallback: string | null): GithubRepoRef {
+  const repository = env["GITHUB_REPOSITORY"] ?? fallback ?? "";
+  if (repository.length === 0) {
     throw new GithubContextError("GITHUB_REPOSITORY_INVALID", "GitHub Actions GITHUB_REPOSITORY must be set as '<owner>/<name>'.");
   }
   const slashIndex = repository.indexOf("/");
@@ -74,22 +74,32 @@ function readGithubRepo(env: NodeJS.ProcessEnv): GithubRepoRef {
   return { owner, name };
 }
 
-function readGithubPrNumber(env: NodeJS.ProcessEnv): number {
+function readGithubPrNumber(env: NodeJS.ProcessEnv, fallback: number | null): number {
   const fromInput = env["PR_NUMBER"];
   const fromEnv = fromInput ?? env["GITHUB_PR_NUMBER"];
-  if (fromEnv === undefined || fromEnv.length === 0) {
-    throw new GithubContextError("GITHUB_PR_NUMBER_INVALID", "GitHub pull request number must be provided via PR_NUMBER input or GITHUB_PR_NUMBER env.");
+  if (fromEnv !== undefined && fromEnv.length > 0) {
+    return parsePrNumber(fromEnv, env);
   }
-  const parsed = Number.parseInt(fromEnv, 10);
+  if (fallback !== null) {
+    return fallback;
+  }
+  throw new GithubContextError(
+    "GITHUB_PR_NUMBER_INVALID",
+    "GitHub pull request number must be provided via PR_NUMBER input, GITHUB_PR_NUMBER env, or the pull_request event payload.",
+  );
+}
+
+function parsePrNumber(raw: string, _env: NodeJS.ProcessEnv): number {
+  const parsed = Number.parseInt(raw, 10);
   if (!Number.isSafeInteger(parsed) || parsed <= 0) {
     throw new GithubContextError("GITHUB_PR_NUMBER_INVALID", "GitHub pull request number must be a positive integer.");
   }
   return parsed;
 }
 
-function readGithubSha(env: NodeJS.ProcessEnv, key: "GITHUB_HEAD_SHA" | "GITHUB_BASE_SHA"): string {
-  const value = env[key];
-  if (value === undefined || value.length === 0) {
+function readGithubSha(env: NodeJS.ProcessEnv, key: "GITHUB_HEAD_SHA" | "GITHUB_BASE_SHA", fallback: string | null): string {
+  const value = env[key] ?? fallback ?? "";
+  if (value.length === 0) {
     throw new GithubContextError("GITHUB_SHA_MISSING", `GitHub Actions ${key} must be set.`);
   }
   return value;
@@ -99,6 +109,10 @@ type PullRequestPayloadFields = {
   readonly isDraft: boolean;
   readonly title: string;
   readonly body: string;
+  readonly prNumber: number | null;
+  readonly headSha: string | null;
+  readonly baseSha: string | null;
+  readonly repoFullName: string | null;
 };
 
 async function readGithubPullRequestPayload(env: NodeJS.ProcessEnv): Promise<PullRequestPayloadFields> {
@@ -115,11 +129,52 @@ async function readGithubPullRequestPayload(env: NodeJS.ProcessEnv): Promise<Pul
   if (!isObject(pullRequest)) {
     throw new GithubContextError("GITHUB_EVENT_PAYLOAD_INVALID", "GitHub event payload must contain a 'pull_request' object.");
   }
+  const repository = readRecord(parsed, "repository");
   return {
     isDraft: readBoolean(pullRequest["draft"]),
     title: readString(pullRequest["title"]),
     body: readString(pullRequest["body"]),
+    prNumber: readOptionalNumber(pullRequest["number"]),
+    headSha: readSha(pullRequest, "head"),
+    baseSha: readSha(pullRequest, "base"),
+    repoFullName: readRepositoryName(repository),
   };
+}
+
+function readSha(record: Record<string, unknown>, key: "head" | "base"): string | null {
+  const slot = record[key];
+  if (!isObject(slot)) {
+    return null;
+  }
+  const sha = slot["sha"];
+  return typeof sha === "string" && sha.length > 0 ? sha : null;
+}
+
+function readRepositoryName(record: Record<string, unknown>): string | null {
+  const fullName = record["full_name"];
+  if (typeof fullName === "string" && fullName.length > 0) {
+    return fullName;
+  }
+  const owner = record["owner"];
+  const name = record["name"];
+  if (isObject(owner) && typeof name === "string" && name.length > 0) {
+    const ownerLogin = owner["login"];
+    if (typeof ownerLogin === "string" && ownerLogin.length > 0) {
+      return `${ownerLogin}/${name}`;
+    }
+  }
+  return null;
+}
+
+function readOptionalNumber(value: unknown): number | null {
+  return typeof value === "number" && Number.isSafeInteger(value) && value > 0 ? value : null;
+}
+
+function readRecord(value: unknown, label: string): Record<string, unknown> {
+  if (!isObject(value)) {
+    throw new GithubContextError("GITHUB_EVENT_PAYLOAD_INVALID", `GitHub event payload must contain a '${label}' object.`);
+  }
+  return value;
 }
 
 function isObject(value: unknown): value is Record<string, unknown> {

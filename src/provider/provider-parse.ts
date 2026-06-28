@@ -7,6 +7,9 @@ export type { ProviderEndpoint };
 type ProviderComment = {
   readonly path: string;
   readonly line: number;
+  readonly body: string;
+  readonly severity: string;
+  readonly category: string;
 };
 
 export type ProviderReviewPayload = {
@@ -128,7 +131,13 @@ function readCommentArray(value: unknown): readonly ProviderComment[] {
     const path = entry["path"];
     const line = entry["line"];
     if (typeof path === "string" && typeof line === "number" && Number.isFinite(line)) {
-      comments.push({ path, line });
+      comments.push({
+        path,
+        line,
+        body: readStringField(entry, "body") ?? "",
+        severity: readStringField(entry, "severity") ?? "medium",
+        category: readStringField(entry, "category") ?? "general",
+      });
     }
   }
   return comments;

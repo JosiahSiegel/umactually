@@ -263,7 +263,13 @@ export class CliArgumentError extends Error {
   override readonly name = "CliArgumentError";
 }
 
-export function dispatchLive(): CliRunResult {
-  process.stderr.write("cli: live provider calls are not supported in this build; use --dry-run\n");
-  return { exitCode: 3 };
+export function dispatchLive(parsed: ParsedCliArgs, cwd: string, env: NodeJS.ProcessEnv): Promise<CliRunResult> {
+  // Live orchestration lives in src/cli/orchestrator.ts so the dry-run path
+  // keeps a single-responsibility surface. This thin wrapper exists only to
+  // preserve the public CLI module exports expected by existing tests.
+  return import("./orchestrator.js").then(({ runLive }) =>
+    runLive({ parsed, cwd, env }).then((result) => ({
+      exitCode: result.exitCode,
+    })),
+  );
 }

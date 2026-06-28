@@ -1,6 +1,307 @@
 import { createRequire as __WEBPACK_EXTERNAL_createRequire } from "module";
-/******/ // The require scope
-/******/ var __nccwpck_require__ = {};
+/******/ var __webpack_modules__ = ({
+
+/***/ 713:
+/***/ ((__unused_webpack_module, __webpack_exports__, __nccwpck_require__) => {
+
+/* harmony export */ __nccwpck_require__.d(__webpack_exports__, {
+/* harmony export */   V: () => (/* binding */ parseDiffPositions)
+/* harmony export */ });
+function parseDiffPositions(diffText) {
+    const linesByPath = new Map();
+    let currentPath = null;
+    let nextNewLine = null;
+    for (const line of diffText.split(/\r?\n/u)) {
+        if (line.startsWith("diff --git ")) {
+            currentPath = null;
+            nextNewLine = null;
+            continue;
+        }
+        if (currentPath === null) {
+            const parsedPath = parseNewFilePath(line);
+            if (parsedPath !== null) {
+                currentPath = parsedPath;
+            }
+            continue;
+        }
+        const hunkStart = parseNewHunkStart(line);
+        if (hunkStart !== null) {
+            nextNewLine = hunkStart;
+            continue;
+        }
+        if (nextNewLine === null) {
+            continue;
+        }
+        if (line.startsWith("+")) {
+            addLine(linesByPath, currentPath, nextNewLine);
+            nextNewLine += 1;
+            continue;
+        }
+        if (line.startsWith(" ")) {
+            addLine(linesByPath, currentPath, nextNewLine);
+            nextNewLine += 1;
+        }
+    }
+    return {
+        hasPosition(position) {
+            return linesByPath.get(position.path)?.has(position.line) ?? false;
+        },
+    };
+}
+function parseNewFilePath(line) {
+    if (!line.startsWith("+++ ")) {
+        return null;
+    }
+    const [rawPath] = line.slice(4).split("\t");
+    if (rawPath === undefined) {
+        return null;
+    }
+    const path = rawPath.trim();
+    if (path === "/dev/null") {
+        return null;
+    }
+    return path.startsWith("b/") ? path.slice(2) : path;
+}
+function parseNewHunkStart(line) {
+    if (!line.startsWith("@@ ")) {
+        return null;
+    }
+    const plusIndex = line.indexOf("+");
+    if (plusIndex === -1) {
+        return null;
+    }
+    const afterPlus = line.slice(plusIndex + 1);
+    const endIndex = afterPlus.search(/[ ,]/u);
+    const rawStart = endIndex === -1 ? afterPlus : afterPlus.slice(0, endIndex);
+    const start = Number.parseInt(rawStart, 10);
+    return Number.isSafeInteger(start) && start > 0 ? start : null;
+}
+function addLine(linesByPath, path, line) {
+    const existingLines = linesByPath.get(path);
+    if (existingLines !== undefined) {
+        existingLines.add(line);
+        return;
+    }
+    linesByPath.set(path, new Set([line]));
+}
+
+
+/***/ }),
+
+/***/ 702:
+/***/ ((__unused_webpack_module, __webpack_exports__, __nccwpck_require__) => {
+
+/* harmony export */ __nccwpck_require__.d(__webpack_exports__, {
+/* harmony export */   O: () => (/* binding */ runReview),
+/* harmony export */   a: () => (/* binding */ REVIEW_MARKER)
+/* harmony export */ });
+/* harmony import */ var _security_scan_review_secrets_js__WEBPACK_IMPORTED_MODULE_1__ = __nccwpck_require__(650);
+/* harmony import */ var _diff_parse_positions_js__WEBPACK_IMPORTED_MODULE_0__ = __nccwpck_require__(713);
+
+
+const REVIEW_MARKER = "<!-- umactually-pr-review -->";
+async function runReview(contract) {
+    parseEvent(contract.eventJson);
+    const review = parseProviderReview(contract.providerReviewJson);
+    const positions = (0,_diff_parse_positions_js__WEBPACK_IMPORTED_MODULE_0__/* .parseDiffPositions */ .V)(contract.diffText);
+    // Always run secret scan before posting — leaks block raw output regardless of flags.
+    await (0,_security_scan_review_secrets_js__WEBPACK_IMPORTED_MODULE_1__/* .scanReviewSecrets */ .R)({
+        diffText: contract.diffText,
+        expectedArtifact: "artifacts/manual/s5-redaction-report.json",
+    });
+    const inlineThreadCount = countMatchingComments(review.comments, positions);
+    const suppressedCommentCount = countOffDiffComments(review, positions);
+    return {
+        artifactPath: contract.expectedArtifact,
+        event: "COMMENT",
+        marker: REVIEW_MARKER,
+        inlineThreadCount,
+        suppressedCommentCount,
+    };
+}
+function parseEvent(eventJson) {
+    const value = JSON.parse(eventJson);
+    parsePullRequestEvent(value);
+}
+function parseProviderReview(providerReviewJson) {
+    const value = JSON.parse(providerReviewJson);
+    return parseProviderReviewPayload(value);
+}
+function countMatchingComments(comments, positions) {
+    let count = 0;
+    for (const comment of comments) {
+        if (positions.hasPosition(comment)) {
+            count += 1;
+        }
+    }
+    return count;
+}
+function countOffDiffComments(review, positions) {
+    let count = 0;
+    for (const comment of review.comments) {
+        if (!positions.hasPosition(comment)) {
+            count += 1;
+        }
+    }
+    for (const comment of review.suppressed_comments) {
+        if (!positions.hasPosition(comment)) {
+            count += 1;
+        }
+    }
+    return count;
+}
+function parsePullRequestEvent(value) {
+    const event = readRecord(value, "GitHub event");
+    const pullRequest = readRecord(readField(event, "pull_request"), "pull_request");
+    readNumberField(pullRequest, "number");
+}
+function parseProviderReviewPayload(value) {
+    const review = readRecord(value, "provider review");
+    const comments = readCommentArray(readField(review, "comments"));
+    const suppressedComments = readCommentArray(readField(review, "suppressed_comments"));
+    return { comments: comments, suppressed_comments: suppressedComments };
+}
+function readRecord(value, label) {
+    if (typeof value !== "object" || value === null || Array.isArray(value)) {
+        throw new TypeError(`Expected ${label} to be an object, received: ${typeof value}`);
+    }
+    return value;
+}
+function readField(record, key) {
+    return record[key];
+}
+function readNumberField(record, key) {
+    const value = readField(record, key);
+    if (typeof value !== "number") {
+        throw new TypeError(`Expected field '${key}' to be a number, received: ${typeof value}`);
+    }
+    return value;
+}
+function readCommentArray(value) {
+    if (!Array.isArray(value)) {
+        throw new TypeError(`Expected comment array, received: ${typeof value}`);
+    }
+    const comments = [];
+    for (const entry of value) {
+        comments.push(parseComment(entry));
+    }
+    return comments;
+}
+function parseComment(value) {
+    const record = readRecord(value, "comment");
+    const path = readField(record, "path");
+    const line = readField(record, "line");
+    if (typeof path !== "string") {
+        throw new TypeError(`Expected comment 'path' to be a string, received: ${typeof path}`);
+    }
+    if (typeof line !== "number") {
+        throw new TypeError(`Expected comment 'line' to be a number, received: ${typeof line}`);
+    }
+    return { path, line };
+}
+
+
+/***/ }),
+
+/***/ 650:
+/***/ ((__unused_webpack_module, __webpack_exports__, __nccwpck_require__) => {
+
+/* harmony export */ __nccwpck_require__.d(__webpack_exports__, {
+/* harmony export */   R: () => (/* binding */ scanReviewSecrets)
+/* harmony export */ });
+const HIGH_CONFIDENCE_SECRET_PATTERNS = [
+    /\bsk_test_[a-z_]+\b/g,
+    /\b(?:AKIA|ASIA)[A-Z0-9]{16}\b/g,
+    /\bghp_[A-Za-z0-9]{36}\b/g,
+];
+const REDACTED_SECRET = "[REDACTED_SECRET]";
+async function scanReviewSecrets(input) {
+    const highConfidenceLeakCount = countHighConfidenceLeaks(input.diffText);
+    const redactedDiff = redactHighConfidenceSecrets(input.diffText);
+    return {
+        artifactPath: input.expectedArtifact,
+        highConfidenceLeakCount,
+        redactedDiffIncludesSecret: countHighConfidenceLeaks(redactedDiff) > 0,
+        blockedRawOutput: true,
+    };
+}
+function countHighConfidenceLeaks(diffText) {
+    let highConfidenceLeakCount = 0;
+    for (const line of diffText.split("\n")) {
+        if (isAddedDiffLine(line)) {
+            highConfidenceLeakCount += countLineSecrets(line);
+        }
+    }
+    return highConfidenceLeakCount;
+}
+function redactHighConfidenceSecrets(diffText) {
+    return diffText
+        .split("\n")
+        .map((line) => (isAddedDiffLine(line) ? redactLineSecrets(line) : line))
+        .join("\n");
+}
+function isAddedDiffLine(line) {
+    return line.startsWith("+") && !line.startsWith("+++");
+}
+function countLineSecrets(line) {
+    let secretCount = 0;
+    for (const pattern of HIGH_CONFIDENCE_SECRET_PATTERNS) {
+        secretCount += Array.from(line.matchAll(pattern)).length;
+    }
+    return secretCount;
+}
+function redactLineSecrets(line) {
+    let redactedLine = line;
+    for (const pattern of HIGH_CONFIDENCE_SECRET_PATTERNS) {
+        redactedLine = redactedLine.replace(pattern, REDACTED_SECRET);
+    }
+    return redactedLine;
+}
+
+
+/***/ }),
+
+/***/ 455:
+/***/ ((module) => {
+
+module.exports = __WEBPACK_EXTERNAL_createRequire(import.meta.url)("node:fs/promises");
+
+/***/ })
+
+/******/ });
+/************************************************************************/
+/******/ // The module cache
+/******/ var __webpack_module_cache__ = {};
+/******/ 
+/******/ // The require function
+/******/ function __nccwpck_require__(moduleId) {
+/******/ 	// Check if module is in cache
+/******/ 	var cachedModule = __webpack_module_cache__[moduleId];
+/******/ 	if (cachedModule !== undefined) {
+/******/ 		return cachedModule.exports;
+/******/ 	}
+/******/ 	// Create a new module (and put it into the cache)
+/******/ 	var module = __webpack_module_cache__[moduleId] = {
+/******/ 		// no module.id needed
+/******/ 		// no module.loaded needed
+/******/ 		exports: {}
+/******/ 	};
+/******/ 
+/******/ 	// Execute the module function
+/******/ 	var threw = true;
+/******/ 	try {
+/******/ 		__webpack_modules__[moduleId](module, module.exports, __nccwpck_require__);
+/******/ 		threw = false;
+/******/ 	} finally {
+/******/ 		if(threw) delete __webpack_module_cache__[moduleId];
+/******/ 	}
+/******/ 
+/******/ 	// Return the exports of the module
+/******/ 	return module.exports;
+/******/ }
+/******/ 
+/******/ // expose the modules object (__webpack_modules__)
+/******/ __nccwpck_require__.m = __webpack_modules__;
 /******/ 
 /************************************************************************/
 /******/ /* webpack/runtime/define property getters */
@@ -15,14 +316,110 @@ import { createRequire as __WEBPACK_EXTERNAL_createRequire } from "module";
 /******/ 	};
 /******/ })();
 /******/ 
+/******/ /* webpack/runtime/ensure chunk */
+/******/ (() => {
+/******/ 	__nccwpck_require__.f = {};
+/******/ 	// This file contains only the entry chunk.
+/******/ 	// The chunk loading function for additional chunks
+/******/ 	__nccwpck_require__.e = (chunkId) => {
+/******/ 		return Promise.all(Object.keys(__nccwpck_require__.f).reduce((promises, key) => {
+/******/ 			__nccwpck_require__.f[key](chunkId, promises);
+/******/ 			return promises;
+/******/ 		}, []));
+/******/ 	};
+/******/ })();
+/******/ 
+/******/ /* webpack/runtime/get javascript chunk filename */
+/******/ (() => {
+/******/ 	// This function allow to reference async chunks
+/******/ 	__nccwpck_require__.u = (chunkId) => {
+/******/ 		// return url for filenames based on template
+/******/ 		return "" + chunkId + ".index.js";
+/******/ 	};
+/******/ })();
+/******/ 
 /******/ /* webpack/runtime/hasOwnProperty shorthand */
 /******/ (() => {
 /******/ 	__nccwpck_require__.o = (obj, prop) => (Object.prototype.hasOwnProperty.call(obj, prop))
 /******/ })();
 /******/ 
+/******/ /* webpack/runtime/make namespace object */
+/******/ (() => {
+/******/ 	// define __esModule on exports
+/******/ 	__nccwpck_require__.r = (exports) => {
+/******/ 		if(typeof Symbol !== 'undefined' && Symbol.toStringTag) {
+/******/ 			Object.defineProperty(exports, Symbol.toStringTag, { value: 'Module' });
+/******/ 		}
+/******/ 		Object.defineProperty(exports, '__esModule', { value: true });
+/******/ 	};
+/******/ })();
+/******/ 
 /******/ /* webpack/runtime/compat */
 /******/ 
 /******/ if (typeof __nccwpck_require__ !== 'undefined') __nccwpck_require__.ab = new URL('.', import.meta.url).pathname.slice(import.meta.url.match(/^file:\/\/\/\w:/) ? 1 : 0, -1) + "/";
+/******/ 
+/******/ /* webpack/runtime/import chunk loading */
+/******/ (() => {
+/******/ 	// no baseURI
+/******/ 	
+/******/ 	// object to store loaded and loading chunks
+/******/ 	// undefined = chunk not loaded, null = chunk preloaded/prefetched
+/******/ 	// [resolve, Promise] = chunk loading, 0 = chunk loaded
+/******/ 	var installedChunks = {
+/******/ 		792: 0
+/******/ 	};
+/******/ 	
+/******/ 	var installChunk = (data) => {
+/******/ 		var {ids, modules, runtime} = data;
+/******/ 		// add "modules" to the modules object,
+/******/ 		// then flag all "ids" as loaded and fire callback
+/******/ 		var moduleId, chunkId, i = 0;
+/******/ 		for(moduleId in modules) {
+/******/ 			if(__nccwpck_require__.o(modules, moduleId)) {
+/******/ 				__nccwpck_require__.m[moduleId] = modules[moduleId];
+/******/ 			}
+/******/ 		}
+/******/ 		if(runtime) runtime(__nccwpck_require__);
+/******/ 		for(;i < ids.length; i++) {
+/******/ 			chunkId = ids[i];
+/******/ 			if(__nccwpck_require__.o(installedChunks, chunkId) && installedChunks[chunkId]) {
+/******/ 				installedChunks[chunkId][0]();
+/******/ 			}
+/******/ 			installedChunks[ids[i]] = 0;
+/******/ 		}
+/******/ 	
+/******/ 	}
+/******/ 	
+/******/ 	__nccwpck_require__.f.j = (chunkId, promises) => {
+/******/ 			// import() chunk loading for javascript
+/******/ 			var installedChunkData = __nccwpck_require__.o(installedChunks, chunkId) ? installedChunks[chunkId] : undefined;
+/******/ 			if(installedChunkData !== 0) { // 0 means "already installed".
+/******/ 	
+/******/ 				// a Promise means "currently loading".
+/******/ 				if(installedChunkData) {
+/******/ 					promises.push(installedChunkData[1]);
+/******/ 				} else {
+/******/ 					if(true) { // all chunks have JS
+/******/ 						// setup Promise in chunk cache
+/******/ 						var promise = import("./" + __nccwpck_require__.u(chunkId)).then(installChunk, (e) => {
+/******/ 							if(installedChunks[chunkId] !== 0) installedChunks[chunkId] = undefined;
+/******/ 							throw e;
+/******/ 						});
+/******/ 						var promise = Promise.race([promise, new Promise((resolve) => (installedChunkData = installedChunks[chunkId] = [resolve]))])
+/******/ 						promises.push(installedChunkData[1] = promise);
+/******/ 					}
+/******/ 				}
+/******/ 			}
+/******/ 	};
+/******/ 	
+/******/ 	// no prefetching
+/******/ 	
+/******/ 	// no preloaded
+/******/ 	
+/******/ 	// no external install chunk
+/******/ 	
+/******/ 	// no on chunks loaded
+/******/ })();
 /******/ 
 /************************************************************************/
 var __webpack_exports__ = {};
@@ -330,60 +727,12 @@ function printHelp() {
     process.stdout.write(CLI_HELP_TEXT);
 }
 
-;// CONCATENATED MODULE: external "node:fs/promises"
-const promises_namespaceObject = __WEBPACK_EXTERNAL_createRequire(import.meta.url)("node:fs/promises");
+// EXTERNAL MODULE: external "node:fs/promises"
+var promises_ = __nccwpck_require__(455);
 ;// CONCATENATED MODULE: external "node:path"
 const external_node_path_namespaceObject = __WEBPACK_EXTERNAL_createRequire(import.meta.url)("node:path");
-;// CONCATENATED MODULE: ./src/security/scan-review-secrets.ts
-const HIGH_CONFIDENCE_SECRET_PATTERNS = [
-    /\bsk_test_[a-z_]+\b/g,
-    /\b(?:AKIA|ASIA)[A-Z0-9]{16}\b/g,
-    /\bghp_[A-Za-z0-9]{36}\b/g,
-];
-const REDACTED_SECRET = "[REDACTED_SECRET]";
-async function scanReviewSecrets(input) {
-    const highConfidenceLeakCount = countHighConfidenceLeaks(input.diffText);
-    const redactedDiff = redactHighConfidenceSecrets(input.diffText);
-    return {
-        artifactPath: input.expectedArtifact,
-        highConfidenceLeakCount,
-        redactedDiffIncludesSecret: countHighConfidenceLeaks(redactedDiff) > 0,
-        blockedRawOutput: true,
-    };
-}
-function countHighConfidenceLeaks(diffText) {
-    let highConfidenceLeakCount = 0;
-    for (const line of diffText.split("\n")) {
-        if (isAddedDiffLine(line)) {
-            highConfidenceLeakCount += countLineSecrets(line);
-        }
-    }
-    return highConfidenceLeakCount;
-}
-function redactHighConfidenceSecrets(diffText) {
-    return diffText
-        .split("\n")
-        .map((line) => (isAddedDiffLine(line) ? redactLineSecrets(line) : line))
-        .join("\n");
-}
-function isAddedDiffLine(line) {
-    return line.startsWith("+") && !line.startsWith("+++");
-}
-function countLineSecrets(line) {
-    let secretCount = 0;
-    for (const pattern of HIGH_CONFIDENCE_SECRET_PATTERNS) {
-        secretCount += Array.from(line.matchAll(pattern)).length;
-    }
-    return secretCount;
-}
-function redactLineSecrets(line) {
-    let redactedLine = line;
-    for (const pattern of HIGH_CONFIDENCE_SECRET_PATTERNS) {
-        redactedLine = redactedLine.replace(pattern, REDACTED_SECRET);
-    }
-    return redactedLine;
-}
-
+// EXTERNAL MODULE: ./src/security/scan-review-secrets.ts
+var scan_review_secrets = __nccwpck_require__(650);
 ;// CONCATENATED MODULE: ./src/azure/run-azure-review.ts
 
 const REVIEW_MARKER = "<!-- umactually-pr-review -->";
@@ -392,7 +741,7 @@ async function runAzureReview(contract) {
     const existingThreads = parseAzureThreads(contract.existingThreadsJson);
     const review = parseProviderReview(contract.reviewJson);
     // Always run secret scan before posting — leaks block raw output regardless of flags.
-    await scanReviewSecrets({
+    await (0,scan_review_secrets/* scanReviewSecrets */.R)({
         diffText: contract.diffText ?? "",
         expectedArtifact: "artifacts/manual/s5-redaction-report.json",
     });
@@ -533,189 +882,8 @@ function readThreadComments(value) {
     return comments;
 }
 
-;// CONCATENATED MODULE: ./src/diff/parse-positions.ts
-function parseDiffPositions(diffText) {
-    const linesByPath = new Map();
-    let currentPath = null;
-    let nextNewLine = null;
-    for (const line of diffText.split(/\r?\n/u)) {
-        if (line.startsWith("diff --git ")) {
-            currentPath = null;
-            nextNewLine = null;
-            continue;
-        }
-        if (currentPath === null) {
-            const parsedPath = parseNewFilePath(line);
-            if (parsedPath !== null) {
-                currentPath = parsedPath;
-            }
-            continue;
-        }
-        const hunkStart = parseNewHunkStart(line);
-        if (hunkStart !== null) {
-            nextNewLine = hunkStart;
-            continue;
-        }
-        if (nextNewLine === null) {
-            continue;
-        }
-        if (line.startsWith("+")) {
-            addLine(linesByPath, currentPath, nextNewLine);
-            nextNewLine += 1;
-            continue;
-        }
-        if (line.startsWith(" ")) {
-            addLine(linesByPath, currentPath, nextNewLine);
-            nextNewLine += 1;
-        }
-    }
-    return {
-        hasPosition(position) {
-            return linesByPath.get(position.path)?.has(position.line) ?? false;
-        },
-    };
-}
-function parseNewFilePath(line) {
-    if (!line.startsWith("+++ ")) {
-        return null;
-    }
-    const [rawPath] = line.slice(4).split("\t");
-    if (rawPath === undefined) {
-        return null;
-    }
-    const path = rawPath.trim();
-    if (path === "/dev/null") {
-        return null;
-    }
-    return path.startsWith("b/") ? path.slice(2) : path;
-}
-function parseNewHunkStart(line) {
-    if (!line.startsWith("@@ ")) {
-        return null;
-    }
-    const plusIndex = line.indexOf("+");
-    if (plusIndex === -1) {
-        return null;
-    }
-    const afterPlus = line.slice(plusIndex + 1);
-    const endIndex = afterPlus.search(/[ ,]/u);
-    const rawStart = endIndex === -1 ? afterPlus : afterPlus.slice(0, endIndex);
-    const start = Number.parseInt(rawStart, 10);
-    return Number.isSafeInteger(start) && start > 0 ? start : null;
-}
-function addLine(linesByPath, path, line) {
-    const existingLines = linesByPath.get(path);
-    if (existingLines !== undefined) {
-        existingLines.add(line);
-        return;
-    }
-    linesByPath.set(path, new Set([line]));
-}
-
-;// CONCATENATED MODULE: ./src/review/run-review.ts
-
-
-const run_review_REVIEW_MARKER = "<!-- umactually-pr-review -->";
-async function runReview(contract) {
-    parseEvent(contract.eventJson);
-    const review = run_review_parseProviderReview(contract.providerReviewJson);
-    const positions = parseDiffPositions(contract.diffText);
-    // Always run secret scan before posting — leaks block raw output regardless of flags.
-    await scanReviewSecrets({
-        diffText: contract.diffText,
-        expectedArtifact: "artifacts/manual/s5-redaction-report.json",
-    });
-    const inlineThreadCount = countMatchingComments(review.comments, positions);
-    const suppressedCommentCount = countOffDiffComments(review, positions);
-    return {
-        artifactPath: contract.expectedArtifact,
-        event: "COMMENT",
-        marker: run_review_REVIEW_MARKER,
-        inlineThreadCount,
-        suppressedCommentCount,
-    };
-}
-function parseEvent(eventJson) {
-    const value = JSON.parse(eventJson);
-    parsePullRequestEvent(value);
-}
-function run_review_parseProviderReview(providerReviewJson) {
-    const value = JSON.parse(providerReviewJson);
-    return parseProviderReviewPayload(value);
-}
-function countMatchingComments(comments, positions) {
-    let count = 0;
-    for (const comment of comments) {
-        if (positions.hasPosition(comment)) {
-            count += 1;
-        }
-    }
-    return count;
-}
-function countOffDiffComments(review, positions) {
-    let count = 0;
-    for (const comment of review.comments) {
-        if (!positions.hasPosition(comment)) {
-            count += 1;
-        }
-    }
-    for (const comment of review.suppressed_comments) {
-        if (!positions.hasPosition(comment)) {
-            count += 1;
-        }
-    }
-    return count;
-}
-function parsePullRequestEvent(value) {
-    const event = run_review_readRecord(value, "GitHub event");
-    const pullRequest = run_review_readRecord(readField(event, "pull_request"), "pull_request");
-    run_review_readNumberField(pullRequest, "number");
-}
-function parseProviderReviewPayload(value) {
-    const review = run_review_readRecord(value, "provider review");
-    const comments = run_review_readCommentArray(readField(review, "comments"));
-    const suppressedComments = run_review_readCommentArray(readField(review, "suppressed_comments"));
-    return { comments: comments, suppressed_comments: suppressedComments };
-}
-function run_review_readRecord(value, label) {
-    if (typeof value !== "object" || value === null || Array.isArray(value)) {
-        throw new TypeError(`Expected ${label} to be an object, received: ${typeof value}`);
-    }
-    return value;
-}
-function readField(record, key) {
-    return record[key];
-}
-function run_review_readNumberField(record, key) {
-    const value = readField(record, key);
-    if (typeof value !== "number") {
-        throw new TypeError(`Expected field '${key}' to be a number, received: ${typeof value}`);
-    }
-    return value;
-}
-function run_review_readCommentArray(value) {
-    if (!Array.isArray(value)) {
-        throw new TypeError(`Expected comment array, received: ${typeof value}`);
-    }
-    const comments = [];
-    for (const entry of value) {
-        comments.push(parseComment(entry));
-    }
-    return comments;
-}
-function parseComment(value) {
-    const record = run_review_readRecord(value, "comment");
-    const path = readField(record, "path");
-    const line = readField(record, "line");
-    if (typeof path !== "string") {
-        throw new TypeError(`Expected comment 'path' to be a string, received: ${typeof path}`);
-    }
-    if (typeof line !== "number") {
-        throw new TypeError(`Expected comment 'line' to be a number, received: ${typeof line}`);
-    }
-    return { path, line };
-}
-
+// EXTERNAL MODULE: ./src/review/run-review.ts
+var run_review = __nccwpck_require__(702);
 ;// CONCATENATED MODULE: ./src/sonar/run-sonar-import.ts
 const EXPECTED_IMPORTED_FINDING_COUNT = 2;
 const MAX_POLL_ATTEMPTS = 3;
@@ -914,8 +1082,8 @@ async function runDryRun(parsed, cwd, platform) {
     const envSources = readEnvSources(process.env);
     const artifactBody = await buildDryRunArtifact(parsed, platform, cwd);
     mergeEnvDiagnostics(artifactBody, envSources);
-    await (0,promises_namespaceObject.mkdir)((0,external_node_path_namespaceObject.dirname)(artifactPath), { recursive: true });
-    await (0,promises_namespaceObject.writeFile)(artifactPath, `${JSON.stringify(artifactBody, null, 2)}\n`, "utf8");
+    await (0,promises_.mkdir)((0,external_node_path_namespaceObject.dirname)(artifactPath), { recursive: true });
+    await (0,promises_.writeFile)(artifactPath, `${JSON.stringify(artifactBody, null, 2)}\n`, "utf8");
     return { exitCode: 0 };
 }
 /**
@@ -991,7 +1159,7 @@ async function buildGithubDryRunArtifact(parsed, cwd) {
     const diffText = await readRequiredFile(diffPath, cwd, "--diff");
     const providerReviewJson = await readOptionalFile(parsed.reviewPath ?? parsed.promptFile, cwd, "{}", "review");
     const expectedArtifact = "artifacts/manual/s1-github-self-review.md";
-    const result = await runReview({
+    const result = await (0,run_review/* runReview */.O)({
         platform: "github",
         eventJson,
         diffText,
@@ -1043,7 +1211,7 @@ async function maybeMergeRedactionReport(parsed, diffText, body) {
     if (!parsed.detectLeaks) {
         return;
     }
-    const report = await scanReviewSecrets({
+    const report = await (0,scan_review_secrets/* scanReviewSecrets */.R)({
         diffText,
         expectedArtifact: DEFAULT_REDACTION_REPORT,
     });
@@ -1081,7 +1249,7 @@ function requireArg(value, flag) {
 async function readRequiredFile(path, cwd, label) {
     const absolute = (0,external_node_path_namespaceObject.isAbsolute)(path) ? path : (0,external_node_path_namespaceObject.resolve)(cwd, path);
     try {
-        return await (0,promises_namespaceObject.readFile)(absolute, "utf8");
+        return await (0,promises_.readFile)(absolute, "utf8");
     }
     catch (error) {
         throw new CliArgumentError(`failed to read ${label} file ${absolute}: ${stringifyError(error)}`);
@@ -1102,9 +1270,13 @@ function stringifyError(error) {
 class CliArgumentError extends Error {
     name = "CliArgumentError";
 }
-function dispatchLive() {
-    process.stderr.write("cli: live provider calls are not supported in this build; use --dry-run\n");
-    return { exitCode: 3 };
+function dispatchLive(parsed, cwd, env) {
+    // Live orchestration lives in src/cli/orchestrator.ts so the dry-run path
+    // keeps a single-responsibility surface. This thin wrapper exists only to
+    // preserve the public CLI module exports expected by existing tests.
+    return __nccwpck_require__.e(/* import() */ 126).then(__nccwpck_require__.bind(__nccwpck_require__, 126)).then(({ runLive }) => runLive({ parsed, cwd, env }).then((result) => ({
+        exitCode: result.exitCode,
+    })));
 }
 
 ;// CONCATENATED MODULE: ./src/cli/validate.ts
@@ -1196,7 +1368,7 @@ async function runCli(args, cwd) {
     if (parsed.dryRun) {
         return runDryRun(parsed, cwd, resolvePlatform(parsed.platform));
     }
-    return dispatchLive();
+    return dispatchLive(parsed, cwd, process.env);
 }
 async function main(argv) {
     try {

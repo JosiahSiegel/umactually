@@ -184,7 +184,9 @@ describe("openai-compatible provider client", () => {
     if (result.ok) {
       expect(result.review.summary).toBe("raw output_text path");
       expect(result.review.verdict).toBe("DISCUSS");
-      expect(result.review.comments).toEqual([{ path: "src/x.ts", line: 3 }]);
+      expect(result.review.comments).toEqual([
+        { path: "src/x.ts", line: 3, body: "", severity: "medium", category: "general" },
+      ]);
     }
   });
 

@@ -35,7 +35,7 @@ export async function runCli(args: readonly string[], cwd: string): Promise<CliR
     return runDryRun(parsed, cwd, resolvePlatform(parsed.platform));
   }
 
-  return dispatchLive();
+  return dispatchLive(parsed, cwd, process.env);
 }
 
 export async function main(argv: readonly string[]): Promise<number> {

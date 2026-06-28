@@ -33,6 +33,8 @@ jobs:
 
       - name: Run UmActually self review
         uses: ./
+        with:
+          dry-run: 'false'
         env:
           UMACTUALLY_API_URL: ${{ secrets.UMACTUALLY_API_URL }}
           UMACTUALLY_API_KEY: ${{ secrets.UMACTUALLY_API_KEY }}
