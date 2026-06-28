@@ -1,0 +1,103 @@
+export type ActionInputs = {
+  readonly githubToken: string;
+  readonly apiKey: string;
+  readonly apiUrl: string;
+  readonly model: string;
+  readonly prompt: string;
+  readonly promptFile: string;
+  readonly additionalPrompt: string;
+  readonly additionalPromptFile: string;
+  readonly walkthrough: boolean;
+  readonly diagnostic: boolean;
+  readonly dryRun: boolean;
+  readonly debugRawResponse: boolean;
+  readonly reviewTimeoutSeconds: number;
+  readonly stallSeconds: number;
+  readonly maxOutputTokens: number;
+  readonly ignoreMinor: boolean;
+  readonly minimumSeverity: "low" | "medium" | "high";
+  readonly maxComments: number;
+  readonly includeSonarqube: boolean;
+  readonly sonarHostUrl: string;
+  readonly sonarToken: string;
+  readonly sonarProjectKey: string;
+  readonly sonarTimeoutSeconds: number;
+  readonly detectLeaks: boolean;
+  readonly platform: "auto" | "github" | "azure";
+  readonly prNumber: string;
+  readonly repo: string;
+};
+
+export function readActionInputs(env: NodeJS.ProcessEnv = process.env): ActionInputs {
+  const get = (name: string): string => {
+    const prefixed = env[`INPUT_${name.toUpperCase().replace(/-/gu, "_")}`];
+    return prefixed ?? "";
+  };
+  const getBool = (name: string, fallback: boolean): boolean => parseBool(get(name), fallback);
+  const getNumber = (name: string, fallback: number): number => {
+    const raw = get(name);
+    if (raw.length === 0) {
+      return fallback;
+    }
+    const parsed = Number.parseInt(raw, 10);
+    return Number.isSafeInteger(parsed) ? parsed : fallback;
+  };
+  const getSeverity = (): ActionInputs["minimumSeverity"] => {
+    const raw = get("minimum-severity");
+    if (raw === "low" || raw === "medium" || raw === "high") {
+      return raw;
+    }
+    return "low";
+  };
+  const getPlatform = (): ActionInputs["platform"] => {
+    const raw = get("platform");
+    if (raw === "github" || raw === "azure") {
+      return raw;
+    }
+    return "auto";
+  };
+
+  return {
+    githubToken: get("github-token"),
+    apiKey: get("api-key"),
+    apiUrl: get("api-url"),
+    model: get("model"),
+    prompt: get("prompt"),
+    promptFile: get("prompt-file"),
+    additionalPrompt: get("additional-prompt"),
+    additionalPromptFile: get("additional-prompt-file"),
+    walkthrough: getBool("walkthrough", false),
+    diagnostic: getBool("diagnostic", false),
+    dryRun: getBool("dry-run", false),
+    debugRawResponse: getBool("debug-raw-response", false),
+    reviewTimeoutSeconds: getNumber("review-timeout-seconds", 300),
+    stallSeconds: getNumber("stall-seconds", 270),
+    maxOutputTokens: getNumber("max-output-tokens", 16_000),
+    ignoreMinor: getBool("ignore-minor", false),
+    minimumSeverity: getSeverity(),
+    maxComments: getNumber("max-comments", 50),
+    includeSonarqube: getBool("include-sonarqube", false),
+    sonarHostUrl: get("sonar-host-url"),
+    sonarToken: get("sonar-token"),
+    sonarProjectKey: get("sonar-project-key"),
+    sonarTimeoutSeconds: getNumber("sonar-timeout-seconds", 300),
+    detectLeaks: getBool("detect-leaks", true),
+    platform: getPlatform(),
+    prNumber: get("pr-number"),
+    repo: get("repo"),
+  };
+}
+
+function parseBool(raw: string, fallback: boolean): boolean {
+  if (raw.length === 0) {
+    return fallback;
+  }
+  const normalized = raw.trim().toLowerCase();
+  if (normalized === "true" || normalized === "1" || normalized === "yes") {
+    return true;
+  }
+  if (normalized === "false" || normalized === "0" || normalized === "no") {
+    return false;
+  }
+  return fallback;
+}
