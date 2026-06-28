@@ -17,18 +17,20 @@ export async function runLive(input: RunLiveInput): Promise<LiveRunResult> {
   const fetchImpl = input.fetchImpl ?? globalThis.fetch.bind(globalThis);
   const platform = detectLivePlatform(env);
   if (platform === null) {
+    const message = "Live review requires GitHub Actions (GITHUB_ACTIONS=true) or Azure Pipelines (TF_BUILD=True).";
+    process.stdout.write(`umactually-pr-review: ${message}\n`);
     return {
       exitCode: 1,
       posted: false,
       reviewId: undefined,
-      message: "Live review requires GitHub Actions (GITHUB_ACTIONS=true) or Azure Pipelines (TF_BUILD=True).",
+      message,
     };
   }
 
     const providerUrl = input.parsed.apiUrl ?? env["UMACTUALLY_API_URL"];
   if (providerUrl === undefined || providerUrl.length === 0) {
     const message = "UMACTUALLY_API_URL must be set for live review.";
-    process.stderr.write(`umactually-pr-review: ${message}\n`);
+    process.stdout.write(`umactually-pr-review: ${message}\n`);
     return {
       exitCode: 1,
       posted: false,
@@ -39,7 +41,7 @@ export async function runLive(input: RunLiveInput): Promise<LiveRunResult> {
   const providerKey = input.parsed.apiKey ?? env["UMACTUALLY_API_KEY"];
   if (providerKey === undefined || providerKey.length === 0) {
     const message = "UMACTUALLY_API_KEY must be set for live review.";
-    process.stderr.write(`umactually-pr-review: ${message}\n`);
+    process.stdout.write(`umactually-pr-review: ${message}\n`);
     return {
       exitCode: 1,
       posted: false,
@@ -64,7 +66,7 @@ export async function runLive(input: RunLiveInput): Promise<LiveRunResult> {
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     const sanitized = sanitizeForPost(message, readSecretValues(env));
-    process.stderr.write(`umactually-pr-review: ${sanitized}\n`);
+    process.stdout.write(`umactually-pr-review: ${sanitized}\n`);
     return {
       exitCode: 1,
       posted: false,
@@ -74,7 +76,7 @@ export async function runLive(input: RunLiveInput): Promise<LiveRunResult> {
   }
 
   if (result.posted) {
-    process.stderr.write(`umactually-pr-review: ${result.message}\n`);
+    process.stdout.write(`umactually-pr-review: ${result.message}\n`);
   }
   return result;
 }
