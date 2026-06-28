@@ -17,14 +17,7 @@ globalThis.__umactually_action_entry__ = true;
 export async function main(): Promise<void> {
   try {
     const cwd = process.cwd();
-    // TEMP DEBUG — visible stderr (not ::debug::, which is hidden in GH log viewer)
-    process.stderr.write(`DIAG umactually-pr-review: simulateFindings env raw=[${process.env["INPUT_SIMULATE_FINDINGS"]}] ` +
-      `hyphen=[${process.env["INPUT_SIMULATE-FINDINGS"]}] ` +
-      `GITHUB_ACTIONS=[${process.env["GITHUB_ACTIONS"]}] ` +
-      `INPUT_DRY_RUN=[${process.env["INPUT_DRY_RUN"]}]\n`);
     const args = await buildArgs(process.env, cwd);
-    process.stderr.write(`DIAG umactually-pr-review: argv has --simulate-findings=${args.includes("--simulate-findings")} ` +
-      `--dry-run=${args.includes("--dry-run")} --no-dry-run=${args.includes("--no-dry-run")}\n`);
     const result = await runCli(args, cwd);
     if (result.exitCode !== 0) {
       process.exit(result.exitCode);

@@ -162,4 +162,36 @@ describe("readActionInputs: simulateFindings defaulting", () => {
     // Then: simulateFindings is true so the orchestrator can inject the fixture.
     expect(inputs.simulateFindings).toBe(true);
   });
+
+  it("simulateFindings honors the literal-hyphen INPUT_SIMULATE-FINDINGS form (GitHub quirk)", () => {
+    // Given: a GitHub Actions runtime where only the literal-hyphen env form
+    // is set (this is what GitHub Actions actually emits for hyphenated input
+    // names that exceed the underscore-mapping threshold in some runners).
+    const env = {
+      GITHUB_ACTIONS: "true",
+      "INPUT_SIMULATE-FINDINGS": "true",
+    } satisfies NodeJS.ProcessEnv;
+
+    // When: readActionInputs resolves the flag.
+    const inputs = readActionInputs(env);
+
+    // Then: simulateFindings is true so the orchestrator can inject the fixture
+    // regardless of which env-var form the runner emitted.
+    expect(inputs.simulateFindings).toBe(true);
+  });
+
+  it("prefers the underscore form when both INPUT_SIMULATE_FINDINGS forms are set", () => {
+    // Given: both env-var forms are set (runner emitted both for some reason).
+    const env = {
+      GITHUB_ACTIONS: "true",
+      INPUT_SIMULATE_FINDINGS: "false",
+      "INPUT_SIMULATE-FINDINGS": "true",
+    } satisfies NodeJS.ProcessEnv;
+
+    // When: readActionInputs resolves the flag.
+    const inputs = readActionInputs(env);
+
+    // Then: the underscore form wins.
+    expect(inputs.simulateFindings).toBe(false);
+  });
 });

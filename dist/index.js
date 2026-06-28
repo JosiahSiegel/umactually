@@ -1458,8 +1458,19 @@ function pathToFileUrl(value) {
 function readActionInputs(env = process.env) {
     const inGitHubActions = env["GITHUB_ACTIONS"] === "true";
     const get = (name) => {
-        const prefixed = env[`INPUT_${name.toUpperCase().replace(/-/gu, "_")}`];
-        return prefixed ?? "";
+        // GitHub Actions normally sets INPUT_<NAME> with hyphens converted to
+        // underscores, but a small set of inputs (notably longer hyphenated names
+        // like "simulate-findings") only receive the literal-hyphen form. Read
+        // both and prefer the underscore form so all inputs work.
+        const underscored = `INPUT_${name.toUpperCase().replace(/-/gu, "_")}`;
+        const hyphenated = `INPUT_${name.toUpperCase()}`;
+        const fromUnderscore = env[underscored];
+        if (typeof fromUnderscore === "string" && fromUnderscore.length > 0)
+            return fromUnderscore;
+        const fromHyphen = env[hyphenated];
+        if (typeof fromHyphen === "string" && fromHyphen.length > 0)
+            return fromHyphen;
+        return "";
     };
     const getWithFallback = (inputName, fallbacks) => {
         const primary = get(inputName);
@@ -1561,14 +1572,7 @@ globalThis.__umactually_action_entry__ = true;
 async function src_main() {
     try {
         const cwd = process.cwd();
-        // TEMP DEBUG — visible stderr (not ::debug::, which is hidden in GH log viewer)
-        process.stderr.write(`DIAG umactually-pr-review: simulateFindings env raw=[${process.env["INPUT_SIMULATE_FINDINGS"]}] ` +
-            `hyphen=[${process.env["INPUT_SIMULATE-FINDINGS"]}] ` +
-            `GITHUB_ACTIONS=[${process.env["GITHUB_ACTIONS"]}] ` +
-            `INPUT_DRY_RUN=[${process.env["INPUT_DRY_RUN"]}]\n`);
         const args = await buildArgs(process.env, cwd);
-        process.stderr.write(`DIAG umactually-pr-review: argv has --simulate-findings=${args.includes("--simulate-findings")} ` +
-            `--dry-run=${args.includes("--dry-run")} --no-dry-run=${args.includes("--no-dry-run")}\n`);
         const result = await runCli(args, cwd);
         if (result.exitCode !== 0) {
             process.exit(result.exitCode);

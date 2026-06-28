@@ -33,8 +33,17 @@ export type ActionInputs = {
 export function readActionInputs(env: NodeJS.ProcessEnv = process.env): ActionInputs {
   const inGitHubActions = env["GITHUB_ACTIONS"] === "true";
   const get = (name: string): string => {
-    const prefixed = env[`INPUT_${name.toUpperCase().replace(/-/gu, "_")}`];
-    return prefixed ?? "";
+    // GitHub Actions normally sets INPUT_<NAME> with hyphens converted to
+    // underscores, but a small set of inputs (notably longer hyphenated names
+    // like "simulate-findings") only receive the literal-hyphen form. Read
+    // both and prefer the underscore form so all inputs work.
+    const underscored = `INPUT_${name.toUpperCase().replace(/-/gu, "_")}`;
+    const hyphenated = `INPUT_${name.toUpperCase()}`;
+    const fromUnderscore = env[underscored];
+    if (typeof fromUnderscore === "string" && fromUnderscore.length > 0) return fromUnderscore;
+    const fromHyphen = env[hyphenated];
+    if (typeof fromHyphen === "string" && fromHyphen.length > 0) return fromHyphen;
+    return "";
   };
   const getWithFallback = (inputName: string, fallbacks: readonly string[]): string => {
     const primary = get(inputName);
