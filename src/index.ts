@@ -14,16 +14,11 @@ declare global {
 
 globalThis.__umactually_action_entry__ = true;
 
-console.error("DEBUG src/index.ts loaded; argv1=" + process.argv[1] + "; import.meta.url=" + import.meta.url + "; GITHUB_ACTIONS=" + process.env.GITHUB_ACTIONS + "; INPUT_DRY_RUN=" + process.env.INPUT_DRY_RUN);
-
 export async function main(): Promise<void> {
   try {
     const cwd = process.cwd();
     const args = await buildArgs(process.env, cwd);
-    process.stderr.write(`DEBUG umactually-pr-review args: ${JSON.stringify(args)}\n`);
-    process.stderr.write(`DEBUG umactually-pr-review env keys: INPUT_DRY_RUN=${JSON.stringify(process.env.INPUT_DRY_RUN)} GITHUB_ACTIONS=${JSON.stringify(process.env.GITHUB_ACTIONS)}\n`);
     const result = await runCli(args, cwd);
-    process.stderr.write(`DEBUG umactually-pr-review result: ${JSON.stringify(result)}\n`);
     if (result.exitCode !== 0) {
       process.exit(result.exitCode);
     }
