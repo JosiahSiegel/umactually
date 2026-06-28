@@ -1,0 +1,27 @@
+{
+  "artifactPath": "artifacts/manual/s1-github-self-review.md",
+  "event": "COMMENT",
+  "marker": "<!-- umactually-pr-review -->",
+  "inlineThreadCount": 1,
+  "suppressedCommentCount": 1,
+  "highConfidenceLeakCount": 1,
+  "redactedDiffIncludesSecret": false,
+  "blockedRawOutput": true,
+  "redactionReport": {
+    "artifactPath": "artifacts/manual/s5-redaction-report.json",
+    "highConfidenceLeakCount": 1,
+    "redactedDiffIncludesSecret": false,
+    "blockedRawOutput": true
+  },
+  "waitedForTerminalQualityGate": true,
+  "importedFindingCount": 2,
+  "timeoutHandled": true,
+  "skipWhenUnconfigured": true,
+  "sonarReport": {
+    "artifactPath": "artifacts/manual/s6-sonar-mocked-run.json",
+    "waitedForTerminalQualityGate": true,
+    "importedFindingCount": 2,
+    "timeoutHandled": true,
+    "skipWhenUnconfigured": true
+  }
+}

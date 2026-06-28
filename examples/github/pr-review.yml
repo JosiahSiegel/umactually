@@ -1,0 +1,46 @@
+# Example: UmActually PR review on GitHub Actions.
+#
+# Copy this file to .github/workflows/pr-review.yml in a repository that wants
+# UmActually to review its pull requests. This workflow uses the in-tree action
+# by default; swap the `uses:` reference for a published tag once one exists.
+#
+# Notes:
+# - Triggers on pull_request only. Do NOT use pull_request_target.
+# - Grant exactly the permissions the action needs.
+# - Secrets reach the action through env:, not through with:.
+
+name: UmActually PR Review
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
+
+permissions:
+  contents: read
+  pull-requests: write
+
+jobs:
+  review:
+    name: UmActually PR review
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Run UmActually PR review
+        # Replace `./` with the published action tag (for example
+        # `example/umactually-pr-review@v1`) once this action is published to the
+        # GitHub Marketplace. Until then, the in-tree action is exercised via `./`.
+        uses: ./
+        env:
+          UMACTUALLY_API_URL: ${{ secrets.UMACTUALLY_API_URL }}
+          UMACTUALLY_API_KEY: ${{ secrets.UMACTUALLY_API_KEY }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
