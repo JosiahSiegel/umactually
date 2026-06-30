@@ -1,18 +1,8 @@
-# Example: UmActually PR review validation on Azure DevOps.
+# Azure DevOps pipeline entrypoint for this repository.
 #
-# Copy this file to azure-pipelines.yml at the repo root, then wire it into a
-# branch policy build validation policy in the Azure DevOps project UI for the
-# target branch (for example `main`).
-#
-# Notes:
-# - pr: below is honored only for GitHub or Bitbucket Cloud repositories
-#   connected to Azure Pipelines. For Azure Repos Git, configure branch policy
-#   build validation instead of relying on pr:.
-# - Enable "Allow scripts to access the OAuth token" in pipeline security.
-# - Grant the build service "Contribute to pull requests" before switching from
-#   dry-run validation to live review posting.
-# - Manual branch runs use synthetic Azure event/diff/review files so this
-#   pipeline can still prove the CLI executes without PR variables.
+# For Azure Repos, attach this YAML to a branch policy build validation policy.
+# The pr: trigger is honored only for GitHub/Bitbucket Cloud repositories that
+# are connected to Azure Pipelines.
 trigger: none
 
 pr:
@@ -51,6 +41,12 @@ steps:
 
   - script: npm ci
     displayName: Install dependencies
+
+  - script: npm run typecheck
+    displayName: Typecheck
+
+  - script: npm test -- --run
+    displayName: Run tests
 
   - script: |
       set -euo pipefail
@@ -150,6 +146,8 @@ steps:
 
   - script: |
       set -euo pipefail
+      : "${UMACTUALLY_PR_NUMBER:?UMACTUALLY_PR_NUMBER must be set by the prepare step.}"
+      : "${UMACTUALLY_REPO:?UMACTUALLY_REPO must be set by the prepare step.}"
       node bin/umactually-pr-review.mjs \
         --platform azure-devops \
         --event "$AZURE_EVENT_PATH" \
@@ -167,7 +165,7 @@ steps:
       console.log(`UmActually Azure dry-run artifact: ${artifactPath}`);
       console.log(`marker=${artifact.marker}; postedThreadCount=${artifact.postedThreadCount}; postedStatusState=${artifact.postedStatusState}`);
       NODE
-    displayName: Run UmActually PR review (dry-run)
+    displayName: Run UmActually Azure dry-run
     env:
       SYSTEM_ACCESSTOKEN: $(System.AccessToken)
       UMACTUALLY_PR_NUMBER: $(UMACTUALLY_PR_NUMBER)
@@ -177,7 +175,7 @@ steps:
 
   - task: PublishPipelineArtifact@1
     condition: always()
-    displayName: Publish review artifacts
+    displayName: Publish manual artifacts
     inputs:
       targetPath: artifacts/manual
       artifact: umactually-review
