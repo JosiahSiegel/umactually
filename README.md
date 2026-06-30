@@ -72,38 +72,29 @@ A complete copyable example lives at [`examples/github/pr-review.yml`](examples/
 
 ## Azure DevOps quickstart
 
-Azure DevOps uses the same bundled CLI directly from a pipeline step. Enable **Allow scripts to access the OAuth token** for the pipeline, map `$(System.AccessToken)` to `SYSTEM_ACCESSTOKEN`, and run the CLI with `--platform azure-devops`.
+Azure DevOps uses the bundled CLI directly from a pipeline step. This repository includes a root [`azure-pipelines.yml`](azure-pipelines.yml) that uses Node 24, runs `npm ci`, validates the project, prepares Azure input files, executes an Azure dry run, and publishes `artifacts/manual`.
+
+For a minimal CLI invocation, pass the supported Azure flags explicitly:
 
 ```yaml
-trigger: none
-
-pr:
-  branches:
-    include:
-      - main
-
-pool:
-  vmImage: ubuntu-latest
-
-steps:
-  - checkout: self
-    persistCredentials: true
-
-  - task: NodeTool@0
-    inputs:
-      versionSpec: "24.x"
-
-  - script: npm ci
-    displayName: Install dependencies
-
-  - script: node bin/umactually-pr-review.mjs --platform azure-devops --repository example/umactually-fixture --diff "$(AZURE_DIFF_PATH)"
-    displayName: Run UmActually PR review
-    env:
-      SYSTEM_ACCESSTOKEN: $(System.AccessToken)
-      AZURE_DIFF_PATH: $(AZURE_DIFF_PATH)
-      UMACTUALLY_API_URL: $(UMACTUALLY_API_URL)
-      UMACTUALLY_API_KEY: $(UMACTUALLY_API_KEY)
+- script: |
+    node bin/umactually-pr-review.mjs \
+      --platform azure-devops \
+      --event "$AZURE_EVENT_PATH" \
+      --diff "$AZURE_DIFF_PATH" \
+      --review "$AZURE_REVIEW_PATH" \
+      --pr-number "$UMACTUALLY_PR_NUMBER" \
+      --repo "$UMACTUALLY_REPO" \
+      --dry-run \
+      --output-artifact artifacts/manual/s4-azure-mocked-run.json
+  displayName: Run UmActually PR review
+  env:
+    SYSTEM_ACCESSTOKEN: $(System.AccessToken)
+    UMACTUALLY_API_URL: $(UMACTUALLY_API_URL)
+    UMACTUALLY_API_KEY: $(UMACTUALLY_API_KEY)
 ```
+
+Use `--repo`; there is no longer alias for that option. Azure dry-run validation still requires `--event`, `--diff`, `--pr-number`, and `--repo`. The root pipeline creates a safe synthetic event/diff/review path for manual branch runs without `SYSTEM_PULLREQUEST_PULLREQUESTID`; PR validation runs fetch the real PR diff with `$(System.AccessToken)` when available.
 
 For Azure Repos, configure a branch policy build validation pipeline; the YAML `pr:` trigger is only honored for GitHub and Bitbucket Cloud repositories in Azure Pipelines. See [`docs/azure-devops.md`](docs/azure-devops.md) and [`examples/azure/azure-pipelines.yml`](examples/azure/azure-pipelines.yml).
 

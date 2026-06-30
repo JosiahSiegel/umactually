@@ -53,7 +53,7 @@ These entries mirror `action.yml`.
 | `GITHUB_REPOSITORY` | GitHub Actions | Yes | Automatically provided by GitHub Actions | Owner/repository name, for example `${{ github.repository }}`. |
 | `GITHUB_SHA` | GitHub Actions | Usually | Automatically provided by GitHub Actions | Current workflow commit SHA used for diagnostics and request context. |
 | `SYSTEM_ACCESSTOKEN` | Azure DevOps | Yes for posting PR threads/status | Map from `$(System.AccessToken)` in the step `env:` block | Authenticates Azure DevOps REST calls. Enable scripts to access the OAuth token. |
-| `SYSTEM_TEAMFOUNDATIONCOLLECTIONURI` | Azure DevOps | Yes | Automatically provided by Azure Pipelines | Azure DevOps organization/collection URI. |
+| `SYSTEM_COLLECTIONURI` | Azure DevOps | Yes | Automatically provided by Azure Pipelines from `$(System.CollectionUri)` | Azure DevOps organization/collection URI. |
 | `SYSTEM_TEAMPROJECT` | Azure DevOps | Yes | Automatically provided by Azure Pipelines | Azure DevOps project name. |
 | `BUILD_REPOSITORY_ID` | Azure DevOps | Yes | Automatically provided by Azure Pipelines | Repository identifier used for PR REST API calls. |
 | `BUILD_REPOSITORY_NAME` | Azure DevOps | Useful | Automatically provided by Azure Pipelines | Human-readable repository name. |
@@ -83,8 +83,19 @@ Avoid passing `api-key` through `with:` unless a wrapper action requires it. Env
 
 ## Recommended Azure DevOps configuration
 
+Use the root [`azure-pipelines.yml`](../azure-pipelines.yml) as the full PR-validation entrypoint. The CLI itself must receive `--event`, `--diff`, `--pr-number`, and `--repo` for Azure validation; use `--repo` for the repository slug.
+
 ```yaml
-- script: node bin/umactually-pr-review.mjs --platform azure-devops --repository example/umactually-fixture --diff "$(AZURE_DIFF_PATH)"
+- script: |
+    node bin/umactually-pr-review.mjs \
+      --platform azure-devops \
+      --event "$AZURE_EVENT_PATH" \
+      --diff "$AZURE_DIFF_PATH" \
+      --review "$AZURE_REVIEW_PATH" \
+      --pr-number "$UMACTUALLY_PR_NUMBER" \
+      --repo "$UMACTUALLY_REPO" \
+      --dry-run \
+      --output-artifact artifacts/manual/s4-azure-mocked-run.json
   displayName: Run UmActually PR review
   env:
     SYSTEM_ACCESSTOKEN: $(System.AccessToken)
@@ -92,27 +103,35 @@ Avoid passing `api-key` through `with:` unless a wrapper action requires it. Env
     UMACTUALLY_API_KEY: $(UMACTUALLY_API_KEY)
 ```
 
-To fetch the PR diff programmatically, use the Azure DevOps REST API with the OAuth token:
+To fetch PR metadata and the PR diff programmatically, use the Azure DevOps REST API with the OAuth token:
 
 ```yaml
 - script: |
+    set -euo pipefail
+    collection_uri="${SYSTEM_COLLECTIONURI%/}"
+    project_path="$(node -e 'process.stdout.write(encodeURIComponent(process.env.SYSTEM_TEAMPROJECT || ""))')"
+    repository_path="$(node -e 'process.stdout.write(encodeURIComponent(process.env.BUILD_REPOSITORY_ID || ""))')"
+    pr_url="${collection_uri}/${project_path}/_apis/git/repositories/${repository_path}/pullRequests/${SYSTEM_PULLREQUEST_PULLREQUESTID}?api-version=7.1"
+    diff_url="${collection_uri}/${project_path}/_apis/git/repositories/${repository_path}/pullRequests/${SYSTEM_PULLREQUEST_PULLREQUESTID}/diffs/commits?api-version=7.1"
     curl -fsS \
-      -H "Authorization: Bearer $(System.AccessToken)" \
-      -H "Content-Type: application/json" \
-      "$(SYSTEM_TEAMFOUNDATIONCOLLECTIONURI)$(SYSTEM_TEAMPROJECT)/_apis/git/repositories/$(BUILD_REPOSITORY_NAME)/pullRequests/$(SYSTEM_PULLREQUEST_PULLREQUESTID)/diff?api-version=7.1-preview.1" \
-      -o "$(BUILD_ARTIFACTSTAGINGDIRECTORY)/pr.diff"
-  displayName: Fetch PR diff via REST API
-
-- script: node bin/umactually-pr-review.mjs --platform azure-devops --diff "$(BUILD_ARTIFACTSTAGINGDIRECTORY)/pr.diff" --dry-run
-  displayName: Run UmActually PR review (dry-run)
+      --header "Authorization: Bearer ${SYSTEM_ACCESSTOKEN}" \
+      --header "Accept: application/json" \
+      "$pr_url" \
+      --output "$AZURE_EVENT_PATH"
+    curl -fsS \
+      --request POST \
+      --header "Authorization: Bearer ${SYSTEM_ACCESSTOKEN}" \
+      --header "Accept: text/plain" \
+      --header "Content-Type: application/json" \
+      --data '{}' \
+      "$diff_url" \
+      --output "$AZURE_DIFF_PATH"
+  displayName: Fetch PR metadata and diff via REST API
   env:
     SYSTEM_ACCESSTOKEN: $(System.AccessToken)
-    AZURE_DIFF_PATH: $(BUILD_ARTIFACTSTAGINGDIRECTORY)/pr.diff
-    UMACTUALLY_API_URL: $(UMACTUALLY_API_URL)
-    UMACTUALLY_API_KEY: $(UMACTUALLY_API_KEY)
 ```
 
-If `SYSTEM_PULLREQUEST_PULLREQUESTID` is empty, verify the pipeline is running as a PR validation build. In Azure Repos, create a branch policy build validation pipeline; do not rely on a plain CI trigger to populate PR variables.
+Manual branch runs do not populate `SYSTEM_PULLREQUEST_PULLREQUESTID`. Keep a synthetic `--event` file, synthetic `--diff` file, `--review` fixture, `--pr-number 1`, and repository slug fallback for smoke validation outside branch-policy PR runs.
 
 ## Provider families
 
