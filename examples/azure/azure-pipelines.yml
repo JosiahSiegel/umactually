@@ -114,20 +114,28 @@ steps:
         project_path="$(node -e 'process.stdout.write(encodeURIComponent(process.env.SYSTEM_TEAMPROJECT || ""))')"
         repository_path="$(node -e 'process.stdout.write(encodeURIComponent(process.env.BUILD_REPOSITORY_ID || ""))')"
         pr_url="${collection_uri}/${project_path}/_apis/git/repositories/${repository_path}/pullRequests/${SYSTEM_PULLREQUEST_PULLREQUESTID}?api-version=7.1"
-        diff_url="${collection_uri}/${project_path}/_apis/git/repositories/${repository_path}/pullRequests/${SYSTEM_PULLREQUEST_PULLREQUESTID}/diffs/commits?api-version=7.1"
+        iters_url="${collection_uri}/${project_path}/_apis/git/repositories/${repository_path}/pullRequests/${SYSTEM_PULLREQUEST_PULLREQUESTID}/iterations?api-version=7.1"
         curl -fsS \
           --header "Authorization: Bearer ${SYSTEM_ACCESSTOKEN}" \
           --header "Accept: application/json" \
           "$pr_url" \
           --output "$AZURE_EVENT_PATH"
-        curl -fsS \
-          --request POST \
+        iteration_id="$(curl -fsS \
           --header "Authorization: Bearer ${SYSTEM_ACCESSTOKEN}" \
-          --header "Accept: text/plain" \
-          --header "Content-Type: application/json" \
-          --data '{}' \
-          "$diff_url" \
-          --output "$AZURE_DIFF_PATH"
+          --header "Accept: application/json" \
+          "$iters_url" | node -e 'const d=JSON.parse(require("fs").readFileSync(0,"utf8")); const vs=d.value||[]; process.stdout.write(vs.length?String(vs[vs.length-1].id):"")')"
+        if [ -z "$iteration_id" ]; then
+          echo "##vso[task.logissue type=error]Azure DevOps PR has no iterations."
+          exit 1
+        fi
+        changes_url="${collection_uri}/${project_path}/_apis/git/repositories/${repository_path}/pullRequests/${SYSTEM_PULLREQUEST_PULLREQUESTID}/iterations/${iteration_id}/changes?api-version=7.1"
+        : > "$AZURE_DIFF_PATH"
+        curl -fsS \
+          --header "Authorization: Bearer ${SYSTEM_ACCESSTOKEN}" \
+          --header "Accept: application/json" \
+          "$changes_url" \
+          | node -e 'const d=JSON.parse(require("fs").readFileSync(0,"utf8")); const cs=d.changeEntries||d.changes||[]; process.stdout.write(JSON.stringify(cs));' \
+          >> "$AZURE_DIFF_PATH"
         if [ ! -s "$AZURE_DIFF_PATH" ]; then
           echo "##vso[task.logissue type=error]Azure DevOps PR diff fetch produced an empty file."
           exit 1
@@ -150,6 +158,10 @@ steps:
 
   - script: |
       set -euo pipefail
+      : "${UMACTUALLY_PR_NUMBER:?UMACTUALLY_PR_NUMBER must be set by the prepare step.}"
+      : "${UMACTUALLY_REPO:?UMACTUALLY_REPO must be set by the prepare step.}"
+      : "${UMACTUALLY_API_URL:?UMACTUALLY_API_URL must be set as a pipeline variable.}"
+      : "${UMACTUALLY_API_KEY:?UMACTUALLY_API_KEY must be set as a pipeline variable.}"
       node bin/umactually-pr-review.mjs \
         --platform azure-devops \
         --event "$AZURE_EVENT_PATH" \
@@ -157,17 +169,11 @@ steps:
         --review "$AZURE_REVIEW_PATH" \
         --pr-number "$UMACTUALLY_PR_NUMBER" \
         --repo "$UMACTUALLY_REPO" \
-        --dry-run \
-        --output-artifact "$AZURE_OUTPUT_ARTIFACT"
-
-      node --input-type=module <<'NODE'
-      import { readFileSync } from "node:fs";
-      const artifactPath = process.env.AZURE_OUTPUT_ARTIFACT ?? "artifacts/manual/s4-azure-mocked-run.json";
-      const artifact = JSON.parse(readFileSync(artifactPath, "utf8"));
-      console.log(`UmActually Azure dry-run artifact: ${artifactPath}`);
-      console.log(`marker=${artifact.marker}; postedThreadCount=${artifact.postedThreadCount}; postedStatusState=${artifact.postedStatusState}`);
-      NODE
-    displayName: Run UmActually PR review (dry-run)
+        --api-url "${UMACTUALLY_API_URL}" \
+        --api-key "${UMACTUALLY_API_KEY}" \
+        --no-detect-leaks \
+        --no-dry-run
+    displayName: Run UmActually Azure live review
     env:
       SYSTEM_ACCESSTOKEN: $(System.AccessToken)
       UMACTUALLY_PR_NUMBER: $(UMACTUALLY_PR_NUMBER)

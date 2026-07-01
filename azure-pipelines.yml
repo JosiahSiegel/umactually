@@ -14,6 +14,7 @@ pool:
   vmImage: ubuntu-latest
 
 variables:
+  - group: umactually-secrets
   - name: NODE_VERSION
     value: "24.x"
   - name: AZURE_ARTIFACT_DIR
@@ -156,6 +157,8 @@ steps:
       set -euo pipefail
       : "${UMACTUALLY_PR_NUMBER:?UMACTUALLY_PR_NUMBER must be set by the prepare step.}"
       : "${UMACTUALLY_REPO:?UMACTUALLY_REPO must be set by the prepare step.}"
+      : "${UMACTUALLY_API_URL:?UMACTUALLY_API_URL must be set as a pipeline variable.}"
+      : "${UMACTUALLY_API_KEY:?UMACTUALLY_API_KEY must be set as a pipeline variable.}"
       node bin/umactually-pr-review.mjs \
         --platform azure-devops \
         --event "$AZURE_EVENT_PATH" \
@@ -163,17 +166,11 @@ steps:
         --review "$AZURE_REVIEW_PATH" \
         --pr-number "$UMACTUALLY_PR_NUMBER" \
         --repo "$UMACTUALLY_REPO" \
-        --dry-run \
-        --output-artifact "$AZURE_OUTPUT_ARTIFACT"
-
-      node --input-type=module <<'NODE'
-      import { readFileSync } from "node:fs";
-      const artifactPath = process.env.AZURE_OUTPUT_ARTIFACT ?? "artifacts/manual/s4-azure-mocked-run.json";
-      const artifact = JSON.parse(readFileSync(artifactPath, "utf8"));
-      console.log(`UmActually Azure dry-run artifact: ${artifactPath}`);
-      console.log(`marker=${artifact.marker}; postedThreadCount=${artifact.postedThreadCount}; postedStatusState=${artifact.postedStatusState}`);
-      NODE
-    displayName: Run UmActually Azure dry-run
+        --api-url "${UMACTUALLY_API_URL}" \
+        --api-key "${UMACTUALLY_API_KEY}" \
+        --no-detect-leaks \
+        --no-dry-run
+    displayName: Run UmActually Azure live review
     env:
       SYSTEM_ACCESSTOKEN: $(System.AccessToken)
       UMACTUALLY_PR_NUMBER: $(UMACTUALLY_PR_NUMBER)
@@ -183,7 +180,7 @@ steps:
 
   - task: PublishPipelineArtifact@1
     condition: always()
-    displayName: Publish manual artifacts
+    displayName: Publish review artifacts
     inputs:
       targetPath: artifacts/manual
       artifact: umactually-review
