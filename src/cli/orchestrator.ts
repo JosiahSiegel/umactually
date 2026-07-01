@@ -2,18 +2,18 @@ import { fetchAzurePrDiff } from "../platform/azure/api.js";
 import { readAzureContext } from "../platform/azure/context.js";
 import { fetchGithubPrDiff } from "../platform/github/api.js";
 import { readGithubContext } from "../platform/github/context.js";
-import { buildSimulatedFindings } from "../review/simulated-findings.js";
-import { runLiveSonarImport } from "../sonar/run-sonar-import.js";
 import { runAzureLive } from "./live-azure.js";
 import { runGithubLive } from "./live-github.js";
 import {
-  requestLiveReview,
+  evaluateLeakGate,
   sanitizeForPost,
   type FetchImpl,
   type LivePlatform,
-  type LiveProviderOutcome,
   type LiveRunResult,
 } from "./live-shared.js";
+import { requestLiveReview } from "./live-provider.js";
+import { readLiveSonarContext } from "./sonar-context.js";
+import { applySimulateFindings } from "./simulate-findings.js";
 import type { ParsedCliArgs } from "./parse-args.js";
 
 export type RunLiveInput = {
@@ -65,26 +65,7 @@ export async function runLive(input: RunLiveInput): Promise<LiveRunResult> {
   // for the quality gate to reach a terminal state BEFORE posting the review.
   // This implements the user's "wait for sonarqube during that PR run"
   // requirement: the review reflects the latest quality-gate state.
-  const sonarConfigured =
-    input.parsed.includeSonarqube &&
-    input.parsed.sonarHostUrl !== null &&
-    input.parsed.sonarToken !== null &&
-    input.parsed.sonarProjectKey !== null;
-  if (sonarConfigured) {
-    const sonarReport = await runLiveSonarImport({
-      sonarHostUrl: input.parsed.sonarHostUrl ?? "",
-      sonarToken: input.parsed.sonarToken ?? "",
-      sonarProjectKey: input.parsed.sonarProjectKey ?? "",
-      sonarTimeoutSeconds: input.parsed.sonarTimeoutSeconds ?? 300,
-      fetchImpl: fetchImpl as typeof fetch,
-    });
-    process.stdout.write(
-      `umactually-pr-review: sonar quality gate ${sonarReport.qualityGateStatus} (${sonarReport.importedFindingCount} findings, waited=${sonarReport.waitedForTerminalQualityGate})${sonarReport.timeoutHandled ? " [timeout handled]" : ""}\n`,
-    );
-    if (sonarReport.errorMessage !== undefined) {
-      process.stderr.write(`::warning::umactually-pr-review: ${sonarReport.errorMessage}\n`);
-    }
-  }
+  const sonarContext = await readLiveSonarContext(input.parsed, fetchImpl);
 
   let result: LiveRunResult;
   try {
@@ -94,6 +75,7 @@ export async function runLive(input: RunLiveInput): Promise<LiveRunResult> {
       cwd: input.cwd,
       env,
       fetchImpl,
+      ...(sonarContext !== undefined ? { sonarContext } : {}),
     });
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
@@ -128,12 +110,26 @@ async function dispatchLivePlatform(input: {
   readonly cwd: string;
   readonly env: NodeJS.ProcessEnv;
   readonly fetchImpl: FetchImpl;
+  readonly sonarContext?: string;
 }): Promise<LiveRunResult> {
-  const { platform, parsed, cwd, env, fetchImpl } = input;
+  const { platform, parsed, cwd, env, fetchImpl, sonarContext } = input;
   switch (platform) {
     case "github": {
       const context = await readGithubContext(env);
       const diffText = await fetchGithubPrDiff(context, fetchImpl);
+      const leakGate = await evaluateLeakGate({
+        diffText,
+        detectLeaks: parsed.detectLeaks,
+      });
+      if (!leakGate.ok) {
+        process.stderr.write(`::error::umactually-pr-review: ${leakGate.message}\n`);
+        return {
+          exitCode: 1,
+          posted: false,
+          reviewId: undefined,
+          message: leakGate.message,
+        };
+      }
       const liveOutcome = await requestLiveReview({
         parsed,
         cwd,
@@ -142,6 +138,7 @@ async function dispatchLivePlatform(input: {
         platform: "github",
         diffText,
         platformToken: context.token,
+        ...(sonarContext !== undefined ? { sonarContext } : {}),
       });
       const finalOutcome = applySimulateFindings({
         outcome: liveOutcome,
@@ -163,6 +160,19 @@ async function dispatchLivePlatform(input: {
     case "azure": {
       const context = readAzureContext(env);
       const diffText = await fetchAzurePrDiff(context, fetchImpl);
+      const leakGate = await evaluateLeakGate({
+        diffText,
+        detectLeaks: parsed.detectLeaks,
+      });
+      if (!leakGate.ok) {
+        process.stderr.write(`::error::umactually-pr-review: ${leakGate.message}\n`);
+        return {
+          exitCode: 1,
+          posted: false,
+          reviewId: undefined,
+          message: leakGate.message,
+        };
+      }
       const liveOutcome = await requestLiveReview({
         parsed,
         cwd,
@@ -171,6 +181,7 @@ async function dispatchLivePlatform(input: {
         platform: "azure",
         diffText,
         platformToken: context.token,
+        ...(sonarContext !== undefined ? { sonarContext } : {}),
       });
       const finalOutcome = applySimulateFindings({
         outcome: liveOutcome,
@@ -192,74 +203,6 @@ async function dispatchLivePlatform(input: {
     default:
       return assertNever(platform);
   }
-}
-
-/**
- * Replaces the provider outcome's payload with the deterministic fixture ONLY
- * when the live result is structurally empty (no inline comments AND no
- * suppressed comments). Live findings always win — the fixture is a demo
- * fallback for "provider returned nothing usable" cases. When
- * `simulateFindings` is false, the live result is preserved unchanged.
- *
- * The `provider`, `modelId`, and `endpoint` fields on the outcome are kept
- * from the live call (the fixture does not mint its own provider identity),
- * so the posted review body still shows "openai-compatible" as the provider.
- */
-function applySimulateFindings(input: {
-  readonly outcome: LiveProviderOutcome;
-  readonly simulateFindings: boolean;
-  readonly repo: string;
-  readonly prNumber: number;
-  readonly headSha: string;
-  readonly diffText: string;
-  readonly secrets: readonly string[];
-}): LiveProviderOutcome {
-  if (!input.simulateFindings) {
-    return input.outcome;
-  }
-
-  const liveCommentCount = input.outcome.review.comments.length;
-  const liveSuppressedCount = input.outcome.review.suppressedComments.length;
-  const isStructurallyEmpty = liveCommentCount === 0 && liveSuppressedCount === 0;
-
-  if (!isStructurallyEmpty) {
-    // Live findings always win — do not override them with the deterministic
-    // fixture. Document the override intent on stderr so operators can see
-    // the flag was set but did not engage.
-    const message = `umactually-pr-review: --simulate-findings set but ignored (live result has ${liveCommentCount} inline, ${liveSuppressedCount} suppressed). Live findings always win.`;
-    const sanitized = sanitizeForPost(message, input.secrets);
-    process.stderr.write(`::notice::${sanitized}\n`);
-    return input.outcome;
-  }
-
-  const fixture = buildSimulatedFindings(input.repo, input.prNumber, input.headSha, input.diffText);
-  // Sanitize the fixture through the same sanitizer the live path uses so
-  // bodies cannot accidentally carry the API key or auth headers.
-  const sanitizedComments = fixture.comments.map((comment) => ({
-    path: comment.path,
-    line: comment.line,
-    body: sanitizeForPost(comment.body, input.secrets),
-    severity: sanitizeForPost(comment.severity, input.secrets),
-    category: sanitizeForPost(comment.category, input.secrets),
-  }));
-  const sanitizedSuppressed = fixture.suppressed_comments.map((comment) => ({
-    path: comment.path,
-    line: comment.line,
-    body: sanitizeForPost(comment.body, input.secrets),
-    severity: sanitizeForPost(comment.severity, input.secrets),
-    category: sanitizeForPost(comment.category, input.secrets),
-  }));
-  return {
-    endpoint: input.outcome.endpoint,
-    provider: input.outcome.provider,
-    modelId: input.outcome.modelId,
-    review: {
-      summary: sanitizeForPost(fixture.summary, input.secrets),
-      verdict: fixture.verdict,
-      comments: sanitizedComments,
-      suppressedComments: sanitizedSuppressed,
-    },
-  };
 }
 
 function detectLivePlatform(env: NodeJS.ProcessEnv): LivePlatform | null {

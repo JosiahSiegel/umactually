@@ -1,3 +1,4 @@
+// allow: SIZE_OK — single GitHub live orchestration suite sharing endpoint recorder, diff fixtures, and marker-review cases
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -31,6 +32,16 @@ const DIFF_TEXT = [
   " }",
   "+",
   "+export const changedLine = true;",
+].join("\n");
+
+const SECRET_DIFF_TEXT = [
+  "diff --git a/src/secret.ts b/src/secret.ts",
+  "index 1111111..2222222 100644",
+  "--- a/src/secret.ts",
+  "+++ b/src/secret.ts",
+  "@@ -1,2 +1,3 @@",
+  " export const safe = true;",
+  "+export const token = \"sk_test_secret_leak\";",
 ].join("\n");
 
 const EVENT_JSON = JSON.stringify({
@@ -117,11 +128,27 @@ function readArray(value: unknown, label: string): readonly unknown[] {
   throw new TypeError(`${label} must be an array`);
 }
 
+function readProviderUserPrompt(call: RecordedCall): string {
+  const body = readRecord(call.body, "provider request");
+  const input = readArray(body["input"], "provider request input");
+  for (const entry of input) {
+    const record = readRecord(entry, "provider input entry");
+    if (record["role"] === "user" && typeof record["content"] === "string") {
+      return record["content"];
+    }
+  }
+  throw new TypeError("provider request must include a user prompt");
+}
+
 function githubRoutes(providerBody: string): readonly FetchRoute[] {
+  return githubRoutesWithDiff(providerBody, DIFF_TEXT);
+}
+
+function githubRoutesWithDiff(providerBody: string, diffText: string): readonly FetchRoute[] {
   return [
     {
       match: (url, method) => method === "GET" && url.endsWith("/pulls/42"),
-      response: new Response(DIFF_TEXT, { status: 200 }),
+      response: new Response(diffText, { status: 200 }),
     },
     {
       match: (url, method) => method === "POST" && url === "https://provider.example/v1/responses",
@@ -253,6 +280,79 @@ describe("runLive GitHub orchestration", () => {
     expect(body["body"]).toContain("Provider response did not contain a valid JSON review payload.");
     expect(body["body"]).not.toContain("RAW_PROVIDER_JSON_SHOULD_NOT_POST");
     expect(readArray(body["comments"], "review comments")).toHaveLength(0);
+  });
+
+  it("blocks high-confidence leaks before submitting the diff to the provider", async () => {
+    // Given: the PR diff contains a high-confidence API key pattern.
+    workspace = await mkdtemp(join(tmpdir(), "umactually-live-leak-pre-provider-"));
+    const eventPath = join(workspace, "event.json");
+    await writeFile(eventPath, EVENT_JSON, "utf8");
+    const recorder = makeFetchRecorder(githubRoutesWithDiff(PROVIDER_REVIEW, SECRET_DIFF_TEXT));
+
+    // When: the live GitHub path runs with leak detection enabled.
+    const result = await runLive({
+      parsed: parseCliArgs(["--platform", "github", "--no-dry-run"]),
+      cwd: workspace,
+      env: githubEnv(eventPath),
+      fetchImpl: recorder.fetchImpl,
+    });
+
+    // Then: the run fails before the provider receives the secret-bearing diff.
+    expect(result.exitCode).toBe(1);
+    expect(result.posted).toBe(false);
+    expect(result.message).toContain("high-confidence secret");
+    expect(recorder.calls.some((call) => call.url === "https://provider.example/v1/responses")).toBe(false);
+  });
+
+  it("includes live SonarQube report in the provider user prompt", async () => {
+    // Given: SonarQube is configured and reports an ERROR quality gate with findings.
+    workspace = await mkdtemp(join(tmpdir(), "umactually-live-sonar-prompt-"));
+    const eventPath = join(workspace, "event.json");
+    await writeFile(eventPath, EVENT_JSON, "utf8");
+    const sonarRoutes: readonly FetchRoute[] = [
+      {
+        match: (url, method) => method === "GET" && url.includes("/api/qualitygates/project_status"),
+        response: makeJsonResponse({ projectStatus: { status: "ERROR" } }),
+      },
+      {
+        match: (url, method) => method === "GET" && url.includes("/api/issues/search"),
+        response: makeJsonResponse({ total: 5 }),
+      },
+      {
+        match: (url, method) => method === "GET" && url.includes("/api/hotspots/search"),
+        response: makeJsonResponse({ paging: { total: 2 } }),
+      },
+    ];
+    const recorder = makeFetchRecorder([...sonarRoutes, ...githubRoutes(PROVIDER_REVIEW)]);
+
+    // When: live orchestration runs with --include-sonarqube.
+    const result = await runLive({
+      parsed: parseCliArgs([
+        "--platform",
+        "github",
+        "--no-dry-run",
+        "--include-sonarqube",
+        "--sonar-host-url",
+        "https://sonar.example.test",
+        "--sonar-token",
+        "sonar-token",
+        "--sonar-project-key",
+        "example-project",
+        "--sonar-timeout-seconds",
+        "10",
+      ]),
+      cwd: workspace,
+      env: githubEnv(eventPath),
+      fetchImpl: recorder.fetchImpl,
+    });
+
+    // Then: the provider prompt includes the live Sonar context, not just logs.
+    expect(result.exitCode).toBe(0);
+    const providerCall = findCall(recorder.calls, "POST", "/v1/responses");
+    const userPrompt = readProviderUserPrompt(providerCall);
+    expect(userPrompt).toContain("SonarQube report:");
+    expect(userPrompt).toContain("Quality gate: ERROR");
+    expect(userPrompt).toContain("Imported findings: 7");
   });
 
   it("posts a GitHub pull request review with marker body and valid inline comments", async () => {

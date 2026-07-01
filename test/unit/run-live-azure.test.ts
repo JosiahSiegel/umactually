@@ -27,6 +27,16 @@ const AZURE_DIFF_TEXT = [
   " }",
 ].join("\n");
 
+const AZURE_SECRET_DIFF_TEXT = [
+  "diff --git a/src/secret.ts b/src/secret.ts",
+  "index 1111111..2222222 100644",
+  "--- a/src/secret.ts",
+  "+++ b/src/secret.ts",
+  "@@ -1,2 +1,3 @@",
+  " export const safe = true;",
+  "+export const token = \"sk_test_azure_secret\";",
+].join("\n");
+
 const PROVIDER_REVIEW = JSON.stringify({
   summary: "Azure live summary.",
   verdict: "APPROVED",
@@ -99,10 +109,14 @@ function readArray(value: unknown, label: string): readonly unknown[] {
 }
 
 function azureRoutes(): readonly FetchRoute[] {
+  return azureRoutesWithDiff(AZURE_DIFF_TEXT);
+}
+
+function azureRoutesWithDiff(diffText: string): readonly FetchRoute[] {
   return [
     {
       match: (url, method) => method === "POST" && url.endsWith("/diffs/commits?api-version=7.1"),
-      response: new Response(AZURE_DIFF_TEXT, { status: 200 }),
+      response: new Response(diffText, { status: 200 }),
     },
     {
       match: (url, method) => method === "POST" && url === "https://provider.example/v1/responses",
@@ -124,6 +138,25 @@ function azureRoutes(): readonly FetchRoute[] {
 }
 
 describe("runLive Azure orchestration", () => {
+  it("blocks high-confidence leaks before submitting the Azure diff to the provider", async () => {
+    // Given: the Azure PR diff contains a high-confidence API key pattern.
+    const recorder = makeFetchRecorder(azureRoutesWithDiff(AZURE_SECRET_DIFF_TEXT));
+
+    // When: the live Azure path runs with leak detection enabled.
+    const result = await runLive({
+      parsed: parseCliArgs(["--platform", "azure", "--no-dry-run"]),
+      cwd: process.cwd(),
+      env: azureEnv(),
+      fetchImpl: recorder.fetchImpl,
+    });
+
+    // Then: the provider is never called with the secret-bearing diff.
+    expect(result.exitCode).toBe(1);
+    expect(result.posted).toBe(false);
+    expect(result.message).toContain("high-confidence secret");
+    expect(recorder.calls.some((call) => call.url === "https://provider.example/v1/responses")).toBe(false);
+  });
+
   it("posts Azure DevOps threads and status through injected fetch", async () => {
     // Given: Azure Pipelines live environment and mocked REST endpoints.
     const recorder = makeFetchRecorder(azureRoutes());

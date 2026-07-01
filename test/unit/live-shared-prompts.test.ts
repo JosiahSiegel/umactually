@@ -1,4 +1,5 @@
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+// allow: SIZE_OK — single live prompt plumbing suite with shared provider fetch recorder and fixtures
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -240,6 +241,65 @@ describe("runLive inline prompt plumbing (Wave 2 / S7-RED)", () => {
     expect(system).toContain("CUSTOM-SYSTEM-MARKER");
     // Then: the hardcoded UmActually system prompt is NOT sent when --prompt overrides it.
     expect(system).not.toContain("You are UmActually, a precise pull request reviewer.");
+  });
+
+  it("loads repository-relative --prompt-file into the provider system prompt", async () => {
+    // Given: a repository-relative system prompt file with a unique marker.
+    workspace = await mkdtemp(join(tmpdir(), "umactually-live-prompts-file-system-"));
+    const eventPath = join(workspace, "event.json");
+    await writeFile(eventPath, EVENT_JSON, "utf8");
+    await mkdir(join(workspace, "prompts"), { recursive: true });
+    await writeFile(join(workspace, "prompts", "system.md"), "FILE-SYSTEM-PROMPT-MARKER", "utf8");
+    const recorder = makeFetchRecorder(githubRoutes(PROVIDER_REVIEW));
+
+    // When: live orchestration runs with --prompt-file.
+    const result = await runLive({
+      parsed: parseCliArgs([
+        "--platform",
+        "github",
+        "--no-dry-run",
+        "--prompt-file",
+        "prompts/system.md",
+      ]),
+      cwd: workspace,
+      env: githubEnv(eventPath),
+      fetchImpl: recorder.fetchImpl,
+    });
+
+    // Then: the provider receives the file content as the system prompt.
+    expect(result.exitCode).toBe(0);
+    const providerCall = findCall(recorder.calls, "POST", "/v1/responses");
+    const { system } = readProviderPrompts(providerCall);
+    expect(system).toContain("FILE-SYSTEM-PROMPT-MARKER");
+    expect(system).not.toContain("You are UmActually, a precise pull request reviewer.");
+  });
+
+  it("uses the safe repository-relative reader for --additional-prompt-file", async () => {
+    // Given: an additional prompt path that tries to escape the repository.
+    workspace = await mkdtemp(join(tmpdir(), "umactually-live-prompts-file-escape-"));
+    const eventPath = join(workspace, "event.json");
+    await writeFile(eventPath, EVENT_JSON, "utf8");
+    const recorder = makeFetchRecorder(githubRoutes(PROVIDER_REVIEW));
+
+    // When: live orchestration runs with a traversal path.
+    const result = await runLive({
+      parsed: parseCliArgs([
+        "--platform",
+        "github",
+        "--no-dry-run",
+        "--additional-prompt-file",
+        "../outside.md",
+      ]),
+      cwd: workspace,
+      env: githubEnv(eventPath),
+      fetchImpl: recorder.fetchImpl,
+    });
+
+    // Then: the run fails before the provider call and does not read outside cwd.
+    expect(result.exitCode).toBe(1);
+    expect(result.posted).toBe(false);
+    expect(result.message).toContain("Prompt file error: outside-cwd");
+    expect(recorder.calls.some((call) => call.url === "https://provider.example/v1/responses")).toBe(false);
   });
 
   it("S7-RED-002b: inline --prompt wins over --prompt-file when both are provided", async () => {
