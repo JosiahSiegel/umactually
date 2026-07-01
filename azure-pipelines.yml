@@ -163,7 +163,7 @@ steps:
         --review "$AZURE_REVIEW_PATH" \
         --pr-number "$UMACTUALLY_PR_NUMBER" \
         --repo "$UMACTUALLY_REPO" \
-        --dry-run \
+        --no-dry-run \
         --output-artifact "$AZURE_OUTPUT_ARTIFACT"
 
       node --input-type=module <<'NODE'
