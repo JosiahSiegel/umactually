@@ -7,6 +7,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { parseCliArgs } from "../../src/cli.js";
 import { runLive } from "../../src/cli/orchestrator.js";
+import { clearCopilotTokenCache } from "../../src/provider/copilot-token.js";
 
 type RecordedCall = {
   readonly url: string;
@@ -70,6 +71,26 @@ const PROVIDER_REVIEW = JSON.stringify({
     },
   ],
   suppressed_comments: [],
+});
+
+const COPILOT_TOKEN_ENVELOPE = JSON.stringify({
+  token: "tid=synthetic-live",
+  expires_at: 9_999_999_999,
+  endpoints: { api: "https://api.individual.githubcopilot.com" },
+});
+
+const COPILOT_CHAT_SUCCESS_BODY = JSON.stringify({
+  id: "chatcmpl_copilot_live_001",
+  model: "gpt-5",
+  choices: [
+    {
+      message: {
+        role: "assistant",
+        content: PROVIDER_REVIEW,
+      },
+      finish_reason: "stop",
+    },
+  ],
 });
 
 function makeJsonResponse(value: unknown, status = 200): Response {
@@ -254,6 +275,74 @@ describe("runLive GitHub orchestration", () => {
     expect(result.message).toContain("UMACTUALLY_API_URL");
     expect(result.message).not.toContain("provider-key-secret");
     expect(result.message).not.toContain("github-token-secret");
+  });
+
+  it("runs Copilot live orchestration with an API key and no provider URL", async () => {
+    // Given: Copilot is selected with a PAT and no --api-url or UMACTUALLY_API_URL.
+    clearCopilotTokenCache();
+    workspace = await mkdtemp(join(tmpdir(), "umactually-live-copilot-no-url-"));
+    const eventPath = join(workspace, "event.json");
+    await writeFile(eventPath, EVENT_JSON, "utf8");
+    const env = {
+      GITHUB_ACTIONS: "true",
+      GITHUB_TOKEN: "github-token-secret",
+      GITHUB_REPOSITORY: "octo-org/octo-repo",
+      GITHUB_EVENT_PATH: eventPath,
+      UMACTUALLY_MODEL: "gpt-5",
+    } satisfies NodeJS.ProcessEnv;
+    const recorder = makeFetchRecorder([
+      {
+        match: (url, method) => method === "GET" && url.endsWith("/pulls/42"),
+        response: new Response(DIFF_TEXT, { status: 200 }),
+      },
+      {
+        match: (url, method) => method === "GET" && url === "https://api.github.com/copilot_internal/v2/token",
+        response: new Response(COPILOT_TOKEN_ENVELOPE, {
+          status: 200,
+          headers: { "content-type": "application/json" },
+        }),
+      },
+      {
+        match: (url, method) =>
+          method === "POST" && url === "https://api.individual.githubcopilot.com/chat/completions",
+        response: new Response(COPILOT_CHAT_SUCCESS_BODY, {
+          status: 200,
+          headers: { "content-type": "application/json" },
+        }),
+      },
+      {
+        match: (url, method) => method === "GET" && url.endsWith("/pulls/42/reviews"),
+        response: makeJsonResponse([]),
+      },
+      {
+        match: (url, method) => method === "POST" && url.endsWith("/pulls/42/reviews"),
+        response: makeJsonResponse({ id: 9001, body: "" }, 201),
+      },
+    ]);
+
+    // When: live orchestration runs against the Copilot provider.
+    const result = await runLive({
+      parsed: parseCliArgs([
+        "--platform",
+        "github",
+        "--provider",
+        "copilot",
+        "--api-key",
+        "gho_test_copilot",
+        "--no-dry-run",
+      ]),
+      cwd: workspace,
+      env,
+      fetchImpl: recorder.fetchImpl,
+    });
+
+    // Then: the review posts successfully through Copilot token + chat, not the openai-compatible responses endpoint.
+    expect(result.exitCode).toBe(0);
+    expect(result.posted).toBe(true);
+    expect(recorder.calls.some((call) => call.url === "https://api.github.com/copilot_internal/v2/token")).toBe(true);
+    expect(recorder.calls.some((call) => call.url === "https://provider.example/v1/responses")).toBe(false);
+    expect(recorder.calls.some((call) => call.url.endsWith("/v1/responses"))).toBe(false);
+    expect(findCall(recorder.calls, "POST", "/pulls/42/reviews")).toMatchObject({ method: "POST" });
   });
 
   it("posts a safe fallback summary when the provider returns malformed JSON", async () => {

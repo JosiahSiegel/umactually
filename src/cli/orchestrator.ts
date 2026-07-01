@@ -38,8 +38,11 @@ export async function runLive(input: RunLiveInput): Promise<LiveRunResult> {
     };
   }
 
+  // Copilot provider does not need UMACTUALLY_API_URL; it uses the GitHub
+  // Copilot token exchange endpoint. Skip the URL check for copilot.
+  const isCopilot = input.parsed.provider === "copilot";
   const providerUrl = input.parsed.apiUrl ?? env["UMACTUALLY_API_URL"];
-  if (providerUrl === undefined || providerUrl.length === 0) {
+  if (!isCopilot && (providerUrl === undefined || providerUrl.length === 0)) {
     const message = "UMACTUALLY_API_URL must be set for live review.";
     process.stdout.write(`umactually-pr-review: ${message}\n`);
     return {

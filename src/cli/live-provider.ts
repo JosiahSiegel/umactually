@@ -32,7 +32,6 @@ export async function requestLiveReview(input: {
     diffText: input.diffText,
     expectedArtifact: "artifacts/manual/s5-redaction-report.json",
   });
-  const providerUrl = readRequiredConfig(input.parsed.apiUrl ?? input.env["UMACTUALLY_API_URL"], "UMACTUALLY_API_URL");
   const providerApiKey = readRequiredConfig(input.parsed.apiKey ?? input.env["UMACTUALLY_API_KEY"], "UMACTUALLY_API_KEY");
   const modelId = readConfiguredModel(input.parsed, input.env);
   const prompts = await buildProviderPrompts(input);
@@ -68,6 +67,7 @@ export async function requestLiveReview(input: {
     throw new LiveReviewError("PROVIDER_REQUEST_FAILED", result.error.message, { cause: result.error });
   }
 
+  const providerUrl = readRequiredConfig(input.parsed.apiUrl ?? input.env["UMACTUALLY_API_URL"], "UMACTUALLY_API_URL");
   const result = await runProviderRequest({
     baseUrl: providerUrl,
     apiKey: providerApiKey,

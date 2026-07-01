@@ -24,7 +24,7 @@ export async function fetchAzurePrDiff(context: AzureContext, fetchImpl: FetchIm
     headers: {
       Authorization: `Bearer ${context.token}`,
       "Content-Type": "application/json",
-      Accept: "application/json",
+      Accept: "text/plain",
       "User-Agent": "umactually-pr-review",
     },
     body: JSON.stringify({}), // no-diff-request = full diff per Azure DevOps defaults
