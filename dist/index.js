@@ -29,6 +29,7 @@ var __webpack_exports__ = {};
 
 // EXPORTS
 __nccwpck_require__.d(__webpack_exports__, {
+  C: () => (/* binding */ buildArgs),
   i: () => (/* binding */ src_main)
 });
 
@@ -1401,275 +1402,546 @@ function readString(value) {
     return typeof value === "string" ? value : "";
 }
 
-;// CONCATENATED MODULE: ./src/review/diff-line-utils.ts
-/**
- * Walk the diff text and return the raw line content for the first
- * `+` or ` ` row at the given right-side position. Falls back to an empty
- * string when the diff has no hunk header reachable for the file path.
- *
- * Exposed so the simulated-findings fixture can build context-aware bodies
- * that reference a representative token from the actual diff line.
- */
-function readDiffLine(diffText, position) {
-    const targetPath = `b/${position.path}`;
-    const diffLines = diffText.split(/\r?\n/u);
-    let currentPath = null;
-    let nextNewLine = null;
-    for (const rawLine of diffLines) {
-        if (rawLine.startsWith("diff --git ")) {
-            currentPath = null;
-            nextNewLine = null;
-            continue;
-        }
-        if (currentPath === null) {
-            if (rawLine.startsWith("+++ ")) {
-                const [rawPath] = rawLine.slice(4).split("\t");
-                if (rawPath !== undefined) {
-                    const path = rawPath.trim();
-                    if (path !== "/dev/null") {
-                        const normalized = path.startsWith("b/") ? path.slice(2) : path;
-                        if (normalized === position.path) {
-                            currentPath = targetPath;
-                        }
-                        else {
-                            currentPath = normalized;
-                        }
-                    }
-                }
-            }
-            continue;
-        }
-        if (currentPath !== targetPath) {
-            continue;
-        }
-        if (rawLine.startsWith("@@ ")) {
-            const start = parseHunkStart(rawLine);
-            nextNewLine = start;
-            continue;
-        }
-        if (nextNewLine === null) {
-            continue;
-        }
-        if (rawLine.startsWith("+") || rawLine.startsWith(" ")) {
-            if (nextNewLine === position.line) {
-                return rawLine.slice(1).trim();
-            }
-            nextNewLine += 1;
-        }
-    }
-    return "";
-}
-/**
- * `@@ -1,4 +1,7 @@` → 1. Returns null when the header is malformed.
- */
-function parseHunkStart(line) {
-    if (!line.startsWith("@@ ")) {
-        return null;
-    }
-    const plusIndex = line.indexOf("+");
-    if (plusIndex === -1) {
-        return null;
-    }
-    const afterPlus = line.slice(plusIndex + 1);
-    const endIndex = afterPlus.search(/[ ,]/u);
-    const rawStart = endIndex === -1 ? afterPlus : afterPlus.slice(0, endIndex);
-    const start = Number.parseInt(rawStart, 10);
-    return Number.isSafeInteger(start) && start > 0 ? start : null;
-}
-/**
- * Pull a meaningful token out of the diff line for context-aware bodies.
- * Falls back to a path-derived identifier when the line is blank.
- */
-function extractRepresentativeToken(lineContent, path) {
-    const identifierMatch = lineContent.match(/\b([A-Za-z_$][\w$]*)\s*\(/u);
-    if (identifierMatch !== null && identifierMatch[1] !== undefined) {
-        return identifierMatch[1];
-    }
-    const declarationMatch = lineContent.match(/\b(?:const|let|var|function|class|interface|type|export)\s+([A-Za-z_$][\w$]*)/u);
-    if (declarationMatch !== null && declarationMatch[1] !== undefined) {
-        return declarationMatch[1];
-    }
-    const genericMatch = lineContent.match(/\b([A-Za-z_$][\w$]{3,})\b/u);
-    if (genericMatch !== null && genericMatch[1] !== undefined) {
-        return genericMatch[1];
-    }
-    const fallback = path.replace(/[^\w]+/gu, "_").replace(/^_+|_+$/gu, "");
-    return fallback.length > 0 ? fallback : "this change";
-}
+;// CONCATENATED MODULE: ./src/cli/live-shared.ts
 
-;// CONCATENATED MODULE: ./src/review/simulated-findings.ts
 
 
 /**
- * Deterministic fixture used by `simulate-findings` to exercise the full
- * render + post path when the live provider returns structurally empty output.
- *
- * The fixture:
- * - parses the real PR diff with `parseDiffPositions` and enumerates the
- *   right-side positions to anchor every inline comment on a real diff line,
- * - mixes severities (high/medium/low) and categories (security, style,
- *   correctness, performance) across at least two files,
- * - extracts a representative token from the diff line (or path) so each
- *   finding body references real code rather than a hard-coded example,
- * - ships 1-2 suppressed_comments entries that deliberately reference lines
- *   NOT in the diff so the suppression path is exercised,
- * - never embeds the review marker, raw provider JSON, fenced details blocks,
- *   or API keys — the marker is appended by the GitHub posting layer.
+ * A provider outcome is structurally empty when it carries no inline comments
+ * AND no suppressed comments. Used by `simulate-findings` to decide whether
+ * the live result should be replaced with the deterministic fixture.
  */
-function buildSimulatedFindings(repo, prNumber, headSha, diffText) {
-    const positions = parseDiffPositions(diffText);
-    const enumerated = positions.enumerate();
-    const inlineBlueprints = enumerated.length > 0
-        ? buildDiverseBlueprints(enumerated, diffText)
-        : buildFallbackBlueprints();
-    const acceptUnanchored = enumerated.length === 0;
-    const comments = [];
-    for (const blueprint of inlineBlueprints) {
-        if (acceptUnanchored || positions.hasPosition(blueprint)) {
-            comments.push({ ...blueprint });
-        }
-        if (comments.length >= MAX_INLINE) {
-            break;
-        }
+function isStructurallyEmptyReview(review) {
+    return review.comments.length === 0 && review.suppressedComments.length === 0;
+}
+class LiveReviewError extends Error {
+    code;
+    name = "LiveReviewError";
+    constructor(code, message, options) {
+        super(message, options);
+        this.code = code;
     }
-    // Suppressed off-diff entries deliberately reference paths/lines that are
-    // NOT present in the diff so the suppression-counting path is exercised.
-    const suppressedBlueprints = [
-        {
-            path: "src/review/example.ts",
-            line: 999,
-            severity: "medium",
-            category: "correctness",
-            body: "Older comment that referenced a removed line is suppressed because the diff no longer contains that position.",
-        },
-        {
-            path: "src/legacy/never-existed.ts",
-            line: 1,
-            severity: "low",
-            category: "style",
-            body: "Suppressed because `src/legacy/never-existed.ts` is not part of the PR diff and no longer ships in the tree.",
-        },
-    ];
-    const suppressed_comments = [];
-    for (const blueprint of suppressedBlueprints) {
-        if (!positions.hasPosition(blueprint)) {
-            suppressed_comments.push({ ...blueprint });
-        }
-        if (suppressed_comments.length >= 2) {
-            break;
-        }
+}
+/**
+ * Gate that refuses to post when high-confidence secrets are detected in the
+ * diff. This is the runtime side of `identify leaks` — the scanner counts
+ * leaks and redacts the diff, but the gate enforces that no provider response
+ * can leak secrets through the posted review body. `detect-leaks: false`
+ * bypasses the gate (operator opt-out).
+ */
+async function evaluateLeakGate(input) {
+    if (!input.detectLeaks) {
+        return { ok: true, leakCount: 0 };
+    }
+    const report = await scanReviewSecrets({
+        diffText: input.diffText,
+        expectedArtifact: "artifacts/manual/s5-redaction-report.json",
+    });
+    if (report.highConfidenceLeakCount === 0) {
+        return { ok: true, leakCount: 0 };
     }
     return {
-        summary: `Simulated review for ${repo}#${prNumber} at ${headSha}. ` +
-            `${comments.length} inline findings, ${suppressed_comments.length} suppressed off-diff.`,
-        verdict: "NEEDS_FIX",
-        comments,
-        suppressed_comments,
+        ok: false,
+        leakCount: report.highConfidenceLeakCount,
+        message: `Refusing to post: ${report.highConfidenceLeakCount} high-confidence secret(s) detected in the diff. Set --no-detect-leaks to override (NOT recommended).`,
     };
 }
-const MAX_INLINE = 6;
-const SEVERITY_PALETTE = ["high", "medium", "low"];
-const CATEGORY_PALETTE = [
-    "security",
-    "correctness",
-    "style",
-    "performance",
-];
-/**
- * Pick up to `MAX_INLINE` positions from the enumerated diff, ensuring at
- * least one anchor per distinct file so findings span multiple paths and
- * severities/categories cycle through their palettes.
- *
- * Strategy: take the first position from each unique file (in diff order)
- * to guarantee path diversity, then top up with additional positions from
- * earlier paths until the cap is reached.
- */
-function buildDiverseBlueprints(enumerated, diffText) {
-    const picked = [];
-    const seenPaths = new Set();
-    for (const position of enumerated) {
-        if (seenPaths.has(position.path)) {
-            continue;
-        }
-        seenPaths.add(position.path);
-        picked.push(position);
-        if (picked.length >= MAX_INLINE) {
+const DEFAULT_MAX_COMMENTS = 50;
+function buildReviewBody(input) {
+    const rawBody = [
+        run_review_REVIEW_MARKER,
+        sanitizeForPost(input.review.summary, input.secrets),
+        "",
+        `${sanitizeForPost(input.modelId, input.secrets)} (${sanitizeForPost(input.provider, input.secrets)})`,
+        "",
+        `Findings: ${input.validCommentCount} inline, ${input.suppressedCommentCount} suppressed.`,
+    ].join("\n");
+    return sanitizeForPost(rawBody, input.secrets);
+}
+function selectPostableComments(input) {
+    const positions = parseDiffPositions(input.diffText);
+    const maxComments = input.parsed.maxComments ?? DEFAULT_MAX_COMMENTS;
+    const comments = [];
+    for (const comment of input.review.comments) {
+        if (comments.length >= maxComments) {
             break;
         }
-    }
-    for (const position of enumerated) {
-        if (picked.length >= MAX_INLINE) {
-            break;
-        }
-        if (picked.includes(position)) {
+        if (!positions.hasPosition(comment)) {
             continue;
         }
-        picked.push(position);
+        if (!passesSeverityPolicy(comment, input.parsed)) {
+            continue;
+        }
+        comments.push({ ...comment, body: sanitizeInlineBody(comment, input.secrets) });
     }
-    return picked.map((position, index) => {
-        const lineContent = readDiffLine(diffText, position);
-        const token = extractRepresentativeToken(lineContent, position.path);
-        const severity = SEVERITY_PALETTE[index % SEVERITY_PALETTE.length] ?? "medium";
-        const category = CATEGORY_PALETTE[index % CATEGORY_PALETTE.length] ?? "correctness";
-        const body = buildContextAwareBody(position, token, category);
-        return {
-            path: position.path,
-            line: position.line,
-            severity,
-            category,
-            body,
-        };
-    });
+    return comments;
 }
-/**
- * Static fallback fixture used when the diff has zero right-side positions
- * (e.g., a placeholder diff, typo-only PR, or empty PR). Anchors inline
- * comments to synthetic positions on `src/example.ts` so the demo path always
- * shows the full render + post pipeline.
- */
-function buildFallbackBlueprints() {
-    const fallbackLines = [3, 5, 7, 9, 11, 13];
-    return fallbackLines.map((line, index) => {
-        const severity = SEVERITY_PALETTE[index % SEVERITY_PALETTE.length] ?? "medium";
-        const category = CATEGORY_PALETTE[index % CATEGORY_PALETTE.length] ?? "correctness";
-        const body = `Simulated fallback finding at \`src/example.ts:${line}\` because the diff has no right-side positions to anchor a real review.`;
-        return {
-            path: "src/example.ts",
-            line,
-            severity,
-            category,
-            body,
-        };
-    });
+function countSuppressedComments(review, diffText) {
+    const positions = parseDiffPositions(diffText);
+    let count = review.suppressedComments.length;
+    for (const comment of review.comments) {
+        if (!positions.hasPosition(comment)) {
+            count += 1;
+        }
+    }
+    return count;
 }
-/**
- * Build a body that references the file path and a representative token,
- * tuned by category. Bodies stay generic enough that the fixture remains
- * useful even when the extracted token is awkward.
- */
-function buildContextAwareBody(position, token, category) {
-    const file = position.path;
-    switch (category) {
-        case "security":
-            return (`The changed line in \`${file}\` references \`${token}\`. ` +
-                `Confirm that any string literals, tokens, or secrets reachable from \`${token}\` ` +
-                `are stripped by the redactor before review output is posted.`);
-        case "correctness":
-            return (`The changed line in \`${file}\` references \`${token}\`. ` +
-                `Trace the new code path through \`${token}\` and verify the call sites ` +
-                `still gate the same invariants the previous implementation enforced.`);
-        case "performance":
-            return (`The changed line in \`${file}\` references \`${token}\`. ` +
-                `If \`${token}\` is invoked on every render path, consider memoizing its ` +
-                `output or hoisting the constant to keep the hot path cheap.`);
-        case "style":
-            return (`The changed line in \`${file}\` references \`${token}\`. ` +
-                `Reformat the surrounding region so the new \`${token}\` declaration stays ` +
-                `semantically grouped with the existing module exports.`);
+function mapReviewVerdictToGithubEvent(verdict) {
+    return verdict === "NEEDS_FIX" ? "REQUEST_CHANGES" : "COMMENT";
+}
+function mapReviewVerdictToAzureStatus(verdict) {
+    switch (verdict) {
+        case "NEEDS_FIX":
+            return "failed";
+        case "APPROVED":
+            return "succeeded";
+        case "COMMENT":
+        case "DISCUSS":
+        case "SHIP":
+            return "pending";
         default:
-            return (`The changed line in \`${file}\` references \`${token}\`. ` +
-                `Review the surrounding code paths and ensure \`${token}\` continues to behave as expected.`);
+            return "pending";
     }
+}
+function sanitizeForPost(value, secrets) {
+    let sanitized = value
+        .replace(/Authorization:\s*[^\r\n]*/giu, "[REDACTED_AUTHORIZATION_HEADER]")
+        .replace(/\bBearer\s+\S+/giu, "[REDACTED_BEARER_TOKEN]");
+    for (const secret of secrets) {
+        if (secret.length > 0) {
+            sanitized = sanitized.split(secret).join("[REDACTED_SECRET]");
+        }
+    }
+    return sanitized;
+}
+async function readTextResponse(response) {
+    try {
+        return await response.text();
+    }
+    catch (error) {
+        throw new LiveReviewError("HTTP_RESPONSE_READ_FAILED", "Failed to read REST response body.", { cause: error });
+    }
+}
+async function readJsonResponse(response) {
+    const text = await readTextResponse(response);
+    if (text.length === 0) {
+        return null;
+    }
+    try {
+        return JSON.parse(text);
+    }
+    catch (error) {
+        if (error instanceof SyntaxError) {
+            throw new LiveReviewError("HTTP_JSON_PARSE_FAILED", "REST response was not valid JSON.", { cause: error });
+        }
+        throw error;
+    }
+}
+function readResponseId(value) {
+    if (!live_shared_isRecord(value)) {
+        return undefined;
+    }
+    const id = value["id"];
+    return typeof id === "number" && Number.isSafeInteger(id) ? id : undefined;
+}
+function ensureHttpOk(response, code, action) {
+    if (!response.ok) {
+        throw new LiveReviewError(code, `${action} failed with HTTP ${response.status}.`);
+    }
+}
+function live_shared_isRecord(value) {
+    return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+function sanitizeInlineBody(comment, secrets) {
+    const prefix = `**${comment.severity} ${comment.category}**`;
+    const body = comment.body.length > 0 ? comment.body : `Finding at ${comment.path}:${comment.line}.`;
+    return sanitizeForPost(`${prefix}\n\n${body}`, secrets);
+}
+function passesSeverityPolicy(comment, parsed) {
+    if (parsed.ignoreMinor && comment.severity.toLowerCase() === "low") {
+        return false;
+    }
+    const minimum = parsed.minimumSeverity;
+    if (minimum === null) {
+        return true;
+    }
+    return severityRank(comment.severity) >= severityRank(minimum);
+}
+function severityRank(severity) {
+    switch (severity.toLowerCase()) {
+        case "critical":
+            return 4;
+        case "high":
+            return 3;
+        case "medium":
+            return 2;
+        case "low":
+            return 1;
+        default:
+            return 0;
+    }
+}
+
+;// CONCATENATED MODULE: ./src/cli/live-azure.ts
+
+
+
+async function runAzureLive(input) {
+    const { context, diffText, provider, parsed, fetchImpl } = input;
+    const comments = selectPostableComments({
+        review: provider.review,
+        diffText,
+        parsed,
+        secrets: [context.token],
+    });
+    const body = buildReviewBody({
+        review: provider.review,
+        provider: provider.provider,
+        modelId: provider.modelId,
+        validCommentCount: comments.length,
+        suppressedCommentCount: countSuppressedComments(provider.review, diffText),
+        secrets: [context.token],
+    });
+    const existingThreads = await listAzureThreads(context, fetchImpl);
+    const postedIds = [];
+    const failedIndices = [];
+    for (let index = 0; index < comments.length; index += 1) {
+        const comment = comments[index];
+        if (comment === undefined)
+            continue;
+        if (hasDuplicateThread(existingThreads, comment)) {
+            continue;
+        }
+        try {
+            const threadId = await postAzureThread({ context, fetchImpl, comment, body });
+            if (threadId !== undefined) {
+                postedIds.push(threadId);
+            }
+        }
+        catch (error) {
+            failedIndices.push(index);
+            const message = error instanceof Error ? error.message : String(error);
+            process.stderr.write(`::warning::umactually-pr-review: Azure thread ${index + 1}/${comments.length} failed (${comment.path}:${comment.line}): ${message}; continuing with remaining threads.\n`);
+        }
+    }
+    if (postedIds.length === 0 && failedIndices.length > 0) {
+        const failed = failedIndices.length;
+        const message = `Azure review failed: 0 threads posted, ${failed} failed`;
+        process.stderr.write(`::error::umactually-pr-review: ${message}\n`);
+        return {
+            exitCode: 1,
+            posted: false,
+            reviewId: undefined,
+            message,
+        };
+    }
+    // At least one thread landed — post the PR status.
+    await postAzureStatus({
+        context,
+        fetchImpl,
+        state: mapReviewVerdictToAzureStatus(provider.review.verdict),
+        description: provider.review.summary,
+    });
+    const firstPostedId = postedIds[0];
+    const successMessage = failedIndices.length > 0
+        ? `posted Azure review (${postedIds.length} threads, ${failedIndices.length} failed)`
+        : `posted Azure review (${postedIds.length} threads)`;
+    return {
+        exitCode: 0,
+        posted: true,
+        reviewId: firstPostedId,
+        message: successMessage,
+    };
+}
+async function listAzureThreads(context, fetchImpl) {
+    const response = await fetchImpl(azureThreadsUrl(context), {
+        method: "GET",
+        headers: azureHeaders(context.token),
+    });
+    ensureHttpOk(response, "AZURE_LIST_THREADS_FAILED", "Azure list PR threads");
+    const json = await readJsonResponse(response);
+    if (!live_shared_isRecord(json)) {
+        return [];
+    }
+    const value = json["value"];
+    if (!Array.isArray(value)) {
+        return [];
+    }
+    return value.map(parseAzureThread).filter((thread) => thread !== null);
+}
+const AZURE_OPEN_STATUSES = new Set(["active", "pending"]);
+const AZURE_RESOLVED_STATUSES = new Set(["closed", "fixed", "wontFix", "byDesign"]);
+function hasDuplicateThread(threads, comment) {
+    const azurePath = `/${comment.path}`.replace(/\/+/gu, "/");
+    const targetLine = comment.line;
+    return threads.some((thread) => {
+        if (thread.threadContext.filePath !== azurePath)
+            return false;
+        if (thread.threadContext.rightFileStart.line !== targetLine)
+            return false;
+        if (AZURE_RESOLVED_STATUSES.has(thread.status))
+            return true;
+        if (AZURE_OPEN_STATUSES.has(thread.status)) {
+            return thread.comments.some((c) => c.content.includes(run_review_REVIEW_MARKER));
+        }
+        return false;
+    });
+}
+async function postAzureThread(input) {
+    const response = await input.fetchImpl(azureThreadsUrl(input.context), {
+        method: "POST",
+        headers: azureHeaders(input.context.token),
+        body: JSON.stringify({
+            comments: [
+                {
+                    parentCommentId: 0,
+                    content: `${input.body}\n\n${input.comment.body}`,
+                    commentType: 1,
+                },
+            ],
+            status: 1,
+            threadContext: {
+                filePath: `/${input.comment.path}`,
+                rightFileStart: { line: input.comment.line, offset: 1 },
+                rightFileEnd: { line: input.comment.line, offset: 1 },
+            },
+        }),
+    });
+    ensureHttpOk(response, "AZURE_CREATE_THREAD_FAILED", "Azure create PR thread");
+    return readResponseId(await readJsonResponse(response));
+}
+async function postAzureStatus(input) {
+    const response = await input.fetchImpl(azureStatusesUrl(input.context), {
+        method: "POST",
+        headers: azureHeaders(input.context.token),
+        body: JSON.stringify({
+            state: input.state,
+            description: input.description,
+            context: { name: "UmActually", genre: "pr-review" },
+        }),
+    });
+    ensureHttpOk(response, "AZURE_CREATE_STATUS_FAILED", "Azure create PR status");
+}
+function parseAzureThread(value) {
+    if (!live_shared_isRecord(value)) {
+        return null;
+    }
+    const status = value["status"];
+    const comments = value["comments"];
+    if (typeof status !== "string" || !Array.isArray(comments)) {
+        return null;
+    }
+    const nestedContext = value["threadContext"];
+    const threadContext = live_shared_isRecord(nestedContext)
+        ? live_azure_readThreadContext(nestedContext)
+        : live_azure_readThreadContext(value);
+    if (threadContext === null) {
+        return null;
+    }
+    return {
+        status,
+        threadContext,
+        comments: comments.map(parseAzureComment).filter((comment) => comment !== null),
+    };
+}
+function live_azure_readThreadContext(record) {
+    const start = readRightFileStart(record);
+    const filePath = record["filePath"];
+    if (typeof filePath !== "string" || start === null) {
+        return null;
+    }
+    return { filePath, rightFileStart: start };
+}
+function readRightFileStart(context) {
+    const start = context["rightFileStart"];
+    if (!live_shared_isRecord(start)) {
+        return null;
+    }
+    const line = start["line"];
+    return typeof line === "number" && Number.isSafeInteger(line) ? { line } : null;
+}
+function parseAzureComment(value) {
+    if (!live_shared_isRecord(value)) {
+        return null;
+    }
+    const content = value["content"];
+    return typeof content === "string" ? { content } : null;
+}
+function azureThreadsUrl(context) {
+    return `${azurePrBaseUrl(context)}/threads?api-version=7.1`;
+}
+function azureStatusesUrl(context) {
+    return `${azurePrBaseUrl(context)}/statuses?api-version=7.1`;
+}
+function azurePrBaseUrl(context) {
+    const project = encodeURIComponent(context.project);
+    return `https://dev.azure.com/${context.org}/${project}/_apis/git/repositories/${context.repoId}/pullRequests/${context.prNumber}`;
+}
+function azureHeaders(token) {
+    return {
+        Authorization: `Bearer ${token}`,
+        Accept: "application/json",
+        "Content-Type": "application/json",
+        "User-Agent": "umactually-pr-review",
+    };
+}
+
+;// CONCATENATED MODULE: ./src/cli/live-github.ts
+
+
+
+async function runGithubLive(input) {
+    const { context, diffText, provider, parsed, fetchImpl } = input;
+    const comments = selectPostableComments({
+        review: provider.review,
+        diffText,
+        parsed,
+        secrets: [context.token],
+    });
+    const postableComments = comments.map((comment) => ({
+        path: comment.path,
+        line: comment.line,
+        side: "RIGHT",
+        body: comment.body,
+    }));
+    const body = buildReviewBody({
+        review: provider.review,
+        provider: provider.provider,
+        modelId: provider.modelId,
+        validCommentCount: comments.length,
+        suppressedCommentCount: countSuppressedComments(provider.review, diffText),
+        secrets: [context.token],
+    });
+    const existing = await findExistingMarkerReview(context, fetchImpl);
+    // When simulate-findings is set the demo path must ALWAYS replace the
+    // existing review via DELETE+POST — even when the new payload carries 0
+    // inline comments. PUT only works on PENDING reviews, but an action's
+    // submitted review is COMMENTED, so PUT is silently dropped by GitHub.
+    // The DELETE+POST path produces a fully populated review body that
+    // replaces whatever was on the PR before.
+    const forceReplace = parsed.simulateFindings === true;
+    if (existing !== null &&
+        !forceReplace &&
+        existing.state === "PENDING" &&
+        postableComments.length === 0) {
+        const reviewId = await updateExistingReview({ context, fetchImpl, review: existing, body });
+        if (reviewId !== null) {
+            return { exitCode: 0, posted: true, reviewId, message: "updated existing GitHub review" };
+        }
+        // PUT failed (e.g., 422 because submitted) — fall through to DELETE+POST below.
+    }
+    if (existing !== null) {
+        await deleteExistingReview({ context, fetchImpl, review: existing });
+    }
+    // simulate-findings is a demo of a populated review — keep the event neutral
+    // regardless of the underlying verdict so we never block the PR with a
+    // REQUEST_CHANGES from synthetic data.
+    const event = forceReplace
+        ? "COMMENT"
+        : mapReviewVerdictToGithubEvent(provider.review.verdict);
+    const reviewId = await createGithubReview({
+        context,
+        fetchImpl,
+        body,
+        event,
+        comments: postableComments,
+    });
+    return {
+        exitCode: 0,
+        posted: true,
+        reviewId,
+        message: existing !== null ? "replaced existing GitHub review" : "posted GitHub review",
+    };
+}
+async function findExistingMarkerReview(context, fetchImpl) {
+    const response = await fetchImpl(githubReviewsUrl(context), {
+        method: "GET",
+        headers: githubHeaders(context.token),
+    });
+    ensureHttpOk(response, "GITHUB_LIST_REVIEWS_FAILED", "GitHub list reviews");
+    const json = await readJsonResponse(response);
+    if (!Array.isArray(json)) {
+        return null;
+    }
+    for (const entry of json) {
+        const review = parseExistingReview(entry);
+        if (review !== null && review.body.includes(run_review_REVIEW_MARKER) && review.state !== "DISMISSED") {
+            return review;
+        }
+    }
+    return null;
+}
+async function updateExistingReview(input) {
+    try {
+        const response = await input.fetchImpl(`${githubReviewsUrl(input.context)}/${input.review.id}`, {
+            method: "PUT",
+            headers: githubHeaders(input.context.token),
+            body: JSON.stringify({ body: input.body }),
+        });
+        ensureHttpOk(response, "GITHUB_UPDATE_REVIEW_FAILED", "GitHub update review");
+        return input.review.id;
+    }
+    catch (error) {
+        if (error instanceof LiveReviewError && error.code === "GITHUB_UPDATE_REVIEW_FAILED") {
+            process.stderr.write(`::warning::umactually-pr-review: failed to update existing GitHub review ${input.review.id} (likely already submitted); falling back to DELETE+POST.\n`);
+            return null;
+        }
+        throw error;
+    }
+}
+async function deleteExistingReview(input) {
+    const response = await input.fetchImpl(`${githubReviewsUrl(input.context)}/${input.review.id}`, {
+        method: "DELETE",
+        headers: githubHeaders(input.context.token),
+    });
+    if (response.status === 204 || response.status === 404) {
+        return;
+    }
+    process.stderr.write(`::warning::umactually-pr-review: failed to delete existing review ${input.review.id} (${response.status}); posting new review anyway.\n`);
+}
+async function createGithubReview(input) {
+    const request = {
+        commit_id: input.context.headSha,
+        body: input.body,
+        event: input.event,
+        comments: input.comments,
+    };
+    const response = await input.fetchImpl(githubReviewsUrl(input.context), {
+        method: "POST",
+        headers: githubHeaders(input.context.token),
+        body: JSON.stringify(request),
+    });
+    ensureHttpOk(response, "GITHUB_CREATE_REVIEW_FAILED", "GitHub create review");
+    return readResponseId(await readJsonResponse(response));
+}
+function parseExistingReview(value) {
+    if (typeof value !== "object" || value === null || Array.isArray(value)) {
+        return null;
+    }
+    const record = value;
+    const id = record["id"];
+    const body = record["body"];
+    const state = record["state"];
+    if (typeof id === "number" && Number.isSafeInteger(id) &&
+        typeof body === "string" &&
+        typeof state === "string") {
+        return { id, body, state };
+    }
+    return null;
+}
+function githubReviewsUrl(context) {
+    const owner = encodeURIComponent(context.repo.owner);
+    const repo = encodeURIComponent(context.repo.name);
+    return `https://api.github.com/repos/${owner}/${repo}/pulls/${context.prNumber}/reviews`;
+}
+function githubHeaders(token) {
+    return {
+        Authorization: `Bearer ${token}`,
+        Accept: "application/vnd.github+json",
+        "Content-Type": "application/json",
+        "X-GitHub-Api-Version": "2026-03-10",
+        "User-Agent": "umactually-pr-review",
+    };
 }
 
 ;// CONCATENATED MODULE: ./src/render/json-extract.ts
@@ -2352,56 +2624,183 @@ function openai_compatible_createRequestId() {
     return `${hex.slice(0, 4).join("")}-${hex.slice(4, 6).join("")}-${hex.slice(6, 8).join("")}-${hex.slice(8, 10).join("")}-${hex.slice(10, 16).join("")}`;
 }
 
-;// CONCATENATED MODULE: ./src/cli/live-shared.ts
-
-
-
-
-
-
-/**
- * A provider outcome is structurally empty when it carries no inline comments
- * AND no suppressed comments. Used by `simulate-findings` to decide whether
- * the live result should be replaced with the deterministic fixture.
- */
-function isStructurallyEmptyReview(review) {
-    return review.comments.length === 0 && review.suppressedComments.length === 0;
+;// CONCATENATED MODULE: ./src/config/errors.ts
+class InvalidConfigError extends Error {
+    field;
+    reason;
+    name = "InvalidConfigError";
+    constructor(field, reason, options) {
+        super(`Invalid config for '${field}': ${reason}`, options);
+        this.field = field;
+        this.reason = reason;
+    }
 }
-class LiveReviewError extends Error {
-    code;
-    name = "LiveReviewError";
-    constructor(code, message, options) {
-        super(message, options);
-        this.code = code;
+class PromptFileError extends Error {
+    path;
+    reason;
+    name = "PromptFileError";
+    constructor(path, reason, options) {
+        super(`Prompt file error: ${reason}`, options);
+        this.path = path;
+        this.reason = reason;
     }
 }
 /**
- * Gate that refuses to post when high-confidence secrets are detected in the
- * diff. This is the runtime side of `identify leaks` — the scanner counts
- * leaks and redacts the diff, but the gate enforces that no provider response
- * can leak secrets through the posted review body. `detect-leaks: false`
- * bypasses the gate (operator opt-out).
+ * Marker used in error messages to replace any user-supplied value
+ * (URLs, tokens, prompt content). Never echo the raw value.
  */
-async function evaluateLeakGate(input) {
-    if (!input.detectLeaks) {
-        return { ok: true, leakCount: 0 };
+const REDACTED = "[REDACTED]";
+
+;// CONCATENATED MODULE: ./src/config/prompt-files.ts
+
+
+
+const PROMPT_SEPARATOR = "\n\n---\n\n";
+const nodePromptFileSystem = {
+    realpath(cwd) {
+        return (0,promises_namespaceObject.realpath)(cwd);
+    },
+    async realpathWithinCwd(path, cwdReal, _self) {
+        const absolute = (0,external_node_path_namespaceObject.resolve)(cwdReal, path);
+        let real;
+        try {
+            real = await (0,promises_namespaceObject.realpath)(absolute);
+        }
+        catch {
+            return { absolute, withinCwd: isWithinCwdLexical(absolute, cwdReal) };
+        }
+        return { absolute: real, withinCwd: isWithinCwdReal(real, cwdReal) };
+    },
+    stat(path) {
+        return (0,promises_namespaceObject.stat)(path).then((s) => ({ isFile: s.isFile(), size: s.size }));
+    },
+    readFile(path) {
+        return (0,promises_namespaceObject.readFile)(path, "utf8");
+    },
+};
+function isWithinCwdReal(real, cwdReal) {
+    if (process.platform === "win32") {
+        const r = real.toLowerCase();
+        const c = cwdReal.toLowerCase();
+        return r === c || r.startsWith(`${c}${external_node_path_namespaceObject.sep}`);
     }
-    const report = await scanReviewSecrets({
-        diffText: input.diffText,
-        expectedArtifact: "artifacts/manual/s5-redaction-report.json",
-    });
-    if (report.highConfidenceLeakCount === 0) {
-        return { ok: true, leakCount: 0 };
+    return real === cwdReal || real.startsWith(`${cwdReal}/`);
+}
+function isWithinCwdLexical(absolute, cwdReal) {
+    const rel = external_node_path_namespaceObject.posix.relative(toPosix(cwdReal), toPosix(absolute));
+    return rel !== "" && !rel.startsWith("..") && !external_node_path_namespaceObject.posix.isAbsolute(rel);
+}
+function toPosix(value) {
+    return process.platform === "win32" ? value.replace(/\\/g, "/") : value;
+}
+/**
+ * Reads each file under `cwd` and concatenates contents.
+ * - Rejects any path whose resolved-realpath escapes `cwd`.
+ * - Enforces a per-file and aggregate byte cap.
+ * - Never includes file contents in errors; only the `[REDACTED]` marker.
+ */
+async function readPromptFiles(paths, byteCap, options) {
+    if (!Number.isInteger(byteCap) || byteCap <= 0) {
+        throw new InvalidConfigError("prompt.byteCap", `expected positive integer, received ${byteCap}`);
     }
+    const fs = options.fs ?? nodePromptFileSystem;
+    const cwdReal = await fs.realpath(options.cwd);
+    const parts = [];
+    let aggregateBytes = 0;
+    for (const rawPath of paths) {
+        if (typeof rawPath !== "string" || rawPath.length === 0) {
+            throw new PromptFileError(String(rawPath), "not-found");
+        }
+        if ((0,external_node_path_namespaceObject.isAbsolute)(rawPath)) {
+            throw new PromptFileError(rawPath, "outside-cwd");
+        }
+        const resolved = await fs.realpathWithinCwd(rawPath, cwdReal, fs);
+        if (!resolved.withinCwd) {
+            throw new PromptFileError(rawPath, "outside-cwd");
+        }
+        let stat;
+        try {
+            stat = await fs.stat(resolved.absolute);
+        }
+        catch {
+            throw new PromptFileError(rawPath, "not-found");
+        }
+        if (!stat.isFile) {
+            throw new PromptFileError(rawPath, "not-a-file");
+        }
+        if (stat.size > byteCap) {
+            throw new PromptFileError(rawPath, "byte-cap-exceeded");
+        }
+        aggregateBytes += stat.size;
+        if (aggregateBytes > byteCap) {
+            throw new PromptFileError(rawPath, "byte-cap-exceeded");
+        }
+        let text;
+        try {
+            text = await fs.readFile(resolved.absolute);
+        }
+        catch {
+            throw new PromptFileError(rawPath, "read-failed");
+        }
+        parts.push(text);
+    }
+    return parts.join(PROMPT_SEPARATOR);
+}
+
+;// CONCATENATED MODULE: ./src/cli/provider-prompts.ts
+
+const DEFAULT_PROMPT_BYTE_CAP = 64 * 1024;
+async function buildProviderPrompts(input) {
+    const additionalPrompt = await readAdditionalPrompt(input);
+    const userParts = [
+        `Platform: ${input.platform}`,
+        additionalPrompt.length > 0 ? `Additional instructions:\n${additionalPrompt}` : "Additional instructions: none",
+    ];
+    if (input.sonarContext !== undefined && input.sonarContext.length > 0) {
+        userParts.push(input.sonarContext);
+    }
+    userParts.push("Diff:", input.diffText);
     return {
-        ok: false,
-        leakCount: report.highConfidenceLeakCount,
-        message: `Refusing to post: ${report.highConfidenceLeakCount} high-confidence secret(s) detected in the diff. Set --no-detect-leaks to override (NOT recommended).`,
+        system: await pickSystemPrompt(input),
+        user: userParts.join("\n\n"),
     };
 }
+async function pickSystemPrompt(input) {
+    const inline = input.parsed.prompt;
+    if (typeof inline === "string" && inline.length > 0) {
+        return inline;
+    }
+    const filePath = input.parsed.promptFile ?? input.env["UMACTUALLY_PROMPT_FILE"];
+    if (filePath !== undefined && filePath.length > 0) {
+        return readPromptFiles([filePath], DEFAULT_PROMPT_BYTE_CAP, { cwd: input.cwd });
+    }
+    return [
+        "You are UmActually, a precise pull request reviewer.",
+        "Return strict JSON only with this schema:",
+        "{\"summary\":string,\"verdict\":\"COMMENT\"|\"APPROVED\"|\"NEEDS_FIX\",\"comments\":[{\"path\":string,\"line\":number,\"body\":string,\"severity\":string,\"category\":string}],\"suppressed_comments\":[{\"path\":string,\"line\":number,\"body\":string,\"severity\":string,\"category\":string}]}",
+        "Anchor comments only to changed or context lines present in the diff. Do not include secrets.",
+    ].join("\n");
+}
+async function readAdditionalPrompt(input) {
+    const inline = input.parsed.additionalPrompt;
+    if (typeof inline === "string" && inline.length > 0) {
+        return inline;
+    }
+    const filePath = input.parsed.additionalPromptFile ?? input.env["UMACTUALLY_ADDITIONAL_PROMPT_FILE"];
+    if (filePath === undefined || filePath.length === 0) {
+        return "";
+    }
+    return readPromptFiles([filePath], DEFAULT_PROMPT_BYTE_CAP, { cwd: input.cwd });
+}
+
+;// CONCATENATED MODULE: ./src/cli/live-provider.ts
+
+
+
+
+
 const DEFAULT_MODEL = "auto";
-const live_shared_DEFAULT_REQUEST_TIMEOUT_MS = 60_000;
-const DEFAULT_MAX_COMMENTS = 50;
+const live_provider_DEFAULT_REQUEST_TIMEOUT_MS = 60_000;
 const PROVIDER_NAME = "openai-compatible";
 const COPILOT_PROVIDER_NAME = "github-copilot";
 async function requestLiveReview(input) {
@@ -2472,145 +2871,6 @@ async function requestLiveReview(input) {
     }
     throw new LiveReviewError("PROVIDER_REQUEST_FAILED", result.error.message, { cause: result.error });
 }
-function buildReviewBody(input) {
-    const rawBody = [
-        run_review_REVIEW_MARKER,
-        sanitizeForPost(input.review.summary, input.secrets),
-        "",
-        `${sanitizeForPost(input.modelId, input.secrets)} (${sanitizeForPost(input.provider, input.secrets)})`,
-        "",
-        `Findings: ${input.validCommentCount} inline, ${input.suppressedCommentCount} suppressed.`,
-    ].join("\n");
-    return sanitizeForPost(rawBody, input.secrets);
-}
-function selectPostableComments(input) {
-    const positions = parseDiffPositions(input.diffText);
-    const maxComments = input.parsed.maxComments ?? DEFAULT_MAX_COMMENTS;
-    const comments = [];
-    for (const comment of input.review.comments) {
-        if (comments.length >= maxComments) {
-            break;
-        }
-        if (!positions.hasPosition(comment)) {
-            continue;
-        }
-        if (!passesSeverityPolicy(comment, input.parsed)) {
-            continue;
-        }
-        comments.push({ ...comment, body: sanitizeInlineBody(comment, input.secrets) });
-    }
-    return comments;
-}
-function countSuppressedComments(review, diffText) {
-    const positions = parseDiffPositions(diffText);
-    let count = review.suppressedComments.length;
-    for (const comment of review.comments) {
-        if (!positions.hasPosition(comment)) {
-            count += 1;
-        }
-    }
-    return count;
-}
-function mapReviewVerdictToGithubEvent(verdict) {
-    return verdict === "NEEDS_FIX" ? "REQUEST_CHANGES" : "COMMENT";
-}
-function mapReviewVerdictToAzureStatus(verdict) {
-    switch (verdict) {
-        case "NEEDS_FIX":
-            return "failed";
-        case "APPROVED":
-            return "succeeded";
-        case "COMMENT":
-        case "DISCUSS":
-        case "SHIP":
-            return "pending";
-        default:
-            return "pending";
-    }
-}
-function sanitizeForPost(value, secrets) {
-    let sanitized = value
-        .replace(/Authorization:\s*[^\r\n]*/giu, "[REDACTED_AUTHORIZATION_HEADER]")
-        .replace(/\bBearer\s+\S+/giu, "[REDACTED_BEARER_TOKEN]");
-    for (const secret of secrets) {
-        if (secret.length > 0) {
-            sanitized = sanitized.split(secret).join("[REDACTED_SECRET]");
-        }
-    }
-    return sanitized;
-}
-async function readTextResponse(response) {
-    try {
-        return await response.text();
-    }
-    catch (error) {
-        throw new LiveReviewError("HTTP_RESPONSE_READ_FAILED", "Failed to read REST response body.", { cause: error });
-    }
-}
-async function readJsonResponse(response) {
-    const text = await readTextResponse(response);
-    if (text.length === 0) {
-        return null;
-    }
-    try {
-        return JSON.parse(text);
-    }
-    catch (error) {
-        if (error instanceof SyntaxError) {
-            throw new LiveReviewError("HTTP_JSON_PARSE_FAILED", "REST response was not valid JSON.", { cause: error });
-        }
-        throw error;
-    }
-}
-function readResponseId(value) {
-    if (!live_shared_isRecord(value)) {
-        return undefined;
-    }
-    const id = value["id"];
-    return typeof id === "number" && Number.isSafeInteger(id) ? id : undefined;
-}
-function ensureHttpOk(response, code, action) {
-    if (!response.ok) {
-        throw new LiveReviewError(code, `${action} failed with HTTP ${response.status}.`);
-    }
-}
-function live_shared_isRecord(value) {
-    return typeof value === "object" && value !== null && !Array.isArray(value);
-}
-async function buildProviderPrompts(input) {
-    const additionalPrompt = await readAdditionalPrompt(input);
-    return {
-        system: pickSystemPrompt(input.parsed.prompt),
-        user: [
-            `Platform: ${input.platform}`,
-            additionalPrompt.length > 0 ? `Additional instructions:\n${additionalPrompt}` : "Additional instructions: none",
-            "Diff:",
-            input.diffText,
-        ].join("\n\n"),
-    };
-}
-function pickSystemPrompt(inline) {
-    if (typeof inline === "string" && inline.length > 0) {
-        return inline;
-    }
-    return [
-        "You are UmActually, a precise pull request reviewer.",
-        "Return strict JSON only with this schema:",
-        "{\"summary\":string,\"verdict\":\"COMMENT\"|\"APPROVED\"|\"NEEDS_FIX\",\"comments\":[{\"path\":string,\"line\":number,\"body\":string,\"severity\":string,\"category\":string}],\"suppressed_comments\":[{\"path\":string,\"line\":number,\"body\":string,\"severity\":string,\"category\":string}]}",
-        "Anchor comments only to changed or context lines present in the diff. Do not include secrets.",
-    ].join("\n");
-}
-async function readAdditionalPrompt(input) {
-    const inline = input.parsed.additionalPrompt;
-    if (typeof inline === "string" && inline.length > 0) {
-        return inline;
-    }
-    const filePath = input.parsed.additionalPromptFile ?? input.env["UMACTUALLY_ADDITIONAL_PROMPT_FILE"];
-    if (filePath === undefined || filePath.length === 0) {
-        return "";
-    }
-    return (0,promises_namespaceObject.readFile)(new URL(filePath, `file://${input.cwd.replace(/\\/gu, "/")}/`), "utf8");
-}
 function normalizeProviderReview(payload, secrets) {
     return {
         summary: sanitizeForPost(payload.summary, secrets),
@@ -2628,11 +2888,6 @@ function normalizeProviderComment(comment, secrets) {
         category: sanitizeForPost(comment.category, secrets),
     };
 }
-function sanitizeInlineBody(comment, secrets) {
-    const prefix = `**${comment.severity} ${comment.category}**`;
-    const body = comment.body.length > 0 ? comment.body : `Finding at ${comment.path}:${comment.line}.`;
-    return sanitizeForPost(`${prefix}\n\n${body}`, secrets);
-}
 function readRequiredConfig(value, name) {
     if (value === undefined || value === null || value.length === 0) {
         throw new LiveReviewError("LIVE_CONFIG_MISSING", `${name} must be set for live review.`);
@@ -2649,7 +2904,7 @@ function readConfiguredModel(parsed, env) {
 }
 function readRequestTimeoutMs(parsed) {
     const seconds = parsed.perRequestTimeoutSeconds ?? parsed.reviewTimeoutSeconds;
-    return seconds === null || seconds <= 0 ? live_shared_DEFAULT_REQUEST_TIMEOUT_MS : seconds * 1_000;
+    return seconds === null || seconds <= 0 ? live_provider_DEFAULT_REQUEST_TIMEOUT_MS : seconds * 1_000;
 }
 function buildMalformedProviderFallback() {
     return {
@@ -2659,426 +2914,360 @@ function buildMalformedProviderFallback() {
         suppressedComments: [],
     };
 }
-function passesSeverityPolicy(comment, parsed) {
-    if (parsed.ignoreMinor && comment.severity.toLowerCase() === "low") {
-        return false;
-    }
-    const minimum = parsed.minimumSeverity;
-    if (minimum === null) {
-        return true;
-    }
-    return severityRank(comment.severity) >= severityRank(minimum);
+
+;// CONCATENATED MODULE: ./src/cli/sonar-context.ts
+
+async function readLiveSonarContext(parsed, fetchImpl) {
+    const report = await readLiveSonarReport(parsed, fetchImpl);
+    return report === undefined ? undefined : formatSonarContext(report);
 }
-function severityRank(severity) {
-    switch (severity.toLowerCase()) {
-        case "critical":
-            return 4;
-        case "high":
-            return 3;
-        case "medium":
-            return 2;
-        case "low":
-            return 1;
-        default:
-            return 0;
+async function readLiveSonarReport(parsed, fetchImpl) {
+    const sonarConfigured = parsed.includeSonarqube &&
+        parsed.sonarHostUrl !== null &&
+        parsed.sonarToken !== null &&
+        parsed.sonarProjectKey !== null;
+    if (!sonarConfigured) {
+        return undefined;
     }
+    const sonarReport = await runLiveSonarImport({
+        sonarHostUrl: parsed.sonarHostUrl ?? "",
+        sonarToken: parsed.sonarToken ?? "",
+        sonarProjectKey: parsed.sonarProjectKey ?? "",
+        sonarTimeoutSeconds: parsed.sonarTimeoutSeconds ?? 300,
+        fetchImpl: fetchImpl,
+    });
+    process.stdout.write(`umactually-pr-review: sonar quality gate ${sonarReport.qualityGateStatus} (${sonarReport.importedFindingCount} findings, waited=${sonarReport.waitedForTerminalQualityGate})${sonarReport.timeoutHandled ? " [timeout handled]" : ""}\n`);
+    if (sonarReport.errorMessage !== undefined) {
+        process.stderr.write(`::warning::umactually-pr-review: ${sonarReport.errorMessage}\n`);
+    }
+    return sonarReport;
+}
+function formatSonarContext(report) {
+    return [
+        "SonarQube report:",
+        `Quality gate: ${report.qualityGateStatus}`,
+        `Imported findings: ${report.importedFindingCount}`,
+        `Waited for terminal quality gate: ${report.waitedForTerminalQualityGate}`,
+        `Timeout handled: ${report.timeoutHandled}`,
+    ].join("\n");
 }
 
-;// CONCATENATED MODULE: ./src/cli/live-azure.ts
-
-
-
-async function runAzureLive(input) {
-    const { context, diffText, provider, parsed, fetchImpl } = input;
-    // Refuse to post when the diff contains high-confidence secrets.
-    // This is the runtime enforcement of "identify leaks" — the scanner
-    // (src/security/scan-review-secrets.ts) counts leaks, this gate enforces.
-    const leakGate = await evaluateLeakGate({
-        diffText,
-        detectLeaks: parsed.detectLeaks,
-    });
-    if (!leakGate.ok) {
-        process.stderr.write(`::error::umactually-pr-review: ${leakGate.message}\n`);
-        return {
-            exitCode: 1,
-            posted: false,
-            reviewId: undefined,
-            message: leakGate.message,
-        };
-    }
-    const comments = selectPostableComments({
-        review: provider.review,
-        diffText,
-        parsed,
-        secrets: [context.token],
-    });
-    const body = buildReviewBody({
-        review: provider.review,
-        provider: provider.provider,
-        modelId: provider.modelId,
-        validCommentCount: comments.length,
-        suppressedCommentCount: countSuppressedComments(provider.review, diffText),
-        secrets: [context.token],
-    });
-    const existingThreads = await listAzureThreads(context, fetchImpl);
-    const postedIds = [];
-    const failedIndices = [];
-    for (let index = 0; index < comments.length; index += 1) {
-        const comment = comments[index];
-        if (comment === undefined)
-            continue;
-        if (hasDuplicateThread(existingThreads, comment)) {
+;// CONCATENATED MODULE: ./src/review/diff-line-utils.ts
+/**
+ * Walk the diff text and return the raw line content for the first
+ * `+` or ` ` row at the given right-side position. Falls back to an empty
+ * string when the diff has no hunk header reachable for the file path.
+ *
+ * Exposed so the simulated-findings fixture can build context-aware bodies
+ * that reference a representative token from the actual diff line.
+ */
+function readDiffLine(diffText, position) {
+    const targetPath = `b/${position.path}`;
+    const diffLines = diffText.split(/\r?\n/u);
+    let currentPath = null;
+    let nextNewLine = null;
+    for (const rawLine of diffLines) {
+        if (rawLine.startsWith("diff --git ")) {
+            currentPath = null;
+            nextNewLine = null;
             continue;
         }
-        try {
-            const threadId = await postAzureThread({ context, fetchImpl, comment, body });
-            if (threadId !== undefined) {
-                postedIds.push(threadId);
+        if (currentPath === null) {
+            if (rawLine.startsWith("+++ ")) {
+                const [rawPath] = rawLine.slice(4).split("\t");
+                if (rawPath !== undefined) {
+                    const path = rawPath.trim();
+                    if (path !== "/dev/null") {
+                        const normalized = path.startsWith("b/") ? path.slice(2) : path;
+                        if (normalized === position.path) {
+                            currentPath = targetPath;
+                        }
+                        else {
+                            currentPath = normalized;
+                        }
+                    }
+                }
             }
+            continue;
         }
-        catch (error) {
-            failedIndices.push(index);
-            const message = error instanceof Error ? error.message : String(error);
-            process.stderr.write(`::warning::umactually-pr-review: Azure thread ${index + 1}/${comments.length} failed (${comment.path}:${comment.line}): ${message}; continuing with remaining threads.\n`);
+        if (currentPath !== targetPath) {
+            continue;
+        }
+        if (rawLine.startsWith("@@ ")) {
+            const start = parseHunkStart(rawLine);
+            nextNewLine = start;
+            continue;
+        }
+        if (nextNewLine === null) {
+            continue;
+        }
+        if (rawLine.startsWith("+") || rawLine.startsWith(" ")) {
+            if (nextNewLine === position.line) {
+                return rawLine.slice(1).trim();
+            }
+            nextNewLine += 1;
         }
     }
-    if (postedIds.length === 0 && failedIndices.length > 0) {
-        const failed = failedIndices.length;
-        const message = `Azure review failed: 0 threads posted, ${failed} failed`;
-        process.stderr.write(`::error::umactually-pr-review: ${message}\n`);
+    return "";
+}
+/**
+ * `@@ -1,4 +1,7 @@` → 1. Returns null when the header is malformed.
+ */
+function parseHunkStart(line) {
+    if (!line.startsWith("@@ ")) {
+        return null;
+    }
+    const plusIndex = line.indexOf("+");
+    if (plusIndex === -1) {
+        return null;
+    }
+    const afterPlus = line.slice(plusIndex + 1);
+    const endIndex = afterPlus.search(/[ ,]/u);
+    const rawStart = endIndex === -1 ? afterPlus : afterPlus.slice(0, endIndex);
+    const start = Number.parseInt(rawStart, 10);
+    return Number.isSafeInteger(start) && start > 0 ? start : null;
+}
+/**
+ * Pull a meaningful token out of the diff line for context-aware bodies.
+ * Falls back to a path-derived identifier when the line is blank.
+ */
+function extractRepresentativeToken(lineContent, path) {
+    const identifierMatch = lineContent.match(/\b([A-Za-z_$][\w$]*)\s*\(/u);
+    if (identifierMatch !== null && identifierMatch[1] !== undefined) {
+        return identifierMatch[1];
+    }
+    const declarationMatch = lineContent.match(/\b(?:const|let|var|function|class|interface|type|export)\s+([A-Za-z_$][\w$]*)/u);
+    if (declarationMatch !== null && declarationMatch[1] !== undefined) {
+        return declarationMatch[1];
+    }
+    const genericMatch = lineContent.match(/\b([A-Za-z_$][\w$]{3,})\b/u);
+    if (genericMatch !== null && genericMatch[1] !== undefined) {
+        return genericMatch[1];
+    }
+    const fallback = path.replace(/[^\w]+/gu, "_").replace(/^_+|_+$/gu, "");
+    return fallback.length > 0 ? fallback : "this change";
+}
+
+;// CONCATENATED MODULE: ./src/review/simulated-findings.ts
+
+
+/**
+ * Deterministic fixture used by `simulate-findings` to exercise the full
+ * render + post path when the live provider returns structurally empty output.
+ *
+ * The fixture:
+ * - parses the real PR diff with `parseDiffPositions` and enumerates the
+ *   right-side positions to anchor every inline comment on a real diff line,
+ * - mixes severities (high/medium/low) and categories (security, style,
+ *   correctness, performance) across at least two files,
+ * - extracts a representative token from the diff line (or path) so each
+ *   finding body references real code rather than a hard-coded example,
+ * - ships 1-2 suppressed_comments entries that deliberately reference lines
+ *   NOT in the diff so the suppression path is exercised,
+ * - never embeds the review marker, raw provider JSON, fenced details blocks,
+ *   or API keys — the marker is appended by the GitHub posting layer.
+ */
+function buildSimulatedFindings(repo, prNumber, headSha, diffText) {
+    const positions = parseDiffPositions(diffText);
+    const enumerated = positions.enumerate();
+    const inlineBlueprints = enumerated.length > 0
+        ? buildDiverseBlueprints(enumerated, diffText)
+        : buildFallbackBlueprints();
+    const acceptUnanchored = enumerated.length === 0;
+    const comments = [];
+    for (const blueprint of inlineBlueprints) {
+        if (acceptUnanchored || positions.hasPosition(blueprint)) {
+            comments.push({ ...blueprint });
+        }
+        if (comments.length >= MAX_INLINE) {
+            break;
+        }
+    }
+    // Suppressed off-diff entries deliberately reference paths/lines that are
+    // NOT present in the diff so the suppression-counting path is exercised.
+    const suppressedBlueprints = [
+        {
+            path: "src/review/example.ts",
+            line: 999,
+            severity: "medium",
+            category: "correctness",
+            body: "Older comment that referenced a removed line is suppressed because the diff no longer contains that position.",
+        },
+        {
+            path: "src/legacy/never-existed.ts",
+            line: 1,
+            severity: "low",
+            category: "style",
+            body: "Suppressed because `src/legacy/never-existed.ts` is not part of the PR diff and no longer ships in the tree.",
+        },
+    ];
+    const suppressed_comments = [];
+    for (const blueprint of suppressedBlueprints) {
+        if (!positions.hasPosition(blueprint)) {
+            suppressed_comments.push({ ...blueprint });
+        }
+        if (suppressed_comments.length >= 2) {
+            break;
+        }
+    }
+    return {
+        summary: `Simulated review for ${repo}#${prNumber} at ${headSha}. ` +
+            `${comments.length} inline findings, ${suppressed_comments.length} suppressed off-diff.`,
+        verdict: "NEEDS_FIX",
+        comments,
+        suppressed_comments,
+    };
+}
+const MAX_INLINE = 6;
+const SEVERITY_PALETTE = ["high", "medium", "low"];
+const CATEGORY_PALETTE = [
+    "security",
+    "correctness",
+    "style",
+    "performance",
+];
+/**
+ * Pick up to `MAX_INLINE` positions from the enumerated diff, ensuring at
+ * least one anchor per distinct file so findings span multiple paths and
+ * severities/categories cycle through their palettes.
+ *
+ * Strategy: take the first position from each unique file (in diff order)
+ * to guarantee path diversity, then top up with additional positions from
+ * earlier paths until the cap is reached.
+ */
+function buildDiverseBlueprints(enumerated, diffText) {
+    const picked = [];
+    const seenPaths = new Set();
+    for (const position of enumerated) {
+        if (seenPaths.has(position.path)) {
+            continue;
+        }
+        seenPaths.add(position.path);
+        picked.push(position);
+        if (picked.length >= MAX_INLINE) {
+            break;
+        }
+    }
+    for (const position of enumerated) {
+        if (picked.length >= MAX_INLINE) {
+            break;
+        }
+        if (picked.includes(position)) {
+            continue;
+        }
+        picked.push(position);
+    }
+    return picked.map((position, index) => {
+        const lineContent = readDiffLine(diffText, position);
+        const token = extractRepresentativeToken(lineContent, position.path);
+        const severity = SEVERITY_PALETTE[index % SEVERITY_PALETTE.length] ?? "medium";
+        const category = CATEGORY_PALETTE[index % CATEGORY_PALETTE.length] ?? "correctness";
+        const body = buildContextAwareBody(position, token, category);
         return {
-            exitCode: 1,
-            posted: false,
-            reviewId: undefined,
-            message,
+            path: position.path,
+            line: position.line,
+            severity,
+            category,
+            body,
         };
-    }
-    // At least one thread landed — post the PR status.
-    await postAzureStatus({
-        context,
-        fetchImpl,
-        state: mapReviewVerdictToAzureStatus(provider.review.verdict),
-        description: provider.review.summary,
-    });
-    const firstPostedId = postedIds[0];
-    const successMessage = failedIndices.length > 0
-        ? `posted Azure review (${postedIds.length} threads, ${failedIndices.length} failed)`
-        : `posted Azure review (${postedIds.length} threads)`;
-    return {
-        exitCode: 0,
-        posted: true,
-        reviewId: firstPostedId,
-        message: successMessage,
-    };
-}
-async function listAzureThreads(context, fetchImpl) {
-    const response = await fetchImpl(azureThreadsUrl(context), {
-        method: "GET",
-        headers: azureHeaders(context.token),
-    });
-    ensureHttpOk(response, "AZURE_LIST_THREADS_FAILED", "Azure list PR threads");
-    const json = await readJsonResponse(response);
-    if (!live_shared_isRecord(json)) {
-        return [];
-    }
-    const value = json["value"];
-    if (!Array.isArray(value)) {
-        return [];
-    }
-    return value.map(parseAzureThread).filter((thread) => thread !== null);
-}
-const AZURE_OPEN_STATUSES = new Set(["active", "pending"]);
-const AZURE_RESOLVED_STATUSES = new Set(["closed", "fixed", "wontFix", "byDesign"]);
-function hasDuplicateThread(threads, comment) {
-    const azurePath = `/${comment.path}`.replace(/\/+/gu, "/");
-    const targetLine = comment.line;
-    return threads.some((thread) => {
-        if (thread.threadContext.filePath !== azurePath)
-            return false;
-        if (thread.threadContext.rightFileStart.line !== targetLine)
-            return false;
-        if (AZURE_RESOLVED_STATUSES.has(thread.status))
-            return true;
-        if (AZURE_OPEN_STATUSES.has(thread.status)) {
-            return thread.comments.some((c) => c.content.includes(run_review_REVIEW_MARKER));
-        }
-        return false;
     });
 }
-async function postAzureThread(input) {
-    const response = await input.fetchImpl(azureThreadsUrl(input.context), {
-        method: "POST",
-        headers: azureHeaders(input.context.token),
-        body: JSON.stringify({
-            comments: [
-                {
-                    parentCommentId: 0,
-                    content: `${input.body}\n\n${input.comment.body}`,
-                    commentType: 1,
-                },
-            ],
-            status: 1,
-            threadContext: {
-                filePath: `/${input.comment.path}`,
-                rightFileStart: { line: input.comment.line, offset: 1 },
-                rightFileEnd: { line: input.comment.line, offset: 1 },
-            },
-        }),
-    });
-    ensureHttpOk(response, "AZURE_CREATE_THREAD_FAILED", "Azure create PR thread");
-    return readResponseId(await readJsonResponse(response));
-}
-async function postAzureStatus(input) {
-    const response = await input.fetchImpl(azureStatusesUrl(input.context), {
-        method: "POST",
-        headers: azureHeaders(input.context.token),
-        body: JSON.stringify({
-            state: input.state,
-            description: input.description,
-            context: { name: "UmActually", genre: "pr-review" },
-        }),
-    });
-    ensureHttpOk(response, "AZURE_CREATE_STATUS_FAILED", "Azure create PR status");
-}
-function parseAzureThread(value) {
-    if (!live_shared_isRecord(value)) {
-        return null;
-    }
-    const status = value["status"];
-    const comments = value["comments"];
-    if (typeof status !== "string" || !Array.isArray(comments)) {
-        return null;
-    }
-    const nestedContext = value["threadContext"];
-    const threadContext = live_shared_isRecord(nestedContext)
-        ? live_azure_readThreadContext(nestedContext)
-        : live_azure_readThreadContext(value);
-    if (threadContext === null) {
-        return null;
-    }
-    return {
-        status,
-        threadContext,
-        comments: comments.map(parseAzureComment).filter((comment) => comment !== null),
-    };
-}
-function live_azure_readThreadContext(record) {
-    const start = readRightFileStart(record);
-    const filePath = record["filePath"];
-    if (typeof filePath !== "string" || start === null) {
-        return null;
-    }
-    return { filePath, rightFileStart: start };
-}
-function readRightFileStart(context) {
-    const start = context["rightFileStart"];
-    if (!live_shared_isRecord(start)) {
-        return null;
-    }
-    const line = start["line"];
-    return typeof line === "number" && Number.isSafeInteger(line) ? { line } : null;
-}
-function parseAzureComment(value) {
-    if (!live_shared_isRecord(value)) {
-        return null;
-    }
-    const content = value["content"];
-    return typeof content === "string" ? { content } : null;
-}
-function azureThreadsUrl(context) {
-    return `${azurePrBaseUrl(context)}/threads?api-version=7.1`;
-}
-function azureStatusesUrl(context) {
-    return `${azurePrBaseUrl(context)}/statuses?api-version=7.1`;
-}
-function azurePrBaseUrl(context) {
-    const project = encodeURIComponent(context.project);
-    return `https://dev.azure.com/${context.org}/${project}/_apis/git/repositories/${context.repoId}/pullRequests/${context.prNumber}`;
-}
-function azureHeaders(token) {
-    return {
-        Authorization: `Bearer ${token}`,
-        Accept: "application/json",
-        "Content-Type": "application/json",
-        "User-Agent": "umactually-pr-review",
-    };
-}
-
-;// CONCATENATED MODULE: ./src/cli/live-github.ts
-
-
-
-async function runGithubLive(input) {
-    const { context, diffText, provider, parsed, fetchImpl } = input;
-    // Refuse to post when the diff contains high-confidence secrets.
-    // This is the runtime enforcement of "identify leaks" — the scanner
-    // (src/security/scan-review-secrets.ts) counts leaks, this gate enforces.
-    const leakGate = await evaluateLeakGate({
-        diffText,
-        detectLeaks: parsed.detectLeaks,
-    });
-    if (!leakGate.ok) {
-        process.stderr.write(`::error::umactually-pr-review: ${leakGate.message}\n`);
+/**
+ * Static fallback fixture used when the diff has zero right-side positions
+ * (e.g., a placeholder diff, typo-only PR, or empty PR). Anchors inline
+ * comments to synthetic positions on `src/example.ts` so the demo path always
+ * shows the full render + post pipeline.
+ */
+function buildFallbackBlueprints() {
+    const fallbackLines = [3, 5, 7, 9, 11, 13];
+    return fallbackLines.map((line, index) => {
+        const severity = SEVERITY_PALETTE[index % SEVERITY_PALETTE.length] ?? "medium";
+        const category = CATEGORY_PALETTE[index % CATEGORY_PALETTE.length] ?? "correctness";
+        const body = `Simulated fallback finding at \`src/example.ts:${line}\` because the diff has no right-side positions to anchor a real review.`;
         return {
-            exitCode: 1,
-            posted: false,
-            reviewId: undefined,
-            message: leakGate.message,
+            path: "src/example.ts",
+            line,
+            severity,
+            category,
+            body,
         };
-    }
-    const comments = selectPostableComments({
-        review: provider.review,
-        diffText,
-        parsed,
-        secrets: [context.token],
     });
-    const postableComments = comments.map((comment) => ({
+}
+/**
+ * Build a body that references the file path and a representative token,
+ * tuned by category. Bodies stay generic enough that the fixture remains
+ * useful even when the extracted token is awkward.
+ */
+function buildContextAwareBody(position, token, category) {
+    const file = position.path;
+    switch (category) {
+        case "security":
+            return (`The changed line in \`${file}\` references \`${token}\`. ` +
+                `Confirm that any string literals, tokens, or secrets reachable from \`${token}\` ` +
+                `are stripped by the redactor before review output is posted.`);
+        case "correctness":
+            return (`The changed line in \`${file}\` references \`${token}\`. ` +
+                `Trace the new code path through \`${token}\` and verify the call sites ` +
+                `still gate the same invariants the previous implementation enforced.`);
+        case "performance":
+            return (`The changed line in \`${file}\` references \`${token}\`. ` +
+                `If \`${token}\` is invoked on every render path, consider memoizing its ` +
+                `output or hoisting the constant to keep the hot path cheap.`);
+        case "style":
+            return (`The changed line in \`${file}\` references \`${token}\`. ` +
+                `Reformat the surrounding region so the new \`${token}\` declaration stays ` +
+                `semantically grouped with the existing module exports.`);
+        default:
+            return (`The changed line in \`${file}\` references \`${token}\`. ` +
+                `Review the surrounding code paths and ensure \`${token}\` continues to behave as expected.`);
+    }
+}
+
+;// CONCATENATED MODULE: ./src/cli/simulate-findings.ts
+
+
+/**
+ * Replaces the provider outcome with a deterministic fixture only when the live
+ * result is structurally empty. Live findings always win.
+ */
+function applySimulateFindings(input) {
+    if (!input.simulateFindings) {
+        return input.outcome;
+    }
+    const liveCommentCount = input.outcome.review.comments.length;
+    const liveSuppressedCount = input.outcome.review.suppressedComments.length;
+    const isStructurallyEmpty = liveCommentCount === 0 && liveSuppressedCount === 0;
+    if (!isStructurallyEmpty) {
+        const message = `umactually-pr-review: --simulate-findings set but ignored (live result has ${liveCommentCount} inline, ${liveSuppressedCount} suppressed). Live findings always win.`;
+        const sanitized = sanitizeForPost(message, input.secrets);
+        process.stderr.write(`::notice::${sanitized}\n`);
+        return input.outcome;
+    }
+    const fixture = buildSimulatedFindings(input.repo, input.prNumber, input.headSha, input.diffText);
+    return {
+        endpoint: input.outcome.endpoint,
+        provider: input.outcome.provider,
+        modelId: input.outcome.modelId,
+        review: {
+            summary: sanitizeForPost(fixture.summary, input.secrets),
+            verdict: fixture.verdict,
+            comments: sanitizeComments(fixture.comments, input.secrets),
+            suppressedComments: sanitizeComments(fixture.suppressed_comments, input.secrets),
+        },
+    };
+}
+function sanitizeComments(comments, secrets) {
+    return comments.map((comment) => ({
         path: comment.path,
         line: comment.line,
-        side: "RIGHT",
-        body: comment.body,
+        body: sanitizeForPost(comment.body, secrets),
+        severity: sanitizeForPost(comment.severity, secrets),
+        category: sanitizeForPost(comment.category, secrets),
     }));
-    const body = buildReviewBody({
-        review: provider.review,
-        provider: provider.provider,
-        modelId: provider.modelId,
-        validCommentCount: comments.length,
-        suppressedCommentCount: countSuppressedComments(provider.review, diffText),
-        secrets: [context.token],
-    });
-    const existing = await findExistingMarkerReview(context, fetchImpl);
-    // When simulate-findings is set the demo path must ALWAYS replace the
-    // existing review via DELETE+POST — even when the new payload carries 0
-    // inline comments. PUT only works on PENDING reviews, but an action's
-    // submitted review is COMMENTED, so PUT is silently dropped by GitHub.
-    // The DELETE+POST path produces a fully populated review body that
-    // replaces whatever was on the PR before.
-    const forceReplace = parsed.simulateFindings === true;
-    if (existing !== null &&
-        !forceReplace &&
-        existing.state === "PENDING" &&
-        postableComments.length === 0) {
-        const reviewId = await updateExistingReview({ context, fetchImpl, review: existing, body });
-        if (reviewId !== null) {
-            return { exitCode: 0, posted: true, reviewId, message: "updated existing GitHub review" };
-        }
-        // PUT failed (e.g., 422 because submitted) — fall through to DELETE+POST below.
-    }
-    if (existing !== null) {
-        await deleteExistingReview({ context, fetchImpl, review: existing });
-    }
-    // simulate-findings is a demo of a populated review — keep the event neutral
-    // regardless of the underlying verdict so we never block the PR with a
-    // REQUEST_CHANGES from synthetic data.
-    const event = forceReplace
-        ? "COMMENT"
-        : mapReviewVerdictToGithubEvent(provider.review.verdict);
-    const reviewId = await createGithubReview({
-        context,
-        fetchImpl,
-        body,
-        event,
-        comments: postableComments,
-    });
-    return {
-        exitCode: 0,
-        posted: true,
-        reviewId,
-        message: existing !== null ? "replaced existing GitHub review" : "posted GitHub review",
-    };
-}
-async function findExistingMarkerReview(context, fetchImpl) {
-    const response = await fetchImpl(githubReviewsUrl(context), {
-        method: "GET",
-        headers: githubHeaders(context.token),
-    });
-    ensureHttpOk(response, "GITHUB_LIST_REVIEWS_FAILED", "GitHub list reviews");
-    const json = await readJsonResponse(response);
-    if (!Array.isArray(json)) {
-        return null;
-    }
-    for (const entry of json) {
-        const review = parseExistingReview(entry);
-        if (review !== null && review.body.includes(run_review_REVIEW_MARKER) && review.state !== "DISMISSED") {
-            return review;
-        }
-    }
-    return null;
-}
-async function updateExistingReview(input) {
-    try {
-        const response = await input.fetchImpl(`${githubReviewsUrl(input.context)}/${input.review.id}`, {
-            method: "PUT",
-            headers: githubHeaders(input.context.token),
-            body: JSON.stringify({ body: input.body }),
-        });
-        ensureHttpOk(response, "GITHUB_UPDATE_REVIEW_FAILED", "GitHub update review");
-        return input.review.id;
-    }
-    catch (error) {
-        if (error instanceof LiveReviewError && error.code === "GITHUB_UPDATE_REVIEW_FAILED") {
-            process.stderr.write(`::warning::umactually-pr-review: failed to update existing GitHub review ${input.review.id} (likely already submitted); falling back to DELETE+POST.\n`);
-            return null;
-        }
-        throw error;
-    }
-}
-async function deleteExistingReview(input) {
-    const response = await input.fetchImpl(`${githubReviewsUrl(input.context)}/${input.review.id}`, {
-        method: "DELETE",
-        headers: githubHeaders(input.context.token),
-    });
-    if (response.status === 204 || response.status === 404) {
-        return;
-    }
-    process.stderr.write(`::warning::umactually-pr-review: failed to delete existing review ${input.review.id} (${response.status}); posting new review anyway.\n`);
-}
-async function createGithubReview(input) {
-    const request = {
-        commit_id: input.context.headSha,
-        body: input.body,
-        event: input.event,
-        comments: input.comments,
-    };
-    const response = await input.fetchImpl(githubReviewsUrl(input.context), {
-        method: "POST",
-        headers: githubHeaders(input.context.token),
-        body: JSON.stringify(request),
-    });
-    ensureHttpOk(response, "GITHUB_CREATE_REVIEW_FAILED", "GitHub create review");
-    return readResponseId(await readJsonResponse(response));
-}
-function parseExistingReview(value) {
-    if (typeof value !== "object" || value === null || Array.isArray(value)) {
-        return null;
-    }
-    const record = value;
-    const id = record["id"];
-    const body = record["body"];
-    const state = record["state"];
-    if (typeof id === "number" && Number.isSafeInteger(id) &&
-        typeof body === "string" &&
-        typeof state === "string") {
-        return { id, body, state };
-    }
-    return null;
-}
-function githubReviewsUrl(context) {
-    const owner = encodeURIComponent(context.repo.owner);
-    const repo = encodeURIComponent(context.repo.name);
-    return `https://api.github.com/repos/${owner}/${repo}/pulls/${context.prNumber}/reviews`;
-}
-function githubHeaders(token) {
-    return {
-        Authorization: `Bearer ${token}`,
-        Accept: "application/vnd.github+json",
-        "Content-Type": "application/json",
-        "X-GitHub-Api-Version": "2026-03-10",
-        "User-Agent": "umactually-pr-review",
-    };
 }
 
 ;// CONCATENATED MODULE: ./src/cli/orchestrator.ts
+
 
 
 
@@ -3128,23 +3317,7 @@ async function runLive(input) {
     // for the quality gate to reach a terminal state BEFORE posting the review.
     // This implements the user's "wait for sonarqube during that PR run"
     // requirement: the review reflects the latest quality-gate state.
-    const sonarConfigured = input.parsed.includeSonarqube &&
-        input.parsed.sonarHostUrl !== null &&
-        input.parsed.sonarToken !== null &&
-        input.parsed.sonarProjectKey !== null;
-    if (sonarConfigured) {
-        const sonarReport = await runLiveSonarImport({
-            sonarHostUrl: input.parsed.sonarHostUrl ?? "",
-            sonarToken: input.parsed.sonarToken ?? "",
-            sonarProjectKey: input.parsed.sonarProjectKey ?? "",
-            sonarTimeoutSeconds: input.parsed.sonarTimeoutSeconds ?? 300,
-            fetchImpl: fetchImpl,
-        });
-        process.stdout.write(`umactually-pr-review: sonar quality gate ${sonarReport.qualityGateStatus} (${sonarReport.importedFindingCount} findings, waited=${sonarReport.waitedForTerminalQualityGate})${sonarReport.timeoutHandled ? " [timeout handled]" : ""}\n`);
-        if (sonarReport.errorMessage !== undefined) {
-            process.stderr.write(`::warning::umactually-pr-review: ${sonarReport.errorMessage}\n`);
-        }
-    }
+    const sonarContext = await readLiveSonarContext(input.parsed, fetchImpl);
     let result;
     try {
         result = await dispatchLivePlatform({
@@ -3153,6 +3326,7 @@ async function runLive(input) {
             cwd: input.cwd,
             env,
             fetchImpl,
+            ...(sonarContext !== undefined ? { sonarContext } : {}),
         });
     }
     catch (error) {
@@ -3181,11 +3355,24 @@ async function runLive(input) {
  * off-diff count regardless of what the live API actually returned.
  */
 async function dispatchLivePlatform(input) {
-    const { platform, parsed, cwd, env, fetchImpl } = input;
+    const { platform, parsed, cwd, env, fetchImpl, sonarContext } = input;
     switch (platform) {
         case "github": {
             const context = await readGithubContext(env);
             const diffText = await fetchGithubPrDiff(context, fetchImpl);
+            const leakGate = await evaluateLeakGate({
+                diffText,
+                detectLeaks: parsed.detectLeaks,
+            });
+            if (!leakGate.ok) {
+                process.stderr.write(`::error::umactually-pr-review: ${leakGate.message}\n`);
+                return {
+                    exitCode: 1,
+                    posted: false,
+                    reviewId: undefined,
+                    message: leakGate.message,
+                };
+            }
             const liveOutcome = await requestLiveReview({
                 parsed,
                 cwd,
@@ -3194,6 +3381,7 @@ async function dispatchLivePlatform(input) {
                 platform: "github",
                 diffText,
                 platformToken: context.token,
+                ...(sonarContext !== undefined ? { sonarContext } : {}),
             });
             const finalOutcome = applySimulateFindings({
                 outcome: liveOutcome,
@@ -3215,6 +3403,19 @@ async function dispatchLivePlatform(input) {
         case "azure": {
             const context = readAzureContext(env);
             const diffText = await fetchAzurePrDiff(context, fetchImpl);
+            const leakGate = await evaluateLeakGate({
+                diffText,
+                detectLeaks: parsed.detectLeaks,
+            });
+            if (!leakGate.ok) {
+                process.stderr.write(`::error::umactually-pr-review: ${leakGate.message}\n`);
+                return {
+                    exitCode: 1,
+                    posted: false,
+                    reviewId: undefined,
+                    message: leakGate.message,
+                };
+            }
             const liveOutcome = await requestLiveReview({
                 parsed,
                 cwd,
@@ -3223,6 +3424,7 @@ async function dispatchLivePlatform(input) {
                 platform: "azure",
                 diffText,
                 platformToken: context.token,
+                ...(sonarContext !== undefined ? { sonarContext } : {}),
             });
             const finalOutcome = applySimulateFindings({
                 outcome: liveOutcome,
@@ -3244,62 +3446,6 @@ async function dispatchLivePlatform(input) {
         default:
             return orchestrator_assertNever(platform);
     }
-}
-/**
- * Replaces the provider outcome's payload with the deterministic fixture ONLY
- * when the live result is structurally empty (no inline comments AND no
- * suppressed comments). Live findings always win — the fixture is a demo
- * fallback for "provider returned nothing usable" cases. When
- * `simulateFindings` is false, the live result is preserved unchanged.
- *
- * The `provider`, `modelId`, and `endpoint` fields on the outcome are kept
- * from the live call (the fixture does not mint its own provider identity),
- * so the posted review body still shows "openai-compatible" as the provider.
- */
-function applySimulateFindings(input) {
-    if (!input.simulateFindings) {
-        return input.outcome;
-    }
-    const liveCommentCount = input.outcome.review.comments.length;
-    const liveSuppressedCount = input.outcome.review.suppressedComments.length;
-    const isStructurallyEmpty = liveCommentCount === 0 && liveSuppressedCount === 0;
-    if (!isStructurallyEmpty) {
-        // Live findings always win — do not override them with the deterministic
-        // fixture. Document the override intent on stderr so operators can see
-        // the flag was set but did not engage.
-        const message = `umactually-pr-review: --simulate-findings set but ignored (live result has ${liveCommentCount} inline, ${liveSuppressedCount} suppressed). Live findings always win.`;
-        const sanitized = sanitizeForPost(message, input.secrets);
-        process.stderr.write(`::notice::${sanitized}\n`);
-        return input.outcome;
-    }
-    const fixture = buildSimulatedFindings(input.repo, input.prNumber, input.headSha, input.diffText);
-    // Sanitize the fixture through the same sanitizer the live path uses so
-    // bodies cannot accidentally carry the API key or auth headers.
-    const sanitizedComments = fixture.comments.map((comment) => ({
-        path: comment.path,
-        line: comment.line,
-        body: sanitizeForPost(comment.body, input.secrets),
-        severity: sanitizeForPost(comment.severity, input.secrets),
-        category: sanitizeForPost(comment.category, input.secrets),
-    }));
-    const sanitizedSuppressed = fixture.suppressed_comments.map((comment) => ({
-        path: comment.path,
-        line: comment.line,
-        body: sanitizeForPost(comment.body, input.secrets),
-        severity: sanitizeForPost(comment.severity, input.secrets),
-        category: sanitizeForPost(comment.category, input.secrets),
-    }));
-    return {
-        endpoint: input.outcome.endpoint,
-        provider: input.outcome.provider,
-        modelId: input.outcome.modelId,
-        review: {
-            summary: sanitizeForPost(fixture.summary, input.secrets),
-            verdict: fixture.verdict,
-            comments: sanitizedComments,
-            suppressedComments: sanitizedSuppressed,
-        },
-    };
 }
 function detectLivePlatform(env) {
     if (env["GITHUB_ACTIONS"] === "true") {
@@ -3693,6 +3839,50 @@ function pathToFileUrl(value) {
     return new URL(`file://${value.replace(/\\/gu, "/")}`).href;
 }
 
+;// CONCATENATED MODULE: ./src/action/append-cli-inputs.ts
+function appendCommonInputArgs(args, inputs) {
+    pushFlagValue(args, "--api-url", inputs.apiUrl);
+    pushFlagValue(args, "--api-key", inputs.apiKey);
+    pushFlagValue(args, "--model", inputs.model);
+    pushFlagValue(args, "--prompt", inputs.prompt);
+    pushFlagValue(args, "--prompt-file", inputs.promptFile);
+    pushFlagValue(args, "--additional-prompt", inputs.additionalPrompt);
+    pushFlagValue(args, "--additional-prompt-file", inputs.additionalPromptFile);
+    pushFlagValue(args, "--sonar-host-url", inputs.sonarHostUrl);
+    pushFlagValue(args, "--sonar-token", inputs.sonarToken);
+    pushFlagValue(args, "--sonar-project-key", inputs.sonarProjectKey);
+    pushFlagValue(args, "--provider", inputs.provider);
+    pushFlagValue(args, "--github-api-base", inputs.githubApiBase);
+    pushFlagValue(args, "--effort", inputs.effort);
+    pushFlagValue(args, "--minimum-severity", inputs.minimumSeverity);
+    pushNumber(args, "--review-timeout-seconds", inputs.reviewTimeoutSeconds);
+    pushNumber(args, "--stall-seconds", inputs.stallSeconds);
+    pushNumber(args, "--max-output-tokens", inputs.maxOutputTokens);
+    pushNumber(args, "--max-comments", inputs.maxComments);
+    pushNumber(args, "--sonar-timeout-seconds", inputs.sonarTimeoutSeconds);
+    pushBool(args, inputs.ignoreMinor, "--ignore-minor");
+    pushBool(args, inputs.includeSonarqube, "--include-sonarqube");
+    pushBool(args, inputs.walkthrough, "--walkthrough");
+    pushBool(args, inputs.diagnostic, "--diagnostic");
+    pushBool(args, inputs.debugRawResponse, "--debug-raw-response");
+    pushBool(args, inputs.simulateFindings, "--simulate-findings");
+    args.push(inputs.detectLeaks ? "--detect-leaks" : "--no-detect-leaks");
+    args.push(inputs.dryRun ? "--dry-run" : "--no-dry-run");
+}
+function pushFlagValue(args, flag, value) {
+    if (typeof value === "string" && value.length > 0) {
+        args.push(flag, value);
+    }
+}
+function pushNumber(args, flag, value) {
+    args.push(flag, String(value));
+}
+function pushBool(args, condition, flag) {
+    if (condition) {
+        args.push(flag);
+    }
+}
+
 ;// CONCATENATED MODULE: ./src/action/read-inputs.ts
 function readActionInputs(env = process.env) {
     const inGitHubActions = env["GITHUB_ACTIONS"] === "true";
@@ -3824,6 +4014,7 @@ function parseBool(raw, fallback) {
 
 
 
+
 globalThis.__umactually_action_entry__ = true;
 async function src_main() {
     try {
@@ -3883,65 +4074,25 @@ async function buildGithubArgs(env, cwd) {
     const platform = inputs.platform === "azure" ? "azure-devops" : "github";
     args.push("--platform", platform);
     const eventPath = await resolveGithubEventPath(env, cwd);
-    pushFlagValue(args, "--event", eventPath);
+    src_pushFlagValue(args, "--event", eventPath);
     const diffPath = await resolveGithubDiffPath(env, cwd);
-    pushFlagValue(args, "--diff", diffPath);
-    pushFlagValue(args, "--review", env["INPUT_REVIEW"]);
-    pushFlagValue(args, "--api-url", inputs.apiUrl);
-    pushFlagValue(args, "--api-key", inputs.apiKey);
-    pushFlagValue(args, "--model", inputs.model);
-    pushFlagValue(args, "--prompt", inputs.prompt);
-    pushFlagValue(args, "--prompt-file", inputs.promptFile);
-    pushFlagValue(args, "--additional-prompt", inputs.additionalPrompt);
-    pushFlagValue(args, "--additional-prompt-file", inputs.additionalPromptFile);
-    pushFlagValue(args, "--sonar-host-url", inputs.sonarHostUrl);
-    pushFlagValue(args, "--sonar-token", inputs.sonarToken);
-    pushFlagValue(args, "--sonar-project-key", inputs.sonarProjectKey);
-    pushNumber(args, "--review-timeout-seconds", inputs.reviewTimeoutSeconds);
-    pushNumber(args, "--stall-seconds", inputs.stallSeconds);
-    pushNumber(args, "--max-output-tokens", inputs.maxOutputTokens);
-    pushBool(args, inputs.ignoreMinor, "--ignore-minor");
-    pushBool(args, inputs.includeSonarqube, "--include-sonarqube");
-    pushBool(args, inputs.walkthrough, "--walkthrough");
-    pushBool(args, inputs.diagnostic, "--diagnostic");
-    pushBool(args, inputs.debugRawResponse, "--debug-raw-response");
-    pushBool(args, inputs.simulateFindings, "--simulate-findings");
-    args.push(inputs.detectLeaks ? "--detect-leaks" : "--no-detect-leaks");
-    pushDryRunFlag(args, inputs);
-    pushFlagValue(args, "--output-artifact", envFallback(env["INPUT_OUTPUT_ARTIFACT"], "artifacts/manual/s1-github-self-review.md"));
+    src_pushFlagValue(args, "--diff", diffPath);
+    src_pushFlagValue(args, "--review", env["INPUT_REVIEW"]);
+    appendCommonInputArgs(args, inputs);
+    src_pushFlagValue(args, "--output-artifact", envFallback(env["INPUT_OUTPUT_ARTIFACT"], "artifacts/manual/s1-github-self-review.md"));
     return args;
 }
 function buildAzureArgs(env) {
     const inputs = readActionInputs(env);
     const args = ["--platform", "azure-devops"];
-    pushFlagValue(args, "--event", envFallback(env["INPUT_EVENT"], env["AZURE_PULL_REQUEST_PATH"]));
-    pushFlagValue(args, "--diff", envFallback(env["INPUT_DIFF"], env["AZURE_DIFF_PATH"], env["DIFF_PATH"]));
-    pushFlagValue(args, "--threads", envFallback(env["INPUT_THREADS"], env["AZURE_THREADS_PATH"]));
-    pushFlagValue(args, "--review", envFallback(env["INPUT_REVIEW"], env["AZURE_REVIEW_PATH"]));
-    pushFlagValue(args, "--api-url", inputs.apiUrl);
-    pushFlagValue(args, "--api-key", inputs.apiKey);
-    pushFlagValue(args, "--model", inputs.model);
-    pushFlagValue(args, "--prompt", inputs.prompt);
-    pushFlagValue(args, "--prompt-file", inputs.promptFile);
-    pushFlagValue(args, "--additional-prompt", inputs.additionalPrompt);
-    pushFlagValue(args, "--additional-prompt-file", inputs.additionalPromptFile);
-    pushFlagValue(args, "--pr-number", inputs.prNumber);
-    pushFlagValue(args, "--repo", inputs.repo);
-    pushFlagValue(args, "--sonar-host-url", inputs.sonarHostUrl);
-    pushFlagValue(args, "--sonar-token", inputs.sonarToken);
-    pushFlagValue(args, "--sonar-project-key", inputs.sonarProjectKey);
-    pushNumber(args, "--review-timeout-seconds", inputs.reviewTimeoutSeconds);
-    pushNumber(args, "--stall-seconds", inputs.stallSeconds);
-    pushNumber(args, "--max-output-tokens", inputs.maxOutputTokens);
-    pushBool(args, inputs.ignoreMinor, "--ignore-minor");
-    pushBool(args, inputs.includeSonarqube, "--include-sonarqube");
-    pushBool(args, inputs.walkthrough, "--walkthrough");
-    pushBool(args, inputs.diagnostic, "--diagnostic");
-    pushBool(args, inputs.debugRawResponse, "--debug-raw-response");
-    pushBool(args, inputs.simulateFindings, "--simulate-findings");
-    args.push(inputs.detectLeaks ? "--detect-leaks" : "--no-detect-leaks");
-    pushDryRunFlag(args, inputs);
-    pushFlagValue(args, "--output-artifact", envFallback(env["INPUT_OUTPUT_ARTIFACT"], "artifacts/manual/s4-azure-mocked-run.json"));
+    src_pushFlagValue(args, "--event", envFallback(env["INPUT_EVENT"], env["AZURE_PULL_REQUEST_PATH"]));
+    src_pushFlagValue(args, "--diff", envFallback(env["INPUT_DIFF"], env["AZURE_DIFF_PATH"], env["DIFF_PATH"]));
+    src_pushFlagValue(args, "--threads", envFallback(env["INPUT_THREADS"], env["AZURE_THREADS_PATH"]));
+    src_pushFlagValue(args, "--review", envFallback(env["INPUT_REVIEW"], env["AZURE_REVIEW_PATH"]));
+    src_pushFlagValue(args, "--pr-number", inputs.prNumber);
+    src_pushFlagValue(args, "--repo", inputs.repo);
+    appendCommonInputArgs(args, inputs);
+    src_pushFlagValue(args, "--output-artifact", envFallback(env["INPUT_OUTPUT_ARTIFACT"], "artifacts/manual/s4-azure-mocked-run.json"));
     return args;
 }
 /**
@@ -4003,7 +4154,7 @@ async function writePlaceholderFile(cwd, name, contents) {
     await (0,promises_namespaceObject.writeFile)(filePath, contents, "utf8");
     return filePath;
 }
-function pushFlagValue(args, flag, value) {
+function src_pushFlagValue(args, flag, value) {
     if (typeof value === "string" && value.length > 0) {
         args.push(flag, value);
     }
@@ -4014,25 +4165,6 @@ function envFallback(...values) {
             return value;
     }
     return "";
-}
-function pushNumber(args, flag, value) {
-    args.push(flag, String(value));
-}
-function pushBool(args, condition, flag) {
-    if (condition) {
-        args.push(flag);
-    }
-}
-function pushDryRunFlag(args, inputs) {
-    // Force --dry-run when INPUT_DRY_RUN is unset or true, or when GITHUB_ACTIONS
-    // is true (readActionInputs already applies that fallback). When INPUT_DRY_RUN
-    // is explicitly false, push --no-dry-run so the CLI's dispatchLive path runs.
-    if (inputs.dryRun) {
-        args.push("--dry-run");
-    }
-    else {
-        args.push("--no-dry-run");
-    }
 }
 const isMainEntry = (() => {
     if (typeof process === "undefined") {
@@ -4055,5 +4187,6 @@ function src_pathToFileUrl(value) {
     return new URL(`file://${value.replace(/\\/gu, "/")}`).href;
 }
 
+var __webpack_exports__buildArgs = __webpack_exports__.C;
 var __webpack_exports__main = __webpack_exports__.i;
-export { __webpack_exports__main as main };
+export { __webpack_exports__buildArgs as buildArgs, __webpack_exports__main as main };
