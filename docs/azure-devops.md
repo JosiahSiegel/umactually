@@ -53,6 +53,31 @@ Two prerequisites:
 
 Do not echo the token. Passing it through `env:` keeps it out of the script body and avoids accidental log disclosure.
 
+## Posting threads and PR status with an explicit PAT
+
+The project build service identity mapped to `SYSTEM_ACCESSTOKEN` does not always hold the `Contribute to pull requests` permission on the repository, which causes the threads and statuses POST endpoints to return HTTP 403. To post live PR comments without manually editing project security, store an Azure DevOps PAT with the required permissions in the `umactually-secrets` variable group as `DEVOPS_PAT`, then forward it to the CLI as `AZURE_DEVOPS_TOKEN`:
+
+```yaml
+- script: |
+    set -euo pipefail
+    : "${DEVOPS_PAT:?DEVOPS_PAT must be set as a pipeline variable (umactually-secrets group).}"
+    export AZURE_DEVOPS_TOKEN="${DEVOPS_PAT}"
+    node bin/umactually-pr-review.mjs \
+      --platform azure-devops \
+      --event "$AZURE_EVENT_PATH" \
+      --diff "$AZURE_DIFF_PATH" \
+      --pr-number "$UMACTUALLY_PR_NUMBER" \
+      --repo "$UMACTUALLY_REPO" \
+      --no-dry-run
+  env:
+    SYSTEM_ACCESSTOKEN: $(System.AccessToken)
+    DEVOPS_PAT: $(DEVOPS_PAT)
+    UMACTUALLY_API_URL: $(UMACTUALLY_API_URL)
+    UMACTUALLY_API_KEY: $(UMACTUALLY_API_KEY)
+```
+
+When `AZURE_DEVOPS_TOKEN` is set, the CLI uses it in preference to `SYSTEM_ACCESSTOKEN` for posting threads and statuses, so the build service identity's missing permission is bypassed. When `AZURE_DEVOPS_TOKEN` is empty, the CLI falls back to `SYSTEM_ACCESSTOKEN` so dry-run and manual callers keep working. The PAT value is treated as a secret and is redacted from logs and provider payloads.
+
 ## Fetching PR metadata and diff
 
 The root pipeline fetches real PR metadata and the PR diff only when `SYSTEM_PULLREQUEST_PULLREQUESTID` is present. The shape is:

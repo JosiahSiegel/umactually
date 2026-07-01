@@ -159,6 +159,13 @@ steps:
       : "${UMACTUALLY_REPO:?UMACTUALLY_REPO must be set by the prepare step.}"
       : "${UMACTUALLY_API_URL:?UMACTUALLY_API_URL must be set as a pipeline variable.}"
       : "${UMACTUALLY_API_KEY:?UMACTUALLY_API_KEY must be set as a pipeline variable.}"
+      # The project build service identity does not always hold the
+      # "Contribute to pull requests" permission needed to POST PR threads
+      # and statuses, which causes HTTP 403. Prefer an explicit Azure
+      # DevOps PAT (from the umactually-secrets variable group) so the
+      # CLI can post threads with an identity that has the right ACL.
+      : "${DEVOPS_PAT:?DEVOPS_PAT must be set as a pipeline variable (umactually-secrets group).}"
+      export AZURE_DEVOPS_TOKEN="${DEVOPS_PAT}"
       node bin/umactually-pr-review.mjs \
         --platform azure-devops \
         --event "$AZURE_EVENT_PATH" \
@@ -177,6 +184,7 @@ steps:
       UMACTUALLY_REPO: $(UMACTUALLY_REPO)
       UMACTUALLY_API_URL: $(UMACTUALLY_API_URL)
       UMACTUALLY_API_KEY: $(UMACTUALLY_API_KEY)
+      DEVOPS_PAT: $(DEVOPS_PAT)
 
   - task: PublishPipelineArtifact@1
     condition: always()

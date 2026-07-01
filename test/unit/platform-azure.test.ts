@@ -172,6 +172,53 @@ describe("Azure DevOps platform unit contract", () => {
     expect(diffText).toContain("+new line");
   });
 
+  it("AZURE-PLATFORM-RED-004 prefers an explicit AZURE_DEVOPS_TOKEN over SYSTEM_ACCESSTOKEN", async () => {
+    // Given: an explicit Azure DevOps PAT is provided alongside the
+    // system OAuth token. The PAT is required when the project build
+    // service identity is missing the "Contribute to pull requests"
+    // permission, which causes HTTP 403 on the threads/statuses
+    // endpoints.
+    const readAzureContext = await loadReadAzureContext();
+    const env: NodeJS.ProcessEnv = {
+      SYSTEM_ACCESSTOKEN: "azure-system-token",
+      AZURE_DEVOPS_TOKEN: "azure-pat-token",
+      SYSTEM_COLLECTIONURI: "https://dev.azure.com/example-org/",
+      SYSTEM_TEAMPROJECT: "Example Project",
+      BUILD_REPOSITORY_ID: "00000000-0000-0000-0000-000000000042",
+      SYSTEM_PULLREQUEST_PULLREQUESTID: "42",
+      SYSTEM_PULLREQUEST_SOURCECOMMITID: "1111111111111111111111111111111111111111",
+      SYSTEM_PULLREQUEST_TARGETBRANCHNAME: "refs/heads/main",
+    };
+
+    // When: the Azure adapter parses the process environment boundary.
+    const context = readAzureContext(env);
+
+    // Then: the typed context carries the explicit PAT, not the system token.
+    expect(context.token).toBe("azure-pat-token");
+  });
+
+  it("AZURE-PLATFORM-RED-005 falls back to SYSTEM_ACCESSTOKEN when AZURE_DEVOPS_TOKEN is empty", async () => {
+    // Given: AZURE_DEVOPS_TOKEN is explicitly empty; the system OAuth
+    // token must still be honored so manual/dry-run callers keep working.
+    const readAzureContext = await loadReadAzureContext();
+    const env: NodeJS.ProcessEnv = {
+      SYSTEM_ACCESSTOKEN: "azure-system-token",
+      AZURE_DEVOPS_TOKEN: "",
+      SYSTEM_COLLECTIONURI: "https://dev.azure.com/example-org/",
+      SYSTEM_TEAMPROJECT: "Example Project",
+      BUILD_REPOSITORY_ID: "00000000-0000-0000-0000-000000000042",
+      SYSTEM_PULLREQUEST_PULLREQUESTID: "42",
+      SYSTEM_PULLREQUEST_SOURCECOMMITID: "1111111111111111111111111111111111111111",
+      SYSTEM_PULLREQUEST_TARGETBRANCHNAME: "refs/heads/main",
+    };
+
+    // When: the Azure adapter parses the process environment boundary.
+    const context = readAzureContext(env);
+
+    // Then: the typed context falls back to the system token.
+    expect(context.token).toBe("azure-system-token");
+  });
+
   it("AZURE-PLATFORM-RED-003 skips deleted-file changes that have null item.path", async () => {
     // Given: an Azure changes response containing a deleted file with item.path=null
     // (real ADO API behavior for deleted files — item.path is null, originalPath has the path).

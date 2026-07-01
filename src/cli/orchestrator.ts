@@ -224,6 +224,7 @@ function readSecretValues(env: NodeJS.ProcessEnv): readonly string[] {
     env["REVIEW_PROVIDER_API_KEY"] ?? "",
     env["GITHUB_TOKEN"] ?? "",
     env["SYSTEM_ACCESSTOKEN"] ?? "",
+    env["AZURE_DEVOPS_TOKEN"] ?? "",
   ];
 }
 
