@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { parseCliArgs } from "../../src/cli.js";
 import { runLive } from "../../src/cli/orchestrator.js";
+import { azureDiffRoutes, azureRollbackDiffFixture } from "./azure-diff-fixture.js";
 
 type RecordedCall = {
   readonly url: string;
@@ -14,21 +15,6 @@ type FetchRoute = {
   readonly match: (url: string, method: string) => boolean;
   readonly response: Response | (() => Response);
 };
-
-const AZURE_DIFF_TEXT = [
-  "diff --git a/src/review/example.ts b/src/review/example.ts",
-  "index 1111111..2222222 100644",
-  "--- a/src/review/example.ts",
-  "+++ b/src/review/example.ts",
-  "@@ -1,4 +1,7 @@",
-  " export function renderReview(): string {",
-  "-  return \"old\";",
-  "-  return \"stale\";",
-  "+  return \"new\";",
-  "+  return \"extra\";",
-  "+  return \"third\";",
-  " }",
-].join("\n");
 
 function makeJsonResponse(value: unknown, status = 200): Response {
   return new Response(JSON.stringify(value), {
@@ -172,10 +158,7 @@ describe("runLive Azure partial-failure rollback (RED gap)", () => {
     /** Test fetch recorder; mutation is the purpose of this fixture. */
     let threadPostCount = 0;
     const recorder = makeFetchRecorder([
-      {
-        match: (url, method) => method === "POST" && url.endsWith("/diffs/commits?api-version=7.1"),
-        response: new Response(AZURE_DIFF_TEXT, { status: 200 }),
-      },
+      ...azureDiffRoutes(makeJsonResponse, azureRollbackDiffFixture()),
       {
         match: (url, method) => method === "POST" && url === "https://provider.example/v1/responses",
         response: makeJsonResponse({ output_text: providerReview }),
@@ -241,10 +224,7 @@ describe("runLive Azure partial-failure rollback (RED gap)", () => {
     });
 
     const recorder = makeFetchRecorder([
-      {
-        match: (url, method) => method === "POST" && url.endsWith("/diffs/commits?api-version=7.1"),
-        response: new Response(AZURE_DIFF_TEXT, { status: 200 }),
-      },
+      ...azureDiffRoutes(makeJsonResponse, azureRollbackDiffFixture()),
       {
         match: (url, method) => method === "POST" && url === "https://provider.example/v1/responses",
         response: makeJsonResponse({ output_text: providerReview }),

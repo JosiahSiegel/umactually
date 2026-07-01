@@ -110,20 +110,28 @@ steps:
         project_path="$(node -e 'process.stdout.write(encodeURIComponent(process.env.SYSTEM_TEAMPROJECT || ""))')"
         repository_path="$(node -e 'process.stdout.write(encodeURIComponent(process.env.BUILD_REPOSITORY_ID || ""))')"
         pr_url="${collection_uri}/${project_path}/_apis/git/repositories/${repository_path}/pullRequests/${SYSTEM_PULLREQUEST_PULLREQUESTID}?api-version=7.1"
-        diff_url="${collection_uri}/${project_path}/_apis/git/repositories/${repository_path}/pullRequests/${SYSTEM_PULLREQUEST_PULLREQUESTID}/diffs/commits?api-version=7.1"
+        iters_url="${collection_uri}/${project_path}/_apis/git/repositories/${repository_path}/pullRequests/${SYSTEM_PULLREQUEST_PULLREQUESTID}/iterations?api-version=7.1"
         curl -fsS \
           --header "Authorization: Bearer ${SYSTEM_ACCESSTOKEN}" \
           --header "Accept: application/json" \
           "$pr_url" \
           --output "$AZURE_EVENT_PATH"
-        curl -fsS \
-          --request POST \
+        iteration_id="$(curl -fsS \
           --header "Authorization: Bearer ${SYSTEM_ACCESSTOKEN}" \
-          --header "Accept: text/plain" \
-          --header "Content-Type: application/json" \
-          --data '{}' \
-          "$diff_url" \
-          --output "$AZURE_DIFF_PATH"
+          --header "Accept: application/json" \
+          "$iters_url" | node -e 'const d=JSON.parse(require("fs").readFileSync(0,"utf8")); const vs=d.value||[]; process.stdout.write(vs.length?String(vs[vs.length-1].id):"")')"
+        if [ -z "$iteration_id" ]; then
+          echo "##vso[task.logissue type=error]Azure DevOps PR has no iterations."
+          exit 1
+        fi
+        changes_url="${collection_uri}/${project_path}/_apis/git/repositories/${repository_path}/pullRequests/${SYSTEM_PULLREQUEST_PULLREQUESTID}/iterations/${iteration_id}/changes?api-version=7.1"
+        : > "$AZURE_DIFF_PATH"
+        curl -fsS \
+          --header "Authorization: Bearer ${SYSTEM_ACCESSTOKEN}" \
+          --header "Accept: application/json" \
+          "$changes_url" \
+          | node -e 'const d=JSON.parse(require("fs").readFileSync(0,"utf8")); const cs=d.changeEntries||d.changes||[]; process.stdout.write(JSON.stringify(cs));' \
+          >> "$AZURE_DIFF_PATH"
         if [ ! -s "$AZURE_DIFF_PATH" ]; then
           echo "##vso[task.logissue type=error]Azure DevOps PR diff fetch produced an empty file."
           exit 1

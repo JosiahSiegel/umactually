@@ -1086,7 +1086,79 @@ function readEnvSources(env = process.env) {
     return out;
 }
 
-;// CONCATENATED MODULE: ./src/platform/azure/api.ts
+;// CONCATENATED MODULE: ./src/platform/azure/diff.ts
+function buildUnifiedFileDiff(path, oldFile, newFile) {
+    if (oldFile.exists === newFile.exists && oldFile.content === newFile.content) {
+        return null;
+    }
+    const diffPath = normalizeDiffPath(path);
+    const oldLines = splitContentLines(oldFile.content);
+    const newLines = splitContentLines(newFile.content);
+    const oldLabel = oldFile.exists ? `a/${diffPath}` : "/dev/null";
+    const newLabel = newFile.exists ? `b/${diffPath}` : "/dev/null";
+    const hunkLines = buildHunkLines(oldLines, newLines);
+    return [
+        `diff --git a/${diffPath} b/${diffPath}`,
+        `--- ${oldLabel}`,
+        `+++ ${newLabel}`,
+        `@@ -${formatRange(oldLines)} +${formatRange(newLines)} @@`,
+        ...hunkLines,
+        "",
+    ].join("\n");
+}
+function buildHunkLines(oldLines, newLines) {
+    const prefixLength = findCommonPrefixLength(oldLines, newLines);
+    const suffixLength = findCommonSuffixLength(oldLines, newLines, prefixLength);
+    const hunkLines = [];
+    for (const line of oldLines.slice(0, prefixLength)) {
+        hunkLines.push(` ${line}`);
+    }
+    for (const line of oldLines.slice(prefixLength, oldLines.length - suffixLength)) {
+        hunkLines.push(`-${line}`);
+    }
+    for (const line of newLines.slice(prefixLength, newLines.length - suffixLength)) {
+        hunkLines.push(`+${line}`);
+    }
+    for (const line of oldLines.slice(oldLines.length - suffixLength)) {
+        hunkLines.push(` ${line}`);
+    }
+    return hunkLines;
+}
+function findCommonPrefixLength(oldLines, newLines) {
+    let index = 0;
+    while (index < oldLines.length && index < newLines.length && oldLines[index] === newLines[index]) {
+        index += 1;
+    }
+    return index;
+}
+function findCommonSuffixLength(oldLines, newLines, prefixLength) {
+    let length = 0;
+    while (length + prefixLength < oldLines.length &&
+        length + prefixLength < newLines.length &&
+        oldLines[oldLines.length - length - 1] === newLines[newLines.length - length - 1]) {
+        length += 1;
+    }
+    return length;
+}
+function splitContentLines(content) {
+    if (content.length === 0) {
+        return [];
+    }
+    const contentWithoutFinalNewline = content.endsWith("\n") ? content.slice(0, -1) : content;
+    if (contentWithoutFinalNewline.length === 0) {
+        return [];
+    }
+    return contentWithoutFinalNewline.split(/\r?\n/u);
+}
+function formatRange(lines) {
+    const start = lines.length === 0 ? 0 : 1;
+    return `${start},${lines.length}`;
+}
+function normalizeDiffPath(path) {
+    return path.startsWith("/") ? path.slice(1) : path;
+}
+
+;// CONCATENATED MODULE: ./src/platform/azure/errors.ts
 class AzureApiError extends Error {
     name = "AzureApiError";
     code;
@@ -1097,32 +1169,238 @@ class AzureApiError extends Error {
         this.status = status;
     }
 }
-const AZURE_DEVOPS_BASE_URL = "https://dev.azure.com";
-const AZURE_DIFFS_API_VERSION = "7.1";
-async function fetchAzurePrDiff(context, fetchImpl = fetch) {
-    const url = buildPullRequestDiffUrl(context);
-    const response = await fetchImpl(url, {
-        method: "POST",
-        headers: {
-            Authorization: `Bearer ${context.token}`,
-            "Content-Type": "application/json",
-            Accept: "text/plain",
-            "User-Agent": "umactually-pr-review",
-        },
-        body: JSON.stringify({}), // no-diff-request = full diff per Azure DevOps defaults
-    });
-    if (!response.ok) {
-        throw new AzureApiError("AZURE_FETCH_FAILED", response.status, `Azure DevOps PR diff request failed with status ${response.status}.`);
+const AZURE_EMPTY_DIFF_STATUS = 200;
+
+;// CONCATENATED MODULE: ./src/platform/azure/payload.ts
+
+function parseLatestIterationId(payload) {
+    const root = requireRecord(payload, "Azure iterations response");
+    const iterations = requireArray(root["value"], "Azure iterations response value");
+    const latestIteration = iterations.at(-1);
+    if (latestIteration === undefined) {
+        throw new AzureApiError("AZURE_FETCH_FAILED", AZURE_EMPTY_DIFF_STATUS, "Azure DevOps PR iterations response was empty.");
     }
-    const diffText = await response.text();
+    const latestRecord = requireRecord(latestIteration, "Azure latest iteration");
+    return requirePositiveInteger(latestRecord["id"], "Azure latest iteration id");
+}
+function parseSourceCommitId(payload) {
+    const root = requireRecord(payload, "Azure iteration response");
+    const sourceRefCommit = requireRecord(root["sourceRefCommit"], "Azure iteration sourceRefCommit");
+    return requireNonEmptyString(sourceRefCommit["commitId"], "Azure iteration sourceRefCommit.commitId");
+}
+function parseIterationChanges(payload) {
+    const root = requireRecord(payload, "Azure iteration changes response");
+    const rawChanges = findFirstArray(root, ["changes", "changeEntries", "value"]);
+    if (rawChanges === null) {
+        throw new AzureApiError("AZURE_FETCH_FAILED", AZURE_EMPTY_DIFF_STATUS, "Azure DevOps PR iteration changes response did not include changes.");
+    }
+    return rawChanges.map(parseAzureChange);
+}
+function parseItemContent(payload) {
+    const root = requireRecord(payload, "Azure item response");
+    return requireString(root["content"], "Azure item response content");
+}
+function parseAzureChange(value) {
+    const root = requireRecord(value, "Azure iteration change");
+    const item = requireRecord(root["item"], "Azure iteration change item");
+    return {
+        item: {
+            path: requireNonEmptyString(item["path"], "Azure iteration change item.path"),
+            url: readOptionalString(item["url"]),
+            objectId: readOptionalString(item["objectId"]),
+        },
+        originalObjectId: readOptionalString(root["originalObjectId"]),
+    };
+}
+function findFirstArray(record, keys) {
+    for (const key of keys) {
+        const value = record[key];
+        if (isUnknownArray(value)) {
+            return value;
+        }
+    }
+    return null;
+}
+function requireRecord(value, label) {
+    if (payload_isRecord(value)) {
+        return value;
+    }
+    throw new AzureApiError("AZURE_FETCH_FAILED", AZURE_EMPTY_DIFF_STATUS, `${label} was not a JSON object.`);
+}
+function requireArray(value, label) {
+    if (isUnknownArray(value)) {
+        return value;
+    }
+    throw new AzureApiError("AZURE_FETCH_FAILED", AZURE_EMPTY_DIFF_STATUS, `${label} was not a JSON array.`);
+}
+function requirePositiveInteger(value, label) {
+    if (typeof value === "number" && Number.isSafeInteger(value) && value > 0) {
+        return value;
+    }
+    throw new AzureApiError("AZURE_FETCH_FAILED", AZURE_EMPTY_DIFF_STATUS, `${label} was not a positive integer.`);
+}
+function requireNonEmptyString(value, label) {
+    const parsed = requireString(value, label);
+    if (parsed.length > 0) {
+        return parsed;
+    }
+    throw new AzureApiError("AZURE_FETCH_FAILED", AZURE_EMPTY_DIFF_STATUS, `${label} was empty.`);
+}
+function requireString(value, label) {
+    if (typeof value === "string") {
+        return value;
+    }
+    throw new AzureApiError("AZURE_FETCH_FAILED", AZURE_EMPTY_DIFF_STATUS, `${label} was not a string.`);
+}
+function readOptionalString(value) {
+    return typeof value === "string" && value.length > 0 ? value : null;
+}
+function payload_isRecord(value) {
+    return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+function isUnknownArray(value) {
+    return Array.isArray(value);
+}
+
+;// CONCATENATED MODULE: ./src/platform/azure/api.ts
+
+
+
+
+const AZURE_DEVOPS_BASE_URL = "https://dev.azure.com";
+const AZURE_API_VERSION = "7.1";
+const AZURE_FETCH_TIMEOUT_MS = 30_000;
+const JSON_MEDIA_TYPE = "application/json";
+const ZERO_OBJECT_ID_PATTERN = /^0+$/u;
+async function fetchAzurePrDiff(context, fetchImpl = fetch) {
+    const client = { context, fetchImpl };
+    const iterationId = parseLatestIterationId(await fetchAzureJson(buildPullRequestIterationsUrl(context), client));
+    const sourceCommitId = parseSourceCommitId(await fetchAzureJson(buildPullRequestIterationUrl(context, iterationId), client));
+    const changes = parseIterationChanges(await fetchAzureJson(buildPullRequestIterationChangesUrl(context, iterationId), client));
+    const diffText = await reconstructUnifiedDiff(client, sourceCommitId, changes);
     if (diffText.length === 0) {
-        throw new AzureApiError("AZURE_DIFF_EMPTY", response.status, "Azure DevOps PR diff response body was empty.");
+        throw new AzureApiError("AZURE_DIFF_EMPTY", AZURE_EMPTY_DIFF_STATUS, "Azure DevOps PR diff response body was empty.");
     }
     return diffText;
 }
-function buildPullRequestDiffUrl(context) {
+async function reconstructUnifiedDiff(client, sourceCommitId, changes) {
+    const fileDiffs = [];
+    for (const change of changes) {
+        const [oldFile, newFile] = await Promise.all([
+            fetchAzureItemSnapshot(client, {
+                version: {
+                    path: change.item.path,
+                    baseUrl: change.item.url,
+                    versionType: "Branch",
+                    version: client.context.targetBranch,
+                },
+                objectId: change.originalObjectId,
+            }),
+            fetchAzureItemSnapshot(client, {
+                version: {
+                    path: change.item.path,
+                    baseUrl: change.item.url,
+                    versionType: "Commit",
+                    version: sourceCommitId,
+                },
+                objectId: change.item.objectId,
+            }),
+        ]);
+        const fileDiff = buildUnifiedFileDiff(change.item.path, oldFile, newFile);
+        if (fileDiff !== null) {
+            fileDiffs.push(fileDiff);
+        }
+    }
+    return fileDiffs.join("");
+}
+async function fetchAzureItemSnapshot(client, request) {
+    if (!hasObjectId(request.objectId)) {
+        return { exists: false, content: "" };
+    }
+    const payload = await fetchAzureJson(buildItemContentUrl(client.context, request.version), client);
+    return { exists: true, content: parseItemContent(payload) };
+}
+async function fetchAzureJson(url, client) {
+    const response = await client.fetchImpl(url, buildAzureRequestInit(client.context));
+    if (!response.ok) {
+        throw new AzureApiError("AZURE_FETCH_FAILED", response.status, `Azure DevOps PR diff request failed with status ${response.status}.`);
+    }
+    const bodyText = await response.text();
+    if (bodyText.length === 0) {
+        throw new AzureApiError("AZURE_FETCH_FAILED", response.status, "Azure DevOps PR diff JSON response body was empty.");
+    }
+    try {
+        const payload = JSON.parse(bodyText);
+        return payload;
+    }
+    catch (error) {
+        if (error instanceof SyntaxError) {
+            throw new AzureApiError("AZURE_FETCH_FAILED", response.status, "Azure DevOps PR diff JSON response body was invalid.", {
+                cause: error,
+            });
+        }
+        throw error;
+    }
+}
+function buildAzureRequestInit(context) {
+    const headers = {
+        Authorization: `Bearer ${context.token}`,
+        Accept: JSON_MEDIA_TYPE,
+        "User-Agent": "umactually-pr-review",
+    };
+    const signal = createAbortSignal();
+    if (signal === null) {
+        return { method: "GET", headers };
+    }
+    return { method: "GET", headers, signal };
+}
+function createAbortSignal() {
+    if (typeof AbortSignal === "undefined" || typeof AbortSignal.timeout !== "function") {
+        return null;
+    }
+    return AbortSignal.timeout(AZURE_FETCH_TIMEOUT_MS);
+}
+function hasObjectId(objectId) {
+    return objectId !== null && !ZERO_OBJECT_ID_PATTERN.test(objectId);
+}
+function buildPullRequestIterationsUrl(context) {
+    return `${buildPullRequestUrl(context)}/iterations?api-version=${AZURE_API_VERSION}`;
+}
+function buildPullRequestIterationUrl(context, iterationId) {
+    return `${buildPullRequestUrl(context)}/iterations/${iterationId}?api-version=${AZURE_API_VERSION}`;
+}
+function buildPullRequestIterationChangesUrl(context, iterationId) {
+    return `${buildPullRequestUrl(context)}/iterations/${iterationId}/changes?api-version=${AZURE_API_VERSION}`;
+}
+function buildPullRequestUrl(context) {
+    return `${buildRepositoryUrl(context)}/pullRequests/${context.prNumber}`;
+}
+function buildItemContentUrl(context, version) {
+    const url = parseItemBaseUrl(version.baseUrl) ?? new URL(`${buildRepositoryUrl(context)}/items`);
+    url.searchParams.set("path", version.path);
+    url.searchParams.set("versionType", version.versionType);
+    url.searchParams.set("version", version.version);
+    url.searchParams.set("includeContent", "true");
+    url.searchParams.set("api-version", AZURE_API_VERSION);
+    return url.toString();
+}
+function parseItemBaseUrl(value) {
+    if (value === null) {
+        return null;
+    }
+    try {
+        return new URL(value);
+    }
+    catch (error) {
+        if (error instanceof TypeError) {
+            return null;
+        }
+        throw error;
+    }
+}
+function buildRepositoryUrl(context) {
     const projectSegment = encodeURIComponent(context.project);
-    return `${AZURE_DEVOPS_BASE_URL}/${context.org}/${projectSegment}/_apis/git/repositories/${context.repoId}/pullRequests/${context.prNumber}/diffs/commits?api-version=${AZURE_DIFFS_API_VERSION}`;
+    return `${AZURE_DEVOPS_BASE_URL}/${context.org}/${projectSegment}/_apis/git/repositories/${context.repoId}`;
 }
 
 ;// CONCATENATED MODULE: ./src/platform/azure/context.ts

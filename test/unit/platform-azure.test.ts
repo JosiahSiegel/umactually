@@ -75,9 +75,12 @@ describe("Azure DevOps platform unit contract", () => {
     });
   });
 
-  it("AZURE-PLATFORM-RED-002 fetches the PR diff with Azure URL and auth", async () => {
-    // Given: a typed Azure PR context and a fake fetch implementation.
+  it("AZURE-PLATFORM-RED-002 reconstructs the PR diff from Azure iteration changes and item JSON", async () => {
+    // Given: a typed Azure PR context and a fetch recorder for the working REST sequence.
     const fetchAzurePrDiff = await loadFetchAzurePrDiff();
+    const sourceCommitId = "2222222222222222222222222222222222222222";
+    const oldObjectId = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+    const newObjectId = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
     const context: AzureContext = {
       token: "azure-token-123",
       org: "example-org",
@@ -87,26 +90,85 @@ describe("Azure DevOps platform unit contract", () => {
       sourceCommit: "1111111111111111111111111111111111111111",
       targetBranch: "refs/heads/main",
     };
-    let observedUrl = "";
-    let observedMethod = "";
-    let observedAuthorization = "";
+    type ObservedAzureFetch = {
+      readonly url: string;
+      readonly method: string;
+      readonly authorization: string;
+      readonly accept: string;
+    };
+    const observedRequests: ObservedAzureFetch[] = [];
+    const jsonResponse = (payload: unknown): Response =>
+      new Response(JSON.stringify(payload), { status: 200, headers: { "Content-Type": "application/json" } });
     const fetchImpl: typeof fetch = async (input, init) => {
-      observedUrl = String(input);
-      observedMethod = init?.method ?? "";
+      const requestUrl = new URL(String(input));
       const headers = new Headers(init?.headers);
-      observedAuthorization = headers.get("authorization") ?? "";
-      return new Response("diff --git a/src/file.ts b/src/file.ts\n", { status: 200 });
+      observedRequests.push({
+        url: requestUrl.toString(),
+        method: init?.method ?? "GET",
+        authorization: headers.get("authorization") ?? "",
+        accept: headers.get("accept") ?? "",
+      });
+
+      if (requestUrl.pathname.endsWith("/pullRequests/42/iterations")) {
+        return jsonResponse({ value: [{ id: 1 }, { id: 2 }] });
+      }
+      if (requestUrl.pathname.endsWith("/pullRequests/42/iterations/2")) {
+        return jsonResponse({ sourceRefCommit: { commitId: sourceCommitId } });
+      }
+      if (requestUrl.pathname.endsWith("/pullRequests/42/iterations/2/changes")) {
+        return jsonResponse({
+          changes: [
+            {
+              item: {
+                objectId: newObjectId,
+                path: "/src/file.ts",
+                url: "https://dev.azure.com/example-org/Example%20Project/_apis/git/repositories/00000000-0000-0000-0000-000000000042/items?path=/src/file.ts",
+              },
+              originalObjectId: oldObjectId,
+            },
+          ],
+        });
+      }
+      if (requestUrl.pathname.endsWith("/items") && requestUrl.searchParams.get("versionType") === "Branch") {
+        expect(requestUrl.searchParams.get("version")).toBe("refs/heads/main");
+        expect(requestUrl.searchParams.get("path")).toBe("/src/file.ts");
+        return jsonResponse({ content: "old line\nshared line\n" });
+      }
+      if (requestUrl.pathname.endsWith("/items") && requestUrl.searchParams.get("versionType") === "Commit") {
+        expect(requestUrl.searchParams.get("version")).toBe(sourceCommitId);
+        expect(requestUrl.searchParams.get("path")).toBe("/src/file.ts");
+        return jsonResponse({ content: "new line\nshared line\n" });
+      }
+      return new Response(JSON.stringify({ message: `unexpected URL ${requestUrl.toString()}` }), { status: 404 });
     };
 
-    // When: the Azure API adapter requests the diff.
+    // When: the Azure API adapter reconstructs the diff from iteration metadata and item contents.
     const diffText = await fetchAzurePrDiff(context, fetchImpl);
 
-    // Then: the adapter POSTs to the Azure pull request commits diff endpoint with bearer token.
-    expect(observedUrl).toBe(
-      "https://dev.azure.com/example-org/Example%20Project/_apis/git/repositories/00000000-0000-0000-0000-000000000042/pullRequests/42/diffs/commits?api-version=7.1",
+    // Then: the adapter uses GET JSON endpoints with bearer auth and returns unified-diff text.
+    expect(observedRequests.map((request) => request.method)).toEqual(["GET", "GET", "GET", "GET", "GET"]);
+    expect(observedRequests.map((request) => request.authorization)).toEqual([
+      "Bearer azure-token-123",
+      "Bearer azure-token-123",
+      "Bearer azure-token-123",
+      "Bearer azure-token-123",
+      "Bearer azure-token-123",
+    ]);
+    expect(observedRequests.map((request) => request.accept)).toEqual([
+      "application/json",
+      "application/json",
+      "application/json",
+      "application/json",
+      "application/json",
+    ]);
+    expect(observedRequests[0]?.url).toBe(
+      "https://dev.azure.com/example-org/Example%20Project/_apis/git/repositories/00000000-0000-0000-0000-000000000042/pullRequests/42/iterations?api-version=7.1",
     );
-    expect(observedMethod).toBe("POST");
-    expect(observedAuthorization).toBe("Bearer azure-token-123");
-    expect(diffText).toBe("diff --git a/src/file.ts b/src/file.ts\n");
+    expect(diffText).toContain("diff --git a/src/file.ts b/src/file.ts");
+    expect(diffText).toContain("--- a/src/file.ts");
+    expect(diffText).toContain("+++ b/src/file.ts");
+    expect(diffText).toContain("@@ -1,2 +1,2 @@");
+    expect(diffText).toContain("-old line");
+    expect(diffText).toContain("+new line");
   });
 });

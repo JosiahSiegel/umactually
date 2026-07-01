@@ -2,6 +2,8 @@ import { describe, expect, it } from "vitest";
 
 import { parseCliArgs } from "../../src/cli.js";
 import { runLive } from "../../src/cli/orchestrator.js";
+import { azureDiffRoutes, azureReviewDiffFixture } from "./azure-diff-fixture.js";
+import type { AzureFetchRoute } from "./azure-diff-fixture.js";
 
 type RecordedCall = {
   readonly url: string;
@@ -10,22 +12,7 @@ type RecordedCall = {
   readonly body: unknown;
 };
 
-type FetchRoute = {
-  readonly match: (url: string, method: string) => boolean;
-  readonly response: Response;
-};
-
-const AZURE_DIFF_TEXT = [
-  "diff --git a/src/review/example.ts b/src/review/example.ts",
-  "index 1111111..2222222 100644",
-  "--- a/src/review/example.ts",
-  "+++ b/src/review/example.ts",
-  "@@ -1,4 +1,7 @@",
-  " export function renderReview(): string {",
-  "-  return \"old\";",
-  "+  return \"new\";",
-  " }",
-].join("\n");
+type FetchRoute = AzureFetchRoute;
 
 const PROVIDER_REVIEW = JSON.stringify({
   summary: "Azure live summary.",
@@ -86,10 +73,7 @@ function parseJson(text: string): unknown {
 
 function azureRoutes(): readonly FetchRoute[] {
   return [
-    {
-      match: (url, method) => method === "POST" && url.endsWith("/diffs/commits?api-version=7.1"),
-      response: new Response(AZURE_DIFF_TEXT, { status: 200 }),
-    },
+    ...azureDiffRoutes(makeJsonResponse, azureReviewDiffFixture()),
     {
       match: (url, method) => method === "POST" && url === "https://provider.example/v1/responses",
       response: makeJsonResponse({ output_text: PROVIDER_REVIEW }),

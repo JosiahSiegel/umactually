@@ -2,6 +2,12 @@ import { describe, expect, it } from "vitest";
 
 import { parseCliArgs } from "../../src/cli.js";
 import { runLive } from "../../src/cli/orchestrator.js";
+import {
+  azureDiffRoutes,
+  azureReviewDiffFixture,
+  azureSecretDiffFixture,
+} from "./azure-diff-fixture.js";
+import type { AzureDiffFixture, AzureFetchRoute } from "./azure-diff-fixture.js";
 
 type RecordedCall = {
   readonly url: string;
@@ -10,32 +16,7 @@ type RecordedCall = {
   readonly body: unknown;
 };
 
-type FetchRoute = {
-  readonly match: (url: string, method: string) => boolean;
-  readonly response: Response;
-};
-
-const AZURE_DIFF_TEXT = [
-  "diff --git a/src/review/example.ts b/src/review/example.ts",
-  "index 1111111..2222222 100644",
-  "--- a/src/review/example.ts",
-  "+++ b/src/review/example.ts",
-  "@@ -1,4 +1,7 @@",
-  " export function renderReview(): string {",
-  "-  return \"old\";",
-  "+  return \"new\";",
-  " }",
-].join("\n");
-
-const AZURE_SECRET_DIFF_TEXT = [
-  "diff --git a/src/secret.ts b/src/secret.ts",
-  "index 1111111..2222222 100644",
-  "--- a/src/secret.ts",
-  "+++ b/src/secret.ts",
-  "@@ -1,2 +1,3 @@",
-  " export const safe = true;",
-  "+export const token = \"sk_test_azure_secret\";",
-].join("\n");
+type FetchRoute = AzureFetchRoute;
 
 const PROVIDER_REVIEW = JSON.stringify({
   summary: "Azure live summary.",
@@ -109,15 +90,12 @@ function readArray(value: unknown, label: string): readonly unknown[] {
 }
 
 function azureRoutes(): readonly FetchRoute[] {
-  return azureRoutesWithDiff(AZURE_DIFF_TEXT);
+  return azureRoutesWithDiff(azureReviewDiffFixture());
 }
 
-function azureRoutesWithDiff(diffText: string): readonly FetchRoute[] {
+function azureRoutesWithDiff(diffFixture: AzureDiffFixture): readonly FetchRoute[] {
   return [
-    {
-      match: (url, method) => method === "POST" && url.endsWith("/diffs/commits?api-version=7.1"),
-      response: new Response(diffText, { status: 200 }),
-    },
+    ...azureDiffRoutes(makeJsonResponse, diffFixture),
     {
       match: (url, method) => method === "POST" && url === "https://provider.example/v1/responses",
       response: makeJsonResponse({ output_text: PROVIDER_REVIEW }),
@@ -140,7 +118,7 @@ function azureRoutesWithDiff(diffText: string): readonly FetchRoute[] {
 describe("runLive Azure orchestration", () => {
   it("blocks high-confidence leaks before submitting the Azure diff to the provider", async () => {
     // Given: the Azure PR diff contains a high-confidence API key pattern.
-    const recorder = makeFetchRecorder(azureRoutesWithDiff(AZURE_SECRET_DIFF_TEXT));
+    const recorder = makeFetchRecorder(azureRoutesWithDiff(azureSecretDiffFixture()));
 
     // When: the live Azure path runs with leak detection enabled.
     const result = await runLive({
