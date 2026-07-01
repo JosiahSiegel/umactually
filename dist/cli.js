@@ -1194,7 +1194,9 @@ function parseIterationChanges(payload) {
     if (rawChanges === null) {
         throw new AzureApiError("AZURE_FETCH_FAILED", AZURE_EMPTY_DIFF_STATUS, "Azure DevOps PR iteration changes response did not include changes.");
     }
-    return rawChanges.map(parseAzureChange);
+    return rawChanges
+        .map(parseAzureChange)
+        .filter((change) => change !== null);
 }
 function parseItemContent(payload) {
     const root = requireRecord(payload, "Azure item response");
@@ -1203,9 +1205,17 @@ function parseItemContent(payload) {
 function parseAzureChange(value) {
     const root = requireRecord(value, "Azure iteration change");
     const item = requireRecord(root["item"], "Azure iteration change item");
+    // ADO returns item.path as null for deleted files (the path lives in
+    // originalPath at the change root). Those entries have no item content to
+    // diff against and must be skipped — the GitHub side handles deletes the
+    // same way by ignoring the null-path entries.
+    const path = item["path"];
+    if (path === null || typeof path !== "string") {
+        return null;
+    }
     return {
         item: {
-            path: requireNonEmptyString(item["path"], "Azure iteration change item.path"),
+            path,
             url: readOptionalString(item["url"]),
             objectId: readOptionalString(item["objectId"]),
         },

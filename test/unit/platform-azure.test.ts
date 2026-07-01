@@ -171,4 +171,73 @@ describe("Azure DevOps platform unit contract", () => {
     expect(diffText).toContain("-old line");
     expect(diffText).toContain("+new line");
   });
+
+  it("AZURE-PLATFORM-RED-003 skips deleted-file changes that have null item.path", async () => {
+    // Given: an Azure changes response containing a deleted file with item.path=null
+    // (real ADO API behavior for deleted files — item.path is null, originalPath has the path).
+    const fetchAzurePrDiff = await loadFetchAzurePrDiff();
+    const sourceCommitId = "3333333333333333333333333333333333333333";
+    const oldObjectId = "cccccccccccccccccccccccccccccccccccccccc";
+    const newObjectId = "dddddddddddddddddddddddddddddddddddddddd";
+    const context: AzureContext = {
+      token: "azure-token-123",
+      org: "example-org",
+      project: "Example Project",
+      repoId: "00000000-0000-0000-0000-000000000042",
+      prNumber: 42,
+      sourceCommit: "1111111111111111111111111111111111111111",
+      targetBranch: "refs/heads/main",
+    };
+    const jsonResponse = (payload: unknown): Response =>
+      new Response(JSON.stringify(payload), { status: 200, headers: { "Content-Type": "application/json" } });
+    const fetchImpl: typeof fetch = async (input) => {
+      const requestUrl = new URL(String(input));
+      if (requestUrl.pathname.endsWith("/pullRequests/42/iterations")) {
+        return jsonResponse({ value: [{ id: 1 }] });
+      }
+      if (requestUrl.pathname.endsWith("/pullRequests/42/iterations/1")) {
+        return jsonResponse({ sourceRefCommit: { commitId: sourceCommitId } });
+      }
+      if (requestUrl.pathname.endsWith("/pullRequests/42/iterations/1/changes")) {
+        return jsonResponse({
+          changes: [
+            // Normal modified file — should be included in the diff
+            {
+              item: {
+                objectId: newObjectId,
+                path: "/src/modified.ts",
+                url: "https://dev.azure.com/example-org/Example%20Project/_apis/git/repositories/00000000-0000-0000-0000-000000000042/items?path=/src/modified.ts",
+              },
+              originalObjectId: oldObjectId,
+            },
+            // Deleted file — ADO returns item.path=null, should be skipped
+            {
+              changeTrackingId: 6,
+              originalPath: "/dist/old-deleted.js",
+              changeId: 6,
+              item: {
+                originalObjectId: oldObjectId,
+                path: null,
+              },
+              changeType: "delete",
+            },
+          ],
+        });
+      }
+      if (requestUrl.pathname.endsWith("/items") && requestUrl.searchParams.get("versionType") === "Branch") {
+        return jsonResponse({ content: "old line\nshared line\n" });
+      }
+      if (requestUrl.pathname.endsWith("/items") && requestUrl.searchParams.get("versionType") === "Commit") {
+        return jsonResponse({ content: "new line\nshared line\n" });
+      }
+      return new Response(JSON.stringify({ message: `unexpected URL ${requestUrl.toString()}` }), { status: 404 });
+    };
+
+    // When: the Azure API adapter reconstructs the diff.
+    const diffText = await fetchAzurePrDiff(context, fetchImpl);
+
+    // Then: the adapter skips the deleted file (null path) and only returns the modified file diff.
+    expect(diffText).toContain("diff --git a/src/modified.ts b/src/modified.ts");
+    expect(diffText).not.toContain("old-deleted.js");
+  });
 });
