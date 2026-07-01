@@ -1106,7 +1106,7 @@ async function fetchAzurePrDiff(context, fetchImpl = fetch) {
         headers: {
             Authorization: `Bearer ${context.token}`,
             "Content-Type": "application/json",
-            Accept: "application/json",
+            Accept: "text/plain",
             "User-Agent": "umactually-pr-review",
         },
         body: JSON.stringify({}), // no-diff-request = full diff per Azure DevOps defaults
@@ -2810,7 +2810,6 @@ async function requestLiveReview(input) {
         diffText: input.diffText,
         expectedArtifact: "artifacts/manual/s5-redaction-report.json",
     });
-    const providerUrl = readRequiredConfig(input.parsed.apiUrl ?? input.env["UMACTUALLY_API_URL"], "UMACTUALLY_API_URL");
     const providerApiKey = readRequiredConfig(input.parsed.apiKey ?? input.env["UMACTUALLY_API_KEY"], "UMACTUALLY_API_KEY");
     const modelId = readConfiguredModel(input.parsed, input.env);
     const prompts = await buildProviderPrompts(input);
@@ -2844,6 +2843,7 @@ async function requestLiveReview(input) {
         }
         throw new LiveReviewError("PROVIDER_REQUEST_FAILED", result.error.message, { cause: result.error });
     }
+    const providerUrl = readRequiredConfig(input.parsed.apiUrl ?? input.env["UMACTUALLY_API_URL"], "UMACTUALLY_API_URL");
     const result = await runProviderRequest({
         baseUrl: providerUrl,
         apiKey: providerApiKey,
@@ -3293,8 +3293,11 @@ async function runLive(input) {
             message,
         };
     }
+    // Copilot provider does not need UMACTUALLY_API_URL; it uses the GitHub
+    // Copilot token exchange endpoint. Skip the URL check for copilot.
+    const isCopilot = input.parsed.provider === "copilot";
     const providerUrl = input.parsed.apiUrl ?? env["UMACTUALLY_API_URL"];
-    if (providerUrl === undefined || providerUrl.length === 0) {
+    if (!isCopilot && (providerUrl === undefined || providerUrl.length === 0)) {
         const message = "UMACTUALLY_API_URL must be set for live review.";
         process.stdout.write(`umactually-pr-review: ${message}\n`);
         return {
@@ -3741,8 +3744,10 @@ function collectValidationErrors(parsed) {
         }
     }
     if (!parsed.dryRun) {
-        if (parsed.apiUrl === null) {
-            errors.push("--api-url is required unless --dry-run is set");
+        // Copilot provider does not need --api-url; it uses the GitHub Copilot
+        // token exchange endpoint (defaulting to https://api.github.com).
+        if (parsed.apiUrl === null && parsed.provider !== "copilot") {
+            errors.push("--api-url is required unless --dry-run is set or --provider copilot is used");
         }
         if (parsed.apiKey === null) {
             errors.push("--api-key is required unless --dry-run is set");
