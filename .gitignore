@@ -2,3 +2,7 @@
 .reference
 node_modules/
 artifacts/scratch/
+artifacts/manual/
+.env
+.playwright-mcp/
+*.png

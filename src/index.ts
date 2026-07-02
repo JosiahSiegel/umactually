@@ -2,7 +2,8 @@ import { mkdir, writeFile } from "node:fs/promises";
 import { isAbsolute, join } from "node:path";
 
 import { runCli } from "./cli.js";
-import { readActionInputs, type ActionInputs } from "./action/read-inputs.js";
+import { appendCommonInputArgs } from "./action/append-cli-inputs.js";
+import { readActionInputs } from "./action/read-inputs.js";
 
 declare global {
   // Cross-module flag the action entry sets at module load so the bundled
@@ -49,7 +50,7 @@ export async function main(): Promise<void> {
  * on missing API credentials. This is the same safety net readActionInputs
  * applies automatically inside GitHub Actions; we extend it to the bare case.
  */
-async function buildArgs(env: NodeJS.ProcessEnv, cwd: string): Promise<readonly string[]> {
+export async function buildArgs(env: NodeJS.ProcessEnv, cwd: string): Promise<readonly string[]> {
   if (env["TF_BUILD"] === "True") {
     return buildAzureArgs(env);
   }
@@ -85,28 +86,7 @@ async function buildGithubArgs(env: NodeJS.ProcessEnv, cwd: string): Promise<rea
   pushFlagValue(args, "--diff", diffPath);
 
   pushFlagValue(args, "--review", env["INPUT_REVIEW"]);
-  pushFlagValue(args, "--api-url", inputs.apiUrl);
-  pushFlagValue(args, "--api-key", inputs.apiKey);
-  pushFlagValue(args, "--model", inputs.model);
-  pushFlagValue(args, "--prompt-file", inputs.promptFile);
-  pushFlagValue(args, "--additional-prompt-file", inputs.additionalPromptFile);
-  pushFlagValue(args, "--sonar-host-url", inputs.sonarHostUrl);
-  pushFlagValue(args, "--sonar-token", inputs.sonarToken);
-  pushFlagValue(args, "--sonar-project-key", inputs.sonarProjectKey);
-
-  pushNumber(args, "--review-timeout-seconds", inputs.reviewTimeoutSeconds);
-  pushNumber(args, "--stall-seconds", inputs.stallSeconds);
-  pushNumber(args, "--max-output-tokens", inputs.maxOutputTokens);
-
-  pushBool(args, inputs.ignoreMinor, "--ignore-minor");
-  pushBool(args, inputs.includeSonarqube, "--include-sonarqube");
-  pushBool(args, inputs.walkthrough, "--walkthrough");
-  pushBool(args, inputs.diagnostic, "--diagnostic");
-  pushBool(args, inputs.debugRawResponse, "--debug-raw-response");
-  pushBool(args, inputs.simulateFindings, "--simulate-findings");
-
-  args.push(inputs.detectLeaks ? "--detect-leaks" : "--no-detect-leaks");
-  pushDryRunFlag(args, inputs);
+  appendCommonInputArgs(args, inputs);
 
   pushFlagValue(
     args,
@@ -129,30 +109,9 @@ function buildAzureArgs(env: NodeJS.ProcessEnv): readonly string[] {
   );
   pushFlagValue(args, "--threads", envFallback(env["INPUT_THREADS"], env["AZURE_THREADS_PATH"]));
   pushFlagValue(args, "--review", envFallback(env["INPUT_REVIEW"], env["AZURE_REVIEW_PATH"]));
-  pushFlagValue(args, "--api-url", inputs.apiUrl);
-  pushFlagValue(args, "--api-key", inputs.apiKey);
-  pushFlagValue(args, "--model", inputs.model);
-  pushFlagValue(args, "--prompt-file", inputs.promptFile);
-  pushFlagValue(args, "--additional-prompt-file", inputs.additionalPromptFile);
   pushFlagValue(args, "--pr-number", inputs.prNumber);
   pushFlagValue(args, "--repo", inputs.repo);
-  pushFlagValue(args, "--sonar-host-url", inputs.sonarHostUrl);
-  pushFlagValue(args, "--sonar-token", inputs.sonarToken);
-  pushFlagValue(args, "--sonar-project-key", inputs.sonarProjectKey);
-
-  pushNumber(args, "--review-timeout-seconds", inputs.reviewTimeoutSeconds);
-  pushNumber(args, "--stall-seconds", inputs.stallSeconds);
-  pushNumber(args, "--max-output-tokens", inputs.maxOutputTokens);
-
-  pushBool(args, inputs.ignoreMinor, "--ignore-minor");
-  pushBool(args, inputs.includeSonarqube, "--include-sonarqube");
-  pushBool(args, inputs.walkthrough, "--walkthrough");
-  pushBool(args, inputs.diagnostic, "--diagnostic");
-  pushBool(args, inputs.debugRawResponse, "--debug-raw-response");
-  pushBool(args, inputs.simulateFindings, "--simulate-findings");
-
-  args.push(inputs.detectLeaks ? "--detect-leaks" : "--no-detect-leaks");
-  pushDryRunFlag(args, inputs);
+  appendCommonInputArgs(args, inputs);
 
   pushFlagValue(
     args,
@@ -240,27 +199,6 @@ function envFallback(...values: ReadonlyArray<string | undefined>): string {
     if (typeof value === "string" && value.length > 0) return value;
   }
   return "";
-}
-
-function pushNumber(args: string[], flag: string, value: number): void {
-  args.push(flag, String(value));
-}
-
-function pushBool(args: string[], condition: boolean, flag: string): void {
-  if (condition) {
-    args.push(flag);
-  }
-}
-
-function pushDryRunFlag(args: string[], inputs: ActionInputs): void {
-  // Force --dry-run when INPUT_DRY_RUN is unset or true, or when GITHUB_ACTIONS
-  // is true (readActionInputs already applies that fallback). When INPUT_DRY_RUN
-  // is explicitly false, push --no-dry-run so the CLI's dispatchLive path runs.
-  if (inputs.dryRun) {
-    args.push("--dry-run");
-  } else {
-    args.push("--no-dry-run");
-  }
 }
 
 const isMainEntry = (() => {

@@ -25,12 +25,17 @@ These inputs mirror `action.yml`.
 | `api-url` | No | `""` | UmActually review API base URL. Prefer `UMACTUALLY_API_URL` in `env` for reusable workflows. |
 | `api-key` | No | `""` | UmActually review API key. Prefer `UMACTUALLY_API_KEY` in `env` or a platform secret; never hard-code it. |
 | `model` | No | `auto` | Review model to request. Use `auto` unless a maintainer asks for a pinned synthetic test model. |
-| `effort` | No | `medium` | Review effort hint. Current runtime normalizes this to `medium`. |
+| `effort` | No | `medium` | Reasoning effort hint (low\|medium\|high). Forwarded as `reasoning.effort` to providers that support it. |
+| `provider` | No | `openai-compatible` | Provider family. Set to `copilot` to use GitHub Copilot (requires a GitHub PAT as `UMACTUALLY_API_KEY`). |
+| `github-api-base` | No | `""` | GitHub API base URL for Copilot token exchange. Defaults to `https://api.github.com`. Set to `https://<tenant>.ghe.com` for GitHub Enterprise Server. |
 | `review-timeout-seconds` | No | `300` | Maximum review wall-clock time in seconds. |
 | `stall-seconds` | No | `270` | Seconds without provider output before the review is considered stalled. |
 | `max-output-tokens` | No | `16000` | Maximum provider output token budget. |
+| `review-file-limit` | No | `200` | Cap on the number of changed files the live review will process. PRs that exceed this get a "diff too large" parent card with zero findings — the per-chunk LLM reviews of huge initial-import diffs produce hallucinated findings. Set to `0` to disable. |
 | `ignore-minor` | No | `false` | Suppress minor non-security findings. Leaks and security findings are never suppressed by this option. |
 | `detect-leaks` | No | `true` | Run secret-leak detection on the diff. Disable with the `--no-detect-leaks` CLI flag. |
+| `prompt` | No | `""` | Inline system prompt override. Wins over `prompt-file`. |
+| `additional-prompt` | No | `""` | Inline additional prompt override. Wins over `additional-prompt-file`. |
 | `prompt-file` | No | `""` | Optional repository-relative prompt file. Absolute paths and path traversal are rejected. |
 | `dry-run` | No | `false` | Generate review output without posting comments or status. |
 
@@ -68,38 +73,29 @@ A complete copyable example lives at [`examples/github/pr-review.yml`](examples/
 
 ## Azure DevOps quickstart
 
-Azure DevOps uses the same bundled CLI directly from a pipeline step. Enable **Allow scripts to access the OAuth token** for the pipeline, map `$(System.AccessToken)` to `SYSTEM_ACCESSTOKEN`, and run the CLI with `--platform azure-devops`.
+Azure DevOps uses the bundled CLI directly from a pipeline step. This repository includes a root [`azure-pipelines.yml`](azure-pipelines.yml) that uses Node 24, runs `npm ci`, validates the project, prepares Azure input files, executes an Azure dry run, and publishes `artifacts/manual`.
+
+For a minimal CLI invocation, pass the supported Azure flags explicitly:
 
 ```yaml
-trigger: none
-
-pr:
-  branches:
-    include:
-      - main
-
-pool:
-  vmImage: ubuntu-latest
-
-steps:
-  - checkout: self
-    persistCredentials: true
-
-  - task: NodeTool@0
-    inputs:
-      versionSpec: "24.x"
-
-  - script: npm ci
-    displayName: Install dependencies
-
-  - script: node bin/umactually-pr-review.mjs --platform azure-devops --repository example/umactually-fixture --diff "$(AZURE_DIFF_PATH)"
-    displayName: Run UmActually PR review
-    env:
-      SYSTEM_ACCESSTOKEN: $(System.AccessToken)
-      AZURE_DIFF_PATH: $(AZURE_DIFF_PATH)
-      UMACTUALLY_API_URL: $(UMACTUALLY_API_URL)
-      UMACTUALLY_API_KEY: $(UMACTUALLY_API_KEY)
+- script: |
+    node bin/umactually-pr-review.mjs \
+      --platform azure-devops \
+      --event "$AZURE_EVENT_PATH" \
+      --diff "$AZURE_DIFF_PATH" \
+      --review "$AZURE_REVIEW_PATH" \
+      --pr-number "$UMACTUALLY_PR_NUMBER" \
+      --repo "$UMACTUALLY_REPO" \
+      --dry-run \
+      --output-artifact artifacts/manual/s4-azure-mocked-run.json
+  displayName: Run UmActually PR review
+  env:
+    SYSTEM_ACCESSTOKEN: $(System.AccessToken)
+    UMACTUALLY_API_URL: $(UMACTUALLY_API_URL)
+    UMACTUALLY_API_KEY: $(UMACTUALLY_API_KEY)
 ```
+
+Use `--repo`; there is no longer alias for that option. Azure dry-run validation still requires `--event`, `--diff`, `--pr-number`, and `--repo`. The root pipeline creates a safe synthetic event/diff/review path for manual branch runs without `SYSTEM_PULLREQUEST_PULLREQUESTID`; PR validation runs fetch the real PR diff with `$(System.AccessToken)` when available.
 
 For Azure Repos, configure a branch policy build validation pipeline; the YAML `pr:` trigger is only honored for GitHub and Bitbucket Cloud repositories in Azure Pipelines. See [`docs/azure-devops.md`](docs/azure-devops.md) and [`examples/azure/azure-pipelines.yml`](examples/azure/azure-pipelines.yml).
 

@@ -2,6 +2,12 @@ import { describe, expect, it } from "vitest";
 
 import { parseCliArgs } from "../../src/cli.js";
 import { runLive } from "../../src/cli/orchestrator.js";
+import {
+  azureDiffRoutes,
+  azureReviewDiffFixture,
+  azureSecretDiffFixture,
+} from "./azure-diff-fixture.js";
+import type { AzureDiffFixture, AzureFetchRoute } from "./azure-diff-fixture.js";
 
 type RecordedCall = {
   readonly url: string;
@@ -10,22 +16,7 @@ type RecordedCall = {
   readonly body: unknown;
 };
 
-type FetchRoute = {
-  readonly match: (url: string, method: string) => boolean;
-  readonly response: Response;
-};
-
-const AZURE_DIFF_TEXT = [
-  "diff --git a/src/review/example.ts b/src/review/example.ts",
-  "index 1111111..2222222 100644",
-  "--- a/src/review/example.ts",
-  "+++ b/src/review/example.ts",
-  "@@ -1,4 +1,7 @@",
-  " export function renderReview(): string {",
-  "-  return \"old\";",
-  "+  return \"new\";",
-  " }",
-].join("\n");
+type FetchRoute = AzureFetchRoute;
 
 const PROVIDER_REVIEW = JSON.stringify({
   summary: "Azure live summary.",
@@ -65,7 +56,10 @@ function makeFetchRecorder(routes: readonly FetchRoute[]): {
     calls.push({ url, method, authorization, body });
     for (const route of routes) {
       if (route.match(url, method)) {
-        return route.response;
+        // PARITY-* update: /threads may be hit twice per run (parent
+        // PR-level + inline-thread POST), so clone the response body to
+        // avoid "Failed to read REST response body." on the second read.
+        return route.response.clone();
       }
     }
     throw new Error(`unexpected ${method} ${url}`);
@@ -99,11 +93,12 @@ function readArray(value: unknown, label: string): readonly unknown[] {
 }
 
 function azureRoutes(): readonly FetchRoute[] {
+  return azureRoutesWithDiff(azureReviewDiffFixture());
+}
+
+function azureRoutesWithDiff(diffFixture: AzureDiffFixture): readonly FetchRoute[] {
   return [
-    {
-      match: (url, method) => method === "POST" && url.endsWith("/diffs/commits?api-version=7.1"),
-      response: new Response(AZURE_DIFF_TEXT, { status: 200 }),
-    },
+    ...azureDiffRoutes(makeJsonResponse, diffFixture),
     {
       match: (url, method) => method === "POST" && url === "https://provider.example/v1/responses",
       response: makeJsonResponse({ output_text: PROVIDER_REVIEW }),
@@ -117,6 +112,11 @@ function azureRoutes(): readonly FetchRoute[] {
       response: makeJsonResponse({ id: 77 }, 200),
     },
     {
+      match: (url, method) => method === "GET" && url.endsWith("/statuses?api-version=7.1"),
+      // Empty statuses list: new dedup helper looks here first.
+      response: makeJsonResponse({ count: 0, value: [] }),
+    },
+    {
       match: (url, method) => method === "POST" && url.endsWith("/statuses?api-version=7.1"),
       response: makeJsonResponse({ id: 88 }, 200),
     },
@@ -124,6 +124,25 @@ function azureRoutes(): readonly FetchRoute[] {
 }
 
 describe("runLive Azure orchestration", () => {
+  it("blocks high-confidence leaks before submitting the Azure diff to the provider", async () => {
+    // Given: the Azure PR diff contains a high-confidence API key pattern.
+    const recorder = makeFetchRecorder(azureRoutesWithDiff(azureSecretDiffFixture()));
+
+    // When: the live Azure path runs with leak detection enabled.
+    const result = await runLive({
+      parsed: parseCliArgs(["--platform", "azure", "--no-dry-run"]),
+      cwd: process.cwd(),
+      env: azureEnv(),
+      fetchImpl: recorder.fetchImpl,
+    });
+
+    // Then: the provider is never called with the secret-bearing diff.
+    expect(result.exitCode).toBe(1);
+    expect(result.posted).toBe(false);
+    expect(result.message).toContain("high-confidence secret");
+    expect(recorder.calls.some((call) => call.url === "https://provider.example/v1/responses")).toBe(false);
+  });
+
   it("posts Azure DevOps threads and status through injected fetch", async () => {
     // Given: Azure Pipelines live environment and mocked REST endpoints.
     const recorder = makeFetchRecorder(azureRoutes());
@@ -138,8 +157,21 @@ describe("runLive Azure orchestration", () => {
 
     // Then: it creates one thread with the marker and one PR status without shelling out.
     expect(result).toMatchObject({ exitCode: 0, posted: true, reviewId: 77 });
-    const threadCall = findCall(recorder.calls, "POST", "/threads?api-version=7.1");
-    const threadBody = readRecord(threadCall.body as Record<string, unknown>, "thread request");
+    // PARITY-* update: the FIRST /threads POST is now the parent PR-level
+    // review summary (no threadContext). Find the INLINE-thread POST by
+    // filtering on a body that carries threadContext.
+    const inlineThreadCall = recorder.calls.find((call) => {
+      if (call.method !== "POST") return false;
+      if (!call.url.endsWith("/threads?api-version=7.1")) return false;
+      const body = call.body;
+      if (typeof body !== "object" || body === null) return false;
+      return "threadContext" in (body as Record<string, unknown>);
+    });
+    expect(inlineThreadCall).toBeDefined();
+    if (inlineThreadCall === undefined) {
+      throw new Error("expected inline thread POST");
+    }
+    const threadBody = readRecord(inlineThreadCall.body as Record<string, unknown>, "thread request");
     const comments = readArray(threadBody["comments"], "thread comments");
     const firstComment = readRecord(comments[0] as Record<string, unknown>, "first thread comment");
     expect(firstComment["content"]).toContain("<!-- umactually-pr-review -->");
@@ -189,10 +221,18 @@ describe("runLive Azure orchestration", () => {
 
     // Then: it posts only the status and does not stack another thread.
     expect(result.exitCode).toBe(0);
-    const threadPosts = recorder.calls.filter(
-      (call) => call.method === "POST" && call.url.endsWith("/threads?api-version=7.1"),
-    );
-    expect(threadPosts).toHaveLength(0);
+    // PARITY-* update: parent PR-level comment is a /threads POST whose
+    // body has NO `threadContext`. Inline-thread POSTs carry a
+    // `threadContext`. Filter to inline-only — that's what this test
+    // is asserting dedup for.
+    const inlineThreadPosts = recorder.calls.filter((call) => {
+      if (call.method !== "POST") return false;
+      if (!call.url.endsWith("/threads?api-version=7.1")) return false;
+      const body = call.body;
+      if (typeof body !== "object" || body === null) return false;
+      return "threadContext" in (body as Record<string, unknown>);
+    });
+    expect(inlineThreadPosts).toHaveLength(0);
     expect(findCall(recorder.calls, "POST", "/statuses?api-version=7.1")).toBeDefined();
   });
 });

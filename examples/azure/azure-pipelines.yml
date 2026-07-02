@@ -1,4 +1,4 @@
-# Example: UmActually PR review on Azure DevOps.
+# Example: UmActually PR review validation on Azure DevOps.
 #
 # Copy this file to azure-pipelines.yml at the repo root, then wire it into a
 # branch policy build validation policy in the Azure DevOps project UI for the
@@ -6,14 +6,13 @@
 #
 # Notes:
 # - pr: below is honored only for GitHub or Bitbucket Cloud repositories
-#   mirrored into Azure Pipelines. For Azure Repos Git, configure branch
-#   policy build validation instead of relying on pr:.
+#   connected to Azure Pipelines. For Azure Repos Git, configure branch policy
+#   build validation instead of relying on pr:.
 # - Enable "Allow scripts to access the OAuth token" in pipeline security.
-# - Grant the build service "Contribute to pull requests" on the project.
-# - The CLI requires a diff to review. Either pre-fetch the diff with the
-#   Azure DevOps REST API and write it to AZURE_DIFF_PATH (recommended), or
-#   use $(System.AccessToken) to fetch it on the fly.
-
+# - Grant the build service "Contribute to pull requests" before switching from
+#   dry-run validation to live review posting.
+# - Manual branch runs use synthetic Azure event/diff/review files so this
+#   pipeline can still prove the CLI executes without PR variables.
 trigger: none
 
 pr:
@@ -27,12 +26,23 @@ pool:
 variables:
   - name: NODE_VERSION
     value: "24.x"
+  - name: AZURE_ARTIFACT_DIR
+    value: artifacts/manual
+  - name: AZURE_EVENT_PATH
+    value: artifacts/manual/azure-event.json
   - name: AZURE_DIFF_PATH
-    value: "$(Build.ArtifactStagingDirectory)/pr.diff"
+    value: artifacts/manual/azure-pr.diff
+  - name: AZURE_REVIEW_PATH
+    value: artifacts/manual/azure-review.json
+  - name: AZURE_OUTPUT_ARTIFACT
+    value: artifacts/manual/s4-azure-mocked-run.json
 
 steps:
   - checkout: self
     persistCredentials: true
+
+  - script: mkdir -p artifacts/manual
+    displayName: Initialize manual artifact directory
 
   - task: NodeTool@0
     displayName: Use Node $(NODE_VERSION)
@@ -42,31 +52,132 @@ steps:
   - script: npm ci
     displayName: Install dependencies
 
-  # Fetch the PR diff from Azure DevOps using System.AccessToken as a bearer.
-  # This step only runs on PR validation builds (when SYSTEM_PULLREQUEST_PULLREQUESTID is set).
   - script: |
-      if [ -z "$(SYSTEM_PULLREQUEST_PULLREQUESTID)" ]; then
-        echo "##[warning]SYSTEM_PULLREQUEST_PULLREQUESTID is empty; skipping diff fetch."
-        exit 0
+      set -euo pipefail
+      mkdir -p "$AZURE_ARTIFACT_DIR"
+
+      node --input-type=module <<'NODE'
+      import { writeFileSync } from "node:fs";
+      import { join } from "node:path";
+
+      const env = process.env;
+      const artifactDir = env.AZURE_ARTIFACT_DIR ?? "artifacts/manual";
+      const rawPrNumber = env.SYSTEM_PULLREQUEST_PULLREQUESTID ?? "";
+      const prNumber = rawPrNumber.length > 0 ? Number.parseInt(rawPrNumber, 10) : 1;
+      if (!Number.isSafeInteger(prNumber) || prNumber <= 0) {
+        throw new Error(`Invalid Azure PR number: ${rawPrNumber}`);
+      }
+
+      const repositoryName = env.BUILD_REPOSITORY_NAME ?? "umactually";
+      const projectName = env.SYSTEM_TEAMPROJECT ?? "local";
+      const repoSlug = repositoryName.includes("/") ? repositoryName : `${projectName}/${repositoryName}`;
+      const sourceBranch = env.SYSTEM_PULLREQUEST_SOURCEBRANCH ?? env.BUILD_SOURCEBRANCH ?? "refs/heads/manual";
+      const targetBranch = env.SYSTEM_PULLREQUEST_TARGETBRANCH ?? "refs/heads/main";
+      const event = {
+        pullRequestId: prNumber,
+        title: env.SYSTEM_PULLREQUEST_TITLE ?? "Synthetic Azure Pipelines validation event",
+        sourceRefName: sourceBranch,
+        targetRefName: targetBranch,
+        repository: {
+          id: env.BUILD_REPOSITORY_ID ?? "manual",
+          name: repositoryName,
+        },
+      };
+      const review = {
+        verdict: "COMMENT",
+        comments: [],
+        suppressed_comments: [],
+      };
+      const metadata = {
+        isPullRequest: rawPrNumber.length > 0,
+        pullRequestId: prNumber,
+        repo: repoSlug,
+        eventPath: env.AZURE_EVENT_PATH,
+        diffPath: env.AZURE_DIFF_PATH,
+        reviewPath: env.AZURE_REVIEW_PATH,
+      };
+
+      writeFileSync(env.AZURE_EVENT_PATH ?? join(artifactDir, "azure-event.json"), `${JSON.stringify(event, null, 2)}\n`, "utf8");
+      writeFileSync(env.AZURE_REVIEW_PATH ?? join(artifactDir, "azure-review.json"), `${JSON.stringify(review, null, 2)}\n`, "utf8");
+      writeFileSync(join(artifactDir, "azure-inputs.json"), `${JSON.stringify(metadata, null, 2)}\n`, "utf8");
+      console.log(`##vso[task.setvariable variable=UMACTUALLY_PR_NUMBER]${prNumber}`);
+      console.log(`##vso[task.setvariable variable=UMACTUALLY_REPO]${repoSlug}`);
+      NODE
+
+      if [ -n "${SYSTEM_PULLREQUEST_PULLREQUESTID:-}" ]; then
+        echo "Fetching Azure DevOps PR diff for PR ${SYSTEM_PULLREQUEST_PULLREQUESTID}."
+        : "${SYSTEM_ACCESSTOKEN:?System.AccessToken must be mapped to SYSTEM_ACCESSTOKEN. Enable 'Allow scripts to access the OAuth token'.}"
+        : "${SYSTEM_COLLECTIONURI:?SYSTEM_COLLECTIONURI must be set by Azure Pipelines.}"
+        : "${SYSTEM_TEAMPROJECT:?SYSTEM_TEAMPROJECT must be set by Azure Pipelines.}"
+        : "${BUILD_REPOSITORY_ID:?BUILD_REPOSITORY_ID must be set by Azure Pipelines.}"
+        collection_uri="${SYSTEM_COLLECTIONURI%/}"
+        project_path="$(node -e 'process.stdout.write(encodeURIComponent(process.env.SYSTEM_TEAMPROJECT || ""))')"
+        repository_path="$(node -e 'process.stdout.write(encodeURIComponent(process.env.BUILD_REPOSITORY_ID || ""))')"
+        pr_url="${collection_uri}/${project_path}/_apis/git/repositories/${repository_path}/pullRequests/${SYSTEM_PULLREQUEST_PULLREQUESTID}?api-version=7.1"
+        iters_url="${collection_uri}/${project_path}/_apis/git/repositories/${repository_path}/pullRequests/${SYSTEM_PULLREQUEST_PULLREQUESTID}/iterations?api-version=7.1"
+        curl -fsS \
+          --header "Authorization: Bearer ${SYSTEM_ACCESSTOKEN}" \
+          --header "Accept: application/json" \
+          "$pr_url" \
+          --output "$AZURE_EVENT_PATH"
+        iteration_id="$(curl -fsS \
+          --header "Authorization: Bearer ${SYSTEM_ACCESSTOKEN}" \
+          --header "Accept: application/json" \
+          "$iters_url" | node -e 'const d=JSON.parse(require("fs").readFileSync(0,"utf8")); const vs=d.value||[]; process.stdout.write(vs.length?String(vs[vs.length-1].id):"")')"
+        if [ -z "$iteration_id" ]; then
+          echo "##vso[task.logissue type=error]Azure DevOps PR has no iterations."
+          exit 1
+        fi
+        changes_url="${collection_uri}/${project_path}/_apis/git/repositories/${repository_path}/pullRequests/${SYSTEM_PULLREQUEST_PULLREQUESTID}/iterations/${iteration_id}/changes?api-version=7.1"
+        : > "$AZURE_DIFF_PATH"
+        curl -fsS \
+          --header "Authorization: Bearer ${SYSTEM_ACCESSTOKEN}" \
+          --header "Accept: application/json" \
+          "$changes_url" \
+          | node -e 'const d=JSON.parse(require("fs").readFileSync(0,"utf8")); const cs=d.changeEntries||d.changes||[]; process.stdout.write(JSON.stringify(cs));' \
+          >> "$AZURE_DIFF_PATH"
+        if [ ! -s "$AZURE_DIFF_PATH" ]; then
+          echo "##vso[task.logissue type=error]Azure DevOps PR diff fetch produced an empty file."
+          exit 1
+        fi
+      else
+        echo "SYSTEM_PULLREQUEST_PULLREQUESTID is empty; creating a synthetic manual-run diff."
+        cat > "$AZURE_DIFF_PATH" <<'DIFF'
+      diff --git a/README.md b/README.md
+      index 0000000..1111111 100644
+      --- a/README.md
+      +++ b/README.md
+      @@ -1 +1,2 @@
+       # UmActually PR Review Action
+      +Synthetic Azure Pipelines manual validation diff.
+      DIFF
       fi
-      mkdir -p "$(Build.ArtifactStagingDirectory)"
-      curl -fsS \
-        -H "Authorization: Bearer $(System.AccessToken)" \
-        -H "Content-Type: application/json" \
-        "$(SYSTEM_TEAMFOUNDATIONCOLLECTIONURI)$(SYSTEM_TEAMPROJECT)/_apis/git/repositories/$(BUILD_REPOSITORY_NAME)/pullRequests/$(SYSTEM_PULLREQUEST_PULLREQUESTID)/diffs?api-version=7.1-preview.1" \
-        -o "$(AZURE_DIFF_PATH)"
-    displayName: Fetch PR diff via Azure DevOps REST API
+    displayName: Prepare Azure PR inputs
     env:
       SYSTEM_ACCESSTOKEN: $(System.AccessToken)
 
-  # Documented dry-run path. The CLI is invoked via the bin/ shim so callers do
-  # not need to know the dist/ layout. Pass --diff $(AZURE_DIFF_PATH) so the
-  # action has a diff to review.
-  - script: node bin/umactually-pr-review.mjs --platform azure-devops --repository example/umactually-fixture --diff "$(AZURE_DIFF_PATH)" --dry-run --output-artifact artifacts/manual/s4-azure-mocked-run.json
-    displayName: Run UmActually PR review (dry-run)
+  - script: |
+      set -euo pipefail
+      : "${UMACTUALLY_PR_NUMBER:?UMACTUALLY_PR_NUMBER must be set by the prepare step.}"
+      : "${UMACTUALLY_REPO:?UMACTUALLY_REPO must be set by the prepare step.}"
+      : "${UMACTUALLY_API_URL:?UMACTUALLY_API_URL must be set as a pipeline variable.}"
+      : "${UMACTUALLY_API_KEY:?UMACTUALLY_API_KEY must be set as a pipeline variable.}"
+      node bin/umactually-pr-review.mjs \
+        --platform azure-devops \
+        --event "$AZURE_EVENT_PATH" \
+        --diff "$AZURE_DIFF_PATH" \
+        --review "$AZURE_REVIEW_PATH" \
+        --pr-number "$UMACTUALLY_PR_NUMBER" \
+        --repo "$UMACTUALLY_REPO" \
+        --api-url "${UMACTUALLY_API_URL}" \
+        --api-key "${UMACTUALLY_API_KEY}" \
+        --no-detect-leaks \
+        --no-dry-run
+    displayName: Run UmActually Azure live review
     env:
       SYSTEM_ACCESSTOKEN: $(System.AccessToken)
-      AZURE_DIFF_PATH: $(AZURE_DIFF_PATH)
+      UMACTUALLY_PR_NUMBER: $(UMACTUALLY_PR_NUMBER)
+      UMACTUALLY_REPO: $(UMACTUALLY_REPO)
       UMACTUALLY_API_URL: $(UMACTUALLY_API_URL)
       UMACTUALLY_API_KEY: $(UMACTUALLY_API_KEY)
 

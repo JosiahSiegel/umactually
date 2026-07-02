@@ -13,15 +13,24 @@ export type { ProviderDiagnosticCode, ProviderEndpoint };
 export class ProviderError extends Error {
   override readonly name = "ProviderError";
 
+  /**
+   * Raw provider response body for diagnostic errors (currently only
+   * `code === "parse"` carries it). Surfaced to the PR-level summary card
+   * so reviewers can see exactly what the model returned. `undefined` for
+   * non-parse errors so the constructor signature stays compatible.
+   */
+  readonly rawText: string | undefined;
+
   constructor(
     readonly code: ProviderDiagnosticCode,
     readonly endpoint: ProviderEndpoint,
     readonly status: number | null,
     readonly requestId: string,
     message: string,
-    options?: ErrorOptions,
+    options?: ErrorOptions & { readonly rawText?: string },
   ) {
     super(message, options);
+    this.rawText = options?.rawText;
   }
 }
 
