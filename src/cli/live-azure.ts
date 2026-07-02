@@ -1,6 +1,7 @@
 import { type AzureContext } from "../platform/azure/context.js";
 import { REVIEW_MARKER } from "../review/run-review.js";
 import {
+  buildInlineCommentBody,
   buildReviewBody,
   countSuppressedComments,
   ensureHttpOk,
@@ -155,7 +156,11 @@ async function postAzureThread(input: {
       comments: [
         {
           parentCommentId: 0,
-          content: `${input.body}\n\n${input.comment.body}`,
+          content: buildInlineCommentBody({
+            comment: input.comment,
+            secrets: [input.context.token],
+            includeMarker: true,
+          }),
           commentType: 1,
         },
       ],

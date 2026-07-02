@@ -2,6 +2,7 @@ import { type GithubContext } from "../platform/github/context.js";
 import { REVIEW_MARKER } from "../review/run-review.js";
 import {
   LiveReviewError,
+  buildInlineCommentBody,
   buildReviewBody,
   countSuppressedComments,
   ensureHttpOk,
@@ -33,7 +34,7 @@ export async function runGithubLive(input: {
     path: comment.path,
     line: comment.line,
     side: "RIGHT" as const,
-    body: comment.body,
+    body: buildInlineCommentBody({ comment, secrets: [context.token] }),
   }));
   const body = buildReviewBody({
     review: provider.review,

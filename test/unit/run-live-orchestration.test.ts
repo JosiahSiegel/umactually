@@ -473,7 +473,7 @@ describe("runLive GitHub orchestration", () => {
       path: "src/review/example.ts",
       line: 3,
       side: "RIGHT",
-      body: "**high correctness**\n\nTighten this changed line.",
+      body: "`high` `correctness`\n\nTighten this changed line.",
     });
   });
 
@@ -553,14 +553,15 @@ describe("runLive GitHub orchestration", () => {
     // Then: the simulated summary replaces the live "empty" summary.
     expect(body["body"]).toContain("Simulated review for octo-org/octo-repo#42");
 
-    // Then: the posted body MUST NOT contain raw provider JSON, the API key,
-    // or a fenced details block (the marker is appended by the posting layer,
-    // not by the fixture itself).
+    // Then: the posted body MUST NOT contain raw provider JSON or any of
+    // the secrets the fixture seeded into the review data. The structured
+    // review body emits a <details> collapse block by design, so we no
+    // longer assert against that pattern; the secret-leak check is the
+    // load-bearing assertion here.
     const postedText = JSON.stringify(body);
     expect(postedText).not.toContain("provider-key-secret");
     expect(postedText).not.toContain("github-token-secret");
     expect(postedText).not.toContain("RAW_PROVIDER_JSON");
-    expect(postedText).not.toMatch(/<details[\s>]/u);
   });
 
   it("DOES NOT replace when --simulate-findings is set and live findings exist (live always wins)", async () => {
@@ -717,7 +718,7 @@ describe("runLive GitHub orchestration", () => {
       path: "src/review/example.ts",
       line: 3,
       side: "RIGHT",
-      body: "**high correctness**\n\nTighten this changed line.",
+      body: "`high` `correctness`\n\nTighten this changed line.",
     });
     expect(postBody["body"]).toContain("<!-- umactually-pr-review -->");
     expect(postBody["event"]).toBe("REQUEST_CHANGES");
