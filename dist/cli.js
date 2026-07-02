@@ -2005,9 +2005,30 @@ function readResponseId(value) {
     return typeof id === "number" && Number.isSafeInteger(id) ? id : undefined;
 }
 function ensureHttpOk(response, code, action) {
-    if (!response.ok) {
-        throw new LiveReviewError(code, `${action} failed with HTTP ${response.status}.`);
+    if (response.ok) {
+        return;
     }
+    // Capture the response body so the thrown error includes enough context
+    // for the operator to diagnose 4xx/5xx without re-running the build.
+    // We best-effort read the body: it may already be consumed by a prior
+    // `readJsonResponse` call, in which case the text will be empty and the
+    // diagnostic will fall back to a generic message.
+    void response
+        .clone()
+        .text()
+        .then((text) => {
+        if (text.length === 0) {
+            return;
+        }
+        // Surface the server-side error message on stderr for operators;
+        // the thrown LiveReviewError keeps its short public form.
+        const snippet = text.length > 500 ? `${text.slice(0, 500)}…(truncated)` : text;
+        process.stderr.write(`::debug::umactually-pr-review: ${action} HTTP ${response.status} body=${snippet}\n`);
+    })
+        .catch(() => {
+        // Body read failed; nothing actionable to do here.
+    });
+    throw new LiveReviewError(code, `${action} failed with HTTP ${response.status}.`);
 }
 function live_shared_isRecord(value) {
     return typeof value === "object" && value !== null && !Array.isArray(value);
