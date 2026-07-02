@@ -368,16 +368,76 @@ async function postAzureStatus(input: {
   readonly state: "succeeded" | "failed" | "pending";
   readonly description: string;
 }): Promise<void> {
+  const safeDescription = sanitizeAzureStatusDescription(input.description);
   const response = await input.fetchImpl(azureStatusesUrl(input.context), {
     method: "POST",
     headers: azureHeaders(input.context.token),
     body: JSON.stringify({
       state: input.state,
-      description: input.description.slice(0, 255),
+      description: safeDescription,
       context: { name: "UmActually", genre: "pr-review" },
     }),
   });
+  if (!response.ok) {
+    // Surface the ADO response body verbatim on stderr before ensureHttpOk
+    // throws so the operator can diagnose future 4xx/5xx failures without
+    // re-running the build. Without this, `ensureHttpOk` only emits an
+    // async `::debug::` snippet that Azure Pipelines hides by default,
+    // which is how build #74's TF20507 LF-rejection stayed invisible until
+    // we reproduced the 400 directly with curl.
+    let bodySnippet = "(empty response body)";
+    try {
+      const text = await response.clone().text();
+      if (text.length > 0) {
+        bodySnippet = text.length > 1000 ? `${text.slice(0, 1000)}\u2026(truncated)` : text;
+      }
+    } catch {
+      // Body read failed; the generic snippet above is the best we can do.
+    }
+    process.stderr.write(
+      `::error::umactually-pr-review: Azure create PR status HTTP ${response.status} body=${bodySnippet}\n`,
+    );
+  }
   ensureHttpOk(response, "AZURE_CREATE_STATUS_FAILED", "Azure create PR status");
+}
+
+/**
+ * Make a string safe to send as the `description` field on the ADO Pull
+ * Request Status POST endpoint
+ * (https://learn.microsoft.com/en-us/rest/api/azure/devops/git/pull-request-statuses/create?view=azure-devops-rest-7.1).
+ *
+ * The live API rejects strings that contain LF (\u000A), CR (\u000D), or
+ * other ASCII control characters with HTTP 400:
+ *
+ *   TF20507: The string argument contains a character that is not valid:'u000A'.
+ *   Correct the argument, and then try the operation again.
+ *   Parameter name: Description
+ *
+ * Build #74 of PR #42 hit this when `buildMalformedProviderFallback`
+ * produced a multi-line `summary` (it embeds a `<details>` block with
+ * newline-separated lines) and the orchestrator forwarded that string
+ * verbatim as the status `description`. `description.slice(0, 255)` does
+ * not strip control characters, so the LF character reached the live API.
+ *
+ * Strategy:
+ *   1. Replace LF (\u000A) and CR (\u000D) with a single space so the
+ *      description stays a clean single-line string.
+ *   2. Strip other ASCII control characters (NUL, BEL, VT, FF, etc.) —
+ *      TAB (\u0009) is preserved because it is not flagged by the API
+ *      (status fields tolerate it; if the API ever rejects TAB too we
+ *      can extend this without touching callers).
+ *   3. Collapse runs of whitespace introduced by the replacements, then
+ *      trim leading/trailing whitespace.
+ *   4. Bound the result to 255 characters to match the documented
+ *      constraint from the existing `description.slice(0, 255)` line.
+ */
+function sanitizeAzureStatusDescription(value: string): string {
+  return value
+    .replace(/[\u000A\u000D]/gu, " ")
+    .replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F]/gu, "")
+    .replace(/\s{2,}/gu, " ")
+    .trim()
+    .slice(0, 255);
 }
 
 function parseAzureThread(value: unknown): AzureThread | null {
