@@ -177,6 +177,7 @@ steps:
         --api-key "${UMACTUALLY_API_KEY}" \
         --model auto \
         --per-request-timeout-seconds 180 \
+        --review-file-limit 50 \
         --no-detect-leaks \
         --no-dry-run
     displayName: Run UmActually Azure live review
