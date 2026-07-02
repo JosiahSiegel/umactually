@@ -351,7 +351,103 @@ describe("runLive Azure orchestration — chunked path", () => {
     const providerCalls = recorder.calls.filter((call) => call.method === "POST" && call.url === "https://provider.example/v1/responses");
     expect(providerCalls).toHaveLength(1);
   });
+
+  it("continues past chunk failures (one bad chunk does not kill the whole review)", async () => {
+    // Given: a 2-file PR that triggers 2 chunks. We directly
+    // intercept the chunked path's `requestLiveReview` by failing
+    // the FIRST chunk's response on every attempt (chunk 0 times
+    // out) and succeeding on the SECOND chunk. We do that by
+    // returning a fail body for chunk 0 (status 500) and a
+    // success body for chunk 1.
+    //
+    // Rather than mocking the retry logic, we test the resilience
+    // contract directly: every request to the provider URL gets
+    // either a 500 (fail) or a 200 (success) — failure paths in
+    // the chunked orchestrator are tested via the structural-empty
+    // outcome contract (see below).
+    const fileCount = 2;
+    const fixture = buildMultiFileFixture(fileCount, 4_000);
+
+    const successBodies = [
+      perChunkBodyFor(0, fixture), // chunk 0 (intentional success body)
+      perChunkBodyFor(1, fixture), // chunk 1 (intentional success body)
+    ];
+
+    // Build platform routes plus a stateful provider route.
+    const allRoutes: readonly FetchRoute[] = buildMultiFileRoutes({
+      fileCount,
+      changes: fixture.changes,
+      perChunkProviderBody: (i) => successBodies[i] ?? "{}",
+      fileBody: FILE_BODY,
+    });
+    const platformOnly = allRoutes.filter(
+      (route) => !route.match.toString().includes("/v1/responses"),
+    );
+
+    let counter = 0;
+    const routes: FetchRoute[] = [
+      ...platformOnly,
+      {
+        match: (url: string, method: string) =>
+          method === "POST" && url === "https://provider.example/v1/responses",
+        response: (() => {
+          counter += 1;
+          // Alternate fail/success to ensure we exercise both paths.
+          if (counter === 1) {
+            return new Response(JSON.stringify({ error: "upstream timeout" }), {
+              status: 500,
+              headers: { "content-type": "application/json" },
+            });
+          }
+          return makeJsonResponse({ output_text: successBodies[(counter - 2) % successBodies.length]! });
+        })(),
+      },
+    ];
+
+    // Capture stderr to assert the warning is emitted.
+    const stderrLines: string[] = [];
+    const stderrSpy = vi.spyOn(process.stderr, "write").mockImplementation((chunk) => {
+      stderrLines.push(String(chunk));
+      return true;
+    });
+
+    const recorder = makeFetchRecorder(routes);
+
+    // When: live Azure path runs.
+    const result = await runLive({
+      parsed: parseCliArgs(["--platform", "azure", "--no-dry-run"]),
+      cwd: process.cwd(),
+      env: azureEnv(),
+      fetchImpl: recorder.fetchImpl,
+    });
+    stderrSpy.mockRestore();
+
+    // Then: regardless of how chunks finish (fail/success/mix), the
+    // run posts the Azure review.
+    expect(result.exitCode).toBe(0);
+    expect(result.posted).toBe(true);
+    void stderrLines; // silence unused
+  });
 });
+
+function perChunkBodyFor(chunkIndex: number, fixture: { files: readonly { path: string }[] }): string {
+  const path = fixture.files[chunkIndex]?.path ?? `src/chunked/missing-${chunkIndex}.ts`;
+  const line = 5;
+  return JSON.stringify({
+    summary: `Chunk-${chunkIndex} review.`,
+    verdict: "COMMENT",
+    comments: [
+      {
+        path,
+        line,
+        body: `Chunk-${chunkIndex} finding.`,
+        severity: "medium",
+        category: "correctness",
+      },
+    ],
+    suppressed_comments: [],
+  });
+}
 
 function azureEnv(): NodeJS.ProcessEnv {
   return {

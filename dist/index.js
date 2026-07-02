@@ -4830,11 +4830,18 @@ const DEFAULT_MAX_COMMENTS_MERGE = 50;
  * Concurrency is bounded with a small worker pool (default 4) so we
  * never stampede the provider with rate-limited parallel calls while
  * still finishing ~100 chunks in ~25 seconds.
+ *
+ * Resilience contract: if any individual chunk FAILS (timeout,
+ * network error, 5xx), we log the failure and substitute a
+ * structurally-empty outcome for that chunk. The merged review
+ * continues with the successes — a single rate-limit hiccup does
+ * NOT cost us the whole review.
  */
 async function requestChunkedLiveReview(input) {
     const concurrency = Math.max(1, input.concurrency ?? DEFAULT_CHUNK_CONCURRENCY);
     const outcomes = [];
     let cursor = 0;
+    let failedChunkCount = 0;
     const workers = Array.from({ length: Math.min(concurrency, input.chunks.length) }, async () => {
         while (true) {
             const index = cursor;
@@ -4842,20 +4849,44 @@ async function requestChunkedLiveReview(input) {
             if (index >= input.chunks.length)
                 break;
             const chunk = input.chunks[index];
-            const outcome = await requestLiveReview({
-                parsed: input.parsed,
-                cwd: input.cwd,
-                env: input.env,
-                fetchImpl: input.fetchImpl,
-                platform: input.platform,
-                diffText: chunk,
-                platformToken: input.platformToken,
-                ...(input.sonarContext !== undefined ? { sonarContext: input.sonarContext } : {}),
-            });
+            let outcome = null;
+            try {
+                outcome = await requestLiveReview({
+                    parsed: input.parsed,
+                    cwd: input.cwd,
+                    env: input.env,
+                    fetchImpl: input.fetchImpl,
+                    platform: input.platform,
+                    diffText: chunk,
+                    platformToken: input.platformToken,
+                    ...(input.sonarContext !== undefined ? { sonarContext: input.sonarContext } : {}),
+                });
+            }
+            catch (error) {
+                // One chunk failed (timeout, 5xx, network). Log a warning
+                // so operators can correlate, then record an empty outcome
+                // so the merge keeps going. This is the difference between
+                // "we lost 1 of 66 chunks" and "the whole review dies on
+                // chunk 12 because the provider was rate-limiting".
+                failedChunkCount += 1;
+                const message = error instanceof Error ? error.message : String(error);
+                const sanitized = sanitizeForPost(message, [input.platformToken]);
+                const redactedChunk = chunk.length > 80 ? `${chunk.slice(0, 77)}…` : chunk;
+                process.stderr.write(`::warning::umactually-pr-review: chunk ${index + 1}/${input.chunks.length} failed (${sanitized}); substituting empty outcome. chunk preview: ${redactedChunk}\n`);
+                outcome = {
+                    review: { summary: "", verdict: "COMMENT", comments: [], suppressedComments: [] },
+                    endpoint: "",
+                    provider: "chunk-failed",
+                    modelId: "",
+                };
+            }
             outcomes[index] = outcome;
         }
     });
     await Promise.all(workers);
+    if (failedChunkCount > 0) {
+        process.stderr.write(`::warning::umactually-pr-review: ${failedChunkCount}/${input.chunks.length} chunks failed; merged review contains only findings from the chunks that succeeded.\n`);
+    }
     return mergeReviewResults(outcomes, {
         maxComments: input.parsed.maxComments ?? DEFAULT_MAX_COMMENTS_MERGE,
     });
