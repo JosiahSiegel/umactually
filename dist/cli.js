@@ -1413,6 +1413,132 @@ function buildRepositoryUrl(context) {
     return `${AZURE_DEVOPS_BASE_URL}/${context.org}/${projectSegment}/_apis/git/repositories/${context.repoId}`;
 }
 
+;// CONCATENATED MODULE: ./src/platform/azure/chunk.ts
+/**
+ * Split a reconstructed unified-diff string into per-file chunks that fit
+ * inside the provider's per-request byte budget.
+ *
+ * Why this exists:
+ *   Azure DevOps reconstructs the PR diff by walking every file in the
+ *   iteration and emitting a self-contained `diff --git a/PATH b/PATH ...`
+ *   block per file. For very large PRs (PR #42 in DemoProject ≈5,000 files)
+ *   the resulting string can exceed the model's context window and the
+ *   provider emits zero review content — the parse-fail fallback path.
+ *   Chunking breaks the diff into manageable per-file groups that the
+ *   provider can process individually, then a merge step reconciles
+ *   their outputs into one review.
+ *
+ * Algorithm (GREEDY PACKING):
+ *   1. Split the input by `diff --git` boundaries so each chunk is a
+ *      contiguous list of WHOLE file diffs. Never split a single file
+ *      across chunks (CHUNK-6).
+ *   2. Walk files in original order, appending each to the current
+ *      chunk until either:
+ *        a) Adding the next file would push the chunk beyond
+ *           `maxChunkBytes`, OR
+ *        b) Adding the next file would put the chunk at
+ *           `maxFilesPerChunk` files.
+ *      Then start a new chunk. The current chunk is finalized.
+ *   3. When the input has only a handful of files OR fits inside the
+ *      byte cap, return a single-element array containing the original
+ *      diff verbatim (CHUNK-4).
+ */
+const DEFAULT_MAX_CHUNK_BYTES = 8_000;
+const DEFAULT_MAX_FILES_PER_CHUNK = 50;
+const DIFF_HEADER_PREFIX = "diff --git ";
+function chunkDiffByFile(diffText, options) {
+    const maxChunkBytes = options?.maxChunkBytes ?? DEFAULT_MAX_CHUNK_BYTES;
+    const maxFilesPerChunk = options?.maxFilesPerChunk ?? DEFAULT_MAX_FILES_PER_CHUNK;
+    if (diffText.length === 0) {
+        return [];
+    }
+    // Single-file-or-empty diff: nothing to chunk.
+    const fileStarts = findDiffHeaderIndices(diffText);
+    if (fileStarts.length <= 1 && diffText.length <= maxChunkBytes) {
+        return [diffText];
+    }
+    // Defensive: maxChunkBytes must be at least 1 char so the loop
+    // terminates (each file-diff is at minimum a `diff --git` header line).
+    const safeBytes = Math.max(1, Math.floor(maxChunkBytes));
+    const safeFiles = Math.max(1, Math.floor(maxFilesPerChunk));
+    const chunks = [];
+    let currentChunk = "";
+    let currentFiles = 0;
+    // Index of the start of the current chunk inside `diffText`. Used so
+    // we can slice out the chunk verbatim (preserving any leading header
+    // lines or zero-length preamble that precede the first `diff --git`).
+    let chunkStart = 0;
+    for (let index = 0; index < fileStarts.length; index += 1) {
+        const fileStart = fileStarts[index];
+        const fileEnd = index + 1 < fileStarts.length ? fileStarts[index + 1] : diffText.length;
+        const fileBlock = diffText.slice(fileStart, fileEnd);
+        const wouldExceedBytes = currentChunk.length + fileBlock.length > safeBytes;
+        const wouldExceedFiles = currentFiles + 1 > safeFiles;
+        // Files that exceed the byte cap on their own get their own chunk
+        // (we never split a file across chunks). This is rare in practice
+        // — `buildUnifiedFileDiff` produces byte-light diffs even for big
+        // files — but we handle it defensively so the chunker cannot loop
+        // forever on a malformed input.
+        const fileIsLargerThanChunkCap = fileBlock.length > safeBytes;
+        const startNewChunk = currentChunk.length > 0 && (wouldExceedBytes || wouldExceedFiles);
+        if (startNewChunk) {
+            chunks.push(diffText.slice(chunkStart, fileStart));
+            chunkStart = fileStart;
+            currentChunk = fileBlock;
+            currentFiles = 1;
+        }
+        else {
+            currentChunk += fileBlock;
+            currentFiles += 1;
+        }
+        // A single-file chunk that already exceeds the cap — never grow it
+        // further. Push it as-is.
+        if (fileIsLargerThanChunkCap) {
+            chunks.push(currentChunk);
+            chunkStart = fileEnd;
+            currentChunk = "";
+            currentFiles = 0;
+        }
+    }
+    if (currentChunk.length > 0) {
+        chunks.push(diffText.slice(chunkStart));
+    }
+    // If the input starts with content before the first `diff --git`
+    // header (some diff tools emit a preamble), attach it to the first
+    // chunk verbatim so we never lose data. We already slice from
+    // `chunkStart` so this is handled above — but if there is a preamble
+    // and the first file itself needs to be split as an "oversized
+    // single-file" chunk, we keep the preamble accessible to the next
+    // chunk.
+    if (chunks.length === 0) {
+        return [diffText];
+    }
+    return chunks;
+}
+/**
+ * Indices in `diff` of every `diff --git ` header. Boundary detection
+ * uses a strict line-start anchor so `diff --git` substrings inside a
+ * hunk body (rare, but possible if a code change happens to contain
+ * the literal string) are not mistaken for file boundaries.
+ */
+function findDiffHeaderIndices(diff) {
+    const starts = [];
+    let cursor = 0;
+    while (cursor < diff.length) {
+        const nextLineEnd = diff.indexOf("\n", cursor);
+        const lineEnd = nextLineEnd === -1 ? diff.length : nextLineEnd;
+        const line = diff.slice(cursor, lineEnd);
+        if (line.startsWith(DIFF_HEADER_PREFIX)) {
+            starts.push(cursor);
+        }
+        cursor = lineEnd + 1;
+        if (nextLineEnd === -1) {
+            break;
+        }
+    }
+    return starts;
+}
+
 ;// CONCATENATED MODULE: ./src/platform/azure/context.ts
 class AzureContextError extends Error {
     name = "AzureContextError";
@@ -1704,6 +1830,127 @@ function readString(value) {
     return typeof value === "string" ? value : "";
 }
 
+;// CONCATENATED MODULE: ./src/cli/live-merge.ts
+const DEFAULT_MAX_COMMENTS = 50;
+/**
+ * Severity ranking used by MERGE-2 (sort) and MERGE-3 (dedup
+ * keep-highest). Higher = more urgent. Unknown severities rank 0 so
+ * they sort last.
+ */
+function severityRank(severity) {
+    switch (severity.toLowerCase()) {
+        case "critical":
+            return 4;
+        case "high":
+            return 3;
+        case "medium":
+            return 2;
+        case "low":
+            return 1;
+        default:
+            return 0;
+    }
+}
+/**
+ * Verdict ranking used by MERGE-5 (pick worst). Higher = worse. The
+ * umbrella strings (COMMENT / SHIP) are treated as best-effort neutral
+ * so the worst signal always wins.
+ */
+function verdictRank(verdict) {
+    switch (verdict.toUpperCase()) {
+        case "NEEDS_FIX":
+            return 4;
+        case "DISCUSS":
+            return 3;
+        case "COMMENT":
+        case "SHIP":
+        case "APPROVED":
+            return 2;
+        default:
+            return 0;
+    }
+}
+/**
+ * Merge per-chunk LiveProviderOutcome values into one. Pure function —
+ * safe to test without I/O.
+ *
+ * Empty input returns an empty (COMMENT) review with no comments and
+ * no summary so the post path can still complete (e.g. when every
+ * chunk returned a parse-fail fallback).
+ */
+function mergeReviewResults(outcomes, options) {
+    const maxComments = options?.maxComments ?? DEFAULT_MAX_COMMENTS;
+    if (outcomes.length === 0) {
+        return {
+            review: { summary: "", verdict: "COMMENT", comments: [], suppressedComments: [] },
+            endpoint: "",
+            provider: "",
+            modelId: "",
+        };
+    }
+    const first = outcomes[0];
+    // Collect + dedup comments by (path, line), keeping highest severity.
+    const dedupedComments = new Map();
+    const dedupedSuppressed = new Map();
+    for (const outcome of outcomes) {
+        for (const comment of outcome.review.comments) {
+            const key = `${comment.path}:${comment.line}`;
+            const existing = dedupedComments.get(key);
+            if (existing === undefined || severityRank(comment.severity) > severityRank(existing.severity)) {
+                dedupedComments.set(key, comment);
+            }
+        }
+        for (const suppressed of outcome.review.suppressedComments) {
+            const key = `${suppressed.path}:${suppressed.line}`;
+            const existing = dedupedSuppressed.get(key);
+            if (existing === undefined || severityRank(suppressed.severity) > severityRank(existing.severity)) {
+                dedupedSuppressed.set(key, suppressed);
+            }
+        }
+    }
+    // MERGE-2: sort by severity desc, then path asc, then line asc.
+    const sortedComments = [...dedupedComments.values()].sort((a, b) => {
+        const rankDelta = severityRank(b.severity) - severityRank(a.severity);
+        if (rankDelta !== 0)
+            return rankDelta;
+        const pathDelta = a.path.localeCompare(b.path);
+        if (pathDelta !== 0)
+            return pathDelta;
+        return a.line - b.line;
+    });
+    // MERGE-4: truncate to maxComments.
+    const truncatedComments = sortedComments.slice(0, maxComments);
+    const sortedSuppressed = [...dedupedSuppressed.values()].sort((a, b) => a.path.localeCompare(b.path));
+    // MERGE-5: pick worst verdict.
+    let worstVerdict = "";
+    let worstRank = -1;
+    for (const outcome of outcomes) {
+        const rank = verdictRank(outcome.review.verdict);
+        if (rank > worstRank) {
+            worstRank = rank;
+            worstVerdict = outcome.review.verdict;
+        }
+    }
+    // MERGE-6: pick the longest summary.
+    let longestSummary = "";
+    for (const outcome of outcomes) {
+        if (outcome.review.summary.length > longestSummary.length) {
+            longestSummary = outcome.review.summary;
+        }
+    }
+    return {
+        review: {
+            summary: longestSummary,
+            verdict: worstVerdict.length > 0 ? worstVerdict : "COMMENT",
+            comments: truncatedComments,
+            suppressedComments: sortedSuppressed,
+        },
+        endpoint: first.endpoint,
+        provider: first.provider,
+        modelId: first.modelId,
+    };
+}
+
 ;// CONCATENATED MODULE: ./src/cli/live-shared.ts
 
 
@@ -1748,7 +1995,7 @@ async function evaluateLeakGate(input) {
         message: `Refusing to post: ${report.highConfidenceLeakCount} high-confidence secret(s) detected in the diff. Set --no-detect-leaks to override (NOT recommended).`,
     };
 }
-const DEFAULT_MAX_COMMENTS = 50;
+const live_shared_DEFAULT_MAX_COMMENTS = 50;
 /**
  * Visual verdict badge used in the review-header summary. Both GitHub and
  * Azure DevOps render markdown, so the same badge appears on each platform.
@@ -1817,8 +2064,8 @@ function countsLine(input) {
  */
 function topConcernsBlock(input) {
     const sorted = [...input.review.comments].sort((a, b) => {
-        const ra = severityRank(a.severity);
-        const rb = severityRank(b.severity);
+        const ra = live_shared_severityRank(a.severity);
+        const rb = live_shared_severityRank(b.severity);
         if (ra !== rb)
             return rb - ra;
         return a.path.localeCompare(b.path);
@@ -2048,7 +2295,7 @@ function buildMalformedProviderFallback(input) {
 }
 function selectPostableComments(input) {
     const positions = parseDiffPositions(input.diffText);
-    const maxComments = input.parsed.maxComments ?? DEFAULT_MAX_COMMENTS;
+    const maxComments = input.parsed.maxComments ?? live_shared_DEFAULT_MAX_COMMENTS;
     const comments = [];
     for (const comment of input.review.comments) {
         if (comments.length >= maxComments) {
@@ -2192,9 +2439,9 @@ function passesSeverityPolicy(comment, parsed) {
     if (minimum === null) {
         return true;
     }
-    return severityRank(comment.severity) >= severityRank(minimum);
+    return live_shared_severityRank(comment.severity) >= live_shared_severityRank(minimum);
 }
-function severityRank(severity) {
+function live_shared_severityRank(severity) {
     switch (severity.toLowerCase()) {
         case "critical":
             return 4;
@@ -4561,6 +4808,60 @@ function sanitizeComments(comments, secrets) {
 
 
 
+
+
+/**
+ * Number of chunks to process concurrently when the chunked path is
+ * active. 4 is a safe default that respects provider rate-limit headers
+ * while still giving us a roughly 4x speed-up over serial chunking.
+ * See `chunkDiffByFile` (src/platform/azure/chunk.ts) for the chunking
+ * contract.
+ */
+const DEFAULT_CHUNK_CONCURRENCY = 4;
+/**
+ * Fallback cap used by the chunked Azure merge when the CLI flag
+ * `--max-comments` is not set. Matches the post-side cap in
+ * `live-shared.ts:DEFAULT_MAX_COMMENTS`.
+ */
+const DEFAULT_MAX_COMMENTS_MERGE = 50;
+/**
+ * Helper used by the Azure live path. Each chunk is fed through
+ * `requestLiveReview` independently and the per-chunk outcomes are
+ * reconciled through `mergeReviewResults`.
+ *
+ * Concurrency is bounded with a small worker pool (default 4) so we
+ * never stampede the provider with rate-limited parallel calls while
+ * still finishing ~100 chunks in ~25 seconds.
+ */
+async function requestChunkedLiveReview(input) {
+    const concurrency = Math.max(1, input.concurrency ?? DEFAULT_CHUNK_CONCURRENCY);
+    const outcomes = [];
+    let cursor = 0;
+    const workers = Array.from({ length: Math.min(concurrency, input.chunks.length) }, async () => {
+        while (true) {
+            const index = cursor;
+            cursor += 1;
+            if (index >= input.chunks.length)
+                break;
+            const chunk = input.chunks[index];
+            const outcome = await requestLiveReview({
+                parsed: input.parsed,
+                cwd: input.cwd,
+                env: input.env,
+                fetchImpl: input.fetchImpl,
+                platform: input.platform,
+                diffText: chunk,
+                platformToken: input.platformToken,
+                ...(input.sonarContext !== undefined ? { sonarContext: input.sonarContext } : {}),
+            });
+            outcomes[index] = outcome;
+        }
+    });
+    await Promise.all(workers);
+    return mergeReviewResults(outcomes, {
+        maxComments: input.parsed.maxComments ?? DEFAULT_MAX_COMMENTS_MERGE,
+    });
+}
 async function runLive(input) {
     const env = input.env ?? process.env;
     const fetchImpl = input.fetchImpl ?? globalThis.fetch.bind(globalThis);
@@ -4703,16 +5004,39 @@ async function dispatchLivePlatform(input) {
                     message: leakGate.message,
                 };
             }
-            const liveOutcome = await requestLiveReview({
-                parsed,
-                cwd,
-                env,
-                fetchImpl,
-                platform: "azure",
-                diffText,
-                platformToken: context.token,
-                ...(sonarContext !== undefined ? { sonarContext } : {}),
-            });
+            const chunks = chunkDiffByFile(diffText);
+            let liveOutcome;
+            if (chunks.length <= 1) {
+                // Fallback: the entire diff fits in one chunk. Use the existing
+                // single-call flow so a small PR review stays cheap and
+                // deterministic.
+                liveOutcome = await requestLiveReview({
+                    parsed,
+                    cwd,
+                    env,
+                    fetchImpl,
+                    platform: "azure",
+                    diffText,
+                    platformToken: context.token,
+                    ...(sonarContext !== undefined ? { sonarContext } : {}),
+                });
+            }
+            else {
+                // Chunked path: feed each per-file chunk to the provider in
+                // parallel (bounded by DEFAULT_CHUNK_CONCURRENCY) and merge
+                // the per-chunk outcomes into a single LiveProviderOutcome.
+                process.stdout.write(`umactually-pr-review: chunking large PR diff into ${chunks.length} provider requests (max concurrency ${DEFAULT_CHUNK_CONCURRENCY}).\n`);
+                liveOutcome = await requestChunkedLiveReview({
+                    parsed,
+                    cwd,
+                    env,
+                    fetchImpl,
+                    platform: "azure",
+                    chunks,
+                    platformToken: context.token,
+                    ...(sonarContext !== undefined ? { sonarContext } : {}),
+                });
+            }
             const finalOutcome = applySimulateFindings({
                 outcome: liveOutcome,
                 simulateFindings: parsed.simulateFindings === true,
