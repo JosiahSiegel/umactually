@@ -5,3 +5,4 @@ artifacts/scratch/
 artifacts/manual/
 .env
 .playwright-mcp/
+*.png
