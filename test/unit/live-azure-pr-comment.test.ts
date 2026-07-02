@@ -292,10 +292,13 @@ describe("postAzurePrComment (Azure parent PR-level review summary)", () => {
     expect(findCall(recorder.calls, "POST", "/statuses?api-version=7.1")).toBeDefined();
   });
 
-  it("PARITY-102: skips the parent PR comment when a marker thread without threadContext already exists", async () => {
-    // Given: Azure returns an existing marker thread that has NO
-    // threadContext (i.e. it is itself a PR-level comment). This is the
-    // dedup signal that a parent review summary already exists.
+  it("PARITY-102: PATCHes the existing parent PR-level marker thread in place (no new parent POST)", async () => {
+    // Given: Azure returns an existing parent PR-level marker thread (with
+    // id and threadContext: null). The live Azure path must PATCH that
+    // thread in place via the documented Update endpoint, not POST a new
+    // parent (which would leave the old one stale).
+    const EXISTING_PARENT_THREAD_ID = 79;
+    const EXISTING_PARENT_COMMENT_ID = 12345;
     const existingParentRoutes: FreshableRoute[] = [
       ...freshable(azureDiffRoutes(makeJsonResponse, azureReviewDiffFixture())),
       {
@@ -309,10 +312,14 @@ describe("postAzurePrComment (Azure parent PR-level review summary)", () => {
             count: 1,
             value: [
               {
+                id: EXISTING_PARENT_THREAD_ID,
                 status: "active",
                 threadContext: null,
                 comments: [
-                  { content: "<!-- umactually-pr-review -->\nExisting parent review summary." },
+                  {
+                    id: EXISTING_PARENT_COMMENT_ID,
+                    content: "<!-- umactually-pr-review -->\nExisting parent review summary.",
+                  },
                 ],
               },
             ],
@@ -321,6 +328,11 @@ describe("postAzurePrComment (Azure parent PR-level review summary)", () => {
       {
         match: (url, method) => method === "POST" && url.endsWith("/threads?api-version=7.1"),
         response: () => makeJsonResponse({ id: 77 }, 200),
+      },
+      {
+        match: (url, method) =>
+          method === "PATCH" && url.endsWith(`/threads/${EXISTING_PARENT_THREAD_ID}?api-version=7.1`),
+        response: () => makeJsonResponse({ id: EXISTING_PARENT_THREAD_ID }, 200),
       },
       {
         match: (url, method) => method === "POST" && url.endsWith("/statuses?api-version=7.1"),
@@ -338,8 +350,7 @@ describe("postAzurePrComment (Azure parent PR-level review summary)", () => {
     });
 
     // Then: at most one /threads POST happens — only the inline finding.
-    // The parent PR-level POST must be skipped because the existing parent
-    // marker thread satisfies dedup.
+    // The parent PR-level comment is PATCHed in place, not POSTed.
     expect(result.exitCode).toBe(0);
     const posts = threadPosts(recorder.calls);
     expect(posts.length).toBe(1);
@@ -351,5 +362,13 @@ describe("postAzurePrComment (Azure parent PR-level review summary)", () => {
     }
     const inlineBody = readRecord(onlyPost.body as Record<string, unknown>, "inline thread body");
     expect(inlineBody["threadContext"]).toBeDefined();
+
+    // And: exactly one PATCH was sent to the existing parent's thread URL.
+    const patchCalls = recorder.calls.filter(
+      (call) =>
+        call.method === "PATCH" &&
+        call.url.endsWith(`/threads/${EXISTING_PARENT_THREAD_ID}?api-version=7.1`),
+    );
+    expect(patchCalls).toHaveLength(1);
   });
 });

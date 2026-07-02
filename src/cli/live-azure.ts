@@ -48,8 +48,14 @@ export async function runAzureLive(input: {
   // — same /threads endpoint, body OMITS `threadContext`, which causes
   // ADO to render it as a free-form PR-level comment rather than a
   // file-pinned inline thread. Best-effort: a parent failure never blocks
-  // the inline-thread loop that follows.
-  await postAzurePrComment({ context, fetchImpl, body, existingThreads });
+  // the inline-thread loop that follows. If an existing parent marker
+  // thread is found, we PATCH it in place via the documented Update
+  // endpoint so subsequent runs can refresh the body (e.g. recover from a
+  // parse-fail fallback that landed on a previous run):
+  //   PATCH .../pullRequests/{id}/threads/{threadId}?api-version=7.1
+  // See https://learn.microsoft.com/en-us/rest/api/azure/devops/git/pull-request-threads/update?view=azure-devops-rest-7.1
+  const parentThread = await postAzurePrComment({ context, fetchImpl, body, existingThreads });
+  const parentThreadId = parentThread?.id;
 
   const postedIds: number[] = [];
   const failedIndices: number[] = [];
@@ -60,7 +66,13 @@ export async function runAzureLive(input: {
       continue;
     }
     try {
-      const threadId = await postAzureThread({ context, fetchImpl, comment, body });
+      const threadId = await postAzureThread({
+        context,
+        fetchImpl,
+        comment,
+        body,
+        parentThreadId,
+      });
       if (threadId !== undefined) {
         postedIds.push(threadId);
       }
@@ -108,6 +120,7 @@ export async function runAzureLive(input: {
 }
 
 type AzureThread = {
+  readonly id: number | undefined;
   readonly status: string;
   readonly threadContext: {
     readonly filePath: string;
@@ -116,6 +129,7 @@ type AzureThread = {
     };
   } | null;
   readonly comments: readonly {
+    readonly id: number | undefined;
     readonly content: string;
   }[];
 };
@@ -155,15 +169,34 @@ function hasDuplicateThread(threads: readonly AzureThread[], comment: LiveReview
   });
 }
 
-function hasExistingParentPrComment(threads: readonly AzureThread[]): boolean {
-  // A parent PR-level comment is a thread with NO `threadContext` that
-  // carries our stable marker. See `parseAzureThread` — `threadContext`
-  // is null when ADO returns `"threadContext": null`.
-  return threads.some((thread) => {
-    if (thread.threadContext !== null) return false;
-    return thread.comments.some((c) => c.content.includes(REVIEW_MARKER));
-  });
+/**
+ * Locate the existing parent PR-level marker thread (one whose
+ * `threadContext` is null and whose first comment carries our stable
+ * marker) so we can PATCH its content in place on subsequent runs.
+ *
+ * Returns the thread + its first comment so the PATCH can preserve the
+ * existing `id` per Microsoft Learn:
+ *   https://learn.microsoft.com/en-us/rest/api/azure/devops/git/pull-request-threads/update?view=azure-devops-rest-7.1
+ *   "comments: Comment[] - A list of the comments." + Comment.id is
+ *   required to keep the comment when patching the thread.
+ */
+function findExistingParentPrComment(threads: readonly AzureThread[]): {
+  readonly thread: AzureThread;
+  readonly comment: AzureThread["comments"][number];
+} | null {
+  for (const thread of threads) {
+    if (thread.threadContext !== null) continue;
+    const firstComment = thread.comments[0];
+    if (firstComment === undefined) continue;
+    if (!firstComment.content.includes(REVIEW_MARKER)) continue;
+    return { thread, comment: firstComment };
+  }
+  return null;
 }
+
+type AzureParentResult =
+  | { readonly id: number; readonly updated: boolean }
+  | undefined;
 
 /**
  * Post a free-form, PR-level (issue-style) review summary as the first card
@@ -174,29 +207,57 @@ function hasExistingParentPrComment(threads: readonly AzureThread[]): boolean {
  * thread, which gives us GitHub-like "review summary above inline
  * findings" parity at the PR-conversation level.
  *
- * The parent POST is best-effort: if it fails (or if a marker thread
- * without threadContext already exists), we log a warning and let the
- * inline-thread loop proceed. The pipeline gate still depends on the
- * status POST, which only fires after at least one inline thread lands.
+ * Update-in-place behavior: when an existing parent marker thread is
+ * found, this PATCHes the thread in place via the documented Update
+ * endpoint (so subsequent runs can refresh the body — e.g. recover from a
+ * parse-fail fallback that landed on a previous run) instead of leaving a
+ * stale summary. The PATCH body carries the existing comment's `id` to
+ * keep the comment, with new `content`.
+ *
+ * The parent POST/PATCH is best-effort: failures are logged and the
+ * inline-thread loop proceeds regardless. The pipeline gate still depends
+ * on the status POST, which only fires after at least one inline thread
+ * lands.
  */
 async function postAzurePrComment(input: {
   readonly context: AzureContext;
   readonly fetchImpl: FetchImpl;
   readonly body: string;
   readonly existingThreads: readonly AzureThread[];
-}): Promise<number | undefined> {
-  if (hasExistingParentPrComment(input.existingThreads)) {
-    return undefined;
+}): Promise<AzureParentResult> {
+  const existing = findExistingParentPrComment(input.existingThreads);
+  if (existing !== null) {
+    if (existing.thread.id === undefined || existing.comment.id === undefined) {
+      // Thread or comment missing ids → fall back to POST. Should never
+      // happen for real ADO responses (both ids are required fields), but
+      // keep the flow total.
+      return postParentThread(input.context, input.fetchImpl, input.body);
+    }
+    return patchParentThread({
+      context: input.context,
+      fetchImpl: input.fetchImpl,
+      body: input.body,
+      threadId: existing.thread.id,
+      commentId: existing.comment.id,
+    });
   }
+  return postParentThread(input.context, input.fetchImpl, input.body);
+}
+
+async function postParentThread(
+  context: AzureContext,
+  fetchImpl: FetchImpl,
+  body: string,
+): Promise<AzureParentResult> {
   try {
-    const response = await input.fetchImpl(azureThreadsUrl(input.context), {
+    const response = await fetchImpl(azureThreadsUrl(context), {
       method: "POST",
-      headers: azureHeaders(input.context.token),
+      headers: azureHeaders(context.token),
       body: JSON.stringify({
         comments: [
           {
             parentCommentId: 0,
-            content: input.body,
+            content: body,
             commentType: 1,
           },
         ],
@@ -205,11 +266,62 @@ async function postAzurePrComment(input: {
       }),
     });
     ensureHttpOk(response, "AZURE_CREATE_PR_COMMENT_FAILED", "Azure create PR comment");
-    return readResponseId(await readJsonResponse(response));
+    const created = readResponseId(await readJsonResponse(response));
+    return created === undefined ? undefined : { id: created, updated: false };
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     process.stderr.write(
       `::warning::umactually-pr-review: Azure parent PR comment POST failed (${message}); continuing with inline threads only.\n`,
+    );
+    return undefined;
+  }
+}
+
+/**
+ * Update an existing parent PR-level thread in place via the documented
+ * Pull Request Threads - Update endpoint. The body MUST include the
+ * existing comment's `id` so ADO keeps that comment (and not create a new
+ * one), with the new `content` for that comment.
+ *
+ * Best-effort: a PATCH failure is logged and treated as if no parent
+ * summary exists for downstream correlation — inline threads proceed
+ * without a parent reference. This matches the original POST's
+ * best-effort behavior.
+ */
+async function patchParentThread(input: {
+  readonly context: AzureContext;
+  readonly fetchImpl: FetchImpl;
+  readonly body: string;
+  readonly threadId: number;
+  readonly commentId: number;
+}): Promise<AzureParentResult> {
+  try {
+    const url = `${azurePrBaseUrl(input.context)}/threads/${input.threadId}?api-version=7.1`;
+    const response = await input.fetchImpl(url, {
+      method: "PATCH",
+      headers: azureHeaders(input.context.token),
+      body: JSON.stringify({
+        // Per Microsoft Learn, the request body is the thread object
+        // shape with `comments: Comment[]`. Each Comment in the array
+        // MUST carry its existing `id` to be preserved.
+        // https://learn.microsoft.com/en-us/rest/api/azure/devops/git/pull-request-threads/update?view=azure-devops-rest-7.1
+        comments: [
+          {
+            id: input.commentId,
+            parentCommentId: 0,
+            content: input.body,
+            commentType: 1,
+          },
+        ],
+        status: 1,
+      }),
+    });
+    ensureHttpOk(response, "AZURE_UPDATE_PR_COMMENT_FAILED", "Azure update PR comment");
+    return { id: input.threadId, updated: true };
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    process.stderr.write(
+      `::warning::umactually-pr-review: Azure parent PR comment PATCH failed (${message}); continuing with inline threads only.\n`,
     );
     return undefined;
   }
@@ -220,6 +332,7 @@ async function postAzureThread(input: {
   readonly fetchImpl: FetchImpl;
   readonly comment: LiveReviewComment;
   readonly body: string;
+  readonly parentThreadId: number | undefined;
 }): Promise<number | undefined> {
   const response = await input.fetchImpl(azureThreadsUrl(input.context), {
     method: "POST",
@@ -232,6 +345,7 @@ async function postAzureThread(input: {
             comment: input.comment,
             secrets: [input.context.token],
             includeMarker: true,
+            ...(input.parentThreadId !== undefined ? { parentThreadId: input.parentThreadId } : {}),
           }),
           commentType: 1,
         },
@@ -297,10 +411,15 @@ function parseAzureThread(value: unknown): AzureThread | null {
       threadContext = flat;
     }
   }
+  const rawId = value["id"];
+  const threadId = typeof rawId === "number" && Number.isSafeInteger(rawId) ? rawId : undefined;
   return {
+    id: threadId,
     status,
     threadContext,
-    comments: comments.map(parseAzureComment).filter((comment): comment is { readonly content: string } => comment !== null),
+    comments: comments
+      .map(parseAzureComment)
+      .filter((comment): comment is { readonly id: number | undefined; readonly content: string } => comment !== null),
   };
 }
 
@@ -322,12 +441,17 @@ function readRightFileStart(context: Record<string, unknown>): { readonly line: 
   return typeof line === "number" && Number.isSafeInteger(line) ? { line } : null;
 }
 
-function parseAzureComment(value: unknown): { readonly content: string } | null {
+function parseAzureComment(value: unknown): { readonly id: number | undefined; readonly content: string } | null {
   if (!isRecord(value)) {
     return null;
   }
   const content = value["content"];
-  return typeof content === "string" ? { content } : null;
+  if (typeof content !== "string") {
+    return null;
+  }
+  const rawId = value["id"];
+  const id = typeof rawId === "number" && Number.isSafeInteger(rawId) ? rawId : undefined;
+  return { id, content };
 }
 
 function azureThreadsUrl(context: AzureContext): string {

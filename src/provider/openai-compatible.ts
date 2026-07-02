@@ -149,6 +149,7 @@ async function callEndpoint(
       response.status,
       requestId,
       "Provider response did not contain a JSON review payload.",
+      { rawText },
     );
   }
 

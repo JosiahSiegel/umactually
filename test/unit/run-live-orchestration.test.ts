@@ -360,14 +360,26 @@ describe("runLive GitHub orchestration", () => {
       fetchImpl: recorder.fetchImpl,
     });
 
-    // Then: it still posts one marker review, but never publishes raw provider text.
+    // Then: it still posts one marker review, with the raw provider text
+    // surfaced in a collapsed `<details>` block for diagnostics (so
+    // reviewers can see what the model actually returned). The original
+    // safe-fallback contract — verdict badge + parse-fail summary line —
+    // is preserved. Any actual secrets in the raw text would still be
+    // sanitized via the existing sanitizer; this test pins the new
+    // "include raw text for diagnostics" contract.
     expect(result.exitCode).toBe(0);
     expect(result.posted).toBe(true);
     const postCall = findCall(recorder.calls, "POST", "/pulls/42/reviews");
     const body = readRecord(postCall.body as Record<string, unknown>, "review request");
     expect(body["body"]).toContain("<!-- umactually-pr-review -->");
     expect(body["body"]).toContain("Provider response did not contain a valid JSON review payload.");
-    expect(body["body"]).not.toContain("RAW_PROVIDER_JSON_SHOULD_NOT_POST");
+    // The raw provider text is now included in a `<details>` block so
+    // reviewers can diagnose parse-fail without leaving the PR.
+    expect(body["body"]).toContain("RAW_PROVIDER_JSON_SHOULD_NOT_POST");
+    expect(body["body"]).toContain("<details>");
+    expect(body["body"]).toContain("📨 Raw provider response (truncated)");
+    // Model + provider line shows which backend failed (no secrets).
+    expect(body["body"]).toContain("Provider: `openai-compatible`");
     expect(readArray(body["comments"], "review comments")).toHaveLength(0);
   });
 

@@ -2,6 +2,7 @@ import { runCopilotRequest } from "../provider/copilot.js";
 import { runProviderRequest, type ProviderReviewPayload } from "../provider/openai-compatible.js";
 import { scanReviewSecrets } from "../security/scan-review-secrets.js";
 import {
+  buildMalformedProviderFallback,
   LiveReviewError,
   sanitizeForPost,
   type FetchImpl,
@@ -58,7 +59,12 @@ export async function requestLiveReview(input: {
     }
     if (result.error.code === "parse") {
       return {
-        review: buildMalformedProviderFallback(),
+        review: buildMalformedProviderFallback({
+          provider: COPILOT_PROVIDER_NAME,
+          modelId,
+          rawText: result.error.rawText ?? "",
+          secrets: [providerApiKey, input.platformToken],
+        }),
         endpoint: result.error.endpoint,
         provider: COPILOT_PROVIDER_NAME,
         modelId,
@@ -91,7 +97,12 @@ export async function requestLiveReview(input: {
 
   if (result.error.code === "parse") {
     return {
-      review: buildMalformedProviderFallback(),
+      review: buildMalformedProviderFallback({
+        provider: PROVIDER_NAME,
+        modelId,
+        rawText: result.error.rawText ?? "",
+        secrets: [providerApiKey, input.platformToken],
+      }),
       endpoint: result.error.endpoint,
       provider: PROVIDER_NAME,
       modelId,
@@ -142,13 +153,4 @@ function readConfiguredModel(parsed: ParsedCliArgs, env: NodeJS.ProcessEnv): str
 function readRequestTimeoutMs(parsed: ParsedCliArgs): number {
   const seconds = parsed.perRequestTimeoutSeconds ?? parsed.reviewTimeoutSeconds;
   return seconds === null || seconds <= 0 ? DEFAULT_REQUEST_TIMEOUT_MS : seconds * 1_000;
-}
-
-function buildMalformedProviderFallback(): LiveReview {
-  return {
-    summary: "Provider response did not contain a valid JSON review payload.",
-    verdict: "COMMENT",
-    comments: [],
-    suppressedComments: [],
-  };
 }

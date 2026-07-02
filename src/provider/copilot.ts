@@ -173,6 +173,7 @@ async function runChatCall(
         response.status,
         requestId,
         "Provider response did not contain a JSON review payload.",
+        { rawText },
       ),
     };
   }
