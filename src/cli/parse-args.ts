@@ -29,6 +29,7 @@ export type ParsedCliArgs = {
   readonly ignoreMinor: boolean;
   readonly minimumSeverity: CliMinimumSeverity | null;
   readonly maxComments: number | null;
+  readonly reviewFileLimit: number | null;
   readonly detectLeaks: boolean;
   readonly walkthrough: boolean;
   readonly diagnostic: boolean;
@@ -72,6 +73,7 @@ export function parseCliArgs(args: readonly string[]): ParsedCliArgs {
   let ignoreMinor = false;
   let minimumSeverity: CliMinimumSeverity | null = null;
   let maxComments: number | null = null;
+  let reviewFileLimit: number | null = null;
   let detectLeaks = true;
   let walkthrough = false;
   let diagnostic = false;
@@ -196,6 +198,10 @@ export function parseCliArgs(args: readonly string[]): ParsedCliArgs {
         maxComments = readIntValue(args, index, "max-comments");
         index += 1;
         break;
+      case "--review-file-limit":
+        reviewFileLimit = readIntValue(args, index, "review-file-limit");
+        index += 1;
+        break;
       case "--detect-leaks":
         detectLeaks = true;
         break;
@@ -286,6 +292,7 @@ export function parseCliArgs(args: readonly string[]): ParsedCliArgs {
     ignoreMinor,
     minimumSeverity,
     maxComments,
+    reviewFileLimit,
     detectLeaks,
     walkthrough,
     diagnostic,

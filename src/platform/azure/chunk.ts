@@ -47,6 +47,22 @@ const DEFAULT_MAX_CHUNK_BYTES = 8_000;
 const DEFAULT_MAX_FILES_PER_CHUNK = 50;
 const DIFF_HEADER_PREFIX = "diff --git ";
 
+/**
+ * Count the number of distinct files in a unified diff by tallying
+ * `diff --git ` headers. The `findDiffHeaderIndices` helper does the
+ * strict line-start anchor matching, so this function correctly ignores
+ * literal `diff --git` substrings that happen to appear inside a hunk.
+ *
+ * Used by the orchestrator to gate the chunked review path on
+ * `review-file-limit` (default 200) — once a PR crosses that threshold
+ * we stop calling the provider because per-chunk reviews of an
+ * arbitrarily-large initial-import diff produce hallucinated findings
+ * that look substantive but aren't grounded in the code.
+ */
+export function countDiffFiles(diffText: string): number {
+  return findDiffHeaderIndices(diffText).length;
+}
+
 export function chunkDiffByFile(diffText: string, options?: ChunkOptions): readonly string[] {
   const maxChunkBytes = options?.maxChunkBytes ?? DEFAULT_MAX_CHUNK_BYTES;
   const maxFilesPerChunk = options?.maxFilesPerChunk ?? DEFAULT_MAX_FILES_PER_CHUNK;

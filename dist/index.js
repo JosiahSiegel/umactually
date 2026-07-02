@@ -67,6 +67,7 @@ function parseCliArgs(args) {
     let ignoreMinor = false;
     let minimumSeverity = null;
     let maxComments = null;
+    let reviewFileLimit = null;
     let detectLeaks = true;
     let walkthrough = false;
     let diagnostic = false;
@@ -190,6 +191,10 @@ function parseCliArgs(args) {
                 maxComments = readIntValue(args, index, "max-comments");
                 index += 1;
                 break;
+            case "--review-file-limit":
+                reviewFileLimit = readIntValue(args, index, "review-file-limit");
+                index += 1;
+                break;
             case "--detect-leaks":
                 detectLeaks = true;
                 break;
@@ -279,6 +284,7 @@ function parseCliArgs(args) {
         ignoreMinor,
         minimumSeverity,
         maxComments,
+        reviewFileLimit,
         detectLeaks,
         walkthrough,
         diagnostic,
@@ -1050,6 +1056,7 @@ const ENV_KEYS = [
     ["ignoreMinor", ["UMACTUALLY_IGNORE_MINOR", "REVIEW_IGNORE_MINOR"]],
     ["minimumSeverity", ["REVIEW_MINIMUM_SEVERITY"]],
     ["maxComments", ["REVIEW_MAX_COMMENTS"]],
+    ["reviewFileLimit", ["REVIEW_FILE_LIMIT"]],
     ["sonarEnabled", ["UMACTUALLY_INCLUDE_SONARQUBE", "REVIEW_SONAR_ENABLED"]],
     ["sonarHost", ["UMACTUALLY_SONAR_HOST_URL", "REVIEW_SONAR_HOST"]],
     ["sonarToken", ["UMACTUALLY_SONAR_TOKEN", "REVIEW_SONAR_TOKEN"]],
@@ -1444,6 +1451,21 @@ function buildRepositoryUrl(context) {
 const DEFAULT_MAX_CHUNK_BYTES = 8_000;
 const DEFAULT_MAX_FILES_PER_CHUNK = 50;
 const DIFF_HEADER_PREFIX = "diff --git ";
+/**
+ * Count the number of distinct files in a unified diff by tallying
+ * `diff --git ` headers. The `findDiffHeaderIndices` helper does the
+ * strict line-start anchor matching, so this function correctly ignores
+ * literal `diff --git` substrings that happen to appear inside a hunk.
+ *
+ * Used by the orchestrator to gate the chunked review path on
+ * `review-file-limit` (default 200) — once a PR crosses that threshold
+ * we stop calling the provider because per-chunk reviews of an
+ * arbitrarily-large initial-import diff produce hallucinated findings
+ * that look substantive but aren't grounded in the code.
+ */
+function countDiffFiles(diffText) {
+    return findDiffHeaderIndices(diffText).length;
+}
 function chunkDiffByFile(diffText, options) {
     const maxChunkBytes = options?.maxChunkBytes ?? DEFAULT_MAX_CHUNK_BYTES;
     const maxFilesPerChunk = options?.maxFilesPerChunk ?? DEFAULT_MAX_FILES_PER_CHUNK;
@@ -2286,6 +2308,42 @@ function buildMalformedProviderFallback(input) {
     // this fallback path would otherwise show the same metadata twice.
     return {
         summary: `Provider response did not contain a valid JSON review payload.\n\n${detailsBlock}`,
+        verdict: "COMMENT",
+        comments: [],
+        suppressedComments: [],
+    };
+}
+/**
+ * Fallback review when the PR's diff touches more than
+ * `reviewFileLimit` files. We skip the chunked review path entirely
+ * and surface a clear "diff too large to review" verdict rather than
+ * feeding the LLM arbitrarily-large per-file chunks (which produces
+ * hallucinated findings that look substantive but aren't grounded in
+ * the code).
+ *
+ * The user can override the cap via `--review-file-limit N` (or
+ * `REVIEW_FILE_LIMIT=N`) — set to 0 to disable the limit and accept
+ * whatever the model produces.
+ */
+function buildTooLargeFallback(input) {
+    const safeProvider = sanitizeForPost(input.provider, input.secrets);
+    const safeModelId = sanitizeForPost(input.modelId, input.secrets);
+    const summary = [
+        `This PR changes \`${input.fileCount}\` files, which is more than the configured \`--review-file-limit\` of \`${input.reviewFileLimit}\`.`,
+        "",
+        "Live review is intentionally skipped on very large diffs because the per-chunk LLM reviews produce hallucinated findings that aren't grounded in the code.",
+        "",
+        "**To enable review on this PR:**",
+        "",
+        `- Raise the limit: \`--review-file-limit ${input.fileCount}\` (or set \`REVIEW_FILE_LIMIT=${input.fileCount}\`).`,
+        "- Or split this PR into smaller PRs.",
+        "",
+        "The merge gate is unaffected — this is a review-quality choice, not a policy decision.",
+        "",
+        `Provider: \`${safeProvider}\` · Model: \`${safeModelId}\``,
+    ].join("\n");
+    return {
+        summary,
         verdict: "COMMENT",
         comments: [],
         suppressedComments: [],
@@ -4152,7 +4210,7 @@ function openai_compatible_createRequestId() {
 }
 
 ;// CONCATENATED MODULE: ./src/config/errors.ts
-class InvalidConfigError extends Error {
+class errors_InvalidConfigError extends Error {
     field;
     reason;
     name = "InvalidConfigError";
@@ -4176,7 +4234,7 @@ class PromptFileError extends Error {
  * Marker used in error messages to replace any user-supplied value
  * (URLs, tokens, prompt content). Never echo the raw value.
  */
-const REDACTED = "[REDACTED]";
+const errors_REDACTED = "[REDACTED]";
 
 ;// CONCATENATED MODULE: ./src/config/prompt-files.ts
 
@@ -4226,9 +4284,9 @@ function toPosix(value) {
  * - Enforces a per-file and aggregate byte cap.
  * - Never includes file contents in errors; only the `[REDACTED]` marker.
  */
-async function readPromptFiles(paths, byteCap, options) {
+async function prompt_files_readPromptFiles(paths, byteCap, options) {
     if (!Number.isInteger(byteCap) || byteCap <= 0) {
-        throw new InvalidConfigError("prompt.byteCap", `expected positive integer, received ${byteCap}`);
+        throw new errors_InvalidConfigError("prompt.byteCap", `expected positive integer, received ${byteCap}`);
     }
     const fs = options.fs ?? nodePromptFileSystem;
     const cwdReal = await fs.realpath(options.cwd);
@@ -4299,7 +4357,7 @@ async function pickSystemPrompt(input) {
     }
     const filePath = input.parsed.promptFile ?? input.env["UMACTUALLY_PROMPT_FILE"];
     if (filePath !== undefined && filePath.length > 0) {
-        return readPromptFiles([filePath], DEFAULT_PROMPT_BYTE_CAP, { cwd: input.cwd });
+        return prompt_files_readPromptFiles([filePath], DEFAULT_PROMPT_BYTE_CAP, { cwd: input.cwd });
     }
     return [
         "You are UmActually, a precise pull request reviewer.",
@@ -4317,7 +4375,7 @@ async function readAdditionalPrompt(input) {
     if (filePath === undefined || filePath.length === 0) {
         return "";
     }
-    return readPromptFiles([filePath], DEFAULT_PROMPT_BYTE_CAP, { cwd: input.cwd });
+    return prompt_files_readPromptFiles([filePath], DEFAULT_PROMPT_BYTE_CAP, { cwd: input.cwd });
 }
 
 ;// CONCATENATED MODULE: ./src/cli/live-provider.ts
@@ -4795,7 +4853,315 @@ function sanitizeComments(comments, secrets) {
     }));
 }
 
+;// CONCATENATED MODULE: ./src/config/parsers.ts
+
+const TRUTHY_STRINGS = new Set(["1", "true", "yes", "on", "y"]);
+const FALSY_STRINGS = new Set(["0", "false", "no", "off", "n", ""]);
+/**
+ * Parses a boolean from an unknown boundary. Accepts:
+ * - native boolean
+ * - 0 or 1 (number)
+ * - string in TRUTHY_STRINGS / FALSY_STRINGS (case-insensitive, trimmed)
+ * Anything else throws InvalidConfigError with [REDACTED] in the message.
+ */
+function parsers_parseBooleanFromUnknown(value, field) {
+    if (typeof value === "boolean")
+        return value;
+    if (typeof value === "number") {
+        if (value === 1)
+            return true;
+        if (value === 0)
+            return false;
+        throw new InvalidConfigError(field, `expected boolean, received number ${REDACTED}`);
+    }
+    if (typeof value === "string") {
+        const normalized = value.trim().toLowerCase();
+        if (TRUTHY_STRINGS.has(normalized))
+            return true;
+        if (FALSY_STRINGS.has(normalized))
+            return false;
+        throw new InvalidConfigError(field, `expected boolean string, received ${REDACTED}`);
+    }
+    throw new InvalidConfigError(field, `expected boolean, received ${typeof value}`);
+}
+const INTEGER_RE = /^-?\d+$/;
+/**
+ * Parses an integer from an unknown boundary. Accepts native integers
+ * and decimal-integer strings. Rejects floats, NaN, Infinity, empty strings.
+ */
+function parsers_parseIntegerFromUnknown(value, field) {
+    if (typeof value === "number") {
+        if (!Number.isInteger(value)) {
+            throw new InvalidConfigError(field, `expected integer, received non-integer number ${REDACTED}`);
+        }
+        return value;
+    }
+    if (typeof value === "string") {
+        const trimmed = value.trim();
+        if (trimmed.length === 0) {
+            throw new InvalidConfigError(field, `expected integer, received empty string`);
+        }
+        if (!INTEGER_RE.test(trimmed)) {
+            throw new InvalidConfigError(field, `expected integer string, received ${REDACTED}`);
+        }
+        const parsed = Number.parseInt(trimmed, 10);
+        if (!Number.isFinite(parsed)) {
+            throw new InvalidConfigError(field, `expected finite integer, received ${REDACTED}`);
+        }
+        return parsed;
+    }
+    throw new InvalidConfigError(field, `expected integer, received ${typeof value}`);
+}
+const VALID_SEVERITIES = new Set([
+    "info",
+    "minor",
+    "major",
+    "critical",
+    "security",
+    "leak",
+]);
+function parsers_parseSeverityFromUnknown(value, field) {
+    if (typeof value !== "string") {
+        throw new InvalidConfigError(field, `expected severity string, received ${typeof value}`);
+    }
+    const normalized = value.trim().toLowerCase();
+    if (!VALID_SEVERITIES.has(normalized)) {
+        throw new InvalidConfigError(field, `unknown severity ${REDACTED}`);
+    }
+    return normalized;
+}
+const VALID_PLATFORMS = new Set(["auto", "github", "azure"]);
+function parsers_parsePlatformFromUnknown(value, field) {
+    if (typeof value !== "string") {
+        throw new InvalidConfigError(field, `expected platform string, received ${typeof value}`);
+    }
+    const normalized = value.trim().toLowerCase();
+    if (!VALID_PLATFORMS.has(normalized)) {
+        throw new InvalidConfigError(field, `unknown platform ${REDACTED}`);
+    }
+    return normalized;
+}
+/**
+ * Normalizes a provider base URL:
+ * - trims whitespace
+ * - requires http: or https:
+ * - lowercases scheme and host
+ * - strips query/fragment
+ * - appends `/v1` if no version path segment is present
+ *
+ * Never includes the raw URL in error messages.
+ */
+function parsers_normalizeApiUrl(rawUrl, field) {
+    if (typeof rawUrl !== "string") {
+        throw new InvalidConfigError(field, `expected URL string, received ${typeof rawUrl}`);
+    }
+    const trimmed = rawUrl.trim();
+    if (trimmed.length === 0) {
+        throw new InvalidConfigError(field, `expected non-empty URL`);
+    }
+    let parsed;
+    try {
+        parsed = new URL(trimmed);
+    }
+    catch {
+        throw new InvalidConfigError(field, `unparseable URL ${REDACTED}`);
+    }
+    const protocol = parsed.protocol.toLowerCase();
+    if (protocol !== "http:" && protocol !== "https:") {
+        throw new InvalidConfigError(field, `unsupported URL scheme ${REDACTED}`);
+    }
+    const cleanedPath = normalizePath(parsed.pathname);
+    const hasVersionSegment = hasVersionPathSegment(cleanedPath);
+    const finalPath = hasVersionSegment ? cleanedPath : appendV1(cleanedPath);
+    return `${protocol}//${parsed.host.toLowerCase()}${finalPath}`;
+}
+function normalizePath(pathname) {
+    const trimmed = pathname.replace(/\/+$/, "");
+    return trimmed;
+}
+function hasVersionPathSegment(path) {
+    if (path.length === 0)
+        return false;
+    const segments = path.split("/");
+    for (const segment of segments) {
+        if (/^v\d+$/.test(segment))
+            return true;
+    }
+    return false;
+}
+function appendV1(path) {
+    return path.length === 0 ? "/v1" : `${path}/v1`;
+}
+
+;// CONCATENATED MODULE: ./src/config/loader.ts
+
+
+
+
+const loader_DEFAULT_MAX_COMMENTS = 50;
+const DEFAULT_REVIEW_FILE_LIMIT = 200;
+const DEFAULT_REVIEW_SECONDS = 300;
+const DEFAULT_STALL_SECONDS = 270;
+const DEFAULT_PER_REQUEST_SECONDS = 60;
+const DEFAULT_SONAR_TIMEOUT_SECONDS = 60;
+const DEFAULT_MINIMUM_SEVERITY = "minor";
+const DEFAULT_PLATFORM = "auto";
+const DEFAULT_PROVIDER_URL = "https://api.openai.com/v1";
+const DEFAULT_PROVIDER_MODEL = "auto";
+const loader_DEFAULT_PROMPT_BYTE_CAP = (/* unused pure expression or super */ null && (64 * 1024));
+/**
+ * Resolves the final ReviewConfig by merging CLI > inputs > env > defaults.
+ * `cwd` is used to resolve prompt file paths (workspace-relative).
+ */
+async function loadConfigFromSources(sources) {
+    const { cli, inputs, env, cwd } = sources;
+    const provider = {
+        url: normalizeApiUrl(pickString(cli.providerUrl, inputs.providerUrl, env.providerUrl, DEFAULT_PROVIDER_URL, "provider.url"), "provider.url"),
+        apiKey: pickString(cli.providerApiKey, inputs.providerApiKey, env.providerApiKey, "", "provider.apiKey"),
+        model: pickString(cli.providerModel, inputs.providerModel, env.providerModel, DEFAULT_PROVIDER_MODEL, "provider.model"),
+    };
+    const guidance = {
+        walkthrough: pickBool(cli.walkthrough, inputs.walkthrough, env.walkthrough, false, "guidance.walkthrough"),
+        diagnostic: pickBool(cli.diagnostic, inputs.diagnostic, env.diagnostic, false, "guidance.diagnostic"),
+        dryRun: pickBool(cli.dryRun, inputs.dryRun, env.dryRun, false, "guidance.dryRun"),
+        debugRawResponse: pickBool(cli.debugRawResponse, inputs.debugRawResponse, env.debugRawResponse, false, "guidance.debugRawResponse"),
+    };
+    const timeouts = {
+        reviewSeconds: pickInt(cli.reviewTimeoutSeconds, inputs.reviewTimeoutSeconds, env.reviewTimeoutSeconds, DEFAULT_REVIEW_SECONDS, "timeouts.reviewSeconds"),
+        stallSeconds: pickInt(cli.stallTimeoutSeconds, inputs.stallTimeoutSeconds, env.stallTimeoutSeconds, DEFAULT_STALL_SECONDS, "timeouts.stallSeconds"),
+        perRequestSeconds: pickInt(cli.perRequestTimeoutSeconds, inputs.perRequestTimeoutSeconds, env.perRequestTimeoutSeconds, DEFAULT_PER_REQUEST_SECONDS, "timeouts.perRequestSeconds"),
+    };
+    const ignoreMinor = pickBool(cli.ignoreMinor, inputs.ignoreMinor, env.ignoreMinor, false, "severity.ignoreMinor");
+    const minimumRaw = pickRawString(cli.minimumSeverity, inputs.minimumSeverity, env.minimumSeverity);
+    const minimum = minimumRaw === undefined
+        ? DEFAULT_MINIMUM_SEVERITY
+        : parseSeverityFromUnknown(minimumRaw, "severity.minimum");
+    const severity = {
+        ignoreMinor,
+        minimum,
+        maxComments: pickInt(cli.maxComments, inputs.maxComments, env.maxComments, loader_DEFAULT_MAX_COMMENTS, "severity.maxComments"),
+    };
+    const scope = {
+        reviewFileLimit: pickInt(cli.reviewFileLimit, inputs.reviewFileLimit, env.reviewFileLimit, DEFAULT_REVIEW_FILE_LIMIT, "scope.reviewFileLimit"),
+    };
+    const sonar = {
+        enabled: pickBool(cli.sonarEnabled, inputs.sonarEnabled, env.sonarEnabled, false, "sonar.enabled"),
+        host: pickString(cli.sonarHost, inputs.sonarHost, env.sonarHost, "", "sonar.host"),
+        token: pickString(cli.sonarToken, inputs.sonarToken, env.sonarToken, "", "sonar.token"),
+        project: pickString(cli.sonarProject, inputs.sonarProject, env.sonarProject, "", "sonar.project"),
+        timeoutSeconds: pickInt(cli.sonarTimeoutSeconds, inputs.sonarTimeoutSeconds, env.sonarTimeoutSeconds, DEFAULT_SONAR_TIMEOUT_SECONDS, "sonar.timeoutSeconds"),
+    };
+    const leakDetection = pickBool(cli.leakDetection, inputs.leakDetection, env.leakDetection, true, "leakDetection");
+    const redactorEnabled = pickBool(cli.redactorEnabled, inputs.redactorEnabled, env.redactorEnabled, true, "redactor.enabled");
+    const platformRaw = pickRawString(cli.platform, inputs.platform, env.platform);
+    const platform = platformRaw === undefined ? DEFAULT_PLATFORM : parsePlatformFromUnknown(platformRaw, "platform");
+    const githubToken = pickString(cli.githubToken, inputs.githubToken, env.githubToken, "", "githubToken");
+    const azure = {
+        org: pickString(cli.azureOrg, inputs.azureOrg, env.azureOrg, "", "azure.org"),
+        project: pickString(cli.azureProject, inputs.azureProject, env.azureProject, "", "azure.project"),
+        repo: pickString(cli.azureRepo, inputs.azureRepo, env.azureRepo, "", "azure.repo"),
+        pullRequestId: pickInt(cli.azurePullRequestId, inputs.azurePullRequestId, env.azurePullRequestId, 0, "azure.pullRequestId"),
+        token: pickString(cli.azureToken, inputs.azureToken, env.azureToken, "", "azure.token"),
+    };
+    const promptByteCap = pickInt(cli.promptByteCap, inputs.promptByteCap, env.promptByteCap, loader_DEFAULT_PROMPT_BYTE_CAP, "prompts.byteCap");
+    const prompts = await resolvePrompts(cli, inputs, env, cwd, promptByteCap);
+    return {
+        provider,
+        prompts,
+        guidance,
+        timeouts,
+        severity,
+        scope,
+        sonar,
+        leakDetection,
+        redactorEnabled,
+        platform,
+        githubToken,
+        azure,
+    };
+}
+async function resolvePrompts(cli, inputs, env, cwd, byteCap) {
+    const systemInline = pickString(cli.promptSystem, inputs.promptSystem, undefined, "", "prompts.system.inline");
+    const systemFiles = collectFiles(cli.promptSystemFile, inputs.promptSystemFile, env.promptSystemFile);
+    const userInline = pickString(cli.promptUser, inputs.promptUser, undefined, "", "prompts.user.inline");
+    const userFiles = collectFiles(cli.promptUserFile, inputs.promptUserFile, env.promptUserFile);
+    let system = "";
+    if (systemInline.length > 0) {
+        system = systemInline;
+    }
+    else if (systemFiles.length > 0) {
+        system = await readPromptFiles(systemFiles, byteCap, { cwd });
+    }
+    let user = "";
+    if (userInline.length > 0) {
+        user = userInline;
+    }
+    else if (userFiles.length > 0) {
+        user = await readPromptFiles(userFiles, byteCap, { cwd });
+    }
+    return {
+        system,
+        user,
+        systemFiles,
+        userFiles,
+    };
+}
+function collectFiles(cliValue, inputValue, envValue) {
+    const out = [];
+    if (typeof cliValue === "string" && cliValue.length > 0)
+        out.push(cliValue);
+    if (typeof inputValue === "string" && inputValue.length > 0 && !out.includes(inputValue))
+        out.push(inputValue);
+    if (typeof envValue === "string" && envValue.length > 0 && !out.includes(envValue))
+        out.push(envValue);
+    return out;
+}
+function pickString(cliValue, inputValue, envValue, fallback, field) {
+    const value = firstDefined(cliValue, inputValue, envValue);
+    if (value === undefined)
+        return fallback;
+    if (typeof value !== "string") {
+        throw new InvalidConfigError(field, `expected string, received ${typeof value}`);
+    }
+    return value;
+}
+function pickRawString(cliValue, inputValue, envValue) {
+    if (typeof cliValue === "string" && cliValue.trim().length > 0)
+        return cliValue;
+    if (typeof inputValue === "string" && inputValue.trim().length > 0)
+        return inputValue;
+    if (typeof envValue === "string" && envValue.trim().length > 0)
+        return envValue;
+    return undefined;
+}
+function pickInt(cliValue, inputValue, envValue, fallback, field) {
+    if (cliValue !== undefined)
+        return parseIntegerFromUnknown(cliValue, field);
+    if (inputValue !== undefined)
+        return parseIntegerFromUnknown(inputValue, field);
+    if (envValue !== undefined)
+        return parseIntegerFromUnknown(envValue, field);
+    return fallback;
+}
+function pickBool(cliValue, inputValue, envValue, fallback, field) {
+    if (cliValue !== undefined)
+        return parseBooleanFromUnknown(cliValue, field);
+    if (inputValue !== undefined)
+        return parseBooleanFromUnknown(inputValue, field);
+    if (envValue !== undefined)
+        return parseBooleanFromUnknown(envValue, field);
+    return fallback;
+}
+function firstDefined(...values) {
+    for (const v of values) {
+        if (v !== undefined)
+            return v;
+    }
+    return undefined;
+}
+
 ;// CONCATENATED MODULE: ./src/cli/orchestrator.ts
+
 
 
 
@@ -4816,6 +5182,8 @@ function sanitizeComments(comments, secrets) {
  * contract.
  */
 const DEFAULT_CHUNK_CONCURRENCY = 4;
+// DEFAULT_REVIEW_FILE_LIMIT (200) is imported from src/config/loader.ts
+// and re-imported below to keep a single source of truth.
 /**
  * Fallback cap used by the chunked Azure merge when the CLI flag
  * `--max-comments` is not set. Matches the post-side cap in
@@ -5033,38 +5401,62 @@ async function dispatchLivePlatform(input) {
                     message: leakGate.message,
                 };
             }
-            const chunks = chunkDiffByFile(diffText);
+            // Gate the live review on the configured file count. The default
+            // 200-file cap is a quality choice: chunked LLM reviews of an
+            // arbitrarily-large initial-import diff produce hallucinated
+            // findings that aren't grounded in the code. The user can
+            // override via `--review-file-limit` (0 disables the limit).
+            const reviewFileLimit = parsed.reviewFileLimit ?? DEFAULT_REVIEW_FILE_LIMIT;
+            const fileCount = countDiffFiles(diffText);
             let liveOutcome;
-            if (chunks.length <= 1) {
-                // Fallback: the entire diff fits in one chunk. Use the existing
-                // single-call flow so a small PR review stays cheap and
-                // deterministic.
-                liveOutcome = await requestLiveReview({
-                    parsed,
-                    cwd,
-                    env,
-                    fetchImpl,
-                    platform: "azure",
-                    diffText,
-                    platformToken: context.token,
-                    ...(sonarContext !== undefined ? { sonarContext } : {}),
-                });
+            if (reviewFileLimit > 0 && fileCount > reviewFileLimit) {
+                process.stdout.write(`umactually-pr-review: skipping live review — PR changes ${fileCount} files, exceeds --review-file-limit=${reviewFileLimit}. Use --review-file-limit 0 to disable.\n`);
+                liveOutcome = {
+                    review: buildTooLargeFallback({
+                        fileCount,
+                        reviewFileLimit,
+                        provider: parsed.provider ?? "openai-compatible",
+                        modelId: parsed.model ?? "auto",
+                        secrets: [context.token],
+                    }),
+                    endpoint: "skipped",
+                    provider: "size-cap",
+                    modelId: "n/a",
+                };
             }
             else {
-                // Chunked path: feed each per-file chunk to the provider in
-                // parallel (bounded by DEFAULT_CHUNK_CONCURRENCY) and merge
-                // the per-chunk outcomes into a single LiveProviderOutcome.
-                process.stdout.write(`umactually-pr-review: chunking large PR diff into ${chunks.length} provider requests (max concurrency ${DEFAULT_CHUNK_CONCURRENCY}).\n`);
-                liveOutcome = await requestChunkedLiveReview({
-                    parsed,
-                    cwd,
-                    env,
-                    fetchImpl,
-                    platform: "azure",
-                    chunks,
-                    platformToken: context.token,
-                    ...(sonarContext !== undefined ? { sonarContext } : {}),
-                });
+                const chunks = chunkDiffByFile(diffText);
+                if (chunks.length <= 1) {
+                    // Fallback: the entire diff fits in one chunk. Use the existing
+                    // single-call flow so a small PR review stays cheap and
+                    // deterministic.
+                    liveOutcome = await requestLiveReview({
+                        parsed,
+                        cwd,
+                        env,
+                        fetchImpl,
+                        platform: "azure",
+                        diffText,
+                        platformToken: context.token,
+                        ...(sonarContext !== undefined ? { sonarContext } : {}),
+                    });
+                }
+                else {
+                    // Chunked path: feed each per-file chunk to the provider in
+                    // parallel (bounded by DEFAULT_CHUNK_CONCURRENCY) and merge
+                    // the per-chunk outcomes into a single LiveProviderOutcome.
+                    process.stdout.write(`umactually-pr-review: chunking large PR diff into ${chunks.length} provider requests (max concurrency ${DEFAULT_CHUNK_CONCURRENCY}).\n`);
+                    liveOutcome = await requestChunkedLiveReview({
+                        parsed,
+                        cwd,
+                        env,
+                        fetchImpl,
+                        platform: "azure",
+                        chunks,
+                        platformToken: context.token,
+                        ...(sonarContext !== undefined ? { sonarContext } : {}),
+                    });
+                }
             }
             const finalOutcome = applySimulateFindings({
                 outcome: liveOutcome,
@@ -5502,6 +5894,7 @@ function appendCommonInputArgs(args, inputs) {
     pushNumber(args, "--stall-seconds", inputs.stallSeconds);
     pushNumber(args, "--max-output-tokens", inputs.maxOutputTokens);
     pushNumber(args, "--max-comments", inputs.maxComments);
+    pushNumber(args, "--review-file-limit", inputs.reviewFileLimit);
     pushNumber(args, "--sonar-timeout-seconds", inputs.sonarTimeoutSeconds);
     pushBool(args, inputs.ignoreMinor, "--ignore-minor");
     pushBool(args, inputs.includeSonarqube, "--include-sonarqube");
@@ -5623,6 +6016,7 @@ function readActionInputs(env = process.env) {
         ignoreMinor: getBool("ignore-minor", false),
         minimumSeverity: getSeverity(),
         maxComments: getNumber("max-comments", 50),
+        reviewFileLimit: getNumber("review-file-limit", 200),
         includeSonarqube: getBool("include-sonarqube", false),
         sonarHostUrl: get("sonar-host-url"),
         sonarToken: get("sonar-token"),

@@ -18,6 +18,7 @@ export type ActionInputs = {
   readonly ignoreMinor: boolean;
   readonly minimumSeverity: "low" | "medium" | "high";
   readonly maxComments: number;
+  readonly reviewFileLimit: number;
   readonly includeSonarqube: boolean;
   readonly sonarHostUrl: string;
   readonly sonarToken: string;
@@ -124,6 +125,7 @@ export function readActionInputs(env: NodeJS.ProcessEnv = process.env): ActionIn
     ignoreMinor: getBool("ignore-minor", false),
     minimumSeverity: getSeverity(),
     maxComments: getNumber("max-comments", 50),
+    reviewFileLimit: getNumber("review-file-limit", 200),
     includeSonarqube: getBool("include-sonarqube", false),
     sonarHostUrl: get("sonar-host-url"),
     sonarToken: get("sonar-token"),

@@ -127,6 +127,7 @@ describe("CLI flag parsing RED contract", () => {
       ignoreMinor: true,
       minimumSeverity: null,
       maxComments: null,
+      reviewFileLimit: null,
       detectLeaks: true,
       walkthrough: false,
       diagnostic: false,

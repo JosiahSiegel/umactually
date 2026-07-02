@@ -98,6 +98,15 @@ inputs:
     description: Cap on posted comments per review.
     required: false
     default: "50"
+  review-file-limit:
+    description: |
+      Soft cap on the number of changed files the live review path will process.
+      When a PR's diff touches more files than this, the CLI skips the chunked
+      review and posts a "diff too large to review" parent card with zero
+      inline findings, rather than feeding arbitrarily-large chunks to the LLM
+      (which produces hallucinated findings). Set to 0 to disable the limit.
+    required: false
+    default: "200"
   include-sonarqube:
     description: Pull SonarQube issues alongside the PR review.
     required: false

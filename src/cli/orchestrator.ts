@@ -1,5 +1,5 @@
 import { fetchAzurePrDiff } from "../platform/azure/api.js";
-import { chunkDiffByFile } from "../platform/azure/chunk.js";
+import { chunkDiffByFile, countDiffFiles } from "../platform/azure/chunk.js";
 import { readAzureContext } from "../platform/azure/context.js";
 import { fetchGithubPrDiff } from "../platform/github/api.js";
 import { readGithubContext } from "../platform/github/context.js";
@@ -7,6 +7,7 @@ import { mergeReviewResults } from "./live-merge.js";
 import { runAzureLive } from "./live-azure.js";
 import { runGithubLive } from "./live-github.js";
 import {
+  buildTooLargeFallback,
   evaluateLeakGate,
   sanitizeForPost,
   type FetchImpl,
@@ -18,6 +19,7 @@ import { requestLiveReview } from "./live-provider.js";
 import { readLiveSonarContext } from "./sonar-context.js";
 import { applySimulateFindings } from "./simulate-findings.js";
 import type { ParsedCliArgs } from "./parse-args.js";
+import { DEFAULT_REVIEW_FILE_LIMIT } from "../config/loader.js";
 
 /**
  * Number of chunks to process concurrently when the chunked path is
@@ -27,6 +29,8 @@ import type { ParsedCliArgs } from "./parse-args.js";
  * contract.
  */
 const DEFAULT_CHUNK_CONCURRENCY = 4;
+// DEFAULT_REVIEW_FILE_LIMIT (200) is imported from src/config/loader.ts
+// and re-imported below to keep a single source of truth.
 
 /**
  * Fallback cap used by the chunked Azure merge when the CLI flag
@@ -280,37 +284,60 @@ async function dispatchLivePlatform(input: {
           message: leakGate.message,
         };
       }
-      const chunks = chunkDiffByFile(diffText);
+      // Gate the live review on the configured file count. The default
+      // 200-file cap is a quality choice: chunked LLM reviews of an
+      // arbitrarily-large initial-import diff produce hallucinated
+      // findings that aren't grounded in the code. The user can
+      // override via `--review-file-limit` (0 disables the limit).
+      const reviewFileLimit = parsed.reviewFileLimit ?? DEFAULT_REVIEW_FILE_LIMIT;
+      const fileCount = countDiffFiles(diffText);
       let liveOutcome: LiveProviderOutcome;
-      if (chunks.length <= 1) {
-        // Fallback: the entire diff fits in one chunk. Use the existing
-        // single-call flow so a small PR review stays cheap and
-        // deterministic.
-        liveOutcome = await requestLiveReview({
-          parsed,
-          cwd,
-          env,
-          fetchImpl,
-          platform: "azure",
-          diffText,
-          platformToken: context.token,
-          ...(sonarContext !== undefined ? { sonarContext } : {}),
-        });
+      if (reviewFileLimit > 0 && fileCount > reviewFileLimit) {
+        process.stdout.write(`umactually-pr-review: skipping live review — PR changes ${fileCount} files, exceeds --review-file-limit=${reviewFileLimit}. Use --review-file-limit 0 to disable.\n`);
+        liveOutcome = {
+          review: buildTooLargeFallback({
+            fileCount,
+            reviewFileLimit,
+            provider: parsed.provider ?? "openai-compatible",
+            modelId: parsed.model ?? "auto",
+            secrets: [context.token],
+          }),
+          endpoint: "skipped",
+          provider: "size-cap",
+          modelId: "n/a",
+        };
       } else {
-        // Chunked path: feed each per-file chunk to the provider in
-        // parallel (bounded by DEFAULT_CHUNK_CONCURRENCY) and merge
-        // the per-chunk outcomes into a single LiveProviderOutcome.
-        process.stdout.write(`umactually-pr-review: chunking large PR diff into ${chunks.length} provider requests (max concurrency ${DEFAULT_CHUNK_CONCURRENCY}).\n`);
-        liveOutcome = await requestChunkedLiveReview({
-          parsed,
-          cwd,
-          env,
-          fetchImpl,
-          platform: "azure",
-          chunks,
-          platformToken: context.token,
-          ...(sonarContext !== undefined ? { sonarContext } : {}),
-        });
+        const chunks = chunkDiffByFile(diffText);
+        if (chunks.length <= 1) {
+          // Fallback: the entire diff fits in one chunk. Use the existing
+          // single-call flow so a small PR review stays cheap and
+          // deterministic.
+          liveOutcome = await requestLiveReview({
+            parsed,
+            cwd,
+            env,
+            fetchImpl,
+            platform: "azure",
+            diffText,
+            platformToken: context.token,
+            ...(sonarContext !== undefined ? { sonarContext } : {}),
+          });
+        } else {
+          // Chunked path: feed each per-file chunk to the provider in
+          // parallel (bounded by DEFAULT_CHUNK_CONCURRENCY) and merge
+          // the per-chunk outcomes into a single LiveProviderOutcome.
+          process.stdout.write(`umactually-pr-review: chunking large PR diff into ${chunks.length} provider requests (max concurrency ${DEFAULT_CHUNK_CONCURRENCY}).\n`);
+          liveOutcome = await requestChunkedLiveReview({
+            parsed,
+            cwd,
+            env,
+            fetchImpl,
+            platform: "azure",
+            chunks,
+            platformToken: context.token,
+            ...(sonarContext !== undefined ? { sonarContext } : {}),
+          });
+        }
       }
       const finalOutcome = applySimulateFindings({
         outcome: liveOutcome,

@@ -31,6 +31,7 @@ These inputs mirror `action.yml`.
 | `review-timeout-seconds` | No | `300` | Maximum review wall-clock time in seconds. |
 | `stall-seconds` | No | `270` | Seconds without provider output before the review is considered stalled. |
 | `max-output-tokens` | No | `16000` | Maximum provider output token budget. |
+| `review-file-limit` | No | `200` | Cap on the number of changed files the live review will process. PRs that exceed this get a "diff too large" parent card with zero findings — the per-chunk LLM reviews of huge initial-import diffs produce hallucinated findings. Set to `0` to disable. |
 | `ignore-minor` | No | `false` | Suppress minor non-security findings. Leaks and security findings are never suppressed by this option. |
 | `detect-leaks` | No | `true` | Run secret-leak detection on the diff. Disable with the `--no-detect-leaks` CLI flag. |
 | `prompt` | No | `""` | Inline system prompt override. Wins over `prompt-file`. |

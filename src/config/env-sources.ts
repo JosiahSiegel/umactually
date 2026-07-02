@@ -22,6 +22,7 @@ const ENV_KEYS: ReadonlyArray<readonly [keyof EnvSources, readonly string[]]> = 
   ["ignoreMinor", ["UMACTUALLY_IGNORE_MINOR", "REVIEW_IGNORE_MINOR"]],
   ["minimumSeverity", ["REVIEW_MINIMUM_SEVERITY"]],
   ["maxComments", ["REVIEW_MAX_COMMENTS"]],
+  ["reviewFileLimit", ["REVIEW_FILE_LIMIT"]],
   ["sonarEnabled", ["UMACTUALLY_INCLUDE_SONARQUBE", "REVIEW_SONAR_ENABLED"]],
   ["sonarHost", ["UMACTUALLY_SONAR_HOST_URL", "REVIEW_SONAR_HOST"]],
   ["sonarToken", ["UMACTUALLY_SONAR_TOKEN", "REVIEW_SONAR_TOKEN"]],

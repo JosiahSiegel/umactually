@@ -27,6 +27,8 @@ These entries mirror `action.yml`.
 | `review-timeout-seconds` | `UMACTUALLY_REVIEW_TIMEOUT_SECONDS` | `300` | Positive integer seconds | Overall review wall-clock budget. Current runtime default is 300 seconds. |
 | `stall-seconds` | `UMACTUALLY_STALL_SECONDS` | `270` | Positive integer seconds | Provider-output stall budget. Current runtime default is 270 seconds. |
 | `max-output-tokens` | `UMACTUALLY_MAX_OUTPUT_TOKENS` | `16000` | Positive integer | Provider output budget. |
+| `max-comments` | — | `50` | Positive integer | Cap on posted inline comments per review. Set to `0` to disable the cap. |
+| `review-file-limit` | `REVIEW_FILE_LIMIT` | `200` | Positive integer, or `0` to disable | Soft cap on the number of changed files the live review path will process. When `countDiffFiles(diff) > review-file-limit` the CLI skips the live review and posts a "diff too large to review" parent card with zero inline findings — the chunked LLM reviews of arbitrarily-large initial-import diffs produce hallucinated findings that aren't grounded in the code. Raise this for huge PRs, or set to `0` to disable the cap entirely. |
 | `ignore-minor` | `UMACTUALLY_IGNORE_MINOR` | `false` | `true`, `false` | Suppresses minor non-security findings only. Leaks and security findings are still reported. |
 | `prompt` | `UMACTUALLY_PROMPT` | `""` | String | Inline system prompt override. Wins over `prompt-file`. |
 | `additional-prompt` | `UMACTUALLY_ADDITIONAL_PROMPT` | `""` | String | Inline additional prompt override. Wins over `additional-prompt-file`. |

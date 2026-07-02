@@ -20,6 +20,7 @@ export function appendCommonInputArgs(args: string[], inputs: ActionInputs): voi
   pushNumber(args, "--stall-seconds", inputs.stallSeconds);
   pushNumber(args, "--max-output-tokens", inputs.maxOutputTokens);
   pushNumber(args, "--max-comments", inputs.maxComments);
+  pushNumber(args, "--review-file-limit", inputs.reviewFileLimit);
   pushNumber(args, "--sonar-timeout-seconds", inputs.sonarTimeoutSeconds);
 
   pushBool(args, inputs.ignoreMinor, "--ignore-minor");

@@ -432,6 +432,49 @@ export function buildMalformedProviderFallback(input: {
   };
 }
 
+/**
+ * Fallback review when the PR's diff touches more than
+ * `reviewFileLimit` files. We skip the chunked review path entirely
+ * and surface a clear "diff too large to review" verdict rather than
+ * feeding the LLM arbitrarily-large per-file chunks (which produces
+ * hallucinated findings that look substantive but aren't grounded in
+ * the code).
+ *
+ * The user can override the cap via `--review-file-limit N` (or
+ * `REVIEW_FILE_LIMIT=N`) — set to 0 to disable the limit and accept
+ * whatever the model produces.
+ */
+export function buildTooLargeFallback(input: {
+  readonly fileCount: number;
+  readonly reviewFileLimit: number;
+  readonly provider: string;
+  readonly modelId: string;
+  readonly secrets: readonly string[];
+}): LiveReview {
+  const safeProvider = sanitizeForPost(input.provider, input.secrets);
+  const safeModelId = sanitizeForPost(input.modelId, input.secrets);
+  const summary = [
+    `This PR changes \`${input.fileCount}\` files, which is more than the configured \`--review-file-limit\` of \`${input.reviewFileLimit}\`.`,
+    "",
+    "Live review is intentionally skipped on very large diffs because the per-chunk LLM reviews produce hallucinated findings that aren't grounded in the code.",
+    "",
+    "**To enable review on this PR:**",
+    "",
+    `- Raise the limit: \`--review-file-limit ${input.fileCount}\` (or set \`REVIEW_FILE_LIMIT=${input.fileCount}\`).`,
+    "- Or split this PR into smaller PRs.",
+    "",
+    "The merge gate is unaffected — this is a review-quality choice, not a policy decision.",
+    "",
+    `Provider: \`${safeProvider}\` · Model: \`${safeModelId}\``,
+  ].join("\n");
+  return {
+    summary,
+    verdict: "COMMENT",
+    comments: [],
+    suppressedComments: [],
+  };
+}
+
 export function selectPostableComments(input: {
   readonly review: LiveReview;
   readonly diffText: string;
