@@ -52,7 +52,13 @@ function makeFetchRecorder(routes: readonly FetchRoute[]): {
     calls.push({ url, method, authorization, body });
     for (const route of routes) {
       if (route.match(url, method)) {
-        return route.response;
+        // PARITY-* update: a route may be hit multiple times in one run
+        // (parent PR-level comment + inline-thread POST both go to
+        // /threads). Response bodies can only be consumed once, so clone
+        // the response text/headers into a fresh Response per call.
+        const original = route.response;
+        const cloned = original.clone();
+        return cloned;
       }
     }
     throw new Error(`unexpected ${method} ${url}`);
@@ -119,9 +125,17 @@ function findCall(calls: readonly RecordedCall[], method: string, urlSuffix: str
 }
 
 function countThreadPosts(calls: readonly RecordedCall[]): number {
-  return calls.filter(
-    (call) => call.method === "POST" && call.url.endsWith("/threads?api-version=7.1"),
-  ).length;
+  // PARITY-* update: Azure live now POSTs a parent PR-level review
+  // summary first (body has NO `threadContext`). The dedup tests
+  // specifically target the inline-thread POST, so we filter to only
+  // /threads POSTs whose body carries a `threadContext` (the inline shape).
+  return calls.filter((call) => {
+    if (call.method !== "POST") return false;
+    if (!call.url.endsWith("/threads?api-version=7.1")) return false;
+    const body = call.body;
+    if (typeof body !== "object" || body === null) return false;
+    return "threadContext" in (body as Record<string, unknown>);
+  }).length;
 }
 
 describe("runLive Azure dedup edge cases", () => {

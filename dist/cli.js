@@ -2011,6 +2011,15 @@ async function runAzureLive(input) {
         secrets: [context.token],
     });
     const existingThreads = await listAzureThreads(context, fetchImpl);
+    // Post the parent PR-level review summary FIRST so the conversation
+    // timeline shows a single review-summary card above all inline threads.
+    // This is the documented "Comment on the pull request" shape from
+    // https://learn.microsoft.com/en-us/rest/api/azure/devops/git/pull-request-threads/create?view=azure-devops-rest-7.1
+    // — same /threads endpoint, body OMITS `threadContext`, which causes
+    // ADO to render it as a free-form PR-level comment rather than a
+    // file-pinned inline thread. Best-effort: a parent failure never blocks
+    // the inline-thread loop that follows.
+    await postAzurePrComment({ context, fetchImpl, body, existingThreads });
     const postedIds = [];
     const failedIndices = [];
     for (let index = 0; index < comments.length; index += 1) {
@@ -2083,6 +2092,8 @@ function hasDuplicateThread(threads, comment) {
     const azurePath = `/${comment.path}`.replace(/\/+/gu, "/");
     const targetLine = comment.line;
     return threads.some((thread) => {
+        if (thread.threadContext === null)
+            return false;
         if (thread.threadContext.filePath !== azurePath)
             return false;
         if (thread.threadContext.rightFileStart.line !== targetLine)
@@ -2094,6 +2105,59 @@ function hasDuplicateThread(threads, comment) {
         }
         return false;
     });
+}
+function hasExistingParentPrComment(threads) {
+    // A parent PR-level comment is a thread with NO `threadContext` that
+    // carries our stable marker. See `parseAzureThread` — `threadContext`
+    // is null when ADO returns `"threadContext": null`.
+    return threads.some((thread) => {
+        if (thread.threadContext !== null)
+            return false;
+        return thread.comments.some((c) => c.content.includes(run_review_REVIEW_MARKER));
+    });
+}
+/**
+ * Post a free-form, PR-level (issue-style) review summary as the first card
+ * in the ADO PR conversation. Uses the documented "Comment on the pull
+ * request" pattern from the Pull Request Threads - Create endpoint: same
+ * `/threads` URL, but the body OMITS `threadContext`. ADO renders that
+ * shape as a top-level conversation card rather than a file-pinned inline
+ * thread, which gives us GitHub-like "review summary above inline
+ * findings" parity at the PR-conversation level.
+ *
+ * The parent POST is best-effort: if it fails (or if a marker thread
+ * without threadContext already exists), we log a warning and let the
+ * inline-thread loop proceed. The pipeline gate still depends on the
+ * status POST, which only fires after at least one inline thread lands.
+ */
+async function postAzurePrComment(input) {
+    if (hasExistingParentPrComment(input.existingThreads)) {
+        return undefined;
+    }
+    try {
+        const response = await input.fetchImpl(azureThreadsUrl(input.context), {
+            method: "POST",
+            headers: azureHeaders(input.context.token),
+            body: JSON.stringify({
+                comments: [
+                    {
+                        parentCommentId: 0,
+                        content: input.body,
+                        commentType: 1,
+                    },
+                ],
+                status: 1,
+                // No `threadContext` field — ADO renders this as a PR-level comment.
+            }),
+        });
+        ensureHttpOk(response, "AZURE_CREATE_PR_COMMENT_FAILED", "Azure create PR comment");
+        return readResponseId(await readJsonResponse(response));
+    }
+    catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        process.stderr.write(`::warning::umactually-pr-review: Azure parent PR comment POST failed (${message}); continuing with inline threads only.\n`);
+        return undefined;
+    }
 }
 async function postAzureThread(input) {
     const response = await input.fetchImpl(azureThreadsUrl(input.context), {
@@ -2143,12 +2207,28 @@ function parseAzureThread(value) {
     if (typeof status !== "string" || !Array.isArray(comments)) {
         return null;
     }
+    const hasThreadContextKey = "threadContext" in value;
     const nestedContext = value["threadContext"];
-    const threadContext = live_shared_isRecord(nestedContext)
-        ? live_azure_readThreadContext(nestedContext)
-        : live_azure_readThreadContext(value);
-    if (threadContext === null) {
-        return null;
+    // A parent PR-level comment is one where `threadContext` is explicitly
+    // null in the ADO response. Flat-key test fixtures omit the
+    // `threadContext` key entirely, so distinguish between the two:
+    //   - key present and value null   → parent PR-level comment
+    //   - key present and value object → inline thread
+    //   - key absent (flat fixture)     → inline thread with filePath + line at top level
+    let threadContext = null;
+    if (hasThreadContextKey) {
+        if (live_shared_isRecord(nestedContext)) {
+            const parsed = live_azure_readThreadContext(nestedContext);
+            if (parsed !== null) {
+                threadContext = parsed;
+            }
+        }
+    }
+    else {
+        const flat = live_azure_readThreadContext(value);
+        if (flat !== null) {
+            threadContext = flat;
+        }
     }
     return {
         status,

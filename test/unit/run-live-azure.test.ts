@@ -56,7 +56,10 @@ function makeFetchRecorder(routes: readonly FetchRoute[]): {
     calls.push({ url, method, authorization, body });
     for (const route of routes) {
       if (route.match(url, method)) {
-        return route.response;
+        // PARITY-* update: /threads may be hit twice per run (parent
+        // PR-level + inline-thread POST), so clone the response body to
+        // avoid "Failed to read REST response body." on the second read.
+        return route.response.clone();
       }
     }
     throw new Error(`unexpected ${method} ${url}`);
@@ -149,8 +152,21 @@ describe("runLive Azure orchestration", () => {
 
     // Then: it creates one thread with the marker and one PR status without shelling out.
     expect(result).toMatchObject({ exitCode: 0, posted: true, reviewId: 77 });
-    const threadCall = findCall(recorder.calls, "POST", "/threads?api-version=7.1");
-    const threadBody = readRecord(threadCall.body as Record<string, unknown>, "thread request");
+    // PARITY-* update: the FIRST /threads POST is now the parent PR-level
+    // review summary (no threadContext). Find the INLINE-thread POST by
+    // filtering on a body that carries threadContext.
+    const inlineThreadCall = recorder.calls.find((call) => {
+      if (call.method !== "POST") return false;
+      if (!call.url.endsWith("/threads?api-version=7.1")) return false;
+      const body = call.body;
+      if (typeof body !== "object" || body === null) return false;
+      return "threadContext" in (body as Record<string, unknown>);
+    });
+    expect(inlineThreadCall).toBeDefined();
+    if (inlineThreadCall === undefined) {
+      throw new Error("expected inline thread POST");
+    }
+    const threadBody = readRecord(inlineThreadCall.body as Record<string, unknown>, "thread request");
     const comments = readArray(threadBody["comments"], "thread comments");
     const firstComment = readRecord(comments[0] as Record<string, unknown>, "first thread comment");
     expect(firstComment["content"]).toContain("<!-- umactually-pr-review -->");
@@ -200,10 +216,18 @@ describe("runLive Azure orchestration", () => {
 
     // Then: it posts only the status and does not stack another thread.
     expect(result.exitCode).toBe(0);
-    const threadPosts = recorder.calls.filter(
-      (call) => call.method === "POST" && call.url.endsWith("/threads?api-version=7.1"),
-    );
-    expect(threadPosts).toHaveLength(0);
+    // PARITY-* update: parent PR-level comment is a /threads POST whose
+    // body has NO `threadContext`. Inline-thread POSTs carry a
+    // `threadContext`. Filter to inline-only — that's what this test
+    // is asserting dedup for.
+    const inlineThreadPosts = recorder.calls.filter((call) => {
+      if (call.method !== "POST") return false;
+      if (!call.url.endsWith("/threads?api-version=7.1")) return false;
+      const body = call.body;
+      if (typeof body !== "object" || body === null) return false;
+      return "threadContext" in (body as Record<string, unknown>);
+    });
+    expect(inlineThreadPosts).toHaveLength(0);
     expect(findCall(recorder.calls, "POST", "/statuses?api-version=7.1")).toBeDefined();
   });
 });
