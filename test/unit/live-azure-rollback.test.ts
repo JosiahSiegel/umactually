@@ -172,8 +172,27 @@ describe("runLive Azure partial-failure rollback (RED gap)", () => {
         response: () => {
           threadPostCount += 1;
           const status = threadPostCount === 2 ? 500 : 200;
-          return makeJsonResponse({ id: 77 + threadPostCount }, status);
+          // The POST response includes the freshly-created thread id
+          // AND the first comment id (used by the per-comment PATCH
+          // that injects the parent-reference text). The 500 response
+          // doesn't need a body.
+          if (status === 500) {
+            return makeJsonResponse({ error: "thread POST failed" }, 500);
+          }
+          return makeJsonResponse(
+            {
+              id: 77 + threadPostCount,
+              comments: [{ id: 9000 + threadPostCount, content: "" }],
+            },
+            200,
+          );
         },
+      },
+      {
+        // Per-comment PATCH on the inline thread.
+        match: (url, method) =>
+          method === "PATCH" && /\/threads\/\d+\/comments\/\d+\?api-version=7\.1$/.test(url),
+        response: makeJsonResponse({}, 200),
       },
       {
         match: (url, method) => method === "GET" && url.endsWith("/statuses?api-version=7.1"),

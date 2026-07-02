@@ -2097,7 +2097,7 @@ async function runAzureLive(input) {
         secrets: [context.token],
     });
     const existingThreads = await listAzureThreads(context, fetchImpl);
-    // Post the parent PR-level review summary FIRST so the conversation
+    // Post the parent PR-level review summary LAST so the conversation
     // timeline shows a single review-summary card above all inline threads.
     // This is the documented "Comment on the pull request" shape from
     // https://learn.microsoft.com/en-us/rest/api/azure/devops/git/pull-request-threads/create?view=azure-devops-rest-7.1
@@ -2107,15 +2107,33 @@ async function runAzureLive(input) {
     // the inline-thread loop that follows.
     //
     // "Always at top of conversation" behavior: the ADO PR Overview
-    // sorts threads by `id` ascending, so the only reliable way to keep
-    // the review summary visually at the top of the conversation is to
-    // allocate a fresh thread id on every run. `postAzurePrComment`
-    // therefore replaces any existing parent marker thread by deleting
-    // its comments (which leaves the thread `isDeleted: true` and hides
-    // it from the conversation) and POSTing a brand-new parent. See the
-    // helper's docstring for the Microsoft Learn citations.
-    const parentThread = await postAzurePrComment({ context, fetchImpl, body, existingThreads });
-    const parentThreadId = parentThread?.id;
+    // sorts threads by `id` descending in the default "newest first"
+    // view (i.e. the highest thread id appears at the TOP of the
+    // conversation). To make the parent review summary the FIRST card
+    // the user sees, we POST it AFTER all the inline threads so its
+    // thread id is the highest on the PR. Inline thread bodies carry a
+    // textual "Reply to PR review summary #PARENT_ID" reference; we
+    // PATCH each inline comment once the parent id is known so the
+    // reference is accurate.
+    //
+    // "Replace, not patch" (PARENT-TOP-*): on every run we also sweep
+    // the existing parent marker thread by deleting every comment on it
+    // (which leaves it `isDeleted: true` and hidden from the
+    // conversation, per
+    // https://learn.microsoft.com/en-us/rest/api/azure/devops/git/pull-request-thread-comments/delete?view=azure-devops-rest-7.1
+    // — "Specify if the thread is deleted which happens when all
+    // comments are deleted") so a stale summary from a previous run
+    // never lingers.
+    const oldParent = findExistingParentPrComment(existingThreads);
+    if (oldParent !== null && typeof oldParent.thread.id === "number") {
+        await deleteParentThreadComments({
+            context,
+            fetchImpl,
+            threadId: oldParent.thread.id,
+            commentIds: threadCommentIds(oldParent.thread),
+        });
+    }
+    const postedInlines = [];
     const postedIds = [];
     const failedIndices = [];
     for (let index = 0; index < comments.length; index += 1) {
@@ -2126,21 +2144,42 @@ async function runAzureLive(input) {
             continue;
         }
         try {
-            const threadId = await postAzureThread({
+            const result = await postAzureThread({
                 context,
                 fetchImpl,
                 comment,
                 body,
-                parentThreadId,
+                parentThreadId: undefined,
             });
-            if (threadId !== undefined) {
-                postedIds.push(threadId);
+            if (result !== undefined) {
+                postedIds.push(result.threadId);
+                postedInlines.push({ ...result, comment });
             }
         }
         catch (error) {
             failedIndices.push(index);
             const message = error instanceof Error ? error.message : String(error);
             process.stderr.write(`::warning::umactually-pr-review: Azure thread ${index + 1}/${comments.length} failed (${comment.path}:${comment.line}): ${message}; continuing with remaining threads.\n`);
+        }
+    }
+    // Now post the parent PR-level review summary LAST so it gets the
+    // highest thread id and sits at the TOP of the conversation.
+    const parentThread = await postParentThread(context, fetchImpl, body);
+    const parentThreadId = parentThread?.id;
+    // PATCH each inline comment to inject the textual parent-reference
+    // now that we know the new parent id. Best-effort: a PATCH failure
+    // is logged and skipped so the run still succeeds.
+    if (parentThreadId !== undefined) {
+        for (const inline of postedInlines) {
+            await patchInlineCommentWithParentRef({
+                context,
+                fetchImpl,
+                threadId: inline.threadId,
+                commentId: inline.commentId,
+                parentThreadId,
+                comment: inline.comment,
+                secrets: [context.token],
+            });
         }
     }
     if (postedIds.length === 0 && failedIndices.length > 0) {
@@ -2161,21 +2200,23 @@ async function runAzureLive(input) {
         state: mapReviewVerdictToAzureStatus(provider.review.verdict),
         description: provider.review.summary,
     });
-    const firstPostedId = postedIds[0];
+    // The reviewId is the PARENT thread id (so consumers can correlate
+    // the run with the top-level summary card on the PR conversation).
+    const reviewId = parentThreadId ?? postedIds[0];
     const successMessage = failedIndices.length > 0
         ? `posted Azure review (${postedIds.length} threads, ${failedIndices.length} failed)`
         : `posted Azure review (${postedIds.length} threads)`;
     return {
         exitCode: 0,
         posted: true,
-        reviewId: firstPostedId,
+        reviewId,
         message: successMessage,
     };
 }
 /**
  * Return every comment id on `thread` that has a numeric `id`. Used by
- * `postAzurePrComment` to drive the per-comment Delete loop when the
- * CLI replaces the existing parent thread.
+ * `deleteParentThreadComments` to drive the per-comment Delete loop
+ * when the CLI replaces the existing parent thread.
  */
 function threadCommentIds(thread) {
     const ids = [];
@@ -2247,60 +2288,22 @@ function findExistingParentPrComment(threads) {
     return null;
 }
 /**
- * Post a free-form, PR-level (issue-style) review summary as the FIRST
- * card in the ADO PR conversation. Uses the documented "Comment on the
- * pull request" pattern from the Pull Request Threads - Create endpoint:
- * same `/threads` URL, but the body OMITS `threadContext`. ADO renders
- * that shape as a top-level conversation card rather than a file-pinned
- * inline thread.
+ * Post a free-form, PR-level (issue-style) review summary as the
+ * TOPMOST card in the ADO PR conversation. Uses the documented
+ * "Comment on the pull request" pattern from the Pull Request
+ * Threads - Create endpoint: same `/threads` URL, but the body
+ * OMITS `threadContext`. ADO renders that shape as a top-level
+ * conversation card rather than a file-pinned inline thread.
  *
- * "Always at top of conversation" behavior (PARENT-TOP-*): the ADO PR
- * Overview sorts threads by `id` ascending, so the only reliable way to
- * keep the review summary visually at the top of the conversation is to
- * allocate a fresh thread id on every run. Concretely, when an existing
- * parent marker thread is found, this helper:
+ * The parent is POSTed LAST in the run (after every inline thread),
+ * so its thread id is the highest on the PR. The ADO PR Overview
+ * sorts threads by `id` descending in the default view, so the
+ * parent review summary sits at the top of the conversation. See
+ * the docstring in `runAzureLive` for the full ordering rationale.
  *
- *   1. Deletes every comment on the old parent via the documented
- *      per-comment Delete endpoint
- *      (DELETE .../threads/{threadId}/comments/{commentId}?api-version=7.1,
- *      https://learn.microsoft.com/en-us/rest/api/azure/devops/git/pull-request-thread-comments/delete?view=azure-devops-rest-7.1).
- *      Per the same doc family, "Specify if the thread is deleted which
- *      happens when all comments are deleted" — i.e. ADO flips the
- *      thread to `isDeleted: true`, and the conversation UI hides
- *      `isDeleted: true` threads.
- *
- *   2. POSTs a brand-new parent thread that gets the highest id on the
- *      PR, so it sits at the very top of the conversation timeline.
- *
- * The old thread id is intentionally lost; users only see the latest
- * state anyway, and inline threads that were posted on previous runs
- * continue to carry a textual `Reply to PR review summary #OLD_ID`
- * reference in their bodies (that text is purely informational — ADO
- * does not have cross-thread parenting; `parentCommentId` is only for
- * replies within a single thread, see
- * https://learn.microsoft.com/en-us/rest/api/azure/devops/git/pull-request-thread-comments/create?view=azure-devops-rest-7.1).
- *
- * The parent POST is best-effort: failures are logged and the
- * inline-thread loop proceeds regardless. The pipeline gate still
- * depends on the status POST, which only fires after at least one
- * inline thread lands.
+ * Best-effort: a parent POST failure is logged and the run still
+ * succeeds as long as at least one inline thread landed.
  */
-async function postAzurePrComment(input) {
-    const existing = findExistingParentPrComment(input.existingThreads);
-    if (existing !== null && typeof existing.thread.id === "number") {
-        // Delete every comment on the old parent so ADO flips it to
-        // `isDeleted: true` (hidden from the conversation). Best-effort:
-        // individual DELETE failures are logged but never block the new
-        // parent POST below.
-        await deleteParentThreadComments({
-            context: input.context,
-            fetchImpl: input.fetchImpl,
-            threadId: existing.thread.id,
-            commentIds: threadCommentIds(existing.thread),
-        });
-    }
-    return postParentThread(input.context, input.fetchImpl, input.body);
-}
 async function postParentThread(context, fetchImpl, body) {
     try {
         const response = await fetchImpl(azureThreadsUrl(context), {
@@ -2320,7 +2323,7 @@ async function postParentThread(context, fetchImpl, body) {
         });
         ensureHttpOk(response, "AZURE_CREATE_PR_COMMENT_FAILED", "Azure create PR comment");
         const created = readResponseId(await readJsonResponse(response));
-        return created === undefined ? undefined : { id: created, replaced: false };
+        return created === undefined ? undefined : { id: created };
     }
     catch (error) {
         const message = error instanceof Error ? error.message : String(error);
@@ -2333,13 +2336,12 @@ async function postParentThread(context, fetchImpl, body) {
  * the thread itself to `isDeleted: true` (per
  * https://learn.microsoft.com/en-us/rest/api/azure/devops/git/pull-request-thread-comments/delete?view=azure-devops-rest-7.1
  * — "Specify if the thread is deleted which happens when all
- * comments are deleted").
+ * comments are deleted"). The conversation UI hides `isDeleted: true`
+ * threads, so a stale parent from a previous run never lingers in
+ * the user's view.
  *
  * Best-effort: a per-comment DELETE failure is logged as a warning
- * and skipped so the parent POST below can still go out. Worst case
- * a stale comment lingers on the old (now-deleted) parent thread
- * until a future run sweeps it; the conversation still hides
- * `isDeleted: true` threads from the user's view.
+ * and skipped so the inline-thread loop below can still go out.
  */
 async function deleteParentThreadComments(input) {
     for (const commentId of input.commentIds) {
@@ -2366,6 +2368,55 @@ async function deleteParentThreadComments(input) {
         }
     }
 }
+/**
+ * PATCH an inline thread's first comment to inject the textual
+ * "Reply to PR review summary #PARENT_ID" reference. The inline
+ * thread was POSTed without that text (so the parent could be
+ * POSTed last and the inline body could reference the new id).
+ *
+ * The PATCH uses the documented Pull Request Thread Comments -
+ * Update endpoint:
+ *   PATCH .../threads/{threadId}/comments/{commentId}?api-version=7.1
+ * with `content` (and the existing `id` to keep the comment).
+ * See https://learn.microsoft.com/en-us/rest/api/azure/devops/git/pull-request-thread-comments/update?view=azure-devops-rest-7.1
+ *
+ * Best-effort: a PATCH failure is logged and the run still succeeds.
+ */
+async function patchInlineCommentWithParentRef(input) {
+    if (input.comment === undefined) {
+        return;
+    }
+    const content = buildInlineCommentBody({
+        comment: input.comment,
+        secrets: input.secrets,
+        includeMarker: true,
+        parentThreadId: input.parentThreadId,
+    });
+    const url = `${azurePrBaseUrl(input.context)}/threads/${input.threadId}/comments/${input.commentId}?api-version=7.1`;
+    try {
+        const response = await input.fetchImpl(url, {
+            method: "PATCH",
+            headers: azureHeaders(input.context.token),
+            body: JSON.stringify({
+                content,
+                // Per Microsoft Learn the request body is the Comment shape
+                // — see
+                // https://learn.microsoft.com/en-us/rest/api/azure/devops/git/pull-request-thread-comments/update?view=azure-devops-rest-7.1
+            }),
+        });
+        if (!response.ok) {
+            await surfaceAzureHttpError({
+                response,
+                action: `Azure patch inline thread ${input.threadId} comment ${input.commentId}`,
+                logPrefix: "::warning::",
+            });
+        }
+    }
+    catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        process.stderr.write(`::warning::umactually-pr-review: Azure patch inline thread ${input.threadId} comment ${input.commentId} threw (${message}); continuing.\n`);
+    }
+}
 async function postAzureThread(input) {
     const response = await input.fetchImpl(azureThreadsUrl(input.context), {
         method: "POST",
@@ -2374,6 +2425,10 @@ async function postAzureThread(input) {
             comments: [
                 {
                     parentCommentId: 0,
+                    // Inline bodies are POSTed WITHOUT the parent-reference text
+                    // because the parent is POSTed later (last). We PATCH the
+                    // comment below to insert the reference once the parent id
+                    // is known — see `patchInlineCommentWithParentRef`.
                     content: buildInlineCommentBody({
                         comment: input.comment,
                         secrets: [input.context.token],
@@ -2392,7 +2447,30 @@ async function postAzureThread(input) {
         }),
     });
     ensureHttpOk(response, "AZURE_CREATE_THREAD_FAILED", "Azure create PR thread");
-    return readResponseId(await readJsonResponse(response));
+    const json = await readJsonResponse(response);
+    if (!live_shared_isRecord(json)) {
+        return undefined;
+    }
+    const threadId = readResponseId(json);
+    if (threadId === undefined) {
+        return undefined;
+    }
+    // The POST response includes the freshly created thread with its
+    // first comment id. We capture that so the caller can PATCH the
+    // comment body later (to insert the parent-reference text).
+    const comments = json["comments"];
+    if (!Array.isArray(comments) || comments.length === 0) {
+        return undefined;
+    }
+    const firstComment = comments[0];
+    if (!live_shared_isRecord(firstComment)) {
+        return undefined;
+    }
+    const commentId = firstComment["id"];
+    if (typeof commentId !== "number" || !Number.isSafeInteger(commentId)) {
+        return undefined;
+    }
+    return { threadId, commentId };
 }
 /**
  * Context name + genre uniquely identify a status entry on the

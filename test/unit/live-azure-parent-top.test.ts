@@ -256,16 +256,27 @@ function existingParentRoutes(): readonly FreshableRoute[] {
       response: () => makeJsonResponse({}, 200),
     },
     {
-      // /threads POST — the parent POST is the first call, the inline
-      // thread POST is the second call. Return a fresh id per call.
+      // /threads POST — first call returns the inline thread (with
+      // its first comment id so the per-comment PATCH that injects
+      // the parent-reference can find its target), second call
+      // returns the new parent thread id (no comment body needed).
       match: (url, method) => method === "POST" && url.endsWith("/threads?api-version=7.1"),
       response: () => {
         postCount += 1;
         if (postCount === 1) {
-          return makeJsonResponse({ id: NEW_PARENT_THREAD_ID }, 200);
+          return makeJsonResponse(
+            { id: 8001, comments: [{ id: 9001, content: "<!-- umactually-pr-review -->\ninitial" }] },
+            200,
+          );
         }
-        return makeJsonResponse({ id: 8000 + postCount }, 200);
+        return makeJsonResponse({ id: NEW_PARENT_THREAD_ID }, 200);
       },
+    },
+    {
+      // Per-comment PATCH on the inline thread.
+      match: (url, method) =>
+        method === "PATCH" && /\/threads\/\d+\/comments\/\d+\?api-version=7\.1$/.test(url),
+      response: () => makeJsonResponse({}, 200),
     },
     {
       match: (url, method) => method === "GET" && url.endsWith("/statuses?api-version=7.1"),
@@ -379,8 +390,10 @@ describe("postAzurePrComment (Azure parent PR-level 'always at top of conversati
     expect(NEW_PARENT_THREAD_ID).toBeGreaterThan(maxExisting);
   });
 
-  it("PARENT-TOP-003: the new parent is POSTed BEFORE the inline thread POST (ordering preserved)", async () => {
-    // Given: existing parent fixture.
+  it("PARENT-TOP-003: the new parent is POSTed AFTER the inline thread POST (parent gets the highest id)", async () => {
+    // Given: existing parent fixture (existing parent has comments,
+    // so DELETEs will go out first; then inline POSTs; then the new
+    // parent POST).
     const recorder = makeFetchRecorder(existingParentRoutes());
 
     // When: the live Azure path runs.
@@ -391,20 +404,20 @@ describe("postAzurePrComment (Azure parent PR-level 'always at top of conversati
       fetchImpl: recorder.fetchImpl,
     });
 
-    // Then: the FIRST /threads POST in the call list is the new parent
-    // (no threadContext). All later /threads POSTs are the inline
-    // thread (with threadContext). The parent id is referenced in
-    // each inline comment body as the reply target.
+    // Then: at least one inline POST (threadContext present) plus
+    // one parent POST (no threadContext) hit /threads.
     const posts = recorder.calls.filter(
       (call) => call.method === "POST" && call.url.endsWith("/threads?api-version=7.1"),
     );
     expect(posts.length).toBeGreaterThanOrEqual(2);
 
-    // The first POST is the new parent (no threadContext).
-    const parentPost = posts[0];
+    // The LAST /threads POST is the new parent (no threadContext) —
+    // this is what gives it the highest thread id on the PR and
+    // places it at the TOP of the ADO PR Overview conversation.
+    const parentPost = posts[posts.length - 1];
     expect(parentPost).toBeDefined();
     if (parentPost === undefined) {
-      throw new Error("expected first thread post");
+      throw new Error("expected last thread post");
     }
     const parentBody = readRecord(parentPost.body as Record<string, unknown>, "parent post body");
     expect(parentBody["threadContext"]).toBeUndefined();
@@ -418,24 +431,29 @@ describe("postAzurePrComment (Azure parent PR-level 'always at top of conversati
     expect(parentContent).toContain("<!-- umactually-pr-review -->");
     expect(parentContent).toContain("Azure parent-top summary.");
 
-    // The later POST is the inline thread (with threadContext), and
-    // its body MUST reference the NEW parent id (not the old one).
-    const inlinePosts = posts.slice(1).filter((call) => {
+    // The earlier POST(s) are the inline thread (with threadContext).
+    const inlinePosts = posts.slice(0, -1).filter((call) => {
       const body = readRecord(call.body as Record<string, unknown>, "inline body");
       return body["threadContext"] !== undefined;
     });
     expect(inlinePosts.length).toBeGreaterThan(0);
-    for (const inlinePost of inlinePosts) {
-      const body = readRecord(inlinePost.body as Record<string, unknown>, "inline body");
-      const comments = readArray(body["comments"], "inline comments");
-      expect(comments).toHaveLength(1);
-      const firstComment = readRecord(comments[0] as Record<string, unknown>, "inline first comment");
-      const content = firstComment["content"];
+
+    // And: each inline thread is PATCHed (after the parent POST) so
+    // its body references the NEW parent id, not the OLD one.
+    const patchCalls = recorder.calls.filter(
+      (call) =>
+        call.method === "PATCH" &&
+        /\/threads\/\d+\/comments\/\d+\?api-version=7\.1$/.test(call.url),
+    );
+    expect(patchCalls.length).toBeGreaterThanOrEqual(inlinePosts.length);
+    for (const patchCall of patchCalls) {
+      const body = readRecord(patchCall.body as Record<string, unknown>, "patch body");
+      const content = body["content"];
       expect(typeof content).toBe("string");
       if (typeof content !== "string") {
-        throw new Error("inline content must be a string");
+        throw new Error("patched inline content must be a string");
       }
-      // Inline thread points at the NEW parent id, not the OLD one.
+      // The PATCHed body references the NEW parent id (not the OLD one).
       expect(content).toContain(`Reply to PR review summary #${NEW_PARENT_THREAD_ID}`);
       expect(content).not.toContain(`Reply to PR review summary #${EXISTING_PARENT_THREAD_ID}`);
     }
@@ -447,6 +465,7 @@ describe("postAzurePrComment (Azure parent PR-level 'always at top of conversati
     // in place, but a future run could find a 0-comment parent from
     // an edge case; we must not crash on the "delete every comment"
     // loop).
+    let postCount = 0;
     const emptyParentRoutes: FreshableRoute[] = [
       ...freshable(azureDiffRoutes(makeJsonResponse, azureReviewDiffFixture())),
       {
@@ -469,10 +488,27 @@ describe("postAzurePrComment (Azure parent PR-level 'always at top of conversati
           }),
       },
       {
-        // /threads POST — the parent POST is the first call, the
-        // inline thread POST is the second call.
+        // /threads POST — first call returns the inline thread id,
+        // second call returns the new parent id. The response body
+        // also includes a `comments[0].id` so the per-comment PATCH
+        // that injects the parent-reference can find its target.
         match: (url, method) => method === "POST" && url.endsWith("/threads?api-version=7.1"),
-        response: () => makeJsonResponse({ id: NEW_PARENT_THREAD_ID }, 200),
+        response: () => {
+          postCount += 1;
+          if (postCount === 1) {
+            return makeJsonResponse(
+              { id: 8001, comments: [{ id: 9001, content: "<!-- umactually-pr-review -->\ninitial" }] },
+              200,
+            );
+          }
+          return makeJsonResponse({ id: NEW_PARENT_THREAD_ID }, 200);
+        },
+      },
+      {
+        // Per-comment PATCH on the inline thread.
+        match: (url, method) =>
+          method === "PATCH" && /\/threads\/\d+\/comments\/\d+\?api-version=7\.1$/.test(url),
+        response: () => makeJsonResponse({}, 200),
       },
       {
         match: (url, method) => method === "GET" && url.endsWith("/statuses?api-version=7.1"),
@@ -494,7 +530,7 @@ describe("postAzurePrComment (Azure parent PR-level 'always at top of conversati
       fetchImpl: recorder.fetchImpl,
     });
 
-    // Then: success path — parent POST + inline POST + status POST.
+    // Then: success path — inline POST + parent POST + status POST.
     expect(result.exitCode).toBe(0);
     expect(result.posted).toBe(true);
 
@@ -503,15 +539,16 @@ describe("postAzurePrComment (Azure parent PR-level 'always at top of conversati
     const deleteCalls = recorder.calls.filter((call) => call.method === "DELETE");
     expect(deleteCalls).toHaveLength(0);
 
-    // And: the new parent POST is still the FIRST /threads POST.
+    // And: the new parent POST is the LAST /threads POST (so it gets
+    // the highest thread id).
     const posts = recorder.calls.filter(
       (call) => call.method === "POST" && call.url.endsWith("/threads?api-version=7.1"),
     );
     expect(posts.length).toBeGreaterThanOrEqual(2);
-    const parentPost = posts[0];
+    const parentPost = posts[posts.length - 1];
     expect(parentPost).toBeDefined();
     if (parentPost === undefined) {
-      throw new Error("expected first thread post");
+      throw new Error("expected last thread post");
     }
     const parentBody = readRecord(parentPost.body as Record<string, unknown>, "parent post body");
     expect(parentBody["threadContext"]).toBeUndefined();

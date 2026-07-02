@@ -198,7 +198,7 @@ describe("postAzurePrComment (Azure parent PR-level review summary)", () => {
     stderrSpy = undefined;
   });
 
-  it("PARITY-100: posts a parent PR comment to /threads WITHOUT threadContext before any inline thread", async () => {
+  it("PARITY-100: posts a parent PR comment to /threads WITHOUT threadContext AFTER any inline thread", async () => {
     // Given: an Azure live environment with one inline finding.
     const recorder = makeFetchRecorder(azureBaseRoutes());
 
@@ -210,21 +210,23 @@ describe("postAzurePrComment (Azure parent PR-level review summary)", () => {
       fetchImpl: recorder.fetchImpl,
     });
 
-    // Then: at least two /threads POSTs happen — the parent PR-level
-    // (no threadContext) one, and one inline (with threadContext) one.
+    // Then: at least two /threads POSTs happen — the inline (with
+    // threadContext) one, and the parent PR-level (no threadContext).
     expect(result.exitCode).toBe(0);
     const posts = threadPosts(recorder.calls);
     expect(posts.length).toBeGreaterThanOrEqual(2);
 
-    // Find the FIRST /threads POST — that must be the parent PR-level
-    // comment. Its body MUST omit `threadContext` (the documented ADO
-    // shape for "Comment on the pull request").
-    const firstPost = posts[0];
-    expect(firstPost).toBeDefined();
-    if (firstPost === undefined) {
-      throw new Error("expected first thread post");
+    // The PARENT (no threadContext) is POSTed LAST so it gets the
+    // highest thread id on the PR and sits at the TOP of the ADO
+    // PR Overview conversation (which sorts threads by id descending
+    // by default). See the docstring in runAzureLive for the full
+    // ordering rationale.
+    const parentPost = posts[posts.length - 1];
+    expect(parentPost).toBeDefined();
+    if (parentPost === undefined) {
+      throw new Error("expected last thread post");
     }
-    const parentBody = readRecord(firstPost.body as Record<string, unknown>, "parent thread body");
+    const parentBody = readRecord(parentPost.body as Record<string, unknown>, "parent thread body");
     expect(parentBody["threadContext"]).toBeUndefined();
     // The parent comment body MUST carry the verdict badge + stable marker
     // from buildReviewBody so the conversation timeline shows the same
@@ -244,9 +246,9 @@ describe("postAzurePrComment (Azure parent PR-level review summary)", () => {
     expect(parentFirst["commentType"]).toBe(1);
     expect(parentBody["status"]).toBe(1);
 
-    // At least one LATER thread POST must include threadContext
+    // At least one EARLIER thread POST must include threadContext
     // (the inline-file-pinned shape).
-    const inlinePost = posts.slice(1).find((call) => {
+    const inlinePost = posts.slice(0, -1).find((call) => {
       const body = readRecord(call.body as Record<string, unknown>, "inline thread body");
       return body["threadContext"] !== undefined;
     });
@@ -254,8 +256,9 @@ describe("postAzurePrComment (Azure parent PR-level review summary)", () => {
   });
 
   it("PARITY-101: still posts inline threads when the parent PR comment POST fails", async () => {
-    // Given: the FIRST /threads POST fails (5xx) but subsequent ones succeed.
-    let parentAttempts = 0;
+    // Given: the LAST /threads POST fails (5xx) — the parent —
+    // but earlier inline POSTs succeed.
+    let postCount = 0;
     const routes: FreshableRoute[] = azureBaseRoutes()
       .filter((route) =>
         !route.match(
@@ -263,15 +266,17 @@ describe("postAzurePrComment (Azure parent PR-level review summary)", () => {
           "POST",
         ),
       );
-    // Stateful /threads POST: first call fails, subsequent calls succeed.
+    // Stateful /threads POST: first call succeeds (inline), second
+    // call fails (parent — POSTed last). The new ordering is
+    // inline-first, parent-last.
     routes.push({
       match: (url, method) => method === "POST" && url.endsWith("/threads?api-version=7.1"),
       response: () => {
-        parentAttempts += 1;
-        if (parentAttempts === 1) {
-          return makeJsonResponse({ error: "parent POST failed" }, 500);
+        postCount += 1;
+        if (postCount === 1) {
+          return makeJsonResponse({ id: 77 }, 200);
         }
-        return makeJsonResponse({ id: 77 + parentAttempts }, 200);
+        return makeJsonResponse({ error: "parent POST failed" }, 500);
       },
     });
 
@@ -290,7 +295,7 @@ describe("postAzurePrComment (Azure parent PR-level review summary)", () => {
     expect(result.exitCode).toBe(0);
     expect(result.posted).toBe(true);
     const posts = threadPosts(recorder.calls);
-    // We expect at least 2 calls: the failed parent + the successful inline.
+    // We expect at least 2 calls: the successful inline + the failed parent.
     expect(posts.length).toBeGreaterThanOrEqual(2);
 
     // The run posted the PR status (success path).
@@ -382,18 +387,22 @@ describe("postAzurePrComment (Azure parent PR-level review summary)", () => {
     const posts = threadPosts(recorder.calls);
     expect(posts.length).toBeGreaterThanOrEqual(2);
 
-    // The FIRST /threads POST is the new parent (no threadContext).
-    const parentPost = posts[0];
+    // The LAST /threads POST is the new parent (no threadContext) —
+    // posting the parent last gives it the highest thread id on the
+    // PR so it sits at the TOP of the ADO PR Overview conversation
+    // (which sorts threads by id descending by default). See the
+    // docstring in runAzureLive for the full ordering rationale.
+    const parentPost = posts[posts.length - 1];
     expect(parentPost).toBeDefined();
     if (parentPost === undefined) {
-      throw new Error("expected first thread post");
+      throw new Error("expected last thread post");
     }
     const parentBody = readRecord(parentPost.body as Record<string, unknown>, "parent thread body");
     expect(parentBody["threadContext"]).toBeUndefined();
 
-    // And: at least one later /threads POST is the inline thread
+    // And: at least one earlier /threads POST is the inline thread
     // (with threadContext).
-    const inlinePost = posts.slice(1).find((call) => {
+    const inlinePost = posts.slice(0, -1).find((call) => {
       const body = readRecord(call.body as Record<string, unknown>, "inline thread body");
       return body["threadContext"] !== undefined;
     });
