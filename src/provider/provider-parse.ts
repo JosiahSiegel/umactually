@@ -68,6 +68,11 @@ export function buildChatBody(config: {
 }
 
 export function extractTextPayload(endpoint: ProviderEndpoint, rawText: string): string {
+  const sseText = tryExtractSse(rawText);
+  if (sseText !== null) {
+    return sseText;
+  }
+
   const parsed = tryParseJson(rawText);
   if (parsed === undefined || !isPlainObject(parsed)) {
     return rawText;
@@ -167,6 +172,63 @@ function tryParseJson(rawText: string): unknown {
   } catch {
     return undefined;
   }
+}
+
+/**
+ * Some providers (e.g. Manifest) ignore `stream: false` and always return
+ * Server-Sent Events. Detect the `data: ` prefix format and concatenate
+ * content from all chunks into a single string.
+ *
+ * Handles both the /chat/completions streaming format (delta.content) and
+ * the /responses streaming format (delta or output_text.delta).
+ */
+function tryExtractSse(rawText: string): string | null {
+  const trimmed = rawText.trim();
+  if (!trimmed.startsWith("data:")) {
+    return null;
+  }
+
+  const fragments: string[] = [];
+
+  for (const line of trimmed.split("\n")) {
+    const clean = line.trim();
+    if (!clean.startsWith("data:")) {
+      continue;
+    }
+    const payload = clean.slice("data:".length).trim();
+    if (payload === "[DONE]" || payload === "") {
+      continue;
+    }
+
+    const parsed = tryParseJson(payload);
+    if (!isPlainObject(parsed)) {
+      continue;
+    }
+
+    // /chat/completions streaming: choices[].delta.content
+    const choices = readArrayField(parsed, "choices");
+    if (choices !== null) {
+      for (const choice of choices) {
+        const delta = readRecordField(choice, "delta");
+        if (delta !== null) {
+          const content = readStringField(delta, "content");
+          if (content !== null) {
+            fragments.push(content);
+          }
+        }
+      }
+      continue;
+    }
+
+    // /responses streaming: delta is a string directly on the JSON object
+    // (response.output_text.delta event)
+    const deltaText = readStringField(parsed, "delta");
+    if (deltaText !== null) {
+      fragments.push(deltaText);
+    }
+  }
+
+  return fragments.length > 0 ? fragments.join("") : null;
 }
 
 function isPlainObject(value: unknown): value is Record<string, unknown> {

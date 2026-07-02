@@ -32,7 +32,7 @@ const DEFAULT_SONAR_TIMEOUT_SECONDS = 60;
 const DEFAULT_MINIMUM_SEVERITY: Severity = "minor";
 const DEFAULT_PLATFORM: Platform = "auto";
 const DEFAULT_PROVIDER_URL = "https://api.openai.com/v1";
-const DEFAULT_PROVIDER_MODEL = "gpt-4o-mini";
+const DEFAULT_PROVIDER_MODEL = "auto";
 const DEFAULT_PROMPT_BYTE_CAP = 64 * 1024;
 
 /**

@@ -175,6 +175,7 @@ steps:
         --repo "$UMACTUALLY_REPO" \
         --api-url "${UMACTUALLY_API_URL}" \
         --api-key "${UMACTUALLY_API_KEY}" \
+        --model auto \
         --no-detect-leaks \
         --no-dry-run
     displayName: Run UmActually Azure live review

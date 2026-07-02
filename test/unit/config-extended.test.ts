@@ -350,7 +350,7 @@ describe("config: loadConfigFromSources precedence", () => {
   it("applies all defaults when nothing is provided", async () => {
     const result = await loadConfigFromSources({ ...empty(), cwd });
     expect(result.provider.url).toBe("https://api.openai.com/v1");
-    expect(result.provider.model).toBe("gpt-4o-mini");
+    expect(result.provider.model).toBe("auto");
     expect(result.platform).toBe("auto");
     expect(result.guidance.dryRun).toBe(false);
     expect(result.leakDetection).toBe(true);

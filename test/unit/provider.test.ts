@@ -418,4 +418,78 @@ describe("openai-compatible provider client", () => {
     expect(recordedBody).not.toHaveProperty("max_output_tokens");
     expect(recordedBody).not.toHaveProperty("reasoning");
   });
+
+  const SSE_CHAT_BODY = [
+    'data: {"id":"chatcmpl-001","object":"chat.completion.chunk","created":1,"model":"auto","choices":[{"index":0,"delta":{"role":"assistant","content":""},"finish_reason":null}]}',
+    "",
+    'data: {"id":"chatcmpl-002","object":"chat.completion.chunk","created":1,"model":"auto","choices":[{"index":0,"delta":{"content":"{\\"summary\\":\\"SSE review.\\","},"finish_reason":null}]}',
+    "",
+    'data: {"id":"chatcmpl-003","object":"chat.completion.chunk","created":1,"model":"auto","choices":[{"index":0,"delta":{"content":"\\"verdict\\":\\"DISCUSS\\",\\"comments\\":[],\\"suppressed_comments\\":[]}"},"finish_reason":null}]}',
+    "",
+    'data: {"id":"chatcmpl-004","object":"chat.completion.chunk","created":1,"model":"auto","choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}',
+    "",
+    'data: {"id":"chatcmpl-005","object":"chat.completion.chunk","created":1,"model":"auto","choices":[],"usage":{"prompt_tokens":10,"completion_tokens":20,"total_tokens":30}}',
+    "",
+    "data: [DONE]",
+    "",
+  ].join("\n");
+
+  it("PROV-UNIT-015 parses SSE streaming chat response (data: lines) as concatenated content", async () => {
+    // Given: /responses 404 forces fallback, /chat/completions returns SSE stream
+    // (some providers like Manifest ignore stream:false and always stream).
+    const stub = makeFetchStub([
+      { status: 404, body: "{}" },
+      { status: 200, body: SSE_CHAT_BODY, contentType: "text/event-stream" },
+    ]);
+
+    // When: the client parses the SSE-formatted chat response.
+    const result = await runProviderRequest({ ...BASE_CONFIG, fetchImpl: stub.fetch });
+
+    // Then: it concatenates delta.content from all data: chunks and parses the review JSON.
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.endpoint).toBe("chat");
+      expect(result.review.summary).toBe("SSE review.");
+      expect(result.review.verdict).toBe("DISCUSS");
+    }
+  });
+
+  it("PROV-UNIT-016 parses SSE streaming responses response (data: lines) as concatenated content", async () => {
+    // Given: /responses returns SSE stream directly (no fallback).
+    const sseBody = [
+      'data: {"id":"resp-001","type":"response.output_text.delta","delta":"{\\"summary\\":\\"SSE responses.\\",\\"verdict\\":\\"SHIP\\",\\"comments\\":[],\\"suppressed_comments\\":[]}"}',
+      "",
+      "data: [DONE]",
+      "",
+    ].join("\n");
+    const stub = makeFetchStub([
+      { status: 200, body: sseBody, contentType: "text/event-stream" },
+    ]);
+
+    // When: the client parses the SSE-formatted responses response.
+    const result = await runProviderRequest({ ...BASE_CONFIG, fetchImpl: stub.fetch });
+
+    // Then: it extracts the delta text and parses the review JSON.
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.endpoint).toBe("responses");
+      expect(result.review.summary).toBe("SSE responses.");
+      expect(result.review.verdict).toBe("SHIP");
+    }
+  });
+
+  it("PROV-UNIT-017 still parses non-SSE JSON responses correctly after SSE support added", async () => {
+    // Given: a standard JSON /responses body (regression test).
+    const stub = makeFetchStub([{ status: 200, body: RESPONSES_SUCCESS_BODY }]);
+
+    // When: the client parses the standard JSON response.
+    const result = await runProviderRequest({ ...BASE_CONFIG, fetchImpl: stub.fetch });
+
+    // Then: it returns ok with the parsed JSON (no regression).
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.endpoint).toBe("responses");
+      expect(result.review.summary).toBe("Synthetic responses review.");
+    }
+  });
 });
