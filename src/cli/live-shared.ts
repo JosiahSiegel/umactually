@@ -112,30 +112,150 @@ export function countBySeverity(comments: readonly { readonly severity: string }
   return counts;
 }
 
-function summaryBlock(input: {
-  readonly review: LiveReview;
+/**
+ * Hard upper bound on the inline-finding preview list inside the parent
+ * "Top concerns" <details> block. Keeps the parent card from being
+ * dominated by a long list when the provider returns many findings.
+ */
+const TOP_CONCERNS_PREVIEW_LIMIT = 5;
+
+/**
+ * Order in which severity levels appear in the counts line and the
+ * "Top concerns" header. Critical first (most urgent), then
+ * high → medium → low. The `info` level is intentionally excluded —
+ * info findings are tracked in the manifest but are not a signal the
+ * reviewer needs to act on.
+ */
+const SEVERITY_ORDER = ["critical", "high", "medium", "low"] as const;
+
+/**
+ * Counts line that appears immediately after the verdict badge. Uses
+ * emoji + backticks (NOT `**word**` asterisks) because ADO's PR-thread
+ * renderer surface has been observed to leak `**...**` as literal
+ * asterisks even though the markdown guidance documents that emphasis
+ * IS supported. Belt-and-braces compatibility — see CLARITY-3 in
+ * test/unit/live-azure-parent-clarity.test.ts.
+ *
+ * The line ALWAYS renders (even when all counts are zero) so a reviewer
+ * can distinguish "0 findings, ship it" from "nothing rendered". That
+ * consistency is the contract CLARITY-5 pins.
+ */
+function countsLine(input: {
   readonly severityCounts: Record<string, number>;
   readonly suppressedCount: number;
-  readonly secrets: readonly string[];
 }): string {
-  const counts = input.severityCounts;
-  const countLines = ["high", "medium", "low", "critical"]
-    .filter((level) => (counts[level] ?? 0) > 0)
-    .map((level) => `- **${level}**: ${counts[level]}`)
-    .join("\n");
-  const suppressedLine = input.suppressedCount > 0
-    ? `- **suppressed** (off-diff): ${input.suppressedCount}\n`
-    : "";
+  const parts: string[] = [];
+  for (const level of SEVERITY_ORDER) {
+    const count = input.severityCounts[level] ?? 0;
+    parts.push(`\`${count}\` ${level}`);
+  }
+  parts.push(`\`${input.suppressedCount}\` suppressed (off-diff)`);
+  return `📊 ${parts.join(" · ")}`;
+}
 
+/**
+ * Build the "Top concerns" <details> block. Shows a preview of the
+ * highest-severity findings so a reviewer can decide which to open in
+ * the inline threads. Hidden by default so it does not push the counts
+ * line below the fold.
+ */
+function topConcernsBlock(input: {
+  readonly review: LiveReview;
+}): string {
+  const sorted = [...input.review.comments].sort((a, b) => {
+    const ra = severityRank(a.severity);
+    const rb = severityRank(b.severity);
+    if (ra !== rb) return rb - ra;
+    return a.path.localeCompare(b.path);
+  });
+  const preview = sorted.slice(0, TOP_CONCERNS_PREVIEW_LIMIT);
+  if (preview.length === 0) {
+    return "";
+  }
+  const header = preview.length === 1
+    ? "📋 Top concern (1)"
+    : `📋 Top concerns (${preview.length})`;
+  const lines = preview.map((comment, index) => {
+    const safeBody = sanitizeForPost(comment.body, []);
+    const oneLiner = safeBody.replace(/\s+/gu, " ").trim();
+    const bodySnippet = oneLiner.length > 120 ? `${oneLiner.slice(0, 117)}…` : oneLiner;
+    return `${index + 1}. \`${comment.path}:${comment.line}\` — ${bodySnippet}`;
+  });
   return [
     "<details>",
-    "<summary>📊 Findings breakdown</summary>",
+    `<summary>${header}</summary>`,
     "",
-    countLines,
-    suppressedLine.length > 0 ? suppressedLine : "",
+    lines.join("\n"),
     "</details>",
     "",
-  ].filter((line) => line.length > 0).join("\n");
+  ].join("\n");
+}
+
+/**
+ * Build the "Suppressed (off-diff)" <details> block. Lists every
+ * comment the system suppressed because its line is not on the diff.
+ * Hidden by default — only the count is visible above the fold.
+ */
+function suppressedBlock(input: {
+  readonly suppressedComments: readonly LiveReviewComment[];
+}): string {
+  if (input.suppressedComments.length === 0) {
+    return "";
+  }
+  const header = input.suppressedComments.length === 1
+    ? "🔕 Suppressed (off-diff, 1)"
+    : `🔕 Suppressed (off-diff, ${input.suppressedComments.length})`;
+  const lines = input.suppressedComments.map((comment) => {
+    const safeBody = sanitizeForPost(comment.body, []);
+    const oneLiner = safeBody.replace(/\s+/gu, " ").trim();
+    const bodySnippet = oneLiner.length > 100 ? `${oneLiner.slice(0, 97)}…` : oneLiner;
+    return `- \`${comment.path}:${comment.line}\` — ${bodySnippet}`;
+  });
+  return [
+    "<details>",
+    `<summary>${header}</summary>`,
+    "",
+    lines.join("\n"),
+    "</details>",
+    "",
+  ].join("\n");
+}
+
+/**
+ * Wrap the provider's prose summary in a collapsed <details> block so
+ * the counts line stays in the first viewport. CLARITY-4 pins this
+ * contract: long prose MUST live inside <details>, not inline.
+ *
+ * If the summary already starts with an HTML <details> block (the
+ * malformed-fallback path includes a raw-response <details>), the
+ * summary is used verbatim — wrapping it in another <details> would
+ * be confusing.
+ */
+function proseBlock(summary: string): string {
+  const trimmed = summary.trim();
+  if (trimmed.length === 0) {
+    return "";
+  }
+  // If the summary already contains a <details> block (parse-fail
+  // fallback), surface it as-is under the "📝 Summary" toggle.
+  if (trimmed.startsWith("<details>") || trimmed.includes("\n<details>")) {
+    return [
+      "<details>",
+      "<summary>📝 Summary</summary>",
+      "",
+      trimmed,
+      "</details>",
+      "",
+    ].join("\n");
+  }
+  return [
+    "<details>",
+    "<summary>📝 Summary</summary>",
+    "",
+    trimmed,
+    "</details>",
+    "",
+  ].join("\n");
 }
 
 function metadataManifest(input: {
@@ -163,13 +283,23 @@ function metadataManifest(input: {
  * starter comment). Both platforms must produce an equivalent contract so AI
  * agents and humans see the same information regardless of platform.
  *
- * Structure:
+ * Clarity-first shape (CLARITY-* contract in
+ * test/unit/live-azure-parent-clarity.test.ts):
+ *
  *   1. Stable HTML marker (used for dedup)
- *   2. Verdict badge
- *   3. Summary paragraph
- *   4. Collapsed <details> block with severity counts
- *   5. Provider/model line
- *   6. Hidden HTML comment with a JSON manifest for AI agents
+ *   2. Verdict badge — large, first thing after the marker
+ *   3. Counts line — emoji + backticks, immediately below the verdict, so a
+ *      reviewer sees "how many findings, how many suppressed" within the
+ *      first viewport
+ *   4. Top-concerns <details> — preview of the highest-severity findings
+ *   5. Suppressed <details> — list of off-diff findings
+ *   6. Prose summary <details> — long provider narrative, hidden by default
+ *   7. Footer — model + provider + inline-thread count, small text
+ *   8. Hidden HTML comment with the JSON manifest for AI agents
+ *
+ * The shape is identical regardless of verdict, finding count, or whether
+ * the provider returned a parse-fail fallback — that consistency is what
+ * lets a reviewer scan the card in 5 seconds.
  */
 export function buildReviewBody(input: {
   readonly review: LiveReview;
@@ -185,19 +315,24 @@ export function buildReviewBody(input: {
   const safeModelId = sanitizeForPost(input.modelId, input.secrets);
   const safeProvider = sanitizeForPost(input.provider, input.secrets);
 
+  const footer =
+    `🤖 Generated by \`${safeModelId}\` via \`${safeProvider}\` · ` +
+    `${input.validCommentCount} inline thread(s) posted`;
+
   const sections = [
     REVIEW_MARKER,
+    "",
     `## ${verdict}`,
     "",
-    safeSummary,
-    "",
-    summaryBlock({
-      review: input.review,
+    countsLine({
       severityCounts,
       suppressedCount: input.suppressedCommentCount,
-      secrets: input.secrets,
     }),
-    `*Generated by \`${safeModelId}\` via \`${safeProvider}\`.*`,
+    "",
+    topConcernsBlock({ review: input.review }),
+    suppressedBlock({ suppressedComments: input.review.suppressedComments }),
+    proseBlock(safeSummary),
+    footer,
     "",
     metadataManifest({
       review: input.review,
@@ -286,8 +421,11 @@ export function buildMalformedProviderFallback(input: {
     "",
   ].join("\n");
 
+  // Note: the summary intentionally does NOT include a "Generated by"
+  // footer — `buildReviewBody` emits that footer in its own block so
+  // this fallback path would otherwise show the same metadata twice.
   return {
-    summary: `Provider response did not contain a valid JSON review payload.\n\n${detailsBlock}*Generated by \`${safeModelId}\` via \`${safeProvider}\`.*`,
+    summary: `Provider response did not contain a valid JSON review payload.\n\n${detailsBlock}`,
     verdict: "COMMENT",
     comments: [],
     suppressedComments: [],

@@ -106,7 +106,13 @@ describe("buildReviewBody (shared GitHub + Azure review header)", () => {
     expect(body).toContain("</details>");
   });
 
-  it("FEAT-PARITY-005 includes severity counts in the collapsed details block", () => {
+  it("FEAT-PARITY-005 includes severity counts at the top of the card (no raw asterisks)", () => {
+    // Severity counts live on the "📊" line immediately after the verdict
+    // badge so the developer sees them within the first viewport. We use
+    // emoji + backticks (NOT `**word**` asterisks) because ADO's
+    // PR-thread renderer has been observed to leak `**...**` as literal
+    // asterisks in this surface — see CLARITY-3 in
+    // test/unit/live-azure-parent-clarity.test.ts.
     const body = buildReviewBody({
       review: SAMPLE_REVIEW,
       provider: "openai-compatible",
@@ -115,9 +121,16 @@ describe("buildReviewBody (shared GitHub + Azure review header)", () => {
       suppressedCommentCount: 1,
       secrets: SECRETS,
     });
-    expect(body).toContain("**high**: 1");
-    expect(body).toContain("**medium**: 1");
-    expect(body).toContain("**low**: 1");
+    // Each severity level appears at least once with a count. Use a
+    // regex that matches the clarity-form counts line, NOT the old
+    // `**high**: 1` raw-asterisk form.
+    expect(body).toMatch(/`1`\s+high/u);
+    expect(body).toMatch(/`1`\s+medium/u);
+    expect(body).toMatch(/`1`\s+low/u);
+    // And the old asterisks form must be GONE everywhere.
+    expect(body).not.toMatch(/\*\*high\*\*:\s*1/u);
+    expect(body).not.toMatch(/\*\*medium\*\*:\s*1/u);
+    expect(body).not.toMatch(/\*\*low\*\*:\s*1/u);
   });
 
   it("FEAT-PARITY-006 includes a machine-readable findings manifest as an HTML comment for AI agents", () => {
