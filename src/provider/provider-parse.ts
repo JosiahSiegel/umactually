@@ -184,7 +184,9 @@ function tryParseJson(rawText: string): unknown {
  */
 function tryExtractSse(rawText: string): string | null {
   const trimmed = rawText.trim();
-  if (!trimmed.startsWith("data:")) {
+  // Detect SSE format: either starts with "data:" or "event:" (some providers
+  // like Manifest prepend event: lines before data: lines).
+  if (!trimmed.startsWith("data:") && !trimmed.startsWith("event:")) {
     return null;
   }
 

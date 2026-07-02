@@ -2018,7 +2018,7 @@ async function postAzureStatus(input) {
         headers: azureHeaders(input.context.token),
         body: JSON.stringify({
             state: input.state,
-            description: input.description,
+            description: input.description.slice(0, 255),
             context: { name: "UmActually", genre: "pr-review" },
         }),
     });
@@ -2484,7 +2484,9 @@ function provider_parse_tryParseJson(rawText) {
  */
 function tryExtractSse(rawText) {
     const trimmed = rawText.trim();
-    if (!trimmed.startsWith("data:")) {
+    // Detect SSE format: either starts with "data:" or "event:" (some providers
+    // like Manifest prepend event: lines before data: lines).
+    if (!trimmed.startsWith("data:") && !trimmed.startsWith("event:")) {
         return null;
     }
     const fragments = [];

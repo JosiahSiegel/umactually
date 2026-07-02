@@ -182,7 +182,7 @@ async function postAzureStatus(input: {
     headers: azureHeaders(input.context.token),
     body: JSON.stringify({
       state: input.state,
-      description: input.description,
+      description: input.description.slice(0, 255),
       context: { name: "UmActually", genre: "pr-review" },
     }),
   });

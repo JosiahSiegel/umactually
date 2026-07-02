@@ -492,4 +492,36 @@ describe("openai-compatible provider client", () => {
       expect(result.review.summary).toBe("Synthetic responses review.");
     }
   });
+
+  it("PROV-UNIT-018 parses SSE with event: prefixes (Manifest /responses format)", async () => {
+    // Given: /responses returns SSE stream where each chunk has an "event:" line
+    // before the "data:" line (the Manifest provider format).
+    const sseBody = [
+      'event: response.created',
+      'data: {"type":"response.created","response":{"id":"r1","status":"in_progress"}}',
+      "",
+      'event: response.output_text.delta',
+      'data: {"type":"response.output_text.delta","delta":"{\\"summary\\":\\"Event-prefixed SSE.\\",\\"verdict\\":\\"DISCUSS\\",\\"comments\\":[],\\"suppressed_comments\\":[]}"}',
+      "",
+      'event: response.completed',
+      'data: {"type":"response.completed","response":{"id":"r1","status":"completed"}}',
+      "",
+      "data: [DONE]",
+      "",
+    ].join("\n");
+    const stub = makeFetchStub([
+      { status: 200, body: sseBody, contentType: "text/event-stream" },
+    ]);
+
+    // When: the client parses the event-prefixed SSE response.
+    const result = await runProviderRequest({ ...BASE_CONFIG, fetchImpl: stub.fetch });
+
+    // Then: it extracts the delta text and parses the review JSON.
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.endpoint).toBe("responses");
+      expect(result.review.summary).toBe("Event-prefixed SSE.");
+      expect(result.review.verdict).toBe("DISCUSS");
+    }
+  });
 });
