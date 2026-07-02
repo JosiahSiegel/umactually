@@ -1,16 +1,31 @@
-// Unit tests for the in-place update of an existing parent PR-level review
-// summary thread on Azure DevOps.
+// Unit tests for the "always at top of conversation" behavior of the
+// parent PR-level review summary on Azure DevOps.
 //
-// Background: previously `postAzurePrComment` was a write-once helper — once
-// a marker thread existed at the PR-conversation level (i.e. without a
-// `threadContext`), every subsequent run was a silent no-op. That left stale
-// content (e.g. a parse-fail fallback) stuck on the parent card forever. To
-// fix it, when an existing parent marker thread is found, the live Azure
-// path now PATCHes the thread in place using the documented
-// Pull Request Threads - Update endpoint:
-//   PATCH https://dev.azure.com/{org}/{project}/_apis/git/repositories/{repoId}/pullRequests/{prId}/threads/{threadId}?api-version=7.1
-// with `comments: [{ id, content, ... }]`. See:
-//   https://learn.microsoft.com/en-us/rest/api/azure/devops/git/pull-request-threads/update?view=azure-devops-rest-7.1
+// Background: the live Azure PR Overview conversation sorts threads
+// strictly by thread id ascending (per
+//   https://learn.microsoft.com/en-us/rest/api/azure/devops/git/pull-request-threads/list?view=azure-devops-rest-7.1
+// — the API itself returns threads in id order). The previous
+// implementation PATCHed an existing parent marker thread in place via
+// the documented Pull Request Threads - Update endpoint
+// (https://learn.microsoft.com/en-us/rest/api/azure/devops/git/pull-request-threads/update?view=azure-devops-rest-7.1)
+// — that preserved the thread's original id, so once a system-activity
+// event posted a thread with a higher id the parent summary sank
+// below it. Users reported "where's the review summary. didn't you
+// say it's supposed to stay at the top".
+//
+// The replacement contract (PARENT-TOP-* in
+// test/unit/live-azure-parent-top.test.ts): every CLI run replaces
+// the parent by deleting every comment on the existing thread (which
+// leaves the thread `isDeleted: true` per the per-comment Delete doc
+// https://learn.microsoft.com/en-us/rest/api/azure/devops/git/pull-request-thread-comments/delete?view=azure-devops-rest-7.1
+// — "Specify if the thread is deleted which happens when all comments
+// are deleted") and POSTing a brand-new parent that gets the highest
+// id on the PR.
+//
+// These tests now assert the REPLACEMENT behavior (no more PATCH on
+// the existing parent). The PARENT-TOP-* tests cover the new edge
+// cases (multiple-comment parent, empty parent); this file pins the
+// body shape so future regressions are caught.
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { parseCliArgs } from "../../src/cli.js";
@@ -124,17 +139,20 @@ function freshable(routes: readonly AzureFetchRoute[]): FreshableRoute[] {
   }));
 }
 
-const PARENT_THREAD_ID = 79;
-const PARENT_COMMENT_ID = 12345;
-const EXISTING_THREADS_URL = "https://dev.azure.com/example-org/Example%20Project/_apis/git/repositories/repo-42/pullRequests/42/threads?api-version=7.1";
+const EXISTING_PARENT_THREAD_ID = 79;
+const EXISTING_PARENT_COMMENT_ID = 12345;
+const NEW_PARENT_THREAD_ID = 9999;
 
 /**
  * Build the route set for the "existing parent marker thread is found"
  * scenario. The /threads GET returns one parent PR-level marker thread
- * (no threadContext, comment carries our marker) plus no inline threads,
- * so the live flow must PATCH the parent and not POST a new one.
+ * (no threadContext, one marker comment) plus no inline threads. Per
+ * the PARENT-TOP-* contract the live flow must REPLACE the parent
+ * (delete every comment → POST a fresh parent) so the new thread id
+ * sits at the top of the conversation timeline.
  */
 function existingParentRoutes(): readonly FreshableRoute[] {
+  let postCount = 0;
   return [
     ...freshable(azureDiffRoutes(makeJsonResponse, azureReviewDiffFixture())),
     {
@@ -148,12 +166,12 @@ function existingParentRoutes(): readonly FreshableRoute[] {
           count: 1,
           value: [
             {
-              id: PARENT_THREAD_ID,
+              id: EXISTING_PARENT_THREAD_ID,
               status: "active",
               threadContext: null,
               comments: [
                 {
-                  id: PARENT_COMMENT_ID,
+                  id: EXISTING_PARENT_COMMENT_ID,
                   content:
                     "<!-- umactually-pr-review -->\n## 💬 DISCUSS\n\nProvider response did not contain a valid JSON review payload.\n",
                 },
@@ -163,25 +181,23 @@ function existingParentRoutes(): readonly FreshableRoute[] {
         }),
     },
     {
-      match: (url, method) => method === "POST" && url.endsWith("/threads?api-version=7.1"),
-      response: () => makeJsonResponse({ id: 9999 }, 200),
+      // Per-comment DELETE on the existing parent thread.
+      match: (url, method) =>
+        method === "DELETE" &&
+        url.includes(`/threads/${EXISTING_PARENT_THREAD_ID}/comments/`),
+      response: () => makeJsonResponse({}, 200),
     },
     {
-      match: (url, method) =>
-        method === "PATCH" && url.endsWith(`/threads/${PARENT_THREAD_ID}?api-version=7.1`),
-      response: () =>
-        makeJsonResponse(
-          {
-            id: PARENT_THREAD_ID,
-            comments: [
-              {
-                id: PARENT_COMMENT_ID,
-                content: "<!-- umactually-pr-review -->\n## ✅ SHIP\n\nAzure parent-comment summary.",
-              },
-            ],
-          },
-          200,
-        ),
+      // /threads POST — first call returns the new parent id, second
+      // call returns the inline thread id.
+      match: (url, method) => method === "POST" && url.endsWith("/threads?api-version=7.1"),
+      response: () => {
+        postCount += 1;
+        if (postCount === 1) {
+          return makeJsonResponse({ id: NEW_PARENT_THREAD_ID }, 200);
+        }
+        return makeJsonResponse({ id: 77 + postCount }, 200);
+      },
     },
     {
       match: (url, method) => method === "GET" && url.endsWith("/statuses?api-version=7.1"),
@@ -195,7 +211,7 @@ function existingParentRoutes(): readonly FreshableRoute[] {
   ];
 }
 
-describe("postAzurePrComment (Azure parent PR-level in-place update)", () => {
+describe("postAzurePrComment (Azure parent PR-level replace-not-patch)", () => {
   let stderrSpy: ReturnType<typeof vi.spyOn> | undefined;
 
   beforeEach(() => {
@@ -207,8 +223,9 @@ describe("postAzurePrComment (Azure parent PR-level in-place update)", () => {
     stderrSpy = undefined;
   });
 
-  it("PARENT-UPDATE-001: detects an existing parent marker thread and PATCHes it instead of POSTing a new one", async () => {
-    // Given: Azure already has an active parent PR-level marker thread (id=79).
+  it("PARENT-UPDATE-001: detects an existing parent marker thread and replaces it (DELETE comments + POST new), not PATCH in place", async () => {
+    // Given: Azure already has an active parent PR-level marker thread (id=79)
+    // with one marker comment.
     const recorder = makeFetchRecorder(existingParentRoutes());
 
     // When: the live Azure path runs.
@@ -222,12 +239,27 @@ describe("postAzurePrComment (Azure parent PR-level in-place update)", () => {
     // Then: exit is 0, the run posted at least one inline thread + status.
     expect(result.exitCode).toBe(0);
 
-    // And: NO POST to /threads went to the bare /threads URL for a new parent
-    // (the parent PR-level comment has NO threadContext and would otherwise
-    // be POSTed before any inline). We assert that there is no POST whose
-    // body has `threadContext: undefined` (the parent shape) — because the
-    // parent should now be PATCHed in place, not POSTed.
-    const newParentPosts = recorder.calls.filter((call) => {
+    // And: the existing parent had its marker comment DELETEd via the
+    // documented per-comment Delete endpoint. No PATCH went to the
+    // old parent's thread URL — the PATCH-in-place path is gone.
+    const deleteCalls = recorder.calls.filter(
+      (call) =>
+        call.method === "DELETE" &&
+        call.url.includes(`/threads/${EXISTING_PARENT_THREAD_ID}/comments/${EXISTING_PARENT_COMMENT_ID}?`),
+    );
+    expect(deleteCalls).toHaveLength(1);
+
+    const patchCalls = recorder.calls.filter(
+      (call) =>
+        call.method === "PATCH" &&
+        call.url.includes(`/threads/${EXISTING_PARENT_THREAD_ID}?`),
+    );
+    expect(patchCalls).toHaveLength(0);
+
+    // And: the new parent POST went out (no threadContext), getting a
+    // brand-new thread id. It is the FIRST /threads POST in the call
+    // log so it precedes any inline thread POST.
+    const parentPosts = recorder.calls.filter((call) => {
       if (call.method !== "POST" || !call.url.endsWith("/threads?api-version=7.1")) {
         return false;
       }
@@ -237,19 +269,11 @@ describe("postAzurePrComment (Azure parent PR-level in-place update)", () => {
       }
       return !("threadContext" in (body as Record<string, unknown>));
     });
-    expect(newParentPosts).toHaveLength(0);
-
-    // And: exactly one PATCH was sent to the existing parent's thread URL,
-    // using the documented PATCH endpoint shape.
-    const patchCalls = recorder.calls.filter(
-      (call) =>
-        call.method === "PATCH" &&
-        call.url === `${EXISTING_THREADS_URL.replace("/threads?api-version=7.1", "")}/threads/${PARENT_THREAD_ID}?api-version=7.1`,
-    );
-    expect(patchCalls).toHaveLength(1);
+    expect(parentPosts).toHaveLength(1);
+    expect(parentPosts[0]?.url).toContain("/threads?api-version=7.1");
   });
 
-  it("PARENT-UPDATE-002: PATCH body carries the new buildReviewBody content and preserves the existing comment id", async () => {
+  it("PARENT-UPDATE-002: new parent POST body carries the buildReviewBody content (no comment id reuse)", async () => {
     // Given: same as above.
     const recorder = makeFetchRecorder(existingParentRoutes());
 
@@ -261,41 +285,52 @@ describe("postAzurePrComment (Azure parent PR-level in-place update)", () => {
       fetchImpl: recorder.fetchImpl,
     });
 
-    // Then: the PATCH body uses the documented Comment[] shape with the
-    // existing comment id and the new body content from buildReviewBody.
-    const patchCall = recorder.calls.find(
-      (call) =>
-        call.method === "PATCH" &&
-        call.url.endsWith(`/threads/${PARENT_THREAD_ID}?api-version=7.1`),
-    );
-    expect(patchCall).toBeDefined();
-    if (patchCall === undefined) {
-      throw new Error("expected PATCH call to existing parent thread");
+    // Then: the FIRST /threads POST is the new parent, with the
+    // documented "Comment on the pull request" shape: comments[0]
+    // carries `parentCommentId: 0`, `commentType: 1`, and the new
+    // buildReviewBody content. There is no `threadContext`. There
+    // is no `id` field on the comment (we are CREATING a brand new
+    // comment, not updating an existing one).
+    const parentPost = recorder.calls.find((call) => {
+      if (call.method !== "POST" || !call.url.endsWith("/threads?api-version=7.1")) {
+        return false;
+      }
+      const body = call.body;
+      if (typeof body !== "object" || body === null) {
+        return false;
+      }
+      return !("threadContext" in (body as Record<string, unknown>));
+    });
+    expect(parentPost).toBeDefined();
+    if (parentPost === undefined) {
+      throw new Error("expected new parent thread post");
     }
-    const patchBody = readRecord(patchCall.body as Record<string, unknown>, "patch body");
+    const parentBody = readRecord(parentPost.body as Record<string, unknown>, "new parent post body");
 
-    // The PATCH body MUST carry `comments` as a single-element array
-    // (per Microsoft Learn: "comments: Comment[] - A list of the comments.")
-    const comments = readArray(patchBody["comments"], "patch comments");
+    expect(parentBody["threadContext"]).toBeUndefined();
+    const comments = readArray(parentBody["comments"], "new parent post comments");
     expect(comments).toHaveLength(1);
-
-    // Each comment MUST preserve its existing id and update its content.
-    const firstComment = readRecord(comments[0] as Record<string, unknown>, "patch first comment");
-    expect(firstComment["id"]).toBe(PARENT_COMMENT_ID);
+    const firstComment = readRecord(comments[0] as Record<string, unknown>, "new parent first comment");
+    expect(firstComment["parentCommentId"]).toBe(0);
+    expect(firstComment["commentType"]).toBe(1);
+    // The new parent must NOT carry an existing comment id (that would
+    // be the PATCH shape, not the POST shape).
+    expect(firstComment["id"]).toBeUndefined();
     const content = firstComment["content"];
     expect(typeof content).toBe("string");
     if (typeof content !== "string") {
-      throw new Error("patched comment content must be a string");
+      throw new Error("new parent comment content must be a string");
     }
-    // The new body must include the verdict badge + summary for the parsed review.
     expect(content).toContain("<!-- umactually-pr-review -->");
     expect(content).toContain("Azure parent-comment summary.");
-    // The review was APPROVED with one inline finding → SHIP badge.
     expect(content).toMatch(/SHIP|APPROVED/);
   });
 
-  it("PARENT-UPDATE-003: each inline thread body references the parent thread id", async () => {
-    // Given: Azure already has an active parent PR-level marker thread (id=79).
+  it("PARENT-UPDATE-003: each inline thread body references the NEW parent thread id, not the old one", async () => {
+    // Given: Azure already has an active parent PR-level marker thread
+    // (id=79). The replacement path returns a NEW parent id (9999 in
+    // this fixture) and every inline thread POSTed on this run must
+    // reference that NEW id — not the stale #79.
     const recorder = makeFetchRecorder(existingParentRoutes());
 
     // When: the live Azure path runs.
@@ -306,9 +341,9 @@ describe("postAzurePrComment (Azure parent PR-level in-place update)", () => {
       fetchImpl: recorder.fetchImpl,
     });
 
-    // Then: every inline thread POST's body must reference the parent
-    // thread id so humans reading the PR can correlate findings with the
-    // summary card (Azure does not let us nest threads).
+    // Then: every inline thread POST's body must reference the NEW
+    // parent id (so humans reading the PR can correlate findings with
+    // the new summary card).
     const inlinePosts = recorder.calls.filter((call) => {
       if (call.method !== "POST" || !call.url.endsWith("/threads?api-version=7.1")) {
         return false;
@@ -330,7 +365,9 @@ describe("postAzurePrComment (Azure parent PR-level in-place update)", () => {
       if (typeof content !== "string") {
         throw new Error("inline content must be a string");
       }
-      expect(content).toContain(`Reply to PR review summary #${PARENT_THREAD_ID}`);
+      // Inline threads point at the NEW parent id, not the stale one.
+      expect(content).toContain(`Reply to PR review summary #${NEW_PARENT_THREAD_ID}`);
+      expect(content).not.toContain(`Reply to PR review summary #${EXISTING_PARENT_THREAD_ID}`);
     }
   });
 });

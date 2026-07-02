@@ -297,13 +297,20 @@ describe("postAzurePrComment (Azure parent PR-level review summary)", () => {
     expect(findCall(recorder.calls, "POST", "/statuses?api-version=7.1")).toBeDefined();
   });
 
-  it("PARITY-102: PATCHes the existing parent PR-level marker thread in place (no new parent POST)", async () => {
-    // Given: Azure returns an existing parent PR-level marker thread (with
-    // id and threadContext: null). The live Azure path must PATCH that
-    // thread in place via the documented Update endpoint, not POST a new
-    // parent (which would leave the old one stale).
+  it("PARITY-102: replaces the existing parent PR-level marker thread (delete-then-POST)", async () => {
+    // Given: Azure returns an existing parent PR-level marker thread
+    // (id and threadContext: null) with one marker comment. Per the
+    // PARENT-TOP-* contract the live Azure path must REPLACE that
+    // thread so the new parent gets the highest thread id on the PR
+    // (which is the only reliable way to keep it at the top of the
+    // conversation timeline — see
+    //   https://learn.microsoft.com/en-us/rest/api/azure/devops/git/pull-request-thread-comments/delete?view=azure-devops-rest-7.1
+    // ). The replacement is one per-comment DELETE for every comment
+    // on the old thread followed by a fresh /threads POST.
     const EXISTING_PARENT_THREAD_ID = 79;
     const EXISTING_PARENT_COMMENT_ID = 12345;
+    const NEW_PARENT_THREAD_ID = 5000;
+    let threadPostCount = 0;
     const existingParentRoutes: FreshableRoute[] = [
       ...freshable(azureDiffRoutes(makeJsonResponse, azureReviewDiffFixture())),
       {
@@ -331,13 +338,23 @@ describe("postAzurePrComment (Azure parent PR-level review summary)", () => {
           }),
       },
       {
-        match: (url, method) => method === "POST" && url.endsWith("/threads?api-version=7.1"),
-        response: () => makeJsonResponse({ id: 77 }, 200),
+        // Per-comment DELETE on the existing parent thread.
+        match: (url, method) =>
+          method === "DELETE" &&
+          url.includes(`/threads/${EXISTING_PARENT_THREAD_ID}/comments/`),
+        response: () => makeJsonResponse({}, 200),
       },
       {
-        match: (url, method) =>
-          method === "PATCH" && url.endsWith(`/threads/${EXISTING_PARENT_THREAD_ID}?api-version=7.1`),
-        response: () => makeJsonResponse({ id: EXISTING_PARENT_THREAD_ID }, 200),
+        // /threads POST — first call returns the new parent id,
+        // second call returns the inline thread id.
+        match: (url, method) => method === "POST" && url.endsWith("/threads?api-version=7.1"),
+        response: () => {
+          threadPostCount += 1;
+          if (threadPostCount === 1) {
+            return makeJsonResponse({ id: NEW_PARENT_THREAD_ID }, 200);
+          }
+          return makeJsonResponse({ id: 77 + threadPostCount }, 200);
+        },
       },
       {
         match: (url, method) => method === "GET" && url.endsWith("/statuses?api-version=7.1"),
@@ -359,26 +376,45 @@ describe("postAzurePrComment (Azure parent PR-level review summary)", () => {
       fetchImpl: recorder.fetchImpl,
     });
 
-    // Then: at most one /threads POST happens — only the inline finding.
-    // The parent PR-level comment is PATCHed in place, not POSTed.
+    // Then: at least two /threads POSTs happen — the new parent and
+    // the inline finding. The old PATCH-in-place behavior is gone.
     expect(result.exitCode).toBe(0);
     const posts = threadPosts(recorder.calls);
-    expect(posts.length).toBe(1);
-    // The remaining POST is the inline thread, which carries threadContext.
-    const onlyPost = posts[0];
-    expect(onlyPost).toBeDefined();
-    if (onlyPost === undefined) {
-      throw new Error("expected one thread post");
-    }
-    const inlineBody = readRecord(onlyPost.body as Record<string, unknown>, "inline thread body");
-    expect(inlineBody["threadContext"]).toBeDefined();
+    expect(posts.length).toBeGreaterThanOrEqual(2);
 
-    // And: exactly one PATCH was sent to the existing parent's thread URL.
+    // The FIRST /threads POST is the new parent (no threadContext).
+    const parentPost = posts[0];
+    expect(parentPost).toBeDefined();
+    if (parentPost === undefined) {
+      throw new Error("expected first thread post");
+    }
+    const parentBody = readRecord(parentPost.body as Record<string, unknown>, "parent thread body");
+    expect(parentBody["threadContext"]).toBeUndefined();
+
+    // And: at least one later /threads POST is the inline thread
+    // (with threadContext).
+    const inlinePost = posts.slice(1).find((call) => {
+      const body = readRecord(call.body as Record<string, unknown>, "inline thread body");
+      return body["threadContext"] !== undefined;
+    });
+    expect(inlinePost).toBeDefined();
+
+    // And: NO PATCH went out to the existing parent's thread URL — the
+    // old "patch in place" path is replaced.
     const patchCalls = recorder.calls.filter(
       (call) =>
         call.method === "PATCH" &&
-        call.url.endsWith(`/threads/${EXISTING_PARENT_THREAD_ID}?api-version=7.1`),
+        call.url.includes(`/threads/${EXISTING_PARENT_THREAD_ID}?`),
     );
-    expect(patchCalls).toHaveLength(1);
+    expect(patchCalls).toHaveLength(0);
+
+    // And: at least one DELETE went out for the existing parent's
+    // marker comment so ADO flips it to `isDeleted: true`.
+    const deleteCalls = recorder.calls.filter(
+      (call) =>
+        call.method === "DELETE" &&
+        call.url.includes(`/threads/${EXISTING_PARENT_THREAD_ID}/comments/`),
+    );
+    expect(deleteCalls.length).toBeGreaterThanOrEqual(1);
   });
 });
