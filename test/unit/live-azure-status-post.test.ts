@@ -176,6 +176,11 @@ describe("postAzureStatus body sanitization", () => {
         response: () => makeJsonResponse({ id: 77 + (threadPostCount += 1) }, 200),
       },
       {
+        match: (url, method) => method === "GET" && url.endsWith("/statuses?api-version=7.1"),
+        // Empty statuses list: new dedup helper looks here first.
+        response: () => makeJsonResponse({ count: 0, value: [] }),
+      },
+      {
         match: (url, method) => method === "POST" && url.endsWith("/statuses?api-version=7.1"),
         response: () => makeJsonResponse({ id: 88 }, 200),
       },
@@ -242,6 +247,11 @@ describe("postAzureStatus body sanitization", () => {
         response: () => makeJsonResponse({ id: 77 + (threadPostCount += 1) }, 200),
       },
       {
+        match: (url, method) => method === "GET" && url.endsWith("/statuses?api-version=7.1"),
+        // Empty statuses list: new dedup helper looks here first.
+        response: () => makeJsonResponse({ count: 0, value: [] }),
+      },
+      {
         match: (url, method) => method === "POST" && url.endsWith("/statuses?api-version=7.1"),
         response: () => makeJsonResponse({ id: 88 }, 200),
       },
@@ -294,6 +304,11 @@ describe("postAzureStatus body sanitization", () => {
       {
         match: (url, method) => method === "POST" && url.endsWith("/threads?api-version=7.1"),
         response: () => makeJsonResponse({ id: 77 + (threadPostCount += 1) }, 200),
+      },
+      {
+        match: (url, method) => method === "GET" && url.endsWith("/statuses?api-version=7.1"),
+        // Empty statuses list: new dedup helper looks here first.
+        response: () => makeJsonResponse({ count: 0, value: [] }),
       },
       {
         match: (url, method) => method === "POST" && url.endsWith("/statuses?api-version=7.1"),

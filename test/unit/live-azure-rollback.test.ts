@@ -176,6 +176,11 @@ describe("runLive Azure partial-failure rollback (RED gap)", () => {
         },
       },
       {
+        match: (url, method) => method === "GET" && url.endsWith("/statuses?api-version=7.1"),
+        // Empty statuses list: new dedup helper looks here first.
+        response: makeJsonResponse({ count: 0, value: [] }),
+      },
+      {
         match: (url, method) => method === "POST" && url.endsWith("/statuses?api-version=7.1"),
         response: makeJsonResponse({ id: 88 }, 200),
       },
@@ -236,6 +241,11 @@ describe("runLive Azure partial-failure rollback (RED gap)", () => {
       {
         match: (url, method) => method === "POST" && url.endsWith("/threads?api-version=7.1"),
         response: makeJsonResponse({ error: "boom" }, 500),
+      },
+      {
+        match: (url, method) => method === "GET" && url.endsWith("/statuses?api-version=7.1"),
+        // Empty statuses list: new dedup helper looks here first.
+        response: makeJsonResponse({ count: 0, value: [] }),
       },
       {
         match: (url, method) => method === "POST" && url.endsWith("/statuses?api-version=7.1"),

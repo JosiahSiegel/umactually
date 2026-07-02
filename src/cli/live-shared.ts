@@ -336,16 +336,36 @@ export function mapReviewVerdictToGithubEvent(verdict: string): "COMMENT" | "REQ
   return verdict === "NEEDS_FIX" ? "REQUEST_CHANGES" : "COMMENT";
 }
 
+/**
+ * Map a review verdict to an Azure DevOps PR-status `state` value.
+ *
+ * State values per Microsoft Learn:
+ *   https://learn.microsoft.com/en-us/rest/api/azure/devops/git/pull-request-statuses/create?view=azure-devops-rest-7.1
+ *   "State of the status."  (notSet | pending | succeeded | failed | error | notApplicable)
+ *
+ * Policy:
+ *   - A failing UmActually review is a **finding**, not a merge-blocking
+ *     check. The merge gate is owned by the ADO branch-policy build
+ *     validation check (which runs the actual CI pipeline and is
+ *     independent of verdict semantics). Mapping `NEEDS_FIX` to
+ *     `"failed"` used to make the Checks panel light up red even when
+ *     the underlying build succeeded — that is the visual problem this
+ *     function fixes.
+ *   - `pending` means "the check ran; here is something the human
+ *     should look at". APPROVED / COMMENT / DISCUSS / SHIP all
+ *     indicate the CLI ran cleanly, so we collapse those to
+ *     `"succeeded"` and reserve `"pending"` for "ran and found things
+ *     to look at" (`NEEDS_FIX`) plus the safe-default fallthrough.
+ */
 export function mapReviewVerdictToAzureStatus(verdict: string): "succeeded" | "failed" | "pending" {
   switch (verdict) {
-    case "NEEDS_FIX":
-      return "failed";
     case "APPROVED":
-      return "succeeded";
     case "COMMENT":
     case "DISCUSS":
     case "SHIP":
-      return "pending";
+      return "succeeded";
+    case "NEEDS_FIX":
+    case "":
     default:
       return "pending";
   }

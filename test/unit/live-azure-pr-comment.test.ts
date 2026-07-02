@@ -133,6 +133,11 @@ function azureBaseRoutes(): readonly FreshableRoute[] {
       response: () => makeJsonResponse({ id: 77 + (threadPostCount += 1) }, 200),
     },
     {
+      match: (url, method) => method === "GET" && url.endsWith("/statuses?api-version=7.1"),
+      // Empty statuses list: new dedup helper looks here first.
+      response: () => makeJsonResponse({ count: 0, value: [] }),
+    },
+    {
       match: (url, method) => method === "POST" && url.endsWith("/statuses?api-version=7.1"),
       response: () => makeJsonResponse({ id: 88 }, 200),
     },
@@ -333,6 +338,11 @@ describe("postAzurePrComment (Azure parent PR-level review summary)", () => {
         match: (url, method) =>
           method === "PATCH" && url.endsWith(`/threads/${EXISTING_PARENT_THREAD_ID}?api-version=7.1`),
         response: () => makeJsonResponse({ id: EXISTING_PARENT_THREAD_ID }, 200),
+      },
+      {
+        match: (url, method) => method === "GET" && url.endsWith("/statuses?api-version=7.1"),
+        // Empty statuses list: new dedup helper looks here first.
+        response: () => makeJsonResponse({ count: 0, value: [] }),
       },
       {
         match: (url, method) => method === "POST" && url.endsWith("/statuses?api-version=7.1"),

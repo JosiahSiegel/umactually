@@ -362,6 +362,24 @@ async function postAzureThread(input: {
   return readResponseId(await readJsonResponse(response));
 }
 
+/**
+ * Context name + genre uniquely identify a status entry on the
+ * Pull Request Statuses collection, per Microsoft Learn:
+ *   https://learn.microsoft.com/en-us/rest/api/azure/devops/git/pull-request-statuses/create?view=azure-devops-rest-7.1
+ *
+ * Renamed from the legacy `"UmActually"` so that:
+ *   - The CLI's status entries are unambiguous (this is the CLI's
+ *     status, not the ADO branch-policy check).
+ *   - The Checks flyout groups by `(context.name, context.genre)`, so a
+ *     fresh entry per run groups into one cell at most.
+ *
+ * The genre stays `"pr-review"` for parity with the existing entries
+ * already on PR #42 (which all carry genre `"pr-review"`), so the
+ * dedup helper below can locate legacy entries on the very next run.
+ */
+const AZURE_STATUS_CONTEXT_NAME = "umactually-pr-review-status";
+const AZURE_STATUS_CONTEXT_GENRE = "pr-review";
+
 async function postAzureStatus(input: {
   readonly context: AzureContext;
   readonly fetchImpl: FetchImpl;
@@ -369,13 +387,46 @@ async function postAzureStatus(input: {
   readonly description: string;
 }): Promise<void> {
   const safeDescription = sanitizeAzureStatusDescription(input.description);
+
+  // Delete the previous CLI status entries for this PR so the
+  // Checks panel stays at exactly one `umactually-pr-review-status`
+  // row per run. The documented Microsoft Learn `Update` endpoint
+  // (https://learn.microsoft.com/en-us/rest/api/azure/devops/git/pull-request-statuses/update?view=azure-devops-rest-7.1)
+  // only supports `op:"remove"`, and `PATCH .../statuses/{id}` does
+  // NOT exist as an in-place updater — it returns
+  // "VssRequestContentTypeNotSupportedException" and then
+  // "JSON Patch operation 'Replace' not supported" once the JSON-Patch
+  // content-type is set. The documented single-status deletion endpoint
+  // is `DELETE .../statuses/{statusId}?api-version=7.1` (204 No Content
+  // on success) — see
+  // https://learn.microsoft.com/en-us/rest/api/azure/devops/git/pull-request-statuses/delete?view=azure-devops-rest-7.1
+  //
+  // Best-effort: any DELETE failure is logged and skipped so the POST
+  // below can still go out (worst case the user sees two rows until
+  // the next clean run). The dedup helper looks for the new
+  // `(name, genre)` AND the legacy `"UmActually"` name so the next
+  // run sweeps both flavors — without this the 34 stale legacy
+  // entries on PR #42 would never go away on their own.
+  const existingStatuses = await listAzureStatuses(input.context, input.fetchImpl);
+  const ownStatusIds = findAllCliStatusIdsByContext(existingStatuses);
+  for (const statusId of ownStatusIds) {
+    await deleteAzureStatusById({
+      context: input.context,
+      fetchImpl: input.fetchImpl,
+      statusId,
+    });
+  }
+
   const response = await input.fetchImpl(azureStatusesUrl(input.context), {
     method: "POST",
     headers: azureHeaders(input.context.token),
     body: JSON.stringify({
       state: input.state,
       description: safeDescription,
-      context: { name: "UmActually", genre: "pr-review" },
+      context: {
+        name: AZURE_STATUS_CONTEXT_NAME,
+        genre: AZURE_STATUS_CONTEXT_GENRE,
+      },
     }),
   });
   if (!response.ok) {
@@ -400,6 +451,235 @@ async function postAzureStatus(input: {
   }
   ensureHttpOk(response, "AZURE_CREATE_STATUS_FAILED", "Azure create PR status");
 }
+
+/**
+ * Shape of a single status entry returned by the
+ * `GET .../pullRequests/{id}/statuses?api-version=7.1` collection
+ * endpoint, narrowed to the fields we read.
+ *
+ * Per Microsoft Learn:
+ *   https://learn.microsoft.com/en-us/rest/api/azure/devops/git/pull-request-statuses/create?view=azure-devops-rest-7.1
+ * the response includes `id` (int32), `state`, `description`,
+ * `creationDate`, `updatedDate`, and `context: { name, genre }`.
+ */
+export type AzureStatusEntry = {
+  readonly id: number;
+  readonly state: string | undefined;
+  readonly description: string;
+  readonly updatedDate: string;
+  readonly context: { readonly name: string; readonly genre: string };
+};
+
+/**
+ * List the existing Pull Request Statuses for the configured PR.
+ *
+ * Per Microsoft Learn the response body is `{ count: number, value: Array<GitPullRequestStatus> }`.
+ * Each `value[i]` carries its own `context.name` + `context.genre`,
+ * which the CLI uses to dedup its own entries away from policy-check
+ * entries written by the ADO branch-policy build validation.
+ *
+ * Returns an empty array when the response body is not a JSON object,
+ * is missing a `value` array, or when individual entries fail to parse
+ * — none of which is a hard failure for the caller (a missing list
+ * simply means no dedup).
+ */
+export async function listAzureStatuses(context: AzureContext, fetchImpl: FetchImpl): Promise<readonly AzureStatusEntry[]> {
+  const response = await fetchImpl(azureStatusesUrl(context), {
+    method: "GET",
+    headers: azureHeaders(context.token),
+  });
+  if (!response.ok) {
+    // Treat a list failure as best-effort: log the ADO body so a
+    // future diagnosis path doesn't need a re-run, then return [].
+    await surfaceAzureHttpError({
+      response,
+      action: "Azure list PR statuses",
+      logPrefix: "::warning::",
+    });
+    return [];
+  }
+  const json = await readJsonResponse(response);
+  if (!isRecord(json)) {
+    return [];
+  }
+  const value = json["value"];
+  if (!Array.isArray(value)) {
+    return [];
+  }
+  const entries: AzureStatusEntry[] = [];
+  for (const raw of value) {
+    const parsed = parseAzureStatusEntry(raw);
+    if (parsed !== null) {
+      entries.push(parsed);
+    }
+  }
+  return entries;
+}
+
+function parseAzureStatusEntry(value: unknown): AzureStatusEntry | null {
+  if (!isRecord(value)) {
+    return null;
+  }
+  const rawId = value["id"];
+  if (typeof rawId !== "number" || !Number.isSafeInteger(rawId)) {
+    return null;
+  }
+  const descriptionRaw = value["description"];
+  const description = typeof descriptionRaw === "string" ? descriptionRaw : "";
+  const updatedDateRaw = value["updatedDate"];
+  const updatedDate = typeof updatedDateRaw === "string" ? updatedDateRaw : "";
+  const contextRaw = value["context"];
+  if (!isRecord(contextRaw)) {
+    return null;
+  }
+  const nameRaw = contextRaw["name"];
+  const genreRaw = contextRaw["genre"];
+  if (typeof nameRaw !== "string" || typeof genreRaw !== "string") {
+    return null;
+  }
+  const stateRaw = value["state"];
+  const state = typeof stateRaw === "string" ? stateRaw : undefined;
+  return {
+    id: rawId,
+    state,
+    description,
+    updatedDate,
+    context: { name: nameRaw, genre: genreRaw },
+  };
+}
+
+/**
+ * Return the most recent entry whose `(context.name, context.genre)`
+ * matches the CLI's status context — i.e. previous CLI posts on this
+ * PR. Exported for test introspection and for callers that want to
+ * surface the previous verdict in the review body without re-posting.
+ */
+export function findLatestStatusByContext(
+  entries: readonly AzureStatusEntry[],
+  name: string,
+  genre: string,
+): AzureStatusEntry | undefined {
+  let latest: AzureStatusEntry | undefined;
+  for (const entry of entries) {
+    if (entry.context.name !== name) continue;
+    if (entry.context.genre !== genre) continue;
+    if (latest === undefined) {
+      latest = entry;
+      continue;
+    }
+    // Compare by updatedDate; fall back to numeric id so ordering is
+    // well-defined even when the API strips updatedDate (older 7.x
+    // responses occasionally omit it on stale entries).
+    if (entry.updatedDate.localeCompare(latest.updatedDate) > 0) {
+      latest = entry;
+      continue;
+    }
+    if (entry.updatedDate === latest.updatedDate && entry.id > latest.id) {
+      latest = entry;
+    }
+  }
+  return latest;
+}
+
+/**
+ * Return ALL existing entries that the CLI owns (its current context
+ * name + genre AND the legacy `"UmActually"` entries that pre-dated
+ * the rename). The legacy entries are included so a single run
+ * sweeps them away — without this, the 34 stale `UmActually` rows
+ * already on PR #42 would never collapse on their own.
+ *
+ * Unrelated statuses (e.g. the branch-policy build validation check,
+ * `codecoverage` quality gates, etc.) are left alone.
+ */
+export function findAllCliStatusIdsByContext(entries: readonly AzureStatusEntry[]): readonly number[] {
+  const ids: number[] = [];
+  for (const entry of entries) {
+    if (entry.context.genre !== AZURE_STATUS_CONTEXT_GENRE) continue;
+    if (
+      entry.context.name === AZURE_STATUS_CONTEXT_NAME
+      || entry.context.name === "UmActually"
+    ) {
+      ids.push(entry.id);
+    }
+  }
+  return ids;
+}
+
+/**
+ * Delete a single Pull Request Status entry. Returns `true` when the
+ * delete succeeded (204 No Content), `false` on any non-2xx. Per
+ * Microsoft Learn the response body is empty on success:
+ *   https://learn.microsoft.com/en-us/rest/api/azure/devops/git/pull-request-statuses/delete?view=azure-devops-rest-7.1
+ *
+ * Best-effort: a delete failure is logged and surfaced as a warning
+ * on stderr, then discarded by the caller — the goal is that the new
+ * POST below always goes out (worst case the user sees two rows until
+ * the next clean run).
+ */
+export async function deleteAzureStatusById(input: {
+  readonly context: AzureContext;
+  readonly fetchImpl: FetchImpl;
+  readonly statusId: number;
+}): Promise<boolean> {
+  const url = `${azurePrBaseUrl(input.context)}/statuses/${input.statusId}?api-version=7.1`;
+  let response: Response;
+  try {
+    response = await input.fetchImpl(url, {
+      method: "DELETE",
+      headers: azureHeaders(input.context.token),
+    });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    process.stderr.write(
+      `::warning::umactually-pr-review: Azure delete PR status ${input.statusId} threw (${message}); continuing.\n`,
+    );
+    return false;
+  }
+  if (response.status === 204 || response.ok) {
+    return true;
+  }
+  await surfaceAzureHttpError({
+    response,
+    action: `Azure delete PR status ${input.statusId}`,
+    logPrefix: "::warning::",
+  });
+  return false;
+}
+
+/**
+ * Best-effort helper that mirrors the body-snippet pattern used by
+ * `ensureHttpOk` and `postAzureStatus`, but routes through the chosen
+ * log level prefix (`::warning::` for non-fatal cleanup calls,
+ * `::error::` for the POST itself). Future 4xx/5xx failures are
+ * diagnosable from CI logs without re-running the build.
+ */
+async function surfaceAzureHttpError(input: {
+  readonly response: Response;
+  readonly action: string;
+  readonly logPrefix: "::warning::" | "::error::";
+}): Promise<void> {
+  let bodySnippet = "(empty response body)";
+  try {
+    const text = await input.response.clone().text();
+    if (text.length > 0) {
+      bodySnippet = text.length > 1000 ? `${text.slice(0, 1000)}\u2026(truncated)` : text;
+    }
+  } catch {
+    // Body read failed; fall back to the generic snippet.
+  }
+  process.stderr.write(
+    `${input.logPrefix}umactually-pr-review: ${input.action} HTTP ${input.response.status} body=${bodySnippet}\n`,
+  );
+}
+
+/**
+ * Public re-exports used by tests that need to introspect the dedup
+ * helpers without going through the full `runAzureLive` orchestration.
+ */
+export const UMACTUALLY_STATUS_CONTEXT = {
+  name: AZURE_STATUS_CONTEXT_NAME,
+  genre: AZURE_STATUS_CONTEXT_GENRE,
+} as const;
 
 /**
  * Make a string safe to send as the `description` field on the ADO Pull
