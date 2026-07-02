@@ -291,7 +291,6 @@ async function dispatchLivePlatform(input: {
       // override via `--review-file-limit` (0 disables the limit).
       const reviewFileLimit = parsed.reviewFileLimit ?? DEFAULT_REVIEW_FILE_LIMIT;
       const fileCount = countDiffFiles(diffText);
-      process.stderr.write(`[DEBUG] diffText.length=${diffText.length}, fileCount=${fileCount}, reviewFileLimit=${reviewFileLimit}\n`);
       let liveOutcome: LiveProviderOutcome;
       if (reviewFileLimit > 0 && fileCount > reviewFileLimit) {
         process.stdout.write(`umactually-pr-review: skipping live review — PR changes ${fileCount} files, exceeds --review-file-limit=${reviewFileLimit}. Use --review-file-limit 0 to disable.\n`);
