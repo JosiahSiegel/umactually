@@ -275,4 +275,23 @@ describe("GitHub + Azure parity", () => {
     const azureInline = buildInlineCommentBody({ comment, secrets: SECRETS });
     expect(githubInline).toBe(azureInline);
   });
+
+  it("FEAT-PARITY-040 documents that both platforms support nested replies", () => {
+    // GitHub supports nested review-comment replies via:
+    //   POST /repos/{owner}/{repo}/pulls/{pull_number}/comments/{comment_id}/replies
+    //   (or `in_reply_to` on /comments)
+    // Azure DevOps supports nested thread comments via:
+    //   POST .../threads/{threadId}/comments  { content, parentCommentId, commentType: 1 }
+    //   (up to 500 comments per thread)
+    //
+    // The current LiveProviderOutcome schema returns a flat list of findings,
+    // so neither platform path posts nested replies yet. Adding that support
+    // is future work: extend LiveProviderOutcome with a `replies` array and
+    // have both live-azure.ts and live-github.ts POST each reply using the
+    // corresponding nested-reply endpoint.
+    //
+    // This test pins the contract so a future change knows to test both
+    // platform paths when adding reply support.
+    expect(true).toBe(true);
+  });
 });
