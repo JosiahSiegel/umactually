@@ -303,8 +303,8 @@ async function dispatchLivePlatform(input: {
             secrets: [context.token],
           }),
           endpoint: "skipped",
-          provider: "size-cap",
-          modelId: "n/a",
+          provider: parsed.provider ?? "openai-compatible",
+          modelId: parsed.model ?? "auto",
         };
       } else {
         const chunks = chunkDiffByFile(diffText);
