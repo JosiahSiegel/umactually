@@ -71,6 +71,19 @@ jobs:
 
 A complete copyable example lives at [`examples/github/pr-review.yml`](examples/github/pr-review.yml).
 
+For a first-time import or vendoring PR that exceeds the 200-file default cap, set `review-file-limit: 0` (or your desired ceiling) to opt in to chunked review:
+
+```yaml
+      - uses: ./
+        with:
+          review-file-limit: 0
+        env:
+          UMACTUALLY_API_URL: ${{ secrets.UMACTUALLY_API_URL }}
+          UMACTUALLY_API_KEY: ${{ secrets.UMACTUALLY_API_KEY }}
+```
+
+`review-file-limit: 0` disables the cap entirely; use it only when you understand the per-chunk LLM reviews of very large diffs may produce hallucinated findings.
+
 ## Azure DevOps quickstart
 
 Azure DevOps uses the bundled CLI directly from a pipeline step. This repository includes a root [`azure-pipelines.yml`](azure-pipelines.yml) that uses Node 24, runs `npm ci`, validates the project, prepares Azure input files, executes an Azure dry run, and publishes `artifacts/manual`.
@@ -98,6 +111,8 @@ For a minimal CLI invocation, pass the supported Azure flags explicitly:
 Use `--repo`; there is no longer alias for that option. Azure dry-run validation still requires `--event`, `--diff`, `--pr-number`, and `--repo`. The root pipeline creates a safe synthetic event/diff/review path for manual branch runs without `SYSTEM_PULLREQUEST_PULLREQUESTID`; PR validation runs fetch the real PR diff with `$(System.AccessToken)` when available.
 
 For Azure Repos, configure a branch policy build validation pipeline; the YAML `pr:` trigger is only honored for GitHub and Bitbucket Cloud repositories in Azure Pipelines. See [`docs/azure-devops.md`](docs/azure-devops.md) and [`examples/azure/azure-pipelines.yml`](examples/azure/azure-pipelines.yml).
+
+For PRs that exceed the 200-file default cap, add `--review-file-limit N` (or set `REVIEW_FILE_LIMIT=N`) to the CLI invocation. Use `0` to disable the cap entirely.
 
 ## Security summary
 
