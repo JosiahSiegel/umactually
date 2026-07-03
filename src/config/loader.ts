@@ -26,8 +26,6 @@ import type {
   TimeoutControls,
 } from "./types.js";
 
-export { DEFAULT_MAX_COMMENTS, DEFAULT_REVIEW_FILE_LIMIT } from "./defaults.js";
-
 const DEFAULT_REVIEW_SECONDS = 300;
 const DEFAULT_STALL_SECONDS = 270;
 const DEFAULT_PER_REQUEST_SECONDS = 60;

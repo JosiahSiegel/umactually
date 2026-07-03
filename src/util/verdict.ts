@@ -37,10 +37,13 @@ export function mapVerdictToAzureStatus(verdict: string, policy: AzureStatusPoli
   }
   if (policy === "legacy") {
     // Legacy policy throws on unknown verdicts — preserves the original
-    // `assertNever(verdict)` guard from `azure/run-azure-review.ts:118`
-    // that the S4 RED contract depends on.
+    // `assertNever(verdict)`-style guard from
+    // `azure/run-azure-review.ts:mapVerdictToStatus` that the S4 RED
+    // contract depends on. (There is no `assertNever` function in this
+    // module; the same effect is achieved via the explicit TypeError
+    // below.)
     if (normalized === KNOWN_BLOCKING_VERDICT) return "failed";
-    throw new TypeError(`unknown verdict for legacy Azure status mapping: ${summarizeVerdict(verdict)}`);
+    throw new TypeError(`unknown verdict for legacy Azure status mapping: ${redactVerdictForError(verdict)}`);
   }
   // Current policy: NEEDS_FIX → "pending"; anything unknown (including
   // empty string) also collapses to "pending" so a malformed verdict
@@ -48,7 +51,13 @@ export function mapVerdictToAzureStatus(verdict: string, policy: AzureStatusPoli
   return "pending";
 }
 
-function summarizeVerdict(verdict: string): string {
+/**
+ * Redact a user-supplied verdict for inclusion in an error message.
+ * Replaces the raw input with `len=<utf8 bytes>, sha256=<12 hex chars>`
+ * so the error is informative for log correlation without echoing
+ * PII, control characters, or terminal-escape sequences from the input.
+ */
+function redactVerdictForError(verdict: string): string {
   const bytes = Buffer.byteLength(verdict, "utf8");
   const hash = createHash("sha256").update(verdict).digest("hex").slice(0, 12);
   return `len=${bytes}, sha256=${hash}`;

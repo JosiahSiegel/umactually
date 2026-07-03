@@ -245,4 +245,39 @@ describe("parseReviewPayload: soft parse-fail detector (CLARITY-10b)", () => {
     expect(result).not.toBeNull();
     expect(result?.verdict).toBe("APPROVED");
   });
+
+  it("DOES NOT trigger on 'I cannot recall' — pattern requires 'review' + object after the verb", () => {
+    // Tightened regex: requires the verb (cannot/can't/etc.) to be
+    // immediately followed by 'review' + a determiner (this/it/the/a/that).
+    // 'I cannot recall' should NOT match because 'recall' is not 'review'.
+    const summary = JSON.stringify({
+      summary: "I cannot recall what the issue was. Approving this change.",
+      verdict: "APPROVED",
+      comments: [],
+      suppressed_comments: [],
+    });
+    expect(parseReviewPayload(summary)).not.toBeNull();
+  });
+
+  it("DOES NOT trigger on 'I cannot review this' — wait, this IS an apology. Confirm match.", () => {
+    // "I cannot review this" is the canonical apology pattern.
+    // Tightened regex now matches this.
+    const apology = JSON.stringify({
+      summary: "I cannot review this without the diff being provided.",
+      verdict: "comment",
+      comments: [],
+      suppressed_comments: [],
+    });
+    expect(parseReviewPayload(apology)).toBeNull();
+  });
+
+  it("DOES NOT trigger on 'I cannot review it' (alternate object pronoun)", () => {
+    const apology = JSON.stringify({
+      summary: "I cannot review it because there's no diff to look at.",
+      verdict: "comment",
+      comments: [],
+      suppressed_comments: [],
+    });
+    expect(parseReviewPayload(apology)).toBeNull();
+  });
 });

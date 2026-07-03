@@ -85,28 +85,6 @@ export function buildChatBody(
  *      (responses), or `choices[].message.content` (chat).
  *   3. Raw text — returned verbatim (caller tries to extract a JSON
  *      block from it via `extractJsonBlock`).
- *   4. **Unusable** — returns `null`. Signals to the caller that no
- *      review-shaped content was extractable. Use this for SSE streams
- *      with only metadata events (response.created / response.completed
- *      with empty output[]) so the parse-fail path fires instead of
- *      silently falling back to the raw SSE text (which would otherwise
- *      match the first balanced `{...}` in the stream and look like
- *      a "successful empty review").
- *
- * The "null vs empty string" distinction is critical: callers test
- * `textPayload === null` to distinguish "provider returned nothing
- * usable" from "provider returned an empty string that happens to
- * not be parseable as JSON". See CLARITY-10.
- */
-/**
- * Extract the text payload from a provider response. Handles four shapes:
- *   1. SSE stream (responses API output_text.delta / chat completions delta /
- *      generic top-level delta) — concatenates fragments into one string.
- *   2. Plain JSON object (Responses API or Chat Completions) — returns
- *      `output_text` (responses), joins `output[].content[].text`
- *      (responses), or `choices[].message.content` (chat).
- *   3. Raw text — returned verbatim (caller tries to extract a JSON
- *      block from it via `extractJsonBlock`).
  *   4. Empty input — returns `""`.
  *
  * The function does NOT report "unusable" — it always returns SOMETHING
@@ -115,6 +93,14 @@ export function buildChatBody(
  * is a valid review. This keeps the public signature stable
  * (`string`, not `string | null`) so existing callers don't need to
  * change their null-handling.
+ *
+ * History note: an earlier revision returned `string | null` to signal
+ * "unusable SSE stream with no text fragments" (CLARITY-10). That
+ * approach was reverted in favor of returning the raw SSE text in
+ * that case so `parseReviewPayload`'s strict empty-fields check (and
+ * the CLARITY-10b soft parse-fail detector) catches the failure as a
+ * null return rather than relying on a separate null-handling path
+ * in callers.
  */
 export function extractTextPayload(endpoint: ProviderEndpoint, rawText: string): string {
   if (rawText.length === 0) {
@@ -239,14 +225,28 @@ function isApologySummary(summary: string): boolean {
   }
   const lower = summary.toLowerCase();
   // Most common patterns from the 3e62237 self-review incident.
+  // Each pattern is anchored narrowly to avoid over-matching legitimate
+  // clean-review summaries that happen to contain "cannot" or "review"
+  // in other contexts (e.g. "I cannot find any issues to review").
   const APOLOGY_PATTERNS: readonly RegExp[] = [
+    // "no diff / file contents were provided / shared / available"
     /\bno\s+(diff|file\s+contents?|contents?)\b.*\b(provided|shared|available|supplied)\b/u,
+    // "please share / provide / send the diff / file / pull request"
     /\bplease\s+(share|provide|send)\s+(the\s+)?(diff|file|pull\s+request|pr)\b/u,
-    /\bi\s+(cannot|can'?t|am\s+unable|i'?m\s+unable)\s+(review|complete)/u,
-    /\b(cannot|can'?t|unable\s+to)\s+review\b/u,
+    // "I cannot / can't review this / it / the PR" — narrow to the
+    // direct-object-after-verb pattern so "I cannot find issues to
+    // review" does NOT match. Requires the verb (cannot/can't/etc.)
+    // immediately followed by review + determiner (this/it/the/a).
+    /\bi\s+(cannot|can'?t|am\s+unable|i'?m\s+unable)\s+review\s+(this|it|the|a|that)\b/u,
+    // "cannot / can't / unable to review" (no object required)
+    /\b(cannot|can'?t|unable\s+to)\s+review\s+(this|it|the|a|that)?\b/u,
+    // "didn't / haven't received" or "no input"
     /\b(didn'?t\s+receive|haven'?t\s+received|no\s+input)\b/u,
+    // "empty diff" or "without diff / input"
     /\b(empty\s+diff|no\s+diff\s+to\s+review|without\s+(diff|input))\b/u,
-    /\b(is\s+empty|was\s+empty)\b.*\b(nothing|to\s+review|review)/u,
+    // "the diff is empty, nothing to review" / "was empty... review"
+    /\b(is\s+empty|was\s+empty)\b.*\b(nothing|to\s+review)\b/u,
+    // "nothing to review"
     /\bnothing\s+to\s+review\b/u,
   ];
   for (const pattern of APOLOGY_PATTERNS) {
