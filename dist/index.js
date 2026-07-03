@@ -2508,6 +2508,12 @@ function authHeaders(token, opts) {
  * single source of truth — the live CLI imports from here rather than
  * redefining it (previously these drifted between
  * `live-github.ts:223` and `http.ts:21`).
+ *
+ * Version `2026-03-10` is the current GitHub REST API version as of
+ * 2026-03-12 (per https://github.blog/changelog/2026-03-12-rest-api-version-2026-03-10-is-now-available/)
+ * and is supported through at least 2028-03-10. The previous
+ * `2022-11-28` default is still supported but is now the legacy
+ * fallback; clients that omit the header still get that version.
  */
 function githubHeaders(token) {
     return authHeaders(token, {
@@ -2553,14 +2559,17 @@ async function fetchTextOrThrow(fetchImpl, input, fail) {
  * write the `await fetchImpl(...) + ensureHttpOk(...) + readJsonResponse(...)`
  * recipe by hand.
  *
+ * STAGED FOR FUTURE USE: the current live path uses
+ * `LiveReviewError`-throwing `ensureHttpOk` + `readJsonResponse` helpers
+ * with best-effort error semantics (most callers catch the throw and
+ * log a warning), so this strict-throw helper has no current call sites.
+ * It is exported so a future migration of any fail-fast caller (or a
+ * fresh platform adapter) can adopt it without re-implementing the
+ * JSON-fetch recipe.
+ *
  * Generic over `TCode extends string` so the `error` constructor's
  * `code` parameter stays narrowed to the platform's literal union
- * (e.g. `"AZURE_CREATE_THREAD_FAILED"`). The `error` constructor is
- * required to accept `(code: TCode, status: number, message: string)`;
- * the live code uses `LiveReviewError` (which is `(code, message)` — see
- * `live-shared.ts:71`) so this helper throws a plain `LiveReviewError`
- * with a status-bearing message when needed. See `fetchJsonForLive` in
- * `live-shared.ts` for the live-path-specific variant.
+ * (e.g. `"AZURE_CREATE_THREAD_FAILED"`).
  */
 async function fetchJsonOrThrow(fetchImpl, input, fail) {
     const init = {
