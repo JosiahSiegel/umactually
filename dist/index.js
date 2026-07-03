@@ -500,6 +500,8 @@ function isPositiveSafeInteger(value) {
     return typeof value === "number" && Number.isSafeInteger(value) && value > 0;
 }
 
+;// CONCATENATED MODULE: external "node:crypto"
+const external_node_crypto_namespaceObject = __WEBPACK_EXTERNAL_createRequire(import.meta.url)("node:crypto");
 ;// CONCATENATED MODULE: ./src/util/verdict.ts
 /**
  * Verdict → Azure PR-status mapping. Centralised so the live CLI
@@ -521,6 +523,7 @@ function isPositiveSafeInteger(value) {
  * GitHub verdict mapping (REQUEST_CHANGES vs COMMENT) is also exported
  * for symmetry; it has a single canonical mapping.
  */
+
 /** Known verdict strings accepted by either policy. */
 const KNOWN_UMBRELLA_VERDICTS = ["APPROVED", "COMMENT", "DISCUSS", "SHIP"];
 const KNOWN_BLOCKING_VERDICT = "NEEDS_FIX";
@@ -536,12 +539,17 @@ function mapVerdictToAzureStatus(verdict, policy) {
         // that the S4 RED contract depends on.
         if (normalized === KNOWN_BLOCKING_VERDICT)
             return "failed";
-        throw new TypeError(`unknown verdict for legacy Azure status mapping: ${JSON.stringify(verdict)}`);
+        throw new TypeError(`unknown verdict for legacy Azure status mapping: ${summarizeVerdict(verdict)}`);
     }
     // Current policy: NEEDS_FIX → "pending"; anything unknown (including
     // empty string) also collapses to "pending" so a malformed verdict
     // can't crash the live runner.
     return "pending";
+}
+function summarizeVerdict(verdict) {
+    const bytes = Buffer.byteLength(verdict, "utf8");
+    const hash = (0,external_node_crypto_namespaceObject.createHash)("sha256").update(verdict).digest("hex").slice(0, 12);
+    return `len=${bytes}, sha256=${hash}`;
 }
 /** GitHub verdict → review-submission event. */
 function mapVerdictToGithubEvent(verdict) {
@@ -1138,60 +1146,422 @@ function sleep(ms) {
     });
 }
 
+;// CONCATENATED MODULE: ./src/config/field-schema.ts
+const FIELDS = {
+    apiUrl: {
+        field: "apiUrl",
+        flag: "--api-url",
+        input: "api-url",
+        env: ["UMACTUALLY_API_URL", "REVIEW_PROVIDER_URL"],
+        type: "string",
+        defaultValue: "",
+    },
+    apiKey: {
+        field: "apiKey",
+        flag: "--api-key",
+        input: "api-key",
+        env: ["UMACTUALLY_API_KEY", "REVIEW_PROVIDER_API_KEY"],
+        type: "string",
+        defaultValue: "",
+    },
+    model: {
+        field: "model",
+        flag: "--model",
+        input: "model",
+        env: ["UMACTUALLY_MODEL", "REVIEW_PROVIDER_MODEL"],
+        type: "string",
+        defaultValue: "auto",
+    },
+    prompt: {
+        field: "prompt",
+        flag: "--prompt",
+        input: "prompt",
+        env: [],
+        type: "string",
+        defaultValue: "",
+    },
+    promptFile: {
+        field: "promptFile",
+        flag: "--prompt-file",
+        input: "prompt-file",
+        env: ["UMACTUALLY_PROMPT_FILE", "REVIEW_PROMPT_SYSTEM_FILE"],
+        type: "string",
+        defaultValue: "",
+    },
+    additionalPrompt: {
+        field: "additionalPrompt",
+        flag: "--additional-prompt",
+        input: "additional-prompt",
+        env: [],
+        type: "string",
+        defaultValue: "",
+    },
+    additionalPromptFile: {
+        field: "additionalPromptFile",
+        flag: "--additional-prompt-file",
+        input: "additional-prompt-file",
+        env: ["UMACTUALLY_ADDITIONAL_PROMPT_FILE", "REVIEW_PROMPT_USER_FILE"],
+        type: "string",
+        defaultValue: "",
+    },
+    walkthrough: {
+        field: "walkthrough",
+        flag: "--walkthrough",
+        input: "walkthrough",
+        env: ["UMACTUALLY_WALKTHROUGH", "REVIEW_WALKTHROUGH"],
+        type: "boolean",
+        defaultValue: false,
+    },
+    diagnostic: {
+        field: "diagnostic",
+        flag: "--diagnostic",
+        input: "diagnostic",
+        env: ["UMACTUALLY_DIAGNOSTIC", "REVIEW_DIAGNOSTIC"],
+        type: "boolean",
+        defaultValue: false,
+    },
+    dryRun: {
+        field: "dryRun",
+        flag: "--dry-run",
+        input: "dry-run",
+        env: ["UMACTUALLY_DRY_RUN", "REVIEW_DRY_RUN"],
+        type: "boolean",
+        defaultValue: false,
+    },
+    debugRawResponse: {
+        field: "debugRawResponse",
+        flag: "--debug-raw-response",
+        input: "debug-raw-response",
+        env: ["REVIEW_DEBUG_RAW_RESPONSE"],
+        type: "boolean",
+        defaultValue: false,
+    },
+    simulateFindings: {
+        field: "simulateFindings",
+        flag: "--simulate-findings",
+        input: "simulate-findings",
+        env: ["UMACTUALLY_SIMULATE_FINDINGS", "REVIEW_SIMULATE_FINDINGS"],
+        type: "boolean",
+        defaultValue: false,
+    },
+    reviewTimeoutSeconds: {
+        field: "reviewTimeoutSeconds",
+        flag: "--review-timeout-seconds",
+        input: "review-timeout-seconds",
+        env: ["UMACTUALLY_REVIEW_TIMEOUT_SECONDS", "REVIEW_TIMEOUT_SECONDS"],
+        type: "integer",
+        defaultValue: 300,
+    },
+    stallSeconds: {
+        field: "stallSeconds",
+        flag: "--stall-seconds",
+        input: "stall-seconds",
+        env: ["UMACTUALLY_STALL_SECONDS", "REVIEW_STALL_SECONDS"],
+        type: "integer",
+        defaultValue: 270,
+    },
+    perRequestTimeoutSeconds: {
+        field: "perRequestTimeoutSeconds",
+        flag: "--per-request-timeout-seconds",
+        input: "per-request-timeout-seconds",
+        env: ["REVIEW_PER_REQUEST_TIMEOUT_SECONDS"],
+        type: "integer",
+        defaultValue: 60,
+    },
+    maxOutputTokens: {
+        field: "maxOutputTokens",
+        flag: "--max-output-tokens",
+        input: "max-output-tokens",
+        env: ["UMACTUALLY_MAX_OUTPUT_TOKENS"],
+        type: "integer",
+        defaultValue: 16_000,
+    },
+    ignoreMinor: {
+        field: "ignoreMinor",
+        flag: "--ignore-minor",
+        input: "ignore-minor",
+        env: ["UMACTUALLY_IGNORE_MINOR", "REVIEW_IGNORE_MINOR"],
+        type: "boolean",
+        defaultValue: false,
+    },
+    minimumSeverity: {
+        field: "minimumSeverity",
+        flag: "--minimum-severity",
+        input: "minimum-severity",
+        env: ["REVIEW_MINIMUM_SEVERITY"],
+        type: "enum",
+        defaultValue: "low",
+        enumValues: ["low", "medium", "high"],
+    },
+    maxComments: {
+        field: "maxComments",
+        flag: "--max-comments",
+        input: "max-comments",
+        env: ["REVIEW_MAX_COMMENTS"],
+        type: "integer",
+        defaultValue: 50,
+    },
+    reviewFileLimit: {
+        field: "reviewFileLimit",
+        flag: "--review-file-limit",
+        input: "review-file-limit",
+        env: ["REVIEW_FILE_LIMIT"],
+        type: "integer",
+        defaultValue: 200,
+    },
+    includeSonarqube: {
+        field: "includeSonarqube",
+        flag: "--include-sonarqube",
+        input: "include-sonarqube",
+        env: ["UMACTUALLY_INCLUDE_SONARQUBE", "REVIEW_SONAR_ENABLED"],
+        type: "boolean",
+        defaultValue: false,
+    },
+    sonarHostUrl: {
+        field: "sonarHostUrl",
+        flag: "--sonar-host-url",
+        input: "sonar-host-url",
+        env: ["UMACTUALLY_SONAR_HOST_URL", "REVIEW_SONAR_HOST"],
+        type: "string",
+        defaultValue: "",
+    },
+    sonarToken: {
+        field: "sonarToken",
+        flag: "--sonar-token",
+        input: "sonar-token",
+        env: ["UMACTUALLY_SONAR_TOKEN", "REVIEW_SONAR_TOKEN"],
+        type: "string",
+        defaultValue: "",
+    },
+    sonarProjectKey: {
+        field: "sonarProjectKey",
+        flag: "--sonar-project-key",
+        input: "sonar-project-key",
+        env: ["UMACTUALLY_SONAR_PROJECT_KEY", "REVIEW_SONAR_PROJECT"],
+        type: "string",
+        defaultValue: "",
+    },
+    sonarTimeoutSeconds: {
+        field: "sonarTimeoutSeconds",
+        flag: "--sonar-timeout-seconds",
+        input: "sonar-timeout-seconds",
+        env: ["REVIEW_SONAR_TIMEOUT_SECONDS"],
+        type: "integer",
+        defaultValue: 300,
+    },
+    detectLeaks: {
+        field: "detectLeaks",
+        flag: "--detect-leaks",
+        input: "detect-leaks",
+        env: ["UMACTUALLY_DETECT_LEAKS", "REVIEW_LEAK_DETECTION"],
+        type: "boolean",
+        defaultValue: true,
+    },
+    platform: {
+        field: "platform",
+        flag: "--platform",
+        input: "platform",
+        env: ["REVIEW_PLATFORM"],
+        type: "enum",
+        defaultValue: "auto",
+        // Canonical three variants. The CLI parser accepts the `"azure-devops"`
+        // alias and normalizes to `"azure"` before this field is reached; the
+        // config loader therefore only sees the canonical set.
+        enumValues: ["auto", "github", "azure"],
+    },
+    prNumber: {
+        field: "prNumber",
+        flag: "--pr-number",
+        input: "pr-number",
+        env: [],
+        type: "string",
+        defaultValue: "",
+    },
+    repo: {
+        field: "repo",
+        flag: "--repo",
+        input: "repo",
+        env: [],
+        type: "string",
+        defaultValue: "",
+    },
+    effort: {
+        field: "effort",
+        flag: "--effort",
+        input: "effort",
+        env: [],
+        type: "enum",
+        defaultValue: "medium",
+        enumValues: ["low", "medium", "high"],
+    },
+    provider: {
+        field: "provider",
+        flag: "--provider",
+        input: "provider",
+        env: [],
+        type: "enum",
+        defaultValue: "openai-compatible",
+        enumValues: ["openai-compatible", "copilot"],
+    },
+    githubApiBase: {
+        field: "githubApiBase",
+        flag: "--github-api-base",
+        input: "github-api-base",
+        env: ["UMACTUALLY_GITHUB_API_BASE"],
+        type: "string",
+        defaultValue: "",
+    },
+    githubToken: {
+        field: "githubToken",
+        flag: null,
+        input: "github_token",
+        env: ["GITHUB_TOKEN"],
+        type: "string",
+        defaultValue: "",
+    },
+    promptByteCap: {
+        field: "promptByteCap",
+        flag: null,
+        input: "prompt-byte-cap",
+        env: ["REVIEW_PROMPT_BYTE_CAP"],
+        type: "integer",
+        defaultValue: 65_536,
+    },
+    redactorEnabled: {
+        field: "redactorEnabled",
+        flag: null,
+        input: "redactor-enabled",
+        env: ["REVIEW_REDACTOR_ENABLED"],
+        type: "boolean",
+        defaultValue: true,
+    },
+    azureOrg: {
+        field: "azureOrg",
+        flag: null,
+        input: "azure-org",
+        env: ["AZURE_DEVOPS_ORG"],
+        type: "string",
+        defaultValue: "",
+    },
+    azureProject: {
+        field: "azureProject",
+        flag: null,
+        input: "azure-project",
+        env: ["AZURE_DEVOPS_PROJECT"],
+        type: "string",
+        defaultValue: "",
+    },
+    azureRepo: {
+        field: "azureRepo",
+        flag: null,
+        input: "azure-repo",
+        env: ["AZURE_DEVOPS_REPO"],
+        type: "string",
+        defaultValue: "",
+    },
+    azurePullRequestId: {
+        field: "azurePullRequestId",
+        flag: null,
+        input: "azure-pull-request-id",
+        env: ["AZURE_DEVOPS_PULL_REQUEST_ID"],
+        type: "integer",
+        defaultValue: 0,
+    },
+    azureToken: {
+        field: "azureToken",
+        flag: null,
+        input: "azure-token",
+        env: ["AZURE_DEVOPS_TOKEN"],
+        type: "string",
+        defaultValue: "",
+    },
+};
+/** All fields in declaration order. */
+const ALL_FIELDS = Object.values(FIELDS);
+/**
+ * Set of every env-var name the runtime reads (across all fields, deduped).
+ * Useful for sanity checks, smoke tests, and any future "unknown env-var"
+ * diagnostics. Derived from the field-schema so adding a field's env entries
+ * here keeps the set in sync without any other code changes.
+ */
+const KNOWN_ENV_VAR_NAMES = new Set(ALL_FIELDS.flatMap((def) => def.env));
+
 ;// CONCATENATED MODULE: ./src/config/env-sources.ts
-// Mapping from canonical config-side field names to their env-var sources.
-// UMACTUALLY_* env vars are the canonical secrets surface for GitHub Actions
-// and Azure DevOps deployments. REVIEW_* keys remain as a backward-compatible
-// fallback so the legacy reference tooling still resolves the same fields.
-// When both are set, the first entry in each list wins.
-const ENV_KEYS = [
-    ["providerUrl", ["UMACTUALLY_API_URL", "REVIEW_PROVIDER_URL"]],
-    ["providerApiKey", ["UMACTUALLY_API_KEY", "REVIEW_PROVIDER_API_KEY"]],
-    ["providerModel", ["UMACTUALLY_MODEL", "REVIEW_PROVIDER_MODEL"]],
-    ["promptSystemFile", ["UMACTUALLY_PROMPT_FILE", "REVIEW_PROMPT_SYSTEM_FILE"]],
-    ["promptUserFile", ["UMACTUALLY_ADDITIONAL_PROMPT_FILE", "REVIEW_PROMPT_USER_FILE"]],
-    ["promptByteCap", ["REVIEW_PROMPT_BYTE_CAP"]],
-    ["walkthrough", ["UMACTUALLY_WALKTHROUGH", "REVIEW_WALKTHROUGH"]],
-    ["diagnostic", ["UMACTUALLY_DIAGNOSTIC", "REVIEW_DIAGNOSTIC"]],
-    ["dryRun", ["UMACTUALLY_DRY_RUN", "REVIEW_DRY_RUN"]],
-    ["debugRawResponse", ["REVIEW_DEBUG_RAW_RESPONSE"]],
-    ["simulateFindings", ["UMACTUALLY_SIMULATE_FINDINGS", "REVIEW_SIMULATE_FINDINGS"]],
-    ["reviewTimeoutSeconds", ["UMACTUALLY_REVIEW_TIMEOUT_SECONDS", "REVIEW_TIMEOUT_SECONDS"]],
-    ["stallTimeoutSeconds", ["UMACTUALLY_STALL_SECONDS", "REVIEW_STALL_SECONDS"]],
-    ["perRequestTimeoutSeconds", ["REVIEW_PER_REQUEST_TIMEOUT_SECONDS"]],
-    ["ignoreMinor", ["UMACTUALLY_IGNORE_MINOR", "REVIEW_IGNORE_MINOR"]],
-    ["minimumSeverity", ["REVIEW_MINIMUM_SEVERITY"]],
-    ["maxComments", ["REVIEW_MAX_COMMENTS"]],
-    ["reviewFileLimit", ["REVIEW_FILE_LIMIT"]],
-    ["sonarEnabled", ["UMACTUALLY_INCLUDE_SONARQUBE", "REVIEW_SONAR_ENABLED"]],
-    ["sonarHost", ["UMACTUALLY_SONAR_HOST_URL", "REVIEW_SONAR_HOST"]],
-    ["sonarToken", ["UMACTUALLY_SONAR_TOKEN", "REVIEW_SONAR_TOKEN"]],
-    ["sonarProject", ["UMACTUALLY_SONAR_PROJECT_KEY", "REVIEW_SONAR_PROJECT"]],
-    ["sonarTimeoutSeconds", ["REVIEW_SONAR_TIMEOUT_SECONDS"]],
-    ["leakDetection", ["UMACTUALLY_DETECT_LEAKS", "REVIEW_LEAK_DETECTION"]],
-    ["redactorEnabled", ["REVIEW_REDACTOR_ENABLED"]],
-    ["platform", ["REVIEW_PLATFORM"]],
-    ["githubToken", ["GITHUB_TOKEN"]],
-    ["azureOrg", ["AZURE_DEVOPS_ORG"]],
-    ["azureProject", ["AZURE_DEVOPS_PROJECT"]],
-    ["azureRepo", ["AZURE_DEVOPS_REPO"]],
-    ["azurePullRequestId", ["AZURE_DEVOPS_PULL_REQUEST_ID"]],
-    ["azureToken", ["AZURE_DEVOPS_TOKEN"]],
-];
+
+const ENV_SOURCE_FIELDS = {
+    apiUrl: "providerUrl",
+    apiKey: "providerApiKey",
+    model: "providerModel",
+    promptFile: "promptSystemFile",
+    additionalPromptFile: "promptUserFile",
+    stallSeconds: "stallTimeoutSeconds",
+    includeSonarqube: "sonarEnabled",
+    sonarHostUrl: "sonarHost",
+    sonarProjectKey: "sonarProject",
+    detectLeaks: "leakDetection",
+};
+function mapFieldToEnvSource(field) {
+    if (isMappedField(field)) {
+        return ENV_SOURCE_FIELDS[field];
+    }
+    if (isEnvSourceField(field)) {
+        return field;
+    }
+    return null;
+}
+function isMappedField(field) {
+    return Object.hasOwn(ENV_SOURCE_FIELDS, field);
+}
+function isEnvSourceField(field) {
+    return [
+        "promptByteCap",
+        "walkthrough",
+        "diagnostic",
+        "dryRun",
+        "debugRawResponse",
+        "simulateFindings",
+        "reviewTimeoutSeconds",
+        "perRequestTimeoutSeconds",
+        "maxOutputTokens",
+        "ignoreMinor",
+        "minimumSeverity",
+        "maxComments",
+        "reviewFileLimit",
+        "sonarToken",
+        "sonarTimeoutSeconds",
+        "redactorEnabled",
+        "platform",
+        "githubApiBase",
+        "githubToken",
+        "azureOrg",
+        "azureProject",
+        "azureRepo",
+        "azurePullRequestId",
+        "azureToken",
+    ].includes(field);
+}
 /**
  * Pure: extracts the known env-var keys from `env` into an EnvSources object.
  * UMACTUALLY_* takes precedence over REVIEW_* when both are set.
  * Never logs values. Empty/missing keys are simply omitted.
  *
- * The canonical env-var set is `KNOWN_ENV_VAR_NAMES` in `src/config/field-schema.ts`.
+ * The canonical env-var set is derived from `FIELDS` in
+ * `src/config/field-schema.ts`.
  */
 function readEnvSources(env = process.env) {
     const out = {};
-    for (const [field, envNames] of ENV_KEYS) {
-        for (const envName of envNames) {
-            const v = env[envName];
-            if (typeof v === "string" && v.trim().length > 0) {
-                out[field] = v;
+    for (const def of ALL_FIELDS) {
+        if (def.env.length === 0) {
+            continue;
+        }
+        const envSourceField = mapFieldToEnvSource(def.field);
+        if (envSourceField === null) {
+            continue;
+        }
+        for (const envName of def.env) {
+            const value = env[envName];
+            if (typeof value === "string" && value.trim().length > 0) {
+                out[envSourceField] = value;
                 break;
             }
         }
@@ -1281,28 +1651,28 @@ function normalizeDiffPath(path) {
  * shape is shared and any future platform (e.g. Bitbucket) gets a uniform
  * ancestor for `catch` clauses that don't care which platform threw.
  *
- * Each subclass keeps its own `override readonly name = "..."` literal so
- * `error.name` continues to print the platform-specific name in stack
- * traces (the base class leaves `name` open for that reason).
+ * The base classes set a default `name` field, and each subclass keeps its
+ * own `override readonly name = "..."` literal so `error.name` continues to
+ * print the platform-specific name in stack traces.
  */
-/** Shared platform context error base; eliminates parallel Azure and GitHub context error class shapes. */
+/** Shared platform context error base; subclasses override `name` with platform-specific literals. */
 class PlatformContextError extends Error {
     code;
+    name = "PlatformContextError";
     constructor(code, message, options) {
         super(message, options);
         this.code = code;
-        this.name = "PlatformContextError";
     }
 }
-/** Shared platform API error base; eliminates parallel Azure and GitHub status-bearing error class shapes. */
+/** Shared platform API error base; subclasses override `name` with platform-specific literals. */
 class PlatformApiError extends Error {
     code;
     status;
+    name = "PlatformApiError";
     constructor(code, status, message, options) {
         super(message, options);
         this.code = code;
         this.status = status;
-        this.name = "PlatformApiError";
     }
 }
 
@@ -2073,782 +2443,16 @@ function readString(value) {
     return typeof value === "string" ? value : "";
 }
 
-;// CONCATENATED MODULE: ./src/config/errors.ts
-class errors_InvalidConfigError extends Error {
-    field;
-    reason;
-    name = "InvalidConfigError";
-    constructor(field, reason, options) {
-        super(`Invalid config for '${field}': ${reason}`, options);
-        this.field = field;
-        this.reason = reason;
-    }
-}
-class PromptFileError extends Error {
-    path;
-    reason;
-    name = "PromptFileError";
-    constructor(path, reason, options) {
-        super(`Prompt file error: ${reason}`, options);
-        this.path = path;
-        this.reason = reason;
-    }
-}
-/**
- * Marker used in error messages to replace any user-supplied value
- * (URLs, tokens, prompt content). Never echo the raw value.
- */
-const errors_REDACTED = "[REDACTED]";
+;// CONCATENATED MODULE: ./src/config/defaults.ts
 
-;// CONCATENATED MODULE: ./src/config/field-schema.ts
-const FIELDS = {
-    apiUrl: {
-        field: "apiUrl",
-        flag: "--api-url",
-        input: "api-url",
-        env: ["UMACTUALLY_API_URL", "REVIEW_PROVIDER_URL"],
-        type: "string",
-        defaultValue: "",
-    },
-    apiKey: {
-        field: "apiKey",
-        flag: "--api-key",
-        input: "api-key",
-        env: ["UMACTUALLY_API_KEY", "REVIEW_PROVIDER_API_KEY"],
-        type: "string",
-        defaultValue: "",
-    },
-    model: {
-        field: "model",
-        flag: "--model",
-        input: "model",
-        env: ["UMACTUALLY_MODEL", "REVIEW_PROVIDER_MODEL"],
-        type: "string",
-        defaultValue: "auto",
-    },
-    prompt: {
-        field: "prompt",
-        flag: "--prompt",
-        input: "prompt",
-        env: [],
-        type: "string",
-        defaultValue: "",
-    },
-    promptFile: {
-        field: "promptFile",
-        flag: "--prompt-file",
-        input: "prompt-file",
-        env: ["UMACTUALLY_PROMPT_FILE", "REVIEW_PROMPT_SYSTEM_FILE"],
-        type: "string",
-        defaultValue: "",
-    },
-    additionalPrompt: {
-        field: "additionalPrompt",
-        flag: "--additional-prompt",
-        input: "additional-prompt",
-        env: [],
-        type: "string",
-        defaultValue: "",
-    },
-    additionalPromptFile: {
-        field: "additionalPromptFile",
-        flag: "--additional-prompt-file",
-        input: "additional-prompt-file",
-        env: ["UMACTUALLY_ADDITIONAL_PROMPT_FILE", "REVIEW_PROMPT_USER_FILE"],
-        type: "string",
-        defaultValue: "",
-    },
-    walkthrough: {
-        field: "walkthrough",
-        flag: "--walkthrough",
-        input: "walkthrough",
-        env: ["UMACTUALLY_WALKTHROUGH", "REVIEW_WALKTHROUGH"],
-        type: "boolean",
-        defaultValue: false,
-    },
-    diagnostic: {
-        field: "diagnostic",
-        flag: "--diagnostic",
-        input: "diagnostic",
-        env: ["UMACTUALLY_DIAGNOSTIC", "REVIEW_DIAGNOSTIC"],
-        type: "boolean",
-        defaultValue: false,
-    },
-    dryRun: {
-        field: "dryRun",
-        flag: "--dry-run",
-        input: "dry-run",
-        env: ["UMACTUALLY_DRY_RUN", "REVIEW_DRY_RUN"],
-        type: "boolean",
-        defaultValue: false,
-    },
-    debugRawResponse: {
-        field: "debugRawResponse",
-        flag: "--debug-raw-response",
-        input: "debug-raw-response",
-        env: ["REVIEW_DEBUG_RAW_RESPONSE"],
-        type: "boolean",
-        defaultValue: false,
-    },
-    simulateFindings: {
-        field: "simulateFindings",
-        flag: "--simulate-findings",
-        input: "simulate-findings",
-        env: ["UMACTUALLY_SIMULATE_FINDINGS", "REVIEW_SIMULATE_FINDINGS"],
-        type: "boolean",
-        defaultValue: false,
-    },
-    reviewTimeoutSeconds: {
-        field: "reviewTimeoutSeconds",
-        flag: "--review-timeout-seconds",
-        input: "review-timeout-seconds",
-        env: ["UMACTUALLY_REVIEW_TIMEOUT_SECONDS", "REVIEW_TIMEOUT_SECONDS"],
-        type: "integer",
-        defaultValue: 300,
-    },
-    stallSeconds: {
-        field: "stallSeconds",
-        flag: "--stall-seconds",
-        input: "stall-seconds",
-        env: ["UMACTUALLY_STALL_SECONDS", "REVIEW_STALL_SECONDS"],
-        type: "integer",
-        defaultValue: 270,
-    },
-    perRequestTimeoutSeconds: {
-        field: "perRequestTimeoutSeconds",
-        flag: "--per-request-timeout-seconds",
-        input: "per-request-timeout-seconds",
-        env: ["REVIEW_PER_REQUEST_TIMEOUT_SECONDS"],
-        type: "integer",
-        defaultValue: 60,
-    },
-    maxOutputTokens: {
-        field: "maxOutputTokens",
-        flag: "--max-output-tokens",
-        input: "max-output-tokens",
-        env: ["UMACTUALLY_MAX_OUTPUT_TOKENS"],
-        type: "integer",
-        defaultValue: 16_000,
-    },
-    ignoreMinor: {
-        field: "ignoreMinor",
-        flag: "--ignore-minor",
-        input: "ignore-minor",
-        env: ["UMACTUALLY_IGNORE_MINOR", "REVIEW_IGNORE_MINOR"],
-        type: "boolean",
-        defaultValue: false,
-    },
-    minimumSeverity: {
-        field: "minimumSeverity",
-        flag: "--minimum-severity",
-        input: "minimum-severity",
-        env: ["REVIEW_MINIMUM_SEVERITY"],
-        type: "enum",
-        defaultValue: "low",
-        enumValues: ["low", "medium", "high"],
-    },
-    maxComments: {
-        field: "maxComments",
-        flag: "--max-comments",
-        input: "max-comments",
-        env: ["REVIEW_MAX_COMMENTS"],
-        type: "integer",
-        defaultValue: 50,
-    },
-    reviewFileLimit: {
-        field: "reviewFileLimit",
-        flag: "--review-file-limit",
-        input: "review-file-limit",
-        env: ["REVIEW_FILE_LIMIT"],
-        type: "integer",
-        defaultValue: 200,
-    },
-    includeSonarqube: {
-        field: "includeSonarqube",
-        flag: "--include-sonarqube",
-        input: "include-sonarqube",
-        env: ["UMACTUALLY_INCLUDE_SONARQUBE", "REVIEW_SONAR_ENABLED"],
-        type: "boolean",
-        defaultValue: false,
-    },
-    sonarHostUrl: {
-        field: "sonarHostUrl",
-        flag: "--sonar-host-url",
-        input: "sonar-host-url",
-        env: ["UMACTUALLY_SONAR_HOST_URL", "REVIEW_SONAR_HOST"],
-        type: "string",
-        defaultValue: "",
-    },
-    sonarToken: {
-        field: "sonarToken",
-        flag: "--sonar-token",
-        input: "sonar-token",
-        env: ["UMACTUALLY_SONAR_TOKEN", "REVIEW_SONAR_TOKEN"],
-        type: "string",
-        defaultValue: "",
-    },
-    sonarProjectKey: {
-        field: "sonarProjectKey",
-        flag: "--sonar-project-key",
-        input: "sonar-project-key",
-        env: ["UMACTUALLY_SONAR_PROJECT_KEY", "REVIEW_SONAR_PROJECT"],
-        type: "string",
-        defaultValue: "",
-    },
-    sonarTimeoutSeconds: {
-        field: "sonarTimeoutSeconds",
-        flag: "--sonar-timeout-seconds",
-        input: "sonar-timeout-seconds",
-        env: ["REVIEW_SONAR_TIMEOUT_SECONDS"],
-        type: "integer",
-        defaultValue: 300,
-    },
-    detectLeaks: {
-        field: "detectLeaks",
-        flag: "--detect-leaks",
-        input: "detect-leaks",
-        env: ["UMACTUALLY_DETECT_LEAKS", "REVIEW_LEAK_DETECTION"],
-        type: "boolean",
-        defaultValue: true,
-    },
-    platform: {
-        field: "platform",
-        flag: "--platform",
-        input: "platform",
-        env: ["REVIEW_PLATFORM"],
-        type: "enum",
-        defaultValue: "auto",
-        // Canonical three variants. The CLI parser accepts the `"azure-devops"`
-        // alias and normalizes to `"azure"` before this field is reached; the
-        // config loader therefore only sees the canonical set.
-        enumValues: ["auto", "github", "azure"],
-    },
-    prNumber: {
-        field: "prNumber",
-        flag: "--pr-number",
-        input: "pr-number",
-        env: [],
-        type: "string",
-        defaultValue: "",
-    },
-    repo: {
-        field: "repo",
-        flag: "--repo",
-        input: "repo",
-        env: [],
-        type: "string",
-        defaultValue: "",
-    },
-    effort: {
-        field: "effort",
-        flag: "--effort",
-        input: "effort",
-        env: [],
-        type: "enum",
-        defaultValue: "medium",
-        enumValues: ["low", "medium", "high"],
-    },
-    provider: {
-        field: "provider",
-        flag: "--provider",
-        input: "provider",
-        env: [],
-        type: "enum",
-        defaultValue: "openai-compatible",
-        enumValues: ["openai-compatible", "copilot"],
-    },
-    githubApiBase: {
-        field: "githubApiBase",
-        flag: "--github-api-base",
-        input: "github-api-base",
-        env: ["UMACTUALLY_GITHUB_API_BASE"],
-        type: "string",
-        defaultValue: "",
-    },
-    githubToken: {
-        field: "githubToken",
-        flag: null,
-        input: "github_token",
-        env: ["GITHUB_TOKEN"],
-        type: "string",
-        defaultValue: "",
-    },
-    promptByteCap: {
-        field: "promptByteCap",
-        flag: null,
-        input: "prompt-byte-cap",
-        env: ["REVIEW_PROMPT_BYTE_CAP"],
-        type: "integer",
-        defaultValue: 65_536,
-    },
-    redactorEnabled: {
-        field: "redactorEnabled",
-        flag: null,
-        input: "redactor-enabled",
-        env: ["REVIEW_REDACTOR_ENABLED"],
-        type: "boolean",
-        defaultValue: true,
-    },
-    azureOrg: {
-        field: "azureOrg",
-        flag: null,
-        input: "azure-org",
-        env: ["AZURE_DEVOPS_ORG"],
-        type: "string",
-        defaultValue: "",
-    },
-    azureProject: {
-        field: "azureProject",
-        flag: null,
-        input: "azure-project",
-        env: ["AZURE_DEVOPS_PROJECT"],
-        type: "string",
-        defaultValue: "",
-    },
-    azureRepo: {
-        field: "azureRepo",
-        flag: null,
-        input: "azure-repo",
-        env: ["AZURE_DEVOPS_REPO"],
-        type: "string",
-        defaultValue: "",
-    },
-    azurePullRequestId: {
-        field: "azurePullRequestId",
-        flag: null,
-        input: "azure-pull-request-id",
-        env: ["AZURE_DEVOPS_PULL_REQUEST_ID"],
-        type: "integer",
-        defaultValue: 0,
-    },
-    azureToken: {
-        field: "azureToken",
-        flag: null,
-        input: "azure-token",
-        env: ["AZURE_DEVOPS_TOKEN"],
-        type: "string",
-        defaultValue: "",
-    },
-};
-/** All fields in declaration order. */
-const ALL_FIELDS = Object.values(FIELDS);
-/**
- * Set of every env-var name the runtime reads (across all fields, deduped).
- * Useful for sanity checks, smoke tests, and any future "unknown env-var"
- * diagnostics. Derived from the field-schema so adding a field's env entries
- * here keeps the set in sync without any other code changes.
- */
-const KNOWN_ENV_VAR_NAMES = new Set(ALL_FIELDS.flatMap((def) => def.env));
-
-;// CONCATENATED MODULE: ./src/config/parsers.ts
-
-
-const TRUTHY_STRINGS = new Set(["1", "true", "yes", "on", "y"]);
-const FALSY_STRINGS = new Set(["0", "false", "no", "off", "n", ""]);
-/**
- * Parses a boolean from an unknown boundary. Accepts:
- * - native boolean
- * - 0 or 1 (number)
- * - string in TRUTHY_STRINGS / FALSY_STRINGS (case-insensitive, trimmed)
- * Anything else throws InvalidConfigError with [REDACTED] in the message.
- */
-function parsers_parseBooleanFromUnknown(value, field) {
-    if (typeof value === "boolean")
-        return value;
-    if (typeof value === "number") {
-        if (value === 1)
-            return true;
-        if (value === 0)
-            return false;
-        throw new InvalidConfigError(field, `expected boolean, received number ${REDACTED}`);
-    }
-    if (typeof value === "string") {
-        const normalized = value.trim().toLowerCase();
-        if (TRUTHY_STRINGS.has(normalized))
-            return true;
-        if (FALSY_STRINGS.has(normalized))
-            return false;
-        throw new InvalidConfigError(field, `expected boolean string, received ${REDACTED}`);
-    }
-    throw new InvalidConfigError(field, `expected boolean, received ${typeof value}`);
-}
-const INTEGER_RE = /^-?\d+$/;
-/**
- * Parses an integer from an unknown boundary. Accepts native integers
- * and decimal-integer strings. Rejects floats, NaN, Infinity, empty strings.
- */
-function parsers_parseIntegerFromUnknown(value, field) {
-    if (typeof value === "number") {
-        if (!Number.isInteger(value)) {
-            throw new InvalidConfigError(field, `expected integer, received non-integer number ${REDACTED}`);
-        }
-        return value;
-    }
-    if (typeof value === "string") {
-        const trimmed = value.trim();
-        if (trimmed.length === 0) {
-            throw new InvalidConfigError(field, `expected integer, received empty string`);
-        }
-        if (!INTEGER_RE.test(trimmed)) {
-            throw new InvalidConfigError(field, `expected integer string, received ${REDACTED}`);
-        }
-        const parsed = Number.parseInt(trimmed, 10);
-        if (!Number.isFinite(parsed)) {
-            throw new InvalidConfigError(field, `expected finite integer, received ${REDACTED}`);
-        }
-        return parsed;
-    }
-    throw new InvalidConfigError(field, `expected integer, received ${typeof value}`);
-}
-const VALID_SEVERITIES = new Set([
-    "info",
-    "minor",
-    "major",
-    "critical",
-    "security",
-    "leak",
-]);
-function parsers_parseSeverityFromUnknown(value, field) {
-    if (typeof value !== "string") {
-        throw new InvalidConfigError(field, `expected severity string, received ${typeof value}`);
-    }
-    const normalized = value.trim().toLowerCase();
-    if (!VALID_SEVERITIES.has(normalized)) {
-        throw new InvalidConfigError(field, `unknown severity ${REDACTED}`);
-    }
-    return normalized;
-}
-// Derive the parser's accepted set from the canonical field-schema entry.
-// Single source of truth: changing the canonical `enumValues` here updates
-// both the parser and any future code-gen of the action.yml / CLI help.
-const VALID_PLATFORMS = new Set(FIELDS.platform.enumValues ?? []);
-function parsers_parsePlatformFromUnknown(value, field) {
-    if (typeof value !== "string") {
-        throw new InvalidConfigError(field, `expected platform string, received ${typeof value}`);
-    }
-    const normalized = value.trim().toLowerCase();
-    if (!VALID_PLATFORMS.has(normalized)) {
-        throw new InvalidConfigError(field, `unknown platform ${REDACTED}`);
-    }
-    return normalized;
-}
-/**
- * Normalizes a provider base URL:
- * - trims whitespace
- * - requires http: or https:
- * - lowercases scheme and host
- * - strips query/fragment
- * - appends `/v1` if no version path segment is present
- *
- * Never includes the raw URL in error messages.
- */
-function parsers_normalizeApiUrl(rawUrl, field) {
-    if (typeof rawUrl !== "string") {
-        throw new InvalidConfigError(field, `expected URL string, received ${typeof rawUrl}`);
-    }
-    const trimmed = rawUrl.trim();
-    if (trimmed.length === 0) {
-        throw new InvalidConfigError(field, `expected non-empty URL`);
-    }
-    let parsed;
-    try {
-        parsed = new URL(trimmed);
-    }
-    catch {
-        throw new InvalidConfigError(field, `unparseable URL ${REDACTED}`);
-    }
-    const protocol = parsed.protocol.toLowerCase();
-    if (protocol !== "http:" && protocol !== "https:") {
-        throw new InvalidConfigError(field, `unsupported URL scheme ${REDACTED}`);
-    }
-    const cleanedPath = normalizePath(parsed.pathname);
-    const hasVersionSegment = hasVersionPathSegment(cleanedPath);
-    const finalPath = hasVersionSegment ? cleanedPath : appendV1(cleanedPath);
-    return `${protocol}//${parsed.host.toLowerCase()}${finalPath}`;
-}
-function normalizePath(pathname) {
-    const trimmed = pathname.replace(/\/+$/, "");
-    return trimmed;
-}
-function hasVersionPathSegment(path) {
-    if (path.length === 0)
-        return false;
-    const segments = path.split("/");
-    for (const segment of segments) {
-        if (/^v\d+$/.test(segment))
-            return true;
-    }
-    return false;
-}
-function appendV1(path) {
-    return path.length === 0 ? "/v1" : `${path}/v1`;
-}
-
-;// CONCATENATED MODULE: ./src/config/prompt-files.ts
-
-
-
-const PROMPT_SEPARATOR = "\n\n---\n\n";
-const nodePromptFileSystem = {
-    realpath(cwd) {
-        return (0,promises_namespaceObject.realpath)(cwd);
-    },
-    async realpathWithinCwd(path, cwdReal, _self) {
-        const absolute = (0,external_node_path_namespaceObject.resolve)(cwdReal, path);
-        let real;
-        try {
-            real = await (0,promises_namespaceObject.realpath)(absolute);
-        }
-        catch {
-            return { absolute, withinCwd: isWithinCwdLexical(absolute, cwdReal) };
-        }
-        return { absolute: real, withinCwd: isWithinCwdReal(real, cwdReal) };
-    },
-    stat(path) {
-        return (0,promises_namespaceObject.stat)(path).then((s) => ({ isFile: s.isFile(), size: s.size }));
-    },
-    readFile(path) {
-        return (0,promises_namespaceObject.readFile)(path, "utf8");
-    },
-};
-function isWithinCwdReal(real, cwdReal) {
-    if (process.platform === "win32") {
-        const r = real.toLowerCase();
-        const c = cwdReal.toLowerCase();
-        return r === c || r.startsWith(`${c}${external_node_path_namespaceObject.sep}`);
-    }
-    return real === cwdReal || real.startsWith(`${cwdReal}/`);
-}
-function isWithinCwdLexical(absolute, cwdReal) {
-    const rel = external_node_path_namespaceObject.posix.relative(toPosix(cwdReal), toPosix(absolute));
-    return rel !== "" && !rel.startsWith("..") && !external_node_path_namespaceObject.posix.isAbsolute(rel);
-}
-function toPosix(value) {
-    return process.platform === "win32" ? value.replace(/\\/g, "/") : value;
-}
-/**
- * Reads each file under `cwd` and concatenates contents.
- * - Rejects any path whose resolved-realpath escapes `cwd`.
- * - Enforces a per-file and aggregate byte cap.
- * - Never includes file contents in errors; only the `[REDACTED]` marker.
- */
-async function prompt_files_readPromptFiles(paths, byteCap, options) {
-    if (!Number.isInteger(byteCap) || byteCap <= 0) {
-        throw new errors_InvalidConfigError("prompt.byteCap", `expected positive integer, received ${byteCap}`);
-    }
-    const fs = options.fs ?? nodePromptFileSystem;
-    const cwdReal = await fs.realpath(options.cwd);
-    const parts = [];
-    let aggregateBytes = 0;
-    for (const rawPath of paths) {
-        if (typeof rawPath !== "string" || rawPath.length === 0) {
-            throw new PromptFileError(String(rawPath), "not-found");
-        }
-        if ((0,external_node_path_namespaceObject.isAbsolute)(rawPath)) {
-            throw new PromptFileError(rawPath, "outside-cwd");
-        }
-        const resolved = await fs.realpathWithinCwd(rawPath, cwdReal, fs);
-        if (!resolved.withinCwd) {
-            throw new PromptFileError(rawPath, "outside-cwd");
-        }
-        let stat;
-        try {
-            stat = await fs.stat(resolved.absolute);
-        }
-        catch {
-            throw new PromptFileError(rawPath, "not-found");
-        }
-        if (!stat.isFile) {
-            throw new PromptFileError(rawPath, "not-a-file");
-        }
-        if (stat.size > byteCap) {
-            throw new PromptFileError(rawPath, "byte-cap-exceeded");
-        }
-        aggregateBytes += stat.size;
-        if (aggregateBytes > byteCap) {
-            throw new PromptFileError(rawPath, "byte-cap-exceeded");
-        }
-        let text;
-        try {
-            text = await fs.readFile(resolved.absolute);
-        }
-        catch {
-            throw new PromptFileError(rawPath, "read-failed");
-        }
-        parts.push(text);
-    }
-    return parts.join(PROMPT_SEPARATOR);
-}
-
-;// CONCATENATED MODULE: ./src/config/loader.ts
-
-
-
-
-
-const DEFAULT_MAX_COMMENTS = 50;
-const DEFAULT_REVIEW_FILE_LIMIT = 200;
-const DEFAULT_REVIEW_SECONDS = 300;
-const DEFAULT_STALL_SECONDS = 270;
-const DEFAULT_PER_REQUEST_SECONDS = 60;
-const DEFAULT_SONAR_TIMEOUT_SECONDS = 60;
-const DEFAULT_MINIMUM_SEVERITY = "minor";
-const DEFAULT_PLATFORM = "auto";
-const DEFAULT_PROVIDER_URL = "https://api.openai.com/v1";
-const DEFAULT_PROVIDER_MODEL = "auto";
-// Sourced from `src/config/field-schema.ts:FIELDS.promptByteCap.defaultValue`
-// so the field-schema is the single source of truth for default values.
+/** Canonical prompt-file byte cap shared by config loading and live prompt assembly. */
 const DEFAULT_PROMPT_BYTE_CAP = FIELDS.promptByteCap.defaultValue;
-/**
- * Resolves the final ReviewConfig by merging CLI > inputs > env > defaults.
- * `cwd` is used to resolve prompt file paths (workspace-relative).
- */
-async function loadConfigFromSources(sources) {
-    const { cli, inputs, env, cwd } = sources;
-    const provider = {
-        url: normalizeApiUrl(pickString(cli.providerUrl, inputs.providerUrl, env.providerUrl, DEFAULT_PROVIDER_URL, "provider.url"), "provider.url"),
-        apiKey: pickString(cli.providerApiKey, inputs.providerApiKey, env.providerApiKey, "", "provider.apiKey"),
-        model: pickString(cli.providerModel, inputs.providerModel, env.providerModel, DEFAULT_PROVIDER_MODEL, "provider.model"),
-    };
-    const guidance = {
-        walkthrough: pickBool(cli.walkthrough, inputs.walkthrough, env.walkthrough, false, "guidance.walkthrough"),
-        diagnostic: pickBool(cli.diagnostic, inputs.diagnostic, env.diagnostic, false, "guidance.diagnostic"),
-        dryRun: pickBool(cli.dryRun, inputs.dryRun, env.dryRun, false, "guidance.dryRun"),
-        debugRawResponse: pickBool(cli.debugRawResponse, inputs.debugRawResponse, env.debugRawResponse, false, "guidance.debugRawResponse"),
-    };
-    const timeouts = {
-        reviewSeconds: pickInt(cli.reviewTimeoutSeconds, inputs.reviewTimeoutSeconds, env.reviewTimeoutSeconds, DEFAULT_REVIEW_SECONDS, "timeouts.reviewSeconds"),
-        stallSeconds: pickInt(cli.stallTimeoutSeconds, inputs.stallTimeoutSeconds, env.stallTimeoutSeconds, DEFAULT_STALL_SECONDS, "timeouts.stallSeconds"),
-        perRequestSeconds: pickInt(cli.perRequestTimeoutSeconds, inputs.perRequestTimeoutSeconds, env.perRequestTimeoutSeconds, DEFAULT_PER_REQUEST_SECONDS, "timeouts.perRequestSeconds"),
-    };
-    const ignoreMinor = pickBool(cli.ignoreMinor, inputs.ignoreMinor, env.ignoreMinor, false, "severity.ignoreMinor");
-    const minimumRaw = pickRawString(cli.minimumSeverity, inputs.minimumSeverity, env.minimumSeverity);
-    const minimum = minimumRaw === undefined
-        ? DEFAULT_MINIMUM_SEVERITY
-        : parseSeverityFromUnknown(minimumRaw, "severity.minimum");
-    const severity = {
-        ignoreMinor,
-        minimum,
-        maxComments: pickInt(cli.maxComments, inputs.maxComments, env.maxComments, DEFAULT_MAX_COMMENTS, "severity.maxComments"),
-    };
-    const scope = {
-        reviewFileLimit: pickInt(cli.reviewFileLimit, inputs.reviewFileLimit, env.reviewFileLimit, DEFAULT_REVIEW_FILE_LIMIT, "scope.reviewFileLimit"),
-    };
-    const sonar = {
-        enabled: pickBool(cli.sonarEnabled, inputs.sonarEnabled, env.sonarEnabled, false, "sonar.enabled"),
-        host: pickString(cli.sonarHost, inputs.sonarHost, env.sonarHost, "", "sonar.host"),
-        token: pickString(cli.sonarToken, inputs.sonarToken, env.sonarToken, "", "sonar.token"),
-        project: pickString(cli.sonarProject, inputs.sonarProject, env.sonarProject, "", "sonar.project"),
-        timeoutSeconds: pickInt(cli.sonarTimeoutSeconds, inputs.sonarTimeoutSeconds, env.sonarTimeoutSeconds, DEFAULT_SONAR_TIMEOUT_SECONDS, "sonar.timeoutSeconds"),
-    };
-    const leakDetection = pickBool(cli.leakDetection, inputs.leakDetection, env.leakDetection, true, "leakDetection");
-    const redactorEnabled = pickBool(cli.redactorEnabled, inputs.redactorEnabled, env.redactorEnabled, true, "redactor.enabled");
-    const platformRaw = pickRawString(cli.platform, inputs.platform, env.platform);
-    const platform = platformRaw === undefined ? DEFAULT_PLATFORM : parsePlatformFromUnknown(platformRaw, "platform");
-    const githubToken = pickString(cli.githubToken, inputs.githubToken, env.githubToken, "", "githubToken");
-    const azure = {
-        org: pickString(cli.azureOrg, inputs.azureOrg, env.azureOrg, "", "azure.org"),
-        project: pickString(cli.azureProject, inputs.azureProject, env.azureProject, "", "azure.project"),
-        repo: pickString(cli.azureRepo, inputs.azureRepo, env.azureRepo, "", "azure.repo"),
-        pullRequestId: pickInt(cli.azurePullRequestId, inputs.azurePullRequestId, env.azurePullRequestId, 0, "azure.pullRequestId"),
-        token: pickString(cli.azureToken, inputs.azureToken, env.azureToken, "", "azure.token"),
-    };
-    const promptByteCap = pickInt(cli.promptByteCap, inputs.promptByteCap, env.promptByteCap, DEFAULT_PROMPT_BYTE_CAP, "prompts.byteCap");
-    const prompts = await resolvePrompts(cli, inputs, env, cwd, promptByteCap);
-    return {
-        provider,
-        prompts,
-        guidance,
-        timeouts,
-        severity,
-        scope,
-        sonar,
-        leakDetection,
-        redactorEnabled,
-        platform,
-        githubToken,
-        azure,
-    };
-}
-async function resolvePrompts(cli, inputs, env, cwd, byteCap) {
-    const systemInline = pickString(cli.promptSystem, inputs.promptSystem, undefined, "", "prompts.system.inline");
-    const systemFiles = collectFiles(cli.promptSystemFile, inputs.promptSystemFile, env.promptSystemFile);
-    const userInline = pickString(cli.promptUser, inputs.promptUser, undefined, "", "prompts.user.inline");
-    const userFiles = collectFiles(cli.promptUserFile, inputs.promptUserFile, env.promptUserFile);
-    let system = "";
-    if (systemInline.length > 0) {
-        system = systemInline;
-    }
-    else if (systemFiles.length > 0) {
-        system = await readPromptFiles(systemFiles, byteCap, { cwd });
-    }
-    let user = "";
-    if (userInline.length > 0) {
-        user = userInline;
-    }
-    else if (userFiles.length > 0) {
-        user = await readPromptFiles(userFiles, byteCap, { cwd });
-    }
-    return {
-        system,
-        user,
-        systemFiles,
-        userFiles,
-    };
-}
-function collectFiles(cliValue, inputValue, envValue) {
-    const out = [];
-    if (typeof cliValue === "string" && cliValue.length > 0)
-        out.push(cliValue);
-    if (typeof inputValue === "string" && inputValue.length > 0 && !out.includes(inputValue))
-        out.push(inputValue);
-    if (typeof envValue === "string" && envValue.length > 0 && !out.includes(envValue))
-        out.push(envValue);
-    return out;
-}
-function pickString(cliValue, inputValue, envValue, fallback, field) {
-    const value = firstDefined(cliValue, inputValue, envValue);
-    if (value === undefined)
-        return fallback;
-    if (typeof value !== "string") {
-        throw new InvalidConfigError(field, `expected string, received ${typeof value}`);
-    }
-    return value;
-}
-function pickRawString(cliValue, inputValue, envValue) {
-    if (typeof cliValue === "string" && cliValue.trim().length > 0)
-        return cliValue;
-    if (typeof inputValue === "string" && inputValue.trim().length > 0)
-        return inputValue;
-    if (typeof envValue === "string" && envValue.trim().length > 0)
-        return envValue;
-    return undefined;
-}
-function pickInt(cliValue, inputValue, envValue, fallback, field) {
-    if (cliValue !== undefined)
-        return parseIntegerFromUnknown(cliValue, field);
-    if (inputValue !== undefined)
-        return parseIntegerFromUnknown(inputValue, field);
-    if (envValue !== undefined)
-        return parseIntegerFromUnknown(envValue, field);
-    return fallback;
-}
-function pickBool(cliValue, inputValue, envValue, fallback, field) {
-    if (cliValue !== undefined)
-        return parseBooleanFromUnknown(cliValue, field);
-    if (inputValue !== undefined)
-        return parseBooleanFromUnknown(inputValue, field);
-    if (envValue !== undefined)
-        return parseBooleanFromUnknown(envValue, field);
-    return fallback;
-}
-function firstDefined(...values) {
-    for (const v of values) {
-        if (v !== undefined)
-            return v;
-    }
-    return undefined;
-}
+/** Canonical cap for posted review comments when no CLI/input override is supplied. */
+const DEFAULT_MAX_COMMENTS = FIELDS.maxComments.defaultValue;
+/** Canonical merge fallback cap for chunked live reviews. */
+const DEFAULT_MAX_COMMENTS_MERGE = DEFAULT_MAX_COMMENTS;
+/** Canonical changed-file soft cap for live reviews. */
+const DEFAULT_REVIEW_FILE_LIMIT = FIELDS.reviewFileLimit.defaultValue;
 
 ;// CONCATENATED MODULE: ./src/util/severity.ts
 /**
@@ -4719,12 +4323,71 @@ function parseReviewPayload(text) {
     if (!isRecord(candidate)) {
         return null;
     }
-    return {
-        summary: provider_parse_readStringField(candidate, "summary") ?? "",
-        verdict: provider_parse_readStringField(candidate, "verdict") ?? "",
-        comments: provider_parse_readCommentArray(candidate["comments"]),
-        suppressed_comments: provider_parse_readCommentArray(candidate["suppressed_comments"]),
-    };
+    const summary = provider_parse_readStringField(candidate, "summary") ?? "";
+    const verdict = provider_parse_readStringField(candidate, "verdict") ?? "";
+    const comments = provider_parse_readCommentArray(candidate["comments"]);
+    const suppressed_comments = provider_parse_readCommentArray(candidate["suppressed_comments"]);
+    // Soft parse-fail detector (CLARITY-10b): some providers/models return
+    // a *structurally valid* JSON wrapper whose contents are an apology
+    // ("No diff or file contents were provided to review...", "I cannot
+    // review this without...", "Please share the diff..."). These pass
+    // the basic `extractJsonBlock` parse AND the strict non-empty check
+    // (because `summary` is non-empty) but are functionally equivalent
+    // to a parse failure — the model did not produce a review.
+    //
+    // Surface these as null so the self-healing retry path fires and
+    // the parse-fail badge renders, instead of silently posting a
+    // 0-finding review that LOOKS clean.
+    //
+    // Only trigger when there are zero findings (comments + suppressed_comments).
+    // A real review with findings but a frustrated summary ("The code looks
+    // fine but I noticed one issue...") is legitimate; we don't want to
+    // rewrite that as a parse-fail.
+    if (comments.length === 0 &&
+        suppressed_comments.length === 0 &&
+        isApologySummary(summary)) {
+        return null;
+    }
+    return { summary, verdict, comments, suppressed_comments };
+}
+/**
+ * Pattern match for "the model couldn't actually review the input" apology
+ * summaries. These are NOT real reviews even when wrapped in valid JSON.
+ *
+ * Matched phrases (case-insensitive, whole-word where reasonable):
+ *   - "no diff" / "no file contents" / "no contents were provided"
+ *   - "please share" / "please provide" / "please send"
+ *   - "i cannot" / "i'm unable" / "i am unable" / "i can not"
+ *   - "cannot review" / "unable to review" / "can't review"
+ *   - "did not receive" / "haven't received" / "no input"
+ *
+ * The match is intentionally narrow — it must look like the model is
+ * telling us *it* failed to receive input, not commenting on the code.
+ * Phrases like "no issues found" or "nothing to flag" are deliberately
+ * excluded — those are legitimate clean-review signals.
+ */
+function isApologySummary(summary) {
+    if (summary.length === 0) {
+        return false;
+    }
+    const lower = summary.toLowerCase();
+    // Most common patterns from the 3e62237 self-review incident.
+    const APOLOGY_PATTERNS = [
+        /\bno\s+(diff|file\s+contents?|contents?)\b.*\b(provided|shared|available|supplied)\b/u,
+        /\bplease\s+(share|provide|send)\s+(the\s+)?(diff|file|pull\s+request|pr)\b/u,
+        /\bi\s+(cannot|can'?t|am\s+unable|i'?m\s+unable)\s+(review|complete)/u,
+        /\b(cannot|can'?t|unable\s+to)\s+review\b/u,
+        /\b(didn'?t\s+receive|haven'?t\s+received|no\s+input)\b/u,
+        /\b(empty\s+diff|no\s+diff\s+to\s+review|without\s+(diff|input))\b/u,
+        /\b(is\s+empty|was\s+empty)\b.*\b(nothing|to\s+review|review)/u,
+        /\bnothing\s+to\s+review\b/u,
+    ];
+    for (const pattern of APOLOGY_PATTERNS) {
+        if (pattern.test(lower)) {
+            return true;
+        }
+    }
+    return false;
 }
 /**
  * Walks the OpenAI Responses API `output[]` array and concatenates all
@@ -5201,7 +4864,7 @@ async function runChatCall(config, fetchImpl, requestId, session) {
     if (!retryResponse.ok) {
         return {
             ok: false,
-            error: new ProviderError("parse", ENDPOINT_CHAT, response.status, requestId, "Provider response did not contain a JSON review payload.", { rawText }),
+            error: new ProviderError("parse", ENDPOINT_CHAT, retryResponse.status, requestId, `Provider self-healing retry failed with status ${retryResponse.status}; original parse error remains the root cause.`, { rawText }),
         };
     }
     const retryRawText = await retryResponse.text();
@@ -5468,12 +5131,132 @@ function openai_compatible_createRequestId() {
     return `${hex.slice(0, 4).join("")}-${hex.slice(4, 6).join("")}-${hex.slice(6, 8).join("")}-${hex.slice(8, 10).join("")}-${hex.slice(10, 16).join("")}`;
 }
 
+;// CONCATENATED MODULE: ./src/config/errors.ts
+class InvalidConfigError extends Error {
+    field;
+    reason;
+    name = "InvalidConfigError";
+    constructor(field, reason, options) {
+        super(`Invalid config for '${field}': ${reason}`, options);
+        this.field = field;
+        this.reason = reason;
+    }
+}
+class PromptFileError extends Error {
+    path;
+    reason;
+    name = "PromptFileError";
+    constructor(path, reason, options) {
+        super(`Prompt file error: ${reason}`, options);
+        this.path = path;
+        this.reason = reason;
+    }
+}
+/**
+ * Marker used in error messages to replace any user-supplied value
+ * (URLs, tokens, prompt content). Never echo the raw value.
+ */
+const REDACTED = "[REDACTED]";
+
+;// CONCATENATED MODULE: ./src/config/prompt-files.ts
+
+
+
+const PROMPT_SEPARATOR = "\n\n---\n\n";
+const nodePromptFileSystem = {
+    realpath(cwd) {
+        return (0,promises_namespaceObject.realpath)(cwd);
+    },
+    async realpathWithinCwd(path, cwdReal, _self) {
+        const absolute = (0,external_node_path_namespaceObject.resolve)(cwdReal, path);
+        let real;
+        try {
+            real = await (0,promises_namespaceObject.realpath)(absolute);
+        }
+        catch {
+            return { absolute, withinCwd: isWithinCwdLexical(absolute, cwdReal) };
+        }
+        return { absolute: real, withinCwd: isWithinCwdReal(real, cwdReal) };
+    },
+    stat(path) {
+        return (0,promises_namespaceObject.stat)(path).then((s) => ({ isFile: s.isFile(), size: s.size }));
+    },
+    readFile(path) {
+        return (0,promises_namespaceObject.readFile)(path, "utf8");
+    },
+};
+function isWithinCwdReal(real, cwdReal) {
+    if (process.platform === "win32") {
+        const r = real.toLowerCase();
+        const c = cwdReal.toLowerCase();
+        return r === c || r.startsWith(`${c}${external_node_path_namespaceObject.sep}`);
+    }
+    return real === cwdReal || real.startsWith(`${cwdReal}/`);
+}
+function isWithinCwdLexical(absolute, cwdReal) {
+    const rel = external_node_path_namespaceObject.posix.relative(toPosix(cwdReal), toPosix(absolute));
+    return rel !== "" && !rel.startsWith("..") && !external_node_path_namespaceObject.posix.isAbsolute(rel);
+}
+function toPosix(value) {
+    return process.platform === "win32" ? value.replace(/\\/g, "/") : value;
+}
+/**
+ * Reads each file under `cwd` and concatenates contents.
+ * - Rejects any path whose resolved-realpath escapes `cwd`.
+ * - Enforces a per-file and aggregate byte cap.
+ * - Never includes file contents in errors; only the `[REDACTED]` marker.
+ */
+async function readPromptFiles(paths, byteCap, options) {
+    if (!Number.isInteger(byteCap) || byteCap <= 0) {
+        throw new InvalidConfigError("prompt.byteCap", `expected positive integer, received ${byteCap}`);
+    }
+    const fs = options.fs ?? nodePromptFileSystem;
+    const cwdReal = await fs.realpath(options.cwd);
+    const parts = [];
+    let aggregateBytes = 0;
+    for (const rawPath of paths) {
+        if (typeof rawPath !== "string" || rawPath.length === 0) {
+            throw new PromptFileError(String(rawPath), "not-found");
+        }
+        if ((0,external_node_path_namespaceObject.isAbsolute)(rawPath)) {
+            throw new PromptFileError(rawPath, "outside-cwd");
+        }
+        const resolved = await fs.realpathWithinCwd(rawPath, cwdReal, fs);
+        if (!resolved.withinCwd) {
+            throw new PromptFileError(rawPath, "outside-cwd");
+        }
+        let stat;
+        try {
+            stat = await fs.stat(resolved.absolute);
+        }
+        catch {
+            throw new PromptFileError(rawPath, "not-found");
+        }
+        if (!stat.isFile) {
+            throw new PromptFileError(rawPath, "not-a-file");
+        }
+        if (stat.size > byteCap) {
+            throw new PromptFileError(rawPath, "byte-cap-exceeded");
+        }
+        aggregateBytes += stat.size;
+        if (aggregateBytes > byteCap) {
+            throw new PromptFileError(rawPath, "byte-cap-exceeded");
+        }
+        let text;
+        try {
+            text = await fs.readFile(resolved.absolute);
+        }
+        catch {
+            throw new PromptFileError(rawPath, "read-failed");
+        }
+        parts.push(text);
+    }
+    return parts.join(PROMPT_SEPARATOR);
+}
+
 ;// CONCATENATED MODULE: ./src/cli/provider-prompts.ts
 
 
-// Sourced from `src/config/field-schema.ts:FIELDS.promptByteCap.defaultValue`
-// so the field-schema is the single source of truth for default values.
-const provider_prompts_DEFAULT_PROMPT_BYTE_CAP = FIELDS.promptByteCap.defaultValue;
 async function buildProviderPrompts(input) {
     const additionalPrompt = await readAdditionalPrompt(input);
     const userParts = [
@@ -5496,7 +5279,7 @@ async function pickSystemPrompt(input) {
     }
     const filePath = input.parsed.promptFile ?? input.env["UMACTUALLY_PROMPT_FILE"];
     if (filePath !== undefined && filePath.length > 0) {
-        return prompt_files_readPromptFiles([filePath], provider_prompts_DEFAULT_PROMPT_BYTE_CAP, { cwd: input.cwd });
+        return readPromptFiles([filePath], DEFAULT_PROMPT_BYTE_CAP, { cwd: input.cwd });
     }
     return [
         "You are UmActually, a precise pull request reviewer.",
@@ -5514,7 +5297,7 @@ async function readAdditionalPrompt(input) {
     if (filePath === undefined || filePath.length === 0) {
         return "";
     }
-    return prompt_files_readPromptFiles([filePath], provider_prompts_DEFAULT_PROMPT_BYTE_CAP, { cwd: input.cwd });
+    return readPromptFiles([filePath], DEFAULT_PROMPT_BYTE_CAP, { cwd: input.cwd });
 }
 
 ;// CONCATENATED MODULE: ./src/cli/live-provider.ts
@@ -5994,25 +5777,36 @@ function sanitizeComments(comments, secrets) {
 
 ;// CONCATENATED MODULE: ./src/util/log.ts
 
+/**
+ * @returns A single line ending with exactly one newline character. Do not append another newline.
+ */
 function formatAnnotation(level, action, message) {
     const actionPrefix = action.length > 0 ? `${action} ` : "";
     return `::${level}::${BRAND_PREFIX}${actionPrefix}${message}\n`;
 }
 function writeAnnotation(level, action, message) {
+    const formatted = formatAnnotation(level, action, message);
     try {
-        process.stderr.write(formatAnnotation(level, action, message));
+        process.stderr.write(formatted);
     }
     catch {
-        // Swallow stderr write failures (rare — e.g. closed stream in a forked
-        // process). The log helpers are best-effort observability; they must
-        // never throw to the caller.
+        if (level !== "debug") {
+            // eslint-disable-next-line no-console
+            console.error(formatted.trimEnd());
+        }
     }
 }
-/** Centralizes duplicated GitHub warning annotations so every warning uses the same brand prefix. */
+/**
+ * Centralizes duplicated GitHub warning annotations so every warning uses the same brand prefix.
+ * Pass an empty string `""` to suppress the action prefix.
+ */
 function logWarning(action, message) {
     writeAnnotation("warning", action, message);
 }
-/** Centralizes duplicated GitHub error annotations so every error uses the same brand prefix. */
+/**
+ * Centralizes duplicated GitHub error annotations so every error uses the same brand prefix.
+ * Pass an empty string `""` to suppress the action prefix.
+ */
 function logError(action, message) {
     writeAnnotation("error", action, message);
 }
@@ -6048,15 +5842,8 @@ function logNotice(action, message) {
  * contract.
  */
 const DEFAULT_CHUNK_CONCURRENCY = 4;
-// DEFAULT_REVIEW_FILE_LIMIT (200) is imported from src/config/loader.ts
-// and re-imported below to keep a single source of truth.
-/**
- * Fallback cap used by the chunked Azure merge when the CLI flag
- * `--max-comments` is not set. Imported from `src/config/loader.ts` to
- * keep a single source of truth — was previously a local re-declaration
- * of `DEFAULT_MAX_COMMENTS` that could drift.
- */
-const DEFAULT_MAX_COMMENTS_MERGE = DEFAULT_MAX_COMMENTS;
+// DEFAULT_REVIEW_FILE_LIMIT is imported from src/config/defaults.ts
+// to keep the live review cap in sync with the field schema.
 /**
  * Helper used by the Azure live path. Each chunk is fed through
  * `requestLiveReview` independently and the per-chunk outcomes are
