@@ -657,6 +657,48 @@ describe("openai-compatible provider client", () => {
     }
   });
 
+  it("PROV-UNIT-025: parse-fail-after-retry preserves the retry's HTTP status when retry returns non-ok", async () => {
+    // Contract: when the retry HTTP call itself fails with a non-retryable,
+    // non-fallback-eligible status (e.g. 401), the parse-fail ProviderError
+    // carries the RETRY status (most informative root cause), not the
+    // original status. Mirrors src/provider/copilot.ts and resolves the
+    // M6OQdds reviewer concern about provider inconsistency.
+    //
+    // Note: 429 and 5xx are retried by runWithRetry; 400/404 fall back to
+    // chat. So we use 401 to exercise the single-retry parse-fail path
+    // without triggering the outer retry/backoff loop.
+    const stub = makeFetchStub([
+      { status: 200, body: "not JSON at all" },
+      { status: 401, body: "unauthorized" },
+    ]);
+
+    const result = await runProviderRequest({ ...BASE_CONFIG, fetchImpl: stub.fetch });
+
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.error.code).toBe("parse");
+      expect(result.error.status).toBe(401);
+    }
+  });
+
+  it("PROV-UNIT-026: parse-fail-after-retry preserves the ORIGINAL status when retry succeeds but is still unparseable", async () => {
+    // When retry returns 200 OK but no parseable payload, the parse-fail
+    // ProviderError carries the ORIGINAL response status (the model
+    // couldn't produce a review, not a transport failure).
+    const stub = makeFetchStub([
+      { status: 200, body: "not JSON at all" },
+      { status: 200, body: JSON.stringify({ choices: [{ message: { content: "still no review" } }] }) },
+    ]);
+
+    const result = await runProviderRequest({ ...BASE_CONFIG, fetchImpl: stub.fetch });
+
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.error.code).toBe("parse");
+      expect(result.error.status).toBe(200);
+    }
+  });
+
   it("PROV-UNIT-024: SSE stream with no extractable content triggers parse failure (the PR #3 case)", async () => {
     // Exact reproduction of the PR #3 failure: provider returns an SSE
     // stream with only metadata events (response.created, response.completed)

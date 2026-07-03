@@ -3,7 +3,7 @@ import { REVIEW_MARKER } from "../review/run-review.js";
 import { scanReviewSecrets } from "../security/scan-review-secrets.js";
 import type { Platform } from "../config/types.js";
 import { DEFAULT_MAX_COMMENTS } from "../config/defaults.js";
-import { isRecord } from "../util/json-guards.js";
+import { isPositiveSafeInteger, isRecord } from "../util/json-guards.js";
 import { MANIFEST_SCHEMA } from "../util/marker.js";
 import { countBySeverity as countBySeverityUtil, SEVERITY_ORDER, severityRank } from "../util/severity.js";
 import { mapVerdictToAzureStatus, mapVerdictToGithubEvent } from "../util/verdict.js";
@@ -165,7 +165,11 @@ function postedVsConsideredRow(input: {
     `**Considered:** \`${input.consideredCount}\` finding(s) from model · ` +
     `**Suppressed:** \`${input.suppressedCount}\` off-diff`;
   if (input.parseFailed) {
-    return `> ⚠️ **Parse failed** — provider response was not a valid JSON review payload. ` +
+    // Use emoji + backticks (NOT `**Parse failed**` markdown emphasis)
+    // for consistency with the severity tally above and to avoid the
+    // ADO PR-thread renderer leakage observed for `**...**` patterns
+    // (see CLARITY-3 in test/unit/live-azure-parent-clarity.test.ts).
+    return `> ⚠️ \`Parse failed\` — provider response was not a valid JSON review payload. ` +
       `No findings were extracted; the raw provider text is included in the Summary section below for diagnostics.\n` +
       `\n${base}`;
   }
@@ -434,7 +438,7 @@ export function buildInlineCommentBody(input: {
     : sanitizeForPost(fallback, input.secrets);
   const marker = input.includeMarker === true ? `${REVIEW_MARKER}\n` : "";
   const parentRef =
-    typeof input.parentThreadId === "number" && Number.isSafeInteger(input.parentThreadId) && input.parentThreadId > 0
+    isPositiveSafeInteger(input.parentThreadId)
       ? `> Reply to PR review summary #${input.parentThreadId}\n\n`
       : "";
   return `${marker}${parentRef}\`${safeSeverity}\` \`${safeCategory}\`\n\n${safeBody}`;

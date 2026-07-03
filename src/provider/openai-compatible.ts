@@ -12,6 +12,7 @@ import {
   sanitizeHttpStatus,
   sanitizeMessage,
 } from "./provider-error.js";
+import { sleep } from "../util/async.js";
 
 const ENDPOINT_RESPONSES: ProviderEndpoint = "responses";
 const ENDPOINT_CHAT: ProviderEndpoint = "chat";
@@ -109,12 +110,6 @@ function isRetryable(error: ProviderError): boolean {
   return error.status === 429 || (typeof error.status === "number" && error.status >= 500);
 }
 
-function sleep(ms: number): Promise<void> {
-  return new Promise((resolve) => {
-    setTimeout(resolve, ms);
-  });
-}
-
 /**
  * Self-healing follow-up message sent to the model when its first response
  * could not be parsed as a JSON review payload. Some providers ignore
@@ -179,8 +174,17 @@ async function callEndpoint(
     ? buildResponsesBody(config, { userOverride: PARSE_FAIL_RETRY_PROMPT })
     : buildChatBody(config, { userOverride: PARSE_FAIL_RETRY_PROMPT });
   let retryReview: ProviderReviewPayload | null = null;
+  // Track the retry's HTTP status (if it reached performFetch and
+  // returned a response) so the parse-fail ProviderError can surface
+  // it. When the retry fails with HTTP 4xx/5xx, that's the most
+  // informative root cause; when the retry succeeds with a still-
+  // unparseable payload, the ORIGINAL response status is the right
+  // signal — the model couldn't produce a review, not a transport
+  // failure. Both cases match `src/provider/copilot.ts`'s contract.
+  let retryResponseStatus: number | null = null;
   try {
     const retryResponse = await performFetch(fetchImpl, url, retryBody, signal, config, requestId, endpoint);
+    retryResponseStatus = retryResponse.status;
     if (retryResponse.ok) {
       const retryRawText = await readBody(retryResponse, endpoint, requestId);
       const retryTextPayload = extractTextPayload(endpoint, retryRawText);
@@ -191,14 +195,15 @@ async function callEndpoint(
       }
     }
   } catch {
-    // Retry HTTP/parse path failed; fall through to the parse-error
-    // throw below with the ORIGINAL rawText.
+    // Retry HTTP/parse path threw (network error, body read error,
+    // etc.) — fall through to the parse-error throw below with the
+    // ORIGINAL rawText. retryResponseStatus stays null in this branch.
   }
   if (retryReview === null) {
     throw new ProviderError(
       "parse",
       endpoint,
-      response.status,
+      retryResponseStatus ?? response.status,
       requestId,
       "Provider response did not contain a JSON review payload after self-healing retry.",
       { rawText },

@@ -1,6 +1,6 @@
 import { AzureApiError, AZURE_EMPTY_DIFF_STATUS } from "./errors.js";
 import type { AzureChange } from "./diff.js";
-import { isRecord } from "../../util/json-guards.js";
+import { isPositiveSafeInteger, isRecord } from "../../util/json-guards.js";
 
 export function parseLatestIterationId(payload: unknown): number {
   const root = requireRecord(payload, "Azure iterations response");
@@ -92,7 +92,7 @@ function requireArray(value: unknown, label: string): readonly unknown[] {
 }
 
 function requirePositiveInteger(value: unknown, label: string): number {
-  if (typeof value === "number" && Number.isSafeInteger(value) && value > 0) {
+  if (isPositiveSafeInteger(value)) {
     return value;
   }
 

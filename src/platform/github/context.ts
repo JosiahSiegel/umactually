@@ -1,5 +1,5 @@
 import { readFile } from "node:fs/promises";
-import { isRecord as isObject } from "../../util/json-guards.js";
+import { isPositiveSafeInteger, isRecord as isObject } from "../../util/json-guards.js";
 import { PlatformContextError } from "../../util/platform-error.js";
 
 export type GithubRepoRef = {
@@ -174,7 +174,7 @@ function readRepositoryName(record: Record<string, unknown>): string | null {
 }
 
 function readOptionalNumber(value: unknown): number | null {
-  return typeof value === "number" && Number.isSafeInteger(value) && value > 0 ? value : null;
+  return isPositiveSafeInteger(value) ? value : null;
 }
 
 function readRecord(value: unknown, label: string): Record<string, unknown> {

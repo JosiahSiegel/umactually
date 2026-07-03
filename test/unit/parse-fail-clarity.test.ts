@@ -33,10 +33,10 @@ describe("CLARITY-10: parse-fail surface is unmistakable", () => {
       suppressedCommentCount: 0,
       secrets: [],
     });
-    expect(body).toMatch(/⚠️ \*\*Parse failed\*\*/u);
+    expect(body).toMatch(/⚠️ `Parse failed`/u);
     // The Posted/Considered/Suppressed row still appears for transparency,
     // but the parse-failed badge is now the FIRST thing the reader sees.
-    const badgeIndex = body.indexOf("⚠️ **Parse failed**");
+    const badgeIndex = body.indexOf("⚠️ `Parse failed`");
     const countsIndex = body.indexOf("**Posted:**");
     expect(badgeIndex).toBeGreaterThan(-1);
     expect(countsIndex).toBeGreaterThan(badgeIndex);
@@ -107,6 +107,6 @@ describe("CLARITY-10: parse-fail surface is unmistakable", () => {
       suppressedCommentCount: 0,
       secrets: [],
     });
-    expect(body).not.toMatch(/⚠️ \*\*Parse failed\*\*/u);
+    expect(body).not.toMatch(/⚠️ `Parse failed`/u);
   });
 });

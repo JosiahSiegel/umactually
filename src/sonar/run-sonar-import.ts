@@ -1,4 +1,5 @@
 import { isRecord } from "../util/json-guards.js";
+import { sleep } from "../util/async.js";
 
 type SonarImportContract = {
   readonly qualityGateSequenceJson: string;
@@ -347,10 +348,4 @@ async function fetchSonarFindings(
   }
 
   return issueCount + hotspotCount;
-}
-
-function sleep(ms: number): Promise<void> {
-  return new Promise((resolve) => {
-    setTimeout(resolve, ms);
-  });
 }
