@@ -1,5 +1,8 @@
 import { type GithubContext } from "../platform/github/context.js";
 import { REVIEW_MARKER } from "../review/run-review.js";
+import { githubHeaders } from "../util/http.js";
+import { isRecord, isSafeInteger } from "../util/json-guards.js";
+import { writeBrandedAnnotation } from "../util/log.js";
 import {
   LiveReviewError,
   buildInlineCommentBody,
@@ -143,8 +146,9 @@ async function updateExistingReview(input: {
     return input.review.id;
   } catch (error) {
     if (error instanceof LiveReviewError && error.code === "GITHUB_UPDATE_REVIEW_FAILED") {
-      process.stderr.write(
-        `::warning::umactually-pr-review: failed to update existing GitHub review ${input.review.id} (likely already submitted); falling back to DELETE+POST.\n`,
+      writeBrandedAnnotation(
+        "warning",
+        `failed to update existing GitHub review ${input.review.id} (likely already submitted); falling back to DELETE+POST.`,
       );
       return null;
     }
@@ -164,8 +168,9 @@ async function deleteExistingReview(input: {
   if (response.status === 204 || response.status === 404) {
     return;
   }
-  process.stderr.write(
-    `::warning::umactually-pr-review: failed to delete existing review ${input.review.id} (${response.status}); posting new review anyway.\n`,
+  writeBrandedAnnotation(
+    "warning",
+    `failed to delete existing review ${input.review.id} (${response.status}); posting new review anyway.`,
   );
 }
 
@@ -192,15 +197,14 @@ async function createGithubReview(input: {
 }
 
 function parseExistingReview(value: unknown): ExistingGithubReview | null {
-  if (typeof value !== "object" || value === null || Array.isArray(value)) {
+  if (!isRecord(value)) {
     return null;
   }
-  const record = value as Record<string, unknown>;
-  const id = record["id"];
-  const body = record["body"];
-  const state = record["state"];
+  const id = value["id"];
+  const body = value["body"];
+  const state = value["state"];
   if (
-    typeof id === "number" && Number.isSafeInteger(id) &&
+    isSafeInteger(id) &&
     typeof body === "string" &&
     typeof state === "string"
   ) {
@@ -213,14 +217,4 @@ function githubReviewsUrl(context: GithubContext): string {
   const owner = encodeURIComponent(context.repo.owner);
   const repo = encodeURIComponent(context.repo.name);
   return `https://api.github.com/repos/${owner}/${repo}/pulls/${context.prNumber}/reviews`;
-}
-
-function githubHeaders(token: string): Record<string, string> {
-  return {
-    Authorization: `Bearer ${token}`,
-    Accept: "application/vnd.github+json",
-    "Content-Type": "application/json",
-    "X-GitHub-Api-Version": "2026-03-10",
-    "User-Agent": "umactually-pr-review",
-  };
 }

@@ -1,12 +1,14 @@
 import { type AzureContext } from "../platform/azure/context.js";
 import { REVIEW_MARKER } from "../review/run-review.js";
 import { AZURE_STATUS_CONTEXT_NAME } from "../util/brand.js";
+import { azureHeaders, truncateBodyForLog } from "../util/http.js";
+import { isRecord, isSafeInteger } from "../util/json-guards.js";
+import { writeBrandedAnnotation } from "../util/log.js";
 import {
   buildInlineCommentBody,
   buildReviewBody,
   countSuppressedComments,
   ensureHttpOk,
-  isRecord,
   mapReviewVerdictToAzureStatus,
   readJsonResponse,
   readResponseId,
@@ -112,8 +114,9 @@ export async function runAzureLive(input: {
     } catch (error) {
       failedIndices.push(index);
       const message = error instanceof Error ? error.message : String(error);
-      process.stderr.write(
-        `::warning::umactually-pr-review: Azure thread ${index + 1}/${comments.length} failed (${comment.path}:${comment.line}): ${message}; continuing with remaining threads.\n`,
+      writeBrandedAnnotation(
+        "warning",
+        `Azure thread ${index + 1}/${comments.length} failed (${comment.path}:${comment.line}): ${message}; continuing with remaining threads.`,
       );
     }
   }
@@ -143,9 +146,7 @@ export async function runAzureLive(input: {
   if (postedIds.length === 0 && failedIndices.length > 0) {
     const failed = failedIndices.length;
     const message = `Azure review failed: 0 threads posted, ${failed} failed`;
-    process.stderr.write(
-      `::error::umactually-pr-review: ${message}\n`,
-    );
+    writeBrandedAnnotation("error", message);
     return {
       exitCode: 1,
       posted: false,
@@ -199,7 +200,7 @@ type AzureThread = {
 function threadCommentIds(thread: AzureThread): readonly number[] {
   const ids: number[] = [];
   for (const comment of thread.comments) {
-    if (typeof comment.id === "number" && Number.isSafeInteger(comment.id)) {
+    if (isSafeInteger(comment.id)) {
       ids.push(comment.id);
     }
   }
@@ -313,8 +314,9 @@ async function postParentThread(
     return created === undefined ? undefined : { id: created };
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
-    process.stderr.write(
-      `::warning::umactually-pr-review: Azure parent PR comment POST failed (${message}); continuing with inline threads only.\n`,
+    writeBrandedAnnotation(
+      "warning",
+      `Azure parent PR comment POST failed (${message}); continuing with inline threads only.`,
     );
     return undefined;
   }
@@ -339,7 +341,7 @@ async function deleteParentThreadComments(input: {
   readonly commentIds: readonly number[];
 }): Promise<void> {
   for (const commentId of input.commentIds) {
-    if (!Number.isSafeInteger(commentId)) {
+    if (!isSafeInteger(commentId)) {
       continue;
     }
     const url = `${azurePrBaseUrl(input.context)}/threads/${input.threadId}/comments/${commentId}?api-version=7.1`;
@@ -352,13 +354,14 @@ async function deleteParentThreadComments(input: {
         await surfaceAzureHttpError({
           response,
           action: `Azure delete parent thread ${input.threadId} comment ${commentId}`,
-          logPrefix: "::warning::",
+          level: "warning",
         });
       }
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
-      process.stderr.write(
-        `::warning::umactually-pr-review: Azure delete parent thread ${input.threadId} comment ${commentId} threw (${message}); continuing.\n`,
+      writeBrandedAnnotation(
+        "warning",
+        `Azure delete parent thread ${input.threadId} comment ${commentId} threw (${message}); continuing.`,
       );
     }
   }
@@ -412,13 +415,14 @@ async function patchInlineCommentWithParentRef(input: {
       await surfaceAzureHttpError({
         response,
         action: `Azure patch inline thread ${input.threadId} comment ${input.commentId}`,
-        logPrefix: "::warning::",
+        level: "warning",
       });
     }
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
-    process.stderr.write(
-      `::warning::umactually-pr-review: Azure patch inline thread ${input.threadId} comment ${input.commentId} threw (${message}); continuing.\n`,
+    writeBrandedAnnotation(
+      "warning",
+      `Azure patch inline thread ${input.threadId} comment ${input.commentId} threw (${message}); continuing.`,
     );
   }
 }
@@ -479,7 +483,7 @@ async function postAzureThread(input: {
     return undefined;
   }
   const commentId = firstComment["id"];
-  if (typeof commentId !== "number" || !Number.isSafeInteger(commentId)) {
+  if (!isSafeInteger(commentId)) {
     return undefined;
   }
   return { threadId, commentId };
@@ -566,14 +570,12 @@ async function postAzureStatus(input: {
     try {
       const text = await response.clone().text();
       if (text.length > 0) {
-        bodySnippet = text.length > 1000 ? `${text.slice(0, 1000)}\u2026(truncated)` : text;
+        bodySnippet = truncateBodyForLog(text, 1000);
       }
     } catch {
       // Body read failed; the generic snippet above is the best we can do.
     }
-    process.stderr.write(
-      `::error::umactually-pr-review: Azure create PR status HTTP ${response.status} body=${bodySnippet}\n`,
-    );
+    writeBrandedAnnotation("error", `Azure create PR status HTTP ${response.status} body=${bodySnippet}`);
   }
   ensureHttpOk(response, "AZURE_CREATE_STATUS_FAILED", "Azure create PR status");
 }
@@ -620,7 +622,7 @@ export async function listAzureStatuses(context: AzureContext, fetchImpl: FetchI
     await surfaceAzureHttpError({
       response,
       action: "Azure list PR statuses",
-      logPrefix: "::warning::",
+      level: "warning",
     });
     return [];
   }
@@ -647,7 +649,7 @@ function parseAzureStatusEntry(value: unknown): AzureStatusEntry | null {
     return null;
   }
   const rawId = value["id"];
-  if (typeof rawId !== "number" || !Number.isSafeInteger(rawId)) {
+  if (!isSafeInteger(rawId)) {
     return null;
   }
   const descriptionRaw = value["description"];
@@ -756,8 +758,9 @@ export async function deleteAzureStatusById(input: {
     });
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
-    process.stderr.write(
-      `::warning::umactually-pr-review: Azure delete PR status ${input.statusId} threw (${message}); continuing.\n`,
+    writeBrandedAnnotation(
+      "warning",
+      `Azure delete PR status ${input.statusId} threw (${message}); continuing.`,
     );
     return false;
   }
@@ -767,7 +770,7 @@ export async function deleteAzureStatusById(input: {
   await surfaceAzureHttpError({
     response,
     action: `Azure delete PR status ${input.statusId}`,
-    logPrefix: "::warning::",
+    level: "warning",
   });
   return false;
 }
@@ -782,20 +785,18 @@ export async function deleteAzureStatusById(input: {
 async function surfaceAzureHttpError(input: {
   readonly response: Response;
   readonly action: string;
-  readonly logPrefix: "::warning::" | "::error::";
+  readonly level: "warning" | "error";
 }): Promise<void> {
   let bodySnippet = "(empty response body)";
   try {
     const text = await input.response.clone().text();
     if (text.length > 0) {
-      bodySnippet = text.length > 1000 ? `${text.slice(0, 1000)}\u2026(truncated)` : text;
+      bodySnippet = truncateBodyForLog(text, 1000);
     }
   } catch {
     // Body read failed; fall back to the generic snippet.
   }
-  process.stderr.write(
-    `${input.logPrefix}umactually-pr-review: ${input.action} HTTP ${input.response.status} body=${bodySnippet}\n`,
-  );
+  writeBrandedAnnotation(input.level, `${input.action} HTTP ${input.response.status} body=${bodySnippet}`);
 }
 
 /**
@@ -878,7 +879,7 @@ function parseAzureThread(value: unknown): AzureThread | null {
     }
   }
   const rawId = value["id"];
-  const threadId = typeof rawId === "number" && Number.isSafeInteger(rawId) ? rawId : undefined;
+  const threadId = isSafeInteger(rawId) ? rawId : undefined;
   return {
     id: threadId,
     status,
@@ -904,7 +905,7 @@ function readRightFileStart(context: Record<string, unknown>): { readonly line: 
     return null;
   }
   const line = start["line"];
-  return typeof line === "number" && Number.isSafeInteger(line) ? { line } : null;
+  return isSafeInteger(line) ? { line } : null;
 }
 
 function parseAzureComment(value: unknown): { readonly id: number | undefined; readonly content: string } | null {
@@ -916,7 +917,7 @@ function parseAzureComment(value: unknown): { readonly id: number | undefined; r
     return null;
   }
   const rawId = value["id"];
-  const id = typeof rawId === "number" && Number.isSafeInteger(rawId) ? rawId : undefined;
+  const id = isSafeInteger(rawId) ? rawId : undefined;
   return { id, content };
 }
 
@@ -931,13 +932,4 @@ function azureStatusesUrl(context: AzureContext): string {
 function azurePrBaseUrl(context: AzureContext): string {
   const project = encodeURIComponent(context.project);
   return `https://dev.azure.com/${context.org}/${project}/_apis/git/repositories/${context.repoId}/pullRequests/${context.prNumber}`;
-}
-
-function azureHeaders(token: string): Record<string, string> {
-  return {
-    Authorization: `Bearer ${token}`,
-    Accept: "application/json",
-    "Content-Type": "application/json",
-    "User-Agent": "umactually-pr-review",
-  };
 }
