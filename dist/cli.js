@@ -377,11 +377,12 @@ const KNOWN_ENV_VAR_NAMES = new Set(ALL_FIELDS.flatMap((def) => def.env));
 
 ;// CONCATENATED MODULE: ./src/util/cli-args.ts
 /**
- * Error class thrown by CLI arg parsers when an enum value is invalid.
+ * Default error class thrown by `readEnum` when an enum value is invalid.
  * The class lives here so `readEnum` can throw it without circular
  * imports between `cli-args.ts` and `parse-args.ts` (the parse-args.ts
  * file defines its own `CliUsageError` separately for parse-time
- * errors; this one is reserved for CLI arg-parser errors specifically).
+ * errors; callers that want the CLI to recognize the error can pass
+ * their own constructor via `readEnum(..., { errorClass: CliUsageError })`).
  */
 class CliArgError extends Error {
     name = "CliArgError";
@@ -413,30 +414,32 @@ function envFallback(...values) {
 }
 /**
  * Validate a CLI enum value against an accepted set, returning the value
- * when it matches and throwing `CliArgError` on miss. Replaces the four
- * hand-coded enum parsers (`readPlatform`, `readEffort`, `readProvider`,
+ * when it matches and throwing on miss. Replaces the four hand-coded
+ * enum parsers (`readPlatform`, `readEffort`, `readProvider`,
  * `readMinimumSeverity`) in `parse-args.ts` so the CLI accepts the
  * exact same set as `FIELDS.<x>.enumValues` in `field-schema.ts`.
  * Single source of truth — changing the canonical `enumValues` array
  * updates both surfaces.
  *
- * Throws `CliArgError` (a typed subclass of `Error`) so the CLI error
- * handler can distinguish arg-parser failures from generic runtime
- * errors. The message format matches the original hand-coded parsers
+ * The error class is injectable via the 4th argument so callers that
+ * need a typed error (e.g. `CliUsageError` in `parse-args.ts`) can
+ * preserve their outer-handler contract; without an explicit class,
+ * `readEnum` falls back to `CliArgError` (also exported from this
+ * module). The message format matches the original hand-coded parsers
  * (`invalid --flag value: X`) so existing tests and user-facing
  * diagnostics stay byte-identical.
  *
  * The accepted set is typed `readonly T[]` so the literal union narrows
  * naturally without an explicit cast: `readEnum<CliPlatform>("--platform",
- * v, FIELDS.platform.enumValues as readonly CliPlatform[])`.
+ * v, FIELDS.platform.enumValues as readonly CliPlatform[], CliUsageError)`.
  */
-function readEnum(flag, value, accepted) {
+function readEnum(flag, value, accepted, errorClass = CliArgError) {
     for (const candidate of accepted) {
         if (candidate === value) {
             return candidate;
         }
     }
-    throw new CliArgError(`invalid ${flag} value: ${value}`);
+    throw new errorClass(`invalid ${flag} value: ${value}`);
 }
 
 ;// CONCATENATED MODULE: ./src/util/json-guards.ts
@@ -876,7 +879,7 @@ function readIntValue(args, index, flag) {
 }
 function readMinimumSeverity(args, index) {
     const raw = readValue(args, index, "minimum-severity");
-    return readEnum("--minimum-severity", raw, FIELDS.minimumSeverity.enumValues);
+    return readEnum("--minimum-severity", raw, FIELDS.minimumSeverity.enumValues, CliUsageError);
 }
 function readPlatform(value) {
     // Accept "azure-devops" as a CLI-only alias for "azure" so callers
@@ -884,14 +887,14 @@ function readPlatform(value) {
     if (value === "azure-devops") {
         return "azure";
     }
-    return readEnum("--platform", value, FIELDS.platform.enumValues);
+    return readEnum("--platform", value, FIELDS.platform.enumValues, CliUsageError);
 }
 function readEffort(args, index) {
     const raw = readValue(args, index, "effort");
-    return readEnum("--effort", raw, FIELDS.effort.enumValues);
+    return readEnum("--effort", raw, FIELDS.effort.enumValues, CliUsageError);
 }
 function readProvider(value) {
-    return readEnum("--provider", value, FIELDS.provider.enumValues);
+    return readEnum("--provider", value, FIELDS.provider.enumValues, CliUsageError);
 }
 
 ;// CONCATENATED MODULE: ./src/cli/help.ts
@@ -2527,11 +2530,16 @@ function authHeaders(token, opts) {
  * redefining it (previously these drifted between
  * `live-github.ts:223` and `http.ts:21`).
  *
- * Version `2026-03-10` is the current GitHub REST API version as of
- * 2026-03-12 (per https://github.blog/changelog/2026-03-12-rest-api-version-2026-03-10-is-now-available/)
- * and is supported through at least 2028-03-10. The previous
- * `2022-11-28` default is still supported but is now the legacy
- * fallback; clients that omit the header still get that version.
+ * Version `2026-03-10` is the current GitHub REST API version. Per
+ * GitHub's official changelog (2026-03-12):
+ *   https://github.blog/changelog/2026-03-12-rest-api-version-2026-03-10-is-now-available/
+ * and the API versions reference page:
+ *   https://docs.github.com/en/rest/about-the-rest-api/api-versions
+ *   "the API version 2026-03-10 was released on Tue, 10 Mar 2026"
+ *   "| 2026-03-10 | Not yet scheduled |"
+ * It is supported through at least 2028-03-10 (the `2022-11-28` legacy
+ * default is supported until March 2028). Requests that omit the header
+ * still default to `2022-11-28`.
  */
 function githubHeaders(token) {
     return authHeaders(token, {

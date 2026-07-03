@@ -352,7 +352,7 @@ function readIntValue(args: readonly string[], index: number, flag: string): num
 
 function readMinimumSeverity(args: readonly string[], index: number): CliMinimumSeverity {
   const raw = readValue(args, index, "minimum-severity");
-  return readEnum<CliMinimumSeverity>("--minimum-severity", raw, FIELDS.minimumSeverity.enumValues as readonly CliMinimumSeverity[]);
+  return readEnum<CliMinimumSeverity>("--minimum-severity", raw, FIELDS.minimumSeverity.enumValues as readonly CliMinimumSeverity[], CliUsageError);
 }
 
 function readPlatform(value: string): CliPlatform {
@@ -361,14 +361,14 @@ function readPlatform(value: string): CliPlatform {
   if (value === "azure-devops") {
     return "azure";
   }
-  return readEnum<CliPlatform>("--platform", value, FIELDS.platform.enumValues as readonly CliPlatform[]);
+  return readEnum<CliPlatform>("--platform", value, FIELDS.platform.enumValues as readonly CliPlatform[], CliUsageError);
 }
 
 function readEffort(args: readonly string[], index: number): CliEffort {
   const raw = readValue(args, index, "effort");
-  return readEnum<CliEffort>("--effort", raw, FIELDS.effort.enumValues as readonly CliEffort[]);
+  return readEnum<CliEffort>("--effort", raw, FIELDS.effort.enumValues as readonly CliEffort[], CliUsageError);
 }
 
 function readProvider(value: string): CliProvider {
-  return readEnum<CliProvider>("--provider", value, FIELDS.provider.enumValues as readonly CliProvider[]);
+  return readEnum<CliProvider>("--provider", value, FIELDS.provider.enumValues as readonly CliProvider[], CliUsageError);
 }

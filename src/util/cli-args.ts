@@ -1,9 +1,10 @@
 /**
- * Error class thrown by CLI arg parsers when an enum value is invalid.
+ * Default error class thrown by `readEnum` when an enum value is invalid.
  * The class lives here so `readEnum` can throw it without circular
  * imports between `cli-args.ts` and `parse-args.ts` (the parse-args.ts
  * file defines its own `CliUsageError` separately for parse-time
- * errors; this one is reserved for CLI arg-parser errors specifically).
+ * errors; callers that want the CLI to recognize the error can pass
+ * their own constructor via `readEnum(..., { errorClass: CliUsageError })`).
  */
 export class CliArgError extends Error {
   override readonly name = "CliArgError";
@@ -40,32 +41,35 @@ export function envFallback(...values: ReadonlyArray<string | undefined>): strin
 
 /**
  * Validate a CLI enum value against an accepted set, returning the value
- * when it matches and throwing `CliArgError` on miss. Replaces the four
- * hand-coded enum parsers (`readPlatform`, `readEffort`, `readProvider`,
+ * when it matches and throwing on miss. Replaces the four hand-coded
+ * enum parsers (`readPlatform`, `readEffort`, `readProvider`,
  * `readMinimumSeverity`) in `parse-args.ts` so the CLI accepts the
  * exact same set as `FIELDS.<x>.enumValues` in `field-schema.ts`.
  * Single source of truth — changing the canonical `enumValues` array
  * updates both surfaces.
  *
- * Throws `CliArgError` (a typed subclass of `Error`) so the CLI error
- * handler can distinguish arg-parser failures from generic runtime
- * errors. The message format matches the original hand-coded parsers
+ * The error class is injectable via the 4th argument so callers that
+ * need a typed error (e.g. `CliUsageError` in `parse-args.ts`) can
+ * preserve their outer-handler contract; without an explicit class,
+ * `readEnum` falls back to `CliArgError` (also exported from this
+ * module). The message format matches the original hand-coded parsers
  * (`invalid --flag value: X`) so existing tests and user-facing
  * diagnostics stay byte-identical.
  *
  * The accepted set is typed `readonly T[]` so the literal union narrows
  * naturally without an explicit cast: `readEnum<CliPlatform>("--platform",
- * v, FIELDS.platform.enumValues as readonly CliPlatform[])`.
+ * v, FIELDS.platform.enumValues as readonly CliPlatform[], CliUsageError)`.
  */
 export function readEnum<T extends string>(
   flag: string,
   value: string,
   accepted: readonly T[],
+  errorClass: new (message: string) => Error = CliArgError,
 ): T {
   for (const candidate of accepted) {
     if (candidate === value) {
       return candidate;
     }
   }
-  throw new CliArgError(`invalid ${flag} value: ${value}`);
+  throw new errorClass(`invalid ${flag} value: ${value}`);
 }

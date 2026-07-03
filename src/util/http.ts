@@ -28,11 +28,16 @@ export function authHeaders(
  * redefining it (previously these drifted between
  * `live-github.ts:223` and `http.ts:21`).
  *
- * Version `2026-03-10` is the current GitHub REST API version as of
- * 2026-03-12 (per https://github.blog/changelog/2026-03-12-rest-api-version-2026-03-10-is-now-available/)
- * and is supported through at least 2028-03-10. The previous
- * `2022-11-28` default is still supported but is now the legacy
- * fallback; clients that omit the header still get that version.
+ * Version `2026-03-10` is the current GitHub REST API version. Per
+ * GitHub's official changelog (2026-03-12):
+ *   https://github.blog/changelog/2026-03-12-rest-api-version-2026-03-10-is-now-available/
+ * and the API versions reference page:
+ *   https://docs.github.com/en/rest/about-the-rest-api/api-versions
+ *   "the API version 2026-03-10 was released on Tue, 10 Mar 2026"
+ *   "| 2026-03-10 | Not yet scheduled |"
+ * It is supported through at least 2028-03-10 (the `2022-11-28` legacy
+ * default is supported until March 2028). Requests that omit the header
+ * still default to `2022-11-28`.
  */
 export function githubHeaders(token: string): Record<string, string> {
   return authHeaders(token, {
