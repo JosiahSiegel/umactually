@@ -23,7 +23,7 @@ inputs:
     required: false
     default: "auto"
   prompt:
-    description: Inline prompt override.
+    description: Inline system prompt override. Wins over prompt-file when both are set.
     required: false
     default: ""
   prompt-file:
@@ -31,11 +31,23 @@ inputs:
     required: false
     default: ""
   additional-prompt:
-    description: Inline additional prompt override.
+    description: Inline additional prompt override. Wins over additional-prompt-file when both are set.
     required: false
     default: ""
   additional-prompt-file:
     description: Repository-relative additional prompt file.
+    required: false
+    default: ""
+  effort:
+    description: Reasoning effort hint (low|medium|high). Currently forwarded as reasoning.effort to providers that support it; medium is the default.
+    required: false
+    default: "medium"
+  provider:
+    description: Provider family (openai-compatible|copilot). Default openai-compatible. Set to copilot to use GitHub Copilot (requires a GitHub PAT as UMACTUALLY_API_KEY and UMACTUALLY_GITHUB_API_BASE for Enterprise Server).
+    required: false
+    default: "openai-compatible"
+  github-api-base:
+    description: GitHub API base URL for Copilot provider token exchange. Defaults to https://api.github.com; set to https://<tenant>.ghe.com for GitHub Enterprise Server data residency.
     required: false
     default: ""
   walkthrough:
@@ -86,6 +98,15 @@ inputs:
     description: Cap on posted comments per review.
     required: false
     default: "50"
+  review-file-limit:
+    description: |
+      Soft cap on the number of changed files the live review path will process.
+      When a PR's diff touches more files than this, the CLI skips the chunked
+      review and posts a "diff too large to review" parent card with zero
+      inline findings, rather than feeding arbitrarily-large chunks to the LLM
+      (which produces hallucinated findings). Set to 0 to disable the limit.
+    required: false
+    default: "200"
   include-sonarqube:
     description: Pull SonarQube issues alongside the PR review.
     required: false

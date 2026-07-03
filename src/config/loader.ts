@@ -18,21 +18,23 @@ import type {
   PromptConfig,
   ProviderConfig,
   ReviewConfig,
+  ReviewScopeControls,
   Severity,
   SeverityControls,
   SonarConfig,
   TimeoutControls,
 } from "./types.js";
 
+export const DEFAULT_MAX_COMMENTS = 50;
+export const DEFAULT_REVIEW_FILE_LIMIT = 200;
 const DEFAULT_REVIEW_SECONDS = 300;
 const DEFAULT_STALL_SECONDS = 270;
 const DEFAULT_PER_REQUEST_SECONDS = 60;
 const DEFAULT_SONAR_TIMEOUT_SECONDS = 60;
-const DEFAULT_MAX_COMMENTS = 50;
 const DEFAULT_MINIMUM_SEVERITY: Severity = "minor";
 const DEFAULT_PLATFORM: Platform = "auto";
 const DEFAULT_PROVIDER_URL = "https://api.openai.com/v1";
-const DEFAULT_PROVIDER_MODEL = "gpt-4o-mini";
+const DEFAULT_PROVIDER_MODEL = "auto";
 const DEFAULT_PROMPT_BYTE_CAP = 64 * 1024;
 
 /**
@@ -99,6 +101,16 @@ export async function loadConfigFromSources(sources: LoadConfigSources): Promise
     maxComments: pickInt(cli.maxComments, inputs.maxComments, env.maxComments, DEFAULT_MAX_COMMENTS, "severity.maxComments"),
   };
 
+  const scope: ReviewScopeControls = {
+    reviewFileLimit: pickInt(
+      cli.reviewFileLimit,
+      inputs.reviewFileLimit,
+      env.reviewFileLimit,
+      DEFAULT_REVIEW_FILE_LIMIT,
+      "scope.reviewFileLimit",
+    ),
+  };
+
   const sonar: SonarConfig = {
     enabled: pickBool(cli.sonarEnabled, inputs.sonarEnabled, env.sonarEnabled, false, "sonar.enabled"),
     host: pickString(cli.sonarHost, inputs.sonarHost, env.sonarHost, "", "sonar.host"),
@@ -151,6 +163,7 @@ export async function loadConfigFromSources(sources: LoadConfigSources): Promise
     guidance,
     timeouts,
     severity,
+    scope,
     sonar,
     leakDetection,
     redactorEnabled,

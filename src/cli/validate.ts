@@ -59,8 +59,10 @@ export function collectValidationErrors(parsed: ParsedCliArgs): readonly string[
   }
 
   if (!parsed.dryRun) {
-    if (parsed.apiUrl === null) {
-      errors.push("--api-url is required unless --dry-run is set");
+    // Copilot provider does not need --api-url; it uses the GitHub Copilot
+    // token exchange endpoint (defaulting to https://api.github.com).
+    if (parsed.apiUrl === null && parsed.provider !== "copilot") {
+      errors.push("--api-url is required unless --dry-run is set or --provider copilot is used");
     }
     if (parsed.apiKey === null) {
       errors.push("--api-key is required unless --dry-run is set");

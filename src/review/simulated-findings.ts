@@ -30,14 +30,15 @@ export function buildSimulatedFindings(
   const positions: DiffPositionIndex = parseDiffPositions(diffText);
   const enumerated: ReadonlyArray<DiffPosition> = positions.enumerate();
 
-  const inlineBlueprints: ReadonlyArray<SimulatedFindingBlueprint> = buildDiverseBlueprints(
-    enumerated,
-    diffText,
-  );
+  const inlineBlueprints: ReadonlyArray<SimulatedFindingBlueprint> = enumerated.length > 0
+    ? buildDiverseBlueprints(enumerated, diffText)
+    : buildFallbackBlueprints();
+
+  const acceptUnanchored = enumerated.length === 0;
 
   const comments: Array<ProviderReviewPayload["comments"][number]> = [];
   for (const blueprint of inlineBlueprints) {
-    if (positions.hasPosition(blueprint)) {
+    if (acceptUnanchored || positions.hasPosition(blueprint)) {
       comments.push({ ...blueprint });
     }
     if (comments.length >= MAX_INLINE) {
@@ -147,6 +148,28 @@ function buildDiverseBlueprints(
     return {
       path: position.path,
       line: position.line,
+      severity,
+      category,
+      body,
+    };
+  });
+}
+
+/**
+ * Static fallback fixture used when the diff has zero right-side positions
+ * (e.g., a placeholder diff, typo-only PR, or empty PR). Anchors inline
+ * comments to synthetic positions on `src/example.ts` so the demo path always
+ * shows the full render + post pipeline.
+ */
+function buildFallbackBlueprints(): ReadonlyArray<SimulatedFindingBlueprint> {
+  const fallbackLines: ReadonlyArray<number> = [3, 5, 7, 9, 11, 13];
+  return fallbackLines.map((line, index) => {
+    const severity = SEVERITY_PALETTE[index % SEVERITY_PALETTE.length] ?? "medium";
+    const category = CATEGORY_PALETTE[index % CATEGORY_PALETTE.length] ?? "correctness";
+    const body = `Simulated fallback finding at \`src/example.ts:${line}\` because the diff has no right-side positions to anchor a real review.`;
+    return {
+      path: "src/example.ts",
+      line,
       severity,
       category,
       body,

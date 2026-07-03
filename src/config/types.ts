@@ -56,12 +56,25 @@ export type ReviewConfig = {
   readonly guidance: GuidanceFlags;
   readonly timeouts: TimeoutControls;
   readonly severity: SeverityControls;
+  readonly scope: ReviewScopeControls;
   readonly sonar: SonarConfig;
   readonly leakDetection: boolean;
   readonly redactorEnabled: boolean;
   readonly platform: Platform;
   readonly githubToken: string;
   readonly azure: AzureConfig;
+};
+
+export type ReviewScopeControls = {
+  /**
+   * Soft cap on the number of changed files the live review path will
+   * process. When `countDiffFiles(diffText) > reviewFileLimit` the
+   * orchestrator skips the chunked review and posts a "diff too large
+   * to review" parent card with zero inline findings, rather than
+   * feeding arbitrarily-large per-file chunks to the LLM (which
+   * produces hallucinated findings that aren't grounded in the diff).
+   */
+  readonly reviewFileLimit: number;
 };
 
 export type CliArgs = {
@@ -84,6 +97,7 @@ export type CliArgs = {
   readonly ignoreMinor?: boolean;
   readonly minimumSeverity?: Severity;
   readonly maxComments?: number;
+  readonly reviewFileLimit?: number;
   readonly sonarEnabled?: boolean;
   readonly sonarHost?: string;
   readonly sonarToken?: string;
@@ -120,6 +134,7 @@ export type ActionInputs = {
   readonly ignoreMinor?: string | boolean;
   readonly minimumSeverity?: string;
   readonly maxComments?: string | number;
+  readonly reviewFileLimit?: string | number;
   readonly sonarEnabled?: string | boolean;
   readonly sonarHost?: string;
   readonly sonarToken?: string;
@@ -154,6 +169,7 @@ export type EnvSources = {
   readonly ignoreMinor?: string;
   readonly minimumSeverity?: string;
   readonly maxComments?: string;
+  readonly reviewFileLimit?: string;
   readonly sonarEnabled?: string;
   readonly sonarHost?: string;
   readonly sonarToken?: string;

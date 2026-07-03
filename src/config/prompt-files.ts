@@ -1,5 +1,5 @@
 import { realpath as fsRealpath, stat as fsStat, readFile as fsReadFile } from "node:fs/promises";
-import { resolve as pathResolve, sep as pathSep, posix } from "node:path";
+import { isAbsolute, resolve as pathResolve, sep as pathSep, posix } from "node:path";
 
 import { InvalidConfigError, PromptFileError } from "./errors.js";
 
@@ -79,6 +79,9 @@ export async function readPromptFiles(
   for (const rawPath of paths) {
     if (typeof rawPath !== "string" || rawPath.length === 0) {
       throw new PromptFileError(String(rawPath), "not-found");
+    }
+    if (isAbsolute(rawPath)) {
+      throw new PromptFileError(rawPath, "outside-cwd");
     }
     const resolved = await fs.realpathWithinCwd(rawPath, cwdReal, fs);
     if (!resolved.withinCwd) {

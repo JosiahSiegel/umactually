@@ -1,11 +1,13 @@
+// allow: SIZE_OK — single GitHub live orchestration suite sharing endpoint recorder, diff fixtures, and marker-review cases
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { parseCliArgs } from "../../src/cli.js";
 import { runLive } from "../../src/cli/orchestrator.js";
+import { clearCopilotTokenCache } from "../../src/provider/copilot-token.js";
 
 type RecordedCall = {
   readonly url: string;
@@ -31,6 +33,16 @@ const DIFF_TEXT = [
   " }",
   "+",
   "+export const changedLine = true;",
+].join("\n");
+
+const SECRET_DIFF_TEXT = [
+  "diff --git a/src/secret.ts b/src/secret.ts",
+  "index 1111111..2222222 100644",
+  "--- a/src/secret.ts",
+  "+++ b/src/secret.ts",
+  "@@ -1,2 +1,3 @@",
+  " export const safe = true;",
+  "+export const token = \"sk_test_secret_leak\";",
 ].join("\n");
 
 const EVENT_JSON = JSON.stringify({
@@ -59,6 +71,26 @@ const PROVIDER_REVIEW = JSON.stringify({
     },
   ],
   suppressed_comments: [],
+});
+
+const COPILOT_TOKEN_ENVELOPE = JSON.stringify({
+  token: "tid=synthetic-live",
+  expires_at: 9_999_999_999,
+  endpoints: { api: "https://api.individual.githubcopilot.com" },
+});
+
+const COPILOT_CHAT_SUCCESS_BODY = JSON.stringify({
+  id: "chatcmpl_copilot_live_001",
+  model: "gpt-5",
+  choices: [
+    {
+      message: {
+        role: "assistant",
+        content: PROVIDER_REVIEW,
+      },
+      finish_reason: "stop",
+    },
+  ],
 });
 
 function makeJsonResponse(value: unknown, status = 200): Response {
@@ -117,11 +149,27 @@ function readArray(value: unknown, label: string): readonly unknown[] {
   throw new TypeError(`${label} must be an array`);
 }
 
+function readProviderUserPrompt(call: RecordedCall): string {
+  const body = readRecord(call.body, "provider request");
+  const input = readArray(body["input"], "provider request input");
+  for (const entry of input) {
+    const record = readRecord(entry, "provider input entry");
+    if (record["role"] === "user" && typeof record["content"] === "string") {
+      return record["content"];
+    }
+  }
+  throw new TypeError("provider request must include a user prompt");
+}
+
 function githubRoutes(providerBody: string): readonly FetchRoute[] {
+  return githubRoutesWithDiff(providerBody, DIFF_TEXT);
+}
+
+function githubRoutesWithDiff(providerBody: string, diffText: string): readonly FetchRoute[] {
   return [
     {
       match: (url, method) => method === "GET" && url.endsWith("/pulls/42"),
-      response: new Response(DIFF_TEXT, { status: 200 }),
+      response: new Response(diffText, { status: 200 }),
     },
     {
       match: (url, method) => method === "POST" && url === "https://provider.example/v1/responses",
@@ -169,7 +217,7 @@ function githubRoutesWithExistingMarkerReview(
     {
       match: (url, method) => method === "GET" && url.endsWith("/pulls/42/reviews"),
       response: makeJsonResponse([
-        { id: options.existingReviewId, body: EXISTING_MARKER_REVIEW_BODY },
+        { id: options.existingReviewId, body: EXISTING_MARKER_REVIEW_BODY, state: "PENDING" },
       ]),
     },
     {
@@ -229,6 +277,74 @@ describe("runLive GitHub orchestration", () => {
     expect(result.message).not.toContain("github-token-secret");
   });
 
+  it("runs Copilot live orchestration with an API key and no provider URL", async () => {
+    // Given: Copilot is selected with a PAT and no --api-url or UMACTUALLY_API_URL.
+    clearCopilotTokenCache();
+    workspace = await mkdtemp(join(tmpdir(), "umactually-live-copilot-no-url-"));
+    const eventPath = join(workspace, "event.json");
+    await writeFile(eventPath, EVENT_JSON, "utf8");
+    const env = {
+      GITHUB_ACTIONS: "true",
+      GITHUB_TOKEN: "github-token-secret",
+      GITHUB_REPOSITORY: "octo-org/octo-repo",
+      GITHUB_EVENT_PATH: eventPath,
+      UMACTUALLY_MODEL: "gpt-5",
+    } satisfies NodeJS.ProcessEnv;
+    const recorder = makeFetchRecorder([
+      {
+        match: (url, method) => method === "GET" && url.endsWith("/pulls/42"),
+        response: new Response(DIFF_TEXT, { status: 200 }),
+      },
+      {
+        match: (url, method) => method === "GET" && url === "https://api.github.com/copilot_internal/v2/token",
+        response: new Response(COPILOT_TOKEN_ENVELOPE, {
+          status: 200,
+          headers: { "content-type": "application/json" },
+        }),
+      },
+      {
+        match: (url, method) =>
+          method === "POST" && url === "https://api.individual.githubcopilot.com/chat/completions",
+        response: new Response(COPILOT_CHAT_SUCCESS_BODY, {
+          status: 200,
+          headers: { "content-type": "application/json" },
+        }),
+      },
+      {
+        match: (url, method) => method === "GET" && url.endsWith("/pulls/42/reviews"),
+        response: makeJsonResponse([]),
+      },
+      {
+        match: (url, method) => method === "POST" && url.endsWith("/pulls/42/reviews"),
+        response: makeJsonResponse({ id: 9001, body: "" }, 201),
+      },
+    ]);
+
+    // When: live orchestration runs against the Copilot provider.
+    const result = await runLive({
+      parsed: parseCliArgs([
+        "--platform",
+        "github",
+        "--provider",
+        "copilot",
+        "--api-key",
+        "gho_test_copilot",
+        "--no-dry-run",
+      ]),
+      cwd: workspace,
+      env,
+      fetchImpl: recorder.fetchImpl,
+    });
+
+    // Then: the review posts successfully through Copilot token + chat, not the openai-compatible responses endpoint.
+    expect(result.exitCode).toBe(0);
+    expect(result.posted).toBe(true);
+    expect(recorder.calls.some((call) => call.url === "https://api.github.com/copilot_internal/v2/token")).toBe(true);
+    expect(recorder.calls.some((call) => call.url === "https://provider.example/v1/responses")).toBe(false);
+    expect(recorder.calls.some((call) => call.url.endsWith("/v1/responses"))).toBe(false);
+    expect(findCall(recorder.calls, "POST", "/pulls/42/reviews")).toMatchObject({ method: "POST" });
+  });
+
   it("posts a safe fallback summary when the provider returns malformed JSON", async () => {
     // Given: provider output that cannot be parsed as the review schema.
     workspace = await mkdtemp(join(tmpdir(), "umactually-live-malformed-"));
@@ -244,15 +360,100 @@ describe("runLive GitHub orchestration", () => {
       fetchImpl: recorder.fetchImpl,
     });
 
-    // Then: it still posts one marker review, but never publishes raw provider text.
+    // Then: it still posts one marker review, with the raw provider text
+    // surfaced in a collapsed `<details>` block for diagnostics (so
+    // reviewers can see what the model actually returned). The original
+    // safe-fallback contract — verdict badge + parse-fail summary line —
+    // is preserved. Any actual secrets in the raw text would still be
+    // sanitized via the existing sanitizer; this test pins the new
+    // "include raw text for diagnostics" contract.
     expect(result.exitCode).toBe(0);
     expect(result.posted).toBe(true);
     const postCall = findCall(recorder.calls, "POST", "/pulls/42/reviews");
     const body = readRecord(postCall.body as Record<string, unknown>, "review request");
     expect(body["body"]).toContain("<!-- umactually-pr-review -->");
     expect(body["body"]).toContain("Provider response did not contain a valid JSON review payload.");
-    expect(body["body"]).not.toContain("RAW_PROVIDER_JSON_SHOULD_NOT_POST");
+    // The raw provider text is now included in a `<details>` block so
+    // reviewers can diagnose parse-fail without leaving the PR.
+    expect(body["body"]).toContain("RAW_PROVIDER_JSON_SHOULD_NOT_POST");
+    expect(body["body"]).toContain("<details>");
+    expect(body["body"]).toContain("📨 Raw provider response (truncated)");
+    // Model + provider line shows which backend failed (no secrets).
+    expect(body["body"]).toContain("Provider: `openai-compatible`");
     expect(readArray(body["comments"], "review comments")).toHaveLength(0);
+  });
+
+  it("blocks high-confidence leaks before submitting the diff to the provider", async () => {
+    // Given: the PR diff contains a high-confidence API key pattern.
+    workspace = await mkdtemp(join(tmpdir(), "umactually-live-leak-pre-provider-"));
+    const eventPath = join(workspace, "event.json");
+    await writeFile(eventPath, EVENT_JSON, "utf8");
+    const recorder = makeFetchRecorder(githubRoutesWithDiff(PROVIDER_REVIEW, SECRET_DIFF_TEXT));
+
+    // When: the live GitHub path runs with leak detection enabled.
+    const result = await runLive({
+      parsed: parseCliArgs(["--platform", "github", "--no-dry-run"]),
+      cwd: workspace,
+      env: githubEnv(eventPath),
+      fetchImpl: recorder.fetchImpl,
+    });
+
+    // Then: the run fails before the provider receives the secret-bearing diff.
+    expect(result.exitCode).toBe(1);
+    expect(result.posted).toBe(false);
+    expect(result.message).toContain("high-confidence secret");
+    expect(recorder.calls.some((call) => call.url === "https://provider.example/v1/responses")).toBe(false);
+  });
+
+  it("includes live SonarQube report in the provider user prompt", async () => {
+    // Given: SonarQube is configured and reports an ERROR quality gate with findings.
+    workspace = await mkdtemp(join(tmpdir(), "umactually-live-sonar-prompt-"));
+    const eventPath = join(workspace, "event.json");
+    await writeFile(eventPath, EVENT_JSON, "utf8");
+    const sonarRoutes: readonly FetchRoute[] = [
+      {
+        match: (url, method) => method === "GET" && url.includes("/api/qualitygates/project_status"),
+        response: makeJsonResponse({ projectStatus: { status: "ERROR" } }),
+      },
+      {
+        match: (url, method) => method === "GET" && url.includes("/api/issues/search"),
+        response: makeJsonResponse({ total: 5 }),
+      },
+      {
+        match: (url, method) => method === "GET" && url.includes("/api/hotspots/search"),
+        response: makeJsonResponse({ paging: { total: 2 } }),
+      },
+    ];
+    const recorder = makeFetchRecorder([...sonarRoutes, ...githubRoutes(PROVIDER_REVIEW)]);
+
+    // When: live orchestration runs with --include-sonarqube.
+    const result = await runLive({
+      parsed: parseCliArgs([
+        "--platform",
+        "github",
+        "--no-dry-run",
+        "--include-sonarqube",
+        "--sonar-host-url",
+        "https://sonar.example.test",
+        "--sonar-token",
+        "sonar-token",
+        "--sonar-project-key",
+        "example-project",
+        "--sonar-timeout-seconds",
+        "10",
+      ]),
+      cwd: workspace,
+      env: githubEnv(eventPath),
+      fetchImpl: recorder.fetchImpl,
+    });
+
+    // Then: the provider prompt includes the live Sonar context, not just logs.
+    expect(result.exitCode).toBe(0);
+    const providerCall = findCall(recorder.calls, "POST", "/v1/responses");
+    const userPrompt = readProviderUserPrompt(providerCall);
+    expect(userPrompt).toContain("SonarQube report:");
+    expect(userPrompt).toContain("Quality gate: ERROR");
+    expect(userPrompt).toContain("Imported findings: 7");
   });
 
   it("posts a GitHub pull request review with marker body and valid inline comments", async () => {
@@ -284,7 +485,7 @@ describe("runLive GitHub orchestration", () => {
       path: "src/review/example.ts",
       line: 3,
       side: "RIGHT",
-      body: "**high correctness**\n\nTighten this changed line.",
+      body: "`high` `correctness`\n\nTighten this changed line.",
     });
   });
 
@@ -364,31 +565,40 @@ describe("runLive GitHub orchestration", () => {
     // Then: the simulated summary replaces the live "empty" summary.
     expect(body["body"]).toContain("Simulated review for octo-org/octo-repo#42");
 
-    // Then: the posted body MUST NOT contain raw provider JSON, the API key,
-    // or a fenced details block (the marker is appended by the posting layer,
-    // not by the fixture itself).
+    // Then: the posted body MUST NOT contain raw provider JSON or any of
+    // the secrets the fixture seeded into the review data. The structured
+    // review body emits a <details> collapse block by design, so we no
+    // longer assert against that pattern; the secret-leak check is the
+    // load-bearing assertion here.
     const postedText = JSON.stringify(body);
     expect(postedText).not.toContain("provider-key-secret");
     expect(postedText).not.toContain("github-token-secret");
     expect(postedText).not.toContain("RAW_PROVIDER_JSON");
-    expect(postedText).not.toMatch(/<details[\s>]/u);
   });
 
-  it("FORCES the deterministic fixture when --simulate-findings is set, even when the live provider returned real findings", async () => {
+  it("DOES NOT replace when --simulate-findings is set and live findings exist (live always wins)", async () => {
     // Given: the live provider returns a non-empty review (real findings).
-    workspace = await mkdtemp(join(tmpdir(), "umactually-live-simulate-overrides-"));
+    workspace = await mkdtemp(join(tmpdir(), "umactually-live-simulate-keeps-live-"));
     const eventPath = join(workspace, "event.json");
     await writeFile(eventPath, EVENT_JSON, "utf8");
     const recorder = makeFetchRecorder(githubRoutes(PROVIDER_REVIEW));
 
-    // When: --simulate-findings is set. The flag is authoritative — it must
-    // drive the posted review regardless of what the live provider returned.
+    // Capture stderr to assert the ::notice:: line.
+    const stderrLines: string[] = [];
+    const stderrSpy = vi.spyOn(process.stderr, "write").mockImplementation((chunk) => {
+      stderrLines.push(String(chunk));
+      return true;
+    });
+
+    // When: --simulate-findings is set but the live result has real findings.
+    // Live findings always win — the fixture is a fallback for empty results only.
     const result = await runLive({
       parsed: parseCliArgs(["--platform", "github", "--no-dry-run", "--simulate-findings"]),
       cwd: workspace,
       env: githubEnv(eventPath),
       fetchImpl: recorder.fetchImpl,
     });
+    stderrSpy.mockRestore();
 
     // Then: the post is successful and the body carries the marker.
     expect(result.exitCode).toBe(0);
@@ -397,25 +607,21 @@ describe("runLive GitHub orchestration", () => {
     const body = readRecord(postCall.body as Record<string, unknown>, "review request");
     expect(body["body"]).toContain("<!-- umactually-pr-review -->");
 
-    // Then: the posted body uses the simulated summary, NOT the live provider summary.
-    expect(body["body"]).toContain("Simulated review for octo-org/octo-repo#42");
-    expect(body["body"]).not.toContain("One valid inline finding.");
+    // Then: the posted body uses the LIVE summary (the fixture did NOT override).
+    expect(body["body"]).toContain("One valid inline finding.");
+    expect(body["body"]).not.toContain("Simulated review for");
 
-    // Then: 4-6 inline threads from the deterministic fixture are posted.
+    // Then: exactly 1 inline thread is posted (the live one, not 4-6 fixture ones).
     const comments = readArray(body["comments"], "review comments");
-    expect(comments.length).toBeGreaterThanOrEqual(4);
-    expect(comments.length).toBeLessThanOrEqual(6);
+    expect(comments).toHaveLength(1);
 
-    // Then: the provider label in the body still reads "openai-compatible"
-    // (the fixture does not mint its own provider identity).
+    // Then: the provider label in the body still reads "openai-compatible".
     expect(body["body"]).toContain("openai-compatible");
 
-    // Then: the posted body MUST NOT contain raw provider JSON, the API key,
-    // or a fenced details block.
-    const postedText = JSON.stringify(body);
-    expect(postedText).not.toContain("provider-key-secret");
-    expect(postedText).not.toContain("github-token-secret");
-    expect(postedText).not.toMatch(/<details[\s>]/u);
+    // Then: stderr emits a ::notice:: explaining that the flag was set but ignored.
+    const allStderr = stderrLines.join("");
+    expect(allStderr).toContain("::notice::");
+    expect(allStderr).toMatch(/ignored/i);
   });
 
   it("does NOT replace when --simulate-findings is false (default)", async () => {
@@ -524,7 +730,7 @@ describe("runLive GitHub orchestration", () => {
       path: "src/review/example.ts",
       line: 3,
       side: "RIGHT",
-      body: "**high correctness**\n\nTighten this changed line.",
+      body: "`high` `correctness`\n\nTighten this changed line.",
     });
     expect(postBody["body"]).toContain("<!-- umactually-pr-review -->");
     expect(postBody["event"]).toBe("REQUEST_CHANGES");

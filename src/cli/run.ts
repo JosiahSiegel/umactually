@@ -9,6 +9,7 @@ import { readEnvSources } from "../config/env-sources.js";
 import type { EnvSources } from "../config/types.js";
 import type { ParsedCliArgs } from "./parse-args.js";
 import type { ResolvedPlatform } from "./validate.js";
+import { runLive as runOrchestrator } from "./orchestrator.js";
 
 export type CliRunResult = {
   readonly exitCode: number;
@@ -267,9 +268,9 @@ export function dispatchLive(parsed: ParsedCliArgs, cwd: string, env: NodeJS.Pro
   // Live orchestration lives in src/cli/orchestrator.ts so the dry-run path
   // keeps a single-responsibility surface. This thin wrapper exists only to
   // preserve the public CLI module exports expected by existing tests.
-  return import("./orchestrator.js").then(({ runLive }) =>
-    runLive({ parsed, cwd, env }).then((result) => ({
-      exitCode: result.exitCode,
-    })),
-  );
+  // Static import (no dynamic import()) so ncc emits a single bundle chunk
+  // rather than a content-hashed dynamic chunk that would need to be committed.
+  return runOrchestrator({ parsed, cwd, env }).then((result) => ({
+    exitCode: result.exitCode,
+  }));
 }

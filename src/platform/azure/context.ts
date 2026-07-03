@@ -26,6 +26,7 @@ export class AzureContextError extends Error {
 }
 
 const SYSTEM_ACCESSTOKEN_ALIAS = "SYSTEM_ACCESSTOKEN";
+const AZURE_DEVOPS_TOKEN_ALIAS = "AZURE_DEVOPS_TOKEN";
 const AZURE_DEVOPS_HOST = "dev.azure.com";
 
 export function readAzureContext(env: NodeJS.ProcessEnv): AzureContext {
@@ -49,9 +50,23 @@ export function readAzureContext(env: NodeJS.ProcessEnv): AzureContext {
 }
 
 function readAzureToken(env: NodeJS.ProcessEnv): string {
+  // Prefer an explicit Azure DevOps PAT (set by a variable group) so PR
+  // threads/statuses can be posted by an identity that already holds the
+  // "Contribute to pull requests" permission. The project build service
+  // identity mapped to SYSTEM_ACCESSTOKEN does not always hold that
+  // permission, which causes HTTP 403 on the threads and statuses
+  // endpoints. Falling back keeps the standard Azure Pipelines OAuth
+  // token usable for manual/dry-run callers that do not have a PAT.
+  const explicitToken = env[AZURE_DEVOPS_TOKEN_ALIAS];
+  if (explicitToken !== undefined && explicitToken.length > 0) {
+    return explicitToken;
+  }
   const token = env[SYSTEM_ACCESSTOKEN_ALIAS];
   if (token === undefined || token.length === 0) {
-    throw new AzureContextError("AZURE_TOKEN_MISSING", "Azure Pipelines SYSTEM_ACCESSTOKEN must be set.");
+    throw new AzureContextError(
+      "AZURE_TOKEN_MISSING",
+      "Azure Pipelines SYSTEM_ACCESSTOKEN (or explicit AZURE_DEVOPS_TOKEN) must be set.",
+    );
   }
   return token;
 }

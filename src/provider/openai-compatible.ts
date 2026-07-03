@@ -39,6 +39,11 @@ export type ProviderCallConfig = {
   readonly requestTimeoutMs: number;
   readonly fetchImpl?: typeof fetch;
   readonly signal?: AbortSignal;
+  readonly maxOutputTokens?: number;
+  readonly reasoningEffort?: "low" | "medium" | "high";
+  readonly promptOverride?: string;
+  readonly additionalPromptOverride?: string;
+  readonly githubApiBase?: string;
 };
 
 export { ProviderError };
@@ -48,12 +53,12 @@ export async function runProviderRequest(config: ProviderCallConfig): Promise<Pr
   const fetchImpl = config.fetchImpl ?? globalThis.fetch.bind(globalThis);
   const requestId = createRequestId();
 
-  const firstAttempt = await runWithEndpoint(config, fetchImpl, requestId, ENDPOINT_RESPONSES);
+  const firstAttempt = await runWithRetry(config, fetchImpl, requestId, ENDPOINT_RESPONSES);
   if (firstAttempt.ok) {
     return firstAttempt;
   }
   if (shouldFallback(firstAttempt.error)) {
-    return runWithEndpoint(config, fetchImpl, requestId, ENDPOINT_CHAT);
+    return runWithRetry(config, fetchImpl, requestId, ENDPOINT_CHAT);
   }
   return firstAttempt;
 }
@@ -72,6 +77,42 @@ async function runWithEndpoint(
     }
     throw error;
   }
+}
+
+const RETRY_BACKOFF_MS: ReadonlyArray<number> = [250, 1_000];
+
+async function runWithRetry(
+  config: ProviderCallConfig,
+  fetchImpl: typeof fetch,
+  requestId: string,
+  endpoint: ProviderEndpoint,
+): Promise<ProviderCallResult> {
+  let lastFailure: ProviderError | null = null;
+  for (let attempt = 0; attempt <= RETRY_BACKOFF_MS.length; attempt += 1) {
+    const result = await runWithEndpoint(config, fetchImpl, requestId, endpoint);
+    if (result.ok) {
+      return result;
+    }
+    lastFailure = result.error;
+    if (!isRetryable(result.error)) {
+      return result;
+    }
+    if (attempt < RETRY_BACKOFF_MS.length) {
+      const backoffMs = RETRY_BACKOFF_MS[attempt] ?? 0;
+      await sleep(backoffMs);
+    }
+  }
+  return { ok: false, error: lastFailure ?? new ProviderError("network", endpoint, null, requestId, "Unknown retry failure.") };
+}
+
+function isRetryable(error: ProviderError): boolean {
+  return error.status === 429 || (typeof error.status === "number" && error.status >= 500);
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => {
+    setTimeout(resolve, ms);
+  });
 }
 
 async function callEndpoint(
@@ -108,6 +149,7 @@ async function callEndpoint(
       response.status,
       requestId,
       "Provider response did not contain a JSON review payload.",
+      { rawText },
     );
   }
 

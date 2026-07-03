@@ -4,8 +4,11 @@
 // regardless of the source filename. To produce both dist/index.js (the
 // action entry) and dist/cli.js (the CLI entry) from two ncc invocations,
 // we run the CLI build into a temp directory and rename index.js -> cli.js.
+// We also copy any *.index.js dynamic chunks (ncc uses content hashes for
+// dynamically-imported modules like src/cli/orchestrator.ts) so that the
+// cli.js bundle's lazy chunks resolve at runtime when loaded from dist/.
 
-import { copyFileSync, readdirSync, rmSync, statSync } from "node:fs";
+import { copyFileSync, readdirSync, rmSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -22,6 +25,15 @@ function main() {
   }
   copyFileSync(join(tmpDir, indexEntry), join(distDir, "cli.js"));
 
+  // Copy any ncc dynamic chunks (e.g. 738.index.js for orchestrator.ts).
+  // The cli.js bundle references these via dynamic import() at runtime;
+  // without them the runtime fails with ERR_MODULE_NOT_FOUND.
+  for (const entry of entries) {
+    if (entry !== "index.js" && entry !== "package.json" && entry.endsWith(".index.js")) {
+      copyFileSync(join(tmpDir, entry), join(distDir, entry));
+    }
+  }
+
   // Mirror dist/package.json from tmp into the canonical dist/.
   const pkgEntry = entries.find((entry) => entry === "package.json");
   if (pkgEntry !== undefined) {
@@ -29,7 +41,7 @@ function main() {
   }
 
   rmSync(tmpDir, { recursive: true, force: true });
-  process.stdout.write("post-bundle: dist/ contains index.js, cli.js, package.json\n");
+  process.stdout.write("post-bundle: dist/ contains index.js, cli.js, package.json, and any ncc dynamic chunks\n");
 }
 
 main();

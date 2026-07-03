@@ -18,6 +18,7 @@ export type ActionInputs = {
   readonly ignoreMinor: boolean;
   readonly minimumSeverity: "low" | "medium" | "high";
   readonly maxComments: number;
+  readonly reviewFileLimit: number;
   readonly includeSonarqube: boolean;
   readonly sonarHostUrl: string;
   readonly sonarToken: string;
@@ -28,6 +29,9 @@ export type ActionInputs = {
   readonly prNumber: string;
   readonly repo: string;
   readonly inGitHubActions: boolean;
+  readonly effort: "low" | "medium" | "high";
+  readonly provider: "openai-compatible" | "copilot";
+  readonly githubApiBase: string;
 };
 
 export function readActionInputs(env: NodeJS.ProcessEnv = process.env): ActionInputs {
@@ -86,6 +90,20 @@ export function readActionInputs(env: NodeJS.ProcessEnv = process.env): ActionIn
     }
     return "auto";
   };
+  const getEffort = (): ActionInputs["effort"] => {
+    const raw = get("effort");
+    if (raw === "low" || raw === "medium" || raw === "high") {
+      return raw;
+    }
+    return "medium";
+  };
+  const getProvider = (): ActionInputs["provider"] => {
+    const raw = get("provider");
+    if (raw === "openai-compatible" || raw === "copilot") {
+      return raw;
+    }
+    return "openai-compatible";
+  };
 
   return {
     githubToken: getWithFallback("github_token", ["GITHUB_TOKEN"]),
@@ -107,6 +125,7 @@ export function readActionInputs(env: NodeJS.ProcessEnv = process.env): ActionIn
     ignoreMinor: getBool("ignore-minor", false),
     minimumSeverity: getSeverity(),
     maxComments: getNumber("max-comments", 50),
+    reviewFileLimit: getNumber("review-file-limit", 200),
     includeSonarqube: getBool("include-sonarqube", false),
     sonarHostUrl: get("sonar-host-url"),
     sonarToken: get("sonar-token"),
@@ -117,6 +136,9 @@ export function readActionInputs(env: NodeJS.ProcessEnv = process.env): ActionIn
     prNumber: get("pr-number"),
     repo: get("repo"),
     inGitHubActions,
+    effort: getEffort(),
+    provider: getProvider(),
+    githubApiBase: getWithFallback("github-api-base", ["UMACTUALLY_GITHUB_API_BASE"]),
   };
 }
 

@@ -1,0 +1,197 @@
+# Azure DevOps pipeline entrypoint for this repository.
+#
+# For Azure Repos, attach this YAML to a branch policy build validation policy.
+# The pr: trigger is honored only for GitHub/Bitbucket Cloud repositories that
+# are connected to Azure Pipelines.
+trigger: none
+
+pr:
+  branches:
+    include:
+      - main
+
+pool:
+  vmImage: ubuntu-latest
+
+variables:
+  - group: umactually-secrets
+  - name: NODE_VERSION
+    value: "24.x"
+  - name: AZURE_ARTIFACT_DIR
+    value: artifacts/manual
+  - name: AZURE_EVENT_PATH
+    value: artifacts/manual/azure-event.json
+  - name: AZURE_DIFF_PATH
+    value: artifacts/manual/azure-pr.diff
+  - name: AZURE_REVIEW_PATH
+    value: artifacts/manual/azure-review.json
+  - name: AZURE_OUTPUT_ARTIFACT
+    value: artifacts/manual/s4-azure-mocked-run.json
+
+steps:
+  - checkout: self
+    persistCredentials: true
+
+  - script: mkdir -p artifacts/manual
+    displayName: Initialize manual artifact directory
+
+  - task: NodeTool@0
+    displayName: Use Node $(NODE_VERSION)
+    inputs:
+      versionSpec: $(NODE_VERSION)
+
+  - script: npm ci
+    displayName: Install dependencies
+
+  - script: npm run typecheck
+    displayName: Typecheck
+
+  - script: npm test -- --run
+    displayName: Run tests
+
+  - script: |
+      set -euo pipefail
+      mkdir -p "$AZURE_ARTIFACT_DIR"
+
+      node --input-type=module <<'NODE'
+      import { writeFileSync } from "node:fs";
+      import { join } from "node:path";
+
+      const env = process.env;
+      const artifactDir = env.AZURE_ARTIFACT_DIR ?? "artifacts/manual";
+      const rawPrNumber = env.SYSTEM_PULLREQUEST_PULLREQUESTID ?? "";
+      const prNumber = rawPrNumber.length > 0 ? Number.parseInt(rawPrNumber, 10) : 1;
+      if (!Number.isSafeInteger(prNumber) || prNumber <= 0) {
+        throw new Error(`Invalid Azure PR number: ${rawPrNumber}`);
+      }
+
+      const repositoryName = env.BUILD_REPOSITORY_NAME ?? "umactually";
+      const projectName = env.SYSTEM_TEAMPROJECT ?? "local";
+      const repoSlug = repositoryName.includes("/") ? repositoryName : `${projectName}/${repositoryName}`;
+      const sourceBranch = env.SYSTEM_PULLREQUEST_SOURCEBRANCH ?? env.BUILD_SOURCEBRANCH ?? "refs/heads/manual";
+      const targetBranch = env.SYSTEM_PULLREQUEST_TARGETBRANCH ?? "refs/heads/main";
+      const event = {
+        pullRequestId: prNumber,
+        title: env.SYSTEM_PULLREQUEST_TITLE ?? "Synthetic Azure Pipelines validation event",
+        sourceRefName: sourceBranch,
+        targetRefName: targetBranch,
+        repository: {
+          id: env.BUILD_REPOSITORY_ID ?? "manual",
+          name: repositoryName,
+        },
+      };
+      const review = {
+        verdict: "COMMENT",
+        comments: [],
+        suppressed_comments: [],
+      };
+      const metadata = {
+        isPullRequest: rawPrNumber.length > 0,
+        pullRequestId: prNumber,
+        repo: repoSlug,
+        eventPath: env.AZURE_EVENT_PATH,
+        diffPath: env.AZURE_DIFF_PATH,
+        reviewPath: env.AZURE_REVIEW_PATH,
+      };
+
+      writeFileSync(env.AZURE_EVENT_PATH ?? join(artifactDir, "azure-event.json"), `${JSON.stringify(event, null, 2)}\n`, "utf8");
+      writeFileSync(env.AZURE_REVIEW_PATH ?? join(artifactDir, "azure-review.json"), `${JSON.stringify(review, null, 2)}\n`, "utf8");
+      writeFileSync(join(artifactDir, "azure-inputs.json"), `${JSON.stringify(metadata, null, 2)}\n`, "utf8");
+      console.log(`##vso[task.setvariable variable=UMACTUALLY_PR_NUMBER]${prNumber}`);
+      console.log(`##vso[task.setvariable variable=UMACTUALLY_REPO]${repoSlug}`);
+      NODE
+
+      if [ -n "${SYSTEM_PULLREQUEST_PULLREQUESTID:-}" ]; then
+        echo "Fetching Azure DevOps PR diff for PR ${SYSTEM_PULLREQUEST_PULLREQUESTID}."
+        : "${SYSTEM_ACCESSTOKEN:?System.AccessToken must be mapped to SYSTEM_ACCESSTOKEN. Enable 'Allow scripts to access the OAuth token'.}"
+        : "${SYSTEM_COLLECTIONURI:?SYSTEM_COLLECTIONURI must be set by Azure Pipelines.}"
+        : "${SYSTEM_TEAMPROJECT:?SYSTEM_TEAMPROJECT must be set by Azure Pipelines.}"
+        : "${BUILD_REPOSITORY_ID:?BUILD_REPOSITORY_ID must be set by Azure Pipelines.}"
+        collection_uri="${SYSTEM_COLLECTIONURI%/}"
+        project_path="$(node -e 'process.stdout.write(encodeURIComponent(process.env.SYSTEM_TEAMPROJECT || ""))')"
+        repository_path="$(node -e 'process.stdout.write(encodeURIComponent(process.env.BUILD_REPOSITORY_ID || ""))')"
+        pr_url="${collection_uri}/${project_path}/_apis/git/repositories/${repository_path}/pullRequests/${SYSTEM_PULLREQUEST_PULLREQUESTID}?api-version=7.1"
+        iters_url="${collection_uri}/${project_path}/_apis/git/repositories/${repository_path}/pullRequests/${SYSTEM_PULLREQUEST_PULLREQUESTID}/iterations?api-version=7.1"
+        curl -fsS \
+          --header "Authorization: Bearer ${SYSTEM_ACCESSTOKEN}" \
+          --header "Accept: application/json" \
+          "$pr_url" \
+          --output "$AZURE_EVENT_PATH"
+        iteration_id="$(curl -fsS \
+          --header "Authorization: Bearer ${SYSTEM_ACCESSTOKEN}" \
+          --header "Accept: application/json" \
+          "$iters_url" | node -e 'const d=JSON.parse(require("fs").readFileSync(0,"utf8")); const vs=d.value||[]; process.stdout.write(vs.length?String(vs[vs.length-1].id):"")')"
+        if [ -z "$iteration_id" ]; then
+          echo "##vso[task.logissue type=error]Azure DevOps PR has no iterations."
+          exit 1
+        fi
+        changes_url="${collection_uri}/${project_path}/_apis/git/repositories/${repository_path}/pullRequests/${SYSTEM_PULLREQUEST_PULLREQUESTID}/iterations/${iteration_id}/changes?api-version=7.1"
+        : > "$AZURE_DIFF_PATH"
+        curl -fsS \
+          --header "Authorization: Bearer ${SYSTEM_ACCESSTOKEN}" \
+          --header "Accept: application/json" \
+          "$changes_url" \
+          | node -e 'const d=JSON.parse(require("fs").readFileSync(0,"utf8")); const cs=d.changeEntries||d.changes||[]; process.stdout.write(JSON.stringify(cs));' \
+          >> "$AZURE_DIFF_PATH"
+        if [ ! -s "$AZURE_DIFF_PATH" ]; then
+          echo "##vso[task.logissue type=error]Azure DevOps PR diff fetch produced an empty file."
+          exit 1
+        fi
+      else
+        echo "SYSTEM_PULLREQUEST_PULLREQUESTID is empty; creating a synthetic manual-run diff."
+        cat > "$AZURE_DIFF_PATH" <<'DIFF'
+      diff --git a/README.md b/README.md
+      index 0000000..1111111 100644
+      --- a/README.md
+      +++ b/README.md
+      @@ -1 +1,2 @@
+       # UmActually PR Review Action
+      +Synthetic Azure Pipelines manual validation diff.
+      DIFF
+      fi
+    displayName: Prepare Azure PR inputs
+    env:
+      SYSTEM_ACCESSTOKEN: $(System.AccessToken)
+
+  - script: |
+      set -euo pipefail
+      : "${UMACTUALLY_PR_NUMBER:?UMACTUALLY_PR_NUMBER must be set by the prepare step.}"
+      : "${UMACTUALLY_REPO:?UMACTUALLY_REPO must be set by the prepare step.}"
+      : "${UMACTUALLY_API_URL:?UMACTUALLY_API_URL must be set as a pipeline variable.}"
+      : "${UMACTUALLY_API_KEY:?UMACTUALLY_API_KEY must be set as a pipeline variable.}"
+      # The project build service identity does not always hold the
+      # "Contribute to pull requests" permission needed to POST PR threads
+      # and statuses, which causes HTTP 403. Prefer an explicit Azure
+      # DevOps PAT (from the umactually-secrets variable group) so the
+      # CLI can post threads with an identity that has the right ACL.
+      : "${DEVOPS_PAT:?DEVOPS_PAT must be set as a pipeline variable (umactually-secrets group).}"
+      export AZURE_DEVOPS_TOKEN="${DEVOPS_PAT}"
+      node bin/umactually-pr-review.mjs \
+        --platform azure-devops \
+        --event "$AZURE_EVENT_PATH" \
+        --diff "$AZURE_DIFF_PATH" \
+        --review "$AZURE_REVIEW_PATH" \
+        --pr-number "$UMACTUALLY_PR_NUMBER" \
+        --repo "$UMACTUALLY_REPO" \
+        --api-url "${UMACTUALLY_API_URL}" \
+        --api-key "${UMACTUALLY_API_KEY}" \
+        --model auto \
+        --per-request-timeout-seconds 180 \
+        --review-file-limit 50 \
+        --no-detect-leaks \
+        --no-dry-run
+    displayName: Run UmActually Azure live review
+    env:
+      SYSTEM_ACCESSTOKEN: $(System.AccessToken)
+      UMACTUALLY_PR_NUMBER: $(UMACTUALLY_PR_NUMBER)
+      UMACTUALLY_REPO: $(UMACTUALLY_REPO)
+      UMACTUALLY_API_URL: $(UMACTUALLY_API_URL)
+      UMACTUALLY_API_KEY: $(UMACTUALLY_API_KEY)
+      DEVOPS_PAT: $(DEVOPS_PAT)
+
+  - task: PublishPipelineArtifact@1
+    condition: always()
+    displayName: Publish review artifacts
+    inputs:
+      targetPath: artifacts/manual
+      artifact: umactually-review

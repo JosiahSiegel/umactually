@@ -1,19 +1,128 @@
 import { fetchAzurePrDiff } from "../platform/azure/api.js";
+import { chunkDiffByFile, countDiffFiles } from "../platform/azure/chunk.js";
 import { readAzureContext } from "../platform/azure/context.js";
 import { fetchGithubPrDiff } from "../platform/github/api.js";
 import { readGithubContext } from "../platform/github/context.js";
-import { buildSimulatedFindings } from "../review/simulated-findings.js";
+import { mergeReviewResults } from "./live-merge.js";
 import { runAzureLive } from "./live-azure.js";
 import { runGithubLive } from "./live-github.js";
 import {
-  requestLiveReview,
+  buildTooLargeFallback,
+  evaluateLeakGate,
   sanitizeForPost,
   type FetchImpl,
   type LivePlatform,
   type LiveProviderOutcome,
   type LiveRunResult,
 } from "./live-shared.js";
+import { requestLiveReview } from "./live-provider.js";
+import { readLiveSonarContext } from "./sonar-context.js";
+import { applySimulateFindings } from "./simulate-findings.js";
 import type { ParsedCliArgs } from "./parse-args.js";
+import { DEFAULT_REVIEW_FILE_LIMIT } from "../config/loader.js";
+
+/**
+ * Number of chunks to process concurrently when the chunked path is
+ * active. 4 is a safe default that respects provider rate-limit headers
+ * while still giving us a roughly 4x speed-up over serial chunking.
+ * See `chunkDiffByFile` (src/platform/azure/chunk.ts) for the chunking
+ * contract.
+ */
+const DEFAULT_CHUNK_CONCURRENCY = 4;
+// DEFAULT_REVIEW_FILE_LIMIT (200) is imported from src/config/loader.ts
+// and re-imported below to keep a single source of truth.
+
+/**
+ * Fallback cap used by the chunked Azure merge when the CLI flag
+ * `--max-comments` is not set. Matches the post-side cap in
+ * `live-shared.ts:DEFAULT_MAX_COMMENTS`.
+ */
+const DEFAULT_MAX_COMMENTS_MERGE = 50;
+
+/**
+ * Helper used by the Azure live path. Each chunk is fed through
+ * `requestLiveReview` independently and the per-chunk outcomes are
+ * reconciled through `mergeReviewResults`.
+ *
+ * Concurrency is bounded with a small worker pool (default 4) so we
+ * never stampede the provider with rate-limited parallel calls while
+ * still finishing ~100 chunks in ~25 seconds.
+ *
+ * Resilience contract: if any individual chunk FAILS (timeout,
+ * network error, 5xx), we log the failure and substitute a
+ * structurally-empty outcome for that chunk. The merged review
+ * continues with the successes — a single rate-limit hiccup does
+ * NOT cost us the whole review.
+ */
+async function requestChunkedLiveReview(input: {
+  readonly parsed: ParsedCliArgs;
+  readonly cwd: string;
+  readonly env: NodeJS.ProcessEnv;
+  readonly fetchImpl: FetchImpl;
+  readonly platform: "azure";
+  readonly chunks: readonly string[];
+  readonly platformToken: string;
+  readonly concurrency?: number;
+  readonly sonarContext?: string;
+}): Promise<LiveProviderOutcome> {
+  const concurrency = Math.max(1, input.concurrency ?? DEFAULT_CHUNK_CONCURRENCY);
+  const outcomes: LiveProviderOutcome[] = [];
+  let cursor = 0;
+  let failedChunkCount = 0;
+  const workers = Array.from(
+    { length: Math.min(concurrency, input.chunks.length) },
+    async () => {
+      while (true) {
+        const index = cursor;
+        cursor += 1;
+        if (index >= input.chunks.length) break;
+        const chunk = input.chunks[index]!;
+        let outcome: LiveProviderOutcome | null = null;
+        try {
+          outcome = await requestLiveReview({
+            parsed: input.parsed,
+            cwd: input.cwd,
+            env: input.env,
+            fetchImpl: input.fetchImpl,
+            platform: input.platform,
+            diffText: chunk,
+            platformToken: input.platformToken,
+            ...(input.sonarContext !== undefined ? { sonarContext: input.sonarContext } : {}),
+          });
+        } catch (error) {
+          // One chunk failed (timeout, 5xx, network). Log a warning
+          // so operators can correlate, then record an empty outcome
+          // so the merge keeps going. This is the difference between
+          // "we lost 1 of 66 chunks" and "the whole review dies on
+          // chunk 12 because the provider was rate-limiting".
+          failedChunkCount += 1;
+          const message = error instanceof Error ? error.message : String(error);
+          const sanitized = sanitizeForPost(message, [input.platformToken]);
+          const redactedChunk = chunk.length > 80 ? `${chunk.slice(0, 77)}…` : chunk;
+          process.stderr.write(
+            `::warning::umactually-pr-review: chunk ${index + 1}/${input.chunks.length} failed (${sanitized}); substituting empty outcome. chunk preview: ${redactedChunk}\n`,
+          );
+          outcome = {
+            review: { summary: "", verdict: "COMMENT", comments: [], suppressedComments: [] },
+            endpoint: "",
+            provider: "chunk-failed",
+            modelId: "",
+          };
+        }
+        outcomes[index] = outcome;
+      }
+    },
+  );
+  await Promise.all(workers);
+  if (failedChunkCount > 0) {
+    process.stderr.write(
+      `::warning::umactually-pr-review: ${failedChunkCount}/${input.chunks.length} chunks failed; merged review contains only findings from the chunks that succeeded.\n`,
+    );
+  }
+  return mergeReviewResults(outcomes, {
+    maxComments: input.parsed.maxComments ?? DEFAULT_MAX_COMMENTS_MERGE,
+  });
+}
 
 export type RunLiveInput = {
   readonly parsed: ParsedCliArgs;
@@ -37,8 +146,11 @@ export async function runLive(input: RunLiveInput): Promise<LiveRunResult> {
     };
   }
 
+  // Copilot provider does not need UMACTUALLY_API_URL; it uses the GitHub
+  // Copilot token exchange endpoint. Skip the URL check for copilot.
+  const isCopilot = input.parsed.provider === "copilot";
   const providerUrl = input.parsed.apiUrl ?? env["UMACTUALLY_API_URL"];
-  if (providerUrl === undefined || providerUrl.length === 0) {
+  if (!isCopilot && (providerUrl === undefined || providerUrl.length === 0)) {
     const message = "UMACTUALLY_API_URL must be set for live review.";
     process.stdout.write(`umactually-pr-review: ${message}\n`);
     return {
@@ -60,6 +172,12 @@ export async function runLive(input: RunLiveInput): Promise<LiveRunResult> {
     };
   }
 
+  // If --include-sonarqube is set with a fully-configured SonarQube, wait
+  // for the quality gate to reach a terminal state BEFORE posting the review.
+  // This implements the user's "wait for sonarqube during that PR run"
+  // requirement: the review reflects the latest quality-gate state.
+  const sonarContext = await readLiveSonarContext(input.parsed, fetchImpl);
+
   let result: LiveRunResult;
   try {
     result = await dispatchLivePlatform({
@@ -68,6 +186,7 @@ export async function runLive(input: RunLiveInput): Promise<LiveRunResult> {
       cwd: input.cwd,
       env,
       fetchImpl,
+      ...(sonarContext !== undefined ? { sonarContext } : {}),
     });
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
@@ -102,12 +221,26 @@ async function dispatchLivePlatform(input: {
   readonly cwd: string;
   readonly env: NodeJS.ProcessEnv;
   readonly fetchImpl: FetchImpl;
+  readonly sonarContext?: string;
 }): Promise<LiveRunResult> {
-  const { platform, parsed, cwd, env, fetchImpl } = input;
+  const { platform, parsed, cwd, env, fetchImpl, sonarContext } = input;
   switch (platform) {
     case "github": {
       const context = await readGithubContext(env);
       const diffText = await fetchGithubPrDiff(context, fetchImpl);
+      const leakGate = await evaluateLeakGate({
+        diffText,
+        detectLeaks: parsed.detectLeaks,
+      });
+      if (!leakGate.ok) {
+        process.stderr.write(`::error::umactually-pr-review: ${leakGate.message}\n`);
+        return {
+          exitCode: 1,
+          posted: false,
+          reviewId: undefined,
+          message: leakGate.message,
+        };
+      }
       const liveOutcome = await requestLiveReview({
         parsed,
         cwd,
@@ -116,6 +249,7 @@ async function dispatchLivePlatform(input: {
         platform: "github",
         diffText,
         platformToken: context.token,
+        ...(sonarContext !== undefined ? { sonarContext } : {}),
       });
       const finalOutcome = applySimulateFindings({
         outcome: liveOutcome,
@@ -137,15 +271,74 @@ async function dispatchLivePlatform(input: {
     case "azure": {
       const context = readAzureContext(env);
       const diffText = await fetchAzurePrDiff(context, fetchImpl);
-      const liveOutcome = await requestLiveReview({
-        parsed,
-        cwd,
-        env,
-        fetchImpl,
-        platform: "azure",
+      const leakGate = await evaluateLeakGate({
         diffText,
-        platformToken: context.token,
+        detectLeaks: parsed.detectLeaks,
       });
+      if (!leakGate.ok) {
+        process.stderr.write(`::error::umactually-pr-review: ${leakGate.message}\n`);
+        return {
+          exitCode: 1,
+          posted: false,
+          reviewId: undefined,
+          message: leakGate.message,
+        };
+      }
+      // Gate the live review on the configured file count. The default
+      // 200-file cap is a quality choice: chunked LLM reviews of an
+      // arbitrarily-large initial-import diff produce hallucinated
+      // findings that aren't grounded in the code. The user can
+      // override via `--review-file-limit` (0 disables the limit).
+      const reviewFileLimit = parsed.reviewFileLimit ?? DEFAULT_REVIEW_FILE_LIMIT;
+      const fileCount = countDiffFiles(diffText);
+      let liveOutcome: LiveProviderOutcome;
+      if (reviewFileLimit > 0 && fileCount > reviewFileLimit) {
+        process.stdout.write(`umactually-pr-review: skipping live review — PR changes ${fileCount} files, exceeds --review-file-limit=${reviewFileLimit}. Use --review-file-limit 0 to disable.\n`);
+        liveOutcome = {
+          review: buildTooLargeFallback({
+            fileCount,
+            reviewFileLimit,
+            provider: parsed.provider ?? "openai-compatible",
+            modelId: parsed.model ?? "auto",
+            secrets: [context.token],
+          }),
+          endpoint: "skipped",
+          provider: parsed.provider ?? "openai-compatible",
+          modelId: parsed.model ?? "auto",
+        };
+      } else {
+        const chunks = chunkDiffByFile(diffText);
+        if (chunks.length <= 1) {
+          // Fallback: the entire diff fits in one chunk. Use the existing
+          // single-call flow so a small PR review stays cheap and
+          // deterministic.
+          liveOutcome = await requestLiveReview({
+            parsed,
+            cwd,
+            env,
+            fetchImpl,
+            platform: "azure",
+            diffText,
+            platformToken: context.token,
+            ...(sonarContext !== undefined ? { sonarContext } : {}),
+          });
+        } else {
+          // Chunked path: feed each per-file chunk to the provider in
+          // parallel (bounded by DEFAULT_CHUNK_CONCURRENCY) and merge
+          // the per-chunk outcomes into a single LiveProviderOutcome.
+          process.stdout.write(`umactually-pr-review: chunking large PR diff into ${chunks.length} provider requests (max concurrency ${DEFAULT_CHUNK_CONCURRENCY}).\n`);
+          liveOutcome = await requestChunkedLiveReview({
+            parsed,
+            cwd,
+            env,
+            fetchImpl,
+            platform: "azure",
+            chunks,
+            platformToken: context.token,
+            ...(sonarContext !== undefined ? { sonarContext } : {}),
+          });
+        }
+      }
       const finalOutcome = applySimulateFindings({
         outcome: liveOutcome,
         simulateFindings: parsed.simulateFindings === true,
@@ -168,59 +361,6 @@ async function dispatchLivePlatform(input: {
   }
 }
 
-/**
- * Replaces the provider outcome's payload with the deterministic fixture when
- * `simulateFindings` is true. The flag is authoritative — the fixture fully
- * drives the review regardless of whether the live provider returned an empty
- * or non-empty result. When `simulateFindings` is false, the live result is
- * preserved unchanged.
- *
- * The `provider`, `modelId`, and `endpoint` fields on the outcome are kept
- * from the live call (the fixture does not mint its own provider identity),
- * so the posted review body still shows "openai-compatible" as the provider.
- */
-function applySimulateFindings(input: {
-  readonly outcome: LiveProviderOutcome;
-  readonly simulateFindings: boolean;
-  readonly repo: string;
-  readonly prNumber: number;
-  readonly headSha: string;
-  readonly diffText: string;
-  readonly secrets: readonly string[];
-}): LiveProviderOutcome {
-  if (!input.simulateFindings) {
-    return input.outcome;
-  }
-  const fixture = buildSimulatedFindings(input.repo, input.prNumber, input.headSha, input.diffText);
-  // Sanitize the fixture through the same sanitizer the live path uses so
-  // bodies cannot accidentally carry the API key or auth headers.
-  const sanitizedComments = fixture.comments.map((comment) => ({
-    path: comment.path,
-    line: comment.line,
-    body: sanitizeForPost(comment.body, input.secrets),
-    severity: sanitizeForPost(comment.severity, input.secrets),
-    category: sanitizeForPost(comment.category, input.secrets),
-  }));
-  const sanitizedSuppressed = fixture.suppressed_comments.map((comment) => ({
-    path: comment.path,
-    line: comment.line,
-    body: sanitizeForPost(comment.body, input.secrets),
-    severity: sanitizeForPost(comment.severity, input.secrets),
-    category: sanitizeForPost(comment.category, input.secrets),
-  }));
-  return {
-    endpoint: input.outcome.endpoint,
-    provider: input.outcome.provider,
-    modelId: input.outcome.modelId,
-    review: {
-      summary: sanitizeForPost(fixture.summary, input.secrets),
-      verdict: fixture.verdict,
-      comments: sanitizedComments,
-      suppressedComments: sanitizedSuppressed,
-    },
-  };
-}
-
 function detectLivePlatform(env: NodeJS.ProcessEnv): LivePlatform | null {
   if (env["GITHUB_ACTIONS"] === "true") {
     return "github";
@@ -237,6 +377,7 @@ function readSecretValues(env: NodeJS.ProcessEnv): readonly string[] {
     env["REVIEW_PROVIDER_API_KEY"] ?? "",
     env["GITHUB_TOKEN"] ?? "",
     env["SYSTEM_ACCESSTOKEN"] ?? "",
+    env["AZURE_DEVOPS_TOKEN"] ?? "",
   ];
 }
 

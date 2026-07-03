@@ -21,11 +21,17 @@ These entries mirror `action.yml`.
 | `api-url` | `UMACTUALLY_API_URL` | `""` | HTTPS URL | Review API base URL. Required for hosted review API use. Prefer env/secret over a literal input. |
 | `api-key` | `UMACTUALLY_API_KEY` | `""` | Secret string | Review API key. Must come from a secret store. Never log or echo it. |
 | `model` | `UMACTUALLY_MODEL` | `auto` | `auto`, `review-model-synthetic` | `review-model-synthetic` is intended for fixtures and deterministic tests. |
-| `effort` | `UMACTUALLY_EFFORT` | `medium` | `low`, `medium`, `high` | Current runtime normalizes this to `medium`; keep the input for forward compatibility. |
+| `effort` | `UMACTUALLY_EFFORT` | `medium` | `low`, `medium`, `high` | Reasoning effort hint. Forwarded as `reasoning.effort` to providers that support it. |
+| `provider` | `UMACTUALLY_PROVIDER` | `openai-compatible` | `openai-compatible`, `copilot` | Provider family. Set to `copilot` to use GitHub Copilot (requires a GitHub PAT as `UMACTUALLY_API_KEY`). |
+| `github-api-base` | `UMACTUALLY_GITHUB_API_BASE` | `""` | HTTPS URL | GitHub API base URL for Copilot token exchange. Set to `https://<tenant>.ghe.com` for GitHub Enterprise Server. |
 | `review-timeout-seconds` | `UMACTUALLY_REVIEW_TIMEOUT_SECONDS` | `300` | Positive integer seconds | Overall review wall-clock budget. Current runtime default is 300 seconds. |
 | `stall-seconds` | `UMACTUALLY_STALL_SECONDS` | `270` | Positive integer seconds | Provider-output stall budget. Current runtime default is 270 seconds. |
 | `max-output-tokens` | `UMACTUALLY_MAX_OUTPUT_TOKENS` | `16000` | Positive integer | Provider output budget. |
+| `max-comments` | — | `50` | Positive integer | Cap on posted inline comments per review. Set to `0` to disable the cap. |
+| `review-file-limit` | `REVIEW_FILE_LIMIT` | `200` | Positive integer, or `0` to disable | Soft cap on the number of changed files the live review path will process. When `countDiffFiles(diff) > review-file-limit` the CLI skips the live review and posts a "diff too large to review" parent card with zero inline findings — the chunked LLM reviews of arbitrarily-large initial-import diffs produce hallucinated findings that aren't grounded in the code. Raise this for huge PRs, or set to `0` to disable the cap entirely. |
 | `ignore-minor` | `UMACTUALLY_IGNORE_MINOR` | `false` | `true`, `false` | Suppresses minor non-security findings only. Leaks and security findings are still reported. |
+| `prompt` | `UMACTUALLY_PROMPT` | `""` | String | Inline system prompt override. Wins over `prompt-file`. |
+| `additional-prompt` | `UMACTUALLY_ADDITIONAL_PROMPT` | `""` | String | Inline additional prompt override. Wins over `additional-prompt-file`. |
 | `prompt-file` | `UMACTUALLY_PROMPT_FILE` | `""` | Repository-relative path | Optional prompt instructions file. Absolute paths and `..` traversal are rejected. |
 | `additional-prompt-file` | `UMACTUALLY_ADDITIONAL_PROMPT_FILE` | `""` | Repository-relative path | Optional additional prompt file. Absolute paths and `..` traversal are rejected. |
 | `detect-leaks` | `UMACTUALLY_DETECT_LEAKS` | `true` | `true`, `false` | Run secret-leak detection on the diff before posting. Disable with `--no-detect-leaks` on the CLI or by setting the input/env to `false`. |
@@ -49,7 +55,7 @@ These entries mirror `action.yml`.
 | `GITHUB_REPOSITORY` | GitHub Actions | Yes | Automatically provided by GitHub Actions | Owner/repository name, for example `${{ github.repository }}`. |
 | `GITHUB_SHA` | GitHub Actions | Usually | Automatically provided by GitHub Actions | Current workflow commit SHA used for diagnostics and request context. |
 | `SYSTEM_ACCESSTOKEN` | Azure DevOps | Yes for posting PR threads/status | Map from `$(System.AccessToken)` in the step `env:` block | Authenticates Azure DevOps REST calls. Enable scripts to access the OAuth token. |
-| `SYSTEM_TEAMFOUNDATIONCOLLECTIONURI` | Azure DevOps | Yes | Automatically provided by Azure Pipelines | Azure DevOps organization/collection URI. |
+| `SYSTEM_COLLECTIONURI` | Azure DevOps | Yes | Automatically provided by Azure Pipelines from `$(System.CollectionUri)` | Azure DevOps organization/collection URI. |
 | `SYSTEM_TEAMPROJECT` | Azure DevOps | Yes | Automatically provided by Azure Pipelines | Azure DevOps project name. |
 | `BUILD_REPOSITORY_ID` | Azure DevOps | Yes | Automatically provided by Azure Pipelines | Repository identifier used for PR REST API calls. |
 | `BUILD_REPOSITORY_NAME` | Azure DevOps | Useful | Automatically provided by Azure Pipelines | Human-readable repository name. |
@@ -79,8 +85,19 @@ Avoid passing `api-key` through `with:` unless a wrapper action requires it. Env
 
 ## Recommended Azure DevOps configuration
 
+Use the root [`azure-pipelines.yml`](../azure-pipelines.yml) as the full PR-validation entrypoint. The CLI itself must receive `--event`, `--diff`, `--pr-number`, and `--repo` for Azure validation; use `--repo` for the repository slug.
+
 ```yaml
-- script: node bin/umactually-pr-review.mjs --platform azure-devops --repository example/umactually-fixture --diff "$(AZURE_DIFF_PATH)"
+- script: |
+    node bin/umactually-pr-review.mjs \
+      --platform azure-devops \
+      --event "$AZURE_EVENT_PATH" \
+      --diff "$AZURE_DIFF_PATH" \
+      --review "$AZURE_REVIEW_PATH" \
+      --pr-number "$UMACTUALLY_PR_NUMBER" \
+      --repo "$UMACTUALLY_REPO" \
+      --dry-run \
+      --output-artifact artifacts/manual/s4-azure-mocked-run.json
   displayName: Run UmActually PR review
   env:
     SYSTEM_ACCESSTOKEN: $(System.AccessToken)
@@ -88,34 +105,53 @@ Avoid passing `api-key` through `with:` unless a wrapper action requires it. Env
     UMACTUALLY_API_KEY: $(UMACTUALLY_API_KEY)
 ```
 
-To fetch the PR diff programmatically, use the Azure DevOps REST API with the OAuth token:
+To fetch PR metadata and the PR diff programmatically, use the Azure DevOps REST API with the OAuth token:
 
 ```yaml
 - script: |
+    set -euo pipefail
+    collection_uri="${SYSTEM_COLLECTIONURI%/}"
+    project_path="$(node -e 'process.stdout.write(encodeURIComponent(process.env.SYSTEM_TEAMPROJECT || ""))')"
+    repository_path="$(node -e 'process.stdout.write(encodeURIComponent(process.env.BUILD_REPOSITORY_ID || ""))')"
+    pr_url="${collection_uri}/${project_path}/_apis/git/repositories/${repository_path}/pullRequests/${SYSTEM_PULLREQUEST_PULLREQUESTID}?api-version=7.1"
+    diff_url="${collection_uri}/${project_path}/_apis/git/repositories/${repository_path}/pullRequests/${SYSTEM_PULLREQUEST_PULLREQUESTID}/diffs/commits?api-version=7.1"
     curl -fsS \
-      -H "Authorization: Bearer $(System.AccessToken)" \
-      -H "Content-Type: application/json" \
-      "$(SYSTEM_TEAMFOUNDATIONCOLLECTIONURI)$(SYSTEM_TEAMPROJECT)/_apis/git/repositories/$(BUILD_REPOSITORY_NAME)/pullRequests/$(SYSTEM_PULLREQUEST_PULLREQUESTID)/diff?api-version=7.1-preview.1" \
-      -o "$(BUILD_ARTIFACTSTAGINGDIRECTORY)/pr.diff"
-  displayName: Fetch PR diff via REST API
-
-- script: node bin/umactually-pr-review.mjs --platform azure-devops --diff "$(BUILD_ARTIFACTSTAGINGDIRECTORY)/pr.diff" --dry-run
-  displayName: Run UmActually PR review (dry-run)
+      --header "Authorization: Bearer ${SYSTEM_ACCESSTOKEN}" \
+      --header "Accept: application/json" \
+      "$pr_url" \
+      --output "$AZURE_EVENT_PATH"
+    curl -fsS \
+      --request POST \
+      --header "Authorization: Bearer ${SYSTEM_ACCESSTOKEN}" \
+      --header "Accept: text/plain" \
+      --header "Content-Type: application/json" \
+      --data '{}' \
+      "$diff_url" \
+      --output "$AZURE_DIFF_PATH"
+  displayName: Fetch PR metadata and diff via REST API
   env:
     SYSTEM_ACCESSTOKEN: $(System.AccessToken)
-    AZURE_DIFF_PATH: $(BUILD_ARTIFACTSTAGINGDIRECTORY)/pr.diff
-    UMACTUALLY_API_URL: $(UMACTUALLY_API_URL)
-    UMACTUALLY_API_KEY: $(UMACTUALLY_API_KEY)
 ```
 
-If `SYSTEM_PULLREQUEST_PULLREQUESTID` is empty, verify the pipeline is running as a PR validation build. In Azure Repos, create a branch policy build validation pipeline; do not rely on a plain CI trigger to populate PR variables.
+Manual branch runs do not populate `SYSTEM_PULLREQUEST_PULLREQUESTID`. Keep a synthetic `--event` file, synthetic `--diff` file, `--review` fixture, `--pr-number 1`, and repository slug fallback for smoke validation outside branch-policy PR runs.
+
+## Provider families
+
+The action supports two provider families:
+
+- **`openai-compatible`** (default): posts to any OpenAI-compatible `/responses` or `/chat/completions` endpoint. The `UMACTUALLY_API_URL` must be the base URL (e.g. `https://api.openai.com/v1`). Set `UMACTUALLY_API_KEY` to the provider key. Forwards `max_output_tokens` and `reasoning.effort` when supported by the endpoint.
+
+- **`copilot`**: exchanges the `UMACTUALLY_API_KEY` value (a GitHub PAT) for a short-lived session token at `${UMACTUALLY_GITHUB_API_BASE}/copilot_internal/v2/token` using `Authorization: token <githubToken>`, then dispatches to the plan-routed host returned in the token envelope (`endpoints.api` — typically `api.individual.githubcopilot.com`, `api.business.githubcopilot.com`, or `api.enterprise.githubcopilot.com` depending on the user's Copilot plan). Sends the required `Editor-Version`, `Editor-Plugin-Version`, `Copilot-Integration-Id`, and `User-Agent` headers. Only `/chat/completions` is used (Copilot does not expose `/responses`).
+
+The provider family is selected via `--provider` (CLI), `provider` (action input), or `UMACTUALLY_PROVIDER` env var. Default `openai-compatible`. For GitHub Enterprise Server data residency, set `UMACTUALLY_GITHUB_API_BASE=https://<tenant>.ghe.com` so the token exchange targets the tenant's API.
 
 ## Defaults and normalization
 
 Current runtime defaults are intentionally conservative:
 
 - `model`: `auto`
-- `effort`: normalized to `medium`
+- `effort`: `medium`
+- `provider`: `openai-compatible`
 - `review-timeout-seconds`: `300`
 - `stall-seconds`: `270`
 - `ignore-minor`: `false`
