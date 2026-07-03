@@ -12,7 +12,7 @@
  */
 
 import { REVIEW_MARKER } from "../util/marker.js";
-import { isRecord as isObjectPayload } from "../util/json-guards.js";
+import { isRecord } from "../util/json-guards.js";
 
 export type ReviewCompatibilityInput = {
   readonly existingCommentsJson: string;
@@ -42,7 +42,7 @@ function isExistingComment(value: unknown): value is ExistingComment {
   // previous open-coded `typeof === "object" && value !== null` matched
   // arrays too, which is the same bug class flagged by
   // `util/json-guards.ts:5-6`.
-  return isObjectPayload(value);
+  return isRecord(value);
 }
 
 function commentBody(value: ExistingComment): string {
@@ -64,7 +64,7 @@ function parseComments(jsonText: string): readonly ExistingComment[] {
 
 function hasResponsesOutputText(jsonText: string): boolean {
   const parsed: unknown = JSON.parse(jsonText);
-  if (!isObjectPayload(parsed)) {
+  if (!isRecord(parsed)) {
     throw new Error("compatibility: providerResponsesJson must parse as a JSON object");
   }
   return typeof parsed["output_text"] === "string";
@@ -72,7 +72,7 @@ function hasResponsesOutputText(jsonText: string): boolean {
 
 function hasChatChoices(jsonText: string): boolean {
   const parsed: unknown = JSON.parse(jsonText);
-  if (!isObjectPayload(parsed)) {
+  if (!isRecord(parsed)) {
     throw new Error("compatibility: chatFallbackJson must parse as a JSON object");
   }
   return Array.isArray(parsed["choices"]);
