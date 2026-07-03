@@ -185,12 +185,76 @@ export function parseReviewPayload(text: string): ProviderReviewPayload | null {
     return null;
   }
 
-  return {
-    summary: readStringField(candidate, "summary") ?? "",
-    verdict: readStringField(candidate, "verdict") ?? "",
-    comments: readCommentArray(candidate["comments"]),
-    suppressed_comments: readCommentArray(candidate["suppressed_comments"]),
-  };
+  const summary = readStringField(candidate, "summary") ?? "";
+  const verdict = readStringField(candidate, "verdict") ?? "";
+  const comments = readCommentArray(candidate["comments"]);
+  const suppressed_comments = readCommentArray(candidate["suppressed_comments"]);
+
+  // Soft parse-fail detector (CLARITY-10b): some providers/models return
+  // a *structurally valid* JSON wrapper whose contents are an apology
+  // ("No diff or file contents were provided to review...", "I cannot
+  // review this without...", "Please share the diff..."). These pass
+  // the basic `extractJsonBlock` parse AND the strict non-empty check
+  // (because `summary` is non-empty) but are functionally equivalent
+  // to a parse failure — the model did not produce a review.
+  //
+  // Surface these as null so the self-healing retry path fires and
+  // the parse-fail badge renders, instead of silently posting a
+  // 0-finding review that LOOKS clean.
+  //
+  // Only trigger when there are zero findings (comments + suppressed_comments).
+  // A real review with findings but a frustrated summary ("The code looks
+  // fine but I noticed one issue...") is legitimate; we don't want to
+  // rewrite that as a parse-fail.
+  if (
+    comments.length === 0 &&
+    suppressed_comments.length === 0 &&
+    isApologySummary(summary)
+  ) {
+    return null;
+  }
+
+  return { summary, verdict, comments, suppressed_comments };
+}
+
+/**
+ * Pattern match for "the model couldn't actually review the input" apology
+ * summaries. These are NOT real reviews even when wrapped in valid JSON.
+ *
+ * Matched phrases (case-insensitive, whole-word where reasonable):
+ *   - "no diff" / "no file contents" / "no contents were provided"
+ *   - "please share" / "please provide" / "please send"
+ *   - "i cannot" / "i'm unable" / "i am unable" / "i can not"
+ *   - "cannot review" / "unable to review" / "can't review"
+ *   - "did not receive" / "haven't received" / "no input"
+ *
+ * The match is intentionally narrow — it must look like the model is
+ * telling us *it* failed to receive input, not commenting on the code.
+ * Phrases like "no issues found" or "nothing to flag" are deliberately
+ * excluded — those are legitimate clean-review signals.
+ */
+function isApologySummary(summary: string): boolean {
+  if (summary.length === 0) {
+    return false;
+  }
+  const lower = summary.toLowerCase();
+  // Most common patterns from the 3e62237 self-review incident.
+  const APOLOGY_PATTERNS: readonly RegExp[] = [
+    /\bno\s+(diff|file\s+contents?|contents?)\b.*\b(provided|shared|available|supplied)\b/u,
+    /\bplease\s+(share|provide|send)\s+(the\s+)?(diff|file|pull\s+request|pr)\b/u,
+    /\bi\s+(cannot|can'?t|am\s+unable|i'?m\s+unable)\s+(review|complete)/u,
+    /\b(cannot|can'?t|unable\s+to)\s+review\b/u,
+    /\b(didn'?t\s+receive|haven'?t\s+received|no\s+input)\b/u,
+    /\b(empty\s+diff|no\s+diff\s+to\s+review|without\s+(diff|input))\b/u,
+    /\b(is\s+empty|was\s+empty)\b.*\b(nothing|to\s+review|review)/u,
+    /\bnothing\s+to\s+review\b/u,
+  ];
+  for (const pattern of APOLOGY_PATTERNS) {
+    if (pattern.test(lower)) {
+      return true;
+    }
+  }
+  return false;
 }
 
 /**

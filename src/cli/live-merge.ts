@@ -30,7 +30,7 @@
  *     a single-call flow.
  */
 import type { LiveProviderOutcome, LiveReviewComment } from "./live-shared.js";
-import { DEFAULT_MAX_COMMENTS } from "../config/loader.js";
+import { DEFAULT_MAX_COMMENTS } from "../config/defaults.js";
 import { severityRank } from "../util/severity.js";
 import { verdictRank } from "../util/verdict.js";
 

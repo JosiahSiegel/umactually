@@ -140,3 +140,109 @@ describe("buildResponsesBody: self-healing retry override", () => {
     expect(input[1]?.content).toBe("review this diff");
   });
 });
+
+describe("parseReviewPayload: soft parse-fail detector (CLARITY-10b)", () => {
+  // Pins the soft parse-fail detector that catches "model returned valid
+  // JSON but the content is an apology" responses. Without this, the
+  // 3e62237 self-review on PR #3 produced a `Posted: 0, Considered: 0`
+  // review with the summary "No diff or file contents were provided to
+  // review..." — structurally valid JSON, zero findings, looked like
+  // a clean bill of health, but the model had actually failed to review.
+
+  it("returns null when summary is the 'no diff or file contents' apology AND zero findings", () => {
+    const apologyPayload = JSON.stringify({
+      summary: "No diff or file contents were provided to review. Please share the pull request diff or the changed files so I can produce a review.",
+      verdict: "comment",
+      comments: [],
+      suppressed_comments: [],
+    });
+    expect(parseReviewPayload(apologyPayload)).toBeNull();
+  });
+
+  it("returns null when summary says 'please share the diff' AND zero findings", () => {
+    const apologyPayload = JSON.stringify({
+      summary: "I cannot review without a diff. Please share the pull request diff.",
+      verdict: "comment",
+      comments: [],
+      suppressed_comments: [],
+    });
+    expect(parseReviewPayload(apologyPayload)).toBeNull();
+  });
+
+  it("returns null when summary says 'I am unable to review' AND zero findings", () => {
+    const apologyPayload = JSON.stringify({
+      summary: "I'm unable to review this pull request because no diff was supplied.",
+      verdict: "comment",
+      comments: [],
+      suppressed_comments: [],
+    });
+    expect(parseReviewPayload(apologyPayload)).toBeNull();
+  });
+
+  it("returns null when summary says 'empty diff' AND zero findings", () => {
+    const apologyPayload = JSON.stringify({
+      summary: "The diff is empty, nothing to review.",
+      verdict: "comment",
+      comments: [],
+      suppressed_comments: [],
+    });
+    expect(parseReviewPayload(apologyPayload)).toBeNull();
+  });
+
+  it("DOES NOT trigger when summary is a legitimate clean-review signal (no findings, non-apology summary)", () => {
+    const cleanReview = JSON.stringify({
+      summary: "All clean. No issues found.",
+      verdict: "APPROVED",
+      comments: [],
+      suppressed_comments: [],
+    });
+    expect(parseReviewPayload(cleanReview)).not.toBeNull();
+  });
+
+  it("DOES NOT trigger when there ARE findings, even with an apologetic-sounding summary", () => {
+    // A real review that includes findings but whose summary is frustrated
+    // is legitimate. We only flag zero-finding reviews as soft parse-fail.
+    const frustratedButRealReview = JSON.stringify({
+      summary: "I cannot review the full PR but I can see one critical issue.",
+      verdict: "NEEDS_FIX",
+      comments: [
+        { path: "src/auth.ts", line: 12, body: "Use bcrypt.", severity: "high", category: "security" },
+      ],
+      suppressed_comments: [],
+    });
+    const result = parseReviewPayload(frustratedButRealReview);
+    expect(result).not.toBeNull();
+    expect(result?.comments).toHaveLength(1);
+  });
+
+  it("DOES NOT trigger when summary is empty (the strict-check already covers that case)", () => {
+    const emptySummary = JSON.stringify({
+      summary: "",
+      verdict: "comment",
+      comments: [],
+      suppressed_comments: [],
+    });
+    // Empty summary is caught by the strict empty-fields check at the
+    // caller (line 164 of openai-compatible.ts) — not by the apology
+    // detector. parseReviewPayload returns the parsed object either way.
+    const result = parseReviewPayload(emptySummary);
+    expect(result).not.toBeNull();
+    expect(result?.summary).toBe("");
+  });
+
+  it("DOES NOT trigger when summary describes a finding with apology-like language", () => {
+    // "I cannot find any issues" is a legitimate clean-review summary
+    // — it has the word "cannot" but the intent is "I cannot find any",
+    // not "I cannot review because no input". The detector should not
+    // over-match.
+    const noIssuesFound = JSON.stringify({
+      summary: "I cannot find any issues with this change. Looks good to merge.",
+      verdict: "APPROVED",
+      comments: [],
+      suppressed_comments: [],
+    });
+    const result = parseReviewPayload(noIssuesFound);
+    expect(result).not.toBeNull();
+    expect(result?.verdict).toBe("APPROVED");
+  });
+});

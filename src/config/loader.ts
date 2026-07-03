@@ -1,5 +1,5 @@
 import { InvalidConfigError } from "./errors.js";
-import { FIELDS } from "./field-schema.js";
+import { DEFAULT_MAX_COMMENTS, DEFAULT_PROMPT_BYTE_CAP, DEFAULT_REVIEW_FILE_LIMIT } from "./defaults.js";
 import {
   parseBooleanFromUnknown,
   parseIntegerFromUnknown,
@@ -26,8 +26,8 @@ import type {
   TimeoutControls,
 } from "./types.js";
 
-export const DEFAULT_MAX_COMMENTS = 50;
-export const DEFAULT_REVIEW_FILE_LIMIT = 200;
+export { DEFAULT_MAX_COMMENTS, DEFAULT_REVIEW_FILE_LIMIT } from "./defaults.js";
+
 const DEFAULT_REVIEW_SECONDS = 300;
 const DEFAULT_STALL_SECONDS = 270;
 const DEFAULT_PER_REQUEST_SECONDS = 60;
@@ -36,9 +36,6 @@ const DEFAULT_MINIMUM_SEVERITY: Severity = "minor";
 const DEFAULT_PLATFORM: Platform = "auto";
 const DEFAULT_PROVIDER_URL = "https://api.openai.com/v1";
 const DEFAULT_PROVIDER_MODEL = "auto";
-// Sourced from `src/config/field-schema.ts:FIELDS.promptByteCap.defaultValue`
-// so the field-schema is the single source of truth for default values.
-const DEFAULT_PROMPT_BYTE_CAP = FIELDS.promptByteCap.defaultValue as number;
 
 /**
  * Resolves the final ReviewConfig by merging CLI > inputs > env > defaults.

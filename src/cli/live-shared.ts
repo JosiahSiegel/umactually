@@ -2,7 +2,7 @@ import { parseDiffPositions } from "../diff/parse-positions.js";
 import { REVIEW_MARKER } from "../review/run-review.js";
 import { scanReviewSecrets } from "../security/scan-review-secrets.js";
 import type { Platform } from "../config/types.js";
-import { DEFAULT_MAX_COMMENTS } from "../config/loader.js";
+import { DEFAULT_MAX_COMMENTS } from "../config/defaults.js";
 import { isRecord } from "../util/json-guards.js";
 import { MANIFEST_SCHEMA } from "../util/marker.js";
 import { countBySeverity as countBySeverityUtil, SEVERITY_ORDER, severityRank } from "../util/severity.js";
@@ -32,6 +32,11 @@ export type LiveReviewComment = {
 export type LiveReview = {
   readonly summary: string;
   readonly verdict: string;
+  /**
+   * Pre-filter finding count. Includes comments the model produced that may be
+   * filtered out by severity policy, off-diff suppression, or `ignore-minor`.
+   * Use this for the "Considered" metric in the parent card.
+   */
   readonly comments: readonly LiveReviewComment[];
   readonly suppressedComments: readonly LiveReviewComment[];
   /**

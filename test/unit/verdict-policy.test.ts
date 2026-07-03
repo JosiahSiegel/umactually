@@ -44,4 +44,11 @@ describe("mapVerdictToAzureStatus: legacy policy (S4 fixture)", () => {
     expect(() => mapVerdictToAzureStatus("", "legacy")).toThrow(TypeError);
     expect(() => mapVerdictToAzureStatus("shipped", "legacy")).toThrow(TypeError);
   });
+
+  it("unknown verdict error message redacts the raw verdict", () => {
+    const rawVerdict = "PRIVATE verdict\nwith control chars";
+
+    expect(() => mapVerdictToAzureStatus(rawVerdict, "legacy")).toThrow(/len=34, sha256=[0-9a-f]{12}/u);
+    expect(() => mapVerdictToAzureStatus(rawVerdict, "legacy")).not.toThrow(rawVerdict);
+  });
 });

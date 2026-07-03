@@ -19,6 +19,8 @@
  * for symmetry; it has a single canonical mapping.
  */
 
+import { createHash } from "node:crypto";
+
 export type AzureStatusPolicy = "legacy" | "current";
 
 export type AzureStatus = "succeeded" | "failed" | "pending";
@@ -38,12 +40,18 @@ export function mapVerdictToAzureStatus(verdict: string, policy: AzureStatusPoli
     // `assertNever(verdict)` guard from `azure/run-azure-review.ts:118`
     // that the S4 RED contract depends on.
     if (normalized === KNOWN_BLOCKING_VERDICT) return "failed";
-    throw new TypeError(`unknown verdict for legacy Azure status mapping: ${JSON.stringify(verdict)}`);
+    throw new TypeError(`unknown verdict for legacy Azure status mapping: ${summarizeVerdict(verdict)}`);
   }
   // Current policy: NEEDS_FIX → "pending"; anything unknown (including
   // empty string) also collapses to "pending" so a malformed verdict
   // can't crash the live runner.
   return "pending";
+}
+
+function summarizeVerdict(verdict: string): string {
+  const bytes = Buffer.byteLength(verdict, "utf8");
+  const hash = createHash("sha256").update(verdict).digest("hex").slice(0, 12);
+  return `len=${bytes}, sha256=${hash}`;
 }
 
 export type GithubEvent = "COMMENT" | "REQUEST_CHANGES";

@@ -1,10 +1,9 @@
 /**
- * CLI-side platform union. The CLI accepts `"azure-devops"` as an alias
- * for `"azure"` (for compatibility with the action.yml `platform: auto|github|azure`
- * spelling) but normalizes both to `"azure"` so downstream code only
- * sees the canonical three variants. Distinct from `Platform` in
- * `src/config/types.ts` (which is the config-side canonical set) — the
- * CLI's accepted set is a superset and the parser is the normalizer.
+ * CLI-side normalized platform union. The CLI parser accepts `"azure-devops"`
+ * as an input alias for `"azure"`, then normalizes it before returning
+ * `ParsedCliArgs`, so this type intentionally exposes only the canonical
+ * downstream variants. Distinct from `Platform` in `src/config/types.ts`
+ * (which is the config-side canonical set).
  */
 export type CliPlatform = "auto" | "github" | "azure";
 export type CliMinimumSeverity = "low" | "medium" | "high";

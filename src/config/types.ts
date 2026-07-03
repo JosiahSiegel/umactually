@@ -177,6 +177,7 @@ export type EnvSources = {
   readonly reviewTimeoutSeconds?: string;
   readonly stallTimeoutSeconds?: string;
   readonly perRequestTimeoutSeconds?: string;
+  readonly maxOutputTokens?: string;
   readonly ignoreMinor?: string;
   readonly minimumSeverity?: string;
   readonly maxComments?: string;
@@ -189,6 +190,7 @@ export type EnvSources = {
   readonly leakDetection?: string;
   readonly redactorEnabled?: string;
   readonly platform?: string;
+  readonly githubApiBase?: string;
   readonly githubToken?: string;
   readonly azureOrg?: string;
   readonly azureProject?: string;

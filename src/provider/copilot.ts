@@ -220,9 +220,9 @@ async function runChatCall(
       error: new ProviderError(
         "parse",
         ENDPOINT_CHAT,
-        response.status,
+        retryResponse.status,
         requestId,
-        "Provider response did not contain a JSON review payload.",
+        `Provider self-healing retry failed with status ${retryResponse.status}; original parse error remains the root cause.`,
         { rawText },
       ),
     };

@@ -19,7 +19,7 @@ import { requestLiveReview } from "./live-provider.js";
 import { readLiveSonarContext } from "./sonar-context.js";
 import { applySimulateFindings } from "./simulate-findings.js";
 import type { ParsedCliArgs } from "./parse-args.js";
-import { DEFAULT_MAX_COMMENTS, DEFAULT_REVIEW_FILE_LIMIT } from "../config/loader.js";
+import { DEFAULT_MAX_COMMENTS_MERGE, DEFAULT_REVIEW_FILE_LIMIT } from "../config/defaults.js";
 import { logError, logWarning } from "../util/log.js";
 
 /**
@@ -30,16 +30,8 @@ import { logError, logWarning } from "../util/log.js";
  * contract.
  */
 const DEFAULT_CHUNK_CONCURRENCY = 4;
-// DEFAULT_REVIEW_FILE_LIMIT (200) is imported from src/config/loader.ts
-// and re-imported below to keep a single source of truth.
-
-/**
- * Fallback cap used by the chunked Azure merge when the CLI flag
- * `--max-comments` is not set. Imported from `src/config/loader.ts` to
- * keep a single source of truth — was previously a local re-declaration
- * of `DEFAULT_MAX_COMMENTS` that could drift.
- */
-const DEFAULT_MAX_COMMENTS_MERGE = DEFAULT_MAX_COMMENTS;
+// DEFAULT_REVIEW_FILE_LIMIT is imported from src/config/defaults.ts
+// to keep the live review cap in sync with the field schema.
 
 /**
  * Helper used by the Azure live path. Each chunk is fed through

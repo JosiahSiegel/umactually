@@ -1,11 +1,7 @@
-import { FIELDS } from "../config/field-schema.js";
+import { DEFAULT_PROMPT_BYTE_CAP } from "../config/defaults.js";
 import { readPromptFiles } from "../config/prompt-files.js";
 import type { LivePlatform } from "./live-shared.js";
 import type { ParsedCliArgs } from "./parse-args.js";
-
-// Sourced from `src/config/field-schema.ts:FIELDS.promptByteCap.defaultValue`
-// so the field-schema is the single source of truth for default values.
-const DEFAULT_PROMPT_BYTE_CAP = FIELDS.promptByteCap.defaultValue as number;
 
 type ProviderPromptsInput = {
   readonly parsed: ParsedCliArgs;

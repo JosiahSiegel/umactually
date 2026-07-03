@@ -1,61 +1,88 @@
+import { ALL_FIELDS } from "./field-schema.js";
 import type { EnvSources } from "./types.js";
 
-// Mapping from canonical config-side field names to their env-var sources.
-// UMACTUALLY_* env vars are the canonical secrets surface for GitHub Actions
-// and Azure DevOps deployments. REVIEW_* keys remain as a backward-compatible
-// fallback so the legacy reference tooling still resolves the same fields.
-// When both are set, the first entry in each list wins.
-const ENV_KEYS: ReadonlyArray<readonly [keyof EnvSources, readonly string[]]> = [
-  ["providerUrl", ["UMACTUALLY_API_URL", "REVIEW_PROVIDER_URL"]],
-  ["providerApiKey", ["UMACTUALLY_API_KEY", "REVIEW_PROVIDER_API_KEY"]],
-  ["providerModel", ["UMACTUALLY_MODEL", "REVIEW_PROVIDER_MODEL"]],
-  ["promptSystemFile", ["UMACTUALLY_PROMPT_FILE", "REVIEW_PROMPT_SYSTEM_FILE"]],
-  ["promptUserFile", ["UMACTUALLY_ADDITIONAL_PROMPT_FILE", "REVIEW_PROMPT_USER_FILE"]],
-  ["promptByteCap", ["REVIEW_PROMPT_BYTE_CAP"]],
-  ["walkthrough", ["UMACTUALLY_WALKTHROUGH", "REVIEW_WALKTHROUGH"]],
-  ["diagnostic", ["UMACTUALLY_DIAGNOSTIC", "REVIEW_DIAGNOSTIC"]],
-  ["dryRun", ["UMACTUALLY_DRY_RUN", "REVIEW_DRY_RUN"]],
-  ["debugRawResponse", ["REVIEW_DEBUG_RAW_RESPONSE"]],
-  ["simulateFindings", ["UMACTUALLY_SIMULATE_FINDINGS", "REVIEW_SIMULATE_FINDINGS"]],
-  ["reviewTimeoutSeconds", ["UMACTUALLY_REVIEW_TIMEOUT_SECONDS", "REVIEW_TIMEOUT_SECONDS"]],
-  ["stallTimeoutSeconds", ["UMACTUALLY_STALL_SECONDS", "REVIEW_STALL_SECONDS"]],
-  ["perRequestTimeoutSeconds", ["REVIEW_PER_REQUEST_TIMEOUT_SECONDS"]],
-  ["ignoreMinor", ["UMACTUALLY_IGNORE_MINOR", "REVIEW_IGNORE_MINOR"]],
-  ["minimumSeverity", ["REVIEW_MINIMUM_SEVERITY"]],
-  ["maxComments", ["REVIEW_MAX_COMMENTS"]],
-  ["reviewFileLimit", ["REVIEW_FILE_LIMIT"]],
-  ["sonarEnabled", ["UMACTUALLY_INCLUDE_SONARQUBE", "REVIEW_SONAR_ENABLED"]],
-  ["sonarHost", ["UMACTUALLY_SONAR_HOST_URL", "REVIEW_SONAR_HOST"]],
-  ["sonarToken", ["UMACTUALLY_SONAR_TOKEN", "REVIEW_SONAR_TOKEN"]],
-  ["sonarProject", ["UMACTUALLY_SONAR_PROJECT_KEY", "REVIEW_SONAR_PROJECT"]],
-  ["sonarTimeoutSeconds", ["REVIEW_SONAR_TIMEOUT_SECONDS"]],
-  ["leakDetection", ["UMACTUALLY_DETECT_LEAKS", "REVIEW_LEAK_DETECTION"]],
-  ["redactorEnabled", ["REVIEW_REDACTOR_ENABLED"]],
-  ["platform", ["REVIEW_PLATFORM"]],
-  ["githubToken", ["GITHUB_TOKEN"]],
-  ["azureOrg", ["AZURE_DEVOPS_ORG"]],
-  ["azureProject", ["AZURE_DEVOPS_PROJECT"]],
-  ["azureRepo", ["AZURE_DEVOPS_REPO"]],
-  ["azurePullRequestId", ["AZURE_DEVOPS_PULL_REQUEST_ID"]],
-  ["azureToken", ["AZURE_DEVOPS_TOKEN"]],
-];
+const ENV_SOURCE_FIELDS = {
+  apiUrl: "providerUrl",
+  apiKey: "providerApiKey",
+  model: "providerModel",
+  promptFile: "promptSystemFile",
+  additionalPromptFile: "promptUserFile",
+  stallSeconds: "stallTimeoutSeconds",
+  includeSonarqube: "sonarEnabled",
+  sonarHostUrl: "sonarHost",
+  sonarProjectKey: "sonarProject",
+  detectLeaks: "leakDetection",
+} as const satisfies Partial<Record<string, keyof EnvSources>>;
+
+type FieldSchemaName = keyof typeof ENV_SOURCE_FIELDS;
+
+function mapFieldToEnvSource(field: string): keyof EnvSources | null {
+  if (isMappedField(field)) {
+    return ENV_SOURCE_FIELDS[field];
+  }
+  if (isEnvSourceField(field)) {
+    return field;
+  }
+  return null;
+}
+
+function isMappedField(field: string): field is FieldSchemaName {
+  return Object.hasOwn(ENV_SOURCE_FIELDS, field);
+}
+
+function isEnvSourceField(field: string): field is keyof EnvSources {
+  return [
+    "promptByteCap",
+    "walkthrough",
+    "diagnostic",
+    "dryRun",
+    "debugRawResponse",
+    "simulateFindings",
+    "reviewTimeoutSeconds",
+    "perRequestTimeoutSeconds",
+    "maxOutputTokens",
+    "ignoreMinor",
+    "minimumSeverity",
+    "maxComments",
+    "reviewFileLimit",
+    "sonarToken",
+    "sonarTimeoutSeconds",
+    "redactorEnabled",
+    "platform",
+    "githubApiBase",
+    "githubToken",
+    "azureOrg",
+    "azureProject",
+    "azureRepo",
+    "azurePullRequestId",
+    "azureToken",
+  ].includes(field);
+}
 
 /**
  * Pure: extracts the known env-var keys from `env` into an EnvSources object.
  * UMACTUALLY_* takes precedence over REVIEW_* when both are set.
  * Never logs values. Empty/missing keys are simply omitted.
  *
- * The canonical env-var set is `KNOWN_ENV_VAR_NAMES` in `src/config/field-schema.ts`.
+ * The canonical env-var set is derived from `FIELDS` in
+ * `src/config/field-schema.ts`.
  */
 export function readEnvSources(env: NodeJS.ProcessEnv = process.env): EnvSources {
   const out: {
     -readonly [K in keyof EnvSources]: EnvSources[K];
   } = {};
-  for (const [field, envNames] of ENV_KEYS) {
-    for (const envName of envNames) {
-      const v = env[envName];
-      if (typeof v === "string" && v.trim().length > 0) {
-        out[field] = v;
+  for (const def of ALL_FIELDS) {
+    if (def.env.length === 0) {
+      continue;
+    }
+    const envSourceField = mapFieldToEnvSource(def.field);
+    if (envSourceField === null) {
+      continue;
+    }
+    for (const envName of def.env) {
+      const value = env[envName];
+      if (typeof value === "string" && value.trim().length > 0) {
+        out[envSourceField] = value;
         break;
       }
     }
