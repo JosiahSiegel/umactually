@@ -471,7 +471,75 @@ export function buildInlineCommentBody(input: {
  * fallback body. Keeps the parent PR-level summary card from being filled
  * with an unbounded provider response if the model misbehaves.
  */
-const MALFORMED_PROVIDER_FALLBACK_RAW_MAX = 1000;
+/**
+ * Total character budget for the parse-fail diagnostic block. The block
+ * shows BOTH the head (provider's opening metadata events) and the tail
+ * (the final `response.completed` event with `output_text`) so reviewers
+ * can see what the model began with AND where it ended up — not just
+ * whichever end happened to land first. CLARITY-12.
+ *
+ * 4000 chars is enough to capture metadata (~400 chars) plus a typical
+ * model review (~2000-3500 chars of JSON) without truncation; long reviews
+ * get head+tail with a quantifier in the middle.
+ */
+const MALFORMED_PROVIDER_FALLBACK_RAW_MAX = 4000;
+/** Size of each end-piece (head / tail) when the raw text exceeds the budget. */
+const MALFORMED_PROVIDER_FALLBACK_HALF_BUDGET = Math.floor(
+  MALFORMED_PROVIDER_FALLBACK_RAW_MAX / 2,
+);
+
+/**
+ * Build a head + tail diagnostic snippet from a long rawText, with a
+ * quantifier showing exactly how many chars were omitted in the middle.
+ * Used by the parse-fail body so reviewers can see both ends of the
+ * stream — typically the opening `response.created`/`response.in_progress`
+ * metadata events AND the final `response.completed` with `output_text`.
+ *
+ * Truncates on a newline boundary where possible so the head/tail pieces
+ * end cleanly. If no newline exists within the last 80 chars of the head
+ * budget, falls back to a hard cut (better than dropping content silently).
+ *
+ * @param rawText  Full raw provider response body
+ * @param halfBudget  Number of chars to take from each end
+ * @returns  Head + quantifier + tail string suitable for the diagnostic block
+ */
+function truncateHeadAndTail(rawText: string, halfBudget: number): string {
+  if (rawText.length <= halfBudget * 2) {
+    return rawText;
+  }
+  const head = trimToNewline(rawText.slice(0, halfBudget), "head");
+  const tail = trimToNewline(rawText.slice(rawText.length - halfBudget), "tail");
+  const omitted = rawText.length - head.length - tail.length;
+  return `${head}\n\n… [${omitted} chars omitted] …\n\n${tail}`;
+}
+
+/**
+ * Trim a head/tail piece to the nearest clean line so the snippet
+ * doesn't end mid-string. For the head, finds the LAST newline in the
+ * piece (so we cut cleanly before the next event). For the tail, finds
+ * the FIRST newline that starts a "real" line (skipping the leading
+ * newline that sits at the start of the tail slice).
+ */
+function trimToNewline(piece: string, end: "head" | "tail"): string {
+  if (end === "head") {
+    // For head: trim to the last newline. Everything after the last
+    // newline within the head piece is a partial line — drop it.
+    const lastNewline = piece.lastIndexOf("\n");
+    if (lastNewline === -1) {
+      return piece;
+    }
+    return piece.slice(0, lastNewline);
+  }
+  // For tail: the first char of the tail slice is often a newline
+  // (because we cut at a line boundary in the original stream). Skip
+  // past leading whitespace + newlines to land on the first real
+  // character of the tail content.
+  let i = 0;
+  while (i < piece.length && (piece[i] === "\n" || piece[i] === " " || piece[i] === "\r")) {
+    i += 1;
+  }
+  return piece.slice(i);
+}
 
 /**
  * Build a `LiveReview` to use when the provider returned a non-JSON or
@@ -491,8 +559,14 @@ export function buildMalformedProviderFallback(input: {
 }): LiveReview {
   const safeProvider = sanitizeForPost(input.provider, input.secrets);
   const safeModelId = sanitizeForPost(input.modelId, input.secrets);
+  // CLARITY-12: show head + tail with a quantifier in the middle so the
+  // diagnostic captures both the opening events and the final
+  // response.completed output_text — not just whichever end happened
+  // to fit in the first N chars. The previous "first N chars only"
+  // truncation hid the actual response.completed event, leading
+  // reviewers to incorrectly conclude the model returned only metadata.
   const truncated = input.rawText.length > MALFORMED_PROVIDER_FALLBACK_RAW_MAX
-    ? `${input.rawText.slice(0, MALFORMED_PROVIDER_FALLBACK_RAW_MAX)}\n…(truncated)`
+    ? truncateHeadAndTail(input.rawText, MALFORMED_PROVIDER_FALLBACK_HALF_BUDGET)
     : input.rawText;
   const safeRaw = sanitizeForPost(truncated, input.secrets);
 
