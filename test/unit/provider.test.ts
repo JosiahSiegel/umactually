@@ -615,9 +615,14 @@ describe("openai-compatible provider client", () => {
       comments: [],
       suppressed_comments: [],
     });
+    // NOTE: deliberately omit `contentType` from the retry response stub.
+    // The runner uses `response.text()` regardless of Content-Type, so
+    // setting `application/json` here would mask a regression where the
+    // runner starts honoring Content-Type to dispatch JSON.parse vs raw
+    // text. With no Content-Type set, the test catches that regression.
     const stub = makeFetchStub([
       { status: 200, body: "not JSON at all" },
-      { status: 200, body: reviewJson, contentType: "application/json" },
+      { status: 200, body: reviewJson },
     ]);
 
     const result = await runProviderRequest({ ...BASE_CONFIG, fetchImpl: stub.fetch });
