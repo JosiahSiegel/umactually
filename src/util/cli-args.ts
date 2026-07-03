@@ -26,3 +26,29 @@ export function envFallback(...values: ReadonlyArray<string | undefined>): strin
   }
   return "";
 }
+
+/**
+ * Validate a CLI enum value against an accepted set, returning the value
+ * when it matches and throwing `Error` on miss. Replaces the four
+ * hand-coded enum parsers (`readPlatform`, `readEffort`, `readProvider`,
+ * `readMinimumSeverity`) in `parse-args.ts` so the CLI accepts the
+ * exact same set as `FIELDS.<x>.enumValues` in `field-schema.ts`.
+ * Single source of truth — changing the canonical `enumValues` array
+ * updates both surfaces.
+ *
+ * The accepted set is typed `readonly T[]` so the literal union narrows
+ * naturally without an explicit cast: `readEnum<CliPlatform>("--platform",
+ * v, FIELDS.platform.enumValues as readonly CliPlatform[])`.
+ */
+export function readEnum<T extends string>(
+  flag: string,
+  value: string,
+  accepted: readonly T[],
+): T {
+  for (const candidate of accepted) {
+    if (candidate === value) {
+      return candidate;
+    }
+  }
+  throw new Error(`invalid ${flag} value: ${value} (accepted: ${accepted.join(", ")})`);
+}
