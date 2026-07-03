@@ -723,6 +723,7 @@ function readThreadComments(value) {
 }
 
 ;// CONCATENATED MODULE: ./src/diff/parse-positions.ts
+
 function parseDiffPositions(diffText) {
     const linesByPath = new Map();
     // preserve the order in which right-side positions were first observed so
@@ -808,7 +809,7 @@ function parseNewHunkStart(line) {
     const endIndex = afterPlus.search(/[ ,]/u);
     const rawStart = endIndex === -1 ? afterPlus : afterPlus.slice(0, endIndex);
     const start = Number.parseInt(rawStart, 10);
-    return Number.isSafeInteger(start) && start > 0 ? start : null;
+    return isPositiveSafeInteger(start) ? start : null;
 }
 function addLine(linesByPath, path, line) {
     const existingLines = linesByPath.get(path);
@@ -925,7 +926,16 @@ function parseComment(value) {
     return { path, line };
 }
 
+;// CONCATENATED MODULE: ./src/util/async.ts
+/** Promise-based timer shared by async provider code; eliminates duplicated sleep helpers. */
+function sleep(ms) {
+    return new Promise((resolve) => {
+        setTimeout(resolve, ms);
+    });
+}
+
 ;// CONCATENATED MODULE: ./src/sonar/run-sonar-import.ts
+
 
 const EXPECTED_IMPORTED_FINDING_COUNT = 2;
 const MAX_POLL_ATTEMPTS = 3;
@@ -1150,11 +1160,6 @@ async function fetchSonarFindings(config, baseUrl, headers, fetchImpl) {
         process.stderr.write(`::warning::umactually-pr-review: sonar hotspots fetch failed: ${message}\n`);
     }
     return issueCount + hotspotCount;
-}
-function sleep(ms) {
-    return new Promise((resolve) => {
-        setTimeout(resolve, ms);
-    });
 }
 
 ;// CONCATENATED MODULE: ./src/config/field-schema.ts
@@ -1835,7 +1840,7 @@ function requireArray(value, label) {
     throw new AzureApiError("AZURE_FETCH_FAILED", AZURE_EMPTY_DIFF_STATUS, `${label} was not a JSON array.`);
 }
 function requirePositiveInteger(value, label) {
-    if (typeof value === "number" && Number.isSafeInteger(value) && value > 0) {
+    if (isPositiveSafeInteger(value)) {
         return value;
     }
     throw new AzureApiError("AZURE_FETCH_FAILED", AZURE_EMPTY_DIFF_STATUS, `${label} was not a positive integer.`);
@@ -2493,7 +2498,7 @@ function readRepositoryName(record) {
     return null;
 }
 function readOptionalNumber(value) {
-    return typeof value === "number" && Number.isSafeInteger(value) && value > 0 ? value : null;
+    return isPositiveSafeInteger(value) ? value : null;
 }
 function context_readRecord(value, label) {
     if (!isRecord(value)) {
@@ -2731,7 +2736,11 @@ function postedVsConsideredRow(input) {
         `**Considered:** \`${input.consideredCount}\` finding(s) from model · ` +
         `**Suppressed:** \`${input.suppressedCount}\` off-diff`;
     if (input.parseFailed) {
-        return `> ⚠️ **Parse failed** — provider response was not a valid JSON review payload. ` +
+        // Use emoji + backticks (NOT `**Parse failed**` markdown emphasis)
+        // for consistency with the severity tally above and to avoid the
+        // ADO PR-thread renderer leakage observed for `**...**` patterns
+        // (see CLARITY-3 in test/unit/live-azure-parent-clarity.test.ts).
+        return `> ⚠️ \`Parse failed\` — provider response was not a valid JSON review payload. ` +
             `No findings were extracted; the raw provider text is included in the Summary section below for diagnostics.\n` +
             `\n${base}`;
     }
@@ -2964,7 +2973,7 @@ function buildInlineCommentBody(input) {
         ? sanitizeForPost(input.comment.body, input.secrets)
         : sanitizeForPost(fallback, input.secrets);
     const marker = input.includeMarker === true ? `${REVIEW_MARKER}\n` : "";
-    const parentRef = typeof input.parentThreadId === "number" && Number.isSafeInteger(input.parentThreadId) && input.parentThreadId > 0
+    const parentRef = isPositiveSafeInteger(input.parentThreadId)
         ? `> Reply to PR review summary #${input.parentThreadId}\n\n`
         : "";
     return `${marker}${parentRef}\`${safeSeverity}\` \`${safeCategory}\`\n\n${safeBody}`;
@@ -5009,6 +5018,7 @@ function createRequestId() {
 ;// CONCATENATED MODULE: ./src/provider/openai-compatible.ts
 
 
+
 const ENDPOINT_RESPONSES = "responses";
 const openai_compatible_ENDPOINT_CHAT = "chat";
 
@@ -5049,18 +5059,13 @@ async function runWithRetry(config, fetchImpl, requestId, endpoint) {
         }
         if (attempt < RETRY_BACKOFF_MS.length) {
             const backoffMs = RETRY_BACKOFF_MS[attempt] ?? 0;
-            await openai_compatible_sleep(backoffMs);
+            await sleep(backoffMs);
         }
     }
     return { ok: false, error: lastFailure ?? new ProviderError("network", endpoint, null, requestId, "Unknown retry failure.") };
 }
 function isRetryable(error) {
     return error.status === 429 || (typeof error.status === "number" && error.status >= 500);
-}
-function openai_compatible_sleep(ms) {
-    return new Promise((resolve) => {
-        setTimeout(resolve, ms);
-    });
 }
 /**
  * Self-healing follow-up message sent to the model when its first response
@@ -5109,8 +5114,17 @@ async function callEndpoint(config, fetchImpl, requestId, endpoint) {
         ? buildResponsesBody(config, { userOverride: openai_compatible_PARSE_FAIL_RETRY_PROMPT })
         : buildChatBody(config, { userOverride: openai_compatible_PARSE_FAIL_RETRY_PROMPT });
     let retryReview = null;
+    // Track the retry's HTTP status (if it reached performFetch and
+    // returned a response) so the parse-fail ProviderError can surface
+    // it. When the retry fails with HTTP 4xx/5xx, that's the most
+    // informative root cause; when the retry succeeds with a still-
+    // unparseable payload, the ORIGINAL response status is the right
+    // signal — the model couldn't produce a review, not a transport
+    // failure. Both cases match `src/provider/copilot.ts`'s contract.
+    let retryResponseStatus = null;
     try {
         const retryResponse = await performFetch(fetchImpl, url, retryBody, signal, config, requestId, endpoint);
+        retryResponseStatus = retryResponse.status;
         if (retryResponse.ok) {
             const retryRawText = await readBody(retryResponse, endpoint, requestId);
             const retryTextPayload = extractTextPayload(endpoint, retryRawText);
@@ -5122,11 +5136,12 @@ async function callEndpoint(config, fetchImpl, requestId, endpoint) {
         }
     }
     catch {
-        // Retry HTTP/parse path failed; fall through to the parse-error
-        // throw below with the ORIGINAL rawText.
+        // Retry HTTP/parse path threw (network error, body read error,
+        // etc.) — fall through to the parse-error throw below with the
+        // ORIGINAL rawText. retryResponseStatus stays null in this branch.
     }
     if (retryReview === null) {
-        throw new ProviderError("parse", endpoint, response.status, requestId, "Provider response did not contain a JSON review payload after self-healing retry.", { rawText });
+        throw new ProviderError("parse", endpoint, retryResponseStatus ?? response.status, requestId, "Provider response did not contain a JSON review payload after self-healing retry.", { rawText });
     }
     return { ok: true, endpoint, review: retryReview, requestId };
 }
@@ -5527,6 +5542,7 @@ function formatSonarContext(report) {
 }
 
 ;// CONCATENATED MODULE: ./src/review/diff-line-utils.ts
+
 /**
  * Walk the diff text and return the raw line content for the first
  * `+` or ` ` row at the given right-side position. Falls back to an empty
@@ -5599,7 +5615,7 @@ function parseHunkStart(line) {
     const endIndex = afterPlus.search(/[ ,]/u);
     const rawStart = endIndex === -1 ? afterPlus : afterPlus.slice(0, endIndex);
     const start = Number.parseInt(rawStart, 10);
-    return Number.isSafeInteger(start) && start > 0 ? start : null;
+    return isPositiveSafeInteger(start) ? start : null;
 }
 /**
  * Pull a meaningful token out of the diff line for context-aware bodies.
