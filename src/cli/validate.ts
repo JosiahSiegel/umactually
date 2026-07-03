@@ -1,6 +1,8 @@
+import type { Platform } from "../config/types.js";
 import type { ParsedCliArgs } from "./parse-args.js";
 
-export type ResolvedPlatform = "github" | "azure";
+/** Platform after auto-resolution. Mirrors `Platform` minus the "auto" variant. */
+export type ResolvedPlatform = Exclude<Platform, "auto">;
 
 export function resolvePlatform(
   platform: ParsedCliArgs["platform"],

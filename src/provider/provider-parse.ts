@@ -1,4 +1,5 @@
 import { extractJsonBlock } from "../render/json-extract.js";
+import { isRecord as isPlainObject } from "../util/json-guards.js";
 
 type ProviderEndpoint = "responses" | "chat";
 
@@ -231,10 +232,6 @@ function tryExtractSse(rawText: string): string | null {
   }
 
   return fragments.length > 0 ? fragments.join("") : null;
-}
-
-function isPlainObject(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
 function readStringField(record: Record<string, unknown>, key: string): string | null {

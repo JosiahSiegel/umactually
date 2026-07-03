@@ -19,7 +19,8 @@ import { requestLiveReview } from "./live-provider.js";
 import { readLiveSonarContext } from "./sonar-context.js";
 import { applySimulateFindings } from "./simulate-findings.js";
 import type { ParsedCliArgs } from "./parse-args.js";
-import { DEFAULT_REVIEW_FILE_LIMIT } from "../config/loader.js";
+import { DEFAULT_MAX_COMMENTS, DEFAULT_REVIEW_FILE_LIMIT } from "../config/loader.js";
+import { logError, logWarning } from "../util/log.js";
 
 /**
  * Number of chunks to process concurrently when the chunked path is
@@ -34,10 +35,11 @@ const DEFAULT_CHUNK_CONCURRENCY = 4;
 
 /**
  * Fallback cap used by the chunked Azure merge when the CLI flag
- * `--max-comments` is not set. Matches the post-side cap in
- * `live-shared.ts:DEFAULT_MAX_COMMENTS`.
+ * `--max-comments` is not set. Imported from `src/config/loader.ts` to
+ * keep a single source of truth — was previously a local re-declaration
+ * of `DEFAULT_MAX_COMMENTS` that could drift.
  */
-const DEFAULT_MAX_COMMENTS_MERGE = 50;
+const DEFAULT_MAX_COMMENTS_MERGE = DEFAULT_MAX_COMMENTS;
 
 /**
  * Helper used by the Azure live path. Each chunk is fed through
@@ -99,8 +101,9 @@ async function requestChunkedLiveReview(input: {
           const message = error instanceof Error ? error.message : String(error);
           const sanitized = sanitizeForPost(message, [input.platformToken]);
           const redactedChunk = chunk.length > 80 ? `${chunk.slice(0, 77)}…` : chunk;
-          process.stderr.write(
-            `::warning::umactually-pr-review: chunk ${index + 1}/${input.chunks.length} failed (${sanitized}); substituting empty outcome. chunk preview: ${redactedChunk}\n`,
+          logWarning(
+            "",
+            `chunk ${index + 1}/${input.chunks.length} failed (${sanitized}); substituting empty outcome. chunk preview: ${redactedChunk}`,
           );
           outcome = {
             review: { summary: "", verdict: "COMMENT", comments: [], suppressedComments: [] },
@@ -115,8 +118,9 @@ async function requestChunkedLiveReview(input: {
   );
   await Promise.all(workers);
   if (failedChunkCount > 0) {
-    process.stderr.write(
-      `::warning::umactually-pr-review: ${failedChunkCount}/${input.chunks.length} chunks failed; merged review contains only findings from the chunks that succeeded.\n`,
+    logWarning(
+      "",
+      `${failedChunkCount}/${input.chunks.length} chunks failed; merged review contains only findings from the chunks that succeeded.`,
     );
   }
   return mergeReviewResults(outcomes, {
@@ -233,7 +237,7 @@ async function dispatchLivePlatform(input: {
         detectLeaks: parsed.detectLeaks,
       });
       if (!leakGate.ok) {
-        process.stderr.write(`::error::umactually-pr-review: ${leakGate.message}\n`);
+        logError("", leakGate.message);
         return {
           exitCode: 1,
           posted: false,
@@ -276,7 +280,7 @@ async function dispatchLivePlatform(input: {
         detectLeaks: parsed.detectLeaks,
       });
       if (!leakGate.ok) {
-        process.stderr.write(`::error::umactually-pr-review: ${leakGate.message}\n`);
+        logError("", leakGate.message);
         return {
           exitCode: 1,
           posted: false,

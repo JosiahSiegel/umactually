@@ -1,16 +1,26 @@
 import type { GithubContext } from "./context.js";
+import { PlatformApiError } from "../../util/platform-error.js";
+import { USER_AGENT } from "../../util/brand.js";
+import { fetchTextOrThrow, githubHeaders } from "../../util/http.js";
 
 export type FetchImpl = (input: string | URL | Request, init?: RequestInit) => Promise<Response>;
 
-export class GithubApiError extends Error {
+/**
+ * API-layer error for the GitHub platform adapter. Inherits the
+ * `PlatformApiError` shape from `src/util/platform-error.ts` so it shares
+ * a common ancestor with `AzureApiError` and is catchable as
+ * `PlatformApiError<...>` when callers don't care about the platform.
+ */
+export class GithubApiError extends PlatformApiError<"GITHUB_FETCH_FAILED" | "GITHUB_DIFF_EMPTY"> {
   override readonly name = "GithubApiError";
-  readonly code: "GITHUB_FETCH_FAILED" | "GITHUB_DIFF_EMPTY";
-  readonly status: number;
 
-  constructor(code: GithubApiError["code"], status: number, message: string, options?: ErrorOptions) {
-    super(message, options);
-    this.code = code;
-    this.status = status;
+  constructor(
+    code: "GITHUB_FETCH_FAILED" | "GITHUB_DIFF_EMPTY",
+    status: number,
+    message: string,
+    options?: ErrorOptions,
+  ) {
+    super(code, status, message, options);
   }
 }
 
@@ -18,30 +28,23 @@ const GITHUB_API_BASE_URL = "https://api.github.com";
 const PULL_DIFF_MEDIA_TYPE = "application/vnd.github.v3.diff";
 
 export async function fetchGithubPrDiff(context: GithubContext, fetchImpl: FetchImpl = fetch): Promise<string> {
-  const url = buildPullUrl(context);
-  const response = await fetchImpl(url, {
-    method: "GET",
-    headers: {
-      Authorization: `Bearer ${context.token}`,
-      Accept: PULL_DIFF_MEDIA_TYPE,
-      "User-Agent": "umactually-pr-review",
+  return fetchTextOrThrow(
+    fetchImpl,
+    {
+      url: buildPullUrl(context),
+      headers: {
+        ...githubHeaders(context.token),
+        Accept: PULL_DIFF_MEDIA_TYPE,
+        "User-Agent": USER_AGENT,
+      },
     },
-  });
-
-  if (!response.ok) {
-    throw new GithubApiError(
-      "GITHUB_FETCH_FAILED",
-      response.status,
-      `GitHub PR diff request failed with status ${response.status}.`,
-    );
-  }
-
-  const diffText = await response.text();
-  if (diffText.length === 0) {
-    throw new GithubApiError("GITHUB_DIFF_EMPTY", response.status, "GitHub PR diff response body was empty.");
-  }
-
-  return diffText;
+    {
+      error: GithubApiError as new (code: string, status: number, message: string) => Error,
+      failCode: "GITHUB_FETCH_FAILED",
+      emptyCode: "GITHUB_DIFF_EMPTY",
+      platform: "GitHub PR diff",
+    },
+  );
 }
 
 function buildPullUrl(context: GithubContext): string {

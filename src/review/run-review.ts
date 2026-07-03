@@ -1,5 +1,6 @@
 import { scanReviewSecrets } from "../security/scan-review-secrets.js";
 import { parseDiffPositions } from "../diff/parse-positions.js";
+import { REVIEW_MARKER } from "../util/marker.js";
 
 export type GithubReviewContract = {
   readonly platform: "github";
@@ -12,12 +13,13 @@ export type GithubReviewContract = {
 export type PostedGithubReview = {
   readonly artifactPath: string;
   readonly event: "COMMENT";
-  readonly marker: "<!-- umactually-pr-review -->";
+  readonly marker: typeof REVIEW_MARKER;
   readonly inlineThreadCount: number;
   readonly suppressedCommentCount: number;
 };
 
-export const REVIEW_MARKER = "<!-- umactually-pr-review -->";
+// Re-exported for backward compatibility; canonical source is src/util/marker.ts.
+export { REVIEW_MARKER };
 
 type ProviderComment = {
   readonly path: string;

@@ -1,9 +1,10 @@
 import type { EnvSources } from "./types.js";
 
-// UMACTUALLY_* env vars are the canonical secrets surface for the GitHub Actions
+// Mapping from canonical config-side field names to their env-var sources.
+// UMACTUALLY_* env vars are the canonical secrets surface for GitHub Actions
 // and Azure DevOps deployments. REVIEW_* keys remain as a backward-compatible
 // fallback so the legacy reference tooling still resolves the same fields.
-// Both are recorded into EnvSources; callers pick the first defined value.
+// When both are set, the first entry in each list wins.
 const ENV_KEYS: ReadonlyArray<readonly [keyof EnvSources, readonly string[]]> = [
   ["providerUrl", ["UMACTUALLY_API_URL", "REVIEW_PROVIDER_URL"]],
   ["providerApiKey", ["UMACTUALLY_API_KEY", "REVIEW_PROVIDER_API_KEY"]],
@@ -38,6 +39,11 @@ const ENV_KEYS: ReadonlyArray<readonly [keyof EnvSources, readonly string[]]> = 
   ["azurePullRequestId", ["AZURE_DEVOPS_PULL_REQUEST_ID"]],
   ["azureToken", ["AZURE_DEVOPS_TOKEN"]],
 ];
+
+/** Set of every env-var name the runtime reads. Used for sanity checks + tests. */
+export const KNOWN_ENV_VAR_NAMES: ReadonlySet<string> = new Set(
+  ENV_KEYS.flatMap(([, envNames]) => envNames),
+);
 
 /**
  * Pure: extracts the known env-var keys from `env` into an EnvSources object.

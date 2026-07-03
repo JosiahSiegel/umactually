@@ -8,7 +8,6 @@ import {
 import { normalizeApiUrl } from "./parsers.js";
 import { readPromptFiles } from "./prompt-files.js";
 import type {
-  ActionInputs,
   AzureConfig,
   CliArgs,
   EnvSources,
@@ -17,6 +16,7 @@ import type {
   Platform,
   PromptConfig,
   ProviderConfig,
+  RawActionInputs,
   ReviewConfig,
   ReviewScopeControls,
   Severity,
@@ -175,7 +175,7 @@ export async function loadConfigFromSources(sources: LoadConfigSources): Promise
 
 async function resolvePrompts(
   cli: CliArgs,
-  inputs: ActionInputs,
+  inputs: RawActionInputs,
   env: EnvSources,
   cwd: string,
   byteCap: number,

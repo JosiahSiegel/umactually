@@ -4,6 +4,7 @@ import { isAbsolute, join } from "node:path";
 import { runCli } from "./cli.js";
 import { appendCommonInputArgs } from "./action/append-cli-inputs.js";
 import { readActionInputs } from "./action/read-inputs.js";
+import { logError } from "./util/log.js";
 
 declare global {
   // Cross-module flag the action entry sets at module load so the bundled
@@ -25,7 +26,7 @@ export async function main(): Promise<void> {
     }
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
-    process.stderr.write(`::error::umactually-pr-review: ${message}\n`);
+    logError("", message);
     process.exit(1);
   }
 }
@@ -215,7 +216,7 @@ const isMainEntry = (() => {
 if (isMainEntry) {
   main().catch((error: unknown) => {
     const message = error instanceof Error ? error.message : String(error);
-    process.stderr.write(`::error::umactually-pr-review: ${message}\n`);
+    logError("", message);
     process.exit(1);
   });
 }

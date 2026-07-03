@@ -12,5 +12,32 @@
     "highConfidenceLeakCount": 1,
     "redactedDiffIncludesSecret": false,
     "blockedRawOutput": true
+  },
+  "effectiveConfig": {
+    "providerUrl": null,
+    "providerModel": null,
+    "walkthrough": null,
+    "diagnostic": null,
+    "dryRun": null,
+    "debugRawResponse": null,
+    "reviewTimeoutSeconds": null,
+    "stallTimeoutSeconds": null,
+    "perRequestTimeoutSeconds": null,
+    "ignoreMinor": null,
+    "minimumSeverity": null,
+    "maxComments": null,
+    "sonarEnabled": null,
+    "sonarHost": null,
+    "sonarProject": null,
+    "sonarTimeoutSeconds": null,
+    "leakDetection": null,
+    "redactorEnabled": null,
+    "platform": null
+  },
+  "secretsDetected": {
+    "apiKey": false,
+    "sonarToken": false,
+    "githubToken": false,
+    "azureToken": false
   }
 }

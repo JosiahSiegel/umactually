@@ -1,4 +1,8 @@
-export type CliPlatform = "auto" | "github" | "azure";
+import type { Platform } from "../config/types.js";
+
+/** CLI-side platform union. Derived from config-side `Platform` so the
+ *  two layers never drift — see `Platform` in `src/config/types.ts`. */
+export type CliPlatform = Platform;
 export type CliMinimumSeverity = "low" | "medium" | "high";
 export type CliEffort = "low" | "medium" | "high";
 export type CliProvider = "openai-compatible" | "copilot";

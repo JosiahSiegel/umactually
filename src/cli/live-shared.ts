@@ -1,11 +1,16 @@
 import { parseDiffPositions } from "../diff/parse-positions.js";
 import { REVIEW_MARKER } from "../review/run-review.js";
 import { scanReviewSecrets } from "../security/scan-review-secrets.js";
+import type { Platform } from "../config/types.js";
+import { DEFAULT_MAX_COMMENTS } from "../config/loader.js";
+import { isRecord } from "../util/json-guards.js";
+import { countBySeverity as countBySeverityUtil, severityRank } from "../util/severity.js";
 import type { ParsedCliArgs } from "./parse-args.js";
 
 export type FetchImpl = (input: string | URL | Request, init?: RequestInit) => Promise<Response>;
 
-export type LivePlatform = "github" | "azure";
+/** Live-path platform (after auto-resolution). Mirrors `Platform` minus "auto". */
+export type LivePlatform = Exclude<Platform, "auto">;
 
 export type LiveRunResult = {
   readonly exitCode: number;
@@ -85,8 +90,6 @@ export async function evaluateLeakGate(input: {
   };
 }
 
-const DEFAULT_MAX_COMMENTS = 50;
-
 /**
  * Visual verdict badge used in the review-header summary. Both GitHub and
  * Azure DevOps render markdown, so the same badge appears on each platform.
@@ -102,15 +105,12 @@ function verdictBadge(verdict: string): string {
  * Group comments by severity (low/medium/high/critical). Used by both the
  * GitHub and Azure review-header builders so the collapsed details block
  * reports the same severity tally regardless of platform.
+ *
+ * Delegates to `src/util/severity.ts` so the live path and the merge path
+ * agree on the exact same lowercase-accumulation logic. Was previously a
+ * local copy that drifted subtly from `live-merge.ts`'s version.
  */
-export function countBySeverity(comments: readonly { readonly severity: string }[]): Record<string, number> {
-  const counts: Record<string, number> = {};
-  for (const comment of comments) {
-    const key = comment.severity.toLowerCase();
-    counts[key] = (counts[key] ?? 0) + 1;
-  }
-  return counts;
-}
+export const countBySeverity = countBySeverityUtil;
 
 /**
  * Hard upper bound on the inline-finding preview list inside the parent
@@ -513,9 +513,15 @@ export function countSuppressedComments(review: LiveReview, diffText: string): n
   return count;
 }
 
-export function mapReviewVerdictToGithubEvent(verdict: string): "COMMENT" | "REQUEST_CHANGES" {
-  return verdict === "NEEDS_FIX" ? "REQUEST_CHANGES" : "COMMENT";
-}
+import { mapVerdictToAzureStatus, mapVerdictToGithubEvent } from "../util/verdict.js";
+
+/**
+ * Map a review verdict to a GitHub review-submission event. Delegates to
+ * `src/util/verdict.ts` so the merge-path verdict-rank table and the
+ * live-path event mapping share the same canonical definitions.
+ */
+export const mapReviewVerdictToGithubEvent: (verdict: string) => "COMMENT" | "REQUEST_CHANGES" =
+  mapVerdictToGithubEvent;
 
 /**
  * Map a review verdict to an Azure DevOps PR-status `state` value.
@@ -524,7 +530,7 @@ export function mapReviewVerdictToGithubEvent(verdict: string): "COMMENT" | "REQ
  *   https://learn.microsoft.com/en-us/rest/api/azure/devops/git/pull-request-statuses/create?view=azure-devops-rest-7.1
  *   "State of the status."  (notSet | pending | succeeded | failed | error | notApplicable)
  *
- * Policy:
+ * Policy (current — same as the live CLI):
  *   - A failing UmActually review is a **finding**, not a merge-blocking
  *     check. The merge gate is owned by the ADO branch-policy build
  *     validation check (which runs the actual CI pipeline and is
@@ -537,20 +543,14 @@ export function mapReviewVerdictToGithubEvent(verdict: string): "COMMENT" | "REQ
  *     indicate the CLI ran cleanly, so we collapse those to
  *     `"succeeded"` and reserve `"pending"` for "ran and found things
  *     to look at" (`NEEDS_FIX`) plus the safe-default fallthrough.
+ *
+ * Delegates to `src/util/verdict.ts` with the `"current"` policy so the
+ * legacy S4 RED-contract mapping (NEEDS_FIX → "failed") stays in one
+ * place and is selectable per call site.
  */
-export function mapReviewVerdictToAzureStatus(verdict: string): "succeeded" | "failed" | "pending" {
-  switch (verdict) {
-    case "APPROVED":
-    case "COMMENT":
-    case "DISCUSS":
-    case "SHIP":
-      return "succeeded";
-    case "NEEDS_FIX":
-    case "":
-    default:
-      return "pending";
-  }
-}
+export const mapReviewVerdictToAzureStatus: (verdict: string) => "succeeded" | "failed" | "pending" = (
+  verdict: string,
+) => mapVerdictToAzureStatus(verdict, "current");
 
 export function sanitizeForPost(value: string, secrets: readonly string[]): string {
   let sanitized = value
@@ -622,9 +622,7 @@ export function ensureHttpOk(response: Response, code: string, action: string): 
   throw new LiveReviewError(code, `${action} failed with HTTP ${response.status}.`);
 }
 
-export function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
-}
+export { isRecord };
 
 function passesSeverityPolicy(comment: LiveReviewComment, parsed: ParsedCliArgs): boolean {
   if (parsed.ignoreMinor && comment.severity.toLowerCase() === "low") {
@@ -635,19 +633,4 @@ function passesSeverityPolicy(comment: LiveReviewComment, parsed: ParsedCliArgs)
     return true;
   }
   return severityRank(comment.severity) >= severityRank(minimum);
-}
-
-function severityRank(severity: string): number {
-  switch (severity.toLowerCase()) {
-    case "critical":
-      return 4;
-    case "high":
-      return 3;
-    case "medium":
-      return 2;
-    case "low":
-      return 1;
-    default:
-      return 0;
-  }
 }

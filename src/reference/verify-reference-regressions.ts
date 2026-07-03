@@ -1,3 +1,5 @@
+import { REVIEW_MARKER } from "../util/marker.js";
+
 export type ReferenceRegressionInput = {
   readonly inlineQuoteReference: string;
   readonly rawJsonLeakReference: string;
@@ -17,7 +19,7 @@ const INLINE_QUOTE_HELPER = "wrap_inline_code";
 const RAW_JSON_LEAK_GUARD = "FenceClosureGuardTests";
 const JSON_FENCE = "```json";
 const LEGACY_MARKER = "<!-- auto-pr-review -->";
-const CURRENT_MARKER = "<!-- umactually-pr-review -->";
+const CURRENT_MARKER = REVIEW_MARKER;
 const LEGACY_MARKER_SLUG = "auto-pr-review";
 const CURRENT_MARKER_SLUG = "umactually-pr-review";
 

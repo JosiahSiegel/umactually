@@ -1,6 +1,7 @@
 import { scanReviewSecrets } from "../security/scan-review-secrets.js";
-
-const REVIEW_MARKER = "<!-- umactually-pr-review -->";
+import { REVIEW_MARKER } from "../util/marker.js";
+import { isRecord } from "../util/json-guards.js";
+import { mapVerdictToAzureStatus } from "../util/verdict.js";
 
 export type AzureReviewContract = {
   readonly pullRequestJson: string;
@@ -116,15 +117,18 @@ function hasMatchingReviewThread(comment: ReviewComment, existingThreads: AzureT
 }
 
 function mapVerdictToStatus(verdict: ReviewVerdict): AzureMockedRun["postedStatusState"] {
-  switch (verdict) {
-    case "NEEDS_FIX":
-      return "failed";
-    case "APPROVED":
-      return "succeeded";
-    case "COMMENT":
-      return "pending";
+  // Use the legacy policy (NEEDS_FIX → "failed") to preserve the S4 RED contract;
+  // the live CLI uses the "current" policy (NEEDS_FIX → "pending") via
+  // src/util/verdict.ts. The two are intentionally divergent — the live CLI
+  // considers NEEDS_FIX a "finding", not a merge-blocking check.
+  const status = mapVerdictToAzureStatus(verdict, "legacy");
+  switch (status) {
+    case "succeeded":
+    case "failed":
+    case "pending":
+      return status;
     default:
-      return assertNever(verdict);
+      return assertNever(status);
   }
 }
 
@@ -137,10 +141,6 @@ function readRecord(value: unknown, label: string): Record<string, unknown> {
     throw new TypeError(`Expected ${label} to be an object, received: ${typeof value}`);
   }
   return value;
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null;
 }
 
 function readNumberField(record: Record<string, unknown>, key: string): number {

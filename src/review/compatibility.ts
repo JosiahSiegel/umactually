@@ -11,6 +11,9 @@
  * the caller supplies (typically fixture contents).
  */
 
+import { REVIEW_MARKER } from "../util/marker.js";
+import { isRecord as isObjectPayload } from "../util/json-guards.js";
+
 export type ReviewCompatibilityInput = {
   readonly existingCommentsJson: string;
   readonly providerResponsesJson: string;
@@ -26,7 +29,7 @@ export type ReviewCompatibilityReport = {
 };
 
 const LEGACY_MARKER = "<!-- auto-pr-review -->";
-const CURRENT_MARKER = "<!-- umactually-pr-review -->";
+const CURRENT_MARKER = REVIEW_MARKER;
 
 const FALLBACK_ORDER: readonly ["responses", "chat"] = ["responses", "chat"];
 
@@ -53,10 +56,6 @@ function parseComments(jsonText: string): readonly ExistingComment[] {
     throw new Error("compatibility: existingCommentsJson must parse as a JSON array");
   }
   return parsed.filter(isExistingComment);
-}
-
-function isObjectPayload(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
 function hasResponsesOutputText(jsonText: string): boolean {
