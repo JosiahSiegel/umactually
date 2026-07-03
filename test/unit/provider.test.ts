@@ -524,4 +524,168 @@ describe("openai-compatible provider client", () => {
       expect(result.review.verdict).toBe("DISCUSS");
     }
   });
+
+  it("PROV-UNIT-020: parses Responses API SSE stream with response.output_text.delta events", async () => {
+    // This is the exact format that the opencode/MiniMax model used on
+    // PR #3 — fragments wrapped in {type, delta} envelopes with
+    // type="response.output_text.delta". The previous parser didn't
+    // know about this shape and silently fell through to a 0-finding
+    // fallback review (CLARITY-10 motivation).
+    const reviewJson = JSON.stringify({
+      summary: "Streamed review.",
+      verdict: "NEEDS_FIX",
+      comments: [{ path: "src/a.ts", line: 1, body: "Fix.", severity: "medium", category: "general" }],
+      suppressed_comments: [],
+    });
+    // Split the review JSON into two delta events to exercise the
+    // accumulator path (not just the response.completed path).
+    const half = Math.ceil(reviewJson.length / 2);
+    const firstHalf = reviewJson.slice(0, half);
+    const secondHalf = reviewJson.slice(half);
+    const sseBody =
+      'event: response.created\n' +
+      'data: {"type":"response.created","response":{"id":"resp_1","status":"in_progress","output":[]}}\n' +
+      '\n' +
+      'event: response.output_text.delta\n' +
+      `data: {"type":"response.output_text.delta","delta":${JSON.stringify(firstHalf)}}\n` +
+      '\n' +
+      'event: response.output_text.delta\n' +
+      `data: {"type":"response.output_text.delta","delta":${JSON.stringify(secondHalf)}}\n` +
+      '\n' +
+      'event: response.completed\n' +
+      'data: {"type":"response.completed","response":{"id":"resp_1","status":"completed"}}\n';
+    const stub = makeFetchStub([
+      { status: 200, body: sseBody, contentType: "text/event-stream" },
+    ]);
+
+    const result = await runProviderRequest({ ...BASE_CONFIG, fetchImpl: stub.fetch });
+
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.endpoint).toBe("responses");
+      expect(result.review.summary).toBe("Streamed review.");
+      expect(result.review.verdict).toBe("NEEDS_FIX");
+      expect(result.review.comments).toHaveLength(1);
+      expect(result.review.comments[0]?.path).toBe("src/a.ts");
+    }
+  });
+
+  it("PROV-UNIT-021: prefers response.completed output_text over accumulated deltas", async () => {
+    // Some providers only send the completed event with output_text
+    // and skip the per-fragment deltas. We should use the completed
+    // text directly without falling back to an empty concatenation.
+    const reviewJson = JSON.stringify({
+      summary: "From completed.",
+      verdict: "APPROVED",
+      comments: [],
+      suppressed_comments: [],
+    });
+    const sseBody =
+      'event: response.completed\n' +
+      `data: ${JSON.stringify({
+        type: "response.completed",
+        response: {
+          id: "resp_2",
+          status: "completed",
+          output_text: reviewJson,
+        },
+      })}\n`;
+    const stub = makeFetchStub([
+      { status: 200, body: sseBody, contentType: "text/event-stream" },
+    ]);
+
+    const result = await runProviderRequest({ ...BASE_CONFIG, fetchImpl: stub.fetch });
+
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.review.summary).toBe("From completed.");
+      expect(result.review.verdict).toBe("APPROVED");
+    }
+  });
+
+  it("PROV-UNIT-022: self-heals with a JSON-reminder retry when the first response is unparseable", async () => {
+    // First call returns text that contains nothing parseable. The
+    // runner retries once with an explicit JSON-only reminder, and the
+    // second call returns a parseable review. The retry payload MUST
+    // include the reminder text in the user role (so the model is
+    // nudged toward a JSON-only response).
+    const reviewJson = JSON.stringify({
+      summary: "Recovered on retry.",
+      verdict: "DISCUSS",
+      comments: [],
+      suppressed_comments: [],
+    });
+    const stub = makeFetchStub([
+      { status: 200, body: "not JSON at all" },
+      { status: 200, body: reviewJson, contentType: "application/json" },
+    ]);
+
+    const result = await runProviderRequest({ ...BASE_CONFIG, fetchImpl: stub.fetch });
+
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.review.summary).toBe("Recovered on retry.");
+    }
+    // The retry's user message should be the JSON reminder.
+    const retryCall = stub.calls[1];
+    expect(retryCall).toBeDefined();
+    const retryBody = retryCall?.body as { readonly input?: ReadonlyArray<{ readonly role: string; readonly content: string }> };
+    const retryUser = retryBody.input?.[1]?.content ?? "";
+    expect(retryUser).toMatch(/JSON/u);
+    expect(retryUser).toMatch(/review payload/u);
+  });
+
+  it("PROV-UNIT-023: treats a non-review JSON object (e.g. chat-format fed to responses endpoint) as a parse failure", async () => {
+    // Before CLARITY-10, the parser was permissive: any JSON object
+    // became a (likely empty) review. That masked real failures.
+    // Now: if summary/verdict/comments are all empty, it's a parse
+    // failure → self-healing retry → still failure → typed parse error.
+    const stub = makeFetchStub([
+      // OpenAI Chat format response sent to the responses endpoint.
+      // `extractTextPayload` falls back to rawText since neither
+      // output_text nor output[] is present, and parseReviewPayload
+      // extracts the whole object as an "empty review".
+      { status: 200, body: JSON.stringify({ choices: [{ message: { content: "x" } }] }) },
+      { status: 200, body: JSON.stringify({ choices: [{ message: { content: "still no review" } }] }) },
+    ]);
+
+    const result = await runProviderRequest({ ...BASE_CONFIG, fetchImpl: stub.fetch });
+
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.error.code).toBe("parse");
+    }
+  });
+
+  it("PROV-UNIT-024: SSE stream with no extractable content triggers parse failure (the PR #3 case)", async () => {
+    // Exact reproduction of the PR #3 failure: provider returns an SSE
+    // stream with only metadata events (response.created, response.completed)
+    // and no actual output text. The parser should surface this as a
+    // parse error, not silently post a 0-finding review.
+    const stub = makeFetchStub([
+      {
+        status: 200,
+        body:
+          'event: response.created\n' +
+          'data: {"type":"response.created","response":{"id":"resp","status":"in_progress","output":[]}}\n' +
+          '\n' +
+          'event: response.completed\n' +
+          'data: {"type":"response.completed","response":{"id":"resp","status":"completed","output":[]}}\n',
+        contentType: "text/event-stream",
+      },
+      // Retry response: still no extractable review content.
+      {
+        status: 200,
+        body: JSON.stringify({ choices: [{ message: { content: "no review" } }] }),
+        contentType: "application/json",
+      },
+    ]);
+
+    const result = await runProviderRequest({ ...BASE_CONFIG, fetchImpl: stub.fetch });
+
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.error.code).toBe("parse");
+    }
+  });
 });

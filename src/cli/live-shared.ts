@@ -34,6 +34,17 @@ export type LiveReview = {
   readonly verdict: string;
   readonly comments: readonly LiveReviewComment[];
   readonly suppressedComments: readonly LiveReviewComment[];
+  /**
+   * True when the provider returned a non-JSON / unparseable response and
+   * we fell back to `buildMalformedProviderFallback`. CRITICAL for the
+   * Posted/Considered/Suppressed row — when true, the reader sees a
+   * distinct "parse failed" badge so a 0-finding review cannot be
+   * mistaken for a clean bill of health. The fallback path renders the
+   * raw provider text in a collapsed <details> block for diagnostics.
+   *
+   * Defaults to false. Only the malformed-fallback path sets this.
+   */
+  readonly parseFailed?: boolean;
 };
 
 /**
@@ -133,17 +144,27 @@ const TOP_CONCERNS_PREVIEW_LIMIT = 5;
  * Always renders (even when all three values are zero) so a reviewer
  * can distinguish "0 found, ship it" from "nothing rendered" —
  * inherited from CLARITY-5.
+ *
+ * When `parseFailed` is true, the row prepends a prominent
+ * `⚠️ Parse failed` badge so a 0-finding review can never be confused
+ * for a clean bill of health. CLARITY-10.
  */
 function postedVsConsideredRow(input: {
   readonly postedCount: number;
   readonly consideredCount: number;
   readonly suppressedCount: number;
+  readonly parseFailed: boolean;
 }): string {
-  return [
+  const base =
     `**Posted:** \`${input.postedCount}\` inline thread(s) · ` +
-      `**Considered:** \`${input.consideredCount}\` finding(s) from model · ` +
-      `**Suppressed:** \`${input.suppressedCount}\` off-diff`,
-  ].join("\n");
+    `**Considered:** \`${input.consideredCount}\` finding(s) from model · ` +
+    `**Suppressed:** \`${input.suppressedCount}\` off-diff`;
+  if (input.parseFailed) {
+    return `> ⚠️ **Parse failed** — provider response was not a valid JSON review payload. ` +
+      `No findings were extracted; the raw provider text is included in the Summary section below for diagnostics.\n` +
+      `\n${base}`;
+  }
+  return base;
 }
 
 /**
@@ -296,6 +317,7 @@ function metadataManifest(input: {
     inlineCount: input.validCommentCount,
     suppressedCount: input.suppressedCommentCount,
     severityCounts: input.severityCounts,
+    ...(input.review.parseFailed === true ? { parseFailed: true } : {}),
   });
   return `<!-- umactually-pr-review:manifest ${manifest} -->`;
 }
@@ -359,6 +381,7 @@ export function buildReviewBody(input: {
       postedCount: input.validCommentCount,
       consideredCount,
       suppressedCount: input.suppressedCommentCount,
+      parseFailed: input.review.parseFailed === true,
     }),
     "",
     countsLine({ severityCounts }),
@@ -463,6 +486,7 @@ export function buildMalformedProviderFallback(input: {
     verdict: "COMMENT",
     comments: [],
     suppressedComments: [],
+    parseFailed: true,
   };
 }
 

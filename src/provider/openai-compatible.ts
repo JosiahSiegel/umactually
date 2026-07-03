@@ -115,6 +115,19 @@ function sleep(ms: number): Promise<void> {
   });
 }
 
+/**
+ * Self-healing follow-up message sent to the model when its first response
+ * could not be parsed as a JSON review payload. Some providers ignore
+ * `stream: false` and return an empty SSE stream; some wrap their output
+ * in markdown fences or prose; some omit the JSON entirely. We retry
+ * once with an explicit reminder before falling back to the parse-fail
+ * surface — that often recovers the review without operator intervention.
+ */
+const PARSE_FAIL_RETRY_PROMPT =
+  "Your previous response did not contain a valid JSON review payload. " +
+  "Please respond with ONLY a JSON object matching this schema (no prose, no fences): " +
+  '{"summary": "...", "verdict": "NEEDS_FIX|APPROVED|COMMENT|DISCUSS|SHIP", "comments": [...], "suppressed_comments": [...]}.';
+
 async function callEndpoint(
   config: ProviderCallConfig,
   fetchImpl: typeof fetch,
@@ -141,19 +154,60 @@ async function callEndpoint(
 
   const rawText = await readBody(response, endpoint, requestId);
   const textPayload = extractTextPayload(endpoint, rawText);
-  const review = parseReviewPayload(textPayload);
-  if (review === null) {
+  const review = textPayload === null ? null : parseReviewPayload(textPayload);
+  // Treat an empty-summary+empty-verdict parse as a parse failure even
+  // when `extractJsonBlock` returned an object. The parser is permissive
+  // about JSON shape (returns `ProviderReviewPayload` with empty fields
+  // for any JSON object), so a chat-format response (`{choices: [...]}`)
+  // fed to the responses endpoint can otherwise pass as a 0-finding
+  // "empty review" — see CLARITY-10.
+  if (review !== null && (review.summary.length > 0 || review.verdict.length > 0 || review.comments.length > 0)) {
+    return { ok: true, endpoint, review, requestId };
+  }
+
+  // Self-healing: parse failed on first attempt. Try once more with an
+  // explicit JSON-only reminder. Some providers (notably those that
+  // emit only an SSE stream of metadata events with no actual output)
+  // recover cleanly when reminded to emit JSON.
+  //
+  // Note: any network/HTTP error on the retry is collapsed back into a
+  // `parse` error (with the ORIGINAL rawText attached) so the parse-fail
+  // path's diagnostic captures the actual root cause — the model
+  // couldn't produce a parseable review, regardless of whether the retry
+  // request itself reached the provider.
+  const retryBody = endpoint === ENDPOINT_RESPONSES
+    ? buildResponsesBody(config, { userOverride: PARSE_FAIL_RETRY_PROMPT })
+    : buildChatBody(config, { userOverride: PARSE_FAIL_RETRY_PROMPT });
+  let retryReview: ProviderReviewPayload | null = null;
+  try {
+    const retryResponse = await performFetch(fetchImpl, url, retryBody, signal, config, requestId, endpoint);
+    if (retryResponse.ok) {
+      const retryRawText = await readBody(retryResponse, endpoint, requestId);
+      const retryTextPayload = extractTextPayload(endpoint, retryRawText);
+      if (retryTextPayload !== null) {
+        const parsedRetry = parseReviewPayload(retryTextPayload);
+        // Same strict check on the retry: must have actual review content.
+        if (parsedRetry !== null && (parsedRetry.summary.length > 0 || parsedRetry.verdict.length > 0 || parsedRetry.comments.length > 0)) {
+          retryReview = parsedRetry;
+        }
+      }
+    }
+  } catch {
+    // Retry HTTP/parse path failed; fall through to the parse-error
+    // throw below with the ORIGINAL rawText.
+  }
+  if (retryReview === null) {
     throw new ProviderError(
       "parse",
       endpoint,
       response.status,
       requestId,
-      "Provider response did not contain a JSON review payload.",
+      "Provider response did not contain a JSON review payload after self-healing retry.",
       { rawText },
     );
   }
 
-  return { ok: true, endpoint, review, requestId };
+  return { ok: true, endpoint, review: retryReview, requestId };
 }
 
 async function performFetch(

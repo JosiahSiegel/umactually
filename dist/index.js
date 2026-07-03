@@ -3046,13 +3046,21 @@ const TOP_CONCERNS_PREVIEW_LIMIT = 5;
  * Always renders (even when all three values are zero) so a reviewer
  * can distinguish "0 found, ship it" from "nothing rendered" —
  * inherited from CLARITY-5.
+ *
+ * When `parseFailed` is true, the row prepends a prominent
+ * `⚠️ Parse failed` badge so a 0-finding review can never be confused
+ * for a clean bill of health. CLARITY-10.
  */
 function postedVsConsideredRow(input) {
-    return [
-        `**Posted:** \`${input.postedCount}\` inline thread(s) · ` +
-            `**Considered:** \`${input.consideredCount}\` finding(s) from model · ` +
-            `**Suppressed:** \`${input.suppressedCount}\` off-diff`,
-    ].join("\n");
+    const base = `**Posted:** \`${input.postedCount}\` inline thread(s) · ` +
+        `**Considered:** \`${input.consideredCount}\` finding(s) from model · ` +
+        `**Suppressed:** \`${input.suppressedCount}\` off-diff`;
+    if (input.parseFailed) {
+        return `> ⚠️ **Parse failed** — provider response was not a valid JSON review payload. ` +
+            `No findings were extracted; the raw provider text is included in the Summary section below for diagnostics.\n` +
+            `\n${base}`;
+    }
+    return base;
 }
 /**
  * Severity tally — critical → high → medium → low — that appears
@@ -3188,6 +3196,7 @@ function metadataManifest(input) {
         inlineCount: input.validCommentCount,
         suppressedCount: input.suppressedCommentCount,
         severityCounts: input.severityCounts,
+        ...(input.review.parseFailed === true ? { parseFailed: true } : {}),
     });
     return `<!-- umactually-pr-review:manifest ${manifest} -->`;
 }
@@ -3240,6 +3249,7 @@ function buildReviewBody(input) {
             postedCount: input.validCommentCount,
             consideredCount,
             suppressedCount: input.suppressedCommentCount,
+            parseFailed: input.review.parseFailed === true,
         }),
         "",
         countsLine({ severityCounts }),
@@ -3327,6 +3337,7 @@ function buildMalformedProviderFallback(input) {
         verdict: "COMMENT",
         comments: [],
         suppressedComments: [],
+        parseFailed: true,
     };
 }
 /**
@@ -4562,12 +4573,13 @@ function tryParseJson(candidate) {
 ;// CONCATENATED MODULE: ./src/provider/provider-parse.ts
 
 
-function buildResponsesBody(config) {
+function buildResponsesBody(config, opts) {
+    const userContent = opts?.userOverride ?? config.user;
     const body = {
         model: config.model,
         input: [
             { role: "system", content: config.system },
-            { role: "user", content: config.user },
+            { role: "user", content: userContent },
         ],
     };
     if (config.maxOutputTokens !== undefined) {
@@ -4578,12 +4590,13 @@ function buildResponsesBody(config) {
     }
     return body;
 }
-function buildChatBody(config) {
+function buildChatBody(config, opts) {
+    const userContent = opts?.userOverride ?? config.user;
     const body = {
         model: config.model,
         messages: [
             { role: "system", content: config.system },
-            { role: "user", content: config.user },
+            { role: "user", content: userContent },
         ],
     };
     if (config.maxOutputTokens !== undefined) {
@@ -4594,44 +4607,92 @@ function buildChatBody(config) {
     }
     return body;
 }
+/**
+ * Extract the text payload from a provider response. Handles four shapes:
+ *   1. SSE stream (responses API output_text.delta / chat completions delta /
+ *      generic top-level delta) — concatenates fragments into one string.
+ *   2. Plain JSON object (Responses API or Chat Completions) — returns
+ *      `output_text` (responses), joins `output[].content[].text`
+ *      (responses), or `choices[].message.content` (chat).
+ *   3. Raw text — returned verbatim (caller tries to extract a JSON
+ *      block from it via `extractJsonBlock`).
+ *   4. **Unusable** — returns `null`. Signals to the caller that no
+ *      review-shaped content was extractable. Use this for SSE streams
+ *      with only metadata events (response.created / response.completed
+ *      with empty output[]) so the parse-fail path fires instead of
+ *      silently falling back to the raw SSE text (which would otherwise
+ *      match the first balanced `{...}` in the stream and look like
+ *      a "successful empty review").
+ *
+ * The "null vs empty string" distinction is critical: callers test
+ * `textPayload === null` to distinguish "provider returned nothing
+ * usable" from "provider returned an empty string that happens to
+ * not be parseable as JSON". See CLARITY-10.
+ */
 function extractTextPayload(endpoint, rawText) {
-    const sseText = tryExtractSse(rawText);
-    if (sseText !== null) {
+    if (rawText.length === 0) {
+        return null;
+    }
+    const trimmedStart = rawText.trimStart();
+    // 1. SSE stream (input starts with "data:" or "event:" prefix).
+    //    When the SSE format was detected but no text fragments were
+    //    extractable (only metadata events like response.created /
+    //    response.completed with empty output[]), return null so the
+    //    parse-fail path fires — don't fall through to the raw-text
+    //    path because that would let `extractJsonBlock` pluck the first
+    //    balanced `{...}` out of the stream and treat it as an empty
+    //    review, masking the real failure (CLARITY-10).
+    if (trimmedStart.startsWith("data:") || trimmedStart.startsWith("event:")) {
+        const sseText = tryExtractSse(rawText);
+        if (sseText === null || sseText.length === 0) {
+            return null;
+        }
         return sseText;
     }
+    // 2. Plain JSON object.
     const parsed = provider_parse_tryParseJson(rawText);
-    if (parsed === undefined || !isRecord(parsed)) {
-        return rawText;
-    }
-    if (endpoint === "responses") {
-        const direct = provider_parse_readStringField(parsed, "output_text");
-        if (direct !== null) {
-            return direct;
-        }
-        const output = readArrayField(parsed, "output");
-        if (output !== null) {
-            const fromOutput = joinOutputText(output);
-            if (fromOutput.length > 0) {
-                return fromOutput;
+    if (parsed !== undefined && isRecord(parsed)) {
+        if (endpoint === "responses") {
+            const direct = provider_parse_readStringField(parsed, "output_text");
+            if (direct !== null && direct.length > 0) {
+                return direct;
             }
+            const output = readArrayField(parsed, "output");
+            if (output !== null) {
+                const fromOutput = joinOutputText(output);
+                if (fromOutput.length > 0) {
+                    return fromOutput;
+                }
+            }
+            // Not in the Responses API shape — but it might be a direct review
+            // JSON (model returned `{"summary": ..., "verdict": ...}` directly).
+            // Fall through to the raw-text path so `extractJsonBlock` can
+            // extract the whole object and `parseReviewPayload` can validate
+            // it (which includes the strict empty-fields check from CLARITY-10).
         }
-        return rawText;
-    }
-    const choices = readArrayField(parsed, "choices");
-    if (choices === null) {
-        return rawText;
-    }
-    for (const choice of choices) {
-        const message = readRecordField(choice, "message");
-        if (message === null) {
-            continue;
+        else {
+            // Chat completions.
+            const choices = readArrayField(parsed, "choices");
+            if (choices !== null) {
+                for (const choice of choices) {
+                    const message = readRecordField(choice, "message");
+                    if (message === null)
+                        continue;
+                    const content = provider_parse_readStringField(message, "content");
+                    if (content !== null && content.length > 0) {
+                        return content;
+                    }
+                }
+            }
+            // Chat JSON shape but no extractable content — usable as raw
+            // text for `parseReviewPayload` to attempt.
         }
-        const content = provider_parse_readStringField(message, "content");
-        if (content !== null) {
-            return content;
-        }
     }
-    return rawText;
+    // 3. Raw text (could be plain prose, markdown, or a JSON block
+    //    wrapped in ``` fences — `extractJsonBlock` handles the latter).
+    //    Only useful if non-empty; empty string would just become a
+    //    useless parse attempt.
+    return rawText.trim().length > 0 ? rawText : null;
 }
 function parseReviewPayload(text) {
     const candidate = extractJsonBlock(text);
@@ -4645,6 +4706,17 @@ function parseReviewPayload(text) {
         suppressed_comments: provider_parse_readCommentArray(candidate["suppressed_comments"]),
     };
 }
+/**
+ * Walks the OpenAI Responses API `output[]` array and concatenates all
+ * text fragments it finds. The Responses API puts output items under
+ * `content[]` as an array of parts (each part is `{type, text}` or
+ * `{type, image_url}` etc) — so this function recurses into content
+ * arrays and pulls out any `text` strings, in order.
+ *
+ * Accepts both the Responses API shape (`content: [{type, text}]`)
+ * and a simpler chat-style shape (`content: {text: "..."}`) for
+ * providers that return the latter.
+ */
 function joinOutputText(output) {
     const fragments = [];
     for (const entry of output) {
@@ -4652,12 +4724,25 @@ function joinOutputText(output) {
             continue;
         }
         const content = entry["content"];
-        if (!isRecord(content)) {
+        // Responses API: content is an array of parts.
+        if (Array.isArray(content)) {
+            for (const part of content) {
+                if (!isRecord(part)) {
+                    continue;
+                }
+                const text = part["text"];
+                if (typeof text === "string") {
+                    fragments.push(text);
+                }
+            }
             continue;
         }
-        const text = content["text"];
-        if (typeof text === "string") {
-            fragments.push(text);
+        // Chat-style: content is a single object with a text field.
+        if (isRecord(content)) {
+            const text = content["text"];
+            if (typeof text === "string") {
+                fragments.push(text);
+            }
         }
     }
     return fragments.join("\n");
@@ -4694,12 +4779,27 @@ function provider_parse_tryParseJson(rawText) {
     }
 }
 /**
- * Some providers (e.g. Manifest) ignore `stream: false` and always return
- * Server-Sent Events. Detect the `data: ` prefix format and concatenate
- * content from all chunks into a single string.
+ * Some providers (e.g. Manifest, MiniMax) ignore `stream: false` and always
+ * return Server-Sent Events. Detect the SSE format and concatenate text
+ * fragments from all chunks into a single string.
  *
- * Handles both the /chat/completions streaming format (delta.content) and
- * the /responses streaming format (delta or output_text.delta).
+ * Handles the SSE formats we've observed in the wild:
+ *   1. /chat/completions streaming: `choices[].delta.content`
+ *   2. /responses streaming with top-level `delta` string (some non-OpenAI
+ *      providers use this variant)
+ *   3. OpenAI /responses streaming with nested events:
+ *        event: response.output_text.delta
+ *        data: {"type":"response.output_text.delta","delta":"fragment"}
+ *      We extract the inner `delta` field regardless of the wrapping key.
+ *   4. /responses streaming where the final `response.completed` event
+ *      contains the full `output[]` array (some providers only send the
+ *      done-event with output and skip the per-fragment deltas). When we
+ *      see a `response.completed` event, we extract `output_text` from
+ *      the inner `response` and prefer it over fragment accumulation.
+ *
+ * Returns the concatenated text if any fragment was found, or null if
+ * the input wasn't SSE or no text fragments were extractable. The caller
+ * (`extractTextPayload`) then falls back to plain-JSON parsing.
  */
 function tryExtractSse(rawText) {
     const trimmed = rawText.trim();
@@ -4709,6 +4809,7 @@ function tryExtractSse(rawText) {
         return null;
     }
     const fragments = [];
+    let completedResponseText = null;
     for (const line of trimmed.split("\n")) {
         const clean = line.trim();
         if (!clean.startsWith("data:")) {
@@ -4721,6 +4822,41 @@ function tryExtractSse(rawText) {
         const parsed = provider_parse_tryParseJson(payload);
         if (!isRecord(parsed)) {
             continue;
+        }
+        // /responses streaming (OpenAI Responses API format):
+        //   event: response.output_text.delta
+        //   data: {"type":"response.output_text.delta","delta":"fragment"}
+        // The delta may live at the top level OR inside a wrapped envelope
+        // depending on the provider. Try the wrapped form first since it's
+        // the canonical OpenAI Responses API shape.
+        const wrappedResponse = readRecordField(parsed, "response");
+        if (wrappedResponse !== null) {
+            const eventType = provider_parse_readStringField(parsed, "type");
+            if (eventType === "response.completed" || eventType === "response.done") {
+                // Final event: prefer the full response payload if it has output_text.
+                const outText = provider_parse_readStringField(wrappedResponse, "output_text");
+                if (outText !== null && outText.length > 0) {
+                    completedResponseText = outText;
+                }
+                else {
+                    // Fall back to joining output[] entries.
+                    const output = readArrayField(wrappedResponse, "output");
+                    if (output !== null) {
+                        const joined = joinOutputText(output);
+                        if (joined.length > 0) {
+                            completedResponseText = joined;
+                        }
+                    }
+                }
+                continue;
+            }
+            if (eventType === "response.output_text.delta" || eventType === "response.delta") {
+                const deltaText = provider_parse_readStringField(parsed, "delta");
+                if (deltaText !== null) {
+                    fragments.push(deltaText);
+                }
+                continue;
+            }
         }
         // /chat/completions streaming: choices[].delta.content
         const choices = readArrayField(parsed, "choices");
@@ -4736,12 +4872,18 @@ function tryExtractSse(rawText) {
             }
             continue;
         }
-        // /responses streaming: delta is a string directly on the JSON object
-        // (response.output_text.delta event)
+        // /responses streaming (alternative non-OpenAI variant): top-level delta
+        // string directly on the JSON object.
         const deltaText = provider_parse_readStringField(parsed, "delta");
         if (deltaText !== null) {
             fragments.push(deltaText);
         }
+    }
+    // Prefer the completed-response text (full output) over accumulated
+    // fragments — providers that send a `response.completed` event usually
+    // skip the per-fragment deltas, so fragment concatenation would be empty.
+    if (completedResponseText !== null) {
+        return completedResponseText;
     }
     return fragments.length > 0 ? fragments.join("") : null;
 }
@@ -4931,6 +5073,10 @@ const COPILOT_EDITOR_PLUGIN_VERSION = "umactually-pr-review/0.1.0";
 const COPILOT_INTEGRATION_ID = "vscode-chat";
 const COPILOT_USER_AGENT = "umactually-pr-review/0.1.0";
 const ENDPOINT_CHAT = "chat";
+/** Self-healing follow-up message for parse-fail retry (mirrors openai-compatible). */
+const PARSE_FAIL_RETRY_PROMPT = "Your previous response did not contain a valid JSON review payload. " +
+    "Please respond with ONLY a JSON object matching this schema (no prose, no fences): " +
+    '{"summary": "...", "verdict": "NEEDS_FIX|APPROVED|COMMENT|DISCUSS|SHIP", "comments": [...], "suppressed_comments": [...]}.';
 async function runCopilotRequest(config) {
     const fetchImpl = config.fetchImpl ?? globalThis.fetch.bind(globalThis);
     const requestId = createRequestId();
@@ -4996,14 +5142,64 @@ async function runChatCall(config, fetchImpl, requestId, session) {
         };
     }
     const textPayload = extractTextPayload(ENDPOINT_CHAT, rawText);
-    const review = parseReviewPayload(textPayload);
-    if (review === null) {
+    const review = textPayload === null ? null : parseReviewPayload(textPayload);
+    // Strict check (CLARITY-10): empty summary+verdict+comments counts as
+    // a parse failure even when extractJsonBlock returned an object. This
+    // catches chat-format responses fed to the responses endpoint and
+    // similar misconfigurations.
+    if (review !== null && (review.summary.length > 0 || review.verdict.length > 0 || review.comments.length > 0)) {
+        return { ok: true, endpoint: ENDPOINT_CHAT, review, requestId };
+    }
+    // Self-healing parse-fail retry: send a follow-up message asking the
+    // model to emit JSON only. Mirrors the openai-compatible path.
+    // See openai-compatible.ts:callEndpoint for the full rationale.
+    const retryBody = buildChatBody({
+        model: config.model,
+        system: config.system,
+        user: config.user,
+        ...(config.maxOutputTokens !== undefined ? { maxOutputTokens: config.maxOutputTokens } : {}),
+        ...(config.reasoningEffort !== undefined ? { reasoningEffort: config.reasoningEffort } : {}),
+    }, { userOverride: PARSE_FAIL_RETRY_PROMPT });
+    let retryResponse;
+    try {
+        retryResponse = await fetchImpl(url, {
+            method: "POST",
+            headers: buildChatHeaders(session.token),
+            body: JSON.stringify(retryBody),
+            signal,
+        });
+    }
+    catch {
+        // Retry HTTP call itself failed — surface the ORIGINAL parse failure
+        // (not the retry's network error) so the parse-fail path's diagnostic
+        // captures the actual root cause.
         return {
             ok: false,
             error: new ProviderError("parse", ENDPOINT_CHAT, response.status, requestId, "Provider response did not contain a JSON review payload.", { rawText }),
         };
     }
-    return { ok: true, endpoint: "chat", review, requestId };
+    if (!retryResponse.ok) {
+        return {
+            ok: false,
+            error: new ProviderError("parse", ENDPOINT_CHAT, response.status, requestId, "Provider response did not contain a JSON review payload.", { rawText }),
+        };
+    }
+    const retryRawText = await retryResponse.text();
+    const retryTextPayload = extractTextPayload(ENDPOINT_CHAT, retryRawText);
+    let retryReview = null;
+    if (retryTextPayload !== null) {
+        const parsedRetry = parseReviewPayload(retryTextPayload);
+        if (parsedRetry !== null && (parsedRetry.summary.length > 0 || parsedRetry.verdict.length > 0 || parsedRetry.comments.length > 0)) {
+            retryReview = parsedRetry;
+        }
+    }
+    if (retryReview === null) {
+        return {
+            ok: false,
+            error: new ProviderError("parse", ENDPOINT_CHAT, response.status, requestId, "Provider response did not contain a JSON review payload after self-healing retry.", { rawText }),
+        };
+    }
+    return { ok: true, endpoint: ENDPOINT_CHAT, review: retryReview, requestId };
 }
 function buildTokenHeaders(githubToken) {
     return {
@@ -5120,6 +5316,17 @@ function openai_compatible_sleep(ms) {
         setTimeout(resolve, ms);
     });
 }
+/**
+ * Self-healing follow-up message sent to the model when its first response
+ * could not be parsed as a JSON review payload. Some providers ignore
+ * `stream: false` and return an empty SSE stream; some wrap their output
+ * in markdown fences or prose; some omit the JSON entirely. We retry
+ * once with an explicit reminder before falling back to the parse-fail
+ * surface — that often recovers the review without operator intervention.
+ */
+const openai_compatible_PARSE_FAIL_RETRY_PROMPT = "Your previous response did not contain a valid JSON review payload. " +
+    "Please respond with ONLY a JSON object matching this schema (no prose, no fences): " +
+    '{"summary": "...", "verdict": "NEEDS_FIX|APPROVED|COMMENT|DISCUSS|SHIP", "comments": [...], "suppressed_comments": [...]}.';
 async function callEndpoint(config, fetchImpl, requestId, endpoint) {
     const url = openai_compatible_joinUrl(config.baseUrl, endpoint === ENDPOINT_RESPONSES ? "/responses" : "/chat/completions");
     const body = endpoint === ENDPOINT_RESPONSES
@@ -5132,11 +5339,52 @@ async function callEndpoint(config, fetchImpl, requestId, endpoint) {
     }
     const rawText = await readBody(response, endpoint, requestId);
     const textPayload = extractTextPayload(endpoint, rawText);
-    const review = parseReviewPayload(textPayload);
-    if (review === null) {
-        throw new ProviderError("parse", endpoint, response.status, requestId, "Provider response did not contain a JSON review payload.", { rawText });
+    const review = textPayload === null ? null : parseReviewPayload(textPayload);
+    // Treat an empty-summary+empty-verdict parse as a parse failure even
+    // when `extractJsonBlock` returned an object. The parser is permissive
+    // about JSON shape (returns `ProviderReviewPayload` with empty fields
+    // for any JSON object), so a chat-format response (`{choices: [...]}`)
+    // fed to the responses endpoint can otherwise pass as a 0-finding
+    // "empty review" — see CLARITY-10.
+    if (review !== null && (review.summary.length > 0 || review.verdict.length > 0 || review.comments.length > 0)) {
+        return { ok: true, endpoint, review, requestId };
     }
-    return { ok: true, endpoint, review, requestId };
+    // Self-healing: parse failed on first attempt. Try once more with an
+    // explicit JSON-only reminder. Some providers (notably those that
+    // emit only an SSE stream of metadata events with no actual output)
+    // recover cleanly when reminded to emit JSON.
+    //
+    // Note: any network/HTTP error on the retry is collapsed back into a
+    // `parse` error (with the ORIGINAL rawText attached) so the parse-fail
+    // path's diagnostic captures the actual root cause — the model
+    // couldn't produce a parseable review, regardless of whether the retry
+    // request itself reached the provider.
+    const retryBody = endpoint === ENDPOINT_RESPONSES
+        ? buildResponsesBody(config, { userOverride: openai_compatible_PARSE_FAIL_RETRY_PROMPT })
+        : buildChatBody(config, { userOverride: openai_compatible_PARSE_FAIL_RETRY_PROMPT });
+    let retryReview = null;
+    try {
+        const retryResponse = await performFetch(fetchImpl, url, retryBody, signal, config, requestId, endpoint);
+        if (retryResponse.ok) {
+            const retryRawText = await readBody(retryResponse, endpoint, requestId);
+            const retryTextPayload = extractTextPayload(endpoint, retryRawText);
+            if (retryTextPayload !== null) {
+                const parsedRetry = parseReviewPayload(retryTextPayload);
+                // Same strict check on the retry: must have actual review content.
+                if (parsedRetry !== null && (parsedRetry.summary.length > 0 || parsedRetry.verdict.length > 0 || parsedRetry.comments.length > 0)) {
+                    retryReview = parsedRetry;
+                }
+            }
+        }
+    }
+    catch {
+        // Retry HTTP/parse path failed; fall through to the parse-error
+        // throw below with the ORIGINAL rawText.
+    }
+    if (retryReview === null) {
+        throw new ProviderError("parse", endpoint, response.status, requestId, "Provider response did not contain a JSON review payload after self-healing retry.", { rawText });
+    }
+    return { ok: true, endpoint, review: retryReview, requestId };
 }
 async function performFetch(fetchImpl, url, body, signal, config, requestId, endpoint) {
     try {
