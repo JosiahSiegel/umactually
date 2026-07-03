@@ -4,19 +4,6 @@
  * Extended types/functions live in sibling modules and are re-exported here.
  */
 
-import type { RawActionInputs } from "./types.js";
-
-/**
- * Backward-compatibility alias. The config-side raw inputs shape was
- * previously exported as `ActionInputs` (colliding with the action-entry
- * type of the same name in `src/action/read-inputs.ts`). The canonical
- * name is now `RawActionInputs`. This alias keeps existing callers (the
- * S2-config unit tests in particular) compiling unchanged.
- *
- * @deprecated Import `RawActionInputs` from `src/config/types.js` instead.
- */
-export type ActionInputs = RawActionInputs;
-
 export type ReviewConfigInput = {
   readonly model: "auto" | "review-model-synthetic";
   readonly effort: "low" | "medium" | "high";

@@ -21,9 +21,9 @@ import {
   shouldKeepFinding,
 } from "../../src/config/review-config.js";
 import type {
-  ActionInputs,
   CliArgs,
   EnvSources,
+  RawActionInputs,
   Severity,
 } from "../../src/config/review-config.js";
 
@@ -341,7 +341,7 @@ describe("config: loadConfigFromSources precedence", () => {
     await rm(cwd, { recursive: true, force: true });
   });
 
-  const empty = (): { cli: CliArgs; inputs: ActionInputs; env: EnvSources } => ({
+  const empty = (): { cli: CliArgs; inputs: RawActionInputs; env: EnvSources } => ({
     cli: {},
     inputs: {},
     env: {},

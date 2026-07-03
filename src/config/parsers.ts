@@ -1,5 +1,6 @@
 import type { Severity, Platform } from "./types.js";
 import { InvalidConfigError, REDACTED } from "./errors.js";
+import { FIELDS } from "./field-schema.js";
 
 const TRUTHY_STRINGS: ReadonlySet<string> = new Set(["1", "true", "yes", "on", "y"]);
 const FALSY_STRINGS: ReadonlySet<string> = new Set(["0", "false", "no", "off", "n", ""]);
@@ -76,8 +77,6 @@ export function parseSeverityFromUnknown(value: unknown, field: string): Severit
   }
   return normalized as Severity;
 }
-
-import { FIELDS } from "./field-schema.js";
 
 // Derive the parser's accepted set from the canonical field-schema entry.
 // Single source of truth: changing the canonical `enumValues` here updates

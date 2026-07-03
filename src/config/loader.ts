@@ -1,4 +1,5 @@
 import { InvalidConfigError } from "./errors.js";
+import { FIELDS } from "./field-schema.js";
 import {
   parseBooleanFromUnknown,
   parseIntegerFromUnknown,
@@ -35,7 +36,9 @@ const DEFAULT_MINIMUM_SEVERITY: Severity = "minor";
 const DEFAULT_PLATFORM: Platform = "auto";
 const DEFAULT_PROVIDER_URL = "https://api.openai.com/v1";
 const DEFAULT_PROVIDER_MODEL = "auto";
-const DEFAULT_PROMPT_BYTE_CAP = 64 * 1024;
+// Sourced from `src/config/field-schema.ts:FIELDS.promptByteCap.defaultValue`
+// so the field-schema is the single source of truth for default values.
+const DEFAULT_PROMPT_BYTE_CAP = FIELDS.promptByteCap.defaultValue as number;
 
 /**
  * Resolves the final ReviewConfig by merging CLI > inputs > env > defaults.

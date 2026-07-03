@@ -2438,6 +2438,7 @@ const KNOWN_ENV_VAR_NAMES = new Set(ALL_FIELDS.flatMap((def) => def.env));
 
 ;// CONCATENATED MODULE: ./src/config/parsers.ts
 
+
 const TRUTHY_STRINGS = new Set(["1", "true", "yes", "on", "y"]);
 const FALSY_STRINGS = new Set(["0", "false", "no", "off", "n", ""]);
 /**
@@ -2513,7 +2514,6 @@ function parsers_parseSeverityFromUnknown(value, field) {
     }
     return normalized;
 }
-
 // Derive the parser's accepted set from the canonical field-schema entry.
 // Single source of truth: changing the canonical `enumValues` here updates
 // both the parser and any future code-gen of the action.yml / CLI help.
@@ -2681,6 +2681,7 @@ async function prompt_files_readPromptFiles(paths, byteCap, options) {
 
 
 
+
 const DEFAULT_MAX_COMMENTS = 50;
 const DEFAULT_REVIEW_FILE_LIMIT = 200;
 const DEFAULT_REVIEW_SECONDS = 300;
@@ -2691,7 +2692,9 @@ const DEFAULT_MINIMUM_SEVERITY = "minor";
 const DEFAULT_PLATFORM = "auto";
 const DEFAULT_PROVIDER_URL = "https://api.openai.com/v1";
 const DEFAULT_PROVIDER_MODEL = "auto";
-const DEFAULT_PROMPT_BYTE_CAP = (/* unused pure expression or super */ null && (64 * 1024));
+// Sourced from `src/config/field-schema.ts:FIELDS.promptByteCap.defaultValue`
+// so the field-schema is the single source of truth for default values.
+const DEFAULT_PROMPT_BYTE_CAP = FIELDS.promptByteCap.defaultValue;
 /**
  * Resolves the final ReviewConfig by merging CLI > inputs > env > defaults.
  * `cwd` is used to resolve prompt file paths (workspace-relative).
@@ -5205,7 +5208,10 @@ function openai_compatible_createRequestId() {
 
 ;// CONCATENATED MODULE: ./src/cli/provider-prompts.ts
 
-const provider_prompts_DEFAULT_PROMPT_BYTE_CAP = 64 * 1024;
+
+// Sourced from `src/config/field-schema.ts:FIELDS.promptByteCap.defaultValue`
+// so the field-schema is the single source of truth for default values.
+const provider_prompts_DEFAULT_PROMPT_BYTE_CAP = FIELDS.promptByteCap.defaultValue;
 async function buildProviderPrompts(input) {
     const additionalPrompt = await readAdditionalPrompt(input);
     const userParts = [
