@@ -154,3 +154,4 @@ describe("CLARITY-9: parent card posts three labeled counts", () => {
     expect(lowIdx).toBeLessThan(infoIdx);
   });
 });
+

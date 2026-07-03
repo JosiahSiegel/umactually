@@ -54,3 +54,4 @@ describe("log annotation fallback", () => {
     expect(consoleSpy).not.toHaveBeenCalled();
   });
 });
+

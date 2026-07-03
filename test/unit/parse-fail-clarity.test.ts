@@ -110,3 +110,4 @@ describe("CLARITY-10: parse-fail surface is unmistakable", () => {
     expect(body).not.toMatch(/⚠️ `Parse failed`/u);
   });
 });
+

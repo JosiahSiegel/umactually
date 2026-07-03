@@ -52,3 +52,4 @@ describe("mapVerdictToAzureStatus: legacy policy (S4 fixture)", () => {
     expect(() => mapVerdictToAzureStatus(rawVerdict, "legacy")).not.toThrow(rawVerdict);
   });
 });
+
