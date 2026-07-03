@@ -238,8 +238,11 @@ function isApologySummary(summary: string): boolean {
     // review" does NOT match. Requires the verb (cannot/can't/etc.)
     // immediately followed by review + determiner (this/it/the/a).
     /\bi\s+(cannot|can'?t|am\s+unable|i'?m\s+unable)\s+review\s+(this|it|the|a|that)\b/u,
-    // "cannot / can't / unable to review" (no object required)
-    /\b(cannot|can'?t|unable\s+to)\s+review\s+(this|it|the|a|that)?\b/u,
+    // "cannot / can't / unable to review" — REQUIRES a direct object
+    // (this/it/the/a/that/self) so "Cannot review the legacy code" or
+    // "unable to review itself" do NOT match (those are legitimate
+    // reviews describing what the model CAN or CANNOT do in context).
+    /\b(cannot|can'?t|unable\s+to)\s+review\s+(this|it|the|a|that|self)\b/u,
     // "didn't / haven't received" or "no input"
     /\b(didn'?t\s+receive|haven'?t\s+received|no\s+input)\b/u,
     // "empty diff" or "without diff / input"
