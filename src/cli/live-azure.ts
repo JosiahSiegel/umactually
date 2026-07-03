@@ -1,5 +1,6 @@
 import { type AzureContext } from "../platform/azure/context.js";
 import { REVIEW_MARKER } from "../review/run-review.js";
+import { AZURE_STATUS_CONTEXT_NAME } from "../util/brand.js";
 import {
   buildInlineCommentBody,
   buildReviewBody,
@@ -498,8 +499,11 @@ async function postAzureThread(input: {
  * The genre stays `"pr-review"` for parity with the existing entries
  * already on PR #42 (which all carry genre `"pr-review"`), so the
  * dedup helper below can locate legacy entries on the very next run.
+ *
+ * The context NAME is sourced from `src/util/brand.ts` (single source
+ * of truth for the brand string). The local `AZURE_STATUS_CONTEXT_GENRE`
+ * stays here because it's a runtime-dedup detail, not brand state.
  */
-const AZURE_STATUS_CONTEXT_NAME = "umactually-pr-review-status";
 const AZURE_STATUS_CONTEXT_GENRE = "pr-review";
 
 async function postAzureStatus(input: {

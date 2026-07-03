@@ -453,13 +453,32 @@ function redactLineSecrets(line) {
 
 ;// CONCATENATED MODULE: ./src/util/marker.ts
 /**
- * Stable HTML marker the live review marker greps for. Critical for dedup:
- * the runner searches for this exact string in existing PR comments, so a
- * silent drift here would break every dedup loop. The constant lives here
- * so every reference (dry-run artifact, live review, fixture parser, raw
- * output type guard) sees the same value.
+ * Stable HTML markers and the manifest schema identifier emitted by the
+ * UmActually live review marker. Critical for dedup: the runner searches
+ * for these strings in existing PR comments, so a silent drift here
+ * would break every dedup loop and every downstream consumer that
+ * parses the manifest. Every reference (dry-run artifact, live review,
+ * fixture parser, raw-output type guard, GitHub agent) sees the same
+ * values via this module.
+ */
+/**
+ * Stable HTML marker the runner greps for in existing PR comments when
+ * deciding whether to replace a previous UmActually review.
  */
 const REVIEW_MARKER = "<!-- umactually-pr-review -->";
+/**
+ * JSON schema identifier for the UmActually manifest that lives inside
+ * the `<!-- umactually-pr-review:manifest { ... } -->` HTML comment on
+ * every posted review. Format is `${BRAND}/v${VERSION}`. AI agents and
+ * downstream tooling parse this string to know they're reading an
+ * UmActually-shaped payload.
+ *
+ * NOT a generic "manifest schema" — this is UmActually-specific by
+ * design. The brand name appears in the schema id so consumers can
+ * tell UmActually manifests apart from any other review tool's
+ * payloads.
+ */
+const MANIFEST_SCHEMA = "umactually-pr-review/v1";
 
 ;// CONCATENATED MODULE: ./src/util/json-guards.ts
 /**
@@ -491,30 +510,39 @@ function isPositiveSafeInteger(value) {
  *
  * Two policies exist because they were written at different times:
  *   - `legacy`: NEEDS_FIX → "failed" (S4 RED contract — fixture pinned).
+ *     Throws on unknown verdicts (preserves the assertNever guard the
+ *     original `azure/run-azure-review.ts:mapVerdictToStatus` had).
  *   - `current`: NEEDS_FIX → "pending" (live behavior — see CLARITY-2 in
  *     live-azure-status-policy.test.ts for the rationale: a failing review
- *     is a finding, not a merge-blocking check).
+ *     is a finding, not a merge-blocking check). Unknowns collapse to
+ *     "pending" so a malformed verdict doesn't crash the runner.
  *
  * The umbrella strings (APPROVED / COMMENT / DISCUSS / SHIP) are always
- * "succeeded" under both policies — only NEEDS_FIX (and unknown/empty)
- * differ.
+ * "succeeded" under both policies — only NEEDS_FIX differs.
  *
  * GitHub verdict mapping (REQUEST_CHANGES vs COMMENT) is also exported
  * for symmetry; it has a single canonical mapping.
  */
+/** Known verdict strings accepted by either policy. */
+const KNOWN_UMBRELLA_VERDICTS = ["APPROVED", "COMMENT", "DISCUSS", "SHIP"];
+const KNOWN_BLOCKING_VERDICT = "NEEDS_FIX";
 function mapVerdictToAzureStatus(verdict, policy) {
     const normalized = verdict.toUpperCase();
     // Umbrella strings → succeeded under both policies.
-    if (normalized === "APPROVED" || normalized === "COMMENT" || normalized === "DISCUSS" || normalized === "SHIP") {
+    if (KNOWN_UMBRELLA_VERDICTS.includes(normalized)) {
         return "succeeded";
     }
     if (policy === "legacy") {
-        if (normalized === "NEEDS_FIX")
+        // Legacy policy throws on unknown verdicts — preserves the original
+        // `assertNever(verdict)` guard from `azure/run-azure-review.ts:118`
+        // that the S4 RED contract depends on.
+        if (normalized === KNOWN_BLOCKING_VERDICT)
             return "failed";
-        return "pending";
+        throw new TypeError(`unknown verdict for legacy Azure status mapping: ${JSON.stringify(verdict)}`);
     }
-    // Current policy: any non-success including NEEDS_FIX collapses to "pending"
-    // so the Checks panel does not light up red for an unsuccessful review.
+    // Current policy: NEEDS_FIX → "pending"; anything unknown (including
+    // empty string) also collapses to "pending" so a malformed verdict
+    // can't crash the live runner.
     return "pending";
 }
 /** GitHub verdict → review-submission event. */
@@ -1400,16 +1428,23 @@ function isUnknownArray(value) {
 }
 
 ;// CONCATENATED MODULE: ./src/util/brand.ts
+/**
+ * Canonical brand string used across CLI, platform, and provider code.
+ *
+ * NOT a generic brand concept: this is the specific string
+ * "umactually-pr-review" that downstream consumers (PR comments, HTTP
+ * User-Agent headers, GitHub agents) match on. Any value other than the
+ * literal "umactually-pr-review" will break dedup loops and integration
+ * parsers, so this is a pinned identifier — not a configuration knob.
+ */
 /** Canonical review brand string; eliminates the 50+ inline "umactually-pr-review" literals across CLI, platform, and provider code. */
 const BRAND = "umactually-pr-review";
 /** Log prefix shared by annotation helpers; eliminates hand-built "umactually-pr-review: " prefixes in stderr diagnostics. */
 const BRAND_PREFIX = `${BRAND}: `;
 /** HTTP User-Agent token shared by provider and platform clients; eliminates duplicated header literals. */
 const USER_AGENT = BRAND;
-/** Manifest schema identifier shared by artifacts and parsers; prevents schema-name drift between producers and consumers. */
-const MANIFEST_SCHEMA = (/* unused pure expression or super */ null && (`${BRAND}/v1`));
 /** Azure DevOps PR status context name; prevents status updates from drifting away from the review brand. */
-const AZURE_STATUS_CONTEXT_NAME = (/* unused pure expression or super */ null && (`${BRAND}-status`));
+const AZURE_STATUS_CONTEXT_NAME = `${BRAND}-status`;
 
 ;// CONCATENATED MODULE: ./src/platform/azure/api.ts
 
@@ -2929,6 +2964,7 @@ function mergeReviewResults(outcomes, options) {
 
 
 
+
 /**
  * A provider outcome is structurally empty when it carries no inline comments
  * AND no suppressed comments. Used by `simulate-findings` to decide whether
@@ -2998,15 +3034,6 @@ const live_shared_countBySeverity = countBySeverity;
  */
 const TOP_CONCERNS_PREVIEW_LIMIT = 5;
 /**
- * Order in which severity levels appear in the counts line and the
- * "Top concerns" header. Critical first (most urgent), then
- * high → medium → low. The `info` level is intentionally excluded —
- * info findings are tracked in the manifest but are not a signal the
- * reviewer needs to act on. Re-exported from `src/util/severity.ts` so
- * every consumer of the canonical order uses the same array.
- */
-const live_shared_SEVERITY_ORDER = SEVERITY_ORDER;
-/**
  * Three explicit labels — posted / considered / suppressed — that make the
  * parent card unambiguous about what the model produced vs. what landed
  * vs. what was rejected. Replaces the old single-line counts that mixed
@@ -3042,7 +3069,7 @@ function postedVsConsideredRow(input) {
  */
 function countsLine(input) {
     const parts = [];
-    for (const level of live_shared_SEVERITY_ORDER) {
+    for (const level of SEVERITY_ORDER) {
         const count = input.severityCounts[level] ?? 0;
         parts.push(`\`${count}\` ${level}`);
     }
@@ -3153,7 +3180,7 @@ function proseBlock(summary) {
 }
 function metadataManifest(input) {
     const manifest = JSON.stringify({
-        schema: "umactually-pr-review/v1",
+        schema: MANIFEST_SCHEMA,
         verdict: input.review.verdict,
         provider: input.provider,
         modelId: input.modelId,
@@ -3480,6 +3507,7 @@ function passesSeverityPolicy(comment, parsed) {
 }
 
 ;// CONCATENATED MODULE: ./src/cli/live-azure.ts
+
 
 
 
@@ -3889,8 +3917,11 @@ async function postAzureThread(input) {
  * The genre stays `"pr-review"` for parity with the existing entries
  * already on PR #42 (which all carry genre `"pr-review"`), so the
  * dedup helper below can locate legacy entries on the very next run.
+ *
+ * The context NAME is sourced from `src/util/brand.ts` (single source
+ * of truth for the brand string). The local `AZURE_STATUS_CONTEXT_GENRE`
+ * stays here because it's a runtime-dedup detail, not brand state.
  */
-const live_azure_AZURE_STATUS_CONTEXT_NAME = "umactually-pr-review-status";
 const AZURE_STATUS_CONTEXT_GENRE = "pr-review";
 async function postAzureStatus(input) {
     const safeDescription = sanitizeAzureStatusDescription(input.description);
@@ -3929,7 +3960,7 @@ async function postAzureStatus(input) {
             state: input.state,
             description: safeDescription,
             context: {
-                name: live_azure_AZURE_STATUS_CONTEXT_NAME,
+                name: AZURE_STATUS_CONTEXT_NAME,
                 genre: AZURE_STATUS_CONTEXT_GENRE,
             },
         }),
@@ -4076,7 +4107,7 @@ function findAllCliStatusIdsByContext(entries) {
     for (const entry of entries) {
         if (entry.context.genre !== AZURE_STATUS_CONTEXT_GENRE)
             continue;
-        if (entry.context.name === live_azure_AZURE_STATUS_CONTEXT_NAME
+        if (entry.context.name === AZURE_STATUS_CONTEXT_NAME
             || entry.context.name === "UmActually") {
             ids.push(entry.id);
         }
@@ -4143,7 +4174,7 @@ async function surfaceAzureHttpError(input) {
  * helpers without going through the full `runAzureLive` orchestration.
  */
 const UMACTUALLY_STATUS_CONTEXT = {
-    name: live_azure_AZURE_STATUS_CONTEXT_NAME,
+    name: AZURE_STATUS_CONTEXT_NAME,
     genre: AZURE_STATUS_CONTEXT_GENRE,
 };
 /**

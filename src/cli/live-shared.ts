@@ -4,7 +4,8 @@ import { scanReviewSecrets } from "../security/scan-review-secrets.js";
 import type { Platform } from "../config/types.js";
 import { DEFAULT_MAX_COMMENTS } from "../config/loader.js";
 import { isRecord } from "../util/json-guards.js";
-import { countBySeverity as countBySeverityUtil, SEVERITY_ORDER as SEVERITY_ORDER_UTIL, severityRank } from "../util/severity.js";
+import { MANIFEST_SCHEMA } from "../util/marker.js";
+import { countBySeverity as countBySeverityUtil, SEVERITY_ORDER, severityRank } from "../util/severity.js";
 import { mapVerdictToAzureStatus, mapVerdictToGithubEvent } from "../util/verdict.js";
 import type { ParsedCliArgs } from "./parse-args.js";
 
@@ -119,16 +120,6 @@ export const countBySeverity = countBySeverityUtil;
  * dominated by a long list when the provider returns many findings.
  */
 const TOP_CONCERNS_PREVIEW_LIMIT = 5;
-
-/**
- * Order in which severity levels appear in the counts line and the
- * "Top concerns" header. Critical first (most urgent), then
- * high → medium → low. The `info` level is intentionally excluded —
- * info findings are tracked in the manifest but are not a signal the
- * reviewer needs to act on. Re-exported from `src/util/severity.ts` so
- * every consumer of the canonical order uses the same array.
- */
-export const SEVERITY_ORDER = SEVERITY_ORDER_UTIL;
 
 /**
  * Three explicit labels — posted / considered / suppressed — that make the
@@ -298,7 +289,7 @@ function metadataManifest(input: {
   readonly severityCounts: Record<string, number>;
 }): string {
   const manifest = JSON.stringify({
-    schema: "umactually-pr-review/v1",
+    schema: MANIFEST_SCHEMA,
     verdict: input.review.verdict,
     provider: input.provider,
     modelId: input.modelId,
