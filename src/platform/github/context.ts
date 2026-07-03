@@ -1,5 +1,5 @@
 import { readFile } from "node:fs/promises";
-import { isPositiveSafeInteger, isRecord as isObject } from "../../util/json-guards.js";
+import { isPositiveSafeInteger, isRecord as isObject, isSafeInteger } from "../../util/json-guards.js";
 import { PlatformContextError } from "../../util/platform-error.js";
 
 export type GithubRepoRef = {
@@ -98,7 +98,7 @@ function readGithubPrNumber(env: NodeJS.ProcessEnv, fallback: number | null): nu
 
 function parsePrNumber(raw: string, _env: NodeJS.ProcessEnv): number {
   const parsed = Number.parseInt(raw, 10);
-  if (!Number.isSafeInteger(parsed) || parsed <= 0) {
+  if (!isSafeInteger(parsed) || parsed <= 0) {
     throw new GithubContextError("GITHUB_PR_NUMBER_INVALID", "GitHub pull request number must be a positive integer.");
   }
   return parsed;
