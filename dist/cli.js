@@ -2775,6 +2775,14 @@ function countsLine(input) {
  * explicitly says "from model (N of Z)" so the reader knows this is
  * the pre-filter list. Hidden by default so it does not push the
  * severity tally below the fold.
+ *
+ * CLARITY-11: when `validCommentCount === 0` but `consideredCount > 0`,
+ * the pre-filter findings were ALL filtered out (severity policy,
+ * max-comments cap, or off-diff suppression). The block must make this
+ * explicit so the reader doesn't confuse "0 posted + N concerns
+ * listed" with a clean bill of health. We re-label the header as
+ * "Filtered findings" and prefix the body with a one-line explanation
+ * of *why* nothing was posted.
  */
 function topConcernsBlock(input) {
     const sorted = [...input.review.comments].sort((a, b) => {
@@ -2790,9 +2798,21 @@ function topConcernsBlock(input) {
     }
     const total = input.review.comments.length;
     const shown = preview.length;
-    const header = preview.length === 1
-        ? `📋 Top concern from model (1 of ${total})`
-        : `📋 Top concerns from model (${shown} of ${total})`;
+    const filteredAll = input.validCommentCount === 0 && total > 0;
+    // Use explicit "Filtered findings" header when every model finding was
+    // filtered — distinguishes this from the normal case where some
+    // findings were posted (so the "Top concerns" preview is a sample of
+    // what landed, not the full rejected list).
+    const header = filteredAll
+        ? shown === 1
+            ? `🔕 Filtered finding from model (1 of ${total}) — none reached inline`
+            : `🔕 Filtered findings from model (${shown} of ${total}) — none reached inline`
+        : shown === 1
+            ? `📋 Top concern from model (1 of ${total})`
+            : `📋 Top concerns from model (${shown} of ${total})`;
+    const explainer = filteredAll
+        ? `\n_The model produced ${total} finding(s); all were filtered by severity policy, the \`max-comments\` cap, or off-diff suppression. The list below is the pre-filter view for transparency — no inline comments were posted._\n`
+        : "";
     const lines = preview.map((comment, index) => {
         const safeBody = sanitizeForPost(comment.body, []);
         const oneLiner = safeBody.replace(/\s+/gu, " ").trim();
@@ -2803,6 +2823,7 @@ function topConcernsBlock(input) {
         "<details>",
         `<summary>${header}</summary>`,
         "",
+        explainer.trimStart(),
         lines.join("\n"),
         "</details>",
         "",
@@ -2938,7 +2959,7 @@ function buildReviewBody(input) {
         "",
         countsLine({ severityCounts }),
         "",
-        topConcernsBlock({ review: input.review }),
+        topConcernsBlock({ review: input.review, validCommentCount: input.validCommentCount }),
         suppressedBlock({ suppressedComments: input.review.suppressedComments }),
         proseBlock(safeSummary),
         footer,

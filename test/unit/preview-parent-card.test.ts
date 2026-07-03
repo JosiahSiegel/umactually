@@ -61,9 +61,38 @@ describe("CLARITY-9: parent card posts three labeled counts", () => {
     expect(body).toMatch(/\*\*Posted:\*\*\s+`0`\s+inline thread\(s\)/u);
     expect(body).toMatch(/\*\*Considered:\*\*\s+`5`\s+finding\(s\) from model/u);
     expect(body).toMatch(/\*\*Suppressed:\*\*\s+`5`\s+off-diff/u);
-    // The Top concerns header must label itself as pre-filter so the reader
-    // knows this is the model's output (5 of 5), NOT the posted set (0).
-    expect(body).toMatch(/📋\s+Top concerns from model \(5 of 5\)/u);
+    // CLARITY-11: when every finding was filtered (Posted: 0, Considered > 0),
+    // the header must re-label to "Filtered findings" so the reader does not
+    // mistake "0 posted + N listed" for a clean bill of health.
+    expect(body).toMatch(/🔕\s+Filtered findings from model \(5 of 5\)\s+—\s+none reached inline/u);
+    expect(body).toMatch(/severity policy.*max-comments.*off-diff suppression/u);
+    // Sanity: the OLD misleading "Top concerns" header must NOT appear in this case.
+    expect(body).not.toMatch(/📋\s+Top concerns from model \(5 of 5\)/u);
+  });
+
+  it("uses 'Top concerns' header (not 'Filtered') when at least one finding landed inline", () => {
+    // If validCommentCount > 0, the header is the normal "Top concerns" — the
+    // pre-filter preview is a sample of the posted set, not a rejected list.
+    const body = buildReviewBody({
+      review: {
+        summary: "",
+        verdict: "COMMENT",
+        comments: [
+          { path: "src/auth.ts", line: 12, body: "Use bcrypt", severity: "high", category: "security" },
+          { path: "src/auth.ts", line: 14, body: "Use bcrypt", severity: "high", category: "security" },
+          { path: "src/auth.ts", line: 16, body: "Use bcrypt", severity: "high", category: "security" },
+        ],
+        suppressedComments: [],
+      },
+      provider: "openai-compatible",
+      modelId: "auto",
+      validCommentCount: 3,
+      suppressedCommentCount: 0,
+      secrets: [],
+    });
+    expect(body).toMatch(/📋\s+Top concerns from model \(3 of 3\)/u);
+    // Filtered-style header must NOT appear when findings landed.
+    expect(body).not.toMatch(/🔕\s+Filtered findings from model/u);
   });
 
   it("renders the three labeled rows even on empty / parse-fail (CLARITY-5 inheritance)", () => {
