@@ -4284,11 +4284,18 @@ function extractJsonBlock(rawText) {
     return null;
 }
 /**
- * Find the body of a ```json ... ``` fence, or return the original text when none.
- * Exposed so callers can reuse the fence-closure guard from raw-output.ts.
+ * Find the body of a ```...``` fence (with or without a language tag),
+ * or return the original text when none. Exposed so callers can reuse
+ * the fence-closure guard from raw-output.ts.
+ *
+ * Accepts any opening fence (```` ```json ````, ```` ```json5 ````, or just
+ * ```` ``` ````) because the model sometimes drops the language tag from
+ * markdown code blocks wrapping a JSON payload. The matching closing
+ * fence is found lazily after the first newline, so the body's content
+ * is captured verbatim including internal whitespace and newlines.
  */
 function extractJsonFenceBody(rawText) {
-    const fenceMatch = /```json\s*\n([\s\S]*?)\n```/.exec(rawText);
+    const fenceMatch = /```[a-zA-Z0-9_+\-]*\s*\n([\s\S]*?)\n```/.exec(rawText);
     const body = fenceMatch?.[1];
     return body ?? rawText;
 }
@@ -4471,6 +4478,25 @@ function extractTextPayload(endpoint, rawText) {
     //    wrapped in ``` fences — `extractJsonBlock` handles the latter).
     return rawText;
 }
+/**
+ * Parse a provider text response into a structured review payload.
+ *
+ * Returns `null` in three distinct cases:
+ *   1. No JSON object found in `text` (plain prose, markdown, or non-JSON
+ *      SSE tail — i.e. `extractJsonBlock` yielded nothing parseable).
+ *   2. `extractJsonBlock` returned a value that isn't a JSON object
+ *      (e.g. a string or array).
+ *   3. (CLARITY-10b) The parsed object is structurally valid but its
+ *      `summary` matches an apology pattern AND it has zero findings
+ *      (no `comments`, no `suppressed_comments`). The model returned a
+ *      legitimate-looking JSON wrapper around an apology message; we
+ *      treat it as a parse failure so the self-healing retry fires.
+ *
+ * Callers that need to distinguish the cases (e.g. for different error
+ * messages) can use the returned `ProviderReviewPayload` shape to
+ * differentiate "structured empty review" (returned, all fields empty)
+ * from "no parseable content" (returns null).
+ */
 function parseReviewPayload(text) {
     const candidate = extractJsonBlock(text);
     if (!isRecord(candidate)) {

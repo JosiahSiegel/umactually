@@ -165,6 +165,25 @@ export function extractTextPayload(endpoint: ProviderEndpoint, rawText: string):
   return rawText;
 }
 
+/**
+ * Parse a provider text response into a structured review payload.
+ *
+ * Returns `null` in three distinct cases:
+ *   1. No JSON object found in `text` (plain prose, markdown, or non-JSON
+ *      SSE tail — i.e. `extractJsonBlock` yielded nothing parseable).
+ *   2. `extractJsonBlock` returned a value that isn't a JSON object
+ *      (e.g. a string or array).
+ *   3. (CLARITY-10b) The parsed object is structurally valid but its
+ *      `summary` matches an apology pattern AND it has zero findings
+ *      (no `comments`, no `suppressed_comments`). The model returned a
+ *      legitimate-looking JSON wrapper around an apology message; we
+ *      treat it as a parse failure so the self-healing retry fires.
+ *
+ * Callers that need to distinguish the cases (e.g. for different error
+ * messages) can use the returned `ProviderReviewPayload` shape to
+ * differentiate "structured empty review" (returned, all fields empty)
+ * from "no parseable content" (returns null).
+ */
 export function parseReviewPayload(text: string): ProviderReviewPayload | null {
   const candidate = extractJsonBlock(text);
   if (!isPlainObject(candidate)) {

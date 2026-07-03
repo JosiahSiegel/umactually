@@ -7,14 +7,22 @@ export function joinUrl(baseUrl: string, path: string): string {
 
 /** Create request correlation IDs consistently; eliminates duplicated UUID fallback logic across providers. */
 export function createRequestId(): string {
-  const cryptoApi = globalThis.crypto;
-  if (typeof cryptoApi.randomUUID === "function") {
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const cryptoApi = (globalThis as any).crypto as
+    | { randomUUID?: () => string; getRandomValues?: (buf: Uint8Array) => Uint8Array }
+    | undefined;
+  if (cryptoApi?.randomUUID !== undefined) {
     return cryptoApi.randomUUID();
   }
   const bytes = new Uint8Array(16);
-  if (typeof cryptoApi.getRandomValues === "function") {
+  if (cryptoApi?.getRandomValues !== undefined) {
     cryptoApi.getRandomValues(bytes);
   } else {
+    // Last-resort fallback: non-cryptographic PRNG. Only reached when the
+    // runtime has no `crypto` global AND no Node `crypto` module loaded —
+    // i.e. very old Node (< 19) without `--experimental-global-webcrypto`,
+    // or non-Node embedders. Request IDs are correlation handles, not
+    // security tokens, so the entropy quality is acceptable here.
     for (let index = 0; index < bytes.length; index += 1) {
       bytes[index] = Math.floor(Math.random() * 256);
     }

@@ -108,4 +108,49 @@ describe("CLARITY-9: parent card posts three labeled counts", () => {
     expect(body).toMatch(/\*\*Considered:\*\*\s+`0`\s+finding\(s\) from model/u);
     expect(body).toMatch(/\*\*Suppressed:\*\*\s+`0`\s+off-diff/u);
   });
+
+  it("Top concerns preview is sorted by severity desc (highest first)", () => {
+    // The reviewer flagged M6OO6Hf: "list content is sorted by
+    // severityRank desc — for a payload of mixed severities, the top-5
+    // preview will mostly be critical/high". Pin the ordering contract:
+    // when comments have mixed severities, the preview shows
+    // critical/high/medium/low (in that order) before lower-severity ones.
+    const body = buildReviewBody({
+      review: {
+        summary: "Mixed severities.",
+        verdict: "NEEDS_FIX",
+        comments: [
+          { path: "src/low.ts", line: 1, body: "low finding", severity: "low", category: "general" },
+          { path: "src/info.ts", line: 1, body: "info finding", severity: "info", category: "general" },
+          { path: "src/critical.ts", line: 1, body: "critical finding", severity: "critical", category: "security" },
+          { path: "src/medium.ts", line: 1, body: "medium finding", severity: "medium", category: "general" },
+          { path: "src/high.ts", line: 1, body: "high finding", severity: "high", category: "security" },
+        ],
+        suppressedComments: [],
+      },
+      provider: "openai-compatible",
+      modelId: "auto",
+      validCommentCount: 5,
+      suppressedCommentCount: 0,
+      secrets: [],
+    });
+    // Extract the order of paths in the Top concerns block.
+    // The block runs from the 📋 header until the closing </details>
+    // tag, regardless of intermediate blank lines.
+    const topConcernsMatch = body.match(
+      /📋\s+Top concerns from model \(5 of 5\)[\s\S]*?<\/details>/u,
+    );
+    expect(topConcernsMatch).not.toBeNull();
+    const topConcernsSection = topConcernsMatch?.[0] ?? "";
+    const criticalIdx = topConcernsSection.indexOf("src/critical.ts");
+    const highIdx = topConcernsSection.indexOf("src/high.ts");
+    const mediumIdx = topConcernsSection.indexOf("src/medium.ts");
+    const lowIdx = topConcernsSection.indexOf("src/low.ts");
+    const infoIdx = topConcernsSection.indexOf("src/info.ts");
+    expect(criticalIdx).toBeGreaterThan(-1);
+    expect(criticalIdx).toBeLessThan(highIdx);
+    expect(highIdx).toBeLessThan(mediumIdx);
+    expect(mediumIdx).toBeLessThan(lowIdx);
+    expect(lowIdx).toBeLessThan(infoIdx);
+  });
 });

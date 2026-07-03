@@ -33,11 +33,18 @@ export function extractJsonBlock(rawText: string): unknown {
 }
 
 /**
- * Find the body of a ```json ... ``` fence, or return the original text when none.
- * Exposed so callers can reuse the fence-closure guard from raw-output.ts.
+ * Find the body of a ```...``` fence (with or without a language tag),
+ * or return the original text when none. Exposed so callers can reuse
+ * the fence-closure guard from raw-output.ts.
+ *
+ * Accepts any opening fence (```` ```json ````, ```` ```json5 ````, or just
+ * ```` ``` ````) because the model sometimes drops the language tag from
+ * markdown code blocks wrapping a JSON payload. The matching closing
+ * fence is found lazily after the first newline, so the body's content
+ * is captured verbatim including internal whitespace and newlines.
  */
 export function extractJsonFenceBody(rawText: string): string {
-  const fenceMatch = /```json\s*\n([\s\S]*?)\n```/.exec(rawText);
+  const fenceMatch = /```[a-zA-Z0-9_+\-]*\s*\n([\s\S]*?)\n```/.exec(rawText);
   const body = fenceMatch?.[1];
 
   return body ?? rawText;
