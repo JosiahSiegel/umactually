@@ -535,18 +535,27 @@ function mapVerdictToAzureStatus(verdict, policy) {
     }
     if (policy === "legacy") {
         // Legacy policy throws on unknown verdicts — preserves the original
-        // `assertNever(verdict)` guard from `azure/run-azure-review.ts:118`
-        // that the S4 RED contract depends on.
+        // `assertNever(verdict)`-style guard from
+        // `azure/run-azure-review.ts:mapVerdictToStatus` that the S4 RED
+        // contract depends on. (There is no `assertNever` function in this
+        // module; the same effect is achieved via the explicit TypeError
+        // below.)
         if (normalized === KNOWN_BLOCKING_VERDICT)
             return "failed";
-        throw new TypeError(`unknown verdict for legacy Azure status mapping: ${summarizeVerdict(verdict)}`);
+        throw new TypeError(`unknown verdict for legacy Azure status mapping: ${redactVerdictForError(verdict)}`);
     }
     // Current policy: NEEDS_FIX → "pending"; anything unknown (including
     // empty string) also collapses to "pending" so a malformed verdict
     // can't crash the live runner.
     return "pending";
 }
-function summarizeVerdict(verdict) {
+/**
+ * Redact a user-supplied verdict for inclusion in an error message.
+ * Replaces the raw input with `len=<utf8 bytes>, sha256=<12 hex chars>`
+ * so the error is informative for log correlation without echoing
+ * PII, control characters, or terminal-escape sequences from the input.
+ */
+function redactVerdictForError(verdict) {
     const bytes = Buffer.byteLength(verdict, "utf8");
     const hash = (0,external_node_crypto_namespaceObject.createHash)("sha256").update(verdict).digest("hex").slice(0, 12);
     return `len=${bytes}, sha256=${hash}`;
@@ -1488,6 +1497,10 @@ const KNOWN_ENV_VAR_NAMES = new Set(ALL_FIELDS.flatMap((def) => def.env));
 
 ;// CONCATENATED MODULE: ./src/config/env-sources.ts
 
+// Aliases: the EnvSources-side field name is not a 1:1 match with the
+// FIELDS field name. The CLI/Inputs surface uses shorter names
+// (`apiUrl`, `apiKey`) while the canonical config-side name is the
+// longer `providerUrl` / `providerApiKey` form.
 const ENV_SOURCE_FIELDS = {
     apiUrl: "providerUrl",
     apiKey: "providerApiKey",
@@ -1500,6 +1513,81 @@ const ENV_SOURCE_FIELDS = {
     sonarProjectKey: "sonarProject",
     detectLeaks: "leakDetection",
 };
+// Reverse index: FIELDS-side field name → EnvSources-side field name.
+// Derived entirely from `ENV_SOURCE_FIELDS` so it stays in sync.
+const FIELDS_TO_ENV_SOURCE = new Map(Object.entries(ENV_SOURCE_FIELDS).map(([envSourceName, fieldsName]) => [fieldsName, envSourceName]));
+// Static allowlist of every `EnvSources` key that appears as a FIELDS
+// `field` name with a non-empty env list. Derived once at module load
+// from this list + `ALL_FIELDS` + `FIELDS_TO_ENV_SOURCE`.
+//
+// Why not derive purely from `ALL_FIELDS`? TypeScript optional fields
+// (`readonly x?: string`) are not present on an empty object instance,
+// so `Object.keys({} as EnvSources)` returns `[]`. We need an explicit
+// list of the keys that can appear as `def.field`.
+//
+// Keeping this in sync: when adding a new EnvSources field to
+// `src/config/types.ts` AND a new FIELDS entry that references it
+// (with non-empty env vars), append the new EnvSources-side key here.
+const DIRECT_ENV_SOURCE_KEYS = [
+    "providerUrl",
+    "providerApiKey",
+    "providerModel",
+    "promptSystemFile",
+    "promptUserFile",
+    "promptByteCap",
+    "walkthrough",
+    "diagnostic",
+    "dryRun",
+    "debugRawResponse",
+    "simulateFindings",
+    "reviewTimeoutSeconds",
+    "stallTimeoutSeconds",
+    "perRequestTimeoutSeconds",
+    "maxOutputTokens",
+    "ignoreMinor",
+    "minimumSeverity",
+    "maxComments",
+    "reviewFileLimit",
+    "sonarEnabled",
+    "sonarHost",
+    "sonarToken",
+    "sonarProject",
+    "sonarTimeoutSeconds",
+    "leakDetection",
+    "redactorEnabled",
+    "platform",
+    "githubApiBase",
+    "githubToken",
+    "azureOrg",
+    "azureProject",
+    "azureRepo",
+    "azurePullRequestId",
+    "azureToken",
+];
+const DIRECT_ENV_SOURCE_KEYS_SET = new Set(DIRECT_ENV_SOURCE_KEYS);
+// The set of EnvSources-side field names that have at least one env var
+// configured. Derived entirely from `ALL_FIELDS` + `FIELDS_TO_ENV_SOURCE`
+// + `DIRECT_ENV_SOURCE_KEYS_SET` so adding a new field with env vars
+// to field-schema.ts automatically enables it here (modulo appending
+// to DIRECT_ENV_SOURCE_KEYS if the EnvSources-side name is new).
+const DERIVED_ENV_SOURCE_FIELDS = (() => {
+    const out = new Set();
+    for (const def of ALL_FIELDS) {
+        if (def.env.length === 0)
+            continue;
+        // Path (b): aliased — reverse-lookup from FIELDS.field to its EnvSources key.
+        const aliased = FIELDS_TO_ENV_SOURCE.get(def.field);
+        if (aliased !== undefined) {
+            out.add(aliased);
+            continue;
+        }
+        // Path (a): direct — the FIELDS.field name itself is an EnvSources key.
+        if (DIRECT_ENV_SOURCE_KEYS_SET.has(def.field)) {
+            out.add(def.field);
+        }
+    }
+    return out;
+})();
 function mapFieldToEnvSource(field) {
     if (isMappedField(field)) {
         return ENV_SOURCE_FIELDS[field];
@@ -1513,32 +1601,7 @@ function isMappedField(field) {
     return Object.hasOwn(ENV_SOURCE_FIELDS, field);
 }
 function isEnvSourceField(field) {
-    return [
-        "promptByteCap",
-        "walkthrough",
-        "diagnostic",
-        "dryRun",
-        "debugRawResponse",
-        "simulateFindings",
-        "reviewTimeoutSeconds",
-        "perRequestTimeoutSeconds",
-        "maxOutputTokens",
-        "ignoreMinor",
-        "minimumSeverity",
-        "maxComments",
-        "reviewFileLimit",
-        "sonarToken",
-        "sonarTimeoutSeconds",
-        "redactorEnabled",
-        "platform",
-        "githubApiBase",
-        "githubToken",
-        "azureOrg",
-        "azureProject",
-        "azureRepo",
-        "azurePullRequestId",
-        "azureToken",
-    ].includes(field);
+    return DERIVED_ENV_SOURCE_FIELDS.has(field);
 }
 /**
  * Pure: extracts the known env-var keys from `env` into an EnvSources object.
@@ -4226,28 +4289,6 @@ function buildChatBody(config, opts) {
  *      (responses), or `choices[].message.content` (chat).
  *   3. Raw text — returned verbatim (caller tries to extract a JSON
  *      block from it via `extractJsonBlock`).
- *   4. **Unusable** — returns `null`. Signals to the caller that no
- *      review-shaped content was extractable. Use this for SSE streams
- *      with only metadata events (response.created / response.completed
- *      with empty output[]) so the parse-fail path fires instead of
- *      silently falling back to the raw SSE text (which would otherwise
- *      match the first balanced `{...}` in the stream and look like
- *      a "successful empty review").
- *
- * The "null vs empty string" distinction is critical: callers test
- * `textPayload === null` to distinguish "provider returned nothing
- * usable" from "provider returned an empty string that happens to
- * not be parseable as JSON". See CLARITY-10.
- */
-/**
- * Extract the text payload from a provider response. Handles four shapes:
- *   1. SSE stream (responses API output_text.delta / chat completions delta /
- *      generic top-level delta) — concatenates fragments into one string.
- *   2. Plain JSON object (Responses API or Chat Completions) — returns
- *      `output_text` (responses), joins `output[].content[].text`
- *      (responses), or `choices[].message.content` (chat).
- *   3. Raw text — returned verbatim (caller tries to extract a JSON
- *      block from it via `extractJsonBlock`).
  *   4. Empty input — returns `""`.
  *
  * The function does NOT report "unusable" — it always returns SOMETHING
@@ -4256,6 +4297,14 @@ function buildChatBody(config, opts) {
  * is a valid review. This keeps the public signature stable
  * (`string`, not `string | null`) so existing callers don't need to
  * change their null-handling.
+ *
+ * History note: an earlier revision returned `string | null` to signal
+ * "unusable SSE stream with no text fragments" (CLARITY-10). That
+ * approach was reverted in favor of returning the raw SSE text in
+ * that case so `parseReviewPayload`'s strict empty-fields check (and
+ * the CLARITY-10b soft parse-fail detector) catches the failure as a
+ * null return rather than relying on a separate null-handling path
+ * in callers.
  */
 function extractTextPayload(endpoint, rawText) {
     if (rawText.length === 0) {
@@ -4372,14 +4421,28 @@ function isApologySummary(summary) {
     }
     const lower = summary.toLowerCase();
     // Most common patterns from the 3e62237 self-review incident.
+    // Each pattern is anchored narrowly to avoid over-matching legitimate
+    // clean-review summaries that happen to contain "cannot" or "review"
+    // in other contexts (e.g. "I cannot find any issues to review").
     const APOLOGY_PATTERNS = [
+        // "no diff / file contents were provided / shared / available"
         /\bno\s+(diff|file\s+contents?|contents?)\b.*\b(provided|shared|available|supplied)\b/u,
+        // "please share / provide / send the diff / file / pull request"
         /\bplease\s+(share|provide|send)\s+(the\s+)?(diff|file|pull\s+request|pr)\b/u,
-        /\bi\s+(cannot|can'?t|am\s+unable|i'?m\s+unable)\s+(review|complete)/u,
-        /\b(cannot|can'?t|unable\s+to)\s+review\b/u,
+        // "I cannot / can't review this / it / the PR" — narrow to the
+        // direct-object-after-verb pattern so "I cannot find issues to
+        // review" does NOT match. Requires the verb (cannot/can't/etc.)
+        // immediately followed by review + determiner (this/it/the/a).
+        /\bi\s+(cannot|can'?t|am\s+unable|i'?m\s+unable)\s+review\s+(this|it|the|a|that)\b/u,
+        // "cannot / can't / unable to review" (no object required)
+        /\b(cannot|can'?t|unable\s+to)\s+review\s+(this|it|the|a|that)?\b/u,
+        // "didn't / haven't received" or "no input"
         /\b(didn'?t\s+receive|haven'?t\s+received|no\s+input)\b/u,
+        // "empty diff" or "without diff / input"
         /\b(empty\s+diff|no\s+diff\s+to\s+review|without\s+(diff|input))\b/u,
-        /\b(is\s+empty|was\s+empty)\b.*\b(nothing|to\s+review|review)/u,
+        // "the diff is empty, nothing to review" / "was empty... review"
+        /\b(is\s+empty|was\s+empty)\b.*\b(nothing|to\s+review)\b/u,
+        // "nothing to review"
         /\bnothing\s+to\s+review\b/u,
     ];
     for (const pattern of APOLOGY_PATTERNS) {
