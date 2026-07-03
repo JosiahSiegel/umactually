@@ -1,6 +1,7 @@
 import {
   buildChatBody,
   extractTextPayload,
+  PARSE_FAIL_RETRY_PROMPT,
   parseReviewPayload,
   type ProviderReviewPayload,
 } from "./provider-parse.js";
@@ -14,6 +15,7 @@ import {
   fetchAndCacheSessionToken,
   getCachedSessionToken,
 } from "./copilot-token.js";
+import { createRequestId, joinUrl } from "../util/url.js";
 
 const DEFAULT_GITHUB_API_BASE = "https://api.github.com";
 const COPILOT_EDITOR_VERSION = "vscode/1.96.0";
@@ -22,12 +24,7 @@ const COPILOT_INTEGRATION_ID = "vscode-chat";
 const COPILOT_USER_AGENT = "umactually-pr-review/0.1.0";
 const ENDPOINT_CHAT = "chat" as const;
 
-/** Self-healing follow-up message for parse-fail retry (mirrors openai-compatible). */
-const PARSE_FAIL_RETRY_PROMPT =
-  "Your previous response did not contain a valid JSON review payload. " +
-  "Please respond with ONLY a JSON object matching this schema (no prose, no fences): " +
-  '{"summary": "...", "verdict": "NEEDS_FIX|APPROVED|COMMENT|DISCUSS|SHIP", "comments": [...], "suppressed_comments": [...]}.';
-
+/** Self-healing follow-up message for parse-fail retry (shared with openai-compatible). */
 export type CopilotCallConfig = {
   readonly githubToken: string;
   readonly apiBase: string | undefined;
@@ -286,30 +283,4 @@ function buildTokenUrl(apiBase: string): string {
     return `${trimmedBase}/copilot_internal/v2/token`;
   }
   return `${trimmedBase}/api/copilot_internal/v2/token`;
-}
-
-function joinUrl(baseUrl: string, path: string): string {
-  const trimmedBase = baseUrl.replace(/\/+$/u, "");
-  const prefixedPath = path.startsWith("/") ? path : `/${path}`;
-  return `${trimmedBase}${prefixedPath}`;
-}
-
-function createRequestId(): string {
-  const cryptoApi = globalThis.crypto;
-  if (typeof cryptoApi.randomUUID === "function") {
-    return cryptoApi.randomUUID();
-  }
-  const bytes = new Uint8Array(16);
-  if (typeof cryptoApi.getRandomValues === "function") {
-    cryptoApi.getRandomValues(bytes);
-  } else {
-    for (let index = 0; index < bytes.length; index += 1) {
-      bytes[index] = Math.floor(Math.random() * 256);
-    }
-  }
-  const hex: string[] = [];
-  for (const byte of bytes) {
-    hex.push(byte.toString(16).padStart(2, "0"));
-  }
-  return `${hex.slice(0, 4).join("")}-${hex.slice(4, 6).join("")}-${hex.slice(6, 8).join("")}-${hex.slice(8, 10).join("")}-${hex.slice(10, 16).join("")}`;
 }
