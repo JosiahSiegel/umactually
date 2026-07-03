@@ -2593,6 +2593,7 @@ function mergeReviewResults(outcomes, options) {
 
 
 
+
 /**
  * A provider outcome is structurally empty when it carries no inline comments
  * AND no suppressed comments. Used by `simulate-findings` to decide whether
@@ -2670,16 +2671,38 @@ const TOP_CONCERNS_PREVIEW_LIMIT = 5;
  */
 const live_shared_SEVERITY_ORDER = ["critical", "high", "medium", "low"];
 /**
- * Counts line that appears immediately after the verdict badge. Uses
- * emoji + backticks (NOT `**word**` asterisks) because ADO's PR-thread
- * renderer surface has been observed to leak `**...**` as literal
- * asterisks even though the markdown guidance documents that emphasis
- * IS supported. Belt-and-braces compatibility — see CLARITY-3 in
- * test/unit/live-azure-parent-clarity.test.ts.
+ * Three explicit labels — posted / considered / suppressed — that make the
+ * parent card unambiguous about what the model produced vs. what landed
+ * vs. what was rejected. Replaces the old single-line counts that mixed
+ * "info" findings (excluded from the severity tally) with "off-diff"
+ * suppressions, which produced the confusing "0 critical · 0 high · 0
+ * medium · 0 low · 5 suppressed" line followed by a non-empty
+ * "Top concerns" list. CLARITY-9 pins the new contract.
  *
- * The line ALWAYS renders (even when all counts are zero) so a reviewer
- * can distinguish "0 findings, ship it" from "nothing rendered". That
- * consistency is the contract CLARITY-5 pins.
+ * Always renders (even when all three values are zero) so a reviewer
+ * can distinguish "0 found, ship it" from "nothing rendered" —
+ * inherited from CLARITY-5.
+ */
+function postedVsConsideredRow(input) {
+    return [
+        `**Posted:** \`${input.postedCount}\` inline thread(s) · ` +
+            `**Considered:** \`${input.consideredCount}\` finding(s) from model · ` +
+            `**Suppressed:** \`${input.suppressedCount}\` off-diff`,
+    ].join("\n");
+}
+/**
+ * Severity tally — critical → high → medium → low — that appears
+ * immediately after the verdict badge and the posted/considered/suppressed
+ * row. Uses emoji + backticks (NOT `**word**` asterisks) because ADO's
+ * PR-thread renderer surface has been observed to leak `**...**` as
+ * literal asterisks even though the markdown guidance documents that
+ * emphasis IS supported. Belt-and-braces compatibility — see CLARITY-3
+ * in test/unit/live-azure-parent-clarity.test.ts.
+ *
+ * The `info` severity is intentionally excluded from this tally (info
+ * findings are tracked in the manifest but are not a signal the reviewer
+ * needs to act on) — the "considered" count above is the unambiguous
+ * answer when an info-heavy payload is in play.
  */
 function countsLine(input) {
     const parts = [];
@@ -2687,14 +2710,15 @@ function countsLine(input) {
         const count = input.severityCounts[level] ?? 0;
         parts.push(`\`${count}\` ${level}`);
     }
-    parts.push(`\`${input.suppressedCount}\` suppressed (off-diff)`);
     return `📊 ${parts.join(" · ")}`;
 }
 /**
  * Build the "Top concerns" <details> block. Shows a preview of the
- * highest-severity findings so a reviewer can decide which to open in
- * the inline threads. Hidden by default so it does not push the counts
- * line below the fold.
+ * highest-severity findings the MODEL produced (pre-filter — this is
+ * NOT the same set as the inline threads posted). The summary line
+ * explicitly says "from model (N of Z)" so the reader knows this is
+ * the pre-filter list. Hidden by default so it does not push the
+ * severity tally below the fold.
  */
 function topConcernsBlock(input) {
     const sorted = [...input.review.comments].sort((a, b) => {
@@ -2708,9 +2732,11 @@ function topConcernsBlock(input) {
     if (preview.length === 0) {
         return "";
     }
+    const total = input.review.comments.length;
+    const shown = preview.length;
     const header = preview.length === 1
-        ? "📋 Top concern (1)"
-        : `📋 Top concerns (${preview.length})`;
+        ? `📋 Top concern from model (1 of ${total})`
+        : `📋 Top concerns from model (${shown} of ${total})`;
     const lines = preview.map((comment, index) => {
         const safeBody = sanitizeForPost(comment.body, []);
         const oneLiner = safeBody.replace(/\s+/gu, " ").trim();
@@ -2811,14 +2837,22 @@ function metadataManifest(input) {
  *
  *   1. Stable HTML marker (used for dedup)
  *   2. Verdict badge — large, first thing after the marker
- *   3. Counts line — emoji + backticks, immediately below the verdict, so a
- *      reviewer sees "how many findings, how many suppressed" within the
- *      first viewport
- *   4. Top-concerns <details> — preview of the highest-severity findings
- *   5. Suppressed <details> — list of off-diff findings
- *   6. Prose summary <details> — long provider narrative, hidden by default
- *   7. Footer — model + provider + inline-thread count, small text
- *   8. Hidden HTML comment with the JSON manifest for AI agents
+ *   3. Posted / Considered / Suppressed row — three labeled counts that
+ *      tell the reviewer what actually landed, what the model produced,
+ *      and what was rejected (off-diff). CLARITY-9.
+ *   4. Severity tally — emoji + backticks for critical → high → medium → low
+ *      immediately after the verdict, so a reviewer sees the per-severity
+ *      split within the first viewport. The `info` level is excluded here
+ *      (intentionally — info findings are not actionable) which is why the
+ *      "Considered" count above is the authoritative total.
+ *   5. Top-concerns <details> — preview of the highest-severity findings
+ *      the MODEL produced (pre-filter). The summary line explicitly says
+ *      "from model (N of Z)" so the reader knows this is pre-filter, not
+ *      a duplicate of the "Posted" count.
+ *   6. Suppressed <details> — list of off-diff findings
+ *   7. Prose summary <details> — long provider narrative, hidden by default
+ *   8. Footer — model + provider + inline-thread count, small text
+ *   9. Hidden HTML comment with the JSON manifest for AI agents
  *
  * The shape is identical regardless of verdict, finding count, or whether
  * the provider returned a parse-fail fallback — that consistency is what
@@ -2826,6 +2860,7 @@ function metadataManifest(input) {
  */
 function buildReviewBody(input) {
     const severityCounts = live_shared_countBySeverity(input.review.comments);
+    const consideredCount = input.review.comments.length;
     const verdict = verdictBadge(input.review.verdict);
     const safeSummary = sanitizeForPost(input.review.summary, input.secrets);
     const safeModelId = sanitizeForPost(input.modelId, input.secrets);
@@ -2837,10 +2872,13 @@ function buildReviewBody(input) {
         "",
         `## ${verdict}`,
         "",
-        countsLine({
-            severityCounts,
+        postedVsConsideredRow({
+            postedCount: input.validCommentCount,
+            consideredCount,
             suppressedCount: input.suppressedCommentCount,
         }),
+        "",
+        countsLine({ severityCounts }),
         "",
         topConcernsBlock({ review: input.review }),
         suppressedBlock({ suppressedComments: input.review.suppressedComments }),
@@ -2994,7 +3032,6 @@ function countSuppressedComments(review, diffText) {
     }
     return count;
 }
-
 /**
  * Map a review verdict to a GitHub review-submission event. Delegates to
  * `src/util/verdict.ts` so the merge-path verdict-rank table and the
