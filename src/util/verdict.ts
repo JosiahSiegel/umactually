@@ -5,8 +5,10 @@
  *
  * Two policies exist because they were written at different times:
  *   - `legacy`: NEEDS_FIX → "failed" (S4 RED contract — fixture pinned).
- *     Throws on unknown verdicts (preserves the assertNever guard the
- *     original `azure/run-azure-review.ts:mapVerdictToStatus` had).
+ *     Throws on unknown verdicts via an explicit `TypeError` (preserves
+ *     the throw-on-unknown guarantee the original
+ *     `azure/run-azure-review.ts:mapVerdictToStatus` had — there is no
+ *     `assertNever` helper in this module).
  *   - `current`: NEEDS_FIX → "pending" (live behavior — see CLARITY-2 in
  *     live-azure-status-policy.test.ts for the rationale: a failing review
  *     is a finding, not a merge-blocking check). Unknowns collapse to
