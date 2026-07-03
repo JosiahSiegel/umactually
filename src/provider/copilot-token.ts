@@ -1,5 +1,5 @@
 import { isAbortError, ProviderError, sanitizeMessage } from "./provider-error.js";
-import { isRecord } from "../util/json-guards.js";
+import { isRecord, readRecordField, readSafeIntegerField, readStringField } from "../util/json-guards.js";
 
 export type TokenCacheEntry = {
   readonly token: string;
@@ -108,7 +108,7 @@ export async function fetchAndCacheSessionToken(
   }
 
   const token = readStringField(envelope, "token");
-  const expiresAt = readNumberField(envelope, "expires_at");
+  const expiresAt = readSafeIntegerField(envelope, "expires_at");
   const endpoints = readRecordField(envelope, "endpoints");
   const chatApiBase = endpoints === null ? null : readStringField(endpoints, "api");
 
@@ -159,22 +159,4 @@ function safeParseJson(text: string): unknown {
   } catch {
     return undefined;
   }
-}
-
-function readStringField(record: Record<string, unknown>, key: string): string | null {
-  const value = record[key];
-  return typeof value === "string" ? value : null;
-}
-
-function readNumberField(record: Record<string, unknown>, key: string): number | null {
-  const value = record[key];
-  return typeof value === "number" && Number.isFinite(value) ? value : null;
-}
-
-function readRecordField(value: unknown, key: string): Record<string, unknown> | null {
-  if (!isRecord(value)) {
-    return null;
-  }
-  const inner = value[key];
-  return isRecord(inner) ? inner : null;
 }
