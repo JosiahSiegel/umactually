@@ -3,7 +3,9 @@ import { REVIEW_MARKER } from "../review/run-review.js";
 import { scanReviewSecrets } from "../security/scan-review-secrets.js";
 import type { Platform } from "../config/types.js";
 import { DEFAULT_MAX_COMMENTS } from "../config/defaults.js";
-import { isPositiveSafeInteger, isRecord } from "../util/json-guards.js";
+import { REDACTED_SECRET_TOKEN } from "../util/brand.js";
+import { truncateBodyForLog } from "../util/http.js";
+import { isPositiveSafeInteger, isRecord, isSafeInteger } from "../util/json-guards.js";
 import { MANIFEST_SCHEMA } from "../util/marker.js";
 import { countBySeverity as countBySeverityUtil, SEVERITY_ORDER, severityRank } from "../util/severity.js";
 import { mapVerdictToAzureStatus, mapVerdictToGithubEvent } from "../util/verdict.js";
@@ -719,7 +721,7 @@ export function sanitizeForPost(value: string, secrets: readonly string[]): stri
     .replace(/\bBearer\s+\S+/giu, "[REDACTED_BEARER_TOKEN]");
   for (const secret of secrets) {
     if (secret.length > 0) {
-      sanitized = sanitized.split(secret).join("[REDACTED_SECRET]");
+      sanitized = sanitized.split(secret).join(REDACTED_SECRET_TOKEN);
     }
   }
   return sanitized;
@@ -753,7 +755,7 @@ export function readResponseId(value: unknown): number | undefined {
     return undefined;
   }
   const id = value["id"];
-  return typeof id === "number" && Number.isSafeInteger(id) ? id : undefined;
+  return isSafeInteger(id) ? id : undefined;
 }
 
 export function ensureHttpOk(response: Response, code: string, action: string): void {
@@ -774,7 +776,7 @@ export function ensureHttpOk(response: Response, code: string, action: string): 
       }
       // Surface the server-side error message on stderr for operators;
       // the thrown LiveReviewError keeps its short public form.
-      const snippet = text.length > 500 ? `${text.slice(0, 500)}…(truncated)` : text;
+      const snippet = truncateBodyForLog(text, 500);
       process.stderr.write(`::debug::umactually-pr-review: ${action} HTTP ${response.status} body=${snippet}\n`);
     })
     .catch(() => {
