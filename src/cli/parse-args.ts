@@ -1,3 +1,7 @@
+import { FIELDS } from "../config/field-schema.js";
+import { readEnum } from "../util/cli-args.js";
+import { isSafeInteger } from "../util/json-guards.js";
+
 /**
  * CLI-side normalized platform union. The CLI parser accepts `"azure-devops"`
  * as an input alias for `"azure"`, then normalizes it before returning
@@ -340,7 +344,7 @@ function readValue(args: readonly string[], index: number, flag: string): string
 function readIntValue(args: readonly string[], index: number, flag: string): number {
   const raw = readValue(args, index, flag);
   const parsed = Number.parseInt(raw, 10);
-  if (!Number.isSafeInteger(parsed)) {
+  if (!isSafeInteger(parsed)) {
     throw new CliUsageError(`flag --${flag} requires an integer value`);
   }
   return parsed;
@@ -348,49 +352,23 @@ function readIntValue(args: readonly string[], index: number, flag: string): num
 
 function readMinimumSeverity(args: readonly string[], index: number): CliMinimumSeverity {
   const raw = readValue(args, index, "minimum-severity");
-  switch (raw) {
-    case "low":
-    case "medium":
-    case "high":
-      return raw;
-    default:
-      throw new CliUsageError(`invalid --minimum-severity value: ${raw}`);
-  }
+  return readEnum<CliMinimumSeverity>("--minimum-severity", raw, FIELDS.minimumSeverity.enumValues as readonly CliMinimumSeverity[]);
 }
 
 function readPlatform(value: string): CliPlatform {
-  switch (value) {
-    case "auto":
-      return "auto";
-    case "github":
-      return "github";
-    case "azure":
-    case "azure-devops":
-      return "azure";
-    default:
-      throw new CliUsageError(`invalid --platform value: ${value}`);
+  // Accept "azure-devops" as a CLI-only alias for "azure" so callers
+  // familiar with the older name keep working.
+  if (value === "azure-devops") {
+    return "azure";
   }
+  return readEnum<CliPlatform>("--platform", value, FIELDS.platform.enumValues as readonly CliPlatform[]);
 }
 
 function readEffort(args: readonly string[], index: number): CliEffort {
   const raw = readValue(args, index, "effort");
-  switch (raw) {
-    case "low":
-    case "medium":
-    case "high":
-      return raw;
-    default:
-      throw new CliUsageError(`invalid --effort value: ${raw}`);
-  }
+  return readEnum<CliEffort>("--effort", raw, FIELDS.effort.enumValues as readonly CliEffort[]);
 }
 
 function readProvider(value: string): CliProvider {
-  switch (value) {
-    case "openai-compatible":
-      return "openai-compatible";
-    case "copilot":
-      return "copilot";
-    default:
-      throw new CliUsageError(`invalid --provider value: ${value}`);
-  }
+  return readEnum<CliProvider>("--provider", value, FIELDS.provider.enumValues as readonly CliProvider[]);
 }
