@@ -1,6 +1,6 @@
 import { scanReviewSecrets } from "../security/scan-review-secrets.js";
 import { REVIEW_MARKER } from "../util/marker.js";
-import { isRecord } from "../util/json-guards.js";
+import { isRecord, readSafeIntegerFieldOrThrow, readStringFieldOrThrow } from "../util/json-guards.js";
 import { mapVerdictToAzureStatus } from "../util/verdict.js";
 
 export type AzureReviewContract = {
@@ -131,21 +131,8 @@ function readRecord(value: unknown, label: string): Record<string, unknown> {
   return value;
 }
 
-function readNumberField(record: Record<string, unknown>, key: string): number {
-  const value = record[key];
-  if (typeof value !== "number") {
-    throw new TypeError(`Expected field '${key}' to be a number, received: ${typeof value}`);
-  }
-  return value;
-}
-
-function readStringField(record: Record<string, unknown>, key: string): string {
-  const value = record[key];
-  if (typeof value !== "string") {
-    throw new TypeError(`Expected field '${key}' to be a string, received: ${typeof value}`);
-  }
-  return value;
-}
+const readNumberField = readSafeIntegerFieldOrThrow;
+const readStringField = readStringFieldOrThrow;
 
 function readVerdict(value: unknown): ReviewVerdict {
   if (value === "NEEDS_FIX" || value === "APPROVED" || value === "COMMENT") {
