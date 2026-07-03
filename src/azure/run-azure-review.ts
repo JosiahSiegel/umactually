@@ -121,19 +121,7 @@ function mapVerdictToStatus(verdict: ReviewVerdict): AzureMockedRun["postedStatu
   // the live CLI uses the "current" policy (NEEDS_FIX → "pending") via
   // src/util/verdict.ts. The two are intentionally divergent — the live CLI
   // considers NEEDS_FIX a "finding", not a merge-blocking check.
-  const status = mapVerdictToAzureStatus(verdict, "legacy");
-  switch (status) {
-    case "succeeded":
-    case "failed":
-    case "pending":
-      return status;
-    default:
-      return assertNever(status);
-  }
-}
-
-function assertNever(value: never): never {
-  throw new TypeError(`Unexpected provider verdict: ${value}`);
+  return mapVerdictToAzureStatus(verdict, "legacy");
 }
 
 function readRecord(value: unknown, label: string): Record<string, unknown> {

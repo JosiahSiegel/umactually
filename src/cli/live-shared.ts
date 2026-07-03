@@ -4,7 +4,7 @@ import { scanReviewSecrets } from "../security/scan-review-secrets.js";
 import type { Platform } from "../config/types.js";
 import { DEFAULT_MAX_COMMENTS } from "../config/loader.js";
 import { isRecord } from "../util/json-guards.js";
-import { countBySeverity as countBySeverityUtil, severityRank } from "../util/severity.js";
+import { countBySeverity as countBySeverityUtil, SEVERITY_ORDER as SEVERITY_ORDER_UTIL, severityRank } from "../util/severity.js";
 import { mapVerdictToAzureStatus, mapVerdictToGithubEvent } from "../util/verdict.js";
 import type { ParsedCliArgs } from "./parse-args.js";
 
@@ -125,9 +125,10 @@ const TOP_CONCERNS_PREVIEW_LIMIT = 5;
  * "Top concerns" header. Critical first (most urgent), then
  * high → medium → low. The `info` level is intentionally excluded —
  * info findings are tracked in the manifest but are not a signal the
- * reviewer needs to act on.
+ * reviewer needs to act on. Re-exported from `src/util/severity.ts` so
+ * every consumer of the canonical order uses the same array.
  */
-const SEVERITY_ORDER = ["critical", "high", "medium", "low"] as const;
+export const SEVERITY_ORDER = SEVERITY_ORDER_UTIL;
 
 /**
  * Three explicit labels — posted / considered / suppressed — that make the

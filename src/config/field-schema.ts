@@ -256,7 +256,10 @@ export const FIELDS = {
     env: ["REVIEW_PLATFORM"],
     type: "enum",
     defaultValue: "auto",
-    enumValues: ["auto", "github", "azure", "azure-devops"],
+    // Canonical three variants. The CLI parser accepts the `"azure-devops"`
+    // alias and normalizes to `"azure"` before this field is reached; the
+    // config loader therefore only sees the canonical set.
+    enumValues: ["auto", "github", "azure"],
   },
   prNumber: {
     field: "prNumber",
@@ -371,15 +374,12 @@ export type FieldName = keyof typeof FIELDS;
 /** All fields in declaration order. */
 export const ALL_FIELDS: readonly FieldDef<FieldType>[] = Object.values(FIELDS);
 
-/** Env-var name → field name lookup. First match wins (UMACTUALLY_* before REVIEW_*). */
-export const ENV_VAR_TO_FIELD: ReadonlyMap<string, FieldName> = (() => {
-  const map = new Map<string, FieldName>();
-  for (const def of ALL_FIELDS) {
-    for (const envName of def.env) {
-      if (!map.has(envName)) {
-        map.set(envName, def.field as FieldName);
-      }
-    }
-  }
-  return map;
-})();
+/**
+ * Set of every env-var name the runtime reads (across all fields, deduped).
+ * Useful for sanity checks, smoke tests, and any future "unknown env-var"
+ * diagnostics. Derived from the field-schema so adding a field's env entries
+ * here keeps the set in sync without any other code changes.
+ */
+export const KNOWN_ENV_VAR_NAMES: ReadonlySet<string> = new Set(
+  ALL_FIELDS.flatMap((def) => def.env),
+);

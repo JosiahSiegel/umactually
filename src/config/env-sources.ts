@@ -40,15 +40,12 @@ const ENV_KEYS: ReadonlyArray<readonly [keyof EnvSources, readonly string[]]> = 
   ["azureToken", ["AZURE_DEVOPS_TOKEN"]],
 ];
 
-/** Set of every env-var name the runtime reads. Used for sanity checks + tests. */
-export const KNOWN_ENV_VAR_NAMES: ReadonlySet<string> = new Set(
-  ENV_KEYS.flatMap(([, envNames]) => envNames),
-);
-
 /**
  * Pure: extracts the known env-var keys from `env` into an EnvSources object.
  * UMACTUALLY_* takes precedence over REVIEW_* when both are set.
  * Never logs values. Empty/missing keys are simply omitted.
+ *
+ * The canonical env-var set is `KNOWN_ENV_VAR_NAMES` in `src/config/field-schema.ts`.
  */
 export function readEnvSources(env: NodeJS.ProcessEnv = process.env): EnvSources {
   const out: {

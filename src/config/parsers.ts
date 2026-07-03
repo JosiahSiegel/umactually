@@ -77,14 +77,21 @@ export function parseSeverityFromUnknown(value: unknown, field: string): Severit
   return normalized as Severity;
 }
 
-const VALID_PLATFORMS: ReadonlySet<Platform> = new Set<Platform>(["auto", "github", "azure"]);
+import { FIELDS } from "./field-schema.js";
+
+// Derive the parser's accepted set from the canonical field-schema entry.
+// Single source of truth: changing the canonical `enumValues` here updates
+// both the parser and any future code-gen of the action.yml / CLI help.
+const VALID_PLATFORMS: ReadonlySet<string> = new Set<string>(
+  FIELDS.platform.enumValues ?? [],
+);
 
 export function parsePlatformFromUnknown(value: unknown, field: string): Platform {
   if (typeof value !== "string") {
     throw new InvalidConfigError(field, `expected platform string, received ${typeof value}`);
   }
   const normalized = value.trim().toLowerCase();
-  if (!VALID_PLATFORMS.has(normalized as Platform)) {
+  if (!VALID_PLATFORMS.has(normalized)) {
     throw new InvalidConfigError(field, `unknown platform ${REDACTED}`);
   }
   return normalized as Platform;

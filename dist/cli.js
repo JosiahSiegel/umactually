@@ -604,18 +604,7 @@ function mapVerdictToStatus(verdict) {
     // the live CLI uses the "current" policy (NEEDS_FIX → "pending") via
     // src/util/verdict.ts. The two are intentionally divergent — the live CLI
     // considers NEEDS_FIX a "finding", not a merge-blocking check.
-    const status = mapVerdictToAzureStatus(verdict, "legacy");
-    switch (status) {
-        case "succeeded":
-        case "failed":
-        case "pending":
-            return status;
-        default:
-            return assertNever(status);
-    }
-}
-function assertNever(value) {
-    throw new TypeError(`Unexpected provider verdict: ${value}`);
+    return mapVerdictToAzureStatus(verdict, "legacy");
 }
 function readRecord(value, label) {
     if (!isRecord(value)) {
@@ -1163,12 +1152,12 @@ const ENV_KEYS = [
     ["azurePullRequestId", ["AZURE_DEVOPS_PULL_REQUEST_ID"]],
     ["azureToken", ["AZURE_DEVOPS_TOKEN"]],
 ];
-/** Set of every env-var name the runtime reads. Used for sanity checks + tests. */
-const KNOWN_ENV_VAR_NAMES = new Set(ENV_KEYS.flatMap(([, envNames]) => envNames));
 /**
  * Pure: extracts the known env-var keys from `env` into an EnvSources object.
  * UMACTUALLY_* takes precedence over REVIEW_* when both are set.
  * Never logs values. Empty/missing keys are simply omitted.
+ *
+ * The canonical env-var set is `KNOWN_ENV_VAR_NAMES` in `src/config/field-schema.ts`.
  */
 function readEnvSources(env = process.env) {
     const out = {};
@@ -2072,6 +2061,346 @@ class PromptFileError extends Error {
  */
 const errors_REDACTED = "[REDACTED]";
 
+;// CONCATENATED MODULE: ./src/config/field-schema.ts
+const FIELDS = {
+    apiUrl: {
+        field: "apiUrl",
+        flag: "--api-url",
+        input: "api-url",
+        env: ["UMACTUALLY_API_URL", "REVIEW_PROVIDER_URL"],
+        type: "string",
+        defaultValue: "",
+    },
+    apiKey: {
+        field: "apiKey",
+        flag: "--api-key",
+        input: "api-key",
+        env: ["UMACTUALLY_API_KEY", "REVIEW_PROVIDER_API_KEY"],
+        type: "string",
+        defaultValue: "",
+    },
+    model: {
+        field: "model",
+        flag: "--model",
+        input: "model",
+        env: ["UMACTUALLY_MODEL", "REVIEW_PROVIDER_MODEL"],
+        type: "string",
+        defaultValue: "auto",
+    },
+    prompt: {
+        field: "prompt",
+        flag: "--prompt",
+        input: "prompt",
+        env: [],
+        type: "string",
+        defaultValue: "",
+    },
+    promptFile: {
+        field: "promptFile",
+        flag: "--prompt-file",
+        input: "prompt-file",
+        env: ["UMACTUALLY_PROMPT_FILE", "REVIEW_PROMPT_SYSTEM_FILE"],
+        type: "string",
+        defaultValue: "",
+    },
+    additionalPrompt: {
+        field: "additionalPrompt",
+        flag: "--additional-prompt",
+        input: "additional-prompt",
+        env: [],
+        type: "string",
+        defaultValue: "",
+    },
+    additionalPromptFile: {
+        field: "additionalPromptFile",
+        flag: "--additional-prompt-file",
+        input: "additional-prompt-file",
+        env: ["UMACTUALLY_ADDITIONAL_PROMPT_FILE", "REVIEW_PROMPT_USER_FILE"],
+        type: "string",
+        defaultValue: "",
+    },
+    walkthrough: {
+        field: "walkthrough",
+        flag: "--walkthrough",
+        input: "walkthrough",
+        env: ["UMACTUALLY_WALKTHROUGH", "REVIEW_WALKTHROUGH"],
+        type: "boolean",
+        defaultValue: false,
+    },
+    diagnostic: {
+        field: "diagnostic",
+        flag: "--diagnostic",
+        input: "diagnostic",
+        env: ["UMACTUALLY_DIAGNOSTIC", "REVIEW_DIAGNOSTIC"],
+        type: "boolean",
+        defaultValue: false,
+    },
+    dryRun: {
+        field: "dryRun",
+        flag: "--dry-run",
+        input: "dry-run",
+        env: ["UMACTUALLY_DRY_RUN", "REVIEW_DRY_RUN"],
+        type: "boolean",
+        defaultValue: false,
+    },
+    debugRawResponse: {
+        field: "debugRawResponse",
+        flag: "--debug-raw-response",
+        input: "debug-raw-response",
+        env: ["REVIEW_DEBUG_RAW_RESPONSE"],
+        type: "boolean",
+        defaultValue: false,
+    },
+    simulateFindings: {
+        field: "simulateFindings",
+        flag: "--simulate-findings",
+        input: "simulate-findings",
+        env: ["UMACTUALLY_SIMULATE_FINDINGS", "REVIEW_SIMULATE_FINDINGS"],
+        type: "boolean",
+        defaultValue: false,
+    },
+    reviewTimeoutSeconds: {
+        field: "reviewTimeoutSeconds",
+        flag: "--review-timeout-seconds",
+        input: "review-timeout-seconds",
+        env: ["UMACTUALLY_REVIEW_TIMEOUT_SECONDS", "REVIEW_TIMEOUT_SECONDS"],
+        type: "integer",
+        defaultValue: 300,
+    },
+    stallSeconds: {
+        field: "stallSeconds",
+        flag: "--stall-seconds",
+        input: "stall-seconds",
+        env: ["UMACTUALLY_STALL_SECONDS", "REVIEW_STALL_SECONDS"],
+        type: "integer",
+        defaultValue: 270,
+    },
+    perRequestTimeoutSeconds: {
+        field: "perRequestTimeoutSeconds",
+        flag: "--per-request-timeout-seconds",
+        input: "per-request-timeout-seconds",
+        env: ["REVIEW_PER_REQUEST_TIMEOUT_SECONDS"],
+        type: "integer",
+        defaultValue: 60,
+    },
+    maxOutputTokens: {
+        field: "maxOutputTokens",
+        flag: "--max-output-tokens",
+        input: "max-output-tokens",
+        env: ["UMACTUALLY_MAX_OUTPUT_TOKENS"],
+        type: "integer",
+        defaultValue: 16_000,
+    },
+    ignoreMinor: {
+        field: "ignoreMinor",
+        flag: "--ignore-minor",
+        input: "ignore-minor",
+        env: ["UMACTUALLY_IGNORE_MINOR", "REVIEW_IGNORE_MINOR"],
+        type: "boolean",
+        defaultValue: false,
+    },
+    minimumSeverity: {
+        field: "minimumSeverity",
+        flag: "--minimum-severity",
+        input: "minimum-severity",
+        env: ["REVIEW_MINIMUM_SEVERITY"],
+        type: "enum",
+        defaultValue: "low",
+        enumValues: ["low", "medium", "high"],
+    },
+    maxComments: {
+        field: "maxComments",
+        flag: "--max-comments",
+        input: "max-comments",
+        env: ["REVIEW_MAX_COMMENTS"],
+        type: "integer",
+        defaultValue: 50,
+    },
+    reviewFileLimit: {
+        field: "reviewFileLimit",
+        flag: "--review-file-limit",
+        input: "review-file-limit",
+        env: ["REVIEW_FILE_LIMIT"],
+        type: "integer",
+        defaultValue: 200,
+    },
+    includeSonarqube: {
+        field: "includeSonarqube",
+        flag: "--include-sonarqube",
+        input: "include-sonarqube",
+        env: ["UMACTUALLY_INCLUDE_SONARQUBE", "REVIEW_SONAR_ENABLED"],
+        type: "boolean",
+        defaultValue: false,
+    },
+    sonarHostUrl: {
+        field: "sonarHostUrl",
+        flag: "--sonar-host-url",
+        input: "sonar-host-url",
+        env: ["UMACTUALLY_SONAR_HOST_URL", "REVIEW_SONAR_HOST"],
+        type: "string",
+        defaultValue: "",
+    },
+    sonarToken: {
+        field: "sonarToken",
+        flag: "--sonar-token",
+        input: "sonar-token",
+        env: ["UMACTUALLY_SONAR_TOKEN", "REVIEW_SONAR_TOKEN"],
+        type: "string",
+        defaultValue: "",
+    },
+    sonarProjectKey: {
+        field: "sonarProjectKey",
+        flag: "--sonar-project-key",
+        input: "sonar-project-key",
+        env: ["UMACTUALLY_SONAR_PROJECT_KEY", "REVIEW_SONAR_PROJECT"],
+        type: "string",
+        defaultValue: "",
+    },
+    sonarTimeoutSeconds: {
+        field: "sonarTimeoutSeconds",
+        flag: "--sonar-timeout-seconds",
+        input: "sonar-timeout-seconds",
+        env: ["REVIEW_SONAR_TIMEOUT_SECONDS"],
+        type: "integer",
+        defaultValue: 300,
+    },
+    detectLeaks: {
+        field: "detectLeaks",
+        flag: "--detect-leaks",
+        input: "detect-leaks",
+        env: ["UMACTUALLY_DETECT_LEAKS", "REVIEW_LEAK_DETECTION"],
+        type: "boolean",
+        defaultValue: true,
+    },
+    platform: {
+        field: "platform",
+        flag: "--platform",
+        input: "platform",
+        env: ["REVIEW_PLATFORM"],
+        type: "enum",
+        defaultValue: "auto",
+        // Canonical three variants. The CLI parser accepts the `"azure-devops"`
+        // alias and normalizes to `"azure"` before this field is reached; the
+        // config loader therefore only sees the canonical set.
+        enumValues: ["auto", "github", "azure"],
+    },
+    prNumber: {
+        field: "prNumber",
+        flag: "--pr-number",
+        input: "pr-number",
+        env: [],
+        type: "string",
+        defaultValue: "",
+    },
+    repo: {
+        field: "repo",
+        flag: "--repo",
+        input: "repo",
+        env: [],
+        type: "string",
+        defaultValue: "",
+    },
+    effort: {
+        field: "effort",
+        flag: "--effort",
+        input: "effort",
+        env: [],
+        type: "enum",
+        defaultValue: "medium",
+        enumValues: ["low", "medium", "high"],
+    },
+    provider: {
+        field: "provider",
+        flag: "--provider",
+        input: "provider",
+        env: [],
+        type: "enum",
+        defaultValue: "openai-compatible",
+        enumValues: ["openai-compatible", "copilot"],
+    },
+    githubApiBase: {
+        field: "githubApiBase",
+        flag: "--github-api-base",
+        input: "github-api-base",
+        env: ["UMACTUALLY_GITHUB_API_BASE"],
+        type: "string",
+        defaultValue: "",
+    },
+    githubToken: {
+        field: "githubToken",
+        flag: null,
+        input: "github_token",
+        env: ["GITHUB_TOKEN"],
+        type: "string",
+        defaultValue: "",
+    },
+    promptByteCap: {
+        field: "promptByteCap",
+        flag: null,
+        input: "prompt-byte-cap",
+        env: ["REVIEW_PROMPT_BYTE_CAP"],
+        type: "integer",
+        defaultValue: 65_536,
+    },
+    redactorEnabled: {
+        field: "redactorEnabled",
+        flag: null,
+        input: "redactor-enabled",
+        env: ["REVIEW_REDACTOR_ENABLED"],
+        type: "boolean",
+        defaultValue: true,
+    },
+    azureOrg: {
+        field: "azureOrg",
+        flag: null,
+        input: "azure-org",
+        env: ["AZURE_DEVOPS_ORG"],
+        type: "string",
+        defaultValue: "",
+    },
+    azureProject: {
+        field: "azureProject",
+        flag: null,
+        input: "azure-project",
+        env: ["AZURE_DEVOPS_PROJECT"],
+        type: "string",
+        defaultValue: "",
+    },
+    azureRepo: {
+        field: "azureRepo",
+        flag: null,
+        input: "azure-repo",
+        env: ["AZURE_DEVOPS_REPO"],
+        type: "string",
+        defaultValue: "",
+    },
+    azurePullRequestId: {
+        field: "azurePullRequestId",
+        flag: null,
+        input: "azure-pull-request-id",
+        env: ["AZURE_DEVOPS_PULL_REQUEST_ID"],
+        type: "integer",
+        defaultValue: 0,
+    },
+    azureToken: {
+        field: "azureToken",
+        flag: null,
+        input: "azure-token",
+        env: ["AZURE_DEVOPS_TOKEN"],
+        type: "string",
+        defaultValue: "",
+    },
+};
+/** All fields in declaration order. */
+const ALL_FIELDS = Object.values(FIELDS);
+/**
+ * Set of every env-var name the runtime reads (across all fields, deduped).
+ * Useful for sanity checks, smoke tests, and any future "unknown env-var"
+ * diagnostics. Derived from the field-schema so adding a field's env entries
+ * here keeps the set in sync without any other code changes.
+ */
+const KNOWN_ENV_VAR_NAMES = new Set(ALL_FIELDS.flatMap((def) => def.env));
+
 ;// CONCATENATED MODULE: ./src/config/parsers.ts
 
 const TRUTHY_STRINGS = new Set(["1", "true", "yes", "on", "y"]);
@@ -2149,7 +2478,11 @@ function parsers_parseSeverityFromUnknown(value, field) {
     }
     return normalized;
 }
-const VALID_PLATFORMS = new Set(["auto", "github", "azure"]);
+
+// Derive the parser's accepted set from the canonical field-schema entry.
+// Single source of truth: changing the canonical `enumValues` here updates
+// both the parser and any future code-gen of the action.yml / CLI help.
+const VALID_PLATFORMS = new Set(FIELDS.platform.enumValues ?? []);
 function parsers_parsePlatformFromUnknown(value, field) {
     if (typeof value !== "string") {
         throw new InvalidConfigError(field, `expected platform string, received ${typeof value}`);
@@ -2492,7 +2825,7 @@ function severityRank(severity) {
     }
 }
 /** Visual order for the counts line; eliminates repeated critical → high → medium → low ordering literals. */
-const SEVERITY_ORDER = (/* unused pure expression or super */ null && (["critical", "high", "medium", "low"]));
+const SEVERITY_ORDER = ["critical", "high", "medium", "low"];
 /** Tally comments by severity; eliminates repeated lowercase accumulation logic in live review paths. */
 function countBySeverity(comments) {
     const counts = {};
@@ -2669,9 +3002,10 @@ const TOP_CONCERNS_PREVIEW_LIMIT = 5;
  * "Top concerns" header. Critical first (most urgent), then
  * high → medium → low. The `info` level is intentionally excluded —
  * info findings are tracked in the manifest but are not a signal the
- * reviewer needs to act on.
+ * reviewer needs to act on. Re-exported from `src/util/severity.ts` so
+ * every consumer of the canonical order uses the same array.
  */
-const live_shared_SEVERITY_ORDER = ["critical", "high", "medium", "low"];
+const live_shared_SEVERITY_ORDER = SEVERITY_ORDER;
 /**
  * Three explicit labels — posted / considered / suppressed — that make the
  * parent card unambiguous about what the model produced vs. what landed
@@ -5369,11 +5703,10 @@ function writeAnnotation(level, action, message) {
     try {
         process.stderr.write(formatAnnotation(level, action, message));
     }
-    catch (error) {
-        if (error instanceof Error) {
-            return;
-        }
-        return;
+    catch {
+        // Swallow stderr write failures (rare — e.g. closed stream in a forked
+        // process). The log helpers are best-effort observability; they must
+        // never throw to the caller.
     }
 }
 /** Centralizes duplicated GitHub warning annotations so every warning uses the same brand prefix. */
@@ -5711,7 +6044,7 @@ async function dispatchLivePlatform(input) {
             });
         }
         default:
-            return orchestrator_assertNever(platform);
+            return assertNever(platform);
     }
 }
 function detectLivePlatform(env) {
@@ -5732,7 +6065,7 @@ function readSecretValues(env) {
         env["AZURE_DEVOPS_TOKEN"] ?? "",
     ];
 }
-function orchestrator_assertNever(value) {
+function assertNever(value) {
     throw new TypeError(`Unhandled live platform: ${value}`);
 }
 

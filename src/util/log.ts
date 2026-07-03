@@ -10,11 +10,10 @@ function formatAnnotation(level: AnnotationLevel, action: string, message: strin
 function writeAnnotation(level: AnnotationLevel, action: string, message: string): void {
   try {
     process.stderr.write(formatAnnotation(level, action, message));
-  } catch (error) {
-    if (error instanceof Error) {
-      return;
-    }
-    return;
+  } catch {
+    // Swallow stderr write failures (rare — e.g. closed stream in a forked
+    // process). The log helpers are best-effort observability; they must
+    // never throw to the caller.
   }
 }
 

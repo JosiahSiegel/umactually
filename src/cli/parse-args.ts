@@ -1,8 +1,12 @@
-import type { Platform } from "../config/types.js";
-
-/** CLI-side platform union. Derived from config-side `Platform` so the
- *  two layers never drift — see `Platform` in `src/config/types.ts`. */
-export type CliPlatform = Platform;
+/**
+ * CLI-side platform union. The CLI accepts `"azure-devops"` as an alias
+ * for `"azure"` (for compatibility with the action.yml `platform: auto|github|azure`
+ * spelling) but normalizes both to `"azure"` so downstream code only
+ * sees the canonical three variants. Distinct from `Platform` in
+ * `src/config/types.ts` (which is the config-side canonical set) — the
+ * CLI's accepted set is a superset and the parser is the normalizer.
+ */
+export type CliPlatform = "auto" | "github" | "azure";
 export type CliMinimumSeverity = "low" | "medium" | "high";
 export type CliEffort = "low" | "medium" | "high";
 export type CliProvider = "openai-compatible" | "copilot";
