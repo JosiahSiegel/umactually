@@ -38,7 +38,11 @@ type ExistingComment = {
 };
 
 function isExistingComment(value: unknown): value is ExistingComment {
-  return typeof value === "object" && value !== null;
+  // Delegates to `isRecord` so arrays are correctly excluded. The
+  // previous open-coded `typeof === "object" && value !== null` matched
+  // arrays too, which is the same bug class flagged by
+  // `util/json-guards.ts:5-6`.
+  return isObjectPayload(value);
 }
 
 function commentBody(value: ExistingComment): string {
