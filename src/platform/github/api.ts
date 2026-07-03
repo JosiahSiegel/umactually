@@ -39,7 +39,7 @@ export async function fetchGithubPrDiff(context: GithubContext, fetchImpl: Fetch
       },
     },
     {
-      error: GithubApiError as new (code: string, status: number, message: string) => Error,
+      error: GithubApiError,
       failCode: "GITHUB_FETCH_FAILED",
       emptyCode: "GITHUB_DIFF_EMPTY",
       platform: "GitHub PR diff",

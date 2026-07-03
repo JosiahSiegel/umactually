@@ -98,27 +98,45 @@ export function buildChatBody(
  * usable" from "provider returned an empty string that happens to
  * not be parseable as JSON". See CLARITY-10.
  */
-export function extractTextPayload(endpoint: ProviderEndpoint, rawText: string): string | null {
+/**
+ * Extract the text payload from a provider response. Handles four shapes:
+ *   1. SSE stream (responses API output_text.delta / chat completions delta /
+ *      generic top-level delta) — concatenates fragments into one string.
+ *   2. Plain JSON object (Responses API or Chat Completions) — returns
+ *      `output_text` (responses), joins `output[].content[].text`
+ *      (responses), or `choices[].message.content` (chat).
+ *   3. Raw text — returned verbatim (caller tries to extract a JSON
+ *      block from it via `extractJsonBlock`).
+ *   4. Empty input — returns `""`.
+ *
+ * The function does NOT report "unusable" — it always returns SOMETHING
+ * (possibly empty) and lets the downstream `parseReviewPayload` plus
+ * the CLARITY-10 strict empty-fields check decide whether the result
+ * is a valid review. This keeps the public signature stable
+ * (`string`, not `string | null`) so existing callers don't need to
+ * change their null-handling.
+ */
+export function extractTextPayload(endpoint: ProviderEndpoint, rawText: string): string {
   if (rawText.length === 0) {
-    return null;
+    return "";
   }
 
-  const trimmedStart = rawText.trimStart();
-
   // 1. SSE stream (input starts with "data:" or "event:" prefix).
-  //    When the SSE format was detected but no text fragments were
-  //    extractable (only metadata events like response.created /
-  //    response.completed with empty output[]), return null so the
-  //    parse-fail path fires — don't fall through to the raw-text
-  //    path because that would let `extractJsonBlock` pluck the first
-  //    balanced `{...}` out of the stream and treat it as an empty
-  //    review, masking the real failure (CLARITY-10).
+  //    Concatenate fragments. If the stream only has metadata events
+  //    (no usable text fragments), return the rawText so the
+  //    downstream strict-empty-fields check (CLARITY-10) catches
+  //    it as a parse failure.
+  const trimmedStart = rawText.trimStart();
   if (trimmedStart.startsWith("data:") || trimmedStart.startsWith("event:")) {
     const sseText = tryExtractSse(rawText);
-    if (sseText === null || sseText.length === 0) {
-      return null;
+    if (sseText !== null && sseText.length > 0) {
+      return sseText;
     }
-    return sseText;
+    // SSE was detected but no usable fragments — return rawText so the
+    // empty-fields strict check can fire. (Returning `""` here would
+    // cause `parseReviewPayload("")` to return null without the
+    // strict-check safeguard.)
+    return rawText;
   }
 
   // 2. Plain JSON object.
@@ -136,11 +154,9 @@ export function extractTextPayload(endpoint: ProviderEndpoint, rawText: string):
           return fromOutput;
         }
       }
-      // Not in the Responses API shape — but it might be a direct review
-      // JSON (model returned `{"summary": ..., "verdict": ...}` directly).
-      // Fall through to the raw-text path so `extractJsonBlock` can
-      // extract the whole object and `parseReviewPayload` can validate
-      // it (which includes the strict empty-fields check from CLARITY-10).
+      // Not in the Responses API shape — fall through to raw text
+      // so `parseReviewPayload` can extract a direct review JSON
+      // object (model returned `{"summary": ..., "verdict": ...}`).
     } else {
       // Chat completions.
       const choices = readArrayField(parsed, "choices");
@@ -154,16 +170,13 @@ export function extractTextPayload(endpoint: ProviderEndpoint, rawText: string):
           }
         }
       }
-      // Chat JSON shape but no extractable content — usable as raw
-      // text for `parseReviewPayload` to attempt.
+      // Chat JSON shape but no extractable content — fall through.
     }
   }
 
   // 3. Raw text (could be plain prose, markdown, or a JSON block
   //    wrapped in ``` fences — `extractJsonBlock` handles the latter).
-  //    Only useful if non-empty; empty string would just become a
-  //    useless parse attempt.
-  return rawText.trim().length > 0 ? rawText : null;
+  return rawText;
 }
 
 export function parseReviewPayload(text: string): ProviderReviewPayload | null {

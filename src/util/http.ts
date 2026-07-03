@@ -37,11 +37,17 @@ export function truncateBodyForLog(text: string, maxLen = 500): string {
  * platform clients. Returns the response body text on 2xx; throws on
  * non-2xx or empty body. The caller passes a typed error class so the
  * platform-specific code/status contract is preserved at the call site.
+ *
+ * Generic over `TCode extends string` so the `error` constructor's
+ * `code` parameter is narrowed to the platform-specific literal
+ * union (e.g. `"GITHUB_FETCH_FAILED" | "GITHUB_DIFF_EMPTY"`), not
+ * widened to plain `string`. Without the generic, the typed
+ * `PlatformApiError<TCode>` code union collapses at the call site.
  */
-export async function fetchTextOrThrow(
+export async function fetchTextOrThrow<TCode extends string>(
   fetchImpl: (input: string | URL | Request, init?: RequestInit) => Promise<Response>,
   input: { readonly url: string; readonly headers: Readonly<Record<string, string>> },
-  fail: { readonly error: new (code: string, status: number, message: string) => Error; readonly failCode: string; readonly emptyCode: string; readonly platform: string },
+  fail: { readonly error: new (code: TCode, status: number, message: string) => Error; readonly failCode: TCode; readonly emptyCode: TCode; readonly platform: string },
 ): Promise<string> {
   const response = await fetchImpl(input.url, { method: "GET", headers: input.headers });
   if (!response.ok) {

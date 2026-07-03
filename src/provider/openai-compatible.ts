@@ -154,7 +154,7 @@ async function callEndpoint(
 
   const rawText = await readBody(response, endpoint, requestId);
   const textPayload = extractTextPayload(endpoint, rawText);
-  const review = textPayload === null ? null : parseReviewPayload(textPayload);
+  const review = parseReviewPayload(textPayload);
   // Treat an empty-summary+empty-verdict parse as a parse failure even
   // when `extractJsonBlock` returned an object. The parser is permissive
   // about JSON shape (returns `ProviderReviewPayload` with empty fields
@@ -184,12 +184,10 @@ async function callEndpoint(
     if (retryResponse.ok) {
       const retryRawText = await readBody(retryResponse, endpoint, requestId);
       const retryTextPayload = extractTextPayload(endpoint, retryRawText);
-      if (retryTextPayload !== null) {
-        const parsedRetry = parseReviewPayload(retryTextPayload);
-        // Same strict check on the retry: must have actual review content.
-        if (parsedRetry !== null && (parsedRetry.summary.length > 0 || parsedRetry.verdict.length > 0 || parsedRetry.comments.length > 0)) {
-          retryReview = parsedRetry;
-        }
+      const parsedRetry = parseReviewPayload(retryTextPayload);
+      // Same strict check on the retry: must have actual review content.
+      if (parsedRetry !== null && (parsedRetry.summary.length > 0 || parsedRetry.verdict.length > 0 || parsedRetry.comments.length > 0)) {
+        retryReview = parsedRetry;
       }
     }
   } catch {

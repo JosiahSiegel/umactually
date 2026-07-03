@@ -60,14 +60,17 @@ describe("extractTextPayload: SSE streaming coverage", () => {
     expect(text).toBe("joined");
   });
 
-  it("returns null for SSE input that has no usable text fragments", () => {
+  it("returns the raw SSE text when only metadata events are present (CLARITY-10 lets the strict empty-fields check handle it)", () => {
     // Pure metadata events, no output_text delta or response.completed.
-    // This is the failure mode that hit PR #3.
+    // This is the failure mode that hit PR #3. extractTextPayload
+    // returns the raw SSE text so the downstream strict empty-fields
+    // check (CLARITY-10) can fire as a parse failure — NOT as a
+    // 0-finding review.
     const sse =
       'event: response.created\n' +
       'data: {"type":"response.created","response":{"id":"resp_4","status":"in_progress","output":[]}}\n';
     const text = extractTextPayload("responses", sse);
-    expect(text).toBeNull();
+    expect(text).toBe(sse);
   });
 });
 
@@ -98,7 +101,7 @@ describe("parseReviewPayload + end-to-end SSE → review payload", () => {
     expect(payload?.comments[0]?.severity).toBe("high");
   });
 
-  it("returns null for an SSE stream with no usable review content", () => {
+  it("returns the raw SSE text when only metadata events are present in a stream with response.completed (CLARITY-10)", () => {
     const sse =
       'event: response.created\n' +
       'data: {"type":"response.created","response":{"id":"resp_6","status":"in_progress","output":[]}}\n' +
@@ -106,9 +109,9 @@ describe("parseReviewPayload + end-to-end SSE → review payload", () => {
       'event: response.completed\n' +
       'data: {"type":"response.completed","response":{"id":"resp_6","status":"completed","output":[]}}\n';
     const text = extractTextPayload("responses", sse);
-    // null because no output_text delta, no response.completed output_text,
-    // and output[] is empty.
-    expect(text).toBeNull();
+    // Returns the raw SSE text — CLARITY-10 strict empty-fields check
+    // is responsible for catching this as a parse failure.
+    expect(text).toBe(sse);
   });
 });
 

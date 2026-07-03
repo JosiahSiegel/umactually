@@ -1872,6 +1872,12 @@ function truncateBodyForLog(text, maxLen = 500) {
  * platform clients. Returns the response body text on 2xx; throws on
  * non-2xx or empty body. The caller passes a typed error class so the
  * platform-specific code/status contract is preserved at the call site.
+ *
+ * Generic over `TCode extends string` so the `error` constructor's
+ * `code` parameter is narrowed to the platform-specific literal
+ * union (e.g. `"GITHUB_FETCH_FAILED" | "GITHUB_DIFF_EMPTY"`), not
+ * widened to plain `string`. Without the generic, the typed
+ * `PlatformApiError<TCode>` code union collapses at the call site.
  */
 async function fetchTextOrThrow(fetchImpl, input, fail) {
     const response = await fetchImpl(input.url, { method: "GET", headers: input.headers });
@@ -4629,25 +4635,44 @@ function buildChatBody(config, opts) {
  * usable" from "provider returned an empty string that happens to
  * not be parseable as JSON". See CLARITY-10.
  */
+/**
+ * Extract the text payload from a provider response. Handles four shapes:
+ *   1. SSE stream (responses API output_text.delta / chat completions delta /
+ *      generic top-level delta) — concatenates fragments into one string.
+ *   2. Plain JSON object (Responses API or Chat Completions) — returns
+ *      `output_text` (responses), joins `output[].content[].text`
+ *      (responses), or `choices[].message.content` (chat).
+ *   3. Raw text — returned verbatim (caller tries to extract a JSON
+ *      block from it via `extractJsonBlock`).
+ *   4. Empty input — returns `""`.
+ *
+ * The function does NOT report "unusable" — it always returns SOMETHING
+ * (possibly empty) and lets the downstream `parseReviewPayload` plus
+ * the CLARITY-10 strict empty-fields check decide whether the result
+ * is a valid review. This keeps the public signature stable
+ * (`string`, not `string | null`) so existing callers don't need to
+ * change their null-handling.
+ */
 function extractTextPayload(endpoint, rawText) {
     if (rawText.length === 0) {
-        return null;
+        return "";
     }
-    const trimmedStart = rawText.trimStart();
     // 1. SSE stream (input starts with "data:" or "event:" prefix).
-    //    When the SSE format was detected but no text fragments were
-    //    extractable (only metadata events like response.created /
-    //    response.completed with empty output[]), return null so the
-    //    parse-fail path fires — don't fall through to the raw-text
-    //    path because that would let `extractJsonBlock` pluck the first
-    //    balanced `{...}` out of the stream and treat it as an empty
-    //    review, masking the real failure (CLARITY-10).
+    //    Concatenate fragments. If the stream only has metadata events
+    //    (no usable text fragments), return the rawText so the
+    //    downstream strict-empty-fields check (CLARITY-10) catches
+    //    it as a parse failure.
+    const trimmedStart = rawText.trimStart();
     if (trimmedStart.startsWith("data:") || trimmedStart.startsWith("event:")) {
         const sseText = tryExtractSse(rawText);
-        if (sseText === null || sseText.length === 0) {
-            return null;
+        if (sseText !== null && sseText.length > 0) {
+            return sseText;
         }
-        return sseText;
+        // SSE was detected but no usable fragments — return rawText so the
+        // empty-fields strict check can fire. (Returning `""` here would
+        // cause `parseReviewPayload("")` to return null without the
+        // strict-check safeguard.)
+        return rawText;
     }
     // 2. Plain JSON object.
     const parsed = provider_parse_tryParseJson(rawText);
@@ -4664,11 +4689,9 @@ function extractTextPayload(endpoint, rawText) {
                     return fromOutput;
                 }
             }
-            // Not in the Responses API shape — but it might be a direct review
-            // JSON (model returned `{"summary": ..., "verdict": ...}` directly).
-            // Fall through to the raw-text path so `extractJsonBlock` can
-            // extract the whole object and `parseReviewPayload` can validate
-            // it (which includes the strict empty-fields check from CLARITY-10).
+            // Not in the Responses API shape — fall through to raw text
+            // so `parseReviewPayload` can extract a direct review JSON
+            // object (model returned `{"summary": ..., "verdict": ...}`).
         }
         else {
             // Chat completions.
@@ -4684,15 +4707,12 @@ function extractTextPayload(endpoint, rawText) {
                     }
                 }
             }
-            // Chat JSON shape but no extractable content — usable as raw
-            // text for `parseReviewPayload` to attempt.
+            // Chat JSON shape but no extractable content — fall through.
         }
     }
     // 3. Raw text (could be plain prose, markdown, or a JSON block
     //    wrapped in ``` fences — `extractJsonBlock` handles the latter).
-    //    Only useful if non-empty; empty string would just become a
-    //    useless parse attempt.
-    return rawText.trim().length > 0 ? rawText : null;
+    return rawText;
 }
 function parseReviewPayload(text) {
     const candidate = extractJsonBlock(text);
@@ -5142,7 +5162,7 @@ async function runChatCall(config, fetchImpl, requestId, session) {
         };
     }
     const textPayload = extractTextPayload(ENDPOINT_CHAT, rawText);
-    const review = textPayload === null ? null : parseReviewPayload(textPayload);
+    const review = parseReviewPayload(textPayload);
     // Strict check (CLARITY-10): empty summary+verdict+comments counts as
     // a parse failure even when extractJsonBlock returned an object. This
     // catches chat-format responses fed to the responses endpoint and
@@ -5187,11 +5207,9 @@ async function runChatCall(config, fetchImpl, requestId, session) {
     const retryRawText = await retryResponse.text();
     const retryTextPayload = extractTextPayload(ENDPOINT_CHAT, retryRawText);
     let retryReview = null;
-    if (retryTextPayload !== null) {
-        const parsedRetry = parseReviewPayload(retryTextPayload);
-        if (parsedRetry !== null && (parsedRetry.summary.length > 0 || parsedRetry.verdict.length > 0 || parsedRetry.comments.length > 0)) {
-            retryReview = parsedRetry;
-        }
+    const parsedRetry = parseReviewPayload(retryTextPayload);
+    if (parsedRetry !== null && (parsedRetry.summary.length > 0 || parsedRetry.verdict.length > 0 || parsedRetry.comments.length > 0)) {
+        retryReview = parsedRetry;
     }
     if (retryReview === null) {
         return {
@@ -5339,7 +5357,7 @@ async function callEndpoint(config, fetchImpl, requestId, endpoint) {
     }
     const rawText = await readBody(response, endpoint, requestId);
     const textPayload = extractTextPayload(endpoint, rawText);
-    const review = textPayload === null ? null : parseReviewPayload(textPayload);
+    const review = parseReviewPayload(textPayload);
     // Treat an empty-summary+empty-verdict parse as a parse failure even
     // when `extractJsonBlock` returned an object. The parser is permissive
     // about JSON shape (returns `ProviderReviewPayload` with empty fields
@@ -5368,12 +5386,10 @@ async function callEndpoint(config, fetchImpl, requestId, endpoint) {
         if (retryResponse.ok) {
             const retryRawText = await readBody(retryResponse, endpoint, requestId);
             const retryTextPayload = extractTextPayload(endpoint, retryRawText);
-            if (retryTextPayload !== null) {
-                const parsedRetry = parseReviewPayload(retryTextPayload);
-                // Same strict check on the retry: must have actual review content.
-                if (parsedRetry !== null && (parsedRetry.summary.length > 0 || parsedRetry.verdict.length > 0 || parsedRetry.comments.length > 0)) {
-                    retryReview = parsedRetry;
-                }
+            const parsedRetry = parseReviewPayload(retryTextPayload);
+            // Same strict check on the retry: must have actual review content.
+            if (parsedRetry !== null && (parsedRetry.summary.length > 0 || parsedRetry.verdict.length > 0 || parsedRetry.comments.length > 0)) {
+                retryReview = parsedRetry;
             }
         }
     }

@@ -168,7 +168,7 @@ async function runChatCall(
   }
 
   const textPayload = extractTextPayload(ENDPOINT_CHAT, rawText);
-  const review = textPayload === null ? null : parseReviewPayload(textPayload);
+  const review = parseReviewPayload(textPayload);
   // Strict check (CLARITY-10): empty summary+verdict+comments counts as
   // a parse failure even when extractJsonBlock returned an object. This
   // catches chat-format responses fed to the responses endpoint and
@@ -230,11 +230,9 @@ async function runChatCall(
   const retryRawText = await retryResponse.text();
   const retryTextPayload = extractTextPayload(ENDPOINT_CHAT, retryRawText);
   let retryReview: ProviderReviewPayload | null = null;
-  if (retryTextPayload !== null) {
-    const parsedRetry = parseReviewPayload(retryTextPayload);
-    if (parsedRetry !== null && (parsedRetry.summary.length > 0 || parsedRetry.verdict.length > 0 || parsedRetry.comments.length > 0)) {
-      retryReview = parsedRetry;
-    }
+  const parsedRetry = parseReviewPayload(retryTextPayload);
+  if (parsedRetry !== null && (parsedRetry.summary.length > 0 || parsedRetry.verdict.length > 0 || parsedRetry.comments.length > 0)) {
+    retryReview = parsedRetry;
   }
   if (retryReview === null) {
     return {
