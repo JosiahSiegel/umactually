@@ -1,4 +1,5 @@
 import { isAbortError, ProviderError, sanitizeMessage } from "./provider-error.js";
+import { isRecord } from "../util/json-guards.js";
 
 export type TokenCacheEntry = {
   readonly token: string;
@@ -158,10 +159,6 @@ function safeParseJson(text: string): unknown {
   } catch {
     return undefined;
   }
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
 function readStringField(record: Record<string, unknown>, key: string): string | null {

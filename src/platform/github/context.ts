@@ -1,4 +1,6 @@
 import { readFile } from "node:fs/promises";
+import { isPositiveSafeInteger, isRecord as isObject } from "../../util/json-guards.js";
+import { PlatformContextError } from "../../util/platform-error.js";
 
 export type GithubRepoRef = {
   readonly owner: string;
@@ -16,20 +18,21 @@ export type GithubContext = {
   readonly body: string;
 };
 
-export class GithubContextError extends Error {
+/**
+ * Context-resolution error for the GitHub platform adapter. Inherits the
+ * `PlatformContextError` shape from `src/util/platform-error.ts` so it
+ * shares a common ancestor with `AzureContextError`. The typed `code`
+ * literal remains GitHub-specific — only the base class is shared.
+ */
+export class GithubContextError extends PlatformContextError<
+  | "GITHUB_TOKEN_MISSING"
+  | "GITHUB_REPOSITORY_INVALID"
+  | "GITHUB_PR_NUMBER_INVALID"
+  | "GITHUB_SHA_MISSING"
+  | "GITHUB_EVENT_PATH_MISSING"
+  | "GITHUB_EVENT_PAYLOAD_INVALID"
+> {
   override readonly name = "GithubContextError";
-  readonly code:
-    | "GITHUB_TOKEN_MISSING"
-    | "GITHUB_REPOSITORY_INVALID"
-    | "GITHUB_PR_NUMBER_INVALID"
-    | "GITHUB_SHA_MISSING"
-    | "GITHUB_EVENT_PATH_MISSING"
-    | "GITHUB_EVENT_PAYLOAD_INVALID";
-
-  constructor(code: GithubContextError["code"], message: string, options?: ErrorOptions) {
-    super(message, options);
-    this.code = code;
-  }
 }
 
 export async function readGithubContext(env: NodeJS.ProcessEnv): Promise<GithubContext> {
@@ -171,7 +174,7 @@ function readRepositoryName(record: Record<string, unknown>): string | null {
 }
 
 function readOptionalNumber(value: unknown): number | null {
-  return typeof value === "number" && Number.isSafeInteger(value) && value > 0 ? value : null;
+  return isPositiveSafeInteger(value) ? value : null;
 }
 
 function readRecord(value: unknown, label: string): Record<string, unknown> {
@@ -179,10 +182,6 @@ function readRecord(value: unknown, label: string): Record<string, unknown> {
     throw new GithubContextError("GITHUB_EVENT_PAYLOAD_INVALID", `GitHub event payload must contain a '${label}' object.`);
   }
   return value;
-}
-
-function isObject(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
 function readBoolean(value: unknown): boolean {

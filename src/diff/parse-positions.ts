@@ -1,3 +1,5 @@
+import { isPositiveSafeInteger } from "../util/json-guards.js";
+
 export type DiffPosition = {
   readonly path: string;
   readonly line: number;
@@ -114,7 +116,7 @@ function parseNewHunkStart(line: string): number | null {
   const rawStart = endIndex === -1 ? afterPlus : afterPlus.slice(0, endIndex);
   const start = Number.parseInt(rawStart, 10);
 
-  return Number.isSafeInteger(start) && start > 0 ? start : null;
+  return isPositiveSafeInteger(start) ? start : null;
 }
 
 function addLine(linesByPath: Map<string, Set<number>>, path: string, line: number): void {

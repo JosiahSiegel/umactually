@@ -1,3 +1,10 @@
+/**
+ * CLI-side normalized platform union. The CLI parser accepts `"azure-devops"`
+ * as an input alias for `"azure"`, then normalizes it before returning
+ * `ParsedCliArgs`, so this type intentionally exposes only the canonical
+ * downstream variants. Distinct from `Platform` in `src/config/types.ts`
+ * (which is the config-side canonical set).
+ */
 export type CliPlatform = "auto" | "github" | "azure";
 export type CliMinimumSeverity = "low" | "medium" | "high";
 export type CliEffort = "low" | "medium" | "high";

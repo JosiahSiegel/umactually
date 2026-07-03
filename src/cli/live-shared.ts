@@ -1,11 +1,18 @@
 import { parseDiffPositions } from "../diff/parse-positions.js";
 import { REVIEW_MARKER } from "../review/run-review.js";
 import { scanReviewSecrets } from "../security/scan-review-secrets.js";
+import type { Platform } from "../config/types.js";
+import { DEFAULT_MAX_COMMENTS } from "../config/defaults.js";
+import { isPositiveSafeInteger, isRecord } from "../util/json-guards.js";
+import { MANIFEST_SCHEMA } from "../util/marker.js";
+import { countBySeverity as countBySeverityUtil, SEVERITY_ORDER, severityRank } from "../util/severity.js";
+import { mapVerdictToAzureStatus, mapVerdictToGithubEvent } from "../util/verdict.js";
 import type { ParsedCliArgs } from "./parse-args.js";
 
 export type FetchImpl = (input: string | URL | Request, init?: RequestInit) => Promise<Response>;
 
-export type LivePlatform = "github" | "azure";
+/** Live-path platform (after auto-resolution). Mirrors `Platform` minus "auto". */
+export type LivePlatform = Exclude<Platform, "auto">;
 
 export type LiveRunResult = {
   readonly exitCode: number;
@@ -25,8 +32,24 @@ export type LiveReviewComment = {
 export type LiveReview = {
   readonly summary: string;
   readonly verdict: string;
+  /**
+   * Pre-filter finding count. Includes comments the model produced that may be
+   * filtered out by severity policy, off-diff suppression, or `ignore-minor`.
+   * Use this for the "Considered" metric in the parent card.
+   */
   readonly comments: readonly LiveReviewComment[];
   readonly suppressedComments: readonly LiveReviewComment[];
+  /**
+   * True when the provider returned a non-JSON / unparseable response and
+   * we fell back to `buildMalformedProviderFallback`. CRITICAL for the
+   * Posted/Considered/Suppressed row — when true, the reader sees a
+   * distinct "parse failed" badge so a 0-finding review cannot be
+   * mistaken for a clean bill of health. The fallback path renders the
+   * raw provider text in a collapsed <details> block for diagnostics.
+   *
+   * Defaults to false. Only the malformed-fallback path sets this.
+   */
+  readonly parseFailed?: boolean;
 };
 
 /**
@@ -85,8 +108,6 @@ export async function evaluateLeakGate(input: {
   };
 }
 
-const DEFAULT_MAX_COMMENTS = 50;
-
 /**
  * Visual verdict badge used in the review-header summary. Both GitHub and
  * Azure DevOps render markdown, so the same badge appears on each platform.
@@ -102,15 +123,12 @@ function verdictBadge(verdict: string): string {
  * Group comments by severity (low/medium/high/critical). Used by both the
  * GitHub and Azure review-header builders so the collapsed details block
  * reports the same severity tally regardless of platform.
+ *
+ * Delegates to `src/util/severity.ts` so the live path and the merge path
+ * agree on the exact same lowercase-accumulation logic. Was previously a
+ * local copy that drifted subtly from `live-merge.ts`'s version.
  */
-export function countBySeverity(comments: readonly { readonly severity: string }[]): Record<string, number> {
-  const counts: Record<string, number> = {};
-  for (const comment of comments) {
-    const key = comment.severity.toLowerCase();
-    counts[key] = (counts[key] ?? 0) + 1;
-  }
-  return counts;
-}
+export const countBySeverity = countBySeverityUtil;
 
 /**
  * Hard upper bound on the inline-finding preview list inside the parent
@@ -120,47 +138,88 @@ export function countBySeverity(comments: readonly { readonly severity: string }
 const TOP_CONCERNS_PREVIEW_LIMIT = 5;
 
 /**
- * Order in which severity levels appear in the counts line and the
- * "Top concerns" header. Critical first (most urgent), then
- * high → medium → low. The `info` level is intentionally excluded —
- * info findings are tracked in the manifest but are not a signal the
- * reviewer needs to act on.
+ * Three explicit labels — posted / considered / suppressed — that make the
+ * parent card unambiguous about what the model produced vs. what landed
+ * vs. what was rejected. Replaces the old single-line counts that mixed
+ * "info" findings (excluded from the severity tally) with "off-diff"
+ * suppressions, which produced the confusing "0 critical · 0 high · 0
+ * medium · 0 low · 5 suppressed" line followed by a non-empty
+ * "Top concerns" list. CLARITY-9 pins the new contract.
+ *
+ * Always renders (even when all three values are zero) so a reviewer
+ * can distinguish "0 found, ship it" from "nothing rendered" —
+ * inherited from CLARITY-5.
+ *
+ * When `parseFailed` is true, the row prepends a prominent
+ * `⚠️ Parse failed` badge so a 0-finding review can never be confused
+ * for a clean bill of health. CLARITY-10.
  */
-const SEVERITY_ORDER = ["critical", "high", "medium", "low"] as const;
+function postedVsConsideredRow(input: {
+  readonly postedCount: number;
+  readonly consideredCount: number;
+  readonly suppressedCount: number;
+  readonly parseFailed: boolean;
+}): string {
+  const base =
+    `**Posted:** \`${input.postedCount}\` inline thread(s) · ` +
+    `**Considered:** \`${input.consideredCount}\` finding(s) from model · ` +
+    `**Suppressed:** \`${input.suppressedCount}\` off-diff`;
+  if (input.parseFailed) {
+    // Use emoji + backticks (NOT `**Parse failed**` markdown emphasis)
+    // for consistency with the severity tally above and to avoid the
+    // ADO PR-thread renderer leakage observed for `**...**` patterns
+    // (see CLARITY-3 in test/unit/live-azure-parent-clarity.test.ts).
+    return `> ⚠️ \`Parse failed\` — provider response was not a valid JSON review payload. ` +
+      `No findings were extracted; the raw provider text is included in the Summary section below for diagnostics.\n` +
+      `\n${base}`;
+  }
+  return base;
+}
 
 /**
- * Counts line that appears immediately after the verdict badge. Uses
- * emoji + backticks (NOT `**word**` asterisks) because ADO's PR-thread
- * renderer surface has been observed to leak `**...**` as literal
- * asterisks even though the markdown guidance documents that emphasis
- * IS supported. Belt-and-braces compatibility — see CLARITY-3 in
- * test/unit/live-azure-parent-clarity.test.ts.
+ * Severity tally — critical → high → medium → low — that appears
+ * immediately after the verdict badge and the posted/considered/suppressed
+ * row. Uses emoji + backticks (NOT `**word**` asterisks) because ADO's
+ * PR-thread renderer surface has been observed to leak `**...**` as
+ * literal asterisks even though the markdown guidance documents that
+ * emphasis IS supported. Belt-and-braces compatibility — see CLARITY-3
+ * in test/unit/live-azure-parent-clarity.test.ts.
  *
- * The line ALWAYS renders (even when all counts are zero) so a reviewer
- * can distinguish "0 findings, ship it" from "nothing rendered". That
- * consistency is the contract CLARITY-5 pins.
+ * The `info` severity is intentionally excluded from this tally (info
+ * findings are tracked in the manifest but are not a signal the reviewer
+ * needs to act on) — the "considered" count above is the unambiguous
+ * answer when an info-heavy payload is in play.
  */
 function countsLine(input: {
   readonly severityCounts: Record<string, number>;
-  readonly suppressedCount: number;
 }): string {
   const parts: string[] = [];
   for (const level of SEVERITY_ORDER) {
     const count = input.severityCounts[level] ?? 0;
     parts.push(`\`${count}\` ${level}`);
   }
-  parts.push(`\`${input.suppressedCount}\` suppressed (off-diff)`);
   return `📊 ${parts.join(" · ")}`;
 }
 
 /**
  * Build the "Top concerns" <details> block. Shows a preview of the
- * highest-severity findings so a reviewer can decide which to open in
- * the inline threads. Hidden by default so it does not push the counts
- * line below the fold.
+ * highest-severity findings the MODEL produced (pre-filter — this is
+ * NOT the same set as the inline threads posted). The summary line
+ * explicitly says "from model (N of Z)" so the reader knows this is
+ * the pre-filter list. Hidden by default so it does not push the
+ * severity tally below the fold.
+ *
+ * CLARITY-11: when `validCommentCount === 0` but `consideredCount > 0`,
+ * the pre-filter findings were ALL filtered out (severity policy,
+ * max-comments cap, or off-diff suppression). The block must make this
+ * explicit so the reader doesn't confuse "0 posted + N concerns
+ * listed" with a clean bill of health. We re-label the header as
+ * "Filtered findings" and prefix the body with a one-line explanation
+ * of *why* nothing was posted.
  */
 function topConcernsBlock(input: {
   readonly review: LiveReview;
+  readonly validCommentCount: number;
 }): string {
   const sorted = [...input.review.comments].sort((a, b) => {
     const ra = severityRank(a.severity);
@@ -172,9 +231,23 @@ function topConcernsBlock(input: {
   if (preview.length === 0) {
     return "";
   }
-  const header = preview.length === 1
-    ? "📋 Top concern (1)"
-    : `📋 Top concerns (${preview.length})`;
+  const total = input.review.comments.length;
+  const shown = preview.length;
+  const filteredAll = input.validCommentCount === 0 && total > 0;
+  // Use explicit "Filtered findings" header when every model finding was
+  // filtered — distinguishes this from the normal case where some
+  // findings were posted (so the "Top concerns" preview is a sample of
+  // what landed, not the full rejected list).
+  const header = filteredAll
+    ? shown === 1
+      ? `🔕 Filtered finding from model (1 of ${total}) — none reached inline`
+      : `🔕 Filtered findings from model (${shown} of ${total}) — none reached inline`
+    : shown === 1
+      ? `📋 Top concern from model (1 of ${total})`
+      : `📋 Top concerns from model (${shown} of ${total})`;
+  const explainer = filteredAll
+    ? `\n_The model produced ${total} finding(s); all were filtered by severity policy, the \`max-comments\` cap, or off-diff suppression. The list below is the pre-filter view for transparency — no inline comments were posted._\n`
+    : "";
   const lines = preview.map((comment, index) => {
     const safeBody = sanitizeForPost(comment.body, []);
     const oneLiner = safeBody.replace(/\s+/gu, " ").trim();
@@ -185,6 +258,7 @@ function topConcernsBlock(input: {
     "<details>",
     `<summary>${header}</summary>`,
     "",
+    explainer.trimStart(),
     lines.join("\n"),
     "</details>",
     "",
@@ -267,13 +341,14 @@ function metadataManifest(input: {
   readonly severityCounts: Record<string, number>;
 }): string {
   const manifest = JSON.stringify({
-    schema: "umactually-pr-review/v1",
+    schema: MANIFEST_SCHEMA,
     verdict: input.review.verdict,
     provider: input.provider,
     modelId: input.modelId,
     inlineCount: input.validCommentCount,
     suppressedCount: input.suppressedCommentCount,
     severityCounts: input.severityCounts,
+    ...(input.review.parseFailed === true ? { parseFailed: true } : {}),
   });
   return `<!-- umactually-pr-review:manifest ${manifest} -->`;
 }
@@ -288,14 +363,22 @@ function metadataManifest(input: {
  *
  *   1. Stable HTML marker (used for dedup)
  *   2. Verdict badge — large, first thing after the marker
- *   3. Counts line — emoji + backticks, immediately below the verdict, so a
- *      reviewer sees "how many findings, how many suppressed" within the
- *      first viewport
- *   4. Top-concerns <details> — preview of the highest-severity findings
- *   5. Suppressed <details> — list of off-diff findings
- *   6. Prose summary <details> — long provider narrative, hidden by default
- *   7. Footer — model + provider + inline-thread count, small text
- *   8. Hidden HTML comment with the JSON manifest for AI agents
+ *   3. Posted / Considered / Suppressed row — three labeled counts that
+ *      tell the reviewer what actually landed, what the model produced,
+ *      and what was rejected (off-diff). CLARITY-9.
+ *   4. Severity tally — emoji + backticks for critical → high → medium → low
+ *      immediately after the verdict, so a reviewer sees the per-severity
+ *      split within the first viewport. The `info` level is excluded here
+ *      (intentionally — info findings are not actionable) which is why the
+ *      "Considered" count above is the authoritative total.
+ *   5. Top-concerns <details> — preview of the highest-severity findings
+ *      the MODEL produced (pre-filter). The summary line explicitly says
+ *      "from model (N of Z)" so the reader knows this is pre-filter, not
+ *      a duplicate of the "Posted" count.
+ *   6. Suppressed <details> — list of off-diff findings
+ *   7. Prose summary <details> — long provider narrative, hidden by default
+ *   8. Footer — model + provider + inline-thread count, small text
+ *   9. Hidden HTML comment with the JSON manifest for AI agents
  *
  * The shape is identical regardless of verdict, finding count, or whether
  * the provider returned a parse-fail fallback — that consistency is what
@@ -310,6 +393,7 @@ export function buildReviewBody(input: {
   readonly secrets: readonly string[];
 }): string {
   const severityCounts = countBySeverity(input.review.comments);
+  const consideredCount = input.review.comments.length;
   const verdict = verdictBadge(input.review.verdict);
   const safeSummary = sanitizeForPost(input.review.summary, input.secrets);
   const safeModelId = sanitizeForPost(input.modelId, input.secrets);
@@ -324,12 +408,16 @@ export function buildReviewBody(input: {
     "",
     `## ${verdict}`,
     "",
-    countsLine({
-      severityCounts,
+    postedVsConsideredRow({
+      postedCount: input.validCommentCount,
+      consideredCount,
       suppressedCount: input.suppressedCommentCount,
+      parseFailed: input.review.parseFailed === true,
     }),
     "",
-    topConcernsBlock({ review: input.review }),
+    countsLine({ severityCounts }),
+    "",
+    topConcernsBlock({ review: input.review, validCommentCount: input.validCommentCount }),
     suppressedBlock({ suppressedComments: input.review.suppressedComments }),
     proseBlock(safeSummary),
     footer,
@@ -372,7 +460,7 @@ export function buildInlineCommentBody(input: {
     : sanitizeForPost(fallback, input.secrets);
   const marker = input.includeMarker === true ? `${REVIEW_MARKER}\n` : "";
   const parentRef =
-    typeof input.parentThreadId === "number" && Number.isSafeInteger(input.parentThreadId) && input.parentThreadId > 0
+    isPositiveSafeInteger(input.parentThreadId)
       ? `> Reply to PR review summary #${input.parentThreadId}\n\n`
       : "";
   return `${marker}${parentRef}\`${safeSeverity}\` \`${safeCategory}\`\n\n${safeBody}`;
@@ -383,7 +471,75 @@ export function buildInlineCommentBody(input: {
  * fallback body. Keeps the parent PR-level summary card from being filled
  * with an unbounded provider response if the model misbehaves.
  */
-const MALFORMED_PROVIDER_FALLBACK_RAW_MAX = 1000;
+/**
+ * Total character budget for the parse-fail diagnostic block. The block
+ * shows BOTH the head (provider's opening metadata events) and the tail
+ * (the final `response.completed` event with `output_text`) so reviewers
+ * can see what the model began with AND where it ended up — not just
+ * whichever end happened to land first. CLARITY-12.
+ *
+ * 4000 chars is enough to capture metadata (~400 chars) plus a typical
+ * model review (~2000-3500 chars of JSON) without truncation; long reviews
+ * get head+tail with a quantifier in the middle.
+ */
+const MALFORMED_PROVIDER_FALLBACK_RAW_MAX = 4000;
+/** Size of each end-piece (head / tail) when the raw text exceeds the budget. */
+const MALFORMED_PROVIDER_FALLBACK_HALF_BUDGET = Math.floor(
+  MALFORMED_PROVIDER_FALLBACK_RAW_MAX / 2,
+);
+
+/**
+ * Build a head + tail diagnostic snippet from a long rawText, with a
+ * quantifier showing exactly how many chars were omitted in the middle.
+ * Used by the parse-fail body so reviewers can see both ends of the
+ * stream — typically the opening `response.created`/`response.in_progress`
+ * metadata events AND the final `response.completed` with `output_text`.
+ *
+ * Truncates on a newline boundary where possible so the head/tail pieces
+ * end cleanly. If no newline exists within the last 80 chars of the head
+ * budget, falls back to a hard cut (better than dropping content silently).
+ *
+ * @param rawText  Full raw provider response body
+ * @param halfBudget  Number of chars to take from each end
+ * @returns  Head + quantifier + tail string suitable for the diagnostic block
+ */
+function truncateHeadAndTail(rawText: string, halfBudget: number): string {
+  if (rawText.length <= halfBudget * 2) {
+    return rawText;
+  }
+  const head = trimToNewline(rawText.slice(0, halfBudget), "head");
+  const tail = trimToNewline(rawText.slice(rawText.length - halfBudget), "tail");
+  const omitted = rawText.length - head.length - tail.length;
+  return `${head}\n\n… [${omitted} chars omitted] …\n\n${tail}`;
+}
+
+/**
+ * Trim a head/tail piece to the nearest clean line so the snippet
+ * doesn't end mid-string. For the head, finds the LAST newline in the
+ * piece (so we cut cleanly before the next event). For the tail, finds
+ * the FIRST newline that starts a "real" line (skipping the leading
+ * newline that sits at the start of the tail slice).
+ */
+function trimToNewline(piece: string, end: "head" | "tail"): string {
+  if (end === "head") {
+    // For head: trim to the last newline. Everything after the last
+    // newline within the head piece is a partial line — drop it.
+    const lastNewline = piece.lastIndexOf("\n");
+    if (lastNewline === -1) {
+      return piece;
+    }
+    return piece.slice(0, lastNewline);
+  }
+  // For tail: the first char of the tail slice is often a newline
+  // (because we cut at a line boundary in the original stream). Skip
+  // past leading whitespace + newlines to land on the first real
+  // character of the tail content.
+  let i = 0;
+  while (i < piece.length && (piece[i] === "\n" || piece[i] === " " || piece[i] === "\r")) {
+    i += 1;
+  }
+  return piece.slice(i);
+}
 
 /**
  * Build a `LiveReview` to use when the provider returned a non-JSON or
@@ -403,8 +559,14 @@ export function buildMalformedProviderFallback(input: {
 }): LiveReview {
   const safeProvider = sanitizeForPost(input.provider, input.secrets);
   const safeModelId = sanitizeForPost(input.modelId, input.secrets);
+  // CLARITY-12: show head + tail with a quantifier in the middle so the
+  // diagnostic captures both the opening events and the final
+  // response.completed output_text — not just whichever end happened
+  // to fit in the first N chars. The previous "first N chars only"
+  // truncation hid the actual response.completed event, leading
+  // reviewers to incorrectly conclude the model returned only metadata.
   const truncated = input.rawText.length > MALFORMED_PROVIDER_FALLBACK_RAW_MAX
-    ? `${input.rawText.slice(0, MALFORMED_PROVIDER_FALLBACK_RAW_MAX)}\n…(truncated)`
+    ? truncateHeadAndTail(input.rawText, MALFORMED_PROVIDER_FALLBACK_HALF_BUDGET)
     : input.rawText;
   const safeRaw = sanitizeForPost(truncated, input.secrets);
 
@@ -429,6 +591,7 @@ export function buildMalformedProviderFallback(input: {
     verdict: "COMMENT",
     comments: [],
     suppressedComments: [],
+    parseFailed: true,
   };
 }
 
@@ -513,9 +676,13 @@ export function countSuppressedComments(review: LiveReview, diffText: string): n
   return count;
 }
 
-export function mapReviewVerdictToGithubEvent(verdict: string): "COMMENT" | "REQUEST_CHANGES" {
-  return verdict === "NEEDS_FIX" ? "REQUEST_CHANGES" : "COMMENT";
-}
+/**
+ * Map a review verdict to a GitHub review-submission event. Delegates to
+ * `src/util/verdict.ts` so the merge-path verdict-rank table and the
+ * live-path event mapping share the same canonical definitions.
+ */
+export const mapReviewVerdictToGithubEvent: (verdict: string) => "COMMENT" | "REQUEST_CHANGES" =
+  mapVerdictToGithubEvent;
 
 /**
  * Map a review verdict to an Azure DevOps PR-status `state` value.
@@ -524,7 +691,7 @@ export function mapReviewVerdictToGithubEvent(verdict: string): "COMMENT" | "REQ
  *   https://learn.microsoft.com/en-us/rest/api/azure/devops/git/pull-request-statuses/create?view=azure-devops-rest-7.1
  *   "State of the status."  (notSet | pending | succeeded | failed | error | notApplicable)
  *
- * Policy:
+ * Policy (current — same as the live CLI):
  *   - A failing UmActually review is a **finding**, not a merge-blocking
  *     check. The merge gate is owned by the ADO branch-policy build
  *     validation check (which runs the actual CI pipeline and is
@@ -537,20 +704,14 @@ export function mapReviewVerdictToGithubEvent(verdict: string): "COMMENT" | "REQ
  *     indicate the CLI ran cleanly, so we collapse those to
  *     `"succeeded"` and reserve `"pending"` for "ran and found things
  *     to look at" (`NEEDS_FIX`) plus the safe-default fallthrough.
+ *
+ * Delegates to `src/util/verdict.ts` with the `"current"` policy so the
+ * legacy S4 RED-contract mapping (NEEDS_FIX → "failed") stays in one
+ * place and is selectable per call site.
  */
-export function mapReviewVerdictToAzureStatus(verdict: string): "succeeded" | "failed" | "pending" {
-  switch (verdict) {
-    case "APPROVED":
-    case "COMMENT":
-    case "DISCUSS":
-    case "SHIP":
-      return "succeeded";
-    case "NEEDS_FIX":
-    case "":
-    default:
-      return "pending";
-  }
-}
+export const mapReviewVerdictToAzureStatus: (verdict: string) => "succeeded" | "failed" | "pending" = (
+  verdict: string,
+) => mapVerdictToAzureStatus(verdict, "current");
 
 export function sanitizeForPost(value: string, secrets: readonly string[]): string {
   let sanitized = value
@@ -622,9 +783,7 @@ export function ensureHttpOk(response: Response, code: string, action: string): 
   throw new LiveReviewError(code, `${action} failed with HTTP ${response.status}.`);
 }
 
-export function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
-}
+export { isRecord };
 
 function passesSeverityPolicy(comment: LiveReviewComment, parsed: ParsedCliArgs): boolean {
   if (parsed.ignoreMinor && comment.severity.toLowerCase() === "low") {
@@ -635,19 +794,4 @@ function passesSeverityPolicy(comment: LiveReviewComment, parsed: ParsedCliArgs)
     return true;
   }
   return severityRank(comment.severity) >= severityRank(minimum);
-}
-
-function severityRank(severity: string): number {
-  switch (severity.toLowerCase()) {
-    case "critical":
-      return 4;
-    case "high":
-      return 3;
-    case "medium":
-      return 2;
-    case "low":
-      return 1;
-    default:
-      return 0;
-  }
 }

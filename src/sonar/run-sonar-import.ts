@@ -1,3 +1,6 @@
+import { isRecord } from "../util/json-guards.js";
+import { sleep } from "../util/async.js";
+
 type SonarImportContract = {
   readonly qualityGateSequenceJson: string;
   readonly issuesJson: string;
@@ -158,12 +161,7 @@ function parseSonarHotspots(json: string): SonarHotspots {
 
 function parseJson(json: string): unknown {
   const value: unknown = JSON.parse(json);
-
   return value;
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
 function isReadonlyArray(value: unknown): value is readonly unknown[] {
@@ -350,10 +348,4 @@ async function fetchSonarFindings(
   }
 
   return issueCount + hotspotCount;
-}
-
-function sleep(ms: number): Promise<void> {
-  return new Promise((resolve) => {
-    setTimeout(resolve, ms);
-  });
 }

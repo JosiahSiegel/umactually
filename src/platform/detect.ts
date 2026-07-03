@@ -1,3 +1,6 @@
+/** Canonical CI-platform union. "azure-devops" is the on-the-wire spelling
+ *  (kept for parity with the Azure DevOps SDK and the action.yml platform
+ *  input). Aliased to "azure" internally by the platform resolver. */
 export type CiPlatform = "github" | "azure-devops" | "unknown";
 
 export class PlatformDetectionError extends Error {

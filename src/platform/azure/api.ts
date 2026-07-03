@@ -3,6 +3,7 @@ import { buildUnifiedFileDiff } from "./diff.js";
 import type { AzureChange, AzureFileSnapshot, AzureItemVersion } from "./diff.js";
 import { AzureApiError, AZURE_EMPTY_DIFF_STATUS } from "./errors.js";
 import { parseItemContent, parseIterationChanges, parseLatestIterationId, parseSourceCommitId } from "./payload.js";
+import { USER_AGENT } from "../../util/brand.js";
 
 export { AzureApiError } from "./errors.js";
 
@@ -120,7 +121,7 @@ function buildAzureRequestInit(context: AzureContext): RequestInit {
   const headers = {
     Authorization: `Bearer ${context.token}`,
     Accept: JSON_MEDIA_TYPE,
-    "User-Agent": "umactually-pr-review",
+    "User-Agent": USER_AGENT,
   };
   const signal = createAbortSignal();
 

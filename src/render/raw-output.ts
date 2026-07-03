@@ -1,8 +1,9 @@
+import { REVIEW_MARKER } from "../util/marker.js";
 import { extractJsonFenceBody } from "./json-extract.js";
 
 type RawReviewInput = {
   readonly rawText: string;
-  readonly marker: "<!-- umactually-pr-review -->";
+  readonly marker: typeof REVIEW_MARKER;
 };
 
 type RecoveredSummary = "Recovered without raw JSON leak.";

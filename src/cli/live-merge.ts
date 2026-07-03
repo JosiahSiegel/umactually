@@ -30,48 +30,9 @@
  *     a single-call flow.
  */
 import type { LiveProviderOutcome, LiveReviewComment } from "./live-shared.js";
-
-const DEFAULT_MAX_COMMENTS = 50;
-
-/**
- * Severity ranking used by MERGE-2 (sort) and MERGE-3 (dedup
- * keep-highest). Higher = more urgent. Unknown severities rank 0 so
- * they sort last.
- */
-function severityRank(severity: string): number {
-  switch (severity.toLowerCase()) {
-    case "critical":
-      return 4;
-    case "high":
-      return 3;
-    case "medium":
-      return 2;
-    case "low":
-      return 1;
-    default:
-      return 0;
-  }
-}
-
-/**
- * Verdict ranking used by MERGE-5 (pick worst). Higher = worse. The
- * umbrella strings (COMMENT / SHIP) are treated as best-effort neutral
- * so the worst signal always wins.
- */
-function verdictRank(verdict: string): number {
-  switch (verdict.toUpperCase()) {
-    case "NEEDS_FIX":
-      return 4;
-    case "DISCUSS":
-      return 3;
-    case "COMMENT":
-    case "SHIP":
-    case "APPROVED":
-      return 2;
-    default:
-      return 0;
-  }
-}
+import { DEFAULT_MAX_COMMENTS } from "../config/defaults.js";
+import { severityRank } from "../util/severity.js";
+import { verdictRank } from "../util/verdict.js";
 
 export type MergeOptions = {
   /**

@@ -1,58 +1,148 @@
+import { ALL_FIELDS } from "./field-schema.js";
 import type { EnvSources } from "./types.js";
 
-// UMACTUALLY_* env vars are the canonical secrets surface for the GitHub Actions
-// and Azure DevOps deployments. REVIEW_* keys remain as a backward-compatible
-// fallback so the legacy reference tooling still resolves the same fields.
-// Both are recorded into EnvSources; callers pick the first defined value.
-const ENV_KEYS: ReadonlyArray<readonly [keyof EnvSources, readonly string[]]> = [
-  ["providerUrl", ["UMACTUALLY_API_URL", "REVIEW_PROVIDER_URL"]],
-  ["providerApiKey", ["UMACTUALLY_API_KEY", "REVIEW_PROVIDER_API_KEY"]],
-  ["providerModel", ["UMACTUALLY_MODEL", "REVIEW_PROVIDER_MODEL"]],
-  ["promptSystemFile", ["UMACTUALLY_PROMPT_FILE", "REVIEW_PROMPT_SYSTEM_FILE"]],
-  ["promptUserFile", ["UMACTUALLY_ADDITIONAL_PROMPT_FILE", "REVIEW_PROMPT_USER_FILE"]],
-  ["promptByteCap", ["REVIEW_PROMPT_BYTE_CAP"]],
-  ["walkthrough", ["UMACTUALLY_WALKTHROUGH", "REVIEW_WALKTHROUGH"]],
-  ["diagnostic", ["UMACTUALLY_DIAGNOSTIC", "REVIEW_DIAGNOSTIC"]],
-  ["dryRun", ["UMACTUALLY_DRY_RUN", "REVIEW_DRY_RUN"]],
-  ["debugRawResponse", ["REVIEW_DEBUG_RAW_RESPONSE"]],
-  ["simulateFindings", ["UMACTUALLY_SIMULATE_FINDINGS", "REVIEW_SIMULATE_FINDINGS"]],
-  ["reviewTimeoutSeconds", ["UMACTUALLY_REVIEW_TIMEOUT_SECONDS", "REVIEW_TIMEOUT_SECONDS"]],
-  ["stallTimeoutSeconds", ["UMACTUALLY_STALL_SECONDS", "REVIEW_STALL_SECONDS"]],
-  ["perRequestTimeoutSeconds", ["REVIEW_PER_REQUEST_TIMEOUT_SECONDS"]],
-  ["ignoreMinor", ["UMACTUALLY_IGNORE_MINOR", "REVIEW_IGNORE_MINOR"]],
-  ["minimumSeverity", ["REVIEW_MINIMUM_SEVERITY"]],
-  ["maxComments", ["REVIEW_MAX_COMMENTS"]],
-  ["reviewFileLimit", ["REVIEW_FILE_LIMIT"]],
-  ["sonarEnabled", ["UMACTUALLY_INCLUDE_SONARQUBE", "REVIEW_SONAR_ENABLED"]],
-  ["sonarHost", ["UMACTUALLY_SONAR_HOST_URL", "REVIEW_SONAR_HOST"]],
-  ["sonarToken", ["UMACTUALLY_SONAR_TOKEN", "REVIEW_SONAR_TOKEN"]],
-  ["sonarProject", ["UMACTUALLY_SONAR_PROJECT_KEY", "REVIEW_SONAR_PROJECT"]],
-  ["sonarTimeoutSeconds", ["REVIEW_SONAR_TIMEOUT_SECONDS"]],
-  ["leakDetection", ["UMACTUALLY_DETECT_LEAKS", "REVIEW_LEAK_DETECTION"]],
-  ["redactorEnabled", ["REVIEW_REDACTOR_ENABLED"]],
-  ["platform", ["REVIEW_PLATFORM"]],
-  ["githubToken", ["GITHUB_TOKEN"]],
-  ["azureOrg", ["AZURE_DEVOPS_ORG"]],
-  ["azureProject", ["AZURE_DEVOPS_PROJECT"]],
-  ["azureRepo", ["AZURE_DEVOPS_REPO"]],
-  ["azurePullRequestId", ["AZURE_DEVOPS_PULL_REQUEST_ID"]],
-  ["azureToken", ["AZURE_DEVOPS_TOKEN"]],
+// Aliases: the EnvSources-side field name is not a 1:1 match with the
+// FIELDS field name. The CLI/Inputs surface uses shorter names
+// (`apiUrl`, `apiKey`) while the canonical config-side name is the
+// longer `providerUrl` / `providerApiKey` form.
+const ENV_SOURCE_FIELDS = {
+  apiUrl: "providerUrl",
+  apiKey: "providerApiKey",
+  model: "providerModel",
+  promptFile: "promptSystemFile",
+  additionalPromptFile: "promptUserFile",
+  stallSeconds: "stallTimeoutSeconds",
+  includeSonarqube: "sonarEnabled",
+  sonarHostUrl: "sonarHost",
+  sonarProjectKey: "sonarProject",
+  detectLeaks: "leakDetection",
+} as const satisfies Partial<Record<string, keyof EnvSources>>;
+
+type FieldSchemaName = keyof typeof ENV_SOURCE_FIELDS;
+
+// Reverse index: FIELDS-side field name → EnvSources-side field name.
+// Derived entirely from `ENV_SOURCE_FIELDS` so it stays in sync.
+const FIELDS_TO_ENV_SOURCE: ReadonlyMap<string, keyof EnvSources> = new Map(
+  (Object.entries(ENV_SOURCE_FIELDS) as ReadonlyArray<[string, string]>).map(
+    ([envSourceName, fieldsName]) => [fieldsName, envSourceName as keyof EnvSources],
+  ),
+);
+
+// Static allowlist of every `EnvSources` key that appears as a FIELDS
+// `field` name with a non-empty env list. Derived once at module load
+// from this list + `ALL_FIELDS` + `FIELDS_TO_ENV_SOURCE`.
+//
+// Why not derive purely from `ALL_FIELDS`? TypeScript optional fields
+// (`readonly x?: string`) are not present on an empty object instance,
+// so `Object.keys({} as EnvSources)` returns `[]`. We need an explicit
+// list of the keys that can appear as `def.field`.
+//
+// Keeping this in sync: when adding a new EnvSources field to
+// `src/config/types.ts` AND a new FIELDS entry that references it
+// (with non-empty env vars), append the new EnvSources-side key here.
+const DIRECT_ENV_SOURCE_KEYS: ReadonlyArray<keyof EnvSources> = [
+  "providerUrl",
+  "providerApiKey",
+  "providerModel",
+  "promptSystemFile",
+  "promptUserFile",
+  "promptByteCap",
+  "walkthrough",
+  "diagnostic",
+  "dryRun",
+  "debugRawResponse",
+  "simulateFindings",
+  "reviewTimeoutSeconds",
+  "stallTimeoutSeconds",
+  "perRequestTimeoutSeconds",
+  "maxOutputTokens",
+  "ignoreMinor",
+  "minimumSeverity",
+  "maxComments",
+  "reviewFileLimit",
+  "sonarEnabled",
+  "sonarHost",
+  "sonarToken",
+  "sonarProject",
+  "sonarTimeoutSeconds",
+  "leakDetection",
+  "redactorEnabled",
+  "platform",
+  "githubApiBase",
+  "githubToken",
+  "azureOrg",
+  "azureProject",
+  "azureRepo",
+  "azurePullRequestId",
+  "azureToken",
 ];
+const DIRECT_ENV_SOURCE_KEYS_SET: ReadonlySet<keyof EnvSources> = new Set(DIRECT_ENV_SOURCE_KEYS);
+
+// The set of EnvSources-side field names that have at least one env var
+// configured. Derived entirely from `ALL_FIELDS` + `FIELDS_TO_ENV_SOURCE`
+// + `DIRECT_ENV_SOURCE_KEYS_SET` so adding a new field with env vars
+// to field-schema.ts automatically enables it here (modulo appending
+// to DIRECT_ENV_SOURCE_KEYS if the EnvSources-side name is new).
+const DERIVED_ENV_SOURCE_FIELDS: ReadonlySet<keyof EnvSources> = (() => {
+  const out = new Set<keyof EnvSources>();
+  for (const def of ALL_FIELDS) {
+    if (def.env.length === 0) continue;
+    // Path (b): aliased — reverse-lookup from FIELDS.field to its EnvSources key.
+    const aliased = FIELDS_TO_ENV_SOURCE.get(def.field);
+    if (aliased !== undefined) {
+      out.add(aliased);
+      continue;
+    }
+    // Path (a): direct — the FIELDS.field name itself is an EnvSources key.
+    if (DIRECT_ENV_SOURCE_KEYS_SET.has(def.field as keyof EnvSources)) {
+      out.add(def.field as keyof EnvSources);
+    }
+  }
+  return out;
+})();
+
+function mapFieldToEnvSource(field: string): keyof EnvSources | null {
+  if (isMappedField(field)) {
+    return ENV_SOURCE_FIELDS[field];
+  }
+  if (isEnvSourceField(field)) {
+    return field;
+  }
+  return null;
+}
+
+function isMappedField(field: string): field is FieldSchemaName {
+  return Object.hasOwn(ENV_SOURCE_FIELDS, field);
+}
+
+function isEnvSourceField(field: string): field is keyof EnvSources {
+  return DERIVED_ENV_SOURCE_FIELDS.has(field as keyof EnvSources);
+}
 
 /**
  * Pure: extracts the known env-var keys from `env` into an EnvSources object.
  * UMACTUALLY_* takes precedence over REVIEW_* when both are set.
  * Never logs values. Empty/missing keys are simply omitted.
+ *
+ * The canonical env-var set is derived from `FIELDS` in
+ * `src/config/field-schema.ts`.
  */
 export function readEnvSources(env: NodeJS.ProcessEnv = process.env): EnvSources {
   const out: {
     -readonly [K in keyof EnvSources]: EnvSources[K];
   } = {};
-  for (const [field, envNames] of ENV_KEYS) {
-    for (const envName of envNames) {
-      const v = env[envName];
-      if (typeof v === "string" && v.trim().length > 0) {
-        out[field] = v;
+  for (const def of ALL_FIELDS) {
+    if (def.env.length === 0) {
+      continue;
+    }
+    const envSourceField = mapFieldToEnvSource(def.field);
+    if (envSourceField === null) {
+      continue;
+    }
+    for (const envName of def.env) {
+      const value = env[envName];
+      if (typeof value === "string" && value.trim().length > 0) {
+        out[envSourceField] = value;
         break;
       }
     }

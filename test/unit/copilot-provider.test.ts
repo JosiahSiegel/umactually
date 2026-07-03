@@ -217,4 +217,30 @@ describe("Copilot provider RED contract", () => {
     expect(chatCall?.url).toBe("https://api.individual.githubcopilot.com/chat/completions");
     expect(chatCall?.authorization).toBe("Bearer tid=ghe");
   });
+
+  it("surfaces retry HTTP status when parse-failure self-healing retry is non-ok", async () => {
+    // Given: the first chat response is not a JSON review payload, and the
+    // self-healing retry receives an HTTP 429 from the provider.
+    const stub = makeFetchStub([
+      { status: 200, body: TOKEN_ENVELOPE_DEFAULT },
+      { status: 200, body: "not json", contentType: "text/plain" },
+      { status: 429, body: JSON.stringify({ error: "rate_limited" }) },
+    ]);
+    const runCopilotRequest = await loadRunCopilotRequest();
+
+    // When: the client runs the Copilot request.
+    const result = await runCopilotRequest({ ...BASE_INPUT, fetchImpl: stub.fetch });
+
+    // Then: the failure remains a parse error for downstream malformed-response
+    // handling, but its diagnostic status/message preserve the retry failure.
+    expect(result).toMatchObject({
+      ok: false,
+      error: {
+        code: "parse",
+        status: 429,
+        rawText: "not json",
+        message: "Provider self-healing retry failed with status 429; original parse error remains the root cause.",
+      },
+    });
+  });
 });

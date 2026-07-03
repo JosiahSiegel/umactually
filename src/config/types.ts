@@ -114,7 +114,18 @@ export type CliArgs = {
   readonly azureToken?: string;
 };
 
-export type ActionInputs = {
+/**
+ * Raw, partially-parsed action-input source shape. Distinct from
+ * `src/action/read-inputs.ts`'s `ActionInputs` (the resolved, typed
+ * shape the action entry produces). Both layers coexist because the
+ * config layer is loaded from a plain record (loader.ts) where every
+ * value is `string | boolean | string | number | undefined`, while the
+ * action entry resolves types up-front.
+ *
+ * Previously named `ActionInputs` — renamed to `RawActionInputs` to
+ * disambiguate from the action-entry type with the same name.
+ */
+export type RawActionInputs = {
   readonly providerUrl?: string;
   readonly providerApiKey?: string;
   readonly providerModel?: string;
@@ -166,6 +177,7 @@ export type EnvSources = {
   readonly reviewTimeoutSeconds?: string;
   readonly stallTimeoutSeconds?: string;
   readonly perRequestTimeoutSeconds?: string;
+  readonly maxOutputTokens?: string;
   readonly ignoreMinor?: string;
   readonly minimumSeverity?: string;
   readonly maxComments?: string;
@@ -178,6 +190,7 @@ export type EnvSources = {
   readonly leakDetection?: string;
   readonly redactorEnabled?: string;
   readonly platform?: string;
+  readonly githubApiBase?: string;
   readonly githubToken?: string;
   readonly azureOrg?: string;
   readonly azureProject?: string;
@@ -188,7 +201,7 @@ export type EnvSources = {
 
 export type LoadConfigSources = {
   readonly cli: CliArgs;
-  readonly inputs: ActionInputs;
+  readonly inputs: RawActionInputs;
   readonly env: EnvSources;
   readonly cwd: string;
 };

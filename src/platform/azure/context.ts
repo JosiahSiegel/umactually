@@ -1,3 +1,5 @@
+import { PlatformContextError } from "../../util/platform-error.js";
+
 export type AzureContext = {
   readonly token: string;
   readonly org: string;
@@ -8,21 +10,23 @@ export type AzureContext = {
   readonly targetBranch: string;
 };
 
-export class AzureContextError extends Error {
+/**
+ * Context-resolution error for the Azure DevOps platform adapter.
+ * Inherits the `PlatformContextError` shape from
+ * `src/util/platform-error.ts` so it shares a common ancestor with
+ * `GithubContextError`. The typed `code` literal remains Azure-specific
+ * — only the base class is shared.
+ */
+export class AzureContextError extends PlatformContextError<
+  | "AZURE_TOKEN_MISSING"
+  | "AZURE_COLLECTION_URI_INVALID"
+  | "AZURE_TEAM_PROJECT_MISSING"
+  | "AZURE_REPOSITORY_ID_MISSING"
+  | "AZURE_PR_NUMBER_INVALID"
+  | "AZURE_SOURCE_COMMIT_MISSING"
+  | "AZURE_TARGET_BRANCH_MISSING"
+> {
   override readonly name = "AzureContextError";
-  readonly code:
-    | "AZURE_TOKEN_MISSING"
-    | "AZURE_COLLECTION_URI_INVALID"
-    | "AZURE_TEAM_PROJECT_MISSING"
-    | "AZURE_REPOSITORY_ID_MISSING"
-    | "AZURE_PR_NUMBER_INVALID"
-    | "AZURE_SOURCE_COMMIT_MISSING"
-    | "AZURE_TARGET_BRANCH_MISSING";
-
-  constructor(code: AzureContextError["code"], message: string, options?: ErrorOptions) {
-    super(message, options);
-    this.code = code;
-  }
 }
 
 const SYSTEM_ACCESSTOKEN_ALIAS = "SYSTEM_ACCESSTOKEN";

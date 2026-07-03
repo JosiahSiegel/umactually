@@ -449,9 +449,144 @@ function redactLineSecrets(line) {
     return redactedLine;
 }
 
+;// CONCATENATED MODULE: ./src/util/marker.ts
+/**
+ * Stable HTML markers and the manifest schema identifier emitted by the
+ * UmActually live review marker. Critical for dedup: the runner searches
+ * for these strings in existing PR comments, so a silent drift here
+ * would break every dedup loop and every downstream consumer that
+ * parses the manifest. Every reference (dry-run artifact, live review,
+ * fixture parser, raw-output type guard, GitHub agent) sees the same
+ * values via this module.
+ */
+/**
+ * Stable HTML marker the runner greps for in existing PR comments when
+ * deciding whether to replace a previous UmActually review.
+ */
+const REVIEW_MARKER = "<!-- umactually-pr-review -->";
+/**
+ * JSON schema identifier for the UmActually manifest that lives inside
+ * the `<!-- umactually-pr-review:manifest { ... } -->` HTML comment on
+ * every posted review. Format is `${BRAND}/v${VERSION}`. AI agents and
+ * downstream tooling parse this string to know they're reading an
+ * UmActually-shaped payload.
+ *
+ * NOT a generic "manifest schema" — this is UmActually-specific by
+ * design. The brand name appears in the schema id so consumers can
+ * tell UmActually manifests apart from any other review tool's
+ * payloads.
+ */
+const MANIFEST_SCHEMA = "umactually-pr-review/v1";
+
+;// CONCATENATED MODULE: ./src/util/json-guards.ts
+/**
+ * Type guard for a JSON object (excludes arrays, null, primitives).
+ * Replaces the 6+ copies scattered across the codebase, including one
+ * buggy copy in `src/azure/run-azure-review.ts:142` that does NOT exclude
+ * arrays — that copy returned `true` for any JSON including arrays.
+ */
+function isRecord(value) {
+    return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+/** Centralizes response JSON parsing so duplicated HTTP callers share one empty-body convention. */
+function readJsonResponse(text) {
+    if (text.length === 0) {
+        return null;
+    }
+    return JSON.parse(text);
+}
+/** Centralizes positive integer guards so CLI and provider paths stop open-coding safe-number checks. */
+function isPositiveSafeInteger(value) {
+    return typeof value === "number" && Number.isSafeInteger(value) && value > 0;
+}
+
+;// CONCATENATED MODULE: external "node:crypto"
+const external_node_crypto_namespaceObject = __WEBPACK_EXTERNAL_createRequire(import.meta.url)("node:crypto");
+;// CONCATENATED MODULE: ./src/util/verdict.ts
+/**
+ * Verdict → Azure PR-status mapping. Centralised so the live CLI
+ * (`live-shared.ts`) and the S4 mocked-run fixture (`azure/run-azure-review.ts`)
+ * share one rank table.
+ *
+ * Two policies exist because they were written at different times:
+ *   - `legacy`: NEEDS_FIX → "failed" (S4 RED contract — fixture pinned).
+ *     Throws on unknown verdicts via an explicit `TypeError` (preserves
+ *     the throw-on-unknown guarantee the original
+ *     `azure/run-azure-review.ts:mapVerdictToStatus` had — there is no
+ *     `assertNever` helper in this module).
+ *   - `current`: NEEDS_FIX → "pending" (live behavior — see CLARITY-2 in
+ *     live-azure-status-policy.test.ts for the rationale: a failing review
+ *     is a finding, not a merge-blocking check). Unknowns collapse to
+ *     "pending" so a malformed verdict doesn't crash the runner.
+ *
+ * The umbrella strings (APPROVED / COMMENT / DISCUSS / SHIP) are always
+ * "succeeded" under both policies — only NEEDS_FIX differs.
+ *
+ * GitHub verdict mapping (REQUEST_CHANGES vs COMMENT) is also exported
+ * for symmetry; it has a single canonical mapping.
+ */
+
+/** Known verdict strings accepted by either policy. */
+const KNOWN_UMBRELLA_VERDICTS = ["APPROVED", "COMMENT", "DISCUSS", "SHIP"];
+const KNOWN_BLOCKING_VERDICT = "NEEDS_FIX";
+function mapVerdictToAzureStatus(verdict, policy) {
+    const normalized = verdict.toUpperCase();
+    // Umbrella strings → succeeded under both policies.
+    if (KNOWN_UMBRELLA_VERDICTS.includes(normalized)) {
+        return "succeeded";
+    }
+    if (policy === "legacy") {
+        // Legacy policy throws on unknown verdicts — preserves the original
+        // `assertNever(verdict)`-style guard from
+        // `azure/run-azure-review.ts:mapVerdictToStatus` that the S4 RED
+        // contract depends on. (There is no `assertNever` function in this
+        // module; the same effect is achieved via the explicit TypeError
+        // below.)
+        if (normalized === KNOWN_BLOCKING_VERDICT)
+            return "failed";
+        throw new TypeError(`unknown verdict for legacy Azure status mapping: ${redactVerdictForError(verdict)}`);
+    }
+    // Current policy: NEEDS_FIX → "pending"; anything unknown (including
+    // empty string) also collapses to "pending" so a malformed verdict
+    // can't crash the live runner.
+    return "pending";
+}
+/**
+ * Redact a user-supplied verdict for inclusion in an error message.
+ * Replaces the raw input with `len=<utf8 bytes>, sha256=<12 hex chars>`
+ * so the error is informative for log correlation without echoing
+ * PII, control characters, or terminal-escape sequences from the input.
+ */
+function redactVerdictForError(verdict) {
+    const bytes = Buffer.byteLength(verdict, "utf8");
+    const hash = (0,external_node_crypto_namespaceObject.createHash)("sha256").update(verdict).digest("hex").slice(0, 12);
+    return `len=${bytes}, sha256=${hash}`;
+}
+/** GitHub verdict → review-submission event. */
+function mapVerdictToGithubEvent(verdict) {
+    return verdict === "NEEDS_FIX" ? "REQUEST_CHANGES" : "COMMENT";
+}
+/** Verdict ranking used by the merge path's "worst verdict wins" rule. */
+function verdictRank(verdict) {
+    switch (verdict.toUpperCase()) {
+        case "NEEDS_FIX":
+            return 4;
+        case "DISCUSS":
+            return 3;
+        case "COMMENT":
+        case "SHIP":
+        case "APPROVED":
+            return 2;
+        default:
+            return 0;
+    }
+}
+
 ;// CONCATENATED MODULE: ./src/azure/run-azure-review.ts
 
-const REVIEW_MARKER = "<!-- umactually-pr-review -->";
+
+
+
 async function runAzureReview(contract) {
     parsePullRequest(contract.pullRequestJson);
     const existingThreads = parseAzureThreads(contract.existingThreadsJson);
@@ -510,28 +645,17 @@ function hasMatchingReviewThread(comment, existingThreads) {
     return false;
 }
 function mapVerdictToStatus(verdict) {
-    switch (verdict) {
-        case "NEEDS_FIX":
-            return "failed";
-        case "APPROVED":
-            return "succeeded";
-        case "COMMENT":
-            return "pending";
-        default:
-            return assertNever(verdict);
-    }
-}
-function assertNever(value) {
-    throw new TypeError(`Unexpected provider verdict: ${value}`);
+    // Use the legacy policy (NEEDS_FIX → "failed") to preserve the S4 RED contract;
+    // the live CLI uses the "current" policy (NEEDS_FIX → "pending") via
+    // src/util/verdict.ts. The two are intentionally divergent — the live CLI
+    // considers NEEDS_FIX a "finding", not a merge-blocking check.
+    return mapVerdictToAzureStatus(verdict, "legacy");
 }
 function readRecord(value, label) {
     if (!isRecord(value)) {
         throw new TypeError(`Expected ${label} to be an object, received: ${typeof value}`);
     }
     return value;
-}
-function isRecord(value) {
-    return typeof value === "object" && value !== null;
 }
 function readNumberField(record, key) {
     const value = record[key];
@@ -599,6 +723,7 @@ function readThreadComments(value) {
 }
 
 ;// CONCATENATED MODULE: ./src/diff/parse-positions.ts
+
 function parseDiffPositions(diffText) {
     const linesByPath = new Map();
     // preserve the order in which right-side positions were first observed so
@@ -684,7 +809,7 @@ function parseNewHunkStart(line) {
     const endIndex = afterPlus.search(/[ ,]/u);
     const rawStart = endIndex === -1 ? afterPlus : afterPlus.slice(0, endIndex);
     const start = Number.parseInt(rawStart, 10);
-    return Number.isSafeInteger(start) && start > 0 ? start : null;
+    return isPositiveSafeInteger(start) ? start : null;
 }
 function addLine(linesByPath, path, line) {
     const existingLines = linesByPath.get(path);
@@ -698,7 +823,9 @@ function addLine(linesByPath, path, line) {
 ;// CONCATENATED MODULE: ./src/review/run-review.ts
 
 
-const run_review_REVIEW_MARKER = "<!-- umactually-pr-review -->";
+
+// Re-exported for backward compatibility; canonical source is src/util/marker.ts.
+
 async function runReview(contract) {
     parseEvent(contract.eventJson);
     const review = run_review_parseProviderReview(contract.providerReviewJson);
@@ -713,7 +840,7 @@ async function runReview(contract) {
     return {
         artifactPath: contract.expectedArtifact,
         event: "COMMENT",
-        marker: run_review_REVIEW_MARKER,
+        marker: REVIEW_MARKER,
         inlineThreadCount,
         suppressedCommentCount,
     };
@@ -799,7 +926,17 @@ function parseComment(value) {
     return { path, line };
 }
 
+;// CONCATENATED MODULE: ./src/util/async.ts
+/** Promise-based timer shared by async provider code; eliminates duplicated sleep helpers. */
+function sleep(ms) {
+    return new Promise((resolve) => {
+        setTimeout(resolve, ms);
+    });
+}
+
 ;// CONCATENATED MODULE: ./src/sonar/run-sonar-import.ts
+
+
 const EXPECTED_IMPORTED_FINDING_COUNT = 2;
 const MAX_POLL_ATTEMPTS = 3;
 const QUALITY_GATE_STATUSES = new Set(["OK", "ERROR", "WARN", "NONE", "IN_PROGRESS"]);
@@ -845,7 +982,7 @@ function waitForTerminalQualityGate(qualityGateSequence) {
 }
 function parseQualityGateSequence(json) {
     const value = parseJson(json);
-    if (!run_sonar_import_isRecord(value)) {
+    if (!isRecord(value)) {
         throw new SonarFixtureParseError("quality-gate-sequence", "a root object");
     }
     const sequence = value["sequence"];
@@ -857,11 +994,11 @@ function parseQualityGateSequence(json) {
     };
 }
 function parseQualityGatePoll(value) {
-    if (!run_sonar_import_isRecord(value)) {
+    if (!isRecord(value)) {
         throw new SonarFixtureParseError("quality-gate-sequence", "poll attempt objects");
     }
     const projectStatus = value["projectStatus"];
-    if (!run_sonar_import_isRecord(projectStatus)) {
+    if (!isRecord(projectStatus)) {
         throw new SonarFixtureParseError("quality-gate-sequence", "projectStatus objects");
     }
     return {
@@ -878,7 +1015,7 @@ function parseQualityGateStatus(value) {
 }
 function parseSonarIssues(json) {
     const value = parseJson(json);
-    if (!run_sonar_import_isRecord(value) || !isReadonlyArray(value["issues"])) {
+    if (!isRecord(value) || !isReadonlyArray(value["issues"])) {
         throw new SonarFixtureParseError("issues", "an issues array");
     }
     return {
@@ -887,7 +1024,7 @@ function parseSonarIssues(json) {
 }
 function parseSonarHotspots(json) {
     const value = parseJson(json);
-    if (!run_sonar_import_isRecord(value) || !isReadonlyArray(value["hotspots"])) {
+    if (!isRecord(value) || !isReadonlyArray(value["hotspots"])) {
         throw new SonarFixtureParseError("hotspots", "a hotspots array");
     }
     return {
@@ -897,9 +1034,6 @@ function parseSonarHotspots(json) {
 function parseJson(json) {
     const value = JSON.parse(json);
     return value;
-}
-function run_sonar_import_isRecord(value) {
-    return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 function isReadonlyArray(value) {
     return Array.isArray(value);
@@ -1027,63 +1161,477 @@ async function fetchSonarFindings(config, baseUrl, headers, fetchImpl) {
     }
     return issueCount + hotspotCount;
 }
-function sleep(ms) {
-    return new Promise((resolve) => {
-        setTimeout(resolve, ms);
-    });
-}
+
+;// CONCATENATED MODULE: ./src/config/field-schema.ts
+const FIELDS = {
+    apiUrl: {
+        field: "apiUrl",
+        flag: "--api-url",
+        input: "api-url",
+        env: ["UMACTUALLY_API_URL", "REVIEW_PROVIDER_URL"],
+        type: "string",
+        defaultValue: "",
+    },
+    apiKey: {
+        field: "apiKey",
+        flag: "--api-key",
+        input: "api-key",
+        env: ["UMACTUALLY_API_KEY", "REVIEW_PROVIDER_API_KEY"],
+        type: "string",
+        defaultValue: "",
+    },
+    model: {
+        field: "model",
+        flag: "--model",
+        input: "model",
+        env: ["UMACTUALLY_MODEL", "REVIEW_PROVIDER_MODEL"],
+        type: "string",
+        defaultValue: "auto",
+    },
+    prompt: {
+        field: "prompt",
+        flag: "--prompt",
+        input: "prompt",
+        env: [],
+        type: "string",
+        defaultValue: "",
+    },
+    promptFile: {
+        field: "promptFile",
+        flag: "--prompt-file",
+        input: "prompt-file",
+        env: ["UMACTUALLY_PROMPT_FILE", "REVIEW_PROMPT_SYSTEM_FILE"],
+        type: "string",
+        defaultValue: "",
+    },
+    additionalPrompt: {
+        field: "additionalPrompt",
+        flag: "--additional-prompt",
+        input: "additional-prompt",
+        env: [],
+        type: "string",
+        defaultValue: "",
+    },
+    additionalPromptFile: {
+        field: "additionalPromptFile",
+        flag: "--additional-prompt-file",
+        input: "additional-prompt-file",
+        env: ["UMACTUALLY_ADDITIONAL_PROMPT_FILE", "REVIEW_PROMPT_USER_FILE"],
+        type: "string",
+        defaultValue: "",
+    },
+    walkthrough: {
+        field: "walkthrough",
+        flag: "--walkthrough",
+        input: "walkthrough",
+        env: ["UMACTUALLY_WALKTHROUGH", "REVIEW_WALKTHROUGH"],
+        type: "boolean",
+        defaultValue: false,
+    },
+    diagnostic: {
+        field: "diagnostic",
+        flag: "--diagnostic",
+        input: "diagnostic",
+        env: ["UMACTUALLY_DIAGNOSTIC", "REVIEW_DIAGNOSTIC"],
+        type: "boolean",
+        defaultValue: false,
+    },
+    dryRun: {
+        field: "dryRun",
+        flag: "--dry-run",
+        input: "dry-run",
+        env: ["UMACTUALLY_DRY_RUN", "REVIEW_DRY_RUN"],
+        type: "boolean",
+        defaultValue: false,
+    },
+    debugRawResponse: {
+        field: "debugRawResponse",
+        flag: "--debug-raw-response",
+        input: "debug-raw-response",
+        env: ["REVIEW_DEBUG_RAW_RESPONSE"],
+        type: "boolean",
+        defaultValue: false,
+    },
+    simulateFindings: {
+        field: "simulateFindings",
+        flag: "--simulate-findings",
+        input: "simulate-findings",
+        env: ["UMACTUALLY_SIMULATE_FINDINGS", "REVIEW_SIMULATE_FINDINGS"],
+        type: "boolean",
+        defaultValue: false,
+    },
+    reviewTimeoutSeconds: {
+        field: "reviewTimeoutSeconds",
+        flag: "--review-timeout-seconds",
+        input: "review-timeout-seconds",
+        env: ["UMACTUALLY_REVIEW_TIMEOUT_SECONDS", "REVIEW_TIMEOUT_SECONDS"],
+        type: "integer",
+        defaultValue: 300,
+    },
+    stallSeconds: {
+        field: "stallSeconds",
+        flag: "--stall-seconds",
+        input: "stall-seconds",
+        env: ["UMACTUALLY_STALL_SECONDS", "REVIEW_STALL_SECONDS"],
+        type: "integer",
+        defaultValue: 270,
+    },
+    perRequestTimeoutSeconds: {
+        field: "perRequestTimeoutSeconds",
+        flag: "--per-request-timeout-seconds",
+        input: "per-request-timeout-seconds",
+        env: ["REVIEW_PER_REQUEST_TIMEOUT_SECONDS"],
+        type: "integer",
+        defaultValue: 60,
+    },
+    maxOutputTokens: {
+        field: "maxOutputTokens",
+        flag: "--max-output-tokens",
+        input: "max-output-tokens",
+        env: ["UMACTUALLY_MAX_OUTPUT_TOKENS"],
+        type: "integer",
+        defaultValue: 16_000,
+    },
+    ignoreMinor: {
+        field: "ignoreMinor",
+        flag: "--ignore-minor",
+        input: "ignore-minor",
+        env: ["UMACTUALLY_IGNORE_MINOR", "REVIEW_IGNORE_MINOR"],
+        type: "boolean",
+        defaultValue: false,
+    },
+    minimumSeverity: {
+        field: "minimumSeverity",
+        flag: "--minimum-severity",
+        input: "minimum-severity",
+        env: ["REVIEW_MINIMUM_SEVERITY"],
+        type: "enum",
+        defaultValue: "low",
+        enumValues: ["low", "medium", "high"],
+    },
+    maxComments: {
+        field: "maxComments",
+        flag: "--max-comments",
+        input: "max-comments",
+        env: ["REVIEW_MAX_COMMENTS"],
+        type: "integer",
+        defaultValue: 50,
+    },
+    reviewFileLimit: {
+        field: "reviewFileLimit",
+        flag: "--review-file-limit",
+        input: "review-file-limit",
+        env: ["REVIEW_FILE_LIMIT"],
+        type: "integer",
+        defaultValue: 200,
+    },
+    includeSonarqube: {
+        field: "includeSonarqube",
+        flag: "--include-sonarqube",
+        input: "include-sonarqube",
+        env: ["UMACTUALLY_INCLUDE_SONARQUBE", "REVIEW_SONAR_ENABLED"],
+        type: "boolean",
+        defaultValue: false,
+    },
+    sonarHostUrl: {
+        field: "sonarHostUrl",
+        flag: "--sonar-host-url",
+        input: "sonar-host-url",
+        env: ["UMACTUALLY_SONAR_HOST_URL", "REVIEW_SONAR_HOST"],
+        type: "string",
+        defaultValue: "",
+    },
+    sonarToken: {
+        field: "sonarToken",
+        flag: "--sonar-token",
+        input: "sonar-token",
+        env: ["UMACTUALLY_SONAR_TOKEN", "REVIEW_SONAR_TOKEN"],
+        type: "string",
+        defaultValue: "",
+    },
+    sonarProjectKey: {
+        field: "sonarProjectKey",
+        flag: "--sonar-project-key",
+        input: "sonar-project-key",
+        env: ["UMACTUALLY_SONAR_PROJECT_KEY", "REVIEW_SONAR_PROJECT"],
+        type: "string",
+        defaultValue: "",
+    },
+    sonarTimeoutSeconds: {
+        field: "sonarTimeoutSeconds",
+        flag: "--sonar-timeout-seconds",
+        input: "sonar-timeout-seconds",
+        env: ["REVIEW_SONAR_TIMEOUT_SECONDS"],
+        type: "integer",
+        defaultValue: 300,
+    },
+    detectLeaks: {
+        field: "detectLeaks",
+        flag: "--detect-leaks",
+        input: "detect-leaks",
+        env: ["UMACTUALLY_DETECT_LEAKS", "REVIEW_LEAK_DETECTION"],
+        type: "boolean",
+        defaultValue: true,
+    },
+    platform: {
+        field: "platform",
+        flag: "--platform",
+        input: "platform",
+        env: ["REVIEW_PLATFORM"],
+        type: "enum",
+        defaultValue: "auto",
+        // Canonical three variants. The CLI parser accepts the `"azure-devops"`
+        // alias and normalizes to `"azure"` before this field is reached; the
+        // config loader therefore only sees the canonical set.
+        enumValues: ["auto", "github", "azure"],
+    },
+    prNumber: {
+        field: "prNumber",
+        flag: "--pr-number",
+        input: "pr-number",
+        env: [],
+        type: "string",
+        defaultValue: "",
+    },
+    repo: {
+        field: "repo",
+        flag: "--repo",
+        input: "repo",
+        env: [],
+        type: "string",
+        defaultValue: "",
+    },
+    effort: {
+        field: "effort",
+        flag: "--effort",
+        input: "effort",
+        env: [],
+        type: "enum",
+        defaultValue: "medium",
+        enumValues: ["low", "medium", "high"],
+    },
+    provider: {
+        field: "provider",
+        flag: "--provider",
+        input: "provider",
+        env: [],
+        type: "enum",
+        defaultValue: "openai-compatible",
+        enumValues: ["openai-compatible", "copilot"],
+    },
+    githubApiBase: {
+        field: "githubApiBase",
+        flag: "--github-api-base",
+        input: "github-api-base",
+        env: ["UMACTUALLY_GITHUB_API_BASE"],
+        type: "string",
+        defaultValue: "",
+    },
+    githubToken: {
+        field: "githubToken",
+        flag: null,
+        input: "github_token",
+        env: ["GITHUB_TOKEN"],
+        type: "string",
+        defaultValue: "",
+    },
+    promptByteCap: {
+        field: "promptByteCap",
+        flag: null,
+        input: "prompt-byte-cap",
+        env: ["REVIEW_PROMPT_BYTE_CAP"],
+        type: "integer",
+        defaultValue: 65_536,
+    },
+    redactorEnabled: {
+        field: "redactorEnabled",
+        flag: null,
+        input: "redactor-enabled",
+        env: ["REVIEW_REDACTOR_ENABLED"],
+        type: "boolean",
+        defaultValue: true,
+    },
+    azureOrg: {
+        field: "azureOrg",
+        flag: null,
+        input: "azure-org",
+        env: ["AZURE_DEVOPS_ORG"],
+        type: "string",
+        defaultValue: "",
+    },
+    azureProject: {
+        field: "azureProject",
+        flag: null,
+        input: "azure-project",
+        env: ["AZURE_DEVOPS_PROJECT"],
+        type: "string",
+        defaultValue: "",
+    },
+    azureRepo: {
+        field: "azureRepo",
+        flag: null,
+        input: "azure-repo",
+        env: ["AZURE_DEVOPS_REPO"],
+        type: "string",
+        defaultValue: "",
+    },
+    azurePullRequestId: {
+        field: "azurePullRequestId",
+        flag: null,
+        input: "azure-pull-request-id",
+        env: ["AZURE_DEVOPS_PULL_REQUEST_ID"],
+        type: "integer",
+        defaultValue: 0,
+    },
+    azureToken: {
+        field: "azureToken",
+        flag: null,
+        input: "azure-token",
+        env: ["AZURE_DEVOPS_TOKEN"],
+        type: "string",
+        defaultValue: "",
+    },
+};
+/** All fields in declaration order. */
+const ALL_FIELDS = Object.values(FIELDS);
+/**
+ * Set of every env-var name the runtime reads (across all fields, deduped).
+ * Useful for sanity checks, smoke tests, and any future "unknown env-var"
+ * diagnostics. Derived from the field-schema so adding a field's env entries
+ * here keeps the set in sync without any other code changes.
+ */
+const KNOWN_ENV_VAR_NAMES = new Set(ALL_FIELDS.flatMap((def) => def.env));
 
 ;// CONCATENATED MODULE: ./src/config/env-sources.ts
-// UMACTUALLY_* env vars are the canonical secrets surface for the GitHub Actions
-// and Azure DevOps deployments. REVIEW_* keys remain as a backward-compatible
-// fallback so the legacy reference tooling still resolves the same fields.
-// Both are recorded into EnvSources; callers pick the first defined value.
-const ENV_KEYS = [
-    ["providerUrl", ["UMACTUALLY_API_URL", "REVIEW_PROVIDER_URL"]],
-    ["providerApiKey", ["UMACTUALLY_API_KEY", "REVIEW_PROVIDER_API_KEY"]],
-    ["providerModel", ["UMACTUALLY_MODEL", "REVIEW_PROVIDER_MODEL"]],
-    ["promptSystemFile", ["UMACTUALLY_PROMPT_FILE", "REVIEW_PROMPT_SYSTEM_FILE"]],
-    ["promptUserFile", ["UMACTUALLY_ADDITIONAL_PROMPT_FILE", "REVIEW_PROMPT_USER_FILE"]],
-    ["promptByteCap", ["REVIEW_PROMPT_BYTE_CAP"]],
-    ["walkthrough", ["UMACTUALLY_WALKTHROUGH", "REVIEW_WALKTHROUGH"]],
-    ["diagnostic", ["UMACTUALLY_DIAGNOSTIC", "REVIEW_DIAGNOSTIC"]],
-    ["dryRun", ["UMACTUALLY_DRY_RUN", "REVIEW_DRY_RUN"]],
-    ["debugRawResponse", ["REVIEW_DEBUG_RAW_RESPONSE"]],
-    ["simulateFindings", ["UMACTUALLY_SIMULATE_FINDINGS", "REVIEW_SIMULATE_FINDINGS"]],
-    ["reviewTimeoutSeconds", ["UMACTUALLY_REVIEW_TIMEOUT_SECONDS", "REVIEW_TIMEOUT_SECONDS"]],
-    ["stallTimeoutSeconds", ["UMACTUALLY_STALL_SECONDS", "REVIEW_STALL_SECONDS"]],
-    ["perRequestTimeoutSeconds", ["REVIEW_PER_REQUEST_TIMEOUT_SECONDS"]],
-    ["ignoreMinor", ["UMACTUALLY_IGNORE_MINOR", "REVIEW_IGNORE_MINOR"]],
-    ["minimumSeverity", ["REVIEW_MINIMUM_SEVERITY"]],
-    ["maxComments", ["REVIEW_MAX_COMMENTS"]],
-    ["reviewFileLimit", ["REVIEW_FILE_LIMIT"]],
-    ["sonarEnabled", ["UMACTUALLY_INCLUDE_SONARQUBE", "REVIEW_SONAR_ENABLED"]],
-    ["sonarHost", ["UMACTUALLY_SONAR_HOST_URL", "REVIEW_SONAR_HOST"]],
-    ["sonarToken", ["UMACTUALLY_SONAR_TOKEN", "REVIEW_SONAR_TOKEN"]],
-    ["sonarProject", ["UMACTUALLY_SONAR_PROJECT_KEY", "REVIEW_SONAR_PROJECT"]],
-    ["sonarTimeoutSeconds", ["REVIEW_SONAR_TIMEOUT_SECONDS"]],
-    ["leakDetection", ["UMACTUALLY_DETECT_LEAKS", "REVIEW_LEAK_DETECTION"]],
-    ["redactorEnabled", ["REVIEW_REDACTOR_ENABLED"]],
-    ["platform", ["REVIEW_PLATFORM"]],
-    ["githubToken", ["GITHUB_TOKEN"]],
-    ["azureOrg", ["AZURE_DEVOPS_ORG"]],
-    ["azureProject", ["AZURE_DEVOPS_PROJECT"]],
-    ["azureRepo", ["AZURE_DEVOPS_REPO"]],
-    ["azurePullRequestId", ["AZURE_DEVOPS_PULL_REQUEST_ID"]],
-    ["azureToken", ["AZURE_DEVOPS_TOKEN"]],
+
+// Aliases: the EnvSources-side field name is not a 1:1 match with the
+// FIELDS field name. The CLI/Inputs surface uses shorter names
+// (`apiUrl`, `apiKey`) while the canonical config-side name is the
+// longer `providerUrl` / `providerApiKey` form.
+const ENV_SOURCE_FIELDS = {
+    apiUrl: "providerUrl",
+    apiKey: "providerApiKey",
+    model: "providerModel",
+    promptFile: "promptSystemFile",
+    additionalPromptFile: "promptUserFile",
+    stallSeconds: "stallTimeoutSeconds",
+    includeSonarqube: "sonarEnabled",
+    sonarHostUrl: "sonarHost",
+    sonarProjectKey: "sonarProject",
+    detectLeaks: "leakDetection",
+};
+// Reverse index: FIELDS-side field name → EnvSources-side field name.
+// Derived entirely from `ENV_SOURCE_FIELDS` so it stays in sync.
+const FIELDS_TO_ENV_SOURCE = new Map(Object.entries(ENV_SOURCE_FIELDS).map(([envSourceName, fieldsName]) => [fieldsName, envSourceName]));
+// Static allowlist of every `EnvSources` key that appears as a FIELDS
+// `field` name with a non-empty env list. Derived once at module load
+// from this list + `ALL_FIELDS` + `FIELDS_TO_ENV_SOURCE`.
+//
+// Why not derive purely from `ALL_FIELDS`? TypeScript optional fields
+// (`readonly x?: string`) are not present on an empty object instance,
+// so `Object.keys({} as EnvSources)` returns `[]`. We need an explicit
+// list of the keys that can appear as `def.field`.
+//
+// Keeping this in sync: when adding a new EnvSources field to
+// `src/config/types.ts` AND a new FIELDS entry that references it
+// (with non-empty env vars), append the new EnvSources-side key here.
+const DIRECT_ENV_SOURCE_KEYS = [
+    "providerUrl",
+    "providerApiKey",
+    "providerModel",
+    "promptSystemFile",
+    "promptUserFile",
+    "promptByteCap",
+    "walkthrough",
+    "diagnostic",
+    "dryRun",
+    "debugRawResponse",
+    "simulateFindings",
+    "reviewTimeoutSeconds",
+    "stallTimeoutSeconds",
+    "perRequestTimeoutSeconds",
+    "maxOutputTokens",
+    "ignoreMinor",
+    "minimumSeverity",
+    "maxComments",
+    "reviewFileLimit",
+    "sonarEnabled",
+    "sonarHost",
+    "sonarToken",
+    "sonarProject",
+    "sonarTimeoutSeconds",
+    "leakDetection",
+    "redactorEnabled",
+    "platform",
+    "githubApiBase",
+    "githubToken",
+    "azureOrg",
+    "azureProject",
+    "azureRepo",
+    "azurePullRequestId",
+    "azureToken",
 ];
+const DIRECT_ENV_SOURCE_KEYS_SET = new Set(DIRECT_ENV_SOURCE_KEYS);
+// The set of EnvSources-side field names that have at least one env var
+// configured. Derived entirely from `ALL_FIELDS` + `FIELDS_TO_ENV_SOURCE`
+// + `DIRECT_ENV_SOURCE_KEYS_SET` so adding a new field with env vars
+// to field-schema.ts automatically enables it here (modulo appending
+// to DIRECT_ENV_SOURCE_KEYS if the EnvSources-side name is new).
+const DERIVED_ENV_SOURCE_FIELDS = (() => {
+    const out = new Set();
+    for (const def of ALL_FIELDS) {
+        if (def.env.length === 0)
+            continue;
+        // Path (b): aliased — reverse-lookup from FIELDS.field to its EnvSources key.
+        const aliased = FIELDS_TO_ENV_SOURCE.get(def.field);
+        if (aliased !== undefined) {
+            out.add(aliased);
+            continue;
+        }
+        // Path (a): direct — the FIELDS.field name itself is an EnvSources key.
+        if (DIRECT_ENV_SOURCE_KEYS_SET.has(def.field)) {
+            out.add(def.field);
+        }
+    }
+    return out;
+})();
+function mapFieldToEnvSource(field) {
+    if (isMappedField(field)) {
+        return ENV_SOURCE_FIELDS[field];
+    }
+    if (isEnvSourceField(field)) {
+        return field;
+    }
+    return null;
+}
+function isMappedField(field) {
+    return Object.hasOwn(ENV_SOURCE_FIELDS, field);
+}
+function isEnvSourceField(field) {
+    return DERIVED_ENV_SOURCE_FIELDS.has(field);
+}
 /**
  * Pure: extracts the known env-var keys from `env` into an EnvSources object.
  * UMACTUALLY_* takes precedence over REVIEW_* when both are set.
  * Never logs values. Empty/missing keys are simply omitted.
+ *
+ * The canonical env-var set is derived from `FIELDS` in
+ * `src/config/field-schema.ts`.
  */
 function readEnvSources(env = process.env) {
     const out = {};
-    for (const [field, envNames] of ENV_KEYS) {
-        for (const envName of envNames) {
-            const v = env[envName];
-            if (typeof v === "string" && v.trim().length > 0) {
-                out[field] = v;
+    for (const def of ALL_FIELDS) {
+        if (def.env.length === 0) {
+            continue;
+        }
+        const envSourceField = mapFieldToEnvSource(def.field);
+        if (envSourceField === null) {
+            continue;
+        }
+        for (const envName of def.env) {
+            const value = env[envName];
+            if (typeof value === "string" && value.trim().length > 0) {
+                out[envSourceField] = value;
                 break;
             }
         }
@@ -1163,20 +1711,63 @@ function normalizeDiffPath(path) {
     return path.startsWith("/") ? path.slice(1) : path;
 }
 
-;// CONCATENATED MODULE: ./src/platform/azure/errors.ts
-class AzureApiError extends Error {
-    name = "AzureApiError";
+;// CONCATENATED MODULE: ./src/util/platform-error.ts
+/**
+ * Shared platform error base classes.
+ *
+ * Previously `AzureApiError`, `GithubApiError`, `AzureContextError`, and
+ * `GithubContextError` each extended `Error` directly with hand-written
+ * `code`/`status` fields. They now extend the generic bases here so the
+ * shape is shared and any future platform (e.g. Bitbucket) gets a uniform
+ * ancestor for `catch` clauses that don't care which platform threw.
+ *
+ * The base classes set a default `name` field, and each subclass keeps its
+ * own `override readonly name = "..."` literal so `error.name` continues to
+ * print the platform-specific name in stack traces.
+ */
+/** Shared platform context error base; subclasses override `name` with platform-specific literals. */
+class PlatformContextError extends Error {
+    code;
+    name = "PlatformContextError";
+    constructor(code, message, options) {
+        super(message, options);
+        this.code = code;
+    }
+}
+/** Shared platform API error base; subclasses override `name` with platform-specific literals. */
+class PlatformApiError extends Error {
     code;
     status;
+    name = "PlatformApiError";
     constructor(code, status, message, options) {
         super(message, options);
         this.code = code;
         this.status = status;
     }
 }
+
+;// CONCATENATED MODULE: ./src/platform/azure/errors.ts
+
+/**
+ * API-layer error for the Azure DevOps platform adapter. Inherits the
+ * `PlatformApiError` shape from `src/util/platform-error.ts` so it
+ * shares a common ancestor with `GithubApiError` and is catchable as
+ * `PlatformApiError<...>` when callers don't care about the platform.
+ *
+ * Inheriting from `PlatformApiError` instead of `Error` directly keeps
+ * the existing `code` + `status` public fields unchanged so all
+ * `throw new AzureApiError(...)` call sites continue to compile.
+ */
+class AzureApiError extends PlatformApiError {
+    name = "AzureApiError";
+    constructor(code, status, message, options) {
+        super(code, status, message, options);
+    }
+}
 const AZURE_EMPTY_DIFF_STATUS = 200;
 
 ;// CONCATENATED MODULE: ./src/platform/azure/payload.ts
+
 
 function parseLatestIterationId(payload) {
     const root = requireRecord(payload, "Azure iterations response");
@@ -1237,7 +1828,7 @@ function findFirstArray(record, keys) {
     return null;
 }
 function requireRecord(value, label) {
-    if (payload_isRecord(value)) {
+    if (isRecord(value)) {
         return value;
     }
     throw new AzureApiError("AZURE_FETCH_FAILED", AZURE_EMPTY_DIFF_STATUS, `${label} was not a JSON object.`);
@@ -1249,7 +1840,7 @@ function requireArray(value, label) {
     throw new AzureApiError("AZURE_FETCH_FAILED", AZURE_EMPTY_DIFF_STATUS, `${label} was not a JSON array.`);
 }
 function requirePositiveInteger(value, label) {
-    if (typeof value === "number" && Number.isSafeInteger(value) && value > 0) {
+    if (isPositiveSafeInteger(value)) {
         return value;
     }
     throw new AzureApiError("AZURE_FETCH_FAILED", AZURE_EMPTY_DIFF_STATUS, `${label} was not a positive integer.`);
@@ -1270,14 +1861,31 @@ function requireString(value, label) {
 function readOptionalString(value) {
     return typeof value === "string" && value.length > 0 ? value : null;
 }
-function payload_isRecord(value) {
-    return typeof value === "object" && value !== null && !Array.isArray(value);
-}
 function isUnknownArray(value) {
     return Array.isArray(value);
 }
 
+;// CONCATENATED MODULE: ./src/util/brand.ts
+/**
+ * Canonical brand string used across CLI, platform, and provider code.
+ *
+ * NOT a generic brand concept: this is the specific string
+ * "umactually-pr-review" that downstream consumers (PR comments, HTTP
+ * User-Agent headers, GitHub agents) match on. Any value other than the
+ * literal "umactually-pr-review" will break dedup loops and integration
+ * parsers, so this is a pinned identifier — not a configuration knob.
+ */
+/** Canonical review brand string; eliminates the 50+ inline "umactually-pr-review" literals across CLI, platform, and provider code. */
+const BRAND = "umactually-pr-review";
+/** Log prefix shared by annotation helpers; eliminates hand-built "umactually-pr-review: " prefixes in stderr diagnostics. */
+const BRAND_PREFIX = `${BRAND}: `;
+/** HTTP User-Agent token shared by provider and platform clients; eliminates duplicated header literals. */
+const USER_AGENT = BRAND;
+/** Azure DevOps PR status context name; prevents status updates from drifting away from the review brand. */
+const AZURE_STATUS_CONTEXT_NAME = `${BRAND}-status`;
+
 ;// CONCATENATED MODULE: ./src/platform/azure/api.ts
+
 
 
 
@@ -1361,7 +1969,7 @@ function buildAzureRequestInit(context) {
     const headers = {
         Authorization: `Bearer ${context.token}`,
         Accept: JSON_MEDIA_TYPE,
-        "User-Agent": "umactually-pr-review",
+        "User-Agent": USER_AGENT,
     };
     const signal = createAbortSignal();
     if (signal === null) {
@@ -1560,13 +2168,16 @@ function findDiffHeaderIndices(diff) {
 }
 
 ;// CONCATENATED MODULE: ./src/platform/azure/context.ts
-class AzureContextError extends Error {
+
+/**
+ * Context-resolution error for the Azure DevOps platform adapter.
+ * Inherits the `PlatformContextError` shape from
+ * `src/util/platform-error.ts` so it shares a common ancestor with
+ * `GithubContextError`. The typed `code` literal remains Azure-specific
+ * — only the base class is shared.
+ */
+class AzureContextError extends PlatformContextError {
     name = "AzureContextError";
-    code;
-    constructor(code, message, options) {
-        super(message, options);
-        this.code = code;
-    }
 }
 const SYSTEM_ACCESSTOKEN_ALIAS = "SYSTEM_ACCESSTOKEN";
 const AZURE_DEVOPS_TOKEN_ALIAS = "AZURE_DEVOPS_TOKEN";
@@ -1669,37 +2280,89 @@ function readAzureTargetBranch(env) {
     return value;
 }
 
+;// CONCATENATED MODULE: ./src/util/http.ts
+
+/** Bearer + JSON Accept + UA; eliminates duplicated auth header construction across platform and provider clients. */
+function authHeaders(token, opts) {
+    const mediaType = opts?.mediaType ?? "application/json";
+    return {
+        Authorization: `Bearer ${token}`,
+        Accept: mediaType,
+        "User-Agent": USER_AGENT,
+        ...opts?.extra,
+    };
+}
+/** GitHub PR review header set; eliminates repeated vnd.github+json and API-version literals. */
+function githubHeaders(token) {
+    return authHeaders(token, {
+        mediaType: "application/vnd.github+json",
+        extra: { "X-GitHub-Api-Version": "2022-11-28" },
+    });
+}
+/** Azure DevOps header set; keeps bearer and UA headers aligned without adding the query-param api-version. */
+function azureHeaders(token) {
+    return authHeaders(token);
+}
+/** Truncate response bodies consistently so duplicated diagnostic logging cannot drift in length or suffix. */
+function truncateBodyForLog(text, maxLen = 500) {
+    return text.length > maxLen ? `${text.slice(0, maxLen)}…(truncated)` : text;
+}
+/**
+ * Generic text-fetch helper used by `fetchGithubPrDiff` and other
+ * platform clients. Returns the response body text on 2xx; throws on
+ * non-2xx or empty body. The caller passes a typed error class so the
+ * platform-specific code/status contract is preserved at the call site.
+ *
+ * Generic over `TCode extends string` so the `error` constructor's
+ * `code` parameter is narrowed to the platform-specific literal
+ * union (e.g. `"GITHUB_FETCH_FAILED" | "GITHUB_DIFF_EMPTY"`), not
+ * widened to plain `string`. Without the generic, the typed
+ * `PlatformApiError<TCode>` code union collapses at the call site.
+ */
+async function fetchTextOrThrow(fetchImpl, input, fail) {
+    const response = await fetchImpl(input.url, { method: "GET", headers: input.headers });
+    if (!response.ok) {
+        throw new fail.error(fail.failCode, response.status, `${fail.platform} request failed with status ${response.status}.`);
+    }
+    const text = await response.text();
+    if (text.length === 0) {
+        throw new fail.error(fail.emptyCode, response.status, `${fail.platform} response body was empty.`);
+    }
+    return text;
+}
+
 ;// CONCATENATED MODULE: ./src/platform/github/api.ts
-class GithubApiError extends Error {
+
+
+
+/**
+ * API-layer error for the GitHub platform adapter. Inherits the
+ * `PlatformApiError` shape from `src/util/platform-error.ts` so it shares
+ * a common ancestor with `AzureApiError` and is catchable as
+ * `PlatformApiError<...>` when callers don't care about the platform.
+ */
+class GithubApiError extends PlatformApiError {
     name = "GithubApiError";
-    code;
-    status;
     constructor(code, status, message, options) {
-        super(message, options);
-        this.code = code;
-        this.status = status;
+        super(code, status, message, options);
     }
 }
 const GITHUB_API_BASE_URL = "https://api.github.com";
 const PULL_DIFF_MEDIA_TYPE = "application/vnd.github.v3.diff";
 async function fetchGithubPrDiff(context, fetchImpl = fetch) {
-    const url = buildPullUrl(context);
-    const response = await fetchImpl(url, {
-        method: "GET",
+    return fetchTextOrThrow(fetchImpl, {
+        url: buildPullUrl(context),
         headers: {
-            Authorization: `Bearer ${context.token}`,
+            ...githubHeaders(context.token),
             Accept: PULL_DIFF_MEDIA_TYPE,
-            "User-Agent": "umactually-pr-review",
+            "User-Agent": USER_AGENT,
         },
+    }, {
+        error: GithubApiError,
+        failCode: "GITHUB_FETCH_FAILED",
+        emptyCode: "GITHUB_DIFF_EMPTY",
+        platform: "GitHub PR diff",
     });
-    if (!response.ok) {
-        throw new GithubApiError("GITHUB_FETCH_FAILED", response.status, `GitHub PR diff request failed with status ${response.status}.`);
-    }
-    const diffText = await response.text();
-    if (diffText.length === 0) {
-        throw new GithubApiError("GITHUB_DIFF_EMPTY", response.status, "GitHub PR diff response body was empty.");
-    }
-    return diffText;
 }
 function buildPullUrl(context) {
     const repositorySegment = `${context.repo.owner}/${context.repo.name}`;
@@ -1708,13 +2371,16 @@ function buildPullUrl(context) {
 
 ;// CONCATENATED MODULE: ./src/platform/github/context.ts
 
-class GithubContextError extends Error {
+
+
+/**
+ * Context-resolution error for the GitHub platform adapter. Inherits the
+ * `PlatformContextError` shape from `src/util/platform-error.ts` so it
+ * shares a common ancestor with `AzureContextError`. The typed `code`
+ * literal remains GitHub-specific — only the base class is shared.
+ */
+class GithubContextError extends PlatformContextError {
     name = "GithubContextError";
-    code;
-    constructor(code, message, options) {
-        super(message, options);
-        this.code = code;
-    }
 }
 async function readGithubContext(env) {
     const token = readGithubToken(env);
@@ -1790,11 +2456,11 @@ async function readGithubPullRequestPayload(env) {
     }
     const rawPayload = await (0,promises_namespaceObject.readFile)(eventPath, "utf8");
     const parsed = JSON.parse(rawPayload);
-    if (!isObject(parsed)) {
+    if (!isRecord(parsed)) {
         throw new GithubContextError("GITHUB_EVENT_PAYLOAD_INVALID", "GitHub event payload must parse as a JSON object.");
     }
     const pullRequest = parsed["pull_request"];
-    if (!isObject(pullRequest)) {
+    if (!isRecord(pullRequest)) {
         throw new GithubContextError("GITHUB_EVENT_PAYLOAD_INVALID", "GitHub event payload must contain a 'pull_request' object.");
     }
     const repository = context_readRecord(parsed, "repository");
@@ -1810,7 +2476,7 @@ async function readGithubPullRequestPayload(env) {
 }
 function readSha(record, key) {
     const slot = record[key];
-    if (!isObject(slot)) {
+    if (!isRecord(slot)) {
         return null;
     }
     const sha = slot["sha"];
@@ -1823,7 +2489,7 @@ function readRepositoryName(record) {
     }
     const owner = record["owner"];
     const name = record["name"];
-    if (isObject(owner) && typeof name === "string" && name.length > 0) {
+    if (isRecord(owner) && typeof name === "string" && name.length > 0) {
         const ownerLogin = owner["login"];
         if (typeof ownerLogin === "string" && ownerLogin.length > 0) {
             return `${ownerLogin}/${name}`;
@@ -1832,16 +2498,13 @@ function readRepositoryName(record) {
     return null;
 }
 function readOptionalNumber(value) {
-    return typeof value === "number" && Number.isSafeInteger(value) && value > 0 ? value : null;
+    return isPositiveSafeInteger(value) ? value : null;
 }
 function context_readRecord(value, label) {
-    if (!isObject(value)) {
+    if (!isRecord(value)) {
         throw new GithubContextError("GITHUB_EVENT_PAYLOAD_INVALID", `GitHub event payload must contain a '${label}' object.`);
     }
     return value;
-}
-function isObject(value) {
-    return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 function readBoolean(value) {
     return value === true;
@@ -1850,46 +2513,49 @@ function readString(value) {
     return typeof value === "string" ? value : "";
 }
 
-;// CONCATENATED MODULE: ./src/cli/live-merge.ts
-const DEFAULT_MAX_COMMENTS = 50;
+;// CONCATENATED MODULE: ./src/config/defaults.ts
+
+/** Canonical prompt-file byte cap shared by config loading and live prompt assembly. */
+const DEFAULT_PROMPT_BYTE_CAP = FIELDS.promptByteCap.defaultValue;
+/** Canonical cap for posted review comments when no CLI/input override is supplied. */
+const DEFAULT_MAX_COMMENTS = FIELDS.maxComments.defaultValue;
+/** Canonical merge fallback cap for chunked live reviews. */
+const DEFAULT_MAX_COMMENTS_MERGE = DEFAULT_MAX_COMMENTS;
+/** Canonical changed-file soft cap for live reviews. */
+const DEFAULT_REVIEW_FILE_LIMIT = FIELDS.reviewFileLimit.defaultValue;
+
+;// CONCATENATED MODULE: ./src/util/severity.ts
 /**
- * Severity ranking used by MERGE-2 (sort) and MERGE-3 (dedup
- * keep-highest). Higher = more urgent. Unknown severities rank 0 so
- * they sort last.
+ * Canonical severity ranking. Scale: critical=4, high=3, medium=2, low=1,
+ * everything else (info, undefined, "")=0. Used by both the live-path
+ * severity filter (live-shared.ts) and the merge-path highest-wins rule
+ * (live-merge.ts). Keep both in sync — these were duplicated until now.
  */
 function severityRank(severity) {
     switch (severity.toLowerCase()) {
-        case "critical":
-            return 4;
-        case "high":
-            return 3;
-        case "medium":
-            return 2;
-        case "low":
-            return 1;
-        default:
-            return 0;
+        case "critical": return 4;
+        case "high": return 3;
+        case "medium": return 2;
+        case "low": return 1;
+        default: return 0;
     }
 }
-/**
- * Verdict ranking used by MERGE-5 (pick worst). Higher = worse. The
- * umbrella strings (COMMENT / SHIP) are treated as best-effort neutral
- * so the worst signal always wins.
- */
-function verdictRank(verdict) {
-    switch (verdict.toUpperCase()) {
-        case "NEEDS_FIX":
-            return 4;
-        case "DISCUSS":
-            return 3;
-        case "COMMENT":
-        case "SHIP":
-        case "APPROVED":
-            return 2;
-        default:
-            return 0;
+/** Visual order for the counts line; eliminates repeated critical → high → medium → low ordering literals. */
+const SEVERITY_ORDER = ["critical", "high", "medium", "low"];
+/** Tally comments by severity; eliminates repeated lowercase accumulation logic in live review paths. */
+function countBySeverity(comments) {
+    const counts = {};
+    for (const comment of comments) {
+        const key = comment.severity.toLowerCase();
+        counts[key] = (counts[key] ?? 0) + 1;
     }
+    return counts;
 }
+
+;// CONCATENATED MODULE: ./src/cli/live-merge.ts
+
+
+
 /**
  * Merge per-chunk LiveProviderOutcome values into one. Pure function —
  * safe to test without I/O.
@@ -1975,6 +2641,11 @@ function mergeReviewResults(outcomes, options) {
 
 
 
+
+
+
+
+
 /**
  * A provider outcome is structurally empty when it carries no inline comments
  * AND no suppressed comments. Used by `simulate-findings` to decide whether
@@ -2015,7 +2686,6 @@ async function evaluateLeakGate(input) {
         message: `Refusing to post: ${report.highConfidenceLeakCount} high-confidence secret(s) detected in the diff. Set --no-detect-leaks to override (NOT recommended).`,
     };
 }
-const live_shared_DEFAULT_MAX_COMMENTS = 50;
 /**
  * Visual verdict badge used in the review-header summary. Both GitHub and
  * Azure DevOps render markdown, so the same badge appears on each platform.
@@ -2032,15 +2702,12 @@ function verdictBadge(verdict) {
  * Group comments by severity (low/medium/high/critical). Used by both the
  * GitHub and Azure review-header builders so the collapsed details block
  * reports the same severity tally regardless of platform.
+ *
+ * Delegates to `src/util/severity.ts` so the live path and the merge path
+ * agree on the exact same lowercase-accumulation logic. Was previously a
+ * local copy that drifted subtly from `live-merge.ts`'s version.
  */
-function countBySeverity(comments) {
-    const counts = {};
-    for (const comment of comments) {
-        const key = comment.severity.toLowerCase();
-        counts[key] = (counts[key] ?? 0) + 1;
-    }
-    return counts;
-}
+const live_shared_countBySeverity = countBySeverity;
 /**
  * Hard upper bound on the inline-finding preview list inside the parent
  * "Top concerns" <details> block. Keeps the parent card from being
@@ -2048,24 +2715,50 @@ function countBySeverity(comments) {
  */
 const TOP_CONCERNS_PREVIEW_LIMIT = 5;
 /**
- * Order in which severity levels appear in the counts line and the
- * "Top concerns" header. Critical first (most urgent), then
- * high → medium → low. The `info` level is intentionally excluded —
- * info findings are tracked in the manifest but are not a signal the
- * reviewer needs to act on.
- */
-const SEVERITY_ORDER = ["critical", "high", "medium", "low"];
-/**
- * Counts line that appears immediately after the verdict badge. Uses
- * emoji + backticks (NOT `**word**` asterisks) because ADO's PR-thread
- * renderer surface has been observed to leak `**...**` as literal
- * asterisks even though the markdown guidance documents that emphasis
- * IS supported. Belt-and-braces compatibility — see CLARITY-3 in
- * test/unit/live-azure-parent-clarity.test.ts.
+ * Three explicit labels — posted / considered / suppressed — that make the
+ * parent card unambiguous about what the model produced vs. what landed
+ * vs. what was rejected. Replaces the old single-line counts that mixed
+ * "info" findings (excluded from the severity tally) with "off-diff"
+ * suppressions, which produced the confusing "0 critical · 0 high · 0
+ * medium · 0 low · 5 suppressed" line followed by a non-empty
+ * "Top concerns" list. CLARITY-9 pins the new contract.
  *
- * The line ALWAYS renders (even when all counts are zero) so a reviewer
- * can distinguish "0 findings, ship it" from "nothing rendered". That
- * consistency is the contract CLARITY-5 pins.
+ * Always renders (even when all three values are zero) so a reviewer
+ * can distinguish "0 found, ship it" from "nothing rendered" —
+ * inherited from CLARITY-5.
+ *
+ * When `parseFailed` is true, the row prepends a prominent
+ * `⚠️ Parse failed` badge so a 0-finding review can never be confused
+ * for a clean bill of health. CLARITY-10.
+ */
+function postedVsConsideredRow(input) {
+    const base = `**Posted:** \`${input.postedCount}\` inline thread(s) · ` +
+        `**Considered:** \`${input.consideredCount}\` finding(s) from model · ` +
+        `**Suppressed:** \`${input.suppressedCount}\` off-diff`;
+    if (input.parseFailed) {
+        // Use emoji + backticks (NOT `**Parse failed**` markdown emphasis)
+        // for consistency with the severity tally above and to avoid the
+        // ADO PR-thread renderer leakage observed for `**...**` patterns
+        // (see CLARITY-3 in test/unit/live-azure-parent-clarity.test.ts).
+        return `> ⚠️ \`Parse failed\` — provider response was not a valid JSON review payload. ` +
+            `No findings were extracted; the raw provider text is included in the Summary section below for diagnostics.\n` +
+            `\n${base}`;
+    }
+    return base;
+}
+/**
+ * Severity tally — critical → high → medium → low — that appears
+ * immediately after the verdict badge and the posted/considered/suppressed
+ * row. Uses emoji + backticks (NOT `**word**` asterisks) because ADO's
+ * PR-thread renderer surface has been observed to leak `**...**` as
+ * literal asterisks even though the markdown guidance documents that
+ * emphasis IS supported. Belt-and-braces compatibility — see CLARITY-3
+ * in test/unit/live-azure-parent-clarity.test.ts.
+ *
+ * The `info` severity is intentionally excluded from this tally (info
+ * findings are tracked in the manifest but are not a signal the reviewer
+ * needs to act on) — the "considered" count above is the unambiguous
+ * answer when an info-heavy payload is in play.
  */
 function countsLine(input) {
     const parts = [];
@@ -2073,19 +2766,28 @@ function countsLine(input) {
         const count = input.severityCounts[level] ?? 0;
         parts.push(`\`${count}\` ${level}`);
     }
-    parts.push(`\`${input.suppressedCount}\` suppressed (off-diff)`);
     return `📊 ${parts.join(" · ")}`;
 }
 /**
  * Build the "Top concerns" <details> block. Shows a preview of the
- * highest-severity findings so a reviewer can decide which to open in
- * the inline threads. Hidden by default so it does not push the counts
- * line below the fold.
+ * highest-severity findings the MODEL produced (pre-filter — this is
+ * NOT the same set as the inline threads posted). The summary line
+ * explicitly says "from model (N of Z)" so the reader knows this is
+ * the pre-filter list. Hidden by default so it does not push the
+ * severity tally below the fold.
+ *
+ * CLARITY-11: when `validCommentCount === 0` but `consideredCount > 0`,
+ * the pre-filter findings were ALL filtered out (severity policy,
+ * max-comments cap, or off-diff suppression). The block must make this
+ * explicit so the reader doesn't confuse "0 posted + N concerns
+ * listed" with a clean bill of health. We re-label the header as
+ * "Filtered findings" and prefix the body with a one-line explanation
+ * of *why* nothing was posted.
  */
 function topConcernsBlock(input) {
     const sorted = [...input.review.comments].sort((a, b) => {
-        const ra = live_shared_severityRank(a.severity);
-        const rb = live_shared_severityRank(b.severity);
+        const ra = severityRank(a.severity);
+        const rb = severityRank(b.severity);
         if (ra !== rb)
             return rb - ra;
         return a.path.localeCompare(b.path);
@@ -2094,9 +2796,23 @@ function topConcernsBlock(input) {
     if (preview.length === 0) {
         return "";
     }
-    const header = preview.length === 1
-        ? "📋 Top concern (1)"
-        : `📋 Top concerns (${preview.length})`;
+    const total = input.review.comments.length;
+    const shown = preview.length;
+    const filteredAll = input.validCommentCount === 0 && total > 0;
+    // Use explicit "Filtered findings" header when every model finding was
+    // filtered — distinguishes this from the normal case where some
+    // findings were posted (so the "Top concerns" preview is a sample of
+    // what landed, not the full rejected list).
+    const header = filteredAll
+        ? shown === 1
+            ? `🔕 Filtered finding from model (1 of ${total}) — none reached inline`
+            : `🔕 Filtered findings from model (${shown} of ${total}) — none reached inline`
+        : shown === 1
+            ? `📋 Top concern from model (1 of ${total})`
+            : `📋 Top concerns from model (${shown} of ${total})`;
+    const explainer = filteredAll
+        ? `\n_The model produced ${total} finding(s); all were filtered by severity policy, the \`max-comments\` cap, or off-diff suppression. The list below is the pre-filter view for transparency — no inline comments were posted._\n`
+        : "";
     const lines = preview.map((comment, index) => {
         const safeBody = sanitizeForPost(comment.body, []);
         const oneLiner = safeBody.replace(/\s+/gu, " ").trim();
@@ -2107,6 +2823,7 @@ function topConcernsBlock(input) {
         "<details>",
         `<summary>${header}</summary>`,
         "",
+        explainer.trimStart(),
         lines.join("\n"),
         "</details>",
         "",
@@ -2177,13 +2894,14 @@ function proseBlock(summary) {
 }
 function metadataManifest(input) {
     const manifest = JSON.stringify({
-        schema: "umactually-pr-review/v1",
+        schema: MANIFEST_SCHEMA,
         verdict: input.review.verdict,
         provider: input.provider,
         modelId: input.modelId,
         inlineCount: input.validCommentCount,
         suppressedCount: input.suppressedCommentCount,
         severityCounts: input.severityCounts,
+        ...(input.review.parseFailed === true ? { parseFailed: true } : {}),
     });
     return `<!-- umactually-pr-review:manifest ${manifest} -->`;
 }
@@ -2197,21 +2915,30 @@ function metadataManifest(input) {
  *
  *   1. Stable HTML marker (used for dedup)
  *   2. Verdict badge — large, first thing after the marker
- *   3. Counts line — emoji + backticks, immediately below the verdict, so a
- *      reviewer sees "how many findings, how many suppressed" within the
- *      first viewport
- *   4. Top-concerns <details> — preview of the highest-severity findings
- *   5. Suppressed <details> — list of off-diff findings
- *   6. Prose summary <details> — long provider narrative, hidden by default
- *   7. Footer — model + provider + inline-thread count, small text
- *   8. Hidden HTML comment with the JSON manifest for AI agents
+ *   3. Posted / Considered / Suppressed row — three labeled counts that
+ *      tell the reviewer what actually landed, what the model produced,
+ *      and what was rejected (off-diff). CLARITY-9.
+ *   4. Severity tally — emoji + backticks for critical → high → medium → low
+ *      immediately after the verdict, so a reviewer sees the per-severity
+ *      split within the first viewport. The `info` level is excluded here
+ *      (intentionally — info findings are not actionable) which is why the
+ *      "Considered" count above is the authoritative total.
+ *   5. Top-concerns <details> — preview of the highest-severity findings
+ *      the MODEL produced (pre-filter). The summary line explicitly says
+ *      "from model (N of Z)" so the reader knows this is pre-filter, not
+ *      a duplicate of the "Posted" count.
+ *   6. Suppressed <details> — list of off-diff findings
+ *   7. Prose summary <details> — long provider narrative, hidden by default
+ *   8. Footer — model + provider + inline-thread count, small text
+ *   9. Hidden HTML comment with the JSON manifest for AI agents
  *
  * The shape is identical regardless of verdict, finding count, or whether
  * the provider returned a parse-fail fallback — that consistency is what
  * lets a reviewer scan the card in 5 seconds.
  */
 function buildReviewBody(input) {
-    const severityCounts = countBySeverity(input.review.comments);
+    const severityCounts = live_shared_countBySeverity(input.review.comments);
+    const consideredCount = input.review.comments.length;
     const verdict = verdictBadge(input.review.verdict);
     const safeSummary = sanitizeForPost(input.review.summary, input.secrets);
     const safeModelId = sanitizeForPost(input.modelId, input.secrets);
@@ -2219,16 +2946,20 @@ function buildReviewBody(input) {
     const footer = `🤖 Generated by \`${safeModelId}\` via \`${safeProvider}\` · ` +
         `${input.validCommentCount} inline thread(s) posted`;
     const sections = [
-        run_review_REVIEW_MARKER,
+        REVIEW_MARKER,
         "",
         `## ${verdict}`,
         "",
-        countsLine({
-            severityCounts,
+        postedVsConsideredRow({
+            postedCount: input.validCommentCount,
+            consideredCount,
             suppressedCount: input.suppressedCommentCount,
+            parseFailed: input.review.parseFailed === true,
         }),
         "",
-        topConcernsBlock({ review: input.review }),
+        countsLine({ severityCounts }),
+        "",
+        topConcernsBlock({ review: input.review, validCommentCount: input.validCommentCount }),
         suppressedBlock({ suppressedComments: input.review.suppressedComments }),
         proseBlock(safeSummary),
         footer,
@@ -2262,8 +2993,8 @@ function buildInlineCommentBody(input) {
     const safeBody = input.comment.body.length > 0
         ? sanitizeForPost(input.comment.body, input.secrets)
         : sanitizeForPost(fallback, input.secrets);
-    const marker = input.includeMarker === true ? `${run_review_REVIEW_MARKER}\n` : "";
-    const parentRef = typeof input.parentThreadId === "number" && Number.isSafeInteger(input.parentThreadId) && input.parentThreadId > 0
+    const marker = input.includeMarker === true ? `${REVIEW_MARKER}\n` : "";
+    const parentRef = isPositiveSafeInteger(input.parentThreadId)
         ? `> Reply to PR review summary #${input.parentThreadId}\n\n`
         : "";
     return `${marker}${parentRef}\`${safeSeverity}\` \`${safeCategory}\`\n\n${safeBody}`;
@@ -2273,7 +3004,71 @@ function buildInlineCommentBody(input) {
  * fallback body. Keeps the parent PR-level summary card from being filled
  * with an unbounded provider response if the model misbehaves.
  */
-const MALFORMED_PROVIDER_FALLBACK_RAW_MAX = 1000;
+/**
+ * Total character budget for the parse-fail diagnostic block. The block
+ * shows BOTH the head (provider's opening metadata events) and the tail
+ * (the final `response.completed` event with `output_text`) so reviewers
+ * can see what the model began with AND where it ended up — not just
+ * whichever end happened to land first. CLARITY-12.
+ *
+ * 4000 chars is enough to capture metadata (~400 chars) plus a typical
+ * model review (~2000-3500 chars of JSON) without truncation; long reviews
+ * get head+tail with a quantifier in the middle.
+ */
+const MALFORMED_PROVIDER_FALLBACK_RAW_MAX = 4000;
+/** Size of each end-piece (head / tail) when the raw text exceeds the budget. */
+const MALFORMED_PROVIDER_FALLBACK_HALF_BUDGET = Math.floor(MALFORMED_PROVIDER_FALLBACK_RAW_MAX / 2);
+/**
+ * Build a head + tail diagnostic snippet from a long rawText, with a
+ * quantifier showing exactly how many chars were omitted in the middle.
+ * Used by the parse-fail body so reviewers can see both ends of the
+ * stream — typically the opening `response.created`/`response.in_progress`
+ * metadata events AND the final `response.completed` with `output_text`.
+ *
+ * Truncates on a newline boundary where possible so the head/tail pieces
+ * end cleanly. If no newline exists within the last 80 chars of the head
+ * budget, falls back to a hard cut (better than dropping content silently).
+ *
+ * @param rawText  Full raw provider response body
+ * @param halfBudget  Number of chars to take from each end
+ * @returns  Head + quantifier + tail string suitable for the diagnostic block
+ */
+function truncateHeadAndTail(rawText, halfBudget) {
+    if (rawText.length <= halfBudget * 2) {
+        return rawText;
+    }
+    const head = trimToNewline(rawText.slice(0, halfBudget), "head");
+    const tail = trimToNewline(rawText.slice(rawText.length - halfBudget), "tail");
+    const omitted = rawText.length - head.length - tail.length;
+    return `${head}\n\n… [${omitted} chars omitted] …\n\n${tail}`;
+}
+/**
+ * Trim a head/tail piece to the nearest clean line so the snippet
+ * doesn't end mid-string. For the head, finds the LAST newline in the
+ * piece (so we cut cleanly before the next event). For the tail, finds
+ * the FIRST newline that starts a "real" line (skipping the leading
+ * newline that sits at the start of the tail slice).
+ */
+function trimToNewline(piece, end) {
+    if (end === "head") {
+        // For head: trim to the last newline. Everything after the last
+        // newline within the head piece is a partial line — drop it.
+        const lastNewline = piece.lastIndexOf("\n");
+        if (lastNewline === -1) {
+            return piece;
+        }
+        return piece.slice(0, lastNewline);
+    }
+    // For tail: the first char of the tail slice is often a newline
+    // (because we cut at a line boundary in the original stream). Skip
+    // past leading whitespace + newlines to land on the first real
+    // character of the tail content.
+    let i = 0;
+    while (i < piece.length && (piece[i] === "\n" || piece[i] === " " || piece[i] === "\r")) {
+        i += 1;
+    }
+    return piece.slice(i);
+}
 /**
  * Build a `LiveReview` to use when the provider returned a non-JSON or
  * unparseable response. Returns `verdict: "COMMENT"` with zero findings
@@ -2287,8 +3082,14 @@ const MALFORMED_PROVIDER_FALLBACK_RAW_MAX = 1000;
 function buildMalformedProviderFallback(input) {
     const safeProvider = sanitizeForPost(input.provider, input.secrets);
     const safeModelId = sanitizeForPost(input.modelId, input.secrets);
+    // CLARITY-12: show head + tail with a quantifier in the middle so the
+    // diagnostic captures both the opening events and the final
+    // response.completed output_text — not just whichever end happened
+    // to fit in the first N chars. The previous "first N chars only"
+    // truncation hid the actual response.completed event, leading
+    // reviewers to incorrectly conclude the model returned only metadata.
     const truncated = input.rawText.length > MALFORMED_PROVIDER_FALLBACK_RAW_MAX
-        ? `${input.rawText.slice(0, MALFORMED_PROVIDER_FALLBACK_RAW_MAX)}\n…(truncated)`
+        ? truncateHeadAndTail(input.rawText, MALFORMED_PROVIDER_FALLBACK_HALF_BUDGET)
         : input.rawText;
     const safeRaw = sanitizeForPost(truncated, input.secrets);
     const detailsBlock = [
@@ -2311,6 +3112,7 @@ function buildMalformedProviderFallback(input) {
         verdict: "COMMENT",
         comments: [],
         suppressedComments: [],
+        parseFailed: true,
     };
 }
 /**
@@ -2351,7 +3153,7 @@ function buildTooLargeFallback(input) {
 }
 function selectPostableComments(input) {
     const positions = parseDiffPositions(input.diffText);
-    const maxComments = input.parsed.maxComments ?? live_shared_DEFAULT_MAX_COMMENTS;
+    const maxComments = input.parsed.maxComments ?? DEFAULT_MAX_COMMENTS;
     const comments = [];
     for (const comment of input.review.comments) {
         if (comments.length >= maxComments) {
@@ -2380,9 +3182,12 @@ function countSuppressedComments(review, diffText) {
     }
     return count;
 }
-function mapReviewVerdictToGithubEvent(verdict) {
-    return verdict === "NEEDS_FIX" ? "REQUEST_CHANGES" : "COMMENT";
-}
+/**
+ * Map a review verdict to a GitHub review-submission event. Delegates to
+ * `src/util/verdict.ts` so the merge-path verdict-rank table and the
+ * live-path event mapping share the same canonical definitions.
+ */
+const mapReviewVerdictToGithubEvent = mapVerdictToGithubEvent;
 /**
  * Map a review verdict to an Azure DevOps PR-status `state` value.
  *
@@ -2390,7 +3195,7 @@ function mapReviewVerdictToGithubEvent(verdict) {
  *   https://learn.microsoft.com/en-us/rest/api/azure/devops/git/pull-request-statuses/create?view=azure-devops-rest-7.1
  *   "State of the status."  (notSet | pending | succeeded | failed | error | notApplicable)
  *
- * Policy:
+ * Policy (current — same as the live CLI):
  *   - A failing UmActually review is a **finding**, not a merge-blocking
  *     check. The merge gate is owned by the ADO branch-policy build
  *     validation check (which runs the actual CI pipeline and is
@@ -2403,20 +3208,12 @@ function mapReviewVerdictToGithubEvent(verdict) {
  *     indicate the CLI ran cleanly, so we collapse those to
  *     `"succeeded"` and reserve `"pending"` for "ran and found things
  *     to look at" (`NEEDS_FIX`) plus the safe-default fallthrough.
+ *
+ * Delegates to `src/util/verdict.ts` with the `"current"` policy so the
+ * legacy S4 RED-contract mapping (NEEDS_FIX → "failed") stays in one
+ * place and is selectable per call site.
  */
-function mapReviewVerdictToAzureStatus(verdict) {
-    switch (verdict) {
-        case "APPROVED":
-        case "COMMENT":
-        case "DISCUSS":
-        case "SHIP":
-            return "succeeded";
-        case "NEEDS_FIX":
-        case "":
-        default:
-            return "pending";
-    }
-}
+const mapReviewVerdictToAzureStatus = (verdict) => mapVerdictToAzureStatus(verdict, "current");
 function sanitizeForPost(value, secrets) {
     let sanitized = value
         .replace(/Authorization:\s*[^\r\n]*/giu, "[REDACTED_AUTHORIZATION_HEADER]")
@@ -2436,7 +3233,7 @@ async function readTextResponse(response) {
         throw new LiveReviewError("HTTP_RESPONSE_READ_FAILED", "Failed to read REST response body.", { cause: error });
     }
 }
-async function readJsonResponse(response) {
+async function live_shared_readJsonResponse(response) {
     const text = await readTextResponse(response);
     if (text.length === 0) {
         return null;
@@ -2452,7 +3249,7 @@ async function readJsonResponse(response) {
     }
 }
 function readResponseId(value) {
-    if (!live_shared_isRecord(value)) {
+    if (!isRecord(value)) {
         return undefined;
     }
     const id = value["id"];
@@ -2484,9 +3281,7 @@ function ensureHttpOk(response, code, action) {
     });
     throw new LiveReviewError(code, `${action} failed with HTTP ${response.status}.`);
 }
-function live_shared_isRecord(value) {
-    return typeof value === "object" && value !== null && !Array.isArray(value);
-}
+
 function passesSeverityPolicy(comment, parsed) {
     if (parsed.ignoreMinor && comment.severity.toLowerCase() === "low") {
         return false;
@@ -2495,24 +3290,11 @@ function passesSeverityPolicy(comment, parsed) {
     if (minimum === null) {
         return true;
     }
-    return live_shared_severityRank(comment.severity) >= live_shared_severityRank(minimum);
-}
-function live_shared_severityRank(severity) {
-    switch (severity.toLowerCase()) {
-        case "critical":
-            return 4;
-        case "high":
-            return 3;
-        case "medium":
-            return 2;
-        case "low":
-            return 1;
-        default:
-            return 0;
-    }
+    return severityRank(comment.severity) >= severityRank(minimum);
 }
 
 ;// CONCATENATED MODULE: ./src/cli/live-azure.ts
+
 
 
 
@@ -2666,11 +3448,11 @@ function threadCommentIds(thread) {
 async function listAzureThreads(context, fetchImpl) {
     const response = await fetchImpl(azureThreadsUrl(context), {
         method: "GET",
-        headers: azureHeaders(context.token),
+        headers: live_azure_azureHeaders(context.token),
     });
     ensureHttpOk(response, "AZURE_LIST_THREADS_FAILED", "Azure list PR threads");
-    const json = await readJsonResponse(response);
-    if (!live_shared_isRecord(json)) {
+    const json = await live_shared_readJsonResponse(response);
+    if (!isRecord(json)) {
         return [];
     }
     const value = json["value"];
@@ -2694,7 +3476,7 @@ function hasDuplicateThread(threads, comment) {
         if (AZURE_RESOLVED_STATUSES.has(thread.status))
             return true;
         if (AZURE_OPEN_STATUSES.has(thread.status)) {
-            return thread.comments.some((c) => c.content.includes(run_review_REVIEW_MARKER));
+            return thread.comments.some((c) => c.content.includes(REVIEW_MARKER));
         }
         return false;
     });
@@ -2717,7 +3499,7 @@ function findExistingParentPrComment(threads) {
         const firstComment = thread.comments[0];
         if (firstComment === undefined)
             continue;
-        if (!firstComment.content.includes(run_review_REVIEW_MARKER))
+        if (!firstComment.content.includes(REVIEW_MARKER))
             continue;
         return { thread, comment: firstComment };
     }
@@ -2744,7 +3526,7 @@ async function postParentThread(context, fetchImpl, body) {
     try {
         const response = await fetchImpl(azureThreadsUrl(context), {
             method: "POST",
-            headers: azureHeaders(context.token),
+            headers: live_azure_azureHeaders(context.token),
             body: JSON.stringify({
                 comments: [
                     {
@@ -2758,7 +3540,7 @@ async function postParentThread(context, fetchImpl, body) {
             }),
         });
         ensureHttpOk(response, "AZURE_CREATE_PR_COMMENT_FAILED", "Azure create PR comment");
-        const created = readResponseId(await readJsonResponse(response));
+        const created = readResponseId(await live_shared_readJsonResponse(response));
         return created === undefined ? undefined : { id: created };
     }
     catch (error) {
@@ -2788,7 +3570,7 @@ async function deleteParentThreadComments(input) {
         try {
             const response = await input.fetchImpl(url, {
                 method: "DELETE",
-                headers: azureHeaders(input.context.token),
+                headers: live_azure_azureHeaders(input.context.token),
             });
             if (!response.ok && response.status !== 204) {
                 await surfaceAzureHttpError({
@@ -2832,7 +3614,7 @@ async function patchInlineCommentWithParentRef(input) {
     try {
         const response = await input.fetchImpl(url, {
             method: "PATCH",
-            headers: azureHeaders(input.context.token),
+            headers: live_azure_azureHeaders(input.context.token),
             body: JSON.stringify({
                 content,
                 // Per Microsoft Learn the request body is the Comment shape
@@ -2856,7 +3638,7 @@ async function patchInlineCommentWithParentRef(input) {
 async function postAzureThread(input) {
     const response = await input.fetchImpl(azureThreadsUrl(input.context), {
         method: "POST",
-        headers: azureHeaders(input.context.token),
+        headers: live_azure_azureHeaders(input.context.token),
         body: JSON.stringify({
             comments: [
                 {
@@ -2883,8 +3665,8 @@ async function postAzureThread(input) {
         }),
     });
     ensureHttpOk(response, "AZURE_CREATE_THREAD_FAILED", "Azure create PR thread");
-    const json = await readJsonResponse(response);
-    if (!live_shared_isRecord(json)) {
+    const json = await live_shared_readJsonResponse(response);
+    if (!isRecord(json)) {
         return undefined;
     }
     const threadId = readResponseId(json);
@@ -2899,7 +3681,7 @@ async function postAzureThread(input) {
         return undefined;
     }
     const firstComment = comments[0];
-    if (!live_shared_isRecord(firstComment)) {
+    if (!isRecord(firstComment)) {
         return undefined;
     }
     const commentId = firstComment["id"];
@@ -2922,8 +3704,11 @@ async function postAzureThread(input) {
  * The genre stays `"pr-review"` for parity with the existing entries
  * already on PR #42 (which all carry genre `"pr-review"`), so the
  * dedup helper below can locate legacy entries on the very next run.
+ *
+ * The context NAME is sourced from `src/util/brand.ts` (single source
+ * of truth for the brand string). The local `AZURE_STATUS_CONTEXT_GENRE`
+ * stays here because it's a runtime-dedup detail, not brand state.
  */
-const AZURE_STATUS_CONTEXT_NAME = "umactually-pr-review-status";
 const AZURE_STATUS_CONTEXT_GENRE = "pr-review";
 async function postAzureStatus(input) {
     const safeDescription = sanitizeAzureStatusDescription(input.description);
@@ -2957,7 +3742,7 @@ async function postAzureStatus(input) {
     }
     const response = await input.fetchImpl(azureStatusesUrl(input.context), {
         method: "POST",
-        headers: azureHeaders(input.context.token),
+        headers: live_azure_azureHeaders(input.context.token),
         body: JSON.stringify({
             state: input.state,
             description: safeDescription,
@@ -3004,7 +3789,7 @@ async function postAzureStatus(input) {
 async function listAzureStatuses(context, fetchImpl) {
     const response = await fetchImpl(azureStatusesUrl(context), {
         method: "GET",
-        headers: azureHeaders(context.token),
+        headers: live_azure_azureHeaders(context.token),
     });
     if (!response.ok) {
         // Treat a list failure as best-effort: log the ADO body so a
@@ -3016,8 +3801,8 @@ async function listAzureStatuses(context, fetchImpl) {
         });
         return [];
     }
-    const json = await readJsonResponse(response);
-    if (!live_shared_isRecord(json)) {
+    const json = await live_shared_readJsonResponse(response);
+    if (!isRecord(json)) {
         return [];
     }
     const value = json["value"];
@@ -3034,7 +3819,7 @@ async function listAzureStatuses(context, fetchImpl) {
     return entries;
 }
 function parseAzureStatusEntry(value) {
-    if (!live_shared_isRecord(value)) {
+    if (!isRecord(value)) {
         return null;
     }
     const rawId = value["id"];
@@ -3046,7 +3831,7 @@ function parseAzureStatusEntry(value) {
     const updatedDateRaw = value["updatedDate"];
     const updatedDate = typeof updatedDateRaw === "string" ? updatedDateRaw : "";
     const contextRaw = value["context"];
-    if (!live_shared_isRecord(contextRaw)) {
+    if (!isRecord(contextRaw)) {
         return null;
     }
     const nameRaw = contextRaw["name"];
@@ -3133,7 +3918,7 @@ async function deleteAzureStatusById(input) {
     try {
         response = await input.fetchImpl(url, {
             method: "DELETE",
-            headers: azureHeaders(input.context.token),
+            headers: live_azure_azureHeaders(input.context.token),
         });
     }
     catch (error) {
@@ -3218,7 +4003,7 @@ function sanitizeAzureStatusDescription(value) {
         .slice(0, 255);
 }
 function parseAzureThread(value) {
-    if (!live_shared_isRecord(value)) {
+    if (!isRecord(value)) {
         return null;
     }
     const status = value["status"];
@@ -3236,7 +4021,7 @@ function parseAzureThread(value) {
     //   - key absent (flat fixture)     → inline thread with filePath + line at top level
     let threadContext = null;
     if (hasThreadContextKey) {
-        if (live_shared_isRecord(nestedContext)) {
+        if (isRecord(nestedContext)) {
             const parsed = live_azure_readThreadContext(nestedContext);
             if (parsed !== null) {
                 threadContext = parsed;
@@ -3270,14 +4055,14 @@ function live_azure_readThreadContext(record) {
 }
 function readRightFileStart(context) {
     const start = context["rightFileStart"];
-    if (!live_shared_isRecord(start)) {
+    if (!isRecord(start)) {
         return null;
     }
     const line = start["line"];
     return typeof line === "number" && Number.isSafeInteger(line) ? { line } : null;
 }
 function parseAzureComment(value) {
-    if (!live_shared_isRecord(value)) {
+    if (!isRecord(value)) {
         return null;
     }
     const content = value["content"];
@@ -3298,7 +4083,7 @@ function azurePrBaseUrl(context) {
     const project = encodeURIComponent(context.project);
     return `https://dev.azure.com/${context.org}/${project}/_apis/git/repositories/${context.repoId}/pullRequests/${context.prNumber}`;
 }
-function azureHeaders(token) {
+function live_azure_azureHeaders(token) {
     return {
         Authorization: `Bearer ${token}`,
         Accept: "application/json",
@@ -3377,16 +4162,16 @@ async function runGithubLive(input) {
 async function findExistingMarkerReview(context, fetchImpl) {
     const response = await fetchImpl(githubReviewsUrl(context), {
         method: "GET",
-        headers: githubHeaders(context.token),
+        headers: live_github_githubHeaders(context.token),
     });
     ensureHttpOk(response, "GITHUB_LIST_REVIEWS_FAILED", "GitHub list reviews");
-    const json = await readJsonResponse(response);
+    const json = await live_shared_readJsonResponse(response);
     if (!Array.isArray(json)) {
         return null;
     }
     for (const entry of json) {
         const review = parseExistingReview(entry);
-        if (review !== null && review.body.includes(run_review_REVIEW_MARKER) && review.state !== "DISMISSED") {
+        if (review !== null && review.body.includes(REVIEW_MARKER) && review.state !== "DISMISSED") {
             return review;
         }
     }
@@ -3396,7 +4181,7 @@ async function updateExistingReview(input) {
     try {
         const response = await input.fetchImpl(`${githubReviewsUrl(input.context)}/${input.review.id}`, {
             method: "PUT",
-            headers: githubHeaders(input.context.token),
+            headers: live_github_githubHeaders(input.context.token),
             body: JSON.stringify({ body: input.body }),
         });
         ensureHttpOk(response, "GITHUB_UPDATE_REVIEW_FAILED", "GitHub update review");
@@ -3413,7 +4198,7 @@ async function updateExistingReview(input) {
 async function deleteExistingReview(input) {
     const response = await input.fetchImpl(`${githubReviewsUrl(input.context)}/${input.review.id}`, {
         method: "DELETE",
-        headers: githubHeaders(input.context.token),
+        headers: live_github_githubHeaders(input.context.token),
     });
     if (response.status === 204 || response.status === 404) {
         return;
@@ -3429,11 +4214,11 @@ async function createGithubReview(input) {
     };
     const response = await input.fetchImpl(githubReviewsUrl(input.context), {
         method: "POST",
-        headers: githubHeaders(input.context.token),
+        headers: live_github_githubHeaders(input.context.token),
         body: JSON.stringify(request),
     });
     ensureHttpOk(response, "GITHUB_CREATE_REVIEW_FAILED", "GitHub create review");
-    return readResponseId(await readJsonResponse(response));
+    return readResponseId(await live_shared_readJsonResponse(response));
 }
 function parseExistingReview(value) {
     if (typeof value !== "object" || value === null || Array.isArray(value)) {
@@ -3455,7 +4240,7 @@ function githubReviewsUrl(context) {
     const repo = encodeURIComponent(context.repo.name);
     return `https://api.github.com/repos/${owner}/${repo}/pulls/${context.prNumber}/reviews`;
 }
-function githubHeaders(token) {
+function live_github_githubHeaders(token) {
     return {
         Authorization: `Bearer ${token}`,
         Accept: "application/vnd.github+json",
@@ -3497,11 +4282,18 @@ function extractJsonBlock(rawText) {
     return null;
 }
 /**
- * Find the body of a ```json ... ``` fence, or return the original text when none.
- * Exposed so callers can reuse the fence-closure guard from raw-output.ts.
+ * Find the body of a ```...``` fence (with or without a language tag),
+ * or return the original text when none. Exposed so callers can reuse
+ * the fence-closure guard from raw-output.ts.
+ *
+ * Accepts any opening fence (```` ```json ````, ```` ```json5 ````, or just
+ * ```` ``` ````) because the model sometimes drops the language tag from
+ * markdown code blocks wrapping a JSON payload. The matching closing
+ * fence is found lazily after the first newline, so the body's content
+ * is captured verbatim including internal whitespace and newlines.
  */
 function extractJsonFenceBody(rawText) {
-    const fenceMatch = /```json\s*\n([\s\S]*?)\n```/.exec(rawText);
+    const fenceMatch = /```[a-zA-Z0-9_+\-]*\s*\n([\s\S]*?)\n```/.exec(rawText);
     const body = fenceMatch?.[1];
     return body ?? rawText;
 }
@@ -3562,12 +4354,14 @@ function tryParseJson(candidate) {
 
 ;// CONCATENATED MODULE: ./src/provider/provider-parse.ts
 
-function buildResponsesBody(config) {
+
+function buildResponsesBody(config, opts) {
+    const userContent = opts?.userOverride ?? config.user;
     const body = {
         model: config.model,
         input: [
             { role: "system", content: config.system },
-            { role: "user", content: config.user },
+            { role: "user", content: userContent },
         ],
     };
     if (config.maxOutputTokens !== undefined) {
@@ -3578,12 +4372,13 @@ function buildResponsesBody(config) {
     }
     return body;
 }
-function buildChatBody(config) {
+function buildChatBody(config, opts) {
+    const userContent = opts?.userOverride ?? config.user;
     const body = {
         model: config.model,
         messages: [
             { role: "system", content: config.system },
-            { role: "user", content: config.user },
+            { role: "user", content: userContent },
         ],
     };
     if (config.maxOutputTokens !== undefined) {
@@ -3594,70 +4389,237 @@ function buildChatBody(config) {
     }
     return body;
 }
+/**
+ * Extract the text payload from a provider response. Handles four shapes:
+ *   1. SSE stream (responses API output_text.delta / chat completions delta /
+ *      generic top-level delta) — concatenates fragments into one string.
+ *   2. Plain JSON object (Responses API or Chat Completions) — returns
+ *      `output_text` (responses), joins `output[].content[].text`
+ *      (responses), or `choices[].message.content` (chat).
+ *   3. Raw text — returned verbatim (caller tries to extract a JSON
+ *      block from it via `extractJsonBlock`).
+ *   4. Empty input — returns `""`.
+ *
+ * The function does NOT report "unusable" — it always returns SOMETHING
+ * (possibly empty) and lets the downstream `parseReviewPayload` plus
+ * the CLARITY-10 strict empty-fields check decide whether the result
+ * is a valid review. This keeps the public signature stable
+ * (`string`, not `string | null`) so existing callers don't need to
+ * change their null-handling.
+ *
+ * History note: an earlier revision returned `string | null` to signal
+ * "unusable SSE stream with no text fragments" (CLARITY-10). That
+ * approach was reverted in favor of returning the raw SSE text in
+ * that case so `parseReviewPayload`'s strict empty-fields check (and
+ * the CLARITY-10b soft parse-fail detector) catches the failure as a
+ * null return rather than relying on a separate null-handling path
+ * in callers.
+ */
 function extractTextPayload(endpoint, rawText) {
-    const sseText = tryExtractSse(rawText);
-    if (sseText !== null) {
-        return sseText;
+    if (rawText.length === 0) {
+        return "";
     }
+    // 1. SSE stream (input starts with "data:" or "event:" prefix).
+    //    Concatenate fragments. If the stream only has metadata events
+    //    (no usable text fragments), return the rawText so the
+    //    downstream strict-empty-fields check (CLARITY-10) catches
+    //    it as a parse failure.
+    const trimmedStart = rawText.trimStart();
+    if (trimmedStart.startsWith("data:") || trimmedStart.startsWith("event:")) {
+        const sseText = tryExtractSse(rawText);
+        if (sseText !== null && sseText.length > 0) {
+            return sseText;
+        }
+        // SSE was detected but no usable fragments — return rawText so the
+        // empty-fields strict check can fire. (Returning `""` here would
+        // cause `parseReviewPayload("")` to return null without the
+        // strict-check safeguard.)
+        return rawText;
+    }
+    // 2. Plain JSON object.
     const parsed = provider_parse_tryParseJson(rawText);
-    if (parsed === undefined || !isPlainObject(parsed)) {
-        return rawText;
-    }
-    if (endpoint === "responses") {
-        const direct = provider_parse_readStringField(parsed, "output_text");
-        if (direct !== null) {
-            return direct;
-        }
-        const output = readArrayField(parsed, "output");
-        if (output !== null) {
-            const fromOutput = joinOutputText(output);
-            if (fromOutput.length > 0) {
-                return fromOutput;
+    if (parsed !== undefined && isRecord(parsed)) {
+        if (endpoint === "responses") {
+            const direct = provider_parse_readStringField(parsed, "output_text");
+            if (direct !== null && direct.length > 0) {
+                return direct;
             }
+            const output = readArrayField(parsed, "output");
+            if (output !== null) {
+                const fromOutput = joinOutputText(output);
+                if (fromOutput.length > 0) {
+                    return fromOutput;
+                }
+            }
+            // Not in the Responses API shape — fall through to raw text
+            // so `parseReviewPayload` can extract a direct review JSON
+            // object (model returned `{"summary": ..., "verdict": ...}`).
         }
-        return rawText;
-    }
-    const choices = readArrayField(parsed, "choices");
-    if (choices === null) {
-        return rawText;
-    }
-    for (const choice of choices) {
-        const message = readRecordField(choice, "message");
-        if (message === null) {
-            continue;
+        else {
+            // Chat completions.
+            const choices = readArrayField(parsed, "choices");
+            if (choices !== null) {
+                for (const choice of choices) {
+                    const message = readRecordField(choice, "message");
+                    if (message === null)
+                        continue;
+                    const content = provider_parse_readStringField(message, "content");
+                    if (content !== null && content.length > 0) {
+                        return content;
+                    }
+                }
+            }
+            // Chat JSON shape but no extractable content — fall through.
         }
-        const content = provider_parse_readStringField(message, "content");
-        if (content !== null) {
-            return content;
-        }
     }
+    // 3. Raw text (could be plain prose, markdown, or a JSON block
+    //    wrapped in ``` fences — `extractJsonBlock` handles the latter).
     return rawText;
 }
+/**
+ * Parse a provider text response into a structured review payload.
+ *
+ * Returns `null` in three distinct cases:
+ *   1. No JSON object found in `text` (plain prose, markdown, or non-JSON
+ *      SSE tail — i.e. `extractJsonBlock` yielded nothing parseable).
+ *   2. `extractJsonBlock` returned a value that isn't a JSON object
+ *      (e.g. a string or array).
+ *   3. (CLARITY-10b) The parsed object is structurally valid but its
+ *      `summary` matches an apology pattern AND it has zero findings
+ *      (no `comments`, no `suppressed_comments`). The model returned a
+ *      legitimate-looking JSON wrapper around an apology message; we
+ *      treat it as a parse failure so the self-healing retry fires.
+ *
+ * Callers that need to distinguish the cases (e.g. for different error
+ * messages) can use the returned `ProviderReviewPayload` shape to
+ * differentiate "structured empty review" (returned, all fields empty)
+ * from "no parseable content" (returns null).
+ */
 function parseReviewPayload(text) {
     const candidate = extractJsonBlock(text);
-    if (!isPlainObject(candidate)) {
+    if (!isRecord(candidate)) {
         return null;
     }
-    return {
-        summary: provider_parse_readStringField(candidate, "summary") ?? "",
-        verdict: provider_parse_readStringField(candidate, "verdict") ?? "",
-        comments: provider_parse_readCommentArray(candidate["comments"]),
-        suppressed_comments: provider_parse_readCommentArray(candidate["suppressed_comments"]),
-    };
+    const summary = provider_parse_readStringField(candidate, "summary") ?? "";
+    const verdict = provider_parse_readStringField(candidate, "verdict") ?? "";
+    const comments = provider_parse_readCommentArray(candidate["comments"]);
+    const suppressed_comments = provider_parse_readCommentArray(candidate["suppressed_comments"]);
+    // Soft parse-fail detector (CLARITY-10b): some providers/models return
+    // a *structurally valid* JSON wrapper whose contents are an apology
+    // ("No diff or file contents were provided to review...", "I cannot
+    // review this without...", "Please share the diff..."). These pass
+    // the basic `extractJsonBlock` parse AND the strict non-empty check
+    // (because `summary` is non-empty) but are functionally equivalent
+    // to a parse failure — the model did not produce a review.
+    //
+    // Surface these as null so the self-healing retry path fires and
+    // the parse-fail badge renders, instead of silently posting a
+    // 0-finding review that LOOKS clean.
+    //
+    // Only trigger when there are zero findings (comments + suppressed_comments).
+    // A real review with findings but a frustrated summary ("The code looks
+    // fine but I noticed one issue...") is legitimate; we don't want to
+    // rewrite that as a parse-fail.
+    if (comments.length === 0 &&
+        suppressed_comments.length === 0 &&
+        isApologySummary(summary)) {
+        return null;
+    }
+    return { summary, verdict, comments, suppressed_comments };
 }
+/**
+ * Pattern match for "the model couldn't actually review the input" apology
+ * summaries. These are NOT real reviews even when wrapped in valid JSON.
+ *
+ * Matched phrases (case-insensitive, whole-word where reasonable):
+ *   - "no diff" / "no file contents" / "no contents were provided"
+ *   - "please share" / "please provide" / "please send"
+ *   - "i cannot" / "i'm unable" / "i am unable" / "i can not"
+ *   - "cannot review" / "unable to review" / "can't review"
+ *   - "did not receive" / "haven't received" / "no input"
+ *
+ * The match is intentionally narrow — it must look like the model is
+ * telling us *it* failed to receive input, not commenting on the code.
+ * Phrases like "no issues found" or "nothing to flag" are deliberately
+ * excluded — those are legitimate clean-review signals.
+ */
+function isApologySummary(summary) {
+    if (summary.length === 0) {
+        return false;
+    }
+    const lower = summary.toLowerCase();
+    // Most common patterns from the 3e62237 self-review incident.
+    // Each pattern is anchored narrowly to avoid over-matching legitimate
+    // clean-review summaries that happen to contain "cannot" or "review"
+    // in other contexts (e.g. "I cannot find any issues to review").
+    const APOLOGY_PATTERNS = [
+        // "no diff / file contents were provided / shared / available"
+        /\bno\s+(diff|file\s+contents?|contents?)\b.*\b(provided|shared|available|supplied)\b/u,
+        // "please share / provide / send the diff / file / pull request"
+        /\bplease\s+(share|provide|send)\s+(the\s+)?(diff|file|pull\s+request|pr)\b/u,
+        // "I cannot / can't review this / it / the PR" — narrow to the
+        // direct-object-after-verb pattern so "I cannot find issues to
+        // review" does NOT match. Requires the verb (cannot/can't/etc.)
+        // immediately followed by review + determiner (this/it/the/a).
+        /\bi\s+(cannot|can'?t|am\s+unable|i'?m\s+unable)\s+review\s+(this|it|the|a|that)\b/u,
+        // "cannot / can't / unable to review" — REQUIRES a direct object
+        // (this/it/the/a/that/self) so "Cannot review the legacy code" or
+        // "unable to review itself" do NOT match (those are legitimate
+        // reviews describing what the model CAN or CANNOT do in context).
+        /\b(cannot|can'?t|unable\s+to)\s+review\s+(this|it|the|a|that|self)\b/u,
+        // "didn't / haven't received" or "no input"
+        /\b(didn'?t\s+receive|haven'?t\s+received|no\s+input)\b/u,
+        // "empty diff" or "without diff / input"
+        /\b(empty\s+diff|no\s+diff\s+to\s+review|without\s+(diff|input))\b/u,
+        // "the diff is empty, nothing to review" / "was empty... review"
+        /\b(is\s+empty|was\s+empty)\b.*\b(nothing|to\s+review)\b/u,
+        // "nothing to review"
+        /\bnothing\s+to\s+review\b/u,
+    ];
+    for (const pattern of APOLOGY_PATTERNS) {
+        if (pattern.test(lower)) {
+            return true;
+        }
+    }
+    return false;
+}
+/**
+ * Walks the OpenAI Responses API `output[]` array and concatenates all
+ * text fragments it finds. The Responses API puts output items under
+ * `content[]` as an array of parts (each part is `{type, text}` or
+ * `{type, image_url}` etc) — so this function recurses into content
+ * arrays and pulls out any `text` strings, in order.
+ *
+ * Accepts both the Responses API shape (`content: [{type, text}]`)
+ * and a simpler chat-style shape (`content: {text: "..."}`) for
+ * providers that return the latter.
+ */
 function joinOutputText(output) {
     const fragments = [];
     for (const entry of output) {
-        if (!isPlainObject(entry)) {
+        if (!isRecord(entry)) {
             continue;
         }
         const content = entry["content"];
-        if (!isPlainObject(content)) {
+        // Responses API: content is an array of parts.
+        if (Array.isArray(content)) {
+            for (const part of content) {
+                if (!isRecord(part)) {
+                    continue;
+                }
+                const text = part["text"];
+                if (typeof text === "string") {
+                    fragments.push(text);
+                }
+            }
             continue;
         }
-        const text = content["text"];
-        if (typeof text === "string") {
-            fragments.push(text);
+        // Chat-style: content is a single object with a text field.
+        if (isRecord(content)) {
+            const text = content["text"];
+            if (typeof text === "string") {
+                fragments.push(text);
+            }
         }
     }
     return fragments.join("\n");
@@ -3668,7 +4630,7 @@ function provider_parse_readCommentArray(value) {
     }
     const comments = [];
     for (const entry of value) {
-        if (!isPlainObject(entry)) {
+        if (!isRecord(entry)) {
             continue;
         }
         const path = entry["path"];
@@ -3694,12 +4656,27 @@ function provider_parse_tryParseJson(rawText) {
     }
 }
 /**
- * Some providers (e.g. Manifest) ignore `stream: false` and always return
- * Server-Sent Events. Detect the `data: ` prefix format and concatenate
- * content from all chunks into a single string.
+ * Some providers (e.g. Manifest, MiniMax) ignore `stream: false` and always
+ * return Server-Sent Events. Detect the SSE format and concatenate text
+ * fragments from all chunks into a single string.
  *
- * Handles both the /chat/completions streaming format (delta.content) and
- * the /responses streaming format (delta or output_text.delta).
+ * Handles the SSE formats we've observed in the wild:
+ *   1. /chat/completions streaming: `choices[].delta.content`
+ *   2. /responses streaming with top-level `delta` string (some non-OpenAI
+ *      providers use this variant)
+ *   3. OpenAI /responses streaming with nested events:
+ *        event: response.output_text.delta
+ *        data: {"type":"response.output_text.delta","delta":"fragment"}
+ *      We extract the inner `delta` field regardless of the wrapping key.
+ *   4. /responses streaming where the final `response.completed` event
+ *      contains the full `output[]` array (some providers only send the
+ *      done-event with output and skip the per-fragment deltas). When we
+ *      see a `response.completed` event, we extract `output_text` from
+ *      the inner `response` and prefer it over fragment accumulation.
+ *
+ * Returns the concatenated text if any fragment was found, or null if
+ * the input wasn't SSE or no text fragments were extractable. The caller
+ * (`extractTextPayload`) then falls back to plain-JSON parsing.
  */
 function tryExtractSse(rawText) {
     const trimmed = rawText.trim();
@@ -3709,6 +4686,7 @@ function tryExtractSse(rawText) {
         return null;
     }
     const fragments = [];
+    let completedResponseText = null;
     for (const line of trimmed.split("\n")) {
         const clean = line.trim();
         if (!clean.startsWith("data:")) {
@@ -3719,8 +4697,43 @@ function tryExtractSse(rawText) {
             continue;
         }
         const parsed = provider_parse_tryParseJson(payload);
-        if (!isPlainObject(parsed)) {
+        if (!isRecord(parsed)) {
             continue;
+        }
+        // /responses streaming (OpenAI Responses API format):
+        //   event: response.output_text.delta
+        //   data: {"type":"response.output_text.delta","delta":"fragment"}
+        // The delta may live at the top level OR inside a wrapped envelope
+        // depending on the provider. Try the wrapped form first since it's
+        // the canonical OpenAI Responses API shape.
+        const wrappedResponse = readRecordField(parsed, "response");
+        if (wrappedResponse !== null) {
+            const eventType = provider_parse_readStringField(parsed, "type");
+            if (eventType === "response.completed" || eventType === "response.done") {
+                // Final event: prefer the full response payload if it has output_text.
+                const outText = provider_parse_readStringField(wrappedResponse, "output_text");
+                if (outText !== null && outText.length > 0) {
+                    completedResponseText = outText;
+                }
+                else {
+                    // Fall back to joining output[] entries.
+                    const output = readArrayField(wrappedResponse, "output");
+                    if (output !== null) {
+                        const joined = joinOutputText(output);
+                        if (joined.length > 0) {
+                            completedResponseText = joined;
+                        }
+                    }
+                }
+                continue;
+            }
+            if (eventType === "response.output_text.delta" || eventType === "response.delta") {
+                const deltaText = provider_parse_readStringField(parsed, "delta");
+                if (deltaText !== null) {
+                    fragments.push(deltaText);
+                }
+                continue;
+            }
         }
         // /chat/completions streaming: choices[].delta.content
         const choices = readArrayField(parsed, "choices");
@@ -3736,17 +4749,20 @@ function tryExtractSse(rawText) {
             }
             continue;
         }
-        // /responses streaming: delta is a string directly on the JSON object
-        // (response.output_text.delta event)
+        // /responses streaming (alternative non-OpenAI variant): top-level delta
+        // string directly on the JSON object.
         const deltaText = provider_parse_readStringField(parsed, "delta");
         if (deltaText !== null) {
             fragments.push(deltaText);
         }
     }
+    // Prefer the completed-response text (full output) over accumulated
+    // fragments — providers that send a `response.completed` event usually
+    // skip the per-fragment deltas, so fragment concatenation would be empty.
+    if (completedResponseText !== null) {
+        return completedResponseText;
+    }
     return fragments.length > 0 ? fragments.join("") : null;
-}
-function isPlainObject(value) {
-    return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 function provider_parse_readStringField(record, key) {
     const value = record[key];
@@ -3757,11 +4773,11 @@ function readArrayField(record, key) {
     return Array.isArray(value) ? value : null;
 }
 function readRecordField(value, key) {
-    if (!isPlainObject(value)) {
+    if (!isRecord(value)) {
         return null;
     }
     const inner = value[key];
-    return isPlainObject(inner) ? inner : null;
+    return isRecord(inner) ? inner : null;
 }
 
 ;// CONCATENATED MODULE: ./src/provider/provider-error.ts
@@ -3822,6 +4838,7 @@ function readErrorCode(error) {
 
 ;// CONCATENATED MODULE: ./src/provider/copilot-token.ts
 
+
 const TOKEN_REFRESH_SKEW_SECONDS = 60;
 const tokenCache = new Map();
 async function fetchAndCacheSessionToken(githubToken, tokenUrl, tokenHeaders, fetchImpl, endpoint, requestId) {
@@ -3861,7 +4878,7 @@ async function fetchAndCacheSessionToken(githubToken, tokenUrl, tokenHeaders, fe
         };
     }
     const envelope = safeParseJson(rawText);
-    if (!copilot_token_isRecord(envelope)) {
+    if (!isRecord(envelope)) {
         return {
             ok: false,
             error: new ProviderError("parse", endpoint, response.status, requestId, "Copilot session token response was not a JSON object."),
@@ -3907,9 +4924,6 @@ function safeParseJson(text) {
         return undefined;
     }
 }
-function copilot_token_isRecord(value) {
-    return typeof value === "object" && value !== null && !Array.isArray(value);
-}
 function copilot_token_readStringField(record, key) {
     const value = record[key];
     return typeof value === "string" ? value : null;
@@ -3919,11 +4933,11 @@ function copilot_token_readNumberField(record, key) {
     return typeof value === "number" && Number.isFinite(value) ? value : null;
 }
 function copilot_token_readRecordField(value, key) {
-    if (!copilot_token_isRecord(value)) {
+    if (!isRecord(value)) {
         return null;
     }
     const inner = value[key];
-    return copilot_token_isRecord(inner) ? inner : null;
+    return isRecord(inner) ? inner : null;
 }
 
 ;// CONCATENATED MODULE: ./src/provider/copilot.ts
@@ -3936,6 +4950,10 @@ const COPILOT_EDITOR_PLUGIN_VERSION = "umactually-pr-review/0.1.0";
 const COPILOT_INTEGRATION_ID = "vscode-chat";
 const COPILOT_USER_AGENT = "umactually-pr-review/0.1.0";
 const ENDPOINT_CHAT = "chat";
+/** Self-healing follow-up message for parse-fail retry (mirrors openai-compatible). */
+const PARSE_FAIL_RETRY_PROMPT = "Your previous response did not contain a valid JSON review payload. " +
+    "Please respond with ONLY a JSON object matching this schema (no prose, no fences): " +
+    '{"summary": "...", "verdict": "NEEDS_FIX|APPROVED|COMMENT|DISCUSS|SHIP", "comments": [...], "suppressed_comments": [...]}.';
 async function runCopilotRequest(config) {
     const fetchImpl = config.fetchImpl ?? globalThis.fetch.bind(globalThis);
     const requestId = createRequestId();
@@ -4002,13 +5020,61 @@ async function runChatCall(config, fetchImpl, requestId, session) {
     }
     const textPayload = extractTextPayload(ENDPOINT_CHAT, rawText);
     const review = parseReviewPayload(textPayload);
-    if (review === null) {
+    // Strict check (CLARITY-10): empty summary+verdict+comments counts as
+    // a parse failure even when extractJsonBlock returned an object. This
+    // catches chat-format responses fed to the responses endpoint and
+    // similar misconfigurations.
+    if (review !== null && (review.summary.length > 0 || review.verdict.length > 0 || review.comments.length > 0)) {
+        return { ok: true, endpoint: ENDPOINT_CHAT, review, requestId };
+    }
+    // Self-healing parse-fail retry: send a follow-up message asking the
+    // model to emit JSON only. Mirrors the openai-compatible path.
+    // See openai-compatible.ts:callEndpoint for the full rationale.
+    const retryBody = buildChatBody({
+        model: config.model,
+        system: config.system,
+        user: config.user,
+        ...(config.maxOutputTokens !== undefined ? { maxOutputTokens: config.maxOutputTokens } : {}),
+        ...(config.reasoningEffort !== undefined ? { reasoningEffort: config.reasoningEffort } : {}),
+    }, { userOverride: PARSE_FAIL_RETRY_PROMPT });
+    let retryResponse;
+    try {
+        retryResponse = await fetchImpl(url, {
+            method: "POST",
+            headers: buildChatHeaders(session.token),
+            body: JSON.stringify(retryBody),
+            signal,
+        });
+    }
+    catch {
+        // Retry HTTP call itself failed — surface the ORIGINAL parse failure
+        // (not the retry's network error) so the parse-fail path's diagnostic
+        // captures the actual root cause.
         return {
             ok: false,
             error: new ProviderError("parse", ENDPOINT_CHAT, response.status, requestId, "Provider response did not contain a JSON review payload.", { rawText }),
         };
     }
-    return { ok: true, endpoint: "chat", review, requestId };
+    if (!retryResponse.ok) {
+        return {
+            ok: false,
+            error: new ProviderError("parse", ENDPOINT_CHAT, retryResponse.status, requestId, `Provider self-healing retry failed with status ${retryResponse.status}; original parse error remains the root cause.`, { rawText }),
+        };
+    }
+    const retryRawText = await retryResponse.text();
+    const retryTextPayload = extractTextPayload(ENDPOINT_CHAT, retryRawText);
+    let retryReview = null;
+    const parsedRetry = parseReviewPayload(retryTextPayload);
+    if (parsedRetry !== null && (parsedRetry.summary.length > 0 || parsedRetry.verdict.length > 0 || parsedRetry.comments.length > 0)) {
+        retryReview = parsedRetry;
+    }
+    if (retryReview === null) {
+        return {
+            ok: false,
+            error: new ProviderError("parse", ENDPOINT_CHAT, response.status, requestId, "Provider response did not contain a JSON review payload after self-healing retry.", { rawText }),
+        };
+    }
+    return { ok: true, endpoint: ENDPOINT_CHAT, review: retryReview, requestId };
 }
 function buildTokenHeaders(githubToken) {
     return {
@@ -4072,6 +5138,7 @@ function createRequestId() {
 ;// CONCATENATED MODULE: ./src/provider/openai-compatible.ts
 
 
+
 const ENDPOINT_RESPONSES = "responses";
 const openai_compatible_ENDPOINT_CHAT = "chat";
 
@@ -4112,7 +5179,7 @@ async function runWithRetry(config, fetchImpl, requestId, endpoint) {
         }
         if (attempt < RETRY_BACKOFF_MS.length) {
             const backoffMs = RETRY_BACKOFF_MS[attempt] ?? 0;
-            await openai_compatible_sleep(backoffMs);
+            await sleep(backoffMs);
         }
     }
     return { ok: false, error: lastFailure ?? new ProviderError("network", endpoint, null, requestId, "Unknown retry failure.") };
@@ -4120,11 +5187,17 @@ async function runWithRetry(config, fetchImpl, requestId, endpoint) {
 function isRetryable(error) {
     return error.status === 429 || (typeof error.status === "number" && error.status >= 500);
 }
-function openai_compatible_sleep(ms) {
-    return new Promise((resolve) => {
-        setTimeout(resolve, ms);
-    });
-}
+/**
+ * Self-healing follow-up message sent to the model when its first response
+ * could not be parsed as a JSON review payload. Some providers ignore
+ * `stream: false` and return an empty SSE stream; some wrap their output
+ * in markdown fences or prose; some omit the JSON entirely. We retry
+ * once with an explicit reminder before falling back to the parse-fail
+ * surface — that often recovers the review without operator intervention.
+ */
+const openai_compatible_PARSE_FAIL_RETRY_PROMPT = "Your previous response did not contain a valid JSON review payload. " +
+    "Please respond with ONLY a JSON object matching this schema (no prose, no fences): " +
+    '{"summary": "...", "verdict": "NEEDS_FIX|APPROVED|COMMENT|DISCUSS|SHIP", "comments": [...], "suppressed_comments": [...]}.';
 async function callEndpoint(config, fetchImpl, requestId, endpoint) {
     const url = openai_compatible_joinUrl(config.baseUrl, endpoint === ENDPOINT_RESPONSES ? "/responses" : "/chat/completions");
     const body = endpoint === ENDPOINT_RESPONSES
@@ -4138,10 +5211,59 @@ async function callEndpoint(config, fetchImpl, requestId, endpoint) {
     const rawText = await readBody(response, endpoint, requestId);
     const textPayload = extractTextPayload(endpoint, rawText);
     const review = parseReviewPayload(textPayload);
-    if (review === null) {
-        throw new ProviderError("parse", endpoint, response.status, requestId, "Provider response did not contain a JSON review payload.", { rawText });
+    // Treat an empty-summary+empty-verdict parse as a parse failure even
+    // when `extractJsonBlock` returned an object. The parser is permissive
+    // about JSON shape (returns `ProviderReviewPayload` with empty fields
+    // for any JSON object), so a chat-format response (`{choices: [...]}`)
+    // fed to the responses endpoint can otherwise pass as a 0-finding
+    // "empty review" — see CLARITY-10.
+    if (review !== null && (review.summary.length > 0 || review.verdict.length > 0 || review.comments.length > 0)) {
+        return { ok: true, endpoint, review, requestId };
     }
-    return { ok: true, endpoint, review, requestId };
+    // Self-healing: parse failed on first attempt. Try once more with an
+    // explicit JSON-only reminder. Some providers (notably those that
+    // emit only an SSE stream of metadata events with no actual output)
+    // recover cleanly when reminded to emit JSON.
+    //
+    // Note: any network/HTTP error on the retry is collapsed back into a
+    // `parse` error (with the ORIGINAL rawText attached) so the parse-fail
+    // path's diagnostic captures the actual root cause — the model
+    // couldn't produce a parseable review, regardless of whether the retry
+    // request itself reached the provider.
+    const retryBody = endpoint === ENDPOINT_RESPONSES
+        ? buildResponsesBody(config, { userOverride: openai_compatible_PARSE_FAIL_RETRY_PROMPT })
+        : buildChatBody(config, { userOverride: openai_compatible_PARSE_FAIL_RETRY_PROMPT });
+    let retryReview = null;
+    // Track the retry's HTTP status (if it reached performFetch and
+    // returned a response) so the parse-fail ProviderError can surface
+    // it. When the retry fails with HTTP 4xx/5xx, that's the most
+    // informative root cause; when the retry succeeds with a still-
+    // unparseable payload, the ORIGINAL response status is the right
+    // signal — the model couldn't produce a review, not a transport
+    // failure. Both cases match `src/provider/copilot.ts`'s contract.
+    let retryResponseStatus = null;
+    try {
+        const retryResponse = await performFetch(fetchImpl, url, retryBody, signal, config, requestId, endpoint);
+        retryResponseStatus = retryResponse.status;
+        if (retryResponse.ok) {
+            const retryRawText = await readBody(retryResponse, endpoint, requestId);
+            const retryTextPayload = extractTextPayload(endpoint, retryRawText);
+            const parsedRetry = parseReviewPayload(retryTextPayload);
+            // Same strict check on the retry: must have actual review content.
+            if (parsedRetry !== null && (parsedRetry.summary.length > 0 || parsedRetry.verdict.length > 0 || parsedRetry.comments.length > 0)) {
+                retryReview = parsedRetry;
+            }
+        }
+    }
+    catch {
+        // Retry HTTP/parse path threw (network error, body read error,
+        // etc.) — fall through to the parse-error throw below with the
+        // ORIGINAL rawText. retryResponseStatus stays null in this branch.
+    }
+    if (retryReview === null) {
+        throw new ProviderError("parse", endpoint, retryResponseStatus ?? response.status, requestId, "Provider response did not contain a JSON review payload after self-healing retry.", { rawText });
+    }
+    return { ok: true, endpoint, review: retryReview, requestId };
 }
 async function performFetch(fetchImpl, url, body, signal, config, requestId, endpoint) {
     try {
@@ -4210,7 +5332,7 @@ function openai_compatible_createRequestId() {
 }
 
 ;// CONCATENATED MODULE: ./src/config/errors.ts
-class errors_InvalidConfigError extends Error {
+class InvalidConfigError extends Error {
     field;
     reason;
     name = "InvalidConfigError";
@@ -4234,7 +5356,7 @@ class PromptFileError extends Error {
  * Marker used in error messages to replace any user-supplied value
  * (URLs, tokens, prompt content). Never echo the raw value.
  */
-const errors_REDACTED = "[REDACTED]";
+const REDACTED = "[REDACTED]";
 
 ;// CONCATENATED MODULE: ./src/config/prompt-files.ts
 
@@ -4284,9 +5406,9 @@ function toPosix(value) {
  * - Enforces a per-file and aggregate byte cap.
  * - Never includes file contents in errors; only the `[REDACTED]` marker.
  */
-async function prompt_files_readPromptFiles(paths, byteCap, options) {
+async function readPromptFiles(paths, byteCap, options) {
     if (!Number.isInteger(byteCap) || byteCap <= 0) {
-        throw new errors_InvalidConfigError("prompt.byteCap", `expected positive integer, received ${byteCap}`);
+        throw new InvalidConfigError("prompt.byteCap", `expected positive integer, received ${byteCap}`);
     }
     const fs = options.fs ?? nodePromptFileSystem;
     const cwdReal = await fs.realpath(options.cwd);
@@ -4334,7 +5456,7 @@ async function prompt_files_readPromptFiles(paths, byteCap, options) {
 
 ;// CONCATENATED MODULE: ./src/cli/provider-prompts.ts
 
-const DEFAULT_PROMPT_BYTE_CAP = 64 * 1024;
+
 async function buildProviderPrompts(input) {
     const additionalPrompt = await readAdditionalPrompt(input);
     const userParts = [
@@ -4357,7 +5479,7 @@ async function pickSystemPrompt(input) {
     }
     const filePath = input.parsed.promptFile ?? input.env["UMACTUALLY_PROMPT_FILE"];
     if (filePath !== undefined && filePath.length > 0) {
-        return prompt_files_readPromptFiles([filePath], DEFAULT_PROMPT_BYTE_CAP, { cwd: input.cwd });
+        return readPromptFiles([filePath], DEFAULT_PROMPT_BYTE_CAP, { cwd: input.cwd });
     }
     return [
         "You are UmActually, a precise pull request reviewer.",
@@ -4375,7 +5497,7 @@ async function readAdditionalPrompt(input) {
     if (filePath === undefined || filePath.length === 0) {
         return "";
     }
-    return prompt_files_readPromptFiles([filePath], DEFAULT_PROMPT_BYTE_CAP, { cwd: input.cwd });
+    return readPromptFiles([filePath], DEFAULT_PROMPT_BYTE_CAP, { cwd: input.cwd });
 }
 
 ;// CONCATENATED MODULE: ./src/cli/live-provider.ts
@@ -4540,6 +5662,7 @@ function formatSonarContext(report) {
 }
 
 ;// CONCATENATED MODULE: ./src/review/diff-line-utils.ts
+
 /**
  * Walk the diff text and return the raw line content for the first
  * `+` or ` ` row at the given right-side position. Falls back to an empty
@@ -4612,7 +5735,7 @@ function parseHunkStart(line) {
     const endIndex = afterPlus.search(/[ ,]/u);
     const rawStart = endIndex === -1 ? afterPlus : afterPlus.slice(0, endIndex);
     const start = Number.parseInt(rawStart, 10);
-    return Number.isSafeInteger(start) && start > 0 ? start : null;
+    return isPositiveSafeInteger(start) ? start : null;
 }
 /**
  * Pull a meaningful token out of the diff line for context-aware bodies.
@@ -4853,314 +5976,52 @@ function sanitizeComments(comments, secrets) {
     }));
 }
 
-;// CONCATENATED MODULE: ./src/config/parsers.ts
+;// CONCATENATED MODULE: ./src/util/log.ts
 
-const TRUTHY_STRINGS = new Set(["1", "true", "yes", "on", "y"]);
-const FALSY_STRINGS = new Set(["0", "false", "no", "off", "n", ""]);
 /**
- * Parses a boolean from an unknown boundary. Accepts:
- * - native boolean
- * - 0 or 1 (number)
- * - string in TRUTHY_STRINGS / FALSY_STRINGS (case-insensitive, trimmed)
- * Anything else throws InvalidConfigError with [REDACTED] in the message.
+ * @returns A single line ending with exactly one newline character. Do not append another newline.
  */
-function parsers_parseBooleanFromUnknown(value, field) {
-    if (typeof value === "boolean")
-        return value;
-    if (typeof value === "number") {
-        if (value === 1)
-            return true;
-        if (value === 0)
-            return false;
-        throw new InvalidConfigError(field, `expected boolean, received number ${REDACTED}`);
-    }
-    if (typeof value === "string") {
-        const normalized = value.trim().toLowerCase();
-        if (TRUTHY_STRINGS.has(normalized))
-            return true;
-        if (FALSY_STRINGS.has(normalized))
-            return false;
-        throw new InvalidConfigError(field, `expected boolean string, received ${REDACTED}`);
-    }
-    throw new InvalidConfigError(field, `expected boolean, received ${typeof value}`);
+function formatAnnotation(level, action, message) {
+    const actionPrefix = action.length > 0 ? `${action} ` : "";
+    return `::${level}::${BRAND_PREFIX}${actionPrefix}${message}\n`;
 }
-const INTEGER_RE = /^-?\d+$/;
-/**
- * Parses an integer from an unknown boundary. Accepts native integers
- * and decimal-integer strings. Rejects floats, NaN, Infinity, empty strings.
- */
-function parsers_parseIntegerFromUnknown(value, field) {
-    if (typeof value === "number") {
-        if (!Number.isInteger(value)) {
-            throw new InvalidConfigError(field, `expected integer, received non-integer number ${REDACTED}`);
-        }
-        return value;
-    }
-    if (typeof value === "string") {
-        const trimmed = value.trim();
-        if (trimmed.length === 0) {
-            throw new InvalidConfigError(field, `expected integer, received empty string`);
-        }
-        if (!INTEGER_RE.test(trimmed)) {
-            throw new InvalidConfigError(field, `expected integer string, received ${REDACTED}`);
-        }
-        const parsed = Number.parseInt(trimmed, 10);
-        if (!Number.isFinite(parsed)) {
-            throw new InvalidConfigError(field, `expected finite integer, received ${REDACTED}`);
-        }
-        return parsed;
-    }
-    throw new InvalidConfigError(field, `expected integer, received ${typeof value}`);
-}
-const VALID_SEVERITIES = new Set([
-    "info",
-    "minor",
-    "major",
-    "critical",
-    "security",
-    "leak",
-]);
-function parsers_parseSeverityFromUnknown(value, field) {
-    if (typeof value !== "string") {
-        throw new InvalidConfigError(field, `expected severity string, received ${typeof value}`);
-    }
-    const normalized = value.trim().toLowerCase();
-    if (!VALID_SEVERITIES.has(normalized)) {
-        throw new InvalidConfigError(field, `unknown severity ${REDACTED}`);
-    }
-    return normalized;
-}
-const VALID_PLATFORMS = new Set(["auto", "github", "azure"]);
-function parsers_parsePlatformFromUnknown(value, field) {
-    if (typeof value !== "string") {
-        throw new InvalidConfigError(field, `expected platform string, received ${typeof value}`);
-    }
-    const normalized = value.trim().toLowerCase();
-    if (!VALID_PLATFORMS.has(normalized)) {
-        throw new InvalidConfigError(field, `unknown platform ${REDACTED}`);
-    }
-    return normalized;
-}
-/**
- * Normalizes a provider base URL:
- * - trims whitespace
- * - requires http: or https:
- * - lowercases scheme and host
- * - strips query/fragment
- * - appends `/v1` if no version path segment is present
- *
- * Never includes the raw URL in error messages.
- */
-function parsers_normalizeApiUrl(rawUrl, field) {
-    if (typeof rawUrl !== "string") {
-        throw new InvalidConfigError(field, `expected URL string, received ${typeof rawUrl}`);
-    }
-    const trimmed = rawUrl.trim();
-    if (trimmed.length === 0) {
-        throw new InvalidConfigError(field, `expected non-empty URL`);
-    }
-    let parsed;
+function writeAnnotation(level, action, message) {
+    const formatted = formatAnnotation(level, action, message);
     try {
-        parsed = new URL(trimmed);
+        process.stderr.write(formatted);
     }
     catch {
-        throw new InvalidConfigError(field, `unparseable URL ${REDACTED}`);
+        if (level !== "debug") {
+            // eslint-disable-next-line no-console
+            console.error(formatted.trimEnd());
+        }
     }
-    const protocol = parsed.protocol.toLowerCase();
-    if (protocol !== "http:" && protocol !== "https:") {
-        throw new InvalidConfigError(field, `unsupported URL scheme ${REDACTED}`);
-    }
-    const cleanedPath = normalizePath(parsed.pathname);
-    const hasVersionSegment = hasVersionPathSegment(cleanedPath);
-    const finalPath = hasVersionSegment ? cleanedPath : appendV1(cleanedPath);
-    return `${protocol}//${parsed.host.toLowerCase()}${finalPath}`;
 }
-function normalizePath(pathname) {
-    const trimmed = pathname.replace(/\/+$/, "");
-    return trimmed;
-}
-function hasVersionPathSegment(path) {
-    if (path.length === 0)
-        return false;
-    const segments = path.split("/");
-    for (const segment of segments) {
-        if (/^v\d+$/.test(segment))
-            return true;
-    }
-    return false;
-}
-function appendV1(path) {
-    return path.length === 0 ? "/v1" : `${path}/v1`;
-}
-
-;// CONCATENATED MODULE: ./src/config/loader.ts
-
-
-
-
-const loader_DEFAULT_MAX_COMMENTS = 50;
-const DEFAULT_REVIEW_FILE_LIMIT = 200;
-const DEFAULT_REVIEW_SECONDS = 300;
-const DEFAULT_STALL_SECONDS = 270;
-const DEFAULT_PER_REQUEST_SECONDS = 60;
-const DEFAULT_SONAR_TIMEOUT_SECONDS = 60;
-const DEFAULT_MINIMUM_SEVERITY = "minor";
-const DEFAULT_PLATFORM = "auto";
-const DEFAULT_PROVIDER_URL = "https://api.openai.com/v1";
-const DEFAULT_PROVIDER_MODEL = "auto";
-const loader_DEFAULT_PROMPT_BYTE_CAP = (/* unused pure expression or super */ null && (64 * 1024));
 /**
- * Resolves the final ReviewConfig by merging CLI > inputs > env > defaults.
- * `cwd` is used to resolve prompt file paths (workspace-relative).
+ * Centralizes duplicated GitHub warning annotations so every warning uses the same brand prefix.
+ * Pass an empty string `""` to suppress the action prefix.
  */
-async function loadConfigFromSources(sources) {
-    const { cli, inputs, env, cwd } = sources;
-    const provider = {
-        url: normalizeApiUrl(pickString(cli.providerUrl, inputs.providerUrl, env.providerUrl, DEFAULT_PROVIDER_URL, "provider.url"), "provider.url"),
-        apiKey: pickString(cli.providerApiKey, inputs.providerApiKey, env.providerApiKey, "", "provider.apiKey"),
-        model: pickString(cli.providerModel, inputs.providerModel, env.providerModel, DEFAULT_PROVIDER_MODEL, "provider.model"),
-    };
-    const guidance = {
-        walkthrough: pickBool(cli.walkthrough, inputs.walkthrough, env.walkthrough, false, "guidance.walkthrough"),
-        diagnostic: pickBool(cli.diagnostic, inputs.diagnostic, env.diagnostic, false, "guidance.diagnostic"),
-        dryRun: pickBool(cli.dryRun, inputs.dryRun, env.dryRun, false, "guidance.dryRun"),
-        debugRawResponse: pickBool(cli.debugRawResponse, inputs.debugRawResponse, env.debugRawResponse, false, "guidance.debugRawResponse"),
-    };
-    const timeouts = {
-        reviewSeconds: pickInt(cli.reviewTimeoutSeconds, inputs.reviewTimeoutSeconds, env.reviewTimeoutSeconds, DEFAULT_REVIEW_SECONDS, "timeouts.reviewSeconds"),
-        stallSeconds: pickInt(cli.stallTimeoutSeconds, inputs.stallTimeoutSeconds, env.stallTimeoutSeconds, DEFAULT_STALL_SECONDS, "timeouts.stallSeconds"),
-        perRequestSeconds: pickInt(cli.perRequestTimeoutSeconds, inputs.perRequestTimeoutSeconds, env.perRequestTimeoutSeconds, DEFAULT_PER_REQUEST_SECONDS, "timeouts.perRequestSeconds"),
-    };
-    const ignoreMinor = pickBool(cli.ignoreMinor, inputs.ignoreMinor, env.ignoreMinor, false, "severity.ignoreMinor");
-    const minimumRaw = pickRawString(cli.minimumSeverity, inputs.minimumSeverity, env.minimumSeverity);
-    const minimum = minimumRaw === undefined
-        ? DEFAULT_MINIMUM_SEVERITY
-        : parseSeverityFromUnknown(minimumRaw, "severity.minimum");
-    const severity = {
-        ignoreMinor,
-        minimum,
-        maxComments: pickInt(cli.maxComments, inputs.maxComments, env.maxComments, loader_DEFAULT_MAX_COMMENTS, "severity.maxComments"),
-    };
-    const scope = {
-        reviewFileLimit: pickInt(cli.reviewFileLimit, inputs.reviewFileLimit, env.reviewFileLimit, DEFAULT_REVIEW_FILE_LIMIT, "scope.reviewFileLimit"),
-    };
-    const sonar = {
-        enabled: pickBool(cli.sonarEnabled, inputs.sonarEnabled, env.sonarEnabled, false, "sonar.enabled"),
-        host: pickString(cli.sonarHost, inputs.sonarHost, env.sonarHost, "", "sonar.host"),
-        token: pickString(cli.sonarToken, inputs.sonarToken, env.sonarToken, "", "sonar.token"),
-        project: pickString(cli.sonarProject, inputs.sonarProject, env.sonarProject, "", "sonar.project"),
-        timeoutSeconds: pickInt(cli.sonarTimeoutSeconds, inputs.sonarTimeoutSeconds, env.sonarTimeoutSeconds, DEFAULT_SONAR_TIMEOUT_SECONDS, "sonar.timeoutSeconds"),
-    };
-    const leakDetection = pickBool(cli.leakDetection, inputs.leakDetection, env.leakDetection, true, "leakDetection");
-    const redactorEnabled = pickBool(cli.redactorEnabled, inputs.redactorEnabled, env.redactorEnabled, true, "redactor.enabled");
-    const platformRaw = pickRawString(cli.platform, inputs.platform, env.platform);
-    const platform = platformRaw === undefined ? DEFAULT_PLATFORM : parsePlatformFromUnknown(platformRaw, "platform");
-    const githubToken = pickString(cli.githubToken, inputs.githubToken, env.githubToken, "", "githubToken");
-    const azure = {
-        org: pickString(cli.azureOrg, inputs.azureOrg, env.azureOrg, "", "azure.org"),
-        project: pickString(cli.azureProject, inputs.azureProject, env.azureProject, "", "azure.project"),
-        repo: pickString(cli.azureRepo, inputs.azureRepo, env.azureRepo, "", "azure.repo"),
-        pullRequestId: pickInt(cli.azurePullRequestId, inputs.azurePullRequestId, env.azurePullRequestId, 0, "azure.pullRequestId"),
-        token: pickString(cli.azureToken, inputs.azureToken, env.azureToken, "", "azure.token"),
-    };
-    const promptByteCap = pickInt(cli.promptByteCap, inputs.promptByteCap, env.promptByteCap, loader_DEFAULT_PROMPT_BYTE_CAP, "prompts.byteCap");
-    const prompts = await resolvePrompts(cli, inputs, env, cwd, promptByteCap);
-    return {
-        provider,
-        prompts,
-        guidance,
-        timeouts,
-        severity,
-        scope,
-        sonar,
-        leakDetection,
-        redactorEnabled,
-        platform,
-        githubToken,
-        azure,
-    };
+function logWarning(action, message) {
+    writeAnnotation("warning", action, message);
 }
-async function resolvePrompts(cli, inputs, env, cwd, byteCap) {
-    const systemInline = pickString(cli.promptSystem, inputs.promptSystem, undefined, "", "prompts.system.inline");
-    const systemFiles = collectFiles(cli.promptSystemFile, inputs.promptSystemFile, env.promptSystemFile);
-    const userInline = pickString(cli.promptUser, inputs.promptUser, undefined, "", "prompts.user.inline");
-    const userFiles = collectFiles(cli.promptUserFile, inputs.promptUserFile, env.promptUserFile);
-    let system = "";
-    if (systemInline.length > 0) {
-        system = systemInline;
-    }
-    else if (systemFiles.length > 0) {
-        system = await readPromptFiles(systemFiles, byteCap, { cwd });
-    }
-    let user = "";
-    if (userInline.length > 0) {
-        user = userInline;
-    }
-    else if (userFiles.length > 0) {
-        user = await readPromptFiles(userFiles, byteCap, { cwd });
-    }
-    return {
-        system,
-        user,
-        systemFiles,
-        userFiles,
-    };
+/**
+ * Centralizes duplicated GitHub error annotations so every error uses the same brand prefix.
+ * Pass an empty string `""` to suppress the action prefix.
+ */
+function logError(action, message) {
+    writeAnnotation("error", action, message);
 }
-function collectFiles(cliValue, inputValue, envValue) {
-    const out = [];
-    if (typeof cliValue === "string" && cliValue.length > 0)
-        out.push(cliValue);
-    if (typeof inputValue === "string" && inputValue.length > 0 && !out.includes(inputValue))
-        out.push(inputValue);
-    if (typeof envValue === "string" && envValue.length > 0 && !out.includes(envValue))
-        out.push(envValue);
-    return out;
+/** Centralizes duplicated debug annotations so verbose diagnostics cannot drift from the branded format. */
+function logDebug(action, message) {
+    writeAnnotation("debug", action, message);
 }
-function pickString(cliValue, inputValue, envValue, fallback, field) {
-    const value = firstDefined(cliValue, inputValue, envValue);
-    if (value === undefined)
-        return fallback;
-    if (typeof value !== "string") {
-        throw new InvalidConfigError(field, `expected string, received ${typeof value}`);
-    }
-    return value;
-}
-function pickRawString(cliValue, inputValue, envValue) {
-    if (typeof cliValue === "string" && cliValue.trim().length > 0)
-        return cliValue;
-    if (typeof inputValue === "string" && inputValue.trim().length > 0)
-        return inputValue;
-    if (typeof envValue === "string" && envValue.trim().length > 0)
-        return envValue;
-    return undefined;
-}
-function pickInt(cliValue, inputValue, envValue, fallback, field) {
-    if (cliValue !== undefined)
-        return parseIntegerFromUnknown(cliValue, field);
-    if (inputValue !== undefined)
-        return parseIntegerFromUnknown(inputValue, field);
-    if (envValue !== undefined)
-        return parseIntegerFromUnknown(envValue, field);
-    return fallback;
-}
-function pickBool(cliValue, inputValue, envValue, fallback, field) {
-    if (cliValue !== undefined)
-        return parseBooleanFromUnknown(cliValue, field);
-    if (inputValue !== undefined)
-        return parseBooleanFromUnknown(inputValue, field);
-    if (envValue !== undefined)
-        return parseBooleanFromUnknown(envValue, field);
-    return fallback;
-}
-function firstDefined(...values) {
-    for (const v of values) {
-        if (v !== undefined)
-            return v;
-    }
-    return undefined;
+/** Centralizes duplicated notice annotations so informational diagnostics share one branded format. */
+function logNotice(action, message) {
+    writeAnnotation("notice", action, message);
 }
 
 ;// CONCATENATED MODULE: ./src/cli/orchestrator.ts
+
 
 
 
@@ -5182,14 +6043,8 @@ function firstDefined(...values) {
  * contract.
  */
 const DEFAULT_CHUNK_CONCURRENCY = 4;
-// DEFAULT_REVIEW_FILE_LIMIT (200) is imported from src/config/loader.ts
-// and re-imported below to keep a single source of truth.
-/**
- * Fallback cap used by the chunked Azure merge when the CLI flag
- * `--max-comments` is not set. Matches the post-side cap in
- * `live-shared.ts:DEFAULT_MAX_COMMENTS`.
- */
-const DEFAULT_MAX_COMMENTS_MERGE = 50;
+// DEFAULT_REVIEW_FILE_LIMIT is imported from src/config/defaults.ts
+// to keep the live review cap in sync with the field schema.
 /**
  * Helper used by the Azure live path. Each chunk is fed through
  * `requestLiveReview` independently and the per-chunk outcomes are
@@ -5240,7 +6095,7 @@ async function requestChunkedLiveReview(input) {
                 const message = error instanceof Error ? error.message : String(error);
                 const sanitized = sanitizeForPost(message, [input.platformToken]);
                 const redactedChunk = chunk.length > 80 ? `${chunk.slice(0, 77)}…` : chunk;
-                process.stderr.write(`::warning::umactually-pr-review: chunk ${index + 1}/${input.chunks.length} failed (${sanitized}); substituting empty outcome. chunk preview: ${redactedChunk}\n`);
+                logWarning("", `chunk ${index + 1}/${input.chunks.length} failed (${sanitized}); substituting empty outcome. chunk preview: ${redactedChunk}`);
                 outcome = {
                     review: { summary: "", verdict: "COMMENT", comments: [], suppressedComments: [] },
                     endpoint: "",
@@ -5253,7 +6108,7 @@ async function requestChunkedLiveReview(input) {
     });
     await Promise.all(workers);
     if (failedChunkCount > 0) {
-        process.stderr.write(`::warning::umactually-pr-review: ${failedChunkCount}/${input.chunks.length} chunks failed; merged review contains only findings from the chunks that succeeded.\n`);
+        logWarning("", `${failedChunkCount}/${input.chunks.length} chunks failed; merged review contains only findings from the chunks that succeeded.`);
     }
     return mergeReviewResults(outcomes, {
         maxComments: input.parsed.maxComments ?? DEFAULT_MAX_COMMENTS_MERGE,
@@ -5350,7 +6205,7 @@ async function dispatchLivePlatform(input) {
                 detectLeaks: parsed.detectLeaks,
             });
             if (!leakGate.ok) {
-                process.stderr.write(`::error::umactually-pr-review: ${leakGate.message}\n`);
+                logError("", leakGate.message);
                 return {
                     exitCode: 1,
                     posted: false,
@@ -5393,7 +6248,7 @@ async function dispatchLivePlatform(input) {
                 detectLeaks: parsed.detectLeaks,
             });
             if (!leakGate.ok) {
-                process.stderr.write(`::error::umactually-pr-review: ${leakGate.message}\n`);
+                logError("", leakGate.message);
                 return {
                     exitCode: 1,
                     posted: false,
@@ -5476,7 +6331,7 @@ async function dispatchLivePlatform(input) {
             });
         }
         default:
-            return orchestrator_assertNever(platform);
+            return assertNever(platform);
     }
 }
 function detectLivePlatform(env) {
@@ -5497,7 +6352,7 @@ function readSecretValues(env) {
         env["AZURE_DEVOPS_TOKEN"] ?? "",
     ];
 }
-function orchestrator_assertNever(value) {
+function assertNever(value) {
     throw new TypeError(`Unhandled live platform: ${value}`);
 }
 
@@ -6052,6 +6907,7 @@ function parseBool(raw, fallback) {
 
 
 
+
 globalThis.__umactually_action_entry__ = true;
 async function src_main() {
     try {
@@ -6064,7 +6920,7 @@ async function src_main() {
     }
     catch (error) {
         const message = error instanceof Error ? error.message : String(error);
-        process.stderr.write(`::error::umactually-pr-review: ${message}\n`);
+        logError("", message);
         process.exit(1);
     }
 }
@@ -6216,7 +7072,7 @@ const isMainEntry = (() => {
 if (isMainEntry) {
     src_main().catch((error) => {
         const message = error instanceof Error ? error.message : String(error);
-        process.stderr.write(`::error::umactually-pr-review: ${message}\n`);
+        logError("", message);
         process.exit(1);
     });
 }

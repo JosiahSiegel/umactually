@@ -1,4 +1,5 @@
 import type { DiffPosition } from "../diff/parse-positions.js";
+import { isPositiveSafeInteger } from "../util/json-guards.js";
 
 /**
  * Walk the diff text and return the raw line content for the first
@@ -79,7 +80,7 @@ function parseHunkStart(line: string): number | null {
   const endIndex = afterPlus.search(/[ ,]/u);
   const rawStart = endIndex === -1 ? afterPlus : afterPlus.slice(0, endIndex);
   const start = Number.parseInt(rawStart, 10);
-  return Number.isSafeInteger(start) && start > 0 ? start : null;
+  return isPositiveSafeInteger(start) ? start : null;
 }
 
 /**

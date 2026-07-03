@@ -21,9 +21,9 @@ import {
   shouldKeepFinding,
 } from "../../src/config/review-config.js";
 import type {
-  ActionInputs,
   CliArgs,
   EnvSources,
+  RawActionInputs,
   Severity,
 } from "../../src/config/review-config.js";
 
@@ -341,7 +341,7 @@ describe("config: loadConfigFromSources precedence", () => {
     await rm(cwd, { recursive: true, force: true });
   });
 
-  const empty = (): { cli: CliArgs; inputs: ActionInputs; env: EnvSources } => ({
+  const empty = (): { cli: CliArgs; inputs: RawActionInputs; env: EnvSources } => ({
     cli: {},
     inputs: {},
     env: {},
@@ -534,12 +534,24 @@ describe("config: readEnvSources", () => {
       UMACTUALLY_REVIEW_TIMEOUT_SECONDS: "300",
       UMACTUALLY_STALL_SECONDS: "270",
       UMACTUALLY_MAX_OUTPUT_TOKENS: "16000",
+      REVIEW_PROMPT_BYTE_CAP: "4096",
+      REVIEW_PER_REQUEST_TIMEOUT_SECONDS: "30",
+      REVIEW_MAX_COMMENTS: "8",
+      REVIEW_FILE_LIMIT: "12",
+      REVIEW_PLATFORM: "azure",
+      UMACTUALLY_GITHUB_API_BASE: "https://ghe.example.test",
+      GITHUB_TOKEN: "gho_token",
+      AZURE_DEVOPS_PROJECT: "ado-project",
+      AZURE_DEVOPS_REPO: "ado-repo",
+      AZURE_DEVOPS_PULL_REQUEST_ID: "42",
+      AZURE_DEVOPS_TOKEN: "ado-token",
       UMACTUALLY_SONAR_HOST_URL: "https://sonar.example.test",
       UMACTUALLY_SONAR_TOKEN: "sonar-token",
       UMACTUALLY_SONAR_PROJECT_KEY: "umactually",
       UMACTUALLY_INCLUDE_SONARQUBE: "true",
       UMACTUALLY_IGNORE_MINOR: "false",
       UMACTUALLY_DETECT_LEAKS: "true",
+      REVIEW_REDACTOR_ENABLED: "false",
     });
     expect(sources.providerUrl).toBe("https://vmi.example.test/v1");
     expect(sources.providerApiKey).toBe("sk_umactually_abcdef0123456789");
@@ -548,12 +560,25 @@ describe("config: readEnvSources", () => {
     expect(sources.promptUserFile).toBe("prompts/extra.md");
     expect(sources.reviewTimeoutSeconds).toBe("300");
     expect(sources.stallTimeoutSeconds).toBe("270");
+    expect(sources.maxOutputTokens).toBe("16000");
+    expect(sources.promptByteCap).toBe("4096");
+    expect(sources.perRequestTimeoutSeconds).toBe("30");
+    expect(sources.maxComments).toBe("8");
+    expect(sources.reviewFileLimit).toBe("12");
+    expect(sources.platform).toBe("azure");
+    expect(sources.githubApiBase).toBe("https://ghe.example.test");
+    expect(sources.githubToken).toBe("gho_token");
+    expect(sources.azureProject).toBe("ado-project");
+    expect(sources.azureRepo).toBe("ado-repo");
+    expect(sources.azurePullRequestId).toBe("42");
+    expect(sources.azureToken).toBe("ado-token");
     expect(sources.sonarHost).toBe("https://sonar.example.test");
     expect(sources.sonarToken).toBe("sonar-token");
     expect(sources.sonarProject).toBe("umactually");
     expect(sources.sonarEnabled).toBe("true");
     expect(sources.ignoreMinor).toBe("false");
     expect(sources.leakDetection).toBe("true");
+    expect(sources.redactorEnabled).toBe("false");
   });
 
   it("UMACTUALLY_* takes precedence over REVIEW_* when both are set", () => {

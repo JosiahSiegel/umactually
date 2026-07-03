@@ -1,8 +1,7 @@
+import { DEFAULT_PROMPT_BYTE_CAP } from "../config/defaults.js";
 import { readPromptFiles } from "../config/prompt-files.js";
 import type { LivePlatform } from "./live-shared.js";
 import type { ParsedCliArgs } from "./parse-args.js";
-
-const DEFAULT_PROMPT_BYTE_CAP = 64 * 1024;
 
 type ProviderPromptsInput = {
   readonly parsed: ParsedCliArgs;

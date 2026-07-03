@@ -71,7 +71,6 @@ export {
 export { loadConfigFromSources } from "./loader.js";
 export { readEnvSources } from "./env-sources.js";
 export type {
-  ActionInputs,
   AzureConfig,
   CliArgs,
   EnvSources,
@@ -80,6 +79,7 @@ export type {
   Platform,
   PromptConfig,
   ProviderConfig,
+  RawActionInputs,
   ReviewConfig,
   Severity,
   SeverityControls,

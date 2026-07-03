@@ -2,7 +2,6 @@ import {
   buildChatBody,
   extractTextPayload,
   parseReviewPayload,
-  type ProviderEndpoint,
   type ProviderReviewPayload,
 } from "./provider-parse.js";
 import {
@@ -21,7 +20,13 @@ const COPILOT_EDITOR_VERSION = "vscode/1.96.0";
 const COPILOT_EDITOR_PLUGIN_VERSION = "umactually-pr-review/0.1.0";
 const COPILOT_INTEGRATION_ID = "vscode-chat";
 const COPILOT_USER_AGENT = "umactually-pr-review/0.1.0";
-const ENDPOINT_CHAT: ProviderEndpoint = "chat";
+const ENDPOINT_CHAT = "chat" as const;
+
+/** Self-healing follow-up message for parse-fail retry (mirrors openai-compatible). */
+const PARSE_FAIL_RETRY_PROMPT =
+  "Your previous response did not contain a valid JSON review payload. " +
+  "Please respond with ONLY a JSON object matching this schema (no prose, no fences): " +
+  '{"summary": "...", "verdict": "NEEDS_FIX|APPROVED|COMMENT|DISCUSS|SHIP", "comments": [...], "suppressed_comments": [...]}.';
 
 export type CopilotCallConfig = {
   readonly githubToken: string;
@@ -164,7 +169,39 @@ async function runChatCall(
 
   const textPayload = extractTextPayload(ENDPOINT_CHAT, rawText);
   const review = parseReviewPayload(textPayload);
-  if (review === null) {
+  // Strict check (CLARITY-10): empty summary+verdict+comments counts as
+  // a parse failure even when extractJsonBlock returned an object. This
+  // catches chat-format responses fed to the responses endpoint and
+  // similar misconfigurations.
+  if (review !== null && (review.summary.length > 0 || review.verdict.length > 0 || review.comments.length > 0)) {
+    return { ok: true, endpoint: ENDPOINT_CHAT, review, requestId };
+  }
+
+  // Self-healing parse-fail retry: send a follow-up message asking the
+  // model to emit JSON only. Mirrors the openai-compatible path.
+  // See openai-compatible.ts:callEndpoint for the full rationale.
+  const retryBody = buildChatBody(
+    {
+      model: config.model,
+      system: config.system,
+      user: config.user,
+      ...(config.maxOutputTokens !== undefined ? { maxOutputTokens: config.maxOutputTokens } : {}),
+      ...(config.reasoningEffort !== undefined ? { reasoningEffort: config.reasoningEffort } : {}),
+    },
+    { userOverride: PARSE_FAIL_RETRY_PROMPT },
+  );
+  let retryResponse: Response;
+  try {
+    retryResponse = await fetchImpl(url, {
+      method: "POST",
+      headers: buildChatHeaders(session.token),
+      body: JSON.stringify(retryBody),
+      signal,
+    });
+  } catch {
+    // Retry HTTP call itself failed — surface the ORIGINAL parse failure
+    // (not the retry's network error) so the parse-fail path's diagnostic
+    // captures the actual root cause.
     return {
       ok: false,
       error: new ProviderError(
@@ -177,8 +214,41 @@ async function runChatCall(
       ),
     };
   }
+  if (!retryResponse.ok) {
+    return {
+      ok: false,
+      error: new ProviderError(
+        "parse",
+        ENDPOINT_CHAT,
+        retryResponse.status,
+        requestId,
+        `Provider self-healing retry failed with status ${retryResponse.status}; original parse error remains the root cause.`,
+        { rawText },
+      ),
+    };
+  }
+  const retryRawText = await retryResponse.text();
+  const retryTextPayload = extractTextPayload(ENDPOINT_CHAT, retryRawText);
+  let retryReview: ProviderReviewPayload | null = null;
+  const parsedRetry = parseReviewPayload(retryTextPayload);
+  if (parsedRetry !== null && (parsedRetry.summary.length > 0 || parsedRetry.verdict.length > 0 || parsedRetry.comments.length > 0)) {
+    retryReview = parsedRetry;
+  }
+  if (retryReview === null) {
+    return {
+      ok: false,
+      error: new ProviderError(
+        "parse",
+        ENDPOINT_CHAT,
+        response.status,
+        requestId,
+        "Provider response did not contain a JSON review payload after self-healing retry.",
+        { rawText },
+      ),
+    };
+  }
 
-  return { ok: true, endpoint: "chat", review, requestId };
+  return { ok: true, endpoint: ENDPOINT_CHAT, review: retryReview, requestId };
 }
 
 function buildTokenHeaders(githubToken: string): Record<string, string> {

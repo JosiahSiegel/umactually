@@ -1,4 +1,5 @@
 import { InvalidConfigError } from "./errors.js";
+import { DEFAULT_MAX_COMMENTS, DEFAULT_PROMPT_BYTE_CAP, DEFAULT_REVIEW_FILE_LIMIT } from "./defaults.js";
 import {
   parseBooleanFromUnknown,
   parseIntegerFromUnknown,
@@ -8,7 +9,6 @@ import {
 import { normalizeApiUrl } from "./parsers.js";
 import { readPromptFiles } from "./prompt-files.js";
 import type {
-  ActionInputs,
   AzureConfig,
   CliArgs,
   EnvSources,
@@ -17,6 +17,7 @@ import type {
   Platform,
   PromptConfig,
   ProviderConfig,
+  RawActionInputs,
   ReviewConfig,
   ReviewScopeControls,
   Severity,
@@ -25,8 +26,6 @@ import type {
   TimeoutControls,
 } from "./types.js";
 
-export const DEFAULT_MAX_COMMENTS = 50;
-export const DEFAULT_REVIEW_FILE_LIMIT = 200;
 const DEFAULT_REVIEW_SECONDS = 300;
 const DEFAULT_STALL_SECONDS = 270;
 const DEFAULT_PER_REQUEST_SECONDS = 60;
@@ -35,7 +34,6 @@ const DEFAULT_MINIMUM_SEVERITY: Severity = "minor";
 const DEFAULT_PLATFORM: Platform = "auto";
 const DEFAULT_PROVIDER_URL = "https://api.openai.com/v1";
 const DEFAULT_PROVIDER_MODEL = "auto";
-const DEFAULT_PROMPT_BYTE_CAP = 64 * 1024;
 
 /**
  * Resolves the final ReviewConfig by merging CLI > inputs > env > defaults.
@@ -175,7 +173,7 @@ export async function loadConfigFromSources(sources: LoadConfigSources): Promise
 
 async function resolvePrompts(
   cli: CliArgs,
-  inputs: ActionInputs,
+  inputs: RawActionInputs,
   env: EnvSources,
   cwd: string,
   byteCap: number,
