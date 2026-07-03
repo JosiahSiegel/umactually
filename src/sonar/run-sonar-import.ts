@@ -1,4 +1,5 @@
 import { isRecord } from "../util/json-guards.js";
+import { writeBrandedAnnotation } from "../util/log.js";
 import { sleep } from "../util/async.js";
 
 type SonarImportContract = {
@@ -277,8 +278,9 @@ export async function runLiveSonarImport(config: LiveSonarConfig): Promise<LiveS
       const message = error instanceof Error ? error.message : String(error);
       // Network errors are not fatal — retry until the deadline.
       lastStatus = "IN_PROGRESS";
-      process.stderr.write(
-        `::warning::umactually-pr-review: sonar quality-gate poll attempt ${pollAttempts} failed: ${message}\n`,
+      writeBrandedAnnotation(
+        "warning",
+        `sonar quality-gate poll attempt ${pollAttempts} failed: ${message}`,
       );
     }
 
@@ -321,9 +323,7 @@ async function fetchSonarFindings(
     }
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
-    process.stderr.write(
-      `::warning::umactually-pr-review: sonar issues fetch failed: ${message}\n`,
-    );
+    writeBrandedAnnotation("warning", `sonar issues fetch failed: ${message}`);
   }
 
   try {
@@ -342,9 +342,7 @@ async function fetchSonarFindings(
     }
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
-    process.stderr.write(
-      `::warning::umactually-pr-review: sonar hotspots fetch failed: ${message}\n`,
-    );
+    writeBrandedAnnotation("warning", `sonar hotspots fetch failed: ${message}`);
   }
 
   return issueCount + hotspotCount;
