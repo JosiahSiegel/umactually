@@ -1,6 +1,8 @@
 import { describe, expect, it } from "vitest";
 
+import { appendCommonInputArgs } from "../../src/action/append-cli-inputs.js";
 import { readActionInputs } from "../../src/action/read-inputs.js";
+import type { ActionInputs } from "../../src/action/read-inputs.js";
 import { buildArgs } from "../../src/index.js";
 
 declare module "vitest" {
@@ -30,6 +32,177 @@ expect.extend({
       message: () => `expected ${JSON.stringify(received)} to contain ordered subsequence ${JSON.stringify(expected)}`,
     };
   },
+});
+
+const DEFAULT_ACTION_INPUTS: ActionInputs = {
+  githubToken: "",
+  apiKey: "",
+  apiUrl: "",
+  model: "",
+  prompt: "",
+  promptFile: "",
+  additionalPrompt: "",
+  additionalPromptFile: "",
+  walkthrough: false,
+  diagnostic: false,
+  dryRun: false,
+  debugRawResponse: false,
+  simulateFindings: false,
+  reviewTimeoutSeconds: 300,
+  stallSeconds: 270,
+  maxOutputTokens: 16_000,
+  ignoreMinor: false,
+  minimumSeverity: "low",
+  maxComments: 50,
+  reviewFileLimit: 200,
+  includeSonarqube: false,
+  sonarHostUrl: "",
+  sonarToken: "",
+  sonarProjectKey: "",
+  sonarTimeoutSeconds: 300,
+  detectLeaks: true,
+  platform: "auto",
+  prNumber: "",
+  repo: "",
+  inGitHubActions: false,
+  effort: "medium",
+  provider: "openai-compatible",
+  githubApiBase: "",
+};
+
+function makeActionInputs(overrides: Partial<ActionInputs> = {}): ActionInputs {
+  return { ...DEFAULT_ACTION_INPUTS, ...overrides };
+}
+
+describe("appendCommonInputArgs", () => {
+  it("emits --detect-leaks when inputs.detectLeaks is true", () => {
+    // Given: action inputs with leak detection enabled.
+    const inputs = makeActionInputs({ detectLeaks: true });
+
+    // When: common action inputs are appended to CLI argv.
+    const args = appendCommonInputArgs([], inputs);
+
+    // Then: the positive parser flag is emitted explicitly.
+    expect(args).toContain("--detect-leaks");
+    expect(args).not.toContain("--no-detect-leaks");
+  });
+
+  it("emits --no-detect-leaks when inputs.detectLeaks is false", () => {
+    // Given: action inputs with leak detection disabled.
+    const inputs = makeActionInputs({ detectLeaks: false });
+
+    // When: common action inputs are appended to CLI argv.
+    const args = appendCommonInputArgs([], inputs);
+
+    // Then: the negative parser flag is emitted explicitly.
+    expect(args).toContain("--no-detect-leaks");
+    expect(args).not.toContain("--detect-leaks");
+  });
+
+  it("emits --dry-run when inputs.dryRun is true", () => {
+    // Given: action inputs with dry run enabled.
+    const inputs = makeActionInputs({ dryRun: true });
+
+    // When: common action inputs are appended to CLI argv.
+    const args = appendCommonInputArgs([], inputs);
+
+    // Then: the positive dry-run parser flag is emitted explicitly.
+    expect(args).toContain("--dry-run");
+    expect(args).not.toContain("--no-dry-run");
+  });
+
+  it("emits --no-dry-run when inputs.dryRun is false", () => {
+    // Given: action inputs with dry run disabled.
+    const inputs = makeActionInputs({ dryRun: false });
+
+    // When: common action inputs are appended to CLI argv.
+    const args = appendCommonInputArgs([], inputs);
+
+    // Then: the negative dry-run parser flag is emitted explicitly.
+    expect(args).toContain("--no-dry-run");
+    expect(args).not.toContain("--dry-run");
+  });
+
+  it("emits --review-file-limit 0 when inputs.reviewFileLimit is zero", () => {
+    // Given: zero is the explicit opt-out value for the file cap.
+    const inputs = makeActionInputs({ reviewFileLimit: 0 });
+
+    // When: common action inputs are appended to CLI argv.
+    const args = appendCommonInputArgs([], inputs);
+
+    // Then: numeric zero is preserved, not skipped as falsy.
+    expect(args).toContainSubsequence(["--review-file-limit", "0"]);
+  });
+
+  it("omits --per-request-timeout-seconds because inputs.perRequestTimeoutSeconds is not an ActionInput", () => {
+    // Given: ActionInputs has no perRequestTimeoutSeconds property.
+    const inputs = makeActionInputs();
+
+    // When: common action inputs are appended to CLI argv.
+    const args = appendCommonInputArgs([], inputs);
+
+    // Then: the parser-only field is not emitted by the action adapter.
+    expect(args).not.toContain("--per-request-timeout-seconds");
+  });
+
+  it("emits --max-output-tokens because inputs.maxOutputTokens is an ActionInput", () => {
+    // Given: read-inputs.ts includes maxOutputTokens in ActionInputs.
+    const inputs = makeActionInputs({ maxOutputTokens: 1234 });
+
+    // When: common action inputs are appended to CLI argv.
+    const args = appendCommonInputArgs([], inputs);
+
+    // Then: the action-owned max output token field is still forwarded.
+    expect(args).toContainSubsequence(["--max-output-tokens", "1234"]);
+    expect(args).not.toContain("--maxOutputTokens");
+  });
+
+  it("does NOT emit --platform", () => {
+    // Given: platform is handled by buildGithubArgs/buildAzureArgs before common args.
+    const inputs = makeActionInputs({ platform: "azure" });
+
+    // When: common action inputs are appended to CLI argv.
+    const args = appendCommonInputArgs([], inputs);
+
+    // Then: common forwarding does not duplicate the caller-owned platform flag.
+    expect(args).not.toContain("--platform");
+  });
+
+  it("does NOT emit --pr-number or --repo", () => {
+    // Given: Azure-only PR metadata is supplied in ActionInputs.
+    const inputs = makeActionInputs({ prNumber: "42", repo: "org/project/_git/repo" });
+
+    // When: common action inputs are appended to CLI argv.
+    const args = appendCommonInputArgs([], inputs);
+
+    // Then: Azure callers keep owning these flags explicitly.
+    expect(args).not.toContain("--pr-number");
+    expect(args).not.toContain("--repo");
+  });
+
+  it("does NOT emit --github-token, --prompt-byte-cap, or --redactor-enabled", () => {
+    // Given: null-flag fields must never cross through CLI argv.
+    const inputs = makeActionInputs({ githubToken: "ghs_secret" });
+
+    // When: common action inputs are appended to CLI argv.
+    const args = appendCommonInputArgs([], inputs);
+
+    // Then: null-flag fields remain internal-only config values.
+    expect(args).not.toContain("--github-token");
+    expect(args).not.toContain("--prompt-byte-cap");
+    expect(args).not.toContain("--redactor-enabled");
+  });
+
+  it("emits --prompt value when inputs.prompt is set", () => {
+    // Given: an inline prompt override is supplied.
+    const inputs = makeActionInputs({ prompt: "value" });
+
+    // When: common action inputs are appended to CLI argv.
+    const args = appendCommonInputArgs([], inputs);
+
+    // Then: the prompt reaches the CLI parser unchanged.
+    expect(args).toContainSubsequence(["--prompt", "value"]);
+  });
 });
 
 describe("readActionInputs: GitHub Actions runtime defaults", () => {
