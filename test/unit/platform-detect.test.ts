@@ -58,10 +58,12 @@ describe("platform detection unit contract", () => {
     // Regression: the canonical helper previously only matched lowercase
     // "true". Real Azure Pipelines agents emit TF_BUILD=True (capital T),
     // so the detector silently fell through to PLATFORM_UNKNOWN and the
-    // CLI defaulted to GitHub. Confirms both casings are accepted so a
-    // manual lowercase export still works for mocked pipelines.
+    // CLI defaulted to GitHub. Confirms all three casings (lowercase /
+    // capital T / all uppercase) are accepted so a PowerShell
+    // `Set-Item env:TF_BUILD=TRUE` mistake does not silently land in
+    // PLATFORM_UNKNOWN.
     const detectPlatform = await loadDetectPlatform();
-    for (const tfBuild of ["True", "true"]) {
+    for (const tfBuild of ["True", "true", "TRUE"]) {
       expect(detectPlatform({ TF_BUILD: tfBuild } as NodeJS.ProcessEnv), `TF_BUILD=${tfBuild}`).toBe("azure-devops");
     }
   });

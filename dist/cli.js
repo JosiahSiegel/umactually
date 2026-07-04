@@ -417,17 +417,35 @@ function envFallback(...values) {
  * `Number.parseInt("12abc", 10)` returns 12; this helper returns null for
  * the same input so callers can fall back or throw a typed error.
  *
- * Accepts:
+ * ## Sign tolerance
+ *
+ * The helper is **sign-tolerant by design**: it accepts `"+1"`, `"-1"`,
+ * `"+0"`, `"-0"` etc. The positivity / non-negativity check is the
+ * CALLER's responsibility (see `parsePrNumber` for `parsed <= 0` and
+ * `readAzurePrNumber` for the same). This split keeps the helper
+ * reusable for signed CLI flags (none today, but the schema may grow)
+ * while every existing caller that wants positive-integer semantics
+ * already adds its own `parsed <= 0` guard.
+ *
+ * ## Accepted shapes
  *   - Optional leading `+` or `-` sign
  *   - One or more ASCII digits
  *   - Any integer that fits in `Number.isSafeInteger` (±(2^53 - 1))
  *
- * Rejects:
+ * ## Rejected shapes
  *   - Empty strings
- *   - Whitespace-only strings (use `trimInt` if you need to tolerate trim)
- *   - Any non-digit content anywhere (including trailing/leading whitespace
- *     inside the body, decimal points, exponent notation)
- *   - Unsigned `"+1"` parses to 1; `"-1"` parses to -1; `"1.5"` returns null.
+ *   - Whitespace-only or whitespace-padded strings (callers that need
+ *     to tolerate trim should `.trim()` first — see action/read-inputs.ts)
+ *   - Any non-digit content anywhere (decimal points, exponent notation,
+ *     trailing letters, internal whitespace)
+ *
+ * ## Caller contract
+ *   - `parsed === null` means "not a valid strict integer". Caller
+ *     decides whether to throw, fall back to a default, or branch.
+ *   - `parsed === 0` is a successful parse. Caller decides whether
+ *     `0` is in-range.
+ *   - `parsed < 0` is a successful parse. Caller decides whether
+ *     negatives are in-range.
  *
  * This is the canonical helper for any CLI flag / env var / input field
  * that represents a strict integer. Replaces the five hand-rolled
@@ -2844,17 +2862,18 @@ function detectPlatform(env) {
 /**
  * Recognise CI-platform "marker present" values.
  *
- * Azure Pipelines emits `TF_BUILD=True` (capital T) — that is the only
- * real-world value but the canonical helper also accepts `"true"` so
- * local mocked pipelines and `pipeline-init.sh` shell scripts that
- * `export TF_BUILD=true` continue to work. Everything else (including
- * `"True "`, `"TRUE"`, `"1"`, `"yes"`) is intentionally rejected: a
- * wrong-case value would only ever come from a manual export, and we
- * want the false-negative to surface as `PLATFORM_UNKNOWN` instead of
- * silently mis-detecting.
+ * Azure Pipelines emits `TF_BUILD=True` (capital T) — the canonical
+ * runner value. The helper also accepts `"true"` (lowercase) so local
+ * mocked pipelines and `pipeline-init.sh` shell scripts that
+ * `export TF_BUILD=true` continue to work, and `"TRUE"` (all uppercase)
+ * so a PowerShell `Set-Item env:TF_BUILD=TRUE` mistake does not
+ * silently land in `PLATFORM_UNKNOWN` for the operator. Everything else
+ * (including `"1"`, `"yes"`, whitespace-padded) is intentionally
+ * rejected: the goal is to recognise the three real-world casings, not
+ * to be a general truthy-string helper.
  */
 function isTruthy(value) {
-    return value === "true" || value === "True";
+    return value === "true" || value === "True" || value === "TRUE";
 }
 
 ;// CONCATENATED MODULE: ./src/platform/github/api.ts

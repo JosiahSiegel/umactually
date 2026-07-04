@@ -44,17 +44,35 @@ export function envFallback(...values: ReadonlyArray<string | undefined>): strin
  * `Number.parseInt("12abc", 10)` returns 12; this helper returns null for
  * the same input so callers can fall back or throw a typed error.
  *
- * Accepts:
+ * ## Sign tolerance
+ *
+ * The helper is **sign-tolerant by design**: it accepts `"+1"`, `"-1"`,
+ * `"+0"`, `"-0"` etc. The positivity / non-negativity check is the
+ * CALLER's responsibility (see `parsePrNumber` for `parsed <= 0` and
+ * `readAzurePrNumber` for the same). This split keeps the helper
+ * reusable for signed CLI flags (none today, but the schema may grow)
+ * while every existing caller that wants positive-integer semantics
+ * already adds its own `parsed <= 0` guard.
+ *
+ * ## Accepted shapes
  *   - Optional leading `+` or `-` sign
  *   - One or more ASCII digits
  *   - Any integer that fits in `Number.isSafeInteger` (±(2^53 - 1))
  *
- * Rejects:
+ * ## Rejected shapes
  *   - Empty strings
- *   - Whitespace-only strings (use `trimInt` if you need to tolerate trim)
- *   - Any non-digit content anywhere (including trailing/leading whitespace
- *     inside the body, decimal points, exponent notation)
- *   - Unsigned `"+1"` parses to 1; `"-1"` parses to -1; `"1.5"` returns null.
+ *   - Whitespace-only or whitespace-padded strings (callers that need
+ *     to tolerate trim should `.trim()` first — see action/read-inputs.ts)
+ *   - Any non-digit content anywhere (decimal points, exponent notation,
+ *     trailing letters, internal whitespace)
+ *
+ * ## Caller contract
+ *   - `parsed === null` means "not a valid strict integer". Caller
+ *     decides whether to throw, fall back to a default, or branch.
+ *   - `parsed === 0` is a successful parse. Caller decides whether
+ *     `0` is in-range.
+ *   - `parsed < 0` is a successful parse. Caller decides whether
+ *     negatives are in-range.
  *
  * This is the canonical helper for any CLI flag / env var / input field
  * that represents a strict integer. Replaces the five hand-rolled
