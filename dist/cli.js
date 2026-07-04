@@ -2698,6 +2698,7 @@ function findDiffHeaderIndices(diff) {
 ;// CONCATENATED MODULE: ./src/platform/azure/context.ts
 
 
+
 /**
  * Context-resolution error for the Azure DevOps platform adapter.
  * Inherits the `PlatformContextError` shape from
@@ -2788,8 +2789,10 @@ function readAzurePrNumber(env) {
     if (raw === undefined || raw.length === 0) {
         throw new AzureContextError("AZURE_PR_NUMBER_INVALID", "Azure Pipelines SYSTEM_PULLREQUEST_PULLREQUESTID must be set.");
     }
-    const parsed = Number.parseInt(raw, 10);
-    if (!isSafeInteger(parsed) || parsed <= 0) {
+    // Strict helper: "42abc" must NOT coerce to 42 (which would land on a
+    // 404 from the Azure DevOps REST API instead of a typed error).
+    const parsed = parseStrictInt(raw);
+    if (parsed === null || !isSafeInteger(parsed) || parsed <= 0) {
         throw new AzureContextError("AZURE_PR_NUMBER_INVALID", "Azure Pipelines SYSTEM_PULLREQUEST_PULLREQUESTID must be a positive integer.");
     }
     return parsed;
@@ -2846,6 +2849,7 @@ function buildPullUrl(context) {
 }
 
 ;// CONCATENATED MODULE: ./src/platform/github/context.ts
+
 
 
 
@@ -2912,8 +2916,12 @@ function readGithubPrNumber(env, fallback) {
     throw new GithubContextError("GITHUB_PR_NUMBER_INVALID", "GitHub pull request number must be provided via PR_NUMBER input, GITHUB_PR_NUMBER env, or the pull_request event payload.");
 }
 function parsePrNumber(raw, _env) {
-    const parsed = Number.parseInt(raw, 10);
-    if (!isSafeInteger(parsed) || parsed <= 0) {
+    // Use the strict helper so "42abc" cannot be silently coerced to 42.
+    // The previous Number.parseInt would have returned 42 from "42abc"
+    // and the resulting PR-number call would have hit GitHub's API with
+    // a partial-numeric path that returned 404 instead of the actual PR.
+    const parsed = parseStrictInt(raw);
+    if (parsed === null || !isSafeInteger(parsed) || parsed <= 0) {
         throw new GithubContextError("GITHUB_PR_NUMBER_INVALID", "GitHub pull request number must be a positive integer.");
     }
     return parsed;

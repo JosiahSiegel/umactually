@@ -287,4 +287,22 @@ describe("Azure DevOps platform unit contract", () => {
     expect(diffText).toContain("diff --git a/src/modified.ts b/src/modified.ts");
     expect(diffText).not.toContain("old-deleted.js");
   });
+
+  it("rejects partial numeric PR numbers (SYSTEM_PULLREQUEST_PULLREQUESTID=42abc) with AZURE_PR_NUMBER_INVALID", async () => {
+    // Regression: Number.parseInt("42abc", 10) silently returns 42.
+    // The strict helper now refuses and the typed AzureContextError
+    // carries the canonical code so the runner surfaces it instead of
+    // making a 404 call against the Azure DevOps REST API.
+    const readAzureContext = await loadReadAzureContext();
+    const env: NodeJS.ProcessEnv = {
+      SYSTEM_ACCESSTOKEN: "azure-system-token",
+      SYSTEM_COLLECTIONURI: "https://dev.azure.com/example-org/",
+      SYSTEM_TEAMPROJECT: "Example Project",
+      BUILD_REPOSITORY_ID: "00000000-0000-0000-0000-000000000042",
+      SYSTEM_PULLREQUEST_PULLREQUESTID: "42abc",
+      SYSTEM_PULLREQUEST_SOURCECOMMITID: "1111111111111111111111111111111111111111",
+      SYSTEM_PULLREQUEST_TARGETBRANCHNAME: "refs/heads/main",
+    };
+    expect(() => readAzureContext(env)).toThrow(/positive integer/u);
+  });
 });

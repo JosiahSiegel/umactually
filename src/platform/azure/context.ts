@@ -1,3 +1,4 @@
+import { parseStrictInt } from "../../util/cli-args.js";
 import { isSafeInteger } from "../../util/json-guards.js";
 import { PlatformContextError } from "../../util/platform-error.js";
 
@@ -122,8 +123,10 @@ function readAzurePrNumber(env: NodeJS.ProcessEnv): number {
   if (raw === undefined || raw.length === 0) {
     throw new AzureContextError("AZURE_PR_NUMBER_INVALID", "Azure Pipelines SYSTEM_PULLREQUEST_PULLREQUESTID must be set.");
   }
-  const parsed = Number.parseInt(raw, 10);
-  if (!isSafeInteger(parsed) || parsed <= 0) {
+  // Strict helper: "42abc" must NOT coerce to 42 (which would land on a
+  // 404 from the Azure DevOps REST API instead of a typed error).
+  const parsed = parseStrictInt(raw);
+  if (parsed === null || !isSafeInteger(parsed) || parsed <= 0) {
     throw new AzureContextError("AZURE_PR_NUMBER_INVALID", "Azure Pipelines SYSTEM_PULLREQUEST_PULLREQUESTID must be a positive integer.");
   }
   return parsed;

@@ -1,4 +1,5 @@
 import { readFile } from "node:fs/promises";
+import { parseStrictInt } from "../../util/cli-args.js";
 import { isPositiveSafeInteger, isRecord as isObject, isSafeInteger } from "../../util/json-guards.js";
 import { PlatformContextError } from "../../util/platform-error.js";
 
@@ -97,8 +98,12 @@ function readGithubPrNumber(env: NodeJS.ProcessEnv, fallback: number | null): nu
 }
 
 function parsePrNumber(raw: string, _env: NodeJS.ProcessEnv): number {
-  const parsed = Number.parseInt(raw, 10);
-  if (!isSafeInteger(parsed) || parsed <= 0) {
+  // Use the strict helper so "42abc" cannot be silently coerced to 42.
+  // The previous Number.parseInt would have returned 42 from "42abc"
+  // and the resulting PR-number call would have hit GitHub's API with
+  // a partial-numeric path that returned 404 instead of the actual PR.
+  const parsed = parseStrictInt(raw);
+  if (parsed === null || !isSafeInteger(parsed) || parsed <= 0) {
     throw new GithubContextError("GITHUB_PR_NUMBER_INVALID", "GitHub pull request number must be a positive integer.");
   }
   return parsed;
