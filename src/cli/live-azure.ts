@@ -1,18 +1,19 @@
 import { type AzureContext } from "../platform/azure/context.js";
-import { REVIEW_MARKER } from "../review/run-review.js";
+import { AZURE_API_VERSION, azurePrBaseUrl } from "../platform/azure/urls.js";
 import { AZURE_STATUS_CONTEXT_NAME } from "../util/brand.js";
+import { formatError } from "../util/error.js";
 import { azureHeaders, truncateBodyForLog } from "../util/http.js";
-import { isRecord, isSafeInteger } from "../util/json-guards.js";
+import { isRecord, isSafeInteger, isUnknownArray } from "../util/json-guards.js";
 import { writeBrandedAnnotation } from "../util/log.js";
+import { commentBodyHasMarker } from "../util/marker.js";
+import { findDuplicateThread } from "../platform/azure/api.js";
 import {
   buildInlineCommentBody,
-  buildReviewBody,
-  countBySeverity,
   ensureHttpOk,
   mapReviewVerdictToAzureStatus,
+  preparePostedReview,
   readJsonResponse,
   readResponseId,
-  selectOffDiffComments,
   selectPostableComments,
   type FetchImpl,
   type LiveProviderOutcome,
@@ -29,33 +30,15 @@ export async function runAzureLive(input: {
 }): Promise<LiveRunResult> {
   const { context, diffText, provider, parsed, fetchImpl } = input;
 
-  const comments = selectPostableComments({
+  const prepared = preparePostedReview({
     review: provider.review,
+    provider: provider.provider,
+    modelId: provider.modelId,
     diffText,
     parsed,
     secrets: [context.token],
   });
-  const offDiffFromComments = selectOffDiffComments(provider.review, diffText);
-  const suppressedCommentCount =
-    provider.review.suppressedComments.length + offDiffFromComments.length;
-  const body = buildReviewBody({
-    review: provider.review,
-    provider: provider.provider,
-    modelId: provider.modelId,
-    validCommentCount: comments.length,
-    suppressedCommentCount,
-    offDiffFromComments,
-    // CLARITY-15: severityCounts must reflect the POSTED set (i.e. the
-    // same comments that produced `validCommentCount`) so the rendered
-    // tally and the footer's inline count reconcile. Computing from
-    // `provider.review.comments` would over-report by the number of
-    // findings filtered out by `selectPostableComments`.
-    severityCounts: countBySeverity(comments),
-    // CLARITY-16: pass the posted set so the "Top concerns" preview
-    // denominator agrees with the tally + footer.
-    postedComments: comments,
-    secrets: [context.token],
-  });
+  const { postableComments: comments, body } = prepared;
   const existingThreads = await listAzureThreads(context, fetchImpl);
 
   // Post the parent PR-level review summary LAST so the conversation
@@ -110,7 +93,7 @@ export async function runAzureLive(input: {
   for (let index = 0; index < comments.length; index += 1) {
     const comment = comments[index];
     if (comment === undefined) continue;
-    if (hasDuplicateThread(existingThreads, comment)) {
+    if (findDuplicateThread(comment, existingThreads) !== null) {
       continue;
     }
     try {
@@ -127,7 +110,7 @@ export async function runAzureLive(input: {
       }
     } catch (error) {
       failedIndices.push(index);
-      const message = error instanceof Error ? error.message : String(error);
+      const message = formatError(error);
       writeBrandedAnnotation(
         "warning",
         `Azure thread ${index + 1}/${comments.length} failed (${comment.path}:${comment.line}): ${message}; continuing with remaining threads.`,
@@ -232,28 +215,10 @@ async function listAzureThreads(context: AzureContext, fetchImpl: FetchImpl): Pr
     return [];
   }
   const value = json["value"];
-  if (!Array.isArray(value)) {
+  if (!isUnknownArray(value)) {
     return [];
   }
   return value.map(parseAzureThread).filter((thread): thread is AzureThread => thread !== null);
-}
-
-const AZURE_OPEN_STATUSES: ReadonlySet<string> = new Set(["active", "pending"]);
-const AZURE_RESOLVED_STATUSES: ReadonlySet<string> = new Set(["closed", "fixed", "wontFix", "byDesign"]);
-
-function hasDuplicateThread(threads: readonly AzureThread[], comment: LiveReviewComment): boolean {
-  const azurePath = `/${comment.path}`.replace(/\/+/gu, "/");
-  const targetLine = comment.line;
-  return threads.some((thread) => {
-    if (thread.threadContext === null) return false;
-    if (thread.threadContext.filePath !== azurePath) return false;
-    if (thread.threadContext.rightFileStart.line !== targetLine) return false;
-    if (AZURE_RESOLVED_STATUSES.has(thread.status)) return true;
-    if (AZURE_OPEN_STATUSES.has(thread.status)) {
-      return thread.comments.some((c) => c.content.includes(REVIEW_MARKER));
-    }
-    return false;
-  });
 }
 
 /**
@@ -275,7 +240,7 @@ function findExistingParentPrComment(threads: readonly AzureThread[]): {
     if (thread.threadContext !== null) continue;
     const firstComment = thread.comments[0];
     if (firstComment === undefined) continue;
-    if (!firstComment.content.includes(REVIEW_MARKER)) continue;
+    if (!commentBodyHasMarker(firstComment.content)) continue;
     return { thread, comment: firstComment };
   }
   return null;
@@ -327,7 +292,7 @@ async function postParentThread(
     const created = readResponseId(await readJsonResponse(response));
     return created === undefined ? undefined : { id: created };
   } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
+    const message = formatError(error);
     writeBrandedAnnotation(
       "warning",
       `Azure parent PR comment POST failed (${message}); continuing with inline threads only.`,
@@ -358,7 +323,7 @@ async function deleteParentThreadComments(input: {
     if (!isSafeInteger(commentId)) {
       continue;
     }
-    const url = `${azurePrBaseUrl(input.context)}/threads/${input.threadId}/comments/${commentId}?api-version=7.1`;
+    const url = `${azurePrBaseUrl(input.context)}/threads/${input.threadId}/comments/${commentId}?api-version=${AZURE_API_VERSION}`;
     try {
       const response = await input.fetchImpl(url, {
         method: "DELETE",
@@ -372,7 +337,7 @@ async function deleteParentThreadComments(input: {
         });
       }
     } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
+      const message = formatError(error);
       writeBrandedAnnotation(
         "warning",
         `Azure delete parent thread ${input.threadId} comment ${commentId} threw (${message}); continuing.`,
@@ -389,7 +354,7 @@ async function deleteParentThreadComments(input: {
  *
  * The PATCH uses the documented Pull Request Thread Comments -
  * Update endpoint:
- *   PATCH .../threads/{threadId}/comments/{commentId}?api-version=7.1
+ *   PATCH .../threads/{threadId}/comments/{commentId}?api-version=<AZURE_API_VERSION>
  * with `content` (and the existing `id` to keep the comment).
  * See https://learn.microsoft.com/en-us/rest/api/azure/devops/git/pull-request-thread-comments/update?view=azure-devops-rest-7.1
  *
@@ -413,7 +378,7 @@ async function patchInlineCommentWithParentRef(input: {
     includeMarker: true,
     parentThreadId: input.parentThreadId,
   });
-  const url = `${azurePrBaseUrl(input.context)}/threads/${input.threadId}/comments/${input.commentId}?api-version=7.1`;
+  const url = `${azurePrBaseUrl(input.context)}/threads/${input.threadId}/comments/${input.commentId}?api-version=${AZURE_API_VERSION}`;
   try {
     const response = await input.fetchImpl(url, {
       method: "PATCH",
@@ -433,7 +398,7 @@ async function patchInlineCommentWithParentRef(input: {
       });
     }
   } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
+    const message = formatError(error);
     writeBrandedAnnotation(
       "warning",
       `Azure patch inline thread ${input.threadId} comment ${input.commentId} threw (${message}); continuing.`,
@@ -541,7 +506,7 @@ async function postAzureStatus(input: {
   // "VssRequestContentTypeNotSupportedException" and then
   // "JSON Patch operation 'Replace' not supported" once the JSON-Patch
   // content-type is set. The documented single-status deletion endpoint
-  // is `DELETE .../statuses/{statusId}?api-version=7.1` (204 No Content
+  // is `DELETE .../statuses/{statusId}?api-version=<AZURE_API_VERSION>` (204 No Content
   // on success) — see
   // https://learn.microsoft.com/en-us/rest/api/azure/devops/git/pull-request-statuses/delete?view=azure-devops-rest-7.1
   //
@@ -596,7 +561,7 @@ async function postAzureStatus(input: {
 
 /**
  * Shape of a single status entry returned by the
- * `GET .../pullRequests/{id}/statuses?api-version=7.1` collection
+ * `GET .../pullRequests/{id}/statuses?api-version=<AZURE_API_VERSION>` collection
  * endpoint, narrowed to the fields we read.
  *
  * Per Microsoft Learn:
@@ -645,7 +610,7 @@ export async function listAzureStatuses(context: AzureContext, fetchImpl: FetchI
     return [];
   }
   const value = json["value"];
-  if (!Array.isArray(value)) {
+  if (!isUnknownArray(value)) {
     return [];
   }
   const entries: AzureStatusEntry[] = [];
@@ -763,7 +728,7 @@ export async function deleteAzureStatusById(input: {
   readonly fetchImpl: FetchImpl;
   readonly statusId: number;
 }): Promise<boolean> {
-  const url = `${azurePrBaseUrl(input.context)}/statuses/${input.statusId}?api-version=7.1`;
+  const url = `${azurePrBaseUrl(input.context)}/statuses/${input.statusId}?api-version=${AZURE_API_VERSION}`;
   let response: Response;
   try {
     response = await input.fetchImpl(url, {
@@ -771,7 +736,7 @@ export async function deleteAzureStatusById(input: {
       headers: azureHeaders(input.context.token),
     });
   } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
+    const message = formatError(error);
     writeBrandedAnnotation(
       "warning",
       `Azure delete PR status ${input.statusId} threw (${message}); continuing.`,
@@ -936,14 +901,9 @@ function parseAzureComment(value: unknown): { readonly id: number | undefined; r
 }
 
 function azureThreadsUrl(context: AzureContext): string {
-  return `${azurePrBaseUrl(context)}/threads?api-version=7.1`;
+  return `${azurePrBaseUrl(context)}/threads?api-version=${AZURE_API_VERSION}`;
 }
 
 function azureStatusesUrl(context: AzureContext): string {
-  return `${azurePrBaseUrl(context)}/statuses?api-version=7.1`;
-}
-
-function azurePrBaseUrl(context: AzureContext): string {
-  const project = encodeURIComponent(context.project);
-  return `https://dev.azure.com/${context.org}/${project}/_apis/git/repositories/${context.repoId}/pullRequests/${context.prNumber}`;
+  return `${azurePrBaseUrl(context)}/statuses?api-version=${AZURE_API_VERSION}`;
 }
