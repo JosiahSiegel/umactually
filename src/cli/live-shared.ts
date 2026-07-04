@@ -113,10 +113,26 @@ export async function evaluateLeakGate(input: {
 /**
  * Visual verdict badge used in the review-header summary. Both GitHub and
  * Azure DevOps render markdown, so the same badge appears on each platform.
+ *
+ * CLARITY-14f: When the model said `NEEDS_FIX` but no findings are
+ * actionable (zero posted + zero suppressed), the verdict is
+ * downgraded to `💬 DISCUSS` rather than `⛔ NEEDS_FIX`. Showing
+ * `NEEDS_FIX` for a card that lists zero items to fix is misleading —
+ * a reviewer would search the diff for things to act on, find nothing,
+ * and lose trust in the verdict signal. `DISCUSS` is the right
+ * semantic: there's nothing to fix, but the review is not a clean
+ * bill of health either (the model said something is wrong; we just
+ * can't surface what).
  */
-function verdictBadge(verdict: string): string {
-  const normalized = verdict.toUpperCase();
-  if (normalized === "NEEDS_FIX") return "⛔ NEEDS_FIX";
+function verdictBadge(input: {
+  readonly verdict: string;
+  readonly validCommentCount: number;
+  readonly suppressedCommentCount: number;
+}): string {
+  const normalized = input.verdict.toUpperCase();
+  const nothingActionable =
+    input.validCommentCount === 0 && input.suppressedCommentCount === 0;
+  if (normalized === "NEEDS_FIX" && !nothingActionable) return "⛔ NEEDS_FIX";
   if (normalized === "APPROVED" || normalized === "SHIP") return "✅ SHIP";
   return "💬 DISCUSS";
 }
@@ -139,66 +155,23 @@ export const countBySeverity = countBySeverityUtil;
  */
 const TOP_CONCERNS_PREVIEW_LIMIT = 5;
 
-/**
- * Three explicit labels — posted / considered / suppressed — that make the
- * parent card unambiguous about what the model produced vs. what landed
- * vs. what was rejected. Replaces the old single-line counts that mixed
- * "info" findings (excluded from the severity tally) with "off-diff"
- * suppressions, which produced the confusing "0 critical · 0 high · 0
- * medium · 0 low · 5 suppressed" line followed by a non-empty
- * "Top concerns" list. CLARITY-9 pins the new contract.
- *
- * Always renders (even when all three values are zero) so a reviewer
- * can distinguish "0 found, ship it" from "nothing rendered" —
- * inherited from CLARITY-5.
- *
- * When `parseFailed` is true, the row prepends a prominent
- * `⚠️ Parse failed` badge so a 0-finding review can never be confused
- * for a clean bill of health. CLARITY-10.
- */
-function postedVsConsideredRow(input: {
-  readonly postedCount: number;
-  readonly consideredCount: number;
-  readonly suppressedCount: number;
-  readonly parseFailed: boolean;
-}): string {
-  const base =
-    `**Posted:** \`${input.postedCount}\` inline thread(s) · ` +
-    `**Considered:** \`${input.consideredCount}\` finding(s) from model · ` +
-    `**Suppressed:** \`${input.suppressedCount}\` off-diff`;
-  if (input.parseFailed) {
-    // Use emoji + backticks (NOT `**Parse failed**` markdown emphasis)
-    // for consistency with the severity tally above and to avoid the
-    // ADO PR-thread renderer leakage observed for `**...**` patterns
-    // (see CLARITY-3 in test/unit/live-azure-parent-clarity.test.ts).
-    return `> ⚠️ \`Parse failed\` — provider response was not a valid JSON review payload. ` +
-      `No findings were extracted; the raw provider text is included in the Summary section below for diagnostics.\n` +
-      `\n${base}`;
-  }
-  return base;
-}
-
-/**
- * Severity tally — critical → high → medium → low — that appears
- * immediately after the verdict badge and the posted/considered/suppressed
- * row. Uses emoji + backticks (NOT `**word**` asterisks) because ADO's
- * PR-thread renderer surface has been observed to leak `**...**` as
- * literal asterisks even though the markdown guidance documents that
- * emphasis IS supported. Belt-and-braces compatibility — see CLARITY-3
- * in test/unit/live-azure-parent-clarity.test.ts.
- *
- * The `info` severity is intentionally excluded from this tally (info
- * findings are tracked in the manifest but are not a signal the reviewer
- * needs to act on) — the "considered" count above is the unambiguous
- * answer when an info-heavy payload is in play.
- */
 function countsLine(input: {
   readonly severityCounts: Record<string, number>;
 }): string {
   const parts: string[] = [];
+  let total = 0;
   for (const level of SEVERITY_ORDER) {
     const count = input.severityCounts[level] ?? 0;
+    total += count;
     parts.push(`\`${count}\` ${level}`);
+  }
+  // CLARITY-14c: when there are zero findings across all severities,
+  // hide the tally entirely. A row of `📊 0 critical · 0 high · 0
+  // medium · 0 low` adds nothing for a reviewer who's scanning the
+  // card for actionable info — and it explicitly duplicates the "0
+  // inline" footer count when nothing was posted.
+  if (total === 0) {
+    return "";
   }
   return `📊 ${parts.join(" · ")}`;
 }
@@ -236,17 +209,17 @@ function topConcernsBlock(input: {
   const total = input.review.comments.length;
   const shown = preview.length;
   const filteredAll = input.validCommentCount === 0 && total > 0;
-  // Use explicit "Filtered findings" header when every model finding was
-  // filtered — distinguishes this from the normal case where some
-  // findings were posted (so the "Top concerns" preview is a sample of
-  // what landed, not the full rejected list).
+  // CLARITY-14g: drop "from model" suffix — the block IS the model
+  // output, so labeling it "from model" is redundant. Use plain
+  // "Top concerns (N)" when findings landed and "Filtered findings
+  // (N of Z shown)" when none landed.
   const header = filteredAll
     ? shown === 1
-      ? `🔕 Filtered finding from model (1 of ${total}) — none reached inline`
-      : `🔕 Filtered findings from model (${shown} of ${total}) — none reached inline`
+      ? `🔕 Filtered finding (1 of ${total} shown)`
+      : `🔕 Filtered findings (${shown} of ${total} shown)`
     : shown === 1
-      ? `📋 Top concern from model (1 of ${total})`
-      : `📋 Top concerns from model (${shown} of ${total})`;
+      ? `📋 Top concern (1)`
+      : `📋 Top concerns (${shown})`;
   const explainer = filteredAll
     ? `\n_The model produced ${total} finding(s); all were filtered by severity policy, the \`max-comments\` cap, or off-diff suppression. The list below is the pre-filter view for transparency — no inline comments were posted._\n`
     : "";
@@ -405,35 +378,60 @@ export function buildReviewBody(input: {
   readonly secrets: readonly string[];
 }): string {
   const severityCounts = countBySeverity(input.review.comments);
-  const consideredCount = input.review.comments.length;
-  const verdict = verdictBadge(input.review.verdict);
+  const verdict = verdictBadge({
+    verdict: input.review.verdict,
+    validCommentCount: input.validCommentCount,
+    suppressedCommentCount: input.suppressedCommentCount,
+  });
   const safeSummary = sanitizeForPost(input.review.summary, input.secrets);
   const safeModelId = sanitizeForPost(input.modelId, input.secrets);
   const safeProvider = sanitizeForPost(input.provider, input.secrets);
 
+  // CLARITY-14: Actionable-only card. Build the body section-by-section,
+  // skipping sections that don't apply to the current review shape:
+  //   - Parse-failed banner — only when parseFailed
+  //   - Off-diff inline note — only when suppressed > 0
+  //   - Severity tally — only when at least one finding has a severity
+  //   - Top concerns / filtered findings — only when comments exist
+  //   - Suppressed details — only when suppressed > 0
+  //   - Summary <details> — only when summary is non-empty
+  // The result is a card that scales with the review: a clean review is
+  // 3 lines (marker + verdict + footer); a busy review shows everything.
+  const parseFailedBanner = input.review.parseFailed === true
+    ? `> ⚠️ \`Parse failed\` — provider response was not a valid JSON review payload. The raw provider text is included in the Summary section below for diagnostics.\n`
+    : "";
+  const offDiffNote =
+    input.suppressedCommentCount > 0
+      ? `> 🔕 ${input.suppressedCommentCount} off-diff finding${input.suppressedCommentCount === 1 ? " was" : "s were"} not on this PR's diff.\n`
+      : "";
+  const tally = countsLine({ severityCounts });
+  const topConcerns = topConcernsBlock({
+    review: input.review,
+    validCommentCount: input.validCommentCount,
+  });
+  const suppressed = suppressedBlock({
+    suppressedComments: input.review.suppressedComments,
+    offDiffFromComments: input.offDiffFromComments,
+  });
+
+  // CLARITY-14e: terse footer — `X inline` is enough; the verbose
+  // "X inline thread(s) posted" adds noise without information.
   const footer =
     `🤖 Generated by \`${safeModelId}\` via \`${safeProvider}\` · ` +
-    `${input.validCommentCount} inline thread(s) posted`;
+    `${input.validCommentCount} inline`;
 
-  const sections = [
+  // Assemble sections. Each section is "" if it doesn't apply, so we
+  // join with `\n\n` and trim trailing blanks.
+  const sections: string[] = [
     REVIEW_MARKER,
     "",
     `## ${verdict}`,
     "",
-    postedVsConsideredRow({
-      postedCount: input.validCommentCount,
-      consideredCount,
-      suppressedCount: input.suppressedCommentCount,
-      parseFailed: input.review.parseFailed === true,
-    }),
-    "",
-    countsLine({ severityCounts }),
-    "",
-    topConcernsBlock({ review: input.review, validCommentCount: input.validCommentCount }),
-    suppressedBlock({
-      suppressedComments: input.review.suppressedComments,
-      offDiffFromComments: input.offDiffFromComments,
-    }),
+    parseFailedBanner,
+    offDiffNote,
+    tally,
+    topConcerns,
+    suppressed,
     proseBlock(safeSummary),
     footer,
     "",
@@ -447,7 +445,7 @@ export function buildReviewBody(input: {
     }),
   ];
 
-  const raw = sections.join("\n");
+  const raw = sections.filter((s) => s.length > 0).join("\n");
   return sanitizeForPost(raw, input.secrets);
 }
 

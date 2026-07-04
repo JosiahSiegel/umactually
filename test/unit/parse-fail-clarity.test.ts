@@ -35,12 +35,13 @@ describe("CLARITY-10: parse-fail surface is unmistakable", () => {
       secrets: [],
     });
     expect(body).toMatch(/⚠️ `Parse failed`/u);
-    // The Posted/Considered/Suppressed row still appears for transparency,
-    // but the parse-failed badge is now the FIRST thing the reader sees.
-    const badgeIndex = body.indexOf("⚠️ `Parse failed`");
-    const countsIndex = body.indexOf("**Posted:**");
-    expect(badgeIndex).toBeGreaterThan(-1);
-    expect(countsIndex).toBeGreaterThan(badgeIndex);
+    // CLARITY-14: the Posted/Considered/Suppressed row was removed in
+    // the actionable-only card redesign. The parse-failed banner is
+    // now followed directly by the summary <details>. Confirm the
+    // row labels are gone so we don't regress.
+    expect(body).not.toMatch(/\*\*Posted:\*\*/u);
+    expect(body).not.toMatch(/\*\*Considered:\*\*/u);
+    expect(body).not.toMatch(/\*\*Suppressed:\*\*/u);
   });
 
   it("sets parseFailed: true on the fallback review and surfaces it in the manifest", () => {
