@@ -54,6 +54,20 @@ describe("platform detection unit contract", () => {
     expect(platform).toBe("azure-devops");
   });
 
+  it("recognises the real Azure Pipelines marker (TF_BUILD=True with capital T)", async () => {
+    // Regression: the canonical helper previously only matched lowercase
+    // "true". Real Azure Pipelines agents emit TF_BUILD=True (capital T),
+    // so the detector silently fell through to PLATFORM_UNKNOWN and the
+    // CLI defaulted to GitHub. Confirms all three casings (lowercase /
+    // capital T / all uppercase) are accepted so a PowerShell
+    // `Set-Item env:TF_BUILD=TRUE` mistake does not silently land in
+    // PLATFORM_UNKNOWN.
+    const detectPlatform = await loadDetectPlatform();
+    for (const tfBuild of ["True", "true", "TRUE"]) {
+      expect(detectPlatform({ TF_BUILD: tfBuild } as NodeJS.ProcessEnv), `TF_BUILD=${tfBuild}`).toBe("azure-devops");
+    }
+  });
+
   it("PLATFORM-RED-003 throws a typed sanitized error when no platform marker is present", async () => {
     // Given: an unknown CI environment with secret-like values that must not leak.
     const detectPlatform = await loadDetectPlatform();

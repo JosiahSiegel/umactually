@@ -1,5 +1,6 @@
 import type { Platform } from "../config/types.js";
 import type { ParsedCliArgs } from "./parse-args.js";
+import { detectPlatform, PlatformDetectionError } from "../platform/detect.js";
 
 /** Platform after auto-resolution. Mirrors `Platform` minus the "auto" variant. */
 export type ResolvedPlatform = Exclude<Platform, "auto">;
@@ -14,7 +15,29 @@ export function resolvePlatform(
     case "azure":
       return "azure";
     case "auto":
-      return env["TF_BUILD"] === "True" ? "azure" : "github";
+      // Route through the canonical detector so auto-resolution and
+      // detection share one truth-table (catches TF_BUILD=True AND
+      // GITHUB_ACTIONS=true, with GitHub precedence). Narrow catch:
+      // any non-PlatformDetectionError is an internal invariant
+      // failure that must surface — matching the orchestrator.ts and
+      // index.ts symmetric narrow-catch pattern.
+      //
+      // Fallback to "github" (not "null" like orchestrator.ts, not
+      // "fall through" like index.ts) is intentional: the validator
+      // must return a concrete ResolvedPlatform so subsequent error
+      // messages can name it, whereas orchestrator needs `null` to
+      // surface "Live review requires GitHub Actions (...)" and
+      // index.ts has no Azure path on the bare-entry side. Unifying
+      // these three contracts would break the validator.
+      try {
+        const detected = detectPlatform(env);
+        return detected === "azure-devops" ? "azure" : "github";
+      } catch (error) {
+        if (error instanceof PlatformDetectionError) {
+          return "github";
+        }
+        throw error;
+      }
     default:
       return assertNever(platform);
   }

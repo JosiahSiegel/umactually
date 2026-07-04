@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 import { appendCommonInputArgs } from "../../src/action/append-cli-inputs.js";
 import { readActionInputs } from "../../src/action/read-inputs.js";
 import type { ActionInputs } from "../../src/action/read-inputs.js";
+import { FIELDS } from "../../src/config/field-schema.js";
 import { buildArgs } from "../../src/index.js";
 
 declare module "vitest" {
@@ -219,6 +220,39 @@ describe("readActionInputs: GitHub Actions runtime defaults", () => {
     // Then: apiUrl surfaces the UMACTUALLY_API_URL fallback.
     expect(inputs.apiUrl).toBe("https://vmi.example.test/v1");
     expect(inputs.inGitHubActions).toBe(true);
+  });
+
+  it("rejects partial numeric garbage in INPUT_* integer fields and falls back to the schema default", () => {
+    // Regression: Number.parseInt("12abc", 10) silently returns 12.
+    // Action inputs must fall back to the schema default for the same
+    // input instead of producing a partial number. Covers every integer
+    // field wired through getNumber so a future field added to
+    // readActionInputs cannot regress.
+    //
+    // `prop` is typed `keyof ActionInputs` so renaming a property in
+    // ActionInputs breaks the test at compile time, not silently.
+    // Expected defaults are pulled from FIELDS so the test asserts the
+    // loader/schema relationship, not magic numbers.
+    const cases: ReadonlyArray<readonly [string, keyof ActionInputs, string, number]> = [
+      ["REVIEW_TIMEOUT_SECONDS", "reviewTimeoutSeconds", "300xyz", FIELDS.reviewTimeoutSeconds.defaultValue as number],
+      ["STALL_SECONDS", "stallSeconds", "270 seconds", FIELDS.stallSeconds.defaultValue as number],
+      ["MAX_OUTPUT_TOKENS", "maxOutputTokens", "16k", FIELDS.maxOutputTokens.defaultValue as number],
+      ["MAX_COMMENTS", "maxComments", "50.0", FIELDS.maxComments.defaultValue as number],
+      ["REVIEW_FILE_LIMIT", "reviewFileLimit", "1e3", FIELDS.reviewFileLimit.defaultValue as number],
+      ["SONAR_TIMEOUT_SECONDS", "sonarTimeoutSeconds", "60abc", FIELDS.sonarTimeoutSeconds.defaultValue as number],
+    ];
+    for (const [field, prop, rawValue, expectedDefault] of cases) {
+      const env = {
+        GITHUB_ACTIONS: "true",
+        [field]: rawValue,
+      } satisfies NodeJS.ProcessEnv;
+      const inputs = readActionInputs(env);
+      // Each field is exposed via ActionInputs — pin that the schema default
+      // wins, not the truncated parseInt result. The keyof-typed index
+      // guards against future renames.
+      const actual = inputs[prop];
+      expect(actual, `${field}=${rawValue}`).toBe(expectedDefault);
+    }
   });
 
   it("INPUT_API_KEY falls back to env.UMACTUALLY_API_KEY when INPUT_API_KEY is unset", () => {

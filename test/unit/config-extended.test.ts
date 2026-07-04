@@ -4,6 +4,8 @@ import { join, sep } from "node:path";
 
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
+import { FIELDS } from "../../src/config/field-schema.js";
+
 import {
   InvalidConfigError,
   PromptFileError,
@@ -359,6 +361,25 @@ describe("config: loadConfigFromSources precedence", () => {
     expect(result.severity.minimum).toBe("minor");
     expect(result.timeouts.reviewSeconds).toBe(300);
     expect(result.sonar.enabled).toBe(false);
+  });
+
+  it("derives all timeout + model defaults from the field-schema (no loader drift)", async () => {
+    // Regression: `config/loader.ts` previously hard-coded
+    // DEFAULT_SONAR_TIMEOUT_SECONDS=60 while the field-schema default
+    // (and therefore the CLI / action / env surfaces) was 300. Live
+    // SonarQube scans silently timed out at 60s. Pins the relationship
+    // between the loader output and the field-schema defaults so a
+    // future loader cannot regress regardless of which numeric value
+    // the schema lands on.
+    const result = await loadConfigFromSources({ ...empty(), cwd });
+    // Schema-relative: the loader must produce the field-schema default,
+    // not a hard-coded magic number. If FIELDS.x.defaultValue changes,
+    // this test moves with it (and so does the loader).
+    expect(result.timeouts.reviewSeconds).toBe(FIELDS.reviewTimeoutSeconds.defaultValue);
+    expect(result.timeouts.stallSeconds).toBe(FIELDS.stallSeconds.defaultValue);
+    expect(result.timeouts.perRequestSeconds).toBe(FIELDS.perRequestTimeoutSeconds.defaultValue);
+    expect(result.sonar.timeoutSeconds).toBe(FIELDS.sonarTimeoutSeconds.defaultValue);
+    expect(result.provider.model).toBe(FIELDS.model.defaultValue);
   });
 
   it("CLI > inputs > env > defaults for booleans (dryRun)", async () => {

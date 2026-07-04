@@ -15,6 +15,13 @@ export class PlatformDetectionError extends Error {
 const GITHUB_ACTIONS_KEY = "GITHUB_ACTIONS";
 const AZURE_TF_BUILD_KEY = "TF_BUILD";
 
+/**
+ * GitHub precedence: GITHUB_ACTIONS is checked first, so a process that
+ * somehow exposes both `GITHUB_ACTIONS=true` and `TF_BUILD=True` (rare,
+ * but possible in nested CI) routes to GitHub. The order is part of the
+ * contract — swapping the two arms would silently change behaviour for
+ * anyone running the action in a cross-platform test harness.
+ */
 export function detectPlatform(env: NodeJS.ProcessEnv): CiPlatform {
   if (isTruthy(env[GITHUB_ACTIONS_KEY])) {
     return "github";
@@ -27,6 +34,19 @@ export function detectPlatform(env: NodeJS.ProcessEnv): CiPlatform {
   throw new PlatformDetectionError();
 }
 
+/**
+ * Recognise CI-platform "marker present" values.
+ *
+ * Azure Pipelines emits `TF_BUILD=True` (capital T) — the canonical
+ * runner value. The helper also accepts `"true"` (lowercase) so local
+ * mocked pipelines and `pipeline-init.sh` shell scripts that
+ * `export TF_BUILD=true` continue to work, and `"TRUE"` (all uppercase)
+ * so a PowerShell `Set-Item env:TF_BUILD=TRUE` mistake does not
+ * silently land in `PLATFORM_UNKNOWN` for the operator. Everything else
+ * (including `"1"`, `"yes"`, whitespace-padded) is intentionally
+ * rejected: the goal is to recognise the three real-world casings, not
+ * to be a general truthy-string helper.
+ */
 function isTruthy(value: string | undefined): boolean {
-  return value === "true";
+  return value === "true" || value === "True" || value === "TRUE";
 }

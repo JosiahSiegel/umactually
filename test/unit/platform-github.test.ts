@@ -135,4 +135,43 @@ describe("GitHub platform unit contract", () => {
     expect(observedAccept).toBe("application/vnd.github.v3.diff");
     expect(diffText).toBe("diff --git a/src/file.ts b/src/file.ts\n");
   });
+
+  it("rejects partial numeric PR numbers (GITHUB_PR_NUMBER=42abc) with GITHUB_PR_NUMBER_INVALID", async () => {
+    // Regression: Number.parseInt("42abc", 10) silently returns 42.
+    // The strict helper now refuses and the typed error carries the
+    // canonical code so the runner surfaces it to stderr instead of
+    // making a 404 call to /repos/.../pulls/42.
+    const readGithubContext = await loadReadGithubContext();
+    const tempDirectory = await mkdtemp(join(tmpdir(), "umactually-github-"));
+    const eventPath = join(tempDirectory, "event.json");
+    await writeFile(
+      eventPath,
+      JSON.stringify({
+        pull_request: {
+          number: 42,
+          title: "Add platform adapters",
+          body: "Review the new adapters.",
+          head: { ref: "feature/strict-pr-number", sha: "1111111111111111111111111111111111111111" },
+          base: { ref: "main", sha: "2222222222222222222222222222222222222222" },
+          draft: false,
+        },
+      }),
+    );
+    const env: NodeJS.ProcessEnv = {
+      GITHUB_TOKEN: "github-token-123",
+      GITHUB_REPOSITORY: "octo-org/octo-repo",
+      GITHUB_REF_NAME: "42/merge",
+      GITHUB_HEAD_REF: "feature/strict-pr-number",
+      GITHUB_PR_NUMBER: "42abc",
+      GITHUB_HEAD_SHA: "1111111111111111111111111111111111111111",
+      GITHUB_BASE_SHA: "2222222222222222222222222222222222222222",
+      GITHUB_EVENT_NAME: "pull_request",
+      GITHUB_EVENT_PATH: eventPath,
+    };
+    await expect(readGithubContext(env)).rejects.toMatchObject({
+      name: "GithubContextError",
+      code: "GITHUB_PR_NUMBER_INVALID",
+    });
+    await rm(tempDirectory, { recursive: true });
+  });
 });

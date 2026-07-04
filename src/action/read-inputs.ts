@@ -1,5 +1,5 @@
 import { FIELDS } from "../config/field-schema.js";
-import { isSafeInteger } from "../util/json-guards.js";
+import { parseStrictInt } from "../util/cli-args.js";
 
 export type ActionInputs = {
   readonly githubToken: string;
@@ -76,8 +76,13 @@ export function readActionInputs(env: NodeJS.ProcessEnv = process.env): ActionIn
     if (raw.length === 0) {
       return fallback;
     }
-    const parsed = Number.parseInt(raw, 10);
-    return isSafeInteger(parsed) ? parsed : fallback;
+    // Trim before parsing so GitHub Actions INPUT_* values that
+    // arrive with leading/trailing whitespace still parse. The strict
+    // helper itself rejects whitespace-padded values by design (CLI
+    // flags rarely carry accidental padding), but the env-var
+    // surface is friendlier with a trim.
+    const parsed = parseStrictInt(raw.trim());
+    return parsed ?? fallback;
   };
   // Enum readers driven by FIELDS so adding a value to `enumValues` in
   // the schema doesn't require updating this file. The literal union

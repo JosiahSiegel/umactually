@@ -40,6 +40,57 @@ export function envFallback(...values: ReadonlyArray<string | undefined>): strin
 }
 
 /**
+ * Strict decimal-integer parser that REJECTS partial numeric garbage.
+ * `Number.parseInt("12abc", 10)` returns 12; this helper returns null for
+ * the same input so callers can fall back or throw a typed error.
+ *
+ * ## Sign tolerance
+ *
+ * The helper is **sign-tolerant by design**: it accepts `"+1"`, `"-1"`,
+ * `"+0"`, `"-0"` etc. The positivity / non-negativity check is the
+ * CALLER's responsibility (see `parsePrNumber` for `parsed <= 0` and
+ * `readAzurePrNumber` for the same). This split keeps the helper
+ * reusable for signed CLI flags (none today, but the schema may grow)
+ * while every existing caller that wants positive-integer semantics
+ * already adds its own `parsed <= 0` guard.
+ *
+ * ## Accepted shapes
+ *   - Optional leading `+` or `-` sign
+ *   - One or more ASCII digits
+ *   - Any integer that fits in `Number.isSafeInteger` (±(2^53 - 1))
+ *
+ * ## Rejected shapes
+ *   - Empty strings
+ *   - Whitespace-only or whitespace-padded strings (callers that need
+ *     to tolerate trim should `.trim()` first — see action/read-inputs.ts)
+ *   - Any non-digit content anywhere (decimal points, exponent notation,
+ *     trailing letters, internal whitespace)
+ *
+ * ## Caller contract
+ *   - `parsed === null` means "not a valid strict integer". Caller
+ *     decides whether to throw, fall back to a default, or branch.
+ *   - `parsed === 0` is a successful parse. Caller decides whether
+ *     `0` is in-range.
+ *   - `parsed < 0` is a successful parse. Caller decides whether
+ *     negatives are in-range.
+ *
+ * This is the canonical helper for any CLI flag / env var / input field
+ * that represents a strict integer. Replaces the five hand-rolled
+ * `Number.parseInt + isSafeInteger` sites in `cli/parse-args.ts`,
+ * `action/read-inputs.ts`, `platform/github/context.ts`, and
+ * `platform/azure/context.ts` so the parsing semantics cannot drift.
+ */
+export function parseStrictInt(raw: string): number | null {
+  if (raw.length === 0) return null;
+  // A single optional sign followed by 1+ ASCII digits, and nothing else.
+  // Using a regex (rather than a manual loop) keeps the intent grep-able
+  // and the cost trivial (this runs only at CLI/env boundary).
+  if (!/^[+-]?\d+$/u.test(raw)) return null;
+  const parsed = Number.parseInt(raw, 10);
+  return Number.isSafeInteger(parsed) ? parsed : null;
+}
+
+/**
  * Validate a CLI enum value against an accepted set, returning the value
  * when it matches and throwing on miss. Replaces the four hand-coded
  * enum parsers (`readPlatform`, `readEffort`, `readProvider`,

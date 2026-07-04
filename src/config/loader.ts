@@ -1,5 +1,14 @@
 import { InvalidConfigError } from "./errors.js";
-import { DEFAULT_MAX_COMMENTS, DEFAULT_PROMPT_BYTE_CAP, DEFAULT_REVIEW_FILE_LIMIT } from "./defaults.js";
+import {
+  DEFAULT_MAX_COMMENTS,
+  DEFAULT_PER_REQUEST_SECONDS,
+  DEFAULT_PROMPT_BYTE_CAP,
+  DEFAULT_PROVIDER_MODEL,
+  DEFAULT_REVIEW_FILE_LIMIT,
+  DEFAULT_REVIEW_SECONDS,
+  DEFAULT_SONAR_TIMEOUT_SECONDS,
+  DEFAULT_STALL_SECONDS,
+} from "./defaults.js";
 import {
   parseBooleanFromUnknown,
   parseIntegerFromUnknown,
@@ -26,14 +35,12 @@ import type {
   TimeoutControls,
 } from "./types.js";
 
-const DEFAULT_REVIEW_SECONDS = 300;
-const DEFAULT_STALL_SECONDS = 270;
-const DEFAULT_PER_REQUEST_SECONDS = 60;
-const DEFAULT_SONAR_TIMEOUT_SECONDS = 60;
+// Loader-only defaults that have no field-schema entry. Kept local so the
+// schema remains the canonical source for any value that ships through
+// the CLI / action / env surfaces.
 const DEFAULT_MINIMUM_SEVERITY: Severity = "minor";
 const DEFAULT_PLATFORM: Platform = "auto";
 const DEFAULT_PROVIDER_URL = "https://api.openai.com/v1";
-const DEFAULT_PROVIDER_MODEL = "auto";
 
 /**
  * Resolves the final ReviewConfig by merging CLI > inputs > env > defaults.

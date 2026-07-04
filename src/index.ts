@@ -4,6 +4,7 @@ import { isAbsolute, join } from "node:path";
 import { runCli } from "./cli.js";
 import { appendCommonInputArgs } from "./action/append-cli-inputs.js";
 import { readActionInputs } from "./action/read-inputs.js";
+import { detectPlatform, PlatformDetectionError } from "./platform/detect.js";
 import { envFallback, pushFlagValue } from "./util/cli-args.js";
 import { formatError } from "./util/error.js";
 import { logError } from "./util/log.js";
@@ -55,8 +56,26 @@ export async function main(): Promise<void> {
  * applies automatically inside GitHub Actions; we extend it to the bare case.
  */
 export async function buildArgs(env: NodeJS.ProcessEnv, cwd: string): Promise<readonly string[]> {
-  if (env["TF_BUILD"] === "True") {
-    return buildAzureArgs(env);
+  // Use the canonical detector so we honour both GITHUB_ACTIONS=true
+  // and TF_BUILD=True (with GitHub precedence). When neither is set,
+  // the bare action-entry path falls through to buildGithubArgs with
+  // an explicit --dry-run safety net.
+  //
+  // Behaviour-equivalence note: the previous code only branched on
+  // TF_BUILD === "True", so a bare action entry with no CI markers
+  // also fell through to buildGithubArgs. The canonical detector
+  // routes the same way — we just additionally recognise GitHub when
+  // GITHUB_ACTIONS=true. (The `env["GITHUB_ACTIONS"] !== "true"` check
+  // further down this function is the --dry-run safety net, NOT a
+  // platform-routing check.)
+  try {
+    const detected = detectPlatform(env);
+    if (detected === "azure-devops") {
+      return buildAzureArgs(env);
+    }
+  } catch (error) {
+    if (!(error instanceof PlatformDetectionError)) throw error;
+    // No CI marker present: fall through to bare entry.
   }
   const args = [...(await buildGithubArgs(env, cwd))];
   if (
