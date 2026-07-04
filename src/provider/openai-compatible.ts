@@ -2,6 +2,7 @@ import {
   buildChatBody,
   buildResponsesBody,
   extractTextPayload,
+  isNonEmptyReview,
   PARSE_FAIL_RETRY_PROMPT,
   parseReviewPayload,
   type ProviderEndpoint,
@@ -13,7 +14,7 @@ import {
   sanitizeHttpStatus,
   sanitizeMessage,
 } from "./provider-error.js";
-import { sleep } from "../util/async.js";
+import { composeSignal, sleep } from "../util/async.js";
 import { createRequestId, joinUrl } from "../util/url.js";
 
 const ENDPOINT_RESPONSES: ProviderEndpoint = "responses";
@@ -157,7 +158,7 @@ async function callEndpoint(
   // for any JSON object), so a chat-format response (`{choices: [...]}`)
   // fed to the responses endpoint can otherwise pass as a 0-finding
   // "empty review" — see CLARITY-10.
-  if (review !== null && (review.summary.length > 0 || review.verdict.length > 0 || review.comments.length > 0)) {
+  if (isNonEmptyReview(review)) {
     return { ok: true, endpoint, review, requestId };
   }
 
@@ -191,7 +192,7 @@ async function callEndpoint(
       const retryTextPayload = extractTextPayload(endpoint, retryRawText);
       const parsedRetry = parseReviewPayload(retryTextPayload);
       // Same strict check on the retry: must have actual review content.
-      if (parsedRetry !== null && (parsedRetry.summary.length > 0 || parsedRetry.verdict.length > 0 || parsedRetry.comments.length > 0)) {
+      if (isNonEmptyReview(parsedRetry)) {
         retryReview = parsedRetry;
       }
     }
@@ -279,11 +280,4 @@ async function readBody(
 
 function shouldFallback(error: ProviderError): boolean {
   return error.status === 404 || error.status === 400;
-}
-
-function composeSignal(signal: AbortSignal | undefined, timeoutMs: number): AbortSignal {
-  if (signal === undefined) {
-    return AbortSignal.timeout(timeoutMs);
-  }
-  return AbortSignal.any([signal, AbortSignal.timeout(timeoutMs)]);
 }

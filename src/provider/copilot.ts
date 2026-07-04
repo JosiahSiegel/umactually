@@ -1,6 +1,7 @@
 import {
   buildChatBody,
   extractTextPayload,
+  isNonEmptyReview,
   PARSE_FAIL_RETRY_PROMPT,
   parseReviewPayload,
   type ProviderReviewPayload,
@@ -16,12 +17,14 @@ import {
   getCachedSessionToken,
 } from "./copilot-token.js";
 import { createRequestId, joinUrl } from "../util/url.js";
+import { BRAND } from "../util/brand.js";
+import { composeSignal } from "../util/async.js";
 
 const DEFAULT_GITHUB_API_BASE = "https://api.github.com";
 const COPILOT_EDITOR_VERSION = "vscode/1.96.0";
-const COPILOT_EDITOR_PLUGIN_VERSION = "umactually-pr-review/0.1.0";
+const COPILOT_EDITOR_PLUGIN_VERSION = `${BRAND}/0.1.0`;
 const COPILOT_INTEGRATION_ID = "vscode-chat";
-const COPILOT_USER_AGENT = "umactually-pr-review/0.1.0";
+const COPILOT_USER_AGENT = `${BRAND}/0.1.0`;
 const ENDPOINT_CHAT = "chat" as const;
 
 /** Self-healing follow-up message for parse-fail retry (shared with openai-compatible). */
@@ -98,7 +101,7 @@ async function runChatCall(
     ...(config.maxOutputTokens !== undefined ? { maxOutputTokens: config.maxOutputTokens } : {}),
     ...(config.reasoningEffort !== undefined ? { reasoningEffort: config.reasoningEffort } : {}),
   });
-  const signal = AbortSignal.timeout(config.requestTimeoutMs);
+  const signal = composeSignal(undefined, config.requestTimeoutMs);
 
   let response: Response;
   try {
@@ -170,7 +173,7 @@ async function runChatCall(
   // a parse failure even when extractJsonBlock returned an object. This
   // catches chat-format responses fed to the responses endpoint and
   // similar misconfigurations.
-  if (review !== null && (review.summary.length > 0 || review.verdict.length > 0 || review.comments.length > 0)) {
+  if (isNonEmptyReview(review)) {
     return { ok: true, endpoint: ENDPOINT_CHAT, review, requestId };
   }
 
@@ -228,7 +231,7 @@ async function runChatCall(
   const retryTextPayload = extractTextPayload(ENDPOINT_CHAT, retryRawText);
   let retryReview: ProviderReviewPayload | null = null;
   const parsedRetry = parseReviewPayload(retryTextPayload);
-  if (parsedRetry !== null && (parsedRetry.summary.length > 0 || parsedRetry.verdict.length > 0 || parsedRetry.comments.length > 0)) {
+  if (isNonEmptyReview(parsedRetry)) {
     retryReview = parsedRetry;
   }
   if (retryReview === null) {
