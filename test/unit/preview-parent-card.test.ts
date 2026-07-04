@@ -4,6 +4,21 @@
 // they would act on — `Posted: 0` was the only number they cared about,
 // and that already lives in the footer.
 //
+// CLARITY-19 vocabulary (this iteration):
+//   - 📊 Pipeline summary: one line that reconciles total / posted /
+//     off-diff / filtered counts so the reader can grok the whole pipeline
+//     in one glance (replaces the loose 🔕 count semantics that confused
+//     readers into thinking "5 of 10" was a different count from "5").
+//   - 🏷️ Severity tally (was 📊): same per-severity counts, renamed icon
+//     to free 📊 for the pipeline summary.
+//   - 📋 Posted preview: `(N)` or `(showing N of M)` — explicitly says
+//     "posted" so the preview cannot be confused with pre-filter model output.
+//   - 🧹 Filtered preview: `(showing N of M candidates)` — no more 🔕.
+//   - 📍 Off-diff details: `(N not posted)` — no more 🔕. Replaces
+//     `Suppressed (off-diff, N)`. The duplicate `> 🔕 N off-diff
+//     finding(s) were not on this PR's diff.` callout is dropped because
+//     the 📊 pipeline summary already surfaces the same count.
+//
 // Each test below covers one of the four action cases:
 //   - Mixed findings posted (verdict NEEDS_FIX, severity tally visible)
 //   - Findings all filtered (verdict DISCUSS, severity tally hidden)
@@ -14,7 +29,7 @@ import { describe, expect, it } from "vitest";
 import { buildReviewBody } from "../../src/cli/live-shared.js";
 
 describe("CLARITY-14: actionable-only parent card", () => {
-  it("never emits Posted/Considered/Suppressed rows (only the off-diff inline note)", () => {
+  it("renders a 📊 pipeline summary that reconciles total / posted / off-diff / filtered", () => {
     const body = buildReviewBody({
       review: {
         summary: "Three issues need attention before merge.",
@@ -36,19 +51,24 @@ describe("CLARITY-14: actionable-only parent card", () => {
       severityCounts: { high: 1, medium: 1, low: 1 },
       secrets: [],
     });
+    // Pipeline summary reconciles every count in one line.
+    // Total = 3 inline + 1 off-diff = 4 model findings; 3 posted, 1 off-diff, 0 filtered.
+    expect(body).toMatch(/📊\s+4\s+findings\s+→\s+3\s+posted,\s+1\s+off-diff,\s+0\s+filtered/u);
     // Rows are gone.
     expect(body).not.toMatch(/\*\*Posted:\*\*/u);
     expect(body).not.toMatch(/\*\*Considered:\*\*/u);
     expect(body).not.toMatch(/\*\*Suppressed:\*\*/u);
-    // Off-diff note replaces the row.
-    expect(body).toMatch(/🔕\s+1\s+off-diff\s+finding\s+was/u);
+    // Duplicate off-diff callout is gone.
+    expect(body).not.toMatch(/🔕\s+\d+\s+off-diff\s+finding/u);
     // Footer carries the inline count.
     expect(body).toMatch(/3\s+inline/u);
-    // Severity tally visible because there are 3 findings.
-    expect(body).toMatch(/📊/u);
+    // Posted preview uses 📋, not 🔕.
+    expect(body).toMatch(/📋\s+Posted preview\s+\(3\)/u);
+    // Severity tally uses 🏷️, not 📊 (📊 is the pipeline summary now).
+    expect(body).toMatch(/🏷️/u);
   });
 
-  it("uses 'Filtered findings' header when every model finding was filtered", () => {
+  it("uses '🧹 Filtered preview' header when every model finding was filtered", () => {
     // 0 posted, 5 considered, 5 off-diff. Header must be the
     // filtered-style label so the reader doesn't mistake the preview
     // for a clean bill of health.
@@ -73,16 +93,21 @@ describe("CLARITY-14: actionable-only parent card", () => {
       severityCounts: { critical: 0, high: 0, medium: 0, low: 0 },
       secrets: [],
     });
-    // Filtered findings header — no "from model" suffix.
-    expect(body).toMatch(/🔕\s+Filtered findings\s+\(\d+ of \d+ shown\)/u);
+    // Pipeline summary reconciles: 5 findings → 0 posted, 5 off-diff, 0 filtered.
+    // (5 candidates are off-diff, none filtered, none posted.)
+    expect(body).toMatch(/📊\s+5\s+findings\s+→\s+0\s+posted,\s+5\s+off-diff,\s+0\s+filtered/u);
+    // Filtered preview header — no more 🔕; uses "showing" + "candidates"
+    // so the (N of M) clearly means preview truncation, not a separate count.
+    expect(body).toMatch(/🧹\s+Filtered preview\s+\(showing\s+\d+\s+of\s+\d+\s+candidates\)/u);
+    expect(body).not.toMatch(/🔕\s+Filtered findings/u);
     expect(body).not.toMatch(/Top concerns from model/u);
-    // No false zero-tally (all info; no severity buckets to count).
-    expect(body).not.toMatch(/📊/u);
+    // No 🏷️ severity tally (all info; no severity buckets to count).
+    expect(body).not.toMatch(/🏷️/u);
     // The verdict downgrades to DISCUSS because nothing is actionable.
     expect(body).toMatch(/💬\s+DISCUSS/u);
   });
 
-  it("uses 'Top concerns' header when at least one finding landed inline", () => {
+  it("uses '📋 Posted preview' header when at least one finding landed inline", () => {
     const body = buildReviewBody({
       review: {
         summary: "",
@@ -102,10 +127,11 @@ describe("CLARITY-14: actionable-only parent card", () => {
       severityCounts: { high: 3 },
       secrets: [],
     });
-    // Plain "Top concerns (3)" — no model provenance.
-    expect(body).toMatch(/📋\s+Top concerns\s+\(3\)/u);
+    // Plain "📋 Posted preview (3)" — no model provenance.
+    expect(body).toMatch(/📋\s+Posted preview\s+\(3\)/u);
     // Filtered-style header must NOT appear when findings landed.
-    expect(body).not.toMatch(/🔕\s+Filtered findings/u);
+    expect(body).not.toMatch(/🧹\s+Filtered preview/u);
+    expect(body).not.toMatch(/🔕/u);
   });
 
   it("clean review (0 posted + 0 suppressed + 0 considered) is minimal", () => {
@@ -123,18 +149,26 @@ describe("CLARITY-14: actionable-only parent card", () => {
     expect(body).not.toMatch(/\*\*Posted:\*\*/u);
     expect(body).not.toMatch(/\*\*Considered:\*\*/u);
     expect(body).not.toMatch(/\*\*Suppressed:\*\*/u);
-    expect(body).not.toMatch(/📊/u);
-    expect(body).not.toMatch(/🔕\s+Suppressed/u);
+    // Clean review: pipeline summary is the one zero-everywhere line.
+    expect(body).toMatch(/📊\s+0\s+findings\s+→\s+0\s+posted,\s+0\s+off-diff,\s+0\s+filtered/u);
+    // No severity tally (nothing to count).
+    expect(body).not.toMatch(/🏷️/u);
+    // No 🧹 Filtered preview, no 📋 Posted preview, no 📍 Off-diff.
+    expect(body).not.toMatch(/🧹/u);
+    expect(body).not.toMatch(/📋\s+Posted preview/u);
+    expect(body).not.toMatch(/📍/u);
+    // No duplicate off-diff callout.
+    expect(body).not.toMatch(/🔕\s+\d+\s+off-diff\s+finding/u);
     expect(body).not.toMatch(/Top concerns/u);
     expect(body).not.toMatch(/Filtered findings/u);
-    expect(body).not.toMatch(/off-diff/u);
+    expect(body).not.toMatch(/Suppressed\s+\(off-diff/u);
     // Verdict + summary + footer still present.
     expect(body).toMatch(/✅\s+SHIP/u);
     expect(body).toMatch(/All clear\./u);
     expect(body).toMatch(/0\s+inline/u);
   });
 
-  it("Top concerns preview is sorted by severity desc (highest first)", () => {
+  it("📋 Posted preview is sorted by severity desc (highest first)", () => {
     const body = buildReviewBody({
       review: {
         summary: "Mixed severities.",
@@ -161,9 +195,9 @@ describe("CLARITY-14: actionable-only parent card", () => {
       severityCounts: { critical: 1, high: 1, medium: 1, low: 1, info: 1 },
       secrets: [],
     });
-    // Extract the order of paths in the Top concerns block.
+    // Extract the order of paths in the Posted preview block.
     const topConcernsMatch = body.match(
-      /📋\s+Top concerns\s+\(5\)[\s\S]*?<\/details>/u,
+      /📋\s+Posted preview\s+\(5\)[\s\S]*?<\/details>/u,
     );
     expect(topConcernsMatch).not.toBeNull();
     const topConcernsSection = topConcernsMatch?.[0] ?? "";
