@@ -31,7 +31,12 @@ export const AZURE_STATUS_CONTEXT_NAME = `${BRAND}-status`;
  */
 export const REDACTED_SECRET_TOKEN = "[REDACTED_SECRET]";
 
-/** Placeholder string substituted into config-parse error messages instead of leaking values. */
+/**
+ * Placeholder string substituted into config-parse error messages instead of
+ * leaking values. Re-exported from `src/config/errors.ts` as `REDACTED` to
+ * preserve the existing import surface in that module (the parser chain in
+ * `src/config/parsers.ts` already imports `REDACTED` from `errors.ts`).
+ */
 export const REDACTED_PLACEHOLDER = "[REDACTED]";
 
 /** Replaces an entire `Authorization: ...` header value in logged request bodies. */

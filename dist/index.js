@@ -973,7 +973,12 @@ const AZURE_STATUS_CONTEXT_NAME = `${BRAND}-status`;
  * touch this constant only.
  */
 const REDACTED_SECRET_TOKEN = "[REDACTED_SECRET]";
-/** Placeholder string substituted into config-parse error messages instead of leaking values. */
+/**
+ * Placeholder string substituted into config-parse error messages instead of
+ * leaking values. Re-exported from `src/config/errors.ts` as `REDACTED` to
+ * preserve the existing import surface in that module (the parser chain in
+ * `src/config/parsers.ts` already imports `REDACTED` from `errors.ts`).
+ */
 const REDACTED_PLACEHOLDER = "[REDACTED]";
 /** Replaces an entire `Authorization: ...` header value in logged request bodies. */
 const REDACTED_AUTHORIZATION_HEADER = "[REDACTED_AUTHORIZATION_HEADER]";
@@ -7047,6 +7052,12 @@ const ACTION_INPUT_FIELDS = {
     provider: true,
     githubApiBase: true,
 };
+/**
+ * Pre-refactor ordering index used to sort `ALL_FIELDS` so the emitted argv
+ * sequence stays byte-identical to the hand-written version. The values are
+ * sparse (gaps allowed) and any field missing here sorts to the end via the
+ * `Number.MAX_SAFE_INTEGER` fallback in `fieldOrder`.
+ */
 const LEGACY_ARG_ORDER_ENTRIES = [
     ["apiUrl", 0],
     ["apiKey", 1],

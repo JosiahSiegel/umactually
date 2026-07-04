@@ -38,7 +38,13 @@ const ACTION_INPUT_FIELDS = {
   githubApiBase: true,
 } as const satisfies Readonly<Record<keyof ActionInputs, true>>;
 
-const LEGACY_ARG_ORDER_ENTRIES = [
+/**
+ * Pre-refactor ordering index used to sort `ALL_FIELDS` so the emitted argv
+ * sequence stays byte-identical to the hand-written version. The values are
+ * sparse (gaps allowed) and any field missing here sorts to the end via the
+ * `Number.MAX_SAFE_INTEGER` fallback in `fieldOrder`.
+ */
+const LEGACY_ARG_ORDER_ENTRIES: readonly (readonly [FieldName, number])[] = [
   ["apiUrl", 0],
   ["apiKey", 1],
   ["model", 2],
@@ -65,7 +71,7 @@ const LEGACY_ARG_ORDER_ENTRIES = [
   ["diagnostic", 23],
   ["debugRawResponse", 24],
   ["simulateFindings", 25],
-] as const satisfies readonly (readonly [FieldName, number])[];
+];
 
 const LEGACY_ARG_ORDER: ReadonlyMap<string, number> = new Map(LEGACY_ARG_ORDER_ENTRIES);
 
