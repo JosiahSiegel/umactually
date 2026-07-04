@@ -27,6 +27,18 @@ export function detectPlatform(env: NodeJS.ProcessEnv): CiPlatform {
   throw new PlatformDetectionError();
 }
 
+/**
+ * Recognise CI-platform "marker present" values.
+ *
+ * Azure Pipelines emits `TF_BUILD=True` (capital T) — that is the only
+ * real-world value but the canonical helper also accepts `"true"` so
+ * local mocked pipelines and `pipeline-init.sh` shell scripts that
+ * `export TF_BUILD=true` continue to work. Everything else (including
+ * `"True "`, `"TRUE"`, `"1"`, `"yes"`) is intentionally rejected: a
+ * wrong-case value would only ever come from a manual export, and we
+ * want the false-negative to surface as `PLATFORM_UNKNOWN` instead of
+ * silently mis-detecting.
+ */
 function isTruthy(value: string | undefined): boolean {
-  return value === "true";
+  return value === "true" || value === "True";
 }

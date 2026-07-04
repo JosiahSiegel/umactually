@@ -6918,7 +6918,43 @@ function dispatchLive(parsed, cwd, env) {
     }));
 }
 
+;// CONCATENATED MODULE: ./src/platform/detect.ts
+class PlatformDetectionError extends Error {
+    name = "PlatformDetectionError";
+    code = "PLATFORM_UNKNOWN";
+    constructor() {
+        super("Unable to detect a supported CI platform from the process environment.");
+    }
+}
+const GITHUB_ACTIONS_KEY = "GITHUB_ACTIONS";
+const AZURE_TF_BUILD_KEY = "TF_BUILD";
+function detectPlatform(env) {
+    if (isTruthy(env[GITHUB_ACTIONS_KEY])) {
+        return "github";
+    }
+    if (isTruthy(env[AZURE_TF_BUILD_KEY])) {
+        return "azure-devops";
+    }
+    throw new PlatformDetectionError();
+}
+/**
+ * Recognise CI-platform "marker present" values.
+ *
+ * Azure Pipelines emits `TF_BUILD=True` (capital T) — that is the only
+ * real-world value but the canonical helper also accepts `"true"` so
+ * local mocked pipelines and `pipeline-init.sh` shell scripts that
+ * `export TF_BUILD=true` continue to work. Everything else (including
+ * `"True "`, `"TRUE"`, `"1"`, `"yes"`) is intentionally rejected: a
+ * wrong-case value would only ever come from a manual export, and we
+ * want the false-negative to surface as `PLATFORM_UNKNOWN` instead of
+ * silently mis-detecting.
+ */
+function isTruthy(value) {
+    return value === "true" || value === "True";
+}
+
 ;// CONCATENATED MODULE: ./src/cli/validate.ts
+
 function resolvePlatform(platform, env = process.env) {
     switch (platform) {
         case "github":
@@ -6926,7 +6962,16 @@ function resolvePlatform(platform, env = process.env) {
         case "azure":
             return "azure";
         case "auto":
-            return env["TF_BUILD"] === "True" ? "azure" : "github";
+            // Route through the canonical detector so auto-resolution and
+            // detection share one truth-table (catches TF_BUILD=True AND
+            // GITHUB_ACTIONS=true, with GitHub precedence).
+            try {
+                const detected = detectPlatform(env);
+                return detected === "azure-devops" ? "azure" : "github";
+            }
+            catch {
+                return "github";
+            }
         default:
             return validate_assertNever(platform);
     }

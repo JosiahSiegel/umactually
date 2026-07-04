@@ -1,5 +1,6 @@
 import type { Platform } from "../config/types.js";
 import type { ParsedCliArgs } from "./parse-args.js";
+import { detectPlatform } from "../platform/detect.js";
 
 /** Platform after auto-resolution. Mirrors `Platform` minus the "auto" variant. */
 export type ResolvedPlatform = Exclude<Platform, "auto">;
@@ -14,7 +15,15 @@ export function resolvePlatform(
     case "azure":
       return "azure";
     case "auto":
-      return env["TF_BUILD"] === "True" ? "azure" : "github";
+      // Route through the canonical detector so auto-resolution and
+      // detection share one truth-table (catches TF_BUILD=True AND
+      // GITHUB_ACTIONS=true, with GitHub precedence).
+      try {
+        const detected = detectPlatform(env);
+        return detected === "azure-devops" ? "azure" : "github";
+      } catch {
+        return "github";
+      }
     default:
       return assertNever(platform);
   }
