@@ -35,10 +35,10 @@ export const DEFAULT_SONAR_TIMEOUT_SECONDS = FIELDS.sonarTimeoutSeconds.defaultV
 /**
  * Canonical provider model default; derived from field-schema.
  *
- * The `as const` (rather than `as string`) preserves the literal type so
- * downstream callers that expect the literal `'auto'` keep their
- * exhaustive-match guarantees — without `as const` the field's literal
- * default widens to `string` and breaks `CliProvider = "auto" | "..."`
- * exhaustiveness at compile time.
+ * Inferred as `string` (matching `pickString`'s signature in `loader.ts`),
+ * but the field-schema's literal `"auto"` default is preserved by
+ * TypeScript's widening rules because the right-hand side is a
+ * `const`-tracked object property; callers that need the literal type
+ * should re-assert at the call site.
  */
 export const DEFAULT_PROVIDER_MODEL = FIELDS.model.defaultValue;

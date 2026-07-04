@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 import { appendCommonInputArgs } from "../../src/action/append-cli-inputs.js";
 import { readActionInputs } from "../../src/action/read-inputs.js";
 import type { ActionInputs } from "../../src/action/read-inputs.js";
+import { FIELDS } from "../../src/config/field-schema.js";
 import { buildArgs } from "../../src/index.js";
 
 declare module "vitest" {
@@ -230,13 +231,15 @@ describe("readActionInputs: GitHub Actions runtime defaults", () => {
     //
     // `prop` is typed `keyof ActionInputs` so renaming a property in
     // ActionInputs breaks the test at compile time, not silently.
+    // Expected defaults are pulled from FIELDS so the test asserts the
+    // loader/schema relationship, not magic numbers.
     const cases: ReadonlyArray<readonly [string, keyof ActionInputs, string, number]> = [
-      ["REVIEW_TIMEOUT_SECONDS", "reviewTimeoutSeconds", "300xyz", 300],
-      ["STALL_SECONDS", "stallSeconds", "270 seconds", 270],
-      ["MAX_OUTPUT_TOKENS", "maxOutputTokens", "16k", 16_000],
-      ["MAX_COMMENTS", "maxComments", "50.0", 50],
-      ["REVIEW_FILE_LIMIT", "reviewFileLimit", "1e3", 200],
-      ["SONAR_TIMEOUT_SECONDS", "sonarTimeoutSeconds", "60abc", 300],
+      ["REVIEW_TIMEOUT_SECONDS", "reviewTimeoutSeconds", "300xyz", FIELDS.reviewTimeoutSeconds.defaultValue as number],
+      ["STALL_SECONDS", "stallSeconds", "270 seconds", FIELDS.stallSeconds.defaultValue as number],
+      ["MAX_OUTPUT_TOKENS", "maxOutputTokens", "16k", FIELDS.maxOutputTokens.defaultValue as number],
+      ["MAX_COMMENTS", "maxComments", "50.0", FIELDS.maxComments.defaultValue as number],
+      ["REVIEW_FILE_LIMIT", "reviewFileLimit", "1e3", FIELDS.reviewFileLimit.defaultValue as number],
+      ["SONAR_TIMEOUT_SECONDS", "sonarTimeoutSeconds", "60abc", FIELDS.sonarTimeoutSeconds.defaultValue as number],
     ];
     for (const [field, prop, rawValue, expectedDefault] of cases) {
       const env = {

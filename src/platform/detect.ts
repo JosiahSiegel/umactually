@@ -15,6 +15,13 @@ export class PlatformDetectionError extends Error {
 const GITHUB_ACTIONS_KEY = "GITHUB_ACTIONS";
 const AZURE_TF_BUILD_KEY = "TF_BUILD";
 
+/**
+ * GitHub precedence: GITHUB_ACTIONS is checked first, so a process that
+ * somehow exposes both `GITHUB_ACTIONS=true` and `TF_BUILD=True` (rare,
+ * but possible in nested CI) routes to GitHub. The order is part of the
+ * contract — swapping the two arms would silently change behaviour for
+ * anyone running the action in a cross-platform test harness.
+ */
 export function detectPlatform(env: NodeJS.ProcessEnv): CiPlatform {
   if (isTruthy(env[GITHUB_ACTIONS_KEY])) {
     return "github";

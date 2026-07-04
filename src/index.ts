@@ -65,7 +65,9 @@ export async function buildArgs(env: NodeJS.ProcessEnv, cwd: string): Promise<re
   // TF_BUILD === "True", so a bare action entry with no CI markers
   // also fell through to buildGithubArgs. The canonical detector
   // routes the same way — we just additionally recognise GitHub when
-  // GITHUB_ACTIONS=true (which was previously checked further down).
+  // GITHUB_ACTIONS=true. (The `env["GITHUB_ACTIONS"] !== "true"` check
+  // further down this function is the --dry-run safety net, NOT a
+  // platform-routing check.)
   try {
     const detected = detectPlatform(env);
     if (detected === "azure-devops") {

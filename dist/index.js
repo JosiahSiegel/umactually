@@ -2823,6 +2823,13 @@ class PlatformDetectionError extends Error {
 }
 const GITHUB_ACTIONS_KEY = "GITHUB_ACTIONS";
 const AZURE_TF_BUILD_KEY = "TF_BUILD";
+/**
+ * GitHub precedence: GITHUB_ACTIONS is checked first, so a process that
+ * somehow exposes both `GITHUB_ACTIONS=true` and `TF_BUILD=True` (rare,
+ * but possible in nested CI) routes to GitHub. The order is part of the
+ * contract — swapping the two arms would silently change behaviour for
+ * anyone running the action in a cross-platform test harness.
+ */
 function detectPlatform(env) {
     if (isTruthy(env[GITHUB_ACTIONS_KEY])) {
         return "github";
@@ -3064,11 +3071,11 @@ const DEFAULT_SONAR_TIMEOUT_SECONDS = FIELDS.sonarTimeoutSeconds.defaultValue;
 /**
  * Canonical provider model default; derived from field-schema.
  *
- * The `as const` (rather than `as string`) preserves the literal type so
- * downstream callers that expect the literal `'auto'` keep their
- * exhaustive-match guarantees — without `as const` the field's literal
- * default widens to `string` and breaks `CliProvider = "auto" | "..."`
- * exhaustiveness at compile time.
+ * Inferred as `string` (matching `pickString`'s signature in `loader.ts`),
+ * but the field-schema's literal `"auto"` default is preserved by
+ * TypeScript's widening rules because the right-hand side is a
+ * `const`-tracked object property; callers that need the literal type
+ * should re-assert at the call site.
  */
 const DEFAULT_PROVIDER_MODEL = FIELDS.model.defaultValue;
 
@@ -7003,6 +7010,14 @@ function resolvePlatform(platform, env = process.env) {
             // any non-PlatformDetectionError is an internal invariant
             // failure that must surface — matching the orchestrator.ts and
             // index.ts symmetric narrow-catch pattern.
+            //
+            // Fallback to "github" (not "null" like orchestrator.ts, not
+            // "fall through" like index.ts) is intentional: the validator
+            // must return a concrete ResolvedPlatform so subsequent error
+            // messages can name it, whereas orchestrator needs `null` to
+            // surface "Live review requires GitHub Actions (...)" and
+            // index.ts has no Azure path on the bare-entry side. Unifying
+            // these three contracts would break the validator.
             try {
                 const detected = detectPlatform(env);
                 return detected === "azure-devops" ? "azure" : "github";
@@ -7328,9 +7343,12 @@ function readActionInputs(env = process.env) {
         if (raw.length === 0) {
             return fallback;
         }
-        // parseStrictInt returns null for both partial garbage ("12abc") and
-        // unsafe integers; either way the schema default wins.
-        const parsed = parseStrictInt(raw);
+        // Trim before parsing so GitHub Actions INPUT_* values that
+        // arrive with leading/trailing whitespace still parse. The strict
+        // helper itself rejects whitespace-padded values by design (CLI
+        // flags rarely carry accidental padding), but the env-var
+        // surface is friendlier with a trim.
+        const parsed = parseStrictInt(raw.trim());
         return parsed ?? fallback;
     };
     // Enum readers driven by FIELDS so adding a value to `enumValues` in
@@ -7454,7 +7472,9 @@ async function buildArgs(env, cwd) {
     // TF_BUILD === "True", so a bare action entry with no CI markers
     // also fell through to buildGithubArgs. The canonical detector
     // routes the same way — we just additionally recognise GitHub when
-    // GITHUB_ACTIONS=true (which was previously checked further down).
+    // GITHUB_ACTIONS=true. (The `env["GITHUB_ACTIONS"] !== "true"` check
+    // further down this function is the --dry-run safety net, NOT a
+    // platform-routing check.)
     try {
         const detected = detectPlatform(env);
         if (detected === "azure-devops") {

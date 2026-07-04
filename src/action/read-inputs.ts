@@ -76,9 +76,12 @@ export function readActionInputs(env: NodeJS.ProcessEnv = process.env): ActionIn
     if (raw.length === 0) {
       return fallback;
     }
-    // parseStrictInt returns null for both partial garbage ("12abc") and
-    // unsafe integers; either way the schema default wins.
-    const parsed = parseStrictInt(raw);
+    // Trim before parsing so GitHub Actions INPUT_* values that
+    // arrive with leading/trailing whitespace still parse. The strict
+    // helper itself rejects whitespace-padded values by design (CLI
+    // flags rarely carry accidental padding), but the env-var
+    // surface is friendlier with a trim.
+    const parsed = parseStrictInt(raw.trim());
     return parsed ?? fallback;
   };
   // Enum readers driven by FIELDS so adding a value to `enumValues` in

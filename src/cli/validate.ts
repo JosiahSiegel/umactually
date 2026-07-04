@@ -21,6 +21,14 @@ export function resolvePlatform(
       // any non-PlatformDetectionError is an internal invariant
       // failure that must surface — matching the orchestrator.ts and
       // index.ts symmetric narrow-catch pattern.
+      //
+      // Fallback to "github" (not "null" like orchestrator.ts, not
+      // "fall through" like index.ts) is intentional: the validator
+      // must return a concrete ResolvedPlatform so subsequent error
+      // messages can name it, whereas orchestrator needs `null` to
+      // surface "Live review requires GitHub Actions (...)" and
+      // index.ts has no Azure path on the bare-entry side. Unifying
+      // these three contracts would break the validator.
       try {
         const detected = detectPlatform(env);
         return detected === "azure-devops" ? "azure" : "github";
