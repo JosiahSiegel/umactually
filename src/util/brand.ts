@@ -30,3 +30,12 @@ export const AZURE_STATUS_CONTEXT_NAME = `${BRAND}-status`;
  * touch this constant only.
  */
 export const REDACTED_SECRET_TOKEN = "[REDACTED_SECRET]";
+
+/** Placeholder string substituted into config-parse error messages instead of leaking values. */
+export const REDACTED_PLACEHOLDER = "[REDACTED]";
+
+/** Replaces an entire `Authorization: ...` header value in logged request bodies. */
+export const REDACTED_AUTHORIZATION_HEADER = "[REDACTED_AUTHORIZATION_HEADER]";
+
+/** Replaces a `Bearer <token>` segment inside a logged request body. */
+export const REDACTED_BEARER_TOKEN = "[REDACTED_BEARER_TOKEN]";

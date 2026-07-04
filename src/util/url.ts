@@ -1,8 +1,21 @@
 /** Join provider base URLs consistently; eliminates duplicated slash trimming across provider clients. */
 export function joinUrl(baseUrl: string, path: string): string {
-  const trimmedBase = baseUrl.replace(/\/+$/u, "");
+  const trimmedBase = stripTrailingSlash(baseUrl);
   const prefixedPath = path.startsWith("/") ? path : `/${path}`;
   return `${trimmedBase}${prefixedPath}`;
+}
+
+/**
+ * Removes trailing slashes from a URL or path segment. Useful before
+ * joining paths so empty-path joins don't produce double slashes.
+ */
+export function stripTrailingSlash(value: string): string {
+  return value.replace(/\/+$/u, "");
+}
+
+/** Convert a local filesystem path to a `file://` URL; eliminates duplicated URL-construction logic in the action and CLI entries. */
+export function pathToFileUrl(value: string): string {
+  return new URL(`file://${value.replace(/\\/gu, "/")}`).href;
 }
 
 /** Create request correlation IDs consistently; eliminates duplicated UUID fallback logic across providers. */
