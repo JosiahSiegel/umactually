@@ -193,6 +193,17 @@ const TOP_CONCERNS_PREVIEW_LIMIT = 5;
 function pipelineSummary(input: {
   readonly review: LiveReview;
   readonly validCommentCount: number;
+  /**
+   * Total suppressed findings = model-suppressed (in
+   * `review.suppressedComments`) PLUS off-diff-from-comments (computed
+   * by the live path via `selectOffDiffComments`). For the CLARITY-19
+   * pipeline summary, this number IS the off-diff count (the two
+   * buckets are visually equivalent — both end up in the
+   * `📍 Off-diff (N not posted)` details block). The field's name
+   * (`suppressedCommentCount`) reflects the unified storage
+   * convention; the pipeline summary's `off-diff` label reflects
+   * the reader-facing intent.
+   */
   readonly suppressedCommentCount: number;
 }): string {
   // Total = every comment the model produced. Includes the model's
@@ -215,12 +226,13 @@ function pipelineSummary(input: {
   // `review.suppressedComments`, this assertion fails loud so the
   // pipeline summary doesn't silently lie. See
   // test/unit/pipeline-summary-invariant.test.ts.
-  const filteredCount = Math.max(0, totalFindings - postedCount - offDiffCount);
-  if (
-    totalFindings !== postedCount + offDiffCount + filteredCount
-  ) {
-    // Should be unreachable given Math.max above, but pinned so a
-    // future refactor of the formula can't silently skew the math.
+  //
+  // NOTE: filteredCount is intentionally NOT clamped to ≥ 0. A negative
+  // value means the caller passed inconsistent counts (e.g. offDiff
+  // > total), which the assertion below catches and throws on. The
+  // previous `Math.max(0, ...)` made the assertion unreachable.
+  const filteredCount = totalFindings - postedCount - offDiffCount;
+  if (totalFindings !== postedCount + offDiffCount + filteredCount) {
     throw new Error(
       `pipelineSummary invariant violated: totalFindings=${totalFindings} !== posted(${postedCount}) + offDiff(${offDiffCount}) + filtered(${filteredCount})`,
     );

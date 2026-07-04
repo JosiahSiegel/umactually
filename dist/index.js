@@ -3339,10 +3339,13 @@ function pipelineSummary(input) {
     // `review.suppressedComments`, this assertion fails loud so the
     // pipeline summary doesn't silently lie. See
     // test/unit/pipeline-summary-invariant.test.ts.
-    const filteredCount = Math.max(0, totalFindings - postedCount - offDiffCount);
+    //
+    // NOTE: filteredCount is intentionally NOT clamped to ≥ 0. A negative
+    // value means the caller passed inconsistent counts (e.g. offDiff
+    // > total), which the assertion below catches and throws on. The
+    // previous `Math.max(0, ...)` made the assertion unreachable.
+    const filteredCount = totalFindings - postedCount - offDiffCount;
     if (totalFindings !== postedCount + offDiffCount + filteredCount) {
-        // Should be unreachable given Math.max above, but pinned so a
-        // future refactor of the formula can't silently skew the math.
         throw new Error(`pipelineSummary invariant violated: totalFindings=${totalFindings} !== posted(${postedCount}) + offDiff(${offDiffCount}) + filtered(${filteredCount})`);
     }
     return `📊 ${totalFindings} findings → ${postedCount} posted, ${offDiffCount} off-diff, ${filteredCount} filtered`;

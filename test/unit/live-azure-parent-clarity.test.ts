@@ -388,9 +388,23 @@ describe("buildReviewBody — 5-second scannable clarity", () => {
     // 📊 pipeline summary reconciles the count, and the 📍 Off-diff
     // details block lists every finding. Summary + header + list count
     // all agree.
-    // Total = 3 comments + 2 suppressedComments = 5; 1 posted, 4 off-diff, 0 filtered.
-    expect(body).toMatch(/📊\s+5\s+findings\s+→\s+1\s+posted,\s+4\s+off-diff,\s+0\s+filtered/u);
-    expect(body).toMatch(/📍\s+Off-diff\s+\(4\s+not\s+posted\)/u);
+    //
+    // Numbers derived from the fixture above (3 comments + 2
+    // suppressedComments; 1 on-diff valid; 4 total suppressed; 0
+    // severity-filtered) so the assertion self-validates against
+    // any future fixture tweak. The literal counts come from the
+    // buildReviewBody call below.
+    const expectedTotal = review.comments.length + review.suppressedComments.length;
+    const expectedPosted = 1; // validCommentCount in the call below
+    const expectedOffDiff = 4; // expectedSuppressedCount === 4
+    const expectedFiltered = expectedTotal - expectedPosted - expectedOffDiff;
+    expect(body).toMatch(
+      new RegExp(
+        `📊\\s+${expectedTotal}\\s+findings\\s+→\\s+${expectedPosted}\\s+posted,\\s+${expectedOffDiff}\\s+off-diff,\\s+${expectedFiltered}\\s+filtered`,
+        "u",
+      ),
+    );
+    expect(body).toMatch(new RegExp(`📍\\s+Off-diff\\s+\\(${expectedOffDiff}\\s+not\\s+posted\\)`, "u"));
     const suppressedSection =
       body.match(/📍\s+Off-diff\s+\(4\s+not\s+posted\)[\s\S]*?<\/details>/u)?.[0] ?? "";
     const listedFindings = suppressedSection.match(/^- `/gmu) ?? [];
@@ -492,10 +506,14 @@ describe("buildReviewBody — 5-second scannable clarity", () => {
     expect(body).not.toMatch(/🔕\s+\d+\s+off-diff\s+finding/u);
   });
 
-  it("CLARITY-14d: inline-count note appears when there are off-diff suppressed findings", () => {
-    // Edge case: validCommentCount === 3 (real findings posted), and
-    // suppressedCommentCount === 2 (off-diff). The card must show a
-    // short inline note explaining the off-diff count.
+  it("CLARITY-19d: pipeline summary replaces inline off-diff callout (CLARITY-14d superseded)", () => {
+    // CLARITY-19 supersedes CLARITY-14d: the old "inline-count note"
+    // (`> 🔕 N off-diff findings were not on this PR's diff.`) is
+    // dropped because the 📊 pipeline summary now surfaces the same
+    // count with one vocabulary. This test pins the new contract:
+    // - Pipeline summary reconciles posted + off-diff (no duplicate callout)
+    // - Severity tally still visible (3 findings survive filtering)
+    // - Posted preview + off-diff details blocks are both visible
     const review: LiveReview = {
       summary: "Two issues found, two off-diff noise.",
       verdict: "NEEDS_FIX",
@@ -521,7 +539,18 @@ describe("buildReviewBody — 5-second scannable clarity", () => {
     });
     // CLARITY-19: no duplicate off-diff callout. The 📊 pipeline summary
     // reconciles the count (3 posted + 2 off-diff = 5 total, 0 filtered).
-    expect(body).toMatch(/📊\s+5\s+findings\s+→\s+3\s+posted,\s+2\s+off-diff,\s+0\s+filtered/u);
+    // Numbers derived from fixture for self-validation against tweaks.
+    // The literal counts come from the buildReviewBody call below.
+    const expectedTotal = review.comments.length + review.suppressedComments.length;
+    const expectedPosted = 3; // validCommentCount in the call below
+    const expectedOffDiff = 2; // suppressedCommentCount in the call below
+    const expectedFiltered = expectedTotal - expectedPosted - expectedOffDiff;
+    expect(body).toMatch(
+      new RegExp(
+        `📊\\s+${expectedTotal}\\s+findings\\s+→\\s+${expectedPosted}\\s+posted,\\s+${expectedOffDiff}\\s+off-diff,\\s+${expectedFiltered}\\s+filtered`,
+        "u",
+      ),
+    );
     // Severity tally still visible (3 findings). Match anywhere in the
     // tally line, not anchored to the start (since the first cell is
     // `0` critical, not `1` high).
@@ -529,9 +558,9 @@ describe("buildReviewBody — 5-second scannable clarity", () => {
     expect(body).toMatch(/`1`\s+medium/u);
     expect(body).toMatch(/`1`\s+low/u);
     // Off-diff details visible (📍 replaces 🔕).
-    expect(body).toMatch(/📍\s+Off-diff\s+\(2\s+not\s+posted\)/u);
+    expect(body).toMatch(new RegExp(`📍\\s+Off-diff\\s+\\(${expectedOffDiff}\\s+not\\s+posted\\)`, "u"));
     // Posted preview visible (📋 replaces the old Top concerns).
-    expect(body).toMatch(/📋\s+Posted preview\s+\(3\)/u);
+    expect(body).toMatch(new RegExp(`📋\\s+Posted preview\\s+\\(${expectedPosted}\\)`, "u"));
     // No duplicate off-diff callout.
     expect(body).not.toMatch(/🔕\s+\d+\s+off-diff\s+finding/u);
     expect(body).not.toMatch(/🔕\s+Suppressed\s+\(off-diff/u);
