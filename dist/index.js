@@ -3488,11 +3488,15 @@ function buildInlineCommentBody(input) {
  * can see what the model began with AND where it ended up — not just
  * whichever end happened to land first. CLARITY-12.
  *
- * 4000 chars is enough to capture metadata (~400 chars) plus a typical
- * model review (~2000-3500 chars of JSON) without truncation; long reviews
- * get head+tail with a quantifier in the middle.
+ * 16 000 chars is enough to capture metadata (~500 chars) plus a typical
+ * modern review (~2-12 KB of JSON output_text) without truncation; SSE
+ * streams that exceed this get head+tail with a quantifier in the middle.
+ * Pinned by `test/unit/parse-fail-diagnostic.test.ts` so the budget cannot
+ * silently regress to a value that hides the final `response.completed`
+ * payload from reviewers. MUST stay well under GitHub's 65 536-char
+ * comment body limit once wrapped in `<details>` + summary + manifest.
  */
-const MALFORMED_PROVIDER_FALLBACK_RAW_MAX = 4000;
+const MALFORMED_PROVIDER_FALLBACK_RAW_MAX = 16_000;
 /** Size of each end-piece (head / tail) when the raw text exceeds the budget. */
 const MALFORMED_PROVIDER_FALLBACK_HALF_BUDGET = Math.floor(MALFORMED_PROVIDER_FALLBACK_RAW_MAX / 2);
 /**
