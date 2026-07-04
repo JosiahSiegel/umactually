@@ -1,6 +1,7 @@
 import { fetchAzurePrDiff } from "../platform/azure/api.js";
 import { chunkDiffByFile, countDiffFiles } from "../platform/azure/chunk.js";
 import { readAzureContext } from "../platform/azure/context.js";
+import { detectPlatform, PlatformDetectionError } from "../platform/detect.js";
 import { fetchGithubPrDiff } from "../platform/github/api.js";
 import { readGithubContext } from "../platform/github/context.js";
 import { mergeReviewResults } from "./live-merge.js";
@@ -340,13 +341,17 @@ async function dispatchLivePlatform(input: {
 }
 
 function detectLivePlatform(env: NodeJS.ProcessEnv): LivePlatform | null {
-  if (env["GITHUB_ACTIONS"] === "true") {
-    return "github";
+  // Routes through the canonical detector so the live CLI and the
+  // detection helper share one truth-table for CI marker recognition.
+  try {
+    const detected = detectPlatform(env);
+    return detected === "azure-devops" ? "azure" : "github";
+  } catch (error) {
+    if (error instanceof PlatformDetectionError) {
+      return null;
+    }
+    throw error;
   }
-  if (env["TF_BUILD"] === "True") {
-    return "azure";
-  }
-  return null;
 }
 
 function readSecretValues(env: NodeJS.ProcessEnv): readonly string[] {

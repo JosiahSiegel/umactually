@@ -2810,6 +2810,41 @@ function readAzureTargetBranch(env) {
     return value;
 }
 
+;// CONCATENATED MODULE: ./src/platform/detect.ts
+class PlatformDetectionError extends Error {
+    name = "PlatformDetectionError";
+    code = "PLATFORM_UNKNOWN";
+    constructor() {
+        super("Unable to detect a supported CI platform from the process environment.");
+    }
+}
+const GITHUB_ACTIONS_KEY = "GITHUB_ACTIONS";
+const AZURE_TF_BUILD_KEY = "TF_BUILD";
+function detectPlatform(env) {
+    if (isTruthy(env[GITHUB_ACTIONS_KEY])) {
+        return "github";
+    }
+    if (isTruthy(env[AZURE_TF_BUILD_KEY])) {
+        return "azure-devops";
+    }
+    throw new PlatformDetectionError();
+}
+/**
+ * Recognise CI-platform "marker present" values.
+ *
+ * Azure Pipelines emits `TF_BUILD=True` (capital T) — that is the only
+ * real-world value but the canonical helper also accepts `"true"` so
+ * local mocked pipelines and `pipeline-init.sh` shell scripts that
+ * `export TF_BUILD=true` continue to work. Everything else (including
+ * `"True "`, `"TRUE"`, `"1"`, `"yes"`) is intentionally rejected: a
+ * wrong-case value would only ever come from a manual export, and we
+ * want the false-negative to surface as `PLATFORM_UNKNOWN` instead of
+ * silently mis-detecting.
+ */
+function isTruthy(value) {
+    return value === "true" || value === "True";
+}
+
 ;// CONCATENATED MODULE: ./src/platform/github/api.ts
 
 
@@ -6400,6 +6435,7 @@ function sanitizeComments(comments, secrets) {
 
 
 
+
 /**
  * Number of chunks to process concurrently when the chunked path is
  * active. 4 is a safe default that respects provider rate-limit headers
@@ -6679,13 +6715,18 @@ async function dispatchLivePlatform(input) {
     }
 }
 function detectLivePlatform(env) {
-    if (env["GITHUB_ACTIONS"] === "true") {
-        return "github";
+    // Routes through the canonical detector so the live CLI and the
+    // detection helper share one truth-table for CI marker recognition.
+    try {
+        const detected = detectPlatform(env);
+        return detected === "azure-devops" ? "azure" : "github";
     }
-    if (env["TF_BUILD"] === "True") {
-        return "azure";
+    catch (error) {
+        if (error instanceof PlatformDetectionError) {
+            return null;
+        }
+        throw error;
     }
-    return null;
 }
 function readSecretValues(env) {
     return [
@@ -6914,41 +6955,6 @@ function dispatchLive(parsed, cwd, env) {
     return runLive({ parsed, cwd, env }).then((result) => ({
         exitCode: result.exitCode,
     }));
-}
-
-;// CONCATENATED MODULE: ./src/platform/detect.ts
-class PlatformDetectionError extends Error {
-    name = "PlatformDetectionError";
-    code = "PLATFORM_UNKNOWN";
-    constructor() {
-        super("Unable to detect a supported CI platform from the process environment.");
-    }
-}
-const GITHUB_ACTIONS_KEY = "GITHUB_ACTIONS";
-const AZURE_TF_BUILD_KEY = "TF_BUILD";
-function detectPlatform(env) {
-    if (isTruthy(env[GITHUB_ACTIONS_KEY])) {
-        return "github";
-    }
-    if (isTruthy(env[AZURE_TF_BUILD_KEY])) {
-        return "azure-devops";
-    }
-    throw new PlatformDetectionError();
-}
-/**
- * Recognise CI-platform "marker present" values.
- *
- * Azure Pipelines emits `TF_BUILD=True` (capital T) — that is the only
- * real-world value but the canonical helper also accepts `"true"` so
- * local mocked pipelines and `pipeline-init.sh` shell scripts that
- * `export TF_BUILD=true` continue to work. Everything else (including
- * `"True "`, `"TRUE"`, `"1"`, `"yes"`) is intentionally rejected: a
- * wrong-case value would only ever come from a manual export, and we
- * want the false-negative to surface as `PLATFORM_UNKNOWN` instead of
- * silently mis-detecting.
- */
-function isTruthy(value) {
-    return value === "true" || value === "True";
 }
 
 ;// CONCATENATED MODULE: ./src/cli/validate.ts
@@ -7366,6 +7372,7 @@ function parseBool(raw, fallback) {
 
 
 
+
 globalThis.__umactually_action_entry__ = true;
 async function src_main() {
     try {
@@ -7403,8 +7410,20 @@ async function src_main() {
  * applies automatically inside GitHub Actions; we extend it to the bare case.
  */
 async function buildArgs(env, cwd) {
-    if (env["TF_BUILD"] === "True") {
-        return buildAzureArgs(env);
+    // Use the canonical detector so we honour both GITHUB_ACTIONS=true
+    // and TF_BUILD=True (with GitHub precedence). When neither is set,
+    // the bare action-entry path falls through to buildGithubArgs with
+    // an explicit --dry-run safety net.
+    try {
+        const detected = detectPlatform(env);
+        if (detected === "azure-devops") {
+            return buildAzureArgs(env);
+        }
+    }
+    catch (error) {
+        if (!(error instanceof PlatformDetectionError))
+            throw error;
+        // No CI marker present: fall through to bare entry.
     }
     const args = [...(await buildGithubArgs(env, cwd))];
     if (env["GITHUB_ACTIONS"] !== "true" &&
