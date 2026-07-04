@@ -1,6 +1,6 @@
 import type { Platform } from "../config/types.js";
 import type { ParsedCliArgs } from "./parse-args.js";
-import { detectPlatform } from "../platform/detect.js";
+import { detectPlatform, PlatformDetectionError } from "../platform/detect.js";
 
 /** Platform after auto-resolution. Mirrors `Platform` minus the "auto" variant. */
 export type ResolvedPlatform = Exclude<Platform, "auto">;
@@ -17,12 +17,18 @@ export function resolvePlatform(
     case "auto":
       // Route through the canonical detector so auto-resolution and
       // detection share one truth-table (catches TF_BUILD=True AND
-      // GITHUB_ACTIONS=true, with GitHub precedence).
+      // GITHUB_ACTIONS=true, with GitHub precedence). Narrow catch:
+      // any non-PlatformDetectionError is an internal invariant
+      // failure that must surface — matching the orchestrator.ts and
+      // index.ts symmetric narrow-catch pattern.
       try {
         const detected = detectPlatform(env);
         return detected === "azure-devops" ? "azure" : "github";
-      } catch {
-        return "github";
+      } catch (error) {
+        if (error instanceof PlatformDetectionError) {
+          return "github";
+        }
+        throw error;
       }
     default:
       return assertNever(platform);

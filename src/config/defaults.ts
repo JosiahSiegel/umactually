@@ -32,5 +32,13 @@ export const DEFAULT_PER_REQUEST_SECONDS = FIELDS.perRequestTimeoutSeconds.defau
  */
 export const DEFAULT_SONAR_TIMEOUT_SECONDS = FIELDS.sonarTimeoutSeconds.defaultValue as number;
 
-/** Canonical provider model default; derived from field-schema. */
-export const DEFAULT_PROVIDER_MODEL = FIELDS.model.defaultValue as string;
+/**
+ * Canonical provider model default; derived from field-schema.
+ *
+ * The `as const` (rather than `as string`) preserves the literal type so
+ * downstream callers that expect the literal `'auto'` keep their
+ * exhaustive-match guarantees — without `as const` the field's literal
+ * default widens to `string` and breaks `CliProvider = "auto" | "..."`
+ * exhaustiveness at compile time.
+ */
+export const DEFAULT_PROVIDER_MODEL = FIELDS.model.defaultValue;

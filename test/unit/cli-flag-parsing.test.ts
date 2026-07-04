@@ -350,12 +350,17 @@ describe("CLI flag parsing: action.yml inputs coverage", () => {
     }
     // Regression: Number.parseInt("12abc", 10) returns 12; the CLI must
     // throw CliUsageError instead of silently parsing partial garbage.
+    //
+    // Note: the empty-string case ("") was already rejected by the
+    // previous Number.parseInt + isSafeInteger guard (NaN is not safe),
+    // so it is pinned here for byte-completeness but is not the bug
+    // being fixed. The remaining 6 cases are all genuinely new.
     const cases: ReadonlyArray<readonly string[]> = [
       ["--max-comments", "12abc"],
       ["--review-timeout-seconds", "300xyz"],
       ["--per-request-timeout-seconds", "60.5"],
       ["--sonar-timeout-seconds", "1e3"],
-      ["--max-output-tokens", ""],
+      ["--max-output-tokens", ""], // pre-existing: NaN is not a safe integer
       ["--stall-seconds", " 270 "],
       ["--max-comments", "1.0"],
     ];

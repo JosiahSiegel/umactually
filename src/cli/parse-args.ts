@@ -1,6 +1,5 @@
 import { FIELDS } from "../config/field-schema.js";
 import { parseStrictInt, readEnum } from "../util/cli-args.js";
-import { isSafeInteger } from "../util/json-guards.js";
 
 /**
  * CLI-side normalized platform union. The CLI parser accepts `"azure-devops"`
@@ -343,8 +342,11 @@ function readValue(args: readonly string[], index: number, flag: string): string
 
 function readIntValue(args: readonly string[], index: number, flag: string): number {
   const raw = readValue(args, index, flag);
+  // parseStrictInt already returns null for non-safe-integer parses, so
+  // no extra isSafeInteger check is needed at the call site — null
+  // is the single sentinel for "not a valid integer".
   const parsed = parseStrictInt(raw);
-  if (parsed === null || !isSafeInteger(parsed)) {
+  if (parsed === null) {
     throw new CliUsageError(`flag --${flag} requires an integer value (got "${raw}")`);
   }
   return parsed;

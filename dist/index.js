@@ -478,170 +478,7 @@ function readEnum(flag, value, accepted, errorClass = CliArgError) {
     throw new errorClass(`invalid ${flag} value: ${value}`);
 }
 
-;// CONCATENATED MODULE: ./src/util/json-guards.ts
-/**
- * Type guard for a JSON object (excludes arrays, null, primitives).
- * Replaces the 6+ copies scattered across the codebase, including one
- * buggy copy in `src/azure/run-azure-review.ts:142` that does NOT exclude
- * arrays — that copy returned `true` for any JSON including arrays.
- */
-function isRecord(value) {
-    return typeof value === "object" && value !== null && !Array.isArray(value);
-}
-/**
- * Type guard for a JSON array (excludes objects, null, primitives).
- * Centralized so duplicated `Array.isArray(value)` checks across
- * `src/sonar/run-sonar-import.ts`, `src/azure/run-azure-review.ts`, and
- * `src/provider/provider-parse.ts` share one definition.
- */
-function isUnknownArray(value) {
-    return Array.isArray(value);
-}
-/** Centralizes positive integer guards so CLI and provider paths stop open-coding safe-number checks. */
-function isPositiveSafeInteger(value) {
-    return typeof value === "number" && Number.isSafeInteger(value) && value > 0;
-}
-/**
- * Safe-integer guard (zero and negatives allowed). Centralizes the
- * predicate that was inlined at 9+ sites across `src/cli/live-azure.ts`,
- * `src/cli/live-shared.ts`, `src/cli/live-github.ts`,
- * `src/cli/parse-args.ts`, `src/action/read-inputs.ts`, and
- * the platform context modules.
- */
-function isSafeInteger(value) {
-    return typeof value === "number" && Number.isSafeInteger(value);
-}
-/**
- * Type-narrowed field reader for a string value at the given key.
- * Returns `null` for missing keys or non-string values; callers can map
- * `null` to a default or surface a parse error.
- *
- * Replaces the byte-identical local copies in `src/provider/provider-parse.ts`
- * and `src/provider/copilot-token.ts` (one definition, many call sites).
- */
-function readStringField(record, key) {
-    const value = record[key];
-    return typeof value === "string" ? value : null;
-}
-/**
- * Throwing variant of `readStringField` for fixtures and contract-driven
- * paths that require a value to be present (S4 mocked run, RED fixtures).
- * Replaces the open-coded `typeof !== "string" throw` blocks previously
- * duplicated in `src/azure/run-azure-review.ts:142` and
- * `src/review/run-review.ts`.
- */
-function readStringFieldOrThrow(record, key, label) {
-    const value = record[key];
-    if (typeof value !== "string") {
-        const field = label ?? key;
-        throw new TypeError(`Expected field '${field}' to be a string, received: ${typeof value}`);
-    }
-    return value;
-}
-/**
- * Type-narrowed field reader for a safe-integer number at the given key.
- * Returns `null` for missing keys, non-number values, NaN/Infinity, or
- * non-integer floats. Callers that want any safe integer (incl. 0/negative)
- * use this; callers that want a positive safe integer use
- * `isPositiveSafeInteger` directly.
- */
-function readSafeIntegerField(record, key) {
-    const value = record[key];
-    return isSafeInteger(value) ? value : null;
-}
-/**
- * Throwing variant of `readSafeIntegerField` for fixtures and contract-driven
- * paths. Replaces the open-coded `typeof !== "number" throw` blocks
- * previously duplicated in `src/azure/run-azure-review.ts:134` and
- * `src/review/run-review.ts`.
- */
-function readSafeIntegerFieldOrThrow(record, key, label) {
-    const value = record[key];
-    if (!isSafeInteger(value)) {
-        const field = label ?? key;
-        throw new TypeError(`Expected field '${field}' to be a number, received: ${typeof value}`);
-    }
-    return value;
-}
-/**
- * Type-narrowed field reader for an array at the given key.
- * Returns `null` when the key is missing or the value is not an array.
- * The `readonly` element type signals that the returned array should not
- * be mutated; callers that want a mutable copy use `.slice()`.
- */
-function readArrayField(record, key) {
-    const value = record[key];
-    return isUnknownArray(value) ? value : null;
-}
-/**
- * Type-narrowed field reader for a nested JSON object at the given key.
- * Returns `null` when the key is missing or the value is not a JSON
- * object (excludes arrays and primitives). The two-step guard makes the
- * function safe to call on `unknown` records.
- */
-function readRecordField(value, key) {
-    if (!isRecord(value)) {
-        return null;
-    }
-    const inner = value[key];
-    return isRecord(inner) ? inner : null;
-}
-/**
- * Read-and-parse a JSON text body into a typed record. Returns `null`
- * when the body is empty OR when the parsed value is not a JSON object.
- * Centralizes the recipe that was duplicated across
- * `src/sonar/run-sonar-import.ts`, `src/review/*`, and
- * `src/platform/azure/payload.ts`.
- */
-function readJsonRecord(text) {
-    if (text.length === 0) {
-        return null;
-    }
-    let parsed;
-    try {
-        parsed = JSON.parse(text);
-    }
-    catch {
-        return null;
-    }
-    return isRecord(parsed) ? parsed : null;
-}
-/**
- * Read-and-parse a JSON text body into a typed array. Returns `null`
- * when the body is empty OR when the parsed value is not a JSON array.
- * Centralizes the recipe that was duplicated across `src/sonar/*` and
- * the platform payload parsers.
- */
-function readJsonArray(text) {
-    if (text.length === 0) {
-        return null;
-    }
-    let parsed;
-    try {
-        parsed = JSON.parse(text);
-    }
-    catch {
-        return null;
-    }
-    return isUnknownArray(parsed) ? parsed : null;
-}
-/**
- * Parse JSON text and return `undefined` on parse failure (instead of
- * throwing). Used by the JSON-extraction helpers in `src/render/json-extract.ts`
- * and the provider/copilot token parsers when a best-effort parse is
- * preferred over try/catch around `JSON.parse` at every call site.
- */
-function tryParseJson(text) {
-    try {
-        return JSON.parse(text);
-    }
-    catch {
-        return undefined;
-    }
-}
-
 ;// CONCATENATED MODULE: ./src/cli/parse-args.ts
-
 
 
 class CliUsageError extends Error {
@@ -921,8 +758,11 @@ function readValue(args, index, flag) {
 }
 function readIntValue(args, index, flag) {
     const raw = readValue(args, index, flag);
+    // parseStrictInt already returns null for non-safe-integer parses, so
+    // no extra isSafeInteger check is needed at the call site — null
+    // is the single sentinel for "not a valid integer".
     const parsed = parseStrictInt(raw);
-    if (parsed === null || !isSafeInteger(parsed)) {
+    if (parsed === null) {
         throw new CliUsageError(`flag --${flag} requires an integer value (got "${raw}")`);
     }
     return parsed;
@@ -1111,6 +951,168 @@ const LEGACY_MARKER_SLUG = "auto-pr-review";
  */
 function commentBodyHasMarker(body) {
     return body.includes(REVIEW_MARKER);
+}
+
+;// CONCATENATED MODULE: ./src/util/json-guards.ts
+/**
+ * Type guard for a JSON object (excludes arrays, null, primitives).
+ * Replaces the 6+ copies scattered across the codebase, including one
+ * buggy copy in `src/azure/run-azure-review.ts:142` that does NOT exclude
+ * arrays — that copy returned `true` for any JSON including arrays.
+ */
+function isRecord(value) {
+    return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+/**
+ * Type guard for a JSON array (excludes objects, null, primitives).
+ * Centralized so duplicated `Array.isArray(value)` checks across
+ * `src/sonar/run-sonar-import.ts`, `src/azure/run-azure-review.ts`, and
+ * `src/provider/provider-parse.ts` share one definition.
+ */
+function isUnknownArray(value) {
+    return Array.isArray(value);
+}
+/** Centralizes positive integer guards so CLI and provider paths stop open-coding safe-number checks. */
+function isPositiveSafeInteger(value) {
+    return typeof value === "number" && Number.isSafeInteger(value) && value > 0;
+}
+/**
+ * Safe-integer guard (zero and negatives allowed). Centralizes the
+ * predicate that was inlined at 9+ sites across `src/cli/live-azure.ts`,
+ * `src/cli/live-shared.ts`, `src/cli/live-github.ts`,
+ * `src/cli/parse-args.ts`, `src/action/read-inputs.ts`, and
+ * the platform context modules.
+ */
+function isSafeInteger(value) {
+    return typeof value === "number" && Number.isSafeInteger(value);
+}
+/**
+ * Type-narrowed field reader for a string value at the given key.
+ * Returns `null` for missing keys or non-string values; callers can map
+ * `null` to a default or surface a parse error.
+ *
+ * Replaces the byte-identical local copies in `src/provider/provider-parse.ts`
+ * and `src/provider/copilot-token.ts` (one definition, many call sites).
+ */
+function readStringField(record, key) {
+    const value = record[key];
+    return typeof value === "string" ? value : null;
+}
+/**
+ * Throwing variant of `readStringField` for fixtures and contract-driven
+ * paths that require a value to be present (S4 mocked run, RED fixtures).
+ * Replaces the open-coded `typeof !== "string" throw` blocks previously
+ * duplicated in `src/azure/run-azure-review.ts:142` and
+ * `src/review/run-review.ts`.
+ */
+function readStringFieldOrThrow(record, key, label) {
+    const value = record[key];
+    if (typeof value !== "string") {
+        const field = label ?? key;
+        throw new TypeError(`Expected field '${field}' to be a string, received: ${typeof value}`);
+    }
+    return value;
+}
+/**
+ * Type-narrowed field reader for a safe-integer number at the given key.
+ * Returns `null` for missing keys, non-number values, NaN/Infinity, or
+ * non-integer floats. Callers that want any safe integer (incl. 0/negative)
+ * use this; callers that want a positive safe integer use
+ * `isPositiveSafeInteger` directly.
+ */
+function readSafeIntegerField(record, key) {
+    const value = record[key];
+    return isSafeInteger(value) ? value : null;
+}
+/**
+ * Throwing variant of `readSafeIntegerField` for fixtures and contract-driven
+ * paths. Replaces the open-coded `typeof !== "number" throw` blocks
+ * previously duplicated in `src/azure/run-azure-review.ts:134` and
+ * `src/review/run-review.ts`.
+ */
+function readSafeIntegerFieldOrThrow(record, key, label) {
+    const value = record[key];
+    if (!isSafeInteger(value)) {
+        const field = label ?? key;
+        throw new TypeError(`Expected field '${field}' to be a number, received: ${typeof value}`);
+    }
+    return value;
+}
+/**
+ * Type-narrowed field reader for an array at the given key.
+ * Returns `null` when the key is missing or the value is not an array.
+ * The `readonly` element type signals that the returned array should not
+ * be mutated; callers that want a mutable copy use `.slice()`.
+ */
+function readArrayField(record, key) {
+    const value = record[key];
+    return isUnknownArray(value) ? value : null;
+}
+/**
+ * Type-narrowed field reader for a nested JSON object at the given key.
+ * Returns `null` when the key is missing or the value is not a JSON
+ * object (excludes arrays and primitives). The two-step guard makes the
+ * function safe to call on `unknown` records.
+ */
+function readRecordField(value, key) {
+    if (!isRecord(value)) {
+        return null;
+    }
+    const inner = value[key];
+    return isRecord(inner) ? inner : null;
+}
+/**
+ * Read-and-parse a JSON text body into a typed record. Returns `null`
+ * when the body is empty OR when the parsed value is not a JSON object.
+ * Centralizes the recipe that was duplicated across
+ * `src/sonar/run-sonar-import.ts`, `src/review/*`, and
+ * `src/platform/azure/payload.ts`.
+ */
+function readJsonRecord(text) {
+    if (text.length === 0) {
+        return null;
+    }
+    let parsed;
+    try {
+        parsed = JSON.parse(text);
+    }
+    catch {
+        return null;
+    }
+    return isRecord(parsed) ? parsed : null;
+}
+/**
+ * Read-and-parse a JSON text body into a typed array. Returns `null`
+ * when the body is empty OR when the parsed value is not a JSON array.
+ * Centralizes the recipe that was duplicated across `src/sonar/*` and
+ * the platform payload parsers.
+ */
+function readJsonArray(text) {
+    if (text.length === 0) {
+        return null;
+    }
+    let parsed;
+    try {
+        parsed = JSON.parse(text);
+    }
+    catch {
+        return null;
+    }
+    return isUnknownArray(parsed) ? parsed : null;
+}
+/**
+ * Parse JSON text and return `undefined` on parse failure (instead of
+ * throwing). Used by the JSON-extraction helpers in `src/render/json-extract.ts`
+ * and the provider/copilot token parsers when a best-effort parse is
+ * preferred over try/catch around `JSON.parse` at every call site.
+ */
+function tryParseJson(text) {
+    try {
+        return JSON.parse(text);
+    }
+    catch {
+        return undefined;
+    }
 }
 
 ;// CONCATENATED MODULE: external "node:crypto"
@@ -2696,7 +2698,6 @@ function findDiffHeaderIndices(diff) {
 ;// CONCATENATED MODULE: ./src/platform/azure/context.ts
 
 
-
 /**
  * Context-resolution error for the Azure DevOps platform adapter.
  * Inherits the `PlatformContextError` shape from
@@ -2789,8 +2790,10 @@ function readAzurePrNumber(env) {
     }
     // Strict helper: "42abc" must NOT coerce to 42 (which would land on a
     // 404 from the Azure DevOps REST API instead of a typed error).
+    // parseStrictInt already returns null for non-safe-integer parses,
+    // so the remaining guard is "must be a positive integer".
     const parsed = parseStrictInt(raw);
-    if (parsed === null || !isSafeInteger(parsed) || parsed <= 0) {
+    if (parsed === null || parsed <= 0) {
         throw new AzureContextError("AZURE_PR_NUMBER_INVALID", "Azure Pipelines SYSTEM_PULLREQUEST_PULLREQUESTID must be a positive integer.");
     }
     return parsed;
@@ -2953,8 +2956,10 @@ function parsePrNumber(raw, _env) {
     // The previous Number.parseInt would have returned 42 from "42abc"
     // and the resulting PR-number call would have hit GitHub's API with
     // a partial-numeric path that returned 404 instead of the actual PR.
+    // parseStrictInt already returns null for non-safe-integer parses,
+    // so the remaining guards are: must parse, must be positive.
     const parsed = parseStrictInt(raw);
-    if (parsed === null || !isSafeInteger(parsed) || parsed <= 0) {
+    if (parsed === null || parsed <= 0) {
         throw new GithubContextError("GITHUB_PR_NUMBER_INVALID", "GitHub pull request number must be a positive integer.");
     }
     return parsed;
@@ -3056,7 +3061,15 @@ const DEFAULT_PER_REQUEST_SECONDS = FIELDS.perRequestTimeoutSeconds.defaultValue
  * byte-identical to the schema default.
  */
 const DEFAULT_SONAR_TIMEOUT_SECONDS = FIELDS.sonarTimeoutSeconds.defaultValue;
-/** Canonical provider model default; derived from field-schema. */
+/**
+ * Canonical provider model default; derived from field-schema.
+ *
+ * The `as const` (rather than `as string`) preserves the literal type so
+ * downstream callers that expect the literal `'auto'` keep their
+ * exhaustive-match guarantees — without `as const` the field's literal
+ * default widens to `string` and breaks `CliProvider = "auto" | "..."`
+ * exhaustiveness at compile time.
+ */
 const DEFAULT_PROVIDER_MODEL = FIELDS.model.defaultValue;
 
 ;// CONCATENATED MODULE: ./src/util/severity.ts
@@ -6986,13 +6999,19 @@ function resolvePlatform(platform, env = process.env) {
         case "auto":
             // Route through the canonical detector so auto-resolution and
             // detection share one truth-table (catches TF_BUILD=True AND
-            // GITHUB_ACTIONS=true, with GitHub precedence).
+            // GITHUB_ACTIONS=true, with GitHub precedence). Narrow catch:
+            // any non-PlatformDetectionError is an internal invariant
+            // failure that must surface — matching the orchestrator.ts and
+            // index.ts symmetric narrow-catch pattern.
             try {
                 const detected = detectPlatform(env);
                 return detected === "azure-devops" ? "azure" : "github";
             }
-            catch {
-                return "github";
+            catch (error) {
+                if (error instanceof PlatformDetectionError) {
+                    return "github";
+                }
+                throw error;
             }
         default:
             return validate_assertNever(platform);
@@ -7264,7 +7283,6 @@ function append_cli_inputs_assertNever(value) {
 ;// CONCATENATED MODULE: ./src/action/read-inputs.ts
 
 
-
 function readActionInputs(env = process.env) {
     const inGitHubActions = env["GITHUB_ACTIONS"] === "true";
     const get = (name) => {
@@ -7310,11 +7328,10 @@ function readActionInputs(env = process.env) {
         if (raw.length === 0) {
             return fallback;
         }
-        // Use the strict helper so partial numeric garbage ("12abc", "60.5")
-        // falls back to the schema default instead of silently truncating.
-        // The previous Number.parseInt would have returned 12 from "12abc".
+        // parseStrictInt returns null for both partial garbage ("12abc") and
+        // unsafe integers; either way the schema default wins.
         const parsed = parseStrictInt(raw);
-        return parsed !== null && isSafeInteger(parsed) ? parsed : fallback;
+        return parsed ?? fallback;
     };
     // Enum readers driven by FIELDS so adding a value to `enumValues` in
     // the schema doesn't require updating this file. The literal union
@@ -7432,6 +7449,12 @@ async function buildArgs(env, cwd) {
     // and TF_BUILD=True (with GitHub precedence). When neither is set,
     // the bare action-entry path falls through to buildGithubArgs with
     // an explicit --dry-run safety net.
+    //
+    // Behaviour-equivalence note: the previous code only branched on
+    // TF_BUILD === "True", so a bare action entry with no CI markers
+    // also fell through to buildGithubArgs. The canonical detector
+    // routes the same way — we just additionally recognise GitHub when
+    // GITHUB_ACTIONS=true (which was previously checked further down).
     try {
         const detected = detectPlatform(env);
         if (detected === "azure-devops") {

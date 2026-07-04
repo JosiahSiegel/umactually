@@ -227,32 +227,27 @@ describe("readActionInputs: GitHub Actions runtime defaults", () => {
     // input instead of producing a partial number. Covers every integer
     // field wired through getNumber so a future field added to
     // readActionInputs cannot regress.
-    const cases: ReadonlyArray<readonly [string, string, number]> = [
-      ["REVIEW_TIMEOUT_SECONDS", "300xyz", 300],
-      ["STALL_SECONDS", "270 seconds", 270],
-      ["MAX_OUTPUT_TOKENS", "16k", 16_000],
-      ["MAX_COMMENTS", "50.0", 50],
-      ["REVIEW_FILE_LIMIT", "1e3", 200],
-      ["SONAR_TIMEOUT_SECONDS", "60abc", 300],
+    //
+    // `prop` is typed `keyof ActionInputs` so renaming a property in
+    // ActionInputs breaks the test at compile time, not silently.
+    const cases: ReadonlyArray<readonly [string, keyof ActionInputs, string, number]> = [
+      ["REVIEW_TIMEOUT_SECONDS", "reviewTimeoutSeconds", "300xyz", 300],
+      ["STALL_SECONDS", "stallSeconds", "270 seconds", 270],
+      ["MAX_OUTPUT_TOKENS", "maxOutputTokens", "16k", 16_000],
+      ["MAX_COMMENTS", "maxComments", "50.0", 50],
+      ["REVIEW_FILE_LIMIT", "reviewFileLimit", "1e3", 200],
+      ["SONAR_TIMEOUT_SECONDS", "sonarTimeoutSeconds", "60abc", 300],
     ];
-    for (const [field, rawValue, expectedDefault] of cases) {
+    for (const [field, prop, rawValue, expectedDefault] of cases) {
       const env = {
         GITHUB_ACTIONS: "true",
         [field]: rawValue,
       } satisfies NodeJS.ProcessEnv;
       const inputs = readActionInputs(env);
       // Each field is exposed via ActionInputs — pin that the schema default
-      // wins, not the truncated parseInt result. The dynamic key lookup
+      // wins, not the truncated parseInt result. The keyof-typed index
       // guards against future renames.
-      const actual = (inputs as unknown as Record<string, unknown>)[
-        // Map the action-input field name back to the ActionInputs property.
-        field === "REVIEW_TIMEOUT_SECONDS" ? "reviewTimeoutSeconds" :
-        field === "STALL_SECONDS" ? "stallSeconds" :
-        field === "MAX_OUTPUT_TOKENS" ? "maxOutputTokens" :
-        field === "MAX_COMMENTS" ? "maxComments" :
-        field === "REVIEW_FILE_LIMIT" ? "reviewFileLimit" :
-        "sonarTimeoutSeconds"
-      ];
+      const actual = inputs[prop];
       expect(actual, `${field}=${rawValue}`).toBe(expectedDefault);
     }
   });

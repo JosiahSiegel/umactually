@@ -60,6 +60,12 @@ export async function buildArgs(env: NodeJS.ProcessEnv, cwd: string): Promise<re
   // and TF_BUILD=True (with GitHub precedence). When neither is set,
   // the bare action-entry path falls through to buildGithubArgs with
   // an explicit --dry-run safety net.
+  //
+  // Behaviour-equivalence note: the previous code only branched on
+  // TF_BUILD === "True", so a bare action entry with no CI markers
+  // also fell through to buildGithubArgs. The canonical detector
+  // routes the same way — we just additionally recognise GitHub when
+  // GITHUB_ACTIONS=true (which was previously checked further down).
   try {
     const detected = detectPlatform(env);
     if (detected === "azure-devops") {
