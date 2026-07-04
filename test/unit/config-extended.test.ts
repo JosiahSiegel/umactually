@@ -361,6 +361,21 @@ describe("config: loadConfigFromSources precedence", () => {
     expect(result.sonar.enabled).toBe(false);
   });
 
+  it("derives all timeout + model defaults from the field-schema (no loader drift)", async () => {
+    // Regression: `config/loader.ts` previously hard-coded
+    // DEFAULT_SONAR_TIMEOUT_SECONDS=60 while the field-schema default
+    // (and therefore the CLI / action / env surfaces) was 300. Live
+    // SonarQube scans silently timed out at 60s. Pins the canonical
+    // values for every schema-backed default so a future loader
+    // cannot regress.
+    const result = await loadConfigFromSources({ ...empty(), cwd });
+    expect(result.timeouts.reviewSeconds).toBe(300); // FIELDS.reviewTimeoutSeconds
+    expect(result.timeouts.stallSeconds).toBe(270); // FIELDS.stallSeconds
+    expect(result.timeouts.perRequestSeconds).toBe(60); // FIELDS.perRequestTimeoutSeconds
+    expect(result.sonar.timeoutSeconds).toBe(300); // FIELDS.sonarTimeoutSeconds (was 60)
+    expect(result.provider.model).toBe("auto"); // FIELDS.model
+  });
+
   it("CLI > inputs > env > defaults for booleans (dryRun)", async () => {
     const result = await loadConfigFromSources({
       cli: { dryRun: true },
