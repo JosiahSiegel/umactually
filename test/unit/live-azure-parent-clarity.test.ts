@@ -424,10 +424,14 @@ describe("buildReviewBody — 5-second scannable clarity", () => {
     expect(body).not.toMatch(/\*\*Suppressed:\*\*/u);
   });
 
-  it("CLARITY-14b: clean review (0 posted + 0 suppressed) shows only verdict + summary + footer", () => {
+  it("CLARITY-14b: clean review (0 posted + 0 suppressed) shows verdict + pipeline summary + summary + footer", () => {
     // The "ship it" case must NOT show a zero-tally severity line,
     // suppressed block, or filtered findings block — all of those
-    // would add noise to a clean review.
+    // would add noise to a clean review. The pipeline summary IS
+    // shown even on a clean review (CLARITY-19): `📊 0 findings →
+    // 0 posted, 0 off-diff, 0 filtered` gives the reader the
+    // "the pipeline actually ran" confirmation that distinguishes
+    // a clean review from a missing review.
     const body = buildReviewBody({
       review: buildEmptyReview(),
       provider: "openai-compatible",

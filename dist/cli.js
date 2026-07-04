@@ -3334,7 +3334,19 @@ function pipelineSummary(input) {
     // Filtered = model comments that survived parsing but were rejected
     // by severity policy, max-comments cap, etc. For live-parse reviews
     // this is `total - posted - off-diff`; for parse-fail it is 0.
+    //
+    // Structural invariant (CLARITY-19): totalFindings MUST equal
+    // postedCount + offDiffCount + filteredCount. If a future code path
+    // routes severity-rejected comments somewhere other than
+    // `review.suppressedComments`, this assertion fails loud so the
+    // pipeline summary doesn't silently lie. See
+    // test/unit/pipeline-summary-invariant.test.ts.
     const filteredCount = Math.max(0, totalFindings - postedCount - offDiffCount);
+    if (totalFindings !== postedCount + offDiffCount + filteredCount) {
+        // Should be unreachable given Math.max above, but pinned so a
+        // future refactor of the formula can't silently skew the math.
+        throw new Error(`pipelineSummary invariant violated: totalFindings=${totalFindings} !== posted(${postedCount}) + offDiff(${offDiffCount}) + filtered(${filteredCount})`);
+    }
     return `📊 ${totalFindings} findings → ${postedCount} posted, ${offDiffCount} off-diff, ${filteredCount} filtered`;
 }
 function countsLine(input) {
@@ -3544,33 +3556,37 @@ function metadataManifest(input) {
  * Clarity-first shape (CLARITY-* contract in
  * test/unit/live-azure-parent-clarity.test.ts):
  *
- *   1. Stable HTML marker (used for dedup)
- *   2. Verdict badge — large, first thing after the marker
- *   3. 📊 Pipeline summary (CLARITY-19) — `N findings → X posted,
- *      Y off-diff, Z filtered` reconciles all four buckets in one
- *      line. Skipped for parse-failed fallbacks (parsed counts
- *      unreliable).
- *   4. 🏷️ Severity tally — `critical → high → medium → low` distribution
- *      of the POSTED set, hidden when all zeros (CLARITY-14c). The
- *      `info` level is excluded here (intentionally — info findings
- *      are not actionable).
- *   5. 📋 Posted preview <details> — preview of the highest-severity
- *      findings actually posted (post-filter). When the cap truncates
- *      the list, header reads "showing N of M" (CLARITY-16). The
- *      "Posted preview" label matches the pipeline summary's `posted`
- *      bucket.
- *   6. 🧹 Filtered preview <details> — preview of the pre-filter
- *      candidates when nothing posted (CLARITY-11). Header reads
- *      "showing N of M candidates" so the (N of M) clearly means
- *      preview truncation, not a separate count.
- *   7. 📍 Off-diff <details> — list of every off-diff finding. Header
- *      reads "📍 Off-diff (N not posted)". (CLARITY-19 dropped the
- *      duplicate `> 🔕 N off-diff findings` callout that used to
- *      appear above this block — the 📊 pipeline summary already
- *      surfaces the count.)
- *   8. Prose summary <details> — long provider narrative, hidden by default
- *   9. Footer — model + provider + inline-thread count, small text
- *   10. Hidden HTML comment with the JSON manifest for AI agents
+ *   - Stable HTML marker (used for dedup)
+ *   - Verdict badge — large, first thing after the marker
+ *   - 📊 Pipeline summary (CLARITY-19) — `N findings → X posted,
+ *     Y off-diff, Z filtered` reconciles all four buckets in one
+ *     line. Skipped for parse-failed fallbacks (parsed counts
+ *     unreliable).
+ *   - 🏷️ Severity tally — `critical → high → medium → low` distribution
+ *     of the POSTED set, hidden when all zeros (CLARITY-14c). The
+ *     `info` level is excluded here (intentionally — info findings
+ *     are not actionable).
+ *   - 📋 Posted preview <details> — preview of the highest-severity
+ *     findings actually posted (post-filter). When the cap truncates
+ *     the list, header reads "showing N of M" (CLARITY-16). The
+ *     "Posted preview" label matches the pipeline summary's `posted`
+ *     bucket.
+ *   - 🧹 Filtered preview <details> — preview of the pre-filter
+ *     candidates when nothing posted (CLARITY-11). Header reads
+ *     "showing N of M candidates" so the (N of M) clearly means
+ *     preview truncation, not a separate count.
+ *   - 📍 Off-diff <details> — list of every off-diff finding. Header
+ *     reads "📍 Off-diff (N not posted)". (CLARITY-19 dropped the
+ *     duplicate `> 🔕 N off-diff findings` callout that used to
+ *     appear above this block — the 📊 pipeline summary already
+ *     surfaces the count.)
+ *   - Prose summary <details> — long provider narrative, hidden by default
+ *   - Footer — model + provider + inline-thread count, small text
+ *   - Hidden HTML comment with the JSON manifest for AI agents
+ *
+ * The exact render order (including blank-line separators) lives in
+ * the assembly `sections` array at the bottom of this function —
+ * keep this list and that array in sync if you reorder.
  *
  * The shape is identical regardless of verdict, finding count, or whether
  * the provider returned a parse-fail fallback — that consistency is what
