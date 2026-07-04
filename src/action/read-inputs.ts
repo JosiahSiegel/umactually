@@ -1,4 +1,5 @@
 import { FIELDS } from "../config/field-schema.js";
+import { parseStrictInt } from "../util/cli-args.js";
 import { isSafeInteger } from "../util/json-guards.js";
 
 export type ActionInputs = {
@@ -76,8 +77,11 @@ export function readActionInputs(env: NodeJS.ProcessEnv = process.env): ActionIn
     if (raw.length === 0) {
       return fallback;
     }
-    const parsed = Number.parseInt(raw, 10);
-    return isSafeInteger(parsed) ? parsed : fallback;
+    // Use the strict helper so partial numeric garbage ("12abc", "60.5")
+    // falls back to the schema default instead of silently truncating.
+    // The previous Number.parseInt would have returned 12 from "12abc".
+    const parsed = parseStrictInt(raw);
+    return parsed !== null && isSafeInteger(parsed) ? parsed : fallback;
   };
   // Enum readers driven by FIELDS so adding a value to `enumValues` in
   // the schema doesn't require updating this file. The literal union

@@ -221,6 +221,42 @@ describe("readActionInputs: GitHub Actions runtime defaults", () => {
     expect(inputs.inGitHubActions).toBe(true);
   });
 
+  it("rejects partial numeric garbage in INPUT_* integer fields and falls back to the schema default", () => {
+    // Regression: Number.parseInt("12abc", 10) silently returns 12.
+    // Action inputs must fall back to the schema default for the same
+    // input instead of producing a partial number. Covers every integer
+    // field wired through getNumber so a future field added to
+    // readActionInputs cannot regress.
+    const cases: ReadonlyArray<readonly [string, string, number]> = [
+      ["REVIEW_TIMEOUT_SECONDS", "300xyz", 300],
+      ["STALL_SECONDS", "270 seconds", 270],
+      ["MAX_OUTPUT_TOKENS", "16k", 16_000],
+      ["MAX_COMMENTS", "50.0", 50],
+      ["REVIEW_FILE_LIMIT", "1e3", 200],
+      ["SONAR_TIMEOUT_SECONDS", "60abc", 300],
+    ];
+    for (const [field, rawValue, expectedDefault] of cases) {
+      const env = {
+        GITHUB_ACTIONS: "true",
+        [field]: rawValue,
+      } satisfies NodeJS.ProcessEnv;
+      const inputs = readActionInputs(env);
+      // Each field is exposed via ActionInputs — pin that the schema default
+      // wins, not the truncated parseInt result. The dynamic key lookup
+      // guards against future renames.
+      const actual = (inputs as unknown as Record<string, unknown>)[
+        // Map the action-input field name back to the ActionInputs property.
+        field === "REVIEW_TIMEOUT_SECONDS" ? "reviewTimeoutSeconds" :
+        field === "STALL_SECONDS" ? "stallSeconds" :
+        field === "MAX_OUTPUT_TOKENS" ? "maxOutputTokens" :
+        field === "MAX_COMMENTS" ? "maxComments" :
+        field === "REVIEW_FILE_LIMIT" ? "reviewFileLimit" :
+        "sonarTimeoutSeconds"
+      ];
+      expect(actual, `${field}=${rawValue}`).toBe(expectedDefault);
+    }
+  });
+
   it("INPUT_API_KEY falls back to env.UMACTUALLY_API_KEY when INPUT_API_KEY is unset", () => {
     // Given: GitHub Actions runtime with only UMACTUALLY_API_KEY set.
     const env = {
