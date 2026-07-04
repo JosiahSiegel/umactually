@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { parseDiffPositions } from "../../src/diff/parse-positions.js";
+import { parseDiffPositions, parseNewFilePath } from "../../src/diff/parse-positions.js";
 
 describe("parseDiffPositions", () => {
   it("returns hasPosition false for unknown paths and lines", () => {
@@ -102,5 +102,20 @@ describe("parseDiffPositions", () => {
     const positions = parseDiffPositions("");
     expect(positions.enumerate()).toEqual([]);
     expect(positions.hasPosition({ path: "src/example.ts", line: 1 })).toBe(false);
+  });
+});
+
+describe("parseNewFilePath", () => {
+  it("strips the 'b/' prefix from a '+++ b/path/to/file' marker", () => {
+    expect(parseNewFilePath("+++ b/path/to/file.ts")).toBe("path/to/file.ts");
+  });
+  it("returns null for the '+++ /dev/null' marker (deletions / new files)", () => {
+    expect(parseNewFilePath("+++ /dev/null")).toBeNull();
+  });
+  it("trims surrounding whitespace around the path", () => {
+    expect(parseNewFilePath("+++ b/path/to/file.ts   ")).toBe("path/to/file.ts");
+  });
+  it("returns null for non-`+++ ` lines", () => {
+    expect(parseNewFilePath("--- a/other/file.ts")).toBeNull();
   });
 });

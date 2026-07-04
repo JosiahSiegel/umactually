@@ -27,3 +27,21 @@ export const REVIEW_MARKER = "<!-- umactually-pr-review -->";
  * payloads.
  */
 export const MANIFEST_SCHEMA = "umactually-pr-review/v1";
+
+/**
+ * Legacy HTML marker from the prior action incarnation. Kept so existing
+ * PR comments authored under that scheme can still be detected for replacement.
+ */
+export const LEGACY_MARKER = "<!-- auto-pr-review -->";
+
+/** Slug of the legacy marker, for body-text matching without the HTML comment delimiters. */
+export const LEGACY_MARKER_SLUG = "auto-pr-review";
+
+/**
+ * Returns true when `body` contains the UmActually review marker.
+ * Centralized so future marker variants (e.g. parent-vs-inline) only need
+ * to be added here.
+ */
+export function commentBodyHasMarker(body: string): boolean {
+  return body.includes(REVIEW_MARKER);
+}

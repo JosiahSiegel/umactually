@@ -591,6 +591,20 @@ function readJsonArray(text) {
     }
     return isUnknownArray(parsed) ? parsed : null;
 }
+/**
+ * Parse JSON text and return `undefined` on parse failure (instead of
+ * throwing). Used by the JSON-extraction helpers in `src/render/json-extract.ts`
+ * and the provider/copilot token parsers when a best-effort parse is
+ * preferred over try/catch around `JSON.parse` at every call site.
+ */
+function tryParseJson(text) {
+    try {
+        return JSON.parse(text);
+    }
+    catch {
+        return undefined;
+    }
+}
 
 ;// CONCATENATED MODULE: ./src/cli/parse-args.ts
 
@@ -959,6 +973,17 @@ const AZURE_STATUS_CONTEXT_NAME = `${BRAND}-status`;
  * touch this constant only.
  */
 const REDACTED_SECRET_TOKEN = "[REDACTED_SECRET]";
+/**
+ * Placeholder string substituted into config-parse error messages instead of
+ * leaking values. Re-exported from `src/config/errors.ts` as `REDACTED` to
+ * preserve the existing import surface in that module (the parser chain in
+ * `src/config/parsers.ts` already imports `REDACTED` from `errors.ts`).
+ */
+const REDACTED_PLACEHOLDER = "[REDACTED]";
+/** Replaces an entire `Authorization: ...` header value in logged request bodies. */
+const REDACTED_AUTHORIZATION_HEADER = "[REDACTED_AUTHORIZATION_HEADER]";
+/** Replaces a `Bearer <token>` segment inside a logged request body. */
+const REDACTED_BEARER_TOKEN = "[REDACTED_BEARER_TOKEN]";
 
 ;// CONCATENATED MODULE: ./src/security/scan-review-secrets.ts
 
@@ -1038,6 +1063,21 @@ const REVIEW_MARKER = "<!-- umactually-pr-review -->";
  * payloads.
  */
 const MANIFEST_SCHEMA = "umactually-pr-review/v1";
+/**
+ * Legacy HTML marker from the prior action incarnation. Kept so existing
+ * PR comments authored under that scheme can still be detected for replacement.
+ */
+const LEGACY_MARKER = "<!-- auto-pr-review -->";
+/** Slug of the legacy marker, for body-text matching without the HTML comment delimiters. */
+const LEGACY_MARKER_SLUG = "auto-pr-review";
+/**
+ * Returns true when `body` contains the UmActually review marker.
+ * Centralized so future marker variants (e.g. parent-vs-inline) only need
+ * to be added here.
+ */
+function commentBodyHasMarker(body) {
+    return body.includes(REVIEW_MARKER);
+}
 
 ;// CONCATENATED MODULE: external "node:crypto"
 const external_node_crypto_namespaceObject = __WEBPACK_EXTERNAL_createRequire(import.meta.url)("node:crypto");
@@ -1121,7 +1161,539 @@ function verdictRank(verdict) {
     }
 }
 
+;// CONCATENATED MODULE: ./src/platform/azure/diff.ts
+function buildUnifiedFileDiff(path, oldFile, newFile) {
+    if (oldFile.exists === newFile.exists && oldFile.content === newFile.content) {
+        return null;
+    }
+    const diffPath = normalizeDiffPath(path);
+    const oldLines = splitContentLines(oldFile.content);
+    const newLines = splitContentLines(newFile.content);
+    const oldLabel = oldFile.exists ? `a/${diffPath}` : "/dev/null";
+    const newLabel = newFile.exists ? `b/${diffPath}` : "/dev/null";
+    const hunkLines = buildHunkLines(oldLines, newLines);
+    return [
+        `diff --git a/${diffPath} b/${diffPath}`,
+        `--- ${oldLabel}`,
+        `+++ ${newLabel}`,
+        `@@ -${formatRange(oldLines)} +${formatRange(newLines)} @@`,
+        ...hunkLines,
+        "",
+    ].join("\n");
+}
+function buildHunkLines(oldLines, newLines) {
+    const prefixLength = findCommonPrefixLength(oldLines, newLines);
+    const suffixLength = findCommonSuffixLength(oldLines, newLines, prefixLength);
+    const hunkLines = [];
+    for (const line of oldLines.slice(0, prefixLength)) {
+        hunkLines.push(` ${line}`);
+    }
+    for (const line of oldLines.slice(prefixLength, oldLines.length - suffixLength)) {
+        hunkLines.push(`-${line}`);
+    }
+    for (const line of newLines.slice(prefixLength, newLines.length - suffixLength)) {
+        hunkLines.push(`+${line}`);
+    }
+    for (const line of oldLines.slice(oldLines.length - suffixLength)) {
+        hunkLines.push(` ${line}`);
+    }
+    return hunkLines;
+}
+function findCommonPrefixLength(oldLines, newLines) {
+    let index = 0;
+    while (index < oldLines.length && index < newLines.length && oldLines[index] === newLines[index]) {
+        index += 1;
+    }
+    return index;
+}
+function findCommonSuffixLength(oldLines, newLines, prefixLength) {
+    let length = 0;
+    while (length + prefixLength < oldLines.length &&
+        length + prefixLength < newLines.length &&
+        oldLines[oldLines.length - length - 1] === newLines[newLines.length - length - 1]) {
+        length += 1;
+    }
+    return length;
+}
+function splitContentLines(content) {
+    if (content.length === 0) {
+        return [];
+    }
+    const contentWithoutFinalNewline = content.endsWith("\n") ? content.slice(0, -1) : content;
+    if (contentWithoutFinalNewline.length === 0) {
+        return [];
+    }
+    return contentWithoutFinalNewline.split(/\r?\n/u);
+}
+function formatRange(lines) {
+    const start = lines.length === 0 ? 0 : 1;
+    return `${start},${lines.length}`;
+}
+function normalizeDiffPath(path) {
+    return path.startsWith("/") ? path.slice(1) : path;
+}
+
+;// CONCATENATED MODULE: ./src/util/platform-error.ts
+/**
+ * Shared platform error base classes.
+ *
+ * Previously `AzureApiError`, `GithubApiError`, `AzureContextError`, and
+ * `GithubContextError` each extended `Error` directly with hand-written
+ * `code`/`status` fields. They now extend the generic bases here so the
+ * shape is shared and any future platform (e.g. Bitbucket) gets a uniform
+ * ancestor for `catch` clauses that don't care which platform threw.
+ *
+ * The base classes set a default `name` field, and each subclass keeps its
+ * own `override readonly name = "..."` literal so `error.name` continues to
+ * print the platform-specific name in stack traces.
+ */
+/** Shared platform context error base; subclasses override `name` with platform-specific literals. */
+class PlatformContextError extends Error {
+    code;
+    name = "PlatformContextError";
+    constructor(code, message, options) {
+        super(message, options);
+        this.code = code;
+    }
+}
+/** Shared platform API error base; subclasses override `name` with platform-specific literals. */
+class PlatformApiError extends Error {
+    code;
+    status;
+    name = "PlatformApiError";
+    constructor(code, status, message, options) {
+        super(message, options);
+        this.code = code;
+        this.status = status;
+    }
+}
+
+;// CONCATENATED MODULE: ./src/platform/azure/errors.ts
+
+/**
+ * API-layer error for the Azure DevOps platform adapter. Inherits the
+ * `PlatformApiError` shape from `src/util/platform-error.ts` so it
+ * shares a common ancestor with `GithubApiError` and is catchable as
+ * `PlatformApiError<...>` when callers don't care about the platform.
+ *
+ * Inheriting from `PlatformApiError` instead of `Error` directly keeps
+ * the existing `code` + `status` public fields unchanged so all
+ * `throw new AzureApiError(...)` call sites continue to compile.
+ */
+class AzureApiError extends PlatformApiError {
+    name = "AzureApiError";
+    constructor(code, status, message, options) {
+        super(code, status, message, options);
+    }
+}
+const AZURE_EMPTY_DIFF_STATUS = 200;
+
+;// CONCATENATED MODULE: ./src/platform/azure/payload.ts
+
+
+function parseLatestIterationId(payload) {
+    const root = requireRecord(payload, "Azure iterations response");
+    const iterations = requireArray(root["value"], "Azure iterations response value");
+    const latestIteration = iterations.at(-1);
+    if (latestIteration === undefined) {
+        throw new AzureApiError("AZURE_FETCH_FAILED", AZURE_EMPTY_DIFF_STATUS, "Azure DevOps PR iterations response was empty.");
+    }
+    const latestRecord = requireRecord(latestIteration, "Azure latest iteration");
+    return requirePositiveInteger(latestRecord["id"], "Azure latest iteration id");
+}
+function parseSourceCommitId(payload) {
+    const root = requireRecord(payload, "Azure iteration response");
+    const sourceRefCommit = requireRecord(root["sourceRefCommit"], "Azure iteration sourceRefCommit");
+    return requireNonEmptyString(sourceRefCommit["commitId"], "Azure iteration sourceRefCommit.commitId");
+}
+function parseIterationChanges(payload) {
+    const root = requireRecord(payload, "Azure iteration changes response");
+    const rawChanges = findFirstArray(root, ["changes", "changeEntries", "value"]);
+    if (rawChanges === null) {
+        throw new AzureApiError("AZURE_FETCH_FAILED", AZURE_EMPTY_DIFF_STATUS, "Azure DevOps PR iteration changes response did not include changes.");
+    }
+    return rawChanges
+        .map(parseAzureChange)
+        .filter((change) => change !== null);
+}
+function parseItemContent(payload) {
+    const root = requireRecord(payload, "Azure item response");
+    return requireString(root["content"], "Azure item response content");
+}
+function parseAzureChange(value) {
+    const root = requireRecord(value, "Azure iteration change");
+    const item = requireRecord(root["item"], "Azure iteration change item");
+    // ADO returns item.path as null for deleted files (the path lives in
+    // originalPath at the change root). Those entries have no item content to
+    // diff against and must be skipped — the GitHub side handles deletes the
+    // same way by ignoring the null-path entries.
+    const path = item["path"];
+    if (path === null || typeof path !== "string") {
+        return null;
+    }
+    return {
+        item: {
+            path,
+            url: readOptionalString(item["url"]),
+            objectId: readOptionalString(item["objectId"]),
+        },
+        originalObjectId: readOptionalString(root["originalObjectId"]),
+    };
+}
+function findFirstArray(record, keys) {
+    for (const key of keys) {
+        const value = record[key];
+        if (isUnknownArray(value)) {
+            return value;
+        }
+    }
+    return null;
+}
+function requireRecord(value, label) {
+    if (isRecord(value)) {
+        return value;
+    }
+    throw new AzureApiError("AZURE_FETCH_FAILED", AZURE_EMPTY_DIFF_STATUS, `${label} was not a JSON object.`);
+}
+function requireArray(value, label) {
+    if (isUnknownArray(value)) {
+        return value;
+    }
+    throw new AzureApiError("AZURE_FETCH_FAILED", AZURE_EMPTY_DIFF_STATUS, `${label} was not a JSON array.`);
+}
+function requirePositiveInteger(value, label) {
+    if (isPositiveSafeInteger(value)) {
+        return value;
+    }
+    throw new AzureApiError("AZURE_FETCH_FAILED", AZURE_EMPTY_DIFF_STATUS, `${label} was not a positive integer.`);
+}
+function requireNonEmptyString(value, label) {
+    const parsed = requireString(value, label);
+    if (parsed.length > 0) {
+        return parsed;
+    }
+    throw new AzureApiError("AZURE_FETCH_FAILED", AZURE_EMPTY_DIFF_STATUS, `${label} was empty.`);
+}
+function requireString(value, label) {
+    if (typeof value === "string") {
+        return value;
+    }
+    throw new AzureApiError("AZURE_FETCH_FAILED", AZURE_EMPTY_DIFF_STATUS, `${label} was not a string.`);
+}
+function readOptionalString(value) {
+    return typeof value === "string" && value.length > 0 ? value : null;
+}
+
+;// CONCATENATED MODULE: ./src/util/http.ts
+
+/** Bearer + JSON Accept + UA; eliminates duplicated auth header construction across platform and provider clients. */
+function authHeaders(token, opts) {
+    const mediaType = opts?.mediaType ?? "application/json";
+    const includeContentType = opts?.contentType ?? true;
+    return {
+        Authorization: `Bearer ${token}`,
+        Accept: mediaType,
+        "User-Agent": USER_AGENT,
+        ...(includeContentType ? { "Content-Type": "application/json" } : {}),
+        ...opts?.extra,
+    };
+}
+/**
+ * GitHub PR review header set; eliminates repeated vnd.github+json and
+ * API-version literals. The pinned `X-GitHub-Api-Version` value is the
+ * single source of truth — the live CLI imports from here rather than
+ * redefining it (previously these drifted between
+ * `live-github.ts:223` and `http.ts:21`).
+ *
+ * Version `2026-03-10` is the current GitHub REST API version. Per
+ * GitHub's official changelog (2026-03-12):
+ *   https://github.blog/changelog/2026-03-12-rest-api-version-2026-03-10-is-now-available/
+ * and the API versions reference page:
+ *   https://docs.github.com/en/rest/about-the-rest-api/api-versions
+ *   "the API version 2026-03-10 was released on Tue, 10 Mar 2026"
+ *   "| 2026-03-10 | Not yet scheduled |"
+ * It is supported through at least 2028-03-10 (the `2022-11-28` legacy
+ * default is supported until March 2028). Requests that omit the header
+ * still default to `2022-11-28`.
+ */
+function githubHeaders(token) {
+    return authHeaders(token, {
+        mediaType: "application/vnd.github+json",
+        extra: { "X-GitHub-Api-Version": "2026-03-10" },
+    });
+}
+/** Azure DevOps header set; keeps bearer and UA headers aligned without adding the query-param api-version. */
+function azureHeaders(token) {
+    return authHeaders(token);
+}
+/** Truncate response bodies consistently so duplicated diagnostic logging cannot drift in length or suffix. */
+function truncateBodyForLog(text, maxLen = 500) {
+    return text.length > maxLen ? `${text.slice(0, maxLen)}…(truncated)` : text;
+}
+/**
+ * Generic text-fetch helper used by `fetchGithubPrDiff` and other
+ * platform clients. Returns the response body text on 2xx; throws on
+ * non-2xx or empty body. The caller passes a typed error class so the
+ * platform-specific code/status contract is preserved at the call site.
+ *
+ * Generic over `TCode extends string` so the `error` constructor's
+ * `code` parameter is narrowed to the platform-specific literal
+ * union (e.g. `"GITHUB_FETCH_FAILED" | "GITHUB_DIFF_EMPTY"`), not
+ * widened to plain `string`. Without the generic, the typed
+ * `PlatformApiError<TCode>` code union collapses at the call site.
+ */
+async function fetchTextOrThrow(fetchImpl, input, fail) {
+    const response = await fetchImpl(input.url, { method: "GET", headers: input.headers });
+    if (!response.ok) {
+        throw new fail.error(fail.failCode, response.status, `${fail.platform} request failed with status ${response.status}.`);
+    }
+    const text = await response.text();
+    if (text.length === 0) {
+        throw new fail.error(fail.emptyCode, response.status, `${fail.platform} response body was empty.`);
+    }
+    return text;
+}
+/**
+ * Generic JSON-fetch helper for POST/PUT/PATCH/DELETE calls. Returns the
+ * response body parsed as `unknown` on 2xx; throws on non-2xx (with the
+ * platform-specific error code/status/message) so callers don't need to
+ * write the `await fetchImpl(...) + ensureHttpOk(...) + readJsonResponse(...)`
+ * recipe by hand.
+ *
+ * STAGED FOR FUTURE USE: the current live path uses
+ * `LiveReviewError`-throwing `ensureHttpOk` + `readJsonResponse` helpers
+ * with best-effort error semantics (most callers catch the throw and
+ * log a warning), so this strict-throw helper has no current call sites.
+ * It is exported so a future migration of any fail-fast caller (or a
+ * fresh platform adapter) can adopt it without re-implementing the
+ * JSON-fetch recipe.
+ *
+ * Generic over `TCode extends string` so the `error` constructor's
+ * `code` parameter stays narrowed to the platform's literal union
+ * (e.g. `"AZURE_CREATE_THREAD_FAILED"`).
+ */
+async function fetchJsonOrThrow(fetchImpl, input, fail) {
+    const init = {
+        method: input.method,
+        headers: input.headers,
+    };
+    if (input.body !== undefined) {
+        init.body = typeof input.body === "string" ? input.body : JSON.stringify(input.body);
+    }
+    const response = await fetchImpl(input.url, init);
+    if (!response.ok) {
+        throw new fail.error(fail.code, response.status, `${fail.action} failed with HTTP ${response.status}.`);
+    }
+    return parseJsonBody(response);
+}
+/**
+ * Parsed JSON body reader. Returns `null` for empty bodies so the
+ * `(await fetchJsonOrThrow(...)) ?? null` idiom works for endpoints
+ * whose 2xx response is legitimately empty (e.g. Azure DELETE 204).
+ * Throws SyntaxError if the body is non-empty and non-JSON.
+ */
+async function parseJsonBody(response) {
+    const text = await response.text();
+    if (text.length === 0) {
+        return null;
+    }
+    return JSON.parse(text);
+}
+
+;// CONCATENATED MODULE: ./src/platform/azure/urls.ts
+/** Canonical Azure DevOps REST API version. Bump in one place to update every endpoint. */
+const AZURE_API_VERSION = "7.1";
+/** Base URL of the public Azure DevOps host. */
+const AZURE_DEVOPS_BASE_URL = "https://dev.azure.com";
+/**
+ * Builds the canonical pull-request URL prefix used by both the live and
+ * dry-run paths. Use this instead of hand-constructing the host/project/
+ * repository/pull-request string in multiple files.
+ */
+function azurePrBaseUrl(context) {
+    const projectSegment = encodeURIComponent(context.project);
+    return `${AZURE_DEVOPS_BASE_URL}/${context.org}/${projectSegment}/_apis/git/repositories/${context.repoId}/pullRequests/${context.prNumber}`;
+}
+/** Same as azurePrBaseUrl but suffixed with the API-version query string. */
+function azurePrBaseUrlWithVersion(context) {
+    return `${azurePrBaseUrl(context)}?api-version=${AZURE_API_VERSION}`;
+}
+
+;// CONCATENATED MODULE: ./src/platform/azure/api.ts
+
+
+
+
+
+
+
+const AZURE_FETCH_TIMEOUT_MS = 30_000;
+const ZERO_OBJECT_ID_PATTERN = /^0+$/u;
+async function fetchAzurePrDiff(context, fetchImpl = fetch) {
+    const client = { context, fetchImpl };
+    const iterationId = parseLatestIterationId(await fetchAzureJson(buildPullRequestIterationsUrl(context), client));
+    const sourceCommitId = parseSourceCommitId(await fetchAzureJson(buildPullRequestIterationUrl(context, iterationId), client));
+    const changes = parseIterationChanges(await fetchAzureJson(buildPullRequestIterationChangesUrl(context, iterationId), client));
+    const diffText = await reconstructUnifiedDiff(client, sourceCommitId, changes);
+    if (diffText.length === 0) {
+        throw new AzureApiError("AZURE_DIFF_EMPTY", AZURE_EMPTY_DIFF_STATUS, "Azure DevOps PR diff response body was empty.");
+    }
+    return diffText;
+}
+async function reconstructUnifiedDiff(client, sourceCommitId, changes) {
+    const fileDiffs = [];
+    for (const change of changes) {
+        const [oldFile, newFile] = await Promise.all([
+            fetchAzureItemSnapshot(client, {
+                version: {
+                    path: change.item.path,
+                    baseUrl: change.item.url,
+                    versionType: "Branch",
+                    version: client.context.targetBranch,
+                },
+                objectId: change.originalObjectId,
+            }),
+            fetchAzureItemSnapshot(client, {
+                version: {
+                    path: change.item.path,
+                    baseUrl: change.item.url,
+                    versionType: "Commit",
+                    version: sourceCommitId,
+                },
+                objectId: change.item.objectId,
+            }),
+        ]);
+        const fileDiff = buildUnifiedFileDiff(change.item.path, oldFile, newFile);
+        if (fileDiff !== null) {
+            fileDiffs.push(fileDiff);
+        }
+    }
+    return fileDiffs.join("");
+}
+async function fetchAzureItemSnapshot(client, request) {
+    if (!hasObjectId(request.objectId)) {
+        return { exists: false, content: "" };
+    }
+    const payload = await fetchAzureJson(buildItemContentUrl(client.context, request.version), client);
+    return { exists: true, content: parseItemContent(payload) };
+}
+async function fetchAzureJson(url, client) {
+    const response = await client.fetchImpl(url, buildAzureRequestInit(client.context));
+    if (!response.ok) {
+        throw new AzureApiError("AZURE_FETCH_FAILED", response.status, `Azure DevOps PR diff request failed with status ${response.status}.`);
+    }
+    const bodyText = await response.text();
+    if (bodyText.length === 0) {
+        throw new AzureApiError("AZURE_FETCH_FAILED", response.status, "Azure DevOps PR diff JSON response body was empty.");
+    }
+    try {
+        const payload = JSON.parse(bodyText);
+        return payload;
+    }
+    catch (error) {
+        if (error instanceof SyntaxError) {
+            throw new AzureApiError("AZURE_FETCH_FAILED", response.status, "Azure DevOps PR diff JSON response body was invalid.", {
+                cause: error,
+            });
+        }
+        throw error;
+    }
+}
+function buildAzureRequestInit(context) {
+    // GET requests must NOT include Content-Type — the Azure REST API treats a
+    // body-bearing Content-Type on a bodiless GET as malformed. Reuse the
+    // shared authHeaders helper with `contentType: false` so this header set
+    // matches the one every other Azure call site builds.
+    const headers = authHeaders(context.token, { contentType: false });
+    return { method: "GET", headers, signal: AbortSignal.timeout(AZURE_FETCH_TIMEOUT_MS) };
+}
+function hasObjectId(objectId) {
+    return objectId !== null && !ZERO_OBJECT_ID_PATTERN.test(objectId);
+}
+function buildPullRequestIterationsUrl(context) {
+    return `${buildPullRequestUrl(context)}/iterations?api-version=${AZURE_API_VERSION}`;
+}
+function buildPullRequestIterationUrl(context, iterationId) {
+    return `${buildPullRequestUrl(context)}/iterations/${iterationId}?api-version=${AZURE_API_VERSION}`;
+}
+function buildPullRequestIterationChangesUrl(context, iterationId) {
+    return `${buildPullRequestUrl(context)}/iterations/${iterationId}/changes?api-version=${AZURE_API_VERSION}`;
+}
+function buildPullRequestUrl(context) {
+    return azurePrBaseUrl(context);
+}
+function buildItemContentUrl(context, version) {
+    const url = parseItemBaseUrl(version.baseUrl) ?? new URL(`${azureRepositoryBaseUrl(context)}/items`);
+    url.searchParams.set("path", version.path);
+    url.searchParams.set("versionType", version.versionType);
+    url.searchParams.set("version", version.version);
+    url.searchParams.set("includeContent", "true");
+    url.searchParams.set("api-version", AZURE_API_VERSION);
+    return url.toString();
+}
+function parseItemBaseUrl(value) {
+    if (value === null) {
+        return null;
+    }
+    try {
+        return new URL(value);
+    }
+    catch (error) {
+        if (error instanceof TypeError) {
+            return null;
+        }
+        throw error;
+    }
+}
+function azureRepositoryBaseUrl(context) {
+    const projectSegment = encodeURIComponent(context.project);
+    return `${AZURE_DEVOPS_BASE_URL}/${context.org}/${projectSegment}/_apis/git/repositories/${context.repoId}`;
+}
+/** Active Azure thread statuses — a thread still in flight. */
+const AZURE_OPEN_STATUSES = new Set(["active", "pending"]);
+/** Resolved Azure thread statuses — closed but kept in the diff history. */
+const AZURE_RESOLVED_STATUSES = new Set(["closed", "fixed", "wontFix", "byDesign"]);
+/**
+ * Returns the first Azure thread that already carries a marker-bearing
+ * comment for the same `(filePath, line)` as `comment`, when the thread
+ * status is in the open or resolved set. Used by both the live and the
+ * dry-run dedup paths so a previous UmActually review does not get
+ * double-posted.
+ *
+ * The unified helper picks the stricter semantics from each call site:
+ *   - status filter (open + resolved) — from the live path; ignored
+ *     threads would otherwise let stale `closed`/`fixed` rows get
+ *     double-posted as fresh findings.
+ *   - multi-comment marker check (any comment carrying the marker counts)
+ *     — from the live path; the dry-run's "first comment only" check
+ *     misses threads whose marker landed in a reply.
+ *   - path normalization (`/+ → /`) — from the live path; raw diff paths
+ *     are unprefixed and Azure's API always returns the leading slash.
+ *
+ * Returns `null` when no duplicate thread exists.
+ */
+function findDuplicateThread(comment, threads) {
+    const azurePath = `/${comment.path}`.replace(/\/+/gu, "/");
+    for (const thread of threads) {
+        if (thread.threadContext === null)
+            continue;
+        if (thread.threadContext.filePath !== azurePath)
+            continue;
+        if (thread.threadContext.rightFileStart.line !== comment.line)
+            continue;
+        if (!AZURE_OPEN_STATUSES.has(thread.status) && !AZURE_RESOLVED_STATUSES.has(thread.status))
+            continue;
+        for (const c of thread.comments) {
+            if (commentBodyHasMarker(c.content)) {
+                return thread;
+            }
+        }
+    }
+    return null;
+}
+
 ;// CONCATENATED MODULE: ./src/azure/run-azure-review.ts
+
 
 
 
@@ -1135,7 +1707,7 @@ async function runAzureReview(contract) {
         diffText: contract.diffText ?? "",
         expectedArtifact: "artifacts/manual/s5-redaction-report.json",
     });
-    const postedThreadCount = countPostableThreads(review.comments, existingThreads);
+    const postedThreadCount = countCommentsMatchingExistingThread(review.comments, existingThreads);
     return {
         artifactPath: contract.expectedArtifact,
         postedThreadCount,
@@ -1161,27 +1733,21 @@ function parseProviderReview(reviewJson) {
         suppressed_comments: readCommentArray(record["suppressed_comments"]),
     };
 }
-function countPostableThreads(comments, existingThreads) {
+function countCommentsMatchingExistingThread(comments, existingThreads) {
+    /**
+     * Count how many review comments already have a matching UmActually
+     * thread on the Azure PR (any marker-bearing comment on the same
+     * filePath/line in an open-or-resolved thread). The S4 contract
+     * exposes this as `postedThreadCount` because the mocked dry-run
+     * represents each existing thread as a "posted" thread.
+     */
     let count = 0;
     for (const comment of comments) {
-        if (hasMatchingReviewThread(comment, existingThreads)) {
+        if (findDuplicateThread(comment, existingThreads.value) !== null) {
             count += 1;
         }
     }
     return count;
-}
-function hasMatchingReviewThread(comment, existingThreads) {
-    const azurePath = `/${comment.path}`;
-    for (const thread of existingThreads.value) {
-        const firstComment = thread.comments[0];
-        if (thread.status === "active" &&
-            thread.threadContext.filePath === azurePath &&
-            thread.threadContext.rightFileStart.line === comment.line &&
-            firstComment?.content.includes(REVIEW_MARKER) === true) {
-            return true;
-        }
-    }
-    return false;
 }
 function mapVerdictToStatus(verdict) {
     // Use the legacy policy (NEEDS_FIX → "failed") to preserve the S4 RED contract;
@@ -1205,7 +1771,7 @@ function readVerdict(value) {
     throw new TypeError(`Expected provider verdict, received: ${typeof value}`);
 }
 function readCommentArray(value) {
-    if (!Array.isArray(value)) {
+    if (!isUnknownArray(value)) {
         throw new TypeError(`Expected review comments array, received: ${typeof value}`);
     }
     const comments = [];
@@ -1216,7 +1782,7 @@ function readCommentArray(value) {
     return comments;
 }
 function readThreadArray(value) {
-    if (!Array.isArray(value)) {
+    if (!isUnknownArray(value)) {
         throw new TypeError(`Expected Azure threads array, received: ${typeof value}`);
     }
     const threads = [];
@@ -1239,7 +1805,7 @@ function readThreadContext(value) {
     };
 }
 function readThreadComments(value) {
-    if (!Array.isArray(value)) {
+    if (!isUnknownArray(value)) {
         throw new TypeError(`Expected Azure thread comments array, received: ${typeof value}`);
     }
     const comments = [];
@@ -1413,24 +1979,24 @@ function countOffDiffComments(review, positions) {
     return count;
 }
 function parsePullRequestEvent(value) {
-    const event = requireRecord(value, "GitHub event");
-    const pullRequest = requireRecord(event["pull_request"], "pull_request");
+    const event = run_review_requireRecord(value, "GitHub event");
+    const pullRequest = run_review_requireRecord(event["pull_request"], "pull_request");
     readSafeIntegerFieldOrThrow(pullRequest, "number");
 }
 function parseProviderReviewPayload(value) {
-    const review = requireRecord(value, "provider review");
+    const review = run_review_requireRecord(value, "provider review");
     const comments = run_review_readCommentArray(review["comments"]);
     const suppressedComments = run_review_readCommentArray(review["suppressed_comments"]);
     return { comments: comments, suppressed_comments: suppressedComments };
 }
-function requireRecord(value, label) {
+function run_review_requireRecord(value, label) {
     if (!isRecord(value)) {
         throw new TypeError(`Expected ${label} to be an object, received: ${typeof value}`);
     }
     return value;
 }
 function run_review_readCommentArray(value) {
-    if (!Array.isArray(value)) {
+    if (!isUnknownArray(value)) {
         throw new TypeError(`Expected comment array, received: ${typeof value}`);
     }
     const comments = [];
@@ -1440,7 +2006,7 @@ function run_review_readCommentArray(value) {
     return comments;
 }
 function parseComment(value) {
-    const record = requireRecord(value, "comment");
+    const record = run_review_requireRecord(value, "comment");
     const path = record["path"];
     const line = record["line"];
     if (typeof path !== "string") {
@@ -1517,11 +2083,82 @@ function sleep(ms) {
         setTimeout(resolve, ms);
     });
 }
+/**
+ * Combine a caller-provided `AbortSignal` with a per-request timeout into a
+ * single signal that fires when EITHER side aborts. When no caller signal
+ * is supplied, returns a plain timeout signal. Shared by the OpenAI-
+ * compatible and Copilot provider paths so the abort-composition semantics
+ * stay byte-identical regardless of which endpoint is in use.
+ */
+function composeSignal(callerSignal, timeoutMs) {
+    if (callerSignal === undefined) {
+        return AbortSignal.timeout(timeoutMs);
+    }
+    return AbortSignal.any([callerSignal, AbortSignal.timeout(timeoutMs)]);
+}
+
+;// CONCATENATED MODULE: ./src/util/url.ts
+/** Join provider base URLs consistently; eliminates duplicated slash trimming across provider clients. */
+function joinUrl(baseUrl, path) {
+    const trimmedBase = stripTrailingSlash(baseUrl);
+    const prefixedPath = path.startsWith("/") ? path : `/${path}`;
+    return `${trimmedBase}${prefixedPath}`;
+}
+/**
+ * Removes trailing slashes from a URL or path segment. Useful before
+ * joining paths so empty-path joins don't produce double slashes.
+ */
+function stripTrailingSlash(value) {
+    return value.replace(/\/+$/u, "");
+}
+/** Convert a local filesystem path to a `file://` URL; eliminates duplicated URL-construction logic in the action and CLI entries. */
+function pathToFileUrl(value) {
+    return new URL(`file://${value.replace(/\\/gu, "/")}`).href;
+}
+/** Create request correlation IDs consistently; eliminates duplicated UUID fallback logic across providers. */
+function createRequestId() {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const cryptoApi = globalThis.crypto;
+    if (cryptoApi?.randomUUID !== undefined) {
+        return cryptoApi.randomUUID();
+    }
+    const bytes = new Uint8Array(16);
+    if (cryptoApi?.getRandomValues !== undefined) {
+        cryptoApi.getRandomValues(bytes);
+    }
+    else {
+        // Last-resort fallback: non-cryptographic PRNG. Only reached when the
+        // runtime has no `crypto` global AND no Node `crypto` module loaded —
+        // i.e. very old Node (< 19) without `--experimental-global-webcrypto`,
+        // or non-Node embedders. Request IDs are correlation handles, not
+        // security tokens, so the entropy quality is acceptable here.
+        for (let index = 0; index < bytes.length; index += 1) {
+            bytes[index] = Math.floor(Math.random() * 256);
+        }
+    }
+    const hex = [];
+    for (const byte of bytes) {
+        hex.push(byte.toString(16).padStart(2, "0"));
+    }
+    return `${hex.slice(0, 4).join("")}-${hex.slice(4, 6).join("")}-${hex.slice(6, 8).join("")}-${hex.slice(8, 10).join("")}-${hex.slice(10, 16).join("")}`;
+}
+
+;// CONCATENATED MODULE: ./src/util/error.ts
+/** Convert unknown errors consistently; eliminates repeated Error-instance narrowing before diagnostic logging. */
+function formatError(error) {
+    if (error instanceof Error)
+        return error.message;
+    return String(error);
+}
 
 ;// CONCATENATED MODULE: ./src/sonar/run-sonar-import.ts
 
 
 
+
+
+/** Thin alias for the canonical `isUnknownArray` helper, named for the readonly-flavor call sites in this module. */
+const isReadonlyArray = isUnknownArray;
 const EXPECTED_IMPORTED_FINDING_COUNT = 2;
 const MAX_POLL_ATTEMPTS = 3;
 const QUALITY_GATE_STATUSES = new Set(["OK", "ERROR", "WARN", "NONE", "IN_PROGRESS"]);
@@ -1620,9 +2257,6 @@ function parseJson(json) {
     const value = JSON.parse(json);
     return value;
 }
-function isReadonlyArray(value) {
-    return Array.isArray(value);
-}
 function isQualityGateStatus(status) {
     return QUALITY_GATE_STATUSES.has(status);
 }
@@ -1644,7 +2278,7 @@ async function runLiveSonarImport(config) {
     const fetchImpl = config.fetchImpl ?? globalThis.fetch.bind(globalThis);
     const pollIntervalMs = config.pollIntervalMs ?? DEFAULT_POLL_INTERVAL_MS;
     const deadline = Date.now() + Math.max(1, config.sonarTimeoutSeconds) * 1_000;
-    const baseUrl = config.sonarHostUrl.replace(/\/+$/u, "");
+    const baseUrl = stripTrailingSlash(config.sonarHostUrl);
     const authHeaders = {
         Authorization: `Bearer ${config.sonarToken}`,
         Accept: "application/json",
@@ -1686,7 +2320,7 @@ async function runLiveSonarImport(config) {
             }
         }
         catch (error) {
-            const message = error instanceof Error ? error.message : String(error);
+            const message = formatError(error);
             // Network errors are not fatal — retry until the deadline.
             lastStatus = "IN_PROGRESS";
             writeBrandedAnnotation("warning", `sonar quality-gate poll attempt ${pollAttempts} failed: ${message}`);
@@ -1722,7 +2356,7 @@ async function fetchSonarFindings(config, baseUrl, headers, fetchImpl) {
         }
     }
     catch (error) {
-        const message = error instanceof Error ? error.message : String(error);
+        const message = formatError(error);
         writeBrandedAnnotation("warning", `sonar issues fetch failed: ${message}`);
     }
     try {
@@ -1741,7 +2375,7 @@ async function fetchSonarFindings(config, baseUrl, headers, fetchImpl) {
         }
     }
     catch (error) {
-        const message = error instanceof Error ? error.message : String(error);
+        const message = formatError(error);
         writeBrandedAnnotation("warning", `sonar hotspots fetch failed: ${message}`);
     }
     return issueCount + hotspotCount;
@@ -1882,374 +2516,6 @@ function readEnvSources(env = process.env) {
         }
     }
     return out;
-}
-
-;// CONCATENATED MODULE: ./src/platform/azure/diff.ts
-function buildUnifiedFileDiff(path, oldFile, newFile) {
-    if (oldFile.exists === newFile.exists && oldFile.content === newFile.content) {
-        return null;
-    }
-    const diffPath = normalizeDiffPath(path);
-    const oldLines = splitContentLines(oldFile.content);
-    const newLines = splitContentLines(newFile.content);
-    const oldLabel = oldFile.exists ? `a/${diffPath}` : "/dev/null";
-    const newLabel = newFile.exists ? `b/${diffPath}` : "/dev/null";
-    const hunkLines = buildHunkLines(oldLines, newLines);
-    return [
-        `diff --git a/${diffPath} b/${diffPath}`,
-        `--- ${oldLabel}`,
-        `+++ ${newLabel}`,
-        `@@ -${formatRange(oldLines)} +${formatRange(newLines)} @@`,
-        ...hunkLines,
-        "",
-    ].join("\n");
-}
-function buildHunkLines(oldLines, newLines) {
-    const prefixLength = findCommonPrefixLength(oldLines, newLines);
-    const suffixLength = findCommonSuffixLength(oldLines, newLines, prefixLength);
-    const hunkLines = [];
-    for (const line of oldLines.slice(0, prefixLength)) {
-        hunkLines.push(` ${line}`);
-    }
-    for (const line of oldLines.slice(prefixLength, oldLines.length - suffixLength)) {
-        hunkLines.push(`-${line}`);
-    }
-    for (const line of newLines.slice(prefixLength, newLines.length - suffixLength)) {
-        hunkLines.push(`+${line}`);
-    }
-    for (const line of oldLines.slice(oldLines.length - suffixLength)) {
-        hunkLines.push(` ${line}`);
-    }
-    return hunkLines;
-}
-function findCommonPrefixLength(oldLines, newLines) {
-    let index = 0;
-    while (index < oldLines.length && index < newLines.length && oldLines[index] === newLines[index]) {
-        index += 1;
-    }
-    return index;
-}
-function findCommonSuffixLength(oldLines, newLines, prefixLength) {
-    let length = 0;
-    while (length + prefixLength < oldLines.length &&
-        length + prefixLength < newLines.length &&
-        oldLines[oldLines.length - length - 1] === newLines[newLines.length - length - 1]) {
-        length += 1;
-    }
-    return length;
-}
-function splitContentLines(content) {
-    if (content.length === 0) {
-        return [];
-    }
-    const contentWithoutFinalNewline = content.endsWith("\n") ? content.slice(0, -1) : content;
-    if (contentWithoutFinalNewline.length === 0) {
-        return [];
-    }
-    return contentWithoutFinalNewline.split(/\r?\n/u);
-}
-function formatRange(lines) {
-    const start = lines.length === 0 ? 0 : 1;
-    return `${start},${lines.length}`;
-}
-function normalizeDiffPath(path) {
-    return path.startsWith("/") ? path.slice(1) : path;
-}
-
-;// CONCATENATED MODULE: ./src/util/platform-error.ts
-/**
- * Shared platform error base classes.
- *
- * Previously `AzureApiError`, `GithubApiError`, `AzureContextError`, and
- * `GithubContextError` each extended `Error` directly with hand-written
- * `code`/`status` fields. They now extend the generic bases here so the
- * shape is shared and any future platform (e.g. Bitbucket) gets a uniform
- * ancestor for `catch` clauses that don't care which platform threw.
- *
- * The base classes set a default `name` field, and each subclass keeps its
- * own `override readonly name = "..."` literal so `error.name` continues to
- * print the platform-specific name in stack traces.
- */
-/** Shared platform context error base; subclasses override `name` with platform-specific literals. */
-class PlatformContextError extends Error {
-    code;
-    name = "PlatformContextError";
-    constructor(code, message, options) {
-        super(message, options);
-        this.code = code;
-    }
-}
-/** Shared platform API error base; subclasses override `name` with platform-specific literals. */
-class PlatformApiError extends Error {
-    code;
-    status;
-    name = "PlatformApiError";
-    constructor(code, status, message, options) {
-        super(message, options);
-        this.code = code;
-        this.status = status;
-    }
-}
-
-;// CONCATENATED MODULE: ./src/platform/azure/errors.ts
-
-/**
- * API-layer error for the Azure DevOps platform adapter. Inherits the
- * `PlatformApiError` shape from `src/util/platform-error.ts` so it
- * shares a common ancestor with `GithubApiError` and is catchable as
- * `PlatformApiError<...>` when callers don't care about the platform.
- *
- * Inheriting from `PlatformApiError` instead of `Error` directly keeps
- * the existing `code` + `status` public fields unchanged so all
- * `throw new AzureApiError(...)` call sites continue to compile.
- */
-class AzureApiError extends PlatformApiError {
-    name = "AzureApiError";
-    constructor(code, status, message, options) {
-        super(code, status, message, options);
-    }
-}
-const AZURE_EMPTY_DIFF_STATUS = 200;
-
-;// CONCATENATED MODULE: ./src/platform/azure/payload.ts
-
-
-function parseLatestIterationId(payload) {
-    const root = payload_requireRecord(payload, "Azure iterations response");
-    const iterations = requireArray(root["value"], "Azure iterations response value");
-    const latestIteration = iterations.at(-1);
-    if (latestIteration === undefined) {
-        throw new AzureApiError("AZURE_FETCH_FAILED", AZURE_EMPTY_DIFF_STATUS, "Azure DevOps PR iterations response was empty.");
-    }
-    const latestRecord = payload_requireRecord(latestIteration, "Azure latest iteration");
-    return requirePositiveInteger(latestRecord["id"], "Azure latest iteration id");
-}
-function parseSourceCommitId(payload) {
-    const root = payload_requireRecord(payload, "Azure iteration response");
-    const sourceRefCommit = payload_requireRecord(root["sourceRefCommit"], "Azure iteration sourceRefCommit");
-    return requireNonEmptyString(sourceRefCommit["commitId"], "Azure iteration sourceRefCommit.commitId");
-}
-function parseIterationChanges(payload) {
-    const root = payload_requireRecord(payload, "Azure iteration changes response");
-    const rawChanges = findFirstArray(root, ["changes", "changeEntries", "value"]);
-    if (rawChanges === null) {
-        throw new AzureApiError("AZURE_FETCH_FAILED", AZURE_EMPTY_DIFF_STATUS, "Azure DevOps PR iteration changes response did not include changes.");
-    }
-    return rawChanges
-        .map(parseAzureChange)
-        .filter((change) => change !== null);
-}
-function parseItemContent(payload) {
-    const root = payload_requireRecord(payload, "Azure item response");
-    return requireString(root["content"], "Azure item response content");
-}
-function parseAzureChange(value) {
-    const root = payload_requireRecord(value, "Azure iteration change");
-    const item = payload_requireRecord(root["item"], "Azure iteration change item");
-    // ADO returns item.path as null for deleted files (the path lives in
-    // originalPath at the change root). Those entries have no item content to
-    // diff against and must be skipped — the GitHub side handles deletes the
-    // same way by ignoring the null-path entries.
-    const path = item["path"];
-    if (path === null || typeof path !== "string") {
-        return null;
-    }
-    return {
-        item: {
-            path,
-            url: readOptionalString(item["url"]),
-            objectId: readOptionalString(item["objectId"]),
-        },
-        originalObjectId: readOptionalString(root["originalObjectId"]),
-    };
-}
-function findFirstArray(record, keys) {
-    for (const key of keys) {
-        const value = record[key];
-        if (payload_isUnknownArray(value)) {
-            return value;
-        }
-    }
-    return null;
-}
-function payload_requireRecord(value, label) {
-    if (isRecord(value)) {
-        return value;
-    }
-    throw new AzureApiError("AZURE_FETCH_FAILED", AZURE_EMPTY_DIFF_STATUS, `${label} was not a JSON object.`);
-}
-function requireArray(value, label) {
-    if (payload_isUnknownArray(value)) {
-        return value;
-    }
-    throw new AzureApiError("AZURE_FETCH_FAILED", AZURE_EMPTY_DIFF_STATUS, `${label} was not a JSON array.`);
-}
-function requirePositiveInteger(value, label) {
-    if (isPositiveSafeInteger(value)) {
-        return value;
-    }
-    throw new AzureApiError("AZURE_FETCH_FAILED", AZURE_EMPTY_DIFF_STATUS, `${label} was not a positive integer.`);
-}
-function requireNonEmptyString(value, label) {
-    const parsed = requireString(value, label);
-    if (parsed.length > 0) {
-        return parsed;
-    }
-    throw new AzureApiError("AZURE_FETCH_FAILED", AZURE_EMPTY_DIFF_STATUS, `${label} was empty.`);
-}
-function requireString(value, label) {
-    if (typeof value === "string") {
-        return value;
-    }
-    throw new AzureApiError("AZURE_FETCH_FAILED", AZURE_EMPTY_DIFF_STATUS, `${label} was not a string.`);
-}
-function readOptionalString(value) {
-    return typeof value === "string" && value.length > 0 ? value : null;
-}
-function payload_isUnknownArray(value) {
-    return Array.isArray(value);
-}
-
-;// CONCATENATED MODULE: ./src/platform/azure/api.ts
-
-
-
-
-
-const AZURE_DEVOPS_BASE_URL = "https://dev.azure.com";
-const AZURE_API_VERSION = "7.1";
-const AZURE_FETCH_TIMEOUT_MS = 30_000;
-const JSON_MEDIA_TYPE = "application/json";
-const ZERO_OBJECT_ID_PATTERN = /^0+$/u;
-async function fetchAzurePrDiff(context, fetchImpl = fetch) {
-    const client = { context, fetchImpl };
-    const iterationId = parseLatestIterationId(await fetchAzureJson(buildPullRequestIterationsUrl(context), client));
-    const sourceCommitId = parseSourceCommitId(await fetchAzureJson(buildPullRequestIterationUrl(context, iterationId), client));
-    const changes = parseIterationChanges(await fetchAzureJson(buildPullRequestIterationChangesUrl(context, iterationId), client));
-    const diffText = await reconstructUnifiedDiff(client, sourceCommitId, changes);
-    if (diffText.length === 0) {
-        throw new AzureApiError("AZURE_DIFF_EMPTY", AZURE_EMPTY_DIFF_STATUS, "Azure DevOps PR diff response body was empty.");
-    }
-    return diffText;
-}
-async function reconstructUnifiedDiff(client, sourceCommitId, changes) {
-    const fileDiffs = [];
-    for (const change of changes) {
-        const [oldFile, newFile] = await Promise.all([
-            fetchAzureItemSnapshot(client, {
-                version: {
-                    path: change.item.path,
-                    baseUrl: change.item.url,
-                    versionType: "Branch",
-                    version: client.context.targetBranch,
-                },
-                objectId: change.originalObjectId,
-            }),
-            fetchAzureItemSnapshot(client, {
-                version: {
-                    path: change.item.path,
-                    baseUrl: change.item.url,
-                    versionType: "Commit",
-                    version: sourceCommitId,
-                },
-                objectId: change.item.objectId,
-            }),
-        ]);
-        const fileDiff = buildUnifiedFileDiff(change.item.path, oldFile, newFile);
-        if (fileDiff !== null) {
-            fileDiffs.push(fileDiff);
-        }
-    }
-    return fileDiffs.join("");
-}
-async function fetchAzureItemSnapshot(client, request) {
-    if (!hasObjectId(request.objectId)) {
-        return { exists: false, content: "" };
-    }
-    const payload = await fetchAzureJson(buildItemContentUrl(client.context, request.version), client);
-    return { exists: true, content: parseItemContent(payload) };
-}
-async function fetchAzureJson(url, client) {
-    const response = await client.fetchImpl(url, buildAzureRequestInit(client.context));
-    if (!response.ok) {
-        throw new AzureApiError("AZURE_FETCH_FAILED", response.status, `Azure DevOps PR diff request failed with status ${response.status}.`);
-    }
-    const bodyText = await response.text();
-    if (bodyText.length === 0) {
-        throw new AzureApiError("AZURE_FETCH_FAILED", response.status, "Azure DevOps PR diff JSON response body was empty.");
-    }
-    try {
-        const payload = JSON.parse(bodyText);
-        return payload;
-    }
-    catch (error) {
-        if (error instanceof SyntaxError) {
-            throw new AzureApiError("AZURE_FETCH_FAILED", response.status, "Azure DevOps PR diff JSON response body was invalid.", {
-                cause: error,
-            });
-        }
-        throw error;
-    }
-}
-function buildAzureRequestInit(context) {
-    const headers = {
-        Authorization: `Bearer ${context.token}`,
-        Accept: JSON_MEDIA_TYPE,
-        "User-Agent": USER_AGENT,
-    };
-    const signal = createAbortSignal();
-    if (signal === null) {
-        return { method: "GET", headers };
-    }
-    return { method: "GET", headers, signal };
-}
-function createAbortSignal() {
-    if (typeof AbortSignal === "undefined" || typeof AbortSignal.timeout !== "function") {
-        return null;
-    }
-    return AbortSignal.timeout(AZURE_FETCH_TIMEOUT_MS);
-}
-function hasObjectId(objectId) {
-    return objectId !== null && !ZERO_OBJECT_ID_PATTERN.test(objectId);
-}
-function buildPullRequestIterationsUrl(context) {
-    return `${buildPullRequestUrl(context)}/iterations?api-version=${AZURE_API_VERSION}`;
-}
-function buildPullRequestIterationUrl(context, iterationId) {
-    return `${buildPullRequestUrl(context)}/iterations/${iterationId}?api-version=${AZURE_API_VERSION}`;
-}
-function buildPullRequestIterationChangesUrl(context, iterationId) {
-    return `${buildPullRequestUrl(context)}/iterations/${iterationId}/changes?api-version=${AZURE_API_VERSION}`;
-}
-function buildPullRequestUrl(context) {
-    return `${buildRepositoryUrl(context)}/pullRequests/${context.prNumber}`;
-}
-function buildItemContentUrl(context, version) {
-    const url = parseItemBaseUrl(version.baseUrl) ?? new URL(`${buildRepositoryUrl(context)}/items`);
-    url.searchParams.set("path", version.path);
-    url.searchParams.set("versionType", version.versionType);
-    url.searchParams.set("version", version.version);
-    url.searchParams.set("includeContent", "true");
-    url.searchParams.set("api-version", AZURE_API_VERSION);
-    return url.toString();
-}
-function parseItemBaseUrl(value) {
-    if (value === null) {
-        return null;
-    }
-    try {
-        return new URL(value);
-    }
-    catch (error) {
-        if (error instanceof TypeError) {
-            return null;
-        }
-        throw error;
-    }
-}
-function buildRepositoryUrl(context) {
-    const projectSegment = encodeURIComponent(context.project);
-    return `${AZURE_DEVOPS_BASE_URL}/${context.org}/${projectSegment}/_apis/git/repositories/${context.repoId}`;
 }
 
 ;// CONCATENATED MODULE: ./src/platform/azure/chunk.ts
@@ -2507,124 +2773,7 @@ function readAzureTargetBranch(env) {
     return value;
 }
 
-;// CONCATENATED MODULE: ./src/util/http.ts
-
-/** Bearer + JSON Accept + UA; eliminates duplicated auth header construction across platform and provider clients. */
-function authHeaders(token, opts) {
-    const mediaType = opts?.mediaType ?? "application/json";
-    const includeContentType = opts?.contentType ?? true;
-    return {
-        Authorization: `Bearer ${token}`,
-        Accept: mediaType,
-        "User-Agent": USER_AGENT,
-        ...(includeContentType ? { "Content-Type": "application/json" } : {}),
-        ...opts?.extra,
-    };
-}
-/**
- * GitHub PR review header set; eliminates repeated vnd.github+json and
- * API-version literals. The pinned `X-GitHub-Api-Version` value is the
- * single source of truth — the live CLI imports from here rather than
- * redefining it (previously these drifted between
- * `live-github.ts:223` and `http.ts:21`).
- *
- * Version `2026-03-10` is the current GitHub REST API version. Per
- * GitHub's official changelog (2026-03-12):
- *   https://github.blog/changelog/2026-03-12-rest-api-version-2026-03-10-is-now-available/
- * and the API versions reference page:
- *   https://docs.github.com/en/rest/about-the-rest-api/api-versions
- *   "the API version 2026-03-10 was released on Tue, 10 Mar 2026"
- *   "| 2026-03-10 | Not yet scheduled |"
- * It is supported through at least 2028-03-10 (the `2022-11-28` legacy
- * default is supported until March 2028). Requests that omit the header
- * still default to `2022-11-28`.
- */
-function githubHeaders(token) {
-    return authHeaders(token, {
-        mediaType: "application/vnd.github+json",
-        extra: { "X-GitHub-Api-Version": "2026-03-10" },
-    });
-}
-/** Azure DevOps header set; keeps bearer and UA headers aligned without adding the query-param api-version. */
-function azureHeaders(token) {
-    return authHeaders(token);
-}
-/** Truncate response bodies consistently so duplicated diagnostic logging cannot drift in length or suffix. */
-function truncateBodyForLog(text, maxLen = 500) {
-    return text.length > maxLen ? `${text.slice(0, maxLen)}…(truncated)` : text;
-}
-/**
- * Generic text-fetch helper used by `fetchGithubPrDiff` and other
- * platform clients. Returns the response body text on 2xx; throws on
- * non-2xx or empty body. The caller passes a typed error class so the
- * platform-specific code/status contract is preserved at the call site.
- *
- * Generic over `TCode extends string` so the `error` constructor's
- * `code` parameter is narrowed to the platform-specific literal
- * union (e.g. `"GITHUB_FETCH_FAILED" | "GITHUB_DIFF_EMPTY"`), not
- * widened to plain `string`. Without the generic, the typed
- * `PlatformApiError<TCode>` code union collapses at the call site.
- */
-async function fetchTextOrThrow(fetchImpl, input, fail) {
-    const response = await fetchImpl(input.url, { method: "GET", headers: input.headers });
-    if (!response.ok) {
-        throw new fail.error(fail.failCode, response.status, `${fail.platform} request failed with status ${response.status}.`);
-    }
-    const text = await response.text();
-    if (text.length === 0) {
-        throw new fail.error(fail.emptyCode, response.status, `${fail.platform} response body was empty.`);
-    }
-    return text;
-}
-/**
- * Generic JSON-fetch helper for POST/PUT/PATCH/DELETE calls. Returns the
- * response body parsed as `unknown` on 2xx; throws on non-2xx (with the
- * platform-specific error code/status/message) so callers don't need to
- * write the `await fetchImpl(...) + ensureHttpOk(...) + readJsonResponse(...)`
- * recipe by hand.
- *
- * STAGED FOR FUTURE USE: the current live path uses
- * `LiveReviewError`-throwing `ensureHttpOk` + `readJsonResponse` helpers
- * with best-effort error semantics (most callers catch the throw and
- * log a warning), so this strict-throw helper has no current call sites.
- * It is exported so a future migration of any fail-fast caller (or a
- * fresh platform adapter) can adopt it without re-implementing the
- * JSON-fetch recipe.
- *
- * Generic over `TCode extends string` so the `error` constructor's
- * `code` parameter stays narrowed to the platform's literal union
- * (e.g. `"AZURE_CREATE_THREAD_FAILED"`).
- */
-async function fetchJsonOrThrow(fetchImpl, input, fail) {
-    const init = {
-        method: input.method,
-        headers: input.headers,
-    };
-    if (input.body !== undefined) {
-        init.body = typeof input.body === "string" ? input.body : JSON.stringify(input.body);
-    }
-    const response = await fetchImpl(input.url, init);
-    if (!response.ok) {
-        throw new fail.error(fail.code, response.status, `${fail.action} failed with HTTP ${response.status}.`);
-    }
-    return parseJsonBody(response);
-}
-/**
- * Parsed JSON body reader. Returns `null` for empty bodies so the
- * `(await fetchJsonOrThrow(...)) ?? null` idiom works for endpoints
- * whose 2xx response is legitimately empty (e.g. Azure DELETE 204).
- * Throws SyntaxError if the body is non-empty and non-JSON.
- */
-async function parseJsonBody(response) {
-    const text = await response.text();
-    if (text.length === 0) {
-        return null;
-    }
-    return JSON.parse(text);
-}
-
 ;// CONCATENATED MODULE: ./src/platform/github/api.ts
-
 
 
 /**
@@ -2647,7 +2796,6 @@ async function fetchGithubPrDiff(context, fetchImpl = fetch) {
         headers: {
             ...githubHeaders(context.token),
             Accept: PULL_DIFF_MEDIA_TYPE,
-            "User-Agent": USER_AGENT,
         },
     }, {
         error: GithubApiError,
@@ -3509,6 +3657,47 @@ function countSuppressedComments(review, diffText) {
     return review.suppressedComments.length + selectOffDiffComments(review, diffText).length;
 }
 /**
+ * The shared GitHub/Azure live-post preparation recipe. Computes the
+ * postable comments, off-diff comments, suppressed comment count, severity
+ * counts, and the review body in one place so both `runGithubLive` and
+ * `runAzureLive` produce identical postable lists and identical review
+ * bodies for identical inputs.
+ *
+ * Callers should use this helper rather than re-running `selectPostableComments`,
+ * `selectOffDiffComments`, `countBySeverity`, and `buildReviewBody` inline,
+ * which was the previous source of drift between the two platforms.
+ */
+function preparePostedReview(input) {
+    const postableComments = selectPostableComments({
+        review: input.review,
+        diffText: input.diffText,
+        parsed: input.parsed,
+        secrets: input.secrets,
+    });
+    const offDiffFromComments = selectOffDiffComments(input.review, input.diffText);
+    const suppressedCommentCount = input.review.suppressedComments.length + offDiffFromComments.length;
+    const severityCounts = live_shared_countBySeverity(postableComments);
+    const body = buildReviewBody({
+        review: input.review,
+        provider: input.provider,
+        modelId: input.modelId,
+        validCommentCount: postableComments.length,
+        suppressedCommentCount,
+        offDiffFromComments,
+        severityCounts,
+        postedComments: postableComments,
+        secrets: input.secrets,
+    });
+    return {
+        postableComments,
+        offDiffFromComments,
+        suppressedCommentCount,
+        severityCounts,
+        body,
+        postedComments: postableComments,
+    };
+}
+/**
  * Map a review verdict to a GitHub review-submission event. Delegates to
  * `src/util/verdict.ts` so the merge-path verdict-rank table and the
  * live-path event mapping share the same canonical definitions.
@@ -3542,8 +3731,8 @@ const mapReviewVerdictToGithubEvent = mapVerdictToGithubEvent;
 const mapReviewVerdictToAzureStatus = (verdict) => mapVerdictToAzureStatus(verdict, "current");
 function sanitizeForPost(value, secrets) {
     let sanitized = value
-        .replace(/Authorization:\s*[^\r\n]*/giu, "[REDACTED_AUTHORIZATION_HEADER]")
-        .replace(/\bBearer\s+\S+/giu, "[REDACTED_BEARER_TOKEN]");
+        .replace(/Authorization:\s*[^\r\n]*/giu, REDACTED_AUTHORIZATION_HEADER)
+        .replace(/\bBearer\s+\S+/giu, REDACTED_BEARER_TOKEN);
     for (const secret of secrets) {
         if (secret.length > 0) {
             sanitized = sanitized.split(secret).join(REDACTED_SECRET_TOKEN);
@@ -3600,7 +3789,7 @@ function ensureHttpOk(response, code, action) {
         // Surface the server-side error message on stderr for operators;
         // the thrown LiveReviewError keeps its short public form.
         const snippet = truncateBodyForLog(text, 500);
-        process.stderr.write(`::debug::umactually-pr-review: ${action} HTTP ${response.status} body=${snippet}\n`);
+        process.stderr.write(`::debug::${BRAND_PREFIX}${action} HTTP ${response.status} body=${snippet}\n`);
     })
         .catch(() => {
         // Body read failed; nothing actionable to do here.
@@ -3627,34 +3816,20 @@ function passesSeverityPolicy(comment, parsed) {
 
 
 
+
+
+
 async function runAzureLive(input) {
     const { context, diffText, provider, parsed, fetchImpl } = input;
-    const comments = selectPostableComments({
+    const prepared = preparePostedReview({
         review: provider.review,
+        provider: provider.provider,
+        modelId: provider.modelId,
         diffText,
         parsed,
         secrets: [context.token],
     });
-    const offDiffFromComments = selectOffDiffComments(provider.review, diffText);
-    const suppressedCommentCount = provider.review.suppressedComments.length + offDiffFromComments.length;
-    const body = buildReviewBody({
-        review: provider.review,
-        provider: provider.provider,
-        modelId: provider.modelId,
-        validCommentCount: comments.length,
-        suppressedCommentCount,
-        offDiffFromComments,
-        // CLARITY-15: severityCounts must reflect the POSTED set (i.e. the
-        // same comments that produced `validCommentCount`) so the rendered
-        // tally and the footer's inline count reconcile. Computing from
-        // `provider.review.comments` would over-report by the number of
-        // findings filtered out by `selectPostableComments`.
-        severityCounts: live_shared_countBySeverity(comments),
-        // CLARITY-16: pass the posted set so the "Top concerns" preview
-        // denominator agrees with the tally + footer.
-        postedComments: comments,
-        secrets: [context.token],
-    });
+    const { postableComments: comments, body } = prepared;
     const existingThreads = await listAzureThreads(context, fetchImpl);
     // Post the parent PR-level review summary LAST so the conversation
     // timeline shows a single review-summary card above all inline threads.
@@ -3699,7 +3874,7 @@ async function runAzureLive(input) {
         const comment = comments[index];
         if (comment === undefined)
             continue;
-        if (hasDuplicateThread(existingThreads, comment)) {
+        if (findDuplicateThread(comment, existingThreads) !== null) {
             continue;
         }
         try {
@@ -3717,7 +3892,7 @@ async function runAzureLive(input) {
         }
         catch (error) {
             failedIndices.push(index);
-            const message = error instanceof Error ? error.message : String(error);
+            const message = formatError(error);
             writeBrandedAnnotation("warning", `Azure thread ${index + 1}/${comments.length} failed (${comment.path}:${comment.line}): ${message}; continuing with remaining threads.`);
         }
     }
@@ -3797,30 +3972,10 @@ async function listAzureThreads(context, fetchImpl) {
         return [];
     }
     const value = json["value"];
-    if (!Array.isArray(value)) {
+    if (!isUnknownArray(value)) {
         return [];
     }
     return value.map(parseAzureThread).filter((thread) => thread !== null);
-}
-const AZURE_OPEN_STATUSES = new Set(["active", "pending"]);
-const AZURE_RESOLVED_STATUSES = new Set(["closed", "fixed", "wontFix", "byDesign"]);
-function hasDuplicateThread(threads, comment) {
-    const azurePath = `/${comment.path}`.replace(/\/+/gu, "/");
-    const targetLine = comment.line;
-    return threads.some((thread) => {
-        if (thread.threadContext === null)
-            return false;
-        if (thread.threadContext.filePath !== azurePath)
-            return false;
-        if (thread.threadContext.rightFileStart.line !== targetLine)
-            return false;
-        if (AZURE_RESOLVED_STATUSES.has(thread.status))
-            return true;
-        if (AZURE_OPEN_STATUSES.has(thread.status)) {
-            return thread.comments.some((c) => c.content.includes(REVIEW_MARKER));
-        }
-        return false;
-    });
 }
 /**
  * Locate the existing parent PR-level marker thread (one whose
@@ -3840,7 +3995,7 @@ function findExistingParentPrComment(threads) {
         const firstComment = thread.comments[0];
         if (firstComment === undefined)
             continue;
-        if (!firstComment.content.includes(REVIEW_MARKER))
+        if (!commentBodyHasMarker(firstComment.content))
             continue;
         return { thread, comment: firstComment };
     }
@@ -3885,7 +4040,7 @@ async function postParentThread(context, fetchImpl, body) {
         return created === undefined ? undefined : { id: created };
     }
     catch (error) {
-        const message = error instanceof Error ? error.message : String(error);
+        const message = formatError(error);
         writeBrandedAnnotation("warning", `Azure parent PR comment POST failed (${message}); continuing with inline threads only.`);
         return undefined;
     }
@@ -3907,7 +4062,7 @@ async function deleteParentThreadComments(input) {
         if (!isSafeInteger(commentId)) {
             continue;
         }
-        const url = `${azurePrBaseUrl(input.context)}/threads/${input.threadId}/comments/${commentId}?api-version=7.1`;
+        const url = `${azurePrBaseUrl(input.context)}/threads/${input.threadId}/comments/${commentId}?api-version=${AZURE_API_VERSION}`;
         try {
             const response = await input.fetchImpl(url, {
                 method: "DELETE",
@@ -3922,7 +4077,7 @@ async function deleteParentThreadComments(input) {
             }
         }
         catch (error) {
-            const message = error instanceof Error ? error.message : String(error);
+            const message = formatError(error);
             writeBrandedAnnotation("warning", `Azure delete parent thread ${input.threadId} comment ${commentId} threw (${message}); continuing.`);
         }
     }
@@ -3935,7 +4090,7 @@ async function deleteParentThreadComments(input) {
  *
  * The PATCH uses the documented Pull Request Thread Comments -
  * Update endpoint:
- *   PATCH .../threads/{threadId}/comments/{commentId}?api-version=7.1
+ *   PATCH .../threads/{threadId}/comments/{commentId}?api-version=<AZURE_API_VERSION>
  * with `content` (and the existing `id` to keep the comment).
  * See https://learn.microsoft.com/en-us/rest/api/azure/devops/git/pull-request-thread-comments/update?view=azure-devops-rest-7.1
  *
@@ -3951,7 +4106,7 @@ async function patchInlineCommentWithParentRef(input) {
         includeMarker: true,
         parentThreadId: input.parentThreadId,
     });
-    const url = `${azurePrBaseUrl(input.context)}/threads/${input.threadId}/comments/${input.commentId}?api-version=7.1`;
+    const url = `${azurePrBaseUrl(input.context)}/threads/${input.threadId}/comments/${input.commentId}?api-version=${AZURE_API_VERSION}`;
     try {
         const response = await input.fetchImpl(url, {
             method: "PATCH",
@@ -3972,7 +4127,7 @@ async function patchInlineCommentWithParentRef(input) {
         }
     }
     catch (error) {
-        const message = error instanceof Error ? error.message : String(error);
+        const message = formatError(error);
         writeBrandedAnnotation("warning", `Azure patch inline thread ${input.threadId} comment ${input.commentId} threw (${message}); continuing.`);
     }
 }
@@ -4062,7 +4217,7 @@ async function postAzureStatus(input) {
     // "VssRequestContentTypeNotSupportedException" and then
     // "JSON Patch operation 'Replace' not supported" once the JSON-Patch
     // content-type is set. The documented single-status deletion endpoint
-    // is `DELETE .../statuses/{statusId}?api-version=7.1` (204 No Content
+    // is `DELETE .../statuses/{statusId}?api-version=<AZURE_API_VERSION>` (204 No Content
     // on success) — see
     // https://learn.microsoft.com/en-us/rest/api/azure/devops/git/pull-request-statuses/delete?view=azure-devops-rest-7.1
     //
@@ -4147,7 +4302,7 @@ async function listAzureStatuses(context, fetchImpl) {
         return [];
     }
     const value = json["value"];
-    if (!Array.isArray(value)) {
+    if (!isUnknownArray(value)) {
         return [];
     }
     const entries = [];
@@ -4254,7 +4409,7 @@ function findAllCliStatusIdsByContext(entries) {
  * the next clean run).
  */
 async function deleteAzureStatusById(input) {
-    const url = `${azurePrBaseUrl(input.context)}/statuses/${input.statusId}?api-version=7.1`;
+    const url = `${azurePrBaseUrl(input.context)}/statuses/${input.statusId}?api-version=${AZURE_API_VERSION}`;
     let response;
     try {
         response = await input.fetchImpl(url, {
@@ -4263,7 +4418,7 @@ async function deleteAzureStatusById(input) {
         });
     }
     catch (error) {
-        const message = error instanceof Error ? error.message : String(error);
+        const message = formatError(error);
         writeBrandedAnnotation("warning", `Azure delete PR status ${input.statusId} threw (${message}); continuing.`);
         return false;
     }
@@ -4415,14 +4570,10 @@ function parseAzureComment(value) {
     return { id, content };
 }
 function azureThreadsUrl(context) {
-    return `${azurePrBaseUrl(context)}/threads?api-version=7.1`;
+    return `${azurePrBaseUrl(context)}/threads?api-version=${AZURE_API_VERSION}`;
 }
 function azureStatusesUrl(context) {
-    return `${azurePrBaseUrl(context)}/statuses?api-version=7.1`;
-}
-function azurePrBaseUrl(context) {
-    const project = encodeURIComponent(context.project);
-    return `https://dev.azure.com/${context.org}/${project}/_apis/git/repositories/${context.repoId}/pullRequests/${context.prNumber}`;
+    return `${azurePrBaseUrl(context)}/statuses?api-version=${AZURE_API_VERSION}`;
 }
 
 ;// CONCATENATED MODULE: ./src/cli/live-github.ts
@@ -4434,38 +4585,21 @@ function azurePrBaseUrl(context) {
 
 async function runGithubLive(input) {
     const { context, diffText, provider, parsed, fetchImpl } = input;
-    const comments = selectPostableComments({
+    const prepared = preparePostedReview({
         review: provider.review,
+        provider: provider.provider,
+        modelId: provider.modelId,
         diffText,
         parsed,
         secrets: [context.token],
     });
+    const { postableComments: comments, body } = prepared;
     const postableComments = comments.map((comment) => ({
         path: comment.path,
         line: comment.line,
         side: "RIGHT",
         body: buildInlineCommentBody({ comment, secrets: [context.token] }),
     }));
-    const offDiffFromComments = selectOffDiffComments(provider.review, diffText);
-    const suppressedCommentCount = provider.review.suppressedComments.length + offDiffFromComments.length;
-    const body = buildReviewBody({
-        review: provider.review,
-        provider: provider.provider,
-        modelId: provider.modelId,
-        validCommentCount: comments.length,
-        suppressedCommentCount,
-        offDiffFromComments,
-        // CLARITY-15: severityCounts must reflect the POSTED set (i.e. the
-        // same comments that produced `validCommentCount`) so the rendered
-        // tally and the footer's inline count reconcile. Computing from
-        // `provider.review.comments` would over-report by the number of
-        // findings filtered out by `selectPostableComments`.
-        severityCounts: live_shared_countBySeverity(comments),
-        // CLARITY-16: pass the posted set so the "Top concerns" preview
-        // denominator agrees with the tally + footer.
-        postedComments: comments,
-        secrets: [context.token],
-    });
     const existing = await findExistingMarkerReview(context, fetchImpl);
     // When simulate-findings is set the demo path must ALWAYS replace the
     // existing review via DELETE+POST — even when the new payload carries 0
@@ -4519,7 +4653,7 @@ async function findExistingMarkerReview(context, fetchImpl) {
     }
     for (const entry of json) {
         const review = parseExistingReview(entry);
-        if (review !== null && review.body.includes(REVIEW_MARKER) && review.state !== "DISMISSED") {
+        if (review !== null && commentBodyHasMarker(review.body) && review.state !== "DISMISSED") {
             return review;
         }
     }
@@ -4589,6 +4723,7 @@ function githubReviewsUrl(context) {
 }
 
 ;// CONCATENATED MODULE: ./src/render/json-extract.ts
+
 /**
  * Extract the most likely JSON payload from a provider text response.
  *
@@ -4681,18 +4816,19 @@ function extractFirstBalancedObject(rawText) {
     }
     return null;
 }
-function tryParseJson(candidate) {
-    try {
-        return JSON.parse(candidate);
-    }
-    catch {
-        return undefined;
-    }
-}
 
 ;// CONCATENATED MODULE: ./src/provider/provider-parse.ts
 
 
+/**
+ * Returns true when the parsed review has at least one non-empty
+ * summary, verdict, or comment — used by the parse-fail retry paths
+ * to decide whether the parsed response carries any usable signal.
+ */
+function isNonEmptyReview(review) {
+    return review !== null
+        && (review.summary.length > 0 || review.verdict.length > 0 || review.comments.length > 0);
+}
 /**
  * Self-healing follow-up message sent to the model when its first response
  * could not be parsed as a JSON review payload. Some providers ignore
@@ -4789,14 +4925,14 @@ function extractTextPayload(endpoint, rawText) {
         return rawText;
     }
     // 2. Plain JSON object.
-    const parsed = provider_parse_tryParseJson(rawText);
+    const parsed = tryParseJson(rawText);
     if (parsed !== undefined && isRecord(parsed)) {
         if (endpoint === "responses") {
-            const direct = provider_parse_readStringField(parsed, "output_text");
+            const direct = readStringField(parsed, "output_text");
             if (direct !== null && direct.length > 0) {
                 return direct;
             }
-            const output = provider_parse_readArrayField(parsed, "output");
+            const output = readArrayField(parsed, "output");
             if (output !== null) {
                 const fromOutput = joinOutputText(output);
                 if (fromOutput.length > 0) {
@@ -4809,13 +4945,13 @@ function extractTextPayload(endpoint, rawText) {
         }
         else {
             // Chat completions.
-            const choices = provider_parse_readArrayField(parsed, "choices");
+            const choices = readArrayField(parsed, "choices");
             if (choices !== null) {
                 for (const choice of choices) {
-                    const message = provider_parse_readRecordField(choice, "message");
+                    const message = readRecordField(choice, "message");
                     if (message === null)
                         continue;
-                    const content = provider_parse_readStringField(message, "content");
+                    const content = readStringField(message, "content");
                     if (content !== null && content.length > 0) {
                         return content;
                     }
@@ -4852,8 +4988,8 @@ function parseReviewPayload(text) {
     if (!isRecord(candidate)) {
         return null;
     }
-    const summary = provider_parse_readStringField(candidate, "summary") ?? "";
-    const verdict = provider_parse_readStringField(candidate, "verdict") ?? "";
+    const summary = readStringField(candidate, "summary") ?? "";
+    const verdict = readStringField(candidate, "verdict") ?? "";
     const comments = provider_parse_readCommentArray(candidate["comments"]);
     const suppressed_comments = provider_parse_readCommentArray(candidate["suppressed_comments"]);
     // Soft parse-fail detector (CLARITY-10b): some providers/models return
@@ -4986,26 +5122,18 @@ function provider_parse_readCommentArray(value) {
             continue;
         }
         const path = entry["path"];
-        const line = provider_parse_readSafeIntegerField(entry, "line");
+        const line = readSafeIntegerField(entry, "line");
         if (typeof path === "string" && line !== null) {
             comments.push({
                 path,
                 line,
-                body: provider_parse_readStringField(entry, "body") ?? "",
-                severity: provider_parse_readStringField(entry, "severity") ?? "medium",
-                category: provider_parse_readStringField(entry, "category") ?? "general",
+                body: readStringField(entry, "body") ?? "",
+                severity: readStringField(entry, "severity") ?? "medium",
+                category: readStringField(entry, "category") ?? "general",
             });
         }
     }
     return comments;
-}
-function provider_parse_tryParseJson(rawText) {
-    try {
-        return JSON.parse(rawText);
-    }
-    catch {
-        return undefined;
-    }
 }
 /**
  * Some providers (e.g. Manifest, MiniMax) ignore `stream: false` and always
@@ -5048,7 +5176,7 @@ function tryExtractSse(rawText) {
         if (payload === "[DONE]" || payload === "") {
             continue;
         }
-        const parsed = provider_parse_tryParseJson(payload);
+        const parsed = tryParseJson(payload);
         if (!isRecord(parsed)) {
             continue;
         }
@@ -5058,18 +5186,18 @@ function tryExtractSse(rawText) {
         // The delta may live at the top level OR inside a wrapped envelope
         // depending on the provider. Try the wrapped form first since it's
         // the canonical OpenAI Responses API shape.
-        const wrappedResponse = provider_parse_readRecordField(parsed, "response");
+        const wrappedResponse = readRecordField(parsed, "response");
         if (wrappedResponse !== null) {
-            const eventType = provider_parse_readStringField(parsed, "type");
+            const eventType = readStringField(parsed, "type");
             if (eventType === "response.completed" || eventType === "response.done") {
                 // Final event: prefer the full response payload if it has output_text.
-                const outText = provider_parse_readStringField(wrappedResponse, "output_text");
+                const outText = readStringField(wrappedResponse, "output_text");
                 if (outText !== null && outText.length > 0) {
                     completedResponseText = outText;
                 }
                 else {
                     // Fall back to joining output[] entries.
-                    const output = provider_parse_readArrayField(wrappedResponse, "output");
+                    const output = readArrayField(wrappedResponse, "output");
                     if (output !== null) {
                         const joined = joinOutputText(output);
                         if (joined.length > 0) {
@@ -5080,7 +5208,7 @@ function tryExtractSse(rawText) {
                 continue;
             }
             if (eventType === "response.output_text.delta" || eventType === "response.delta") {
-                const deltaText = provider_parse_readStringField(parsed, "delta");
+                const deltaText = readStringField(parsed, "delta");
                 if (deltaText !== null) {
                     fragments.push(deltaText);
                 }
@@ -5088,12 +5216,12 @@ function tryExtractSse(rawText) {
             }
         }
         // /chat/completions streaming: choices[].delta.content
-        const choices = provider_parse_readArrayField(parsed, "choices");
+        const choices = readArrayField(parsed, "choices");
         if (choices !== null) {
             for (const choice of choices) {
-                const delta = provider_parse_readRecordField(choice, "delta");
+                const delta = readRecordField(choice, "delta");
                 if (delta !== null) {
-                    const content = provider_parse_readStringField(delta, "content");
+                    const content = readStringField(delta, "content");
                     if (content !== null) {
                         fragments.push(content);
                     }
@@ -5103,7 +5231,7 @@ function tryExtractSse(rawText) {
         }
         // /responses streaming (alternative non-OpenAI variant): top-level delta
         // string directly on the JSON object.
-        const deltaText = provider_parse_readStringField(parsed, "delta");
+        const deltaText = readStringField(parsed, "delta");
         if (deltaText !== null) {
             fragments.push(deltaText);
         }
@@ -5115,18 +5243,6 @@ function tryExtractSse(rawText) {
         return completedResponseText;
     }
     return fragments.length > 0 ? fragments.join("") : null;
-}
-function provider_parse_readStringField(record, key) {
-    return readStringField(record, key);
-}
-function provider_parse_readArrayField(record, key) {
-    return readArrayField(record, key);
-}
-function provider_parse_readRecordField(value, key) {
-    return readRecordField(value, key);
-}
-function provider_parse_readSafeIntegerField(record, key) {
-    return readSafeIntegerField(record, key);
 }
 
 ;// CONCATENATED MODULE: ./src/provider/provider-error.ts
@@ -5226,7 +5342,7 @@ async function fetchAndCacheSessionToken(githubToken, tokenUrl, tokenHeaders, fe
             error: new ProviderError("parse", endpoint, response.status, requestId, sanitizeMessage(error, "Failed to read Copilot session token body."), { cause: error }),
         };
     }
-    const envelope = safeParseJson(rawText);
+    const envelope = tryParseJson(rawText);
     if (!isRecord(envelope)) {
         return {
             ok: false,
@@ -5265,60 +5381,19 @@ function clearCopilotTokenCache() {
 function buildCacheKey(githubToken) {
     return githubToken;
 }
-function safeParseJson(text) {
-    try {
-        return JSON.parse(text);
-    }
-    catch {
-        return undefined;
-    }
-}
-
-;// CONCATENATED MODULE: ./src/util/url.ts
-/** Join provider base URLs consistently; eliminates duplicated slash trimming across provider clients. */
-function joinUrl(baseUrl, path) {
-    const trimmedBase = baseUrl.replace(/\/+$/u, "");
-    const prefixedPath = path.startsWith("/") ? path : `/${path}`;
-    return `${trimmedBase}${prefixedPath}`;
-}
-/** Create request correlation IDs consistently; eliminates duplicated UUID fallback logic across providers. */
-function createRequestId() {
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const cryptoApi = globalThis.crypto;
-    if (cryptoApi?.randomUUID !== undefined) {
-        return cryptoApi.randomUUID();
-    }
-    const bytes = new Uint8Array(16);
-    if (cryptoApi?.getRandomValues !== undefined) {
-        cryptoApi.getRandomValues(bytes);
-    }
-    else {
-        // Last-resort fallback: non-cryptographic PRNG. Only reached when the
-        // runtime has no `crypto` global AND no Node `crypto` module loaded —
-        // i.e. very old Node (< 19) without `--experimental-global-webcrypto`,
-        // or non-Node embedders. Request IDs are correlation handles, not
-        // security tokens, so the entropy quality is acceptable here.
-        for (let index = 0; index < bytes.length; index += 1) {
-            bytes[index] = Math.floor(Math.random() * 256);
-        }
-    }
-    const hex = [];
-    for (const byte of bytes) {
-        hex.push(byte.toString(16).padStart(2, "0"));
-    }
-    return `${hex.slice(0, 4).join("")}-${hex.slice(4, 6).join("")}-${hex.slice(6, 8).join("")}-${hex.slice(8, 10).join("")}-${hex.slice(10, 16).join("")}`;
-}
 
 ;// CONCATENATED MODULE: ./src/provider/copilot.ts
 
 
 
 
+
+
 const DEFAULT_GITHUB_API_BASE = "https://api.github.com";
 const COPILOT_EDITOR_VERSION = "vscode/1.96.0";
-const COPILOT_EDITOR_PLUGIN_VERSION = "umactually-pr-review/0.1.0";
+const COPILOT_EDITOR_PLUGIN_VERSION = `${BRAND}/0.1.0`;
 const COPILOT_INTEGRATION_ID = "vscode-chat";
-const COPILOT_USER_AGENT = "umactually-pr-review/0.1.0";
+const COPILOT_USER_AGENT = `${BRAND}/0.1.0`;
 const ENDPOINT_CHAT = "chat";
 async function runCopilotRequest(config) {
     const fetchImpl = config.fetchImpl ?? globalThis.fetch.bind(globalThis);
@@ -5346,7 +5421,7 @@ async function runChatCall(config, fetchImpl, requestId, session) {
         ...(config.maxOutputTokens !== undefined ? { maxOutputTokens: config.maxOutputTokens } : {}),
         ...(config.reasoningEffort !== undefined ? { reasoningEffort: config.reasoningEffort } : {}),
     });
-    const signal = AbortSignal.timeout(config.requestTimeoutMs);
+    const signal = composeSignal(undefined, config.requestTimeoutMs);
     let response;
     try {
         response = await fetchImpl(url, {
@@ -5390,7 +5465,7 @@ async function runChatCall(config, fetchImpl, requestId, session) {
     // a parse failure even when extractJsonBlock returned an object. This
     // catches chat-format responses fed to the responses endpoint and
     // similar misconfigurations.
-    if (review !== null && (review.summary.length > 0 || review.verdict.length > 0 || review.comments.length > 0)) {
+    if (isNonEmptyReview(review)) {
         return { ok: true, endpoint: ENDPOINT_CHAT, review, requestId };
     }
     // Self-healing parse-fail retry: send a follow-up message asking the
@@ -5431,7 +5506,7 @@ async function runChatCall(config, fetchImpl, requestId, session) {
     const retryTextPayload = extractTextPayload(ENDPOINT_CHAT, retryRawText);
     let retryReview = null;
     const parsedRetry = parseReviewPayload(retryTextPayload);
-    if (parsedRetry !== null && (parsedRetry.summary.length > 0 || parsedRetry.verdict.length > 0 || parsedRetry.comments.length > 0)) {
+    if (isNonEmptyReview(parsedRetry)) {
         retryReview = parsedRetry;
     }
     if (retryReview === null) {
@@ -5559,7 +5634,7 @@ async function callEndpoint(config, fetchImpl, requestId, endpoint) {
     // for any JSON object), so a chat-format response (`{choices: [...]}`)
     // fed to the responses endpoint can otherwise pass as a 0-finding
     // "empty review" — see CLARITY-10.
-    if (review !== null && (review.summary.length > 0 || review.verdict.length > 0 || review.comments.length > 0)) {
+    if (isNonEmptyReview(review)) {
         return { ok: true, endpoint, review, requestId };
     }
     // Self-healing: parse failed on first attempt. Try once more with an
@@ -5592,7 +5667,7 @@ async function callEndpoint(config, fetchImpl, requestId, endpoint) {
             const retryTextPayload = extractTextPayload(endpoint, retryRawText);
             const parsedRetry = parseReviewPayload(retryTextPayload);
             // Same strict check on the retry: must have actual review content.
-            if (parsedRetry !== null && (parsedRetry.summary.length > 0 || parsedRetry.verdict.length > 0 || parsedRetry.comments.length > 0)) {
+            if (isNonEmptyReview(parsedRetry)) {
                 retryReview = parsedRetry;
             }
         }
@@ -5641,12 +5716,6 @@ async function readBody(response, endpoint, requestId) {
 function shouldFallback(error) {
     return error.status === 404 || error.status === 400;
 }
-function composeSignal(signal, timeoutMs) {
-    if (signal === undefined) {
-        return AbortSignal.timeout(timeoutMs);
-    }
-    return AbortSignal.any([signal, AbortSignal.timeout(timeoutMs)]);
-}
 
 ;// CONCATENATED MODULE: ./src/config/errors.ts
 class InvalidConfigError extends Error {
@@ -5673,7 +5742,7 @@ class PromptFileError extends Error {
  * Marker used in error messages to replace any user-supplied value
  * (URLs, tokens, prompt content). Never echo the raw value.
  */
-const REDACTED = "[REDACTED]";
+
 
 ;// CONCATENATED MODULE: ./src/config/prompt-files.ts
 
@@ -5944,6 +6013,7 @@ function readRequestTimeoutMs(parsed) {
 ;// CONCATENATED MODULE: ./src/cli/sonar-context.ts
 
 
+
 async function readLiveSonarContext(parsed, fetchImpl) {
     const report = await readLiveSonarReport(parsed, fetchImpl);
     return report === undefined ? undefined : formatSonarContext(report);
@@ -5963,7 +6033,7 @@ async function readLiveSonarReport(parsed, fetchImpl) {
         sonarTimeoutSeconds: parsed.sonarTimeoutSeconds ?? 300,
         fetchImpl: fetchImpl,
     });
-    process.stdout.write(`umactually-pr-review: sonar quality gate ${sonarReport.qualityGateStatus} (${sonarReport.importedFindingCount} findings, waited=${sonarReport.waitedForTerminalQualityGate})${sonarReport.timeoutHandled ? " [timeout handled]" : ""}\n`);
+    process.stdout.write(`${BRAND_PREFIX}sonar quality gate ${sonarReport.qualityGateStatus} (${sonarReport.importedFindingCount} findings, waited=${sonarReport.waitedForTerminalQualityGate})${sonarReport.timeoutHandled ? " [timeout handled]" : ""}\n`);
     if (sonarReport.errorMessage !== undefined) {
         writeBrandedAnnotation("warning", sonarReport.errorMessage);
     }
@@ -6001,20 +6071,9 @@ function readDiffLine(diffText, position) {
             continue;
         }
         if (currentPath === null) {
-            if (rawLine.startsWith("+++ ")) {
-                const [rawPath] = rawLine.slice(4).split("\t");
-                if (rawPath !== undefined) {
-                    const path = rawPath.trim();
-                    if (path !== "/dev/null") {
-                        const normalized = path.startsWith("b/") ? path.slice(2) : path;
-                        if (normalized === position.path) {
-                            currentPath = targetPath;
-                        }
-                        else {
-                            currentPath = normalized;
-                        }
-                    }
-                }
+            const parsedPath = parseNewFilePath(rawLine);
+            if (parsedPath !== null) {
+                currentPath = parsedPath === position.path ? targetPath : parsedPath;
             }
             continue;
         }
@@ -6237,6 +6296,7 @@ function buildContextAwareBody(position, token, category) {
 ;// CONCATENATED MODULE: ./src/cli/simulate-findings.ts
 
 
+
 /**
  * Replaces the provider outcome with a deterministic fixture only when the live
  * result is structurally empty. Live findings always win.
@@ -6249,7 +6309,7 @@ function applySimulateFindings(input) {
     const liveSuppressedCount = input.outcome.review.suppressedComments.length;
     const isStructurallyEmpty = liveCommentCount === 0 && liveSuppressedCount === 0;
     if (!isStructurallyEmpty) {
-        const message = `umactually-pr-review: --simulate-findings set but ignored (live result has ${liveCommentCount} inline, ${liveSuppressedCount} suppressed). Live findings always win.`;
+        const message = `${BRAND_PREFIX}--simulate-findings set but ignored (live result has ${liveCommentCount} inline, ${liveSuppressedCount} suppressed). Live findings always win.`;
         const sanitized = sanitizeForPost(message, input.secrets);
         process.stderr.write(`::notice::${sanitized}\n`);
         return input.outcome;
@@ -6278,6 +6338,8 @@ function sanitizeComments(comments, secrets) {
 }
 
 ;// CONCATENATED MODULE: ./src/cli/orchestrator.ts
+
+
 
 
 
@@ -6349,7 +6411,7 @@ async function requestChunkedLiveReview(input) {
                 // "we lost 1 of 66 chunks" and "the whole review dies on
                 // chunk 12 because the provider was rate-limiting".
                 failedChunkCount += 1;
-                const message = error instanceof Error ? error.message : String(error);
+                const message = formatError(error);
                 const sanitized = sanitizeForPost(message, [input.platformToken]);
                 const redactedChunk = chunk.length > 80 ? `${chunk.slice(0, 77)}…` : chunk;
                 logWarning("", `chunk ${index + 1}/${input.chunks.length} failed (${sanitized}); substituting empty outcome. chunk preview: ${redactedChunk}`);
@@ -6386,7 +6448,7 @@ async function runLive(input) {
     const platform = detectLivePlatform(env);
     if (platform === null) {
         const message = "Live review requires GitHub Actions (GITHUB_ACTIONS=true) or Azure Pipelines (TF_BUILD=True).";
-        process.stdout.write(`umactually-pr-review: ${message}\n`);
+        process.stdout.write(`${BRAND_PREFIX}${message}\n`);
         return failedResult(message);
     }
     // Copilot provider does not need UMACTUALLY_API_URL; it uses the GitHub
@@ -6395,13 +6457,13 @@ async function runLive(input) {
     const providerUrl = input.parsed.apiUrl ?? env["UMACTUALLY_API_URL"];
     if (!isCopilot && (providerUrl === undefined || providerUrl.length === 0)) {
         const message = "UMACTUALLY_API_URL must be set for live review.";
-        process.stdout.write(`umactually-pr-review: ${message}\n`);
+        process.stdout.write(`${BRAND_PREFIX}${message}\n`);
         return failedResult(message);
     }
     const providerKey = input.parsed.apiKey ?? env["UMACTUALLY_API_KEY"];
     if (providerKey === undefined || providerKey.length === 0) {
         const message = "UMACTUALLY_API_KEY must be set for live review.";
-        process.stdout.write(`umactually-pr-review: ${message}\n`);
+        process.stdout.write(`${BRAND_PREFIX}${message}\n`);
         return failedResult(message);
     }
     // If --include-sonarqube is set with a fully-configured SonarQube, wait
@@ -6421,13 +6483,13 @@ async function runLive(input) {
         });
     }
     catch (error) {
-        const message = error instanceof Error ? error.message : String(error);
+        const message = formatError(error);
         const sanitized = sanitizeForPost(message, readSecretValues(env));
-        process.stdout.write(`umactually-pr-review: ${sanitized}\n`);
+        process.stdout.write(`${BRAND_PREFIX}${sanitized}\n`);
         return failedResult(sanitized);
     }
     if (result.posted) {
-        process.stdout.write(`umactually-pr-review: ${result.message}\n`);
+        process.stdout.write(`${BRAND_PREFIX}${result.message}\n`);
     }
     return result;
 }
@@ -6501,7 +6563,7 @@ async function dispatchLivePlatform(input) {
             const fileCount = countDiffFiles(diffText);
             let liveOutcome;
             if (reviewFileLimit > 0 && fileCount > reviewFileLimit) {
-                process.stdout.write(`umactually-pr-review: skipping live review — PR changes ${fileCount} files, exceeds --review-file-limit=${reviewFileLimit}. Use --review-file-limit 0 to disable.\n`);
+                process.stdout.write(`${BRAND_PREFIX}skipping live review — PR changes ${fileCount} files, exceeds --review-file-limit=${reviewFileLimit}. Use --review-file-limit 0 to disable.\n`);
                 liveOutcome = {
                     review: buildTooLargeFallback({
                         fileCount,
@@ -6536,7 +6598,7 @@ async function dispatchLivePlatform(input) {
                     // Chunked path: feed each per-file chunk to the provider in
                     // parallel (bounded by DEFAULT_CHUNK_CONCURRENCY) and merge
                     // the per-chunk outcomes into a single LiveProviderOutcome.
-                    process.stdout.write(`umactually-pr-review: chunking large PR diff into ${chunks.length} provider requests (max concurrency ${DEFAULT_CHUNK_CONCURRENCY}).\n`);
+                    process.stdout.write(`${BRAND_PREFIX}chunking large PR diff into ${chunks.length} provider requests (max concurrency ${DEFAULT_CHUNK_CONCURRENCY}).\n`);
                     liveOutcome = await requestChunkedLiveReview({
                         parsed,
                         cwd,
@@ -6593,6 +6655,7 @@ function assertNever(value) {
 }
 
 ;// CONCATENATED MODULE: ./src/cli/run.ts
+
 
 
 
@@ -6784,7 +6847,7 @@ async function readRequiredFile(path, cwd, label) {
         return await (0,promises_namespaceObject.readFile)(absolute, "utf8");
     }
     catch (error) {
-        throw new CliArgumentError(`failed to read ${label} file ${absolute}: ${stringifyError(error)}`);
+        throw new CliArgumentError(`failed to read ${label} file ${absolute}: ${formatError(error)}`);
     }
 }
 async function readOptionalFile(path, cwd, fallback, label) {
@@ -6792,12 +6855,6 @@ async function readOptionalFile(path, cwd, fallback, label) {
         return fallback;
     }
     return readRequiredFile(path, cwd, label);
-}
-function stringifyError(error) {
-    if (error instanceof Error) {
-        return error.message;
-    }
-    return String(error);
 }
 class CliArgumentError extends Error {
     name = "CliArgumentError";
@@ -6884,6 +6941,8 @@ function validate_assertNever(value) {
 
 
 
+
+
 async function runCli(args, cwd) {
     let parsed;
     try {
@@ -6916,12 +6975,7 @@ async function main(argv) {
             process.stderr.write(`cli: ${error.message}\n`);
             return 2;
         }
-        if (error instanceof Error) {
-            process.stderr.write(`cli: unexpected error: ${error.message}\n`);
-        }
-        else {
-            process.stderr.write(`cli: unexpected error: ${String(error)}\n`);
-        }
+        process.stderr.write(`cli: unexpected error: ${formatError(error)}\n`);
         return 1;
     }
 }
@@ -6956,58 +7010,140 @@ if (isMainModule) {
         process.exit(exitCode);
     })
         .catch((error) => {
-        const message = error instanceof Error ? error.message : String(error);
-        process.stderr.write(`cli: fatal: ${message}\n`);
+        process.stderr.write(`cli: fatal: ${formatError(error)}\n`);
         process.exit(1);
     });
 }
-function pathToFileUrl(value) {
-    return new URL(`file://${value.replace(/\\/gu, "/")}`).href;
-}
 
 ;// CONCATENATED MODULE: ./src/action/append-cli-inputs.ts
+
+const ACTION_INPUT_FIELDS = {
+    githubToken: true,
+    apiKey: true,
+    apiUrl: true,
+    model: true,
+    prompt: true,
+    promptFile: true,
+    additionalPrompt: true,
+    additionalPromptFile: true,
+    walkthrough: true,
+    diagnostic: true,
+    dryRun: true,
+    debugRawResponse: true,
+    simulateFindings: true,
+    reviewTimeoutSeconds: true,
+    stallSeconds: true,
+    maxOutputTokens: true,
+    ignoreMinor: true,
+    minimumSeverity: true,
+    maxComments: true,
+    reviewFileLimit: true,
+    includeSonarqube: true,
+    sonarHostUrl: true,
+    sonarToken: true,
+    sonarProjectKey: true,
+    sonarTimeoutSeconds: true,
+    detectLeaks: true,
+    platform: true,
+    prNumber: true,
+    repo: true,
+    inGitHubActions: true,
+    effort: true,
+    provider: true,
+    githubApiBase: true,
+};
+/**
+ * Pre-refactor ordering index used to sort `ALL_FIELDS` so the emitted argv
+ * sequence stays byte-identical to the hand-written version. The values are
+ * sparse (gaps allowed) and any field missing here sorts to the end via the
+ * `Number.MAX_SAFE_INTEGER` fallback in `fieldOrder`.
+ */
+const LEGACY_ARG_ORDER_ENTRIES = [
+    ["apiUrl", 0],
+    ["apiKey", 1],
+    ["model", 2],
+    ["prompt", 3],
+    ["promptFile", 4],
+    ["additionalPrompt", 5],
+    ["additionalPromptFile", 6],
+    ["sonarHostUrl", 7],
+    ["sonarToken", 8],
+    ["sonarProjectKey", 9],
+    ["provider", 10],
+    ["githubApiBase", 11],
+    ["effort", 12],
+    ["minimumSeverity", 13],
+    ["reviewTimeoutSeconds", 14],
+    ["stallSeconds", 15],
+    ["maxOutputTokens", 16],
+    ["maxComments", 17],
+    ["reviewFileLimit", 18],
+    ["sonarTimeoutSeconds", 19],
+    ["ignoreMinor", 20],
+    ["includeSonarqube", 21],
+    ["walkthrough", 22],
+    ["diagnostic", 23],
+    ["debugRawResponse", 24],
+    ["simulateFindings", 25],
+];
+const LEGACY_ARG_ORDER = new Map(LEGACY_ARG_ORDER_ENTRIES);
 function appendCommonInputArgs(args, inputs) {
-    append_cli_inputs_pushFlagValue(args, "--api-url", inputs.apiUrl);
-    append_cli_inputs_pushFlagValue(args, "--api-key", inputs.apiKey);
-    append_cli_inputs_pushFlagValue(args, "--model", inputs.model);
-    append_cli_inputs_pushFlagValue(args, "--prompt", inputs.prompt);
-    append_cli_inputs_pushFlagValue(args, "--prompt-file", inputs.promptFile);
-    append_cli_inputs_pushFlagValue(args, "--additional-prompt", inputs.additionalPrompt);
-    append_cli_inputs_pushFlagValue(args, "--additional-prompt-file", inputs.additionalPromptFile);
-    append_cli_inputs_pushFlagValue(args, "--sonar-host-url", inputs.sonarHostUrl);
-    append_cli_inputs_pushFlagValue(args, "--sonar-token", inputs.sonarToken);
-    append_cli_inputs_pushFlagValue(args, "--sonar-project-key", inputs.sonarProjectKey);
-    append_cli_inputs_pushFlagValue(args, "--provider", inputs.provider);
-    append_cli_inputs_pushFlagValue(args, "--github-api-base", inputs.githubApiBase);
-    append_cli_inputs_pushFlagValue(args, "--effort", inputs.effort);
-    append_cli_inputs_pushFlagValue(args, "--minimum-severity", inputs.minimumSeverity);
-    append_cli_inputs_pushNumber(args, "--review-timeout-seconds", inputs.reviewTimeoutSeconds);
-    append_cli_inputs_pushNumber(args, "--stall-seconds", inputs.stallSeconds);
-    append_cli_inputs_pushNumber(args, "--max-output-tokens", inputs.maxOutputTokens);
-    append_cli_inputs_pushNumber(args, "--max-comments", inputs.maxComments);
-    append_cli_inputs_pushNumber(args, "--review-file-limit", inputs.reviewFileLimit);
-    append_cli_inputs_pushNumber(args, "--sonar-timeout-seconds", inputs.sonarTimeoutSeconds);
-    append_cli_inputs_pushBool(args, inputs.ignoreMinor, "--ignore-minor");
-    append_cli_inputs_pushBool(args, inputs.includeSonarqube, "--include-sonarqube");
-    append_cli_inputs_pushBool(args, inputs.walkthrough, "--walkthrough");
-    append_cli_inputs_pushBool(args, inputs.diagnostic, "--diagnostic");
-    append_cli_inputs_pushBool(args, inputs.debugRawResponse, "--debug-raw-response");
-    append_cli_inputs_pushBool(args, inputs.simulateFindings, "--simulate-findings");
+    for (const def of commonInputFieldDefs()) {
+        const flag = def.flag;
+        if (flag === null)
+            continue;
+        if (!isFieldInActionInputs(def.field))
+            continue;
+        pushFieldValue(args, def.type, flag, inputs[def.field]);
+    }
     args.push(inputs.detectLeaks ? "--detect-leaks" : "--no-detect-leaks");
     args.push(inputs.dryRun ? "--dry-run" : "--no-dry-run");
+    return args;
 }
-function append_cli_inputs_pushFlagValue(args, flag, value) {
-    if (typeof value === "string" && value.length > 0) {
-        args.push(flag, value);
+function commonInputFieldDefs() {
+    return [...ALL_FIELDS]
+        .filter((def) => !isCallerOwnedField(def) && !isManualBooleanField(def) && hasActionCliSurface(def))
+        .sort((left, right) => fieldOrder(left.field) - fieldOrder(right.field));
+}
+function hasActionCliSurface(def) {
+    return def.flag !== null && isFieldInActionInputs(def.field);
+}
+function isCallerOwnedField(def) {
+    return def.field === "platform" || def.field === "prNumber" || def.field === "repo";
+}
+function isManualBooleanField(def) {
+    return def.field === "detectLeaks" || def.field === "dryRun";
+}
+function isFieldInActionInputs(field) {
+    return Object.hasOwn(ACTION_INPUT_FIELDS, field);
+}
+function fieldOrder(field) {
+    return LEGACY_ARG_ORDER.get(field) ?? Number.MAX_SAFE_INTEGER;
+}
+function pushFieldValue(args, type, flag, value) {
+    switch (type) {
+        case "string":
+        case "enum":
+            if (typeof value === "string" && value.length > 0) {
+                args.push(flag, value);
+            }
+            break;
+        case "integer":
+            if (typeof value === "number" && Number.isFinite(value)) {
+                args.push(flag, String(value));
+            }
+            break;
+        case "boolean":
+            if (value === true) {
+                args.push(flag);
+            }
+            break;
+        default:
+            append_cli_inputs_assertNever(type);
     }
 }
-function append_cli_inputs_pushNumber(args, flag, value) {
-    args.push(flag, String(value));
-}
-function append_cli_inputs_pushBool(args, condition, flag) {
-    if (condition) {
-        args.push(flag);
-    }
+function append_cli_inputs_assertNever(value) {
+    throw new TypeError(`unhandled field type: ${JSON.stringify(value)}`);
 }
 
 ;// CONCATENATED MODULE: ./src/action/read-inputs.ts
@@ -7132,6 +7268,9 @@ function parseBool(raw, fallback) {
 
 
 
+
+
+
 globalThis.__umactually_action_entry__ = true;
 async function src_main() {
     try {
@@ -7143,7 +7282,7 @@ async function src_main() {
         }
     }
     catch (error) {
-        const message = error instanceof Error ? error.message : String(error);
+        const message = formatError(error);
         logError("", message);
         process.exit(1);
     }
@@ -7191,25 +7330,25 @@ async function buildGithubArgs(env, cwd) {
     const platform = inputs.platform === "azure" ? "azure-devops" : "github";
     args.push("--platform", platform);
     const eventPath = await resolveGithubEventPath(env, cwd);
-    src_pushFlagValue(args, "--event", eventPath);
+    pushFlagValue(args, "--event", eventPath);
     const diffPath = await resolveGithubDiffPath(env, cwd);
-    src_pushFlagValue(args, "--diff", diffPath);
-    src_pushFlagValue(args, "--review", env["INPUT_REVIEW"]);
+    pushFlagValue(args, "--diff", diffPath);
+    pushFlagValue(args, "--review", env["INPUT_REVIEW"]);
     appendCommonInputArgs(args, inputs);
-    src_pushFlagValue(args, "--output-artifact", src_envFallback(env["INPUT_OUTPUT_ARTIFACT"], "artifacts/manual/s1-github-self-review.md"));
+    pushFlagValue(args, "--output-artifact", envFallback(env["INPUT_OUTPUT_ARTIFACT"], "artifacts/manual/s1-github-self-review.md"));
     return args;
 }
 function buildAzureArgs(env) {
     const inputs = readActionInputs(env);
     const args = ["--platform", "azure-devops"];
-    src_pushFlagValue(args, "--event", src_envFallback(env["INPUT_EVENT"], env["AZURE_PULL_REQUEST_PATH"]));
-    src_pushFlagValue(args, "--diff", src_envFallback(env["INPUT_DIFF"], env["AZURE_DIFF_PATH"], env["DIFF_PATH"]));
-    src_pushFlagValue(args, "--threads", src_envFallback(env["INPUT_THREADS"], env["AZURE_THREADS_PATH"]));
-    src_pushFlagValue(args, "--review", src_envFallback(env["INPUT_REVIEW"], env["AZURE_REVIEW_PATH"]));
-    src_pushFlagValue(args, "--pr-number", inputs.prNumber);
-    src_pushFlagValue(args, "--repo", inputs.repo);
+    pushFlagValue(args, "--event", envFallback(env["INPUT_EVENT"], env["AZURE_PULL_REQUEST_PATH"]));
+    pushFlagValue(args, "--diff", envFallback(env["INPUT_DIFF"], env["AZURE_DIFF_PATH"], env["DIFF_PATH"]));
+    pushFlagValue(args, "--threads", envFallback(env["INPUT_THREADS"], env["AZURE_THREADS_PATH"]));
+    pushFlagValue(args, "--review", envFallback(env["INPUT_REVIEW"], env["AZURE_REVIEW_PATH"]));
+    pushFlagValue(args, "--pr-number", inputs.prNumber);
+    pushFlagValue(args, "--repo", inputs.repo);
     appendCommonInputArgs(args, inputs);
-    src_pushFlagValue(args, "--output-artifact", src_envFallback(env["INPUT_OUTPUT_ARTIFACT"], "artifacts/manual/s4-azure-mocked-run.json"));
+    pushFlagValue(args, "--output-artifact", envFallback(env["INPUT_OUTPUT_ARTIFACT"], "artifacts/manual/s4-azure-mocked-run.json"));
     return args;
 }
 /**
@@ -7219,7 +7358,7 @@ function buildAzureArgs(env) {
  *  3. GITHUB_ACTIONS self-review placeholder (empty pull_request payload)
  */
 async function resolveGithubEventPath(env, cwd) {
-    const explicit = src_envFallback(env["INPUT_EVENT"], env["GITHUB_EVENT_PATH"]);
+    const explicit = envFallback(env["INPUT_EVENT"], env["GITHUB_EVENT_PATH"]);
     if (explicit.length > 0)
         return explicit;
     return writePlaceholderFile(cwd, "event.json", GITHUB_PLACEHOLDER_EVENT);
@@ -7231,7 +7370,7 @@ async function resolveGithubEventPath(env, cwd) {
  *  3. GITHUB_ACTIONS self-review placeholder (empty diff)
  */
 async function resolveGithubDiffPath(env, cwd) {
-    const explicit = src_envFallback(env["INPUT_DIFF"], env["DIFF_PATH"]);
+    const explicit = envFallback(env["INPUT_DIFF"], env["DIFF_PATH"]);
     if (explicit.length > 0)
         return explicit;
     return writePlaceholderFile(cwd, "diff.patch", GITHUB_PLACEHOLDER_DIFF);
@@ -7271,18 +7410,6 @@ async function writePlaceholderFile(cwd, name, contents) {
     await (0,promises_namespaceObject.writeFile)(filePath, contents, "utf8");
     return filePath;
 }
-function src_pushFlagValue(args, flag, value) {
-    if (typeof value === "string" && value.length > 0) {
-        args.push(flag, value);
-    }
-}
-function src_envFallback(...values) {
-    for (const value of values) {
-        if (typeof value === "string" && value.length > 0)
-            return value;
-    }
-    return "";
-}
 const isMainEntry = (() => {
     if (typeof process === "undefined") {
         return false;
@@ -7291,17 +7418,14 @@ const isMainEntry = (() => {
     if (argv1 === undefined) {
         return false;
     }
-    return import.meta.url === src_pathToFileUrl(argv1);
+    return import.meta.url === pathToFileUrl(argv1);
 })();
 if (isMainEntry) {
     src_main().catch((error) => {
-        const message = error instanceof Error ? error.message : String(error);
+        const message = formatError(error);
         logError("", message);
         process.exit(1);
     });
-}
-function src_pathToFileUrl(value) {
-    return new URL(`file://${value.replace(/\\/gu, "/")}`).href;
 }
 
 var __webpack_exports__buildArgs = __webpack_exports__.C;

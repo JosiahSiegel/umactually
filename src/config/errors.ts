@@ -31,4 +31,4 @@ export class PromptFileError extends Error {
  * Marker used in error messages to replace any user-supplied value
  * (URLs, tokens, prompt content). Never echo the raw value.
  */
-export const REDACTED = "[REDACTED]";
+export { REDACTED_PLACEHOLDER as REDACTED } from "../util/brand.js";

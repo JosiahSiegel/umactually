@@ -1,18 +1,18 @@
 import { extractJsonBlock } from "../render/json-extract.js";
 import {
-  isRecord as isPlainObject,
+  isRecord,
   isUnknownArray,
-  readArrayField as readArrayFieldHelper,
-  readRecordField as readRecordFieldHelper,
-  readSafeIntegerField as readSafeIntegerFieldHelper,
-  readStringField as readStringFieldHelper,
+  readArrayField,
+  readRecordField,
+  readSafeIntegerField,
+  readStringField,
+  tryParseJson,
 } from "../util/json-guards.js";
-
-type ProviderEndpoint = "responses" | "chat";
+import type { ProviderEndpoint } from "./provider-error.js";
 
 export type { ProviderEndpoint };
 
-type ProviderComment = {
+export type ProviderComment = {
   readonly path: string;
   readonly line: number;
   readonly body: string;
@@ -26,6 +26,16 @@ export type ProviderReviewPayload = {
   readonly comments: readonly ProviderComment[];
   readonly suppressed_comments: readonly ProviderComment[];
 };
+
+/**
+ * Returns true when the parsed review has at least one non-empty
+ * summary, verdict, or comment — used by the parse-fail retry paths
+ * to decide whether the parsed response carries any usable signal.
+ */
+export function isNonEmptyReview(review: ProviderReviewPayload | null): review is ProviderReviewPayload {
+  return review !== null
+    && (review.summary.length > 0 || review.verdict.length > 0 || review.comments.length > 0);
+}
 
 export type RequestBody = Record<string, unknown>;
 
@@ -150,7 +160,7 @@ export function extractTextPayload(endpoint: ProviderEndpoint, rawText: string):
 
   // 2. Plain JSON object.
   const parsed = tryParseJson(rawText);
-  if (parsed !== undefined && isPlainObject(parsed)) {
+  if (parsed !== undefined && isRecord(parsed)) {
     if (endpoint === "responses") {
       const direct = readStringField(parsed, "output_text");
       if (direct !== null && direct.length > 0) {
@@ -209,7 +219,7 @@ export function extractTextPayload(endpoint: ProviderEndpoint, rawText: string):
  */
 export function parseReviewPayload(text: string): ProviderReviewPayload | null {
   const candidate = extractJsonBlock(text);
-  if (!isPlainObject(candidate)) {
+  if (!isRecord(candidate)) {
     return null;
   }
 
@@ -316,14 +326,14 @@ function isApologySummary(summary: string): boolean {
 function joinOutputText(output: readonly unknown[]): string {
   const fragments: string[] = [];
   for (const entry of output) {
-    if (!isPlainObject(entry)) {
+    if (!isRecord(entry)) {
       continue;
     }
     const content = entry["content"];
     // Responses API: content is an array of parts.
     if (Array.isArray(content)) {
       for (const part of content) {
-        if (!isPlainObject(part)) {
+        if (!isRecord(part)) {
           continue;
         }
         const text = part["text"];
@@ -334,7 +344,7 @@ function joinOutputText(output: readonly unknown[]): string {
       continue;
     }
     // Chat-style: content is a single object with a text field.
-    if (isPlainObject(content)) {
+    if (isRecord(content)) {
       const text = content["text"];
       if (typeof text === "string") {
         fragments.push(text);
@@ -350,7 +360,7 @@ function readCommentArray(value: unknown): readonly ProviderComment[] {
   }
   const comments: ProviderComment[] = [];
   for (const entry of value) {
-    if (!isPlainObject(entry)) {
+    if (!isRecord(entry)) {
       continue;
     }
     const path = entry["path"];
@@ -366,14 +376,6 @@ function readCommentArray(value: unknown): readonly ProviderComment[] {
     }
   }
   return comments;
-}
-
-function tryParseJson(rawText: string): unknown {
-  try {
-    return JSON.parse(rawText);
-  } catch {
-    return undefined;
-  }
 }
 
 /**
@@ -421,7 +423,7 @@ function tryExtractSse(rawText: string): string | null {
     }
 
     const parsed = tryParseJson(payload);
-    if (!isPlainObject(parsed)) {
+    if (!isRecord(parsed)) {
       continue;
     }
 
@@ -490,20 +492,4 @@ function tryExtractSse(rawText: string): string | null {
     return completedResponseText;
   }
   return fragments.length > 0 ? fragments.join("") : null;
-}
-
-function readStringField(record: Record<string, unknown>, key: string): string | null {
-  return readStringFieldHelper(record, key);
-}
-
-function readArrayField(record: Record<string, unknown>, key: string): readonly unknown[] | null {
-  return readArrayFieldHelper(record, key);
-}
-
-function readRecordField(value: unknown, key: string): Record<string, unknown> | null {
-  return readRecordFieldHelper(value, key);
-}
-
-function readSafeIntegerField(record: Record<string, unknown>, key: string): number | null {
-  return readSafeIntegerFieldHelper(record, key);
 }

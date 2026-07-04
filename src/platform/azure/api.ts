@@ -3,16 +3,18 @@ import { buildUnifiedFileDiff } from "./diff.js";
 import type { AzureChange, AzureFileSnapshot, AzureItemVersion } from "./diff.js";
 import { AzureApiError, AZURE_EMPTY_DIFF_STATUS } from "./errors.js";
 import { parseItemContent, parseIterationChanges, parseLatestIterationId, parseSourceCommitId } from "./payload.js";
-import { USER_AGENT } from "../../util/brand.js";
+import { authHeaders } from "../../util/http.js";
+import type { FetchImpl } from "../../util/http.js";
+import { commentBodyHasMarker } from "../../util/marker.js";
+import {
+  AZURE_API_VERSION,
+  AZURE_DEVOPS_BASE_URL,
+  azurePrBaseUrl,
+} from "./urls.js";
 
 export { AzureApiError } from "./errors.js";
 
-export type FetchImpl = (input: string | URL | Request, init?: RequestInit) => Promise<Response>;
-
-const AZURE_DEVOPS_BASE_URL = "https://dev.azure.com";
-const AZURE_API_VERSION = "7.1";
 const AZURE_FETCH_TIMEOUT_MS = 30_000;
-const JSON_MEDIA_TYPE = "application/json";
 const ZERO_OBJECT_ID_PATTERN = /^0+$/u;
 
 type AzureJsonClient = {
@@ -118,26 +120,12 @@ async function fetchAzureJson(url: string, client: AzureJsonClient): Promise<unk
 }
 
 function buildAzureRequestInit(context: AzureContext): RequestInit {
-  const headers = {
-    Authorization: `Bearer ${context.token}`,
-    Accept: JSON_MEDIA_TYPE,
-    "User-Agent": USER_AGENT,
-  };
-  const signal = createAbortSignal();
-
-  if (signal === null) {
-    return { method: "GET", headers };
-  }
-
-  return { method: "GET", headers, signal };
-}
-
-function createAbortSignal(): AbortSignal | null {
-  if (typeof AbortSignal === "undefined" || typeof AbortSignal.timeout !== "function") {
-    return null;
-  }
-
-  return AbortSignal.timeout(AZURE_FETCH_TIMEOUT_MS);
+  // GET requests must NOT include Content-Type — the Azure REST API treats a
+  // body-bearing Content-Type on a bodiless GET as malformed. Reuse the
+  // shared authHeaders helper with `contentType: false` so this header set
+  // matches the one every other Azure call site builds.
+  const headers = authHeaders(context.token, { contentType: false });
+  return { method: "GET", headers, signal: AbortSignal.timeout(AZURE_FETCH_TIMEOUT_MS) };
 }
 
 function hasObjectId(objectId: string | null): boolean {
@@ -157,11 +145,11 @@ function buildPullRequestIterationChangesUrl(context: AzureContext, iterationId:
 }
 
 function buildPullRequestUrl(context: AzureContext): string {
-  return `${buildRepositoryUrl(context)}/pullRequests/${context.prNumber}`;
+  return azurePrBaseUrl(context);
 }
 
 function buildItemContentUrl(context: AzureContext, version: AzureItemVersion): string {
-  const url = parseItemBaseUrl(version.baseUrl) ?? new URL(`${buildRepositoryUrl(context)}/items`);
+  const url = parseItemBaseUrl(version.baseUrl) ?? new URL(`${azureRepositoryBaseUrl(context)}/items`);
   url.searchParams.set("path", version.path);
   url.searchParams.set("versionType", version.versionType);
   url.searchParams.set("version", version.version);
@@ -186,7 +174,71 @@ function parseItemBaseUrl(value: string | null): URL | null {
   }
 }
 
-function buildRepositoryUrl(context: AzureContext): string {
+function azureRepositoryBaseUrl(context: AzureContext): string {
   const projectSegment = encodeURIComponent(context.project);
   return `${AZURE_DEVOPS_BASE_URL}/${context.org}/${projectSegment}/_apis/git/repositories/${context.repoId}`;
+}
+
+/** Active Azure thread statuses — a thread still in flight. */
+const AZURE_OPEN_STATUSES: ReadonlySet<string> = new Set(["active", "pending"]);
+/** Resolved Azure thread statuses — closed but kept in the diff history. */
+const AZURE_RESOLVED_STATUSES: ReadonlySet<string> = new Set(["closed", "fixed", "wontFix", "byDesign"]);
+
+/**
+ * Structural Azure thread shape consumed by `findDuplicateThread`. Both the
+ * live CLI (`src/cli/live-azure.ts`) and the dry-run reviewer
+ * (`src/azure/run-azure-review.ts`) parse Azure's `/threads` response into
+ * thread records; their concrete types are not structurally identical, so
+ * the helper narrows to the subset it actually reads:
+ *   - `status` (string)
+ *   - `threadContext` (nullable; `filePath` + `rightFileStart.line` for inline threads)
+ *   - `comments` (each comment carries a `content` string that may include the marker)
+ * `threadContext === null` indicates a parent PR-level comment — those are
+ * always skipped because dedup is an inline-only concern.
+ */
+export type AzureInlineThread = {
+  readonly status: string;
+  readonly threadContext: {
+    readonly filePath: string;
+    readonly rightFileStart: { readonly line: number };
+  } | null;
+  readonly comments: readonly { readonly content: string }[];
+};
+
+/**
+ * Returns the first Azure thread that already carries a marker-bearing
+ * comment for the same `(filePath, line)` as `comment`, when the thread
+ * status is in the open or resolved set. Used by both the live and the
+ * dry-run dedup paths so a previous UmActually review does not get
+ * double-posted.
+ *
+ * The unified helper picks the stricter semantics from each call site:
+ *   - status filter (open + resolved) — from the live path; ignored
+ *     threads would otherwise let stale `closed`/`fixed` rows get
+ *     double-posted as fresh findings.
+ *   - multi-comment marker check (any comment carrying the marker counts)
+ *     — from the live path; the dry-run's "first comment only" check
+ *     misses threads whose marker landed in a reply.
+ *   - path normalization (`/+ → /`) — from the live path; raw diff paths
+ *     are unprefixed and Azure's API always returns the leading slash.
+ *
+ * Returns `null` when no duplicate thread exists.
+ */
+export function findDuplicateThread(
+  comment: { readonly path: string; readonly line: number },
+  threads: readonly AzureInlineThread[]
+): AzureInlineThread | null {
+  const azurePath = `/${comment.path}`.replace(/\/+/gu, "/");
+  for (const thread of threads) {
+    if (thread.threadContext === null) continue;
+    if (thread.threadContext.filePath !== azurePath) continue;
+    if (thread.threadContext.rightFileStart.line !== comment.line) continue;
+    if (!AZURE_OPEN_STATUSES.has(thread.status) && !AZURE_RESOLVED_STATUSES.has(thread.status)) continue;
+    for (const c of thread.comments) {
+      if (commentBodyHasMarker(c.content)) {
+        return thread;
+      }
+    }
+  }
+  return null;
 }

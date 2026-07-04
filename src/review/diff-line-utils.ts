@@ -1,4 +1,4 @@
-import { type DiffPosition, parseHunkStart } from "../diff/parse-positions.js";
+import { type DiffPosition, parseHunkStart, parseNewFilePath } from "../diff/parse-positions.js";
 
 /**
  * Walk the diff text and return the raw line content for the first
@@ -22,19 +22,9 @@ export function readDiffLine(diffText: string, position: DiffPosition): string {
     }
 
     if (currentPath === null) {
-      if (rawLine.startsWith("+++ ")) {
-        const [rawPath] = rawLine.slice(4).split("\t");
-        if (rawPath !== undefined) {
-          const path = rawPath.trim();
-          if (path !== "/dev/null") {
-            const normalized = path.startsWith("b/") ? path.slice(2) : path;
-            if (normalized === position.path) {
-              currentPath = targetPath;
-            } else {
-              currentPath = normalized;
-            }
-          }
-        }
+      const parsedPath = parseNewFilePath(rawLine);
+      if (parsedPath !== null) {
+        currentPath = parsedPath === position.path ? targetPath : parsedPath;
       }
       continue;
     }

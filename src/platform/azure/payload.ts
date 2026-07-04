@@ -1,6 +1,6 @@
 import { AzureApiError, AZURE_EMPTY_DIFF_STATUS } from "./errors.js";
 import type { AzureChange } from "./diff.js";
-import { isPositiveSafeInteger, isRecord } from "../../util/json-guards.js";
+import { isPositiveSafeInteger, isRecord, isUnknownArray } from "../../util/json-guards.js";
 
 export function parseLatestIterationId(payload: unknown): number {
   const root = requireRecord(payload, "Azure iterations response");
@@ -118,8 +118,4 @@ function requireString(value: unknown, label: string): string {
 
 function readOptionalString(value: unknown): string | null {
   return typeof value === "string" && value.length > 0 ? value : null;
-}
-
-function isUnknownArray(value: unknown): value is readonly unknown[] {
-  return Array.isArray(value);
 }

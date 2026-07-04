@@ -1,5 +1,8 @@
 import { USER_AGENT } from "./brand.js";
 
+/** Pluggable fetch shape used by every HTTP-touching module. */
+export type FetchImpl = (input: string | URL | Request, init?: RequestInit) => Promise<Response>;
+
 /** Bearer + JSON Accept + UA; eliminates duplicated auth header construction across platform and provider clients. */
 export function authHeaders(
   token: string,

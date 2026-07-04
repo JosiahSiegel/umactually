@@ -1,5 +1,11 @@
 import { isAbortError, ProviderError, sanitizeMessage } from "./provider-error.js";
-import { isRecord, readRecordField, readSafeIntegerField, readStringField } from "../util/json-guards.js";
+import {
+  isRecord,
+  readRecordField,
+  readSafeIntegerField,
+  readStringField,
+  tryParseJson,
+} from "../util/json-guards.js";
 
 export type TokenCacheEntry = {
   readonly token: string;
@@ -93,7 +99,7 @@ export async function fetchAndCacheSessionToken(
     };
   }
 
-  const envelope = safeParseJson(rawText);
+  const envelope = tryParseJson(rawText);
   if (!isRecord(envelope)) {
     return {
       ok: false,
@@ -151,12 +157,4 @@ export function clearCopilotTokenCache(): void {
 
 function buildCacheKey(githubToken: string): string {
   return githubToken;
-}
-
-function safeParseJson(text: string): unknown {
-  try {
-    return JSON.parse(text);
-  } catch {
-    return undefined;
-  }
 }

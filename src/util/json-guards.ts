@@ -153,3 +153,17 @@ export function readJsonArray(text: string): readonly unknown[] | null {
   }
   return isUnknownArray(parsed) ? parsed : null;
 }
+
+/**
+ * Parse JSON text and return `undefined` on parse failure (instead of
+ * throwing). Used by the JSON-extraction helpers in `src/render/json-extract.ts`
+ * and the provider/copilot token parsers when a best-effort parse is
+ * preferred over try/catch around `JSON.parse` at every call site.
+ */
+export function tryParseJson(text: string): unknown {
+  try {
+    return JSON.parse(text);
+  } catch {
+    return undefined;
+  }
+}

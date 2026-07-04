@@ -7,6 +7,7 @@ import { scanReviewSecrets } from "../security/scan-review-secrets.js";
 import { runSonarImport } from "../sonar/run-sonar-import.js";
 import { readEnvSources } from "../config/env-sources.js";
 import type { EnvSources } from "../config/types.js";
+import { formatError } from "../util/error.js";
 import type { ParsedCliArgs } from "./parse-args.js";
 import type { ResolvedPlatform } from "./validate.js";
 import { runLive as runOrchestrator } from "./orchestrator.js";
@@ -237,7 +238,7 @@ async function readRequiredFile(path: string, cwd: string, label: string): Promi
   try {
     return await readFile(absolute, "utf8");
   } catch (error) {
-    throw new CliArgumentError(`failed to read ${label} file ${absolute}: ${stringifyError(error)}`);
+    throw new CliArgumentError(`failed to read ${label} file ${absolute}: ${formatError(error)}`);
   }
 }
 
@@ -251,13 +252,6 @@ async function readOptionalFile(
     return fallback;
   }
   return readRequiredFile(path, cwd, label);
-}
-
-function stringifyError(error: unknown): string {
-  if (error instanceof Error) {
-    return error.message;
-  }
-  return String(error);
 }
 
 export class CliArgumentError extends Error {

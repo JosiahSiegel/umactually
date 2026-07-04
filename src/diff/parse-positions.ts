@@ -83,7 +83,7 @@ function recordPosition(
   ordered.push({ path, line });
 }
 
-function parseNewFilePath(line: string): string | null {
+export function parseNewFilePath(line: string): string | null {
   if (!line.startsWith("+++ ")) {
     return null;
   }

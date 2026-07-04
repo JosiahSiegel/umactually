@@ -1,6 +1,6 @@
 import { scanReviewSecrets } from "../security/scan-review-secrets.js";
 import { parseDiffPositions } from "../diff/parse-positions.js";
-import { isRecord, readSafeIntegerFieldOrThrow } from "../util/json-guards.js";
+import { isRecord, isUnknownArray, readSafeIntegerFieldOrThrow } from "../util/json-guards.js";
 import { REVIEW_MARKER } from "../util/marker.js";
 
 export type GithubReviewContract = {
@@ -117,7 +117,7 @@ function requireRecord(value: unknown, label: string): Record<string, unknown> {
 }
 
 function readCommentArray(value: unknown): readonly ProviderComment[] {
-  if (!Array.isArray(value)) {
+  if (!isUnknownArray(value)) {
     throw new TypeError(`Expected comment array, received: ${typeof value}`);
   }
 

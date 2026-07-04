@@ -1,7 +1,8 @@
 import { scanReviewSecrets } from "../security/scan-review-secrets.js";
 import { REVIEW_MARKER } from "../util/marker.js";
-import { isRecord, readSafeIntegerFieldOrThrow, readStringFieldOrThrow } from "../util/json-guards.js";
+import { isRecord, isUnknownArray, readSafeIntegerFieldOrThrow, readStringFieldOrThrow } from "../util/json-guards.js";
 import { mapVerdictToAzureStatus } from "../util/verdict.js";
+import { findDuplicateThread } from "../platform/azure/api.js";
 
 export type AzureReviewContract = {
   readonly pullRequestJson: string;
@@ -59,7 +60,7 @@ export async function runAzureReview(contract: AzureReviewContract): Promise<Azu
     expectedArtifact: "artifacts/manual/s5-redaction-report.json",
   });
 
-  const postedThreadCount = countPostableThreads(review.comments, existingThreads);
+  const postedThreadCount = countCommentsMatchingExistingThread(review.comments, existingThreads);
 
   return {
     artifactPath: contract.expectedArtifact,
@@ -90,30 +91,21 @@ function parseProviderReview(reviewJson: string): ProviderReview {
   };
 }
 
-function countPostableThreads(comments: readonly ReviewComment[], existingThreads: AzureThreads): number {
+function countCommentsMatchingExistingThread(comments: readonly ReviewComment[], existingThreads: AzureThreads): number {
+  /**
+   * Count how many review comments already have a matching UmActually
+   * thread on the Azure PR (any marker-bearing comment on the same
+   * filePath/line in an open-or-resolved thread). The S4 contract
+   * exposes this as `postedThreadCount` because the mocked dry-run
+   * represents each existing thread as a "posted" thread.
+   */
   let count = 0;
   for (const comment of comments) {
-    if (hasMatchingReviewThread(comment, existingThreads)) {
+    if (findDuplicateThread(comment, existingThreads.value) !== null) {
       count += 1;
     }
   }
   return count;
-}
-
-function hasMatchingReviewThread(comment: ReviewComment, existingThreads: AzureThreads): boolean {
-  const azurePath = `/${comment.path}`;
-  for (const thread of existingThreads.value) {
-    const firstComment = thread.comments[0];
-    if (
-      thread.status === "active" &&
-      thread.threadContext.filePath === azurePath &&
-      thread.threadContext.rightFileStart.line === comment.line &&
-      firstComment?.content.includes(REVIEW_MARKER) === true
-    ) {
-      return true;
-    }
-  }
-  return false;
 }
 
 function mapVerdictToStatus(verdict: ReviewVerdict): AzureMockedRun["postedStatusState"] {
@@ -142,7 +134,7 @@ function readVerdict(value: unknown): ReviewVerdict {
 }
 
 function readCommentArray(value: unknown): readonly ReviewComment[] {
-  if (!Array.isArray(value)) {
+  if (!isUnknownArray(value)) {
     throw new TypeError(`Expected review comments array, received: ${typeof value}`);
   }
 
@@ -155,7 +147,7 @@ function readCommentArray(value: unknown): readonly ReviewComment[] {
 }
 
 function readThreadArray(value: unknown): readonly AzureThread[] {
-  if (!Array.isArray(value)) {
+  if (!isUnknownArray(value)) {
     throw new TypeError(`Expected Azure threads array, received: ${typeof value}`);
   }
 
@@ -181,7 +173,7 @@ function readThreadContext(value: unknown): AzureThread["threadContext"] {
 }
 
 function readThreadComments(value: unknown): AzureThread["comments"] {
-  if (!Array.isArray(value)) {
+  if (!isUnknownArray(value)) {
     throw new TypeError(`Expected Azure thread comments array, received: ${typeof value}`);
   }
 
