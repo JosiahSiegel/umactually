@@ -686,6 +686,141 @@ describe("buildReviewBody — 5-second scannable clarity", () => {
     expect(body).toMatch(/💬\s+DISCUSS/u);
   });
 
+  // CLARITY-16: Top concerns preview header must surface the denominator
+  // when the preview is truncated. Before CLARITY-16 the header read
+  // "Top concerns (5)" — which is INDISTINGUISHABLE from "Top concerns (5)"
+  // when there are 5 findings total. After CLARITY-16 the header reads
+  // "Top concerns (5 of 10 shown)" when truncated, and stays "Top
+  // concerns (N)" (no denominator) when all findings fit.
+  //
+  // Why this matters: with the CLARITY-15 fix the tally already reconciles
+  // with the inline footer, so a reader sees "📊 4 medium · 6 low" then
+  // "Top concerns (5)" and reasonably asks "wait, is (5) the cap or the
+  // total?". Surfacing the denominator kills that ambiguity in one glance.
+  it("CLARITY-16a: Top concerns header shows denominator when truncated", () => {
+    // 10 posted comments (4 medium, 6 low), preview capped at 5.
+    const postedComments: LiveReviewComment[] = [
+      { path: "src/a.ts", line: 1, body: "m1", severity: "medium", category: "general" },
+      { path: "src/b.ts", line: 1, body: "m2", severity: "medium", category: "general" },
+      { path: "src/c.ts", line: 1, body: "m3", severity: "medium", category: "general" },
+      { path: "src/d.ts", line: 1, body: "m4", severity: "medium", category: "general" },
+      { path: "src/e.ts", line: 1, body: "l1", severity: "low", category: "general" },
+      { path: "src/f.ts", line: 1, body: "l2", severity: "low", category: "general" },
+      { path: "src/g.ts", line: 1, body: "l3", severity: "low", category: "general" },
+      { path: "src/h.ts", line: 1, body: "l4", severity: "low", category: "general" },
+      { path: "src/i.ts", line: 1, body: "l5", severity: "low", category: "general" },
+      { path: "src/j.ts", line: 1, body: "l6", severity: "low", category: "general" },
+    ];
+    const review: LiveReview = {
+      summary: "Ten findings will be posted.",
+      verdict: "NEEDS_FIX",
+      comments: postedComments,
+      suppressedComments: [],
+    };
+    const body = buildReviewBody({
+      review,
+      provider: "openai-compatible",
+      modelId: "auto",
+      validCommentCount: 10,
+      suppressedCommentCount: 0,
+      offDiffFromComments: [],
+      severityCounts: { medium: 4, low: 6 },
+      secrets: SECRETS,
+    });
+    // Header surfaces the cap + total so the reader doesn't confuse
+    // "5 of 10" with "5 total".
+    expect(body).toMatch(/📋\s+Top concerns\s+\(5\s+of\s+10\s+shown\)/u);
+    // Tally still sums to 10 (CLARITY-15 invariant).
+    expect(body).toMatch(/10\s+inline/u);
+  });
+
+  it("CLARITY-16b: Top concerns header stays terse when nothing is truncated", () => {
+    // 3 posted findings, well under the 5-cap. Header should read
+    // "Top concerns (3)" — no denominator needed because there's no
+    // truncation.
+    const review: LiveReview = {
+      summary: "Three findings.",
+      verdict: "NEEDS_FIX",
+      comments: [
+        { path: "src/a.ts", line: 1, body: "h", severity: "high", category: "security" },
+        { path: "src/b.ts", line: 1, body: "m", severity: "medium", category: "general" },
+        { path: "src/c.ts", line: 1, body: "l", severity: "low", category: "general" },
+      ],
+      suppressedComments: [],
+    };
+    const body = buildReviewBody({
+      review,
+      provider: "openai-compatible",
+      modelId: "auto",
+      validCommentCount: 3,
+      suppressedCommentCount: 0,
+      offDiffFromComments: [],
+      severityCounts: { high: 1, medium: 1, low: 1 },
+      secrets: SECRETS,
+    });
+    expect(body).toMatch(/📋\s+Top concerns\s+\(3\)/u);
+    // No "of N shown" suffix when nothing is truncated.
+    expect(body).not.toMatch(/Top concerns\s+\(\d+\s+of\s+\d+/u);
+  });
+
+  it("CLARITY-16c: Top concerns at exactly the cap (5) shows no denominator", () => {
+    // Boundary case: 5 findings exactly = the cap. No truncation, no
+    // denominator needed.
+    const review: LiveReview = {
+      summary: "Five findings.",
+      verdict: "NEEDS_FIX",
+      comments: [
+        { path: "src/a.ts", line: 1, body: "h", severity: "high", category: "security" },
+        { path: "src/b.ts", line: 1, body: "m1", severity: "medium", category: "general" },
+        { path: "src/c.ts", line: 1, body: "m2", severity: "medium", category: "general" },
+        { path: "src/d.ts", line: 1, body: "l1", severity: "low", category: "general" },
+        { path: "src/e.ts", line: 1, body: "l2", severity: "low", category: "general" },
+      ],
+      suppressedComments: [],
+    };
+    const body = buildReviewBody({
+      review,
+      provider: "openai-compatible",
+      modelId: "auto",
+      validCommentCount: 5,
+      suppressedCommentCount: 0,
+      offDiffFromComments: [],
+      severityCounts: { high: 1, medium: 2, low: 2 },
+      secrets: SECRETS,
+    });
+    expect(body).toMatch(/📋\s+Top concerns\s+\(5\)/u);
+    expect(body).not.toMatch(/Top concerns\s+\(5\s+of\s+5/u);
+  });
+
+  it("CLARITY-16d: Filtered findings header still uses denominator (CLARITY-14g invariant)", () => {
+    // When validCommentCount === 0 and the model returned findings,
+    // the header is "Filtered findings (N of Z shown)" — already has
+    // the denominator. CLARITY-16 must NOT regress this.
+    const review: LiveReview = {
+      summary: "All filtered.",
+      verdict: "COMMENT",
+      comments: Array.from({ length: 18 }, (_, i) => ({
+        path: `src/${i}.ts`,
+        line: 1,
+        body: `finding ${i}`,
+        severity: "low",
+        category: "general",
+      })),
+      suppressedComments: [],
+    };
+    const body = buildReviewBody({
+      review,
+      provider: "openai-compatible",
+      modelId: "auto",
+      validCommentCount: 0,
+      suppressedCommentCount: 0,
+      offDiffFromComments: [],
+      severityCounts: { critical: 0, high: 0, medium: 0, low: 0 },
+      secrets: SECRETS,
+    });
+    expect(body).toMatch(/🔕\s+Filtered findings\s+\(\d+\s+of\s+\d+\s+shown\)/u);
+  });
+
   it("CLARITY-15c: severity tally and manifest severityCounts use the SAME source", () => {
     // Pin the invariant: the tally line and the manifest's
     // severityCounts must be derived from the same set. Both are

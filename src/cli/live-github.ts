@@ -56,6 +56,9 @@ export async function runGithubLive(input: {
     // `provider.review.comments` would over-report by the number of
     // findings filtered out by `selectPostableComments`.
     severityCounts: countBySeverity(comments),
+    // CLARITY-16: pass the posted set so the "Top concerns" preview
+    // denominator agrees with the tally + footer.
+    postedComments: comments,
     secrets: [context.token],
   });
   const existing = await findExistingMarkerReview(context, fetchImpl);

@@ -177,26 +177,47 @@ function countsLine(input: {
 }
 
 /**
- * Build the "Top concerns" <details> block. Shows a preview of the
- * highest-severity findings the MODEL produced (pre-filter — this is
- * NOT the same set as the inline threads posted). The summary line
- * explicitly says "from model (N of Z)" so the reader knows this is
- * the pre-filter list. Hidden by default so it does not push the
- * severity tally below the fold.
+ * Build the "Top concerns" <details> block. Shows the highest-severity
+ * findings the caller posted, capped at TOP_CONCERNS_PREVIEW_LIMIT. When
+ * the cap truncates the list, the header surfaces the denominator so the
+ * reader can tell "5 of 10 shown" from "5 total" without doing math.
  *
- * CLARITY-11: when `validCommentCount === 0` but `consideredCount > 0`,
- * the pre-filter findings were ALL filtered out (severity policy,
- * max-comments cap, or off-diff suppression). The block must make this
- * explicit so the reader doesn't confuse "0 posted + N concerns
- * listed" with a clean bill of health. We re-label the header as
- * "Filtered findings" and prefix the body with a one-line explanation
- * of *why* nothing was posted.
+ * CLARITY-16: surface the denominator whenever truncation happens. A
+ * header that reads "Top concerns (5)" with 10 posted findings reads
+ * like "5 is the total" — but it's the cap. The reader expects the
+ * preview to match the tally (which sums to 10); showing just (5)
+ * breaks that mental model. Fix: when shown < total, render
+ * "Top concerns (N of M shown)".
+ *
+ * CLARITY-11: when `validCommentCount === 0` but `postedComments.length === 0`
+ * and the model returned findings, the pre-filter findings were ALL
+ * filtered out (severity policy, max-comments cap, or off-diff
+ * suppression). The block must make this explicit so the reader
+ * doesn't confuse "0 posted + N concerns listed" with a clean bill
+ * of health. We re-label the header as "Filtered findings" and prefix
+ * the body with a one-line explanation of *why* nothing was posted.
  */
 function topConcernsBlock(input: {
   readonly review: LiveReview;
   readonly validCommentCount: number;
+  readonly postedComments?: readonly LiveReviewComment[];
 }): string {
-  const sorted = [...input.review.comments].sort((a, b) => {
+  const filteredAll = input.validCommentCount === 0 && input.review.comments.length > 0;
+  // CLARITY-16: when the caller passes the posted set (the new
+  // contract), use it as the preview source so the preview agrees with
+  // the tally + footer. When omitted (older callers / fixtures),
+  // fall back to `review.comments` and the denominator becomes the
+  // model's total — the header still surfaces truncation but the
+  // numbers may not perfectly agree with the tally.
+  // For the "filteredAll" branch, the preview is the full pre-filter
+  // set (capped), so the denominator is the model's total. For the
+  // "some posted" branch, the preview is the posted set (capped), so
+  // the denominator is the posted count — which agrees with the
+  // tally and the footer (CLARITY-15 invariant).
+  const sourceComments = filteredAll
+    ? input.review.comments
+    : input.postedComments ?? input.review.comments;
+  const sorted = [...sourceComments].sort((a, b) => {
     const ra = severityRank(a.severity);
     const rb = severityRank(b.severity);
     if (ra !== rb) return rb - ra;
@@ -206,20 +227,25 @@ function topConcernsBlock(input: {
   if (preview.length === 0) {
     return "";
   }
-  const total = input.review.comments.length;
+  const total = sourceComments.length;
   const shown = preview.length;
-  const filteredAll = input.validCommentCount === 0 && total > 0;
+  const truncated = shown < total;
   // CLARITY-14g: drop "from model" suffix — the block IS the model
-  // output, so labeling it "from model" is redundant. Use plain
-  // "Top concerns (N)" when findings landed and "Filtered findings
-  // (N of Z shown)" when none landed.
+  // output (or the posted set), so labeling it "from model" is
+  // redundant. Use plain "Top concerns (N)" when findings fit in
+  // the preview, "Top concerns (N of M shown)" when truncated, and
+  // "Filtered findings (N of M shown)" when none landed.
   const header = filteredAll
     ? shown === 1
       ? `🔕 Filtered finding (1 of ${total} shown)`
       : `🔕 Filtered findings (${shown} of ${total} shown)`
-    : shown === 1
-      ? `📋 Top concern (1)`
-      : `📋 Top concerns (${shown})`;
+    : truncated
+      ? shown === 1
+        ? `📋 Top concern (1 of ${total} shown)`
+        : `📋 Top concerns (${shown} of ${total} shown)`
+      : shown === 1
+        ? `📋 Top concern (1)`
+        : `📋 Top concerns (${shown})`;
   const explainer = filteredAll
     ? `\n_The model produced ${total} finding(s); all were filtered by severity policy, the \`max-comments\` cap, or off-diff suppression. The list below is the pre-filter view for transparency — no inline comments were posted._\n`
     : "";
@@ -376,6 +402,17 @@ export function buildReviewBody(input: {
    */
   readonly offDiffFromComments: readonly LiveReviewComment[];
   /**
+   * Findings actually posted as inline threads — the same array that
+   * produced `validCommentCount` and `severityCounts`. Used to render
+   * the "Top concerns" preview so the preview agrees with the tally
+   * and the footer (CLARITY-16 invariant). When this list is omitted
+   * (older callers, simulate-findings fixture, etc.), the preview
+   * falls back to `review.comments` and the header denominator uses
+   * the model's total instead — see `topConcernsBlock` for the exact
+   * fallback semantics.
+   */
+  readonly postedComments?: readonly LiveReviewComment[];
+  /**
    * Severity distribution of the POSTED comments (i.e. the comments
    * that survived `selectPostableComments` filtering). Used for both
    * the rendered tally and the manifest's `severityCounts` so they
@@ -417,6 +454,15 @@ export function buildReviewBody(input: {
   const topConcerns = topConcernsBlock({
     review: input.review,
     validCommentCount: input.validCommentCount,
+    // CLARITY-16: pass the posted comments so the preview denominator
+    // agrees with the tally + footer. When the caller omits this
+    // (older fixtures, simulate-findings, etc.), topConcernsBlock
+    // falls back to `review.comments` as the preview source. Spread
+    // conditionally because `exactOptionalPropertyTypes: true` rejects
+    // explicit `undefined`.
+    ...(input.postedComments !== undefined
+      ? { postedComments: input.postedComments }
+      : {}),
   });
   const suppressed = suppressedBlock({
     suppressedComments: input.review.suppressedComments,
