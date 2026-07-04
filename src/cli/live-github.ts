@@ -7,11 +7,11 @@ import {
   LiveReviewError,
   buildInlineCommentBody,
   buildReviewBody,
-  countSuppressedComments,
   ensureHttpOk,
   mapReviewVerdictToGithubEvent,
   readJsonResponse,
   readResponseId,
+  selectOffDiffComments,
   selectPostableComments,
   type FetchImpl,
   type LiveProviderOutcome,
@@ -39,12 +39,16 @@ export async function runGithubLive(input: {
     side: "RIGHT" as const,
     body: buildInlineCommentBody({ comment, secrets: [context.token] }),
   }));
+  const offDiffFromComments = selectOffDiffComments(provider.review, diffText);
+  const suppressedCommentCount =
+    provider.review.suppressedComments.length + offDiffFromComments.length;
   const body = buildReviewBody({
     review: provider.review,
     provider: provider.provider,
     modelId: provider.modelId,
     validCommentCount: comments.length,
-    suppressedCommentCount: countSuppressedComments(provider.review, diffText),
+    suppressedCommentCount,
+    offDiffFromComments,
     secrets: [context.token],
   });
   const existing = await findExistingMarkerReview(context, fetchImpl);

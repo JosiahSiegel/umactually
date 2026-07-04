@@ -34,7 +34,9 @@ import { describe, expect, it } from "vitest";
 import {
   buildReviewBody,
   buildMalformedProviderFallback,
+  countSuppressedComments,
   type LiveReview,
+  type LiveReviewComment,
 } from "../../src/cli/live-shared.js";
 
 const SECRETS = ["sk-test-secret-do-not-leak"] as const;
@@ -158,6 +160,7 @@ const STD_INPUT = {
   modelId: "auto",
   validCommentCount: 9,
   suppressedCommentCount: 4,
+  offDiffFromComments: [],
   secrets: SECRETS,
 };
 
@@ -229,6 +232,7 @@ describe("buildReviewBody — 5-second scannable clarity", () => {
       modelId: "auto",
       validCommentCount: 0,
       suppressedCommentCount: 0,
+      offDiffFromComments: [],
       secrets: SECRETS,
     });
     const lines = body.split("\n").map((line) => line.trim()).filter((line) => line.length > 0);
@@ -256,6 +260,7 @@ describe("buildReviewBody — 5-second scannable clarity", () => {
       modelId: "auto",
       validCommentCount: 0,
       suppressedCommentCount: 0,
+      offDiffFromComments: [],
       secrets: SECRETS,
     });
     const lines = body.split("\n").map((line) => line.trim()).filter((line) => line.length > 0);
@@ -294,5 +299,95 @@ describe("buildReviewBody — 5-second scannable clarity", () => {
     const githubBody = buildReviewBody(STD_INPUT);
     const azureBody = buildReviewBody(STD_INPUT);
     expect(githubBody).toBe(azureBody);
+  });
+
+  // CLARITY-13: The "Suppressed: N off-diff" row count and the
+  // "🔕 Suppressed (off-diff, N)" details block must reconcile. Today
+  // `countSuppressedComments` adds `review.suppressedComments` PLUS
+  // off-diff entries from `review.comments`, but `suppressedBlock`
+  // only renders `review.suppressedComments`. The row says "4 off-diff"
+  // but the details block only lists 2 — confusing. This test pins the
+  // fix: pass `offDiffFromComments` through `buildReviewBody` so the
+  // details block lists every suppressed finding the row is counting.
+  it("CLARITY-13: Suppressed row count matches suppressed details list", () => {
+    const onDiffComment: LiveReviewComment = {
+      path: "src/changed.ts",
+      line: 2,
+      body: "This one is on the diff.",
+      severity: "high",
+      category: "security",
+    };
+    const offDiffCommentA: LiveReviewComment = {
+      path: "src/changed.ts",
+      line: 99,
+      body: "This changed-file finding is off the diff.",
+      severity: "medium",
+      category: "maintainability",
+    };
+    const offDiffCommentB: LiveReviewComment = {
+      path: "src/deleted.ts",
+      line: 4,
+      body: "This missing-file finding is off the diff.",
+      severity: "low",
+      category: "general",
+    };
+    const modelSuppressedA: LiveReviewComment = {
+      path: "src/model-suppressed-a.ts",
+      line: 7,
+      body: "The model already marked this as suppressed.",
+      severity: "low",
+      category: "general",
+    };
+    const modelSuppressedB: LiveReviewComment = {
+      path: "src/model-suppressed-b.ts",
+      line: 8,
+      body: "The model also marked this as suppressed.",
+      severity: "medium",
+      category: "security",
+    };
+    const review: LiveReview = {
+      summary: "Suppressed findings must reconcile.",
+      verdict: "NEEDS_FIX",
+      comments: [onDiffComment, offDiffCommentA, offDiffCommentB],
+      suppressedComments: [modelSuppressedA, modelSuppressedB],
+    };
+    const diffText = [
+      "diff --git a/src/changed.ts b/src/changed.ts",
+      "--- a/src/changed.ts",
+      "+++ b/src/changed.ts",
+      "@@ -1,2 +1,3 @@",
+      " export const existing = 1;",
+      "+export const added = 2;",
+      " export const trailing = 3;",
+      "",
+    ].join("\n");
+    const offDiffFromComments = [offDiffCommentA, offDiffCommentB] as const;
+    const expectedSuppressedCount = countSuppressedComments(review, diffText);
+
+    const body = buildReviewBody({
+      review,
+      provider: "openai-compatible",
+      modelId: "auto",
+      validCommentCount: 1,
+      suppressedCommentCount: expectedSuppressedCount,
+      offDiffFromComments,
+      secrets: SECRETS,
+    });
+
+    // Ground-truth: there are 4 suppressed (2 model + 2 off-diff).
+    expect(expectedSuppressedCount).toBe(4);
+    // Row + header + list count all agree.
+    expect(body).toMatch(/\*\*Suppressed:\*\*\s+`4`\s+off-diff/u);
+    expect(body).toMatch(/🔕\s+Suppressed\s+\(off-diff,\s+4\)/u);
+    const suppressedSection =
+      body.match(/🔕\s+Suppressed\s+\(off-diff,\s+4\)[\s\S]*?<\/details>/u)?.[0] ?? "";
+    const listedFindings = suppressedSection.match(/^- `/gmu) ?? [];
+    expect(listedFindings).toHaveLength(expectedSuppressedCount);
+    // All four suppressed entries are listed; the on-diff one is NOT.
+    expect(suppressedSection).toContain("src/model-suppressed-a.ts:7");
+    expect(suppressedSection).toContain("src/model-suppressed-b.ts:8");
+    expect(suppressedSection).toContain("src/changed.ts:99");
+    expect(suppressedSection).toContain("src/deleted.ts:4");
+    expect(suppressedSection).not.toContain("src/changed.ts:2");
   });
 });

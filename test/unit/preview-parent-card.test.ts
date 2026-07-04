@@ -30,6 +30,7 @@ describe("CLARITY-9: parent card posts three labeled counts", () => {
       modelId: "auto",
       validCommentCount: 3,
       suppressedCommentCount: 1,
+      offDiffFromComments: [],
       secrets: [],
     });
     expect(body).toMatch(/\*\*Posted:\*\*\s+`3`\s+inline thread\(s\)/u);
@@ -56,6 +57,7 @@ describe("CLARITY-9: parent card posts three labeled counts", () => {
       modelId: "auto",
       validCommentCount: 0,
       suppressedCommentCount: 5,
+      offDiffFromComments: [],
       secrets: [],
     });
     expect(body).toMatch(/\*\*Posted:\*\*\s+`0`\s+inline thread\(s\)/u);
@@ -88,6 +90,7 @@ describe("CLARITY-9: parent card posts three labeled counts", () => {
       modelId: "auto",
       validCommentCount: 3,
       suppressedCommentCount: 0,
+      offDiffFromComments: [],
       secrets: [],
     });
     expect(body).toMatch(/📋\s+Top concerns from model \(3 of 3\)/u);
@@ -102,6 +105,7 @@ describe("CLARITY-9: parent card posts three labeled counts", () => {
       modelId: "auto",
       validCommentCount: 0,
       suppressedCommentCount: 0,
+      offDiffFromComments: [],
       secrets: [],
     });
     expect(body).toMatch(/\*\*Posted:\*\*\s+`0`\s+inline thread\(s\)/u);
@@ -132,6 +136,7 @@ describe("CLARITY-9: parent card posts three labeled counts", () => {
       modelId: "auto",
       validCommentCount: 5,
       suppressedCommentCount: 0,
+      offDiffFromComments: [],
       secrets: [],
     });
     // Extract the order of paths in the Top concerns block.

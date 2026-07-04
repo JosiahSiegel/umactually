@@ -274,14 +274,16 @@ function topConcernsBlock(input: {
  */
 function suppressedBlock(input: {
   readonly suppressedComments: readonly LiveReviewComment[];
+  readonly offDiffFromComments: readonly LiveReviewComment[];
 }): string {
-  if (input.suppressedComments.length === 0) {
+  const combined = [...input.suppressedComments, ...input.offDiffFromComments];
+  if (combined.length === 0) {
     return "";
   }
-  const header = input.suppressedComments.length === 1
+  const header = combined.length === 1
     ? "🔕 Suppressed (off-diff, 1)"
-    : `🔕 Suppressed (off-diff, ${input.suppressedComments.length})`;
-  const lines = input.suppressedComments.map((comment) => {
+    : `🔕 Suppressed (off-diff, ${combined.length})`;
+  const lines = combined.map((comment) => {
     const safeBody = sanitizeForPost(comment.body, []);
     const oneLiner = safeBody.replace(/\s+/gu, " ").trim();
     const bodySnippet = oneLiner.length > 100 ? `${oneLiner.slice(0, 97)}…` : oneLiner;
@@ -392,6 +394,14 @@ export function buildReviewBody(input: {
   readonly modelId: string;
   readonly validCommentCount: number;
   readonly suppressedCommentCount: number;
+  /**
+   * Findings from `review.comments` whose `path:line` is NOT on the diff.
+   * Rendered alongside `review.suppressedComments` so the
+   * `🔕 Suppressed (off-diff, N)` block lists every finding the row
+   * counts — see CLARITY-13. Required parameter; pass `[]` when the
+   * caller has no off-diff findings to surface.
+   */
+  readonly offDiffFromComments: readonly LiveReviewComment[];
   readonly secrets: readonly string[];
 }): string {
   const severityCounts = countBySeverity(input.review.comments);
@@ -420,7 +430,10 @@ export function buildReviewBody(input: {
     countsLine({ severityCounts }),
     "",
     topConcernsBlock({ review: input.review, validCommentCount: input.validCommentCount }),
-    suppressedBlock({ suppressedComments: input.review.suppressedComments }),
+    suppressedBlock({
+      suppressedComments: input.review.suppressedComments,
+      offDiffFromComments: input.offDiffFromComments,
+    }),
     proseBlock(safeSummary),
     footer,
     "",
@@ -667,15 +680,16 @@ export function selectPostableComments(input: {
   return comments;
 }
 
-export function countSuppressedComments(review: LiveReview, diffText: string): number {
+export function selectOffDiffComments(
+  review: LiveReview,
+  diffText: string,
+): readonly LiveReviewComment[] {
   const positions = parseDiffPositions(diffText);
-  let count = review.suppressedComments.length;
-  for (const comment of review.comments) {
-    if (!positions.hasPosition(comment)) {
-      count += 1;
-    }
-  }
-  return count;
+  return review.comments.filter((comment) => !positions.hasPosition(comment));
+}
+
+export function countSuppressedComments(review: LiveReview, diffText: string): number {
+  return review.suppressedComments.length + selectOffDiffComments(review, diffText).length;
 }
 
 /**

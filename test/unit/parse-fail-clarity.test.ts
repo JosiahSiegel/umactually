@@ -31,6 +31,7 @@ describe("CLARITY-10: parse-fail surface is unmistakable", () => {
       modelId: "auto",
       validCommentCount: 0,
       suppressedCommentCount: 0,
+      offDiffFromComments: [],
       secrets: [],
     });
     expect(body).toMatch(/⚠️ `Parse failed`/u);
@@ -57,6 +58,7 @@ describe("CLARITY-10: parse-fail surface is unmistakable", () => {
       modelId: "auto",
       validCommentCount: 0,
       suppressedCommentCount: 0,
+      offDiffFromComments: [],
       secrets: [],
     });
     const manifestMatch = body.match(/<!--\s*umactually-pr-review:manifest\s+(\{[\s\S]*?\})\s+-->/u);
@@ -80,6 +82,7 @@ describe("CLARITY-10: parse-fail surface is unmistakable", () => {
       modelId: "auto",
       validCommentCount: 1,
       suppressedCommentCount: 0,
+      offDiffFromComments: [],
       secrets: [],
     });
     expect(body).not.toMatch(/⚠️ \*\*Parse failed\*\*/u);
@@ -105,6 +108,7 @@ describe("CLARITY-10: parse-fail surface is unmistakable", () => {
       modelId: "auto",
       validCommentCount: 0,
       suppressedCommentCount: 0,
+      offDiffFromComments: [],
       secrets: [],
     });
     expect(body).not.toMatch(/⚠️ `Parse failed`/u);

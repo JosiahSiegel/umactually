@@ -3129,13 +3129,14 @@ function topConcernsBlock(input) {
  * Hidden by default — only the count is visible above the fold.
  */
 function suppressedBlock(input) {
-    if (input.suppressedComments.length === 0) {
+    const combined = [...input.suppressedComments, ...input.offDiffFromComments];
+    if (combined.length === 0) {
         return "";
     }
-    const header = input.suppressedComments.length === 1
+    const header = combined.length === 1
         ? "🔕 Suppressed (off-diff, 1)"
-        : `🔕 Suppressed (off-diff, ${input.suppressedComments.length})`;
-    const lines = input.suppressedComments.map((comment) => {
+        : `🔕 Suppressed (off-diff, ${combined.length})`;
+    const lines = combined.map((comment) => {
         const safeBody = sanitizeForPost(comment.body, []);
         const oneLiner = safeBody.replace(/\s+/gu, " ").trim();
         const bodySnippet = oneLiner.length > 100 ? `${oneLiner.slice(0, 97)}…` : oneLiner;
@@ -3254,7 +3255,10 @@ function buildReviewBody(input) {
         countsLine({ severityCounts }),
         "",
         topConcernsBlock({ review: input.review, validCommentCount: input.validCommentCount }),
-        suppressedBlock({ suppressedComments: input.review.suppressedComments }),
+        suppressedBlock({
+            suppressedComments: input.review.suppressedComments,
+            offDiffFromComments: input.offDiffFromComments,
+        }),
         proseBlock(safeSummary),
         footer,
         "",
@@ -3466,15 +3470,12 @@ function selectPostableComments(input) {
     }
     return comments;
 }
-function countSuppressedComments(review, diffText) {
+function selectOffDiffComments(review, diffText) {
     const positions = parseDiffPositions(diffText);
-    let count = review.suppressedComments.length;
-    for (const comment of review.comments) {
-        if (!positions.hasPosition(comment)) {
-            count += 1;
-        }
-    }
-    return count;
+    return review.comments.filter((comment) => !positions.hasPosition(comment));
+}
+function countSuppressedComments(review, diffText) {
+    return review.suppressedComments.length + selectOffDiffComments(review, diffText).length;
 }
 /**
  * Map a review verdict to a GitHub review-submission event. Delegates to
@@ -3603,12 +3604,15 @@ async function runAzureLive(input) {
         parsed,
         secrets: [context.token],
     });
+    const offDiffFromComments = selectOffDiffComments(provider.review, diffText);
+    const suppressedCommentCount = provider.review.suppressedComments.length + offDiffFromComments.length;
     const body = buildReviewBody({
         review: provider.review,
         provider: provider.provider,
         modelId: provider.modelId,
         validCommentCount: comments.length,
-        suppressedCommentCount: countSuppressedComments(provider.review, diffText),
+        suppressedCommentCount,
+        offDiffFromComments,
         secrets: [context.token],
     });
     const existingThreads = await listAzureThreads(context, fetchImpl);
@@ -4402,12 +4406,15 @@ async function runGithubLive(input) {
         side: "RIGHT",
         body: buildInlineCommentBody({ comment, secrets: [context.token] }),
     }));
+    const offDiffFromComments = selectOffDiffComments(provider.review, diffText);
+    const suppressedCommentCount = provider.review.suppressedComments.length + offDiffFromComments.length;
     const body = buildReviewBody({
         review: provider.review,
         provider: provider.provider,
         modelId: provider.modelId,
         validCommentCount: comments.length,
-        suppressedCommentCount: countSuppressedComments(provider.review, diffText),
+        suppressedCommentCount,
+        offDiffFromComments,
         secrets: [context.token],
     });
     const existing = await findExistingMarkerReview(context, fetchImpl);

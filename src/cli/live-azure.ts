@@ -7,11 +7,11 @@ import { writeBrandedAnnotation } from "../util/log.js";
 import {
   buildInlineCommentBody,
   buildReviewBody,
-  countSuppressedComments,
   ensureHttpOk,
   mapReviewVerdictToAzureStatus,
   readJsonResponse,
   readResponseId,
+  selectOffDiffComments,
   selectPostableComments,
   type FetchImpl,
   type LiveProviderOutcome,
@@ -34,12 +34,16 @@ export async function runAzureLive(input: {
     parsed,
     secrets: [context.token],
   });
+  const offDiffFromComments = selectOffDiffComments(provider.review, diffText);
+  const suppressedCommentCount =
+    provider.review.suppressedComments.length + offDiffFromComments.length;
   const body = buildReviewBody({
     review: provider.review,
     provider: provider.provider,
     modelId: provider.modelId,
     validCommentCount: comments.length,
-    suppressedCommentCount: countSuppressedComments(provider.review, diffText),
+    suppressedCommentCount,
+    offDiffFromComments,
     secrets: [context.token],
   });
   const existingThreads = await listAzureThreads(context, fetchImpl);
