@@ -1,5 +1,12 @@
 import { extractJsonBlock } from "../render/json-extract.js";
-import { isRecord as isPlainObject } from "../util/json-guards.js";
+import {
+  isRecord as isPlainObject,
+  isUnknownArray,
+  readArrayField as readArrayFieldHelper,
+  readRecordField as readRecordFieldHelper,
+  readSafeIntegerField as readSafeIntegerFieldHelper,
+  readStringField as readStringFieldHelper,
+} from "../util/json-guards.js";
 
 type ProviderEndpoint = "responses" | "chat";
 
@@ -21,6 +28,22 @@ export type ProviderReviewPayload = {
 };
 
 export type RequestBody = Record<string, unknown>;
+
+/**
+ * Self-healing follow-up message sent to the model when its first response
+ * could not be parsed as a JSON review payload. Some providers ignore
+ * `stream: false` and return an empty SSE stream; some wrap their output
+ * in markdown fences or prose; some omit the JSON entirely. We retry
+ * once with an explicit reminder before falling back to the parse-fail
+ * surface — that often recovers the review without operator intervention.
+ *
+ * Shared between `openai-compatible.ts` and `copilot.ts` so the
+ * self-healing message stays byte-identical regardless of provider.
+ */
+export const PARSE_FAIL_RETRY_PROMPT =
+  "Your previous response did not contain a valid JSON review payload. " +
+  "Please respond with ONLY a JSON object matching this schema (no prose, no fences): " +
+  '{"summary": "...", "verdict": "NEEDS_FIX|APPROVED|COMMENT|DISCUSS|SHIP", "comments": [...], "suppressed_comments": [...]}.';
 
 export function buildResponsesBody(
   config: {
@@ -322,7 +345,7 @@ function joinOutputText(output: readonly unknown[]): string {
 }
 
 function readCommentArray(value: unknown): readonly ProviderComment[] {
-  if (!Array.isArray(value)) {
+  if (!isUnknownArray(value)) {
     return [];
   }
   const comments: ProviderComment[] = [];
@@ -331,8 +354,8 @@ function readCommentArray(value: unknown): readonly ProviderComment[] {
       continue;
     }
     const path = entry["path"];
-    const line = entry["line"];
-    if (typeof path === "string" && typeof line === "number" && Number.isFinite(line)) {
+    const line = readSafeIntegerField(entry, "line");
+    if (typeof path === "string" && line !== null) {
       comments.push({
         path,
         line,
@@ -470,19 +493,17 @@ function tryExtractSse(rawText: string): string | null {
 }
 
 function readStringField(record: Record<string, unknown>, key: string): string | null {
-  const value = record[key];
-  return typeof value === "string" ? value : null;
+  return readStringFieldHelper(record, key);
 }
 
 function readArrayField(record: Record<string, unknown>, key: string): readonly unknown[] | null {
-  const value = record[key];
-  return Array.isArray(value) ? value : null;
+  return readArrayFieldHelper(record, key);
 }
 
 function readRecordField(value: unknown, key: string): Record<string, unknown> | null {
-  if (!isPlainObject(value)) {
-    return null;
-  }
-  const inner = value[key];
-  return isPlainObject(inner) ? inner : null;
+  return readRecordFieldHelper(value, key);
+}
+
+function readSafeIntegerField(record: Record<string, unknown>, key: string): number | null {
+  return readSafeIntegerFieldHelper(record, key);
 }

@@ -1,4 +1,5 @@
 import { runLiveSonarImport, type LiveSonarReport } from "../sonar/run-sonar-import.js";
+import { writeBrandedAnnotation } from "../util/log.js";
 import type { FetchImpl } from "./live-shared.js";
 import type { ParsedCliArgs } from "./parse-args.js";
 
@@ -30,7 +31,7 @@ async function readLiveSonarReport(parsed: ParsedCliArgs, fetchImpl: FetchImpl):
     `umactually-pr-review: sonar quality gate ${sonarReport.qualityGateStatus} (${sonarReport.importedFindingCount} findings, waited=${sonarReport.waitedForTerminalQualityGate})${sonarReport.timeoutHandled ? " [timeout handled]" : ""}\n`,
   );
   if (sonarReport.errorMessage !== undefined) {
-    process.stderr.write(`::warning::umactually-pr-review: ${sonarReport.errorMessage}\n`);
+    writeBrandedAnnotation("warning", sonarReport.errorMessage);
   }
   return sonarReport;
 }

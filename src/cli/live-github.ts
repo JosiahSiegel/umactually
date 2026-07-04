@@ -1,14 +1,18 @@
 import { type GithubContext } from "../platform/github/context.js";
 import { REVIEW_MARKER } from "../review/run-review.js";
+import { githubHeaders } from "../util/http.js";
+import { isRecord, isSafeInteger } from "../util/json-guards.js";
+import { writeBrandedAnnotation } from "../util/log.js";
 import {
   LiveReviewError,
   buildInlineCommentBody,
   buildReviewBody,
-  countSuppressedComments,
+  countBySeverity,
   ensureHttpOk,
   mapReviewVerdictToGithubEvent,
   readJsonResponse,
   readResponseId,
+  selectOffDiffComments,
   selectPostableComments,
   type FetchImpl,
   type LiveProviderOutcome,
@@ -36,12 +40,25 @@ export async function runGithubLive(input: {
     side: "RIGHT" as const,
     body: buildInlineCommentBody({ comment, secrets: [context.token] }),
   }));
+  const offDiffFromComments = selectOffDiffComments(provider.review, diffText);
+  const suppressedCommentCount =
+    provider.review.suppressedComments.length + offDiffFromComments.length;
   const body = buildReviewBody({
     review: provider.review,
     provider: provider.provider,
     modelId: provider.modelId,
     validCommentCount: comments.length,
-    suppressedCommentCount: countSuppressedComments(provider.review, diffText),
+    suppressedCommentCount,
+    offDiffFromComments,
+    // CLARITY-15: severityCounts must reflect the POSTED set (i.e. the
+    // same comments that produced `validCommentCount`) so the rendered
+    // tally and the footer's inline count reconcile. Computing from
+    // `provider.review.comments` would over-report by the number of
+    // findings filtered out by `selectPostableComments`.
+    severityCounts: countBySeverity(comments),
+    // CLARITY-16: pass the posted set so the "Top concerns" preview
+    // denominator agrees with the tally + footer.
+    postedComments: comments,
     secrets: [context.token],
   });
   const existing = await findExistingMarkerReview(context, fetchImpl);
@@ -143,8 +160,9 @@ async function updateExistingReview(input: {
     return input.review.id;
   } catch (error) {
     if (error instanceof LiveReviewError && error.code === "GITHUB_UPDATE_REVIEW_FAILED") {
-      process.stderr.write(
-        `::warning::umactually-pr-review: failed to update existing GitHub review ${input.review.id} (likely already submitted); falling back to DELETE+POST.\n`,
+      writeBrandedAnnotation(
+        "warning",
+        `failed to update existing GitHub review ${input.review.id} (likely already submitted); falling back to DELETE+POST.`,
       );
       return null;
     }
@@ -164,8 +182,9 @@ async function deleteExistingReview(input: {
   if (response.status === 204 || response.status === 404) {
     return;
   }
-  process.stderr.write(
-    `::warning::umactually-pr-review: failed to delete existing review ${input.review.id} (${response.status}); posting new review anyway.\n`,
+  writeBrandedAnnotation(
+    "warning",
+    `failed to delete existing review ${input.review.id} (${response.status}); posting new review anyway.`,
   );
 }
 
@@ -192,15 +211,14 @@ async function createGithubReview(input: {
 }
 
 function parseExistingReview(value: unknown): ExistingGithubReview | null {
-  if (typeof value !== "object" || value === null || Array.isArray(value)) {
+  if (!isRecord(value)) {
     return null;
   }
-  const record = value as Record<string, unknown>;
-  const id = record["id"];
-  const body = record["body"];
-  const state = record["state"];
+  const id = value["id"];
+  const body = value["body"];
+  const state = value["state"];
   if (
-    typeof id === "number" && Number.isSafeInteger(id) &&
+    isSafeInteger(id) &&
     typeof body === "string" &&
     typeof state === "string"
   ) {
@@ -213,14 +231,4 @@ function githubReviewsUrl(context: GithubContext): string {
   const owner = encodeURIComponent(context.repo.owner);
   const repo = encodeURIComponent(context.repo.name);
   return `https://api.github.com/repos/${owner}/${repo}/pulls/${context.prNumber}/reviews`;
-}
-
-function githubHeaders(token: string): Record<string, string> {
-  return {
-    Authorization: `Bearer ${token}`,
-    Accept: "application/vnd.github+json",
-    "Content-Type": "application/json",
-    "X-GitHub-Api-Version": "2026-03-10",
-    "User-Agent": "umactually-pr-review",
-  };
 }

@@ -1,3 +1,5 @@
+import { REDACTED_SECRET_TOKEN } from "../util/brand.js";
+
 type ScanReviewSecretsInput = {
   readonly diffText: string;
   readonly expectedArtifact: "artifacts/manual/s5-redaction-report.json";
@@ -15,8 +17,6 @@ const HIGH_CONFIDENCE_SECRET_PATTERNS: readonly RegExp[] = [
   /\b(?:AKIA|ASIA)[A-Z0-9]{16}\b/g,
   /\bghp_[A-Za-z0-9]{36}\b/g,
 ];
-
-const REDACTED_SECRET = "[REDACTED_SECRET]";
 
 export async function scanReviewSecrets(input: ScanReviewSecretsInput): Promise<ScanReviewSecretsReport> {
   const highConfidenceLeakCount = countHighConfidenceLeaks(input.diffText);
@@ -67,7 +67,7 @@ function redactLineSecrets(line: string): string {
   let redactedLine = line;
 
   for (const pattern of HIGH_CONFIDENCE_SECRET_PATTERNS) {
-    redactedLine = redactedLine.replace(pattern, REDACTED_SECRET);
+    redactedLine = redactedLine.replace(pattern, REDACTED_SECRET_TOKEN);
   }
 
   return redactedLine;

@@ -1,3 +1,6 @@
+import { FIELDS } from "../config/field-schema.js";
+import { isSafeInteger } from "../util/json-guards.js";
+
 export type ActionInputs = {
   readonly githubToken: string;
   readonly apiKey: string;
@@ -74,35 +77,21 @@ export function readActionInputs(env: NodeJS.ProcessEnv = process.env): ActionIn
       return fallback;
     }
     const parsed = Number.parseInt(raw, 10);
-    return Number.isSafeInteger(parsed) ? parsed : fallback;
+    return isSafeInteger(parsed) ? parsed : fallback;
   };
-  const getSeverity = (): ActionInputs["minimumSeverity"] => {
-    const raw = get("minimum-severity");
-    if (raw === "low" || raw === "medium" || raw === "high") {
-      return raw;
+  // Enum readers driven by FIELDS so adding a value to `enumValues` in
+  // the schema doesn't require updating this file. The literal union
+  // cast is safe because `enumValues` is the canonical set.
+  const readEnumFromInput = <T extends string>(
+    inputName: string,
+    fallback: T,
+    accepted: readonly T[],
+  ): T => {
+    const raw = get(inputName);
+    for (const candidate of accepted) {
+      if (raw === candidate) return candidate;
     }
-    return "low";
-  };
-  const getPlatform = (): ActionInputs["platform"] => {
-    const raw = get("platform");
-    if (raw === "github" || raw === "azure") {
-      return raw;
-    }
-    return "auto";
-  };
-  const getEffort = (): ActionInputs["effort"] => {
-    const raw = get("effort");
-    if (raw === "low" || raw === "medium" || raw === "high") {
-      return raw;
-    }
-    return "medium";
-  };
-  const getProvider = (): ActionInputs["provider"] => {
-    const raw = get("provider");
-    if (raw === "openai-compatible" || raw === "copilot") {
-      return raw;
-    }
-    return "openai-compatible";
+    return fallback;
   };
 
   return {
@@ -119,25 +108,44 @@ export function readActionInputs(env: NodeJS.ProcessEnv = process.env): ActionIn
     dryRun: getDryRun(),
     debugRawResponse: getBool("debug-raw-response", false),
     simulateFindings: getBool("simulate-findings", false),
-    reviewTimeoutSeconds: getNumber("review-timeout-seconds", 300),
-    stallSeconds: getNumber("stall-seconds", 270),
-    maxOutputTokens: getNumber("max-output-tokens", 16_000),
+    // Numeric defaults sourced from FIELDS.<x>.defaultValue so the
+    // schema stays the single source of truth — adding a new integer
+    // field doesn't require editing this file.
+    reviewTimeoutSeconds: getNumber("review-timeout-seconds", FIELDS.reviewTimeoutSeconds.defaultValue as number),
+    stallSeconds: getNumber("stall-seconds", FIELDS.stallSeconds.defaultValue as number),
+    maxOutputTokens: getNumber("max-output-tokens", FIELDS.maxOutputTokens.defaultValue as number),
     ignoreMinor: getBool("ignore-minor", false),
-    minimumSeverity: getSeverity(),
-    maxComments: getNumber("max-comments", 50),
-    reviewFileLimit: getNumber("review-file-limit", 200),
+    minimumSeverity: readEnumFromInput(
+      "minimum-severity",
+      FIELDS.minimumSeverity.defaultValue as "low" | "medium" | "high",
+      FIELDS.minimumSeverity.enumValues as readonly ("low" | "medium" | "high")[],
+    ),
+    maxComments: getNumber("max-comments", FIELDS.maxComments.defaultValue as number),
+    reviewFileLimit: getNumber("review-file-limit", FIELDS.reviewFileLimit.defaultValue as number),
     includeSonarqube: getBool("include-sonarqube", false),
     sonarHostUrl: get("sonar-host-url"),
     sonarToken: get("sonar-token"),
     sonarProjectKey: get("sonar-project-key"),
-    sonarTimeoutSeconds: getNumber("sonar-timeout-seconds", 300),
+    sonarTimeoutSeconds: getNumber("sonar-timeout-seconds", FIELDS.sonarTimeoutSeconds.defaultValue as number),
     detectLeaks: getBool("detect-leaks", true),
-    platform: getPlatform(),
+    platform: readEnumFromInput(
+      "platform",
+      FIELDS.platform.defaultValue as "auto" | "github" | "azure",
+      FIELDS.platform.enumValues as readonly ("auto" | "github" | "azure")[],
+    ),
     prNumber: get("pr-number"),
     repo: get("repo"),
     inGitHubActions,
-    effort: getEffort(),
-    provider: getProvider(),
+    effort: readEnumFromInput(
+      "effort",
+      FIELDS.effort.defaultValue as "low" | "medium" | "high",
+      FIELDS.effort.enumValues as readonly ("low" | "medium" | "high")[],
+    ),
+    provider: readEnumFromInput(
+      "provider",
+      FIELDS.provider.defaultValue as "openai-compatible" | "copilot",
+      FIELDS.provider.enumValues as readonly ("openai-compatible" | "copilot")[],
+    ),
     githubApiBase: getWithFallback("github-api-base", ["UMACTUALLY_GITHUB_API_BASE"]),
   };
 }

@@ -19,3 +19,14 @@ export const USER_AGENT = BRAND;
 
 /** Azure DevOps PR status context name; prevents status updates from drifting away from the review brand. */
 export const AZURE_STATUS_CONTEXT_NAME = `${BRAND}-status`;
+
+/**
+ * Redaction token emitted by secret scanners and runtime sanitizers
+ * when a high-confidence secret or per-secret value is replaced. The
+ * runtime sanitizer (`live-shared.ts:sanitizeForPost`) and the
+ * scanner (`scan-review-secrets.ts`) must emit the SAME token so the
+ * downstream log-filter and dedup heuristics agree on what counts as
+ * "already-redacted". Single source of truth — any future rename must
+ * touch this constant only.
+ */
+export const REDACTED_SECRET_TOKEN = "[REDACTED_SECRET]";

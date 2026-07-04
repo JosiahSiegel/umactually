@@ -1,18 +1,20 @@
-// Pins the new CLARITY-9 contract: the parent card explicitly labels
-// three independent counts (posted / considered / suppressed) so the
-// reader can never confuse the model's pre-filter output with what was
-// actually posted.
+// Pins the new CLARITY-14 contract: the parent card shows only actionable
+// information. The old "Posted / Considered / Suppressed" three-row layout
+// was removed because the row counts didn't tell the reviewer anything
+// they would act on — `Posted: 0` was the only number they cared about,
+// and that already lives in the footer.
 //
-// The "all info + off-diff" scenario is the one that surfaced the bug:
-// under the old layout the counts line showed "0 critical · 0 high ·
-// 0 medium · 0 low · 5 suppressed" while the Top concerns list showed
-// 5 items, which read as contradictory.
+// Each test below covers one of the four action cases:
+//   - Mixed findings posted (verdict NEEDS_FIX, severity tally visible)
+//   - Findings all filtered (verdict DISCUSS, severity tally hidden)
+//   - Clean review (verdict SHIP, no details blocks)
+//   - Off-diff note surfaces the suppressed count when inline findings exist
 import { describe, expect, it } from "vitest";
 
 import { buildReviewBody } from "../../src/cli/live-shared.js";
 
-describe("CLARITY-9: parent card posts three labeled counts", () => {
-  it("renders explicit Posted / Considered / Suppressed labels", () => {
+describe("CLARITY-14: actionable-only parent card", () => {
+  it("never emits Posted/Considered/Suppressed rows (only the off-diff inline note)", () => {
     const body = buildReviewBody({
       review: {
         summary: "Three issues need attention before merge.",
@@ -30,15 +32,26 @@ describe("CLARITY-9: parent card posts three labeled counts", () => {
       modelId: "auto",
       validCommentCount: 3,
       suppressedCommentCount: 1,
+      offDiffFromComments: [],
+      severityCounts: { high: 1, medium: 1, low: 1 },
       secrets: [],
     });
-    expect(body).toMatch(/\*\*Posted:\*\*\s+`3`\s+inline thread\(s\)/u);
-    expect(body).toMatch(/\*\*Considered:\*\*\s+`3`\s+finding\(s\) from model/u);
-    expect(body).toMatch(/\*\*Suppressed:\*\*\s+`1`\s+off-diff/u);
+    // Rows are gone.
+    expect(body).not.toMatch(/\*\*Posted:\*\*/u);
+    expect(body).not.toMatch(/\*\*Considered:\*\*/u);
+    expect(body).not.toMatch(/\*\*Suppressed:\*\*/u);
+    // Off-diff note replaces the row.
+    expect(body).toMatch(/🔕\s+1\s+off-diff\s+finding\s+was/u);
+    // Footer carries the inline count.
+    expect(body).toMatch(/3\s+inline/u);
+    // Severity tally visible because there are 3 findings.
+    expect(body).toMatch(/📊/u);
   });
 
-  it("makes the all-info+off-diff scenario unambiguous", () => {
-    // All 5 model findings are info-severity AND off-diff → 0 posted, 5 considered, 5 suppressed.
+  it("uses 'Filtered findings' header when every model finding was filtered", () => {
+    // 0 posted, 5 considered, 5 off-diff. Header must be the
+    // filtered-style label so the reader doesn't mistake the preview
+    // for a clean bill of health.
     const body = buildReviewBody({
       review: {
         summary: "",
@@ -56,23 +69,20 @@ describe("CLARITY-9: parent card posts three labeled counts", () => {
       modelId: "auto",
       validCommentCount: 0,
       suppressedCommentCount: 5,
+      offDiffFromComments: [],
+      severityCounts: { critical: 0, high: 0, medium: 0, low: 0 },
       secrets: [],
     });
-    expect(body).toMatch(/\*\*Posted:\*\*\s+`0`\s+inline thread\(s\)/u);
-    expect(body).toMatch(/\*\*Considered:\*\*\s+`5`\s+finding\(s\) from model/u);
-    expect(body).toMatch(/\*\*Suppressed:\*\*\s+`5`\s+off-diff/u);
-    // CLARITY-11: when every finding was filtered (Posted: 0, Considered > 0),
-    // the header must re-label to "Filtered findings" so the reader does not
-    // mistake "0 posted + N listed" for a clean bill of health.
-    expect(body).toMatch(/🔕\s+Filtered findings from model \(5 of 5\)\s+—\s+none reached inline/u);
-    expect(body).toMatch(/severity policy.*max-comments.*off-diff suppression/u);
-    // Sanity: the OLD misleading "Top concerns" header must NOT appear in this case.
-    expect(body).not.toMatch(/📋\s+Top concerns from model \(5 of 5\)/u);
+    // Filtered findings header — no "from model" suffix.
+    expect(body).toMatch(/🔕\s+Filtered findings\s+\(\d+ of \d+ shown\)/u);
+    expect(body).not.toMatch(/Top concerns from model/u);
+    // No false zero-tally (all info; no severity buckets to count).
+    expect(body).not.toMatch(/📊/u);
+    // The verdict downgrades to DISCUSS because nothing is actionable.
+    expect(body).toMatch(/💬\s+DISCUSS/u);
   });
 
-  it("uses 'Top concerns' header (not 'Filtered') when at least one finding landed inline", () => {
-    // If validCommentCount > 0, the header is the normal "Top concerns" — the
-    // pre-filter preview is a sample of the posted set, not a rejected list.
+  it("uses 'Top concerns' header when at least one finding landed inline", () => {
     const body = buildReviewBody({
       review: {
         summary: "",
@@ -88,33 +98,43 @@ describe("CLARITY-9: parent card posts three labeled counts", () => {
       modelId: "auto",
       validCommentCount: 3,
       suppressedCommentCount: 0,
+      offDiffFromComments: [],
+      severityCounts: { high: 3 },
       secrets: [],
     });
-    expect(body).toMatch(/📋\s+Top concerns from model \(3 of 3\)/u);
+    // Plain "Top concerns (3)" — no model provenance.
+    expect(body).toMatch(/📋\s+Top concerns\s+\(3\)/u);
     // Filtered-style header must NOT appear when findings landed.
-    expect(body).not.toMatch(/🔕\s+Filtered findings from model/u);
+    expect(body).not.toMatch(/🔕\s+Filtered findings/u);
   });
 
-  it("renders the three labeled rows even on empty / parse-fail (CLARITY-5 inheritance)", () => {
+  it("clean review (0 posted + 0 suppressed + 0 considered) is minimal", () => {
     const body = buildReviewBody({
-      review: { summary: "", verdict: "COMMENT", comments: [], suppressedComments: [] },
+      review: { summary: "All clear.", verdict: "SHIP", comments: [], suppressedComments: [] },
       provider: "openai-compatible",
       modelId: "auto",
       validCommentCount: 0,
       suppressedCommentCount: 0,
+      offDiffFromComments: [],
+      severityCounts: { critical: 0, high: 0, medium: 0, low: 0 },
       secrets: [],
     });
-    expect(body).toMatch(/\*\*Posted:\*\*\s+`0`\s+inline thread\(s\)/u);
-    expect(body).toMatch(/\*\*Considered:\*\*\s+`0`\s+finding\(s\) from model/u);
-    expect(body).toMatch(/\*\*Suppressed:\*\*\s+`0`\s+off-diff/u);
+    // No rows, no tally, no suppressed block, no filtered/top-concerns.
+    expect(body).not.toMatch(/\*\*Posted:\*\*/u);
+    expect(body).not.toMatch(/\*\*Considered:\*\*/u);
+    expect(body).not.toMatch(/\*\*Suppressed:\*\*/u);
+    expect(body).not.toMatch(/📊/u);
+    expect(body).not.toMatch(/🔕\s+Suppressed/u);
+    expect(body).not.toMatch(/Top concerns/u);
+    expect(body).not.toMatch(/Filtered findings/u);
+    expect(body).not.toMatch(/off-diff/u);
+    // Verdict + summary + footer still present.
+    expect(body).toMatch(/✅\s+SHIP/u);
+    expect(body).toMatch(/All clear\./u);
+    expect(body).toMatch(/0\s+inline/u);
   });
 
   it("Top concerns preview is sorted by severity desc (highest first)", () => {
-    // The reviewer flagged M6OO6Hf: "list content is sorted by
-    // severityRank desc — for a payload of mixed severities, the top-5
-    // preview will mostly be critical/high". Pin the ordering contract:
-    // when comments have mixed severities, the preview shows
-    // critical/high/medium/low (in that order) before lower-severity ones.
     const body = buildReviewBody({
       review: {
         summary: "Mixed severities.",
@@ -132,13 +152,18 @@ describe("CLARITY-9: parent card posts three labeled counts", () => {
       modelId: "auto",
       validCommentCount: 5,
       suppressedCommentCount: 0,
+      offDiffFromComments: [],
+      // info severity is excluded from the rendered tally per CLARITY-3,
+      // but it's counted in `validCommentCount` and the manifest. The
+      // tally sum (4) is intentionally < inline count (5) — the
+      // contract is "info findings exist" without giving them a tally
+      // bucket.
+      severityCounts: { critical: 1, high: 1, medium: 1, low: 1, info: 1 },
       secrets: [],
     });
     // Extract the order of paths in the Top concerns block.
-    // The block runs from the 📋 header until the closing </details>
-    // tag, regardless of intermediate blank lines.
     const topConcernsMatch = body.match(
-      /📋\s+Top concerns from model \(5 of 5\)[\s\S]*?<\/details>/u,
+      /📋\s+Top concerns\s+\(5\)[\s\S]*?<\/details>/u,
     );
     expect(topConcernsMatch).not.toBeNull();
     const topConcernsSection = topConcernsMatch?.[0] ?? "";
@@ -154,4 +179,3 @@ describe("CLARITY-9: parent card posts three labeled counts", () => {
     expect(lowIdx).toBeLessThan(infoIdx);
   });
 });
-

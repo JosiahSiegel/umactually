@@ -2,6 +2,7 @@ import {
   buildChatBody,
   buildResponsesBody,
   extractTextPayload,
+  PARSE_FAIL_RETRY_PROMPT,
   parseReviewPayload,
   type ProviderEndpoint,
   type ProviderReviewPayload,
@@ -13,6 +14,7 @@ import {
   sanitizeMessage,
 } from "./provider-error.js";
 import { sleep } from "../util/async.js";
+import { createRequestId, joinUrl } from "../util/url.js";
 
 const ENDPOINT_RESPONSES: ProviderEndpoint = "responses";
 const ENDPOINT_CHAT: ProviderEndpoint = "chat";
@@ -117,11 +119,10 @@ function isRetryable(error: ProviderError): boolean {
  * in markdown fences or prose; some omit the JSON entirely. We retry
  * once with an explicit reminder before falling back to the parse-fail
  * surface — that often recovers the review without operator intervention.
+ *
+ * The shared prompt constant lives in `provider-parse.ts` so the Copilot
+ * path can reuse it byte-for-byte (DRY-12).
  */
-const PARSE_FAIL_RETRY_PROMPT =
-  "Your previous response did not contain a valid JSON review payload. " +
-  "Please respond with ONLY a JSON object matching this schema (no prose, no fences): " +
-  '{"summary": "...", "verdict": "NEEDS_FIX|APPROVED|COMMENT|DISCUSS|SHIP", "comments": [...], "suppressed_comments": [...]}.';
 
 async function callEndpoint(
   config: ProviderCallConfig,
@@ -285,30 +286,4 @@ function composeSignal(signal: AbortSignal | undefined, timeoutMs: number): Abor
     return AbortSignal.timeout(timeoutMs);
   }
   return AbortSignal.any([signal, AbortSignal.timeout(timeoutMs)]);
-}
-
-function joinUrl(baseUrl: string, path: string): string {
-  const trimmedBase = baseUrl.replace(/\/+$/u, "");
-  const prefixedPath = path.startsWith("/") ? path : `/${path}`;
-  return `${trimmedBase}${prefixedPath}`;
-}
-
-function createRequestId(): string {
-  const cryptoApi = globalThis.crypto;
-  if (typeof cryptoApi.randomUUID === "function") {
-    return cryptoApi.randomUUID();
-  }
-  const bytes = new Uint8Array(16);
-  if (typeof cryptoApi.getRandomValues === "function") {
-    cryptoApi.getRandomValues(bytes);
-  } else {
-    for (let index = 0; index < bytes.length; index += 1) {
-      bytes[index] = Math.floor(Math.random() * 256);
-    }
-  }
-  const hex: string[] = [];
-  for (const byte of bytes) {
-    hex.push(byte.toString(16).padStart(2, "0"));
-  }
-  return `${hex.slice(0, 4).join("")}-${hex.slice(4, 6).join("")}-${hex.slice(6, 8).join("")}-${hex.slice(8, 10).join("")}-${hex.slice(10, 16).join("")}`;
 }

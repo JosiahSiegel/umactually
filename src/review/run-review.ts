@@ -1,5 +1,6 @@
 import { scanReviewSecrets } from "../security/scan-review-secrets.js";
 import { parseDiffPositions } from "../diff/parse-positions.js";
+import { isRecord, readSafeIntegerFieldOrThrow } from "../util/json-guards.js";
 import { REVIEW_MARKER } from "../util/marker.js";
 
 export type GithubReviewContract = {
@@ -96,34 +97,21 @@ function countOffDiffComments(
 }
 
 function parsePullRequestEvent(value: unknown): void {
-  const event = readRecord(value, "GitHub event");
-  const pullRequest = readRecord(readField(event, "pull_request"), "pull_request");
-  readNumberField(pullRequest, "number");
+  const event = requireRecord(value, "GitHub event");
+  const pullRequest = requireRecord(event["pull_request"], "pull_request");
+  readSafeIntegerFieldOrThrow(pullRequest, "number");
 }
 
 function parseProviderReviewPayload(value: unknown): ProviderReviewPayload {
-  const review = readRecord(value, "provider review");
-  const comments = readCommentArray(readField(review, "comments"));
-  const suppressedComments = readCommentArray(readField(review, "suppressed_comments"));
+  const review = requireRecord(value, "provider review");
+  const comments = readCommentArray(review["comments"]);
+  const suppressedComments = readCommentArray(review["suppressed_comments"]);
   return { comments: comments, suppressed_comments: suppressedComments };
 }
 
-function readRecord(value: unknown, label: string): Record<string, unknown> {
-  if (typeof value !== "object" || value === null || Array.isArray(value)) {
+function requireRecord(value: unknown, label: string): Record<string, unknown> {
+  if (!isRecord(value)) {
     throw new TypeError(`Expected ${label} to be an object, received: ${typeof value}`);
-  }
-
-  return value as Record<string, unknown>;
-}
-
-function readField(record: Record<string, unknown>, key: string): unknown {
-  return record[key];
-}
-
-function readNumberField(record: Record<string, unknown>, key: string): number {
-  const value = readField(record, key);
-  if (typeof value !== "number") {
-    throw new TypeError(`Expected field '${key}' to be a number, received: ${typeof value}`);
   }
   return value;
 }
@@ -141,9 +129,9 @@ function readCommentArray(value: unknown): readonly ProviderComment[] {
 }
 
 function parseComment(value: unknown): ProviderComment {
-  const record = readRecord(value, "comment");
-  const path = readField(record, "path");
-  const line = readField(record, "line");
+  const record = requireRecord(value, "comment");
+  const path = record["path"];
+  const line = record["line"];
   if (typeof path !== "string") {
     throw new TypeError(`Expected comment 'path' to be a string, received: ${typeof path}`);
   }

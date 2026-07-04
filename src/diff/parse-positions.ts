@@ -119,6 +119,15 @@ function parseNewHunkStart(line: string): number | null {
   return isPositiveSafeInteger(start) ? start : null;
 }
 
+/**
+ * `@@ -1,4 +1,7 @@` → 1. Returns null when the header is malformed.
+ *
+ * Exported so `src/review/diff-line-utils.ts:readDiffLine` can reuse
+ * the exact same parser instead of re-implementing it (the two copies
+ * drifted subtly before the export was added).
+ */
+export const parseHunkStart = parseNewHunkStart;
+
 function addLine(linesByPath: Map<string, Set<number>>, path: string, line: number): void {
   const existingLines = linesByPath.get(path);
   if (existingLines !== undefined) {

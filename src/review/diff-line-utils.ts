@@ -1,5 +1,4 @@
-import type { DiffPosition } from "../diff/parse-positions.js";
-import { isPositiveSafeInteger } from "../util/json-guards.js";
+import { type DiffPosition, parseHunkStart } from "../diff/parse-positions.js";
 
 /**
  * Walk the diff text and return the raw line content for the first
@@ -63,24 +62,6 @@ export function readDiffLine(diffText: string, position: DiffPosition): string {
   }
 
   return "";
-}
-
-/**
- * `@@ -1,4 +1,7 @@` → 1. Returns null when the header is malformed.
- */
-function parseHunkStart(line: string): number | null {
-  if (!line.startsWith("@@ ")) {
-    return null;
-  }
-  const plusIndex = line.indexOf("+");
-  if (plusIndex === -1) {
-    return null;
-  }
-  const afterPlus = line.slice(plusIndex + 1);
-  const endIndex = afterPlus.search(/[ ,]/u);
-  const rawStart = endIndex === -1 ? afterPlus : afterPlus.slice(0, endIndex);
-  const start = Number.parseInt(rawStart, 10);
-  return isPositiveSafeInteger(start) ? start : null;
 }
 
 /**

@@ -3,7 +3,9 @@ import { REVIEW_MARKER } from "../review/run-review.js";
 import { scanReviewSecrets } from "../security/scan-review-secrets.js";
 import type { Platform } from "../config/types.js";
 import { DEFAULT_MAX_COMMENTS } from "../config/defaults.js";
-import { isPositiveSafeInteger, isRecord } from "../util/json-guards.js";
+import { REDACTED_SECRET_TOKEN } from "../util/brand.js";
+import { truncateBodyForLog } from "../util/http.js";
+import { isPositiveSafeInteger, isRecord, isSafeInteger } from "../util/json-guards.js";
 import { MANIFEST_SCHEMA } from "../util/marker.js";
 import { countBySeverity as countBySeverityUtil, SEVERITY_ORDER, severityRank } from "../util/severity.js";
 import { mapVerdictToAzureStatus, mapVerdictToGithubEvent } from "../util/verdict.js";
@@ -111,10 +113,26 @@ export async function evaluateLeakGate(input: {
 /**
  * Visual verdict badge used in the review-header summary. Both GitHub and
  * Azure DevOps render markdown, so the same badge appears on each platform.
+ *
+ * CLARITY-14f: When the model said `NEEDS_FIX` but no findings are
+ * actionable (zero posted + zero suppressed), the verdict is
+ * downgraded to `💬 DISCUSS` rather than `⛔ NEEDS_FIX`. Showing
+ * `NEEDS_FIX` for a card that lists zero items to fix is misleading —
+ * a reviewer would search the diff for things to act on, find nothing,
+ * and lose trust in the verdict signal. `DISCUSS` is the right
+ * semantic: there's nothing to fix, but the review is not a clean
+ * bill of health either (the model said something is wrong; we just
+ * can't surface what).
  */
-function verdictBadge(verdict: string): string {
-  const normalized = verdict.toUpperCase();
-  if (normalized === "NEEDS_FIX") return "⛔ NEEDS_FIX";
+function verdictBadge(input: {
+  readonly verdict: string;
+  readonly validCommentCount: number;
+  readonly suppressedCommentCount: number;
+}): string {
+  const normalized = input.verdict.toUpperCase();
+  const nothingActionable =
+    input.validCommentCount === 0 && input.suppressedCommentCount === 0;
+  if (normalized === "NEEDS_FIX" && !nothingActionable) return "⛔ NEEDS_FIX";
   if (normalized === "APPROVED" || normalized === "SHIP") return "✅ SHIP";
   return "💬 DISCUSS";
 }
@@ -137,91 +155,69 @@ export const countBySeverity = countBySeverityUtil;
  */
 const TOP_CONCERNS_PREVIEW_LIMIT = 5;
 
-/**
- * Three explicit labels — posted / considered / suppressed — that make the
- * parent card unambiguous about what the model produced vs. what landed
- * vs. what was rejected. Replaces the old single-line counts that mixed
- * "info" findings (excluded from the severity tally) with "off-diff"
- * suppressions, which produced the confusing "0 critical · 0 high · 0
- * medium · 0 low · 5 suppressed" line followed by a non-empty
- * "Top concerns" list. CLARITY-9 pins the new contract.
- *
- * Always renders (even when all three values are zero) so a reviewer
- * can distinguish "0 found, ship it" from "nothing rendered" —
- * inherited from CLARITY-5.
- *
- * When `parseFailed` is true, the row prepends a prominent
- * `⚠️ Parse failed` badge so a 0-finding review can never be confused
- * for a clean bill of health. CLARITY-10.
- */
-function postedVsConsideredRow(input: {
-  readonly postedCount: number;
-  readonly consideredCount: number;
-  readonly suppressedCount: number;
-  readonly parseFailed: boolean;
-}): string {
-  const base =
-    `**Posted:** \`${input.postedCount}\` inline thread(s) · ` +
-    `**Considered:** \`${input.consideredCount}\` finding(s) from model · ` +
-    `**Suppressed:** \`${input.suppressedCount}\` off-diff`;
-  if (input.parseFailed) {
-    // Use emoji + backticks (NOT `**Parse failed**` markdown emphasis)
-    // for consistency with the severity tally above and to avoid the
-    // ADO PR-thread renderer leakage observed for `**...**` patterns
-    // (see CLARITY-3 in test/unit/live-azure-parent-clarity.test.ts).
-    return `> ⚠️ \`Parse failed\` — provider response was not a valid JSON review payload. ` +
-      `No findings were extracted; the raw provider text is included in the Summary section below for diagnostics.\n` +
-      `\n${base}`;
-  }
-  return base;
-}
-
-/**
- * Severity tally — critical → high → medium → low — that appears
- * immediately after the verdict badge and the posted/considered/suppressed
- * row. Uses emoji + backticks (NOT `**word**` asterisks) because ADO's
- * PR-thread renderer surface has been observed to leak `**...**` as
- * literal asterisks even though the markdown guidance documents that
- * emphasis IS supported. Belt-and-braces compatibility — see CLARITY-3
- * in test/unit/live-azure-parent-clarity.test.ts.
- *
- * The `info` severity is intentionally excluded from this tally (info
- * findings are tracked in the manifest but are not a signal the reviewer
- * needs to act on) — the "considered" count above is the unambiguous
- * answer when an info-heavy payload is in play.
- */
 function countsLine(input: {
   readonly severityCounts: Record<string, number>;
 }): string {
   const parts: string[] = [];
+  let total = 0;
   for (const level of SEVERITY_ORDER) {
     const count = input.severityCounts[level] ?? 0;
+    total += count;
     parts.push(`\`${count}\` ${level}`);
+  }
+  // CLARITY-14c: when there are zero findings across all severities,
+  // hide the tally entirely. A row of `📊 0 critical · 0 high · 0
+  // medium · 0 low` adds nothing for a reviewer who's scanning the
+  // card for actionable info — and it explicitly duplicates the "0
+  // inline" footer count when nothing was posted.
+  if (total === 0) {
+    return "";
   }
   return `📊 ${parts.join(" · ")}`;
 }
 
 /**
- * Build the "Top concerns" <details> block. Shows a preview of the
- * highest-severity findings the MODEL produced (pre-filter — this is
- * NOT the same set as the inline threads posted). The summary line
- * explicitly says "from model (N of Z)" so the reader knows this is
- * the pre-filter list. Hidden by default so it does not push the
- * severity tally below the fold.
+ * Build the "Top concerns" <details> block. Shows the highest-severity
+ * findings the caller posted, capped at TOP_CONCERNS_PREVIEW_LIMIT. When
+ * the cap truncates the list, the header surfaces the denominator so the
+ * reader can tell "5 of 10 shown" from "5 total" without doing math.
  *
- * CLARITY-11: when `validCommentCount === 0` but `consideredCount > 0`,
- * the pre-filter findings were ALL filtered out (severity policy,
- * max-comments cap, or off-diff suppression). The block must make this
- * explicit so the reader doesn't confuse "0 posted + N concerns
- * listed" with a clean bill of health. We re-label the header as
- * "Filtered findings" and prefix the body with a one-line explanation
- * of *why* nothing was posted.
+ * CLARITY-16: surface the denominator whenever truncation happens. A
+ * header that reads "Top concerns (5)" with 10 posted findings reads
+ * like "5 is the total" — but it's the cap. The reader expects the
+ * preview to match the tally (which sums to 10); showing just (5)
+ * breaks that mental model. Fix: when shown < total, render
+ * "Top concerns (N of M shown)".
+ *
+ * CLARITY-11: when `validCommentCount === 0` but `postedComments.length === 0`
+ * and the model returned findings, the pre-filter findings were ALL
+ * filtered out (severity policy, max-comments cap, or off-diff
+ * suppression). The block must make this explicit so the reader
+ * doesn't confuse "0 posted + N concerns listed" with a clean bill
+ * of health. We re-label the header as "Filtered findings" and prefix
+ * the body with a one-line explanation of *why* nothing was posted.
  */
 function topConcernsBlock(input: {
   readonly review: LiveReview;
   readonly validCommentCount: number;
+  readonly postedComments?: readonly LiveReviewComment[];
 }): string {
-  const sorted = [...input.review.comments].sort((a, b) => {
+  const filteredAll = input.validCommentCount === 0 && input.review.comments.length > 0;
+  // CLARITY-16: when the caller passes the posted set (the new
+  // contract), use it as the preview source so the preview agrees with
+  // the tally + footer. When omitted (older callers / fixtures),
+  // fall back to `review.comments` and the denominator becomes the
+  // model's total — the header still surfaces truncation but the
+  // numbers may not perfectly agree with the tally.
+  // For the "filteredAll" branch, the preview is the full pre-filter
+  // set (capped), so the denominator is the model's total. For the
+  // "some posted" branch, the preview is the posted set (capped), so
+  // the denominator is the posted count — which agrees with the
+  // tally and the footer (CLARITY-15 invariant).
+  const sourceComments = filteredAll
+    ? input.review.comments
+    : input.postedComments ?? input.review.comments;
+  const sorted = [...sourceComments].sort((a, b) => {
     const ra = severityRank(a.severity);
     const rb = severityRank(b.severity);
     if (ra !== rb) return rb - ra;
@@ -231,20 +227,25 @@ function topConcernsBlock(input: {
   if (preview.length === 0) {
     return "";
   }
-  const total = input.review.comments.length;
+  const total = sourceComments.length;
   const shown = preview.length;
-  const filteredAll = input.validCommentCount === 0 && total > 0;
-  // Use explicit "Filtered findings" header when every model finding was
-  // filtered — distinguishes this from the normal case where some
-  // findings were posted (so the "Top concerns" preview is a sample of
-  // what landed, not the full rejected list).
+  const truncated = shown < total;
+  // CLARITY-14g: drop "from model" suffix — the block IS the model
+  // output (or the posted set), so labeling it "from model" is
+  // redundant. Use plain "Top concerns (N)" when findings fit in
+  // the preview, "Top concerns (N of M shown)" when truncated, and
+  // "Filtered findings (N of M shown)" when none landed.
   const header = filteredAll
     ? shown === 1
-      ? `🔕 Filtered finding from model (1 of ${total}) — none reached inline`
-      : `🔕 Filtered findings from model (${shown} of ${total}) — none reached inline`
-    : shown === 1
-      ? `📋 Top concern from model (1 of ${total})`
-      : `📋 Top concerns from model (${shown} of ${total})`;
+      ? `🔕 Filtered finding (1 of ${total} shown)`
+      : `🔕 Filtered findings (${shown} of ${total} shown)`
+    : truncated
+      ? shown === 1
+        ? `📋 Top concern (1 of ${total} shown)`
+        : `📋 Top concerns (${shown} of ${total} shown)`
+      : shown === 1
+        ? `📋 Top concern (1)`
+        : `📋 Top concerns (${shown})`;
   const explainer = filteredAll
     ? `\n_The model produced ${total} finding(s); all were filtered by severity policy, the \`max-comments\` cap, or off-diff suppression. The list below is the pre-filter view for transparency — no inline comments were posted._\n`
     : "";
@@ -272,14 +273,16 @@ function topConcernsBlock(input: {
  */
 function suppressedBlock(input: {
   readonly suppressedComments: readonly LiveReviewComment[];
+  readonly offDiffFromComments: readonly LiveReviewComment[];
 }): string {
-  if (input.suppressedComments.length === 0) {
+  const combined = [...input.suppressedComments, ...input.offDiffFromComments];
+  if (combined.length === 0) {
     return "";
   }
-  const header = input.suppressedComments.length === 1
+  const header = combined.length === 1
     ? "🔕 Suppressed (off-diff, 1)"
-    : `🔕 Suppressed (off-diff, ${input.suppressedComments.length})`;
-  const lines = input.suppressedComments.map((comment) => {
+    : `🔕 Suppressed (off-diff, ${combined.length})`;
+  const lines = combined.map((comment) => {
     const safeBody = sanitizeForPost(comment.body, []);
     const oneLiner = safeBody.replace(/\s+/gu, " ").trim();
     const bodySnippet = oneLiner.length > 100 ? `${oneLiner.slice(0, 97)}…` : oneLiner;
@@ -390,35 +393,100 @@ export function buildReviewBody(input: {
   readonly modelId: string;
   readonly validCommentCount: number;
   readonly suppressedCommentCount: number;
+  /**
+   * Findings from `review.comments` whose `path:line` is NOT on the diff.
+   * Rendered alongside `review.suppressedComments` so the
+   * `🔕 Suppressed (off-diff, N)` block lists every finding the row
+   * counts — see CLARITY-13. Required parameter; pass `[]` when the
+   * caller has no off-diff findings to surface.
+   */
+  readonly offDiffFromComments: readonly LiveReviewComment[];
+  /**
+   * Findings actually posted as inline threads — the same array that
+   * produced `validCommentCount` and `severityCounts`. Used to render
+   * the "Top concerns" preview so the preview agrees with the tally
+   * and the footer (CLARITY-16 invariant). When this list is omitted
+   * (older callers, simulate-findings fixture, etc.), the preview
+   * falls back to `review.comments` and the header denominator uses
+   * the model's total instead — see `topConcernsBlock` for the exact
+   * fallback semantics.
+   */
+  readonly postedComments?: readonly LiveReviewComment[];
+  /**
+   * Severity distribution of the POSTED comments (i.e. the comments
+   * that survived `selectPostableComments` filtering). Used for both
+   * the rendered tally and the manifest's `severityCounts` so they
+   * agree by construction. Callers MUST compute this from the same set
+   * that produced `validCommentCount`; computing from `review.comments`
+   * is a CLARITY-15 violation (tally would over-report by the number
+   * of filtered-out findings).
+   */
+  readonly severityCounts: Record<string, number>;
   readonly secrets: readonly string[];
 }): string {
-  const severityCounts = countBySeverity(input.review.comments);
-  const consideredCount = input.review.comments.length;
-  const verdict = verdictBadge(input.review.verdict);
+  const verdict = verdictBadge({
+    verdict: input.review.verdict,
+    validCommentCount: input.validCommentCount,
+    suppressedCommentCount: input.suppressedCommentCount,
+  });
   const safeSummary = sanitizeForPost(input.review.summary, input.secrets);
   const safeModelId = sanitizeForPost(input.modelId, input.secrets);
   const safeProvider = sanitizeForPost(input.provider, input.secrets);
 
+  // CLARITY-14: Actionable-only card. Build the body section-by-section,
+  // skipping sections that don't apply to the current review shape:
+  //   - Parse-failed banner — only when parseFailed
+  //   - Off-diff inline note — only when suppressed > 0
+  //   - Severity tally — only when at least one finding has a severity
+  //   - Top concerns / filtered findings — only when comments exist
+  //   - Suppressed details — only when suppressed > 0
+  //   - Summary <details> — only when summary is non-empty
+  // The result is a card that scales with the review: a clean review is
+  // 3 lines (marker + verdict + footer); a busy review shows everything.
+  const parseFailedBanner = input.review.parseFailed === true
+    ? `> ⚠️ \`Parse failed\` — provider response was not a valid JSON review payload. The raw provider text is included in the Summary section below for diagnostics.\n`
+    : "";
+  const offDiffNote =
+    input.suppressedCommentCount > 0
+      ? `> 🔕 ${input.suppressedCommentCount} off-diff finding${input.suppressedCommentCount === 1 ? " was" : "s were"} not on this PR's diff.\n`
+      : "";
+  const tally = countsLine({ severityCounts: input.severityCounts });
+  const topConcerns = topConcernsBlock({
+    review: input.review,
+    validCommentCount: input.validCommentCount,
+    // CLARITY-16: pass the posted comments so the preview denominator
+    // agrees with the tally + footer. When the caller omits this
+    // (older fixtures, simulate-findings, etc.), topConcernsBlock
+    // falls back to `review.comments` as the preview source. Spread
+    // conditionally because `exactOptionalPropertyTypes: true` rejects
+    // explicit `undefined`.
+    ...(input.postedComments !== undefined
+      ? { postedComments: input.postedComments }
+      : {}),
+  });
+  const suppressed = suppressedBlock({
+    suppressedComments: input.review.suppressedComments,
+    offDiffFromComments: input.offDiffFromComments,
+  });
+
+  // CLARITY-14e: terse footer — `X inline` is enough; the verbose
+  // "X inline thread(s) posted" adds noise without information.
   const footer =
     `🤖 Generated by \`${safeModelId}\` via \`${safeProvider}\` · ` +
-    `${input.validCommentCount} inline thread(s) posted`;
+    `${input.validCommentCount} inline`;
 
-  const sections = [
+  // Assemble sections. Each section is "" if it doesn't apply, so we
+  // join with `\n\n` and trim trailing blanks.
+  const sections: string[] = [
     REVIEW_MARKER,
     "",
     `## ${verdict}`,
     "",
-    postedVsConsideredRow({
-      postedCount: input.validCommentCount,
-      consideredCount,
-      suppressedCount: input.suppressedCommentCount,
-      parseFailed: input.review.parseFailed === true,
-    }),
-    "",
-    countsLine({ severityCounts }),
-    "",
-    topConcernsBlock({ review: input.review, validCommentCount: input.validCommentCount }),
-    suppressedBlock({ suppressedComments: input.review.suppressedComments }),
+    parseFailedBanner,
+    offDiffNote,
+    tally,
+    topConcerns,
+    suppressed,
     proseBlock(safeSummary),
     footer,
     "",
@@ -428,11 +496,11 @@ export function buildReviewBody(input: {
       modelId: input.modelId,
       validCommentCount: input.validCommentCount,
       suppressedCommentCount: input.suppressedCommentCount,
-      severityCounts,
+      severityCounts: input.severityCounts,
     }),
   ];
 
-  const raw = sections.join("\n");
+  const raw = sections.filter((s) => s.length > 0).join("\n");
   return sanitizeForPost(raw, input.secrets);
 }
 
@@ -665,15 +733,16 @@ export function selectPostableComments(input: {
   return comments;
 }
 
-export function countSuppressedComments(review: LiveReview, diffText: string): number {
+export function selectOffDiffComments(
+  review: LiveReview,
+  diffText: string,
+): readonly LiveReviewComment[] {
   const positions = parseDiffPositions(diffText);
-  let count = review.suppressedComments.length;
-  for (const comment of review.comments) {
-    if (!positions.hasPosition(comment)) {
-      count += 1;
-    }
-  }
-  return count;
+  return review.comments.filter((comment) => !positions.hasPosition(comment));
+}
+
+export function countSuppressedComments(review: LiveReview, diffText: string): number {
+  return review.suppressedComments.length + selectOffDiffComments(review, diffText).length;
 }
 
 /**
@@ -719,7 +788,7 @@ export function sanitizeForPost(value: string, secrets: readonly string[]): stri
     .replace(/\bBearer\s+\S+/giu, "[REDACTED_BEARER_TOKEN]");
   for (const secret of secrets) {
     if (secret.length > 0) {
-      sanitized = sanitized.split(secret).join("[REDACTED_SECRET]");
+      sanitized = sanitized.split(secret).join(REDACTED_SECRET_TOKEN);
     }
   }
   return sanitized;
@@ -753,7 +822,7 @@ export function readResponseId(value: unknown): number | undefined {
     return undefined;
   }
   const id = value["id"];
-  return typeof id === "number" && Number.isSafeInteger(id) ? id : undefined;
+  return isSafeInteger(id) ? id : undefined;
 }
 
 export function ensureHttpOk(response: Response, code: string, action: string): void {
@@ -774,7 +843,7 @@ export function ensureHttpOk(response: Response, code: string, action: string): 
       }
       // Surface the server-side error message on stderr for operators;
       // the thrown LiveReviewError keeps its short public form.
-      const snippet = text.length > 500 ? `${text.slice(0, 500)}…(truncated)` : text;
+      const snippet = truncateBodyForLog(text, 500);
       process.stderr.write(`::debug::umactually-pr-review: ${action} HTTP ${response.status} body=${snippet}\n`);
     })
     .catch(() => {

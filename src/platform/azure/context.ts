@@ -1,3 +1,4 @@
+import { isSafeInteger } from "../../util/json-guards.js";
 import { PlatformContextError } from "../../util/platform-error.js";
 
 export type AzureContext = {
@@ -122,7 +123,7 @@ function readAzurePrNumber(env: NodeJS.ProcessEnv): number {
     throw new AzureContextError("AZURE_PR_NUMBER_INVALID", "Azure Pipelines SYSTEM_PULLREQUEST_PULLREQUESTID must be set.");
   }
   const parsed = Number.parseInt(raw, 10);
-  if (!Number.isSafeInteger(parsed) || parsed <= 0) {
+  if (!isSafeInteger(parsed) || parsed <= 0) {
     throw new AzureContextError("AZURE_PR_NUMBER_INVALID", "Azure Pipelines SYSTEM_PULLREQUEST_PULLREQUESTID must be a positive integer.");
   }
   return parsed;

@@ -127,6 +127,16 @@ export type RunLiveInput = {
   readonly fetchImpl?: FetchImpl;
 };
 
+/**
+ * Factory for the canonical "failed but did not post" result shape.
+ * Used at every failure exit point in `runLive` so the wire shape stays
+ * byte-identical regardless of where the run failed (missing config,
+ * thrown error, leak gate, etc.).
+ */
+function failedResult(message: string): LiveRunResult {
+  return { exitCode: 1, posted: false, reviewId: undefined, message };
+}
+
 export async function runLive(input: RunLiveInput): Promise<LiveRunResult> {
   const env = input.env ?? process.env;
   const fetchImpl = input.fetchImpl ?? globalThis.fetch.bind(globalThis);
@@ -134,12 +144,7 @@ export async function runLive(input: RunLiveInput): Promise<LiveRunResult> {
   if (platform === null) {
     const message = "Live review requires GitHub Actions (GITHUB_ACTIONS=true) or Azure Pipelines (TF_BUILD=True).";
     process.stdout.write(`umactually-pr-review: ${message}\n`);
-    return {
-      exitCode: 1,
-      posted: false,
-      reviewId: undefined,
-      message,
-    };
+    return failedResult(message);
   }
 
   // Copilot provider does not need UMACTUALLY_API_URL; it uses the GitHub
@@ -149,23 +154,13 @@ export async function runLive(input: RunLiveInput): Promise<LiveRunResult> {
   if (!isCopilot && (providerUrl === undefined || providerUrl.length === 0)) {
     const message = "UMACTUALLY_API_URL must be set for live review.";
     process.stdout.write(`umactually-pr-review: ${message}\n`);
-    return {
-      exitCode: 1,
-      posted: false,
-      reviewId: undefined,
-      message,
-    };
+    return failedResult(message);
   }
   const providerKey = input.parsed.apiKey ?? env["UMACTUALLY_API_KEY"];
   if (providerKey === undefined || providerKey.length === 0) {
     const message = "UMACTUALLY_API_KEY must be set for live review.";
     process.stdout.write(`umactually-pr-review: ${message}\n`);
-    return {
-      exitCode: 1,
-      posted: false,
-      reviewId: undefined,
-      message,
-    };
+    return failedResult(message);
   }
 
   // If --include-sonarqube is set with a fully-configured SonarQube, wait
@@ -188,12 +183,7 @@ export async function runLive(input: RunLiveInput): Promise<LiveRunResult> {
     const message = error instanceof Error ? error.message : String(error);
     const sanitized = sanitizeForPost(message, readSecretValues(env));
     process.stdout.write(`umactually-pr-review: ${sanitized}\n`);
-    return {
-      exitCode: 1,
-      posted: false,
-      reviewId: undefined,
-      message: sanitized,
-    };
+    return failedResult(sanitized);
   }
 
   if (result.posted) {
@@ -230,12 +220,7 @@ async function dispatchLivePlatform(input: {
       });
       if (!leakGate.ok) {
         logError("", leakGate.message);
-        return {
-          exitCode: 1,
-          posted: false,
-          reviewId: undefined,
-          message: leakGate.message,
-        };
+        return failedResult(leakGate.message);
       }
       const liveOutcome = await requestLiveReview({
         parsed,
@@ -273,12 +258,7 @@ async function dispatchLivePlatform(input: {
       });
       if (!leakGate.ok) {
         logError("", leakGate.message);
-        return {
-          exitCode: 1,
-          posted: false,
-          reviewId: undefined,
-          message: leakGate.message,
-        };
+        return failedResult(leakGate.message);
       }
       // Gate the live review on the configured file count. The default
       // 200-file cap is a quality choice: chunked LLM reviews of an

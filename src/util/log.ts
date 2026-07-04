@@ -47,3 +47,21 @@ export function logDebug(action: string, message: string): void {
 export function logNotice(action: string, message: string): void {
   writeAnnotation("notice", action, message);
 }
+
+/**
+ * Write a raw `::warning::` / `::error::` annotation to stderr. Use this
+ * ONLY for ad-hoc messages that don't fit the action-prefix template
+ * (e.g. per-iteration failures with dynamic indices, HTTP-body-aware
+ * diagnostics). Pass an empty `action` to suppress the action prefix;
+ * the level token (`warning` / `error`) is always emitted.
+ *
+ * Replaces the 15+ hand-rolled `process.stderr.write(\`::warning::umactually-pr-review: ...\`)`
+ * calls scattered across `live-azure.ts`, `live-github.ts`,
+ * `sonar/run-sonar-import.ts`, and `cli/sonar-context.ts`.
+ */
+export function writeBrandedAnnotation(
+  level: "warning" | "error",
+  message: string,
+): void {
+  process.stderr.write(`::${level}::${BRAND_PREFIX}${message}\n`);
+}
