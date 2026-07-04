@@ -93,9 +93,11 @@ describe("CLARITY-14: actionable-only parent card", () => {
       severityCounts: { critical: 0, high: 0, medium: 0, low: 0 },
       secrets: [],
     });
-    // Pipeline summary reconciles: 5 findings → 0 posted, 5 off-diff, 0 filtered.
-    // (5 candidates are off-diff, none filtered, none posted.)
-    expect(body).toMatch(/📊\s+5\s+findings\s+→\s+0\s+posted,\s+5\s+off-diff,\s+0\s+filtered/u);
+    // Pipeline summary reconciles: 5 findings → 0 posted, 0 off-diff, 5 filtered.
+    // (All 5 candidates are severity-filtered info findings, not off-diff:
+    // `review.comments.length` = 5, `review.suppressedComments.length` = 0,
+    // `offDiffFromComments.length` = 0 → off-diff = 0, total = 5, filtered = 5.)
+    expect(body).toMatch(/📊\s+5\s+findings\s+→\s+0\s+posted,\s+0\s+off-diff,\s+5\s+filtered/u);
     // Filtered preview header — no more 🔕; uses "showing" + "candidates"
     // so the (N of M) clearly means preview truncation, not a separate count.
     expect(body).toMatch(/🧹\s+Filtered preview\s+\(showing\s+\d+\s+of\s+\d+\s+candidates\)/u);

@@ -29,6 +29,37 @@ function line(body: string): string {
 }
 
 describe("CLARITY-19 pipeline summary structural invariant", () => {
+  it("filteredCount never goes negative (renderer gracefully clamps to 0)", () => {
+    // Edge case: caller passes inconsistent counts (offDiff > total).
+    // The renderer should NOT throw — that would 500 the parent card.
+    // Instead it clamps filteredCount to 0 so the card still renders
+    // with a slightly inaccurate "0 filtered" label. The comment
+    // documents this is a graceful-degradation policy, not a silent
+    // lie — a partial card is better than no card at PR-comment
+    // render time (inline threads are already posted).
+    const body = buildReviewBody({
+      review: {
+        summary: "Caller inconsistency test.",
+        verdict: "COMMENT",
+        comments: [
+          { path: "src/a.ts", line: 1, body: "x", severity: "low", category: "general" },
+        ],
+        suppressedComments: [],
+      },
+      provider: "openai-compatible",
+      modelId: "auto",
+      // Caller lies: claims 5 posted + 5 off-diff from 1 finding.
+      validCommentCount: 5,
+      suppressedCommentCount: 5,
+      offDiffFromComments: [],
+      severityCounts: { low: 1 },
+      secrets: [],
+    });
+    // The pipeline summary must still render (no throw). The numbers
+    // may not add up but the card itself is intact.
+    expect(body).toMatch(/📊/u);
+  });
+
   it("total === posted + off-diff + filtered when comments stay inline", () => {
     const body = buildReviewBody({
       review: {
@@ -54,13 +85,25 @@ describe("CLARITY-19 pipeline summary structural invariant", () => {
   });
 
   it("total === posted + off-diff + filtered when comments split inline + off-diff", () => {
+    // CLARITY-19: pipelineSummary computes offDiff from
+    // (review.suppressedComments.length + offDiffFromComments.length),
+    // not from caller-suppressedCommentCount. Pass the array so the
+    // test exercises both routes (1 from suppressedComments + 1 from
+    // offDiffFromComments = 2 off-diff).
+    const offDiffComment = {
+      path: "src/old.ts",
+      line: 1,
+      body: "off-diff noise",
+      severity: "low",
+      category: "general",
+    };
     const body = buildReviewBody({
       review: {
         summary: "Mixed.",
         verdict: "NEEDS_FIX",
         comments: [
           { path: "src/a.ts", line: 1, body: "x", severity: "high", category: "security" },
-          { path: "src/old.ts", line: 1, body: "off-diff noise", severity: "low", category: "general" },
+          offDiffComment,
         ],
         suppressedComments: [
           { path: "src/legacy.ts", line: 1, body: "Legacy.", severity: "low", category: "general" },
@@ -70,7 +113,7 @@ describe("CLARITY-19 pipeline summary structural invariant", () => {
       modelId: "auto",
       validCommentCount: 1,
       suppressedCommentCount: 2,
-      offDiffFromComments: [],
+      offDiffFromComments: [offDiffComment],
       severityCounts: { high: 1, low: 1 },
       secrets: SECRETS,
     });

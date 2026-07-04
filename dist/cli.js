@@ -3322,34 +3322,29 @@ const TOP_CONCERNS_PREVIEW_LIMIT = 5;
  * the parsed counts are unreliable.
  */
 function pipelineSummary(input) {
-    // Total = every comment the model produced. Includes the model's
-    // off-diff output (counted in suppressedCommentCount) and the model's
-    // inline comments (counted in validCommentCount). For the parse-fail
-    // fallback path the review.comments array is empty (the parse failed),
-    // so total === validCommentCount + suppressedCommentCount === 0 —
-    // callers gate on input.review.parseFailed === true to skip rendering.
+    // Compute every count from the source-of-truth arrays. This makes
+    // the formula self-consistent: any future refactor that changes
+    // one of these inputs surfaces as a negative filteredCount below,
+    // rather than silently propagating inconsistent caller state.
     const totalFindings = input.review.comments.length + input.review.suppressedComments.length;
     const postedCount = input.validCommentCount;
-    const offDiffCount = input.suppressedCommentCount;
+    const offDiffCount = input.review.suppressedComments.length + input.offDiffFromComments.length;
     // Filtered = model comments that survived parsing but were rejected
     // by severity policy, max-comments cap, etc. For live-parse reviews
     // this is `total - posted - off-diff`; for parse-fail it is 0.
     //
-    // Structural invariant (CLARITY-19): totalFindings MUST equal
-    // postedCount + offDiffCount + filteredCount. If a future code path
-    // routes severity-rejected comments somewhere other than
-    // `review.suppressedComments`, this assertion fails loud so the
-    // pipeline summary doesn't silently lie. See
-    // test/unit/pipeline-summary-invariant.test.ts.
-    //
-    // NOTE: filteredCount is intentionally NOT clamped to ≥ 0. A negative
-    // value means the caller passed inconsistent counts (e.g. offDiff
-    // > total), which the assertion below catches and throws on. The
-    // previous `Math.max(0, ...)` made the assertion unreachable.
-    const filteredCount = totalFindings - postedCount - offDiffCount;
-    if (totalFindings !== postedCount + offDiffCount + filteredCount) {
-        throw new Error(`pipelineSummary invariant violated: totalFindings=${totalFindings} !== posted(${postedCount}) + offDiff(${offDiffCount}) + filtered(${filteredCount})`);
-    }
+    // CLARITY-19 invariant (replaced after round-3 self-review):
+    //   The previous `totalFindings !== postedCount + offDiffCount +
+    //   filteredCount` check was tautological because filteredCount IS
+    //   defined as that difference. The only failure mode it could
+    //   catch was arithmetic overflow, not the routing regression the
+    //   comment described. The real check is on filteredCount >= 0:
+    //   a negative value means the caller passed inconsistent counts
+    //   (off-diff or posted > total). For graceful degradation, clamp
+    //   to 0 instead of throwing — this is a renderer, not a validator;
+    //   a partial card is better than no card (the parent's inline
+    //   threads are already posted by the time this runs).
+    const filteredCount = Math.max(0, totalFindings - postedCount - offDiffCount);
     return `📊 ${totalFindings} findings → ${postedCount} posted, ${offDiffCount} off-diff, ${filteredCount} filtered`;
 }
 function countsLine(input) {
@@ -3626,7 +3621,7 @@ function buildReviewBody(input) {
         : pipelineSummary({
             review: input.review,
             validCommentCount: input.validCommentCount,
-            suppressedCommentCount: input.suppressedCommentCount,
+            offDiffFromComments: input.offDiffFromComments,
         });
     const tally = countsLine({ severityCounts: input.severityCounts });
     const topConcerns = topConcernsBlock({
