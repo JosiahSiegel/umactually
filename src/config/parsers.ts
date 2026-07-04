@@ -1,6 +1,7 @@
 import type { Severity, Platform } from "./types.js";
 import { InvalidConfigError, REDACTED } from "./errors.js";
 import { FIELDS } from "./field-schema.js";
+import { stripTrailingSlash } from "../util/url.js";
 
 const TRUTHY_STRINGS: ReadonlySet<string> = new Set(["1", "true", "yes", "on", "y"]);
 const FALSY_STRINGS: ReadonlySet<string> = new Set(["0", "false", "no", "off", "n", ""]);
@@ -131,8 +132,7 @@ export function normalizeApiUrl(rawUrl: unknown, field: string): string {
 }
 
 function normalizePath(pathname: string): string {
-  const trimmed = pathname.replace(/\/+$/, "");
-  return trimmed;
+  return stripTrailingSlash(pathname);
 }
 
 function hasVersionPathSegment(path: string): boolean {

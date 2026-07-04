@@ -11,7 +11,7 @@
  * the caller supplies (typically fixture contents).
  */
 
-import { REVIEW_MARKER } from "../util/marker.js";
+import { LEGACY_MARKER, commentBodyHasMarker } from "../util/marker.js";
 import { isRecord } from "../util/json-guards.js";
 
 export type ReviewCompatibilityInput = {
@@ -27,9 +27,6 @@ export type ReviewCompatibilityReport = {
   readonly providerFallbackOrder: readonly ["responses", "chat"];
   readonly invalidDiffCommentSuppressed: true;
 };
-
-const LEGACY_MARKER = "<!-- auto-pr-review -->";
-const CURRENT_MARKER = REVIEW_MARKER;
 
 const FALLBACK_ORDER: readonly ["responses", "chat"] = ["responses", "chat"];
 
@@ -50,8 +47,12 @@ function commentBody(value: ExistingComment): string {
   return typeof body === "string" ? body : "";
 }
 
-function hasMarkerInAnyComment(comments: readonly ExistingComment[], marker: string): boolean {
-  return comments.some((comment) => commentBody(comment).includes(marker));
+function hasLegacyMarkerInAnyComment(comments: readonly ExistingComment[]): boolean {
+  return comments.some((comment) => commentBody(comment).includes(LEGACY_MARKER));
+}
+
+function hasCurrentMarkerInAnyComment(comments: readonly ExistingComment[]): boolean {
+  return comments.some((comment) => commentBodyHasMarker(commentBody(comment)));
 }
 
 function parseComments(jsonText: string): readonly ExistingComment[] {
@@ -124,8 +125,8 @@ export async function verifyReviewCompatibility(
   input: ReviewCompatibilityInput,
 ): Promise<ReviewCompatibilityReport> {
   const comments = parseComments(input.existingCommentsJson);
-  const recognizesLegacyMarker = hasMarkerInAnyComment(comments, LEGACY_MARKER);
-  const recognizesCurrentMarker = hasMarkerInAnyComment(comments, CURRENT_MARKER);
+  const recognizesLegacyMarker = hasLegacyMarkerInAnyComment(comments);
+  const recognizesCurrentMarker = hasCurrentMarkerInAnyComment(comments);
 
   const hasProviderResponses = hasResponsesOutputText(input.providerResponsesJson);
   const hasProviderChatFallback = hasChatChoices(input.chatFallbackJson);

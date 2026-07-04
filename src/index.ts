@@ -4,7 +4,10 @@ import { isAbsolute, join } from "node:path";
 import { runCli } from "./cli.js";
 import { appendCommonInputArgs } from "./action/append-cli-inputs.js";
 import { readActionInputs } from "./action/read-inputs.js";
+import { envFallback, pushFlagValue } from "./util/cli-args.js";
+import { formatError } from "./util/error.js";
 import { logError } from "./util/log.js";
+import { pathToFileUrl } from "./util/url.js";
 
 declare global {
   // Cross-module flag the action entry sets at module load so the bundled
@@ -25,7 +28,7 @@ export async function main(): Promise<void> {
       process.exit(result.exitCode);
     }
   } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
+    const message = formatError(error);
     logError("", message);
     process.exit(1);
   }
@@ -189,19 +192,6 @@ async function writePlaceholderFile(cwd: string, name: string, contents: string)
   return filePath;
 }
 
-function pushFlagValue(args: string[], flag: string, value: string | undefined): void {
-  if (typeof value === "string" && value.length > 0) {
-    args.push(flag, value);
-  }
-}
-
-function envFallback(...values: ReadonlyArray<string | undefined>): string {
-  for (const value of values) {
-    if (typeof value === "string" && value.length > 0) return value;
-  }
-  return "";
-}
-
 const isMainEntry = (() => {
   if (typeof process === "undefined") {
     return false;
@@ -215,12 +205,8 @@ const isMainEntry = (() => {
 
 if (isMainEntry) {
   main().catch((error: unknown) => {
-    const message = error instanceof Error ? error.message : String(error);
+    const message = formatError(error);
     logError("", message);
     process.exit(1);
   });
-}
-
-function pathToFileUrl(value: string): string {
-  return new URL(`file://${value.replace(/\\/gu, "/")}`).href;
 }

@@ -1,4 +1,5 @@
 import { runLiveSonarImport, type LiveSonarReport } from "../sonar/run-sonar-import.js";
+import { BRAND_PREFIX } from "../util/brand.js";
 import { writeBrandedAnnotation } from "../util/log.js";
 import type { FetchImpl } from "./live-shared.js";
 import type { ParsedCliArgs } from "./parse-args.js";
@@ -28,7 +29,7 @@ async function readLiveSonarReport(parsed: ParsedCliArgs, fetchImpl: FetchImpl):
     fetchImpl: fetchImpl as typeof fetch,
   });
   process.stdout.write(
-    `umactually-pr-review: sonar quality gate ${sonarReport.qualityGateStatus} (${sonarReport.importedFindingCount} findings, waited=${sonarReport.waitedForTerminalQualityGate})${sonarReport.timeoutHandled ? " [timeout handled]" : ""}\n`,
+    `${BRAND_PREFIX}sonar quality gate ${sonarReport.qualityGateStatus} (${sonarReport.importedFindingCount} findings, waited=${sonarReport.waitedForTerminalQualityGate})${sonarReport.timeoutHandled ? " [timeout handled]" : ""}\n`,
   );
   if (sonarReport.errorMessage !== undefined) {
     writeBrandedAnnotation("warning", sonarReport.errorMessage);

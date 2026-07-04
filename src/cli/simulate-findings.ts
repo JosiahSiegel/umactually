@@ -1,4 +1,5 @@
 import { buildSimulatedFindings } from "../review/simulated-findings.js";
+import { BRAND_PREFIX } from "../util/brand.js";
 import { sanitizeForPost, type LiveProviderOutcome, type LiveReviewComment } from "./live-shared.js";
 
 /**
@@ -23,7 +24,7 @@ export function applySimulateFindings(input: {
   const isStructurallyEmpty = liveCommentCount === 0 && liveSuppressedCount === 0;
 
   if (!isStructurallyEmpty) {
-    const message = `umactually-pr-review: --simulate-findings set but ignored (live result has ${liveCommentCount} inline, ${liveSuppressedCount} suppressed). Live findings always win.`;
+    const message = `${BRAND_PREFIX}--simulate-findings set but ignored (live result has ${liveCommentCount} inline, ${liveSuppressedCount} suppressed). Live findings always win.`;
     const sanitized = sanitizeForPost(message, input.secrets);
     process.stderr.write(`::notice::${sanitized}\n`);
     return input.outcome;

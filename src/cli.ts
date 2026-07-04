@@ -2,6 +2,8 @@ import { CliHelpSignal, CliUsageError, parseCliArgs, type ParsedCliArgs } from "
 import { printHelp } from "./cli/help.js";
 import { dispatchLive, runDryRun, type CliRunResult } from "./cli/run.js";
 import { collectValidationErrors, resolvePlatform } from "./cli/validate.js";
+import { formatError } from "./util/error.js";
+import { pathToFileUrl } from "./util/url.js";
 
 declare global {
   // Cross-module flag set by the action entry to suppress this module's
@@ -47,11 +49,7 @@ export async function main(argv: readonly string[]): Promise<number> {
       process.stderr.write(`cli: ${error.message}\n`);
       return 2;
     }
-    if (error instanceof Error) {
-      process.stderr.write(`cli: unexpected error: ${error.message}\n`);
-    } else {
-      process.stderr.write(`cli: unexpected error: ${String(error)}\n`);
-    }
+    process.stderr.write(`cli: unexpected error: ${formatError(error)}\n`);
     return 1;
   }
 }
@@ -88,12 +86,7 @@ if (isMainModule) {
       process.exit(exitCode);
     })
     .catch((error: unknown) => {
-      const message = error instanceof Error ? error.message : String(error);
-      process.stderr.write(`cli: fatal: ${message}\n`);
+      process.stderr.write(`cli: fatal: ${formatError(error)}\n`);
       process.exit(1);
     });
-}
-
-function pathToFileUrl(value: string): string {
-  return new URL(`file://${value.replace(/\\/gu, "/")}`).href;
 }

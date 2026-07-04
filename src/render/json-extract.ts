@@ -1,3 +1,5 @@
+import { tryParseJson } from "../util/json-guards.js";
+
 /**
  * Extract the most likely JSON payload from a provider text response.
  *
@@ -100,12 +102,4 @@ export function extractFirstBalancedObject(rawText: string): string | null {
   }
 
   return null;
-}
-
-function tryParseJson(candidate: string): unknown {
-  try {
-    return JSON.parse(candidate);
-  } catch {
-    return undefined;
-  }
 }

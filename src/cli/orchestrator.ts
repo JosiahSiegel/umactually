@@ -20,6 +20,8 @@ import { readLiveSonarContext } from "./sonar-context.js";
 import { applySimulateFindings } from "./simulate-findings.js";
 import type { ParsedCliArgs } from "./parse-args.js";
 import { DEFAULT_MAX_COMMENTS_MERGE, DEFAULT_REVIEW_FILE_LIMIT } from "../config/defaults.js";
+import { BRAND_PREFIX } from "../util/brand.js";
+import { formatError } from "../util/error.js";
 import { logError, logWarning } from "../util/log.js";
 
 /**
@@ -90,7 +92,7 @@ async function requestChunkedLiveReview(input: {
           // "we lost 1 of 66 chunks" and "the whole review dies on
           // chunk 12 because the provider was rate-limiting".
           failedChunkCount += 1;
-          const message = error instanceof Error ? error.message : String(error);
+          const message = formatError(error);
           const sanitized = sanitizeForPost(message, [input.platformToken]);
           const redactedChunk = chunk.length > 80 ? `${chunk.slice(0, 77)}…` : chunk;
           logWarning(
@@ -143,7 +145,7 @@ export async function runLive(input: RunLiveInput): Promise<LiveRunResult> {
   const platform = detectLivePlatform(env);
   if (platform === null) {
     const message = "Live review requires GitHub Actions (GITHUB_ACTIONS=true) or Azure Pipelines (TF_BUILD=True).";
-    process.stdout.write(`umactually-pr-review: ${message}\n`);
+    process.stdout.write(`${BRAND_PREFIX}${message}\n`);
     return failedResult(message);
   }
 
@@ -153,13 +155,13 @@ export async function runLive(input: RunLiveInput): Promise<LiveRunResult> {
   const providerUrl = input.parsed.apiUrl ?? env["UMACTUALLY_API_URL"];
   if (!isCopilot && (providerUrl === undefined || providerUrl.length === 0)) {
     const message = "UMACTUALLY_API_URL must be set for live review.";
-    process.stdout.write(`umactually-pr-review: ${message}\n`);
+    process.stdout.write(`${BRAND_PREFIX}${message}\n`);
     return failedResult(message);
   }
   const providerKey = input.parsed.apiKey ?? env["UMACTUALLY_API_KEY"];
   if (providerKey === undefined || providerKey.length === 0) {
     const message = "UMACTUALLY_API_KEY must be set for live review.";
-    process.stdout.write(`umactually-pr-review: ${message}\n`);
+    process.stdout.write(`${BRAND_PREFIX}${message}\n`);
     return failedResult(message);
   }
 
@@ -180,14 +182,14 @@ export async function runLive(input: RunLiveInput): Promise<LiveRunResult> {
       ...(sonarContext !== undefined ? { sonarContext } : {}),
     });
   } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
+    const message = formatError(error);
     const sanitized = sanitizeForPost(message, readSecretValues(env));
-    process.stdout.write(`umactually-pr-review: ${sanitized}\n`);
+    process.stdout.write(`${BRAND_PREFIX}${sanitized}\n`);
     return failedResult(sanitized);
   }
 
   if (result.posted) {
-    process.stdout.write(`umactually-pr-review: ${result.message}\n`);
+    process.stdout.write(`${BRAND_PREFIX}${result.message}\n`);
   }
   return result;
 }
@@ -269,7 +271,7 @@ async function dispatchLivePlatform(input: {
       const fileCount = countDiffFiles(diffText);
       let liveOutcome: LiveProviderOutcome;
       if (reviewFileLimit > 0 && fileCount > reviewFileLimit) {
-        process.stdout.write(`umactually-pr-review: skipping live review — PR changes ${fileCount} files, exceeds --review-file-limit=${reviewFileLimit}. Use --review-file-limit 0 to disable.\n`);
+        process.stdout.write(`${BRAND_PREFIX}skipping live review — PR changes ${fileCount} files, exceeds --review-file-limit=${reviewFileLimit}. Use --review-file-limit 0 to disable.\n`);
         liveOutcome = {
           review: buildTooLargeFallback({
             fileCount,
@@ -302,7 +304,7 @@ async function dispatchLivePlatform(input: {
           // Chunked path: feed each per-file chunk to the provider in
           // parallel (bounded by DEFAULT_CHUNK_CONCURRENCY) and merge
           // the per-chunk outcomes into a single LiveProviderOutcome.
-          process.stdout.write(`umactually-pr-review: chunking large PR diff into ${chunks.length} provider requests (max concurrency ${DEFAULT_CHUNK_CONCURRENCY}).\n`);
+          process.stdout.write(`${BRAND_PREFIX}chunking large PR diff into ${chunks.length} provider requests (max concurrency ${DEFAULT_CHUNK_CONCURRENCY}).\n`);
           liveOutcome = await requestChunkedLiveReview({
             parsed,
             cwd,

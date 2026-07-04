@@ -1,6 +1,11 @@
-import { isRecord } from "../util/json-guards.js";
+import { isRecord, isUnknownArray } from "../util/json-guards.js";
 import { writeBrandedAnnotation } from "../util/log.js";
 import { sleep } from "../util/async.js";
+import { stripTrailingSlash } from "../util/url.js";
+import { formatError } from "../util/error.js";
+
+/** Thin alias for the canonical `isUnknownArray` helper, named for the readonly-flavor call sites in this module. */
+const isReadonlyArray = isUnknownArray;
 
 type SonarImportContract = {
   readonly qualityGateSequenceJson: string;
@@ -165,10 +170,6 @@ function parseJson(json: string): unknown {
   return value;
 }
 
-function isReadonlyArray(value: unknown): value is readonly unknown[] {
-  return Array.isArray(value);
-}
-
 function isQualityGateStatus(status: string): status is QualityGateStatus {
   return QUALITY_GATE_STATUSES.has(status);
 }
@@ -232,7 +233,7 @@ export async function runLiveSonarImport(config: LiveSonarConfig): Promise<LiveS
   const fetchImpl = config.fetchImpl ?? globalThis.fetch.bind(globalThis);
   const pollIntervalMs = config.pollIntervalMs ?? DEFAULT_POLL_INTERVAL_MS;
   const deadline = Date.now() + Math.max(1, config.sonarTimeoutSeconds) * 1_000;
-  const baseUrl = config.sonarHostUrl.replace(/\/+$/u, "");
+  const baseUrl = stripTrailingSlash(config.sonarHostUrl);
   const authHeaders: Record<string, string> = {
     Authorization: `Bearer ${config.sonarToken}`,
     Accept: "application/json",
@@ -275,7 +276,7 @@ export async function runLiveSonarImport(config: LiveSonarConfig): Promise<LiveS
         }
       }
     } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
+      const message = formatError(error);
       // Network errors are not fatal — retry until the deadline.
       lastStatus = "IN_PROGRESS";
       writeBrandedAnnotation(
@@ -322,7 +323,7 @@ async function fetchSonarFindings(
       }
     }
   } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
+    const message = formatError(error);
     writeBrandedAnnotation("warning", `sonar issues fetch failed: ${message}`);
   }
 
@@ -341,7 +342,7 @@ async function fetchSonarFindings(
       }
     }
   } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
+    const message = formatError(error);
     writeBrandedAnnotation("warning", `sonar hotspots fetch failed: ${message}`);
   }
 

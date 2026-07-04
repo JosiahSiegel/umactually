@@ -1,9 +1,7 @@
 import type { GithubContext } from "./context.js";
 import { PlatformApiError } from "../../util/platform-error.js";
-import { USER_AGENT } from "../../util/brand.js";
+import type { FetchImpl } from "../../util/http.js";
 import { fetchTextOrThrow, githubHeaders } from "../../util/http.js";
-
-export type FetchImpl = (input: string | URL | Request, init?: RequestInit) => Promise<Response>;
 
 /**
  * API-layer error for the GitHub platform adapter. Inherits the
@@ -35,7 +33,6 @@ export async function fetchGithubPrDiff(context: GithubContext, fetchImpl: Fetch
       headers: {
         ...githubHeaders(context.token),
         Accept: PULL_DIFF_MEDIA_TYPE,
-        "User-Agent": USER_AGENT,
       },
     },
     {
