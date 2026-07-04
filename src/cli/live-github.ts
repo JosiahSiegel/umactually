@@ -1,18 +1,16 @@
 import { type GithubContext } from "../platform/github/context.js";
-import { REVIEW_MARKER } from "../review/run-review.js";
+import { commentBodyHasMarker } from "../util/marker.js";
 import { githubHeaders } from "../util/http.js";
 import { isRecord, isSafeInteger } from "../util/json-guards.js";
 import { writeBrandedAnnotation } from "../util/log.js";
 import {
   LiveReviewError,
   buildInlineCommentBody,
-  buildReviewBody,
-  countBySeverity,
   ensureHttpOk,
   mapReviewVerdictToGithubEvent,
+  preparePostedReview,
   readJsonResponse,
   readResponseId,
-  selectOffDiffComments,
   selectPostableComments,
   type FetchImpl,
   type LiveProviderOutcome,
@@ -28,39 +26,21 @@ export async function runGithubLive(input: {
 }): Promise<LiveRunResult> {
   const { context, diffText, provider, parsed, fetchImpl } = input;
 
-  const comments = selectPostableComments({
+  const prepared = preparePostedReview({
     review: provider.review,
+    provider: provider.provider,
+    modelId: provider.modelId,
     diffText,
     parsed,
     secrets: [context.token],
   });
+  const { postableComments: comments, body } = prepared;
   const postableComments = comments.map((comment) => ({
     path: comment.path,
     line: comment.line,
     side: "RIGHT" as const,
     body: buildInlineCommentBody({ comment, secrets: [context.token] }),
   }));
-  const offDiffFromComments = selectOffDiffComments(provider.review, diffText);
-  const suppressedCommentCount =
-    provider.review.suppressedComments.length + offDiffFromComments.length;
-  const body = buildReviewBody({
-    review: provider.review,
-    provider: provider.provider,
-    modelId: provider.modelId,
-    validCommentCount: comments.length,
-    suppressedCommentCount,
-    offDiffFromComments,
-    // CLARITY-15: severityCounts must reflect the POSTED set (i.e. the
-    // same comments that produced `validCommentCount`) so the rendered
-    // tally and the footer's inline count reconcile. Computing from
-    // `provider.review.comments` would over-report by the number of
-    // findings filtered out by `selectPostableComments`.
-    severityCounts: countBySeverity(comments),
-    // CLARITY-16: pass the posted set so the "Top concerns" preview
-    // denominator agrees with the tally + footer.
-    postedComments: comments,
-    secrets: [context.token],
-  });
   const existing = await findExistingMarkerReview(context, fetchImpl);
   // When simulate-findings is set the demo path must ALWAYS replace the
   // existing review via DELETE+POST — even when the new payload carries 0
@@ -137,7 +117,7 @@ async function findExistingMarkerReview(context: GithubContext, fetchImpl: Fetch
   }
   for (const entry of json) {
     const review = parseExistingReview(entry);
-    if (review !== null && review.body.includes(REVIEW_MARKER) && review.state !== "DISMISSED") {
+    if (review !== null && commentBodyHasMarker(review.body) && review.state !== "DISMISSED") {
       return review;
     }
   }

@@ -1,17 +1,24 @@
 import { parseDiffPositions } from "../diff/parse-positions.js";
-import { REVIEW_MARKER } from "../review/run-review.js";
+import { REVIEW_MARKER } from "../util/marker.js";
 import { scanReviewSecrets } from "../security/scan-review-secrets.js";
 import type { Platform } from "../config/types.js";
 import { DEFAULT_MAX_COMMENTS } from "../config/defaults.js";
-import { REDACTED_SECRET_TOKEN } from "../util/brand.js";
+import {
+  BRAND_PREFIX,
+  REDACTED_AUTHORIZATION_HEADER,
+  REDACTED_BEARER_TOKEN,
+  REDACTED_SECRET_TOKEN,
+} from "../util/brand.js";
 import { truncateBodyForLog } from "../util/http.js";
+import type { FetchImpl } from "../util/http.js";
 import { isPositiveSafeInteger, isRecord, isSafeInteger } from "../util/json-guards.js";
 import { MANIFEST_SCHEMA } from "../util/marker.js";
 import { countBySeverity as countBySeverityUtil, SEVERITY_ORDER, severityRank } from "../util/severity.js";
 import { mapVerdictToAzureStatus, mapVerdictToGithubEvent } from "../util/verdict.js";
+import type { ProviderComment } from "../provider/provider-parse.js";
 import type { ParsedCliArgs } from "./parse-args.js";
 
-export type FetchImpl = (input: string | URL | Request, init?: RequestInit) => Promise<Response>;
+export type { FetchImpl };
 
 /** Live-path platform (after auto-resolution). Mirrors `Platform` minus "auto". */
 export type LivePlatform = Exclude<Platform, "auto">;
@@ -23,13 +30,7 @@ export type LiveRunResult = {
   readonly message: string;
 };
 
-export type LiveReviewComment = {
-  readonly path: string;
-  readonly line: number;
-  readonly body: string;
-  readonly severity: string;
-  readonly category: string;
-};
+export type LiveReviewComment = ProviderComment;
 
 export type LiveReview = {
   readonly summary: string;
@@ -69,6 +70,22 @@ export type LiveProviderOutcome = {
   readonly provider: string;
   readonly modelId: string;
 };
+
+/**
+ * The shape returned by {@link preparePostedReview}: the in-diff comments
+ * eligible for inline posting, the off-diff comments that surface only in
+ * the manifest, the suppressed count, the severity tally, the rendered
+ * review body, and the posted-comment set (currently the same as the
+ * postable set, but kept distinct for future divergence).
+ */
+export interface PreparedPostedReview {
+  readonly postableComments: readonly LiveReviewComment[];
+  readonly offDiffFromComments: readonly LiveReviewComment[];
+  readonly suppressedCommentCount: number;
+  readonly severityCounts: Record<string, number>;
+  readonly body: string;
+  readonly postedComments: readonly LiveReviewComment[];
+}
 
 export class LiveReviewError extends Error {
   override readonly name = "LiveReviewError";
@@ -746,6 +763,56 @@ export function countSuppressedComments(review: LiveReview, diffText: string): n
 }
 
 /**
+ * The shared GitHub/Azure live-post preparation recipe. Computes the
+ * postable comments, off-diff comments, suppressed comment count, severity
+ * counts, and the review body in one place so both `runGithubLive` and
+ * `runAzureLive` produce identical postable lists and identical review
+ * bodies for identical inputs.
+ *
+ * Callers should use this helper rather than re-running `selectPostableComments`,
+ * `selectOffDiffComments`, `countBySeverity`, and `buildReviewBody` inline,
+ * which was the previous source of drift between the two platforms.
+ */
+export function preparePostedReview(input: {
+  readonly review: LiveReview;
+  readonly provider: string;
+  readonly modelId: string;
+  readonly diffText: string;
+  readonly parsed: ParsedCliArgs;
+  readonly secrets: readonly string[];
+}): PreparedPostedReview {
+  const postableComments = selectPostableComments({
+    review: input.review,
+    diffText: input.diffText,
+    parsed: input.parsed,
+    secrets: input.secrets,
+  });
+  const offDiffFromComments = selectOffDiffComments(input.review, input.diffText);
+  const suppressedCommentCount = input.review.suppressedComments.length + offDiffFromComments.length;
+  const severityCounts = countBySeverity(postableComments);
+  const body = buildReviewBody({
+    review: input.review,
+    provider: input.provider,
+    modelId: input.modelId,
+    validCommentCount: postableComments.length,
+    suppressedCommentCount,
+    offDiffFromComments,
+    severityCounts,
+    postedComments: postableComments,
+    secrets: input.secrets,
+  });
+
+  return {
+    postableComments,
+    offDiffFromComments,
+    suppressedCommentCount,
+    severityCounts,
+    body,
+    postedComments: postableComments,
+  };
+}
+
+/**
  * Map a review verdict to a GitHub review-submission event. Delegates to
  * `src/util/verdict.ts` so the merge-path verdict-rank table and the
  * live-path event mapping share the same canonical definitions.
@@ -784,8 +851,8 @@ export const mapReviewVerdictToAzureStatus: (verdict: string) => "succeeded" | "
 
 export function sanitizeForPost(value: string, secrets: readonly string[]): string {
   let sanitized = value
-    .replace(/Authorization:\s*[^\r\n]*/giu, "[REDACTED_AUTHORIZATION_HEADER]")
-    .replace(/\bBearer\s+\S+/giu, "[REDACTED_BEARER_TOKEN]");
+    .replace(/Authorization:\s*[^\r\n]*/giu, REDACTED_AUTHORIZATION_HEADER)
+    .replace(/\bBearer\s+\S+/giu, REDACTED_BEARER_TOKEN);
   for (const secret of secrets) {
     if (secret.length > 0) {
       sanitized = sanitized.split(secret).join(REDACTED_SECRET_TOKEN);
@@ -844,7 +911,7 @@ export function ensureHttpOk(response: Response, code: string, action: string): 
       // Surface the server-side error message on stderr for operators;
       // the thrown LiveReviewError keeps its short public form.
       const snippet = truncateBodyForLog(text, 500);
-      process.stderr.write(`::debug::umactually-pr-review: ${action} HTTP ${response.status} body=${snippet}\n`);
+      process.stderr.write(`::debug::${BRAND_PREFIX}${action} HTTP ${response.status} body=${snippet}\n`);
     })
     .catch(() => {
       // Body read failed; nothing actionable to do here.
