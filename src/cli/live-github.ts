@@ -7,6 +7,7 @@ import {
   LiveReviewError,
   buildInlineCommentBody,
   buildReviewBody,
+  countBySeverity,
   ensureHttpOk,
   mapReviewVerdictToGithubEvent,
   readJsonResponse,
@@ -49,6 +50,12 @@ export async function runGithubLive(input: {
     validCommentCount: comments.length,
     suppressedCommentCount,
     offDiffFromComments,
+    // CLARITY-15: severityCounts must reflect the POSTED set (i.e. the
+    // same comments that produced `validCommentCount`) so the rendered
+    // tally and the footer's inline count reconcile. Computing from
+    // `provider.review.comments` would over-report by the number of
+    // findings filtered out by `selectPostableComments`.
+    severityCounts: countBySeverity(comments),
     secrets: [context.token],
   });
   const existing = await findExistingMarkerReview(context, fetchImpl);

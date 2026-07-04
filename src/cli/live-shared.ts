@@ -375,9 +375,18 @@ export function buildReviewBody(input: {
    * caller has no off-diff findings to surface.
    */
   readonly offDiffFromComments: readonly LiveReviewComment[];
+  /**
+   * Severity distribution of the POSTED comments (i.e. the comments
+   * that survived `selectPostableComments` filtering). Used for both
+   * the rendered tally and the manifest's `severityCounts` so they
+   * agree by construction. Callers MUST compute this from the same set
+   * that produced `validCommentCount`; computing from `review.comments`
+   * is a CLARITY-15 violation (tally would over-report by the number
+   * of filtered-out findings).
+   */
+  readonly severityCounts: Record<string, number>;
   readonly secrets: readonly string[];
 }): string {
-  const severityCounts = countBySeverity(input.review.comments);
   const verdict = verdictBadge({
     verdict: input.review.verdict,
     validCommentCount: input.validCommentCount,
@@ -404,7 +413,7 @@ export function buildReviewBody(input: {
     input.suppressedCommentCount > 0
       ? `> 🔕 ${input.suppressedCommentCount} off-diff finding${input.suppressedCommentCount === 1 ? " was" : "s were"} not on this PR's diff.\n`
       : "";
-  const tally = countsLine({ severityCounts });
+  const tally = countsLine({ severityCounts: input.severityCounts });
   const topConcerns = topConcernsBlock({
     review: input.review,
     validCommentCount: input.validCommentCount,
@@ -441,7 +450,7 @@ export function buildReviewBody(input: {
       modelId: input.modelId,
       validCommentCount: input.validCommentCount,
       suppressedCommentCount: input.suppressedCommentCount,
-      severityCounts,
+      severityCounts: input.severityCounts,
     }),
   ];
 

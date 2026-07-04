@@ -3209,7 +3209,6 @@ function metadataManifest(input) {
  * lets a reviewer scan the card in 5 seconds.
  */
 function buildReviewBody(input) {
-    const severityCounts = live_shared_countBySeverity(input.review.comments);
     const verdict = verdictBadge({
         verdict: input.review.verdict,
         validCommentCount: input.validCommentCount,
@@ -3234,7 +3233,7 @@ function buildReviewBody(input) {
     const offDiffNote = input.suppressedCommentCount > 0
         ? `> 🔕 ${input.suppressedCommentCount} off-diff finding${input.suppressedCommentCount === 1 ? " was" : "s were"} not on this PR's diff.\n`
         : "";
-    const tally = countsLine({ severityCounts });
+    const tally = countsLine({ severityCounts: input.severityCounts });
     const topConcerns = topConcernsBlock({
         review: input.review,
         validCommentCount: input.validCommentCount,
@@ -3268,7 +3267,7 @@ function buildReviewBody(input) {
             modelId: input.modelId,
             validCommentCount: input.validCommentCount,
             suppressedCommentCount: input.suppressedCommentCount,
-            severityCounts,
+            severityCounts: input.severityCounts,
         }),
     ];
     const raw = sections.filter((s) => s.length > 0).join("\n");
@@ -3613,6 +3612,12 @@ async function runAzureLive(input) {
         validCommentCount: comments.length,
         suppressedCommentCount,
         offDiffFromComments,
+        // CLARITY-15: severityCounts must reflect the POSTED set (i.e. the
+        // same comments that produced `validCommentCount`) so the rendered
+        // tally and the footer's inline count reconcile. Computing from
+        // `provider.review.comments` would over-report by the number of
+        // findings filtered out by `selectPostableComments`.
+        severityCounts: live_shared_countBySeverity(comments),
         secrets: [context.token],
     });
     const existingThreads = await listAzureThreads(context, fetchImpl);
@@ -4415,6 +4420,12 @@ async function runGithubLive(input) {
         validCommentCount: comments.length,
         suppressedCommentCount,
         offDiffFromComments,
+        // CLARITY-15: severityCounts must reflect the POSTED set (i.e. the
+        // same comments that produced `validCommentCount`) so the rendered
+        // tally and the footer's inline count reconcile. Computing from
+        // `provider.review.comments` would over-report by the number of
+        // findings filtered out by `selectPostableComments`.
+        severityCounts: live_shared_countBySeverity(comments),
         secrets: [context.token],
     });
     const existing = await findExistingMarkerReview(context, fetchImpl);

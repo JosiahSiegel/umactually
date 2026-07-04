@@ -58,6 +58,7 @@ describe("buildReviewBody (shared GitHub + Azure review header)", () => {
       validCommentCount: 3,
       suppressedCommentCount: 1,
       offDiffFromComments: [],
+      severityCounts: { high: 1, medium: 1, low: 1 },
       secrets: SECRETS,
     });
     expect(body).toContain("<!-- umactually-pr-review -->");
@@ -71,6 +72,7 @@ describe("buildReviewBody (shared GitHub + Azure review header)", () => {
       validCommentCount: 3,
       suppressedCommentCount: 1,
       offDiffFromComments: [],
+      severityCounts: { high: 1, medium: 1, low: 1 },
       secrets: SECRETS,
     });
     // Verdict is one of three values; the badge is rendered consistently.
@@ -88,6 +90,7 @@ describe("buildReviewBody (shared GitHub + Azure review header)", () => {
       validCommentCount: 3,
       suppressedCommentCount: 1,
       offDiffFromComments: [],
+      severityCounts: { high: 1, medium: 1, low: 1 },
       secrets: SECRETS,
     });
     expect(body).toContain("Three issues need attention before merge.");
@@ -101,6 +104,7 @@ describe("buildReviewBody (shared GitHub + Azure review header)", () => {
       validCommentCount: 3,
       suppressedCommentCount: 1,
       offDiffFromComments: [],
+      severityCounts: { high: 1, medium: 1, low: 1 },
       secrets: SECRETS,
     });
     // GitHub renders <details> natively; ADO renders the raw HTML in markdown
@@ -124,6 +128,7 @@ describe("buildReviewBody (shared GitHub + Azure review header)", () => {
       validCommentCount: 3,
       suppressedCommentCount: 1,
       offDiffFromComments: [],
+      severityCounts: { high: 1, medium: 1, low: 1 },
       secrets: SECRETS,
     });
     // Each severity level appears at least once with a count. Use a
@@ -146,6 +151,7 @@ describe("buildReviewBody (shared GitHub + Azure review header)", () => {
       validCommentCount: 3,
       suppressedCommentCount: 1,
       offDiffFromComments: [],
+      severityCounts: { high: 1, medium: 1, low: 1 },
       secrets: SECRETS,
     });
     // The manifest is embedded in a hidden HTML comment so it does not
@@ -180,6 +186,7 @@ describe("buildReviewBody (shared GitHub + Azure review header)", () => {
       validCommentCount: 0,
       suppressedCommentCount: 0,
       offDiffFromComments: [],
+      severityCounts: { critical: 0, high: 0, medium: 0, low: 0 },
       secrets: SECRETS,
     });
     expect(body).not.toContain("sk-test-secret-do-not-leak");
@@ -271,6 +278,7 @@ describe("GitHub + Azure parity", () => {
       validCommentCount: 3,
       suppressedCommentCount: 1,
       offDiffFromComments: [],
+      severityCounts: { high: 1, medium: 1, low: 1 },
       secrets: SECRETS,
     });
     const azureBody = buildReviewBody({
@@ -280,6 +288,7 @@ describe("GitHub + Azure parity", () => {
       validCommentCount: 3,
       suppressedCommentCount: 1,
       offDiffFromComments: [],
+      severityCounts: { high: 1, medium: 1, low: 1 },
       secrets: SECRETS,
     });
     expect(githubBody).toBe(azureBody);

@@ -33,6 +33,7 @@ describe("CLARITY-14: actionable-only parent card", () => {
       validCommentCount: 3,
       suppressedCommentCount: 1,
       offDiffFromComments: [],
+      severityCounts: { high: 1, medium: 1, low: 1 },
       secrets: [],
     });
     // Rows are gone.
@@ -69,6 +70,7 @@ describe("CLARITY-14: actionable-only parent card", () => {
       validCommentCount: 0,
       suppressedCommentCount: 5,
       offDiffFromComments: [],
+      severityCounts: { critical: 0, high: 0, medium: 0, low: 0 },
       secrets: [],
     });
     // Filtered findings header — no "from model" suffix.
@@ -97,6 +99,7 @@ describe("CLARITY-14: actionable-only parent card", () => {
       validCommentCount: 3,
       suppressedCommentCount: 0,
       offDiffFromComments: [],
+      severityCounts: { high: 3 },
       secrets: [],
     });
     // Plain "Top concerns (3)" — no model provenance.
@@ -113,6 +116,7 @@ describe("CLARITY-14: actionable-only parent card", () => {
       validCommentCount: 0,
       suppressedCommentCount: 0,
       offDiffFromComments: [],
+      severityCounts: { critical: 0, high: 0, medium: 0, low: 0 },
       secrets: [],
     });
     // No rows, no tally, no suppressed block, no filtered/top-concerns.
@@ -149,6 +153,12 @@ describe("CLARITY-14: actionable-only parent card", () => {
       validCommentCount: 5,
       suppressedCommentCount: 0,
       offDiffFromComments: [],
+      // info severity is excluded from the rendered tally per CLARITY-3,
+      // but it's counted in `validCommentCount` and the manifest. The
+      // tally sum (4) is intentionally < inline count (5) — the
+      // contract is "info findings exist" without giving them a tally
+      // bucket.
+      severityCounts: { critical: 1, high: 1, medium: 1, low: 1, info: 1 },
       secrets: [],
     });
     // Extract the order of paths in the Top concerns block.

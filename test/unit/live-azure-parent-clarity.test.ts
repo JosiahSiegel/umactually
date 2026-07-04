@@ -161,6 +161,7 @@ const STD_INPUT = {
   validCommentCount: 9,
   suppressedCommentCount: 4,
   offDiffFromComments: [],
+  severityCounts: { critical: 0, high: 1, medium: 2, low: 6 },
   secrets: SECRETS,
 };
 
@@ -233,6 +234,8 @@ describe("buildReviewBody — 5-second scannable clarity", () => {
       validCommentCount: 0,
       suppressedCommentCount: 0,
       offDiffFromComments: [],
+
+      severityCounts: { critical: 0, high: 0, medium: 0, low: 0 },
       secrets: SECRETS,
     });
     const lines = body.split("\n").map((line) => line.trim()).filter((line) => line.length > 0);
@@ -261,6 +264,8 @@ describe("buildReviewBody — 5-second scannable clarity", () => {
       validCommentCount: 0,
       suppressedCommentCount: 0,
       offDiffFromComments: [],
+
+      severityCounts: { critical: 0, high: 0, medium: 0, low: 0 },
       secrets: SECRETS,
     });
     const lines = body.split("\n").map((line) => line.trim()).filter((line) => line.length > 0);
@@ -372,6 +377,7 @@ describe("buildReviewBody — 5-second scannable clarity", () => {
       validCommentCount: 1,
       suppressedCommentCount: expectedSuppressedCount,
       offDiffFromComments,
+      severityCounts: { critical: 0, high: 1, medium: 0, low: 0 },
       secrets: SECRETS,
     });
 
@@ -426,6 +432,8 @@ describe("buildReviewBody — 5-second scannable clarity", () => {
       validCommentCount: 0,
       suppressedCommentCount: 0,
       offDiffFromComments: [],
+
+      severityCounts: { critical: 0, high: 0, medium: 0, low: 0 },
       secrets: SECRETS,
     });
     // No zero-tally line.
@@ -466,6 +474,8 @@ describe("buildReviewBody — 5-second scannable clarity", () => {
       validCommentCount: 0,
       suppressedCommentCount: 2,
       offDiffFromComments: [],
+
+      severityCounts: { critical: 0, high: 0, medium: 0, low: 0 },
       secrets: SECRETS,
     });
     expect(body).not.toMatch(/📊/u);
@@ -499,6 +509,7 @@ describe("buildReviewBody — 5-second scannable clarity", () => {
       validCommentCount: 3,
       suppressedCommentCount: 2,
       offDiffFromComments: [],
+      severityCounts: { high: 1, medium: 1, low: 1 },
       secrets: SECRETS,
     });
     // Inline note above the suppressed block.
@@ -542,6 +553,8 @@ describe("buildReviewBody — 5-second scannable clarity", () => {
       validCommentCount: 0,
       suppressedCommentCount: 0,
       offDiffFromComments: [],
+
+      severityCounts: { critical: 0, high: 0, medium: 0, low: 0 },
       secrets: SECRETS,
     });
     expect(body).toMatch(/💬\s+DISCUSS/u);
@@ -570,11 +583,144 @@ describe("buildReviewBody — 5-second scannable clarity", () => {
       validCommentCount: 0,
       suppressedCommentCount: 0,
       offDiffFromComments: [],
+
+      severityCounts: { critical: 0, high: 0, medium: 0, low: 0 },
       secrets: SECRETS,
     });
     // No "from model" suffix.
     expect(body).not.toMatch(/from model/u);
     // Filtered findings header when 0 posted but findings exist.
     expect(body).toMatch(/🔕\s+Filtered findings\s+\(\d+ of \d+ shown\)/u);
+  });
+
+  // CLARITY-15: The severity tally (📊 N critical · ... · N low) and the
+  // footer's inline count (`N inline`) MUST reconcile. The tally counts
+  // findings that survived severity/cap/off-diff filtering — i.e. the
+  // SAME set the footer reports. Before CLARITY-15 the tally reflected
+  // the model's full output (e.g. "1 high · 3 medium · 6 low" = 10)
+  // while the footer reflected the post-filter posted set (e.g.
+  // "9 inline") — off by the number of findings filtered out. A
+  // reviewer looking at the card should never have to do that math.
+  //
+  // The fix: `severityCounts` becomes a caller-provided parameter,
+  // computed from the POSTED comments (the same set that produces
+  // `validCommentCount`). Both the rendered tally and the manifest
+  // use the same input, so they agree by construction.
+  it("CLARITY-15a: severity tally total equals inline footer count", () => {
+    // 12 model comments (1 high, 3 medium, 6 low, 2 info) → after
+    // filters → 9 posted (caller passes the 9). Tally must sum to 9.
+    const postedComments = [
+      { path: "src/a.ts", line: 1, body: "high 1", severity: "high", category: "security" },
+      { path: "src/b.ts", line: 1, body: "medium 1", severity: "medium", category: "general" },
+      { path: "src/c.ts", line: 1, body: "medium 2", severity: "medium", category: "general" },
+      { path: "src/d.ts", line: 1, body: "medium 3", severity: "medium", category: "general" },
+      { path: "src/e.ts", line: 1, body: "low 1", severity: "low", category: "general" },
+      { path: "src/f.ts", line: 1, body: "low 2", severity: "low", category: "general" },
+      { path: "src/g.ts", line: 1, body: "low 3", severity: "low", category: "general" },
+      { path: "src/h.ts", line: 1, body: "low 4", severity: "low", category: "general" },
+      { path: "src/i.ts", line: 1, body: "low 5", severity: "low", category: "general" },
+    ];
+    const review: LiveReview = {
+      summary: "9 findings will be posted; 3 filtered out.",
+      verdict: "NEEDS_FIX",
+      comments: [
+        // Same 9 that posted ...
+        ...postedComments,
+        // ... plus 3 that did NOT post (filtered by severity/cap).
+        { path: "src/j.ts", line: 1, body: "low (off-diff)", severity: "low", category: "general" },
+        { path: "src/k.ts", line: 1, body: "low (info severity)", severity: "info", category: "general" },
+        { path: "src/l.ts", line: 1, body: "info 2", severity: "info", category: "general" },
+      ],
+      suppressedComments: [],
+    };
+    const body = buildReviewBody({
+      review,
+      provider: "openai-compatible",
+      modelId: "auto",
+      validCommentCount: postedComments.length,
+      suppressedCommentCount: 0,
+      offDiffFromComments: [],
+
+      severityCounts: { critical: 0, high: 1, medium: 3, low: 5 },
+      secrets: SECRETS,
+    });
+    // Tally shows the post-filter distribution.
+    expect(body).toMatch(/📊\s+`0`\s+critical\s+·\s+`1`\s+high\s+·\s+`3`\s+medium\s+·\s+`5`\s+low/u);
+    // Footer matches the inline count.
+    expect(body).toMatch(/9\s+inline/u);
+    // Manifest's severityCounts matches the tally (1 high, 3 medium, 5 low — info excluded).
+    const manifestMatch = body.match(/<!--\s*umactually-pr-review:manifest\s+(\{[\s\S]*?\})\s*-->/u);
+    expect(manifestMatch).not.toBeNull();
+    const manifest = JSON.parse(manifestMatch?.[1] ?? "{}");
+    expect(manifest.severityCounts).toEqual({ critical: 0, high: 1, medium: 3, low: 5 });
+    expect(manifest.inlineCount).toBe(9);
+    // Sum check: tally totals MUST equal validCommentCount.
+    expect(1 + 3 + 5).toBe(9);
+  });
+
+  it("CLARITY-15b: severity tally hidden when zero posted (CLARITY-14c still wins)", () => {
+    // If validCommentCount === 0, the tally must be hidden (CLARITY-14c),
+    // even if the model returned many findings. The caller's
+    // severityCounts will be all zeros in this case.
+    const review: LiveReview = {
+      summary: "Model said NEEDS_FIX but nothing actionable.",
+      verdict: "NEEDS_FIX",
+      comments: [
+        { path: "src/old.ts", line: 1, body: "low", severity: "low", category: "general" },
+      ],
+      suppressedComments: [],
+    };
+    const body = buildReviewBody({
+      review,
+      provider: "openai-compatible",
+      modelId: "auto",
+      validCommentCount: 0,
+      suppressedCommentCount: 0,
+      offDiffFromComments: [],
+
+      severityCounts: { critical: 0, high: 0, medium: 0, low: 0 },
+      secrets: SECRETS,
+    });
+    expect(body).not.toMatch(/📊/u);
+    // Verdict downgrades to DISCUSS per CLARITY-14f.
+    expect(body).toMatch(/💬\s+DISCUSS/u);
+  });
+
+  it("CLARITY-15c: severity tally and manifest severityCounts use the SAME source", () => {
+    // Pin the invariant: the tally line and the manifest's
+    // severityCounts must be derived from the same set. Both are
+    // caller-provided via `severityCounts`. If they ever drift, this
+    // test catches it.
+    const postedComments = [
+      { path: "src/x.ts", line: 5, body: "high", severity: "high", category: "security" },
+      { path: "src/y.ts", line: 6, body: "medium", severity: "medium", category: "general" },
+    ];
+    const review: LiveReview = {
+      summary: "Two findings.",
+      verdict: "NEEDS_FIX",
+      comments: [
+        ...postedComments,
+        // Pretend the model also returned some filtered-out findings.
+        { path: "src/z.ts", line: 1, body: "low filtered", severity: "low", category: "general" },
+      ],
+      suppressedComments: [],
+    };
+    const body = buildReviewBody({
+      review,
+      provider: "openai-compatible",
+      modelId: "auto",
+      validCommentCount: 2,
+      suppressedCommentCount: 0,
+      offDiffFromComments: [],
+      severityCounts: { critical: 0, high: 1, medium: 1, low: 0 },
+      secrets: SECRETS,
+    });
+    // Tally totals 2.
+    expect(body).toMatch(/📊\s+`0`\s+critical\s+·\s+`1`\s+high\s+·\s+`1`\s+medium\s+·\s+`0`\s+low/u);
+    expect(body).toMatch(/2\s+inline/u);
+    const manifestMatch = body.match(/<!--\s*umactually-pr-review:manifest\s+(\{[\s\S]*?\})\s*-->/u);
+    const manifest = JSON.parse(manifestMatch?.[1] ?? "{}");
+    expect(manifest.severityCounts).toEqual({ critical: 0, high: 1, medium: 1, low: 0 });
+    expect(manifest.inlineCount).toBe(2);
   });
 });

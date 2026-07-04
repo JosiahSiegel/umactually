@@ -7,6 +7,7 @@ import { writeBrandedAnnotation } from "../util/log.js";
 import {
   buildInlineCommentBody,
   buildReviewBody,
+  countBySeverity,
   ensureHttpOk,
   mapReviewVerdictToAzureStatus,
   readJsonResponse,
@@ -44,6 +45,12 @@ export async function runAzureLive(input: {
     validCommentCount: comments.length,
     suppressedCommentCount,
     offDiffFromComments,
+    // CLARITY-15: severityCounts must reflect the POSTED set (i.e. the
+    // same comments that produced `validCommentCount`) so the rendered
+    // tally and the footer's inline count reconcile. Computing from
+    // `provider.review.comments` would over-report by the number of
+    // findings filtered out by `selectPostableComments`.
+    severityCounts: countBySeverity(comments),
     secrets: [context.token],
   });
   const existingThreads = await listAzureThreads(context, fetchImpl);
