@@ -383,13 +383,30 @@ describe("buildReviewBody — 5-second scannable clarity", () => {
 
     // Ground-truth: there are 4 suppressed (2 model + 2 off-diff).
     expect(expectedSuppressedCount).toBe(4);
-    // CLARITY-14: The "Suppressed: N off-diff" row is gone — instead the
-    // off-diff inline note surfaces the count, and the details block
-    // header carries the count. Row + header + list count all agree.
-    expect(body).toMatch(/🔕\s+4\s+off-diff\s+findings/u);
-    expect(body).toMatch(/🔕\s+Suppressed\s+\(off-diff,\s+4\)/u);
+    // CLARITY-14 + CLARITY-19: The duplicate off-diff callout is dropped
+    // (it duplicated the suppressed count with confusing `🔕` icons). The
+    // 📊 pipeline summary reconciles the count, and the 📍 Off-diff
+    // details block lists every finding. Summary + header + list count
+    // all agree.
+    //
+    // Numbers derived from the fixture above (3 comments + 2
+    // suppressedComments; 1 on-diff valid; 4 total suppressed; 0
+    // severity-filtered) so the assertion self-validates against
+    // any future fixture tweak. The literal counts come from the
+    // buildReviewBody call below.
+    const expectedTotal = review.comments.length + review.suppressedComments.length;
+    const expectedPosted = 1; // validCommentCount in the call below
+    const expectedOffDiff = 4; // expectedSuppressedCount === 4
+    const expectedFiltered = expectedTotal - expectedPosted - expectedOffDiff;
+    expect(body).toMatch(
+      new RegExp(
+        `📊\\s+${expectedTotal}\\s+findings\\s+→\\s+${expectedPosted}\\s+posted,\\s+${expectedOffDiff}\\s+off-diff,\\s+${expectedFiltered}\\s+filtered`,
+        "u",
+      ),
+    );
+    expect(body).toMatch(new RegExp(`📍\\s+Off-diff\\s+\\(${expectedOffDiff}\\s+not\\s+posted\\)`, "u"));
     const suppressedSection =
-      body.match(/🔕\s+Suppressed\s+\(off-diff,\s+4\)[\s\S]*?<\/details>/u)?.[0] ?? "";
+      body.match(/📍\s+Off-diff\s+\(4\s+not\s+posted\)[\s\S]*?<\/details>/u)?.[0] ?? "";
     const listedFindings = suppressedSection.match(/^- `/gmu) ?? [];
     expect(listedFindings).toHaveLength(expectedSuppressedCount);
     // All four suppressed entries are listed; the on-diff one is NOT.
@@ -421,10 +438,14 @@ describe("buildReviewBody — 5-second scannable clarity", () => {
     expect(body).not.toMatch(/\*\*Suppressed:\*\*/u);
   });
 
-  it("CLARITY-14b: clean review (0 posted + 0 suppressed) shows only verdict + summary + footer", () => {
+  it("CLARITY-14b: clean review (0 posted + 0 suppressed) shows verdict + pipeline summary + summary + footer", () => {
     // The "ship it" case must NOT show a zero-tally severity line,
     // suppressed block, or filtered findings block — all of those
-    // would add noise to a clean review.
+    // would add noise to a clean review. The pipeline summary IS
+    // shown even on a clean review (CLARITY-19): `📊 0 findings →
+    // 0 posted, 0 off-diff, 0 filtered` gives the reader the
+    // "the pipeline actually ran" confirmation that distinguishes
+    // a clean review from a missing review.
     const body = buildReviewBody({
       review: buildEmptyReview(),
       provider: "openai-compatible",
@@ -436,14 +457,14 @@ describe("buildReviewBody — 5-second scannable clarity", () => {
       severityCounts: { critical: 0, high: 0, medium: 0, low: 0 },
       secrets: SECRETS,
     });
-    // No zero-tally line.
-    expect(body).not.toMatch(/📊\s+`0`\s+critical/u);
-    // No suppressed details.
-    expect(body).not.toMatch(/🔕\s+Suppressed\s+\(off-diff/u);
-    // No filtered findings block.
-    expect(body).not.toMatch(/🔕\s+Filtered findings/u);
-    // No top concerns block.
-    expect(body).not.toMatch(/📋\s+Top concerns/u);
+    // No zero-tally line (severity tally now uses 🏷️).
+    expect(body).not.toMatch(/🏷️\s+`0`\s+critical/u);
+    // No off-diff details block.
+    expect(body).not.toMatch(/📍\s+Off-diff/u);
+    // No filtered preview block.
+    expect(body).not.toMatch(/🧹\s+Filtered preview/u);
+    // No posted preview block.
+    expect(body).not.toMatch(/📋\s+Posted preview/u);
     // Verdict + summary + footer are still there.
     expect(body).toContain("<!-- umactually-pr-review -->");
     expect(body).toMatch(/^## /mu);
@@ -478,17 +499,21 @@ describe("buildReviewBody — 5-second scannable clarity", () => {
       severityCounts: { critical: 0, high: 0, medium: 0, low: 0 },
       secrets: SECRETS,
     });
-    expect(body).not.toMatch(/📊/u);
-    // Suppressed block is still visible.
-    expect(body).toMatch(/🔕\s+Suppressed\s+\(off-diff,\s+2\)/u);
-    // Inline note appears above the block.
-    expect(body).toMatch(/🔕\s+2\s+off-diff\s+findings/u);
+    expect(body).not.toMatch(/🏷️/u);
+    // Off-diff details block is visible (📍 replaces 🔕).
+    expect(body).toMatch(/📍\s+Off-diff\s+\(2\s+not\s+posted\)/u);
+    // No duplicate off-diff callout (CLARITY-19).
+    expect(body).not.toMatch(/🔕\s+\d+\s+off-diff\s+finding/u);
   });
 
-  it("CLARITY-14d: inline-count note appears when there are off-diff suppressed findings", () => {
-    // Edge case: validCommentCount === 3 (real findings posted), and
-    // suppressedCommentCount === 2 (off-diff). The card must show a
-    // short inline note explaining the off-diff count.
+  it("CLARITY-19d: pipeline summary replaces inline off-diff callout (CLARITY-14d superseded)", () => {
+    // CLARITY-19 supersedes CLARITY-14d: the old "inline-count note"
+    // (`> 🔕 N off-diff findings were not on this PR's diff.`) is
+    // dropped because the 📊 pipeline summary now surfaces the same
+    // count with one vocabulary. This test pins the new contract:
+    // - Pipeline summary reconciles posted + off-diff (no duplicate callout)
+    // - Severity tally still visible (3 findings survive filtering)
+    // - Posted preview + off-diff details blocks are both visible
     const review: LiveReview = {
       summary: "Two issues found, two off-diff noise.",
       verdict: "NEEDS_FIX",
@@ -512,18 +537,34 @@ describe("buildReviewBody — 5-second scannable clarity", () => {
       severityCounts: { high: 1, medium: 1, low: 1 },
       secrets: SECRETS,
     });
-    // Inline note above the suppressed block.
-    expect(body).toMatch(/🔕\s+2\s+off-diff\s+findings/u);
+    // CLARITY-19: no duplicate off-diff callout. The 📊 pipeline summary
+    // reconciles the count (3 posted + 2 off-diff = 5 total, 0 filtered).
+    // Numbers derived from fixture for self-validation against tweaks.
+    // The literal counts come from the buildReviewBody call below.
+    const expectedTotal = review.comments.length + review.suppressedComments.length;
+    const expectedPosted = 3; // validCommentCount in the call below
+    const expectedOffDiff = 2; // suppressedCommentCount in the call below
+    const expectedFiltered = expectedTotal - expectedPosted - expectedOffDiff;
+    expect(body).toMatch(
+      new RegExp(
+        `📊\\s+${expectedTotal}\\s+findings\\s+→\\s+${expectedPosted}\\s+posted,\\s+${expectedOffDiff}\\s+off-diff,\\s+${expectedFiltered}\\s+filtered`,
+        "u",
+      ),
+    );
     // Severity tally still visible (3 findings). Match anywhere in the
     // tally line, not anchored to the start (since the first cell is
     // `0` critical, not `1` high).
     expect(body).toMatch(/`1`\s+high/u);
     expect(body).toMatch(/`1`\s+medium/u);
     expect(body).toMatch(/`1`\s+low/u);
-    // Suppressed details visible.
-    expect(body).toMatch(/🔕\s+Suppressed\s+\(off-diff,\s+2\)/u);
-    // Top concerns visible.
-    expect(body).toMatch(/📋\s+Top concerns\s+\(3\)/u);
+    // Off-diff details visible (📍 replaces 🔕).
+    expect(body).toMatch(new RegExp(`📍\\s+Off-diff\\s+\\(${expectedOffDiff}\\s+not\\s+posted\\)`, "u"));
+    // Posted preview visible (📋 replaces the old Top concerns).
+    expect(body).toMatch(new RegExp(`📋\\s+Posted preview\\s+\\(${expectedPosted}\\)`, "u"));
+    // No duplicate off-diff callout.
+    expect(body).not.toMatch(/🔕\s+\d+\s+off-diff\s+finding/u);
+    expect(body).not.toMatch(/🔕\s+Suppressed\s+\(off-diff/u);
+    expect(body).not.toMatch(/Top concerns/u);
   });
 
   it("CLARITY-14e: footer inline count is terse and matches validCommentCount", () => {
@@ -589,8 +630,8 @@ describe("buildReviewBody — 5-second scannable clarity", () => {
     });
     // No "from model" suffix.
     expect(body).not.toMatch(/from model/u);
-    // Filtered findings header when 0 posted but findings exist.
-    expect(body).toMatch(/🔕\s+Filtered findings\s+\(\d+ of \d+ shown\)/u);
+    // Filtered preview header (🧹) when 0 posted but findings exist.
+    expect(body).toMatch(/🧹\s+Filtered preview\s+\(showing\s+\d+\s+of\s+\d+\s+candidates\)/u);
   });
 
   // CLARITY-15: The severity tally (📊 N critical · ... · N low) and the
@@ -645,7 +686,8 @@ describe("buildReviewBody — 5-second scannable clarity", () => {
       secrets: SECRETS,
     });
     // Tally shows the post-filter distribution.
-    expect(body).toMatch(/📊\s+`0`\s+critical\s+·\s+`1`\s+high\s+·\s+`3`\s+medium\s+·\s+`5`\s+low/u);
+    // CLARITY-19: severity tally icon is now 🏷️ (📊 is the pipeline summary).
+    expect(body).toMatch(/🏷️\s+`0`\s+critical\s+·\s+`1`\s+high\s+·\s+`3`\s+medium\s+·\s+`5`\s+low/u);
     // Footer matches the inline count.
     expect(body).toMatch(/9\s+inline/u);
     // Manifest's severityCounts matches the tally (1 high, 3 medium, 5 low — info excluded).
@@ -681,7 +723,12 @@ describe("buildReviewBody — 5-second scannable clarity", () => {
       severityCounts: { critical: 0, high: 0, medium: 0, low: 0 },
       secrets: SECRETS,
     });
-    expect(body).not.toMatch(/📊/u);
+    // CLARITY-19: severity tally is hidden when zero (🏷️ no longer 📊);
+    // pipeline summary IS visible so the reader sees what happened
+    // to the model's 1 finding (filtered by severity policy).
+    // Total = 1 comment + 0 suppressed = 1; 0 posted, 0 off-diff, 1 filtered.
+    expect(body).not.toMatch(/🏷️/u);
+    expect(body).toMatch(/📊\s+1\s+findings\s+→\s+0\s+posted,\s+0\s+off-diff,\s+1\s+filtered/u);
     // Verdict downgrades to DISCUSS per CLARITY-14f.
     expect(body).toMatch(/💬\s+DISCUSS/u);
   });
@@ -728,8 +775,8 @@ describe("buildReviewBody — 5-second scannable clarity", () => {
       secrets: SECRETS,
     });
     // Header surfaces the cap + total so the reader doesn't confuse
-    // "5 of 10" with "5 total".
-    expect(body).toMatch(/📋\s+Top concerns\s+\(5\s+of\s+10\s+shown\)/u);
+    // "showing 5 of 10" with "5 total".
+    expect(body).toMatch(/📋\s+Posted preview\s+\(showing\s+5\s+of\s+10\)/u);
     // Tally still sums to 10 (CLARITY-15 invariant).
     expect(body).toMatch(/10\s+inline/u);
   });
@@ -758,9 +805,9 @@ describe("buildReviewBody — 5-second scannable clarity", () => {
       severityCounts: { high: 1, medium: 1, low: 1 },
       secrets: SECRETS,
     });
-    expect(body).toMatch(/📋\s+Top concerns\s+\(3\)/u);
-    // No "of N shown" suffix when nothing is truncated.
-    expect(body).not.toMatch(/Top concerns\s+\(\d+\s+of\s+\d+/u);
+    expect(body).toMatch(/📋\s+Posted preview\s+\(3\)/u);
+    // No "showing N of M" suffix when nothing is truncated.
+    expect(body).not.toMatch(/Posted preview\s+\(showing\s+\d+\s+of\s+\d+/u);
   });
 
   it("CLARITY-16c: Top concerns at exactly the cap (5) shows no denominator", () => {
@@ -788,11 +835,11 @@ describe("buildReviewBody — 5-second scannable clarity", () => {
       severityCounts: { high: 1, medium: 2, low: 2 },
       secrets: SECRETS,
     });
-    expect(body).toMatch(/📋\s+Top concerns\s+\(5\)/u);
-    expect(body).not.toMatch(/Top concerns\s+\(5\s+of\s+5/u);
+    expect(body).toMatch(/📋\s+Posted preview\s+\(5\)/u);
+    expect(body).not.toMatch(/Posted preview\s+\(showing\s+5\s+of\s+5/u);
   });
 
-  it("CLARITY-16d: Filtered findings header still uses denominator (CLARITY-14g invariant)", () => {
+  it("CLARITY-16d: Filtered preview header still uses denominator (CLARITY-14g invariant)", () => {
     // When validCommentCount === 0 and the model returned findings,
     // the header is "Filtered findings (N of Z shown)" — already has
     // the denominator. CLARITY-16 must NOT regress this.
@@ -818,7 +865,7 @@ describe("buildReviewBody — 5-second scannable clarity", () => {
       severityCounts: { critical: 0, high: 0, medium: 0, low: 0 },
       secrets: SECRETS,
     });
-    expect(body).toMatch(/🔕\s+Filtered findings\s+\(\d+\s+of\s+\d+\s+shown\)/u);
+    expect(body).toMatch(/🧹\s+Filtered preview\s+\(showing\s+\d+\s+of\s+\d+\s+candidates\)/u);
   });
 
   it("CLARITY-15c: severity tally and manifest severityCounts use the SAME source", () => {
@@ -850,8 +897,8 @@ describe("buildReviewBody — 5-second scannable clarity", () => {
       severityCounts: { critical: 0, high: 1, medium: 1, low: 0 },
       secrets: SECRETS,
     });
-    // Tally totals 2.
-    expect(body).toMatch(/📊\s+`0`\s+critical\s+·\s+`1`\s+high\s+·\s+`1`\s+medium\s+·\s+`0`\s+low/u);
+    // Tally totals 2 (CLARITY-19: icon is 🏷️ now, 📊 is the pipeline summary).
+    expect(body).toMatch(/🏷️\s+`0`\s+critical\s+·\s+`1`\s+high\s+·\s+`1`\s+medium\s+·\s+`0`\s+low/u);
     expect(body).toMatch(/2\s+inline/u);
     const manifestMatch = body.match(/<!--\s*umactually-pr-review:manifest\s+(\{[\s\S]*?\})\s*-->/u);
     const manifest = JSON.parse(manifestMatch?.[1] ?? "{}");

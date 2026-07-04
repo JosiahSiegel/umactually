@@ -3299,10 +3299,54 @@ function verdictBadge(input) {
 const live_shared_countBySeverity = countBySeverity;
 /**
  * Hard upper bound on the inline-finding preview list inside the parent
- * "Top concerns" <details> block. Keeps the parent card from being
+ * "Posted preview" <details> block. Keeps the parent card from being
  * dominated by a long list when the provider returns many findings.
  */
 const TOP_CONCERNS_PREVIEW_LIMIT = 5;
+/**
+ * CLARITY-19 pipeline summary. Reconciles total findings → posted +
+ * off-diff + filtered in ONE line so the reader can grok the whole
+ * pipeline in one glance.
+ *
+ * Replaces three confusing `🔕` rows that mixed the same icon for
+ * different concepts and used `(N of M shown)` truncation phrasing
+ * that read like a separate count. The pipeline summary uses the `📊`
+ * icon (frees `🏷️` for the severity tally) and explicit word labels
+ * ("posted" / "off-diff" / "filtered") so no reader mistakes one count
+ * for another.
+ *
+ * Always rendered for parsed reviews (even when all counts are 0 — a
+ * clean review with `📊 0 findings → 0 posted, 0 off-diff, 0 filtered`
+ * gives the reader the "I did the right thing" confirmation that the
+ * pipeline actually ran). Skipped for parse-failed fallbacks because
+ * the parsed counts are unreliable.
+ */
+function pipelineSummary(input) {
+    // Compute every count from the source-of-truth arrays. This makes
+    // the formula self-consistent: any future refactor that changes
+    // one of these inputs surfaces as a negative filteredCount below,
+    // rather than silently propagating inconsistent caller state.
+    const totalFindings = input.review.comments.length + input.review.suppressedComments.length;
+    const postedCount = input.validCommentCount;
+    const offDiffCount = input.review.suppressedComments.length + input.offDiffFromComments.length;
+    // Filtered = model comments that survived parsing but were rejected
+    // by severity policy, max-comments cap, etc. For live-parse reviews
+    // this is `total - posted - off-diff`; for parse-fail it is 0.
+    //
+    // CLARITY-19 invariant (replaced after round-3 self-review):
+    //   The previous `totalFindings !== postedCount + offDiffCount +
+    //   filteredCount` check was tautological because filteredCount IS
+    //   defined as that difference. The only failure mode it could
+    //   catch was arithmetic overflow, not the routing regression the
+    //   comment described. The real check is on filteredCount >= 0:
+    //   a negative value means the caller passed inconsistent counts
+    //   (off-diff or posted > total). For graceful degradation, clamp
+    //   to 0 instead of throwing — this is a renderer, not a validator;
+    //   a partial card is better than no card (the parent's inline
+    //   threads are already posted by the time this runs).
+    const filteredCount = Math.max(0, totalFindings - postedCount - offDiffCount);
+    return `📊 ${totalFindings} findings → ${postedCount} posted, ${offDiffCount} off-diff, ${filteredCount} filtered`;
+}
 function countsLine(input) {
     const parts = [];
     let total = 0;
@@ -3312,34 +3356,43 @@ function countsLine(input) {
         parts.push(`\`${count}\` ${level}`);
     }
     // CLARITY-14c: when there are zero findings across all severities,
-    // hide the tally entirely. A row of `📊 0 critical · 0 high · 0
+    // hide the tally entirely. A row of `🏷️ 0 critical · 0 high · 0
     // medium · 0 low` adds nothing for a reviewer who's scanning the
     // card for actionable info — and it explicitly duplicates the "0
     // inline" footer count when nothing was posted.
+    //
+    // CLARITY-19: icon is now `🏷️` (severity / classification tag),
+    // not `📊` which is now the pipeline summary icon.
     if (total === 0) {
         return "";
     }
-    return `📊 ${parts.join(" · ")}`;
+    return `🏷️ ${parts.join(" · ")}`;
 }
 /**
- * Build the "Top concerns" <details> block. Shows the highest-severity
- * findings the caller posted, capped at TOP_CONCERNS_PREVIEW_LIMIT. When
- * the cap truncates the list, the header surfaces the denominator so the
- * reader can tell "5 of 10 shown" from "5 total" without doing math.
+ * Build the "Posted preview" / "Filtered preview" <details> block. Shows
+ * the highest-severity findings (posted or pre-filter), capped at
+ * TOP_CONCERNS_PREVIEW_LIMIT. When the cap truncates the list, the
+ * header surfaces the denominator so the reader can tell "showing 5 of
+ * 10" from "5 total" without doing math.
+ *
+ * CLARITY-19: the icon is `📋` (Posted preview) when at least one
+ * finding landed inline and `🧹` (Filtered preview) when the model
+ * returned findings but none posted — three icons (📋/🧹/📍) replace
+ * the old single `🔕` to make the three categories visually distinct.
  *
  * CLARITY-16: surface the denominator whenever truncation happens. A
- * header that reads "Top concerns (5)" with 10 posted findings reads
+ * header that reads "Posted preview (5)" with 10 posted findings reads
  * like "5 is the total" — but it's the cap. The reader expects the
  * preview to match the tally (which sums to 10); showing just (5)
  * breaks that mental model. Fix: when shown < total, render
- * "Top concerns (N of M shown)".
+ * "Posted preview (showing N of M)".
  *
  * CLARITY-11: when `validCommentCount === 0` but `postedComments.length === 0`
  * and the model returned findings, the pre-filter findings were ALL
  * filtered out (severity policy, max-comments cap, or off-diff
  * suppression). The block must make this explicit so the reader
- * doesn't confuse "0 posted + N concerns listed" with a clean bill
- * of health. We re-label the header as "Filtered findings" and prefix
+ * doesn't confuse "0 posted + N candidates listed" with a clean bill
+ * of health. We re-label the header as "Filtered preview" and prefix
  * the body with a one-line explanation of *why* nothing was posted.
  */
 function topConcernsBlock(input) {
@@ -3374,20 +3427,22 @@ function topConcernsBlock(input) {
     const truncated = shown < total;
     // CLARITY-14g: drop "from model" suffix — the block IS the model
     // output (or the posted set), so labeling it "from model" is
-    // redundant. Use plain "Top concerns (N)" when findings fit in
-    // the preview, "Top concerns (N of M shown)" when truncated, and
-    // "Filtered findings (N of M shown)" when none landed.
+    // redundant. Use plain "📋 Posted preview (N)" when findings fit in
+    // the preview, "📋 Posted preview (showing N of M)" when truncated,
+    // and "🧹 Filtered preview (showing N of M candidates)" when none
+    // landed. CLARITY-19 swaps the icons and adds "showing" / "candidates"
+    // to make the (N of M) clearly truncation, not a separate count.
     const header = filteredAll
         ? shown === 1
-            ? `🔕 Filtered finding (1 of ${total} shown)`
-            : `🔕 Filtered findings (${shown} of ${total} shown)`
+            ? `🧹 Filtered preview (showing 1 of ${total} candidates)`
+            : `🧹 Filtered preview (showing ${shown} of ${total} candidates)`
         : truncated
             ? shown === 1
-                ? `📋 Top concern (1 of ${total} shown)`
-                : `📋 Top concerns (${shown} of ${total} shown)`
+                ? `📋 Posted preview (showing 1 of ${total})`
+                : `📋 Posted preview (showing ${shown} of ${total})`
             : shown === 1
-                ? `📋 Top concern (1)`
-                : `📋 Top concerns (${shown})`;
+                ? `📋 Posted preview (1)`
+                : `📋 Posted preview (${shown})`;
     const explainer = filteredAll
         ? `\n_The model produced ${total} finding(s); all were filtered by severity policy, the \`max-comments\` cap, or off-diff suppression. The list below is the pre-filter view for transparency — no inline comments were posted._\n`
         : "";
@@ -3408,9 +3463,16 @@ function topConcernsBlock(input) {
     ].join("\n");
 }
 /**
- * Build the "Suppressed (off-diff)" <details> block. Lists every
+ * Build the "📍 Off-diff (N not posted)" <details> block. Lists every
  * comment the system suppressed because its line is not on the diff.
  * Hidden by default — only the count is visible above the fold.
+ *
+ * CLARITY-19: header is `📍 Off-diff (N not posted)` — the pin icon
+ * matches the file:line problem, "Off-diff" matches the 📊 pipeline
+ * summary's bucket name, and "(N not posted)" matches the action
+ * (these findings were not posted as comments because they were not
+ * on the diff). Replaces the old `🔕 Suppressed (off-diff, N)` header
+ * that mixed the same icon as the filtered-findings block.
  */
 function suppressedBlock(input) {
     const combined = [...input.suppressedComments, ...input.offDiffFromComments];
@@ -3418,8 +3480,8 @@ function suppressedBlock(input) {
         return "";
     }
     const header = combined.length === 1
-        ? "🔕 Suppressed (off-diff, 1)"
-        : `🔕 Suppressed (off-diff, ${combined.length})`;
+        ? "📍 Off-diff (1 not posted)"
+        : `📍 Off-diff (${combined.length} not posted)`;
     const lines = combined.map((comment) => {
         const safeBody = sanitizeForPost(comment.body, []);
         const oneLiner = safeBody.replace(/\s+/gu, " ").trim();
@@ -3492,24 +3554,37 @@ function metadataManifest(input) {
  * Clarity-first shape (CLARITY-* contract in
  * test/unit/live-azure-parent-clarity.test.ts):
  *
- *   1. Stable HTML marker (used for dedup)
- *   2. Verdict badge — large, first thing after the marker
- *   3. Posted / Considered / Suppressed row — three labeled counts that
- *      tell the reviewer what actually landed, what the model produced,
- *      and what was rejected (off-diff). CLARITY-9.
- *   4. Severity tally — emoji + backticks for critical → high → medium → low
- *      immediately after the verdict, so a reviewer sees the per-severity
- *      split within the first viewport. The `info` level is excluded here
- *      (intentionally — info findings are not actionable) which is why the
- *      "Considered" count above is the authoritative total.
- *   5. Top-concerns <details> — preview of the highest-severity findings
- *      the MODEL produced (pre-filter). The summary line explicitly says
- *      "from model (N of Z)" so the reader knows this is pre-filter, not
- *      a duplicate of the "Posted" count.
- *   6. Suppressed <details> — list of off-diff findings
- *   7. Prose summary <details> — long provider narrative, hidden by default
- *   8. Footer — model + provider + inline-thread count, small text
- *   9. Hidden HTML comment with the JSON manifest for AI agents
+ *   - Stable HTML marker (used for dedup)
+ *   - Verdict badge — large, first thing after the marker
+ *   - 📊 Pipeline summary (CLARITY-19) — `N findings → X posted,
+ *     Y off-diff, Z filtered` reconciles all four buckets in one
+ *     line. Skipped for parse-failed fallbacks (parsed counts
+ *     unreliable).
+ *   - 🏷️ Severity tally — `critical → high → medium → low` distribution
+ *     of the POSTED set, hidden when all zeros (CLARITY-14c). The
+ *     `info` level is excluded here (intentionally — info findings
+ *     are not actionable).
+ *   - 📋 Posted preview <details> — preview of the highest-severity
+ *     findings actually posted (post-filter). When the cap truncates
+ *     the list, header reads "showing N of M" (CLARITY-16). The
+ *     "Posted preview" label matches the pipeline summary's `posted`
+ *     bucket.
+ *   - 🧹 Filtered preview <details> — preview of the pre-filter
+ *     candidates when nothing posted (CLARITY-11). Header reads
+ *     "showing N of M candidates" so the (N of M) clearly means
+ *     preview truncation, not a separate count.
+ *   - 📍 Off-diff <details> — list of every off-diff finding. Header
+ *     reads "📍 Off-diff (N not posted)". (CLARITY-19 dropped the
+ *     duplicate `> 🔕 N off-diff findings` callout that used to
+ *     appear above this block — the 📊 pipeline summary already
+ *     surfaces the count.)
+ *   - Prose summary <details> — long provider narrative, hidden by default
+ *   - Footer — model + provider + inline-thread count, small text
+ *   - Hidden HTML comment with the JSON manifest for AI agents
+ *
+ * The exact render order (including blank-line separators) lives in
+ * the assembly `sections` array at the bottom of this function —
+ * keep this list and that array in sync if you reorder.
  *
  * The shape is identical regardless of verdict, finding count, or whether
  * the provider returned a parse-fail fallback — that consistency is what
@@ -3524,22 +3599,30 @@ function buildReviewBody(input) {
     const safeSummary = sanitizeForPost(input.review.summary, input.secrets);
     const safeModelId = sanitizeForPost(input.modelId, input.secrets);
     const safeProvider = sanitizeForPost(input.provider, input.secrets);
-    // CLARITY-14: Actionable-only card. Build the body section-by-section,
-    // skipping sections that don't apply to the current review shape:
-    //   - Parse-failed banner — only when parseFailed
-    //   - Off-diff inline note — only when suppressed > 0
-    //   - Severity tally — only when at least one finding has a severity
-    //   - Top concerns / filtered findings — only when comments exist
-    //   - Suppressed details — only when suppressed > 0
+    // CLARITY-14 + CLARITY-19: Actionable-only card. Build the body
+    // section-by-section, skipping sections that don't apply:
+    //   - Parse-failed banner — only when parseFailed (suppresses the
+    //     pipeline summary because parsed counts are unreliable)
+    //   - Pipeline summary — `📊 N findings → X posted, Y off-diff, Z filtered`
+    //     every parsed review (including all-zero clean reviews)
+    //   - Severity tally (🏷️) — only when at least one finding has a severity
+    //   - Posted preview (📋) — only when posted comments exist
+    //   - Filtered preview (🧹) — only when nothing posted but model had findings
+    //   - Off-diff details (📍) — only when suppressed > 0
     //   - Summary <details> — only when summary is non-empty
     // The result is a card that scales with the review: a clean review is
-    // 3 lines (marker + verdict + footer); a busy review shows everything.
+    // 4 lines (marker + verdict + summary + footer); a busy review shows
+    // everything.
     const parseFailedBanner = input.review.parseFailed === true
         ? `> ⚠️ \`Parse failed\` — provider response was not a valid JSON review payload. The raw provider text is included in the Summary section below for diagnostics.\n`
         : "";
-    const offDiffNote = input.suppressedCommentCount > 0
-        ? `> 🔕 ${input.suppressedCommentCount} off-diff finding${input.suppressedCommentCount === 1 ? " was" : "s were"} not on this PR's diff.\n`
-        : "";
+    const pipeline = input.review.parseFailed === true
+        ? ""
+        : pipelineSummary({
+            review: input.review,
+            validCommentCount: input.validCommentCount,
+            offDiffFromComments: input.offDiffFromComments,
+        });
     const tally = countsLine({ severityCounts: input.severityCounts });
     const topConcerns = topConcernsBlock({
         review: input.review,
@@ -3570,7 +3653,7 @@ function buildReviewBody(input) {
         `## ${verdict}`,
         "",
         parseFailedBanner,
-        offDiffNote,
+        pipeline,
         tally,
         topConcerns,
         suppressed,

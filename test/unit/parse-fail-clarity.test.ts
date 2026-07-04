@@ -43,6 +43,10 @@ describe("CLARITY-10: parse-fail surface is unmistakable", () => {
     expect(body).not.toMatch(/\*\*Posted:\*\*/u);
     expect(body).not.toMatch(/\*\*Considered:\*\*/u);
     expect(body).not.toMatch(/\*\*Suppressed:\*\*/u);
+    // CLARITY-19: parse-failed fallback skips the 📊 pipeline summary
+    // because parsed counts are unreliable. The ⚠️ banner is the
+    // only count-bearing element on the card.
+    expect(body).not.toMatch(/📊/u);
   });
 
   it("sets parseFailed: true on the fallback review and surfaces it in the manifest", () => {
