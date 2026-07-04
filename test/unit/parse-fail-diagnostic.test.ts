@@ -5,6 +5,15 @@
 // A reviewer seeing only the head could incorrectly conclude "the model
 // returned only metadata" when the real cause (text was truncated from
 // the diagnostic) was hidden.
+//
+// Also pins the diagnostic budget (MALFORMED_PROVIDER_FALLBACK_RAW_MAX
+// in src/cli/live-shared.ts) so the value cannot silently regress below
+// what's needed to capture a typical SSE stream. PR #5 self-review
+// repeatedly produced `parseFailed:true` because the budget was too
+// small to include the final `response.completed` payload; raising it
+// to 16 000 chars lets the diagnostic include a typical modern review
+// JSON (2-12 KB) verbatim, while still fitting inside GitHub's
+// 65 536-char comment body limit.
 
 import { describe, expect, it } from "vitest";
 
@@ -34,9 +43,9 @@ describe("CLARITY-12: parse-fail diagnostic shows head + tail", () => {
     const tail =
       "event: response.completed\n" +
       'data: {"type":"response.completed","response":{"id":"resp_1","status":"completed","output_text":"REVIEW_JSON_HERE"}}\n';
-    // Padding must be large enough to exceed MALFORMED_PROVIDER_FALLBACK_RAW_MAX (4000)
-    // so head+tail truncation kicks in. Stream ends up > 8000 chars.
-    const padding = "x".repeat(8000);
+    // Padding must be large enough to exceed MALFORMED_PROVIDER_FALLBACK_RAW_MAX
+    // (16 000) so head+tail truncation kicks in. Stream ends up > 32 000 chars.
+    const padding = "x".repeat(32_000);
     const longStream = head + padding + tail;
 
     const fallback = buildMalformedProviderFallback({
@@ -52,15 +61,15 @@ describe("CLARITY-12: parse-fail diagnostic shows head + tail", () => {
     expect(fallback.summary).toContain("event: response.created");
     expect(fallback.summary).toContain("event: response.completed");
     expect(fallback.summary).toContain("REVIEW_JSON_HERE");
-    // The padding in the middle must be omitted (or at least not the full 3000 chars).
+    // The padding in the middle must be omitted (or at least not the full 32 000 chars).
     expect(fallback.summary).not.toContain(padding);
   });
 
   it("the truncation marker indicates how many chars were omitted", () => {
-    // Must exceed MALFORMED_PROVIDER_FALLBACK_RAW_MAX (4000) for head+tail
+    // Must exceed MALFORMED_PROVIDER_FALLBACK_RAW_MAX (16 000) for head+tail
     // truncation to kick in.
-    const head = "A".repeat(2500);
-    const tail = "B".repeat(2500);
+    const head = "A".repeat(10_000);
+    const tail = "B".repeat(10_000);
     const longStream = head + tail;
     const fallback = buildMalformedProviderFallback({
       provider: "openai-compatible",
@@ -71,5 +80,39 @@ describe("CLARITY-12: parse-fail diagnostic shows head + tail", () => {
     // The marker should quantify the omission so reviewers know what they
     // didn't see — e.g., "… [N chars omitted] …"
     expect(fallback.summary).toMatch(/\[(\d+) chars omitted\]/u);
+  });
+
+  it("preserves a full 12 KB review JSON inline (the upper bound of typical modern reviews)", () => {
+    // Regression: PR #5 self-review produced parseFailed:true repeatedly
+    // because the diagnostic budget was 4000 chars and the actual JSON
+    // review was larger. Pin that a 12 KB review body now fits in the
+    // diagnostic without head+tail truncation.
+    const reviewJson = "X".repeat(12_000);
+    const stream =
+      "event: response.created\ndata: {}\n\n" +
+      "event: response.completed\ndata: " +
+      reviewJson + "\n";
+    const fallback = buildMalformedProviderFallback({
+      provider: "openai-compatible",
+      modelId: "auto",
+      rawText: stream,
+      secrets: [],
+    });
+    expect(fallback.summary).toContain(reviewJson);
+    expect(fallback.summary).not.toContain("chars omitted");
+  });
+
+  it("keeps the diagnostic block small enough for GitHub's 65 536-char comment body limit", () => {
+    // Sanity: even with a 16 000-char raw stream, the full diagnostic
+    // block (wrapped in <details> + summary + manifest) must stay well
+    // under GitHub's comment body limit.
+    const rawText = "y".repeat(60_000); // pathological SSE stream
+    const fallback = buildMalformedProviderFallback({
+      provider: "openai-compatible",
+      modelId: "auto",
+      rawText,
+      secrets: [],
+    });
+    expect(fallback.summary.length).toBeLessThan(20_000);
   });
 });
