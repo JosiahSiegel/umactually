@@ -1,5 +1,5 @@
 import { FIELDS } from "../config/field-schema.js";
-import { readEnum } from "../util/cli-args.js";
+import { parseStrictInt, readEnum } from "../util/cli-args.js";
 import { isSafeInteger } from "../util/json-guards.js";
 
 /**
@@ -343,9 +343,9 @@ function readValue(args: readonly string[], index: number, flag: string): string
 
 function readIntValue(args: readonly string[], index: number, flag: string): number {
   const raw = readValue(args, index, flag);
-  const parsed = Number.parseInt(raw, 10);
-  if (!isSafeInteger(parsed)) {
-    throw new CliUsageError(`flag --${flag} requires an integer value`);
+  const parsed = parseStrictInt(raw);
+  if (parsed === null || !isSafeInteger(parsed)) {
+    throw new CliUsageError(`flag --${flag} requires an integer value (got "${raw}")`);
   }
   return parsed;
 }

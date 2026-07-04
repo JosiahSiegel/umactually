@@ -342,6 +342,29 @@ describe("CLI flag parsing: action.yml inputs coverage", () => {
     expect(parsed.maxComments).toBe(50);
     expect(parsed.sonarTimeoutSeconds).toBe(300);
   });
+
+  it("rejects partial numeric garbage in integer flags instead of silently truncating", async () => {
+    const parseCliArgs = await expectNotImplementedExport(cliModule, cliPath, "parseCliArgs");
+    if (!isParseCliArgs(parseCliArgs)) {
+      expect.fail("RED: src/cli.ts must export parseCliArgs(args)");
+    }
+    // Regression: Number.parseInt("12abc", 10) returns 12; the CLI must
+    // throw CliUsageError instead of silently parsing partial garbage.
+    const cases: ReadonlyArray<readonly string[]> = [
+      ["--max-comments", "12abc"],
+      ["--review-timeout-seconds", "300xyz"],
+      ["--per-request-timeout-seconds", "60.5"],
+      ["--sonar-timeout-seconds", "1e3"],
+      ["--max-output-tokens", ""],
+      ["--stall-seconds", " 270 "],
+      ["--max-comments", "1.0"],
+    ];
+    for (const argv of cases) {
+      expect(() => parseCliArgs(argv as string[]), `argv=${argv.join(" ")}`).toThrow(
+        /integer value/u,
+      );
+    }
+  });
 });
 
 function safePlaceholder(flag: string): string {

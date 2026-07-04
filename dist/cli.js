@@ -413,6 +413,40 @@ function envFallback(...values) {
     return "";
 }
 /**
+ * Strict decimal-integer parser that REJECTS partial numeric garbage.
+ * `Number.parseInt("12abc", 10)` returns 12; this helper returns null for
+ * the same input so callers can fall back or throw a typed error.
+ *
+ * Accepts:
+ *   - Optional leading `+` or `-` sign
+ *   - One or more ASCII digits
+ *   - Any integer that fits in `Number.isSafeInteger` (±(2^53 - 1))
+ *
+ * Rejects:
+ *   - Empty strings
+ *   - Whitespace-only strings (use `trimInt` if you need to tolerate trim)
+ *   - Any non-digit content anywhere (including trailing/leading whitespace
+ *     inside the body, decimal points, exponent notation)
+ *   - Unsigned `"+1"` parses to 1; `"-1"` parses to -1; `"1.5"` returns null.
+ *
+ * This is the canonical helper for any CLI flag / env var / input field
+ * that represents a strict integer. Replaces the five hand-rolled
+ * `Number.parseInt + isSafeInteger` sites in `cli/parse-args.ts`,
+ * `action/read-inputs.ts`, `platform/github/context.ts`, and
+ * `platform/azure/context.ts` so the parsing semantics cannot drift.
+ */
+function parseStrictInt(raw) {
+    if (raw.length === 0)
+        return null;
+    // A single optional sign followed by 1+ ASCII digits, and nothing else.
+    // Using a regex (rather than a manual loop) keeps the intent grep-able
+    // and the cost trivial (this runs only at CLI/env boundary).
+    if (!/^[+-]?\d+$/u.test(raw))
+        return null;
+    const parsed = Number.parseInt(raw, 10);
+    return Number.isSafeInteger(parsed) ? parsed : null;
+}
+/**
  * Validate a CLI enum value against an accepted set, returning the value
  * when it matches and throwing on miss. Replaces the four hand-coded
  * enum parsers (`readPlatform`, `readEffort`, `readProvider`,
@@ -885,9 +919,9 @@ function readValue(args, index, flag) {
 }
 function readIntValue(args, index, flag) {
     const raw = readValue(args, index, flag);
-    const parsed = Number.parseInt(raw, 10);
-    if (!isSafeInteger(parsed)) {
-        throw new CliUsageError(`flag --${flag} requires an integer value`);
+    const parsed = parseStrictInt(raw);
+    if (parsed === null || !isSafeInteger(parsed)) {
+        throw new CliUsageError(`flag --${flag} requires an integer value (got "${raw}")`);
     }
     return parsed;
 }
