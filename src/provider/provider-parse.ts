@@ -412,13 +412,40 @@ function tryExtractSse(rawText: string): string | null {
   const fragments: string[] = [];
   let completedResponseText: string | null = null;
 
+  // Group the input into events separated by blank lines, then within each
+  // event concatenate the data: lines per the SSE spec ("If the line starts
+  // with data:, the rest of the line after the colon is the data. If the
+  // line is just data:, the data is an empty string. Multiple data: lines
+  // in the same event are concatenated with newlines."). This handles the
+  // case where an SSE encoder wrote a JSON-encoded data line that contains
+  // a literal newline character — splitting that into separate "data:" lines
+  // would lose the trailing portion of the JSON payload.
+  const events: string[][] = [[]];
   for (const line of trimmed.split("\n")) {
-    const clean = line.trim();
-    if (!clean.startsWith("data:")) {
+    if (line.trim() === "") {
+      if (events[events.length - 1]!.length > 0) {
+        events.push([]);
+      }
       continue;
     }
-    const payload = clean.slice("data:".length).trim();
-    if (payload === "[DONE]" || payload === "") {
+    events[events.length - 1]!.push(line);
+  }
+
+  for (const eventLines of events) {
+    // Concatenate all data: lines in this event with newlines (per SSE spec).
+    const dataLines: string[] = [];
+    for (const line of eventLines) {
+      if (line.startsWith("data:")) {
+        dataLines.push(line.slice("data:".length));
+      }
+    }
+    if (dataLines.length === 0) {
+      continue;
+    }
+    // Per SSE spec: data segments are joined with a single newline. Leading
+    // space after "data:" is stripped if present (some encoders add it).
+    const payload = dataLines.map((d) => d.startsWith(" ") ? d.slice(1) : d).join("\n").trim();
+    if (payload === "" || payload === "[DONE]") {
       continue;
     }
 
