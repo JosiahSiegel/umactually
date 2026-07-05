@@ -31,6 +31,14 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
+      - name: Rebuild bundled dist
+        # The committed dist/ in the PR head may be older than src/ from
+        # someone else's prior commit. The action entrypoint is dist/index.js
+        # (see action.yml), so a stale bundle silently reviews with the
+        # wrong code. Re-bundle every run, then verify the freshness check
+        # passes before posting the review.
+        run: npm run build
+
       - name: Check bundled dist is fresh
         run: npm run check:dist-freshness
 
