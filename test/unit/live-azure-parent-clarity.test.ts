@@ -176,21 +176,23 @@ describe("buildReviewBody — 5-second scannable clarity", () => {
     expect(lines[1]).toMatch(/SHIP|APPROVED|NEEDS_FIX|DISCUSS|COMMENT/);
   });
 
-  it("CLARITY-2: severity counts line is within 200 chars of the verdict badge", () => {
+  it("CLARITY-2: severity tally is present in the body (after the findings table)", () => {
+    // Cutover note: the old contract required the severity tally to be
+    // within 200 chars of the verdict so it stayed above the fold. The
+    // severity-table layout puts the findings TABLE between verdict and
+    // tally — the table IS the primary scannable element. The tally is
+    // still emitted, just below the table. This test pins that contract.
     const body = buildReviewBody(STD_INPUT);
     const verdictIndex = body.indexOf("## ");
     expect(verdictIndex).toBeGreaterThanOrEqual(0);
     const afterVerdict = body.slice(verdictIndex);
-    // The counts line MUST appear within 200 chars after the verdict badge.
-    // It MUST appear before the first <details> (which would push the
-    // counts below the fold).
-    const countsIdx = afterVerdict.search(/`\d+`\s+(high|medium|low|critical)/u);
+    // The tally MUST appear somewhere after the verdict.
+    const countsIdx = afterVerdict.search(/🏷️\s+`\d+`\s+critical/u);
     expect(countsIdx).toBeGreaterThanOrEqual(0);
-    expect(countsIdx).toBeLessThan(200);
-    const detailsIdx = afterVerdict.indexOf("<details>");
-    if (detailsIdx >= 0) {
-      expect(countsIdx).toBeLessThan(detailsIdx);
-    }
+    // The findings table sits between verdict and tally; tally is
+    // somewhere later in the body but still before the footer.
+    const footerIdx = afterVerdict.indexOf("🤖");
+    expect(countsIdx).toBeLessThan(footerIdx);
   });
 
   it("CLARITY-3: NEVER emits raw `**word**` asterisks for severity values", () => {
@@ -205,28 +207,29 @@ describe("buildReviewBody — 5-second scannable clarity", () => {
     expect(body).not.toMatch(/\*\*suppressed\*\*/u);
   });
 
-  it("CLARITY-4: long summary prose is wrapped in a <details> block", () => {
+  it("CLARITY-4: summary prose appears in the body as a Summary section (no <details> wrapper)", () => {
+    // Cutover note: the old contract required long summary prose inside
+    // <details> blocks. The severity-table layout surfaces the summary
+    // inline under `### 📝 Summary` — reviewers see the prose without
+    // having to click, and the findings table is the scannable anchor.
     const body = buildReviewBody(STD_INPUT);
-    // The provider's prose summary must NOT appear outside a <details>
-    // block in the parent card — otherwise it dominates the first viewport.
     const summarySentence = "Three issues need attention before merge.";
-    // The summary must exist somewhere (we still want the prose available
-    // for reviewers who choose to expand).
+    // The summary must still be present in the body.
     expect(body).toContain(summarySentence);
-    // The summary must sit INSIDE a <details>...</details> block.
-    const detailsStart = body.indexOf("<details>");
-    const detailsEnd = body.lastIndexOf("</details>");
-    expect(detailsStart).toBeGreaterThanOrEqual(0);
-    expect(detailsEnd).toBeGreaterThan(detailsStart);
-    expect(body.slice(detailsStart, detailsEnd)).toContain(summarySentence);
+    // And it must live under a Summary heading.
+    expect(body).toMatch(/###\s+📝\s+Summary/u);
+    // No <details> wrappers at all in the body — the severity-table
+    // layout deliberately renders everything inline.
+    expect(body).not.toContain("<details>");
+    expect(body).not.toContain("</details>");
   });
 
   it("CLARITY-5: empty review (no inline + no suppressed) still produces the same shape", () => {
-    // This is the malformed-fallback / parse-fail / empty-payload case.
-    // Even with zero findings, the card must show: marker, verdict,
-    // counts line (showing 0), and the manifest. Otherwise the developer
-    // cannot tell the difference between "0 findings, ship it" and
-    // "nothing happened".
+    // Cutover note: the severity-table layout ALWAYS shows the findings
+    // table even on clean reviews (with a single `_No findings to
+    // address_` row). The pipeline summary is NOT emitted in the body
+    // — that data lives in the hidden manifest. The card shape remains
+    // marker + verdict + findings table + summary + footer + manifest.
     const body = buildReviewBody({
       review: buildEmptyReview(),
       provider: "openai-compatible",
@@ -245,12 +248,19 @@ describe("buildReviewBody — 5-second scannable clarity", () => {
     expect(lines[1]).toMatch(/^## /u);
     expect(lines[1]).toMatch(/[⛔✅💬]/u);
     // CLARITY-14c: zero-tally line is hidden when there are no findings.
-    expect(body).not.toMatch(/📊\s+`0`\s+critical/u);
-    // manifest
+    expect(body).not.toMatch(/🏷️/u);
+    // Findings table is still present with the "no findings" placeholder row.
+    expect(body).toMatch(/No findings to address/u);
+    // Pipeline summary NOT in the body (it moved into the manifest).
+    expect(body).not.toMatch(/📊\s+\d+\s+findings\s+→/u);
+    // manifest still emitted
     expect(body).toMatch(/<!--\s*umactually-pr-review:manifest\s*\{/u);
   });
 
   it("CLARITY-5b: malformed-fallback review (parse-fail) also produces the same shape", () => {
+    // Cutover note: the severity-table layout does not use <details>
+    // for the parse-fail diagnostic block. The raw provider text from
+    // the malformed fallback flows through the Summary section inline.
     const review = buildMalformedProviderFallback({
       provider: "openai-compatible",
       modelId: "auto",
@@ -273,10 +283,11 @@ describe("buildReviewBody — 5-second scannable clarity", () => {
     expect(lines[1]).toMatch(/^## /u);
     // CLARITY-14c: zero-tally line is hidden when there are no findings
     // (parse-fail reviews have zero findings by definition).
-    expect(body).not.toMatch(/📊\s+`0`\s+critical/u);
-    // the raw provider text should appear inside a <details> block
+    expect(body).not.toMatch(/🏷️/u);
+    // The raw provider text must still surface somewhere for diagnostics.
     expect(body).toContain("not actually JSON");
-    expect(body).toContain("<details>");
+    // Manifest still present so AI agents know about the parse-fail.
+    expect(body).toMatch(/<!--\s*umactually-pr-review:manifest[\s\S]*parseFailed/u);
   });
 
   it("CLARITY-6: includes the stable HTML marker for dedup", () => {
@@ -315,7 +326,12 @@ describe("buildReviewBody — 5-second scannable clarity", () => {
   // but the details block only lists 2 — confusing. This test pins the
   // fix: pass `offDiffFromComments` through `buildReviewBody` so the
   // details block lists every suppressed finding the row is counting.
-  it("CLARITY-13: Suppressed row count matches suppressed details list", () => {
+  it("CLARITY-13: off-diff findings are reconciled in the manifest (not as a body block)", () => {
+    // Cutover note: the severity-table layout does not render an
+    // off-diff details block. The off-diff count is surfaced through
+    // the hidden manifest's suppressedCount field — AI agents can
+    // query it; humans don't see a separate block in the card. The
+    // findings table shows ONLY the posted set.
     const onDiffComment: LiveReviewComment = {
       path: "src/changed.ts",
       line: 2,
@@ -379,42 +395,28 @@ describe("buildReviewBody — 5-second scannable clarity", () => {
       offDiffFromComments,
       severityCounts: { critical: 0, high: 1, medium: 0, low: 0 },
       secrets: SECRETS,
+      // The new layout needs the actual posted set so it doesn't
+      // render off-diff entries as if they had been posted inline.
+      postedComments: [onDiffComment],
     });
 
     // Ground-truth: there are 4 suppressed (2 model + 2 off-diff).
     expect(expectedSuppressedCount).toBe(4);
-    // CLARITY-14 + CLARITY-19: The duplicate off-diff callout is dropped
-    // (it duplicated the suppressed count with confusing `🔕` icons). The
-    // 📊 pipeline summary reconciles the count, and the 📍 Off-diff
-    // details block lists every finding. Summary + header + list count
-    // all agree.
-    //
-    // Numbers derived from the fixture above (3 comments + 2
-    // suppressedComments; 1 on-diff valid; 4 total suppressed; 0
-    // severity-filtered) so the assertion self-validates against
-    // any future fixture tweak. The literal counts come from the
-    // buildReviewBody call below.
-    const expectedTotal = review.comments.length + review.suppressedComments.length;
-    const expectedPosted = 1; // validCommentCount in the call below
-    const expectedOffDiff = 4; // expectedSuppressedCount === 4
-    const expectedFiltered = expectedTotal - expectedPosted - expectedOffDiff;
-    expect(body).toMatch(
-      new RegExp(
-        `📊\\s+${expectedTotal}\\s+findings\\s+→\\s+${expectedPosted}\\s+posted,\\s+${expectedOffDiff}\\s+off-diff,\\s+${expectedFiltered}\\s+filtered`,
-        "u",
-      ),
-    );
-    expect(body).toMatch(new RegExp(`📍\\s+Off-diff\\s+\\(${expectedOffDiff}\\s+not\\s+posted\\)`, "u"));
-    const suppressedSection =
-      body.match(/📍\s+Off-diff\s+\(4\s+not\s+posted\)[\s\S]*?<\/details>/u)?.[0] ?? "";
-    const listedFindings = suppressedSection.match(/^- `/gmu) ?? [];
-    expect(listedFindings).toHaveLength(expectedSuppressedCount);
-    // All four suppressed entries are listed; the on-diff one is NOT.
-    expect(suppressedSection).toContain("src/model-suppressed-a.ts:7");
-    expect(suppressedSection).toContain("src/model-suppressed-b.ts:8");
-    expect(suppressedSection).toContain("src/changed.ts:99");
-    expect(suppressedSection).toContain("src/deleted.ts:4");
-    expect(suppressedSection).not.toContain("src/changed.ts:2");
+    // Manifest captures the suppressed count so AI agents can reconcile.
+    const manifestMatch = body.match(/<!--\s*umactually-pr-review:manifest\s+(\{[\s\S]*?\})\s*-->/u);
+    expect(manifestMatch).not.toBeNull();
+    const manifest = JSON.parse(manifestMatch?.[1] ?? "{}");
+    expect(manifest.suppressedCount).toBe(4);
+    expect(manifest.inlineCount).toBe(1);
+    // Body does NOT show the off-diff callout (it lived in the legacy
+    // off-diff details block; the new layout moves that info to the
+    // manifest).
+    expect(body).not.toMatch(/📍\s+Off-diff/u);
+    // Body shows the posted set in the findings table.
+    expect(body).toContain("`src/changed.ts`:2");
+    expect(body).not.toContain("`src/changed.ts`:99");
+    expect(body).not.toContain("`src/deleted.ts`:4");
+    expect(body).not.toContain("`src/model-suppressed-a.ts`:7");
   });
 
   // CLARITY-14: Actionable-only card. The current review body is over-busy
@@ -438,14 +440,10 @@ describe("buildReviewBody — 5-second scannable clarity", () => {
     expect(body).not.toMatch(/\*\*Suppressed:\*\*/u);
   });
 
-  it("CLARITY-14b: clean review (0 posted + 0 suppressed) shows verdict + pipeline summary + summary + footer", () => {
-    // The "ship it" case must NOT show a zero-tally severity line,
-    // suppressed block, or filtered findings block — all of those
-    // would add noise to a clean review. The pipeline summary IS
-    // shown even on a clean review (CLARITY-19): `📊 0 findings →
-    // 0 posted, 0 off-diff, 0 filtered` gives the reader the
-    // "the pipeline actually ran" confirmation that distinguishes
-    // a clean review from a missing review.
+  it("CLARITY-14b: clean review (0 posted + 0 suppressed) shows verdict + empty findings table + summary + footer", () => {
+    // Cutover note: the severity-table layout always renders the findings
+    // table — even on clean reviews, the table appears with a single
+    // `_No findings to address_` row. Pipeline summary moved to manifest.
     const body = buildReviewBody({
       review: buildEmptyReview(),
       provider: "openai-compatible",
@@ -457,28 +455,32 @@ describe("buildReviewBody — 5-second scannable clarity", () => {
       severityCounts: { critical: 0, high: 0, medium: 0, low: 0 },
       secrets: SECRETS,
     });
-    // No zero-tally line (severity tally now uses 🏷️).
-    expect(body).not.toMatch(/🏷️\s+`0`\s+critical/u);
-    // No off-diff details block.
+    // No zero-tally line.
+    expect(body).not.toMatch(/🏷️/u);
+    // No off-diff / posted-preview / filtered-preview blocks.
     expect(body).not.toMatch(/📍\s+Off-diff/u);
-    // No filtered preview block.
     expect(body).not.toMatch(/🧹\s+Filtered preview/u);
-    // No posted preview block.
     expect(body).not.toMatch(/📋\s+Posted preview/u);
+    // No <details> wrappers anywhere.
+    expect(body).not.toContain("<details>");
+    // No inline pipeline summary in the body.
+    expect(body).not.toMatch(/📊\s+\d+\s+findings\s+→/u);
+    // Findings table still present with the empty-row placeholder.
+    expect(body).toMatch(/No findings to address/u);
     // Verdict + summary + footer are still there.
     expect(body).toContain("<!-- umactually-pr-review -->");
     expect(body).toMatch(/^## /mu);
     expect(body).toMatch(/[⛔✅💬]/u);
-    expect(body).toMatch(/<summary>📝 Summary<\/summary>/u);
+    expect(body).toMatch(/###\s+📝\s+Summary/u);
     expect(body).toMatch(/🤖\s+Generated by/u);
     // Footer reflects inline count.
     expect(body).toMatch(/0\s+inline/u);
   });
 
   it("CLARITY-14c: severity tally hidden when there are zero findings (regardless of inline count)", () => {
-    // Edge case: validCommentCount === 0, but suppressed count > 0.
-    // The card must NOT show a severity tally of zeros — the findings
-    // are all off-diff, so severity is irrelevant to the reviewer.
+    // Cutover note: severity tally is hidden when no findings have
+    // any severity. The off-diff details block is GONE in the
+    // severity-table layout — off-diff info lives in the manifest only.
     const review: LiveReview = {
       summary: "Findings were all off-diff.",
       verdict: "NEEDS_FIX",
@@ -500,20 +502,22 @@ describe("buildReviewBody — 5-second scannable clarity", () => {
       secrets: SECRETS,
     });
     expect(body).not.toMatch(/🏷️/u);
-    // Off-diff details block is visible (📍 replaces 🔕).
-    expect(body).toMatch(/📍\s+Off-diff\s+\(2\s+not\s+posted\)/u);
-    // No duplicate off-diff callout (CLARITY-19).
-    expect(body).not.toMatch(/🔕\s+\d+\s+off-diff\s+finding/u);
+    // No off-diff details block in the new layout.
+    expect(body).not.toMatch(/📍\s+Off-diff/u);
+    // Findings table still present, showing the empty placeholder row.
+    expect(body).toMatch(/No findings to address/u);
+    // Manifest still carries the suppressed count for AI agents.
+    const manifestMatch = body.match(/<!--\s*umactually-pr-review:manifest\s+(\{[\s\S]*?\})\s*-->/u);
+    expect(manifestMatch).not.toBeNull();
+    const manifest = JSON.parse(manifestMatch?.[1] ?? "{}");
+    expect(manifest.suppressedCount).toBe(2);
   });
 
-  it("CLARITY-19d: pipeline summary replaces inline off-diff callout (CLARITY-14d superseded)", () => {
-    // CLARITY-19 supersedes CLARITY-14d: the old "inline-count note"
-    // (`> 🔕 N off-diff findings were not on this PR's diff.`) is
-    // dropped because the 📊 pipeline summary now surfaces the same
-    // count with one vocabulary. This test pins the new contract:
-    // - Pipeline summary reconciles posted + off-diff (no duplicate callout)
-    // - Severity tally still visible (3 findings survive filtering)
-    // - Posted preview + off-diff details blocks are both visible
+  it("CLARITY-19d: posted findings surface inline in the table; off-diff reconciled via manifest", () => {
+    // Cutover note: the severity-table layout shows ONLY the posted
+    // findings in the body table. Off-diff and pipeline counts live
+    // in the hidden manifest. The body's severity tally is computed
+    // from the posted set (same source as the manifest's tally).
     const review: LiveReview = {
       summary: "Two issues found, two off-diff noise.",
       verdict: "NEEDS_FIX",
@@ -536,35 +540,29 @@ describe("buildReviewBody — 5-second scannable clarity", () => {
       offDiffFromComments: [],
       severityCounts: { high: 1, medium: 1, low: 1 },
       secrets: SECRETS,
+      postedComments: review.comments,
     });
-    // CLARITY-19: no duplicate off-diff callout. The 📊 pipeline summary
-    // reconciles the count (3 posted + 2 off-diff = 5 total, 0 filtered).
-    // Numbers derived from fixture for self-validation against tweaks.
-    // The literal counts come from the buildReviewBody call below.
-    const expectedTotal = review.comments.length + review.suppressedComments.length;
-    const expectedPosted = 3; // validCommentCount in the call below
-    const expectedOffDiff = 2; // suppressedCommentCount in the call below
-    const expectedFiltered = expectedTotal - expectedPosted - expectedOffDiff;
-    expect(body).toMatch(
-      new RegExp(
-        `📊\\s+${expectedTotal}\\s+findings\\s+→\\s+${expectedPosted}\\s+posted,\\s+${expectedOffDiff}\\s+off-diff,\\s+${expectedFiltered}\\s+filtered`,
-        "u",
-      ),
-    );
-    // Severity tally still visible (3 findings). Match anywhere in the
-    // tally line, not anchored to the start (since the first cell is
-    // `0` critical, not `1` high).
-    expect(body).toMatch(/`1`\s+high/u);
-    expect(body).toMatch(/`1`\s+medium/u);
-    expect(body).toMatch(/`1`\s+low/u);
-    // Off-diff details visible (📍 replaces 🔕).
-    expect(body).toMatch(new RegExp(`📍\\s+Off-diff\\s+\\(${expectedOffDiff}\\s+not\\s+posted\\)`, "u"));
-    // Posted preview visible (📋 replaces the old Top concerns).
-    expect(body).toMatch(new RegExp(`📋\\s+Posted preview\\s+\\(${expectedPosted}\\)`, "u"));
-    // No duplicate off-diff callout.
-    expect(body).not.toMatch(/🔕\s+\d+\s+off-diff\s+finding/u);
-    expect(body).not.toMatch(/🔕\s+Suppressed\s+\(off-diff/u);
+    // Severity tally still visible (3 findings survived filtering).
+    expect(body).toMatch(/🏷️\s+`0`\s+critical\s+·\s+`1`\s+high\s+·\s+`1`\s+medium\s+·\s+`1`\s+low/u);
+    // Body shows the posted findings inline in the table.
+    expect(body).toContain("`src/auth.ts`:12");
+    expect(body).toContain("`src/db.ts`:7");
+    expect(body).toContain("`src/api.ts`:22");
+    // Off-diff items do NOT appear in the body.
+    expect(body).not.toContain("`src/old.ts`:3");
+    expect(body).not.toContain("`src/older.ts`:1");
+    // Manifest captures the off-diff count + per-bucket severities.
+    const manifestMatch = body.match(/<!--\s*umactually-pr-review:manifest\s+(\{[\s\S]*?\})\s*-->/u);
+    expect(manifestMatch).not.toBeNull();
+    const manifest = JSON.parse(manifestMatch?.[1] ?? "{}");
+    expect(manifest.inlineCount).toBe(3);
+    expect(manifest.suppressedCount).toBe(2);
+    expect(manifest.severityCounts).toEqual({ high: 1, medium: 1, low: 1 });
+    // No legacy callouts anywhere.
+    expect(body).not.toMatch(/🔕/u);
     expect(body).not.toMatch(/Top concerns/u);
+    expect(body).not.toMatch(/Posted preview/u);
+    expect(body).not.toMatch(/Filtered preview/u);
   });
 
   it("CLARITY-14e: footer inline count is terse and matches validCommentCount", () => {
@@ -602,11 +600,11 @@ describe("buildReviewBody — 5-second scannable clarity", () => {
     expect(body).not.toMatch(/⛔\s+NEEDS_FIX/u);
   });
 
-  it("CLARITY-14g: filtered findings block uses simpler header (no model provenance)", () => {
-    // The old header "📋 Top concerns from model (5 of 18)" mixed
-    // "Top concerns" and "from model" — confusing. New contract: the
-    // block IS the model output, so just "Top concerns (N)" or
-    // "Filtered findings (N of Z shown)" suffices.
+  it("CLARITY-14g: filtered findings surface inline in the table when nothing posted (no 'Filtered preview' block)", () => {
+    // Cutover note: the severity-table layout does NOT use a "Filtered
+    // preview" header. When 0 findings posted but the model returned
+    // candidates, the findings table still shows them inline as the
+    // posted set (callers pass the post-filter set as `postedComments`).
     const review: LiveReview = {
       summary: "All findings filtered.",
       verdict: "COMMENT",
@@ -628,10 +626,13 @@ describe("buildReviewBody — 5-second scannable clarity", () => {
       severityCounts: { critical: 0, high: 0, medium: 0, low: 0 },
       secrets: SECRETS,
     });
-    // No "from model" suffix.
+    // No "from model" or "Filtered preview" anywhere — that vocabulary
+    // is gone with the cutover.
     expect(body).not.toMatch(/from model/u);
-    // Filtered preview header (🧹) when 0 posted but findings exist.
-    expect(body).toMatch(/🧹\s+Filtered preview\s+\(showing\s+\d+\s+of\s+\d+\s+candidates\)/u);
+    expect(body).not.toMatch(/🧹/u);
+    expect(body).not.toMatch(/Filtered preview/u);
+    // No <details> wrappers.
+    expect(body).not.toContain("<details>");
   });
 
   // CLARITY-15: The severity tally (📊 N critical · ... · N low) and the
@@ -701,9 +702,9 @@ describe("buildReviewBody — 5-second scannable clarity", () => {
   });
 
   it("CLARITY-15b: severity tally hidden when zero posted (CLARITY-14c still wins)", () => {
-    // If validCommentCount === 0, the tally must be hidden (CLARITY-14c),
-    // even if the model returned many findings. The caller's
-    // severityCounts will be all zeros in this case.
+    // Cutover note: pipeline summary is NOT in the body anymore; the
+    // tally is hidden when all counts are zero. The verdict still
+    // downgrades to DISCUSS for the "nothing actionable" case.
     const review: LiveReview = {
       summary: "Model said NEEDS_FIX but nothing actionable.",
       verdict: "NEEDS_FIX",
@@ -723,12 +724,10 @@ describe("buildReviewBody — 5-second scannable clarity", () => {
       severityCounts: { critical: 0, high: 0, medium: 0, low: 0 },
       secrets: SECRETS,
     });
-    // CLARITY-19: severity tally is hidden when zero (🏷️ no longer 📊);
-    // pipeline summary IS visible so the reader sees what happened
-    // to the model's 1 finding (filtered by severity policy).
-    // Total = 1 comment + 0 suppressed = 1; 0 posted, 0 off-diff, 1 filtered.
+    // Tally hidden when all counts zero.
     expect(body).not.toMatch(/🏷️/u);
-    expect(body).toMatch(/📊\s+1\s+findings\s+→\s+0\s+posted,\s+0\s+off-diff,\s+1\s+filtered/u);
+    // No pipeline summary in body.
+    expect(body).not.toMatch(/📊\s+\d+\s+findings\s+→/u);
     // Verdict downgrades to DISCUSS per CLARITY-14f.
     expect(body).toMatch(/💬\s+DISCUSS/u);
   });
@@ -744,8 +743,11 @@ describe("buildReviewBody — 5-second scannable clarity", () => {
   // with the inline footer, so a reader sees "📊 4 medium · 6 low" then
   // "Top concerns (5)" and reasonably asks "wait, is (5) the cap or the
   // total?". Surfacing the denominator kills that ambiguity in one glance.
-  it("CLARITY-16a: Top concerns header shows denominator when truncated", () => {
-    // 10 posted comments (4 medium, 6 low), preview capped at 5.
+  it("CLARITY-16a: every posted finding appears as a row in the table (no preview cap)", () => {
+    // Cutover note: the old CLARITY-16a/16b/16c/16d suite capped the
+    // preview at 5 with a `showing N of M` denominator. The severity-
+    // table layout shows EVERY posted finding inline — no preview cap,
+    // no truncation. The table IS the full list.
     const postedComments: LiveReviewComment[] = [
       { path: "src/a.ts", line: 1, body: "m1", severity: "medium", category: "general" },
       { path: "src/b.ts", line: 1, body: "m2", severity: "medium", category: "general" },
@@ -774,17 +776,17 @@ describe("buildReviewBody — 5-second scannable clarity", () => {
       severityCounts: { medium: 4, low: 6 },
       secrets: SECRETS,
     });
-    // Header surfaces the cap + total so the reader doesn't confuse
-    // "showing 5 of 10" with "5 total".
-    expect(body).toMatch(/📋\s+Posted preview\s+\(showing\s+5\s+of\s+10\)/u);
+    // Every posted finding is in the table.
+    for (const c of postedComments) {
+      expect(body).toContain(c.path);
+    }
+    // The numbered column reflects every row.
+    expect(body).toMatch(/\| 10 \|/u);
     // Tally still sums to 10 (CLARITY-15 invariant).
     expect(body).toMatch(/10\s+inline/u);
   });
 
-  it("CLARITY-16b: Top concerns header stays terse when nothing is truncated", () => {
-    // 3 posted findings, well under the 5-cap. Header should read
-    // "Top concerns (3)" — no denominator needed because there's no
-    // truncation.
+  it("CLARITY-16b: small review shows all rows in the table (no 'Posted preview' header)", () => {
     const review: LiveReview = {
       summary: "Three findings.",
       verdict: "NEEDS_FIX",
@@ -805,67 +807,12 @@ describe("buildReviewBody — 5-second scannable clarity", () => {
       severityCounts: { high: 1, medium: 1, low: 1 },
       secrets: SECRETS,
     });
-    expect(body).toMatch(/📋\s+Posted preview\s+\(3\)/u);
-    // No "showing N of M" suffix when nothing is truncated.
-    expect(body).not.toMatch(/Posted preview\s+\(showing\s+\d+\s+of\s+\d+/u);
-  });
-
-  it("CLARITY-16c: Top concerns at exactly the cap (5) shows no denominator", () => {
-    // Boundary case: 5 findings exactly = the cap. No truncation, no
-    // denominator needed.
-    const review: LiveReview = {
-      summary: "Five findings.",
-      verdict: "NEEDS_FIX",
-      comments: [
-        { path: "src/a.ts", line: 1, body: "h", severity: "high", category: "security" },
-        { path: "src/b.ts", line: 1, body: "m1", severity: "medium", category: "general" },
-        { path: "src/c.ts", line: 1, body: "m2", severity: "medium", category: "general" },
-        { path: "src/d.ts", line: 1, body: "l1", severity: "low", category: "general" },
-        { path: "src/e.ts", line: 1, body: "l2", severity: "low", category: "general" },
-      ],
-      suppressedComments: [],
-    };
-    const body = buildReviewBody({
-      review,
-      provider: "openai-compatible",
-      modelId: "auto",
-      validCommentCount: 5,
-      suppressedCommentCount: 0,
-      offDiffFromComments: [],
-      severityCounts: { high: 1, medium: 2, low: 2 },
-      secrets: SECRETS,
-    });
-    expect(body).toMatch(/📋\s+Posted preview\s+\(5\)/u);
-    expect(body).not.toMatch(/Posted preview\s+\(showing\s+5\s+of\s+5/u);
-  });
-
-  it("CLARITY-16d: Filtered preview header still uses denominator (CLARITY-14g invariant)", () => {
-    // When validCommentCount === 0 and the model returned findings,
-    // the header is "Filtered findings (N of Z shown)" — already has
-    // the denominator. CLARITY-16 must NOT regress this.
-    const review: LiveReview = {
-      summary: "All filtered.",
-      verdict: "COMMENT",
-      comments: Array.from({ length: 18 }, (_, i) => ({
-        path: `src/${i}.ts`,
-        line: 1,
-        body: `finding ${i}`,
-        severity: "low",
-        category: "general",
-      })),
-      suppressedComments: [],
-    };
-    const body = buildReviewBody({
-      review,
-      provider: "openai-compatible",
-      modelId: "auto",
-      validCommentCount: 0,
-      suppressedCommentCount: 0,
-      offDiffFromComments: [],
-      severityCounts: { critical: 0, high: 0, medium: 0, low: 0 },
-      secrets: SECRETS,
-    });
-    expect(body).toMatch(/🧹\s+Filtered preview\s+\(showing\s+\d+\s+of\s+\d+\s+candidates\)/u);
+    // No "Posted preview" header — the table is the list.
+    expect(body).not.toMatch(/📋\s+Posted preview/u);
+    // Every row appears.
+    expect(body).toContain("`src/a.ts`:1");
+    expect(body).toContain("`src/b.ts`:1");
+    expect(body).toContain("`src/c.ts`:1");
   });
 
   it("CLARITY-15c: severity tally and manifest severityCounts use the SAME source", () => {
