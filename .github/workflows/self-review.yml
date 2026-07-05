@@ -36,6 +36,13 @@ jobs:
         with:
           dry-run: 'false'
           detect-leaks: 'false'
+          # Emit the extracted payload to stderr on parse-fail so the
+          # GitHub Actions log shows what the parser actually saw. The
+          # 16 KB diagnostic in the PR comment truncates the middle of
+          # the raw response (where response.completed lives), so without
+          # this log we cannot tell whether the parser extracted the
+          # right text or the wrong one.
+          debug-raw-response: 'true'
           github_token: ${{ secrets.GITHUB_TOKEN }}
         env:
           UMACTUALLY_API_URL: ${{ secrets.UMACTUALLY_API_URL }}
