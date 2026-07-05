@@ -22,7 +22,7 @@
  * to remove the build output.
  */
 
-import { existsSync, mkdirSync, readFileSync, writeFileSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { execFileSync } from "node:child_process";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -79,7 +79,7 @@ function ensureBuild() {
 }
 
 function statMtime(p) {
-  return readFileSync(p).atimeMs; // good enough for staleness
+  return statSync(p).mtimeMs;
 }
 
 // ---------------------------------------------------------------------------

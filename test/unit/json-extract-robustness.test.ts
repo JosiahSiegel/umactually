@@ -11,6 +11,7 @@
 import { describe, expect, it } from "vitest";
 
 import {
+  extractFirstBalancedObject,
   extractJsonBlock,
 } from "../../src/render/json-extract.js";
 import {
@@ -109,6 +110,19 @@ describe("extractJsonBlock: robustness to literal control chars in JSON strings"
       expect(comments[0]?.["body"]).toBe("Nested\nbody");
       const meta = obj["meta"] as Record<string, unknown>;
       expect(meta["key"]).toBe("tab\there");
+    }
+  });
+
+  it("preserves a literal backslash-n pair (not double-escaped)", () => {
+    // The input has a string value containing the two-char sequence \\n
+    // (backslash + n). The function must NOT replace it with the four-char
+    // sequence \\\\n. It only escapes raw control characters (\n, \r, \t, \b, \f).
+    const input = '{"key":"a\\\\nb"}';
+    const result = extractFirstBalancedObject(input);
+    expect(result).not.toBeNull();
+    if (result !== null) {
+      const parsed = JSON.parse(result) as { key: string };
+      expect(parsed.key).toBe("a\\nb");
     }
   });
 });

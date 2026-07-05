@@ -3,10 +3,9 @@
 //
 // Cutover context: the legacy "Posted / Considered / Suppressed" three-row
 // layout, the `<details>`-wrapped Posted preview, the off-diff callout,
-// and the inline pipeline summary line are all gone. The new layout
-// surfaces every posted finding inline in a GFM table. Off-diff +
-// filtered counts move to the hidden manifest so AI agents can read
-// them while humans see only the actionable findings.
+// and the legacy preview/off-diff blocks are all gone. The new layout
+// surfaces every posted finding inline in a GFM table, while the pipeline
+// summary line keeps posted/off-diff/filtered reconciliation visible.
 //
 // Each test below pins ONE of the four action cases the legacy contract
 // had, updated to the new layout:
@@ -106,6 +105,32 @@ describe("severity-table layout — actionable-only parent card", () => {
     expect(body).not.toMatch(/🏷️/u);
     // Verdict downgrades to DISCUSS.
     expect(body).toMatch(/💬\s+DISCUSS/u);
+  });
+
+  it("all-filtered model output renders a meaningful empty state", () => {
+    const body = buildReviewBody({
+      review: {
+        summary: "The model produced candidates, but policy filtered all of them.",
+        verdict: "NEEDS_FIX",
+        comments: [
+          { path: "src/noisy.ts", line: 1, body: "Style-only candidate", severity: "info", category: "style" },
+        ],
+        suppressedComments: [],
+      },
+      provider: "openai-compatible",
+      modelId: "auto",
+      validCommentCount: 0,
+      suppressedCommentCount: 0,
+      offDiffFromComments: [],
+      severityCounts: { critical: 0, high: 0, medium: 0, low: 0 },
+      secrets: [],
+      postedComments: [],
+    });
+
+    expect(body).toMatch(/💬\s+DISCUSS/u);
+    expect(body).toMatch(/\| — \| — \| — \| — \| _No findings to address_ \|/u);
+    expect(body).toMatch(/📊\s+1\s+findings\s+→\s+0\s+posted,\s+0\s+off-diff,\s+1\s+filtered/u);
+    expect(body).not.toMatch(/🏷️/u);
   });
 
   it("every posted finding appears as a row in the table", () => {

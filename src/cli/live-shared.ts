@@ -12,7 +12,7 @@ import {
 import { truncateBodyForLog } from "../util/http.js";
 import type { FetchImpl } from "../util/http.js";
 import { isPositiveSafeInteger, isRecord, isSafeInteger } from "../util/json-guards.js";
-import { renderSummary, type ReviewData as LayoutReviewData } from "../render/summary-layouts.js";
+import { renderSummary, type LayoutId, type ReviewData as LayoutReviewData } from "../render/summary-layouts.js";
 import { countBySeverity as countBySeverityUtil, severityRank } from "../util/severity.js";
 import { mapVerdictToAzureStatus, mapVerdictToGithubEvent } from "../util/verdict.js";
 import type { ProviderComment } from "../provider/provider-parse.js";
@@ -129,10 +129,10 @@ export async function evaluateLeakGate(input: {
 
 /**
  * Group comments by severity (low/medium/high/critical). Re-exported here
- * because external callers (`preparePostedReview`, the live tests) import
- * this helper from `live-shared.ts`. Delegates to `src/util/severity.ts`
- * so the live path and the merge path agree on the exact same
- * lowercase-accumulation logic.
+ * because external callers import this helper from `live-shared.ts`.
+ * Do not remove without updating all callers. Delegates to
+ * `src/util/severity.ts` so the live path and the merge path agree on
+ * the exact same lowercase-accumulation logic.
  */
 export const countBySeverity = countBySeverityUtil;
 
@@ -154,7 +154,7 @@ export const countBySeverity = countBySeverityUtil;
  *   - Verdict badge — second line, large H2
  *   - 🏷️ Severity tally — `critical → high → medium → low` distribution
  *     of the POSTED set, hidden when all zeros
- *   - Stable `<!-- umalready-pr-review:manifest {…} -->` for AI agents
+  *   - Stable `<!-- umactually-pr-review:manifest {…} -->` for AI agents
  *   - Same byte-for-byte output on GitHub and Azure (parity invariant)
  *   - Secret redaction applied to every rendered string
  *
@@ -225,6 +225,7 @@ export function buildReviewBody(input: {
    */
   readonly severityCounts: Record<string, number>;
   readonly secrets: readonly string[];
+  readonly layout?: LayoutId;
 }): string {
   // Delegate to the "severity-table" layout from
   // `src/render/summary-layouts.ts` — selected from the 20-layout
@@ -257,7 +258,7 @@ export function buildReviewBody(input: {
     postedComments,
     secrets: input.secrets,
   };
-  return renderSummary("severity-table", reviewData);
+  return renderSummary(input.layout ?? "severity-table", reviewData);
 }
 
 /**

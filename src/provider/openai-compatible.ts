@@ -15,10 +15,16 @@ import {
   sanitizeMessage,
 } from "./provider-error.js";
 import { composeSignal, sleep } from "../util/async.js";
+import { REDACTED_SECRET_TOKEN } from "../util/brand.js";
 import { createRequestId, joinUrl } from "../util/url.js";
 
 const ENDPOINT_RESPONSES: ProviderEndpoint = "responses";
 const ENDPOINT_CHAT: ProviderEndpoint = "chat";
+const DEBUG_SECRET_PATTERNS: readonly RegExp[] = [
+  /\bsk_test_[a-z_]+\b/gu,
+  /\b(?:AKIA|ASIA)[A-Z0-9]{16}\b/gu,
+  /\bghp_[A-Za-z0-9]{36}\b/gu,
+];
 
 type ProviderCallSuccess = {
   readonly ok: true;
@@ -158,13 +164,15 @@ async function callEndpoint(
   // does not log the raw response by default (it would dump 100+ KB to
   // the log on every run).
   if (process.env["UMACTUALLY_DEBUG_RAW"] === "1") {
-    process.stderr.write(
+    writeDebugRaw(
       `[DEBUG-RAW] requestId=${requestId} endpoint=${endpoint} ` +
       `rawTextLength=${rawText.length} textPayloadLength=${textPayload.length}\n`,
+      config,
     );
-    process.stderr.write(`[DEBUG-RAW] textPayload first 200: ${JSON.stringify(textPayload.slice(0, 200))}\n`);
-    process.stderr.write(`[DEBUG-RAW] textPayload last 200:  ${JSON.stringify(textPayload.slice(-200))}\n`);
-    process.stderr.write(`[DEBUG-RAW] hasResponseCompletedEvent: ${rawText.includes('"type":"response.completed"')}\n`);
+    const safeTextPayload = redactDebugSecrets(textPayload, config);
+    writeDebugRaw(`[DEBUG-RAW] textPayload first 200: ${JSON.stringify(safeTextPayload.slice(0, 200))}\n`, config);
+    writeDebugRaw(`[DEBUG-RAW] textPayload last 200:  ${JSON.stringify(safeTextPayload.slice(-200))}\n`, config);
+    writeDebugRaw(`[DEBUG-RAW] hasResponseCompletedEvent: ${rawText.includes('"type":"response.completed"')}\n`, config);
   }
   const review = parseReviewPayload(textPayload);
   // Treat an empty-summary+empty-verdict parse as a parse failure even
@@ -206,12 +214,14 @@ async function callEndpoint(
       const retryRawText = await readBody(retryResponse, endpoint, requestId);
       const retryTextPayload = extractTextPayload(endpoint, retryRawText);
       if (process.env["UMACTUALLY_DEBUG_RAW"] === "1") {
-        process.stderr.write(
+        writeDebugRaw(
           `[DEBUG-RAW] retry requestId=${requestId} ` +
           `rawTextLength=${retryRawText.length} textPayloadLength=${retryTextPayload.length}\n`,
+          config,
         );
-        process.stderr.write(`[DEBUG-RAW] retry textPayload first 200: ${JSON.stringify(retryTextPayload.slice(0, 200))}\n`);
-        process.stderr.write(`[DEBUG-RAW] retry textPayload last 200:  ${JSON.stringify(retryTextPayload.slice(-200))}\n`);
+        const safeRetryTextPayload = redactDebugSecrets(retryTextPayload, config);
+        writeDebugRaw(`[DEBUG-RAW] retry textPayload first 200: ${JSON.stringify(safeRetryTextPayload.slice(0, 200))}\n`, config);
+        writeDebugRaw(`[DEBUG-RAW] retry textPayload last 200:  ${JSON.stringify(safeRetryTextPayload.slice(-200))}\n`, config);
       }
       const parsedRetry = parseReviewPayload(retryTextPayload);
       // Same strict check on the retry: must have actual review content.
@@ -236,6 +246,23 @@ async function callEndpoint(
   }
 
   return { ok: true, endpoint, review: retryReview, requestId };
+}
+
+function writeDebugRaw(message: string, config: ProviderCallConfig): void {
+  process.stderr.write(redactDebugSecrets(message, config));
+}
+
+function redactDebugSecrets(value: string, config: ProviderCallConfig): string {
+  let redacted = value;
+  for (const secret of [config.apiKey, config.promptOverride ?? "", config.additionalPromptOverride ?? ""]) {
+    if (secret.length > 0) {
+      redacted = redacted.split(secret).join(REDACTED_SECRET_TOKEN);
+    }
+  }
+  for (const pattern of DEBUG_SECRET_PATTERNS) {
+    redacted = redacted.replace(pattern, REDACTED_SECRET_TOKEN);
+  }
+  return redacted;
 }
 
 async function performFetch(

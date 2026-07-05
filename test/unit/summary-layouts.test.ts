@@ -234,8 +234,8 @@ describe("S2 — all layouts render without throwing", () => {
   }
 
   it("renderSummary throws on unknown layout", () => {
-    // @ts-expect-error — intentionally invalid
-    expect(() => renderSummary("nope", makeBusyData())).toThrow();
+    const invalidLayout: LayoutId = JSON.parse('"nope"');
+    expect(() => renderSummary(invalidLayout, makeBusyData())).toThrow();
   });
 
   it("renderBaseline renders the 'current' baseline", () => {
@@ -260,7 +260,7 @@ describe("S3 — every layout includes the stable marker", () => {
 
 describe("S4 — every layout includes the hidden manifest", () => {
   for (const layout of LAYOUTS) {
-    it(`${layout} embeds the umalready-pr-review:manifest comment`, () => {
+    it(`${layout} embeds the umactually-pr-review:manifest comment`, () => {
       const out = renderSummary(layout, makeBusyData());
       expect(out).toContain("<!-- umactually-pr-review:manifest ");
       expect(out).toContain(MANIFEST_SCHEMA);
@@ -449,6 +449,34 @@ describe("S7 — baseline layout reproduces existing summary invariants", () => 
 });
 
 // -- Additional cross-cutting invariants -----------------------------------
+
+describe("severity-table details", () => {
+  it("falls back to general when a runtime comment omits category", () => {
+    const data: ReviewData = JSON.parse(JSON.stringify({
+      review: {
+        summary: "Category fallback.",
+        verdict: "NEEDS_FIX",
+        comments: [
+          { path: "src/no-category.ts", line: 3, body: "Missing category.", severity: "medium" },
+        ],
+        suppressedComments: [],
+      },
+      provider: "openai-compatible",
+      modelId: "auto",
+      validCommentCount: 1,
+      suppressedCommentCount: 0,
+      severityCounts: { critical: 0, high: 0, medium: 1, low: 0 },
+      offDiffFromComments: [],
+      postedComments: [
+        { path: "src/no-category.ts", line: 3, body: "Missing category.", severity: "medium" },
+      ],
+      secrets: [],
+    }));
+
+    const out = renderSummary("severity-table", data);
+    expect(out).toContain("| 1 | 🟠 Medium | general | `src/no-category.ts`:3 | Missing category. |");
+  });
+});
 
 describe("cross-cutting invariants — all layouts", () => {
   for (const layout of LAYOUTS) {

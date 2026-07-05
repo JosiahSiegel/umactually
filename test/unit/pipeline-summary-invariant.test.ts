@@ -14,13 +14,10 @@
 // so a refactor of the formula fails loud.
 //
 // Cutover note: the severity-table layout (chosen from the 20-layout
-// sheet) does NOT emit the `📊 N findings → X posted, Y off-diff, Z
-// filtered` line in the rendered body. The pipeline reconciliation
-// moved to the hidden `<!-- umalready-pr-review:manifest -->` JSON,
-// where AI agents and the live-merge tooling can read it without it
-// cluttering the visible card. The structural invariant is still
-// preserved — these tests now read the manifest and verify the
-// postable/off-diff/filtered counts match the formula.
+// sheet) emits the `📊 N findings → X posted, Y off-diff, Z filtered`
+// line in the rendered body. These tests read that visible pipeline
+// line and verify the postable/off-diff/filtered counts reconcile by
+// construction.
 
 import { describe, expect, it } from "vitest";
 
@@ -44,21 +41,20 @@ function readManifest(body: string): Manifest {
 }
 
 function counts(body: string): { total: number; posted: number; offDiff: number; filtered: number } {
-  const manifest = readManifest(body);
-  // total is reconstructed from caller-visible counts: posted + offDiff + filtered.
-  // Since the manifest only exposes posted + suppressed, we use the
-  // body to derive filtered (filtered = total - posted - offDiff). The
-  // severity-table layout preserves the invariant by construction so
-  // any drift surfaces here.
-  return {
-    total: manifest.inlineCount + manifest.suppressedCount,
-    posted: manifest.inlineCount,
-    offDiff: manifest.suppressedCount,
-    filtered: 0, // severity-table layout does not surface filtered explicitly
-  };
+  const match = body.match(/📊\s+(\d+)\s+findings\s+→\s+(\d+)\s+posted,\s+(\d+)\s+off-diff,\s+(\d+)\s+filtered/u);
+  if (match === null) {
+    throw new Error(`pipeline summary line not found in:\n${body}`);
+  }
+  const [, totalRaw, postedRaw, offDiffRaw, filteredRaw] = match;
+  const total = Number(totalRaw);
+  const posted = Number(postedRaw);
+  const offDiff = Number(offDiffRaw);
+  const filtered = Number(filteredRaw);
+  expect(total).toBe(posted + offDiff + filtered);
+  return { total, posted, offDiff, filtered };
 }
 
-describe("CLARITY-19 pipeline summary structural invariant (manifest-backed)", () => {
+describe("CLARITY-19 pipeline summary structural invariant (body-backed)", () => {
   it("renders without throwing on inconsistent caller counts (graceful degradation)", () => {
     // Edge case: caller passes inconsistent counts (offDiff > total).
     // The renderer should NOT throw — that would 500 the parent card.

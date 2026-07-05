@@ -129,22 +129,24 @@ export function extractFirstBalancedObject(rawText: string): string | null {
   // characters that appear INSIDE JSON strings. We re-walk because the
   // first pass above only tracked depth, not the output positions.
   const substring = rawText.slice(startIndex, endIndex + 1);
-  let result = "";
+  const segments: string[] = [];
   inString = false;
   escape = false;
   for (let index = 0; index < substring.length; index += 1) {
-    const char = substring[index];
+    const char = substring.charAt(index);
     if (inString) {
-      result += char;
       if (escape) {
+        segments.push(char);
         escape = false;
         continue;
       }
       if (char === "\\") {
+        segments.push(char);
         escape = true;
         continue;
       }
       if (char === '"') {
+        segments.push(char);
         inString = false;
         continue;
       }
@@ -152,25 +154,26 @@ export function extractFirstBalancedObject(rawText: string): string | null {
       // invalid in JSON strings. \n, \r, \t are the common ones from
       // SSE delta concatenation; we also handle \b, \f for completeness.
       if (char === "\n") {
-        result = result.slice(0, -1) + "\\n";
+        segments.push("\\n");
         continue;
       }
       if (char === "\r") {
-        result = result.slice(0, -1) + "\\r";
+        segments.push("\\r");
         continue;
       }
       if (char === "\t") {
-        result = result.slice(0, -1) + "\\t";
+        segments.push("\\t");
         continue;
       }
       if (char === "\b") {
-        result = result.slice(0, -1) + "\\b";
+        segments.push("\\b");
         continue;
       }
       if (char === "\f") {
-        result = result.slice(0, -1) + "\\f";
+        segments.push("\\f");
         continue;
       }
+      segments.push(char);
       continue;
     }
     // Outside a string: control characters are valid JSON whitespace,
@@ -178,8 +181,8 @@ export function extractFirstBalancedObject(rawText: string): string | null {
     if (char === '"') {
       inString = true;
     }
-    result += char;
+    segments.push(char);
   }
 
-  return result;
+  return segments.join("");
 }

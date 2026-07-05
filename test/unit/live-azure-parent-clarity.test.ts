@@ -176,23 +176,14 @@ describe("buildReviewBody — 5-second scannable clarity", () => {
     expect(lines[1]).toMatch(/SHIP|APPROVED|NEEDS_FIX|DISCUSS|COMMENT/);
   });
 
-  it("CLARITY-2: severity tally is present in the body (after the findings table)", () => {
-    // Cutover note: the old contract required the severity tally to be
-    // within 200 chars of the verdict so it stayed above the fold. The
-    // severity-table layout puts the findings TABLE between verdict and
-    // tally — the table IS the primary scannable element. The tally is
-    // still emitted, just below the table. This test pins that contract.
+  it("CLARITY-2: severity tally appears within the first 500 characters", () => {
     const body = buildReviewBody(STD_INPUT);
     const verdictIndex = body.indexOf("## ");
     expect(verdictIndex).toBeGreaterThanOrEqual(0);
     const afterVerdict = body.slice(verdictIndex);
-    // The tally MUST appear somewhere after the verdict.
     const countsIdx = afterVerdict.search(/🏷️\s+`\d+`\s+critical/u);
     expect(countsIdx).toBeGreaterThanOrEqual(0);
-    // The findings table sits between verdict and tally; tally is
-    // somewhere later in the body but still before the footer.
-    const footerIdx = afterVerdict.indexOf("🤖");
-    expect(countsIdx).toBeLessThan(footerIdx);
+    expect(verdictIndex + countsIdx).toBeLessThan(500);
   });
 
   it("CLARITY-3: NEVER emits raw `**word**` asterisks for severity values", () => {
@@ -251,8 +242,8 @@ describe("buildReviewBody — 5-second scannable clarity", () => {
     expect(body).not.toMatch(/🏷️/u);
     // Findings table is still present with the "no findings" placeholder row.
     expect(body).toMatch(/No findings to address/u);
-    // Pipeline summary NOT in the body (it moved into the manifest).
-    expect(body).not.toMatch(/📊\s+\d+\s+findings\s+→/u);
+    // Pipeline summary is visible so humans can reconcile filtered/off-diff counts.
+    expect(body).toMatch(/📊\s+0\s+findings\s+→\s+0\s+posted,\s+0\s+off-diff,\s+0\s+filtered/u);
     // manifest still emitted
     expect(body).toMatch(/<!--\s*umactually-pr-review:manifest\s*\{/u);
   });
@@ -463,8 +454,8 @@ describe("buildReviewBody — 5-second scannable clarity", () => {
     expect(body).not.toMatch(/📋\s+Posted preview/u);
     // No <details> wrappers anywhere.
     expect(body).not.toContain("<details>");
-    // No inline pipeline summary in the body.
-    expect(body).not.toMatch(/📊\s+\d+\s+findings\s+→/u);
+    // Pipeline summary is visible so humans can reconcile filtered/off-diff counts.
+    expect(body).toMatch(/📊\s+0\s+findings\s+→\s+0\s+posted,\s+0\s+off-diff,\s+0\s+filtered/u);
     // Findings table still present with the empty-row placeholder.
     expect(body).toMatch(/No findings to address/u);
     // Verdict + summary + footer are still there.
@@ -726,8 +717,8 @@ describe("buildReviewBody — 5-second scannable clarity", () => {
     });
     // Tally hidden when all counts zero.
     expect(body).not.toMatch(/🏷️/u);
-    // No pipeline summary in body.
-    expect(body).not.toMatch(/📊\s+\d+\s+findings\s+→/u);
+    // Pipeline summary is visible so humans can reconcile filtered/off-diff counts.
+    expect(body).toMatch(/📊\s+1\s+findings\s+→\s+0\s+posted,\s+0\s+off-diff,\s+1\s+filtered/u);
     // Verdict downgrades to DISCUSS per CLARITY-14f.
     expect(body).toMatch(/💬\s+DISCUSS/u);
   });

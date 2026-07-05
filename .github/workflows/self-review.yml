@@ -31,6 +31,9 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
+      - name: Check bundled dist is fresh
+        run: npm run check:dist-freshness
+
       - name: Run UmActually self review
         uses: ./
         with:

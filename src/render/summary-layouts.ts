@@ -114,6 +114,9 @@ export const LAYOUTS: readonly LayoutId[] = [
 /** Singleton baseline identifier. */
 export const BASELINE: BaselineId = "current";
 
+/** Summary length above which the default layout uses a collapsed details block. */
+export const VERBOSE_THRESHOLD_CHARS = 500;
+
 /**
  * Data shape every layout accepts. Derived from `LiveReview` (the
  * canonical input shape to the existing `buildReviewBody` in
@@ -532,6 +535,13 @@ function layoutSeverityTable(data: ReviewData): string {
   if (data.review.parseFailed === true) {
     parts.push("> ⚠️ `Parse failed` — provider response was not a valid JSON review payload. The raw provider text is included in the Summary section below for diagnostics.");
     parts.push("");
+  } else {
+    parts.push(pipelineLine(data));
+    const tally = severityTally(data);
+    if (tally.length > 0) {
+      parts.push(tally);
+    }
+    parts.push("");
   }
 
   parts.push("### 📋 Findings");
@@ -544,16 +554,10 @@ function layoutSeverityTable(data: ReviewData): string {
     all.forEach((c, i) => {
       const title = redact(c.body, data.secrets).replace(/\s+/gu, " ").trim();
       const snippet = title.length > 80 ? `${title.slice(0, 77)}…` : title;
-      parts.push(`| ${i + 1} | ${severityEmoji(c.severity)} ${severityLabel(c.severity)} | ${cell(c.category)} | \`${cell(c.path)}\`:${c.line} | ${cell(snippet)} |`);
+      parts.push(`| ${i + 1} | ${severityEmoji(c.severity)} ${severityLabel(c.severity)} | ${cell(c.category ?? "general")} | \`${cell(c.path)}\`:${c.line} | ${cell(snippet)} |`);
     });
   }
   parts.push("");
-
-  const tally = severityTally(data);
-  if (tally.length > 0) {
-    parts.push(tally);
-    parts.push("");
-  }
 
   if (data.review.summary.trim().length > 0) {
     const safeSummary = redact(data.review.summary, data.secrets);
@@ -564,7 +568,6 @@ function layoutSeverityTable(data: ReviewData): string {
     // Threshold picked to match the "long/verbose" trigger the user
     // asked us to address; below it, the summary stays compact and
     // readable on both platforms.
-    const VERBOSE_THRESHOLD_CHARS = 500;
     if (safeSummary.length > VERBOSE_THRESHOLD_CHARS) {
       parts.push("### 📝 Summary");
       parts.push("");
@@ -1102,16 +1105,26 @@ function layoutReleaseNotes(data: ReviewData): string {
   parts.push("");
 
   // Map severity → "category"
-  const buckets: Record<string, LiveReviewComment[]> = {
+  type ReleaseNotesBucketName =
+    | "🔴 Fixes (high/critical)"
+    | "🟠 Improvements (medium)"
+    | "🟡 Style (low)";
+  const buckets: Record<ReleaseNotesBucketName, LiveReviewComment[]> = {
     "🔴 Fixes (high/critical)": [],
     "🟠 Improvements (medium)": [],
     "🟡 Style (low)": [],
   };
+  const SEVERITY_RANK_TO_BUCKET: Record<number, ReleaseNotesBucketName> = {
+    4: "🔴 Fixes (high/critical)",
+    3: "🔴 Fixes (high/critical)",
+    2: "🟠 Improvements (medium)",
+    1: "🟡 Style (low)",
+    0: "🟡 Style (low)",
+  };
   for (const c of data.postedComments) {
     const rank = severityRank(c.severity);
-    if (rank >= 3) buckets["🔴 Fixes (high/critical)"]!.push(c);
-    else if (rank === 2) buckets["🟠 Improvements (medium)"]!.push(c);
-    else buckets["🟡 Style (low)"]!.push(c);
+    const bucketName = SEVERITY_RANK_TO_BUCKET[rank] ?? "🟡 Style (low)";
+    buckets[bucketName].push(c);
   }
 
   for (const [header, list] of Object.entries(buckets)) {
@@ -1565,6 +1578,9 @@ const BASELINE_RENDERERS: Record<BaselineId, RendererFn> = {
  *          and Azure DevOps PR threads.
  */
 export function renderSummary(layout: LayoutId, data: ReviewData): string {
+  if (data.postedComments === undefined) {
+    throw new Error("renderSummary: data.postedComments is required (was undefined). Use buildReviewBody() to dispatch — it computes the post-filter set from review.comments.");
+  }
   const renderer = LAYOUT_RENDERERS[layout];
   if (renderer === undefined) {
     throw new Error(`Unknown layout: ${layout as string}`);

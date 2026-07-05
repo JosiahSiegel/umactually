@@ -3280,6 +3280,8 @@ const LAYOUTS = (/* unused pure expression or super */ null && ([
 ]));
 /** Singleton baseline identifier. */
 const BASELINE = "current";
+/** Summary length above which the default layout uses a collapsed details block. */
+const VERBOSE_THRESHOLD_CHARS = 500;
 // ---------------------------------------------------------------------------
 // Internal helpers
 // ---------------------------------------------------------------------------
@@ -3641,6 +3643,14 @@ function layoutSeverityTable(data) {
         parts.push("> ⚠️ `Parse failed` — provider response was not a valid JSON review payload. The raw provider text is included in the Summary section below for diagnostics.");
         parts.push("");
     }
+    else {
+        parts.push(pipelineLine(data));
+        const tally = severityTally(data);
+        if (tally.length > 0) {
+            parts.push(tally);
+        }
+        parts.push("");
+    }
     parts.push("### 📋 Findings");
     parts.push("");
     parts.push("| # | Severity | Category | File:Line | Title |");
@@ -3652,15 +3662,10 @@ function layoutSeverityTable(data) {
         all.forEach((c, i) => {
             const title = redact(c.body, data.secrets).replace(/\s+/gu, " ").trim();
             const snippet = title.length > 80 ? `${title.slice(0, 77)}…` : title;
-            parts.push(`| ${i + 1} | ${severityEmoji(c.severity)} ${severityLabel(c.severity)} | ${cell(c.category)} | \`${cell(c.path)}\`:${c.line} | ${cell(snippet)} |`);
+            parts.push(`| ${i + 1} | ${severityEmoji(c.severity)} ${severityLabel(c.severity)} | ${cell(c.category ?? "general")} | \`${cell(c.path)}\`:${c.line} | ${cell(snippet)} |`);
         });
     }
     parts.push("");
-    const tally = severityTally(data);
-    if (tally.length > 0) {
-        parts.push(tally);
-        parts.push("");
-    }
     if (data.review.summary.trim().length > 0) {
         const safeSummary = redact(data.review.summary, data.secrets);
         // Cross-platform note: <details>/<summary> renders as a collapsible
@@ -3670,7 +3675,6 @@ function layoutSeverityTable(data) {
         // Threshold picked to match the "long/verbose" trigger the user
         // asked us to address; below it, the summary stays compact and
         // readable on both platforms.
-        const VERBOSE_THRESHOLD_CHARS = 500;
         if (safeSummary.length > VERBOSE_THRESHOLD_CHARS) {
             parts.push("### 📝 Summary");
             parts.push("");
@@ -4149,20 +4153,22 @@ function layoutReleaseNotes(data) {
     parts.push("");
     parts.push("### 📝 Review changelog");
     parts.push("");
-    // Map severity → "category"
     const buckets = {
         "🔴 Fixes (high/critical)": [],
         "🟠 Improvements (medium)": [],
         "🟡 Style (low)": [],
     };
+    const SEVERITY_RANK_TO_BUCKET = {
+        4: "🔴 Fixes (high/critical)",
+        3: "🔴 Fixes (high/critical)",
+        2: "🟠 Improvements (medium)",
+        1: "🟡 Style (low)",
+        0: "🟡 Style (low)",
+    };
     for (const c of data.postedComments) {
         const rank = severityRank(c.severity);
-        if (rank >= 3)
-            buckets["🔴 Fixes (high/critical)"].push(c);
-        else if (rank === 2)
-            buckets["🟠 Improvements (medium)"].push(c);
-        else
-            buckets["🟡 Style (low)"].push(c);
+        const bucketName = SEVERITY_RANK_TO_BUCKET[rank] ?? "🟡 Style (low)";
+        buckets[bucketName].push(c);
     }
     for (const [header, list] of Object.entries(buckets)) {
         if (list.length === 0)
@@ -4564,6 +4570,9 @@ const BASELINE_RENDERERS = {
  *          and Azure DevOps PR threads.
  */
 function renderSummary(layout, data) {
+    if (data.postedComments === undefined) {
+        throw new Error("renderSummary: data.postedComments is required (was undefined). Use buildReviewBody() to dispatch — it computes the post-filter set from review.comments.");
+    }
     const renderer = LAYOUT_RENDERERS[layout];
     if (renderer === undefined) {
         throw new Error(`Unknown layout: ${layout}`);
@@ -4660,10 +4669,10 @@ async function evaluateLeakGate(input) {
 }
 /**
  * Group comments by severity (low/medium/high/critical). Re-exported here
- * because external callers (`preparePostedReview`, the live tests) import
- * this helper from `live-shared.ts`. Delegates to `src/util/severity.ts`
- * so the live path and the merge path agree on the exact same
- * lowercase-accumulation logic.
+ * because external callers import this helper from `live-shared.ts`.
+ * Do not remove without updating all callers. Delegates to
+ * `src/util/severity.ts` so the live path and the merge path agree on
+ * the exact same lowercase-accumulation logic.
  */
 const live_shared_countBySeverity = countBySeverity;
 /**
@@ -4684,7 +4693,7 @@ const live_shared_countBySeverity = countBySeverity;
  *   - Verdict badge — second line, large H2
  *   - 🏷️ Severity tally — `critical → high → medium → low` distribution
  *     of the POSTED set, hidden when all zeros
- *   - Stable `<!-- umalready-pr-review:manifest {…} -->` for AI agents
+  *   - Stable `<!-- umactually-pr-review:manifest {…} -->` for AI agents
  *   - Same byte-for-byte output on GitHub and Azure (parity invariant)
  *   - Secret redaction applied to every rendered string
  *
@@ -4749,7 +4758,7 @@ function buildReviewBody(input) {
         postedComments,
         secrets: input.secrets,
     };
-    return renderSummary("severity-table", reviewData);
+    return renderSummary(input.layout ?? "severity-table", reviewData);
 }
 /**
  * Build a single inline-comment body. Both GitHub review comments and Azure
@@ -6143,22 +6152,24 @@ function extractFirstBalancedObject(rawText) {
     // characters that appear INSIDE JSON strings. We re-walk because the
     // first pass above only tracked depth, not the output positions.
     const substring = rawText.slice(startIndex, endIndex + 1);
-    let result = "";
+    const segments = [];
     inString = false;
     escape = false;
     for (let index = 0; index < substring.length; index += 1) {
-        const char = substring[index];
+        const char = substring.charAt(index);
         if (inString) {
-            result += char;
             if (escape) {
+                segments.push(char);
                 escape = false;
                 continue;
             }
             if (char === "\\") {
+                segments.push(char);
                 escape = true;
                 continue;
             }
             if (char === '"') {
+                segments.push(char);
                 inString = false;
                 continue;
             }
@@ -6166,25 +6177,26 @@ function extractFirstBalancedObject(rawText) {
             // invalid in JSON strings. \n, \r, \t are the common ones from
             // SSE delta concatenation; we also handle \b, \f for completeness.
             if (char === "\n") {
-                result = result.slice(0, -1) + "\\n";
+                segments.push("\\n");
                 continue;
             }
             if (char === "\r") {
-                result = result.slice(0, -1) + "\\r";
+                segments.push("\\r");
                 continue;
             }
             if (char === "\t") {
-                result = result.slice(0, -1) + "\\t";
+                segments.push("\\t");
                 continue;
             }
             if (char === "\b") {
-                result = result.slice(0, -1) + "\\b";
+                segments.push("\\b");
                 continue;
             }
             if (char === "\f") {
-                result = result.slice(0, -1) + "\\f";
+                segments.push("\\f");
                 continue;
             }
+            segments.push(char);
             continue;
         }
         // Outside a string: control characters are valid JSON whitespace,
@@ -6192,9 +6204,9 @@ function extractFirstBalancedObject(rawText) {
         if (char === '"') {
             inString = true;
         }
-        result += char;
+        segments.push(char);
     }
-    return result;
+    return segments.join("");
 }
 
 ;// CONCATENATED MODULE: ./src/provider/provider-parse.ts
@@ -6962,8 +6974,14 @@ function buildTokenUrl(apiBase) {
 
 
 
+
 const ENDPOINT_RESPONSES = "responses";
 const openai_compatible_ENDPOINT_CHAT = "chat";
+const DEBUG_SECRET_PATTERNS = [
+    /\bsk_test_[a-z_]+\b/gu,
+    /\b(?:AKIA|ASIA)[A-Z0-9]{16}\b/gu,
+    /\bghp_[A-Za-z0-9]{36}\b/gu,
+];
 
 async function runProviderRequest(config) {
     const fetchImpl = config.fetchImpl ?? globalThis.fetch.bind(globalThis);
@@ -7040,11 +7058,12 @@ async function callEndpoint(config, fetchImpl, requestId, endpoint) {
     // does not log the raw response by default (it would dump 100+ KB to
     // the log on every run).
     if (process.env["UMACTUALLY_DEBUG_RAW"] === "1") {
-        process.stderr.write(`[DEBUG-RAW] requestId=${requestId} endpoint=${endpoint} ` +
-            `rawTextLength=${rawText.length} textPayloadLength=${textPayload.length}\n`);
-        process.stderr.write(`[DEBUG-RAW] textPayload first 200: ${JSON.stringify(textPayload.slice(0, 200))}\n`);
-        process.stderr.write(`[DEBUG-RAW] textPayload last 200:  ${JSON.stringify(textPayload.slice(-200))}\n`);
-        process.stderr.write(`[DEBUG-RAW] hasResponseCompletedEvent: ${rawText.includes('"type":"response.completed"')}\n`);
+        writeDebugRaw(`[DEBUG-RAW] requestId=${requestId} endpoint=${endpoint} ` +
+            `rawTextLength=${rawText.length} textPayloadLength=${textPayload.length}\n`, config);
+        const safeTextPayload = redactDebugSecrets(textPayload, config);
+        writeDebugRaw(`[DEBUG-RAW] textPayload first 200: ${JSON.stringify(safeTextPayload.slice(0, 200))}\n`, config);
+        writeDebugRaw(`[DEBUG-RAW] textPayload last 200:  ${JSON.stringify(safeTextPayload.slice(-200))}\n`, config);
+        writeDebugRaw(`[DEBUG-RAW] hasResponseCompletedEvent: ${rawText.includes('"type":"response.completed"')}\n`, config);
     }
     const review = parseReviewPayload(textPayload);
     // Treat an empty-summary+empty-verdict parse as a parse failure even
@@ -7085,10 +7104,11 @@ async function callEndpoint(config, fetchImpl, requestId, endpoint) {
             const retryRawText = await readBody(retryResponse, endpoint, requestId);
             const retryTextPayload = extractTextPayload(endpoint, retryRawText);
             if (process.env["UMACTUALLY_DEBUG_RAW"] === "1") {
-                process.stderr.write(`[DEBUG-RAW] retry requestId=${requestId} ` +
-                    `rawTextLength=${retryRawText.length} textPayloadLength=${retryTextPayload.length}\n`);
-                process.stderr.write(`[DEBUG-RAW] retry textPayload first 200: ${JSON.stringify(retryTextPayload.slice(0, 200))}\n`);
-                process.stderr.write(`[DEBUG-RAW] retry textPayload last 200:  ${JSON.stringify(retryTextPayload.slice(-200))}\n`);
+                writeDebugRaw(`[DEBUG-RAW] retry requestId=${requestId} ` +
+                    `rawTextLength=${retryRawText.length} textPayloadLength=${retryTextPayload.length}\n`, config);
+                const safeRetryTextPayload = redactDebugSecrets(retryTextPayload, config);
+                writeDebugRaw(`[DEBUG-RAW] retry textPayload first 200: ${JSON.stringify(safeRetryTextPayload.slice(0, 200))}\n`, config);
+                writeDebugRaw(`[DEBUG-RAW] retry textPayload last 200:  ${JSON.stringify(safeRetryTextPayload.slice(-200))}\n`, config);
             }
             const parsedRetry = parseReviewPayload(retryTextPayload);
             // Same strict check on the retry: must have actual review content.
@@ -7106,6 +7126,21 @@ async function callEndpoint(config, fetchImpl, requestId, endpoint) {
         throw new ProviderError("parse", endpoint, retryResponseStatus ?? response.status, requestId, "Provider response did not contain a JSON review payload after self-healing retry.", { rawText });
     }
     return { ok: true, endpoint, review: retryReview, requestId };
+}
+function writeDebugRaw(message, config) {
+    process.stderr.write(redactDebugSecrets(message, config));
+}
+function redactDebugSecrets(value, config) {
+    let redacted = value;
+    for (const secret of [config.apiKey, config.promptOverride ?? "", config.additionalPromptOverride ?? ""]) {
+        if (secret.length > 0) {
+            redacted = redacted.split(secret).join(REDACTED_SECRET_TOKEN);
+        }
+    }
+    for (const pattern of DEBUG_SECRET_PATTERNS) {
+        redacted = redacted.replace(pattern, REDACTED_SECRET_TOKEN);
+    }
+    return redacted;
 }
 async function performFetch(fetchImpl, url, body, signal, config, requestId, endpoint) {
     try {
@@ -8290,24 +8325,33 @@ async function readOptionalFile(path, cwd, fallback, label) {
 class CliArgumentError extends Error {
     name = "CliArgumentError";
 }
-function dispatchLive(parsed, cwd, env) {
+async function dispatchLive(parsed, cwd, env) {
     // Live orchestration lives in src/cli/orchestrator.ts so the dry-run path
     // keeps a single-responsibility surface. This thin wrapper exists only to
     // preserve the public CLI module exports expected by existing tests.
     // Static import (no dynamic import()) so ncc emits a single bundle chunk
     // rather than a content-hashed dynamic chunk that would need to be committed.
     //
-    // Wire --debug-raw-response through to the provider code as a process-env
-    // signal so the openai-compatible.ts parse-fail path can dump the
-    // extracted payload to stderr. Without this, the only way to diagnose
-    // a production parse-fail is to read the 100+ KB raw response out of
-    // the PR comment's <details> block (which is truncated to 16 KB).
+    // Compatibility shim: provider debug logging still reads
+    // UMACTUALLY_DEBUG_RAW from process.env. Set it only for this dispatch
+    // and restore/delete it in finally so same-process batch runs do not
+    // inherit --debug-raw-response from an earlier review.
+    const previousDebugRaw = process.env["UMACTUALLY_DEBUG_RAW"];
     if (parsed.debugRawResponse === true) {
         process.env["UMACTUALLY_DEBUG_RAW"] = "1";
     }
-    return runLive({ parsed, cwd, env }).then((result) => ({
-        exitCode: result.exitCode,
-    }));
+    try {
+        const result = await runLive({ parsed, cwd, env });
+        return { exitCode: result.exitCode };
+    }
+    finally {
+        if (previousDebugRaw === undefined) {
+            delete process.env["UMACTUALLY_DEBUG_RAW"];
+        }
+        else {
+            process.env["UMACTUALLY_DEBUG_RAW"] = previousDebugRaw;
+        }
+    }
 }
 
 ;// CONCATENATED MODULE: ./src/cli/validate.ts
