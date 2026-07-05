@@ -151,6 +151,21 @@ async function callEndpoint(
 
   const rawText = await readBody(response, endpoint, requestId);
   const textPayload = extractTextPayload(endpoint, rawText);
+  // [DEBUG-RAW] Emit extracted text length + first/last 200 chars so the
+  // GitHub Actions log shows what the parser actually saw. Pinned by the
+  // --debug-raw-response action input. This is the only way to diagnose
+  // production parse-fails without re-running the model — the action
+  // does not log the raw response by default (it would dump 100+ KB to
+  // the log on every run).
+  if (process.env["UMACTUALLY_DEBUG_RAW"] === "1") {
+    process.stderr.write(
+      `[DEBUG-RAW] requestId=${requestId} endpoint=${endpoint} ` +
+      `rawTextLength=${rawText.length} textPayloadLength=${textPayload.length}\n`,
+    );
+    process.stderr.write(`[DEBUG-RAW] textPayload first 200: ${JSON.stringify(textPayload.slice(0, 200))}\n`);
+    process.stderr.write(`[DEBUG-RAW] textPayload last 200:  ${JSON.stringify(textPayload.slice(-200))}\n`);
+    process.stderr.write(`[DEBUG-RAW] hasResponseCompletedEvent: ${rawText.includes('"type":"response.completed"')}\n`);
+  }
   const review = parseReviewPayload(textPayload);
   // Treat an empty-summary+empty-verdict parse as a parse failure even
   // when `extractJsonBlock` returned an object. The parser is permissive
@@ -190,6 +205,14 @@ async function callEndpoint(
     if (retryResponse.ok) {
       const retryRawText = await readBody(retryResponse, endpoint, requestId);
       const retryTextPayload = extractTextPayload(endpoint, retryRawText);
+      if (process.env["UMACTUALLY_DEBUG_RAW"] === "1") {
+        process.stderr.write(
+          `[DEBUG-RAW] retry requestId=${requestId} ` +
+          `rawTextLength=${retryRawText.length} textPayloadLength=${retryTextPayload.length}\n`,
+        );
+        process.stderr.write(`[DEBUG-RAW] retry textPayload first 200: ${JSON.stringify(retryTextPayload.slice(0, 200))}\n`);
+        process.stderr.write(`[DEBUG-RAW] retry textPayload last 200:  ${JSON.stringify(retryTextPayload.slice(-200))}\n`);
+      }
       const parsedRetry = parseReviewPayload(retryTextPayload);
       // Same strict check on the retry: must have actual review content.
       if (isNonEmptyReview(parsedRetry)) {

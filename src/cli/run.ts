@@ -264,6 +264,15 @@ export function dispatchLive(parsed: ParsedCliArgs, cwd: string, env: NodeJS.Pro
   // preserve the public CLI module exports expected by existing tests.
   // Static import (no dynamic import()) so ncc emits a single bundle chunk
   // rather than a content-hashed dynamic chunk that would need to be committed.
+  //
+  // Wire --debug-raw-response through to the provider code as a process-env
+  // signal so the openai-compatible.ts parse-fail path can dump the
+  // extracted payload to stderr. Without this, the only way to diagnose
+  // a production parse-fail is to read the 100+ KB raw response out of
+  // the PR comment's <details> block (which is truncated to 16 KB).
+  if (parsed.debugRawResponse === true) {
+    process.env["UMACTUALLY_DEBUG_RAW"] = "1";
+  }
   return runOrchestrator({ parsed, cwd, env }).then((result) => ({
     exitCode: result.exitCode,
   }));

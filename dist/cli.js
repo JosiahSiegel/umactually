@@ -7035,6 +7035,19 @@ async function callEndpoint(config, fetchImpl, requestId, endpoint) {
     }
     const rawText = await readBody(response, endpoint, requestId);
     const textPayload = extractTextPayload(endpoint, rawText);
+    // [DEBUG-RAW] Emit extracted text length + first/last 200 chars so the
+    // GitHub Actions log shows what the parser actually saw. Pinned by the
+    // --debug-raw-response action input. This is the only way to diagnose
+    // production parse-fails without re-running the model — the action
+    // does not log the raw response by default (it would dump 100+ KB to
+    // the log on every run).
+    if (process.env["UMACTUALLY_DEBUG_RAW"] === "1") {
+        process.stderr.write(`[DEBUG-RAW] requestId=${requestId} endpoint=${endpoint} ` +
+            `rawTextLength=${rawText.length} textPayloadLength=${textPayload.length}\n`);
+        process.stderr.write(`[DEBUG-RAW] textPayload first 200: ${JSON.stringify(textPayload.slice(0, 200))}\n`);
+        process.stderr.write(`[DEBUG-RAW] textPayload last 200:  ${JSON.stringify(textPayload.slice(-200))}\n`);
+        process.stderr.write(`[DEBUG-RAW] hasResponseCompletedEvent: ${rawText.includes('"type":"response.completed"')}\n`);
+    }
     const review = parseReviewPayload(textPayload);
     // Treat an empty-summary+empty-verdict parse as a parse failure even
     // when `extractJsonBlock` returned an object. The parser is permissive
@@ -7073,6 +7086,12 @@ async function callEndpoint(config, fetchImpl, requestId, endpoint) {
         if (retryResponse.ok) {
             const retryRawText = await readBody(retryResponse, endpoint, requestId);
             const retryTextPayload = extractTextPayload(endpoint, retryRawText);
+            if (process.env["UMACTUALLY_DEBUG_RAW"] === "1") {
+                process.stderr.write(`[DEBUG-RAW] retry requestId=${requestId} ` +
+                    `rawTextLength=${retryRawText.length} textPayloadLength=${retryTextPayload.length}\n`);
+                process.stderr.write(`[DEBUG-RAW] retry textPayload first 200: ${JSON.stringify(retryTextPayload.slice(0, 200))}\n`);
+                process.stderr.write(`[DEBUG-RAW] retry textPayload last 200:  ${JSON.stringify(retryTextPayload.slice(-200))}\n`);
+            }
             const parsedRetry = parseReviewPayload(retryTextPayload);
             // Same strict check on the retry: must have actual review content.
             if (isNonEmptyReview(parsedRetry)) {
@@ -8279,6 +8298,15 @@ function dispatchLive(parsed, cwd, env) {
     // preserve the public CLI module exports expected by existing tests.
     // Static import (no dynamic import()) so ncc emits a single bundle chunk
     // rather than a content-hashed dynamic chunk that would need to be committed.
+    //
+    // Wire --debug-raw-response through to the provider code as a process-env
+    // signal so the openai-compatible.ts parse-fail path can dump the
+    // extracted payload to stderr. Without this, the only way to diagnose
+    // a production parse-fail is to read the 100+ KB raw response out of
+    // the PR comment's <details> block (which is truncated to 16 KB).
+    if (parsed.debugRawResponse === true) {
+        process.env["UMACTUALLY_DEBUG_RAW"] = "1";
+    }
     return runLive({ parsed, cwd, env }).then((result) => ({
         exitCode: result.exitCode,
     }));
