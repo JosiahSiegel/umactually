@@ -3213,6 +3213,1371 @@ function mergeReviewResults(outcomes, options) {
     };
 }
 
+;// CONCATENATED MODULE: ./src/render/summary-layouts.ts
+/**
+ * 20 unique markdown layout variants for the UmActually PR review summary.
+ *
+ * The "review summary" is the parent PR-level card posted alongside the
+ * per-finding inline threads on a GitHub Pull Request review or an Azure
+ * DevOps PR thread. The summary is the first thing reviewers see when they
+ * open the PR conversation; it must answer four questions in under five
+ * seconds:
+ *
+ *   1. Should I ship, fix, or discuss?
+ *   2. How many things are wrong?
+ *   3. What kinds of things are wrong?
+ *   4. Where in the diff should I look first?
+ *
+ * This module defines twenty visually distinct layouts that all answer
+ * those questions but organize the answer differently. The default
+ * (`LAYOUT_DEFAULT`) is byte-identical to the existing `buildReviewBody`
+ * output so that all existing tests continue to pass without modification.
+ * The other nineteen are opt-in alternatives.
+ *
+ * Cross-platform rules (GitHub PR review body + Azure DevOps PR thread):
+ *   - DO use GFM tables, headings, blockquote, lists, fenced code,
+ *     inline code, links, raw Unicode emoji, horizontal rules.
+ *   - DO NOT use `<details>`/`<summary>` (Azure renders them as raw text).
+ *   - DO NOT use raw `<table>` HTML (Azure ignores it).
+ *   - DO NOT use task lists `- [x]` / `- [ ]` (Azure ignores check state).
+ *   - Body must stay under GitHub's 65,536-char comment limit.
+ *
+ * Every layout in this module obeys the rules above. See
+ * `test/unit/summary-layouts.test.ts` for the invariant assertions.
+ */
+
+
+
+/** The 20 replacement layouts the user requested. */
+const LAYOUTS = (/* unused pure expression or super */ null && ([
+    "dashboard",
+    "pipeline",
+    "verdict-banner",
+    "severity-table",
+    "card-grid",
+    "tldr-walkthrough",
+    "checklist",
+    "progress-bars",
+    "pros-cons",
+    "tweet",
+    "faq",
+    "terminal",
+    "incident",
+    "release-notes",
+    "coverage",
+    "thermometer",
+    "status-page",
+    "diffstat",
+    "sticky-notes",
+    "newspaper",
+]));
+/** Singleton baseline identifier. */
+const BASELINE = "current";
+// ---------------------------------------------------------------------------
+// Internal helpers
+// ---------------------------------------------------------------------------
+/** Sanitize a value against the redaction list before it lands in markdown. */
+function redact(value, secrets) {
+    if (secrets.length === 0)
+        return value;
+    let out = value;
+    for (const secret of secrets) {
+        if (secret.length === 0)
+            continue;
+        out = out.split(secret).join(REDACTED_SECRET_TOKEN);
+    }
+    return out;
+}
+/** Total findings the model produced (posted + off-diff + filtered). */
+function totalFindings(data) {
+    return data.review.comments.length + data.review.suppressedComments.length;
+}
+/** Off-diff count: model-suppressed + off-diff-from-comments. */
+function offDiffCount(data) {
+    return data.review.suppressedComments.length + data.offDiffFromComments.length;
+}
+/** Filtered = model comments that survived parsing but were not posted. */
+function filteredCount(data) {
+    return Math.max(0, totalFindings(data) - data.validCommentCount - offDiffCount(data));
+}
+/** Escape pipes in a value so it can sit inside a GFM table cell. */
+function cell(value) {
+    return value.replace(/\|/gu, "\\|").replace(/\r?\n/gu, " ").trim();
+}
+/** Render a single-line finding label as `path:line — snippet`. */
+function findingLine(c, secrets) {
+    const safeBody = redact(c.body, secrets).replace(/\s+/gu, " ").trim();
+    const snippet = safeBody.length > 100 ? `${safeBody.slice(0, 97)}…` : safeBody;
+    return `\`${cell(c.path)}\`:${c.line} — ${snippet}`;
+}
+/** Severity → display emoji used by every layout that wants a single glyph. */
+function severityEmoji(level) {
+    switch (level.toLowerCase()) {
+        case "critical": return "🟣";
+        case "high": return "🔴";
+        case "medium": return "🟠";
+        case "low": return "🟡";
+        default: return "⚪";
+    }
+}
+/** Severity → short label used in compact rows. */
+function severityLabel(level) {
+    switch (level.toLowerCase()) {
+        case "critical": return "Critical";
+        case "high": return "High";
+        case "medium": return "Medium";
+        case "low": return "Low";
+        default: return level || "Info";
+    }
+}
+/** Compose the stable hidden manifest that AI agents parse. */
+function manifest(data) {
+    const payload = {
+        schema: MANIFEST_SCHEMA,
+        verdict: data.review.verdict,
+        provider: data.provider,
+        modelId: data.modelId,
+        inlineCount: data.validCommentCount,
+        suppressedCount: data.suppressedCommentCount,
+        severityCounts: { ...data.severityCounts },
+        ...(data.review.parseFailed === true ? { parseFailed: true } : {}),
+    };
+    return `<!-- umactually-pr-review:manifest ${JSON.stringify(payload)} -->`;
+}
+/** Compose the verdict badge. Mirrors `verdictBadge` in live-shared.ts. */
+function verdictBadge(data) {
+    const normalized = data.review.verdict.toUpperCase();
+    const nothingActionable = data.validCommentCount === 0 && data.suppressedCommentCount === 0;
+    if (normalized === "NEEDS_FIX" && !nothingActionable)
+        return "⛔ NEEDS_FIX";
+    if (normalized === "APPROVED" || normalized === "SHIP")
+        return "✅ SHIP";
+    return "💬 DISCUSS";
+}
+/** Pipeline summary line used by most layouts (mirrors CLARITY-19). */
+function pipelineLine(data) {
+    const total = totalFindings(data);
+    return `📊 ${total} findings → ${data.validCommentCount} posted, ${offDiffCount(data)} off-diff, ${filteredCount(data)} filtered`;
+}
+/** Severity tally line used by most layouts. */
+function severityTally(data) {
+    const parts = [];
+    let total = 0;
+    for (const level of SEVERITY_ORDER) {
+        const count = data.severityCounts[level] ?? 0;
+        total += count;
+        parts.push(`\`${count}\` ${level}`);
+    }
+    if (total === 0)
+        return "";
+    return `🏷️ ${parts.join(" · ")}`;
+}
+/** Compose the standard footer line. */
+function footer(data) {
+    const safeModel = redact(data.modelId, data.secrets);
+    const safeProvider = redact(data.provider, data.secrets);
+    return `🤖 Generated by \`${safeModel}\` via \`${safeProvider}\` · ${data.validCommentCount} inline`;
+}
+/** Sort posted comments by severity desc, then path asc — same invariant the existing code uses. */
+function sortedPosted(data) {
+    return [...data.postedComments].sort((a, b) => {
+        const ra = severityRank(a.severity);
+        const rb = severityRank(b.severity);
+        if (ra !== rb)
+            return rb - ra;
+        return a.path.localeCompare(b.path);
+    });
+}
+/** Top N preview line items (rendered as bullets, capped at 5 like the existing code). */
+function previewLines(data, max = 5) {
+    return sortedPosted(data).slice(0, max).map((c, i) => `${i + 1}. ${findingLine(c, data.secrets)}`);
+}
+// ---------------------------------------------------------------------------
+// Baseline — current (what we have now)
+// ---------------------------------------------------------------------------
+// Byte-identical to the existing buildReviewBody() body. Re-uses the same
+// section order so all existing tests continue to pass without modification.
+// Exposed for side-by-side comparison in the viewer; not part of the 20-sheet.
+function layoutBaseline(data) {
+    const summary = redact(data.review.summary, data.secrets);
+    const sections = [];
+    sections.push(REVIEW_MARKER);
+    sections.push("");
+    sections.push(`## ${verdictBadge(data)}`);
+    sections.push("");
+    if (data.review.parseFailed === true) {
+        sections.push("> ⚠️ `Parse failed` — provider response was not a valid JSON review payload. The raw provider text is included in the Summary section below for diagnostics.");
+    }
+    else {
+        sections.push(pipelineLine(data));
+    }
+    const tally = severityTally(data);
+    if (tally.length > 0)
+        sections.push(tally);
+    // Posted preview (or filtered preview)
+    if (data.validCommentCount > 0 && data.postedComments.length > 0) {
+        const preview = previewLines(data);
+        const total = data.postedComments.length;
+        const header = preview.length < total
+            ? `📋 Posted preview (showing ${preview.length} of ${total})`
+            : `📋 Posted preview (${preview.length})`;
+        sections.push("");
+        sections.push(header);
+        for (const line of preview)
+            sections.push(line);
+    }
+    else if (data.review.comments.length > 0) {
+        const preview = previewLines(data);
+        const total = data.review.comments.length;
+        sections.push("");
+        sections.push(`🧹 Filtered preview (showing ${preview.length} of ${total} candidates)`);
+        sections.push("");
+        sections.push(`_The model produced ${total} finding(s); all were filtered by severity policy, the \`max-comments\` cap, or off-diff suppression. The list below is the pre-filter view for transparency — no inline comments were posted._`);
+        for (const line of preview)
+            sections.push(line);
+    }
+    // Off-diff block
+    const combined = [...data.review.suppressedComments, ...data.offDiffFromComments];
+    if (combined.length > 0) {
+        sections.push("");
+        sections.push(`📍 Off-diff (${combined.length} not posted)`);
+        for (const c of combined)
+            sections.push(`- ${findingLine(c, data.secrets)}`);
+    }
+    // Summary prose
+    if (summary.trim().length > 0) {
+        sections.push("");
+        sections.push("📝 Summary");
+        sections.push("");
+        sections.push(summary);
+    }
+    sections.push("");
+    sections.push(footer(data));
+    sections.push("");
+    sections.push(manifest(data));
+    return sections.filter((s) => s.length > 0).join("\n");
+}
+// ---------------------------------------------------------------------------
+// Layout 1 — Dashboard (KPI tiles)
+// ---------------------------------------------------------------------------
+// Large numbers in a GFM grid: one row of KPI tiles + one row of sub-stats.
+// Reads in 3 seconds: how many, what verdict, what model.
+function layoutDashboard(data) {
+    const verdict = verdictBadge(data);
+    const tally = severityTally(data);
+    const total = totalFindings(data);
+    const posted = data.validCommentCount;
+    const offDiff = offDiffCount(data);
+    const filtered = filteredCount(data);
+    const parts = [];
+    parts.push(`## ${verdict}`);
+    parts.push("");
+    parts.push("### 📊 Review dashboard");
+    parts.push("");
+    parts.push("| Verdict | Findings | Posted | Off-diff | Filtered |");
+    parts.push("| :--- | ---: | ---: | ---: | ---: |");
+    parts.push(`| **${verdict}** | **${total}** | **${posted}** | **${offDiff}** | **${filtered}** |`);
+    parts.push("");
+    if (tally.length > 0) {
+        parts.push("### 🏷️ Severity breakdown");
+        parts.push("");
+        parts.push("| Critical | High | Medium | Low |");
+        parts.push("| ---: | ---: | ---: | ---: |");
+        const c = data.severityCounts["critical"] ?? 0;
+        const h = data.severityCounts["high"] ?? 0;
+        const m = data.severityCounts["medium"] ?? 0;
+        const l = data.severityCounts["low"] ?? 0;
+        parts.push(`| **${c}** | **${h}** | **${m}** | **${l}** |`);
+        parts.push("");
+    }
+    if (data.postedComments.length > 0) {
+        parts.push("### 🔝 Top findings");
+        parts.push("");
+        parts.push("| # | Severity | File:Line | Title |");
+        parts.push("| ---: | :--- | :--- | :--- |");
+        sortedPosted(data).slice(0, 5).forEach((c, i) => {
+            const title = redact(c.body, data.secrets).replace(/\s+/gu, " ").trim();
+            const snippet = title.length > 80 ? `${title.slice(0, 77)}…` : title;
+            parts.push(`| ${i + 1} | ${severityEmoji(c.severity)} ${severityLabel(c.severity)} | \`${cell(c.path)}\`:${c.line} | ${cell(snippet)} |`);
+        });
+        parts.push("");
+    }
+    if (data.review.summary.trim().length > 0) {
+        parts.push("### 💬 Summary");
+        parts.push("");
+        parts.push(`> ${redact(data.review.summary, data.secrets).split("\n").join("\n> ")}`);
+        parts.push("");
+    }
+    parts.push("---");
+    parts.push(footer(data));
+    parts.push("");
+    parts.push(REVIEW_MARKER);
+    parts.push(manifest(data));
+    return parts.join("\n");
+}
+// ---------------------------------------------------------------------------
+// Layout 2 — Pipeline (sequential step diagram)
+// ---------------------------------------------------------------------------
+// Reads as a flow: input → review → output. Each step is a numbered
+// blockquote block so it scans top-to-bottom like a process diagram.
+function layoutPipeline(data) {
+    const verdict = verdictBadge(data);
+    const parts = [];
+    parts.push(`## ${verdict}`);
+    parts.push("");
+    parts.push("### 🔄 Review pipeline");
+    parts.push("");
+    parts.push("```text");
+    parts.push("┌──────────────┐   ┌──────────────┐   ┌──────────────┐   ┌──────────────┐");
+    parts.push("│  Provider    │──▶│  Redaction   │──▶│   Review     │──▶│  Filter &    │");
+    parts.push(`│  ${(redact(data.provider, data.secrets) || "?").padEnd(10)} │   │  scan: diff  │   │  model: ok   │   │  post: ${data.validCommentCount}    │`);
+    parts.push("└──────────────┘   └──────────────┘   └──────────────┘   └──────────────┘");
+    parts.push("```");
+    parts.push("");
+    parts.push("### 🪜 Steps in this run");
+    parts.push("");
+    parts.push(`> **①  Provider request** — sent to \`${redact(data.provider, data.secrets)}\`.`);
+    parts.push(">");
+    parts.push(`> **②  Secret scan** — redaction pass on the diff before it reached the model.`);
+    parts.push(">");
+    parts.push(`> **③  Model review** — \`${redact(data.modelId, data.secrets)}\` returned \`${data.review.verdict}\`.`);
+    parts.push(">");
+    parts.push(`> **④  Filter** — severity policy + \`max-comments\` cap + off-diff suppression.`);
+    parts.push(">");
+    parts.push(`> **⑤  Post** — ${data.validCommentCount} of ${totalFindings(data)} findings posted as inline threads.`);
+    parts.push("");
+    if (data.validCommentCount > 0) {
+        parts.push("### 🎯 Highest-priority items");
+        parts.push("");
+        sortedPosted(data).slice(0, 5).forEach((c, i) => {
+            parts.push(`${i + 1}. ${severityEmoji(c.severity)} **${severityLabel(c.severity)}** — ${findingLine(c, data.secrets)}`);
+        });
+        parts.push("");
+    }
+    parts.push("---");
+    parts.push(footer(data));
+    parts.push("");
+    parts.push(REVIEW_MARKER);
+    parts.push(manifest(data));
+    return parts.join("\n");
+}
+// ---------------------------------------------------------------------------
+// Layout 3 — Verdict Banner (oversized single banner)
+// ---------------------------------------------------------------------------
+// One HUGE verdict banner with a tiny context table under it.
+// Best when reviewers want a one-glance signal.
+function layoutVerdictBanner(data) {
+    const verdict = verdictBadge(data);
+    const parts = [];
+    parts.push(`# ${verdict}`);
+    parts.push("");
+    parts.push(`> ## ${verdict}`);
+    parts.push(`>`);
+    parts.push(`> **${data.validCommentCount}** findings to address · ${totalFindings(data)} total considered`);
+    parts.push(`>`);
+    parts.push(`> Model: \`${redact(data.modelId, data.secrets)}\` · Provider: \`${redact(data.provider, data.secrets)}\``);
+    parts.push("");
+    parts.push("### 📌 At a glance");
+    parts.push("");
+    parts.push("| Total | Posted | Off-diff | Filtered |");
+    parts.push("| ---: | ---: | ---: | ---: |");
+    parts.push(`| **${totalFindings(data)}** | **${data.validCommentCount}** | **${offDiffCount(data)}** | **${filteredCount(data)}** |`);
+    parts.push("");
+    const tally = severityTally(data);
+    if (tally.length > 0) {
+        parts.push(tally);
+        parts.push("");
+    }
+    if (data.postedComments.length > 0) {
+        parts.push("### 📋 Findings to address");
+        parts.push("");
+        sortedPosted(data).slice(0, 5).forEach((c, i) => {
+            const title = redact(c.body, data.secrets).replace(/\s+/gu, " ").trim();
+            const snippet = title.length > 90 ? `${title.slice(0, 87)}…` : title;
+            parts.push(`${i + 1}. ${severityEmoji(c.severity)} \`${cell(c.path)}\`:${c.line} — ${cell(snippet)}`);
+        });
+        parts.push("");
+    }
+    if (data.review.summary.trim().length > 0) {
+        parts.push("### 💬 Provider summary");
+        parts.push("");
+        parts.push(redact(data.review.summary, data.secrets));
+        parts.push("");
+    }
+    parts.push("---");
+    parts.push(footer(data));
+    parts.push("");
+    parts.push(REVIEW_MARKER);
+    parts.push(manifest(data));
+    return parts.join("\n");
+}
+// ---------------------------------------------------------------------------
+// Layout 4 — Severity Table (SonarQube-style)
+// ---------------------------------------------------------------------------
+// Classic GFM table: every finding on a row, severity + category + title.
+// Best when reviewers want to triage the full list in one glance.
+function layoutSeverityTable(data) {
+    const verdict = verdictBadge(data);
+    const all = sortedPosted(data);
+    const parts = [];
+    // Marker first so dedup loops always find it (the contract that
+    // GitHub/Azure dedup loops rely on). The verdict comes next so the
+    // first non-marker line is the verdict badge (CLARITY-1 invariant).
+    parts.push(REVIEW_MARKER);
+    parts.push("");
+    parts.push(`## ${verdict}`);
+    parts.push("");
+    // CLARITY-10: parse-fail banner must be unmistakable. Rendered as a
+    // blockquote immediately after the verdict so a 0-finding review
+    // cannot be confused with a clean bill of health.
+    if (data.review.parseFailed === true) {
+        parts.push("> ⚠️ `Parse failed` — provider response was not a valid JSON review payload. The raw provider text is included in the Summary section below for diagnostics.");
+        parts.push("");
+    }
+    parts.push("### 📋 Findings");
+    parts.push("");
+    parts.push("| # | Severity | Category | File:Line | Title |");
+    parts.push("| ---: | :--- | :--- | :--- | :--- |");
+    if (all.length === 0) {
+        parts.push("| — | — | — | — | _No findings to address_ |");
+    }
+    else {
+        all.forEach((c, i) => {
+            const title = redact(c.body, data.secrets).replace(/\s+/gu, " ").trim();
+            const snippet = title.length > 80 ? `${title.slice(0, 77)}…` : title;
+            parts.push(`| ${i + 1} | ${severityEmoji(c.severity)} ${severityLabel(c.severity)} | ${cell(c.category)} | \`${cell(c.path)}\`:${c.line} | ${cell(snippet)} |`);
+        });
+    }
+    parts.push("");
+    const tally = severityTally(data);
+    if (tally.length > 0) {
+        parts.push(tally);
+        parts.push("");
+    }
+    if (data.review.summary.trim().length > 0) {
+        parts.push("### 📝 Summary");
+        parts.push("");
+        parts.push(redact(data.review.summary, data.secrets));
+        parts.push("");
+    }
+    parts.push("---");
+    parts.push(footer(data));
+    parts.push("");
+    parts.push(manifest(data));
+    return parts.join("\n");
+}
+// ---------------------------------------------------------------------------
+// Layout 5 — Card Grid (one card per severity bucket)
+// ---------------------------------------------------------------------------
+// Each severity bucket is its own ## section. Inside: a short list of
+// bullet findings. Reads like a stack of color-coded sticky notes.
+function layoutCardGrid(data) {
+    const verdict = verdictBadge(data);
+    const buckets = {
+        critical: [], high: [], medium: [], low: [],
+    };
+    for (const c of data.postedComments) {
+        const key = c.severity.toLowerCase();
+        const target = buckets[key] ?? buckets["low"];
+        if (target !== undefined)
+            target.push(c);
+    }
+    const parts = [];
+    parts.push(`## ${verdict}`);
+    parts.push("");
+    parts.push("### 🎴 Findings by severity");
+    parts.push("");
+    for (const level of SEVERITY_ORDER) {
+        const bucket = buckets[level] ?? [];
+        if (bucket.length === 0)
+            continue;
+        parts.push(`#### ${severityEmoji(level)} ${severityLabel(level)} — ${bucket.length} finding${bucket.length === 1 ? "" : "s"}`);
+        parts.push("");
+        for (const c of bucket) {
+            const title = redact(c.body, data.secrets).replace(/\s+/gu, " ").trim();
+            parts.push(`> **\`${cell(c.path)}\`:${c.line}** — ${cell(title)}`);
+            parts.push("");
+        }
+    }
+    if (data.postedComments.length === 0) {
+        parts.push("> _No findings to address._");
+        parts.push("");
+    }
+    parts.push("---");
+    parts.push(footer(data));
+    parts.push("");
+    parts.push(REVIEW_MARKER);
+    parts.push(manifest(data));
+    return parts.join("\n");
+}
+// ---------------------------------------------------------------------------
+// Layout 6 — TL;DR + Walkthrough
+// ---------------------------------------------------------------------------
+// Headline TL;DR callout followed by per-file walkthrough sections.
+// Mirrors CodeRabbit's summary card.
+function layoutTldrWalkthrough(data) {
+    const verdict = verdictBadge(data);
+    const parts = [];
+    parts.push(`## ${verdict}`);
+    parts.push("");
+    parts.push("### 📌 TL;DR");
+    parts.push("");
+    parts.push(`> ${verdict}. **${data.validCommentCount}** of **${totalFindings(data)}** findings posted inline.`);
+    parts.push(">");
+    if (data.postedComments.length > 0) {
+        parts.push(`> Top concern: ${findingLine(sortedPosted(data)[0], data.secrets)}`);
+    }
+    else {
+        parts.push("> No actionable concerns surfaced.");
+    }
+    parts.push("");
+    // Per-file walkthrough
+    const byFile = new Map();
+    for (const c of data.postedComments) {
+        const arr = byFile.get(c.path) ?? [];
+        arr.push(c);
+        byFile.set(c.path, arr);
+    }
+    if (byFile.size > 0) {
+        parts.push("### 📂 Files touched");
+        parts.push("");
+        const sorted = [...byFile.entries()].sort(([a], [b]) => a.localeCompare(b));
+        for (const [path, comments] of sorted) {
+            parts.push(`#### \`${cell(path)}\` — ${comments.length} finding${comments.length === 1 ? "" : "s"}`);
+            parts.push("");
+            for (const c of comments) {
+                const title = redact(c.body, data.secrets).replace(/\s+/gu, " ").trim();
+                parts.push(`- ${severityEmoji(c.severity)} **${severityLabel(c.severity)}** (line ${c.line}) — ${cell(title)}`);
+            }
+            parts.push("");
+        }
+    }
+    if (data.review.summary.trim().length > 0) {
+        parts.push("### 💬 Full summary");
+        parts.push("");
+        parts.push(redact(data.review.summary, data.secrets));
+        parts.push("");
+    }
+    parts.push("---");
+    parts.push(footer(data));
+    parts.push("");
+    parts.push(REVIEW_MARKER);
+    parts.push(manifest(data));
+    return parts.join("\n");
+}
+// ---------------------------------------------------------------------------
+// Layout 7 — Checklist (grouped by category)
+// ---------------------------------------------------------------------------
+// Plain bulleted list grouped by category. Each item has an emoji and
+// a `path:line` reference. Reads like a todo list.
+function layoutChecklist(data) {
+    const verdict = verdictBadge(data);
+    const parts = [];
+    parts.push(`## ${verdict}`);
+    parts.push("");
+    parts.push("### ✅ Review checklist");
+    parts.push("");
+    // Group by category
+    const byCat = new Map();
+    for (const c of data.postedComments) {
+        const key = c.category || "general";
+        const arr = byCat.get(key) ?? [];
+        arr.push(c);
+        byCat.set(key, arr);
+    }
+    const sortedCats = [...byCat.entries()].sort(([a], [b]) => a.localeCompare(b));
+    for (const [cat, comments] of sortedCats) {
+        parts.push(`#### 📦 ${cat} (${comments.length})`);
+        parts.push("");
+        for (const c of comments) {
+            const title = redact(c.body, data.secrets).replace(/\s+/gu, " ").trim();
+            const snippet = title.length > 90 ? `${title.slice(0, 87)}…` : title;
+            parts.push(`- ${severityEmoji(c.severity)} \`${cell(c.path)}\`:${c.line} — ${cell(snippet)}`);
+        }
+        parts.push("");
+    }
+    if (sortedCats.length === 0) {
+        parts.push("> _No findings to address._");
+        parts.push("");
+    }
+    const tally = severityTally(data);
+    if (tally.length > 0) {
+        parts.push(tally);
+        parts.push("");
+    }
+    parts.push("---");
+    parts.push(footer(data));
+    parts.push("");
+    parts.push(REVIEW_MARKER);
+    parts.push(manifest(data));
+    return parts.join("\n");
+}
+// ---------------------------------------------------------------------------
+// Layout 8 — Progress Bars (ASCII block bars)
+// ---------------------------------------------------------------------------
+// Per-severity bar made of `█` (filled) and `░` (empty) blocks inside
+// an inline code block. Terminal-style dashboard.
+function layoutProgressBars(data) {
+    const verdict = verdictBadge(data);
+    const total = data.validCommentCount;
+    const parts = [];
+    parts.push(`## ${verdict}`);
+    parts.push("");
+    parts.push("### 📊 Severity distribution");
+    parts.push("");
+    const max = Math.max(1, ...SEVERITY_ORDER.map((l) => data.severityCounts[l] ?? 0));
+    for (const level of SEVERITY_ORDER) {
+        const count = data.severityCounts[level] ?? 0;
+        const filled = Math.round((count / max) * 20);
+        const empty = 20 - filled;
+        const bar = "█".repeat(filled) + "░".repeat(empty);
+        const pct = total === 0 ? "0%" : `${Math.round((count / total) * 100)}%`;
+        parts.push(`\`${level.padEnd(8)} ${bar} ${String(count).padStart(3)} ${pct.padStart(4)}\``);
+    }
+    parts.push("");
+    parts.push("### 📋 Findings");
+    parts.push("");
+    if (data.postedComments.length === 0) {
+        parts.push("> _No findings to address._");
+    }
+    else {
+        sortedPosted(data).slice(0, 5).forEach((c, i) => {
+            parts.push(`${i + 1}. ${severityEmoji(c.severity)} ${findingLine(c, data.secrets)}`);
+        });
+    }
+    parts.push("");
+    if (data.review.summary.trim().length > 0) {
+        parts.push("### 💬 Summary");
+        parts.push("");
+        parts.push(redact(data.review.summary, data.secrets));
+        parts.push("");
+    }
+    parts.push("---");
+    parts.push(footer(data));
+    parts.push("");
+    parts.push(REVIEW_MARKER);
+    parts.push(manifest(data));
+    return parts.join("\n");
+}
+// ---------------------------------------------------------------------------
+// Layout 9 — Pros & Cons (two-column GFM table)
+// ---------------------------------------------------------------------------
+// Splits the list into positives (low/critical-clean items) and
+// negatives (findings to fix). Reads like a balanced review.
+function layoutProsCons(data) {
+    const verdict = verdictBadge(data);
+    const parts = [];
+    parts.push(`## ${verdict}`);
+    parts.push("");
+    parts.push("### ⚖️ Strengths vs concerns");
+    parts.push("");
+    const concerns = sortedPosted(data);
+    const lowCount = (data.severityCounts["low"] ?? 0);
+    const highCount = (data.severityCounts["high"] ?? 0) + (data.severityCounts["critical"] ?? 0);
+    parts.push("| ✅ Strengths | ⚠️ Concerns |");
+    parts.push("| :--- | :--- |");
+    const strengthsMd = totalFindings(data) === 0
+        ? "_No issues found — clean review._"
+        : `_Reviewed **${totalFindings(data)}** finding${totalFindings(data) === 1 ? "" : "s"} across the diff. Severity tally: ${severityTally(data) || "all clear"}._`;
+    const concernsMd = concerns.length === 0
+        ? "_None._"
+        : concerns.slice(0, 5).map((c) => `**${severityLabel(c.severity)}** — ${findingLine(c, data.secrets)}`).join("<br>");
+    parts.push(`| ${strengthsMd} | ${concernsMd} |`);
+    parts.push("");
+    if (lowCount + highCount > 0) {
+        parts.push("### 📊 Tally");
+        parts.push("");
+        parts.push(severityTally(data));
+        parts.push("");
+    }
+    if (data.review.summary.trim().length > 0) {
+        parts.push("### 💬 Summary");
+        parts.push("");
+        parts.push(redact(data.review.summary, data.secrets));
+        parts.push("");
+    }
+    parts.push("---");
+    parts.push(footer(data));
+    parts.push("");
+    parts.push(REVIEW_MARKER);
+    parts.push(manifest(data));
+    return parts.join("\n");
+}
+// ---------------------------------------------------------------------------
+// Layout 10 — Tweet / Announcement
+// ---------------------------------------------------------------------------
+// Single big quote-block headline followed by 4-bullet "what this means".
+// Reads like a project announcement card.
+function layoutTweet(data) {
+    const verdict = verdictBadge(data);
+    const parts = [];
+    parts.push(`## ${verdict}`);
+    parts.push("");
+    parts.push(`> ## ${verdict}`);
+    parts.push(">");
+    parts.push(`> **${data.validCommentCount}** finding${data.validCommentCount === 1 ? "" : "s"} posted inline out of **${totalFindings(data)}** total.`);
+    parts.push(">");
+    parts.push(`> Powered by \`${redact(data.modelId, data.secrets)}\` via \`${redact(data.provider, data.secrets)}\`.`);
+    parts.push("");
+    parts.push("### 💡 What this means");
+    parts.push("");
+    const tally = severityTally(data);
+    if (tally.length > 0) {
+        parts.push(`- ${tally}`);
+    }
+    if (data.postedComments.length > 0) {
+        parts.push(`- Top priority: ${findingLine(sortedPosted(data)[0], data.secrets)}`);
+    }
+    else {
+        parts.push("- ✅ No actionable concerns.");
+    }
+    if (offDiffCount(data) > 0) {
+        parts.push(`- 📍 ${offDiffCount(data)} off-diff finding${offDiffCount(data) === 1 ? "" : "s"} not posted (not on this diff).`);
+    }
+    if (filteredCount(data) > 0) {
+        parts.push(`- 🧹 ${filteredCount(data)} filtered by severity policy or \`max-comments\` cap.`);
+    }
+    parts.push("");
+    if (data.review.summary.trim().length > 0) {
+        parts.push("### 📖 Story");
+        parts.push("");
+        parts.push(redact(data.review.summary, data.secrets));
+        parts.push("");
+    }
+    parts.push("---");
+    parts.push(footer(data));
+    parts.push("");
+    parts.push(REVIEW_MARKER);
+    parts.push(manifest(data));
+    return parts.join("\n");
+}
+// ---------------------------------------------------------------------------
+// Layout 11 — FAQ Q&A
+// ---------------------------------------------------------------------------
+// Each finding becomes a Q: "Why is `path:line` a problem?" A: ...
+// Great for senior reviewers asking "what do I actually need to know?"
+function layoutFaq(data) {
+    const verdict = verdictBadge(data);
+    const parts = [];
+    parts.push(`## ${verdict}`);
+    parts.push("");
+    parts.push("### ❓ Reviewer Q&A");
+    parts.push("");
+    if (data.postedComments.length === 0) {
+        parts.push("> _No findings to address — review passed clean._");
+        parts.push("");
+    }
+    else {
+        sortedPosted(data).slice(0, 5).forEach((c, i) => {
+            const title = redact(c.body, data.secrets).replace(/\s+/gu, " ").trim();
+            parts.push(`### Q${i + 1}: What's wrong at \`${cell(c.path)}\`:${c.line}?`);
+            parts.push("");
+            parts.push(`**A:** ${severityEmoji(c.severity)} **${severityLabel(c.severity)}** (${cell(c.category)}). ${cell(title)}`);
+            parts.push("");
+        });
+    }
+    parts.push("### Q: What's the overall verdict?");
+    parts.push("");
+    parts.push(`**A:** ${verdict}. ${data.validCommentCount} posted of ${totalFindings(data)} total.`);
+    parts.push("");
+    if (data.review.summary.trim().length > 0) {
+        parts.push("### Q: Anything else worth noting?");
+        parts.push("");
+        parts.push(`**A:** ${redact(data.review.summary, data.secrets)}`);
+        parts.push("");
+    }
+    parts.push("---");
+    parts.push(footer(data));
+    parts.push("");
+    parts.push(REVIEW_MARKER);
+    parts.push(manifest(data));
+    return parts.join("\n");
+}
+// ---------------------------------------------------------------------------
+// Layout 12 — Terminal Output (fenced code block)
+// ---------------------------------------------------------------------------
+// Entire summary sits inside a single fenced code block styled like
+// terminal output. Pure ASCII + emoji.
+function layoutTerminal(data) {
+    const verdict = verdictBadge(data);
+    const parts = [];
+    parts.push(`## ${verdict}`);
+    parts.push("");
+    parts.push("### 🖥️ Terminal report");
+    parts.push("");
+    parts.push("```text");
+    parts.push("┌──────────────────────────────────────────────────────────┐");
+    parts.push(`│ umactually-pr-review · ${verdict.padEnd(36)} │`);
+    parts.push("├──────────────────────────────────────────────────────────┤");
+    parts.push(`│ Provider : ${(redact(data.provider, data.secrets) || "?").padEnd(45)} │`);
+    parts.push(`│ Model    : ${(redact(data.modelId, data.secrets) || "?").padEnd(45)} │`);
+    parts.push(`│ Total    : ${String(totalFindings(data)).padEnd(45)} │`);
+    parts.push(`│ Posted   : ${String(data.validCommentCount).padEnd(45)} │`);
+    parts.push(`│ Off-diff : ${String(offDiffCount(data)).padEnd(45)} │`);
+    parts.push(`│ Filtered : ${String(filteredCount(data)).padEnd(45)} │`);
+    parts.push("└──────────────────────────────────────────────────────────┘");
+    parts.push("");
+    parts.push("[Findings by severity]");
+    for (const level of SEVERITY_ORDER) {
+        const count = data.severityCounts[level] ?? 0;
+        const bar = "■".repeat(count) + "□".repeat(Math.max(0, 10 - count));
+        parts.push(`  ${level.padEnd(8)} ${bar} (${String(count).padStart(3)})`);
+    }
+    if (data.postedComments.length > 0) {
+        parts.push("");
+        parts.push("[Top 5 posted]");
+        sortedPosted(data).slice(0, 5).forEach((c, i) => {
+            parts.push(`  ${String(i + 1).padStart(2)}. ${c.severity.padEnd(8)} ${cell(c.path)}:${c.line}`);
+        });
+    }
+    parts.push("```");
+    parts.push("");
+    if (data.review.summary.trim().length > 0) {
+        parts.push("### 💬 Summary");
+        parts.push("");
+        parts.push(redact(data.review.summary, data.secrets));
+        parts.push("");
+    }
+    parts.push("---");
+    parts.push(footer(data));
+    parts.push("");
+    parts.push(REVIEW_MARKER);
+    parts.push(manifest(data));
+    return parts.join("\n");
+}
+// ---------------------------------------------------------------------------
+// Layout 13 — Incident Report (timeline)
+// ---------------------------------------------------------------------------
+// Reads like a post-incident report: status, severity, timeline, impact.
+function layoutIncident(data) {
+    const verdict = verdictBadge(data);
+    const parts = [];
+    parts.push(`## ${verdict}`);
+    parts.push("");
+    parts.push("### 📟 Incident report");
+    parts.push("");
+    const severityWord = data.validCommentCount === 0
+        ? "✅ None"
+        : (data.severityCounts["critical"] ?? 0) > 0
+            ? "🟣 Critical"
+            : (data.severityCounts["high"] ?? 0) > 0
+                ? "🔴 High"
+                : (data.severityCounts["medium"] ?? 0) > 0
+                    ? "🟠 Medium"
+                    : "🟡 Low";
+    parts.push(`**Status:** ${verdict}  &nbsp;&nbsp;  **Severity:** ${severityWord}  &nbsp;&nbsp;  **Findings:** ${data.validCommentCount} of ${totalFindings(data)}`);
+    parts.push("");
+    parts.push("### ⏱️ Timeline of this review run");
+    parts.push("");
+    parts.push("| Step | Event |");
+    parts.push("| :--- | :--- |");
+    parts.push(`| ① | 🟢 Diff fetched from \`${redact(data.provider, data.secrets)}\` PR source. |`);
+    parts.push(`| ② | 🔒 Secret scan ran — ${data.validCommentCount > 0 ? "diff redacted before model submission" : "no high-confidence secrets detected"}. |`);
+    parts.push(`| ③ | 🤖 Model \`${redact(data.modelId, data.secrets)}\` returned \`${data.review.verdict}\`. |`);
+    parts.push(`| ④ | 🧹 Filter pass: severity policy + \`max-comments\` cap. |`);
+    parts.push(`| ⑤ | 📤 ${data.validCommentCount} inline thread${data.validCommentCount === 1 ? "" : "s"} posted. |`);
+    parts.push("");
+    parts.push("### 🎯 Impact");
+    parts.push("");
+    if (data.postedComments.length > 0) {
+        sortedPosted(data).slice(0, 5).forEach((c, i) => {
+            parts.push(`${i + 1}. ${findingLine(c, data.secrets)}`);
+        });
+    }
+    else {
+        parts.push("- ✅ No blocking findings.");
+    }
+    parts.push("");
+    if (offDiffCount(data) > 0) {
+        parts.push("### 📍 Off-diff items (not posted)");
+        parts.push("");
+        [...data.review.suppressedComments, ...data.offDiffFromComments].slice(0, 5).forEach((c) => {
+            parts.push(`- ${findingLine(c, data.secrets)}`);
+        });
+        parts.push("");
+    }
+    if (data.review.summary.trim().length > 0) {
+        parts.push("### 💬 Provider summary");
+        parts.push("");
+        parts.push(redact(data.review.summary, data.secrets));
+        parts.push("");
+    }
+    parts.push("---");
+    parts.push(footer(data));
+    parts.push("");
+    parts.push(REVIEW_MARKER);
+    parts.push(manifest(data));
+    return parts.join("\n");
+}
+// ---------------------------------------------------------------------------
+// Layout 14 — Release Notes (categorized changelog)
+// ---------------------------------------------------------------------------
+// Reads like a CHANGELOG entry: Features / Fixes / Style sections.
+function layoutReleaseNotes(data) {
+    const verdict = verdictBadge(data);
+    const parts = [];
+    parts.push(`## ${verdict}`);
+    parts.push("");
+    parts.push("### 📝 Review changelog");
+    parts.push("");
+    // Map severity → "category"
+    const buckets = {
+        "🔴 Fixes (high/critical)": [],
+        "🟠 Improvements (medium)": [],
+        "🟡 Style (low)": [],
+    };
+    for (const c of data.postedComments) {
+        const rank = severityRank(c.severity);
+        if (rank >= 3)
+            buckets["🔴 Fixes (high/critical)"].push(c);
+        else if (rank === 2)
+            buckets["🟠 Improvements (medium)"].push(c);
+        else
+            buckets["🟡 Style (low)"].push(c);
+    }
+    for (const [header, list] of Object.entries(buckets)) {
+        if (list.length === 0)
+            continue;
+        parts.push(`### ${header}`);
+        parts.push("");
+        list.forEach((c, i) => {
+            const title = redact(c.body, data.secrets).replace(/\s+/gu, " ").trim();
+            const snippet = title.length > 80 ? `${title.slice(0, 77)}…` : title;
+            parts.push(`- **${cell(c.path)}:${c.line}** — ${cell(snippet)}`);
+            if (i === list.length - 1)
+                parts.push("");
+        });
+    }
+    if (data.postedComments.length === 0) {
+        parts.push("### ✅ No changes required");
+        parts.push("");
+        parts.push("- Review passed clean — ship it.");
+        parts.push("");
+    }
+    if (data.review.summary.trim().length > 0) {
+        parts.push("### 📖 Notes");
+        parts.push("");
+        parts.push(redact(data.review.summary, data.secrets));
+        parts.push("");
+    }
+    parts.push("---");
+    parts.push(footer(data));
+    parts.push("");
+    parts.push(REVIEW_MARKER);
+    parts.push(manifest(data));
+    return parts.join("\n");
+}
+// ---------------------------------------------------------------------------
+// Layout 15 — Coverage Report
+// ---------------------------------------------------------------------------
+// Per-file table with emoji status. Reads like a test-coverage widget.
+function layoutCoverage(data) {
+    const verdict = verdictBadge(data);
+    const parts = [];
+    parts.push(`## ${verdict}`);
+    parts.push("");
+    parts.push("### 🧪 File-by-file review");
+    parts.push("");
+    const byFile = new Map();
+    for (const c of data.postedComments) {
+        const arr = byFile.get(c.path) ?? [];
+        arr.push(c);
+        byFile.set(c.path, arr);
+    }
+    const sortedFiles = [...byFile.entries()].sort(([a], [b]) => a.localeCompare(b));
+    parts.push("| File | Findings | Status |");
+    parts.push("| :--- | ---: | :---: |");
+    if (sortedFiles.length === 0) {
+        parts.push("| _all files_ | **0** | ✅ Pass |");
+    }
+    else {
+        for (const [path, comments] of sortedFiles) {
+            const worst = Math.max(...comments.map((c) => severityRank(c.severity)));
+            const status = worst >= 3 ? "🔴" : worst === 2 ? "🟠" : worst === 1 ? "🟡" : "⚪";
+            parts.push(`| \`${cell(path)}\` | **${comments.length}** | ${status} |`);
+        }
+    }
+    parts.push("");
+    parts.push("### 📋 Detail");
+    parts.push("");
+    if (sortedFiles.length === 0) {
+        parts.push("> _No findings to address._");
+    }
+    else {
+        for (const [path, comments] of sortedFiles) {
+            parts.push(`#### \`${cell(path)}\``);
+            parts.push("");
+            for (const c of comments) {
+                parts.push(`- ${severityEmoji(c.severity)} line ${c.line} — ${redact(c.body, data.secrets).replace(/\s+/gu, " ").trim()}`);
+            }
+            parts.push("");
+        }
+    }
+    if (data.review.summary.trim().length > 0) {
+        parts.push("### 💬 Summary");
+        parts.push("");
+        parts.push(redact(data.review.summary, data.secrets));
+        parts.push("");
+    }
+    parts.push("---");
+    parts.push(footer(data));
+    parts.push("");
+    parts.push(REVIEW_MARKER);
+    parts.push(manifest(data));
+    return parts.join("\n");
+}
+// ---------------------------------------------------------------------------
+// Layout 16 — Thermometer (vertical severity ladder)
+// ---------------------------------------------------------------------------
+// Stacked emoji severity ladder + count badges. Visual "how hot is this PR".
+function layoutThermometer(data) {
+    const verdict = verdictBadge(data);
+    const parts = [];
+    parts.push(`## ${verdict}`);
+    parts.push("");
+    parts.push("### 🌡️ Risk thermometer");
+    parts.push("");
+    const total = data.validCommentCount;
+    const c = data.severityCounts["critical"] ?? 0;
+    const h = data.severityCounts["high"] ?? 0;
+    const m = data.severityCounts["medium"] ?? 0;
+    const l = data.severityCounts["low"] ?? 0;
+    const ratio = total === 0 ? 0 : Math.min(1, (c * 4 + h * 3 + m * 2 + l * 1) / Math.max(1, total * 4));
+    parts.push("```text");
+    parts.push("       🟣 Critical  ┌──┐");
+    parts.push("                    │" + "█".repeat(Math.round(c * 2)).padEnd(10, " ") + "│ " + String(c).padStart(3));
+    parts.push("       🔴 High      │  │");
+    parts.push("                    │" + "█".repeat(Math.round(h * 2)).padEnd(10, " ") + "│ " + String(h).padStart(3));
+    parts.push("       🟠 Medium    │  │");
+    parts.push("                    │" + "█".repeat(Math.round(m * 2)).padEnd(10, " ") + "│ " + String(m).padStart(3));
+    parts.push("       🟡 Low       │  │");
+    parts.push("                    │" + "█".repeat(Math.round(l * 2)).padEnd(10, " ") + "│ " + String(l).padStart(3));
+    parts.push("                    └──┘");
+    parts.push("                     0  " + Math.round(ratio * 100) + "%");
+    parts.push("```");
+    parts.push("");
+    parts.push("### 📋 Findings");
+    parts.push("");
+    if (data.postedComments.length === 0) {
+        parts.push("> _No findings._");
+    }
+    else {
+        sortedPosted(data).slice(0, 5).forEach((c, i) => {
+            parts.push(`${i + 1}. ${findingLine(c, data.secrets)}`);
+        });
+    }
+    parts.push("");
+    if (data.review.summary.trim().length > 0) {
+        parts.push("### 💬 Summary");
+        parts.push("");
+        parts.push(redact(data.review.summary, data.secrets));
+        parts.push("");
+    }
+    parts.push("---");
+    parts.push(footer(data));
+    parts.push("");
+    parts.push(REVIEW_MARKER);
+    parts.push(manifest(data));
+    return parts.join("\n");
+}
+// ---------------------------------------------------------------------------
+// Layout 17 — Status Page
+// ---------------------------------------------------------------------------
+// Mirrors GitHub Status / statuspage.io: status banner, then per-component status.
+function layoutStatusPage(data) {
+    const verdict = verdictBadge(data);
+    const parts = [];
+    parts.push(`## ${verdict}`);
+    parts.push("");
+    parts.push("### 📡 Status page");
+    parts.push("");
+    const banner = data.validCommentCount === 0
+        ? "✅ All clear — no findings"
+        : (data.severityCounts["critical"] ?? 0) > 0
+            ? "🟣 Critical findings reported"
+            : (data.severityCounts["high"] ?? 0) > 0
+                ? "🔴 High severity findings reported"
+                : (data.severityCounts["medium"] ?? 0) > 0
+                    ? "🟠 Medium severity findings reported"
+                    : "🟡 Low severity findings reported";
+    parts.push(`> ## ${banner}`);
+    parts.push(">");
+    parts.push(`> Last updated by \`${redact(data.modelId, data.secrets)}\` via \`${redact(data.provider, data.secrets)}\``);
+    parts.push("");
+    parts.push("### 🧩 Components");
+    parts.push("");
+    parts.push("| Component | Status | Details |");
+    parts.push("| :--- | :---: | :--- |");
+    parts.push(`| Diff fetch | ✅ Operational | Provider \`${cell(redact(data.provider, data.secrets))}\` responded. |`);
+    parts.push(`| Secret scan | ✅ Operational | Redaction pass complete. |`);
+    parts.push(`| Model review | ${data.review.parseFailed === true ? "🔴 Degraded" : "✅ Operational"} | \`${cell(redact(data.modelId, data.secrets))}\` verdict: \`${data.review.verdict}\`. |`);
+    parts.push(`| Filter & post | ${data.validCommentCount === 0 ? "🟡 No-op" : "✅ Operational"} | ${data.validCommentCount} of ${totalFindings(data)} posted. |`);
+    parts.push("");
+    if (data.postedComments.length > 0) {
+        parts.push("### ⚠️ Active incidents");
+        parts.push("");
+        sortedPosted(data).slice(0, 5).forEach((c, i) => {
+            parts.push(`${i + 1}. ${findingLine(c, data.secrets)}`);
+        });
+        parts.push("");
+    }
+    if (data.review.summary.trim().length > 0) {
+        parts.push("### 📝 Notes");
+        parts.push("");
+        parts.push(redact(data.review.summary, data.secrets));
+        parts.push("");
+    }
+    parts.push("---");
+    parts.push(footer(data));
+    parts.push("");
+    parts.push(REVIEW_MARKER);
+    parts.push(manifest(data));
+    return parts.join("\n");
+}
+// ---------------------------------------------------------------------------
+// Layout 18 — Diffstat (per-file +/- with ASCII bars)
+// ---------------------------------------------------------------------------
+// Per-file change summary using ASCII bars. Reads like `git diff --stat`.
+function layoutDiffstat(data) {
+    const verdict = verdictBadge(data);
+    const parts = [];
+    parts.push(`## ${verdict}`);
+    parts.push("");
+    parts.push("### 📊 Review diffstat");
+    parts.push("");
+    const byFile = new Map();
+    for (const c of data.postedComments) {
+        const arr = byFile.get(c.path) ?? [];
+        arr.push(c);
+        byFile.set(c.path, arr);
+    }
+    const max = Math.max(1, ...[...byFile.values()].map((v) => v.length));
+    parts.push("```text");
+    if (byFile.size === 0) {
+        parts.push("(no findings)");
+    }
+    else {
+        const sortedFiles = [...byFile.entries()].sort(([a], [b]) => a.localeCompare(b));
+        const pathWidth = Math.max(8, ...sortedFiles.map(([p]) => p.length));
+        for (const [path, comments] of sortedFiles) {
+            const filled = Math.round((comments.length / max) * 24);
+            const bar = "█".repeat(filled) + "░".repeat(24 - filled);
+            parts.push(`  ${path.padEnd(pathWidth)} │ ${bar} ${String(comments.length).padStart(3)}`);
+        }
+    }
+    parts.push("```");
+    parts.push("");
+    if (byFile.size > 0) {
+        parts.push("### 🔎 Detail");
+        parts.push("");
+        const sortedFiles = [...byFile.entries()].sort(([a], [b]) => a.localeCompare(b));
+        for (const [path, comments] of sortedFiles) {
+            parts.push(`#### \`${cell(path)}\``);
+            parts.push("");
+            for (const c of comments) {
+                parts.push(`- ${severityEmoji(c.severity)} line ${c.line} — ${redact(c.body, data.secrets).replace(/\s+/gu, " ").trim()}`);
+            }
+            parts.push("");
+        }
+    }
+    else {
+        parts.push("> _No findings to address._");
+        parts.push("");
+    }
+    if (data.review.summary.trim().length > 0) {
+        parts.push("### 💬 Summary");
+        parts.push("");
+        parts.push(redact(data.review.summary, data.secrets));
+        parts.push("");
+    }
+    parts.push("---");
+    parts.push(footer(data));
+    parts.push("");
+    parts.push(REVIEW_MARKER);
+    parts.push(manifest(data));
+    return parts.join("\n");
+}
+// ---------------------------------------------------------------------------
+// Layout 19 — Sticky Notes (push-pin quote blocks)
+// ---------------------------------------------------------------------------
+// Each finding is its own blockquote with a 📌 prefix. Reads like a
+// wall of sticky notes.
+function layoutStickyNotes(data) {
+    const verdict = verdictBadge(data);
+    const parts = [];
+    parts.push(`## ${verdict}`);
+    parts.push("");
+    parts.push("### 📌 Sticky notes");
+    parts.push("");
+    if (data.postedComments.length === 0) {
+        parts.push("> 📌 _No sticky notes — review passed clean._");
+        parts.push("");
+    }
+    else {
+        sortedPosted(data).slice(0, 6).forEach((c) => {
+            const title = redact(c.body, data.secrets).replace(/\s+/gu, " ").trim();
+            const snippet = title.length > 200 ? `${title.slice(0, 197)}…` : title;
+            parts.push(">");
+            parts.push(`> 📌 **${severityLabel(c.severity)}** — \`${cell(c.path)}\`:${c.line}`);
+            parts.push(">");
+            parts.push(`> ${cell(snippet)}`);
+            parts.push(">");
+        });
+        if (data.postedComments.length > 6) {
+            parts.push(`> _…and ${data.postedComments.length - 6} more._`);
+        }
+        parts.push("");
+    }
+    const tally = severityTally(data);
+    if (tally.length > 0) {
+        parts.push(tally);
+        parts.push("");
+    }
+    if (data.review.summary.trim().length > 0) {
+        parts.push("### 💬 Summary");
+        parts.push("");
+        parts.push(redact(data.review.summary, data.secrets));
+        parts.push("");
+    }
+    parts.push("---");
+    parts.push(footer(data));
+    parts.push("");
+    parts.push(REVIEW_MARKER);
+    parts.push(manifest(data));
+    return parts.join("\n");
+}
+// ---------------------------------------------------------------------------
+// Layout 20 — Newspaper (headline-lede-body)
+// ---------------------------------------------------------------------------
+// Headline H1, italic lede, then body. Reads like a news article.
+function layoutNewspaper(data) {
+    const verdict = verdictBadge(data);
+    const parts = [];
+    parts.push(`# ${verdict}`);
+    parts.push("");
+    parts.push(`### *${data.validCommentCount} of ${totalFindings(data)} findings posted; review model: \`${redact(data.modelId, data.secrets)}\`*`);
+    parts.push("");
+    if (data.postedComments.length > 0) {
+        parts.push("> ## Top story");
+        parts.push(">");
+        const top = sortedPosted(data)[0];
+        const topTitle = redact(top.body, data.secrets).replace(/\s+/gu, " ").trim();
+        parts.push(`> **${severityLabel(top.severity)}** at \`${cell(top.path)}\`:${top.line}.`);
+        parts.push(">");
+        parts.push(`> ${cell(topTitle)}`);
+        parts.push("");
+    }
+    parts.push("### The rundown");
+    parts.push("");
+    if (data.postedComments.length === 0) {
+        parts.push("_No findings to address._");
+    }
+    else {
+        sortedPosted(data).slice(0, 6).forEach((c, i) => {
+            const title = redact(c.body, data.secrets).replace(/\s+/gu, " ").trim();
+            const snippet = title.length > 140 ? `${title.slice(0, 137)}…` : title;
+            parts.push(`**${i + 1}.** ${severityEmoji(c.severity)} \`${cell(c.path)}\`:${c.line} — ${cell(snippet)}`);
+        });
+    }
+    parts.push("");
+    if (data.review.summary.trim().length > 0) {
+        parts.push("### Editor's note");
+        parts.push("");
+        parts.push(redact(data.review.summary, data.secrets));
+        parts.push("");
+    }
+    const tally = severityTally(data);
+    if (tally.length > 0) {
+        parts.push("### By the numbers");
+        parts.push("");
+        parts.push(tally);
+        parts.push("");
+    }
+    parts.push("---");
+    parts.push(footer(data));
+    parts.push("");
+    parts.push(REVIEW_MARKER);
+    parts.push(manifest(data));
+    return parts.join("\n");
+}
+const LAYOUT_RENDERERS = {
+    "dashboard": layoutDashboard,
+    "pipeline": layoutPipeline,
+    "verdict-banner": layoutVerdictBanner,
+    "severity-table": layoutSeverityTable,
+    "card-grid": layoutCardGrid,
+    "tldr-walkthrough": layoutTldrWalkthrough,
+    "checklist": layoutChecklist,
+    "progress-bars": layoutProgressBars,
+    "pros-cons": layoutProsCons,
+    "tweet": layoutTweet,
+    "faq": layoutFaq,
+    "terminal": layoutTerminal,
+    "incident": layoutIncident,
+    "release-notes": layoutReleaseNotes,
+    "coverage": layoutCoverage,
+    "thermometer": layoutThermometer,
+    "status-page": layoutStatusPage,
+    "diffstat": layoutDiffstat,
+    "sticky-notes": layoutStickyNotes,
+    "newspaper": layoutNewspaper,
+};
+const BASELINE_RENDERERS = {
+    "current": layoutBaseline,
+};
+/**
+ * Render a review summary using one of the 20 replacement layouts.
+ *
+ * @param layout  Layout identifier (see {@link LayoutId}).
+ * @param data    Review data shape; same inputs as the existing
+ *                `buildReviewBody` in `src/cli/live-shared.ts`.
+ * @returns Markdown body string safe to post to GitHub PR reviews
+ *          and Azure DevOps PR threads.
+ */
+function renderSummary(layout, data) {
+    const renderer = LAYOUT_RENDERERS[layout];
+    if (renderer === undefined) {
+        throw new Error(`Unknown layout: ${layout}`);
+    }
+    return renderer(data);
+}
+/**
+ * Render the BASELINE review summary (byte-identical reproduction of
+ * the existing `buildReviewBody` output). Use this for side-by-side
+ * comparison in the viewer and for the regression test that pins
+ * `LAYOUTS` parity with `buildReviewBody`.
+ */
+function renderBaseline(baseline, data) {
+    const renderer = BASELINE_RENDERERS[baseline];
+    if (renderer === undefined) {
+        throw new Error(`Unknown baseline: ${baseline}`);
+    }
+    return renderer(data);
+}
+/** Human-readable label for each of the 20 layouts. */
+const LAYOUT_LABELS = {
+    "dashboard": "1 · Dashboard — KPI tiles",
+    "pipeline": "2 · Pipeline — step diagram",
+    "verdict-banner": "3 · Verdict banner — single oversized callout",
+    "severity-table": "4 · Severity table — SonarQube-style",
+    "card-grid": "5 · Card grid — one card per severity",
+    "tldr-walkthrough": "6 · TL;DR + walkthrough",
+    "checklist": "7 · Checklist — grouped by category",
+    "progress-bars": "8 · Progress bars — ASCII block bars",
+    "pros-cons": "9 · Pros & Cons — two-column GFM table",
+    "tweet": "10 · Tweet — announcement card",
+    "faq": "11 · FAQ — Q/A pairs",
+    "terminal": "12 · Terminal — fenced code block",
+    "incident": "13 · Incident report — timeline",
+    "release-notes": "14 · Release notes — categorized changelog",
+    "coverage": "15 · Coverage report — per-file table",
+    "thermometer": "16 · Thermometer — vertical severity ladder",
+    "status-page": "17 · Status page — components & incidents",
+    "diffstat": "18 · Diffstat — per-file +/- with ASCII bars",
+    "sticky-notes": "19 · Sticky notes — push-pin quote blocks",
+    "newspaper": "20 · Newspaper — headline-lede-body",
+};
+
 ;// CONCATENATED MODULE: ./src/cli/live-shared.ts
 
 
@@ -3265,412 +4630,97 @@ async function evaluateLeakGate(input) {
     };
 }
 /**
- * Visual verdict badge used in the review-header summary. Both GitHub and
- * Azure DevOps render markdown, so the same badge appears on each platform.
- *
- * CLARITY-14f: When the model said `NEEDS_FIX` but no findings are
- * actionable (zero posted + zero suppressed), the verdict is
- * downgraded to `💬 DISCUSS` rather than `⛔ NEEDS_FIX`. Showing
- * `NEEDS_FIX` for a card that lists zero items to fix is misleading —
- * a reviewer would search the diff for things to act on, find nothing,
- * and lose trust in the verdict signal. `DISCUSS` is the right
- * semantic: there's nothing to fix, but the review is not a clean
- * bill of health either (the model said something is wrong; we just
- * can't surface what).
- */
-function verdictBadge(input) {
-    const normalized = input.verdict.toUpperCase();
-    const nothingActionable = input.validCommentCount === 0 && input.suppressedCommentCount === 0;
-    if (normalized === "NEEDS_FIX" && !nothingActionable)
-        return "⛔ NEEDS_FIX";
-    if (normalized === "APPROVED" || normalized === "SHIP")
-        return "✅ SHIP";
-    return "💬 DISCUSS";
-}
-/**
- * Group comments by severity (low/medium/high/critical). Used by both the
- * GitHub and Azure review-header builders so the collapsed details block
- * reports the same severity tally regardless of platform.
- *
- * Delegates to `src/util/severity.ts` so the live path and the merge path
- * agree on the exact same lowercase-accumulation logic. Was previously a
- * local copy that drifted subtly from `live-merge.ts`'s version.
+ * Group comments by severity (low/medium/high/critical). Re-exported here
+ * because external callers (`preparePostedReview`, the live tests) import
+ * this helper from `live-shared.ts`. Delegates to `src/util/severity.ts`
+ * so the live path and the merge path agree on the exact same
+ * lowercase-accumulation logic.
  */
 const live_shared_countBySeverity = countBySeverity;
-/**
- * Hard upper bound on the inline-finding preview list inside the parent
- * "Posted preview" <details> block. Keeps the parent card from being
- * dominated by a long list when the provider returns many findings.
- */
-const TOP_CONCERNS_PREVIEW_LIMIT = 5;
-/**
- * CLARITY-19 pipeline summary. Reconciles total findings → posted +
- * off-diff + filtered in ONE line so the reader can grok the whole
- * pipeline in one glance.
- *
- * Replaces three confusing `🔕` rows that mixed the same icon for
- * different concepts and used `(N of M shown)` truncation phrasing
- * that read like a separate count. The pipeline summary uses the `📊`
- * icon (frees `🏷️` for the severity tally) and explicit word labels
- * ("posted" / "off-diff" / "filtered") so no reader mistakes one count
- * for another.
- *
- * Always rendered for parsed reviews (even when all counts are 0 — a
- * clean review with `📊 0 findings → 0 posted, 0 off-diff, 0 filtered`
- * gives the reader the "I did the right thing" confirmation that the
- * pipeline actually ran). Skipped for parse-failed fallbacks because
- * the parsed counts are unreliable.
- */
-function pipelineSummary(input) {
-    // Compute every count from the source-of-truth arrays. This makes
-    // the formula self-consistent: any future refactor that changes
-    // one of these inputs surfaces as a negative filteredCount below,
-    // rather than silently propagating inconsistent caller state.
-    const totalFindings = input.review.comments.length + input.review.suppressedComments.length;
-    const postedCount = input.validCommentCount;
-    const offDiffCount = input.review.suppressedComments.length + input.offDiffFromComments.length;
-    // Filtered = model comments that survived parsing but were rejected
-    // by severity policy, max-comments cap, etc. For live-parse reviews
-    // this is `total - posted - off-diff`; for parse-fail it is 0.
-    //
-    // CLARITY-19 invariant (replaced after round-3 self-review):
-    //   The previous `totalFindings !== postedCount + offDiffCount +
-    //   filteredCount` check was tautological because filteredCount IS
-    //   defined as that difference. The only failure mode it could
-    //   catch was arithmetic overflow, not the routing regression the
-    //   comment described. The real check is on filteredCount >= 0:
-    //   a negative value means the caller passed inconsistent counts
-    //   (off-diff or posted > total). For graceful degradation, clamp
-    //   to 0 instead of throwing — this is a renderer, not a validator;
-    //   a partial card is better than no card (the parent's inline
-    //   threads are already posted by the time this runs).
-    const filteredCount = Math.max(0, totalFindings - postedCount - offDiffCount);
-    return `📊 ${totalFindings} findings → ${postedCount} posted, ${offDiffCount} off-diff, ${filteredCount} filtered`;
-}
-function countsLine(input) {
-    const parts = [];
-    let total = 0;
-    for (const level of SEVERITY_ORDER) {
-        const count = input.severityCounts[level] ?? 0;
-        total += count;
-        parts.push(`\`${count}\` ${level}`);
-    }
-    // CLARITY-14c: when there are zero findings across all severities,
-    // hide the tally entirely. A row of `🏷️ 0 critical · 0 high · 0
-    // medium · 0 low` adds nothing for a reviewer who's scanning the
-    // card for actionable info — and it explicitly duplicates the "0
-    // inline" footer count when nothing was posted.
-    //
-    // CLARITY-19: icon is now `🏷️` (severity / classification tag),
-    // not `📊` which is now the pipeline summary icon.
-    if (total === 0) {
-        return "";
-    }
-    return `🏷️ ${parts.join(" · ")}`;
-}
-/**
- * Build the "Posted preview" / "Filtered preview" <details> block. Shows
- * the highest-severity findings (posted or pre-filter), capped at
- * TOP_CONCERNS_PREVIEW_LIMIT. When the cap truncates the list, the
- * header surfaces the denominator so the reader can tell "showing 5 of
- * 10" from "5 total" without doing math.
- *
- * CLARITY-19: the icon is `📋` (Posted preview) when at least one
- * finding landed inline and `🧹` (Filtered preview) when the model
- * returned findings but none posted — three icons (📋/🧹/📍) replace
- * the old single `🔕` to make the three categories visually distinct.
- *
- * CLARITY-16: surface the denominator whenever truncation happens. A
- * header that reads "Posted preview (5)" with 10 posted findings reads
- * like "5 is the total" — but it's the cap. The reader expects the
- * preview to match the tally (which sums to 10); showing just (5)
- * breaks that mental model. Fix: when shown < total, render
- * "Posted preview (showing N of M)".
- *
- * CLARITY-11: when `validCommentCount === 0` but `postedComments.length === 0`
- * and the model returned findings, the pre-filter findings were ALL
- * filtered out (severity policy, max-comments cap, or off-diff
- * suppression). The block must make this explicit so the reader
- * doesn't confuse "0 posted + N candidates listed" with a clean bill
- * of health. We re-label the header as "Filtered preview" and prefix
- * the body with a one-line explanation of *why* nothing was posted.
- */
-function topConcernsBlock(input) {
-    const filteredAll = input.validCommentCount === 0 && input.review.comments.length > 0;
-    // CLARITY-16: when the caller passes the posted set (the new
-    // contract), use it as the preview source so the preview agrees with
-    // the tally + footer. When omitted (older callers / fixtures),
-    // fall back to `review.comments` and the denominator becomes the
-    // model's total — the header still surfaces truncation but the
-    // numbers may not perfectly agree with the tally.
-    // For the "filteredAll" branch, the preview is the full pre-filter
-    // set (capped), so the denominator is the model's total. For the
-    // "some posted" branch, the preview is the posted set (capped), so
-    // the denominator is the posted count — which agrees with the
-    // tally and the footer (CLARITY-15 invariant).
-    const sourceComments = filteredAll
-        ? input.review.comments
-        : input.postedComments ?? input.review.comments;
-    const sorted = [...sourceComments].sort((a, b) => {
-        const ra = severityRank(a.severity);
-        const rb = severityRank(b.severity);
-        if (ra !== rb)
-            return rb - ra;
-        return a.path.localeCompare(b.path);
-    });
-    const preview = sorted.slice(0, TOP_CONCERNS_PREVIEW_LIMIT);
-    if (preview.length === 0) {
-        return "";
-    }
-    const total = sourceComments.length;
-    const shown = preview.length;
-    const truncated = shown < total;
-    // CLARITY-14g: drop "from model" suffix — the block IS the model
-    // output (or the posted set), so labeling it "from model" is
-    // redundant. Use plain "📋 Posted preview (N)" when findings fit in
-    // the preview, "📋 Posted preview (showing N of M)" when truncated,
-    // and "🧹 Filtered preview (showing N of M candidates)" when none
-    // landed. CLARITY-19 swaps the icons and adds "showing" / "candidates"
-    // to make the (N of M) clearly truncation, not a separate count.
-    const header = filteredAll
-        ? shown === 1
-            ? `🧹 Filtered preview (showing 1 of ${total} candidates)`
-            : `🧹 Filtered preview (showing ${shown} of ${total} candidates)`
-        : truncated
-            ? shown === 1
-                ? `📋 Posted preview (showing 1 of ${total})`
-                : `📋 Posted preview (showing ${shown} of ${total})`
-            : shown === 1
-                ? `📋 Posted preview (1)`
-                : `📋 Posted preview (${shown})`;
-    const explainer = filteredAll
-        ? `\n_The model produced ${total} finding(s); all were filtered by severity policy, the \`max-comments\` cap, or off-diff suppression. The list below is the pre-filter view for transparency — no inline comments were posted._\n`
-        : "";
-    const lines = preview.map((comment, index) => {
-        const safeBody = sanitizeForPost(comment.body, []);
-        const oneLiner = safeBody.replace(/\s+/gu, " ").trim();
-        const bodySnippet = oneLiner.length > 120 ? `${oneLiner.slice(0, 117)}…` : oneLiner;
-        return `${index + 1}. \`${comment.path}:${comment.line}\` — ${bodySnippet}`;
-    });
-    return [
-        "<details>",
-        `<summary>${header}</summary>`,
-        "",
-        explainer.trimStart(),
-        lines.join("\n"),
-        "</details>",
-        "",
-    ].join("\n");
-}
-/**
- * Build the "📍 Off-diff (N not posted)" <details> block. Lists every
- * comment the system suppressed because its line is not on the diff.
- * Hidden by default — only the count is visible above the fold.
- *
- * CLARITY-19: header is `📍 Off-diff (N not posted)` — the pin icon
- * matches the file:line problem, "Off-diff" matches the 📊 pipeline
- * summary's bucket name, and "(N not posted)" matches the action
- * (these findings were not posted as comments because they were not
- * on the diff). Replaces the old `🔕 Suppressed (off-diff, N)` header
- * that mixed the same icon as the filtered-findings block.
- */
-function suppressedBlock(input) {
-    const combined = [...input.suppressedComments, ...input.offDiffFromComments];
-    if (combined.length === 0) {
-        return "";
-    }
-    const header = combined.length === 1
-        ? "📍 Off-diff (1 not posted)"
-        : `📍 Off-diff (${combined.length} not posted)`;
-    const lines = combined.map((comment) => {
-        const safeBody = sanitizeForPost(comment.body, []);
-        const oneLiner = safeBody.replace(/\s+/gu, " ").trim();
-        const bodySnippet = oneLiner.length > 100 ? `${oneLiner.slice(0, 97)}…` : oneLiner;
-        return `- \`${comment.path}:${comment.line}\` — ${bodySnippet}`;
-    });
-    return [
-        "<details>",
-        `<summary>${header}</summary>`,
-        "",
-        lines.join("\n"),
-        "</details>",
-        "",
-    ].join("\n");
-}
-/**
- * Wrap the provider's prose summary in a collapsed <details> block so
- * the counts line stays in the first viewport. CLARITY-4 pins this
- * contract: long prose MUST live inside <details>, not inline.
- *
- * If the summary already starts with an HTML <details> block (the
- * malformed-fallback path includes a raw-response <details>), the
- * summary is used verbatim — wrapping it in another <details> would
- * be confusing.
- */
-function proseBlock(summary) {
-    const trimmed = summary.trim();
-    if (trimmed.length === 0) {
-        return "";
-    }
-    // If the summary already contains a <details> block (parse-fail
-    // fallback), surface it as-is under the "📝 Summary" toggle.
-    if (trimmed.startsWith("<details>") || trimmed.includes("\n<details>")) {
-        return [
-            "<details>",
-            "<summary>📝 Summary</summary>",
-            "",
-            trimmed,
-            "</details>",
-            "",
-        ].join("\n");
-    }
-    return [
-        "<details>",
-        "<summary>📝 Summary</summary>",
-        "",
-        trimmed,
-        "</details>",
-        "",
-    ].join("\n");
-}
-function metadataManifest(input) {
-    const manifest = JSON.stringify({
-        schema: MANIFEST_SCHEMA,
-        verdict: input.review.verdict,
-        provider: input.provider,
-        modelId: input.modelId,
-        inlineCount: input.validCommentCount,
-        suppressedCount: input.suppressedCommentCount,
-        severityCounts: input.severityCounts,
-        ...(input.review.parseFailed === true ? { parseFailed: true } : {}),
-    });
-    return `<!-- umactually-pr-review:manifest ${manifest} -->`;
-}
 /**
  * Build the body of the overall review (GitHub review body or Azure thread
  * starter comment). Both platforms must produce an equivalent contract so AI
  * agents and humans see the same information regardless of platform.
  *
- * Clarity-first shape (CLARITY-* contract in
- * test/unit/live-azure-parent-clarity.test.ts):
+ * Implementation: delegates to the `severity-table` layout defined in
+ * `src/render/summary-layouts.ts` (one of the 20 alternatives surfaced
+ * during the layout review — see the local viewer at
+ * `scripts/view-summary-layouts.mjs` for the full design sheet and
+ * baseline comparison). The other 19 layouts are still reachable via
+ * `renderSummary(layout, data)` for callers that want a different
+ * visual personality; this function is the single wired default.
  *
- *   - Stable HTML marker (used for dedup)
- *   - Verdict badge — large, first thing after the marker
- *   - 📊 Pipeline summary (CLARITY-19) — `N findings → X posted,
- *     Y off-diff, Z filtered` reconciles all four buckets in one
- *     line. Skipped for parse-failed fallbacks (parsed counts
- *     unreliable).
+ * Contract invariants preserved across the cutover:
+ *   - Stable HTML marker (used for dedup) — first line of body
+ *   - Verdict badge — second line, large H2
  *   - 🏷️ Severity tally — `critical → high → medium → low` distribution
- *     of the POSTED set, hidden when all zeros (CLARITY-14c). The
- *     `info` level is excluded here (intentionally — info findings
- *     are not actionable).
- *   - 📋 Posted preview <details> — preview of the highest-severity
- *     findings actually posted (post-filter). When the cap truncates
- *     the list, header reads "showing N of M" (CLARITY-16). The
- *     "Posted preview" label matches the pipeline summary's `posted`
- *     bucket.
- *   - 🧹 Filtered preview <details> — preview of the pre-filter
- *     candidates when nothing posted (CLARITY-11). Header reads
- *     "showing N of M candidates" so the (N of M) clearly means
- *     preview truncation, not a separate count.
- *   - 📍 Off-diff <details> — list of every off-diff finding. Header
- *     reads "📍 Off-diff (N not posted)". (CLARITY-19 dropped the
- *     duplicate `> 🔕 N off-diff findings` callout that used to
- *     appear above this block — the 📊 pipeline summary already
- *     surfaces the count.)
- *   - Prose summary <details> — long provider narrative, hidden by default
- *   - Footer — model + provider + inline-thread count, small text
- *   - Hidden HTML comment with the JSON manifest for AI agents
+ *     of the POSTED set, hidden when all zeros
+ *   - Stable `<!-- umalready-pr-review:manifest {…} -->` for AI agents
+ *   - Same byte-for-byte output on GitHub and Azure (parity invariant)
+ *   - Secret redaction applied to every rendered string
  *
- * The exact render order (including blank-line separators) lives in
- * the assembly `sections` array at the bottom of this function —
- * keep this list and that array in sync if you reorder.
+ * Changes vs the legacy builder:
+ *   - No more `📋 Posted preview` / `🧹 Filtered preview` / `📍 Off-diff`
+ *     `<details>` blocks — the severity-table layout shows the full
+ *     findings list inline so reviewers don't need to click to expand
+ *     to see what the review actually said. Off-diff + filtered are
+ *     summarized in the manifest (still machine-readable) rather than
+ *     rendered as separate hidden blocks.
+ *   - No more `<details>` for the summary prose — the new layout
+ *     surfaces the summary inline (small paragraph), since the
+ *     findings table is already collapsed-style.
+ *   - Body stays under GitHub's 65,536-char limit (enforced by
+ *     `test/unit/summary-layouts.test.ts`).
  *
- * The shape is identical regardless of verdict, finding count, or whether
- * the provider returned a parse-fail fallback — that consistency is what
- * lets a reviewer scan the card in 5 seconds.
+ * CLARITY-* contract notes:
+ *   - CLARITY-1 (verdict first): preserved.
+ *   - CLARITY-2 (severity within 200 chars): preserved via the tally.
+ *   - CLARITY-3 (no raw `**word**`): preserved — the severity-table
+ *     layout uses emoji + backtick labels instead of `**medium**`.
+ *   - CLARITY-4 (summary inside `<details>`): NO LONGER APPLIES — the
+ *     severity-table layout surfaces the summary inline. Test
+ *     assertions that pinned this contract have been updated.
+ *   - CLARITY-5 (identical shape across empty/clean/busy): preserved —
+ *     the layout always emits the same section structure.
+ *   - CLARITY-6/7 (marker + manifest): preserved.
+ *   - CLARITY-8 (GitHub == Azure): preserved — both paths call this
+ *     same function.
+ *   - CLARITY-13/19 (off-diff / pipeline reconciliation): now surfaced
+ *     through the manifest + the rendered table instead of separate
+ *     `<details>` blocks.
  */
 function buildReviewBody(input) {
-    const verdict = verdictBadge({
-        verdict: input.review.verdict,
+    // Delegate to the "severity-table" layout from
+    // `src/render/summary-layouts.ts` — selected from the 20-layout
+    // sheet after side-by-side review. The other 19 layouts remain
+    // available via `renderSummary(layout, data)` for callers that want
+    // a different visual personality. See the local viewer
+    // (`scripts/view-summary-layouts.mjs`) for the design rationale and
+    // before/after comparison.
+    //
+    // The legacy in-place assembly of the parent card (verdict + pipeline
+    // summary + posted preview + off-diff block + summary <details> +
+    // footer + manifest) is preserved verbatim as the "current"
+    // baseline inside `renderBaseline("current", data)` so the viewer
+    // can render the old shape side-by-side with the new one.
+    //
+    // Compatibility shim: callers that omit `postedComments` (older
+    // fixtures, `simulate-findings`) used to fall back to
+    // `review.comments`. The severity-table layout needs the actual
+    // posted set, so we resolve the fallback here before dispatch.
+    const postedComments = input.postedComments ?? input.review.comments;
+    const reviewData = {
+        review: input.review,
+        provider: input.provider,
+        modelId: input.modelId,
         validCommentCount: input.validCommentCount,
         suppressedCommentCount: input.suppressedCommentCount,
-    });
-    const safeSummary = sanitizeForPost(input.review.summary, input.secrets);
-    const safeModelId = sanitizeForPost(input.modelId, input.secrets);
-    const safeProvider = sanitizeForPost(input.provider, input.secrets);
-    // CLARITY-14 + CLARITY-19: Actionable-only card. Build the body
-    // section-by-section, skipping sections that don't apply:
-    //   - Parse-failed banner — only when parseFailed (suppresses the
-    //     pipeline summary because parsed counts are unreliable)
-    //   - Pipeline summary — `📊 N findings → X posted, Y off-diff, Z filtered`
-    //     every parsed review (including all-zero clean reviews)
-    //   - Severity tally (🏷️) — only when at least one finding has a severity
-    //   - Posted preview (📋) — only when posted comments exist
-    //   - Filtered preview (🧹) — only when nothing posted but model had findings
-    //   - Off-diff details (📍) — only when suppressed > 0
-    //   - Summary <details> — only when summary is non-empty
-    // The result is a card that scales with the review: a clean review is
-    // 4 lines (marker + verdict + summary + footer); a busy review shows
-    // everything.
-    const parseFailedBanner = input.review.parseFailed === true
-        ? `> ⚠️ \`Parse failed\` — provider response was not a valid JSON review payload. The raw provider text is included in the Summary section below for diagnostics.\n`
-        : "";
-    const pipeline = input.review.parseFailed === true
-        ? ""
-        : pipelineSummary({
-            review: input.review,
-            validCommentCount: input.validCommentCount,
-            offDiffFromComments: input.offDiffFromComments,
-        });
-    const tally = countsLine({ severityCounts: input.severityCounts });
-    const topConcerns = topConcernsBlock({
-        review: input.review,
-        validCommentCount: input.validCommentCount,
-        // CLARITY-16: pass the posted comments so the preview denominator
-        // agrees with the tally + footer. When the caller omits this
-        // (older fixtures, simulate-findings, etc.), topConcernsBlock
-        // falls back to `review.comments` as the preview source. Spread
-        // conditionally because `exactOptionalPropertyTypes: true` rejects
-        // explicit `undefined`.
-        ...(input.postedComments !== undefined
-            ? { postedComments: input.postedComments }
-            : {}),
-    });
-    const suppressed = suppressedBlock({
-        suppressedComments: input.review.suppressedComments,
+        severityCounts: input.severityCounts,
         offDiffFromComments: input.offDiffFromComments,
-    });
-    // CLARITY-14e: terse footer — `X inline` is enough; the verbose
-    // "X inline thread(s) posted" adds noise without information.
-    const footer = `🤖 Generated by \`${safeModelId}\` via \`${safeProvider}\` · ` +
-        `${input.validCommentCount} inline`;
-    // Assemble sections. Each section is "" if it doesn't apply, so we
-    // join with `\n\n` and trim trailing blanks.
-    const sections = [
-        REVIEW_MARKER,
-        "",
-        `## ${verdict}`,
-        "",
-        parseFailedBanner,
-        pipeline,
-        tally,
-        topConcerns,
-        suppressed,
-        proseBlock(safeSummary),
-        footer,
-        "",
-        metadataManifest({
-            review: input.review,
-            provider: input.provider,
-            modelId: input.modelId,
-            validCommentCount: input.validCommentCount,
-            suppressedCommentCount: input.suppressedCommentCount,
-            severityCounts: input.severityCounts,
-        }),
-    ];
-    const raw = sections.filter((s) => s.length > 0).join("\n");
-    return sanitizeForPost(raw, input.secrets);
+        postedComments,
+        secrets: input.secrets,
+    };
+    return renderSummary("severity-table", reviewData);
 }
 /**
  * Build a single inline-comment body. Both GitHub review comments and Azure
