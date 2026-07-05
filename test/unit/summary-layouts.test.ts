@@ -476,6 +476,99 @@ describe("severity-table details", () => {
     const out = renderSummary("severity-table", data);
     expect(out).toContain("| 1 | 🟠 Medium | general | `src/no-category.ts`:3 | Missing category. |");
   });
+
+  // CLARITY-19a: when the model produced off-diff/suppressed findings
+  // and the table has fewer rows than the pipeline-line total, the
+  // reader sees the gap as an explicit annotation between the tally
+  // and the table. Without this line, "13 findings → 9 posted" makes
+  // the reader subtract to learn what happened to the other 4.
+  it("emits a reconciliation line when offDiffCount > 0", () => {
+    // 3 model findings: 1 in-diff (posted) + 2 off-diff. Without the
+    // annotation, the reader would see "📊 3 findings → 1 posted, 2
+    // off-diff, 0 filtered" and a 1-row table with no explanation for
+    // the missing 2.
+    const data: ReviewData = makeData({
+      review: {
+        summary: "Off-diff heavy.",
+        verdict: "NEEDS_FIX",
+        comments: [
+          { path: "src/a.ts", line: 1, body: "In-line.", severity: "high", category: "bug" },
+          { path: "src/legacy/x.ts", line: 10, body: "Off-diff #1.", severity: "low", category: "style" },
+        ],
+        suppressedComments: [
+          { path: "src/legacy/y.ts", line: 20, body: "Off-diff #2.", severity: "low", category: "style" },
+        ],
+      },
+      validCommentCount: 1,
+      suppressedCommentCount: 1,
+      severityCounts: { critical: 0, high: 1, medium: 0, low: 0 },
+      offDiffFromComments: [
+        { path: "src/legacy/x.ts", line: 10, body: "Off-diff #1.", severity: "low", category: "style" },
+      ],
+      postedComments: [
+        { path: "src/a.ts", line: 1, body: "In-line.", severity: "high", category: "bug" },
+      ],
+    });
+
+    const out = renderSummary("severity-table", data);
+    // The exact format pin — counts come from offDiffCount (2) and
+    // postedComments.length (1), so the math is direct and obvious.
+    expect(out).toContain(
+      "> 🔍 **2 of the 3 findings are off-diff or suppressed** — the table below shows only the **1** in-line comments.",
+    );
+  });
+
+  it("does NOT emit a reconciliation line when offDiffCount === 0", () => {
+    // All model findings became in-line comments. The pipeline-line
+    // total already matches the table row count, so the annotation
+    // would be noise.
+    const data: ReviewData = makeData({
+      review: {
+        summary: "All in-line.",
+        verdict: "NEEDS_FIX",
+        comments: [
+          { path: "src/a.ts", line: 1, body: "In-line.", severity: "high", category: "bug" },
+        ],
+        suppressedComments: [],
+      },
+      validCommentCount: 1,
+      suppressedCommentCount: 0,
+      severityCounts: { critical: 0, high: 1, medium: 0, low: 0 },
+      offDiffFromComments: [],
+      postedComments: [
+        { path: "src/a.ts", line: 1, body: "In-line.", severity: "high", category: "bug" },
+      ],
+    });
+
+    const out = renderSummary("severity-table", data);
+    expect(out).not.toContain("are off-diff or suppressed");
+  });
+
+  it("does NOT emit a reconciliation line in the parse-failed branch", () => {
+    // CLARITY-19 invariant: when the provider response couldn't be
+    // parsed, ALL counts are unreliable. The new annotation would be
+    // a lie. Verify the ⚠️ banner branch suppresses it.
+    const data: ReviewData = makeData({
+      review: {
+        summary: "Raw provider text in summary.",
+        verdict: "COMMENT",
+        parseFailed: true,
+        comments: [],
+        suppressedComments: [],
+      },
+      validCommentCount: 0,
+      suppressedCommentCount: 0,
+      severityCounts: { critical: 0, high: 0, medium: 0, low: 0 },
+      offDiffFromComments: [],
+      postedComments: [],
+    });
+
+    const out = renderSummary("severity-table", data);
+    // ⚠️ banner present, no 📊 pipeline line, no reconciliation line.
+    expect(out).toContain("> ⚠️ `Parse failed`");
+    expect(out).not.toMatch(/📊/u);
+    expect(out).not.toContain("are off-diff or suppressed");
+  });
 });
 
 describe("cross-cutting invariants — all layouts", () => {

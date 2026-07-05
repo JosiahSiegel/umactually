@@ -541,6 +541,18 @@ function layoutSeverityTable(data: ReviewData): string {
     if (tally.length > 0) {
       parts.push(tally);
     }
+    // CLARITY-19a: when findings were filtered or off-diff, the pipeline
+    // line's "N findings" total is the model's gross output and will
+    // not match the table row count below. Surface the gap explicitly
+    // so the reader doesn't have to subtract in their head. Only emits
+    // when offDiffCount > 0 (i.e. there is actually a gap to explain).
+    const gap = offDiffCount(data);
+    const inlineRows = data.postedComments.length;
+    if (gap > 0) {
+      parts.push(
+        `> 🔍 **${gap} of the ${totalFindings(data)} findings are off-diff or suppressed** — the table below shows only the **${inlineRows}** in-line comments.`,
+      );
+    }
     parts.push("");
   }
 
