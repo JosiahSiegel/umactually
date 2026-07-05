@@ -6,7 +6,9 @@ import { tryParseJson } from "../util/json-guards.js";
  * Order of attempts (mirrors the fence-closure guard in src/render/raw-output.ts):
  *   1. The whole text, parsed as JSON.
  *   2. A ```json ... ``` fence body, parsed as JSON.
- *   3. The first balanced { ... } object, parsed as JSON.
+ *   3. The first balanced { ... } object, parsed as JSON — with control
+ *      characters inside JSON strings escaped to make the substring
+ *      valid JSON (see `extractFirstBalancedObject`).
  *
  * Returns the parsed value when one of the attempts succeeds, otherwise null.
  * The whole text is always returned to the caller via `extractJsonBlock` so they
@@ -56,6 +58,21 @@ export function extractJsonFenceBody(rawText: string): string {
  * Locate the first balanced `{ ... }` object in `rawText`, respecting nested
  * braces and quoted strings (including \" escapes). Returns null when no
  * balanced object can be found.
+ *
+ * Returns a JSON-safe substring with literal control characters (newlines,
+ * tabs, carriage returns) inside JSON strings escaped to their JSON-escape
+ * equivalents (`\n`, `\t`, `\r`). This is required for parser robustness
+ * because some provider streaming formats (notably SSE `response.output_text.delta`
+ * events) JSON-encode delta values such that the JSON-escape for newline
+ * (`\n`) becomes a literal newline in the SSE data line source — and the
+ * SSE protocol treats that newline as a line break. After concatenating
+ * fragments, the result contains literal newlines inside what should be
+ * JSON strings, which makes the substring invalid JSON. This function walks
+ * the balanced substring and escapes those control characters back to their
+ * JSON-escape equivalents so the result is valid JSON.
+ *
+ * Newlines/tabs OUTSIDE strings (structural whitespace between fields) are
+ * preserved — they're already valid JSON whitespace.
  */
 export function extractFirstBalancedObject(rawText: string): string | null {
   const startIndex = rawText.indexOf("{");
@@ -67,6 +84,8 @@ export function extractFirstBalancedObject(rawText: string): string | null {
   let inString = false;
   let escape = false;
 
+  // First pass: find the end index of the balanced object.
+  let endIndex = -1;
   for (let index = startIndex; index < rawText.length; index += 1) {
     const char = rawText[index];
 
@@ -96,10 +115,71 @@ export function extractFirstBalancedObject(rawText: string): string | null {
     if (char === "}") {
       depth -= 1;
       if (depth === 0) {
-        return rawText.slice(startIndex, index + 1);
+        endIndex = index;
+        break;
       }
     }
   }
 
-  return null;
+  if (endIndex === -1) {
+    return null;
+  }
+
+  // Second pass: walk the balanced substring and escape literal control
+  // characters that appear INSIDE JSON strings. We re-walk because the
+  // first pass above only tracked depth, not the output positions.
+  const substring = rawText.slice(startIndex, endIndex + 1);
+  let result = "";
+  inString = false;
+  escape = false;
+  for (let index = 0; index < substring.length; index += 1) {
+    const char = substring[index];
+    if (inString) {
+      result += char;
+      if (escape) {
+        escape = false;
+        continue;
+      }
+      if (char === "\\") {
+        escape = true;
+        continue;
+      }
+      if (char === '"') {
+        inString = false;
+        continue;
+      }
+      // Inside a string: escape literal control characters that are
+      // invalid in JSON strings. \n, \r, \t are the common ones from
+      // SSE delta concatenation; we also handle \b, \f for completeness.
+      if (char === "\n") {
+        result = result.slice(0, -1) + "\\n";
+        continue;
+      }
+      if (char === "\r") {
+        result = result.slice(0, -1) + "\\r";
+        continue;
+      }
+      if (char === "\t") {
+        result = result.slice(0, -1) + "\\t";
+        continue;
+      }
+      if (char === "\b") {
+        result = result.slice(0, -1) + "\\b";
+        continue;
+      }
+      if (char === "\f") {
+        result = result.slice(0, -1) + "\\f";
+        continue;
+      }
+      continue;
+    }
+    // Outside a string: control characters are valid JSON whitespace,
+    // so just copy them through.
+    if (char === '"') {
+      inString = true;
+    }
+    result += char;
+  }
+
+  return result;
 }
