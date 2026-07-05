@@ -3235,7 +3235,15 @@ function mergeReviewResults(outcomes, options) {
  * Cross-platform rules (GitHub PR review body + Azure DevOps PR thread):
  *   - DO use GFM tables, headings, blockquote, lists, fenced code,
  *     inline code, links, raw Unicode emoji, horizontal rules.
- *   - DO NOT use `<details>`/`<summary>` (Azure renders them as raw text).
+ *   - DO NOT use `<details>`/`<summary>` for short content — Azure DevOps
+ *     PR comments render them as raw text. EXCEPTION: when the model
+ *     emits a verbose summary (>500 chars), the severity-table layout
+ *     wraps the summary in `<details>` so reviewers can collapse it
+ *     on GitHub. Azure DevOps will show the raw `<details>` HTML in
+ *     that case — a trade-off we accept to keep long reviews from
+ *     dominating the conversation thread. Pinned by S5a (short
+ *     summary has no details) and S5b (long summary wraps in details)
+ *     in `test/unit/summary-layouts.test.ts`.
  *   - DO NOT use raw `<table>` HTML (Azure ignores it).
  *   - DO NOT use task lists `- [x]` / `- [ ]` (Azure ignores check state).
  *   - Body must stay under GitHub's 65,536-char comment limit.
@@ -3653,10 +3661,32 @@ function layoutSeverityTable(data) {
         parts.push("");
     }
     if (data.review.summary.trim().length > 0) {
-        parts.push("### 📝 Summary");
-        parts.push("");
-        parts.push(redact(data.review.summary, data.secrets));
-        parts.push("");
+        const safeSummary = redact(data.review.summary, data.secrets);
+        // Cross-platform note: <details>/<summary> renders as a collapsible
+        // section on GitHub PR reviews (primary platform), but Azure DevOps
+        // PR comments show the raw HTML. We accept that trade-off ONLY for
+        // verbose summaries (>500 chars) — short summaries stay inline.
+        // Threshold picked to match the "long/verbose" trigger the user
+        // asked us to address; below it, the summary stays compact and
+        // readable on both platforms.
+        const VERBOSE_THRESHOLD_CHARS = 500;
+        if (safeSummary.length > VERBOSE_THRESHOLD_CHARS) {
+            parts.push("### 📝 Summary");
+            parts.push("");
+            parts.push("<details>");
+            parts.push("<summary>📝 Click to expand the full review summary</summary>");
+            parts.push("");
+            parts.push(safeSummary);
+            parts.push("");
+            parts.push("</details>");
+            parts.push("");
+        }
+        else {
+            parts.push("### 📝 Summary");
+            parts.push("");
+            parts.push(safeSummary);
+            parts.push("");
+        }
     }
     parts.push("---");
     parts.push(footer(data));
