@@ -7120,6 +7120,17 @@ async function callEndpoint(config, fetchImpl, requestId, endpoint) {
         writeDebugRaw(`[DEBUG-RAW] hasResponseCompletedEvent: ${rawText.includes('"type":"response.completed"')}\n`, config);
     }
     const review = parseReviewPayload(textPayload);
+    // [DEBUG-RAW] Trace the parse decision so the next parse-fail run can
+    // show exactly what `parseReviewPayload` returned. Without this, we
+    // see "retry fired" in the log but not WHY (null vs all-empty-fields
+    // vs apology-summary-detected are all indistinguishable from outside).
+    if (process.env["UMACTUALLY_DEBUG_RAW"] === "1") {
+        const trace = review === null
+            ? "null"
+            : `summary.len=${review.summary.length} verdict='${review.verdict}' comments=${review.comments.length} suppressed=${review.suppressed_comments.length}`;
+        writeDebugRaw(`[DEBUG-RAW] parseReviewPayload returned: ${trace}\n`, config);
+        writeDebugRaw(`[DEBUG-RAW] isNonEmptyReview: ${isNonEmptyReview(review)}\n`, config);
+    }
     // Treat an empty-summary+empty-verdict parse as a parse failure even
     // when `extractJsonBlock` returned an object. The parser is permissive
     // about JSON shape (returns `ProviderReviewPayload` with empty fields
