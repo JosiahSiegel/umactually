@@ -513,10 +513,52 @@ function tryExtractSse(rawText: string): string | null {
   }
 
   // Prefer the completed-response text (full output) over accumulated
-  // fragments — providers that send a `response.completed` event usually
-  // skip the per-fragment deltas, so fragment concatenation would be empty.
+  // fragments — but ONLY if the completed text looks like real content.
+  //
+  // Some providers (notably MiniMax-M3 observed in Azure DevOps PR #43
+  // thread 589) emit a `response.completed` event whose `output[]` carries
+  // a stub/placeholder string (e.g. "placeholder", the model wrapper
+  // metadata, or just the prompt echo) — and the real review text only
+  // appears in the per-fragment `response.output_text.delta` events.
+  //
+  // If we naively prefer the placeholder, `extractTextPayload` returns the
+  // placeholder and `parseReviewPayload` cannot extract a review from it,
+  // producing a parse-fail surface.
+  //
+  // Resolution: prefer the completed text only when it is "non-stub" OR
+  // when no delta fragments were collected (i.e. the completed event is
+  // the only source of truth). When deltas exist and the completed text
+  // looks like a stub, fall back to the deltas.
   if (completedResponseText !== null) {
-    return completedResponseText;
+    const onlySource = fragments.length === 0;
+    if (onlySource || !isStubCompletedText(completedResponseText)) {
+      return completedResponseText;
+    }
   }
   return fragments.length > 0 ? fragments.join("") : null;
+}
+
+/**
+ * Heuristic: detect a `response.completed` `output_text` value that is
+ * a stub/placeholder rather than the real review text.
+ *
+ * Triggers (returns true → caller falls back to delta concatenation):
+ *   - Empty string
+ *   - String shorter than 8 characters (real reviews are at minimum
+ *     `{"summary":"x"}` ≈ 16 chars; provider stubs are usually < 8)
+ *   - String that doesn't contain a `{` (the opening of a JSON object —
+ *     a stub like "placeholder" or the model wrapper's prompt echo
+ *     rarely contains a `{`)
+ *
+ * This is intentionally permissive: false positives (treating a real
+ * short review as a stub) are rare because real reviews always contain
+ * `{`. The test suite in `test/unit/azure-thread-589-repro.test.ts`
+ * pins the behavior end-to-end with the production failure mode
+ * (MiniMax-M3 `response.completed` stub "placeholder").
+ */
+function isStubCompletedText(text: string): boolean {
+  if (text.length === 0) return true;
+  if (text.length < 8) return true;
+  if (!text.includes("{")) return true;
+  return false;
 }
