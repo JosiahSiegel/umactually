@@ -282,22 +282,112 @@ describe("S4 — every layout includes the hidden manifest", () => {
   }
 });
 
-// -- S5: No <details>/<summary> tags ---------------------------------------
+// -- S5: <details>/<summary> policy ----------------------------------------
+// Cross-platform rule: avoid <details>/<summary> by default because
+// Azure DevOps PR comments render them as raw text. EXCEPTION: when the
+// summary is verbose (>500 chars), wrap it in <details> with a click-
+// to-expand summary. GitHub renders the collapsible correctly; Azure
+// DevOps shows the raw HTML (uglier but still readable) — a trade-off
+// worth taking for long reviews that would otherwise dominate the PR
+// conversation thread.
+//
+// Each layout MUST be tested in BOTH regimes:
+//   - S5a: short summary → no <details>/<summary> tags
+//   - S5b: long summary → wraps content in <details>/<summary> tags
+//
+// (The existing test fixture `makeBusyData()` uses a short summary,
+// so the S5a tests use that fixture and the S5b tests use a new
+// `makeVerboseData()` helper.)
 
-describe("S5 — no layout uses <details>/<summary> (Azure-incompatible)", () => {
+describe("S5a — short summary produces no <details>/<summary> tags (Azure-incompatible default)", () => {
   for (const layout of LAYOUTS) {
-    it(`${layout} has no <details> tag`, () => {
+    it(`${layout} has no <details> tag for short summary`, () => {
       const out = renderSummary(layout, makeBusyData());
       expect(out).not.toContain("<details>");
       expect(out).not.toContain("</details>");
     });
 
-    it(`${layout} has no <summary> tag`, () => {
+    it(`${layout} has no <summary> tag for short summary`, () => {
       const out = renderSummary(layout, makeBusyData());
       expect(out).not.toContain("<summary>");
       expect(out).not.toContain("</summary>");
     });
   }
+});
+
+describe("S5b — verbose summary (>500 chars) is wrapped in <details> for collapsibility", () => {
+  // Helper: a review with a 1.5K-char summary mimicking the production
+  // self-review on PR #9 where the model emits `Key correctness
+  // concerns I spotted: ... I cannot approve without addressing: ...`
+  // sections that are too long to be inline.
+  function makeVerboseData(): Parameters<typeof renderSummary>[1] {
+    const verboseSummary = [
+      "Reviewed the PR. This PR refactors `buildReviewBody` to delegate to a new `severity-table` layout in `src/render/summary-layouts.ts`, adds 20 alternative layouts + viewer scripts, fixes SSE JSON extraction by escaping literal control chars, and rewrites several existing clarity tests to match the new output shape.",
+      "",
+      "Key correctness concerns I spotted:",
+      "",
+      ...Array.from({ length: 10 }, (_, i) => `${i + 1}. **Concern ${i + 1}**: This is a detailed explanation of a correctness issue found in the diff that requires the author's attention before merge.`),
+      "",
+      "I cannot approve this without addressing:",
+      "",
+      ...Array.from({ length: 3 }, (_, i) => `- The committed artifact concern number ${i + 1}.`),
+    ].join("\n");
+    return {
+      review: {
+        summary: verboseSummary,
+        verdict: "NEEDS_FIX",
+        comments: [
+          { path: "src/test.ts", line: 1, body: "Test concern", severity: "high", category: "general" },
+        ],
+        suppressedComments: [],
+      },
+      provider: "github",
+      modelId: "auto",
+      validCommentCount: 1,
+      suppressedCommentCount: 0,
+      offDiffFromComments: [],
+      postedComments: [
+        { path: "src/test.ts", line: 1, body: "Test concern", severity: "high", category: "general" },
+      ],
+      severityCounts: { high: 1, medium: 0, low: 0 },
+      secrets: [],
+    };
+  }
+
+  it("severity-table wraps verbose summary in a <details> block", () => {
+    const out = renderSummary("severity-table", makeVerboseData());
+    // Must have a <details>...</details> wrapping the summary
+    expect(out).toContain("<details>");
+    expect(out).toContain("</details>");
+    // And a <summary> with the click-to-expand label
+    expect(out).toMatch(/<summary>[\s\S]*?<\/summary>/u);
+  });
+
+  it("verbose summary's <details> contains the model output (no truncation)", () => {
+    const data = makeVerboseData();
+    const out = renderSummary("severity-table", data);
+    // The summary text MUST appear inside the details block — we
+    // should NOT silently truncate just because we wrapped it.
+    expect(out).toContain("Key correctness concerns I spotted:");
+    expect(out).toContain("I cannot approve this without addressing:");
+    expect(out).toContain("Concern 10");
+  });
+
+  it("verbose summary <details> body is correctly closed before the next section", () => {
+    const out = renderSummary("severity-table", makeVerboseData());
+    // The </details> must appear BEFORE the horizontal rule (---)
+    // that separates Summary from the Footer.
+    const detailsClose = out.indexOf("</details>");
+    const hr = out.indexOf("\n---\n");
+    expect(detailsClose).toBeGreaterThan(0);
+    expect(hr).toBeGreaterThan(detailsClose);
+  });
+
+  it("verbose summary length fits inside the body well below 65,536 chars", () => {
+    const out = renderSummary("severity-table", makeVerboseData());
+    // Wrapping in <details> shouldn't bloat the body past GitHub's limit
+    expect(out.length).toBeLessThan(65_536);
+  });
 });
 
 // -- S6: No raw <table> HTML -----------------------------------------------
