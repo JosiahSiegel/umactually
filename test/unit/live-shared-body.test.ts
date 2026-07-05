@@ -96,7 +96,12 @@ describe("buildReviewBody (shared GitHub + Azure review header)", () => {
     expect(body).toContain("Three issues need attention before merge.");
   });
 
-  it("FEAT-PARITY-004 includes a collapsed <details> block for AI/human secondary details", () => {
+  it("FEAT-PARITY-004 surfaces every finding inline in the parent card (no hidden details block)", () => {
+    // Cutover note: the old builder wrapped long prose and the posted
+    // preview in <details> blocks. The new severity-table layout
+    // surfaces every finding inline in a GFM table so reviewers see
+    // the full review without clicking. The hidden manifest comment
+    // (FEAT-PARITY-006) remains the only hidden payload.
     const body = buildReviewBody({
       review: SAMPLE_REVIEW,
       provider: "openai-compatible",
@@ -107,11 +112,13 @@ describe("buildReviewBody (shared GitHub + Azure review header)", () => {
       severityCounts: { high: 1, medium: 1, low: 1 },
       secrets: SECRETS,
     });
-    // GitHub renders <details> natively; ADO renders the raw HTML in markdown
-    // bodies — the marker must be present in the contract regardless of how
-    // the platform renders it.
-    expect(body).toContain("<details>");
-    expect(body).toContain("</details>");
+    // Every finding must appear in the rendered body, NOT hidden.
+    for (const c of SAMPLE_REVIEW.comments) {
+      expect(body).toContain(c.path);
+      expect(body).toContain(c.body);
+    }
+    // The severity-table layout must surface a real findings table.
+    expect(body).toMatch(/\| # \| Severity \| Category \| File:Line \| Title \|/u);
   });
 
   it("FEAT-PARITY-005 includes severity counts at the top of the card (no raw asterisks)", () => {
