@@ -21,15 +21,16 @@
  * Cross-platform rules (GitHub PR review body + Azure DevOps PR thread):
  *   - DO use GFM tables, headings, blockquote, lists, fenced code,
  *     inline code, links, raw Unicode emoji, horizontal rules.
- *   - DO NOT use `<details>`/`<summary>` for short content — Azure DevOps
- *     PR comments render them as raw text. EXCEPTION: when the model
- *     emits a verbose summary (>500 chars), the severity-table layout
- *     wraps the summary in `<details>` so reviewers can collapse it
- *     on GitHub. Azure DevOps will show the raw `<details>` HTML in
- *     that case — a trade-off we accept to keep long reviews from
- *     dominating the conversation thread. Pinned by S5a (short
- *     summary has no details) and S5b (long summary wraps in details)
- *     in `test/unit/summary-layouts.test.ts`.
+ *   - DO use `<details>`/`<summary>` — verified 2026-07-05 to render as
+ *     a collapsible section on BOTH GitHub PR reviews AND Azure DevOps
+ *     PR comments (empirical test via playwright against PR #43 thread
+ *     575 and the production review thread, both show working
+ *     click-to-expand UX). The previous "Azure renders as raw text"
+ *     rule was based on 2023-era community reports and is no longer
+ *     accurate. The severity-table layout uses `<details>` for verbose
+ *     summaries (>500 chars) — pinned by S5a (short summary has no
+ *     details) and S5b (long summary wraps in details) in
+ *     `test/unit/summary-layouts.test.ts`.
  *   - DO NOT use raw `<table>` HTML (Azure ignores it).
  *   - DO NOT use task lists `- [x]` / `- [ ]` (Azure ignores check state).
  *   - Body must stay under GitHub's 65,536-char comment limit.
