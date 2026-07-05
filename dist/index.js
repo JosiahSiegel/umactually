@@ -6001,7 +6001,9 @@ function githubReviewsUrl(context) {
  * Order of attempts (mirrors the fence-closure guard in src/render/raw-output.ts):
  *   1. The whole text, parsed as JSON.
  *   2. A ```json ... ``` fence body, parsed as JSON.
- *   3. The first balanced { ... } object, parsed as JSON.
+ *   3. The first balanced { ... } object, parsed as JSON — with control
+ *      characters inside JSON strings escaped to make the substring
+ *      valid JSON (see `extractFirstBalancedObject`).
  *
  * Returns the parsed value when one of the attempts succeeds, otherwise null.
  * The whole text is always returned to the caller via `extractJsonBlock` so they
@@ -6045,6 +6047,21 @@ function extractJsonFenceBody(rawText) {
  * Locate the first balanced `{ ... }` object in `rawText`, respecting nested
  * braces and quoted strings (including \" escapes). Returns null when no
  * balanced object can be found.
+ *
+ * Returns a JSON-safe substring with literal control characters (newlines,
+ * tabs, carriage returns) inside JSON strings escaped to their JSON-escape
+ * equivalents (`\n`, `\t`, `\r`). This is required for parser robustness
+ * because some provider streaming formats (notably SSE `response.output_text.delta`
+ * events) JSON-encode delta values such that the JSON-escape for newline
+ * (`\n`) becomes a literal newline in the SSE data line source — and the
+ * SSE protocol treats that newline as a line break. After concatenating
+ * fragments, the result contains literal newlines inside what should be
+ * JSON strings, which makes the substring invalid JSON. This function walks
+ * the balanced substring and escapes those control characters back to their
+ * JSON-escape equivalents so the result is valid JSON.
+ *
+ * Newlines/tabs OUTSIDE strings (structural whitespace between fields) are
+ * preserved — they're already valid JSON whitespace.
  */
 function extractFirstBalancedObject(rawText) {
     const startIndex = rawText.indexOf("{");
@@ -6054,6 +6071,8 @@ function extractFirstBalancedObject(rawText) {
     let depth = 0;
     let inString = false;
     let escape = false;
+    // First pass: find the end index of the balanced object.
+    let endIndex = -1;
     for (let index = startIndex; index < rawText.length; index += 1) {
         const char = rawText[index];
         if (inString) {
@@ -6081,11 +6100,70 @@ function extractFirstBalancedObject(rawText) {
         if (char === "}") {
             depth -= 1;
             if (depth === 0) {
-                return rawText.slice(startIndex, index + 1);
+                endIndex = index;
+                break;
             }
         }
     }
-    return null;
+    if (endIndex === -1) {
+        return null;
+    }
+    // Second pass: walk the balanced substring and escape literal control
+    // characters that appear INSIDE JSON strings. We re-walk because the
+    // first pass above only tracked depth, not the output positions.
+    const substring = rawText.slice(startIndex, endIndex + 1);
+    let result = "";
+    inString = false;
+    escape = false;
+    for (let index = 0; index < substring.length; index += 1) {
+        const char = substring[index];
+        if (inString) {
+            result += char;
+            if (escape) {
+                escape = false;
+                continue;
+            }
+            if (char === "\\") {
+                escape = true;
+                continue;
+            }
+            if (char === '"') {
+                inString = false;
+                continue;
+            }
+            // Inside a string: escape literal control characters that are
+            // invalid in JSON strings. \n, \r, \t are the common ones from
+            // SSE delta concatenation; we also handle \b, \f for completeness.
+            if (char === "\n") {
+                result = result.slice(0, -1) + "\\n";
+                continue;
+            }
+            if (char === "\r") {
+                result = result.slice(0, -1) + "\\r";
+                continue;
+            }
+            if (char === "\t") {
+                result = result.slice(0, -1) + "\\t";
+                continue;
+            }
+            if (char === "\b") {
+                result = result.slice(0, -1) + "\\b";
+                continue;
+            }
+            if (char === "\f") {
+                result = result.slice(0, -1) + "\\f";
+                continue;
+            }
+            continue;
+        }
+        // Outside a string: control characters are valid JSON whitespace,
+        // so just copy them through.
+        if (char === '"') {
+            inString = true;
+        }
+        result += char;
+    }
+    return result;
 }
 
 ;// CONCATENATED MODULE: ./src/provider/provider-parse.ts
@@ -6438,13 +6516,39 @@ function tryExtractSse(rawText) {
     }
     const fragments = [];
     let completedResponseText = null;
+    // Group the input into events separated by blank lines, then within each
+    // event concatenate the data: lines per the SSE spec ("If the line starts
+    // with data:, the rest of the line after the colon is the data. If the
+    // line is just data:, the data is an empty string. Multiple data: lines
+    // in the same event are concatenated with newlines."). This handles the
+    // case where an SSE encoder wrote a JSON-encoded data line that contains
+    // a literal newline character — splitting that into separate "data:" lines
+    // would lose the trailing portion of the JSON payload.
+    const events = [[]];
     for (const line of trimmed.split("\n")) {
-        const clean = line.trim();
-        if (!clean.startsWith("data:")) {
+        if (line.trim() === "") {
+            if (events[events.length - 1].length > 0) {
+                events.push([]);
+            }
             continue;
         }
-        const payload = clean.slice("data:".length).trim();
-        if (payload === "[DONE]" || payload === "") {
+        events[events.length - 1].push(line);
+    }
+    for (const eventLines of events) {
+        // Concatenate all data: lines in this event with newlines (per SSE spec).
+        const dataLines = [];
+        for (const line of eventLines) {
+            if (line.startsWith("data:")) {
+                dataLines.push(line.slice("data:".length));
+            }
+        }
+        if (dataLines.length === 0) {
+            continue;
+        }
+        // Per SSE spec: data segments are joined with a single newline. Leading
+        // space after "data:" is stripped if present (some encoders add it).
+        const payload = dataLines.map((d) => d.startsWith(" ") ? d.slice(1) : d).join("\n").trim();
+        if (payload === "" || payload === "[DONE]") {
             continue;
         }
         const parsed = tryParseJson(payload);
