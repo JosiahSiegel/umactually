@@ -11,11 +11,18 @@
 // verdict), not the parse-fail sentinel.
 //
 // Exit codes:
-//   0  Output artifact contains a real review.
-//   1  Output artifact missing.
-//   2  Output artifact contains the parse-fail sentinel.
-//   3  Output artifact exists but has zero inline threads AND no clean
-//      verdict (suspicious — the action may have silently dropped them).
+//   0  Output artifact contains a real review (with findings OR a clean
+//      verdict) OR contains a low-signal review (zero findings but some
+//      event/verdict/status signal is set — the action posted something,
+//      just nothing inline). The low-signal case is logged with a
+//      `[WARN]` line but does not fail the build, because it can be a
+//      legitimate outcome (e.g. the action posted a parent card and the
+//      severity threshold filtered all findings out).
+//   1  Output artifact missing entirely OR contains invalid JSON.
+//   2  Output artifact contains the parse-fail sentinel OR has zero
+//      findings with no event/verdict/status signal AND no clean
+//      verdict. This is the canonical parse-fail surface — the action
+//      posted a card whose body is the apology-summary diagnostic.
 
 import { existsSync, readFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
@@ -168,7 +175,21 @@ for (const relativePath of ARTIFACTS) {
       `[FAIL] ${relativePath}: ${result.reason} ` +
         `(event=${result.event} verdict=${result.verdict} threads=${result.inlineThreadCount} parseFailed=${result.parseFailed ?? false})`,
     );
-    exitCode = 3;
+    // Map the failure reason to a specific exit code so callers (CI,
+    // operators reading logs) can distinguish the failure modes:
+    //   - "not-valid-json" → exit 1 (artifact exists but is malformed JSON;
+    //     likely a writer bug or partial write).
+    //   - any parse-fail signal → exit 2 (the canonical regression class:
+    //     the action posted a parse-fail card and CI should fail-fast).
+    //   - default → exit 3 (catch-all for any future classifier branch
+    //     that returns ok: false without mapping to a specific code).
+    if (result.reason === "not-valid-json") {
+      exitCode = 1;
+    } else if (result.reason.startsWith("parse-fail")) {
+      exitCode = 2;
+    } else {
+      exitCode = 3;
+    }
     continue;
   }
   console.log(

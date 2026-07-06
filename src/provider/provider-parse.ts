@@ -80,10 +80,32 @@ export type SeverityWarning = {
  * Default value is `null` (no sink installed → no warnings surfaced),
  * preserving the previous silent-coercion behavior for any caller that
  * has not opted in.
+ *
+ * Concurrency note: a module-level singleton is only safe when callers
+ * install → await → clear atomically (Node's single-threaded event loop
+ * guarantees no `await` boundary interleaves another `setActiveSeveritySink`
+ * call). Any future caller that runs two `requestLiveReview` requests
+ * concurrently via `Promise.all` will have the second `setActiveSeveritySink`
+ * overwrite the first's slot, and the first's `finally` will clear the
+ * second's sink mid-flight — silently corrupting the telemetry array.
+ * The guard below surfaces this condition loudly so the regression is
+ * caught at install time, not silently after the fact.
  */
 let activeSeveritySink: SeverityWarningSink | null = null;
 
 export function setActiveSeveritySink(sink: SeverityWarningSink | null): void {
+  if (sink !== null && activeSeveritySink !== null) {
+    // Concurrency footgun detected: a sink is already installed and the
+    // caller is overwriting it without clearing the previous one first.
+    // Log + warn loudly so the regression class surfaces in CI logs
+    // rather than silently corrupting telemetry.
+    console.warn(
+      "[provider-parse] setActiveSeveritySink: overwriting a non-null ambient sink. " +
+        "This usually means two requestLiveReview calls are running concurrently " +
+        "(Promise.all) — the second's sink will be cleared by the first's finally, " +
+        "corrupting the captured warnings. Thread the sink via ParseContext instead.",
+    );
+  }
   activeSeveritySink = sink;
 }
 
