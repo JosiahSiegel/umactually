@@ -23,7 +23,9 @@
     "typecheck": "tsc --noEmit",
     "build": "ncc build src/index.ts -o dist && ncc build src/cli.ts -o dist-tmp && node scripts/post-bundle.mjs",
     "bundle": "npm run build",
-    "check:dist-freshness": "node scripts/check-dist-freshness.mjs"
+    "check:dist-freshness": "node scripts/check-dist-freshness.mjs",
+    "view:summary-layouts": "node scripts/view-summary-layouts.mjs",
+    "clean:summary-layouts": "node scripts/clean-viewer.mjs"
   },
   "engines": {
     "node": ">=24"

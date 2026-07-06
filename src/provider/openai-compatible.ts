@@ -15,10 +15,16 @@ import {
   sanitizeMessage,
 } from "./provider-error.js";
 import { composeSignal, sleep } from "../util/async.js";
+import { REDACTED_SECRET_TOKEN } from "../util/brand.js";
 import { createRequestId, joinUrl } from "../util/url.js";
 
 const ENDPOINT_RESPONSES: ProviderEndpoint = "responses";
 const ENDPOINT_CHAT: ProviderEndpoint = "chat";
+const DEBUG_SECRET_PATTERNS: readonly RegExp[] = [
+  /\bsk_test_[a-z_]+\b/gu,
+  /\b(?:AKIA|ASIA)[A-Z0-9]{16}\b/gu,
+  /\bghp_[A-Za-z0-9]{36}\b/gu,
+];
 
 type ProviderCallSuccess = {
   readonly ok: true;
@@ -151,7 +157,35 @@ async function callEndpoint(
 
   const rawText = await readBody(response, endpoint, requestId);
   const textPayload = extractTextPayload(endpoint, rawText);
+  // [DEBUG-RAW] Emit extracted text length + first/last 200 chars so the
+  // GitHub Actions log shows what the parser actually saw. Pinned by the
+  // --debug-raw-response action input. This is the only way to diagnose
+  // production parse-fails without re-running the model — the action
+  // does not log the raw response by default (it would dump 100+ KB to
+  // the log on every run).
+  if (process.env["UMACTUALLY_DEBUG_RAW"] === "1") {
+    writeDebugRaw(
+      `[DEBUG-RAW] requestId=${requestId} endpoint=${endpoint} ` +
+      `rawTextLength=${rawText.length} textPayloadLength=${textPayload.length}\n`,
+      config,
+    );
+    const safeTextPayload = redactDebugSecrets(textPayload, config);
+    writeDebugRaw(`[DEBUG-RAW] textPayload first 200: ${JSON.stringify(safeTextPayload.slice(0, 200))}\n`, config);
+    writeDebugRaw(`[DEBUG-RAW] textPayload last 200:  ${JSON.stringify(safeTextPayload.slice(-200))}\n`, config);
+    writeDebugRaw(`[DEBUG-RAW] hasResponseCompletedEvent: ${rawText.includes('"type":"response.completed"')}\n`, config);
+  }
   const review = parseReviewPayload(textPayload);
+  // [DEBUG-RAW] Trace the parse decision so the next parse-fail run can
+  // show exactly what `parseReviewPayload` returned. Without this, we
+  // see "retry fired" in the log but not WHY (null vs all-empty-fields
+  // vs apology-summary-detected are all indistinguishable from outside).
+  if (process.env["UMACTUALLY_DEBUG_RAW"] === "1") {
+    const trace = review === null
+      ? "null"
+      : `summary.len=${review.summary.length} verdict='${review.verdict}' comments=${review.comments.length} suppressed=${review.suppressed_comments.length}`;
+    writeDebugRaw(`[DEBUG-RAW] parseReviewPayload returned: ${trace}\n`, config);
+    writeDebugRaw(`[DEBUG-RAW] isNonEmptyReview: ${isNonEmptyReview(review)}\n`, config);
+  }
   // Treat an empty-summary+empty-verdict parse as a parse failure even
   // when `extractJsonBlock` returned an object. The parser is permissive
   // about JSON shape (returns `ProviderReviewPayload` with empty fields
@@ -190,6 +224,16 @@ async function callEndpoint(
     if (retryResponse.ok) {
       const retryRawText = await readBody(retryResponse, endpoint, requestId);
       const retryTextPayload = extractTextPayload(endpoint, retryRawText);
+      if (process.env["UMACTUALLY_DEBUG_RAW"] === "1") {
+        writeDebugRaw(
+          `[DEBUG-RAW] retry requestId=${requestId} ` +
+          `rawTextLength=${retryRawText.length} textPayloadLength=${retryTextPayload.length}\n`,
+          config,
+        );
+        const safeRetryTextPayload = redactDebugSecrets(retryTextPayload, config);
+        writeDebugRaw(`[DEBUG-RAW] retry textPayload first 200: ${JSON.stringify(safeRetryTextPayload.slice(0, 200))}\n`, config);
+        writeDebugRaw(`[DEBUG-RAW] retry textPayload last 200:  ${JSON.stringify(safeRetryTextPayload.slice(-200))}\n`, config);
+      }
       const parsedRetry = parseReviewPayload(retryTextPayload);
       // Same strict check on the retry: must have actual review content.
       if (isNonEmptyReview(parsedRetry)) {
@@ -213,6 +257,23 @@ async function callEndpoint(
   }
 
   return { ok: true, endpoint, review: retryReview, requestId };
+}
+
+function writeDebugRaw(message: string, config: ProviderCallConfig): void {
+  process.stderr.write(redactDebugSecrets(message, config));
+}
+
+function redactDebugSecrets(value: string, config: ProviderCallConfig): string {
+  let redacted = value;
+  for (const secret of [config.apiKey, config.promptOverride ?? "", config.additionalPromptOverride ?? ""]) {
+    if (secret.length > 0) {
+      redacted = redacted.split(secret).join(REDACTED_SECRET_TOKEN);
+    }
+  }
+  for (const pattern of DEBUG_SECRET_PATTERNS) {
+    redacted = redacted.replace(pattern, REDACTED_SECRET_TOKEN);
+  }
+  return redacted;
 }
 
 async function performFetch(

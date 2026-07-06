@@ -31,11 +31,29 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
+      - name: Rebuild bundled dist
+        # The committed dist/ in the PR head may be older than src/ from
+        # someone else's prior commit. The action entrypoint is dist/index.js
+        # (see action.yml), so a stale bundle silently reviews with the
+        # wrong code. Re-bundle every run, then verify the freshness check
+        # passes before posting the review.
+        run: npm run build
+
+      - name: Check bundled dist is fresh
+        run: npm run check:dist-freshness
+
       - name: Run UmActually self review
         uses: ./
         with:
           dry-run: 'false'
           detect-leaks: 'false'
+          # Emit the extracted payload to stderr on parse-fail so the
+          # GitHub Actions log shows what the parser actually saw. The
+          # 16 KB diagnostic in the PR comment truncates the middle of
+          # the raw response (where response.completed lives), so without
+          # this log we cannot tell whether the parser extracted the
+          # right text or the wrong one.
+          debug-raw-response: 'true'
           github_token: ${{ secrets.GITHUB_TOKEN }}
         env:
           UMACTUALLY_API_URL: ${{ secrets.UMACTUALLY_API_URL }}

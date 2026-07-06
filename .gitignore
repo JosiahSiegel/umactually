@@ -5,4 +5,7 @@ artifacts/scratch/
 artifacts/manual/
 .env
 .playwright-mcp/
+.layout-viewer-build/
+*.tsbuildinfo
+build/
 *.png

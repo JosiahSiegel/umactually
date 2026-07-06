@@ -1,35 +1,26 @@
-// Pins the new CLARITY-14 contract: the parent card shows only actionable
-// information. The old "Posted / Considered / Suppressed" three-row layout
-// was removed because the row counts didn't tell the reviewer anything
-// they would act on — `Posted: 0` was the only number they cared about,
-// and that already lives in the footer.
+// Pins the severity-table layout contract — the chosen layout from the
+// 20-layout sheet (`src/render/summary-layouts.ts`).
 //
-// CLARITY-19 vocabulary (this iteration):
-//   - 📊 Pipeline summary: one line that reconciles total / posted /
-//     off-diff / filtered counts so the reader can grok the whole pipeline
-//     in one glance (replaces the loose 🔕 count semantics that confused
-//     readers into thinking "5 of 10" was a different count from "5").
-//   - 🏷️ Severity tally (was 📊): same per-severity counts, renamed icon
-//     to free 📊 for the pipeline summary.
-//   - 📋 Posted preview: `(N)` or `(showing N of M)` — explicitly says
-//     "posted" so the preview cannot be confused with pre-filter model output.
-//   - 🧹 Filtered preview: `(showing N of M candidates)` — no more 🔕.
-//   - 📍 Off-diff details: `(N not posted)` — no more 🔕. Replaces
-//     `Suppressed (off-diff, N)`. The duplicate `> 🔕 N off-diff
-//     finding(s) were not on this PR's diff.` callout is dropped because
-//     the 📊 pipeline summary already surfaces the same count.
+// Cutover context: the legacy "Posted / Considered / Suppressed" three-row
+// layout, the `<details>`-wrapped Posted preview, the off-diff callout,
+// and the legacy preview/off-diff blocks are all gone. The new layout
+// surfaces every posted finding inline in a GFM table, while the pipeline
+// summary line keeps posted/off-diff/filtered reconciliation visible.
 //
-// Each test below covers one of the four action cases:
-//   - Mixed findings posted (verdict NEEDS_FIX, severity tally visible)
-//   - Findings all filtered (verdict DISCUSS, severity tally hidden)
-//   - Clean review (verdict SHIP, no details blocks)
-//   - Off-diff note surfaces the suppressed count when inline findings exist
+// Each test below pins ONE of the four action cases the legacy contract
+// had, updated to the new layout:
+//
+//   - Mixed findings posted (verdict NEEDS_FIX, findings table populated)
+//   - Findings all filtered (verdict DISCUSS, empty findings table)
+//   - Clean review (verdict SHIP, table with `_No findings to address_`)
+//   - Severity desc sort (still required for the table)
+
 import { describe, expect, it } from "vitest";
 
 import { buildReviewBody } from "../../src/cli/live-shared.js";
 
-describe("CLARITY-14: actionable-only parent card", () => {
-  it("renders a 📊 pipeline summary that reconciles total / posted / off-diff / filtered", () => {
+describe("severity-table layout — actionable-only parent card", () => {
+  it("renders a findings table with every posted finding inline", () => {
     const body = buildReviewBody({
       review: {
         summary: "Three issues need attention before merge.",
@@ -50,28 +41,39 @@ describe("CLARITY-14: actionable-only parent card", () => {
       offDiffFromComments: [],
       severityCounts: { high: 1, medium: 1, low: 1 },
       secrets: [],
+      postedComments: [
+        { path: "src/auth.ts", line: 12, body: "Use bcrypt.", severity: "high", category: "security" },
+        { path: "src/db.ts", line: 7, body: "Add timeout.", severity: "medium", category: "maintainability" },
+        { path: "README.md", line: 42, body: "Update example.", severity: "low", category: "docs" },
+      ],
     });
-    // Pipeline summary reconciles every count in one line.
-    // Total = 3 inline + 1 off-diff = 4 model findings; 3 posted, 1 off-diff, 0 filtered.
-    expect(body).toMatch(/📊\s+4\s+findings\s+→\s+3\s+posted,\s+1\s+off-diff,\s+0\s+filtered/u);
-    // Rows are gone.
+    // Findings table is present and contains every posted finding inline.
+    expect(body).toMatch(/\| # \| Severity \| Category \| File:Line \| Title \|/u);
+    expect(body).toContain("`src/auth.ts`:12");
+    expect(body).toContain("`src/db.ts`:7");
+    expect(body).toContain("`README.md`:42");
+    // Manifest carries the suppressed count so AI agents can reconcile.
+    const manifest = body.match(/<!--\s*umactually-pr-review:manifest\s+(\{[\s\S]*?\})\s*-->/u);
+    expect(manifest).not.toBeNull();
+    const parsed = JSON.parse(manifest?.[1] ?? "{}");
+    expect(parsed.inlineCount).toBe(3);
+    expect(parsed.suppressedCount).toBe(1);
+    // No legacy row labels.
     expect(body).not.toMatch(/\*\*Posted:\*\*/u);
     expect(body).not.toMatch(/\*\*Considered:\*\*/u);
     expect(body).not.toMatch(/\*\*Suppressed:\*\*/u);
-    // Duplicate off-diff callout is gone.
-    expect(body).not.toMatch(/🔕\s+\d+\s+off-diff\s+finding/u);
+    // No off-diff callout (moved to manifest).
+    expect(body).not.toMatch(/🔕/u);
     // Footer carries the inline count.
     expect(body).toMatch(/3\s+inline/u);
-    // Posted preview uses 📋, not 🔕.
-    expect(body).toMatch(/📋\s+Posted preview\s+\(3\)/u);
-    // Severity tally uses 🏷️, not 📊 (📊 is the pipeline summary now).
+    // Severity tally uses 🏷️.
     expect(body).toMatch(/🏷️/u);
+    // No `<details>` blocks.
+    expect(body).not.toContain("<details>");
   });
 
-  it("uses '🧹 Filtered preview' header when every model finding was filtered", () => {
-    // 0 posted, 5 considered, 5 off-diff. Header must be the
-    // filtered-style label so the reader doesn't mistake the preview
-    // for a clean bill of health.
+  it("renders an empty findings table when every finding was filtered out", () => {
+    // 0 posted, 0 off-diff. The findings table shows the empty placeholder.
     const body = buildReviewBody({
       review: {
         summary: "",
@@ -80,36 +82,62 @@ describe("CLARITY-14: actionable-only parent card", () => {
           { path: "dist/cli.js", line: 451, body: "Bundled output", severity: "info", category: "build" },
           { path: "dist/cli.js", line: 453, body: "Bundled output", severity: "info", category: "build" },
           { path: "dist/index.js", line: 449, body: "Bundled output", severity: "info", category: "build" },
-          { path: "artifacts/manual/s4-azure-mocked-run.json", line: 5, body: "Manual fixture", severity: "info", category: "test" },
-          { path: "artifacts/manual/s6-sonar-mocked-run.json", line: 26, body: "Manual fixture", severity: "info", category: "test" },
         ],
         suppressedComments: [],
       },
       provider: "openai-compatible",
       modelId: "auto",
       validCommentCount: 0,
-      suppressedCommentCount: 5,
+      suppressedCommentCount: 0,
       offDiffFromComments: [],
       severityCounts: { critical: 0, high: 0, medium: 0, low: 0 },
       secrets: [],
+      postedComments: [],
     });
-    // Pipeline summary reconciles: 5 findings → 0 posted, 0 off-diff, 5 filtered.
-    // (All 5 candidates are severity-filtered info findings, not off-diff:
-    // `review.comments.length` = 5, `review.suppressedComments.length` = 0,
-    // `offDiffFromComments.length` = 0 → off-diff = 0, total = 5, filtered = 5.)
-    expect(body).toMatch(/📊\s+5\s+findings\s+→\s+0\s+posted,\s+0\s+off-diff,\s+5\s+filtered/u);
-    // Filtered preview header — no more 🔕; uses "showing" + "candidates"
-    // so the (N of M) clearly means preview truncation, not a separate count.
-    expect(body).toMatch(/🧹\s+Filtered preview\s+\(showing\s+\d+\s+of\s+\d+\s+candidates\)/u);
-    expect(body).not.toMatch(/🔕\s+Filtered findings/u);
-    expect(body).not.toMatch(/Top concerns from model/u);
-    // No 🏷️ severity tally (all info; no severity buckets to count).
+    // Findings table is present with the empty placeholder row.
+    expect(body).toMatch(/\| # \| Severity \| Category \| File:Line \| Title \|/u);
+    expect(body).toMatch(/No findings to address/u);
+    // No legacy "Filtered preview" header.
+    expect(body).not.toMatch(/🧹/u);
+    expect(body).not.toMatch(/Filtered preview/u);
+    expect(body).not.toMatch(/🔕/u);
+    // No severity tally (nothing in the four severity buckets).
     expect(body).not.toMatch(/🏷️/u);
-    // The verdict downgrades to DISCUSS because nothing is actionable.
+    // Verdict downgrades to DISCUSS.
     expect(body).toMatch(/💬\s+DISCUSS/u);
   });
 
-  it("uses '📋 Posted preview' header when at least one finding landed inline", () => {
+  it("all-filtered model output renders a meaningful empty state", () => {
+    const body = buildReviewBody({
+      review: {
+        summary: "The model produced candidates, but policy filtered all of them.",
+        verdict: "NEEDS_FIX",
+        comments: [
+          { path: "src/noisy.ts", line: 1, body: "Style-only candidate", severity: "info", category: "style" },
+        ],
+        suppressedComments: [],
+      },
+      provider: "openai-compatible",
+      modelId: "auto",
+      validCommentCount: 0,
+      suppressedCommentCount: 0,
+      offDiffFromComments: [],
+      severityCounts: { critical: 0, high: 0, medium: 0, low: 0 },
+      secrets: [],
+      postedComments: [],
+    });
+
+    expect(body).toMatch(/💬\s+DISCUSS/u);
+    expect(body).toMatch(/\| — \| — \| — \| — \| _No findings to address_ \|/u);
+    // Headline leads with the posted count (0). The model produced
+    // 1 finding but it was filtered (severity/minor policy) so 0
+    // made it to the postable set. The reader sees "0 inline
+    // findings" — they don't have to subtract.
+    expect(body).toMatch(/📊\s+0\s+inline\s+findings/u);
+    expect(body).not.toMatch(/🏷️/u);
+  });
+
+  it("every posted finding appears as a row in the table", () => {
     const body = buildReviewBody({
       review: {
         summary: "",
@@ -128,15 +156,23 @@ describe("CLARITY-14: actionable-only parent card", () => {
       offDiffFromComments: [],
       severityCounts: { high: 3 },
       secrets: [],
+      postedComments: [
+        { path: "src/auth.ts", line: 12, body: "Use bcrypt", severity: "high", category: "security" },
+        { path: "src/auth.ts", line: 14, body: "Use bcrypt", severity: "high", category: "security" },
+        { path: "src/auth.ts", line: 16, body: "Use bcrypt", severity: "high", category: "security" },
+      ],
     });
-    // Plain "📋 Posted preview (3)" — no model provenance.
-    expect(body).toMatch(/📋\s+Posted preview\s+\(3\)/u);
-    // Filtered-style header must NOT appear when findings landed.
+    // Every row appears as its own line in the table.
+    for (let i = 1; i <= 3; i += 1) {
+      expect(body).toMatch(new RegExp(`\\|\\s+${i}\\s+\\|`, "u"));
+    }
+    // No legacy "Posted preview" or "Filtered preview" headers.
+    expect(body).not.toMatch(/📋\s+Posted preview/u);
     expect(body).not.toMatch(/🧹\s+Filtered preview/u);
     expect(body).not.toMatch(/🔕/u);
   });
 
-  it("clean review (0 posted + 0 suppressed + 0 considered) is minimal", () => {
+  it("clean review (0 posted + 0 suppressed) shows verdict + empty table + summary + footer", () => {
     const body = buildReviewBody({
       review: { summary: "All clear.", verdict: "SHIP", comments: [], suppressedComments: [] },
       provider: "openai-compatible",
@@ -147,37 +183,34 @@ describe("CLARITY-14: actionable-only parent card", () => {
       severityCounts: { critical: 0, high: 0, medium: 0, low: 0 },
       secrets: [],
     });
-    // No rows, no tally, no suppressed block, no filtered/top-concerns.
+    // No row labels, no tally, no legacy details blocks.
     expect(body).not.toMatch(/\*\*Posted:\*\*/u);
     expect(body).not.toMatch(/\*\*Considered:\*\*/u);
     expect(body).not.toMatch(/\*\*Suppressed:\*\*/u);
-    // Clean review: pipeline summary is the one zero-everywhere line.
-    expect(body).toMatch(/📊\s+0\s+findings\s+→\s+0\s+posted,\s+0\s+off-diff,\s+0\s+filtered/u);
-    // No severity tally (nothing to count).
+    // No severity tally when zero findings.
     expect(body).not.toMatch(/🏷️/u);
-    // No 🧹 Filtered preview, no 📋 Posted preview, no 📍 Off-diff.
+    // No 🧹 / 📋 / 📍 / 🔕 anywhere.
     expect(body).not.toMatch(/🧹/u);
     expect(body).not.toMatch(/📋\s+Posted preview/u);
     expect(body).not.toMatch(/📍/u);
-    // No duplicate off-diff callout.
-    expect(body).not.toMatch(/🔕\s+\d+\s+off-diff\s+finding/u);
-    expect(body).not.toMatch(/Top concerns/u);
-    expect(body).not.toMatch(/Filtered findings/u);
-    expect(body).not.toMatch(/Suppressed\s+\(off-diff/u);
+    expect(body).not.toMatch(/🔕/u);
+    // No <details> wrappers.
+    expect(body).not.toContain("<details>");
     // Verdict + summary + footer still present.
     expect(body).toMatch(/✅\s+SHIP/u);
     expect(body).toMatch(/All clear\./u);
     expect(body).toMatch(/0\s+inline/u);
+    // Empty findings table placeholder is rendered.
+    expect(body).toMatch(/No findings to address/u);
   });
 
-  it("📋 Posted preview is sorted by severity desc (highest first)", () => {
+  it("findings table is sorted by severity desc (highest first)", () => {
     const body = buildReviewBody({
       review: {
         summary: "Mixed severities.",
         verdict: "NEEDS_FIX",
         comments: [
           { path: "src/low.ts", line: 1, body: "low finding", severity: "low", category: "general" },
-          { path: "src/info.ts", line: 1, body: "info finding", severity: "info", category: "general" },
           { path: "src/critical.ts", line: 1, body: "critical finding", severity: "critical", category: "security" },
           { path: "src/medium.ts", line: 1, body: "medium finding", severity: "medium", category: "general" },
           { path: "src/high.ts", line: 1, body: "high finding", severity: "high", category: "security" },
@@ -186,32 +219,26 @@ describe("CLARITY-14: actionable-only parent card", () => {
       },
       provider: "openai-compatible",
       modelId: "auto",
-      validCommentCount: 5,
+      validCommentCount: 4,
       suppressedCommentCount: 0,
       offDiffFromComments: [],
-      // info severity is excluded from the rendered tally per CLARITY-3,
-      // but it's counted in `validCommentCount` and the manifest. The
-      // tally sum (4) is intentionally < inline count (5) — the
-      // contract is "info findings exist" without giving them a tally
-      // bucket.
-      severityCounts: { critical: 1, high: 1, medium: 1, low: 1, info: 1 },
+      severityCounts: { critical: 1, high: 1, medium: 1, low: 1 },
       secrets: [],
+      postedComments: [
+        { path: "src/low.ts", line: 1, body: "low finding", severity: "low", category: "general" },
+        { path: "src/critical.ts", line: 1, body: "critical finding", severity: "critical", category: "security" },
+        { path: "src/medium.ts", line: 1, body: "medium finding", severity: "medium", category: "general" },
+        { path: "src/high.ts", line: 1, body: "high finding", severity: "high", category: "security" },
+      ],
     });
-    // Extract the order of paths in the Posted preview block.
-    const topConcernsMatch = body.match(
-      /📋\s+Posted preview\s+\(5\)[\s\S]*?<\/details>/u,
-    );
-    expect(topConcernsMatch).not.toBeNull();
-    const topConcernsSection = topConcernsMatch?.[0] ?? "";
-    const criticalIdx = topConcernsSection.indexOf("src/critical.ts");
-    const highIdx = topConcernsSection.indexOf("src/high.ts");
-    const mediumIdx = topConcernsSection.indexOf("src/medium.ts");
-    const lowIdx = topConcernsSection.indexOf("src/low.ts");
-    const infoIdx = topConcernsSection.indexOf("src/info.ts");
+    // Severity-descent sort: critical before high before medium before low.
+    const criticalIdx = body.indexOf("src/critical.ts");
+    const highIdx = body.indexOf("src/high.ts");
+    const mediumIdx = body.indexOf("src/medium.ts");
+    const lowIdx = body.indexOf("src/low.ts");
     expect(criticalIdx).toBeGreaterThan(-1);
     expect(criticalIdx).toBeLessThan(highIdx);
     expect(highIdx).toBeLessThan(mediumIdx);
     expect(mediumIdx).toBeLessThan(lowIdx);
-    expect(lowIdx).toBeLessThan(infoIdx);
   });
 });

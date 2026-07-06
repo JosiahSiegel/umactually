@@ -4,6 +4,23 @@ All notable changes to UmActually are documented in this file. The format is
 based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this
 project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Changed
+
+- **BREAKING**: `minimum-severity` default flipped from `low` to `medium`.
+  Out of the box, low-severity findings (style, hygiene) are filtered
+  out of the postable set and do not appear as inline comments. Set
+  `minimum-severity: low` explicitly to keep them.
+- Severity-table layout headline now leads with the **posted comment
+  count** (e.g. `📊 24 inline findings`) rather than the model's gross
+  output. Off-diff findings are surfaced as a separate callout
+  (`> 🔍 4 off-diff findings not posted inline — the model produced
+  them but they target files not in this PR's diff.`) instead of
+  appearing as a "28 findings → 24 posted" math breakdown. The
+  manifest still carries `inlineCount` and `suppressedCount`
+  separately for downstream consumers.
+
 ## [0.1.0] - 2026-06-27
 
 ### Added
