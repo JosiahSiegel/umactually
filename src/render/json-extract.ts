@@ -36,13 +36,6 @@ export function extractJsonBlock(rawText: string): unknown {
         JSON.parse(balanced);
       } catch (e) {
         process.stderr.write(`[DEBUG-RAW] balanced-parse failed at length ${balanced.length}: ${e instanceof Error ? e.message : String(e)}\n`);
-        // Show the char at the failure position
-        const pos = 16692;  // known from last run
-        if (pos < balanced.length) {
-          const start = Math.max(0, pos - 50);
-          const end = Math.min(balanced.length, pos + 50);
-          process.stderr.write(`[DEBUG-RAW] around pos ${pos}: ${JSON.stringify(balanced.slice(start, end))}\n`);
-        }
       }
     }
   }

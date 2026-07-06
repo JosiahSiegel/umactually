@@ -1,6 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { extractTextPayload } from "../../src/provider/provider-parse.js";
-import { parseReviewPayload, isNonEmptyReview } from "../../src/provider/provider-parse.js";
+import { extractTextPayload, parseReviewPayload, isNonEmptyReview } from "../../src/provider/provider-parse.js";
 
 // Reconstruct the 17,566-byte SSE stream shape from the 2026-07-05T23:43:45Z
 // debug log. We don't have the full rawText, but the key signal is:
@@ -44,9 +43,6 @@ describe("PR-9 SSE→payload→parse trace", () => {
     ].join("\n");
 
     const textPayload = extractTextPayload("responses", sse);
-    console.log("textPayload length:", textPayload.length);
-    console.log("textPayload first 200:", JSON.stringify(textPayload.slice(0, 200)));
-    console.log("textPayload last 200:", JSON.stringify(textPayload.slice(-200)));
 
     // The real review (concatenated from deltas) should come through, NOT
     // the stub. The stub-completed-text fix from 937cdc4 should make
@@ -85,8 +81,6 @@ describe("PR-9 SSE→payload→parse trace", () => {
   });
 
   it("REGRESSION: model wraps JSON in ```json fence using JSON-escaped \\n (2 chars) — extractor must handle", () => {
-    // Mark this test distinctly so its console output is identifiable.
-    console.log("=== TEST 3 START ===");
     // The 2026-07-05T23:59:46Z self-review run (requestId=771a64b3) had
     // textPayload that started with `\`\`\`json\n{\n  "summary": "Large
     // PR...` — where `\n` is the LITERAL 2-char sequence (backslash + n),
@@ -128,9 +122,6 @@ describe("PR-9 SSE→payload→parse trace", () => {
     ].join("\n");
 
     const textPayload = extractTextPayload("responses", sse);
-    console.log("textPayload length:", textPayload.length);
-    console.log("textPayload first 200:", JSON.stringify(textPayload.slice(0, 200)));
-    console.log("textPayload last 200:", JSON.stringify(textPayload.slice(-200)));
 
     // The fence must be stripped, the JSON must parse, and the review
     // must be returned (not null) so the retry does NOT fire.
