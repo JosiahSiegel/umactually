@@ -6072,14 +6072,8 @@ function extractJsonBlock(rawText) {
         return fencedAttempt;
     }
     const balanced = extractFirstBalancedObject(rawText);
-    if (process.env["UMACTUALLY_DEBUG_RAW"] === "1") {
-        process.stderr.write(`[DEBUG-RAW] extractJsonBlock: balanced.length=${balanced?.length ?? "null"}\n`);
-    }
     if (balanced !== null) {
         const balancedAttempt = tryParseJson(balanced);
-        if (process.env["UMACTUALLY_DEBUG_RAW"] === "1") {
-            process.stderr.write(`[DEBUG-RAW] extractJsonBlock: balancedAttempt=${balancedAttempt !== undefined ? "ok" : "failed"}\n`);
-        }
         if (balancedAttempt !== undefined) {
             return balancedAttempt;
         }
@@ -6462,10 +6456,6 @@ function parseReviewPayload(text) {
     if (comments.length === 0 &&
         suppressed_comments.length === 0 &&
         isApologySummary(summary)) {
-        // [DEBUG-RAW] Trace soft parse-fail fires
-        if (process.env["UMACTUALLY_DEBUG_RAW"] === "1") {
-            process.stderr.write(`[DEBUG-RAW] soft-parse-fail: zero findings + apology summary. summary first 300: ${JSON.stringify(summary.slice(0, 300))}\n`);
-        }
         return null;
     }
     return { summary, verdict, comments, suppressed_comments };
@@ -6521,9 +6511,6 @@ function isApologySummary(summary) {
     ];
     for (const pattern of APOLOGY_PATTERNS) {
         if (pattern.test(lower)) {
-            if (process.env["UMACTUALLY_DEBUG_RAW"] === "1") {
-                process.stderr.write(`[DEBUG-RAW] apology-pattern matched: ${pattern.source}\n`);
-            }
             return true;
         }
     }
