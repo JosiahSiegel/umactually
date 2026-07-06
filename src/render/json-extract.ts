@@ -31,6 +31,12 @@ export function extractJsonBlock(rawText: string): unknown {
     const balancedAttempt = tryParseJson(balanced);
     if (balancedAttempt !== undefined) {
       return balancedAttempt;
+    } else if (process.env["UMACTUALLY_DEBUG_RAW"] === "1") {
+      try {
+        JSON.parse(balanced);
+      } catch (e) {
+        process.stderr.write(`[DEBUG-RAW] balanced-parse failed at length ${balanced.length}: ${e instanceof Error ? e.message : String(e)}\n`);
+      }
     }
   }
 
