@@ -3320,10 +3320,64 @@ function filteredCount(data) {
 function cell(value) {
     return value.replace(/\|/gu, "\\|").replace(/\r?\n/gu, " ").trim();
 }
+/**
+ * Redact a comment body and collapse runs of whitespace to a single space.
+ *
+ * Most layouts want a one-line "snippet" — never the raw multi-paragraph
+ * provider body, never unredacted secrets. The collapsed form is the
+ * canonical snippet shape used in tables, bullets, sticky notes, and
+ * the inline preview. Returns an empty string if the body is empty
+ * after redaction (so callers can `parts.push(snippet)` without
+ * rendering an empty bullet).
+ *
+ * Replaces 13 inline copies of
+ * `redact(c.body, secrets).replace(/\s+/gu, " ").trim()`.
+ */
+function collapseBody(c, secrets) {
+    return redact(c.body, secrets).replace(/\s+/gu, " ").trim();
+}
+/**
+ * Truncate a snippet to `max` chars with a horizontal-ellipsis suffix.
+ *
+ * Layouts use different truncation budgets depending on column width
+ * (table cells vs. blockquote stickies vs. newspaper lede), so this
+ * helper is parameterised rather than hardcoded. The threshold check
+ * (`> max`) preserves a string at exactly `max` chars — i.e. we only
+ * truncate when there is something to cut. The cut leaves room for the
+ * single-char `…` suffix (i.e. `slice(0, max - 3)`, then append `…`),
+ * which matches the byte-for-byte truncation budget the layouts have
+ * always used (e.g. `length > 80 ? slice(0, 77) + '…' : title` → 78
+ * visible chars). Two chars of headroom are dropped so future suffixes
+ * wider than `…` (e.g. two-char '..') can swap in without re-tuning
+ * every call site.
+ *
+ * Pass `max = 0` (or any falsy) to disable truncation and return the
+ * input unchanged — useful when a layout has unlimited horizontal room.
+ */
+function truncateSnippet(snippet, max) {
+    if (!max || snippet.length <= max)
+        return snippet;
+    return `${snippet.slice(0, max - 3)}…`;
+}
+/**
+ * Group posted comments by file path and return the entries sorted
+ * alphabetically by path. Used by every layout that renders a
+ * per-file section (`tldr-walkthrough`, `coverage`, `diffstat`).
+ * Replaces 3 inline copies of
+ * `new Map → for-loop → [...entries].sort([a],[b] localeCompare)`.
+ */
+function groupByFile(comments) {
+    const map = new Map();
+    for (const c of comments) {
+        const list = map.get(c.path) ?? [];
+        list.push(c);
+        map.set(c.path, list);
+    }
+    return [...map.entries()].sort(([a], [b]) => a.localeCompare(b));
+}
 /** Render a single-line finding label as `path:line — snippet`. */
 function findingLine(c, secrets) {
-    const safeBody = redact(c.body, secrets).replace(/\s+/gu, " ").trim();
-    const snippet = safeBody.length > 100 ? `${safeBody.slice(0, 97)}…` : safeBody;
+    const snippet = truncateSnippet(collapseBody(c, secrets), 100);
     return `\`${cell(c.path)}\`:${c.line} — ${snippet}`;
 }
 /** Severity → display emoji used by every layout that wants a single glyph. */
@@ -3547,8 +3601,8 @@ function layoutDashboard(data) {
         parts.push("| # | Severity | File:Line | Title |");
         parts.push("| ---: | :--- | :--- | :--- |");
         sortedPosted(data).slice(0, 5).forEach((c, i) => {
-            const title = redact(c.body, data.secrets).replace(/\s+/gu, " ").trim();
-            const snippet = title.length > 80 ? `${title.slice(0, 77)}…` : title;
+            const title = collapseBody(c, data.secrets);
+            const snippet = truncateSnippet(title, 80);
             parts.push(`| ${i + 1} | ${severityEmoji(c.severity)} ${severityLabel(c.severity)} | \`${cell(c.path)}\`:${c.line} | ${cell(snippet)} |`);
         });
         parts.push("");
@@ -3633,8 +3687,8 @@ function layoutVerdictBanner(data) {
         parts.push("### 📋 Findings to address");
         parts.push("");
         sortedPosted(data).slice(0, 5).forEach((c, i) => {
-            const title = redact(c.body, data.secrets).replace(/\s+/gu, " ").trim();
-            const snippet = title.length > 90 ? `${title.slice(0, 87)}…` : title;
+            const title = collapseBody(c, data.secrets);
+            const snippet = truncateSnippet(title, 90);
             parts.push(`${i + 1}. ${severityEmoji(c.severity)} \`${cell(c.path)}\`:${c.line} — ${cell(snippet)}`);
         });
         parts.push("");
@@ -3697,8 +3751,8 @@ function layoutSeverityTable(data) {
     }
     else {
         all.forEach((c, i) => {
-            const title = redact(c.body, data.secrets).replace(/\s+/gu, " ").trim();
-            const snippet = title.length > 80 ? `${title.slice(0, 77)}…` : title;
+            const title = collapseBody(c, data.secrets);
+            const snippet = truncateSnippet(title, 80);
             parts.push(`| ${i + 1} | ${severityEmoji(c.severity)} ${severityLabel(c.severity)} | ${cell(c.category ?? "general")} | \`${cell(c.path)}\`:${c.line} | ${cell(snippet)} |`);
         });
     }
@@ -3764,7 +3818,7 @@ function layoutCardGrid(data) {
         parts.push(`#### ${severityEmoji(level)} ${severityLabel(level)} — ${bucket.length} finding${bucket.length === 1 ? "" : "s"}`);
         parts.push("");
         for (const c of bucket) {
-            const title = redact(c.body, data.secrets).replace(/\s+/gu, " ").trim();
+            const title = collapseBody(c, data.secrets);
             parts.push(`> **\`${cell(c.path)}\`:${c.line}** — ${cell(title)}`);
             parts.push("");
         }
@@ -3797,21 +3851,15 @@ function layoutTldrWalkthrough(data) {
     }
     parts.push("");
     // Per-file walkthrough
-    const byFile = new Map();
-    for (const c of data.postedComments) {
-        const arr = byFile.get(c.path) ?? [];
-        arr.push(c);
-        byFile.set(c.path, arr);
-    }
-    if (byFile.size > 0) {
+    const sortedFiles = groupByFile(data.postedComments);
+    if (sortedFiles.length > 0) {
         parts.push("### 📂 Files touched");
         parts.push("");
-        const sorted = [...byFile.entries()].sort(([a], [b]) => a.localeCompare(b));
-        for (const [path, comments] of sorted) {
+        for (const [path, comments] of sortedFiles) {
             parts.push(`#### \`${cell(path)}\` — ${comments.length} finding${comments.length === 1 ? "" : "s"}`);
             parts.push("");
             for (const c of comments) {
-                const title = redact(c.body, data.secrets).replace(/\s+/gu, " ").trim();
+                const title = collapseBody(c, data.secrets);
                 parts.push(`- ${severityEmoji(c.severity)} **${severityLabel(c.severity)}** (line ${c.line}) — ${cell(title)}`);
             }
             parts.push("");
@@ -3850,8 +3898,8 @@ function layoutChecklist(data) {
         parts.push(`#### 📦 ${cat} (${comments.length})`);
         parts.push("");
         for (const c of comments) {
-            const title = redact(c.body, data.secrets).replace(/\s+/gu, " ").trim();
-            const snippet = title.length > 90 ? `${title.slice(0, 87)}…` : title;
+            const title = collapseBody(c, data.secrets);
+            const snippet = truncateSnippet(title, 90);
             parts.push(`- ${severityEmoji(c.severity)} \`${cell(c.path)}\`:${c.line} — ${cell(snippet)}`);
         }
         parts.push("");
@@ -4009,7 +4057,7 @@ function layoutFaq(data) {
     }
     else {
         sortedPosted(data).slice(0, 5).forEach((c, i) => {
-            const title = redact(c.body, data.secrets).replace(/\s+/gu, " ").trim();
+            const title = collapseBody(c, data.secrets);
             parts.push(`### Q${i + 1}: What's wrong at \`${cell(c.path)}\`:${c.line}?`);
             parts.push("");
             parts.push(`**A:** ${severityEmoji(c.severity)} **${severityLabel(c.severity)}** (${cell(c.category)}). ${cell(title)}`);
@@ -4168,8 +4216,8 @@ function layoutReleaseNotes(data) {
         parts.push(`### ${header}`);
         parts.push("");
         list.forEach((c, i) => {
-            const title = redact(c.body, data.secrets).replace(/\s+/gu, " ").trim();
-            const snippet = title.length > 80 ? `${title.slice(0, 77)}…` : title;
+            const title = collapseBody(c, data.secrets);
+            const snippet = truncateSnippet(title, 80);
             parts.push(`- **${cell(c.path)}:${c.line}** — ${cell(snippet)}`);
             if (i === list.length - 1)
                 parts.push("");
@@ -4200,13 +4248,7 @@ function layoutCoverage(data) {
     parts.push("");
     parts.push("### 🧪 File-by-file review");
     parts.push("");
-    const byFile = new Map();
-    for (const c of data.postedComments) {
-        const arr = byFile.get(c.path) ?? [];
-        arr.push(c);
-        byFile.set(c.path, arr);
-    }
-    const sortedFiles = [...byFile.entries()].sort(([a], [b]) => a.localeCompare(b));
+    const sortedFiles = groupByFile(data.postedComments);
     parts.push("| File | Findings | Status |");
     parts.push("| :--- | ---: | :---: |");
     if (sortedFiles.length === 0) {
@@ -4230,7 +4272,7 @@ function layoutCoverage(data) {
             parts.push(`#### \`${cell(path)}\``);
             parts.push("");
             for (const c of comments) {
-                parts.push(`- ${severityEmoji(c.severity)} line ${c.line} — ${redact(c.body, data.secrets).replace(/\s+/gu, " ").trim()}`);
+                parts.push(`- ${severityEmoji(c.severity)} line ${c.line} — ${collapseBody(c, data.secrets)}`);
             }
             parts.push("");
         }
@@ -4352,19 +4394,13 @@ function layoutDiffstat(data) {
     parts.push("");
     parts.push("### 📊 Review diffstat");
     parts.push("");
-    const byFile = new Map();
-    for (const c of data.postedComments) {
-        const arr = byFile.get(c.path) ?? [];
-        arr.push(c);
-        byFile.set(c.path, arr);
-    }
-    const max = Math.max(1, ...[...byFile.values()].map((v) => v.length));
+    const sortedFiles = groupByFile(data.postedComments);
+    const max = Math.max(1, ...sortedFiles.map(([, v]) => v.length));
     parts.push("```text");
-    if (byFile.size === 0) {
+    if (sortedFiles.length === 0) {
         parts.push("(no findings)");
     }
     else {
-        const sortedFiles = [...byFile.entries()].sort(([a], [b]) => a.localeCompare(b));
         const pathWidth = Math.max(8, ...sortedFiles.map(([p]) => p.length));
         for (const [path, comments] of sortedFiles) {
             const filled = Math.round((comments.length / max) * 24);
@@ -4374,15 +4410,14 @@ function layoutDiffstat(data) {
     }
     parts.push("```");
     parts.push("");
-    if (byFile.size > 0) {
+    if (sortedFiles.length > 0) {
         parts.push("### 🔎 Detail");
         parts.push("");
-        const sortedFiles = [...byFile.entries()].sort(([a], [b]) => a.localeCompare(b));
         for (const [path, comments] of sortedFiles) {
             parts.push(`#### \`${cell(path)}\``);
             parts.push("");
             for (const c of comments) {
-                parts.push(`- ${severityEmoji(c.severity)} line ${c.line} — ${redact(c.body, data.secrets).replace(/\s+/gu, " ").trim()}`);
+                parts.push(`- ${severityEmoji(c.severity)} line ${c.line} — ${collapseBody(c, data.secrets)}`);
             }
             parts.push("");
         }
@@ -4417,8 +4452,8 @@ function layoutStickyNotes(data) {
     }
     else {
         sortedPosted(data).slice(0, 6).forEach((c) => {
-            const title = redact(c.body, data.secrets).replace(/\s+/gu, " ").trim();
-            const snippet = title.length > 200 ? `${title.slice(0, 197)}…` : title;
+            const title = collapseBody(c, data.secrets);
+            const snippet = truncateSnippet(title, 200);
             parts.push(">");
             parts.push(`> 📌 **${severityLabel(c.severity)}** — \`${cell(c.path)}\`:${c.line}`);
             parts.push(">");
@@ -4471,8 +4506,8 @@ function layoutNewspaper(data) {
     }
     else {
         sortedPosted(data).slice(0, 6).forEach((c, i) => {
-            const title = redact(c.body, data.secrets).replace(/\s+/gu, " ").trim();
-            const snippet = title.length > 140 ? `${title.slice(0, 137)}…` : title;
+            const title = collapseBody(c, data.secrets);
+            const snippet = truncateSnippet(title, 140);
             parts.push(`**${i + 1}.** ${severityEmoji(c.severity)} \`${cell(c.path)}\`:${c.line} — ${cell(snippet)}`);
         });
     }
