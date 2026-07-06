@@ -3320,64 +3320,10 @@ function filteredCount(data) {
 function cell(value) {
     return value.replace(/\|/gu, "\\|").replace(/\r?\n/gu, " ").trim();
 }
-/**
- * Redact a comment body and collapse runs of whitespace to a single space.
- *
- * Most layouts want a one-line "snippet" — never the raw multi-paragraph
- * provider body, never unredacted secrets. The collapsed form is the
- * canonical snippet shape used in tables, bullets, sticky notes, and
- * the inline preview. Returns an empty string if the body is empty
- * after redaction (so callers can `parts.push(snippet)` without
- * rendering an empty bullet).
- *
- * Replaces 13 inline copies of
- * `redact(c.body, secrets).replace(/\s+/gu, " ").trim()`.
- */
-function collapseBody(c, secrets) {
-    return redact(c.body, secrets).replace(/\s+/gu, " ").trim();
-}
-/**
- * Truncate a snippet to `max` chars with a horizontal-ellipsis suffix.
- *
- * Layouts use different truncation budgets depending on column width
- * (table cells vs. blockquote stickies vs. newspaper lede), so this
- * helper is parameterised rather than hardcoded. The threshold check
- * (`> max`) preserves a string at exactly `max` chars — i.e. we only
- * truncate when there is something to cut. The cut leaves room for the
- * single-char `…` suffix (i.e. `slice(0, max - 3)`, then append `…`),
- * which matches the byte-for-byte truncation budget the layouts have
- * always used (e.g. `length > 80 ? slice(0, 77) + '…' : title` → 78
- * visible chars). Two chars of headroom are dropped so future suffixes
- * wider than `…` (e.g. two-char '..') can swap in without re-tuning
- * every call site.
- *
- * Pass `max = 0` (or any falsy) to disable truncation and return the
- * input unchanged — useful when a layout has unlimited horizontal room.
- */
-function truncateSnippet(snippet, max) {
-    if (!max || snippet.length <= max)
-        return snippet;
-    return `${snippet.slice(0, max - 3)}…`;
-}
-/**
- * Group posted comments by file path and return the entries sorted
- * alphabetically by path. Used by every layout that renders a
- * per-file section (`tldr-walkthrough`, `coverage`, `diffstat`).
- * Replaces 3 inline copies of
- * `new Map → for-loop → [...entries].sort([a],[b] localeCompare)`.
- */
-function groupByFile(comments) {
-    const map = new Map();
-    for (const c of comments) {
-        const list = map.get(c.path) ?? [];
-        list.push(c);
-        map.set(c.path, list);
-    }
-    return [...map.entries()].sort(([a], [b]) => a.localeCompare(b));
-}
 /** Render a single-line finding label as `path:line — snippet`. */
 function findingLine(c, secrets) {
-    const snippet = truncateSnippet(collapseBody(c, secrets), 100);
+    const safeBody = redact(c.body, secrets).replace(/\s+/gu, " ").trim();
+    const snippet = safeBody.length > 100 ? `${safeBody.slice(0, 97)}…` : safeBody;
     return `\`${cell(c.path)}\`:${c.line} — ${snippet}`;
 }
 /** Severity → display emoji used by every layout that wants a single glyph. */
@@ -3454,6 +3400,56 @@ function severityTally(data) {
         return "";
     return `🏷️ ${parts.join(" · ")}`;
 }
+/**
+ * Append the canonical "provider summary" section to `parts` when the
+ * review has a non-empty summary. Every layout wants this section —
+ * the variation is purely cosmetic (heading emoji + label, and whether
+ * to wrap in blockquote or render inline). When `heading` is `null`,
+ * no `###` line is emitted (callers like `dashboard` render the summary
+ * inside their own wrapper). When `blockquote` is true, every line of
+ * the summary is prefixed with `> ` so it renders as a single blockquote
+ * — used by `dashboard` to keep the summary visually separated from the
+ * KPI tiles above it.
+ *
+ * Output is byte-identical to the previous inline form
+ *   if (data.review.summary.trim().length > 0) {
+ *     parts.push(\`### ${heading}\`); parts.push("");
+ *     parts.push(redact(data.review.summary, data.secrets));
+ *     parts.push("");
+ *   }
+ * for the 14 layouts that use this shape. Three layouts have unique
+ * rendering needs (severity-table's `<details>` wrap for verbose
+ * summaries, faq's `### Q: ...?` + `**A:** ...` shape, dashboard's
+ * blockquote variant) and stay inline.
+ */
+function summarySection(data, parts, options = {}) {
+    if (data.review.summary.trim().length === 0)
+        return;
+    const safeSummary = redact(data.review.summary, data.secrets);
+    const heading = options.heading ?? "### 💬 Summary";
+    if (heading !== null) {
+        parts.push(heading);
+        parts.push("");
+    }
+    if (options.blockquote === true) {
+        parts.push(`> ${safeSummary.split("\n").join("\n> ")}`);
+    }
+    else {
+        parts.push(safeSummary);
+    }
+    parts.push("");
+}
+/**
+ * Canonical parse-fail banner string — the blockquote that a layout
+ * emits immediately after the verdict badge when the provider returned
+ * a non-JSON / unparseable response. CLARITY-10 invariant: the banner
+ * must be unmistakable so a 0-finding review cannot be confused with
+ * a clean bill of health. Used by `layoutBaseline` and
+ * `layoutSeverityTable` (the only two layouts that render this banner;
+ * the other 18 layouts rely on `pipelineLine` + `severityTally` being
+ * empty when parse-failed and skip the banner entirely).
+ */
+const PARSE_FAILED_BANNER = "> ⚠️ `Parse failed` — provider response was not a valid JSON review payload. The raw provider text is included in the Summary section below for diagnostics.";
 /** Compose the standard footer line. */
 function footer(data) {
     const safeModel = redact(data.modelId, data.secrets);
@@ -3474,29 +3470,6 @@ function sortedPosted(data) {
 function previewLines(data, max = 5) {
     return sortedPosted(data).slice(0, max).map((c, i) => `${i + 1}. ${findingLine(c, data.secrets)}`);
 }
-/**
- * Append the canonical trailer (horizontal rule, `footer`, marker, manifest)
- * to `parts` and return the joined string. Every replacement layout in
- * `LAYOUT_RENDERERS` ends with this exact sequence — it is the contract
- * that keeps dedup loops and the AI manifest parser happy:
- *   1. `<!-- umactually-pr-review -->` marker (dedup key)
- *   2. Stable hidden manifest with verdict + severity tally
- *   3. `🤖 Generated by ...` footer at the bottom for human readers
- *
- * NOT used by `layoutBaseline` — the baseline reproduces the legacy
- * `buildReviewBody` byte-for-byte, which puts the marker at the TOP
- * and uses no horizontal rule.
- *
- * Output is byte-identical to the previous hand-rolled trailer.
- */
-function closeReviewBlock(data, parts) {
-    parts.push("---");
-    parts.push(footer(data));
-    parts.push("");
-    parts.push(REVIEW_MARKER);
-    parts.push(manifest(data));
-    return parts.join("\n");
-}
 // ---------------------------------------------------------------------------
 // Baseline — current (what we have now)
 // ---------------------------------------------------------------------------
@@ -3511,7 +3484,7 @@ function layoutBaseline(data) {
     sections.push(`## ${verdictBadge(data)}`);
     sections.push("");
     if (data.review.parseFailed === true) {
-        sections.push("> ⚠️ `Parse failed` — provider response was not a valid JSON review payload. The raw provider text is included in the Summary section below for diagnostics.");
+        sections.push(PARSE_FAILED_BANNER);
     }
     else {
         sections.push(pipelineLine(data));
@@ -3601,19 +3574,19 @@ function layoutDashboard(data) {
         parts.push("| # | Severity | File:Line | Title |");
         parts.push("| ---: | :--- | :--- | :--- |");
         sortedPosted(data).slice(0, 5).forEach((c, i) => {
-            const title = collapseBody(c, data.secrets);
-            const snippet = truncateSnippet(title, 80);
+            const title = redact(c.body, data.secrets).replace(/\s+/gu, " ").trim();
+            const snippet = title.length > 80 ? `${title.slice(0, 77)}…` : title;
             parts.push(`| ${i + 1} | ${severityEmoji(c.severity)} ${severityLabel(c.severity)} | \`${cell(c.path)}\`:${c.line} | ${cell(snippet)} |`);
         });
         parts.push("");
     }
-    if (data.review.summary.trim().length > 0) {
-        parts.push("### 💬 Summary");
-        parts.push("");
-        parts.push(`> ${redact(data.review.summary, data.secrets).split("\n").join("\n> ")}`);
-        parts.push("");
-    }
-    return closeReviewBlock(data, parts);
+    summarySection(data, parts, { blockquote: true });
+    parts.push("---");
+    parts.push(footer(data));
+    parts.push("");
+    parts.push(REVIEW_MARKER);
+    parts.push(manifest(data));
+    return parts.join("\n");
 }
 // ---------------------------------------------------------------------------
 // Layout 2 — Pipeline (sequential step diagram)
@@ -3654,7 +3627,12 @@ function layoutPipeline(data) {
         });
         parts.push("");
     }
-    return closeReviewBlock(data, parts);
+    parts.push("---");
+    parts.push(footer(data));
+    parts.push("");
+    parts.push(REVIEW_MARKER);
+    parts.push(manifest(data));
+    return parts.join("\n");
 }
 // ---------------------------------------------------------------------------
 // Layout 3 — Verdict Banner (oversized single banner)
@@ -3687,19 +3665,19 @@ function layoutVerdictBanner(data) {
         parts.push("### 📋 Findings to address");
         parts.push("");
         sortedPosted(data).slice(0, 5).forEach((c, i) => {
-            const title = collapseBody(c, data.secrets);
-            const snippet = truncateSnippet(title, 90);
+            const title = redact(c.body, data.secrets).replace(/\s+/gu, " ").trim();
+            const snippet = title.length > 90 ? `${title.slice(0, 87)}…` : title;
             parts.push(`${i + 1}. ${severityEmoji(c.severity)} \`${cell(c.path)}\`:${c.line} — ${cell(snippet)}`);
         });
         parts.push("");
     }
-    if (data.review.summary.trim().length > 0) {
-        parts.push("### 💬 Provider summary");
-        parts.push("");
-        parts.push(redact(data.review.summary, data.secrets));
-        parts.push("");
-    }
-    return closeReviewBlock(data, parts);
+    summarySection(data, parts, { heading: "### 💬 Provider summary" });
+    parts.push("---");
+    parts.push(footer(data));
+    parts.push("");
+    parts.push(REVIEW_MARKER);
+    parts.push(manifest(data));
+    return parts.join("\n");
 }
 // ---------------------------------------------------------------------------
 // Layout 4 — Severity Table (SonarQube-style)
@@ -3721,7 +3699,7 @@ function layoutSeverityTable(data) {
     // blockquote immediately after the verdict so a 0-finding review
     // cannot be confused with a clean bill of health.
     if (data.review.parseFailed === true) {
-        parts.push("> ⚠️ `Parse failed` — provider response was not a valid JSON review payload. The raw provider text is included in the Summary section below for diagnostics.");
+        parts.push(PARSE_FAILED_BANNER);
         parts.push("");
     }
     else {
@@ -3751,8 +3729,8 @@ function layoutSeverityTable(data) {
     }
     else {
         all.forEach((c, i) => {
-            const title = collapseBody(c, data.secrets);
-            const snippet = truncateSnippet(title, 80);
+            const title = redact(c.body, data.secrets).replace(/\s+/gu, " ").trim();
+            const snippet = title.length > 80 ? `${title.slice(0, 77)}…` : title;
             parts.push(`| ${i + 1} | ${severityEmoji(c.severity)} ${severityLabel(c.severity)} | ${cell(c.category ?? "general")} | \`${cell(c.path)}\`:${c.line} | ${cell(snippet)} |`);
         });
     }
@@ -3818,7 +3796,7 @@ function layoutCardGrid(data) {
         parts.push(`#### ${severityEmoji(level)} ${severityLabel(level)} — ${bucket.length} finding${bucket.length === 1 ? "" : "s"}`);
         parts.push("");
         for (const c of bucket) {
-            const title = collapseBody(c, data.secrets);
+            const title = redact(c.body, data.secrets).replace(/\s+/gu, " ").trim();
             parts.push(`> **\`${cell(c.path)}\`:${c.line}** — ${cell(title)}`);
             parts.push("");
         }
@@ -3827,7 +3805,12 @@ function layoutCardGrid(data) {
         parts.push("> _No findings to address._");
         parts.push("");
     }
-    return closeReviewBlock(data, parts);
+    parts.push("---");
+    parts.push(footer(data));
+    parts.push("");
+    parts.push(REVIEW_MARKER);
+    parts.push(manifest(data));
+    return parts.join("\n");
 }
 // ---------------------------------------------------------------------------
 // Layout 6 — TL;DR + Walkthrough
@@ -3851,27 +3834,33 @@ function layoutTldrWalkthrough(data) {
     }
     parts.push("");
     // Per-file walkthrough
-    const sortedFiles = groupByFile(data.postedComments);
-    if (sortedFiles.length > 0) {
+    const byFile = new Map();
+    for (const c of data.postedComments) {
+        const arr = byFile.get(c.path) ?? [];
+        arr.push(c);
+        byFile.set(c.path, arr);
+    }
+    if (byFile.size > 0) {
         parts.push("### 📂 Files touched");
         parts.push("");
-        for (const [path, comments] of sortedFiles) {
+        const sorted = [...byFile.entries()].sort(([a], [b]) => a.localeCompare(b));
+        for (const [path, comments] of sorted) {
             parts.push(`#### \`${cell(path)}\` — ${comments.length} finding${comments.length === 1 ? "" : "s"}`);
             parts.push("");
             for (const c of comments) {
-                const title = collapseBody(c, data.secrets);
+                const title = redact(c.body, data.secrets).replace(/\s+/gu, " ").trim();
                 parts.push(`- ${severityEmoji(c.severity)} **${severityLabel(c.severity)}** (line ${c.line}) — ${cell(title)}`);
             }
             parts.push("");
         }
     }
-    if (data.review.summary.trim().length > 0) {
-        parts.push("### 💬 Full summary");
-        parts.push("");
-        parts.push(redact(data.review.summary, data.secrets));
-        parts.push("");
-    }
-    return closeReviewBlock(data, parts);
+    summarySection(data, parts, { heading: "### 💬 Full summary" });
+    parts.push("---");
+    parts.push(footer(data));
+    parts.push("");
+    parts.push(REVIEW_MARKER);
+    parts.push(manifest(data));
+    return parts.join("\n");
 }
 // ---------------------------------------------------------------------------
 // Layout 7 — Checklist (grouped by category)
@@ -3898,8 +3887,8 @@ function layoutChecklist(data) {
         parts.push(`#### 📦 ${cat} (${comments.length})`);
         parts.push("");
         for (const c of comments) {
-            const title = collapseBody(c, data.secrets);
-            const snippet = truncateSnippet(title, 90);
+            const title = redact(c.body, data.secrets).replace(/\s+/gu, " ").trim();
+            const snippet = title.length > 90 ? `${title.slice(0, 87)}…` : title;
             parts.push(`- ${severityEmoji(c.severity)} \`${cell(c.path)}\`:${c.line} — ${cell(snippet)}`);
         }
         parts.push("");
@@ -3913,7 +3902,12 @@ function layoutChecklist(data) {
         parts.push(tally);
         parts.push("");
     }
-    return closeReviewBlock(data, parts);
+    parts.push("---");
+    parts.push(footer(data));
+    parts.push("");
+    parts.push(REVIEW_MARKER);
+    parts.push(manifest(data));
+    return parts.join("\n");
 }
 // ---------------------------------------------------------------------------
 // Layout 8 — Progress Bars (ASCII block bars)
@@ -3949,13 +3943,13 @@ function layoutProgressBars(data) {
         });
     }
     parts.push("");
-    if (data.review.summary.trim().length > 0) {
-        parts.push("### 💬 Summary");
-        parts.push("");
-        parts.push(redact(data.review.summary, data.secrets));
-        parts.push("");
-    }
-    return closeReviewBlock(data, parts);
+    summarySection(data, parts);
+    parts.push("---");
+    parts.push(footer(data));
+    parts.push("");
+    parts.push(REVIEW_MARKER);
+    parts.push(manifest(data));
+    return parts.join("\n");
 }
 // ---------------------------------------------------------------------------
 // Layout 9 — Pros & Cons (two-column GFM table)
@@ -3988,13 +3982,13 @@ function layoutProsCons(data) {
         parts.push(severityTally(data));
         parts.push("");
     }
-    if (data.review.summary.trim().length > 0) {
-        parts.push("### 💬 Summary");
-        parts.push("");
-        parts.push(redact(data.review.summary, data.secrets));
-        parts.push("");
-    }
-    return closeReviewBlock(data, parts);
+    summarySection(data, parts);
+    parts.push("---");
+    parts.push(footer(data));
+    parts.push("");
+    parts.push(REVIEW_MARKER);
+    parts.push(manifest(data));
+    return parts.join("\n");
 }
 // ---------------------------------------------------------------------------
 // Layout 10 — Tweet / Announcement
@@ -4031,13 +4025,13 @@ function layoutTweet(data) {
         parts.push(`- 🧹 ${filteredCount(data)} filtered by severity policy or \`max-comments\` cap.`);
     }
     parts.push("");
-    if (data.review.summary.trim().length > 0) {
-        parts.push("### 📖 Story");
-        parts.push("");
-        parts.push(redact(data.review.summary, data.secrets));
-        parts.push("");
-    }
-    return closeReviewBlock(data, parts);
+    summarySection(data, parts, { heading: "### 📖 Story" });
+    parts.push("---");
+    parts.push(footer(data));
+    parts.push("");
+    parts.push(REVIEW_MARKER);
+    parts.push(manifest(data));
+    return parts.join("\n");
 }
 // ---------------------------------------------------------------------------
 // Layout 11 — FAQ Q&A
@@ -4057,7 +4051,7 @@ function layoutFaq(data) {
     }
     else {
         sortedPosted(data).slice(0, 5).forEach((c, i) => {
-            const title = collapseBody(c, data.secrets);
+            const title = redact(c.body, data.secrets).replace(/\s+/gu, " ").trim();
             parts.push(`### Q${i + 1}: What's wrong at \`${cell(c.path)}\`:${c.line}?`);
             parts.push("");
             parts.push(`**A:** ${severityEmoji(c.severity)} **${severityLabel(c.severity)}** (${cell(c.category)}). ${cell(title)}`);
@@ -4074,7 +4068,12 @@ function layoutFaq(data) {
         parts.push(`**A:** ${redact(data.review.summary, data.secrets)}`);
         parts.push("");
     }
-    return closeReviewBlock(data, parts);
+    parts.push("---");
+    parts.push(footer(data));
+    parts.push("");
+    parts.push(REVIEW_MARKER);
+    parts.push(manifest(data));
+    return parts.join("\n");
 }
 // ---------------------------------------------------------------------------
 // Layout 12 — Terminal Output (fenced code block)
@@ -4115,13 +4114,13 @@ function layoutTerminal(data) {
     }
     parts.push("```");
     parts.push("");
-    if (data.review.summary.trim().length > 0) {
-        parts.push("### 💬 Summary");
-        parts.push("");
-        parts.push(redact(data.review.summary, data.secrets));
-        parts.push("");
-    }
-    return closeReviewBlock(data, parts);
+    summarySection(data, parts);
+    parts.push("---");
+    parts.push(footer(data));
+    parts.push("");
+    parts.push(REVIEW_MARKER);
+    parts.push(manifest(data));
+    return parts.join("\n");
 }
 // ---------------------------------------------------------------------------
 // Layout 13 — Incident Report (timeline)
@@ -4174,13 +4173,13 @@ function layoutIncident(data) {
         });
         parts.push("");
     }
-    if (data.review.summary.trim().length > 0) {
-        parts.push("### 💬 Provider summary");
-        parts.push("");
-        parts.push(redact(data.review.summary, data.secrets));
-        parts.push("");
-    }
-    return closeReviewBlock(data, parts);
+    summarySection(data, parts, { heading: "### 💬 Provider summary" });
+    parts.push("---");
+    parts.push(footer(data));
+    parts.push("");
+    parts.push(REVIEW_MARKER);
+    parts.push(manifest(data));
+    return parts.join("\n");
 }
 // ---------------------------------------------------------------------------
 // Layout 14 — Release Notes (categorized changelog)
@@ -4216,8 +4215,8 @@ function layoutReleaseNotes(data) {
         parts.push(`### ${header}`);
         parts.push("");
         list.forEach((c, i) => {
-            const title = collapseBody(c, data.secrets);
-            const snippet = truncateSnippet(title, 80);
+            const title = redact(c.body, data.secrets).replace(/\s+/gu, " ").trim();
+            const snippet = title.length > 80 ? `${title.slice(0, 77)}…` : title;
             parts.push(`- **${cell(c.path)}:${c.line}** — ${cell(snippet)}`);
             if (i === list.length - 1)
                 parts.push("");
@@ -4229,13 +4228,13 @@ function layoutReleaseNotes(data) {
         parts.push("- Review passed clean — ship it.");
         parts.push("");
     }
-    if (data.review.summary.trim().length > 0) {
-        parts.push("### 📖 Notes");
-        parts.push("");
-        parts.push(redact(data.review.summary, data.secrets));
-        parts.push("");
-    }
-    return closeReviewBlock(data, parts);
+    summarySection(data, parts, { heading: "### 📖 Notes" });
+    parts.push("---");
+    parts.push(footer(data));
+    parts.push("");
+    parts.push(REVIEW_MARKER);
+    parts.push(manifest(data));
+    return parts.join("\n");
 }
 // ---------------------------------------------------------------------------
 // Layout 15 — Coverage Report
@@ -4248,7 +4247,13 @@ function layoutCoverage(data) {
     parts.push("");
     parts.push("### 🧪 File-by-file review");
     parts.push("");
-    const sortedFiles = groupByFile(data.postedComments);
+    const byFile = new Map();
+    for (const c of data.postedComments) {
+        const arr = byFile.get(c.path) ?? [];
+        arr.push(c);
+        byFile.set(c.path, arr);
+    }
+    const sortedFiles = [...byFile.entries()].sort(([a], [b]) => a.localeCompare(b));
     parts.push("| File | Findings | Status |");
     parts.push("| :--- | ---: | :---: |");
     if (sortedFiles.length === 0) {
@@ -4272,18 +4277,18 @@ function layoutCoverage(data) {
             parts.push(`#### \`${cell(path)}\``);
             parts.push("");
             for (const c of comments) {
-                parts.push(`- ${severityEmoji(c.severity)} line ${c.line} — ${collapseBody(c, data.secrets)}`);
+                parts.push(`- ${severityEmoji(c.severity)} line ${c.line} — ${redact(c.body, data.secrets).replace(/\s+/gu, " ").trim()}`);
             }
             parts.push("");
         }
     }
-    if (data.review.summary.trim().length > 0) {
-        parts.push("### 💬 Summary");
-        parts.push("");
-        parts.push(redact(data.review.summary, data.secrets));
-        parts.push("");
-    }
-    return closeReviewBlock(data, parts);
+    summarySection(data, parts);
+    parts.push("---");
+    parts.push(footer(data));
+    parts.push("");
+    parts.push(REVIEW_MARKER);
+    parts.push(manifest(data));
+    return parts.join("\n");
 }
 // ---------------------------------------------------------------------------
 // Layout 16 — Thermometer (vertical severity ladder)
@@ -4326,13 +4331,13 @@ function layoutThermometer(data) {
         });
     }
     parts.push("");
-    if (data.review.summary.trim().length > 0) {
-        parts.push("### 💬 Summary");
-        parts.push("");
-        parts.push(redact(data.review.summary, data.secrets));
-        parts.push("");
-    }
-    return closeReviewBlock(data, parts);
+    summarySection(data, parts);
+    parts.push("---");
+    parts.push(footer(data));
+    parts.push("");
+    parts.push(REVIEW_MARKER);
+    parts.push(manifest(data));
+    return parts.join("\n");
 }
 // ---------------------------------------------------------------------------
 // Layout 17 — Status Page
@@ -4375,13 +4380,13 @@ function layoutStatusPage(data) {
         });
         parts.push("");
     }
-    if (data.review.summary.trim().length > 0) {
-        parts.push("### 📝 Notes");
-        parts.push("");
-        parts.push(redact(data.review.summary, data.secrets));
-        parts.push("");
-    }
-    return closeReviewBlock(data, parts);
+    summarySection(data, parts, { heading: "### 📝 Notes" });
+    parts.push("---");
+    parts.push(footer(data));
+    parts.push("");
+    parts.push(REVIEW_MARKER);
+    parts.push(manifest(data));
+    return parts.join("\n");
 }
 // ---------------------------------------------------------------------------
 // Layout 18 — Diffstat (per-file +/- with ASCII bars)
@@ -4394,13 +4399,19 @@ function layoutDiffstat(data) {
     parts.push("");
     parts.push("### 📊 Review diffstat");
     parts.push("");
-    const sortedFiles = groupByFile(data.postedComments);
-    const max = Math.max(1, ...sortedFiles.map(([, v]) => v.length));
+    const byFile = new Map();
+    for (const c of data.postedComments) {
+        const arr = byFile.get(c.path) ?? [];
+        arr.push(c);
+        byFile.set(c.path, arr);
+    }
+    const max = Math.max(1, ...[...byFile.values()].map((v) => v.length));
     parts.push("```text");
-    if (sortedFiles.length === 0) {
+    if (byFile.size === 0) {
         parts.push("(no findings)");
     }
     else {
+        const sortedFiles = [...byFile.entries()].sort(([a], [b]) => a.localeCompare(b));
         const pathWidth = Math.max(8, ...sortedFiles.map(([p]) => p.length));
         for (const [path, comments] of sortedFiles) {
             const filled = Math.round((comments.length / max) * 24);
@@ -4410,14 +4421,15 @@ function layoutDiffstat(data) {
     }
     parts.push("```");
     parts.push("");
-    if (sortedFiles.length > 0) {
+    if (byFile.size > 0) {
         parts.push("### 🔎 Detail");
         parts.push("");
+        const sortedFiles = [...byFile.entries()].sort(([a], [b]) => a.localeCompare(b));
         for (const [path, comments] of sortedFiles) {
             parts.push(`#### \`${cell(path)}\``);
             parts.push("");
             for (const c of comments) {
-                parts.push(`- ${severityEmoji(c.severity)} line ${c.line} — ${collapseBody(c, data.secrets)}`);
+                parts.push(`- ${severityEmoji(c.severity)} line ${c.line} — ${redact(c.body, data.secrets).replace(/\s+/gu, " ").trim()}`);
             }
             parts.push("");
         }
@@ -4426,13 +4438,13 @@ function layoutDiffstat(data) {
         parts.push("> _No findings to address._");
         parts.push("");
     }
-    if (data.review.summary.trim().length > 0) {
-        parts.push("### 💬 Summary");
-        parts.push("");
-        parts.push(redact(data.review.summary, data.secrets));
-        parts.push("");
-    }
-    return closeReviewBlock(data, parts);
+    summarySection(data, parts);
+    parts.push("---");
+    parts.push(footer(data));
+    parts.push("");
+    parts.push(REVIEW_MARKER);
+    parts.push(manifest(data));
+    return parts.join("\n");
 }
 // ---------------------------------------------------------------------------
 // Layout 19 — Sticky Notes (push-pin quote blocks)
@@ -4452,8 +4464,8 @@ function layoutStickyNotes(data) {
     }
     else {
         sortedPosted(data).slice(0, 6).forEach((c) => {
-            const title = collapseBody(c, data.secrets);
-            const snippet = truncateSnippet(title, 200);
+            const title = redact(c.body, data.secrets).replace(/\s+/gu, " ").trim();
+            const snippet = title.length > 200 ? `${title.slice(0, 197)}…` : title;
             parts.push(">");
             parts.push(`> 📌 **${severityLabel(c.severity)}** — \`${cell(c.path)}\`:${c.line}`);
             parts.push(">");
@@ -4470,13 +4482,13 @@ function layoutStickyNotes(data) {
         parts.push(tally);
         parts.push("");
     }
-    if (data.review.summary.trim().length > 0) {
-        parts.push("### 💬 Summary");
-        parts.push("");
-        parts.push(redact(data.review.summary, data.secrets));
-        parts.push("");
-    }
-    return closeReviewBlock(data, parts);
+    summarySection(data, parts);
+    parts.push("---");
+    parts.push(footer(data));
+    parts.push("");
+    parts.push(REVIEW_MARKER);
+    parts.push(manifest(data));
+    return parts.join("\n");
 }
 // ---------------------------------------------------------------------------
 // Layout 20 — Newspaper (headline-lede-body)
@@ -4506,8 +4518,8 @@ function layoutNewspaper(data) {
     }
     else {
         sortedPosted(data).slice(0, 6).forEach((c, i) => {
-            const title = collapseBody(c, data.secrets);
-            const snippet = truncateSnippet(title, 140);
+            const title = redact(c.body, data.secrets).replace(/\s+/gu, " ").trim();
+            const snippet = title.length > 140 ? `${title.slice(0, 137)}…` : title;
             parts.push(`**${i + 1}.** ${severityEmoji(c.severity)} \`${cell(c.path)}\`:${c.line} — ${cell(snippet)}`);
         });
     }
@@ -4525,7 +4537,12 @@ function layoutNewspaper(data) {
         parts.push(tally);
         parts.push("");
     }
-    return closeReviewBlock(data, parts);
+    parts.push("---");
+    parts.push(footer(data));
+    parts.push("");
+    parts.push(REVIEW_MARKER);
+    parts.push(manifest(data));
+    return parts.join("\n");
 }
 const LAYOUT_RENDERERS = {
     "dashboard": layoutDashboard,
