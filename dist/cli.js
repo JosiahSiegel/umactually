@@ -3467,14 +3467,15 @@ function severityTally(data) {
  *
  * Output is byte-identical to the previous inline form
  *   if (data.review.summary.trim().length > 0) {
- *     parts.push(\`### ${heading}\`); parts.push("");
+ *     parts.push(`### ${heading}`); parts.push("");
  *     parts.push(redact(data.review.summary, data.secrets));
  *     parts.push("");
  *   }
- * for the 14 layouts that use this shape. Three layouts have unique
- * rendering needs (severity-table's `<details>` wrap for verbose
- * summaries, faq's `### Q: ...?` + `**A:** ...` shape, dashboard's
- * blockquote variant) and stay inline.
+ * for the 14 layouts that use this shape (8 default + 5 custom-heading
+ * variants + 1 blockquote variant). Two layouts have unique rendering
+ * needs that the helper doesn't fit and stay inline:
+ *   - `severity-table` wraps verbose summaries in a `<details>` block.
+ *   - `faq` renders the summary as `### Q: ...?` + `**A:** ...`.
  */
 function summarySection(data, parts, options = {}) {
     if (data.review.summary.trim().length === 0)
@@ -3657,7 +3658,7 @@ function layoutDashboard(data) {
         });
         parts.push("");
     }
-    summarySection(data, parts, { blockquote: true });
+    summarySection(data, parts, { heading: null, blockquote: true });
     return closeReviewBlock(data, parts);
 }
 // ---------------------------------------------------------------------------
