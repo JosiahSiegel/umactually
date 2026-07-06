@@ -3452,6 +3452,57 @@ function severityTally(data) {
         return "";
     return `🏷️ ${parts.join(" · ")}`;
 }
+/**
+ * Append the canonical "provider summary" section to `parts` when the
+ * review has a non-empty summary. Every layout wants this section —
+ * the variation is purely cosmetic (heading emoji + label, and whether
+ * to wrap in blockquote or render inline). When `heading` is `null`,
+ * no `###` line is emitted (callers like `dashboard` render the summary
+ * inside their own wrapper). When `blockquote` is true, every line of
+ * the summary is prefixed with `> ` so it renders as a single blockquote
+ * — used by `dashboard` to keep the summary visually separated from the
+ * KPI tiles above it.
+ *
+ * Output is byte-identical to the previous inline form
+ *   if (data.review.summary.trim().length > 0) {
+ *     parts.push(`### ${heading}`); parts.push("");
+ *     parts.push(redact(data.review.summary, data.secrets));
+ *     parts.push("");
+ *   }
+ * for the 14 layouts that use this shape (8 default + 5 custom-heading
+ * variants + 1 blockquote variant). Two layouts have unique rendering
+ * needs that the helper doesn't fit and stay inline:
+ *   - `severity-table` wraps verbose summaries in a `<details>` block.
+ *   - `faq` renders the summary as `### Q: ...?` + `**A:** ...`.
+ */
+function summarySection(data, parts, options = {}) {
+    if (data.review.summary.trim().length === 0)
+        return;
+    const safeSummary = redact(data.review.summary, data.secrets);
+    const heading = options.heading ?? "### 💬 Summary";
+    if (heading !== null) {
+        parts.push(heading);
+        parts.push("");
+    }
+    if (options.blockquote === true) {
+        parts.push(`> ${safeSummary.split("\n").join("\n> ")}`);
+    }
+    else {
+        parts.push(safeSummary);
+    }
+    parts.push("");
+}
+/**
+ * Canonical parse-fail banner string — the blockquote that a layout
+ * emits immediately after the verdict badge when the provider returned
+ * a non-JSON / unparseable response. CLARITY-10 invariant: the banner
+ * must be unmistakable so a 0-finding review cannot be confused with
+ * a clean bill of health. Used by `layoutBaseline` and
+ * `layoutSeverityTable` (the only two layouts that render this banner;
+ * the other 18 layouts rely on `pipelineLine` + `severityTally` being
+ * empty when parse-failed and skip the banner entirely).
+ */
+const PARSE_FAILED_BANNER = "> ⚠️ `Parse failed` — provider response was not a valid JSON review payload. The raw provider text is included in the Summary section below for diagnostics.";
 /** Compose the standard footer line. */
 function footer(data) {
     const safeModel = redact(data.modelId, data.secrets);
@@ -3509,7 +3560,7 @@ function layoutBaseline(data) {
     sections.push(`## ${verdictBadge(data)}`);
     sections.push("");
     if (data.review.parseFailed === true) {
-        sections.push("> ⚠️ `Parse failed` — provider response was not a valid JSON review payload. The raw provider text is included in the Summary section below for diagnostics.");
+        sections.push(PARSE_FAILED_BANNER);
     }
     else {
         sections.push(pipelineLine(data));
@@ -3605,12 +3656,7 @@ function layoutDashboard(data) {
         });
         parts.push("");
     }
-    if (data.review.summary.trim().length > 0) {
-        parts.push("### 💬 Summary");
-        parts.push("");
-        parts.push(`> ${redact(data.review.summary, data.secrets).split("\n").join("\n> ")}`);
-        parts.push("");
-    }
+    summarySection(data, parts, { heading: null, blockquote: true });
     return closeReviewBlock(data, parts);
 }
 // ---------------------------------------------------------------------------
@@ -3691,12 +3737,7 @@ function layoutVerdictBanner(data) {
         });
         parts.push("");
     }
-    if (data.review.summary.trim().length > 0) {
-        parts.push("### 💬 Provider summary");
-        parts.push("");
-        parts.push(redact(data.review.summary, data.secrets));
-        parts.push("");
-    }
+    summarySection(data, parts, { heading: "### 💬 Provider summary" });
     return closeReviewBlock(data, parts);
 }
 // ---------------------------------------------------------------------------
@@ -3719,7 +3760,7 @@ function layoutSeverityTable(data) {
     // blockquote immediately after the verdict so a 0-finding review
     // cannot be confused with a clean bill of health.
     if (data.review.parseFailed === true) {
-        parts.push("> ⚠️ `Parse failed` — provider response was not a valid JSON review payload. The raw provider text is included in the Summary section below for diagnostics.");
+        parts.push(PARSE_FAILED_BANNER);
         parts.push("");
     }
     else {
@@ -3863,12 +3904,7 @@ function layoutTldrWalkthrough(data) {
             parts.push("");
         }
     }
-    if (data.review.summary.trim().length > 0) {
-        parts.push("### 💬 Full summary");
-        parts.push("");
-        parts.push(redact(data.review.summary, data.secrets));
-        parts.push("");
-    }
+    summarySection(data, parts, { heading: "### 💬 Full summary" });
     return closeReviewBlock(data, parts);
 }
 // ---------------------------------------------------------------------------
@@ -3947,12 +3983,7 @@ function layoutProgressBars(data) {
         });
     }
     parts.push("");
-    if (data.review.summary.trim().length > 0) {
-        parts.push("### 💬 Summary");
-        parts.push("");
-        parts.push(redact(data.review.summary, data.secrets));
-        parts.push("");
-    }
+    summarySection(data, parts);
     return closeReviewBlock(data, parts);
 }
 // ---------------------------------------------------------------------------
@@ -3986,12 +4017,7 @@ function layoutProsCons(data) {
         parts.push(severityTally(data));
         parts.push("");
     }
-    if (data.review.summary.trim().length > 0) {
-        parts.push("### 💬 Summary");
-        parts.push("");
-        parts.push(redact(data.review.summary, data.secrets));
-        parts.push("");
-    }
+    summarySection(data, parts);
     return closeReviewBlock(data, parts);
 }
 // ---------------------------------------------------------------------------
@@ -4029,12 +4055,7 @@ function layoutTweet(data) {
         parts.push(`- 🧹 ${filteredCount(data)} filtered by severity policy or \`max-comments\` cap.`);
     }
     parts.push("");
-    if (data.review.summary.trim().length > 0) {
-        parts.push("### 📖 Story");
-        parts.push("");
-        parts.push(redact(data.review.summary, data.secrets));
-        parts.push("");
-    }
+    summarySection(data, parts, { heading: "### 📖 Story" });
     return closeReviewBlock(data, parts);
 }
 // ---------------------------------------------------------------------------
@@ -4113,12 +4134,7 @@ function layoutTerminal(data) {
     }
     parts.push("```");
     parts.push("");
-    if (data.review.summary.trim().length > 0) {
-        parts.push("### 💬 Summary");
-        parts.push("");
-        parts.push(redact(data.review.summary, data.secrets));
-        parts.push("");
-    }
+    summarySection(data, parts);
     return closeReviewBlock(data, parts);
 }
 // ---------------------------------------------------------------------------
@@ -4172,12 +4188,7 @@ function layoutIncident(data) {
         });
         parts.push("");
     }
-    if (data.review.summary.trim().length > 0) {
-        parts.push("### 💬 Provider summary");
-        parts.push("");
-        parts.push(redact(data.review.summary, data.secrets));
-        parts.push("");
-    }
+    summarySection(data, parts, { heading: "### 💬 Provider summary" });
     return closeReviewBlock(data, parts);
 }
 // ---------------------------------------------------------------------------
@@ -4227,12 +4238,7 @@ function layoutReleaseNotes(data) {
         parts.push("- Review passed clean — ship it.");
         parts.push("");
     }
-    if (data.review.summary.trim().length > 0) {
-        parts.push("### 📖 Notes");
-        parts.push("");
-        parts.push(redact(data.review.summary, data.secrets));
-        parts.push("");
-    }
+    summarySection(data, parts, { heading: "### 📖 Notes" });
     return closeReviewBlock(data, parts);
 }
 // ---------------------------------------------------------------------------
@@ -4275,12 +4281,7 @@ function layoutCoverage(data) {
             parts.push("");
         }
     }
-    if (data.review.summary.trim().length > 0) {
-        parts.push("### 💬 Summary");
-        parts.push("");
-        parts.push(redact(data.review.summary, data.secrets));
-        parts.push("");
-    }
+    summarySection(data, parts);
     return closeReviewBlock(data, parts);
 }
 // ---------------------------------------------------------------------------
@@ -4324,12 +4325,7 @@ function layoutThermometer(data) {
         });
     }
     parts.push("");
-    if (data.review.summary.trim().length > 0) {
-        parts.push("### 💬 Summary");
-        parts.push("");
-        parts.push(redact(data.review.summary, data.secrets));
-        parts.push("");
-    }
+    summarySection(data, parts);
     return closeReviewBlock(data, parts);
 }
 // ---------------------------------------------------------------------------
@@ -4373,12 +4369,7 @@ function layoutStatusPage(data) {
         });
         parts.push("");
     }
-    if (data.review.summary.trim().length > 0) {
-        parts.push("### 📝 Notes");
-        parts.push("");
-        parts.push(redact(data.review.summary, data.secrets));
-        parts.push("");
-    }
+    summarySection(data, parts, { heading: "### 📝 Notes" });
     return closeReviewBlock(data, parts);
 }
 // ---------------------------------------------------------------------------
@@ -4424,12 +4415,7 @@ function layoutDiffstat(data) {
         parts.push("> _No findings to address._");
         parts.push("");
     }
-    if (data.review.summary.trim().length > 0) {
-        parts.push("### 💬 Summary");
-        parts.push("");
-        parts.push(redact(data.review.summary, data.secrets));
-        parts.push("");
-    }
+    summarySection(data, parts);
     return closeReviewBlock(data, parts);
 }
 // ---------------------------------------------------------------------------
@@ -4468,12 +4454,7 @@ function layoutStickyNotes(data) {
         parts.push(tally);
         parts.push("");
     }
-    if (data.review.summary.trim().length > 0) {
-        parts.push("### 💬 Summary");
-        parts.push("");
-        parts.push(redact(data.review.summary, data.secrets));
-        parts.push("");
-    }
+    summarySection(data, parts);
     return closeReviewBlock(data, parts);
 }
 // ---------------------------------------------------------------------------
