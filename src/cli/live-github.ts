@@ -82,6 +82,11 @@ export async function runGithubLive(input: {
     posted: true,
     reviewId,
     message: existing !== null ? "replaced existing GitHub review" : "posted GitHub review",
+    // Surface the live review's actual counts so the self-review guard
+    // artifact-write path can persist them — the dry-run stub's counts
+    // would otherwise mask what GitHub actually saw.
+    inlineThreadCount: postableComments.length,
+    verdict: provider.review.verdict,
   };
 }
 

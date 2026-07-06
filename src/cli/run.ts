@@ -301,35 +301,70 @@ export async function dispatchLive(parsed: ParsedCliArgs, cwd: string, env: Node
  * card via the GitHub API, this artifact is the only local signal that
  * the review produced zero findings. Without it, the guard has nothing
  * to inspect and CI passes despite garbage on the PR.
+ *
+ * Two cases:
+ *   1. `result.posted === false`: write a parse-fail sentinel so the
+ *      guard catches it.
+ *   2. `result.posted === true`: write a success marker that reflects
+ *      the live review's actual counts. The dry-run path may have
+ *      already written a stub to this artifact, but the live path's
+ *      counts (which match what GitHub/Azure actually saw) are more
+ *      accurate. The guard inspects `inlineThreadCount`/`postedThreadCount`
+ *      + `parseFailed` to classify, so writing the live counts keeps
+ *      the guard honest about what really happened.
+ *
+ * Concurrency: also surfaced via the severity-warning concurrency guard
+ * in `setActiveSeveritySink`. This function runs once per `dispatchLive`
+ * invocation, in `finally` — so a panic mid-review still writes the
+ * sentinel.
  */
 async function writeLiveArtifact(
   parsed: ParsedCliArgs,
   cwd: string,
-  result: { readonly posted: boolean; readonly message: string },
+  result: {
+    readonly posted: boolean;
+    readonly message: string;
+    readonly inlineThreadCount?: number;
+    readonly suppressedCommentCount?: number;
+    readonly verdict?: string;
+  },
 ): Promise<void> {
-  // Only write a parse-fail sentinel when the live review did NOT post.
-  // For successful posts, the GitHub API already records what was posted
-  // (inline threads + status) and the local artifact's job is to help
-  // the self-review guard catch regressions — which only matters when
-  // the action silently dropped its payload. Overwriting a legitimate
-  // (non-zero inlineThreadCount) artifact with zeros would make the
-  // guard see a false-positive parse-fail on the next CI run.
   if (parsed.outputArtifact === null) return;
-  if (result.posted) return;
   const artifactPath = isAbsolute(parsed.outputArtifact)
     ? parsed.outputArtifact
     : resolve(cwd, parsed.outputArtifact);
   await mkdir(dirname(artifactPath), { recursive: true });
+  if (!result.posted) {
+    const body = {
+      artifactPath,
+      posted: false,
+      message: result.message,
+      marker: "<!-- umactually-pr-review -->",
+      inlineThreadCount: 0,
+      suppressedCommentCount: 0,
+      blockedRawOutput: false,
+      parseFailed: true,
+      note: "Live review did not post anything via the GitHub/Azure API. Inspect the action log for the underlying parser/network error.",
+    };
+    await writeFile(artifactPath, `${JSON.stringify(body, null, 2)}\n`, "utf8");
+    return;
+  }
+  // Successful post: write a success artifact reflecting the live
+  // counts. If the dry-run already wrote a stub to this path, this
+  // OVERWRITES it with the real counts (so the guard sees the truth
+  // rather than whatever the dry-run fixture produced). The shape
+  // matches the dry-run artifact's top-level fields.
   const body = {
     artifactPath,
-    posted: false,
+    posted: true,
     message: result.message,
     marker: "<!-- umactually-pr-review -->",
-    inlineThreadCount: 0,
-    suppressedCommentCount: 0,
+    inlineThreadCount: result.inlineThreadCount ?? 0,
+    suppressedCommentCount: result.suppressedCommentCount ?? 0,
     blockedRawOutput: false,
-    parseFailed: true,
-    note: "Live review did not post anything via the GitHub/Azure API. Inspect the action log for the underlying parser/network error.",
+    parseFailed: false,
+    ...(result.verdict !== undefined ? { verdict: result.verdict } : {}),
+    note: "Live review posted successfully; counts reflect what the GitHub/Azure API saw.",
   };
   await writeFile(artifactPath, `${JSON.stringify(body, null, 2)}\n`, "utf8");
 }
