@@ -226,6 +226,16 @@ export function buildReviewBody(input: {
   readonly severityCounts: Record<string, number>;
   readonly secrets: readonly string[];
   readonly layout?: LayoutId;
+  /**
+   * Optional threshold context forwarded to the rendered layout so the
+   * `🏷️ …` severity tally can append a `_(filtered)_` marker when the
+   * active `--minimum-severity` / `--ignore-minor` setting hides one or
+   * more tiers. Omit (or pass `null`/`false`) for the byte-identical
+   * legacy tally — used by unit tests, simulate-findings, and any
+   * caller that does not yet have a `ParsedCliArgs` in scope.
+   */
+  readonly minimumSeverity?: string | null;
+  readonly ignoreMinor?: boolean;
 }): string {
   // Delegate to the "severity-table" layout from
   // `src/render/summary-layouts.ts` — selected from the 20-layout
@@ -257,6 +267,8 @@ export function buildReviewBody(input: {
     offDiffFromComments: input.offDiffFromComments,
     postedComments,
     secrets: input.secrets,
+    minimumSeverity: input.minimumSeverity ?? null,
+    ignoreMinor: input.ignoreMinor === true,
   };
   return renderSummary(input.layout ?? "severity-table", reviewData);
 }
@@ -544,6 +556,13 @@ export function preparePostedReview(input: {
     severityCounts,
     postedComments: postableComments,
     secrets: input.secrets,
+    // Threshold context — forwarded so the rendered `🏷️ …` tally can
+    // append `_(filtered)_` when the active `--minimum-severity` or
+    // `--ignore-minor` flag hides one or more tiers. Older callers
+    // (unit tests, simulate-findings) can omit both and get the
+    // byte-identical legacy tally.
+    minimumSeverity: input.parsed.minimumSeverity,
+    ignoreMinor: input.parsed.ignoreMinor,
   });
 
   return {
