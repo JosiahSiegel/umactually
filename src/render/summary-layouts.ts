@@ -275,7 +275,12 @@ function severityEmoji(level: string): string {
     case "high":     return `<span style="color:#cf222e">■</span>`;
     case "medium":   return `<span style="color:#fb8500">▲</span>`;
     case "low":      return `<span style="color:#9a6700">◆</span>`;
-    case "info":     return `<span style="color:#9a6700">◆</span>`;
+    // info gets a distinct outline glyph (no color wrapper) so it's
+    // distinguishable from low even for color-blind reviewers. The
+    // bot flagged that sharing the same glyph+color as low defeats
+    // the shape-diversity rationale — fixed by using ○ (the same
+    // fallback used for unknown severities) with a gray note color.
+    case "info":     return `<span style="color:#6e7781">○</span>`;
     default:         return "○";
   }
 }

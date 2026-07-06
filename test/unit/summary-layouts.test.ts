@@ -494,7 +494,7 @@ describe("severity-table details", () => {
       { severity: "high",     color: "#cf222e", glyph: "■" },
       { severity: "medium",   color: "#fb8500", glyph: "▲" },
       { severity: "low",      color: "#9a6700", glyph: "◆" },
-      { severity: "info",     color: "#9a6700", glyph: "◆" },
+      { severity: "info",     color: "#6e7781", glyph: "○" },
     ];
     for (const c of cases) {
       const data = makeData({

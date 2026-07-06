@@ -366,11 +366,16 @@ function readCommentArray(value: unknown): readonly ProviderComment[] {
     const path = entry["path"];
     const line = readSafeIntegerField(entry, "line");
     if (typeof path === "string" && line !== null) {
+      const body = readStringField(entry, "body") ?? "";
       comments.push({
         path,
         line,
-        body: readStringField(entry, "body") ?? "",
-        severity: normalizeProviderSeverity(readStringField(entry, "severity")),
+        body,
+        // Pass body so body-scoped rules (security + hardening/leak
+        // heuristics) can distinguish a hardening tip from an active
+        // leak. Without body, normalizeProviderSeverity falls back to
+        // the severity-only mapping (security → high).
+        severity: normalizeProviderSeverity(readStringField(entry, "severity"), body),
         category: readStringField(entry, "category") ?? "general",
       });
     }
@@ -390,7 +395,7 @@ function readCommentArray(value: unknown): readonly ProviderComment[] {
  * `minimum-severity` threshold (default `medium`) and posts the finding
  * inline even when the user has configured a stricter filter.
  *
- * Mapping:
+ * Mapping (severity-only, no body):
  *   - `info`     → `info`
  *   - `nit`      → `info`     (style nit, below `low`)
  *   - `minor`    → `low`      (Sonar minor ≈ our low)
@@ -400,20 +405,43 @@ function readCommentArray(value: unknown): readonly ProviderComment[] {
  *   - `high`     → `high`
  *   - `critical` → `critical`
  *   - `blocker`  → `critical` (Sonar blocker ≈ our critical)
- *   - `security` → `critical` (security findings are never "minor";
- *                              they must survive `minimum-severity:
- *                              critical` so a security-conscious user
- *                              doesn't accidentally filter them out)
- *   - `leak`     → `critical` (same rationale — leaked secrets are the
- *                              highest-severity class of finding)
+ *   - `security` → see body-scoped rules below
+ *   - `leak`     → `critical` (leaked secrets are always the highest
+ *                              severity class — no hardening-tip
+ *                              ambiguity here)
  *   - anything else → `medium` (preserves prior default behavior)
+ *
+ * Body-scoped rules for `security` (when a body is provided):
+ *   - body matches HARDENING_HINT_PATTERN ("consider adding a CSP",
+ *     "rate limiting", etc.) → `high` (it's a hardening tip, not a
+ *     current vulnerability — let the user's threshold filter it if
+ *     they want)
+ *   - body matches LEAK_INDICATOR_PATTERN ("secret", "credential",
+ *     "token", "API key", "password") → `critical` (active leak, must
+ *     survive any threshold)
+ *   - anything else → `high` (default for `security` severity when body
+ *     doesn't indicate either hardening or active leak)
+ *
+ * Rationale for body-scoped rules: a provider that emits severity:
+ * "security" for a low-severity hardening tip ("consider adding a CSP
+ * header") would bypass the user's minimum-severity: critical filter
+ * and post a non-critical finding inline. Body-scoped scoping lets the
+ * mapping distinguish "this is a hardening tip" from "this is an active
+ * leak" using the comment's textual content.
  *
  * Unknown-but-non-empty values now get a sensible rank instead of the
  * catch-all `medium`. The `minimum-severity` threshold then does its job
  * correctly: a `nit` becomes `info` (rank 0) and is filtered out under
  * `minimum-severity: medium` (rank 2).
  */
-export function normalizeProviderSeverity(value: string | null): string {
+
+/** Patterns that indicate a low-severity hardening tip, not an active vulnerability. */
+const HARDENING_HINT_PATTERN = /\b(consider\s+add(?:ing)?|suggest(?:ed|s)?\s+(?:adding|using)|you\s+(?:may|might|should)\s+want\s+to|harden(?:ing)?|best\s+practice)\b/iu;
+
+/** Patterns that indicate an active secret leak or credential exposure. */
+const LEAK_INDICATOR_PATTERN = /\b(secret|credential|token|api[\s_-]?key|password|private[\s_-]?key|exposed|leaked|disclosed|committed\s+by\s+accident)\b/iu;
+
+export function normalizeProviderSeverity(value: string | null, body?: string | null): string {
   if (value === null || value.length === 0) {
     return "medium";
   }
@@ -432,9 +460,23 @@ export function normalizeProviderSeverity(value: string | null): string {
       return "high";
     case "critical":
     case "blocker":
-    case "security":
-    case "leak":
       return "critical";
+    case "leak":
+      // Leaked secrets are always critical — no hardening-tip ambiguity.
+      return "critical";
+    case "security":
+      // Body-scoped: hardening tips stay at high; active leaks escalate
+      // to critical. When no body is provided, default to high (the
+      // conservative choice that lets the user's threshold filter).
+      if (body !== undefined && body !== null && body.length > 0) {
+        if (LEAK_INDICATOR_PATTERN.test(body)) {
+          return "critical";
+        }
+        if (HARDENING_HINT_PATTERN.test(body)) {
+          return "high";
+        }
+      }
+      return "high";
     default:
       return "medium";
   }
