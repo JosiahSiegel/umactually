@@ -20,7 +20,8 @@ export function extractJsonBlock(rawText: string): unknown {
     return wholeAttempt;
   }
 
-  const fencedAttempt = tryParseJson(extractJsonFenceBody(rawText));
+  const fenceBody = extractJsonFenceBody(rawText);
+  const fencedAttempt = tryParseJson(fenceBody);
   if (fencedAttempt !== undefined) {
     return fencedAttempt;
   }
@@ -46,11 +47,50 @@ export function extractJsonBlock(rawText: string): unknown {
  * markdown code blocks wrapping a JSON payload. The matching closing
  * fence is found lazily after the first newline, so the body's content
  * is captured verbatim including internal whitespace and newlines.
+ *
+ * Two newline shapes are accepted at the fence boundaries:
+ *   1. Real newlines (0x0A) — the response arrived as a raw markdown
+ *      block outside any JSON envelope.
+ *   2. JSON-escaped `\n` (the 2-char sequence backslash + n) — the
+ *      response arrived as a string value inside a JSON envelope (e.g.
+ *      an SSE `response.output_text.delta` event). The model wrote the
+ *      fence boundaries using JSON-escaped newlines because the entire
+ *      response was itself a JSON string. The first regex (real newlines)
+ *      does NOT match this shape; without the second regex, the fence
+ *      body would not be extracted and the parser would fall through to
+ *      the balanced-object fallback, which can return null on long
+ *      payloads (regression observed 2026-07-05T23:59:46Z, requestId
+ *      771a64b3). The two alternations are tried in order; the first
+ *      match wins.
  */
 export function extractJsonFenceBody(rawText: string): string {
-  const fenceMatch = /```[a-zA-Z0-9_+\-]*\s*\n([\s\S]*?)\n```/.exec(rawText);
-  const body = fenceMatch?.[1];
+  // Real-newline boundaries: ```[tag]\n[body]\n```
+  const realNewline = /```[a-zA-Z0-9_+\-]*\s*\n([\s\S]*?)\n```/.exec(rawText);
+  // JSON-escaped-newline boundaries: ```[tag]\n[body]\n```  (where \n is
+  // the literal 2-char sequence). The opening ```[tag] is followed by
+  // either a real newline OR the 2-char escape, same for the closing.
+  // In a regex literal, the 2-char sequence `\n` requires 4 backslashes
+  // (`\\\\n` in source → `\\n` in the regex pattern → matches literal
+  // backslash + n in input).
+  const escapedNewline = /```[a-zA-Z0-9_+\-]*\s*\\n([\s\S]*?)\\n```/u.exec(rawText);
 
+  let body: string | undefined = realNewline?.[1] ?? escapedNewline?.[1];
+  if (body !== undefined && escapedNewline !== null && realNewline === null) {
+    // The body was extracted from a JSON-escaped-newline fence. The
+    // content was the inside of a JSON string, so its `\n` characters
+    // are 2-char escapes, NOT real newlines. To make this parseable
+    // as a JSON object, we need to convert the 2-char `\n` (and
+    // other JSON escapes) to their real-character equivalents. Wrap
+    // the body in a JSON string and re-parse so the standard JSON
+    // unescape logic handles the conversion.
+    try {
+      body = JSON.parse('"' + body.replace(/"/gu, '\\"') + '"');
+    } catch {
+      // Body is not a valid JSON-string-encoded value; fall through
+      // and return it as-is so the caller's `tryParseJson` (and the
+      // balanced-object fallback) can try other shapes.
+    }
+  }
   return body ?? rawText;
 }
 

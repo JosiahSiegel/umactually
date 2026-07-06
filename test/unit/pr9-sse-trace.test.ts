@@ -84,27 +84,34 @@ describe("PR-9 SSE→payload→parse trace", () => {
     expect(textPayload).toContain('"summary"');
   });
 
-  it("REGRESSION: model wraps JSON in ```json fence — extractor must handle", () => {
+  it("REGRESSION: model wraps JSON in ```json fence using JSON-escaped \\n (2 chars) — extractor must handle", () => {
+    // Mark this test distinctly so its console output is identifiable.
+    console.log("=== TEST 3 START ===");
     // The 2026-07-05T23:59:46Z self-review run (requestId=771a64b3) had
     // textPayload that started with `\`\`\`json\n{\n  "summary": "Large
-    // PR replacing buildReviewBody...` and ended with `\n}\n\`\`\`` —
-    // the model wrapped its JSON in a markdown code fence. The
-    // `extractJsonFenceBody` regex should strip the fence and return
-    // the body, then `tryParseJson` should parse it.
+    // PR...` — where `\n` is the LITERAL 2-char sequence (backslash + n),
+    // not a real newline. This is because the model wrote the response
+    // as a JSON string (SSE delta value), so it had to escape newlines
+    // per the JSON spec.
+    //
+    // The current `extractJsonFenceBody` regex uses `\s*\n` which matches
+    // a real newline character, NOT the 2-char `\n` escape. So when the
+    // fence boundaries are JSON-escaped, the regex doesn't match and the
+    // fence body is not extracted. This is the bug.
     const realReview = {
-      summary: "Large PR replacing buildReviewBody with a severity-table layout (1 of 20 alternatives), adding SSE+JSON robustness fixes, debug raw-response tracing, dist-freshness CI guard, and a server-side manifest for the dedup loop. The verdict is NEEDS_FIX because the new cross-platform severity-table layout makes assumptions about GitHub Actions runners that may not hold for all providers.",
+      summary: "Large PR replacing buildReviewBody with a severity-table layout.",
       verdict: "NEEDS_FIX",
       comments: [
-        { path: "src/cli/live-shared.ts:227", line: 227, body: "The CLARITY-4 doc-comment section is stale — remove it.", severity: "high", category: "documentation" },
+        { path: "src/cli/live-shared.ts:227", line: 227, body: "Stale doc comment.", severity: "high", category: "documentation" },
       ],
-      suppressed_comments: [
-        { path: "scripts/clean-viewer.mjs:8", line: 8, body: "Hardcoded PR_NUMBER = 9 — note that this is a one-off maintainer tool.", severity: "low", category: "code-quality" },
-      ],
+      suppressed_comments: [],
     };
     const realReviewJson = JSON.stringify(realReview, null, 2);
 
-    // The model's response shape: a delta carrying the fenced JSON
-    const fenceWrapped = "```json\n" + realReviewJson + "\n```";
+    // The model wraps the JSON in ```json\n{...}\n```. The \n here is
+    // the JSON escape (2 chars), not a real newline — because the entire
+    // response is itself a JSON string in the SSE delta envelope.
+    const fenceWrapped = "```json\\n" + realReviewJson.replace(/\n/g, "\\n") + "\\n```";
     const deltaEnvelope = JSON.stringify({
       type: "response.output_text.delta",
       delta: fenceWrapped,
