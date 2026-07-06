@@ -6072,8 +6072,14 @@ function extractJsonBlock(rawText) {
         return fencedAttempt;
     }
     const balanced = extractFirstBalancedObject(rawText);
+    if (process.env["UMACTUALLY_DEBUG_RAW"] === "1") {
+        process.stderr.write(`[DEBUG-RAW] extractJsonBlock: balanced.length=${balanced?.length ?? "null"}\n`);
+    }
     if (balanced !== null) {
         const balancedAttempt = tryParseJson(balanced);
+        if (process.env["UMACTUALLY_DEBUG_RAW"] === "1") {
+            process.stderr.write(`[DEBUG-RAW] extractJsonBlock: balancedAttempt=${balancedAttempt !== undefined ? "ok" : "failed"}\n`);
+        }
         if (balancedAttempt !== undefined) {
             return balancedAttempt;
         }
