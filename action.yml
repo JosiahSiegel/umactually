@@ -91,9 +91,12 @@ inputs:
     required: false
     default: "false"
   minimum-severity:
-    description: Minimum severity to post (low|medium|high).
+    description: |
+      Minimum severity to post inline (low|medium|high). Defaults to "medium" —
+      low-severity findings (style, hygiene) are filtered out of the postable set.
+      Set to "low" to keep them.
     required: false
-    default: "low"
+    default: "medium"
   max-comments:
     description: Cap on posted comments per review.
     required: false

@@ -423,8 +423,13 @@ describe("S7 — baseline layout reproduces existing summary invariants", () => 
   });
 
   it("baseline includes the pipeline summary line", () => {
+    // Headline leads with the posted count (6) — the reader's question
+    // is "how many findings will appear inline on this PR?", not "how
+    // many did the model produce?". The model's gross output (7) is
+    // surfaced separately as the off-diff callout, not jammed into
+    // the headline number. See pipelineLine() doc for the rationale.
     const out = renderBaseline(BASELINE, makeBusyData());
-    expect(out).toContain("📊 7 findings → 6 posted, 1 off-diff, 0 filtered");
+    expect(out).toContain("📊 6 inline findings");
   });
 
   it("baseline includes the severity tally", () => {
@@ -477,16 +482,17 @@ describe("severity-table details", () => {
     expect(out).toContain("| 1 | 🟠 Medium | general | `src/no-category.ts`:3 | Missing category. |");
   });
 
-  // CLARITY-19a: when the model produced off-diff/suppressed findings
-  // and the table has fewer rows than the pipeline-line total, the
-  // reader sees the gap as an explicit annotation between the tally
-  // and the table. Without this line, "13 findings → 9 posted" makes
-  // the reader subtract to learn what happened to the other 4.
-  it("emits a reconciliation line when offDiffCount > 0", () => {
-    // 3 model findings: 1 in-diff (posted) + 2 off-diff. Without the
-    // annotation, the reader would see "📊 3 findings → 1 posted, 2
-    // off-diff, 0 filtered" and a 1-row table with no explanation for
-    // the missing 2.
+  // CLARITY-19a: when the model produced off-diff findings, the reader
+  // sees a callout between the tally and the table explaining *why*
+  // the table has fewer rows than the model's gross output (the
+  // off-diff findings target files not in this PR's diff). The
+  // callout is a "reason", not a "math discrepancy" — it does NOT
+  // appear in the headline number, which is just `postedComments.length`.
+  it("emits an off-diff callout when offDiffCount > 0", () => {
+    // 3 model findings: 1 in-diff (posted) + 2 off-diff. The headline
+    // shows "1 inline finding" (the posted one). The callout explains
+    // that 2 of the model's findings were off-diff and therefore not
+    // posted inline.
     const data: ReviewData = makeData({
       review: {
         summary: "Off-diff heavy.",
@@ -511,17 +517,19 @@ describe("severity-table details", () => {
     });
 
     const out = renderSummary("severity-table", data);
-    // The exact format pin — counts come from offDiffCount (2) and
-    // postedComments.length (1), so the math is direct and obvious.
+    // Headline leads with the posted count, not the model gross output.
+    expect(out).toContain("📊 1 inline finding");
+    // Callout explains the *reason* the table has fewer rows than
+    // the model produced — the off-diff findings target files not
+    // in this PR's diff.
     expect(out).toContain(
-      "> 🔍 **2 of the 3 findings are off-diff or suppressed** — the table below shows only the **1** in-line comments.",
+      "> 🔍 2 off-diff findings not posted inline — the model produced them but they target files not in this PR's diff.",
     );
   });
 
-  it("does NOT emit a reconciliation line when offDiffCount === 0", () => {
-    // All model findings became in-line comments. The pipeline-line
-    // total already matches the table row count, so the annotation
-    // would be noise.
+  it("does NOT emit an off-diff callout when offDiffCount === 0", () => {
+    // All model findings became in-line comments. The headline
+    // already answers the reader's question — no callout needed.
     const data: ReviewData = makeData({
       review: {
         summary: "All in-line.",
@@ -541,7 +549,8 @@ describe("severity-table details", () => {
     });
 
     const out = renderSummary("severity-table", data);
-    expect(out).not.toContain("are off-diff or suppressed");
+    expect(out).toContain("📊 1 inline finding");
+    expect(out).not.toContain("not posted inline");
   });
 
   it("does NOT emit a reconciliation line in the parse-failed branch", () => {
@@ -564,10 +573,91 @@ describe("severity-table details", () => {
     });
 
     const out = renderSummary("severity-table", data);
-    // ⚠️ banner present, no 📊 pipeline line, no reconciliation line.
+    // ⚠️ banner present, no 📊 headline, no off-diff callout.
     expect(out).toContain("> ⚠️ `Parse failed`");
     expect(out).not.toMatch(/📊/u);
-    expect(out).not.toContain("are off-diff or suppressed");
+    expect(out).not.toMatch(/not posted inline/u);
+  });
+
+  // New headline format: leads with postedComments.length (not the
+  // model's gross output). The reader's question is "how many findings
+  // will appear inline on this PR?" — and the answer is the posted
+  // count, full stop.
+  it("headline reads 'N inline findings' (singular when N === 1)", () => {
+    const data: ReviewData = makeData({
+      review: {
+        summary: "One finding.",
+        verdict: "NEEDS_FIX",
+        comments: [{ path: "src/a.ts", line: 1, body: "x", severity: "high", category: "bug" }],
+        suppressedComments: [],
+      },
+      validCommentCount: 1,
+      suppressedCommentCount: 0,
+      severityCounts: { critical: 0, high: 1, medium: 0, low: 0 },
+      offDiffFromComments: [],
+      postedComments: [{ path: "src/a.ts", line: 1, body: "x", severity: "high", category: "bug" }],
+    });
+    const out = renderSummary("severity-table", data);
+    // Singular form (no trailing "s").
+    expect(out).toContain("📊 1 inline finding");
+    expect(out).not.toContain("📊 1 inline findings");
+  });
+
+  it("headline reads 'N inline findings' (plural when N > 1) and equals postedComments.length not validCommentCount", () => {
+    // The model produced 4 comments but the runtime only posted 2
+    // (2 were filtered by severity policy). The headline must read
+    // "2 inline findings" — the posted count, not the model gross
+    // output, not the caller-supplied validCommentCount which the
+    // renderer does not directly consult.
+    const data: ReviewData = makeData({
+      review: {
+        summary: "Some filtered.",
+        verdict: "NEEDS_FIX",
+        comments: [
+          { path: "src/a.ts", line: 1, body: "x", severity: "high", category: "bug" },
+          { path: "src/b.ts", line: 1, body: "y", severity: "medium", category: "bug" },
+        ],
+        suppressedComments: [],
+      },
+      validCommentCount: 2,
+      suppressedCommentCount: 0,
+      severityCounts: { critical: 0, high: 1, medium: 1, low: 0 },
+      offDiffFromComments: [],
+      postedComments: [
+        { path: "src/a.ts", line: 1, body: "x", severity: "high", category: "bug" },
+        { path: "src/b.ts", line: 1, body: "y", severity: "medium", category: "bug" },
+      ],
+    });
+    const out = renderSummary("severity-table", data);
+    expect(out).toContain("📊 2 inline findings");
+  });
+
+  it("headline reads '0 inline findings' when postedComments is empty, even if model produced findings", () => {
+    // The caller says 0 posted (all filtered). The headline must
+    // read "0 inline findings" — the user's question is "how many
+    // will I see on this PR?" and the answer is 0.
+    const data: ReviewData = makeData({
+      review: {
+        summary: "All filtered.",
+        verdict: "COMMENT",
+        comments: [
+          { path: "dist/cli.js", line: 1, body: "Bundled", severity: "info", category: "build" },
+          { path: "dist/cli.js", line: 2, body: "Bundled", severity: "info", category: "build" },
+        ],
+        suppressedComments: [],
+      },
+      validCommentCount: 0,
+      suppressedCommentCount: 0,
+      severityCounts: { critical: 0, high: 0, medium: 0, low: 0 },
+      offDiffFromComments: [],
+      // postedComments: [] — explicitly empty (not the review.comments
+      // fallback) so the headline reads 0, not 2.
+      postedComments: [],
+    });
+    const out = renderSummary("severity-table", data);
+    expect(out).toContain("📊 0 inline findings");
+    // No off-diff callout when offDiffCount === 0.
+    expect(out).not.toMatch(/not posted inline/u);
   });
 });
 

@@ -30,6 +30,7 @@ These entries mirror `action.yml`.
 | `max-comments` | — | `50` | Positive integer | Cap on posted inline comments per review. Set to `0` to disable the cap. |
 | `review-file-limit` | `REVIEW_FILE_LIMIT` | `200` | Positive integer, or `0` to disable | Soft cap on the number of changed files the live review path will process. When `countDiffFiles(diff) > review-file-limit` the CLI skips the live review and posts a "diff too large to review" parent card with zero inline findings — the chunked LLM reviews of arbitrarily-large initial-import diffs produce hallucinated findings that aren't grounded in the code. Raise this for huge PRs, or set to `0` to disable the cap entirely. |
 | `ignore-minor` | `UMACTUALLY_IGNORE_MINOR` | `false` | `true`, `false` | Suppresses minor non-security findings only. Leaks and security findings are still reported. |
+| `minimum-severity` | `REVIEW_MINIMUM_SEVERITY` | `medium` | `low`, `medium`, `high` | Minimum severity for inline comments. Defaults to `medium`, so `low`-severity findings (style, hygiene) are filtered out before posting. Set to `low` to keep them. |
 | `prompt` | `UMACTUALLY_PROMPT` | `""` | String | Inline system prompt override. Wins over `prompt-file`. |
 | `additional-prompt` | `UMACTUALLY_ADDITIONAL_PROMPT` | `""` | String | Inline additional prompt override. Wins over `additional-prompt-file`. |
 | `prompt-file` | `UMACTUALLY_PROMPT_FILE` | `""` | Repository-relative path | Optional prompt instructions file. Absolute paths and `..` traversal are rejected. |

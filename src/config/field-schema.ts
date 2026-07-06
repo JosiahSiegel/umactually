@@ -182,7 +182,11 @@ export const FIELDS = {
     input: "minimum-severity",
     env: ["REVIEW_MINIMUM_SEVERITY"],
     type: "enum",
-    defaultValue: "low",
+    // BREAKING CHANGE (unreleased): default flipped from "low" to "medium"
+    // so low-severity (style/hygiene) findings are filtered out of the
+    // postable set by default. Users who want to keep low findings
+    // inline can set `minimum-severity: low` explicitly.
+    defaultValue: "medium",
     enumValues: ["low", "medium", "high"],
   },
   maxComments: {

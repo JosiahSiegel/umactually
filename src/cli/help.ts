@@ -19,6 +19,7 @@ export const CLI_HELP_TEXT = [
   "  --sonar-token <token>",
   "  --sonar-project-key <key>",
   "  --ignore-minor",
+  "  --minimum-severity <low|medium|high>  default: medium",
   "  --detect-leaks | --no-detect-leaks",
   "  --dry-run               Write artifact JSON only, no provider calls",
   "  --simulate-findings     Replace empty live findings with deterministic fixture",

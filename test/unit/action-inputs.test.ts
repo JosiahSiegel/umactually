@@ -53,7 +53,11 @@ const DEFAULT_ACTION_INPUTS: ActionInputs = {
   stallSeconds: 270,
   maxOutputTokens: 16_000,
   ignoreMinor: false,
-  minimumSeverity: "low",
+  // BREAKING CHANGE (unreleased): minimum-severity default is now
+  // "medium" (was "low"). Low-severity findings are filtered out of
+  // the postable set by default. Users opt back in by setting
+  // minimum-severity: "low" explicitly.
+  minimumSeverity: "medium",
   maxComments: 50,
   reviewFileLimit: 200,
   includeSonarqube: false,

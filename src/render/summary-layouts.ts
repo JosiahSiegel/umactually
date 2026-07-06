@@ -225,10 +225,22 @@ function verdictBadge(data: ReviewData): string {
   return "💬 DISCUSS";
 }
 
-/** Pipeline summary line used by most layouts (mirrors CLARITY-19). */
+/**
+ * Pipeline summary line used by most layouts.
+ *
+ * Leads with the number of comments that will appear inline on the diff
+ * (i.e. `postedComments.length`). The reader's question is "how many
+ * findings will I see on this PR?" — not "how many did the model
+ * produce?" The model's gross output is the wrong primary signal
+ * because it includes findings the runtime filtered (severity policy,
+ * off-diff suppression) before posting. Off-diff findings are surfaced
+ * separately as a callout in `layoutSeverityTable` (see
+ * `severity-table off-diff callout` block below), not jammed into the
+ * headline number.
+ */
 function pipelineLine(data: ReviewData): string {
-  const total = totalFindings(data);
-  return `📊 ${total} findings → ${data.validCommentCount} posted, ${offDiffCount(data)} off-diff, ${filteredCount(data)} filtered`;
+  const n = data.postedComments.length;
+  return `📊 ${n} inline finding${n === 1 ? "" : "s"}`;
 }
 
 /** Severity tally line used by most layouts. */
@@ -541,16 +553,16 @@ function layoutSeverityTable(data: ReviewData): string {
     if (tally.length > 0) {
       parts.push(tally);
     }
-    // CLARITY-19a: when findings were filtered or off-diff, the pipeline
-    // line's "N findings" total is the model's gross output and will
-    // not match the table row count below. Surface the gap explicitly
-    // so the reader doesn't have to subtract in their head. Only emits
-    // when offDiffCount > 0 (i.e. there is actually a gap to explain).
+    // CLARITY-19a: when off-diff findings exist, surface them as a
+    // callout so the reader knows why the table has fewer rows than
+    // the model's gross output. The callout explains the *reason*
+    // (findings target files not in this PR's diff) rather than the
+    // *math* (gap between total and inline). Skipped when offDiffCount
+    // is 0 — the headline already answers the reader's question.
     const gap = offDiffCount(data);
-    const inlineRows = data.postedComments.length;
     if (gap > 0) {
       parts.push(
-        `> 🔍 **${gap} of the ${totalFindings(data)} findings are off-diff or suppressed** — the table below shows only the **${inlineRows}** in-line comments.`,
+        `> 🔍 ${gap} off-diff finding${gap === 1 ? "" : "s"} not posted inline — the model produced ${gap === 1 ? "it" : "them"} but ${gap === 1 ? "it" : "they"} target${gap === 1 ? "s" : ""} files not in this PR's diff.`,
       );
     }
     parts.push("");

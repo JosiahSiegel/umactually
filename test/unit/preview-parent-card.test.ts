@@ -129,7 +129,11 @@ describe("severity-table layout — actionable-only parent card", () => {
 
     expect(body).toMatch(/💬\s+DISCUSS/u);
     expect(body).toMatch(/\| — \| — \| — \| — \| _No findings to address_ \|/u);
-    expect(body).toMatch(/📊\s+1\s+findings\s+→\s+0\s+posted,\s+0\s+off-diff,\s+1\s+filtered/u);
+    // Headline leads with the posted count (0). The model produced
+    // 1 finding but it was filtered (severity/minor policy) so 0
+    // made it to the postable set. The reader sees "0 inline
+    // findings" — they don't have to subtract.
+    expect(body).toMatch(/📊\s+0\s+inline\s+findings/u);
     expect(body).not.toMatch(/🏷️/u);
   });
 

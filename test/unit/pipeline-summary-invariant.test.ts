@@ -1,23 +1,25 @@
-// Pins the CLARITY-19 pipeline-summary structural invariant:
-//   totalFindings === postedCount + offDiffCount + filteredCount
+// Pins the new headline invariant for the severity-table layout.
 //
-// Where:
-//   totalFindings  = review.comments.length + review.suppressedComments.length
-//   postedCount    = validCommentCount (caller-supplied)
-//   offDiffCount   = suppressedCommentCount (caller-supplied)
-//   filteredCount  = max(0, totalFindings - postedCount - offDiffCount)
+// OLD format (rejected 2026-07-05 by user feedback):
+//   "📊 13 findings → 9 posted, 4 off-diff, 0 filtered"
+// — The headline number was the model's gross output, not the
+//   number of findings the reviewer would see inline. The reader
+//   had to subtract to learn what would actually appear on the PR.
 //
-// A future code path that routes severity-rejected comments somewhere
-// other than review.suppressedComments would shift the counts and
-// silently skew the rendered pipeline summary. The assertions below
-// exercise every (total, posted, off-diff) shape the live path produces
-// so a refactor of the formula fails loud.
+// NEW format (this test):
+//   "📊 9 inline findings"
+//   "> 🔍 4 off-diff findings not posted inline — the model
+//    produced them but they target files not in this PR's diff."
+// — The headline is the posted count (the reader's question is
+//   "how many findings will appear on this PR?"). The off-diff
+//   count is a separate callout that explains the *reason* for
+//   the gap, not the math.
 //
-// Cutover note: the severity-table layout (chosen from the 20-layout
-// sheet) emits the `📊 N findings → X posted, Y off-diff, Z filtered`
-// line in the rendered body. These tests read that visible pipeline
-// line and verify the postable/off-diff/filtered counts reconcile by
-// construction.
+// The manifest still carries `inlineCount` and `suppressedCount`
+// for downstream consumers. The math invariant
+// (total === posted + off-diff + filtered) is preserved by the
+// data model — the renderer just no longer jams it into the
+// headline. See `CHANGELOG.md` [Unreleased] for the rationale.
 
 import { describe, expect, it } from "vitest";
 
@@ -40,24 +42,10 @@ function readManifest(body: string): Manifest {
   return JSON.parse(match[1] ?? "{}") as Manifest;
 }
 
-function counts(body: string): { total: number; posted: number; offDiff: number; filtered: number } {
-  const match = body.match(/📊\s+(\d+)\s+findings\s+→\s+(\d+)\s+posted,\s+(\d+)\s+off-diff,\s+(\d+)\s+filtered/u);
-  if (match === null) {
-    throw new Error(`pipeline summary line not found in:\n${body}`);
-  }
-  const [, totalRaw, postedRaw, offDiffRaw, filteredRaw] = match;
-  const total = Number(totalRaw);
-  const posted = Number(postedRaw);
-  const offDiff = Number(offDiffRaw);
-  const filtered = Number(filteredRaw);
-  expect(total).toBe(posted + offDiff + filtered);
-  return { total, posted, offDiff, filtered };
-}
-
-describe("CLARITY-19 pipeline summary structural invariant (body-backed)", () => {
+describe("CLARITY-19 (new) headline + off-diff callout invariant (body-backed)", () => {
   it("renders without throwing on inconsistent caller counts (graceful degradation)", () => {
-    // Edge case: caller passes inconsistent counts (offDiff > total).
-    // The renderer should NOT throw — that would 500 the parent card.
+    // Edge case: caller passes inconsistent counts. The renderer
+    // should NOT throw — that would 500 the parent card.
     const body = buildReviewBody({
       review: {
         summary: "Caller inconsistency test.",
@@ -82,7 +70,7 @@ describe("CLARITY-19 pipeline summary structural invariant (body-backed)", () =>
     expect(manifest.suppressedCount).toBe(5);
   });
 
-  it("total === posted + off-diff when comments stay inline", () => {
+  it("headline reads 'N inline findings' and the callout is absent when all comments stay inline", () => {
     const body = buildReviewBody({
       review: {
         summary: "Three findings posted.",
@@ -107,14 +95,17 @@ describe("CLARITY-19 pipeline summary structural invariant (body-backed)", () =>
         { path: "src/c.ts", line: 1, body: "z", severity: "low", category: "general" },
       ],
     });
-    // Manifest carries the posted + suppressed counts.
-    const c = counts(body);
-    expect(c.total).toBe(3);
-    expect(c.posted).toBe(3);
-    expect(c.offDiff).toBe(0);
+    // Headline: 3 inline findings.
+    expect(body).toMatch(/📊\s+3\s+inline\s+findings/u);
+    // No off-diff callout (offDiffCount === 0).
+    expect(body).not.toMatch(/not posted inline/u);
+    // Manifest still carries the breakdown.
+    const manifest = readManifest(body);
+    expect(manifest.inlineCount).toBe(3);
+    expect(manifest.suppressedCount).toBe(0);
   });
 
-  it("total === posted + off-diff when comments split inline + off-diff", () => {
+  it("headline reads 'N inline findings' and the callout fires when comments split inline + off-diff", () => {
     const offDiffComment = {
       path: "src/old.ts",
       line: 1,
@@ -145,14 +136,19 @@ describe("CLARITY-19 pipeline summary structural invariant (body-backed)", () =>
         { path: "src/a.ts", line: 1, body: "x", severity: "high", category: "security" },
       ],
     });
-    // 1 posted + 2 off-diff = 3 total.
-    const c = counts(body);
-    expect(c.total).toBe(3);
-    expect(c.posted).toBe(1);
-    expect(c.offDiff).toBe(2);
+    // Headline: 1 inline finding (NOT 3, NOT "3 findings → 1 posted").
+    expect(body).toMatch(/📊\s+1\s+inline\s+finding/u);
+    // Callout fires because offDiffCount > 0.
+    expect(body).toMatch(
+      /> 🔍 2 off-diff findings not posted inline — the model produced them but they target files not in this PR's diff\./u,
+    );
+    // Manifest still carries the breakdown.
+    const manifest = readManifest(body);
+    expect(manifest.inlineCount).toBe(1);
+    expect(manifest.suppressedCount).toBe(2);
   });
 
-  it("manifest reports zero posted when all model findings were severity-filtered", () => {
+  it("headline reads '0 inline findings' when all model findings were filtered", () => {
     const body = buildReviewBody({
       review: {
         summary: "All filtered.",
@@ -173,16 +169,14 @@ describe("CLARITY-19 pipeline summary structural invariant (body-backed)", () =>
       secrets: SECRETS,
       postedComments: [],
     });
-    // 3 model findings, 0 posted, 0 suppressed. The findings table
-    // surfaces them anyway (callers pass the model output as
-    // postedComments when filtering happens server-side) but the
-    // manifest's inlineCount reflects the post-filter count of 0.
+    // 0 inline findings — reader sees the right number immediately.
+    expect(body).toMatch(/📊\s+0\s+inline\s+findings/u);
+    // Manifest's inlineCount reflects the post-filter count of 0.
     const manifest = readManifest(body);
     expect(manifest.inlineCount).toBe(0);
-    expect(manifest.suppressedCount).toBe(0);
   });
 
-  it("total === 0 on a clean review (0 posted, 0 off-diff)", () => {
+  it("headline reads '0 inline findings' on a clean review (0 posted, 0 off-diff)", () => {
     const body = buildReviewBody({
       review: { summary: "All clear.", verdict: "SHIP", comments: [], suppressedComments: [] },
       provider: "openai-compatible",
@@ -193,17 +187,16 @@ describe("CLARITY-19 pipeline summary structural invariant (body-backed)", () =>
       severityCounts: { critical: 0, high: 0, medium: 0, low: 0 },
       secrets: SECRETS,
     });
-    const c = counts(body);
-    expect(c.total).toBe(0);
-    expect(c.posted).toBe(0);
-    expect(c.offDiff).toBe(0);
+    expect(body).toMatch(/📊\s+0\s+inline\s+findings/u);
+    // No off-diff callout when offDiffCount === 0.
+    expect(body).not.toMatch(/not posted inline/u);
   });
 
   it("parse-failed fallback surfaces the ⚠️ banner and parseFailed flag", () => {
     // The severity-table layout surfaces the parse-fail banner in the
-    // body and the parseFailed flag in the manifest. The pipeline
-    // summary line is NOT emitted in either place — parsed counts are
-    // unreliable for parse-fail cases.
+    // body and the parseFailed flag in the manifest. The headline
+    // and off-diff callout are NOT emitted in either place — parsed
+    // counts are unreliable for parse-fail cases.
     const body = buildReviewBody({
       review: {
         summary: "Provider returned non-JSON.",
@@ -222,6 +215,10 @@ describe("CLARITY-19 pipeline summary structural invariant (body-backed)", () =>
     });
     // Banner is unmistakable.
     expect(body).toMatch(/⚠️ `Parse failed`/u);
+    // No headline in parse-fail branch.
+    expect(body).not.toMatch(/📊/u);
+    // No off-diff callout in parse-fail branch.
+    expect(body).not.toMatch(/not posted inline/u);
     // Manifest carries parseFailed for AI agents.
     const manifest = readManifest(body);
     expect(manifest.parseFailed).toBe(true);

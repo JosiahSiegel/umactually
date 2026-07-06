@@ -242,8 +242,11 @@ describe("buildReviewBody — 5-second scannable clarity", () => {
     expect(body).not.toMatch(/🏷️/u);
     // Findings table is still present with the "no findings" placeholder row.
     expect(body).toMatch(/No findings to address/u);
-    // Pipeline summary is visible so humans can reconcile filtered/off-diff counts.
-    expect(body).toMatch(/📊\s+0\s+findings\s+→\s+0\s+posted,\s+0\s+off-diff,\s+0\s+filtered/u);
+    // Headline leads with the posted count. The clean review has 0
+    // inline findings, so the headline reads "0 inline findings" (no
+    // off-diff callout, since offDiffCount === 0).
+    expect(body).toMatch(/📊\s+0\s+inline\s+findings/u);
+    expect(body).not.toMatch(/not posted inline/u);
     // manifest still emitted
     expect(body).toMatch(/<!--\s*umactually-pr-review:manifest\s*\{/u);
   });
@@ -454,8 +457,10 @@ describe("buildReviewBody — 5-second scannable clarity", () => {
     expect(body).not.toMatch(/📋\s+Posted preview/u);
     // No <details> wrappers anywhere.
     expect(body).not.toContain("<details>");
-    // Pipeline summary is visible so humans can reconcile filtered/off-diff counts.
-    expect(body).toMatch(/📊\s+0\s+findings\s+→\s+0\s+posted,\s+0\s+off-diff,\s+0\s+filtered/u);
+    // Headline leads with the posted count. Clean review = 0 inline
+    // findings, no off-diff callout (offDiffCount === 0).
+    expect(body).toMatch(/📊\s+0\s+inline\s+findings/u);
+    expect(body).not.toMatch(/not posted inline/u);
     // Findings table still present with the empty-row placeholder.
     expect(body).toMatch(/No findings to address/u);
     // Verdict + summary + footer are still there.
@@ -711,14 +716,22 @@ describe("buildReviewBody — 5-second scannable clarity", () => {
       validCommentCount: 0,
       suppressedCommentCount: 0,
       offDiffFromComments: [],
-
+      // Pass postedComments: [] explicitly so the headline reads
+      // 0 inline findings (not the 1-comment fallback from
+      // review.comments — the runtime filtered the only comment
+      // out of the postable set).
+      postedComments: [],
       severityCounts: { critical: 0, high: 0, medium: 0, low: 0 },
       secrets: SECRETS,
     });
     // Tally hidden when all counts zero.
     expect(body).not.toMatch(/🏷️/u);
-    // Pipeline summary is visible so humans can reconcile filtered/off-diff counts.
-    expect(body).toMatch(/📊\s+1\s+findings\s+→\s+0\s+posted,\s+0\s+off-diff,\s+1\s+filtered/u);
+    // Headline leads with the posted count (0). No off-diff callout
+    // because offDiffCount === 0 (the model produced 1 finding but it
+    // was filtered before posting). The reader sees "0 inline
+    // findings" — they don't have to subtract.
+    expect(body).toMatch(/📊\s+0\s+inline\s+findings/u);
+    expect(body).not.toMatch(/not posted inline/u);
     // Verdict downgrades to DISCUSS per CLARITY-14f.
     expect(body).toMatch(/💬\s+DISCUSS/u);
   });
