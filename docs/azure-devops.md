@@ -78,6 +78,25 @@ The project build service identity mapped to `SYSTEM_ACCESSTOKEN` does not alway
 
 When `AZURE_DEVOPS_TOKEN` is set, the CLI uses it in preference to `SYSTEM_ACCESSTOKEN` for posting threads and statuses, so the build service identity's missing permission is bypassed. When `AZURE_DEVOPS_TOKEN` is empty, the CLI falls back to `SYSTEM_ACCESSTOKEN` so dry-run and manual callers keep working. The PAT value is treated as a secret and is redacted from logs and provider payloads.
 
+### Local development: sourcing the PAT from `.env`
+
+For local inspection of PR state (reviewing posted threads, checking merge status, fetching run logs from outside the agent), store the PAT in `.env` as `DEVOPS_PAT` and source it into the shell:
+
+```bash
+# .env (gitignored — never commit)
+DEVOPS_PAT=<your-pat>
+AZURE_DEVOPS_ORG=josiah-siegel
+AZURE_DEVOPS_PROJECT=DemoProject
+AZURE_DEVOPS_PULL_REQUEST_ID=51
+
+# One-shot source for a single command
+set -a && source .env && set +a
+curl -s -u ":${DEVOPS_PAT}" \
+  "https://dev.azure.com/${AZURE_DEVOPS_ORG}/${AZURE_DEVOPS_PROJECT}/_apis/git/pullrequests/${AZURE_DEVOPS_PULL_REQUEST_ID}?api-version=7.1"
+```
+
+Both `DEVOPS_PAT` (agent-friendly name) and `AZURE_DEVOPS_TOKEN` (runtime-side name) can hold the same PAT value. The `.env.example` template at the repo root documents the local flow.
+
 ## Fetching PR metadata and diff
 
 The root pipeline fetches real PR metadata and the PR diff only when `SYSTEM_PULLREQUEST_PULLREQUESTID` is present. The actual implementation lives in [`scripts/prepare-azure-pr-inputs.sh`](../scripts/prepare-azure-pr-inputs.sh), which both the root pipeline and `examples/azure/azure-pipelines.yml` invoke via a single shell step:
