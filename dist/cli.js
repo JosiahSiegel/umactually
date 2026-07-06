@@ -3344,9 +3344,12 @@ function collapseBody(c, secrets) {
  * helper is parameterised rather than hardcoded. The threshold check
  * (`> max`) preserves a string at exactly `max` chars — i.e. we only
  * truncate when there is something to cut. The cut leaves room for the
- * single-char `…` suffix (i.e. `slice(0, max - 1)`), which matches the
- * byte-for-byte truncation budget the layouts have always used
- * (e.g. `length > 80 ? slice(0, 77) + '…' : title` → 78 visible chars).
+ * single-char `…` suffix (i.e. `slice(0, max - 3)`, then append `…`),
+ * which matches the byte-for-byte truncation budget the layouts have
+ * always used (e.g. `length > 80 ? slice(0, 77) + '…' : title` → 78
+ * visible chars). Two chars of headroom are dropped so future suffixes
+ * wider than `…` (e.g. two-char '..') can swap in without re-tuning
+ * every call site.
  *
  * Pass `max = 0` (or any falsy) to disable truncation and return the
  * input unchanged — useful when a layout has unlimited horizontal room.
