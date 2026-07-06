@@ -400,10 +400,12 @@ function readCommentArray(value: unknown): readonly ProviderComment[] {
  *   - `high`     → `high`
  *   - `critical` → `critical`
  *   - `blocker`  → `critical` (Sonar blocker ≈ our critical)
- *   - `security` → `high`     (security findings aren't a separate
- *                              rank in our scale; rank `high` keeps them
- *                              visible without bypassing the threshold)
- *   - `leak`     → `high`     (same rationale as security)
+ *   - `security` → `critical` (security findings are never "minor";
+ *                              they must survive `minimum-severity:
+ *                              critical` so a security-conscious user
+ *                              doesn't accidentally filter them out)
+ *   - `leak`     → `critical` (same rationale — leaked secrets are the
+ *                              highest-severity class of finding)
  *   - anything else → `medium` (preserves prior default behavior)
  *
  * Unknown-but-non-empty values now get a sensible rank instead of the
@@ -411,7 +413,7 @@ function readCommentArray(value: unknown): readonly ProviderComment[] {
  * correctly: a `nit` becomes `info` (rank 0) and is filtered out under
  * `minimum-severity: medium` (rank 2).
  */
-function normalizeProviderSeverity(value: string | null): string {
+export function normalizeProviderSeverity(value: string | null): string {
   if (value === null || value.length === 0) {
     return "medium";
   }
@@ -427,11 +429,11 @@ function normalizeProviderSeverity(value: string | null): string {
     case "medium":
       return "medium";
     case "high":
-    case "security":
-    case "leak":
       return "high";
     case "critical":
     case "blocker":
+    case "security":
+    case "leak":
       return "critical";
     default:
       return "medium";
