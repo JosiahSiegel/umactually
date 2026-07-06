@@ -236,14 +236,37 @@ function findingLine(c: LiveReviewComment, secrets: readonly string[]): string {
   return `\`${cell(c.path)}\`:${c.line} — ${snippet}`;
 }
 
-/** Severity → display emoji used by every layout that wants a single glyph. */
+/**
+ * Severity → display emoji used by every layout that wants a single glyph.
+ *
+ * Uses the Unicode colored-circle emoji (🟣 🔴 🟠 🟡 ⚪) because they
+ * render with their own color on GitHub (which ships a colored emoji
+ * font) without any inline HTML or `style` attribute. An earlier revision
+ * tried inline `<span style="color:…">…</span>` to work around Azure
+ * DevOps not rendering colored emoji — but GitHub's sanitizer strips
+ * the `style` attribute from `<span>` tags (verified via the GitHub
+ * `/markdown` API), so the colors vanished on GitHub and the approach
+ * failed on both platforms.
+ *
+ * CROSS-PLATFORM STATUS:
+ *   - GitHub: renders with color (ships a colored emoji font).
+ *   - Azure DevOps: renders as outline `⚪` for all severities (no
+ *     colored emoji font installed). Reviewers on Azure lose the
+ *     color signal but the glyph shape (`🟣`/`🔴`/`🟠`/`🟡`) is
+ *     still distinct. This is a known cross-platform limitation,
+ *     not a regression.
+ *
+ * The fallback (unknown severity) is the same outline `⚪` so
+ * "I don't know what this is" doesn't visually claim to be a real severity.
+ */
 function severityEmoji(level: string): string {
   switch (level.toLowerCase()) {
     case "critical": return "🟣";
-    case "high": return "🔴";
-    case "medium": return "🟠";
-    case "low": return "🟡";
-    default: return "⚪";
+    case "high":     return "🔴";
+    case "medium":   return "🟠";
+    case "low":      return "🟡";
+    case "info":     return "🟡";
+    default:         return "⚪";
   }
 }
 

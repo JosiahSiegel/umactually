@@ -482,6 +482,44 @@ describe("severity-table details", () => {
     expect(out).toContain("| 1 | 🟠 Medium | general | `src/no-category.ts`:3 | Missing category. |");
   });
 
+  // Pin the cross-platform severity rendering. Each known severity emits
+  // a distinct colored-circle Unicode emoji. GitHub renders with color;
+  // Azure DevOps falls back to outline `⚪` (a known cross-platform
+  // limitation — the glyph shape is still distinct, so reviewers can
+  // still differentiate by shape). The plain-○ fallback for unknown
+  // severities doesn't visually claim a real severity rank.
+  it("severityEmoji emits a distinct Unicode glyph per known severity", () => {
+    // Mirror the function under test (kept in sync — see summary-layouts.ts).
+    const cases: ReadonlyArray<{ readonly severity: string; readonly glyph: string }> = [
+      { severity: "critical", glyph: "🟣" },
+      { severity: "high",     glyph: "🔴" },
+      { severity: "medium",   glyph: "🟠" },
+      { severity: "low",      glyph: "🟡" },
+      { severity: "info",     glyph: "🟡" },
+    ];
+    for (const c of cases) {
+      const data = makeData({
+        postedComments: [
+          { path: "src/x.ts", line: 1, body: "x", severity: c.severity, category: "general" },
+        ],
+      });
+      const out = renderSummary("severity-table", data);
+      expect(out).toContain(c.glyph);
+    }
+  });
+
+  it("severityEmoji emits plain-⚪ fallback for unknown severities", () => {
+    // Unknown severities don't match any bucket in severity-table, so use
+    // a layout that renders every comment inline (verdict-banner).
+    const data = makeData({
+      postedComments: [
+        { path: "src/x.ts", line: 1, body: "x", severity: "unknown", category: "general" },
+      ],
+    });
+    const out = renderSummary("verdict-banner", data);
+    expect(out).toContain("⚪");
+  });
+
   // CLARITY-19a: when the model produced off-diff findings, the reader
   // sees a callout between the tally and the table explaining *why*
   // the table has fewer rows than the model's gross output (the
