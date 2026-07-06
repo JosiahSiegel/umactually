@@ -42,11 +42,40 @@ jobs:
       - name: Check bundled dist is fresh
         run: npm run check:dist-freshness
 
+      # Fetch the actual PR diff and write it to artifacts/manual/diff.patch
+      # so the action can review against the real changes (not the
+      # placeholder diff it auto-generates when INPUT_DIFF is missing).
+      # Regression: prior runs posted "No pull request diff was provided"
+      # parse-fail cards because INPUT_DIFF was unset and the action
+      # silently substituted its 3-line placeholder diff, which the
+      # model correctly rejected as not-a-real-diff.
+      - name: Fetch PR diff
+        if: github.event_name == 'pull_request'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            const path = require('path');
+            const { data: pr } = await github.rest.pulls.get({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              pull_number: context.issue.number,
+              mediaType: { format: 'diff' },
+            });
+            const dir = 'artifacts/manual';
+            fs.mkdirSync(dir, { recursive: true });
+            fs.writeFileSync(path.join(dir, 'diff.patch'), pr, 'utf8');
+            core.info(`wrote PR diff (${pr.length} bytes) to ${dir}/diff.patch`);
+
       - name: Run UmActually self review
         uses: ./
         with:
           dry-run: 'false'
           detect-leaks: 'false'
+          # Pass the fetched diff path to the action. Without this, the
+          # action falls back to a 3-line placeholder diff and the model
+          # rejects it as "no pull request diff was provided".
+          diff: 'artifacts/manual/diff.patch'
           # Emit the extracted payload to stderr on parse-fail so the
           # GitHub Actions log shows what the parser actually saw. The
           # 16 KB diagnostic in the PR comment truncates the middle of

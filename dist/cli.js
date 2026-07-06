@@ -6585,8 +6585,16 @@ function isApologySummary(summary) {
     // clean-review summaries that happen to contain "cannot" or "review"
     // in other contexts (e.g. "I cannot find any issues to review").
     const APOLOGY_PATTERNS = [
-        // "no diff / file contents were provided / shared / available"
+        // "no diff / file contents were provided / shared / available" — direct form.
         /\bno\s+(diff|file\s+contents?|contents?)\b.*\b(provided|shared|available|supplied)\b/u,
+        // "no [pull request | pr | file] diff was provided" — the model often
+        // adds "pull request" / "pr" / "file" between "no" and "diff" before
+        // reaching the apology verb. Live evidence (PR self-review at
+        // 2026-07-06T22:08Z): "No pull request diff was provided in the
+        // request, so no review can be produced." — the narrow `no\s+(diff|...)`
+        // pattern above misses this. This broadened pattern matches any
+        // "no <modifier>* diff/file/contents ... <apology verb>" form.
+        /\bno\s+(?:pull\s+request\s+|pr\s+|file\s+|the\s+|any\s+)*(?:diff|file\s+contents?|contents?)\b.*\b(provided|shared|available|supplied|received)\b/u,
         // "please share / provide / send the diff / file / pull request"
         /\bplease\s+(share|provide|send)\s+(the\s+)?(diff|file|pull\s+request|pr)\b/u,
         // "I cannot / can't review this / it / the PR" — narrow to the
