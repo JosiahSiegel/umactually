@@ -528,7 +528,14 @@ function parseCliArgs(args) {
     let sonarProjectKey = null;
     let sonarTimeoutSeconds = null;
     let ignoreMinor = false;
-    let minimumSeverity = null;
+    // BREAKING CHANGE: default flipped from null (no minimum) to "medium".
+    // Matches the action.yml default and src/config/field-schema.ts so the
+    // CLI and the GitHub Action behave the same out of the box. Without
+    // this, the CLI path's passesSeverityPolicy() short-circuits on null
+    // and posts every finding including low/info, while the action filters
+    // them. Users who want the old "no minimum" behavior can pass
+    // `--minimum-severity low` explicitly.
+    let minimumSeverity = "medium";
     let maxComments = null;
     let reviewFileLimit = null;
     let detectLeaks = true;
