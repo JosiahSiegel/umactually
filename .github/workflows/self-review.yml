@@ -42,18 +42,6 @@ jobs:
       - name: Check bundled dist is fresh
         run: npm run check:dist-freshness
 
-      # Self-review guard: refuses to pass CI when the action's output
-      # artifact is a parse-fail diagnostic card instead of a real
-      # review. Regression context: PR #17 self-review posted the same
-      # parse-fail card 4 times in a row (rounds 2-4 of thread
-      # resolution) and every CI check passed because the action exit
-      # code was 0. This guard catches that regression class so the
-      # next time the parser regresses, CI fails immediately instead of
-      # posting garbage to the PR.
-      - name: Verify self-review output is a real review
-        if: always()
-        run: node scripts/check-self-review-output.mjs
-
       - name: Run UmActually self review
         uses: ./
         with:
@@ -70,6 +58,18 @@ jobs:
         env:
           UMACTUALLY_API_URL: ${{ secrets.UMACTUALLY_API_URL }}
           UMACTUALLY_API_KEY: ${{ secrets.UMACTUALLY_API_KEY }}
+
+      # Self-review guard: refuses to pass CI when the action's output
+      # artifact is a parse-fail diagnostic card instead of a real
+      # review. Runs AFTER the action step (with if: always()) so it
+      # inspects the current run's output, not a stale artifact from a
+      # previous run. Regression context: PR #17 self-review posted
+      # the same parse-fail card 4 times in a row and every CI check
+      # passed because the action exit code was 0 — this guard catches
+      # that regression class.
+      - name: Verify self-review output is a real review
+        if: always()
+        run: node scripts/check-self-review-output.mjs
 
 # Verifying the action posted a review
 # -----------------------------------
