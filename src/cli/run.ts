@@ -307,21 +307,29 @@ async function writeLiveArtifact(
   cwd: string,
   result: { readonly posted: boolean; readonly message: string },
 ): Promise<void> {
+  // Only write a parse-fail sentinel when the live review did NOT post.
+  // For successful posts, the GitHub API already records what was posted
+  // (inline threads + status) and the local artifact's job is to help
+  // the self-review guard catch regressions — which only matters when
+  // the action silently dropped its payload. Overwriting a legitimate
+  // (non-zero inlineThreadCount) artifact with zeros would make the
+  // guard see a false-positive parse-fail on the next CI run.
   if (parsed.outputArtifact === null) return;
+  if (result.posted) return;
   const artifactPath = isAbsolute(parsed.outputArtifact)
     ? parsed.outputArtifact
     : resolve(cwd, parsed.outputArtifact);
   await mkdir(dirname(artifactPath), { recursive: true });
   const body = {
     artifactPath,
-    posted: result.posted,
+    posted: false,
     message: result.message,
     marker: "<!-- umactually-pr-review -->",
     inlineThreadCount: 0,
     suppressedCommentCount: 0,
     blockedRawOutput: false,
-    parseFailed: !result.posted,
-    note: "Live review did not produce a parseable dry-run artifact body. Inspect the PR review itself for the actual findings count.",
+    parseFailed: true,
+    note: "Live review did not post anything via the GitHub/Azure API. Inspect the action log for the underlying parser/network error.",
   };
   await writeFile(artifactPath, `${JSON.stringify(body, null, 2)}\n`, "utf8");
 }

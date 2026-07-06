@@ -59,7 +59,7 @@ function classify(content) {
 
   // Two artifact shapes exist:
   //   1. GitHub self-review shape: { event, verdict, inlineThreadCount,
-  //      suppressedCommentCount, marker, blockedRawOutput }
+  //      suppressedCommentCount, marker, blockedRawOutput, parseFailed }
   //   2. Azure self-review shape:  { postedThreadCount,
   //      postedStatusState, marker, blockedRawOutput }
   const event = String(parsed.event ?? "").trim();
@@ -69,9 +69,29 @@ function classify(content) {
   const suppressedCommentCount = Number(parsed.suppressedCommentCount ?? 0);
   const postedStatusState = String(parsed.postedStatusState ?? "").trim();
   const blockedRawOutput = parsed.blockedRawOutput === true;
+  const parseFailed = parsed.parseFailed === true;
 
   // Sum threads across both shapes.
   const totalFindings = inlineThreadCount + postedThreadCount;
+
+  // Explicit parse-fail signal: when the live-path artifact writer
+  // (writeLiveArtifact in src/cli/run.ts) sees a non-posted run, it
+  // stamps parseFailed=true so the guard can catch the failure even
+  // if the artifact has no findings (the only way a parse-fail
+  // card can be distinguished from a legitimately-empty review).
+  if (parseFailed) {
+    return {
+      ok: false,
+      reason: "parse-fail: artifact explicitly flagged parseFailed=true",
+      event,
+      verdict,
+      inlineThreadCount,
+      postedThreadCount,
+      postedStatusState,
+      blockedRawOutput,
+      parseFailed,
+    };
+  }
 
   // Parse-fail signal: zero findings AND no status/event AND no verdict.
   // A real review has at least one of: event set, verdict set, postedStatusState
@@ -146,7 +166,7 @@ for (const relativePath of ARTIFACTS) {
   if (!result.ok) {
     console.error(
       `[FAIL] ${relativePath}: ${result.reason} ` +
-        `(event=${result.event} verdict=${result.verdict} threads=${result.inlineThreadCount})`,
+        `(event=${result.event} verdict=${result.verdict} threads=${result.inlineThreadCount} parseFailed=${result.parseFailed ?? false})`,
     );
     exitCode = 3;
     continue;
