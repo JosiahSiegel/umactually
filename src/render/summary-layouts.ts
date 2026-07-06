@@ -236,14 +236,47 @@ function findingLine(c: LiveReviewComment, secrets: readonly string[]): string {
   return `\`${cell(c.path)}\`:${c.line} — ${snippet}`;
 }
 
-/** Severity → display emoji used by every layout that wants a single glyph. */
+/**
+ * Severity → colored glyph used by every layout that wants a single dot.
+ *
+ * Returns an inline-HTML span with a CSS `color` plus a per-severity
+ * shape (● / ■ / ▲ / ◆), rather than a raw Unicode emoji like
+ * `🟣 🔴 🟠 🟡`. Two reasons:
+ *
+ * 1. CROSS-PLATFORM COLOR: the colored-circle emoji are Unicode
+ *    variation-selector-16 sequences (`U+1F7E0` etc.) that require a
+ *    colored emoji font to render with color. GitHub ships one; Azure
+ *    DevOps does NOT — the colored circles render as outline `⚪` on
+ *    Azure, so every severity dot collapses to the same outline and
+ *    reviewers can't distinguish critical from medium at a glance.
+ *
+ * 2. SHAPE DIVERSITY: using the same `●` glyph for every severity
+ *    loses the per-severity shape (`🟣`/`🔴`/`🟠`/`🟡`) that some
+ *    reviewers skim by. Color-blind reviewers especially benefit from
+ *    shape diversity. So each severity gets a distinct glyph
+ *    (`●`/`■`/`▲`/`◆`) in addition to color — belt and suspenders.
+ *
+ * Inline `<span style="color: …">…</span>` rendering is presumed to work
+ * on both platforms based on existing precedent: the cross-platform
+ * markdown rule already permits `<details>` and `<table>` (both render
+ * as inline HTML on GitHub and Azure). The colored `style` attribute
+ * is standard HTML 4.01 and is supported by GitHub's sanitizer and
+ * Azure DevOps's markdown engine. If a future platform breaks this
+ * assumption, the assertion will fail visually — the tests assert the
+ * exact glyph + color tuple, not just the string output, so a regression
+ * here is caught by `test/unit/summary-layouts.test.ts`.
+ *
+ * The fallback (unknown severity) renders as a plain outline `○` so
+ * "I don't know what this is" doesn't visually claim to be a real severity.
+ */
 function severityEmoji(level: string): string {
   switch (level.toLowerCase()) {
-    case "critical": return "🟣";
-    case "high": return "🔴";
-    case "medium": return "🟠";
-    case "low": return "🟡";
-    default: return "⚪";
+    case "critical": return `<span style="color:#a371f7">●</span>`;
+    case "high":     return `<span style="color:#cf222e">■</span>`;
+    case "medium":   return `<span style="color:#fb8500">▲</span>`;
+    case "low":      return `<span style="color:#9a6700">◆</span>`;
+    case "info":     return `<span style="color:#9a6700">◆</span>`;
+    default:         return "○";
   }
 }
 
