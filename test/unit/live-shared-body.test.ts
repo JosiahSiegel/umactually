@@ -9,6 +9,7 @@ import {
   countBySeverity,
   type LiveReview,
 } from "../../src/cli/live-shared.js";
+import { renderSummary } from "../../src/render/summary-layouts.js";
 
 const SAMPLE_REVIEW: LiveReview = {
   summary: "Three issues need attention before merge.",
@@ -331,5 +332,178 @@ describe("GitHub + Azure parity", () => {
     // This test pins the contract so a future change knows to test both
     // platform paths when adding reply support.
     expect(true).toBe(true);
+  });
+});
+
+describe("buildReviewBody — severity-tally filter marker", () => {
+  // CLARITY-22: the 🏷️ … tally should visually convey that some tiers
+  // were intentionally hidden by `--minimum-severity` or `--ignore-minor`
+  // so a "0 low" reading doesn't look like "0 low findings exist".
+  // The marker is per-tier: each filtered tier gets a trailing `*`,
+  // and a single code-fenced legend line `` `* = filtered by threshold` ``
+  // appears BELOW the tally. When no threshold is configured the
+  // tally is byte-identical to legacy (no asterisk, no legend).
+  const LEGEND = "`* = filtered by threshold`";
+
+  const reviewWithMixedSeverities: LiveReview = {
+    summary: "Mixed-severity findings for tally marker test.",
+    verdict: "NEEDS_FIX",
+    comments: [
+      { path: "src/a.ts", line: 1, body: "critical issue", severity: "critical", category: "security" },
+      { path: "src/b.ts", line: 2, body: "high issue", severity: "high", category: "maintainability" },
+      { path: "src/c.ts", line: 3, body: "medium issue", severity: "medium", category: "maintainability" },
+      { path: "src/d.ts", line: 4, body: "low issue", severity: "low", category: "docs" },
+    ],
+    suppressedComments: [],
+  };
+
+  it("no threshold → tally has NO asterisks and NO legend (byte-identical to legacy)", () => {
+    const body = buildReviewBody({
+      review: reviewWithMixedSeverities,
+      provider: "openai-compatible",
+      modelId: "auto",
+      validCommentCount: 4,
+      suppressedCommentCount: 0,
+      offDiffFromComments: [],
+      severityCounts: { critical: 1, high: 1, medium: 1, low: 1 },
+      secrets: SECRETS,
+      // No minimumSeverity / ignoreMinor — defaults must keep legacy output.
+    });
+    expect(body).toContain("🏷️ `1` critical · `1` high · `1` medium · `1` low");
+    expect(body).not.toContain(LEGEND);
+    expect(body).not.toMatch(/`1` \w+\*/); // no asterisk on any tier
+  });
+
+  it("minimumSeverity='high' → medium + low get asterisks; legend below tally", () => {
+    const body = buildReviewBody({
+      review: reviewWithMixedSeverities,
+      provider: "openai-compatible",
+      modelId: "auto",
+      validCommentCount: 2, // only critical + high survive
+      suppressedCommentCount: 0,
+      offDiffFromComments: [],
+      severityCounts: { critical: 1, high: 1 }, // medium + low filtered out
+      secrets: SECRETS,
+      minimumSeverity: "high",
+    });
+    expect(body).toContain("🏷️ `1` critical · `1` high · `0` medium* · `0` low*");
+    expect(body).toContain(LEGEND);
+  });
+
+  it("minimumSeverity='critical' → high + medium + low get asterisks", () => {
+    const body = buildReviewBody({
+      review: reviewWithMixedSeverities,
+      provider: "openai-compatible",
+      modelId: "auto",
+      validCommentCount: 1,
+      suppressedCommentCount: 0,
+      offDiffFromComments: [],
+      severityCounts: { critical: 1 },
+      secrets: SECRETS,
+      minimumSeverity: "critical",
+    });
+    expect(body).toContain("🏷️ `1` critical · `0` high* · `0` medium* · `0` low*");
+    expect(body).toContain(LEGEND);
+  });
+
+  it("ignoreMinor=true → only low gets an asterisk; legend below tally", () => {
+    const body = buildReviewBody({
+      review: reviewWithMixedSeverities,
+      provider: "openai-compatible",
+      modelId: "auto",
+      validCommentCount: 3, // critical + high + medium survive
+      suppressedCommentCount: 0,
+      offDiffFromComments: [],
+      severityCounts: { critical: 1, high: 1, medium: 1 },
+      secrets: SECRETS,
+      ignoreMinor: true,
+    });
+    expect(body).toContain("🏷️ `1` critical · `1` high · `1` medium · `0` low*");
+    expect(body).toContain(LEGEND);
+  });
+
+  it("ignoreMinor=false + minimumSeverity='low' → ALL tiers visible → NO asterisks, NO legend", () => {
+    // minimumSeverity='low' means EVERYTHING (rank ≥ 1) is shown; low is
+    // explicitly NOT filtered. ignoreMinor=false. So the marker must be
+    // absent — same as the no-threshold case.
+    const body = buildReviewBody({
+      review: reviewWithMixedSeverities,
+      provider: "openai-compatible",
+      modelId: "auto",
+      validCommentCount: 4,
+      suppressedCommentCount: 0,
+      offDiffFromComments: [],
+      severityCounts: { critical: 1, high: 1, medium: 1, low: 1 },
+      secrets: SECRETS,
+      minimumSeverity: "low",
+      ignoreMinor: false,
+    });
+    expect(body).toContain("🏷️ `1` critical · `1` high · `1` medium · `1` low");
+    expect(body).not.toContain(LEGEND);
+    expect(body).not.toMatch(/`1` \w+\*/); // no asterisk on any tier
+  });
+
+  it("ignoreMinor=true + minimumSeverity='high' → union of filtered tiers; legend present", () => {
+    const body = buildReviewBody({
+      review: reviewWithMixedSeverities,
+      provider: "openai-compatible",
+      modelId: "auto",
+      validCommentCount: 2,
+      suppressedCommentCount: 0,
+      offDiffFromComments: [],
+      severityCounts: { critical: 1, high: 1 },
+      secrets: SECRETS,
+      minimumSeverity: "high",
+      ignoreMinor: true,
+    });
+    // Both flags hide medium + low (ignoreMinor is a no-op since the
+    // minimum threshold already hides them — but the marker/legend must
+    // still appear because the active threshold hides something).
+    expect(body).toContain("🏷️ `1` critical · `1` high · `0` medium* · `0` low*");
+    expect(body).toContain(LEGEND);
+  });
+
+  it("asterisk + legend appear on the `severity-table` default layout (the one buildReviewBody dispatches to)", () => {
+    // The severity-table layout (LAYOUT_DEFAULT) is what buildReviewBody
+    // renders by default. It uses the inline `severityTally` form (NOT
+    // the GFM table form used by `dashboard`). Verify the new marker
+    // shape lands correctly there.
+    const body = buildReviewBody({
+      review: reviewWithMixedSeverities,
+      provider: "openai-compatible",
+      modelId: "auto",
+      validCommentCount: 2,
+      suppressedCommentCount: 0,
+      offDiffFromComments: [],
+      severityCounts: { critical: 1, high: 1 },
+      secrets: SECRETS,
+      minimumSeverity: "high",
+    });
+    // The asterisk appears on filtered tiers and the legend is below.
+    expect(body).toMatch(/`0` medium\* · `0` low\*/);
+    expect(body).toContain(LEGEND);
+  });
+
+  it("asterisk + legend are absent from the `dashboard` layout (which uses a GFM table)", () => {
+    // The `dashboard` layout renders the counts as a GFM table —
+    // "🏷️ Severity breakdown" + a `| Critical | High | Medium | Low |` row.
+    // The inline `🏷️ \`X\` critical · \`X\` high · …` tally does NOT appear
+    // there. Verify the asterisk + legend are NOT emitted there —
+    // the marker is a property of the inline tally form, not the table
+    // form (the dashboard also surfaces a separate "Filtered: N" KPI).
+    const body = renderSummary("dashboard", {
+      review: reviewWithMixedSeverities,
+      provider: "openai-compatible",
+      modelId: "auto",
+      validCommentCount: 2,
+      suppressedCommentCount: 0,
+      offDiffFromComments: [],
+      postedComments: [],
+      severityCounts: { critical: 1, high: 1 },
+      secrets: SECRETS,
+      minimumSeverity: "high",
+    });
+    expect(body).toContain("🏷️ Severity breakdown");
+    expect(body).not.toContain(LEGEND);
   });
 });

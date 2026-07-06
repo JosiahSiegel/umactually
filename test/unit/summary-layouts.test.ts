@@ -520,17 +520,17 @@ describe("severity-table details", () => {
     expect(out).toContain("⚪");
   });
 
-  // CLARITY-19a: when the model produced off-diff findings, the reader
-  // sees a callout between the tally and the table explaining *why*
-  // the table has fewer rows than the model's gross output (the
-  // off-diff findings target files not in this PR's diff). The
-  // callout is a "reason", not a "math discrepancy" — it does NOT
-  // appear in the headline number, which is just `postedComments.length`.
-  it("emits an off-diff callout when offDiffCount > 0", () => {
+  // CLARITY-19a (retired): the off-diff callout used to explain why the
+  // table has fewer rows than the model's gross output. Removed —
+  // reviewers don't action off-diff findings (they target files
+  // outside this PR's diff) and the "Off-diff: N" KPI tile in the
+  // dashboard already exposes the count without noise. The headline
+  // still leads with the posted count; off-diff counts are surfaced
+  // only via the manifest and the dashboard KPI tile.
+  it("does NOT emit an off-diff callout when offDiffCount > 0 (CLARITY-19a retired)", () => {
     // 3 model findings: 1 in-diff (posted) + 2 off-diff. The headline
-    // shows "1 inline finding" (the posted one). The callout explains
-    // that 2 of the model's findings were off-diff and therefore not
-    // posted inline.
+    // shows "1 inline finding" (the posted one). The off-diff count is
+    // surfaced only via the dashboard KPI tile + the manifest.
     const data: ReviewData = makeData({
       review: {
         summary: "Off-diff heavy.",
@@ -555,14 +555,11 @@ describe("severity-table details", () => {
     });
 
     const out = renderSummary("severity-table", data);
-    // Headline leads with the posted count, not the model gross output.
+    // Headline still leads with the posted count.
     expect(out).toContain("📊 1 inline finding");
-    // Callout explains the *reason* the table has fewer rows than
-    // the model produced — the off-diff findings target files not
-    // in this PR's diff.
-    expect(out).toContain(
-      "> 🔍 2 off-diff findings not posted inline — the model produced them but they target files not in this PR's diff.",
-    );
+    // CLARITY-19a retired: no off-diff callout in the body.
+    expect(out).not.toMatch(/not posted inline/u);
+    expect(out).not.toMatch(/🔍/u);
   });
 
   it("does NOT emit an off-diff callout when offDiffCount === 0", () => {
