@@ -21,14 +21,28 @@
 #      lines so downstream steps can read UMACTUALLY_PR_NUMBER and
 #      UMACTUALLY_REPO as pipeline variables.
 #
-# Required env vars (set by the calling Azure pipeline step):
+# Required env vars (set by the calling Azure pipeline step's
+# `variables:` block — see azure-pipelines.yml lines 20-29 and
+# examples/azure/azure-pipelines.yml lines 27-36):
 #   AZURE_ARTIFACT_DIR  artifacts directory (e.g. artifacts/manual)
 #   AZURE_EVENT_PATH    path to write the PR event JSON
 #   AZURE_DIFF_PATH     path to write the PR diff
 #   AZURE_REVIEW_PATH   path to write the review fixture
-#   SYSTEM_ACCESSTOKEN  $(System.AccessToken) mapping (PR fetch only)
+#   SYSTEM_ACCESSTOKEN  $(System.AccessToken) mapping (PR fetch only;
+#                       only required when SYSTEM_PULLREQUEST_PULLREQUESTID
+#                       is set, i.e. branch-policy PR validation builds)
 
 set -euo pipefail
+
+# Fail fast with a clear error if any caller forgets to define the
+# required vars. Under `set -u`, an unset var in `mkdir -p "$X"`
+# would otherwise produce a confusing "no such file or directory"
+# instead of an actionable message naming the missing variable.
+: "${AZURE_ARTIFACT_DIR:?AZURE_ARTIFACT_DIR must be set in the pipeline variables block (e.g. value: artifacts/manual)}"
+: "${AZURE_EVENT_PATH:?AZURE_EVENT_PATH must be set in the pipeline variables block (e.g. value: artifacts/manual/azure-event.json)}"
+: "${AZURE_DIFF_PATH:?AZURE_DIFF_PATH must be set in the pipeline variables block (e.g. value: artifacts/manual/azure-pr.diff)}"
+: "${AZURE_REVIEW_PATH:?AZURE_REVIEW_PATH must be set in the pipeline variables block (e.g. value: artifacts/manual/azure-review.json)}"
+
 mkdir -p "$AZURE_ARTIFACT_DIR"
 
 node --input-type=module <<'NODE'
