@@ -479,22 +479,23 @@ describe("severity-table details", () => {
     }));
 
     const out = renderSummary("severity-table", data);
-    expect(out).toContain("| 1 | <span style=\"color:#fb8500\">▲</span> Medium | general | `src/no-category.ts`:3 | Missing category. |");
+    expect(out).toContain("| 1 | 🟠 Medium | general | `src/no-category.ts`:3 | Missing category. |");
   });
 
-  // Pin the cross-platform severity rendering. Each known severity must
-  // emit a distinct shape AND color (so color-blind reviewers can still
-  // differentiate). The plain-○ fallback is for unknown severities so
-  // "I don't know what this is" doesn't visually claim a real rank.
-  it("severityEmoji emits distinct shape+color per known severity (cross-platform)", () => {
-    // Known severities render through severity-table (which groups by bucket).
+  // Pin the cross-platform severity rendering. Each known severity emits
+  // a distinct colored-circle Unicode emoji. GitHub renders with color;
+  // Azure DevOps falls back to outline `⚪` (a known cross-platform
+  // limitation — the glyph shape is still distinct, so reviewers can
+  // still differentiate by shape). The plain-○ fallback for unknown
+  // severities doesn't visually claim a real severity rank.
+  it("severityEmoji emits a distinct Unicode glyph per known severity", () => {
     // Mirror the function under test (kept in sync — see summary-layouts.ts).
-    const cases: ReadonlyArray<{ readonly severity: string; readonly color: string; readonly glyph: string }> = [
-      { severity: "critical", color: "#a371f7", glyph: "●" },
-      { severity: "high",     color: "#cf222e", glyph: "■" },
-      { severity: "medium",   color: "#fb8500", glyph: "▲" },
-      { severity: "low",      color: "#9a6700", glyph: "◆" },
-      { severity: "info",     color: "#9a6700", glyph: "◆" },
+    const cases: ReadonlyArray<{ readonly severity: string; readonly glyph: string }> = [
+      { severity: "critical", glyph: "🟣" },
+      { severity: "high",     glyph: "🔴" },
+      { severity: "medium",   glyph: "🟠" },
+      { severity: "low",      glyph: "🟡" },
+      { severity: "info",     glyph: "🟡" },
     ];
     for (const c of cases) {
       const data = makeData({
@@ -503,11 +504,11 @@ describe("severity-table details", () => {
         ],
       });
       const out = renderSummary("severity-table", data);
-      expect(out).toContain(`<span style="color:${c.color}">${c.glyph}</span>`);
+      expect(out).toContain(c.glyph);
     }
   });
 
-  it("severityEmoji emits plain-○ fallback for unknown severities", () => {
+  it("severityEmoji emits plain-⚪ fallback for unknown severities", () => {
     // Unknown severities don't match any bucket in severity-table, so use
     // a layout that renders every comment inline (verdict-banner).
     const data = makeData({
@@ -516,10 +517,7 @@ describe("severity-table details", () => {
       ],
     });
     const out = renderSummary("verdict-banner", data);
-    expect(out).toContain("○");
-    // Critically: the unknown severity must NOT get the inline-span wrapper
-    // (that would visually claim a real severity rank via the colored text).
-    expect(out).not.toContain("<span style=\"color:");
+    expect(out).toContain("⚪");
   });
 
   // CLARITY-19a: when the model produced off-diff findings, the reader

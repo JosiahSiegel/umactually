@@ -3379,46 +3379,36 @@ function findingLine(c, secrets) {
     return `\`${cell(c.path)}\`:${c.line} — ${snippet}`;
 }
 /**
- * Severity → colored glyph used by every layout that wants a single dot.
+ * Severity → display emoji used by every layout that wants a single glyph.
  *
- * Returns an inline-HTML span with a CSS `color` plus a per-severity
- * shape (● / ■ / ▲ / ◆), rather than a raw Unicode emoji like
- * `🟣 🔴 🟠 🟡`. Two reasons:
+ * Uses the Unicode colored-circle emoji (🟣 🔴 🟠 🟡 ⚪) because they
+ * render with their own color on GitHub (which ships a colored emoji
+ * font) without any inline HTML or `style` attribute. An earlier revision
+ * tried inline `<span style="color:…">…</span>` to work around Azure
+ * DevOps not rendering colored emoji — but GitHub's sanitizer strips
+ * the `style` attribute from `<span>` tags (verified via the GitHub
+ * `/markdown` API), so the colors vanished on GitHub and the approach
+ * failed on both platforms.
  *
- * 1. CROSS-PLATFORM COLOR: the colored-circle emoji are Unicode
- *    variation-selector-16 sequences (`U+1F7E0` etc.) that require a
- *    colored emoji font to render with color. GitHub ships one; Azure
- *    DevOps does NOT — the colored circles render as outline `⚪` on
- *    Azure, so every severity dot collapses to the same outline and
- *    reviewers can't distinguish critical from medium at a glance.
+ * CROSS-PLATFORM STATUS:
+ *   - GitHub: renders with color (ships a colored emoji font).
+ *   - Azure DevOps: renders as outline `⚪` for all severities (no
+ *     colored emoji font installed). Reviewers on Azure lose the
+ *     color signal but the glyph shape (`🟣`/`🔴`/`🟠`/`🟡`) is
+ *     still distinct. This is a known cross-platform limitation,
+ *     not a regression.
  *
- * 2. SHAPE DIVERSITY: using the same `●` glyph for every severity
- *    loses the per-severity shape (`🟣`/`🔴`/`🟠`/`🟡`) that some
- *    reviewers skim by. Color-blind reviewers especially benefit from
- *    shape diversity. So each severity gets a distinct glyph
- *    (`●`/`■`/`▲`/`◆`) in addition to color — belt and suspenders.
- *
- * Inline `<span style="color: …">…</span>` rendering is presumed to work
- * on both platforms based on existing precedent: the cross-platform
- * markdown rule already permits `<details>` and `<table>` (both render
- * as inline HTML on GitHub and Azure). The colored `style` attribute
- * is standard HTML 4.01 and is supported by GitHub's sanitizer and
- * Azure DevOps's markdown engine. If a future platform breaks this
- * assumption, the assertion will fail visually — the tests assert the
- * exact glyph + color tuple, not just the string output, so a regression
- * here is caught by `test/unit/summary-layouts.test.ts`.
- *
- * The fallback (unknown severity) renders as a plain outline `○` so
+ * The fallback (unknown severity) is the same outline `⚪` so
  * "I don't know what this is" doesn't visually claim to be a real severity.
  */
 function severityEmoji(level) {
     switch (level.toLowerCase()) {
-        case "critical": return `<span style="color:#a371f7">●</span>`;
-        case "high": return `<span style="color:#cf222e">■</span>`;
-        case "medium": return `<span style="color:#fb8500">▲</span>`;
-        case "low": return `<span style="color:#9a6700">◆</span>`;
-        case "info": return `<span style="color:#9a6700">◆</span>`;
-        default: return "○";
+        case "critical": return "🟣";
+        case "high": return "🔴";
+        case "medium": return "🟠";
+        case "low": return "🟡";
+        case "info": return "🟡";
+        default: return "⚪";
     }
 }
 /** Severity → short label used in compact rows. */
@@ -6569,11 +6559,16 @@ function provider_parse_readCommentArray(value) {
         const path = entry["path"];
         const line = readSafeIntegerField(entry, "line");
         if (typeof path === "string" && line !== null) {
+            const body = readStringField(entry, "body") ?? "";
             comments.push({
                 path,
                 line,
-                body: readStringField(entry, "body") ?? "",
-                severity: normalizeProviderSeverity(readStringField(entry, "severity")),
+                body,
+                // Pass body so body-scoped rules (security + hardening/leak
+                // heuristics) can distinguish a hardening tip from an active
+                // leak. Without body, normalizeProviderSeverity falls back to
+                // the severity-only mapping (security → high).
+                severity: normalizeProviderSeverity(readStringField(entry, "severity"), body),
                 category: readStringField(entry, "category") ?? "general",
             });
         }
@@ -6592,7 +6587,7 @@ function provider_parse_readCommentArray(value) {
  * `minimum-severity` threshold (default `medium`) and posts the finding
  * inline even when the user has configured a stricter filter.
  *
- * Mapping:
+ * Mapping (severity-only, no body):
  *   - `info`     → `info`
  *   - `nit`      → `info`     (style nit, below `low`)
  *   - `minor`    → `low`      (Sonar minor ≈ our low)
@@ -6602,20 +6597,40 @@ function provider_parse_readCommentArray(value) {
  *   - `high`     → `high`
  *   - `critical` → `critical`
  *   - `blocker`  → `critical` (Sonar blocker ≈ our critical)
- *   - `security` → `critical` (security findings are never "minor";
- *                              they must survive `minimum-severity:
- *                              critical` so a security-conscious user
- *                              doesn't accidentally filter them out)
- *   - `leak`     → `critical` (same rationale — leaked secrets are the
- *                              highest-severity class of finding)
+ *   - `security` → see body-scoped rules below
+ *   - `leak`     → `critical` (leaked secrets are always the highest
+ *                              severity class — no hardening-tip
+ *                              ambiguity here)
  *   - anything else → `medium` (preserves prior default behavior)
+ *
+ * Body-scoped rules for `security` (when a body is provided):
+ *   - body matches HARDENING_HINT_PATTERN ("consider adding a CSP",
+ *     "rate limiting", etc.) → `high` (it's a hardening tip, not a
+ *     current vulnerability — let the user's threshold filter it if
+ *     they want)
+ *   - body matches LEAK_INDICATOR_PATTERN ("secret", "credential",
+ *     "token", "API key", "password") → `critical` (active leak, must
+ *     survive any threshold)
+ *   - anything else → `high` (default for `security` severity when body
+ *     doesn't indicate either hardening or active leak)
+ *
+ * Rationale for body-scoped rules: a provider that emits severity:
+ * "security" for a low-severity hardening tip ("consider adding a CSP
+ * header") would bypass the user's minimum-severity: critical filter
+ * and post a non-critical finding inline. Body-scoped scoping lets the
+ * mapping distinguish "this is a hardening tip" from "this is an active
+ * leak" using the comment's textual content.
  *
  * Unknown-but-non-empty values now get a sensible rank instead of the
  * catch-all `medium`. The `minimum-severity` threshold then does its job
  * correctly: a `nit` becomes `info` (rank 0) and is filtered out under
  * `minimum-severity: medium` (rank 2).
  */
-function normalizeProviderSeverity(value) {
+/** Patterns that indicate a low-severity hardening tip, not an active vulnerability. */
+const HARDENING_HINT_PATTERN = /\b(consider\s+add(?:ing)?|suggest(?:ed|s)?\s+(?:adding|using)|you\s+(?:may|might|should)\s+want\s+to|harden(?:ing)?|best\s+practice)\b/iu;
+/** Patterns that indicate an active secret leak or credential exposure. */
+const LEAK_INDICATOR_PATTERN = /\b(secret|credential|token|api[\s_-]?key|password|private[\s_-]?key|exposed|leaked|disclosed|committed\s+by\s+accident)\b/iu;
+function normalizeProviderSeverity(value, body) {
     if (value === null || value.length === 0) {
         return "medium";
     }
@@ -6634,9 +6649,23 @@ function normalizeProviderSeverity(value) {
             return "high";
         case "critical":
         case "blocker":
-        case "security":
-        case "leak":
             return "critical";
+        case "leak":
+            // Leaked secrets are always critical — no hardening-tip ambiguity.
+            return "critical";
+        case "security":
+            // Body-scoped: hardening tips stay at high; active leaks escalate
+            // to critical. When no body is provided, default to high (the
+            // conservative choice that lets the user's threshold filter).
+            if (body !== undefined && body !== null && body.length > 0) {
+                if (LEAK_INDICATOR_PATTERN.test(body)) {
+                    return "critical";
+                }
+                if (HARDENING_HINT_PATTERN.test(body)) {
+                    return "high";
+                }
+            }
+            return "high";
         default:
             return "medium";
     }
