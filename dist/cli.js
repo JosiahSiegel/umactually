@@ -7158,6 +7158,28 @@ async function callEndpoint(config, fetchImpl, requestId, endpoint) {
         catch (parseErr) {
             writeDebugRaw(`[DEBUG-RAW] wholeJsonParse: FAILED (${parseErr instanceof Error ? parseErr.message : String(parseErr)})\n`, config);
         }
+        // Also trace the fence extraction result, since the whole-parse
+        // failure on a fence-wrapped response means `extractJsonBlock` is
+        // relying on the fence-body fallback. If the fallback body itself
+        // fails to parse, parseReviewPayload returns null and the retry
+        // fires (regression observed 2026-07-05T23:59:46Z).
+        const fenceBody = textPayload.match(/```[a-zA-Z0-9_+\-]*\s*\n([\s\S]*?)\n```/u)?.[1];
+        if (fenceBody !== undefined) {
+            writeDebugRaw(`[DEBUG-RAW] fenceBody length: ${fenceBody.length}\n`, config);
+            writeDebugRaw(`[DEBUG-RAW] fenceBody first 200: ${JSON.stringify(fenceBody.slice(0, 200))}\n`, config);
+            writeDebugRaw(`[DEBUG-RAW] fenceBody last 200:  ${JSON.stringify(fenceBody.slice(-200))}\n`, config);
+            try {
+                const fenceParsed = JSON.parse(fenceBody);
+                const isRec = fenceParsed !== null && typeof fenceParsed === "object" && !Array.isArray(fenceParsed);
+                writeDebugRaw(`[DEBUG-RAW] fenceJsonParse: ${isRec ? "ok record" : "ok not-record"}\n`, config);
+            }
+            catch (fenceErr) {
+                writeDebugRaw(`[DEBUG-RAW] fenceJsonParse: FAILED (${fenceErr instanceof Error ? fenceErr.message : String(fenceErr)})\n`, config);
+            }
+        }
+        else {
+            writeDebugRaw(`[DEBUG-RAW] fenceBody: NO MATCH\n`, config);
+        }
     }
     // Treat an empty-summary+empty-verdict parse as a parse failure even
     // when `extractJsonBlock` returned an object. The parser is permissive

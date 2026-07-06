@@ -83,4 +83,54 @@ describe("PR-9 SSE→payload→parse trace", () => {
     const textPayload = extractTextPayload("responses", sse);
     expect(textPayload).toContain('"summary"');
   });
+
+  it("REGRESSION: model wraps JSON in ```json fence — extractor must handle", () => {
+    // The 2026-07-05T23:59:46Z self-review run (requestId=771a64b3) had
+    // textPayload that started with `\`\`\`json\n{\n  "summary": "Large
+    // PR replacing buildReviewBody...` and ended with `\n}\n\`\`\`` —
+    // the model wrapped its JSON in a markdown code fence. The
+    // `extractJsonFenceBody` regex should strip the fence and return
+    // the body, then `tryParseJson` should parse it.
+    const realReview = {
+      summary: "Large PR replacing buildReviewBody with a severity-table layout (1 of 20 alternatives), adding SSE+JSON robustness fixes, debug raw-response tracing, dist-freshness CI guard, and a server-side manifest for the dedup loop. The verdict is NEEDS_FIX because the new cross-platform severity-table layout makes assumptions about GitHub Actions runners that may not hold for all providers.",
+      verdict: "NEEDS_FIX",
+      comments: [
+        { path: "src/cli/live-shared.ts:227", line: 227, body: "The CLARITY-4 doc-comment section is stale — remove it.", severity: "high", category: "documentation" },
+      ],
+      suppressed_comments: [
+        { path: "scripts/clean-viewer.mjs:8", line: 8, body: "Hardcoded PR_NUMBER = 9 — note that this is a one-off maintainer tool.", severity: "low", category: "code-quality" },
+      ],
+    };
+    const realReviewJson = JSON.stringify(realReview, null, 2);
+
+    // The model's response shape: a delta carrying the fenced JSON
+    const fenceWrapped = "```json\n" + realReviewJson + "\n```";
+    const deltaEnvelope = JSON.stringify({
+      type: "response.output_text.delta",
+      delta: fenceWrapped,
+    });
+    const completedEnvelope = JSON.stringify({
+      type: "response.completed",
+      response: { output: [{ content: [{ text: "placeholder" }] }] },
+    });
+    const sse = [
+      `data: ${deltaEnvelope}`,
+      "",
+      `data: ${completedEnvelope}`,
+      "",
+    ].join("\n");
+
+    const textPayload = extractTextPayload("responses", sse);
+    console.log("textPayload length:", textPayload.length);
+    console.log("textPayload first 200:", JSON.stringify(textPayload.slice(0, 200)));
+    console.log("textPayload last 200:", JSON.stringify(textPayload.slice(-200)));
+
+    // The fence must be stripped, the JSON must parse, and the review
+    // must be returned (not null) so the retry does NOT fire.
+    const review = parseReviewPayload(textPayload);
+    expect(review).not.toBeNull();
+    expect(review!.summary.length).toBeGreaterThan(0);
+    expect(review!.comments).toHaveLength(1);
+    expect(isNonEmptyReview(review!)).toBe(true);
+  });
 });
