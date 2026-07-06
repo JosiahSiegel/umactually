@@ -3205,19 +3205,56 @@ function mergeReviewResults(outcomes, options) {
             worstVerdict = outcome.review.verdict;
         }
     }
-    // MERGE-6: pick the longest summary.
-    let longestSummary = "";
+    // MERGE-6: pick the best summary across all chunk outcomes.
+    //
+    // The previous implementation picked the LONGEST summary. That was
+    // wrong: a parse-fail fallback's summary (built by
+    // `buildMalformedProviderFallback`) is intentionally long because it
+    // embeds a `<details>` block with the raw provider response, so it
+    // ALWAYS beat the successful chunk's real summary. The merged card
+    // then contradicted itself — real findings in the findings table,
+    // parse-fail diagnostic in the summary section.
+    //
+    // New policy: prefer summaries from chunks that contributed real
+    // findings (comments or suppressed comments). The parse-fail fallback
+    // has both arrays empty AND `parseFailed: true` set, so it's filtered
+    // out. Among the surviving chunks, pick the longest summary (real
+    // review summaries tend to vary in length and the longest is usually
+    // the most informative). If NO chunk contributed findings, fall back
+    // to the parse-fail summary as the only honest diagnostic.
+    let summarySource = null;
+    let summarySourceLength = -1;
+    let fallbackSummary = "";
     for (const outcome of outcomes) {
-        if (outcome.review.summary.length > longestSummary.length) {
-            longestSummary = outcome.review.summary;
+        const isParseFail = outcome.review.parseFailed === true;
+        const hasFindings = outcome.review.comments.length > 0 ||
+            outcome.review.suppressedComments.length > 0;
+        if (isParseFail || !hasFindings) {
+            if (outcome.review.summary.length > fallbackSummary.length) {
+                fallbackSummary = outcome.review.summary;
+            }
+            continue;
+        }
+        if (outcome.review.summary.length > summarySourceLength) {
+            summarySource = outcome.review.summary;
+            summarySourceLength = outcome.review.summary.length;
         }
     }
+    const longestSummary = summarySource ?? fallbackSummary;
+    // The merged review is parseFailed only when no chunk contributed
+    // real findings — i.e. every chunk was a parse-fail fallback OR was
+    // structurally empty (in which case summarySource is null and the
+    // fallback summary was used). When at least one chunk succeeded,
+    // the merged card has real findings and should NOT be marked
+    // parseFailed even if other chunks failed.
+    const mergedParseFailed = summarySource === null;
     return {
         review: {
             summary: longestSummary,
             verdict: worstVerdict.length > 0 ? worstVerdict : "COMMENT",
             comments: truncatedComments,
             suppressedComments: sortedSuppressed,
+            ...(mergedParseFailed ? { parseFailed: true } : {}),
         },
         endpoint: first.endpoint,
         provider: first.provider,
