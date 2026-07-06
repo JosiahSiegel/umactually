@@ -370,12 +370,72 @@ function readCommentArray(value: unknown): readonly ProviderComment[] {
         path,
         line,
         body: readStringField(entry, "body") ?? "",
-        severity: readStringField(entry, "severity") ?? "medium",
+        severity: normalizeProviderSeverity(readStringField(entry, "severity")),
         category: readStringField(entry, "category") ?? "general",
       });
     }
   }
   return comments;
+}
+
+/**
+ * Normalize a provider-emitted severity string to one of our canonical
+ * scale values (`low | medium | high | critical | info`).
+ *
+ * Different providers use different scales — OpenAI-style models tend to
+ * emit `low | medium | high`, Sonar-style models emit `info | minor |
+ * major | critical | blocker`, Copilot-style emits similar. Without
+ * normalization, an unknown severity falls through to the catch-all
+ * `"medium"` default in `readCommentArray` — which bypasses the
+ * `minimum-severity` threshold (default `medium`) and posts the finding
+ * inline even when the user has configured a stricter filter.
+ *
+ * Mapping:
+ *   - `info`     → `info`
+ *   - `nit`      → `info`     (style nit, below `low`)
+ *   - `minor`    → `low`      (Sonar minor ≈ our low)
+ *   - `low`      → `low`
+ *   - `major`    → `medium`   (Sonar major ≈ our medium)
+ *   - `medium`   → `medium`
+ *   - `high`     → `high`
+ *   - `critical` → `critical`
+ *   - `blocker`  → `critical` (Sonar blocker ≈ our critical)
+ *   - `security` → `high`     (security findings aren't a separate
+ *                              rank in our scale; rank `high` keeps them
+ *                              visible without bypassing the threshold)
+ *   - `leak`     → `high`     (same rationale as security)
+ *   - anything else → `medium` (preserves prior default behavior)
+ *
+ * Unknown-but-non-empty values now get a sensible rank instead of the
+ * catch-all `medium`. The `minimum-severity` threshold then does its job
+ * correctly: a `nit` becomes `info` (rank 0) and is filtered out under
+ * `minimum-severity: medium` (rank 2).
+ */
+function normalizeProviderSeverity(value: string | null): string {
+  if (value === null || value.length === 0) {
+    return "medium";
+  }
+  const lower = value.toLowerCase();
+  switch (lower) {
+    case "info":
+    case "nit":
+      return "info";
+    case "minor":
+    case "low":
+      return "low";
+    case "major":
+    case "medium":
+      return "medium";
+    case "high":
+    case "security":
+    case "leak":
+      return "high";
+    case "critical":
+    case "blocker":
+      return "critical";
+    default:
+      return "medium";
+  }
 }
 
 /**

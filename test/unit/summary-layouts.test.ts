@@ -479,7 +479,7 @@ describe("severity-table details", () => {
     }));
 
     const out = renderSummary("severity-table", data);
-    expect(out).toContain("| 1 | 🟠 Medium | general | `src/no-category.ts`:3 | Missing category. |");
+    expect(out).toContain("| 1 | <span style=\"color:#fb8500\">●</span> Medium | general | `src/no-category.ts`:3 | Missing category. |");
   });
 
   // CLARITY-19a: when the model produced off-diff findings, the reader

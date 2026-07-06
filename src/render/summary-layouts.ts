@@ -236,14 +236,32 @@ function findingLine(c: LiveReviewComment, secrets: readonly string[]): string {
   return `\`${cell(c.path)}\`:${c.line} — ${snippet}`;
 }
 
-/** Severity → display emoji used by every layout that wants a single glyph. */
+/**
+ * Severity → colored circle glyph used by every layout that wants a single dot.
+ *
+ * Returns an inline-HTML span with a CSS `color` rather than a raw Unicode
+ * emoji like `🟣 🔴 🟠 🟡`. Reason: the colored-circle emoji are
+ * Unicode variation-selector-16 sequences (`U+1F7E0` etc.) that require
+ * a colored emoji font to render with color. GitHub ships one; Azure
+ * DevOps does NOT — the colored circles render as outline `⚪` on Azure,
+ * so every severity dot collapses to the same outline and reviewers
+ * can't distinguish critical from medium at a glance.
+ *
+ * Inline `<span style="color: …">●</span>` is supported on both platforms:
+ *   - GitHub renders it as a colored bullet
+ *   - Azure DevOps renders it as a colored bullet (same engine as
+ *     `<details>` and `<table>` already used by the cross-platform rule)
+ *
+ * The fallback (unknown severity) renders as a plain outline `○` so
+ * "I don't know what this is" doesn't visually claim to be a real severity.
+ */
 function severityEmoji(level: string): string {
   switch (level.toLowerCase()) {
-    case "critical": return "🟣";
-    case "high": return "🔴";
-    case "medium": return "🟠";
-    case "low": return "🟡";
-    default: return "⚪";
+    case "critical": return `<span style="color:#a371f7">●</span>`;
+    case "high":     return `<span style="color:#cf222e">●</span>`;
+    case "medium":   return `<span style="color:#fb8500">●</span>`;
+    case "low":      return `<span style="color:#9a6700">●</span>`;
+    default:         return "○";
   }
 }
 

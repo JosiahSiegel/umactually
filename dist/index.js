@@ -3378,14 +3378,32 @@ function findingLine(c, secrets) {
     const snippet = truncateSnippet(collapseBody(c, secrets), 100);
     return `\`${cell(c.path)}\`:${c.line} — ${snippet}`;
 }
-/** Severity → display emoji used by every layout that wants a single glyph. */
+/**
+ * Severity → colored circle glyph used by every layout that wants a single dot.
+ *
+ * Returns an inline-HTML span with a CSS `color` rather than a raw Unicode
+ * emoji like `🟣 🔴 🟠 🟡`. Reason: the colored-circle emoji are
+ * Unicode variation-selector-16 sequences (`U+1F7E0` etc.) that require
+ * a colored emoji font to render with color. GitHub ships one; Azure
+ * DevOps does NOT — the colored circles render as outline `⚪` on Azure,
+ * so every severity dot collapses to the same outline and reviewers
+ * can't distinguish critical from medium at a glance.
+ *
+ * Inline `<span style="color: …">●</span>` is supported on both platforms:
+ *   - GitHub renders it as a colored bullet
+ *   - Azure DevOps renders it as a colored bullet (same engine as
+ *     `<details>` and `<table>` already used by the cross-platform rule)
+ *
+ * The fallback (unknown severity) renders as a plain outline `○` so
+ * "I don't know what this is" doesn't visually claim to be a real severity.
+ */
 function severityEmoji(level) {
     switch (level.toLowerCase()) {
-        case "critical": return "🟣";
-        case "high": return "🔴";
-        case "medium": return "🟠";
-        case "low": return "🟡";
-        default: return "⚪";
+        case "critical": return `<span style="color:#a371f7">●</span>`;
+        case "high": return `<span style="color:#cf222e">●</span>`;
+        case "medium": return `<span style="color:#fb8500">●</span>`;
+        case "low": return `<span style="color:#9a6700">●</span>`;
+        default: return "○";
     }
 }
 /** Severity → short label used in compact rows. */
@@ -6540,12 +6558,71 @@ function provider_parse_readCommentArray(value) {
                 path,
                 line,
                 body: readStringField(entry, "body") ?? "",
-                severity: readStringField(entry, "severity") ?? "medium",
+                severity: normalizeProviderSeverity(readStringField(entry, "severity")),
                 category: readStringField(entry, "category") ?? "general",
             });
         }
     }
     return comments;
+}
+/**
+ * Normalize a provider-emitted severity string to one of our canonical
+ * scale values (`low | medium | high | critical | info`).
+ *
+ * Different providers use different scales — OpenAI-style models tend to
+ * emit `low | medium | high`, Sonar-style models emit `info | minor |
+ * major | critical | blocker`, Copilot-style emits similar. Without
+ * normalization, an unknown severity falls through to the catch-all
+ * `"medium"` default in `readCommentArray` — which bypasses the
+ * `minimum-severity` threshold (default `medium`) and posts the finding
+ * inline even when the user has configured a stricter filter.
+ *
+ * Mapping:
+ *   - `info`     → `info`
+ *   - `nit`      → `info`     (style nit, below `low`)
+ *   - `minor`    → `low`      (Sonar minor ≈ our low)
+ *   - `low`      → `low`
+ *   - `major`    → `medium`   (Sonar major ≈ our medium)
+ *   - `medium`   → `medium`
+ *   - `high`     → `high`
+ *   - `critical` → `critical`
+ *   - `blocker`  → `critical` (Sonar blocker ≈ our critical)
+ *   - `security` → `high`     (security findings aren't a separate
+ *                              rank in our scale; rank `high` keeps them
+ *                              visible without bypassing the threshold)
+ *   - `leak`     → `high`     (same rationale as security)
+ *   - anything else → `medium` (preserves prior default behavior)
+ *
+ * Unknown-but-non-empty values now get a sensible rank instead of the
+ * catch-all `medium`. The `minimum-severity` threshold then does its job
+ * correctly: a `nit` becomes `info` (rank 0) and is filtered out under
+ * `minimum-severity: medium` (rank 2).
+ */
+function normalizeProviderSeverity(value) {
+    if (value === null || value.length === 0) {
+        return "medium";
+    }
+    const lower = value.toLowerCase();
+    switch (lower) {
+        case "info":
+        case "nit":
+            return "info";
+        case "minor":
+        case "low":
+            return "low";
+        case "major":
+        case "medium":
+            return "medium";
+        case "high":
+        case "security":
+        case "leak":
+            return "high";
+        case "critical":
+        case "blocker":
+            return "critical";
+        default:
+            return "medium";
+    }
 }
 /**
  * Some providers (e.g. Manifest, MiniMax) ignore `stream: false` and always
