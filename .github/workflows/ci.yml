@@ -39,53 +39,20 @@ jobs:
       - name: Dist freshness guard
         run: npm run check:dist-freshness
 
+      # CLI smoke scenarios — each step invokes scripts/ci-smoke.mjs with a
+      # scenario id. Adding a new scenario = one entry in the SCENARIOS table
+      # inside scripts/ci-smoke.mjs + one thin step here.
       - name: CLI smoke (S1 GitHub dry-run)
-        run: |
-          node bin/umactually-pr-review.mjs \
-            --platform github \
-            --event test/fixtures/github/pull-request-event.json \
-            --diff test/fixtures/github/full-pr.diff \
-            --review test/fixtures/github/provider-review.json \
-            --output-artifact artifacts/manual/s1-github-self-review.md \
-            --dry-run
+        run: node scripts/ci-smoke.mjs S1
 
       - name: CLI smoke (S4 Azure dry-run)
-        run: |
-          node bin/umactually-pr-review.mjs \
-            --platform azure-devops \
-            --event test/fixtures/azure/pull-request.json \
-            --diff test/fixtures/github/full-pr.diff \
-            --threads test/fixtures/azure/threads.json \
-            --review test/fixtures/github/provider-review.json \
-            --pr-number 42 \
-            --repo example/umactually-fixture \
-            --output-artifact artifacts/manual/s4-azure-mocked-run.json \
-            --dry-run
+        run: node scripts/ci-smoke.mjs S4
 
       - name: CLI smoke (S5 redaction)
-        run: |
-          node bin/umactually-pr-review.mjs \
-            --platform github \
-            --event test/fixtures/github/pull-request-event.json \
-            --diff test/fixtures/github/full-pr.diff \
-            --review test/fixtures/github/provider-review.json \
-            --detect-leaks \
-            --output-artifact artifacts/manual/s5-redaction-report.json \
-            --dry-run
+        run: node scripts/ci-smoke.mjs S5
 
       - name: CLI smoke (S6 SonarQube mocked)
-        run: |
-          node bin/umactually-pr-review.mjs \
-            --platform github \
-            --event test/fixtures/github/pull-request-event.json \
-            --diff test/fixtures/github/full-pr.diff \
-            --review test/fixtures/github/provider-review.json \
-            --include-sonarqube \
-            --sonar-host-url https://sonar.example.test \
-            --sonar-token synthetic \
-            --sonar-project-key synthetic \
-            --output-artifact artifacts/manual/s6-sonar-mocked-run.json \
-            --dry-run
+        run: node scripts/ci-smoke.mjs S6
 
       - name: Upload artifacts
         if: always()
