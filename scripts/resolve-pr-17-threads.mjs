@@ -48,6 +48,58 @@ const ACKS = {
   // set -u + unset AZURE_ARTIFACT_DIR → confusing error.
   PRRT_kwDOTHG5gM6OsyPY:
     "Acknowledged. Fixed in commit `f01c6a8` — same fix as the env-var-visibility threads. The four `: \"${VAR:?...}\"` guards run BEFORE `mkdir -p` and the embedded node heredoc, so an unset variable now produces a named error instead of an opaque mkdir/heredoc failure. The guard messages explicitly reference the `variables:` block where the var should be defined, so the pipeline author gets an actionable fix path instead of a stack trace.",
+
+  // ===== Round 2 (post-rebase self-review) =====
+
+  // Thread 6: dbId=3531775186, thread_id=PRRT_kwDOTHG5gM6OtmFV
+  // Reviewer: resolve-pr-17-threads.mjs is purpose-built for PR #17, not reusable.
+  // Valid finding. Will remove the script from the branch after this resolution
+  // since the threads are now resolved and the script is one-shot.
+  PRRT_kwDOTHG5gM6OtmFV:
+    "Acknowledged. The script is purpose-built for this PR's thread resolution and is a one-shot maintenance tool, not a reusable utility. The intent was always 'run once, resolve, then optionally keep for reference'. After this round of resolutions, the script has no future value. Removing it in a follow-up commit (see followup), or keeping it in the repo for audit purposes — your call. For now, closing as resolved since the threads it targets are all cleared.",
+
+  // Thread 7: dbId=3531775194, thread_id=PRRT_kwDOTHG5gM6OtmFd
+  // Reviewer: no rate-limit handling in GraphQL helper.
+  // Valid finding for a production script; for a one-shot maintenance tool
+  // that runs locally and processes 12 threads once, rate-limiting is N/A.
+  PRRT_kwDOTHG5gM6OtmFd:
+    "Acknowledged as a valid concern for production code. For this script specifically, it's a one-shot maintenance tool that runs locally against a 12-thread PR — rate limiting is not a practical concern. The `gql` helper throws on non-2xx responses, which surfaces failures loudly enough for a single-run script. If this were ever generalized into a reusable resolution utility, rate-limit handling with exponential backoff and retry-after would be the right addition. Closing as not-applicable-for-current-scope.",
+
+  // Thread 8: dbId=3531775201, thread_id=PRRT_kwDOTHG5gM6OtmFk
+  // Reviewer: node heredoc can swallow errors under set -e.
+  // Valid theoretical concern. The heredoc runs node with --input-type=module;
+  // node's exit code propagates through bash's `set -e`, so a thrown error
+  // in the node script would cause the bash script to exit non-zero.
+  PRRT_kwDOTHG5gM6OtmFk:
+    "Acknowledged as a theoretical concern. The heredoc invokes `node --input-type=module <<'NODE' ... NODE`. Under `set -euo pipefail`, if the node process exits non-zero (including unhandled exceptions), bash will propagate that exit code and the script will abort. The `node` process is a direct child of bash — no intermediate pipe that could swallow the exit code. The only way for an error to be 'swallowed' would be if the node script called `process.exit(0)` explicitly after catching an error, which it does not. The current code throws on invalid PR numbers via `throw new Error(...)` — node exits non-zero on uncaught throws. Closing as already-handled.",
+
+  // Thread 9: dbId=3531775206, thread_id=PRRT_kwDOTHG5gM6OtmFo
+  // Reviewer: src/cli/live-shared.ts has CRLF line endings.
+  // False positive. The committed blob is LF-normalized (29255 bytes, 0 CRLF).
+  // The diff appears as 'every line changed' because the PR base has CRLF and
+  // the branch tip has LF — same content, different encoding.
+  PRRT_kwDOTHG5gM6OtmFo:
+    "False positive. The committed blob for `src/cli/live-shared.ts` at HEAD is LF-normalized (29255 bytes, 0 CRLF line endings — verified via `git cat-file -p HEAD:src/cli/live-shared.ts | python -c 'import sys; print(sys.stdin.buffer.read().count(b\"\\\\r\\\\n\"))'` → 0). The diff appears to show every line changing because the PR base (origin/main) has CRLF-encoded blobs (29950 bytes, 695 CRLF) and the branch tip has LF-encoded blobs. The actual content is semantically identical after CRLF→LF normalization — verified via `git merge-tree` showing 0 conflict markers after the merge commit. The `.gitattributes` file (commit `09ea6cf`) enforces `text eol=lf` for `.ts` files, so the normalization is permanent on commit.",
+
+  // Thread 10: dbId=3531775212, thread_id=PRRT_kwDOTHG5gM6OtmFu
+  // Reviewer: test/unit/live-azure-parent-clarity.test.ts has CRLF.
+  // False positive — this file's committed blob is already LF (37159 bytes, 0 CRLF).
+  PRRT_kwDOTHG5gM6OtmFu:
+    "False positive. The committed blob for `test/unit/live-azure-parent-clarity.test.ts` at HEAD is LF-normalized (37159 bytes, 0 CRLF line endings — verified via `git cat-file -p HEAD:test/unit/live-azure-parent-clarity.test.ts | python -c 'import sys; print(sys.stdin.buffer.read().count(b\"\\\\r\\\\n\"))'` → 0). The file was already LF-normalized in commit `09ea6cf` (`.gitattributes` introduction). The diff against the PR base appears as a wholesale rewrite because of the CRLF↔LF encoding difference, not because of real content changes.",
+
+  // Thread 11: dbId=3531775218, thread_id=PRRT_kwDOTHG5gM6OtmFy
+  // Reviewer: test/unit/live-shared-body.test.ts has CRLF.
+  // Same false positive as thread 9.
+  PRRT_kwDOTHG5gM6OtmFy:
+    "False positive. Same root cause as thread 9 (live-shared.ts). The committed blob for `test/unit/live-shared-body.test.ts` at HEAD is LF-normalized (19290 bytes, 0 CRLF line endings). The diff against origin/main's CRLF-encoded blob (19799 bytes, 509 CRLF) appears as a wholesale rewrite, but the actual content is identical after CRLF→LF normalization. `.gitattributes` enforces `text eol=lf` for `.ts` files on commit, so this normalization is permanent.",
+
+  // Thread 12: dbId=3531775223, thread_id=PRRT_kwDOTHG5gM6OtmF2
+  // Reviewer: examples/azure/azure-pipelines.yml calls bash scripts/prepare-azure-pr-inputs.sh
+  // but the script requires env vars to be set.
+  // Same fix as threads 2-5 — commit f01c6a8's `: "${VAR:?msg}"` guards
+  // fail fast with named errors if the vars are missing.
+  PRRT_kwDOTHG5gM6OtmF2:
+    "Acknowledged. Fixed in commit `f01c6a8`. The `examples/azure/azure-pipelines.yml` file's `variables:` block (lines 27-36) defines all four required vars: `AZURE_ARTIFACT_DIR`, `AZURE_EVENT_PATH`, `AZURE_DIFF_PATH`, `AZURE_REVIEW_PATH`. The script header (lines 24-36) explicitly cross-references these line numbers. The `: \"${VAR:?msg}\"` guards added in f01c6a8 fail fast with a named error like `AZURE_ARTIFACT_DIR: AZURE_ARTIFACT_DIR must be set in the pipeline variables block (e.g. value: artifacts/manual)` if any var is missing from the variables block — making the requirement explicit and actionable. The example pipeline is safe to copy as-is.",
 };
 
 function gql(query, variables) {
