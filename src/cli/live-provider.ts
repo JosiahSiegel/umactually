@@ -1,5 +1,13 @@
 import { runCopilotRequest } from "../provider/copilot.js";
-import { runProviderRequest, type ProviderReviewPayload } from "../provider/openai-compatible.js";
+import {
+  runProviderRequest,
+  type ProviderReviewPayload,
+} from "../provider/openai-compatible.js";
+import {
+  setActiveSeveritySink,
+  type SeverityWarning,
+  type SeverityWarningSink,
+} from "../provider/provider-parse.js";
 import { scanReviewSecrets } from "../security/scan-review-secrets.js";
 import {
   buildMalformedProviderFallback,
@@ -37,79 +45,110 @@ export async function requestLiveReview(input: {
   const modelId = readConfiguredModel(input.parsed, input.env);
   const prompts = await buildProviderPrompts(input);
 
-  if (input.parsed.provider === "copilot") {
-    const result = await runCopilotRequest({
-      githubToken: providerApiKey,
-      apiBase: input.parsed.githubApiBase ?? input.env["UMACTUALLY_GITHUB_API_BASE"] ?? "https://api.github.com",
+  // Install an ambient severity-warning sink for the duration of this
+  // request. Any `parseReviewPayload` call inside `runCopilotRequest` /
+  // `runProviderRequest` will push warnings into the captured array
+  // (the sink is auto-cleared in `finally`). Node's single-threaded
+  // event loop means no two concurrent `requestLiveReview` calls can
+  // interleave the set/await/clear sequence, so the singleton slot is
+  // safe. The provider name is captured at install time so every warning
+  // recorded during this request is attributed correctly even if a
+  // generic test runner does not pass `providerName` explicitly.
+  const severityWarnings: SeverityWarning[] = [];
+  const sinkProviderName =
+    input.parsed.provider === "copilot" ? COPILOT_PROVIDER_NAME : PROVIDER_NAME;
+  const sink: SeverityWarningSink = (raw, normalized, ctx) => {
+    severityWarnings.push({
+      rawValue: raw,
+      normalizedFallback: normalized,
+      commentIndex: ctx.commentIndex,
+      providerName: ctx.providerName ?? sinkProviderName,
+    });
+  };
+  setActiveSeveritySink(sink);
+  try {
+    if (input.parsed.provider === "copilot") {
+      const result = await runCopilotRequest({
+        githubToken: providerApiKey,
+        apiBase: input.parsed.githubApiBase ?? input.env["UMACTUALLY_GITHUB_API_BASE"] ?? "https://api.github.com",
+        system: prompts.system,
+        user: prompts.user,
+        model: modelId,
+        requestTimeoutMs: readRequestTimeoutMs(input.parsed),
+        ...(input.parsed.maxOutputTokens !== null ? { maxOutputTokens: input.parsed.maxOutputTokens } : {}),
+        ...(input.parsed.effort !== null ? { reasoningEffort: input.parsed.effort } : {}),
+        fetchImpl: input.fetchImpl as typeof fetch,
+      });
+      if (result.ok) {
+        return {
+          review: normalizeProviderReview(result.review, [providerApiKey, input.platformToken]),
+          endpoint: result.endpoint,
+          provider: COPILOT_PROVIDER_NAME,
+          modelId,
+          severityWarnings: severityWarnings.slice(),
+        };
+      }
+      if (result.error.code === "parse") {
+        return {
+          review: buildMalformedProviderFallback({
+            provider: COPILOT_PROVIDER_NAME,
+            modelId,
+            rawText: result.error.rawText ?? "",
+            secrets: [providerApiKey, input.platformToken],
+          }),
+          endpoint: result.error.endpoint,
+          provider: COPILOT_PROVIDER_NAME,
+          modelId,
+          severityWarnings: severityWarnings.slice(),
+        };
+      }
+      throw new LiveReviewError("PROVIDER_REQUEST_FAILED", result.error.message, { cause: result.error });
+    }
+
+    const providerUrl = readRequiredConfig(input.parsed.apiUrl ?? input.env["UMACTUALLY_API_URL"], "UMACTUALLY_API_URL");
+    const result = await runProviderRequest({
+      baseUrl: providerUrl,
+      apiKey: providerApiKey,
+      model: modelId,
       system: prompts.system,
       user: prompts.user,
-      model: modelId,
       requestTimeoutMs: readRequestTimeoutMs(input.parsed),
       ...(input.parsed.maxOutputTokens !== null ? { maxOutputTokens: input.parsed.maxOutputTokens } : {}),
       ...(input.parsed.effort !== null ? { reasoningEffort: input.parsed.effort } : {}),
-      fetchImpl: input.fetchImpl as typeof fetch,
+      fetchImpl: input.fetchImpl,
     });
+
     if (result.ok) {
       return {
         review: normalizeProviderReview(result.review, [providerApiKey, input.platformToken]),
         endpoint: result.endpoint,
-        provider: COPILOT_PROVIDER_NAME,
+        provider: PROVIDER_NAME,
         modelId,
+        severityWarnings: severityWarnings.slice(),
       };
     }
+
     if (result.error.code === "parse") {
       return {
         review: buildMalformedProviderFallback({
-          provider: COPILOT_PROVIDER_NAME,
+          provider: PROVIDER_NAME,
           modelId,
           rawText: result.error.rawText ?? "",
           secrets: [providerApiKey, input.platformToken],
         }),
         endpoint: result.error.endpoint,
-        provider: COPILOT_PROVIDER_NAME,
-        modelId,
-      };
-    }
-    throw new LiveReviewError("PROVIDER_REQUEST_FAILED", result.error.message, { cause: result.error });
-  }
-
-  const providerUrl = readRequiredConfig(input.parsed.apiUrl ?? input.env["UMACTUALLY_API_URL"], "UMACTUALLY_API_URL");
-  const result = await runProviderRequest({
-    baseUrl: providerUrl,
-    apiKey: providerApiKey,
-    model: modelId,
-    system: prompts.system,
-    user: prompts.user,
-    requestTimeoutMs: readRequestTimeoutMs(input.parsed),
-    ...(input.parsed.maxOutputTokens !== null ? { maxOutputTokens: input.parsed.maxOutputTokens } : {}),
-    ...(input.parsed.effort !== null ? { reasoningEffort: input.parsed.effort } : {}),
-    fetchImpl: input.fetchImpl,
-  });
-
-  if (result.ok) {
-    return {
-      review: normalizeProviderReview(result.review, [providerApiKey, input.platformToken]),
-      endpoint: result.endpoint,
-      provider: PROVIDER_NAME,
-      modelId,
-    };
-  }
-
-  if (result.error.code === "parse") {
-    return {
-      review: buildMalformedProviderFallback({
         provider: PROVIDER_NAME,
         modelId,
-        rawText: result.error.rawText ?? "",
-        secrets: [providerApiKey, input.platformToken],
-      }),
-      endpoint: result.error.endpoint,
-      provider: PROVIDER_NAME,
-      modelId,
-    };
-  }
+        severityWarnings: severityWarnings.slice(),
+      };
+    }
 
-  throw new LiveReviewError("PROVIDER_REQUEST_FAILED", result.error.message, { cause: result.error });
+    throw new LiveReviewError("PROVIDER_REQUEST_FAILED", result.error.message, { cause: result.error });
+  } finally {
+    // Always clear the sink so a subsequent, unrelated request does not
+    // inherit this request's warnings array.
+    setActiveSeveritySink(null);
+  }
 }
 
 function normalizeProviderReview(payload: ProviderReviewPayload, secrets: readonly string[]): LiveReview {

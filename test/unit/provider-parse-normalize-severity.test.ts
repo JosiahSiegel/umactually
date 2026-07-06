@@ -7,8 +7,11 @@
 // branch plus null/empty/uppercase-mixed input. A regression here silently
 // re-classifies provider output and changes what gets posted vs filtered.
 
-import { describe, expect, it } from "vitest";
-import { normalizeProviderSeverity } from "../../src/provider/provider-parse.js";
+import { describe, expect, it, vi } from "vitest";
+import {
+  normalizeProviderSeverity,
+  parseReviewPayload,
+} from "../../src/provider/provider-parse.js";
 
 describe("normalizeProviderSeverity — provider scale → our scale", () => {
   // Table of every mapping branch (severity-only, no body). Each row
@@ -167,5 +170,236 @@ describe("normalizeProviderSeverity — provider scale → our scale", () => {
     expect(normalizeProviderSeverity("leak", "Consider adding hardening")).toBe("critical");
     expect(normalizeProviderSeverity("leak", "")).toBe("critical");
     expect(normalizeProviderSeverity("leak", null)).toBe("critical");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Unknown-severity warning contract.
+//
+// The 5-tier canonical scale (info | low | medium | high | critical) is
+// the only vocabulary the live runtime understands (see
+// `src/util/severity.ts` `severityRank`). Providers occasionally emit a
+// string outside this set — `"warning"`, `"important"`, `"3"`, etc. The
+// historical `default:` branch silently coerced every unknown value to
+// `"medium"`, which over-ranks style nits and hides the misbehavior from
+// the operator.
+//
+// Contract: when the parser encounters an unrecognized severity string
+// (or null/empty), it must (a) still fall back to `"medium"` so the run
+// does not crash, but (b) surface a structured warning so operators can
+// see which comment was malformed and which provider emitted it. The
+// sink is the structured channel; `console.warn` is the operator-visible
+// channel.
+// ---------------------------------------------------------------------------
+
+describe("normalizeProviderSeverity — unknown severity surfaces via sink", () => {
+  it("warns and returns 'medium' for unrecognized string 'warning'", () => {
+    const sink = vi.fn();
+    const result = normalizeProviderSeverity("warning", null, {
+      sink,
+      providerName: "openai-compatible",
+      commentIndex: 3,
+    });
+    expect(result).toBe("medium");
+    expect(sink).toHaveBeenCalledTimes(1);
+    const [raw, normalized, ctx] = sink.mock.calls[0]!;
+    expect(raw).toBe("warning");
+    expect(normalized).toBe("medium");
+    expect(ctx).toMatchObject({ providerName: "openai-compatible", commentIndex: 3 });
+  });
+
+  it("warns and returns 'medium' for empty string", () => {
+    const sink = vi.fn();
+    const result = normalizeProviderSeverity("", null, {
+      sink,
+      providerName: "github-copilot",
+      commentIndex: 0,
+    });
+    expect(result).toBe("medium");
+    expect(sink).toHaveBeenCalledTimes(1);
+    const [raw] = sink.mock.calls[0]!;
+    expect(raw).toBe("");
+  });
+
+  it("warns and returns 'medium' for null", () => {
+    const sink = vi.fn();
+    const result = normalizeProviderSeverity(null, null, {
+      sink,
+      providerName: "openai-compatible",
+      commentIndex: 1,
+    });
+    expect(result).toBe("medium");
+    expect(sink).toHaveBeenCalledTimes(1);
+    const [raw, , ctx] = sink.mock.calls[0]!;
+    expect(raw).toBe("");
+    expect(ctx).toMatchObject({ providerName: "openai-compatible", commentIndex: 1 });
+  });
+
+  it("does NOT warn for canonical value 'critical'", () => {
+    const sink = vi.fn();
+    expect(
+      normalizeProviderSeverity("critical", null, {
+        sink,
+        providerName: "openai-compatible",
+        commentIndex: 0,
+      }),
+    ).toBe("critical");
+    expect(sink).not.toHaveBeenCalled();
+  });
+
+  it("does NOT warn for canonical synonym 'blocker'", () => {
+    const sink = vi.fn();
+    expect(
+      normalizeProviderSeverity("blocker", null, {
+        sink,
+        providerName: "openai-compatible",
+        commentIndex: 0,
+      }),
+    ).toBe("critical");
+    expect(sink).not.toHaveBeenCalled();
+  });
+
+  it("does NOT warn for canonical synonym 'leak'", () => {
+    const sink = vi.fn();
+    expect(
+      normalizeProviderSeverity("leak", "any body", {
+        sink,
+        providerName: "openai-compatible",
+        commentIndex: 0,
+      }),
+    ).toBe("critical");
+    expect(sink).not.toHaveBeenCalled();
+  });
+
+  it("does NOT warn when sink is omitted (backward-compat path)", () => {
+    expect(normalizeProviderSeverity("warning")).toBe("medium");
+    expect(normalizeProviderSeverity("")).toBe("medium");
+    expect(normalizeProviderSeverity(null)).toBe("medium");
+  });
+
+  it("calls console.warn with the raw value, normalized value, and provider context", () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      normalizeProviderSeverity("important", null, {
+        sink: () => {},
+        providerName: "openai-compatible",
+        commentIndex: 7,
+      });
+      expect(warn).toHaveBeenCalledTimes(1);
+      const firstCall = warn.mock.calls[0];
+      expect(firstCall).toBeDefined();
+      const args = firstCall as readonly unknown[];
+      const msg = args[0] as string;
+      expect(typeof msg).toBe("string");
+      expect(msg).toContain("important");
+      expect(msg).toContain("medium");
+      expect(msg).toContain("openai-compatible");
+      expect(msg).toContain("7");
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it("the security body-pattern escalation (LEAK → critical, hardening → high) does NOT warn", () => {
+    const sink = vi.fn();
+    expect(
+      normalizeProviderSeverity("security", "API key committed by accident", {
+        sink,
+        providerName: "openai-compatible",
+        commentIndex: 0,
+      }),
+    ).toBe("critical");
+    expect(
+      normalizeProviderSeverity("security", "consider adding CSP", {
+        sink,
+        providerName: "openai-compatible",
+        commentIndex: 1,
+      }),
+    ).toBe("high");
+    expect(
+      normalizeProviderSeverity("security", "neutral body", {
+        sink,
+        providerName: "openai-compatible",
+        commentIndex: 2,
+      }),
+    ).toBe("high");
+    expect(sink).not.toHaveBeenCalled();
+  });
+});
+
+describe("parseReviewPayload — unknown severity surfaces via sink at call site", () => {
+  it("emits a sink warning with provider name + comment index when a comment has 'warning'", () => {
+    const sink = vi.fn();
+    const payload = JSON.stringify({
+      summary: "ok",
+      verdict: "COMMENT",
+      comments: [
+        { path: "src/a.ts", line: 1, body: "b1", severity: "high", category: "x" },
+        { path: "src/b.ts", line: 2, body: "b2", severity: "warning", category: "y" },
+      ],
+      suppressed_comments: [],
+    });
+    const review = parseReviewPayload(payload, { sink, providerName: "openai-compatible" });
+    expect(review).not.toBeNull();
+    expect(review!.comments[0]!.severity).toBe("high");
+    expect(review!.comments[1]!.severity).toBe("medium");
+    expect(sink).toHaveBeenCalledTimes(1);
+    const [, , ctx] = sink.mock.calls[0]!;
+    expect(ctx).toMatchObject({ providerName: "openai-compatible", commentIndex: 1 });
+  });
+
+  it("emits a sink warning for every malformed-severity comment, each with its index", () => {
+    const sink = vi.fn();
+    const payload = JSON.stringify({
+      summary: "ok",
+      verdict: "COMMENT",
+      comments: [
+        { path: "src/a.ts", line: 1, body: "b1", severity: "warning", category: "x" },
+        { path: "src/b.ts", line: 2, body: "b2", severity: "3", category: "y" },
+        { path: "src/c.ts", line: 3, body: "b3", severity: "high", category: "z" },
+        { path: "src/d.ts", line: 4, body: "b4", severity: "", category: "w" },
+      ],
+      suppressed_comments: [],
+    });
+    parseReviewPayload(payload, { sink, providerName: "github-copilot" });
+    expect(sink).toHaveBeenCalledTimes(3);
+    const indices = sink.mock.calls.map(
+      (c) => (c[2] as { readonly commentIndex: number }).commentIndex,
+    );
+    expect(indices).toEqual([0, 1, 3]);
+    const providers = sink.mock.calls.map(
+      (c) => (c[2] as { readonly providerName: string }).providerName,
+    );
+    expect(providers.every((p) => p === "github-copilot")).toBe(true);
+  });
+
+  it("emits a sink warning for suppressed_comments too", () => {
+    const sink = vi.fn();
+    const payload = JSON.stringify({
+      summary: "ok",
+      verdict: "COMMENT",
+      comments: [],
+      suppressed_comments: [
+        { path: "src/a.ts", line: 1, body: "b1", severity: "important", category: "x" },
+      ],
+    });
+    parseReviewPayload(payload, { sink, providerName: "openai-compatible" });
+    expect(sink).toHaveBeenCalledTimes(1);
+    const [, , ctx] = sink.mock.calls[0]!;
+    expect(ctx).toMatchObject({ providerName: "openai-compatible", commentIndex: 0 });
+  });
+
+  it("parseReviewPayload without options still works (backward-compat path)", () => {
+    const payload = JSON.stringify({
+      summary: "ok",
+      verdict: "COMMENT",
+      comments: [
+        { path: "src/a.ts", line: 1, body: "b1", severity: "warning", category: "x" },
+      ],
+      suppressed_comments: [],
+    });
+    const review = parseReviewPayload(payload);
+    expect(review).not.toBeNull();
+    expect(review!.comments[0]!.severity).toBe("medium");
   });
 });

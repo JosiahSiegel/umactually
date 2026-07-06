@@ -49,7 +49,7 @@ async function pickSystemPrompt(input: {
   return [
     "You are UmActually, a precise pull request reviewer.",
     "Return strict JSON only with this schema:",
-    "{\"summary\":string,\"verdict\":\"COMMENT\"|\"APPROVED\"|\"NEEDS_FIX\",\"comments\":[{\"path\":string,\"line\":number,\"body\":string,\"severity\":string,\"category\":string}],\"suppressed_comments\":[{\"path\":string,\"line\":number,\"body\":string,\"severity\":string,\"category\":string}]}",
+    "{\"summary\":string,\"verdict\":\"COMMENT\"|\"APPROVED\"|\"NEEDS_FIX\",\"comments\":[{\"path\":string,\"line\":number,\"body\":string,\"severity\":\"info\"|\"low\"|\"medium\"|\"high\"|\"critical\",\"category\":string}],\"suppressed_comments\":[{\"path\":string,\"line\":number,\"body\":string,\"severity\":\"info\"|\"low\"|\"medium\"|\"high\"|\"critical\",\"category\":string}]}",
     "Anchor comments only to changed or context lines present in the diff. Do not include secrets.",
   ].join("\n");
 }

@@ -3160,6 +3160,8 @@ function mergeReviewResults(outcomes, options) {
             endpoint: "",
             provider: "",
             modelId: "",
+            // No inputs → no warnings to surface.
+            severityWarnings: [],
         };
     }
     const first = outcomes[0];
@@ -3222,6 +3224,11 @@ function mergeReviewResults(outcomes, options) {
         endpoint: first.endpoint,
         provider: first.provider,
         modelId: first.modelId,
+        // MERGE severity warnings: concatenate each input outcome's warnings
+        // (each retains its own providerName + commentIndex, so the consumer
+        // can disambiguate per-source attribution). The merge itself does
+        // not generate new warnings.
+        severityWarnings: outcomes.flatMap((o) => o.severityWarnings),
     };
 }
 
@@ -6323,6 +6330,41 @@ function extractFirstBalancedObject(rawText) {
 
 
 /**
+ * Ambient (module-singleton) sink slot. `live-provider.ts`
+ * `requestLiveReview` installs a sink here before invoking the provider
+ * and clears it in `finally`, so any `parseReviewPayload` call reachable
+ * from `runCopilotRequest` / `runProviderRequest` will pick it up
+ * without needing to thread it through every call site.
+ *
+ * Default value is `null` (no sink installed → no warnings surfaced),
+ * preserving the previous silent-coercion behavior for any caller that
+ * has not opted in.
+ */
+let activeSeveritySink = null;
+function setActiveSeveritySink(sink) {
+    activeSeveritySink = sink;
+}
+function getActiveSeveritySink() {
+    return activeSeveritySink;
+}
+/**
+ * Emit a structured warning when the parser encounters a severity value
+ * it cannot classify. Always also writes a single `console.warn` line so
+ * operators can see the mismatch in CI logs without needing to inspect
+ * the structured sink channel.
+ */
+function emitSeverityWarning(rawValue, normalizedFallback, context, sink) {
+    const providerLabel = context.providerName ?? "unknown-provider";
+    const safeRaw = JSON.stringify(rawValue);
+    const message = `provider ${providerLabel} emitted unrecognized severity ${safeRaw} ` +
+        `at comment index ${context.commentIndex}; falling back to "${normalizedFallback}". ` +
+        `Expected one of: info, low, medium, high, critical.`;
+    console.warn(message, context);
+    if (sink !== undefined) {
+        sink(rawValue, normalizedFallback, context);
+    }
+}
+/**
  * Returns true when the parsed review has at least one non-empty
  * summary, verdict, or comment — used by the parse-fail retry paths
  * to decide whether the parsed response carries any usable signal.
@@ -6485,15 +6527,15 @@ function extractTextPayload(endpoint, rawText) {
  * differentiate "structured empty review" (returned, all fields empty)
  * from "no parseable content" (returns null).
  */
-function parseReviewPayload(text) {
+function parseReviewPayload(text, context) {
     const candidate = extractJsonBlock(text);
     if (!isRecord(candidate)) {
         return null;
     }
     const summary = readStringField(candidate, "summary") ?? "";
     const verdict = readStringField(candidate, "verdict") ?? "";
-    const comments = provider_parse_readCommentArray(candidate["comments"]);
-    const suppressed_comments = provider_parse_readCommentArray(candidate["suppressed_comments"]);
+    const comments = provider_parse_readCommentArray(candidate["comments"], context);
+    const suppressed_comments = provider_parse_readCommentArray(candidate["suppressed_comments"], context);
     // Soft parse-fail detector (CLARITY-10b): some providers/models return
     // a *structurally valid* JSON wrapper whose contents are an apology
     // ("No diff or file contents were provided to review...", "I cannot
@@ -6614,14 +6656,19 @@ function joinOutputText(output) {
     }
     return fragments.join("\n");
 }
-function provider_parse_readCommentArray(value) {
+function provider_parse_readCommentArray(value, context) {
     if (!isUnknownArray(value)) {
         return [];
     }
+    // Prefer an explicit context; fall back to the ambient module-singleton
+    // sink so live-provider.ts can install a sink once per request without
+    // threading it through every parseReviewPayload call site.
+    const effectiveSink = context?.sink ?? getActiveSeveritySink() ?? undefined;
+    const effectiveProviderName = context?.providerName;
     const comments = [];
-    for (const entry of value) {
+    value.forEach((entry, index) => {
         if (!isRecord(entry)) {
-            continue;
+            return;
         }
         const path = entry["path"];
         const line = readSafeIntegerField(entry, "line");
@@ -6635,11 +6682,27 @@ function provider_parse_readCommentArray(value) {
                 // heuristics) can distinguish a hardening tip from an active
                 // leak. Without body, normalizeProviderSeverity falls back to
                 // the severity-only mapping (security → high).
-                severity: normalizeProviderSeverity(readStringField(entry, "severity"), body),
+                //
+                // The sink + providerName + commentIndex options let the caller
+                // (live-provider.ts via the ambient sink; tests via explicit
+                // options) observe malformed severity values per-comment.
+                severity: normalizeProviderSeverity(readStringField(entry, "severity"), body, 
+                // exactOptionalPropertyTypes: omit undefined keys so the call
+                // is assignable to the strict optional types in
+                // `normalizeProviderSeverity`'s third parameter.
+                effectiveSink !== undefined || effectiveProviderName !== undefined
+                    ? {
+                        ...(effectiveSink !== undefined ? { sink: effectiveSink } : {}),
+                        ...(effectiveProviderName !== undefined
+                            ? { providerName: effectiveProviderName }
+                            : {}),
+                        commentIndex: index,
+                    }
+                    : { commentIndex: index }),
                 category: readStringField(entry, "category") ?? "general",
             });
         }
-    }
+    });
     return comments;
 }
 /**
@@ -6697,8 +6760,20 @@ function provider_parse_readCommentArray(value) {
 const HARDENING_HINT_PATTERN = /\b(consider\s+add(?:ing)?|suggest(?:ed|s)?\s+(?:adding|using)|you\s+(?:may|might|should)\s+want\s+to|harden(?:ing)?|best\s+practice)\b/iu;
 /** Patterns that indicate an active secret leak or credential exposure. */
 const LEAK_INDICATOR_PATTERN = /\b(secret|credential|token|api[\s_-]?key|password|private[\s_-]?key|exposed|leaked|disclosed|committed\s+by\s+accident)\b/iu;
-function normalizeProviderSeverity(value, body) {
+function normalizeProviderSeverity(value, body, options) {
+    const sink = options?.sink;
+    // Build the context object explicitly so undefined keys are omitted
+    // (required by exactOptionalPropertyTypes: `providerName?: string`
+    // does not accept the value `undefined`, only the key's absence).
+    const context = options?.providerName !== undefined
+        ? { providerName: options.providerName, commentIndex: options.commentIndex ?? -1 }
+        : { commentIndex: options?.commentIndex ?? -1 };
     if (value === null || value.length === 0) {
+        // Empty/null is treated the same as unknown: fall back to "medium"
+        // but emit a warning so operators can tell the difference between
+        // "provider omitted severity entirely" vs "provider emitted a
+        // non-canonical value".
+        emitSeverityWarning(value ?? "", "medium", context, sink);
         return "medium";
     }
     const lower = value.toLowerCase();
@@ -6734,6 +6809,9 @@ function normalizeProviderSeverity(value, body) {
             }
             return "high";
         default:
+            // Unknown severity — preserve previous fallback to "medium" so
+            // the run does not crash, but warn so operators see the misbehavior.
+            emitSeverityWarning(value, "medium", context, sink);
             return "medium";
     }
 }
@@ -7595,7 +7673,7 @@ async function pickSystemPrompt(input) {
     return [
         "You are UmActually, a precise pull request reviewer.",
         "Return strict JSON only with this schema:",
-        "{\"summary\":string,\"verdict\":\"COMMENT\"|\"APPROVED\"|\"NEEDS_FIX\",\"comments\":[{\"path\":string,\"line\":number,\"body\":string,\"severity\":string,\"category\":string}],\"suppressed_comments\":[{\"path\":string,\"line\":number,\"body\":string,\"severity\":string,\"category\":string}]}",
+        "{\"summary\":string,\"verdict\":\"COMMENT\"|\"APPROVED\"|\"NEEDS_FIX\",\"comments\":[{\"path\":string,\"line\":number,\"body\":string,\"severity\":\"info\"|\"low\"|\"medium\"|\"high\"|\"critical\",\"category\":string}],\"suppressed_comments\":[{\"path\":string,\"line\":number,\"body\":string,\"severity\":\"info\"|\"low\"|\"medium\"|\"high\"|\"critical\",\"category\":string}]}",
         "Anchor comments only to changed or context lines present in the diff. Do not include secrets.",
     ].join("\n");
 }
@@ -7617,6 +7695,7 @@ async function readAdditionalPrompt(input) {
 
 
 
+
 const DEFAULT_MODEL = "auto";
 const live_provider_DEFAULT_REQUEST_TIMEOUT_MS = 60_000;
 const PROVIDER_NAME = "openai-compatible";
@@ -7629,13 +7708,71 @@ async function requestLiveReview(input) {
     const providerApiKey = readRequiredConfig(input.parsed.apiKey ?? input.env["UMACTUALLY_API_KEY"], "UMACTUALLY_API_KEY");
     const modelId = readConfiguredModel(input.parsed, input.env);
     const prompts = await buildProviderPrompts(input);
-    if (input.parsed.provider === "copilot") {
-        const result = await runCopilotRequest({
-            githubToken: providerApiKey,
-            apiBase: input.parsed.githubApiBase ?? input.env["UMACTUALLY_GITHUB_API_BASE"] ?? "https://api.github.com",
+    // Install an ambient severity-warning sink for the duration of this
+    // request. Any `parseReviewPayload` call inside `runCopilotRequest` /
+    // `runProviderRequest` will push warnings into the captured array
+    // (the sink is auto-cleared in `finally`). Node's single-threaded
+    // event loop means no two concurrent `requestLiveReview` calls can
+    // interleave the set/await/clear sequence, so the singleton slot is
+    // safe. The provider name is captured at install time so every warning
+    // recorded during this request is attributed correctly even if a
+    // generic test runner does not pass `providerName` explicitly.
+    const severityWarnings = [];
+    const sinkProviderName = input.parsed.provider === "copilot" ? COPILOT_PROVIDER_NAME : PROVIDER_NAME;
+    const sink = (raw, normalized, ctx) => {
+        severityWarnings.push({
+            rawValue: raw,
+            normalizedFallback: normalized,
+            commentIndex: ctx.commentIndex,
+            providerName: ctx.providerName ?? sinkProviderName,
+        });
+    };
+    setActiveSeveritySink(sink);
+    try {
+        if (input.parsed.provider === "copilot") {
+            const result = await runCopilotRequest({
+                githubToken: providerApiKey,
+                apiBase: input.parsed.githubApiBase ?? input.env["UMACTUALLY_GITHUB_API_BASE"] ?? "https://api.github.com",
+                system: prompts.system,
+                user: prompts.user,
+                model: modelId,
+                requestTimeoutMs: readRequestTimeoutMs(input.parsed),
+                ...(input.parsed.maxOutputTokens !== null ? { maxOutputTokens: input.parsed.maxOutputTokens } : {}),
+                ...(input.parsed.effort !== null ? { reasoningEffort: input.parsed.effort } : {}),
+                fetchImpl: input.fetchImpl,
+            });
+            if (result.ok) {
+                return {
+                    review: normalizeProviderReview(result.review, [providerApiKey, input.platformToken]),
+                    endpoint: result.endpoint,
+                    provider: COPILOT_PROVIDER_NAME,
+                    modelId,
+                    severityWarnings: severityWarnings.slice(),
+                };
+            }
+            if (result.error.code === "parse") {
+                return {
+                    review: buildMalformedProviderFallback({
+                        provider: COPILOT_PROVIDER_NAME,
+                        modelId,
+                        rawText: result.error.rawText ?? "",
+                        secrets: [providerApiKey, input.platformToken],
+                    }),
+                    endpoint: result.error.endpoint,
+                    provider: COPILOT_PROVIDER_NAME,
+                    modelId,
+                    severityWarnings: severityWarnings.slice(),
+                };
+            }
+            throw new LiveReviewError("PROVIDER_REQUEST_FAILED", result.error.message, { cause: result.error });
+        }
+        const providerUrl = readRequiredConfig(input.parsed.apiUrl ?? input.env["UMACTUALLY_API_URL"], "UMACTUALLY_API_URL");
+        const result = await runProviderRequest({
+            baseUrl: providerUrl,
+            apiKey: providerApiKey,
+            model: modelId,
             system: prompts.system,
             user: prompts.user,
-            model: modelId,
             requestTimeoutMs: readRequestTimeoutMs(input.parsed),
             ...(input.parsed.maxOutputTokens !== null ? { maxOutputTokens: input.parsed.maxOutputTokens } : {}),
             ...(input.parsed.effort !== null ? { reasoningEffort: input.parsed.effort } : {}),
@@ -7645,59 +7782,32 @@ async function requestLiveReview(input) {
             return {
                 review: normalizeProviderReview(result.review, [providerApiKey, input.platformToken]),
                 endpoint: result.endpoint,
-                provider: COPILOT_PROVIDER_NAME,
+                provider: PROVIDER_NAME,
                 modelId,
+                severityWarnings: severityWarnings.slice(),
             };
         }
         if (result.error.code === "parse") {
             return {
                 review: buildMalformedProviderFallback({
-                    provider: COPILOT_PROVIDER_NAME,
+                    provider: PROVIDER_NAME,
                     modelId,
                     rawText: result.error.rawText ?? "",
                     secrets: [providerApiKey, input.platformToken],
                 }),
                 endpoint: result.error.endpoint,
-                provider: COPILOT_PROVIDER_NAME,
+                provider: PROVIDER_NAME,
                 modelId,
+                severityWarnings: severityWarnings.slice(),
             };
         }
         throw new LiveReviewError("PROVIDER_REQUEST_FAILED", result.error.message, { cause: result.error });
     }
-    const providerUrl = readRequiredConfig(input.parsed.apiUrl ?? input.env["UMACTUALLY_API_URL"], "UMACTUALLY_API_URL");
-    const result = await runProviderRequest({
-        baseUrl: providerUrl,
-        apiKey: providerApiKey,
-        model: modelId,
-        system: prompts.system,
-        user: prompts.user,
-        requestTimeoutMs: readRequestTimeoutMs(input.parsed),
-        ...(input.parsed.maxOutputTokens !== null ? { maxOutputTokens: input.parsed.maxOutputTokens } : {}),
-        ...(input.parsed.effort !== null ? { reasoningEffort: input.parsed.effort } : {}),
-        fetchImpl: input.fetchImpl,
-    });
-    if (result.ok) {
-        return {
-            review: normalizeProviderReview(result.review, [providerApiKey, input.platformToken]),
-            endpoint: result.endpoint,
-            provider: PROVIDER_NAME,
-            modelId,
-        };
+    finally {
+        // Always clear the sink so a subsequent, unrelated request does not
+        // inherit this request's warnings array.
+        setActiveSeveritySink(null);
     }
-    if (result.error.code === "parse") {
-        return {
-            review: buildMalformedProviderFallback({
-                provider: PROVIDER_NAME,
-                modelId,
-                rawText: result.error.rawText ?? "",
-                secrets: [providerApiKey, input.platformToken],
-            }),
-            endpoint: result.error.endpoint,
-            provider: PROVIDER_NAME,
-            modelId,
-        };
-    }
-    throw new LiveReviewError("PROVIDER_REQUEST_FAILED", result.error.message, { cause: result.error });
 }
 function normalizeProviderReview(payload, secrets) {
     return {
@@ -8050,6 +8160,9 @@ function applySimulateFindings(input) {
             comments: sanitizeComments(fixture.comments, input.secrets),
             suppressedComments: sanitizeComments(fixture.suppressed_comments, input.secrets),
         },
+        // Synthesized fixture — never went through the real parser, so
+        // there are no severity warnings to surface.
+        severityWarnings: [],
     };
 }
 function sanitizeComments(comments, secrets) {
@@ -8146,6 +8259,9 @@ async function requestChunkedLiveReview(input) {
                     endpoint: "",
                     provider: "chunk-failed",
                     modelId: "",
+                    // Failed-chunk placeholder — no severity warnings to surface
+                    // (the parser never ran on this chunk).
+                    severityWarnings: [],
                 };
             }
             outcomes[index] = outcome;
@@ -8301,6 +8417,9 @@ async function dispatchLivePlatform(input) {
                     endpoint: "skipped",
                     provider: parsed.provider ?? "openai-compatible",
                     modelId: parsed.model ?? "auto",
+                    // Skipped-due-to-file-limit placeholder — no parser ran, so
+                    // no severity warnings to surface.
+                    severityWarnings: [],
                 };
             }
             else {

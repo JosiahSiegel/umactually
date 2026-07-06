@@ -28,6 +28,105 @@ export type ProviderReviewPayload = {
 };
 
 /**
+ * Structured context for a single provider-severity mismatch event.
+ * `providerName` identifies the live provider ("openai-compatible" /
+ * "github-copilot"); `commentIndex` is the 0-based index of the comment
+ * within whichever array was being parsed (comments[] or
+ * suppressed_comments[]) — the two arrays share the same 0-based space
+ * but are independent (so a malformed severity in suppressed_comments[2]
+ * reports index 2 regardless of how many inline comments preceded it).
+ */
+export type SeverityWarningContext = {
+  readonly providerName?: string;
+  readonly commentIndex: number;
+};
+
+/**
+ * Sink for surfacing non-fatal provider-severity mismatches. The parser
+ * still falls back to "medium" so a misbehaving provider does not crash
+ * the run; the sink exists purely so the operator (and any structured
+ * telemetry downstream of `LiveProviderOutcome.severityWarnings`) can see
+ * WHICH comment was wrong.
+ *
+ * Args: (rawValue, normalizedFallback, context). The rawValue may be the
+ * empty string when the provider omitted the severity field entirely.
+ */
+export type SeverityWarningSink = (
+  rawValue: string,
+  normalizedFallback: string,
+  context: SeverityWarningContext,
+) => void;
+
+/**
+ * Captured record of a single provider-severity mismatch, suitable for
+ * downstream serialization into `LiveProviderOutcome.severityWarnings`
+ * and rendering in a future summary-layout footer (not wired yet — the
+ * type is plumbed but no layout reads it).
+ */
+export type SeverityWarning = {
+  readonly rawValue: string;
+  readonly normalizedFallback: string;
+  readonly commentIndex: number;
+  readonly providerName: string;
+};
+
+/**
+ * Ambient (module-singleton) sink slot. `live-provider.ts`
+ * `requestLiveReview` installs a sink here before invoking the provider
+ * and clears it in `finally`, so any `parseReviewPayload` call reachable
+ * from `runCopilotRequest` / `runProviderRequest` will pick it up
+ * without needing to thread it through every call site.
+ *
+ * Default value is `null` (no sink installed → no warnings surfaced),
+ * preserving the previous silent-coercion behavior for any caller that
+ * has not opted in.
+ */
+let activeSeveritySink: SeverityWarningSink | null = null;
+
+export function setActiveSeveritySink(sink: SeverityWarningSink | null): void {
+  activeSeveritySink = sink;
+}
+
+function getActiveSeveritySink(): SeverityWarningSink | null {
+  return activeSeveritySink;
+}
+
+/**
+ * Shared options type threaded through `parseReviewPayload` →
+ * `readCommentArray` → `normalizeProviderSeverity`. All fields are
+ * optional — when omitted, behavior is byte-identical to the previous
+ * silent-coercion path.
+ */
+export type ParseContext = {
+  readonly sink?: SeverityWarningSink;
+  readonly providerName?: string;
+};
+
+/**
+ * Emit a structured warning when the parser encounters a severity value
+ * it cannot classify. Always also writes a single `console.warn` line so
+ * operators can see the mismatch in CI logs without needing to inspect
+ * the structured sink channel.
+ */
+function emitSeverityWarning(
+  rawValue: string,
+  normalizedFallback: string,
+  context: SeverityWarningContext,
+  sink: SeverityWarningSink | undefined,
+): void {
+  const providerLabel = context.providerName ?? "unknown-provider";
+  const safeRaw = JSON.stringify(rawValue);
+  const message =
+    `provider ${providerLabel} emitted unrecognized severity ${safeRaw} ` +
+    `at comment index ${context.commentIndex}; falling back to "${normalizedFallback}". ` +
+    `Expected one of: info, low, medium, high, critical.`;
+  console.warn(message, context);
+  if (sink !== undefined) {
+    sink(rawValue, normalizedFallback, context);
+  }
+}
+
+/**
  * Returns true when the parsed review has at least one non-empty
  * summary, verdict, or comment — used by the parse-fail retry paths
  * to decide whether the parsed response carries any usable signal.
@@ -217,7 +316,10 @@ export function extractTextPayload(endpoint: ProviderEndpoint, rawText: string):
  * differentiate "structured empty review" (returned, all fields empty)
  * from "no parseable content" (returns null).
  */
-export function parseReviewPayload(text: string): ProviderReviewPayload | null {
+export function parseReviewPayload(
+  text: string,
+  context?: ParseContext,
+): ProviderReviewPayload | null {
   const candidate = extractJsonBlock(text);
   if (!isRecord(candidate)) {
     return null;
@@ -225,8 +327,8 @@ export function parseReviewPayload(text: string): ProviderReviewPayload | null {
 
   const summary = readStringField(candidate, "summary") ?? "";
   const verdict = readStringField(candidate, "verdict") ?? "";
-  const comments = readCommentArray(candidate["comments"]);
-  const suppressed_comments = readCommentArray(candidate["suppressed_comments"]);
+  const comments = readCommentArray(candidate["comments"], context);
+  const suppressed_comments = readCommentArray(candidate["suppressed_comments"], context);
 
   // Soft parse-fail detector (CLARITY-10b): some providers/models return
   // a *structurally valid* JSON wrapper whose contents are an apology
@@ -354,14 +456,22 @@ function joinOutputText(output: readonly unknown[]): string {
   return fragments.join("\n");
 }
 
-function readCommentArray(value: unknown): readonly ProviderComment[] {
+function readCommentArray(
+  value: unknown,
+  context?: ParseContext,
+): readonly ProviderComment[] {
   if (!isUnknownArray(value)) {
     return [];
   }
+  // Prefer an explicit context; fall back to the ambient module-singleton
+  // sink so live-provider.ts can install a sink once per request without
+  // threading it through every parseReviewPayload call site.
+  const effectiveSink = context?.sink ?? getActiveSeveritySink() ?? undefined;
+  const effectiveProviderName = context?.providerName;
   const comments: ProviderComment[] = [];
-  for (const entry of value) {
+  value.forEach((entry, index) => {
     if (!isRecord(entry)) {
-      continue;
+      return;
     }
     const path = entry["path"];
     const line = readSafeIntegerField(entry, "line");
@@ -375,11 +485,30 @@ function readCommentArray(value: unknown): readonly ProviderComment[] {
         // heuristics) can distinguish a hardening tip from an active
         // leak. Without body, normalizeProviderSeverity falls back to
         // the severity-only mapping (security → high).
-        severity: normalizeProviderSeverity(readStringField(entry, "severity"), body),
+        //
+        // The sink + providerName + commentIndex options let the caller
+        // (live-provider.ts via the ambient sink; tests via explicit
+        // options) observe malformed severity values per-comment.
+        severity: normalizeProviderSeverity(
+          readStringField(entry, "severity"),
+          body,
+          // exactOptionalPropertyTypes: omit undefined keys so the call
+          // is assignable to the strict optional types in
+          // `normalizeProviderSeverity`'s third parameter.
+          effectiveSink !== undefined || effectiveProviderName !== undefined
+            ? {
+                ...(effectiveSink !== undefined ? { sink: effectiveSink } : {}),
+                ...(effectiveProviderName !== undefined
+                  ? { providerName: effectiveProviderName }
+                  : {}),
+                commentIndex: index,
+              }
+            : { commentIndex: index },
+        ),
         category: readStringField(entry, "category") ?? "general",
       });
     }
-  }
+  });
   return comments;
 }
 
@@ -441,8 +570,29 @@ const HARDENING_HINT_PATTERN = /\b(consider\s+add(?:ing)?|suggest(?:ed|s)?\s+(?:
 /** Patterns that indicate an active secret leak or credential exposure. */
 const LEAK_INDICATOR_PATTERN = /\b(secret|credential|token|api[\s_-]?key|password|private[\s_-]?key|exposed|leaked|disclosed|committed\s+by\s+accident)\b/iu;
 
-export function normalizeProviderSeverity(value: string | null, body?: string | null): string {
+export function normalizeProviderSeverity(
+  value: string | null,
+  body?: string | null,
+  options?: {
+    readonly sink?: SeverityWarningSink;
+    readonly providerName?: string;
+    readonly commentIndex?: number;
+  },
+): string {
+  const sink = options?.sink;
+  // Build the context object explicitly so undefined keys are omitted
+  // (required by exactOptionalPropertyTypes: `providerName?: string`
+  // does not accept the value `undefined`, only the key's absence).
+  const context: SeverityWarningContext = options?.providerName !== undefined
+    ? { providerName: options.providerName, commentIndex: options.commentIndex ?? -1 }
+    : { commentIndex: options?.commentIndex ?? -1 };
+
   if (value === null || value.length === 0) {
+    // Empty/null is treated the same as unknown: fall back to "medium"
+    // but emit a warning so operators can tell the difference between
+    // "provider omitted severity entirely" vs "provider emitted a
+    // non-canonical value".
+    emitSeverityWarning(value ?? "", "medium", context, sink);
     return "medium";
   }
   const lower = value.toLowerCase();
@@ -478,6 +628,9 @@ export function normalizeProviderSeverity(value: string | null, body?: string | 
       }
       return "high";
     default:
+      // Unknown severity — preserve previous fallback to "medium" so
+      // the run does not crash, but warn so operators see the misbehavior.
+      emitSeverityWarning(value, "medium", context, sink);
       return "medium";
   }
 }

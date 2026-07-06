@@ -65,6 +65,8 @@ export function mergeReviewResults(
       endpoint: "",
       provider: "",
       modelId: "",
+      // No inputs → no warnings to surface.
+      severityWarnings: [],
     };
   }
 
@@ -134,5 +136,10 @@ export function mergeReviewResults(
     endpoint: first.endpoint,
     provider: first.provider,
     modelId: first.modelId,
+    // MERGE severity warnings: concatenate each input outcome's warnings
+    // (each retains its own providerName + commentIndex, so the consumer
+    // can disambiguate per-source attribution). The merge itself does
+    // not generate new warnings.
+    severityWarnings: outcomes.flatMap((o) => o.severityWarnings),
   };
 }
