@@ -134,6 +134,16 @@ export type ReviewData = {
   readonly offDiffFromComments: readonly LiveReviewComment[];
   readonly postedComments: readonly LiveReviewComment[];
   readonly secrets: readonly string[];
+  /**
+   * Optional threshold context used by the `🏷️ …` severity tally to
+   * append a per-tier `*` marker + a `_\* = filtered by threshold_`
+   * legend line when some tiers are intentionally hidden by
+   * `--minimum-severity` or `--ignore-minor`. When both fields are
+   * omitted (or `null`/`false`), the tally renders unchanged
+   * (byte-identical to the original behavior).
+   */
+  readonly minimumSeverity?: string | null;
+  readonly ignoreMinor?: boolean;
 };
 
 // ---------------------------------------------------------------------------
@@ -324,14 +334,57 @@ function pipelineLine(data: ReviewData): string {
   return `📊 ${n} inline finding${n === 1 ? "" : "s"}`;
 }
 
+/**
+ * Returns the set of severity tiers that are intentionally hidden by
+ * the active `--minimum-severity` / `--ignore-minor` threshold. Empty
+ * when no threshold is configured or the threshold keeps every tier
+ * visible — callers use this to (a) mark each filtered tier with a
+ * trailing `*` in the tally line, and (b) emit the legend line below.
+ *
+ * Examples:
+ *   - minimumSeverity=null,  ignoreMinor=false → ∅ (no marker anywhere)
+ *   - minimumSeverity="high", ignoreMinor=false → { medium, low }
+ *   - minimumSeverity=null,  ignoreMinor=true  → { low }
+ *   - minimumSeverity="high", ignoreMinor=true  → { medium, low } (union)
+ *   - minimumSeverity="low",  ignoreMinor=false → ∅ (everything visible)
+ */
+function filteredTiers(data: ReviewData): ReadonlySet<string> {
+  const minimum = data.minimumSeverity != null ? data.minimumSeverity.toLowerCase() : null;
+  const ignoreMinor = data.ignoreMinor === true;
+  if (!ignoreMinor && minimum === null) return new Set();
+  const ignoredByMin =
+    minimum !== null
+      ? SEVERITY_ORDER.filter((level) => severityRank(level) < severityRank(minimum))
+      : [];
+  const ignoredByIgnoreMinor = ignoreMinor ? ["low"] : [];
+  return new Set([...ignoredByMin, ...ignoredByIgnoreMinor]);
+}
+
+/**
+ * Legend line that follows the severity tally when any tier is
+ * filtered. Returns `""` when nothing is filtered — callers MUST treat
+ * it as opt-in: only push this line in layouts that have room for a
+ * second markdown line below the tally. Returns the code-fenced
+ * single-line legend `` `* = filtered by threshold` `` — code-fenced
+ * (not italic) so the `*` doesn't need a backslash escape on either
+ * GitHub or Azure DevOps, and short enough to fit below the tally
+ * without breaking table-cell / bullet contexts.
+ */
+function severityTallyLegend(data: ReviewData): string {
+  if (filteredTiers(data).size === 0) return "";
+  return "`* = filtered by threshold`";
+}
+
 /** Severity tally line used by most layouts. */
 function severityTally(data: ReviewData): string {
+  const filtered = filteredTiers(data);
   const parts: string[] = [];
   let total = 0;
   for (const level of SEVERITY_ORDER) {
     const count = data.severityCounts[level] ?? 0;
     total += count;
-    parts.push(`\`${count}\` ${level}`);
+    const mark = filtered.has(level) ? "*" : "";
+    parts.push(`\`${count}\` ${level}${mark}`);
   }
   if (total === 0) return "";
   return `🏷️ ${parts.join(" · ")}`;
@@ -462,7 +515,11 @@ function layoutBaseline(data: ReviewData): string {
   }
 
   const tally = severityTally(data);
-  if (tally.length > 0) sections.push(tally);
+  if (tally.length > 0) {
+    sections.push(tally);
+    const legend = severityTallyLegend(data);
+    if (legend.length > 0) sections.push(legend);
+  }
 
   // Posted preview (or filtered preview)
   if (data.validCommentCount > 0 && data.postedComments.length > 0) {
@@ -484,13 +541,10 @@ function layoutBaseline(data: ReviewData): string {
     for (const line of preview) sections.push(line);
   }
 
-  // Off-diff block
-  const combined = [...data.review.suppressedComments, ...data.offDiffFromComments];
-  if (combined.length > 0) {
-    sections.push("");
-    sections.push(`📍 Off-diff (${combined.length} not posted)`);
-    for (const c of combined) sections.push(`- ${findingLine(c, data.secrets)}`);
-  }
+  // Off-diff block — removed (CLARITY-19a retired). Reviewers don't
+  // action off-diff findings; the dashboard "Off-diff: N" KPI tile
+  // already exposes the count. See the retired callout in
+  // layoutSeverityTable for the full rationale.
 
   // Summary prose
   if (summary.trim().length > 0) {
@@ -639,6 +693,8 @@ function layoutVerdictBanner(data: ReviewData): string {
   const tally = severityTally(data);
   if (tally.length > 0) {
     parts.push(tally);
+    const legend = severityTallyLegend(data);
+    if (legend.length > 0) parts.push(legend);
     parts.push("");
   }
 
@@ -688,19 +744,14 @@ function layoutSeverityTable(data: ReviewData): string {
     const tally = severityTally(data);
     if (tally.length > 0) {
       parts.push(tally);
+      const legend = severityTallyLegend(data);
+      if (legend.length > 0) parts.push(legend);
     }
-    // CLARITY-19a: when off-diff findings exist, surface them as a
-    // callout so the reader knows why the table has fewer rows than
-    // the model's gross output. The callout explains the *reason*
-    // (findings target files not in this PR's diff) rather than the
-    // *math* (gap between total and inline). Skipped when offDiffCount
-    // is 0 — the headline already answers the reader's question.
-    const gap = offDiffCount(data);
-    if (gap > 0) {
-      parts.push(
-        `> 🔍 ${gap} off-diff finding${gap === 1 ? "" : "s"} not posted inline — the model produced ${gap === 1 ? "it" : "them"} but ${gap === 1 ? "it" : "they"} target${gap === 1 ? "s" : ""} files not in this PR's diff.`,
-      );
-    }
+    // CLARITY-19a (retired): the off-diff callout used to explain why
+    // the table has fewer rows than the model's gross output. Removed
+    // — reviewers don't action off-diff findings (they target files
+    // outside this PR's diff) and the "Off-diff: N" KPI tile in the
+    // dashboard already exposes the count without noise.
     parts.push("");
   }
 
@@ -882,6 +933,8 @@ function layoutChecklist(data: ReviewData): string {
   const tally = severityTally(data);
   if (tally.length > 0) {
     parts.push(tally);
+    const legend = severityTallyLegend(data);
+    if (legend.length > 0) parts.push(legend);
     parts.push("");
   }
 
@@ -965,6 +1018,8 @@ function layoutProsCons(data: ReviewData): string {
     parts.push("### 📊 Tally");
     parts.push("");
     parts.push(severityTally(data));
+    const legend = severityTallyLegend(data);
+    if (legend.length > 0) parts.push(legend);
     parts.push("");
   }
 
@@ -1002,9 +1057,6 @@ function layoutTweet(data: ReviewData): string {
     parts.push(`- Top priority: ${findingLine(sortedPosted(data)[0]!, data.secrets)}`);
   } else {
     parts.push("- ✅ No actionable concerns.");
-  }
-  if (offDiffCount(data) > 0) {
-    parts.push(`- 📍 ${offDiffCount(data)} off-diff finding${offDiffCount(data) === 1 ? "" : "s"} not posted (not on this diff).`);
   }
   if (filteredCount(data) > 0) {
     parts.push(`- 🧹 ${filteredCount(data)} filtered by severity policy or \`max-comments\` cap.`);
@@ -1155,14 +1207,11 @@ function layoutIncident(data: ReviewData): string {
   }
   parts.push("");
 
-  if (offDiffCount(data) > 0) {
-    parts.push("### 📍 Off-diff items (not posted)");
-    parts.push("");
-    [...data.review.suppressedComments, ...data.offDiffFromComments].slice(0, 5).forEach((c) => {
-      parts.push(`- ${findingLine(c, data.secrets)}`);
-    });
-    parts.push("");
-  }
+  // CLARITY-19a (retired): the "📍 Off-diff items (not posted)" section
+  // used to render up to 5 off-diff findings. Removed — reviewers
+  // don't action off-diff findings (they target files outside this
+  // PR's diff) and the "Off-diff: N" KPI tile in the dashboard
+  // already exposes the count without noise.
 
   summarySection(data, parts, { heading: "### 💬 Provider summary" });
 
@@ -1472,6 +1521,8 @@ function layoutStickyNotes(data: ReviewData): string {
   const tally = severityTally(data);
   if (tally.length > 0) {
     parts.push(tally);
+    const legend = severityTallyLegend(data);
+    if (legend.length > 0) parts.push(legend);
     parts.push("");
   }
 
@@ -1530,6 +1581,8 @@ function layoutNewspaper(data: ReviewData): string {
     parts.push("### By the numbers");
     parts.push("");
     parts.push(tally);
+    const legend = severityTallyLegend(data);
+    if (legend.length > 0) parts.push(legend);
     parts.push("");
   }
 

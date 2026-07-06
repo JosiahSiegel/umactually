@@ -42,7 +42,7 @@ function readManifest(body: string): Manifest {
   return JSON.parse(match[1] ?? "{}") as Manifest;
 }
 
-describe("CLARITY-19 (new) headline + off-diff callout invariant (body-backed)", () => {
+describe("CLARITY-19 (new) headline invariant — off-diff callout retired (CLARITY-19a)", () => {
   it("renders without throwing on inconsistent caller counts (graceful degradation)", () => {
     // Edge case: caller passes inconsistent counts. The renderer
     // should NOT throw — that would 500 the parent card.
@@ -105,7 +105,13 @@ describe("CLARITY-19 (new) headline + off-diff callout invariant (body-backed)",
     expect(manifest.suppressedCount).toBe(0);
   });
 
-  it("headline reads 'N inline findings' and the callout fires when comments split inline + off-diff", () => {
+  it("headline reads 'N inline findings' when comments split inline + off-diff (CLARITY-19a retired: no off-diff callout)", () => {
+    // CLARITY-19a retired: the off-diff callout was removed because
+    // reviewers don't action off-diff findings (they target files
+    // outside this PR's diff) and the dashboard "Off-diff: N" KPI
+    // tile already exposes the count without noise. The headline
+    // still leads with the posted count; off-diff counts live in the
+    // manifest only.
     const offDiffComment = {
       path: "src/old.ts",
       line: 1,
@@ -138,10 +144,10 @@ describe("CLARITY-19 (new) headline + off-diff callout invariant (body-backed)",
     });
     // Headline: 1 inline finding (NOT 3, NOT "3 findings → 1 posted").
     expect(body).toMatch(/📊\s+1\s+inline\s+finding/u);
-    // Callout fires because offDiffCount > 0.
-    expect(body).toMatch(
-      /> 🔍 2 off-diff findings not posted inline — the model produced them but they target files not in this PR's diff\./u,
-    );
+    // No off-diff callout (retired). The dashboard KPI tile carries
+    // the count; the manifest carries the machine-readable breakdown.
+    expect(body).not.toMatch(/not posted inline/u);
+    expect(body).not.toMatch(/🔍/u);
     // Manifest still carries the breakdown.
     const manifest = readManifest(body);
     expect(manifest.inlineCount).toBe(1);
