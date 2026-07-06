@@ -275,6 +275,12 @@ export async function dispatchLive(parsed: ParsedCliArgs, cwd: string, env: Node
   }
   try {
     const result = await runOrchestrator({ parsed, cwd, env });
+    // Write a summary artifact at the same path the dry-run uses so the
+    // self-review CI guard (`scripts/check-self-review-output.mjs`) can
+    // inspect the live review's outcome. Without this, a parse-fail
+    // card posted via the GitHub API leaves no local trace for the
+    // guard to catch — the action exits 0 and CI sees "pass".
+    await writeLiveArtifact(parsed, cwd, result);
     return { exitCode: result.exitCode };
   } finally {
     if (previousDebugRaw === undefined) {
@@ -283,4 +289,39 @@ export async function dispatchLive(parsed: ParsedCliArgs, cwd: string, env: Node
       process.env["UMACTUALLY_DEBUG_RAW"] = previousDebugRaw;
     }
   }
+}
+
+/**
+ * Persist the live review outcome to the same artifact path the dry-run
+ * uses. The shape matches the dry-run artifact's top-level fields so
+ * `scripts/check-self-review-output.mjs` can inspect either path with
+ * the same classifier.
+ *
+ * Critical for the self-review guard: when the action posts a parse-fail
+ * card via the GitHub API, this artifact is the only local signal that
+ * the review produced zero findings. Without it, the guard has nothing
+ * to inspect and CI passes despite garbage on the PR.
+ */
+async function writeLiveArtifact(
+  parsed: ParsedCliArgs,
+  cwd: string,
+  result: { readonly posted: boolean; readonly message: string },
+): Promise<void> {
+  if (parsed.outputArtifact === null) return;
+  const artifactPath = isAbsolute(parsed.outputArtifact)
+    ? parsed.outputArtifact
+    : resolve(cwd, parsed.outputArtifact);
+  await mkdir(dirname(artifactPath), { recursive: true });
+  const body = {
+    artifactPath,
+    posted: result.posted,
+    message: result.message,
+    marker: "<!-- umactually-pr-review -->",
+    inlineThreadCount: 0,
+    suppressedCommentCount: 0,
+    blockedRawOutput: false,
+    parseFailed: !result.posted,
+    note: "Live review did not produce a parseable dry-run artifact body. Inspect the PR review itself for the actual findings count.",
+  };
+  await writeFile(artifactPath, `${JSON.stringify(body, null, 2)}\n`, "utf8");
 }
