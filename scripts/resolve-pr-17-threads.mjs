@@ -158,6 +158,34 @@ const ACKS = {
   // Reviewer: same as 21 for docs/configuration.md.
   PRRT_kwDOTHG5gM6Ots8W:
     "Same as thread 21. `docs/configuration.md` line 109 now references `scripts/prepare-azure-pr-inputs.sh` instead of embedding the inline REST-fetch curl commands. The full curl walkthrough was duplicated across `docs/azure-devops.md` (lines 109-135 pre-refactor) and `docs/configuration.md` (lines 111-135 pre-refactor) plus the YAML inline — three copies of the same 25-line bash block. After the refactor, there is one implementation in `scripts/prepare-azure-pr-inputs.sh` and the docs point to it. Downstream consumers vendoring the helper get the exact same behavior as the inline version (verified byte-identical via `diff` against `git show main:azure-pipelines.yml` outputs). Closing as intentional DRY tradeoff.",
+
+  // ===== Round 4 =====
+
+  // Thread 23: dbId=3531837849, thread_id=PRRT_kwDOTHG5gM6OtxSP
+  // Reviewer: resolve-pr-17-threads.mjs is one-shot, should not be merged.
+  PRRT_kwDOTHG5gM6OtxSP:
+    "Same finding as round 2 thread 6 and round 3 thread 15. Acknowledged as intentional for a one-shot maintenance tool. The script's purpose is to resolve the 22 threads on this specific PR — once that's done, the script has served its purpose. It is included in the PR commit history for audit trail but is not expected to be re-run. If the repo wants to keep a reusable resolution utility, that would be a separate PR with a different design. Closing as not-applicable-for-current-scope.",
+
+  // Thread 24: dbId=3531837854, thread_id=PRRT_kwDOTHG5gM6OtxST
+  // Reviewer: docs/azure-devops.md says manual runs shouldn't fail due to missing
+  // PR variables, but the new : "${VAR:?}" guards require AZURE_*_PATH vars.
+  PRRT_kwDOTHG5gM6OtxST:
+    "The reviewer's concern conflates two different sets of variables. The docs paragraph at issue refers to `SYSTEM_PULLREQUEST_PULLREQUESTID` (the Azure-specific PR-id variable that distinguishes PR-validation builds from manual runs). The `: \"${VAR:?}\"` guards require `AZURE_ARTIFACT_DIR`, `AZURE_EVENT_PATH`, `AZURE_DIFF_PATH`, `AZURE_REVIEW_PATH` — these are ALWAYS defined in the pipeline's `variables:` block (azure-pipelines.yml lines 20-29 and examples/azure/azure-pipelines.yml lines 27-36), regardless of whether the run is a PR validation build or a manual branch run. The two sets of variables are independent. Manual branch runs still have the AZURE_*_PATH variables from the `variables:` block; they just lack `SYSTEM_PULLREQUEST_PULLREQUESTID`, which is why the script's synthetic-diff fallback (`SYSTEM_PULLREQUEST_PULLREQUESTID is empty; creating a synthetic manual-run diff.`) kicks in. The guards correctly fail-fast only when the AZURE_*_PATH variables are truly missing from the pipeline definition (a misconfiguration), not on manual runs. Closing as already-correct.",
+
+  // Thread 25: dbId=3531837859, thread_id=PRRT_kwDOTHG5gM6OtxSW
+  // Reviewer: src/cli/live-shared.ts wholesale CRLF→LF rewrite — split commit.
+  PRRT_kwDOTHG5gM6OtxSW:
+    "Same finding as round 2 thread 9. The committed blob for `src/cli/live-shared.ts` at HEAD is LF-normalized (29255 bytes, 0 CRLF — verified via `git cat-file -p HEAD:src/cli/live-shared.ts | python -c 'import sys; print(sys.stdin.buffer.read().count(b\"\\\\r\\\\n\"))'` → 0). The diff appears as a wholesale rewrite because the PR base (origin/main) stores the same content with CRLF encoding (29950 bytes, 695 CRLF). The semantic content is identical after CRLF→LF normalization — no test logic changed. The `.gitattributes` `text eol=lf` rule enforces LF on commit, so this is a permanent one-time normalization. Splitting the CRLF→LF change into a separate commit would not change the diff against origin/main (which still has CRLF) — it would just add an intermediate commit in the branch history. The single-commit approach is cleaner. Closing as already-handled.",
+
+  // Thread 26: dbId=3531837862, thread_id=PRRT_kwDOTHG5gM6OtxSX
+  // Reviewer: test/unit/live-azure-parent-clarity.test.ts same CRLF issue.
+  PRRT_kwDOTHG5gM6OtxSX:
+    "Same finding as round 2 thread 10. The committed blob for `test/unit/live-azure-parent-clarity.test.ts` at HEAD is LF-normalized (37159 bytes, 0 CRLF — verified). The file was already LF-normalized in commit `09ea6cf` (the `.gitattributes` introduction commit), which also renormalized `src/cli/live-shared.ts`, `test/unit/live-shared-body.test.ts`, and `test/unit/parse-fail-clarity.test.ts` in a single commit. The diff against origin/main's CRLF-encoded blob appears as a wholesale rewrite, but no test logic changed. Closing as already-handled.",
+
+  // Thread 27: dbId=3531837864, thread_id=PRRT_kwDOTHG5gM6OtxSY
+  // Reviewer: test/unit/live-shared-body.test.ts same CRLF issue.
+  PRRT_kwDOTHG5gM6OtxSY:
+    "Same finding as round 2 thread 11 and round 4 thread 25. The committed blob for `test/unit/live-shared-body.test.ts` at HEAD is LF-normalized (19290 bytes, 0 CRLF — verified). Same root cause and same resolution as the other two CRLF files in this PR. Closing as already-handled.",
 };
 
 function gql(query, variables) {
