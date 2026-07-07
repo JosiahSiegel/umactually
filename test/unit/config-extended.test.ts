@@ -33,12 +33,17 @@ const SECRET_TOKEN = "sk_test_LEAK_ME_abcdef0123456789";
 
 describe("config: severity rank + bypass", () => {
   it("ranks severities in the expected order", () => {
+    // Unified rank table (now delegated to src/util/severity.ts:severityRank
+    // so the live path and the config path agree). Absolute values shifted
+    // from the previous parallel table (critical was 3, security 4, leak 5)
+    // to the live-path values (critical=4, security=5, leak=6). Ordinal
+    // relationships are unchanged.
     expect(rankSeverity("info")).toBe(0);
     expect(rankSeverity("minor")).toBe(1);
     expect(rankSeverity("major")).toBe(2);
-    expect(rankSeverity("critical")).toBe(3);
-    expect(rankSeverity("security")).toBe(4);
-    expect(rankSeverity("leak")).toBe(5);
+    expect(rankSeverity("critical")).toBe(4);
+    expect(rankSeverity("security")).toBe(5);
+    expect(rankSeverity("leak")).toBe(6);
     expect(rankSeverity("leak")).toBeGreaterThan(rankSeverity("security"));
   });
 
