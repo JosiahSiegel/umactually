@@ -256,7 +256,20 @@ async function dispatchLivePlatform(input: {
       });
     }
     case "azure": {
-      const context = readAzureContext(env);
+      // Forward --pr-number (when supplied) to the Azure context reader so
+      // manual CLI invocations work without synthesising
+      // SYSTEM_PULLREQUEST_PULLREQUESTID. The flag is validated at the
+      // CLI boundary (see src/cli/validate.ts); we re-parse here so the
+      // typed AzureContext receives a guaranteed-positive integer or
+      // undefined (which falls back to the env var path).
+      let azurePrNumberOverride: number | undefined = undefined;
+      if (parsed.prNumber !== null) {
+        const candidate = Number.parseInt(parsed.prNumber, 10);
+        if (Number.isSafeInteger(candidate) && candidate > 0) {
+          azurePrNumberOverride = candidate;
+        }
+      }
+      const context = readAzureContext(env, { prNumber: azurePrNumberOverride });
       const diffText = await fetchAzurePrDiff(context, fetchImpl);
       const leakGate = await evaluateLeakGate({
         diffText,

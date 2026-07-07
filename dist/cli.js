@@ -1213,6 +1213,54 @@ function redactVerdictForError(verdict) {
 function mapVerdictToGithubEvent(verdict) {
     return verdict === "NEEDS_FIX" ? "REQUEST_CHANGES" : "COMMENT";
 }
+/**
+ * Reconcile the model's raw verdict against the postable severity counts.
+ *
+ * The model emits a `verdict` string from its JSON payload verbatim (see
+ * `src/provider/provider-parse.ts:351`). The severity filter
+ * (`passesSeverityPolicy` in `src/cli/live-shared.ts`) may then drop
+ * every comment — for example, the model tagged everything `info` and
+ * the user set `--minimum-severity medium`. In that case
+ * `severityCounts` is empty, `postableComments.length` is 0, and the
+ * review posts with a `⛔ NEEDS_FIX` headline and a contradictory
+ * `📊 0 inline findings` summary. The PR is then blocked by
+ * `REQUEST_CHANGES` / a `pending` ADO status, but there is nothing
+ * for the human reviewer to act on.
+ *
+ * This helper centralizes the fix: when the postable severity counts
+ * are empty AND the model's verdict is the blocking `NEEDS_FIX`,
+ * downgrade the verdict to `COMMENT` so the headline matches the
+ * body. Non-blocking verdicts (`APPROVED` / `COMMENT` / `DISCUSS` /
+ * `SHIP`) on an empty review are a coherent state — an empty review
+ * that the model approves is fine and must NOT be re-stamped as
+ * `COMMENT` (which would lose information; `✅ SHIP` on zero
+ * findings is the canonical "no findings, looks good" outcome).
+ *
+ * Apply this at every user-facing surface that renders the verdict
+ * (badge, manifest, GitHub review event, Azure PR status). The
+ * reconcile-on-read pattern keeps the model's raw verdict intact in
+ * the parsed `LiveReview` so logging / debugging can still see what
+ * the model actually said.
+ *
+ * Regression: PR #18 self-review posted `⛔ NEEDS_FIX` with `📊 0
+ * inline findings` because the model emitted `NEEDS_FIX` while
+ * tagging all five findings `severity: "info"`, and the default
+ * `--minimum-severity medium` filtered every one of them out. The
+ * reviewer had to expand the collapsible summary to learn what the
+ * model wanted. This helper makes that contradiction impossible.
+ */
+function reconcileVerdictForEmptySeverityCounts(verdict, severityCounts) {
+    // Only the blocking verdict is the contradiction class. Other
+    // verdicts on empty reviews are coherent states and pass through.
+    if (verdict.toUpperCase() !== "NEEDS_FIX") {
+        return verdict;
+    }
+    const total = Object.values(severityCounts).reduce((sum, count) => sum + count, 0);
+    if (total === 0) {
+        return "COMMENT";
+    }
+    return verdict;
+}
 /** Verdict ranking used by the merge path's "worst verdict wins" rule. */
 function verdictRank(verdict) {
     switch (verdict.toUpperCase()) {
@@ -2743,12 +2791,12 @@ class AzureContextError extends PlatformContextError {
 const SYSTEM_ACCESSTOKEN_ALIAS = "SYSTEM_ACCESSTOKEN";
 const AZURE_DEVOPS_TOKEN_ALIAS = "AZURE_DEVOPS_TOKEN";
 const AZURE_DEVOPS_HOST = "dev.azure.com";
-function readAzureContext(env) {
+function readAzureContext(env, overrides) {
     const token = readAzureToken(env);
     const org = readAzureOrg(env);
     const project = readAzureProject(env);
     const repoId = readAzureRepoId(env);
-    const prNumber = readAzurePrNumber(env);
+    const prNumber = readAzurePrNumber(env, overrides?.prNumber);
     const sourceCommit = readAzureSha(env);
     const targetBranch = readAzureTargetBranch(env);
     return {
@@ -2815,10 +2863,35 @@ function readAzureRepoId(env) {
     }
     return repoId;
 }
-function readAzurePrNumber(env) {
+function readAzurePrNumber(env, override) {
+    // Prefer an explicit CLI flag (`--pr-number`) override so manual
+    // invocations outside of an Azure Pipelines PR build work without
+    // synthesising SYSTEM_PULLREQUEST_PULLREQUESTID. The flag is
+    // validated at the CLI boundary (see src/cli/validate.ts), but we
+    // re-validate here so direct callers of readAzureContext (tests,
+    // future internal call sites) cannot smuggle a non-positive value
+    // past the boundary.
+    if (override !== undefined) {
+        if (!Number.isInteger(override) || override <= 0) {
+            throw new AzureContextError("AZURE_PR_NUMBER_INVALID", "Azure CLI flag --pr-number must be a positive integer.");
+        }
+        return override;
+    }
     const raw = env["SYSTEM_PULLREQUEST_PULLREQUESTID"];
     if (raw === undefined || raw.length === 0) {
-        throw new AzureContextError("AZURE_PR_NUMBER_INVALID", "Azure Pipelines SYSTEM_PULLREQUEST_PULLREQUESTID must be set.");
+        throw new AzureContextError("AZURE_PR_NUMBER_INVALID", [
+            "Azure Pipelines SYSTEM_PULLREQUEST_PULLREQUESTID must be set.",
+            "",
+            "Recovery options:",
+            "  (1) Run as a build validation policy on an Azure Repos branch —",
+            "      Azure Pipelines sets SYSTEM_PULLREQUEST_PULLREQUESTID automatically.",
+            "      See docs/azure-devops.md.",
+            "  (2) For manual/CLI invocations, pass --pr-number <N> on the command line",
+            "      (in addition to supplying BUILD_REPOSITORY_ID, SYSTEM_COLLECTIONURI,",
+            "      SYSTEM_TEAMPROJECT, SYSTEM_PULLREQUEST_SOURCECOMMITID,",
+            "      SYSTEM_PULLREQUEST_TARGETBRANCHNAME, and either SYSTEM_ACCESSTOKEN",
+            "      or AZURE_DEVOPS_TOKEN as env vars).",
+        ].join("\n"));
     }
     // Strict helper: "42abc" must NOT coerce to 42 (which would land on a
     // 404 from the Azure DevOps REST API instead of a typed error).
@@ -2826,7 +2899,15 @@ function readAzurePrNumber(env) {
     // so the remaining guard is "must be a positive integer".
     const parsed = parseStrictInt(raw);
     if (parsed === null || parsed <= 0) {
-        throw new AzureContextError("AZURE_PR_NUMBER_INVALID", "Azure Pipelines SYSTEM_PULLREQUEST_PULLREQUESTID must be a positive integer.");
+        throw new AzureContextError("AZURE_PR_NUMBER_INVALID", [
+            "Azure Pipelines SYSTEM_PULLREQUEST_PULLREQUESTID must be a positive integer.",
+            "",
+            "Recovery options:",
+            "  (1) Run as a build validation policy on an Azure Repos branch —",
+            "      Azure Pipelines sets SYSTEM_PULLREQUEST_PULLREQUESTID automatically.",
+            "  (2) For manual/CLI invocations, pass --pr-number <N> instead of relying",
+            "      on the env var (the flag accepts positive integers only).",
+        ].join("\n"));
     }
     return parsed;
 }
@@ -5086,8 +5167,17 @@ function preparePostedReview(input) {
     const offDiffFromComments = selectOffDiffComments(input.review, input.diffText);
     const suppressedCommentCount = input.review.suppressedComments.length + offDiffFromComments.length;
     const severityCounts = live_shared_countBySeverity(postableComments);
+    // Reconcile the model's raw verdict against the postable severity
+    // counts. If every finding was severity-filtered out, the body will
+    // render `📊 0 inline findings`, and rendering `⛔ NEEDS_FIX` against
+    // that headline is contradictory — the human reviewer would block
+    // the PR on a verdict that has no findings to act on. Downgrade to
+    // `COMMENT` in that case so the badge matches the body. See
+    // `src/util/verdict.ts:reconcileVerdictForEmptySeverityCounts` for
+    // the rule and the PR #18 regression context.
+    const effectiveVerdict = reconcileVerdictForEmptySeverityCounts(input.review.verdict, severityCounts);
     const body = buildReviewBody({
-        review: input.review,
+        review: { ...input.review, verdict: effectiveVerdict },
         provider: input.provider,
         modelId: input.modelId,
         validCommentCount: postableComments.length,
@@ -5111,6 +5201,7 @@ function preparePostedReview(input) {
         severityCounts,
         body,
         postedComments: postableComments,
+        effectiveVerdict,
     };
 }
 /**
@@ -5347,7 +5438,12 @@ async function runAzureLive(input) {
     await postAzureStatus({
         context,
         fetchImpl,
-        state: mapReviewVerdictToAzureStatus(provider.review.verdict),
+        // Use the *effective* verdict (post-reconciliation) so the Azure
+        // PR status matches the review body. A NEEDS_FIX review whose
+        // findings were all severity-filtered out surfaces here as
+        // `succeeded`, matching the `📊 0 inline findings` body and
+        // avoiding a misleading `pending` check against an empty review.
+        state: mapReviewVerdictToAzureStatus(prepared.effectiveVerdict),
         description: provider.review.summary,
     });
     // The reviewId is the PARENT thread id (so consumers can correlate
@@ -5363,7 +5459,10 @@ async function runAzureLive(input) {
         message: successMessage,
         // Surface the live counts for the self-review guard artifact.
         inlineThreadCount: postedIds.length,
-        verdict: provider.review.verdict,
+        // Use the *effective* verdict (post-reconciliation) so the artifact
+        // matches the Azure PR status and the body. See the matching
+        // comment on the GitHub side in `live-github.ts`.
+        verdict: prepared.effectiveVerdict,
     };
 }
 /**
@@ -6045,7 +6144,7 @@ async function runGithubLive(input) {
     // REQUEST_CHANGES from synthetic data.
     const event = forceReplace
         ? "COMMENT"
-        : mapReviewVerdictToGithubEvent(provider.review.verdict);
+        : mapReviewVerdictToGithubEvent(prepared.effectiveVerdict);
     const reviewId = await createGithubReview({
         context,
         fetchImpl,
@@ -6062,7 +6161,12 @@ async function runGithubLive(input) {
         // artifact-write path can persist them — the dry-run stub's counts
         // would otherwise mask what GitHub actually saw.
         inlineThreadCount: postableComments.length,
-        verdict: provider.review.verdict,
+        // Use the *effective* verdict (post-reconciliation) so the artifact
+        // matches what GitHub actually saw via the `event` parameter. A
+        // NEEDS_FIX review whose findings were all severity-filtered out
+        // surfaces here as `COMMENT`, matching the `📊 0 inline findings`
+        // body and the `COMMENT` review event.
+        verdict: prepared.effectiveVerdict,
     };
 }
 async function findExistingMarkerReview(context, fetchImpl) {
@@ -8527,7 +8631,20 @@ async function dispatchLivePlatform(input) {
             });
         }
         case "azure": {
-            const context = readAzureContext(env);
+            // Forward --pr-number (when supplied) to the Azure context reader so
+            // manual CLI invocations work without synthesising
+            // SYSTEM_PULLREQUEST_PULLREQUESTID. The flag is validated at the
+            // CLI boundary (see src/cli/validate.ts); we re-parse here so the
+            // typed AzureContext receives a guaranteed-positive integer or
+            // undefined (which falls back to the env var path).
+            let azurePrNumberOverride = undefined;
+            if (parsed.prNumber !== null) {
+                const candidate = Number.parseInt(parsed.prNumber, 10);
+                if (Number.isSafeInteger(candidate) && candidate > 0) {
+                    azurePrNumberOverride = candidate;
+                }
+            }
+            const context = readAzureContext(env, { prNumber: azurePrNumberOverride });
             const diffText = await fetchAzurePrDiff(context, fetchImpl);
             const leakGate = await evaluateLeakGate({
                 diffText,
