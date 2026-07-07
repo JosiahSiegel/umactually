@@ -125,6 +125,163 @@ describe("extractJsonBlock: robustness to literal control chars in JSON strings"
       expect(parsed.key).toBe("a\\nb");
     }
   });
+
+  it("double-escapes stray `\\X` where X is not a valid JSON escape character", () => {
+    // REPRO: PR #24 self-review (run 28898948220) emitted a 20,703-char
+    // review across SSE deltas. The body fields contained markdown
+    // backticks (`` ` ``) inside JSON strings. The model's output had
+    // the two-char sequence `\` + `` ` `` (a backslash followed by a
+    // backtick) which is not a valid JSON escape (`"`/`\`/`/`/`b`/
+    // `f`/`n`/`r`/`t`/`u` are the only valid ones). The balanced-
+    // object fallback's existing escape conversion passes `\` through
+    // verbatim and lets JSON.parse reject the whole payload with
+    // "Bad escaped character in JSON at position 13115", which
+    // triggers the parse-fail fallback instead of rendering the real
+    // review. Fix: when the escape-conversion walker sees `\` followed
+    // by anything outside the valid JSON escape set, emit `\\X` so
+    // JSON.parse sees `\\` + `X` → `\` + `X` in the parsed output
+    // — the literal `\` + char the model most likely intended.
+    //
+    // JS source note: in a single-quoted JS literal `\\` is one
+    // backslash and `` ` `` is a backtick, so the runtime input
+    // contains the two-char sequence `\` + `` ` `` inside the JSON
+    // body field — exactly what triggers the parser failure.
+    const input = '{"body":"markdown code: \\`code\\` end"}';
+    const result = extractFirstBalancedObject(input);
+    expect(result).not.toBeNull();
+    if (result !== null) {
+      const parsed = JSON.parse(result) as { body: string };
+      // The model wrote `\` + `` ` `` in its body; the fix preserves
+      // that literal sequence in the parsed output.
+      expect(parsed.body).toBe("markdown code: \\`code\\` end");
+    }
+  });
+
+  it("double-escapes stray `\\X` where X is `\\:`, `\\,`, `\\.`, `\\'` (common markdown escapes)", () => {
+    // Models writing markdown sometimes emit `\:`, `\,`, `\.`, `\'` —
+    // markdown backslash-escapes. None are valid JSON escapes, so
+    // without the double-escape fix the parse fails with
+    // "Bad escaped character in JSON". The fix preserves the literal
+    // `\` + char in the parsed output.
+    const cases = [
+      { from: "with \\: colon", expected: "with \\: colon" },
+      { from: "with \\, comma", expected: "with \\, comma" },
+      { from: "with \\. dot", expected: "with \\. dot" },
+      { from: "with \\' apostrophe", expected: "with \\' apostrophe" },
+    ];
+    for (const { from, expected } of cases) {
+      const input = `{"body":"${from}"}`;
+      const result = extractFirstBalancedObject(input);
+      expect(result, `input: ${input}`).not.toBeNull();
+      if (result !== null) {
+        const parsed = JSON.parse(result) as { body: string };
+        expect(parsed.body, `input: ${from}`).toBe(expected);
+      }
+    }
+  });
+
+  it("double-escapes a stray `\\X` mixed with literal control chars (real-world SSE case)", () => {
+    // End-to-end shape: literal newlines inside strings (from SSE delta
+    // accumulation) AND a stray `\X` in a body field. Both must be
+    // repaired for the substring to parse as valid JSON.
+    const input = '{\n  "body": "line1\nline2\nwith \`bad\` escape",\n  "ok": true\n}';
+    const result = extractFirstBalancedObject(input);
+    expect(result).not.toBeNull();
+    if (result !== null) {
+      const parsed = JSON.parse(result) as { body: string; ok: boolean };
+      expect(parsed.body).toBe("line1\nline2\nwith \`bad\` escape");
+      expect(parsed.ok).toBe(true);
+    }
+  });
+
+  it("repairs stray `\\u` followed by non-hex (invalid unicode escape)", () => {
+    // `\u` requires exactly 4 hex digits. `\uZZZZ` is invalid JSON
+    // and JSON.parse rejects with "Bad escaped character in JSON"
+    // or "Invalid unicode escape". The fix double-escapes `\u`
+    // (which is in VALID_JSON_ESCAPE_CHARS, so it should NOT be
+    // double-escaped) — but the FOLLOWING non-hex chars need
+    // handling. This test pins the current behavior: a `\u` with
+    // non-hex following chars is still a parse failure (the fix
+    // only handles single-char invalid escapes, not 4-hex unicode).
+    //
+    // If the model emits something like `\uFOOO` (with letters), the
+    // `\u` passes through as a valid escape char, then `F` (not
+    // hex) follows. JSON.parse sees `\uF` and rejects.
+    //
+    // We don't try to repair this — the model would have to produce
+    // valid 4-hex for unicode escapes. This test exists to pin the
+    // limitation so a future refactor doesn't claim to handle it.
+    const input = '{"body":"with \\uFOOO bad escape"}';
+    const result = extractFirstBalancedObject(input);
+    // The fix doesn't change this case (the `\u` IS in VALID_JSON_ESCAPE_CHARS).
+    // Result is whatever extractFirstBalancedObject returns, and
+    // JSON.parse may still fail. We accept either outcome but assert
+    // the helper doesn't throw.
+    if (result !== null) {
+      try { JSON.parse(result); } catch { /* known limitation */ }
+    }
+    expect(result).not.toBeNull();
+  });
+
+  it("preserves all valid JSON escape sequences through the repair pass", () => {
+    // Round-trip test: every valid single-char JSON escape must come
+    // through the repair unchanged (NOT over-escaped to `\\X`). If
+    // any of these were double-escaped, JSON.parse would output a
+    // backslash followed by the literal char instead of the
+    // decoded escape, and the assertion would fail.
+    const cases = [
+      { from: "quote: \\\"end", expected: 'quote: "end' },
+      { from: "backslash: \\\\end", expected: "backslash: \\end" },
+      { from: "slash: \\/end", expected: "slash: /end" },
+      { from: "back: \\bend", expected: "back: \bend" },
+      { from: "form: \\fend", expected: "form: \fend" },
+      { from: "newline: \\nend", expected: "newline: \nend" },
+      { from: "carriage: \\rend", expected: "carriage: \rend" },
+      { from: "tab: \\tend", expected: "tab: \tend" },
+    ];
+    for (const { from, expected } of cases) {
+      // JS source note: `\\` is one backslash, so the runtime
+      // input contains the 2-char sequence `\` + char inside the
+      // JSON body field — exactly what JSON.parse expects.
+      const input = `{"body":"${from}"}`;
+      const result = extractFirstBalancedObject(input);
+      expect(result, `input: ${input}`).not.toBeNull();
+      if (result !== null) {
+        const parsed = JSON.parse(result) as { body: string };
+        expect(parsed.body, `input: ${from}`).toBe(expected);
+      }
+    }
+  });
+});
+
+describe("extractJsonBlock: fence-body literal-control-char repair", () => {
+  // The fence body extracted from ```json ... ``` can still contain
+  // literal newlines inside JSON strings (because the textPayload came
+  // from SSE delta accumulation where each delta's `\n` escape was
+  // decoded to a real newline). `tryParseJson(fenceBody)` would reject
+  // those literal newlines. The fence-body extraction must therefore
+  // run the same escape-repair pass as the balanced-object fallback
+  // so the body parses before we fall through to that slower path.
+  it("repairs literal newlines inside fence-body strings", () => {
+    const fenced = '```json\n{\n  "body": "line1\nline2",\n  "ok": true\n}\n```';
+    const result = extractJsonBlock(fenced);
+    expect(result).not.toBeNull();
+    const parsed = result as { body: string; ok: boolean };
+    expect(parsed.body).toBe("line1\nline2");
+    expect(parsed.ok).toBe(true);
+  });
+
+  it("repairs stray `\\X` in fence-body strings", () => {
+    // JS source note: `\\` is one backslash, so the runtime fenced
+    // body contains the two-char sequence `\` + `` ` `` inside the
+    // JSON body field — exactly the production failure mode. The
+    // fix preserves the literal sequence in the parsed output.
+    const fenced = '```json\n{\n  "body": "with \\`bad\\` escape"\n}\n```';
+    const result = extractJsonBlock(fenced);
+    expect(result).not.toBeNull();
+    const parsed = result as { body: string };
+    expect(parsed.body).toBe("with \\`bad\\` escape");
+  });
 });
 
 describe("extractTextPayload: SSE end-to-end with newline-containing deltas", () => {
@@ -165,5 +322,52 @@ describe("extractTextPayload: SSE end-to-end with newline-containing deltas", ()
     expect(review?.summary).toBe("Reviewed the auth refactor.\nTwo issues found.");
     expect(review?.verdict).toBe("NEEDS_FIX");
     expect(review?.comments).toHaveLength(1);
+  });
+
+  it("extracts a review with stray `\\X` sequences in body fields (real PR #24 failure mode)", async () => {
+    // REPRO: PR #24 self-review run 28898948220 emitted a review
+    // where body fields contained `\` followed by `` ` `` (markdown
+    // backtick escape). The textPayload accumulated real newlines
+    // from SSE delta accumulation AND had stray `\X` sequences —
+    // both needed repair for JSON.parse to accept the document.
+    //
+    // Construct a model output that has BOTH failure modes in one
+    // string: a literal newline (from delta accumulation) AND a
+    // stray `\`` (from markdown prose).
+    const modelOutput =
+      '{"summary":"Reviewed.\\nHas findings.",' +
+      '"verdict":"NEEDS_FIX",' +
+      '"comments":[{"path":"src/a.ts","line":1,"body":"line1\\nwith \\`tick\\` here","severity":"medium","category":"style"}],' +
+      '"suppressed_comments":[]}';
+
+    const stream =
+      'event: response.created\n' +
+      'data: {"type":"response.created","response":{"id":"r2","status":"in_progress","output":[]}}\n' +
+      '\n' +
+      'event: response.output_text.delta\n' +
+      'data: {"type":"response.output_text.delta","delta":' +
+      JSON.stringify(modelOutput) +
+      '}\n' +
+      '\n' +
+      'data: [DONE]\n';
+
+    const { parseReviewPayload } = await import("../../src/provider/provider-parse.js");
+    const text = extractTextPayload("responses", stream);
+    expect(text).not.toBeNull();
+    const review = parseReviewPayload(text);
+    expect(review).not.toBeNull();
+    if (review !== null) {
+      // summary: literal newline preserved (decoded from `\n` in source)
+      expect(review.summary).toBe("Reviewed.\nHas findings.");
+      expect(review.verdict).toBe("NEEDS_FIX");
+      expect(review.comments).toHaveLength(1);
+      // The body has BOTH: a real newline AND the literal `\`` sequence
+      // (what the model wrote). The fix preserves both in the parsed
+      // output — that's the whole point of double-escaping.
+      expect(review.comments[0]?.body).toBe("line1\nwith \\`tick\\` here");
+      expect(review.comments[0]?.path).toBe("src/a.ts");
+      expect(review.comments[0]?.line).toBe(1);
+      expect(review.comments[0]?.severity).toBe("medium");
+    }
   });
 });

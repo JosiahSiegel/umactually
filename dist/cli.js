@@ -165,14 +165,6 @@ const FIELDS = {
         type: "integer",
         defaultValue: 16_000,
     },
-    ignoreMinor: {
-        field: "ignoreMinor",
-        flag: "--ignore-minor",
-        input: "ignore-minor",
-        env: ["UMACTUALLY_IGNORE_MINOR", "REVIEW_IGNORE_MINOR"],
-        type: "boolean",
-        defaultValue: false,
-    },
     minimumSeverity: {
         field: "minimumSeverity",
         flag: "--minimum-severity",
@@ -498,7 +490,241 @@ function readEnum(flag, value, accepted, errorClass = CliArgError) {
     throw new errorClass(`invalid ${flag} value: ${value}`);
 }
 
+;// CONCATENATED MODULE: ./src/util/brand.ts
+/**
+ * Canonical brand string used across CLI, platform, and provider code.
+ *
+ * NOT a generic brand concept: this is the specific string
+ * "umactually-pr-review" that downstream consumers (PR comments, HTTP
+ * User-Agent headers, GitHub agents) match on. Any value other than the
+ * literal "umactually-pr-review" will break dedup loops and integration
+ * parsers, so this is a pinned identifier — not a configuration knob.
+ */
+/** Canonical review brand string; eliminates the 50+ inline "umactually-pr-review" literals across CLI, platform, and provider code. */
+const BRAND = "umactually-pr-review";
+/** Log prefix shared by annotation helpers; eliminates hand-built "umactually-pr-review: " prefixes in stderr diagnostics. */
+const BRAND_PREFIX = `${BRAND}: `;
+/** HTTP User-Agent token shared by provider and platform clients; eliminates duplicated header literals. */
+const USER_AGENT = BRAND;
+/** Azure DevOps PR status context name; prevents status updates from drifting away from the review brand. */
+const AZURE_STATUS_CONTEXT_NAME = `${BRAND}-status`;
+/**
+ * Redaction token emitted by secret scanners and runtime sanitizers
+ * when a high-confidence secret or per-secret value is replaced. The
+ * runtime sanitizer (`live-shared.ts:sanitizeForPost`) and the
+ * scanner (`scan-review-secrets.ts`) must emit the SAME token so the
+ * downstream log-filter and dedup heuristics agree on what counts as
+ * "already-redacted". Single source of truth — any future rename must
+ * touch this constant only.
+ */
+const REDACTED_SECRET_TOKEN = "[REDACTED_SECRET]";
+/**
+ * Placeholder string substituted into config-parse error messages instead of
+ * leaking values. Re-exported from `src/config/errors.ts` as `REDACTED` to
+ * preserve the existing import surface in that module (the parser chain in
+ * `src/config/parsers.ts` already imports `REDACTED` from `errors.ts`).
+ */
+const REDACTED_PLACEHOLDER = "[REDACTED]";
+/** Replaces an entire `Authorization: ...` header value in logged request bodies. */
+const REDACTED_AUTHORIZATION_HEADER = "[REDACTED_AUTHORIZATION_HEADER]";
+/** Replaces a `Bearer <token>` segment inside a logged request body. */
+const REDACTED_BEARER_TOKEN = "[REDACTED_BEARER_TOKEN]";
+
+;// CONCATENATED MODULE: ./src/config/errors.ts
+class errors_InvalidConfigError extends Error {
+    field;
+    reason;
+    name = "InvalidConfigError";
+    constructor(field, reason, options) {
+        super(`Invalid config for '${field}': ${reason}`, options);
+        this.field = field;
+        this.reason = reason;
+    }
+}
+class PromptFileError extends Error {
+    path;
+    reason;
+    name = "PromptFileError";
+    constructor(path, reason, options) {
+        super(`Prompt file error: ${reason}`, options);
+        this.path = path;
+        this.reason = reason;
+    }
+}
+/**
+ * Marker used in error messages to replace any user-supplied value
+ * (URLs, tokens, prompt content). Never echo the raw value.
+ */
+
+
+;// CONCATENATED MODULE: ./src/config/parsers.ts
+
+
+
+const TRUTHY_STRINGS = new Set(["1", "true", "yes", "on", "y"]);
+const FALSY_STRINGS = new Set(["0", "false", "no", "off", "n", ""]);
+/**
+ * Parses a boolean from an unknown boundary. Accepts:
+ * - native boolean
+ * - 0 or 1 (number)
+ * - string in TRUTHY_STRINGS / FALSY_STRINGS (case-insensitive, trimmed)
+ * Anything else throws InvalidConfigError with [REDACTED] in the message.
+ */
+function parseBooleanFromUnknown(value, field) {
+    if (typeof value === "boolean")
+        return value;
+    if (typeof value === "number") {
+        if (value === 1)
+            return true;
+        if (value === 0)
+            return false;
+        throw new InvalidConfigError(field, `expected boolean, received number ${REDACTED}`);
+    }
+    if (typeof value === "string") {
+        const normalized = value.trim().toLowerCase();
+        if (TRUTHY_STRINGS.has(normalized))
+            return true;
+        if (FALSY_STRINGS.has(normalized))
+            return false;
+        throw new InvalidConfigError(field, `expected boolean string, received ${REDACTED}`);
+    }
+    throw new InvalidConfigError(field, `expected boolean, received ${typeof value}`);
+}
+const INTEGER_RE = /^-?\d+$/;
+/**
+ * Parses an integer from an unknown boundary. Accepts native integers
+ * and decimal-integer strings. Rejects floats, NaN, Infinity, empty strings.
+ */
+function parseIntegerFromUnknown(value, field) {
+    if (typeof value === "number") {
+        if (!Number.isInteger(value)) {
+            throw new InvalidConfigError(field, `expected integer, received non-integer number ${REDACTED}`);
+        }
+        return value;
+    }
+    if (typeof value === "string") {
+        const trimmed = value.trim();
+        if (trimmed.length === 0) {
+            throw new InvalidConfigError(field, `expected integer, received empty string`);
+        }
+        if (!INTEGER_RE.test(trimmed)) {
+            throw new InvalidConfigError(field, `expected integer string, received ${REDACTED}`);
+        }
+        const parsed = Number.parseInt(trimmed, 10);
+        if (!Number.isFinite(parsed)) {
+            throw new InvalidConfigError(field, `expected finite integer, received ${REDACTED}`);
+        }
+        return parsed;
+    }
+    throw new InvalidConfigError(field, `expected integer, received ${typeof value}`);
+}
+const VALID_SEVERITIES = new Set([
+    "info",
+    "minor",
+    "major",
+    "critical",
+    "security",
+    "leak",
+]);
+const SEVERITY_ALIASES = Object.freeze({
+    low: "minor",
+    medium: "major",
+    high: "critical",
+});
+// Startup invariant: every alias target must be a canonical Severity in
+// VALID_SEVERITIES. The TypeScript `Record<... , Severity | undefined>`
+// signature catches invalid targets at compile time, but a future
+// relaxation (e.g. widening the type during a refactor) would let bad
+// aliases slip through. This assertion runs once at module load and
+// throws if anyone introduces `"low": "banana"`-style drift. The
+// pin-by-test in `test/unit/config-extended.test.ts:config:
+// minimum-severity default + alias mapping` covers the live case; this
+// is the compile-time-fallback for static analysis.
+for (const [alias, target] of Object.entries(SEVERITY_ALIASES)) {
+    if (target !== undefined && !VALID_SEVERITIES.has(target)) {
+        throw new Error(`severity alias "${alias}" maps to non-canonical severity ${JSON.stringify(target)}`);
+    }
+}
+function parseSeverityFromUnknown(value, field) {
+    if (typeof value !== "string") {
+        throw new errors_InvalidConfigError(field, `expected severity string, received ${typeof value}`);
+    }
+    const normalized = value.trim().toLowerCase();
+    const alias = SEVERITY_ALIASES[normalized];
+    if (alias !== undefined)
+        return alias;
+    if (!VALID_SEVERITIES.has(normalized)) {
+        throw new errors_InvalidConfigError(field, `unknown severity ${REDACTED_PLACEHOLDER}`);
+    }
+    return normalized;
+}
+// Derive the parser's accepted set from the canonical field-schema entry.
+// Single source of truth: changing the canonical `enumValues` here updates
+// both the parser and any future code-gen of the action.yml / CLI help.
+const VALID_PLATFORMS = new Set(FIELDS.platform.enumValues ?? []);
+function parsePlatformFromUnknown(value, field) {
+    if (typeof value !== "string") {
+        throw new InvalidConfigError(field, `expected platform string, received ${typeof value}`);
+    }
+    const normalized = value.trim().toLowerCase();
+    if (!VALID_PLATFORMS.has(normalized)) {
+        throw new InvalidConfigError(field, `unknown platform ${REDACTED}`);
+    }
+    return normalized;
+}
+/**
+ * Normalizes a provider base URL:
+ * - trims whitespace
+ * - requires http: or https:
+ * - lowercases scheme and host
+ * - strips query/fragment
+ * - appends `/v1` if no version path segment is present
+ *
+ * Never includes the raw URL in error messages.
+ */
+function normalizeApiUrl(rawUrl, field) {
+    if (typeof rawUrl !== "string") {
+        throw new InvalidConfigError(field, `expected URL string, received ${typeof rawUrl}`);
+    }
+    const trimmed = rawUrl.trim();
+    if (trimmed.length === 0) {
+        throw new InvalidConfigError(field, `expected non-empty URL`);
+    }
+    let parsed;
+    try {
+        parsed = new URL(trimmed);
+    }
+    catch {
+        throw new InvalidConfigError(field, `unparseable URL ${REDACTED}`);
+    }
+    const protocol = parsed.protocol.toLowerCase();
+    if (protocol !== "http:" && protocol !== "https:") {
+        throw new InvalidConfigError(field, `unsupported URL scheme ${REDACTED}`);
+    }
+    const cleanedPath = normalizePath(parsed.pathname);
+    const hasVersionSegment = hasVersionPathSegment(cleanedPath);
+    const finalPath = hasVersionSegment ? cleanedPath : appendV1(cleanedPath);
+    return `${protocol}//${parsed.host.toLowerCase()}${finalPath}`;
+}
+function normalizePath(pathname) {
+    return stripTrailingSlash(pathname);
+}
+function hasVersionPathSegment(path) {
+    if (path.length === 0)
+        return false;
+    const segments = path.split("/");
+    for (const segment of segments) {
+        if (/^v\d+$/.test(segment))
+            return true;
+    }
+    return false;
+}
+function appendV1(path) {
+    return path.length === 0 ? "/v1" : `${path}/v1`;
+}
+
 ;// CONCATENATED MODULE: ./src/cli/parse-args.ts
+
 
 
 class CliUsageError extends Error {
@@ -527,7 +753,6 @@ function parseCliArgs(args) {
     let sonarToken = null;
     let sonarProjectKey = null;
     let sonarTimeoutSeconds = null;
-    let ignoreMinor = false;
     // BREAKING CHANGE: default flipped from null (no minimum) to "medium".
     // Matches the action.yml default and src/config/field-schema.ts so the
     // CLI and the GitHub Action behave the same out of the box. Without
@@ -648,11 +873,8 @@ function parseCliArgs(args) {
                 index += 1;
                 break;
             case "--ignore-minor":
-                ignoreMinor = true;
-                break;
             case "--no-ignore-minor":
-                ignoreMinor = false;
-                break;
+                throw new CliUsageError("--ignore-minor was removed; use --minimum-severity medium (or low/high) to suppress minor findings. Leaks and security findings are never suppressed. Environment variables UMACTUALLY_IGNORE_MINOR and REVIEW_IGNORE_MINOR are also ignored.");
             case "--minimum-severity":
                 minimumSeverity = readMinimumSeverity(args, index);
                 index += 1;
@@ -751,8 +973,10 @@ function parseCliArgs(args) {
         sonarToken,
         sonarProjectKey,
         sonarTimeoutSeconds,
-        ignoreMinor,
         minimumSeverity,
+        minimumSeverityInternal: minimumSeverity === null
+            ? null
+            : parseSeverityFromUnknown(minimumSeverity, "cli.minimumSeverity"),
         maxComments,
         reviewFileLimit,
         detectLeaks,
@@ -835,7 +1059,6 @@ const CLI_HELP_TEXT = [
     "  --sonar-host-url <url>",
     "  --sonar-token <token>",
     "  --sonar-project-key <key>",
-    "  --ignore-minor",
     "  --minimum-severity <low|medium|high>  default: medium",
     "  --detect-leaks | --no-detect-leaks",
     "  --dry-run               Write artifact JSON only, no provider calls",
@@ -851,46 +1074,6 @@ function printHelp() {
 const promises_namespaceObject = __WEBPACK_EXTERNAL_createRequire(import.meta.url)("node:fs/promises");
 ;// CONCATENATED MODULE: external "node:path"
 const external_node_path_namespaceObject = __WEBPACK_EXTERNAL_createRequire(import.meta.url)("node:path");
-;// CONCATENATED MODULE: ./src/util/brand.ts
-/**
- * Canonical brand string used across CLI, platform, and provider code.
- *
- * NOT a generic brand concept: this is the specific string
- * "umactually-pr-review" that downstream consumers (PR comments, HTTP
- * User-Agent headers, GitHub agents) match on. Any value other than the
- * literal "umactually-pr-review" will break dedup loops and integration
- * parsers, so this is a pinned identifier — not a configuration knob.
- */
-/** Canonical review brand string; eliminates the 50+ inline "umactually-pr-review" literals across CLI, platform, and provider code. */
-const BRAND = "umactually-pr-review";
-/** Log prefix shared by annotation helpers; eliminates hand-built "umactually-pr-review: " prefixes in stderr diagnostics. */
-const BRAND_PREFIX = `${BRAND}: `;
-/** HTTP User-Agent token shared by provider and platform clients; eliminates duplicated header literals. */
-const USER_AGENT = BRAND;
-/** Azure DevOps PR status context name; prevents status updates from drifting away from the review brand. */
-const AZURE_STATUS_CONTEXT_NAME = `${BRAND}-status`;
-/**
- * Redaction token emitted by secret scanners and runtime sanitizers
- * when a high-confidence secret or per-secret value is replaced. The
- * runtime sanitizer (`live-shared.ts:sanitizeForPost`) and the
- * scanner (`scan-review-secrets.ts`) must emit the SAME token so the
- * downstream log-filter and dedup heuristics agree on what counts as
- * "already-redacted". Single source of truth — any future rename must
- * touch this constant only.
- */
-const REDACTED_SECRET_TOKEN = "[REDACTED_SECRET]";
-/**
- * Placeholder string substituted into config-parse error messages instead of
- * leaking values. Re-exported from `src/config/errors.ts` as `REDACTED` to
- * preserve the existing import surface in that module (the parser chain in
- * `src/config/parsers.ts` already imports `REDACTED` from `errors.ts`).
- */
-const REDACTED_PLACEHOLDER = "[REDACTED]";
-/** Replaces an entire `Authorization: ...` header value in logged request bodies. */
-const REDACTED_AUTHORIZATION_HEADER = "[REDACTED_AUTHORIZATION_HEADER]";
-/** Replaces a `Bearer <token>` segment inside a logged request body. */
-const REDACTED_BEARER_TOKEN = "[REDACTED_BEARER_TOKEN]";
-
 ;// CONCATENATED MODULE: ./src/security/scan-review-secrets.ts
 
 const HIGH_CONFIDENCE_SECRET_PATTERNS = [
@@ -2216,7 +2399,7 @@ function composeSignal(callerSignal, timeoutMs) {
 ;// CONCATENATED MODULE: ./src/util/url.ts
 /** Join provider base URLs consistently; eliminates duplicated slash trimming across provider clients. */
 function joinUrl(baseUrl, path) {
-    const trimmedBase = stripTrailingSlash(baseUrl);
+    const trimmedBase = url_stripTrailingSlash(baseUrl);
     const prefixedPath = path.startsWith("/") ? path : `/${path}`;
     return `${trimmedBase}${prefixedPath}`;
 }
@@ -2224,7 +2407,7 @@ function joinUrl(baseUrl, path) {
  * Removes trailing slashes from a URL or path segment. Useful before
  * joining paths so empty-path joins don't produce double slashes.
  */
-function stripTrailingSlash(value) {
+function url_stripTrailingSlash(value) {
     return value.replace(/\/+$/u, "");
 }
 /** Convert a local filesystem path to a `file://` URL; eliminates duplicated URL-construction logic in the action and CLI entries. */
@@ -2394,7 +2577,7 @@ async function runLiveSonarImport(config) {
     const fetchImpl = config.fetchImpl ?? globalThis.fetch.bind(globalThis);
     const pollIntervalMs = config.pollIntervalMs ?? DEFAULT_POLL_INTERVAL_MS;
     const deadline = Date.now() + Math.max(1, config.sonarTimeoutSeconds) * 1_000;
-    const baseUrl = stripTrailingSlash(config.sonarHostUrl);
+    const baseUrl = url_stripTrailingSlash(config.sonarHostUrl);
     const authHeaders = {
         Authorization: `Bearer ${config.sonarToken}`,
         Accept: "application/json",
@@ -2546,7 +2729,6 @@ const DIRECT_ENV_SOURCE_KEYS = [
     "stallTimeoutSeconds",
     "perRequestTimeoutSeconds",
     "maxOutputTokens",
-    "ignoreMinor",
     "minimumSeverity",
     "maxComments",
     "reviewFileLimit",
@@ -2614,6 +2796,7 @@ function isEnvSourceField(field) {
  * `src/config/field-schema.ts`.
  */
 function readEnvSources(env = process.env) {
+    warnIfLegacyIgnoreMinorEnvVarsAreSet(env);
     const out = {};
     for (const def of ALL_FIELDS) {
         if (def.env.length === 0) {
@@ -2632,6 +2815,41 @@ function readEnvSources(env = process.env) {
         }
     }
     return out;
+}
+// Set of env-var names that were honored by previous versions of this
+// action but are now silently ignored after the `ignore-minor` removal.
+// We surface a one-time warning on stderr so CI pipelines that still
+// carry these env vars (often baked into runner images / variable
+// groups months ago) get a migration nudge they would otherwise miss.
+// The CLI counterpart fails loudly via `CliUsageError`; env vars are
+// weaker because they are inherited invisibly, which is exactly the
+// case where a warning helps.
+const LEGACY_IGNORE_MINOR_ENV_VARS = new Set([
+    "UMACTUALLY_IGNORE_MINOR",
+    "REVIEW_IGNORE_MINOR",
+]);
+// Per-process dedupe so a single CLI invocation that calls
+// `readEnvSources` multiple times (config loader, scenario tests, etc.)
+// doesn't spam stderr with the same warning. The set is module-scoped
+// so it lives for the lifetime of the process — the warning is meant
+// to be "once per session", not "once per call".
+const WARNED_LEGACY_ENV_VARS = new Set();
+function warnIfLegacyIgnoreMinorEnvVarsAreSet(env) {
+    const setNow = [];
+    for (const name of LEGACY_IGNORE_MINOR_ENV_VARS) {
+        if (WARNED_LEGACY_ENV_VARS.has(name))
+            continue;
+        const value = env[name];
+        if (typeof value === "string" && value.trim().length > 0) {
+            setNow.push(name);
+        }
+    }
+    if (setNow.length === 0)
+        return;
+    for (const name of setNow)
+        WARNED_LEGACY_ENV_VARS.add(name);
+    process.stderr.write(`[umactually] env ${setNow.join(", ")} is set but no longer honored. ` +
+        `Use minimum-severity (low|medium|high, default medium) instead.\n`);
 }
 
 ;// CONCATENATED MODULE: ./src/platform/azure/chunk.ts
@@ -3195,19 +3413,59 @@ const DEFAULT_PROVIDER_MODEL = FIELDS.model.defaultValue;
 
 ;// CONCATENATED MODULE: ./src/util/severity.ts
 /**
- * Canonical severity ranking. Scale: critical=4, high=3, medium=2, low=1,
- * everything else (info, undefined, "")=0. Used by both the live-path
- * severity filter (live-shared.ts) and the merge-path highest-wins rule
- * (live-merge.ts). Keep both in sync — these were duplicated until now.
+ * Canonical severity ranking — the single source of truth for severity
+ * ordering across the entire codebase.
+ *
+ * Unified scale (supersedes the former parallel table in config/severity.ts):
+ *   leak=6, security=5, critical=4, high=3, medium/major=2, low/minor=1,
+ *   info/everything else=0.
+ *
+ * Both the provider-output vocabulary (info/low/medium/high/critical,
+ * produced by `normalizeProviderSeverity`) and the internal-finding
+ * vocabulary (info/minor/major/critical/security/leak, used by the
+ * `Severity` type) are handled by this one function so they can never
+ * diverge. Used by the live-path severity filter (`live-shared.ts`), the
+ * merge-path highest-wins rule (`live-merge.ts`), the summary layouts
+ * (`render/summary-layouts.ts`), and the config-layer severity policy
+ * (`config/severity.ts` which now delegates here).
+ *
+ * Exhaustiveness: `SEVERITY_RANK` is typed `Record<Severity, number>`
+ * so the TypeScript compiler rejects any future `Severity` member that
+ * lacks a rank entry. The runtime `lookup` does the same check by
+ * indexing into the typed table — `info` from the internal vocabulary
+ * ranks 0 (not the default collapse). Provider-side typos
+ * (`"warning"`, `"3"`, etc.) that survive `normalizeProviderSeverity`
+ * still hit the default branch and rank 0; those are already warned
+ * about upstream via `provider-parse.ts:emitSeverityWarning`.
  */
-function severityRank(severity) {
-    switch (severity.toLowerCase()) {
-        case "critical": return 4;
-        case "high": return 3;
-        case "medium": return 2;
-        case "low": return 1;
-        default: return 0;
-    }
+const SEVERITY_RANK = {
+    info: 0,
+    minor: 1,
+    major: 2,
+    critical: 4,
+    security: 5,
+    leak: 6,
+};
+const SEVERITY_RANK_BY_STRING = Object.freeze({
+    ...SEVERITY_RANK,
+    // Provider-output aliases not in the internal Severity union. These
+    // are normalized upstream by `normalizeProviderSeverity` but a few
+    // call sites still pass raw provider strings (notably
+    // `passesSeverityPolicy` for the minimum-severity threshold). The
+    // ranks below are pinned by the test suite — explicit literals
+    // (not arithmetic on `SEVERITY_RANK.critical` etc.) so a future
+    // re-tuning of the canonical table cannot silently shift the
+    // aliases. The order is: low < medium < high < critical; the
+    // minor/major aliases already in `SEVERITY_RANK` collapse to the
+    // same ranks as low/medium respectively (kept consistent on
+    // purpose — Sonar emits `minor`/`major`, providers emit
+    // `low`/`medium`).
+    low: 1,
+    medium: 2,
+    high: 3,
+});
+function severity_severityRank(severity) {
+    return SEVERITY_RANK_BY_STRING[severity.toLowerCase()] ?? 0;
 }
 /** Visual order for the counts line; eliminates repeated critical → high → medium → low ordering literals. */
 const SEVERITY_ORDER = ["critical", "high", "medium", "low"];
@@ -3253,21 +3511,21 @@ function mergeReviewResults(outcomes, options) {
         for (const comment of outcome.review.comments) {
             const key = `${comment.path}:${comment.line}`;
             const existing = dedupedComments.get(key);
-            if (existing === undefined || severityRank(comment.severity) > severityRank(existing.severity)) {
+            if (existing === undefined || severity_severityRank(comment.severity) > severity_severityRank(existing.severity)) {
                 dedupedComments.set(key, comment);
             }
         }
         for (const suppressed of outcome.review.suppressedComments) {
             const key = `${suppressed.path}:${suppressed.line}`;
             const existing = dedupedSuppressed.get(key);
-            if (existing === undefined || severityRank(suppressed.severity) > severityRank(existing.severity)) {
+            if (existing === undefined || severity_severityRank(suppressed.severity) > severity_severityRank(existing.severity)) {
                 dedupedSuppressed.set(key, suppressed);
             }
         }
     }
     // MERGE-2: sort by severity desc, then path asc, then line asc.
     const sortedComments = [...dedupedComments.values()].sort((a, b) => {
-        const rankDelta = severityRank(b.severity) - severityRank(a.severity);
+        const rankDelta = severity_severityRank(b.severity) - severity_severityRank(a.severity);
         if (rankDelta !== 0)
             return rankDelta;
         const pathDelta = a.path.localeCompare(b.path);
@@ -3386,16 +3644,22 @@ function mergeReviewResults(outcomes, options) {
  * Cross-platform rules (GitHub PR review body + Azure DevOps PR thread):
  *   - DO use GFM tables, headings, blockquote, lists, fenced code,
  *     inline code, links, raw Unicode emoji, horizontal rules.
- *   - DO use `<details>`/`<summary>` — verified 2026-07-05 to render as
- *     a collapsible section on BOTH GitHub PR reviews AND Azure DevOps
- *     PR comments (empirical test via playwright against PR #43 thread
- *     575 and the production review thread, both show working
- *     click-to-expand UX). The previous "Azure renders as raw text"
- *     rule was based on 2023-era community reports and is no longer
- *     accurate. The severity-table layout uses `<details>` for verbose
- *     summaries (>500 chars) — pinned by S5a (short summary has no
- *     details) and S5b (long summary wraps in details) in
- *     `test/unit/summary-layouts.test.ts`.
+ *   - DO use `<details>`/`<summary>` — verified to render as a working
+ *     click-to-expand widget on BOTH GitHub PR reviews AND Azure DevOps
+ *     PR comments. Empirical evidence:
+ *       - GitHub: PR #20 self-review renders with disclosure triangle +
+ *         click-to-expand (verified via DOM 2026-07-07).
+ *       - Azure DevOps: PR #53 thread 1620 renders with `▸` disclosure
+ *         marker on each summary; clicking toggles `open` attr; body
+ *         expands to show path + full title (verified via playwright
+ *         + DOM 2026-07-07). Previous "Azure renders as raw text" rule
+ *         was based on 2023-era community reports and is no longer
+ *         accurate for the post-2025 Azure DevOps PR thread renderer.
+ *     The severity-table + dashboard layouts use `<details>` for the
+ *     findings list (one block per finding — see findingsDetailsRow
+ *     docstring for the full rationale) and for verbose summaries
+ *     (>500 chars). Pinned by S5a (short summary uses no <details> in
+ *     the SUMMARY section) and S5b (long summary wraps in <details>).
  *   - DO NOT use raw `<table>` HTML (Azure ignores it).
  *   - DO NOT use task lists `- [x]` / `- [ ]` (Azure ignores check state).
  *   - Body must stay under GitHub's 65,536-char comment limit.
@@ -3525,6 +3789,42 @@ function findingLine(c, secrets) {
     return `\`${cell(c.path)}\`:${c.line} — ${snippet}`;
 }
 /**
+ * Render a single finding as a `<details>` collapsible block.
+ *
+ * Mobile-friendly replacement for a GFM table row. GFM tables at
+ * 576px viewport auto-size columns to their widest cell, then wrap
+ * mid-word (`#` column stacks "10" vertically, File:Line breaks
+ * mid-identifier, Title truncates with `…`, Severity header wraps
+ * to "Severit"/"y"). The `<details>` element has no column-width
+ * constraints, so:
+ *   - severity emoji + word always render on one line
+ *   - the summary line never truncates inside a code path
+ *   - the full body, path, and line number render at any width
+ *     once the user expands the row
+ *
+ * Summary line shape: `1 · 🟠 Medium — Indentation regression: line 831 …`
+ * Expanded body shape: blank line, then `📍 \`path\`:line`, then
+ * `> ` blockquoted body (blockquotes survive inside `<details>`
+ * on both GitHub and Azure DevOps).
+ *
+ * `summaryCap` is the budget for the summary-line truncation. The
+ * full title always renders in the expanded body.
+ */
+function findingsDetailsRow(index, c, secrets, summaryCap) {
+    const title = collapseBody(c, secrets);
+    const snippet = truncateSnippet(title, summaryCap);
+    const lines = [];
+    lines.push("<details>");
+    lines.push(`<summary>${index} · ${severityEmoji(c.severity)} ${severityLabel(c.severity)} — ${cell(snippet)}</summary>`);
+    lines.push("");
+    lines.push(`📍 \`${cell(c.path)}\`:${c.line}`);
+    lines.push("");
+    lines.push(`> ${cell(title)}`);
+    lines.push("");
+    lines.push("</details>");
+    return lines.join("\n");
+}
+/**
  * Severity → display emoji used by every layout that wants a single glyph.
  *
  * Uses the Unicode colored-circle emoji (🟣 🔴 🟠 🟡 ⚪) because they
@@ -3609,29 +3909,23 @@ function pipelineLine(data) {
     return `📊 ${n} inline finding${n === 1 ? "" : "s"}`;
 }
 /**
- * Returns the set of severity tiers that are intentionally hidden by
- * the active `--minimum-severity` / `--ignore-minor` threshold. Empty
- * when no threshold is configured or the threshold keeps every tier
- * visible — callers use this to (a) mark each filtered tier with a
- * trailing `*` in the tally line, and (b) emit the legend line below.
+  * Returns the set of severity tiers that are intentionally hidden by
+ * the active `--minimum-severity` threshold. Empty when no threshold is
+ * configured or the threshold keeps every displayed tier visible — callers
+ * use this to (a) mark each filtered tier with a trailing `*` in the tally
+ * line, and (b) emit the legend line below.
  *
  * Examples:
- *   - minimumSeverity=null,  ignoreMinor=false → ∅ (no marker anywhere)
- *   - minimumSeverity="high", ignoreMinor=false → { medium, low }
- *   - minimumSeverity=null,  ignoreMinor=true  → { low }
- *   - minimumSeverity="high", ignoreMinor=true  → { medium, low } (union)
- *   - minimumSeverity="low",  ignoreMinor=false → ∅ (everything visible)
+ *   - minimumSeverity=null     → ∅ (no marker anywhere)
+ *   - minimumSeverity="low"    → ∅ (everything visible)
+ *   - minimumSeverity="medium" → { low }
+ *   - minimumSeverity="high"   → { medium, low }
  */
 function filteredTiers(data) {
     const minimum = data.minimumSeverity != null ? data.minimumSeverity.toLowerCase() : null;
-    const ignoreMinor = data.ignoreMinor === true;
-    if (!ignoreMinor && minimum === null)
+    if (minimum === null)
         return new Set();
-    const ignoredByMin = minimum !== null
-        ? SEVERITY_ORDER.filter((level) => severityRank(level) < severityRank(minimum))
-        : [];
-    const ignoredByIgnoreMinor = ignoreMinor ? ["low"] : [];
-    return new Set([...ignoredByMin, ...ignoredByIgnoreMinor]);
+    return new Set(SEVERITY_ORDER.filter((level) => severity_severityRank(level) < severity_severityRank(minimum)));
 }
 /**
  * Legend line that follows the severity tally when any tier is
@@ -3723,8 +4017,8 @@ function footer(data) {
 /** Sort posted comments by severity desc, then path asc — same invariant the existing code uses. */
 function sortedPosted(data) {
     return [...data.postedComments].sort((a, b) => {
-        const ra = severityRank(a.severity);
-        const rb = severityRank(b.severity);
+        const ra = severity_severityRank(a.severity);
+        const rb = severity_severityRank(b.severity);
         if (ra !== rb)
             return rb - ra;
         return a.path.localeCompare(b.path);
@@ -3858,12 +4152,8 @@ function layoutDashboard(data) {
     if (data.postedComments.length > 0) {
         parts.push("### 🔝 Top findings");
         parts.push("");
-        parts.push("| # | Severity | File:Line | Title |");
-        parts.push("| ---: | :--- | :--- | :--- |");
         sortedPosted(data).slice(0, 5).forEach((c, i) => {
-            const title = collapseBody(c, data.secrets);
-            const snippet = truncateSnippet(title, 80);
-            parts.push(`| ${i + 1} | ${severityEmoji(c.severity)} ${severityLabel(c.severity)} | \`${cell(c.path)}\`:${c.line} | ${cell(snippet)} |`);
+            parts.push(findingsDetailsRow(i + 1, c, data.secrets, 80));
         });
         parts.push("");
     }
@@ -3995,19 +4285,37 @@ function layoutSeverityTable(data) {
     }
     parts.push("### 📋 Findings");
     parts.push("");
-    parts.push("| # | Severity | Category | File:Line | Title |");
-    parts.push("| ---: | :--- | :--- | :--- | :--- |");
+    // Mobile-friendly collapsible list. A GFM table at 576px viewport
+    // auto-sizes each column to fit its widest cell, then wraps mid-word
+    // (`#` column stacks "10" → "1"/"0", File:Line breaks inside
+    // `summary-layouts` → `summa`/`ry-`/`layouts.ts`, Title truncates
+    // mid-sentence, Severity header wraps to "Severit"/"y"). None of
+    // those are fixable inside a GFM table because the renderer doesn't
+    // expose column-width controls and `word-wrap: anywhere` will
+    // character-break any unbreakable token that overflows even by 1px.
+    //
+    // `<details>`/`<summary>` is a native HTML element that GitHub's
+    // GFM passes through (verified 2026-07-05 per file header; Azure
+    // DevOps renders the same way in markdown). Each finding gets one
+    // collapsed block: the summary shows severity emoji + word + the
+    // first ~80 chars of the title; clicking expands to show the full
+    // path, line number, and full title with no width constraints.
+    //
+    // Information previously encoded in table columns:
+    //   #       → leading "N · " in the summary line
+    //   Severity→ "🟠 Medium" (emoji + label, no width constraint)
+    //   File:Line → first line of expanded body, prefixed with 📍
+    //   Title  → first 80 chars in summary, full text in expanded body
     if (all.length === 0) {
-        parts.push("| — | — | — | — | _No findings to address_ |");
+        parts.push("_No findings to address._");
+        parts.push("");
     }
     else {
         all.forEach((c, i) => {
-            const title = collapseBody(c, data.secrets);
-            const snippet = truncateSnippet(title, 80);
-            parts.push(`| ${i + 1} | ${severityEmoji(c.severity)} ${severityLabel(c.severity)} | ${cell(c.category ?? "general")} | \`${cell(c.path)}\`:${c.line} | ${cell(snippet)} |`);
+            parts.push(findingsDetailsRow(i + 1, c, data.secrets, 80));
         });
+        parts.push("");
     }
-    parts.push("");
     if (data.review.summary.trim().length > 0) {
         const safeSummary = redact(data.review.summary, data.secrets);
         // Cross-platform note: <details>/<summary> renders as a collapsible
@@ -4415,19 +4723,29 @@ function layoutReleaseNotes(data) {
     parts.push("### 📝 Review changelog");
     parts.push("");
     const buckets = {
-        "🔴 Fixes (high/critical)": [],
+        "🔴 Fixes (critical+)": [],
         "🟠 Improvements (medium)": [],
         "🟡 Style (low)": [],
     };
+    // Severity-rank → release-notes bucket. Mirrors the unified rank table
+    // in `src/util/severity.ts:severityRank` (leak=6, security=5,
+    // critical=4, high=3, medium/major=2, low/minor=1, info=0). The
+    // "🔴 Fixes (critical+)" bucket intentionally covers the entire top
+    // half (ranks 3-6 — high, critical, security, leak) so security and
+    // leak findings (which the live path can produce when the severity
+    // filter is permissive or bypassed) get bucketed as fixes rather
+    // than silently collapsed into the default "🟡 Style (low)" bucket.
     const SEVERITY_RANK_TO_BUCKET = {
-        4: "🔴 Fixes (high/critical)",
-        3: "🔴 Fixes (high/critical)",
+        6: "🔴 Fixes (critical+)",
+        5: "🔴 Fixes (critical+)",
+        4: "🔴 Fixes (critical+)",
+        3: "🔴 Fixes (critical+)",
         2: "🟠 Improvements (medium)",
         1: "🟡 Style (low)",
         0: "🟡 Style (low)",
     };
     for (const c of data.postedComments) {
-        const rank = severityRank(c.severity);
+        const rank = severity_severityRank(c.severity);
         const bucketName = SEVERITY_RANK_TO_BUCKET[rank] ?? "🟡 Style (low)";
         buckets[bucketName].push(c);
     }
@@ -4472,7 +4790,7 @@ function layoutCoverage(data) {
     }
     else {
         for (const [path, comments] of sortedFiles) {
-            const worst = Math.max(...comments.map((c) => severityRank(c.severity)));
+            const worst = Math.max(...comments.map((c) => severity_severityRank(c.severity)));
             const status = worst >= 3 ? "🔴" : worst === 2 ? "🟠" : worst === 1 ? "🟡" : "⚪";
             parts.push(`| \`${cell(path)}\` | **${comments.length}** | ${status} |`);
         }
@@ -4805,7 +5123,1491 @@ const LAYOUT_LABELS = {
     "newspaper": "20 · Newspaper — headline-lede-body",
 };
 
+;// CONCATENATED MODULE: ./src/config/severity.ts
+
+/**
+ * Returns the numeric rank for a severity. Higher = more severe.
+ *
+ * Delegates to `severityRank` in `src/util/severity.ts` so the
+ * config-layer and the live-layer share one rank table. The previous
+ * separate `SEVERITY_RANK` table here diverged from the live path on
+ * absolute values (e.g. `critical` was 3 here vs 4 in the live path)
+ * and could silently disagree on ordering when the two surfaces were
+ * composed in the same call (see `live-shared.ts:passesSeverityPolicy`,
+ * which used the live-path table and ignored this one entirely).
+ */
+function rankSeverity(severity) {
+    return severityRank(severity);
+}
+/**
+ * True when `severity` is at least as severe as `minimum`. Delegates
+ * to the canonical `severityRank` so the comparison cannot drift from
+ * the live-path filter or the merge-path ranking.
+ */
+function isSeverityAtLeast(minimum, severity) {
+    return severity_severityRank(severity) >= severity_severityRank(minimum);
+}
+/**
+ * Decides whether a finding should be kept under the configured minimum
+ * severity threshold.
+ *
+ * Security policy invariant: `security` and `leak` findings ALWAYS survive
+ * any threshold, even when the configured minimum would otherwise filter them.
+ */
+function shouldKeepFinding(controls, finding) {
+    // security and leak ALWAYS survive any threshold (security policy)
+    if (finding === "security" || finding === "leak")
+        return true;
+    return isSeverityAtLeast(controls.minimum, finding);
+}
+
+;// CONCATENATED MODULE: ./src/render/json-extract.ts
+
+/**
+ * Valid JSON escape characters (the second character after `\`).
+ * Any other character following `\` inside a JSON string is an invalid
+ * escape sequence and will cause JSON.parse to reject the document
+ * with "Bad escaped character in JSON". Models writing prose (especially
+ * markdown) frequently produce stray `\X` sequences inside JSON string
+ * fields — `\`` (escaped backtick, common in shell contexts), `\.`,
+ * `\:`, `\,`, `\'`, etc. None of these are valid JSON escapes.
+ */
+const VALID_JSON_ESCAPE_CHARS = new Set([
+    '"',
+    "\\",
+    "/",
+    "b",
+    "f",
+    "n",
+    "r",
+    "t",
+    "u",
+]);
+/**
+ * Extract the most likely JSON payload from a provider text response.
+ *
+ * Order of attempts (mirrors the fence-closure guard in src/render/raw-output.ts):
+ *   1. The whole text, parsed as JSON.
+ *   2. A ```json ... ``` fence body, parsed as JSON.
+ *   3. The first balanced { ... } object, parsed as JSON — with control
+ *      characters inside JSON strings escaped to make the substring
+ *      valid JSON (see `extractFirstBalancedObject`).
+ *
+ * Returns the parsed value when one of the attempts succeeds, otherwise null.
+ * The whole text is always returned to the caller via `extractJsonBlock` so they
+ * can decide what to do with raw context on failure (see renderRawReviewFallback).
+ */
+function extractJsonBlock(rawText) {
+    const wholeAttempt = tryParseJson(rawText);
+    if (wholeAttempt !== undefined) {
+        return wholeAttempt;
+    }
+    const fenceBody = extractJsonFenceBody(rawText);
+    // Repair the fence body before trying to parse it: the body may
+    // contain literal control characters (from SSE delta accumulation,
+    // where each delta's `\n` was decoded to a real newline) or stray
+    // `\X` sequences (from markdown prose the model wrote unescaped).
+    // The repair pass is the same balanced-walk used by the
+    // balanced-object fallback below — applied here so the cheaper
+    // fence path doesn't fall through unnecessarily on SSE-shaped
+    // input.
+    const repairedFenceBody = repairJsonStringLiterals(fenceBody);
+    const fencedAttempt = tryParseJson(repairedFenceBody);
+    if (fencedAttempt !== undefined) {
+        return fencedAttempt;
+    }
+    const balanced = extractFirstBalancedObject(rawText);
+    if (balanced !== null) {
+        const balancedAttempt = tryParseJson(balanced);
+        if (balancedAttempt !== undefined) {
+            return balancedAttempt;
+        }
+        else if (process.env["UMACTUALLY_DEBUG_RAW"] === "1") {
+            try {
+                JSON.parse(balanced);
+            }
+            catch (e) {
+                process.stderr.write(`[DEBUG-RAW] balanced-parse failed at length ${balanced.length}: ${e instanceof Error ? e.message : String(e)}\n`);
+            }
+        }
+    }
+    return null;
+}
+/**
+ * Find the body of a ```...``` fence (with or without a language tag),
+ * or return the original text when none. Exposed so callers can reuse
+ * the fence-closure guard from raw-output.ts.
+ *
+ * Accepts any opening fence (```` ```json ````, ```` ```json5 ````, or just
+ * ```` ``` ````) because the model sometimes drops the language tag from
+ * markdown code blocks wrapping a JSON payload. The matching closing
+ * fence is found lazily after the first newline, so the body's content
+ * is captured verbatim including internal whitespace and newlines.
+ *
+ * Two newline shapes are accepted at the fence boundaries:
+ *   1. Real newlines (0x0A) — the response arrived as a raw markdown
+ *      block outside any JSON envelope.
+ *   2. JSON-escaped `\n` (the 2-char sequence backslash + n) — the
+ *      response arrived as a string value inside a JSON envelope (e.g.
+ *      an SSE `response.output_text.delta` event). The model wrote the
+ *      fence boundaries using JSON-escaped newlines because the entire
+ *      response was itself a JSON string. The first regex (real newlines)
+ *      does NOT match this shape; without the second regex, the fence
+ *      body would not be extracted and the parser would fall through to
+ *      the balanced-object fallback, which can return null on long
+ *      payloads (regression observed 2026-07-05T23:59:46Z, requestId
+ *      771a64b3). The two alternations are tried in order; the first
+ *      match wins.
+ */
+function extractJsonFenceBody(rawText) {
+    // Real-newline boundaries: ```[tag]\n[body]\n```
+    const realNewline = /```[a-zA-Z0-9_+\-]*\s*\n([\s\S]*?)\n```/.exec(rawText);
+    // JSON-escaped-newline boundaries: ```[tag]\n[body]\n```  (where \n is
+    // the literal 2-char sequence). The opening ```[tag] is followed by
+    // either a real newline OR the 2-char escape, same for the closing.
+    // In a regex literal, the 2-char sequence `\n` requires 4 backslashes
+    // (`\\\\n` in source → `\\n` in the regex pattern → matches literal
+    // backslash + n in input).
+    const escapedNewline = /```[a-zA-Z0-9_+\-]*\s*\\n([\s\S]*?)\\n```/u.exec(rawText);
+    let body = realNewline?.[1] ?? escapedNewline?.[1];
+    if (body !== undefined && escapedNewline !== null && realNewline === null) {
+        // The body was extracted from a JSON-escaped-newline fence. The
+        // content was the inside of a JSON string, so its `\n` characters
+        // are 2-char escapes, NOT real newlines. To make this parseable
+        // as a JSON object, we need to convert the 2-char `\n` (and
+        // other JSON escapes) to their real-character equivalents. Wrap
+        // the body in a JSON string and re-parse so the standard JSON
+        // unescape logic handles the conversion.
+        try {
+            body = JSON.parse('"' + body.replace(/"/gu, '\\"') + '"');
+        }
+        catch {
+            // Body is not a valid JSON-string-encoded value; fall through
+            // and return it as-is so the caller's `tryParseJson` (and the
+            // balanced-object fallback) can try other shapes.
+        }
+    }
+    if (body === undefined) {
+        return rawText;
+    }
+    // Run the JSON-string escape-repair pass on the extracted body. The
+    // body may contain literal control characters (from SSE delta
+    // accumulation, where each delta's `\n` was decoded to a real
+    // newline) or stray `\X` sequences (from markdown prose that the
+    // model wrote unescaped). Without this pass, `tryParseJson(body)`
+    // rejects with "Bad control character" or "Bad escaped character"
+    // and the parser falls through to the slower balanced-object
+    // fallback — which then has to repeat the same repair work.
+    return repairJsonStringLiterals(body);
+}
+/**
+ * Locate the first balanced `{ ... }` object in `rawText`, respecting nested
+ * braces and quoted strings (including \" escapes). Returns null when no
+ * balanced object can be found.
+ *
+ * Returns a JSON-safe substring with two repairs applied:
+ *   1. Literal control characters inside JSON strings (`\n \r \t \b \f`)
+ *      are escaped to their 2-char JSON-escape equivalents. This handles
+ *      SSE delta concatenation, where each delta's `\n` was decoded
+ *      to a real newline when the SSE payload was JSON-parsed.
+ *   2. Stray `\X` sequences inside JSON strings where X is NOT a valid
+ *      JSON escape char (`"`/`\`/`/`/`b`/`f`/`n`/`r`/`t`/`u`) are
+ *      double-escaped so JSON.parse sees `\\X` → `\X` in the parsed
+ *      output. Models writing markdown prose sometimes produce
+ *      `` \` ``, `\:`, `\,`, `\.`, `\'` inside JSON body fields;
+ *      these would otherwise reject with "Bad escaped character in
+ *      JSON" (live evidence: PR #24 self-review run 28898948220,
+ *      body 20,691 chars, fail at position 13115).
+ *
+ * Newlines/tabs OUTSIDE strings (structural whitespace between fields) are
+ * preserved — they're already valid JSON whitespace.
+ */
+function extractFirstBalancedObject(rawText) {
+    const startIndex = rawText.indexOf("{");
+    if (startIndex === -1) {
+        return null;
+    }
+    let depth = 0;
+    let inString = false;
+    let escape = false;
+    // First pass: find the end index of the balanced object.
+    let endIndex = -1;
+    for (let index = startIndex; index < rawText.length; index += 1) {
+        const char = rawText[index];
+        if (inString) {
+            if (escape) {
+                escape = false;
+                continue;
+            }
+            if (char === "\\") {
+                escape = true;
+                continue;
+            }
+            if (char === '"') {
+                // Disambiguate a stray `"` from a legitimate closing quote by
+                // peeking ahead. A real closing quote is followed (after
+                // optional whitespace) by a structural JSON character
+                // (`,`, `}`, `]`, `:`). Anything else means the model forgot
+                // to escape a `"` inside the string value (SSE delta
+                // concatenation surfaces this as an unescaped quote in the
+                // resulting textPayload). Treat the latter as a stray quote
+                // — stay inside the string so the depth tracker keeps
+                // working AND escape it in the second pass.
+                //
+                // Note: `"` is NOT a structural JSON character so we don't
+                // include it in the close-quote set. If we did, a stray
+                // `"` followed by another `"` (e.g. `body: "value" "next":`)
+                // would be misclassified as a closing quote.
+                const nextNonWs = peekNextNonWhitespace(rawText, index + 1);
+                if (nextNonWs === -1 ||
+                    nextNonWs === ",".charCodeAt(0) ||
+                    nextNonWs === "}".charCodeAt(0) ||
+                    nextNonWs === "]".charCodeAt(0) ||
+                    nextNonWs === ":".charCodeAt(0)) {
+                    inString = false;
+                }
+                // else: stray quote inside a string. Stay inString; the second
+                // pass will escape it.
+                continue;
+            }
+            continue;
+        }
+        if (char === '"') {
+            inString = true;
+            continue;
+        }
+        if (char === "{") {
+            depth += 1;
+            continue;
+        }
+        if (char === "}") {
+            depth -= 1;
+            if (depth === 0) {
+                endIndex = index;
+                break;
+            }
+        }
+    }
+    if (endIndex === -1) {
+        return null;
+    }
+    // Second pass: walk the balanced substring and escape literal control
+    // characters that appear INSIDE JSON strings. We re-walk because the
+    // first pass above only tracked depth, not the output positions.
+    const substring = rawText.slice(startIndex, endIndex + 1);
+    const segments = [];
+    inString = false;
+    escape = false;
+    for (let index = 0; index < substring.length; index += 1) {
+        const char = substring.charAt(index);
+        if (inString) {
+            if (escape) {
+                // Validate the escape sequence: only `" \ / b f n r t u` are
+                // valid JSON escapes. Models writing markdown prose sometimes
+                // emit stray `\X` sequences (`` \` ``, `\:`, `\,`, `\.`, etc.)
+                // which JSON.parse rejects with "Bad escaped character in
+                // JSON". Double-escape the invalid form so the parsed output
+                // preserves the literal `\` + char the model intended.
+                //
+                // The `\` itself was already pushed when `escape` was set on
+                // the previous iteration; here we only emit the second
+                // character (or `\\` + char for the invalid case).
+                if (!VALID_JSON_ESCAPE_CHARS.has(char)) {
+                    segments.push("\\" + char);
+                }
+                else {
+                    segments.push(char);
+                }
+                escape = false;
+                continue;
+            }
+            if (char === "\\") {
+                segments.push(char);
+                escape = true;
+                continue;
+            }
+            if (char === '"') {
+                // Same disambiguation as the first pass: peek ahead to determine
+                // whether this `"` is a legitimate closing quote (followed by
+                // structural JSON punctuation) or a stray quote from an
+                // unescaped model emission. The latter gets escaped so the
+                // resulting substring parses as valid JSON.
+                const nextNonWs = peekNextNonWhitespace(substring, index + 1);
+                if (nextNonWs === -1 ||
+                    nextNonWs === ",".charCodeAt(0) ||
+                    nextNonWs === "}".charCodeAt(0) ||
+                    nextNonWs === "]".charCodeAt(0) ||
+                    nextNonWs === ":".charCodeAt(0)) {
+                    // Legitimate closing quote: emit the raw `"` and exit the
+                    // string. The first-pass peek-ahead already determined this
+                    // was the close.
+                    segments.push(char);
+                    inString = false;
+                    continue;
+                }
+                // Stray quote inside a string: escape it so the parser keeps
+                // the string open. Live evidence (run 28829205474 at
+                // 2026-07-06T23:03:58Z): the model's review body contained an
+                // unescaped `"` inside a body field, breaking the outer JSON.
+                segments.push('\\"');
+                continue;
+            }
+            // Inside a string: escape literal control characters that are
+            // invalid in JSON strings. \n, \r, \t are the common ones from
+            // SSE delta concatenation; we also handle \b, \f for completeness.
+            if (char === "\n") {
+                segments.push("\\n");
+                continue;
+            }
+            if (char === "\r") {
+                segments.push("\\r");
+                continue;
+            }
+            if (char === "\t") {
+                segments.push("\\t");
+                continue;
+            }
+            if (char === "\b") {
+                segments.push("\\b");
+                continue;
+            }
+            if (char === "\f") {
+                segments.push("\\f");
+                continue;
+            }
+            segments.push(char);
+            continue;
+        }
+        // Outside a string: control characters are valid JSON whitespace,
+        // so just copy them through.
+        if (char === '"') {
+            inString = true;
+        }
+        segments.push(char);
+    }
+    return segments.join("");
+}
+/**
+ * Walk `text` (a balanced JSON document — object or array) and return
+ * a JSON-safe copy where:
+ *   - literal control characters inside JSON strings (`\n \r \t \b \f`)
+ *     are escaped to their 2-char JSON-escape equivalents
+ *   - stray `\X` sequences inside JSON strings (where X is NOT a valid
+ *     JSON escape char: `"`, `\`, `/`, `b`, `f`, `n`, `r`, `t`, `u`)
+ *     are double-escaped so JSON.parse sees `\\X` → `\X` in the
+ *     parsed output. Without this, models writing markdown prose
+ *     that contains `\.`, `\:`, `\,`, `\'`, `` \` ``, etc. produce
+ *     valid JSON to a human reader but invalid JSON to JSON.parse,
+ *     which fails with "Bad escaped character in JSON" and triggers
+ *     the parse-fail fallback.
+ *   - stray `"` inside a string (model forgot to escape a quote) is
+ *     escaped to `\"` so JSON.parse keeps the string open and can
+ *     parse the outer object.
+ *
+ * Structural whitespace OUTSIDE strings (newlines/tabs between fields)
+ * is preserved unchanged — that's already valid JSON whitespace.
+ *
+ * Uses the same peek-ahead logic for stray-quote disambiguation as
+ * `extractFirstBalancedObject`'s second pass; in fact this helper is
+ * the same code, factored out so the fence-body path doesn't have to
+ * duplicate it.
+ *
+ * Returns `text` unchanged when it doesn't contain a balanced object
+ * or array — the caller can fall through to the balanced-object
+ * fallback.
+ */
+function repairJsonStringLiterals(text) {
+    const startIndex = text.indexOf("{") === -1 ? text.indexOf("[") : text.indexOf("{");
+    if (startIndex === -1) {
+        return text;
+    }
+    // Find the end index of the balanced top-level object/array.
+    let endIndex = -1;
+    let depth = 0;
+    let inString = false;
+    let escape = false;
+    for (let index = startIndex; index < text.length; index += 1) {
+        const char = text[index];
+        if (char === undefined)
+            break;
+        if (inString) {
+            if (escape) {
+                escape = false;
+                continue;
+            }
+            if (char === "\\") {
+                escape = true;
+                continue;
+            }
+            if (char === '"') {
+                // Use the same stray-quote peek-ahead as extractFirstBalancedObject.
+                const nextNonWs = peekNextNonWhitespace(text, index + 1);
+                if (nextNonWs === -1 ||
+                    nextNonWs === ",".charCodeAt(0) ||
+                    nextNonWs === "}".charCodeAt(0) ||
+                    nextNonWs === "]".charCodeAt(0) ||
+                    nextNonWs === ":".charCodeAt(0)) {
+                    inString = false;
+                }
+                continue;
+            }
+            continue;
+        }
+        if (char === '"') {
+            inString = true;
+            continue;
+        }
+        if (char === "{" || char === "[") {
+            depth += 1;
+            continue;
+        }
+        if (char === "}" || char === "]") {
+            depth -= 1;
+            if (depth === 0) {
+                endIndex = index;
+                break;
+            }
+        }
+    }
+    if (endIndex === -1) {
+        return text;
+    }
+    // Second pass: walk the balanced substring and emit a repaired copy.
+    const substring = text.slice(startIndex, endIndex + 1);
+    const segments = [];
+    inString = false;
+    escape = false;
+    for (let index = 0; index < substring.length; index += 1) {
+        const char = substring.charAt(index);
+        if (inString) {
+            if (escape) {
+                // Validate that the escape sequence is one JSON.parse accepts.
+                // Any other character following `\` is an invalid escape
+                // (e.g. `` \` ``, `\:`, `\,` from markdown prose); double-
+                // escape it to `\\X` so JSON.parse sees a literal backslash
+                // followed by the character in the parsed output, which is
+                // what the model most likely intended.
+                //
+                // The `\` itself was already pushed when `escape` was set on
+                // the previous iteration; here we only push the second
+                // character of the (possibly double-escaped) sequence.
+                if (!VALID_JSON_ESCAPE_CHARS.has(char)) {
+                    segments.push("\\" + char);
+                }
+                else {
+                    segments.push(char);
+                }
+                escape = false;
+                continue;
+            }
+            if (char === "\\") {
+                segments.push(char);
+                escape = true;
+                continue;
+            }
+            if (char === '"') {
+                const nextNonWs = peekNextNonWhitespace(substring, index + 1);
+                if (nextNonWs === -1 ||
+                    nextNonWs === ",".charCodeAt(0) ||
+                    nextNonWs === "}".charCodeAt(0) ||
+                    nextNonWs === "]".charCodeAt(0) ||
+                    nextNonWs === ":".charCodeAt(0)) {
+                    segments.push(char);
+                    inString = false;
+                    continue;
+                }
+                segments.push('\\"');
+                continue;
+            }
+            if (char === "\n") {
+                segments.push("\\n");
+                continue;
+            }
+            if (char === "\r") {
+                segments.push("\\r");
+                continue;
+            }
+            if (char === "\t") {
+                segments.push("\\t");
+                continue;
+            }
+            if (char === "\b") {
+                segments.push("\\b");
+                continue;
+            }
+            if (char === "\f") {
+                segments.push("\\f");
+                continue;
+            }
+            segments.push(char);
+            continue;
+        }
+        if (char === '"') {
+            inString = true;
+        }
+        segments.push(char);
+    }
+    return text.slice(0, startIndex) + segments.join("") + text.slice(endIndex + 1);
+}
+/**
+ * Peek the character code of the next non-whitespace character in
+ * `text` starting at `fromIndex`. Returns `-1` when `fromIndex` is past
+ * the end of `text`. Used by the balanced-object extractor to
+ * disambiguate a stray unescaped `"` inside a JSON string from a
+ * legitimate closing quote: the latter is always followed (after
+ * optional whitespace) by a structural JSON character (`,`, `}`, `]`,
+ * `:`); anything else means the model forgot to JSON-encode the
+ * quote.
+ */
+function peekNextNonWhitespace(text, fromIndex) {
+    for (let i = fromIndex; i < text.length; i += 1) {
+        const code = text.charCodeAt(i);
+        // JSON whitespace: space (0x20), tab (0x09), LF (0x0A), CR (0x0D).
+        if (code !== 0x20 && code !== 0x09 && code !== 0x0a && code !== 0x0d) {
+            return code;
+        }
+    }
+    return -1;
+}
+
+;// CONCATENATED MODULE: ./src/provider/provider-parse.ts
+
+
+/**
+ * Ambient (module-singleton) sink slot. `live-provider.ts`
+ * `requestLiveReview` installs a sink here before invoking the provider
+ * and clears it in `finally`, so any `parseReviewPayload` call reachable
+ * from `runCopilotRequest` / `runProviderRequest` will pick it up
+ * without needing to thread it through every call site.
+ *
+ * Default value is `null` (no sink installed → no warnings surfaced),
+ * preserving the previous silent-coercion behavior for any caller that
+ * has not opted in.
+ *
+ * Concurrency note: a module-level singleton is only safe when callers
+ * install → await → clear atomically (Node's single-threaded event loop
+ * guarantees no `await` boundary interleaves another `setActiveSeveritySink`
+ * call). Any future caller that runs two `requestLiveReview` requests
+ * concurrently via `Promise.all` will have the second `setActiveSeveritySink`
+ * overwrite the first's slot, and the first's `finally` will clear the
+ * second's sink mid-flight — silently corrupting the telemetry array.
+ * The guard below surfaces this condition loudly so the regression is
+ * caught at install time, not silently after the fact.
+ */
+let activeSeveritySink = null;
+function setActiveSeveritySink(sink) {
+    if (sink !== null && activeSeveritySink !== null) {
+        // Concurrency footgun detected: a sink is already installed and the
+        // caller is overwriting it without clearing the previous one first.
+        // Log + warn loudly so the regression class surfaces in CI logs
+        // rather than silently corrupting telemetry.
+        console.warn("[provider-parse] setActiveSeveritySink: overwriting a non-null ambient sink. " +
+            "This usually means two requestLiveReview calls are running concurrently " +
+            "(Promise.all) — the second's sink will be cleared by the first's finally, " +
+            "corrupting the captured warnings. Thread the sink via ParseContext instead.");
+    }
+    activeSeveritySink = sink;
+}
+function getActiveSeveritySink() {
+    return activeSeveritySink;
+}
+/**
+ * Emit a structured warning when the parser encounters a severity value
+ * it cannot classify. Always also writes a single `console.warn` line so
+ * operators can see the mismatch in CI logs without needing to inspect
+ * the structured sink channel.
+ */
+function emitSeverityWarning(rawValue, normalizedFallback, context, sink) {
+    const providerLabel = context.providerName ?? "unknown-provider";
+    const safeRaw = JSON.stringify(rawValue);
+    const message = `provider ${providerLabel} emitted unrecognized severity ${safeRaw} ` +
+        `at comment index ${context.commentIndex}; falling back to "${normalizedFallback}". ` +
+        `Expected one of: info, low, medium, high, critical.`;
+    console.warn(message, context);
+    if (sink !== undefined) {
+        sink(rawValue, normalizedFallback, context);
+    }
+}
+/**
+ * Returns true when the parsed review has at least one non-empty
+ * summary, verdict, or comment — used by the parse-fail retry paths
+ * to decide whether the parsed response carries any usable signal.
+ */
+function isNonEmptyReview(review) {
+    return review !== null
+        && (review.summary.length > 0 || review.verdict.length > 0 || review.comments.length > 0);
+}
+/**
+ * Self-healing follow-up prefix prepended to the original user
+ * message when the first response could not be parsed as a JSON
+ * review payload. The prefix explicitly asks the model to emit
+ * JSON-only output (no prose, no fences); the original user
+ * content is APPENDED after the prefix so the model still has
+ * the PR diff + review instructions to work from.
+ *
+ * Prepending (rather than replacing) is critical: a prior version
+ * replaced `config.user` with just the reminder, which caused the
+ * model to fall back to "Reviewer not yet engaged — no code
+ * context was provided" because it no longer had the diff to
+ * review. That fallback then passed `isNonEmptyReview` (its
+ * `summary` field is non-empty), got posted as the actual review
+ * with 0 findings, and masked the underlying parse-fail — the
+ * operator saw an empty findings table instead of the
+ * "raise --max-output-tokens and retry" / "model regression"
+ * parse-fail diagnostic. Pinned by PR #20 review screenshot.
+ *
+ * Some providers ignore `stream: false` and return an empty SSE
+ * stream; some wrap their output in markdown fences or prose;
+ * some omit the JSON entirely. We retry once with the prefix
+ * appended before falling back to the parse-fail surface — that
+ * often recovers the review without operator intervention.
+ *
+ * Shared between `openai-compatible.ts` and `copilot.ts` so the
+ * self-healing message stays byte-identical regardless of provider.
+ */
+const PARSE_FAIL_RETRY_PROMPT = "Your previous response did not contain a valid JSON review payload. " +
+    "Please respond with ONLY a JSON object matching this schema (no prose, no fences): " +
+    '{"summary": "...", "verdict": "NEEDS_FIX|APPROVED|COMMENT|DISCUSS|SHIP", "comments": [...], "suppressed_comments": [...]}.\n\n' +
+    "Original review request follows:\n\n";
+function buildResponsesBody(config, opts) {
+    // When `userOverride` is set (parse-fail retry), APPEND the original
+    // user content so the model retains the PR diff + review instructions.
+    // The override prefix asks the model to emit JSON-only output; the
+    // trailing original content gives it the actual work. See
+    // PARSE_FAIL_RETRY_PROMPT for the why.
+    const userContent = opts?.userOverride !== undefined
+        ? `${opts.userOverride}${config.user}`
+        : config.user;
+    const body = {
+        model: config.model,
+        input: [
+            { role: "system", content: config.system },
+            { role: "user", content: userContent },
+        ],
+    };
+    if (config.maxOutputTokens !== undefined) {
+        body["max_output_tokens"] = config.maxOutputTokens;
+    }
+    if (config.reasoningEffort !== undefined) {
+        body["reasoning"] = { effort: config.reasoningEffort };
+    }
+    return body;
+}
+function buildChatBody(config, opts) {
+    // When `userOverride` is set (parse-fail retry), APPEND the original
+    // user content so the model retains the PR diff + review instructions.
+    // See `buildResponsesBody` + `PARSE_FAIL_RETRY_PROMPT` for the why.
+    const userContent = opts?.userOverride !== undefined
+        ? `${opts.userOverride}${config.user}`
+        : config.user;
+    const body = {
+        model: config.model,
+        messages: [
+            { role: "system", content: config.system },
+            { role: "user", content: userContent },
+        ],
+    };
+    if (config.maxOutputTokens !== undefined) {
+        body["max_tokens"] = config.maxOutputTokens;
+    }
+    if (config.reasoningEffort !== undefined) {
+        body["reasoning_effort"] = config.reasoningEffort;
+    }
+    return body;
+}
+/**
+ * Extract the text payload from a provider response. Handles four shapes:
+ *   1. SSE stream (responses API output_text.delta / chat completions delta /
+ *      generic top-level delta) — concatenates fragments into one string.
+ *   2. Plain JSON object (Responses API or Chat Completions) — returns
+ *      `output_text` (responses), joins `output[].content[].text`
+ *      (responses), or `choices[].message.content` (chat).
+ *   3. Raw text — returned verbatim (caller tries to extract a JSON
+ *      block from it via `extractJsonBlock`).
+ *   4. Empty input — returns `""`.
+ *
+ * The function does NOT report "unusable" — it always returns SOMETHING
+ * (possibly empty) and lets the downstream `parseReviewPayload` plus
+ * the CLARITY-10 strict empty-fields check decide whether the result
+ * is a valid review. This keeps the public signature stable
+ * (`string`, not `string | null`) so existing callers don't need to
+ * change their null-handling.
+ *
+ * History note: an earlier revision returned `string | null` to signal
+ * "unusable SSE stream with no text fragments" (CLARITY-10). That
+ * approach was reverted in favor of returning the raw SSE text in
+ * that case so `parseReviewPayload`'s strict empty-fields check (and
+ * the CLARITY-10b soft parse-fail detector) catches the failure as a
+ * null return rather than relying on a separate null-handling path
+ * in callers.
+ */
+function extractTextPayload(endpoint, rawText) {
+    if (rawText.length === 0) {
+        return "";
+    }
+    // 1. SSE stream (input starts with "data:" or "event:" prefix).
+    //    Concatenate fragments. If the stream only has metadata events
+    //    (no usable text fragments), return the rawText so the
+    //    downstream strict-empty-fields check (CLARITY-10) catches
+    //    it as a parse failure.
+    const trimmedStart = rawText.trimStart();
+    if (trimmedStart.startsWith("data:") || trimmedStart.startsWith("event:")) {
+        const sseText = tryExtractSse(rawText);
+        if (sseText !== null && sseText.length > 0) {
+            return sseText;
+        }
+        // SSE was detected but no usable fragments — return rawText so the
+        // empty-fields strict check can fire. (Returning `""` here would
+        // cause `parseReviewPayload("")` to return null without the
+        // strict-check safeguard.)
+        return rawText;
+    }
+    // 2. Plain JSON object.
+    const parsed = tryParseJson(rawText);
+    if (parsed !== undefined && isRecord(parsed)) {
+        if (endpoint === "responses") {
+            const direct = readStringField(parsed, "output_text");
+            if (direct !== null && direct.length > 0) {
+                return direct;
+            }
+            const output = readArrayField(parsed, "output");
+            if (output !== null) {
+                const fromOutput = joinOutputText(output);
+                if (fromOutput.length > 0) {
+                    return fromOutput;
+                }
+            }
+            // Not in the Responses API shape — fall through to raw text
+            // so `parseReviewPayload` can extract a direct review JSON
+            // object (model returned `{"summary": ..., "verdict": ...}`).
+        }
+        else {
+            // Chat completions.
+            const choices = readArrayField(parsed, "choices");
+            if (choices !== null) {
+                for (const choice of choices) {
+                    const message = readRecordField(choice, "message");
+                    if (message === null)
+                        continue;
+                    const content = readStringField(message, "content");
+                    if (content !== null && content.length > 0) {
+                        return content;
+                    }
+                }
+            }
+            // Chat JSON shape but no extractable content — fall through.
+        }
+    }
+    // 3. Raw text (could be plain prose, markdown, or a JSON block
+    //    wrapped in ``` fences — `extractJsonBlock` handles the latter).
+    return rawText;
+}
+/**
+ * Parse a provider text response into a structured review payload.
+ *
+ * Returns `null` in three distinct cases:
+ *   1. No JSON object found in `text` (plain prose, markdown, or non-JSON
+ *      SSE tail — i.e. `extractJsonBlock` yielded nothing parseable).
+ *   2. `extractJsonBlock` returned a value that isn't a JSON object
+ *      (e.g. a string or array).
+ *   3. (CLARITY-10b) The parsed object is structurally valid but its
+ *      `summary` matches an apology pattern AND it has zero findings
+ *      (no `comments`, no `suppressed_comments`). The model returned a
+ *      legitimate-looking JSON wrapper around an apology message; we
+ *      treat it as a parse failure so the self-healing retry fires.
+ *
+ * Callers that need to distinguish the cases (e.g. for different error
+ * messages) can use the returned `ProviderReviewPayload` shape to
+ * differentiate "structured empty review" (returned, all fields empty)
+ * from "no parseable content" (returns null).
+ */
+function parseReviewPayload(text, context) {
+    const candidate = extractJsonBlock(text);
+    if (!isRecord(candidate)) {
+        return null;
+    }
+    const summary = readStringField(candidate, "summary") ?? "";
+    const verdict = readStringField(candidate, "verdict") ?? "";
+    const comments = provider_parse_readCommentArray(candidate["comments"], context);
+    const suppressed_comments = provider_parse_readCommentArray(candidate["suppressed_comments"], context);
+    // Soft parse-fail detector (CLARITY-10b): some providers/models return
+    // a *structurally valid* JSON wrapper whose contents are an apology
+    // ("No diff or file contents were provided to review...", "I cannot
+    // review this without...", "Please share the diff..."). These pass
+    // the basic `extractJsonBlock` parse AND the strict non-empty check
+    // (because `summary` is non-empty) but are functionally equivalent
+    // to a parse failure — the model did not produce a review.
+    //
+    // Surface these as null so the self-healing retry path fires and
+    // the parse-fail badge renders, instead of silently posting a
+    // 0-finding review that LOOKS clean.
+    //
+    // Only trigger when there are zero findings (comments + suppressed_comments).
+    // A real review with findings but a frustrated summary ("The code looks
+    // fine but I noticed one issue...") is legitimate; we don't want to
+    // rewrite that as a parse-fail.
+    if (comments.length === 0 &&
+        suppressed_comments.length === 0 &&
+        isApologySummary(summary)) {
+        return null;
+    }
+    return { summary, verdict, comments, suppressed_comments };
+}
+/**
+ * True when the raw SSE stream ended before the model emitted the
+ * final `response.completed` (or `response.done`) event. Distinguishes
+ * "the stream was truncated" from "the stream completed but the JSON
+ * inside was malformed". Used by the parse-fail diagnostic so reviewers
+ * see "raise --max-output-tokens and retry" instead of a generic
+ * "provider response was not valid JSON".
+ *
+ * Detection walks `data:` lines only (not the raw text), so a review
+ * whose comment body happens to contain the literal string
+ * `"type":"response.completed"` cannot trick the detector into
+ * thinking the stream completed cleanly. Mirrors `tryExtractSse`'s
+ * SSE-spec parsing: blank lines separate events, comment lines
+ * (`:` prefix) are ignored, and the payload is the substring after
+ * `data:` with optional leading space stripped.
+ *
+ * Edge cases that intentionally return `false`:
+ *   - Non-SSE responses (chat-completions, plain JSON): there's no
+ *     stream-completion concept for a single-shot response, so
+ *     truncation only applies to streaming endpoints. Detected by
+ *     absence of any `data:` line.
+ *   - Empty rawText: trivially not a truncated stream.
+ *   - A response.completed event whose output_text was empty: still
+ *     a completed stream, just one whose model output was nothing.
+ *     `tryExtractSse` falls back to the delta accumulation in this
+ *     case but the stream itself terminated cleanly.
+ */
+/**
+ * Scan SSE `data:` lines for the terminal event-type marker.
+ *
+ * Walks `rawText` line-by-line and looks only at the JSON payloads
+ * inside `data:` lines (not at `event:` header lines or arbitrary
+ * text content like review-comment bodies). This is essential because
+ * a model reviewing a diff that contains the literal string
+ * `"type":"response.completed"` would otherwise match the
+ * substring check and trick the parser into thinking the stream
+ * completed cleanly. Mirrors the structure-walk pattern used by
+ * `tryExtractSse` (above) so the SSE contract is enforced the same
+ * way everywhere.
+ */
+function findSseEventTypeMarker(rawText) {
+    for (const line of rawText.split("\n")) {
+        if (!line.startsWith("data:")) {
+            continue;
+        }
+        // Per SSE spec: data: is followed by an optional single space,
+        // then the payload. Trim the leading space so the JSON parse
+        // (or substring check) sees a clean value.
+        const payload = line.slice("data:".length).replace(/^ /u, "");
+        if (payload === "" || payload === "[DONE]") {
+            continue;
+        }
+        if (payload.includes('"type":"response.completed"')) {
+            return "response.completed";
+        }
+        if (payload.includes('"type":"response.done"')) {
+            return "response.done";
+        }
+    }
+    return null;
+}
+/**
+ * True when the raw SSE stream ended before the model emitted the
+ * final `response.completed` (or `response.done`) event. Distinguishes
+ * "the stream was truncated" from "the stream completed but the JSON
+ * inside was malformed". Used by the parse-fail diagnostic so reviewers
+ * see "raise --max-output-tokens and retry" instead of a generic
+ * "provider response was not valid JSON".
+ *
+ * Detection walks `data:` lines only (not the raw text), so a review
+ * whose comment body happens to contain the literal string
+ * `"type":"response.completed"` cannot trick the detector into
+ * thinking the stream completed cleanly. Mirrors `tryExtractSse`'s
+ * SSE-spec parsing: blank lines separate events, comment lines
+ * (`:` prefix) are ignored, and the payload is the substring after
+ * `data:` with optional leading space stripped.
+ *
+ * Edge cases that intentionally return `false`:
+ *   - Non-SSE responses (chat-completions, plain JSON): there's no
+ *     stream-completion concept for a single-shot response, so
+ *     truncation only applies to streaming endpoints. Detected by
+ *     absence of any `data:` line.
+ *   - Empty rawText: trivially not a truncated stream.
+ *   - A response.completed event whose output_text was empty: still
+ *     a completed stream, just one whose model output was nothing.
+ *     `tryExtractSse` falls back to the delta accumulation in this
+ *     case but the stream itself terminated cleanly.
+ */
+function wasResponseStreamTruncated(rawText) {
+    if (rawText.length === 0) {
+        return false;
+    }
+    // Quick exit for non-SSE responses (chat-completions, plain JSON).
+    // Any `data:` line anywhere in the text indicates an SSE stream;
+    // single-shot JSON has none.
+    if (!rawText.includes("data:")) {
+        return false;
+    }
+    return findSseEventTypeMarker(rawText) === null;
+}
+/**
+ * Extract the terminal-event payload from an SSE stream. Walks
+ * `data:` lines, parses each as JSON, and returns the FIRST parsed
+ * payload whose `type` field is `response.completed` or
+ * `response.done`. Returns `undefined` if no terminal event was
+ * emitted or if every data: line fails to parse.
+ *
+ * Scoping the search to the SSE event stream (rather than searching
+ * the raw text) is essential: a model reviewing a diff that contains
+ * a `"usage":` literal would otherwise pick up the wrong value.
+ */
+function extractTerminalEventPayload(rawText) {
+    for (const line of rawText.split("\n")) {
+        if (!line.startsWith("data:")) {
+            continue;
+        }
+        const payload = line.slice("data:".length).replace(/^ /u, "");
+        if (payload === "" || payload === "[DONE]") {
+            continue;
+        }
+        let parsed;
+        try {
+            parsed = JSON.parse(payload);
+        }
+        catch {
+            continue;
+        }
+        if (!isRecord(parsed))
+            continue;
+        const eventType = parsed["type"];
+        if (eventType === "response.completed" || eventType === "response.done") {
+            return parsed;
+        }
+    }
+    return undefined;
+}
+/**
+ * Extract a `ProviderUsage` subset from the raw SSE stream's terminal
+ * `response.completed` event's `usage` block. Returns `undefined` when
+ * the stream was truncated (no completed event) or when the provider
+ * didn't emit a usage block. Used by the token-headroom warning so
+ * operators can see whether the model filled its `max_output_tokens`
+ * budget when a parse-fail occurs.
+ *
+ * Scoping: the usage block is read from the terminal event's PARSED
+ * JSON payload — not from a raw `indexOf('"usage":')` substring scan
+ * over the whole rawText. This avoids picking up usage-like JSON
+ * from intermediate events, model review-content bodies that happen
+ * to contain `"usage":`, or any other unrelated occurrence.
+ */
+function parseProviderUsage(rawText) {
+    const terminalEvent = extractTerminalEventPayload(rawText);
+    if (terminalEvent === undefined) {
+        return undefined;
+    }
+    const usageRaw = terminalEvent["usage"];
+    if (!isRecord(usageRaw)) {
+        return undefined;
+    }
+    let inputTokens;
+    let outputTokens;
+    let totalTokens;
+    if (typeof usageRaw["input_tokens"] === "number")
+        inputTokens = usageRaw["input_tokens"];
+    if (typeof usageRaw["output_tokens"] === "number")
+        outputTokens = usageRaw["output_tokens"];
+    if (typeof usageRaw["total_tokens"] === "number")
+        totalTokens = usageRaw["total_tokens"];
+    if (inputTokens === undefined && outputTokens === undefined && totalTokens === undefined) {
+        return undefined;
+    }
+    return {
+        ...(inputTokens !== undefined ? { input_tokens: inputTokens } : {}),
+        ...(outputTokens !== undefined ? { output_tokens: outputTokens } : {}),
+        ...(totalTokens !== undefined ? { total_tokens: totalTokens } : {}),
+    };
+}
+/**
+ * Combined truncation-detection + usage-extraction helper. Returns
+ * the diagnosis that callers attach to the ProviderError so the
+ * parse-fail diagnostic can render a reason-specific headline.
+ *
+ * Both `openai-compatible.ts` and `copilot.ts` use this helper
+ * instead of duplicating the inline `wasResponseStreamTruncated` +
+ * `parseProviderUsage` block. Keeping the logic in one place means
+ * the "what counts as truncated" contract is enforced uniformly
+ * across providers. (See the self-review finding on
+ * `src/provider/openai-compatible.ts:263` for the duplication
+ * rationale.)
+ *
+ * Note: this helper does NOT emit the headroom `::warning::` line
+ * that was in the prior inline duplicate. That warning required
+ * BOTH `truncated === true` AND a populated `usage.output_tokens`,
+ * but `parseProviderUsage` only reads usage from the terminal event
+ * — and a stream with the terminal event is by definition NOT
+ * truncated. The combination is unreachable in practice; the
+ * warning was dead code. If a future provider emits usage on
+ * intermediate events, the warning should be re-introduced via a
+ * dedicated `parseIntermediateUsage` helper.
+ */
+function diagnoseParseFailure(input) {
+    const truncated = wasResponseStreamTruncated(input.rawText);
+    const usage = parseProviderUsage(input.rawText);
+    return { truncated, usage };
+}
+/**
+ * Pattern match for "the model couldn't actually review the input" apology
+ * summaries. These are NOT real reviews even when wrapped in valid JSON.
+ *
+ * Matched phrases (case-insensitive, whole-word where reasonable):
+ *   - "no diff" / "no file contents" / "no contents were provided"
+ *   - "please share" / "please provide" / "please send"
+ *   - "i cannot" / "i'm unable" / "i am unable" / "i can not"
+ *   - "cannot review" / "unable to review" / "can't review"
+ *   - "did not receive" / "haven't received" / "no input"
+ *
+ * The match is intentionally narrow — it must look like the model is
+ * telling us *it* failed to receive input, not commenting on the code.
+ * Phrases like "no issues found" or "nothing to flag" are deliberately
+ * excluded — those are legitimate clean-review signals.
+ */
+function isApologySummary(summary) {
+    if (summary.length === 0) {
+        return false;
+    }
+    const lower = summary.toLowerCase();
+    // Most common patterns from the 3e62237 self-review incident.
+    // Each pattern is anchored narrowly to avoid over-matching legitimate
+    // clean-review summaries that happen to contain "cannot" or "review"
+    // in other contexts (e.g. "I cannot find any issues to review").
+    const APOLOGY_PATTERNS = [
+        // "no diff / file contents were provided / shared / available" — direct form.
+        /\bno\s+(diff|file\s+contents?|contents?)\b.*\b(provided|shared|available|supplied)\b/u,
+        // "no [pull request | pr | file] diff was provided" — the model often
+        // adds "pull request" / "pr" / "file" between "no" and "diff" before
+        // reaching the apology verb. Live evidence (PR self-review at
+        // 2026-07-06T22:08Z): "No pull request diff was provided in the
+        // request, so no review can be produced." — the narrow `no\s+(diff|...)`
+        // pattern above misses this. This broadened pattern matches any
+        // "no <modifier>* diff/file/contents ... <apology verb>" form.
+        /\bno\s+(?:pull\s+request\s+|pr\s+|file\s+|the\s+|any\s+)*(?:diff|file\s+contents?|contents?)\b.*\b(provided|shared|available|supplied|received)\b/u,
+        // "please share / provide / send the diff / file / pull request"
+        /\bplease\s+(share|provide|send)\s+(the\s+)?(diff|file|pull\s+request|pr)\b/u,
+        // "I cannot / can't review this / it / the PR" — narrow to the
+        // direct-object-after-verb pattern so "I cannot find issues to
+        // review" does NOT match. Requires the verb (cannot/can't/etc.)
+        // immediately followed by review + determiner (this/it/the/a).
+        /\bi\s+(cannot|can'?t|am\s+unable|i'?m\s+unable)\s+review\s+(this|it|the|a|that)\b/u,
+        // "cannot / can't / unable to review" — REQUIRES a direct object
+        // (this/it/the/a/that/self) so "Cannot review the legacy code" or
+        // "unable to review itself" do NOT match (those are legitimate
+        // reviews describing what the model CAN or CANNOT do in context).
+        /\b(cannot|can'?t|unable\s+to)\s+review\s+(this|it|the|a|that|self)\b/u,
+        // "didn't / haven't received" or "no input"
+        /\b(didn'?t\s+receive|haven'?t\s+received|no\s+input)\b/u,
+        // "empty diff" or "without diff / input"
+        /\b(empty\s+diff|no\s+diff\s+to\s+review|without\s+(diff|input))\b/u,
+        // "the diff is empty, nothing to review" / "was empty... review"
+        /\b(is\s+empty|was\s+empty)\b.*\b(nothing|to\s+review)\b/u,
+        // "nothing to review"
+        /\bnothing\s+to\s+review\b/u,
+    ];
+    for (const pattern of APOLOGY_PATTERNS) {
+        if (pattern.test(lower)) {
+            return true;
+        }
+    }
+    return false;
+}
+/**
+ * Walks the OpenAI Responses API `output[]` array and concatenates all
+ * text fragments it finds. The Responses API puts output items under
+ * `content[]` as an array of parts (each part is `{type, text}` or
+ * `{type, image_url}` etc) — so this function recurses into content
+ * arrays and pulls out any `text` strings, in order.
+ *
+ * Accepts both the Responses API shape (`content: [{type, text}]`)
+ * and a simpler chat-style shape (`content: {text: "..."}`) for
+ * providers that return the latter.
+ */
+function joinOutputText(output) {
+    const fragments = [];
+    for (const entry of output) {
+        if (!isRecord(entry)) {
+            continue;
+        }
+        const content = entry["content"];
+        // Responses API: content is an array of parts.
+        if (Array.isArray(content)) {
+            for (const part of content) {
+                if (!isRecord(part)) {
+                    continue;
+                }
+                const text = part["text"];
+                if (typeof text === "string") {
+                    fragments.push(text);
+                }
+            }
+            continue;
+        }
+        // Chat-style: content is a single object with a text field.
+        if (isRecord(content)) {
+            const text = content["text"];
+            if (typeof text === "string") {
+                fragments.push(text);
+            }
+        }
+    }
+    return fragments.join("\n");
+}
+function provider_parse_readCommentArray(value, context) {
+    if (!isUnknownArray(value)) {
+        return [];
+    }
+    // Prefer an explicit context; fall back to the ambient module-singleton
+    // sink so live-provider.ts can install a sink once per request without
+    // threading it through every parseReviewPayload call site.
+    const effectiveSink = context?.sink ?? getActiveSeveritySink() ?? undefined;
+    const effectiveProviderName = context?.providerName;
+    const comments = [];
+    value.forEach((entry, index) => {
+        if (!isRecord(entry)) {
+            return;
+        }
+        const path = entry["path"];
+        const line = readSafeIntegerField(entry, "line");
+        if (typeof path === "string" && line !== null) {
+            const body = readStringField(entry, "body") ?? "";
+            comments.push({
+                path,
+                line,
+                body,
+                // Pass body so body-scoped rules (security + hardening/leak
+                // heuristics) can distinguish a hardening tip from an active
+                // leak. Without body, normalizeProviderSeverity falls back to
+                // the severity-only mapping (security → high).
+                //
+                // The sink + providerName + commentIndex options let the caller
+                // (live-provider.ts via the ambient sink; tests via explicit
+                // options) observe malformed severity values per-comment.
+                severity: normalizeProviderSeverity(readStringField(entry, "severity"), body, 
+                // exactOptionalPropertyTypes: omit undefined keys so the call
+                // is assignable to the strict optional types in
+                // `normalizeProviderSeverity`'s third parameter.
+                effectiveSink !== undefined || effectiveProviderName !== undefined
+                    ? {
+                        ...(effectiveSink !== undefined ? { sink: effectiveSink } : {}),
+                        ...(effectiveProviderName !== undefined
+                            ? { providerName: effectiveProviderName }
+                            : {}),
+                        commentIndex: index,
+                    }
+                    : { commentIndex: index }),
+                category: readStringField(entry, "category") ?? "general",
+            });
+        }
+    });
+    return comments;
+}
+/**
+ * Normalize a provider-emitted severity string to one of our canonical
+ * scale values (`low | medium | high | critical | info`).
+ *
+ * Different providers use different scales — OpenAI-style models tend to
+ * emit `low | medium | high`, Sonar-style models emit `info | minor |
+ * major | critical | blocker`, Copilot-style emits similar. Without
+ * normalization, an unknown severity falls through to the catch-all
+ * `"medium"` default in `readCommentArray` — which bypasses the
+ * `minimum-severity` threshold (default `medium`) and posts the finding
+ * inline even when the user has configured a stricter filter.
+ *
+ * Mapping (severity-only, no body):
+ *   - `info`     → `info`
+ *   - `nit`      → `info`     (style nit, below `low`)
+ *   - `minor`    → `low`      (Sonar minor ≈ our low)
+ *   - `low`      → `low`
+ *   - `major`    → `medium`   (Sonar major ≈ our medium)
+ *   - `medium`   → `medium`
+ *   - `high`     → `high`
+ *   - `critical` → `critical`
+ *   - `blocker`  → `critical` (Sonar blocker ≈ our critical)
+ *   - `security` → see body-scoped rules below
+ *   - `leak`     → `critical` (leaked secrets are always the highest
+ *                              severity class — no hardening-tip
+ *                              ambiguity here)
+ *   - anything else → `medium` (preserves prior default behavior)
+ *
+ * Body-scoped rules for `security` (when a body is provided):
+ *   - body matches HARDENING_HINT_PATTERN ("consider adding a CSP",
+ *     "rate limiting", etc.) → `high` (it's a hardening tip, not a
+ *     current vulnerability — let the user's threshold filter it if
+ *     they want)
+ *   - body matches LEAK_INDICATOR_PATTERN ("secret", "credential",
+ *     "token", "API key", "password") → `critical` (active leak, must
+ *     survive any threshold)
+ *   - anything else → `high` (default for `security` severity when body
+ *     doesn't indicate either hardening or active leak)
+ *
+ * Rationale for body-scoped rules: a provider that emits severity:
+ * "security" for a low-severity hardening tip ("consider adding a CSP
+ * header") would bypass the user's minimum-severity: critical filter
+ * and post a non-critical finding inline. Body-scoped scoping lets the
+ * mapping distinguish "this is a hardening tip" from "this is an active
+ * leak" using the comment's textual content.
+ *
+ * Unknown-but-non-empty values now get a sensible rank instead of the
+ * catch-all `medium`. The `minimum-severity` threshold then does its job
+ * correctly: a `nit` becomes `info` (rank 0) and is filtered out under
+ * `minimum-severity: medium` (rank 2).
+ */
+/** Patterns that indicate a low-severity hardening tip, not an active vulnerability. */
+const HARDENING_HINT_PATTERN = /\b(consider\s+add(?:ing)?|suggest(?:ed|s)?\s+(?:adding|using)|you\s+(?:may|might|should)\s+want\s+to|harden(?:ing)?|best\s+practice)\b/iu;
+/** Patterns that indicate an active secret leak or credential exposure. */
+const LEAK_INDICATOR_PATTERN = /\b(secret|credential|token|api[\s_-]?key|password|private[\s_-]?key|exposed|leaked|disclosed|committed\s+by\s+accident)\b/iu;
+function normalizeProviderSeverity(value, body, options) {
+    const sink = options?.sink;
+    // Build the context object explicitly so undefined keys are omitted
+    // (required by exactOptionalPropertyTypes: `providerName?: string`
+    // does not accept the value `undefined`, only the key's absence).
+    const context = options?.providerName !== undefined
+        ? { providerName: options.providerName, commentIndex: options.commentIndex ?? -1 }
+        : { commentIndex: options?.commentIndex ?? -1 };
+    if (value === null || value.length === 0) {
+        // Empty/null: silently fall back to "medium" WITHOUT emitting a
+        // warning. Rationale: many live providers (notably GitHub Copilot)
+        // routinely omit the `severity` field entirely. Warning on every
+        // omitted field would multiply to one warning per finding (50+ per
+        // review) and bury any genuinely-unrecognized-value warnings in
+        // noise. Operators can still surface empty-severity warnings via
+        // the ambient sink's debug channel — the raw `rawValue` is `""`
+        // for empty/null, distinguishable from `unrecognized string`.
+        return "medium";
+    }
+    const lower = value.toLowerCase();
+    switch (lower) {
+        case "info":
+        case "nit":
+            return "info";
+        case "minor":
+        case "low":
+            return "low";
+        case "major":
+        case "medium":
+            return "medium";
+        case "high":
+            return "high";
+        case "critical":
+        case "blocker":
+            return "critical";
+        case "leak":
+            // Leaked secrets are always critical — no hardening-tip ambiguity.
+            return "critical";
+        case "security":
+            // Body-scoped: hardening tips stay at high; active leaks escalate
+            // to critical. When no body is provided, default to high (the
+            // conservative choice that lets the user's threshold filter).
+            if (body !== undefined && body !== null && body.length > 0) {
+                if (LEAK_INDICATOR_PATTERN.test(body)) {
+                    return "critical";
+                }
+                if (HARDENING_HINT_PATTERN.test(body)) {
+                    return "high";
+                }
+            }
+            return "high";
+        default:
+            // Unknown severity — preserve previous fallback to "medium" so
+            // the run does not crash, but warn so operators see the misbehavior.
+            emitSeverityWarning(value, "medium", context, sink);
+            return "medium";
+    }
+}
+/**
+ * Some providers (e.g. Manifest, MiniMax) ignore `stream: false` and always
+ * return Server-Sent Events. Detect the SSE format and concatenate text
+ * fragments from all chunks into a single string.
+ *
+ * Handles the SSE formats we've observed in the wild:
+ *   1. /chat/completions streaming: `choices[].delta.content`
+ *   2. /responses streaming with top-level `delta` string (some non-OpenAI
+ *      providers use this variant)
+ *   3. OpenAI /responses streaming with nested events:
+ *        event: response.output_text.delta
+ *        data: {"type":"response.output_text.delta","delta":"fragment"}
+ *      We extract the inner `delta` field regardless of the wrapping key.
+ *   4. /responses streaming where the final `response.completed` event
+ *      contains the full `output[]` array (some providers only send the
+ *      done-event with output and skip the per-fragment deltas). When we
+ *      see a `response.completed` event, we extract `output_text` from
+ *      the inner `response` and prefer it over fragment accumulation.
+ *
+ * Returns the concatenated text if any fragment was found, or null if
+ * the input wasn't SSE or no text fragments were extractable. The caller
+ * (`extractTextPayload`) then falls back to plain-JSON parsing.
+ */
+function tryExtractSse(rawText) {
+    const trimmed = rawText.trim();
+    // Detect SSE format: either starts with "data:" or "event:" (some providers
+    // like Manifest prepend event: lines before data: lines).
+    if (!trimmed.startsWith("data:") && !trimmed.startsWith("event:")) {
+        return null;
+    }
+    const fragments = [];
+    let completedResponseText = null;
+    // Group the input into events separated by blank lines, then within each
+    // event concatenate the data: lines per the SSE spec ("If the line starts
+    // with data:, the rest of the line after the colon is the data. If the
+    // line is just data:, the data is an empty string. Multiple data: lines
+    // in the same event are concatenated with newlines."). This handles the
+    // case where an SSE encoder wrote a JSON-encoded data line that contains
+    // a literal newline character — splitting that into separate "data:" lines
+    // would lose the trailing portion of the JSON payload.
+    const events = [[]];
+    for (const line of trimmed.split("\n")) {
+        if (line.trim() === "") {
+            if (events[events.length - 1].length > 0) {
+                events.push([]);
+            }
+            continue;
+        }
+        events[events.length - 1].push(line);
+    }
+    for (const eventLines of events) {
+        // Concatenate all data: lines in this event with newlines (per SSE spec).
+        const dataLines = [];
+        for (const line of eventLines) {
+            if (line.startsWith("data:")) {
+                dataLines.push(line.slice("data:".length));
+            }
+        }
+        if (dataLines.length === 0) {
+            continue;
+        }
+        // Per SSE spec: data segments are joined with a single newline. Leading
+        // space after "data:" is stripped if present (some encoders add it).
+        const payload = dataLines.map((d) => d.startsWith(" ") ? d.slice(1) : d).join("\n").trim();
+        if (payload === "" || payload === "[DONE]") {
+            continue;
+        }
+        const parsed = tryParseJson(payload);
+        if (!isRecord(parsed)) {
+            continue;
+        }
+        // /responses streaming (OpenAI Responses API format):
+        //   event: response.output_text.delta
+        //   data: {"type":"response.output_text.delta","delta":"fragment"}
+        // The delta may live at the top level OR inside a wrapped envelope
+        // depending on the provider. Try the wrapped form first since it's
+        // the canonical OpenAI Responses API shape.
+        const wrappedResponse = readRecordField(parsed, "response");
+        if (wrappedResponse !== null) {
+            const eventType = readStringField(parsed, "type");
+            if (eventType === "response.completed" || eventType === "response.done") {
+                // Final event: prefer the full response payload if it has output_text.
+                const outText = readStringField(wrappedResponse, "output_text");
+                if (outText !== null && outText.length > 0) {
+                    completedResponseText = outText;
+                }
+                else {
+                    // Fall back to joining output[] entries.
+                    const output = readArrayField(wrappedResponse, "output");
+                    if (output !== null) {
+                        const joined = joinOutputText(output);
+                        if (joined.length > 0) {
+                            completedResponseText = joined;
+                        }
+                    }
+                }
+                continue;
+            }
+            if (eventType === "response.output_text.delta" || eventType === "response.delta") {
+                const deltaText = readStringField(parsed, "delta");
+                if (deltaText !== null) {
+                    fragments.push(deltaText);
+                }
+                continue;
+            }
+        }
+        // /chat/completions streaming: choices[].delta.content
+        const choices = readArrayField(parsed, "choices");
+        if (choices !== null) {
+            for (const choice of choices) {
+                const delta = readRecordField(choice, "delta");
+                if (delta !== null) {
+                    const content = readStringField(delta, "content");
+                    if (content !== null) {
+                        fragments.push(content);
+                    }
+                }
+            }
+            continue;
+        }
+        // /responses streaming (alternative non-OpenAI variant): top-level delta
+        // string directly on the JSON object.
+        const deltaText = readStringField(parsed, "delta");
+        if (deltaText !== null) {
+            fragments.push(deltaText);
+        }
+    }
+    // Prefer the completed-response text (full output) over accumulated
+    // fragments — but ONLY if the completed text looks like real content.
+    //
+    // Some providers (notably MiniMax-M3 observed in Azure DevOps PR #43
+    // thread 589) emit a `response.completed` event whose `output[]` carries
+    // a stub/placeholder string (e.g. "placeholder", the model wrapper
+    // metadata, or just the prompt echo) — and the real review text only
+    // appears in the per-fragment `response.output_text.delta` events.
+    //
+    // If we naively prefer the placeholder, `extractTextPayload` returns the
+    // placeholder and `parseReviewPayload` cannot extract a review from it,
+    // producing a parse-fail surface.
+    //
+    // Resolution: prefer the completed text only when it is "non-stub" OR
+    // when no delta fragments were collected (i.e. the completed event is
+    // the only source of truth). When deltas exist and the completed text
+    // looks like a stub, fall back to the deltas.
+    if (completedResponseText !== null) {
+        const onlySource = fragments.length === 0;
+        if (onlySource || !isStubCompletedText(completedResponseText)) {
+            return completedResponseText;
+        }
+    }
+    return fragments.length > 0 ? fragments.join("") : null;
+}
+/**
+ * Heuristic: detect a `response.completed` `output_text` value that is
+ * a stub/placeholder rather than the real review text.
+ *
+ * Triggers (returns true → caller falls back to delta concatenation):
+ *   - Empty string
+ *   - String shorter than 8 characters (real reviews are at minimum
+ *     `{"summary":"x"}` ≈ 16 chars; provider stubs are usually < 8)
+ *   - String that doesn't contain a `{` (the opening of a JSON object —
+ *     a stub like "placeholder" or the model wrapper's prompt echo
+ *     rarely contains a `{`)
+ *
+ * This is intentionally permissive: false positives (treating a real
+ * short review as a stub) are rare because real reviews always contain
+ * `{`. The test suite in `test/unit/azure-thread-589-repro.test.ts`
+ * pins the behavior end-to-end with the production failure mode
+ * (MiniMax-M3 `response.completed` stub "placeholder").
+ */
+function isStubCompletedText(text) {
+    if (text.length === 0)
+        return true;
+    if (text.length < 8)
+        return true;
+    if (!text.includes("{"))
+        return true;
+    return false;
+}
+
 ;// CONCATENATED MODULE: ./src/cli/live-shared.ts
+
+
 
 
 
@@ -4947,7 +6749,6 @@ function buildReviewBody(input) {
         postedComments,
         secrets: input.secrets,
         minimumSeverity: input.minimumSeverity ?? null,
-        ignoreMinor: input.ignoreMinor === true,
     };
     return renderSummary(input.layout ?? "severity-table", reviewData);
 }
@@ -5048,16 +6849,6 @@ function trimToNewline(piece, end) {
     }
     return piece.slice(i);
 }
-/**
- * Build a `LiveReview` to use when the provider returned a non-JSON or
- * unparseable response. Returns `verdict: "COMMENT"` with zero findings
- * and a summary that names the model + provider. The raw provider text is
- * included so reviewers can diagnose the failure without leaving the PR.
- *
- * `buildReviewBody` will fold this summary into the parent PR-level card
- * along with a collapsed `<details>` block containing the raw provider
- * text — see the helper for the exact rendering.
- */
 function buildMalformedProviderFallback(input) {
     const safeProvider = sanitizeForPost(input.provider, input.secrets);
     const safeModelId = sanitizeForPost(input.modelId, input.secrets);
@@ -5083,16 +6874,57 @@ function buildMalformedProviderFallback(input) {
         "</details>",
         "",
     ].join("\n");
+    // Reason-specific headline + remediation. The truncated case carries
+    // actionable advice ("raise --max-output-tokens") that the malformed
+    // case doesn't have. Keeping these strings in the helper (not the
+    // render layer) means every layout that falls back to the parse-fail
+    // diagnostic surfaces the same advice — the alternative (per-layout
+    // strings) is exactly the kind of drift the unified builder is meant
+    // to prevent.
+    const headline = buildParseFailureHeadline(input.reason);
+    const remediation = buildParseFailureRemediation(input.reason);
     // Note: the summary intentionally does NOT include a "Generated by"
     // footer — `buildReviewBody` emits that footer in its own block so
     // this fallback path would otherwise show the same metadata twice.
     return {
-        summary: `Provider response did not contain a valid JSON review payload.\n\n${detailsBlock}`,
+        summary: `${headline}${remediation.length > 0 ? `\n\n**Remediation:** ${remediation}` : ""}\n\n${detailsBlock}`,
         verdict: "COMMENT",
         comments: [],
         suppressedComments: [],
         parseFailed: true,
+        ...(input.reason !== undefined ? { parseFailureReason: input.reason } : {}),
     };
+}
+/**
+ * Render the parse-failure headline. Lives in `live-shared.ts` so every
+ * layout that consumes the fallback review (severity-table, verdict-
+ * banner, release-notes, etc.) gets the same wording without each
+ * layout having to know about ParseFailureReason. The headline is the
+ * single sentence that says "what happened" in the parse-fail banner.
+ */
+function buildParseFailureHeadline(reason) {
+    if (reason?.kind === "truncated") {
+        return "Provider response stream was truncated before the model emitted its final `response.completed` event.";
+    }
+    return "Provider response did not contain a valid JSON review payload.";
+}
+/**
+ * Render the actionable remediation line. Empty for the malformed case
+ * because there's no automatic fix — only "the model returned bad data,
+ * file a bug". The truncated case carries concrete advice: raise
+ * --max-output-tokens and retry.
+ */
+function buildParseFailureRemediation(reason) {
+    if (reason?.kind !== "truncated") {
+        return "";
+    }
+    const usagePct = reason.usage?.output_tokens !== undefined && reason.maxOutputTokens !== undefined && reason.maxOutputTokens > 0
+        ? Math.round((reason.usage.output_tokens / reason.maxOutputTokens) * 100)
+        : null;
+    const usageDetail = reason.usage?.output_tokens !== undefined
+        ? ` (model emitted ${reason.usage.output_tokens} output tokens${usagePct !== null ? ` ≈ ${usagePct}% of the configured cap` : ""})`
+        : "";
+    return `The output was likely cut off by the model's token budget${usageDetail}. Try raising \`--max-output-tokens\` and re-running. If the model consistently exceeds the cap, split the diff into smaller chunks.`;
 }
 /**
  * Fallback review when the PR's diff touches more than
@@ -5199,12 +7031,10 @@ function preparePostedReview(input) {
         postedComments: postableComments,
         secrets: input.secrets,
         // Threshold context — forwarded so the rendered `🏷️ …` tally can
-        // append `_(filtered)_` when the active `--minimum-severity` or
-        // `--ignore-minor` flag hides one or more tiers. Older callers
-        // (unit tests, simulate-findings) can omit both and get the
-        // byte-identical legacy tally.
+        // append `*` when the active `--minimum-severity` setting hides one
+        // or more tiers. Older callers (unit tests, simulate-findings) can
+        // omit it and get the byte-identical legacy tally.
         minimumSeverity: input.parsed.minimumSeverity,
-        ignoreMinor: input.parsed.ignoreMinor,
     });
     return {
         postableComments,
@@ -5317,14 +7147,25 @@ function ensureHttpOk(response, code, action) {
 }
 
 function passesSeverityPolicy(comment, parsed) {
-    if (parsed.ignoreMinor && comment.severity.toLowerCase() === "low") {
-        return false;
-    }
-    const minimum = parsed.minimumSeverity;
-    if (minimum === null) {
+    // `minimumSeverityInternal` is pre-resolved at arg-parse time (CLI
+    // enum → internal Severity via the alias table). Reading it here
+    // avoids re-parsing on every comment and ensures a malformed value
+    // fails fast at the CLI boundary instead of throwing
+    // InvalidConfigError deep in the live path.
+    const minimum = parsed.minimumSeverityInternal;
+    if (minimum === null)
         return true;
-    }
-    return severityRank(comment.severity) >= severityRank(minimum);
+    // Normalize the comment's severity before the threshold + carve-out
+    // check. The provider may emit non-canonical values (typos like
+    // "warning", unknown ranks, etc.) and `LiveReviewComment.severity`
+    // is typed `string`, not `Severity`. Without normalization, the
+    // carve-out's `finding === "security"` string compare would silently
+    // miss a typo and filter a finding that the security policy says
+    // must be preserved. normalizeProviderSeverity is the same function
+    // the live-path parser uses, so the threshold check sees the same
+    // canonical severity the rendered tally would.
+    const normalized = normalizeProviderSeverity(comment.severity);
+    return shouldKeepFinding({ minimum }, normalized);
 }
 
 ;// CONCATENATED MODULE: ./src/cli/live-azure.ts
@@ -6262,996 +8103,6 @@ function githubReviewsUrl(context) {
     return `https://api.github.com/repos/${owner}/${repo}/pulls/${context.prNumber}/reviews`;
 }
 
-;// CONCATENATED MODULE: ./src/render/json-extract.ts
-
-/**
- * Extract the most likely JSON payload from a provider text response.
- *
- * Order of attempts (mirrors the fence-closure guard in src/render/raw-output.ts):
- *   1. The whole text, parsed as JSON.
- *   2. A ```json ... ``` fence body, parsed as JSON.
- *   3. The first balanced { ... } object, parsed as JSON — with control
- *      characters inside JSON strings escaped to make the substring
- *      valid JSON (see `extractFirstBalancedObject`).
- *
- * Returns the parsed value when one of the attempts succeeds, otherwise null.
- * The whole text is always returned to the caller via `extractJsonBlock` so they
- * can decide what to do with raw context on failure (see renderRawReviewFallback).
- */
-function extractJsonBlock(rawText) {
-    const wholeAttempt = tryParseJson(rawText);
-    if (wholeAttempt !== undefined) {
-        return wholeAttempt;
-    }
-    const fenceBody = extractJsonFenceBody(rawText);
-    const fencedAttempt = tryParseJson(fenceBody);
-    if (fencedAttempt !== undefined) {
-        return fencedAttempt;
-    }
-    const balanced = extractFirstBalancedObject(rawText);
-    if (balanced !== null) {
-        const balancedAttempt = tryParseJson(balanced);
-        if (balancedAttempt !== undefined) {
-            return balancedAttempt;
-        }
-        else if (process.env["UMACTUALLY_DEBUG_RAW"] === "1") {
-            try {
-                JSON.parse(balanced);
-            }
-            catch (e) {
-                process.stderr.write(`[DEBUG-RAW] balanced-parse failed at length ${balanced.length}: ${e instanceof Error ? e.message : String(e)}\n`);
-            }
-        }
-    }
-    return null;
-}
-/**
- * Find the body of a ```...``` fence (with or without a language tag),
- * or return the original text when none. Exposed so callers can reuse
- * the fence-closure guard from raw-output.ts.
- *
- * Accepts any opening fence (```` ```json ````, ```` ```json5 ````, or just
- * ```` ``` ````) because the model sometimes drops the language tag from
- * markdown code blocks wrapping a JSON payload. The matching closing
- * fence is found lazily after the first newline, so the body's content
- * is captured verbatim including internal whitespace and newlines.
- *
- * Two newline shapes are accepted at the fence boundaries:
- *   1. Real newlines (0x0A) — the response arrived as a raw markdown
- *      block outside any JSON envelope.
- *   2. JSON-escaped `\n` (the 2-char sequence backslash + n) — the
- *      response arrived as a string value inside a JSON envelope (e.g.
- *      an SSE `response.output_text.delta` event). The model wrote the
- *      fence boundaries using JSON-escaped newlines because the entire
- *      response was itself a JSON string. The first regex (real newlines)
- *      does NOT match this shape; without the second regex, the fence
- *      body would not be extracted and the parser would fall through to
- *      the balanced-object fallback, which can return null on long
- *      payloads (regression observed 2026-07-05T23:59:46Z, requestId
- *      771a64b3). The two alternations are tried in order; the first
- *      match wins.
- */
-function extractJsonFenceBody(rawText) {
-    // Real-newline boundaries: ```[tag]\n[body]\n```
-    const realNewline = /```[a-zA-Z0-9_+\-]*\s*\n([\s\S]*?)\n```/.exec(rawText);
-    // JSON-escaped-newline boundaries: ```[tag]\n[body]\n```  (where \n is
-    // the literal 2-char sequence). The opening ```[tag] is followed by
-    // either a real newline OR the 2-char escape, same for the closing.
-    // In a regex literal, the 2-char sequence `\n` requires 4 backslashes
-    // (`\\\\n` in source → `\\n` in the regex pattern → matches literal
-    // backslash + n in input).
-    const escapedNewline = /```[a-zA-Z0-9_+\-]*\s*\\n([\s\S]*?)\\n```/u.exec(rawText);
-    let body = realNewline?.[1] ?? escapedNewline?.[1];
-    if (body !== undefined && escapedNewline !== null && realNewline === null) {
-        // The body was extracted from a JSON-escaped-newline fence. The
-        // content was the inside of a JSON string, so its `\n` characters
-        // are 2-char escapes, NOT real newlines. To make this parseable
-        // as a JSON object, we need to convert the 2-char `\n` (and
-        // other JSON escapes) to their real-character equivalents. Wrap
-        // the body in a JSON string and re-parse so the standard JSON
-        // unescape logic handles the conversion.
-        try {
-            body = JSON.parse('"' + body.replace(/"/gu, '\\"') + '"');
-        }
-        catch {
-            // Body is not a valid JSON-string-encoded value; fall through
-            // and return it as-is so the caller's `tryParseJson` (and the
-            // balanced-object fallback) can try other shapes.
-        }
-    }
-    return body ?? rawText;
-}
-/**
- * Locate the first balanced `{ ... }` object in `rawText`, respecting nested
- * braces and quoted strings (including \" escapes). Returns null when no
- * balanced object can be found.
- *
- * Returns a JSON-safe substring with literal control characters (newlines,
- * tabs, carriage returns) inside JSON strings escaped to their JSON-escape
- * equivalents (`\n`, `\t`, `\r`). This is required for parser robustness
- * because some provider streaming formats (notably SSE `response.output_text.delta`
- * events) JSON-encode delta values such that the JSON-escape for newline
- * (`\n`) becomes a literal newline in the SSE data line source — and the
- * SSE protocol treats that newline as a line break. After concatenating
- * fragments, the result contains literal newlines inside what should be
- * JSON strings, which makes the substring invalid JSON. This function walks
- * the balanced substring and escapes those control characters back to their
- * JSON-escape equivalents so the result is valid JSON.
- *
- * Newlines/tabs OUTSIDE strings (structural whitespace between fields) are
- * preserved — they're already valid JSON whitespace.
- */
-function extractFirstBalancedObject(rawText) {
-    const startIndex = rawText.indexOf("{");
-    if (startIndex === -1) {
-        return null;
-    }
-    let depth = 0;
-    let inString = false;
-    let escape = false;
-    // First pass: find the end index of the balanced object.
-    let endIndex = -1;
-    for (let index = startIndex; index < rawText.length; index += 1) {
-        const char = rawText[index];
-        if (inString) {
-            if (escape) {
-                escape = false;
-                continue;
-            }
-            if (char === "\\") {
-                escape = true;
-                continue;
-            }
-            if (char === '"') {
-                // Disambiguate a stray `"` from a legitimate closing quote by
-                // peeking ahead. A real closing quote is followed (after
-                // optional whitespace) by a structural JSON character
-                // (`,`, `}`, `]`, `:`). Anything else means the model forgot
-                // to escape a `"` inside the string value (SSE delta
-                // concatenation surfaces this as an unescaped quote in the
-                // resulting textPayload). Treat the latter as a stray quote
-                // — stay inside the string so the depth tracker keeps
-                // working AND escape it in the second pass.
-                //
-                // Note: `"` is NOT a structural JSON character so we don't
-                // include it in the close-quote set. If we did, a stray
-                // `"` followed by another `"` (e.g. `body: "value" "next":`)
-                // would be misclassified as a closing quote.
-                const nextNonWs = peekNextNonWhitespace(rawText, index + 1);
-                if (nextNonWs === -1 ||
-                    nextNonWs === ",".charCodeAt(0) ||
-                    nextNonWs === "}".charCodeAt(0) ||
-                    nextNonWs === "]".charCodeAt(0) ||
-                    nextNonWs === ":".charCodeAt(0)) {
-                    inString = false;
-                }
-                // else: stray quote inside a string. Stay inString; the second
-                // pass will escape it.
-                continue;
-            }
-            continue;
-        }
-        if (char === '"') {
-            inString = true;
-            continue;
-        }
-        if (char === "{") {
-            depth += 1;
-            continue;
-        }
-        if (char === "}") {
-            depth -= 1;
-            if (depth === 0) {
-                endIndex = index;
-                break;
-            }
-        }
-    }
-    if (endIndex === -1) {
-        return null;
-    }
-    // Second pass: walk the balanced substring and escape literal control
-    // characters that appear INSIDE JSON strings. We re-walk because the
-    // first pass above only tracked depth, not the output positions.
-    const substring = rawText.slice(startIndex, endIndex + 1);
-    const segments = [];
-    inString = false;
-    escape = false;
-    for (let index = 0; index < substring.length; index += 1) {
-        const char = substring.charAt(index);
-        if (inString) {
-            if (escape) {
-                segments.push(char);
-                escape = false;
-                continue;
-            }
-            if (char === "\\") {
-                segments.push(char);
-                escape = true;
-                continue;
-            }
-            if (char === '"') {
-                // Same disambiguation as the first pass: peek ahead to determine
-                // whether this `"` is a legitimate closing quote (followed by
-                // structural JSON punctuation) or a stray quote from an
-                // unescaped model emission. The latter gets escaped so the
-                // resulting substring parses as valid JSON.
-                const nextNonWs = peekNextNonWhitespace(substring, index + 1);
-                if (nextNonWs === -1 ||
-                    nextNonWs === ",".charCodeAt(0) ||
-                    nextNonWs === "}".charCodeAt(0) ||
-                    nextNonWs === "]".charCodeAt(0) ||
-                    nextNonWs === ":".charCodeAt(0)) {
-                    // Legitimate closing quote: emit the raw `"` and exit the
-                    // string. The first-pass peek-ahead already determined this
-                    // was the close.
-                    segments.push(char);
-                    inString = false;
-                    continue;
-                }
-                // Stray quote inside a string: escape it so the parser keeps
-                // the string open. Live evidence (run 28829205474 at
-                // 2026-07-06T23:03:58Z): the model's review body contained an
-                // unescaped `"` inside a body field, breaking the outer JSON.
-                segments.push('\\"');
-                continue;
-            }
-            // Inside a string: escape literal control characters that are
-            // invalid in JSON strings. \n, \r, \t are the common ones from
-            // SSE delta concatenation; we also handle \b, \f for completeness.
-            if (char === "\n") {
-                segments.push("\\n");
-                continue;
-            }
-            if (char === "\r") {
-                segments.push("\\r");
-                continue;
-            }
-            if (char === "\t") {
-                segments.push("\\t");
-                continue;
-            }
-            if (char === "\b") {
-                segments.push("\\b");
-                continue;
-            }
-            if (char === "\f") {
-                segments.push("\\f");
-                continue;
-            }
-            segments.push(char);
-            continue;
-        }
-        // Outside a string: control characters are valid JSON whitespace,
-        // so just copy them through.
-        if (char === '"') {
-            inString = true;
-        }
-        segments.push(char);
-    }
-    return segments.join("");
-}
-/**
- * Peek the character code of the next non-whitespace character in
- * `text` starting at `fromIndex`. Returns `-1` when `fromIndex` is past
- * the end of `text`. Used by the balanced-object extractor to
- * disambiguate a stray unescaped `"` inside a JSON string from a
- * legitimate closing quote: the latter is always followed (after
- * optional whitespace) by a structural JSON character (`,`, `}`, `]`,
- * `:`); anything else means the model forgot to JSON-encode the
- * quote.
- */
-function peekNextNonWhitespace(text, fromIndex) {
-    for (let i = fromIndex; i < text.length; i += 1) {
-        const code = text.charCodeAt(i);
-        // JSON whitespace: space (0x20), tab (0x09), LF (0x0A), CR (0x0D).
-        if (code !== 0x20 && code !== 0x09 && code !== 0x0a && code !== 0x0d) {
-            return code;
-        }
-    }
-    return -1;
-}
-
-;// CONCATENATED MODULE: ./src/provider/provider-parse.ts
-
-
-/**
- * Ambient (module-singleton) sink slot. `live-provider.ts`
- * `requestLiveReview` installs a sink here before invoking the provider
- * and clears it in `finally`, so any `parseReviewPayload` call reachable
- * from `runCopilotRequest` / `runProviderRequest` will pick it up
- * without needing to thread it through every call site.
- *
- * Default value is `null` (no sink installed → no warnings surfaced),
- * preserving the previous silent-coercion behavior for any caller that
- * has not opted in.
- *
- * Concurrency note: a module-level singleton is only safe when callers
- * install → await → clear atomically (Node's single-threaded event loop
- * guarantees no `await` boundary interleaves another `setActiveSeveritySink`
- * call). Any future caller that runs two `requestLiveReview` requests
- * concurrently via `Promise.all` will have the second `setActiveSeveritySink`
- * overwrite the first's slot, and the first's `finally` will clear the
- * second's sink mid-flight — silently corrupting the telemetry array.
- * The guard below surfaces this condition loudly so the regression is
- * caught at install time, not silently after the fact.
- */
-let activeSeveritySink = null;
-function setActiveSeveritySink(sink) {
-    if (sink !== null && activeSeveritySink !== null) {
-        // Concurrency footgun detected: a sink is already installed and the
-        // caller is overwriting it without clearing the previous one first.
-        // Log + warn loudly so the regression class surfaces in CI logs
-        // rather than silently corrupting telemetry.
-        console.warn("[provider-parse] setActiveSeveritySink: overwriting a non-null ambient sink. " +
-            "This usually means two requestLiveReview calls are running concurrently " +
-            "(Promise.all) — the second's sink will be cleared by the first's finally, " +
-            "corrupting the captured warnings. Thread the sink via ParseContext instead.");
-    }
-    activeSeveritySink = sink;
-}
-function getActiveSeveritySink() {
-    return activeSeveritySink;
-}
-/**
- * Emit a structured warning when the parser encounters a severity value
- * it cannot classify. Always also writes a single `console.warn` line so
- * operators can see the mismatch in CI logs without needing to inspect
- * the structured sink channel.
- */
-function emitSeverityWarning(rawValue, normalizedFallback, context, sink) {
-    const providerLabel = context.providerName ?? "unknown-provider";
-    const safeRaw = JSON.stringify(rawValue);
-    const message = `provider ${providerLabel} emitted unrecognized severity ${safeRaw} ` +
-        `at comment index ${context.commentIndex}; falling back to "${normalizedFallback}". ` +
-        `Expected one of: info, low, medium, high, critical.`;
-    console.warn(message, context);
-    if (sink !== undefined) {
-        sink(rawValue, normalizedFallback, context);
-    }
-}
-/**
- * Returns true when the parsed review has at least one non-empty
- * summary, verdict, or comment — used by the parse-fail retry paths
- * to decide whether the parsed response carries any usable signal.
- */
-function isNonEmptyReview(review) {
-    return review !== null
-        && (review.summary.length > 0 || review.verdict.length > 0 || review.comments.length > 0);
-}
-/**
- * Self-healing follow-up message sent to the model when its first response
- * could not be parsed as a JSON review payload. Some providers ignore
- * `stream: false` and return an empty SSE stream; some wrap their output
- * in markdown fences or prose; some omit the JSON entirely. We retry
- * once with an explicit reminder before falling back to the parse-fail
- * surface — that often recovers the review without operator intervention.
- *
- * Shared between `openai-compatible.ts` and `copilot.ts` so the
- * self-healing message stays byte-identical regardless of provider.
- */
-const PARSE_FAIL_RETRY_PROMPT = "Your previous response did not contain a valid JSON review payload. " +
-    "Please respond with ONLY a JSON object matching this schema (no prose, no fences): " +
-    '{"summary": "...", "verdict": "NEEDS_FIX|APPROVED|COMMENT|DISCUSS|SHIP", "comments": [...], "suppressed_comments": [...]}.';
-function buildResponsesBody(config, opts) {
-    const userContent = opts?.userOverride ?? config.user;
-    const body = {
-        model: config.model,
-        input: [
-            { role: "system", content: config.system },
-            { role: "user", content: userContent },
-        ],
-    };
-    if (config.maxOutputTokens !== undefined) {
-        body["max_output_tokens"] = config.maxOutputTokens;
-    }
-    if (config.reasoningEffort !== undefined) {
-        body["reasoning"] = { effort: config.reasoningEffort };
-    }
-    return body;
-}
-function buildChatBody(config, opts) {
-    const userContent = opts?.userOverride ?? config.user;
-    const body = {
-        model: config.model,
-        messages: [
-            { role: "system", content: config.system },
-            { role: "user", content: userContent },
-        ],
-    };
-    if (config.maxOutputTokens !== undefined) {
-        body["max_tokens"] = config.maxOutputTokens;
-    }
-    if (config.reasoningEffort !== undefined) {
-        body["reasoning_effort"] = config.reasoningEffort;
-    }
-    return body;
-}
-/**
- * Extract the text payload from a provider response. Handles four shapes:
- *   1. SSE stream (responses API output_text.delta / chat completions delta /
- *      generic top-level delta) — concatenates fragments into one string.
- *   2. Plain JSON object (Responses API or Chat Completions) — returns
- *      `output_text` (responses), joins `output[].content[].text`
- *      (responses), or `choices[].message.content` (chat).
- *   3. Raw text — returned verbatim (caller tries to extract a JSON
- *      block from it via `extractJsonBlock`).
- *   4. Empty input — returns `""`.
- *
- * The function does NOT report "unusable" — it always returns SOMETHING
- * (possibly empty) and lets the downstream `parseReviewPayload` plus
- * the CLARITY-10 strict empty-fields check decide whether the result
- * is a valid review. This keeps the public signature stable
- * (`string`, not `string | null`) so existing callers don't need to
- * change their null-handling.
- *
- * History note: an earlier revision returned `string | null` to signal
- * "unusable SSE stream with no text fragments" (CLARITY-10). That
- * approach was reverted in favor of returning the raw SSE text in
- * that case so `parseReviewPayload`'s strict empty-fields check (and
- * the CLARITY-10b soft parse-fail detector) catches the failure as a
- * null return rather than relying on a separate null-handling path
- * in callers.
- */
-function extractTextPayload(endpoint, rawText) {
-    if (rawText.length === 0) {
-        return "";
-    }
-    // 1. SSE stream (input starts with "data:" or "event:" prefix).
-    //    Concatenate fragments. If the stream only has metadata events
-    //    (no usable text fragments), return the rawText so the
-    //    downstream strict-empty-fields check (CLARITY-10) catches
-    //    it as a parse failure.
-    const trimmedStart = rawText.trimStart();
-    if (trimmedStart.startsWith("data:") || trimmedStart.startsWith("event:")) {
-        const sseText = tryExtractSse(rawText);
-        if (sseText !== null && sseText.length > 0) {
-            return sseText;
-        }
-        // SSE was detected but no usable fragments — return rawText so the
-        // empty-fields strict check can fire. (Returning `""` here would
-        // cause `parseReviewPayload("")` to return null without the
-        // strict-check safeguard.)
-        return rawText;
-    }
-    // 2. Plain JSON object.
-    const parsed = tryParseJson(rawText);
-    if (parsed !== undefined && isRecord(parsed)) {
-        if (endpoint === "responses") {
-            const direct = readStringField(parsed, "output_text");
-            if (direct !== null && direct.length > 0) {
-                return direct;
-            }
-            const output = readArrayField(parsed, "output");
-            if (output !== null) {
-                const fromOutput = joinOutputText(output);
-                if (fromOutput.length > 0) {
-                    return fromOutput;
-                }
-            }
-            // Not in the Responses API shape — fall through to raw text
-            // so `parseReviewPayload` can extract a direct review JSON
-            // object (model returned `{"summary": ..., "verdict": ...}`).
-        }
-        else {
-            // Chat completions.
-            const choices = readArrayField(parsed, "choices");
-            if (choices !== null) {
-                for (const choice of choices) {
-                    const message = readRecordField(choice, "message");
-                    if (message === null)
-                        continue;
-                    const content = readStringField(message, "content");
-                    if (content !== null && content.length > 0) {
-                        return content;
-                    }
-                }
-            }
-            // Chat JSON shape but no extractable content — fall through.
-        }
-    }
-    // 3. Raw text (could be plain prose, markdown, or a JSON block
-    //    wrapped in ``` fences — `extractJsonBlock` handles the latter).
-    return rawText;
-}
-/**
- * Parse a provider text response into a structured review payload.
- *
- * Returns `null` in three distinct cases:
- *   1. No JSON object found in `text` (plain prose, markdown, or non-JSON
- *      SSE tail — i.e. `extractJsonBlock` yielded nothing parseable).
- *   2. `extractJsonBlock` returned a value that isn't a JSON object
- *      (e.g. a string or array).
- *   3. (CLARITY-10b) The parsed object is structurally valid but its
- *      `summary` matches an apology pattern AND it has zero findings
- *      (no `comments`, no `suppressed_comments`). The model returned a
- *      legitimate-looking JSON wrapper around an apology message; we
- *      treat it as a parse failure so the self-healing retry fires.
- *
- * Callers that need to distinguish the cases (e.g. for different error
- * messages) can use the returned `ProviderReviewPayload` shape to
- * differentiate "structured empty review" (returned, all fields empty)
- * from "no parseable content" (returns null).
- */
-function parseReviewPayload(text, context) {
-    const candidate = extractJsonBlock(text);
-    if (!isRecord(candidate)) {
-        return null;
-    }
-    const summary = readStringField(candidate, "summary") ?? "";
-    const verdict = readStringField(candidate, "verdict") ?? "";
-    const comments = provider_parse_readCommentArray(candidate["comments"], context);
-    const suppressed_comments = provider_parse_readCommentArray(candidate["suppressed_comments"], context);
-    // Soft parse-fail detector (CLARITY-10b): some providers/models return
-    // a *structurally valid* JSON wrapper whose contents are an apology
-    // ("No diff or file contents were provided to review...", "I cannot
-    // review this without...", "Please share the diff..."). These pass
-    // the basic `extractJsonBlock` parse AND the strict non-empty check
-    // (because `summary` is non-empty) but are functionally equivalent
-    // to a parse failure — the model did not produce a review.
-    //
-    // Surface these as null so the self-healing retry path fires and
-    // the parse-fail badge renders, instead of silently posting a
-    // 0-finding review that LOOKS clean.
-    //
-    // Only trigger when there are zero findings (comments + suppressed_comments).
-    // A real review with findings but a frustrated summary ("The code looks
-    // fine but I noticed one issue...") is legitimate; we don't want to
-    // rewrite that as a parse-fail.
-    if (comments.length === 0 &&
-        suppressed_comments.length === 0 &&
-        isApologySummary(summary)) {
-        return null;
-    }
-    return { summary, verdict, comments, suppressed_comments };
-}
-/**
- * Pattern match for "the model couldn't actually review the input" apology
- * summaries. These are NOT real reviews even when wrapped in valid JSON.
- *
- * Matched phrases (case-insensitive, whole-word where reasonable):
- *   - "no diff" / "no file contents" / "no contents were provided"
- *   - "please share" / "please provide" / "please send"
- *   - "i cannot" / "i'm unable" / "i am unable" / "i can not"
- *   - "cannot review" / "unable to review" / "can't review"
- *   - "did not receive" / "haven't received" / "no input"
- *
- * The match is intentionally narrow — it must look like the model is
- * telling us *it* failed to receive input, not commenting on the code.
- * Phrases like "no issues found" or "nothing to flag" are deliberately
- * excluded — those are legitimate clean-review signals.
- */
-function isApologySummary(summary) {
-    if (summary.length === 0) {
-        return false;
-    }
-    const lower = summary.toLowerCase();
-    // Most common patterns from the 3e62237 self-review incident.
-    // Each pattern is anchored narrowly to avoid over-matching legitimate
-    // clean-review summaries that happen to contain "cannot" or "review"
-    // in other contexts (e.g. "I cannot find any issues to review").
-    const APOLOGY_PATTERNS = [
-        // "no diff / file contents were provided / shared / available" — direct form.
-        /\bno\s+(diff|file\s+contents?|contents?)\b.*\b(provided|shared|available|supplied)\b/u,
-        // "no [pull request | pr | file] diff was provided" — the model often
-        // adds "pull request" / "pr" / "file" between "no" and "diff" before
-        // reaching the apology verb. Live evidence (PR self-review at
-        // 2026-07-06T22:08Z): "No pull request diff was provided in the
-        // request, so no review can be produced." — the narrow `no\s+(diff|...)`
-        // pattern above misses this. This broadened pattern matches any
-        // "no <modifier>* diff/file/contents ... <apology verb>" form.
-        /\bno\s+(?:pull\s+request\s+|pr\s+|file\s+|the\s+|any\s+)*(?:diff|file\s+contents?|contents?)\b.*\b(provided|shared|available|supplied|received)\b/u,
-        // "please share / provide / send the diff / file / pull request"
-        /\bplease\s+(share|provide|send)\s+(the\s+)?(diff|file|pull\s+request|pr)\b/u,
-        // "I cannot / can't review this / it / the PR" — narrow to the
-        // direct-object-after-verb pattern so "I cannot find issues to
-        // review" does NOT match. Requires the verb (cannot/can't/etc.)
-        // immediately followed by review + determiner (this/it/the/a).
-        /\bi\s+(cannot|can'?t|am\s+unable|i'?m\s+unable)\s+review\s+(this|it|the|a|that)\b/u,
-        // "cannot / can't / unable to review" — REQUIRES a direct object
-        // (this/it/the/a/that/self) so "Cannot review the legacy code" or
-        // "unable to review itself" do NOT match (those are legitimate
-        // reviews describing what the model CAN or CANNOT do in context).
-        /\b(cannot|can'?t|unable\s+to)\s+review\s+(this|it|the|a|that|self)\b/u,
-        // "didn't / haven't received" or "no input"
-        /\b(didn'?t\s+receive|haven'?t\s+received|no\s+input)\b/u,
-        // "empty diff" or "without diff / input"
-        /\b(empty\s+diff|no\s+diff\s+to\s+review|without\s+(diff|input))\b/u,
-        // "the diff is empty, nothing to review" / "was empty... review"
-        /\b(is\s+empty|was\s+empty)\b.*\b(nothing|to\s+review)\b/u,
-        // "nothing to review"
-        /\bnothing\s+to\s+review\b/u,
-    ];
-    for (const pattern of APOLOGY_PATTERNS) {
-        if (pattern.test(lower)) {
-            return true;
-        }
-    }
-    return false;
-}
-/**
- * Walks the OpenAI Responses API `output[]` array and concatenates all
- * text fragments it finds. The Responses API puts output items under
- * `content[]` as an array of parts (each part is `{type, text}` or
- * `{type, image_url}` etc) — so this function recurses into content
- * arrays and pulls out any `text` strings, in order.
- *
- * Accepts both the Responses API shape (`content: [{type, text}]`)
- * and a simpler chat-style shape (`content: {text: "..."}`) for
- * providers that return the latter.
- */
-function joinOutputText(output) {
-    const fragments = [];
-    for (const entry of output) {
-        if (!isRecord(entry)) {
-            continue;
-        }
-        const content = entry["content"];
-        // Responses API: content is an array of parts.
-        if (Array.isArray(content)) {
-            for (const part of content) {
-                if (!isRecord(part)) {
-                    continue;
-                }
-                const text = part["text"];
-                if (typeof text === "string") {
-                    fragments.push(text);
-                }
-            }
-            continue;
-        }
-        // Chat-style: content is a single object with a text field.
-        if (isRecord(content)) {
-            const text = content["text"];
-            if (typeof text === "string") {
-                fragments.push(text);
-            }
-        }
-    }
-    return fragments.join("\n");
-}
-function provider_parse_readCommentArray(value, context) {
-    if (!isUnknownArray(value)) {
-        return [];
-    }
-    // Prefer an explicit context; fall back to the ambient module-singleton
-    // sink so live-provider.ts can install a sink once per request without
-    // threading it through every parseReviewPayload call site.
-    const effectiveSink = context?.sink ?? getActiveSeveritySink() ?? undefined;
-    const effectiveProviderName = context?.providerName;
-    const comments = [];
-    value.forEach((entry, index) => {
-        if (!isRecord(entry)) {
-            return;
-        }
-        const path = entry["path"];
-        const line = readSafeIntegerField(entry, "line");
-        if (typeof path === "string" && line !== null) {
-            const body = readStringField(entry, "body") ?? "";
-            comments.push({
-                path,
-                line,
-                body,
-                // Pass body so body-scoped rules (security + hardening/leak
-                // heuristics) can distinguish a hardening tip from an active
-                // leak. Without body, normalizeProviderSeverity falls back to
-                // the severity-only mapping (security → high).
-                //
-                // The sink + providerName + commentIndex options let the caller
-                // (live-provider.ts via the ambient sink; tests via explicit
-                // options) observe malformed severity values per-comment.
-                severity: normalizeProviderSeverity(readStringField(entry, "severity"), body, 
-                // exactOptionalPropertyTypes: omit undefined keys so the call
-                // is assignable to the strict optional types in
-                // `normalizeProviderSeverity`'s third parameter.
-                effectiveSink !== undefined || effectiveProviderName !== undefined
-                    ? {
-                        ...(effectiveSink !== undefined ? { sink: effectiveSink } : {}),
-                        ...(effectiveProviderName !== undefined
-                            ? { providerName: effectiveProviderName }
-                            : {}),
-                        commentIndex: index,
-                    }
-                    : { commentIndex: index }),
-                category: readStringField(entry, "category") ?? "general",
-            });
-        }
-    });
-    return comments;
-}
-/**
- * Normalize a provider-emitted severity string to one of our canonical
- * scale values (`low | medium | high | critical | info`).
- *
- * Different providers use different scales — OpenAI-style models tend to
- * emit `low | medium | high`, Sonar-style models emit `info | minor |
- * major | critical | blocker`, Copilot-style emits similar. Without
- * normalization, an unknown severity falls through to the catch-all
- * `"medium"` default in `readCommentArray` — which bypasses the
- * `minimum-severity` threshold (default `medium`) and posts the finding
- * inline even when the user has configured a stricter filter.
- *
- * Mapping (severity-only, no body):
- *   - `info`     → `info`
- *   - `nit`      → `info`     (style nit, below `low`)
- *   - `minor`    → `low`      (Sonar minor ≈ our low)
- *   - `low`      → `low`
- *   - `major`    → `medium`   (Sonar major ≈ our medium)
- *   - `medium`   → `medium`
- *   - `high`     → `high`
- *   - `critical` → `critical`
- *   - `blocker`  → `critical` (Sonar blocker ≈ our critical)
- *   - `security` → see body-scoped rules below
- *   - `leak`     → `critical` (leaked secrets are always the highest
- *                              severity class — no hardening-tip
- *                              ambiguity here)
- *   - anything else → `medium` (preserves prior default behavior)
- *
- * Body-scoped rules for `security` (when a body is provided):
- *   - body matches HARDENING_HINT_PATTERN ("consider adding a CSP",
- *     "rate limiting", etc.) → `high` (it's a hardening tip, not a
- *     current vulnerability — let the user's threshold filter it if
- *     they want)
- *   - body matches LEAK_INDICATOR_PATTERN ("secret", "credential",
- *     "token", "API key", "password") → `critical` (active leak, must
- *     survive any threshold)
- *   - anything else → `high` (default for `security` severity when body
- *     doesn't indicate either hardening or active leak)
- *
- * Rationale for body-scoped rules: a provider that emits severity:
- * "security" for a low-severity hardening tip ("consider adding a CSP
- * header") would bypass the user's minimum-severity: critical filter
- * and post a non-critical finding inline. Body-scoped scoping lets the
- * mapping distinguish "this is a hardening tip" from "this is an active
- * leak" using the comment's textual content.
- *
- * Unknown-but-non-empty values now get a sensible rank instead of the
- * catch-all `medium`. The `minimum-severity` threshold then does its job
- * correctly: a `nit` becomes `info` (rank 0) and is filtered out under
- * `minimum-severity: medium` (rank 2).
- */
-/** Patterns that indicate a low-severity hardening tip, not an active vulnerability. */
-const HARDENING_HINT_PATTERN = /\b(consider\s+add(?:ing)?|suggest(?:ed|s)?\s+(?:adding|using)|you\s+(?:may|might|should)\s+want\s+to|harden(?:ing)?|best\s+practice)\b/iu;
-/** Patterns that indicate an active secret leak or credential exposure. */
-const LEAK_INDICATOR_PATTERN = /\b(secret|credential|token|api[\s_-]?key|password|private[\s_-]?key|exposed|leaked|disclosed|committed\s+by\s+accident)\b/iu;
-function normalizeProviderSeverity(value, body, options) {
-    const sink = options?.sink;
-    // Build the context object explicitly so undefined keys are omitted
-    // (required by exactOptionalPropertyTypes: `providerName?: string`
-    // does not accept the value `undefined`, only the key's absence).
-    const context = options?.providerName !== undefined
-        ? { providerName: options.providerName, commentIndex: options.commentIndex ?? -1 }
-        : { commentIndex: options?.commentIndex ?? -1 };
-    if (value === null || value.length === 0) {
-        // Empty/null: silently fall back to "medium" WITHOUT emitting a
-        // warning. Rationale: many live providers (notably GitHub Copilot)
-        // routinely omit the `severity` field entirely. Warning on every
-        // omitted field would multiply to one warning per finding (50+ per
-        // review) and bury any genuinely-unrecognized-value warnings in
-        // noise. Operators can still surface empty-severity warnings via
-        // the ambient sink's debug channel — the raw `rawValue` is `""`
-        // for empty/null, distinguishable from `unrecognized string`.
-        return "medium";
-    }
-    const lower = value.toLowerCase();
-    switch (lower) {
-        case "info":
-        case "nit":
-            return "info";
-        case "minor":
-        case "low":
-            return "low";
-        case "major":
-        case "medium":
-            return "medium";
-        case "high":
-            return "high";
-        case "critical":
-        case "blocker":
-            return "critical";
-        case "leak":
-            // Leaked secrets are always critical — no hardening-tip ambiguity.
-            return "critical";
-        case "security":
-            // Body-scoped: hardening tips stay at high; active leaks escalate
-            // to critical. When no body is provided, default to high (the
-            // conservative choice that lets the user's threshold filter).
-            if (body !== undefined && body !== null && body.length > 0) {
-                if (LEAK_INDICATOR_PATTERN.test(body)) {
-                    return "critical";
-                }
-                if (HARDENING_HINT_PATTERN.test(body)) {
-                    return "high";
-                }
-            }
-            return "high";
-        default:
-            // Unknown severity — preserve previous fallback to "medium" so
-            // the run does not crash, but warn so operators see the misbehavior.
-            emitSeverityWarning(value, "medium", context, sink);
-            return "medium";
-    }
-}
-/**
- * Some providers (e.g. Manifest, MiniMax) ignore `stream: false` and always
- * return Server-Sent Events. Detect the SSE format and concatenate text
- * fragments from all chunks into a single string.
- *
- * Handles the SSE formats we've observed in the wild:
- *   1. /chat/completions streaming: `choices[].delta.content`
- *   2. /responses streaming with top-level `delta` string (some non-OpenAI
- *      providers use this variant)
- *   3. OpenAI /responses streaming with nested events:
- *        event: response.output_text.delta
- *        data: {"type":"response.output_text.delta","delta":"fragment"}
- *      We extract the inner `delta` field regardless of the wrapping key.
- *   4. /responses streaming where the final `response.completed` event
- *      contains the full `output[]` array (some providers only send the
- *      done-event with output and skip the per-fragment deltas). When we
- *      see a `response.completed` event, we extract `output_text` from
- *      the inner `response` and prefer it over fragment accumulation.
- *
- * Returns the concatenated text if any fragment was found, or null if
- * the input wasn't SSE or no text fragments were extractable. The caller
- * (`extractTextPayload`) then falls back to plain-JSON parsing.
- */
-function tryExtractSse(rawText) {
-    const trimmed = rawText.trim();
-    // Detect SSE format: either starts with "data:" or "event:" (some providers
-    // like Manifest prepend event: lines before data: lines).
-    if (!trimmed.startsWith("data:") && !trimmed.startsWith("event:")) {
-        return null;
-    }
-    const fragments = [];
-    let completedResponseText = null;
-    // Group the input into events separated by blank lines, then within each
-    // event concatenate the data: lines per the SSE spec ("If the line starts
-    // with data:, the rest of the line after the colon is the data. If the
-    // line is just data:, the data is an empty string. Multiple data: lines
-    // in the same event are concatenated with newlines."). This handles the
-    // case where an SSE encoder wrote a JSON-encoded data line that contains
-    // a literal newline character — splitting that into separate "data:" lines
-    // would lose the trailing portion of the JSON payload.
-    const events = [[]];
-    for (const line of trimmed.split("\n")) {
-        if (line.trim() === "") {
-            if (events[events.length - 1].length > 0) {
-                events.push([]);
-            }
-            continue;
-        }
-        events[events.length - 1].push(line);
-    }
-    for (const eventLines of events) {
-        // Concatenate all data: lines in this event with newlines (per SSE spec).
-        const dataLines = [];
-        for (const line of eventLines) {
-            if (line.startsWith("data:")) {
-                dataLines.push(line.slice("data:".length));
-            }
-        }
-        if (dataLines.length === 0) {
-            continue;
-        }
-        // Per SSE spec: data segments are joined with a single newline. Leading
-        // space after "data:" is stripped if present (some encoders add it).
-        const payload = dataLines.map((d) => d.startsWith(" ") ? d.slice(1) : d).join("\n").trim();
-        if (payload === "" || payload === "[DONE]") {
-            continue;
-        }
-        const parsed = tryParseJson(payload);
-        if (!isRecord(parsed)) {
-            continue;
-        }
-        // /responses streaming (OpenAI Responses API format):
-        //   event: response.output_text.delta
-        //   data: {"type":"response.output_text.delta","delta":"fragment"}
-        // The delta may live at the top level OR inside a wrapped envelope
-        // depending on the provider. Try the wrapped form first since it's
-        // the canonical OpenAI Responses API shape.
-        const wrappedResponse = readRecordField(parsed, "response");
-        if (wrappedResponse !== null) {
-            const eventType = readStringField(parsed, "type");
-            if (eventType === "response.completed" || eventType === "response.done") {
-                // Final event: prefer the full response payload if it has output_text.
-                const outText = readStringField(wrappedResponse, "output_text");
-                if (outText !== null && outText.length > 0) {
-                    completedResponseText = outText;
-                }
-                else {
-                    // Fall back to joining output[] entries.
-                    const output = readArrayField(wrappedResponse, "output");
-                    if (output !== null) {
-                        const joined = joinOutputText(output);
-                        if (joined.length > 0) {
-                            completedResponseText = joined;
-                        }
-                    }
-                }
-                continue;
-            }
-            if (eventType === "response.output_text.delta" || eventType === "response.delta") {
-                const deltaText = readStringField(parsed, "delta");
-                if (deltaText !== null) {
-                    fragments.push(deltaText);
-                }
-                continue;
-            }
-        }
-        // /chat/completions streaming: choices[].delta.content
-        const choices = readArrayField(parsed, "choices");
-        if (choices !== null) {
-            for (const choice of choices) {
-                const delta = readRecordField(choice, "delta");
-                if (delta !== null) {
-                    const content = readStringField(delta, "content");
-                    if (content !== null) {
-                        fragments.push(content);
-                    }
-                }
-            }
-            continue;
-        }
-        // /responses streaming (alternative non-OpenAI variant): top-level delta
-        // string directly on the JSON object.
-        const deltaText = readStringField(parsed, "delta");
-        if (deltaText !== null) {
-            fragments.push(deltaText);
-        }
-    }
-    // Prefer the completed-response text (full output) over accumulated
-    // fragments — but ONLY if the completed text looks like real content.
-    //
-    // Some providers (notably MiniMax-M3 observed in Azure DevOps PR #43
-    // thread 589) emit a `response.completed` event whose `output[]` carries
-    // a stub/placeholder string (e.g. "placeholder", the model wrapper
-    // metadata, or just the prompt echo) — and the real review text only
-    // appears in the per-fragment `response.output_text.delta` events.
-    //
-    // If we naively prefer the placeholder, `extractTextPayload` returns the
-    // placeholder and `parseReviewPayload` cannot extract a review from it,
-    // producing a parse-fail surface.
-    //
-    // Resolution: prefer the completed text only when it is "non-stub" OR
-    // when no delta fragments were collected (i.e. the completed event is
-    // the only source of truth). When deltas exist and the completed text
-    // looks like a stub, fall back to the deltas.
-    if (completedResponseText !== null) {
-        const onlySource = fragments.length === 0;
-        if (onlySource || !isStubCompletedText(completedResponseText)) {
-            return completedResponseText;
-        }
-    }
-    return fragments.length > 0 ? fragments.join("") : null;
-}
-/**
- * Heuristic: detect a `response.completed` `output_text` value that is
- * a stub/placeholder rather than the real review text.
- *
- * Triggers (returns true → caller falls back to delta concatenation):
- *   - Empty string
- *   - String shorter than 8 characters (real reviews are at minimum
- *     `{"summary":"x"}` ≈ 16 chars; provider stubs are usually < 8)
- *   - String that doesn't contain a `{` (the opening of a JSON object —
- *     a stub like "placeholder" or the model wrapper's prompt echo
- *     rarely contains a `{`)
- *
- * This is intentionally permissive: false positives (treating a real
- * short review as a stub) are rare because real reviews always contain
- * `{`. The test suite in `test/unit/azure-thread-589-repro.test.ts`
- * pins the behavior end-to-end with the production failure mode
- * (MiniMax-M3 `response.completed` stub "placeholder").
- */
-function isStubCompletedText(text) {
-    if (text.length === 0)
-        return true;
-    if (text.length < 8)
-        return true;
-    if (!text.includes("{"))
-        return true;
-    return false;
-}
-
 ;// CONCATENATED MODULE: ./src/provider/provider-error.ts
 class ProviderError extends Error {
     code;
@@ -7266,6 +8117,26 @@ class ProviderError extends Error {
      * non-parse errors so the constructor signature stays compatible.
      */
     rawText;
+    /**
+     * True when the parse error was caused by a truncated SSE stream —
+     * the provider's response ended before the model emitted a
+     * `response.completed` (or equivalent) event. Distinct from a
+     * completed-but-malformed response (where the stream ended cleanly
+     * but the JSON itself was structurally wrong). Surfaced in the
+     * parse-fail diagnostic so reviewers can tell "raise
+     * --max-output-tokens and retry" apart from "model returned bad JSON".
+     * `undefined` for non-parse errors.
+     */
+    truncated;
+    /**
+     * Token usage reported by the provider in the `response.completed`
+     * event's `usage` block. Surfaced by the headroom-warning check so
+     * operators can see whether the model filled its token budget
+     * (explains the truncated-stream case). `undefined` when the
+     * provider didn't emit usage data or the stream was truncated
+     * before the completed event.
+     */
+    usage;
     constructor(code, endpoint, status, requestId, message, options) {
         super(message, options);
         this.code = code;
@@ -7273,6 +8144,8 @@ class ProviderError extends Error {
         this.status = status;
         this.requestId = requestId;
         this.rawText = options?.rawText;
+        this.truncated = options?.truncated;
+        this.usage = options?.usage;
     }
 }
 function sanitizeHttpStatus(endpoint, status) {
@@ -7517,9 +8390,19 @@ async function runChatCall(config, fetchImpl, requestId, session) {
         retryReview = parsedRetry;
     }
     if (retryReview === null) {
+        // Same parse-fail diagnostic contract as openai-compatible.ts:
+        // distinguish "truncated stream" from "completed but malformed" so
+        // the diagnostic can show actionable remediation advice. Delegates
+        // to the shared `diagnoseParseFailure` helper so the truncation
+        // detection logic is not duplicated per provider.
+        const diagnosis = diagnoseParseFailure({ rawText });
         return {
             ok: false,
-            error: new ProviderError("parse", ENDPOINT_CHAT, response.status, requestId, "Provider response did not contain a JSON review payload after self-healing retry.", { rawText }),
+            error: new ProviderError("parse", ENDPOINT_CHAT, response.status, requestId, "Provider response did not contain a JSON review payload after self-healing retry.", {
+                rawText,
+                truncated: diagnosis.truncated,
+                ...(diagnosis.usage !== undefined ? { usage: diagnosis.usage } : {}),
+            }),
         };
     }
     return { ok: true, endpoint: ENDPOINT_CHAT, review: retryReview, requestId };
@@ -7723,7 +8606,19 @@ async function callEndpoint(config, fetchImpl, requestId, endpoint) {
         // ORIGINAL rawText. retryResponseStatus stays null in this branch.
     }
     if (retryReview === null) {
-        throw new ProviderError("parse", endpoint, retryResponseStatus ?? response.status, requestId, "Provider response did not contain a JSON review payload after self-healing retry.", { rawText });
+        // Distinguish "truncated stream" (model hit its token budget before
+        // emitting response.completed) from "completed stream with malformed
+        // JSON" (model returned bad data). The former is actionable: the
+        // operator can raise --max-output-tokens and retry. The latter
+        // usually means a model regression. Both surface in the parse-fail
+        // diagnostic via `ProviderError.truncated` so the render layer can
+        // show different remediation advice.
+        const diagnosis = diagnoseParseFailure({ rawText });
+        throw new ProviderError("parse", endpoint, retryResponseStatus ?? response.status, requestId, "Provider response did not contain a JSON review payload after self-healing retry.", {
+            rawText,
+            truncated: diagnosis.truncated,
+            ...(diagnosis.usage !== undefined ? { usage: diagnosis.usage } : {}),
+        });
     }
     return { ok: true, endpoint, review: retryReview, requestId };
 }
@@ -7777,33 +8672,6 @@ function shouldFallback(error) {
     return error.status === 404 || error.status === 400;
 }
 
-;// CONCATENATED MODULE: ./src/config/errors.ts
-class InvalidConfigError extends Error {
-    field;
-    reason;
-    name = "InvalidConfigError";
-    constructor(field, reason, options) {
-        super(`Invalid config for '${field}': ${reason}`, options);
-        this.field = field;
-        this.reason = reason;
-    }
-}
-class PromptFileError extends Error {
-    path;
-    reason;
-    name = "PromptFileError";
-    constructor(path, reason, options) {
-        super(`Prompt file error: ${reason}`, options);
-        this.path = path;
-        this.reason = reason;
-    }
-}
-/**
- * Marker used in error messages to replace any user-supplied value
- * (URLs, tokens, prompt content). Never echo the raw value.
- */
-
-
 ;// CONCATENATED MODULE: ./src/config/prompt-files.ts
 
 
@@ -7854,7 +8722,7 @@ function toPosix(value) {
  */
 async function readPromptFiles(paths, byteCap, options) {
     if (!Number.isInteger(byteCap) || byteCap <= 0) {
-        throw new InvalidConfigError("prompt.byteCap", `expected positive integer, received ${byteCap}`);
+        throw new errors_InvalidConfigError("prompt.byteCap", `expected positive integer, received ${byteCap}`);
     }
     const fs = options.fs ?? nodePromptFileSystem;
     const cwdReal = await fs.realpath(options.cwd);
@@ -8014,6 +8882,7 @@ async function requestLiveReview(input) {
                         modelId,
                         rawText: result.error.rawText ?? "",
                         secrets: [providerApiKey, input.platformToken],
+                        ...parseFailureReasonFromProviderError(result.error, input.parsed.maxOutputTokens),
                     }),
                     endpoint: result.error.endpoint,
                     provider: COPILOT_PROVIDER_NAME,
@@ -8051,6 +8920,7 @@ async function requestLiveReview(input) {
                     modelId,
                     rawText: result.error.rawText ?? "",
                     secrets: [providerApiKey, input.platformToken],
+                    ...parseFailureReasonFromProviderError(result.error, input.parsed.maxOutputTokens),
                 }),
                 endpoint: result.error.endpoint,
                 provider: PROVIDER_NAME,
@@ -8100,6 +8970,26 @@ function readConfiguredModel(parsed, env) {
 function readRequestTimeoutMs(parsed) {
     const seconds = parsed.perRequestTimeoutSeconds ?? parsed.reviewTimeoutSeconds;
     return seconds === null || seconds <= 0 ? live_provider_DEFAULT_REQUEST_TIMEOUT_MS : seconds * 1_000;
+}
+/**
+ * Translate a ProviderError's parse-failure fields into the reason
+ * shape that `buildMalformedProviderFallback` consumes. Returns an
+ * empty spread when the error has no truncation signal (the caller
+ * then omits the `reason` field and the fallback renders the generic
+ * "Provider response did not contain a valid JSON review payload"
+ * headline).
+ */
+function parseFailureReasonFromProviderError(error, maxOutputTokens) {
+    if (error.truncated !== true) {
+        return {};
+    }
+    return {
+        reason: {
+            kind: "truncated",
+            ...(error.usage !== undefined ? { usage: error.usage } : {}),
+            ...(maxOutputTokens !== null ? { maxOutputTokens } : {}),
+        },
+    };
 }
 
 ;// CONCATENATED MODULE: ./src/cli/sonar-context.ts
@@ -8843,7 +9733,6 @@ function buildEffectiveConfig(env) {
         reviewTimeoutSeconds: env.reviewTimeoutSeconds ?? null,
         stallTimeoutSeconds: env.stallTimeoutSeconds ?? null,
         perRequestTimeoutSeconds: env.perRequestTimeoutSeconds ?? null,
-        ignoreMinor: env.ignoreMinor ?? null,
         minimumSeverity: env.minimumSeverity ?? null,
         maxComments: env.maxComments ?? null,
         sonarEnabled: env.sonarEnabled ?? null,

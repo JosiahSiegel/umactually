@@ -1,6 +1,27 @@
 import { tryParseJson } from "../util/json-guards.js";
 
 /**
+ * Valid JSON escape characters (the second character after `\`).
+ * Any other character following `\` inside a JSON string is an invalid
+ * escape sequence and will cause JSON.parse to reject the document
+ * with "Bad escaped character in JSON". Models writing prose (especially
+ * markdown) frequently produce stray `\X` sequences inside JSON string
+ * fields — `\`` (escaped backtick, common in shell contexts), `\.`,
+ * `\:`, `\,`, `\'`, etc. None of these are valid JSON escapes.
+ */
+const VALID_JSON_ESCAPE_CHARS: ReadonlySet<string> = new Set([
+  '"',
+  "\\",
+  "/",
+  "b",
+  "f",
+  "n",
+  "r",
+  "t",
+  "u",
+]);
+
+/**
  * Extract the most likely JSON payload from a provider text response.
  *
  * Order of attempts (mirrors the fence-closure guard in src/render/raw-output.ts):
@@ -21,7 +42,16 @@ export function extractJsonBlock(rawText: string): unknown {
   }
 
   const fenceBody = extractJsonFenceBody(rawText);
-  const fencedAttempt = tryParseJson(fenceBody);
+  // Repair the fence body before trying to parse it: the body may
+  // contain literal control characters (from SSE delta accumulation,
+  // where each delta's `\n` was decoded to a real newline) or stray
+  // `\X` sequences (from markdown prose the model wrote unescaped).
+  // The repair pass is the same balanced-walk used by the
+  // balanced-object fallback below — applied here so the cheaper
+  // fence path doesn't fall through unnecessarily on SSE-shaped
+  // input.
+  const repairedFenceBody = repairJsonStringLiterals(fenceBody);
+  const fencedAttempt = tryParseJson(repairedFenceBody);
   if (fencedAttempt !== undefined) {
     return fencedAttempt;
   }
@@ -97,7 +127,18 @@ export function extractJsonFenceBody(rawText: string): string {
       // balanced-object fallback) can try other shapes.
     }
   }
-  return body ?? rawText;
+  if (body === undefined) {
+    return rawText;
+  }
+  // Run the JSON-string escape-repair pass on the extracted body. The
+  // body may contain literal control characters (from SSE delta
+  // accumulation, where each delta's `\n` was decoded to a real
+  // newline) or stray `\X` sequences (from markdown prose that the
+  // model wrote unescaped). Without this pass, `tryParseJson(body)`
+  // rejects with "Bad control character" or "Bad escaped character"
+  // and the parser falls through to the slower balanced-object
+  // fallback — which then has to repeat the same repair work.
+  return repairJsonStringLiterals(body);
 }
 
 /**
@@ -105,17 +146,19 @@ export function extractJsonFenceBody(rawText: string): string {
  * braces and quoted strings (including \" escapes). Returns null when no
  * balanced object can be found.
  *
- * Returns a JSON-safe substring with literal control characters (newlines,
- * tabs, carriage returns) inside JSON strings escaped to their JSON-escape
- * equivalents (`\n`, `\t`, `\r`). This is required for parser robustness
- * because some provider streaming formats (notably SSE `response.output_text.delta`
- * events) JSON-encode delta values such that the JSON-escape for newline
- * (`\n`) becomes a literal newline in the SSE data line source — and the
- * SSE protocol treats that newline as a line break. After concatenating
- * fragments, the result contains literal newlines inside what should be
- * JSON strings, which makes the substring invalid JSON. This function walks
- * the balanced substring and escapes those control characters back to their
- * JSON-escape equivalents so the result is valid JSON.
+ * Returns a JSON-safe substring with two repairs applied:
+ *   1. Literal control characters inside JSON strings (`\n \r \t \b \f`)
+ *      are escaped to their 2-char JSON-escape equivalents. This handles
+ *      SSE delta concatenation, where each delta's `\n` was decoded
+ *      to a real newline when the SSE payload was JSON-parsed.
+ *   2. Stray `\X` sequences inside JSON strings where X is NOT a valid
+ *      JSON escape char (`"`/`\`/`/`/`b`/`f`/`n`/`r`/`t`/`u`) are
+ *      double-escaped so JSON.parse sees `\\X` → `\X` in the parsed
+ *      output. Models writing markdown prose sometimes produce
+ *      `` \` ``, `\:`, `\,`, `\.`, `\'` inside JSON body fields;
+ *      these would otherwise reject with "Bad escaped character in
+ *      JSON" (live evidence: PR #24 self-review run 28898948220,
+ *      body 20,691 chars, fail at position 13115).
  *
  * Newlines/tabs OUTSIDE strings (structural whitespace between fields) are
  * preserved — they're already valid JSON whitespace.
@@ -208,7 +251,21 @@ export function extractFirstBalancedObject(rawText: string): string | null {
     const char = substring.charAt(index);
     if (inString) {
       if (escape) {
-        segments.push(char);
+        // Validate the escape sequence: only `" \ / b f n r t u` are
+        // valid JSON escapes. Models writing markdown prose sometimes
+        // emit stray `\X` sequences (`` \` ``, `\:`, `\,`, `\.`, etc.)
+        // which JSON.parse rejects with "Bad escaped character in
+        // JSON". Double-escape the invalid form so the parsed output
+        // preserves the literal `\` + char the model intended.
+        //
+        // The `\` itself was already pushed when `escape` was set on
+        // the previous iteration; here we only emit the second
+        // character (or `\\` + char for the invalid case).
+        if (!VALID_JSON_ESCAPE_CHARS.has(char)) {
+          segments.push("\\" + char);
+        } else {
+          segments.push(char);
+        }
         escape = false;
         continue;
       }
@@ -280,6 +337,174 @@ export function extractFirstBalancedObject(rawText: string): string | null {
   }
 
   return segments.join("");
+}
+
+/**
+ * Walk `text` (a balanced JSON document — object or array) and return
+ * a JSON-safe copy where:
+ *   - literal control characters inside JSON strings (`\n \r \t \b \f`)
+ *     are escaped to their 2-char JSON-escape equivalents
+ *   - stray `\X` sequences inside JSON strings (where X is NOT a valid
+ *     JSON escape char: `"`, `\`, `/`, `b`, `f`, `n`, `r`, `t`, `u`)
+ *     are double-escaped so JSON.parse sees `\\X` → `\X` in the
+ *     parsed output. Without this, models writing markdown prose
+ *     that contains `\.`, `\:`, `\,`, `\'`, `` \` ``, etc. produce
+ *     valid JSON to a human reader but invalid JSON to JSON.parse,
+ *     which fails with "Bad escaped character in JSON" and triggers
+ *     the parse-fail fallback.
+ *   - stray `"` inside a string (model forgot to escape a quote) is
+ *     escaped to `\"` so JSON.parse keeps the string open and can
+ *     parse the outer object.
+ *
+ * Structural whitespace OUTSIDE strings (newlines/tabs between fields)
+ * is preserved unchanged — that's already valid JSON whitespace.
+ *
+ * Uses the same peek-ahead logic for stray-quote disambiguation as
+ * `extractFirstBalancedObject`'s second pass; in fact this helper is
+ * the same code, factored out so the fence-body path doesn't have to
+ * duplicate it.
+ *
+ * Returns `text` unchanged when it doesn't contain a balanced object
+ * or array — the caller can fall through to the balanced-object
+ * fallback.
+ */
+function repairJsonStringLiterals(text: string): string {
+  const startIndex = text.indexOf("{") === -1 ? text.indexOf("[") : text.indexOf("{");
+  if (startIndex === -1) {
+    return text;
+  }
+
+  // Find the end index of the balanced top-level object/array.
+  let endIndex = -1;
+  let depth = 0;
+  let inString = false;
+  let escape = false;
+  for (let index = startIndex; index < text.length; index += 1) {
+    const char = text[index];
+    if (char === undefined) break;
+    if (inString) {
+      if (escape) {
+        escape = false;
+        continue;
+      }
+      if (char === "\\") {
+        escape = true;
+        continue;
+      }
+      if (char === '"') {
+        // Use the same stray-quote peek-ahead as extractFirstBalancedObject.
+        const nextNonWs = peekNextNonWhitespace(text, index + 1);
+        if (
+          nextNonWs === -1 ||
+          nextNonWs === ",".charCodeAt(0) ||
+          nextNonWs === "}".charCodeAt(0) ||
+          nextNonWs === "]".charCodeAt(0) ||
+          nextNonWs === ":".charCodeAt(0)
+        ) {
+          inString = false;
+        }
+        continue;
+      }
+      continue;
+    }
+    if (char === '"') {
+      inString = true;
+      continue;
+    }
+    if (char === "{" || char === "[") {
+      depth += 1;
+      continue;
+    }
+    if (char === "}" || char === "]") {
+      depth -= 1;
+      if (depth === 0) {
+        endIndex = index;
+        break;
+      }
+    }
+  }
+  if (endIndex === -1) {
+    return text;
+  }
+
+  // Second pass: walk the balanced substring and emit a repaired copy.
+  const substring = text.slice(startIndex, endIndex + 1);
+  const segments: string[] = [];
+  inString = false;
+  escape = false;
+  for (let index = 0; index < substring.length; index += 1) {
+    const char = substring.charAt(index);
+    if (inString) {
+      if (escape) {
+        // Validate that the escape sequence is one JSON.parse accepts.
+        // Any other character following `\` is an invalid escape
+        // (e.g. `` \` ``, `\:`, `\,` from markdown prose); double-
+        // escape it to `\\X` so JSON.parse sees a literal backslash
+        // followed by the character in the parsed output, which is
+        // what the model most likely intended.
+        //
+        // The `\` itself was already pushed when `escape` was set on
+        // the previous iteration; here we only push the second
+        // character of the (possibly double-escaped) sequence.
+        if (!VALID_JSON_ESCAPE_CHARS.has(char)) {
+          segments.push("\\" + char);
+        } else {
+          segments.push(char);
+        }
+        escape = false;
+        continue;
+      }
+      if (char === "\\") {
+        segments.push(char);
+        escape = true;
+        continue;
+      }
+      if (char === '"') {
+        const nextNonWs = peekNextNonWhitespace(substring, index + 1);
+        if (
+          nextNonWs === -1 ||
+          nextNonWs === ",".charCodeAt(0) ||
+          nextNonWs === "}".charCodeAt(0) ||
+          nextNonWs === "]".charCodeAt(0) ||
+          nextNonWs === ":".charCodeAt(0)
+        ) {
+          segments.push(char);
+          inString = false;
+          continue;
+        }
+        segments.push('\\"');
+        continue;
+      }
+      if (char === "\n") {
+        segments.push("\\n");
+        continue;
+      }
+      if (char === "\r") {
+        segments.push("\\r");
+        continue;
+      }
+      if (char === "\t") {
+        segments.push("\\t");
+        continue;
+      }
+      if (char === "\b") {
+        segments.push("\\b");
+        continue;
+      }
+      if (char === "\f") {
+        segments.push("\\f");
+        continue;
+      }
+      segments.push(char);
+      continue;
+    }
+    if (char === '"') {
+      inString = true;
+    }
+    segments.push(char);
+  }
+
+  return text.slice(0, startIndex) + segments.join("") + text.slice(endIndex + 1);
 }
 
 /**
