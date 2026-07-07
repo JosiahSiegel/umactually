@@ -52,6 +52,12 @@ steps:
   - script: npm ci
     displayName: Install dependencies
 
+  - script: bash scripts/ci-validate.sh
+    displayName: Run CI validation suite
+    # Validation step delegates to scripts/ci-validate.sh so this
+    # example pipeline runs the same typecheck + test + bundle +
+    # freshness gates as the root azure-pipelines.yml.
+
   - script: bash scripts/prepare-azure-pr-inputs.sh
     displayName: Prepare Azure PR inputs
     # Prepare step delegates to scripts/prepare-azure-pr-inputs.sh so this

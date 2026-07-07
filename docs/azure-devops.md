@@ -7,7 +7,7 @@ UmActually runs on Azure DevOps through the bundled CLI. The repository now has 
 The root pipeline is intentionally safe for both PR validation and manual branch runs:
 
 1. Uses Node 24 and installs dependencies with `npm ci`.
-2. Runs `npm run typecheck` and `npm test -- --run`.
+2. Runs [`scripts/ci-validate.sh`](../scripts/ci-validate.sh), which performs the full CI validation suite: `npm run typecheck`, `npm test -- --run`, `npm run bundle`, and `npm run check:dist-freshness`. The example pipeline at [`examples/azure/azure-pipelines.yml`](../examples/azure/azure-pipelines.yml) invokes the same script so both pipelines share one implementation of the validation gates.
 3. Creates `artifacts/manual` and writes Azure-compatible input files.
 4. On PR validation runs, fetches the PR payload and diff with `$(System.AccessToken)` and real Azure PR metadata.
 5. On manual non-PR runs, writes a synthetic Azure event, diff, and review payload so the CLI still executes without `SYSTEM_PULLREQUEST_PULLREQUESTID`.
