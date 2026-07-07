@@ -213,10 +213,19 @@ describe("check-self-review-output.mjs (subprocess)", () => {
     expect(outputOf(result)).toMatch(/reconcileVerdictForEmptySeverityCounts/u);
   });
 
-  it("returns exit 0 for NEEDS_FIX review when suppressed comments exist (off-diff findings can back the verdict)", () => {
+  it("returns exit 4 for NEEDS_FIX review with 0 inline findings even when suppressed comments exist (the contradiction class is about the inline count, not the suppressed count)", () => {
     // Given: the model emitted NEEDS_FIX and 2 comments were
-    // suppressed as off-diff. The verdict has backing — the runner
-    // is not blocking the PR on a phantom review.
+    // suppressed as off-diff, but ZERO findings were posted inline.
+    // Earlier versions of this guard required suppressedCommentCount
+    // === 0 too — but the GitHub/Azure review-event mapping only
+    // looks at inline findings (off-diff findings live in a separate
+    // summary callout, not in the diff review). A NEEDS_FIX verdict
+    // with zero inline findings is still contradictory because the
+    // blocking state (REQUEST_CHANGES / pending) is set on the empty
+    // inline review. PR #18 self-review (model comment after the
+    // first fix) caught this: the runner's experience is "nothing on
+    // the diff to look at", regardless of how many off-diff
+    // findings exist.
     const result = runGuard({
       s1: JSON.stringify({
         event: "REQUEST_CHANGES",
@@ -229,8 +238,9 @@ describe("check-self-review-output.mjs (subprocess)", () => {
       }),
     });
 
-    expect(result.status).toBe(0);
-    expect(outputOf(result)).toContain("[OK]");
+    expect(result.status).toBe(4);
+    expect(outputOf(result)).toContain("[FAIL]");
+    expect(outputOf(result)).toMatch(/contradictory-review/u);
   });
 
   it("returns exit 1 when no artifacts are present (catch-all)", () => {

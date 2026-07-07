@@ -134,19 +134,28 @@ function classify(content) {
     };
   }
 
-  // Contradiction class: blocking verdict (NEEDS_FIX) with zero
-  // findings AND no suppressed comments. The action would have set
-  // the GitHub review event to REQUEST_CHANGES (or the Azure PR
-  // status to pending) for a review that posts zero findings — a
-  // regression that the verdict reconciliation in
-  // src/util/verdict.ts:reconcileVerdictForEmptySeverityCounts is
-  // meant to prevent. If this guard fires, either the reconciliation
+  // Contradiction class: blocking verdict (NEEDS_FIX) with zero inline
+  // findings. The action would have set the GitHub review event to
+  // REQUEST_CHANGES (or the Azure PR status to pending) for a review
+  // that posts zero findings — a regression that the verdict
+  // reconciliation in src/util/verdict.ts:reconcileVerdictForEmptySeverityCounts
+  // is meant to prevent. If this guard fires, either the reconciliation
   // regressed or a new verdict-mapping path bypassed it; either way,
   // refuse to green-check the workflow.
   //
   // This check runs BEFORE the low-signal fallback below because
   // NEEDS_FIX + zero findings IS the contradictory case — it must
   // not be silently downgraded to a warning.
+  //
+  // Note: suppressedCommentCount is intentionally NOT in this check's
+  // guard. Off-diff findings live in a separate summary callout, not
+  // in the diff review comments; a NEEDS_FIX verdict with off-diff
+  // findings but zero inline findings still has nothing actionable on
+  // the diff for a human reviewer to look at, and the GitHub/Azure
+  // review-event / PR-status mappings will still set the blocking
+  // state for an empty inline review. The contradiction is about the
+  // PR reviewer's experience at the diff, not the model's broader
+  // analysis.
   //
   // PR #18 self-review posted exactly this contradiction (model
   // emitted NEEDS_FIX, all 5 findings filtered out by --minimum-severity
@@ -155,16 +164,12 @@ function classify(content) {
   // low-signal reviews as warnings. After this fix, that class is a
   // hard [FAIL].
   const upperVerdict = verdict.toUpperCase();
-  if (
-    upperVerdict === "NEEDS_FIX" &&
-    totalFindings === 0 &&
-    suppressedCommentCount === 0
-  ) {
+  if (upperVerdict === "NEEDS_FIX" && totalFindings === 0) {
     return {
       ok: false,
       reason:
-        "contradictory-review: verdict=NEEDS_FIX with 0 inline findings and 0 suppressed comments " +
-        "(a blocking verdict must have findings to back it up; check " +
+        "contradictory-review: verdict=NEEDS_FIX with 0 inline findings " +
+        "(a blocking verdict must have inline findings to back it up; check " +
         "src/util/verdict.ts:reconcileVerdictForEmptySeverityCounts)",
       event,
       verdict,
@@ -227,27 +232,27 @@ for (const relativePath of ARTIFACTS) {
       `[FAIL] ${relativePath}: ${result.reason} ` +
         `(event=${result.event} verdict=${result.verdict} threads=${result.inlineThreadCount} parseFailed=${result.parseFailed ?? false})`,
     );
-// Map the failure reason to a specific exit code so callers (CI,
-//    operators reading logs) can distinguish the failure modes:
-//    - "not-valid-json" → exit 1 (artifact exists but is malformed JSON;
-//      likely a writer bug or partial write).
-//    - any parse-fail signal → exit 2 (the canonical regression class:
-//      the action posted a parse-fail card and CI should fail-fast).
-//    - "contradictory-review" → exit 4 (NEEDS_FIX verdict with zero
-//      findings and zero suppressed comments — a blocking verdict
-//      that has nothing to block on; verdict reconciliation in
-//      src/util/verdict.ts is the primary defense).
-//    - default → exit 3 (catch-all for any future classifier branch
-//      that returns ok: false without mapping to a specific code).
-   if (result.reason === "not-valid-json") {
-     exitCode = 1;
-   } else if (result.reason.startsWith("parse-fail")) {
-     exitCode = 2;
-   } else if (result.reason.startsWith("contradictory-review")) {
-     exitCode = 4;
-   } else {
-     exitCode = 3;
-   }
+    // Map the failure reason to a specific exit code so callers (CI,
+    // operators reading logs) can distinguish the failure modes:
+    //   - "not-valid-json" → exit 1 (artifact exists but is malformed JSON;
+    //     likely a writer bug or partial write).
+    //   - any parse-fail signal → exit 2 (the canonical regression class:
+    //     the action posted a parse-fail card and CI should fail-fast).
+    //   - "contradictory-review" → exit 4 (NEEDS_FIX verdict with zero
+    //     findings — a blocking verdict that has nothing to block on;
+    //     verdict reconciliation in src/util/verdict.ts is the primary
+    //     defense).
+    //   - default → exit 3 (catch-all for any future classifier branch
+    //     that returns ok: false without mapping to a specific code).
+    if (result.reason === "not-valid-json") {
+      exitCode = 1;
+    } else if (result.reason.startsWith("parse-fail")) {
+      exitCode = 2;
+    } else if (result.reason.startsWith("contradictory-review")) {
+      exitCode = 4;
+    } else {
+      exitCode = 3;
+    }
     continue;
   }
   console.log(

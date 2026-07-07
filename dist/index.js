@@ -3277,13 +3277,25 @@ function mergeReviewResults(outcomes, options) {
     const truncatedComments = sortedComments.slice(0, maxComments);
     const sortedSuppressed = [...dedupedSuppressed.values()].sort((a, b) => a.path.localeCompare(b.path));
     // MERGE-5: pick worst verdict.
+    //
+    // Apply the same severity-counts reconciliation that the live path
+    // uses (see src/util/verdict.ts:reconcileVerdictForEmptySeverityCounts)
+    // BEFORE ranking, so a chunk whose NEEDS_FIX verdict was backed only
+    // by findings that the severity filter dropped doesn't pollute the
+    // "worst verdict" pick with a contradictory blocking verdict.
+    // Without this, the merge path could re-introduce the same
+    // "NEEDS_FIX + 0 inline findings" contradiction the live path's
+    // preparePostedReview reconciliation prevents — even if every individual
+    // chunk ran preparePostedReview correctly. PR #18 self-review comment
+    // caught this regression class.
     let worstVerdict = "";
     let worstRank = -1;
     for (const outcome of outcomes) {
-        const rank = verdictRank(outcome.review.verdict);
+        const reconciledVerdict = reconcileVerdictForEmptySeverityCounts(outcome.review.verdict, countBySeverity(outcome.review.comments));
+        const rank = verdictRank(reconciledVerdict);
         if (rank > worstRank) {
             worstRank = rank;
-            worstVerdict = outcome.review.verdict;
+            worstVerdict = reconciledVerdict;
         }
     }
     // MERGE-6: pick the best summary across all chunk outcomes.
@@ -8631,16 +8643,31 @@ async function dispatchLivePlatform(input) {
         case "azure": {
             // Forward --pr-number (when supplied) to the Azure context reader so
             // manual CLI invocations work without synthesising
-            // SYSTEM_PULLREQUEST_PULLREQUESTID. The flag is validated at the
-            // CLI boundary (see src/cli/validate.ts); we re-parse here so the
-            // typed AzureContext receives a guaranteed-positive integer or
-            // undefined (which falls back to the env var path).
+            // SYSTEM_PULLREQUEST_PULLREQUESTID. The CLI boundary validates the
+            // flag (see src/cli/validate.ts), but we re-parse here because:
+            //   (1) readAzureContext is also callable directly from tests and
+            //       future internal call sites that bypass the CLI boundary, so
+            //       re-validating here keeps the invariant local to the context
+            //       reader.
+            //   (2) Silent fallback to the env var when the flag is invalid
+            //       would mask a real user mistake (typo on the command line,
+            //       shell quoting bug, etc.) by appearing to "work" with the
+            //       env-var value while ignoring the flag. Better to surface
+            //       the failure loudly than to silently do the wrong thing.
+            //   (3) Number.parseInt("42abc") returns 42 (the legacy
+            //       Number.parseInt trap). Use Number() which returns NaN for
+            //       non-numeric strings — NaN fails isSafeInteger, which we
+            //       surface as an error rather than dropping the override.
             let azurePrNumberOverride = undefined;
             if (parsed.prNumber !== null) {
-                const candidate = Number.parseInt(parsed.prNumber, 10);
-                if (Number.isSafeInteger(candidate) && candidate > 0) {
-                    azurePrNumberOverride = candidate;
+                const candidate = Number(parsed.prNumber);
+                if (!Number.isFinite(candidate) || !Number.isInteger(candidate) || candidate <= 0) {
+                    throw new Error(`Azure CLI flag --pr-number must be a positive integer (got ${JSON.stringify(parsed.prNumber)}).`);
                 }
+                if (!Number.isSafeInteger(candidate)) {
+                    throw new Error(`Azure CLI flag --pr-number must be a safe integer (got ${candidate}).`);
+                }
+                azurePrNumberOverride = candidate;
             }
             const context = readAzureContext(env, { prNumber: azurePrNumberOverride });
             const diffText = await fetchAzurePrDiff(context, fetchImpl);
