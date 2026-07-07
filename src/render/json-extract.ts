@@ -154,6 +154,11 @@ export function extractFirstBalancedObject(rawText: string): string | null {
         // resulting textPayload). Treat the latter as a stray quote
         // — stay inside the string so the depth tracker keeps
         // working AND escape it in the second pass.
+        //
+        // Note: `"` is NOT a structural JSON character so we don't
+        // include it in the close-quote set. If we did, a stray
+        // `"` followed by another `"` (e.g. `body: "value" "next":`)
+        // would be misclassified as a closing quote.
         const nextNonWs = peekNextNonWhitespace(rawText, index + 1);
         if (
           nextNonWs === -1 ||
