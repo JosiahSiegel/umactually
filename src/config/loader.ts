@@ -38,7 +38,8 @@ import type {
 // Loader-only defaults that have no field-schema entry. Kept local so the
 // schema remains the canonical source for any value that ships through
 // the CLI / action / env surfaces.
-const DEFAULT_MINIMUM_SEVERITY: Severity = "minor";
+// Keep aligned with field-schema.ts and action.yml's `minimum-severity` default.
+const DEFAULT_MINIMUM_SEVERITY: Severity = parseSeverityFromUnknown("medium", "severity.minimum");
 const DEFAULT_PLATFORM: Platform = "auto";
 const DEFAULT_PROVIDER_URL = "https://api.openai.com/v1";
 
@@ -95,13 +96,11 @@ export async function loadConfigFromSources(sources: LoadConfigSources): Promise
     ),
   };
 
-  const ignoreMinor = pickBool(cli.ignoreMinor, inputs.ignoreMinor, env.ignoreMinor, false, "severity.ignoreMinor");
   const minimumRaw = pickRawString(cli.minimumSeverity, inputs.minimumSeverity, env.minimumSeverity);
   const minimum: Severity = minimumRaw === undefined
     ? DEFAULT_MINIMUM_SEVERITY
     : parseSeverityFromUnknown(minimumRaw, "severity.minimum");
   const severity: SeverityControls = {
-    ignoreMinor,
     minimum,
     maxComments: pickInt(cli.maxComments, inputs.maxComments, env.maxComments, DEFAULT_MAX_COMMENTS, "severity.maxComments"),
   };
