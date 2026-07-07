@@ -195,32 +195,52 @@ describe("extractJsonBlock: robustness to literal control chars in JSON strings"
   });
 
   it("repairs stray `\\u` followed by non-hex (invalid unicode escape)", () => {
-    // `\u` requires exactly 4 hex digits. `\uZZZZ` is invalid JSON
-    // and JSON.parse rejects with "Bad escaped character in JSON"
-    // or "Invalid unicode escape". The fix double-escapes `\u`
-    // (which is in VALID_JSON_ESCAPE_CHARS, so it should NOT be
-    // double-escaped) — but the FOLLOWING non-hex chars need
-    // handling. This test pins the current behavior: a `\u` with
-    // non-hex following chars is still a parse failure (the fix
-    // only handles single-char invalid escapes, not 4-hex unicode).
+    // REPRO: PR #24 self-review (run 28900452753) failed with
+    // "Bad Unicode escape in JSON at position 4157". The model
+    // emitted `\u` followed by something that isn't 4 hex digits
+    // (truncated `\u00`, or `\uXYZW`, or `\u000G`). JSON.parse
+    // rejects with "Bad Unicode escape in JSON". Fix: when the
+    // escape-conversion walker sees `\u`, peek 4 chars ahead —
+    // if any isn't hex, double-escape the `\u` so the parsed
+    // output preserves the literal sequence.
     //
-    // If the model emits something like `\uFOOO` (with letters), the
-    // `\u` passes through as a valid escape char, then `F` (not
-    // hex) follows. JSON.parse sees `\uF` and rejects.
-    //
-    // We don't try to repair this — the model would have to produce
-    // valid 4-hex for unicode escapes. This test exists to pin the
-    // limitation so a future refactor doesn't claim to handle it.
-    const input = '{"body":"with \\uFOOO bad escape"}';
-    const result = extractFirstBalancedObject(input);
-    // The fix doesn't change this case (the `\u` IS in VALID_JSON_ESCAPE_CHARS).
-    // Result is whatever extractFirstBalancedObject returns, and
-    // JSON.parse may still fail. We accept either outcome but assert
-    // the helper doesn't throw.
-    if (result !== null) {
-      try { JSON.parse(result); } catch { /* known limitation */ }
+    // JS source note: in a single-quoted JS literal `\\` is one
+    // backslash, so the runtime input contains `\u` followed by
+    // 4 chars inside the JSON body field — exactly what triggers
+    // the parser failure.
+    const cases = [
+      { from: "with \\u00 truncated", expected: "with \\u00 truncated" },
+      { from: "with \\uXYZW non-hex", expected: "with \\uXYZW non-hex" },
+      { from: "with \\u000G bad 4th", expected: "with \\u000G bad 4th" },
+    ];
+    for (const { from, expected } of cases) {
+      const input = `{"body":"${from}"}`;
+      const result = extractFirstBalancedObject(input);
+      expect(result, `input: ${input}`).not.toBeNull();
+      if (result !== null) {
+        const parsed = JSON.parse(result) as { body: string };
+        expect(parsed.body, `input: ${from}`).toBe(expected);
+      }
     }
-    expect(result).not.toBeNull();
+  });
+
+  it("preserves valid `\\uXXXX` escapes through the repair pass", () => {
+    // The fix must NOT over-escape valid 4-hex unicode escapes.
+    // `\u0041` decodes to 'A', `\u00e9` to 'é', etc.
+    const cases = [
+      { from: "letter A: \\u0041", expected: "letter A: A" },
+      { from: "é: \\u00e9", expected: "é: é" },
+      { from: "0xFFFD: \\uFFFD", expected: "0xFFFD: \uFFFD" },
+    ];
+    for (const { from, expected } of cases) {
+      const input = `{"body":"${from}"}`;
+      const result = extractFirstBalancedObject(input);
+      expect(result, `input: ${input}`).not.toBeNull();
+      if (result !== null) {
+        const parsed = JSON.parse(result) as { body: string };
+        expect(parsed.body, `input: ${from}`).toBe(expected);
+      }
+    }
   });
 
   it("preserves all valid JSON escape sequences through the repair pass", () => {

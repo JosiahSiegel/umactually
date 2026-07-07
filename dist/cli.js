@@ -5184,6 +5184,28 @@ const VALID_JSON_ESCAPE_CHARS = new Set([
     "u",
 ]);
 /**
+ * True when `substring[index..index+4]` is exactly 4 ASCII hex digits
+ * (0-9, a-f, A-F). Used to validate `\uXXXX` unicode escapes — JSON.parse
+ * requires exactly 4 hex digits and rejects `\u` followed by anything
+ * else with "Bad Unicode escape in JSON".
+ *
+ * Returns false if the substring ends before index+4 (truncated input
+ * is also a parse failure).
+ */
+function isHexQuadAt(substring, index) {
+    if (index + 4 > substring.length)
+        return false;
+    for (let i = 0; i < 4; i += 1) {
+        const c = substring.charCodeAt(index + i);
+        const isDigit = c >= 0x30 && c <= 0x39; // 0-9
+        const isLowerHex = c >= 0x61 && c <= 0x66; // a-f
+        const isUpperHex = c >= 0x41 && c <= 0x46; // A-F
+        if (!isDigit && !isLowerHex && !isUpperHex)
+            return false;
+    }
+    return true;
+}
+/**
  * Extract the most likely JSON payload from a provider text response.
  *
  * Order of attempts (mirrors the fence-closure guard in src/render/raw-output.ts):
@@ -5403,16 +5425,21 @@ function extractFirstBalancedObject(rawText) {
         if (inString) {
             if (escape) {
                 // Validate the escape sequence: only `" \ / b f n r t u` are
-                // valid JSON escapes. Models writing markdown prose sometimes
-                // emit stray `\X` sequences (`` \` ``, `\:`, `\,`, `\.`, etc.)
-                // which JSON.parse rejects with "Bad escaped character in
-                // JSON". Double-escape the invalid form so the parsed output
-                // preserves the literal `\` + char the model intended.
+                // valid single-char JSON escapes, AND `\u` requires exactly
+                // 4 hex digits. Models writing markdown prose sometimes
+                // emit stray `\X` sequences (`` \` ``, `\:`, `\,`, `\.`,
+                // etc.) which JSON.parse rejects with "Bad escaped
+                // character in JSON", or partial `\uXXXX` sequences
+                // (`\u00`, `\uXYZW`) rejected with "Bad Unicode escape in
+                // JSON". Double-escape the invalid form so the parsed
+                // output preserves the literal sequence the model wrote.
                 //
                 // The `\` itself was already pushed when `escape` was set on
                 // the previous iteration; here we only emit the second
                 // character (or `\\` + char for the invalid case).
-                if (!VALID_JSON_ESCAPE_CHARS.has(char)) {
+                const isInvalidSingleChar = !VALID_JSON_ESCAPE_CHARS.has(char);
+                const isInvalidUnicodeEscape = char === "u" && !isHexQuadAt(substring, index + 1);
+                if (isInvalidSingleChar || isInvalidUnicodeEscape) {
                     segments.push("\\" + char);
                 }
                 else {
@@ -5582,16 +5609,29 @@ function repairJsonStringLiterals(text) {
         if (inString) {
             if (escape) {
                 // Validate that the escape sequence is one JSON.parse accepts.
-                // Any other character following `\` is an invalid escape
-                // (e.g. `` \` ``, `\:`, `\,` from markdown prose); double-
-                // escape it to `\\X` so JSON.parse sees a literal backslash
-                // followed by the character in the parsed output, which is
-                // what the model most likely intended.
+                // Two failure modes to handle:
+                //
+                //   1. `\` followed by a char outside the valid set
+                //      (`"`/`\`/`/`/`b`/`f`/`n`/`r`/`t`/`u`) — e.g.
+                //      `` \` ``, `\:`, `\,`, `\.`, `\'` from markdown
+                //      prose. JSON.parse rejects with "Bad escaped
+                //      character". Fix: double-escape the whole sequence
+                //      to `\\X` so JSON.parse sees a literal backslash +
+                //      char in the parsed output.
+                //
+                //   2. `\u` followed by anything that isn't 4 hex digits
+                //      (e.g. truncated `\u00`, `\uXYZW`, `\u000G`) —
+                //      JSON.parse rejects with "Bad Unicode escape in
+                //      JSON". Fix: same — double-escape `\u` to `\\u` so
+                //      JSON.parse sees the literal sequence in the
+                //      parsed output.
                 //
                 // The `\` itself was already pushed when `escape` was set on
                 // the previous iteration; here we only push the second
                 // character of the (possibly double-escaped) sequence.
-                if (!VALID_JSON_ESCAPE_CHARS.has(char)) {
+                const isInvalidSingleChar = !VALID_JSON_ESCAPE_CHARS.has(char);
+                const isInvalidUnicodeEscape = char === "u" && !isHexQuadAt(substring, index + 1);
+                if (isInvalidSingleChar || isInvalidUnicodeEscape) {
                     segments.push("\\" + char);
                 }
                 else {
