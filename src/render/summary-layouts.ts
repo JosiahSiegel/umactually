@@ -283,41 +283,40 @@ function severityEmoji(level: string): string {
 /**
  * Severity cell for GFM-table rows.
  *
- * Returns emoji + non-breaking-space + text label. The cell is
- * treated as one inline token (no break opportunity between the
- * glyph and the label) by GitHub's GFM renderer, so the emoji
- * never drops to a second line on its own.
+ * Returns the colored-circle emoji ONLY — no text label. Rationale:
  *
- * The label itself can still wrap mid-word when the column is
- * narrower than "Medium" (~70px) because:
- *   - GitHub's table CSS uses `word-wrap: anywhere` (verified via
- *     DOM inspection: `getComputedStyle(td).wordWrap === "anywhere"`),
- *     which character-breaks any unbreakable token that overflows.
- *   - The html-pipeline sanitizer strips `style` attributes from
- *     `<span>` inside markdown table cells, so
- *     `<span style="white-space: nowrap">…</span>` survives as a
- *     bare `<span>` with no typography override.
- *   - Per-character `&nbsp;` works but creates visible letter
- *     spacing ("M e d i u m").
+ *   GitHub's GFM table cells use `word-wrap: anywhere` (verified via
+ *   `getComputedStyle(td).wordWrap === "anywhere"` on PR #20's
+ *   rendered output), and the html-pipeline sanitizer strips
+ *   `style` from `<span>` so `<span style="white-space: nowrap">`
+ *   survives as a bare `<span>` with no typography override. The
+ *   only reliable way to prevent character-wrap inside a Severity
+ *   cell at narrow viewports (~70px at GitHub's mobile breakpoint)
+ *   is to keep the cell content narrow enough that wrap never
+ *   triggers — a single emoji glyph (~18px) is the only content
+ *   that's safe.
  *
- * Callers must therefore ensure the Severity column is wide enough
- * to hold `🟠&nbsp;Medium` (≈90px at GitHub's default font). The
- * severity-table layout achieves this by dropping the Category
- * column (Category is already announced in every inline review
- * comment body as a leading `\`category\`` token) and reverting
- * to a 4-column `# | Severity | File:Line | Title` shape with an
- * 80-char title snippet — matching the dashboard's 🔝 Top findings
- * table that already renders correctly at every viewport.
+ *   The text label is not lost: every inline review comment body
+ *   already leads with `\`severity\` \`category\``, and the
+ *   severity-table summary line reads
+ *   `🟣 0 critical · 🔴 0 high · 🟠 5 medium · 🟡 0 low*` so the
+ *   label is announced in plain text adjacent to the table. The
+ *   colored emoji also survives Azure DevOps's no-color-font
+ *   fallback (different glyph shape per severity), keeping the
+ *   visual signal consistent across both platforms.
  *
- * History (see PR #20 review thread):
+ * History (see PR #20 review thread + screenshots 2026-07-07):
  *   - Plain emoji + space → wraps between glyph and label.
  *   - emoji + `&nbsp;` + label, 5-column table → wraps mid-word
- *     ("Mediu" / "m") because the Severity column is squeezed to
+ *     ("Mediu" / "m") because Severity column is squeezed to
  *     ~70px by the Category column.
- *   - emoji + `&nbsp;` + label, 4-column table → fits cleanly.
- *     The `&nbsp;` ensures the emoji↔label boundary is the
- *     tightest visual unit; the label wraps internally only if
- *     the column is forced below ~70px.
+ *   - emoji + `&nbsp;` + label, 4-column table (drop Category) →
+ *     STILL wraps at ~70px because "🟠 Medium" needs ~90px and
+ *     `word-wrap: anywhere` character-breaks any unbreakable
+ *     token that overflows even by 1px.
+ *   - emoji only → fits cleanly. Single glyph, single line,
+ *     every viewport. The label is announced in the summary line
+ *     and inline review bodies.
  *
  * Scope: GFM-table layouts (severity-table + dashboard's "🔝 Top
  * findings"). Inline layouts use `severityEmoji()` + `severityLabel()`
@@ -325,7 +324,7 @@ function severityEmoji(level: string): string {
  * no wrap risk.
  */
 function severityCell(level: string): string {
-  return `${severityEmoji(level)}&nbsp;${severityLabel(level)}`;
+  return severityEmoji(level);
 }
 
 /** Severity → short label used in compact rows. */
