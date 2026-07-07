@@ -479,7 +479,9 @@ describe("severity-table details", () => {
     }));
 
     const out = renderSummary("severity-table", data);
-    expect(out).toContain("| 1 | 🟠 Medium | general | `src/no-category.ts`:3 | Missing category. |");
+    // Emoji + &nbsp; + label so GitHub's GFM table renderer keeps the
+    // Severity column on a single line (see severityCell comment).
+    expect(out).toContain("| 1 | 🟠&nbsp;Medium | general | `src/no-category.ts`:3 | Missing category. |");
   });
 
   // Pin the cross-platform severity rendering. Each known severity emits
@@ -518,6 +520,32 @@ describe("severity-table details", () => {
     });
     const out = renderSummary("verdict-banner", data);
     expect(out).toContain("⚪");
+  });
+
+  it("GFM-table severity cells use &nbsp; so emoji + label stay on one line", () => {
+    // Regression: GitHub's GFM renderer wraps between the emoji glyph
+    // and the label when the Severity column is narrow. Verified via
+    // screenshot 2026-07-07 — the emoji and label were stacked on
+    // two lines in the severity-table layout. The fix is a U+00A0
+    // non-breaking space between them, which GitHub + Azure both
+    // honor inside table cells. This test pins the byte contract
+    // for every GFM-table layout that renders severity cells.
+    const data = makeData({
+      postedComments: [
+        { path: "src/x.ts", line: 1, body: "x", severity: "medium", category: "general" },
+        { path: "src/y.ts", line: 2, body: "y", severity: "critical", category: "general" },
+      ],
+    });
+    // severity-table is the default layout and the one captured in
+    // the screenshot.
+    const severityOut = renderSummary("severity-table", data);
+    expect(severityOut).toContain("🟠&nbsp;Medium");
+    expect(severityOut).toContain("🟣&nbsp;Critical");
+    // dashboard also has a "🔝 Top findings" GFM table that benefits
+    // from the same fix.
+    const dashboardOut = renderSummary("dashboard", data);
+    expect(dashboardOut).toContain("🟠&nbsp;Medium");
+    expect(dashboardOut).toContain("🟣&nbsp;Critical");
   });
 
   // CLARITY-19a (retired): the off-diff callout used to explain why the

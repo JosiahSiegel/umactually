@@ -280,6 +280,33 @@ function severityEmoji(level: string): string {
   }
 }
 
+/**
+ * Severity cell for table rows: emoji + non-breaking-space + label.
+ *
+ * GitHub's GFM table renderer treats the emoji glyph, the regular space,
+ * and the label as three separate tokens, so a narrow Severity column
+ * (which auto-sizes to fit the longest "🟠 Medium" or "🔴 Critical" in
+ * the table) wraps between the emoji and the label, stacking them on
+ * two lines. The Severity column auto-width plus the right-side table
+ * alignment on `Title` leaves the column barely wider than the emoji
+ * glyph itself, so the label below it is forced to wrap.
+ *
+ * The fix: a `&nbsp;` (U+00A0) between the emoji and label binds them
+ * into one non-breakable token. Both GitHub and Azure DevOps honor
+ * HTML entities inside table cells, so this works cross-platform.
+ * Verified via screenshot 2026-07-07: the emoji + label now renders
+ * on a single line in the Severity column of `layoutSeverityTable`.
+ *
+ * Scope: used by the GFM-table layouts where column auto-width forces
+ * the wrap (the severity-table + any future tabular layout). The
+ * inline layouts (verdict banner, summary prose, card grid) don't
+ * need this — the text flows inline and the emoji hugs the label
+ * naturally because there's no column boundary.
+ */
+function severityCell(level: string): string {
+  return `${severityEmoji(level)}&nbsp;${severityLabel(level)}`;
+}
+
 /** Severity → short label used in compact rows. */
 function severityLabel(level: string): string {
   switch (level.toLowerCase()) {
@@ -607,7 +634,7 @@ function layoutDashboard(data: ReviewData): string {
     sortedPosted(data).slice(0, 5).forEach((c, i) => {
       const title = collapseBody(c, data.secrets);
       const snippet = truncateSnippet(title, 80);
-      parts.push(`| ${i + 1} | ${severityEmoji(c.severity)} ${severityLabel(c.severity)} | \`${cell(c.path)}\`:${c.line} | ${cell(snippet)} |`);
+      parts.push(`| ${i + 1} | ${severityCell(c.severity)} | \`${cell(c.path)}\`:${c.line} | ${cell(snippet)} |`);
     });
     parts.push("");
   }
@@ -771,8 +798,13 @@ function layoutSeverityTable(data: ReviewData): string {
       // GitHub's ~680px PR comment container. 50 keeps the table's
       // max-content width near the container width so columns barely
       // compress. ADO's wider container is unaffected either way.
+      //
+      // The Severity cell uses `severityCell()` (emoji + &nbsp; + label)
+      // so GitHub's GFM table renderer keeps the emoji and label on a
+      // single line. Without the &nbsp;, the auto-sized Severity column
+      // wraps the label below the emoji, stacking them on two lines.
       const snippet = truncateSnippet(title, 50);
-      parts.push(`| ${i + 1} | ${severityEmoji(c.severity)} ${severityLabel(c.severity)} | ${cell(c.category ?? "general")} | \`${cell(c.path)}\`:${c.line} | ${cell(snippet)} |`);
+      parts.push(`| ${i + 1} | ${severityCell(c.severity)} | ${cell(c.category ?? "general")} | \`${cell(c.path)}\`:${c.line} | ${cell(snippet)} |`);
     });
   }
   parts.push("");
