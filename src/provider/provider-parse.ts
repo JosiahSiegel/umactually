@@ -8,9 +8,9 @@ import {
   readStringField,
   tryParseJson,
 } from "../util/json-guards.js";
-import type { ProviderEndpoint } from "./provider-error.js";
+import type { ProviderEndpoint, ProviderUsage } from "./provider-error.js";
 
-export type { ProviderEndpoint };
+export type { ProviderEndpoint, ProviderUsage };
 
 export type ProviderComment = {
   readonly path: string;
@@ -377,6 +377,121 @@ export function parseReviewPayload(
   }
 
   return { summary, verdict, comments, suppressed_comments };
+}
+
+/**
+ * True when the raw SSE stream ended before the model emitted the
+ * final `response.completed` (or `response.done`) event. Distinguishes
+ * "the stream was truncated" from "the stream completed but the JSON
+ * inside was malformed". Used by the parse-fail diagnostic so reviewers
+ * see "raise --max-output-tokens and retry" instead of a generic
+ * "provider response was not valid JSON".
+ *
+ * Detection is a substring check for the `response.completed` /
+ * `response.done` markers in the raw text. Both are recognized by
+ * `tryExtractSse` as the stream's terminal event; either one
+ * conclusively means the stream completed normally.
+ *
+ * Edge cases that intentionally return `false`:
+ *   - Non-SSE responses (chat-completions, plain JSON): there's no
+ *     stream-completion concept for a single-shot response, so
+ *     truncation only applies to streaming endpoints. Callers
+ *     should only check this on responses from `endpoint === "responses"`.
+ *   - Empty rawText: trivially not a truncated stream — the request
+ *     never produced any output.
+ *   - A response.completed event whose output_text was empty: still
+ *     a completed stream, just one whose model output was nothing.
+ *     `tryExtractSse` falls back to the delta accumulation in this
+ *     case but the stream itself terminated cleanly.
+ */
+export function wasResponseStreamTruncated(rawText: string): boolean {
+  if (rawText.length === 0) {
+    return false;
+  }
+  // Non-SSE responses (single-shot JSON from /chat/completions, plain
+  // JSON envelopes, etc.) aren't streams at all — "truncated" doesn't
+  // apply. The parse-fail path surfaces the generic malformed message
+  // for these. Detection is the same SSE-prefix check used by
+  // `extractTextPayload` (line 270) and `tryExtractSse` (line 803).
+  const trimmed = rawText.trimStart();
+  if (!trimmed.startsWith("data:") && !trimmed.startsWith("event:")) {
+    return false;
+  }
+  // The completed-event detection in `tryExtractSse` recognizes both
+  // "response.completed" and "response.done" as terminal events, so
+  // we mirror that here. The substring check is cheap and good enough:
+  // SSE event-type markers don't collide with review JSON content
+  // because they're quoted inside `data:` JSON payloads.
+  return !(
+    rawText.includes('"type":"response.completed"') ||
+    rawText.includes('"type":"response.done"')
+  );
+}
+
+/**
+ * Extract a `ProviderUsage` subset from the raw SSE stream's terminal
+ * `response.completed` event's `usage` block. Returns `undefined` when
+ * the stream was truncated (no completed event) or when the provider
+ * didn't emit a usage block. Used by the token-headroom warning so
+ * operators can see whether the model filled its `max_output_tokens`
+ * budget when a parse-fail occurs.
+ */
+export function parseProviderUsage(rawText: string): ProviderUsage | undefined {
+  if (!rawText.includes('"type":"response.completed"') && !rawText.includes('"type":"response.done"')) {
+    return undefined;
+  }
+  // The usage block lives inside the completed event's payload. We
+  // look for the first `"usage":{...}` substring and parse just that
+  // fragment — full SSE parsing is overkill for a diagnostic field.
+  const usageStart = rawText.indexOf('"usage":');
+  if (usageStart === -1) {
+    return undefined;
+  }
+  // Walk to the matching `}`, respecting nested braces but not string
+  // boundaries. Usage payloads are shallow enough (no nested objects
+  // beyond `input_tokens_details` / `output_tokens_details`) that a
+  // brace-counting walk is safe.
+  const objectStart = rawText.indexOf("{", usageStart);
+  if (objectStart === -1) {
+    return undefined;
+  }
+  let depth = 0;
+  let endIndex = -1;
+  for (let i = objectStart; i < rawText.length; i += 1) {
+    const ch = rawText[i];
+    if (ch === "{") {
+      depth += 1;
+    } else if (ch === "}") {
+      depth -= 1;
+      if (depth === 0) {
+        endIndex = i;
+        break;
+      }
+    }
+  }
+  if (endIndex === -1) {
+    return undefined;
+  }
+  try {
+    const parsed: unknown = JSON.parse(rawText.slice(objectStart, endIndex + 1));
+    if (!isRecord(parsed)) return undefined;
+    let inputTokens: number | undefined;
+    let outputTokens: number | undefined;
+    let totalTokens: number | undefined;
+    if (typeof parsed["input_tokens"] === "number") inputTokens = parsed["input_tokens"];
+    if (typeof parsed["output_tokens"] === "number") outputTokens = parsed["output_tokens"];
+    if (typeof parsed["total_tokens"] === "number") totalTokens = parsed["total_tokens"];
+    if (inputTokens === undefined && outputTokens === undefined && totalTokens === undefined) {
+      return undefined;
+    }
+    return {
+      ...(inputTokens !== undefined ? { input_tokens: inputTokens } : {}),
+      ...(outputTokens !== undefined ? { output_tokens: outputTokens } : {}),
+      ...(totalTokens !== undefined ? { total_tokens: totalTokens } : {}),
+    };
+  } catch {
+    return undefined;
+  }
 }
 
 /**

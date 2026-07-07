@@ -3,8 +3,10 @@ import {
   buildResponsesBody,
   extractTextPayload,
   isNonEmptyReview,
+  parseProviderUsage,
   PARSE_FAIL_RETRY_PROMPT,
   parseReviewPayload,
+  wasResponseStreamTruncated,
   type ProviderEndpoint,
   type ProviderReviewPayload,
 } from "./provider-parse.js";
@@ -246,13 +248,37 @@ async function callEndpoint(
     // ORIGINAL rawText. retryResponseStatus stays null in this branch.
   }
   if (retryReview === null) {
+    // Distinguish "truncated stream" (model hit its token budget before
+    // emitting response.completed) from "completed stream with malformed
+    // JSON" (model returned bad data). The former is actionable: the
+    // operator can raise --max-output-tokens and retry. The latter
+    // usually means a model regression. Both surface in the parse-fail
+    // diagnostic via `ProviderError.truncated` so the render layer can
+    // show different remediation advice.
+    const truncated = wasResponseStreamTruncated(rawText);
+    const usage = parseProviderUsage(rawText);
+    // Token-headroom warning: if the model filled >= 90% of its
+    // configured max_output_tokens budget AND the stream was truncated,
+    // the cause is almost certainly the token limit, not a model
+    // regression. Surface a structured warning so operators see it
+    // even when the action's --debug-raw-response flag isn't on.
+    if (truncated && usage?.output_tokens !== undefined && config.maxOutputTokens !== undefined) {
+      const usageFraction = usage.output_tokens / config.maxOutputTokens;
+      if (usageFraction >= 0.9) {
+        process.stderr.write(
+          `::warning::umactually-pr-review: provider ${endpoint} hit ${Math.round(usageFraction * 100)}% ` +
+          `of max_output_tokens=${config.maxOutputTokens} (output_tokens=${usage.output_tokens}); ` +
+          `consider raising --max-output-tokens and retrying. requestId=${requestId}.\n`,
+        );
+      }
+    }
     throw new ProviderError(
       "parse",
       endpoint,
       retryResponseStatus ?? response.status,
       requestId,
       "Provider response did not contain a JSON review payload after self-healing retry.",
-      { rawText },
+      { rawText, truncated, ...(usage !== undefined ? { usage } : {}) },
     );
   }
 
