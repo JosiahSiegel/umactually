@@ -116,3 +116,103 @@ describe("CLARITY-12: parse-fail diagnostic shows head + tail", () => {
     expect(fallback.summary.length).toBeLessThan(20_000);
   });
 });
+
+describe("parse-fail reason: truncated stream vs malformed JSON", () => {
+  // Regression for the parse-fail diagnostic after PR #20's self-review
+  // run hit a truncated provider stream (the model emitted valid-looking
+  // JSON but never reached `response.completed`). The old generic
+  // headline ("Provider response did not contain a valid JSON review
+  // payload.") left the operator guessing — was it a model regression
+  // or a token-budget issue? After this fix, the truncated case gets
+  // a specific headline and an actionable remediation hint.
+
+  it("renders the truncated-stream headline when reason.kind is 'truncated'", () => {
+    const fallback = buildMalformedProviderFallback({
+      provider: "openai-compatible",
+      modelId: "auto",
+      rawText: "event: response.created\ndata: {\"type\":\"response.created\"}\n",
+      secrets: [],
+      reason: { kind: "truncated" },
+    });
+    expect(fallback.summary).toContain(
+      "Provider response stream was truncated before the model emitted its final `response.completed` event.",
+    );
+    // Generic malformed headline must NOT appear when reason is truncated.
+    expect(fallback.summary).not.toContain(
+      "Provider response did not contain a valid JSON review payload.",
+    );
+  });
+
+  it("includes the remediation hint with --max-output-tokens advice for truncated streams", () => {
+    const fallback = buildMalformedProviderFallback({
+      provider: "openai-compatible",
+      modelId: "auto",
+      rawText: "",
+      secrets: [],
+      reason: { kind: "truncated", maxOutputTokens: 16000 },
+    });
+    expect(fallback.summary).toContain("**Remediation:**");
+    expect(fallback.summary).toContain("--max-output-tokens");
+  });
+
+  it("includes the model's output-token count in the remediation when usage is provided", () => {
+    const fallback = buildMalformedProviderFallback({
+      provider: "openai-compatible",
+      modelId: "auto",
+      rawText: "",
+      secrets: [],
+      reason: {
+        kind: "truncated",
+        maxOutputTokens: 16000,
+        usage: { output_tokens: 15743 },
+      },
+    });
+    expect(fallback.summary).toContain("15743 output tokens");
+    // 15743 / 16000 ≈ 98%, so the percentage should round and render.
+    expect(fallback.summary).toContain("≈ 98%");
+  });
+
+  it("renders the generic malformed headline when reason.kind is 'malformed'", () => {
+    const fallback = buildMalformedProviderFallback({
+      provider: "openai-compatible",
+      modelId: "auto",
+      rawText: '{"output_text":"not actually a review"}',
+      secrets: [],
+      reason: { kind: "malformed" },
+    });
+    expect(fallback.summary).toContain(
+      "Provider response did not contain a valid JSON review payload.",
+    );
+    // Truncated-stream headline must NOT appear when reason is malformed.
+    expect(fallback.summary).not.toContain("stream was truncated");
+    // No remediation for malformed — the operator can only file a bug.
+    expect(fallback.summary).not.toContain("**Remediation:**");
+  });
+
+  it("preserves the generic headline when reason is omitted (backward-compat)", () => {
+    // Existing call sites that don't pass `reason` must keep working
+    // byte-identical to the pre-truncation-detection behavior.
+    const fallback = buildMalformedProviderFallback({
+      provider: "openai-compatible",
+      modelId: "auto",
+      rawText: "stub",
+      secrets: [],
+    });
+    expect(fallback.summary).toContain(
+      "Provider response did not contain a valid JSON review payload.",
+    );
+    expect(fallback.summary).not.toContain("stream was truncated");
+  });
+
+  it("carries parseFailureReason on LiveReview when reason is supplied", () => {
+    const fallback = buildMalformedProviderFallback({
+      provider: "openai-compatible",
+      modelId: "auto",
+      rawText: "stub",
+      secrets: [],
+      reason: { kind: "truncated", maxOutputTokens: 16000 },
+    });
+    expect(fallback.parseFailed).toBe(true);
+    expect(fallback.parseFailureReason?.kind).toBe("truncated");
+  });
+});
