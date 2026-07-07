@@ -479,14 +479,17 @@ describe("severity-table details", () => {
     }));
 
     const out = renderSummary("severity-table", data);
-    // Emoji + &nbsp; + label wrapped in <span style="white-space:nowrap">
-    // so GitHub's GFM table renderer keeps the entire Severity cell
-    // (emoji AND label) on a single line, even when the column is
-    // narrower than the longest label like "Medium" (which would
-    // otherwise break as "Mediu" / "m" mid-word). See severityCell
-    // docstring.
+    // severityCell emits the severity emoji only (no text label). The
+    // emoji is a single glyph that cannot wrap; the text label is
+    // omitted from GFM-table Severity cells because GitHub's table
+    // renderer uses `word-wrap: anywhere` and the html-pipeline
+    // sanitizer strips `style` from inline spans, so any wider
+    // content (>~70px on mobile) wraps mid-word with no markdown
+    // trick to prevent it. The label is announced via the inline
+    // review comment body (leading `\`medium\`` token). See
+    // severityCell docstring.
     expect(out).toContain(
-      '| 1 | <span style="white-space: nowrap">🟠&nbsp;Medium</span> | general | `src/no-category.ts`:3 | Missing category. |',
+      '| 1 | 🟠 | general | `src/no-category.ts`:3 | Missing category. |',
     );
   });
 
@@ -528,26 +531,31 @@ describe("severity-table details", () => {
     expect(out).toContain("⚪");
   });
 
-  it("GFM-table severity cells use <span style=white-space:nowrap> so emoji + label never wrap", () => {
-    // Two regressions pinned here, both captured via screenshot
+  it("GFM-table severity cells emit emoji only (single-glyph, cannot wrap)", () => {
+    // Three regressions pinned here, captured via screenshots
     // 2026-07-07:
     //   (a) GitHub's GFM renderer wraps between the emoji glyph and
     //       the label when the Severity column is narrow. The
     //       severity-table layout showed the emoji stacked above the
     //       label on two lines.
-    //   (b) Even after the &nbsp; fix bound emoji + label together,
-    //       the LABEL itself wrapped mid-word when the column was
-    //       narrower than the longest label ("Medium" breaking as
-    //       "Mediu" / "m" in the second screenshot).
+    //   (b) The `&nbsp;` between emoji + label bound them together
+    //       but the LABEL itself wrapped mid-word when the column was
+    //       narrower than the longest label ("Medium" → "Mediu" / "m"
+    //       in the second screenshot).
+    //   (c) The `<span style="white-space: nowrap">` wrap does NOT
+    //       work — GitHub's html-pipeline sanitizer strips the
+    //       `style` attribute from `<span>` inside markdown tables
+    //       (verified via DOM inspection: the span survives but
+    //       its `style` is removed, and the table's CSS uses
+    //       `word-wrap: anywhere` which character-breaks any
+    //       unbreakable token longer than the cell width).
     //
-    // The correct fix for "no wrapping ever" is the <span
-    // style="white-space: nowrap"> approach GitHub's own docs
-    // recommend (github/docs issue #28392). GitHub's html-pipeline
-    // sanitizer allows the white-space style on <span>; both GitHub
-    // and Azure DevOps render the span as one unbreakable inline
-    // token. The &nbsp; between emoji + label is kept as defense in
-    // depth — if a future platform strips the style attribute, the
-    // nbsp at least prevents the emoji↔label boundary from wrapping.
+    // The fix that actually works: emit ONLY the colored-circle
+    // emoji in the Severity cell. A single glyph can't wrap, the
+    // label is announced in the inline review comment body
+    // (leading `\`medium\`` / `\`critical\`` token), and the emoji
+    // is distinct across both GitHub (color) and Azure DevOps
+    // (outline glyph fallback).
     //
     // Pin the byte contract for every GFM-table layout that renders
     // severity cells.
@@ -558,23 +566,21 @@ describe("severity-table details", () => {
       ],
     });
     // severity-table is the default layout and the one captured in
-    // the screenshot.
+    // the screenshot. Rows are sorted by severity bucket (highest
+    // rank first), so critical is row 1, medium is row 2 in both
+    // layouts.
     const severityOut = renderSummary("severity-table", data);
-    expect(severityOut).toContain(
-      '<span style="white-space: nowrap">🟠&nbsp;Medium</span>',
-    );
-    expect(severityOut).toContain(
-      '<span style="white-space: nowrap">🟣&nbsp;Critical</span>',
-    );
-    // dashboard also has a "🔝 Top findings" GFM table that benefits
-    // from the same fix.
+    expect(severityOut).toContain("| 1 | 🟣 |");
+    expect(severityOut).toContain("| 2 | 🟠 |");
+    // dashboard also has a "🔝 Top findings" GFM table that
+    // benefits from the same fix.
     const dashboardOut = renderSummary("dashboard", data);
-    expect(dashboardOut).toContain(
-      '<span style="white-space: nowrap">🟠&nbsp;Medium</span>',
-    );
-    expect(dashboardOut).toContain(
-      '<span style="white-space: nowrap">🟣&nbsp;Critical</span>',
-    );
+    expect(dashboardOut).toContain("| 1 | 🟣 |");
+    expect(dashboardOut).toContain("| 2 | 🟠 |");
+    // And: the text label is NOT in the GFM-table Severity cell —
+    // it would re-introduce the wrap regression on narrow viewports.
+    expect(severityOut).not.toContain("Medium |");
+    expect(severityOut).not.toContain("Critical |");
   });
 
   // CLARITY-19a (retired): the off-diff callout used to explain why the
