@@ -8664,10 +8664,10 @@ async function dispatchLivePlatform(input) {
             if (parsed.prNumber !== null) {
                 const candidate = Number(parsed.prNumber);
                 if (!Number.isFinite(candidate) || !Number.isInteger(candidate) || candidate <= 0) {
-                    throw new Error(`Azure CLI flag --pr-number must be a positive integer (got ${JSON.stringify(parsed.prNumber)}).`);
+                    throw new AzureContextError("AZURE_PR_NUMBER_INVALID", `Azure CLI flag --pr-number must be a positive integer (got ${JSON.stringify(parsed.prNumber)}).`);
                 }
                 if (!Number.isSafeInteger(candidate)) {
-                    throw new Error(`Azure CLI flag --pr-number must be a safe integer (got ${candidate}).`);
+                    throw new AzureContextError("AZURE_PR_NUMBER_INVALID", `Azure CLI flag --pr-number must be a safe integer (got ${candidate}).`);
                 }
                 azurePrNumberOverride = candidate;
             }

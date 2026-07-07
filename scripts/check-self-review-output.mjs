@@ -205,6 +205,7 @@ function classify(content) {
     verdict,
     inlineThreadCount,
     postedThreadCount,
+    postedStatusState,
     suppressedCommentCount,
     blockedRawOutput,
   };

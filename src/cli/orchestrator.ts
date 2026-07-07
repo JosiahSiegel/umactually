@@ -1,6 +1,6 @@
 import { fetchAzurePrDiff } from "../platform/azure/api.js";
 import { chunkDiffByFile, countDiffFiles } from "../platform/azure/chunk.js";
-import { readAzureContext } from "../platform/azure/context.js";
+import { AzureContextError, readAzureContext } from "../platform/azure/context.js";
 import { detectPlatform, PlatformDetectionError } from "../platform/detect.js";
 import { fetchGithubPrDiff } from "../platform/github/api.js";
 import { readGithubContext } from "../platform/github/context.js";
@@ -277,12 +277,14 @@ async function dispatchLivePlatform(input: {
       if (parsed.prNumber !== null) {
         const candidate = Number(parsed.prNumber);
         if (!Number.isFinite(candidate) || !Number.isInteger(candidate) || candidate <= 0) {
-          throw new Error(
+          throw new AzureContextError(
+            "AZURE_PR_NUMBER_INVALID",
             `Azure CLI flag --pr-number must be a positive integer (got ${JSON.stringify(parsed.prNumber)}).`,
           );
         }
         if (!Number.isSafeInteger(candidate)) {
-          throw new Error(
+          throw new AzureContextError(
+            "AZURE_PR_NUMBER_INVALID",
             `Azure CLI flag --pr-number must be a safe integer (got ${candidate}).`,
           );
         }
