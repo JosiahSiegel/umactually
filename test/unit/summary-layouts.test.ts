@@ -299,18 +299,42 @@ describe("S4 — every layout includes the hidden manifest", () => {
 // so the S5a tests use that fixture and the S5b tests use a new
 // `makeVerboseData()` helper.)
 
-describe("S5a — short summary produces no <details>/<summary> tags (Azure-incompatible default)", () => {
+describe("S5a — short summary section is NOT wrapped in <details>/<summary> tags (Azure-incompatible default)", () => {
+  // The S5 contract is about the SUMMARY section: Azure DevOps's
+  // markdown renderer leaks raw `<details>`/`<summary>` HTML instead of
+  // rendering them as collapsible widgets, so the summary must stay
+  // inline when short. Findings, by contrast, are a separate concern
+  // (the `<details>` per finding is intentional — see findingsDetailsRow
+  // docstring).
+  //
+  // Scope the assertion to the section between `### 📝 Summary` and
+  // the next `###` heading (or the horizontal rule before the footer).
+  function summarySection(out: string): string {
+    const start = out.indexOf("### 📝 Summary");
+    if (start < 0) return "";
+    const afterStart = out.slice(start + "### 📝 Summary".length);
+    // Stop at the next horizontal rule (---) or next heading (###).
+    const stopCandidates = [
+      afterStart.indexOf("\n---\n"),
+      afterStart.indexOf("\n### "),
+    ].filter((n) => n >= 0);
+    const stop = stopCandidates.length > 0 ? Math.min(...stopCandidates) : afterStart.length;
+    return afterStart.slice(0, stop);
+  }
+
   for (const layout of LAYOUTS) {
-    it(`${layout} has no <details> tag for short summary`, () => {
+    it(`${layout} summary section has no <details> tag for short summary`, () => {
       const out = renderSummary(layout, makeBusyData());
-      expect(out).not.toContain("<details>");
-      expect(out).not.toContain("</details>");
+      const summary = summarySection(out);
+      expect(summary).not.toContain("<details>");
+      expect(summary).not.toContain("</details>");
     });
 
-    it(`${layout} has no <summary> tag for short summary`, () => {
+    it(`${layout} summary section has no <summary> tag for short summary`, () => {
       const out = renderSummary(layout, makeBusyData());
-      expect(out).not.toContain("<summary>");
-      expect(out).not.toContain("</summary>");
+      const summary = summarySection(out);
+      expect(summary).not.toContain("<summary>");
+      expect(summary).not.toContain("</summary>");
     });
   }
 });
@@ -479,14 +503,19 @@ describe("severity-table details", () => {
     }));
 
     const out = renderSummary("severity-table", data);
-    // severity-table uses a 4-column layout (# | Severity | File:Line |
-    // Title). The Severity cell is emoji + em-space padding — see
-    // severityCell docstring for the full history (3 prior iterations
-    // all wrapped at some viewport; only emoji + padding fits every
-    // viewport without header or content wrap).
+    // severity-table renders each finding as a <details> collapsible
+    // block. The summary line carries "N · emoji label — truncated
+    // title" and the expanded body carries the full path + line +
+    // title. No GFM table is emitted at all (the 4-col table caused
+    // mid-word wrap at 576px viewport — see findingsDetailsRow
+    // docstring + history).
     expect(out).toContain(
-      '| 1 | 🟠&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp; | `src/no-category.ts`:3 | Missing category. |',
+      '<summary>1 · 🟠 Medium — Missing category.</summary>',
     );
+    expect(out).toContain('📍 `src/no-category.ts`:3');
+    expect(out).toContain('> Missing category.');
+    // And: no GFM table header for severity findings.
+    expect(out).not.toContain("| # | Severity |");
   });
 
   // Pin the cross-platform severity rendering. Each known severity emits
@@ -527,75 +556,74 @@ describe("severity-table details", () => {
     expect(out).toContain("⚪");
   });
 
-  it("GFM-table severity cells render emoji + padding on one line (no header or content wrap)", () => {
-    // Four regressions pinned here, captured via screenshots
-    // 2026-07-07:
-    //   (a) GitHub's GFM renderer wraps between the emoji glyph and
-    //       the label when the Severity column is narrow. The
-    //       severity-table layout showed the emoji stacked above the
-    //       label on two lines.
-    //   (b) The `&nbsp;` between emoji + label bound them together
-    //       but the LABEL itself wrapped mid-word when the column was
-    //       narrower than the longest label ("Medium" → "Mediu" / "m"
-    //       in the second screenshot, after dropping the Category
-    //       column the Severity column was ~70px and "🟠 Medium"
-    //       still overflowed by ~2px).
-    //   (c) The `<span style="white-space: nowrap">` wrap does NOT
-    //       work — GitHub's html-pipeline sanitizer strips the
-    //       `style` attribute from `<span>` inside markdown tables
-    //       (verified via DOM inspection: the span survives but
-    //       its `style` is removed, and the table's CSS uses
-    //       `word-wrap: anywhere` which character-breaks any
-    //       unbreakable token longer than the cell width).
-    //   (d) Dropping the text label fixes (b) but shrinks the
-    //       Severity column to ~60px (just the glyph), which then
-    //       wraps the "Severity" header itself to "Seve" / "rity"
-    //       on a separate visual axis.
+  it("findings render as <details> collapsible rows (mobile-friendly)", () => {
+    // History (see findingsDetailsRow docstring for full detail):
+    //   The previous GFM-table layouts (severity-table + dashboard's
+    //   "🔝 Top findings") rendered as 4-col tables with Severity
+    //   cells containing `🟠&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;`
+    //   (emoji + 10 nbsp's). At 576px viewport the table looked
+    //   ugly because every column was auto-sized to fit the widest
+    //   cell content:
+    //     - `#` column: 38px → "10" wrapped to two lines vertically
+    //     - `Severity` column: 63px → header fit but cells showed
+    //       a wide blank gap (the 10 nbsp's rendered as 10 spaces)
+    //     - `File:Line` column: 142px → paths wrapped mid-identifier
+    //       (`src/render/summa` / `ry-` / `layouts.ts :287`)
+    //     - `Title` column: 252px → ellipsised mid-sentence on every
+    //       row ("the first one sta…", "+ Provi…", etc.)
+    //   Six markdown tricks were tried to fix the cell content
+    //   (emoji only, emoji + label, span nowrap, em-space padding,
+    //    4-nbsp, 10-nbsp) — all failed because GitHub's GFM table
+    //   renderer doesn't expose column-width controls and uses
+    //   `word-wrap: anywhere` which character-breaks any token that
+    //   overflows by even 1px.
     //
-    // The fix that actually works: emit the colored-circle emoji +
-    // `&nbsp;` + em-space (`\u2003`). The em-space is invisible-ish
-    // padding (~16px wide) that forces GitHub's auto-layout to
-    // allocate ~80px to the Severity column. That's enough to fit
-    // the "Severity" header on one line WITHOUT re-introducing the
-    // emoji + label form (which still overflows at narrow viewports).
+    // The fix that actually works: replace the GFM table with a
+    // list of `<details>` collapsible rows. `<details>` has no
+    // column-width constraint, so:
+    //   - the summary line always renders on one line
+    //   - the full title, path, and line render inside the expanded
+    //     body with no truncation
+    //   - severity emoji + label render together with no wrap
+    //   - mobile users see a scannable list; desktop users click to
+    //     expand
     //
-    // The text label is announced in:
-    //   - the summary line `🟣 0 critical · 🔴 0 high · 🟠 5 medium…`
-    //     above the table (plain text, no width constraint)
-    //   - every inline review comment body (`\`medium\` \`category\``)
-    //
-    // The colored emoji also survives Azure DevOps's no-color-font
-    // fallback (different glyph shape per severity).
-    //
-    // Pin the byte contract for every GFM-table layout that renders
-    // severity cells.
+    // Pinned byte contract for severity-table + dashboard (both
+    // layouts use findingsDetailsRow):
     const data = makeData({
       postedComments: [
         { path: "src/x.ts", line: 1, body: "x", severity: "medium", category: "general" },
         { path: "src/y.ts", line: 2, body: "y", severity: "critical", category: "general" },
       ],
     });
-    // severity-table is the default layout and the one captured in
-    // the screenshot. Rows are sorted by severity bucket (highest
-    // rank first), so critical is row 1, medium is row 2.
+    // severity-table is the default layout. Rows are sorted by
+    // severity bucket (highest rank first), so critical is row 1,
+    // medium is row 2.
     const severityOut = renderSummary("severity-table", data);
-    expect(severityOut).toContain("| 1 | 🟣&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp; |");
-    expect(severityOut).toContain("| 2 | 🟠&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp; |");
-    // And: 4-column shape (no Category column).
-    expect(severityOut).not.toContain("| # | Severity | Category |");
-    expect(severityOut).toContain("| # | Severity | File:Line | Title |");
-    // The text label MUST NOT be in the Severity cell — it would
-    // re-introduce the wrap regression at any viewport where the
-    // Severity column is <90px wide (every mobile viewport).
-    expect(severityOut).not.toContain("Medium |");
-    expect(severityOut).not.toContain("Critical |");
-    // dashboard also has a "🔝 Top findings" GFM table that uses
-    // the same emoji + padding Severity cell.
+    expect(severityOut).toContain(
+      "<summary>1 · 🟣 Critical — y</summary>",
+    );
+    expect(severityOut).toContain(
+      "<summary>2 · 🟠 Medium — x</summary>",
+    );
+    expect(severityOut).toContain("📍 `src/y.ts`:2");
+    expect(severityOut).toContain("📍 `src/x.ts`:1");
+    // And: NO GFM table at all — the previous 4-col layout caused
+    // mid-word wrap at every mobile viewport.
+    expect(severityOut).not.toContain("| # | Severity |");
+    expect(severityOut).not.toContain("| ---: | :--- | :--- | :--- |");
+    expect(severityOut).not.toContain("&nbsp;&nbsp;&nbsp;&nbsp;");
+    // dashboard also has a "🔝 Top findings" block that uses the
+    // same <details> shape.
     const dashboardOut = renderSummary("dashboard", data);
-    expect(dashboardOut).toContain("| 1 | 🟣&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp; |");
-    expect(dashboardOut).toContain("| 2 | 🟠&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp; |");
-    expect(dashboardOut).not.toContain("Medium |");
-    expect(dashboardOut).not.toContain("Critical |");
+    expect(dashboardOut).toContain(
+      "<summary>1 · 🟣 Critical — y</summary>",
+    );
+    expect(dashboardOut).toContain(
+      "<summary>2 · 🟠 Medium — x</summary>",
+    );
+    expect(dashboardOut).not.toContain("| # | Severity |");
+    expect(dashboardOut).not.toContain("&nbsp;&nbsp;&nbsp;&nbsp;");
   });
 
   // CLARITY-19a (retired): the off-diff callout used to explain why the

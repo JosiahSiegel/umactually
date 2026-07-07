@@ -247,6 +247,50 @@ function findingLine(c: LiveReviewComment, secrets: readonly string[]): string {
 }
 
 /**
+ * Render a single finding as a `<details>` collapsible block.
+ *
+ * Mobile-friendly replacement for a GFM table row. GFM tables at
+ * 576px viewport auto-size columns to their widest cell, then wrap
+ * mid-word (`#` column stacks "10" vertically, File:Line breaks
+ * mid-identifier, Title truncates with `…`, Severity header wraps
+ * to "Severit"/"y"). The `<details>` element has no column-width
+ * constraints, so:
+ *   - severity emoji + word always render on one line
+ *   - the summary line never truncates inside a code path
+ *   - the full body, path, and line number render at any width
+ *     once the user expands the row
+ *
+ * Summary line shape: `1 · 🟠 Medium — Indentation regression: line 831 …`
+ * Expanded body shape: blank line, then `📍 \`path\`:line`, then
+ * `> ` blockquoted body (blockquotes survive inside `<details>`
+ * on both GitHub and Azure DevOps).
+ *
+ * `summaryCap` is the budget for the summary-line truncation. The
+ * full title always renders in the expanded body.
+ */
+function findingsDetailsRow(
+  index: number,
+  c: LiveReviewComment,
+  secrets: readonly string[],
+  summaryCap: number,
+): string {
+  const title = collapseBody(c, secrets);
+  const snippet = truncateSnippet(title, summaryCap);
+  const lines: string[] = [];
+  lines.push("<details>");
+  lines.push(
+    `<summary>${index} · ${severityEmoji(c.severity)} ${severityLabel(c.severity)} — ${cell(snippet)}</summary>`,
+  );
+  lines.push("");
+  lines.push(`📍 \`${cell(c.path)}\`:${c.line}`);
+  lines.push("");
+  lines.push(`> ${cell(title)}`);
+  lines.push("");
+  lines.push("</details>");
+  return lines.join("\n");
+}
+
+/**
  * Severity → display emoji used by every layout that wants a single glyph.
  *
  * Uses the Unicode colored-circle emoji (🟣 🔴 🟠 🟡 ⚪) because they
@@ -278,79 +322,6 @@ function severityEmoji(level: string): string {
     case "info":     return "🟡";
     default:         return "⚪";
   }
-}
-
-/**
- * Severity cell for GFM-table rows.
- *
- * Returns the colored-circle emoji + non-breaking-space padding.
- * Rationale:
- *
- *   GitHub's GFM table cells use `word-wrap: anywhere` (verified via
- *   `getComputedStyle(td).wordWrap === "anywhere"` on PR #20's
- *   rendered output), and the html-pipeline sanitizer strips
- *   `style` from `<span>` so `<span style="white-space: nowrap">`
- *   survives as a bare `<span>` with no typography override. The
- *   only reliable way to prevent character-wrap inside a Severity
- *   cell at narrow viewports is to keep the cell content narrow
- *   enough that wrap never triggers — a single emoji glyph (~18px)
- *   is the only meaningful content that's safe.
- *
- *   Three layout pathologies we must avoid in the Severity column:
- *     (a) Content wrap: "🟠 Medium" overflows the column by ~2px →
- *         character-wraps mid-word as "🟠 Mediu" / "m" (the whole
- *         token is unbreakable under nowrap).
- *     (b) Header wrap: "Severity" header is ~55px at 14px font; when
- *         the column is auto-sized to ~60px to fit just the emoji
- *         glyph, the header itself wraps to "Seve" / "rity".
- *
- *   We avoid (a) by dropping the text label (the label is announced
- *   in the summary line `🟣 0 critical · 🔴 0 high · 🟠 5 medium…`
- *   above the table, and in every inline review comment body as
- *   `\`medium\` \`category\``). We avoid (b) by padding the cell
- *   with three additional `&nbsp;` tokens (~20px total width at
- *   GitHub's font). The padding is unbreakable (nbsp is preserved
- *   by html-pipeline and acts as a non-break opportunity), so the
- *   whole "emoji + 4 nbsp" token survives as one line at any
- *   viewport width.
- *
- *   Tried em-space (`\u2003`) instead of nbsp first: GitHub's
- *   html-pipeline strips trailing whitespace including em-space, so
- *   the column stayed at ~60px (verified on PR #20 self-review run
- *   28885186296 — rendered HTML was `<td>🟠&nbsp; </td>` with the
- *   em-space gone). nbsp is the only whitespace character GitHub
- *   preserves in markdown table cells.
- *
- * History (see PR #20 review thread + screenshots 2026-07-07):
- *   - Plain emoji + space → wraps between glyph and label.
- *   - emoji + `&nbsp;` + label, 5-column table → wraps mid-word
- *     ("Mediu" / "m") because Severity column is squeezed to
- *     ~70px by the Category column.
- *   - emoji + `&nbsp;` + label, 4-column table (drop Category) →
- *     STILL wraps at ~70px because "🟠 Medium" needs ~90px and
- *     `word-wrap: anywhere` character-breaks any unbreakable
- *     token that overflows even by 1px.
- *   - emoji only (4-col) → cell doesn't wrap but the "Severity"
- *     header itself wraps to "Seve" / "rity" because the column
- *     shrinks to ~60px to fit just the glyph.
- *   - emoji + `&nbsp;` + em-space → em-space stripped by
- *     html-pipeline, column still ~60px, header still wraps.
- *   - emoji + 4 `&nbsp;` (this) → column widens to ~80px because
- *     nbsp is preserved by html-pipeline. Header fits, cell fits.
- *
- * Scope: GFM-table layouts (severity-table + dashboard's "🔝 Top
- * findings"). Inline layouts use `severityEmoji()` + `severityLabel()`
- * directly with bold (e.g., `🟠 **Medium**`) — no column boundary,
- * no wrap risk.
- */
-function severityCell(level: string): string {
-  // emoji + 10 nbsp's as width-padding. Each nbsp is ~4-7px wide at
-  // GitHub's 14px font, so 10 nbsp's add ~40-70px of forced cell
-  // width. The whole token stays unbreakable (nbsp binds), so even at
-  // the narrowest viewport the cell content renders as one line.
-  // Trailing whitespace would be stripped by GitHub's html-pipeline,
-  // but nbsp's are preserved (they're meaningful non-breaking tokens).
-  return `${severityEmoji(level)}&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;`;
 }
 
 /** Severity → short label used in compact rows. */
@@ -675,12 +646,8 @@ function layoutDashboard(data: ReviewData): string {
   if (data.postedComments.length > 0) {
     parts.push("### 🔝 Top findings");
     parts.push("");
-    parts.push("| # | Severity | File:Line | Title |");
-    parts.push("| ---: | :--- | :--- | :--- |");
     sortedPosted(data).slice(0, 5).forEach((c, i) => {
-      const title = collapseBody(c, data.secrets);
-      const snippet = truncateSnippet(title, 80);
-      parts.push(`| ${i + 1} | ${severityCell(c.severity)} | \`${cell(c.path)}\`:${c.line} | ${cell(snippet)} |`);
+      parts.push(findingsDetailsRow(i + 1, c, data.secrets, 80));
     });
     parts.push("");
   }
@@ -830,29 +797,36 @@ function layoutSeverityTable(data: ReviewData): string {
 
 parts.push("### 📋 Findings");
   parts.push("");
-  // 4-column layout: # | Severity | File:Line | Title. Category is
-  // intentionally omitted because (a) GitHub's table auto-layout
-  // squeezes the Severity column below ~70px when Category is
-  // present, causing "Medium" to wrap mid-word as "Mediu" / "m"
-  // (verified on PR #20 — screenshot 2026-07-07); and (b) every
-  // inline review comment body already leads with a `\`category\``
-  // token, so the value isn't lost. Matches the dashboard's "🔝 Top
-  // findings" table shape for cross-layout consistency.
-  parts.push("| # | Severity | File:Line | Title |");
-  parts.push("| ---: | :--- | :--- | :--- |");
+  // Mobile-friendly collapsible list. A GFM table at 576px viewport
+  // auto-sizes each column to fit its widest cell, then wraps mid-word
+  // (`#` column stacks "10" → "1"/"0", File:Line breaks inside
+  // `summary-layouts` → `summa`/`ry-`/`layouts.ts`, Title truncates
+  // mid-sentence, Severity header wraps to "Severit"/"y"). None of
+  // those are fixable inside a GFM table because the renderer doesn't
+  // expose column-width controls and `word-wrap: anywhere` will
+  // character-break any unbreakable token that overflows even by 1px.
+  //
+  // `<details>`/`<summary>` is a native HTML element that GitHub's
+  // GFM passes through (verified 2026-07-05 per file header; Azure
+  // DevOps renders the same way in markdown). Each finding gets one
+  // collapsed block: the summary shows severity emoji + word + the
+  // first ~80 chars of the title; clicking expands to show the full
+  // path, line number, and full title with no width constraints.
+  //
+  // Information previously encoded in table columns:
+  //   #       → leading "N · " in the summary line
+  //   Severity→ "🟠 Medium" (emoji + label, no width constraint)
+  //   File:Line → first line of expanded body, prefixed with 📍
+  //   Title  → first 80 chars in summary, full text in expanded body
   if (all.length === 0) {
-    parts.push("| — | — | — | _No findings to address_ |");
+    parts.push("_No findings to address._");
+    parts.push("");
   } else {
     all.forEach((c, i) => {
-      const title = collapseBody(c, data.secrets);
-      // 80-char title (same as the 🔝 Top findings table) since
-      // dropping the Category column frees up the horizontal budget
-      // the Title needs to read cleanly at every viewport.
-      const snippet = truncateSnippet(title, 80);
-      parts.push(`| ${i + 1} | ${severityCell(c.severity)} | \`${cell(c.path)}\`:${c.line} | ${cell(snippet)} |`);
+      parts.push(findingsDetailsRow(i + 1, c, data.secrets, 80));
     });
+    parts.push("");
   }
-  parts.push("");
 
   if (data.review.summary.trim().length > 0) {
     const safeSummary = redact(data.review.summary, data.secrets);
