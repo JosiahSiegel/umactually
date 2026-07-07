@@ -1,11 +1,10 @@
 import {
   buildChatBody,
+  diagnoseParseFailure,
   extractTextPayload,
   isNonEmptyReview,
-  parseProviderUsage,
   PARSE_FAIL_RETRY_PROMPT,
   parseReviewPayload,
-  wasResponseStreamTruncated,
   type ProviderReviewPayload,
 } from "./provider-parse.js";
 import {
@@ -237,22 +236,12 @@ async function runChatCall(
     retryReview = parsedRetry;
   }
   if (retryReview === null) {
-    // Distinguish "truncated stream" from "completed but malformed" so
-    // the parse-fail diagnostic can show different remediation advice
-    // (raise --max-output-tokens vs check model regression). Mirror of
-    // the openai-compatible.ts parse-fail throw — keep them aligned.
-    const truncated = wasResponseStreamTruncated(rawText);
-    const usage = parseProviderUsage(rawText);
-    if (truncated && usage?.output_tokens !== undefined && config.maxOutputTokens !== undefined) {
-      const usageFraction = usage.output_tokens / config.maxOutputTokens;
-      if (usageFraction >= 0.9) {
-        process.stderr.write(
-          `::warning::umactually-pr-review: provider ${ENDPOINT_CHAT} hit ${Math.round(usageFraction * 100)}% ` +
-          `of max_output_tokens=${config.maxOutputTokens} (output_tokens=${usage.output_tokens}); ` +
-          `consider raising --max-output-tokens and retrying. requestId=${requestId}.\n`,
-        );
-      }
-    }
+    // Same parse-fail diagnostic contract as openai-compatible.ts:
+    // distinguish "truncated stream" from "completed but malformed" so
+    // the diagnostic can show actionable remediation advice. Delegates
+    // to the shared `diagnoseParseFailure` helper so the truncation
+    // detection logic is not duplicated per provider.
+    const diagnosis = diagnoseParseFailure({ rawText });
     return {
       ok: false,
       error: new ProviderError(
@@ -261,7 +250,11 @@ async function runChatCall(
         response.status,
         requestId,
         "Provider response did not contain a JSON review payload after self-healing retry.",
-        { rawText, truncated, ...(usage !== undefined ? { usage } : {}) },
+        {
+          rawText,
+          truncated: diagnosis.truncated,
+          ...(diagnosis.usage !== undefined ? { usage: diagnosis.usage } : {}),
+        },
       ),
     };
   }

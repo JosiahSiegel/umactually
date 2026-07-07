@@ -9,7 +9,11 @@
 
 import { describe, expect, it } from "vitest";
 
-import { parseProviderUsage, wasResponseStreamTruncated } from "../../src/provider/provider-parse.js";
+import {
+  diagnoseParseFailure,
+  parseProviderUsage,
+  wasResponseStreamTruncated,
+} from "../../src/provider/provider-parse.js";
 
 describe("wasResponseStreamTruncated", () => {
   it("returns true for an SSE stream that never emitted response.completed", () => {
@@ -72,6 +76,41 @@ describe("wasResponseStreamTruncated", () => {
   it("returns false for plain prose (no SSE markers)", () => {
     expect(wasResponseStreamTruncated("the model said hello")).toBe(false);
   });
+
+  it("does NOT match a 'response.completed' substring inside a non-data: line", () => {
+    // Regression for the self-review finding on
+    // src/provider/provider-parse.ts:430 — a model reviewing a diff that
+    // contains the literal string `"type":"response.completed"`
+    // (e.g., reviewing SSE-parser code) must not trick the detector
+    // into thinking the stream completed cleanly. The detector
+    // scopes its match to `data:` lines only.
+    const truncatedStream = [
+      'event: response.created',
+      'data: {"type":"response.created"}',
+      '',
+      'event: response.output_text.delta',
+      'data: {"type":"response.output_text.delta","delta":"here is the literal: \\"type\\":\\"response.completed\\" appearing inside a review body"}',
+      '',
+      // No terminal event actually emitted — the substring is just
+      // content inside a delta.
+    ].join("\n");
+    expect(wasResponseStreamTruncated(truncatedStream)).toBe(true);
+  });
+
+  it("handles the leading-space variant after 'data:' per the SSE spec", () => {
+    // SSE spec says the data: prefix is optionally followed by a
+    // single space before the payload. The detector strips it so
+    // `data: {...}` and `data: {...}` both parse the same way.
+    const completedStream = [
+      'event: response.created',
+      'data: {"type":"response.created"}',
+      '',
+      'event: response.completed',
+      'data:  {"type":"response.completed"}',
+      '',
+    ].join("\n");
+    expect(wasResponseStreamTruncated(completedStream)).toBe(false);
+  });
 });
 
 describe("parseProviderUsage", () => {
@@ -119,5 +158,77 @@ describe("parseProviderUsage", () => {
       // No response.completed follows.
     ].join("\n");
     expect(parseProviderUsage(stream)).toBeUndefined();
+  });
+
+  it("scopes usage extraction to the terminal event's parsed payload", () => {
+    // Regression for the self-review finding on
+    // src/provider/provider-parse.ts:455 — when the stream contains
+    // both a usage-bearing intermediate event AND the terminal
+    // event's usage block, parseProviderUsage must return the
+    // terminal-event values, not the first occurrence.
+    const stream = [
+      'event: response.created',
+      'data: {"type":"response.created","usage":{"output_tokens":1}}',
+      '',
+      'event: response.completed',
+      'data: {"type":"response.completed","usage":{"output_tokens":7777,"total_tokens":9999}}',
+      '',
+    ].join("\n");
+    expect(parseProviderUsage(stream)).toEqual({
+      output_tokens: 7777,
+      total_tokens: 9999,
+    });
+  });
+});
+
+describe("diagnoseParseFailure (dedup helper for openai-compatible + copilot)", () => {
+  // Both providers wire this helper into the parse-fail throw path
+  // so the truncation-detection + usage-extraction logic is not
+  // duplicated. Self-review of #20 found the duplication between
+  // openai-compatible.ts and copilot.ts; this test pins the shared
+  // contract.
+
+  it("returns truncated=true with no usage for a stream missing response.completed", () => {
+    const diagnosis = diagnoseParseFailure({
+      rawText: 'event: response.created\ndata: {"type":"response.created"}',
+    });
+    expect(diagnosis.truncated).toBe(true);
+    expect(diagnosis.usage).toBeUndefined();
+  });
+
+  it("returns truncated=false with usage when the terminal event was emitted", () => {
+    const stream = [
+      'event: response.completed',
+      'data: {"type":"response.completed","usage":{"output_tokens":5000,"total_tokens":6000}}',
+      '',
+    ].join("\n");
+    const diagnosis = diagnoseParseFailure({ rawText: stream });
+    expect(diagnosis.truncated).toBe(false);
+    expect(diagnosis.usage).toEqual({ output_tokens: 5000, total_tokens: 6000 });
+  });
+
+  it("does NOT emit any stderr output (the headroom warning was removed as dead code)", () => {
+    // The earlier inline duplicate emitted a ::warning:: line when
+    // truncated AND usage was populated. That combination is
+    // unreachable in practice (a stream with the terminal event
+    // is by definition not truncated), so the warning was dead
+    // code. The helper deliberately omits it. If a future provider
+    // emits usage on intermediate events, a dedicated
+    // parseIntermediateUsage helper should reintroduce the warning.
+    const writes: string[] = [];
+    const originalWrite = process.stderr.write.bind(process.stderr);
+    const spy = ((chunk: string | Uint8Array, ...rest: unknown[]): boolean => {
+      if (typeof chunk === "string") writes.push(chunk);
+      return originalWrite(chunk as never, ...(rest as never[]));
+    }) as typeof process.stderr.write;
+    process.stderr.write = spy;
+    try {
+      diagnoseParseFailure({
+        rawText: 'event: response.created\ndata: {"type":"response.created"}',
+      });
+      expect(writes.length).toBe(0);
+    } finally {
+      process.stderr.write = originalWrite;
+    }
   });
 });
