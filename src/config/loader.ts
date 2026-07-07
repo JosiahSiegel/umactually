@@ -38,8 +38,16 @@ import type {
 // Loader-only defaults that have no field-schema entry. Kept local so the
 // schema remains the canonical source for any value that ships through
 // the CLI / action / env surfaces.
-// Keep aligned with field-schema.ts and action.yml's `minimum-severity` default.
-const DEFAULT_MINIMUM_SEVERITY: Severity = parseSeverityFromUnknown("medium", "severity.minimum");
+//
+// Must stay aligned with field-schema.ts (enumValues) and action.yml's
+// `minimum-severity` default. The user-facing enum is `low|medium|high`
+// and maps to internal `Severity` via the parser alias table
+// (`low → minor`, `medium → major`, `high → critical`). The default
+// "medium" is the user-facing value; the loader applies the alias here
+// so it does not run parseSeverityFromUnknown at module load (which
+// would throw on import if a future caller passed a value outside the
+// accepted set, and is otherwise wasteful at module load).
+const DEFAULT_MINIMUM_SEVERITY: Severity = "major";
 const DEFAULT_PLATFORM: Platform = "auto";
 const DEFAULT_PROVIDER_URL = "https://api.openai.com/v1";
 

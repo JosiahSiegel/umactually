@@ -22,13 +22,20 @@ If `highConfidenceLeakCount` is non-zero, treat the run as a security incident: 
 
 ## minimum-severity cannot hide leaks or security findings
 
-`minimum-severity` (default `medium`) is the sole severity filter for posted inline findings. Raising the threshold to `medium` or `high` suppresses `low`-severity findings (style, hygiene), but it does **not** suppress:
+`minimum-severity` (default `medium`) is the sole severity filter for posted inline findings. Raising the threshold suppresses findings below the configured tier (e.g. `medium` filters `info` and `low`; `high` filters `info`, `low`, and `medium`), but it does **not** suppress:
 
 - High-confidence leaks detected during redaction.
 - Security findings emitted by the review provider.
-- Findings marked as `severity: high` or `severity: critical` by the runtime.
 
-If you need a quieter review output, lower the noise on the model side first. Treat `minimum-severity: low` as a higher-noise mode, not a less-secure mode.
+The carve-out is unconditional: `security` and `leak` findings bypass every configured threshold. They cannot be turned off via `minimum-severity` or any other input — to suppress them you must remove them at the source (e.g. stop posting the credential, fix the underlying code).
+
+For noise control, think of the threshold as a quieter-to-louder knob:
+
+- `minimum-severity: high` — quietest; only blocking findings surface inline.
+- `minimum-severity: medium` — default; filters style/hygiene noise, keeps substantive findings.
+- `minimum-severity: low` — highest-noise; surfaces everything except `info`.
+
+If the default review output is too noisy, raise `minimum-severity` before reaching for model-side changes. Lowering it is the right move only when you specifically need style/hygiene findings inline.
 
 ## Prompt file path safety
 

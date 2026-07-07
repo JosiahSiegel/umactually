@@ -15,12 +15,14 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   "suppress minor findings" use case with finer control. The previous
   guarantee that `security` and `leak` findings are never suppressed now
   lives inside `minimum-severity`'s semantics and applies regardless of
-  the configured threshold. Workflows and pipelines still passing
-  `ignore-minor: true` should migrate to `minimum-severity: medium`
-  (which is also the new default, so existing users on the action
-  default will see no behavior change). Pipelines passing
-  `--ignore-minor` on the CLI will fail loudly with a migration
-  message.
+  the configured threshold. Pipelines passing `--ignore-minor` on the CLI
+  will fail loudly with a migration message.
+  - Action users on the previous default (`ignore-minor: false`) will
+    lose `info` findings that were previously posted inline; that
+    matches the new `minimum-severity: medium` default.
+  - Pipelines that were passing `ignore-minor: true` should migrate to
+    `minimum-severity: medium` (the new default) to preserve the same
+    behavior.
 - **BREAKING**: `minimum-severity` default flipped from `low` to `medium`.
   Out of the box, low-severity findings (style, hygiene) are filtered
   out of the postable set and do not appear as inline comments. Set

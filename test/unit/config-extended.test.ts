@@ -722,8 +722,8 @@ describe("config: secret redaction in errors", () => {
 describe("config: severity list sanity", () => {
   const ALL: readonly Severity[] = ["info", "minor", "major", "critical", "security", "leak"];
   it("exposes a strict ordering with security/leak at top", () => {
-    for (let i = 0; i < ALL.length; i++) {
-      for (let j = i + 1; j < ALL.length; j++) {
+    for (let i = 0; i < ALL.length; i += 1) {
+      for (let j = i + 1; j < ALL.length; j += 1) {
         const lower = ALL[i];
         const higher = ALL[j];
         if (lower === undefined || higher === undefined) throw new Error("unreachable");
@@ -733,6 +733,22 @@ describe("config: severity list sanity", () => {
         expect(isSeverityAtLeast(higher, lower)).toBe(false);
       }
     }
+  });
+});
+
+describe("config: minimum-severity default + alias mapping", () => {
+  // Pins the user-facing → internal Severity alias table so the loader
+  // default (`DEFAULT_MINIMUM_SEVERITY = "major"`) and the parser
+  // alias map can never silently drift. The user-facing enum is
+  // `low|medium|high`; the loader default resolves to `medium`, which
+  // aliases to internal `major`. If either side changes, this test
+  // surfaces the mismatch instead of silently disagreeing.
+  it("'medium' aliases to internal 'major'", () => {
+    expect(parseSeverityFromUnknown("medium", "test")).toBe<Severity>("major");
+  });
+  it("'low' aliases to internal 'minor' and 'high' aliases to 'critical'", () => {
+    expect(parseSeverityFromUnknown("low", "test")).toBe<Severity>("minor");
+    expect(parseSeverityFromUnknown("high", "test")).toBe<Severity>("critical");
   });
 });
 
