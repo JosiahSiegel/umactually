@@ -46,6 +46,16 @@ These entries mirror `action.yml`.
 | `simulate-findings` | `UMACTUALLY_SIMULATE_FINDINGS` | `false` | `true`, `false` | When enabled, replaces a structurally empty live provider payload (no inline comments and no suppressed comments) with the deterministic multi-finding fixture defined in `src/review/simulated-findings.ts`. Live findings always win: a non-empty provider result is preserved untouched. The fixture anchors 4-6 inline threads across at least 2 files (mixed severities and categories) plus 1-2 suppressed off-diff entries so the suppression path is exercised. CLI equivalent: `--simulate-findings` / `--no-simulate-findings`. |
 | `platform` | `UMACTUALLY_PLATFORM` | `auto` | `auto`, `github`, `azure` | Platform dispatch hint. `auto` selects GitHub when `GITHUB_ACTIONS=true` and Azure when `TF_BUILD=True`. |
 
+## Removed inputs (migration map)
+
+The following inputs were removed in a recent breaking change. Workflows and pipelines still setting them will not error — they are silently ignored (env vars) or surface as a one-time stderr warning at config load. Migrate as shown:
+
+| Removed input | Env vars | Migrate to |
+| --- | --- | --- |
+| `ignore-minor: true` | `UMACTUALLY_IGNORE_MINOR`, `REVIEW_IGNORE_MINOR` | `minimum-severity: medium` (the new default) |
+
+CLI users will see `CliUsageError` for `--ignore-minor` / `--no-ignore-minor` with the same migration hint.
+
 ## Platform and token environment variables
 
 | Env var | Platform | Required | Default/source | Purpose |

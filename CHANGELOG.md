@@ -15,8 +15,16 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   "suppress minor findings" use case with finer control. The previous
   guarantee that `security` and `leak` findings are never suppressed now
   lives inside `minimum-severity`'s semantics and applies regardless of
-  the configured threshold. Pipelines passing `--ignore-minor` on the CLI
-  will fail loudly with a migration message.
+  the configured threshold.
+  - CLI: `--ignore-minor` / `--no-ignore-minor` throw `CliUsageError`
+    with a migration message — fail loudly is intentional so explicit
+    CLI callers can't silently miss the change.
+  - Env vars: silently ignored. CI users who still have
+    `UMACTUALLY_IGNORE_MINOR` / `REVIEW_IGNORE_MINOR` set will see a
+    one-time stderr warning on the next run pointing them at
+    `minimum-severity`. The asymmetry with the CLI is deliberate: env
+    vars are inherited invisibly and a hard throw on every run would
+    brick pipelines that simply forgot to clean up.
   - Action users on the previous default (`ignore-minor: false`) will
     lose `info` findings that were previously posted inline; that
     matches the new `minimum-severity: medium` default.

@@ -127,6 +127,7 @@ function isEnvSourceField(field: string): field is keyof EnvSources {
  * `src/config/field-schema.ts`.
  */
 export function readEnvSources(env: NodeJS.ProcessEnv = process.env): EnvSources {
+  warnIfLegacyIgnoreMinorEnvVarsAreSet(env);
   const out: {
     -readonly [K in keyof EnvSources]: EnvSources[K];
   } = {};
@@ -147,4 +148,29 @@ export function readEnvSources(env: NodeJS.ProcessEnv = process.env): EnvSources
     }
   }
   return out;
+}
+
+// Set of env-var names that were honored by previous versions of this
+// action but are now silently ignored after the `ignore-minor` removal.
+// We surface a one-time warning on stderr so CI pipelines that still
+// carry these env vars (often baked into runner images / variable
+// groups months ago) get a migration nudge they would otherwise miss.
+// The CLI counterpart fails loudly via `CliUsageError`; env vars are
+// weaker because they are inherited invisibly, which is exactly the
+// case where a warning helps.
+const LEGACY_IGNORE_MINOR_ENV_VARS: ReadonlySet<string> = new Set([
+  "UMACTUALLY_IGNORE_MINOR",
+  "REVIEW_IGNORE_MINOR",
+]);
+
+function warnIfLegacyIgnoreMinorEnvVarsAreSet(env: NodeJS.ProcessEnv): void {
+  for (const name of LEGACY_IGNORE_MINOR_ENV_VARS) {
+    const value = env[name];
+    if (typeof value === "string" && value.trim().length > 0) {
+      process.stderr.write(
+        `[umactually] env ${name} is set but no longer honored. ` +
+          `Use minimum-severity (low|medium|high, default medium) instead.\n`,
+      );
+    }
+  }
 }

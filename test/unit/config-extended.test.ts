@@ -2,7 +2,7 @@ import { mkdtemp, mkdir, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, sep } from "node:path";
 
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { FIELDS } from "../../src/config/field-schema.js";
 import { severityRank } from "../../src/util/severity.js";
@@ -666,6 +666,47 @@ describe("config: readEnvSources", () => {
     });
     expect(sources.providerUrl).toBe("https://legacy.example.test/v1");
     expect(sources.providerApiKey).toBe("legacy-key");
+  });
+});
+
+describe("config: legacy ignore-minor env-var warning", () => {
+  // The `ignore-minor` removal leaves UMACTUALLY_IGNORE_MINOR and
+  // REVIEW_IGNORE_MINOR as silently-dropped env vars. CI pipelines
+  // that still set these will get a one-time stderr warning pointing
+  // them at minimum-severity. Without this test, a future refactor
+  // could drop the warning and silently regress the migration nudge.
+  it("emits a stderr warning when UMACTUALLY_IGNORE_MINOR is set", () => {
+    const stderr = vi.spyOn(process.stderr, "write").mockImplementation(() => true);
+    try {
+      readEnvSources({ UMACTUALLY_IGNORE_MINOR: "true" });
+      expect(stderr).toHaveBeenCalled();
+      const message = stderr.mock.calls.map((call) => String(call[0])).join("");
+      expect(message).toMatch(/UMACTUALLY_IGNORE_MINOR/u);
+      expect(message).toMatch(/minimum-severity/u);
+    } finally {
+      stderr.mockRestore();
+    }
+  });
+  it("emits a stderr warning when REVIEW_IGNORE_MINOR is set", () => {
+    const stderr = vi.spyOn(process.stderr, "write").mockImplementation(() => true);
+    try {
+      readEnvSources({ REVIEW_IGNORE_MINOR: "true" });
+      expect(stderr).toHaveBeenCalled();
+      const message = stderr.mock.calls.map((call) => String(call[0])).join("");
+      expect(message).toMatch(/REVIEW_IGNORE_MINOR/u);
+    } finally {
+      stderr.mockRestore();
+    }
+  });
+  it("does not warn when legacy env vars are absent", () => {
+    const stderr = vi.spyOn(process.stderr, "write").mockImplementation(() => true);
+    try {
+      readEnvSources({ SOME_OTHER_VAR: "true" });
+      const message = stderr.mock.calls.map((call) => String(call[0])).join("");
+      expect(message).not.toMatch(/IGNORE_MINOR/u);
+    } finally {
+      stderr.mockRestore();
+    }
   });
 });
 
