@@ -20,15 +20,15 @@ After redaction, the action re-scans the diff and reports `highConfidenceLeakCou
 
 If `highConfidenceLeakCount` is non-zero, treat the run as a security incident: the source PR introduced a credential into a diff. Page the security on-call, rotate the leaked credential, and confirm the PR is not merged.
 
-## ignore-minor cannot hide leaks or security findings
+## minimum-severity cannot hide leaks or security findings
 
-`ignore-minor` (default `true`) suppresses only minor non-security findings. It does **not** suppress:
+`minimum-severity` (default `medium`) is the sole severity filter for posted inline findings. Raising the threshold to `medium` or `high` suppresses `low`-severity findings (style, hygiene), but it does **not** suppress:
 
 - High-confidence leaks detected during redaction.
 - Security findings emitted by the review provider.
 - Findings marked as `severity: high` or `severity: critical` by the runtime.
 
-If you need a quieter review output, lower the noise on the model side first. Treat `ignore-minor: false` as a higher-noise mode, not a less-secure mode.
+If you need a quieter review output, lower the noise on the model side first. Treat `minimum-severity: low` as a higher-noise mode, not a less-secure mode.
 
 ## Prompt file path safety
 
