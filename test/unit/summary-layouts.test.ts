@@ -299,18 +299,42 @@ describe("S4 — every layout includes the hidden manifest", () => {
 // so the S5a tests use that fixture and the S5b tests use a new
 // `makeVerboseData()` helper.)
 
-describe("S5a — short summary produces no <details>/<summary> tags (Azure-incompatible default)", () => {
+describe("S5a — short summary section is NOT wrapped in <details>/<summary> tags (Azure-incompatible default)", () => {
+  // The S5 contract is about the SUMMARY section: Azure DevOps's
+  // markdown renderer leaks raw `<details>`/`<summary>` HTML instead of
+  // rendering them as collapsible widgets, so the summary must stay
+  // inline when short. Findings, by contrast, are a separate concern
+  // (the `<details>` per finding is intentional — see findingsDetailsRow
+  // docstring).
+  //
+  // Scope the assertion to the section between `### 📝 Summary` and
+  // the next `###` heading (or the horizontal rule before the footer).
+  function summarySection(out: string): string {
+    const start = out.indexOf("### 📝 Summary");
+    if (start < 0) return "";
+    const afterStart = out.slice(start + "### 📝 Summary".length);
+    // Stop at the next horizontal rule (---) or next heading (###).
+    const stopCandidates = [
+      afterStart.indexOf("\n---\n"),
+      afterStart.indexOf("\n### "),
+    ].filter((n) => n >= 0);
+    const stop = stopCandidates.length > 0 ? Math.min(...stopCandidates) : afterStart.length;
+    return afterStart.slice(0, stop);
+  }
+
   for (const layout of LAYOUTS) {
-    it(`${layout} has no <details> tag for short summary`, () => {
+    it(`${layout} summary section has no <details> tag for short summary`, () => {
       const out = renderSummary(layout, makeBusyData());
-      expect(out).not.toContain("<details>");
-      expect(out).not.toContain("</details>");
+      const summary = summarySection(out);
+      expect(summary).not.toContain("<details>");
+      expect(summary).not.toContain("</details>");
     });
 
-    it(`${layout} has no <summary> tag for short summary`, () => {
+    it(`${layout} summary section has no <summary> tag for short summary`, () => {
       const out = renderSummary(layout, makeBusyData());
-      expect(out).not.toContain("<summary>");
-      expect(out).not.toContain("</summary>");
+      const summary = summarySection(out);
+      expect(summary).not.toContain("<summary>");
+      expect(summary).not.toContain("</summary>");
     });
   }
 });
@@ -479,7 +503,19 @@ describe("severity-table details", () => {
     }));
 
     const out = renderSummary("severity-table", data);
-    expect(out).toContain("| 1 | 🟠 Medium | general | `src/no-category.ts`:3 | Missing category. |");
+    // severity-table renders each finding as a <details> collapsible
+    // block. The summary line carries "N · emoji label — truncated
+    // title" and the expanded body carries the full path + line +
+    // title. No GFM table is emitted at all (the 4-col table caused
+    // mid-word wrap at 576px viewport — see findingsDetailsRow
+    // docstring + history).
+    expect(out).toContain(
+      '<summary>1 · 🟠 Medium — Missing category.</summary>',
+    );
+    expect(out).toContain('📍 `src/no-category.ts`:3');
+    expect(out).toContain('> Missing category.');
+    // And: no GFM table header for severity findings.
+    expect(out).not.toContain("| # | Severity |");
   });
 
   // Pin the cross-platform severity rendering. Each known severity emits
@@ -518,6 +554,76 @@ describe("severity-table details", () => {
     });
     const out = renderSummary("verdict-banner", data);
     expect(out).toContain("⚪");
+  });
+
+  it("findings render as <details> collapsible rows (mobile-friendly)", () => {
+    // History (see findingsDetailsRow docstring for full detail):
+    //   The previous GFM-table layouts (severity-table + dashboard's
+    //   "🔝 Top findings") rendered as 4-col tables with Severity
+    //   cells containing `🟠&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;`
+    //   (emoji + 10 nbsp's). At 576px viewport the table looked
+    //   ugly because every column was auto-sized to fit the widest
+    //   cell content:
+    //     - `#` column: 38px → "10" wrapped to two lines vertically
+    //     - `Severity` column: 63px → header fit but cells showed
+    //       a wide blank gap (the 10 nbsp's rendered as 10 spaces)
+    //     - `File:Line` column: 142px → paths wrapped mid-identifier
+    //       (`src/render/summa` / `ry-` / `layouts.ts :287`)
+    //     - `Title` column: 252px → ellipsised mid-sentence on every
+    //       row ("the first one sta…", "+ Provi…", etc.)
+    //   Six markdown tricks were tried to fix the cell content
+    //   (emoji only, emoji + label, span nowrap, em-space padding,
+    //    4-nbsp, 10-nbsp) — all failed because GitHub's GFM table
+    //   renderer doesn't expose column-width controls and uses
+    //   `word-wrap: anywhere` which character-breaks any token that
+    //   overflows by even 1px.
+    //
+    // The fix that actually works: replace the GFM table with a
+    // list of `<details>` collapsible rows. `<details>` has no
+    // column-width constraint, so:
+    //   - the summary line always renders on one line
+    //   - the full title, path, and line render inside the expanded
+    //     body with no truncation
+    //   - severity emoji + label render together with no wrap
+    //   - mobile users see a scannable list; desktop users click to
+    //     expand
+    //
+    // Pinned byte contract for severity-table + dashboard (both
+    // layouts use findingsDetailsRow):
+    const data = makeData({
+      postedComments: [
+        { path: "src/x.ts", line: 1, body: "x", severity: "medium", category: "general" },
+        { path: "src/y.ts", line: 2, body: "y", severity: "critical", category: "general" },
+      ],
+    });
+    // severity-table is the default layout. Rows are sorted by
+    // severity bucket (highest rank first), so critical is row 1,
+    // medium is row 2.
+    const severityOut = renderSummary("severity-table", data);
+    expect(severityOut).toContain(
+      "<summary>1 · 🟣 Critical — y</summary>",
+    );
+    expect(severityOut).toContain(
+      "<summary>2 · 🟠 Medium — x</summary>",
+    );
+    expect(severityOut).toContain("📍 `src/y.ts`:2");
+    expect(severityOut).toContain("📍 `src/x.ts`:1");
+    // And: NO GFM table at all — the previous 4-col layout caused
+    // mid-word wrap at every mobile viewport.
+    expect(severityOut).not.toContain("| # | Severity |");
+    expect(severityOut).not.toContain("| ---: | :--- | :--- | :--- |");
+    expect(severityOut).not.toContain("&nbsp;&nbsp;&nbsp;&nbsp;");
+    // dashboard also has a "🔝 Top findings" block that uses the
+    // same <details> shape.
+    const dashboardOut = renderSummary("dashboard", data);
+    expect(dashboardOut).toContain(
+      "<summary>1 · 🟣 Critical — y</summary>",
+    );
+    expect(dashboardOut).toContain(
+      "<summary>2 · 🟠 Medium — x</summary>",
+    );
+    expect(dashboardOut).not.toContain("| # | Severity |");
+    expect(dashboardOut).not.toContain("&nbsp;&nbsp;&nbsp;&nbsp;");
   });
 
   // CLARITY-19a (retired): the off-diff callout used to explain why the

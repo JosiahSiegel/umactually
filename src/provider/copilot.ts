@@ -1,5 +1,6 @@
 import {
   buildChatBody,
+  diagnoseParseFailure,
   extractTextPayload,
   isNonEmptyReview,
   PARSE_FAIL_RETRY_PROMPT,
@@ -235,6 +236,12 @@ async function runChatCall(
     retryReview = parsedRetry;
   }
   if (retryReview === null) {
+    // Same parse-fail diagnostic contract as openai-compatible.ts:
+    // distinguish "truncated stream" from "completed but malformed" so
+    // the diagnostic can show actionable remediation advice. Delegates
+    // to the shared `diagnoseParseFailure` helper so the truncation
+    // detection logic is not duplicated per provider.
+    const diagnosis = diagnoseParseFailure({ rawText });
     return {
       ok: false,
       error: new ProviderError(
@@ -243,7 +250,11 @@ async function runChatCall(
         response.status,
         requestId,
         "Provider response did not contain a JSON review payload after self-healing retry.",
-        { rawText },
+        {
+          rawText,
+          truncated: diagnosis.truncated,
+          ...(diagnosis.usage !== undefined ? { usage: diagnosis.usage } : {}),
+        },
       ),
     };
   }

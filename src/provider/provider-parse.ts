@@ -8,9 +8,9 @@ import {
   readStringField,
   tryParseJson,
 } from "../util/json-guards.js";
-import type { ProviderEndpoint } from "./provider-error.js";
+import type { ProviderEndpoint, ProviderUsage } from "./provider-error.js";
 
-export type { ProviderEndpoint };
+export type { ProviderEndpoint, ProviderUsage };
 
 export type ProviderComment = {
   readonly path: string;
@@ -161,12 +161,29 @@ export function isNonEmptyReview(review: ProviderReviewPayload | null): review i
 export type RequestBody = Record<string, unknown>;
 
 /**
- * Self-healing follow-up message sent to the model when its first response
- * could not be parsed as a JSON review payload. Some providers ignore
- * `stream: false` and return an empty SSE stream; some wrap their output
- * in markdown fences or prose; some omit the JSON entirely. We retry
- * once with an explicit reminder before falling back to the parse-fail
- * surface — that often recovers the review without operator intervention.
+ * Self-healing follow-up prefix prepended to the original user
+ * message when the first response could not be parsed as a JSON
+ * review payload. The prefix explicitly asks the model to emit
+ * JSON-only output (no prose, no fences); the original user
+ * content is APPENDED after the prefix so the model still has
+ * the PR diff + review instructions to work from.
+ *
+ * Prepending (rather than replacing) is critical: a prior version
+ * replaced `config.user` with just the reminder, which caused the
+ * model to fall back to "Reviewer not yet engaged — no code
+ * context was provided" because it no longer had the diff to
+ * review. That fallback then passed `isNonEmptyReview` (its
+ * `summary` field is non-empty), got posted as the actual review
+ * with 0 findings, and masked the underlying parse-fail — the
+ * operator saw an empty findings table instead of the
+ * "raise --max-output-tokens and retry" / "model regression"
+ * parse-fail diagnostic. Pinned by PR #20 review screenshot.
+ *
+ * Some providers ignore `stream: false` and return an empty SSE
+ * stream; some wrap their output in markdown fences or prose;
+ * some omit the JSON entirely. We retry once with the prefix
+ * appended before falling back to the parse-fail surface — that
+ * often recovers the review without operator intervention.
  *
  * Shared between `openai-compatible.ts` and `copilot.ts` so the
  * self-healing message stays byte-identical regardless of provider.
@@ -174,7 +191,8 @@ export type RequestBody = Record<string, unknown>;
 export const PARSE_FAIL_RETRY_PROMPT =
   "Your previous response did not contain a valid JSON review payload. " +
   "Please respond with ONLY a JSON object matching this schema (no prose, no fences): " +
-  '{"summary": "...", "verdict": "NEEDS_FIX|APPROVED|COMMENT|DISCUSS|SHIP", "comments": [...], "suppressed_comments": [...]}.';
+  '{"summary": "...", "verdict": "NEEDS_FIX|APPROVED|COMMENT|DISCUSS|SHIP", "comments": [...], "suppressed_comments": [...]}.\n\n' +
+  "Original review request follows:\n\n";
 
 export function buildResponsesBody(
   config: {
@@ -186,7 +204,14 @@ export function buildResponsesBody(
   },
   opts?: { readonly userOverride?: string },
 ): RequestBody {
-  const userContent = opts?.userOverride ?? config.user;
+  // When `userOverride` is set (parse-fail retry), APPEND the original
+  // user content so the model retains the PR diff + review instructions.
+  // The override prefix asks the model to emit JSON-only output; the
+  // trailing original content gives it the actual work. See
+  // PARSE_FAIL_RETRY_PROMPT for the why.
+  const userContent = opts?.userOverride !== undefined
+    ? `${opts.userOverride}${config.user}`
+    : config.user;
   const body: Record<string, unknown> = {
     model: config.model,
     input: [
@@ -213,7 +238,12 @@ export function buildChatBody(
   },
   opts?: { readonly userOverride?: string },
 ): RequestBody {
-  const userContent = opts?.userOverride ?? config.user;
+  // When `userOverride` is set (parse-fail retry), APPEND the original
+  // user content so the model retains the PR diff + review instructions.
+  // See `buildResponsesBody` + `PARSE_FAIL_RETRY_PROMPT` for the why.
+  const userContent = opts?.userOverride !== undefined
+    ? `${opts.userOverride}${config.user}`
+    : config.user;
   const body: Record<string, unknown> = {
     model: config.model,
     messages: [
@@ -377,6 +407,229 @@ export function parseReviewPayload(
   }
 
   return { summary, verdict, comments, suppressed_comments };
+}
+
+/**
+ * True when the raw SSE stream ended before the model emitted the
+ * final `response.completed` (or `response.done`) event. Distinguishes
+ * "the stream was truncated" from "the stream completed but the JSON
+ * inside was malformed". Used by the parse-fail diagnostic so reviewers
+ * see "raise --max-output-tokens and retry" instead of a generic
+ * "provider response was not valid JSON".
+ *
+ * Detection walks `data:` lines only (not the raw text), so a review
+ * whose comment body happens to contain the literal string
+ * `"type":"response.completed"` cannot trick the detector into
+ * thinking the stream completed cleanly. Mirrors `tryExtractSse`'s
+ * SSE-spec parsing: blank lines separate events, comment lines
+ * (`:` prefix) are ignored, and the payload is the substring after
+ * `data:` with optional leading space stripped.
+ *
+ * Edge cases that intentionally return `false`:
+ *   - Non-SSE responses (chat-completions, plain JSON): there's no
+ *     stream-completion concept for a single-shot response, so
+ *     truncation only applies to streaming endpoints. Detected by
+ *     absence of any `data:` line.
+ *   - Empty rawText: trivially not a truncated stream.
+ *   - A response.completed event whose output_text was empty: still
+ *     a completed stream, just one whose model output was nothing.
+ *     `tryExtractSse` falls back to the delta accumulation in this
+ *     case but the stream itself terminated cleanly.
+ */
+/**
+ * Scan SSE `data:` lines for the terminal event-type marker.
+ *
+ * Walks `rawText` line-by-line and looks only at the JSON payloads
+ * inside `data:` lines (not at `event:` header lines or arbitrary
+ * text content like review-comment bodies). This is essential because
+ * a model reviewing a diff that contains the literal string
+ * `"type":"response.completed"` would otherwise match the
+ * substring check and trick the parser into thinking the stream
+ * completed cleanly. Mirrors the structure-walk pattern used by
+ * `tryExtractSse` (above) so the SSE contract is enforced the same
+ * way everywhere.
+ */
+function findSseEventTypeMarker(rawText: string): "response.completed" | "response.done" | null {
+  for (const line of rawText.split("\n")) {
+    if (!line.startsWith("data:")) {
+      continue;
+    }
+    // Per SSE spec: data: is followed by an optional single space,
+    // then the payload. Trim the leading space so the JSON parse
+    // (or substring check) sees a clean value.
+    const payload = line.slice("data:".length).replace(/^ /u, "");
+    if (payload === "" || payload === "[DONE]") {
+      continue;
+    }
+    if (payload.includes('"type":"response.completed"')) {
+      return "response.completed";
+    }
+    if (payload.includes('"type":"response.done"')) {
+      return "response.done";
+    }
+  }
+  return null;
+}
+
+/**
+ * True when the raw SSE stream ended before the model emitted the
+ * final `response.completed` (or `response.done`) event. Distinguishes
+ * "the stream was truncated" from "the stream completed but the JSON
+ * inside was malformed". Used by the parse-fail diagnostic so reviewers
+ * see "raise --max-output-tokens and retry" instead of a generic
+ * "provider response was not valid JSON".
+ *
+ * Detection walks `data:` lines only (not the raw text), so a review
+ * whose comment body happens to contain the literal string
+ * `"type":"response.completed"` cannot trick the detector into
+ * thinking the stream completed cleanly. Mirrors `tryExtractSse`'s
+ * SSE-spec parsing: blank lines separate events, comment lines
+ * (`:` prefix) are ignored, and the payload is the substring after
+ * `data:` with optional leading space stripped.
+ *
+ * Edge cases that intentionally return `false`:
+ *   - Non-SSE responses (chat-completions, plain JSON): there's no
+ *     stream-completion concept for a single-shot response, so
+ *     truncation only applies to streaming endpoints. Detected by
+ *     absence of any `data:` line.
+ *   - Empty rawText: trivially not a truncated stream.
+ *   - A response.completed event whose output_text was empty: still
+ *     a completed stream, just one whose model output was nothing.
+ *     `tryExtractSse` falls back to the delta accumulation in this
+ *     case but the stream itself terminated cleanly.
+ */
+export function wasResponseStreamTruncated(rawText: string): boolean {
+  if (rawText.length === 0) {
+    return false;
+  }
+  // Quick exit for non-SSE responses (chat-completions, plain JSON).
+  // Any `data:` line anywhere in the text indicates an SSE stream;
+  // single-shot JSON has none.
+  if (!rawText.includes("data:")) {
+    return false;
+  }
+  return findSseEventTypeMarker(rawText) === null;
+}
+
+/**
+ * Extract the terminal-event payload from an SSE stream. Walks
+ * `data:` lines, parses each as JSON, and returns the FIRST parsed
+ * payload whose `type` field is `response.completed` or
+ * `response.done`. Returns `undefined` if no terminal event was
+ * emitted or if every data: line fails to parse.
+ *
+ * Scoping the search to the SSE event stream (rather than searching
+ * the raw text) is essential: a model reviewing a diff that contains
+ * a `"usage":` literal would otherwise pick up the wrong value.
+ */
+function extractTerminalEventPayload(rawText: string): Record<string, unknown> | undefined {
+  for (const line of rawText.split("\n")) {
+    if (!line.startsWith("data:")) {
+      continue;
+    }
+    const payload = line.slice("data:".length).replace(/^ /u, "");
+    if (payload === "" || payload === "[DONE]") {
+      continue;
+    }
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(payload);
+    } catch {
+      continue;
+    }
+    if (!isRecord(parsed)) continue;
+    const eventType = parsed["type"];
+    if (eventType === "response.completed" || eventType === "response.done") {
+      return parsed;
+    }
+  }
+  return undefined;
+}
+
+/**
+ * Extract a `ProviderUsage` subset from the raw SSE stream's terminal
+ * `response.completed` event's `usage` block. Returns `undefined` when
+ * the stream was truncated (no completed event) or when the provider
+ * didn't emit a usage block. Used by the token-headroom warning so
+ * operators can see whether the model filled its `max_output_tokens`
+ * budget when a parse-fail occurs.
+ *
+ * Scoping: the usage block is read from the terminal event's PARSED
+ * JSON payload — not from a raw `indexOf('"usage":')` substring scan
+ * over the whole rawText. This avoids picking up usage-like JSON
+ * from intermediate events, model review-content bodies that happen
+ * to contain `"usage":`, or any other unrelated occurrence.
+ */
+export function parseProviderUsage(rawText: string): ProviderUsage | undefined {
+  const terminalEvent = extractTerminalEventPayload(rawText);
+  if (terminalEvent === undefined) {
+    return undefined;
+  }
+  const usageRaw = terminalEvent["usage"];
+  if (!isRecord(usageRaw)) {
+    return undefined;
+  }
+  let inputTokens: number | undefined;
+  let outputTokens: number | undefined;
+  let totalTokens: number | undefined;
+  if (typeof usageRaw["input_tokens"] === "number") inputTokens = usageRaw["input_tokens"];
+  if (typeof usageRaw["output_tokens"] === "number") outputTokens = usageRaw["output_tokens"];
+  if (typeof usageRaw["total_tokens"] === "number") totalTokens = usageRaw["total_tokens"];
+  if (inputTokens === undefined && outputTokens === undefined && totalTokens === undefined) {
+    return undefined;
+  }
+  return {
+    ...(inputTokens !== undefined ? { input_tokens: inputTokens } : {}),
+    ...(outputTokens !== undefined ? { output_tokens: outputTokens } : {}),
+    ...(totalTokens !== undefined ? { total_tokens: totalTokens } : {}),
+  };
+}
+
+/**
+ * Structured outcome of classifying a parse-failed provider response.
+ * `truncated` is true when the stream ended without a
+ * `response.completed` event; `usage` carries the model's token
+ * usage when the terminal event emitted one (otherwise undefined).
+ *
+ * Both providers (openai-compatible and Copilot) emit the same shape
+ * here so the parse-fail diagnostic can render a single
+ * reason-specific message regardless of which provider produced the
+ * failure. See `diagnoseParseFailure` for the consumer-facing helper.
+ */
+export type ParseFailureDiagnosis = {
+  readonly truncated: boolean;
+  readonly usage: ProviderUsage | undefined;
+};
+
+/**
+ * Combined truncation-detection + usage-extraction helper. Returns
+ * the diagnosis that callers attach to the ProviderError so the
+ * parse-fail diagnostic can render a reason-specific headline.
+ *
+ * Both `openai-compatible.ts` and `copilot.ts` use this helper
+ * instead of duplicating the inline `wasResponseStreamTruncated` +
+ * `parseProviderUsage` block. Keeping the logic in one place means
+ * the "what counts as truncated" contract is enforced uniformly
+ * across providers. (See the self-review finding on
+ * `src/provider/openai-compatible.ts:263` for the duplication
+ * rationale.)
+ *
+ * Note: this helper does NOT emit the headroom `::warning::` line
+ * that was in the prior inline duplicate. That warning required
+ * BOTH `truncated === true` AND a populated `usage.output_tokens`,
+ * but `parseProviderUsage` only reads usage from the terminal event
+ * — and a stream with the terminal event is by definition NOT
+ * truncated. The combination is unreachable in practice; the
+ * warning was dead code. If a future provider emits usage on
+ * intermediate events, the warning should be re-introduced via a
+ * dedicated `parseIntermediateUsage` helper.
+ */
+export function diagnoseParseFailure(input: {
+  readonly rawText: string;
+}): ParseFailureDiagnosis {
+  const truncated = wasResponseStreamTruncated(input.rawText);
+  const usage = parseProviderUsage(input.rawText);
+  return { truncated, usage };
 }
 
 /**

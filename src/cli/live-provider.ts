@@ -18,6 +18,7 @@ import {
   type LiveProviderOutcome,
   type LiveReview,
   type LiveReviewComment,
+  type ParseFailureReason,
 } from "./live-shared.js";
 import type { ParsedCliArgs } from "./parse-args.js";
 import { buildProviderPrompts } from "./provider-prompts.js";
@@ -95,6 +96,7 @@ export async function requestLiveReview(input: {
             modelId,
             rawText: result.error.rawText ?? "",
             secrets: [providerApiKey, input.platformToken],
+            ...parseFailureReasonFromProviderError(result.error, input.parsed.maxOutputTokens),
           }),
           endpoint: result.error.endpoint,
           provider: COPILOT_PROVIDER_NAME,
@@ -135,6 +137,7 @@ export async function requestLiveReview(input: {
           modelId,
           rawText: result.error.rawText ?? "",
           secrets: [providerApiKey, input.platformToken],
+          ...parseFailureReasonFromProviderError(result.error, input.parsed.maxOutputTokens),
         }),
         endpoint: result.error.endpoint,
         provider: PROVIDER_NAME,
@@ -192,4 +195,28 @@ function readConfiguredModel(parsed: ParsedCliArgs, env: NodeJS.ProcessEnv): str
 function readRequestTimeoutMs(parsed: ParsedCliArgs): number {
   const seconds = parsed.perRequestTimeoutSeconds ?? parsed.reviewTimeoutSeconds;
   return seconds === null || seconds <= 0 ? DEFAULT_REQUEST_TIMEOUT_MS : seconds * 1_000;
+}
+
+/**
+ * Translate a ProviderError's parse-failure fields into the reason
+ * shape that `buildMalformedProviderFallback` consumes. Returns an
+ * empty spread when the error has no truncation signal (the caller
+ * then omits the `reason` field and the fallback renders the generic
+ * "Provider response did not contain a valid JSON review payload"
+ * headline).
+ */
+function parseFailureReasonFromProviderError(
+  error: { readonly truncated: boolean | undefined; readonly usage: { readonly output_tokens?: number; readonly total_tokens?: number } | undefined },
+  maxOutputTokens: number | null,
+): { reason?: ParseFailureReason } {
+  if (error.truncated !== true) {
+    return {};
+  }
+  return {
+    reason: {
+      kind: "truncated",
+      ...(error.usage !== undefined ? { usage: error.usage } : {}),
+      ...(maxOutputTokens !== null ? { maxOutputTokens } : {}),
+    },
+  };
 }

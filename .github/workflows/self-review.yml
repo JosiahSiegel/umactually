@@ -83,6 +83,16 @@ jobs:
           # this log we cannot tell whether the parser extracted the
           # right text or the wrong one.
           debug-raw-response: 'true'
+          # Raised from the default 16000 to 32000 so a model review of
+          # a large PR diff (e.g. this PR's 585-line diff that produced
+          # 8 inline findings + suppressed_comments) doesn't get cut
+          # off mid-stream. The action's parse-fail diagnostic surfaces
+          # a `::warning::` line when the model fills >= 90% of this
+          # budget, so leaving it at the default 16000 would also
+          # produce a useful warning instead of a silent parse-fail.
+          # Override here (not in action.yml) so other callers using
+          # the bundled action aren't affected.
+          max-output-tokens: '32000'
           github_token: ${{ secrets.GITHUB_TOKEN }}
         env:
           UMACTUALLY_API_URL: ${{ secrets.UMACTUALLY_API_URL }}

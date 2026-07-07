@@ -21,16 +21,22 @@
  * Cross-platform rules (GitHub PR review body + Azure DevOps PR thread):
  *   - DO use GFM tables, headings, blockquote, lists, fenced code,
  *     inline code, links, raw Unicode emoji, horizontal rules.
- *   - DO use `<details>`/`<summary>` — verified 2026-07-05 to render as
- *     a collapsible section on BOTH GitHub PR reviews AND Azure DevOps
- *     PR comments (empirical test via playwright against PR #43 thread
- *     575 and the production review thread, both show working
- *     click-to-expand UX). The previous "Azure renders as raw text"
- *     rule was based on 2023-era community reports and is no longer
- *     accurate. The severity-table layout uses `<details>` for verbose
- *     summaries (>500 chars) — pinned by S5a (short summary has no
- *     details) and S5b (long summary wraps in details) in
- *     `test/unit/summary-layouts.test.ts`.
+ *   - DO use `<details>`/`<summary>` — verified to render as a working
+ *     click-to-expand widget on BOTH GitHub PR reviews AND Azure DevOps
+ *     PR comments. Empirical evidence:
+ *       - GitHub: PR #20 self-review renders with disclosure triangle +
+ *         click-to-expand (verified via DOM 2026-07-07).
+ *       - Azure DevOps: PR #53 thread 1620 renders with `▸` disclosure
+ *         marker on each summary; clicking toggles `open` attr; body
+ *         expands to show path + full title (verified via playwright
+ *         + DOM 2026-07-07). Previous "Azure renders as raw text" rule
+ *         was based on 2023-era community reports and is no longer
+ *         accurate for the post-2025 Azure DevOps PR thread renderer.
+ *     The severity-table + dashboard layouts use `<details>` for the
+ *     findings list (one block per finding — see findingsDetailsRow
+ *     docstring for the full rationale) and for verbose summaries
+ *     (>500 chars). Pinned by S5a (short summary uses no <details> in
+ *     the SUMMARY section) and S5b (long summary wraps in <details>).
  *   - DO NOT use raw `<table>` HTML (Azure ignores it).
  *   - DO NOT use task lists `- [x]` / `- [ ]` (Azure ignores check state).
  *   - Body must stay under GitHub's 65,536-char comment limit.
@@ -244,6 +250,50 @@ function groupByFile(
 function findingLine(c: LiveReviewComment, secrets: readonly string[]): string {
   const snippet = truncateSnippet(collapseBody(c, secrets), 100);
   return `\`${cell(c.path)}\`:${c.line} — ${snippet}`;
+}
+
+/**
+ * Render a single finding as a `<details>` collapsible block.
+ *
+ * Mobile-friendly replacement for a GFM table row. GFM tables at
+ * 576px viewport auto-size columns to their widest cell, then wrap
+ * mid-word (`#` column stacks "10" vertically, File:Line breaks
+ * mid-identifier, Title truncates with `…`, Severity header wraps
+ * to "Severit"/"y"). The `<details>` element has no column-width
+ * constraints, so:
+ *   - severity emoji + word always render on one line
+ *   - the summary line never truncates inside a code path
+ *   - the full body, path, and line number render at any width
+ *     once the user expands the row
+ *
+ * Summary line shape: `1 · 🟠 Medium — Indentation regression: line 831 …`
+ * Expanded body shape: blank line, then `📍 \`path\`:line`, then
+ * `> ` blockquoted body (blockquotes survive inside `<details>`
+ * on both GitHub and Azure DevOps).
+ *
+ * `summaryCap` is the budget for the summary-line truncation. The
+ * full title always renders in the expanded body.
+ */
+function findingsDetailsRow(
+  index: number,
+  c: LiveReviewComment,
+  secrets: readonly string[],
+  summaryCap: number,
+): string {
+  const title = collapseBody(c, secrets);
+  const snippet = truncateSnippet(title, summaryCap);
+  const lines: string[] = [];
+  lines.push("<details>");
+  lines.push(
+    `<summary>${index} · ${severityEmoji(c.severity)} ${severityLabel(c.severity)} — ${cell(snippet)}</summary>`,
+  );
+  lines.push("");
+  lines.push(`📍 \`${cell(c.path)}\`:${c.line}`);
+  lines.push("");
+  lines.push(`> ${cell(title)}`);
+  lines.push("");
+  lines.push("</details>");
+  return lines.join("\n");
 }
 
 /**
@@ -602,12 +652,8 @@ function layoutDashboard(data: ReviewData): string {
   if (data.postedComments.length > 0) {
     parts.push("### 🔝 Top findings");
     parts.push("");
-    parts.push("| # | Severity | File:Line | Title |");
-    parts.push("| ---: | :--- | :--- | :--- |");
     sortedPosted(data).slice(0, 5).forEach((c, i) => {
-      const title = collapseBody(c, data.secrets);
-      const snippet = truncateSnippet(title, 80);
-      parts.push(`| ${i + 1} | ${severityEmoji(c.severity)} ${severityLabel(c.severity)} | \`${cell(c.path)}\`:${c.line} | ${cell(snippet)} |`);
+      parts.push(findingsDetailsRow(i + 1, c, data.secrets, 80));
     });
     parts.push("");
   }
@@ -755,27 +801,38 @@ function layoutSeverityTable(data: ReviewData): string {
     parts.push("");
   }
 
-  parts.push("### 📋 Findings");
+parts.push("### 📋 Findings");
   parts.push("");
-  parts.push("| # | Severity | Category | File:Line | Title |");
-  parts.push("| ---: | :--- | :--- | :--- | :--- |");
+  // Mobile-friendly collapsible list. A GFM table at 576px viewport
+  // auto-sizes each column to fit its widest cell, then wraps mid-word
+  // (`#` column stacks "10" → "1"/"0", File:Line breaks inside
+  // `summary-layouts` → `summa`/`ry-`/`layouts.ts`, Title truncates
+  // mid-sentence, Severity header wraps to "Severit"/"y"). None of
+  // those are fixable inside a GFM table because the renderer doesn't
+  // expose column-width controls and `word-wrap: anywhere` will
+  // character-break any unbreakable token that overflows even by 1px.
+  //
+  // `<details>`/`<summary>` is a native HTML element that GitHub's
+  // GFM passes through (verified 2026-07-05 per file header; Azure
+  // DevOps renders the same way in markdown). Each finding gets one
+  // collapsed block: the summary shows severity emoji + word + the
+  // first ~80 chars of the title; clicking expands to show the full
+  // path, line number, and full title with no width constraints.
+  //
+  // Information previously encoded in table columns:
+  //   #       → leading "N · " in the summary line
+  //   Severity→ "🟠 Medium" (emoji + label, no width constraint)
+  //   File:Line → first line of expanded body, prefixed with 📍
+  //   Title  → first 80 chars in summary, full text in expanded body
   if (all.length === 0) {
-    parts.push("| — | — | — | — | _No findings to address_ |");
+    parts.push("_No findings to address._");
+    parts.push("");
   } else {
     all.forEach((c, i) => {
-      const title = collapseBody(c, data.secrets);
-      // Truncate to 50 chars (not 80) so the Title column doesn't
-      // dominate GitHub's proportional table auto-layout. At 80 chars
-      // the title starves the narrow Severity/Category columns,
-      // causing mid-word wrapping ("Mediu/m", "correct/ness") on
-      // GitHub's ~680px PR comment container. 50 keeps the table's
-      // max-content width near the container width so columns barely
-      // compress. ADO's wider container is unaffected either way.
-      const snippet = truncateSnippet(title, 50);
-      parts.push(`| ${i + 1} | ${severityEmoji(c.severity)} ${severityLabel(c.severity)} | ${cell(c.category ?? "general")} | \`${cell(c.path)}\`:${c.line} | ${cell(snippet)} |`);
+      parts.push(findingsDetailsRow(i + 1, c, data.secrets, 80));
     });
+    parts.push("");
   }
-  parts.push("");
 
   if (data.review.summary.trim().length > 0) {
     const safeSummary = redact(data.review.summary, data.secrets);
@@ -1241,17 +1298,27 @@ function layoutReleaseNotes(data: ReviewData): string {
 
   // Map severity → "category"
   type ReleaseNotesBucketName =
-    | "🔴 Fixes (high/critical)"
+    | "🔴 Fixes (critical+)"
     | "🟠 Improvements (medium)"
     | "🟡 Style (low)";
   const buckets: Record<ReleaseNotesBucketName, LiveReviewComment[]> = {
-    "🔴 Fixes (high/critical)": [],
+    "🔴 Fixes (critical+)": [],
     "🟠 Improvements (medium)": [],
     "🟡 Style (low)": [],
   };
+  // Severity-rank → release-notes bucket. Mirrors the unified rank table
+  // in `src/util/severity.ts:severityRank` (leak=6, security=5,
+  // critical=4, high=3, medium/major=2, low/minor=1, info=0). The
+  // "🔴 Fixes (critical+)" bucket intentionally covers the entire top
+  // half (ranks 3-6 — high, critical, security, leak) so security and
+  // leak findings (which the live path can produce when the severity
+  // filter is permissive or bypassed) get bucketed as fixes rather
+  // than silently collapsed into the default "🟡 Style (low)" bucket.
   const SEVERITY_RANK_TO_BUCKET: Record<number, ReleaseNotesBucketName> = {
-    4: "🔴 Fixes (high/critical)",
-    3: "🔴 Fixes (high/critical)",
+    6: "🔴 Fixes (critical+)",
+    5: "🔴 Fixes (critical+)",
+    4: "🔴 Fixes (critical+)",
+    3: "🔴 Fixes (critical+)",
     2: "🟠 Improvements (medium)",
     1: "🟡 Style (low)",
     0: "🟡 Style (low)",

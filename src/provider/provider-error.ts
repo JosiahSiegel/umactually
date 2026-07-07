@@ -21,18 +21,58 @@ export class ProviderError extends Error {
    */
   readonly rawText: string | undefined;
 
+  /**
+   * True when the parse error was caused by a truncated SSE stream —
+   * the provider's response ended before the model emitted a
+   * `response.completed` (or equivalent) event. Distinct from a
+   * completed-but-malformed response (where the stream ended cleanly
+   * but the JSON itself was structurally wrong). Surfaced in the
+   * parse-fail diagnostic so reviewers can tell "raise
+   * --max-output-tokens and retry" apart from "model returned bad JSON".
+   * `undefined` for non-parse errors.
+   */
+  readonly truncated: boolean | undefined;
+
+  /**
+   * Token usage reported by the provider in the `response.completed`
+   * event's `usage` block. Surfaced by the headroom-warning check so
+   * operators can see whether the model filled its token budget
+   * (explains the truncated-stream case). `undefined` when the
+   * provider didn't emit usage data or the stream was truncated
+   * before the completed event.
+   */
+  readonly usage: ProviderUsage | undefined;
+
   constructor(
     readonly code: ProviderDiagnosticCode,
     readonly endpoint: ProviderEndpoint,
     readonly status: number | null,
     readonly requestId: string,
     message: string,
-    options?: ErrorOptions & { readonly rawText?: string },
+    options?: ErrorOptions & {
+      readonly rawText?: string;
+      readonly truncated?: boolean;
+      readonly usage?: ProviderUsage;
+    },
   ) {
     super(message, options);
     this.rawText = options?.rawText;
+    this.truncated = options?.truncated;
+    this.usage = options?.usage;
   }
 }
+
+/**
+ * Subset of the provider's `usage` object the headroom warning reads.
+ * Most providers report these on the response.completed event; the
+ * `total` and `output` fields are the ones that matter for the
+ * "did the model run out of tokens" check.
+ */
+export type ProviderUsage = {
+  readonly input_tokens?: number;
+  readonly output_tokens?: number;
+  readonly total_tokens?: number;
+};
 
 export function sanitizeHttpStatus(endpoint: ProviderEndpoint, status: number): string {
   return `Provider ${endpoint} responded with HTTP ${status}.`;

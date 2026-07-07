@@ -118,8 +118,17 @@ describe("buildReviewBody (shared GitHub + Azure review header)", () => {
       expect(body).toContain(c.path);
       expect(body).toContain(c.body);
     }
-    // The severity-table layout must surface a real findings table.
-    expect(body).toMatch(/\| # \| Severity \| Category \| File:Line \| Title \|/u);
+    // The severity-table layout must surface a real findings list.
+    // Shape: `<details>` collapsible rows (mobile-friendly — see
+    // findingsDetailsRow docstring). The previous 4-col GFM-table
+    // layout caused mid-word wrap at 576px viewport (Severity
+    // header "Severit"/"y", # column "10" stacked, File:Line
+    // broken mid-identifier); <details> has no column-width
+    // constraints so all of that disappears.
+    expect(body).toContain("<summary>1 ·");
+    expect(body).toContain("</details>");
+    expect(body).not.toContain("| # | Severity |");
+    expect(body).not.toContain("&nbsp;&nbsp;&nbsp;&nbsp;");
   });
 
   it("FEAT-PARITY-005 includes severity counts at the top of the card (no raw asterisks)", () => {

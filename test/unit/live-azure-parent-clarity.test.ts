@@ -202,17 +202,34 @@ describe("buildReviewBody — 5-second scannable clarity", () => {
     // Cutover note: the old contract required long summary prose inside
     // <details> blocks. The severity-table layout surfaces the summary
     // inline under `### 📝 Summary` — reviewers see the prose without
-    // having to click, and the findings table is the scannable anchor.
+    // having to click, and the findings list is the scannable anchor.
+    //
+    // Findings DO use `<details>` (mobile-friendly replacement for the
+    // 4-col GFM table — see findingsDetailsRow docstring). The
+    // assertion here scopes to the summary section, which must stay
+    // inline for Azure DevOps (which leaks raw `<details>` HTML
+    // instead of rendering as a collapsible widget).
     const body = buildReviewBody(STD_INPUT);
     const summarySentence = "Three issues need attention before merge.";
     // The summary must still be present in the body.
     expect(body).toContain(summarySentence);
     // And it must live under a Summary heading.
     expect(body).toMatch(/###\s+📝\s+Summary/u);
-    // No <details> wrappers at all in the body — the severity-table
-    // layout deliberately renders everything inline.
-    expect(body).not.toContain("<details>");
-    expect(body).not.toContain("</details>");
+    // No <details> wrappers inside the summary section. The findings
+    // list uses <details> per row, but that's expected (CLARITY-4
+    // is about the SUMMARY section, not findings).
+    const summaryStart = body.indexOf("### 📝 Summary");
+    const afterSummary = body.slice(summaryStart + "### 📝 Summary".length);
+    const summaryEndCandidates = [
+      afterSummary.indexOf("\n---\n"),
+      afterSummary.indexOf("\n### "),
+    ].filter((n) => n >= 0);
+    const summaryEnd = summaryEndCandidates.length > 0
+      ? Math.min(...summaryEndCandidates)
+      : afterSummary.length;
+    const summarySection = afterSummary.slice(0, summaryEnd);
+    expect(summarySection).not.toContain("<details>");
+    expect(summarySection).not.toContain("</details>");
   });
 
   it("CLARITY-5: empty review (no inline + no suppressed) still produces the same shape", () => {
@@ -621,13 +638,19 @@ describe("buildReviewBody — 5-second scannable clarity", () => {
 
       severityCounts: { critical: 0, high: 0, medium: 0, low: 0 },
       secrets: SECRETS,
+      // Explicit empty posted set: 0 findings survived filtering.
+      // (Without this, buildReviewBody's compat shim falls back to
+      // review.comments, which has 3 items, and the table would render
+      // those — that's the contract being tested here.)
+      postedComments: [],
     });
     // No "from model" or "Filtered preview" anywhere — that vocabulary
     // is gone with the cutover.
     expect(body).not.toMatch(/from model/u);
     expect(body).not.toMatch(/🧹/u);
     expect(body).not.toMatch(/Filtered preview/u);
-    // No <details> wrappers.
+    // 0 posted findings → empty placeholder, no <details> rows.
+    expect(body).toContain("_No findings to address._");
     expect(body).not.toContain("<details>");
   });
 
@@ -784,8 +807,10 @@ describe("buildReviewBody — 5-second scannable clarity", () => {
     for (const c of postedComments) {
       expect(body).toContain(c.path);
     }
-    // The numbered column reflects every row.
-    expect(body).toMatch(/\| 10 \|/u);
+    // The numbered column reflects every row. With the new
+    // `<details>` findings list the "10th" row appears in the
+    // summary line as `<summary>10 · …</summary>`.
+    expect(body).toContain("<summary>10 ·");
     // Tally still sums to 10 (CLARITY-15 invariant).
     expect(body).toMatch(/10\s+inline/u);
   });

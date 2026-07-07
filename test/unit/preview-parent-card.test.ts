@@ -3,24 +3,31 @@
 //
 // Cutover context: the legacy "Posted / Considered / Suppressed" three-row
 // layout, the `<details>`-wrapped Posted preview, the off-diff callout,
-// and the legacy preview/off-diff blocks are all gone. The new layout
-// surfaces every posted finding inline in a GFM table, while the pipeline
-// summary line keeps posted/off-diff/filtered reconciliation visible.
+// and the legacy preview/off-diff blocks are all gone.
+//
+// The findings list rendered by `buildReviewBody` is a sequence of
+// `<details>` collapsible rows (mobile-friendly). The summary line on
+// each row carries "N · emoji label — title" and the expanded body
+// shows the full path, line number, and title. The previous GFM-table
+// layout collapsed ugly at 576px viewport (Severity header wrapped to
+// "Severit"/"y", # column stacked "10" vertically, File:Line broke
+// mid-identifier, Title ellipsised mid-sentence); `<details>` has no
+// column-width constraints so all of that disappears.
 //
 // Each test below pins ONE of the four action cases the legacy contract
 // had, updated to the new layout:
 //
-//   - Mixed findings posted (verdict NEEDS_FIX, findings table populated)
-//   - Findings all filtered (verdict DISCUSS, empty findings table)
-//   - Clean review (verdict SHIP, table with `_No findings to address_`)
-//   - Severity desc sort (still required for the table)
+//   - Mixed findings posted (verdict NEEDS_FIX, <details> rows populated)
+//   - Findings all filtered (verdict DISCUSS, empty placeholder)
+//   - Clean review (verdict SHIP, empty placeholder)
+//   - Severity desc sort (still required for the <details> rows)
 
 import { describe, expect, it } from "vitest";
 
 import { buildReviewBody } from "../../src/cli/live-shared.js";
 
 describe("severity-table layout — actionable-only parent card", () => {
-  it("renders a findings table with every posted finding inline", () => {
+  it("renders <details> rows with every posted finding inline", () => {
     const body = buildReviewBody({
       review: {
         summary: "Three issues need attention before merge.",
@@ -47,11 +54,14 @@ describe("severity-table layout — actionable-only parent card", () => {
         { path: "README.md", line: 42, body: "Update example.", severity: "low", category: "docs" },
       ],
     });
-    // Findings table is present and contains every posted finding inline.
-    expect(body).toMatch(/\| # \| Severity \| Category \| File:Line \| Title \|/u);
-    expect(body).toContain("`src/auth.ts`:12");
-    expect(body).toContain("`src/db.ts`:7");
-    expect(body).toContain("`README.md`:42");
+    // Every posted finding has its own <details> row.
+    expect(body).toContain('<summary>1 · 🔴 High — Use bcrypt.</summary>');
+    expect(body).toContain('<summary>2 · 🟠 Medium — Add timeout.</summary>');
+    expect(body).toContain('<summary>3 · 🟡 Low — Update example.</summary>');
+    // Expanded body shows path:line.
+    expect(body).toContain("📍 `src/auth.ts`:12");
+    expect(body).toContain("📍 `src/db.ts`:7");
+    expect(body).toContain("📍 `README.md`:42");
     // Manifest carries the suppressed count so AI agents can reconcile.
     const manifest = body.match(/<!--\s*umactually-pr-review:manifest\s+(\{[\s\S]*?\})\s*-->/u);
     expect(manifest).not.toBeNull();
@@ -68,12 +78,13 @@ describe("severity-table layout — actionable-only parent card", () => {
     expect(body).toMatch(/3\s+inline/u);
     // Severity tally uses 🏷️.
     expect(body).toMatch(/🏷️/u);
-    // No `<details>` blocks.
-    expect(body).not.toContain("<details>");
+    // No GFM-table severity cells (the old wrap-regression layout).
+    expect(body).not.toContain("| # | Severity |");
+    expect(body).not.toContain("&nbsp;&nbsp;&nbsp;&nbsp;");
   });
 
-  it("renders an empty findings table when every finding was filtered out", () => {
-    // 0 posted, 0 off-diff. The findings table shows the empty placeholder.
+  it("renders an empty placeholder when every finding was filtered out", () => {
+    // 0 posted, 0 off-diff. The findings list shows the empty placeholder.
     const body = buildReviewBody({
       review: {
         summary: "",
@@ -94,9 +105,9 @@ describe("severity-table layout — actionable-only parent card", () => {
       secrets: [],
       postedComments: [],
     });
-    // Findings table is present with the empty placeholder row.
-    expect(body).toMatch(/\| # \| Severity \| Category \| File:Line \| Title \|/u);
-    expect(body).toMatch(/No findings to address/u);
+    // Empty placeholder, no <details> rows (no posted findings).
+    expect(body).toContain("_No findings to address._");
+    expect(body).not.toContain("<details>");
     // No legacy "Filtered preview" header.
     expect(body).not.toMatch(/🧹/u);
     expect(body).not.toMatch(/Filtered preview/u);
@@ -128,7 +139,9 @@ describe("severity-table layout — actionable-only parent card", () => {
     });
 
     expect(body).toMatch(/💬\s+DISCUSS/u);
-    expect(body).toMatch(/\| — \| — \| — \| — \| _No findings to address_ \|/u);
+    // Empty placeholder, no <details> rows.
+    expect(body).toContain("_No findings to address._");
+    expect(body).not.toContain("<details>");
     // Headline leads with the posted count (0). The model produced
     // 1 finding but it was filtered (severity/minor policy) so 0
     // made it to the postable set. The reader sees "0 inline
@@ -137,7 +150,7 @@ describe("severity-table layout — actionable-only parent card", () => {
     expect(body).not.toMatch(/🏷️/u);
   });
 
-  it("every posted finding appears as a row in the table", () => {
+  it("every posted finding appears as its own <details> row", () => {
     const body = buildReviewBody({
       review: {
         summary: "",
@@ -162,17 +175,17 @@ describe("severity-table layout — actionable-only parent card", () => {
         { path: "src/auth.ts", line: 16, body: "Use bcrypt", severity: "high", category: "security" },
       ],
     });
-    // Every row appears as its own line in the table.
-    for (let i = 1; i <= 3; i += 1) {
-      expect(body).toMatch(new RegExp(`\\|\\s+${i}\\s+\\|`, "u"));
-    }
+    // Each finding has its own summary line numbered 1, 2, 3.
+    expect(body).toContain('<summary>1 · 🔴 High — Use bcrypt</summary>');
+    expect(body).toContain('<summary>2 · 🔴 High — Use bcrypt</summary>');
+    expect(body).toContain('<summary>3 · 🔴 High — Use bcrypt</summary>');
     // No legacy "Posted preview" or "Filtered preview" headers.
     expect(body).not.toMatch(/📋\s+Posted preview/u);
     expect(body).not.toMatch(/🧹\s+Filtered preview/u);
     expect(body).not.toMatch(/🔕/u);
   });
 
-  it("clean review (0 posted + 0 suppressed) shows verdict + empty table + summary + footer", () => {
+  it("clean review (0 posted + 0 suppressed) shows verdict + empty placeholder + summary + footer", () => {
     const body = buildReviewBody({
       review: { summary: "All clear.", verdict: "SHIP", comments: [], suppressedComments: [] },
       provider: "openai-compatible",
@@ -194,17 +207,17 @@ describe("severity-table layout — actionable-only parent card", () => {
     expect(body).not.toMatch(/📋\s+Posted preview/u);
     expect(body).not.toMatch(/📍/u);
     expect(body).not.toMatch(/🔕/u);
-    // No <details> wrappers.
+    // No <details> rows for posted findings (none posted).
     expect(body).not.toContain("<details>");
     // Verdict + summary + footer still present.
     expect(body).toMatch(/✅\s+SHIP/u);
     expect(body).toMatch(/All clear\./u);
     expect(body).toMatch(/0\s+inline/u);
-    // Empty findings table placeholder is rendered.
+    // Empty findings placeholder is rendered.
     expect(body).toMatch(/No findings to address/u);
   });
 
-  it("findings table is sorted by severity desc (highest first)", () => {
+  it("findings list is sorted by severity desc (highest first)", () => {
     const body = buildReviewBody({
       review: {
         summary: "Mixed severities.",
