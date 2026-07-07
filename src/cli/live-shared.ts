@@ -15,7 +15,6 @@ import { isPositiveSafeInteger, isRecord, isSafeInteger } from "../util/json-gua
 import { renderSummary, type LayoutId, type ReviewData as LayoutReviewData } from "../render/summary-layouts.js";
 import { countBySeverity as countBySeverityUtil } from "../util/severity.js";
 import { mapVerdictToAzureStatus, mapVerdictToGithubEvent, reconcileVerdictForEmptySeverityCounts } from "../util/verdict.js";
-import { parseSeverityFromUnknown } from "../config/parsers.js";
 import { shouldKeepFinding } from "../config/severity.js";
 import type { Severity } from "../config/types.js";
 import type { ProviderComment } from "../provider/provider-parse.js";
@@ -794,21 +793,19 @@ export function ensureHttpOk(response: Response, code: string, action: string): 
 export { isRecord };
 
 function passesSeverityPolicy(comment: LiveReviewComment, parsed: ParsedCliArgs): boolean {
-  const minimum = parsed.minimumSeverity;
-  // null means "no threshold configured" — every finding passes.
+  // `minimumSeverityInternal` is pre-resolved at arg-parse time (CLI
+  // enum → internal Severity via the alias table). Reading it here
+  // avoids re-parsing on every comment and ensures a malformed value
+  // fails fast at the CLI boundary instead of throwing
+  // InvalidConfigError deep in the live path.
+  const minimum = parsed.minimumSeverityInternal;
   if (minimum === null) return true;
   // Delegate the threshold + security/leak carve-out to the canonical
-  // `shouldKeepFinding` so the live path and the config layer share one
-  // implementation. The live-path CLI enum (`low|medium|high`) is mapped
-  // to the internal `Severity` via `parseSeverityFromUnknown`'s alias
-  // table (low→minor, medium→major, high→critical) — see
-  // `src/config/parsers.ts:SEVERITY_ALIASES`. Without the delegation,
-  // any future change to the carve-out semantics would have to land in
-  // both `src/config/severity.ts` and `src/cli/live-shared.ts`, which
-  // is exactly the kind of silent divergence this refactor is meant to
+  // `shouldKeepFinding` so the live path and the config layer share
+  // one implementation. Without the delegation, any future change to
+  // the carve-out semantics would have to land in both
+  // `src/config/severity.ts` and `src/cli/live-shared.ts`, which is
+  // exactly the kind of silent divergence this refactor is meant to
   // prevent.
-  return shouldKeepFinding(
-    { minimum: parseSeverityFromUnknown(minimum, "live.minimumSeverity") },
-    comment.severity.toLowerCase() as Severity,
-  );
+  return shouldKeepFinding({ minimum }, comment.severity.toLowerCase() as Severity);
 }

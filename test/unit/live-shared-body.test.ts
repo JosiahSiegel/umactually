@@ -432,6 +432,53 @@ describe("buildReviewBody — severity-tally filter marker", () => {
     expect(body).toContain(LEGEND);
   });
 
+  it("security + leak carve-out: severity 'security' / 'leak' findings are never asterisked regardless of minimumSeverity", () => {
+    // The four display tiers (critical/high/medium/low) are user-facing
+    // buckets; security + leak are CARVE-OUT findings that bypass the
+    // threshold entirely. They should never appear in the rendered tally
+    // at all (they're not in the four-tier summary), AND they should
+    // not be filtered out of postable comments. This test pins both:
+    // the rendered tally does not include `security*` or `leak*`
+    // markers, and the severity counts passed in are preserved as-is
+    // (the render layer doesn't decrement them).
+    const securityReview: LiveReview = {
+      summary: "test review",
+      verdict: "NEEDS_FIX",
+      comments: [
+        { path: "src/a.ts", line: 1, body: "leak", severity: "leak", category: "security" },
+        { path: "src/b.ts", line: 2, body: "sec", severity: "security", category: "security" },
+        { path: "src/c.ts", line: 3, body: "critical issue", severity: "critical", category: "security" },
+        { path: "src/d.ts", line: 4, body: "low issue", severity: "low", category: "style" },
+      ],
+      suppressedComments: [],
+    };
+    const body = buildReviewBody({
+      review: securityReview,
+      provider: "openai-compatible",
+      modelId: "auto",
+      validCommentCount: 3, // leak + security + critical survive; low filtered
+      suppressedCommentCount: 0,
+      offDiffFromComments: [],
+      // Caller computes severityCounts from the postable set: leak +
+      // security + critical survive, low filtered. security/leak
+      // don't appear in the rendered 4-tier tally because they are
+      // not display tiers — they're carve-outs.
+      severityCounts: { critical: 1, leak: 1, security: 1 },
+      secrets: SECRETS,
+      minimumSeverity: "high",
+    });
+    // No `security*` or `leak*` markers — they aren't display tiers.
+    expect(body).not.toMatch(/security\*/u);
+    expect(body).not.toMatch(/leak\*/u);
+    // critical is the highest visible tier; only it shows in the tally.
+    expect(body).toContain("🏷️ `1` critical");
+    // The filtered markers (medium*, low*) come from the threshold,
+    // not from the carve-out. With minimumSeverity='high' and only
+    // critical+security+leak in the postable set, no medium/low
+    // tiers are visible to be marked.
+    expect(body).toMatch(/`0` medium\* · `0` low\*/u);
+  });
+
   it("asterisk + legend appear on the `severity-table` default layout (the one buildReviewBody dispatches to)", () => {
     // The severity-table layout (LAYOUT_DEFAULT) is what buildReviewBody
     // renders by default. It uses the inline `severityTally` form (NOT

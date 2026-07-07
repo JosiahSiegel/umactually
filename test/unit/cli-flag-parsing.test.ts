@@ -124,6 +124,7 @@ describe("CLI flag parsing RED contract", () => {
       sonarProjectKey: "umactually",
       sonarTimeoutSeconds: null,
       minimumSeverity: "medium",
+      minimumSeverityInternal: "major",
       maxComments: null,
       reviewFileLimit: null,
       detectLeaks: true,
