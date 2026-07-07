@@ -764,7 +764,14 @@ function layoutSeverityTable(data: ReviewData): string {
   } else {
     all.forEach((c, i) => {
       const title = collapseBody(c, data.secrets);
-      const snippet = truncateSnippet(title, 80);
+      // Truncate to 50 chars (not 80) so the Title column doesn't
+      // dominate GitHub's proportional table auto-layout. At 80 chars
+      // the title starves the narrow Severity/Category columns,
+      // causing mid-word wrapping ("Mediu/m", "correct/ness") on
+      // GitHub's ~680px PR comment container. 50 keeps the table's
+      // max-content width near the container width so columns barely
+      // compress. ADO's wider container is unaffected either way.
+      const snippet = truncateSnippet(title, 50);
       parts.push(`| ${i + 1} | ${severityEmoji(c.severity)} ${severityLabel(c.severity)} | ${cell(c.category ?? "general")} | \`${cell(c.path)}\`:${c.line} | ${cell(snippet)} |`);
     });
   }
