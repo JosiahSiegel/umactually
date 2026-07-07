@@ -675,10 +675,17 @@ describe("config: legacy ignore-minor env-var warning", () => {
   // that still set these will get a one-time stderr warning pointing
   // them at minimum-severity. Without this test, a future refactor
   // could drop the warning and silently regress the migration nudge.
-  it("emits a stderr warning when UMACTUALLY_IGNORE_MINOR is set", () => {
+  beforeEach(() => {
+    // Reset the module-scoped dedupe set between tests by clearing
+    // the module cache for env-sources. Otherwise a test that warns
+    // would suppress the warning in the next test.
+    vi.resetModules();
+  });
+  it("emits a stderr warning when UMACTUALLY_IGNORE_MINOR is set", async () => {
+    const { readEnvSources: readFresh } = await import("../../src/config/env-sources.js");
     const stderr = vi.spyOn(process.stderr, "write").mockImplementation(() => true);
     try {
-      readEnvSources({ UMACTUALLY_IGNORE_MINOR: "true" });
+      readFresh({ UMACTUALLY_IGNORE_MINOR: "true" });
       expect(stderr).toHaveBeenCalled();
       const message = stderr.mock.calls.map((call) => String(call[0])).join("");
       expect(message).toMatch(/UMACTUALLY_IGNORE_MINOR/u);
@@ -687,10 +694,11 @@ describe("config: legacy ignore-minor env-var warning", () => {
       stderr.mockRestore();
     }
   });
-  it("emits a stderr warning when REVIEW_IGNORE_MINOR is set", () => {
+  it("emits a stderr warning when REVIEW_IGNORE_MINOR is set", async () => {
+    const { readEnvSources: readFresh } = await import("../../src/config/env-sources.js");
     const stderr = vi.spyOn(process.stderr, "write").mockImplementation(() => true);
     try {
-      readEnvSources({ REVIEW_IGNORE_MINOR: "true" });
+      readFresh({ REVIEW_IGNORE_MINOR: "true" });
       expect(stderr).toHaveBeenCalled();
       const message = stderr.mock.calls.map((call) => String(call[0])).join("");
       expect(message).toMatch(/REVIEW_IGNORE_MINOR/u);
@@ -698,10 +706,40 @@ describe("config: legacy ignore-minor env-var warning", () => {
       stderr.mockRestore();
     }
   });
-  it("does not warn when legacy env vars are absent", () => {
+  it("combines both legacy env vars into a single warning line when both are set", async () => {
+    const { readEnvSources: readFresh } = await import("../../src/config/env-sources.js");
     const stderr = vi.spyOn(process.stderr, "write").mockImplementation(() => true);
     try {
-      readEnvSources({ SOME_OTHER_VAR: "true" });
+      readFresh({ UMACTUALLY_IGNORE_MINOR: "true", REVIEW_IGNORE_MINOR: "true" });
+      // Single warning line covering both names — no back-to-back spam.
+      const message = stderr.mock.calls.map((call) => String(call[0])).join("");
+      expect(message).toMatch(/UMACTUALLY_IGNORE_MINOR/u);
+      expect(message).toMatch(/REVIEW_IGNORE_MINOR/u);
+      // Exactly one stderr write for the migration warning.
+      expect(stderr.mock.calls.length).toBe(1);
+    } finally {
+      stderr.mockRestore();
+    }
+  });
+  it("does not warn twice when readEnvSources is called multiple times", async () => {
+    const { readEnvSources: readFresh } = await import("../../src/config/env-sources.js");
+    const stderr = vi.spyOn(process.stderr, "write").mockImplementation(() => true);
+    try {
+      readFresh({ UMACTUALLY_IGNORE_MINOR: "true" });
+      readFresh({ UMACTUALLY_IGNORE_MINOR: "true" });
+      readFresh({ UMACTUALLY_IGNORE_MINOR: "true" });
+      // The module-scoped dedupe set survives across calls within
+      // the same process — only the first call warns.
+      expect(stderr.mock.calls.length).toBe(1);
+    } finally {
+      stderr.mockRestore();
+    }
+  });
+  it("does not warn when legacy env vars are absent", async () => {
+    const { readEnvSources: readFresh } = await import("../../src/config/env-sources.js");
+    const stderr = vi.spyOn(process.stderr, "write").mockImplementation(() => true);
+    try {
+      readFresh({ SOME_OTHER_VAR: "true" });
       const message = stderr.mock.calls.map((call) => String(call[0])).join("");
       expect(message).not.toMatch(/IGNORE_MINOR/u);
     } finally {

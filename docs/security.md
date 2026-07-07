@@ -22,12 +22,16 @@ If `highConfidenceLeakCount` is non-zero, treat the run as a security incident: 
 
 ## minimum-severity cannot hide leaks or security findings
 
-`minimum-severity` (default `medium`) is the sole severity filter for posted inline findings. Raising the threshold suppresses findings below the configured tier (e.g. `medium` filters `info` and `low`; `high` filters `info`, `low`, and `medium`), but it does **not** suppress:
+`minimum-severity` (default `medium`) filters out findings below the configured tier. The threshold applies uniformly to every finding, with one carve-out: **`security` and `leak` findings ALWAYS survive any threshold.**
 
-- High-confidence leaks detected during redaction.
-- Security findings emitted by the review provider.
+Concretely, the threshold behavior:
 
-The carve-out is unconditional: `security` and `leak` findings bypass every configured threshold. They cannot be turned off via `minimum-severity` or any other input — to suppress them you must remove them at the source (e.g. stop posting the credential, fix the underlying code).
+- `low` — surfaces everything except `info`.
+- `medium` (default) — filters `info` and `low`.
+- `high` — filters `info`, `low`, and `medium`.
+- `critical` — filters everything below `critical`.
+
+The carve-out is unconditional. `security` and `leak` findings bypass every configured threshold and cannot be turned off via `minimum-severity` or any other input — to suppress them you must remove them at the source (e.g. stop posting the credential, fix the underlying code).
 
 **What the carve-out does NOT cover:** `high` and `critical` findings are filtered by `minimum-severity` like any other tier. Setting `minimum-severity: high` suppresses `critical` along with everything below it. Only `security` and `leak` are unconditionally preserved — nothing else is exempt from the threshold.
 

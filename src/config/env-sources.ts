@@ -163,14 +163,26 @@ const LEGACY_IGNORE_MINOR_ENV_VARS: ReadonlySet<string> = new Set([
   "REVIEW_IGNORE_MINOR",
 ]);
 
+// Per-process dedupe so a single CLI invocation that calls
+// `readEnvSources` multiple times (config loader, scenario tests, etc.)
+// doesn't spam stderr with the same warning. The set is module-scoped
+// so it lives for the lifetime of the process — the warning is meant
+// to be "once per session", not "once per call".
+const WARNED_LEGACY_ENV_VARS: Set<string> = new Set();
+
 function warnIfLegacyIgnoreMinorEnvVarsAreSet(env: NodeJS.ProcessEnv): void {
+  const setNow: string[] = [];
   for (const name of LEGACY_IGNORE_MINOR_ENV_VARS) {
+    if (WARNED_LEGACY_ENV_VARS.has(name)) continue;
     const value = env[name];
     if (typeof value === "string" && value.trim().length > 0) {
-      process.stderr.write(
-        `[umactually] env ${name} is set but no longer honored. ` +
-          `Use minimum-severity (low|medium|high, default medium) instead.\n`,
-      );
+      setNow.push(name);
     }
   }
+  if (setNow.length === 0) return;
+  for (const name of setNow) WARNED_LEGACY_ENV_VARS.add(name);
+  process.stderr.write(
+    `[umactually] env ${setNow.join(", ")} is set but no longer honored. ` +
+      `Use minimum-severity (low|medium|high, default medium) instead.\n`,
+  );
 }
