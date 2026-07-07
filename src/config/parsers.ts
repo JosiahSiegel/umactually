@@ -74,6 +74,23 @@ const SEVERITY_ALIASES: Readonly<Record<string, Severity | undefined>> = Object.
   high: "critical",
 });
 
+// Startup invariant: every alias target must be a canonical Severity in
+// VALID_SEVERITIES. The TypeScript `Record<... , Severity | undefined>`
+// signature catches invalid targets at compile time, but a future
+// relaxation (e.g. widening the type during a refactor) would let bad
+// aliases slip through. This assertion runs once at module load and
+// throws if anyone introduces `"low": "banana"`-style drift. The
+// pin-by-test in `test/unit/config-extended.test.ts:config:
+// minimum-severity default + alias mapping` covers the live case; this
+// is the compile-time-fallback for static analysis.
+for (const [alias, target] of Object.entries(SEVERITY_ALIASES)) {
+  if (target !== undefined && !VALID_SEVERITIES.has(target)) {
+    throw new Error(
+      `severity alias "${alias}" maps to non-canonical severity ${JSON.stringify(target)}`,
+    );
+  }
+}
+
 export function parseSeverityFromUnknown(value: unknown, field: string): Severity {
   if (typeof value !== "string") {
     throw new InvalidConfigError(field, `expected severity string, received ${typeof value}`);
