@@ -55,22 +55,38 @@ describe("config: severity rank + bypass", () => {
     expect(isSeverityAtLeast("info", "info")).toBe(true);
   });
 
-  it("ignoreMinor suppresses info and minor only", () => {
-    expect(shouldKeepFinding({ ignoreMinor: true, minimum: "minor" }, "info")).toBe(false);
-    expect(shouldKeepFinding({ ignoreMinor: true, minimum: "minor" }, "minor")).toBe(false);
-    expect(shouldKeepFinding({ ignoreMinor: true, minimum: "minor" }, "major")).toBe(true);
+  it("minimum threshold filters below-tier findings", () => {
+    expect(shouldKeepFinding({ minimum: "minor" }, "info")).toBe(false);
+    expect(shouldKeepFinding({ minimum: "minor" }, "minor")).toBe(true);
+    expect(shouldKeepFinding({ minimum: "minor" }, "major")).toBe(true);
   });
 
-  it("ignoreMinor never suppresses security or leak", () => {
-    expect(shouldKeepFinding({ ignoreMinor: true, minimum: "minor" }, "security")).toBe(true);
-    expect(shouldKeepFinding({ ignoreMinor: true, minimum: "minor" }, "leak")).toBe(true);
+  it("minimum severity filters across minimum-severity enum values", () => {
+    // CLI/action users pass low|medium|high. shouldKeepFinding receives the
+    // internal Severity threshold, so this test pins the alias mapping:
+    // low → minor, medium → major, high → critical.
+    const allSeverities: readonly Severity[] = ["info", "minor", "major", "critical", "security", "leak"];
+    const cases: ReadonlyArray<{
+      readonly minimumSeverity: "low" | "medium" | "high";
+      readonly minimum: Severity;
+      readonly kept: readonly Severity[];
+    }> = [
+      { minimumSeverity: "low", minimum: "minor", kept: ["minor", "major", "critical", "security", "leak"] },
+      { minimumSeverity: "medium", minimum: "major", kept: ["major", "critical", "security", "leak"] },
+      { minimumSeverity: "high", minimum: "critical", kept: ["critical", "security", "leak"] },
+    ];
+
+    for (const c of cases) {
+      const actual = allSeverities.filter((severity) => shouldKeepFinding({ minimum: c.minimum }, severity));
+      expect(actual, c.minimumSeverity).toEqual(c.kept);
+    }
   });
 
-  it("minimum threshold filters without ignoreMinor", () => {
-    expect(shouldKeepFinding({ ignoreMinor: false, minimum: "critical" }, "major")).toBe(false);
-    expect(shouldKeepFinding({ ignoreMinor: false, minimum: "critical" }, "critical")).toBe(true);
-    expect(shouldKeepFinding({ ignoreMinor: false, minimum: "critical" }, "security")).toBe(true);
-    expect(shouldKeepFinding({ ignoreMinor: false, minimum: "critical" }, "leak")).toBe(true);
+  it("security and leak ALWAYS bypass minimum threshold (security policy)", () => {
+    for (const minimum of ["critical", "major", "minor"] as const) {
+      expect(shouldKeepFinding({ minimum }, "security"), `minimum=${minimum}`).toBe(true);
+      expect(shouldKeepFinding({ minimum }, "leak"), `minimum=${minimum}`).toBe(true);
+    }
   });
 
   it("leak and security bypass minimum thresholds by rank", () => {
@@ -393,7 +409,7 @@ describe("config: loadConfigFromSources precedence", () => {
     expect(result.leakDetection).toBe(true);
     expect(result.redactorEnabled).toBe(true);
     expect(result.severity.maxComments).toBe(50);
-    expect(result.severity.minimum).toBe("minor");
+    expect(result.severity.minimum).toBe("major");
     expect(result.timeouts.reviewSeconds).toBe(300);
     expect(result.sonar.enabled).toBe(false);
   });
@@ -605,7 +621,6 @@ describe("config: readEnvSources", () => {
       UMACTUALLY_SONAR_TOKEN: "sonar-token",
       UMACTUALLY_SONAR_PROJECT_KEY: "umactually",
       UMACTUALLY_INCLUDE_SONARQUBE: "true",
-      UMACTUALLY_IGNORE_MINOR: "false",
       UMACTUALLY_DETECT_LEAKS: "true",
       REVIEW_REDACTOR_ENABLED: "false",
     });
@@ -632,7 +647,6 @@ describe("config: readEnvSources", () => {
     expect(sources.sonarToken).toBe("sonar-token");
     expect(sources.sonarProject).toBe("umactually");
     expect(sources.sonarEnabled).toBe("true");
-    expect(sources.ignoreMinor).toBe("false");
     expect(sources.leakDetection).toBe("true");
     expect(sources.redactorEnabled).toBe("false");
   });

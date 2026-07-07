@@ -98,22 +98,22 @@ describe("preparePostedReview", () => {
     expect(prepared.suppressedCommentCount).toBe(1);
   });
 
-  it("applies severity filter (ignoreMinor hides info/minor)", () => {
-    // Given: low/minor and info findings are mixed with an actionable high finding.
-    const minor = makeComment({ line: 1, severity: "low" });
+  it("applies severity filter", () => {
+    // Given: low and info findings are mixed with an actionable high finding.
+    const low = makeComment({ line: 1, severity: "low" });
     const info = makeComment({ line: 2, severity: "info" });
     const high = makeComment({ line: 3, severity: "high" });
-    const review = makeReview({ comments: [minor, info, high] });
+    const review = makeReview({ comments: [low, info, high] });
 
-    // When: minor findings are ignored and the minimum posted severity is low.
+    // When: the minimum posted severity is low.
     const prepared = prepareReview({
       review,
-      args: ["--ignore-minor", "--minimum-severity", "low"],
+      args: ["--minimum-severity", "low"],
     });
 
-    // Then: the low/minor and info entries are excluded from the postable set.
-    expect(prepared.postableComments).toEqual([high]);
-    expect(prepared.postedComments).toEqual([high]);
+    // Then: low (= threshold) and high (> threshold) survive; info (< threshold) is excluded.
+    expect(prepared.postableComments).toEqual([low, high]);
+    expect(prepared.postedComments).toEqual([low, high]);
   });
 
   it("respects maxComments cap", () => {
