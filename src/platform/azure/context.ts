@@ -34,12 +34,15 @@ const SYSTEM_ACCESSTOKEN_ALIAS = "SYSTEM_ACCESSTOKEN";
 const AZURE_DEVOPS_TOKEN_ALIAS = "AZURE_DEVOPS_TOKEN";
 const AZURE_DEVOPS_HOST = "dev.azure.com";
 
-export function readAzureContext(env: NodeJS.ProcessEnv): AzureContext {
+export function readAzureContext(
+  env: NodeJS.ProcessEnv,
+  overrides?: { readonly prNumber?: number | undefined },
+): AzureContext {
   const token = readAzureToken(env);
   const org = readAzureOrg(env);
   const project = readAzureProject(env);
   const repoId = readAzureRepoId(env);
-  const prNumber = readAzurePrNumber(env);
+  const prNumber = readAzurePrNumber(env, overrides?.prNumber);
   const sourceCommit = readAzureSha(env);
   const targetBranch = readAzureTargetBranch(env);
 
@@ -117,10 +120,44 @@ function readAzureRepoId(env: NodeJS.ProcessEnv): string {
   return repoId;
 }
 
-function readAzurePrNumber(env: NodeJS.ProcessEnv): number {
+function readAzurePrNumber(
+  env: NodeJS.ProcessEnv,
+  override?: number,
+): number {
+  // Prefer an explicit CLI flag (`--pr-number`) override so manual
+  // invocations outside of an Azure Pipelines PR build work without
+  // synthesising SYSTEM_PULLREQUEST_PULLREQUESTID. The flag is
+  // validated at the CLI boundary (see src/cli/validate.ts), but we
+  // re-validate here so direct callers of readAzureContext (tests,
+  // future internal call sites) cannot smuggle a non-positive value
+  // past the boundary.
+  if (override !== undefined) {
+    if (!Number.isInteger(override) || override <= 0) {
+      throw new AzureContextError(
+        "AZURE_PR_NUMBER_INVALID",
+        "Azure CLI flag --pr-number must be a positive integer.",
+      );
+    }
+    return override;
+  }
   const raw = env["SYSTEM_PULLREQUEST_PULLREQUESTID"];
   if (raw === undefined || raw.length === 0) {
-    throw new AzureContextError("AZURE_PR_NUMBER_INVALID", "Azure Pipelines SYSTEM_PULLREQUEST_PULLREQUESTID must be set.");
+    throw new AzureContextError(
+      "AZURE_PR_NUMBER_INVALID",
+      [
+        "Azure Pipelines SYSTEM_PULLREQUEST_PULLREQUESTID must be set.",
+        "",
+        "Recovery options:",
+        "  (1) Run as a build validation policy on an Azure Repos branch —",
+        "      Azure Pipelines sets SYSTEM_PULLREQUEST_PULLREQUESTID automatically.",
+        "      See docs/azure-devops.md.",
+        "  (2) For manual/CLI invocations, pass --pr-number <N> on the command line",
+        "      (in addition to supplying BUILD_REPOSITORY_ID, SYSTEM_COLLECTIONURI,",
+        "      SYSTEM_TEAMPROJECT, SYSTEM_PULLREQUEST_SOURCECOMMITID,",
+        "      SYSTEM_PULLREQUEST_TARGETBRANCHNAME, and either SYSTEM_ACCESSTOKEN",
+        "      or AZURE_DEVOPS_TOKEN as env vars).",
+      ].join("\n"),
+    );
   }
   // Strict helper: "42abc" must NOT coerce to 42 (which would land on a
   // 404 from the Azure DevOps REST API instead of a typed error).
@@ -128,7 +165,18 @@ function readAzurePrNumber(env: NodeJS.ProcessEnv): number {
   // so the remaining guard is "must be a positive integer".
   const parsed = parseStrictInt(raw);
   if (parsed === null || parsed <= 0) {
-    throw new AzureContextError("AZURE_PR_NUMBER_INVALID", "Azure Pipelines SYSTEM_PULLREQUEST_PULLREQUESTID must be a positive integer.");
+    throw new AzureContextError(
+      "AZURE_PR_NUMBER_INVALID",
+      [
+        "Azure Pipelines SYSTEM_PULLREQUEST_PULLREQUESTID must be a positive integer.",
+        "",
+        "Recovery options:",
+        "  (1) Run as a build validation policy on an Azure Repos branch —",
+        "      Azure Pipelines sets SYSTEM_PULLREQUEST_PULLREQUESTID automatically.",
+        "  (2) For manual/CLI invocations, pass --pr-number <N> instead of relying",
+        "      on the env var (the flag accepts positive integers only).",
+      ].join("\n"),
+    );
   }
   return parsed;
 }

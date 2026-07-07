@@ -156,7 +156,12 @@ export async function runAzureLive(input: {
   await postAzureStatus({
     context,
     fetchImpl,
-    state: mapReviewVerdictToAzureStatus(provider.review.verdict),
+    // Use the *effective* verdict (post-reconciliation) so the Azure
+    // PR status matches the review body. A NEEDS_FIX review whose
+    // findings were all severity-filtered out surfaces here as
+    // `succeeded`, matching the `📊 0 inline findings` body and
+    // avoiding a misleading `pending` check against an empty review.
+    state: mapReviewVerdictToAzureStatus(prepared.effectiveVerdict),
     description: provider.review.summary,
   });
 
@@ -173,7 +178,10 @@ export async function runAzureLive(input: {
     message: successMessage,
     // Surface the live counts for the self-review guard artifact.
     inlineThreadCount: postedIds.length,
-    verdict: provider.review.verdict,
+    // Use the *effective* verdict (post-reconciliation) so the artifact
+    // matches the Azure PR status and the body. See the matching
+    // comment on the GitHub side in `live-github.ts`.
+    verdict: prepared.effectiveVerdict,
   };
 }
 

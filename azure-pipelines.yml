@@ -43,11 +43,13 @@ steps:
   - script: npm ci
     displayName: Install dependencies
 
-  - script: npm run typecheck
-    displayName: Typecheck
-
-  - script: npm test -- --run
-    displayName: Run tests
+  - script: bash scripts/ci-validate.sh
+    displayName: Run CI validation suite
+    # Validation step delegates to scripts/ci-validate.sh so this
+    # pipeline and examples/azure/azure-pipelines.yml share one
+    # implementation of the typecheck + test + bundle + freshness gates.
+    # The script also re-bundles dist/ so the Azure live review below
+    # cannot silently consume a stale bundle.
 
   - script: bash scripts/prepare-azure-pr-inputs.sh
     displayName: Prepare Azure PR inputs

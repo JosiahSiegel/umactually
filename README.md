@@ -86,7 +86,7 @@ For a first-time import or vendoring PR that exceeds the 200-file default cap, s
 
 ## Azure DevOps quickstart
 
-Azure DevOps uses the bundled CLI directly from a pipeline step. This repository includes a root [`azure-pipelines.yml`](azure-pipelines.yml) that uses Node 24, runs `npm ci`, validates the project, prepares Azure input files, executes an Azure dry run, and publishes `artifacts/manual`.
+Azure DevOps uses the bundled CLI directly from a pipeline step. This repository includes a root [`azure-pipelines.yml`](azure-pipelines.yml) that uses Node 24, runs `npm ci`, runs the [`scripts/ci-validate.sh`](scripts/ci-validate.sh) validation suite (typecheck + test + bundle + dist-freshness), prepares Azure input files, executes an Azure dry run, and publishes `artifacts/manual`.
 
 For a minimal CLI invocation, pass the supported Azure flags explicitly:
 

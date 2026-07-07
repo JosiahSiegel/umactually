@@ -1,6 +1,6 @@
 import { fetchAzurePrDiff } from "../platform/azure/api.js";
 import { chunkDiffByFile, countDiffFiles } from "../platform/azure/chunk.js";
-import { readAzureContext } from "../platform/azure/context.js";
+import { AzureContextError, readAzureContext } from "../platform/azure/context.js";
 import { detectPlatform, PlatformDetectionError } from "../platform/detect.js";
 import { fetchGithubPrDiff } from "../platform/github/api.js";
 import { readGithubContext } from "../platform/github/context.js";
@@ -256,7 +256,41 @@ async function dispatchLivePlatform(input: {
       });
     }
     case "azure": {
-      const context = readAzureContext(env);
+      // Forward --pr-number (when supplied) to the Azure context reader so
+      // manual CLI invocations work without synthesising
+      // SYSTEM_PULLREQUEST_PULLREQUESTID. The CLI boundary validates the
+      // flag (see src/cli/validate.ts), but we re-parse here because:
+      //   (1) readAzureContext is also callable directly from tests and
+      //       future internal call sites that bypass the CLI boundary, so
+      //       re-validating here keeps the invariant local to the context
+      //       reader.
+      //   (2) Silent fallback to the env var when the flag is invalid
+      //       would mask a real user mistake (typo on the command line,
+      //       shell quoting bug, etc.) by appearing to "work" with the
+      //       env-var value while ignoring the flag. Better to surface
+      //       the failure loudly than to silently do the wrong thing.
+      //   (3) Number.parseInt("42abc") returns 42 (the legacy
+      //       Number.parseInt trap). Use Number() which returns NaN for
+      //       non-numeric strings — NaN fails isSafeInteger, which we
+      //       surface as an error rather than dropping the override.
+      let azurePrNumberOverride: number | undefined = undefined;
+      if (parsed.prNumber !== null) {
+        const candidate = Number(parsed.prNumber);
+        if (!Number.isFinite(candidate) || !Number.isInteger(candidate) || candidate <= 0) {
+          throw new AzureContextError(
+            "AZURE_PR_NUMBER_INVALID",
+            `Azure CLI flag --pr-number must be a positive integer (got ${JSON.stringify(parsed.prNumber)}).`,
+          );
+        }
+        if (!Number.isSafeInteger(candidate)) {
+          throw new AzureContextError(
+            "AZURE_PR_NUMBER_INVALID",
+            `Azure CLI flag --pr-number must be a safe integer (got ${candidate}).`,
+          );
+        }
+        azurePrNumberOverride = candidate;
+      }
+      const context = readAzureContext(env, { prNumber: azurePrNumberOverride });
       const diffText = await fetchAzurePrDiff(context, fetchImpl);
       const leakGate = await evaluateLeakGate({
         diffText,

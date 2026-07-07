@@ -14,7 +14,7 @@ import type { FetchImpl } from "../util/http.js";
 import { isPositiveSafeInteger, isRecord, isSafeInteger } from "../util/json-guards.js";
 import { renderSummary, type LayoutId, type ReviewData as LayoutReviewData } from "../render/summary-layouts.js";
 import { countBySeverity as countBySeverityUtil, severityRank } from "../util/severity.js";
-import { mapVerdictToAzureStatus, mapVerdictToGithubEvent } from "../util/verdict.js";
+import { mapVerdictToAzureStatus, mapVerdictToGithubEvent, reconcileVerdictForEmptySeverityCounts } from "../util/verdict.js";
 import type { ProviderComment } from "../provider/provider-parse.js";
 import type { ParsedCliArgs } from "./parse-args.js";
 
@@ -102,6 +102,17 @@ export interface PreparedPostedReview {
   readonly severityCounts: Record<string, number>;
   readonly body: string;
   readonly postedComments: readonly LiveReviewComment[];
+  /**
+   * The verdict that callers should publish to user-facing surfaces
+   * (review body badge, manifest payload, GitHub review event, Azure
+   * PR status). Reconciled from the model's raw verdict against the
+   * postable severity counts via
+   * `reconcileVerdictForEmptySeverityCounts` — so a NEEDS_FIX review
+   * whose findings were all severity-filtered out surfaces as
+   * `COMMENT` instead of contradicting the `📊 0 inline findings`
+   * body. See `src/util/verdict.ts` for the rule.
+   */
+  readonly effectiveVerdict: string;
 }
 
 export class LiveReviewError extends Error {
@@ -563,8 +574,20 @@ export function preparePostedReview(input: {
   const offDiffFromComments = selectOffDiffComments(input.review, input.diffText);
   const suppressedCommentCount = input.review.suppressedComments.length + offDiffFromComments.length;
   const severityCounts = countBySeverity(postableComments);
+  // Reconcile the model's raw verdict against the postable severity
+  // counts. If every finding was severity-filtered out, the body will
+  // render `📊 0 inline findings`, and rendering `⛔ NEEDS_FIX` against
+  // that headline is contradictory — the human reviewer would block
+  // the PR on a verdict that has no findings to act on. Downgrade to
+  // `COMMENT` in that case so the badge matches the body. See
+  // `src/util/verdict.ts:reconcileVerdictForEmptySeverityCounts` for
+  // the rule and the PR #18 regression context.
+  const effectiveVerdict = reconcileVerdictForEmptySeverityCounts(
+    input.review.verdict,
+    severityCounts,
+  );
   const body = buildReviewBody({
-    review: input.review,
+    review: { ...input.review, verdict: effectiveVerdict },
     provider: input.provider,
     modelId: input.modelId,
     validCommentCount: postableComments.length,
@@ -589,6 +612,7 @@ export function preparePostedReview(input: {
     severityCounts,
     body,
     postedComments: postableComments,
+    effectiveVerdict,
   };
 }
 

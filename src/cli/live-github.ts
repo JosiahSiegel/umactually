@@ -69,7 +69,7 @@ export async function runGithubLive(input: {
   // REQUEST_CHANGES from synthetic data.
   const event: "COMMENT" | "REQUEST_CHANGES" = forceReplace
     ? "COMMENT"
-    : mapReviewVerdictToGithubEvent(provider.review.verdict);
+    : mapReviewVerdictToGithubEvent(prepared.effectiveVerdict);
   const reviewId = await createGithubReview({
     context,
     fetchImpl,
@@ -86,7 +86,12 @@ export async function runGithubLive(input: {
     // artifact-write path can persist them — the dry-run stub's counts
     // would otherwise mask what GitHub actually saw.
     inlineThreadCount: postableComments.length,
-    verdict: provider.review.verdict,
+    // Use the *effective* verdict (post-reconciliation) so the artifact
+    // matches what GitHub actually saw via the `event` parameter. A
+    // NEEDS_FIX review whose findings were all severity-filtered out
+    // surfaces here as `COMMENT`, matching the `📊 0 inline findings`
+    // body and the `COMMENT` review event.
+    verdict: prepared.effectiveVerdict,
   };
 }
 

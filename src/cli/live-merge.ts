@@ -31,8 +31,8 @@
  */
 import type { LiveProviderOutcome, LiveReviewComment } from "./live-shared.js";
 import { DEFAULT_MAX_COMMENTS } from "../config/defaults.js";
-import { severityRank } from "../util/severity.js";
-import { verdictRank } from "../util/verdict.js";
+import { severityRank, countBySeverity } from "../util/severity.js";
+import { reconcileVerdictForEmptySeverityCounts, verdictRank } from "../util/verdict.js";
 
 export type MergeOptions = {
   /**
@@ -108,13 +108,28 @@ export function mergeReviewResults(
   const sortedSuppressed = [...dedupedSuppressed.values()].sort((a, b) => a.path.localeCompare(b.path));
 
   // MERGE-5: pick worst verdict.
+  //
+  // Apply the same severity-counts reconciliation that the live path
+  // uses (see src/util/verdict.ts:reconcileVerdictForEmptySeverityCounts)
+  // BEFORE ranking, so a chunk whose NEEDS_FIX verdict was backed only
+  // by findings that the severity filter dropped doesn't pollute the
+  // "worst verdict" pick with a contradictory blocking verdict.
+  // Without this, the merge path could re-introduce the same
+  // "NEEDS_FIX + 0 inline findings" contradiction the live path's
+  // preparePostedReview reconciliation prevents — even if every individual
+  // chunk ran preparePostedReview correctly. PR #18 self-review comment
+  // caught this regression class.
   let worstVerdict = "";
   let worstRank = -1;
   for (const outcome of outcomes) {
-    const rank = verdictRank(outcome.review.verdict);
+    const reconciledVerdict = reconcileVerdictForEmptySeverityCounts(
+      outcome.review.verdict,
+      countBySeverity(outcome.review.comments),
+    );
+    const rank = verdictRank(reconciledVerdict);
     if (rank > worstRank) {
       worstRank = rank;
-      worstVerdict = outcome.review.verdict;
+      worstVerdict = reconciledVerdict;
     }
   }
 
