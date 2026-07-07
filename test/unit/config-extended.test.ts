@@ -5,6 +5,7 @@ import { join, sep } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
 import { FIELDS } from "../../src/config/field-schema.js";
+import { severityRank } from "../../src/util/severity.js";
 
 import {
   InvalidConfigError,
@@ -77,6 +78,19 @@ describe("config: severity rank + bypass", () => {
     expect(rankSeverity("leak")).toBeGreaterThan(rankSeverity("critical"));
     expect(isSeverityAtLeast("major", "leak")).toBe(true);
     expect(isSeverityAtLeast("info", "leak")).toBe(true);
+  });
+
+  it("rankSeverity and severityRank agree on every internal Severity value", () => {
+    // Regression guard for the P0 severity-rank consolidation. Before
+    // this fix, rankSeverity (config/severity.ts) and severityRank
+    // (util/severity.ts) were two separate tables that could disagree
+    // on absolute values. After this fix, rankSeverity delegates to
+    // severityRank so they MUST agree on every internal Severity
+    // value — this test pins that contract.
+    const ALL: readonly Severity[] = ["info", "minor", "major", "critical", "security", "leak"];
+    for (const s of ALL) {
+      expect(rankSeverity(s)).toBe(severityRank(s));
+    }
   });
 });
 

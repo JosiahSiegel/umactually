@@ -17,16 +17,14 @@ import type { Severity } from "../config/types.js";
  * (`render/summary-layouts.ts`), and the config-layer severity policy
  * (`config/severity.ts` which now delegates here).
  *
- * Exhaustiveness: the canonical `Severity` union is captured in
- * `SEVERITY_RANK` below as a `Record<Severity, number>`. The TypeScript
- * compiler will reject any future `Severity` member that lacks a rank
- * entry, so a new severity can't silently collapse to rank 0 via the
- * default branch. The function signature accepts `string` (not
- * `Severity`) because it is also called with raw provider-emitted
- * values (`info | low | medium | high | critical`) plus Sonar aliases
- * (`minor | major`) that are normalized upstream; unrecognized strings
- * intentionally rank 0 so the minimum-severity threshold filters them
- * out cleanly.
+ * Exhaustiveness: `SEVERITY_RANK` is typed `Record<Severity, number>`
+ * so the TypeScript compiler rejects any future `Severity` member that
+ * lacks a rank entry. The runtime `lookup` does the same check by
+ * indexing into the typed table — `info` from the internal vocabulary
+ * ranks 0 (not the default collapse). Provider-side typos
+ * (`"warning"`, `"3"`, etc.) that survive `normalizeProviderSeverity`
+ * still hit the default branch and rank 0; those are already warned
+ * about upstream via `provider-parse.ts:emitSeverityWarning`.
  */
 const SEVERITY_RANK = {
   info: 0,
@@ -37,37 +35,20 @@ const SEVERITY_RANK = {
   leak: 6,
 } as const satisfies Record<Severity, number>;
 
-export function severityRank(severity: string): number {
-  switch (severity.toLowerCase()) {
-    case "leak": return 6;
-    case "security": return 5;
-    case "critical": return 4;
-    case "high": return 3;
-    case "medium":
-    case "major":
-      return 2;
-    case "low":
-    case "minor":
-      return 1;
-    case "info":
-      return 0;
-    default:
-      return 0;
-  }
-}
+const SEVERITY_RANK_BY_STRING: Readonly<Record<string, number>> = Object.freeze({
+  ...SEVERITY_RANK,
+  // Provider-output aliases not in the internal Severity union. These
+  // are normalized upstream by `normalizeProviderSeverity` but a few
+  // call sites still pass raw provider strings (notably
+  // `passesSeverityPolicy` for the minimum-severity threshold).
+  low: SEVERITY_RANK.minor,
+  medium: SEVERITY_RANK.major,
+  high: SEVERITY_RANK.critical - 1,
+});
 
-/**
- * Compile-time exhaustiveness assertion: if a future severity is added
- * to the `Severity` union but not given a rank in `SEVERITY_RANK`, the
- * `as const satisfies Record<Severity, number>` check above will fail.
- * The runtime `default: return 0` below handles only truly-unrecognized
- * strings (provider-side typos like "warning" or "3") that survived
- * `normalizeProviderSeverity`. Those are already warned about upstream
- * via `provider-parse.ts:emitSeverityWarning`.
- */
-// Reference the table so TS preserves the type-level check even though
-// the runtime `switch` is what actually returns ranks.
-void SEVERITY_RANK;
+export function severityRank(severity: string): number {
+  return SEVERITY_RANK_BY_STRING[severity.toLowerCase()] ?? 0;
+}
 
 /** Visual order for the counts line; eliminates repeated critical → high → medium → low ordering literals. */
 export const SEVERITY_ORDER = ["critical", "high", "medium", "low"] as const;
