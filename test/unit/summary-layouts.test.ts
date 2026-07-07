@@ -480,14 +480,12 @@ describe("severity-table details", () => {
 
     const out = renderSummary("severity-table", data);
     // severity-table uses a 4-column layout (# | Severity | File:Line |
-    // Title). The Severity cell is emoji-only — see severityCell
-    // docstring for why the text label was dropped (GitHub's
-    // word-wrap: anywhere + html-pipeline sanitizer strip mean no
-    // markdown trick can prevent character-wrap when content exceeds
-    // column width, and "🟠 Medium" needs ~90px while the Severity
-    // column at 576px viewport is ~70px).
+    // Title). The Severity cell is emoji + em-space padding — see
+    // severityCell docstring for the full history (3 prior iterations
+    // all wrapped at some viewport; only emoji + padding fits every
+    // viewport without header or content wrap).
     expect(out).toContain(
-      '| 1 | 🟠 | `src/no-category.ts`:3 | Missing category. |',
+      '| 1 | 🟠&nbsp;\u2003 | `src/no-category.ts`:3 | Missing category. |',
     );
   });
 
@@ -529,8 +527,8 @@ describe("severity-table details", () => {
     expect(out).toContain("⚪");
   });
 
-  it("GFM-table severity cells emit emoji only (single-glyph, cannot wrap)", () => {
-    // Three regressions pinned here, captured via screenshots
+  it("GFM-table severity cells render emoji + padding on one line (no header or content wrap)", () => {
+    // Four regressions pinned here, captured via screenshots
     // 2026-07-07:
     //   (a) GitHub's GFM renderer wraps between the emoji glyph and
     //       the label when the Severity column is narrow. The
@@ -549,11 +547,19 @@ describe("severity-table details", () => {
     //       its `style` is removed, and the table's CSS uses
     //       `word-wrap: anywhere` which character-breaks any
     //       unbreakable token longer than the cell width).
+    //   (d) Dropping the text label fixes (b) but shrinks the
+    //       Severity column to ~60px (just the glyph), which then
+    //       wraps the "Severity" header itself to "Seve" / "rity"
+    //       on a separate visual axis.
     //
-    // The fix that actually works: emit ONLY the colored-circle
-    // emoji in the Severity cell. A single glyph (~18px) cannot
-    // exceed the ~70px column width at any viewport, so no
-    // markdown trick is needed. The text label is announced in:
+    // The fix that actually works: emit the colored-circle emoji +
+    // `&nbsp;` + em-space (`\u2003`). The em-space is invisible-ish
+    // padding (~16px wide) that forces GitHub's auto-layout to
+    // allocate ~80px to the Severity column. That's enough to fit
+    // the "Severity" header on one line WITHOUT re-introducing the
+    // emoji + label form (which still overflows at narrow viewports).
+    //
+    // The text label is announced in:
     //   - the summary line `🟣 0 critical · 🔴 0 high · 🟠 5 medium…`
     //     above the table (plain text, no width constraint)
     //   - every inline review comment body (`\`medium\` \`category\``)
@@ -573,8 +579,8 @@ describe("severity-table details", () => {
     // the screenshot. Rows are sorted by severity bucket (highest
     // rank first), so critical is row 1, medium is row 2.
     const severityOut = renderSummary("severity-table", data);
-    expect(severityOut).toContain("| 1 | 🟣 |");
-    expect(severityOut).toContain("| 2 | 🟠 |");
+    expect(severityOut).toContain("| 1 | 🟣&nbsp;\u2003 |");
+    expect(severityOut).toContain("| 2 | 🟠&nbsp;\u2003 |");
     // And: 4-column shape (no Category column).
     expect(severityOut).not.toContain("| # | Severity | Category |");
     expect(severityOut).toContain("| # | Severity | File:Line | Title |");
@@ -584,10 +590,10 @@ describe("severity-table details", () => {
     expect(severityOut).not.toContain("Medium |");
     expect(severityOut).not.toContain("Critical |");
     // dashboard also has a "🔝 Top findings" GFM table that uses
-    // the same single-emoji Severity cell.
+    // the same emoji + padding Severity cell.
     const dashboardOut = renderSummary("dashboard", data);
-    expect(dashboardOut).toContain("| 1 | 🟣 |");
-    expect(dashboardOut).toContain("| 2 | 🟠 |");
+    expect(dashboardOut).toContain("| 1 | 🟣&nbsp;\u2003 |");
+    expect(dashboardOut).toContain("| 2 | 🟠&nbsp;\u2003 |");
     expect(dashboardOut).not.toContain("Medium |");
     expect(dashboardOut).not.toContain("Critical |");
   });

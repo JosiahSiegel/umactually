@@ -283,7 +283,7 @@ function severityEmoji(level: string): string {
 /**
  * Severity cell for GFM-table rows.
  *
- * Returns the colored-circle emoji ONLY — no text label. Rationale:
+ * Returns the colored-circle emoji + em-space padding. Rationale:
  *
  *   GitHub's GFM table cells use `word-wrap: anywhere` (verified via
  *   `getComputedStyle(td).wordWrap === "anywhere"` on PR #20's
@@ -291,10 +291,28 @@ function severityEmoji(level: string): string {
  *   `style` from `<span>` so `<span style="white-space: nowrap">`
  *   survives as a bare `<span>` with no typography override. The
  *   only reliable way to prevent character-wrap inside a Severity
- *   cell at narrow viewports (~70px at GitHub's mobile breakpoint)
- *   is to keep the cell content narrow enough that wrap never
- *   triggers — a single emoji glyph (~18px) is the only content
- *   that's safe.
+ *   cell at narrow viewports is to keep the cell content narrow
+ *   enough that wrap never triggers — a single emoji glyph (~18px)
+ *   is the only content that's safe to include.
+ *
+ *   Two layout pathologies we must avoid in the Severity column:
+ *     (a) Content wrap: "🟠 Medium" overflows the column by ~2px →
+ *         character-wraps mid-word as "🟠 Mediu" / "m" (since the
+ *         whole token is unbreakable under nowrap).
+ *     (b) Header wrap: "Severity" header is ~55px at 14px font;
+ *         when the column is auto-sized to ~60px to fit just the
+ *         emoji glyph, the header itself wraps to "Seve" / "rity".
+ *
+ *   Fix (b) without re-introducing (a): add an em-space (`\u2003`,
+ *   same width as a digit at GitHub's font) at the END of the cell.
+ *   This is invisible-ish padding that forces GitHub's auto-layout
+ *   to allocate ~16px more horizontal space to the Severity column,
+ *   which is enough to fit the "Severity" header on one line without
+ *   the emoji + label form (which still overflows). The em-space is
+ *   a single unbreakable token bound to the emoji by `&nbsp;`, so
+ *   if the column is ever squeezed below ~80px on a future
+ *   viewport, the whole "emoji\u00a0\u2003" token survives as one
+ *   line (wraps at the colon, not inside the cell).
  *
  *   The text label is not lost: every inline review comment body
  *   already leads with `\`severity\` \`category\``, and the
@@ -302,8 +320,7 @@ function severityEmoji(level: string): string {
  *   `🟣 0 critical · 🔴 0 high · 🟠 5 medium · 🟡 0 low*` so the
  *   label is announced in plain text adjacent to the table. The
  *   colored emoji also survives Azure DevOps's no-color-font
- *   fallback (different glyph shape per severity), keeping the
- *   visual signal consistent across both platforms.
+ *   fallback (different glyph shape per severity).
  *
  * History (see PR #20 review thread + screenshots 2026-07-07):
  *   - Plain emoji + space → wraps between glyph and label.
@@ -314,9 +331,11 @@ function severityEmoji(level: string): string {
  *     STILL wraps at ~70px because "🟠 Medium" needs ~90px and
  *     `word-wrap: anywhere` character-breaks any unbreakable
  *     token that overflows even by 1px.
- *   - emoji only → fits cleanly. Single glyph, single line,
- *     every viewport. The label is announced in the summary line
- *     and inline review bodies.
+ *   - emoji only (4-col) → cell doesn't wrap but the "Severity"
+ *     header itself wraps to "Seve" / "rity" because the column
+ *     shrinks to ~60px to fit just the glyph.
+ *   - emoji + `&nbsp;` + em-space (4-col) → column widens to
+ *     ~80px, header fits on one line, cell is one line. Final.
  *
  * Scope: GFM-table layouts (severity-table + dashboard's "🔝 Top
  * findings"). Inline layouts use `severityEmoji()` + `severityLabel()`
@@ -324,7 +343,7 @@ function severityEmoji(level: string): string {
  * no wrap risk.
  */
 function severityCell(level: string): string {
-  return severityEmoji(level);
+  return `${severityEmoji(level)}&nbsp;\u2003`;
 }
 
 /** Severity → short label used in compact rows. */
