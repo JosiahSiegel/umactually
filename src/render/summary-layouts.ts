@@ -21,16 +21,22 @@
  * Cross-platform rules (GitHub PR review body + Azure DevOps PR thread):
  *   - DO use GFM tables, headings, blockquote, lists, fenced code,
  *     inline code, links, raw Unicode emoji, horizontal rules.
- *   - DO use `<details>`/`<summary>` — verified 2026-07-05 to render as
- *     a collapsible section on BOTH GitHub PR reviews AND Azure DevOps
- *     PR comments (empirical test via playwright against PR #43 thread
- *     575 and the production review thread, both show working
- *     click-to-expand UX). The previous "Azure renders as raw text"
- *     rule was based on 2023-era community reports and is no longer
- *     accurate. The severity-table layout uses `<details>` for verbose
- *     summaries (>500 chars) — pinned by S5a (short summary has no
- *     details) and S5b (long summary wraps in details) in
- *     `test/unit/summary-layouts.test.ts`.
+ *   - DO use `<details>`/`<summary>` — verified to render as a working
+ *     click-to-expand widget on BOTH GitHub PR reviews AND Azure DevOps
+ *     PR comments. Empirical evidence:
+ *       - GitHub: PR #20 self-review renders with disclosure triangle +
+ *         click-to-expand (verified via DOM 2026-07-07).
+ *       - Azure DevOps: PR #53 thread 1620 renders with `▸` disclosure
+ *         marker on each summary; clicking toggles `open` attr; body
+ *         expands to show path + full title (verified via playwright
+ *         + DOM 2026-07-07). Previous "Azure renders as raw text" rule
+ *         was based on 2023-era community reports and is no longer
+ *         accurate for the post-2025 Azure DevOps PR thread renderer.
+ *     The severity-table + dashboard layouts use `<details>` for the
+ *     findings list (one block per finding — see findingsDetailsRow
+ *     docstring for the full rationale) and for verbose summaries
+ *     (>500 chars). Pinned by S5a (short summary uses no <details> in
+ *     the SUMMARY section) and S5b (long summary wraps in <details>).
  *   - DO NOT use raw `<table>` HTML (Azure ignores it).
  *   - DO NOT use task lists `- [x]` / `- [ ]` (Azure ignores check state).
  *   - Body must stay under GitHub's 65,536-char comment limit.
