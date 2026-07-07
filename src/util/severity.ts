@@ -1,15 +1,32 @@
 /**
- * Canonical severity ranking. Scale: critical=4, high=3, medium=2, low=1,
- * everything else (info, undefined, "")=0. Used by both the live-path
- * severity filter (live-shared.ts) and the merge-path highest-wins rule
- * (live-merge.ts). Keep both in sync — these were duplicated until now.
+ * Canonical severity ranking — the single source of truth for severity
+ * ordering across the entire codebase.
+ *
+ * Unified scale (supersedes the former parallel table in config/severity.ts):
+ *   leak=6, security=5, critical=4, high=3, medium/major=2, low/minor=1,
+ *   info/everything else=0.
+ *
+ * Both the provider-output vocabulary (info/low/medium/high/critical,
+ * produced by `normalizeProviderSeverity`) and the internal-finding
+ * vocabulary (info/minor/major/critical/security/leak, used by the
+ * `Severity` type) are handled by this one function so they can never
+ * diverge. Used by the live-path severity filter (`live-shared.ts`), the
+ * merge-path highest-wins rule (`live-merge.ts`), the summary layouts
+ * (`render/summary-layouts.ts`), and the config-layer severity policy
+ * (`config/severity.ts` which now delegates here).
  */
 export function severityRank(severity: string): number {
   switch (severity.toLowerCase()) {
+    case "leak": return 6;
+    case "security": return 5;
     case "critical": return 4;
     case "high": return 3;
-    case "medium": return 2;
-    case "low": return 1;
+    case "medium":
+    case "major":
+      return 2;
+    case "low":
+    case "minor":
+      return 1;
     default: return 0;
   }
 }

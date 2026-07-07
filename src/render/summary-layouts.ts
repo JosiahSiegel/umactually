@@ -1249,7 +1249,17 @@ function layoutReleaseNotes(data: ReviewData): string {
     "🟠 Improvements (medium)": [],
     "🟡 Style (low)": [],
   };
+  // Severity-rank → release-notes bucket. Mirrors the unified rank table
+  // in `src/util/severity.ts:severityRank` (leak=6, security=5,
+  // critical=4, high=3, medium/major=2, low/minor=1, info=0). In
+  // practice, only ranks 0-4 are produced by the postable pipeline
+  // because `passesSeverityPolicy` filters findings before they reach
+  // this layout, but the map covers the full rank table so a future
+  // direct postable source of security/leak findings doesn't silently
+  // bucket them as "Style (low)".
   const SEVERITY_RANK_TO_BUCKET: Record<number, ReleaseNotesBucketName> = {
+    6: "🔴 Fixes (high/critical)",
+    5: "🔴 Fixes (high/critical)",
     4: "🔴 Fixes (high/critical)",
     3: "🔴 Fixes (high/critical)",
     2: "🟠 Improvements (medium)",
