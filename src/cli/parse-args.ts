@@ -36,7 +36,6 @@ export type ParsedCliArgs = {
   readonly sonarToken: string | null;
   readonly sonarProjectKey: string | null;
   readonly sonarTimeoutSeconds: number | null;
-  readonly ignoreMinor: boolean;
   readonly minimumSeverity: CliMinimumSeverity | null;
   readonly maxComments: number | null;
   readonly reviewFileLimit: number | null;
@@ -80,7 +79,6 @@ export function parseCliArgs(args: readonly string[]): ParsedCliArgs {
   let sonarToken: string | null = null;
   let sonarProjectKey: string | null = null;
   let sonarTimeoutSeconds: number | null = null;
-  let ignoreMinor = false;
   // BREAKING CHANGE: default flipped from null (no minimum) to "medium".
   // Matches the action.yml default and src/config/field-schema.ts so the
   // CLI and the GitHub Action behave the same out of the box. Without
@@ -202,11 +200,8 @@ export function parseCliArgs(args: readonly string[]): ParsedCliArgs {
         index += 1;
         break;
       case "--ignore-minor":
-        ignoreMinor = true;
-        break;
       case "--no-ignore-minor":
-        ignoreMinor = false;
-        break;
+        throw new CliUsageError("--ignore-minor was removed; use --minimum-severity medium (or low/high) to suppress minor findings. Leaks and security findings are never suppressed. Environment variables UMACTUALLY_IGNORE_MINOR and REVIEW_IGNORE_MINOR are also ignored.");
       case "--minimum-severity":
         minimumSeverity = readMinimumSeverity(args, index);
         index += 1;
@@ -306,7 +301,6 @@ export function parseCliArgs(args: readonly string[]): ParsedCliArgs {
     sonarToken,
     sonarProjectKey,
     sonarTimeoutSeconds,
-    ignoreMinor,
     minimumSeverity,
     maxComments,
     reviewFileLimit,

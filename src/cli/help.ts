@@ -18,7 +18,6 @@ export const CLI_HELP_TEXT = [
   "  --sonar-host-url <url>",
   "  --sonar-token <token>",
   "  --sonar-project-key <key>",
-  "  --ignore-minor",
   "  --minimum-severity <low|medium|high>  default: medium",
   "  --detect-leaks | --no-detect-leaks",
   "  --dry-run               Write artifact JSON only, no provider calls",

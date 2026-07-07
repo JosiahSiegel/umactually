@@ -43,7 +43,7 @@ export type LiveReview = {
   readonly verdict: string;
   /**
    * Pre-filter finding count. Includes comments the model produced that may be
-   * filtered out by severity policy, off-diff suppression, or `ignore-minor`.
+   * filtered out by severity policy or off-diff suppression.
    * Use this for the "Considered" metric in the parent card.
    */
   readonly comments: readonly LiveReviewComment[];
@@ -265,14 +265,13 @@ export function buildReviewBody(input: {
   readonly layout?: LayoutId;
   /**
    * Optional threshold context forwarded to the rendered layout so the
-   * `🏷️ …` severity tally can append a `_(filtered)_` marker when the
-   * active `--minimum-severity` / `--ignore-minor` setting hides one or
-   * more tiers. Omit (or pass `null`/`false`) for the byte-identical
-   * legacy tally — used by unit tests, simulate-findings, and any
-   * caller that does not yet have a `ParsedCliArgs` in scope.
+   * `🏷️ …` severity tally can append a `*` marker when the active
+   * `--minimum-severity` setting hides one or more tiers. Omit (or pass
+   * `null`) for the byte-identical legacy tally — used by unit tests,
+   * simulate-findings, and any caller that does not yet have a
+   * `ParsedCliArgs` in scope.
    */
   readonly minimumSeverity?: string | null;
-  readonly ignoreMinor?: boolean;
 }): string {
   // Delegate to the "severity-table" layout from
   // `src/render/summary-layouts.ts` — selected from the 20-layout
@@ -305,7 +304,6 @@ export function buildReviewBody(input: {
     postedComments,
     secrets: input.secrets,
     minimumSeverity: input.minimumSeverity ?? null,
-    ignoreMinor: input.ignoreMinor === true,
   };
   return renderSummary(input.layout ?? "severity-table", reviewData);
 }
@@ -666,12 +664,10 @@ export function preparePostedReview(input: {
     postedComments: postableComments,
     secrets: input.secrets,
     // Threshold context — forwarded so the rendered `🏷️ …` tally can
-    // append `_(filtered)_` when the active `--minimum-severity` or
-    // `--ignore-minor` flag hides one or more tiers. Older callers
-    // (unit tests, simulate-findings) can omit both and get the
-    // byte-identical legacy tally.
+    // append `*` when the active `--minimum-severity` setting hides one
+    // or more tiers. Older callers (unit tests, simulate-findings) can
+    // omit it and get the byte-identical legacy tally.
     minimumSeverity: input.parsed.minimumSeverity,
-    ignoreMinor: input.parsed.ignoreMinor,
   });
 
   return {
@@ -795,12 +791,10 @@ export function ensureHttpOk(response: Response, code: string, action: string): 
 export { isRecord };
 
 function passesSeverityPolicy(comment: LiveReviewComment, parsed: ParsedCliArgs): boolean {
-  if (parsed.ignoreMinor && comment.severity.toLowerCase() === "low") {
-    return false;
-  }
+  // security and leak ALWAYS survive any threshold (security policy)
+  const sevLower = comment.severity.toLowerCase();
+  if (sevLower === "security" || sevLower === "leak") return true;
   const minimum = parsed.minimumSeverity;
-  if (minimum === null) {
-    return true;
-  }
+  if (minimum === null) return true;
   return severityRank(comment.severity) >= severityRank(minimum);
 }

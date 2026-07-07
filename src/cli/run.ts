@@ -63,7 +63,6 @@ function buildEffectiveConfig(env: EnvSources): Record<string, unknown> {
     reviewTimeoutSeconds: env.reviewTimeoutSeconds ?? null,
     stallTimeoutSeconds: env.stallTimeoutSeconds ?? null,
     perRequestTimeoutSeconds: env.perRequestTimeoutSeconds ?? null,
-    ignoreMinor: env.ignoreMinor ?? null,
     minimumSeverity: env.minimumSeverity ?? null,
     maxComments: env.maxComments ?? null,
     sonarEnabled: env.sonarEnabled ?? null,
