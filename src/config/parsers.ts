@@ -68,11 +68,19 @@ const VALID_SEVERITIES: ReadonlySet<Severity> = new Set<Severity>([
   "leak",
 ]);
 
+const SEVERITY_ALIASES: Readonly<Record<string, Severity | undefined>> = Object.freeze({
+  low: "minor",
+  medium: "major",
+  high: "critical",
+});
+
 export function parseSeverityFromUnknown(value: unknown, field: string): Severity {
   if (typeof value !== "string") {
     throw new InvalidConfigError(field, `expected severity string, received ${typeof value}`);
   }
   const normalized = value.trim().toLowerCase();
+  const alias = SEVERITY_ALIASES[normalized];
+  if (alias !== undefined) return alias;
   if (!VALID_SEVERITIES.has(normalized as Severity)) {
     throw new InvalidConfigError(field, `unknown severity ${REDACTED}`);
   }
