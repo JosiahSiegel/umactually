@@ -479,9 +479,15 @@ describe("severity-table details", () => {
     }));
 
     const out = renderSummary("severity-table", data);
-    // Emoji + &nbsp; + label so GitHub's GFM table renderer keeps the
-    // Severity column on a single line (see severityCell comment).
-    expect(out).toContain("| 1 | 🟠&nbsp;Medium | general | `src/no-category.ts`:3 | Missing category. |");
+    // Emoji + &nbsp; + label wrapped in <span style="white-space:nowrap">
+    // so GitHub's GFM table renderer keeps the entire Severity cell
+    // (emoji AND label) on a single line, even when the column is
+    // narrower than the longest label like "Medium" (which would
+    // otherwise break as "Mediu" / "m" mid-word). See severityCell
+    // docstring.
+    expect(out).toContain(
+      '| 1 | <span style="white-space: nowrap">🟠&nbsp;Medium</span> | general | `src/no-category.ts`:3 | Missing category. |',
+    );
   });
 
   // Pin the cross-platform severity rendering. Each known severity emits
@@ -522,14 +528,29 @@ describe("severity-table details", () => {
     expect(out).toContain("⚪");
   });
 
-  it("GFM-table severity cells use &nbsp; so emoji + label stay on one line", () => {
-    // Regression: GitHub's GFM renderer wraps between the emoji glyph
-    // and the label when the Severity column is narrow. Verified via
-    // screenshot 2026-07-07 — the emoji and label were stacked on
-    // two lines in the severity-table layout. The fix is a U+00A0
-    // non-breaking space between them, which GitHub + Azure both
-    // honor inside table cells. This test pins the byte contract
-    // for every GFM-table layout that renders severity cells.
+  it("GFM-table severity cells use <span style=white-space:nowrap> so emoji + label never wrap", () => {
+    // Two regressions pinned here, both captured via screenshot
+    // 2026-07-07:
+    //   (a) GitHub's GFM renderer wraps between the emoji glyph and
+    //       the label when the Severity column is narrow. The
+    //       severity-table layout showed the emoji stacked above the
+    //       label on two lines.
+    //   (b) Even after the &nbsp; fix bound emoji + label together,
+    //       the LABEL itself wrapped mid-word when the column was
+    //       narrower than the longest label ("Medium" breaking as
+    //       "Mediu" / "m" in the second screenshot).
+    //
+    // The correct fix for "no wrapping ever" is the <span
+    // style="white-space: nowrap"> approach GitHub's own docs
+    // recommend (github/docs issue #28392). GitHub's html-pipeline
+    // sanitizer allows the white-space style on <span>; both GitHub
+    // and Azure DevOps render the span as one unbreakable inline
+    // token. The &nbsp; between emoji + label is kept as defense in
+    // depth — if a future platform strips the style attribute, the
+    // nbsp at least prevents the emoji↔label boundary from wrapping.
+    //
+    // Pin the byte contract for every GFM-table layout that renders
+    // severity cells.
     const data = makeData({
       postedComments: [
         { path: "src/x.ts", line: 1, body: "x", severity: "medium", category: "general" },
@@ -539,13 +560,21 @@ describe("severity-table details", () => {
     // severity-table is the default layout and the one captured in
     // the screenshot.
     const severityOut = renderSummary("severity-table", data);
-    expect(severityOut).toContain("🟠&nbsp;Medium");
-    expect(severityOut).toContain("🟣&nbsp;Critical");
+    expect(severityOut).toContain(
+      '<span style="white-space: nowrap">🟠&nbsp;Medium</span>',
+    );
+    expect(severityOut).toContain(
+      '<span style="white-space: nowrap">🟣&nbsp;Critical</span>',
+    );
     // dashboard also has a "🔝 Top findings" GFM table that benefits
     // from the same fix.
     const dashboardOut = renderSummary("dashboard", data);
-    expect(dashboardOut).toContain("🟠&nbsp;Medium");
-    expect(dashboardOut).toContain("🟣&nbsp;Critical");
+    expect(dashboardOut).toContain(
+      '<span style="white-space: nowrap">🟠&nbsp;Medium</span>',
+    );
+    expect(dashboardOut).toContain(
+      '<span style="white-space: nowrap">🟣&nbsp;Critical</span>',
+    );
   });
 
   // CLARITY-19a (retired): the off-diff callout used to explain why the

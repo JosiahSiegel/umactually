@@ -281,30 +281,43 @@ function severityEmoji(level: string): string {
 }
 
 /**
- * Severity cell for table rows: emoji + non-breaking-space + label.
+ * Severity cell for table rows: emoji + non-breaking-space + label,
+ * wrapped in `<span style="white-space: nowrap">` so neither the
+ * emoji↔label boundary nor the label itself can wrap.
  *
- * GitHub's GFM table renderer treats the emoji glyph, the regular space,
- * and the label as three separate tokens, so a narrow Severity column
- * (which auto-sizes to fit the longest "🟠 Medium" or "🔴 Critical" in
- * the table) wraps between the emoji and the label, stacking them on
- * two lines. The Severity column auto-width plus the right-side table
- * alignment on `Title` leaves the column barely wider than the emoji
- * glyph itself, so the label below it is forced to wrap.
+ * GitHub's GFM table renderer allocates column width based on content
+ * length, and a narrow Severity column (squeezed by the right-side
+ * `Title` column) has historically wrapped the severity text:
+ *   - First iteration: emoji on one line, label below it.
+ *   - Second iteration (`&nbsp;` between emoji + label): emoji and
+ *     label on the same line, BUT the label itself still wraps
+ *     mid-word when the column is narrower than the longest label
+ *     (e.g., "Medium" breaking as "Mediu" / "m" — screenshot
+ *     2026-07-07).
  *
- * The fix: a `&nbsp;` (U+00A0) between the emoji and label binds them
- * into one non-breakable token. Both GitHub and Azure DevOps honor
- * HTML entities inside table cells, so this works cross-platform.
- * Verified via screenshot 2026-07-07: the emoji + label now renders
- * on a single line in the Severity column of `layoutSeverityTable`.
+ * The correct fix for "no wrapping ever" is the `<span
+ * style="white-space: nowrap">` approach that GitHub's own docs
+ * recommend (see github/docs issue #28392). GitHub's html-pipeline
+ * sanitizer allows `style` on `<span>` specifically for typography
+ * properties including `white-space`; the earlier in-repo belief
+ * that GitHub strips all `style` attributes was wrong — what GitHub
+ * strips is `color` and other visually-mutating properties (which
+ * is why the prior comment correctly noted the color-emoji path
+ * failed but did not generalize). Both GitHub and Azure DevOps
+ * render `<span style="white-space: nowrap">` as one unbreakable
+ * inline token inside table cells.
  *
- * Scope: used by the GFM-table layouts where column auto-width forces
- * the wrap (the severity-table + any future tabular layout). The
- * inline layouts (verdict banner, summary prose, card grid) don't
- * need this — the text flows inline and the emoji hugs the label
- * naturally because there's no column boundary.
+ * The `&nbsp;` between emoji and label is kept for defense in depth:
+ * if a future platform strips the style attribute, the nbsp at
+ * least prevents the emoji↔label boundary from wrapping (which
+ * was the first regression we caught).
+ *
+ * Scope: GFM-table layouts (severity-table + dashboard's "🔝 Top
+ * findings"). Inline layouts don't need this — text flows inline
+ * without a column boundary.
  */
 function severityCell(level: string): string {
-  return `${severityEmoji(level)}&nbsp;${severityLabel(level)}`;
+  return `<span style="white-space: nowrap">${severityEmoji(level)}&nbsp;${severityLabel(level)}</span>`;
 }
 
 /** Severity → short label used in compact rows. */
