@@ -42,11 +42,14 @@ import type {
 // Must stay aligned with field-schema.ts (enumValues) and action.yml's
 // `minimum-severity` default. The user-facing enum is `low|medium|high`
 // and maps to internal `Severity` via the parser alias table
-// (`low → minor`, `medium → major`, `high → critical`). The default
-// "medium" is the user-facing value; the loader applies the alias here
-// so it does not run parseSeverityFromUnknown at module load (which
-// would throw on import if a future caller passed a value outside the
-// accepted set, and is otherwise wasteful at module load).
+// (`low → minor`, `medium → major`, `high → critical`). The loader
+// stores the INTERNAL `Severity` literal — `medium` on the user surface
+// becomes `major` here — so the constant is the alias target, not the
+// user-facing string. Test
+// `test/unit/config-extended.test.ts:config: minimum-severity default
+// + alias mapping` pins this mapping so any future drift between the
+// schema default, the loader constant, and the parser alias surfaces
+// as a test failure rather than a silent config-layer disagreement.
 const DEFAULT_MINIMUM_SEVERITY: Severity = "major";
 const DEFAULT_PLATFORM: Platform = "auto";
 const DEFAULT_PROVIDER_URL = "https://api.openai.com/v1";
