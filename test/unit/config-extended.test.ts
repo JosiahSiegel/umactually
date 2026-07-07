@@ -90,7 +90,23 @@ describe("config: severity rank + bypass", () => {
     const ALL: readonly Severity[] = ["info", "minor", "major", "critical", "security", "leak"];
     for (const s of ALL) {
       expect(rankSeverity(s)).toBe(severityRank(s));
+      expect(severityRank(s)).toBeGreaterThanOrEqual(0);
     }
+  });
+
+  it("severityRank pins the provider-alias ranks: low < medium < high < critical", () => {
+    // The provider-side vocabulary (`low | medium | high`) is NOT in
+    // the internal Severity union but is a real consumer via
+    // `passesSeverityPolicy` and the minimum-severity CLI flag. Pin
+    // absolute values so a future re-tuning of SEVERITY_RANK cannot
+    // silently shift the alias ranks via arithmetic coupling.
+    expect(severityRank("low")).toBe(1);
+    expect(severityRank("medium")).toBe(2);
+    expect(severityRank("high")).toBe(3);
+    // Order must hold: low < medium < high < critical.
+    expect(severityRank("low")).toBeLessThan(severityRank("medium"));
+    expect(severityRank("medium")).toBeLessThan(severityRank("high"));
+    expect(severityRank("high")).toBeLessThan(severityRank("critical"));
   });
 });
 

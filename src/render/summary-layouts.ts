@@ -1273,27 +1273,27 @@ function layoutReleaseNotes(data: ReviewData): string {
 
   // Map severity → "category"
   type ReleaseNotesBucketName =
-    | "🔴 Fixes (high/critical)"
+    | "🔴 Fixes (critical+)"
     | "🟠 Improvements (medium)"
     | "🟡 Style (low)";
   const buckets: Record<ReleaseNotesBucketName, LiveReviewComment[]> = {
-    "🔴 Fixes (high/critical)": [],
+    "🔴 Fixes (critical+)": [],
     "🟠 Improvements (medium)": [],
     "🟡 Style (low)": [],
   };
   // Severity-rank → release-notes bucket. Mirrors the unified rank table
   // in `src/util/severity.ts:severityRank` (leak=6, security=5,
-  // critical=4, high=3, medium/major=2, low/minor=1, info=0). In
-  // practice, only ranks 0-4 are produced by the postable pipeline
-  // because `passesSeverityPolicy` filters findings before they reach
-  // this layout, but the map covers the full rank table so a future
-  // direct postable source of security/leak findings doesn't silently
-  // bucket them as "Style (low)".
+  // critical=4, high=3, medium/major=2, low/minor=1, info=0). The
+  // "🔴 Fixes (critical+)" bucket intentionally covers the entire top
+  // half (ranks 3-6 — high, critical, security, leak) so security and
+  // leak findings (which the live path can produce when the severity
+  // filter is permissive or bypassed) get bucketed as fixes rather
+  // than silently collapsed into the default "🟡 Style (low)" bucket.
   const SEVERITY_RANK_TO_BUCKET: Record<number, ReleaseNotesBucketName> = {
-    6: "🔴 Fixes (high/critical)",
-    5: "🔴 Fixes (high/critical)",
-    4: "🔴 Fixes (high/critical)",
-    3: "🔴 Fixes (high/critical)",
+    6: "🔴 Fixes (critical+)",
+    5: "🔴 Fixes (critical+)",
+    4: "🔴 Fixes (critical+)",
+    3: "🔴 Fixes (critical+)",
     2: "🟠 Improvements (medium)",
     1: "🟡 Style (low)",
     0: "🟡 Style (low)",

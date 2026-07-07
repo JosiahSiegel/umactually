@@ -40,10 +40,18 @@ const SEVERITY_RANK_BY_STRING: Readonly<Record<string, number>> = Object.freeze(
   // Provider-output aliases not in the internal Severity union. These
   // are normalized upstream by `normalizeProviderSeverity` but a few
   // call sites still pass raw provider strings (notably
-  // `passesSeverityPolicy` for the minimum-severity threshold).
-  low: SEVERITY_RANK.minor,
-  medium: SEVERITY_RANK.major,
-  high: SEVERITY_RANK.critical - 1,
+  // `passesSeverityPolicy` for the minimum-severity threshold). The
+  // ranks below are pinned by the test suite — explicit literals
+  // (not arithmetic on `SEVERITY_RANK.critical` etc.) so a future
+  // re-tuning of the canonical table cannot silently shift the
+  // aliases. The order is: low < medium < high < critical; the
+  // minor/major aliases already in `SEVERITY_RANK` collapse to the
+  // same ranks as low/medium respectively (kept consistent on
+  // purpose — Sonar emits `minor`/`major`, providers emit
+  // `low`/`medium`).
+  low: 1,
+  medium: 2,
+  high: 3,
 });
 
 export function severityRank(severity: string): number {
