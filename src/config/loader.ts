@@ -50,6 +50,12 @@ import type {
 // + alias mapping` pins this mapping so any future drift between the
 // schema default, the loader constant, and the parser alias surfaces
 // as a test failure rather than a silent config-layer disagreement.
+// Pinned by `test/unit/config-extended.test.ts:loader default tracks
+// field-schema default` so any future change to either side surfaces
+// as a test failure rather than a silent config-layer disagreement.
+// The constant stores the INTERNAL `Severity` literal — `medium` on
+// the user surface becomes `major` here — so it's the alias target,
+// not the user-facing string.
 const DEFAULT_MINIMUM_SEVERITY: Severity = "major";
 const DEFAULT_PLATFORM: Platform = "auto";
 const DEFAULT_PROVIDER_URL = "https://api.openai.com/v1";

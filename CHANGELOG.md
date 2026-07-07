@@ -28,9 +28,19 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   - Action users on the previous default (`ignore-minor: false`) will
     lose `info` findings that were previously posted inline; that
     matches the new `minimum-severity: medium` default.
-  - Pipelines that were passing `ignore-minor: true` should migrate to
-    `minimum-severity: medium` (the new default) to preserve the same
-    behavior.
+  - Pipelines that were passing `ignore-minor: true` need to recreate
+    their previous filter combination on top of `minimum-severity`,
+    NOT just rely on the new default. Migration matrix:
+    - `ignore-minor: true` + `minimum-severity: low` (default)
+      → `minimum-severity: medium` (the new default).
+    - `ignore-minor: true` + `minimum-severity: medium`
+      → `minimum-severity: medium` (the new default).
+    - `ignore-minor: true` + `minimum-severity: high`
+      → `minimum-severity: high` (NOT the new default).
+    The old `ignore-minor: true` only suppressed `info` / `minor`
+    findings; it did NOT raise the threshold above whatever
+    `minimum-severity` was already set to. Recreate your prior
+    threshold explicitly to keep the same behavior.
 - **BREAKING**: `minimum-severity` default flipped from `low` to `medium`.
   Out of the box, low-severity findings (style, hygiene) are filtered
   out of the postable set and do not appear as inline comments. Set

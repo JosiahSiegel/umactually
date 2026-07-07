@@ -829,6 +829,35 @@ describe("config: minimum-severity default + alias mapping", () => {
     expect(parseSeverityFromUnknown("low", "test")).toBe<Severity>("minor");
     expect(parseSeverityFromUnknown("high", "test")).toBe<Severity>("critical");
   });
+  it("loader default tracks field-schema default via the alias table", async () => {
+    // The schema (`field-schema.ts`) holds the user-facing default
+    // string (`medium`); the loader stores the alias-resolved
+    // internal Severity (`major`). A future change to either side
+    // (e.g. someone flips the schema default to `low`, or relaxes
+    // the alias mapping) would silently change effective config —
+    // this test fails instead.
+    //
+    // We exercise the loader with an empty sources object so the
+    // default path is the only one that runs, then assert the
+    // resolved `severity.minimum` equals the alias of the schema
+    // default. This catches both:
+    //   - schema default changes (FIELDS.minimumSeverity.defaultValue)
+    //   - alias changes (SEVERITY_ALIASES in parsers.ts)
+    //   - loader default changes (DEFAULT_MINIMUM_SEVERITY in loader.ts)
+    const { loadConfigFromSources } = await import("../../src/config/loader.js");
+    const schemaDefault = FIELDS.minimumSeverity.defaultValue;
+    if (typeof schemaDefault !== "string") {
+      throw new Error("schema default is not a string");
+    }
+    const expected = parseSeverityFromUnknown(schemaDefault, "test");
+    const config = await loadConfigFromSources({
+      cli: {},
+      inputs: {},
+      env: {},
+      cwd: process.cwd(),
+    });
+    expect(config.severity.minimum).toBe(expected);
+  });
 });
 
 // Sanity marker for `sep` import (used implicitly on win32 for path containment).

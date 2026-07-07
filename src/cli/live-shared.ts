@@ -17,6 +17,7 @@ import { countBySeverity as countBySeverityUtil } from "../util/severity.js";
 import { mapVerdictToAzureStatus, mapVerdictToGithubEvent, reconcileVerdictForEmptySeverityCounts } from "../util/verdict.js";
 import { shouldKeepFinding } from "../config/severity.js";
 import type { Severity } from "../config/types.js";
+import { normalizeProviderSeverity } from "../provider/provider-parse.js";
 import type { ProviderComment } from "../provider/provider-parse.js";
 import type { ParsedCliArgs } from "./parse-args.js";
 
@@ -800,12 +801,15 @@ function passesSeverityPolicy(comment: LiveReviewComment, parsed: ParsedCliArgs)
   // InvalidConfigError deep in the live path.
   const minimum = parsed.minimumSeverityInternal;
   if (minimum === null) return true;
-  // Delegate the threshold + security/leak carve-out to the canonical
-  // `shouldKeepFinding` so the live path and the config layer share
-  // one implementation. Without the delegation, any future change to
-  // the carve-out semantics would have to land in both
-  // `src/config/severity.ts` and `src/cli/live-shared.ts`, which is
-  // exactly the kind of silent divergence this refactor is meant to
-  // prevent.
-  return shouldKeepFinding({ minimum }, comment.severity.toLowerCase() as Severity);
+  // Normalize the comment's severity before the threshold + carve-out
+  // check. The provider may emit non-canonical values (typos like
+  // "warning", unknown ranks, etc.) and `LiveReviewComment.severity`
+  // is typed `string`, not `Severity`. Without normalization, the
+  // carve-out's `finding === "security"` string compare would silently
+  // miss a typo and filter a finding that the security policy says
+  // must be preserved. normalizeProviderSeverity is the same function
+  // the live-path parser uses, so the threshold check sees the same
+  // canonical severity the rendered tally would.
+  const normalized = normalizeProviderSeverity(comment.severity);
+  return shouldKeepFinding({ minimum }, normalized as Severity);
 }
