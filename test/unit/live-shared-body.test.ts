@@ -119,7 +119,11 @@ describe("buildReviewBody (shared GitHub + Azure review header)", () => {
       expect(body).toContain(c.body);
     }
     // The severity-table layout must surface a real findings table.
-    expect(body).toMatch(/\| # \| Severity \| Category \| File:Line \| Title \|/u);
+    // 4-column shape: # | Severity | File:Line | Title. Category was
+    // dropped from this layout because it squeezed the Severity
+    // column below ~70px on narrow viewports (verified PR #20
+    // screenshot 2026-07-07).
+    expect(body).toMatch(/\| # \| Severity \| File:Line \| Title \|/u);
   });
 
   it("FEAT-PARITY-005 includes severity counts at the top of the card (no raw asterisks)", () => {

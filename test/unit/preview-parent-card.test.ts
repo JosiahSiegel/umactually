@@ -48,7 +48,10 @@ describe("severity-table layout — actionable-only parent card", () => {
       ],
     });
     // Findings table is present and contains every posted finding inline.
-    expect(body).toMatch(/\| # \| Severity \| Category \| File:Line \| Title \|/u);
+    // 4-column shape: # | Severity | File:Line | Title. Category is
+    // omitted because it squeezed the Severity column below ~70px on
+    // narrow viewports (verified PR #20 screenshot 2026-07-07).
+    expect(body).toMatch(/\| # \| Severity \| File:Line \| Title \|/u);
     expect(body).toContain("`src/auth.ts`:12");
     expect(body).toContain("`src/db.ts`:7");
     expect(body).toContain("`README.md`:42");
@@ -95,8 +98,10 @@ describe("severity-table layout — actionable-only parent card", () => {
       postedComments: [],
     });
     // Findings table is present with the empty placeholder row.
-    expect(body).toMatch(/\| # \| Severity \| Category \| File:Line \| Title \|/u);
-    expect(body).toMatch(/No findings to address/u);
+    // 4-column shape (# | Severity | File:Line | Title); the empty
+    // row has 3 dashes (one per non-empty column).
+    expect(body).toMatch(/\| # \| Severity \| File:Line \| Title \|/u);
+    expect(body).toMatch(/\| — \| — \| — \| _No findings/u);
     // No legacy "Filtered preview" header.
     expect(body).not.toMatch(/🧹/u);
     expect(body).not.toMatch(/Filtered preview/u);
@@ -128,7 +133,8 @@ describe("severity-table layout — actionable-only parent card", () => {
     });
 
     expect(body).toMatch(/💬\s+DISCUSS/u);
-    expect(body).toMatch(/\| — \| — \| — \| — \| _No findings to address_ \|/u);
+    // 4-column empty placeholder: # | Severity | File:Line | Title → 3 dashes.
+    expect(body).toMatch(/\| — \| — \| — \| _No findings to address_ \|/u);
     // Headline leads with the posted count (0). The model produced
     // 1 finding but it was filtered (severity/minor policy) so 0
     // made it to the postable set. The reader sees "0 inline

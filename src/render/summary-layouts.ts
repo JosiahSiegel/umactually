@@ -283,38 +283,41 @@ function severityEmoji(level: string): string {
 /**
  * Severity cell for GFM-table rows.
  *
- * Returns the severity emoji only (no text label). Rationale:
- *   - GitHub's html-pipeline sanitizer strips `style` attributes
- *     from `<span>` inside markdown table cells (verified by DOM
- *     inspection of the rendered output — the span survives but
- *     `style="white-space: nowrap"` does not).
- *   - Combined with GitHub's table CSS `word-wrap: anywhere`, any
- *     unbreakable inline token longer than the cell width is
- *     character-wrapped (e.g., "Medium" → "Mediu" / "m") and no
- *     markdown trick — `<span style>`, `&nbsp;` between words,
- *     zero-width joiners, etc. — can prevent it once content
- *     exceeds cell width.
- *   - The Severity column is narrow (~70px on mobile) because the
- *     header is short and the table auto-sizes columns by content,
- *     so even a 6-character label overflows.
+ * Returns emoji + non-breaking-space + text label. The cell is
+ * treated as one inline token (no break opportunity between the
+ * glyph and the label) by GitHub's GFM renderer, so the emoji
+ * never drops to a second line on its own.
  *
- * Dropping the text label and emitting only the colored-circle
- * emoji guarantees a single, unbreakable inline glyph regardless
- * of viewport width. The label is not lost — every inline review
- * comment already leads with `\`severity\` \`category\`` so the
- * severity word is announced in plain text right under the table.
- * The colored glyph also survives Azure DevOps's no-color-font
- * fallback (different glyph shape per severity), keeping the
- * visual signal consistent across both platforms.
+ * The label itself can still wrap mid-word when the column is
+ * narrower than "Medium" (~70px) because:
+ *   - GitHub's table CSS uses `word-wrap: anywhere` (verified via
+ *     DOM inspection: `getComputedStyle(td).wordWrap === "anywhere"`),
+ *     which character-breaks any unbreakable token that overflows.
+ *   - The html-pipeline sanitizer strips `style` attributes from
+ *     `<span>` inside markdown table cells, so
+ *     `<span style="white-space: nowrap">…</span>` survives as a
+ *     bare `<span>` with no typography override.
+ *   - Per-character `&nbsp;` works but creates visible letter
+ *     spacing ("M e d i u m").
  *
- * History (kept for context — see PR #20 review thread):
- *   - First attempt: emoji + plain space → wraps between glyph and label.
- *   - Second attempt: emoji + `&nbsp;` + label → wraps mid-word in
- *     narrow columns ("Mediu" / "m").
- *   - Third attempt (rejected): `<span style="white-space: nowrap">`
- *     wrapping the whole token — sanitizer strips the style
- *     attribute, so the wrap still occurs.
- *   - Final: emoji-only. Single glyph, single line, every viewport.
+ * Callers must therefore ensure the Severity column is wide enough
+ * to hold `🟠&nbsp;Medium` (≈90px at GitHub's default font). The
+ * severity-table layout achieves this by dropping the Category
+ * column (Category is already announced in every inline review
+ * comment body as a leading `\`category\`` token) and reverting
+ * to a 4-column `# | Severity | File:Line | Title` shape with an
+ * 80-char title snippet — matching the dashboard's 🔝 Top findings
+ * table that already renders correctly at every viewport.
+ *
+ * History (see PR #20 review thread):
+ *   - Plain emoji + space → wraps between glyph and label.
+ *   - emoji + `&nbsp;` + label, 5-column table → wraps mid-word
+ *     ("Mediu" / "m") because the Severity column is squeezed to
+ *     ~70px by the Category column.
+ *   - emoji + `&nbsp;` + label, 4-column table → fits cleanly.
+ *     The `&nbsp;` ensures the emoji↔label boundary is the
+ *     tightest visual unit; the label wraps internally only if
+ *     the column is forced below ~70px.
  *
  * Scope: GFM-table layouts (severity-table + dashboard's "🔝 Top
  * findings"). Inline layouts use `severityEmoji()` + `severityLabel()`
@@ -322,7 +325,7 @@ function severityEmoji(level: string): string {
  * no wrap risk.
  */
 function severityCell(level: string): string {
-  return severityEmoji(level);
+  return `${severityEmoji(level)}&nbsp;${severityLabel(level)}`;
 }
 
 /** Severity → short label used in compact rows. */
@@ -800,34 +803,28 @@ function layoutSeverityTable(data: ReviewData): string {
     parts.push("");
   }
 
-  parts.push("### 📋 Findings");
+parts.push("### 📋 Findings");
   parts.push("");
-  parts.push("| # | Severity | Category | File:Line | Title |");
-  parts.push("| ---: | :--- | :--- | :--- | :--- |");
+  // 4-column layout: # | Severity | File:Line | Title. Category is
+  // intentionally omitted because (a) GitHub's table auto-layout
+  // squeezes the Severity column below ~70px when Category is
+  // present, causing "Medium" to wrap mid-word as "Mediu" / "m"
+  // (verified on PR #20 — screenshot 2026-07-07); and (b) every
+  // inline review comment body already leads with a `\`category\``
+  // token, so the value isn't lost. Matches the dashboard's "🔝 Top
+  // findings" table shape for cross-layout consistency.
+  parts.push("| # | Severity | File:Line | Title |");
+  parts.push("| ---: | :--- | :--- | :--- |");
   if (all.length === 0) {
-    parts.push("| — | — | — | — | _No findings to address_ |");
+    parts.push("| — | — | — | _No findings to address_ |");
   } else {
     all.forEach((c, i) => {
       const title = collapseBody(c, data.secrets);
-      // Truncate to 50 chars (not 80) so the Title column doesn't
-      // dominate GitHub's proportional table auto-layout. At 80 chars
-      // the title starves the narrow Severity/Category columns,
-      // causing mid-word wrapping ("Mediu/m", "correct/ness") on
-      // GitHub's ~680px PR comment container. 50 keeps the table's
-      // max-content width near the container width so columns barely
-      // compress. ADO's wider container is unaffected either way.
-      //
-      // The Severity cell uses `severityCell()` (emoji only — no text
-      // label) so the cell is a single glyph that cannot wrap. With
-      // any wider content (emoji + label), GitHub's GFM table
-      // renderer would wrap mid-word on narrow viewports because
-      // `word-wrap: anywhere` is enforced on table cells and the
-      // html-pipeline sanitizer strips `style` from inline spans.
-      // The text label is announced in the inline review comment
-      // body instead (leading `\`severity\`` token). See severityCell
-      // docstring for the full history.
-      const snippet = truncateSnippet(title, 50);
-      parts.push(`| ${i + 1} | ${severityCell(c.severity)} | ${cell(c.category ?? "general")} | \`${cell(c.path)}\`:${c.line} | ${cell(snippet)} |`);
+      // 80-char title (same as the 🔝 Top findings table) since
+      // dropping the Category column frees up the horizontal budget
+      // the Title needs to read cleanly at every viewport.
+      const snippet = truncateSnippet(title, 80);
+      parts.push(`| ${i + 1} | ${severityCell(c.severity)} | \`${cell(c.path)}\`:${c.line} | ${cell(snippet)} |`);
     });
   }
   parts.push("");
