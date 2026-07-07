@@ -208,7 +208,7 @@ describe("normalizeProviderSeverity — unknown severity surfaces via sink", () 
     expect(ctx).toMatchObject({ providerName: "openai-compatible", commentIndex: 3 });
   });
 
-  it("warns and returns 'medium' for empty string", () => {
+  it("returns 'medium' silently for empty string (no warning — providers commonly omit severity)", () => {
     const sink = vi.fn();
     const result = normalizeProviderSeverity("", null, {
       sink,
@@ -216,12 +216,10 @@ describe("normalizeProviderSeverity — unknown severity surfaces via sink", () 
       commentIndex: 0,
     });
     expect(result).toBe("medium");
-    expect(sink).toHaveBeenCalledTimes(1);
-    const [raw] = sink.mock.calls[0]!;
-    expect(raw).toBe("");
+    expect(sink).not.toHaveBeenCalled();
   });
 
-  it("warns and returns 'medium' for null", () => {
+  it("returns 'medium' silently for null (no warning — providers commonly omit severity)", () => {
     const sink = vi.fn();
     const result = normalizeProviderSeverity(null, null, {
       sink,
@@ -229,10 +227,7 @@ describe("normalizeProviderSeverity — unknown severity surfaces via sink", () 
       commentIndex: 1,
     });
     expect(result).toBe("medium");
-    expect(sink).toHaveBeenCalledTimes(1);
-    const [raw, , ctx] = sink.mock.calls[0]!;
-    expect(raw).toBe("");
-    expect(ctx).toMatchObject({ providerName: "openai-compatible", commentIndex: 1 });
+    expect(sink).not.toHaveBeenCalled();
   });
 
   it("does NOT warn for canonical value 'critical'", () => {
@@ -275,6 +270,8 @@ describe("normalizeProviderSeverity — unknown severity surfaces via sink", () 
     expect(normalizeProviderSeverity("warning")).toBe("medium");
     expect(normalizeProviderSeverity("")).toBe("medium");
     expect(normalizeProviderSeverity(null)).toBe("medium");
+    // Sanity: the canonical high-tier value still maps correctly.
+    expect(normalizeProviderSeverity("high")).toBe("high");
   });
 
   it("calls console.warn with the raw value, normalized value, and provider context", () => {
@@ -348,7 +345,7 @@ describe("parseReviewPayload — unknown severity surfaces via sink at call site
     expect(ctx).toMatchObject({ providerName: "openai-compatible", commentIndex: 1 });
   });
 
-  it("emits a sink warning for every malformed-severity comment, each with its index", () => {
+  it("emits a sink warning for every unrecognized-severity comment (but NOT for empty/null), each with its index", () => {
     const sink = vi.fn();
     const payload = JSON.stringify({
       summary: "ok",
@@ -357,16 +354,20 @@ describe("parseReviewPayload — unknown severity surfaces via sink at call site
         { path: "src/a.ts", line: 1, body: "b1", severity: "warning", category: "x" },
         { path: "src/b.ts", line: 2, body: "b2", severity: "3", category: "y" },
         { path: "src/c.ts", line: 3, body: "b3", severity: "high", category: "z" },
+        // Empty severity: silent fallback to "medium" — no warning,
+        // because providers commonly omit the field entirely and
+        // warning per-comment would flood the logs (one warning per
+        // finding on a 50-finding review).
         { path: "src/d.ts", line: 4, body: "b4", severity: "", category: "w" },
       ],
       suppressed_comments: [],
     });
     parseReviewPayload(payload, { sink, providerName: "github-copilot" });
-    expect(sink).toHaveBeenCalledTimes(3);
+    expect(sink).toHaveBeenCalledTimes(2);
     const indices = sink.mock.calls.map(
       (c) => (c[2] as { readonly commentIndex: number }).commentIndex,
     );
-    expect(indices).toEqual([0, 1, 3]);
+    expect(indices).toEqual([0, 1]);
     const providers = sink.mock.calls.map(
       (c) => (c[2] as { readonly providerName: string }).providerName,
     );

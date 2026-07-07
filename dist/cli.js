@@ -6902,11 +6902,14 @@ function normalizeProviderSeverity(value, body, options) {
         ? { providerName: options.providerName, commentIndex: options.commentIndex ?? -1 }
         : { commentIndex: options?.commentIndex ?? -1 };
     if (value === null || value.length === 0) {
-        // Empty/null is treated the same as unknown: fall back to "medium"
-        // but emit a warning so operators can tell the difference between
-        // "provider omitted severity entirely" vs "provider emitted a
-        // non-canonical value".
-        emitSeverityWarning(value ?? "", "medium", context, sink);
+        // Empty/null: silently fall back to "medium" WITHOUT emitting a
+        // warning. Rationale: many live providers (notably GitHub Copilot)
+        // routinely omit the `severity` field entirely. Warning on every
+        // omitted field would multiply to one warning per finding (50+ per
+        // review) and bury any genuinely-unrecognized-value warnings in
+        // noise. Operators can still surface empty-severity warnings via
+        // the ambient sink's debug channel — the raw `rawValue` is `""`
+        // for empty/null, distinguishable from `unrecognized string`.
         return "medium";
     }
     const lower = value.toLowerCase();
