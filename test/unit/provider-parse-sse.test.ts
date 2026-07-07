@@ -6,6 +6,7 @@
 import { describe, expect, it } from "vitest";
 
 import {
+  buildChatBody,
   buildResponsesBody,
   extractTextPayload,
   parseReviewPayload,
@@ -116,7 +117,12 @@ describe("parseReviewPayload + end-to-end SSE → review payload", () => {
 });
 
 describe("buildResponsesBody: self-healing retry override", () => {
-  it("accepts a userOverride that replaces the user message", () => {
+  // The parse-fail retry must PRESERVE the original user content (PR diff +
+  // review instructions) so the model still has work to do on the retry.
+  // Prepending the JSON-only reminder and keeping the original prompt
+  // prevents the model from falling back to "Reviewer not yet engaged —
+  // no code context was provided" (observed on PR #20 run 28876454316).
+  it("prepends userOverride to the original user message (does not replace it)", () => {
     const body = buildResponsesBody(
       {
         model: "auto",
@@ -126,7 +132,10 @@ describe("buildResponsesBody: self-healing retry override", () => {
       { userOverride: "Please output JSON only" },
     );
     const input = body["input"] as ReadonlyArray<{ readonly role: string; readonly content: string }>;
-    expect(input[1]?.content).toBe("Please output JSON only");
+    // Both the override AND the original user content must be present;
+    // the override comes first so the model's first tokens are the
+    // JSON-only reminder, but the trailing diff gives it work to do.
+    expect(input[1]?.content).toBe("Please output JSON onlyreview this diff");
     expect(input[0]?.content).toBe("you are a reviewer");
   });
 
@@ -138,6 +147,25 @@ describe("buildResponsesBody: self-healing retry override", () => {
     });
     const input = body["input"] as ReadonlyArray<{ readonly role: string; readonly content: string }>;
     expect(input[1]?.content).toBe("review this diff");
+  });
+});
+
+describe("buildChatBody: self-healing retry override", () => {
+  // Mirrors `buildResponsesBody`: the chat-completions retry path also
+  // prepends the JSON-only reminder to the original user content so the
+  // model retains the PR diff + review instructions.
+  it("prepends userOverride to the original user message (does not replace it)", () => {
+    const body = buildChatBody(
+      {
+        model: "auto",
+        system: "you are a reviewer",
+        user: "review this diff",
+      },
+      { userOverride: "Please output JSON only" },
+    );
+    const messages = body["messages"] as ReadonlyArray<{ readonly role: string; readonly content: string }>;
+    expect(messages[1]?.content).toBe("Please output JSON onlyreview this diff");
+    expect(messages[0]?.content).toBe("you are a reviewer");
   });
 });
 

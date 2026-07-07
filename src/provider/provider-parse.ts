@@ -161,12 +161,29 @@ export function isNonEmptyReview(review: ProviderReviewPayload | null): review i
 export type RequestBody = Record<string, unknown>;
 
 /**
- * Self-healing follow-up message sent to the model when its first response
- * could not be parsed as a JSON review payload. Some providers ignore
- * `stream: false` and return an empty SSE stream; some wrap their output
- * in markdown fences or prose; some omit the JSON entirely. We retry
- * once with an explicit reminder before falling back to the parse-fail
- * surface — that often recovers the review without operator intervention.
+ * Self-healing follow-up prefix prepended to the original user
+ * message when the first response could not be parsed as a JSON
+ * review payload. The prefix explicitly asks the model to emit
+ * JSON-only output (no prose, no fences); the original user
+ * content is APPENDED after the prefix so the model still has
+ * the PR diff + review instructions to work from.
+ *
+ * Prepending (rather than replacing) is critical: a prior version
+ * replaced `config.user` with just the reminder, which caused the
+ * model to fall back to "Reviewer not yet engaged — no code
+ * context was provided" because it no longer had the diff to
+ * review. That fallback then passed `isNonEmptyReview` (its
+ * `summary` field is non-empty), got posted as the actual review
+ * with 0 findings, and masked the underlying parse-fail — the
+ * operator saw an empty findings table instead of the
+ * "raise --max-output-tokens and retry" / "model regression"
+ * parse-fail diagnostic. Pinned by PR #20 review screenshot.
+ *
+ * Some providers ignore `stream: false` and return an empty SSE
+ * stream; some wrap their output in markdown fences or prose;
+ * some omit the JSON entirely. We retry once with the prefix
+ * appended before falling back to the parse-fail surface — that
+ * often recovers the review without operator intervention.
  *
  * Shared between `openai-compatible.ts` and `copilot.ts` so the
  * self-healing message stays byte-identical regardless of provider.
@@ -174,7 +191,8 @@ export type RequestBody = Record<string, unknown>;
 export const PARSE_FAIL_RETRY_PROMPT =
   "Your previous response did not contain a valid JSON review payload. " +
   "Please respond with ONLY a JSON object matching this schema (no prose, no fences): " +
-  '{"summary": "...", "verdict": "NEEDS_FIX|APPROVED|COMMENT|DISCUSS|SHIP", "comments": [...], "suppressed_comments": [...]}.';
+  '{"summary": "...", "verdict": "NEEDS_FIX|APPROVED|COMMENT|DISCUSS|SHIP", "comments": [...], "suppressed_comments": [...]}.\n\n' +
+  "Original review request follows:\n\n";
 
 export function buildResponsesBody(
   config: {
@@ -186,7 +204,14 @@ export function buildResponsesBody(
   },
   opts?: { readonly userOverride?: string },
 ): RequestBody {
-  const userContent = opts?.userOverride ?? config.user;
+  // When `userOverride` is set (parse-fail retry), APPEND the original
+  // user content so the model retains the PR diff + review instructions.
+  // The override prefix asks the model to emit JSON-only output; the
+  // trailing original content gives it the actual work. See
+  // PARSE_FAIL_RETRY_PROMPT for the why.
+  const userContent = opts?.userOverride !== undefined
+    ? `${opts.userOverride}${config.user}`
+    : config.user;
   const body: Record<string, unknown> = {
     model: config.model,
     input: [
@@ -213,7 +238,12 @@ export function buildChatBody(
   },
   opts?: { readonly userOverride?: string },
 ): RequestBody {
-  const userContent = opts?.userOverride ?? config.user;
+  // When `userOverride` is set (parse-fail retry), APPEND the original
+  // user content so the model retains the PR diff + review instructions.
+  // See `buildResponsesBody` + `PARSE_FAIL_RETRY_PROMPT` for the why.
+  const userContent = opts?.userOverride !== undefined
+    ? `${opts.userOverride}${config.user}`
+    : config.user;
   const body: Record<string, unknown> = {
     model: config.model,
     messages: [
