@@ -485,7 +485,7 @@ describe("severity-table details", () => {
     // all wrapped at some viewport; only emoji + padding fits every
     // viewport without header or content wrap).
     expect(out).toContain(
-      '| 1 | 🟠&nbsp;\u2003 | `src/no-category.ts`:3 | Missing category. |',
+      '| 1 | 🟠&nbsp;&nbsp;&nbsp;&nbsp; | `src/no-category.ts`:3 | Missing category. |',
     );
   });
 
@@ -579,8 +579,8 @@ describe("severity-table details", () => {
     // the screenshot. Rows are sorted by severity bucket (highest
     // rank first), so critical is row 1, medium is row 2.
     const severityOut = renderSummary("severity-table", data);
-    expect(severityOut).toContain("| 1 | 🟣&nbsp;\u2003 |");
-    expect(severityOut).toContain("| 2 | 🟠&nbsp;\u2003 |");
+    expect(severityOut).toContain("| 1 | 🟣&nbsp;&nbsp;&nbsp;&nbsp; |");
+    expect(severityOut).toContain("| 2 | 🟠&nbsp;&nbsp;&nbsp;&nbsp; |");
     // And: 4-column shape (no Category column).
     expect(severityOut).not.toContain("| # | Severity | Category |");
     expect(severityOut).toContain("| # | Severity | File:Line | Title |");
@@ -592,8 +592,8 @@ describe("severity-table details", () => {
     // dashboard also has a "🔝 Top findings" GFM table that uses
     // the same emoji + padding Severity cell.
     const dashboardOut = renderSummary("dashboard", data);
-    expect(dashboardOut).toContain("| 1 | 🟣&nbsp;\u2003 |");
-    expect(dashboardOut).toContain("| 2 | 🟠&nbsp;\u2003 |");
+    expect(dashboardOut).toContain("| 1 | 🟣&nbsp;&nbsp;&nbsp;&nbsp; |");
+    expect(dashboardOut).toContain("| 2 | 🟠&nbsp;&nbsp;&nbsp;&nbsp; |");
     expect(dashboardOut).not.toContain("Medium |");
     expect(dashboardOut).not.toContain("Critical |");
   });
