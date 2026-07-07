@@ -344,7 +344,13 @@ function severityEmoji(level: string): string {
  * no wrap risk.
  */
 function severityCell(level: string): string {
-  return `${severityEmoji(level)}&nbsp;&nbsp;&nbsp;&nbsp;`;
+  // emoji + 10 nbsp's as width-padding. Each nbsp is ~4-7px wide at
+  // GitHub's 14px font, so 10 nbsp's add ~40-70px of forced cell
+  // width. The whole token stays unbreakable (nbsp binds), so even at
+  // the narrowest viewport the cell content renders as one line.
+  // Trailing whitespace would be stripped by GitHub's html-pipeline,
+  // but nbsp's are preserved (they're meaningful non-breaking tokens).
+  return `${severityEmoji(level)}&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;`;
 }
 
 /** Severity → short label used in compact rows. */
