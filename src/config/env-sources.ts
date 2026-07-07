@@ -56,7 +56,6 @@ const DIRECT_ENV_SOURCE_KEYS: ReadonlyArray<keyof EnvSources> = [
   "stallTimeoutSeconds",
   "perRequestTimeoutSeconds",
   "maxOutputTokens",
-  "ignoreMinor",
   "minimumSeverity",
   "maxComments",
   "reviewFileLimit",
