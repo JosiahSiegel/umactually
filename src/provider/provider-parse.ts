@@ -387,18 +387,20 @@ export function parseReviewPayload(
  * see "raise --max-output-tokens and retry" instead of a generic
  * "provider response was not valid JSON".
  *
- * Detection is a substring check for the `response.completed` /
- * `response.done` markers in the raw text. Both are recognized by
- * `tryExtractSse` as the stream's terminal event; either one
- * conclusively means the stream completed normally.
+ * Detection walks `data:` lines only (not the raw text), so a review
+ * whose comment body happens to contain the literal string
+ * `"type":"response.completed"` cannot trick the detector into
+ * thinking the stream completed cleanly. Mirrors `tryExtractSse`'s
+ * SSE-spec parsing: blank lines separate events, comment lines
+ * (`:` prefix) are ignored, and the payload is the substring after
+ * `data:` with optional leading space stripped.
  *
  * Edge cases that intentionally return `false`:
  *   - Non-SSE responses (chat-completions, plain JSON): there's no
  *     stream-completion concept for a single-shot response, so
- *     truncation only applies to streaming endpoints. Callers
- *     should only check this on responses from `endpoint === "responses"`.
- *   - Empty rawText: trivially not a truncated stream — the request
- *     never produced any output.
+ *     truncation only applies to streaming endpoints. Detected by
+ *     absence of any `data:` line.
+ *   - Empty rawText: trivially not a truncated stream.
  *   - A response.completed event whose output_text was empty: still
  *     a completed stream, just one whose model output was nothing.
  *     `tryExtractSse` falls back to the delta accumulation in this
