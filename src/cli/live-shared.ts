@@ -13,8 +13,11 @@ import { truncateBodyForLog } from "../util/http.js";
 import type { FetchImpl } from "../util/http.js";
 import { isPositiveSafeInteger, isRecord, isSafeInteger } from "../util/json-guards.js";
 import { renderSummary, type LayoutId, type ReviewData as LayoutReviewData } from "../render/summary-layouts.js";
-import { countBySeverity as countBySeverityUtil, severityRank } from "../util/severity.js";
+import { countBySeverity as countBySeverityUtil } from "../util/severity.js";
 import { mapVerdictToAzureStatus, mapVerdictToGithubEvent, reconcileVerdictForEmptySeverityCounts } from "../util/verdict.js";
+import { parseSeverityFromUnknown } from "../config/parsers.js";
+import { shouldKeepFinding } from "../config/severity.js";
+import type { Severity } from "../config/types.js";
 import type { ProviderComment } from "../provider/provider-parse.js";
 import type { ParsedCliArgs } from "./parse-args.js";
 
@@ -791,10 +794,21 @@ export function ensureHttpOk(response: Response, code: string, action: string): 
 export { isRecord };
 
 function passesSeverityPolicy(comment: LiveReviewComment, parsed: ParsedCliArgs): boolean {
-  // security and leak ALWAYS survive any threshold (security policy)
-  const sevLower = comment.severity.toLowerCase();
-  if (sevLower === "security" || sevLower === "leak") return true;
   const minimum = parsed.minimumSeverity;
+  // null means "no threshold configured" — every finding passes.
   if (minimum === null) return true;
-  return severityRank(comment.severity) >= severityRank(minimum);
+  // Delegate the threshold + security/leak carve-out to the canonical
+  // `shouldKeepFinding` so the live path and the config layer share one
+  // implementation. The live-path CLI enum (`low|medium|high`) is mapped
+  // to the internal `Severity` via `parseSeverityFromUnknown`'s alias
+  // table (low→minor, medium→major, high→critical) — see
+  // `src/config/parsers.ts:SEVERITY_ALIASES`. Without the delegation,
+  // any future change to the carve-out semantics would have to land in
+  // both `src/config/severity.ts` and `src/cli/live-shared.ts`, which
+  // is exactly the kind of silent divergence this refactor is meant to
+  // prevent.
+  return shouldKeepFinding(
+    { minimum: parseSeverityFromUnknown(minimum, "live.minimumSeverity") },
+    comment.severity.toLowerCase() as Severity,
+  );
 }

@@ -29,6 +29,8 @@ If `highConfidenceLeakCount` is non-zero, treat the run as a security incident: 
 
 The carve-out is unconditional: `security` and `leak` findings bypass every configured threshold. They cannot be turned off via `minimum-severity` or any other input — to suppress them you must remove them at the source (e.g. stop posting the credential, fix the underlying code).
 
+**What the carve-out does NOT cover:** `high` and `critical` findings are filtered by `minimum-severity` like any other tier. Setting `minimum-severity: high` suppresses `critical` along with everything below it. Only `security` and `leak` are unconditionally preserved — nothing else is exempt from the threshold.
+
 For noise control, think of the threshold as a quieter-to-louder knob:
 
 - `minimum-severity: high` — quietest; only blocking findings surface inline.
