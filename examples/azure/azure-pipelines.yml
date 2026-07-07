@@ -84,8 +84,13 @@ steps:
     displayName: Run UmActually Azure live review
     env:
       SYSTEM_ACCESSTOKEN: $(System.AccessToken)
-      UMACTUALLY_PR_NUMBER: $(UMACTUALLY_PR_NUMBER)
-      UMACTUALLY_REPO: $(UMACTUALLY_REPO)
+      # NOTE: UMACTUALLY_PR_NUMBER + UMACTUALLY_REPO are set by the
+      # prepare step via ##vso[task.setvariable]. Do NOT re-bind them
+      # here — ADO locks any variable named in this env: block as
+      # readonly for the entire pipeline run, which makes the prepare
+      # step's setvariable emit fail with "Overwriting readonly
+      # variable ... is not permitted". The script body reads them
+      # from the inherited pipeline env anyway.
       UMACTUALLY_API_URL: $(UMACTUALLY_API_URL)
       UMACTUALLY_API_KEY: $(UMACTUALLY_API_KEY)
 
