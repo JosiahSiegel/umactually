@@ -171,6 +171,9 @@ export async function runAzureLive(input: {
     posted: true,
     reviewId,
     message: successMessage,
+    // Surface the live counts for the self-review guard artifact.
+    inlineThreadCount: postedIds.length,
+    verdict: provider.review.verdict,
   };
 }
 

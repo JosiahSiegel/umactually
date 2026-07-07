@@ -30,6 +30,7 @@ function outcome(overrides: Partial<LiveProviderOutcome>): LiveProviderOutcome {
     endpoint: overrides.endpoint ?? "https://provider.example/v1",
     provider: overrides.provider ?? "openai-compatible",
     modelId: overrides.modelId ?? "auto",
+    severityWarnings: overrides.severityWarnings ?? [],
   };
 }
 

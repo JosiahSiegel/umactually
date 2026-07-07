@@ -41,6 +41,9 @@ export function applySimulateFindings(input: {
       comments: sanitizeComments(fixture.comments, input.secrets),
       suppressedComments: sanitizeComments(fixture.suppressed_comments, input.secrets),
     },
+    // Synthesized fixture — never went through the real parser, so
+    // there are no severity warnings to surface.
+    severityWarnings: [],
   };
 }
 

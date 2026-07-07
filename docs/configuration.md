@@ -106,35 +106,16 @@ Use the root [`azure-pipelines.yml`](../azure-pipelines.yml) as the full PR-vali
     UMACTUALLY_API_KEY: $(UMACTUALLY_API_KEY)
 ```
 
-To fetch PR metadata and the PR diff programmatically, use the Azure DevOps REST API with the OAuth token:
+To fetch PR metadata and the PR diff programmatically, the root pipeline delegates to [`scripts/prepare-azure-pr-inputs.sh`](../scripts/prepare-azure-pr-inputs.sh). The script writes a synthetic `--event`, `--diff`, and `--review` fixture so manual branch runs (without `SYSTEM_PULLREQUEST_PULLREQUESTID`) still execute end-to-end, and switches to a live Azure DevOps REST fetch when the PR ID is set. See [docs/azure-devops.md](azure-devops.md#fetching-pr-metadata-and-diff) for the full walkthrough.
 
 ```yaml
-- script: |
-    set -euo pipefail
-    collection_uri="${SYSTEM_COLLECTIONURI%/}"
-    project_path="$(node -e 'process.stdout.write(encodeURIComponent(process.env.SYSTEM_TEAMPROJECT || ""))')"
-    repository_path="$(node -e 'process.stdout.write(encodeURIComponent(process.env.BUILD_REPOSITORY_ID || ""))')"
-    pr_url="${collection_uri}/${project_path}/_apis/git/repositories/${repository_path}/pullRequests/${SYSTEM_PULLREQUEST_PULLREQUESTID}?api-version=7.1"
-    diff_url="${collection_uri}/${project_path}/_apis/git/repositories/${repository_path}/pullRequests/${SYSTEM_PULLREQUEST_PULLREQUESTID}/diffs/commits?api-version=7.1"
-    curl -fsS \
-      --header "Authorization: Bearer ${SYSTEM_ACCESSTOKEN}" \
-      --header "Accept: application/json" \
-      "$pr_url" \
-      --output "$AZURE_EVENT_PATH"
-    curl -fsS \
-      --request POST \
-      --header "Authorization: Bearer ${SYSTEM_ACCESSTOKEN}" \
-      --header "Accept: text/plain" \
-      --header "Content-Type: application/json" \
-      --data '{}' \
-      "$diff_url" \
-      --output "$AZURE_DIFF_PATH"
-  displayName: Fetch PR metadata and diff via REST API
+- script: bash scripts/prepare-azure-pr-inputs.sh
+  displayName: Prepare Azure PR inputs
   env:
     SYSTEM_ACCESSTOKEN: $(System.AccessToken)
 ```
 
-Manual branch runs do not populate `SYSTEM_PULLREQUEST_PULLREQUESTID`. Keep a synthetic `--event` file, synthetic `--diff` file, `--review` fixture, `--pr-number 1`, and repository slug fallback for smoke validation outside branch-policy PR runs.
+Manual branch runs do not populate `SYSTEM_PULLREQUEST_PULLREQUESTID`. The synthetic inputs written by `prepare-azure-pr-inputs.sh` cover that case automatically — no extra fallback to maintain.
 
 ## Provider families
 

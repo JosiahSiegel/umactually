@@ -3158,6 +3158,8 @@ function mergeReviewResults(outcomes, options) {
             endpoint: "",
             provider: "",
             modelId: "",
+            // No inputs → no warnings to surface.
+            severityWarnings: [],
         };
     }
     const first = outcomes[0];
@@ -3203,23 +3205,65 @@ function mergeReviewResults(outcomes, options) {
             worstVerdict = outcome.review.verdict;
         }
     }
-    // MERGE-6: pick the longest summary.
-    let longestSummary = "";
+    // MERGE-6: pick the best summary across all chunk outcomes.
+    //
+    // The previous implementation picked the LONGEST summary. That was
+    // wrong: a parse-fail fallback's summary (built by
+    // `buildMalformedProviderFallback`) is intentionally long because it
+    // embeds a `<details>` block with the raw provider response, so it
+    // ALWAYS beat the successful chunk's real summary. The merged card
+    // then contradicted itself — real findings in the findings table,
+    // parse-fail diagnostic in the summary section.
+    //
+    // New policy: prefer summaries from chunks that contributed real
+    // findings (comments or suppressed comments). The parse-fail fallback
+    // has both arrays empty AND `parseFailed: true` set, so it's filtered
+    // out. Among the surviving chunks, pick the longest summary (real
+    // review summaries tend to vary in length and the longest is usually
+    // the most informative). If NO chunk contributed findings, fall back
+    // to the parse-fail summary as the only honest diagnostic.
+    let summarySource = null;
+    let summarySourceLength = -1;
+    let fallbackSummary = "";
     for (const outcome of outcomes) {
-        if (outcome.review.summary.length > longestSummary.length) {
-            longestSummary = outcome.review.summary;
+        const isParseFail = outcome.review.parseFailed === true;
+        const hasFindings = outcome.review.comments.length > 0 ||
+            outcome.review.suppressedComments.length > 0;
+        if (isParseFail || !hasFindings) {
+            if (outcome.review.summary.length > fallbackSummary.length) {
+                fallbackSummary = outcome.review.summary;
+            }
+            continue;
+        }
+        if (outcome.review.summary.length > summarySourceLength) {
+            summarySource = outcome.review.summary;
+            summarySourceLength = outcome.review.summary.length;
         }
     }
+    const longestSummary = summarySource ?? fallbackSummary;
+    // The merged review is parseFailed only when no chunk contributed
+    // real findings — i.e. every chunk was a parse-fail fallback OR was
+    // structurally empty (in which case summarySource is null and the
+    // fallback summary was used). When at least one chunk succeeded,
+    // the merged card has real findings and should NOT be marked
+    // parseFailed even if other chunks failed.
+    const mergedParseFailed = summarySource === null;
     return {
         review: {
             summary: longestSummary,
             verdict: worstVerdict.length > 0 ? worstVerdict : "COMMENT",
             comments: truncatedComments,
             suppressedComments: sortedSuppressed,
+            ...(mergedParseFailed ? { parseFailed: true } : {}),
         },
         endpoint: first.endpoint,
         provider: first.provider,
         modelId: first.modelId,
+        // MERGE severity warnings: concatenate each input outcome's warnings
+        // (each retains its own providerName + commentIndex, so the consumer
+        // can disambiguate per-source attribution). The merge itself does
+        // not generate new warnings.
+        severityWarnings: outcomes.flatMap((o) => o.severityWarnings),
     };
 }
 
@@ -5315,6 +5359,9 @@ async function runAzureLive(input) {
         posted: true,
         reviewId,
         message: successMessage,
+        // Surface the live counts for the self-review guard artifact.
+        inlineThreadCount: postedIds.length,
+        verdict: provider.review.verdict,
     };
 }
 /**
@@ -6009,6 +6056,11 @@ async function runGithubLive(input) {
         posted: true,
         reviewId,
         message: existing !== null ? "replaced existing GitHub review" : "posted GitHub review",
+        // Surface the live review's actual counts so the self-review guard
+        // artifact-write path can persist them — the dry-run stub's counts
+        // would otherwise mask what GitHub actually saw.
+        inlineThreadCount: postableComments.length,
+        verdict: provider.review.verdict,
     };
 }
 async function findExistingMarkerReview(context, fetchImpl) {
@@ -6233,7 +6285,31 @@ function extractFirstBalancedObject(rawText) {
                 continue;
             }
             if (char === '"') {
-                inString = false;
+                // Disambiguate a stray `"` from a legitimate closing quote by
+                // peeking ahead. A real closing quote is followed (after
+                // optional whitespace) by a structural JSON character
+                // (`,`, `}`, `]`, `:`). Anything else means the model forgot
+                // to escape a `"` inside the string value (SSE delta
+                // concatenation surfaces this as an unescaped quote in the
+                // resulting textPayload). Treat the latter as a stray quote
+                // — stay inside the string so the depth tracker keeps
+                // working AND escape it in the second pass.
+                //
+                // Note: `"` is NOT a structural JSON character so we don't
+                // include it in the close-quote set. If we did, a stray
+                // `"` followed by another `"` (e.g. `body: "value" "next":`)
+                // would be misclassified as a closing quote.
+                const nextNonWs = peekNextNonWhitespace(rawText, index + 1);
+                if (nextNonWs === -1 ||
+                    nextNonWs === ",".charCodeAt(0) ||
+                    nextNonWs === "}".charCodeAt(0) ||
+                    nextNonWs === "]".charCodeAt(0) ||
+                    nextNonWs === ":".charCodeAt(0)) {
+                    inString = false;
+                }
+                // else: stray quote inside a string. Stay inString; the second
+                // pass will escape it.
+                continue;
             }
             continue;
         }
@@ -6277,8 +6353,29 @@ function extractFirstBalancedObject(rawText) {
                 continue;
             }
             if (char === '"') {
-                segments.push(char);
-                inString = false;
+                // Same disambiguation as the first pass: peek ahead to determine
+                // whether this `"` is a legitimate closing quote (followed by
+                // structural JSON punctuation) or a stray quote from an
+                // unescaped model emission. The latter gets escaped so the
+                // resulting substring parses as valid JSON.
+                const nextNonWs = peekNextNonWhitespace(substring, index + 1);
+                if (nextNonWs === -1 ||
+                    nextNonWs === ",".charCodeAt(0) ||
+                    nextNonWs === "}".charCodeAt(0) ||
+                    nextNonWs === "]".charCodeAt(0) ||
+                    nextNonWs === ":".charCodeAt(0)) {
+                    // Legitimate closing quote: emit the raw `"` and exit the
+                    // string. The first-pass peek-ahead already determined this
+                    // was the close.
+                    segments.push(char);
+                    inString = false;
+                    continue;
+                }
+                // Stray quote inside a string: escape it so the parser keeps
+                // the string open. Live evidence (run 28829205474 at
+                // 2026-07-06T23:03:58Z): the model's review body contained an
+                // unescaped `"` inside a body field, breaking the outer JSON.
+                segments.push('\\"');
                 continue;
             }
             // Inside a string: escape literal control characters that are
@@ -6316,10 +6413,85 @@ function extractFirstBalancedObject(rawText) {
     }
     return segments.join("");
 }
+/**
+ * Peek the character code of the next non-whitespace character in
+ * `text` starting at `fromIndex`. Returns `-1` when `fromIndex` is past
+ * the end of `text`. Used by the balanced-object extractor to
+ * disambiguate a stray unescaped `"` inside a JSON string from a
+ * legitimate closing quote: the latter is always followed (after
+ * optional whitespace) by a structural JSON character (`,`, `}`, `]`,
+ * `:`); anything else means the model forgot to JSON-encode the
+ * quote.
+ */
+function peekNextNonWhitespace(text, fromIndex) {
+    for (let i = fromIndex; i < text.length; i += 1) {
+        const code = text.charCodeAt(i);
+        // JSON whitespace: space (0x20), tab (0x09), LF (0x0A), CR (0x0D).
+        if (code !== 0x20 && code !== 0x09 && code !== 0x0a && code !== 0x0d) {
+            return code;
+        }
+    }
+    return -1;
+}
 
 ;// CONCATENATED MODULE: ./src/provider/provider-parse.ts
 
 
+/**
+ * Ambient (module-singleton) sink slot. `live-provider.ts`
+ * `requestLiveReview` installs a sink here before invoking the provider
+ * and clears it in `finally`, so any `parseReviewPayload` call reachable
+ * from `runCopilotRequest` / `runProviderRequest` will pick it up
+ * without needing to thread it through every call site.
+ *
+ * Default value is `null` (no sink installed → no warnings surfaced),
+ * preserving the previous silent-coercion behavior for any caller that
+ * has not opted in.
+ *
+ * Concurrency note: a module-level singleton is only safe when callers
+ * install → await → clear atomically (Node's single-threaded event loop
+ * guarantees no `await` boundary interleaves another `setActiveSeveritySink`
+ * call). Any future caller that runs two `requestLiveReview` requests
+ * concurrently via `Promise.all` will have the second `setActiveSeveritySink`
+ * overwrite the first's slot, and the first's `finally` will clear the
+ * second's sink mid-flight — silently corrupting the telemetry array.
+ * The guard below surfaces this condition loudly so the regression is
+ * caught at install time, not silently after the fact.
+ */
+let activeSeveritySink = null;
+function setActiveSeveritySink(sink) {
+    if (sink !== null && activeSeveritySink !== null) {
+        // Concurrency footgun detected: a sink is already installed and the
+        // caller is overwriting it without clearing the previous one first.
+        // Log + warn loudly so the regression class surfaces in CI logs
+        // rather than silently corrupting telemetry.
+        console.warn("[provider-parse] setActiveSeveritySink: overwriting a non-null ambient sink. " +
+            "This usually means two requestLiveReview calls are running concurrently " +
+            "(Promise.all) — the second's sink will be cleared by the first's finally, " +
+            "corrupting the captured warnings. Thread the sink via ParseContext instead.");
+    }
+    activeSeveritySink = sink;
+}
+function getActiveSeveritySink() {
+    return activeSeveritySink;
+}
+/**
+ * Emit a structured warning when the parser encounters a severity value
+ * it cannot classify. Always also writes a single `console.warn` line so
+ * operators can see the mismatch in CI logs without needing to inspect
+ * the structured sink channel.
+ */
+function emitSeverityWarning(rawValue, normalizedFallback, context, sink) {
+    const providerLabel = context.providerName ?? "unknown-provider";
+    const safeRaw = JSON.stringify(rawValue);
+    const message = `provider ${providerLabel} emitted unrecognized severity ${safeRaw} ` +
+        `at comment index ${context.commentIndex}; falling back to "${normalizedFallback}". ` +
+        `Expected one of: info, low, medium, high, critical.`;
+    console.warn(message, context);
+    if (sink !== undefined) {
+        sink(rawValue, normalizedFallback, context);
+    }
+}
 /**
  * Returns true when the parsed review has at least one non-empty
  * summary, verdict, or comment — used by the parse-fail retry paths
@@ -6483,15 +6655,15 @@ function extractTextPayload(endpoint, rawText) {
  * differentiate "structured empty review" (returned, all fields empty)
  * from "no parseable content" (returns null).
  */
-function parseReviewPayload(text) {
+function parseReviewPayload(text, context) {
     const candidate = extractJsonBlock(text);
     if (!isRecord(candidate)) {
         return null;
     }
     const summary = readStringField(candidate, "summary") ?? "";
     const verdict = readStringField(candidate, "verdict") ?? "";
-    const comments = provider_parse_readCommentArray(candidate["comments"]);
-    const suppressed_comments = provider_parse_readCommentArray(candidate["suppressed_comments"]);
+    const comments = provider_parse_readCommentArray(candidate["comments"], context);
+    const suppressed_comments = provider_parse_readCommentArray(candidate["suppressed_comments"], context);
     // Soft parse-fail detector (CLARITY-10b): some providers/models return
     // a *structurally valid* JSON wrapper whose contents are an apology
     // ("No diff or file contents were provided to review...", "I cannot
@@ -6541,8 +6713,16 @@ function isApologySummary(summary) {
     // clean-review summaries that happen to contain "cannot" or "review"
     // in other contexts (e.g. "I cannot find any issues to review").
     const APOLOGY_PATTERNS = [
-        // "no diff / file contents were provided / shared / available"
+        // "no diff / file contents were provided / shared / available" — direct form.
         /\bno\s+(diff|file\s+contents?|contents?)\b.*\b(provided|shared|available|supplied)\b/u,
+        // "no [pull request | pr | file] diff was provided" — the model often
+        // adds "pull request" / "pr" / "file" between "no" and "diff" before
+        // reaching the apology verb. Live evidence (PR self-review at
+        // 2026-07-06T22:08Z): "No pull request diff was provided in the
+        // request, so no review can be produced." — the narrow `no\s+(diff|...)`
+        // pattern above misses this. This broadened pattern matches any
+        // "no <modifier>* diff/file/contents ... <apology verb>" form.
+        /\bno\s+(?:pull\s+request\s+|pr\s+|file\s+|the\s+|any\s+)*(?:diff|file\s+contents?|contents?)\b.*\b(provided|shared|available|supplied|received)\b/u,
         // "please share / provide / send the diff / file / pull request"
         /\bplease\s+(share|provide|send)\s+(the\s+)?(diff|file|pull\s+request|pr)\b/u,
         // "I cannot / can't review this / it / the PR" — narrow to the
@@ -6612,14 +6792,19 @@ function joinOutputText(output) {
     }
     return fragments.join("\n");
 }
-function provider_parse_readCommentArray(value) {
+function provider_parse_readCommentArray(value, context) {
     if (!isUnknownArray(value)) {
         return [];
     }
+    // Prefer an explicit context; fall back to the ambient module-singleton
+    // sink so live-provider.ts can install a sink once per request without
+    // threading it through every parseReviewPayload call site.
+    const effectiveSink = context?.sink ?? getActiveSeveritySink() ?? undefined;
+    const effectiveProviderName = context?.providerName;
     const comments = [];
-    for (const entry of value) {
+    value.forEach((entry, index) => {
         if (!isRecord(entry)) {
-            continue;
+            return;
         }
         const path = entry["path"];
         const line = readSafeIntegerField(entry, "line");
@@ -6633,11 +6818,27 @@ function provider_parse_readCommentArray(value) {
                 // heuristics) can distinguish a hardening tip from an active
                 // leak. Without body, normalizeProviderSeverity falls back to
                 // the severity-only mapping (security → high).
-                severity: normalizeProviderSeverity(readStringField(entry, "severity"), body),
+                //
+                // The sink + providerName + commentIndex options let the caller
+                // (live-provider.ts via the ambient sink; tests via explicit
+                // options) observe malformed severity values per-comment.
+                severity: normalizeProviderSeverity(readStringField(entry, "severity"), body, 
+                // exactOptionalPropertyTypes: omit undefined keys so the call
+                // is assignable to the strict optional types in
+                // `normalizeProviderSeverity`'s third parameter.
+                effectiveSink !== undefined || effectiveProviderName !== undefined
+                    ? {
+                        ...(effectiveSink !== undefined ? { sink: effectiveSink } : {}),
+                        ...(effectiveProviderName !== undefined
+                            ? { providerName: effectiveProviderName }
+                            : {}),
+                        commentIndex: index,
+                    }
+                    : { commentIndex: index }),
                 category: readStringField(entry, "category") ?? "general",
             });
         }
-    }
+    });
     return comments;
 }
 /**
@@ -6695,8 +6896,23 @@ function provider_parse_readCommentArray(value) {
 const HARDENING_HINT_PATTERN = /\b(consider\s+add(?:ing)?|suggest(?:ed|s)?\s+(?:adding|using)|you\s+(?:may|might|should)\s+want\s+to|harden(?:ing)?|best\s+practice)\b/iu;
 /** Patterns that indicate an active secret leak or credential exposure. */
 const LEAK_INDICATOR_PATTERN = /\b(secret|credential|token|api[\s_-]?key|password|private[\s_-]?key|exposed|leaked|disclosed|committed\s+by\s+accident)\b/iu;
-function normalizeProviderSeverity(value, body) {
+function normalizeProviderSeverity(value, body, options) {
+    const sink = options?.sink;
+    // Build the context object explicitly so undefined keys are omitted
+    // (required by exactOptionalPropertyTypes: `providerName?: string`
+    // does not accept the value `undefined`, only the key's absence).
+    const context = options?.providerName !== undefined
+        ? { providerName: options.providerName, commentIndex: options.commentIndex ?? -1 }
+        : { commentIndex: options?.commentIndex ?? -1 };
     if (value === null || value.length === 0) {
+        // Empty/null: silently fall back to "medium" WITHOUT emitting a
+        // warning. Rationale: many live providers (notably GitHub Copilot)
+        // routinely omit the `severity` field entirely. Warning on every
+        // omitted field would multiply to one warning per finding (50+ per
+        // review) and bury any genuinely-unrecognized-value warnings in
+        // noise. Operators can still surface empty-severity warnings via
+        // the ambient sink's debug channel — the raw `rawValue` is `""`
+        // for empty/null, distinguishable from `unrecognized string`.
         return "medium";
     }
     const lower = value.toLowerCase();
@@ -6732,6 +6948,9 @@ function normalizeProviderSeverity(value, body) {
             }
             return "high";
         default:
+            // Unknown severity — preserve previous fallback to "medium" so
+            // the run does not crash, but warn so operators see the misbehavior.
+            emitSeverityWarning(value, "medium", context, sink);
             return "medium";
     }
 }
@@ -7593,7 +7812,7 @@ async function pickSystemPrompt(input) {
     return [
         "You are UmActually, a precise pull request reviewer.",
         "Return strict JSON only with this schema:",
-        "{\"summary\":string,\"verdict\":\"COMMENT\"|\"APPROVED\"|\"NEEDS_FIX\",\"comments\":[{\"path\":string,\"line\":number,\"body\":string,\"severity\":string,\"category\":string}],\"suppressed_comments\":[{\"path\":string,\"line\":number,\"body\":string,\"severity\":string,\"category\":string}]}",
+        "{\"summary\":string,\"verdict\":\"COMMENT\"|\"APPROVED\"|\"NEEDS_FIX\",\"comments\":[{\"path\":string,\"line\":number,\"body\":string,\"severity\":\"info\"|\"low\"|\"medium\"|\"high\"|\"critical\",\"category\":string}],\"suppressed_comments\":[{\"path\":string,\"line\":number,\"body\":string,\"severity\":\"info\"|\"low\"|\"medium\"|\"high\"|\"critical\",\"category\":string}]}",
         "Anchor comments only to changed or context lines present in the diff. Do not include secrets.",
     ].join("\n");
 }
@@ -7615,6 +7834,7 @@ async function readAdditionalPrompt(input) {
 
 
 
+
 const DEFAULT_MODEL = "auto";
 const live_provider_DEFAULT_REQUEST_TIMEOUT_MS = 60_000;
 const PROVIDER_NAME = "openai-compatible";
@@ -7627,13 +7847,71 @@ async function requestLiveReview(input) {
     const providerApiKey = readRequiredConfig(input.parsed.apiKey ?? input.env["UMACTUALLY_API_KEY"], "UMACTUALLY_API_KEY");
     const modelId = readConfiguredModel(input.parsed, input.env);
     const prompts = await buildProviderPrompts(input);
-    if (input.parsed.provider === "copilot") {
-        const result = await runCopilotRequest({
-            githubToken: providerApiKey,
-            apiBase: input.parsed.githubApiBase ?? input.env["UMACTUALLY_GITHUB_API_BASE"] ?? "https://api.github.com",
+    // Install an ambient severity-warning sink for the duration of this
+    // request. Any `parseReviewPayload` call inside `runCopilotRequest` /
+    // `runProviderRequest` will push warnings into the captured array
+    // (the sink is auto-cleared in `finally`). Node's single-threaded
+    // event loop means no two concurrent `requestLiveReview` calls can
+    // interleave the set/await/clear sequence, so the singleton slot is
+    // safe. The provider name is captured at install time so every warning
+    // recorded during this request is attributed correctly even if a
+    // generic test runner does not pass `providerName` explicitly.
+    const severityWarnings = [];
+    const sinkProviderName = input.parsed.provider === "copilot" ? COPILOT_PROVIDER_NAME : PROVIDER_NAME;
+    const sink = (raw, normalized, ctx) => {
+        severityWarnings.push({
+            rawValue: raw,
+            normalizedFallback: normalized,
+            commentIndex: ctx.commentIndex,
+            providerName: ctx.providerName ?? sinkProviderName,
+        });
+    };
+    setActiveSeveritySink(sink);
+    try {
+        if (input.parsed.provider === "copilot") {
+            const result = await runCopilotRequest({
+                githubToken: providerApiKey,
+                apiBase: input.parsed.githubApiBase ?? input.env["UMACTUALLY_GITHUB_API_BASE"] ?? "https://api.github.com",
+                system: prompts.system,
+                user: prompts.user,
+                model: modelId,
+                requestTimeoutMs: readRequestTimeoutMs(input.parsed),
+                ...(input.parsed.maxOutputTokens !== null ? { maxOutputTokens: input.parsed.maxOutputTokens } : {}),
+                ...(input.parsed.effort !== null ? { reasoningEffort: input.parsed.effort } : {}),
+                fetchImpl: input.fetchImpl,
+            });
+            if (result.ok) {
+                return {
+                    review: normalizeProviderReview(result.review, [providerApiKey, input.platformToken]),
+                    endpoint: result.endpoint,
+                    provider: COPILOT_PROVIDER_NAME,
+                    modelId,
+                    severityWarnings: severityWarnings.slice(),
+                };
+            }
+            if (result.error.code === "parse") {
+                return {
+                    review: buildMalformedProviderFallback({
+                        provider: COPILOT_PROVIDER_NAME,
+                        modelId,
+                        rawText: result.error.rawText ?? "",
+                        secrets: [providerApiKey, input.platformToken],
+                    }),
+                    endpoint: result.error.endpoint,
+                    provider: COPILOT_PROVIDER_NAME,
+                    modelId,
+                    severityWarnings: severityWarnings.slice(),
+                };
+            }
+            throw new LiveReviewError("PROVIDER_REQUEST_FAILED", result.error.message, { cause: result.error });
+        }
+        const providerUrl = readRequiredConfig(input.parsed.apiUrl ?? input.env["UMACTUALLY_API_URL"], "UMACTUALLY_API_URL");
+        const result = await runProviderRequest({
+            baseUrl: providerUrl,
+            apiKey: providerApiKey,
+            model: modelId,
             system: prompts.system,
             user: prompts.user,
-            model: modelId,
             requestTimeoutMs: readRequestTimeoutMs(input.parsed),
             ...(input.parsed.maxOutputTokens !== null ? { maxOutputTokens: input.parsed.maxOutputTokens } : {}),
             ...(input.parsed.effort !== null ? { reasoningEffort: input.parsed.effort } : {}),
@@ -7643,59 +7921,32 @@ async function requestLiveReview(input) {
             return {
                 review: normalizeProviderReview(result.review, [providerApiKey, input.platformToken]),
                 endpoint: result.endpoint,
-                provider: COPILOT_PROVIDER_NAME,
+                provider: PROVIDER_NAME,
                 modelId,
+                severityWarnings: severityWarnings.slice(),
             };
         }
         if (result.error.code === "parse") {
             return {
                 review: buildMalformedProviderFallback({
-                    provider: COPILOT_PROVIDER_NAME,
+                    provider: PROVIDER_NAME,
                     modelId,
                     rawText: result.error.rawText ?? "",
                     secrets: [providerApiKey, input.platformToken],
                 }),
                 endpoint: result.error.endpoint,
-                provider: COPILOT_PROVIDER_NAME,
+                provider: PROVIDER_NAME,
                 modelId,
+                severityWarnings: severityWarnings.slice(),
             };
         }
         throw new LiveReviewError("PROVIDER_REQUEST_FAILED", result.error.message, { cause: result.error });
     }
-    const providerUrl = readRequiredConfig(input.parsed.apiUrl ?? input.env["UMACTUALLY_API_URL"], "UMACTUALLY_API_URL");
-    const result = await runProviderRequest({
-        baseUrl: providerUrl,
-        apiKey: providerApiKey,
-        model: modelId,
-        system: prompts.system,
-        user: prompts.user,
-        requestTimeoutMs: readRequestTimeoutMs(input.parsed),
-        ...(input.parsed.maxOutputTokens !== null ? { maxOutputTokens: input.parsed.maxOutputTokens } : {}),
-        ...(input.parsed.effort !== null ? { reasoningEffort: input.parsed.effort } : {}),
-        fetchImpl: input.fetchImpl,
-    });
-    if (result.ok) {
-        return {
-            review: normalizeProviderReview(result.review, [providerApiKey, input.platformToken]),
-            endpoint: result.endpoint,
-            provider: PROVIDER_NAME,
-            modelId,
-        };
+    finally {
+        // Always clear the sink so a subsequent, unrelated request does not
+        // inherit this request's warnings array.
+        setActiveSeveritySink(null);
     }
-    if (result.error.code === "parse") {
-        return {
-            review: buildMalformedProviderFallback({
-                provider: PROVIDER_NAME,
-                modelId,
-                rawText: result.error.rawText ?? "",
-                secrets: [providerApiKey, input.platformToken],
-            }),
-            endpoint: result.error.endpoint,
-            provider: PROVIDER_NAME,
-            modelId,
-        };
-    }
-    throw new LiveReviewError("PROVIDER_REQUEST_FAILED", result.error.message, { cause: result.error });
 }
 function normalizeProviderReview(payload, secrets) {
     return {
@@ -8048,6 +8299,9 @@ function applySimulateFindings(input) {
             comments: sanitizeComments(fixture.comments, input.secrets),
             suppressedComments: sanitizeComments(fixture.suppressed_comments, input.secrets),
         },
+        // Synthesized fixture — never went through the real parser, so
+        // there are no severity warnings to surface.
+        severityWarnings: [],
     };
 }
 function sanitizeComments(comments, secrets) {
@@ -8144,6 +8398,9 @@ async function requestChunkedLiveReview(input) {
                     endpoint: "",
                     provider: "chunk-failed",
                     modelId: "",
+                    // Failed-chunk placeholder — no severity warnings to surface
+                    // (the parser never ran on this chunk).
+                    severityWarnings: [],
                 };
             }
             outcomes[index] = outcome;
@@ -8299,6 +8556,9 @@ async function dispatchLivePlatform(input) {
                     endpoint: "skipped",
                     provider: parsed.provider ?? "openai-compatible",
                     modelId: parsed.model ?? "auto",
+                    // Skipped-due-to-file-limit placeholder — no parser ran, so
+                    // no severity warnings to surface.
+                    severityWarnings: [],
                 };
             }
             else {
@@ -8605,6 +8865,12 @@ async function dispatchLive(parsed, cwd, env) {
     }
     try {
         const result = await runLive({ parsed, cwd, env });
+        // Write a summary artifact at the same path the dry-run uses so the
+        // self-review CI guard (`scripts/check-self-review-output.mjs`) can
+        // inspect the live review's outcome. Without this, a parse-fail
+        // card posted via the GitHub API leaves no local trace for the
+        // guard to catch — the action exits 0 and CI sees "pass".
+        await writeLiveArtifact(parsed, cwd, result);
         return { exitCode: result.exitCode };
     }
     finally {
@@ -8615,6 +8881,74 @@ async function dispatchLive(parsed, cwd, env) {
             process.env["UMACTUALLY_DEBUG_RAW"] = previousDebugRaw;
         }
     }
+}
+/**
+ * Persist the live review outcome to the same artifact path the dry-run
+ * uses. The shape matches the dry-run artifact's top-level fields so
+ * `scripts/check-self-review-output.mjs` can inspect either path with
+ * the same classifier.
+ *
+ * Critical for the self-review guard: when the action posts a parse-fail
+ * card via the GitHub API, this artifact is the only local signal that
+ * the review produced zero findings. Without it, the guard has nothing
+ * to inspect and CI passes despite garbage on the PR.
+ *
+ * Two cases:
+ *   1. `result.posted === false`: write a parse-fail sentinel so the
+ *      guard catches it.
+ *   2. `result.posted === true`: write a success marker that reflects
+ *      the live review's actual counts. The dry-run path may have
+ *      already written a stub to this artifact, but the live path's
+ *      counts (which match what GitHub/Azure actually saw) are more
+ *      accurate. The guard inspects `inlineThreadCount`/`postedThreadCount`
+ *      + `parseFailed` to classify, so writing the live counts keeps
+ *      the guard honest about what really happened.
+ *
+ * Concurrency: also surfaced via the severity-warning concurrency guard
+ * in `setActiveSeveritySink`. This function runs once per `dispatchLive`
+ * invocation, in `finally` — so a panic mid-review still writes the
+ * sentinel.
+ */
+async function writeLiveArtifact(parsed, cwd, result) {
+    if (parsed.outputArtifact === null)
+        return;
+    const artifactPath = (0,external_node_path_namespaceObject.isAbsolute)(parsed.outputArtifact)
+        ? parsed.outputArtifact
+        : (0,external_node_path_namespaceObject.resolve)(cwd, parsed.outputArtifact);
+    await (0,promises_namespaceObject.mkdir)((0,external_node_path_namespaceObject.dirname)(artifactPath), { recursive: true });
+    if (!result.posted) {
+        const body = {
+            artifactPath,
+            posted: false,
+            message: result.message,
+            marker: "<!-- umactually-pr-review -->",
+            inlineThreadCount: 0,
+            suppressedCommentCount: 0,
+            blockedRawOutput: false,
+            parseFailed: true,
+            note: "Live review did not post anything via the GitHub/Azure API. Inspect the action log for the underlying parser/network error.",
+        };
+        await (0,promises_namespaceObject.writeFile)(artifactPath, `${JSON.stringify(body, null, 2)}\n`, "utf8");
+        return;
+    }
+    // Successful post: write a success artifact reflecting the live
+    // counts. If the dry-run already wrote a stub to this path, this
+    // OVERWRITES it with the real counts (so the guard sees the truth
+    // rather than whatever the dry-run fixture produced). The shape
+    // matches the dry-run artifact's top-level fields.
+    const body = {
+        artifactPath,
+        posted: true,
+        message: result.message,
+        marker: "<!-- umactually-pr-review -->",
+        inlineThreadCount: result.inlineThreadCount ?? 0,
+        suppressedCommentCount: result.suppressedCommentCount ?? 0,
+        blockedRawOutput: false,
+        parseFailed: false,
+        ...(result.verdict !== undefined ? { verdict: result.verdict } : {}),
+        note: "Live review posted successfully; counts reflect what the GitHub/Azure API saw.",
+    };
+    await (0,promises_namespaceObject.writeFile)(artifactPath, `${JSON.stringify(body, null, 2)}\n`, "utf8");
 }
 
 ;// CONCATENATED MODULE: ./src/cli/validate.ts

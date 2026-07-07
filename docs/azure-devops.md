@@ -78,38 +78,43 @@ The project build service identity mapped to `SYSTEM_ACCESSTOKEN` does not alway
 
 When `AZURE_DEVOPS_TOKEN` is set, the CLI uses it in preference to `SYSTEM_ACCESSTOKEN` for posting threads and statuses, so the build service identity's missing permission is bypassed. When `AZURE_DEVOPS_TOKEN` is empty, the CLI falls back to `SYSTEM_ACCESSTOKEN` so dry-run and manual callers keep working. The PAT value is treated as a secret and is redacted from logs and provider payloads.
 
+### Local development: sourcing the PAT from `.env`
+
+For local inspection of PR state (reviewing posted threads, checking merge status, fetching run logs from outside the agent), store the PAT in `.env` as `DEVOPS_PAT` and source it into the shell:
+
+```bash
+# .env (gitignored — never commit)
+DEVOPS_PAT=<your-pat>
+AZURE_DEVOPS_ORG=josiah-siegel
+AZURE_DEVOPS_PROJECT=DemoProject
+AZURE_DEVOPS_PULL_REQUEST_ID=51
+
+# One-shot source for a single command
+set -a && source .env && set +a
+curl -s -u ":${DEVOPS_PAT}" \
+  "https://dev.azure.com/${AZURE_DEVOPS_ORG}/${AZURE_DEVOPS_PROJECT}/_apis/git/pullrequests/${AZURE_DEVOPS_PULL_REQUEST_ID}?api-version=7.1"
+```
+
+Both `DEVOPS_PAT` (agent-friendly name) and `AZURE_DEVOPS_TOKEN` (runtime-side name) can hold the same PAT value. The `.env.example` template at the repo root documents the local flow.
+
 ## Fetching PR metadata and diff
 
-The root pipeline fetches real PR metadata and the PR diff only when `SYSTEM_PULLREQUEST_PULLREQUESTID` is present. The shape is:
+The root pipeline fetches real PR metadata and the PR diff only when `SYSTEM_PULLREQUEST_PULLREQUESTID` is present. The actual implementation lives in [`scripts/prepare-azure-pr-inputs.sh`](../scripts/prepare-azure-pr-inputs.sh), which both the root pipeline and `examples/azure/azure-pipelines.yml` invoke via a single shell step:
 
 ```yaml
-- script: |
-    set -euo pipefail
-    : "${SYSTEM_ACCESSTOKEN:?System.AccessToken must be mapped to SYSTEM_ACCESSTOKEN.}"
-    collection_uri="${SYSTEM_COLLECTIONURI%/}"
-    project_path="$(node -e 'process.stdout.write(encodeURIComponent(process.env.SYSTEM_TEAMPROJECT || ""))')"
-    repository_path="$(node -e 'process.stdout.write(encodeURIComponent(process.env.BUILD_REPOSITORY_ID || ""))')"
-    pr_url="${collection_uri}/${project_path}/_apis/git/repositories/${repository_path}/pullRequests/${SYSTEM_PULLREQUEST_PULLREQUESTID}?api-version=7.1"
-    diff_url="${collection_uri}/${project_path}/_apis/git/repositories/${repository_path}/pullRequests/${SYSTEM_PULLREQUEST_PULLREQUESTID}/diffs/commits?api-version=7.1"
-    curl -fsS \
-      --header "Authorization: Bearer ${SYSTEM_ACCESSTOKEN}" \
-      --header "Accept: application/json" \
-      "$pr_url" \
-      --output "$AZURE_EVENT_PATH"
-    curl -fsS \
-      --request POST \
-      --header "Authorization: Bearer ${SYSTEM_ACCESSTOKEN}" \
-      --header "Accept: text/plain" \
-      --header "Content-Type: application/json" \
-      --data '{}' \
-      "$diff_url" \
-      --output "$AZURE_DIFF_PATH"
-  displayName: Fetch PR metadata and diff via Azure DevOps REST API
+- script: bash scripts/prepare-azure-pr-inputs.sh
+  displayName: Prepare Azure PR inputs
   env:
     SYSTEM_ACCESSTOKEN: $(System.AccessToken)
 ```
 
-Manual branch runs should not fail just because PR variables are missing. Keep the synthetic event/diff/review fallback from the root pipeline when adapting the example.
+The script does three things in order:
+
+1. Writes a synthetic Azure PR event + review fixture (always, so manual branch runs without `SYSTEM_PULLREQUEST_PULLREQUESTID` still execute end-to-end).
+2. Emits `##vso[task.setvariable]` markers so downstream steps can read `UMACTUALLY_PR_NUMBER` and `UMACTUALLY_REPO` as pipeline variables.
+3. When `SYSTEM_PULLREQUEST_PULLREQUESTID` is set, fetches the real PR payload + iteration + change-set via the Azure DevOps REST API (`/_apis/git/repositories/{repoId}/pullRequests/{prId}` + `/iterations` + `/iterations/{id}/changes`, all at `api-version=7.1`) using the OAuth bearer token.
+
+Manual branch runs should not fail just because PR variables are missing. The synthetic event/diff/review fallback is built into `prepare-azure-pr-inputs.sh`, so adapting the example pipeline does not require copying that logic.
 
 ## Why `pr:` does not populate on Azure Repos
 

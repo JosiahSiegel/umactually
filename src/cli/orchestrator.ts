@@ -105,6 +105,9 @@ async function requestChunkedLiveReview(input: {
             endpoint: "",
             provider: "chunk-failed",
             modelId: "",
+            // Failed-chunk placeholder — no severity warnings to surface
+            // (the parser never ran on this chunk).
+            severityWarnings: [],
           };
         }
         outcomes[index] = outcome;
@@ -284,6 +287,9 @@ async function dispatchLivePlatform(input: {
           endpoint: "skipped",
           provider: parsed.provider ?? "openai-compatible",
           modelId: parsed.model ?? "auto",
+          // Skipped-due-to-file-limit placeholder — no parser ran, so
+          // no severity warnings to surface.
+          severityWarnings: [],
         };
       } else {
         const chunks = chunkDiffByFile(diffText);

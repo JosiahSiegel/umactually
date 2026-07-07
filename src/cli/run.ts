@@ -275,6 +275,12 @@ export async function dispatchLive(parsed: ParsedCliArgs, cwd: string, env: Node
   }
   try {
     const result = await runOrchestrator({ parsed, cwd, env });
+    // Write a summary artifact at the same path the dry-run uses so the
+    // self-review CI guard (`scripts/check-self-review-output.mjs`) can
+    // inspect the live review's outcome. Without this, a parse-fail
+    // card posted via the GitHub API leaves no local trace for the
+    // guard to catch — the action exits 0 and CI sees "pass".
+    await writeLiveArtifact(parsed, cwd, result);
     return { exitCode: result.exitCode };
   } finally {
     if (previousDebugRaw === undefined) {
@@ -283,4 +289,82 @@ export async function dispatchLive(parsed: ParsedCliArgs, cwd: string, env: Node
       process.env["UMACTUALLY_DEBUG_RAW"] = previousDebugRaw;
     }
   }
+}
+
+/**
+ * Persist the live review outcome to the same artifact path the dry-run
+ * uses. The shape matches the dry-run artifact's top-level fields so
+ * `scripts/check-self-review-output.mjs` can inspect either path with
+ * the same classifier.
+ *
+ * Critical for the self-review guard: when the action posts a parse-fail
+ * card via the GitHub API, this artifact is the only local signal that
+ * the review produced zero findings. Without it, the guard has nothing
+ * to inspect and CI passes despite garbage on the PR.
+ *
+ * Two cases:
+ *   1. `result.posted === false`: write a parse-fail sentinel so the
+ *      guard catches it.
+ *   2. `result.posted === true`: write a success marker that reflects
+ *      the live review's actual counts. The dry-run path may have
+ *      already written a stub to this artifact, but the live path's
+ *      counts (which match what GitHub/Azure actually saw) are more
+ *      accurate. The guard inspects `inlineThreadCount`/`postedThreadCount`
+ *      + `parseFailed` to classify, so writing the live counts keeps
+ *      the guard honest about what really happened.
+ *
+ * Concurrency: also surfaced via the severity-warning concurrency guard
+ * in `setActiveSeveritySink`. This function runs once per `dispatchLive`
+ * invocation, in `finally` — so a panic mid-review still writes the
+ * sentinel.
+ */
+async function writeLiveArtifact(
+  parsed: ParsedCliArgs,
+  cwd: string,
+  result: {
+    readonly posted: boolean;
+    readonly message: string;
+    readonly inlineThreadCount?: number;
+    readonly suppressedCommentCount?: number;
+    readonly verdict?: string;
+  },
+): Promise<void> {
+  if (parsed.outputArtifact === null) return;
+  const artifactPath = isAbsolute(parsed.outputArtifact)
+    ? parsed.outputArtifact
+    : resolve(cwd, parsed.outputArtifact);
+  await mkdir(dirname(artifactPath), { recursive: true });
+  if (!result.posted) {
+    const body = {
+      artifactPath,
+      posted: false,
+      message: result.message,
+      marker: "<!-- umactually-pr-review -->",
+      inlineThreadCount: 0,
+      suppressedCommentCount: 0,
+      blockedRawOutput: false,
+      parseFailed: true,
+      note: "Live review did not post anything via the GitHub/Azure API. Inspect the action log for the underlying parser/network error.",
+    };
+    await writeFile(artifactPath, `${JSON.stringify(body, null, 2)}\n`, "utf8");
+    return;
+  }
+  // Successful post: write a success artifact reflecting the live
+  // counts. If the dry-run already wrote a stub to this path, this
+  // OVERWRITES it with the real counts (so the guard sees the truth
+  // rather than whatever the dry-run fixture produced). The shape
+  // matches the dry-run artifact's top-level fields.
+  const body = {
+    artifactPath,
+    posted: true,
+    message: result.message,
+    marker: "<!-- umactually-pr-review -->",
+    inlineThreadCount: result.inlineThreadCount ?? 0,
+    suppressedCommentCount: result.suppressedCommentCount ?? 0,
+    blockedRawOutput: false,
+    parseFailed: false,
+    ...(result.verdict !== undefined ? { verdict: result.verdict } : {}),
+    note: "Live review posted successfully; counts reflect what the GitHub/Azure API saw.",
+  };
+  await writeFile(artifactPath, `${JSON.stringify(body, null, 2)}\n`, "utf8");
 }

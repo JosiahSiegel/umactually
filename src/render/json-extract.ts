@@ -145,7 +145,33 @@ export function extractFirstBalancedObject(rawText: string): string | null {
         continue;
       }
       if (char === '"') {
-        inString = false;
+        // Disambiguate a stray `"` from a legitimate closing quote by
+        // peeking ahead. A real closing quote is followed (after
+        // optional whitespace) by a structural JSON character
+        // (`,`, `}`, `]`, `:`). Anything else means the model forgot
+        // to escape a `"` inside the string value (SSE delta
+        // concatenation surfaces this as an unescaped quote in the
+        // resulting textPayload). Treat the latter as a stray quote
+        // — stay inside the string so the depth tracker keeps
+        // working AND escape it in the second pass.
+        //
+        // Note: `"` is NOT a structural JSON character so we don't
+        // include it in the close-quote set. If we did, a stray
+        // `"` followed by another `"` (e.g. `body: "value" "next":`)
+        // would be misclassified as a closing quote.
+        const nextNonWs = peekNextNonWhitespace(rawText, index + 1);
+        if (
+          nextNonWs === -1 ||
+          nextNonWs === ",".charCodeAt(0) ||
+          nextNonWs === "}".charCodeAt(0) ||
+          nextNonWs === "]".charCodeAt(0) ||
+          nextNonWs === ":".charCodeAt(0)
+        ) {
+          inString = false;
+        }
+        // else: stray quote inside a string. Stay inString; the second
+        // pass will escape it.
+        continue;
       }
       continue;
     }
@@ -192,8 +218,31 @@ export function extractFirstBalancedObject(rawText: string): string | null {
         continue;
       }
       if (char === '"') {
-        segments.push(char);
-        inString = false;
+        // Same disambiguation as the first pass: peek ahead to determine
+        // whether this `"` is a legitimate closing quote (followed by
+        // structural JSON punctuation) or a stray quote from an
+        // unescaped model emission. The latter gets escaped so the
+        // resulting substring parses as valid JSON.
+        const nextNonWs = peekNextNonWhitespace(substring, index + 1);
+        if (
+          nextNonWs === -1 ||
+          nextNonWs === ",".charCodeAt(0) ||
+          nextNonWs === "}".charCodeAt(0) ||
+          nextNonWs === "]".charCodeAt(0) ||
+          nextNonWs === ":".charCodeAt(0)
+        ) {
+          // Legitimate closing quote: emit the raw `"` and exit the
+          // string. The first-pass peek-ahead already determined this
+          // was the close.
+          segments.push(char);
+          inString = false;
+          continue;
+        }
+        // Stray quote inside a string: escape it so the parser keeps
+        // the string open. Live evidence (run 28829205474 at
+        // 2026-07-06T23:03:58Z): the model's review body contained an
+        // unescaped `"` inside a body field, breaking the outer JSON.
+        segments.push('\\"');
         continue;
       }
       // Inside a string: escape literal control characters that are
@@ -231,4 +280,25 @@ export function extractFirstBalancedObject(rawText: string): string | null {
   }
 
   return segments.join("");
+}
+
+/**
+ * Peek the character code of the next non-whitespace character in
+ * `text` starting at `fromIndex`. Returns `-1` when `fromIndex` is past
+ * the end of `text`. Used by the balanced-object extractor to
+ * disambiguate a stray unescaped `"` inside a JSON string from a
+ * legitimate closing quote: the latter is always followed (after
+ * optional whitespace) by a structural JSON character (`,`, `}`, `]`,
+ * `:`); anything else means the model forgot to JSON-encode the
+ * quote.
+ */
+function peekNextNonWhitespace(text: string, fromIndex: number): number {
+  for (let i = fromIndex; i < text.length; i += 1) {
+    const code = text.charCodeAt(i);
+    // JSON whitespace: space (0x20), tab (0x09), LF (0x0A), CR (0x0D).
+    if (code !== 0x20 && code !== 0x09 && code !== 0x0a && code !== 0x0d) {
+      return code;
+    }
+  }
+  return -1;
 }

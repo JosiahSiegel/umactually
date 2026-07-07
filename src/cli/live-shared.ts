@@ -28,6 +28,12 @@ export type LiveRunResult = {
   readonly posted: boolean;
   readonly reviewId: number | undefined;
   readonly message: string;
+  /** Counts from the live review, surfaced for the self-review guard's
+   *  artifact-write path. Optional because legacy callers (failed
+   *  pre-review paths) don't have a review to count. */
+  readonly inlineThreadCount?: number;
+  readonly suppressedCommentCount?: number;
+  readonly verdict?: string;
 };
 
 export type LiveReviewComment = ProviderComment;
@@ -69,6 +75,17 @@ export type LiveProviderOutcome = {
   readonly endpoint: string;
   readonly provider: string;
   readonly modelId: string;
+  /**
+   * Structured records of every severity-value mismatch the parser saw
+   * for this request. Empty when every comment carried a canonical
+   * 5-tier severity. Populated by `live-provider.ts` capturing
+   * warnings from the ambient severity sink installed via
+   * `setActiveSeveritySink` for the duration of the request.
+   *
+   * NOT yet rendered in any summary layout — plumbed here so a follow-up
+   * can surface it in the footer without re-plumbing the parser.
+   */
+  readonly severityWarnings: readonly import("../provider/provider-parse.js").SeverityWarning[];
 };
 
 /**

@@ -10,6 +10,14 @@ inputs:
     description: GitHub token used to read the workflow event payload and post the review.
     required: false
     default: ""
+  diff:
+    description: >
+      Path to the PR diff file. When unset, the action falls back to a
+      3-line placeholder diff which the model correctly rejects as
+      'no pull request diff was provided'. Workflows should always
+      pass this input pointing at the actual PR diff.
+    required: false
+    default: ""
   api-key:
     description: Provider API key for the review request.
     required: false
