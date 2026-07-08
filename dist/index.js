@@ -9712,6 +9712,9 @@ async function callEndpoint(config, fetchImpl, requestId, endpoint, baseUrl) {
     // (`provider_error`) so the live-review layer can hard-fail instead
     // of posting a 0-finding COMMENT review that exits 0.
     const providerError = detectProviderError(rawText);
+    if (process.env["UMACTUALLY_DEBUG_RAW"] === "1") {
+        writeDebugRaw(`[DEBUG-RAW] detectProviderError: ${providerError === null ? "null" : `kind=${providerError.kind} message=${JSON.stringify(providerError.message)}`}\n`, config);
+    }
     if (providerError !== null) {
         throw new ProviderError("provider_error", endpoint, response.status, requestId, providerError.message, { rawText, providerErrorDetails: providerError });
     }
