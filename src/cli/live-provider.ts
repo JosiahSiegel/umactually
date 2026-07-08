@@ -11,7 +11,6 @@ import {
 } from "../provider/provider-parse.js";
 import { scanReviewSecrets } from "../security/scan-review-secrets.js";
 import { resolveAutoModel } from "./auto-model.js";
-import { parseDiffPositions } from "../diff/parse-positions.js";
 import {
   buildMalformedProviderFallback,
   LiveReviewError,
@@ -26,6 +25,7 @@ import {
 import type { ParsedCliArgs } from "./parse-args.js";
 import { buildParseWarningsArtifact } from "./parse-warnings.js";
 import { buildProviderPrompts, REVIEW_PAYLOAD_JSON_SCHEMA } from "./provider-prompts.js";
+import { verifyFindingsAgainstDiff } from "./verify-findings.js";
 
 const DEFAULT_REQUEST_TIMEOUT_MS = 60_000;
 const PROVIDER_NAME = "openai-compatible";
@@ -240,27 +240,13 @@ function applyVerifyFilter(review: LiveReview, diffText: string): LiveReview {
   if (diffText.length === 0) {
     return review;
   }
-  // Use the same (path, line) acceptance as `parse-warnings.ts`
-  // and the standalone `verifyFindingsAgainstDiff` helper, so
-  // the parse-warnings artifact and the inline filter agree
-  // on which comments get dropped. The previous version of
-  // this filter added a stricter `Number.isInteger` check that
-  // silently dropped shape errors; the parse-warnings layer
-  // now records them instead so the artifact is the
-  // authoritative record of ALL fabrication events.
-  const positions = parseDiffPositions(diffText);
-  return {
-    ...review,
-    comments: review.comments.filter((c) => {
-      if (c.path.length === 0) {
-        return false;
-      }
-      if (!Number.isInteger(c.line) || c.line < 1) {
-        return false;
-      }
-      return positions.hasPosition(c);
-    }),
-  };
+  // Delegate to the standalone `verifyFindingsAgainstDiff` helper
+  // so the inline filter and the parse-warnings artifact agree
+  // on which comments get dropped — the previous inline
+  // re-implementation diverged from the helper in a way that
+  // let the artifact undercount fabrication events.
+  const { verified } = verifyFindingsAgainstDiff({ review, diffText });
+  return { ...review, comments: verified };
 }
 
 function normalizeProviderReview(
