@@ -48,7 +48,22 @@ export async function fetchGithubPrDiff(context: GithubContext, fetchImpl: Fetch
       platform: "GitHub PR diff",
     },
   );
-  return filterBuildArtifacts(raw);
+  const filtered = filterBuildArtifacts(raw);
+  // `fetchTextOrThrow` already throws on the API's empty response,
+  // but `filterBuildArtifacts` can ALSO produce an empty string when
+  // every block was filtered as a build artifact. Throw the same
+  // GITHUB_DIFF_EMPTY so the upstream `dispatchLivePlatform` path
+  // surfaces a parse-fail card (mirrors the Azure AZURE_DIFF_EMPTY
+  // behavior). Without this, the live review would attempt to
+  // ask the model to review an empty diff and post 0 findings.
+  if (filtered.length === 0) {
+    throw new GithubApiError(
+      "GITHUB_DIFF_EMPTY",
+      200,
+      "GitHub PR diff was empty after build-artifact filtering (every changed file was excluded).",
+    );
+  }
+  return filtered;
 }
 
 function buildPullUrl(context: GithubContext): string {

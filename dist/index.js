@@ -1919,7 +1919,6 @@ const DEFAULT_BUILD_ARTIFACT_PATTERNS = [
     "dist/",
     "build/",
     "out/",
-    "lib/",
     "target/", // Rust/Java
     "_build/", // Elixir
     ".next/",
@@ -2088,7 +2087,13 @@ function filterBuildArtifacts(diffText, patterns = DEFAULT_BUILD_ARTIFACT_PATTER
     if (retained.length === 0) {
         return "";
     }
-    return retained.join("");
+    // Join with a single newline so consecutive `diff --git` blocks are
+    // separated. The split stripped the leading `diff --git ` marker from
+    // every block (we re-prepended it), but the inter-block separator
+    // (the trailing newline of the previous block) was discarded by
+    // String.split's separator semantics. Re-inserting `\n` here keeps
+    // the output parseable as a unified diff.
+    return retained.join("\n");
 }
 /**
  * Extract the target path (`b/...` from `+++ b/...`) from a diff block.
@@ -3675,7 +3680,18 @@ async function fetchGithubPrDiff(context, fetchImpl = fetch) {
         emptyCode: "GITHUB_DIFF_EMPTY",
         platform: "GitHub PR diff",
     });
-    return filterBuildArtifacts(raw);
+    const filtered = filterBuildArtifacts(raw);
+    // `fetchTextOrThrow` already throws on the API's empty response,
+    // but `filterBuildArtifacts` can ALSO produce an empty string when
+    // every block was filtered as a build artifact. Throw the same
+    // GITHUB_DIFF_EMPTY so the upstream `dispatchLivePlatform` path
+    // surfaces a parse-fail card (mirrors the Azure AZURE_DIFF_EMPTY
+    // behavior). Without this, the live review would attempt to
+    // ask the model to review an empty diff and post 0 findings.
+    if (filtered.length === 0) {
+        throw new GithubApiError("GITHUB_DIFF_EMPTY", 200, "GitHub PR diff was empty after build-artifact filtering (every changed file was excluded).");
+    }
+    return filtered;
 }
 function buildPullUrl(context) {
     const repositorySegment = `${context.repo.owner}/${context.repo.name}`;
@@ -9233,22 +9249,18 @@ function shouldFallback(error) {
  *
  * The resolver here picks a model with the best cost-vs-hallucination
  * trade-off for the active provider:
- *   - provider=copilot  → claude-sonnet-4.6 (Copilot's default; the
- *     least-hallucinating frontier model for grounded code review
- *     per the model-comparison research; HHEM 10.6%, lowest among
- *     the Claude/GPT flagship models for path/line citation)
+ *   - provider=copilot  → claude-3-5-sonnet (Copilot's Claude backend;
+ *     this is the model string the GitHub Copilot Chat Completions
+ *     endpoint actually accepts — the v3.x and v3.5 Sonnet line is
+ *     the Copilot-routable Claude. claude-sonnet-4.6 is NOT a
+ *     Copilot-routable string and would 404.)
  *   - provider=openai-compatible + URL contains "anthropic"  → claude-sonnet-4.6
  *   - provider=openai-compatible + URL contains "generativelanguage"  → gemini-2.5-flash
  *   - provider=openai-compatible otherwise (incl. api.openai.com)  → gpt-5-mini
  *
  * Users can always override via `--model` (or `UMACTUALLY_MODEL`).
- * The resolver is the layer 5 piece of the citation-grounding fix
- * (ranked technique #5 in the production-tool survey: "model
- * selection for hallucination resistance"); the LLM still
- * fabricates occasionally, but the model choice is the cheapest
- * defense in the chain.
  */
-const COPILOT_DEFAULT_MODEL = "claude-sonnet-4.6";
+const COPILOT_DEFAULT_MODEL = "claude-3-5-sonnet";
 const ANTHROPIC_DEFAULT_MODEL = "claude-sonnet-4.6";
 const GOOGLE_DEFAULT_MODEL = "gemini-2.5-flash";
 const OPENAI_DEFAULT_MODEL = "gpt-5-mini";
@@ -9277,8 +9289,8 @@ const DEFAULT_FALLBACK_MODELS = [
     OPENAI_DEFAULT_MODEL,
     ANTHROPIC_DEFAULT_MODEL,
     GOOGLE_DEFAULT_MODEL,
-    "gpt-5.4-mini",
-    "gpt-5.4-nano",
+    "gpt-4.1",
+    "gpt-4.1-mini",
 ];
 /**
  * Parse a `--fallback-models` CLI value (comma-separated) into a
@@ -9734,18 +9746,35 @@ async function requestLiveReview(input) {
                 fetchImpl: input.fetchImpl,
             });
             if (result.ok) {
-                const review = normalizeProviderReview(result.review, [providerApiKey, input.platformToken], {
-                    enabled: input.parsed.verifyFindings === true,
+                // Step 1: normalize WITHOUT the verify filter so the
+                // parse-warnings artifact (built in step 2) records every
+                // off-diff citation the model emitted, not just the ones
+                // that survived the inline filter. The filter is a
+                // defense-in-depth, not a replacement for the artifact.
+                const preVerifyReview = normalizeProviderReview(result.review, [providerApiKey, input.platformToken], {
+                    enabled: false,
                     diffText: input.diffText,
                 });
-                return withParseWarnings({
-                    review,
+                // Step 2: build the parse-warnings artifact from the
+                // pre-verify review (so it captures every fabrication).
+                const preVerifyOutcome = withParseWarnings({
+                    review: preVerifyReview,
                     endpoint: result.endpoint,
                     provider: COPILOT_PROVIDER_NAME,
                     modelId,
                     severityWarnings: severityWarnings.slice(),
                     diffText: input.diffText,
                 });
+                // Step 3: apply the deterministic verify filter to the
+                // comments[] that gets passed downstream (so the
+                // platform-posting paths only see anchorable findings).
+                const finalReview = input.parsed.verifyFindings === true
+                    ? applyVerifyFilter(preVerifyReview, input.diffText)
+                    : preVerifyReview;
+                return {
+                    ...preVerifyOutcome,
+                    review: finalReview,
+                };
             }
             if (result.error.code === "parse") {
                 const review = buildMalformedProviderFallback({
@@ -9780,18 +9809,26 @@ async function requestLiveReview(input) {
             fetchImpl: input.fetchImpl,
         });
         if (result.ok) {
-            const review = normalizeProviderReview(result.review, [providerApiKey, input.platformToken], {
-                enabled: input.parsed.verifyFindings === true,
+            // See the Copilot branch for the three-step flow rationale.
+            const preVerifyReview = normalizeProviderReview(result.review, [providerApiKey, input.platformToken], {
+                enabled: false,
                 diffText: input.diffText,
             });
-            return withParseWarnings({
-                review,
+            const preVerifyOutcome = withParseWarnings({
+                review: preVerifyReview,
                 endpoint: result.endpoint,
                 provider: PROVIDER_NAME,
                 modelId,
                 severityWarnings: severityWarnings.slice(),
                 diffText: input.diffText,
             });
+            const finalReview = input.parsed.verifyFindings === true
+                ? applyVerifyFilter(preVerifyReview, input.diffText)
+                : preVerifyReview;
+            return {
+                ...preVerifyOutcome,
+                review: finalReview,
+            };
         }
         if (result.error.code === "parse") {
             const review = buildMalformedProviderFallback({
@@ -9835,6 +9872,31 @@ function withParseWarnings(input) {
             review: input.review,
             diffText: input.diffText,
         }).warnings,
+    };
+}
+/**
+ * Apply the deterministic (path, line) verify filter to the
+ * review's comments[]. Returns a new LiveReview with the filtered
+ * comments[]. The original is left untouched so callers (the
+ * parse-warnings artifact builder) see the pre-filter payload.
+ *
+ * Defense-in-depth Layer 4: the post-filter in
+ * `selectPostableComments` runs the same check, but doing it here
+ * means the platform-posting paths only see anchorable findings.
+ */
+function applyVerifyFilter(review, diffText) {
+    if (diffText.length === 0) {
+        return review;
+    }
+    const positions = parseDiffPositions(diffText);
+    return {
+        ...review,
+        comments: review.comments.filter((c) => {
+            if (!Number.isInteger(c.line) || c.line < 1 || c.path.length === 0) {
+                return false;
+            }
+            return positions.hasPosition(c);
+        }),
     };
 }
 function normalizeProviderReview(payload, secrets, verify) {
@@ -10655,17 +10717,30 @@ function resolveParseWarningsArtifactPath(primaryArtifactPath) {
     // Replace the extension with `.parse-warnings.json`. Most reviews use
     // `.md` (s1-github-self-review.md) or `.json` (s4-azure-mocked-run.json);
     // we keep the directory and stem, swap the suffix.
-    const dir = (0,external_node_path_namespaceObject.dirname)(primaryArtifactPath);
-    const stem = basename(primaryArtifactPath).replace(/\.[^.]+$/u, "");
-    return joinPath(dir, `${stem}.parse-warnings.json`);
+    //
+    // We use our own custom `basename` and `joinPath` (instead of
+    // `node:path`'s) because the input can be either a POSIX path
+    // (Linux/macOS CI) or a Windows path (Windows local dev). The
+    // node:path versions behave correctly per-platform but a path
+    // captured on Windows and consumed on Linux (or vice versa)
+    // yields the wrong dirname. The custom pair handles both.
+    const dir = customDirname(primaryArtifactPath);
+    const stem = customBasename(primaryArtifactPath).replace(/\.[^.]+$/u, "");
+    return customJoinPath(dir, `${stem}.parse-warnings.json`);
 }
-function basename(path) {
+function customBasename(path) {
     const idx = path.lastIndexOf("/");
     const winIdx = path.lastIndexOf("\\");
     const cut = Math.max(idx, winIdx);
     return cut === -1 ? path : path.slice(cut + 1);
 }
-function joinPath(dir, file) {
+function customDirname(path) {
+    const idx = path.lastIndexOf("/");
+    const winIdx = path.lastIndexOf("\\");
+    const cut = Math.max(idx, winIdx);
+    return cut === -1 ? "" : path.slice(0, cut);
+}
+function customJoinPath(dir, file) {
     if (dir === "" || dir === ".") {
         return file;
     }

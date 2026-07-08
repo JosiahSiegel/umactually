@@ -41,7 +41,10 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   6. **Deterministic verify-findings filter** — defense-in-depth
      re-runs the (path, line) filter on the model's `comments[]`
      before posting. Default ON. `--verify-findings` /
-     `--no-verify-findings`.
+     `--no-verify-findings`. Critically, the parse-warnings
+     artifact is built from the PRE-verify review so it captures
+     every fabrication event (the inline filter is a defense
+     in depth, not a replacement for the artifact).
 - New CLI flags: `--strict-schema`, `--no-strict-schema`,
   `--verify-findings`, `--no-verify-findings`. Both default to
   ON. Both are no-ops when the provider doesn't support

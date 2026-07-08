@@ -7,10 +7,10 @@ import {
 } from "../../src/cli/auto-model.js";
 
 describe("resolveAutoModel", () => {
-  it("returns claude-sonnet-4.6 for provider=copilot", () => {
+  it("returns claude-3-5-sonnet for provider=copilot (Copilot's actual Claude backend)", () => {
     expect(
       resolveAutoModel({ provider: "copilot", apiUrl: null, env: {} }),
-    ).toBe("claude-sonnet-4.6");
+    ).toBe("claude-3-5-sonnet");
   });
 
   it("returns claude-sonnet-4.6 when apiUrl points to anthropic", () => {

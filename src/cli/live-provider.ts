@@ -92,18 +92,35 @@ export async function requestLiveReview(input: {
         fetchImpl: input.fetchImpl as typeof fetch,
       });
       if (result.ok) {
-        const review = normalizeProviderReview(result.review, [providerApiKey, input.platformToken], {
-          enabled: input.parsed.verifyFindings === true,
+        // Step 1: normalize WITHOUT the verify filter so the
+        // parse-warnings artifact (built in step 2) records every
+        // off-diff citation the model emitted, not just the ones
+        // that survived the inline filter. The filter is a
+        // defense-in-depth, not a replacement for the artifact.
+        const preVerifyReview = normalizeProviderReview(result.review, [providerApiKey, input.platformToken], {
+          enabled: false,
           diffText: input.diffText,
         });
-        return withParseWarnings({
-          review,
+        // Step 2: build the parse-warnings artifact from the
+        // pre-verify review (so it captures every fabrication).
+        const preVerifyOutcome = withParseWarnings({
+          review: preVerifyReview,
           endpoint: result.endpoint,
           provider: COPILOT_PROVIDER_NAME,
           modelId,
           severityWarnings: severityWarnings.slice(),
           diffText: input.diffText,
         });
+        // Step 3: apply the deterministic verify filter to the
+        // comments[] that gets passed downstream (so the
+        // platform-posting paths only see anchorable findings).
+        const finalReview = input.parsed.verifyFindings === true
+          ? applyVerifyFilter(preVerifyReview, input.diffText)
+          : preVerifyReview;
+        return {
+          ...preVerifyOutcome,
+          review: finalReview,
+        };
       }
       if (result.error.code === "parse") {
         const review = buildMalformedProviderFallback({
@@ -140,18 +157,26 @@ export async function requestLiveReview(input: {
     });
 
     if (result.ok) {
-      const review = normalizeProviderReview(result.review, [providerApiKey, input.platformToken], {
-        enabled: input.parsed.verifyFindings === true,
+      // See the Copilot branch for the three-step flow rationale.
+      const preVerifyReview = normalizeProviderReview(result.review, [providerApiKey, input.platformToken], {
+        enabled: false,
         diffText: input.diffText,
       });
-      return withParseWarnings({
-        review,
+      const preVerifyOutcome = withParseWarnings({
+        review: preVerifyReview,
         endpoint: result.endpoint,
         provider: PROVIDER_NAME,
         modelId,
         severityWarnings: severityWarnings.slice(),
         diffText: input.diffText,
       });
+      const finalReview = input.parsed.verifyFindings === true
+        ? applyVerifyFilter(preVerifyReview, input.diffText)
+        : preVerifyReview;
+      return {
+        ...preVerifyOutcome,
+        review: finalReview,
+      };
     }
 
     if (result.error.code === "parse") {
@@ -204,6 +229,32 @@ function withParseWarnings(input: {
       review: input.review,
       diffText: input.diffText,
     }).warnings,
+  };
+}
+
+/**
+ * Apply the deterministic (path, line) verify filter to the
+ * review's comments[]. Returns a new LiveReview with the filtered
+ * comments[]. The original is left untouched so callers (the
+ * parse-warnings artifact builder) see the pre-filter payload.
+ *
+ * Defense-in-depth Layer 4: the post-filter in
+ * `selectPostableComments` runs the same check, but doing it here
+ * means the platform-posting paths only see anchorable findings.
+ */
+function applyVerifyFilter(review: LiveReview, diffText: string): LiveReview {
+  if (diffText.length === 0) {
+    return review;
+  }
+  const positions = parseDiffPositions(diffText);
+  return {
+    ...review,
+    comments: review.comments.filter((c) => {
+      if (!Number.isInteger(c.line) || c.line < 1 || c.path.length === 0) {
+        return false;
+      }
+      return positions.hasPosition(c);
+    }),
   };
 }
 

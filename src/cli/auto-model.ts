@@ -13,23 +13,19 @@
  *
  * The resolver here picks a model with the best cost-vs-hallucination
  * trade-off for the active provider:
- *   - provider=copilot  → claude-sonnet-4.6 (Copilot's default; the
- *     least-hallucinating frontier model for grounded code review
- *     per the model-comparison research; HHEM 10.6%, lowest among
- *     the Claude/GPT flagship models for path/line citation)
+ *   - provider=copilot  → claude-3-5-sonnet (Copilot's Claude backend;
+ *     this is the model string the GitHub Copilot Chat Completions
+ *     endpoint actually accepts — the v3.x and v3.5 Sonnet line is
+ *     the Copilot-routable Claude. claude-sonnet-4.6 is NOT a
+ *     Copilot-routable string and would 404.)
  *   - provider=openai-compatible + URL contains "anthropic"  → claude-sonnet-4.6
  *   - provider=openai-compatible + URL contains "generativelanguage"  → gemini-2.5-flash
  *   - provider=openai-compatible otherwise (incl. api.openai.com)  → gpt-5-mini
  *
  * Users can always override via `--model` (or `UMACTUALLY_MODEL`).
- * The resolver is the layer 5 piece of the citation-grounding fix
- * (ranked technique #5 in the production-tool survey: "model
- * selection for hallucination resistance"); the LLM still
- * fabricates occasionally, but the model choice is the cheapest
- * defense in the chain.
  */
 
-const COPILOT_DEFAULT_MODEL = "claude-sonnet-4.6";
+const COPILOT_DEFAULT_MODEL = "claude-3-5-sonnet";
 const ANTHROPIC_DEFAULT_MODEL = "claude-sonnet-4.6";
 const GOOGLE_DEFAULT_MODEL = "gemini-2.5-flash";
 const OPENAI_DEFAULT_MODEL = "gpt-5-mini";
@@ -64,8 +60,8 @@ export const DEFAULT_FALLBACK_MODELS: readonly string[] = [
   OPENAI_DEFAULT_MODEL,
   ANTHROPIC_DEFAULT_MODEL,
   GOOGLE_DEFAULT_MODEL,
-  "gpt-5.4-mini",
-  "gpt-5.4-nano",
+  "gpt-4.1",
+  "gpt-4.1-mini",
 ];
 
 /**

@@ -17,8 +17,15 @@ describe("isBuildArtifactPath", () => {
 
   it("matches build/ outputs", () => {
     expect(isBuildArtifactPath("build/index.js")).toBe(true);
-    expect(isBuildArtifactPath("lib/utils.js")).toBe(true);
     expect(isBuildArtifactPath("out/main.js")).toBe(true);
+  });
+
+  it("does NOT match src/lib/ (legitimate source layout)", () => {
+    // `lib/` is removed from the default patterns because many
+    // TypeScript / Node projects put source in `src/lib/` or
+    // even root `lib/`. Pattern docs above explain the trade-off.
+    expect(isBuildArtifactPath("src/lib/utils.ts")).toBe(false);
+    expect(isBuildArtifactPath("lib/utils.ts")).toBe(false);
   });
 
   it("matches coverage outputs", () => {
@@ -178,6 +185,40 @@ describe("filterBuildArtifacts", () => {
     expect(filtered).not.toContain("dist/b.js");
     // The single retained block should come through intact.
     expect(filtered.indexOf("src/keep.ts")).toBeGreaterThan(-1);
+  });
+
+  it("preserves inter-block newlines when multiple source blocks remain (no glue)", () => {
+    // Regression: the join used `retained.join("")` which glued
+    // consecutive `diff --git` blocks together into one malformed
+    // line. The fix joins with "\n" so each block starts on its own
+    // line.
+    const two = [
+      "diff --git a/src/a.ts b/src/a.ts",
+      "--- a/src/a.ts",
+      "+++ b/src/a.ts",
+      "@@ -1,1 +1,2 @@",
+      " x",
+      "+y",
+      "",
+      "diff --git a/src/b.ts b/src/b.ts",
+      "--- a/src/b.ts",
+      "+++ b/src/b.ts",
+      "@@ -1,1 +1,2 @@",
+      " p",
+      "+q",
+      "",
+    ].join("\n");
+    const filtered = filterBuildArtifacts(two);
+    expect(filtered).toContain("src/a.ts");
+    expect(filtered).toContain("src/b.ts");
+    // The two diff blocks must be separated by a newline so the
+    // resulting diff remains a valid unified diff (the second block
+    // must start on its own line, not be glued to the previous
+    // block's last hunk content).
+    const lines = filtered.split("\n");
+    const secondBlockStart = lines.findIndex((l) => l.startsWith("diff --git a/src/b.ts"));
+    expect(secondBlockStart).toBeGreaterThan(0);
+    expect(lines[secondBlockStart - 1]?.length === 0).toBe(true);
   });
 
   it("treats a / b / prefixes correctly", () => {

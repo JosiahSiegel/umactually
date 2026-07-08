@@ -43,7 +43,6 @@ export const DEFAULT_BUILD_ARTIFACT_PATTERNS: readonly string[] = [
   "dist/",
   "build/",
   "out/",
-  "lib/",
   "target/", // Rust/Java
   "_build/", // Elixir
   ".next/",
@@ -232,7 +231,13 @@ export function filterBuildArtifacts(
     return "";
   }
 
-  return retained.join("");
+  // Join with a single newline so consecutive `diff --git` blocks are
+  // separated. The split stripped the leading `diff --git ` marker from
+  // every block (we re-prepended it), but the inter-block separator
+  // (the trailing newline of the previous block) was discarded by
+  // String.split's separator semantics. Re-inserting `\n` here keeps
+  // the output parseable as a unified diff.
+  return retained.join("\n");
 }
 
 /**
