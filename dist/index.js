@@ -2072,8 +2072,15 @@ function filterBuildArtifacts(diffText, patterns = DEFAULT_BUILD_ARTIFACT_PATTER
     let retainedBytes = 0;
     let droppedBlocks = 0;
     for (const block of blocks) {
-        const path = extractTargetPath(block);
-        if (path !== null && isBuildArtifactPath(path, patterns)) {
+        const { a, b } = extractTargetPaths(block);
+        // Test the artifact filter against BOTH sides so renames across
+        // the filter boundary are caught. A file moved FROM dist/ TO
+        // src/ is reported by the `a` side as `dist/x.js`; a file moved
+        // FROM src/ TO dist/ is reported by the `b` side as `dist/x.js`.
+        // Either side matching means the block touches a build artifact.
+        const matchesArtifact = (a !== null && isBuildArtifactPath(a, patterns)) ||
+            (b !== null && isBuildArtifactPath(b, patterns));
+        if (matchesArtifact) {
             droppedBlocks += 1;
             continue;
         }
@@ -2096,20 +2103,23 @@ function filterBuildArtifacts(diffText, patterns = DEFAULT_BUILD_ARTIFACT_PATTER
     return retained.join("\n");
 }
 /**
- * Extract the target path (`b/...` from `+++ b/...`) from a diff block.
- * Returns null if the block is malformed or the file was deleted
- * (`+++ /dev/null`).
+ * Extract the target paths from a diff block. Returns both the
+ * `a/` (old) and `b/` (new) sides so the caller can test the
+ * artifact-pattern filter against BOTH paths of a rename. A file
+ * moved across the filter boundary (e.g. `dist/x.js` → `src/x.js`)
+ * is correctly filtered by testing the old path; a file moved INTO
+ * a non-artifact path (e.g. `src/x.js` → `dist/x.js`) is correctly
+ * filtered by testing the new path.
+ *
+ * Either side may be null (file add: only `b/`, file delete: only
+ * `a/`, malformed: neither).
  */
-function extractTargetPath(block) {
+function extractTargetPaths(block) {
     const lines = block.split(/\r?\n/u);
-    // Prefer the `b/` side (the new file). If the file is being deleted
-    // (`+++ /dev/null`) or renamed, fall back to the `a/` side so a
-    // deleted dist/ file is still filterable. Both sides carry the same
-    // path for renames; for adds only `b/` is set; for deletes only
-    // `a/` is set.
-    const aSide = readPathLine(lines, "--- ");
-    const bSide = readPathLine(lines, "+++ ");
-    return bSide ?? aSide;
+    return {
+        a: readPathLine(lines, "--- "),
+        b: readPathLine(lines, "+++ "),
+    };
 }
 function readPathLine(lines, prefix) {
     for (const line of lines) {
@@ -9306,12 +9316,14 @@ const PROVIDER_FALLBACKS = {
         GOOGLE_DEFAULT_MODEL,
     ],
     copilot: [
+        // The Copilot fallback chain is intentionally short: the
+        // provider only accepts Copilot-routable model strings, and
+        // a parse-fail retry on a different model that's still
+        // Copilot-routable would 404 too. The retry loop should fall
+        // back to the same model with a parse-fail retry prompt
+        // (handled in provider-parse.ts:PARSE_FAIL_RETRY_PROMPT);
+        // a model-level fallback is a no-op for Copilot today.
         COPILOT_DEFAULT_MODEL,
-        COPILOT_DEFAULT_MODEL, // doubled deliberately: the Copilot
-        // fallback list is shorter because the provider only accepts
-        // Copilot-routable model strings. Doubling the entry gives
-        // the retry loop a "second try" on the same model after the
-        // first attempt hit a transient parse-fail.
     ],
 };
 const DEFAULT_FALLBACK_MODELS = PROVIDER_FALLBACKS["openai-compatible"];

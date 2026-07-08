@@ -246,6 +246,60 @@ describe("filterBuildArtifacts", () => {
     expect(filterBuildArtifacts(diff)).toBe("");
   });
 
+  it("filters rename blocks where EITHER the old or new path is a build artifact", () => {
+    // File moved FROM dist/ TO src/ (renamed out of a build
+    // directory): both sides must be tested, not just the new
+    // path. The old path is `dist/x.js` (build artifact), the
+    // new is `src/x.js` (not an artifact). The block should
+    // still be filtered.
+    const renamedOut = [
+      "diff --git a/dist/x.js b/src/x.js",
+      "similarity index 99%",
+      "rename from dist/x.js",
+      "rename to src/x.js",
+      "--- a/dist/x.js",
+      "+++ b/src/x.js",
+      "@@ -1,1 +1,1 @@",
+      "-x",
+      "+y",
+      "",
+    ].join("\n");
+    expect(filterBuildArtifacts(renamedOut)).toBe("");
+
+    // File moved FROM src/ TO dist/: old is not an artifact, new
+    // is. The block should be filtered.
+    const renamedIn = [
+      "diff --git a/src/x.js b/dist/x.js",
+      "similarity index 99%",
+      "rename from src/x.js",
+      "rename to dist/x.js",
+      "--- a/src/x.js",
+      "+++ b/dist/x.js",
+      "@@ -1,1 +1,1 @@",
+      "-x",
+      "+y",
+      "",
+    ].join("\n");
+    expect(filterBuildArtifacts(renamedIn)).toBe("");
+
+    // File moved between two non-artifact paths: should be
+    // retained.
+    const renamedBoth = [
+      "diff --git a/src/a.ts b/src/b.ts",
+      "similarity index 99%",
+      "rename from src/a.ts",
+      "rename to src/b.ts",
+      "--- a/src/a.ts",
+      "+++ b/src/b.ts",
+      "@@ -1,1 +1,1 @@",
+      "-x",
+      "+y",
+      "",
+    ].join("\n");
+    expect(filterBuildArtifacts(renamedBoth)).toContain("src/a.ts");
+    expect(filterBuildArtifacts(renamedBoth)).toContain("src/b.ts");
+  });
+
   it("locks the PR-#56 reproduction: dist/cli.js + dist/index.js + 6 more", () => {
     // Regression: PR #56 sync review produced 8 findings citing
     // dist/cli.js and dist/index.js. The diff was source-only but the

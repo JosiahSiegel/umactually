@@ -71,12 +71,14 @@ const PROVIDER_FALLBACKS: Readonly<Record<"openai-compatible" | "copilot", reado
     GOOGLE_DEFAULT_MODEL,
   ],
   copilot: [
+    // The Copilot fallback chain is intentionally short: the
+    // provider only accepts Copilot-routable model strings, and
+    // a parse-fail retry on a different model that's still
+    // Copilot-routable would 404 too. The retry loop should fall
+    // back to the same model with a parse-fail retry prompt
+    // (handled in provider-parse.ts:PARSE_FAIL_RETRY_PROMPT);
+    // a model-level fallback is a no-op for Copilot today.
     COPILOT_DEFAULT_MODEL,
-    COPILOT_DEFAULT_MODEL, // doubled deliberately: the Copilot
-    // fallback list is shorter because the provider only accepts
-    // Copilot-routable model strings. Doubling the entry gives
-    // the retry loop a "second try" on the same model after the
-    // first attempt hit a transient parse-fail.
   ],
 };
 
