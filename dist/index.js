@@ -9848,7 +9848,7 @@ function shouldFallback(error) {
 const COPILOT_DEFAULT_MODEL = "claude-3-5-sonnet";
 const ANTHROPIC_DEFAULT_MODEL = "claude-sonnet-4.6";
 const GOOGLE_DEFAULT_MODEL = "gemini-2.5-flash";
-const MINIMAX_DEFAULT_MODEL = "MiniMax-Text-01";
+const MINIMAX_DEFAULT_MODEL = "MiniMax-M3";
 const OPENAI_DEFAULT_MODEL = "gpt-5-mini";
 const HOST_ROUTES = [
     // MiniMax: the api.minimax.io gateway only accepts MiniMax-Text-01
@@ -9929,6 +9929,7 @@ const URL_SPECIFIC_FALLBACKS = {
     // both resolve to the same chain.
     "minimax": [
         MINIMAX_DEFAULT_MODEL,
+        "MiniMax-Text-01",
         "abab6.5s-chat",
         "abab5.5-chat",
     ],

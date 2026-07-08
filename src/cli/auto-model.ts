@@ -38,7 +38,7 @@ import { extractHostname } from "../util/url.js";
 const COPILOT_DEFAULT_MODEL = "claude-3-5-sonnet";
 const ANTHROPIC_DEFAULT_MODEL = "claude-sonnet-4.6";
 const GOOGLE_DEFAULT_MODEL = "gemini-2.5-flash";
-const MINIMAX_DEFAULT_MODEL = "MiniMax-Text-01";
+const MINIMAX_DEFAULT_MODEL = "MiniMax-M3";
 const OPENAI_DEFAULT_MODEL = "gpt-5-mini";
 
 /**
@@ -151,6 +151,7 @@ const URL_SPECIFIC_FALLBACKS: Readonly<Record<string, readonly string[]>> = {
   // both resolve to the same chain.
   "minimax": [
     MINIMAX_DEFAULT_MODEL,
+    "MiniMax-Text-01",
     "abab6.5s-chat",
     "abab5.5-chat",
   ],

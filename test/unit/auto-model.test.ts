@@ -55,7 +55,7 @@ describe("resolveAutoModel", () => {
         apiUrl: "https://api.minimax.io/v1",
         env: {},
       }),
-    ).toBe("MiniMax-Text-01");
+    ).toBe("MiniMax-M3");
   });
 
   it("returns MiniMax-Text-01 for minimax URLs with any path (e.g. /anthropic)", () => {
@@ -65,7 +65,7 @@ describe("resolveAutoModel", () => {
         apiUrl: "https://api.minimax.io/anthropic",
         env: {},
       }),
-    ).toBe("MiniMax-Text-01");
+    ).toBe("MiniMax-M3");
   });
 
   it("returns MiniMax-Text-01 for minimax URLs case-insensitively", () => {
@@ -75,7 +75,7 @@ describe("resolveAutoModel", () => {
         apiUrl: "https://API.MINIMAX.IO/v1",
         env: {},
       }),
-    ).toBe("MiniMax-Text-01");
+    ).toBe("MiniMax-M3");
   });
 
   it("returns MiniMax-Text-01 for scheme-less uppercase URLs (regression: extractHostname fallback was not lowercasing)", () => {
@@ -93,7 +93,7 @@ describe("resolveAutoModel", () => {
         apiUrl: "API.MINIMAX.IO",
         env: {},
       }),
-    ).toBe("MiniMax-Text-01");
+    ).toBe("MiniMax-M3");
   });
 
   it("returns gpt-5-mini for the default OpenAI-compatible case", () => {
@@ -139,6 +139,7 @@ describe("fallbackModelsFor: URL-specific chains for non-OpenAI providers", () =
     // The generic OpenAI chain would 400 on MiniMax. The URL-specific
     // chain returns only models MiniMax accepts.
     const chain = fallbackModelsFor("openai-compatible", "https://api.minimax.io/v1");
+    expect(chain).toContain("MiniMax-M3");
     expect(chain).toContain("MiniMax-Text-01");
     expect(chain).not.toContain("gpt-5-mini");
     expect(chain).not.toContain("claude-sonnet-4.6");
@@ -245,6 +246,6 @@ describe("hostname extraction: a /minimax path in the URL does NOT trigger MiniM
         apiUrl: "https://api.minimax.io/anthropic",
         env: {},
       }),
-    ).toBe("MiniMax-Text-01");
+    ).toBe("MiniMax-M3");
   });
 });
