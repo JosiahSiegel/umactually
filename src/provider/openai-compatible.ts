@@ -107,10 +107,10 @@ function buildBodyConfig(config: ProviderCallConfig): {
  */
 function stripResponseFormat<T extends { readonly responseFormat?: unknown }>(
   config: T,
-): Omit<T, "responseFormat"> & { readonly responseFormat?: never } {
+): Omit<T, "responseFormat"> {
   const { responseFormat: _drop, ...rest } = config;
   void _drop;
-  return rest as Omit<T, "responseFormat">;
+  return rest;
 }
 
 export async function runProviderRequest(config: ProviderCallConfig): Promise<ProviderCallResult> {
