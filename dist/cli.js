@@ -9817,7 +9817,13 @@ async function callEndpoint(config, fetchImpl, requestId, endpoint, baseUrl) {
     let retryResponseStatus = null;
     let retryErrorMessage = null;
     try {
-        const retryResponse = await performFetch(fetchImpl, url, retryBody, signal, config, requestId, endpoint);
+        // Fresh signal for the retry so it gets the full timeout budget.
+        // Reusing the first-attempt signal would give the retry only
+        // whatever time was left on the original 300s AbortSignal.
+        // Some models (e.g. MiniMax-M3 with bumped-budget retry) need
+        // 3-5 minutes per attempt.
+        const retrySignal = composeSignal(config.signal, config.requestTimeoutMs);
+        const retryResponse = await performFetch(fetchImpl, url, retryBody, retrySignal, config, requestId, endpoint);
         retryResponseStatus = retryResponse.status;
         if (retryResponse.ok) {
             const retryRawText = await readBody(retryResponse, endpoint, requestId);
