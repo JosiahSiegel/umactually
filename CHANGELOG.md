@@ -8,6 +8,51 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Changed
 
+- **BREAKING**: `ignore-minor` input removed.
+  The `ignore-minor` action input, CLI flag, and `UMACTUALLY_IGNORE_MINOR` /
+  `REVIEW_IGNORE_MINOR` env vars have been removed. Use `minimum-severity`
+  (`low|medium|high`, default `medium`) instead — it covers the same
+  "suppress minor findings" use case with finer control. The previous
+  guarantee that `security` and `leak` findings are never suppressed now
+  lives inside `minimum-severity`'s semantics and applies regardless of
+  the configured threshold.
+  - CLI: `--ignore-minor` / `--no-ignore-minor` throw `CliUsageError`
+    with a migration message — fail loudly is intentional so explicit
+    CLI callers can't silently miss the change.
+  - Env vars: silently ignored. CI users who still have
+    `UMACTUALLY_IGNORE_MINOR` / `REVIEW_IGNORE_MINOR` set will see a
+    one-time stderr warning on the next run pointing them at
+    `minimum-severity`. The asymmetry with the CLI is deliberate: env
+    vars are inherited invisibly and a hard throw on every run would
+    brick pipelines that simply forgot to clean up.
+  - Action users who were on the previous defaults
+    (`ignore-minor: false`, `minimum-severity: low`) will lose
+    `info` findings that were previously posted inline; that
+    matches the new `minimum-severity: medium` default. Set
+    `minimum-severity: low` explicitly to keep the old
+    "show everything" behavior.
+  - Pipelines that were passing `ignore-minor: true` need to recreate
+    their previous filter combination on top of `minimum-severity`,
+    NOT just rely on the new default. The two knobs were layered
+    (`ignoreMinor` filtered info+low; `minimum-severity` filtered
+    everything below the configured tier), so the equivalent new
+    setting depends on what previous `minimum-severity` tier you
+    were filtering at. Migration examples:
+    - `ignore-minor: true` + previous `minimum-severity: low` (the
+      old default) → `minimum-severity: medium` (the new default).
+      The previous effective filter dropped info+low, and the new
+      default does the same.
+    - `ignore-minor: true` + previous `minimum-severity: medium`
+      → `minimum-severity: medium` (the new default). No change
+      needed.
+    - `ignore-minor: true` + previous `minimum-severity: high`
+      → `minimum-severity: high` (NOT the new default).
+    - `ignore-minor: false` (the prior default) + previous
+      `minimum-severity: low` (the prior default) → accept the
+      new default of `medium` to filter style/hygiene, or set
+      `minimum-severity: low` explicitly to keep all findings.
+    - `ignore-minor: false` + previous `minimum-severity: high`
+      → `minimum-severity: high` (no change needed).
 - **BREAKING**: `minimum-severity` default flipped from `low` to `medium`.
   Out of the box, low-severity findings (style, hygiene) are filtered
   out of the postable set and do not appear as inline comments. Set

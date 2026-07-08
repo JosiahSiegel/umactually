@@ -29,7 +29,6 @@ export type TimeoutControls = {
 };
 
 export type SeverityControls = {
-  readonly ignoreMinor: boolean;
   readonly minimum: Severity;
   readonly maxComments: number;
 };
@@ -94,7 +93,6 @@ export type CliArgs = {
   readonly reviewTimeoutSeconds?: number;
   readonly stallTimeoutSeconds?: number;
   readonly perRequestTimeoutSeconds?: number;
-  readonly ignoreMinor?: boolean;
   readonly minimumSeverity?: Severity;
   readonly maxComments?: number;
   readonly reviewFileLimit?: number;
@@ -142,7 +140,6 @@ export type RawActionInputs = {
   readonly reviewTimeoutSeconds?: string | number;
   readonly stallTimeoutSeconds?: string | number;
   readonly perRequestTimeoutSeconds?: string | number;
-  readonly ignoreMinor?: string | boolean;
   readonly minimumSeverity?: string;
   readonly maxComments?: string | number;
   readonly reviewFileLimit?: string | number;
@@ -178,7 +175,6 @@ export type EnvSources = {
   readonly stallTimeoutSeconds?: string;
   readonly perRequestTimeoutSeconds?: string;
   readonly maxOutputTokens?: string;
-  readonly ignoreMinor?: string;
   readonly minimumSeverity?: string;
   readonly maxComments?: string;
   readonly reviewFileLimit?: string;

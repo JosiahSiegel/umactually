@@ -26,19 +26,17 @@ export function isSeverityAtLeast(minimum: Severity, severity: Severity): boolea
 }
 
 /**
- * Decides whether a finding should be kept under the configured severity controls.
- * - ignoreMinor=true suppresses `info` and `minor` findings only.
- * - `security` and `leak` findings are NEVER suppressed by ignoreMinor.
- * - The minimum threshold is evaluated AFTER ignoreMinor; security/leak are still
- *   at-or-above their own rank, so they survive any threshold check.
+ * Decides whether a finding should be kept under the configured minimum
+ * severity threshold.
+ *
+ * Security policy invariant: `security` and `leak` findings ALWAYS survive
+ * any threshold, even when the configured minimum would otherwise filter them.
  */
 export function shouldKeepFinding(
-  controls: { readonly ignoreMinor: boolean; readonly minimum: Severity },
+  controls: { readonly minimum: Severity },
   finding: Severity,
 ): boolean {
-  if (controls.ignoreMinor) {
-    if (finding === "info" || finding === "minor") return false;
-    return true;
-  }
+  // security and leak ALWAYS survive any threshold (security policy)
+  if (finding === "security" || finding === "leak") return true;
   return isSeverityAtLeast(controls.minimum, finding);
 }

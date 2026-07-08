@@ -20,15 +20,30 @@ After redaction, the action re-scans the diff and reports `highConfidenceLeakCou
 
 If `highConfidenceLeakCount` is non-zero, treat the run as a security incident: the source PR introduced a credential into a diff. Page the security on-call, rotate the leaked credential, and confirm the PR is not merged.
 
-## ignore-minor cannot hide leaks or security findings
+## minimum-severity cannot hide leaks or security findings
 
-`ignore-minor` (default `true`) suppresses only minor non-security findings. It does **not** suppress:
+`minimum-severity` (default `medium`) filters out findings below the configured tier. The threshold applies uniformly to every finding, with one carve-out: **`security` and `leak` findings ALWAYS survive any threshold.**
 
-- High-confidence leaks detected during redaction.
-- Security findings emitted by the review provider.
-- Findings marked as `severity: high` or `severity: critical` by the runtime.
+Concretely, the threshold behavior:
 
-If you need a quieter review output, lower the noise on the model side first. Treat `ignore-minor: false` as a higher-noise mode, not a less-secure mode.
+- `low` — surfaces everything except `info`.
+- `medium` (default) — filters `info` and `low`.
+- `high` — filters `info`, `low`, and `medium`.
+- `critical` — filters everything below `critical`.
+
+The carve-out is unconditional. `security` and `leak` findings bypass every configured threshold and cannot be turned off via `minimum-severity` or any other input — to suppress them you must remove them at the source (e.g. stop posting the credential, fix the underlying code).
+
+**What the carve-out does NOT cover:** `high` and `critical` findings are filtered by `minimum-severity` like any other tier. Setting `minimum-severity: high` suppresses `critical` along with everything below it. Only `security` and `leak` are unconditionally preserved — nothing else is exempt from the threshold.
+
+**Migration note for users coming from the old `ignore-minor` semantics:** the previous carve-out phrasing implied `high` and `critical` findings were also exempt in some configurations; that exemption is gone. With `minimum-severity: high`, both `high` and `critical` findings are filtered like any other tier — only `security` and `leak` are unconditionally preserved. If you relied on the old `high`/`critical` exemption, raise `minimum-severity` to `critical` (which keeps `critical` and `security`/`leak`) rather than `high`.
+
+For noise control, think of the threshold as a quieter-to-louder knob:
+
+- `minimum-severity: high` — quietest; only blocking findings surface inline.
+- `minimum-severity: medium` — default; filters style/hygiene noise, keeps substantive findings.
+- `minimum-severity: low` — highest-noise; surfaces everything except `info`.
+
+If the default review output is too noisy, raise `minimum-severity` before reaching for model-side changes. Lowering it is the right move only when you specifically need style/hygiene findings inline.
 
 ## Prompt file path safety
 

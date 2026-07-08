@@ -2,7 +2,7 @@ import { mkdtemp, mkdir, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, sep } from "node:path";
 
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { FIELDS } from "../../src/config/field-schema.js";
 import { severityRank } from "../../src/util/severity.js";
@@ -55,22 +55,38 @@ describe("config: severity rank + bypass", () => {
     expect(isSeverityAtLeast("info", "info")).toBe(true);
   });
 
-  it("ignoreMinor suppresses info and minor only", () => {
-    expect(shouldKeepFinding({ ignoreMinor: true, minimum: "minor" }, "info")).toBe(false);
-    expect(shouldKeepFinding({ ignoreMinor: true, minimum: "minor" }, "minor")).toBe(false);
-    expect(shouldKeepFinding({ ignoreMinor: true, minimum: "minor" }, "major")).toBe(true);
+  it("minimum threshold filters below-tier findings", () => {
+    expect(shouldKeepFinding({ minimum: "minor" }, "info")).toBe(false);
+    expect(shouldKeepFinding({ minimum: "minor" }, "minor")).toBe(true);
+    expect(shouldKeepFinding({ minimum: "minor" }, "major")).toBe(true);
   });
 
-  it("ignoreMinor never suppresses security or leak", () => {
-    expect(shouldKeepFinding({ ignoreMinor: true, minimum: "minor" }, "security")).toBe(true);
-    expect(shouldKeepFinding({ ignoreMinor: true, minimum: "minor" }, "leak")).toBe(true);
+  it("minimum severity filters across minimum-severity enum values", () => {
+    // CLI/action users pass low|medium|high. shouldKeepFinding receives the
+    // internal Severity threshold, so this test pins the alias mapping:
+    // low → minor, medium → major, high → critical.
+    const allSeverities: readonly Severity[] = ["info", "minor", "major", "critical", "security", "leak"];
+    const cases: ReadonlyArray<{
+      readonly minimumSeverity: "low" | "medium" | "high";
+      readonly minimum: Severity;
+      readonly kept: readonly Severity[];
+    }> = [
+      { minimumSeverity: "low", minimum: "minor", kept: ["minor", "major", "critical", "security", "leak"] },
+      { minimumSeverity: "medium", minimum: "major", kept: ["major", "critical", "security", "leak"] },
+      { minimumSeverity: "high", minimum: "critical", kept: ["critical", "security", "leak"] },
+    ];
+
+    for (const c of cases) {
+      const actual = allSeverities.filter((severity) => shouldKeepFinding({ minimum: c.minimum }, severity));
+      expect(actual, c.minimumSeverity).toEqual(c.kept);
+    }
   });
 
-  it("minimum threshold filters without ignoreMinor", () => {
-    expect(shouldKeepFinding({ ignoreMinor: false, minimum: "critical" }, "major")).toBe(false);
-    expect(shouldKeepFinding({ ignoreMinor: false, minimum: "critical" }, "critical")).toBe(true);
-    expect(shouldKeepFinding({ ignoreMinor: false, minimum: "critical" }, "security")).toBe(true);
-    expect(shouldKeepFinding({ ignoreMinor: false, minimum: "critical" }, "leak")).toBe(true);
+  it("security and leak ALWAYS bypass minimum threshold (security policy)", () => {
+    for (const minimum of ["critical", "major", "minor"] as const) {
+      expect(shouldKeepFinding({ minimum }, "security"), `minimum=${minimum}`).toBe(true);
+      expect(shouldKeepFinding({ minimum }, "leak"), `minimum=${minimum}`).toBe(true);
+    }
   });
 
   it("leak and security bypass minimum thresholds by rank", () => {
@@ -163,6 +179,21 @@ describe("config: integer parsing", () => {
     expect(() => parseIntegerFromUnknown("abc", "n")).toThrow(InvalidConfigError);
     expect(() => parseIntegerFromUnknown("3.14", "n")).toThrow(InvalidConfigError);
   });
+
+  it("rejects integers outside the safe-integer range", () => {
+    // Mirrors the CLI's parseStrictInt check: values exceeding 2^53-1
+    // silently lose precision when compared as exact integers (cache
+    // keys, severity lookups, etc.), so reject them at parse time.
+    // The string form is the most likely path — users copying values
+    // from monitoring dashboards or test fixtures.
+    const overMax = String(Number.MAX_SAFE_INTEGER + 2);
+    const underMin = String(Number.MIN_SAFE_INTEGER - 2);
+    expect(() => parseIntegerFromUnknown(overMax, "n")).toThrow(InvalidConfigError);
+    expect(() => parseIntegerFromUnknown(underMin, "n")).toThrow(InvalidConfigError);
+    // Boundaries should still work.
+    expect(parseIntegerFromUnknown(Number.MAX_SAFE_INTEGER, "n")).toBe(Number.MAX_SAFE_INTEGER);
+    expect(parseIntegerFromUnknown(Number.MIN_SAFE_INTEGER, "n")).toBe(Number.MIN_SAFE_INTEGER);
+  });
 });
 
 describe("config: severity parsing", () => {
@@ -231,25 +262,20 @@ describe("config: URL normalization", () => {
   });
 
   it("rejects malformed URLs with REDACTED", () => {
+    // Given: a malformed URL (no scheme, no host). The normalizer must
+    // throw InvalidConfigError without leaking the raw input.
+    const malformed = `not a url at all ${SECRET_TOKEN}`;
+
+    // When / Then: the parse throws and the error message does not contain the secret.
+    let thrown: Error | undefined;
     try {
-      normalizeApiUrl(`https://api.example.com/${SECRET_TOKEN}?token=${SECRET_TOKEN}`, "f");
-      throw new Error("should have thrown");
+      normalizeApiUrl(malformed, "f");
     } catch (error) {
-      // Valid URL — normalization succeeds; ensure the secret never appears in the output.
-      const message = (error as Error).message;
-      // No error path exercised — but verify the URL parsed output also doesn't echo the secret
-      // (a defense-in-depth check).
-      expect(message === "" || !message.includes(SECRET_TOKEN)).toBe(true);
+      thrown = error as Error;
     }
-    // Truly malformed input:
-    try {
-      normalizeApiUrl(`not a url: ${SECRET_TOKEN}`, "f");
-      throw new Error("should have thrown");
-    } catch (error) {
-      const message = (error as Error).message;
-      expect(message).not.toContain(SECRET_TOKEN);
-      expect(message).toContain(REDACTED);
-    }
+    expect(thrown).toBeDefined();
+    expect(thrown?.message).not.toContain(SECRET_TOKEN);
+    expect(thrown?.message).toContain(REDACTED);
   });
 
   it("rejects empty / non-string", () => {
@@ -393,7 +419,7 @@ describe("config: loadConfigFromSources precedence", () => {
     expect(result.leakDetection).toBe(true);
     expect(result.redactorEnabled).toBe(true);
     expect(result.severity.maxComments).toBe(50);
-    expect(result.severity.minimum).toBe("minor");
+    expect(result.severity.minimum).toBe("major");
     expect(result.timeouts.reviewSeconds).toBe(300);
     expect(result.sonar.enabled).toBe(false);
   });
@@ -605,7 +631,6 @@ describe("config: readEnvSources", () => {
       UMACTUALLY_SONAR_TOKEN: "sonar-token",
       UMACTUALLY_SONAR_PROJECT_KEY: "umactually",
       UMACTUALLY_INCLUDE_SONARQUBE: "true",
-      UMACTUALLY_IGNORE_MINOR: "false",
       UMACTUALLY_DETECT_LEAKS: "true",
       REVIEW_REDACTOR_ENABLED: "false",
     });
@@ -632,7 +657,6 @@ describe("config: readEnvSources", () => {
     expect(sources.sonarToken).toBe("sonar-token");
     expect(sources.sonarProject).toBe("umactually");
     expect(sources.sonarEnabled).toBe("true");
-    expect(sources.ignoreMinor).toBe("false");
     expect(sources.leakDetection).toBe("true");
     expect(sources.redactorEnabled).toBe("false");
   });
@@ -652,6 +676,85 @@ describe("config: readEnvSources", () => {
     });
     expect(sources.providerUrl).toBe("https://legacy.example.test/v1");
     expect(sources.providerApiKey).toBe("legacy-key");
+  });
+});
+
+describe("config: legacy ignore-minor env-var warning", () => {
+  // The `ignore-minor` removal leaves UMACTUALLY_IGNORE_MINOR and
+  // REVIEW_IGNORE_MINOR as silently-dropped env vars. CI pipelines
+  // that still set these will get a one-time stderr warning pointing
+  // them at minimum-severity. Without this test, a future refactor
+  // could drop the warning and silently regress the migration nudge.
+  beforeEach(() => {
+    // Reset the module-scoped dedupe set between tests by clearing
+    // the module cache for env-sources. Otherwise a test that warns
+    // would suppress the warning in the next test.
+    vi.resetModules();
+  });
+  it("emits a stderr warning when UMACTUALLY_IGNORE_MINOR is set", async () => {
+    const { readEnvSources: readFresh } = await import("../../src/config/env-sources.js");
+    const stderr = vi.spyOn(process.stderr, "write").mockImplementation(() => true);
+    try {
+      readFresh({ UMACTUALLY_IGNORE_MINOR: "true" });
+      expect(stderr).toHaveBeenCalled();
+      const message = stderr.mock.calls.map((call) => String(call[0])).join("");
+      expect(message).toMatch(/UMACTUALLY_IGNORE_MINOR/u);
+      expect(message).toMatch(/minimum-severity/u);
+    } finally {
+      stderr.mockRestore();
+    }
+  });
+  it("emits a stderr warning when REVIEW_IGNORE_MINOR is set", async () => {
+    const { readEnvSources: readFresh } = await import("../../src/config/env-sources.js");
+    const stderr = vi.spyOn(process.stderr, "write").mockImplementation(() => true);
+    try {
+      readFresh({ REVIEW_IGNORE_MINOR: "true" });
+      expect(stderr).toHaveBeenCalled();
+      const message = stderr.mock.calls.map((call) => String(call[0])).join("");
+      expect(message).toMatch(/REVIEW_IGNORE_MINOR/u);
+    } finally {
+      stderr.mockRestore();
+    }
+  });
+  it("combines both legacy env vars into a single warning line when both are set", async () => {
+    const { readEnvSources: readFresh } = await import("../../src/config/env-sources.js");
+    const stderr = vi.spyOn(process.stderr, "write").mockImplementation(() => true);
+    try {
+      readFresh({ UMACTUALLY_IGNORE_MINOR: "true", REVIEW_IGNORE_MINOR: "true" });
+      // Single warning line covering both names — no back-to-back spam.
+      const message = stderr.mock.calls.map((call) => String(call[0])).join("");
+      expect(message).toMatch(/UMACTUALLY_IGNORE_MINOR/u);
+      expect(message).toMatch(/REVIEW_IGNORE_MINOR/u);
+      // Exactly one stderr write for the migration warning.
+      expect(stderr.mock.calls.length).toBe(1);
+    } finally {
+      stderr.mockRestore();
+    }
+  });
+  it("does not warn twice when readEnvSources is called multiple times", async () => {
+    const { readEnvSources: readFresh } = await import("../../src/config/env-sources.js");
+    const stderr = vi.spyOn(process.stderr, "write").mockImplementation(() => true);
+    try {
+      readFresh({ UMACTUALLY_IGNORE_MINOR: "true" });
+      readFresh({ UMACTUALLY_IGNORE_MINOR: "true" });
+      readFresh({ UMACTUALLY_IGNORE_MINOR: "true" });
+      // The module-scoped dedupe set survives across calls within
+      // the same process — only the first call warns.
+      expect(stderr.mock.calls.length).toBe(1);
+    } finally {
+      stderr.mockRestore();
+    }
+  });
+  it("does not warn when legacy env vars are absent", async () => {
+    const { readEnvSources: readFresh } = await import("../../src/config/env-sources.js");
+    const stderr = vi.spyOn(process.stderr, "write").mockImplementation(() => true);
+    try {
+      readFresh({ SOME_OTHER_VAR: "true" });
+      const message = stderr.mock.calls.map((call) => String(call[0])).join("");
+      expect(message).not.toMatch(/IGNORE_MINOR/u);
+    } finally {
+      stderr.mockRestore();
+    }
   });
 });
 
@@ -708,8 +811,8 @@ describe("config: secret redaction in errors", () => {
 describe("config: severity list sanity", () => {
   const ALL: readonly Severity[] = ["info", "minor", "major", "critical", "security", "leak"];
   it("exposes a strict ordering with security/leak at top", () => {
-    for (let i = 0; i < ALL.length; i++) {
-      for (let j = i + 1; j < ALL.length; j++) {
+    for (let i = 0; i < ALL.length; i += 1) {
+      for (let j = i + 1; j < ALL.length; j += 1) {
         const lower = ALL[i];
         const higher = ALL[j];
         if (lower === undefined || higher === undefined) throw new Error("unreachable");
@@ -719,6 +822,51 @@ describe("config: severity list sanity", () => {
         expect(isSeverityAtLeast(higher, lower)).toBe(false);
       }
     }
+  });
+});
+
+describe("config: minimum-severity default + alias mapping", () => {
+  // Pins the user-facing → internal Severity alias table so the loader
+  // default (`DEFAULT_MINIMUM_SEVERITY = "major"`) and the parser
+  // alias map can never silently drift. The user-facing enum is
+  // `low|medium|high`; the loader default resolves to `medium`, which
+  // aliases to internal `major`. If either side changes, this test
+  // surfaces the mismatch instead of silently disagreeing.
+  it("'medium' aliases to internal 'major'", () => {
+    expect(parseSeverityFromUnknown("medium", "test")).toBe<Severity>("major");
+  });
+  it("'low' aliases to internal 'minor' and 'high' aliases to 'critical'", () => {
+    expect(parseSeverityFromUnknown("low", "test")).toBe<Severity>("minor");
+    expect(parseSeverityFromUnknown("high", "test")).toBe<Severity>("critical");
+  });
+  it("loader default tracks field-schema default via the alias table", async () => {
+    // The schema (`field-schema.ts`) holds the user-facing default
+    // string (`medium`); the loader stores the alias-resolved
+    // internal Severity (`major`). A future change to either side
+    // (e.g. someone flips the schema default to `low`, or relaxes
+    // the alias mapping) would silently change effective config —
+    // this test fails instead.
+    //
+    // We exercise the loader with an empty sources object so the
+    // default path is the only one that runs, then assert the
+    // resolved `severity.minimum` equals the alias of the schema
+    // default. This catches both:
+    //   - schema default changes (FIELDS.minimumSeverity.defaultValue)
+    //   - alias changes (SEVERITY_ALIASES in parsers.ts)
+    //   - loader default changes (DEFAULT_MINIMUM_SEVERITY in loader.ts)
+    const { loadConfigFromSources } = await import("../../src/config/loader.js");
+    const schemaDefault = FIELDS.minimumSeverity.defaultValue;
+    if (typeof schemaDefault !== "string") {
+      throw new Error("schema default is not a string");
+    }
+    const expected = parseSeverityFromUnknown(schemaDefault, "test");
+    const config = await loadConfigFromSources({
+      cli: {},
+      inputs: {},
+      env: {},
+      cwd: process.cwd(),
+    });
+    expect(config.severity.minimum).toBe(expected);
   });
 });
 

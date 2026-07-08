@@ -11,14 +11,15 @@
 #     env:
 #       SYSTEM_ACCESSTOKEN: $(System.AccessToken)
 #
-# Behaviour (byte-for-byte equivalent to the inlined version):
+# Behaviour:
 #   1. Creates $AZURE_ARTIFACT_DIR and writes a synthetic Azure PR event
 #      + review fixture so manual branch runs without
 #      SYSTEM_PULLREQUEST_PULLREQUESTID still execute end-to-end.
 #   2. When SYSTEM_PULLREQUEST_PULLREQUESTID is set (PR validation),
-#      fetches the real PR payload + diff via the Azure DevOps REST API
-#      using the OAuth bearer token. Emits ##vso[task.setvariable]
-#      lines so downstream steps can read UMACTUALLY_PR_NUMBER and
+#      fetches the real PR payload via the Azure DevOps REST API and
+#      generates a real unified diff via `git diff` (three-dot:
+#      origin/<target>...HEAD). Emits ##vso[task.setvariable] lines so
+#      downstream steps can read UMACTUALLY_PR_NUMBER and
 #      UMACTUALLY_REPO as pipeline variables.
 #
 # Required env vars (set by the calling Azure pipeline step's
@@ -94,7 +95,13 @@ console.log(`##vso[task.setvariable variable=UMACTUALLY_REPO]${repoSlug}`);
 NODE
 
 if [ -n "${SYSTEM_PULLREQUEST_PULLREQUESTID:-}" ]; then
-  echo "Fetching Azure DevOps PR diff for PR ${SYSTEM_PULLREQUEST_PULLREQUESTID}."
+  echo "Fetching Azure DevOps PR diff for PR ${SYSTEM_PULLREQUEST_PULLREQUESTID} via git diff."
+  # Fetch the real PR metadata via the REST API (still needed for the
+  # event JSON that downstream steps consume). The diff is generated
+  # via git diff instead of the iterations/changes REST endpoint
+  # because that endpoint returns a JSON manifest of changed files
+  # (changeEntries), not a unified diff — the model can't review code
+  # from file paths alone.
   : "${SYSTEM_ACCESSTOKEN:?System.AccessToken must be mapped to SYSTEM_ACCESSTOKEN. Enable 'Allow scripts to access the OAuth token'.}"
   : "${SYSTEM_COLLECTIONURI:?SYSTEM_COLLECTIONURI must be set by Azure Pipelines.}"
   : "${SYSTEM_TEAMPROJECT:?SYSTEM_TEAMPROJECT must be set by Azure Pipelines.}"
@@ -103,31 +110,52 @@ if [ -n "${SYSTEM_PULLREQUEST_PULLREQUESTID:-}" ]; then
   project_path="$(node -e 'process.stdout.write(encodeURIComponent(process.env.SYSTEM_TEAMPROJECT || ""))')"
   repository_path="$(node -e 'process.stdout.write(encodeURIComponent(process.env.BUILD_REPOSITORY_ID || ""))')"
   pr_url="${collection_uri}/${project_path}/_apis/git/repositories/${repository_path}/pullRequests/${SYSTEM_PULLREQUEST_PULLREQUESTID}?api-version=7.1"
-  iters_url="${collection_uri}/${project_path}/_apis/git/repositories/${repository_path}/pullRequests/${SYSTEM_PULLREQUEST_PULLREQUESTID}/iterations?api-version=7.1"
   curl -fsS \
     --header "Authorization: Bearer ${SYSTEM_ACCESSTOKEN}" \
     --header "Accept: application/json" \
     "$pr_url" \
     --output "$AZURE_EVENT_PATH"
-  iteration_id="$(curl -fsS \
-    --header "Authorization: Bearer ${SYSTEM_ACCESSTOKEN}" \
-    --header "Accept: application/json" \
-    "$iters_url" | node -e 'const d=JSON.parse(require("fs").readFileSync(0,"utf8")); const vs=d.value||[]; process.stdout.write(vs.length?String(vs[vs.length-1].id):"")')"
-  if [ -z "$iteration_id" ]; then
-    echo "##vso[task.logissue type=error]Azure DevOps PR has no iterations."
-    exit 1
+  # SYSTEM_PULLREQUEST_TARGETBRANCH is set by Azure Pipelines on
+  # branch-policy PR validation builds, but the user reported a case
+  # where it was empty (likely an older Azure DevOps Server version
+  # or a misconfigured branch policy). Derive the default branch from
+  # `git symbolic-ref refs/remotes/origin/HEAD` so we don't hard-code
+  # `main` (which would silently produce wrong diffs against main on
+  # repos whose default branch is master/develop/etc.). Fall back to
+  # `main` only when symbolic-ref itself fails — that's the case where
+  # either origin/HEAD isn't set (shallow clone with no HEAD tracking)
+  # or git can't resolve it (auth/network). Emit a warning either way
+  # so the operator notices.
+  if [ -n "${SYSTEM_PULLREQUEST_TARGETBRANCH:-}" ]; then
+    target_branch="${SYSTEM_PULLREQUEST_TARGETBRANCH#refs/heads/}"
+  else
+    detected_default="$(git symbolic-ref --quiet --short refs/remotes/origin/HEAD 2>/dev/null | sed 's#^origin/##' || true)"
+    if [ -n "${detected_default}" ]; then
+      echo "##vso[task.logissue type=warning]SYSTEM_PULLREQUEST_TARGETBRANCH was empty; falling back to detected default branch '${detected_default}'. Verify the pipeline is wired to a branch policy build validation rule."
+      target_branch="${detected_default}"
+    else
+      echo "##vso[task.logissue type=warning]SYSTEM_PULLREQUEST_TARGETBRANCH was empty and git symbolic-ref could not determine origin/HEAD; falling back to 'main'. Verify the pipeline is wired to a branch policy build validation rule."
+      target_branch="main"
+    fi
   fi
-  changes_url="${collection_uri}/${project_path}/_apis/git/repositories/${repository_path}/pullRequests/${SYSTEM_PULLREQUEST_PULLREQUESTID}/iterations/${iteration_id}/changes?api-version=7.1"
-  : > "$AZURE_DIFF_PATH"
-  curl -fsS \
-    --header "Authorization: Bearer ${SYSTEM_ACCESSTOKEN}" \
-    --header "Accept: application/json" \
-    "$changes_url" \
-    | node -e 'const d=JSON.parse(require("fs").readFileSync(0,"utf8")); const cs=d.changeEntries||d.changes||[]; process.stdout.write(JSON.stringify(cs));' \
-    >> "$AZURE_DIFF_PATH"
+  # Fetch the target branch so git can resolve the merge-base for
+  # the three-dot diff. persistCredentials: true on the checkout step
+  # means the agent has OAuth-authenticated access to origin.
+  git fetch origin "${target_branch}"
+  # Three-dot diff: changes on HEAD since it diverged from the target
+  # branch. This captures exactly what the PR introduces, including
+  # multi-commit branches. The output is a standard unified diff that
+  # the model can review. Exclude dist/ — those are ncc-bundled
+  # artifacts that the model wastes tokens on (one review of a 31-
+  # file PR produced 5 of 50 findings about minified bundle contents
+  # and the model itself flagged "Generated bundles should not be the
+  # reviewable surface"). The GitHub Actions self-review workflow has
+  # the same issue but the GitHub diff endpoint serves the diff
+  # straight from git, so we'd need the same exclusion there if we
+  # want a comparable experience.
+  git diff "origin/${target_branch}...HEAD" -- . ':!dist' > "$AZURE_DIFF_PATH"
   if [ ! -s "$AZURE_DIFF_PATH" ]; then
-    echo "##vso[task.logissue type=error]Azure DevOps PR diff fetch produced an empty file."
-    exit 1
+    echo "##vso[task.logissue type=warning]Azure DevOps PR git diff is empty (target branch matches HEAD, or only dist/ files changed)."
   fi
 else
   echo "SYSTEM_PULLREQUEST_PULLREQUESTID is empty; creating a synthetic manual-run diff."
