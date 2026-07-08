@@ -110,6 +110,16 @@ jobs:
         env:
           UMACTUALLY_API_URL: ${{ secrets.UMACTUALLY_API_URL }}
           UMACTUALLY_API_KEY: ${{ secrets.UMACTUALLY_API_KEY }}
+          # Disable the wire strict JSON schema. MiniMax-M3 produces
+          # analysis tokens (billed against the same output budget)
+          # that exhaust the schema-emission budget before the model
+          # can finish the JSON. The system prompt's prose schema
+          # guide + the parse-fail self-healing retry path (which
+          # already drops the schema on retry) handle the JSON
+          # contract without forcing the model into a token-rationed
+          # state. Override here (not in action.yml) so other
+          # callers using the bundled action aren't affected.
+          UMACTUALLY_NO_STRICT_SCHEMA: '1'
 
       # Self-review guard: refuses to pass CI when the action's output
       # artifact is a parse-fail diagnostic card instead of a real

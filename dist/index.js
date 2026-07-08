@@ -10520,6 +10520,15 @@ async function requestLiveReview(input) {
     const providerApiKey = readRequiredConfig(input.parsed.apiKey ?? input.env["UMACTUALLY_API_KEY"], "UMACTUALLY_API_KEY");
     const modelId = readConfiguredModel(input.parsed, input.env);
     const prompts = await buildProviderPrompts(input);
+    // Honor UMACTUALLY_NO_STRICT_SCHEMA=1 (workflow toggle). Lets a
+    // CI pipeline disable the wire-format JSON-schema constraint
+    // when running on a model that produces too much reasoning
+    // output to fit the schema within the output budget. The system
+    // prompt's prose schema guide + the parse-fail self-healing
+    // retry path handle the JSON contract without the wire schema.
+    const strictSchema = input.env["UMACTUALLY_NO_STRICT_SCHEMA"] === "1"
+        ? false
+        : input.parsed.strictSchema;
     // Install an ambient severity-warning sink for the duration of this
     // request. Any `parseReviewPayload` call inside `runCopilotRequest` /
     // `runProviderRequest` will push warnings into the captured array
@@ -10553,7 +10562,7 @@ async function requestLiveReview(input) {
     // handles models that follow instructions but reject the wire
     // constraint. This makes the action dynamically adapt to any
     // provider without operator intervention.
-    const responseFormat = input.parsed.strictSchema === false
+    const responseFormat = strictSchema === false
         ? undefined
         : { type: "json_schema", strict: true, schema: REVIEW_PAYLOAD_JSON_SCHEMA };
     try {
