@@ -688,8 +688,18 @@ function countSuppressedCommentsWithPositions(
   review: LiveReview,
   positions: ReturnType<typeof parseDiffPositions>,
 ): number {
-  return review.suppressedComments.length +
-    selectOffDiffCommentsWithPositions(review, positions).length;
+  // Inline the off-diff filter to avoid materializing the intermediate
+  // array that `selectOffDiffCommentsWithPositions` would build.
+  // The filter is the same predicate; the only difference is the
+  // return shape (array vs count). This saves one allocation
+  // per review for the `preparePostedReview` happy path.
+  let offDiffCount = 0;
+  for (const comment of review.comments) {
+    if (!positions.hasPosition(comment)) {
+      offDiffCount += 1;
+    }
+  }
+  return review.suppressedComments.length + offDiffCount;
 }
 
 /**

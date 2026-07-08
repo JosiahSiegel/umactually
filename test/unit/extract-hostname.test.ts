@@ -39,15 +39,18 @@ describe("extractHostname: hostname-only match, always lowercased", () => {
     expect(extractHostname("API.MINIMAX.IO")).toBe("api.minimax.io");
   });
 
-  it("returns null for an unparseable scheme-less port-only string (localhost:8080)", () => {
-    // `new URL("localhost:8080")` parses as `localhost:8080/`
-    // with hostname `""` (empty string) on current Node. We then
-    // take the try branch and return `host.toLowerCase()` which
-    // is `""` — the function returns `null` because the parsed
-    // hostname is empty. The fallback path is not reached for
-    // this input. This is correct behavior: `localhost:8080`
-    // without a scheme is ambiguous, and the auto-model
-    // shouldn't try to route a hostname-less URL.
+  it("returns null for an unparseable scheme-less `host:port` string (localhost:8080)", () => {
+    // `new URL("localhost:8080")` parses as `localhost:8080/` but
+    // with hostname `""` (empty string) on current Node — the URL
+    // parser interprets the `:` as a port separator but the host
+    // is empty because there's no scheme. We then take the try
+    // branch and return `host.toLowerCase()` which is `""` — the
+    // function returns `null` because the parsed hostname is
+    // empty. The fallback path is not reached for this input.
+    // This is correct behavior: `localhost:8080` without a
+    // scheme is ambiguous (could be a host:port pair, or could
+    // be a malformed URL), and the auto-model shouldn't try to
+    // route a hostname-less URL.
     expect(extractHostname("localhost:8080")).toBe(null);
   });
 
