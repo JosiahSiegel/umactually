@@ -734,8 +734,21 @@ export function preparePostedReview(input: {
     parsed: input.parsed,
     secrets: input.secrets,
   });
+  // The off-diff comments array is needed for the manifest payload
+  // (so reviewers can see which findings the post-filter dropped
+  // and why). The suppressed count is also displayed. Both are
+  // derived from the same `review.comments - positions.hasPosition`
+  // filter. The array materialization is unavoidable (the manifest
+  // needs every entry) and the count iteration is cheap (one
+  // pass per comment). The "inline" variant of
+  // `countSuppressedCommentsWithPositions` is the right tool when
+  // the caller does NOT need the array — the public
+  // `countSuppressedComments` uses it. For `preparePostedReview`
+  // the array-then-count pattern is the right trade-off: we avoid
+  // building it twice, but the count helper inlines the filter
+  // when no array is needed.
   const offDiffFromComments = selectOffDiffCommentsWithPositions(input.review, positions);
-  const suppressedCommentCount = countSuppressedCommentsWithPositions(input.review, positions);
+  const suppressedCommentCount = input.review.suppressedComments.length + offDiffFromComments.length;
   const severityCounts = countBySeverity(postableComments);
   // Reconcile the model's raw verdict against the postable severity
   // counts. If every finding was severity-filtered out, the body will

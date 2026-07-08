@@ -101,7 +101,9 @@ export function extractOrigin(baseUrl: string): string {
  * Examples:
  *   - `https://api.example.com/v1`        → `api.example.com`
  *   - `API.MINIMAX.IO`                    → `api.minimax.io`
- *   - `localhost:8080`                    → `localhost`
+ *   - `localhost:8080`                    → null (`new URL("localhost:8080")`
+ *     parses with empty hostname because `localhost` is not a
+ *     special scheme; the function returns null for empty hosts)
  *   - `` (empty string)                   → null
  */
 export function extractHostname(baseUrl: string): string | null {
