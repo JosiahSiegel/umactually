@@ -17,7 +17,7 @@ import {
   sanitizeMessage,
 } from "./provider-error.js";
 import { composeSignal, sleep } from "../util/async.js";
-import { REDACTED_SECRET_TOKEN } from "../util/brand.js";
+import { BRAND_PREFIX, REDACTED_SECRET_TOKEN } from "../util/brand.js";
 import { createRequestId, joinUrl, resolveProviderBaseUrlCandidates } from "../util/url.js";
 
 const ENDPOINT_RESPONSES: ProviderEndpoint = "responses";
@@ -110,9 +110,24 @@ export async function runProviderRequest(config: ProviderCallConfig): Promise<Pr
   // See resolveProviderBaseUrlCandidates in src/util/url.ts for the
   // candidate list construction.
   const baseUrlCandidates = resolveProviderBaseUrlCandidates(config.baseUrl);
+  // Surface the candidate list so operators can verify the URL
+  // resolution is doing what they expect. Without these annotation
+  // lines, a 400/404 from the action's last attempt is opaque — the
+  // operator can't tell whether the action tried the URL they pasted
+  // or jumped straight to the origin+prefix form. The `::notice::`
+  // annotations are visible in the GitHub Actions log and survive
+  // even if the action's `process.stderr.write` is captured.
+  if (baseUrlCandidates.length > 1) {
+    process.stderr.write(
+      `::notice::${BRAND_PREFIX}Resolving provider base URL: trying ${baseUrlCandidates.length} candidates in order: ${baseUrlCandidates.join(", ")}\n`,
+    );
+  }
 
   let lastAttempt: ProviderCallResult = { ok: false, error: new ProviderError("network", ENDPOINT_RESPONSES, null, requestId, "No base URL candidates resolved.") };
   for (const candidate of baseUrlCandidates) {
+    process.stderr.write(
+      `::notice::${BRAND_PREFIX}Trying base URL: ${candidate}\n`,
+    );
     const firstAttempt = await runWithRetry(config, fetchImpl, requestId, ENDPOINT_RESPONSES, candidate);
     if (firstAttempt.ok) {
       return firstAttempt;
@@ -130,6 +145,9 @@ export async function runProviderRequest(config: ProviderCallConfig): Promise<Pr
       if (!isRoutableFailure(chatAttempt.error)) {
         return chatAttempt;
       }
+      process.stderr.write(
+        `::notice::${BRAND_PREFIX}Base URL ${candidate} returned routable failure (status=${chatAttempt.error.status}); advancing to next candidate.\n`,
+      );
       lastAttempt = chatAttempt;
       continue;
     }
@@ -138,6 +156,9 @@ export async function runProviderRequest(config: ProviderCallConfig): Promise<Pr
     if (!isRoutableFailure(firstAttempt.error)) {
       return firstAttempt;
     }
+    process.stderr.write(
+      `::notice::${BRAND_PREFIX}Base URL ${candidate} returned routable failure (status=${firstAttempt.error.status}); advancing to next candidate.\n`,
+    );
     lastAttempt = firstAttempt;
   }
   return lastAttempt;
