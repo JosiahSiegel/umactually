@@ -5,10 +5,12 @@ import {
 } from "../provider/openai-compatible.js";
 import {
   setActiveSeveritySink,
+  type ResponseFormat,
   type SeverityWarning,
   type SeverityWarningSink,
 } from "../provider/provider-parse.js";
 import { scanReviewSecrets } from "../security/scan-review-secrets.js";
+import { resolveAutoModel } from "./auto-model.js";
 import {
   buildMalformedProviderFallback,
   LiveReviewError,
@@ -21,9 +23,10 @@ import {
   type ParseFailureReason,
 } from "./live-shared.js";
 import type { ParsedCliArgs } from "./parse-args.js";
-import { buildProviderPrompts } from "./provider-prompts.js";
+import { buildParseWarningsArtifact } from "./parse-warnings.js";
+import { buildProviderPrompts, REVIEW_PAYLOAD_JSON_SCHEMA } from "./provider-prompts.js";
+import { verifyFindingsAgainstDiff } from "./verify-findings.js";
 
-const DEFAULT_MODEL = "auto";
 const DEFAULT_REQUEST_TIMEOUT_MS = 60_000;
 const PROVIDER_NAME = "openai-compatible";
 const COPILOT_PROVIDER_NAME = "github-copilot";
@@ -67,6 +70,13 @@ export async function requestLiveReview(input: {
     });
   };
   setActiveSeveritySink(sink);
+  // Layer 2-C: when the CLI flag enables it, send the strict JSON-schema
+  // response_format on the wire. Defaults to true so the model is
+  // constrained at decode time; the in-context system prompt carries
+  // the same schema as a guide for free-form models.
+  const responseFormat: ResponseFormat | undefined = input.parsed.strictSchema === false
+    ? undefined
+    : { type: "json_schema", strict: true, schema: REVIEW_PAYLOAD_JSON_SCHEMA as unknown as Record<string, unknown> };
   try {
     if (input.parsed.provider === "copilot") {
       const result = await runCopilotRequest({
@@ -78,31 +88,56 @@ export async function requestLiveReview(input: {
         requestTimeoutMs: readRequestTimeoutMs(input.parsed),
         ...(input.parsed.maxOutputTokens !== null ? { maxOutputTokens: input.parsed.maxOutputTokens } : {}),
         ...(input.parsed.effort !== null ? { reasoningEffort: input.parsed.effort } : {}),
+        ...(responseFormat !== undefined ? { responseFormat } : {}),
         fetchImpl: input.fetchImpl as typeof fetch,
       });
       if (result.ok) {
-        return {
-          review: normalizeProviderReview(result.review, [providerApiKey, input.platformToken]),
+        // Step 1: normalize without the verify filter so the
+        // parse-warnings artifact (built in step 2) records every
+        // off-diff citation the model emitted, not just the ones
+        // that survived the inline filter. The filter is a
+        // defense-in-depth, not a replacement for the artifact.
+        const preVerifyReview = normalizeProviderReview(result.review, [providerApiKey, input.platformToken]);
+        // Step 2: build the parse-warnings artifact from the
+        // pre-verify review (so it captures every fabrication).
+        const preVerifyOutcome = withParseWarnings({
+          review: preVerifyReview,
           endpoint: result.endpoint,
           provider: COPILOT_PROVIDER_NAME,
           modelId,
           severityWarnings: severityWarnings.slice(),
+          diffText: input.diffText,
+        });
+        // Step 3: apply the deterministic verify filter to the
+        // comments[] that gets passed downstream (so the
+        // platform-posting paths only see anchorable findings).
+        // Use `!== false` rather than `=== true` so callers
+        // (tests, future serializers) that omit the field
+        // still get the default-ON behavior.
+        const finalReview = input.parsed.verifyFindings !== false
+          ? applyVerifyFilter(preVerifyReview, input.diffText)
+          : preVerifyReview;
+        return {
+          ...preVerifyOutcome,
+          review: finalReview,
         };
       }
       if (result.error.code === "parse") {
-        return {
-          review: buildMalformedProviderFallback({
-            provider: COPILOT_PROVIDER_NAME,
-            modelId,
-            rawText: result.error.rawText ?? "",
-            secrets: [providerApiKey, input.platformToken],
-            ...parseFailureReasonFromProviderError(result.error, input.parsed.maxOutputTokens),
-          }),
+        const review = buildMalformedProviderFallback({
+          provider: COPILOT_PROVIDER_NAME,
+          modelId,
+          rawText: result.error.rawText ?? "",
+          secrets: [providerApiKey, input.platformToken],
+          ...parseFailureReasonFromProviderError(result.error, input.parsed.maxOutputTokens),
+        });
+        return withParseWarnings({
+          review,
           endpoint: result.error.endpoint,
           provider: COPILOT_PROVIDER_NAME,
           modelId,
           severityWarnings: severityWarnings.slice(),
-        };
+          diffText: input.diffText,
+        });
       }
       throw new LiveReviewError("PROVIDER_REQUEST_FAILED", result.error.message, { cause: result.error });
     }
@@ -117,33 +152,46 @@ export async function requestLiveReview(input: {
       requestTimeoutMs: readRequestTimeoutMs(input.parsed),
       ...(input.parsed.maxOutputTokens !== null ? { maxOutputTokens: input.parsed.maxOutputTokens } : {}),
       ...(input.parsed.effort !== null ? { reasoningEffort: input.parsed.effort } : {}),
+      ...(responseFormat !== undefined ? { responseFormat } : {}),
       fetchImpl: input.fetchImpl,
     });
 
     if (result.ok) {
-      return {
-        review: normalizeProviderReview(result.review, [providerApiKey, input.platformToken]),
+      // See the Copilot branch for the three-step flow rationale.
+      const preVerifyReview = normalizeProviderReview(result.review, [providerApiKey, input.platformToken]);
+      const preVerifyOutcome = withParseWarnings({
+        review: preVerifyReview,
         endpoint: result.endpoint,
         provider: PROVIDER_NAME,
         modelId,
         severityWarnings: severityWarnings.slice(),
+        diffText: input.diffText,
+      });
+      const finalReview = input.parsed.verifyFindings !== false
+        ? applyVerifyFilter(preVerifyReview, input.diffText)
+        : preVerifyReview;
+      return {
+        ...preVerifyOutcome,
+        review: finalReview,
       };
     }
 
     if (result.error.code === "parse") {
-      return {
-        review: buildMalformedProviderFallback({
-          provider: PROVIDER_NAME,
-          modelId,
-          rawText: result.error.rawText ?? "",
-          secrets: [providerApiKey, input.platformToken],
-          ...parseFailureReasonFromProviderError(result.error, input.parsed.maxOutputTokens),
-        }),
+      const review = buildMalformedProviderFallback({
+        provider: PROVIDER_NAME,
+        modelId,
+        rawText: result.error.rawText ?? "",
+        secrets: [providerApiKey, input.platformToken],
+        ...parseFailureReasonFromProviderError(result.error, input.parsed.maxOutputTokens),
+      });
+      return withParseWarnings({
+        review,
         endpoint: result.error.endpoint,
         provider: PROVIDER_NAME,
         modelId,
         severityWarnings: severityWarnings.slice(),
-      };
+        diffText: input.diffText,
+      });
     }
 
     throw new LiveReviewError("PROVIDER_REQUEST_FAILED", result.error.message, { cause: result.error });
@@ -154,7 +202,67 @@ export async function requestLiveReview(input: {
   }
 }
 
-function normalizeProviderReview(payload: ProviderReviewPayload, secrets: readonly string[]): LiveReview {
+/**
+ * Compute parse warnings for the review (off-diff citations the
+ * model fabricated) and attach them to the outcome. Layer 3 of the
+ * citation-grounding fix — makes the fabrication visible in the
+ * parse-warnings.json artifact instead of silently suppressing it.
+ */
+function withParseWarnings(input: {
+  readonly review: LiveReview;
+  readonly endpoint: string;
+  readonly provider: string;
+  readonly modelId: string;
+  readonly severityWarnings: readonly import("../provider/provider-parse.js").SeverityWarning[];
+  readonly diffText: string;
+}): LiveProviderOutcome {
+  return {
+    review: input.review,
+    endpoint: input.endpoint,
+    provider: input.provider,
+    modelId: input.modelId,
+    severityWarnings: input.severityWarnings,
+    parseWarnings: buildParseWarningsArtifact({
+      review: input.review,
+      diffText: input.diffText,
+    }).warnings,
+  };
+}
+
+/**
+ * Apply the deterministic (path, line) verify filter to the
+ * review's comments[]. Returns a new LiveReview with the filtered
+ * comments[]. The original is left untouched so callers (the
+ * parse-warnings artifact builder) see the pre-filter payload.
+ *
+ * Defense-in-depth Layer 4: the post-filter in
+ * `selectPostableComments` runs the same check, but doing it here
+ * means the platform-posting paths only see anchorable findings.
+ */
+function applyVerifyFilter(review: LiveReview, diffText: string): LiveReview {
+  if (diffText.length === 0) {
+    return review;
+  }
+  // Delegate to the standalone `verifyFindingsAgainstDiff` helper
+  // so the inline filter and the parse-warnings artifact agree
+  // on which comments get dropped — the previous inline
+  // re-implementation diverged from the helper in a way that
+  // let the artifact undercount fabrication events.
+  const { verified } = verifyFindingsAgainstDiff({ review, diffText });
+  return { ...review, comments: verified };
+}
+
+function normalizeProviderReview(
+  payload: ProviderReviewPayload,
+  secrets: readonly string[],
+): LiveReview {
+  // Layer 4 deterministic verification is applied in the caller
+  // (see `applyVerifyFilter` in `live-provider.ts`) AFTER the
+  // parse-warnings artifact is built. Doing it in the caller means
+  // the artifact captures every fabrication event, even ones the
+  // inline filter drops. Don't re-add the filter here — see
+  // the three-step flow in the Copilot/openai-compatible
+  // branches.
   return {
     summary: sanitizeForPost(payload.summary, secrets),
     verdict: payload.verdict,
@@ -185,11 +293,28 @@ function readRequiredConfig(value: string | undefined | null, name: string): str
 
 function readConfiguredModel(parsed: ParsedCliArgs, env: NodeJS.ProcessEnv): string {
   const fromArgs = parsed.model;
-  if (fromArgs !== null && fromArgs.length > 0) {
+  // Treat the literal string "auto" the same as the default
+  // (unset): the user is asking for the opinionated resolver,
+  // not for the provider's "auto" pass-through. Without this,
+  // `--model auto` would short-circuit before the resolver
+  // runs and send the literal string "auto" to the provider.
+  if (fromArgs !== null && fromArgs.length > 0 && fromArgs !== "auto") {
     return fromArgs;
   }
   const fromEnv = env["UMACTUALLY_MODEL"];
-  return fromEnv === undefined || fromEnv.length === 0 ? DEFAULT_MODEL : fromEnv;
+  if (fromEnv !== undefined && fromEnv.length > 0 && fromEnv !== "auto") {
+    return fromEnv;
+  }
+  // Layer 5: `auto` is no longer passed verbatim. The resolver picks
+  // a less-hallucinating model based on the active provider + API
+  // URL. See `src/cli/auto-model.ts` for the per-provider mapping
+  // and the Vectara HHEM rationale.
+  const provider = (parsed.provider ?? "openai-compatible") as "openai-compatible" | "copilot";
+  return resolveAutoModel({
+    provider,
+    apiUrl: parsed.apiUrl,
+    env,
+  });
 }
 
 function readRequestTimeoutMs(parsed: ParsedCliArgs): number {

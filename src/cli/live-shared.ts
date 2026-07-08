@@ -37,6 +37,14 @@ export type LiveRunResult = {
   readonly inlineThreadCount?: number;
   readonly suppressedCommentCount?: number;
   readonly verdict?: string;
+  /**
+   * Off-diff citation warnings the LLM emitted. Threaded from the
+   * provider outcome through the orchestrator into the artifact-write
+   * path so the parse-warnings.json sibling artifact records every
+   * fabrication event. Empty when the model's citations all anchored
+   * to the supplied diff.
+   */
+  readonly parseWarnings?: readonly import("./parse-warnings.js").ParseWarning[];
 };
 
 export type LiveReviewComment = ProviderComment;
@@ -98,6 +106,15 @@ export type LiveProviderOutcome = {
    * can surface it in the footer without re-plumbing the parser.
    */
   readonly severityWarnings: readonly import("../provider/provider-parse.js").SeverityWarning[];
+  /**
+   * Structured records of every comment the model emitted whose
+   * (path, line) does not anchor to the supplied diff. Built by
+   * `parse-warnings.ts:collectParseWarnings` so the artifact captures
+   * LLM citation hallucination rather than silently dropping it
+   * into the suppressed count. See `parse-warnings.test.ts` for the
+   * PR #56 regression test that locks the 8-fabrication count.
+   */
+  readonly parseWarnings: readonly import("./parse-warnings.js").ParseWarning[];
 };
 
 /**

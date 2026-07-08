@@ -38,6 +38,7 @@ function successOutcome(summary: string, commentCount: number): LiveProviderOutc
     provider: "openai-compatible",
     modelId: "auto",
     severityWarnings: [],
+    parseWarnings: [],
   };
 }
 
@@ -62,6 +63,7 @@ function parseFailOutcome(): LiveProviderOutcome {
     provider: "openai-compatible",
     modelId: "auto",
     severityWarnings: [],
+    parseWarnings: [],
   };
 }
 

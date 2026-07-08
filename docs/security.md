@@ -45,6 +45,18 @@ For noise control, think of the threshold as a quieter-to-louder knob:
 
 If the default review output is too noisy, raise `minimum-severity` before reaching for model-side changes. Lowering it is the right move only when you specifically need style/hygiene findings inline.
 
+## LLM citation hallucination defenses
+
+LLMs occasionally cite files and line numbers that do not exist in the supplied diff (the canonical example: a model cites `dist/cli.js:42` from training priors even though the diff was source-only). UmActually layers five defenses so a fabrication cannot become a posted inline comment:
+
+1. **Diff-side exclusion** — `dist/`, `build/`, `node_modules/`, `coverage/`, lockfiles, `*.min.js`, `*.map`, and similar are stripped from the diff before it reaches the model. Applied on BOTH the GitHub REST-diff path and the Azure REST-reconstruction path; the same patterns also run on the CLI's `--diff` reader.
+2. **System-prompt path enum** — the user message lists every file the model is permitted to cite, paired with an explicit "quote the diff lines that justify the finding" workflow. The positive constraint (cite only what's in the list) is paired with a "do not cite off-list" constraint to avoid the "negative-instructions backfire" failure mode.
+3. **Wire-format `response_format: json_schema`** — the strict schema is sent to providers that support it. `--strict-schema` (default ON) / `--no-strict-schema`.
+4. **Deterministic verify-findings filter** — before posting, every comment is re-checked against the diff. Any (path, line) pair not in the diff is dropped. The same filter records what was dropped in the `parse-warnings.json` sibling artifact so operators can see fabrication events.
+5. **Model auto-resolver** — `model: "auto"` resolves to the less-hallucinating model for the active provider (`gpt-5-mini` for OpenAI, `claude-sonnet-4.6` for Anthropic, `claude-3-5-sonnet` for Copilot — the 4.6 string is NOT Copilot-routable and would 404, so Copilot uses the 3.5 Sonnet line, or `gemini-2.5-flash` for Google, per Vectara HHEM 2026-05-11), not whatever the provider's "auto" picks.
+
+The `parse-warnings.json` artifact is the authoritative record of fabrication events. If the file shows a non-zero `summary.invalidCount`, the review dropped at least one comment the model cited. The `summary.byReason` field splits the drop into `path-not-in-diff` and `line-not-in-diff` for triage.
+
 ## Prompt file path safety
 
 `prompt-file` (or `UMACTUALLY_PROMPT_FILE`) is loaded from disk and concatenated into the review request. The runtime refuses the following inputs:

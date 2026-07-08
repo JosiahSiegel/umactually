@@ -55,10 +55,46 @@ export type ProviderCallConfig = {
   readonly promptOverride?: string;
   readonly additionalPromptOverride?: string;
   readonly githubApiBase?: string;
+  /**
+   * Wire-format strict JSON schema. When provided, the request
+   * body is sent with `response_format: { type: "json_schema", strict: true }`
+   * (or `text: { format: ... }` for the Responses API) so the
+   * provider enforces the schema at decode time. The in-context
+   * system prompt is always present; this adds the API-level
+   * constraint on top. See the citation-grounding research notes
+   * for why we layer this with the path-allowlist + post-filter
+   * (structured output catches shape errors; the filter catches
+   * semantic errors).
+   */
+  readonly responseFormat?: import("./provider-parse.js").ResponseFormat;
 };
 
 export { ProviderError };
 export type { ProviderEndpoint, ProviderReviewPayload };
+
+/**
+ * Project the call config down to the body shape expected by
+ * `buildResponsesBody` / `buildChatBody`. The strict-schema
+ * `responseFormat` rides along so the wire request carries the
+ * JSON-schema constraint when the call config provides it.
+ */
+function buildBodyConfig(config: ProviderCallConfig): {
+  readonly model: string;
+  readonly system: string;
+  readonly user: string;
+  readonly maxOutputTokens?: number;
+  readonly reasoningEffort?: "low" | "medium" | "high";
+  readonly responseFormat?: import("./provider-parse.js").ResponseFormat;
+} {
+  return {
+    model: config.model,
+    system: config.system,
+    user: config.user,
+    ...(config.maxOutputTokens !== undefined ? { maxOutputTokens: config.maxOutputTokens } : {}),
+    ...(config.reasoningEffort !== undefined ? { reasoningEffort: config.reasoningEffort } : {}),
+    ...(config.responseFormat !== undefined ? { responseFormat: config.responseFormat } : {}),
+  };
+}
 
 export async function runProviderRequest(config: ProviderCallConfig): Promise<ProviderCallResult> {
   const fetchImpl = config.fetchImpl ?? globalThis.fetch.bind(globalThis);
@@ -140,8 +176,8 @@ async function callEndpoint(
 ): Promise<ProviderCallSuccess> {
   const url = joinUrl(config.baseUrl, endpoint === ENDPOINT_RESPONSES ? "/responses" : "/chat/completions");
   const body = endpoint === ENDPOINT_RESPONSES
-    ? buildResponsesBody(config)
-    : buildChatBody(config);
+    ? buildResponsesBody(buildBodyConfig(config))
+    : buildChatBody(buildBodyConfig(config));
   const signal = composeSignal(config.signal, config.requestTimeoutMs);
 
   const response = await performFetch(fetchImpl, url, body, signal, config, requestId, endpoint);
@@ -208,8 +244,8 @@ async function callEndpoint(
   // couldn't produce a parseable review, regardless of whether the retry
   // request itself reached the provider.
   const retryBody = endpoint === ENDPOINT_RESPONSES
-    ? buildResponsesBody(config, { userOverride: PARSE_FAIL_RETRY_PROMPT })
-    : buildChatBody(config, { userOverride: PARSE_FAIL_RETRY_PROMPT });
+    ? buildResponsesBody(buildBodyConfig(config), { userOverride: PARSE_FAIL_RETRY_PROMPT })
+    : buildChatBody(buildBodyConfig(config), { userOverride: PARSE_FAIL_RETRY_PROMPT });
   let retryReview: ProviderReviewPayload | null = null;
   // Track the retry's HTTP status (if it reached performFetch and
   // returned a response) so the parse-fail ProviderError can surface

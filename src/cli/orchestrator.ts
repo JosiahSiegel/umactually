@@ -108,6 +108,7 @@ async function requestChunkedLiveReview(input: {
             // Failed-chunk placeholder — no severity warnings to surface
             // (the parser never ran on this chunk).
             severityWarnings: [],
+            parseWarnings: [],
           };
         }
         outcomes[index] = outcome;
@@ -324,6 +325,7 @@ async function dispatchLivePlatform(input: {
           // Skipped-due-to-file-limit placeholder — no parser ran, so
           // no severity warnings to surface.
           severityWarnings: [],
+          parseWarnings: [],
         };
       } else {
         const chunks = chunkDiffByFile(diffText);

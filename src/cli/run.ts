@@ -36,6 +36,53 @@ export async function runDryRun(parsed: ParsedCliArgs, cwd: string, platform: Re
 }
 
 /**
+ * Sibling artifact path for the parse-warnings record. The parse-warnings
+ * JSON sits next to the main review artifact so a CI guard or operator
+ * can `cat artifacts/manual/s1-github-parse-warnings.json` alongside
+ * the s1 review. Filename is fixed (not user-configurable) so the
+ * downstream check tools have a stable path.
+ */
+export function resolveParseWarningsArtifactPath(
+  primaryArtifactPath: string,
+): string {
+  // Replace the extension with `.parse-warnings.json`. Most reviews use
+  // `.md` (s1-github-self-review.md) or `.json` (s4-azure-mocked-run.json);
+  // we keep the directory and stem, swap the suffix.
+  //
+  // We use our own custom `basename` and `joinPath` (instead of
+  // `node:path`'s) because the input can be either a POSIX path
+  // (Linux/macOS CI) or a Windows path (Windows local dev). The
+  // node:path versions behave correctly per-platform but a path
+  // captured on Windows and consumed on Linux (or vice versa)
+  // yields the wrong dirname. The custom pair handles both.
+  const dir = customDirname(primaryArtifactPath);
+  const stem = customBasename(primaryArtifactPath).replace(/\.[^.]+$/u, "");
+  return customJoinPath(dir, `${stem}.parse-warnings.json`);
+}
+
+function customBasename(path: string): string {
+  const idx = path.lastIndexOf("/");
+  const winIdx = path.lastIndexOf("\\");
+  const cut = Math.max(idx, winIdx);
+  return cut === -1 ? path : path.slice(cut + 1);
+}
+
+function customDirname(path: string): string {
+  const idx = path.lastIndexOf("/");
+  const winIdx = path.lastIndexOf("\\");
+  const cut = Math.max(idx, winIdx);
+  return cut === -1 ? "" : path.slice(0, cut);
+}
+
+function customJoinPath(dir: string, file: string): string {
+  if (dir === "" || dir === ".") {
+    return file;
+  }
+  const sep = dir.includes("\\") && !dir.includes("/") ? "\\" : "/";
+  return dir.endsWith("/") || dir.endsWith("\\") ? `${dir}${file}` : `${dir}${sep}${file}`;
+}
+
+/**
  * Merge sanitized env diagnostics into the dry-run artifact body.
  * Never includes raw secret values: only booleans (presence) and non-secret
  * scalars (providerUrl, providerModel, env-sourced guidance flag strings).
@@ -328,6 +375,7 @@ async function writeLiveArtifact(
     readonly inlineThreadCount?: number;
     readonly suppressedCommentCount?: number;
     readonly verdict?: string;
+    readonly parseWarnings?: readonly import("./parse-warnings.js").ParseWarning[];
   },
 ): Promise<void> {
   // Use the same default path resolution as the dry-run path so the
@@ -350,6 +398,7 @@ async function writeLiveArtifact(
       note: "Live review did not post anything via the GitHub/Azure API. Inspect the action log for the underlying parser/network error.",
     };
     await writeFile(artifactPath, `${JSON.stringify(body, null, 2)}\n`, "utf8");
+    await writeParseWarningsArtifact(artifactPath, result.parseWarnings ?? []);
     return;
   }
   // Successful post: write a success artifact reflecting the live
@@ -370,4 +419,46 @@ async function writeLiveArtifact(
     note: "Live review posted successfully; counts reflect what the GitHub/Azure API saw.",
   };
   await writeFile(artifactPath, `${JSON.stringify(body, null, 2)}\n`, "utf8");
+  await writeParseWarningsArtifact(artifactPath, result.parseWarnings ?? []);
+}
+
+/**
+ * Write the parse-warnings sibling artifact at a path derived from the
+ * main artifact path. Empty warnings list → still write the file
+ * (with summary counts) so downstream tooling has a stable contract;
+ * the file's `summary.invalidCount` is the field operators should
+ * watch for non-zero regressions.
+ */
+async function writeParseWarningsArtifact(
+  primaryArtifactPath: string,
+  warnings: readonly import("./parse-warnings.js").ParseWarning[],
+): Promise<void> {
+  const path = resolveParseWarningsArtifactPath(primaryArtifactPath);
+  // Build the summary from the warnings list using the same logic as
+  // buildParseWarningsArtifact (we re-import rather than re-invoke the
+  // function because we already have the warnings array).
+  const byReason: Record<"path-not-in-diff" | "line-not-in-diff", number> = {
+    "path-not-in-diff": 0,
+    "line-not-in-diff": 0,
+  };
+  const bySource: Record<"comments" | "suppressed_comments", number> = {
+    comments: 0,
+    suppressed_comments: 0,
+  };
+  for (const w of warnings) {
+    byReason[w.reason] += 1;
+    bySource[w.source] += 1;
+  }
+  const body = {
+    summary: {
+      invalidCount: warnings.length,
+      byReason,
+      bySource,
+      note: warnings.length === 0
+        ? "All model citations anchored to the supplied diff. No fabrication detected."
+        : `${warnings.length} comment(s) cited a path or line not present in the supplied diff. The review post-filter (parseDiffPositions) dropped these from inline posting. See PR #56 for the canonical regression that produced 8 such warnings on a source-only diff.`,
+    },
+    warnings,
+  };
+  await writeFile(path, `${JSON.stringify(body, null, 2)}\n`, "utf8");
 }
