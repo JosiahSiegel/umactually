@@ -6,6 +6,7 @@ import { parseItemContent, parseIterationChanges, parseLatestIterationId, parseS
 import { authHeaders } from "../../util/http.js";
 import type { FetchImpl } from "../../util/http.js";
 import { commentBodyHasMarker } from "../../util/marker.js";
+import { filterBuildArtifacts } from "../../diff/filter-build-artifacts.js";
 import {
   AZURE_API_VERSION,
   AZURE_DEVOPS_BASE_URL,
@@ -34,11 +35,18 @@ export async function fetchAzurePrDiff(context: AzureContext, fetchImpl: FetchIm
   const changes = parseIterationChanges(await fetchAzureJson(buildPullRequestIterationChangesUrl(context, iterationId), client));
   const diffText = await reconstructUnifiedDiff(client, sourceCommitId, changes);
 
-  if (diffText.length === 0) {
+  // The REST-reconstruction path (used when the diff was not pre-filtered
+  // by `scripts/prepare-azure-pr-inputs.sh`) emits blocks for every
+  // `change.item.path`, including `dist/`, lockfiles, etc. Strip them
+  // before returning so the model never sees them — see
+  // `src/diff/filter-build-artifacts.ts` for the full rationale.
+  const filtered = filterBuildArtifacts(diffText);
+
+  if (filtered.length === 0) {
     throw new AzureApiError("AZURE_DIFF_EMPTY", AZURE_EMPTY_DIFF_STATUS, "Azure DevOps PR diff response body was empty.");
   }
 
-  return diffText;
+  return filtered;
 }
 
 async function reconstructUnifiedDiff(

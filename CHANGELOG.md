@@ -6,6 +6,52 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+
+- **LLM citation grounding (PR #26)**: layered defense against LLM
+  path/line fabrication. Five layers, each closing a different
+  failure mode observed in PR #56 (a 122-line source-only diff that
+  produced 8 dist/-fabrication findings on the ADO policy review):
+  1. **Diff filter** — `src/diff/filter-build-artifacts.ts` strips
+     `dist/`, `build/`, `node_modules/`, lockfiles, `*.min.js`,
+     `*.map`, etc. on BOTH the GitHub REST-diff path and the
+     Azure REST-reconstruction path. Centralizes what was a
+     shell-side `':!dist'` on Azure only.
+  2. **System-prompt rewrite** — `src/cli/provider-prompts.ts` now
+     documents the strict JSON schema, the diff path enum, the
+     quote-first workflow (Anthropic pattern: copy the diff lines
+     that justify a finding BEFORE emitting it), and the positive
+     constraint (cite only what's in the Files-in-diff list).
+  3. **Wire-format `response_format: json_schema`** — the strict
+     schema is sent on the wire to providers that support it.
+     `--strict-schema` (default ON) / `--no-strict-schema`.
+  4. **Parse-warnings artifact** — every off-diff or off-line
+     finding the model emitted is now recorded in
+     `artifacts/manual/*.parse-warnings.json` (sibling to the
+     main review artifact). Pinned by a regression test
+     (`test/unit/parse-warnings.test.ts`) that locks the exact
+     8-fabrication count from PR #56.
+  5. **Model auto-resolver** — `model: "auto"` no longer passes
+     through verbatim. Resolves to `gpt-5-mini` (OpenAI),
+     `claude-sonnet-4.6` (Anthropic), `claude-3-5-sonnet`
+     (Copilot — the 4.6 string is NOT Copilot-routable and
+     would 404, so Copilot uses the 3.5 Sonnet line), or
+     `gemini-2.5-flash` (Google) based on the active provider +
+     `UMACTUALLY_API_URL`. Per the Vectara HHEM 2026-05-11
+     leaderboard, these models have HHEM 5-11% vs the
+     9-23% of gpt-4o/o3/o4-mini that the prior default fell back to.
+  6. **Deterministic verify-findings filter** — defense-in-depth
+     re-runs the (path, line) filter on the model's `comments[]`
+     before posting. Default ON. `--verify-findings` /
+     `--no-verify-findings`. Critically, the parse-warnings
+     artifact is built from the PRE-verify review so it captures
+     every fabrication event (the inline filter is a defense
+     in depth, not a replacement for the artifact).
+- New CLI flags: `--strict-schema`, `--no-strict-schema`,
+  `--verify-findings`, `--no-verify-findings`. Both default to
+  ON. Both are no-ops when the provider doesn't support
+  `response_format: json_schema`.
+
 ### Changed
 
 - **BREAKING**: `ignore-minor` input removed.

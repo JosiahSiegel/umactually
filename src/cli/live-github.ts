@@ -57,7 +57,13 @@ export async function runGithubLive(input: {
   ) {
     const reviewId = await updateExistingReview({ context, fetchImpl, review: existing, body });
     if (reviewId !== null) {
-      return { exitCode: 0, posted: true, reviewId, message: "updated existing GitHub review" };
+      return {
+        exitCode: 0,
+        posted: true,
+        reviewId,
+        message: "updated existing GitHub review",
+        parseWarnings: provider.parseWarnings,
+      };
     }
     // PUT failed (e.g., 422 because submitted) — fall through to DELETE+POST below.
   }
@@ -92,6 +98,10 @@ export async function runGithubLive(input: {
     // surfaces here as `COMMENT`, matching the `📊 0 inline findings`
     // body and the `COMMENT` review event.
     verdict: prepared.effectiveVerdict,
+    // Thread parse warnings (off-diff citation hallucinations) to the
+    // artifact-write path so the parse-warnings.json sibling artifact
+    // surfaces them for operators / CI guards.
+    parseWarnings: provider.parseWarnings,
   };
 }
 

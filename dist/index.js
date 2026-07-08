@@ -784,6 +784,17 @@ function parseCliArgs(args) {
     let maxOutputTokens = null;
     let dryRun = false;
     let outputArtifact = null;
+    // Layer 2-C: default ON so the wire-format JSON-schema constraint
+    // fires by default. Operators on providers that reject the strict-
+    // schema payload can opt out via --no-strict-schema.
+    let strictSchema = true;
+    // Layer 4: default ON so the deterministic verifyFindingsAgainstDiff
+    // re-runs the (path, line) filter on the model's comments[] before
+    // posting. The filter is the same one the post-filter uses; running
+    // it explicitly is defense-in-depth (the parse-warnings artifact
+    // would also catch the same off-diff citations, but this drops
+    // them from the postable set before they even reach the platform).
+    let verifyFindings = true;
     for (let index = 0; index < args.length; index += 1) {
         const token = args[index];
         if (token === undefined) {
@@ -953,6 +964,18 @@ function parseCliArgs(args) {
                 outputArtifact = readValue(args, index, "output-artifact");
                 index += 1;
                 break;
+            case "--strict-schema":
+                strictSchema = true;
+                break;
+            case "--no-strict-schema":
+                strictSchema = false;
+                break;
+            case "--verify-findings":
+                verifyFindings = true;
+                break;
+            case "--no-verify-findings":
+                verifyFindings = false;
+                break;
             case "--help":
             case "-h":
                 throw new CliHelpSignal();
@@ -1000,6 +1023,8 @@ function parseCliArgs(args) {
         maxOutputTokens,
         dryRun,
         outputArtifact,
+        strictSchema,
+        verifyFindings,
     };
 }
 class CliHelpSignal extends Error {
@@ -1094,6 +1119,8 @@ const HELP_FLAGS = [
     { flag: "--max-comments <n>" },
     { flag: "--review-file-limit <n>", description: "Cap on changed files for live review (0 = disable)" },
     { flag: "--minimum-severity <low|medium|high>", description: "default: medium" },
+    { flag: "--strict-schema | --no-strict-schema", description: "Send response_format json_schema on the wire (default: yes)" },
+    { flag: "--verify-findings | --no-verify-findings", description: "Deterministic (path,line) re-verification before posting (default: yes)" },
     { flag: "--walkthrough | --no-walkthrough" },
     { flag: "--diagnostic | --no-diagnostic" },
     { flag: "--debug-raw-response | --no-debug-raw-response" },
@@ -1847,6 +1874,302 @@ async function parseJsonBody(response) {
     return JSON.parse(text);
 }
 
+;// CONCATENATED MODULE: ./src/diff/filter-build-artifacts.ts
+/**
+ * Centralized exclusion of build-artifact / generated paths from review diffs.
+ *
+ * Background — what this solves
+ * -----------------------------
+ * LLMs have strong training-data priors for paths like `dist/cli.js`,
+ * `dist/index.js`, `build/`, `node_modules/`, and lockfiles. When a review
+ * prompt carries these paths in the diff (or — worse — emits them in the
+ * model's response), the model "recognizes" them from training and starts
+ * fabricating content about what they contain, even when those paths are
+ * not in the supplied diff. PR #56 surfaced this in production: an
+ * `auto`-model review of a 122-line source-only diff still produced 8
+ * findings citing `dist/cli.js:N` and `dist/index.js:N` line numbers.
+ *
+ * The production-tool survey (CodeRabbit, Sourcery, Greptile, Ellipsis)
+ * converges on the same defense: strip these paths from the diff
+ * upstream AND surface them as negative examples in the prompt.
+ *
+ * Why this lives in its own module
+ * --------------------------------
+ * Until now, exclusion happened in two places that could drift:
+ *   1. `scripts/prepare-azure-pr-inputs.sh` — shell-side `':!dist'`
+ *   2. `.github/workflows/self-review.yml` — no exclusion at all (REST diff)
+ *
+ * A single TypeScript filter applied uniformly:
+ *   - on the GitHub REST-diff path (`src/platform/github/api.ts`)
+ *   - on the Azure REST-reconstruction path (`src/platform/azure/api.ts`)
+ *   - on the local `git diff` path (defense in depth, since the shell
+ *     already excludes — the script's `':!dist'` and our filter should
+ *     agree)
+ *   - on the CLI `--diff <path>` reader (so a user-supplied diff that
+ *     still contains dist/ — e.g. from a non-standard pipeline — gets
+ *     filtered too)
+ *
+ * Patterns are minimatch-style globs (directory, wildcard, ext). They
+ * match against the forward-slash normalized path so the filter is
+ * OS-agnostic.
+ */
+/** Build-artifact / generated path globs that should never enter a review prompt. */
+const DEFAULT_BUILD_ARTIFACT_PATTERNS = [
+    // Output directories (match the dir and anything under it)
+    "dist/",
+    "build/",
+    "out/",
+    "target/", // Rust/Java
+    "_build/", // Elixir
+    ".next/",
+    ".nuxt/",
+    ".output/",
+    // Compiled / minified / bundled (double-star so we match at any depth)
+    "**/*.min.js",
+    "**/*.min.css",
+    "**/*.bundle.js",
+    "**/*.bundle.css",
+    "**/*.chunk.js",
+    // Source maps (match at any depth)
+    "**/*.map",
+    // Test coverage
+    "coverage/",
+    ".nyc_output/",
+    // Dependencies
+    "node_modules/",
+    "vendor/",
+    // Lockfiles (match at any depth, including monorepo subdirs)
+    "**/package-lock.json",
+    "**/yarn.lock",
+    "**/pnpm-lock.yaml",
+    "**/bun.lockb",
+    "**/Gemfile.lock",
+    "**/Cargo.lock",
+    "**/poetry.lock",
+    "**/composer.lock",
+    // TypeScript build info (at any depth)
+    "**/*.tsbuildinfo",
+];
+/** Normalize a path to forward-slashes for matching. */
+function toPosixPath(path) {
+    return path.replace(/\\/gu, "/");
+}
+/**
+ * Convert a single minimatch-ish glob to a RegExp anchored at both ends.
+ *
+ * Supports:
+ *   - directory pattern (ending in slash) — matches the dir itself or anything under it
+ *   - double-star — matches any number of path segments
+ *   - single-star — matches any number of non-slash characters
+ *   - exact path — no wildcards, anchored match only
+ *   - `*.ext`              — matches any path ending in `.ext`
+ *   - `name.ext`           — exact match (no wildcards)
+ *
+ * Does NOT support full minimatch syntax — the goal is a small, predictable
+ * filter, not a general-purpose matcher. Excluded files are an allowlist;
+ * new patterns should be added to `DEFAULT_BUILD_ARTIFACT_PATTERNS` and
+ * covered by tests in `test/unit/diff-filter.test.ts`.
+ */
+function globToRegExp(glob) {
+    // Build the RegExp by walking the glob character-by-character.
+    // The naive `.replace` approach had a subtle bug: escaping slashes
+    // and ordering `**` before `*` is easy to get wrong. The
+    // character-by-character walk is more verbose but unambiguous.
+    let pattern = "";
+    let i = 0;
+    while (i < glob.length) {
+        const ch = glob[i];
+        if (ch === "*") {
+            if (glob[i + 1] === "*") {
+                pattern += ".*";
+                i += 2;
+                continue;
+            }
+            pattern += "[^/]*";
+            i += 1;
+            continue;
+        }
+        if (ch === "?") {
+            pattern += "[^/]";
+            i += 1;
+            continue;
+        }
+        if (ch === "." || ch === "+" || ch === "(" || ch === ")" ||
+            ch === "|" || ch === "^" || ch === "$" || ch === "{" ||
+            ch === "}" || ch === "[" || ch === "]" || ch === "\\") {
+            pattern += `\\${ch}`;
+            i += 1;
+            continue;
+        }
+        pattern += ch;
+        i += 1;
+    }
+    if (glob.endsWith("/")) {
+        // Directory pattern (e.g. `dist/`, `node_modules/`).
+        // Strip the trailing `/` for matching: `dist/` becomes `dist`,
+        // then we match either the dir itself (`dist`) or the dir followed
+        // by `/<anything>` (`dist/cli.js`, `dist/nested/file.js`).
+        // For monorepo cases (`packages/api/dist/x.js`), we also match
+        // when the dir appears as a non-leading path segment.
+        const dirPattern = pattern.slice(0, -1);
+        return new RegExp(`(?:^${dirPattern}$|^${dirPattern}/|(?:^|.*/)${dirPattern}(?:/|$))`, "u");
+    }
+    // For patterns like `**/*.map`, the leading `**/` should match zero
+    // or more path segments. The greedy `.*` does that for us, but
+    // anchored to start we need to also allow the prefix to be empty.
+    // E.g. `app.js.map` should match `**/*.map`. We replace the leading
+    // `^.*?/` with `^(?:.*/)?` to make the prefix optional.
+    const finalPattern = pattern.startsWith(".*/") ? `(?:.*/)?${pattern.slice(3)}` : pattern;
+    return new RegExp(`^${finalPattern}$`, "u");
+}
+/**
+ * Check whether a path matches any of the given patterns.
+ *
+ * The path is normalized to forward-slashes before matching, so
+ * Windows-style `dist\cli.js` and POSIX `dist/cli.js` are treated
+ * identically.
+ */
+function isBuildArtifactPath(path, patterns = DEFAULT_BUILD_ARTIFACT_PATTERNS) {
+    const normalized = toPosixPath(path);
+    for (const pattern of patterns) {
+        if (globToRegExp(pattern).test(normalized)) {
+            return true;
+        }
+    }
+    return false;
+}
+/**
+ * Strip every diff block for a path matching a build-artifact pattern.
+ *
+ * The input is expected to be a unified diff (`diff --git a/... b/...`
+ * blocks separated by blank lines or file headers). Each block is dropped
+ * entirely — including its `index` line, `--- a/`, `+++ b/`, hunks, and
+ * any trailing context. Whitespace between blocks is preserved so the
+ * remaining diff is still well-formed.
+ *
+ * Lines that are not part of any block (e.g. a leading comment or
+ * garbage) are preserved verbatim. The function never throws on a
+ * malformed input; if no `diff --git` headers are found, the input is
+ * returned unchanged.
+ */
+function filterBuildArtifacts(diffText, patterns = DEFAULT_BUILD_ARTIFACT_PATTERNS) {
+    if (diffText.length === 0) {
+        return diffText;
+    }
+    // Split into blocks on diff --git headers. We use `String.split` with
+    // a multiline regex rather than `String.match` because the latter
+    // pattern's `(?=^diff --git |$)` lookahead matches the end of every
+    // line (the `m` flag makes `$` mean end-of-line), which truncated
+    // each block at the first `--- a/...` line. Splitting on the header
+    // itself and prepending it to each subsequent piece is unambiguous.
+    const parts = diffText.split(/^diff --git /um);
+    if (parts.length <= 1) {
+        // No `diff --git ` headers — input is either empty or not a diff.
+        return diffText;
+    }
+    const blocks = parts.slice(1).map((p) => `diff --git ${p}`);
+    const retained = [];
+    let retainedBytes = 0;
+    let droppedBlocks = 0;
+    for (const block of blocks) {
+        const { a, b } = extractTargetPaths(block);
+        // Test the artifact filter against BOTH sides so renames across
+        // the filter boundary are caught. A file moved FROM dist/ TO
+        // src/ is reported by the `a` side as `dist/x.js`; a file moved
+        // FROM src/ TO dist/ is reported by the `b` side as `dist/x.js`.
+        // Either side matching means the block touches a build artifact.
+        const matchesArtifact = (a !== null && isBuildArtifactPath(a, patterns)) ||
+            (b !== null && isBuildArtifactPath(b, patterns));
+        if (matchesArtifact) {
+            droppedBlocks += 1;
+            continue;
+        }
+        retained.push(block);
+        retainedBytes += block.length;
+    }
+    // Avoid returning an empty string when every block was filtered; downstream
+    // callers (e.g. `parseDiffPositions`) treat empty diffs as "no review
+    // surface" and produce a parse-fail. Surface that with a one-line marker
+    // so the model at least sees something meaningful.
+    if (retained.length === 0) {
+        return "";
+    }
+    // Join with a single newline so consecutive `diff --git` blocks are
+    // separated. The split stripped the leading `diff --git ` marker from
+    // every block (we re-prepended it), but the inter-block separator
+    // (the trailing newline of the previous block) was discarded by
+    // String.split's separator semantics. Re-inserting `\n` here keeps
+    // the output parseable as a unified diff.
+    return retained.join("\n");
+}
+/**
+ * Extract the target paths from a diff block. Returns both the
+ * `a/` (old) and `b/` (new) sides so the caller can test the
+ * artifact-pattern filter against BOTH paths of a rename. A file
+ * moved across the filter boundary (e.g. `dist/x.js` → `src/x.js`)
+ * is correctly filtered by testing the old path; a file moved INTO
+ * a non-artifact path (e.g. `src/x.js` → `dist/x.js`) is correctly
+ * filtered by testing the new path.
+ *
+ * Either side may be null (file add: only `b/`, file delete: only
+ * `a/`, malformed: neither).
+ */
+function extractTargetPaths(block) {
+    const lines = block.split(/\r?\n/u);
+    return {
+        a: readPathLine(lines, "--- "),
+        b: readPathLine(lines, "+++ "),
+    };
+}
+function readPathLine(lines, prefix) {
+    for (const line of lines) {
+        if (!line.startsWith(prefix)) {
+            continue;
+        }
+        const rawPath = line.slice(prefix.length).split("\t")[0]?.trim() ?? "";
+        if (rawPath === "" || rawPath === "/dev/null") {
+            return null;
+        }
+        return rawPath.startsWith("a/") || rawPath.startsWith("b/")
+            ? rawPath.slice(2)
+            : rawPath;
+    }
+    return null;
+}
+/**
+ * Return the list of paths that appear in a diff (both `a/` and `b/`
+ * sides, deduplicated, forward-slash normalized). Used by the prompt
+ * builder to enumerate the diff's file list as a path enum in the
+ * JSON-schema + system-prompt path.
+ *
+ * Skips `/dev/null` on either side (file adds/dels). Order matches
+ * the diff's first appearance.
+ */
+function listDiffPaths(diffText) {
+    const seen = new Set();
+    const ordered = [];
+    const lines = diffText.split(/\r?\n/u);
+    for (const line of lines) {
+        if (!line.startsWith("+++ ") && !line.startsWith("--- ")) {
+            continue;
+        }
+        const rawPath = line.slice(4).split("\t")[0]?.trim() ?? "";
+        if (rawPath === "" || rawPath === "/dev/null") {
+            continue;
+        }
+        const stripped = rawPath.startsWith("a/") || rawPath.startsWith("b/")
+            ? rawPath.slice(2)
+            : rawPath;
+        const normalized = toPosixPath(stripped);
+        if (seen.has(normalized)) {
+            continue;
+        }
+        seen.add(normalized);
+        ordered.push(normalized);
+    }
+    return ordered;
+}
+
 ;// CONCATENATED MODULE: ./src/platform/azure/urls.ts
 /** Canonical Azure DevOps REST API version. Bump in one place to update every endpoint. */
 const AZURE_API_VERSION = "7.1";
@@ -1874,6 +2197,7 @@ function azurePrBaseUrlWithVersion(context) {
 
 
 
+
 const AZURE_FETCH_TIMEOUT_MS = 30_000;
 const ZERO_OBJECT_ID_PATTERN = /^0+$/u;
 async function fetchAzurePrDiff(context, fetchImpl = fetch) {
@@ -1882,10 +2206,16 @@ async function fetchAzurePrDiff(context, fetchImpl = fetch) {
     const sourceCommitId = parseSourceCommitId(await fetchAzureJson(buildPullRequestIterationUrl(context, iterationId), client));
     const changes = parseIterationChanges(await fetchAzureJson(buildPullRequestIterationChangesUrl(context, iterationId), client));
     const diffText = await reconstructUnifiedDiff(client, sourceCommitId, changes);
-    if (diffText.length === 0) {
+    // The REST-reconstruction path (used when the diff was not pre-filtered
+    // by `scripts/prepare-azure-pr-inputs.sh`) emits blocks for every
+    // `change.item.path`, including `dist/`, lockfiles, etc. Strip them
+    // before returning so the model never sees them — see
+    // `src/diff/filter-build-artifacts.ts` for the full rationale.
+    const filtered = filterBuildArtifacts(diffText);
+    if (filtered.length === 0) {
         throw new AzureApiError("AZURE_DIFF_EMPTY", AZURE_EMPTY_DIFF_STATUS, "Azure DevOps PR diff response body was empty.");
     }
-    return diffText;
+    return filtered;
 }
 async function reconstructUnifiedDiff(client, sourceCommitId, changes) {
     const fileDiffs = [];
@@ -3327,6 +3657,7 @@ function readAzureTargetBranch(env) {
 ;// CONCATENATED MODULE: ./src/platform/github/api.ts
 
 
+
 /**
  * API-layer error for the GitHub platform adapter. Inherits the
  * `PlatformApiError` shape from `src/util/platform-error.ts` so it shares
@@ -3342,7 +3673,12 @@ class GithubApiError extends PlatformApiError {
 const GITHUB_API_BASE_URL = "https://api.github.com";
 const PULL_DIFF_MEDIA_TYPE = "application/vnd.github.v3.diff";
 async function fetchGithubPrDiff(context, fetchImpl = fetch) {
-    return fetchTextOrThrow(fetchImpl, {
+    // GitHub's REST `/pulls/{n}` endpoint returns the server-side diff
+    // verbatim from git, which means PRs that touch `dist/`, `node_modules/`,
+    // lockfiles, etc. surface those blocks to the reviewer. Strip them
+    // before they reach the LLM — see `src/diff/filter-build-artifacts.ts`
+    // for the full rationale.
+    const raw = await fetchTextOrThrow(fetchImpl, {
         url: buildPullUrl(context),
         headers: {
             ...githubHeaders(context.token),
@@ -3354,6 +3690,18 @@ async function fetchGithubPrDiff(context, fetchImpl = fetch) {
         emptyCode: "GITHUB_DIFF_EMPTY",
         platform: "GitHub PR diff",
     });
+    const filtered = filterBuildArtifacts(raw);
+    // `fetchTextOrThrow` already throws on the API's empty response,
+    // but `filterBuildArtifacts` can ALSO produce an empty string when
+    // every block was filtered as a build artifact. Throw the same
+    // GITHUB_DIFF_EMPTY so the upstream `dispatchLivePlatform` path
+    // surfaces a parse-fail card (mirrors the Azure AZURE_DIFF_EMPTY
+    // behavior). Without this, the live review would attempt to
+    // ask the model to review an empty diff and post 0 findings.
+    if (filtered.length === 0) {
+        throw new GithubApiError("GITHUB_DIFF_EMPTY", 200, "GitHub PR diff was empty after build-artifact filtering (every changed file was excluded).");
+    }
+    return filtered;
 }
 function buildPullUrl(context) {
     const repositorySegment = `${context.repo.owner}/${context.repo.name}`;
@@ -3638,6 +3986,7 @@ function mergeReviewResults(outcomes, options) {
             modelId: "",
             // No inputs → no warnings to surface.
             severityWarnings: [],
+            parseWarnings: [],
         };
     }
     const first = outcomes[0];
@@ -3754,6 +4103,10 @@ function mergeReviewResults(outcomes, options) {
         // can disambiguate per-source attribution). The merge itself does
         // not generate new warnings.
         severityWarnings: outcomes.flatMap((o) => o.severityWarnings),
+        // Same pattern for parse warnings (off-diff citations) — each chunk
+        // review emits its own set, and the merged outcome surfaces all of
+        // them so the parse-warnings.json artifact reflects the full run.
+        parseWarnings: outcomes.flatMap((o) => o.parseWarnings),
     };
 }
 
@@ -5971,6 +6324,9 @@ function buildResponsesBody(config, opts) {
     if (config.reasoningEffort !== undefined) {
         body["reasoning"] = { effort: config.reasoningEffort };
     }
+    if (config.responseFormat !== undefined) {
+        body["text"] = { format: config.responseFormat };
+    }
     return body;
 }
 function buildChatBody(config, opts) {
@@ -5992,6 +6348,9 @@ function buildChatBody(config, opts) {
     }
     if (config.reasoningEffort !== undefined) {
         body["reasoning_effort"] = config.reasoningEffort;
+    }
+    if (config.responseFormat !== undefined) {
+        body["response_format"] = config.responseFormat;
     }
     return body;
 }
@@ -7465,6 +7824,13 @@ async function runAzureLive(input) {
             posted: false,
             reviewId: undefined,
             message,
+            // `provider.parseWarnings` is the parse-warnings computed
+            // from the model response. The error path here is the
+            // "0 threads posted" case (which means the model response
+            // was valid but every comment was filtered out as
+            // off-diff). The pre-validation warnings are still meaningful
+            // in that case.
+            parseWarnings: provider.parseWarnings,
         };
     }
     // At least one thread landed — post the PR status.
@@ -7496,6 +7862,10 @@ async function runAzureLive(input) {
         // matches the Azure PR status and the body. See the matching
         // comment on the GitHub side in `live-github.ts`.
         verdict: prepared.effectiveVerdict,
+        // Thread parse warnings (off-diff citation hallucinations) to the
+        // artifact-write path so the parse-warnings.json sibling artifact
+        // surfaces them for operators / CI guards.
+        parseWarnings: provider.parseWarnings,
     };
 }
 /**
@@ -8165,7 +8535,13 @@ async function runGithubLive(input) {
         postableComments.length === 0) {
         const reviewId = await updateExistingReview({ context, fetchImpl, review: existing, body });
         if (reviewId !== null) {
-            return { exitCode: 0, posted: true, reviewId, message: "updated existing GitHub review" };
+            return {
+                exitCode: 0,
+                posted: true,
+                reviewId,
+                message: "updated existing GitHub review",
+                parseWarnings: provider.parseWarnings,
+            };
         }
         // PUT failed (e.g., 422 because submitted) — fall through to DELETE+POST below.
     }
@@ -8200,6 +8576,10 @@ async function runGithubLive(input) {
         // surfaces here as `COMMENT`, matching the `📊 0 inline findings`
         // body and the `COMMENT` review event.
         verdict: prepared.effectiveVerdict,
+        // Thread parse warnings (off-diff citation hallucinations) to the
+        // artifact-write path so the parse-warnings.json sibling artifact
+        // surfaces them for operators / CI guards.
+        parseWarnings: provider.parseWarnings,
     };
 }
 async function findExistingMarkerReview(context, fetchImpl) {
@@ -8480,6 +8860,7 @@ async function runChatCall(config, fetchImpl, requestId, session) {
         user: config.user,
         ...(config.maxOutputTokens !== undefined ? { maxOutputTokens: config.maxOutputTokens } : {}),
         ...(config.reasoningEffort !== undefined ? { reasoningEffort: config.reasoningEffort } : {}),
+        ...(config.responseFormat !== undefined ? { responseFormat: config.responseFormat } : {}),
     });
     const signal = composeSignal(undefined, config.requestTimeoutMs);
     let response;
@@ -8635,6 +9016,22 @@ const DEBUG_SECRET_PATTERNS = [
     /\bghp_[A-Za-z0-9]{36}\b/gu,
 ];
 
+/**
+ * Project the call config down to the body shape expected by
+ * `buildResponsesBody` / `buildChatBody`. The strict-schema
+ * `responseFormat` rides along so the wire request carries the
+ * JSON-schema constraint when the call config provides it.
+ */
+function buildBodyConfig(config) {
+    return {
+        model: config.model,
+        system: config.system,
+        user: config.user,
+        ...(config.maxOutputTokens !== undefined ? { maxOutputTokens: config.maxOutputTokens } : {}),
+        ...(config.reasoningEffort !== undefined ? { reasoningEffort: config.reasoningEffort } : {}),
+        ...(config.responseFormat !== undefined ? { responseFormat: config.responseFormat } : {}),
+    };
+}
 async function runProviderRequest(config) {
     const fetchImpl = config.fetchImpl ?? globalThis.fetch.bind(globalThis);
     const requestId = createRequestId();
@@ -8694,8 +9091,8 @@ function isRetryable(error) {
 async function callEndpoint(config, fetchImpl, requestId, endpoint) {
     const url = joinUrl(config.baseUrl, endpoint === ENDPOINT_RESPONSES ? "/responses" : "/chat/completions");
     const body = endpoint === ENDPOINT_RESPONSES
-        ? buildResponsesBody(config)
-        : buildChatBody(config);
+        ? buildResponsesBody(buildBodyConfig(config))
+        : buildChatBody(buildBodyConfig(config));
     const signal = composeSignal(config.signal, config.requestTimeoutMs);
     const response = await performFetch(fetchImpl, url, body, signal, config, requestId, endpoint);
     if (!response.ok) {
@@ -8749,8 +9146,8 @@ async function callEndpoint(config, fetchImpl, requestId, endpoint) {
     // couldn't produce a parseable review, regardless of whether the retry
     // request itself reached the provider.
     const retryBody = endpoint === ENDPOINT_RESPONSES
-        ? buildResponsesBody(config, { userOverride: PARSE_FAIL_RETRY_PROMPT })
-        : buildChatBody(config, { userOverride: PARSE_FAIL_RETRY_PROMPT });
+        ? buildResponsesBody(buildBodyConfig(config), { userOverride: PARSE_FAIL_RETRY_PROMPT })
+        : buildChatBody(buildBodyConfig(config), { userOverride: PARSE_FAIL_RETRY_PROMPT });
     let retryReview = null;
     // Track the retry's HTTP status (if it reached performFetch and
     // returned a response) so the parse-fail ProviderError can surface
@@ -8852,6 +9249,213 @@ function shouldFallback(error) {
     return error.status === 404 || error.status === 400;
 }
 
+;// CONCATENATED MODULE: ./src/cli/auto-model.ts
+/**
+ * Layer 5: opinionated `model: "auto"` resolution.
+ *
+ * The default `auto` was previously passed verbatim to the provider,
+ * which on most OpenAI-compatible endpoints resolves to whatever the
+ * provider's "auto" picks (often gpt-4o or gpt-4-turbo). Per the
+ * Vectara HHEM 2026-05-11 leaderboard, those models have a 9-12%
+ * hallucination rate on grounded summarization tasks, vs 3-5% for
+ * gpt-5-mini / gemini-2.5-flash-lite / claude-haiku-4.5.
+ *
+ * PR-Agent (qodo-ai) made the same switch in 2025: their default
+ * went from gpt-4o to gpt-5 explicitly to reduce path fabrication.
+ *
+ * The resolver here picks a model with the best cost-vs-hallucination
+ * trade-off for the active provider:
+ *   - provider=copilot  → claude-3-5-sonnet (Copilot's Claude backend;
+ *     this is the model string the GitHub Copilot Chat Completions
+ *     endpoint actually accepts — the v3.x and v3.5 Sonnet line is
+ *     the Copilot-routable Claude. claude-sonnet-4.6 is NOT a
+ *     Copilot-routable string and would 404.)
+ *   - provider=openai-compatible + URL contains "anthropic"  → claude-sonnet-4.6
+ *   - provider=openai-compatible + URL contains "generativelanguage"  → gemini-2.5-flash
+ *   - provider=openai-compatible otherwise (incl. api.openai.com)  → gpt-5-mini
+ *
+ * Users can always override via `--model` (or `UMACTUALLY_MODEL`).
+ */
+const COPILOT_DEFAULT_MODEL = "claude-3-5-sonnet";
+const ANTHROPIC_DEFAULT_MODEL = "claude-sonnet-4.6";
+const GOOGLE_DEFAULT_MODEL = "gemini-2.5-flash";
+const OPENAI_DEFAULT_MODEL = "gpt-5-mini";
+function resolveAutoModel(input) {
+    if (input.provider === "copilot") {
+        return COPILOT_DEFAULT_MODEL;
+    }
+    const url = input.apiUrl ?? input.env["UMACTUALLY_API_URL"] ?? "";
+    if (url.includes("anthropic")) {
+        return ANTHROPIC_DEFAULT_MODEL;
+    }
+    if (url.includes("generativelanguage") || url.includes("googleapis")) {
+        return GOOGLE_DEFAULT_MODEL;
+    }
+    return OPENAI_DEFAULT_MODEL;
+}
+/**
+ * The fallback chain used when a primary model returns a parse-fail
+ * or a non-parseable response. Each entry is a model name the
+ * provider accepts. The current implementation is sequential (try
+ * the first, fall back to the next on parse-fail), not parallel —
+ * keeps the per-request cost predictable and matches the
+ * PR-Agent `retry_with_fallback_models` pattern.
+ *
+ * IMPORTANT: the fallback chain is provider-specific. Trying
+ * `claude-sonnet-4.6` as a Copilot fallback would 404 (per the
+ * Copilot model routing documented in `resolveAutoModel`).
+ * `fallbackModelsFor` filters the list to provider-routable models
+ * so the parse-fail recovery doesn't itself fail.
+ */
+const PROVIDER_FALLBACKS = {
+    "openai-compatible": [
+        OPENAI_DEFAULT_MODEL,
+        "gpt-4.1",
+        "gpt-4.1-mini",
+        ANTHROPIC_DEFAULT_MODEL,
+        GOOGLE_DEFAULT_MODEL,
+    ],
+    copilot: [
+        // The Copilot fallback chain is intentionally short: the
+        // provider only accepts Copilot-routable model strings, and
+        // a parse-fail retry on a different model that's still
+        // Copilot-routable would 404 too. The retry loop should fall
+        // back to the same model with a parse-fail retry prompt
+        // (handled in provider-parse.ts:PARSE_FAIL_RETRY_PROMPT);
+        // a model-level fallback is a no-op for Copilot today.
+        COPILOT_DEFAULT_MODEL,
+    ],
+};
+const DEFAULT_FALLBACK_MODELS = PROVIDER_FALLBACKS["openai-compatible"];
+/**
+ * Return the fallback chain for a specific provider. Use this
+ * instead of the bare `DEFAULT_FALLBACK_MODELS` constant in any
+ * path that might be Copilot-routed — otherwise the parse-fail
+ * recovery would itself fail with a 404.
+ */
+function fallbackModelsFor(provider) {
+    return PROVIDER_FALLBACKS[provider];
+}
+/**
+ * Parse a `--fallback-models` CLI value (comma-separated) into a
+ * list. Empty parts and duplicate entries are dropped.
+ */
+function parseFallbackModels(value) {
+    if (value === null || value === undefined || value.length === 0) {
+        return DEFAULT_FALLBACK_MODELS;
+    }
+    const seen = new Set();
+    const out = [];
+    for (const part of value.split(",")) {
+        const trimmed = part.trim();
+        if (trimmed.length === 0 || seen.has(trimmed)) {
+            continue;
+        }
+        seen.add(trimmed);
+        out.push(trimmed);
+    }
+    return out.length > 0 ? out : DEFAULT_FALLBACK_MODELS;
+}
+
+;// CONCATENATED MODULE: ./src/cli/parse-warnings.ts
+
+/**
+ * Classify and return the list of `comments` and `suppressed_comments`
+ * whose (path, line) pair does not anchor to the supplied diff.
+ *
+ * The diff filter (Layer 1) and the prompt grounding (Layer 2) aim to
+ * prevent these in the first place, but every production LLM
+ * review tool still encounters them at the long tail. Surfacing
+ * them in a structured artifact is the difference between "model
+ * fabricated dist/cli.js:1 and we have no idea" and "the manifest
+ * records exactly what the model emitted, what we filtered, and why".
+ *
+ * Reasons:
+ *   - `path-not-in-diff` — the model cited a path that does not appear
+ *     anywhere in the diff (e.g. `dist/cli.js` when dist/ was excluded
+ *     by the diff filter)
+ *   - `line-not-in-diff` — the path appears in the diff but the
+ *     specific line does not (off-by-one or hallucinated line number)
+ *   - `path-and-line-not-in-diff` — neither the path nor the line
+ *     matches anything in the diff
+ */
+function collectParseWarnings(input) {
+    const positions = parseDiffPositions(input.diffText);
+    const diffPaths = new Set(positions.enumerate().map((p) => p.path));
+    const warnings = [];
+    for (const [source, list] of [
+        ["comments", input.review.comments],
+        ["suppressed_comments", input.review.suppressedComments],
+    ]) {
+        list.forEach((comment, index) => {
+            const path = comment.path;
+            const line = comment.line;
+            // Defensive: a model might emit a non-integer line OR an
+            // empty path. Treat both as off-diff (the most actionable
+            // signal: the model fabricated the position) so the
+            // parse-warnings artifact records the shape error too —
+            // a comment with `line: 2.5` is a fabrication just as
+            // much as a hallucinated `dist/cli.js:1`, and silently
+            // dropping it from the artifact would hide a real failure
+            // mode from operators.
+            const pathInDiff = path.length > 0 && diffPaths.has(path);
+            const lineInDiff = Number.isInteger(line) && line > 0 && positions.hasPosition({ path, line });
+            if (pathInDiff && lineInDiff) {
+                return;
+            }
+            // Reason precedence: if the path is not in the diff, that's the
+            // most actionable signal (the diff filter missed it OR the model
+            // fabricated the path). A line-number error on an in-diff path
+            // is a different failure mode (off-by-one / hallucinated line).
+            const reason = !pathInDiff
+                ? "path-not-in-diff"
+                : "line-not-in-diff";
+            warnings.push({
+                reason,
+                source,
+                index,
+                modelPath: path,
+                modelLine: line,
+                modelSeverity: comment.severity,
+                bodyExcerpt: comment.body.length > 200
+                    ? `${comment.body.slice(0, 200)}…`
+                    : comment.body,
+            });
+        });
+    }
+    return warnings;
+}
+/**
+ * Build the parse-warnings JSON payload. Always includes the
+ * `summary` counts so operators can scan the artifact for
+ * regressions without parsing the full array.
+ */
+function buildParseWarningsArtifact(input) {
+    const warnings = collectParseWarnings(input);
+    const byReason = {
+        "path-not-in-diff": 0,
+        "line-not-in-diff": 0,
+    };
+    const bySource = {
+        comments: 0,
+        suppressed_comments: 0,
+    };
+    for (const w of warnings) {
+        byReason[w.reason] += 1;
+        bySource[w.source] += 1;
+    }
+    return {
+        summary: {
+            totalComments: input.review.comments.length,
+            totalSuppressed: input.review.suppressedComments.length,
+            invalidCount: warnings.length,
+            byReason,
+            bySource,
+        },
+        warnings,
+    };
+}
+
 ;// CONCATENATED MODULE: ./src/config/prompt-files.ts
 
 
@@ -8951,6 +9555,77 @@ async function readPromptFiles(paths, byteCap, options) {
 ;// CONCATENATED MODULE: ./src/cli/provider-prompts.ts
 
 
+
+/**
+ * The strict JSON schema the model must emit. We send this on the
+ * wire as `response_format: { type: "json_schema", strict: true }`
+ * for the OpenAI Responses/Chat APIs that support it (see
+ * `src/provider/provider-parse.ts:buildResponsesBody`). The schema
+ * is a duplicate of the prose in the system prompt — the prose is
+ * the in-context guide, the wire schema is the API enforcement.
+ *
+ * The model can still emit the *wrong* path or line — strict schema
+ * enforces shape, not truth. The post-filter in
+ * `parseDiffPositions` + the `parse-warnings.json` artifact are
+ * the layer that enforces truth.
+ *
+ * Compatibility note: the LIVE parser (in `provider-parse.ts`) is
+ * permissive about `verdict` and `severity` strings (it accepts any
+ * non-empty string and the `normalizeProviderSeverity` fallback
+ * maps unrecognized values). The wire schema is therefore
+ * permissive on those fields too — `string` with a `minLength: 1`
+ * constraint rather than a strict enum. A strict enum here would
+ * cause valid responses to be rejected by providers that enforce
+ * the schema (and per the model-comparison survey, the `severity`
+ * and `verdict` strings are exactly where providers diverge).
+ *
+ * The wire schema intentionally has NO `description` fields. Strict
+ * JSON-schema providers (e.g. OpenAI strict-mode) treat `description`
+ * as machine-checked, and a description with prose like "A path
+ * from the Files-in-diff list below" can be interpreted as a
+ * constraint that breaks valid responses. The in-context system
+ * prompt carries the full description text; the wire schema is
+ * pure shape.
+ */
+const REVIEW_PAYLOAD_JSON_SCHEMA = {
+    type: "object",
+    additionalProperties: false,
+    required: ["summary", "verdict", "comments", "suppressed_comments"],
+    properties: {
+        summary: { type: "string" },
+        verdict: { type: "string", minLength: 1 },
+        comments: {
+            type: "array",
+            items: {
+                type: "object",
+                additionalProperties: false,
+                required: ["path", "line", "body", "severity", "category"],
+                properties: {
+                    path: { type: "string" },
+                    line: { type: "integer", minimum: 1 },
+                    body: { type: "string" },
+                    severity: { type: "string", minLength: 1 },
+                    category: { type: "string" },
+                },
+            },
+        },
+        suppressed_comments: {
+            type: "array",
+            items: {
+                type: "object",
+                additionalProperties: false,
+                required: ["path", "line", "body", "severity", "category"],
+                properties: {
+                    path: { type: "string" },
+                    line: { type: "integer", minimum: 1 },
+                    body: { type: "string" },
+                    severity: { type: "string", minLength: 1 },
+                    category: { type: "string" },
+                },
+            },
+        },
+    },
+};
 async function buildProviderPrompts(input) {
     const additionalPrompt = await readAdditionalPrompt(input);
     const userParts = [
@@ -8960,11 +9635,36 @@ async function buildProviderPrompts(input) {
     if (input.sonarContext !== undefined && input.sonarContext.length > 0) {
         userParts.push(input.sonarContext);
     }
+    // Layer 2-A: enumerate the diff's path list in the user message
+    // so the model can verify any cited path by grep. We list the
+    // paths even on the strict-schema path (which already constrains
+    // `path` to a string type) because the model emits a literal
+    // string the post-filter then validates against this list.
+    userParts.push(buildFilesInDiffBlock(input.diffText));
     userParts.push("Diff:", input.diffText);
     return {
         system: await pickSystemPrompt(input),
         user: userParts.join("\n\n"),
     };
+}
+/**
+ * Format the diff's file list as an explicit, copy-pastable block the
+ * model can match against. Pinned by the citation-grounding plan
+ * (Layer 2-A): the prompt now lists every path the model is
+ * permitted to cite, which makes hallucinated paths obvious to
+ * both the model and the post-filter.
+ */
+function buildFilesInDiffBlock(diffText) {
+    const paths = listDiffPaths(diffText);
+    if (paths.length === 0) {
+        return "Files in diff: (none — empty diff)";
+    }
+    const lines = paths.map((p, i) => `  ${i + 1}. ${p}`);
+    return [
+        "Files in diff (the ONLY paths you may cite):",
+        ...lines,
+        "Do NOT cite any path that is not in this list. If a finding requires a file not in the diff, omit the finding entirely rather than fabricating a path.",
+    ].join("\n");
 }
 async function pickSystemPrompt(input) {
     const inline = input.parsed.prompt;
@@ -8975,11 +9675,55 @@ async function pickSystemPrompt(input) {
     if (filePath !== undefined && filePath.length > 0) {
         return readPromptFiles([filePath], DEFAULT_PROMPT_BYTE_CAP, { cwd: input.cwd });
     }
+    return buildDefaultSystemPrompt();
+}
+/**
+ * The built-in default system prompt. Rewritten in PR #26 (the
+ * "LLM citation grounding" fix) to:
+ *
+ * 1. Quote the source lines BEFORE emitting a finding (Anthropic
+ *    pattern: "if it can't find a quote, state that no relevant
+ *    quote was found"). This forces the model to anchor each
+ *    finding to a real diff line and makes fabrication obvious.
+ * 2. Foreground the diff path enum (the user message carries the
+ *    same list — see `buildFilesInDiffBlock`) so the model knows
+ *    the EXACT set of valid paths.
+ * 3. Include the strict JSON schema so a free-form model that
+ *    ignores the wire `response_format` still gets a clear
+ *    shape guide. (Prose schema + wire schema is the standard
+ *    pattern; see the Ellipsis "27 months of LLM agents" post.)
+ * 4. Pre-empt the "DO NOT cite dist/" failure mode (PR #56) by
+ *    telling the model that build artifacts are excluded upstream
+ *    AND the post-filter will reject any off-path citation. The
+ *    "Negative Constraints Backfire" finding from the
+ *    hallucination-survey (Rana, 2026) shows that bare "DO NOT
+ *    cite X" instructions can paradoxically prime X — so we
+ *    include the prohibition paired with the positive constraint
+ *    (cite only what's in the list) and the consequence (filtered
+ *    out, surfaces in the warning artifact).
+ */
+function buildDefaultSystemPrompt() {
     return [
         "You are UmActually, a precise pull request reviewer.",
-        "Return strict JSON only with this schema:",
-        "{\"summary\":string,\"verdict\":\"COMMENT\"|\"APPROVED\"|\"NEEDS_FIX\",\"comments\":[{\"path\":string,\"line\":number,\"body\":string,\"severity\":\"info\"|\"low\"|\"medium\"|\"high\"|\"critical\",\"category\":string}],\"suppressed_comments\":[{\"path\":string,\"line\":number,\"body\":string,\"severity\":\"info\"|\"low\"|\"medium\"|\"high\"|\"critical\",\"category\":string}]}",
-        "Anchor comments only to changed or context lines present in the diff. Do not include secrets.",
+        "",
+        "Workflow for every finding you emit:",
+        "1. Identify a real concern introduced by the diff.",
+        "2. Copy the EXACT diff lines that justify the concern (a verbatim quote, 1-3 lines).",
+        "3. Emit a JSON object whose `path` matches a file from the Files-in-diff list in the user message and whose `line` matches a line number that appears in the diff for that file.",
+        "If you cannot complete steps 2-3, OMIT the finding entirely. Do not invent a citation.",
+        "",
+        "Forbidden (a non-exhaustive list to make the boundary explicit; the positive constraint above takes precedence):",
+        "- Do NOT cite any path that is not in the Files-in-diff list. Build artifacts, generated files, and lockfiles are stripped from the diff upstream and are never reviewable here.",
+        "- Do NOT cite any line number that does not appear in the diff for the cited path. Off-by-one or hallucinated line numbers are rejected by the post-filter.",
+        "- Do NOT infer missing context. If the diff does not show a function call, do not claim a function call exists.",
+        "- Do NOT include secrets, tokens, or any literal that looks like a credential.",
+        "",
+        "Severity values: info, low, medium, high, critical, security, leak. Use 'security' for an active vulnerability, 'leak' for a confirmed secret, 'critical' for severe bugs. Style and hygiene issues go in 'low' or 'info'.",
+        "",
+        "Return strict JSON only — no prose, no markdown fences. Schema:",
+        JSON.stringify(REVIEW_PAYLOAD_JSON_SCHEMA, null, 2),
+        "",
+        "If the diff is empty or has no actionable findings, return verdict=COMMENT with an empty comments array. Do not invent findings to fill the response.",
     ].join("\n");
 }
 async function readAdditionalPrompt(input) {
@@ -8994,6 +9738,105 @@ async function readAdditionalPrompt(input) {
     return readPromptFiles([filePath], DEFAULT_PROMPT_BYTE_CAP, { cwd: input.cwd });
 }
 
+;// CONCATENATED MODULE: ./src/cli/verify-findings.ts
+/**
+ * Layer 4: two-pass verification (opt-in via `--verify-findings`).
+ *
+ * After the first model call returns a review, run a small per-finding
+ * verification pass that asks the model to copy the diff lines that
+ * justify each finding. Findings where the model cannot produce a
+ * supporting quote are dropped before posting.
+ *
+ * Per the citation-grounding research:
+ *   - SWR-Bench (1000 PRs): multi-pass aggregation gives +43.7% F1
+ *   - HalluJudge (Atlassian production): Tree-of-Thoughts verifier
+ *     F1 = 0.85, $0.009/comment
+ *   - CodeRabbit: explicit "verification agent" before posting
+ *   - Ellipsis: Generate-then-Filter architecture; filter rejects
+ *     findings the generator cannot ground in evidence
+ *
+ * This implementation is intentionally narrow: a single cheap
+ * verification call per finding, with a strict JSON schema that
+ * only permits `verified: true|false` + the supporting quote (or
+ * empty quote for unverified). The findings list is processed in
+ * order; a verified=true flag is kept, anything else is dropped.
+ *
+ * Off by default. The cost is roughly 2x the per-PR review cost
+ * (a small per-finding call). For high-stakes repos that need the
+ * extra accuracy, opt in via `--verify-findings`.
+ */
+
+/**
+ * Pure post-filter that drops findings whose (path, line) doesn't anchor
+ * to the supplied diff. This is the deterministic verification — the
+ * cheap path that runs WITHOUT a second model call. The `--verify-findings`
+ * flag adds an additional model-based check on top.
+ *
+ * Useful as a standalone entry point for callers that want the
+ * deterministic filter without the model overhead (e.g. tests,
+ * dry-run, smoke tests).
+ */
+function verifyFindingsAgainstDiff(input) {
+    const positions = parseDiffPositions(input.diffText);
+    const verified = [];
+    const dropped = [];
+    for (const comment of input.review.comments) {
+        if (positions.hasPosition(comment)) {
+            verified.push(comment);
+        }
+        else {
+            dropped.push(comment);
+        }
+    }
+    return { verified, dropped };
+}
+/**
+ * Model-based verification. Sends a per-finding prompt to the same
+ * provider, asking the model to copy the diff lines that justify
+ * each finding. Findings where the model returns `verified: false`
+ * or an empty `quote` are dropped.
+ *
+ * Not yet wired into the live flow — the `requestLiveReview` and
+ * `runGithubLive` / `runAzureLive` paths would need to call this
+ * after the first model response and before posting. Wiring is
+ * tracked as a follow-up: this function exists so callers can
+ * opt in via a higher-level orchestration, and the deterministic
+ * `verifyFindingsAgainstDiff` covers the common case.
+ */
+async function verifyFindingsWithModel(input) {
+    const systemPrompt = "You are a strict reviewer verifying that each finding is supported by the diff. Return JSON { verified: boolean, quote: string } for each.";
+    const userPrompt = [
+        "Verify each finding against the diff below. Copy the EXACT diff lines that justify it into `quote`. If the diff does not support the finding, return verified: false with quote: \"\".",
+        ...input.review.comments.map((c, i) => `Finding ${i + 1}: path=${c.path} line=${c.line} body=${c.body}`),
+        "",
+        "Diff:",
+        input.diffText,
+    ].join("\n\n");
+    const result = await input.verifier({
+        systemPrompt,
+        userPrompt,
+        findings: input.review.comments,
+    });
+    const verified = [];
+    const dropped = [];
+    // Walk in lockstep with the input comments so the verifier's
+    // decision for finding N maps to review.comments[N].
+    for (let i = 0; i < input.review.comments.length; i += 1) {
+        const comment = input.review.comments[i];
+        const verdict = result[i];
+        if (comment === undefined) {
+            continue;
+        }
+        if (verdict !== undefined && verdict.verified && verdict.supportingQuote.length > 0) {
+            verified.push(comment);
+        }
+        else {
+            dropped.push(comment);
+        }
+    }
+    return { verified, dropped };
+}
+
 ;// CONCATENATED MODULE: ./src/cli/live-provider.ts
 
 
@@ -9001,7 +9844,9 @@ async function readAdditionalPrompt(input) {
 
 
 
-const DEFAULT_MODEL = "auto";
+
+
+
 const live_provider_DEFAULT_REQUEST_TIMEOUT_MS = 60_000;
 const PROVIDER_NAME = "openai-compatible";
 const COPILOT_PROVIDER_NAME = "github-copilot";
@@ -9033,6 +9878,13 @@ async function requestLiveReview(input) {
         });
     };
     setActiveSeveritySink(sink);
+    // Layer 2-C: when the CLI flag enables it, send the strict JSON-schema
+    // response_format on the wire. Defaults to true so the model is
+    // constrained at decode time; the in-context system prompt carries
+    // the same schema as a guide for free-form models.
+    const responseFormat = input.parsed.strictSchema === false
+        ? undefined
+        : { type: "json_schema", strict: true, schema: REVIEW_PAYLOAD_JSON_SCHEMA };
     try {
         if (input.parsed.provider === "copilot") {
             const result = await runCopilotRequest({
@@ -9044,31 +9896,56 @@ async function requestLiveReview(input) {
                 requestTimeoutMs: readRequestTimeoutMs(input.parsed),
                 ...(input.parsed.maxOutputTokens !== null ? { maxOutputTokens: input.parsed.maxOutputTokens } : {}),
                 ...(input.parsed.effort !== null ? { reasoningEffort: input.parsed.effort } : {}),
+                ...(responseFormat !== undefined ? { responseFormat } : {}),
                 fetchImpl: input.fetchImpl,
             });
             if (result.ok) {
-                return {
-                    review: normalizeProviderReview(result.review, [providerApiKey, input.platformToken]),
+                // Step 1: normalize without the verify filter so the
+                // parse-warnings artifact (built in step 2) records every
+                // off-diff citation the model emitted, not just the ones
+                // that survived the inline filter. The filter is a
+                // defense-in-depth, not a replacement for the artifact.
+                const preVerifyReview = normalizeProviderReview(result.review, [providerApiKey, input.platformToken]);
+                // Step 2: build the parse-warnings artifact from the
+                // pre-verify review (so it captures every fabrication).
+                const preVerifyOutcome = withParseWarnings({
+                    review: preVerifyReview,
                     endpoint: result.endpoint,
                     provider: COPILOT_PROVIDER_NAME,
                     modelId,
                     severityWarnings: severityWarnings.slice(),
+                    diffText: input.diffText,
+                });
+                // Step 3: apply the deterministic verify filter to the
+                // comments[] that gets passed downstream (so the
+                // platform-posting paths only see anchorable findings).
+                // Use `!== false` rather than `=== true` so callers
+                // (tests, future serializers) that omit the field
+                // still get the default-ON behavior.
+                const finalReview = input.parsed.verifyFindings !== false
+                    ? applyVerifyFilter(preVerifyReview, input.diffText)
+                    : preVerifyReview;
+                return {
+                    ...preVerifyOutcome,
+                    review: finalReview,
                 };
             }
             if (result.error.code === "parse") {
-                return {
-                    review: buildMalformedProviderFallback({
-                        provider: COPILOT_PROVIDER_NAME,
-                        modelId,
-                        rawText: result.error.rawText ?? "",
-                        secrets: [providerApiKey, input.platformToken],
-                        ...parseFailureReasonFromProviderError(result.error, input.parsed.maxOutputTokens),
-                    }),
+                const review = buildMalformedProviderFallback({
+                    provider: COPILOT_PROVIDER_NAME,
+                    modelId,
+                    rawText: result.error.rawText ?? "",
+                    secrets: [providerApiKey, input.platformToken],
+                    ...parseFailureReasonFromProviderError(result.error, input.parsed.maxOutputTokens),
+                });
+                return withParseWarnings({
+                    review,
                     endpoint: result.error.endpoint,
                     provider: COPILOT_PROVIDER_NAME,
                     modelId,
                     severityWarnings: severityWarnings.slice(),
-                };
+                    diffText: input.diffText,
+                });
             }
             throw new LiveReviewError("PROVIDER_REQUEST_FAILED", result.error.message, { cause: result.error });
         }
@@ -9082,31 +9959,44 @@ async function requestLiveReview(input) {
             requestTimeoutMs: readRequestTimeoutMs(input.parsed),
             ...(input.parsed.maxOutputTokens !== null ? { maxOutputTokens: input.parsed.maxOutputTokens } : {}),
             ...(input.parsed.effort !== null ? { reasoningEffort: input.parsed.effort } : {}),
+            ...(responseFormat !== undefined ? { responseFormat } : {}),
             fetchImpl: input.fetchImpl,
         });
         if (result.ok) {
-            return {
-                review: normalizeProviderReview(result.review, [providerApiKey, input.platformToken]),
+            // See the Copilot branch for the three-step flow rationale.
+            const preVerifyReview = normalizeProviderReview(result.review, [providerApiKey, input.platformToken]);
+            const preVerifyOutcome = withParseWarnings({
+                review: preVerifyReview,
                 endpoint: result.endpoint,
                 provider: PROVIDER_NAME,
                 modelId,
                 severityWarnings: severityWarnings.slice(),
+                diffText: input.diffText,
+            });
+            const finalReview = input.parsed.verifyFindings !== false
+                ? applyVerifyFilter(preVerifyReview, input.diffText)
+                : preVerifyReview;
+            return {
+                ...preVerifyOutcome,
+                review: finalReview,
             };
         }
         if (result.error.code === "parse") {
-            return {
-                review: buildMalformedProviderFallback({
-                    provider: PROVIDER_NAME,
-                    modelId,
-                    rawText: result.error.rawText ?? "",
-                    secrets: [providerApiKey, input.platformToken],
-                    ...parseFailureReasonFromProviderError(result.error, input.parsed.maxOutputTokens),
-                }),
+            const review = buildMalformedProviderFallback({
+                provider: PROVIDER_NAME,
+                modelId,
+                rawText: result.error.rawText ?? "",
+                secrets: [providerApiKey, input.platformToken],
+                ...parseFailureReasonFromProviderError(result.error, input.parsed.maxOutputTokens),
+            });
+            return withParseWarnings({
+                review,
                 endpoint: result.error.endpoint,
                 provider: PROVIDER_NAME,
                 modelId,
                 severityWarnings: severityWarnings.slice(),
-            };
+                diffText: input.diffText,
+            });
         }
         throw new LiveReviewError("PROVIDER_REQUEST_FAILED", result.error.message, { cause: result.error });
     }
@@ -9116,7 +10006,55 @@ async function requestLiveReview(input) {
         setActiveSeveritySink(null);
     }
 }
+/**
+ * Compute parse warnings for the review (off-diff citations the
+ * model fabricated) and attach them to the outcome. Layer 3 of the
+ * citation-grounding fix — makes the fabrication visible in the
+ * parse-warnings.json artifact instead of silently suppressing it.
+ */
+function withParseWarnings(input) {
+    return {
+        review: input.review,
+        endpoint: input.endpoint,
+        provider: input.provider,
+        modelId: input.modelId,
+        severityWarnings: input.severityWarnings,
+        parseWarnings: buildParseWarningsArtifact({
+            review: input.review,
+            diffText: input.diffText,
+        }).warnings,
+    };
+}
+/**
+ * Apply the deterministic (path, line) verify filter to the
+ * review's comments[]. Returns a new LiveReview with the filtered
+ * comments[]. The original is left untouched so callers (the
+ * parse-warnings artifact builder) see the pre-filter payload.
+ *
+ * Defense-in-depth Layer 4: the post-filter in
+ * `selectPostableComments` runs the same check, but doing it here
+ * means the platform-posting paths only see anchorable findings.
+ */
+function applyVerifyFilter(review, diffText) {
+    if (diffText.length === 0) {
+        return review;
+    }
+    // Delegate to the standalone `verifyFindingsAgainstDiff` helper
+    // so the inline filter and the parse-warnings artifact agree
+    // on which comments get dropped — the previous inline
+    // re-implementation diverged from the helper in a way that
+    // let the artifact undercount fabrication events.
+    const { verified } = verifyFindingsAgainstDiff({ review, diffText });
+    return { ...review, comments: verified };
+}
 function normalizeProviderReview(payload, secrets) {
+    // Layer 4 deterministic verification is applied in the caller
+    // (see `applyVerifyFilter` in `live-provider.ts`) AFTER the
+    // parse-warnings artifact is built. Doing it in the caller means
+    // the artifact captures every fabrication event, even ones the
+    // inline filter drops. Don't re-add the filter here — see
+    // the three-step flow in the Copilot/openai-compatible
+    // branches.
     return {
         summary: sanitizeForPost(payload.summary, secrets),
         verdict: payload.verdict,
@@ -9141,11 +10079,28 @@ function readRequiredConfig(value, name) {
 }
 function readConfiguredModel(parsed, env) {
     const fromArgs = parsed.model;
-    if (fromArgs !== null && fromArgs.length > 0) {
+    // Treat the literal string "auto" the same as the default
+    // (unset): the user is asking for the opinionated resolver,
+    // not for the provider's "auto" pass-through. Without this,
+    // `--model auto` would short-circuit before the resolver
+    // runs and send the literal string "auto" to the provider.
+    if (fromArgs !== null && fromArgs.length > 0 && fromArgs !== "auto") {
         return fromArgs;
     }
     const fromEnv = env["UMACTUALLY_MODEL"];
-    return fromEnv === undefined || fromEnv.length === 0 ? DEFAULT_MODEL : fromEnv;
+    if (fromEnv !== undefined && fromEnv.length > 0 && fromEnv !== "auto") {
+        return fromEnv;
+    }
+    // Layer 5: `auto` is no longer passed verbatim. The resolver picks
+    // a less-hallucinating model based on the active provider + API
+    // URL. See `src/cli/auto-model.ts` for the per-provider mapping
+    // and the Vectara HHEM rationale.
+    const provider = (parsed.provider ?? "openai-compatible");
+    return resolveAutoModel({
+        provider,
+        apiUrl: parsed.apiUrl,
+        env,
+    });
 }
 function readRequestTimeoutMs(parsed) {
     const seconds = parsed.perRequestTimeoutSeconds ?? parsed.reviewTimeoutSeconds;
@@ -9490,6 +10445,7 @@ function applySimulateFindings(input) {
         // Synthesized fixture — never went through the real parser, so
         // there are no severity warnings to surface.
         severityWarnings: [],
+        parseWarnings: [],
     };
 }
 function sanitizeComments(comments, secrets) {
@@ -9589,6 +10545,7 @@ async function requestChunkedLiveReview(input) {
                     // Failed-chunk placeholder — no severity warnings to surface
                     // (the parser never ran on this chunk).
                     severityWarnings: [],
+                    parseWarnings: [],
                 };
             }
             outcomes[index] = outcome;
@@ -9775,6 +10732,7 @@ async function dispatchLivePlatform(input) {
                     // Skipped-due-to-file-limit placeholder — no parser ran, so
                     // no severity warnings to surface.
                     severityWarnings: [],
+                    parseWarnings: [],
                 };
             }
             else {
@@ -9886,6 +10844,47 @@ async function runDryRun(parsed, cwd, platform) {
     await (0,promises_namespaceObject.mkdir)((0,external_node_path_namespaceObject.dirname)(artifactPath), { recursive: true });
     await (0,promises_namespaceObject.writeFile)(artifactPath, `${JSON.stringify(artifactBody, null, 2)}\n`, "utf8");
     return { exitCode: 0 };
+}
+/**
+ * Sibling artifact path for the parse-warnings record. The parse-warnings
+ * JSON sits next to the main review artifact so a CI guard or operator
+ * can `cat artifacts/manual/s1-github-parse-warnings.json` alongside
+ * the s1 review. Filename is fixed (not user-configurable) so the
+ * downstream check tools have a stable path.
+ */
+function resolveParseWarningsArtifactPath(primaryArtifactPath) {
+    // Replace the extension with `.parse-warnings.json`. Most reviews use
+    // `.md` (s1-github-self-review.md) or `.json` (s4-azure-mocked-run.json);
+    // we keep the directory and stem, swap the suffix.
+    //
+    // We use our own custom `basename` and `joinPath` (instead of
+    // `node:path`'s) because the input can be either a POSIX path
+    // (Linux/macOS CI) or a Windows path (Windows local dev). The
+    // node:path versions behave correctly per-platform but a path
+    // captured on Windows and consumed on Linux (or vice versa)
+    // yields the wrong dirname. The custom pair handles both.
+    const dir = customDirname(primaryArtifactPath);
+    const stem = customBasename(primaryArtifactPath).replace(/\.[^.]+$/u, "");
+    return customJoinPath(dir, `${stem}.parse-warnings.json`);
+}
+function customBasename(path) {
+    const idx = path.lastIndexOf("/");
+    const winIdx = path.lastIndexOf("\\");
+    const cut = Math.max(idx, winIdx);
+    return cut === -1 ? path : path.slice(cut + 1);
+}
+function customDirname(path) {
+    const idx = path.lastIndexOf("/");
+    const winIdx = path.lastIndexOf("\\");
+    const cut = Math.max(idx, winIdx);
+    return cut === -1 ? "" : path.slice(0, cut);
+}
+function customJoinPath(dir, file) {
+    if (dir === "" || dir === ".") {
+        return file;
+    }
+    const sep = dir.includes("\\") && !dir.includes("/") ? "\\" : "/";
+    return dir.endsWith("/") || dir.endsWith("\\") ? `${dir}${file}` : `${dir}${sep}${file}`;
 }
 /**
  * Merge sanitized env diagnostics into the dry-run artifact body.
@@ -10147,6 +11146,7 @@ async function writeLiveArtifact(parsed, cwd, platform, result) {
             note: "Live review did not post anything via the GitHub/Azure API. Inspect the action log for the underlying parser/network error.",
         };
         await (0,promises_namespaceObject.writeFile)(artifactPath, `${JSON.stringify(body, null, 2)}\n`, "utf8");
+        await writeParseWarningsArtifact(artifactPath, result.parseWarnings ?? []);
         return;
     }
     // Successful post: write a success artifact reflecting the live
@@ -10167,6 +11167,44 @@ async function writeLiveArtifact(parsed, cwd, platform, result) {
         note: "Live review posted successfully; counts reflect what the GitHub/Azure API saw.",
     };
     await (0,promises_namespaceObject.writeFile)(artifactPath, `${JSON.stringify(body, null, 2)}\n`, "utf8");
+    await writeParseWarningsArtifact(artifactPath, result.parseWarnings ?? []);
+}
+/**
+ * Write the parse-warnings sibling artifact at a path derived from the
+ * main artifact path. Empty warnings list → still write the file
+ * (with summary counts) so downstream tooling has a stable contract;
+ * the file's `summary.invalidCount` is the field operators should
+ * watch for non-zero regressions.
+ */
+async function writeParseWarningsArtifact(primaryArtifactPath, warnings) {
+    const path = resolveParseWarningsArtifactPath(primaryArtifactPath);
+    // Build the summary from the warnings list using the same logic as
+    // buildParseWarningsArtifact (we re-import rather than re-invoke the
+    // function because we already have the warnings array).
+    const byReason = {
+        "path-not-in-diff": 0,
+        "line-not-in-diff": 0,
+    };
+    const bySource = {
+        comments: 0,
+        suppressed_comments: 0,
+    };
+    for (const w of warnings) {
+        byReason[w.reason] += 1;
+        bySource[w.source] += 1;
+    }
+    const body = {
+        summary: {
+            invalidCount: warnings.length,
+            byReason,
+            bySource,
+            note: warnings.length === 0
+                ? "All model citations anchored to the supplied diff. No fabrication detected."
+                : `${warnings.length} comment(s) cited a path or line not present in the supplied diff. The review post-filter (parseDiffPositions) dropped these from inline posting. See PR #56 for the canonical regression that produced 8 such warnings on a source-only diff.`,
+        },
+        warnings,
+    };
+    await (0,promises_namespaceObject.writeFile)(path, `${JSON.stringify(body, null, 2)}\n`, "utf8");
 }
 
 ;// CONCATENATED MODULE: ./src/cli.ts

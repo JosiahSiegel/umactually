@@ -67,6 +67,7 @@ export function mergeReviewResults(
       modelId: "",
       // No inputs → no warnings to surface.
       severityWarnings: [],
+      parseWarnings: [],
     };
   }
 
@@ -194,5 +195,9 @@ export function mergeReviewResults(
     // can disambiguate per-source attribution). The merge itself does
     // not generate new warnings.
     severityWarnings: outcomes.flatMap((o) => o.severityWarnings),
+    // Same pattern for parse warnings (off-diff citations) — each chunk
+    // review emits its own set, and the merged outcome surfaces all of
+    // them so the parse-warnings.json artifact reflects the full run.
+    parseWarnings: outcomes.flatMap((o) => o.parseWarnings),
   };
 }

@@ -194,6 +194,23 @@ export const PARSE_FAIL_RETRY_PROMPT =
   '{"summary": "...", "verdict": "NEEDS_FIX|APPROVED|COMMENT|DISCUSS|SHIP", "comments": [...], "suppressed_comments": [...]}.\n\n' +
   "Original review request follows:\n\n";
 
+/**
+ * Schema for `response_format` on OpenAI Responses / Chat Completions.
+ * Defined in `src/cli/provider-prompts.ts:REVIEW_PAYLOAD_JSON_SCHEMA`
+ * and re-exported here for the provider layer's request-body builder.
+ * Wire-format strict schemas are NOT a hallucination cure-all — see
+ * the "Valid JSON Is Not Correct JSON" caveat in the
+ * citation-grounding research — but they close the failure class
+ * where the model emits prose-wrapped JSON or path-garbage text.
+ */
+export type ResponseFormat =
+  | { readonly type: "json_object" }
+  | {
+      readonly type: "json_schema";
+      readonly strict: true;
+      readonly schema: Record<string, unknown>;
+    };
+
 export function buildResponsesBody(
   config: {
     readonly model: string;
@@ -201,6 +218,7 @@ export function buildResponsesBody(
     readonly user: string;
     readonly maxOutputTokens?: number;
     readonly reasoningEffort?: "low" | "medium" | "high";
+    readonly responseFormat?: ResponseFormat;
   },
   opts?: { readonly userOverride?: string },
 ): RequestBody {
@@ -225,6 +243,9 @@ export function buildResponsesBody(
   if (config.reasoningEffort !== undefined) {
     body["reasoning"] = { effort: config.reasoningEffort };
   }
+  if (config.responseFormat !== undefined) {
+    body["text"] = { format: config.responseFormat };
+  }
   return body;
 }
 
@@ -235,6 +256,7 @@ export function buildChatBody(
     readonly user: string;
     readonly maxOutputTokens?: number;
     readonly reasoningEffort?: "low" | "medium" | "high";
+    readonly responseFormat?: ResponseFormat;
   },
   opts?: { readonly userOverride?: string },
 ): RequestBody {
@@ -256,6 +278,9 @@ export function buildChatBody(
   }
   if (config.reasoningEffort !== undefined) {
     body["reasoning_effort"] = config.reasoningEffort;
+  }
+  if (config.responseFormat !== undefined) {
+    body["response_format"] = config.responseFormat;
   }
   return body;
 }

@@ -149,6 +149,13 @@ export async function runAzureLive(input: {
       posted: false,
       reviewId: undefined,
       message,
+      // `provider.parseWarnings` is the parse-warnings computed
+      // from the model response. The error path here is the
+      // "0 threads posted" case (which means the model response
+      // was valid but every comment was filtered out as
+      // off-diff). The pre-validation warnings are still meaningful
+      // in that case.
+      parseWarnings: provider.parseWarnings,
     };
   }
 
@@ -182,6 +189,10 @@ export async function runAzureLive(input: {
     // matches the Azure PR status and the body. See the matching
     // comment on the GitHub side in `live-github.ts`.
     verdict: prepared.effectiveVerdict,
+    // Thread parse warnings (off-diff citation hallucinations) to the
+    // artifact-write path so the parse-warnings.json sibling artifact
+    // surfaces them for operators / CI guards.
+    parseWarnings: provider.parseWarnings,
   };
 }
 

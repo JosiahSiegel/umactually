@@ -51,6 +51,8 @@ const HELP_FLAGS: readonly HelpFlag[] = [
   { flag: "--max-comments <n>" },
   { flag: "--review-file-limit <n>", description: "Cap on changed files for live review (0 = disable)" },
   { flag: "--minimum-severity <low|medium|high>", description: "default: medium" },
+  { flag: "--strict-schema | --no-strict-schema", description: "Send response_format json_schema on the wire (default: yes)" },
+  { flag: "--verify-findings | --no-verify-findings", description: "Deterministic (path,line) re-verification before posting (default: yes)" },
   { flag: "--walkthrough | --no-walkthrough" },
   { flag: "--diagnostic | --no-diagnostic" },
   { flag: "--debug-raw-response | --no-debug-raw-response" },

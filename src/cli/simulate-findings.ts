@@ -44,6 +44,7 @@ export function applySimulateFindings(input: {
     // Synthesized fixture — never went through the real parser, so
     // there are no severity warnings to surface.
     severityWarnings: [],
+    parseWarnings: [],
   };
 }
 

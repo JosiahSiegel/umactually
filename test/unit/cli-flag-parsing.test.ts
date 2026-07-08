@@ -138,6 +138,8 @@ describe("CLI flag parsing RED contract", () => {
       maxOutputTokens: null,
       dryRun: true,
       outputArtifact: "artifacts/manual/azure-dry-run.json",
+      strictSchema: true,
+      verifyFindings: true,
     });
   });
 });

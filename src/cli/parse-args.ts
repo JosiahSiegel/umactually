@@ -61,6 +61,26 @@ export type ParsedCliArgs = {
   readonly maxOutputTokens: number | null;
   readonly dryRun: boolean;
   readonly outputArtifact: string | null;
+  /**
+   * When true (the default), send `response_format: { type: "json_schema", strict: true }`
+   * on the wire so the provider enforces the review schema at decode time.
+   * Set to false via `--no-strict-schema` for providers that reject the
+   * strict-schema payload (older Copilot routes, certain self-hosted
+   * OpenAI-compatible servers). The in-context system prompt still
+   * documents the schema, so omitting the wire constraint degrades to
+   * "shape guide only" — the post-filter still catches semantic errors.
+   */
+  readonly strictSchema: boolean;
+  /**
+   * When true, the deterministic `verifyFindingsAgainstDiff` filter
+   * runs an extra time on the model's `comments[]` before they're
+   * passed to the inline-posting step. This is on by default and
+   * matches the Layer 4 + Layer 3 contracts: any off-diff citation
+   * is dropped, regardless of how it survived the previous filters.
+   * Set to false via `--no-verify-findings` only if the caller has
+   * their own out-of-band validation (rare).
+   */
+  readonly verifyFindings: boolean;
 };
 
 export class CliUsageError extends Error {
@@ -111,6 +131,17 @@ export function parseCliArgs(args: readonly string[]): ParsedCliArgs {
   let maxOutputTokens: number | null = null;
   let dryRun = false;
   let outputArtifact: string | null = null;
+  // Layer 2-C: default ON so the wire-format JSON-schema constraint
+  // fires by default. Operators on providers that reject the strict-
+  // schema payload can opt out via --no-strict-schema.
+  let strictSchema = true;
+  // Layer 4: default ON so the deterministic verifyFindingsAgainstDiff
+  // re-runs the (path, line) filter on the model's comments[] before
+  // posting. The filter is the same one the post-filter uses; running
+  // it explicitly is defense-in-depth (the parse-warnings artifact
+  // would also catch the same off-diff citations, but this drops
+  // them from the postable set before they even reach the platform).
+  let verifyFindings = true;
 
   for (let index = 0; index < args.length; index += 1) {
     const token = args[index];
@@ -281,6 +312,18 @@ export function parseCliArgs(args: readonly string[]): ParsedCliArgs {
         outputArtifact = readValue(args, index, "output-artifact");
         index += 1;
         break;
+      case "--strict-schema":
+        strictSchema = true;
+        break;
+      case "--no-strict-schema":
+        strictSchema = false;
+        break;
+      case "--verify-findings":
+        verifyFindings = true;
+        break;
+      case "--no-verify-findings":
+        verifyFindings = false;
+        break;
       case "--help":
       case "-h":
         throw new CliHelpSignal();
@@ -329,6 +372,8 @@ export function parseCliArgs(args: readonly string[]): ParsedCliArgs {
     maxOutputTokens,
     dryRun,
     outputArtifact,
+    strictSchema,
+    verifyFindings,
   };
 }
 
