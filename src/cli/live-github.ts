@@ -3,6 +3,7 @@ import { commentBodyHasMarker } from "../util/marker.js";
 import { githubHeaders } from "../util/http.js";
 import { isRecord, isSafeInteger } from "../util/json-guards.js";
 import { writeBrandedAnnotation } from "../util/log.js";
+import type { ParsedCliArgs } from "./parse-args.js";
 import {
   LiveReviewError,
   buildInlineCommentBody,
@@ -11,7 +12,6 @@ import {
   preparePostedReview,
   readJsonResponse,
   readResponseId,
-  selectPostableComments,
   type FetchImpl,
   type LiveProviderOutcome,
   type LiveRunResult,
@@ -21,7 +21,7 @@ export async function runGithubLive(input: {
   readonly context: GithubContext;
   readonly diffText: string;
   readonly provider: LiveProviderOutcome;
-  readonly parsed: Parameters<typeof selectPostableComments>[0]["parsed"];
+  readonly parsed: ParsedCliArgs;
   readonly fetchImpl: FetchImpl;
 }): Promise<LiveRunResult> {
   const { context, diffText, provider, parsed, fetchImpl } = input;
