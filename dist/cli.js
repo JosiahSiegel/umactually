@@ -9779,7 +9779,33 @@ async function callEndpoint(config, fetchImpl, requestId, endpoint, baseUrl) {
     // path's diagnostic captures the actual root cause — the model
     // couldn't produce a parseable review, regardless of whether the retry
     // request itself reached the provider.
-    const retryBodyConfig = stripResponseFormat(buildBodyConfig(config));
+    //
+    // Bumped-budget retry: some providers (notably MiniMax-M3) emit
+    // long reasoning blocks that consume the entire output budget
+    // before the model can write the JSON review. When the first
+    // attempt's raw response is large (suggests the model produced
+    // content) but the extracted text payload is small or empty
+    // (suggests the actual review didn't make it through), raise
+    // `maxOutputTokens` for the retry so the model has more room.
+    // The retry still uses the same prompt, same schema, same model
+    // — just more output budget.
+    const firstAttemptBodyConfig = stripResponseFormat(buildBodyConfig(config));
+    // Heuristic: when the response is "large but empty" (rawText > 16K
+    // but textPayload < 200 chars), the model likely produced reasoning
+    // only and was truncated before the JSON review. Double the budget
+    // for the retry. Capped at 128K to avoid blowing past provider
+    // limits.
+    const needsMoreBudget = rawText.length > 16_000 && textPayload.length < 200;
+    const bumpedMaxOutput = needsMoreBudget && config.maxOutputTokens !== undefined
+        ? Math.min(config.maxOutputTokens * 2, 128_000)
+        : config.maxOutputTokens;
+    if (process.env["UMACTUALLY_DEBUG_RAW"] === "1" && needsMoreBudget) {
+        writeDebugRaw(`[DEBUG-RAW] bumped-budget retry: rawText.length=${rawText.length} textPayload.length=${textPayload.length} bumpedMaxOutput=${bumpedMaxOutput}\n`, config);
+    }
+    const retryBodyConfig = {
+        ...firstAttemptBodyConfig,
+        ...(bumpedMaxOutput !== undefined ? { maxOutputTokens: bumpedMaxOutput } : {}),
+    };
     const retryBody = endpoint === ENDPOINT_RESPONSES
         ? buildResponsesBody(retryBodyConfig, { userOverride: PARSE_FAIL_RETRY_PROMPT })
         : buildChatBody(retryBodyConfig, { userOverride: PARSE_FAIL_RETRY_PROMPT });

@@ -39,18 +39,25 @@ describe("extractHostname: hostname-only match, always lowercased", () => {
     expect(extractHostname("API.MINIMAX.IO")).toBe("api.minimax.io");
   });
 
-  it("returns null for an unparseable scheme-less `host:port` string (localhost:8080)", () => {
-    // `new URL("localhost:8080")` parses as `localhost:8080/` but
-    // with hostname `""` (empty string) on current Node — the URL
-    // parser interprets the `:` as a port separator but the host
-    // is empty because there's no scheme. We then take the try
-    // branch and return `host.toLowerCase()` which is `""` — the
-    // function returns `null` because the parsed hostname is
-    // empty. The fallback path is not reached for this input.
-    // This is correct behavior: `localhost:8080` without a
-    // scheme is ambiguous (could be a host:port pair, or could
-    // be a malformed URL), and the auto-model shouldn't try to
+  it("returns null for a scheme-less `host:port` string (localhost:8080)", () => {
+    // `new URL("localhost:8080")` parses successfully on current
+    // Node (the URL parser interprets the `:` as a port separator
+    // and the host as `""` because there is no scheme). The try
+    // branch returns `new URL(...).hostname` which is the empty
+    // string; the function then returns `null` because the parsed
+    // hostname is empty. The fallback path is not reached for this
+    // input. The behavior is correct: `localhost:8080` without a
+    // scheme is ambiguous (could be a host:port pair, or could be
+    // a malformed URL), and the auto-model should not try to
     // route a hostname-less URL.
+    //
+    // The previous version of this test described the input as
+    // "unparseable" but the WHATWG URL parser actually accepts it
+    // (with an empty hostname). The assertion and the contract
+    // (return null for an empty host) are unchanged; the wording
+    // was tightened so a future reader doesn't think the test is
+    // asserting "input is unparseable" when it is asserting
+    // "extracted hostname is empty".
     expect(extractHostname("localhost:8080")).toBe(null);
   });
 
