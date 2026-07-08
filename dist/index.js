@@ -9717,6 +9717,12 @@ async function callEndpoint(config, fetchImpl, requestId, endpoint, baseUrl) {
         writeDebugRaw(`[DEBUG-RAW] textPayload last 200:  ${JSON.stringify(safeTextPayload.slice(-200))}\n`, config);
         writeDebugRaw(`[DEBUG-RAW] hasResponseCompletedEvent: ${rawText.includes('"type":"response.completed"')}\n`, config);
     }
+    // Surface parse-decision signals so future parse-fail runs can tell
+    // whether the self-healing retry was skipped (detectProviderError
+    // matched) or actually ran. The M3 model can produce a 100+ KB
+    // response whose only content is reasoning — `joinOutputText`
+    // returns empty and the parser correctly classifies it as
+    // parse-fail, but we need to know whether the retry fired.
     const review = parseReviewPayload(textPayload);
     // [DEBUG-RAW] Trace the parse decision so the next parse-fail run can
     // show exactly what `parseReviewPayload` returned. Without this, we
@@ -9748,6 +9754,9 @@ async function callEndpoint(config, fetchImpl, requestId, endpoint, baseUrl) {
     // (`provider_error`) so the live-review layer can hard-fail instead
     // of posting a 0-finding COMMENT review that exits 0.
     const providerError = detectProviderError(rawText);
+    if (process.env["UMACTUALLY_DEBUG_RAW"] === "1") {
+        writeDebugRaw(`[DEBUG-RAW] detectProviderError: ${providerError === null ? "null" : `kind=${providerError.kind} message=${JSON.stringify(providerError.message)}`}\n`, config);
+    }
     if (providerError !== null) {
         throw new ProviderError("provider_error", endpoint, response.status, requestId, providerError.message, { rawText, providerErrorDetails: providerError });
     }
