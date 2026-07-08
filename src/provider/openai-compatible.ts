@@ -97,6 +97,22 @@ function buildBodyConfig(config: ProviderCallConfig): {
   };
 }
 
+/**
+ * Return a copy of the body config with `responseFormat` stripped.
+ * Used by the parse-fail self-healing retry: the first attempt
+ * sends the wire schema, and if the model returns prose instead of
+ * JSON (because the provider silently rejected the schema), the
+ * retry drops the schema and relies on the system prompt's prose
+ * "Return strict JSON only" instruction.
+ */
+function stripResponseFormat<T extends { readonly responseFormat?: unknown }>(
+  config: T,
+): Omit<T, "responseFormat"> & { readonly responseFormat?: never } {
+  const { responseFormat: _drop, ...rest } = config;
+  void _drop;
+  return rest as Omit<T, "responseFormat">;
+}
+
 export async function runProviderRequest(config: ProviderCallConfig): Promise<ProviderCallResult> {
   const fetchImpl = config.fetchImpl ?? globalThis.fetch.bind(globalThis);
   const requestId = createRequestId();
@@ -327,14 +343,22 @@ async function callEndpoint(
   // emit only an SSE stream of metadata events with no actual output)
   // recover cleanly when reminded to emit JSON.
   //
+  // The retry DROPS the strict `response_format` constraint. Some
+  // providers silently reject the wire schema and produce prose
+  // instead of JSON — the retry lets the system prompt's "Return
+  // strict JSON only" prose instruction carry the contract instead.
+  // This makes the action dynamically adapt to any provider without
+  // a hardcoded compatibility list.
+  //
   // Note: any network/HTTP error on the retry is collapsed back into a
   // `parse` error (with the ORIGINAL rawText attached) so the parse-fail
   // path's diagnostic captures the actual root cause — the model
   // couldn't produce a parseable review, regardless of whether the retry
   // request itself reached the provider.
+  const retryBodyConfig = stripResponseFormat(buildBodyConfig(config));
   const retryBody = endpoint === ENDPOINT_RESPONSES
-    ? buildResponsesBody(buildBodyConfig(config), { userOverride: PARSE_FAIL_RETRY_PROMPT })
-    : buildChatBody(buildBodyConfig(config), { userOverride: PARSE_FAIL_RETRY_PROMPT });
+    ? buildResponsesBody(retryBodyConfig, { userOverride: PARSE_FAIL_RETRY_PROMPT })
+    : buildChatBody(retryBodyConfig, { userOverride: PARSE_FAIL_RETRY_PROMPT });
   let retryReview: ProviderReviewPayload | null = null;
   // Track the retry's HTTP status (if it reached performFetch and
   // returned a response) so the parse-fail ProviderError can surface
