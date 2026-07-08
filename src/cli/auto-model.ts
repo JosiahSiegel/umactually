@@ -12,15 +12,18 @@
  * went from gpt-4o to gpt-5 explicitly to reduce path fabrication.
  *
  * The resolver here picks a model with the best cost-vs-hallucination
- * trade-off for the active provider:
+ * trade-off for the active provider. Hostname match (not full-URL
+ * match) — a URL like `https://api.minimax.io/anthropic` correctly
+ * routes to MiniMax-Text-01 because the hostname is `api.minimax.io`,
+ * even though the path contains "anthropic":
  *   - provider=copilot  → claude-3-5-sonnet (Copilot's Claude backend;
  *     this is the model string the GitHub Copilot Chat Completions
  *     endpoint actually accepts — the v3.x and v3.5 Sonnet line is
  *     the Copilot-routable Claude. claude-sonnet-4.6 is NOT a
  *     Copilot-routable string and would 404.)
- *   - provider=openai-compatible + URL contains "anthropic"  → claude-sonnet-4.6
- *   - provider=openai-compatible + URL contains "generativelanguage"  → gemini-2.5-flash
- *   - provider=openai-compatible + URL contains "minimax" or "MiniMax"  → MiniMax-Text-01
+ *   - provider=openai-compatible + URL hostname contains "minimax"  → MiniMax-Text-01
+ *   - provider=openai-compatible + URL hostname contains "anthropic"  → claude-sonnet-4.6
+ *   - provider=openai-compatible + URL hostname contains "generativelanguage" or "googleapis"  → gemini-2.5-flash
  *   - provider=openai-compatible otherwise (incl. api.openai.com)  → gpt-5-mini
  *
  * The MiniMax branch was added when PR #28's self-review hit HTTP
@@ -110,35 +113,34 @@ export function resolveAutoModel(input: {
 function extractHostname(url: string): string | null {
   const trimmed = url.trim();
   if (trimmed.length === 0) return null;
+  let host: string | null;
   try {
-    return new URL(trimmed).hostname.toLowerCase();
+    // `URL.hostname` is already lowercased per the WHATWG URL spec.
+    // The comparison against lowercase host keys in `HOST_ROUTES`
+    // and `URL_SPECIFIC_FALLBACKS` works because the URL parser
+    // normalizes the case at parse time.
+    host = new URL(trimmed).hostname;
   } catch {
-    // Fallback: strip scheme manually, then read up to the first
-    // `/` or `:`. `localhost:8080` parses to hostname "localhost"
-    // in some runtimes and `8080` in others, so this path handles
-    // the parse-failure case explicitly.
+    // Fallback: scheme-less URLs (`API.MINIMAX.IO`, `localhost:8080`)
+    // don't parse with `new URL()`. Strip the scheme manually, then
+    // read up to the first `/` or `:`. The previous implementation
+    // forgot to lowercase the result here, so a scheme-less
+    // uppercase URL like `API.MINIMAX.IO` returned `API.MINIMAX.IO`
+    // (uppercase) and did NOT match the lowercase `minimax` route --
+    // a real bug. We lowercase before returning so the
+    // case-insensitive match works regardless of whether the URL
+    // had a parseable scheme.
     const schemeSep = trimmed.indexOf("://");
-    if (schemeSep === -1) {
-      const firstSlash = trimmed.indexOf("/");
-      const firstColon = trimmed.indexOf(":");
-      const stop = firstSlash === -1 ? trimmed.length : firstSlash;
-      const host = firstColon === -1 || firstColon > stop
-        ? trimmed.slice(0, stop)
-        : trimmed.slice(0, firstColon);
-      return host.length > 0 ? host : null;
-    }
-    const sepLen = 3; // "://" length
-    const afterScheme = trimmed.slice(schemeSep + sepLen);
+    const afterScheme = schemeSep === -1 ? trimmed : trimmed.slice(schemeSep + 3);
     const firstSlash = afterScheme.indexOf("/");
     const firstColon = afterScheme.indexOf(":");
     const stop = firstSlash === -1 ? afterScheme.length : firstSlash;
-    const host = firstColon === -1 || firstColon > stop
+    host = firstColon === -1 || firstColon > stop
       ? afterScheme.slice(0, stop)
       : afterScheme.slice(0, firstColon);
-    return host.length > 0 ? host : null;
   }
+  return host.length > 0 ? host.toLowerCase() : null;
 }
-
 /**
  * The fallback chain used when a primary model returns a parse-fail
  * or a non-parseable response. Each entry is a model name the

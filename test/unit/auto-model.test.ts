@@ -78,6 +78,24 @@ describe("resolveAutoModel", () => {
     ).toBe("MiniMax-Text-01");
   });
 
+  it("returns MiniMax-Text-01 for scheme-less uppercase URLs (regression: extractHostname fallback was not lowercasing)", () => {
+    // Regression: `extractHostname` previously returned the host in
+    // its original case for scheme-less URLs (because `new URL()`
+    // throws on inputs like `API.MINIMAX.IO` and the fallback path
+    // forgot to lowercase). The case-insensitive substring match
+    // against the lowercase `minimax` route then FAILED, so the
+    // resolver fell through to the default gpt-5-mini — which the
+    // MiniMax provider would 400 on. After the fix, the fallback
+    // path also lowercases, so the match works.
+    expect(
+      resolveAutoModel({
+        provider: "openai-compatible",
+        apiUrl: "API.MINIMAX.IO",
+        env: {},
+      }),
+    ).toBe("MiniMax-Text-01");
+  });
+
   it("returns gpt-5-mini for the default OpenAI-compatible case", () => {
     expect(
       resolveAutoModel({
