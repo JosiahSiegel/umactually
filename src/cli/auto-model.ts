@@ -177,9 +177,13 @@ const PROVIDER_FALLBACKS: Readonly<Record<"openai-compatible" | "copilot", reado
  * Per-URL fallback chains for providers that only accept their own
  * model names. The MiniMax provider (`api.minimax.io`) returns
  * HTTP 400 for any OpenAI/Anthropic/Google model name, so the
- * generic openai-compatible fallback chain would 400 too. The
- * URL-specific chains here override the default for the matching
- * hostnames.
+ * generic openai-compatible fallback chain would 400 too.
+ *
+ * The map key is the host substring used by `HOST_ROUTES` so a
+ * single source of truth drives both primary and fallback model
+ * selection. Adding a new provider means adding ONE entry to
+ * `HOST_ROUTES` and (if it needs custom fallbacks) ONE entry here
+ * with the same key.
  */
 const URL_SPECIFIC_FALLBACKS: Readonly<Record<string, readonly string[]>> = {
   // `toLowerCase()` is applied to the URL before lookup so this
@@ -204,16 +208,25 @@ export const DEFAULT_FALLBACK_MODELS: readonly string[] = PROVIDER_FALLBACKS["op
  * URL-specific chain (e.g. `api.minimax.io`), the URL-specific
  * chain wins — the generic OpenAI chain would 400 on those
  * providers.
+ *
+ * Hostname-only matching: matches against the URL hostname, not
+ * the full URL, so a path like `/minimax-router` in
+ * `https://example.com/minimax-router` does NOT falsely trigger
+ * the MiniMax fallback chain. This is the same contract as
+ * `resolveAutoModel`'s hostname-based routing — both functions
+ * use `extractHostname` so the match is consistent.
  */
 export function fallbackModelsFor(
   provider: "openai-compatible" | "copilot",
   apiUrl?: string | null,
 ): readonly string[] {
   if (apiUrl !== undefined && apiUrl !== null && apiUrl.length > 0) {
-    const lower = apiUrl.toLowerCase();
-    for (const [hostKey, chain] of Object.entries(URL_SPECIFIC_FALLBACKS)) {
-      if (lower.includes(hostKey)) {
-        return chain;
+    const hostname = extractHostname(apiUrl);
+    if (hostname !== null) {
+      for (const [hostKey, chain] of Object.entries(URL_SPECIFIC_FALLBACKS)) {
+        if (hostname.includes(hostKey)) {
+          return chain;
+        }
       }
     }
   }

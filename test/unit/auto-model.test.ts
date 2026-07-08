@@ -140,6 +140,28 @@ describe("fallbackModelsFor: URL-specific chains for non-OpenAI providers", () =
     expect(fallbackModelsFor("copilot", "https://api.openai.com/v1"))
       .toEqual(["claude-3-5-sonnet"]);
   });
+
+  it("does NOT match MiniMax for a URL whose path contains 'minimax' but whose host is unrelated", () => {
+    // Regression: substring matching on the full URL was the previous
+    // behavior. A URL like `https://example.com/minimax-router` would
+    // falsely match `url.includes("minimax")` and return the MiniMax
+    // chain (which would 400 on a non-MiniMax provider). The
+    // hostname-only extract prevents that.
+    const chain = fallbackModelsFor(
+      "openai-compatible",
+      "https://example.com/minimax-router/v1",
+    );
+    expect(chain).toContain("gpt-5-mini");
+    expect(chain).not.toContain("MiniMax-Text-01");
+  });
+
+  it("uses hostname for case-insensitive match (API.MINIMAX.IO)", () => {
+    const chain = fallbackModelsFor(
+      "openai-compatible",
+      "https://API.MINIMAX.IO/v1",
+    );
+    expect(chain).toContain("MiniMax-Text-01");
+  });
 });
 
 describe("DEFAULT_FALLBACK_MODELS", () => {
