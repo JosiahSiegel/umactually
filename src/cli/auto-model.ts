@@ -33,6 +33,8 @@
  *
  * Users can always override via `--model` (or `UMACTUALLY_MODEL`).
  */
+import { extractHostname } from "../util/url.js";
+
 
 const COPILOT_DEFAULT_MODEL = "claude-3-5-sonnet";
 const ANTHROPIC_DEFAULT_MODEL = "claude-sonnet-4.6";
@@ -98,49 +100,6 @@ export function resolveAutoModel(input: {
   return OPENAI_DEFAULT_MODEL;
 }
 
-/**
- * Extract the hostname from a URL string. Returns null when the
- * input is empty, malformed, or a bare string without a scheme
- * separator. The caller is expected to fall back to the default
- * model when null is returned.
- *
- * Why hostname-only: substring matching on the full URL is too
- * loose. A URL like `https://example.com/minimax-router` would
- * falsely match `url.includes("minimax")` and pick a MiniMax
- * model. The hostname extract prevents that — `example.com`
- * doesn't contain `minimax`, so the model is the default.
- */
-function extractHostname(url: string): string | null {
-  const trimmed = url.trim();
-  if (trimmed.length === 0) return null;
-  let host: string | null;
-  try {
-    // `URL.hostname` is already lowercased per the WHATWG URL spec.
-    // The comparison against lowercase host keys in `HOST_ROUTES`
-    // and `URL_SPECIFIC_FALLBACKS` works because the URL parser
-    // normalizes the case at parse time.
-    host = new URL(trimmed).hostname;
-  } catch {
-    // Fallback: scheme-less URLs (`API.MINIMAX.IO`, `localhost:8080`)
-    // don't parse with `new URL()`. Strip the scheme manually, then
-    // read up to the first `/` or `:`. The previous implementation
-    // forgot to lowercase the result here, so a scheme-less
-    // uppercase URL like `API.MINIMAX.IO` returned `API.MINIMAX.IO`
-    // (uppercase) and did NOT match the lowercase `minimax` route --
-    // a real bug. We lowercase before returning so the
-    // case-insensitive match works regardless of whether the URL
-    // had a parseable scheme.
-    const schemeSep = trimmed.indexOf("://");
-    const afterScheme = schemeSep === -1 ? trimmed : trimmed.slice(schemeSep + 3);
-    const firstSlash = afterScheme.indexOf("/");
-    const firstColon = afterScheme.indexOf(":");
-    const stop = firstSlash === -1 ? afterScheme.length : firstSlash;
-    host = firstColon === -1 || firstColon > stop
-      ? afterScheme.slice(0, stop)
-      : afterScheme.slice(0, firstColon);
-  }
-  return host.length > 0 ? host.toLowerCase() : null;
-}
 /**
  * The fallback chain used when a primary model returns a parse-fail
  * or a non-parseable response. Each entry is a model name the

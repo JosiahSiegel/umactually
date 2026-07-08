@@ -80,6 +80,53 @@ export function extractOrigin(baseUrl: string): string {
 }
 
 /**
+ * Extract the hostname from a URL string. Returns null when the
+ * input is empty, malformed, or a bare string without a scheme
+ * separator. The caller is expected to fall back to a sensible
+ * default when null is returned.
+ *
+ * Why hostname-only: substring matching on the full URL is too
+ * loose. A URL like `https://example.com/minimax-router` would
+ * falsely match `url.includes("minimax")` and pick a MiniMax
+ * model. The hostname extract prevents that — `example.com`
+ * doesn't contain `minimax`, so the model is the default.
+ *
+ * The returned hostname is always lowercased so callers can compare
+ * directly against lowercase host keys. `URL.hostname` is already
+ * lowercased per the WHATWG URL spec; the manual fallback path
+ * (for scheme-less URLs) explicitly lowercases to keep the
+ * case-insensitive match consistent regardless of whether the
+ * URL had a parseable scheme.
+ *
+ * Examples:
+ *   - `https://api.example.com/v1`        → `api.example.com`
+ *   - `API.MINIMAX.IO`                    → `api.minimax.io`
+ *   - `localhost:8080`                    → `localhost`
+ *   - `` (empty string)                   → null
+ */
+export function extractHostname(baseUrl: string): string | null {
+  const trimmed = baseUrl.trim();
+  if (trimmed.length === 0) return null;
+  let host: string | null;
+  try {
+    host = new URL(trimmed).hostname;
+  } catch {
+    // Fallback: scheme-less URLs (`API.MINIMAX.IO`, `localhost:8080`)
+    // don't parse with `new URL()`. Strip the scheme manually, then
+    // read up to the first `/` or `:`.
+    const schemeSep = trimmed.indexOf("://");
+    const afterScheme = schemeSep === -1 ? trimmed : trimmed.slice(schemeSep + 3);
+    const firstSlash = afterScheme.indexOf("/");
+    const firstColon = afterScheme.indexOf(":");
+    const stop = firstSlash === -1 ? afterScheme.length : firstSlash;
+    host = firstColon === -1 || firstColon > stop
+      ? afterScheme.slice(0, stop)
+      : afterScheme.slice(0, firstColon);
+  }
+  return host.length > 0 ? host.toLowerCase() : null;
+}
+
+/**
  * Return the ORDERED list of base URL candidates to try when calling
  * the openai-compatible provider. The first candidate is the
  * operator-supplied URL as-pasted (after trimming trailing slashes) —
