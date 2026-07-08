@@ -33,7 +33,9 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
      8-fabrication count from PR #56.
   5. **Model auto-resolver** — `model: "auto"` no longer passes
      through verbatim. Resolves to `gpt-5-mini` (OpenAI),
-     `claude-sonnet-4.6` (Anthropic, Copilot), or
+     `claude-sonnet-4.6` (Anthropic), `claude-3-5-sonnet`
+     (Copilot — the 4.6 string is NOT Copilot-routable and
+     would 404, so Copilot uses the 3.5 Sonnet line), or
      `gemini-2.5-flash` (Google) based on the active provider +
      `UMACTUALLY_API_URL`. Per the Vectara HHEM 2026-05-11
      leaderboard, these models have HHEM 5-11% vs the
