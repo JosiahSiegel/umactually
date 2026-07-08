@@ -92,15 +92,12 @@ export async function requestLiveReview(input: {
         fetchImpl: input.fetchImpl as typeof fetch,
       });
       if (result.ok) {
-        // Step 1: normalize WITHOUT the verify filter so the
+        // Step 1: normalize without the verify filter so the
         // parse-warnings artifact (built in step 2) records every
         // off-diff citation the model emitted, not just the ones
         // that survived the inline filter. The filter is a
         // defense-in-depth, not a replacement for the artifact.
-        const preVerifyReview = normalizeProviderReview(result.review, [providerApiKey, input.platformToken], {
-          enabled: false,
-          diffText: input.diffText,
-        });
+        const preVerifyReview = normalizeProviderReview(result.review, [providerApiKey, input.platformToken]);
         // Step 2: build the parse-warnings artifact from the
         // pre-verify review (so it captures every fabrication).
         const preVerifyOutcome = withParseWarnings({
@@ -158,10 +155,7 @@ export async function requestLiveReview(input: {
 
     if (result.ok) {
       // See the Copilot branch for the three-step flow rationale.
-      const preVerifyReview = normalizeProviderReview(result.review, [providerApiKey, input.platformToken], {
-        enabled: false,
-        diffText: input.diffText,
-      });
+      const preVerifyReview = normalizeProviderReview(result.review, [providerApiKey, input.platformToken]);
       const preVerifyOutcome = withParseWarnings({
         review: preVerifyReview,
         endpoint: result.endpoint,
@@ -261,37 +255,19 @@ function applyVerifyFilter(review: LiveReview, diffText: string): LiveReview {
 function normalizeProviderReview(
   payload: ProviderReviewPayload,
   secrets: readonly string[],
-  verify: {
-    readonly enabled: boolean;
-    readonly diffText: string;
-  },
 ): LiveReview {
-  const sanitizedComments = payload.comments.map((comment) => normalizeProviderComment(comment, secrets));
-  const sanitizedSuppressed = payload.suppressed_comments.map((comment) => normalizeProviderComment(comment, secrets));
-  // Layer 4 deterministic verification: drop comments whose (path, line)
-  // doesn't anchor to the diff. This is the same check the post-filter
-  // runs, but doing it here means the surviving comments[] is what the
-  // platform-posting paths see. Comments dropped here are NOT moved to
-  // suppressedComments — the parse-warnings artifact is the authoritative
-  // record of what was dropped. This filter is intentionally NOT
-  // applied to the parse-fail fallback (`buildMalformedProviderFallback`
-  // callers pass an empty diff and skip verification).
-  const verifiedComments = verify.enabled && verify.diffText.length > 0
-    ? sanitizedComments.filter((c) => {
-        // The verification is path+line, and the line must be a
-        // positive integer (the parser already enforces this on the
-        // raw model output, but a sanitize step could change things).
-        if (!Number.isInteger(c.line) || c.line < 1 || c.path.length === 0) {
-          return false;
-        }
-        return parseDiffPositions(verify.diffText).hasPosition(c);
-      })
-    : sanitizedComments;
+  // Layer 4 deterministic verification is applied in the caller
+  // (see `applyVerifyFilter` in `live-provider.ts`) AFTER the
+  // parse-warnings artifact is built. Doing it in the caller means
+  // the artifact captures every fabrication event, even ones the
+  // inline filter drops. Don't re-add the filter here — see
+  // the three-step flow in the Copilot/openai-compatible
+  // branches.
   return {
     summary: sanitizeForPost(payload.summary, secrets),
     verdict: payload.verdict,
-    comments: verifiedComments,
-    suppressedComments: sanitizedSuppressed,
+    comments: payload.comments.map((comment) => normalizeProviderComment(comment, secrets)),
+    suppressedComments: payload.suppressed_comments.map((comment) => normalizeProviderComment(comment, secrets)),
   };
 }
 
