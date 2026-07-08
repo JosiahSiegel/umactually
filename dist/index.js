@@ -9578,6 +9578,14 @@ async function readPromptFiles(paths, byteCap, options) {
  * cause valid responses to be rejected by providers that enforce
  * the schema (and per the model-comparison survey, the `severity`
  * and `verdict` strings are exactly where providers diverge).
+ *
+ * The wire schema intentionally has NO `description` fields. Strict
+ * JSON-schema providers (e.g. OpenAI strict-mode) treat `description`
+ * as machine-checked, and a description with prose like "A path
+ * from the Files-in-diff list below" can be interpreted as a
+ * constraint that breaks valid responses. The in-context system
+ * prompt carries the full description text; the wire schema is
+ * pure shape.
  */
 const REVIEW_PAYLOAD_JSON_SCHEMA = {
     type: "object",
@@ -9585,11 +9593,7 @@ const REVIEW_PAYLOAD_JSON_SCHEMA = {
     required: ["summary", "verdict", "comments", "suppressed_comments"],
     properties: {
         summary: { type: "string" },
-        verdict: {
-            type: "string",
-            minLength: 1,
-            description: "One of COMMENT, APPROVED, NEEDS_FIX, DISCUSS, or SHIP. The parser accepts any non-empty string and the verdict is reconciled downstream.",
-        },
+        verdict: { type: "string", minLength: 1 },
         comments: {
             type: "array",
             items: {
@@ -9597,10 +9601,10 @@ const REVIEW_PAYLOAD_JSON_SCHEMA = {
                 additionalProperties: false,
                 required: ["path", "line", "body", "severity", "category"],
                 properties: {
-                    path: { type: "string", description: "A path from the Files-in-diff list below." },
-                    line: { type: "integer", minimum: 1, description: "A line number that appears in the diff for that path." },
+                    path: { type: "string" },
+                    line: { type: "integer", minimum: 1 },
                     body: { type: "string" },
-                    severity: { type: "string", minLength: 1, description: "Severity string. Canonical values: info, low, medium, high, critical, security, leak. Parser accepts any non-empty value." },
+                    severity: { type: "string", minLength: 1 },
                     category: { type: "string" },
                 },
             },
@@ -10075,11 +10079,16 @@ function readRequiredConfig(value, name) {
 }
 function readConfiguredModel(parsed, env) {
     const fromArgs = parsed.model;
-    if (fromArgs !== null && fromArgs.length > 0) {
+    // Treat the literal string "auto" the same as the default
+    // (unset): the user is asking for the opinionated resolver,
+    // not for the provider's "auto" pass-through. Without this,
+    // `--model auto` would short-circuit before the resolver
+    // runs and send the literal string "auto" to the provider.
+    if (fromArgs !== null && fromArgs.length > 0 && fromArgs !== "auto") {
         return fromArgs;
     }
     const fromEnv = env["UMACTUALLY_MODEL"];
-    if (fromEnv !== undefined && fromEnv.length > 0) {
+    if (fromEnv !== undefined && fromEnv.length > 0 && fromEnv !== "auto") {
         return fromEnv;
     }
     // Layer 5: `auto` is no longer passed verbatim. The resolver picks

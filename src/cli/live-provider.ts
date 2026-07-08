@@ -293,11 +293,16 @@ function readRequiredConfig(value: string | undefined | null, name: string): str
 
 function readConfiguredModel(parsed: ParsedCliArgs, env: NodeJS.ProcessEnv): string {
   const fromArgs = parsed.model;
-  if (fromArgs !== null && fromArgs.length > 0) {
+  // Treat the literal string "auto" the same as the default
+  // (unset): the user is asking for the opinionated resolver,
+  // not for the provider's "auto" pass-through. Without this,
+  // `--model auto` would short-circuit before the resolver
+  // runs and send the literal string "auto" to the provider.
+  if (fromArgs !== null && fromArgs.length > 0 && fromArgs !== "auto") {
     return fromArgs;
   }
   const fromEnv = env["UMACTUALLY_MODEL"];
-  if (fromEnv !== undefined && fromEnv.length > 0) {
+  if (fromEnv !== undefined && fromEnv.length > 0 && fromEnv !== "auto") {
     return fromEnv;
   }
   // Layer 5: `auto` is no longer passed verbatim. The resolver picks
