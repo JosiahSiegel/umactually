@@ -13,8 +13,11 @@ import { truncateBodyForLog } from "../util/http.js";
 import type { FetchImpl } from "../util/http.js";
 import { isPositiveSafeInteger, isRecord, isSafeInteger } from "../util/json-guards.js";
 import { renderSummary, type LayoutId, type ReviewData as LayoutReviewData } from "../render/summary-layouts.js";
-import { countBySeverity as countBySeverityUtil, severityRank } from "../util/severity.js";
+import { countBySeverity as countBySeverityUtil } from "../util/severity.js";
 import { mapVerdictToAzureStatus, mapVerdictToGithubEvent, reconcileVerdictForEmptySeverityCounts } from "../util/verdict.js";
+import { shouldKeepFinding } from "../config/severity.js";
+import type { Severity } from "../config/types.js";
+import { normalizeProviderSeverity } from "../provider/provider-parse.js";
 import type { ProviderComment } from "../provider/provider-parse.js";
 import type { ParsedCliArgs } from "./parse-args.js";
 
@@ -43,7 +46,7 @@ export type LiveReview = {
   readonly verdict: string;
   /**
    * Pre-filter finding count. Includes comments the model produced that may be
-   * filtered out by severity policy, off-diff suppression, or `ignore-minor`.
+   * filtered out by severity policy or off-diff suppression.
    * Use this for the "Considered" metric in the parent card.
    */
   readonly comments: readonly LiveReviewComment[];
@@ -265,14 +268,13 @@ export function buildReviewBody(input: {
   readonly layout?: LayoutId;
   /**
    * Optional threshold context forwarded to the rendered layout so the
-   * `🏷️ …` severity tally can append a `_(filtered)_` marker when the
-   * active `--minimum-severity` / `--ignore-minor` setting hides one or
-   * more tiers. Omit (or pass `null`/`false`) for the byte-identical
-   * legacy tally — used by unit tests, simulate-findings, and any
-   * caller that does not yet have a `ParsedCliArgs` in scope.
+   * `🏷️ …` severity tally can append a `*` marker when the active
+   * `--minimum-severity` setting hides one or more tiers. Omit (or pass
+   * `null`) for the byte-identical legacy tally — used by unit tests,
+   * simulate-findings, and any caller that does not yet have a
+   * `ParsedCliArgs` in scope.
    */
   readonly minimumSeverity?: string | null;
-  readonly ignoreMinor?: boolean;
 }): string {
   // Delegate to the "severity-table" layout from
   // `src/render/summary-layouts.ts` — selected from the 20-layout
@@ -305,7 +307,6 @@ export function buildReviewBody(input: {
     postedComments,
     secrets: input.secrets,
     minimumSeverity: input.minimumSeverity ?? null,
-    ignoreMinor: input.ignoreMinor === true,
   };
   return renderSummary(input.layout ?? "severity-table", reviewData);
 }
@@ -666,12 +667,10 @@ export function preparePostedReview(input: {
     postedComments: postableComments,
     secrets: input.secrets,
     // Threshold context — forwarded so the rendered `🏷️ …` tally can
-    // append `_(filtered)_` when the active `--minimum-severity` or
-    // `--ignore-minor` flag hides one or more tiers. Older callers
-    // (unit tests, simulate-findings) can omit both and get the
-    // byte-identical legacy tally.
+    // append `*` when the active `--minimum-severity` setting hides one
+    // or more tiers. Older callers (unit tests, simulate-findings) can
+    // omit it and get the byte-identical legacy tally.
     minimumSeverity: input.parsed.minimumSeverity,
-    ignoreMinor: input.parsed.ignoreMinor,
   });
 
   return {
@@ -795,12 +794,22 @@ export function ensureHttpOk(response: Response, code: string, action: string): 
 export { isRecord };
 
 function passesSeverityPolicy(comment: LiveReviewComment, parsed: ParsedCliArgs): boolean {
-  if (parsed.ignoreMinor && comment.severity.toLowerCase() === "low") {
-    return false;
-  }
-  const minimum = parsed.minimumSeverity;
-  if (minimum === null) {
-    return true;
-  }
-  return severityRank(comment.severity) >= severityRank(minimum);
+  // `minimumSeverityInternal` is pre-resolved at arg-parse time (CLI
+  // enum → internal Severity via the alias table). Reading it here
+  // avoids re-parsing on every comment and ensures a malformed value
+  // fails fast at the CLI boundary instead of throwing
+  // InvalidConfigError deep in the live path.
+  const minimum = parsed.minimumSeverityInternal;
+  if (minimum === null) return true;
+  // Normalize the comment's severity before the threshold + carve-out
+  // check. The provider may emit non-canonical values (typos like
+  // "warning", unknown ranks, etc.) and `LiveReviewComment.severity`
+  // is typed `string`, not `Severity`. Without normalization, the
+  // carve-out's `finding === "security"` string compare would silently
+  // miss a typo and filter a finding that the security policy says
+  // must be preserved. normalizeProviderSeverity is the same function
+  // the live-path parser uses, so the threshold check sees the same
+  // canonical severity the rendered tally would.
+  const normalized = normalizeProviderSeverity(comment.severity, comment.body);
+  return shouldKeepFinding({ minimum }, normalized as Severity);
 }

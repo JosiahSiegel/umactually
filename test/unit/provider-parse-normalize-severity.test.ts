@@ -8,6 +8,7 @@
 // re-classifies provider output and changes what gets posted vs filtered.
 
 import { describe, expect, it, vi } from "vitest";
+import { shouldKeepFinding } from "../../src/config/review-config.js";
 import {
   normalizeProviderSeverity,
   parseReviewPayload,
@@ -170,6 +171,11 @@ describe("normalizeProviderSeverity — provider scale → our scale", () => {
     expect(normalizeProviderSeverity("leak", "Consider adding hardening")).toBe("critical");
     expect(normalizeProviderSeverity("leak", "")).toBe("critical");
     expect(normalizeProviderSeverity("leak", null)).toBe("critical");
+  });
+
+  it("integration: security and leak bypass shouldKeepFinding at minimum critical", () => {
+    expect(shouldKeepFinding({ minimum: "critical" }, "security")).toBe(true);
+    expect(shouldKeepFinding({ minimum: "critical" }, "leak")).toBe(true);
   });
 });
 

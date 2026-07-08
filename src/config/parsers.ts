@@ -54,6 +54,17 @@ export function parseIntegerFromUnknown(value: unknown, field: string): number {
     if (!Number.isFinite(parsed)) {
       throw new InvalidConfigError(field, `expected finite integer, received ${REDACTED}`);
     }
+    // Reject values outside the safe-integer range so callers that
+    // rely on exact equality (severity-key lookups, cache keys,
+    // downstream arithmetic) do not silently truncate. The CLI's
+    // parseStrictInt has the same check; this is the config-loader's
+    // equivalent so the two surfaces agree.
+    if (!Number.isSafeInteger(parsed)) {
+      throw new InvalidConfigError(
+        field,
+        `expected integer in [${Number.MIN_SAFE_INTEGER}, ${Number.MAX_SAFE_INTEGER}], received ${REDACTED}`,
+      );
+    }
     return parsed;
   }
   throw new InvalidConfigError(field, `expected integer, received ${typeof value}`);
@@ -68,11 +79,36 @@ const VALID_SEVERITIES: ReadonlySet<Severity> = new Set<Severity>([
   "leak",
 ]);
 
+const SEVERITY_ALIASES: Readonly<Record<string, Severity | undefined>> = Object.freeze({
+  low: "minor",
+  medium: "major",
+  high: "critical",
+});
+
+// Startup invariant: every alias target must be a canonical Severity in
+// VALID_SEVERITIES. The TypeScript `Record<... , Severity | undefined>`
+// signature catches invalid targets at compile time, but a future
+// relaxation (e.g. widening the type during a refactor) would let bad
+// aliases slip through. This assertion runs once at module load and
+// throws if anyone introduces `"low": "banana"`-style drift. The
+// pin-by-test in `test/unit/config-extended.test.ts:config:
+// minimum-severity default + alias mapping` covers the live case; this
+// is the compile-time-fallback for static analysis.
+for (const [alias, target] of Object.entries(SEVERITY_ALIASES)) {
+  if (target !== undefined && !VALID_SEVERITIES.has(target)) {
+    throw new Error(
+      `severity alias "${alias}" maps to non-canonical severity ${JSON.stringify(target)}`,
+    );
+  }
+}
+
 export function parseSeverityFromUnknown(value: unknown, field: string): Severity {
   if (typeof value !== "string") {
     throw new InvalidConfigError(field, `expected severity string, received ${typeof value}`);
   }
   const normalized = value.trim().toLowerCase();
+  const alias = SEVERITY_ALIASES[normalized];
+  if (alias !== undefined) return alias;
   if (!VALID_SEVERITIES.has(normalized as Severity)) {
     throw new InvalidConfigError(field, `unknown severity ${REDACTED}`);
   }

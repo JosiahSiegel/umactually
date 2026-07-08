@@ -168,14 +168,6 @@ export const FIELDS = {
     type: "integer",
     defaultValue: 16_000,
   },
-  ignoreMinor: {
-    field: "ignoreMinor",
-    flag: "--ignore-minor",
-    input: "ignore-minor",
-    env: ["UMACTUALLY_IGNORE_MINOR", "REVIEW_IGNORE_MINOR"],
-    type: "boolean",
-    defaultValue: false,
-  },
   minimumSeverity: {
     field: "minimumSeverity",
     flag: "--minimum-severity",

@@ -346,12 +346,12 @@ describe("GitHub + Azure parity", () => {
 
 describe("buildReviewBody — severity-tally filter marker", () => {
   // CLARITY-22: the 🏷️ … tally should visually convey that some tiers
-  // were intentionally hidden by `--minimum-severity` or `--ignore-minor`
-  // so a "0 low" reading doesn't look like "0 low findings exist".
-  // The marker is per-tier: each filtered tier gets a trailing `*`,
-  // and a single code-fenced legend line `` `* = filtered by threshold` ``
-  // appears BELOW the tally. When no threshold is configured the
-  // tally is byte-identical to legacy (no asterisk, no legend).
+  // were intentionally hidden by `--minimum-severity` so a "0 low" reading
+  // doesn't look like "0 low findings exist". The marker is per-tier: each
+  // filtered tier gets a trailing `*`, and a single code-fenced legend line
+  // `` `* = filtered by threshold` `` appears BELOW the tally. When no
+  // threshold is configured the tally is byte-identical to legacy (no
+  // asterisk, no legend).
   const LEGEND = "`* = filtered by threshold`";
 
   const reviewWithMixedSeverities: LiveReview = {
@@ -366,7 +366,7 @@ describe("buildReviewBody — severity-tally filter marker", () => {
     suppressedComments: [],
   };
 
-  it("no threshold → tally has NO asterisks and NO legend (byte-identical to legacy)", () => {
+  it("minimumSeverity=null → tally has NO asterisks and NO legend (byte-identical to legacy)", () => {
     const body = buildReviewBody({
       review: reviewWithMixedSeverities,
       provider: "openai-compatible",
@@ -376,11 +376,44 @@ describe("buildReviewBody — severity-tally filter marker", () => {
       offDiffFromComments: [],
       severityCounts: { critical: 1, high: 1, medium: 1, low: 1 },
       secrets: SECRETS,
-      // No minimumSeverity / ignoreMinor — defaults must keep legacy output.
+      minimumSeverity: null,
     });
     expect(body).toContain("🏷️ `1` critical · `1` high · `1` medium · `1` low");
     expect(body).not.toContain(LEGEND);
-    expect(body).not.toMatch(/`1` \w+\*/); // no asterisk on any tier
+    expect(body).not.toMatch(/`1` \w+\*/u); // no asterisk on any tier
+  });
+
+  it("minimumSeverity='low' → tally has NO asterisks and NO legend", () => {
+    const body = buildReviewBody({
+      review: reviewWithMixedSeverities,
+      provider: "openai-compatible",
+      modelId: "auto",
+      validCommentCount: 4,
+      suppressedCommentCount: 0,
+      offDiffFromComments: [],
+      severityCounts: { critical: 1, high: 1, medium: 1, low: 1 },
+      secrets: SECRETS,
+      minimumSeverity: "low",
+    });
+    expect(body).toContain("🏷️ `1` critical · `1` high · `1` medium · `1` low");
+    expect(body).not.toContain(LEGEND);
+    expect(body).not.toMatch(/`1` \w+\*/u); // no asterisk on any tier
+  });
+
+  it("minimumSeverity='medium' → only low gets an asterisk; legend below tally", () => {
+    const body = buildReviewBody({
+      review: reviewWithMixedSeverities,
+      provider: "openai-compatible",
+      modelId: "auto",
+      validCommentCount: 3, // critical + high + medium survive
+      suppressedCommentCount: 0,
+      offDiffFromComments: [],
+      severityCounts: { critical: 1, high: 1, medium: 1 },
+      secrets: SECRETS,
+      minimumSeverity: "medium",
+    });
+    expect(body).toContain("🏷️ `1` critical · `1` high · `1` medium · `0` low*");
+    expect(body).toContain(LEGEND);
   });
 
   it("minimumSeverity='high' → medium + low get asterisks; legend below tally", () => {
@@ -399,77 +432,51 @@ describe("buildReviewBody — severity-tally filter marker", () => {
     expect(body).toContain(LEGEND);
   });
 
-  it("minimumSeverity='critical' → high + medium + low get asterisks", () => {
+  it("security + leak carve-out: severity 'security' / 'leak' findings are never asterisked regardless of minimumSeverity", () => {
+    // The four display tiers (critical/high/medium/low) are user-facing
+    // buckets; security + leak are CARVE-OUT findings that bypass the
+    // threshold entirely. They should never appear in the rendered tally
+    // at all (they're not in the four-tier summary), AND they should
+    // not be filtered out of postable comments. This test pins both:
+    // the rendered tally does not include `security*` or `leak*`
+    // markers, and the severity counts passed in are preserved as-is
+    // (the render layer doesn't decrement them).
+    const securityReview: LiveReview = {
+      summary: "test review",
+      verdict: "NEEDS_FIX",
+      comments: [
+        { path: "src/a.ts", line: 1, body: "leak", severity: "leak", category: "security" },
+        { path: "src/b.ts", line: 2, body: "sec", severity: "security", category: "security" },
+        { path: "src/c.ts", line: 3, body: "critical issue", severity: "critical", category: "security" },
+        { path: "src/d.ts", line: 4, body: "low issue", severity: "low", category: "style" },
+      ],
+      suppressedComments: [],
+    };
     const body = buildReviewBody({
-      review: reviewWithMixedSeverities,
+      review: securityReview,
       provider: "openai-compatible",
       modelId: "auto",
-      validCommentCount: 1,
+      validCommentCount: 3, // leak + security + critical survive; low filtered
       suppressedCommentCount: 0,
       offDiffFromComments: [],
-      severityCounts: { critical: 1 },
-      secrets: SECRETS,
-      minimumSeverity: "critical",
-    });
-    expect(body).toContain("🏷️ `1` critical · `0` high* · `0` medium* · `0` low*");
-    expect(body).toContain(LEGEND);
-  });
-
-  it("ignoreMinor=true → only low gets an asterisk; legend below tally", () => {
-    const body = buildReviewBody({
-      review: reviewWithMixedSeverities,
-      provider: "openai-compatible",
-      modelId: "auto",
-      validCommentCount: 3, // critical + high + medium survive
-      suppressedCommentCount: 0,
-      offDiffFromComments: [],
-      severityCounts: { critical: 1, high: 1, medium: 1 },
-      secrets: SECRETS,
-      ignoreMinor: true,
-    });
-    expect(body).toContain("🏷️ `1` critical · `1` high · `1` medium · `0` low*");
-    expect(body).toContain(LEGEND);
-  });
-
-  it("ignoreMinor=false + minimumSeverity='low' → ALL tiers visible → NO asterisks, NO legend", () => {
-    // minimumSeverity='low' means EVERYTHING (rank ≥ 1) is shown; low is
-    // explicitly NOT filtered. ignoreMinor=false. So the marker must be
-    // absent — same as the no-threshold case.
-    const body = buildReviewBody({
-      review: reviewWithMixedSeverities,
-      provider: "openai-compatible",
-      modelId: "auto",
-      validCommentCount: 4,
-      suppressedCommentCount: 0,
-      offDiffFromComments: [],
-      severityCounts: { critical: 1, high: 1, medium: 1, low: 1 },
-      secrets: SECRETS,
-      minimumSeverity: "low",
-      ignoreMinor: false,
-    });
-    expect(body).toContain("🏷️ `1` critical · `1` high · `1` medium · `1` low");
-    expect(body).not.toContain(LEGEND);
-    expect(body).not.toMatch(/`1` \w+\*/); // no asterisk on any tier
-  });
-
-  it("ignoreMinor=true + minimumSeverity='high' → union of filtered tiers; legend present", () => {
-    const body = buildReviewBody({
-      review: reviewWithMixedSeverities,
-      provider: "openai-compatible",
-      modelId: "auto",
-      validCommentCount: 2,
-      suppressedCommentCount: 0,
-      offDiffFromComments: [],
-      severityCounts: { critical: 1, high: 1 },
+      // Caller computes severityCounts from the postable set: leak +
+      // security + critical survive, low filtered. security/leak
+      // don't appear in the rendered 4-tier tally because they are
+      // not display tiers — they're carve-outs.
+      severityCounts: { critical: 1, leak: 1, security: 1 },
       secrets: SECRETS,
       minimumSeverity: "high",
-      ignoreMinor: true,
     });
-    // Both flags hide medium + low (ignoreMinor is a no-op since the
-    // minimum threshold already hides them — but the marker/legend must
-    // still appear because the active threshold hides something).
-    expect(body).toContain("🏷️ `1` critical · `1` high · `0` medium* · `0` low*");
-    expect(body).toContain(LEGEND);
+    // No `security*` or `leak*` markers — they aren't display tiers.
+    expect(body).not.toMatch(/security\*/u);
+    expect(body).not.toMatch(/leak\*/u);
+    // critical is the highest visible tier; only it shows in the tally.
+    expect(body).toContain("🏷️ `1` critical");
+    // The filtered markers (medium*, low*) come from the threshold,
+    // not from the carve-out. With minimumSeverity='high' and only
+    // critical+security+leak in the postable set, no medium/low
+    // tiers are visible to be marked.
+    expect(body).toMatch(/`0` medium\* · `0` low\*/u);
   });
 
   it("asterisk + legend appear on the `severity-table` default layout (the one buildReviewBody dispatches to)", () => {

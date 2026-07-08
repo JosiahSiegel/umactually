@@ -29,8 +29,7 @@ These entries mirror `action.yml`.
 | `max-output-tokens` | `UMACTUALLY_MAX_OUTPUT_TOKENS` | `16000` | Positive integer | Provider output budget. |
 | `max-comments` | — | `50` | Positive integer | Cap on posted inline comments per review. Set to `0` to disable the cap. |
 | `review-file-limit` | `REVIEW_FILE_LIMIT` | `200` | Positive integer, or `0` to disable | Soft cap on the number of changed files the live review path will process. When `countDiffFiles(diff) > review-file-limit` the CLI skips the live review and posts a "diff too large to review" parent card with zero inline findings — the chunked LLM reviews of arbitrarily-large initial-import diffs produce hallucinated findings that aren't grounded in the code. Raise this for huge PRs, or set to `0` to disable the cap entirely. |
-| `ignore-minor` | `UMACTUALLY_IGNORE_MINOR` | `false` | `true`, `false` | Suppresses minor non-security findings only. Leaks and security findings are still reported. |
-| `minimum-severity` | `REVIEW_MINIMUM_SEVERITY` | `medium` | `low`, `medium`, `high` | Minimum severity for inline comments. Defaults to `medium`, so `low`-severity findings (style, hygiene) are filtered out before posting. Set to `low` to keep them. |
+| `minimum-severity` | `REVIEW_MINIMUM_SEVERITY` | `medium` | `low`, `medium`, `high` | Minimum severity for inline comments. Defaults to `medium`, so `low`-severity findings (style, hygiene) are filtered out before posting. Set to `low` to keep them. `security` and `leak` findings ALWAYS survive any threshold and are never suppressed. |
 | `prompt` | `UMACTUALLY_PROMPT` | `""` | String | Inline system prompt override. Wins over `prompt-file`. |
 | `additional-prompt` | `UMACTUALLY_ADDITIONAL_PROMPT` | `""` | String | Inline additional prompt override. Wins over `additional-prompt-file`. |
 | `prompt-file` | `UMACTUALLY_PROMPT_FILE` | `""` | Repository-relative path | Optional prompt instructions file. Absolute paths and `..` traversal are rejected. |
@@ -46,6 +45,16 @@ These entries mirror `action.yml`.
 | `debug-raw-response` | `UMACTUALLY_DEBUG_RAW_RESPONSE` | `false` | `true`, `false` | Echo the raw provider response into the workflow log. |
 | `simulate-findings` | `UMACTUALLY_SIMULATE_FINDINGS` | `false` | `true`, `false` | When enabled, replaces a structurally empty live provider payload (no inline comments and no suppressed comments) with the deterministic multi-finding fixture defined in `src/review/simulated-findings.ts`. Live findings always win: a non-empty provider result is preserved untouched. The fixture anchors 4-6 inline threads across at least 2 files (mixed severities and categories) plus 1-2 suppressed off-diff entries so the suppression path is exercised. CLI equivalent: `--simulate-findings` / `--no-simulate-findings`. |
 | `platform` | `UMACTUALLY_PLATFORM` | `auto` | `auto`, `github`, `azure` | Platform dispatch hint. `auto` selects GitHub when `GITHUB_ACTIONS=true` and Azure when `TF_BUILD=True`. |
+
+## Removed inputs (migration map)
+
+The following inputs were removed in a recent breaking change. Workflows and pipelines still setting them will not error — they are silently ignored (env vars) or surface as a one-time stderr warning at config load. Migrate as shown:
+
+| Removed input | Env vars | Migrate to |
+| --- | --- | --- |
+| `ignore-minor: true` | `UMACTUALLY_IGNORE_MINOR`, `REVIEW_IGNORE_MINOR` | `minimum-severity: medium` (the new default) |
+
+CLI users will see `CliUsageError` for `--ignore-minor` / `--no-ignore-minor` with the same migration hint.
 
 ## Platform and token environment variables
 
@@ -136,7 +145,6 @@ Current runtime defaults are intentionally conservative:
 - `provider`: `openai-compatible`
 - `review-timeout-seconds`: `300`
 - `stall-seconds`: `270`
-- `ignore-minor`: `false`
 - `dry-run`: `true` (default to dry-run; set to `false` for live provider calls)
 - `detect-leaks`: `true`
 - `prompt-file`: unset

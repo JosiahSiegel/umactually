@@ -142,14 +142,12 @@ export type ReviewData = {
   readonly secrets: readonly string[];
   /**
    * Optional threshold context used by the `🏷️ …` severity tally to
-   * append a per-tier `*` marker + a `_\* = filtered by threshold_`
+   * append a per-tier `*` marker + a `` `* = filtered by threshold` ``
    * legend line when some tiers are intentionally hidden by
-   * `--minimum-severity` or `--ignore-minor`. When both fields are
-   * omitted (or `null`/`false`), the tally renders unchanged
-   * (byte-identical to the original behavior).
+   * `--minimum-severity`. When omitted (or `null`), the tally renders
+   * unchanged (byte-identical to the original behavior).
    */
   readonly minimumSeverity?: string | null;
-  readonly ignoreMinor?: boolean;
 };
 
 // ---------------------------------------------------------------------------
@@ -385,29 +383,22 @@ function pipelineLine(data: ReviewData): string {
 }
 
 /**
- * Returns the set of severity tiers that are intentionally hidden by
- * the active `--minimum-severity` / `--ignore-minor` threshold. Empty
- * when no threshold is configured or the threshold keeps every tier
- * visible — callers use this to (a) mark each filtered tier with a
- * trailing `*` in the tally line, and (b) emit the legend line below.
+  * Returns the set of severity tiers that are intentionally hidden by
+ * the active `--minimum-severity` threshold. Empty when no threshold is
+ * configured or the threshold keeps every displayed tier visible — callers
+ * use this to (a) mark each filtered tier with a trailing `*` in the tally
+ * line, and (b) emit the legend line below.
  *
  * Examples:
- *   - minimumSeverity=null,  ignoreMinor=false → ∅ (no marker anywhere)
- *   - minimumSeverity="high", ignoreMinor=false → { medium, low }
- *   - minimumSeverity=null,  ignoreMinor=true  → { low }
- *   - minimumSeverity="high", ignoreMinor=true  → { medium, low } (union)
- *   - minimumSeverity="low",  ignoreMinor=false → ∅ (everything visible)
+ *   - minimumSeverity=null     → ∅ (no marker anywhere)
+ *   - minimumSeverity="low"    → ∅ (everything visible)
+ *   - minimumSeverity="medium" → { low }
+ *   - minimumSeverity="high"   → { medium, low }
  */
 function filteredTiers(data: ReviewData): ReadonlySet<string> {
   const minimum = data.minimumSeverity != null ? data.minimumSeverity.toLowerCase() : null;
-  const ignoreMinor = data.ignoreMinor === true;
-  if (!ignoreMinor && minimum === null) return new Set();
-  const ignoredByMin =
-    minimum !== null
-      ? SEVERITY_ORDER.filter((level) => severityRank(level) < severityRank(minimum))
-      : [];
-  const ignoredByIgnoreMinor = ignoreMinor ? ["low"] : [];
-  return new Set([...ignoredByMin, ...ignoredByIgnoreMinor]);
+  if (minimum === null) return new Set();
+  return new Set(SEVERITY_ORDER.filter((level) => severityRank(level) < severityRank(minimum)));
 }
 
 /**
@@ -1723,6 +1714,9 @@ export function renderSummary(layout: LayoutId, data: ReviewData): string {
  * `LAYOUTS` parity with `buildReviewBody`.
  */
 export function renderBaseline(baseline: BaselineId, data: ReviewData): string {
+  if (data.postedComments === undefined) {
+    throw new Error("renderBaseline: data.postedComments is required (was undefined). Use buildReviewBody() to dispatch — it computes the post-filter set from review.comments.");
+  }
   const renderer = BASELINE_RENDERERS[baseline];
   if (renderer === undefined) {
     throw new Error(`Unknown baseline: ${baseline as string}`);

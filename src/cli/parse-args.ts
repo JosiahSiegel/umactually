@@ -1,5 +1,7 @@
 import { FIELDS } from "../config/field-schema.js";
 import { parseStrictInt, readEnum } from "../util/cli-args.js";
+import type { Severity } from "../config/types.js";
+import { parseSeverityFromUnknown } from "../config/parsers.js";
 
 /**
  * CLI-side normalized platform union. The CLI parser accepts `"azure-devops"`
@@ -36,8 +38,16 @@ export type ParsedCliArgs = {
   readonly sonarToken: string | null;
   readonly sonarProjectKey: string | null;
   readonly sonarTimeoutSeconds: number | null;
-  readonly ignoreMinor: boolean;
   readonly minimumSeverity: CliMinimumSeverity | null;
+  /**
+   * Pre-resolved internal `Severity` for `minimumSeverity` (mapped via
+   * the alias table: low→minor, medium→major, high→critical). `null`
+   * when no threshold is set. Computed once at arg-parse time so
+   * per-comment consumers like `passesSeverityPolicy` don't re-parse
+   * (and don't re-throw `InvalidConfigError` deep in the live path on
+   * a future bad value).
+   */
+  readonly minimumSeverityInternal: Severity | null;
   readonly maxComments: number | null;
   readonly reviewFileLimit: number | null;
   readonly detectLeaks: boolean;
@@ -80,7 +90,6 @@ export function parseCliArgs(args: readonly string[]): ParsedCliArgs {
   let sonarToken: string | null = null;
   let sonarProjectKey: string | null = null;
   let sonarTimeoutSeconds: number | null = null;
-  let ignoreMinor = false;
   // BREAKING CHANGE: default flipped from null (no minimum) to "medium".
   // Matches the action.yml default and src/config/field-schema.ts so the
   // CLI and the GitHub Action behave the same out of the box. Without
@@ -202,11 +211,8 @@ export function parseCliArgs(args: readonly string[]): ParsedCliArgs {
         index += 1;
         break;
       case "--ignore-minor":
-        ignoreMinor = true;
-        break;
       case "--no-ignore-minor":
-        ignoreMinor = false;
-        break;
+        throw new CliUsageError("--ignore-minor was removed; use --minimum-severity medium (or low/high) to suppress minor findings. Leaks and security findings are never suppressed. Environment variables UMACTUALLY_IGNORE_MINOR and REVIEW_IGNORE_MINOR are also ignored.");
       case "--minimum-severity":
         minimumSeverity = readMinimumSeverity(args, index);
         index += 1;
@@ -306,8 +312,10 @@ export function parseCliArgs(args: readonly string[]): ParsedCliArgs {
     sonarToken,
     sonarProjectKey,
     sonarTimeoutSeconds,
-    ignoreMinor,
     minimumSeverity,
+    minimumSeverityInternal: minimumSeverity === null
+      ? null
+      : parseSeverityFromUnknown(minimumSeverity, "cli.minimumSeverity"),
     maxComments,
     reviewFileLimit,
     detectLeaks,

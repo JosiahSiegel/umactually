@@ -18,7 +18,6 @@ export type ActionInputs = {
   readonly reviewTimeoutSeconds: number;
   readonly stallSeconds: number;
   readonly maxOutputTokens: number;
-  readonly ignoreMinor: boolean;
   readonly minimumSeverity: "low" | "medium" | "high";
   readonly maxComments: number;
   readonly reviewFileLimit: number;
@@ -119,7 +118,6 @@ export function readActionInputs(env: NodeJS.ProcessEnv = process.env): ActionIn
     reviewTimeoutSeconds: getNumber("review-timeout-seconds", FIELDS.reviewTimeoutSeconds.defaultValue as number),
     stallSeconds: getNumber("stall-seconds", FIELDS.stallSeconds.defaultValue as number),
     maxOutputTokens: getNumber("max-output-tokens", FIELDS.maxOutputTokens.defaultValue as number),
-    ignoreMinor: getBool("ignore-minor", false),
     minimumSeverity: readEnumFromInput(
       "minimum-severity",
       FIELDS.minimumSeverity.defaultValue as "low" | "medium" | "high",

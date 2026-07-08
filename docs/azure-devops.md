@@ -112,7 +112,7 @@ The script does three things in order:
 
 1. Writes a synthetic Azure PR event + review fixture (always, so manual branch runs without `SYSTEM_PULLREQUEST_PULLREQUESTID` still execute end-to-end).
 2. Emits `##vso[task.setvariable]` markers so downstream steps can read `UMACTUALLY_PR_NUMBER` and `UMACTUALLY_REPO` as pipeline variables.
-3. When `SYSTEM_PULLREQUEST_PULLREQUESTID` is set, fetches the real PR payload + iteration + change-set via the Azure DevOps REST API (`/_apis/git/repositories/{repoId}/pullRequests/{prId}` + `/iterations` + `/iterations/{id}/changes`, all at `api-version=7.1`) using the OAuth bearer token.
+3. When `SYSTEM_PULLREQUEST_PULLREQUESTID` is set, fetches the real PR payload via the Azure DevOps REST API (`/_apis/git/repositories/{repoId}/pullRequests/{prId}` at `api-version=7.1`) using the OAuth bearer token, then generates a real unified diff via `git diff origin/<target>...HEAD` so the model reviews actual code changes (not just file paths).
 
 Manual branch runs should not fail just because PR variables are missing. The synthetic event/diff/review fallback is built into `prepare-azure-pr-inputs.sh`, so adapting the example pipeline does not require copying that logic.
 

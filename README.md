@@ -32,7 +32,6 @@ These inputs mirror `action.yml`.
 | `stall-seconds` | No | `270` | Seconds without provider output before the review is considered stalled. |
 | `max-output-tokens` | No | `16000` | Maximum provider output token budget. |
 | `review-file-limit` | No | `200` | Cap on the number of changed files the live review will process. PRs that exceed this get a "diff too large" parent card with zero findings — the per-chunk LLM reviews of huge initial-import diffs produce hallucinated findings. Set to `0` to disable. |
-| `ignore-minor` | No | `false` | Suppress minor non-security findings. Leaks and security findings are never suppressed by this option. |
 | `detect-leaks` | No | `true` | Run secret-leak detection on the diff. Disable with the `--no-detect-leaks` CLI flag. |
 | `prompt` | No | `""` | Inline system prompt override. Wins over `prompt-file`. |
 | `additional-prompt` | No | `""` | Inline additional prompt override. Wins over `additional-prompt-file`. |
@@ -118,7 +117,7 @@ For PRs that exceed the 200-file default cap, add `--review-file-limit N` (or se
 
 - Secrets are never intentionally logged or echoed.
 - Review diffs are redacted before provider submission and before artifacts are written.
-- High-confidence leaks and security findings are blocking even when `ignore-minor` is enabled.
+- High-confidence leaks and security findings ALWAYS bypass `minimum-severity` and are never suppressed.
 - `prompt-file` is repository-relative only; absolute paths and `..` traversal are rejected.
 
 Read the full [security notes](docs/security.md) before enabling this on repositories that accept external contributors.

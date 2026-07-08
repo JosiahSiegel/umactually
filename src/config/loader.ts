@@ -38,7 +38,25 @@ import type {
 // Loader-only defaults that have no field-schema entry. Kept local so the
 // schema remains the canonical source for any value that ships through
 // the CLI / action / env surfaces.
-const DEFAULT_MINIMUM_SEVERITY: Severity = "minor";
+//
+// Must stay aligned with field-schema.ts (enumValues) and action.yml's
+// `minimum-severity` default. The user-facing enum is `low|medium|high`
+// and maps to internal `Severity` via the parser alias table
+// (`low → minor`, `medium → major`, `high → critical`). The loader
+// stores the INTERNAL `Severity` literal — `medium` on the user surface
+// becomes `major` here — so the constant is the alias target, not the
+// user-facing string. Test
+// `test/unit/config-extended.test.ts:config: minimum-severity default
+// + alias mapping` pins this mapping so any future drift between the
+// schema default, the loader constant, and the parser alias surfaces
+// as a test failure rather than a silent config-layer disagreement.
+// Pinned by `test/unit/config-extended.test.ts:loader default tracks
+// field-schema default` so any future change to either side surfaces
+// as a test failure rather than a silent config-layer disagreement.
+// The constant stores the INTERNAL `Severity` literal — `medium` on
+// the user surface becomes `major` here — so it's the alias target,
+// not the user-facing string.
+const DEFAULT_MINIMUM_SEVERITY: Severity = "major";
 const DEFAULT_PLATFORM: Platform = "auto";
 const DEFAULT_PROVIDER_URL = "https://api.openai.com/v1";
 
@@ -95,13 +113,11 @@ export async function loadConfigFromSources(sources: LoadConfigSources): Promise
     ),
   };
 
-  const ignoreMinor = pickBool(cli.ignoreMinor, inputs.ignoreMinor, env.ignoreMinor, false, "severity.ignoreMinor");
   const minimumRaw = pickRawString(cli.minimumSeverity, inputs.minimumSeverity, env.minimumSeverity);
   const minimum: Severity = minimumRaw === undefined
     ? DEFAULT_MINIMUM_SEVERITY
     : parseSeverityFromUnknown(minimumRaw, "severity.minimum");
   const severity: SeverityControls = {
-    ignoreMinor,
     minimum,
     maxComments: pickInt(cli.maxComments, inputs.maxComments, env.maxComments, DEFAULT_MAX_COMMENTS, "severity.maxComments"),
   };

@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 
+import { CliUsageError } from "../../src/cli/parse-args.js";
 import { expectNotImplementedExport } from "../helpers/assert-red-module.js";
 
 type CliPlatform = "auto" | "github" | "azure";
@@ -30,7 +31,6 @@ type ParsedCliArgs = {
   readonly sonarToken: string | null;
   readonly sonarProjectKey: string | null;
   readonly sonarTimeoutSeconds: number | null;
-  readonly ignoreMinor: boolean;
   readonly minimumSeverity: CliMinimumSeverity | null;
   readonly maxComments: number | null;
   readonly detectLeaks: boolean;
@@ -86,7 +86,6 @@ describe("CLI flag parsing RED contract", () => {
       "sonar-token",
       "--sonar-project-key",
       "umactually",
-      "--ignore-minor",
       "--detect-leaks",
       "--dry-run",
       "--output-artifact",
@@ -124,8 +123,8 @@ describe("CLI flag parsing RED contract", () => {
       sonarToken: "sonar-token",
       sonarProjectKey: "umactually",
       sonarTimeoutSeconds: null,
-      ignoreMinor: true,
       minimumSeverity: "medium",
+      minimumSeverityInternal: "major",
       maxComments: null,
       reviewFileLimit: null,
       detectLeaks: true,
@@ -155,7 +154,6 @@ describe("CLI flag parsing: action.yml inputs coverage", () => {
     "--max-output-tokens",
     "--minimum-severity",
     "--max-comments",
-    "--ignore-minor",
     "--debug-raw-response",
     "--diagnostic",
     "--walkthrough",
@@ -172,7 +170,6 @@ describe("CLI flag parsing: action.yml inputs coverage", () => {
     "--no-diagnostic",
     "--no-debug-raw-response",
     "--no-dry-run",
-    "--no-ignore-minor",
     "--no-include-sonarqube",
     "--simulate-findings",
     "--no-simulate-findings",
@@ -228,7 +225,7 @@ describe("CLI flag parsing: action.yml inputs coverage", () => {
     }
   });
 
-  it("CLI smoke: --review-timeout-seconds --platform --no-dry-run --ignore-minor --minimum-severity do not throw 'unknown flag'", async () => {
+  it("CLI smoke: --review-timeout-seconds --platform --no-dry-run --minimum-severity do not throw 'unknown flag'", async () => {
     // Given: a representative set of flags the self-review workflow pushes.
     const parseCliArgs = await expectNotImplementedExport(cliModule, cliPath, "parseCliArgs");
     if (!isParseCliArgs(parseCliArgs)) {
@@ -240,24 +237,17 @@ describe("CLI flag parsing: action.yml inputs coverage", () => {
       "--platform",
       "github",
       "--no-dry-run",
-      "--ignore-minor",
       "--minimum-severity",
       "medium",
     ];
 
     // When: parseCliArgs processes the flags.
-    let result: ParsedCliArgs | null = null;
-    expect(() => {
-      result = parseCliArgs(args);
-    }).not.toThrow();
+    const parsed = parseCliArgs(args);
 
     // Then: the parsed values reflect the requested flags.
-    expect(result).not.toBeNull();
-    const parsed = result as unknown as ParsedCliArgs;
     expect(parsed.reviewTimeoutSeconds).toBe(300);
     expect(parsed.platform).toBe("github");
     expect(parsed.dryRun).toBe(false);
-    expect(parsed.ignoreMinor).toBe(true);
     expect(parsed.minimumSeverity).toBe("medium");
   });
 
@@ -270,7 +260,7 @@ describe("CLI flag parsing: action.yml inputs coverage", () => {
     expect(parsed.dryRun).toBe(false);
   });
 
-  it("--dry-run takes precedence over later --no-dry-run in the same argv", async () => {
+  it("--no-dry-run overrides earlier --dry-run in the same argv (last wins)", async () => {
     const parseCliArgs = await expectNotImplementedExport(cliModule, cliPath, "parseCliArgs");
     if (!isParseCliArgs(parseCliArgs)) {
       expect.fail("RED: src/cli.ts must export parseCliArgs(args)");
@@ -290,28 +280,43 @@ describe("CLI flag parsing: action.yml inputs coverage", () => {
     expect(parseCliArgs(["--platform", "azure-devops"]).platform).toBe("azure");
   });
 
-  it("--no-ignore-minor / --no-walkthrough / --no-diagnostic / --no-debug-raw-response / --no-include-sonarqube flip the matching booleans off", async () => {
+  it("--no-walkthrough / --no-diagnostic / --no-debug-raw-response / --no-include-sonarqube flip the matching booleans off", async () => {
     const parseCliArgs = await expectNotImplementedExport(cliModule, cliPath, "parseCliArgs");
     if (!isParseCliArgs(parseCliArgs)) {
       expect.fail("RED: src/cli.ts must export parseCliArgs(args)");
     }
     const parsed = parseCliArgs([
-      "--ignore-minor",
       "--walkthrough",
       "--diagnostic",
       "--debug-raw-response",
       "--include-sonarqube",
-      "--no-ignore-minor",
       "--no-walkthrough",
       "--no-diagnostic",
       "--no-debug-raw-response",
       "--no-include-sonarqube",
     ]);
-    expect(parsed.ignoreMinor).toBe(false);
     expect(parsed.walkthrough).toBe(false);
     expect(parsed.diagnostic).toBe(false);
     expect(parsed.debugRawResponse).toBe(false);
     expect(parsed.includeSonarqube).toBe(false);
+  });
+
+  it("--ignore-minor throws CliUsageError with minimum-severity migration guidance", async () => {
+    const parseCliArgs = await expectNotImplementedExport(cliModule, cliPath, "parseCliArgs");
+    if (!isParseCliArgs(parseCliArgs)) {
+      expect.fail("RED: src/cli.ts must export parseCliArgs(args)");
+    }
+    expect(() => parseCliArgs(["--ignore-minor"])).toThrow(CliUsageError);
+    expect(() => parseCliArgs(["--ignore-minor"])).toThrow(/use --minimum-severity/u);
+  });
+
+  it("--no-ignore-minor throws CliUsageError with minimum-severity migration guidance", async () => {
+    const parseCliArgs = await expectNotImplementedExport(cliModule, cliPath, "parseCliArgs");
+    if (!isParseCliArgs(parseCliArgs)) {
+      expect.fail("RED: src/cli.ts must export parseCliArgs(args)");
+    }
+    expect(() => parseCliArgs(["--no-ignore-minor"])).toThrow(CliUsageError);
+    expect(() => parseCliArgs(["--no-ignore-minor"])).toThrow(/use --minimum-severity/u);
   });
 
   it("--minimum-severity rejects values outside {low, medium, high}", async () => {
