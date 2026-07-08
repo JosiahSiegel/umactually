@@ -55,14 +55,44 @@ export function resolveAutoModel(input: {
  * the first, fall back to the next on parse-fail), not parallel —
  * keeps the per-request cost predictable and matches the
  * PR-Agent `retry_with_fallback_models` pattern.
+ *
+ * IMPORTANT: the fallback chain is provider-specific. Trying
+ * `claude-sonnet-4.6` as a Copilot fallback would 404 (per the
+ * Copilot model routing documented in `resolveAutoModel`).
+ * `fallbackModelsFor` filters the list to provider-routable models
+ * so the parse-fail recovery doesn't itself fail.
  */
-export const DEFAULT_FALLBACK_MODELS: readonly string[] = [
-  OPENAI_DEFAULT_MODEL,
-  ANTHROPIC_DEFAULT_MODEL,
-  GOOGLE_DEFAULT_MODEL,
-  "gpt-4.1",
-  "gpt-4.1-mini",
-];
+const PROVIDER_FALLBACKS: Readonly<Record<"openai-compatible" | "copilot", readonly string[]>> = {
+  "openai-compatible": [
+    OPENAI_DEFAULT_MODEL,
+    "gpt-4.1",
+    "gpt-4.1-mini",
+    ANTHROPIC_DEFAULT_MODEL,
+    GOOGLE_DEFAULT_MODEL,
+  ],
+  copilot: [
+    COPILOT_DEFAULT_MODEL,
+    COPILOT_DEFAULT_MODEL, // doubled deliberately: the Copilot
+    // fallback list is shorter because the provider only accepts
+    // Copilot-routable model strings. Doubling the entry gives
+    // the retry loop a "second try" on the same model after the
+    // first attempt hit a transient parse-fail.
+  ],
+};
+
+export const DEFAULT_FALLBACK_MODELS: readonly string[] = PROVIDER_FALLBACKS["openai-compatible"];
+
+/**
+ * Return the fallback chain for a specific provider. Use this
+ * instead of the bare `DEFAULT_FALLBACK_MODELS` constant in any
+ * path that might be Copilot-routed — otherwise the parse-fail
+ * recovery would itself fail with a 404.
+ */
+export function fallbackModelsFor(
+  provider: "openai-compatible" | "copilot",
+): readonly string[] {
+  return PROVIDER_FALLBACKS[provider];
+}
 
 /**
  * Parse a `--fallback-models` CLI value (comma-separated) into a

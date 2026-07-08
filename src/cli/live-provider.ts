@@ -240,11 +240,22 @@ function applyVerifyFilter(review: LiveReview, diffText: string): LiveReview {
   if (diffText.length === 0) {
     return review;
   }
+  // Use the same (path, line) acceptance as `parse-warnings.ts`
+  // and the standalone `verifyFindingsAgainstDiff` helper, so
+  // the parse-warnings artifact and the inline filter agree
+  // on which comments get dropped. The previous version of
+  // this filter added a stricter `Number.isInteger` check that
+  // silently dropped shape errors; the parse-warnings layer
+  // now records them instead so the artifact is the
+  // authoritative record of ALL fabrication events.
   const positions = parseDiffPositions(diffText);
   return {
     ...review,
     comments: review.comments.filter((c) => {
-      if (!Number.isInteger(c.line) || c.line < 1 || c.path.length === 0) {
+      if (c.path.length === 0) {
+        return false;
+      }
+      if (!Number.isInteger(c.line) || c.line < 1) {
         return false;
       }
       return positions.hasPosition(c);

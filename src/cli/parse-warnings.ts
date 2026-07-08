@@ -65,15 +65,16 @@ export function collectParseWarnings(input: {
     list.forEach((comment, index) => {
       const path = comment.path;
       const line = comment.line;
-      // Defensive: a model might emit a non-integer line. We treat that
-      // as "not in diff" but still report it (so operators can spot
-      // shape-level errors in the prompt or provider).
-      const lineIsInteger = Number.isInteger(line);
-      if (path.length === 0 || !lineIsInteger) {
-        return;
-      }
-      const pathInDiff = diffPaths.has(path);
-      const lineInDiff = lineIsInteger && positions.hasPosition({ path, line });
+      // Defensive: a model might emit a non-integer line OR an
+      // empty path. Treat both as off-diff (the most actionable
+      // signal: the model fabricated the position) so the
+      // parse-warnings artifact records the shape error too —
+      // a comment with `line: 2.5` is a fabrication just as
+      // much as a hallucinated `dist/cli.js:1`, and silently
+      // dropping it from the artifact would hide a real failure
+      // mode from operators.
+      const pathInDiff = path.length > 0 && diffPaths.has(path);
+      const lineInDiff = Number.isInteger(line) && line > 0 && positions.hasPosition({ path, line });
       if (pathInDiff && lineInDiff) {
         return;
       }

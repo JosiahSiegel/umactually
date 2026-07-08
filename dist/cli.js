@@ -7816,6 +7816,12 @@ async function runAzureLive(input) {
             posted: false,
             reviewId: undefined,
             message,
+            // `provider.parseWarnings` is the parse-warnings computed
+            // from the model response. The error path here is the
+            // "0 threads posted" case (which means the model response
+            // was valid but every comment was filtered out as
+            // off-diff). The pre-validation warnings are still meaningful
+            // in that case.
             parseWarnings: provider.parseWarnings,
         };
     }
@@ -9286,14 +9292,40 @@ function resolveAutoModel(input) {
  * the first, fall back to the next on parse-fail), not parallel —
  * keeps the per-request cost predictable and matches the
  * PR-Agent `retry_with_fallback_models` pattern.
+ *
+ * IMPORTANT: the fallback chain is provider-specific. Trying
+ * `claude-sonnet-4.6` as a Copilot fallback would 404 (per the
+ * Copilot model routing documented in `resolveAutoModel`).
+ * `fallbackModelsFor` filters the list to provider-routable models
+ * so the parse-fail recovery doesn't itself fail.
  */
-const DEFAULT_FALLBACK_MODELS = [
-    OPENAI_DEFAULT_MODEL,
-    ANTHROPIC_DEFAULT_MODEL,
-    GOOGLE_DEFAULT_MODEL,
-    "gpt-4.1",
-    "gpt-4.1-mini",
-];
+const PROVIDER_FALLBACKS = {
+    "openai-compatible": [
+        OPENAI_DEFAULT_MODEL,
+        "gpt-4.1",
+        "gpt-4.1-mini",
+        ANTHROPIC_DEFAULT_MODEL,
+        GOOGLE_DEFAULT_MODEL,
+    ],
+    copilot: [
+        COPILOT_DEFAULT_MODEL,
+        COPILOT_DEFAULT_MODEL, // doubled deliberately: the Copilot
+        // fallback list is shorter because the provider only accepts
+        // Copilot-routable model strings. Doubling the entry gives
+        // the retry loop a "second try" on the same model after the
+        // first attempt hit a transient parse-fail.
+    ],
+};
+const DEFAULT_FALLBACK_MODELS = PROVIDER_FALLBACKS["openai-compatible"];
+/**
+ * Return the fallback chain for a specific provider. Use this
+ * instead of the bare `DEFAULT_FALLBACK_MODELS` constant in any
+ * path that might be Copilot-routed — otherwise the parse-fail
+ * recovery would itself fail with a 404.
+ */
+function fallbackModelsFor(provider) {
+    return PROVIDER_FALLBACKS[provider];
+}
 /**
  * Parse a `--fallback-models` CLI value (comma-separated) into a
  * list. Empty parts and duplicate entries are dropped.
@@ -9348,15 +9380,16 @@ function collectParseWarnings(input) {
         list.forEach((comment, index) => {
             const path = comment.path;
             const line = comment.line;
-            // Defensive: a model might emit a non-integer line. We treat that
-            // as "not in diff" but still report it (so operators can spot
-            // shape-level errors in the prompt or provider).
-            const lineIsInteger = Number.isInteger(line);
-            if (path.length === 0 || !lineIsInteger) {
-                return;
-            }
-            const pathInDiff = diffPaths.has(path);
-            const lineInDiff = lineIsInteger && positions.hasPosition({ path, line });
+            // Defensive: a model might emit a non-integer line OR an
+            // empty path. Treat both as off-diff (the most actionable
+            // signal: the model fabricated the position) so the
+            // parse-warnings artifact records the shape error too —
+            // a comment with `line: 2.5` is a fabrication just as
+            // much as a hallucinated `dist/cli.js:1`, and silently
+            // dropping it from the artifact would hide a real failure
+            // mode from operators.
+            const pathInDiff = path.length > 0 && diffPaths.has(path);
+            const lineInDiff = Number.isInteger(line) && line > 0 && positions.hasPosition({ path, line });
             if (pathInDiff && lineInDiff) {
                 return;
             }
@@ -9524,9 +9557,17 @@ async function readPromptFiles(paths, byteCap, options) {
  * The model can still emit the *wrong* path or line — strict schema
  * enforces shape, not truth. The post-filter in
  * `parseDiffPositions` + the `parse-warnings.json` artifact are
- * the layer that enforces truth. See the deep-research summary
- * in `.omo/plans/` (or the PR body) for why this is the right
- * combination per the production-tool survey.
+ * the layer that enforces truth.
+ *
+ * Compatibility note: the LIVE parser (in `provider-parse.ts`) is
+ * permissive about `verdict` and `severity` strings (it accepts any
+ * non-empty string and the `normalizeProviderSeverity` fallback
+ * maps unrecognized values). The wire schema is therefore
+ * permissive on those fields too — `string` with a `minLength: 1`
+ * constraint rather than a strict enum. A strict enum here would
+ * cause valid responses to be rejected by providers that enforce
+ * the schema (and per the model-comparison survey, the `severity`
+ * and `verdict` strings are exactly where providers diverge).
  */
 const REVIEW_PAYLOAD_JSON_SCHEMA = {
     type: "object",
@@ -9536,7 +9577,8 @@ const REVIEW_PAYLOAD_JSON_SCHEMA = {
         summary: { type: "string" },
         verdict: {
             type: "string",
-            enum: ["COMMENT", "APPROVED", "NEEDS_FIX", "DISCUSS", "SHIP"],
+            minLength: 1,
+            description: "One of COMMENT, APPROVED, NEEDS_FIX, DISCUSS, or SHIP. The parser accepts any non-empty string and the verdict is reconciled downstream.",
         },
         comments: {
             type: "array",
@@ -9545,13 +9587,10 @@ const REVIEW_PAYLOAD_JSON_SCHEMA = {
                 additionalProperties: false,
                 required: ["path", "line", "body", "severity", "category"],
                 properties: {
-                    path: { type: "string", description: "A path from the Files-in-diff list below. Emit a literal string the model can verify by grep." },
-                    line: { type: "integer", minimum: 1, description: "A line number that appears in the diff for that path (either a + line or a context line)." },
-                    body: { type: "string", description: "Markdown body. Keep under 600 chars. No secrets. No code blocks outside the diff." },
-                    severity: {
-                        type: "string",
-                        enum: ["info", "low", "medium", "high", "critical", "security", "leak"],
-                    },
+                    path: { type: "string", description: "A path from the Files-in-diff list below." },
+                    line: { type: "integer", minimum: 1, description: "A line number that appears in the diff for that path." },
+                    body: { type: "string" },
+                    severity: { type: "string", minLength: 1, description: "Severity string. Canonical values: info, low, medium, high, critical, security, leak. Parser accepts any non-empty value." },
                     category: { type: "string" },
                 },
             },
@@ -9566,7 +9605,7 @@ const REVIEW_PAYLOAD_JSON_SCHEMA = {
                     path: { type: "string" },
                     line: { type: "integer", minimum: 1 },
                     body: { type: "string" },
-                    severity: { type: "string" },
+                    severity: { type: "string", minLength: 1 },
                     category: { type: "string" },
                 },
             },
@@ -9884,11 +9923,22 @@ function applyVerifyFilter(review, diffText) {
     if (diffText.length === 0) {
         return review;
     }
+    // Use the same (path, line) acceptance as `parse-warnings.ts`
+    // and the standalone `verifyFindingsAgainstDiff` helper, so
+    // the parse-warnings artifact and the inline filter agree
+    // on which comments get dropped. The previous version of
+    // this filter added a stricter `Number.isInteger` check that
+    // silently dropped shape errors; the parse-warnings layer
+    // now records them instead so the artifact is the
+    // authoritative record of ALL fabrication events.
     const positions = parseDiffPositions(diffText);
     return {
         ...review,
         comments: review.comments.filter((c) => {
-            if (!Number.isInteger(c.line) || c.line < 1 || c.path.length === 0) {
+            if (c.path.length === 0) {
+                return false;
+            }
+            if (!Number.isInteger(c.line) || c.line < 1) {
                 return false;
             }
             return positions.hasPosition(c);
