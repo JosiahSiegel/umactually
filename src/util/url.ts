@@ -6,71 +6,129 @@ export function joinUrl(baseUrl: string, path: string): string {
 }
 
 /**
- * Resolve a provider's `baseUrl` + a default API prefix so the
- * `openai-compatible` provider can call OpenAI-style routes
- * (`/responses`, `/chat/completions`) without the operator having to
- * include the `/v1` segment in `UMACTUALLY_API_URL`.
+ * Resolve a provider's `baseUrl` down to its origin (scheme + host + port),
+ * then append a default API prefix. This makes the action robust against
+ * any operator-supplied path: no matter what the user puts after the host
+ * (`/v1`, `/openai`, `/anthropic`, `/api/v2`, etc.), the action always
+ * targets the canonical OpenAI-style path on the host root.
  *
- * Behavior:
- *   - If `baseUrl` is a bare host (no path component after the TLD),
- *     `defaultPrefix` is inserted: `https://api.example.com` →
- *     `https://api.example.com/v1`.
- *   - If `baseUrl` already has a path component
- *     (e.g. `https://example.com/openai` or `https://example.com/v1`),
- *     the URL is returned unchanged — the operator has chosen a
- *     routing convention and the action should not override it.
- *   - If `baseUrl` has a non-v1 path (e.g. `https://example.com/openai`),
- *     the action appends the endpoint path verbatim: `/responses` →
- *     `https://example.com/openai/responses`. This is the most
- *     flexible behavior — the operator opts into a custom namespace
- *     and the action respects it.
+ * Goal: `${result}/responses` and `${result}/chat/completions` must
+ * reach the provider regardless of what path the operator typed in
+ * `UMACTUALLY_API_URL`. The provider is responsible for serving those
+ * routes at the host root + `/v1/...`.
  *
- * The check is intentionally narrow: only insert the default prefix
- * when the URL has no path AT ALL (path = "" or path = "/"). A
- * trailing slash alone does not signal a custom namespace — most
- * OpenAI-compatible providers serve `/v1/...` behind a bare host,
- * so `https://api.example.com/` is treated as bare-host and gets
- * the default prefix.
+ * Examples (defaultPrefix = `/v1`):
+ *   - `https://api.example.com`           → `https://api.example.com/v1`
+ *   - `https://api.example.com/`          → `https://api.example.com/v1`
+ *   - `https://api.example.com/v1`        → `https://api.example.com/v1`
+ *   - `https://api.example.com/openai`    → `https://api.example.com/v1`
+ *   - `https://api.example.com/anthropic` → `https://api.example.com/v1`
+ *   - `https://api.example.com/api/v2`    → `https://api.example.com/v1`
+ *   - `https://api.example.com/v1/openai` → `https://api.example.com/v1`
  *
- * Hosts with `https://` or `http://` and an IPv4/IPv6 literal are
- * detected as bare-host when there's no path segment after the
- * authority. The detection uses a minimal URL parse — we only
- * inspect the `pathname` field, which is what determines whether a
- * custom prefix is in play.
+ * The path is **always** discarded. This is intentional: the action
+ * calls OpenAI-style routes (`/responses`, `/chat/completions`),
+ * and the operator's path is treated as decorative noise rather than
+ * a routing hint. The fix trades a small amount of flexibility (no
+ * custom namespace support) for a large amount of robustness — the
+ * action works the same regardless of what path the operator typed.
+ *
+ * If an operator genuinely needs a custom namespace, they can use
+ * the `--provider copilot` path (which uses GitHub's API directly)
+ * or the `copilot` provider family which has its own routing.
+ *
+ * Detection uses a minimal URL parse. The fallback substring path
+ * handles unencoded spaces and other URL-parse failures.
+ *
+ * @param baseUrl       Operator-supplied base URL.
+ * @param defaultPrefix Default prefix to append to the origin.
+ *                      Default `/v1`.
  */
 export function resolveProviderBaseUrl(
   baseUrl: string,
   defaultPrefix: string = "/v1",
 ): string {
-  const trimmed = stripTrailingSlash(baseUrl);
-  // Try to parse as a URL. If parsing fails (e.g. unencoded space),
-  // fall back to a substring check: trim the trailing slash and
-  // look for the last `/` AFTER the scheme separator.
-  let pathname = "/";
+  const origin = extractOrigin(baseUrl);
+  return `${origin}${defaultPrefix}`;
+}
+
+/**
+ * Return the origin (scheme + host + port) of a URL, stripping any path,
+ * query, and fragment. Used by `resolveProviderBaseUrl` to normalize
+ * operator-supplied URLs to their canonical host root.
+ *
+ * Returns the input unchanged if it cannot be parsed as a URL — this
+ * preserves the original string for callers that want a best-effort
+ * fallback. Callers that need a strict guarantee should pass a
+ * well-formed URL.
+ */
+export function extractOrigin(baseUrl: string): string {
   try {
-    const parsed = new URL(trimmed);
-    pathname = parsed.pathname;
+    return new URL(baseUrl).origin;
   } catch {
-    // Fallback: extract path after `://` authority.
-    const schemeSep = trimmed.indexOf("://");
+    const schemeSep = baseUrl.indexOf("://");
     if (schemeSep === -1) {
-      // No scheme — treat as bare path/host string and inspect.
-      const firstSlash = trimmed.indexOf("/");
-      pathname = firstSlash === -1 ? "" : trimmed.slice(firstSlash);
-    } else {
-      const sepLen = 3; // "://" length
-      const afterScheme = trimmed.slice(schemeSep + sepLen);
-      const firstSlash = afterScheme.indexOf("/");
-      pathname = firstSlash === -1 ? "" : afterScheme.slice(firstSlash);
+      const firstSlash = baseUrl.indexOf("/");
+      return firstSlash === -1 ? baseUrl : baseUrl.slice(0, firstSlash);
     }
+    const sepLen = 3; // "://" length
+    const afterScheme = baseUrl.slice(schemeSep + sepLen);
+    const firstSlash = afterScheme.indexOf("/");
+    const authority = firstSlash === -1 ? afterScheme : afterScheme.slice(0, firstSlash);
+    return baseUrl.slice(0, schemeSep + sepLen) + authority;
   }
-  // Bare host: empty path or "/" only. Insert the default prefix.
-  if (pathname === "" || pathname === "/") {
-    return `${trimmed}${defaultPrefix}`;
+}
+
+/**
+ * Return the ORDERED list of base URL candidates to try when calling
+ * the openai-compatible provider. The first candidate is the
+ * operator-supplied URL as-pasted (after trimming trailing slashes) —
+ * we always respect what the operator typed. Subsequent candidates
+ * are progressively more "normalized" forms: first the origin with
+ * the default prefix prepended, then the origin alone (rare —
+ * only useful if the provider serves routes at the root with no
+ * prefix).
+ *
+ * The list is de-duplicated so the caller doesn't try the same URL
+ * twice. The provider tries each candidate in order; if a candidate
+ * 404s on both `/responses` and `/chat/completions`, the next
+ * candidate is tried. The first candidate that returns a non-404
+ * response wins.
+ *
+ * This is the "robust to any URL shape" contract: no matter what
+ * the operator types, we find a working endpoint. The order is
+ * important — the operator's URL comes first so the wire path
+ * matches their intent whenever possible.
+ *
+ * Examples (defaultPrefix = `/v1`):
+ *   - `https://api.example.com` →
+ *       [`https://api.example.com`,
+ *        `https://api.example.com/v1`]
+ *   - `https://api.example.com/v1` →
+ *       [`https://api.example.com/v1`,
+ *        `https://api.example.com/v1`]  (de-duplicated)
+ *   - `https://api.example.com/anthropic` →
+ *       [`https://api.example.com/anthropic`,
+ *        `https://api.example.com/v1`]
+ *   - `https://api.example.com/api/v2` →
+ *       [`https://api.example.com/api/v2`,
+ *        `https://api.example.com/v1`]
+ *
+ * The fallback candidate (origin + default prefix) is included even
+ * when the operator's URL is a bare host, so a single candidate is
+ * tried twice (de-duplicated to one). This keeps the contract
+ * uniform: callers always iterate a list, no special-casing.
+ */
+export function resolveProviderBaseUrlCandidates(
+  baseUrl: string,
+  defaultPrefix: string = "/v1",
+): readonly string[] {
+  const pasted = stripTrailingSlash(baseUrl);
+  const normalized = resolveProviderBaseUrl(baseUrl, defaultPrefix);
+  if (pasted === normalized) {
+    return [pasted];
   }
-  // Custom namespace already present — return as-is, the action will
-  // append the endpoint path verbatim.
-  return trimmed;
+  return [pasted, normalized];
 }
 
 /**

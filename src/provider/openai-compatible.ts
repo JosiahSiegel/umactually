@@ -18,7 +18,7 @@ import {
 } from "./provider-error.js";
 import { composeSignal, sleep } from "../util/async.js";
 import { REDACTED_SECRET_TOKEN } from "../util/brand.js";
-import { createRequestId, joinUrl, resolveProviderBaseUrl } from "../util/url.js";
+import { createRequestId, joinUrl, resolveProviderBaseUrlCandidates } from "../util/url.js";
 
 const ENDPOINT_RESPONSES: ProviderEndpoint = "responses";
 const ENDPOINT_CHAT: ProviderEndpoint = "chat";
@@ -100,21 +100,58 @@ function buildBodyConfig(config: ProviderCallConfig): {
 export async function runProviderRequest(config: ProviderCallConfig): Promise<ProviderCallResult> {
   const fetchImpl = config.fetchImpl ?? globalThis.fetch.bind(globalThis);
   const requestId = createRequestId();
-  // Auto-resolve the base URL: bare-host URLs (e.g. `https://api.example.com`)
-  // get `/v1` prepended so OpenAI-style routes (`/responses`, `/chat/completions`)
-  // resolve correctly. URLs that already carry a path segment are used verbatim
-  // so operators can opt into a custom namespace. See resolveProviderBaseUrl
-  // in src/util/url.ts for the detection rules.
-  const resolvedBaseUrl = resolveProviderBaseUrl(config.baseUrl);
+  // URL resolution strategy: try the operator's URL as-pasted first
+  // (after trimming trailing slashes), then fall back to the
+  // origin-stripped URL with /v1/ appended. This is the "robust to
+  // any URL shape" contract: no matter what path the operator typed
+  // (`/v1`, `/openai`, `/anthropic`, `/api/v2`, or none at all), the
+  // action finds a working endpoint.
+  //
+  // See resolveProviderBaseUrlCandidates in src/util/url.ts for the
+  // candidate list construction.
+  const baseUrlCandidates = resolveProviderBaseUrlCandidates(config.baseUrl);
 
-  const firstAttempt = await runWithRetry(config, fetchImpl, requestId, ENDPOINT_RESPONSES, resolvedBaseUrl);
-  if (firstAttempt.ok) {
-    return firstAttempt;
+  let lastAttempt: ProviderCallResult = { ok: false, error: new ProviderError("network", ENDPOINT_RESPONSES, null, requestId, "No base URL candidates resolved.") };
+  for (const candidate of baseUrlCandidates) {
+    const firstAttempt = await runWithRetry(config, fetchImpl, requestId, ENDPOINT_RESPONSES, candidate);
+    if (firstAttempt.ok) {
+      return firstAttempt;
+    }
+    if (shouldFallback(firstAttempt.error)) {
+      const chatAttempt = await runWithRetry(config, fetchImpl, requestId, ENDPOINT_CHAT, candidate);
+      if (chatAttempt.ok) {
+        return chatAttempt;
+      }
+      // Chat fallback also failed. Move to the next URL candidate
+      // (the operator-pasted URL failed → try origin-stripped, etc.)
+      // unless the error is NOT a 404/400 (e.g. auth failure, server
+      // error) — in that case, retrying with a different URL won't
+      // help, so return immediately.
+      if (!isRoutableFailure(chatAttempt.error)) {
+        return chatAttempt;
+      }
+      lastAttempt = chatAttempt;
+      continue;
+    }
+    // The /responses endpoint failed with a non-routable status
+    // (e.g. 401, 500). Retrying with a different URL won't help.
+    if (!isRoutableFailure(firstAttempt.error)) {
+      return firstAttempt;
+    }
+    lastAttempt = firstAttempt;
   }
-  if (shouldFallback(firstAttempt.error)) {
-    return runWithRetry(config, fetchImpl, requestId, ENDPOINT_CHAT, resolvedBaseUrl);
-  }
-  return firstAttempt;
+  return lastAttempt;
+}
+
+/**
+ * True when the failure was a routing-level rejection (404 Not Found
+ * or 400 Bad Request) that would benefit from trying a different URL
+ * shape. False for auth failures (401/403), server errors (5xx),
+ * parse failures, and timeouts — those have a single root cause and
+ * a different URL won't help.
+ */
+function isRoutableFailure(error: ProviderError): boolean {
+  return error.status === 404 || error.status === 400;
 }
 
 async function runWithEndpoint(
