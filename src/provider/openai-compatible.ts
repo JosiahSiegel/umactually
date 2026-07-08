@@ -18,7 +18,7 @@ import {
 } from "./provider-error.js";
 import { composeSignal, sleep } from "../util/async.js";
 import { REDACTED_SECRET_TOKEN } from "../util/brand.js";
-import { createRequestId, joinUrl } from "../util/url.js";
+import { createRequestId, joinUrl, resolveProviderBaseUrl } from "../util/url.js";
 
 const ENDPOINT_RESPONSES: ProviderEndpoint = "responses";
 const ENDPOINT_CHAT: ProviderEndpoint = "chat";
@@ -100,13 +100,19 @@ function buildBodyConfig(config: ProviderCallConfig): {
 export async function runProviderRequest(config: ProviderCallConfig): Promise<ProviderCallResult> {
   const fetchImpl = config.fetchImpl ?? globalThis.fetch.bind(globalThis);
   const requestId = createRequestId();
+  // Auto-resolve the base URL: bare-host URLs (e.g. `https://api.example.com`)
+  // get `/v1` prepended so OpenAI-style routes (`/responses`, `/chat/completions`)
+  // resolve correctly. URLs that already carry a path segment are used verbatim
+  // so operators can opt into a custom namespace. See resolveProviderBaseUrl
+  // in src/util/url.ts for the detection rules.
+  const resolvedBaseUrl = resolveProviderBaseUrl(config.baseUrl);
 
-  const firstAttempt = await runWithRetry(config, fetchImpl, requestId, ENDPOINT_RESPONSES);
+  const firstAttempt = await runWithRetry(config, fetchImpl, requestId, ENDPOINT_RESPONSES, resolvedBaseUrl);
   if (firstAttempt.ok) {
     return firstAttempt;
   }
   if (shouldFallback(firstAttempt.error)) {
-    return runWithRetry(config, fetchImpl, requestId, ENDPOINT_CHAT);
+    return runWithRetry(config, fetchImpl, requestId, ENDPOINT_CHAT, resolvedBaseUrl);
   }
   return firstAttempt;
 }
@@ -116,9 +122,10 @@ async function runWithEndpoint(
   fetchImpl: typeof fetch,
   requestId: string,
   endpoint: ProviderEndpoint,
+  baseUrl: string,
 ): Promise<ProviderCallResult> {
   try {
-    return await callEndpoint(config, fetchImpl, requestId, endpoint);
+    return await callEndpoint(config, fetchImpl, requestId, endpoint, baseUrl);
   } catch (error) {
     if (error instanceof ProviderError) {
       return { ok: false, error };
@@ -134,10 +141,11 @@ async function runWithRetry(
   fetchImpl: typeof fetch,
   requestId: string,
   endpoint: ProviderEndpoint,
+  baseUrl: string,
 ): Promise<ProviderCallResult> {
   let lastFailure: ProviderError | null = null;
   for (let attempt = 0; attempt <= RETRY_BACKOFF_MS.length; attempt += 1) {
-    const result = await runWithEndpoint(config, fetchImpl, requestId, endpoint);
+    const result = await runWithEndpoint(config, fetchImpl, requestId, endpoint, baseUrl);
     if (result.ok) {
       return result;
     }
@@ -174,8 +182,9 @@ async function callEndpoint(
   fetchImpl: typeof fetch,
   requestId: string,
   endpoint: ProviderEndpoint,
+  baseUrl: string,
 ): Promise<ProviderCallSuccess> {
-  const url = joinUrl(config.baseUrl, endpoint === ENDPOINT_RESPONSES ? "/responses" : "/chat/completions");
+  const url = joinUrl(baseUrl, endpoint === ENDPOINT_RESPONSES ? "/responses" : "/chat/completions");
   const body = endpoint === ENDPOINT_RESPONSES
     ? buildResponsesBody(buildBodyConfig(config))
     : buildChatBody(buildBodyConfig(config));
