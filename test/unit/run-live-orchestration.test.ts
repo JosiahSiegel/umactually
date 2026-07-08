@@ -367,7 +367,11 @@ describe("runLive GitHub orchestration", () => {
     // is preserved. Any actual secrets in the raw text would still be
     // sanitized via the existing sanitizer; this test pins the new
     // "include raw text for diagnostics" contract.
-    expect(result.exitCode).toBe(0);
+    //
+    // exitCode is now 1 (was 0) because parse failures must fail CI —
+    // a parse-failed review with 0 findings must not be mistaken for
+    // a clean bill of health.
+    expect(result.exitCode).toBe(1);
     expect(result.posted).toBe(true);
     const postCall = findCall(recorder.calls, "POST", "/pulls/42/reviews");
     const body = readRecord(postCall.body as Record<string, unknown>, "review request");

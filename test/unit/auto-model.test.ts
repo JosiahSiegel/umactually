@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import {
   DEFAULT_FALLBACK_MODELS,
+  fallbackModelsFor,
   parseFallbackModels,
   resolveAutoModel,
 } from "../../src/cli/auto-model.js";
@@ -43,6 +44,40 @@ describe("resolveAutoModel", () => {
     ).toBe("gemini-2.5-flash");
   });
 
+  it("returns MiniMax-Text-01 when apiUrl contains minimax", () => {
+    // Regression: PR #28's self-review hit HTTP 400 on every
+    // OpenAI/Anthropic/Google model name. The MiniMax provider
+    // only accepts `MiniMax-Text-01` (or `abab*` aliases). Detected
+    // by hostname substring match (case-insensitive).
+    expect(
+      resolveAutoModel({
+        provider: "openai-compatible",
+        apiUrl: "https://api.minimax.io/v1",
+        env: {},
+      }),
+    ).toBe("MiniMax-Text-01");
+  });
+
+  it("returns MiniMax-Text-01 for minimax URLs with any path (e.g. /anthropic)", () => {
+    expect(
+      resolveAutoModel({
+        provider: "openai-compatible",
+        apiUrl: "https://api.minimax.io/anthropic",
+        env: {},
+      }),
+    ).toBe("MiniMax-Text-01");
+  });
+
+  it("returns MiniMax-Text-01 for minimax URLs case-insensitively", () => {
+    expect(
+      resolveAutoModel({
+        provider: "openai-compatible",
+        apiUrl: "https://API.MINIMAX.IO/v1",
+        env: {},
+      }),
+    ).toBe("MiniMax-Text-01");
+  });
+
   it("returns gpt-5-mini for the default OpenAI-compatible case", () => {
     expect(
       resolveAutoModel({
@@ -73,6 +108,37 @@ describe("resolveAutoModel", () => {
         env: {},
       }),
     ).toBe("gpt-5-mini");
+  });
+});
+
+describe("fallbackModelsFor: URL-specific chains for non-OpenAI providers", () => {
+  it("returns the openai chain for plain openai-compatible URLs", () => {
+    expect(fallbackModelsFor("openai-compatible", "https://api.openai.com/v1")[0])
+      .toBe("gpt-5-mini");
+  });
+
+  it("returns the MiniMax chain for api.minimax.io URLs", () => {
+    // The generic OpenAI chain would 400 on MiniMax. The URL-specific
+    // chain returns only models MiniMax accepts.
+    const chain = fallbackModelsFor("openai-compatible", "https://api.minimax.io/v1");
+    expect(chain).toContain("MiniMax-Text-01");
+    expect(chain).not.toContain("gpt-5-mini");
+    expect(chain).not.toContain("claude-sonnet-4.6");
+  });
+
+  it("returns the MiniMax chain even when the URL has a non-v1 path", () => {
+    const chain = fallbackModelsFor("openai-compatible", "https://api.minimax.io/anthropic");
+    expect(chain).toContain("MiniMax-Text-01");
+  });
+
+  it("returns the openai chain when apiUrl is null (callers that don't have URL context)", () => {
+    expect(fallbackModelsFor("openai-compatible", null)[0])
+      .toBe("gpt-5-mini");
+  });
+
+  it("returns only the Copilot default for the copilot provider", () => {
+    expect(fallbackModelsFor("copilot", "https://api.openai.com/v1"))
+      .toEqual(["claude-3-5-sonnet"]);
   });
 });
 
@@ -111,5 +177,34 @@ describe("parseFallbackModels", () => {
 
   it("returns the defaults when every part is empty", () => {
     expect(parseFallbackModels(",,,")).toEqual(DEFAULT_FALLBACK_MODELS);
+  });
+});
+
+describe("hostname extraction: a /minimax path in the URL does NOT trigger MiniMax routing", () => {
+  // Substring matching on the full URL is too loose — a URL like
+  // `https://example.com/minimax-router` would falsely match
+  // `url.includes("minimax")`. The hostname-only extract
+  // prevents that. We exercise it through resolveAutoModel.
+  it("does NOT match MiniMax for a URL whose path contains 'minimax' but whose host is unrelated", () => {
+    expect(
+      resolveAutoModel({
+        provider: "openai-compatible",
+        apiUrl: "https://example.com/minimax-router/v1",
+        env: {},
+      }),
+    ).toBe("gpt-5-mini");
+  });
+
+  it("does NOT match Anthropic for a URL whose path contains 'anthropic' but whose host is MiniMax", () => {
+    // This is the regression case: `https://api.minimax.io/anthropic`
+    // must route to MiniMax-Text-01, NOT claude-sonnet-4.6. The
+    // hostname-first check is what makes this work.
+    expect(
+      resolveAutoModel({
+        provider: "openai-compatible",
+        apiUrl: "https://api.minimax.io/anthropic",
+        env: {},
+      }),
+    ).toBe("MiniMax-Text-01");
   });
 });

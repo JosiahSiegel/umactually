@@ -2784,6 +2784,124 @@ function joinUrl(baseUrl, path) {
     return `${trimmedBase}${prefixedPath}`;
 }
 /**
+ * Resolve a provider's `baseUrl` down to its origin (scheme + host + port),
+ * then append a default API prefix. This makes the action robust against
+ * any operator-supplied path: no matter what the user puts after the host
+ * (`/v1`, `/openai`, `/anthropic`, `/api/v2`, etc.), the action always
+ * targets the canonical OpenAI-style path on the host root.
+ *
+ * Goal: `${result}/responses` and `${result}/chat/completions` must
+ * reach the provider regardless of what path the operator typed in
+ * `UMACTUALLY_API_URL`. The provider is responsible for serving those
+ * routes at the host root + `/v1/...`.
+ *
+ * Examples (defaultPrefix = `/v1`):
+ *   - `https://api.example.com`           → `https://api.example.com/v1`
+ *   - `https://api.example.com/`          → `https://api.example.com/v1`
+ *   - `https://api.example.com/v1`        → `https://api.example.com/v1`
+ *   - `https://api.example.com/openai`    → `https://api.example.com/v1`
+ *   - `https://api.example.com/anthropic` → `https://api.example.com/v1`
+ *   - `https://api.example.com/api/v2`    → `https://api.example.com/v1`
+ *   - `https://api.example.com/v1/openai` → `https://api.example.com/v1`
+ *
+ * The path is **always** discarded. This is intentional: the action
+ * calls OpenAI-style routes (`/responses`, `/chat/completions`),
+ * and the operator's path is treated as decorative noise rather than
+ * a routing hint. The fix trades a small amount of flexibility (no
+ * custom namespace support) for a large amount of robustness — the
+ * action works the same regardless of what path the operator typed.
+ *
+ * If an operator genuinely needs a custom namespace, they can use
+ * the `--provider copilot` path (which uses GitHub's API directly)
+ * or the `copilot` provider family which has its own routing.
+ *
+ * Detection uses a minimal URL parse. The fallback substring path
+ * handles unencoded spaces and other URL-parse failures.
+ *
+ * @param baseUrl       Operator-supplied base URL.
+ * @param defaultPrefix Default prefix to append to the origin.
+ *                      Default `/v1`.
+ */
+function resolveProviderBaseUrl(baseUrl, defaultPrefix = "/v1") {
+    const origin = extractOrigin(baseUrl);
+    return `${origin}${defaultPrefix}`;
+}
+/**
+ * Return the origin (scheme + host + port) of a URL, stripping any path,
+ * query, and fragment. Used by `resolveProviderBaseUrl` to normalize
+ * operator-supplied URLs to their canonical host root.
+ *
+ * Returns the input unchanged if it cannot be parsed as a URL — this
+ * preserves the original string for callers that want a best-effort
+ * fallback. Callers that need a strict guarantee should pass a
+ * well-formed URL.
+ */
+function extractOrigin(baseUrl) {
+    try {
+        return new URL(baseUrl).origin;
+    }
+    catch {
+        const schemeSep = baseUrl.indexOf("://");
+        if (schemeSep === -1) {
+            const firstSlash = baseUrl.indexOf("/");
+            return firstSlash === -1 ? baseUrl : baseUrl.slice(0, firstSlash);
+        }
+        const sepLen = 3; // "://" length
+        const afterScheme = baseUrl.slice(schemeSep + sepLen);
+        const firstSlash = afterScheme.indexOf("/");
+        const authority = firstSlash === -1 ? afterScheme : afterScheme.slice(0, firstSlash);
+        return baseUrl.slice(0, schemeSep + sepLen) + authority;
+    }
+}
+/**
+ * Return the ORDERED list of base URL candidates to try when calling
+ * the openai-compatible provider. The first candidate is the
+ * operator-supplied URL as-pasted (after trimming trailing slashes) —
+ * we always respect what the operator typed. Subsequent candidates
+ * are progressively more "normalized" forms: first the origin with
+ * the default prefix prepended, then the origin alone (rare —
+ * only useful if the provider serves routes at the root with no
+ * prefix).
+ *
+ * The list is de-duplicated so the caller doesn't try the same URL
+ * twice. The provider tries each candidate in order; if a candidate
+ * 404s on both `/responses` and `/chat/completions`, the next
+ * candidate is tried. The first candidate that returns a non-404
+ * response wins.
+ *
+ * This is the "robust to any URL shape" contract: no matter what
+ * the operator types, we find a working endpoint. The order is
+ * important — the operator's URL comes first so the wire path
+ * matches their intent whenever possible.
+ *
+ * Examples (defaultPrefix = `/v1`):
+ *   - `https://api.example.com` →
+ *       [`https://api.example.com`,
+ *        `https://api.example.com/v1`]
+ *   - `https://api.example.com/v1` →
+ *       [`https://api.example.com/v1`,
+ *        `https://api.example.com/v1`]  (de-duplicated)
+ *   - `https://api.example.com/anthropic` →
+ *       [`https://api.example.com/anthropic`,
+ *        `https://api.example.com/v1`]
+ *   - `https://api.example.com/api/v2` →
+ *       [`https://api.example.com/api/v2`,
+ *        `https://api.example.com/v1`]
+ *
+ * The fallback candidate (origin + default prefix) is included even
+ * when the operator's URL is a bare host, so a single candidate is
+ * tried twice (de-duplicated to one). This keeps the contract
+ * uniform: callers always iterate a list, no special-casing.
+ */
+function resolveProviderBaseUrlCandidates(baseUrl, defaultPrefix = "/v1") {
+    const pasted = url_stripTrailingSlash(baseUrl);
+    const normalized = resolveProviderBaseUrl(baseUrl, defaultPrefix);
+    if (pasted === normalized) {
+        return [pasted];
+    }
+    return [pasted, normalized];
+}
+/**
  * Removes trailing slashes from a URL or path segment. Useful before
  * joining paths so empty-path joins don't produce double slashes.
  */
@@ -7145,6 +7263,247 @@ function isStubCompletedText(text) {
         return true;
     return false;
 }
+/**
+ * Dynamically detect provider-error responses that arrive as HTTP 200
+ * with a structurally valid JSON body but carry NO actual model output.
+ * These are the most dangerous failure class because the existing
+ * "parse failed" path treats them as genuine parse failures — posting
+ * a COMMENT review with zero findings and exiting 0, so CI sees green
+ * even though the model never ran.
+ *
+ * Provider-agnostic detection signals (any ONE suffices):
+ *
+ *   1. **Zero-usage signal**: The response JSON has a `usage` block
+ *      where `input_tokens === 0` AND `output_tokens === 0` (and
+ *      `total_tokens === 0` when present). A real model invocation
+ *      always consumes at least 1 input token. This is the strongest
+ *      signal because it comes directly from the provider's billing
+ *      layer — routers, proxies, and gateways that fail to route the
+ *      request still report zero usage because no model was called.
+ *
+ *      IMPORTANT: `usage` must be READ FROM the response JSON
+ *      (top-level or inside the SSE terminal event), not from the
+ *      `ProviderError.usage` field, which only carries usage from
+ *      the terminal SSE event. A non-SSE provider error (plain JSON
+ *      HTTP 200) would have usage on the top-level JSON object and
+ *      nowhere else.
+ *
+ *   2. **Error-doc-URL signal**: The response text contains a
+ *      documentation URL with an error-code path
+ *      (`/docs/errors/M101`, `/docs/errors/`, `/help/error/`). This
+ *      is universal across LLM routers (Manifest, LiteLLM, OpenRouter,
+ *      custom gateways) — they all link to their error documentation.
+ *
+ *   3. **Error-envelope signal**: The response JSON has an `error`
+ *      object or `errors` array at the top level with `type`/`message`/
+ *      `code` fields. This is the standard shape for JSON-API errors
+ *      (RFC 7807, JSON:API spec) and is used by every major API
+ *      gateway when the request reaches the server but cannot be
+ *      processed (bad model name, no route configured, quota exceeded).
+ *
+ *   4. **Zero-output + zero-usage fallback**: Response has
+ *      `output_text: ""` or `output: []` (empty output) AND
+ *      zero-usage. This catches providers that return a valid response
+ *      envelope but with no actual model output — the "connected but
+ *      no providers" case.
+ *
+ * IMPORTANT: The function intentionally does NOT match on substrings
+ * like "Manifest M101" or "model not supported" — those are
+ * provider-specific and would miss new providers. The four signals
+ * above are structural and work for any provider.
+ *
+ * Non-triggers (intentionally):
+ *   - A response with `output_tokens > 0` is never a provider error
+ *     (the model ran and produced output, even if the output is
+ *     garbage — that's a parse failure, not a provider error).
+ *   - A response with no `usage` block at all is ambiguous (some
+ *     providers omit usage on streaming responses) — we only trigger
+ *     when usage IS present and IS all-zeros.
+ *   - A response with a valid review JSON (summary + comments) is
+ *     never a provider error regardless of usage.
+ */
+function detectProviderError(rawText) {
+    if (rawText.length === 0) {
+        return null;
+    }
+    // Try parsing the raw text as JSON. If it's not JSON, fall through
+    // to the text-signal checks (error-doc URLs in plain text).
+    const parsed = tryParseJson(rawText);
+    if (parsed !== undefined && isRecord(parsed)) {
+        // Signal 1: error-envelope at the top level.
+        const errorDetails = checkErrorEnvelope(parsed);
+        if (errorDetails !== null) {
+            return errorDetails;
+        }
+        // Signal 2: zero-usage with no output (or empty output).
+        const zeroUsage = checkZeroUsage(parsed);
+        if (zeroUsage !== null) {
+            // If the response also has actual review content, this is NOT
+            // a provider error — some routers emit zero usage on cached
+            // responses. The review content check prevents a false positive.
+            const hasReviewContent = checkHasReviewContent(parsed);
+            if (!hasReviewContent) {
+                return zeroUsage;
+            }
+        }
+    }
+    // Signal 3: error-doc-URL in the raw text (works for both JSON and
+    // non-JSON responses — some providers return plain text error messages).
+    const docUrlSignal = checkErrorDocUrl(rawText);
+    if (docUrlSignal !== null) {
+        return docUrlSignal;
+    }
+    return null;
+}
+/**
+ * Check for a top-level `error` object or `errors` array in the JSON
+ * response. This is the standard JSON-API error shape used by gateways,
+ * routers, and proxies when the request reaches the server but cannot
+ * be processed.
+ */
+function checkErrorEnvelope(parsed) {
+    // Single `error` object (RFC 7807 / common shape).
+    const errorField = parsed["error"];
+    if (isRecord(errorField)) {
+        const message = readStringField(errorField, "message") ??
+            readStringField(errorField, "type") ??
+            readStringField(errorField, "code") ??
+            "Provider returned an error envelope.";
+        return {
+            kind: "error-envelope",
+            message,
+            ...(readStringField(errorField, "type") !== null
+                ? { detail: `type: ${readStringField(errorField, "type")}` }
+                : {}),
+        };
+    }
+    // `errors` array (JSON:API spec shape).
+    const errorsField = parsed["errors"];
+    if (isUnknownArray(errorsField) && errorsField.length > 0) {
+        const first = errorsField[0];
+        if (isRecord(first)) {
+            const message = readStringField(first, "message") ??
+                readStringField(first, "detail") ??
+                readStringField(first, "title") ??
+                "Provider returned an errors array.";
+            return {
+                kind: "error-envelope",
+                message,
+            };
+        }
+    }
+    return null;
+}
+/**
+ * Check for a `usage` block where all token counts are zero. This
+ * means no model was invoked — a dead giveaway for router/proxy
+ * misconfiguration.
+ *
+ * Checks both top-level `usage` (non-SSE JSON responses) and
+ * `response.usage` (SSE terminal event envelope). Does NOT use the
+ * `ProviderError.usage` field because that only carries usage from
+ * the terminal SSE event and would miss non-SSE responses.
+ */
+function checkZeroUsage(parsed) {
+    const usage = readUsageBlock(parsed);
+    if (usage === null) {
+        return null;
+    }
+    const input = usage["input_tokens"];
+    const output = usage["output_tokens"];
+    const total = usage["total_tokens"];
+    // Only trigger when usage IS present and ALL fields are zero (or
+    // the only present field is zero). A missing usage block is NOT a
+    // signal (some providers omit it); a partial-usage block with at
+    // least one non-zero field is NOT a signal (the model ran).
+    const hasAnyField = input !== undefined || output !== undefined || total !== undefined;
+    if (!hasAnyField) {
+        return null;
+    }
+    const allZero = (input === undefined || input === 0) &&
+        (output === undefined || output === 0) &&
+        (total === undefined || total === 0);
+    if (allZero) {
+        return {
+            kind: "zero-usage",
+            message: "Provider reported zero token usage — no model was invoked. Check provider configuration and API key.",
+        };
+    }
+    return null;
+}
+/**
+ * Read the `usage` block from a parsed JSON response. Checks both
+ * top-level `usage` (non-SSE JSON) and `response.usage` (SSE
+ * terminal-event envelope shape where the full response is wrapped
+ * inside a `response` key).
+ */
+function readUsageBlock(parsed) {
+    // Top-level usage (non-SSE JSON response).
+    const topLevelUsage = readRecordField(parsed, "usage");
+    if (topLevelUsage !== null) {
+        return topLevelUsage;
+    }
+    // SSE terminal-event envelope: { response: { ... usage: { ... } } }.
+    const responseField = readRecordField(parsed, "response");
+    if (responseField !== null) {
+        const nestedUsage = readRecordField(responseField, "usage");
+        if (nestedUsage !== null) {
+            return nestedUsage;
+        }
+    }
+    return null;
+}
+/**
+ * Check whether the parsed JSON response contains actual review content
+ * (summary, verdict, or comments). Used to prevent false positives
+ * when zero-usage is detected — some routers emit zero usage on cached
+ * responses that DO contain a valid review.
+ */
+function checkHasReviewContent(parsed) {
+    const summary = readStringField(parsed, "summary");
+    if (summary !== null && summary.length > 0) {
+        return true;
+    }
+    const verdict = readStringField(parsed, "verdict");
+    if (verdict !== null && verdict.length > 0) {
+        return true;
+    }
+    const comments = readArrayField(parsed, "comments");
+    if (comments !== null && comments.length > 0) {
+        return true;
+    }
+    return false;
+}
+/**
+ * Check the raw text for error-documentation URLs. This is universal
+ * across LLM routers and gateways — they all link to their error docs.
+ *
+ * Matches patterns like:
+ *   - `/docs/errors/M101`
+ *   - `/docs/errors/`
+ *   - `/help/error/`
+ *   - `/docs/error-codes#`
+ *
+ * Works on both JSON (extracted from string fields) and plain-text
+ * responses.
+ */
+function checkErrorDocUrl(rawText) {
+    // Match `/docs/errors/` (Manifest, generic), `/help/error/` (some
+    // enterprise gateways), `/docs/error-codes` (Azure-style).
+    const ERROR_DOC_PATTERN = /\/(?:docs|help)\/errors?[-_/a-z0-9]*/iu;
+    if (ERROR_DOC_PATTERN.test(rawText)) {
+        // Extract the matched substring for the detail field so the
+        // operator can see which documentation URL was referenced.
+        const match = rawText.match(ERROR_DOC_PATTERN);
+        const detail = match !== null ? match[0] : "";
+        return {
+            kind: "error-doc-url",
+            message: "Provider response contains an error documentation URL — provider routing or configuration error.",
+            ...(detail.length > 0 ? { detail } : {}),
+        };
+    }
+    return null;
+}
 
 ;// CONCATENATED MODULE: ./src/cli/live-shared.ts
 
@@ -7850,11 +8209,12 @@ async function runAzureLive(input) {
     // The reviewId is the PARENT thread id (so consumers can correlate
     // the run with the top-level summary card on the PR conversation).
     const reviewId = parentThreadId ?? postedIds[0];
+    const parseFailed = provider.review.parseFailed === true;
     const successMessage = failedIndices.length > 0
-        ? `posted Azure review (${postedIds.length} threads, ${failedIndices.length} failed)`
-        : `posted Azure review (${postedIds.length} threads)`;
+        ? `posted Azure review (${postedIds.length} threads, ${failedIndices.length} failed)${parseFailed ? " (parse failed)" : ""}`
+        : `posted Azure review (${postedIds.length} threads)${parseFailed ? " (parse failed)" : ""}`;
     return {
-        exitCode: 0,
+        exitCode: parseFailed ? 1 : 0,
         posted: true,
         reviewId,
         message: successMessage,
@@ -7864,6 +8224,9 @@ async function runAzureLive(input) {
         // matches the Azure PR status and the body. See the matching
         // comment on the GitHub side in `live-github.ts`.
         verdict: prepared.effectiveVerdict,
+        // Signal parse-fail to the artifact-write path so writeLiveArtifact
+        // can stamp `parseFailed: true` on the posted=true branch.
+        parseFailed,
         // Thread parse warnings (off-diff citation hallucinations) to the
         // artifact-write path so the parse-warnings.json sibling artifact
         // surfaces them for operators / CI guards.
@@ -8537,11 +8900,13 @@ async function runGithubLive(input) {
         postableComments.length === 0) {
         const reviewId = await updateExistingReview({ context, fetchImpl, review: existing, body });
         if (reviewId !== null) {
+            const parseFailed = provider.review.parseFailed === true;
             return {
-                exitCode: 0,
+                exitCode: parseFailed ? 1 : 0,
                 posted: true,
                 reviewId,
-                message: "updated existing GitHub review",
+                message: parseFailed ? "updated existing GitHub review (parse failed)" : "updated existing GitHub review",
+                parseFailed,
                 parseWarnings: provider.parseWarnings,
             };
         }
@@ -8563,11 +8928,14 @@ async function runGithubLive(input) {
         event,
         comments: postableComments,
     });
+    const parseFailed = provider.review.parseFailed === true;
     return {
-        exitCode: 0,
+        exitCode: parseFailed ? 1 : 0,
         posted: true,
         reviewId,
-        message: existing !== null ? "replaced existing GitHub review" : "posted GitHub review",
+        message: existing !== null
+            ? (parseFailed ? "replaced existing GitHub review (parse failed)" : "replaced existing GitHub review")
+            : (parseFailed ? "posted GitHub review (parse failed)" : "posted GitHub review"),
         // Surface the live review's actual counts so the self-review guard
         // artifact-write path can persist them — the dry-run stub's counts
         // would otherwise mask what GitHub actually saw.
@@ -8578,6 +8946,9 @@ async function runGithubLive(input) {
         // surfaces here as `COMMENT`, matching the `📊 0 inline findings`
         // body and the `COMMENT` review event.
         verdict: prepared.effectiveVerdict,
+        // Signal parse-fail to the artifact-write path so writeLiveArtifact
+        // can stamp `parseFailed: true` on the posted=true branch.
+        parseFailed,
         // Thread parse warnings (off-diff citation hallucinations) to the
         // artifact-write path so the parse-warnings.json sibling artifact
         // surfaces them for operators / CI guards.
@@ -8699,6 +9070,14 @@ class ProviderError extends Error {
      * before the completed event.
      */
     usage;
+    /**
+     * Structured details when `code === "provider_error"`. Carries the
+     * detection signal kind (zero-usage, error-envelope, error-doc-url)
+     * and a human-readable message so downstream layers can surface
+     * actionable remediation advice. `undefined` for all other error
+     * codes.
+     */
+    providerErrorDetails;
     constructor(code, endpoint, status, requestId, message, options) {
         super(message, options);
         this.code = code;
@@ -8708,6 +9087,7 @@ class ProviderError extends Error {
         this.rawText = options?.rawText;
         this.truncated = options?.truncated;
         this.usage = options?.usage;
+        this.providerErrorDetails = options?.providerErrorDetails;
     }
 }
 function sanitizeHttpStatus(endpoint, status) {
@@ -8911,6 +9291,17 @@ async function runChatCall(config, fetchImpl, requestId, session) {
     if (isNonEmptyReview(review)) {
         return { ok: true, endpoint: ENDPOINT_CHAT, review, requestId };
     }
+    // Provider-error detection: check for router/proxy misconfiguration
+    // before the self-healing retry. See openai-compatible.ts for the
+    // full rationale — the short version: retrying won't help when no
+    // model was invoked.
+    const providerError = detectProviderError(rawText);
+    if (providerError !== null) {
+        return {
+            ok: false,
+            error: new ProviderError("provider_error", ENDPOINT_CHAT, response.status, requestId, providerError.message, { rawText, providerErrorDetails: providerError }),
+        };
+    }
     // Self-healing parse-fail retry: send a follow-up message asking the
     // model to emit JSON only. Mirrors the openai-compatible path.
     // See openai-compatible.ts:callEndpoint for the full rationale.
@@ -9037,18 +9428,73 @@ function buildBodyConfig(config) {
 async function runProviderRequest(config) {
     const fetchImpl = config.fetchImpl ?? globalThis.fetch.bind(globalThis);
     const requestId = createRequestId();
-    const firstAttempt = await runWithRetry(config, fetchImpl, requestId, ENDPOINT_RESPONSES);
-    if (firstAttempt.ok) {
-        return firstAttempt;
+    // URL resolution strategy: try the operator's URL as-pasted first
+    // (after trimming trailing slashes), then fall back to the
+    // origin-stripped URL with /v1/ appended. This is the "robust to
+    // any URL shape" contract: no matter what path the operator typed
+    // (`/v1`, `/openai`, `/anthropic`, `/api/v2`, or none at all), the
+    // action finds a working endpoint.
+    //
+    // See resolveProviderBaseUrlCandidates in src/util/url.ts for the
+    // candidate list construction.
+    const baseUrlCandidates = resolveProviderBaseUrlCandidates(config.baseUrl);
+    // Surface the candidate list so operators can verify the URL
+    // resolution is doing what they expect. Without these annotation
+    // lines, a 400/404 from the action's last attempt is opaque — the
+    // operator can't tell whether the action tried the URL they pasted
+    // or jumped straight to the origin+prefix form. The `::notice::`
+    // annotations are visible in the GitHub Actions log and survive
+    // even if the action's `process.stderr.write` is captured.
+    if (baseUrlCandidates.length > 1) {
+        process.stderr.write(`::notice::${BRAND_PREFIX}Resolving provider base URL: trying ${baseUrlCandidates.length} candidates in order: ${baseUrlCandidates.join(", ")}\n`);
     }
-    if (shouldFallback(firstAttempt.error)) {
-        return runWithRetry(config, fetchImpl, requestId, openai_compatible_ENDPOINT_CHAT);
+    let lastAttempt = { ok: false, error: new ProviderError("network", ENDPOINT_RESPONSES, null, requestId, "No base URL candidates resolved.") };
+    for (const candidate of baseUrlCandidates) {
+        process.stderr.write(`::notice::${BRAND_PREFIX}Trying base URL: ${candidate}\n`);
+        const firstAttempt = await runWithRetry(config, fetchImpl, requestId, ENDPOINT_RESPONSES, candidate);
+        if (firstAttempt.ok) {
+            return firstAttempt;
+        }
+        if (shouldFallback(firstAttempt.error)) {
+            const chatAttempt = await runWithRetry(config, fetchImpl, requestId, openai_compatible_ENDPOINT_CHAT, candidate);
+            if (chatAttempt.ok) {
+                return chatAttempt;
+            }
+            // Chat fallback also failed. Move to the next URL candidate
+            // (the operator-pasted URL failed → try origin-stripped, etc.)
+            // unless the error is NOT a 404/400 (e.g. auth failure, server
+            // error) — in that case, retrying with a different URL won't
+            // help, so return immediately.
+            if (!isRoutableFailure(chatAttempt.error)) {
+                return chatAttempt;
+            }
+            process.stderr.write(`::notice::${BRAND_PREFIX}Base URL ${candidate} returned routable failure (status=${chatAttempt.error.status}); advancing to next candidate.\n`);
+            lastAttempt = chatAttempt;
+            continue;
+        }
+        // The /responses endpoint failed with a non-routable status
+        // (e.g. 401, 500). Retrying with a different URL won't help.
+        if (!isRoutableFailure(firstAttempt.error)) {
+            return firstAttempt;
+        }
+        process.stderr.write(`::notice::${BRAND_PREFIX}Base URL ${candidate} returned routable failure (status=${firstAttempt.error.status}); advancing to next candidate.\n`);
+        lastAttempt = firstAttempt;
     }
-    return firstAttempt;
+    return lastAttempt;
 }
-async function runWithEndpoint(config, fetchImpl, requestId, endpoint) {
+/**
+ * True when the failure was a routing-level rejection (404 Not Found
+ * or 400 Bad Request) that would benefit from trying a different URL
+ * shape. False for auth failures (401/403), server errors (5xx),
+ * parse failures, and timeouts — those have a single root cause and
+ * a different URL won't help.
+ */
+function isRoutableFailure(error) {
+    return error.status === 404 || error.status === 400;
+}
+async function runWithEndpoint(config, fetchImpl, requestId, endpoint, baseUrl) {
     try {
-        return await callEndpoint(config, fetchImpl, requestId, endpoint);
+        return await callEndpoint(config, fetchImpl, requestId, endpoint, baseUrl);
     }
     catch (error) {
         if (error instanceof ProviderError) {
@@ -9058,10 +9504,10 @@ async function runWithEndpoint(config, fetchImpl, requestId, endpoint) {
     }
 }
 const RETRY_BACKOFF_MS = [250, 1_000];
-async function runWithRetry(config, fetchImpl, requestId, endpoint) {
+async function runWithRetry(config, fetchImpl, requestId, endpoint, baseUrl) {
     let lastFailure = null;
     for (let attempt = 0; attempt <= RETRY_BACKOFF_MS.length; attempt += 1) {
-        const result = await runWithEndpoint(config, fetchImpl, requestId, endpoint);
+        const result = await runWithEndpoint(config, fetchImpl, requestId, endpoint, baseUrl);
         if (result.ok) {
             return result;
         }
@@ -9090,8 +9536,8 @@ function isRetryable(error) {
  * The shared prompt constant lives in `provider-parse.ts` so the Copilot
  * path can reuse it byte-for-byte (DRY-12).
  */
-async function callEndpoint(config, fetchImpl, requestId, endpoint) {
-    const url = joinUrl(config.baseUrl, endpoint === ENDPOINT_RESPONSES ? "/responses" : "/chat/completions");
+async function callEndpoint(config, fetchImpl, requestId, endpoint, baseUrl) {
+    const url = joinUrl(baseUrl, endpoint === ENDPOINT_RESPONSES ? "/responses" : "/chat/completions");
     const body = endpoint === ENDPOINT_RESPONSES
         ? buildResponsesBody(buildBodyConfig(config))
         : buildChatBody(buildBodyConfig(config));
@@ -9136,6 +9582,19 @@ async function callEndpoint(config, fetchImpl, requestId, endpoint) {
     // "empty review" — see CLARITY-10.
     if (isNonEmptyReview(review)) {
         return { ok: true, endpoint, review, requestId };
+    }
+    // Provider-error detection: before attempting the self-healing
+    // retry, check whether the raw response is a provider error (router
+    // misconfiguration, no providers configured, invalid API key, etc.)
+    // rather than a genuine parse failure. Provider errors are NOT
+    // retryable — retrying with a JSON-reminder prompt won't help when
+    // no model was invoked in the first place. Short-circuiting here
+    // saves a wasted retry and surfaces a specific error code
+    // (`provider_error`) so the live-review layer can hard-fail instead
+    // of posting a 0-finding COMMENT review that exits 0.
+    const providerError = detectProviderError(rawText);
+    if (providerError !== null) {
+        throw new ProviderError("provider_error", endpoint, response.status, requestId, providerError.message, { rawText, providerErrorDetails: providerError });
     }
     // Self-healing: parse failed on first attempt. Try once more with an
     // explicit JSON-only reminder. Some providers (notably those that
@@ -9274,26 +9733,93 @@ function shouldFallback(error) {
  *     Copilot-routable string and would 404.)
  *   - provider=openai-compatible + URL contains "anthropic"  → claude-sonnet-4.6
  *   - provider=openai-compatible + URL contains "generativelanguage"  → gemini-2.5-flash
+ *   - provider=openai-compatible + URL contains "minimax" or "MiniMax"  → MiniMax-Text-01
  *   - provider=openai-compatible otherwise (incl. api.openai.com)  → gpt-5-mini
+ *
+ * The MiniMax branch was added when PR #28's self-review hit HTTP
+ * 400 on every OpenAI/Anthropic model name — the MiniMax provider
+ * only serves `MiniMax-Text-01` (or `abab*` aliases). Detected by
+ * the URL hostname containing `minimax`.
  *
  * Users can always override via `--model` (or `UMACTUALLY_MODEL`).
  */
 const COPILOT_DEFAULT_MODEL = "claude-3-5-sonnet";
 const ANTHROPIC_DEFAULT_MODEL = "claude-sonnet-4.6";
 const GOOGLE_DEFAULT_MODEL = "gemini-2.5-flash";
+const MINIMAX_DEFAULT_MODEL = "MiniMax-Text-01";
 const OPENAI_DEFAULT_MODEL = "gpt-5-mini";
+const HOST_ROUTES = [
+    // MiniMax: the api.minimax.io gateway only accepts MiniMax-Text-01
+    // and abab* aliases. Any OpenAI/Anthropic model name returns
+    // HTTP 400. Detected by hostname substring.
+    { hostSubstring: "minimax", model: MINIMAX_DEFAULT_MODEL },
+    // Anthropic: api.anthropic.com serves the claude-* line.
+    { hostSubstring: "anthropic", model: ANTHROPIC_DEFAULT_MODEL },
+    // Google: generativelanguage.googleapis.com (Gemini API) and
+    // aiplatform.googleapis.com (Vertex AI) both serve gemini-*.
+    { hostSubstring: "generativelanguage", model: GOOGLE_DEFAULT_MODEL },
+    { hostSubstring: "googleapis", model: GOOGLE_DEFAULT_MODEL },
+];
 function resolveAutoModel(input) {
     if (input.provider === "copilot") {
         return COPILOT_DEFAULT_MODEL;
     }
     const url = input.apiUrl ?? input.env["UMACTUALLY_API_URL"] ?? "";
-    if (url.includes("anthropic")) {
-        return ANTHROPIC_DEFAULT_MODEL;
-    }
-    if (url.includes("generativelanguage") || url.includes("googleapis")) {
-        return GOOGLE_DEFAULT_MODEL;
+    const hostname = extractHostname(url);
+    if (hostname !== null) {
+        const lowerHost = hostname.toLowerCase();
+        for (const route of HOST_ROUTES) {
+            if (lowerHost.includes(route.hostSubstring)) {
+                return route.model;
+            }
+        }
     }
     return OPENAI_DEFAULT_MODEL;
+}
+/**
+ * Extract the hostname from a URL string. Returns null when the
+ * input is empty, malformed, or a bare string without a scheme
+ * separator. The caller is expected to fall back to the default
+ * model when null is returned.
+ *
+ * Why hostname-only: substring matching on the full URL is too
+ * loose. A URL like `https://example.com/minimax-router` would
+ * falsely match `url.includes("minimax")` and pick a MiniMax
+ * model. The hostname extract prevents that — `example.com`
+ * doesn't contain `minimax`, so the model is the default.
+ */
+function extractHostname(url) {
+    const trimmed = url.trim();
+    if (trimmed.length === 0)
+        return null;
+    try {
+        return new URL(trimmed).hostname.toLowerCase();
+    }
+    catch {
+        // Fallback: strip scheme manually, then read up to the first
+        // `/` or `:`. `localhost:8080` parses to hostname "localhost"
+        // in some runtimes and `8080` in others, so this path handles
+        // the parse-failure case explicitly.
+        const schemeSep = trimmed.indexOf("://");
+        if (schemeSep === -1) {
+            const firstSlash = trimmed.indexOf("/");
+            const firstColon = trimmed.indexOf(":");
+            const stop = firstSlash === -1 ? trimmed.length : firstSlash;
+            const host = firstColon === -1 || firstColon > stop
+                ? trimmed.slice(0, stop)
+                : trimmed.slice(0, firstColon);
+            return host.length > 0 ? host : null;
+        }
+        const sepLen = 3; // "://" length
+        const afterScheme = trimmed.slice(schemeSep + sepLen);
+        const firstSlash = afterScheme.indexOf("/");
+        const firstColon = afterScheme.indexOf(":");
+        const stop = firstSlash === -1 ? afterScheme.length : firstSlash;
+        const host = firstColon === -1 || firstColon > stop
+            ? afterScheme.slice(0, stop)
+            : afterScheme.slice(0, firstColon);
+        return host.length > 0 ? host : null;
+    }
 }
 /**
  * The fallback chain used when a primary model returns a parse-fail
@@ -9328,14 +9854,45 @@ const PROVIDER_FALLBACKS = {
         COPILOT_DEFAULT_MODEL,
     ],
 };
+/**
+ * Per-URL fallback chains for providers that only accept their own
+ * model names. The MiniMax provider (`api.minimax.io`) returns
+ * HTTP 400 for any OpenAI/Anthropic/Google model name, so the
+ * generic openai-compatible fallback chain would 400 too. The
+ * URL-specific chains here override the default for the matching
+ * hostnames.
+ */
+const URL_SPECIFIC_FALLBACKS = {
+    // `toLowerCase()` is applied to the URL before lookup so this
+    // map is case-insensitive — `api.minimax.io` and `API.MINIMAX.IO`
+    // both resolve to the same chain.
+    "minimax": [
+        MINIMAX_DEFAULT_MODEL,
+        "abab6.5s-chat",
+        "abab5.5-chat",
+    ],
+};
 const DEFAULT_FALLBACK_MODELS = PROVIDER_FALLBACKS["openai-compatible"];
 /**
  * Return the fallback chain for a specific provider. Use this
  * instead of the bare `DEFAULT_FALLBACK_MODELS` constant in any
  * path that might be Copilot-routed — otherwise the parse-fail
  * recovery would itself fail with a 404.
+ *
+ * If `apiUrl` is provided and the URL hostname matches a
+ * URL-specific chain (e.g. `api.minimax.io`), the URL-specific
+ * chain wins — the generic OpenAI chain would 400 on those
+ * providers.
  */
-function fallbackModelsFor(provider) {
+function fallbackModelsFor(provider, apiUrl) {
+    if (apiUrl !== undefined && apiUrl !== null && apiUrl.length > 0) {
+        const lower = apiUrl.toLowerCase();
+        for (const [hostKey, chain] of Object.entries(URL_SPECIFIC_FALLBACKS)) {
+            if (lower.includes(hostKey)) {
+                return chain;
+            }
+        }
+    }
     return PROVIDER_FALLBACKS[provider];
 }
 /**
@@ -9949,6 +10506,13 @@ async function requestLiveReview(input) {
                     diffText: input.diffText,
                 });
             }
+            // Provider errors (router misconfig, no providers configured,
+            // invalid API key, etc.) are NOT parse failures and must NOT
+            // be posted as a COMMENT review. Hard-fail so CI sees the error.
+            if (result.error.code === "provider_error") {
+                const details = result.error.providerErrorDetails;
+                throw new LiveReviewError("PROVIDER_ERROR", details?.message ?? result.error.message, { cause: result.error });
+            }
             throw new LiveReviewError("PROVIDER_REQUEST_FAILED", result.error.message, { cause: result.error });
         }
         const providerUrl = readRequiredConfig(input.parsed.apiUrl ?? input.env["UMACTUALLY_API_URL"], "UMACTUALLY_API_URL");
@@ -9999,6 +10563,13 @@ async function requestLiveReview(input) {
                 severityWarnings: severityWarnings.slice(),
                 diffText: input.diffText,
             });
+        }
+        // Provider errors (router misconfig, no providers configured,
+        // invalid API key, etc.) are NOT parse failures and must NOT
+        // be posted as a COMMENT review. Hard-fail so CI sees the error.
+        if (result.error.code === "provider_error") {
+            const details = result.error.providerErrorDetails;
+            throw new LiveReviewError("PROVIDER_ERROR", details?.message ?? result.error.message, { cause: result.error });
         }
         throw new LiveReviewError("PROVIDER_REQUEST_FAILED", result.error.message, { cause: result.error });
     }
@@ -11164,7 +11735,7 @@ async function writeLiveArtifact(parsed, cwd, platform, result) {
         inlineThreadCount: result.inlineThreadCount ?? 0,
         suppressedCommentCount: result.suppressedCommentCount ?? 0,
         blockedRawOutput: false,
-        parseFailed: false,
+        parseFailed: result.parseFailed === true,
         ...(result.verdict !== undefined ? { verdict: result.verdict } : {}),
         note: "Live review posted successfully; counts reflect what the GitHub/Azure API saw.",
     };

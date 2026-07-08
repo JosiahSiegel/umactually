@@ -57,11 +57,13 @@ export async function runGithubLive(input: {
   ) {
     const reviewId = await updateExistingReview({ context, fetchImpl, review: existing, body });
     if (reviewId !== null) {
+      const parseFailed = provider.review.parseFailed === true;
       return {
-        exitCode: 0,
+        exitCode: parseFailed ? 1 : 0,
         posted: true,
         reviewId,
-        message: "updated existing GitHub review",
+        message: parseFailed ? "updated existing GitHub review (parse failed)" : "updated existing GitHub review",
+        parseFailed,
         parseWarnings: provider.parseWarnings,
       };
     }
@@ -83,11 +85,14 @@ export async function runGithubLive(input: {
     event,
     comments: postableComments,
   });
+  const parseFailed = provider.review.parseFailed === true;
   return {
-    exitCode: 0,
+    exitCode: parseFailed ? 1 : 0,
     posted: true,
     reviewId,
-    message: existing !== null ? "replaced existing GitHub review" : "posted GitHub review",
+    message: existing !== null
+      ? (parseFailed ? "replaced existing GitHub review (parse failed)" : "replaced existing GitHub review")
+      : (parseFailed ? "posted GitHub review (parse failed)" : "posted GitHub review"),
     // Surface the live review's actual counts so the self-review guard
     // artifact-write path can persist them — the dry-run stub's counts
     // would otherwise mask what GitHub actually saw.
@@ -98,6 +103,9 @@ export async function runGithubLive(input: {
     // surfaces here as `COMMENT`, matching the `📊 0 inline findings`
     // body and the `COMMENT` review event.
     verdict: prepared.effectiveVerdict,
+    // Signal parse-fail to the artifact-write path so writeLiveArtifact
+    // can stamp `parseFailed: true` on the posted=true branch.
+    parseFailed,
     // Thread parse warnings (off-diff citation hallucinations) to the
     // artifact-write path so the parse-warnings.json sibling artifact
     // surfaces them for operators / CI guards.
