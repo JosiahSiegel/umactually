@@ -139,6 +139,17 @@ export async function requestLiveReview(input: {
           diffText: input.diffText,
         });
       }
+      // Provider errors (router misconfig, no providers configured,
+      // invalid API key, etc.) are NOT parse failures and must NOT
+      // be posted as a COMMENT review. Hard-fail so CI sees the error.
+      if (result.error.code === "provider_error") {
+        const details = result.error.providerErrorDetails;
+        throw new LiveReviewError(
+          "PROVIDER_ERROR",
+          details?.message ?? result.error.message,
+          { cause: result.error },
+        );
+      }
       throw new LiveReviewError("PROVIDER_REQUEST_FAILED", result.error.message, { cause: result.error });
     }
 
@@ -192,6 +203,17 @@ export async function requestLiveReview(input: {
         severityWarnings: severityWarnings.slice(),
         diffText: input.diffText,
       });
+    }
+    // Provider errors (router misconfig, no providers configured,
+    // invalid API key, etc.) are NOT parse failures and must NOT
+    // be posted as a COMMENT review. Hard-fail so CI sees the error.
+    if (result.error.code === "provider_error") {
+      const details = result.error.providerErrorDetails;
+      throw new LiveReviewError(
+        "PROVIDER_ERROR",
+        details?.message ?? result.error.message,
+        { cause: result.error },
+      );
     }
 
     throw new LiveReviewError("PROVIDER_REQUEST_FAILED", result.error.message, { cause: result.error });

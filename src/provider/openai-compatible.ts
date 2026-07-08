@@ -1,6 +1,7 @@
 import {
   buildChatBody,
   buildResponsesBody,
+  detectProviderError,
   diagnoseParseFailure,
   extractTextPayload,
   isNonEmptyReview,
@@ -231,6 +232,27 @@ async function callEndpoint(
   // "empty review" — see CLARITY-10.
   if (isNonEmptyReview(review)) {
     return { ok: true, endpoint, review, requestId };
+  }
+
+  // Provider-error detection: before attempting the self-healing
+  // retry, check whether the raw response is a provider error (router
+  // misconfiguration, no providers configured, invalid API key, etc.)
+  // rather than a genuine parse failure. Provider errors are NOT
+  // retryable — retrying with a JSON-reminder prompt won't help when
+  // no model was invoked in the first place. Short-circuiting here
+  // saves a wasted retry and surfaces a specific error code
+  // (`provider_error`) so the live-review layer can hard-fail instead
+  // of posting a 0-finding COMMENT review that exits 0.
+  const providerError = detectProviderError(rawText);
+  if (providerError !== null) {
+    throw new ProviderError(
+      "provider_error",
+      endpoint,
+      response.status,
+      requestId,
+      providerError.message,
+      { rawText, providerErrorDetails: providerError },
+    );
   }
 
   // Self-healing: parse failed on first attempt. Try once more with an

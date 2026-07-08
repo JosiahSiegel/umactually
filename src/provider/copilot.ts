@@ -1,5 +1,6 @@
 import {
   buildChatBody,
+  detectProviderError,
   diagnoseParseFailure,
   extractTextPayload,
   isNonEmptyReview,
@@ -185,6 +186,25 @@ async function runChatCall(
   // similar misconfigurations.
   if (isNonEmptyReview(review)) {
     return { ok: true, endpoint: ENDPOINT_CHAT, review, requestId };
+  }
+
+  // Provider-error detection: check for router/proxy misconfiguration
+  // before the self-healing retry. See openai-compatible.ts for the
+  // full rationale — the short version: retrying won't help when no
+  // model was invoked.
+  const providerError = detectProviderError(rawText);
+  if (providerError !== null) {
+    return {
+      ok: false,
+      error: new ProviderError(
+        "provider_error",
+        ENDPOINT_CHAT,
+        response.status,
+        requestId,
+        providerError.message,
+        { rawText, providerErrorDetails: providerError },
+      ),
+    };
   }
 
   // Self-healing parse-fail retry: send a follow-up message asking the

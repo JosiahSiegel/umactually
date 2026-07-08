@@ -4,11 +4,25 @@ type ProviderDiagnosticCode =
   | "network"
   | "timeout"
   | "parse"
+  | "provider_error"
   | "aborted";
 
 type ProviderEndpoint = "responses" | "chat";
 
 export type { ProviderDiagnosticCode, ProviderEndpoint };
+
+/**
+ * Structured details for a `provider_error` diagnostic code. Carries
+ * the `kind` (zero-usage, error-envelope, error-doc-url) and a
+ * human-readable `message` so the live-review layer can surface
+ * actionable advice (check API key, configure routing, etc.) instead
+ * of the generic "parse failed" banner.
+ */
+export type ProviderErrorDetails = {
+  readonly kind: string;
+  readonly message: string;
+  readonly detail?: string;
+};
 
 export class ProviderError extends Error {
   override readonly name = "ProviderError";
@@ -43,6 +57,15 @@ export class ProviderError extends Error {
    */
   readonly usage: ProviderUsage | undefined;
 
+  /**
+   * Structured details when `code === "provider_error"`. Carries the
+   * detection signal kind (zero-usage, error-envelope, error-doc-url)
+   * and a human-readable message so downstream layers can surface
+   * actionable remediation advice. `undefined` for all other error
+   * codes.
+   */
+  readonly providerErrorDetails: ProviderErrorDetails | undefined;
+
   constructor(
     readonly code: ProviderDiagnosticCode,
     readonly endpoint: ProviderEndpoint,
@@ -53,12 +76,14 @@ export class ProviderError extends Error {
       readonly rawText?: string;
       readonly truncated?: boolean;
       readonly usage?: ProviderUsage;
+      readonly providerErrorDetails?: ProviderErrorDetails;
     },
   ) {
     super(message, options);
     this.rawText = options?.rawText;
     this.truncated = options?.truncated;
     this.usage = options?.usage;
+    this.providerErrorDetails = options?.providerErrorDetails;
   }
 }
 

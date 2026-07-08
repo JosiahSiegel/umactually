@@ -7143,6 +7143,247 @@ function isStubCompletedText(text) {
         return true;
     return false;
 }
+/**
+ * Dynamically detect provider-error responses that arrive as HTTP 200
+ * with a structurally valid JSON body but carry NO actual model output.
+ * These are the most dangerous failure class because the existing
+ * "parse failed" path treats them as genuine parse failures — posting
+ * a COMMENT review with zero findings and exiting 0, so CI sees green
+ * even though the model never ran.
+ *
+ * Provider-agnostic detection signals (any ONE suffices):
+ *
+ *   1. **Zero-usage signal**: The response JSON has a `usage` block
+ *      where `input_tokens === 0` AND `output_tokens === 0` (and
+ *      `total_tokens === 0` when present). A real model invocation
+ *      always consumes at least 1 input token. This is the strongest
+ *      signal because it comes directly from the provider's billing
+ *      layer — routers, proxies, and gateways that fail to route the
+ *      request still report zero usage because no model was called.
+ *
+ *      IMPORTANT: `usage` must be READ FROM the response JSON
+ *      (top-level or inside the SSE terminal event), not from the
+ *      `ProviderError.usage` field, which only carries usage from
+ *      the terminal SSE event. A non-SSE provider error (plain JSON
+ *      HTTP 200) would have usage on the top-level JSON object and
+ *      nowhere else.
+ *
+ *   2. **Error-doc-URL signal**: The response text contains a
+ *      documentation URL with an error-code path
+ *      (`/docs/errors/M101`, `/docs/errors/`, `/help/error/`). This
+ *      is universal across LLM routers (Manifest, LiteLLM, OpenRouter,
+ *      custom gateways) — they all link to their error documentation.
+ *
+ *   3. **Error-envelope signal**: The response JSON has an `error`
+ *      object or `errors` array at the top level with `type`/`message`/
+ *      `code` fields. This is the standard shape for JSON-API errors
+ *      (RFC 7807, JSON:API spec) and is used by every major API
+ *      gateway when the request reaches the server but cannot be
+ *      processed (bad model name, no route configured, quota exceeded).
+ *
+ *   4. **Zero-output + zero-usage fallback**: Response has
+ *      `output_text: ""` or `output: []` (empty output) AND
+ *      zero-usage. This catches providers that return a valid response
+ *      envelope but with no actual model output — the "connected but
+ *      no providers" case.
+ *
+ * IMPORTANT: The function intentionally does NOT match on substrings
+ * like "Manifest M101" or "model not supported" — those are
+ * provider-specific and would miss new providers. The four signals
+ * above are structural and work for any provider.
+ *
+ * Non-triggers (intentionally):
+ *   - A response with `output_tokens > 0` is never a provider error
+ *     (the model ran and produced output, even if the output is
+ *     garbage — that's a parse failure, not a provider error).
+ *   - A response with no `usage` block at all is ambiguous (some
+ *     providers omit usage on streaming responses) — we only trigger
+ *     when usage IS present and IS all-zeros.
+ *   - A response with a valid review JSON (summary + comments) is
+ *     never a provider error regardless of usage.
+ */
+function detectProviderError(rawText) {
+    if (rawText.length === 0) {
+        return null;
+    }
+    // Try parsing the raw text as JSON. If it's not JSON, fall through
+    // to the text-signal checks (error-doc URLs in plain text).
+    const parsed = tryParseJson(rawText);
+    if (parsed !== undefined && isRecord(parsed)) {
+        // Signal 1: error-envelope at the top level.
+        const errorDetails = checkErrorEnvelope(parsed);
+        if (errorDetails !== null) {
+            return errorDetails;
+        }
+        // Signal 2: zero-usage with no output (or empty output).
+        const zeroUsage = checkZeroUsage(parsed);
+        if (zeroUsage !== null) {
+            // If the response also has actual review content, this is NOT
+            // a provider error — some routers emit zero usage on cached
+            // responses. The review content check prevents a false positive.
+            const hasReviewContent = checkHasReviewContent(parsed);
+            if (!hasReviewContent) {
+                return zeroUsage;
+            }
+        }
+    }
+    // Signal 3: error-doc-URL in the raw text (works for both JSON and
+    // non-JSON responses — some providers return plain text error messages).
+    const docUrlSignal = checkErrorDocUrl(rawText);
+    if (docUrlSignal !== null) {
+        return docUrlSignal;
+    }
+    return null;
+}
+/**
+ * Check for a top-level `error` object or `errors` array in the JSON
+ * response. This is the standard JSON-API error shape used by gateways,
+ * routers, and proxies when the request reaches the server but cannot
+ * be processed.
+ */
+function checkErrorEnvelope(parsed) {
+    // Single `error` object (RFC 7807 / common shape).
+    const errorField = parsed["error"];
+    if (isRecord(errorField)) {
+        const message = readStringField(errorField, "message") ??
+            readStringField(errorField, "type") ??
+            readStringField(errorField, "code") ??
+            "Provider returned an error envelope.";
+        return {
+            kind: "error-envelope",
+            message,
+            ...(readStringField(errorField, "type") !== null
+                ? { detail: `type: ${readStringField(errorField, "type")}` }
+                : {}),
+        };
+    }
+    // `errors` array (JSON:API spec shape).
+    const errorsField = parsed["errors"];
+    if (isUnknownArray(errorsField) && errorsField.length > 0) {
+        const first = errorsField[0];
+        if (isRecord(first)) {
+            const message = readStringField(first, "message") ??
+                readStringField(first, "detail") ??
+                readStringField(first, "title") ??
+                "Provider returned an errors array.";
+            return {
+                kind: "error-envelope",
+                message,
+            };
+        }
+    }
+    return null;
+}
+/**
+ * Check for a `usage` block where all token counts are zero. This
+ * means no model was invoked — a dead giveaway for router/proxy
+ * misconfiguration.
+ *
+ * Checks both top-level `usage` (non-SSE JSON responses) and
+ * `response.usage` (SSE terminal event envelope). Does NOT use the
+ * `ProviderError.usage` field because that only carries usage from
+ * the terminal SSE event and would miss non-SSE responses.
+ */
+function checkZeroUsage(parsed) {
+    const usage = readUsageBlock(parsed);
+    if (usage === null) {
+        return null;
+    }
+    const input = usage["input_tokens"];
+    const output = usage["output_tokens"];
+    const total = usage["total_tokens"];
+    // Only trigger when usage IS present and ALL fields are zero (or
+    // the only present field is zero). A missing usage block is NOT a
+    // signal (some providers omit it); a partial-usage block with at
+    // least one non-zero field is NOT a signal (the model ran).
+    const hasAnyField = input !== undefined || output !== undefined || total !== undefined;
+    if (!hasAnyField) {
+        return null;
+    }
+    const allZero = (input === undefined || input === 0) &&
+        (output === undefined || output === 0) &&
+        (total === undefined || total === 0);
+    if (allZero) {
+        return {
+            kind: "zero-usage",
+            message: "Provider reported zero token usage — no model was invoked. Check provider configuration and API key.",
+        };
+    }
+    return null;
+}
+/**
+ * Read the `usage` block from a parsed JSON response. Checks both
+ * top-level `usage` (non-SSE JSON) and `response.usage` (SSE
+ * terminal-event envelope shape where the full response is wrapped
+ * inside a `response` key).
+ */
+function readUsageBlock(parsed) {
+    // Top-level usage (non-SSE JSON response).
+    const topLevelUsage = readRecordField(parsed, "usage");
+    if (topLevelUsage !== null) {
+        return topLevelUsage;
+    }
+    // SSE terminal-event envelope: { response: { ... usage: { ... } } }.
+    const responseField = readRecordField(parsed, "response");
+    if (responseField !== null) {
+        const nestedUsage = readRecordField(responseField, "usage");
+        if (nestedUsage !== null) {
+            return nestedUsage;
+        }
+    }
+    return null;
+}
+/**
+ * Check whether the parsed JSON response contains actual review content
+ * (summary, verdict, or comments). Used to prevent false positives
+ * when zero-usage is detected — some routers emit zero usage on cached
+ * responses that DO contain a valid review.
+ */
+function checkHasReviewContent(parsed) {
+    const summary = readStringField(parsed, "summary");
+    if (summary !== null && summary.length > 0) {
+        return true;
+    }
+    const verdict = readStringField(parsed, "verdict");
+    if (verdict !== null && verdict.length > 0) {
+        return true;
+    }
+    const comments = readArrayField(parsed, "comments");
+    if (comments !== null && comments.length > 0) {
+        return true;
+    }
+    return false;
+}
+/**
+ * Check the raw text for error-documentation URLs. This is universal
+ * across LLM routers and gateways — they all link to their error docs.
+ *
+ * Matches patterns like:
+ *   - `/docs/errors/M101`
+ *   - `/docs/errors/`
+ *   - `/help/error/`
+ *   - `/docs/error-codes#`
+ *
+ * Works on both JSON (extracted from string fields) and plain-text
+ * responses.
+ */
+function checkErrorDocUrl(rawText) {
+    // Match `/docs/errors/` (Manifest, generic), `/help/error/` (some
+    // enterprise gateways), `/docs/error-codes` (Azure-style).
+    const ERROR_DOC_PATTERN = /\/(?:docs|help)\/errors?[-_/a-z0-9]*/iu;
+    if (ERROR_DOC_PATTERN.test(rawText)) {
+        // Extract the matched substring for the detail field so the
+        // operator can see which documentation URL was referenced.
+        const match = rawText.match(ERROR_DOC_PATTERN);
+        const detail = match !== null ? match[0] : "";
+        return {
+            kind: "error-doc-url",
+            message: "Provider response contains an error documentation URL — provider routing or configuration error.",
+            ...(detail.length > 0 ? { detail } : {}),
+        };
+    }
+    return null;
+}
 
 ;// CONCATENATED MODULE: ./src/cli/live-shared.ts
 
@@ -7848,11 +8089,12 @@ async function runAzureLive(input) {
     // The reviewId is the PARENT thread id (so consumers can correlate
     // the run with the top-level summary card on the PR conversation).
     const reviewId = parentThreadId ?? postedIds[0];
+    const parseFailed = provider.review.parseFailed === true;
     const successMessage = failedIndices.length > 0
-        ? `posted Azure review (${postedIds.length} threads, ${failedIndices.length} failed)`
-        : `posted Azure review (${postedIds.length} threads)`;
+        ? `posted Azure review (${postedIds.length} threads, ${failedIndices.length} failed)${parseFailed ? " (parse failed)" : ""}`
+        : `posted Azure review (${postedIds.length} threads)${parseFailed ? " (parse failed)" : ""}`;
     return {
-        exitCode: 0,
+        exitCode: parseFailed ? 1 : 0,
         posted: true,
         reviewId,
         message: successMessage,
@@ -7862,6 +8104,9 @@ async function runAzureLive(input) {
         // matches the Azure PR status and the body. See the matching
         // comment on the GitHub side in `live-github.ts`.
         verdict: prepared.effectiveVerdict,
+        // Signal parse-fail to the artifact-write path so writeLiveArtifact
+        // can stamp `parseFailed: true` on the posted=true branch.
+        parseFailed,
         // Thread parse warnings (off-diff citation hallucinations) to the
         // artifact-write path so the parse-warnings.json sibling artifact
         // surfaces them for operators / CI guards.
@@ -8535,11 +8780,13 @@ async function runGithubLive(input) {
         postableComments.length === 0) {
         const reviewId = await updateExistingReview({ context, fetchImpl, review: existing, body });
         if (reviewId !== null) {
+            const parseFailed = provider.review.parseFailed === true;
             return {
-                exitCode: 0,
+                exitCode: parseFailed ? 1 : 0,
                 posted: true,
                 reviewId,
-                message: "updated existing GitHub review",
+                message: parseFailed ? "updated existing GitHub review (parse failed)" : "updated existing GitHub review",
+                parseFailed,
                 parseWarnings: provider.parseWarnings,
             };
         }
@@ -8561,11 +8808,14 @@ async function runGithubLive(input) {
         event,
         comments: postableComments,
     });
+    const parseFailed = provider.review.parseFailed === true;
     return {
-        exitCode: 0,
+        exitCode: parseFailed ? 1 : 0,
         posted: true,
         reviewId,
-        message: existing !== null ? "replaced existing GitHub review" : "posted GitHub review",
+        message: existing !== null
+            ? (parseFailed ? "replaced existing GitHub review (parse failed)" : "replaced existing GitHub review")
+            : (parseFailed ? "posted GitHub review (parse failed)" : "posted GitHub review"),
         // Surface the live review's actual counts so the self-review guard
         // artifact-write path can persist them — the dry-run stub's counts
         // would otherwise mask what GitHub actually saw.
@@ -8576,6 +8826,9 @@ async function runGithubLive(input) {
         // surfaces here as `COMMENT`, matching the `📊 0 inline findings`
         // body and the `COMMENT` review event.
         verdict: prepared.effectiveVerdict,
+        // Signal parse-fail to the artifact-write path so writeLiveArtifact
+        // can stamp `parseFailed: true` on the posted=true branch.
+        parseFailed,
         // Thread parse warnings (off-diff citation hallucinations) to the
         // artifact-write path so the parse-warnings.json sibling artifact
         // surfaces them for operators / CI guards.
@@ -8697,6 +8950,14 @@ class ProviderError extends Error {
      * before the completed event.
      */
     usage;
+    /**
+     * Structured details when `code === "provider_error"`. Carries the
+     * detection signal kind (zero-usage, error-envelope, error-doc-url)
+     * and a human-readable message so downstream layers can surface
+     * actionable remediation advice. `undefined` for all other error
+     * codes.
+     */
+    providerErrorDetails;
     constructor(code, endpoint, status, requestId, message, options) {
         super(message, options);
         this.code = code;
@@ -8706,6 +8967,7 @@ class ProviderError extends Error {
         this.rawText = options?.rawText;
         this.truncated = options?.truncated;
         this.usage = options?.usage;
+        this.providerErrorDetails = options?.providerErrorDetails;
     }
 }
 function sanitizeHttpStatus(endpoint, status) {
@@ -8908,6 +9170,17 @@ async function runChatCall(config, fetchImpl, requestId, session) {
     // similar misconfigurations.
     if (isNonEmptyReview(review)) {
         return { ok: true, endpoint: ENDPOINT_CHAT, review, requestId };
+    }
+    // Provider-error detection: check for router/proxy misconfiguration
+    // before the self-healing retry. See openai-compatible.ts for the
+    // full rationale — the short version: retrying won't help when no
+    // model was invoked.
+    const providerError = detectProviderError(rawText);
+    if (providerError !== null) {
+        return {
+            ok: false,
+            error: new ProviderError("provider_error", ENDPOINT_CHAT, response.status, requestId, providerError.message, { rawText, providerErrorDetails: providerError }),
+        };
     }
     // Self-healing parse-fail retry: send a follow-up message asking the
     // model to emit JSON only. Mirrors the openai-compatible path.
@@ -9134,6 +9407,19 @@ async function callEndpoint(config, fetchImpl, requestId, endpoint) {
     // "empty review" — see CLARITY-10.
     if (isNonEmptyReview(review)) {
         return { ok: true, endpoint, review, requestId };
+    }
+    // Provider-error detection: before attempting the self-healing
+    // retry, check whether the raw response is a provider error (router
+    // misconfiguration, no providers configured, invalid API key, etc.)
+    // rather than a genuine parse failure. Provider errors are NOT
+    // retryable — retrying with a JSON-reminder prompt won't help when
+    // no model was invoked in the first place. Short-circuiting here
+    // saves a wasted retry and surfaces a specific error code
+    // (`provider_error`) so the live-review layer can hard-fail instead
+    // of posting a 0-finding COMMENT review that exits 0.
+    const providerError = detectProviderError(rawText);
+    if (providerError !== null) {
+        throw new ProviderError("provider_error", endpoint, response.status, requestId, providerError.message, { rawText, providerErrorDetails: providerError });
     }
     // Self-healing: parse failed on first attempt. Try once more with an
     // explicit JSON-only reminder. Some providers (notably those that
@@ -9947,6 +10233,13 @@ async function requestLiveReview(input) {
                     diffText: input.diffText,
                 });
             }
+            // Provider errors (router misconfig, no providers configured,
+            // invalid API key, etc.) are NOT parse failures and must NOT
+            // be posted as a COMMENT review. Hard-fail so CI sees the error.
+            if (result.error.code === "provider_error") {
+                const details = result.error.providerErrorDetails;
+                throw new LiveReviewError("PROVIDER_ERROR", details?.message ?? result.error.message, { cause: result.error });
+            }
             throw new LiveReviewError("PROVIDER_REQUEST_FAILED", result.error.message, { cause: result.error });
         }
         const providerUrl = readRequiredConfig(input.parsed.apiUrl ?? input.env["UMACTUALLY_API_URL"], "UMACTUALLY_API_URL");
@@ -9997,6 +10290,13 @@ async function requestLiveReview(input) {
                 severityWarnings: severityWarnings.slice(),
                 diffText: input.diffText,
             });
+        }
+        // Provider errors (router misconfig, no providers configured,
+        // invalid API key, etc.) are NOT parse failures and must NOT
+        // be posted as a COMMENT review. Hard-fail so CI sees the error.
+        if (result.error.code === "provider_error") {
+            const details = result.error.providerErrorDetails;
+            throw new LiveReviewError("PROVIDER_ERROR", details?.message ?? result.error.message, { cause: result.error });
         }
         throw new LiveReviewError("PROVIDER_REQUEST_FAILED", result.error.message, { cause: result.error });
     }
@@ -11162,7 +11462,7 @@ async function writeLiveArtifact(parsed, cwd, platform, result) {
         inlineThreadCount: result.inlineThreadCount ?? 0,
         suppressedCommentCount: result.suppressedCommentCount ?? 0,
         blockedRawOutput: false,
-        parseFailed: false,
+        parseFailed: result.parseFailed === true,
         ...(result.verdict !== undefined ? { verdict: result.verdict } : {}),
         note: "Live review posted successfully; counts reflect what the GitHub/Azure API saw.",
     };

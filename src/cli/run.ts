@@ -375,6 +375,7 @@ async function writeLiveArtifact(
     readonly inlineThreadCount?: number;
     readonly suppressedCommentCount?: number;
     readonly verdict?: string;
+    readonly parseFailed?: boolean;
     readonly parseWarnings?: readonly import("./parse-warnings.js").ParseWarning[];
   },
 ): Promise<void> {
@@ -414,7 +415,7 @@ async function writeLiveArtifact(
     inlineThreadCount: result.inlineThreadCount ?? 0,
     suppressedCommentCount: result.suppressedCommentCount ?? 0,
     blockedRawOutput: false,
-    parseFailed: false,
+    parseFailed: result.parseFailed === true,
     ...(result.verdict !== undefined ? { verdict: result.verdict } : {}),
     note: "Live review posted successfully; counts reflect what the GitHub/Azure API saw.",
   };

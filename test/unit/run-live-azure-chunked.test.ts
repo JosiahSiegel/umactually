@@ -423,8 +423,11 @@ describe("runLive Azure orchestration — chunked path", () => {
     stderrSpy.mockRestore();
 
     // Then: regardless of how chunks finish (fail/success/mix), the
-    // run posts the Azure review.
-    expect(result.exitCode).toBe(0);
+    // run posts the Azure review. When all chunks fail, the merged
+    // review is marked parseFailed and exits 1 (not 0) so CI fails
+    // rather than silently passing on a review where the model never
+    // produced output.
+    expect(result.exitCode).toBe(1);
     expect(result.posted).toBe(true);
     void stderrLines; // silence unused
   });
