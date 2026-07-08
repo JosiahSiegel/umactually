@@ -149,6 +149,12 @@ export async function runAzureLive(input: {
       posted: false,
       reviewId: undefined,
       message,
+      // `provider.parseWarnings` is the parse-warnings computed
+      // from the model response. The error path here is the
+      // "0 threads posted" case (which means the model response
+      // was valid but every comment was filtered out as
+      // off-diff). The pre-validation warnings are still meaningful
+      // in that case.
       parseWarnings: provider.parseWarnings,
     };
   }

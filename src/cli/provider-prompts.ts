@@ -29,9 +29,17 @@ export type ProviderPrompts = {
  * The model can still emit the *wrong* path or line — strict schema
  * enforces shape, not truth. The post-filter in
  * `parseDiffPositions` + the `parse-warnings.json` artifact are
- * the layer that enforces truth. See the deep-research summary
- * in `.omo/plans/` (or the PR body) for why this is the right
- * combination per the production-tool survey.
+ * the layer that enforces truth.
+ *
+ * Compatibility note: the LIVE parser (in `provider-parse.ts`) is
+ * permissive about `verdict` and `severity` strings (it accepts any
+ * non-empty string and the `normalizeProviderSeverity` fallback
+ * maps unrecognized values). The wire schema is therefore
+ * permissive on those fields too — `string` with a `minLength: 1`
+ * constraint rather than a strict enum. A strict enum here would
+ * cause valid responses to be rejected by providers that enforce
+ * the schema (and per the model-comparison survey, the `severity`
+ * and `verdict` strings are exactly where providers diverge).
  */
 export const REVIEW_PAYLOAD_JSON_SCHEMA = {
   type: "object",
@@ -41,7 +49,9 @@ export const REVIEW_PAYLOAD_JSON_SCHEMA = {
     summary: { type: "string" },
     verdict: {
       type: "string",
-      enum: ["COMMENT", "APPROVED", "NEEDS_FIX", "DISCUSS", "SHIP"],
+      minLength: 1,
+      description:
+        "One of COMMENT, APPROVED, NEEDS_FIX, DISCUSS, or SHIP. The parser accepts any non-empty string and the verdict is reconciled downstream.",
     },
     comments: {
       type: "array",
@@ -50,13 +60,10 @@ export const REVIEW_PAYLOAD_JSON_SCHEMA = {
         additionalProperties: false,
         required: ["path", "line", "body", "severity", "category"],
         properties: {
-          path: { type: "string", description: "A path from the Files-in-diff list below. Emit a literal string the model can verify by grep." },
-          line: { type: "integer", minimum: 1, description: "A line number that appears in the diff for that path (either a + line or a context line)." },
-          body: { type: "string", description: "Markdown body. Keep under 600 chars. No secrets. No code blocks outside the diff." },
-          severity: {
-            type: "string",
-            enum: ["info", "low", "medium", "high", "critical", "security", "leak"],
-          },
+          path: { type: "string", description: "A path from the Files-in-diff list below." },
+          line: { type: "integer", minimum: 1, description: "A line number that appears in the diff for that path." },
+          body: { type: "string" },
+          severity: { type: "string", minLength: 1, description: "Severity string. Canonical values: info, low, medium, high, critical, security, leak. Parser accepts any non-empty value." },
           category: { type: "string" },
         },
       },
@@ -71,7 +78,7 @@ export const REVIEW_PAYLOAD_JSON_SCHEMA = {
           path: { type: "string" },
           line: { type: "integer", minimum: 1 },
           body: { type: "string" },
-          severity: { type: "string" },
+          severity: { type: "string", minLength: 1 },
           category: { type: "string" },
         },
       },
