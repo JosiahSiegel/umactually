@@ -6593,6 +6593,19 @@ function extractTextPayload(endpoint, rawText) {
                 // strict-empty-fields check downstream classifies it as
                 // a parse failure.
                 if (output.length > 0) {
+                    // Reasoning-fallback: some providers (notably MiniMax-M3)
+                    // write a draft of the final review JSON inside their
+                    // reasoning block, then run out of output budget before
+                    // emitting it as the formal `output_text` answer. The
+                    // reasoning can contain MULTIPLE drafts of the review
+                    // (the model revises as it reasons); we want the LAST
+                    // valid one, which is the most refined. If we find one,
+                    // return it so `parseReviewPayload` can produce a real
+                    // review instead of a parse-fail.
+                    const recovered = extractLastReviewDraftFromReasoning(output);
+                    if (recovered !== null) {
+                        return recovered;
+                    }
                     return "";
                 }
             }
@@ -6997,6 +7010,77 @@ function joinOutputText(output) {
         }
     }
     return fragments.join("\n");
+}
+/**
+ * Some providers (notably MiniMax-M3) write a draft of the final
+ * review JSON inside their reasoning block — the model narrates
+ * "let me write the JSON: ```json\n{...}\n```" as part of its
+ * chain-of-thought — then runs out of the output budget before the
+ * formal `output_text` field gets emitted. The response.completed
+ * envelope then has `output[]` containing only reasoning entries,
+ * and the actual review is recoverable only from inside the
+ * reasoning text.
+ *
+ * The reasoning can contain MULTIPLE drafts (the model revises its
+ * own answer as it reasons). We want the LAST valid review-shaped
+ * JSON object — that's the most refined version, closest to what
+ * the model would have emitted.
+ *
+ * Returns the JSON string (the contents of the last ```json fenced
+ * block that parses as a review) or `null` if no valid draft is
+ * found. The returned string is the raw JSON, which downstream
+ * `parseReviewPayload` will re-parse and validate.
+ */
+function extractLastReviewDraftFromReasoning(output) {
+    let lastDraft = null;
+    for (const entry of output) {
+        if (!isRecord(entry))
+            continue;
+        const content = entry["content"];
+        if (!Array.isArray(content))
+            continue;
+        for (const part of content) {
+            if (!isRecord(part))
+                continue;
+            const partType = part["type"];
+            if (typeof partType === "string" && !partType.includes("reasoning")) {
+                // Not a reasoning part — skip.
+                continue;
+            }
+            const text = part["text"];
+            if (typeof text !== "string")
+                continue;
+            // Scan this reasoning block for fenced JSON objects.
+            // The model uses ```json, ```typescript, or just ``` fences.
+            // The opener accepts any language tag (or none); the body is
+            // captured up to the next ``` closer. Bodies that don't start
+            // with `{` (code snippets, typescript signatures, plain prose)
+            // are skipped — only review-shaped JSON objects are kept.
+            const fenceRe = /```[a-zA-Z0-9_+\-]*\s*\n([\s\S]*?)\n```/gu;
+            let m;
+            while ((m = fenceRe.exec(text)) !== null) {
+                const body = m[1]?.trim() ?? "";
+                if (!body.startsWith("{"))
+                    continue;
+                try {
+                    const parsed = JSON.parse(body);
+                    if (!isRecord(parsed))
+                        continue;
+                    // Must look like a review: has summary or verdict or comments.
+                    if ("summary" in parsed ||
+                        "verdict" in parsed ||
+                        "comments" in parsed) {
+                        lastDraft = body;
+                    }
+                }
+                catch {
+                    // Not valid JSON — skip; the model often writes
+                    // partial JSON in its thinking that doesn't parse.
+                }
+            }
+        }
+    }
+    return lastDraft;
 }
 function provider_parse_readCommentArray(value, context) {
     if (!isUnknownArray(value)) {
