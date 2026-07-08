@@ -149,6 +149,7 @@ export async function runAzureLive(input: {
       posted: false,
       reviewId: undefined,
       message,
+      parseWarnings: provider.parseWarnings,
     };
   }
 
@@ -182,6 +183,10 @@ export async function runAzureLive(input: {
     // matches the Azure PR status and the body. See the matching
     // comment on the GitHub side in `live-github.ts`.
     verdict: prepared.effectiveVerdict,
+    // Thread parse warnings (off-diff citation hallucinations) to the
+    // artifact-write path so the parse-warnings.json sibling artifact
+    // surfaces them for operators / CI guards.
+    parseWarnings: provider.parseWarnings,
   };
 }
 

@@ -5,10 +5,13 @@ import {
 } from "../provider/openai-compatible.js";
 import {
   setActiveSeveritySink,
+  type ResponseFormat,
   type SeverityWarning,
   type SeverityWarningSink,
 } from "../provider/provider-parse.js";
 import { scanReviewSecrets } from "../security/scan-review-secrets.js";
+import { resolveAutoModel } from "./auto-model.js";
+import { parseDiffPositions } from "../diff/parse-positions.js";
 import {
   buildMalformedProviderFallback,
   LiveReviewError,
@@ -21,9 +24,9 @@ import {
   type ParseFailureReason,
 } from "./live-shared.js";
 import type { ParsedCliArgs } from "./parse-args.js";
-import { buildProviderPrompts } from "./provider-prompts.js";
+import { buildParseWarningsArtifact } from "./parse-warnings.js";
+import { buildProviderPrompts, REVIEW_PAYLOAD_JSON_SCHEMA } from "./provider-prompts.js";
 
-const DEFAULT_MODEL = "auto";
 const DEFAULT_REQUEST_TIMEOUT_MS = 60_000;
 const PROVIDER_NAME = "openai-compatible";
 const COPILOT_PROVIDER_NAME = "github-copilot";
@@ -67,6 +70,13 @@ export async function requestLiveReview(input: {
     });
   };
   setActiveSeveritySink(sink);
+  // Layer 2-C: when the CLI flag enables it, send the strict JSON-schema
+  // response_format on the wire. Defaults to true so the model is
+  // constrained at decode time; the in-context system prompt carries
+  // the same schema as a guide for free-form models.
+  const responseFormat: ResponseFormat | undefined = input.parsed.strictSchema === false
+    ? undefined
+    : { type: "json_schema", strict: true, schema: REVIEW_PAYLOAD_JSON_SCHEMA as unknown as Record<string, unknown> };
   try {
     if (input.parsed.provider === "copilot") {
       const result = await runCopilotRequest({
@@ -78,31 +88,39 @@ export async function requestLiveReview(input: {
         requestTimeoutMs: readRequestTimeoutMs(input.parsed),
         ...(input.parsed.maxOutputTokens !== null ? { maxOutputTokens: input.parsed.maxOutputTokens } : {}),
         ...(input.parsed.effort !== null ? { reasoningEffort: input.parsed.effort } : {}),
+        ...(responseFormat !== undefined ? { responseFormat } : {}),
         fetchImpl: input.fetchImpl as typeof fetch,
       });
       if (result.ok) {
-        return {
-          review: normalizeProviderReview(result.review, [providerApiKey, input.platformToken]),
+        const review = normalizeProviderReview(result.review, [providerApiKey, input.platformToken], {
+          enabled: input.parsed.verifyFindings === true,
+          diffText: input.diffText,
+        });
+        return withParseWarnings({
+          review,
           endpoint: result.endpoint,
           provider: COPILOT_PROVIDER_NAME,
           modelId,
           severityWarnings: severityWarnings.slice(),
-        };
+          diffText: input.diffText,
+        });
       }
       if (result.error.code === "parse") {
-        return {
-          review: buildMalformedProviderFallback({
-            provider: COPILOT_PROVIDER_NAME,
-            modelId,
-            rawText: result.error.rawText ?? "",
-            secrets: [providerApiKey, input.platformToken],
-            ...parseFailureReasonFromProviderError(result.error, input.parsed.maxOutputTokens),
-          }),
+        const review = buildMalformedProviderFallback({
+          provider: COPILOT_PROVIDER_NAME,
+          modelId,
+          rawText: result.error.rawText ?? "",
+          secrets: [providerApiKey, input.platformToken],
+          ...parseFailureReasonFromProviderError(result.error, input.parsed.maxOutputTokens),
+        });
+        return withParseWarnings({
+          review,
           endpoint: result.error.endpoint,
           provider: COPILOT_PROVIDER_NAME,
           modelId,
           severityWarnings: severityWarnings.slice(),
-        };
+          diffText: input.diffText,
+        });
       }
       throw new LiveReviewError("PROVIDER_REQUEST_FAILED", result.error.message, { cause: result.error });
     }
@@ -117,33 +135,41 @@ export async function requestLiveReview(input: {
       requestTimeoutMs: readRequestTimeoutMs(input.parsed),
       ...(input.parsed.maxOutputTokens !== null ? { maxOutputTokens: input.parsed.maxOutputTokens } : {}),
       ...(input.parsed.effort !== null ? { reasoningEffort: input.parsed.effort } : {}),
+      ...(responseFormat !== undefined ? { responseFormat } : {}),
       fetchImpl: input.fetchImpl,
     });
 
     if (result.ok) {
-      return {
-        review: normalizeProviderReview(result.review, [providerApiKey, input.platformToken]),
+      const review = normalizeProviderReview(result.review, [providerApiKey, input.platformToken], {
+        enabled: input.parsed.verifyFindings === true,
+        diffText: input.diffText,
+      });
+      return withParseWarnings({
+        review,
         endpoint: result.endpoint,
         provider: PROVIDER_NAME,
         modelId,
         severityWarnings: severityWarnings.slice(),
-      };
+        diffText: input.diffText,
+      });
     }
 
     if (result.error.code === "parse") {
-      return {
-        review: buildMalformedProviderFallback({
-          provider: PROVIDER_NAME,
-          modelId,
-          rawText: result.error.rawText ?? "",
-          secrets: [providerApiKey, input.platformToken],
-          ...parseFailureReasonFromProviderError(result.error, input.parsed.maxOutputTokens),
-        }),
+      const review = buildMalformedProviderFallback({
+        provider: PROVIDER_NAME,
+        modelId,
+        rawText: result.error.rawText ?? "",
+        secrets: [providerApiKey, input.platformToken],
+        ...parseFailureReasonFromProviderError(result.error, input.parsed.maxOutputTokens),
+      });
+      return withParseWarnings({
+        review,
         endpoint: result.error.endpoint,
         provider: PROVIDER_NAME,
         modelId,
         severityWarnings: severityWarnings.slice(),
-      };
+        diffText: input.diffText,
+      });
     }
 
     throw new LiveReviewError("PROVIDER_REQUEST_FAILED", result.error.message, { cause: result.error });
@@ -154,12 +180,67 @@ export async function requestLiveReview(input: {
   }
 }
 
-function normalizeProviderReview(payload: ProviderReviewPayload, secrets: readonly string[]): LiveReview {
+/**
+ * Compute parse warnings for the review (off-diff citations the
+ * model fabricated) and attach them to the outcome. Layer 3 of the
+ * citation-grounding fix — makes the fabrication visible in the
+ * parse-warnings.json artifact instead of silently suppressing it.
+ */
+function withParseWarnings(input: {
+  readonly review: LiveReview;
+  readonly endpoint: string;
+  readonly provider: string;
+  readonly modelId: string;
+  readonly severityWarnings: readonly import("../provider/provider-parse.js").SeverityWarning[];
+  readonly diffText: string;
+}): LiveProviderOutcome {
+  return {
+    review: input.review,
+    endpoint: input.endpoint,
+    provider: input.provider,
+    modelId: input.modelId,
+    severityWarnings: input.severityWarnings,
+    parseWarnings: buildParseWarningsArtifact({
+      review: input.review,
+      diffText: input.diffText,
+    }).warnings,
+  };
+}
+
+function normalizeProviderReview(
+  payload: ProviderReviewPayload,
+  secrets: readonly string[],
+  verify: {
+    readonly enabled: boolean;
+    readonly diffText: string;
+  },
+): LiveReview {
+  const sanitizedComments = payload.comments.map((comment) => normalizeProviderComment(comment, secrets));
+  const sanitizedSuppressed = payload.suppressed_comments.map((comment) => normalizeProviderComment(comment, secrets));
+  // Layer 4 deterministic verification: drop comments whose (path, line)
+  // doesn't anchor to the diff. This is the same check the post-filter
+  // runs, but doing it here means the surviving comments[] is what the
+  // platform-posting paths see. Comments dropped here are NOT moved to
+  // suppressedComments — the parse-warnings artifact is the authoritative
+  // record of what was dropped. This filter is intentionally NOT
+  // applied to the parse-fail fallback (`buildMalformedProviderFallback`
+  // callers pass an empty diff and skip verification).
+  const verifiedComments = verify.enabled && verify.diffText.length > 0
+    ? sanitizedComments.filter((c) => {
+        // The verification is path+line, and the line must be a
+        // positive integer (the parser already enforces this on the
+        // raw model output, but a sanitize step could change things).
+        if (!Number.isInteger(c.line) || c.line < 1 || c.path.length === 0) {
+          return false;
+        }
+        return parseDiffPositions(verify.diffText).hasPosition(c);
+      })
+    : sanitizedComments;
   return {
     summary: sanitizeForPost(payload.summary, secrets),
     verdict: payload.verdict,
-    comments: payload.comments.map((comment) => normalizeProviderComment(comment, secrets)),
-    suppressedComments: payload.suppressed_comments.map((comment) => normalizeProviderComment(comment, secrets)),
+    comments: verifiedComments,
+    suppressedComments: sanitizedSuppressed,
   };
 }
 
@@ -189,7 +270,19 @@ function readConfiguredModel(parsed: ParsedCliArgs, env: NodeJS.ProcessEnv): str
     return fromArgs;
   }
   const fromEnv = env["UMACTUALLY_MODEL"];
-  return fromEnv === undefined || fromEnv.length === 0 ? DEFAULT_MODEL : fromEnv;
+  if (fromEnv !== undefined && fromEnv.length > 0) {
+    return fromEnv;
+  }
+  // Layer 5: `auto` is no longer passed verbatim. The resolver picks
+  // a less-hallucinating model based on the active provider + API
+  // URL. See `src/cli/auto-model.ts` for the per-provider mapping
+  // and the Vectara HHEM rationale.
+  const provider = (parsed.provider ?? "openai-compatible") as "openai-compatible" | "copilot";
+  return resolveAutoModel({
+    provider,
+    apiUrl: parsed.apiUrl,
+    env,
+  });
 }
 
 function readRequestTimeoutMs(parsed: ParsedCliArgs): number {

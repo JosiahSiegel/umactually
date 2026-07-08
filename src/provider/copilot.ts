@@ -39,6 +39,14 @@ export type CopilotCallConfig = {
   readonly maxOutputTokens?: number;
   readonly reasoningEffort?: "low" | "medium" | "high";
   readonly fetchImpl?: typeof fetch;
+  /**
+   * Optional strict JSON schema enforced via `response_format`. The
+   * Copilot Chat Completions endpoint accepts the same shape as the
+   * OpenAI Chat Completions endpoint (it routes to a Copilot-backed
+   * model); passing the strict schema in narrows the response to
+   * the review shape and prevents prose-wrapped JSON.
+   */
+  readonly responseFormat?: import("./provider-parse.js").ResponseFormat;
 };
 
 export type CopilotCallSuccess = {
@@ -101,6 +109,7 @@ async function runChatCall(
     user: config.user,
     ...(config.maxOutputTokens !== undefined ? { maxOutputTokens: config.maxOutputTokens } : {}),
     ...(config.reasoningEffort !== undefined ? { reasoningEffort: config.reasoningEffort } : {}),
+    ...(config.responseFormat !== undefined ? { responseFormat: config.responseFormat } : {}),
   });
   const signal = composeSignal(undefined, config.requestTimeoutMs);
 

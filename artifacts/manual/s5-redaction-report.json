@@ -23,7 +23,6 @@
     "reviewTimeoutSeconds": null,
     "stallTimeoutSeconds": null,
     "perRequestTimeoutSeconds": null,
-    "ignoreMinor": null,
     "minimumSeverity": null,
     "maxComments": null,
     "sonarEnabled": null,

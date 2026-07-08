@@ -31,6 +31,7 @@ function outcome(overrides: Partial<LiveProviderOutcome>): LiveProviderOutcome {
     provider: overrides.provider ?? "openai-compatible",
     modelId: overrides.modelId ?? "auto",
     severityWarnings: overrides.severityWarnings ?? [],
+    parseWarnings: overrides.parseWarnings ?? [],
   };
 }
 

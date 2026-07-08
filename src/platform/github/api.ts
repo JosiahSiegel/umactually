@@ -2,6 +2,7 @@ import type { GithubContext } from "./context.js";
 import { PlatformApiError } from "../../util/platform-error.js";
 import type { FetchImpl } from "../../util/http.js";
 import { fetchTextOrThrow, githubHeaders } from "../../util/http.js";
+import { filterBuildArtifacts } from "../../diff/filter-build-artifacts.js";
 
 /**
  * API-layer error for the GitHub platform adapter. Inherits the
@@ -26,7 +27,12 @@ const GITHUB_API_BASE_URL = "https://api.github.com";
 const PULL_DIFF_MEDIA_TYPE = "application/vnd.github.v3.diff";
 
 export async function fetchGithubPrDiff(context: GithubContext, fetchImpl: FetchImpl = fetch): Promise<string> {
-  return fetchTextOrThrow(
+  // GitHub's REST `/pulls/{n}` endpoint returns the server-side diff
+  // verbatim from git, which means PRs that touch `dist/`, `node_modules/`,
+  // lockfiles, etc. surface those blocks to the reviewer. Strip them
+  // before they reach the LLM — see `src/diff/filter-build-artifacts.ts`
+  // for the full rationale.
+  const raw = await fetchTextOrThrow(
     fetchImpl,
     {
       url: buildPullUrl(context),
@@ -42,6 +48,7 @@ export async function fetchGithubPrDiff(context: GithubContext, fetchImpl: Fetch
       platform: "GitHub PR diff",
     },
   );
+  return filterBuildArtifacts(raw);
 }
 
 function buildPullUrl(context: GithubContext): string {
