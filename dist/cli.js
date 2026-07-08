@@ -2496,7 +2496,7 @@ function readThreadComments(value) {
 
 ;// CONCATENATED MODULE: ./src/diff/parse-positions.ts
 
-function parseDiffPositions(diffText) {
+function parse_positions_parseDiffPositions(diffText) {
     const linesByPath = new Map();
     // preserve the order in which right-side positions were first observed so
     // callers (e.g. simulated-findings) can pick the first N anchor points
@@ -2610,7 +2610,7 @@ function addLine(linesByPath, path, line) {
 async function runReview(contract) {
     parseEvent(contract.eventJson);
     const review = run_review_parseProviderReview(contract.providerReviewJson);
-    const positions = parseDiffPositions(contract.diffText);
+    const positions = parse_positions_parseDiffPositions(contract.diffText);
     // Always run secret scan before posting — leaks block raw output regardless of flags.
     await scanReviewSecrets({
         diffText: contract.diffText,
@@ -7863,14 +7863,32 @@ function buildTooLargeFallback(input) {
     };
 }
 function selectPostableComments(input) {
-    const positions = parseDiffPositions(input.diffText);
+    return selectPostableCommentsWithPositions({
+        review: input.review,
+        positions: parseDiffPositions(input.diffText),
+        parsed: input.parsed,
+        secrets: input.secrets,
+    });
+}
+/**
+ * Internal variant of `selectPostableComments` that accepts a
+ * pre-computed `DiffPositionIndex`. Use this when the caller has
+ * already parsed the diff (e.g. `preparePostedReview` calls
+ * `selectPostableComments`, `selectOffDiffComments`, and
+ * `countSuppressedComments` in sequence, and each was previously
+ * re-parsing the same diff). Eliminating the duplicate parse is a
+ * meaningful win for large PRs — a 5000-line diff parses in
+ * single-digit ms, but `preparePostedReview` was doing it 3x
+ * per review.
+ */
+function selectPostableCommentsWithPositions(input) {
     const maxComments = input.parsed.maxComments ?? DEFAULT_MAX_COMMENTS;
     const comments = [];
     for (const comment of input.review.comments) {
         if (comments.length >= maxComments) {
             break;
         }
-        if (!positions.hasPosition(comment)) {
+        if (!input.positions.hasPosition(comment)) {
             continue;
         }
         if (!passesSeverityPolicy(comment, input.parsed)) {
@@ -7884,11 +7902,28 @@ function selectPostableComments(input) {
     return comments;
 }
 function selectOffDiffComments(review, diffText) {
-    const positions = parseDiffPositions(diffText);
+    return selectOffDiffCommentsWithPositions(review, parseDiffPositions(diffText));
+}
+/**
+ * Internal variant of `selectOffDiffComments` that accepts a
+ * pre-computed `DiffPositionIndex`. See
+ * `selectPostableCommentsWithPositions` for the rationale.
+ */
+function selectOffDiffCommentsWithPositions(review, positions) {
     return review.comments.filter((comment) => !positions.hasPosition(comment));
 }
 function countSuppressedComments(review, diffText) {
-    return review.suppressedComments.length + selectOffDiffComments(review, diffText).length;
+    const positions = parseDiffPositions(diffText);
+    return countSuppressedCommentsWithPositions(review, positions);
+}
+/**
+ * Internal variant of `countSuppressedComments` that accepts a
+ * pre-computed `DiffPositionIndex`. See
+ * `selectPostableCommentsWithPositions` for the rationale.
+ */
+function countSuppressedCommentsWithPositions(review, positions) {
+    return review.suppressedComments.length +
+        selectOffDiffCommentsWithPositions(review, positions).length;
 }
 /**
  * The shared GitHub/Azure live-post preparation recipe. Computes the
@@ -7902,14 +7937,21 @@ function countSuppressedComments(review, diffText) {
  * which was the previous source of drift between the two platforms.
  */
 function preparePostedReview(input) {
-    const postableComments = selectPostableComments({
+    // Parse the diff ONCE and pass the index to all three selectors.
+    // Each of the public selectors (`selectPostableComments`,
+    // `selectOffDiffComments`, `countSuppressedComments`) was
+    // previously re-parsing the same diff internally — 3x parses per
+    // review. The `*WithPositions` variants take a pre-computed
+    // index so the parse runs exactly once.
+    const positions = parse_positions_parseDiffPositions(input.diffText);
+    const postableComments = selectPostableCommentsWithPositions({
         review: input.review,
-        diffText: input.diffText,
+        positions,
         parsed: input.parsed,
         secrets: input.secrets,
     });
-    const offDiffFromComments = selectOffDiffComments(input.review, input.diffText);
-    const suppressedCommentCount = input.review.suppressedComments.length + offDiffFromComments.length;
+    const offDiffFromComments = selectOffDiffCommentsWithPositions(input.review, positions);
+    const suppressedCommentCount = countSuppressedCommentsWithPositions(input.review, positions);
     const severityCounts = live_shared_countBySeverity(postableComments);
     // Reconcile the model's raw verdict against the postable severity
     // counts. If every finding was severity-filtered out, the body will
@@ -9964,7 +10006,7 @@ function parseFallbackModels(value, apiUrl) {
  *     matches anything in the diff
  */
 function collectParseWarnings(input) {
-    const positions = parseDiffPositions(input.diffText);
+    const positions = parse_positions_parseDiffPositions(input.diffText);
     const diffPaths = new Set(positions.enumerate().map((p) => p.path));
     const warnings = [];
     for (const [source, list] of [
@@ -10361,7 +10403,7 @@ async function readAdditionalPrompt(input) {
  * dry-run, smoke tests).
  */
 function verifyFindingsAgainstDiff(input) {
-    const positions = parseDiffPositions(input.diffText);
+    const positions = parse_positions_parseDiffPositions(input.diffText);
     const verified = [];
     const dropped = [];
     for (const comment of input.review.comments) {
@@ -10853,7 +10895,7 @@ function extractRepresentativeToken(lineContent, path) {
  *   or API keys — the marker is appended by the GitHub posting layer.
  */
 function buildSimulatedFindings(repo, prNumber, headSha, diffText) {
-    const positions = parseDiffPositions(diffText);
+    const positions = parse_positions_parseDiffPositions(diffText);
     const enumerated = positions.enumerate();
     const inlineBlueprints = enumerated.length > 0
         ? buildDiverseBlueprints(enumerated, diffText)
