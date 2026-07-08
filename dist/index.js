@@ -9846,22 +9846,24 @@ function shouldFallback(error) {
  * The resolver here picks a model with the best cost-vs-hallucination
  * trade-off for the active provider. Hostname match (not full-URL
  * match) — a URL like `https://api.minimax.io/anthropic` correctly
- * routes to MiniMax-Text-01 because the hostname is `api.minimax.io`,
+ * routes to MiniMax-M3 because the hostname is `api.minimax.io`,
  * even though the path contains "anthropic":
  *   - provider=copilot  → claude-3-5-sonnet (Copilot's Claude backend;
  *     this is the model string the GitHub Copilot Chat Completions
  *     endpoint actually accepts — the v3.x and v3.5 Sonnet line is
  *     the Copilot-routable Claude. claude-sonnet-4.6 is NOT a
  *     Copilot-routable string and would 404.)
- *   - provider=openai-compatible + URL hostname contains "minimax"  → MiniMax-Text-01
+ *   - provider=openai-compatible + URL hostname contains "minimax"  → MiniMax-M3
  *   - provider=openai-compatible + URL hostname contains "anthropic"  → claude-sonnet-4.6
  *   - provider=openai-compatible + URL hostname contains "generativelanguage" or "googleapis"  → gemini-2.5-flash
  *   - provider=openai-compatible otherwise (incl. api.openai.com)  → gpt-5-mini
  *
  * The MiniMax branch was added when PR #28's self-review hit HTTP
  * 400 on every OpenAI/Anthropic model name — the MiniMax provider
- * only serves `MiniMax-Text-01` (or `abab*` aliases). Detected by
- * the URL hostname containing `minimax`.
+ * only serves `MiniMax-M3` and `MiniMax-Text-01` (plus `abab*`
+ * aliases). Default is `MiniMax-M3`; `MiniMax-Text-01` is the
+ * fallback if M3 has a bad day. Detected by the URL hostname
+ * containing `minimax`.
  *
  * Users can always override via `--model` (or `UMACTUALLY_MODEL`).
  */
@@ -9872,9 +9874,9 @@ const GOOGLE_DEFAULT_MODEL = "gemini-2.5-flash";
 const MINIMAX_DEFAULT_MODEL = "MiniMax-M3";
 const OPENAI_DEFAULT_MODEL = "gpt-5-mini";
 const HOST_ROUTES = [
-    // MiniMax: the api.minimax.io gateway only accepts MiniMax-Text-01
-    // and abab* aliases. Any OpenAI/Anthropic model name returns
-    // HTTP 400. Detected by hostname substring.
+    // MiniMax: the api.minimax.io gateway only accepts MiniMax-M3,
+    // MiniMax-Text-01, and abab* aliases. Any OpenAI/Anthropic
+    // model name returns HTTP 400. Detected by hostname substring.
     { hostSubstring: "minimax", model: MINIMAX_DEFAULT_MODEL },
     // Anthropic: api.anthropic.com serves the claude-* line.
     { hostSubstring: "anthropic", model: ANTHROPIC_DEFAULT_MODEL },
@@ -9993,9 +9995,9 @@ function fallbackModelsFor(provider, apiUrl) {
  *
  * When `apiUrl` is provided, the default fallback chain uses the
  * URL-specific model list when the URL matches a known provider
- * (e.g. `api.minimax.io` → MiniMax-Text-01, not the generic
- * openai-compatible chain). This makes `--fallback-models` consistent
- * with `resolveAutoModel`'s URL-aware behavior.
+ * (e.g. `api.minimax.io` → MiniMax-M3 then MiniMax-Text-01, not
+ * the generic openai-compatible chain). This makes `--fallback-models`
+ * consistent with `resolveAutoModel`'s URL-aware behavior.
  */
 function parseFallbackModels(value, apiUrl) {
     const defaultChain = apiUrl !== undefined && apiUrl !== null && apiUrl.length > 0
