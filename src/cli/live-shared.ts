@@ -38,6 +38,16 @@ export type LiveRunResult = {
   readonly suppressedCommentCount?: number;
   readonly verdict?: string;
   /**
+   * True when the provider returned a non-JSON / unparseable response
+   * and the review was posted using the malformed-provider fallback.
+   * The live-posting paths set this AND return `exitCode: 1` so CI
+   * fails on parse failures rather than silently passing. The review
+   * is still posted (so the operator can see the diagnostic on the
+   * PR), but the Action exit code is non-zero so branch policies and
+   * `if: failure()` steps can react.
+   */
+  readonly parseFailed?: boolean;
+  /**
    * Off-diff citation warnings the LLM emitted. Threaded from the
    * provider outcome through the orchestrator into the artifact-write
    * path so the parse-warnings.json sibling artifact records every

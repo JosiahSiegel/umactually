@@ -175,11 +175,12 @@ export async function runAzureLive(input: {
   // The reviewId is the PARENT thread id (so consumers can correlate
   // the run with the top-level summary card on the PR conversation).
   const reviewId = parentThreadId ?? postedIds[0];
+  const parseFailed = provider.review.parseFailed === true;
   const successMessage = failedIndices.length > 0
-    ? `posted Azure review (${postedIds.length} threads, ${failedIndices.length} failed)`
-    : `posted Azure review (${postedIds.length} threads)`;
+    ? `posted Azure review (${postedIds.length} threads, ${failedIndices.length} failed)${parseFailed ? " (parse failed)" : ""}`
+    : `posted Azure review (${postedIds.length} threads)${parseFailed ? " (parse failed)" : ""}`;
   return {
-    exitCode: 0,
+    exitCode: parseFailed ? 1 : 0,
     posted: true,
     reviewId,
     message: successMessage,
@@ -189,6 +190,9 @@ export async function runAzureLive(input: {
     // matches the Azure PR status and the body. See the matching
     // comment on the GitHub side in `live-github.ts`.
     verdict: prepared.effectiveVerdict,
+    // Signal parse-fail to the artifact-write path so writeLiveArtifact
+    // can stamp `parseFailed: true` on the posted=true branch.
+    parseFailed,
     // Thread parse warnings (off-diff citation hallucinations) to the
     // artifact-write path so the parse-warnings.json sibling artifact
     // surfaces them for operators / CI guards.
