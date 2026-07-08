@@ -676,23 +676,6 @@ function selectOffDiffCommentsWithPositions(
 
 export function countSuppressedComments(review: LiveReview, diffText: string): number {
   const positions = parseDiffPositions(diffText);
-  return countSuppressedCommentsWithPositions(review, positions);
-}
-
-/**
- * Internal variant of `countSuppressedComments` that accepts a
- * pre-computed `DiffPositionIndex`. See
- * `selectPostableCommentsWithPositions` for the rationale.
- */
-function countSuppressedCommentsWithPositions(
-  review: LiveReview,
-  positions: ReturnType<typeof parseDiffPositions>,
-): number {
-  // Inline the off-diff filter to avoid materializing the intermediate
-  // array that `selectOffDiffCommentsWithPositions` would build.
-  // The filter is the same predicate; the only difference is the
-  // return shape (array vs count). This saves one allocation
-  // per review for the `preparePostedReview` happy path.
   let offDiffCount = 0;
   for (const comment of review.comments) {
     if (!positions.hasPosition(comment)) {
@@ -739,14 +722,12 @@ export function preparePostedReview(input: {
   // and why). The suppressed count is also displayed. Both are
   // derived from the same `review.comments - positions.hasPosition`
   // filter. The array materialization is unavoidable (the manifest
-  // needs every entry) and the count iteration is cheap (one
-  // pass per comment). The "inline" variant of
-  // `countSuppressedCommentsWithPositions` is the right tool when
-  // the caller does NOT need the array — the public
-  // `countSuppressedComments` uses it. For `preparePostedReview`
-  // the array-then-count pattern is the right trade-off: we avoid
-  // building it twice, but the count helper inlines the filter
-  // when no array is needed.
+  // needs every entry) and the count derivation is just a `.length`
+  // on it. `countSuppressedComments(review, diffText)` is a
+  // single-call helper for callers that don't need the array; it
+  // re-parses the diff and re-runs the filter. `preparePostedReview`
+  // already has `positions` and the off-diff array, so it computes
+  // the count inline rather than calling the helper.
   const offDiffFromComments = selectOffDiffCommentsWithPositions(input.review, positions);
   const suppressedCommentCount = input.review.suppressedComments.length + offDiffFromComments.length;
   const severityCounts = countBySeverity(postableComments);
