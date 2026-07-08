@@ -9896,10 +9896,19 @@ function fallbackModelsFor(provider, apiUrl) {
 /**
  * Parse a `--fallback-models` CLI value (comma-separated) into a
  * list. Empty parts and duplicate entries are dropped.
+ *
+ * When `apiUrl` is provided, the default fallback chain uses the
+ * URL-specific model list when the URL matches a known provider
+ * (e.g. `api.minimax.io` → MiniMax-Text-01, not the generic
+ * openai-compatible chain). This makes `--fallback-models` consistent
+ * with `resolveAutoModel`'s URL-aware behavior.
  */
-function parseFallbackModels(value) {
+function parseFallbackModels(value, apiUrl) {
+    const defaultChain = apiUrl !== undefined && apiUrl !== null && apiUrl.length > 0
+        ? fallbackModelsFor("openai-compatible", apiUrl)
+        : DEFAULT_FALLBACK_MODELS;
     if (value === null || value === undefined || value.length === 0) {
-        return DEFAULT_FALLBACK_MODELS;
+        return defaultChain;
     }
     const seen = new Set();
     const out = [];
@@ -9911,7 +9920,7 @@ function parseFallbackModels(value) {
         seen.add(trimmed);
         out.push(trimmed);
     }
-    return out.length > 0 ? out : DEFAULT_FALLBACK_MODELS;
+    return out.length > 0 ? out : defaultChain;
 }
 
 ;// CONCATENATED MODULE: ./src/cli/parse-warnings.ts
