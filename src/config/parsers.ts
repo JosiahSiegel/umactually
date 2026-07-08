@@ -54,6 +54,17 @@ export function parseIntegerFromUnknown(value: unknown, field: string): number {
     if (!Number.isFinite(parsed)) {
       throw new InvalidConfigError(field, `expected finite integer, received ${REDACTED}`);
     }
+    // Reject values outside the safe-integer range so callers that
+    // rely on exact equality (severity-key lookups, cache keys,
+    // downstream arithmetic) do not silently truncate. The CLI's
+    // parseStrictInt has the same check; this is the config-loader's
+    // equivalent so the two surfaces agree.
+    if (!Number.isSafeInteger(parsed)) {
+      throw new InvalidConfigError(
+        field,
+        `expected integer in [${Number.MIN_SAFE_INTEGER}, ${Number.MAX_SAFE_INTEGER}], received ${REDACTED}`,
+      );
+    }
     return parsed;
   }
   throw new InvalidConfigError(field, `expected integer, received ${typeof value}`);

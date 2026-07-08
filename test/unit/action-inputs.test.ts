@@ -403,25 +403,29 @@ describe("readActionInputs: simulateFindings defaulting", () => {
     expect(inputs.simulateFindings).toBe(true);
   });
 
-  it("simulateFindings honors the literal-hyphen INPUT_SIMULATE-FINDINGS form (GitHub quirk)", () => {
-    // Given: a GitHub Actions runtime where only the literal-hyphen env form
-    // is set (this is what GitHub Actions actually emits for hyphenated input
-    // names that exceed the underscore-mapping threshold in some runners).
+  it("simulateFindings reads the canonical underscore INPUT_SIMULATE_FINDINGS form", () => {
+    // Given: a GitHub Actions runtime where the canonical env form is set.
+    // GitHub Actions documents that hyphenated input names are exposed as
+    // INPUT_<name with hyphens replaced by underscores> — so
+    // `simulate-findings` becomes `INPUT_SIMULATE_FINDINGS`. This is the
+    // only documented behavior.
     const env = {
       GITHUB_ACTIONS: "true",
-      "INPUT_SIMULATE-FINDINGS": "true",
+      INPUT_SIMULATE_FINDINGS: "true",
     } satisfies NodeJS.ProcessEnv;
 
     // When: readActionInputs resolves the flag.
     const inputs = readActionInputs(env);
 
-    // Then: simulateFindings is true so the orchestrator can inject the fixture
-    // regardless of which env-var form the runner emitted.
+    // Then: simulateFindings is true.
     expect(inputs.simulateFindings).toBe(true);
   });
 
-  it("prefers the underscore form when both INPUT_SIMULATE_FINDINGS forms are set", () => {
-    // Given: both env-var forms are set (runner emitted both for some reason).
+  it("prefers the underscore form when both env-var forms are set", () => {
+    // Given: both env-var forms are set. The literal-hyphen form is a
+    // legacy fallback for runners that emitted it before the canonical
+    // underscore mapping was standardized; the underscore form is the
+    // documented contract and wins on conflict.
     const env = {
       GITHUB_ACTIONS: "true",
       INPUT_SIMULATE_FINDINGS: "false",

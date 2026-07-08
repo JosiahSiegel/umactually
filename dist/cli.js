@@ -614,6 +614,14 @@ function parseIntegerFromUnknown(value, field) {
         if (!Number.isFinite(parsed)) {
             throw new InvalidConfigError(field, `expected finite integer, received ${REDACTED}`);
         }
+        // Reject values outside the safe-integer range so callers that
+        // rely on exact equality (severity-key lookups, cache keys,
+        // downstream arithmetic) do not silently truncate. The CLI's
+        // parseStrictInt has the same check; this is the config-loader's
+        // equivalent so the two surfaces agree.
+        if (!Number.isSafeInteger(parsed)) {
+            throw new InvalidConfigError(field, `expected integer in [${Number.MIN_SAFE_INTEGER}, ${Number.MAX_SAFE_INTEGER}], received ${REDACTED}`);
+        }
         return parsed;
     }
     throw new InvalidConfigError(field, `expected integer, received ${typeof value}`);
@@ -1050,19 +1058,34 @@ const CLI_HELP_TEXT = [
     "  --review <path>         Azure provider review JSON (optional in dry-run)",
     "  --pr-number <n>         Pull request number",
     "  --repo <owner/name>",
-    "  --api-url <url>         Provider Responses API URL",
+    "  --api-url <url>         Provider Responses API URL (default: https://api.openai.com/v1)",
     "  --api-key <key>         Provider API key",
-    "  --model <id>            Provider model id",
+    "  --model <id>            Provider model id (default: auto)",
+    "  --prompt <text>         Inline system prompt override",
     "  --prompt-file <path>",
+    "  --additional-prompt <text>",
     "  --additional-prompt-file <path>",
+    "  --effort <low|medium|high>           Reasoning effort hint (default: medium)",
+    "  --provider <openai-compatible|copilot>  Provider family",
+    "  --github-api-base <url> GitHub API base URL (Copilot token exchange; default: https://api.github.com)",
     "  --include-sonarqube",
     "  --sonar-host-url <url>",
     "  --sonar-token <token>",
     "  --sonar-project-key <key>",
+    "  --sonar-timeout-seconds <n>",
+    "  --review-timeout-seconds <n>",
+    "  --stall-seconds <n>",
+    "  --per-request-timeout-seconds <n>",
+    "  --max-output-tokens <n>",
+    "  --max-comments <n>",
+    "  --review-file-limit <n>  Cap on changed files for live review (0 = disable)",
     "  --minimum-severity <low|medium|high>  default: medium",
+    "  --walkthrough | --no-walkthrough",
+    "  --diagnostic | --no-diagnostic",
+    "  --debug-raw-response | --no-debug-raw-response",
     "  --detect-leaks | --no-detect-leaks",
-    "  --dry-run               Write artifact JSON only, no provider calls",
-    "  --simulate-findings     Replace empty live findings with deterministic fixture",
+    "  --dry-run | --no-dry-run",
+    "  --simulate-findings | --no-simulate-findings",
     "  --output-artifact <path>",
     "",
 ].join("\n");
@@ -2852,6 +2875,138 @@ function warnIfLegacyIgnoreMinorEnvVarsAreSet(env) {
         `Use minimum-severity (low|medium|high, default medium) instead.\n`);
 }
 
+;// CONCATENATED MODULE: ./src/platform/detect.ts
+class PlatformDetectionError extends Error {
+    name = "PlatformDetectionError";
+    code = "PLATFORM_UNKNOWN";
+    constructor() {
+        super("Unable to detect a supported CI platform from the process environment.");
+    }
+}
+const GITHUB_ACTIONS_KEY = "GITHUB_ACTIONS";
+const AZURE_TF_BUILD_KEY = "TF_BUILD";
+/**
+ * GitHub precedence: GITHUB_ACTIONS is checked first, so a process that
+ * somehow exposes both `GITHUB_ACTIONS=true` and `TF_BUILD=True` (rare,
+ * but possible in nested CI) routes to GitHub. The order is part of the
+ * contract — swapping the two arms would silently change behaviour for
+ * anyone running the action in a cross-platform test harness.
+ */
+function detectPlatform(env) {
+    if (isTruthy(env[GITHUB_ACTIONS_KEY])) {
+        return "github";
+    }
+    if (isTruthy(env[AZURE_TF_BUILD_KEY])) {
+        return "azure-devops";
+    }
+    throw new PlatformDetectionError();
+}
+/**
+ * Recognise CI-platform "marker present" values.
+ *
+ * Azure Pipelines emits `TF_BUILD=True` (capital T) — the canonical
+ * runner value. The helper also accepts `"true"` (lowercase) so local
+ * mocked pipelines and `pipeline-init.sh` shell scripts that
+ * `export TF_BUILD=true` continue to work, and `"TRUE"` (all uppercase)
+ * so a PowerShell `Set-Item env:TF_BUILD=TRUE` mistake does not
+ * silently land in `PLATFORM_UNKNOWN` for the operator. Everything else
+ * (including `"1"`, `"yes"`, whitespace-padded) is intentionally
+ * rejected: the goal is to recognise the three real-world casings, not
+ * to be a general truthy-string helper.
+ */
+function isTruthy(value) {
+    return value === "true" || value === "True" || value === "TRUE";
+}
+
+;// CONCATENATED MODULE: ./src/cli/validate.ts
+
+function resolvePlatform(platform, env = process.env) {
+    switch (platform) {
+        case "github":
+            return "github";
+        case "azure":
+            return "azure";
+        case "auto":
+            // Route through the canonical detector so auto-resolution and
+            // detection share one truth-table (catches TF_BUILD=True AND
+            // GITHUB_ACTIONS=true, with GitHub precedence). Narrow catch:
+            // any non-PlatformDetectionError is an internal invariant
+            // failure that must surface — matching the orchestrator.ts and
+            // index.ts symmetric narrow-catch pattern.
+            //
+            // Fallback to "github" (not "null" like orchestrator.ts, not
+            // "fall through" like index.ts) is intentional: the validator
+            // must return a concrete ResolvedPlatform so subsequent error
+            // messages can name it, whereas orchestrator needs `null` to
+            // surface "Live review requires GitHub Actions (...)" and
+            // index.ts has no Azure path on the bare-entry side. Unifying
+            // these three contracts would break the validator.
+            try {
+                const detected = detectPlatform(env);
+                return detected === "azure-devops" ? "azure" : "github";
+            }
+            catch (error) {
+                if (error instanceof PlatformDetectionError) {
+                    return "github";
+                }
+                throw error;
+            }
+        default:
+            return assertNever(platform);
+    }
+}
+function collectValidationErrors(parsed) {
+    const errors = [];
+    const resolved = resolvePlatform(parsed.platform);
+    if (resolved === "github") {
+        if (parsed.eventPath === null) {
+            errors.push("--event is required for --platform github");
+        }
+        if (parsed.diffPath === null) {
+            errors.push("--diff is required for --platform github");
+        }
+    }
+    if (resolved === "azure") {
+        if (parsed.eventPath === null) {
+            errors.push("--event is required for --platform azure");
+        }
+        if (parsed.diffPath === null) {
+            errors.push("--diff is required for --platform azure");
+        }
+        if (parsed.prNumber === null) {
+            errors.push("--pr-number is required for --platform azure");
+        }
+        if (parsed.repo === null) {
+            errors.push("--repo is required for --platform azure");
+        }
+    }
+    if (parsed.includeSonarqube) {
+        if (parsed.sonarHostUrl === null) {
+            errors.push("--sonar-host-url is required when --include-sonarqube is set");
+        }
+        if (parsed.sonarToken === null) {
+            errors.push("--sonar-token is required when --include-sonarqube is set");
+        }
+        if (parsed.sonarProjectKey === null) {
+            errors.push("--sonar-project-key is required when --include-sonarqube is set");
+        }
+    }
+    if (!parsed.dryRun) {
+        // Copilot provider does not need --api-url; it uses the GitHub Copilot
+        // token exchange endpoint (defaulting to https://api.github.com).
+        if (parsed.apiUrl === null && parsed.provider !== "copilot") {
+            errors.push("--api-url is required unless --dry-run is set or --provider copilot is used");
+        }
+        if (parsed.apiKey === null) {
+            errors.push("--api-key is required unless --dry-run is set");
+        }
+    }
+    return errors;
+}
+function assertNever(value) {
+    throw new TypeError(`unhandled platform variant: ${JSON.stringify(value)}`);
+}
+
 ;// CONCATENATED MODULE: ./src/platform/azure/chunk.ts
 /**
  * Split a reconstructed unified-diff string into per-file chunks that fit
@@ -3142,49 +3297,6 @@ function readAzureTargetBranch(env) {
         throw new AzureContextError("AZURE_TARGET_BRANCH_MISSING", "Azure Pipelines SYSTEM_PULLREQUEST_TARGETBRANCHNAME must be set.");
     }
     return value;
-}
-
-;// CONCATENATED MODULE: ./src/platform/detect.ts
-class PlatformDetectionError extends Error {
-    name = "PlatformDetectionError";
-    code = "PLATFORM_UNKNOWN";
-    constructor() {
-        super("Unable to detect a supported CI platform from the process environment.");
-    }
-}
-const GITHUB_ACTIONS_KEY = "GITHUB_ACTIONS";
-const AZURE_TF_BUILD_KEY = "TF_BUILD";
-/**
- * GitHub precedence: GITHUB_ACTIONS is checked first, so a process that
- * somehow exposes both `GITHUB_ACTIONS=true` and `TF_BUILD=True` (rare,
- * but possible in nested CI) routes to GitHub. The order is part of the
- * contract — swapping the two arms would silently change behaviour for
- * anyone running the action in a cross-platform test harness.
- */
-function detectPlatform(env) {
-    if (isTruthy(env[GITHUB_ACTIONS_KEY])) {
-        return "github";
-    }
-    if (isTruthy(env[AZURE_TF_BUILD_KEY])) {
-        return "azure-devops";
-    }
-    throw new PlatformDetectionError();
-}
-/**
- * Recognise CI-platform "marker present" values.
- *
- * Azure Pipelines emits `TF_BUILD=True` (capital T) — the canonical
- * runner value. The helper also accepts `"true"` (lowercase) so local
- * mocked pipelines and `pipeline-init.sh` shell scripts that
- * `export TF_BUILD=true` continue to work, and `"TRUE"` (all uppercase)
- * so a PowerShell `Set-Item env:TF_BUILD=TRUE` mistake does not
- * silently land in `PLATFORM_UNKNOWN` for the operator. Everything else
- * (including `"1"`, `"yes"`, whitespace-padded) is intentionally
- * rejected: the goal is to recognise the three real-world casings, not
- * to be a general truthy-string helper.
- */
-function isTruthy(value) {
-    return value === "true" || value === "True" || value === "TRUE";
 }
 
 ;// CONCATENATED MODULE: ./src/platform/github/api.ts
@@ -9692,7 +9804,7 @@ async function dispatchLivePlatform(input) {
             });
         }
         default:
-            return assertNever(platform);
+            return orchestrator_assertNever(platform);
     }
 }
 function detectLivePlatform(env) {
@@ -9718,11 +9830,12 @@ function readSecretValues(env) {
         env["AZURE_DEVOPS_TOKEN"] ?? "",
     ];
 }
-function assertNever(value) {
+function orchestrator_assertNever(value) {
     throw new TypeError(`Unhandled live platform: ${value}`);
 }
 
 ;// CONCATENATED MODULE: ./src/cli/run.ts
+
 
 
 
@@ -9948,7 +10061,8 @@ async function dispatchLive(parsed, cwd, env) {
         // inspect the live review's outcome. Without this, a parse-fail
         // card posted via the GitHub API leaves no local trace for the
         // guard to catch — the action exits 0 and CI sees "pass".
-        await writeLiveArtifact(parsed, cwd, result);
+        const platform = resolvePlatform(parsed.platform, env);
+        await writeLiveArtifact(parsed, cwd, platform, result);
         return { exitCode: result.exitCode };
     }
     finally {
@@ -9987,12 +10101,13 @@ async function dispatchLive(parsed, cwd, env) {
  * invocation, in `finally` — so a panic mid-review still writes the
  * sentinel.
  */
-async function writeLiveArtifact(parsed, cwd, result) {
-    if (parsed.outputArtifact === null)
-        return;
-    const artifactPath = (0,external_node_path_namespaceObject.isAbsolute)(parsed.outputArtifact)
-        ? parsed.outputArtifact
-        : (0,external_node_path_namespaceObject.resolve)(cwd, parsed.outputArtifact);
+async function writeLiveArtifact(parsed, cwd, platform, result) {
+    // Use the same default path resolution as the dry-run path so the
+    // self-review CI guard has a local trace even when the caller did
+    // NOT pass --output-artifact. Without this, a parse-fail card posted
+    // via the GitHub/Azure API leaves no local trace and the guard sees
+    // an empty artifact directory.
+    const artifactPath = resolveArtifactPath(parsed.outputArtifact, platform, cwd);
     await (0,promises_namespaceObject.mkdir)((0,external_node_path_namespaceObject.dirname)(artifactPath), { recursive: true });
     if (!result.posted) {
         const body = {
@@ -10027,95 +10142,6 @@ async function writeLiveArtifact(parsed, cwd, result) {
         note: "Live review posted successfully; counts reflect what the GitHub/Azure API saw.",
     };
     await (0,promises_namespaceObject.writeFile)(artifactPath, `${JSON.stringify(body, null, 2)}\n`, "utf8");
-}
-
-;// CONCATENATED MODULE: ./src/cli/validate.ts
-
-function resolvePlatform(platform, env = process.env) {
-    switch (platform) {
-        case "github":
-            return "github";
-        case "azure":
-            return "azure";
-        case "auto":
-            // Route through the canonical detector so auto-resolution and
-            // detection share one truth-table (catches TF_BUILD=True AND
-            // GITHUB_ACTIONS=true, with GitHub precedence). Narrow catch:
-            // any non-PlatformDetectionError is an internal invariant
-            // failure that must surface — matching the orchestrator.ts and
-            // index.ts symmetric narrow-catch pattern.
-            //
-            // Fallback to "github" (not "null" like orchestrator.ts, not
-            // "fall through" like index.ts) is intentional: the validator
-            // must return a concrete ResolvedPlatform so subsequent error
-            // messages can name it, whereas orchestrator needs `null` to
-            // surface "Live review requires GitHub Actions (...)" and
-            // index.ts has no Azure path on the bare-entry side. Unifying
-            // these three contracts would break the validator.
-            try {
-                const detected = detectPlatform(env);
-                return detected === "azure-devops" ? "azure" : "github";
-            }
-            catch (error) {
-                if (error instanceof PlatformDetectionError) {
-                    return "github";
-                }
-                throw error;
-            }
-        default:
-            return validate_assertNever(platform);
-    }
-}
-function collectValidationErrors(parsed) {
-    const errors = [];
-    const resolved = resolvePlatform(parsed.platform);
-    if (resolved === "github") {
-        if (parsed.eventPath === null) {
-            errors.push("--event is required for --platform github");
-        }
-        if (parsed.diffPath === null) {
-            errors.push("--diff is required for --platform github");
-        }
-    }
-    if (resolved === "azure") {
-        if (parsed.eventPath === null) {
-            errors.push("--event is required for --platform azure");
-        }
-        if (parsed.diffPath === null) {
-            errors.push("--diff is required for --platform azure");
-        }
-        if (parsed.prNumber === null) {
-            errors.push("--pr-number is required for --platform azure");
-        }
-        if (parsed.repo === null) {
-            errors.push("--repo is required for --platform azure");
-        }
-    }
-    if (parsed.includeSonarqube) {
-        if (parsed.sonarHostUrl === null) {
-            errors.push("--sonar-host-url is required when --include-sonarqube is set");
-        }
-        if (parsed.sonarToken === null) {
-            errors.push("--sonar-token is required when --include-sonarqube is set");
-        }
-        if (parsed.sonarProjectKey === null) {
-            errors.push("--sonar-project-key is required when --include-sonarqube is set");
-        }
-    }
-    if (!parsed.dryRun) {
-        // Copilot provider does not need --api-url; it uses the GitHub Copilot
-        // token exchange endpoint (defaulting to https://api.github.com).
-        if (parsed.apiUrl === null && parsed.provider !== "copilot") {
-            errors.push("--api-url is required unless --dry-run is set or --provider copilot is used");
-        }
-        if (parsed.apiKey === null) {
-            errors.push("--api-key is required unless --dry-run is set");
-        }
-    }
-    return errors;
-}
-function validate_assertNever(value) {
-    throw new TypeError(`unhandled platform variant: ${JSON.stringify(value)}`);
 }
 
 ;// CONCATENATED MODULE: ./src/cli.ts

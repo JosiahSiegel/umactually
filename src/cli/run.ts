@@ -9,7 +9,7 @@ import { readEnvSources } from "../config/env-sources.js";
 import type { EnvSources } from "../config/types.js";
 import { formatError } from "../util/error.js";
 import type { ParsedCliArgs } from "./parse-args.js";
-import type { ResolvedPlatform } from "./validate.js";
+import { resolvePlatform, type ResolvedPlatform } from "./validate.js";
 import { runLive as runOrchestrator } from "./orchestrator.js";
 
 export type CliRunResult = {
@@ -279,7 +279,8 @@ export async function dispatchLive(parsed: ParsedCliArgs, cwd: string, env: Node
     // inspect the live review's outcome. Without this, a parse-fail
     // card posted via the GitHub API leaves no local trace for the
     // guard to catch — the action exits 0 and CI sees "pass".
-    await writeLiveArtifact(parsed, cwd, result);
+    const platform = resolvePlatform(parsed.platform, env);
+    await writeLiveArtifact(parsed, cwd, platform, result);
     return { exitCode: result.exitCode };
   } finally {
     if (previousDebugRaw === undefined) {
@@ -320,6 +321,7 @@ export async function dispatchLive(parsed: ParsedCliArgs, cwd: string, env: Node
 async function writeLiveArtifact(
   parsed: ParsedCliArgs,
   cwd: string,
+  platform: ResolvedPlatform,
   result: {
     readonly posted: boolean;
     readonly message: string;
@@ -328,10 +330,12 @@ async function writeLiveArtifact(
     readonly verdict?: string;
   },
 ): Promise<void> {
-  if (parsed.outputArtifact === null) return;
-  const artifactPath = isAbsolute(parsed.outputArtifact)
-    ? parsed.outputArtifact
-    : resolve(cwd, parsed.outputArtifact);
+  // Use the same default path resolution as the dry-run path so the
+  // self-review CI guard has a local trace even when the caller did
+  // NOT pass --output-artifact. Without this, a parse-fail card posted
+  // via the GitHub/Azure API leaves no local trace and the guard sees
+  // an empty artifact directory.
+  const artifactPath = resolveArtifactPath(parsed.outputArtifact, platform, cwd);
   await mkdir(dirname(artifactPath), { recursive: true });
   if (!result.posted) {
     const body = {

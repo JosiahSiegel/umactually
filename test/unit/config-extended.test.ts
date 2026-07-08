@@ -179,6 +179,21 @@ describe("config: integer parsing", () => {
     expect(() => parseIntegerFromUnknown("abc", "n")).toThrow(InvalidConfigError);
     expect(() => parseIntegerFromUnknown("3.14", "n")).toThrow(InvalidConfigError);
   });
+
+  it("rejects integers outside the safe-integer range", () => {
+    // Mirrors the CLI's parseStrictInt check: values exceeding 2^53-1
+    // silently lose precision when compared as exact integers (cache
+    // keys, severity lookups, etc.), so reject them at parse time.
+    // The string form is the most likely path — users copying values
+    // from monitoring dashboards or test fixtures.
+    const overMax = String(Number.MAX_SAFE_INTEGER + 2);
+    const underMin = String(Number.MIN_SAFE_INTEGER - 2);
+    expect(() => parseIntegerFromUnknown(overMax, "n")).toThrow(InvalidConfigError);
+    expect(() => parseIntegerFromUnknown(underMin, "n")).toThrow(InvalidConfigError);
+    // Boundaries should still work.
+    expect(parseIntegerFromUnknown(Number.MAX_SAFE_INTEGER, "n")).toBe(Number.MAX_SAFE_INTEGER);
+    expect(parseIntegerFromUnknown(Number.MIN_SAFE_INTEGER, "n")).toBe(Number.MIN_SAFE_INTEGER);
+  });
 });
 
 describe("config: severity parsing", () => {
@@ -247,25 +262,20 @@ describe("config: URL normalization", () => {
   });
 
   it("rejects malformed URLs with REDACTED", () => {
+    // Given: a malformed URL (no scheme, no host). The normalizer must
+    // throw InvalidConfigError without leaking the raw input.
+    const malformed = `not a url at all ${SECRET_TOKEN}`;
+
+    // When / Then: the parse throws and the error message does not contain the secret.
+    let thrown: Error | undefined;
     try {
-      normalizeApiUrl(`https://api.example.com/${SECRET_TOKEN}?token=${SECRET_TOKEN}`, "f");
-      throw new Error("should have thrown");
+      normalizeApiUrl(malformed, "f");
     } catch (error) {
-      // Valid URL — normalization succeeds; ensure the secret never appears in the output.
-      const message = (error as Error).message;
-      // No error path exercised — but verify the URL parsed output also doesn't echo the secret
-      // (a defense-in-depth check).
-      expect(message === "" || !message.includes(SECRET_TOKEN)).toBe(true);
+      thrown = error as Error;
     }
-    // Truly malformed input:
-    try {
-      normalizeApiUrl(`not a url: ${SECRET_TOKEN}`, "f");
-      throw new Error("should have thrown");
-    } catch (error) {
-      const message = (error as Error).message;
-      expect(message).not.toContain(SECRET_TOKEN);
-      expect(message).toContain(REDACTED);
-    }
+    expect(thrown).toBeDefined();
+    expect(thrown?.message).not.toContain(SECRET_TOKEN);
+    expect(thrown?.message).toContain(REDACTED);
   });
 
   it("rejects empty / non-string", () => {

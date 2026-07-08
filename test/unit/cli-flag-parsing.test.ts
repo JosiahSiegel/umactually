@@ -260,7 +260,7 @@ describe("CLI flag parsing: action.yml inputs coverage", () => {
     expect(parsed.dryRun).toBe(false);
   });
 
-  it("--dry-run takes precedence over later --no-dry-run in the same argv", async () => {
+  it("--no-dry-run overrides earlier --dry-run in the same argv (last wins)", async () => {
     const parseCliArgs = await expectNotImplementedExport(cliModule, cliPath, "parseCliArgs");
     if (!isParseCliArgs(parseCliArgs)) {
       expect.fail("RED: src/cli.ts must export parseCliArgs(args)");
