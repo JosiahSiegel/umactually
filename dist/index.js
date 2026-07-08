@@ -2782,6 +2782,124 @@ function joinUrl(baseUrl, path) {
     return `${trimmedBase}${prefixedPath}`;
 }
 /**
+ * Resolve a provider's `baseUrl` down to its origin (scheme + host + port),
+ * then append a default API prefix. This makes the action robust against
+ * any operator-supplied path: no matter what the user puts after the host
+ * (`/v1`, `/openai`, `/anthropic`, `/api/v2`, etc.), the action always
+ * targets the canonical OpenAI-style path on the host root.
+ *
+ * Goal: `${result}/responses` and `${result}/chat/completions` must
+ * reach the provider regardless of what path the operator typed in
+ * `UMACTUALLY_API_URL`. The provider is responsible for serving those
+ * routes at the host root + `/v1/...`.
+ *
+ * Examples (defaultPrefix = `/v1`):
+ *   - `https://api.example.com`           → `https://api.example.com/v1`
+ *   - `https://api.example.com/`          → `https://api.example.com/v1`
+ *   - `https://api.example.com/v1`        → `https://api.example.com/v1`
+ *   - `https://api.example.com/openai`    → `https://api.example.com/v1`
+ *   - `https://api.example.com/anthropic` → `https://api.example.com/v1`
+ *   - `https://api.example.com/api/v2`    → `https://api.example.com/v1`
+ *   - `https://api.example.com/v1/openai` → `https://api.example.com/v1`
+ *
+ * The path is **always** discarded. This is intentional: the action
+ * calls OpenAI-style routes (`/responses`, `/chat/completions`),
+ * and the operator's path is treated as decorative noise rather than
+ * a routing hint. The fix trades a small amount of flexibility (no
+ * custom namespace support) for a large amount of robustness — the
+ * action works the same regardless of what path the operator typed.
+ *
+ * If an operator genuinely needs a custom namespace, they can use
+ * the `--provider copilot` path (which uses GitHub's API directly)
+ * or the `copilot` provider family which has its own routing.
+ *
+ * Detection uses a minimal URL parse. The fallback substring path
+ * handles unencoded spaces and other URL-parse failures.
+ *
+ * @param baseUrl       Operator-supplied base URL.
+ * @param defaultPrefix Default prefix to append to the origin.
+ *                      Default `/v1`.
+ */
+function resolveProviderBaseUrl(baseUrl, defaultPrefix = "/v1") {
+    const origin = extractOrigin(baseUrl);
+    return `${origin}${defaultPrefix}`;
+}
+/**
+ * Return the origin (scheme + host + port) of a URL, stripping any path,
+ * query, and fragment. Used by `resolveProviderBaseUrl` to normalize
+ * operator-supplied URLs to their canonical host root.
+ *
+ * Returns the input unchanged if it cannot be parsed as a URL — this
+ * preserves the original string for callers that want a best-effort
+ * fallback. Callers that need a strict guarantee should pass a
+ * well-formed URL.
+ */
+function extractOrigin(baseUrl) {
+    try {
+        return new URL(baseUrl).origin;
+    }
+    catch {
+        const schemeSep = baseUrl.indexOf("://");
+        if (schemeSep === -1) {
+            const firstSlash = baseUrl.indexOf("/");
+            return firstSlash === -1 ? baseUrl : baseUrl.slice(0, firstSlash);
+        }
+        const sepLen = 3; // "://" length
+        const afterScheme = baseUrl.slice(schemeSep + sepLen);
+        const firstSlash = afterScheme.indexOf("/");
+        const authority = firstSlash === -1 ? afterScheme : afterScheme.slice(0, firstSlash);
+        return baseUrl.slice(0, schemeSep + sepLen) + authority;
+    }
+}
+/**
+ * Return the ORDERED list of base URL candidates to try when calling
+ * the openai-compatible provider. The first candidate is the
+ * operator-supplied URL as-pasted (after trimming trailing slashes) —
+ * we always respect what the operator typed. Subsequent candidates
+ * are progressively more "normalized" forms: first the origin with
+ * the default prefix prepended, then the origin alone (rare —
+ * only useful if the provider serves routes at the root with no
+ * prefix).
+ *
+ * The list is de-duplicated so the caller doesn't try the same URL
+ * twice. The provider tries each candidate in order; if a candidate
+ * 404s on both `/responses` and `/chat/completions`, the next
+ * candidate is tried. The first candidate that returns a non-404
+ * response wins.
+ *
+ * This is the "robust to any URL shape" contract: no matter what
+ * the operator types, we find a working endpoint. The order is
+ * important — the operator's URL comes first so the wire path
+ * matches their intent whenever possible.
+ *
+ * Examples (defaultPrefix = `/v1`):
+ *   - `https://api.example.com` →
+ *       [`https://api.example.com`,
+ *        `https://api.example.com/v1`]
+ *   - `https://api.example.com/v1` →
+ *       [`https://api.example.com/v1`,
+ *        `https://api.example.com/v1`]  (de-duplicated)
+ *   - `https://api.example.com/anthropic` →
+ *       [`https://api.example.com/anthropic`,
+ *        `https://api.example.com/v1`]
+ *   - `https://api.example.com/api/v2` →
+ *       [`https://api.example.com/api/v2`,
+ *        `https://api.example.com/v1`]
+ *
+ * The fallback candidate (origin + default prefix) is included even
+ * when the operator's URL is a bare host, so a single candidate is
+ * tried twice (de-duplicated to one). This keeps the contract
+ * uniform: callers always iterate a list, no special-casing.
+ */
+function resolveProviderBaseUrlCandidates(baseUrl, defaultPrefix = "/v1") {
+    const pasted = url_stripTrailingSlash(baseUrl);
+    const normalized = resolveProviderBaseUrl(baseUrl, defaultPrefix);
+    if (pasted === normalized) {
+        return [pasted];
+    }
+    return [pasted, normalized];
+}
+/**
  * Removes trailing slashes from a URL or path segment. Useful before
  * joining paths so empty-path joins don't produce double slashes.
  */
@@ -9308,18 +9426,73 @@ function buildBodyConfig(config) {
 async function runProviderRequest(config) {
     const fetchImpl = config.fetchImpl ?? globalThis.fetch.bind(globalThis);
     const requestId = createRequestId();
-    const firstAttempt = await runWithRetry(config, fetchImpl, requestId, ENDPOINT_RESPONSES);
-    if (firstAttempt.ok) {
-        return firstAttempt;
+    // URL resolution strategy: try the operator's URL as-pasted first
+    // (after trimming trailing slashes), then fall back to the
+    // origin-stripped URL with /v1/ appended. This is the "robust to
+    // any URL shape" contract: no matter what path the operator typed
+    // (`/v1`, `/openai`, `/anthropic`, `/api/v2`, or none at all), the
+    // action finds a working endpoint.
+    //
+    // See resolveProviderBaseUrlCandidates in src/util/url.ts for the
+    // candidate list construction.
+    const baseUrlCandidates = resolveProviderBaseUrlCandidates(config.baseUrl);
+    // Surface the candidate list so operators can verify the URL
+    // resolution is doing what they expect. Without these annotation
+    // lines, a 400/404 from the action's last attempt is opaque — the
+    // operator can't tell whether the action tried the URL they pasted
+    // or jumped straight to the origin+prefix form. The `::notice::`
+    // annotations are visible in the GitHub Actions log and survive
+    // even if the action's `process.stderr.write` is captured.
+    if (baseUrlCandidates.length > 1) {
+        process.stderr.write(`::notice::${BRAND_PREFIX}Resolving provider base URL: trying ${baseUrlCandidates.length} candidates in order: ${baseUrlCandidates.join(", ")}\n`);
     }
-    if (shouldFallback(firstAttempt.error)) {
-        return runWithRetry(config, fetchImpl, requestId, openai_compatible_ENDPOINT_CHAT);
+    let lastAttempt = { ok: false, error: new ProviderError("network", ENDPOINT_RESPONSES, null, requestId, "No base URL candidates resolved.") };
+    for (const candidate of baseUrlCandidates) {
+        process.stderr.write(`::notice::${BRAND_PREFIX}Trying base URL: ${candidate}\n`);
+        const firstAttempt = await runWithRetry(config, fetchImpl, requestId, ENDPOINT_RESPONSES, candidate);
+        if (firstAttempt.ok) {
+            return firstAttempt;
+        }
+        if (shouldFallback(firstAttempt.error)) {
+            const chatAttempt = await runWithRetry(config, fetchImpl, requestId, openai_compatible_ENDPOINT_CHAT, candidate);
+            if (chatAttempt.ok) {
+                return chatAttempt;
+            }
+            // Chat fallback also failed. Move to the next URL candidate
+            // (the operator-pasted URL failed → try origin-stripped, etc.)
+            // unless the error is NOT a 404/400 (e.g. auth failure, server
+            // error) — in that case, retrying with a different URL won't
+            // help, so return immediately.
+            if (!isRoutableFailure(chatAttempt.error)) {
+                return chatAttempt;
+            }
+            process.stderr.write(`::notice::${BRAND_PREFIX}Base URL ${candidate} returned routable failure (status=${chatAttempt.error.status}); advancing to next candidate.\n`);
+            lastAttempt = chatAttempt;
+            continue;
+        }
+        // The /responses endpoint failed with a non-routable status
+        // (e.g. 401, 500). Retrying with a different URL won't help.
+        if (!isRoutableFailure(firstAttempt.error)) {
+            return firstAttempt;
+        }
+        process.stderr.write(`::notice::${BRAND_PREFIX}Base URL ${candidate} returned routable failure (status=${firstAttempt.error.status}); advancing to next candidate.\n`);
+        lastAttempt = firstAttempt;
     }
-    return firstAttempt;
+    return lastAttempt;
 }
-async function runWithEndpoint(config, fetchImpl, requestId, endpoint) {
+/**
+ * True when the failure was a routing-level rejection (404 Not Found
+ * or 400 Bad Request) that would benefit from trying a different URL
+ * shape. False for auth failures (401/403), server errors (5xx),
+ * parse failures, and timeouts — those have a single root cause and
+ * a different URL won't help.
+ */
+function isRoutableFailure(error) {
+    return error.status === 404 || error.status === 400;
+}
+async function runWithEndpoint(config, fetchImpl, requestId, endpoint, baseUrl) {
     try {
-        return await callEndpoint(config, fetchImpl, requestId, endpoint);
+        return await callEndpoint(config, fetchImpl, requestId, endpoint, baseUrl);
     }
     catch (error) {
         if (error instanceof ProviderError) {
@@ -9329,10 +9502,10 @@ async function runWithEndpoint(config, fetchImpl, requestId, endpoint) {
     }
 }
 const RETRY_BACKOFF_MS = [250, 1_000];
-async function runWithRetry(config, fetchImpl, requestId, endpoint) {
+async function runWithRetry(config, fetchImpl, requestId, endpoint, baseUrl) {
     let lastFailure = null;
     for (let attempt = 0; attempt <= RETRY_BACKOFF_MS.length; attempt += 1) {
-        const result = await runWithEndpoint(config, fetchImpl, requestId, endpoint);
+        const result = await runWithEndpoint(config, fetchImpl, requestId, endpoint, baseUrl);
         if (result.ok) {
             return result;
         }
@@ -9361,8 +9534,8 @@ function isRetryable(error) {
  * The shared prompt constant lives in `provider-parse.ts` so the Copilot
  * path can reuse it byte-for-byte (DRY-12).
  */
-async function callEndpoint(config, fetchImpl, requestId, endpoint) {
-    const url = joinUrl(config.baseUrl, endpoint === ENDPOINT_RESPONSES ? "/responses" : "/chat/completions");
+async function callEndpoint(config, fetchImpl, requestId, endpoint, baseUrl) {
+    const url = joinUrl(baseUrl, endpoint === ENDPOINT_RESPONSES ? "/responses" : "/chat/completions");
     const body = endpoint === ENDPOINT_RESPONSES
         ? buildResponsesBody(buildBodyConfig(config))
         : buildChatBody(buildBodyConfig(config));
@@ -9558,26 +9731,93 @@ function shouldFallback(error) {
  *     Copilot-routable string and would 404.)
  *   - provider=openai-compatible + URL contains "anthropic"  → claude-sonnet-4.6
  *   - provider=openai-compatible + URL contains "generativelanguage"  → gemini-2.5-flash
+ *   - provider=openai-compatible + URL contains "minimax" or "MiniMax"  → MiniMax-Text-01
  *   - provider=openai-compatible otherwise (incl. api.openai.com)  → gpt-5-mini
+ *
+ * The MiniMax branch was added when PR #28's self-review hit HTTP
+ * 400 on every OpenAI/Anthropic model name — the MiniMax provider
+ * only serves `MiniMax-Text-01` (or `abab*` aliases). Detected by
+ * the URL hostname containing `minimax`.
  *
  * Users can always override via `--model` (or `UMACTUALLY_MODEL`).
  */
 const COPILOT_DEFAULT_MODEL = "claude-3-5-sonnet";
 const ANTHROPIC_DEFAULT_MODEL = "claude-sonnet-4.6";
 const GOOGLE_DEFAULT_MODEL = "gemini-2.5-flash";
+const MINIMAX_DEFAULT_MODEL = "MiniMax-Text-01";
 const OPENAI_DEFAULT_MODEL = "gpt-5-mini";
+const HOST_ROUTES = [
+    // MiniMax: the api.minimax.io gateway only accepts MiniMax-Text-01
+    // and abab* aliases. Any OpenAI/Anthropic model name returns
+    // HTTP 400. Detected by hostname substring.
+    { hostSubstring: "minimax", model: MINIMAX_DEFAULT_MODEL },
+    // Anthropic: api.anthropic.com serves the claude-* line.
+    { hostSubstring: "anthropic", model: ANTHROPIC_DEFAULT_MODEL },
+    // Google: generativelanguage.googleapis.com (Gemini API) and
+    // aiplatform.googleapis.com (Vertex AI) both serve gemini-*.
+    { hostSubstring: "generativelanguage", model: GOOGLE_DEFAULT_MODEL },
+    { hostSubstring: "googleapis", model: GOOGLE_DEFAULT_MODEL },
+];
 function resolveAutoModel(input) {
     if (input.provider === "copilot") {
         return COPILOT_DEFAULT_MODEL;
     }
     const url = input.apiUrl ?? input.env["UMACTUALLY_API_URL"] ?? "";
-    if (url.includes("anthropic")) {
-        return ANTHROPIC_DEFAULT_MODEL;
-    }
-    if (url.includes("generativelanguage") || url.includes("googleapis")) {
-        return GOOGLE_DEFAULT_MODEL;
+    const hostname = extractHostname(url);
+    if (hostname !== null) {
+        const lowerHost = hostname.toLowerCase();
+        for (const route of HOST_ROUTES) {
+            if (lowerHost.includes(route.hostSubstring)) {
+                return route.model;
+            }
+        }
     }
     return OPENAI_DEFAULT_MODEL;
+}
+/**
+ * Extract the hostname from a URL string. Returns null when the
+ * input is empty, malformed, or a bare string without a scheme
+ * separator. The caller is expected to fall back to the default
+ * model when null is returned.
+ *
+ * Why hostname-only: substring matching on the full URL is too
+ * loose. A URL like `https://example.com/minimax-router` would
+ * falsely match `url.includes("minimax")` and pick a MiniMax
+ * model. The hostname extract prevents that — `example.com`
+ * doesn't contain `minimax`, so the model is the default.
+ */
+function extractHostname(url) {
+    const trimmed = url.trim();
+    if (trimmed.length === 0)
+        return null;
+    try {
+        return new URL(trimmed).hostname.toLowerCase();
+    }
+    catch {
+        // Fallback: strip scheme manually, then read up to the first
+        // `/` or `:`. `localhost:8080` parses to hostname "localhost"
+        // in some runtimes and `8080` in others, so this path handles
+        // the parse-failure case explicitly.
+        const schemeSep = trimmed.indexOf("://");
+        if (schemeSep === -1) {
+            const firstSlash = trimmed.indexOf("/");
+            const firstColon = trimmed.indexOf(":");
+            const stop = firstSlash === -1 ? trimmed.length : firstSlash;
+            const host = firstColon === -1 || firstColon > stop
+                ? trimmed.slice(0, stop)
+                : trimmed.slice(0, firstColon);
+            return host.length > 0 ? host : null;
+        }
+        const sepLen = 3; // "://" length
+        const afterScheme = trimmed.slice(schemeSep + sepLen);
+        const firstSlash = afterScheme.indexOf("/");
+        const firstColon = afterScheme.indexOf(":");
+        const stop = firstSlash === -1 ? afterScheme.length : firstSlash;
+        const host = firstColon === -1 || firstColon > stop
+            ? afterScheme.slice(0, stop)
+            : afterScheme.slice(0, firstColon);
+        return host.length > 0 ? host : null;
+    }
 }
 /**
  * The fallback chain used when a primary model returns a parse-fail
@@ -9612,14 +9852,45 @@ const PROVIDER_FALLBACKS = {
         COPILOT_DEFAULT_MODEL,
     ],
 };
+/**
+ * Per-URL fallback chains for providers that only accept their own
+ * model names. The MiniMax provider (`api.minimax.io`) returns
+ * HTTP 400 for any OpenAI/Anthropic/Google model name, so the
+ * generic openai-compatible fallback chain would 400 too. The
+ * URL-specific chains here override the default for the matching
+ * hostnames.
+ */
+const URL_SPECIFIC_FALLBACKS = {
+    // `toLowerCase()` is applied to the URL before lookup so this
+    // map is case-insensitive — `api.minimax.io` and `API.MINIMAX.IO`
+    // both resolve to the same chain.
+    "minimax": [
+        MINIMAX_DEFAULT_MODEL,
+        "abab6.5s-chat",
+        "abab5.5-chat",
+    ],
+};
 const DEFAULT_FALLBACK_MODELS = PROVIDER_FALLBACKS["openai-compatible"];
 /**
  * Return the fallback chain for a specific provider. Use this
  * instead of the bare `DEFAULT_FALLBACK_MODELS` constant in any
  * path that might be Copilot-routed — otherwise the parse-fail
  * recovery would itself fail with a 404.
+ *
+ * If `apiUrl` is provided and the URL hostname matches a
+ * URL-specific chain (e.g. `api.minimax.io`), the URL-specific
+ * chain wins — the generic OpenAI chain would 400 on those
+ * providers.
  */
-function fallbackModelsFor(provider) {
+function fallbackModelsFor(provider, apiUrl) {
+    if (apiUrl !== undefined && apiUrl !== null && apiUrl.length > 0) {
+        const lower = apiUrl.toLowerCase();
+        for (const [hostKey, chain] of Object.entries(URL_SPECIFIC_FALLBACKS)) {
+            if (lower.includes(hostKey)) {
+                return chain;
+            }
+        }
+    }
     return PROVIDER_FALLBACKS[provider];
 }
 /**

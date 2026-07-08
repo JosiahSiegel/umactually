@@ -6,6 +6,132 @@ export function joinUrl(baseUrl: string, path: string): string {
 }
 
 /**
+ * Resolve a provider's `baseUrl` down to its origin (scheme + host + port),
+ * then append a default API prefix. This makes the action robust against
+ * any operator-supplied path: no matter what the user puts after the host
+ * (`/v1`, `/openai`, `/anthropic`, `/api/v2`, etc.), the action always
+ * targets the canonical OpenAI-style path on the host root.
+ *
+ * Goal: `${result}/responses` and `${result}/chat/completions` must
+ * reach the provider regardless of what path the operator typed in
+ * `UMACTUALLY_API_URL`. The provider is responsible for serving those
+ * routes at the host root + `/v1/...`.
+ *
+ * Examples (defaultPrefix = `/v1`):
+ *   - `https://api.example.com`           → `https://api.example.com/v1`
+ *   - `https://api.example.com/`          → `https://api.example.com/v1`
+ *   - `https://api.example.com/v1`        → `https://api.example.com/v1`
+ *   - `https://api.example.com/openai`    → `https://api.example.com/v1`
+ *   - `https://api.example.com/anthropic` → `https://api.example.com/v1`
+ *   - `https://api.example.com/api/v2`    → `https://api.example.com/v1`
+ *   - `https://api.example.com/v1/openai` → `https://api.example.com/v1`
+ *
+ * The path is **always** discarded. This is intentional: the action
+ * calls OpenAI-style routes (`/responses`, `/chat/completions`),
+ * and the operator's path is treated as decorative noise rather than
+ * a routing hint. The fix trades a small amount of flexibility (no
+ * custom namespace support) for a large amount of robustness — the
+ * action works the same regardless of what path the operator typed.
+ *
+ * If an operator genuinely needs a custom namespace, they can use
+ * the `--provider copilot` path (which uses GitHub's API directly)
+ * or the `copilot` provider family which has its own routing.
+ *
+ * Detection uses a minimal URL parse. The fallback substring path
+ * handles unencoded spaces and other URL-parse failures.
+ *
+ * @param baseUrl       Operator-supplied base URL.
+ * @param defaultPrefix Default prefix to append to the origin.
+ *                      Default `/v1`.
+ */
+export function resolveProviderBaseUrl(
+  baseUrl: string,
+  defaultPrefix: string = "/v1",
+): string {
+  const origin = extractOrigin(baseUrl);
+  return `${origin}${defaultPrefix}`;
+}
+
+/**
+ * Return the origin (scheme + host + port) of a URL, stripping any path,
+ * query, and fragment. Used by `resolveProviderBaseUrl` to normalize
+ * operator-supplied URLs to their canonical host root.
+ *
+ * Returns the input unchanged if it cannot be parsed as a URL — this
+ * preserves the original string for callers that want a best-effort
+ * fallback. Callers that need a strict guarantee should pass a
+ * well-formed URL.
+ */
+export function extractOrigin(baseUrl: string): string {
+  try {
+    return new URL(baseUrl).origin;
+  } catch {
+    const schemeSep = baseUrl.indexOf("://");
+    if (schemeSep === -1) {
+      const firstSlash = baseUrl.indexOf("/");
+      return firstSlash === -1 ? baseUrl : baseUrl.slice(0, firstSlash);
+    }
+    const sepLen = 3; // "://" length
+    const afterScheme = baseUrl.slice(schemeSep + sepLen);
+    const firstSlash = afterScheme.indexOf("/");
+    const authority = firstSlash === -1 ? afterScheme : afterScheme.slice(0, firstSlash);
+    return baseUrl.slice(0, schemeSep + sepLen) + authority;
+  }
+}
+
+/**
+ * Return the ORDERED list of base URL candidates to try when calling
+ * the openai-compatible provider. The first candidate is the
+ * operator-supplied URL as-pasted (after trimming trailing slashes) —
+ * we always respect what the operator typed. Subsequent candidates
+ * are progressively more "normalized" forms: first the origin with
+ * the default prefix prepended, then the origin alone (rare —
+ * only useful if the provider serves routes at the root with no
+ * prefix).
+ *
+ * The list is de-duplicated so the caller doesn't try the same URL
+ * twice. The provider tries each candidate in order; if a candidate
+ * 404s on both `/responses` and `/chat/completions`, the next
+ * candidate is tried. The first candidate that returns a non-404
+ * response wins.
+ *
+ * This is the "robust to any URL shape" contract: no matter what
+ * the operator types, we find a working endpoint. The order is
+ * important — the operator's URL comes first so the wire path
+ * matches their intent whenever possible.
+ *
+ * Examples (defaultPrefix = `/v1`):
+ *   - `https://api.example.com` →
+ *       [`https://api.example.com`,
+ *        `https://api.example.com/v1`]
+ *   - `https://api.example.com/v1` →
+ *       [`https://api.example.com/v1`,
+ *        `https://api.example.com/v1`]  (de-duplicated)
+ *   - `https://api.example.com/anthropic` →
+ *       [`https://api.example.com/anthropic`,
+ *        `https://api.example.com/v1`]
+ *   - `https://api.example.com/api/v2` →
+ *       [`https://api.example.com/api/v2`,
+ *        `https://api.example.com/v1`]
+ *
+ * The fallback candidate (origin + default prefix) is included even
+ * when the operator's URL is a bare host, so a single candidate is
+ * tried twice (de-duplicated to one). This keeps the contract
+ * uniform: callers always iterate a list, no special-casing.
+ */
+export function resolveProviderBaseUrlCandidates(
+  baseUrl: string,
+  defaultPrefix: string = "/v1",
+): readonly string[] {
+  const pasted = stripTrailingSlash(baseUrl);
+  const normalized = resolveProviderBaseUrl(baseUrl, defaultPrefix);
+  if (pasted === normalized) {
+    return [pasted];
+  }
+  return [pasted, normalized];
+}
+
+/**
  * Removes trailing slashes from a URL or path segment. Useful before
  * joining paths so empty-path joins don't produce double slashes.
  */
