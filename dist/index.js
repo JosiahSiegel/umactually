@@ -5091,6 +5091,9 @@ function renderSummary(layout, data) {
  * `LAYOUTS` parity with `buildReviewBody`.
  */
 function renderBaseline(baseline, data) {
+    if (data.postedComments === undefined) {
+        throw new Error("renderBaseline: data.postedComments is required (was undefined). Use buildReviewBody() to dispatch — it computes the post-filter set from review.comments.");
+    }
     const renderer = BASELINE_RENDERERS[baseline];
     if (renderer === undefined) {
         throw new Error(`Unknown baseline: ${baseline}`);

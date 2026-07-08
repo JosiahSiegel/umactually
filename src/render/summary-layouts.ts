@@ -1714,6 +1714,9 @@ export function renderSummary(layout: LayoutId, data: ReviewData): string {
  * `LAYOUTS` parity with `buildReviewBody`.
  */
 export function renderBaseline(baseline: BaselineId, data: ReviewData): string {
+  if (data.postedComments === undefined) {
+    throw new Error("renderBaseline: data.postedComments is required (was undefined). Use buildReviewBody() to dispatch — it computes the post-filter set from review.comments.");
+  }
   const renderer = BASELINE_RENDERERS[baseline];
   if (renderer === undefined) {
     throw new Error(`Unknown baseline: ${baseline as string}`);
