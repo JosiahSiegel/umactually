@@ -2,11 +2,11 @@
  * CLI help text. Flag descriptions are column-aligned so `--help` output is
  * scannable instead of drifting as flags are added.
  *
- * The longest flag+placeholder is `--provider <openai-compatible|copilot>`
- * (38 chars). With the 2-space indent and 2-space gutter, the description
- * column starts at column 43 (1-indexed) — i.e. 26 padding spaces after
- * the placeholder of a 12-char flag, 0 padding spaces after the 38-char
- * `--provider` placeholder.
+ * `FLAG_COLUMN_WIDTH` is computed at runtime from the longest entry in
+ * `HELP_FLAGS` (currently `--debug-raw-response | --no-debug-raw-response`
+ * at 46 chars). With the 2-space indent and 2-space gutter, the description
+ * column starts at column 51 (1-indexed). Future flag additions are
+ * trivially correct because adding a longer flag recomputes the width.
  *
  * The `--github-api-base`, `--review-file-limit`, and `--minimum-severity`
  * entries previously sat at unrelated columns (25/27/34); fixing them
