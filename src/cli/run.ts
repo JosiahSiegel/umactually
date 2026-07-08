@@ -48,19 +48,33 @@ export function resolveParseWarningsArtifactPath(
   // Replace the extension with `.parse-warnings.json`. Most reviews use
   // `.md` (s1-github-self-review.md) or `.json` (s4-azure-mocked-run.json);
   // we keep the directory and stem, swap the suffix.
-  const dir = dirname(primaryArtifactPath);
-  const stem = basename(primaryArtifactPath).replace(/\.[^.]+$/u, "");
-  return joinPath(dir, `${stem}.parse-warnings.json`);
+  //
+  // We use our own custom `basename` and `joinPath` (instead of
+  // `node:path`'s) because the input can be either a POSIX path
+  // (Linux/macOS CI) or a Windows path (Windows local dev). The
+  // node:path versions behave correctly per-platform but a path
+  // captured on Windows and consumed on Linux (or vice versa)
+  // yields the wrong dirname. The custom pair handles both.
+  const dir = customDirname(primaryArtifactPath);
+  const stem = customBasename(primaryArtifactPath).replace(/\.[^.]+$/u, "");
+  return customJoinPath(dir, `${stem}.parse-warnings.json`);
 }
 
-function basename(path: string): string {
+function customBasename(path: string): string {
   const idx = path.lastIndexOf("/");
   const winIdx = path.lastIndexOf("\\");
   const cut = Math.max(idx, winIdx);
   return cut === -1 ? path : path.slice(cut + 1);
 }
 
-function joinPath(dir: string, file: string): string {
+function customDirname(path: string): string {
+  const idx = path.lastIndexOf("/");
+  const winIdx = path.lastIndexOf("\\");
+  const cut = Math.max(idx, winIdx);
+  return cut === -1 ? "" : path.slice(0, cut);
+}
+
+function customJoinPath(dir: string, file: string): string {
   if (dir === "" || dir === ".") {
     return file;
   }
