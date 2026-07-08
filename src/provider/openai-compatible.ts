@@ -293,22 +293,6 @@ async function callEndpoint(
     const safeTextPayload = redactDebugSecrets(textPayload, config);
     writeDebugRaw(`[DEBUG-RAW] textPayload first 200: ${JSON.stringify(safeTextPayload.slice(0, 200))}\n`, config);
     writeDebugRaw(`[DEBUG-RAW] textPayload last 200:  ${JSON.stringify(safeTextPayload.slice(-200))}\n`, config);
-    // Surface the parsed envelope's top-level shape so we can tell
-    // whether the response is SSE, a single JSON envelope, or something
-    // else. Helps debug the M3 model which can return 100+ KB of
-    // reasoning alongside a truncated `output_text` field.
-    try {
-      const parsed = JSON.parse(rawText);
-      if (typeof parsed === "object" && parsed !== null) {
-        const keys = Object.keys(parsed);
-        const outText = typeof parsed.output_text === "string" ? parsed.output_text : null;
-        const hasOutput = Array.isArray(parsed.output);
-        const outArrLen = hasOutput ? parsed.output.length : 0;
-        writeDebugRaw(`[DEBUG-RAW] rawText keys: ${JSON.stringify(keys)} output_text.len=${outText?.length ?? 0} output.len=${outArrLen}\n`, config);
-      }
-    } catch {
-      writeDebugRaw(`[DEBUG-RAW] rawText is not JSON\n`, config);
-    }
     writeDebugRaw(`[DEBUG-RAW] hasResponseCompletedEvent: ${rawText.includes('"type":"response.completed"')}\n`, config);
   }
   const review = parseReviewPayload(textPayload);
@@ -343,12 +327,6 @@ async function callEndpoint(
   // (`provider_error`) so the live-review layer can hard-fail instead
   // of posting a 0-finding COMMENT review that exits 0.
   const providerError = detectProviderError(rawText);
-  if (process.env["UMACTUALLY_DEBUG_RAW"] === "1") {
-    writeDebugRaw(
-      `[DEBUG-RAW] detectProviderError: ${providerError === null ? "null" : `kind=${providerError.kind} message=${JSON.stringify(providerError.message)}`}\n`,
-      config,
-    );
-  }
   if (providerError !== null) {
     throw new ProviderError(
       "provider_error",
