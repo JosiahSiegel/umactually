@@ -293,14 +293,6 @@ async function callEndpoint(
     const safeTextPayload = redactDebugSecrets(textPayload, config);
     writeDebugRaw(`[DEBUG-RAW] textPayload first 200: ${JSON.stringify(safeTextPayload.slice(0, 200))}\n`, config);
     writeDebugRaw(`[DEBUG-RAW] textPayload last 200:  ${JSON.stringify(safeTextPayload.slice(-200))}\n`, config);
-    // [DEBUG-RAW-2] Dump a larger tail window so we can see the full
-    // structure of any partial JSON the model emitted at the end of
-    // its output. Some models (e.g. MiniMax-M3) produce 100+ KB of
-    // reasoning prose followed by an incomplete JSON object that
-    // runs out of the output budget mid-field. The 200-char window
-    // hides the JSON structure; 2000 chars usually captures the
-    // last 1-2 findings plus the trailing `]`/`}` truncation point.
-    writeDebugRaw(`[DEBUG-RAW] textPayload last 2000: ${JSON.stringify(safeTextPayload.slice(-2000))}\n`, config);
     writeDebugRaw(`[DEBUG-RAW] hasResponseCompletedEvent: ${rawText.includes('"type":"response.completed"')}\n`, config);
   }
   const review = parseReviewPayload(textPayload);
@@ -335,12 +327,6 @@ async function callEndpoint(
   // (`provider_error`) so the live-review layer can hard-fail instead
   // of posting a 0-finding COMMENT review that exits 0.
   const providerError = detectProviderError(rawText);
-  if (process.env["UMACTUALLY_DEBUG_RAW"] === "1") {
-    writeDebugRaw(
-      `[DEBUG-RAW] detectProviderError: ${providerError === null ? "null" : `kind=${providerError.kind} message=${JSON.stringify(providerError.message)}`}\n`,
-      config,
-    );
-  }
   if (providerError !== null) {
     throw new ProviderError(
       "provider_error",

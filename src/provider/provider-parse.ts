@@ -348,10 +348,23 @@ export function extractTextPayload(endpoint: ProviderEndpoint, rawText: string):
         if (fromOutput.length > 0) {
           return fromOutput;
         }
+        // The response had an `output[]` array but `joinOutputText`
+        // produced nothing — every entry was a reasoning block the
+        // parser intentionally skipped. Returning the raw envelope
+        // would leak the chain-of-thought prose (stored in the
+        // reasoning parts) into the extracted text, which then
+        // fails `parseReviewPayload` because the first balanced `{`
+        // is inside the reasoning prose. Return empty so the
+        // strict-empty-fields check downstream classifies it as
+        // a parse failure.
+        if (output.length > 0) {
+          return "";
+        }
       }
-      // Not in the Responses API shape — fall through to raw text
-      // so `parseReviewPayload` can extract a direct review JSON
-      // object (model returned `{"summary": ..., "verdict": ...}`).
+      // No `output[]` array at all — fall through to raw text so
+      // `parseReviewPayload` can extract a direct review JSON object
+      // (model returned `{"summary": ..., "verdict": ...}` outside
+      // the Responses API envelope).
     } else {
       // Chat completions.
       const choices = readArrayField(parsed, "choices");
@@ -746,6 +759,17 @@ function joinOutputText(output: readonly unknown[]): string {
         if (!isRecord(part)) {
           continue;
         }
+        // The Responses API puts reasoning content in a separate
+        // `type: "reasoning_text"` part. Including it would concat
+        // 100+ KB of chain-of-thought prose ahead of the final JSON
+        // answer and break `parseReviewPayload` (the first balanced
+        // `{` is in the reasoning prose, not the real output). Skip
+        // any part whose type is in the reasoning family — the
+        // `output_text` (or untyped) parts are the actual review.
+        const partType = part["type"];
+        if (typeof partType === "string" && partType.includes("reasoning")) {
+          continue;
+        }
         const text = part["text"];
         if (typeof text === "string") {
           fragments.push(text);
@@ -755,6 +779,10 @@ function joinOutputText(output: readonly unknown[]): string {
     }
     // Chat-style: content is a single object with a text field.
     if (isRecord(content)) {
+      const contentType = content["type"];
+      if (typeof contentType === "string" && contentType.includes("reasoning")) {
+        continue;
+      }
       const text = content["text"];
       if (typeof text === "string") {
         fragments.push(text);
@@ -1031,6 +1059,17 @@ function tryExtractSse(rawText: string): string | null {
     const wrappedResponse = readRecordField(parsed, "response");
     if (wrappedResponse !== null) {
       const eventType = readStringField(parsed, "type");
+      // Skip reasoning-text deltas entirely. Some providers (e.g.
+      // MiniMax-M3) emit `response.reasoning_text.delta` events
+      // alongside the final answer. Concat-ing them into `fragments`
+      // would prepend 100+ KB of chain-of-thought prose ahead of the
+      // JSON review, breaking `parseReviewPayload` (the first
+      // balanced `{` would be inside the reasoning prose). The actual
+      // review text is in `response.output_text.delta` and the final
+      // `response.completed` event.
+      if (typeof eventType === "string" && eventType.includes("reasoning")) {
+        continue;
+      }
       if (eventType === "response.completed" || eventType === "response.done") {
         // Final event: prefer the full response payload if it has output_text.
         const outText = readStringField(wrappedResponse, "output_text");
@@ -1073,7 +1112,12 @@ function tryExtractSse(rawText: string): string | null {
     }
 
     // /responses streaming (alternative non-OpenAI variant): top-level delta
-    // string directly on the JSON object.
+    // string directly on the JSON object. Skip reasoning deltas — they
+    // are chain-of-thought prose, not part of the final review payload.
+    const topLevelType = readStringField(parsed, "type");
+    if (typeof topLevelType === "string" && topLevelType.includes("reasoning")) {
+      continue;
+    }
     const deltaText = readStringField(parsed, "delta");
     if (deltaText !== null) {
       fragments.push(deltaText);
