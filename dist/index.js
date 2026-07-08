@@ -9897,7 +9897,6 @@ async function callEndpoint(config, fetchImpl, requestId, endpoint, baseUrl) {
     // signal — the model couldn't produce a review, not a transport
     // failure. Both cases match `src/provider/copilot.ts`'s contract.
     let retryResponseStatus = null;
-    let retryErrorMessage = null;
     try {
         // Fresh signal for the retry so it gets the full timeout budget.
         // Reusing the first-attempt signal would give the retry only
@@ -9923,18 +9922,11 @@ async function callEndpoint(config, fetchImpl, requestId, endpoint, baseUrl) {
                 retryReview = parsedRetry;
             }
         }
-        else {
-            retryErrorMessage = `retry returned status=${retryResponse.status}`;
-        }
     }
-    catch (error) {
+    catch {
         // Retry HTTP/parse path threw (network error, body read error,
         // etc.) — fall through to the parse-error throw below with the
         // ORIGINAL rawText. retryResponseStatus stays null in this branch.
-        retryErrorMessage = error instanceof Error ? error.message : String(error);
-    }
-    if (process.env["UMACTUALLY_DEBUG_RAW"] === "1") {
-        writeDebugRaw(`[DEBUG-RAW] retry outcome: review=${retryReview === null ? "null" : "ok"} status=${retryResponseStatus} error=${retryErrorMessage}\n`, config);
     }
     if (retryReview === null) {
         // Distinguish "truncated stream" (model hit its token budget before
