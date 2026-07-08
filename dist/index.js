@@ -9903,7 +9903,10 @@ async function requestLiveReview(input) {
                 // Step 3: apply the deterministic verify filter to the
                 // comments[] that gets passed downstream (so the
                 // platform-posting paths only see anchorable findings).
-                const finalReview = input.parsed.verifyFindings === true
+                // Use `!== false` rather than `=== true` so callers
+                // (tests, future serializers) that omit the field
+                // still get the default-ON behavior.
+                const finalReview = input.parsed.verifyFindings !== false
                     ? applyVerifyFilter(preVerifyReview, input.diffText)
                     : preVerifyReview;
                 return {
@@ -9954,7 +9957,7 @@ async function requestLiveReview(input) {
                 severityWarnings: severityWarnings.slice(),
                 diffText: input.diffText,
             });
-            const finalReview = input.parsed.verifyFindings === true
+            const finalReview = input.parsed.verifyFindings !== false
                 ? applyVerifyFilter(preVerifyReview, input.diffText)
                 : preVerifyReview;
             return {
