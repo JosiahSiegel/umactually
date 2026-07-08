@@ -96,7 +96,6 @@ NODE
 
 if [ -n "${SYSTEM_PULLREQUEST_PULLREQUESTID:-}" ]; then
   echo "Fetching Azure DevOps PR diff for PR ${SYSTEM_PULLREQUEST_PULLREQUESTID} via git diff."
-  : "${SYSTEM_PULLREQUEST_TARGETBRANCH:?SYSTEM_PULLREQUEST_TARGETBRANCH must be set by Azure Pipelines for PR validation builds.}"
   # Fetch the real PR metadata via the REST API (still needed for the
   # event JSON that downstream steps consume). The diff is generated
   # via git diff instead of the iterations/changes REST endpoint
@@ -116,18 +115,36 @@ if [ -n "${SYSTEM_PULLREQUEST_PULLREQUESTID:-}" ]; then
     --header "Accept: application/json" \
     "$pr_url" \
     --output "$AZURE_EVENT_PATH"
+  # SYSTEM_PULLREQUEST_TARGETBRANCH is set by Azure Pipelines on
+  # branch-policy PR validation builds, but the user reported a case
+  # where it was empty (likely an older Azure DevOps Server version
+  # or a misconfigured branch policy). Fall back to "main" — the
+  # canonical default for this repo — so the script still produces a
+  # diff instead of failing. Emit a warning so the operator notices.
+  if [ -z "${SYSTEM_PULLREQUEST_TARGETBRANCH:-}" ]; then
+    echo "##vso[task.logissue type=warning]SYSTEM_PULLREQUEST_TARGETBRANCH was empty; falling back to refs/heads/main. Verify the pipeline is wired to a branch policy build validation rule."
+    target_branch="main"
+  else
+    target_branch="${SYSTEM_PULLREQUEST_TARGETBRANCH#refs/heads/}"
+  fi
   # Fetch the target branch so git can resolve the merge-base for
   # the three-dot diff. persistCredentials: true on the checkout step
   # means the agent has OAuth-authenticated access to origin.
-  target_branch="${SYSTEM_PULLREQUEST_TARGETBRANCH#refs/heads/}"
   git fetch origin "${target_branch}"
   # Three-dot diff: changes on HEAD since it diverged from the target
   # branch. This captures exactly what the PR introduces, including
   # multi-commit branches. The output is a standard unified diff that
-  # the model can review.
-  git diff "origin/${target_branch}...HEAD" > "$AZURE_DIFF_PATH"
+  # the model can review. Exclude dist/ — those are ncc-bundled
+  # artifacts that the model wastes tokens on (one review of a 31-
+  # file PR produced 5 of 50 findings about minified bundle contents
+  # and the model itself flagged "Generated bundles should not be the
+  # reviewable surface"). The GitHub Actions self-review workflow has
+  # the same issue but the GitHub diff endpoint serves the diff
+  # straight from git, so we'd need the same exclusion there if we
+  # want a comparable experience.
+  git diff "origin/${target_branch}...HEAD" -- . ':!dist' > "$AZURE_DIFF_PATH"
   if [ ! -s "$AZURE_DIFF_PATH" ]; then
-    echo "##vso[task.logissue type=warning]Azure DevOps PR git diff is empty (target branch matches HEAD)."
+    echo "##vso[task.logissue type=warning]Azure DevOps PR git diff is empty (target branch matches HEAD, or only dist/ files changed)."
   fi
 else
   echo "SYSTEM_PULLREQUEST_PULLREQUESTID is empty; creating a synthetic manual-run diff."
