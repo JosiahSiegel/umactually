@@ -243,6 +243,21 @@ describe("S2 — all layouts render without throwing", () => {
     expect(typeof out).toBe("string");
     expect(out.length).toBeGreaterThan(0);
   });
+
+  it("renderBaseline throws a descriptive error when postedComments is omitted", () => {
+    // The guard mirrors renderSummary's: callers who construct
+    // ReviewData manually (not via buildReviewBody) get a clear error
+    // pointing at the right entry point rather than a confusing crash
+    // deep inside a layout helper. Pin the contract so the next
+    // refactor that breaks the guard surfaces as a test failure.
+    const dataWithoutPostedComments = {
+      ...makeBusyData(),
+      postedComments: undefined as unknown as typeof makeBusyData extends { postedComments: infer T } ? T : never,
+    };
+    expect(() => renderBaseline(BASELINE, dataWithoutPostedComments)).toThrow(
+      /postedComments is required/u,
+    );
+  });
 });
 
 // -- S3: Stable marker present in every layout -----------------------------

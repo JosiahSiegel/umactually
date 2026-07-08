@@ -7317,7 +7317,7 @@ function passesSeverityPolicy(comment, parsed) {
     // must be preserved. normalizeProviderSeverity is the same function
     // the live-path parser uses, so the threshold check sees the same
     // canonical severity the rendered tally would.
-    const normalized = normalizeProviderSeverity(comment.severity);
+    const normalized = normalizeProviderSeverity(comment.severity, comment.body);
     return shouldKeepFinding({ minimum }, normalized);
 }
 

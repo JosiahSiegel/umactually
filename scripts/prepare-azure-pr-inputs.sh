@@ -118,14 +118,25 @@ if [ -n "${SYSTEM_PULLREQUEST_PULLREQUESTID:-}" ]; then
   # SYSTEM_PULLREQUEST_TARGETBRANCH is set by Azure Pipelines on
   # branch-policy PR validation builds, but the user reported a case
   # where it was empty (likely an older Azure DevOps Server version
-  # or a misconfigured branch policy). Fall back to "main" — the
-  # canonical default for this repo — so the script still produces a
-  # diff instead of failing. Emit a warning so the operator notices.
-  if [ -z "${SYSTEM_PULLREQUEST_TARGETBRANCH:-}" ]; then
-    echo "##vso[task.logissue type=warning]SYSTEM_PULLREQUEST_TARGETBRANCH was empty; falling back to refs/heads/main. Verify the pipeline is wired to a branch policy build validation rule."
-    target_branch="main"
-  else
+  # or a misconfigured branch policy). Derive the default branch from
+  # `git symbolic-ref refs/remotes/origin/HEAD` so we don't hard-code
+  # `main` (which would silently produce wrong diffs against main on
+  # repos whose default branch is master/develop/etc.). Fall back to
+  # `main` only when symbolic-ref itself fails — that's the case where
+  # either origin/HEAD isn't set (shallow clone with no HEAD tracking)
+  # or git can't resolve it (auth/network). Emit a warning either way
+  # so the operator notices.
+  if [ -n "${SYSTEM_PULLREQUEST_TARGETBRANCH:-}" ]; then
     target_branch="${SYSTEM_PULLREQUEST_TARGETBRANCH#refs/heads/}"
+  else
+    detected_default="$(git symbolic-ref --quiet --short refs/remotes/origin/HEAD 2>/dev/null | sed 's#^origin/##' || true)"
+    if [ -n "${detected_default}" ]; then
+      echo "##vso[task.logissue type=warning]SYSTEM_PULLREQUEST_TARGETBRANCH was empty; falling back to detected default branch '${detected_default}'. Verify the pipeline is wired to a branch policy build validation rule."
+      target_branch="${detected_default}"
+    else
+      echo "##vso[task.logissue type=warning]SYSTEM_PULLREQUEST_TARGETBRANCH was empty and git symbolic-ref could not determine origin/HEAD; falling back to 'main'. Verify the pipeline is wired to a branch policy build validation rule."
+      target_branch="main"
+    fi
   fi
   # Fetch the target branch so git can resolve the merge-base for
   # the three-dot diff. persistCredentials: true on the checkout step
