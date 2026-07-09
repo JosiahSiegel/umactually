@@ -181,11 +181,160 @@ export function resolveProviderBaseUrlCandidates(
 }
 
 /**
+ * Resolve the Anthropic Messages API URL from the operator-supplied base URL.
+ *
+ * Mirrors the OFFICIAL @anthropic-ai/sdk convention (Claude Code's
+ * `ANTHROPIC_BASE_URL=https://api.anthropic.com` becomes
+ * `POST https://api.anthropic.com/v1/messages`) and the documented
+ * fix in https://github.com/xemantic/anthropic-sdk-kotlin/pull/145 —
+ * which notes that previously "client.post('/v1/messages') replaced
+ * any path on a configured baseUrl, breaking Anthropic-compatible
+ * providers whose endpoints live under a path prefix."
+ *
+ * Anthropic-compatible gateways commonly mount the protocol under a
+ * path prefix. The canonical example is MiniMax's Anthropic endpoint:
+ *
+ *   `--api-url https://api.minimax.io/anthropic` →
+ *   `POST https://api.minimax.io/anthropic/v1/messages`
+ *
+ * NOT `https://api.minimax.io/v1/messages` (which 404s on MiniMax — see
+ * https://platform.minimax.io/docs/token-plan/claude-code). The path
+ * on the operator's URL is real routing, not decorative noise.
+ *
+ * Behavior:
+ *
+ *   - Parse the input as a URL and split out origin / path / query /
+ *     fragment via the WHATWG URL parser. Query string and fragment
+ *     are intentionally dropped — they don't address `/v1/messages`
+ *     at any known Anthropic-protocol gateway, and passing them
+ *     through would smuggle the endpoint into the query segment
+ *     (`.../v1?token=abc/v1/messages`), an invalid URL that fires
+ *     against a different route.
+ *   - Trim trailing slashes from the resulting path.
+ *   - If the path already ends in `/v1/messages`, return as-is
+ *     (operator pre-appended; idempotent).
+ *   - If it ends in `/v1`, append `/messages` (don't double-`/v1` —
+ *     matches the SDK default of `https://api.anthropic.com/v1`).
+ *   - Otherwise, append `/v1/messages` to the existing path (path
+ *     prefix is preserved).
+ *   - On URL-parse failure (operator supplied something that isn't a
+ *     valid URL), fall back to a trailing-slash strip + naive
+ *     concatenation — preserves the original string when the WHATWG
+ *     parser can't decode it but still drops the function rather
+ *     than throwing.
+ *
+ * Examples:
+ *
+ *   - `https://api.anthropic.com`                        → `https://api.anthropic.com/v1/messages`
+ *   - `https://api.anthropic.com/v1`                     → `https://api.anthropic.com/v1/messages`
+ *   - `https://api.anthropic.com/v1/`                    → `https://api.anthropic.com/v1/messages`
+ *   - `https://api.minimax.io/anthropic`                 → `https://api.minimax.io/anthropic/v1/messages`
+ *   - `https://api.minimax.io/anthropic/`                → `https://api.minimax.io/anthropic/v1/messages`
+ *   - `https://gateway.example.com/llm/anthropic`        → `https://gateway.example.com/llm/anthropic/v1/messages`
+ *   - `https://api.anthropic.com/v1/messages`            → `https://api.anthropic.com/v1/messages` (idempotent)
+ *   - `https://api.anthropic.com/v1?token=abc`           → `https://api.anthropic.com/v1/messages` (query dropped)
+ *   - `https://api.anthropic.com/v1#section`             → `https://api.anthropic.com/v1/messages` (fragment dropped)
+ *
+ * Note: this helper REPLACES `resolveProviderBaseUrl` for the
+ * Anthropic provider only. The OpenAI-compatible provider still uses
+ * `resolveProviderBaseUrlCandidates` because OpenAI gateways
+ * (`/openai`, `/api/v2`, etc.) live at the host root + `/v1`, so the
+ * try-as-pasted-then-origin-with-`/v1` fallback is the right
+ * contract there. Anthropic's path-prefix gateways (MiniMax's
+ * `/anthropic`) need the path preserved.
+ */
+export function resolveAnthropicMessagesUrl(baseUrl: string): string {
+  // Parse once and split origin / path. Drop query string and fragment
+  // up front — they don't address the canonical /v1/messages route at
+  // any known Anthropic-protocol gateway, and passing them through
+  // would append the path segment into the query (`...?token=abc/v1/
+  // messages`), an invalid URL.
+  let origin: string;
+  let pathPart: string;
+  try {
+    const parsed = new URL(baseUrl);
+    origin = parsed.origin;
+    pathPart = parsed.pathname;
+  } catch {
+    // Unparseable input. Fall back to extractOrigin + raw concatenation.
+    //
+    // IMPORTANT: keep `pathPart` in the SAME shape `parsed.pathname`
+    // would have produced — including a leading `/`. The dispatcher
+    // checks below assume the leading-slash form (`/v1`,
+    // `/v1/messages`); stripping the slash would route an unparseable
+    // input through the wrong branch and produce a doubled
+    // `/v1/v1/messages` suffix.
+    origin = extractOrigin(baseUrl);
+    pathPart = stripTrailingSlash(baseUrl).slice(origin.length);
+  }
+  // Normalize: WHATWG URL sets pathname to "/" for a bare host; we
+  // want the empty string so concatenation produces `origin + /v1/messages`
+  // without a doubled slash.
+  const cleanedPath = stripTrailingSlash(pathPart === "/" ? "" : pathPart);
+  if (cleanedPath.endsWith("/v1/messages")) {
+    // Operator pre-appended the full messages endpoint; idempotent.
+    return joinUrl(origin, cleanedPath);
+  }
+  // Match the LAST path segment being literally `v1`. The previous
+  // `cleanedPath.endsWith("/v1")` was a suffix check that falsely
+  // matched paths whose trailing characters happened to be `v1`
+  // (e.g. `/my-v1` → wrong branch, would append `/messages`
+  // instead of `/v1/messages`). Path-segment comparison is the
+  // Anthropic-SDK intent: only a trailing `/v1` *segment* counts,
+  // not any path that happens to end in those two characters.
+  const lastSegment = cleanedPath === "" ? "" : cleanedPath.slice(cleanedPath.lastIndexOf("/") + 1);
+  if (cleanedPath === "/v1" || lastSegment === "v1") {
+    return joinUrl(origin, `${cleanedPath}/messages`);
+  }
+  return joinUrl(origin, `${cleanedPath}/v1/messages`);
+}
+
+/**
  * Removes trailing slashes from a URL or path segment. Useful before
  * joining paths so empty-path joins don't produce double slashes.
  */
 export function stripTrailingSlash(value: string): string {
   return value.replace(/\/+$/u, "");
+}
+
+/**
+ * Strip the query string and fragment from a URL for safe inclusion
+ * in CI logs and operator-facing diagnostics. The URL may carry
+ * session tokens, tenant identifiers, or other credential-bearing
+ * parameters in the query slot — leaking those into the action's
+ * stderr notices (which are persisted as GitHub Actions annotations)
+ * is a credential-disclosure risk that we explicitly avoid.
+ *
+ * Behavior:
+ *   - Empty input                        → empty output
+ *   - Bare host                          → unchanged
+ *   - With query string                  → origin + path (no `?`)
+ *   - With fragment                      → origin + path (no `#`)
+ *   - Unparseable input                  → substring-stripped; never throws
+ *
+ * Examples:
+ *   - `https://api.example.com`                   → `https://api.example.com`
+ *   - `https://api.example.com/v1`                → `https://api.example.com/v1`
+ *   - `https://api.example.com?token=secret`      → `https://api.example.com`
+ *   - `https://api.example.com/v1#anchor`         → `https://api.example.com/v1`
+ */
+export function redactUrlForLog(value: string): string {
+  if (value.length === 0) return value;
+  try {
+    const parsed = new URL(value);
+    // WHATWG URL normalizes pathname to start with `/`; for a bare
+    // host it's just `/`, so concatenating origin + `/` would
+    // produce `https://api.example.com/` for an input of
+    // `https://api.example.com`. Strip the trailing slash so the
+    // redacted form matches the input canonicalization the operator
+    // typed.
+    const path = parsed.pathname === "/" ? "" : parsed.pathname;
+    return `${parsed.origin}${path}`;
+  } catch {
+    // Unparseable URL — strip query and fragment manually.
+    const noQuery = value.split("?")[0] ?? value;
+    return noQuery.split("#")[0] ?? noQuery;
+  }
 }
 
 /** Convert a local filesystem path to a `file://` URL; eliminates duplicated URL-construction logic in the action and CLI entries. */
