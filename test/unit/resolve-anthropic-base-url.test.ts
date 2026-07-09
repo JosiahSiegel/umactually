@@ -108,4 +108,22 @@ describe("Anthropic Messages URL: preserve operator path, append /v1/messages", 
       "https://api.anthropic.com/v1/messages",
     );
   });
+
+  it("ANTH-URL-010: unparseable input falls back to substring extraction WITHOUT stripping the leading slash", () => {
+    // Pins the catch-block contract: when WHATWG URL parsing fails,
+    // we fall back to substring extraction. Critically, the leading
+    // slash on `pathPart` is preserved (matches `parsed.pathname`
+    // shape exactly) so the dispatcher checks below see `/v1` /
+    // `/v1/messages` as expected — not the slash-stripped forms
+    // `v1` / `v1/messages` which would route through the wrong
+    // branch and double-`/v1/v1/messages`.
+    //
+    // `http://[invalid` is unparseable by WHATWG URL (the `[invalid`
+    // bracket pair is rejected), so we exercise the catch branch.
+    // The origin-prefix substring-extraction produces the leading-
+    // slash form expected by the dispatcher checks.
+    expect(anthropicMessagesBase("http://[invalid/v1")).toBe(
+      "http://[invalid/v1/messages",
+    );
+  });
 });

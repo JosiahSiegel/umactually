@@ -256,12 +256,16 @@ export function resolveAnthropicMessagesUrl(baseUrl: string): string {
     origin = parsed.origin;
     pathPart = parsed.pathname;
   } catch {
-    // Unparseable input. Fall back to extractOrigin + raw concatenation
-    // (the prior helper's contract — preserves the input verbatim when
-    // it can't be decoded as a URL).
+    // Unparseable input. Fall back to extractOrigin + raw concatenation.
+    //
+    // IMPORTANT: keep `pathPart` in the SAME shape `parsed.pathname`
+    // would have produced — including a leading `/`. The dispatcher
+    // checks below assume the leading-slash form (`/v1`,
+    // `/v1/messages`); stripping the slash would route an unparseable
+    // input through the wrong branch and produce a doubled
+    // `/v1/v1/messages` suffix.
     origin = extractOrigin(baseUrl);
     pathPart = stripTrailingSlash(baseUrl).slice(origin.length);
-    if (pathPart.startsWith("/")) pathPart = pathPart.slice(1);
   }
   // Normalize: WHATWG URL sets pathname to "/" for a bare host; we
   // want the empty string so concatenation produces `origin + /v1/messages`
