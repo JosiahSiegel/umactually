@@ -1,78 +1,155 @@
 // Pins the URL resolution strategy for the Anthropic Messages provider.
 //
-// Contract: ALWAYS canonicalize to origin + /v1. The Anthropic
-// /v1/messages endpoint is fixed — there's no scenario where a
-// custom path is valid (unlike OpenAI where gateways may mount
-// the API at /openai, /api/v2, etc.). If the operator types
-// `https://api.anthropic.com/anthropic`, the action resolves
-// directly to `https://api.anthropic.com/v1` instead of
-// burning a 404 on `/anthropic/messages`.
+// Contract: ALONG THE OFFICIAL @anthropic-ai/sdk CONVENTION.
 //
-// The single-candidate output also makes the wire path
-// deterministic — no fallback loop, no logged "trying N
-// candidates", no wasted request per invocation.
+//   - Base URL = whatever the operator (or env var) supplied.
+//   - Strip trailing slash.
+//   - If the path ends in `/v1`, append `/messages` (idempotent).
+//     Otherwise, append `/v1/messages` to the existing path.
+//
+// Why this matters: Anthropic-compatible gateways (NOT just anthropic.com)
+// commonly mount the protocol under a path prefix. The documented
+// example is `https://api.minimax.io/anthropic` (per
+// https://platform.minimax.io/docs/token-plan/claude-code), which
+// resolves to `https://api.minimax.io/anthropic/v1/messages` — NOT
+// `https://api.minimax.io/v1/messages`. The previous "always strip the
+// path" version of this helper silently 404'd MiniMax. Anthropic.com
+// itself only serves `/v1/messages` at the bare host, but operators may
+// also point --api-url at a self-hosted gateway under a path prefix.
+//
+// The math matches the official Anthropic SDK and
+// anthropic-sdk-kotlin's path-preserving fix in
+// https://github.com/xemantic/anthropic-sdk-kotlin/pull/145 — also
+// matches the Vercel ai-sdk's documented failure mode in
+// https://github.com/vercel/ai/issues/15580.
 import { describe, expect, it } from "vitest";
 
-import { resolveProviderBaseUrl } from "../../src/util/url.js";
+import { resolveAnthropicMessagesUrl } from "../../src/util/url.js";
 
-describe("Anthropic base URL resolution: always canonical /v1, ignore path", () => {
-  // The Anthropic provider uses `resolveProviderBaseUrl(baseUrl, "/v1")`
-  // directly — NOT the candidates form — because Anthropic's
-  // /v1/messages endpoint is canonical. There's no scenario where a
-  // custom path is meaningful (unlike OpenAI where gateways may mount
-  // /openai, /api/v2, etc.). These tests pin the resolution contract
-  // so a future refactor that introduces an as-pasted-first loop for
-  // Anthropic trips a RED.
-  it("ANTH-URL-001: a bare host resolves to origin + /v1", () => {
-    expect(resolveProviderBaseUrl("https://api.anthropic.com")).toBe(
-      "https://api.anthropic.com/v1",
+// Test alias for readability: `anthropicMessagesBase(x)` reads as
+// "the URL the anthropic client will POST to given baseUrl input x."
+const anthropicMessagesBase = resolveAnthropicMessagesUrl;
+
+describe("Anthropic Messages URL: preserve operator path, append /v1/messages", () => {
+  it("ANTH-URL-001: a bare host appends /v1/messages (anthropic.com default-shape input)", () => {
+    // Anthropic SDK convention: a bare host means the host root mounts
+    // the API at /v1/messages. Matches what Claude Code sets
+    // ANTHROPIC_BASE_URL to (bare host → SDK prepends /v1/messages).
+    expect(anthropicMessagesBase("https://api.anthropic.com")).toBe(
+      "https://api.anthropic.com/v1/messages",
     );
   });
 
-  it("ANTH-URL-002: a host with /v1 path resolves to origin + /v1 (idempotent)", () => {
-    expect(resolveProviderBaseUrl("https://api.anthropic.com/v1")).toBe(
-      "https://api.anthropic.com/v1",
+  it("ANTH-URL-002: a host already ending in /v1 appends /messages only (no double /v1)", () => {
+    // Default URL is `https://api.anthropic.com/v1`. Operator who
+    // passed --api-url=$default in env ends up here.
+    expect(anthropicMessagesBase("https://api.anthropic.com/v1")).toBe(
+      "https://api.anthropic.com/v1/messages",
     );
   });
 
-  it("ANTH-URL-003: a host with /anthropic path resolves to origin + /v1, NOT /anthropic", () => {
-    // This is the regression case you flagged: previously the
-    // Anthropic client tried the as-pasted URL first
-    // (https://api.anthropic.com/anthropic/messages) and burned a
-    // 404 before falling back. Canonical resolve goes straight to
-    // /v1/messages.
-    expect(resolveProviderBaseUrl("https://api.anthropic.com/anthropic")).toBe(
-      "https://api.anthropic.com/v1",
+  it("ANTH-URL-003: a host with /anthropic path appends /v1/messages to the existing path (MiniMax-style)", () => {
+    // This is the regression case the user fixed: MiniMax's Anthropic
+    // compatibility lives at https://api.minimax.io/anthropic/v1/messages
+    // (per https://platform.minimax.io/docs/token-plan/claude-code).
+    // The previous "always strip path" version silently 404'd MiniMax.
+    expect(anthropicMessagesBase("https://api.minimax.io/anthropic")).toBe(
+      "https://api.minimax.io/anthropic/v1/messages",
     );
   });
 
-  it("ANTH-URL-004: a host with /v1/messages path resolves to origin + /v1 (strip the trailing /messages)", () => {
-    // Operator who already pre-appended /messages by mistake —
-    // we strip down to /v1 because Anthropic's canonical route is
-    // just /v1, not /v1/messages under /v1/messages.
-    expect(resolveProviderBaseUrl("https://api.anthropic.com/v1/messages")).toBe(
-      "https://api.anthropic.com/v1",
+  it("ANTH-URL-004: a host already ending in /v1/messages is left alone (operator pre-appended; idempotent)", () => {
+    // Operator who pre-appended /v1/messages — we leave it alone
+    // rather than produce `/v1/messages/messages`. The Anthropic SDK
+    // doesn't handle this either, but the wrapper can do better.
+    expect(anthropicMessagesBase("https://api.anthropic.com/v1/messages")).toBe(
+      "https://api.anthropic.com/v1/messages",
     );
   });
 
-  it("ANTH-URL-005: a self-hosted gateway at a custom path still resolves to /v1", () => {
+  it("ANTH-URL-005: a self-hosted gateway at a custom path keeps the prefix (e.g. /llm/anthropic)", () => {
     // Self-hosted gateway at https://gateway.example.com/llm/anthropic
-    // → resolves to /v1. The /llm/anthropic path is decorative
-    // noise from the operator's perspective; only the host matters.
-    expect(resolveProviderBaseUrl("https://gateway.example.com/llm/anthropic")).toBe(
-      "https://gateway.example.com/v1",
+    // → /llm/anthropic/v1/messages. The path is real routing, not
+    // decorative noise — matches anthropic-sdk-kotlin's fix.
+    expect(anthropicMessagesBase("https://gateway.example.com/llm/anthropic")).toBe(
+      "https://gateway.example.com/llm/anthropic/v1/messages",
     );
   });
 
   it("ANTH-URL-006: preserves scheme and port", () => {
-    expect(resolveProviderBaseUrl("http://localhost:8080/foo")).toBe(
-      "http://localhost:8080/v1",
+    expect(anthropicMessagesBase("http://localhost:8080")).toBe(
+      "http://localhost:8080/v1/messages",
     );
   });
 
-  it("ANTH-URL-007: strips query string and fragment", () => {
-    expect(resolveProviderBaseUrl("https://api.anthropic.com/anthropic?token=abc#section")).toBe(
-      "https://api.anthropic.com/v1",
+  it("ANTH-URL-007: trims trailing slash before appending (avoids //v1)", () => {
+    expect(anthropicMessagesBase("https://api.anthropic.com/")).toBe(
+      "https://api.anthropic.com/v1/messages",
+    );
+  });
+
+  it("ANTH-URL-008: trims trailing slash on a path-prefixed URL (no //v1)", () => {
+    expect(anthropicMessagesBase("https://api.minimax.io/anthropic/")).toBe(
+      "https://api.minimax.io/anthropic/v1/messages",
+    );
+  });
+
+  it("ANTH-URL-009: query string and fragment are dropped before appending the canonical route", () => {
+    // Query strings and fragments don't address `/v1/messages` at any
+    // known Anthropic-protocol gateway. Passing them through would
+    // append the path segment into the query slot
+    // (`...?token=abc/v1/messages`), an invalid URL the server would
+    // route somewhere the operator didn't intend. The helper
+    // intentionally drops them.
+    expect(anthropicMessagesBase("https://api.anthropic.com/v1?token=abc")).toBe(
+      "https://api.anthropic.com/v1/messages",
+    );
+    expect(anthropicMessagesBase("https://api.anthropic.com/v1?foo=bar&baz=qux#section")).toBe(
+      "https://api.anthropic.com/v1/messages",
+    );
+  });
+
+  it("ANTH-URL-010: unparseable input falls back to substring extraction WITHOUT stripping the leading slash", () => {
+    // Pins the catch-block contract: when WHATWG URL parsing fails,
+    // we fall back to substring extraction. Critically, the leading
+    // slash on `pathPart` is preserved (matches `parsed.pathname`
+    // shape exactly) so the dispatcher checks below see `/v1` /
+    // `/v1/messages` as expected — not the slash-stripped forms
+    // `v1` / `v1/messages` which would route through the wrong
+    // branch and double-`/v1/v1/messages`.
+    //
+    // `http://[invalid` is unparseable by WHATWG URL (the `[invalid`
+    // bracket pair is rejected), so we exercise the catch branch.
+    // The origin-prefix substring-extraction produces the leading-
+    // slash form expected by the dispatcher checks.
+    expect(anthropicMessagesBase("http://[invalid/v1")).toBe(
+      "http://[invalid/v1/messages",
+    );
+  });
+
+  it("ANTH-URL-011: trailing characters that look like \"/v1\" but aren't a full segment fall through to /v1/messages", () => {
+    // Path-segment match (not string-suffix match): the helper
+    // must distinguish a path whose LAST SEGMENT is literally
+    // `v1` (e.g. `/my-v1` is NOT `/my/v1` — but `/my-v1` has
+    // trailing `v1` characters that a naive `.endsWith("/v1")`
+    // would falsely match) from a path whose last segment IS `v1`.
+    //
+    // The Anthropic SDK convention is to treat a trailing `/v1`
+    // *segment* as already-appended (skip the double-prefix). A
+    // path whose last segment is `my-v1` is NOT a `/v1`-prefixed
+    // Anthropic gateway — it's a custom path that should get the
+    // canonical `/v1/messages` suffix appended.
+    expect(anthropicMessagesBase("https://gateway.example.com/my-v1")).toBe(
+      "https://gateway.example.com/my-v1/v1/messages",
+    );
+    expect(anthropicMessagesBase("https://gateway.example.com/v1/anthropic")).toBe(
+      // The last segment is `anthropic`, not `v1` — falls through
+      // to /v1/messages append.
+      "https://gateway.example.com/v1/anthropic/v1/messages",
+    );
+    expect(anthropicMessagesBase("https://gateway.example.com/v1")).toBe(
+      // Last segment IS `v1` — append /messages only.
+      "https://gateway.example.com/v1/messages",
     );
   });
 });

@@ -18,7 +18,7 @@ import {
 } from "./provider-error.js";
 import { composeSignal, sleep } from "../util/async.js";
 import { BRAND_PREFIX, REDACTED_SECRET_TOKEN } from "../util/brand.js";
-import { createRequestId, joinUrl, resolveProviderBaseUrlCandidates } from "../util/url.js";
+import { createRequestId, joinUrl, redactUrlForLog, resolveProviderBaseUrlCandidates } from "../util/url.js";
 
 const ENDPOINT_RESPONSES: ProviderEndpoint = "responses";
 const ENDPOINT_CHAT: ProviderEndpoint = "chat";
@@ -135,14 +135,14 @@ export async function runProviderRequest(config: ProviderCallConfig): Promise<Pr
   // even if the action's `process.stderr.write` is captured.
   if (baseUrlCandidates.length > 1) {
     process.stderr.write(
-      `::notice::${BRAND_PREFIX}Resolving provider base URL: trying ${baseUrlCandidates.length} candidates in order: ${baseUrlCandidates.join(", ")}\n`,
+      `::notice::${BRAND_PREFIX}Resolving provider base URL: trying ${baseUrlCandidates.length} candidates in order: ${baseUrlCandidates.map(redactUrlForLog).join(", ")}\n`,
     );
   }
 
   let lastAttempt: ProviderCallResult = { ok: false, error: new ProviderError("network", ENDPOINT_RESPONSES, null, requestId, "No base URL candidates resolved.") };
   for (const candidate of baseUrlCandidates) {
     process.stderr.write(
-      `::notice::${BRAND_PREFIX}Trying base URL: ${candidate}\n`,
+      `::notice::${BRAND_PREFIX}Trying base URL: ${redactUrlForLog(candidate)}\n`,
     );
     const firstAttempt = await runWithRetry(config, fetchImpl, requestId, ENDPOINT_RESPONSES, candidate);
     if (firstAttempt.ok) {
@@ -162,7 +162,7 @@ export async function runProviderRequest(config: ProviderCallConfig): Promise<Pr
         return chatAttempt;
       }
       process.stderr.write(
-        `::notice::${BRAND_PREFIX}Base URL ${candidate} returned routable failure (status=${chatAttempt.error.status}); advancing to next candidate.\n`,
+        `::notice::${BRAND_PREFIX}Base URL ${redactUrlForLog(candidate)} returned routable failure (status=${chatAttempt.error.status}); advancing to next candidate.\n`,
       );
       lastAttempt = chatAttempt;
       continue;
@@ -173,7 +173,7 @@ export async function runProviderRequest(config: ProviderCallConfig): Promise<Pr
       return firstAttempt;
     }
     process.stderr.write(
-      `::notice::${BRAND_PREFIX}Base URL ${candidate} returned routable failure (status=${firstAttempt.error.status}); advancing to next candidate.\n`,
+      `::notice::${BRAND_PREFIX}Base URL ${redactUrlForLog(candidate)} returned routable failure (status=${firstAttempt.error.status}); advancing to next candidate.\n`,
     );
     lastAttempt = firstAttempt;
   }
