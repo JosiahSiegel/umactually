@@ -1,9 +1,28 @@
 /**
  * Native Anthropic Messages API client.
  *
- * Implements `POST {baseUrl}/messages` against Anthropic's
- * `/v1/messages` protocol. The wire shape differs from the OpenAI Chat
- * Completions / Responses API in three meaningful ways:
+ * Implements `POST {baseUrl}/v1/messages` against Anthropic's
+ * `/v1/messages` protocol — but with the path-prefix convention of the
+ * official @anthropic-ai/sdk: the operator's `baseUrl` is treated as a
+ * path-prefix and `/v1/messages` is appended to it (with a guard for
+ * the `/v1` and `/v1/messages` already-appended cases). This is the
+ * same convention Claude Code uses for `ANTHROPIC_BASE_URL` and the
+ * same fix as anthropic-sdk-kotlin's
+ * https://github.com/xemantic/anthropic-sdk-kotlin/pull/145.
+ *
+ * Path-preserving matters because Anthropic-compatible gateways
+ * commonly mount the protocol under a path prefix — the documented
+ * case is MiniMax's Anthropic endpoint at
+ * `https://api.minimax.io/anthropic`, which resolves to
+ * `https://api.minimax.io/anthropic/v1/messages` per
+ * https://platform.minimax.io/docs/token-plan/claude-code (and similar
+ * for the openai-compatible `/v1` endpoint at
+ * https://platform.minimax.io/docs/token-plan/codex). The previous
+ * "always strip the path" version of this helper silently 404'd that
+ * gateway.
+ *
+ * The wire shape differs from the OpenAI Chat Completions / Responses
+ * API in three meaningful ways:
  *
  *  1. **Auth header**: `x-api-key: <key>` (not `Authorization: Bearer ...`)
  *     plus the required `anthropic-version: 2023-06-01` version pin.
@@ -41,7 +60,10 @@ import {
   sanitizeMessage,
 } from "./provider-error.js";
 import { composeSignal, sleep } from "../util/async.js";
-import { createRequestId, joinUrl, resolveProviderBaseUrl } from "../util/url.js";
+import {
+  createRequestId,
+  resolveAnthropicMessagesUrl,
+} from "../util/url.js";
 import { isRecord, readArrayField, readRecordField, readStringField } from "../util/json-guards.js";
 
 const ENDPOINT: ProviderEndpoint = "anthropic";
@@ -241,30 +263,38 @@ export async function runAnthropicRequest(
   const fetchImpl = config.fetchImpl ?? globalThis.fetch.bind(globalThis);
   const requestId = createRequestId();
 
-  // Anthropic's /v1/messages endpoint is canonical — there's no
-  // valid scenario where a custom path is meaningful (unlike OpenAI
-  // where gateways may mount the API at /openai, /api/v2, etc.).
-  // We resolve directly to `origin + /v1` instead of trying the
-  // as-pasted URL first. The single-candidate resolution avoids a
-  // wasted 404 on `/anthropic/messages` when the operator types
-  // `--api-url https://api.anthropic.com/anthropic` (the regression
-  // case PR #28's resolveProviderBaseUrlCandidates contract left in
-  // for the openai-compatible client — Anthropic doesn't need it
-  // because the route is fixed).
-  const baseUrl = resolveProviderBaseUrl(config.baseUrl, "/v1");
+  // Resolve to the full Anthropic Messages URL, preserving any
+  // operator-supplied path prefix. This matches the OFFICIAL
+  // @anthropic-ai/sdk convention (Claude Code's `ANTHROPIC_BASE_URL`
+  // becomes `<baseURL>/v1/messages`) and the path-preserving fix in
+  // https://github.com/xemantic/anthropic-sdk-kotlin/pull/145.
+  //
+  // Critically, this UNBLOCKS Anthropic-compatible gateways whose
+  // endpoints live under a path prefix — the documented case is
+  // `https://api.minimax.io/anthropic` →
+  // `https://api.minimax.io/anthropic/v1/messages` per
+  // https://platform.minimax.io/docs/token-plan/claude-code.
+  //
+  // Anthropic.com itself only serves `/v1/messages` at the bare host,
+  // so an operator pointing at `https://api.anthropic.com/anthropic`
+  // would still produce `/anthropic/v1/messages` (which 404s on
+  // anthropic.com — operator error) — but that's the SDK's behavior
+  // too. Self-hosted gateways under a path prefix are the supported
+  // case here.
+  const url = resolveAnthropicMessagesUrl(config.baseUrl);
 
-  return runWithRetry(config, fetchImpl, requestId, baseUrl);
+  return runWithRetry(config, fetchImpl, requestId, url);
 }
 
 async function runWithRetry(
   config: AnthropicProviderCallConfig,
   fetchImpl: typeof fetch,
   requestId: string,
-  baseUrl: string,
+  url: string,
 ): Promise<AnthropicProviderCallResult> {
   let lastFailure: ProviderError | null = null;
   for (let attempt = 0; attempt <= RETRY_BACKOFF_MS.length; attempt += 1) {
-    const result = await runOnce(config, fetchImpl, requestId, baseUrl);
+    const result = await runOnce(config, fetchImpl, requestId, url);
     if (result.ok) {
       return result;
     }
@@ -294,9 +324,14 @@ async function runOnce(
   config: AnthropicProviderCallConfig,
   fetchImpl: typeof fetch,
   requestId: string,
-  baseUrl: string,
+  url: string,
 ): Promise<AnthropicProviderCallResult> {
-  const url = joinUrl(baseUrl, "/messages");
+  // `url` is the FULL messages URL already resolved by
+  // `resolveAnthropicMessagesUrl` (which appends `/v1/messages`,
+  // preserves the operator's path prefix, and short-circuits on the
+  // `/v1/messages` already-appended case). No further joining is
+  // needed here — appending `/messages` again would produce a doubled
+  // `/v1/messages/messages` segment.
   const body = buildAnthropicBody(buildBodyConfig(config));
   const signal = composeSignal(config.signal, config.requestTimeoutMs);
 

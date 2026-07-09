@@ -293,15 +293,21 @@ describe("requestLiveReview dispatch — provider=anthropic", () => {
     expect(outcome.review.suppressedComments[0]!.body).toContain("[REDACTED_SECRET]");
   });
 
-  it("DISPATCH-ANTH-005 /anthropic path is canonicalized to /v1/messages (no wasted 404 on /anthropic/messages)", async () => {
-    // Regression case the user flagged: when an operator types
-    // `--api-url https://api.anthropic.com/anthropic`, the action
-    // must NOT try the as-pasted URL first
-    // (POST /anthropic/messages would 404). It must canonicalize
-    // directly to /v1/messages — same canonical behavior PR #29
-    // established for the openai-compatible client.
+  it("DISPATCH-ANTH-005 path-prefixed base URL preserves the prefix (MiniMax-style Anthropic-compatible gateway)", async () => {
+    // When an operator types
+    // `--api-url https://api.minimax.io/anthropic`, the action must
+    // post to `https://api.minimax.io/anthropic/v1/messages` (with
+    // the `/anthropic` prefix preserved), NOT to
+    // `https://api.minimax.io/v1/messages`. MiniMax's Anthropic
+    // endpoint lives at the prefix per
+    // https://platform.minimax.io/docs/token-plan/claude-code.
+    //
+    // This is the documented Anthropic-compatible-gateway shape — the
+    // path is a real routing prefix, not decorative noise. Matches the
+    // official @anthropic-ai/sdk convention and anthropic-sdk-kotlin's
+    // path-preserving fix.
     const successText = JSON.stringify({
-      summary: "anthropic path canonicalized correctly.",
+      summary: "minimax anthropic gateway works with path prefix.",
       verdict: "APPROVED",
       comments: [],
       suppressed_comments: [],
@@ -310,7 +316,7 @@ describe("requestLiveReview dispatch — provider=anthropic", () => {
     const mod = await loadRequestLiveReviewModule();
     const parsed = {
       ...makeBaseArgs("anthropic"),
-      apiUrl: "https://api.anthropic.com/anthropic",
+      apiUrl: "https://api.minimax.io/anthropic",
     };
 
     const outcome = await mod.requestLiveReview({
@@ -323,12 +329,13 @@ describe("requestLiveReview dispatch — provider=anthropic", () => {
       platformToken: "gh",
     });
 
-    // Exactly one wire request, hitting canonical /v1/messages.
+    // Exactly one wire request, hitting the path-prefixed URL.
     expect(stub.calls).toHaveLength(1);
     const call = stub.calls[0]!;
-    expect(call.url).toBe("https://api.anthropic.com/v1/messages");
-    expect(call.url).not.toContain("/anthropic/messages");
-    expect(outcome.review.summary).toBe("anthropic path canonicalized correctly.");
+    expect(call.url).toBe("https://api.minimax.io/anthropic/v1/messages");
+    expect(call.url).not.toBe("https://api.minimax.io/v1/messages"); // not the canonical-OpenAI shape
+    expect(call.url).not.toContain("/messages/messages");
+    expect(outcome.review.summary).toBe("minimax anthropic gateway works with path prefix.");
   });
 
   it("DISPATCH-ANTH-006 --api-url unset defaults to https://api.anthropic.com/v1 (fixes PR #30 self-review H1)", async () => {
