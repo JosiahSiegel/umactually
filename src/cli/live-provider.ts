@@ -251,6 +251,7 @@ export async function requestLiveReview(input: {
           readRequestTimeoutMs: () => readRequestTimeoutMs(input.parsed),
           fetchImpl: input.fetchImpl,
           parsed: input.parsed,
+          responseFormat,
         });
         if (fallback.ok) {
           result = fallback;
@@ -306,6 +307,7 @@ export async function requestLiveReview(input: {
         readRequestTimeoutMs: () => readRequestTimeoutMs(input.parsed),
         fetchImpl: input.fetchImpl,
         parsed: input.parsed,
+        responseFormat,
       });
       if (fallback.ok) {
         result = fallback;
@@ -553,6 +555,7 @@ async function runWithCrossProtocolFallback(
     readonly readRequestTimeoutMs: () => number;
     readonly fetchImpl: typeof fetch;
     readonly parsed: ParsedCliArgs;
+    readonly responseFormat: import("../provider/provider-parse.js").ResponseFormat | undefined;
   },
 ): Promise<
   | { readonly ok: true; readonly endpoint: ProviderEndpoint; readonly review: ProviderReviewPayload; readonly requestId: string }
@@ -590,8 +593,11 @@ async function runWithCrossProtocolFallback(
   // fallback semantics to attempt a same-URL retry under a
   // different protocol family — wherever the operator's URL points
   // is where the key goes, exactly once per protocol.
+  let fallbackResult: {
+    readonly ok: true; readonly endpoint: ProviderEndpoint; readonly review: ProviderReviewPayload; readonly requestId: string;
+  } | { readonly ok: false; readonly error: { readonly code: string; readonly status: number | null } };
   if (args.fallbackProvider === "anthropic") {
-    return runAnthropicRequest({
+    fallbackResult = await runAnthropicRequest({
       baseUrl: args.baseUrl,
       apiKey: args.providerApiKey,
       model: args.modelId,
@@ -601,17 +607,33 @@ async function runWithCrossProtocolFallback(
       ...(args.parsed.maxOutputTokens !== null ? { maxOutputTokens: args.parsed.maxOutputTokens } : {}),
       fetchImpl: args.fetchImpl,
     });
+  } else {
+    fallbackResult = await runProviderRequest({
+      baseUrl: args.baseUrl,
+      apiKey: args.providerApiKey,
+      model: args.modelId,
+      system: args.prompts.system,
+      user: args.prompts.user,
+      requestTimeoutMs: args.readRequestTimeoutMs(),
+      ...(args.parsed.maxOutputTokens !== null ? { maxOutputTokens: args.parsed.maxOutputTokens } : {}),
+      ...(args.parsed.effort !== null ? { reasoningEffort: args.parsed.effort } : {}),
+      // Carry the strict-JSON-schema constraint from the named call:
+      // if the operator enabled `--strict-schema`/`responseFormat`,
+      // the fallback should match (otherwise payload variance between
+      // protocols can silently leak through).
+      ...(args.responseFormat !== undefined ? { responseFormat: args.responseFormat } : {}),
+      fetchImpl: args.fetchImpl,
+    });
   }
-  // OpenAI fallback
-  return runProviderRequest({
-    baseUrl: args.baseUrl,
-    apiKey: args.providerApiKey,
-    model: args.modelId,
-    system: args.prompts.system,
-    user: args.prompts.user,
-    requestTimeoutMs: args.readRequestTimeoutMs(),
-    ...(args.parsed.maxOutputTokens !== null ? { maxOutputTokens: args.parsed.maxOutputTokens } : {}),
-    ...(args.parsed.effort !== null ? { reasoningEffort: args.parsed.effort } : {}),
-    fetchImpl: args.fetchImpl,
-  });
+  // Diagnostic on dual-protocol failure: if both protocols fail,
+  // we surface the named error (per the contract), but we still log
+  // the fallback's status so operators can distinguish "named
+  // alone failed with 404" from "named AND fallback failed at this
+  // URL" without needing to enable DEBUG mode.
+  if (!fallbackResult.ok) {
+    process.stderr.write(
+      `::notice::${BRAND_PREFIX}Cross-protocol fallback "${args.fallbackProvider}" returned status=${fallbackResult.error.status} at ${redactUrlForLog(args.baseUrl)} — surfacing named protocol's error.\n`,
+    );
+  }
+  return fallbackResult;
 }

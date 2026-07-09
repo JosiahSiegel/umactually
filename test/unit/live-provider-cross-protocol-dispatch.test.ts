@@ -280,3 +280,56 @@ describe("cross-protocol fallback should NOT trigger when named provider succeed
     expect(stub.calls[0]!.url).toBe("https://api.minimax.io/v1/responses");
   });
 });
+
+describe("cross-protocol fallback dual-failure surface", () => {
+  it("DISPATCH-FALLBACK-LOG-001: when BOTH named + fallback fail, the surface error is the named provider's", async () => {
+    // Operator picks anthropic for /v1 URL. Anthropic /v1/messages
+    // 404s → cross-protocol fallback to OpenAI. OpenAI /v1/responses
+    // ALSO 404s → both protocols fail. The contract says surface the
+    // NAMED provider's error (honor operator's intent), but log
+    // both attempts so operators can audit. We assert:
+    //   - the result error.code matches the named protocol's code (anthropic_4xx).
+    //   - the named-protocol error surfaces.
+    //   - both protocols were called (one Anthropic 404 + at least
+    //     one OpenAI 404).
+    // Note: we don't directly assert the log output here (it goes to
+    // stderr notice channels). The contract is about which error
+    // is surfaced, not about the visual diagnostic format.
+    const stub = makeFetchStub([
+      // /v1/messages (anthropic) → 404
+      { status: 404, body: "404 page not found" },
+      // /v1/responses (openai fallback) → 404
+      { status: 404, body: "404 page not found" },
+      // /v1/chat/completions (openai fallback's internal retry) → 404
+      { status: 404, body: "404 page not found" },
+    ]);
+    const dispatcher = await loadDispatcher();
+    const parsed = makeBase({
+      provider: "anthropic",
+      apiUrl: "https://api.minimax.io/v1",
+      apiKey: "sk-both-fail-do-not-leak",
+      fetchImpl: stub.fetch,
+      env: {},
+    });
+    let capturedError: unknown;
+    try {
+      await dispatcher.requestLiveReview({
+        parsed,
+        cwd: process.cwd(),
+        env: {},
+        fetchImpl: stub.fetch,
+        platform: "github",
+        diffText,
+        platformToken: "gh-token",
+      });
+    } catch (error) {
+      capturedError = error;
+    }
+    expect(capturedError).toBeInstanceOf(Error);
+    // Error message starts with the named provider's prefix.
+    expect(String((capturedError as { message: string }).message)).toMatch(/Anthropic/i);
+    // Both protocols were attempted.
+    expect(stub.calls.some((c) => c.url.endsWith("/v1/messages"))).toBe(true);
+    expect(stub.calls.some((c) => c.url.endsWith("/v1/responses"))).toBe(true);
+  });
+});
