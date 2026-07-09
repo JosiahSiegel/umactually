@@ -16,6 +16,10 @@ import {
 } from "../provider/provider-parse.js";
 import type { ProviderEndpoint } from "../provider/provider-error.js";
 import { looksLikeAnthropicEndpoint, redactUrlForLog } from "../util/url.js";
+import {
+  DEFAULT_ANTHROPIC_URL,
+  DEFAULT_GITHUB_API_BASE,
+} from "../util/provider-defaults.js";
 import { scanReviewSecrets } from "../security/scan-review-secrets.js";
 import { BRAND_PREFIX } from "../util/brand.js";
 import { resolveAutoModel } from "./auto-model.js";
@@ -183,7 +187,7 @@ export async function requestLiveReview(input: {
     if (input.parsed.provider === "copilot") {
       const result = await runCopilotRequest({
         githubToken: providerApiKey,
-        apiBase: input.parsed.githubApiBase ?? input.env["UMACTUALLY_GITHUB_API_BASE"] ?? "https://api.github.com",
+        apiBase: input.parsed.githubApiBase ?? input.env["UMACTUALLY_GITHUB_API_BASE"] ?? DEFAULT_GITHUB_API_BASE,
         system: prompts.system,
         user: prompts.user,
         model: modelId,
@@ -229,7 +233,7 @@ export async function requestLiveReview(input: {
       // --provider anthropic is set.
       const providerUrl = input.parsed.apiUrl
         ?? input.env["UMACTUALLY_API_URL"]
-        ?? "https://api.anthropic.com/v1";
+        ?? DEFAULT_ANTHROPIC_URL;
       let result = await runAnthropicRequest({
         baseUrl: providerUrl,
         apiKey: providerApiKey,
