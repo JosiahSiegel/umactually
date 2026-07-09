@@ -11,7 +11,9 @@ import {
   type SeverityWarningSink,
 } from "../provider/provider-parse.js";
 import type { ProviderEndpoint } from "../provider/provider-error.js";
+import { redactUrlForLog } from "../util/url.js";
 import { scanReviewSecrets } from "../security/scan-review-secrets.js";
+import { BRAND_PREFIX } from "../util/brand.js";
 import { resolveAutoModel } from "./auto-model.js";
 import {
   buildMalformedProviderFallback,
@@ -520,7 +522,23 @@ function isRoutableFailureForDispatcher(error: {
   readonly code: string;
   readonly status: number | null;
 }): boolean {
-  return error.status === 404 || error.status === 400;
+  // Cross-protocol fallback fires on 404 only — the wire-shape
+  // genuinely does not have a route for this URL at this provider.
+  // We intentionally exclude HTTP 400 from this check, even though
+  // the openai-compatible client's internal URL-candidate loop
+  // treats both 404 and 400 as "advance to next candidate":
+  //
+  // 400 typically signals a payload-level error (malformed body,
+  // missing required field, unsupported `max_tokens` value,
+  // content-policy rejection). Firing cross-protocol fallback on a
+  // payload-400 would silently mask wire-shape bugs: an Anthropic
+  // call that 400s on an unsupported parameter would retry against
+  // OpenAI's wire shape (different body layout) and possibly
+  // succeed, with the operator seeing a successful review attributed
+  // to the OTHER protocol without ever knowing their original
+  // call was malformed. So at the dispatcher boundary we
+  // restrict the cross-protocol trigger to truly-routing failures.
+  return error.status === 404;
 }
 
 async function runWithCrossProtocolFallback(
@@ -543,11 +561,35 @@ async function runWithCrossProtocolFallback(
   if (!isRoutableFailureForDispatcher(args.namedResult.error)) {
     return args.namedResult;
   }
+  // Surface the fallback so operators can SEE that the dispatcher
+  // crossed protocol boundaries on their behalf. Without these
+  // notices, a fallback success looks identical to a named-protocol
+  // success in the GitHub review attribution, and the operator
+  // can't audit which protocol actually produced the review.
+  //
+  // We log the protocol pair + a redacted URL (origin + path, no
+  // query string) so the notice identifies which URL produced the
+  // fallback without leaking any `?token=`-style session id into
+  // the persisted action log.
+  process.stderr.write(
+    `::notice::${BRAND_PREFIX}Named provider "${args.namedProvider}" returned status=${args.namedResult.error.status} at ${redactUrlForLog(args.baseUrl)} — retrying with cross-protocol fallback "${args.fallbackProvider}".\n`,
+  );
   // The named provider couldn't route at this base URL. Try the other
   // protocol at the SAME base URL — no URL transformation here, the
   // fallback provider's resolver (resolveProviderBaseUrlCandidates /
   // resolveAnthropicMessagesUrl) will do whatever path-prefix work
   // is appropriate for its wire shape.
+  //
+  // SECURITY NOTE: the operator's API key is passed to BOTH the
+  // named and the fallback protocol client. This is correct on
+  // dual-protocol gateways (MiniMax at /anthropic and /v1 accepts
+  // the same key for both protocols). The 404-only trigger (see
+  // isRoutableFailureForDispatcher) keeps this from happening for
+  // payload-level errors, but operators pointing the action at a
+  // non-dual-protocol URL can still expect this dispatcher's
+  // fallback semantics to attempt a same-URL retry under a
+  // different protocol family — wherever the operator's URL points
+  // is where the key goes, exactly once per protocol.
   if (args.fallbackProvider === "anthropic") {
     return runAnthropicRequest({
       baseUrl: args.baseUrl,

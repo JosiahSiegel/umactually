@@ -94,14 +94,18 @@ describe("Anthropic Messages URL: preserve operator path, append /v1/messages", 
     );
   });
 
-  it("ANTH-URL-009: query string in the base URL is left in place (the SDK does naive concat — operators with stray params should clean their URL)", () => {
-    // Query strings are uncommon for Anthropic-compatible gateways but
-    // the wrapper does naive path concatenation, matching the official
-    // Anthropic SDK. If an operator passes a URL with stray params,
-    // they need to clean it themselves. Pinned here so a future
-    // "smart query parser" can't silently change the wire shape.
+  it("ANTH-URL-009: query string and fragment are dropped before appending the canonical route", () => {
+    // Query strings and fragments don't address `/v1/messages` at any
+    // known Anthropic-protocol gateway. Passing them through would
+    // append the path segment into the query slot
+    // (`...?token=abc/v1/messages`), an invalid URL the server would
+    // route somewhere the operator didn't intend. The helper
+    // intentionally drops them.
     expect(anthropicMessagesBase("https://api.anthropic.com/v1?token=abc")).toBe(
-      "https://api.anthropic.com/v1?token=abc/v1/messages",
+      "https://api.anthropic.com/v1/messages",
+    );
+    expect(anthropicMessagesBase("https://api.anthropic.com/v1?foo=bar&baz=qux#section")).toBe(
+      "https://api.anthropic.com/v1/messages",
     );
   });
 });
