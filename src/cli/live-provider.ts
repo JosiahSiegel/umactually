@@ -10,6 +10,7 @@ import {
   type SeverityWarning,
   type SeverityWarningSink,
 } from "../provider/provider-parse.js";
+import type { ProviderEndpoint } from "../provider/provider-error.js";
 import { scanReviewSecrets } from "../security/scan-review-secrets.js";
 import { resolveAutoModel } from "./auto-model.js";
 import {
@@ -32,6 +33,23 @@ const DEFAULT_REQUEST_TIMEOUT_MS = 60_000;
 const PROVIDER_NAME = "openai-compatible";
 const COPILOT_PROVIDER_NAME = "github-copilot";
 const ANTHROPIC_PROVIDER_NAME = "anthropic-messages";
+
+/**
+ * Map a `ProviderEndpoint` (the wire-shape discriminator returned by
+ * the provider client on success) to its operator-facing display name
+ * used in the review outcome, the parse-warnings artifact, and the
+ * surface-level attribution. When cross-protocol fallback fires, the
+ * named provider fails but the OTHER protocol succeeds; this helper
+ * recovers the actual-protocol name so the outcome attribute is
+ * correct (e.g. "anthropic-messages" not "openai-compatible").
+ */
+function providerNameForEndpoint(endpoint: ProviderEndpoint): string {
+  switch (endpoint) {
+    case "anthropic": return ANTHROPIC_PROVIDER_NAME;
+    case "responses":
+    case "chat":      return PROVIDER_NAME;
+  }
+}
 
 export async function requestLiveReview(input: {
   readonly parsed: ParsedCliArgs;
@@ -186,10 +204,16 @@ export async function requestLiveReview(input: {
       // Anthropic native provider (`/v1/messages`). The wire body uses
       // the Anthropic Messages schema (top-level `system`, user-only
       // `messages[]`, `max_tokens` instead of `max_output_tokens`,
-      // `x-api-key`/`anthropic-version` headers) — which the
-      // openai-compatible client does NOT speak. Routing through a
-      // dedicated client avoids an OpenAI-shaped request going to
-      // `/v1/messages` and getting 400'd at the wire layer.
+      // `x-api-key`/`anthropic-version` headers). The URL resolution
+      // (in `resolveAnthropicMessagesUrl`) preserves the operator's
+      // path prefix so Anthropic-compatible gateways like
+      // `https://api.minimax.io/anthropic` route correctly.
+      //
+      // When the URL fails with a routing-level rejection (404/400),
+      // `runWithCrossProtocolFallback` transparently retries with the
+      // OpenAI-compatible client at the same base URL — operators
+      // pointing MiniMax-style gateways at the action don't have to
+      // know which protocol lives under which path prefix.
       //
       // Anthropic defaults to https://api.anthropic.com/v1 when
       // --api-url is unset. This matches the contracts in
@@ -200,7 +224,7 @@ export async function requestLiveReview(input: {
       const providerUrl = input.parsed.apiUrl
         ?? input.env["UMACTUALLY_API_URL"]
         ?? "https://api.anthropic.com/v1";
-      const result = await runAnthropicRequest({
+      let result = await runAnthropicRequest({
         baseUrl: providerUrl,
         apiKey: providerApiKey,
         model: modelId,
@@ -210,11 +234,33 @@ export async function requestLiveReview(input: {
         ...(input.parsed.maxOutputTokens !== null ? { maxOutputTokens: input.parsed.maxOutputTokens } : {}),
         fetchImpl: input.fetchImpl,
       });
+      if (!result.ok) {
+        // Cross-protocol fallback to the OpenAI client at the same URL.
+        // If the fallback also fails, surface the original anthropic error
+        // (the operator picked `--provider anthropic` — honor that intent).
+        const fallback = await runWithCrossProtocolFallback({
+          namedProvider: "anthropic",
+          namedResult: result,
+          fallbackProvider: "openai-compatible",
+          baseUrl: providerUrl,
+          providerApiKey,
+          modelId,
+          prompts,
+          readRequestTimeoutMs: () => readRequestTimeoutMs(input.parsed),
+          fetchImpl: input.fetchImpl,
+          parsed: input.parsed,
+        });
+        if (fallback.ok) {
+          result = fallback;
+        }
+      }
       if (result.ok) {
-        return handleSuccess(result, ANTHROPIC_PROVIDER_NAME);
+        const providerName = providerNameForEndpoint(result.endpoint);
+        return handleSuccess(result, providerName);
       }
       if (result.error.code === "parse") {
-        return handleParse(result, ANTHROPIC_PROVIDER_NAME, result.error.rawText ?? "");
+        const providerName = providerNameForEndpoint(result.error.endpoint);
+        return handleParse(result, providerName, result.error.rawText ?? "");
       }
       if (result.error.code === "provider_error") {
         const details = result.error.providerErrorDetails;
@@ -224,7 +270,7 @@ export async function requestLiveReview(input: {
     }
 
     const providerUrl = readRequiredConfig(input.parsed.apiUrl ?? input.env["UMACTUALLY_API_URL"], "UMACTUALLY_API_URL");
-    const result = await runProviderRequest({
+    let result = await runProviderRequest({
       baseUrl: providerUrl,
       apiKey: providerApiKey,
       model: modelId,
@@ -237,12 +283,41 @@ export async function requestLiveReview(input: {
       fetchImpl: input.fetchImpl,
     });
 
+    if (!result.ok) {
+      // Cross-protocol fallback: if the named (openai-compatible) client
+      // exhausted its URL candidates with a routing-level failure, try
+      // the Anthropic client at the same URL. On dual-protocol gateways
+      // (MiniMax at /anthropic/, etc.) this lets `--provider
+      // openai-compatible` discover the Anthropic-protocol endpoint at
+      // `/anthropic/v1/messages` without operator intervention.
+      //
+      // If the fallback also fails, surface the original named error
+      // (the operator picked `--provider openai-compatible`).
+      const fallback = await runWithCrossProtocolFallback({
+        namedProvider: "openai-compatible",
+        namedResult: result,
+        fallbackProvider: "anthropic",
+        baseUrl: providerUrl,
+        providerApiKey,
+        modelId,
+        prompts,
+        readRequestTimeoutMs: () => readRequestTimeoutMs(input.parsed),
+        fetchImpl: input.fetchImpl,
+        parsed: input.parsed,
+      });
+      if (fallback.ok) {
+        result = fallback;
+      }
+    }
+
     if (result.ok) {
-      return handleSuccess(result, PROVIDER_NAME);
+      const providerName = providerNameForEndpoint(result.endpoint);
+      return handleSuccess(result, providerName);
     }
 
     if (result.error.code === "parse") {
-      return handleParse(result, PROVIDER_NAME, result.error.rawText ?? "");
+      const providerName = providerNameForEndpoint(result.error.endpoint);
+      return handleParse(result, providerName, result.error.rawText ?? "");
     }
     // Provider errors (router misconfig, no providers configured,
     // invalid API key, etc.) are NOT parse failures and must NOT
@@ -406,4 +481,95 @@ function parseFailureReasonFromProviderError(
       ...(maxOutputTokens !== null ? { maxOutputTokens } : {}),
     },
   };
+}
+
+/**
+ * Cross-protocol fallback wrapper for the live dispatcher.
+ *
+ * Some operators point `--api-url` at an Anthropic-protocol-capable
+ * gateway (the documented example is `https://api.minimax.io/anthropic`
+ * per https://platform.minimax.io/docs/token-plan/claude-code) but
+ * choose `--provider openai-compatible` (or vice versa — `--api-url
+ * https://api.minimax.io/v1` with `--provider anthropic` per
+ * https://platform.minimax.io/docs/token-plan/codex). MiniMax serves
+ * BOTH protocols at the same hostname — Anthropic-protocol at
+ * `/anthropic/v1/messages`, OpenAI-protocol at `/v1/responses`.
+ *
+ * When the operator's chosen provider returns a routing-level failure
+ * (404 / 400 — the named protocol doesn't recognize the path), we
+ * transparently retry with the other protocol client at the same
+ * base URL. This makes `--provider` advisory on dual-protocol
+ * gateways, so operators don't need to memorize which path prefix
+ * maps to which protocol family.
+ *
+ * Failure mode the wrapper does NOT handle:
+ *
+ * - Auth failures (401 / 403) and server errors (5xx): the named
+ *   provider already retried internally; another protocol won't help.
+ * - Parse failures: the named provider returned a parse-able 200
+ *   but the body didn't match — not a routing issue.
+ * - Network errors (timeout / TCP): retrying with a different
+ *   protocol won't help.
+ *
+ * On dual-protocol failure, the named provider's error is surfaced
+ * (the operator picked it; we honor intent in the error path).
+ */
+type NamedProtocol = "openai-compatible" | "anthropic";
+
+function isRoutableFailureForDispatcher(error: {
+  readonly code: string;
+  readonly status: number | null;
+}): boolean {
+  return error.status === 404 || error.status === 400;
+}
+
+async function runWithCrossProtocolFallback(
+  args: {
+    readonly namedProvider: NamedProtocol;
+    readonly namedResult: { readonly ok: false; readonly error: { readonly code: string; readonly status: number | null } };
+    readonly fallbackProvider: NamedProtocol;
+    readonly baseUrl: string;
+    readonly providerApiKey: string;
+    readonly modelId: string;
+    readonly prompts: { readonly system: string; readonly user: string };
+    readonly readRequestTimeoutMs: () => number;
+    readonly fetchImpl: typeof fetch;
+    readonly parsed: ParsedCliArgs;
+  },
+): Promise<
+  | { readonly ok: true; readonly endpoint: ProviderEndpoint; readonly review: ProviderReviewPayload; readonly requestId: string }
+  | { readonly ok: false; readonly error: { readonly code: string; readonly status: number | null } }
+> {
+  if (!isRoutableFailureForDispatcher(args.namedResult.error)) {
+    return args.namedResult;
+  }
+  // The named provider couldn't route at this base URL. Try the other
+  // protocol at the SAME base URL — no URL transformation here, the
+  // fallback provider's resolver (resolveProviderBaseUrlCandidates /
+  // resolveAnthropicMessagesUrl) will do whatever path-prefix work
+  // is appropriate for its wire shape.
+  if (args.fallbackProvider === "anthropic") {
+    return runAnthropicRequest({
+      baseUrl: args.baseUrl,
+      apiKey: args.providerApiKey,
+      model: args.modelId,
+      system: args.prompts.system,
+      user: args.prompts.user,
+      requestTimeoutMs: args.readRequestTimeoutMs(),
+      ...(args.parsed.maxOutputTokens !== null ? { maxOutputTokens: args.parsed.maxOutputTokens } : {}),
+      fetchImpl: args.fetchImpl,
+    });
+  }
+  // OpenAI fallback
+  return runProviderRequest({
+    baseUrl: args.baseUrl,
+    apiKey: args.providerApiKey,
+    model: args.modelId,
+    system: args.prompts.system,
+    user: args.prompts.user,
+    requestTimeoutMs: args.readRequestTimeoutMs(),
+    ...(args.parsed.maxOutputTokens !== null ? { maxOutputTokens: args.parsed.maxOutputTokens } : {}),
+    ...(args.parsed.effort !== null ? { reasoningEffort: args.parsed.effort } : {}),
+    fetchImpl: args.fetchImpl,
+  });
 }
