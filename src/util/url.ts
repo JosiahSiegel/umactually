@@ -272,9 +272,18 @@ export function resolveAnthropicMessagesUrl(baseUrl: string): string {
   // without a doubled slash.
   const cleanedPath = stripTrailingSlash(pathPart === "/" ? "" : pathPart);
   if (cleanedPath.endsWith("/v1/messages")) {
+    // Operator pre-appended the full messages endpoint; idempotent.
     return joinUrl(origin, cleanedPath);
   }
-  if (cleanedPath === "/v1" || cleanedPath.endsWith("/v1")) {
+  // Match the LAST path segment being literally `v1`. The previous
+  // `cleanedPath.endsWith("/v1")` was a suffix check that falsely
+  // matched paths whose trailing characters happened to be `v1`
+  // (e.g. `/my-v1` → wrong branch, would append `/messages`
+  // instead of `/v1/messages`). Path-segment comparison is the
+  // Anthropic-SDK intent: only a trailing `/v1` *segment* counts,
+  // not any path that happens to end in those two characters.
+  const lastSegment = cleanedPath === "" ? "" : cleanedPath.slice(cleanedPath.lastIndexOf("/") + 1);
+  if (cleanedPath === "/v1" || lastSegment === "v1") {
     return joinUrl(origin, `${cleanedPath}/messages`);
   }
   return joinUrl(origin, `${cleanedPath}/v1/messages`);

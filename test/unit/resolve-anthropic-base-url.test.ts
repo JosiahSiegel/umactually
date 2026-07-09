@@ -126,4 +126,30 @@ describe("Anthropic Messages URL: preserve operator path, append /v1/messages", 
       "http://[invalid/v1/messages",
     );
   });
+
+  it("ANTH-URL-011: trailing characters that look like \"/v1\" but aren't a full segment fall through to /v1/messages", () => {
+    // Path-segment match (not string-suffix match): the helper
+    // must distinguish a path whose LAST SEGMENT is literally
+    // `v1` (e.g. `/my-v1` is NOT `/my/v1` — but `/my-v1` has
+    // trailing `v1` characters that a naive `.endsWith("/v1")`
+    // would falsely match) from a path whose last segment IS `v1`.
+    //
+    // The Anthropic SDK convention is to treat a trailing `/v1`
+    // *segment* as already-appended (skip the double-prefix). A
+    // path whose last segment is `my-v1` is NOT a `/v1`-prefixed
+    // Anthropic gateway — it's a custom path that should get the
+    // canonical `/v1/messages` suffix appended.
+    expect(anthropicMessagesBase("https://gateway.example.com/my-v1")).toBe(
+      "https://gateway.example.com/my-v1/v1/messages",
+    );
+    expect(anthropicMessagesBase("https://gateway.example.com/v1/anthropic")).toBe(
+      // The last segment is `anthropic`, not `v1` — falls through
+      // to /v1/messages append.
+      "https://gateway.example.com/v1/anthropic/v1/messages",
+    );
+    expect(anthropicMessagesBase("https://gateway.example.com/v1")).toBe(
+      // Last segment IS `v1` — append /messages only.
+      "https://gateway.example.com/v1/messages",
+    );
+  });
 });
