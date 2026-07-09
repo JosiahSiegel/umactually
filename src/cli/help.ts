@@ -37,7 +37,7 @@ const HELP_FLAGS: readonly HelpFlag[] = [
   { flag: "--additional-prompt <text>" },
   { flag: "--additional-prompt-file <path>" },
   { flag: "--effort <low|medium|high>", description: "Reasoning effort hint (default: medium)" },
-  { flag: "--provider <openai-compatible|copilot>", description: "Provider family" },
+  { flag: "--provider <openai-compatible|copilot|anthropic>", description: "Provider family (anthropic uses native /v1/messages)" },
   { flag: "--github-api-base <url>", description: "GitHub API base URL (Copilot token exchange; default: https://api.github.com)" },
   { flag: "--include-sonarqube" },
   { flag: "--sonar-host-url <url>" },

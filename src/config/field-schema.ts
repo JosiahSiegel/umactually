@@ -289,7 +289,14 @@ export const FIELDS = {
     env: [],
     type: "enum",
     defaultValue: "openai-compatible",
-    enumValues: ["openai-compatible", "copilot"],
+    // Anthropic Messages (`api.anthropic.com/v1/messages`) was added
+    // alongside the OpenAI-compatible and Copilot families so operators
+    // running on a vanilla Anthropic API key (no OpenAI proxy in front)
+    // can use the action out of the box. The provider picks the
+    // Anthropic-native wire protocol (top-level `system` field, user
+    // messages only, `x-api-key`/`anthropic-version` headers) and posts
+    // to `/v1/messages`.
+    enumValues: ["openai-compatible", "copilot", "anthropic"],
   },
   githubApiBase: {
     field: "githubApiBase",
