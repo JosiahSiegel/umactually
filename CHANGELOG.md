@@ -8,6 +8,63 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- **Native Anthropic Messages API provider (PR #31)**: third
+  provider family alongside `openai-compatible` and `copilot`. Wire
+  shape is the Anthropic Messages schema (`POST /v1/messages`,
+  `x-api-key` + `anthropic-version: 2023-06-01`, top-level `system`,
+  user-only `messages[]`, `max_tokens` instead of `max_output_tokens`).
+  URL resolver follows the `@anthropic-ai/sdk` convention — preserves
+  the operator's path prefix — so Anthropic-protocol gateways mounted
+  under arbitrary prefixes route correctly. The `--provider anthropic`
+  default base URL is `https://api.anthropic.com/v1`; `api-url` is
+  optional for this provider (override for self-hosted Anthropic-protocol
+  gateways like MiniMax).
+- **URL-aware defaults in `parseFallbackModels` (PR #29)**: the
+  `model: "auto"` resolver picks the right per-provider model from the
+  hostname pattern. `gpt-5-mini` for `openai-compatible`, `claude-sonnet-4.6`
+  for Anthropic endpoints, `claude-3-5-sonnet` for Copilot (4.6 is not
+  Copilot-routable), `gemini-2.5-flash` for Google, `MiniMax-M3` for
+  MiniMax. Per the Vectara HHEM 2026-05-11 leaderboard.
+- **Cross-protocol auto-discovery on dual-protocol gateways (PR #32)**:
+  the dispatcher transparently retries the OTHER provider family at the
+  same `UMACTUALLY_API_URL` when the named provider returns a routing-level
+  rejection (404). Documented use case: [MiniMax](https://platform.minimax.io/docs/token-plan/claude-code)
+  serves both Anthropic-protocol (`/anthropic/v1/messages`) and
+  OpenAI-protocol (`/v1/responses`) under the same hostname with the same
+  API key. Operators no longer have to guess which protocol lives under
+  which path prefix — `--provider` becomes advisory. Fallback is strictly
+  bounded to 404 (payload 400 / parse / auth / network errors do NOT
+  trigger fallback — those have a single root cause). See
+  [`docs/providers.md`](docs/providers.md#cross-protocol-auto-discovery-the-dispatcher).
+- **New `docs/providers.md`**: canonical end-to-end reference for the
+  provider layer — per-family URL resolution rules, the
+  Anthropic-protocol path-prefix preservation contract (with the
+  `@anthropic-ai/sdk` / `anthropic-sdk-kotlin` references), the
+  cross-protocol dispatcher decision tree, the dual-protocol gateway
+  matrix (MiniMax, LiteLLM, Portkey patterns), and model
+  auto-resolution per hostname. The page a fresh dev reads first when
+  touching anything in `src/util/url.ts` or
+  `src/cli/live-provider.ts`.
+
+### Changed
+
+- **Anthropic URL helper now preserves operator path prefixes
+  (PR #32)**: the previous `resolveProviderBaseUrl(baseUrl, "/v1")`
+  stripped the operator's path and always substituted `/v1`, which
+  silently 404'd MiniMax-style Anthropic-protocol gateways under path
+  prefixes. The new `resolveAnthropicMessagesUrl(baseUrl)` in
+  `src/util/url.ts` appends `/v1/messages` per the official
+  `@anthropic-ai/sdk` convention without stripping the operator's
+  path. Query string and fragment are now stripped before appending
+  (prevents `.../v1?token=abc/v1/messages`-style URL malformation).
+- **`redactUrlForLog` helper (PR #32)**: strips query string and
+  fragment from URLs before they enter `::notice::` action annotations
+  (which persist in GitHub Actions run logs). Three log sites in
+  `src/provider/openai-compatible.ts` and two in
+  `src/cli/live-provider.ts` route through the helper. Pinned by
+  `test/unit/redact-url-for-log.test.ts`. Operators who accidentally
+  (or maliciously) type a URL with a `?token=` parameter no longer
+  leak the token into the persisted CI annotation log.
 - **LLM citation grounding (PR #26)**: layered defense against LLM
   path/line fabrication. Five layers, each closing a different
   failure mode observed in PR #56 (a 122-line source-only diff that

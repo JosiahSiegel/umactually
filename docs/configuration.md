@@ -22,7 +22,7 @@ These entries mirror `action.yml`.
 | `api-key` | `UMACTUALLY_API_KEY` | `""` | Secret string | Review API key. Must come from a secret store. Never log or echo it. |
 | `model` | `UMACTUALLY_MODEL` | `auto` | `auto`, `review-model-synthetic` | `review-model-synthetic` is intended for fixtures and deterministic tests. `auto` is opinionated: it resolves to `gpt-5-mini` for OpenAI endpoints, `claude-sonnet-4.6` for Anthropic, `claude-3-5-sonnet` for Copilot (the 4.6 string is NOT Copilot-routable and would 404, so Copilot uses the 3.5 Sonnet line), and `gemini-2.5-flash` for Google endpoints — each chosen for the lowest citation-hallucination rate among production code-review models per the Vectara HHEM 2026-05-11 leaderboard. Set a literal model name (`gpt-5-mini`, `claude-sonnet-4.6`, etc.) to override. |
 | `effort` | `UMACTUALLY_EFFORT` | `medium` | `low`, `medium`, `high` | Reasoning effort hint. Forwarded as `reasoning.effort` to providers that support it. |
-| `provider` | `UMACTUALLY_PROVIDER` | `openai-compatible` | `openai-compatible`, `copilot`, `anthropic` | Provider family. Set to `copilot` to use GitHub Copilot (requires a GitHub PAT as `UMACTUALLY_API_KEY`). Set to `anthropic` to use the native Anthropic Messages API (`POST /v1/messages` with `x-api-key`/`anthropic-version` headers). |
+| `provider` | `UMACTUALLY_PROVIDER` | `openai-compatible` | `openai-compatible`, `copilot`, `anthropic` | Provider family. Set to `copilot` to use GitHub Copilot (requires a GitHub PAT as `UMACTUALLY_API_KEY`). Set to `anthropic` to use the native Anthropic Messages API (`POST /v1/messages` with `x-api-key`/`anthropic-version` headers). **Advisory on dual-protocol gateways** — if the operator's `--provider` returns 404 at the URL, the dispatcher retries the OTHER protocol at the same URL (MiniMax serves both Anthropic and OpenAI protocols under the same hostname). See [providers.md](providers.md#cross-protocol-auto-discovery-the-dispatcher). |
 | `github-api-base` | `UMACTUALLY_GITHUB_API_BASE` | `""` | HTTPS URL | GitHub API base URL for Copilot token exchange. Set to `https://<tenant>.ghe.com` for GitHub Enterprise Server. |
 | `review-timeout-seconds` | `UMACTUALLY_REVIEW_TIMEOUT_SECONDS` | `300` | Positive integer seconds | Overall review wall-clock budget. Current runtime default is 300 seconds. |
 | `stall-seconds` | `UMACTUALLY_STALL_SECONDS` | `270` | Positive integer seconds | Provider-output stall budget. Current runtime default is 270 seconds. |
@@ -130,13 +130,40 @@ Manual branch runs do not populate `SYSTEM_PULLREQUEST_PULLREQUESTID`. The synth
 
 ## Provider families
 
-The action supports three provider families:
+The action supports three provider families. For the canonical end-to-end reference (URL resolution rules, cross-prot protocol dispatch, the MiniMax dual-protocol matrix, model auto-resolution per provider) see [`docs/providers.md`](providers.md). This page documents the CLI surface and runtime defaults only.
 
 - **`openai-compatible`** (default): posts to any OpenAI-compatible `/responses` or `/chat/completions` endpoint. The `UMACTUALLY_API_URL` must be the base URL (e.g. `https://api.openai.com/v1`). Set `UMACTUALLY_API_KEY` to the provider key. Forwards `max_output_tokens` and `reasoning.effort` when supported by the endpoint.
 
 - **`copilot`**: exchanges the `UMACTUALLY_API_KEY` value (a GitHub PAT) for a short-lived session token at `${UMACTUALLY_GITHUB_API_BASE}/copilot_internal/v2/token` using `Authorization: token <githubToken>`, then dispatches to the plan-routed host returned in the token envelope (`endpoints.api` — typically `api.individual.githubcopilot.com`, `api.business.githubcopilot.com`, or `api.enterprise.githubcopilot.com` depending on the user's Copilot plan). Sends the required `Editor-Version`, `Editor-Plugin-Version`, `Copilot-Integration-Id`, and `User-Agent` headers. Only `/chat/completions` is used (Copilot does not expose `/responses`).
 
-- **`anthropic`**: uses the native Anthropic Messages API (`POST /v1/messages`). The wire body uses the Anthropic Messages schema — top-level `system` field, user-only `messages[]`, `max_tokens` instead of `max_output_tokens`, `x-api-key` and `anthropic-version: 2023-06-01` headers (NOT `Authorization: Bearer ...`). Anthropic does not support OpenAI-style `response_format: json_schema`, so strict-JSON is enforced entirely by the in-context system prompt + the parser; the same fallback the openai-compatible client uses after its self-healing retry strips the wire schema. Defaults to `https://api.anthropic.com/v1` when `UMACTUALLY_API_URL` is unset; override for a self-hosted Anthropic-protocol gateway. The retry / parse-fail / bumped-budget / network-retry flows are shared byte-for-byte with the openai-compatible client so behavior is identical regardless of provider family.
+- **`anthropic`**: uses the native Anthropic Messages API (`POST /v1/messages`). The wire body uses the Anthropic Messages schema — top-level `system` field, user-only `messages[]`, `max_tokens` instead of `max_output_tokens`, `x-api-key` and `anthropic-version: 2023-06-01` headers (NOT `Authorization: Bearer ...`). Anthropic does not support OpenAI-style `response_format: json_schema`, so strict-JSON is enforced entirely by the in-context system prompt + the parser; the same fallback the openai-compatible client uses after its self-healing retry strips the wire schema. Defaults to `https://api.anthropic.com/v1` when `UMACTUALLY_API_URL` is unset. The URL resolver (`src/util/url.ts:resolveAnthropicMessagesUrl`) follows the official `@anthropic-ai/sdk` convention: **the operator's path prefix is preserved**, so `--api-url https://api.minimax.io/anthropic` POSTs to `https://api.minimax.io/anthropic/v1/messages` (not `/v1/messages`). This matches [MiniMax's docs](https://platform.minimax.io/docs/token-plan/claude-code) and the [anthropic-sdk-kotlin path-preserving fix](https://github.com/xemantic/anthropic-sdk-kotlin/pull/145). Query strings and fragments are dropped before route resolution to prevent `.../v1?token=abc/v1/messages`-style URL malformations. The retry / parse-fail / bumped-budget / network-retry flows are shared byte-for-byte with the openai-compatible client so behavior is identical regardless of provider family.
+
+### Cross-protocol auto-discovery (dual-protocol gateways)
+
+When `--api-url` points at a gateway that serves both protocols under the same hostname (the documented example is MiniMax, but the rule generalizes — any Anthropic-protocol-compatible gateway mounted under a path prefix):
+
+```text
+--provider openai-compatible --api-url https://api.minimax.io/anthropic
+  → dispatcher tries /anthropic/responses + /anthropic/chat/completions (404)
+  → fallback to origin + /v1, tries /v1/responses + /v1/chat/completions (404)
+  → named provider exhausted; fall back to OTHER protocol
+  → anthropic provider tries resolveAnthropicMessagesUrl → /anthropic/v1/messages (200)
+  → outcome.attribution = "anthropic-messages"
+```
+
+And the inverse:
+
+```text
+--provider anthropic --api-url https://api.minimax.io/v1
+  → dispatcher tries /v1/messages (404)
+  → fall back to OTHER protocol
+  → openai-compatible tries /v1/responses + /v1/chat/completions
+  → outcome.attribution = "openai-compatible" on success
+```
+
+The trigger is **strictly 404** (routing-level rejection). 400 (payload error), 401/403 (auth), 5xx (server), parse failures, and network errors do NOT trigger the fallback — see [providers.md](providers.md#what-triggers-the-fallback) for the rationale. Each fallback emits two `::notice::` annotations so operators can audit which protocol produced the review.
+
+The fallback reuses the operator's `UMACTUALLY_API_KEY` for both protocols. This is correct on documented dual-protocol gateways (MiniMax accepts the same key for both protocols at the same hostname). Operators pointing the action at a non-dual-protocol URL with the wrong `--provider` get a wasted secondary request — the `::notice::` annotations let them see it happened so they can pick the right `--provider` next run.
 
 The provider family is selected via `--provider` (CLI), `provider` (action input), or `UMACTUALLY_PROVIDER` env var. Default `openai-compatible`. For GitHub Enterprise Server data residency, set `UMACTUALLY_GITHUB_API_BASE=https://<tenant>.ghe.com` so the token exchange targets the tenant's API.
 
