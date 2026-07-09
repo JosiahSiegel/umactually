@@ -11260,7 +11260,16 @@ async function requestLiveReview(input) {
             // openai-compatible client does NOT speak. Routing through a
             // dedicated client avoids an OpenAI-shaped request going to
             // `/v1/messages` and getting 400'd at the wire layer.
-            const providerUrl = readRequiredConfig(input.parsed.apiUrl ?? input.env["UMACTUALLY_API_URL"], "UMACTUALLY_API_URL");
+            //
+            // Anthropic defaults to https://api.anthropic.com/v1 when
+            // --api-url is unset. This matches the contracts in
+            // `action.yml`, the README's "Using the native Anthropic
+            // Messages API" block, and `validate.ts`/`orchestrator.ts`
+            // which both exempt --api-url from the required check when
+            // --provider anthropic is set.
+            const providerUrl = input.parsed.apiUrl
+                ?? input.env["UMACTUALLY_API_URL"]
+                ?? "https://api.anthropic.com/v1";
             const result = await runAnthropicRequest({
                 baseUrl: providerUrl,
                 apiKey: providerApiKey,

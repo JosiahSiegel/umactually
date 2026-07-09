@@ -124,7 +124,7 @@ function makeBaseArgs(providerValue: "openai-compatible" | "copilot" | "anthropi
     reviewPath: null,
     prNumber: "1",
     repo: "foo/bar",
-    apiUrl: providerValue === "anthropic" ? "https://api.anthropic.com/v1" : "https://api.openai.com/v1",
+    apiUrl: (providerValue === "anthropic" ? "https://api.anthropic.com/v1" : "https://api.openai.com/v1") as string | null,
     apiKey: "sk-test-synthetic-secret-do-not-leak",
     model: null,
     promptFile: null,
@@ -329,5 +329,42 @@ describe("requestLiveReview dispatch — provider=anthropic", () => {
     expect(call.url).toBe("https://api.anthropic.com/v1/messages");
     expect(call.url).not.toContain("/anthropic/messages");
     expect(outcome.review.summary).toBe("anthropic path canonicalized correctly.");
+  });
+
+  it("DISPATCH-ANTH-006 --api-url unset defaults to https://api.anthropic.com/v1 (fixes PR #30 self-review H1)", async () => {
+    // Self-review (H1) flagged this exact regression: live-provider.ts
+    // was calling readRequiredConfig(UMACTUALLY_API_URL, ...) for the
+    // anthropic provider, throwing when neither --api-url nor the env
+    // var was set — which crashed the README example
+    // `provider: anthropic` with only `UMACTUALLY_API_KEY` in `env:`.
+    // The contract is: anthropic defaults to api.anthropic.com/v1.
+    const successText = JSON.stringify({
+      summary: "anthropic default URL works without --api-url.",
+      verdict: "APPROVED",
+      comments: [],
+      suppressed_comments: [],
+    });
+    const stub = makeFetchStub([{ status: 200, body: buildAnthropicSuccessBody(successText) }]);
+    const mod = await loadRequestLiveReviewModule();
+    const parsed = {
+      ...makeBaseArgs("anthropic"),
+      apiUrl: null, // operator did NOT set --api-url
+    };
+
+    const outcome = await mod.requestLiveReview({
+      parsed,
+      cwd: process.cwd(),
+      env: {}, // and no UMACTUALLY_API_URL in env
+      fetchImpl: stub.fetch,
+      platform: "github",
+      diffText: MINIMAL_DIFF,
+      platformToken: "gh",
+    });
+
+    // The Anthropic branch must have hit the documented default URL,
+    // not thrown LiveReviewError('LIVE_CONFIG_MISSING', ...).
+    expect(stub.calls).toHaveLength(1);
+    expect(stub.calls[0]!.url).toBe("https://api.anthropic.com/v1/messages");
+    expect(outcome.review.summary).toBe("anthropic default URL works without --api-url.");
   });
 });
