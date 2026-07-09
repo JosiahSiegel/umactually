@@ -7,6 +7,7 @@ import { isRecord, isSafeInteger, isUnknownArray } from "../util/json-guards.js"
 import { writeBrandedAnnotation } from "../util/log.js";
 import { commentBodyHasMarker } from "../util/marker.js";
 import { findDuplicateThread } from "../platform/azure/api.js";
+import type { ParsedCliArgs } from "./parse-args.js";
 import {
   buildInlineCommentBody,
   ensureHttpOk,
@@ -14,7 +15,6 @@ import {
   preparePostedReview,
   readJsonResponse,
   readResponseId,
-  selectPostableComments,
   type FetchImpl,
   type LiveProviderOutcome,
   type LiveReviewComment,
@@ -25,7 +25,7 @@ export async function runAzureLive(input: {
   readonly context: AzureContext;
   readonly diffText: string;
   readonly provider: LiveProviderOutcome;
-  readonly parsed: Parameters<typeof selectPostableComments>[0]["parsed"];
+  readonly parsed: ParsedCliArgs;
   readonly fetchImpl: FetchImpl;
 }): Promise<LiveRunResult> {
   const { context, diffText, provider, parsed, fetchImpl } = input;

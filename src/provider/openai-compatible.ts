@@ -97,6 +97,22 @@ function buildBodyConfig(config: ProviderCallConfig): {
   };
 }
 
+/**
+ * Return a copy of the body config with `responseFormat` stripped.
+ * Used by the parse-fail self-healing retry: the first attempt
+ * sends the wire schema, and if the model returns prose instead of
+ * JSON (because the provider silently rejected the schema), the
+ * retry drops the schema and relies on the system prompt's prose
+ * "Return strict JSON only" instruction.
+ */
+function stripResponseFormat<T extends { readonly responseFormat?: unknown }>(
+  config: T,
+): Omit<T, "responseFormat"> & { readonly responseFormat?: never } {
+  const { responseFormat: _drop, ...rest } = config;
+  void _drop;
+  return rest as Omit<T, "responseFormat"> & { readonly responseFormat?: never };
+}
+
 export async function runProviderRequest(config: ProviderCallConfig): Promise<ProviderCallResult> {
   const fetchImpl = config.fetchImpl ?? globalThis.fetch.bind(globalThis);
   const requestId = createRequestId();
@@ -220,6 +236,13 @@ async function runWithRetry(
 }
 
 function isRetryable(error: ProviderError): boolean {
+  // Transient network failures (no HTTP status) should be retried —
+  // the connection may have been reset, the provider may be in the
+  // middle of a failover, etc. Without this, a single TCP hiccup
+  // kills the whole review.
+  if (error.code === "network") {
+    return true;
+  }
   return error.status === 429 || (typeof error.status === "number" && error.status >= 500);
 }
 
@@ -279,6 +302,12 @@ async function callEndpoint(
     writeDebugRaw(`[DEBUG-RAW] textPayload last 200:  ${JSON.stringify(safeTextPayload.slice(-200))}\n`, config);
     writeDebugRaw(`[DEBUG-RAW] hasResponseCompletedEvent: ${rawText.includes('"type":"response.completed"')}\n`, config);
   }
+  // Surface parse-decision signals so future parse-fail runs can tell
+  // whether the self-healing retry was skipped (detectProviderError
+  // matched) or actually ran. The M3 model can produce a 100+ KB
+  // response whose only content is reasoning — `joinOutputText`
+  // returns empty and the parser correctly classifies it as
+  // parse-fail, but we need to know whether the retry fired.
   const review = parseReviewPayload(textPayload);
   // [DEBUG-RAW] Trace the parse decision so the next parse-fail run can
   // show exactly what `parseReviewPayload` returned. Without this, we
@@ -327,14 +356,51 @@ async function callEndpoint(
   // emit only an SSE stream of metadata events with no actual output)
   // recover cleanly when reminded to emit JSON.
   //
+  // The retry DROPS the strict `response_format` constraint. Some
+  // providers silently reject the wire schema and produce prose
+  // instead of JSON — the retry lets the system prompt's "Return
+  // strict JSON only" prose instruction carry the contract instead.
+  // This makes the action dynamically adapt to any provider without
+  // a hardcoded compatibility list.
+  //
   // Note: any network/HTTP error on the retry is collapsed back into a
   // `parse` error (with the ORIGINAL rawText attached) so the parse-fail
   // path's diagnostic captures the actual root cause — the model
   // couldn't produce a parseable review, regardless of whether the retry
   // request itself reached the provider.
+  //
+  // Bumped-budget retry: some providers (notably MiniMax-M3) emit
+  // long reasoning blocks that consume the entire output budget
+  // before the model can write the JSON review. When the first
+  // attempt's raw response is large (suggests the model produced
+  // content) but the extracted text payload is small or empty
+  // (suggests the actual review didn't make it through), raise
+  // `maxOutputTokens` for the retry so the model has more room.
+  // The retry still uses the same prompt, same schema, same model
+  // — just more output budget.
+  const firstAttemptBodyConfig = stripResponseFormat(buildBodyConfig(config));
+  // Heuristic: when the response is "large but empty" (rawText > 16K
+  // but textPayload < 200 chars), the model likely produced reasoning
+  // only and was truncated before the JSON review. Double the budget
+  // for the retry. Capped at 128K to avoid blowing past provider
+  // limits.
+  const needsMoreBudget = rawText.length > 16_000 && textPayload.length < 200;
+  const bumpedMaxOutput = needsMoreBudget && config.maxOutputTokens !== undefined
+    ? Math.min(config.maxOutputTokens * 2, 128_000)
+    : config.maxOutputTokens;
+  if (process.env["UMACTUALLY_DEBUG_RAW"] === "1" && needsMoreBudget) {
+    writeDebugRaw(
+      `[DEBUG-RAW] bumped-budget retry: rawText.length=${rawText.length} textPayload.length=${textPayload.length} bumpedMaxOutput=${bumpedMaxOutput}\n`,
+      config,
+    );
+  }
+  const retryBodyConfig: ReturnType<typeof buildBodyConfig> = {
+    ...firstAttemptBodyConfig,
+    ...(bumpedMaxOutput !== undefined ? { maxOutputTokens: bumpedMaxOutput } : {}),
+  };
   const retryBody = endpoint === ENDPOINT_RESPONSES
-    ? buildResponsesBody(buildBodyConfig(config), { userOverride: PARSE_FAIL_RETRY_PROMPT })
-    : buildChatBody(buildBodyConfig(config), { userOverride: PARSE_FAIL_RETRY_PROMPT });
+    ? buildResponsesBody(retryBodyConfig, { userOverride: PARSE_FAIL_RETRY_PROMPT })
+    : buildChatBody(retryBodyConfig, { userOverride: PARSE_FAIL_RETRY_PROMPT });
   let retryReview: ProviderReviewPayload | null = null;
   // Track the retry's HTTP status (if it reached performFetch and
   // returned a response) so the parse-fail ProviderError can surface
@@ -345,7 +411,13 @@ async function callEndpoint(
   // failure. Both cases match `src/provider/copilot.ts`'s contract.
   let retryResponseStatus: number | null = null;
   try {
-    const retryResponse = await performFetch(fetchImpl, url, retryBody, signal, config, requestId, endpoint);
+    // Fresh signal for the retry so it gets the full timeout budget.
+    // Reusing the first-attempt signal would give the retry only
+    // whatever time was left on the original 300s AbortSignal.
+    // Some models (e.g. MiniMax-M3 with bumped-budget retry) need
+    // 3-5 minutes per attempt.
+    const retrySignal = composeSignal(config.signal, config.requestTimeoutMs);
+    const retryResponse = await performFetch(fetchImpl, url, retryBody, retrySignal, config, requestId, endpoint);
     retryResponseStatus = retryResponse.status;
     if (retryResponse.ok) {
       const retryRawText = await readBody(retryResponse, endpoint, requestId);

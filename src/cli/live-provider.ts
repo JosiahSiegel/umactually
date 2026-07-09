@@ -74,6 +74,15 @@ export async function requestLiveReview(input: {
   // response_format on the wire. Defaults to true so the model is
   // constrained at decode time; the in-context system prompt carries
   // the same schema as a guide for free-form models.
+  //
+  // Some models don't support strict JSON schema and produce prose
+  // instead of JSON. Rather than maintaining a hardcoded list of
+  // non-compliant models, the provider layer's self-healing retry
+  // path detects the parse-fail and retries WITHOUT the schema —
+  // the system prompt's "Return strict JSON only" instruction
+  // handles models that follow instructions but reject the wire
+  // constraint. This makes the action dynamically adapt to any
+  // provider without operator intervention.
   const responseFormat: ResponseFormat | undefined = input.parsed.strictSchema === false
     ? undefined
     : { type: "json_schema", strict: true, schema: REVIEW_PAYLOAD_JSON_SCHEMA as unknown as Record<string, unknown> };

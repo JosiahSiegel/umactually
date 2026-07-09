@@ -56,7 +56,7 @@ describe("buildProviderPrompts", () => {
     });
     // The schema is inlined into the system prompt as a guide for
     // models that ignore the wire-format response_format constraint.
-    expect(prompts.system).toContain("strict JSON only");
+    expect(prompts.system.toLowerCase()).toContain("output contract");
     expect(prompts.system.toLowerCase()).toContain("schema");
     // The wire schema literal is also accessible.
     expect(REVIEW_PAYLOAD_JSON_SCHEMA.type).toBe("object");
