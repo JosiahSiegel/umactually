@@ -36,6 +36,23 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   bounded to 404 (payload 400 / parse / auth / network errors do NOT
   trigger fallback — those have a single root cause). See
   [`docs/providers.md`](docs/providers.md#cross-protocol-auto-discovery-the-dispatcher).
+- **Path-prefix heuristic for `/anthropic` URLs (PR #34)**: the cross-
+  protocol fallback in PR #32 only fires AFTER the named provider's URL
+  candidate loop exhausts. On MiniMax-style dual-protocol gateways the
+  openai-compatible loop successfully degrades `/anthropic` to
+  origin+`/v1` (where MiniMax also serves OpenAI), so the dispatcher
+  never reached the fallback and silently routed an
+  `UMACTUALLY_API_URL=https://api.minimax.io/anthropic` to OpenAI at
+  `/v1/responses` — wrong protocol. Fix: a new heuristic in the
+  dispatcher checks whether any path segment in the operator's URL
+  exactly equals `anthropic` (case-insensitive, byte-for-byte). When
+  true, the dispatcher commits to the Anthropic Messages API client
+  regardless of `--provider`, with a `::notice::` annotation for
+  operator audit. Conservative by design — false negatives still fall
+  through to cross-protocol fallback; false positives are bounded to
+  exact-segment matches so `anthropic-v2` and `my-anthropic` do NOT
+  trigger. See
+  [`docs/providers.md`](docs/providers.md#path-prefix-heuristic-the-anthropic-url--anthropic-protocol-commit).
 - **New `docs/providers.md`**: canonical end-to-end reference for the
   provider layer — per-family URL resolution rules, the
   Anthropic-protocol path-prefix preservation contract (with the

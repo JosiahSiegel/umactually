@@ -87,6 +87,39 @@ Dispatcher behavior:
   7. Outcome.attribution = "anthropic-messages" (recovered via providerNameForEndpoint)
 ```
 
+### Path-prefix heuristic (the `/anthropic` URL → Anthropic-protocol commit)
+
+A subtle gotcha surfaced by the operator's actual setup (`UMACTUALLY_API_URL=https://api.minimax.io/anthropic` + default `--provider=openai-compatible`): the openai-compatible client's URL candidate loop downgrades `/anthropic` to `origin+/v1` and tries `/v1/responses` there. MiniMax serves OpenAI Responses at `/v1/responses` (just like it serves Anthropic at `/anthropic/v1/messages`), so the openai loop happily succeeds with the **OpenAI** wire shape — never triggering the cross-protocol fallback above. Result: the action posts OpenAI-Responses shape to a URL the operator typed as an Anthropic-protocol gateway.
+
+To prevent this, the dispatcher runs `looksLikeAnthropicEndpoint(baseUrl)` *before* choosing which provider client to call. If ANY path segment is exactly `anthropic` (case-insensitive, byte-for-byte match — `anthropic-v2` and `my-anthropic` do NOT match), the dispatcher commits to the Anthropic Messages API client regardless of `--provider`. The cross-protocol fallback still fires if the committed Anthropic call also fails.
+
+```text
+URL                                                             → committed protocol
+https://api.minimax.io/anthropic                               → anthropic (heuristic)
+https://gateway.example.com/llm/anthropic                     → anthropic (heuristic)
+https://gateway.example.com/v1/anthropic                       → anthropic (heuristic)
+https://api.openai.com/v1                                       → openai-compatible (default)
+https://api.example.com/                                        → openai-compatible (default)
+https://api.example.com/anthropic-v2                            → openai-compatible (heuristic does NOT match)
+https://api.example.com/anthropic?token=secret                  → anthropic (heuristic; query dropped)
+```
+
+Operator-visible notice on every URL that triggers the heuristic:
+
+```
+::notice::umactually-pr-review: Operator URL contains an /anthropic path segment; using the Anthropic Messages API client (not the default openai-compatible).
+```
+
+The heuristic is conservative by design. False negatives still fall through to the cross-protocol fallback chain. False positives are bounded to byte-for-byte segment matches so a path like `https://attacker.example.com/anthropic-related` does NOT trigger the heuristic (the segment is `anthropic-related`, not `anthropic`). See `src/util/url.ts:looksLikeAnthropicEndpoint` for the exact contract and `test/unit/looks-like-anthropic-endpoint.test.ts` for the boundary test matrix.
+
+### What triggers the fallback
+
+`isRoutableFailureForDispatcher(error)` is `true` ONLY when `error.status === 404`. Specifically:
+
+- **404** → cross-protocol fallback fires. Genuine routing-level rejection.
+- **400** → fallback does NOT fire. The OpenAI client's internal URL-candidate loop advances to sibling paths under the same URL (responses → chat/completions), but the dispatcher boundary does NOT switch protocols on 400. Rationale: 400 typically signals payload-level errors (malformed body, missing required field, unsupported `max_tokens` value, content-policy rejection). Switching protocols on 400 would silently mask wire-shape bugs — an Anthropic call that 400s on an unsupported parameter would retry against the OpenAI wire shape and possibly succeed, with the operator seeing a successful review attributed to the OTHER protocol without ever knowing their original call was malformed.
+- **Other (401/403/429/5xx/network/parse)** → fallback does NOT fire. Single root cause; another protocol won't help.
+
 And the inverse:
 
 ```text
@@ -98,14 +131,6 @@ Dispatcher behavior:
   3. OpenAI tries /v1/responses, then /v1/chat/completions  → 200 (or 400 if M3 body shape mismatch)
   4. Outcome.attribution = "openai-compatible"
 ```
-
-### What triggers the fallback
-
-`isRoutableFailureForDispatcher(error)` is `true` ONLY when `error.status === 404`. Specifically:
-
-- **404** → cross-protocol fallback fires. Genuine routing-level rejection.
-- **400** → fallback does NOT fire. The OpenAI client's internal URL-candidate loop advances to sibling paths under the same URL (responses → chat/completions), but the dispatcher boundary does NOT switch protocols on 400. Rationale: 400 typically signals payload-level errors (malformed body, missing required field, unsupported `max_tokens` value, content-policy rejection). Switching protocols on 400 would silently mask wire-shape bugs — an Anthropic call that 400s on an unsupported parameter would retry against the OpenAI wire shape and possibly succeed, with the operator seeing a successful review attributed to the OTHER protocol without ever knowing their original call was malformed.
-- **Other (401/403/429/5xx/network/parse)** → fallback does NOT fire. Single root cause; another protocol won't help.
 
 ### Outcome attribution after fallback
 

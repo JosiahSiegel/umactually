@@ -165,6 +165,18 @@ The trigger is **strictly 404** (routing-level rejection). 400 (payload error), 
 
 The fallback reuses the operator's `UMACTUALLY_API_KEY` for both protocols. This is correct on documented dual-protocol gateways (MiniMax accepts the same key for both protocols at the same hostname). Operators pointing the action at a non-dual-protocol URL with the wrong `--provider` get a wasted secondary request — the `::notice::` annotations let them see it happened so they can pick the right `--provider` next run.
 
+#### Path-prefix heuristic for `/anthropic` URLs (commit-to-Anthropic-protocol)
+
+A subtle gotcha surfaced by the operator's actual setup (`UMACTUALLY_API_URL=https://api.minimax.io/anthropic` + default `--provider=openai-compatible`): the openai-compatible client's URL candidate loop downgrades `/anthropic` to `origin+/v1` and tries `/v1/responses` there. MiniMax serves OpenAI Responses at `/v1/responses` (just like it serves Anthropic at `/anthropic/v1/messages`), so the openai loop happily succeeds with the **OpenAI** wire shape — never triggering the cross-protocol fallback above. Result: the action posts OpenAI-Responses shape to a URL the operator typed as an Anthropic-protocol gateway.
+
+To prevent this, the dispatcher runs `looksLikeAnthropicEndpoint(baseUrl)` (`src/util/url.ts`) *before* choosing which provider client to call. When ANY path segment is exactly `anthropic` (case-insensitive, byte-for-byte — `anthropic-v2` and `my-anthropic` do NOT match), the dispatcher commits to the Anthropic Messages API client regardless of `--provider`. A `::notice::` is emitted on every URL that triggers the heuristic:
+
+```
+::notice::umactually-pr-review: Operator URL contains an /anthropic path segment; using the Anthropic Messages API client (not the default openai-compatible).
+```
+
+The heuristic is conservative by design. False negatives still fall through to the cross-protocol fallback chain above. False positives are bounded to byte-for-byte segment matches so a path like `https://attacker.example.com/anthropic-related` does NOT trigger the heuristic. See [`docs/providers.md#path-prefix-heuristic`](providers.md#path-prefix-heuristic-the-anthropic-url--anthropic-protocol-commit) for the full contract and the boundary test matrix (`test/unit/looks-like-anthropic-endpoint.test.ts`).
+
 The provider family is selected via `--provider` (CLI), `provider` (action input), or `UMACTUALLY_PROVIDER` env var. Default `openai-compatible`. For GitHub Enterprise Server data residency, set `UMACTUALLY_GITHUB_API_BASE=https://<tenant>.ghe.com` so the token exchange targets the tenant's API.
 
 ## Defaults and normalization
