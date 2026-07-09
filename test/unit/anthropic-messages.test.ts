@@ -360,6 +360,23 @@ describe("anthropic-messages wire-shape helpers", () => {
     expect(payload).toBe("First second");
   });
 
+  it("ANTH-SHAPE-005 extractAnthropicTextPayload skips reasoning blocks (no text leak into the parse path)", async () => {
+    // Anthropic returns `content: [{type:"reasoning", ...}, {type:"text", text:"JSON"}]`
+    // for models that emit internal reasoning. The text payload must
+    // exclude reasoning blocks so the JSON parser sees only the final
+    // answer.
+    const mod = (await expectFutureModule("../../src/provider/anthropic-messages.js")) as {
+      readonly extractAnthropicTextPayload: (raw: string) => string;
+    };
+    const payload = mod.extractAnthropicTextPayload(JSON.stringify({
+      content: [
+        { type: "reasoning", text: "Long thinking... should not appear in payload" },
+        { type: "text", text: '{"summary":"only json","verdict":"APPROVED"}' },
+      ],
+    }));
+    expect(payload).toBe('{"summary":"only json","verdict":"APPROVED"}');
+  });
+
   it("ANTH-SHAPE-004 extractAnthropicTextPayload returns rawText for Anthropic error envelopes (no content[] array)", async () => {
     const mod = (await expectFutureModule("../../src/provider/anthropic-messages.js")) as {
       readonly extractAnthropicTextPayload: (raw: string) => string;

@@ -163,12 +163,7 @@ export function buildAnthropicBody(
  * downstream `parseReviewPayload` will classify that as a parse-fail
  * (per `isNonEmptyReview`), which trips the self-healing retry path.
  */
-export function extractAnthropicTextPayload(rawText: string, endpoint: ProviderEndpoint = ENDPOINT): string {
-  // The 2nd `endpoint` parameter is unused but kept for signature parity
-  // with the openai-compatible `extractTextPayload` helper, which the
-  // SSE-parser path passes for diagnostic logging. Anthropic doesn't have
-  // a streamed variant today, so we drop it on the floor.
-  void endpoint;
+export function extractAnthropicTextPayload(rawText: string): string {
   let parsed: unknown;
   try {
     parsed = JSON.parse(rawText);
