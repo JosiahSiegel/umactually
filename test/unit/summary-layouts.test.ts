@@ -3,7 +3,7 @@
 // Scenario contract (see ulw-notepad):
 //   S1: Module exports 20 distinct layout IDs (smoke test).
 //   S2: All 20 layouts render without throwing given sample data.
-//   S3: All 20 layouts include the stable marker <!-- umactually-pr-review -->.
+//   S3: All 20 layouts include the stable review marker (see src/util/marker.ts).
 //   S4: All 20 layouts include the manifest JSON.
 //   S5: No layout uses <details>/<summary> (Azure-incompatible).
 //   S6: No layout uses raw <table> HTML (Azure-incompatible).

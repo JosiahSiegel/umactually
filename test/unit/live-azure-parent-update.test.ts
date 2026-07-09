@@ -30,6 +30,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { parseCliArgs } from "../../src/cli.js";
 import { runLive } from "../../src/cli/orchestrator.js";
+import { REVIEW_MARKER } from "../../src/util/marker.js";
 import { azureDiffRoutes, azureReviewDiffFixture } from "./azure-diff-fixture.js";
 import type { AzureFetchRoute } from "./azure-diff-fixture.js";
 
@@ -173,7 +174,7 @@ function existingParentRoutes(): readonly FreshableRoute[] {
                 {
                   id: EXISTING_PARENT_COMMENT_ID,
                   content:
-                    "<!-- umactually-pr-review -->\n## 💬 DISCUSS\n\nProvider response did not contain a valid JSON review payload.\n",
+                    `${REVIEW_MARKER}\n## 💬 DISCUSS\n\nProvider response did not contain a valid JSON review payload.\n`,
                 },
               ],
             },
@@ -197,7 +198,7 @@ function existingParentRoutes(): readonly FreshableRoute[] {
         postCount += 1;
         if (postCount === 1) {
           return makeJsonResponse(
-            { id: 8001, comments: [{ id: 9001, content: "<!-- umactually-pr-review -->\ninitial" }] },
+            { id: 8001, comments: [{ id: 9001, content: `${REVIEW_MARKER}\ninitial` }] },
             200,
           );
         }
@@ -350,7 +351,7 @@ describe("postAzurePrComment (Azure parent PR-level replace-not-patch)", () => {
     if (typeof content !== "string") {
       throw new Error("new parent comment content must be a string");
     }
-    expect(content).toContain("<!-- umactually-pr-review -->");
+    expect(content).toContain(REVIEW_MARKER);
     expect(content).toContain("Azure parent-comment summary.");
     expect(content).toMatch(/SHIP|APPROVED/);
   });

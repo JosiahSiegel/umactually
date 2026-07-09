@@ -23,6 +23,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { parseCliArgs } from "../../src/cli.js";
 import { runLive } from "../../src/cli/orchestrator.js";
+import { REVIEW_MARKER } from "../../src/util/marker.js";
 import { azureDiffRoutes, azureReviewDiffFixture } from "./azure-diff-fixture.js";
 import type { AzureFetchRoute } from "./azure-diff-fixture.js";
 
@@ -238,7 +239,7 @@ describe("postAzurePrComment (Azure parent PR-level review summary)", () => {
     if (typeof parentContent !== "string") {
       throw new Error("parent content must be a string");
     }
-    expect(parentContent).toContain("<!-- umactually-pr-review -->");
+    expect(parentContent).toContain(REVIEW_MARKER);
     expect(parentContent).toMatch(/NEEDS_FIX|SHIP|APPROVED|DISCUSS|COMMENT/);
     expect(parentContent).toContain("Azure parent-comment summary.");
     // parentCommentId must be 0 and status must be 1 (active).
@@ -335,7 +336,7 @@ describe("postAzurePrComment (Azure parent PR-level review summary)", () => {
                 comments: [
                   {
                     id: EXISTING_PARENT_COMMENT_ID,
-                    content: "<!-- umactually-pr-review -->\nExisting parent review summary.",
+                    content: `${REVIEW_MARKER}\nExisting parent review summary.`,
                   },
                 ],
               },

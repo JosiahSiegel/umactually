@@ -20,6 +20,9 @@ export const USER_AGENT = BRAND;
 /** Azure DevOps PR status context name; prevents status updates from drifting away from the review brand. */
 export const AZURE_STATUS_CONTEXT_NAME = `${BRAND}-status`;
 
+/** Azure DevOps PR status context genre; the discriminator that keeps our status updates distinct from any other tool's. */
+export const AZURE_STATUS_CONTEXT_GENRE = "pr-review";
+
 /**
  * Redaction token emitted by secret scanners and runtime sanitizers
  * when a high-confidence secret or per-secret value is replaced. The

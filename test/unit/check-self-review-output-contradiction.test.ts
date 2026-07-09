@@ -26,6 +26,8 @@ import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node
 import { join, resolve } from "node:path";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
+import { REVIEW_MARKER } from "../../src/util/marker.js";
+
 const HERE = resolve(__dirname, "..", "..");
 const SCRIPT = resolve(HERE, "scripts", "check-self-review-output.mjs");
 const ARTIFACTS_DIR = resolve(HERE, "artifacts", "manual");
@@ -131,14 +133,14 @@ describe("check-self-review-output.mjs (subprocess)", () => {
         verdict: "COMMENT",
         inlineThreadCount: 0,
         suppressedCommentCount: 0,
-        marker: "<!-- umactually-pr-review -->",
+        marker: REVIEW_MARKER,
         blockedRawOutput: false,
         parseFailed: false,
       }),
       s4: JSON.stringify({
         postedThreadCount: 0,
         postedStatusState: "succeeded",
-        marker: "<!-- umactually-pr-review -->",
+        marker: REVIEW_MARKER,
         blockedRawOutput: false,
       }),
     });
@@ -157,7 +159,7 @@ describe("check-self-review-output.mjs (subprocess)", () => {
         verdict: "NEEDS_FIX",
         inlineThreadCount: 3,
         suppressedCommentCount: 1,
-        marker: "<!-- umactually-pr-review -->",
+        marker: REVIEW_MARKER,
         blockedRawOutput: false,
         parseFailed: false,
       }),
@@ -200,7 +202,7 @@ describe("check-self-review-output.mjs (subprocess)", () => {
         verdict: "NEEDS_FIX",
         inlineThreadCount: 0,
         suppressedCommentCount: 0,
-        marker: "<!-- umactually-pr-review -->",
+        marker: REVIEW_MARKER,
         blockedRawOutput: false,
         parseFailed: false,
       }),
@@ -232,7 +234,7 @@ describe("check-self-review-output.mjs (subprocess)", () => {
         verdict: "NEEDS_FIX",
         inlineThreadCount: 0,
         suppressedCommentCount: 2,
-        marker: "<!-- umactually-pr-review -->",
+        marker: REVIEW_MARKER,
         blockedRawOutput: false,
         parseFailed: false,
       }),

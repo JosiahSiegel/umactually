@@ -2,6 +2,7 @@ import { readFile } from "node:fs/promises";
 import { describe, expect, it } from "vitest";
 
 import { expectNotImplementedExport } from "../helpers/assert-red-module.js";
+import { REVIEW_MARKER } from "../../src/util/marker.js";
 
 type GithubReviewContract = {
   readonly platform: "github";
@@ -14,7 +15,7 @@ type GithubReviewContract = {
 type PostedGithubReview = {
   readonly artifactPath: string;
   readonly event: "COMMENT";
-  readonly marker: "<!-- umactually-pr-review -->";
+  readonly marker: typeof REVIEW_MARKER;
   readonly inlineThreadCount: number;
   readonly suppressedCommentCount: number;
 };
@@ -55,7 +56,7 @@ describe("S1 GitHub self-review RED contract", () => {
     expect(result).toEqual({
       artifactPath: "artifacts/manual/s1-github-self-review.md",
       event: "COMMENT",
-      marker: "<!-- umactually-pr-review -->",
+      marker: REVIEW_MARKER,
       inlineThreadCount: 1,
       suppressedCommentCount: 1,
     });

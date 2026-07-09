@@ -45,10 +45,10 @@
  * `test/unit/summary-layouts.test.ts` for the invariant assertions.
  */
 
-import { REVIEW_MARKER, MANIFEST_SCHEMA } from "../util/marker.js";
+import { REVIEW_MARKER, MANIFEST_SCHEMA, MANIFEST_MARKER_PREFIX, MANIFEST_MARKER_SUFFIX } from "../util/marker.js";
 import type { LiveReview, LiveReviewComment } from "../cli/live-shared.js";
 import { SEVERITY_ORDER, severityRank } from "../util/severity.js";
-import { REDACTED_SECRET_TOKEN } from "../util/brand.js";
+import { BRAND, REDACTED_SECRET_TOKEN } from "../util/brand.js";
 
 // ---------------------------------------------------------------------------
 // Public types
@@ -351,7 +351,7 @@ function manifest(data: ReviewData): string {
     severityCounts: { ...data.severityCounts },
     ...(data.review.parseFailed === true ? { parseFailed: true } : {}),
   };
-  return `<!-- umactually-pr-review:manifest ${JSON.stringify(payload)} -->`;
+  return `${MANIFEST_MARKER_PREFIX}${JSON.stringify(payload)}${MANIFEST_MARKER_SUFFIX}`;
 }
 
 /** Compose the verdict badge. Mirrors `verdictBadge` in live-shared.ts. */
@@ -1182,7 +1182,7 @@ function layoutTerminal(data: ReviewData): string {
   parts.push("");
   parts.push("```text");
   parts.push("┌──────────────────────────────────────────────────────────┐");
-  parts.push(`│ umactually-pr-review · ${verdict.padEnd(36)} │`);
+  parts.push(`│ ${BRAND} · ${verdict.padEnd(36)} │`);
   parts.push("├──────────────────────────────────────────────────────────┤");
   parts.push(`│ Provider : ${(redact(data.provider, data.secrets) || "?").padEnd(45)} │`);
   parts.push(`│ Model    : ${(redact(data.modelId, data.secrets) || "?" ).padEnd(45)} │`);

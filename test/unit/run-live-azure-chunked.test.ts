@@ -13,6 +13,7 @@ import { describe, expect, it } from "vitest";
 
 import { parseCliArgs } from "../../src/cli.js";
 import { runLive } from "../../src/cli/orchestrator.js";
+import { REVIEW_MARKER } from "../../src/util/marker.js";
 import {
   AZURE_NEW_OBJECT_ID,
   AZURE_OLD_OBJECT_ID,
@@ -312,7 +313,7 @@ describe("runLive Azure orchestration — chunked path", () => {
     const parentBody = readRecord(parentPosts[0]!.body as Record<string, unknown>, "parent thread request");
     const parentFirstComment = readRecord(readArray(parentBody["comments"], "parent comments")[0] as Record<string, unknown>, "parent first comment");
     const parentBodyText = String(parentFirstComment["content"]);
-    expect(parentBodyText).toContain("<!-- umactually-pr-review -->");
+    expect(parentBodyText).toContain(REVIEW_MARKER);
     expect(parentBodyText).toContain("⛔ NEEDS_FIX");
   });
 
