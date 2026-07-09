@@ -1,9 +1,13 @@
 import { runCopilotRequest } from "../provider/copilot.js";
 import {
   runProviderRequest,
+  type ProviderCallResult,
   type ProviderReviewPayload,
 } from "../provider/openai-compatible.js";
-import { runAnthropicRequest } from "../provider/anthropic-messages.js";
+import {
+  runAnthropicRequest,
+  type AnthropicProviderCallResult,
+} from "../provider/anthropic-messages.js";
 import {
   setActiveSeveritySink,
   type ResponseFormat,
@@ -11,7 +15,7 @@ import {
   type SeverityWarningSink,
 } from "../provider/provider-parse.js";
 import type { ProviderEndpoint } from "../provider/provider-error.js";
-import { redactUrlForLog } from "../util/url.js";
+import { looksLikeAnthropicEndpoint, redactUrlForLog } from "../util/url.js";
 import { scanReviewSecrets } from "../security/scan-review-secrets.js";
 import { BRAND_PREFIX } from "../util/brand.js";
 import { resolveAutoModel } from "./auto-model.js";
@@ -273,18 +277,59 @@ export async function requestLiveReview(input: {
     }
 
     const providerUrl = readRequiredConfig(input.parsed.apiUrl ?? input.env["UMACTUALLY_API_URL"], "UMACTUALLY_API_URL");
-    let result = await runProviderRequest({
-      baseUrl: providerUrl,
-      apiKey: providerApiKey,
-      model: modelId,
-      system: prompts.system,
-      user: prompts.user,
-      requestTimeoutMs: readRequestTimeoutMs(input.parsed),
-      ...(input.parsed.maxOutputTokens !== null ? { maxOutputTokens: input.parsed.maxOutputTokens } : {}),
-      ...(input.parsed.effort !== null ? { reasoningEffort: input.parsed.effort } : {}),
-      ...(responseFormat !== undefined ? { responseFormat } : {}),
-      fetchImpl: input.fetchImpl,
-    });
+
+    // Path-prefix heuristic: if the operator's URL looks like an
+    // Anthropic-protocol gateway (any path segment equal to
+    // `anthropic`, case-insensitive — MiniMax's `/anthropic`,
+    // self-hosted LiteLLM `/llm/anthropic`, etc.) commit to the
+    // Anthropic Messages API client regardless of which `--provider`
+    // was set. Otherwise the openai-compatible client's URL
+    // candidate loop downgrades the URL to origin+`/v1` and may
+    // happily succeed there, silently routing an `/anthropic`-prefix
+    // URL to OpenAI Responses — which breaks operator intent on
+    // dual-protocol gateways.
+    //
+    // The explicit `--provider anthropic` branch above already handles
+    // this. The only flips this heuristic triggers is
+    // `--provider openai-compatible` (the default) on a URL whose
+    // `/anthropic` path component signals Anthropic-protocol intent.
+    //
+    // Emit a ::notice:: even when --provider=anthropic so operators see
+    // the dispatcher considered and committed to the right protocol —
+    // invisible-to-the-eye but logged for audit.
+    const useAnthropicProtocol = looksLikeAnthropicEndpoint(providerUrl);
+    if (useAnthropicProtocol) {
+      process.stderr.write(
+        `::notice::${BRAND_PREFIX}Operator URL contains an /anthropic path segment; using the Anthropic Messages API client (not the default openai-compatible).\n`,
+      );
+    }
+
+    let result: ProviderCallResult | AnthropicProviderCallResult;
+    if (useAnthropicProtocol) {
+      result = await runAnthropicRequest({
+        baseUrl: providerUrl,
+        apiKey: providerApiKey,
+        model: modelId,
+        system: prompts.system,
+        user: prompts.user,
+        requestTimeoutMs: readRequestTimeoutMs(input.parsed),
+        ...(input.parsed.maxOutputTokens !== null ? { maxOutputTokens: input.parsed.maxOutputTokens } : {}),
+        fetchImpl: input.fetchImpl,
+      });
+    } else {
+      result = await runProviderRequest({
+        baseUrl: providerUrl,
+        apiKey: providerApiKey,
+        model: modelId,
+        system: prompts.system,
+        user: prompts.user,
+        requestTimeoutMs: readRequestTimeoutMs(input.parsed),
+        ...(input.parsed.maxOutputTokens !== null ? { maxOutputTokens: input.parsed.maxOutputTokens } : {}),
+        ...(input.parsed.effort !== null ? { reasoningEffort: input.parsed.effort } : {}),
+        ...(responseFormat !== undefined ? { responseFormat } : {}),
+        fetchImpl: input.fetchImpl,
+      });
+    }
 
     if (!result.ok) {
       // Cross-protocol fallback: if the named (openai-compatible) client

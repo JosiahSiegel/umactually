@@ -146,31 +146,38 @@ function makeBase(args: Args) {
   };
 }
 
-describe("cross-protocol fallback: openai-compatible falls back to anthropic-protocol at /anthropic/v1/messages", () => {
-  it("DISPATCH-OPEN-FALLBACK-001: openai-compatible against /anthropic falls back to anthropic protocol when ALL OpenAI candidates 404", async () => {
-    // Operator typed --api-url https://api.minimax.io/anthropic and
-    // --provider openai-compatible. The OpenAI client tries
-    // `/anthropic/responses` then `/anthropic/chat/completions`,
-    // then advances to the origin+`/v1` fallback which tries
-    // `/v1/responses` then `/v1/chat/completions`. All four 404.
-    // The dispatcher should NOT give up; it should fall back to the
-    // Anthropic protocol at `/anthropic/v1/messages` using the
-    // Anthropic wire shape (x-api-key header, top-level `system`,
-    // etc.).
+describe("cross-protocol fallback: openai-compatible falls back to anthropic-protocol when ALL OpenAI candidates 404 and the URL is NOT heuristically committed to Anthropic", () => {
+  it("DISPATCH-OPEN-FALLBACK-001: openai-compatible against a non-Anthropic-prefixed URL that has no OpenAI route falls back to anthropic protocol when ALL OpenAI candidates 404", async () => {
+    // Operator typed --api-url https://api.example.com/anthropic-v2 and
+    // --provider openai-compatible. The path-prefix heuristic
+    // (`looksLikeAnthropicEndpoint`) does NOT commit to Anthropic here
+    // because the path segment is 'anthropic-v2', not 'anthropic' — the
+    // heuristic only triggers on exact-segment matches. So the openai-
+    // compatible client runs its full candidate loop:
+    //   /anthropic-v2/responses + /anthropic-v2/chat/completions → 404
+    //   /v1/responses + /v1/chat/completions → 404 (origin fallback)
+    // All four 404. The dispatcher should NOT give up; it should fall
+    // back to the Anthropic protocol at `/anthropic-v2/v1/messages`
+    // using the Anthropic wire shape (x-api-key header).
+    //
+    // (When the URL is /anthropic flat, the path-prefix heuristic
+    // commits to Anthropic protocol directly without going through
+    // the cross-protocol fallback block. That case is covered by
+    // HEURISTIC-DISPATCH-001 in the heuristic describe block below.)
     const stub = makeFetchStub([
-      // URL candidate 1: /anthropic — both endpoints 404
-      { status: 404, body: "404 page not found" },  // /anthropic/responses
-      { status: 404, body: "404 page not found" },  // /anthropic/chat/completions
+      // URL candidate 1: /anthropic-v2 — both endpoints 404
+      { status: 404, body: "404 page not found" },  // /anthropic-v2/responses
+      { status: 404, body: "404 page not found" },  // /anthropic-v2/chat/completions
       // URL candidate 2: /v1 (origin fallback) — both endpoints 404
       { status: 404, body: "404 page not found" },  // /v1/responses
       { status: 404, body: "404 page not found" },  // /v1/chat/completions
-      // Anthropic-protocol fallback: /anthropic/v1/messages 200
+      // Anthropic-protocol fallback: /anthropic-v2/v1/messages 200
       { status: 200, body: anthropicSuccessResponses(SUCCESS_TEXT_ANTH) },
     ]);
     const dispatcher = await loadDispatcher();
     const parsed = makeBase({
       provider: "openai-compatible",
-      apiUrl: "https://api.minimax.io/anthropic",
+      apiUrl: "https://api.example.com/anthropic-v2",
       apiKey: "sk-anth-fallback-secret-do-not-leak",
       fetchImpl: stub.fetch,
       env: {},
@@ -190,10 +197,13 @@ describe("cross-protocol fallback: openai-compatible falls back to anthropic-pro
     expect(outcome.endpoint).toBe("anthropic");
     expect(outcome.provider).toBe("anthropic-messages");
     expect(stub.calls.length).toBeGreaterThanOrEqual(5);
+    // The Anthropic client preserves the operator's path prefix per
+    // resolveAnthropicMessagesUrl, so /anthropic-v2 resolves to
+    // /anthropic-v2/v1/messages, NOT /anthropic/v1/messages.
     const fallbackCall = stub.calls.find(c =>
-      c.url.endsWith("/anthropic/v1/messages")
+      c.url.endsWith("/anthropic-v2/v1/messages")
     );
-    expect(fallbackCall, "expected a call to /anthropic/v1/messages").toBeDefined();
+    expect(fallbackCall, "expected a call to /anthropic-v2/v1/messages").toBeDefined();
     expect(fallbackCall?.headers["x-api-key"]).toBe("sk-anth-fallback-secret-do-not-leak");
     expect(fallbackCall?.headers["anthropic-version"]).toBe("2023-06-01");
     expect(fallbackCall?.headers["authorization"]).toBeUndefined();
@@ -331,5 +341,192 @@ describe("cross-protocol fallback dual-failure surface", () => {
     // Both protocols were attempted.
     expect(stub.calls.some((c) => c.url.endsWith("/v1/messages"))).toBe(true);
     expect(stub.calls.some((c) => c.url.endsWith("/v1/responses"))).toBe(true);
+  });
+});
+
+describe("path-prefix heuristic: /anthropic URL commits to Anthropic protocol even when --provider=openai-compatible", () => {
+  it("HEURISTIC-DISPATCH-001: provider=openai-compatible + URL=https://api.minimax.io/anthropic posts to /anthropic/v1/messages with x-api-key (NOT OpenAI /v1/responses)", async () => {
+    // Regression: previously the openai-compatible client's URL
+    // candidate loop downgraded the URL to /v1 (origin+/v1) and
+    // MiniMax serves OpenAI there too, so the action silently
+    // posted a /v1/responses OpenAI-Responses call. With the
+    // path-prefix heuristic, the dispatcher should commit to
+    // the Anthropic Messages API client. Stub the Anthropic
+    // endpoint returning 200 and confirm the dispatcher POSTs
+    // there (not /v1/responses).
+    const stub = makeFetchStub([
+      { status: 200, body: anthropicSuccessResponses("heuristic-dispatch-001 summary") },
+    ]);
+    const dispatcher = await loadDispatcher();
+    const parsed = makeBase({
+      provider: "openai-compatible",
+      apiUrl: "https://api.minimax.io/anthropic",
+      apiKey: "sk-minimax-smoke-test-do-not-leak",
+      fetchImpl: stub.fetch,
+      env: {},
+    });
+    const outcome = await dispatcher.requestLiveReview({
+      parsed,
+      cwd: process.cwd(),
+      env: {},
+      fetchImpl: stub.fetch,
+      platform: "github",
+      diffText,
+      platformToken: "gh-token",
+    });
+
+    // The Anthropic-protocol endpoint was hit (x-api-key + /v1/messages path).
+    expect(stub.calls.some((c) => c.url.endsWith("/anthropic/v1/messages"))).toBe(true);
+    // The OpenAI-protocol endpoint was NOT hit (no /v1/responses, no /v1/chat/completions).
+    expect(stub.calls.some((c) => c.url.endsWith("/v1/responses"))).toBe(false);
+    expect(stub.calls.some((c) => c.url.endsWith("/v1/chat/completions"))).toBe(false);
+
+    // The Anthropic client outcome attribute should be recovered (not
+    // the default openai-compatible) — this is THE bug we're fixing.
+    // The summary string comes from the parse-fail fallback review
+    // (not the model output), so we don't pin a literal string here;
+    // the URL+attribute check pins the contract.
+    expect(outcome.provider).toBe("anthropic-messages");
+    expect(outcome.endpoint).toBe("anthropic");
+    // The Anthropic-protocol call was made with the right auth headers.
+    const anthropicCall = stub.calls.find((c) => c.url.endsWith("/anthropic/v1/messages"));
+    expect(anthropicCall?.headers["x-api-key"]).toBe("sk-minimax-smoke-test-do-not-leak");
+    expect(anthropicCall?.headers["anthropic-version"]).toBe("2023-06-01");
+  });
+
+  it("HEURISTIC-DISPATCH-002: provider=openai-compatible + URL=https://gateway.example.com/llm/anthropic commits to Anthropic (self-hosted gateway case)", async () => {
+    // The heuristic is path-segment based, not hostname-based.
+    // Self-hosted Anthropic-protocol gateways under arbitrary paths
+    // (LiteLLM-style `/llm/anthropic`, Portkey-style `/v1/anthropic`)
+    // also commit to the Anthropic Messages API.
+    const stub = makeFetchStub([
+      { status: 200, body: anthropicSuccessResponses("llm/anthropic summary") },
+    ]);
+    const dispatcher = await loadDispatcher();
+    const parsed = makeBase({
+      provider: "openai-compatible",
+      apiUrl: "https://gateway.example.com/llm/anthropic",
+      apiKey: "sk-test-llm-anthropic-do-not-leak",
+      fetchImpl: stub.fetch,
+      env: {},
+    });
+    const outcome = await dispatcher.requestLiveReview({
+      parsed,
+      cwd: process.cwd(),
+      env: {},
+      fetchImpl: stub.fetch,
+      platform: "github",
+      diffText,
+      platformToken: "gh-token",
+    });
+    expect(stub.calls.some((c) => c.url.endsWith("/llm/anthropic/v1/messages"))).toBe(true);
+    expect(outcome.provider).toBe("anthropic-messages");
+  });
+
+  it("HEURISTIC-DISPATCH-003: provider=openai-compatible + URL=https://api.openai.com/v1 (no /anthropic) stays OpenAI", async () => {
+    // Negative case: a vanilla OpenAI URL with no /anthropic segment
+    // must NOT commit to Anthropic — the dispatcher stays on the
+    // OpenAI client and POSTs to /v1/responses as today.
+    const stub = makeFetchStub([
+      { status: 200, body: openaiSuccessResponses("vanilla openai") },
+    ]);
+    const dispatcher = await loadDispatcher();
+    const parsed = makeBase({
+      provider: "openai-compatible",
+      apiUrl: "https://api.openai.com/v1",
+      apiKey: "sk-test-openai-do-not-leak",
+      fetchImpl: stub.fetch,
+      env: {},
+    });
+    const outcome = await dispatcher.requestLiveReview({
+      parsed,
+      cwd: process.cwd(),
+      env: {},
+      fetchImpl: stub.fetch,
+      platform: "github",
+      diffText,
+      platformToken: "gh-token",
+    });
+    expect(stub.calls.some((c) => c.url.endsWith("/v1/responses"))).toBe(true);
+    expect(stub.calls.some((c) => c.url.endsWith("/v1/messages"))).toBe(false);
+    expect(outcome.provider).toBe("openai-compatible");
+    expect(outcome.endpoint).toBe("responses");
+  });
+
+  it("HEURISTIC-DISPATCH-004: provider=anthropic + URL=https://api.minimax.io/anthropic still commits to Anthropic (heuristic is a no-op when explicit)", async () => {
+    // The explicit --provider=anthropic branch already handles this case.
+    // Sanity check: with explicit anthropic, the dispatcher hits the
+    // Anthropic endpoint via the normal anthropic-client path, not via
+    // the heuristic gate.
+    const stub = makeFetchStub([
+      { status: 200, body: anthropicSuccessResponses("explicit anthropic") },
+    ]);
+    const dispatcher = await loadDispatcher();
+    const parsed = makeBase({
+      provider: "anthropic",
+      apiUrl: "https://api.minimax.io/anthropic",
+      apiKey: "sk-explicit-anthropic-do-not-leak",
+      fetchImpl: stub.fetch,
+      env: {},
+    });
+    const outcome = await dispatcher.requestLiveReview({
+      parsed,
+      cwd: process.cwd(),
+      env: {},
+      fetchImpl: stub.fetch,
+      platform: "github",
+      diffText,
+      platformToken: "gh-token",
+    });
+    expect(stub.calls.some((c) => c.url.endsWith("/anthropic/v1/messages"))).toBe(true);
+    expect(stub.calls.some((c) => c.url === "https://api.minimax.io/anthropic/v1/messages")).toBe(true);
+    expect(outcome.provider).toBe("anthropic-messages");
+  });
+
+  it("HEURISTIC-DISPATCH-005: provider=openai-compatible + URL=https://api.example.com/anthropic-v2 does NOT commit (path segment 'anthropic-v2' != 'anthropic')", async () => {
+    // The path-segment match is exact (case-insensitive). 'anthropic-v2'
+    // is its own segment — not the literal 'anthropic'. The heuristic
+    // stays on the OpenAI client and lets the openai client's URL
+    // candidate loop try /anthropic-v2/responses etc., eventually
+    // falling back via the cross-protocol layer when everything 404s.
+    const stub = makeFetchStub([
+      // /anthropic-v2/responses + /anthropic-v2/chat/completions (openai
+      // client's candidate loop, both 404 because /anthropic-v2 doesn't
+      // exist) — then cross-protocol fallback to Anthropic at
+      // /anthropic-v2/v1/messages (also 404 because the path is wrong).
+      { status: 404, body: "404 page not found" }, // /anthropic-v2/responses
+      { status: 404, body: "404 page not found" }, // /anthropic-v2/chat/completions
+      { status: 404, body: "404 page not found" }, // /v1/responses (origin fallback)
+      { status: 404, body: "404 page not found" }, // /v1/chat/completions
+      { status: 404, body: "404 page not found" }, // /anthropic-v2/v1/messages (anthropic fallback)
+    ]);
+    const dispatcher = await loadDispatcher();
+    const parsed = makeBase({
+      provider: "openai-compatible",
+      apiUrl: "https://api.example.com/anthropic-v2",
+      apiKey: "sk-anthropic-v2-do-not-leak",
+      fetchImpl: stub.fetch,
+      env: {},
+    });
+    let capturedError: unknown;
+    try {
+      await dispatcher.requestLiveReview({
+        parsed,
+        cwd: process.cwd(),
+        env: {},
+        fetchImpl: stub.fetch,
+        platform: "github",
+        diffText,
+        platformToken: "gh-token",
+      });
+    } catch (error) {
+      capturedError = error;
+    }
+    // The OpenAI client's URL candidate loop ran, advanced to the
+    // Anthropic-protocol fallback (because /anthropic-v2 didn't 200 on
+    // OpenAI), but ultimately failed — surfaced as expected.
+    expect(capturedError).toBeInstanceOf(Error);
+    // /anthropic-v2/v1/messages was attempted (cross-protocol fallback).
+    expect(stub.calls.some((c) => c.url.endsWith("/anthropic-v2/v1/messages"))).toBe(true);
   });
 });
