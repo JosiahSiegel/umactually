@@ -88,7 +88,11 @@ Override the base URL (for a self-hosted Anthropic-protocol gateway) via `api-ur
 
 ### Anthropic-compatible gateways and MiniMax
 
-Some providers serve both Anthropic-protocol and OpenAI-protocol endpoints under the same hostname at different path prefixes. The action handles this transparently: **when the operator-picked provider returns a routing-level rejection (404) at the URL, the dispatcher automatically retries the OTHER protocol at the same URL.** On dual-protocol gateways the operator doesn't have to know which protocol lives under which path prefix.
+Some providers serve both Anthropic-protocol and OpenAI-protocol endpoints under the same hostname at different path prefixes. The action handles this transparently with two layers:
+
+1. **Path-prefix heuristic** (`looksLikeAnthropicEndpoint` in `src/util/url.ts`): when the operator's `--api-url` has any path segment equal to `anthropic` (case-insensitive, byte-for-byte — `https://api.minimax.io/anthropic`, `https://gateway.example.com/llm/anthropic`, `https://api.example.com/v1/anthropic` all match), the dispatcher commits to the Anthropic Messages API client regardless of `--provider`. This prevents the openai-compatible client's URL-candidate loop from silently downgrading `/anthropic` to origin+`/v1` (where MiniMax also serves OpenAI and the openai loop would happily succeed with the wrong protocol). A `::notice::` is emitted on every URL that triggers the heuristic so the operator can audit the dispatcher's decision.
+
+2. **Cross-protocol fallback** (PR #32): when the named provider (or the committed one from the heuristic) returns a routing-level rejection (404), the dispatcher retries the OTHER protocol at the same URL. Strictly limited to 404 — payload-level 400s do NOT trigger the fallback, because switching protocols on 400 would silently mask wire-shape bugs.
 
 ```yaml
       - uses: ./
@@ -99,9 +103,9 @@ Some providers serve both Anthropic-protocol and OpenAI-protocol endpoints under
           UMACTUALLY_API_KEY: ${{ secrets.MINIMAX_API_KEY }}
 ```
 
-The action tries OpenAI first (`/anthropic/responses`, `/anthropic/chat/completions`, `/v1/responses`, `/v1/chat/completions` — all 404 on MiniMax's anthropic prefix), then falls back to the Anthropic protocol and POSTs `https://api.minimax.io/anthropic/v1/messages` successfully. Set `--provider anthropic --api-url https://api.minimax.io/v1` for the inverse. The trace is logged via `::notice::` annotations so operators can see which protocol actually produced the review (see `artifacts/manual/s1-github-self-review.md` after a run).
+On this URL the heuristic commits to the Anthropic Messages API client and POSTs `https://api.minimax.io/anthropic/v1/messages` with `x-api-key` + `anthropic-version: 2023-06-01` headers — the wire shape MiniMax prescribes for this path. Set `--provider anthropic --api-url https://api.minimax.io/v1` for the inverse. The protocol actually used is recovered in `outcome.provider` and reflected in the review attribution (see `artifacts/manual/s1-github-self-review.md` after a run).
 
-Cross-protocol fallback is **strictly limited to 404** — payload-level 400s (e.g. unsupported parameter on a wire shape) do NOT trigger the fallback, because switching protocols on 400 would silently mask wire-shape bugs. See [docs/providers.md#cross-protocol-auto-discovery-the-dispatcher](docs/providers.md#cross-protocol-auto-discovery-the-dispatcher) for the rules.
+See [docs/providers.md#cross-protocol-auto-discovery-the-dispatcher](docs/providers.md#cross-protocol-auto-discovery-the-dispatcher) for the full dispatch decision tree.
 
 For a first-time import or vendoring PR that exceeds the 200-file default cap, set `review-file-limit: 0` (or your desired ceiling) to opt in to chunked review:
 
