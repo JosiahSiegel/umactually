@@ -640,6 +640,58 @@ describe("openai-compatible provider client", () => {
     expect(retryUser).toMatch(/review payload/u);
   });
 
+  it("PROV-UNIT-022b: self-healing retry DROPS the strict response_format constraint", async () => {
+    // Some providers (notably MiniMax) silently reject the wire
+    // `response_format: { type: "json_schema" }` constraint and
+    // produce prose instead of JSON. The retry path detects this
+    // (parse fails) and retries WITHOUT the wire schema — letting
+    // the system prompt's "Return strict JSON only" prose
+    // instruction carry the contract. This makes the action
+    // dynamically adapt to any provider without a hardcoded
+    // compatibility list.
+    //
+    // The test verifies: the first call's body includes
+    // `text: { format: { type: "json_schema", strict: true, schema: ... } }`
+    // (the wire schema), and the retry's body does NOT include
+    // that constraint — so a provider that ignores it on retry
+    // can freeform JSON without a malformed-schema penalty.
+    const reviewJson = JSON.stringify({
+      summary: "Recovered on retry without schema.",
+      verdict: "DISCUSS",
+      comments: [],
+      suppressed_comments: [],
+    });
+    const stub = makeFetchStub([
+      { status: 200, body: "provider returned prose instead of JSON" },
+      { status: 200, body: reviewJson },
+    ]);
+    const configWithSchema = {
+      ...BASE_CONFIG,
+      responseFormat: {
+        type: "json_schema" as const,
+        strict: true as const,
+        schema: { type: "object" },
+      },
+    };
+
+    const result = await runProviderRequest({ ...configWithSchema, fetchImpl: stub.fetch });
+
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.review.summary).toBe("Recovered on retry without schema.");
+    }
+
+    // First call: must include the wire schema (text.format.type === "json_schema").
+    const firstBody = stub.calls[0]?.body as { readonly text?: { readonly format?: { readonly type?: string } } } | undefined;
+    expect(firstBody?.text?.format?.type).toBe("json_schema");
+
+    // Retry: must NOT include the wire schema. The system prompt's
+    // "Return strict JSON only" prose instruction is the only
+    // remaining contract.
+    const retryBody = stub.calls[1]?.body as { readonly text?: { readonly format?: { readonly type?: string } } } | undefined;
+    expect(retryBody?.text?.format).toBeUndefined();
+  });
+
   it("PROV-UNIT-023: treats a non-review JSON object (e.g. chat-format fed to responses endpoint) as a parse failure", async () => {
     // Before CLARITY-10, the parser was permissive: any JSON object
     // became a (likely empty) review. That masked real failures.

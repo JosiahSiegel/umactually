@@ -2494,7 +2494,7 @@ function readThreadComments(value) {
 
 ;// CONCATENATED MODULE: ./src/diff/parse-positions.ts
 
-function parseDiffPositions(diffText) {
+function parse_positions_parseDiffPositions(diffText) {
     const linesByPath = new Map();
     // preserve the order in which right-side positions were first observed so
     // callers (e.g. simulated-findings) can pick the first N anchor points
@@ -2608,7 +2608,7 @@ function addLine(linesByPath, path, line) {
 async function runReview(contract) {
     parseEvent(contract.eventJson);
     const review = run_review_parseProviderReview(contract.providerReviewJson);
-    const positions = parseDiffPositions(contract.diffText);
+    const positions = parse_positions_parseDiffPositions(contract.diffText);
     // Always run secret scan before posting — leaks block raw output regardless of flags.
     await scanReviewSecrets({
         diffText: contract.diffText,
@@ -2850,6 +2850,56 @@ function extractOrigin(baseUrl) {
         const authority = firstSlash === -1 ? afterScheme : afterScheme.slice(0, firstSlash);
         return baseUrl.slice(0, schemeSep + sepLen) + authority;
     }
+}
+/**
+ * Extract the hostname from a URL string. Returns null when the
+ * input is empty, malformed, or a bare string without a scheme
+ * separator. The caller is expected to fall back to a sensible
+ * default when null is returned.
+ *
+ * Why hostname-only: substring matching on the full URL is too
+ * loose. A URL like `https://example.com/minimax-router` would
+ * falsely match `url.includes("minimax")` and pick a MiniMax
+ * model. The hostname extract prevents that — `example.com`
+ * doesn't contain `minimax`, so the model is the default.
+ *
+ * The returned hostname is always lowercased so callers can compare
+ * directly against lowercase host keys. `URL.hostname` is already
+ * lowercased per the WHATWG URL spec; the manual fallback path
+ * (for scheme-less URLs) explicitly lowercases to keep the
+ * case-insensitive match consistent regardless of whether the
+ * URL had a parseable scheme.
+ *
+ * Examples:
+ *   - `https://api.example.com/v1`        → `api.example.com`
+ *   - `API.MINIMAX.IO`                    → `api.minimax.io`
+ *   - `localhost:8080`                    → null (`new URL("localhost:8080")`
+ *     parses with empty hostname because `localhost` is not a
+ *     special scheme; the function returns null for empty hosts)
+ *   - `` (empty string)                   → null
+ */
+function url_extractHostname(baseUrl) {
+    const trimmed = baseUrl.trim();
+    if (trimmed.length === 0)
+        return null;
+    let host;
+    try {
+        host = new URL(trimmed).hostname;
+    }
+    catch {
+        // Fallback: scheme-less URLs (`API.MINIMAX.IO`, `localhost:8080`)
+        // don't parse with `new URL()`. Strip the scheme manually, then
+        // read up to the first `/` or `:`.
+        const schemeSep = trimmed.indexOf("://");
+        const afterScheme = schemeSep === -1 ? trimmed : trimmed.slice(schemeSep + 3);
+        const firstSlash = afterScheme.indexOf("/");
+        const firstColon = afterScheme.indexOf(":");
+        const stop = firstSlash === -1 ? afterScheme.length : firstSlash;
+        host = firstColon === -1 || firstColon > stop
+            ? afterScheme.slice(0, stop)
+            : afterScheme.slice(0, firstColon);
+    }
+    return host.length > 0 ? host.toLowerCase() : null;
 }
 /**
  * Return the ORDERED list of base URL candidates to try when calling
@@ -6533,10 +6583,36 @@ function extractTextPayload(endpoint, rawText) {
                 if (fromOutput.length > 0) {
                     return fromOutput;
                 }
+                // The response had an `output[]` array but `joinOutputText`
+                // produced nothing — every entry was a reasoning block the
+                // parser intentionally skipped. Returning the raw envelope
+                // would leak the chain-of-thought prose (stored in the
+                // reasoning parts) into the extracted text, which then
+                // fails `parseReviewPayload` because the first balanced `{`
+                // is inside the reasoning prose. Return empty so the
+                // strict-empty-fields check downstream classifies it as
+                // a parse failure.
+                if (output.length > 0) {
+                    // Reasoning-fallback: some providers (notably MiniMax-M3)
+                    // write a draft of the final review JSON inside their
+                    // reasoning block, then run out of output budget before
+                    // emitting it as the formal `output_text` answer. The
+                    // reasoning can contain MULTIPLE drafts of the review
+                    // (the model revises as it reasons); we want the LAST
+                    // valid one, which is the most refined. If we find one,
+                    // return it so `parseReviewPayload` can produce a real
+                    // review instead of a parse-fail.
+                    const recovered = extractLastReviewDraftFromReasoning(output);
+                    if (recovered !== null) {
+                        return recovered;
+                    }
+                    return "";
+                }
             }
-            // Not in the Responses API shape — fall through to raw text
-            // so `parseReviewPayload` can extract a direct review JSON
-            // object (model returned `{"summary": ..., "verdict": ...}`).
+            // No `output[]` array at all — fall through to raw text so
+            // `parseReviewPayload` can extract a direct review JSON object
+            // (model returned `{"summary": ..., "verdict": ...}` outside
+            // the Responses API envelope).
         }
         else {
             // Chat completions.
@@ -6903,6 +6979,17 @@ function joinOutputText(output) {
                 if (!isRecord(part)) {
                     continue;
                 }
+                // The Responses API puts reasoning content in a separate
+                // `type: "reasoning_text"` part. Including it would concat
+                // 100+ KB of chain-of-thought prose ahead of the final JSON
+                // answer and break `parseReviewPayload` (the first balanced
+                // `{` is in the reasoning prose, not the real output). Skip
+                // any part whose type is in the reasoning family — the
+                // `output_text` (or untyped) parts are the actual review.
+                const partType = part["type"];
+                if (typeof partType === "string" && partType.includes("reasoning")) {
+                    continue;
+                }
                 const text = part["text"];
                 if (typeof text === "string") {
                     fragments.push(text);
@@ -6912,6 +6999,10 @@ function joinOutputText(output) {
         }
         // Chat-style: content is a single object with a text field.
         if (isRecord(content)) {
+            const contentType = content["type"];
+            if (typeof contentType === "string" && contentType.includes("reasoning")) {
+                continue;
+            }
             const text = content["text"];
             if (typeof text === "string") {
                 fragments.push(text);
@@ -6919,6 +7010,77 @@ function joinOutputText(output) {
         }
     }
     return fragments.join("\n");
+}
+/**
+ * Some providers (notably MiniMax-M3) write a draft of the final
+ * review JSON inside their reasoning block — the model narrates
+ * "let me write the JSON: ```json\n{...}\n```" as part of its
+ * chain-of-thought — then runs out of the output budget before the
+ * formal `output_text` field gets emitted. The response.completed
+ * envelope then has `output[]` containing only reasoning entries,
+ * and the actual review is recoverable only from inside the
+ * reasoning text.
+ *
+ * The reasoning can contain MULTIPLE drafts (the model revises its
+ * own answer as it reasons). We want the LAST valid review-shaped
+ * JSON object — that's the most refined version, closest to what
+ * the model would have emitted.
+ *
+ * Returns the JSON string (the contents of the last ```json fenced
+ * block that parses as a review) or `null` if no valid draft is
+ * found. The returned string is the raw JSON, which downstream
+ * `parseReviewPayload` will re-parse and validate.
+ */
+function extractLastReviewDraftFromReasoning(output) {
+    let lastDraft = null;
+    for (const entry of output) {
+        if (!isRecord(entry))
+            continue;
+        const content = entry["content"];
+        if (!Array.isArray(content))
+            continue;
+        for (const part of content) {
+            if (!isRecord(part))
+                continue;
+            const partType = part["type"];
+            if (typeof partType === "string" && !partType.includes("reasoning")) {
+                // Not a reasoning part — skip.
+                continue;
+            }
+            const text = part["text"];
+            if (typeof text !== "string")
+                continue;
+            // Scan this reasoning block for fenced JSON objects.
+            // The model uses ```json, ```typescript, or just ``` fences.
+            // The opener accepts any language tag (or none); the body is
+            // captured up to the next ``` closer. Bodies that don't start
+            // with `{` (code snippets, typescript signatures, plain prose)
+            // are skipped — only review-shaped JSON objects are kept.
+            const fenceRe = /```[a-zA-Z0-9_+\-]*\s*\n([\s\S]*?)\n```/gu;
+            let m;
+            while ((m = fenceRe.exec(text)) !== null) {
+                const body = m[1]?.trim() ?? "";
+                if (!body.startsWith("{"))
+                    continue;
+                try {
+                    const parsed = JSON.parse(body);
+                    if (!isRecord(parsed))
+                        continue;
+                    // Must look like a review: has summary or verdict or comments.
+                    if ("summary" in parsed ||
+                        "verdict" in parsed ||
+                        "comments" in parsed) {
+                        lastDraft = body;
+                    }
+                }
+                catch {
+                    // Not valid JSON — skip; the model often writes
+                    // partial JSON in its thinking that doesn't parse.
+                }
+            }
+        }
+    }
+    return lastDraft;
 }
 function provider_parse_readCommentArray(value, context) {
     if (!isUnknownArray(value)) {
@@ -7162,6 +7324,17 @@ function tryExtractSse(rawText) {
         const wrappedResponse = readRecordField(parsed, "response");
         if (wrappedResponse !== null) {
             const eventType = readStringField(parsed, "type");
+            // Skip reasoning-text deltas entirely. Some providers (e.g.
+            // MiniMax-M3) emit `response.reasoning_text.delta` events
+            // alongside the final answer. Concat-ing them into `fragments`
+            // would prepend 100+ KB of chain-of-thought prose ahead of the
+            // JSON review, breaking `parseReviewPayload` (the first
+            // balanced `{` would be inside the reasoning prose). The actual
+            // review text is in `response.output_text.delta` and the final
+            // `response.completed` event.
+            if (typeof eventType === "string" && eventType.includes("reasoning")) {
+                continue;
+            }
             if (eventType === "response.completed" || eventType === "response.done") {
                 // Final event: prefer the full response payload if it has output_text.
                 const outText = readStringField(wrappedResponse, "output_text");
@@ -7203,7 +7376,12 @@ function tryExtractSse(rawText) {
             continue;
         }
         // /responses streaming (alternative non-OpenAI variant): top-level delta
-        // string directly on the JSON object.
+        // string directly on the JSON object. Skip reasoning deltas — they
+        // are chain-of-thought prose, not part of the final review payload.
+        const topLevelType = readStringField(parsed, "type");
+        if (typeof topLevelType === "string" && topLevelType.includes("reasoning")) {
+            continue;
+        }
         const deltaText = readStringField(parsed, "delta");
         if (deltaText !== null) {
             fragments.push(deltaText);
@@ -7861,14 +8039,32 @@ function buildTooLargeFallback(input) {
     };
 }
 function selectPostableComments(input) {
-    const positions = parseDiffPositions(input.diffText);
+    return selectPostableCommentsWithPositions({
+        review: input.review,
+        positions: parseDiffPositions(input.diffText),
+        parsed: input.parsed,
+        secrets: input.secrets,
+    });
+}
+/**
+ * Internal variant of `selectPostableComments` that accepts a
+ * pre-computed `DiffPositionIndex`. Use this when the caller has
+ * already parsed the diff (e.g. `preparePostedReview` calls
+ * `selectPostableComments`, `selectOffDiffComments`, and
+ * `countSuppressedComments` in sequence, and each was previously
+ * re-parsing the same diff). Eliminating the duplicate parse is a
+ * meaningful win for large PRs — a 5000-line diff parses in
+ * single-digit ms, but `preparePostedReview` was doing it 3x
+ * per review.
+ */
+function selectPostableCommentsWithPositions(input) {
     const maxComments = input.parsed.maxComments ?? DEFAULT_MAX_COMMENTS;
     const comments = [];
     for (const comment of input.review.comments) {
         if (comments.length >= maxComments) {
             break;
         }
-        if (!positions.hasPosition(comment)) {
+        if (!input.positions.hasPosition(comment)) {
             continue;
         }
         if (!passesSeverityPolicy(comment, input.parsed)) {
@@ -7882,11 +8078,25 @@ function selectPostableComments(input) {
     return comments;
 }
 function selectOffDiffComments(review, diffText) {
-    const positions = parseDiffPositions(diffText);
+    return selectOffDiffCommentsWithPositions(review, parseDiffPositions(diffText));
+}
+/**
+ * Internal variant of `selectOffDiffComments` that accepts a
+ * pre-computed `DiffPositionIndex`. See
+ * `selectPostableCommentsWithPositions` for the rationale.
+ */
+function selectOffDiffCommentsWithPositions(review, positions) {
     return review.comments.filter((comment) => !positions.hasPosition(comment));
 }
 function countSuppressedComments(review, diffText) {
-    return review.suppressedComments.length + selectOffDiffComments(review, diffText).length;
+    const positions = parseDiffPositions(diffText);
+    let offDiffCount = 0;
+    for (const comment of review.comments) {
+        if (!positions.hasPosition(comment)) {
+            offDiffCount += 1;
+        }
+    }
+    return review.suppressedComments.length + offDiffCount;
 }
 /**
  * The shared GitHub/Azure live-post preparation recipe. Computes the
@@ -7900,13 +8110,31 @@ function countSuppressedComments(review, diffText) {
  * which was the previous source of drift between the two platforms.
  */
 function preparePostedReview(input) {
-    const postableComments = selectPostableComments({
+    // Parse the diff ONCE and pass the index to all three selectors.
+    // Each of the public selectors (`selectPostableComments`,
+    // `selectOffDiffComments`, `countSuppressedComments`) was
+    // previously re-parsing the same diff internally — 3x parses per
+    // review. The `*WithPositions` variants take a pre-computed
+    // index so the parse runs exactly once.
+    const positions = parse_positions_parseDiffPositions(input.diffText);
+    const postableComments = selectPostableCommentsWithPositions({
         review: input.review,
-        diffText: input.diffText,
+        positions,
         parsed: input.parsed,
         secrets: input.secrets,
     });
-    const offDiffFromComments = selectOffDiffComments(input.review, input.diffText);
+    // The off-diff comments array is needed for the manifest payload
+    // (so reviewers can see which findings the post-filter dropped
+    // and why). The suppressed count is also displayed. Both are
+    // derived from the same `review.comments - positions.hasPosition`
+    // filter. The array materialization is unavoidable (the manifest
+    // needs every entry) and the count derivation is just a `.length`
+    // on it. `countSuppressedComments(review, diffText)` is a
+    // single-call helper for callers that don't need the array; it
+    // re-parses the diff and re-runs the filter. `preparePostedReview`
+    // already has `positions` and the off-diff array, so it computes
+    // the count inline rather than calling the helper.
+    const offDiffFromComments = selectOffDiffCommentsWithPositions(input.review, positions);
     const suppressedCommentCount = input.review.suppressedComments.length + offDiffFromComments.length;
     const severityCounts = live_shared_countBySeverity(postableComments);
     // Reconcile the model's raw verdict against the postable severity
@@ -9423,6 +9651,19 @@ function buildBodyConfig(config) {
         ...(config.responseFormat !== undefined ? { responseFormat: config.responseFormat } : {}),
     };
 }
+/**
+ * Return a copy of the body config with `responseFormat` stripped.
+ * Used by the parse-fail self-healing retry: the first attempt
+ * sends the wire schema, and if the model returns prose instead of
+ * JSON (because the provider silently rejected the schema), the
+ * retry drops the schema and relies on the system prompt's prose
+ * "Return strict JSON only" instruction.
+ */
+function stripResponseFormat(config) {
+    const { responseFormat: _drop, ...rest } = config;
+    void _drop;
+    return rest;
+}
 async function runProviderRequest(config) {
     const fetchImpl = config.fetchImpl ?? globalThis.fetch.bind(globalThis);
     const requestId = createRequestId();
@@ -9521,6 +9762,13 @@ async function runWithRetry(config, fetchImpl, requestId, endpoint, baseUrl) {
     return { ok: false, error: lastFailure ?? new ProviderError("network", endpoint, null, requestId, "Unknown retry failure.") };
 }
 function isRetryable(error) {
+    // Transient network failures (no HTTP status) should be retried —
+    // the connection may have been reset, the provider may be in the
+    // middle of a failover, etc. Without this, a single TCP hiccup
+    // kills the whole review.
+    if (error.code === "network") {
+        return true;
+    }
     return error.status === 429 || (typeof error.status === "number" && error.status >= 500);
 }
 /**
@@ -9560,6 +9808,12 @@ async function callEndpoint(config, fetchImpl, requestId, endpoint, baseUrl) {
         writeDebugRaw(`[DEBUG-RAW] textPayload last 200:  ${JSON.stringify(safeTextPayload.slice(-200))}\n`, config);
         writeDebugRaw(`[DEBUG-RAW] hasResponseCompletedEvent: ${rawText.includes('"type":"response.completed"')}\n`, config);
     }
+    // Surface parse-decision signals so future parse-fail runs can tell
+    // whether the self-healing retry was skipped (detectProviderError
+    // matched) or actually ran. The M3 model can produce a 100+ KB
+    // response whose only content is reasoning — `joinOutputText`
+    // returns empty and the parser correctly classifies it as
+    // parse-fail, but we need to know whether the retry fired.
     const review = parseReviewPayload(textPayload);
     // [DEBUG-RAW] Trace the parse decision so the next parse-fail run can
     // show exactly what `parseReviewPayload` returned. Without this, we
@@ -9599,14 +9853,48 @@ async function callEndpoint(config, fetchImpl, requestId, endpoint, baseUrl) {
     // emit only an SSE stream of metadata events with no actual output)
     // recover cleanly when reminded to emit JSON.
     //
+    // The retry DROPS the strict `response_format` constraint. Some
+    // providers silently reject the wire schema and produce prose
+    // instead of JSON — the retry lets the system prompt's "Return
+    // strict JSON only" prose instruction carry the contract instead.
+    // This makes the action dynamically adapt to any provider without
+    // a hardcoded compatibility list.
+    //
     // Note: any network/HTTP error on the retry is collapsed back into a
     // `parse` error (with the ORIGINAL rawText attached) so the parse-fail
     // path's diagnostic captures the actual root cause — the model
     // couldn't produce a parseable review, regardless of whether the retry
     // request itself reached the provider.
+    //
+    // Bumped-budget retry: some providers (notably MiniMax-M3) emit
+    // long reasoning blocks that consume the entire output budget
+    // before the model can write the JSON review. When the first
+    // attempt's raw response is large (suggests the model produced
+    // content) but the extracted text payload is small or empty
+    // (suggests the actual review didn't make it through), raise
+    // `maxOutputTokens` for the retry so the model has more room.
+    // The retry still uses the same prompt, same schema, same model
+    // — just more output budget.
+    const firstAttemptBodyConfig = stripResponseFormat(buildBodyConfig(config));
+    // Heuristic: when the response is "large but empty" (rawText > 16K
+    // but textPayload < 200 chars), the model likely produced reasoning
+    // only and was truncated before the JSON review. Double the budget
+    // for the retry. Capped at 128K to avoid blowing past provider
+    // limits.
+    const needsMoreBudget = rawText.length > 16_000 && textPayload.length < 200;
+    const bumpedMaxOutput = needsMoreBudget && config.maxOutputTokens !== undefined
+        ? Math.min(config.maxOutputTokens * 2, 128_000)
+        : config.maxOutputTokens;
+    if (process.env["UMACTUALLY_DEBUG_RAW"] === "1" && needsMoreBudget) {
+        writeDebugRaw(`[DEBUG-RAW] bumped-budget retry: rawText.length=${rawText.length} textPayload.length=${textPayload.length} bumpedMaxOutput=${bumpedMaxOutput}\n`, config);
+    }
+    const retryBodyConfig = {
+        ...firstAttemptBodyConfig,
+        ...(bumpedMaxOutput !== undefined ? { maxOutputTokens: bumpedMaxOutput } : {}),
+    };
     const retryBody = endpoint === ENDPOINT_RESPONSES
-        ? buildResponsesBody(buildBodyConfig(config), { userOverride: PARSE_FAIL_RETRY_PROMPT })
-        : buildChatBody(buildBodyConfig(config), { userOverride: PARSE_FAIL_RETRY_PROMPT });
+        ? buildResponsesBody(retryBodyConfig, { userOverride: PARSE_FAIL_RETRY_PROMPT })
+        : buildChatBody(retryBodyConfig, { userOverride: PARSE_FAIL_RETRY_PROMPT });
     let retryReview = null;
     // Track the retry's HTTP status (if it reached performFetch and
     // returned a response) so the parse-fail ProviderError can surface
@@ -9617,7 +9905,13 @@ async function callEndpoint(config, fetchImpl, requestId, endpoint, baseUrl) {
     // failure. Both cases match `src/provider/copilot.ts`'s contract.
     let retryResponseStatus = null;
     try {
-        const retryResponse = await performFetch(fetchImpl, url, retryBody, signal, config, requestId, endpoint);
+        // Fresh signal for the retry so it gets the full timeout budget.
+        // Reusing the first-attempt signal would give the retry only
+        // whatever time was left on the original 300s AbortSignal.
+        // Some models (e.g. MiniMax-M3 with bumped-budget retry) need
+        // 3-5 minutes per attempt.
+        const retrySignal = composeSignal(config.signal, config.requestTimeoutMs);
+        const retryResponse = await performFetch(fetchImpl, url, retryBody, retrySignal, config, requestId, endpoint);
         retryResponseStatus = retryResponse.status;
         if (retryResponse.ok) {
             const retryRawText = await readBody(retryResponse, endpoint, requestId);
@@ -9723,33 +10017,39 @@ function shouldFallback(error) {
  * went from gpt-4o to gpt-5 explicitly to reduce path fabrication.
  *
  * The resolver here picks a model with the best cost-vs-hallucination
- * trade-off for the active provider:
+ * trade-off for the active provider. Hostname match (not full-URL
+ * match) — a URL like `https://api.minimax.io/anthropic` correctly
+ * routes to MiniMax-M3 because the hostname is `api.minimax.io`,
+ * even though the path contains "anthropic":
  *   - provider=copilot  → claude-3-5-sonnet (Copilot's Claude backend;
  *     this is the model string the GitHub Copilot Chat Completions
  *     endpoint actually accepts — the v3.x and v3.5 Sonnet line is
  *     the Copilot-routable Claude. claude-sonnet-4.6 is NOT a
  *     Copilot-routable string and would 404.)
- *   - provider=openai-compatible + URL contains "anthropic"  → claude-sonnet-4.6
- *   - provider=openai-compatible + URL contains "generativelanguage"  → gemini-2.5-flash
- *   - provider=openai-compatible + URL contains "minimax" or "MiniMax"  → MiniMax-Text-01
+ *   - provider=openai-compatible + URL hostname contains "minimax"  → MiniMax-M3
+ *   - provider=openai-compatible + URL hostname contains "anthropic"  → claude-sonnet-4.6
+ *   - provider=openai-compatible + URL hostname contains "generativelanguage" or "googleapis"  → gemini-2.5-flash
  *   - provider=openai-compatible otherwise (incl. api.openai.com)  → gpt-5-mini
  *
  * The MiniMax branch was added when PR #28's self-review hit HTTP
  * 400 on every OpenAI/Anthropic model name — the MiniMax provider
- * only serves `MiniMax-Text-01` (or `abab*` aliases). Detected by
- * the URL hostname containing `minimax`.
+ * only serves `MiniMax-M3` and `MiniMax-Text-01` (plus `abab*`
+ * aliases). Default is `MiniMax-M3`; `MiniMax-Text-01` is the
+ * fallback if M3 has a bad day. Detected by the URL hostname
+ * containing `minimax`.
  *
  * Users can always override via `--model` (or `UMACTUALLY_MODEL`).
  */
+
 const COPILOT_DEFAULT_MODEL = "claude-3-5-sonnet";
 const ANTHROPIC_DEFAULT_MODEL = "claude-sonnet-4.6";
 const GOOGLE_DEFAULT_MODEL = "gemini-2.5-flash";
-const MINIMAX_DEFAULT_MODEL = "MiniMax-Text-01";
+const MINIMAX_DEFAULT_MODEL = "MiniMax-M3";
 const OPENAI_DEFAULT_MODEL = "gpt-5-mini";
 const HOST_ROUTES = [
-    // MiniMax: the api.minimax.io gateway only accepts MiniMax-Text-01
-    // and abab* aliases. Any OpenAI/Anthropic model name returns
-    // HTTP 400. Detected by hostname substring.
+    // MiniMax: the api.minimax.io gateway only accepts MiniMax-M3,
+    // MiniMax-Text-01, and abab* aliases. Any OpenAI/Anthropic
+    // model name returns HTTP 400. Detected by hostname substring.
     { hostSubstring: "minimax", model: MINIMAX_DEFAULT_MODEL },
     // Anthropic: api.anthropic.com serves the claude-* line.
     { hostSubstring: "anthropic", model: ANTHROPIC_DEFAULT_MODEL },
@@ -9763,7 +10063,7 @@ function resolveAutoModel(input) {
         return COPILOT_DEFAULT_MODEL;
     }
     const url = input.apiUrl ?? input.env["UMACTUALLY_API_URL"] ?? "";
-    const hostname = extractHostname(url);
+    const hostname = url_extractHostname(url);
     if (hostname !== null) {
         const lowerHost = hostname.toLowerCase();
         for (const route of HOST_ROUTES) {
@@ -9773,51 +10073,6 @@ function resolveAutoModel(input) {
         }
     }
     return OPENAI_DEFAULT_MODEL;
-}
-/**
- * Extract the hostname from a URL string. Returns null when the
- * input is empty, malformed, or a bare string without a scheme
- * separator. The caller is expected to fall back to the default
- * model when null is returned.
- *
- * Why hostname-only: substring matching on the full URL is too
- * loose. A URL like `https://example.com/minimax-router` would
- * falsely match `url.includes("minimax")` and pick a MiniMax
- * model. The hostname extract prevents that — `example.com`
- * doesn't contain `minimax`, so the model is the default.
- */
-function extractHostname(url) {
-    const trimmed = url.trim();
-    if (trimmed.length === 0)
-        return null;
-    try {
-        return new URL(trimmed).hostname.toLowerCase();
-    }
-    catch {
-        // Fallback: strip scheme manually, then read up to the first
-        // `/` or `:`. `localhost:8080` parses to hostname "localhost"
-        // in some runtimes and `8080` in others, so this path handles
-        // the parse-failure case explicitly.
-        const schemeSep = trimmed.indexOf("://");
-        if (schemeSep === -1) {
-            const firstSlash = trimmed.indexOf("/");
-            const firstColon = trimmed.indexOf(":");
-            const stop = firstSlash === -1 ? trimmed.length : firstSlash;
-            const host = firstColon === -1 || firstColon > stop
-                ? trimmed.slice(0, stop)
-                : trimmed.slice(0, firstColon);
-            return host.length > 0 ? host : null;
-        }
-        const sepLen = 3; // "://" length
-        const afterScheme = trimmed.slice(schemeSep + sepLen);
-        const firstSlash = afterScheme.indexOf("/");
-        const firstColon = afterScheme.indexOf(":");
-        const stop = firstSlash === -1 ? afterScheme.length : firstSlash;
-        const host = firstColon === -1 || firstColon > stop
-            ? afterScheme.slice(0, stop)
-            : afterScheme.slice(0, firstColon);
-        return host.length > 0 ? host : null;
-    }
 }
 /**
  * The fallback chain used when a primary model returns a parse-fail
@@ -9856,9 +10111,13 @@ const PROVIDER_FALLBACKS = {
  * Per-URL fallback chains for providers that only accept their own
  * model names. The MiniMax provider (`api.minimax.io`) returns
  * HTTP 400 for any OpenAI/Anthropic/Google model name, so the
- * generic openai-compatible fallback chain would 400 too. The
- * URL-specific chains here override the default for the matching
- * hostnames.
+ * generic openai-compatible fallback chain would 400 too.
+ *
+ * The map key is the host substring used by `HOST_ROUTES` so a
+ * single source of truth drives both primary and fallback model
+ * selection. Adding a new provider means adding ONE entry to
+ * `HOST_ROUTES` and (if it needs custom fallbacks) ONE entry here
+ * with the same key.
  */
 const URL_SPECIFIC_FALLBACKS = {
     // `toLowerCase()` is applied to the URL before lookup so this
@@ -9866,6 +10125,7 @@ const URL_SPECIFIC_FALLBACKS = {
     // both resolve to the same chain.
     "minimax": [
         MINIMAX_DEFAULT_MODEL,
+        "MiniMax-Text-01",
         "abab6.5s-chat",
         "abab5.5-chat",
     ],
@@ -9881,13 +10141,22 @@ const DEFAULT_FALLBACK_MODELS = PROVIDER_FALLBACKS["openai-compatible"];
  * URL-specific chain (e.g. `api.minimax.io`), the URL-specific
  * chain wins — the generic OpenAI chain would 400 on those
  * providers.
+ *
+ * Hostname-only matching: matches against the URL hostname, not
+ * the full URL, so a path like `/minimax-router` in
+ * `https://example.com/minimax-router` does NOT falsely trigger
+ * the MiniMax fallback chain. This is the same contract as
+ * `resolveAutoModel`'s hostname-based routing — both functions
+ * use `extractHostname` so the match is consistent.
  */
 function fallbackModelsFor(provider, apiUrl) {
     if (apiUrl !== undefined && apiUrl !== null && apiUrl.length > 0) {
-        const lower = apiUrl.toLowerCase();
-        for (const [hostKey, chain] of Object.entries(URL_SPECIFIC_FALLBACKS)) {
-            if (lower.includes(hostKey)) {
-                return chain;
+        const hostname = extractHostname(apiUrl);
+        if (hostname !== null) {
+            for (const [hostKey, chain] of Object.entries(URL_SPECIFIC_FALLBACKS)) {
+                if (hostname.includes(hostKey)) {
+                    return chain;
+                }
             }
         }
     }
@@ -9896,10 +10165,19 @@ function fallbackModelsFor(provider, apiUrl) {
 /**
  * Parse a `--fallback-models` CLI value (comma-separated) into a
  * list. Empty parts and duplicate entries are dropped.
+ *
+ * When `apiUrl` is provided, the default fallback chain uses the
+ * URL-specific model list when the URL matches a known provider
+ * (e.g. `api.minimax.io` → MiniMax-M3 then MiniMax-Text-01, not
+ * the generic openai-compatible chain). This makes `--fallback-models`
+ * consistent with `resolveAutoModel`'s URL-aware behavior.
  */
-function parseFallbackModels(value) {
+function parseFallbackModels(value, apiUrl) {
+    const defaultChain = apiUrl !== undefined && apiUrl !== null && apiUrl.length > 0
+        ? fallbackModelsFor("openai-compatible", apiUrl)
+        : DEFAULT_FALLBACK_MODELS;
     if (value === null || value === undefined || value.length === 0) {
-        return DEFAULT_FALLBACK_MODELS;
+        return defaultChain;
     }
     const seen = new Set();
     const out = [];
@@ -9911,7 +10189,7 @@ function parseFallbackModels(value) {
         seen.add(trimmed);
         out.push(trimmed);
     }
-    return out.length > 0 ? out : DEFAULT_FALLBACK_MODELS;
+    return out.length > 0 ? out : defaultChain;
 }
 
 ;// CONCATENATED MODULE: ./src/cli/parse-warnings.ts
@@ -9937,7 +10215,7 @@ function parseFallbackModels(value) {
  *     matches anything in the diff
  */
 function collectParseWarnings(input) {
-    const positions = parseDiffPositions(input.diffText);
+    const positions = parse_positions_parseDiffPositions(input.diffText);
     const diffPaths = new Set(positions.enumerate().map((p) => p.path));
     const warnings = [];
     for (const [source, list] of [
@@ -10263,6 +10541,11 @@ function buildDefaultSystemPrompt() {
     return [
         "You are UmActually, a precise pull request reviewer.",
         "",
+        "Output contract:",
+        "- Your entire response is parsed as a single JSON object matching the schema below. No prose before or after the JSON. No markdown code fences around the JSON (the parser strips them, but emitting them wastes output tokens).",
+        "- If you would normally think before answering, the thinking must happen INSIDE the JSON (e.g. as a `reasoning` field) — not as separate prose. The parser discards any text before the first `{` and after the last `}`, so thinking prose only burns your output budget and the answer gets truncated.",
+        "- The JSON must contain every required field (`summary`, `verdict`, `comments`, `suppressed_comments`). Missing fields cause a parse failure and the operator sees a parse-fail card instead of your review.",
+        "",
         "Workflow for every finding you emit:",
         "1. Identify a real concern introduced by the diff.",
         "2. Copy the EXACT diff lines that justify the concern (a verbatim quote, 1-3 lines).",
@@ -10274,10 +10557,12 @@ function buildDefaultSystemPrompt() {
         "- Do NOT cite any line number that does not appear in the diff for the cited path. Off-by-one or hallucinated line numbers are rejected by the post-filter.",
         "- Do NOT infer missing context. If the diff does not show a function call, do not claim a function call exists.",
         "- Do NOT include secrets, tokens, or any literal that looks like a credential.",
+        "- Do NOT emit prose before or after the JSON. The parser will reject your response as a parse-fail.",
+        "- Do NOT emit reasoning that is longer than the answer itself. If you have analyzed for a while and the answer is still ahead, you are about to run out of output budget — emit the JSON now with whatever findings you have, even if you would have found more.",
         "",
         "Severity values: info, low, medium, high, critical, security, leak. Use 'security' for an active vulnerability, 'leak' for a confirmed secret, 'critical' for severe bugs. Style and hygiene issues go in 'low' or 'info'.",
         "",
-        "Return strict JSON only — no prose, no markdown fences. Schema:",
+        "Schema:",
         JSON.stringify(REVIEW_PAYLOAD_JSON_SCHEMA, null, 2),
         "",
         "If the diff is empty or has no actionable findings, return verdict=COMMENT with an empty comments array. Do not invent findings to fill the response.",
@@ -10334,7 +10619,7 @@ async function readAdditionalPrompt(input) {
  * dry-run, smoke tests).
  */
 function verifyFindingsAgainstDiff(input) {
-    const positions = parseDiffPositions(input.diffText);
+    const positions = parse_positions_parseDiffPositions(input.diffText);
     const verified = [];
     const dropped = [];
     for (const comment of input.review.comments) {
@@ -10439,6 +10724,15 @@ async function requestLiveReview(input) {
     // response_format on the wire. Defaults to true so the model is
     // constrained at decode time; the in-context system prompt carries
     // the same schema as a guide for free-form models.
+    //
+    // Some models don't support strict JSON schema and produce prose
+    // instead of JSON. Rather than maintaining a hardcoded list of
+    // non-compliant models, the provider layer's self-healing retry
+    // path detects the parse-fail and retries WITHOUT the schema —
+    // the system prompt's "Return strict JSON only" instruction
+    // handles models that follow instructions but reject the wire
+    // constraint. This makes the action dynamically adapt to any
+    // provider without operator intervention.
     const responseFormat = input.parsed.strictSchema === false
         ? undefined
         : { type: "json_schema", strict: true, schema: REVIEW_PAYLOAD_JSON_SCHEMA };
@@ -10826,7 +11120,7 @@ function extractRepresentativeToken(lineContent, path) {
  *   or API keys — the marker is appended by the GitHub posting layer.
  */
 function buildSimulatedFindings(repo, prNumber, headSha, diffText) {
-    const positions = parseDiffPositions(diffText);
+    const positions = parse_positions_parseDiffPositions(diffText);
     const enumerated = positions.enumerate();
     const inlineBlueprints = enumerated.length > 0
         ? buildDiverseBlueprints(enumerated, diffText)
