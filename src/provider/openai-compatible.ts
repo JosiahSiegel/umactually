@@ -12,6 +12,7 @@ import {
 } from "./provider-parse.js";
 import {
   isAbortError,
+  isRoutableFailureForUrlCandidate,
   ProviderError,
   sanitizeHttpStatus,
   sanitizeMessage,
@@ -19,6 +20,7 @@ import {
 import { composeSignal, sleep } from "../util/async.js";
 import { BRAND_PREFIX, REDACTED_SECRET_TOKEN } from "../util/brand.js";
 import { isDebugRawActive } from "../util/debug-raw.js";
+import { replaceSecretsLiterally } from "../util/redact.js";
 import { createRequestId, joinUrl, redactUrlForLog, resolveProviderBaseUrlCandidates } from "../util/url.js";
 
 const ENDPOINT_RESPONSES: ProviderEndpoint = "responses";
@@ -159,7 +161,7 @@ export async function runProviderRequest(config: ProviderCallConfig): Promise<Pr
       // unless the error is NOT a 404/400 (e.g. auth failure, server
       // error) — in that case, retrying with a different URL won't
       // help, so return immediately.
-      if (!isRoutableFailure(chatAttempt.error)) {
+      if (!isRoutableFailureForUrlCandidate(chatAttempt.error)) {
         return chatAttempt;
       }
       process.stderr.write(
@@ -170,7 +172,7 @@ export async function runProviderRequest(config: ProviderCallConfig): Promise<Pr
     }
     // The /responses endpoint failed with a non-routable status
     // (e.g. 401, 500). Retrying with a different URL won't help.
-    if (!isRoutableFailure(firstAttempt.error)) {
+    if (!isRoutableFailureForUrlCandidate(firstAttempt.error)) {
       return firstAttempt;
     }
     process.stderr.write(
@@ -179,17 +181,6 @@ export async function runProviderRequest(config: ProviderCallConfig): Promise<Pr
     lastAttempt = firstAttempt;
   }
   return lastAttempt;
-}
-
-/**
- * True when the failure was a routing-level rejection (404 Not Found
- * or 400 Bad Request) that would benefit from trying a different URL
- * shape. False for auth failures (401/403), server errors (5xx),
- * parse failures, and timeouts — those have a single root cause and
- * a different URL won't help.
- */
-function isRoutableFailure(error: ProviderError): boolean {
-  return error.status === 404 || error.status === 400;
 }
 
 async function runWithEndpoint(
@@ -475,12 +466,11 @@ function writeDebugRaw(message: string, config: ProviderCallConfig): void {
 }
 
 function redactDebugSecrets(value: string, config: ProviderCallConfig): string {
-  let redacted = value;
-  for (const secret of [config.apiKey, config.promptOverride ?? "", config.additionalPromptOverride ?? ""]) {
-    if (secret.length > 0) {
-      redacted = redacted.split(secret).join(REDACTED_SECRET_TOKEN);
-    }
-  }
+  let redacted = replaceSecretsLiterally(value, [
+    config.apiKey,
+    config.promptOverride ?? "",
+    config.additionalPromptOverride ?? "",
+  ]);
   for (const pattern of DEBUG_SECRET_PATTERNS) {
     redacted = redacted.replace(pattern, REDACTED_SECRET_TOKEN);
   }

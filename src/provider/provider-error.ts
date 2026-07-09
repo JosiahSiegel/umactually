@@ -110,6 +110,35 @@ export type ProviderUsage = {
   readonly total_tokens?: number;
 };
 
+/**
+ * Routing-level failure predicates intentionally diverge by boundary:
+ *
+ * - URL-candidate fallback stays inside one OpenAI-compatible provider
+ *   client. HTTP 404 and 400 can both mean the operator's base URL shape
+ *   missed the provider's route, so the client may advance to the next
+ *   resolved candidate without changing wire protocol.
+ * - Cross-protocol fallback crosses from one provider protocol family to
+ *   another. It fires on 404 only because the wire shape genuinely does
+ *   not have a route for this URL at this provider. We intentionally
+ *   exclude HTTP 400 even though URL-candidate fallback accepts it.
+ *
+ * 400 typically signals a payload-level error (malformed body, missing
+ * required field, unsupported `max_tokens` value, content-policy
+ * rejection). Firing cross-protocol fallback on a payload-400 would silently mask wire-shape bugs:
+ * an Anthropic call that 400s on an
+ * unsupported parameter would retry against OpenAI's wire shape (different
+ * body layout) and possibly succeed, with the operator seeing a successful
+ * review attributed to the OTHER protocol without ever knowing their
+ * original call was malformed.
+ */
+export function isRoutableFailureForUrlCandidate(error: { readonly status: number | null }): boolean {
+  return error.status === 404 || error.status === 400;
+}
+
+export function isRoutableFailureForCrossProtocol(error: { readonly status: number | null }): boolean {
+  return error.status === 404;
+}
+
 export function sanitizeHttpStatus(endpoint: ProviderEndpoint, status: number): string {
   return `Provider ${endpoint} responded with HTTP ${status}.`;
 }
