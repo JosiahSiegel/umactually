@@ -9764,6 +9764,13 @@ async function runWithRetry(config, fetchImpl, requestId, endpoint, baseUrl) {
     return { ok: false, error: lastFailure ?? new ProviderError("network", endpoint, null, requestId, "Unknown retry failure.") };
 }
 function isRetryable(error) {
+    // Transient network failures (no HTTP status) should be retried —
+    // the connection may have been reset, the provider may be in the
+    // middle of a failover, etc. Without this, a single TCP hiccup
+    // kills the whole review.
+    if (error.code === "network") {
+        return true;
+    }
     return error.status === 429 || (typeof error.status === "number" && error.status >= 500);
 }
 /**
@@ -10536,6 +10543,11 @@ function buildDefaultSystemPrompt() {
     return [
         "You are UmActually, a precise pull request reviewer.",
         "",
+        "Output contract:",
+        "- Your entire response is parsed as a single JSON object matching the schema below. No prose before or after the JSON. No markdown code fences around the JSON (the parser strips them, but emitting them wastes output tokens).",
+        "- If you would normally think before answering, the thinking must happen INSIDE the JSON (e.g. as a `reasoning` field) — not as separate prose. The parser discards any text before the first `{` and after the last `}`, so thinking prose only burns your output budget and the answer gets truncated.",
+        "- The JSON must contain every required field (`summary`, `verdict`, `comments`, `suppressed_comments`). Missing fields cause a parse failure and the operator sees a parse-fail card instead of your review.",
+        "",
         "Workflow for every finding you emit:",
         "1. Identify a real concern introduced by the diff.",
         "2. Copy the EXACT diff lines that justify the concern (a verbatim quote, 1-3 lines).",
@@ -10547,10 +10559,12 @@ function buildDefaultSystemPrompt() {
         "- Do NOT cite any line number that does not appear in the diff for the cited path. Off-by-one or hallucinated line numbers are rejected by the post-filter.",
         "- Do NOT infer missing context. If the diff does not show a function call, do not claim a function call exists.",
         "- Do NOT include secrets, tokens, or any literal that looks like a credential.",
+        "- Do NOT emit prose before or after the JSON. The parser will reject your response as a parse-fail.",
+        "- Do NOT emit reasoning that is longer than the answer itself. If you have analyzed for a while and the answer is still ahead, you are about to run out of output budget — emit the JSON now with whatever findings you have, even if you would have found more.",
         "",
         "Severity values: info, low, medium, high, critical, security, leak. Use 'security' for an active vulnerability, 'leak' for a confirmed secret, 'critical' for severe bugs. Style and hygiene issues go in 'low' or 'info'.",
         "",
-        "Return strict JSON only — no prose, no markdown fences. Schema:",
+        "Schema:",
         JSON.stringify(REVIEW_PAYLOAD_JSON_SCHEMA, null, 2),
         "",
         "If the diff is empty or has no actionable findings, return verdict=COMMENT with an empty comments array. Do not invent findings to fill the response.",
