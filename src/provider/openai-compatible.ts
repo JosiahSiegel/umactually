@@ -18,6 +18,7 @@ import {
 } from "./provider-error.js";
 import { composeSignal, sleep } from "../util/async.js";
 import { BRAND_PREFIX, REDACTED_SECRET_TOKEN } from "../util/brand.js";
+import { isDebugRawActive } from "../util/debug-raw.js";
 import { createRequestId, joinUrl, redactUrlForLog, resolveProviderBaseUrlCandidates } from "../util/url.js";
 
 const ENDPOINT_RESPONSES: ProviderEndpoint = "responses";
@@ -291,7 +292,7 @@ async function callEndpoint(
   // production parse-fails without re-running the model — the action
   // does not log the raw response by default (it would dump 100+ KB to
   // the log on every run).
-  if (process.env["UMACTUALLY_DEBUG_RAW"] === "1") {
+  if (isDebugRawActive()) {
     writeDebugRaw(
       `[DEBUG-RAW] requestId=${requestId} endpoint=${endpoint} ` +
       `rawTextLength=${rawText.length} textPayloadLength=${textPayload.length}\n`,
@@ -313,7 +314,7 @@ async function callEndpoint(
   // show exactly what `parseReviewPayload` returned. Without this, we
   // see "retry fired" in the log but not WHY (null vs all-empty-fields
   // vs apology-summary-detected are all indistinguishable from outside).
-  if (process.env["UMACTUALLY_DEBUG_RAW"] === "1") {
+  if (isDebugRawActive()) {
     const trace = review === null
       ? "null"
       : `summary.len=${review.summary.length} verdict='${review.verdict}' comments=${review.comments.length} suppressed=${review.suppressed_comments.length}`;
@@ -388,7 +389,7 @@ async function callEndpoint(
   const bumpedMaxOutput = needsMoreBudget && config.maxOutputTokens !== undefined
     ? Math.min(config.maxOutputTokens * 2, 128_000)
     : config.maxOutputTokens;
-  if (process.env["UMACTUALLY_DEBUG_RAW"] === "1" && needsMoreBudget) {
+  if (isDebugRawActive() && needsMoreBudget) {
     writeDebugRaw(
       `[DEBUG-RAW] bumped-budget retry: rawText.length=${rawText.length} textPayload.length=${textPayload.length} bumpedMaxOutput=${bumpedMaxOutput}\n`,
       config,
@@ -422,7 +423,7 @@ async function callEndpoint(
     if (retryResponse.ok) {
       const retryRawText = await readBody(retryResponse, endpoint, requestId);
       const retryTextPayload = extractTextPayload(endpoint, retryRawText);
-      if (process.env["UMACTUALLY_DEBUG_RAW"] === "1") {
+      if (isDebugRawActive()) {
         writeDebugRaw(
           `[DEBUG-RAW] retry requestId=${requestId} ` +
           `rawTextLength=${retryRawText.length} textPayloadLength=${retryTextPayload.length}\n`,

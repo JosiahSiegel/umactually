@@ -1,3 +1,4 @@
+import { isDebugRawActive } from "../util/debug-raw.js";
 import { tryParseJson } from "../util/json-guards.js";
 
 /**
@@ -82,7 +83,7 @@ export function extractJsonBlock(rawText: string): unknown {
     const balancedAttempt = tryParseJson(balanced);
     if (balancedAttempt !== undefined) {
       return balancedAttempt;
-    } else if (process.env["UMACTUALLY_DEBUG_RAW"] === "1") {
+    } else if (isDebugRawActive()) {
       try {
         JSON.parse(balanced);
       } catch (e) {
