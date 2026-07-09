@@ -84,10 +84,13 @@ export function collectValidationErrors(parsed: ParsedCliArgs): readonly string[
   }
 
   if (!parsed.dryRun) {
-    // Copilot provider does not need --api-url; it uses the GitHub Copilot
-    // token exchange endpoint (defaulting to https://api.github.com).
-    if (parsed.apiUrl === null && parsed.provider !== "copilot") {
-      errors.push("--api-url is required unless --dry-run is set or --provider copilot is used");
+    // Copilot + Anthropic-native providers don't need --api-url:
+    //   - Copilot uses the GitHub Copilot token exchange endpoint
+    //     (defaulting to https://api.github.com).
+    //   - Anthropic defaults to https://api.anthropic.com — an operator
+    //     with the default key can run without specifying --api-url.
+    if (parsed.apiUrl === null && parsed.provider !== "copilot" && parsed.provider !== "anthropic") {
+      errors.push("--api-url is required unless --dry-run is set, --provider copilot is used, or --provider anthropic is used");
     }
     if (parsed.apiKey === null) {
       errors.push("--api-key is required unless --dry-run is set");

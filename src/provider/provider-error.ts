@@ -1,13 +1,24 @@
 type ProviderDiagnosticCode =
   | "responses_4xx"
   | "chat_4xx"
+  | "anthropic_4xx"
   | "network"
   | "timeout"
   | "parse"
   | "provider_error"
   | "aborted";
 
-type ProviderEndpoint = "responses" | "chat";
+/**
+ * Provider endpoint discriminator. Carries the wire endpoint the call
+ * landed on so downstream diagnostics (parse-fail fallbacks, error
+ * renderers, logs) can identify which protocol produced the failure.
+ *
+ *  - `responses` / `chat` — OpenAI-style Chat Completions / Responses API.
+ *  - `anthropic` — Anthropic Messages API (`POST /v1/messages` with
+ *    `x-api-key`/`anthropic-version` headers). Shape compatible with the
+ *    same review payload; transport only differs.
+ */
+type ProviderEndpoint = "responses" | "chat" | "anthropic";
 
 export type { ProviderDiagnosticCode, ProviderEndpoint };
 

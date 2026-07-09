@@ -51,7 +51,16 @@ inputs:
     required: false
     default: "medium"
   provider:
-    description: Provider family (openai-compatible|copilot). Default openai-compatible. Set to copilot to use GitHub Copilot (requires a GitHub PAT as UMACTUALLY_API_KEY and UMACTUALLY_GITHUB_API_BASE for Enterprise Server).
+    description: >
+      Provider family. Default `openai-compatible` (OpenAI Chat Completions
+      / Responses API over any OpenAI-protocol gateway). Set to `copilot`
+      to use GitHub Copilot (requires a GitHub PAT as `UMACTUALLY_API_KEY`
+      and `UMACTUALLY_GITHUB_API_BASE` for Enterprise Server). Set to
+      `anthropic` to use the native Anthropic Messages API (`POST /v1/messages`
+      with `x-api-key`/`anthropic-version` headers) — useful when running
+      against an Anthropic API key without an OpenAI proxy in front. The
+      Anthropic provider defaults to `https://api.anthropic.com/v1`; override
+      via `api-url` for a self-hosted Anthropic-protocol gateway.
     required: false
     default: "openai-compatible"
   github-api-base:

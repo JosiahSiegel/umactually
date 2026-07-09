@@ -81,12 +81,20 @@ const HOST_ROUTES: readonly HostRoute[] = [
 ];
 
 export function resolveAutoModel(input: {
-  readonly provider: "openai-compatible" | "copilot";
+  readonly provider: "openai-compatible" | "copilot" | "anthropic";
   readonly apiUrl: string | null;
   readonly env: NodeJS.ProcessEnv;
 }): string {
   if (input.provider === "copilot") {
     return COPILOT_DEFAULT_MODEL;
+  }
+  // Anthropic provider: the operator picked the Anthropic-native
+  // `/v1/messages` protocol. Return the Anthropic default regardless of
+  // the URL — the protocol is Anthropic-only, so hostname routing does
+  // not apply. Operators who want a different Anthropic model can
+  // override via `--model`.
+  if (input.provider === "anthropic") {
+    return ANTHROPIC_DEFAULT_MODEL;
   }
   const url = input.apiUrl ?? input.env["UMACTUALLY_API_URL"] ?? "";
   const hostname = extractHostname(url);
@@ -115,7 +123,7 @@ export function resolveAutoModel(input: {
  * `fallbackModelsFor` filters the list to provider-routable models
  * so the parse-fail recovery doesn't itself fail.
  */
-const PROVIDER_FALLBACKS: Readonly<Record<"openai-compatible" | "copilot", readonly string[]>> = {
+const PROVIDER_FALLBACKS: Readonly<Record<"openai-compatible" | "copilot" | "anthropic", readonly string[]>> = {
   "openai-compatible": [
     OPENAI_DEFAULT_MODEL,
     "gpt-4.1",
@@ -132,6 +140,16 @@ const PROVIDER_FALLBACKS: Readonly<Record<"openai-compatible" | "copilot", reado
     // (handled in provider-parse.ts:PARSE_FAIL_RETRY_PROMPT);
     // a model-level fallback is a no-op for Copilot today.
     COPILOT_DEFAULT_MODEL,
+  ],
+  anthropic: [
+    // The Anthropic native provider (`/v1/messages`) only accepts
+    // Anthropic claude-* model names. Other provider families' model
+    // strings would 400 on the wire. The chain is intentionally
+    // bare-bones — operators who need a multi-model fallback chain
+    // for Anthropic can pass `--fallback-models` explicitly.
+    ANTHROPIC_DEFAULT_MODEL,
+    "claude-haiku-4.5",
+    "claude-opus-4.6",
   ],
 };
 
@@ -180,7 +198,7 @@ export const DEFAULT_FALLBACK_MODELS: readonly string[] = PROVIDER_FALLBACKS["op
  * use `extractHostname` so the match is consistent.
  */
 export function fallbackModelsFor(
-  provider: "openai-compatible" | "copilot",
+  provider: "openai-compatible" | "copilot" | "anthropic",
   apiUrl?: string | null,
 ): readonly string[] {
   if (apiUrl !== undefined && apiUrl !== null && apiUrl.length > 0) {

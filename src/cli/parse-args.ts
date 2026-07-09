@@ -13,7 +13,7 @@ import { parseSeverityFromUnknown } from "../config/parsers.js";
 export type CliPlatform = "auto" | "github" | "azure";
 export type CliMinimumSeverity = "low" | "medium" | "high";
 export type CliEffort = "low" | "medium" | "high";
-export type CliProvider = "openai-compatible" | "copilot";
+export type CliProvider = "openai-compatible" | "copilot" | "anthropic";
 
 export type ParsedCliArgs = {
   readonly platform: CliPlatform;

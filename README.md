@@ -26,7 +26,7 @@ These inputs mirror `action.yml`.
 | `api-key` | No | `""` | UmActually review API key. Prefer `UMACTUALLY_API_KEY` in `env` or a platform secret; never hard-code it. |
 | `model` | No | `auto` | Review model to request. Use `auto` unless a maintainer asks for a pinned synthetic test model. |
 | `effort` | No | `medium` | Reasoning effort hint (low\|medium\|high). Forwarded as `reasoning.effort` to providers that support it. |
-| `provider` | No | `openai-compatible` | Provider family. Set to `copilot` to use GitHub Copilot (requires a GitHub PAT as `UMACTUALLY_API_KEY`). |
+| `provider` | No | `openai-compatible` | Provider family. Set to `copilot` to use GitHub Copilot (requires a GitHub PAT as `UMACTUALLY_API_KEY`). Set to `anthropic` to use the native Anthropic Messages API (`POST /v1/messages` with `x-api-key`/`anthropic-version` headers). |
 | `github-api-base` | No | `""` | GitHub API base URL for Copilot token exchange. Defaults to `https://api.github.com`. Set to `https://<tenant>.ghe.com` for GitHub Enterprise Server. |
 | `review-timeout-seconds` | No | `300` | Maximum review wall-clock time in seconds. |
 | `stall-seconds` | No | `270` | Seconds without provider output before the review is considered stalled. |
@@ -69,6 +69,20 @@ jobs:
 ```
 
 A complete copyable example lives at [`examples/github/pr-review.yml`](examples/github/pr-review.yml).
+
+### Using the native Anthropic Messages API
+
+When your `UMACTUALLY_API_KEY` is a vanilla Anthropic key (no OpenAI proxy in front), set `provider: anthropic`. The action posts directly to `https://api.anthropic.com/v1/messages` using the Anthropic Messages wire schema (top-level `system`, user-only `messages[]`, `x-api-key` + `anthropic-version: 2023-06-01` headers). No need to provision an OpenAI-protocol gateway.
+
+```yaml
+      - uses: ./
+        with:
+          provider: anthropic
+        env:
+          UMACTUALLY_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+```
+
+Override the base URL (for a self-hosted Anthropic-protocol gateway) via `api-url: https://your-gateway.example/anthropic`.
 
 For a first-time import or vendoring PR that exceeds the 200-file default cap, set `review-file-limit: 0` (or your desired ceiling) to opt in to chunked review:
 
