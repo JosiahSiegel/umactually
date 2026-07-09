@@ -1,7 +1,11 @@
 import { describe, expect, it } from "vitest";
 
 import { replaceSecretsLiterally } from "../../src/util/redact.js";
-import { REDACTED_AUTHORIZATION_HEADER, REDACTED_SECRET_TOKEN } from "../../src/util/brand.js";
+import {
+  REDACTED_AUTHORIZATION_HEADER,
+  REDACTED_BEARER_TOKEN,
+  REDACTED_SECRET_TOKEN,
+} from "../../src/util/brand.js";
 
 describe("replaceSecretsLiterally", () => {
   it("DRY-REDACT-001 returns the input unchanged when secrets are empty", () => {
@@ -67,7 +71,7 @@ describe("replaceSecretsLiterally", () => {
 
     // When
     const liveOutput = replaceSecretsLiterally(
-      liveInput.replace(/Authorization:\s*[^\r\n]*/giu, REDACTED_AUTHORIZATION_HEADER).replace(/\bBearer\s+\S+/giu, "[REDACTED_BEARER_TOKEN]"),
+      liveInput.replace(/Authorization:\s*[^\r\n]*/giu, REDACTED_AUTHORIZATION_HEADER).replace(/\bBearer\s+\S+/giu, REDACTED_BEARER_TOKEN),
       [],
     );
     const summaryOutput = replaceSecretsLiterally(summaryInput, ["secret123"]);
