@@ -181,6 +181,66 @@ export function resolveProviderBaseUrlCandidates(
 }
 
 /**
+ * Resolve the Anthropic Messages API URL from the operator-supplied base URL.
+ *
+ * Mirrors the OFFICIAL @anthropic-ai/sdk convention (Claude Code's
+ * `ANTHROPIC_BASE_URL=https://api.anthropic.com` becomes
+ * `POST https://api.anthropic.com/v1/messages`) and the documented
+ * fix in https://github.com/xemantic/anthropic-sdk-kotlin/pull/145 —
+ * which notes that previously "client.post('/v1/messages') replaced
+ * any path on a configured baseUrl, breaking Anthropic-compatible
+ * providers whose endpoints live under a path prefix."
+ *
+ * Anthropic-compatible gateways commonly mount the protocol under a
+ * path prefix. The canonical example is MiniMax's Anthropic endpoint:
+ *
+ *   `--api-url https://api.minimax.io/anthropic` →
+ *   `POST https://api.minimax.io/anthropic/v1/messages`
+ *
+ * NOT `https://api.minimax.io/v1/messages` (which 404s on MiniMax — see
+ * https://platform.minimax.io/docs/token-plan/claude-code). The path
+ * on the operator's URL is real routing, not decorative noise.
+ *
+ * Behavior:
+ *
+ *   - Trim trailing slashes from the operator's URL.
+ *   - If the trimmed URL already ends in `/v1/messages`, leave it
+ *     alone (operator pre-appended; idempotent).
+ *   - If it ends in `/v1`, append `/messages` (don't double-`/v1` —
+ *     matches the SDK default of `https://api.anthropic.com/v1`).
+ *   - Otherwise, append `/v1/messages` to the existing path (path
+ *     prefix is preserved).
+ *
+ * Examples:
+ *
+ *   - `https://api.anthropic.com`                        → `https://api.anthropic.com/v1/messages`
+ *   - `https://api.anthropic.com/v1`                     → `https://api.anthropic.com/v1/messages`
+ *   - `https://api.anthropic.com/v1/`                    → `https://api.anthropic.com/v1/messages`
+ *   - `https://api.minimax.io/anthropic`                 → `https://api.minimax.io/anthropic/v1/messages`
+ *   - `https://api.minimax.io/anthropic/`                → `https://api.minimax.io/anthropic/v1/messages`
+ *   - `https://gateway.example.com/llm/anthropic`        → `https://gateway.example.com/llm/anthropic/v1/messages`
+ *   - `https://api.anthropic.com/v1/messages`            → `https://api.anthropic.com/v1/messages` (idempotent)
+ *
+ * Note: this helper REPLACES `resolveProviderBaseUrl` for the
+ * Anthropic provider only. The OpenAI-compatible provider still uses
+ * `resolveProviderBaseUrlCandidates` because OpenAI gateways
+ * (`/openai`, `/api/v2`, etc.) live at the host root + `/v1`, so the
+ * try-as-pasted-then-origin-with-`/v1` fallback is the right
+ * contract there. Anthropic's path-prefix gateways (MiniMax's
+ * `/anthropic`) need the path preserved.
+ */
+export function resolveAnthropicMessagesUrl(baseUrl: string): string {
+  const trimmed = stripTrailingSlash(baseUrl);
+  if (trimmed.endsWith("/v1/messages")) {
+    return trimmed;
+  }
+  if (trimmed.endsWith("/v1")) {
+    return joinUrl(trimmed, "/messages");
+  }
+  return joinUrl(trimmed, "/v1/messages");
+}
+
+/**
  * Removes trailing slashes from a URL or path segment. Useful before
  * joining paths so empty-path joins don't produce double slashes.
  */
