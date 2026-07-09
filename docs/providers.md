@@ -133,7 +133,7 @@ The dispatcher surfaces the named provider's error on dual-protocol failure rath
 
 ## Model auto-resolution on dual-protocol gateways
 
-`src/cli/auto-model.ts:resolveAutoModel` resolves `model: "auto"` per-provider + URL hostname. On MiniMax-style gateways the same `M2-M3` model works for both protocols, so the operator's choice of `--provider` does not change the model. The auto-detected defaults:
+`src/cli/auto-model.ts:resolveAutoModel` resolves `model: "auto"` per-provider + URL hostname. On MiniMax-style gateways the same `MiniMax-M3` model works for both protocols, so the operator's choice of `--provider` does not change the model. The auto-detected defaults:
 
 ```text
 hostname                    → resolved model
