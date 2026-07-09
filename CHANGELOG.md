@@ -43,14 +43,15 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   origin+`/v1` (where MiniMax also serves OpenAI), so the dispatcher
   never reached the fallback and silently routed an
   `UMACTUALLY_API_URL=https://api.minimax.io/anthropic` to OpenAI at
-  `/v1/responses` — wrong protocol. Fix: `looksLikeAnthropicEndpoint`
-  in `src/util/url.ts` checks whether ANY path segment exactly equals
-  `anthropic` (case-insensitive, byte-for-byte). When true, the
-  dispatcher commits to the Anthropic Messages API client regardless
-  of `--provider`, with a `::notice::` annotation for operator audit.
-  Conservative by design — false negatives still fall through to
-  cross-protocol fallback; false positives are bounded to exact-segment
-  matches so `anthropic-v2` and `my-anthropic` do NOT trigger. See
+  `/v1/responses` — wrong protocol. Fix: a new heuristic in the
+  dispatcher checks whether any path segment in the operator's URL
+  exactly equals `anthropic` (case-insensitive, byte-for-byte). When
+  true, the dispatcher commits to the Anthropic Messages API client
+  regardless of `--provider`, with a `::notice::` annotation for
+  operator audit. Conservative by design — false negatives still fall
+  through to cross-protocol fallback; false positives are bounded to
+  exact-segment matches so `anthropic-v2` and `my-anthropic` do NOT
+  trigger. See
   [`docs/providers.md`](docs/providers.md#path-prefix-heuristic-the-anthropic-url--anthropic-protocol-commit).
 - **New `docs/providers.md`**: canonical end-to-end reference for the
   provider layer — per-family URL resolution rules, the
