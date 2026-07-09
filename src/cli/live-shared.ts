@@ -3,13 +3,9 @@ import { REVIEW_MARKER } from "../util/marker.js";
 import { scanReviewSecrets } from "../security/scan-review-secrets.js";
 import type { Platform } from "../config/types.js";
 import { DEFAULT_MAX_COMMENTS } from "../config/defaults.js";
-import {
-  BRAND_PREFIX,
-  REDACTED_AUTHORIZATION_HEADER,
-  REDACTED_BEARER_TOKEN,
-  REDACTED_SECRET_TOKEN,
-} from "../util/brand.js";
+import { BRAND_PREFIX, REDACTED_AUTHORIZATION_HEADER, REDACTED_BEARER_TOKEN } from "../util/brand.js";
 import { truncateBodyForLog } from "../util/http.js";
+import { replaceSecretsLiterally } from "../util/redact.js";
 import type { FetchImpl } from "../util/http.js";
 import { isPositiveSafeInteger, isRecord, isSafeInteger } from "../util/json-guards.js";
 import { renderSummary, type LayoutId, type ReviewData as LayoutReviewData } from "../render/summary-layouts.js";
@@ -816,15 +812,10 @@ export const mapReviewVerdictToAzureStatus: (verdict: string) => "succeeded" | "
 ) => mapVerdictToAzureStatus(verdict, "current");
 
 export function sanitizeForPost(value: string, secrets: readonly string[]): string {
-  let sanitized = value
+  const sanitized = value
     .replace(/Authorization:\s*[^\r\n]*/giu, REDACTED_AUTHORIZATION_HEADER)
     .replace(/\bBearer\s+\S+/giu, REDACTED_BEARER_TOKEN);
-  for (const secret of secrets) {
-    if (secret.length > 0) {
-      sanitized = sanitized.split(secret).join(REDACTED_SECRET_TOKEN);
-    }
-  }
-  return sanitized;
+  return replaceSecretsLiterally(sanitized, secrets);
 }
 
 export async function readTextResponse(response: Response): Promise<string> {
