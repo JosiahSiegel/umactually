@@ -115,7 +115,10 @@ The heuristic is conservative by design. False negatives still fall through to t
 ### What triggers the fallback
 
 `isRoutableFailureForDispatcher(error)` is `true` ONLY when `error.status === 404`. Specifically:
-```
+
+- **404** → cross-protocol fallback fires. Genuine routing-level rejection.
+- **400** → fallback does NOT fire. The OpenAI client's internal URL-candidate loop advances to sibling paths under the same URL (responses → chat/completions), but the dispatcher boundary does NOT switch protocols on 400. Rationale: 400 typically signals payload-level errors (malformed body, missing required field, unsupported `max_tokens` value, content-policy rejection). Switching protocols on 400 would silently mask wire-shape bugs — an Anthropic call that 400s on an unsupported parameter would retry against the OpenAI wire shape and possibly succeed, with the operator seeing a successful review attributed to the OTHER protocol without ever knowing their original call was malformed.
+- **Other (401/403/429/5xx/network/parse)** → fallback does NOT fire. Single root cause; another protocol won't help.
 
 And the inverse:
 
@@ -128,7 +131,6 @@ Dispatcher behavior:
   3. OpenAI tries /v1/responses, then /v1/chat/completions  → 200 (or 400 if M3 body shape mismatch)
   4. Outcome.attribution = "openai-compatible"
 ```
-...
 
 ### Outcome attribution after fallback
 

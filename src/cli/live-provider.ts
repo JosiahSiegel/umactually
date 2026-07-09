@@ -300,7 +300,7 @@ export async function requestLiveReview(input: {
     const useAnthropicProtocol = looksLikeAnthropicEndpoint(providerUrl);
     if (useAnthropicProtocol) {
       process.stderr.write(
-        `::notice::${BRAND_PREFIX}Operator URL contains an /anthropic path segment; using the Anthropic Messages API client (not the default openai-compatible).\n`,
+        `::notice::${BRAND_PREFIX}Operator URL contains an /anthropic path segment; using the Anthropic Messages API client (regardless of --provider).\n`,
       );
     }
 
