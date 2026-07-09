@@ -236,6 +236,13 @@ async function runWithRetry(
 }
 
 function isRetryable(error: ProviderError): boolean {
+  // Transient network failures (no HTTP status) should be retried —
+  // the connection may have been reset, the provider may be in the
+  // middle of a failover, etc. Without this, a single TCP hiccup
+  // kills the whole review.
+  if (error.code === "network") {
+    return true;
+  }
   return error.status === 429 || (typeof error.status === "number" && error.status >= 500);
 }
 

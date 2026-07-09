@@ -172,6 +172,50 @@ describe("openai-compatible provider client — retry on 429/5xx", () => {
     expect(responsesCallCount).toBe(1);
   });
 
+  it("S7-RED-027 retries on network error then succeeds on the second attempt", async () => {
+    // Given: the first /responses call throws a network error
+    // (e.g. ECONNRESET, DNS hiccup, fetch implementation rejected
+    // the connection), the second call succeeds. The retry layer
+    // must surface the network error as retryable so transient
+    // connectivity blips don't kill the whole review.
+    const calls: { url: string; method: string }[] = [];
+    let attempt = 0;
+    const stubbed: typeof fetch = async (input, init) => {
+      const requestUrl = typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url;
+      const requestInit = init ?? {};
+      calls.push({ url: requestUrl, method: requestInit.method ?? "GET" });
+      attempt += 1;
+      if (attempt === 1) {
+        // Simulate a fetch-level network failure. globalThis.fetch
+        // would throw a TypeError (or a custom error in some
+        // runtimes); the performFetch wrapper classifies this as
+        // a ProviderError with code="network".
+        throw new TypeError("fetch failed: ECONNRESET");
+      }
+      return new Response(RESPONSES_SUCCESS_BODY, {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      });
+    };
+    void calls;
+
+    // When: the client posts to the provider.
+    const result = await runProviderRequest({
+      ...BASE_CONFIG,
+      requestTimeoutMs: 5_000,
+      fetchImpl: stubbed,
+    });
+
+    // Then: the retry layer recovers via the second attempt and
+    // the responses endpoint is used.
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.endpoint).toBe("responses");
+      expect(result.review.summary).toBe("Synthetic responses review.");
+    }
+    expect(attempt).toBe(2);
+  });
+
   it("S7-RED-026 retries exhausted on persistent 429 returns a typed ProviderError after max attempts", async () => {
     // Given: /responses returns 429 for all attempts (1 initial + 2 retries = 3 calls).
     const stub = makeFetchStub([
