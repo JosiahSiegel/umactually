@@ -88,6 +88,7 @@ The action treats the following inputs as untrusted:
 - Diff lines.
 - `prompt-file` contents (if the file path passes the path safety checks).
 - Anything in the event JSON except the small allow-list (PR number, repository name, head SHA).
+- The `api-url` string (and any query parameters it carries). The URL is opaque to the action and may come from a workflow input or environment variable.
 
 The action treats the following inputs as trusted:
 
@@ -96,6 +97,39 @@ The action treats the following inputs as trusted:
 - `GITHUB_TOKEN` (or `SYSTEM_ACCESSTOKEN` on Azure DevOps).
 
 Never expose trusted inputs to untrusted strings. In particular, do not interpolate `secrets.*` into a script body that is later written to disk.
+
+## CI log URL redaction
+
+GitHub Actions annotations are persisted on the PR's action run and visible to anyone with `actions:read` on the repository. The action emits `::notice::` lines that include the operator's `UMACTUALLY_API_URL` so operators can audit which candidate URL the dispatcher is trying.
+
+`redactUrlForLog(value: string): string` in `src/util/url.ts` is the single point where URLs cross into log output. It strips the query string (`?...`) and fragment (`#...`) from a URL, drops to bare `origin + path` form. Concrete transformations:
+
+```text
+https://api.example.com                              → https://api.example.com
+https://api.example.com/v1/responses                 → https://api.example.com/v1/responses
+https://gateway.example.com/session=abc              → https://gateway.example.com
+https://gateway.example.com/oauth?token=secret-leak  → https://gateway.example.com/oauth
+https://api.minimax.io/anthropic?session=abc123      → https://api.minimax.io/anthropic
+```
+
+The helper uses the WHATWG `URL` parser and falls back to substring-strip if the input is unparseable. It is wired into every `::notice::` URL log site:
+
+- `src/provider/openai-compatible.ts` — `"Resolving provider base URL"`, `"Trying base URL"`, and `"Base URL ... returned routable failure"` notices (3 sites).
+- `src/cli/live-provider.ts` — the `"Named provider ... returned status=... — retrying with cross-protocol fallback ..."` and the dual-protocol-failure notice in `runWithCrossProtocolFallback`.
+
+Operators who accidentally (or maliciously) type a URL with a `?token=` session parameter do not leak that token into the action log on every retry. The wire-shape path (the `fetch` call) is unaffected — the API key STILL goes to the same URL over HTTPS, but the query token never reaches the persisted log.
+
+## Cross-protocol dispatcher security notes
+
+The cross-protocol fallback in `src/cli/live-provider.ts:runWithCrossProtocolFallback` posts the operator's `UMACTUALLY_API_KEY` to BOTH the named provider and the fallback provider at the same `UMACTUALLY_API_URL` when the named protocol returns 404. This is correct on documented dual-protocol gateways (MiniMax accepts the same key for both protocols). The fallbacks that are NOT correct are bounded by the 404-only trigger:
+
+- **404** is treated as a routing-level rejection → fallback fires. The operator has likely typed a URL whose protocol-prefix they got wrong (e.g. `provider=openai-compatible` against `/anthropic`).
+- **400** is NOT a routing failure → fallback does NOT fire. Payload-level 400s (e.g. unsupported `max_tokens` value, content-policy rejection) would be silently masked if we switched protocols on 400 — the operator would see a successful review attributed to the OTHER protocol and never know their original call was wire-shape-malformed.
+- **401/403/429/5xx/network/parse** → fallback does NOT fire. Single root cause; another protocol won't help.
+
+Operators pointing `--provider anthropic` or `--provider openai-compatible` at non-dual-protocol URLs (a hostname that serves only one protocol) get a wasted secondary request at most. The `::notice::` annotation surfaces this so they can pick the right `--provider` on the next run. The fallback is bounded to a single retry, so even on non-dual-protocol URLs the wasted request cost is one extra HTTP call (~10–30s for Anthropic, ~5–15s for OpenAI).
+
+`api-url` is treated as untrusted above — see [`docs/providers.md`](providers.md#cross-protocol-auto-discovery-the-dispatcher) for the full decision tree.
 
 ## Least-privilege GitHub permissions
 

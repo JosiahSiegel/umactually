@@ -13,6 +13,11 @@
 #   dry-run validation to live review posting.
 # - Manual branch runs use synthetic Azure event/diff/review files so this
 #   pipeline can still prove the CLI executes without PR variables.
+# - On dual-protocol gateways (MiniMax serves Anthropic-protocol at
+#   /anthropic and OpenAI-protocol at /v1 under the same hostname), the
+#   `--provider` flag becomes advisory — the dispatcher tries the OTHER
+#   protocol at the same URL when the named one 404s. See
+#   docs/providers.md#cross-protocol-auto-discovery-the-dispatcher.
 trigger: none
 
 pr:
@@ -79,6 +84,12 @@ steps:
         --repo "$UMACTUALLY_REPO" \
         --api-url "${UMACTUALLY_API_URL}" \
         --api-key "${UMACTUALLY_API_KEY}" \
+        # Default provider is openai-compatible. On dual-protocol gateways
+        # (MiniMax) the dispatcher auto-discovers the protocol at the URL
+        # regardless of which provider is named here — see
+        # docs/providers.md#cross-protocol-auto-discovery-the-dispatcher.
+        # Switch to --provider anthropic for vanilla Anthropic API or
+        # MiniMax's /anthropic path-prefix.
         --no-detect-leaks \
         --no-dry-run
     displayName: Run UmActually Azure live review

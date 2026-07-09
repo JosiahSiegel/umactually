@@ -156,3 +156,57 @@ For live posting, also inspect the PR for threads containing:
 ```
 
 A standalone copyable example lives at [`examples/azure/azure-pipelines.yml`](../examples/azure/azure-pipelines.yml).
+
+## Syncing merged GitHub PRs to ADO main
+
+When the action lives in both GitHub and ADO and the canonical review pipeline is GitHub (`umactually-pr-review/` at GitHub), ADO main drifts behind. The workflow that keeps them in parity is reproducible end-to-end with the REST API — no manual web-UI steps required.
+
+The pattern (used for PRs #32 / ADO #62 and earlier syncs #59, #60, #61):
+
+1. **Merge the PR on GitHub first** (squash or merge, per the PR's bot reviews). This becomes the "source of truth" commit on GitHub main.
+
+2. **Create a sync branch from origin/main on ADO** — the branch name follows `sync/ado-main-with-github-mainN` (each PR increments N):
+
+    ```bash
+    # Locally against the canonical repo
+    git checkout ado/main
+    git checkout -b sync/ado-main-with-github-main8 origin/main
+    git push ado sync/ado-main-with-github-main8
+    ```
+
+3. **Create the ADO PR via REST API**. ADO's web UI is not required — the operator used `gh api` against ADO. Required fields: `sourceRefName`, `targetRefName` (`refs/heads/main`), `bypassPolicy: true` (with a `bypassReason` explaining the sync), `bypassReason: "Sync of already-merged GitHub PR #N."`.
+
+    ```bash
+    # Find the repo id once:
+    REPO_ID=$(curl -sS -u ":${DEVOPS_PAT}" \
+      "https://dev.azure.com/josiah-siegel/DemoProject/_apis/git/repositories?api-version=7.1" \
+      | python -c "import sys, json; print(next(r['id'] for r in json.load(sys.stdin)['value'] if r['name']=='umactually'))")
+
+    # Create the PR with bypassPolicy (bypassReason required when bypassing):
+    curl -sS -X POST -u ":${DEVOPS_PAT}" -H "Content-Type: application/json" \
+      "https://dev.azure.com/josiah-siegel/DemoProject/_apis/git/repositories/${REPO_ID}/pullrequests?api-version=7.1" \
+      -d '{
+        "sourceRefName": "refs/heads/sync/ado-main-with-github-main8",
+        "targetRefName": "refs/heads/main",
+        "title": "sync: bring ADO main into parity with GitHub main (PR #32)",
+        "description": "Sync PR #32 ...",
+        "bypassPolicy": true,
+        "bypassReason": "Sync of already-merged GitHub PR #32."
+      }'
+    ```
+
+4. **ADO detects conflicts** when the PRs being synced involve overlapping files (the case for cross-provider work spanning `src/cli/live-provider.ts`, `src/util/url.ts`, etc.). When conflicts arise, the merge fails with `mergeStatus: conflicts`.
+
+5. **Resolve conflicts locally** — checkout the sync branch, do `git merge ado/main --no-ff`, run `git checkout --theirs <file>` for each conflict (the sync branch is the source of truth because the GitHub PR has already passed CI + review there), commit the resolution with `git commit --no-edit`.
+
+6. **Force-push the resolved branch** with `--force-with-lease`:
+
+    ```bash
+    git push --force-with-lease ado sync/ado-main-with-github-main8
+    ```
+
+7. **Complete the PR via REST API** — set `status: completed` with `bypassPolicy: true` and `lastMergeSourceCommit: { commitId: <force-pushed tip SHA> }`. After this, ADO main moves to the sync PR's merge commit.
+
+The sync PR's merge commit will be **one commit ahead** of GitHub main in history (the merge commit itself), but the **tree** is identical. GitHub and ADO are at parity for any `git checkout <commit-sha>` operation; they only differ in commit-graph history.
+
+Required secrets: `DEVOPS_PAT` (or `AZURE_DEVOPS_TOKEN`) must be in `.env` or the shell session for the REST calls. Both are agent-friendly names that map to the same Azure DevOps Personal Access Token value — see the [`Local development: sourcing the PAT from .env`](#local-development-sourcing-the-pat-from-env) section above.
