@@ -290,6 +290,57 @@ export function resolveAnthropicMessagesUrl(baseUrl: string): string {
 }
 
 /**
+ * Heuristic: does the operator's `UMACTUALLY_API_URL` look like it's
+ * pointing at an Anthropic-protocol gateway?
+ *
+ * Used by the live-provider dispatcher to commit to the Anthropic
+ * Messages API client even when `--provider` defaults to
+ * `openai-compatible`. Without this, the openai-compatible client's
+ * URL candidate loop downgrades paths like
+ * `https://api.minimax.io/anthropic` to the origin+`/v1` fallback
+ * (which on MiniMax also serves OpenAI-protocol at `/v1/responses`),
+ * and the action ends up POSTing OpenAI wire-shape requests to an
+ * Anthropic-protocol gateway — silently breaking operator intent.
+ *
+ * Contract: returns `true` when ANY path segment exactly equals
+ * `anthropic` (case-insensitive). Anything else (bare host, `/v1`,
+ * `/openai`, arbitrary custom paths) returns `false`.
+ *
+ * Examples (see `test/unit/looks-like-anthropic-endpoint.test.ts`):
+ *
+ *   `https://api.minimax.io/anthropic`                 → true
+ *   `https://api.minimax.io/anthropic/v1`              → true
+ *   `https://gateway.example.com/llm/anthropic`        → true
+ *   `https://gateway.example.com/v1/anthropic`        → true
+ *   `https://api.openai.com/v1`                        → false
+ *   `https://api.example.com/`                         → false
+ *   `https://api.example.com/anthropic-v2`            → false (different segment)
+ *   `https://api.example.com/anthropic?token=…`        → true  (query dropped)
+ *
+ * Conservative by design: a `false` result means the dispatcher
+ * won't auto-commit to Anthropic protocol, falling back to the
+ * `--provider` choice and the cross-protocol fallback chain.
+ * An unexpected `false` is recoverable (the fallback still fires
+ * on a real 404); an unexpected `true` would silently pick the
+ * Anthropic wire shape on a URL that doesn't speak it.
+ */
+export function looksLikeAnthropicEndpoint(baseUrl: string): boolean {
+  if (baseUrl.length === 0) return false;
+  let pathname: string;
+  try {
+    pathname = new URL(baseUrl).pathname;
+  } catch {
+    // Substring fallback for unparseable URLs.
+    pathname = stripTrailingSlash(baseUrl).replace(/^[a-z]+:\/\/[^/]*/i, "");
+  }
+  // Normalize trailing slashes and split into segments. The leading
+  // slash is preserved; an empty pathname for bare hosts collapses
+  // to zero segments.
+  const segments = pathname.split("/").filter(s => s.length > 0);
+  return segments.some(s => s.toLowerCase() === "anthropic");
+}
+
+/**
  * Removes trailing slashes from a URL or path segment. Useful before
  * joining paths so empty-path joins don't produce double slashes.
  */
