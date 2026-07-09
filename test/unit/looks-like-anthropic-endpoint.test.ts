@@ -94,4 +94,17 @@ describe("looksLikeAnthropicEndpoint: path-prefix heuristic for protocol selecti
     expect(looksLikeAnthropicEndpoint("https://api.minimax.io/anthropic/")).toBe(true);
     expect(looksLikeAnthropicEndpoint("https://api.example.com/")).toBe(false);
   });
+
+  it("HEURISTIC-011: exact-segment contract — segments containing 'anthropic' as a substring do NOT match", () => {
+    // The dispatcher will POST OpenAI-Responses wire shape to these
+    // URLs if the heuristic falsely returns true. Tightening the contract
+    // here: only the byte-for-byte match `s === "anthropic"` qualifies.
+    // The 404-only cross-protocol fallback would catch a real miss,
+    // but the heuristic itself must NOT over-trigger.
+    expect(looksLikeAnthropicEndpoint("https://attacker.example.com/my-team/anthropic-related")).toBe(false);
+    expect(looksLikeAnthropicEndpoint("https://gateway.example.com/anthropic-fork/v1")).toBe(false);
+    expect(looksLikeAnthropicEndpoint("https://api.example.com/anthropic-team/foo")).toBe(false);
+    expect(looksLikeAnthropicEndpoint("https://api.example.com/xanthropic")).toBe(false);
+    expect(looksLikeAnthropicEndpoint("https://api.example.com/anthropicy")).toBe(false);
+  });
 });

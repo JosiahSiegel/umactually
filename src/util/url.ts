@@ -302,20 +302,35 @@ export function resolveAnthropicMessagesUrl(baseUrl: string): string {
  * and the action ends up POSTing OpenAI wire-shape requests to an
  * Anthropic-protocol gateway — silently breaking operator intent.
  *
- * Contract: returns `true` when ANY path segment exactly equals
- * `anthropic` (case-insensitive). Anything else (bare host, `/v1`,
- * `/openai`, arbitrary custom paths) returns `false`.
+ * Contract: returns `true` when ANY path segment **exactly** equals
+ * `anthropic` (case-insensitive, byte-for-byte match — no prefix or
+ * suffix overlap). Anything else (bare host, `/v1`, `/openai`,
+ * arbitrary custom paths, segments that *contain* `anthropic` but
+ * don't equal it) returns `false`.
+ *
+ * The exact-segment match is intentional: `anthropic-v2` /
+ * `my-anthropic` / `anthropic-fork` etc. are different segments
+ * from `anthropic` and don't trigger the heuristic. This is a
+ * tight, conservative contract — the only paths that commit to
+ * Anthropic protocol are paths that are LITERALLY `/anthropic`
+ * (with optional trailing `/v1`, `/llm/anthropic`, `/v1/anthropic`,
+ * etc. but never `/anthropic-anything`). A false positive here
+ * would silently POST Anthropic wire shape to a server expecting
+ * something else, which is worse than the (recoverable) false
+ * negative of falling through to the cross-protocol fallback chain.
  *
  * Examples (see `test/unit/looks-like-anthropic-endpoint.test.ts`):
  *
- *   `https://api.minimax.io/anthropic`                 → true
- *   `https://api.minimax.io/anthropic/v1`              → true
- *   `https://gateway.example.com/llm/anthropic`        → true
- *   `https://gateway.example.com/v1/anthropic`        → true
- *   `https://api.openai.com/v1`                        → false
- *   `https://api.example.com/`                         → false
- *   `https://api.example.com/anthropic-v2`            → false (different segment)
- *   `https://api.example.com/anthropic?token=…`        → true  (query dropped)
+ *   `https://api.minimax.io/anthropic`                 → true  (segment "anthropic")
+ *   `https://api.minimax.io/anthropic/v1`              → true  (segment "anthropic")
+ *   `https://gateway.example.com/llm/anthropic`        → true  (segment "anthropic")
+ *   `https://gateway.example.com/v1/anthropic`        → true  (segment "anthropic")
+ *   `https://api.openai.com/v1`                        → false (no "anthropic" segment)
+ *   `https://api.example.com/`                         → false (no path)
+ *   `https://api.example.com/anthropic-v2`            → false (segment "anthropic-v2" ≠ "anthropic")
+ *   `https://api.example.com/my-anthropic`             → false (segment "my-anthropic" ≠ "anthropic")
+ *   `https://api.example.com/anthropic-team/foo`       → false (segment "anthropic-team" ≠ "anthropic")
+ *   `https://api.example.com/anthropic?token=…`        → true  (query dropped, path segment "anthropic" matches)
  *
  * Conservative by design: a `false` result means the dispatcher
  * won't auto-commit to Anthropic protocol, falling back to the
