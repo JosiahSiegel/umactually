@@ -292,4 +292,42 @@ describe("requestLiveReview dispatch — provider=anthropic", () => {
     expect(outcome.review.suppressedComments[0]!.body).not.toContain(secret);
     expect(outcome.review.suppressedComments[0]!.body).toContain("[REDACTED_SECRET]");
   });
+
+  it("DISPATCH-ANTH-005 /anthropic path is canonicalized to /v1/messages (no wasted 404 on /anthropic/messages)", async () => {
+    // Regression case the user flagged: when an operator types
+    // `--api-url https://api.anthropic.com/anthropic`, the action
+    // must NOT try the as-pasted URL first
+    // (POST /anthropic/messages would 404). It must canonicalize
+    // directly to /v1/messages — same canonical behavior PR #29
+    // established for the openai-compatible client.
+    const successText = JSON.stringify({
+      summary: "anthropic path canonicalized correctly.",
+      verdict: "APPROVED",
+      comments: [],
+      suppressed_comments: [],
+    });
+    const stub = makeFetchStub([{ status: 200, body: buildAnthropicSuccessBody(successText) }]);
+    const mod = await loadRequestLiveReviewModule();
+    const parsed = {
+      ...makeBaseArgs("anthropic"),
+      apiUrl: "https://api.anthropic.com/anthropic",
+    };
+
+    const outcome = await mod.requestLiveReview({
+      parsed,
+      cwd: process.cwd(),
+      env: {},
+      fetchImpl: stub.fetch,
+      platform: "github",
+      diffText: MINIMAL_DIFF,
+      platformToken: "gh",
+    });
+
+    // Exactly one wire request, hitting canonical /v1/messages.
+    expect(stub.calls).toHaveLength(1);
+    const call = stub.calls[0]!;
+    expect(call.url).toBe("https://api.anthropic.com/v1/messages");
+    expect(call.url).not.toContain("/anthropic/messages");
+    expect(outcome.review.summary).toBe("anthropic path canonicalized correctly.");
+  });
 });

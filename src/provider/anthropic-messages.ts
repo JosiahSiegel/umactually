@@ -41,7 +41,7 @@ import {
   sanitizeMessage,
 } from "./provider-error.js";
 import { composeSignal, sleep } from "../util/async.js";
-import { createRequestId, joinUrl, resolveProviderBaseUrlCandidates } from "../util/url.js";
+import { createRequestId, joinUrl, resolveProviderBaseUrl } from "../util/url.js";
 import { isRecord, readArrayField, readRecordField, readStringField } from "../util/json-guards.js";
 
 const ENDPOINT: ProviderEndpoint = "anthropic";
@@ -241,47 +241,19 @@ export async function runAnthropicRequest(
   const fetchImpl = config.fetchImpl ?? globalThis.fetch.bind(globalThis);
   const requestId = createRequestId();
 
-  // Same robust URL resolution strategy as the OpenAI client: try as-pasted
-  // (after trimming trailing slashes) first, fall back to origin + default
-  // prefix. For Anthropic, the canonical first-URL is `https://api.anthropic.com/v1`
-  // — the bare host `https://api.anthropic.com` will resolve to
-  // `https://api.anthropic.com/v1` after the candidate-list fallback and
-  // then `joinUrl` appends `/messages`.
-  const baseUrlCandidates = resolveProviderBaseUrlCandidates(config.baseUrl, "/v1");
-  if (baseUrlCandidates.length > 1) {
-    process.stderr.write(
-      `::notice::UmActually Resolving Anthropic base URL: trying ${baseUrlCandidates.length} candidates in order: ${baseUrlCandidates.join(", ")}\n`,
-    );
-  }
+  // Anthropic's /v1/messages endpoint is canonical — there's no
+  // valid scenario where a custom path is meaningful (unlike OpenAI
+  // where gateways may mount the API at /openai, /api/v2, etc.).
+  // We resolve directly to `origin + /v1` instead of trying the
+  // as-pasted URL first. The single-candidate resolution avoids a
+  // wasted 404 on `/anthropic/messages` when the operator types
+  // `--api-url https://api.anthropic.com/anthropic` (the regression
+  // case PR #28's resolveProviderBaseUrlCandidates contract left in
+  // for the openai-compatible client — Anthropic doesn't need it
+  // because the route is fixed).
+  const baseUrl = resolveProviderBaseUrl(config.baseUrl, "/v1");
 
-  let lastAttempt: AnthropicProviderCallResult = {
-    ok: false,
-    error: new ProviderError("network", ENDPOINT, null, requestId, "No base URL candidates resolved for Anthropic."),
-  };
-  for (const candidate of baseUrlCandidates) {
-    process.stderr.write(`::notice::UmActually Trying Anthropic base URL: ${candidate}\n`);
-    // Anthropic serves `/messages` only — no `/responses` / `/chat/completions`
-    // fallback (those are OpenAI routes). So the per-candidate loop only
-    // tries the single Anthropic Messages endpoint.
-    const attempt = await runWithRetry(config, fetchImpl, requestId, candidate);
-    if (attempt.ok) {
-      return attempt;
-    }
-    // Auth failures, server errors, parse failures — none of these benefit
-    // from trying a different URL shape, so return immediately.
-    if (!isRoutableFailure(attempt.error)) {
-      return attempt;
-    }
-    process.stderr.write(
-      `::notice::UmActually Anthropic base URL ${candidate} returned routable failure (status=${attempt.error.status}); advancing to next candidate.\n`,
-    );
-    lastAttempt = attempt;
-  }
-  return lastAttempt;
-}
-
-function isRoutableFailure(error: ProviderError): boolean {
-  return error.status === 404;
+  return runWithRetry(config, fetchImpl, requestId, baseUrl);
 }
 
 async function runWithRetry(
