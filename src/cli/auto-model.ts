@@ -35,6 +35,8 @@
  *
  * Users can always override via `--model` (or `UMACTUALLY_MODEL`).
  */
+import { resolveField } from "../config/field-resolution.js";
+import { ENV_KEYS } from "../util/env-keys.js";
 import { extractHostname } from "../util/url.js";
 
 const COPILOT_DEFAULT_MODEL = "claude-3-5-sonnet";
@@ -96,7 +98,7 @@ export function resolveAutoModel(input: {
   if (input.provider === "anthropic") {
     return ANTHROPIC_DEFAULT_MODEL;
   }
-  const url = input.apiUrl ?? input.env["UMACTUALLY_API_URL"] ?? "";
+  const url = resolveField(input.apiUrl, input.env[ENV_KEYS.UMACTUALLY_API_URL], "");
   const hostname = extractHostname(url);
   if (hostname !== null) {
     const lowerHost = hostname.toLowerCase();

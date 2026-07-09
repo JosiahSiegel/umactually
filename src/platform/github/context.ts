@@ -1,5 +1,6 @@
 import { readFile } from "node:fs/promises";
 import { parseStrictInt } from "../../util/cli-args.js";
+import { ENV_KEYS } from "../../util/env-keys.js";
 import { isPositiveSafeInteger, isRecord as isObject } from "../../util/json-guards.js";
 import { PlatformContextError } from "../../util/platform-error.js";
 
@@ -57,7 +58,7 @@ export async function readGithubContext(env: NodeJS.ProcessEnv): Promise<GithubC
 }
 
 function readGithubToken(env: NodeJS.ProcessEnv): string {
-  const fromEnv = env["GITHUB_TOKEN"];
+  const fromEnv = env[ENV_KEYS.GITHUB_TOKEN];
   if (typeof fromEnv === "string" && fromEnv.length > 0) {
     return fromEnv;
   }
@@ -69,7 +70,7 @@ function readGithubToken(env: NodeJS.ProcessEnv): string {
 }
 
 function readGithubRepo(env: NodeJS.ProcessEnv, fallback: string | null): GithubRepoRef {
-  const repository = env["GITHUB_REPOSITORY"] ?? fallback ?? "";
+  const repository = env[ENV_KEYS.GITHUB_REPOSITORY] ?? fallback ?? "";
   if (repository.length === 0) {
     throw new GithubContextError("GITHUB_REPOSITORY_INVALID", "GitHub Actions GITHUB_REPOSITORY must be set as '<owner>/<name>'.");
   }
@@ -130,7 +131,7 @@ type PullRequestPayloadFields = {
 };
 
 async function readGithubPullRequestPayload(env: NodeJS.ProcessEnv): Promise<PullRequestPayloadFields> {
-  const eventPath = env["GITHUB_EVENT_PATH"];
+  const eventPath = env[ENV_KEYS.GITHUB_EVENT_PATH];
   if (eventPath === undefined || eventPath.length === 0) {
     throw new GithubContextError("GITHUB_EVENT_PATH_MISSING", "GitHub Actions GITHUB_EVENT_PATH must be set for pull_request events.");
   }

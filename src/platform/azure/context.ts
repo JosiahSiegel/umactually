@@ -1,4 +1,5 @@
 import { parseStrictInt } from "../../util/cli-args.js";
+import { ENV_KEYS } from "../../util/env-keys.js";
 import { PlatformContextError } from "../../util/platform-error.js";
 
 export type AzureContext = {
@@ -80,7 +81,7 @@ function readAzureToken(env: NodeJS.ProcessEnv): string {
 }
 
 function readAzureOrg(env: NodeJS.ProcessEnv): string {
-  const collectionUri = env["SYSTEM_COLLECTIONURI"];
+  const collectionUri = env[ENV_KEYS.SYSTEM_COLLECTIONURI];
   if (collectionUri === undefined || collectionUri.length === 0) {
     throw new AzureContextError("AZURE_COLLECTION_URI_INVALID", "Azure Pipelines SYSTEM_COLLECTIONURI must be set.");
   }
@@ -105,7 +106,7 @@ function readAzureOrg(env: NodeJS.ProcessEnv): string {
 }
 
 function readAzureProject(env: NodeJS.ProcessEnv): string {
-  const project = env["SYSTEM_TEAMPROJECT"];
+  const project = env[ENV_KEYS.SYSTEM_TEAMPROJECT];
   if (project === undefined || project.length === 0) {
     throw new AzureContextError("AZURE_TEAM_PROJECT_MISSING", "Azure Pipelines SYSTEM_TEAMPROJECT must be set.");
   }
@@ -113,7 +114,7 @@ function readAzureProject(env: NodeJS.ProcessEnv): string {
 }
 
 function readAzureRepoId(env: NodeJS.ProcessEnv): string {
-  const repoId = env["BUILD_REPOSITORY_ID"];
+  const repoId = env[ENV_KEYS.BUILD_REPOSITORY_ID];
   if (repoId === undefined || repoId.length === 0) {
     throw new AzureContextError("AZURE_REPOSITORY_ID_MISSING", "Azure Pipelines BUILD_REPOSITORY_ID must be set.");
   }
@@ -140,7 +141,7 @@ function readAzurePrNumber(
     }
     return override;
   }
-  const raw = env["SYSTEM_PULLREQUEST_PULLREQUESTID"];
+  const raw = env[ENV_KEYS.SYSTEM_PULLREQUEST_PULLREQUESTID];
   if (raw === undefined || raw.length === 0) {
     throw new AzureContextError(
       "AZURE_PR_NUMBER_INVALID",
@@ -182,7 +183,7 @@ function readAzurePrNumber(
 }
 
 function readAzureSha(env: NodeJS.ProcessEnv): string {
-  const value = env["SYSTEM_PULLREQUEST_SOURCECOMMITID"];
+  const value = env[ENV_KEYS.SYSTEM_PULLREQUEST_SOURCECOMMITID];
   if (value === undefined || value.length === 0) {
     throw new AzureContextError("AZURE_SOURCE_COMMIT_MISSING", "Azure Pipelines SYSTEM_PULLREQUEST_SOURCECOMMITID must be set.");
   }
@@ -190,7 +191,7 @@ function readAzureSha(env: NodeJS.ProcessEnv): string {
 }
 
 function readAzureTargetBranch(env: NodeJS.ProcessEnv): string {
-  const value = env["SYSTEM_PULLREQUEST_TARGETBRANCHNAME"];
+  const value = env[ENV_KEYS.SYSTEM_PULLREQUEST_TARGETBRANCHNAME];
   if (value === undefined || value.length === 0) {
     throw new AzureContextError("AZURE_TARGET_BRANCH_MISSING", "Azure Pipelines SYSTEM_PULLREQUEST_TARGETBRANCHNAME must be set.");
   }
