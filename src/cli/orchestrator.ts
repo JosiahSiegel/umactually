@@ -154,11 +154,15 @@ export async function runLive(input: RunLiveInput): Promise<LiveRunResult> {
     return failedResult(message);
   }
 
-  // Copilot provider does not need UMACTUALLY_API_URL; it uses the GitHub
-  // Copilot token exchange endpoint. Skip the URL check for copilot.
+  // Copilot + Anthropic-native providers don't need UMACTUALLY_API_URL:
+  //   - Copilot uses the GitHub Copilot token exchange endpoint.
+  //   - Anthropic defaults to https://api.anthropic.com/v1 and reads
+  //     `x-api-key` directly from UMACTUALLY_API_KEY.
+  // Skip the URL check for both.
   const isCopilot = input.parsed.provider === "copilot";
+  const isAnthropic = input.parsed.provider === "anthropic";
   const providerUrl = input.parsed.apiUrl ?? env["UMACTUALLY_API_URL"];
-  if (!isCopilot && (providerUrl === undefined || providerUrl.length === 0)) {
+  if (!isCopilot && !isAnthropic && (providerUrl === undefined || providerUrl.length === 0)) {
     const message = "UMACTUALLY_API_URL must be set for live review.";
     process.stdout.write(`${BRAND_PREFIX}${message}\n`);
     return failedResult(message);

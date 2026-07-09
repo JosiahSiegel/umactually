@@ -32,7 +32,7 @@ export type ActionInputs = {
   readonly repo: string;
   readonly inGitHubActions: boolean;
   readonly effort: "low" | "medium" | "high";
-  readonly provider: "openai-compatible" | "copilot";
+  readonly provider: "openai-compatible" | "copilot" | "anthropic";
   readonly githubApiBase: string;
 };
 
@@ -146,8 +146,8 @@ export function readActionInputs(env: NodeJS.ProcessEnv = process.env): ActionIn
     ),
     provider: readEnumFromInput(
       "provider",
-      FIELDS.provider.defaultValue as "openai-compatible" | "copilot",
-      FIELDS.provider.enumValues as readonly ("openai-compatible" | "copilot")[],
+      FIELDS.provider.defaultValue as "openai-compatible" | "copilot" | "anthropic",
+      FIELDS.provider.enumValues as readonly ("openai-compatible" | "copilot" | "anthropic")[],
     ),
     githubApiBase: getWithFallback("github-api-base", ["UMACTUALLY_GITHUB_API_BASE"]),
   };

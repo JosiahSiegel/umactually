@@ -3,6 +3,7 @@ import {
   runProviderRequest,
   type ProviderReviewPayload,
 } from "../provider/openai-compatible.js";
+import { runAnthropicRequest } from "../provider/anthropic-messages.js";
 import {
   setActiveSeveritySink,
   type ResponseFormat,
@@ -30,6 +31,7 @@ import { verifyFindingsAgainstDiff } from "./verify-findings.js";
 const DEFAULT_REQUEST_TIMEOUT_MS = 60_000;
 const PROVIDER_NAME = "openai-compatible";
 const COPILOT_PROVIDER_NAME = "github-copilot";
+const ANTHROPIC_PROVIDER_NAME = "anthropic-messages";
 
 export async function requestLiveReview(input: {
   readonly parsed: ParsedCliArgs;
@@ -60,7 +62,9 @@ export async function requestLiveReview(input: {
   // generic test runner does not pass `providerName` explicitly.
   const severityWarnings: SeverityWarning[] = [];
   const sinkProviderName =
-    input.parsed.provider === "copilot" ? COPILOT_PROVIDER_NAME : PROVIDER_NAME;
+    input.parsed.provider === "copilot" ? COPILOT_PROVIDER_NAME
+      : input.parsed.provider === "anthropic" ? ANTHROPIC_PROVIDER_NAME
+      : PROVIDER_NAME;
   const sink: SeverityWarningSink = (raw, normalized, ctx) => {
     severityWarnings.push({
       rawValue: raw,
@@ -86,6 +90,71 @@ export async function requestLiveReview(input: {
   const responseFormat: ResponseFormat | undefined = input.parsed.strictSchema === false
     ? undefined
     : { type: "json_schema", strict: true, schema: REVIEW_PAYLOAD_JSON_SCHEMA as unknown as Record<string, unknown> };
+
+  /**
+   * Success path shared by all three provider families
+   * (`openai-compatible` / `copilot` / `anthropic`). Mirrors the
+   * 3-step flow that previously lived inline in each branch:
+   * normalize (secrets scrubbed) → parse-warnings artifact → verify
+   * filter for downstream platform-posting. Behavior is BYTE-IDENTICAL
+   * regardless of provider.
+   */
+  function handleSuccess(
+    result: { readonly ok: true; readonly endpoint: string; readonly review: ProviderReviewPayload },
+    providerName: string,
+  ): LiveProviderOutcome {
+    const preVerifyReview = normalizeProviderReview(result.review, [providerApiKey, input.platformToken]);
+    const preVerifyOutcome = withParseWarnings({
+      review: preVerifyReview,
+      endpoint: result.endpoint,
+      provider: providerName,
+      modelId,
+      severityWarnings: severityWarnings.slice(),
+      diffText: input.diffText,
+    });
+    const finalReview = input.parsed.verifyFindings !== false
+      ? applyVerifyFilter(preVerifyReview, input.diffText)
+      : preVerifyReview;
+    return { ...preVerifyOutcome, review: finalReview };
+  }
+
+  /**
+   * Parse-failure path shared by all three provider families.
+   * Builds the malformed-provider fallback review and attaches the
+   * parse-warnings artifact so operators see what was wrong with the
+   * model's response (off-diff citations, missed severity classification,
+   * truncated-stream marker, etc.) before the action exits non-zero.
+   */
+  function handleParse(
+    result: {
+      readonly ok: false;
+      readonly error: {
+        readonly code: string;
+        readonly endpoint: string;
+        readonly truncated: boolean | undefined;
+        readonly usage: { input_tokens?: number; output_tokens?: number; total_tokens?: number } | undefined;
+      };
+    },
+    providerName: string,
+    rawText: string,
+  ): LiveProviderOutcome {
+    const review = buildMalformedProviderFallback({
+      provider: providerName,
+      modelId,
+      rawText,
+      secrets: [providerApiKey, input.platformToken],
+      ...parseFailureReasonFromProviderError(result.error, input.parsed.maxOutputTokens),
+    });
+    return withParseWarnings({
+      review,
+      endpoint: result.error.endpoint,
+      provider: providerName,
+      modelId,
+      severityWarnings: severityWarnings.slice(),
+      diffText: input.diffText,
+    });
+  }
+
   try {
     if (input.parsed.provider === "copilot") {
       const result = await runCopilotRequest({
@@ -101,63 +170,55 @@ export async function requestLiveReview(input: {
         fetchImpl: input.fetchImpl as typeof fetch,
       });
       if (result.ok) {
-        // Step 1: normalize without the verify filter so the
-        // parse-warnings artifact (built in step 2) records every
-        // off-diff citation the model emitted, not just the ones
-        // that survived the inline filter. The filter is a
-        // defense-in-depth, not a replacement for the artifact.
-        const preVerifyReview = normalizeProviderReview(result.review, [providerApiKey, input.platformToken]);
-        // Step 2: build the parse-warnings artifact from the
-        // pre-verify review (so it captures every fabrication).
-        const preVerifyOutcome = withParseWarnings({
-          review: preVerifyReview,
-          endpoint: result.endpoint,
-          provider: COPILOT_PROVIDER_NAME,
-          modelId,
-          severityWarnings: severityWarnings.slice(),
-          diffText: input.diffText,
-        });
-        // Step 3: apply the deterministic verify filter to the
-        // comments[] that gets passed downstream (so the
-        // platform-posting paths only see anchorable findings).
-        // Use `!== false` rather than `=== true` so callers
-        // (tests, future serializers) that omit the field
-        // still get the default-ON behavior.
-        const finalReview = input.parsed.verifyFindings !== false
-          ? applyVerifyFilter(preVerifyReview, input.diffText)
-          : preVerifyReview;
-        return {
-          ...preVerifyOutcome,
-          review: finalReview,
-        };
+        return handleSuccess(result, COPILOT_PROVIDER_NAME);
       }
       if (result.error.code === "parse") {
-        const review = buildMalformedProviderFallback({
-          provider: COPILOT_PROVIDER_NAME,
-          modelId,
-          rawText: result.error.rawText ?? "",
-          secrets: [providerApiKey, input.platformToken],
-          ...parseFailureReasonFromProviderError(result.error, input.parsed.maxOutputTokens),
-        });
-        return withParseWarnings({
-          review,
-          endpoint: result.error.endpoint,
-          provider: COPILOT_PROVIDER_NAME,
-          modelId,
-          severityWarnings: severityWarnings.slice(),
-          diffText: input.diffText,
-        });
+        return handleParse(result, COPILOT_PROVIDER_NAME, result.error.rawText ?? "");
       }
-      // Provider errors (router misconfig, no providers configured,
-      // invalid API key, etc.) are NOT parse failures and must NOT
-      // be posted as a COMMENT review. Hard-fail so CI sees the error.
       if (result.error.code === "provider_error") {
         const details = result.error.providerErrorDetails;
-        throw new LiveReviewError(
-          "PROVIDER_ERROR",
-          details?.message ?? result.error.message,
-          { cause: result.error },
-        );
+        throw new LiveReviewError("PROVIDER_ERROR", details?.message ?? result.error.message, { cause: result.error });
+      }
+      throw new LiveReviewError("PROVIDER_REQUEST_FAILED", result.error.message, { cause: result.error });
+    }
+
+    if (input.parsed.provider === "anthropic") {
+      // Anthropic native provider (`/v1/messages`). The wire body uses
+      // the Anthropic Messages schema (top-level `system`, user-only
+      // `messages[]`, `max_tokens` instead of `max_output_tokens`,
+      // `x-api-key`/`anthropic-version` headers) — which the
+      // openai-compatible client does NOT speak. Routing through a
+      // dedicated client avoids an OpenAI-shaped request going to
+      // `/v1/messages` and getting 400'd at the wire layer.
+      //
+      // Anthropic defaults to https://api.anthropic.com/v1 when
+      // --api-url is unset. This matches the contracts in
+      // `action.yml`, the README's "Using the native Anthropic
+      // Messages API" block, and `validate.ts`/`orchestrator.ts`
+      // which both exempt --api-url from the required check when
+      // --provider anthropic is set.
+      const providerUrl = input.parsed.apiUrl
+        ?? input.env["UMACTUALLY_API_URL"]
+        ?? "https://api.anthropic.com/v1";
+      const result = await runAnthropicRequest({
+        baseUrl: providerUrl,
+        apiKey: providerApiKey,
+        model: modelId,
+        system: prompts.system,
+        user: prompts.user,
+        requestTimeoutMs: readRequestTimeoutMs(input.parsed),
+        ...(input.parsed.maxOutputTokens !== null ? { maxOutputTokens: input.parsed.maxOutputTokens } : {}),
+        fetchImpl: input.fetchImpl,
+      });
+      if (result.ok) {
+        return handleSuccess(result, ANTHROPIC_PROVIDER_NAME);
+      }
+      if (result.error.code === "parse") {
+        return handleParse(result, ANTHROPIC_PROVIDER_NAME, result.error.rawText ?? "");
+      }
+      if (result.error.code === "provider_error") {
+        const details = result.error.providerErrorDetails;
+        throw new LiveReviewError("PROVIDER_ERROR", details?.message ?? result.error.message, { cause: result.error });
       }
       throw new LiveReviewError("PROVIDER_REQUEST_FAILED", result.error.message, { cause: result.error });
     }
@@ -177,41 +238,11 @@ export async function requestLiveReview(input: {
     });
 
     if (result.ok) {
-      // See the Copilot branch for the three-step flow rationale.
-      const preVerifyReview = normalizeProviderReview(result.review, [providerApiKey, input.platformToken]);
-      const preVerifyOutcome = withParseWarnings({
-        review: preVerifyReview,
-        endpoint: result.endpoint,
-        provider: PROVIDER_NAME,
-        modelId,
-        severityWarnings: severityWarnings.slice(),
-        diffText: input.diffText,
-      });
-      const finalReview = input.parsed.verifyFindings !== false
-        ? applyVerifyFilter(preVerifyReview, input.diffText)
-        : preVerifyReview;
-      return {
-        ...preVerifyOutcome,
-        review: finalReview,
-      };
+      return handleSuccess(result, PROVIDER_NAME);
     }
 
     if (result.error.code === "parse") {
-      const review = buildMalformedProviderFallback({
-        provider: PROVIDER_NAME,
-        modelId,
-        rawText: result.error.rawText ?? "",
-        secrets: [providerApiKey, input.platformToken],
-        ...parseFailureReasonFromProviderError(result.error, input.parsed.maxOutputTokens),
-      });
-      return withParseWarnings({
-        review,
-        endpoint: result.error.endpoint,
-        provider: PROVIDER_NAME,
-        modelId,
-        severityWarnings: severityWarnings.slice(),
-        diffText: input.diffText,
-      });
+      return handleParse(result, PROVIDER_NAME, result.error.rawText ?? "");
     }
     // Provider errors (router misconfig, no providers configured,
     // invalid API key, etc.) are NOT parse failures and must NOT
@@ -340,7 +371,7 @@ function readConfiguredModel(parsed: ParsedCliArgs, env: NodeJS.ProcessEnv): str
   // a less-hallucinating model based on the active provider + API
   // URL. See `src/cli/auto-model.ts` for the per-provider mapping
   // and the Vectara HHEM rationale.
-  const provider = (parsed.provider ?? "openai-compatible") as "openai-compatible" | "copilot";
+  const provider = (parsed.provider ?? "openai-compatible") as "openai-compatible" | "copilot" | "anthropic";
   return resolveAutoModel({
     provider,
     apiUrl: parsed.apiUrl,
