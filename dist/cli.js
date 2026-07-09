@@ -286,14 +286,7 @@ const FIELDS = {
         env: [],
         type: "enum",
         defaultValue: "openai-compatible",
-        // Anthropic Messages (`api.anthropic.com/v1/messages`) was added
-        // alongside the OpenAI-compatible and Copilot families so operators
-        // running on a vanilla Anthropic API key (no OpenAI proxy in front)
-        // can use the action out of the box. The provider picks the
-        // Anthropic-native wire protocol (top-level `system` field, user
-        // messages only, `x-api-key`/`anthropic-version` headers) and posts
-        // to `/v1/messages`.
-        enumValues: ["openai-compatible", "copilot", "anthropic"],
+        enumValues: ["openai-compatible", "copilot"],
     },
     githubApiBase: {
         field: "githubApiBase",
@@ -1110,7 +1103,7 @@ const HELP_FLAGS = [
     { flag: "--additional-prompt <text>" },
     { flag: "--additional-prompt-file <path>" },
     { flag: "--effort <low|medium|high>", description: "Reasoning effort hint (default: medium)" },
-    { flag: "--provider <openai-compatible|copilot|anthropic>", description: "Provider family (anthropic uses native /v1/messages)" },
+    { flag: "--provider <openai-compatible|copilot>", description: "Provider family" },
     { flag: "--github-api-base <url>", description: "GitHub API base URL (Copilot token exchange; default: https://api.github.com)" },
     { flag: "--include-sonarqube" },
     { flag: "--sonar-host-url <url>" },
@@ -3524,13 +3517,10 @@ function collectValidationErrors(parsed) {
         }
     }
     if (!parsed.dryRun) {
-        // Copilot + Anthropic-native providers don't need --api-url:
-        //   - Copilot uses the GitHub Copilot token exchange endpoint
-        //     (defaulting to https://api.github.com).
-        //   - Anthropic defaults to https://api.anthropic.com — an operator
-        //     with the default key can run without specifying --api-url.
-        if (parsed.apiUrl === null && parsed.provider !== "copilot" && parsed.provider !== "anthropic") {
-            errors.push("--api-url is required unless --dry-run is set, --provider copilot is used, or --provider anthropic is used");
+        // Copilot provider does not need --api-url; it uses the GitHub Copilot
+        // token exchange endpoint (defaulting to https://api.github.com).
+        if (parsed.apiUrl === null && parsed.provider !== "copilot") {
+            errors.push("--api-url is required unless --dry-run is set or --provider copilot is used");
         }
         if (parsed.apiKey === null) {
             errors.push("--api-key is required unless --dry-run is set");
@@ -10014,415 +10004,6 @@ function shouldFallback(error) {
     return error.status === 404 || error.status === 400;
 }
 
-;// CONCATENATED MODULE: ./src/provider/anthropic-messages.ts
-/**
- * Native Anthropic Messages API client.
- *
- * Implements `POST {baseUrl}/messages` against Anthropic's
- * `/v1/messages` protocol. The wire shape differs from the OpenAI Chat
- * Completions / Responses API in three meaningful ways:
- *
- *  1. **Auth header**: `x-api-key: <key>` (not `Authorization: Bearer ...`)
- *     plus the required `anthropic-version: 2023-06-01` version pin.
- *  2. **Body layout**: `system` is a top-level field, NOT a system-role
- *     message inside `messages[]`. `messages[]` only carries user/assistant
- *     turns.
- *  3. **Response body**: success returns `content: [{type:"text", text:"..."}]`
- *     and `stop_reason: "end_turn" | "max_tokens" | "tool_use" | ...`;
- *     errors are nested as `{type:"error", error:{type, message}}`.
- *
- * Anthropic does NOT support OpenAI's `response_format: { type: "json_schema", ...}`
- * constraint. The strict-JSON contract is enforced entirely by the in-context
- * system prompt and the parser — same fallback the OpenAI client uses AFTER
- * its `response_format`-stripped self-healing retry. So we never send
- * `response_format` and never strip it.
- *
- * The retry / parse-fail / bumped-budget / network-retry / provider-error
- * flows are shared byte-for-byte with `openai-compatible.ts` so the
- * end-to-end behavior (recover from parse-fail, surface truncated-stream
- * diagnostic, hard-fail on router errors) is identical regardless of which
- * provider family the operator picks.
- */
-
-
-
-
-
-const ENDPOINT = "anthropic";
-const ANTHROPIC_VERSION = "2023-06-01";
-const anthropic_messages_RETRY_BACKOFF_MS = [250, 1_000];
-
-/**
- * Project the call config down to the body shape expected by
- * `buildAnthropicBody`. Anthropic accepts a top-level `system` field,
- * not a system-role message — this projection is intentionally minimal.
- */
-function anthropic_messages_buildBodyConfig(config) {
-    return {
-        model: config.model,
-        system: config.system,
-        user: config.user,
-        ...(config.maxOutputTokens !== undefined ? { maxOutputTokens: config.maxOutputTokens } : {}),
-    };
-}
-/**
- * Anthropic Messages API body.
- *
- * Sample wire shape (curl):
- *   curl https://api.anthropic.com/v1/messages \
- *     -H 'x-api-key: $ANTHROPIC_API_KEY' \
- *     -H 'anthropic-version: 2023-06-01' \
- *     -H 'content-type: application/json' \
- *     -d '{
- *       "model": "claude-sonnet-4.6",
- *       "max_tokens": 1024,
- *       "system": "You are a code review assistant...",
- *       "messages": [{"role": "user", "content": "..."}]
- *     }'
- *
- * Notably absent (compared to the OpenAI Chat Completions body):
- *   - `response_format` — Anthropic has no equivalent JSON-schema
- *     constraint. The system prompt enforces strict JSON, and the parser
- *     is permissive about prose-wrapped shapes.
- *   - `temperature` — Anthropic does not require it; default 1.0 (was the
- *     Anthropic-only behavior until `temperature` was added in 2024).
- *     Including it is optional and we don't.
- *   - `stream` — non-streaming JSON response; Anthropic default.
- */
-function buildAnthropicBody(config, opts) {
-    // See PARSE_FAIL_RETRY_PROMPT in provider-parse.ts for why we APPEND
-    // the original user content instead of replacing it on retry.
-    const userContent = opts?.userOverride !== undefined
-        ? `${opts.userOverride}${config.user}`
-        : config.user;
-    const body = {
-        model: config.model,
-        system: config.system,
-        messages: [
-            { role: "user", content: userContent },
-        ],
-    };
-    // Anthropic REQUIRES `max_tokens`. Without it the API rejects the
-    // request with HTTP 400 (`"messages: at least one message is required"` /
-    // `"max_tokens: Field required"`). We always send it; default to 4096
-    // when the operator did not pin one so the call works even in tests
-    // that omit the cap.
-    body["max_tokens"] = config.maxOutputTokens ?? 4096;
-    return body;
-}
-/**
- * Extract the user's text payload from an Anthropic Messages response.
- *
- * Anthropic returns `content: [{type:"text", text:"..."}]` for
- * non-streaming success responses, plus `usage` and `stop_reason`
- * fields. We concatenate ALL `text` blocks (multi-block responses can
- * happen when a tool_use block precedes or follows a text block) and
- * ignore non-text blocks (Anthropic's tool_use is a separate content
- * type we don't support).
- *
- * Returns the empty string when the response has no text blocks; the
- * downstream `parseReviewPayload` will classify that as a parse-fail
- * (per `isNonEmptyReview`), which trips the self-healing retry path.
- */
-function extractAnthropicTextPayload(rawText) {
-    let parsed;
-    try {
-        parsed = JSON.parse(rawText);
-    }
-    catch {
-        return rawText;
-    }
-    if (!isRecord(parsed)) {
-        return rawText;
-    }
-    const content = readArrayField(parsed, "content");
-    if (content === null) {
-        // No `content` array — typical for Anthropic error envelopes that
-        // use `{type:"error", error:{type, message}}` instead of `content[]`.
-        // The downstream `detectProviderError` will catch that case.
-        return rawText;
-    }
-    const fragments = [];
-    for (const block of content) {
-        if (!isRecord(block))
-            continue;
-        const type = readStringField(block, "type");
-        if (type !== "text")
-            continue;
-        const text = readStringField(block, "text");
-        if (text !== null && text.length > 0)
-            fragments.push(text);
-    }
-    return fragments.length > 0 ? fragments.join("") : rawText;
-}
-/**
- * Read the `stop_reason` from a parsed Anthropic response. Returns
- * `"max_tokens"` when the model hit its output budget, `null` otherwise
- * or when the field is absent. Used by `diagnoseParseFailure` to
- * distinguish "truncated stream" from "bad JSON".
- */
-function readStopReason(parsed) {
-    if (!isRecord(parsed))
-        return null;
-    const stopReason = readStringField(parsed, "stop_reason");
-    if (stopReason === null || stopReason.length === 0)
-        return null;
-    return stopReason;
-}
-/**
- * Read the `usage` block from a parsed Anthropic response. Returns
- * undefined when absent or malformed — the parse-fail diagnostic only
- * surfaces usage when the provider actually reported it.
- */
-function readUsage(parsed) {
-    if (!isRecord(parsed))
-        return undefined;
-    const usage = readRecordField(parsed, "usage");
-    if (usage === null || !isRecord(usage))
-        return undefined;
-    const inputTokens = anthropic_messages_readNumberField(usage, "input_tokens");
-    const outputTokens = anthropic_messages_readNumberField(usage, "output_tokens");
-    const totalTokens = anthropic_messages_readNumberField(usage, "total_tokens");
-    if (inputTokens === undefined && outputTokens === undefined && totalTokens === undefined) {
-        return undefined;
-    }
-    // Build mutable then freeze-via-cast — preserves the readonly surface
-    // the consumers (ProviderError.usage) expect while keeping the
-    // construction site ergonomic.
-    const mutable = {};
-    if (inputTokens !== undefined)
-        mutable.input_tokens = inputTokens;
-    if (outputTokens !== undefined)
-        mutable.output_tokens = outputTokens;
-    if (totalTokens !== undefined)
-        mutable.total_tokens = totalTokens;
-    return mutable;
-}
-function anthropic_messages_readNumberField(record, key) {
-    const raw = record[key];
-    if (typeof raw !== "number")
-        return undefined;
-    return raw;
-}
-async function runAnthropicRequest(config) {
-    const fetchImpl = config.fetchImpl ?? globalThis.fetch.bind(globalThis);
-    const requestId = createRequestId();
-    // Anthropic's /v1/messages endpoint is canonical — there's no
-    // valid scenario where a custom path is meaningful (unlike OpenAI
-    // where gateways may mount the API at /openai, /api/v2, etc.).
-    // We resolve directly to `origin + /v1` instead of trying the
-    // as-pasted URL first. The single-candidate resolution avoids a
-    // wasted 404 on `/anthropic/messages` when the operator types
-    // `--api-url https://api.anthropic.com/anthropic` (the regression
-    // case PR #28's resolveProviderBaseUrlCandidates contract left in
-    // for the openai-compatible client — Anthropic doesn't need it
-    // because the route is fixed).
-    const baseUrl = resolveProviderBaseUrl(config.baseUrl, "/v1");
-    return anthropic_messages_runWithRetry(config, fetchImpl, requestId, baseUrl);
-}
-async function anthropic_messages_runWithRetry(config, fetchImpl, requestId, baseUrl) {
-    let lastFailure = null;
-    for (let attempt = 0; attempt <= anthropic_messages_RETRY_BACKOFF_MS.length; attempt += 1) {
-        const result = await runOnce(config, fetchImpl, requestId, baseUrl);
-        if (result.ok) {
-            return result;
-        }
-        lastFailure = result.error;
-        if (!anthropic_messages_isRetryable(result.error)) {
-            return result;
-        }
-        if (attempt < anthropic_messages_RETRY_BACKOFF_MS.length) {
-            const backoffMs = anthropic_messages_RETRY_BACKOFF_MS[attempt] ?? 0;
-            await sleep(backoffMs);
-        }
-    }
-    return {
-        ok: false,
-        error: lastFailure ?? new ProviderError("network", ENDPOINT, null, requestId, "Unknown Anthropic retry failure."),
-    };
-}
-function anthropic_messages_isRetryable(error) {
-    if (error.code === "network") {
-        return true;
-    }
-    return error.status === 429 || (typeof error.status === "number" && error.status >= 500);
-}
-async function runOnce(config, fetchImpl, requestId, baseUrl) {
-    const url = joinUrl(baseUrl, "/messages");
-    const body = buildAnthropicBody(anthropic_messages_buildBodyConfig(config));
-    const signal = composeSignal(config.signal, config.requestTimeoutMs);
-    let response;
-    try {
-        response = await anthropic_messages_performFetch(fetchImpl, url, body, signal, config.apiKey, requestId);
-    }
-    catch (error) {
-        if (error instanceof ProviderError) {
-            return { ok: false, error };
-        }
-        throw error;
-    }
-    if (!response.ok) {
-        // Anthropic returns errors as `{type:"error", error:{type, message}}`
-        // with a status (401, 404, 429, 5xx). The 4xx/5xx envelope itself
-        // doesn't usually have a recognizable signal beyond the HTTP status,
-        // so we just throw a typed ProviderError with the status. The
-        // body text is read ONLY so the diagnostic can cite it.
-        let errorBodyText = "";
-        try {
-            errorBodyText = await response.text();
-        }
-        catch {
-            // Body read failure shouldn't mask the original status.
-        }
-        return {
-            ok: false,
-            error: new ProviderError("anthropic_4xx", ENDPOINT, response.status, requestId, `Anthropic Messages API responded with HTTP ${response.status}.`, { ...(errorBodyText.length > 0 ? { rawText: errorBodyText } : {}) }),
-        };
-    }
-    let rawText;
-    try {
-        rawText = await response.text();
-    }
-    catch (error) {
-        return {
-            ok: false,
-            error: new ProviderError("parse", ENDPOINT, response.status, requestId, sanitizeMessage(error, "Failed to read Anthropic response body."), { cause: error }),
-        };
-    }
-    const textPayload = extractAnthropicTextPayload(rawText);
-    // Provider-error detection: a 200 OK whose body is an Anthropic error
-    // envelope (router misconfiguration, model not found, content policy
-    // rejection returned with 200 OK in some setups) should be classified
-    // as provider_error, NOT as a parse failure. Same logic the OpenAI
-    // path runs.
-    const providerError = detectProviderError(rawText);
-    if (providerError !== null) {
-        return {
-            ok: false,
-            error: new ProviderError("provider_error", ENDPOINT, response.status, requestId, providerError.message, { rawText, providerErrorDetails: providerError }),
-        };
-    }
-    const review = parseReviewPayload(textPayload);
-    if (isNonEmptyReview(review)) {
-        return { ok: true, endpoint: ENDPOINT, review, requestId };
-    }
-    // Empty JSON or "truncated stream" parse-fail path. We check
-    // `stop_reason === "max_tokens"` AND `rawText.length > 16K` to
-    // distinguish "model ran out of tokens" from "model returned bad JSON".
-    // Both surface as parse errors, but the diagnostic in `truncated: true`
-    // lets the operator know raising `--max-output-tokens` would help.
-    let parsedStopReason = null;
-    let parsedUsage;
-    try {
-        const parsedRaw = JSON.parse(rawText);
-        parsedStopReason = readStopReason(parsedRaw);
-        parsedUsage = readUsage(parsedRaw);
-    }
-    catch {
-        // rawText wasn't JSON; that's exactly why the parse failed.
-    }
-    const truncatedByStopReason = parsedStopReason === "max_tokens";
-    // Bumped-budget retry heuristic: large empty stream → likely a
-    // truncation / reasoning-only response. Re-issue with more budget.
-    // Same heuristic as openai-compatible.ts.
-    const needsMoreBudget = rawText.length > 16_000 && textPayload.length < 200;
-    const bumpedMaxOutput = needsMoreBudget && config.maxOutputTokens !== undefined
-        ? Math.min(config.maxOutputTokens * 2, 128_000)
-        : config.maxOutputTokens;
-    // Self-healing retry with the JSON-only reminder prefix.
-    const retryBodyConfig = {
-        ...anthropic_messages_buildBodyConfig(config),
-        ...(bumpedMaxOutput !== undefined ? { maxOutputTokens: bumpedMaxOutput } : {}),
-    };
-    const retryBody = buildAnthropicBody(retryBodyConfig, { userOverride: PARSE_FAIL_RETRY_PROMPT });
-    let retryReview = null;
-    let retryResponseStatus = null;
-    try {
-        // Fresh signal: same rationale as openai-compatible.
-        const retrySignal = composeSignal(config.signal, config.requestTimeoutMs);
-        const retryResponse = await anthropic_messages_performFetch(fetchImpl, url, retryBody, retrySignal, config.apiKey, requestId);
-        retryResponseStatus = retryResponse.status;
-        if (retryResponse.ok) {
-            const retryRawText = await retryResponse.text();
-            const retryTextPayload = extractAnthropicTextPayload(retryRawText);
-            const parsedRetry = parseReviewPayload(retryTextPayload);
-            if (isNonEmptyReview(parsedRetry)) {
-                retryReview = parsedRetry;
-            }
-        }
-    }
-    catch {
-        // Retry path threw — fall through to the original-rawText parse-fail
-        // throw below. retryResponseStatus stays null in this branch.
-    }
-    if (retryReview !== null) {
-        return { ok: true, endpoint: ENDPOINT, review: retryReview, requestId };
-    }
-    // Distinguish "truncated stream" from "completed but malformed" by
-    // checking the ORIGINAL response's stop_reason. When the first
-    // attempt ended at `max_tokens`, the operator's remediation is to
-    // raise `--max-output-tokens`; otherwise the model returned bad JSON
-    // (model regression or schema mismatch).
-    const diagnosis = diagnoseParseFailure({ rawText });
-    // diagnoseParseFailure's `truncated` heuristic is based on a missing
-    // SSE-completed event marker; for Anthropic that marker doesn't apply,
-    // so override with our explicit stop_reason check when we have one.
-    const effectiveTruncated = truncatedByStopReason || diagnosis.truncated;
-    // Prefer the Anthropic-reported usage over the diagnosis's
-    // SSE-completed-event-derived `usage`. Strip the `undefined` value
-    // so we satisfy `exactOptionalPropertyTypes`.
-    const usage = parsedUsage ?? diagnosis.usage;
-    const errorOptions = {
-        rawText,
-        truncated: effectiveTruncated,
-        ...(usage !== undefined ? { usage } : {}),
-    };
-    return {
-        ok: false,
-        error: new ProviderError("parse", ENDPOINT, retryResponseStatus ?? response.status, requestId, "Anthropic response did not contain a JSON review payload after self-healing retry.", errorOptions),
-    };
-}
-async function anthropic_messages_performFetch(fetchImpl, url, body, signal, apiKey, requestId) {
-    try {
-        return await fetchImpl(url, {
-            method: "POST",
-            headers: {
-                "content-type": "application/json",
-                // Anthropic BANS the `Authorization: Bearer ...` header. The
-                // correct auth header is `x-api-key`, with the required
-                // `anthropic-version` pin. Sending Bearer instead results in a
-                // 401 with no useful error message. Test fixtures pin both
-                // headers (no `authorization`).
-                "x-api-key": apiKey,
-                "anthropic-version": ANTHROPIC_VERSION,
-                "x-request-id": requestId,
-            },
-            body: JSON.stringify(body),
-            signal,
-        });
-    }
-    catch (error) {
-        if (isAbortError(error)) {
-            throw new ProviderError("timeout", ENDPOINT, null, requestId, "Anthropic request timed out.");
-        }
-        throw new ProviderError("network", ENDPOINT, null, requestId, sanitizeMessage(error, "Network error contacting Anthropic."), { cause: error });
-    }
-}
-/**
- * Build the headers for an Anthropic Messages request. Exported so the
- * test fixture can pin the exact shape. The api-key comes from the call
- * config, NOT from the body, because we don't want the key landing in
- * any request artifact / log / debug dump.
- */
-function buildAnthropicHeaders(apiKey, requestId) {
-    return {
-        "content-type": "application/json",
-        "x-api-key": apiKey,
-        "anthropic-version": ANTHROPIC_VERSION,
-        "x-request-id": requestId,
-    };
-}
-
 ;// CONCATENATED MODULE: ./src/cli/auto-model.ts
 /**
  * Layer 5: opinionated `model: "auto"` resolution.
@@ -10483,14 +10064,6 @@ function resolveAutoModel(input) {
     if (input.provider === "copilot") {
         return COPILOT_DEFAULT_MODEL;
     }
-    // Anthropic provider: the operator picked the Anthropic-native
-    // `/v1/messages` protocol. Return the Anthropic default regardless of
-    // the URL — the protocol is Anthropic-only, so hostname routing does
-    // not apply. Operators who want a different Anthropic model can
-    // override via `--model`.
-    if (input.provider === "anthropic") {
-        return ANTHROPIC_DEFAULT_MODEL;
-    }
     const url = input.apiUrl ?? input.env["UMACTUALLY_API_URL"] ?? "";
     const hostname = url_extractHostname(url);
     if (hostname !== null) {
@@ -10534,16 +10107,6 @@ const PROVIDER_FALLBACKS = {
         // (handled in provider-parse.ts:PARSE_FAIL_RETRY_PROMPT);
         // a model-level fallback is a no-op for Copilot today.
         COPILOT_DEFAULT_MODEL,
-    ],
-    anthropic: [
-        // The Anthropic native provider (`/v1/messages`) only accepts
-        // Anthropic claude-* model names. Other provider families' model
-        // strings would 400 on the wire. The chain is intentionally
-        // bare-bones — operators who need a multi-model fallback chain
-        // for Anthropic can pass `--fallback-models` explicitly.
-        ANTHROPIC_DEFAULT_MODEL,
-        "claude-haiku-4.5",
-        "claude-opus-4.6",
     ],
 };
 /**
@@ -11128,11 +10691,9 @@ async function verifyFindingsWithModel(input) {
 
 
 
-
 const live_provider_DEFAULT_REQUEST_TIMEOUT_MS = 60_000;
 const PROVIDER_NAME = "openai-compatible";
 const COPILOT_PROVIDER_NAME = "github-copilot";
-const ANTHROPIC_PROVIDER_NAME = "anthropic-messages";
 async function requestLiveReview(input) {
     await scanReviewSecrets({
         diffText: input.diffText,
@@ -11151,9 +10712,7 @@ async function requestLiveReview(input) {
     // recorded during this request is attributed correctly even if a
     // generic test runner does not pass `providerName` explicitly.
     const severityWarnings = [];
-    const sinkProviderName = input.parsed.provider === "copilot" ? COPILOT_PROVIDER_NAME
-        : input.parsed.provider === "anthropic" ? ANTHROPIC_PROVIDER_NAME
-            : PROVIDER_NAME;
+    const sinkProviderName = input.parsed.provider === "copilot" ? COPILOT_PROVIDER_NAME : PROVIDER_NAME;
     const sink = (raw, normalized, ctx) => {
         severityWarnings.push({
             rawValue: raw,
@@ -11179,53 +10738,6 @@ async function requestLiveReview(input) {
     const responseFormat = input.parsed.strictSchema === false
         ? undefined
         : { type: "json_schema", strict: true, schema: REVIEW_PAYLOAD_JSON_SCHEMA };
-    /**
-     * Success path shared by all three provider families
-     * (`openai-compatible` / `copilot` / `anthropic`). Mirrors the
-     * 3-step flow that previously lived inline in each branch:
-     * normalize (secrets scrubbed) → parse-warnings artifact → verify
-     * filter for downstream platform-posting. Behavior is BYTE-IDENTICAL
-     * regardless of provider.
-     */
-    function handleSuccess(result, providerName) {
-        const preVerifyReview = normalizeProviderReview(result.review, [providerApiKey, input.platformToken]);
-        const preVerifyOutcome = withParseWarnings({
-            review: preVerifyReview,
-            endpoint: result.endpoint,
-            provider: providerName,
-            modelId,
-            severityWarnings: severityWarnings.slice(),
-            diffText: input.diffText,
-        });
-        const finalReview = input.parsed.verifyFindings !== false
-            ? applyVerifyFilter(preVerifyReview, input.diffText)
-            : preVerifyReview;
-        return { ...preVerifyOutcome, review: finalReview };
-    }
-    /**
-     * Parse-failure path shared by all three provider families.
-     * Builds the malformed-provider fallback review and attaches the
-     * parse-warnings artifact so operators see what was wrong with the
-     * model's response (off-diff citations, missed severity classification,
-     * truncated-stream marker, etc.) before the action exits non-zero.
-     */
-    function handleParse(result, providerName, rawText) {
-        const review = buildMalformedProviderFallback({
-            provider: providerName,
-            modelId,
-            rawText,
-            secrets: [providerApiKey, input.platformToken],
-            ...parseFailureReasonFromProviderError(result.error, input.parsed.maxOutputTokens),
-        });
-        return withParseWarnings({
-            review,
-            endpoint: result.error.endpoint,
-            provider: providerName,
-            modelId,
-            severityWarnings: severityWarnings.slice(),
-            diffText: input.diffText,
-        });
-    }
     try {
         if (input.parsed.provider === "copilot") {
             const result = await runCopilotRequest({
@@ -11241,51 +10753,56 @@ async function requestLiveReview(input) {
                 fetchImpl: input.fetchImpl,
             });
             if (result.ok) {
-                return handleSuccess(result, COPILOT_PROVIDER_NAME);
+                // Step 1: normalize without the verify filter so the
+                // parse-warnings artifact (built in step 2) records every
+                // off-diff citation the model emitted, not just the ones
+                // that survived the inline filter. The filter is a
+                // defense-in-depth, not a replacement for the artifact.
+                const preVerifyReview = normalizeProviderReview(result.review, [providerApiKey, input.platformToken]);
+                // Step 2: build the parse-warnings artifact from the
+                // pre-verify review (so it captures every fabrication).
+                const preVerifyOutcome = withParseWarnings({
+                    review: preVerifyReview,
+                    endpoint: result.endpoint,
+                    provider: COPILOT_PROVIDER_NAME,
+                    modelId,
+                    severityWarnings: severityWarnings.slice(),
+                    diffText: input.diffText,
+                });
+                // Step 3: apply the deterministic verify filter to the
+                // comments[] that gets passed downstream (so the
+                // platform-posting paths only see anchorable findings).
+                // Use `!== false` rather than `=== true` so callers
+                // (tests, future serializers) that omit the field
+                // still get the default-ON behavior.
+                const finalReview = input.parsed.verifyFindings !== false
+                    ? applyVerifyFilter(preVerifyReview, input.diffText)
+                    : preVerifyReview;
+                return {
+                    ...preVerifyOutcome,
+                    review: finalReview,
+                };
             }
             if (result.error.code === "parse") {
-                return handleParse(result, COPILOT_PROVIDER_NAME, result.error.rawText ?? "");
+                const review = buildMalformedProviderFallback({
+                    provider: COPILOT_PROVIDER_NAME,
+                    modelId,
+                    rawText: result.error.rawText ?? "",
+                    secrets: [providerApiKey, input.platformToken],
+                    ...parseFailureReasonFromProviderError(result.error, input.parsed.maxOutputTokens),
+                });
+                return withParseWarnings({
+                    review,
+                    endpoint: result.error.endpoint,
+                    provider: COPILOT_PROVIDER_NAME,
+                    modelId,
+                    severityWarnings: severityWarnings.slice(),
+                    diffText: input.diffText,
+                });
             }
-            if (result.error.code === "provider_error") {
-                const details = result.error.providerErrorDetails;
-                throw new LiveReviewError("PROVIDER_ERROR", details?.message ?? result.error.message, { cause: result.error });
-            }
-            throw new LiveReviewError("PROVIDER_REQUEST_FAILED", result.error.message, { cause: result.error });
-        }
-        if (input.parsed.provider === "anthropic") {
-            // Anthropic native provider (`/v1/messages`). The wire body uses
-            // the Anthropic Messages schema (top-level `system`, user-only
-            // `messages[]`, `max_tokens` instead of `max_output_tokens`,
-            // `x-api-key`/`anthropic-version` headers) — which the
-            // openai-compatible client does NOT speak. Routing through a
-            // dedicated client avoids an OpenAI-shaped request going to
-            // `/v1/messages` and getting 400'd at the wire layer.
-            //
-            // Anthropic defaults to https://api.anthropic.com/v1 when
-            // --api-url is unset. This matches the contracts in
-            // `action.yml`, the README's "Using the native Anthropic
-            // Messages API" block, and `validate.ts`/`orchestrator.ts`
-            // which both exempt --api-url from the required check when
-            // --provider anthropic is set.
-            const providerUrl = input.parsed.apiUrl
-                ?? input.env["UMACTUALLY_API_URL"]
-                ?? "https://api.anthropic.com/v1";
-            const result = await runAnthropicRequest({
-                baseUrl: providerUrl,
-                apiKey: providerApiKey,
-                model: modelId,
-                system: prompts.system,
-                user: prompts.user,
-                requestTimeoutMs: readRequestTimeoutMs(input.parsed),
-                ...(input.parsed.maxOutputTokens !== null ? { maxOutputTokens: input.parsed.maxOutputTokens } : {}),
-                fetchImpl: input.fetchImpl,
-            });
-            if (result.ok) {
-                return handleSuccess(result, ANTHROPIC_PROVIDER_NAME);
-            }
-            if (result.error.code === "parse") {
-                return handleParse(result, ANTHROPIC_PROVIDER_NAME, result.error.rawText ?? "");
-            }
+            // Provider errors (router misconfig, no providers configured,
+            // invalid API key, etc.) are NOT parse failures and must NOT
+            // be posted as a COMMENT review. Hard-fail so CI sees the error.
             if (result.error.code === "provider_error") {
                 const details = result.error.providerErrorDetails;
                 throw new LiveReviewError("PROVIDER_ERROR", details?.message ?? result.error.message, { cause: result.error });
@@ -11306,10 +10823,40 @@ async function requestLiveReview(input) {
             fetchImpl: input.fetchImpl,
         });
         if (result.ok) {
-            return handleSuccess(result, PROVIDER_NAME);
+            // See the Copilot branch for the three-step flow rationale.
+            const preVerifyReview = normalizeProviderReview(result.review, [providerApiKey, input.platformToken]);
+            const preVerifyOutcome = withParseWarnings({
+                review: preVerifyReview,
+                endpoint: result.endpoint,
+                provider: PROVIDER_NAME,
+                modelId,
+                severityWarnings: severityWarnings.slice(),
+                diffText: input.diffText,
+            });
+            const finalReview = input.parsed.verifyFindings !== false
+                ? applyVerifyFilter(preVerifyReview, input.diffText)
+                : preVerifyReview;
+            return {
+                ...preVerifyOutcome,
+                review: finalReview,
+            };
         }
         if (result.error.code === "parse") {
-            return handleParse(result, PROVIDER_NAME, result.error.rawText ?? "");
+            const review = buildMalformedProviderFallback({
+                provider: PROVIDER_NAME,
+                modelId,
+                rawText: result.error.rawText ?? "",
+                secrets: [providerApiKey, input.platformToken],
+                ...parseFailureReasonFromProviderError(result.error, input.parsed.maxOutputTokens),
+            });
+            return withParseWarnings({
+                review,
+                endpoint: result.error.endpoint,
+                provider: PROVIDER_NAME,
+                modelId,
+                severityWarnings: severityWarnings.slice(),
+                diffText: input.diffText,
+            });
         }
         // Provider errors (router misconfig, no providers configured,
         // invalid API key, etc.) are NOT parse failures and must NOT
@@ -11897,15 +11444,11 @@ async function runLive(input) {
         process.stdout.write(`${BRAND_PREFIX}${message}\n`);
         return failedResult(message);
     }
-    // Copilot + Anthropic-native providers don't need UMACTUALLY_API_URL:
-    //   - Copilot uses the GitHub Copilot token exchange endpoint.
-    //   - Anthropic defaults to https://api.anthropic.com/v1 and reads
-    //     `x-api-key` directly from UMACTUALLY_API_KEY.
-    // Skip the URL check for both.
+    // Copilot provider does not need UMACTUALLY_API_URL; it uses the GitHub
+    // Copilot token exchange endpoint. Skip the URL check for copilot.
     const isCopilot = input.parsed.provider === "copilot";
-    const isAnthropic = input.parsed.provider === "anthropic";
     const providerUrl = input.parsed.apiUrl ?? env["UMACTUALLY_API_URL"];
-    if (!isCopilot && !isAnthropic && (providerUrl === undefined || providerUrl.length === 0)) {
+    if (!isCopilot && (providerUrl === undefined || providerUrl.length === 0)) {
         const message = "UMACTUALLY_API_URL must be set for live review.";
         process.stdout.write(`${BRAND_PREFIX}${message}\n`);
         return failedResult(message);
