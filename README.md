@@ -13,8 +13,10 @@ The action is designed for:
 - [GitHub Actions quickstart](#github-actions-quickstart)
 - [Azure DevOps quickstart](#azure-devops-quickstart)
 - [Configuration reference](docs/configuration.md)
+- [Provider protocol reference](docs/providers.md) — when adding/changing providers, URL resolution rules, dual-protocol dispatch
 - [Security model](docs/security.md)
 - [Azure DevOps setup notes](docs/azure-devops.md)
+- [Contributing / cold-startup guide](CONTRIBUTING.md) — if you've been away for a while, read this first
 
 ## Inputs
 
@@ -22,11 +24,11 @@ These inputs mirror `action.yml`.
 
 | Input | Required | Default | Description |
 | --- | --- | --- | --- |
-| `api-url` | No | `""` | UmActually review API base URL. Prefer `UMACTUALLY_API_URL` in `env` for reusable workflows. |
-| `api-key` | No | `""` | UmActually review API key. Prefer `UMACTUALLY_API_KEY` in `env` or a platform secret; never hard-code it. |
-| `model` | No | `auto` | Review model to request. Use `auto` unless a maintainer asks for a pinned synthetic test model. |
+| `api-url` | No | `""` | Provider base URL. See [docs/providers.md](docs/providers.md) for the per-family URL resolution rules. Prefer `UMACTUALLY_API_URL` in `env` for reusable workflows. Required for `openai-compatible`; `anthropic` defaults to `https://api.anthropic.com/v1`; ignored for `copilot`. |
+| `api-key` | No | `""` | Provider API key. Prefer `UMACTUALLY_API_KEY` in `env` or a platform secret; never hard-code it. |
+| `model` | No | `auto` | Review model to request. `auto` resolves per-provider + per-URL — see [docs/providers.md#model-auto-resolution-on-dual-protocol-gateways](docs/providers.md#model-auto-resolution-on-dual-protocol-gateways). Use a pinned synthetic name only when a maintainer asks for it. |
 | `effort` | No | `medium` | Reasoning effort hint (low\|medium\|high). Forwarded as `reasoning.effort` to providers that support it. |
-| `provider` | No | `openai-compatible` | Provider family. Set to `copilot` to use GitHub Copilot (requires a GitHub PAT as `UMACTUALLY_API_KEY`). Set to `anthropic` to use the native Anthropic Messages API (`POST /v1/messages` with `x-api-key`/`anthropic-version` headers). |
+| `provider` | No | `openai-compatible` | Provider family. `openai-compatible` posts to any OpenAI-protocol gateway. `copilot` uses GitHub Copilot with a GitHub PAT. `anthropic` uses the native Anthropic Messages API. **On dual-protocol gateways** (e.g. MiniMax serves both Anthropic and OpenAI protocols under the same hostname), `--provider` is advisory: the dispatcher transparently falls back to the OTHER protocol at the same URL when the named protocol returns a routing-level rejection (404). See [docs/providers.md#cross-protocol-auto-discovery-the-dispatcher](docs/providers.md#cross-protocol-auto-discovery-the-dispatcher). |
 | `github-api-base` | No | `""` | GitHub API base URL for Copilot token exchange. Defaults to `https://api.github.com`. Set to `https://<tenant>.ghe.com` for GitHub Enterprise Server. |
 | `review-timeout-seconds` | No | `300` | Maximum review wall-clock time in seconds. |
 | `stall-seconds` | No | `270` | Seconds without provider output before the review is considered stalled. |
@@ -82,7 +84,24 @@ When your `UMACTUALLY_API_KEY` is a vanilla Anthropic key (no OpenAI proxy in fr
           UMACTUALLY_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
 ```
 
-Override the base URL (for a self-hosted Anthropic-protocol gateway) via `api-url: https://your-gateway.example/anthropic`.
+Override the base URL (for a self-hosted Anthropic-protocol gateway) via `api-url: https://your-gateway.example/anthropic`. The Anthropic provider resolves the URL per the [@anthropic-ai/sdk](https://github.com/anthropics/anthropic-sdk-typescript) convention — **it preserves the operator's path prefix** so Anthropic-protocol gateways mounted under arbitrary prefixes (the documented example: [MiniMax](https://platform.minimax.io/docs/token-plan/claude-code) at `https://api.minimax.io/anthropic`) route correctly. A typo like `https://api.minimax.io/anthropic` lands at `https://api.minimax.io/anthropic/v1/messages`, not `/v1/messages` (which 404s on MiniMax).
+
+### Anthropic-compatible gateways and MiniMax
+
+Some providers serve both Anthropic-protocol and OpenAI-protocol endpoints under the same hostname at different path prefixes. The action handles this transparently: **when the operator-picked provider returns a routing-level rejection (404) at the URL, the dispatcher automatically retries the OTHER protocol at the same URL.** On dual-protocol gateways the operator doesn't have to know which protocol lives under which path prefix.
+
+```yaml
+      - uses: ./
+        with:
+          provider: openai-compatible   # works fine even when the URL is the Anthropic-prefix one
+          api-url: https://api.minimax.io/anthropic
+        env:
+          UMACTUALLY_API_KEY: ${{ secrets.MINIMAX_API_KEY }}
+```
+
+The action tries OpenAI first (`/anthropic/responses`, `/anthropic/chat/completions`, `/v1/responses`, `/v1/chat/completions` — all 404 on MiniMax's anthropic prefix), then falls back to the Anthropic protocol and POSTs `https://api.minimax.io/anthropic/v1/messages` successfully. Set `--provider anthropic --api-url https://api.minimax.io/v1` for the inverse. The trace is logged via `::notice::` annotations so operators can see which protocol actually produced the review (see `artifacts/manual/s1-github-self-review.md` after a run).
+
+Cross-protocol fallback is **strictly limited to 404** — payload-level 400s (e.g. unsupported parameter on a wire shape) do NOT trigger the fallback, because switching protocols on 400 would silently mask wire-shape bugs. See [docs/providers.md#cross-protocol-auto-discovery-the-dispatcher](docs/providers.md#cross-protocol-auto-discovery-the-dispatcher) for the rules.
 
 For a first-time import or vendoring PR that exceeds the 200-file default cap, set `review-file-limit: 0` (or your desired ceiling) to opt in to chunked review:
 
@@ -133,6 +152,8 @@ For PRs that exceed the 200-file default cap, add `--review-file-limit N` (or se
 - Review diffs are redacted before provider submission and before artifacts are written.
 - High-confidence leaks and security findings ALWAYS bypass `minimum-severity` and are never suppressed.
 - `prompt-file` is repository-relative only; absolute paths and `..` traversal are rejected.
+- All `::notice::` URLs (the persisted Action annotations) are routed through `redactUrlForLog()` which strips query strings and fragments. Operators who accidentally (or maliciously) type a URL with a `?token=…` parameter do not leak the token into the action log — see [docs/security.md#ci-log-url-redaction](docs/security.md#ci-log-url-redaction).
+- Cross-protocol dispatcher reuses the operator's API key for both protocols at the same URL on dual-protocol gateways (MiniMax serves both at the same hostname). This is correct on documented dual-protocol gateways; on non-dual-protocol gateways the same key would land at the same URL with a different wire shape. The 404-only trigger keeps this from happening on payload-level errors.
 
 Read the full [security notes](docs/security.md) before enabling this on repositories that accept external contributors.
 
