@@ -155,18 +155,24 @@ describe("applyConfidenceFilter — Layer 5 false-positive prevention", () => {
 
   describe("contradicted-by-quote", () => {
     it("downgrades a finding that claims missing parameterized queries when the diff shows them", () => {
+      // Note: the diff intentionally uses the literal phrase
+      // "parameterized query" in a comment so the contradicted-by-quote
+      // check fires. The $1 / $2 SQL placeholders are no longer
+      // presence markers (see the regression test below for the FP
+      // that caused their removal) — only the prose phrase counts.
       const diff = [
         "diff --git a/db/query.ts b/db/query.ts",
         "--- a/db/query.ts",
         "+++ b/db/query.ts",
         "@@ -1,3 +1,4 @@",
         " export async function getUser(id: string) {",
+        "+  // Use a parameterized query for safety",
         "+  const result = await db.query('SELECT * FROM users WHERE id = $1', [id]);",
         " }",
       ].join("\n");
       const c = comment({
         path: "db/query.ts",
-        line: 2,
+        line: 3,
         body: "This query is missing parameterized query support — it should use a prepared statement to prevent SQL injection.",
         severity: "high",
       });
@@ -198,6 +204,50 @@ describe("applyConfidenceFilter — Layer 5 false-positive prevention", () => {
       const result = applyConfidenceFilter({ review: review([c]), diffText: diff });
       // No "parameterized" / "prepared statement" in the diff → finding
       // is legitimate, keep at high.
+      expect(result.kept).toHaveLength(1);
+      expect(result.downgraded).toHaveLength(0);
+    });
+
+    it("does NOT downgrade when the body mentions parameterized queries but the diff only has $1/$2 placeholders in unrelated context (PR #43 self-review finding)", () => {
+      // Regression for self-review finding on PR #43 thread 3559191384:
+      // the PRESENCE_CONSTRUCTS entry for "parameterized queries" used
+      // to include `$1` and `$2` as presence markers. These two-character
+      // tokens are extraordinarily common in diffs (regex substitutions,
+      // format strings, template literals, mathematical expressions) and
+      // produced false-positive contradicted-by-quote downgrades on
+      // legitimate findings about unrelated code. Removed from the
+      // construct set; SQL parameter syntax is not anchored to a
+      // security construct the way "parameterized query" / "parameterised
+      // query" phrasings are.
+      const diff = [
+        "diff --git a/template/render.ts b/template/render.ts",
+        "--- a/template/render.ts",
+        "+++ b/template/render.ts",
+        "@@ -1,3 +1,4 @@",
+        " export function render(template: string) {",
+        "+  return template.replace(/\\$(\\d+)/g, (_, idx) => values[parseInt(idx) - 1] ?? '');",
+        " }",
+      ].join("\n");
+      // Body mentions parameterized queries but the diff is a
+      // template-literal regex substitution, NOT a SQL query. The
+      // finding's claim is nonsensical here (no SQL context), so the
+      // filter must NOT downgrade it as "contradicted by quote" — the
+      // $1 / $2 markers in the diff are NOT parameterized-query
+      // placeholders, they're regex capture-group references.
+      const c = comment({
+        path: "template/render.ts",
+        line: 2,
+        body: "This template is missing parameterized query support — it should use a prepared statement to prevent SQL injection.",
+        severity: "high",
+      });
+      const result = applyConfidenceFilter({ review: review([c]), diffText: diff });
+      // The diff has no "parameterized query" / "parameterised query"
+      // / "prepared statement" — only `$1` / `$2` regex markers. Pre-fix
+      // the filter would have downgraded this to `info` because the
+      // presence-marker check matched `$1` and `$2`. Post-fix, the
+      // finding stays at `high` (legitimate: there really is no
+      // parameterized query here, the model is wrong about SQL but
+      // that's a model-quality issue, not a contradicted-by-quote FP).
       expect(result.kept).toHaveLength(1);
       expect(result.downgraded).toHaveLength(0);
     });
