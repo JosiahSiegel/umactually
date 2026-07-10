@@ -519,12 +519,13 @@ describe("runLive inline prompt plumbing (Wave 2 / S7-RED)", () => {
     expect(firstIdx).toBeLessThan(secondIdx);
   });
 
-  it("ULW-CACHE-001: two runLive invocations against the same cwd do not re-stat the default-lookup list", async () => {
-    // Smoke guard: cache the per-cwd default-lookup result so the
-    // chunked orchestrator (which calls buildProviderPrompts PER
-    // chunk) doesn't re-stat. This test verifies the cache survives
-    // across two independent runLive invocations within the same
-    // process.
+  it("ULW-CACHE-001: runLive resets the cache on each entry point — second invocation sees fresh filesystem state", async () => {
+    // Regression for the self-review concern on PR #47: the
+    // process-scoped cache MUST be invalidated on each `runLive`
+    // entry point so a long-lived process that invokes runLive
+    // multiple times against the same cwd sees fresh filesystem
+    // state on each call. Without this, a CI step that removes a
+    // prompt file between reviews would crash with "not-found".
     workspace = await mkdtemp(join(tmpdir(), "umactually-live-prompts-cache-"));
     const eventPath = join(workspace, "event.json");
     await writeFile(eventPath, EVENT_JSON, "utf8");
@@ -543,14 +544,11 @@ describe("runLive inline prompt plumbing (Wave 2 / S7-RED)", () => {
     const firstCall = findCall(recorder1.calls, "POST", "/v1/responses");
     expect(readProviderPrompts(firstCall).system).toContain("CACHE-MARKER");
 
-    // Remove the file between invocations. If the cache does NOT
-    // exist, the second invocation re-stats and finds no CLAUDE.md
-    // (so the system prompt would NOT contain CACHE-MARKER) and the
-    // run completes successfully (exitCode 0).
-    // If the cache DOES exist, the second invocation uses the cached
-    // ["CLAUDE.md"] list — readPromptFiles then opens the file and
-    // throws "not-found", which `runLive` swallows and surfaces as
-    // exitCode=1 with a "Prompt file error: not-found" message.
+    // Remove the file between invocations. With the entry-point
+    // reset hook, the SECOND invocation re-stats the disk and
+    // finds no CLAUDE.md — so the system prompt falls through to
+    // the built-in default. The run completes successfully
+    // (exitCode 0).
     await rm(join(workspace, "CLAUDE.md"), { force: true });
     const second = await runLive({
       parsed: parseCliArgs(["--platform", "github", "--no-dry-run"]),
@@ -558,15 +556,14 @@ describe("runLive inline prompt plumbing (Wave 2 / S7-RED)", () => {
       env: githubEnv(eventPath),
       fetchImpl: recorder2.fetchImpl,
     });
-    // Then: the cached file list was used (file is gone, so the
-    // cache returns the stale ["CLAUDE.md"] list and readPromptFiles
-    // fails). This is the signature behavior of the cache: it
-    // prevents re-stat even when the file disappears between calls.
-    expect(second.exitCode).toBe(1);
-    expect(second.message).toContain("Prompt file error: not-found");
-    // And: NO provider call was made (the failure happened in
-    // buildProviderPrompts BEFORE the provider was called).
-    expect(recorder2.calls.some((call) => call.url === "https://provider.example/v1/responses")).toBe(false);
+    expect(second.exitCode).toBe(0);
+    // Then: the second invocation's system prompt did NOT include
+    // CACHE-MARKER (file was gone, cache was reset, no default
+    // loaded) — fell through to the built-in default.
+    const secondCall = findCall(recorder2.calls, "POST", "/v1/responses");
+    expect(secondCall).toBeDefined();
+    expect(readProviderPrompts(secondCall).system).not.toContain("CACHE-MARKER");
+    expect(readProviderPrompts(secondCall).system).toContain("You are UmActually");
   });
 });
 

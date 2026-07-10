@@ -1,5 +1,5 @@
 import { realpath as fsRealpath, stat as fsStat, readFile as fsReadFile } from "node:fs/promises";
-import { isAbsolute, resolve as pathResolve, sep as pathSep, posix } from "node:path";
+import { isAbsolute, join as pathJoin, resolve as pathResolve, sep as pathSep, posix } from "node:path";
 
 import { InvalidConfigError, PromptFileError } from "./errors.js";
 
@@ -194,7 +194,13 @@ export async function resolveDefaultPromptFiles(
   const existing: string[] = [];
   for (const candidate of DEFAULT_PROMPT_FILE_PATHS) {
     try {
-      const stat = await fs.stat(`${cwd.replace(/[\\/]+$/u, "")}/${candidate}`);
+      // Use path.join for proper platform-aware path composition
+      // (handles POSIX, Windows separators, and trailing slashes on
+      // cwd without ad-hoc string manipulation). DEFAULT_PROMPT_FILE_PATHS
+      // entries are hardcoded relative paths so this is safe; the
+      // security boundary for explicit `prompt-files` arrays is
+      // enforced separately inside `readPromptFiles`.
+      const stat = await fs.stat(pathJoin(cwd, candidate));
       if (stat.isFile) {
         existing.push(candidate);
       }

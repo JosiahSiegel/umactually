@@ -25,6 +25,7 @@ import {
 } from "./live-shared.js";
 import { requestLiveReview } from "./live-provider.js";
 import { readLiveSonarContext } from "./sonar-context.js";
+import { resetDefaultPromptFilesCache } from "./provider-prompts.js";
 import type { ParsedCliArgs } from "./parse-args.js";
 import { applySimulateFindings } from "./simulate-findings.js";
 
@@ -163,6 +164,13 @@ function failedResult(message: string): LiveRunResult {
 }
 
 export async function runLive(input: RunLiveInput): Promise<LiveRunResult> {
+  // Reset the default-prompt-file cache on each entry point so a
+  // long-lived process that calls runLive more than once against the
+  // same cwd always re-stats the disk. See
+  // src/cli/provider-prompts.ts:resetDefaultPromptFilesCache for the
+  // rationale. This is effectively a no-op under the documented
+  // deployment model (one process per review run).
+  resetDefaultPromptFilesCache();
   const env = input.env ?? process.env;
   const fetchImpl = input.fetchImpl ?? globalThis.fetch.bind(globalThis);
   const platform = detectLivePlatform(env);

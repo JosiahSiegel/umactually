@@ -1,4 +1,5 @@
 import { statSync } from "node:fs";
+import { join as pathJoin } from "node:path";
 
 import { DEFAULT_PROMPT_BYTE_CAP } from "../config/defaults.js";
 import { resolveField } from "../config/field-resolution.js";
@@ -199,8 +200,22 @@ function resolveDefaultPromptFilesOnce(cwd: string): readonly string[] {
   if (cached !== undefined) return cached;
   const out: string[] = [];
   for (const candidate of DEFAULT_PROMPT_FILE_PATHS) {
+    // Defense in depth: every entry in DEFAULT_PROMPT_FILE_PATHS is a
+    // hardcoded relative path with no `..` segments and no leading
+    // `/`, but `path.join` would silently swallow an absolute candidate
+    // (e.g. `/etc/passwd`) and turn it into an absolute path under
+    // cwd. Reject anything that is not a plain relative path here so
+    // a future change that adds a non-conforming entry surfaces a
+    // loud failure instead of silently expanding the security
+    // boundary.
+    if (!isSafeRelativeCandidate(candidate)) {
+      throw new Error(
+        `DEFAULT_PROMPT_FILE_PATHS contains an unsafe entry: ${JSON.stringify(candidate)}. ` +
+          `Entries must be relative paths with no '..' segments and no leading '/' or drive letter.`,
+      );
+    }
     try {
-      const s = statSync(`${cwd.replace(/[\\/]+$/u, "")}/${candidate}`);
+      const s = statSync(pathJoin(cwd, candidate));
       if (s.isFile()) out.push(candidate);
     } catch {
       // ENOENT (or any other stat failure): silently skip.
@@ -212,6 +227,28 @@ function resolveDefaultPromptFilesOnce(cwd: string): readonly string[] {
 }
 
 /**
+ * Returns true iff the candidate is a safe relative path: no leading
+ * `/`, no leading drive letter (Windows `C:` etc.), no `..` segments,
+ * and at least one non-separator character.
+ *
+ * This is defense in depth — DEFAULT_PROMPT_FILE_PATHS is hardcoded
+ * with safe entries today. The check exists so a future maintainer
+ * who adds an entry with `..` (e.g. `../sibling/CLAUDE.md`) sees a
+ * loud failure rather than silently allowing the action to read a
+ * path outside cwd.
+ */
+function isSafeRelativeCandidate(candidate: string): boolean {
+  if (typeof candidate !== "string" || candidate.length === 0) return false;
+  if (candidate.startsWith("/") || candidate.startsWith("\\")) return false;
+  // Windows drive-letter prefix: "C:" or "C:\" or "C:/". Reject.
+  if (/^[a-zA-Z]:[\\/]?/u.test(candidate)) return false;
+  // No `..` segments (handles both POSIX and Windows separators).
+  const segments = candidate.split(/[\\/]/u);
+  if (segments.some((seg) => seg === "..")) return false;
+  return true;
+}
+
+/**
  * Test-only hook to clear the per-cwd default-prompt cache. Used by
  * tests that mutate the workspace mid-run and need the next
  * `buildProviderPrompts` call to re-stat the disk.
@@ -220,6 +257,32 @@ function resolveDefaultPromptFilesOnce(cwd: string): readonly string[] {
  * contract on `DEFAULT_PROMPT_FILES_CACHE`.
  */
 export function __resetDefaultPromptFilesCacheForTests(): void {
+  DEFAULT_PROMPT_FILES_CACHE.clear();
+}
+
+/**
+ * Reset hook called by the CLI entry points (`runCli`, `runDryRun`,
+ * `runLive`) at the start of each invocation. Under the documented
+ * deployment model — one Node process per review run — this is
+ * effectively a no-op (the cache is fresh on the first build call).
+ *
+ * Why it exists:
+ * 1. **Tests that exercise the chunked orchestrator's per-call
+ *    buildProviderPrompts path need to invalidate the cache between
+ *    independent runLive invocations in the same process.** The
+ *    test-only hook above exists for that — but production callers
+ *    never need it.
+ * 2. **A long-lived-process deployment (out of scope; not the
+ *    action's model) would call this between reviews to force a
+ *    fresh stat of the cwd's default-lookup files.** Documented
+ *    but not used by the bundled CLI today.
+ *
+ * The function name intentionally preserves the "ForTests" pattern in
+ * the dedicated test hook above; this entry-point reset is a
+ * separate surface and is the one production callers could call if
+ * they ever needed to.
+ */
+export function resetDefaultPromptFilesCache(): void {
   DEFAULT_PROMPT_FILES_CACHE.clear();
 }
 

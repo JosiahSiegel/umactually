@@ -3734,6 +3734,278 @@ async function withDebugRawEnv(enabled, fn) {
     }
 }
 
+;// CONCATENATED MODULE: external "node:fs"
+const external_node_fs_namespaceObject = __WEBPACK_EXTERNAL_createRequire(import.meta.url)("node:fs");
+;// CONCATENATED MODULE: ./src/config/defaults.ts
+
+/** Canonical prompt-file byte cap shared by config loading and live prompt assembly. */
+const DEFAULT_PROMPT_BYTE_CAP = FIELDS.promptByteCap.defaultValue;
+/** Canonical cap for posted review comments when no CLI/input override is supplied. */
+const DEFAULT_MAX_COMMENTS = FIELDS.maxComments.defaultValue;
+/** Canonical merge fallback cap for chunked live reviews. */
+const DEFAULT_MAX_COMMENTS_MERGE = DEFAULT_MAX_COMMENTS;
+/** Canonical changed-file soft cap for live reviews. */
+const DEFAULT_REVIEW_FILE_LIMIT = FIELDS.reviewFileLimit.defaultValue;
+/** Canonical wall-clock review timeout, in seconds; derived from field-schema so the loader cannot drift from the canonical default. */
+const DEFAULT_REVIEW_SECONDS = FIELDS.reviewTimeoutSeconds.defaultValue;
+/** Canonical provider-output stall timeout, in seconds; derived from field-schema. */
+const DEFAULT_STALL_SECONDS = FIELDS.stallSeconds.defaultValue;
+/** Canonical per-request HTTP timeout, in seconds; derived from field-schema. */
+const DEFAULT_PER_REQUEST_SECONDS = FIELDS.perRequestTimeoutSeconds.defaultValue;
+/**
+ * Canonical Sonar HTTP timeout, in seconds; derived from field-schema.
+ *
+ * Surfaced a real bug: `config/loader.ts` previously hard-coded `60` here
+ * while the field-schema default (and therefore the CLI / action / env
+ * surfaces) is `300`. Live SonarQube scans silently timed out at 60s
+ * when no override was supplied. This re-export makes the loader default
+ * byte-identical to the schema default.
+ */
+const DEFAULT_SONAR_TIMEOUT_SECONDS = FIELDS.sonarTimeoutSeconds.defaultValue;
+/**
+ * Canonical provider model default; derived from field-schema.
+ *
+ * Inferred as `string` (matching `pickString`'s signature in `loader.ts`),
+ * but the field-schema's literal `"auto"` default is preserved by
+ * TypeScript's widening rules because the right-hand side is a
+ * `const`-tracked object property; callers that need the literal type
+ * should re-assert at the call site.
+ */
+const DEFAULT_PROVIDER_MODEL = FIELDS.model.defaultValue;
+
+;// CONCATENATED MODULE: ./src/config/field-resolution.ts
+/**
+ * Resolve a config field through the canonical precedence chain: parsed > env > fallback.
+ *
+ * Returns the first value in the chain that is non-null, non-undefined, AND (when a
+ * string) non-empty. This matches the behavior the live path hand-rolls inline at
+ * multiple sites (`parsed.X ?? env["Y"] ?? DEFAULT_Z`).
+ *
+ * Why this exists: the config loader (`src/config/loader.ts`) has private pickX
+ * helpers used only inside loadConfigFromSources. The live path cannot call those
+ * directly — it builds parsed/env from different inputs (CLI argv + action inputs +
+ * env) and needs the same chain. Centralizing eliminates the 7+ hand-rolled
+ * `parsed.X ?? env["Y"]` occurrences scattered across cli/ that future maintainers
+ * could "fix" by adding a default to one site but not the others.
+ *
+ * Treats the empty string as "missing" for string-typed fields. This matches the
+ * CLI's existing behavior (`parseStringFromUnknown` raises on empty input, and the
+ * shell typically passes empty strings for unset flags).
+ *
+ * @param parsedValue  CLI/inputs value (already parsed).
+ * @param envValue     Env-var value (read via ENV_KEYS.X).
+ * @param fallback     The schema default (from FIELDS.<x>.defaultValue or a derived constant).
+ * @returns            The first non-null/non-empty value, or `fallback`.
+ */
+function resolveField(parsedValue, envValue, fallback) {
+    if (parsedValue !== undefined && parsedValue !== null) {
+        if (typeof parsedValue === "string" && parsedValue.length === 0) {
+            // Empty string is treated as missing for string fields.
+        }
+        else {
+            return parsedValue;
+        }
+    }
+    if (envValue !== undefined && envValue !== null) {
+        if (typeof envValue === "string" && envValue.length === 0) {
+            // Empty string from env is treated as missing.
+        }
+        else {
+            return envValue;
+        }
+    }
+    return fallback;
+}
+
+;// CONCATENATED MODULE: ./src/config/prompt-files.ts
+
+
+
+const PROMPT_SEPARATOR = "\n\n---\n\n";
+const nodePromptFileSystem = {
+    realpath(cwd) {
+        return (0,promises_namespaceObject.realpath)(cwd);
+    },
+    async realpathWithinCwd(path, cwdReal, _self) {
+        const absolute = (0,external_node_path_namespaceObject.resolve)(cwdReal, path);
+        let real;
+        try {
+            real = await (0,promises_namespaceObject.realpath)(absolute);
+        }
+        catch {
+            return { absolute, withinCwd: isWithinCwdLexical(absolute, cwdReal) };
+        }
+        return { absolute: real, withinCwd: isWithinCwdReal(real, cwdReal) };
+    },
+    stat(path) {
+        return (0,promises_namespaceObject.stat)(path).then((s) => ({ isFile: s.isFile(), size: s.size }));
+    },
+    readFile(path) {
+        return (0,promises_namespaceObject.readFile)(path, "utf8");
+    },
+};
+function isWithinCwdReal(real, cwdReal) {
+    if (process.platform === "win32") {
+        const r = real.toLowerCase();
+        const c = cwdReal.toLowerCase();
+        return r === c || r.startsWith(`${c}${external_node_path_namespaceObject.sep}`);
+    }
+    return real === cwdReal || real.startsWith(`${cwdReal}/`);
+}
+function isWithinCwdLexical(absolute, cwdReal) {
+    const rel = external_node_path_namespaceObject.posix.relative(toPosix(cwdReal), toPosix(absolute));
+    return rel !== "" && !rel.startsWith("..") && !external_node_path_namespaceObject.posix.isAbsolute(rel);
+}
+function toPosix(value) {
+    return process.platform === "win32" ? value.replace(/\\/g, "/") : value;
+}
+/**
+ * Reads each file under `cwd` and concatenates contents.
+ * - Rejects any path whose resolved-realpath escapes `cwd`.
+ * - Enforces a per-file and aggregate byte cap.
+ * - Never includes file contents in errors; only the `[REDACTED]` marker.
+ */
+async function readPromptFiles(paths, byteCap, options) {
+    if (!Number.isInteger(byteCap) || byteCap <= 0) {
+        throw new errors_InvalidConfigError("prompt.byteCap", `expected positive integer, received ${byteCap}`);
+    }
+    const fs = options.fs ?? nodePromptFileSystem;
+    const cwdReal = await fs.realpath(options.cwd);
+    const parts = [];
+    let aggregateBytes = 0;
+    for (const rawPath of paths) {
+        if (typeof rawPath !== "string" || rawPath.length === 0) {
+            throw new PromptFileError(String(rawPath), "not-found");
+        }
+        if ((0,external_node_path_namespaceObject.isAbsolute)(rawPath)) {
+            throw new PromptFileError(rawPath, "outside-cwd");
+        }
+        const resolved = await fs.realpathWithinCwd(rawPath, cwdReal, fs);
+        if (!resolved.withinCwd) {
+            throw new PromptFileError(rawPath, "outside-cwd");
+        }
+        let stat;
+        try {
+            stat = await fs.stat(resolved.absolute);
+        }
+        catch {
+            throw new PromptFileError(rawPath, "not-found");
+        }
+        if (!stat.isFile) {
+            throw new PromptFileError(rawPath, "not-a-file");
+        }
+        if (stat.size > byteCap) {
+            throw new PromptFileError(rawPath, "byte-cap-exceeded");
+        }
+        aggregateBytes += stat.size;
+        if (aggregateBytes > byteCap) {
+            throw new PromptFileError(rawPath, "byte-cap-exceeded");
+        }
+        let text;
+        try {
+            text = await fs.readFile(resolved.absolute);
+        }
+        catch {
+            throw new PromptFileError(rawPath, "read-failed");
+        }
+        parts.push(text);
+    }
+    return parts.join(PROMPT_SEPARATOR);
+}
+/**
+ * Split a newline- or comma-separated list of paths into a deduplicated,
+ * ordered, trimmed array of non-empty strings. Empty input yields an
+ * empty array. Order is preserved by first-occurrence.
+ *
+ * Public so tests can pin the splitting contract directly and so the
+ * config-loader pipeline (which receives raw env-var strings) can
+ * apply the same splitting semantics as the live prompt assembly.
+ */
+function splitPromptFileList(raw) {
+    if (typeof raw !== "string" || raw.length === 0)
+        return [];
+    const seen = new Set();
+    const out = [];
+    // Split on commas AND any newline flavor (LF, CR-LF, CR-only).
+    // The trim() on each piece also strips trailing CR that CR-LF
+    // leaves behind after the LF split, so the round-trip is safe on
+    // Windows-pasted strings.
+    for (const piece of raw.split(/[\n\r,]/u)) {
+        const trimmed = piece.trim();
+        if (trimmed.length === 0)
+            continue;
+        if (seen.has(trimmed))
+            continue;
+        seen.add(trimmed);
+        out.push(trimmed);
+    }
+    return out;
+}
+/**
+ * Repository-relative filenames UmActually auto-discovers when no explicit
+ * prompt-file or prompt-files override is supplied. Each entry is checked
+ * with `fs.stat`; missing files are silently skipped so repos that lack
+ * any of these files fall through to the built-in default system prompt
+ * (or empty additional prompt).
+ *
+ * Order matters: files are concatenated in the listed order. The
+ * recognized conventions are:
+ *
+ * - `CLAUDE.md` — Anthropic Claude Code / Cowork repo-level instructions.
+ * - `AGENTS.md` — emerging agent-agnostic convention (also adopted by
+ *   Cursor, aider, and OpenAI Codex).
+ * - `.github/copilot-instructions.md` — GitHub Copilot Coding Agent
+ *   instructions (documented at
+ *   https://docs.github.com/en/copilot/customizing-copilot/adding-custom-instructions-for-github-copilot).
+ * - `.cursorrules` — Cursor legacy single-file rules format.
+ * - `GEMINI.md` — Google Gemini CLI repo-level instructions.
+ *
+ * Excluded by design (deferred to a future iteration that needs glob
+ * support): `.github/instructions/*.md` (Copilot multi-file mode) and
+ * `.clinerules/*.md` (Cline). Glob support requires an allowlist-aware
+ * directory read; the current `readPromptFiles` API only accepts a flat
+ * list of paths.
+ */
+const DEFAULT_PROMPT_FILE_PATHS = [
+    "CLAUDE.md",
+    "AGENTS.md",
+    ".github/copilot-instructions.md",
+    ".cursorrules",
+    "GEMINI.md",
+];
+/**
+ * Resolve `DEFAULT_PROMPT_FILE_PATHS` against `cwd` and return only the
+ * paths that exist on disk and are regular files. Missing entries are
+ * silently dropped (not an error). Symlink targets are NOT followed here
+ * — `readPromptFiles` does its own realpath resolution at read time.
+ *
+ * Pure (no global fs). Accepts the same `PromptFileSystem` shape used
+ * by `readPromptFiles` so tests can inject a fake filesystem. The
+ * default implementation uses the real `node:fs`.
+ */
+async function resolveDefaultPromptFiles(cwd, fs) {
+    const existing = [];
+    for (const candidate of DEFAULT_PROMPT_FILE_PATHS) {
+        try {
+            // Use path.join for proper platform-aware path composition
+            // (handles POSIX, Windows separators, and trailing slashes on
+            // cwd without ad-hoc string manipulation). DEFAULT_PROMPT_FILE_PATHS
+            // entries are hardcoded relative paths so this is safe; the
+            // security boundary for explicit `prompt-files` arrays is
+            // enforced separately inside `readPromptFiles`.
+            const stat = await fs.stat(pathJoin(cwd, candidate));
+            if (stat.isFile) {
+                existing.push(candidate);
+            }
+        }
+        catch {
+            // ENOENT (or any other stat failure): silently skip. The user did
+            // not opt in to this file; its absence is not an error.
+        }
+    }
+    return existing;
+}
+
 ;// CONCATENATED MODULE: ./src/util/env-keys.ts
 /** Centralised env-var name registry; eliminates inline `env["..."]` strings and keeps legacy aliases visible. */
 const ENV_KEYS = {
@@ -3781,6 +4053,958 @@ const ENV_KEYS = {
     INPUT_OUTPUT_ARTIFACT: "INPUT_OUTPUT_ARTIFACT",
     INPUT_PLATFORM: "INPUT_PLATFORM",
 };
+
+;// CONCATENATED MODULE: ./src/review/verified-facts.ts
+// SPDX-License-Identifier: MIT
+/**
+ * Verified facts layer — pre-computed repo-state assertions that the
+ * model receives in the prompt and that the post-filter uses to
+ * downgrade findings that contradict the diff.
+ *
+ * Why this exists
+ * ---------------
+ * On PR #41 the model emitted a Critical finding claiming "dist/ is not
+ * listed in files so the npm-published action will fail at runtime",
+ * even though the diff for package.json showed `dist` present both
+ * before and after the change (`npm pack --dry-run` confirmed dist/
+ * ships). The model was making a verifiable repo-state claim without
+ * grounding it in the diff.
+ *
+ * The fix has two halves:
+ *   1. Before sending to the model, scan the post-change state of a
+ *      handful of known structured fields (package.json#files,
+ *      action.yml#outputs, etc.) and produce a "Verified facts" block
+ *      the model sees BEFORE the diff. The model can then read the
+ *      facts and avoid asserting facts the action can already prove.
+ *   2. After the model responds, scan each finding's body for
+ *      contradiction patterns (e.g. "X is missing from Y" when the
+ *      verified facts say X is in Y). Downgrade such findings to
+ *      `info` rather than posting them at their claimed severity.
+ *
+ * This module only does the extraction (step 1). The post-filter is in
+ * `src/cli/verify-findings.ts`.
+ *
+ * Design constraints
+ * ------------------
+ * - Source of truth: the diff. The action runs in a consumer's
+ *   checkout where cwd/package.json is NOT UmActually's package.json
+ *   — we cannot read the worktree. We reconstruct each file's
+ *   post-change content from the diff hunks (context lines + added
+ *   lines, ignoring removed lines).
+ * - Conservative: if a fact cannot be extracted with high
+ *   confidence, it is OMITTED. The model should not see a half-baked
+ *   fact and assume it's authoritative.
+ * - Cheap: O(diff length) parse. One JSON.parse call per structured
+ *   field. No external commands, no network.
+ */
+
+/**
+ * Derive verified facts from the supplied PR diff text.
+ *
+ * Reconstructs the post-change content of `package.json` and
+ * `action.yml` from the diff hunks (the action cannot read the
+ * consumer's worktree safely — cwd is the consumer's repo, not ours).
+ */
+function collectVerifiedFacts(diffText) {
+    return {
+        filesInDiff: listDiffPaths(diffText),
+        packageJsonFiles: readPackageJsonFiles(diffText),
+        packageJsonBin: readPackageJsonBin(diffText),
+        packageJsonMain: readPackageJsonMain(diffText),
+        actionOutputs: readActionOutputs(diffText),
+    };
+}
+/**
+ * Render the verified facts as a prompt block. Empty blocks are
+ * omitted (the prompt should not signal "facts collected" when none
+ * were). The block is rendered as plain text the model can read line
+ * by line.
+ */
+function renderVerifiedFactsBlock(facts) {
+    const lines = [];
+    if (facts.packageJsonFiles !== null) {
+        lines.push(`package.json#files (post-change): ${JSON.stringify(facts.packageJsonFiles.files)}`);
+    }
+    if (facts.packageJsonBin !== null) {
+        lines.push(`package.json#bin (post-change): ${JSON.stringify(facts.packageJsonBin.binEntries)}`);
+    }
+    if (facts.packageJsonMain !== null) {
+        lines.push(`package.json#main (post-change): ${JSON.stringify(facts.packageJsonMain.main)}`);
+    }
+    if (facts.actionOutputs !== null) {
+        lines.push(`action.yml#outputs (post-change): ${JSON.stringify(facts.actionOutputs.outputKeys)}`);
+    }
+    if (lines.length === 0) {
+        return "";
+    }
+    return [
+        "Verified facts (reconstructed from the diff below; do NOT contradict these — they are authoritative for this PR):",
+        ...lines,
+        "If a finding would contradict any of the above, the finding is wrong; omit it or rephrase without the contradiction.",
+    ].join("\n");
+}
+/**
+ * Reconstruct a file's post-change content from the diff. Returns
+ * null if the file does not appear in the diff. The reconstructed
+ * content is the file content as it would appear in the post-PR
+ * worktree — context lines preserved verbatim, added lines included,
+ * removed lines excluded.
+ *
+ * Implementation note: we walk the diff linearly, tracking which file
+ * we're in, and for the target file we collect (context lines, added
+ * lines). We ignore hunk headers (`@@ -X,Y +A,B @@`) and file-path
+ * headers (`+++ b/...`, `--- a/...`).
+ */
+function reconstructFileFromDiff(diffText, filePath) {
+    const files = new Map();
+    let currentPath = null;
+    let buffer = null;
+    const flush = () => {
+        if (currentPath !== null && buffer !== null) {
+            files.set(currentPath, buffer);
+        }
+    };
+    for (const line of diffText.split(/\r?\n/u)) {
+        if (line.startsWith("diff --git ")) {
+            flush();
+            const match = /^diff --git a\/(.+) b\/(.+)$/u.exec(line);
+            currentPath = match === null ? null : (match[2] ?? null);
+            buffer = [];
+            continue;
+        }
+        if (currentPath === null || buffer === null) {
+            continue;
+        }
+        if (line.startsWith("+++") || line.startsWith("---")) {
+            continue;
+        }
+        if (line.startsWith("@@")) {
+            continue;
+        }
+        // Only process unified-diff hunk lines. A line that doesn't
+        // start with one of the three markers ('+', '-', ' ') is not
+        // a valid hunk line (e.g. a stray blank line, an annotation).
+        // Skip it rather than injecting it as a context line, which
+        // would shift line numbers and corrupt the JSON parser
+        // downstream.
+        if (line.startsWith("+")) {
+            buffer.push(line.slice(1));
+        }
+        else if (line.startsWith("-")) {
+            // removed line: skip
+        }
+        else if (line.startsWith(" ")) {
+            buffer.push(line.slice(1));
+        }
+        else {
+            // No diff marker; ignore (e.g. blank line, malformed input).
+        }
+    }
+    flush();
+    const reconstructed = files.get(filePath);
+    return reconstructed === undefined ? null : reconstructed.join("\n");
+}
+function readPackageJsonFiles(diffText) {
+    const content = reconstructFileFromDiff(diffText, "package.json");
+    if (content === null) {
+        return null;
+    }
+    // Try full JSON parse first — works when the diff includes enough
+    // of the file to form a valid document (e.g. when package.json is
+    // small enough that one hunk covers the whole `files` block).
+    const fullParse = tryParsePackageJson(content);
+    if (fullParse !== null) {
+        return extractFilesFromParsed(fullParse);
+    }
+    // Fall back to targeted extraction: find the `"files":` key and
+    // read every JSON string inside the matching brackets. This
+    // handles the common case where only the array's contents were
+    // changed (the array opener is in the unchanged context).
+    return extractFilesByScanning(content);
+}
+function readPackageJsonBin(diffText) {
+    const content = reconstructFileFromDiff(diffText, "package.json");
+    if (content === null) {
+        return null;
+    }
+    const fullParse = tryParsePackageJson(content);
+    if (fullParse !== null) {
+        return extractBinFromParsed(fullParse);
+    }
+    return extractBinByScanning(content);
+}
+function readPackageJsonMain(diffText) {
+    const content = reconstructFileFromDiff(diffText, "package.json");
+    if (content === null) {
+        return null;
+    }
+    const fullParse = tryParsePackageJson(content);
+    if (fullParse !== null) {
+        return extractMainFromParsed(fullParse);
+    }
+    return extractMainByScanning(content);
+}
+function tryParsePackageJson(content) {
+    try {
+        const parsed = JSON.parse(content);
+        if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
+            return null;
+        }
+        return parsed;
+    }
+    catch {
+        return null;
+    }
+}
+function extractFilesFromParsed(pkg) {
+    const files = pkg["files"];
+    if (files === undefined) {
+        return null;
+    }
+    if (!Array.isArray(files)) {
+        return null;
+    }
+    const out = [];
+    for (const entry of files) {
+        if (typeof entry !== "string") {
+            return null;
+        }
+        out.push(entry);
+    }
+    return { kind: "package-json-files", files: out };
+}
+function extractBinFromParsed(pkg) {
+    const bin = pkg["bin"];
+    if (bin === undefined) {
+        return { kind: "package-json-bin", binEntries: [] };
+    }
+    if (typeof bin === "string") {
+        return { kind: "package-json-bin", binEntries: [`(binary) -> ${bin}`] };
+    }
+    if (typeof bin !== "object" || bin === null || Array.isArray(bin)) {
+        return null;
+    }
+    const out = [];
+    for (const [name, value] of Object.entries(bin)) {
+        if (typeof value !== "string") {
+            return null;
+        }
+        out.push(`${name} -> ${value}`);
+    }
+    return { kind: "package-json-bin", binEntries: out };
+}
+function extractMainFromParsed(pkg) {
+    const main = pkg["main"];
+    if (main === undefined) {
+        return null;
+    }
+    if (typeof main !== "string") {
+        return null;
+    }
+    return { kind: "package-json-main", main };
+}
+// ---------------------------------------------------------------------------
+// Targeted scanners — used when the diff only contains part of the file
+// and JSON.parse fails. Each scanner locates a JSON key and reads its
+// array / object / string value with a hand-rolled walker.
+// ---------------------------------------------------------------------------
+/**
+ * Find `"files": [ ... ]` and read every string element. Returns null
+ * if the key isn't present or the array isn't a clean JSON string
+ * array. Tolerates multiline arrays.
+ */
+function extractFilesByScanning(content) {
+    const start = findKeyIndex(content, '"files"');
+    if (start === -1) {
+        return null;
+    }
+    let i = content.indexOf(":", start) + 1;
+    while (i < content.length && /\s/u.test(content[i] ?? "")) {
+        i++;
+    }
+    if (content[i] !== "[") {
+        return null;
+    }
+    i++;
+    const out = [];
+    while (i < content.length) {
+        const ch = content[i];
+        if (ch === undefined) {
+            return null;
+        }
+        if (ch === "]") {
+            return { kind: "package-json-files", files: out };
+        }
+        if (ch === '"') {
+            const end = readStringLiteral(content, i);
+            if (end === -1) {
+                return null;
+            }
+            out.push(decodeStringLiteral(content.slice(i + 1, end)));
+            i = end + 1;
+            while (i < content.length &&
+                (content[i] === " " || content[i] === "\t" || content[i] === "\n" || content[i] === "\r" || content[i] === ",")) {
+                i++;
+            }
+            continue;
+        }
+        i++;
+    }
+    return null;
+}
+/**
+ * Find `"bin": { ... }` and read every `"name": "value"` entry.
+ */
+function extractBinByScanning(content) {
+    const start = findKeyIndex(content, '"bin"');
+    if (start === -1) {
+        // `bin` was not mentioned in the diff at all — we don't know
+        // whether it was removed or simply not touched. Conservatively
+        // omit rather than misreport.
+        return null;
+    }
+    let i = content.indexOf(":", start) + 1;
+    while (i < content.length && /\s/u.test(content[i] ?? "")) {
+        i++;
+    }
+    if (content[i] === '"') {
+        // Single string form: `"bin": "bin/foo.mjs"`.
+        const end = readStringLiteral(content, i);
+        if (end === -1) {
+            return null;
+        }
+        const value = decodeStringLiteral(content.slice(i + 1, end));
+        return { kind: "package-json-bin", binEntries: [`(binary) -> ${value}`] };
+    }
+    if (content[i] !== "{") {
+        return null;
+    }
+    i++;
+    const out = [];
+    while (i < content.length) {
+        const ch = content[i];
+        if (ch === undefined) {
+            return null;
+        }
+        if (ch === "}") {
+            return { kind: "package-json-bin", binEntries: out };
+        }
+        if (ch === '"') {
+            const keyEnd = readStringLiteral(content, i);
+            if (keyEnd === -1) {
+                return null;
+            }
+            const name = decodeStringLiteral(content.slice(i + 1, keyEnd));
+            let j = keyEnd + 1;
+            while (j < content.length && (content[j] === " " || content[j] === "\t" || content[j] === "\n" || content[j] === "\r")) {
+                j++;
+            }
+            if (content[j] !== ":") {
+                return null;
+            }
+            j++;
+            while (j < content.length && (content[j] === " " || content[j] === "\t" || content[j] === "\n" || content[j] === "\r")) {
+                j++;
+            }
+            if (content[j] !== '"') {
+                return null;
+            }
+            const valEnd = readStringLiteral(content, j);
+            if (valEnd === -1) {
+                return null;
+            }
+            const value = decodeStringLiteral(content.slice(j + 1, valEnd));
+            out.push(`${name} -> ${value}`);
+            i = valEnd + 1;
+            while (i < content.length &&
+                (content[i] === " " || content[i] === "\t" || content[i] === "\n" || content[i] === "\r" || content[i] === ",")) {
+                i++;
+            }
+            continue;
+        }
+        i++;
+    }
+    return null;
+}
+/**
+ * Find `"main": "value"` and return the string.
+ */
+function extractMainByScanning(content) {
+    const start = findKeyIndex(content, '"main"');
+    if (start === -1) {
+        return null;
+    }
+    let i = content.indexOf(":", start) + 1;
+    while (i < content.length && /\s/u.test(content[i] ?? "")) {
+        i++;
+    }
+    if (content[i] !== '"') {
+        return null;
+    }
+    const end = readStringLiteral(content, i);
+    if (end === -1) {
+        return null;
+    }
+    return { kind: "package-json-main", main: decodeStringLiteral(content.slice(i + 1, end)) };
+}
+/**
+ * Locate the start index of a JSON key. Returns -1 if not present.
+ * Skips past any key-like substring that is followed by something
+ * other than `:` (after optional tabs/spaces).
+ */
+function findKeyIndex(content, quotedKey) {
+    let i = 0;
+    while (i < content.length) {
+        const idx = content.indexOf(quotedKey, i);
+        if (idx === -1) {
+            return -1;
+        }
+        let j = idx + quotedKey.length;
+        while (j < content.length && (content[j] === " " || content[j] === "\t")) {
+            j++;
+        }
+        if (content[j] === ":") {
+            return idx;
+        }
+        i = idx + 1;
+    }
+    return -1;
+}
+/**
+ * Return the closing-`"` index for a string literal that starts at
+ * `openIndex` (which must point at the opening `"`). Returns -1 on
+ * unterminated literal. Handles `\"` escapes.
+ */
+function readStringLiteral(content, openIndex) {
+    for (let i = openIndex + 1; i < content.length; i++) {
+        const ch = content[i];
+        if (ch === undefined) {
+            return -1;
+        }
+        if (ch === "\\") {
+            i++;
+            continue;
+        }
+        if (ch === '"') {
+            return i;
+        }
+    }
+    return -1;
+}
+/**
+ * Decode a JSON string-literal body (without surrounding quotes) into
+ * a JS string. Handles the common escapes \\, \", \n, \r, \t.
+ */
+function decodeStringLiteral(body) {
+    let out = "";
+    for (let i = 0; i < body.length; i++) {
+        const ch = body[i];
+        if (ch === "\\") {
+            const next = body[i + 1];
+            if (next === undefined) {
+                out += "\\";
+                continue;
+            }
+            switch (next) {
+                case '"':
+                    out += '"';
+                    i++;
+                    break;
+                case "\\":
+                    out += "\\";
+                    i++;
+                    break;
+                case "n":
+                    out += "\n";
+                    i++;
+                    break;
+                case "r":
+                    out += "\r";
+                    i++;
+                    break;
+                case "t":
+                    out += "\t";
+                    i++;
+                    break;
+                default:
+                    out += next;
+                    i++;
+                    break;
+            }
+            continue;
+        }
+        out += ch ?? "";
+    }
+    return out;
+}
+function readActionOutputs(diffText) {
+    const content = reconstructFileFromDiff(diffText, "action.yml");
+    if (content === null) {
+        return null;
+    }
+    return parseActionOutputsYaml(content, diffText);
+}
+/**
+ * Minimal YAML reader for the action.yml `outputs:` block. We do not
+ * need a full YAML parser — outputs is always a flat map of
+ * key: description pairs at 2-space indentation under the
+ * `outputs:` line. We collect keys only.
+ *
+ * Returns null when the reconstructed action.yml does NOT contain an
+ * `outputs:` line AND the diff did not explicitly remove one. This
+ * is important: returning an empty `outputKeys` array for an
+ * action.yml that never had outputs would cause the post-filter to
+ * interpret the empty list as "outputs were removed" and
+ * potentially flag findings that legitimately mention outputs in
+ * natural language.
+ *
+ * When the diff DOES contain `-outputs:` (or an entire outputs
+ * block removal), we return `{ outputKeys: [] }` because the diff
+ * itself is the signal that outputs was removed; the absence of
+ * `outputs:` in the reconstructed file is the post-change state.
+ */
+function parseActionOutputsYaml(text, diffText) {
+    const lines = text.split(/\r?\n/u);
+    const outputKeys = [];
+    let inOutputsBlock = false;
+    let sawOutputsMarker = false;
+    for (const line of lines) {
+        if (/^outputs\s*:\s*$/u.test(line)) {
+            inOutputsBlock = true;
+            sawOutputsMarker = true;
+            continue;
+        }
+        if (!inOutputsBlock) {
+            continue;
+        }
+        if (line.length > 0 && line[0] !== " " && line[0] !== "\t") {
+            inOutputsBlock = false;
+            continue;
+        }
+        const keyMatch = /^  (\w[\w-]*)\s*:/u.exec(line);
+        if (keyMatch !== null) {
+            outputKeys.push(keyMatch[1] ?? "");
+        }
+    }
+    if (sawOutputsMarker) {
+        return { kind: "action-outputs", outputKeys };
+    }
+    // Reconstructed action.yml has no `outputs:` line. Distinguish:
+    // (a) the diff explicitly removed the outputs block — in which
+    //     case the post-change state is "no outputs" and we should
+    //     report it as such.
+    // (b) action.yml never had outputs, or our reconstruction is
+    //     incomplete — in which case we should not report it.
+    if (/^-\s*outputs\s*:\s*$/um.test(diffText)) {
+        return { kind: "action-outputs", outputKeys: [] };
+    }
+    // Also detect removal of the entire outputs block (the `outputs:`
+    // line is in a `-outputs:` removal but the keys were also
+    // removed as a sequence). Check for any `-  <key>:` pattern that
+    // is a key in the outputs block. As a fallback, check whether
+    // the diff has the `outputs:` word at all in a removed line.
+    if (/^-\s*outputs\b/um.test(diffText)) {
+        return { kind: "action-outputs", outputKeys: [] };
+    }
+    return null;
+}
+
+;// CONCATENATED MODULE: ./src/cli/provider-prompts.ts
+
+
+
+
+
+
+
+
+// Re-exports of the default-lookup and splitting primitives so callers
+// (including the CLI help and tests) can import them from the public
+// `cli/provider-prompts` surface without reaching into `config/`.
+
+/**
+ * The strict JSON schema the model must emit. We send this on the
+ * wire as `response_format: { type: "json_schema", strict: true }`
+ * for the OpenAI Responses/Chat APIs that support it (see
+ * `src/provider/provider-parse.ts:buildResponsesBody`). The schema
+ * is a duplicate of the prose in the system prompt — the prose is
+ * the in-context guide, the wire schema is the API enforcement.
+ *
+ * The model can still emit the *wrong* path or line — strict schema
+ * enforces shape, not truth. The post-filter in
+ * `parseDiffPositions` + the `parse-warnings.json` artifact are
+ * the layer that enforces truth.
+ *
+ * Compatibility note: the LIVE parser (in `provider-parse.ts`) is
+ * permissive about `verdict` and `severity` strings (it accepts any
+ * non-empty string and the `normalizeProviderSeverity` fallback
+ * maps unrecognized values). The wire schema is therefore
+ * permissive on those fields too — `string` with a `minLength: 1`
+ * constraint rather than a strict enum. A strict enum here would
+ * cause valid responses to be rejected by providers that enforce
+ * the schema (and per the model-comparison survey, the `severity`
+ * and `verdict` strings are exactly where providers diverge).
+ *
+ * The wire schema intentionally has NO `description` fields. Strict
+ * JSON-schema providers (e.g. OpenAI strict-mode) treat `description`
+ * as machine-checked, and a description with prose like "A path
+ * from the Files-in-diff list below" can be interpreted as a
+ * constraint that breaks valid responses. The in-context system
+ * prompt carries the full description text; the wire schema is
+ * pure shape.
+ */
+const REVIEW_PAYLOAD_JSON_SCHEMA = {
+    type: "object",
+    additionalProperties: false,
+    required: ["summary", "verdict", "comments", "suppressed_comments"],
+    properties: {
+        summary: { type: "string" },
+        verdict: { type: "string", minLength: 1 },
+        comments: {
+            type: "array",
+            items: {
+                type: "object",
+                additionalProperties: false,
+                required: ["path", "line", "body", "severity", "category"],
+                properties: {
+                    path: { type: "string" },
+                    line: { type: "integer", minimum: 1 },
+                    body: { type: "string" },
+                    severity: { type: "string", minLength: 1 },
+                    category: { type: "string" },
+                },
+            },
+        },
+        suppressed_comments: {
+            type: "array",
+            items: {
+                type: "object",
+                additionalProperties: false,
+                required: ["path", "line", "body", "severity", "category"],
+                properties: {
+                    path: { type: "string" },
+                    line: { type: "integer", minimum: 1 },
+                    body: { type: "string" },
+                    severity: { type: "string", minLength: 1 },
+                    category: { type: "string" },
+                },
+            },
+        },
+    },
+};
+async function buildProviderPrompts(input) {
+    // Resolve the default-lookup list ONCE per cwd so the chunked
+    // orchestrator (which calls buildProviderPrompts PER chunk) does
+    // not race on multiple parallel fs.stat calls or break the
+    // single-threaded sink assumption that `setActiveSeveritySink`
+    // relies on. Implementation: synchronous stat() so we do NOT add a
+    // new `await` boundary at the top of buildProviderPrompts.
+    const defaultPaths = resolveDefaultPromptFilesOnce(input.cwd);
+    const additionalPrompt = await readAdditionalPrompt(input, defaultPaths);
+    const userParts = [
+        `Platform: ${input.platform}`,
+        additionalPrompt.length > 0 ? `Additional instructions:\n${additionalPrompt}` : "Additional instructions: none",
+    ];
+    if (input.sonarContext !== undefined && input.sonarContext.length > 0) {
+        userParts.push(input.sonarContext);
+    }
+    // Verified facts layer — pre-computed, authoritative repo state the
+    // model sees BEFORE the diff. Without this layer the model can
+    // hallucinate verifiable repo facts (e.g. claim dist/ is missing
+    // from package.json#files when it is present in the diff). With
+    // it, the model has an explicit contradiction anchor.
+    const verifiedFacts = collectVerifiedFacts(input.diffText);
+    const verifiedBlock = renderVerifiedFactsBlock(verifiedFacts);
+    if (verifiedBlock.length > 0) {
+        userParts.push(verifiedBlock);
+    }
+    // Layer 2-A: enumerate the diff's path list in the user message
+    // so the model can verify any cited path by grep. We list the
+    // paths even on the strict-schema path (which already constrains
+    // `path` to a string type) because the model emits a literal
+    // string the post-filter then validates against this list.
+    userParts.push(buildFilesInDiffBlock(input.diffText));
+    userParts.push("Diff:", input.diffText);
+    return {
+        system: await pickSystemPrompt(input, defaultPaths),
+        user: userParts.join("\n\n"),
+    };
+}
+/**
+ * Per-cwd memoized wrapper around `resolveDefaultPromptFiles`. The
+ * chunked live path invokes `buildProviderPrompts` per chunk, so a
+ * per-call resolve would multiply the fs.stat calls and (more
+ * importantly) introduce an extra `await` boundary that breaks the
+ * single-threaded event-loop assumption `setActiveSeveritySink`
+ * relies on (see `src/provider/provider-parse.ts:86-88`).
+ *
+ * Implementation note: uses synchronous fs.stat to avoid any `await`
+ * boundary in `buildProviderPrompts`. Each stat is sub-millisecond
+ * and the result is cached per cwd, so the total cost is at most 5
+ * sync stats on the FIRST `buildProviderPrompts` call per process.
+ *
+ * ## Cache lifetime contract
+ *
+ * The cache is **process-scoped and lives for the lifetime of the
+ * Node process**. It is intentionally NOT invalidated by anything
+ * other than `__resetDefaultPromptFilesCacheForTests` (which is a
+ * test-only hook). This is acceptable for the action's documented
+ * deployment model — each `umactually-pr-review` invocation
+ * (GitHub Actions, Azure DevOps, CLI) runs as a FRESH Node
+ * process, so the cache effectively lives for one review run.
+ *
+ * What this means for callers:
+ *
+ * - **Standard usage (one process per review run):** The cache is
+ *   populated on the first `buildProviderPrompts` call (with up to
+ *   five sync `fs.stat` calls for `DEFAULT_PROMPT_FILE_PATHS`); every
+ *   subsequent call within the same run reuses the cached path list.
+ *   Per-chunk reads re-stat the disk (cheap; cache is path-list, not
+ *   file-content).
+ *
+ * - **Long-lived processes (rare):** If you reuse the bundled CLI
+ *   inside a daemon or composite step that runs the action multiple
+ *   times against the same cwd, the cache entry will persist across
+ *   runs — a `CLAUDE.md` added AFTER the first run will not be
+ *   auto-loaded by the second run. This is acceptable because the
+ *   documented deployment model is one process per review; the
+ *   alternative (cache-busting) would either add a new `await`
+ *   boundary (race) or require a per-run `reset()` call that the
+ *   caller is responsible for invoking. Documented here so the
+ *   contract is explicit; if a long-lived-process use case emerges,
+ *   revisit this design.
+ *
+ * - **Tests:** Use `__resetDefaultPromptFilesCacheForTests()` to
+ *   clear the cache between scenarios that mutate the workspace.
+ */
+const DEFAULT_PROMPT_FILES_CACHE = new Map();
+function resolveDefaultPromptFilesOnce(cwd) {
+    const cached = DEFAULT_PROMPT_FILES_CACHE.get(cwd);
+    if (cached !== undefined)
+        return cached;
+    const out = [];
+    for (const candidate of DEFAULT_PROMPT_FILE_PATHS) {
+        // Defense in depth: every entry in DEFAULT_PROMPT_FILE_PATHS is a
+        // hardcoded relative path with no `..` segments and no leading
+        // `/`, but `path.join` would silently swallow an absolute candidate
+        // (e.g. `/etc/passwd`) and turn it into an absolute path under
+        // cwd. Reject anything that is not a plain relative path here so
+        // a future change that adds a non-conforming entry surfaces a
+        // loud failure instead of silently expanding the security
+        // boundary.
+        if (!isSafeRelativeCandidate(candidate)) {
+            throw new Error(`DEFAULT_PROMPT_FILE_PATHS contains an unsafe entry: ${JSON.stringify(candidate)}. ` +
+                `Entries must be relative paths with no '..' segments and no leading '/' or drive letter.`);
+        }
+        try {
+            const s = (0,external_node_fs_namespaceObject.statSync)((0,external_node_path_namespaceObject.join)(cwd, candidate));
+            if (s.isFile())
+                out.push(candidate);
+        }
+        catch {
+            // ENOENT (or any other stat failure): silently skip.
+        }
+    }
+    const frozen = Object.freeze(out);
+    DEFAULT_PROMPT_FILES_CACHE.set(cwd, frozen);
+    return frozen;
+}
+/**
+ * Returns true iff the candidate is a safe relative path: no leading
+ * `/`, no leading drive letter (Windows `C:` etc.), no `..` segments,
+ * and at least one non-separator character.
+ *
+ * This is defense in depth — DEFAULT_PROMPT_FILE_PATHS is hardcoded
+ * with safe entries today. The check exists so a future maintainer
+ * who adds an entry with `..` (e.g. `../sibling/CLAUDE.md`) sees a
+ * loud failure rather than silently allowing the action to read a
+ * path outside cwd.
+ */
+function isSafeRelativeCandidate(candidate) {
+    if (typeof candidate !== "string" || candidate.length === 0)
+        return false;
+    if (candidate.startsWith("/") || candidate.startsWith("\\"))
+        return false;
+    // Windows drive-letter prefix: "C:" or "C:\" or "C:/". Reject.
+    if (/^[a-zA-Z]:[\\/]?/u.test(candidate))
+        return false;
+    // No `..` segments (handles both POSIX and Windows separators).
+    const segments = candidate.split(/[\\/]/u);
+    if (segments.some((seg) => seg === ".."))
+        return false;
+    return true;
+}
+/**
+ * Test-only hook to clear the per-cwd default-prompt cache. Used by
+ * tests that mutate the workspace mid-run and need the next
+ * `buildProviderPrompts` call to re-stat the disk.
+ *
+ * Production callers should NOT need this — see the cache lifetime
+ * contract on `DEFAULT_PROMPT_FILES_CACHE`.
+ */
+function __resetDefaultPromptFilesCacheForTests() {
+    DEFAULT_PROMPT_FILES_CACHE.clear();
+}
+/**
+ * Reset hook called by the CLI entry points (`runCli`, `runDryRun`,
+ * `runLive`) at the start of each invocation. Under the documented
+ * deployment model — one Node process per review run — this is
+ * effectively a no-op (the cache is fresh on the first build call).
+ *
+ * Why it exists:
+ * 1. **Tests that exercise the chunked orchestrator's per-call
+ *    buildProviderPrompts path need to invalidate the cache between
+ *    independent runLive invocations in the same process.** The
+ *    test-only hook above exists for that — but production callers
+ *    never need it.
+ * 2. **A long-lived-process deployment (out of scope; not the
+ *    action's model) would call this between reviews to force a
+ *    fresh stat of the cwd's default-lookup files.** Documented
+ *    but not used by the bundled CLI today.
+ *
+ * The function name intentionally preserves the "ForTests" pattern in
+ * the dedicated test hook above; this entry-point reset is a
+ * separate surface and is the one production callers could call if
+ * they ever needed to.
+ */
+function resetDefaultPromptFilesCache() {
+    DEFAULT_PROMPT_FILES_CACHE.clear();
+}
+/**
+ * Format the diff's file list as an explicit, copy-pastable block the
+ * model can match against. Pinned by the citation-grounding plan
+ * (Layer 2-A): the prompt now lists every path the model is
+ * permitted to cite, which makes hallucinated paths obvious to
+ * both the model and the post-filter.
+ */
+function buildFilesInDiffBlock(diffText) {
+    const paths = listDiffPaths(diffText);
+    if (paths.length === 0) {
+        return "Files in diff: (none — empty diff)";
+    }
+    const lines = paths.map((p, i) => `  ${i + 1}. ${p}`);
+    return [
+        "Files in diff (the ONLY paths you may cite):",
+        ...lines,
+        "Do NOT cite any path that is not in this list. If a finding requires a file not in the diff, omit the finding entirely rather than fabricating a path.",
+    ].join("\n");
+}
+async function pickSystemPrompt(input, defaultPaths) {
+    const inline = input.parsed.prompt;
+    if (typeof inline === "string" && inline.length > 0) {
+        return inline;
+    }
+    // Precedence for system prompt file resolution:
+    //   1. `--prompt-files` (array) — when set, COMPLETELY OVERRIDES the
+    //      default-lookup list. The single-file `--prompt-file` is
+    //      ignored in this branch so the array semantics are honest.
+    //   2. `--prompt-file` (single, legacy) — used as-is.
+    //   3. Auto-discover from `DEFAULT_PROMPT_FILE_PATHS` (CLAUDE.md,
+    //      AGENTS.md, .github/copilot-instructions.md, .cursorrules,
+    //      GEMINI.md). Files that do not exist are skipped.
+    //   4. Built-in `buildDefaultSystemPrompt()`.
+    const promptFilesRaw = resolveField(input.parsed.promptFiles, input.env[ENV_KEYS.UMACTUALLY_PROMPT_FILES], "");
+    const promptFilesList = splitPromptFileList(promptFilesRaw);
+    if (promptFilesList.length > 0) {
+        return readPromptFiles(promptFilesList, DEFAULT_PROMPT_BYTE_CAP, { cwd: input.cwd });
+    }
+    const filePath = resolveField(input.parsed.promptFile, input.env[ENV_KEYS.UMACTUALLY_PROMPT_FILE], "");
+    if (filePath !== undefined && filePath.length > 0) {
+        return readPromptFiles([filePath], DEFAULT_PROMPT_BYTE_CAP, { cwd: input.cwd });
+    }
+    if (defaultPaths.length > 0) {
+        return readPromptFiles(defaultPaths, DEFAULT_PROMPT_BYTE_CAP, { cwd: input.cwd });
+    }
+    return buildDefaultSystemPrompt();
+}
+/**
+ * The built-in default system prompt. Rewritten in PR #26 (the
+ * "LLM citation grounding" fix) to:
+ *
+ * 1. Quote the source lines BEFORE emitting a finding (Anthropic
+ *    pattern: "if it can't find a quote, state that no relevant
+ *    quote was found"). This forces the model to anchor each
+ *    finding to a real diff line and makes fabrication obvious.
+ * 2. Foreground the diff path enum (the user message carries the
+ *    same list — see `buildFilesInDiffBlock`) so the model knows
+ *    the EXACT set of valid paths.
+ * 3. Include the strict JSON schema so a free-form model that
+ *    ignores the wire `response_format` still gets a clear
+ *    shape guide. (Prose schema + wire schema is the standard
+ *    pattern; see the Ellipsis "27 months of LLM agents" post.)
+ * 4. Pre-empt the "DO NOT cite dist/" failure mode (PR #56) by
+ *    telling the model that build artifacts are excluded upstream
+ *    AND the post-filter will reject any off-path citation. The
+ *    "Negative Constraints Backfire" finding from the
+ *    hallucination-survey (Rana, 2026) shows that bare "DO NOT
+ *    cite X" instructions can paradoxically prime X — so we
+ *    include the prohibition paired with the positive constraint
+ *    (cite only what's in the list) and the consequence (filtered
+ *    out, surfaces in the warning artifact).
+ */
+function buildDefaultSystemPrompt() {
+    return [
+        "You are UmActually, a precise pull request reviewer.",
+        "",
+        "Output contract:",
+        "- Your entire response is parsed as a single JSON object matching the schema below. No prose before or after the JSON. No markdown code fences around the JSON (the parser strips them, but emitting them wastes output tokens).",
+        "- If you would normally think before answering, the thinking must happen INSIDE the JSON (e.g. as a `reasoning` field) — not as separate prose. The parser discards any text before the first `{` and after the last `}`, so thinking prose only burns your output budget and the answer gets truncated.",
+        "- The JSON must contain every required field (`summary`, `verdict`, `comments`, `suppressed_comments`). Missing fields cause a parse failure and the operator sees a parse-fail card instead of your review.",
+        "",
+        "Workflow for every finding you emit:",
+        "1. Identify a real concern introduced by the diff.",
+        "2. Copy the EXACT diff lines that justify the concern (a verbatim quote, 1-3 lines).",
+        "3. Emit a JSON object whose `path` matches a file from the Files-in-diff list in the user message and whose `line` matches a line number that appears in the diff for that file.",
+        "If you cannot complete steps 2-3, OMIT the finding entirely. Do not invent a citation.",
+        "",
+        "Verified-facts grounding:",
+        "- When the user message includes a 'Verified facts' block, those facts are authoritative for this PR. They were reconstructed from the diff by a deterministic parser. Do NOT emit a finding whose `body` contradicts any fact in the block — omit the finding entirely or rephrase it without the contradiction.",
+        "- Common contradiction patterns to avoid: claiming X is missing from a whitelist/list when X is in the verified list, claiming Y was removed when Y is in the verified list, claiming an output/input was deleted when the verified facts show it still exists.",
+        "- If you would have made such a claim and the verified facts contradict it, the verified facts are correct; your reading of the diff was wrong. Omit the finding.",
+        "",
+        "False-positive prevention (Layer 5 — calibration):",
+        "- Do NOT emit generic best-practice advice without quoting the exact diff line that demonstrates the issue. Advice like 'you should use parameterized queries', 'consider adding an index', 'this could be vulnerable to X' is only a finding if the diff shows the absence AND you can quote the relevant code. The post-filter explicitly downgrades bodies that use these phrasings without a diff anchor.",
+        "- Do NOT emit findings whose severity is medium or higher if the body uses hedging language ('could', 'might', 'potentially', 'in some cases', 'in theory'). Reserve medium+ for confirmed violations. The post-filter calibrates hedged-at-high-severity findings down to info.",
+        "- Do NOT flag code as missing error handling, validation, sanitization, or authentication if the diff's context lines already show it present. Read the surrounding lines of the cited file before claiming absence — the construct may be in the unchanged context the diff preserves. The post-filter downgrades findings whose body names a construct that the hunk actually contains.",
+        "- Do NOT flag a code pattern as a bug if the diff includes an inline comment documenting it as intentional ('// intentional:', '// by design', '// note:', '// hack:', '// workaround', '// rationale:', '// see <link>'). The model often misses the documenting comment when the pattern LOOKS problematic in isolation. The post-filter downgrades these findings so the operator can see them with softer severity.",
+        "- When a finding would be speculative ('in some edge case', 'if X were to happen', 'could theoretically lead to'), drop the severity to 'info' or 'low' AT EMISSION TIME rather than emitting at medium/high and relying on the post-filter.",
+        "",
+        "Forbidden (a non-exhaustive list to make the boundary explicit; the positive constraint above takes precedence):",
+        "- Do NOT cite any path that is not in the Files-in-diff list. Build artifacts, generated files, and lockfiles are stripped from the diff upstream and are never reviewable here.",
+        "- Do NOT cite any line number that does not appear in the diff for the cited path. Off-by-one or hallucinated line numbers are rejected by the post-filter.",
+        "- Do NOT infer missing context. If the diff does not show a function call, do not claim a function call exists.",
+        "- Do NOT include secrets, tokens, or any literal that looks like a credential.",
+        "- Do NOT emit prose before or after the JSON. The parser will reject your response as a parse-fail.",
+        "- Do NOT emit reasoning that is longer than the answer itself. If you have analyzed for a while and the answer is still ahead, you are about to run out of output budget — emit the JSON now with whatever findings you have, even if you would have found more.",
+        "",
+        "Severity values: info, low, medium, high, critical, security, leak. Use 'security' for an active vulnerability, 'leak' for a confirmed secret, 'critical' for severe bugs. Style and hygiene issues go in 'low' or 'info'.",
+        "",
+        "Schema:",
+        JSON.stringify(REVIEW_PAYLOAD_JSON_SCHEMA, null, 2),
+        "",
+        "If the diff is empty or has no actionable findings, return verdict=COMMENT with an empty comments array. Do not invent findings to fill the response.",
+    ].join("\n");
+}
+async function readAdditionalPrompt(input, defaultPaths) {
+    const inline = input.parsed.additionalPrompt;
+    if (typeof inline === "string" && inline.length > 0) {
+        return inline;
+    }
+    // Precedence mirrors `pickSystemPrompt`: array overrides defaults,
+    // single-file is the legacy path, then default-lookup, then empty.
+    const filesRaw = resolveField(input.parsed.additionalPromptFiles, input.env[ENV_KEYS.UMACTUALLY_ADDITIONAL_PROMPT_FILES], "");
+    const filesList = splitPromptFileList(filesRaw);
+    if (filesList.length > 0) {
+        return readPromptFiles(filesList, DEFAULT_PROMPT_BYTE_CAP, { cwd: input.cwd });
+    }
+    const filePath = resolveField(input.parsed.additionalPromptFile, input.env[ENV_KEYS.UMACTUALLY_ADDITIONAL_PROMPT_FILE], "");
+    if (filePath !== undefined && filePath.length > 0) {
+        return readPromptFiles([filePath], DEFAULT_PROMPT_BYTE_CAP, { cwd: input.cwd });
+    }
+    if (defaultPaths.length === 0)
+        return "";
+    return readPromptFiles(defaultPaths, DEFAULT_PROMPT_BYTE_CAP, { cwd: input.cwd });
+}
 
 ;// CONCATENATED MODULE: ./src/platform/detect.ts
 
@@ -3916,87 +5140,6 @@ function collectValidationErrors(parsed) {
 }
 function assertNever(value) {
     throw new TypeError(`unhandled platform variant: ${JSON.stringify(value)}`);
-}
-
-;// CONCATENATED MODULE: ./src/config/defaults.ts
-
-/** Canonical prompt-file byte cap shared by config loading and live prompt assembly. */
-const DEFAULT_PROMPT_BYTE_CAP = FIELDS.promptByteCap.defaultValue;
-/** Canonical cap for posted review comments when no CLI/input override is supplied. */
-const DEFAULT_MAX_COMMENTS = FIELDS.maxComments.defaultValue;
-/** Canonical merge fallback cap for chunked live reviews. */
-const DEFAULT_MAX_COMMENTS_MERGE = DEFAULT_MAX_COMMENTS;
-/** Canonical changed-file soft cap for live reviews. */
-const DEFAULT_REVIEW_FILE_LIMIT = FIELDS.reviewFileLimit.defaultValue;
-/** Canonical wall-clock review timeout, in seconds; derived from field-schema so the loader cannot drift from the canonical default. */
-const DEFAULT_REVIEW_SECONDS = FIELDS.reviewTimeoutSeconds.defaultValue;
-/** Canonical provider-output stall timeout, in seconds; derived from field-schema. */
-const DEFAULT_STALL_SECONDS = FIELDS.stallSeconds.defaultValue;
-/** Canonical per-request HTTP timeout, in seconds; derived from field-schema. */
-const DEFAULT_PER_REQUEST_SECONDS = FIELDS.perRequestTimeoutSeconds.defaultValue;
-/**
- * Canonical Sonar HTTP timeout, in seconds; derived from field-schema.
- *
- * Surfaced a real bug: `config/loader.ts` previously hard-coded `60` here
- * while the field-schema default (and therefore the CLI / action / env
- * surfaces) is `300`. Live SonarQube scans silently timed out at 60s
- * when no override was supplied. This re-export makes the loader default
- * byte-identical to the schema default.
- */
-const DEFAULT_SONAR_TIMEOUT_SECONDS = FIELDS.sonarTimeoutSeconds.defaultValue;
-/**
- * Canonical provider model default; derived from field-schema.
- *
- * Inferred as `string` (matching `pickString`'s signature in `loader.ts`),
- * but the field-schema's literal `"auto"` default is preserved by
- * TypeScript's widening rules because the right-hand side is a
- * `const`-tracked object property; callers that need the literal type
- * should re-assert at the call site.
- */
-const DEFAULT_PROVIDER_MODEL = FIELDS.model.defaultValue;
-
-;// CONCATENATED MODULE: ./src/config/field-resolution.ts
-/**
- * Resolve a config field through the canonical precedence chain: parsed > env > fallback.
- *
- * Returns the first value in the chain that is non-null, non-undefined, AND (when a
- * string) non-empty. This matches the behavior the live path hand-rolls inline at
- * multiple sites (`parsed.X ?? env["Y"] ?? DEFAULT_Z`).
- *
- * Why this exists: the config loader (`src/config/loader.ts`) has private pickX
- * helpers used only inside loadConfigFromSources. The live path cannot call those
- * directly — it builds parsed/env from different inputs (CLI argv + action inputs +
- * env) and needs the same chain. Centralizing eliminates the 7+ hand-rolled
- * `parsed.X ?? env["Y"]` occurrences scattered across cli/ that future maintainers
- * could "fix" by adding a default to one site but not the others.
- *
- * Treats the empty string as "missing" for string-typed fields. This matches the
- * CLI's existing behavior (`parseStringFromUnknown` raises on empty input, and the
- * shell typically passes empty strings for unset flags).
- *
- * @param parsedValue  CLI/inputs value (already parsed).
- * @param envValue     Env-var value (read via ENV_KEYS.X).
- * @param fallback     The schema default (from FIELDS.<x>.defaultValue or a derived constant).
- * @returns            The first non-null/non-empty value, or `fallback`.
- */
-function resolveField(parsedValue, envValue, fallback) {
-    if (parsedValue !== undefined && parsedValue !== null) {
-        if (typeof parsedValue === "string" && parsedValue.length === 0) {
-            // Empty string is treated as missing for string fields.
-        }
-        else {
-            return parsedValue;
-        }
-    }
-    if (envValue !== undefined && envValue !== null) {
-        if (typeof envValue === "string" && envValue.length === 0) {
-            // Empty string from env is treated as missing.
-        }
-        else {
-            return envValue;
-        }
-    }
-    return fallback;
 }
 
 ;// CONCATENATED MODULE: ./src/platform/azure/chunk.ts
@@ -11378,1080 +12521,6 @@ function buildParseWarningsArtifact(input) {
     };
 }
 
-;// CONCATENATED MODULE: external "node:fs"
-const external_node_fs_namespaceObject = __WEBPACK_EXTERNAL_createRequire(import.meta.url)("node:fs");
-;// CONCATENATED MODULE: ./src/config/prompt-files.ts
-
-
-
-const PROMPT_SEPARATOR = "\n\n---\n\n";
-const nodePromptFileSystem = {
-    realpath(cwd) {
-        return (0,promises_namespaceObject.realpath)(cwd);
-    },
-    async realpathWithinCwd(path, cwdReal, _self) {
-        const absolute = (0,external_node_path_namespaceObject.resolve)(cwdReal, path);
-        let real;
-        try {
-            real = await (0,promises_namespaceObject.realpath)(absolute);
-        }
-        catch {
-            return { absolute, withinCwd: isWithinCwdLexical(absolute, cwdReal) };
-        }
-        return { absolute: real, withinCwd: isWithinCwdReal(real, cwdReal) };
-    },
-    stat(path) {
-        return (0,promises_namespaceObject.stat)(path).then((s) => ({ isFile: s.isFile(), size: s.size }));
-    },
-    readFile(path) {
-        return (0,promises_namespaceObject.readFile)(path, "utf8");
-    },
-};
-function isWithinCwdReal(real, cwdReal) {
-    if (process.platform === "win32") {
-        const r = real.toLowerCase();
-        const c = cwdReal.toLowerCase();
-        return r === c || r.startsWith(`${c}${external_node_path_namespaceObject.sep}`);
-    }
-    return real === cwdReal || real.startsWith(`${cwdReal}/`);
-}
-function isWithinCwdLexical(absolute, cwdReal) {
-    const rel = external_node_path_namespaceObject.posix.relative(toPosix(cwdReal), toPosix(absolute));
-    return rel !== "" && !rel.startsWith("..") && !external_node_path_namespaceObject.posix.isAbsolute(rel);
-}
-function toPosix(value) {
-    return process.platform === "win32" ? value.replace(/\\/g, "/") : value;
-}
-/**
- * Reads each file under `cwd` and concatenates contents.
- * - Rejects any path whose resolved-realpath escapes `cwd`.
- * - Enforces a per-file and aggregate byte cap.
- * - Never includes file contents in errors; only the `[REDACTED]` marker.
- */
-async function readPromptFiles(paths, byteCap, options) {
-    if (!Number.isInteger(byteCap) || byteCap <= 0) {
-        throw new errors_InvalidConfigError("prompt.byteCap", `expected positive integer, received ${byteCap}`);
-    }
-    const fs = options.fs ?? nodePromptFileSystem;
-    const cwdReal = await fs.realpath(options.cwd);
-    const parts = [];
-    let aggregateBytes = 0;
-    for (const rawPath of paths) {
-        if (typeof rawPath !== "string" || rawPath.length === 0) {
-            throw new PromptFileError(String(rawPath), "not-found");
-        }
-        if ((0,external_node_path_namespaceObject.isAbsolute)(rawPath)) {
-            throw new PromptFileError(rawPath, "outside-cwd");
-        }
-        const resolved = await fs.realpathWithinCwd(rawPath, cwdReal, fs);
-        if (!resolved.withinCwd) {
-            throw new PromptFileError(rawPath, "outside-cwd");
-        }
-        let stat;
-        try {
-            stat = await fs.stat(resolved.absolute);
-        }
-        catch {
-            throw new PromptFileError(rawPath, "not-found");
-        }
-        if (!stat.isFile) {
-            throw new PromptFileError(rawPath, "not-a-file");
-        }
-        if (stat.size > byteCap) {
-            throw new PromptFileError(rawPath, "byte-cap-exceeded");
-        }
-        aggregateBytes += stat.size;
-        if (aggregateBytes > byteCap) {
-            throw new PromptFileError(rawPath, "byte-cap-exceeded");
-        }
-        let text;
-        try {
-            text = await fs.readFile(resolved.absolute);
-        }
-        catch {
-            throw new PromptFileError(rawPath, "read-failed");
-        }
-        parts.push(text);
-    }
-    return parts.join(PROMPT_SEPARATOR);
-}
-/**
- * Split a newline- or comma-separated list of paths into a deduplicated,
- * ordered, trimmed array of non-empty strings. Empty input yields an
- * empty array. Order is preserved by first-occurrence.
- *
- * Public so tests can pin the splitting contract directly and so the
- * config-loader pipeline (which receives raw env-var strings) can
- * apply the same splitting semantics as the live prompt assembly.
- */
-function splitPromptFileList(raw) {
-    if (typeof raw !== "string" || raw.length === 0)
-        return [];
-    const seen = new Set();
-    const out = [];
-    // Split on commas AND any newline flavor (LF, CR-LF, CR-only).
-    // The trim() on each piece also strips trailing CR that CR-LF
-    // leaves behind after the LF split, so the round-trip is safe on
-    // Windows-pasted strings.
-    for (const piece of raw.split(/[\n\r,]/u)) {
-        const trimmed = piece.trim();
-        if (trimmed.length === 0)
-            continue;
-        if (seen.has(trimmed))
-            continue;
-        seen.add(trimmed);
-        out.push(trimmed);
-    }
-    return out;
-}
-/**
- * Repository-relative filenames UmActually auto-discovers when no explicit
- * prompt-file or prompt-files override is supplied. Each entry is checked
- * with `fs.stat`; missing files are silently skipped so repos that lack
- * any of these files fall through to the built-in default system prompt
- * (or empty additional prompt).
- *
- * Order matters: files are concatenated in the listed order. The
- * recognized conventions are:
- *
- * - `CLAUDE.md` — Anthropic Claude Code / Cowork repo-level instructions.
- * - `AGENTS.md` — emerging agent-agnostic convention (also adopted by
- *   Cursor, aider, and OpenAI Codex).
- * - `.github/copilot-instructions.md` — GitHub Copilot Coding Agent
- *   instructions (documented at
- *   https://docs.github.com/en/copilot/customizing-copilot/adding-custom-instructions-for-github-copilot).
- * - `.cursorrules` — Cursor legacy single-file rules format.
- * - `GEMINI.md` — Google Gemini CLI repo-level instructions.
- *
- * Excluded by design (deferred to a future iteration that needs glob
- * support): `.github/instructions/*.md` (Copilot multi-file mode) and
- * `.clinerules/*.md` (Cline). Glob support requires an allowlist-aware
- * directory read; the current `readPromptFiles` API only accepts a flat
- * list of paths.
- */
-const DEFAULT_PROMPT_FILE_PATHS = [
-    "CLAUDE.md",
-    "AGENTS.md",
-    ".github/copilot-instructions.md",
-    ".cursorrules",
-    "GEMINI.md",
-];
-/**
- * Resolve `DEFAULT_PROMPT_FILE_PATHS` against `cwd` and return only the
- * paths that exist on disk and are regular files. Missing entries are
- * silently dropped (not an error). Symlink targets are NOT followed here
- * — `readPromptFiles` does its own realpath resolution at read time.
- *
- * Pure (no global fs). Accepts the same `PromptFileSystem` shape used
- * by `readPromptFiles` so tests can inject a fake filesystem. The
- * default implementation uses the real `node:fs`.
- */
-async function resolveDefaultPromptFiles(cwd, fs) {
-    const existing = [];
-    for (const candidate of DEFAULT_PROMPT_FILE_PATHS) {
-        try {
-            const stat = await fs.stat(`${cwd.replace(/[\\/]+$/u, "")}/${candidate}`);
-            if (stat.isFile) {
-                existing.push(candidate);
-            }
-        }
-        catch {
-            // ENOENT (or any other stat failure): silently skip. The user did
-            // not opt in to this file; its absence is not an error.
-        }
-    }
-    return existing;
-}
-
-;// CONCATENATED MODULE: ./src/review/verified-facts.ts
-// SPDX-License-Identifier: MIT
-/**
- * Verified facts layer — pre-computed repo-state assertions that the
- * model receives in the prompt and that the post-filter uses to
- * downgrade findings that contradict the diff.
- *
- * Why this exists
- * ---------------
- * On PR #41 the model emitted a Critical finding claiming "dist/ is not
- * listed in files so the npm-published action will fail at runtime",
- * even though the diff for package.json showed `dist` present both
- * before and after the change (`npm pack --dry-run` confirmed dist/
- * ships). The model was making a verifiable repo-state claim without
- * grounding it in the diff.
- *
- * The fix has two halves:
- *   1. Before sending to the model, scan the post-change state of a
- *      handful of known structured fields (package.json#files,
- *      action.yml#outputs, etc.) and produce a "Verified facts" block
- *      the model sees BEFORE the diff. The model can then read the
- *      facts and avoid asserting facts the action can already prove.
- *   2. After the model responds, scan each finding's body for
- *      contradiction patterns (e.g. "X is missing from Y" when the
- *      verified facts say X is in Y). Downgrade such findings to
- *      `info` rather than posting them at their claimed severity.
- *
- * This module only does the extraction (step 1). The post-filter is in
- * `src/cli/verify-findings.ts`.
- *
- * Design constraints
- * ------------------
- * - Source of truth: the diff. The action runs in a consumer's
- *   checkout where cwd/package.json is NOT UmActually's package.json
- *   — we cannot read the worktree. We reconstruct each file's
- *   post-change content from the diff hunks (context lines + added
- *   lines, ignoring removed lines).
- * - Conservative: if a fact cannot be extracted with high
- *   confidence, it is OMITTED. The model should not see a half-baked
- *   fact and assume it's authoritative.
- * - Cheap: O(diff length) parse. One JSON.parse call per structured
- *   field. No external commands, no network.
- */
-
-/**
- * Derive verified facts from the supplied PR diff text.
- *
- * Reconstructs the post-change content of `package.json` and
- * `action.yml` from the diff hunks (the action cannot read the
- * consumer's worktree safely — cwd is the consumer's repo, not ours).
- */
-function collectVerifiedFacts(diffText) {
-    return {
-        filesInDiff: listDiffPaths(diffText),
-        packageJsonFiles: readPackageJsonFiles(diffText),
-        packageJsonBin: readPackageJsonBin(diffText),
-        packageJsonMain: readPackageJsonMain(diffText),
-        actionOutputs: readActionOutputs(diffText),
-    };
-}
-/**
- * Render the verified facts as a prompt block. Empty blocks are
- * omitted (the prompt should not signal "facts collected" when none
- * were). The block is rendered as plain text the model can read line
- * by line.
- */
-function renderVerifiedFactsBlock(facts) {
-    const lines = [];
-    if (facts.packageJsonFiles !== null) {
-        lines.push(`package.json#files (post-change): ${JSON.stringify(facts.packageJsonFiles.files)}`);
-    }
-    if (facts.packageJsonBin !== null) {
-        lines.push(`package.json#bin (post-change): ${JSON.stringify(facts.packageJsonBin.binEntries)}`);
-    }
-    if (facts.packageJsonMain !== null) {
-        lines.push(`package.json#main (post-change): ${JSON.stringify(facts.packageJsonMain.main)}`);
-    }
-    if (facts.actionOutputs !== null) {
-        lines.push(`action.yml#outputs (post-change): ${JSON.stringify(facts.actionOutputs.outputKeys)}`);
-    }
-    if (lines.length === 0) {
-        return "";
-    }
-    return [
-        "Verified facts (reconstructed from the diff below; do NOT contradict these — they are authoritative for this PR):",
-        ...lines,
-        "If a finding would contradict any of the above, the finding is wrong; omit it or rephrase without the contradiction.",
-    ].join("\n");
-}
-/**
- * Reconstruct a file's post-change content from the diff. Returns
- * null if the file does not appear in the diff. The reconstructed
- * content is the file content as it would appear in the post-PR
- * worktree — context lines preserved verbatim, added lines included,
- * removed lines excluded.
- *
- * Implementation note: we walk the diff linearly, tracking which file
- * we're in, and for the target file we collect (context lines, added
- * lines). We ignore hunk headers (`@@ -X,Y +A,B @@`) and file-path
- * headers (`+++ b/...`, `--- a/...`).
- */
-function reconstructFileFromDiff(diffText, filePath) {
-    const files = new Map();
-    let currentPath = null;
-    let buffer = null;
-    const flush = () => {
-        if (currentPath !== null && buffer !== null) {
-            files.set(currentPath, buffer);
-        }
-    };
-    for (const line of diffText.split(/\r?\n/u)) {
-        if (line.startsWith("diff --git ")) {
-            flush();
-            const match = /^diff --git a\/(.+) b\/(.+)$/u.exec(line);
-            currentPath = match === null ? null : (match[2] ?? null);
-            buffer = [];
-            continue;
-        }
-        if (currentPath === null || buffer === null) {
-            continue;
-        }
-        if (line.startsWith("+++") || line.startsWith("---")) {
-            continue;
-        }
-        if (line.startsWith("@@")) {
-            continue;
-        }
-        // Only process unified-diff hunk lines. A line that doesn't
-        // start with one of the three markers ('+', '-', ' ') is not
-        // a valid hunk line (e.g. a stray blank line, an annotation).
-        // Skip it rather than injecting it as a context line, which
-        // would shift line numbers and corrupt the JSON parser
-        // downstream.
-        if (line.startsWith("+")) {
-            buffer.push(line.slice(1));
-        }
-        else if (line.startsWith("-")) {
-            // removed line: skip
-        }
-        else if (line.startsWith(" ")) {
-            buffer.push(line.slice(1));
-        }
-        else {
-            // No diff marker; ignore (e.g. blank line, malformed input).
-        }
-    }
-    flush();
-    const reconstructed = files.get(filePath);
-    return reconstructed === undefined ? null : reconstructed.join("\n");
-}
-function readPackageJsonFiles(diffText) {
-    const content = reconstructFileFromDiff(diffText, "package.json");
-    if (content === null) {
-        return null;
-    }
-    // Try full JSON parse first — works when the diff includes enough
-    // of the file to form a valid document (e.g. when package.json is
-    // small enough that one hunk covers the whole `files` block).
-    const fullParse = tryParsePackageJson(content);
-    if (fullParse !== null) {
-        return extractFilesFromParsed(fullParse);
-    }
-    // Fall back to targeted extraction: find the `"files":` key and
-    // read every JSON string inside the matching brackets. This
-    // handles the common case where only the array's contents were
-    // changed (the array opener is in the unchanged context).
-    return extractFilesByScanning(content);
-}
-function readPackageJsonBin(diffText) {
-    const content = reconstructFileFromDiff(diffText, "package.json");
-    if (content === null) {
-        return null;
-    }
-    const fullParse = tryParsePackageJson(content);
-    if (fullParse !== null) {
-        return extractBinFromParsed(fullParse);
-    }
-    return extractBinByScanning(content);
-}
-function readPackageJsonMain(diffText) {
-    const content = reconstructFileFromDiff(diffText, "package.json");
-    if (content === null) {
-        return null;
-    }
-    const fullParse = tryParsePackageJson(content);
-    if (fullParse !== null) {
-        return extractMainFromParsed(fullParse);
-    }
-    return extractMainByScanning(content);
-}
-function tryParsePackageJson(content) {
-    try {
-        const parsed = JSON.parse(content);
-        if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
-            return null;
-        }
-        return parsed;
-    }
-    catch {
-        return null;
-    }
-}
-function extractFilesFromParsed(pkg) {
-    const files = pkg["files"];
-    if (files === undefined) {
-        return null;
-    }
-    if (!Array.isArray(files)) {
-        return null;
-    }
-    const out = [];
-    for (const entry of files) {
-        if (typeof entry !== "string") {
-            return null;
-        }
-        out.push(entry);
-    }
-    return { kind: "package-json-files", files: out };
-}
-function extractBinFromParsed(pkg) {
-    const bin = pkg["bin"];
-    if (bin === undefined) {
-        return { kind: "package-json-bin", binEntries: [] };
-    }
-    if (typeof bin === "string") {
-        return { kind: "package-json-bin", binEntries: [`(binary) -> ${bin}`] };
-    }
-    if (typeof bin !== "object" || bin === null || Array.isArray(bin)) {
-        return null;
-    }
-    const out = [];
-    for (const [name, value] of Object.entries(bin)) {
-        if (typeof value !== "string") {
-            return null;
-        }
-        out.push(`${name} -> ${value}`);
-    }
-    return { kind: "package-json-bin", binEntries: out };
-}
-function extractMainFromParsed(pkg) {
-    const main = pkg["main"];
-    if (main === undefined) {
-        return null;
-    }
-    if (typeof main !== "string") {
-        return null;
-    }
-    return { kind: "package-json-main", main };
-}
-// ---------------------------------------------------------------------------
-// Targeted scanners — used when the diff only contains part of the file
-// and JSON.parse fails. Each scanner locates a JSON key and reads its
-// array / object / string value with a hand-rolled walker.
-// ---------------------------------------------------------------------------
-/**
- * Find `"files": [ ... ]` and read every string element. Returns null
- * if the key isn't present or the array isn't a clean JSON string
- * array. Tolerates multiline arrays.
- */
-function extractFilesByScanning(content) {
-    const start = findKeyIndex(content, '"files"');
-    if (start === -1) {
-        return null;
-    }
-    let i = content.indexOf(":", start) + 1;
-    while (i < content.length && /\s/u.test(content[i] ?? "")) {
-        i++;
-    }
-    if (content[i] !== "[") {
-        return null;
-    }
-    i++;
-    const out = [];
-    while (i < content.length) {
-        const ch = content[i];
-        if (ch === undefined) {
-            return null;
-        }
-        if (ch === "]") {
-            return { kind: "package-json-files", files: out };
-        }
-        if (ch === '"') {
-            const end = readStringLiteral(content, i);
-            if (end === -1) {
-                return null;
-            }
-            out.push(decodeStringLiteral(content.slice(i + 1, end)));
-            i = end + 1;
-            while (i < content.length &&
-                (content[i] === " " || content[i] === "\t" || content[i] === "\n" || content[i] === "\r" || content[i] === ",")) {
-                i++;
-            }
-            continue;
-        }
-        i++;
-    }
-    return null;
-}
-/**
- * Find `"bin": { ... }` and read every `"name": "value"` entry.
- */
-function extractBinByScanning(content) {
-    const start = findKeyIndex(content, '"bin"');
-    if (start === -1) {
-        // `bin` was not mentioned in the diff at all — we don't know
-        // whether it was removed or simply not touched. Conservatively
-        // omit rather than misreport.
-        return null;
-    }
-    let i = content.indexOf(":", start) + 1;
-    while (i < content.length && /\s/u.test(content[i] ?? "")) {
-        i++;
-    }
-    if (content[i] === '"') {
-        // Single string form: `"bin": "bin/foo.mjs"`.
-        const end = readStringLiteral(content, i);
-        if (end === -1) {
-            return null;
-        }
-        const value = decodeStringLiteral(content.slice(i + 1, end));
-        return { kind: "package-json-bin", binEntries: [`(binary) -> ${value}`] };
-    }
-    if (content[i] !== "{") {
-        return null;
-    }
-    i++;
-    const out = [];
-    while (i < content.length) {
-        const ch = content[i];
-        if (ch === undefined) {
-            return null;
-        }
-        if (ch === "}") {
-            return { kind: "package-json-bin", binEntries: out };
-        }
-        if (ch === '"') {
-            const keyEnd = readStringLiteral(content, i);
-            if (keyEnd === -1) {
-                return null;
-            }
-            const name = decodeStringLiteral(content.slice(i + 1, keyEnd));
-            let j = keyEnd + 1;
-            while (j < content.length && (content[j] === " " || content[j] === "\t" || content[j] === "\n" || content[j] === "\r")) {
-                j++;
-            }
-            if (content[j] !== ":") {
-                return null;
-            }
-            j++;
-            while (j < content.length && (content[j] === " " || content[j] === "\t" || content[j] === "\n" || content[j] === "\r")) {
-                j++;
-            }
-            if (content[j] !== '"') {
-                return null;
-            }
-            const valEnd = readStringLiteral(content, j);
-            if (valEnd === -1) {
-                return null;
-            }
-            const value = decodeStringLiteral(content.slice(j + 1, valEnd));
-            out.push(`${name} -> ${value}`);
-            i = valEnd + 1;
-            while (i < content.length &&
-                (content[i] === " " || content[i] === "\t" || content[i] === "\n" || content[i] === "\r" || content[i] === ",")) {
-                i++;
-            }
-            continue;
-        }
-        i++;
-    }
-    return null;
-}
-/**
- * Find `"main": "value"` and return the string.
- */
-function extractMainByScanning(content) {
-    const start = findKeyIndex(content, '"main"');
-    if (start === -1) {
-        return null;
-    }
-    let i = content.indexOf(":", start) + 1;
-    while (i < content.length && /\s/u.test(content[i] ?? "")) {
-        i++;
-    }
-    if (content[i] !== '"') {
-        return null;
-    }
-    const end = readStringLiteral(content, i);
-    if (end === -1) {
-        return null;
-    }
-    return { kind: "package-json-main", main: decodeStringLiteral(content.slice(i + 1, end)) };
-}
-/**
- * Locate the start index of a JSON key. Returns -1 if not present.
- * Skips past any key-like substring that is followed by something
- * other than `:` (after optional tabs/spaces).
- */
-function findKeyIndex(content, quotedKey) {
-    let i = 0;
-    while (i < content.length) {
-        const idx = content.indexOf(quotedKey, i);
-        if (idx === -1) {
-            return -1;
-        }
-        let j = idx + quotedKey.length;
-        while (j < content.length && (content[j] === " " || content[j] === "\t")) {
-            j++;
-        }
-        if (content[j] === ":") {
-            return idx;
-        }
-        i = idx + 1;
-    }
-    return -1;
-}
-/**
- * Return the closing-`"` index for a string literal that starts at
- * `openIndex` (which must point at the opening `"`). Returns -1 on
- * unterminated literal. Handles `\"` escapes.
- */
-function readStringLiteral(content, openIndex) {
-    for (let i = openIndex + 1; i < content.length; i++) {
-        const ch = content[i];
-        if (ch === undefined) {
-            return -1;
-        }
-        if (ch === "\\") {
-            i++;
-            continue;
-        }
-        if (ch === '"') {
-            return i;
-        }
-    }
-    return -1;
-}
-/**
- * Decode a JSON string-literal body (without surrounding quotes) into
- * a JS string. Handles the common escapes \\, \", \n, \r, \t.
- */
-function decodeStringLiteral(body) {
-    let out = "";
-    for (let i = 0; i < body.length; i++) {
-        const ch = body[i];
-        if (ch === "\\") {
-            const next = body[i + 1];
-            if (next === undefined) {
-                out += "\\";
-                continue;
-            }
-            switch (next) {
-                case '"':
-                    out += '"';
-                    i++;
-                    break;
-                case "\\":
-                    out += "\\";
-                    i++;
-                    break;
-                case "n":
-                    out += "\n";
-                    i++;
-                    break;
-                case "r":
-                    out += "\r";
-                    i++;
-                    break;
-                case "t":
-                    out += "\t";
-                    i++;
-                    break;
-                default:
-                    out += next;
-                    i++;
-                    break;
-            }
-            continue;
-        }
-        out += ch ?? "";
-    }
-    return out;
-}
-function readActionOutputs(diffText) {
-    const content = reconstructFileFromDiff(diffText, "action.yml");
-    if (content === null) {
-        return null;
-    }
-    return parseActionOutputsYaml(content, diffText);
-}
-/**
- * Minimal YAML reader for the action.yml `outputs:` block. We do not
- * need a full YAML parser — outputs is always a flat map of
- * key: description pairs at 2-space indentation under the
- * `outputs:` line. We collect keys only.
- *
- * Returns null when the reconstructed action.yml does NOT contain an
- * `outputs:` line AND the diff did not explicitly remove one. This
- * is important: returning an empty `outputKeys` array for an
- * action.yml that never had outputs would cause the post-filter to
- * interpret the empty list as "outputs were removed" and
- * potentially flag findings that legitimately mention outputs in
- * natural language.
- *
- * When the diff DOES contain `-outputs:` (or an entire outputs
- * block removal), we return `{ outputKeys: [] }` because the diff
- * itself is the signal that outputs was removed; the absence of
- * `outputs:` in the reconstructed file is the post-change state.
- */
-function parseActionOutputsYaml(text, diffText) {
-    const lines = text.split(/\r?\n/u);
-    const outputKeys = [];
-    let inOutputsBlock = false;
-    let sawOutputsMarker = false;
-    for (const line of lines) {
-        if (/^outputs\s*:\s*$/u.test(line)) {
-            inOutputsBlock = true;
-            sawOutputsMarker = true;
-            continue;
-        }
-        if (!inOutputsBlock) {
-            continue;
-        }
-        if (line.length > 0 && line[0] !== " " && line[0] !== "\t") {
-            inOutputsBlock = false;
-            continue;
-        }
-        const keyMatch = /^  (\w[\w-]*)\s*:/u.exec(line);
-        if (keyMatch !== null) {
-            outputKeys.push(keyMatch[1] ?? "");
-        }
-    }
-    if (sawOutputsMarker) {
-        return { kind: "action-outputs", outputKeys };
-    }
-    // Reconstructed action.yml has no `outputs:` line. Distinguish:
-    // (a) the diff explicitly removed the outputs block — in which
-    //     case the post-change state is "no outputs" and we should
-    //     report it as such.
-    // (b) action.yml never had outputs, or our reconstruction is
-    //     incomplete — in which case we should not report it.
-    if (/^-\s*outputs\s*:\s*$/um.test(diffText)) {
-        return { kind: "action-outputs", outputKeys: [] };
-    }
-    // Also detect removal of the entire outputs block (the `outputs:`
-    // line is in a `-outputs:` removal but the keys were also
-    // removed as a sequence). Check for any `-  <key>:` pattern that
-    // is a key in the outputs block. As a fallback, check whether
-    // the diff has the `outputs:` word at all in a removed line.
-    if (/^-\s*outputs\b/um.test(diffText)) {
-        return { kind: "action-outputs", outputKeys: [] };
-    }
-    return null;
-}
-
-;// CONCATENATED MODULE: ./src/cli/provider-prompts.ts
-
-
-
-
-
-
-
-// Re-exports of the default-lookup and splitting primitives so callers
-// (including the CLI help and tests) can import them from the public
-// `cli/provider-prompts` surface without reaching into `config/`.
-
-/**
- * The strict JSON schema the model must emit. We send this on the
- * wire as `response_format: { type: "json_schema", strict: true }`
- * for the OpenAI Responses/Chat APIs that support it (see
- * `src/provider/provider-parse.ts:buildResponsesBody`). The schema
- * is a duplicate of the prose in the system prompt — the prose is
- * the in-context guide, the wire schema is the API enforcement.
- *
- * The model can still emit the *wrong* path or line — strict schema
- * enforces shape, not truth. The post-filter in
- * `parseDiffPositions` + the `parse-warnings.json` artifact are
- * the layer that enforces truth.
- *
- * Compatibility note: the LIVE parser (in `provider-parse.ts`) is
- * permissive about `verdict` and `severity` strings (it accepts any
- * non-empty string and the `normalizeProviderSeverity` fallback
- * maps unrecognized values). The wire schema is therefore
- * permissive on those fields too — `string` with a `minLength: 1`
- * constraint rather than a strict enum. A strict enum here would
- * cause valid responses to be rejected by providers that enforce
- * the schema (and per the model-comparison survey, the `severity`
- * and `verdict` strings are exactly where providers diverge).
- *
- * The wire schema intentionally has NO `description` fields. Strict
- * JSON-schema providers (e.g. OpenAI strict-mode) treat `description`
- * as machine-checked, and a description with prose like "A path
- * from the Files-in-diff list below" can be interpreted as a
- * constraint that breaks valid responses. The in-context system
- * prompt carries the full description text; the wire schema is
- * pure shape.
- */
-const REVIEW_PAYLOAD_JSON_SCHEMA = {
-    type: "object",
-    additionalProperties: false,
-    required: ["summary", "verdict", "comments", "suppressed_comments"],
-    properties: {
-        summary: { type: "string" },
-        verdict: { type: "string", minLength: 1 },
-        comments: {
-            type: "array",
-            items: {
-                type: "object",
-                additionalProperties: false,
-                required: ["path", "line", "body", "severity", "category"],
-                properties: {
-                    path: { type: "string" },
-                    line: { type: "integer", minimum: 1 },
-                    body: { type: "string" },
-                    severity: { type: "string", minLength: 1 },
-                    category: { type: "string" },
-                },
-            },
-        },
-        suppressed_comments: {
-            type: "array",
-            items: {
-                type: "object",
-                additionalProperties: false,
-                required: ["path", "line", "body", "severity", "category"],
-                properties: {
-                    path: { type: "string" },
-                    line: { type: "integer", minimum: 1 },
-                    body: { type: "string" },
-                    severity: { type: "string", minLength: 1 },
-                    category: { type: "string" },
-                },
-            },
-        },
-    },
-};
-async function buildProviderPrompts(input) {
-    // Resolve the default-lookup list ONCE per cwd so the chunked
-    // orchestrator (which calls buildProviderPrompts PER chunk) does
-    // not race on multiple parallel fs.stat calls or break the
-    // single-threaded sink assumption that `setActiveSeveritySink`
-    // relies on. Implementation: synchronous stat() so we do NOT add a
-    // new `await` boundary at the top of buildProviderPrompts.
-    const defaultPaths = resolveDefaultPromptFilesOnce(input.cwd);
-    const additionalPrompt = await readAdditionalPrompt(input, defaultPaths);
-    const userParts = [
-        `Platform: ${input.platform}`,
-        additionalPrompt.length > 0 ? `Additional instructions:\n${additionalPrompt}` : "Additional instructions: none",
-    ];
-    if (input.sonarContext !== undefined && input.sonarContext.length > 0) {
-        userParts.push(input.sonarContext);
-    }
-    // Verified facts layer — pre-computed, authoritative repo state the
-    // model sees BEFORE the diff. Without this layer the model can
-    // hallucinate verifiable repo facts (e.g. claim dist/ is missing
-    // from package.json#files when it is present in the diff). With
-    // it, the model has an explicit contradiction anchor.
-    const verifiedFacts = collectVerifiedFacts(input.diffText);
-    const verifiedBlock = renderVerifiedFactsBlock(verifiedFacts);
-    if (verifiedBlock.length > 0) {
-        userParts.push(verifiedBlock);
-    }
-    // Layer 2-A: enumerate the diff's path list in the user message
-    // so the model can verify any cited path by grep. We list the
-    // paths even on the strict-schema path (which already constrains
-    // `path` to a string type) because the model emits a literal
-    // string the post-filter then validates against this list.
-    userParts.push(buildFilesInDiffBlock(input.diffText));
-    userParts.push("Diff:", input.diffText);
-    return {
-        system: await pickSystemPrompt(input, defaultPaths),
-        user: userParts.join("\n\n"),
-    };
-}
-/**
- * Per-cwd memoized wrapper around `resolveDefaultPromptFiles`. The
- * chunked live path invokes `buildProviderPrompts` per chunk, so a
- * per-call resolve would multiply the fs.stat calls and (more
- * importantly) introduce an extra `await` boundary that breaks the
- * single-threaded event-loop assumption `setActiveSeveritySink`
- * relies on (see `src/provider/provider-parse.ts:86-88`).
- *
- * Implementation note: uses synchronous fs.stat to avoid any `await`
- * boundary in `buildProviderPrompts`. Each stat is sub-millisecond
- * and the result is cached per cwd, so the total cost is at most 5
- * sync stats on the FIRST `buildProviderPrompts` call per process.
- *
- * ## Cache lifetime contract
- *
- * The cache is **process-scoped and lives for the lifetime of the
- * Node process**. It is intentionally NOT invalidated by anything
- * other than `__resetDefaultPromptFilesCacheForTests` (which is a
- * test-only hook). This is acceptable for the action's documented
- * deployment model — each `umactually-pr-review` invocation
- * (GitHub Actions, Azure DevOps, CLI) runs as a FRESH Node
- * process, so the cache effectively lives for one review run.
- *
- * What this means for callers:
- *
- * - **Standard usage (one process per review run):** The cache is
- *   populated on the first `buildProviderPrompts` call (with up to
- *   five sync `fs.stat` calls for `DEFAULT_PROMPT_FILE_PATHS`); every
- *   subsequent call within the same run reuses the cached path list.
- *   Per-chunk reads re-stat the disk (cheap; cache is path-list, not
- *   file-content).
- *
- * - **Long-lived processes (rare):** If you reuse the bundled CLI
- *   inside a daemon or composite step that runs the action multiple
- *   times against the same cwd, the cache entry will persist across
- *   runs — a `CLAUDE.md` added AFTER the first run will not be
- *   auto-loaded by the second run. This is acceptable because the
- *   documented deployment model is one process per review; the
- *   alternative (cache-busting) would either add a new `await`
- *   boundary (race) or require a per-run `reset()` call that the
- *   caller is responsible for invoking. Documented here so the
- *   contract is explicit; if a long-lived-process use case emerges,
- *   revisit this design.
- *
- * - **Tests:** Use `__resetDefaultPromptFilesCacheForTests()` to
- *   clear the cache between scenarios that mutate the workspace.
- */
-const DEFAULT_PROMPT_FILES_CACHE = new Map();
-function resolveDefaultPromptFilesOnce(cwd) {
-    const cached = DEFAULT_PROMPT_FILES_CACHE.get(cwd);
-    if (cached !== undefined)
-        return cached;
-    const out = [];
-    for (const candidate of DEFAULT_PROMPT_FILE_PATHS) {
-        try {
-            const s = (0,external_node_fs_namespaceObject.statSync)(`${cwd.replace(/[\\/]+$/u, "")}/${candidate}`);
-            if (s.isFile())
-                out.push(candidate);
-        }
-        catch {
-            // ENOENT (or any other stat failure): silently skip.
-        }
-    }
-    const frozen = Object.freeze(out);
-    DEFAULT_PROMPT_FILES_CACHE.set(cwd, frozen);
-    return frozen;
-}
-/**
- * Test-only hook to clear the per-cwd default-prompt cache. Used by
- * tests that mutate the workspace mid-run and need the next
- * `buildProviderPrompts` call to re-stat the disk.
- *
- * Production callers should NOT need this — see the cache lifetime
- * contract on `DEFAULT_PROMPT_FILES_CACHE`.
- */
-function __resetDefaultPromptFilesCacheForTests() {
-    DEFAULT_PROMPT_FILES_CACHE.clear();
-}
-/**
- * Format the diff's file list as an explicit, copy-pastable block the
- * model can match against. Pinned by the citation-grounding plan
- * (Layer 2-A): the prompt now lists every path the model is
- * permitted to cite, which makes hallucinated paths obvious to
- * both the model and the post-filter.
- */
-function buildFilesInDiffBlock(diffText) {
-    const paths = listDiffPaths(diffText);
-    if (paths.length === 0) {
-        return "Files in diff: (none — empty diff)";
-    }
-    const lines = paths.map((p, i) => `  ${i + 1}. ${p}`);
-    return [
-        "Files in diff (the ONLY paths you may cite):",
-        ...lines,
-        "Do NOT cite any path that is not in this list. If a finding requires a file not in the diff, omit the finding entirely rather than fabricating a path.",
-    ].join("\n");
-}
-async function pickSystemPrompt(input, defaultPaths) {
-    const inline = input.parsed.prompt;
-    if (typeof inline === "string" && inline.length > 0) {
-        return inline;
-    }
-    // Precedence for system prompt file resolution:
-    //   1. `--prompt-files` (array) — when set, COMPLETELY OVERRIDES the
-    //      default-lookup list. The single-file `--prompt-file` is
-    //      ignored in this branch so the array semantics are honest.
-    //   2. `--prompt-file` (single, legacy) — used as-is.
-    //   3. Auto-discover from `DEFAULT_PROMPT_FILE_PATHS` (CLAUDE.md,
-    //      AGENTS.md, .github/copilot-instructions.md, .cursorrules,
-    //      GEMINI.md). Files that do not exist are skipped.
-    //   4. Built-in `buildDefaultSystemPrompt()`.
-    const promptFilesRaw = resolveField(input.parsed.promptFiles, input.env[ENV_KEYS.UMACTUALLY_PROMPT_FILES], "");
-    const promptFilesList = splitPromptFileList(promptFilesRaw);
-    if (promptFilesList.length > 0) {
-        return readPromptFiles(promptFilesList, DEFAULT_PROMPT_BYTE_CAP, { cwd: input.cwd });
-    }
-    const filePath = resolveField(input.parsed.promptFile, input.env[ENV_KEYS.UMACTUALLY_PROMPT_FILE], "");
-    if (filePath !== undefined && filePath.length > 0) {
-        return readPromptFiles([filePath], DEFAULT_PROMPT_BYTE_CAP, { cwd: input.cwd });
-    }
-    if (defaultPaths.length > 0) {
-        return readPromptFiles(defaultPaths, DEFAULT_PROMPT_BYTE_CAP, { cwd: input.cwd });
-    }
-    return buildDefaultSystemPrompt();
-}
-/**
- * The built-in default system prompt. Rewritten in PR #26 (the
- * "LLM citation grounding" fix) to:
- *
- * 1. Quote the source lines BEFORE emitting a finding (Anthropic
- *    pattern: "if it can't find a quote, state that no relevant
- *    quote was found"). This forces the model to anchor each
- *    finding to a real diff line and makes fabrication obvious.
- * 2. Foreground the diff path enum (the user message carries the
- *    same list — see `buildFilesInDiffBlock`) so the model knows
- *    the EXACT set of valid paths.
- * 3. Include the strict JSON schema so a free-form model that
- *    ignores the wire `response_format` still gets a clear
- *    shape guide. (Prose schema + wire schema is the standard
- *    pattern; see the Ellipsis "27 months of LLM agents" post.)
- * 4. Pre-empt the "DO NOT cite dist/" failure mode (PR #56) by
- *    telling the model that build artifacts are excluded upstream
- *    AND the post-filter will reject any off-path citation. The
- *    "Negative Constraints Backfire" finding from the
- *    hallucination-survey (Rana, 2026) shows that bare "DO NOT
- *    cite X" instructions can paradoxically prime X — so we
- *    include the prohibition paired with the positive constraint
- *    (cite only what's in the list) and the consequence (filtered
- *    out, surfaces in the warning artifact).
- */
-function buildDefaultSystemPrompt() {
-    return [
-        "You are UmActually, a precise pull request reviewer.",
-        "",
-        "Output contract:",
-        "- Your entire response is parsed as a single JSON object matching the schema below. No prose before or after the JSON. No markdown code fences around the JSON (the parser strips them, but emitting them wastes output tokens).",
-        "- If you would normally think before answering, the thinking must happen INSIDE the JSON (e.g. as a `reasoning` field) — not as separate prose. The parser discards any text before the first `{` and after the last `}`, so thinking prose only burns your output budget and the answer gets truncated.",
-        "- The JSON must contain every required field (`summary`, `verdict`, `comments`, `suppressed_comments`). Missing fields cause a parse failure and the operator sees a parse-fail card instead of your review.",
-        "",
-        "Workflow for every finding you emit:",
-        "1. Identify a real concern introduced by the diff.",
-        "2. Copy the EXACT diff lines that justify the concern (a verbatim quote, 1-3 lines).",
-        "3. Emit a JSON object whose `path` matches a file from the Files-in-diff list in the user message and whose `line` matches a line number that appears in the diff for that file.",
-        "If you cannot complete steps 2-3, OMIT the finding entirely. Do not invent a citation.",
-        "",
-        "Verified-facts grounding:",
-        "- When the user message includes a 'Verified facts' block, those facts are authoritative for this PR. They were reconstructed from the diff by a deterministic parser. Do NOT emit a finding whose `body` contradicts any fact in the block — omit the finding entirely or rephrase it without the contradiction.",
-        "- Common contradiction patterns to avoid: claiming X is missing from a whitelist/list when X is in the verified list, claiming Y was removed when Y is in the verified list, claiming an output/input was deleted when the verified facts show it still exists.",
-        "- If you would have made such a claim and the verified facts contradict it, the verified facts are correct; your reading of the diff was wrong. Omit the finding.",
-        "",
-        "False-positive prevention (Layer 5 — calibration):",
-        "- Do NOT emit generic best-practice advice without quoting the exact diff line that demonstrates the issue. Advice like 'you should use parameterized queries', 'consider adding an index', 'this could be vulnerable to X' is only a finding if the diff shows the absence AND you can quote the relevant code. The post-filter explicitly downgrades bodies that use these phrasings without a diff anchor.",
-        "- Do NOT emit findings whose severity is medium or higher if the body uses hedging language ('could', 'might', 'potentially', 'in some cases', 'in theory'). Reserve medium+ for confirmed violations. The post-filter calibrates hedged-at-high-severity findings down to info.",
-        "- Do NOT flag code as missing error handling, validation, sanitization, or authentication if the diff's context lines already show it present. Read the surrounding lines of the cited file before claiming absence — the construct may be in the unchanged context the diff preserves. The post-filter downgrades findings whose body names a construct that the hunk actually contains.",
-        "- Do NOT flag a code pattern as a bug if the diff includes an inline comment documenting it as intentional ('// intentional:', '// by design', '// note:', '// hack:', '// workaround', '// rationale:', '// see <link>'). The model often misses the documenting comment when the pattern LOOKS problematic in isolation. The post-filter downgrades these findings so the operator can see them with softer severity.",
-        "- When a finding would be speculative ('in some edge case', 'if X were to happen', 'could theoretically lead to'), drop the severity to 'info' or 'low' AT EMISSION TIME rather than emitting at medium/high and relying on the post-filter.",
-        "",
-        "Forbidden (a non-exhaustive list to make the boundary explicit; the positive constraint above takes precedence):",
-        "- Do NOT cite any path that is not in the Files-in-diff list. Build artifacts, generated files, and lockfiles are stripped from the diff upstream and are never reviewable here.",
-        "- Do NOT cite any line number that does not appear in the diff for the cited path. Off-by-one or hallucinated line numbers are rejected by the post-filter.",
-        "- Do NOT infer missing context. If the diff does not show a function call, do not claim a function call exists.",
-        "- Do NOT include secrets, tokens, or any literal that looks like a credential.",
-        "- Do NOT emit prose before or after the JSON. The parser will reject your response as a parse-fail.",
-        "- Do NOT emit reasoning that is longer than the answer itself. If you have analyzed for a while and the answer is still ahead, you are about to run out of output budget — emit the JSON now with whatever findings you have, even if you would have found more.",
-        "",
-        "Severity values: info, low, medium, high, critical, security, leak. Use 'security' for an active vulnerability, 'leak' for a confirmed secret, 'critical' for severe bugs. Style and hygiene issues go in 'low' or 'info'.",
-        "",
-        "Schema:",
-        JSON.stringify(REVIEW_PAYLOAD_JSON_SCHEMA, null, 2),
-        "",
-        "If the diff is empty or has no actionable findings, return verdict=COMMENT with an empty comments array. Do not invent findings to fill the response.",
-    ].join("\n");
-}
-async function readAdditionalPrompt(input, defaultPaths) {
-    const inline = input.parsed.additionalPrompt;
-    if (typeof inline === "string" && inline.length > 0) {
-        return inline;
-    }
-    // Precedence mirrors `pickSystemPrompt`: array overrides defaults,
-    // single-file is the legacy path, then default-lookup, then empty.
-    const filesRaw = resolveField(input.parsed.additionalPromptFiles, input.env[ENV_KEYS.UMACTUALLY_ADDITIONAL_PROMPT_FILES], "");
-    const filesList = splitPromptFileList(filesRaw);
-    if (filesList.length > 0) {
-        return readPromptFiles(filesList, DEFAULT_PROMPT_BYTE_CAP, { cwd: input.cwd });
-    }
-    const filePath = resolveField(input.parsed.additionalPromptFile, input.env[ENV_KEYS.UMACTUALLY_ADDITIONAL_PROMPT_FILE], "");
-    if (filePath !== undefined && filePath.length > 0) {
-        return readPromptFiles([filePath], DEFAULT_PROMPT_BYTE_CAP, { cwd: input.cwd });
-    }
-    if (defaultPaths.length === 0)
-        return "";
-    return readPromptFiles(defaultPaths, DEFAULT_PROMPT_BYTE_CAP, { cwd: input.cwd });
-}
-
 ;// CONCATENATED MODULE: ./src/cli/verify-findings.ts
 /**
  * Layer 4: two-pass verification (opt-in via `--verify-findings`).
@@ -14273,6 +14342,7 @@ function sanitizeComments(comments, secrets) {
 
 
 
+
 /**
  * Number of chunks to process concurrently when the chunked path is
  * active. 4 is a safe default that respects provider rate-limit headers
@@ -14381,6 +14451,13 @@ function failedResult(message) {
     return { exitCode: 1, posted: false, reviewId: undefined, message };
 }
 async function runLive(input) {
+    // Reset the default-prompt-file cache on each entry point so a
+    // long-lived process that calls runLive more than once against the
+    // same cwd always re-stats the disk. See
+    // src/cli/provider-prompts.ts:resetDefaultPromptFilesCache for the
+    // rationale. This is effectively a no-op under the documented
+    // deployment model (one process per review run).
+    resetDefaultPromptFilesCache();
     const env = input.env ?? process.env;
     const fetchImpl = input.fetchImpl ?? globalThis.fetch.bind(globalThis);
     const platform = detectLivePlatform(env);
@@ -14650,6 +14727,7 @@ function orchestrator_assertNever(value) {
 
 
 
+
 const DEFAULT_AZURE_ARTIFACT = "artifacts/manual/s4-azure-mocked-run.json";
 const DEFAULT_REDACTION_REPORT = "artifacts/manual/s5-redaction-report.json";
 const DEFAULT_SONAR_REPORT = "artifacts/manual/s6-sonar-mocked-run.json";
@@ -14659,6 +14737,11 @@ const SONAR_FIXTURE_QUALITY_GATE = JSON.stringify({
     sequence: [{ projectStatus: { status: "OK" } }],
 });
 async function runDryRun(parsed, cwd, platform) {
+    // Mirror runLive's reset hook so a long-lived process that invokes
+    // runDryRun repeatedly (e.g. a test runner) doesn't see stale
+    // default-lookup decisions. See
+    // src/cli/provider-prompts.ts:resetDefaultPromptFilesCache.
+    resetDefaultPromptFilesCache();
     const artifactPath = resolveArtifactPath(parsed.outputArtifact, platform, cwd);
     const envSources = readEnvSources(process.env);
     const artifactBody = await buildDryRunArtifact(parsed, platform, cwd);

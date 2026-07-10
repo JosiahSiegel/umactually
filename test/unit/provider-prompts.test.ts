@@ -9,6 +9,7 @@ import {
   buildProviderPrompts,
   DEFAULT_PROMPT_FILE_PATHS,
   resolveDefaultPromptFiles,
+  resetDefaultPromptFilesCache,
   REVIEW_PAYLOAD_JSON_SCHEMA,
   splitPromptFileList,
 } from "../../src/cli/provider-prompts.js";
@@ -422,6 +423,30 @@ describe("resolveDefaultPromptFiles", () => {
     };
     const result = await resolveDefaultPromptFiles(cwd, fs);
     expect(result).toEqual([]);
+  });
+
+  it("composes paths via path.join (no raw `/` concat with trailing slash on cwd)", async () => {
+    // Regression: the previous implementation did
+    // `${cwd.replace(/[\\/]+$/u, "")}/${candidate}` which works on
+    // POSIX but produces `C:\repo/CLAUDE.md` on Windows. Verify
+    // the resolver uses path.join semantics — the fake fs receives a
+    // path with proper separators for the platform.
+    const probed: string[] = [];
+    const cwd = "/tmp/with-trailing/";
+    const fs = {
+      stat: async (p: string): Promise<{ isFile: boolean; size: number }> => {
+        probed.push(p);
+        if (p.endsWith("CLAUDE.md")) return { isFile: true, size: 100 };
+        throw Object.assign(new Error("ENOENT"), { code: "ENOENT" });
+      },
+    };
+    await resolveDefaultPromptFiles(cwd, fs);
+    // Then: the stat call received a properly-joined path (NOT
+    // `/tmp/with-trailing//CLAUDE.md` — no double slash).
+    const claudeCall = probed.find((p) => p.endsWith("CLAUDE.md"));
+    expect(claudeCall).toBeDefined();
+    expect(claudeCall).not.toContain("//");
+    expect(claudeCall).not.toMatch(/\/$/u);
   });
 });
 
@@ -1028,6 +1053,58 @@ describe("buildProviderPrompts: resolveDefaultPromptFilesOnce cache", () => {
     // reset (e.g. an env var that invalidates it). The function name
     // contains "ForTests" — that's the documented contract.
     expect(__resetDefaultPromptFilesCacheForTests.name).toBe("__resetDefaultPromptFilesCacheForTests");
+  });
+
+  it("resetDefaultPromptFilesCache is the entry-point reset hook (no 'ForTests' suffix, callable from production)", () => {
+    // The bundle's CLI entry points (`runLive`, `runDryRun`) call
+    // `resetDefaultPromptFilesCache` at the start of every
+    // invocation to ensure a long-lived process sees fresh
+    // default-lookup decisions on each review. This is the
+    // counterpart to the test-only `__resetDefaultPromptFilesCacheForTests`.
+    expect(typeof resetDefaultPromptFilesCache).toBe("function");
+    expect(resetDefaultPromptFilesCache.name).toBe("resetDefaultPromptFilesCache");
+    expect(resetDefaultPromptFilesCache.name).not.toContain("ForTests");
+    // And: calling it is safe (idempotent).
+    resetDefaultPromptFilesCache();
+    resetDefaultPromptFilesCache();
+  });
+
+  it("resetDefaultPromptFilesCache forces the next buildProviderPrompts call to re-stat the disk", async () => {
+    // Mirror of the test-only hook test, but using the
+    // production-callable hook. This pins the runtime contract: a
+    // long-lived process can call resetDefaultPromptFilesCache at the
+    // start of each review and get fresh default-lookup decisions.
+    __resetDefaultPromptFilesCacheForTests();
+    // Given: CLAUDE.md present on the first call.
+    const cwd1 = await mkdtemp(join(tmpdir(), "uma-reset-hook-"));
+    try {
+      await writeFile(join(cwd1, "CLAUDE.md"), "BEFORE-RESET", "utf8");
+      const first = await buildProviderPrompts({
+        parsed: parsedArgsForTest(),
+        cwd: cwd1,
+        env: {},
+        platform: "github",
+        diffText: SOURCE_DIFF,
+      });
+      expect(first.system).toContain("BEFORE-RESET");
+      // Mutate the file's content.
+      await writeFile(join(cwd1, "CLAUDE.md"), "AFTER-RESET-CALL", "utf8");
+      // Reset the cache using the production hook.
+      resetDefaultPromptFilesCache();
+      // Then: the next call must re-stat and see the new content.
+      const second = await buildProviderPrompts({
+        parsed: parsedArgsForTest(),
+        cwd: cwd1,
+        env: {},
+        platform: "github",
+        diffText: SOURCE_DIFF,
+      });
+      expect(second.system).toContain("AFTER-RESET-CALL");
+      expect(second.system).not.toContain("BEFORE-RESET");
+    } finally {
+      await rm(cwd1, { recursive: true, force: true });
+      __resetDefaultPromptFilesCacheForTests();
+    }
   });
 });
 
