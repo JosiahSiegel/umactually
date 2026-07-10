@@ -155,8 +155,21 @@ export type LiveProviderOutcome = {
    * visibility but the platform-posting path sees the softer
    * severity. Disjoint from `review.comments` and from
    * `verifiedFactsFilter.downgraded`.
+   *
+   * Optional: legacy / synthesize-from-fixture outcomes that did
+   * not run the confidence filter (e.g. `applySimulateFindings`,
+   * older outcomes from before the filter was wired) MUST omit
+   * this field so the legacy-compat branch in
+   * `aggregateConfidenceFilter` (which keys on
+   * `o.confidenceFilter === undefined`) takes over and surfaces
+   * `o.review.comments` as confidence-kept. Setting an empty
+   * `confidenceFilter: { kept: [], downgraded: [], reasons: [] }`
+   * would short-circuit the legacy branch and silently drop the
+   * synthesized comments during merge. Pinned by
+   * `test/unit/live-merge.test.ts` MERGE-CONFIDENCE legacy
+   * compat case.
    */
-  readonly confidenceFilter: import("../review/filter-confidence.js").ConfidenceFilterResult;
+  readonly confidenceFilter?: import("../review/filter-confidence.js").ConfidenceFilterResult;
 };
 
 /**
