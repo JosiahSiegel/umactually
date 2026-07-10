@@ -14,8 +14,11 @@ on:
 # Cancel in-progress self-review runs on the same PR so rapid pushes do not
 # spawn concurrent review runs that compete for the same PR comments slot
 # (and waste API quota on the provider side).
+# The expression falls back to github.ref when github.event.pull_request.number
+# is undefined (e.g. on workflow_dispatch runs), so manual runs do not all
+# collapse into a single global cancellation group.
 concurrency:
-  group: self-review-${{ github.workflow }}-${{ github.event.pull_request.number }}
+  group: self-review-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: true
 
 permissions:

@@ -50,9 +50,9 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   regardless of `--provider`, with a `::notice::` annotation for
   operator audit. Conservative by design — false negatives still fall
   through to cross-protocol fallback; false positives are bounded to
-exact-segment matches so `anthropic-v2` and `my-anthropic` do NOT
-    trigger. See
-    [`docs/providers.md`](docs/providers.md#path-prefix-heuristic-the-anthropic-url-commits-to-the-anthropic-protocol).
+  exact-segment matches so `anthropic-v2` and `my-anthropic` do NOT
+  trigger. See
+  [`docs/providers.md`](docs/providers.md#path-prefix-heuristic-the-anthropic-url-commits-to-the-anthropic-protocol).
 - **New `docs/providers.md`**: canonical end-to-end reference for the
   provider layer — per-family URL resolution rules, the
   Anthropic-protocol path-prefix preservation contract (with the

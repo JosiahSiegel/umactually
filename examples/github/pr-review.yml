@@ -24,8 +24,11 @@ on:
 
 # Cancel in-progress runs when a new commit lands on the same PR — prevents
 # wasted API quota on rapid pushes.
+# The expression falls back to github.ref when github.event.pull_request.number
+# is undefined (e.g. on workflow_dispatch runs), so manual runs do not all
+# collapse into a single global cancellation group.
 concurrency:
-  group: umactually-pr-review-${{ github.workflow }}-${{ github.event.pull_request.number }}
+  group: umactually-pr-review-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: true
 
 permissions:

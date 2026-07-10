@@ -79,9 +79,15 @@ steps:
   # at the URL regardless of which provider is named here — see
   # docs/providers.md#cross-protocol-auto-discovery-the-dispatcher. Switch to
   # --provider anthropic for vanilla Anthropic API or a /anthropic path-prefix
-  # gateway. --no-detect-leaks keeps the live Azure path consistent with the
-  # root azure-pipelines.yml (the leak-gate is enforced via the redaction layer
-  # inside the provider clients regardless).
+  # gateway.
+  #
+  # --no-detect-leaks: the diff-redaction layer (always on, scrubs secrets before
+  # provider submission) is independent of the leak-detector (which tags
+  # findings with severity='leak' for PR-thread display). The live Azure path
+  # uses --no-detect-leaks so PR threads focus on review-style findings; the
+  # redaction report (artifacts/manual/s5-redaction-report.json, written when
+  # leak detection IS enabled) is the canonical surface for credential-leak
+  # auditing. Matches the root azure-pipelines.yml.
   - script: |
       set -euo pipefail
       : "${UMACTUALLY_PR_NUMBER:?UMACTUALLY_PR_NUMBER must be set by the prepare step.}"
