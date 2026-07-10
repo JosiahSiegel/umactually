@@ -18,6 +18,10 @@
 #   `--provider` flag becomes advisory — the dispatcher tries the OTHER
 #   protocol at the same URL when the named one 404s. See
 #   docs/providers.md#cross-protocol-auto-discovery-the-dispatcher.
+#
+# Required pipeline variables (set these in the pipeline UI or a variable group):
+#   UMACTUALLY_API_URL   — provider base URL
+#   UMACTUALLY_API_KEY   — provider API key (mark secret)
 trigger: none
 
 pr:
@@ -69,6 +73,21 @@ steps:
     # example pipeline shares one implementation with the root pipeline.
     env:
       SYSTEM_ACCESSTOKEN: $(System.AccessToken)
+  # Live review step. Default --provider is openai-compatible; on dual-protocol
+  # gateways (MiniMax serves Anthropic-protocol at /anthropic and OpenAI-protocol
+  # at /v1 under the same hostname), the dispatcher auto-discovers the protocol
+  # at the URL regardless of which provider is named here — see
+  # docs/providers.md#cross-protocol-auto-discovery-the-dispatcher. Switch to
+  # --provider anthropic for vanilla Anthropic API or a /anthropic path-prefix
+  # gateway.
+  #
+  # --no-detect-leaks: the diff-redaction layer (always on, scrubs secrets before
+  # provider submission) is independent of the leak-detector (which tags
+  # findings with severity='leak' for PR-thread display). The live Azure path
+  # uses --no-detect-leaks so PR threads focus on review-style findings; the
+  # redaction report (artifacts/manual/s5-redaction-report.json, written when
+  # leak detection IS enabled) is the canonical surface for credential-leak
+  # auditing. Matches the root azure-pipelines.yml.
   - script: |
       set -euo pipefail
       : "${UMACTUALLY_PR_NUMBER:?UMACTUALLY_PR_NUMBER must be set by the prepare step.}"
@@ -84,12 +103,6 @@ steps:
         --repo "$UMACTUALLY_REPO" \
         --api-url "${UMACTUALLY_API_URL}" \
         --api-key "${UMACTUALLY_API_KEY}" \
-        # Default provider is openai-compatible. On dual-protocol gateways
-        # (MiniMax) the dispatcher auto-discovers the protocol at the URL
-        # regardless of which provider is named here — see
-        # docs/providers.md#cross-protocol-auto-discovery-the-dispatcher.
-        # Switch to --provider anthropic for vanilla Anthropic API or
-        # MiniMax's /anthropic path-prefix.
         --no-detect-leaks \
         --no-dry-run
     displayName: Run UmActually Azure live review

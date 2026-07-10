@@ -130,7 +130,7 @@ Manual branch runs do not populate `SYSTEM_PULLREQUEST_PULLREQUESTID`. The synth
 
 ## Provider families
 
-The action supports three provider families. For the canonical end-to-end reference (URL resolution rules, cross-prot protocol dispatch, the MiniMax dual-protocol matrix, model auto-resolution per provider) see [`docs/providers.md`](providers.md). This page documents the CLI surface and runtime defaults only.
+The action supports three provider families. For the canonical end-to-end reference (URL resolution rules, cross-protocol dispatch, the MiniMax dual-protocol matrix, model auto-resolution per provider) see [`docs/providers.md`](providers.md). This page documents the CLI surface and runtime defaults only.
 
 - **`openai-compatible`** (default): posts to any OpenAI-compatible `/responses` or `/chat/completions` endpoint. The `UMACTUALLY_API_URL` must be the base URL (e.g. `https://api.openai.com/v1`). Set `UMACTUALLY_API_KEY` to the provider key. Forwards `max_output_tokens` and `reasoning.effort` when supported by the endpoint.
 
@@ -175,7 +175,7 @@ To prevent this, the dispatcher runs `looksLikeAnthropicEndpoint(baseUrl)` (`src
 ::notice::umactually-pr-review: Operator URL contains an /anthropic path segment; using the Anthropic Messages API client (not the default openai-compatible).
 ```
 
-The heuristic is conservative by design. False negatives still fall through to the cross-protocol fallback chain above. False positives are bounded to byte-for-byte segment matches so a path like `https://attacker.example.com/anthropic-related` does NOT trigger the heuristic. See [`docs/providers.md#path-prefix-heuristic`](providers.md#path-prefix-heuristic-the-anthropic-url--anthropic-protocol-commit) for the full contract and the boundary test matrix (`test/unit/looks-like-anthropic-endpoint.test.ts`).
+The heuristic is conservative by design. False negatives still fall through to the cross-protocol fallback chain above. False positives are bounded to byte-for-byte segment matches so a path like `https://attacker.example.com/anthropic-related` does NOT trigger the heuristic. See [`docs/providers.md#path-prefix-heuristic`](providers.md#path-prefix-heuristic-the-anthropic-url-commits-to-the-anthropic-protocol) for the full contract and the boundary test matrix (`test/unit/looks-like-anthropic-endpoint.test.ts`).
 
 The provider family is selected via `--provider` (CLI), `provider` (action input), or `UMACTUALLY_PROVIDER` env var. Default `openai-compatible`. For GitHub Enterprise Server data residency, set `UMACTUALLY_GITHUB_API_BASE=https://<tenant>.ghe.com` so the token exchange targets the tenant's API.
 

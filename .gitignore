@@ -9,3 +9,36 @@ artifacts/manual/
 *.tsbuildinfo
 build/
 *.png
+
+# ncc bundle staging directory — created by `npm run bundle` before
+# `scripts/post-bundle.mjs` renames the cli bundle and rmSync's the tmp dir.
+# If a build aborts before post-bundle runs, this leaks untracked content.
+dist-tmp/
+
+# OS / editor scratch (Windows, macOS, vim/emacs leaks).
+.DS_Store
+Thumbs.db
+*.swp
+*.swo
+*~
+
+# Tooling-generated logs that should never be committed.
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# Coverage output from vitest --coverage (not currently enabled, but
+# safe to declare so the first person who turns it on doesn't accidentally
+# commit coverage/).
+coverage/
+.vitest-cache/
+
+# Personal env / version files that some contributors drop at repo root.
+# (.env is already ignored; these are sibling files for direnv/asdf/pyenv.)
+.envrc
+.env.*
+!.env.example
+.tool-versions
+.python-version

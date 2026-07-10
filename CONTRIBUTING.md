@@ -82,7 +82,7 @@ gh pr create --base main --head <branch>                         # opens PR
 
 ## ADO ↔ GitHub sync workflow
 
-The operator's setup has GitHub as the canonical review pipeline (the action's home repo) and an Azure DevOps fork (`josiah-siegel/DemoProject/_git/umactually`) for ADO-side validation work. When the canonical GitHub main advances, ADO main needs to catch up via a sync PR.
+If you maintain a fork of this action in Azure DevOps for ADO-side validation work and need to keep its `main` in lock-step with the canonical GitHub `main`, ADO main needs to catch up via a sync PR.
 
 The end-to-end workflow is documented in [`docs/azure-devops.md`](docs/azure-devops.md#syncing-merged-github-prs-to-ado-main). The summary:
 

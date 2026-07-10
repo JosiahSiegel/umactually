@@ -166,3 +166,66 @@ function parsedArgsForTest(overrides: {
     verifyFindings: true,
   };
 }
+describe("buildProviderPrompts verified-facts block", () => {
+  const PR_41_DIFF = [
+    "diff --git a/package.json b/package.json",
+    "--- a/package.json",
+    "+++ b/package.json",
+    "@@ -10,8 +35,14 @@",
+    '   "bin": {',
+    '     "umactually-pr-review": "bin/umactually-pr-review.mjs"',
+    "   },",
+    '   "files": [',
+    '     "dist",',
+    '     "bin",',
+    '     "action.yml",',
+    '     "README.md",',
+    '-    "LICENSE"',
+    '+    "LICENSE",',
+    '+    "docs",',
+    '+    "examples",',
+    '+    "scripts"',
+    "   ],",
+  ].join("\n");
+
+  it("embeds the verified-facts block before the diff when package.json is changed", async () => {
+    const prompts = await buildProviderPrompts({
+      parsed: parsedArgsForTest(),
+      cwd: process.cwd(),
+      env: {},
+      platform: "github",
+      diffText: PR_41_DIFF,
+    });
+    // The block must contain dist/ so the model sees the authoritative
+    // list BEFORE the diff and cannot plausibly claim dist/ is missing.
+    expect(prompts.user).toContain("Verified facts");
+    expect(prompts.user).toContain("package.json#files");
+    expect(prompts.user).toContain("dist");
+    expect(prompts.user).toContain("do NOT contradict these");
+  });
+
+  it("does not include the verified-facts block when neither package.json nor action.yml is in the diff", async () => {
+    const prompts = await buildProviderPrompts({
+      parsed: parsedArgsForTest(),
+      cwd: process.cwd(),
+      env: {},
+      platform: "github",
+      diffText: SOURCE_DIFF,
+    });
+    // SOURCE_DIFF only touches src/cli/help.ts, so no verified facts
+    // can be extracted and the block should be omitted.
+    expect(prompts.user).not.toContain("Verified facts");
+  });
+
+  it("system prompt includes verified-facts grounding instructions", async () => {
+    const prompts = await buildProviderPrompts({
+      parsed: parsedArgsForTest(),
+      cwd: process.cwd(),
+      env: {},
+      platform: "github",
+      diffText: PR_41_DIFF,
+    });
+    expect(prompts.system).toContain("Verified-facts grounding");
+    expect(prompts.system).toContain("authoritative for this PR");
+  });
+});

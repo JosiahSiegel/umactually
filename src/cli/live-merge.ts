@@ -53,6 +53,38 @@ export type MergeOptions = {
  * no summary so the post path can still complete (e.g. when every
  * chunk returned a parse-fail fallback).
  */
+/**
+ * Aggregate the per-chunk verified-facts filter results into a single
+ * result for the merged outcome. Concatenates kept/downgraded lists
+ * across chunks and emits global indices so the downgrade reasons
+ * reference the final merged comment positions.
+ */
+function aggregateVerifiedFactsFilter(
+  outcomes: readonly LiveProviderOutcome[],
+): import("./verify-findings.js").VerifiedFactsFilterResult {
+  const kept: LiveReviewComment[] = [];
+  const downgraded: LiveReviewComment[] = [];
+  const downgradeReasons: { index: number; reason: string }[] = [];
+  let globalIndex = 0;
+  for (const o of outcomes) {
+    for (const c of o.verifiedFactsFilter.kept) {
+      kept.push(c);
+      globalIndex += 1;
+    }
+    for (let i = 0; i < o.verifiedFactsFilter.downgraded.length; i += 1) {
+      const c = o.verifiedFactsFilter.downgraded[i];
+      const reason = o.verifiedFactsFilter.downgradeReasons[i]?.reason ?? "";
+      if (c === undefined) {
+        continue;
+      }
+      downgraded.push(c);
+      downgradeReasons.push({ index: globalIndex, reason });
+      globalIndex += 1;
+    }
+  }
+  return { kept, downgraded, downgradeReasons };
+}
+
 export function mergeReviewResults(
   outcomes: readonly LiveProviderOutcome[],
   options?: MergeOptions,
@@ -68,6 +100,7 @@ export function mergeReviewResults(
       // No inputs → no warnings to surface.
       severityWarnings: [],
       parseWarnings: [],
+      verifiedFactsFilter: { kept: [], downgraded: [], downgradeReasons: [] },
     };
   }
 
@@ -199,5 +232,10 @@ export function mergeReviewResults(
     // review emits its own set, and the merged outcome surfaces all of
     // them so the parse-warnings.json artifact reflects the full run.
     parseWarnings: outcomes.flatMap((o) => o.parseWarnings),
+    // Aggregate verified-facts downgrades across all chunks. Each chunk's
+    // filter ran independently against the same diff so we dedup by
+    // (index, reason) so a finding flagged in two chunks doesn't double-
+    // count in the summary.
+    verifiedFactsFilter: aggregateVerifiedFactsFilter(outcomes),
   };
 }

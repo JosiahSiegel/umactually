@@ -32,6 +32,11 @@ function outcome(overrides: Partial<LiveProviderOutcome>): LiveProviderOutcome {
     modelId: overrides.modelId ?? "auto",
     severityWarnings: overrides.severityWarnings ?? [],
     parseWarnings: overrides.parseWarnings ?? [],
+    verifiedFactsFilter: overrides.verifiedFactsFilter ?? {
+      kept: [],
+      downgraded: [],
+      downgradeReasons: [],
+    },
   };
 }
 

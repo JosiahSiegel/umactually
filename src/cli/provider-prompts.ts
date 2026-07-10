@@ -3,6 +3,10 @@ import { resolveField } from "../config/field-resolution.js";
 import { readPromptFiles } from "../config/prompt-files.js";
 import { listDiffPaths } from "../diff/filter-build-artifacts.js";
 import { ENV_KEYS } from "../util/env-keys.js";
+import {
+  collectVerifiedFacts,
+  renderVerifiedFactsBlock,
+} from "../review/verified-facts.js";
 import type { LivePlatform } from "./live-shared.js";
 import type { ParsedCliArgs } from "./parse-args.js";
 
@@ -100,6 +104,16 @@ export async function buildProviderPrompts(input: ProviderPromptsInput): Promise
   if (input.sonarContext !== undefined && input.sonarContext.length > 0) {
     userParts.push(input.sonarContext);
   }
+  // Verified facts layer — pre-computed, authoritative repo state the
+  // model sees BEFORE the diff. Without this layer the model can
+  // hallucinate verifiable repo facts (e.g. claim dist/ is missing
+  // from package.json#files when it is present in the diff). With
+  // it, the model has an explicit contradiction anchor.
+  const verifiedFacts = collectVerifiedFacts(input.diffText);
+  const verifiedBlock = renderVerifiedFactsBlock(verifiedFacts);
+  if (verifiedBlock.length > 0) {
+    userParts.push(verifiedBlock);
+  }
   // Layer 2-A: enumerate the diff's path list in the user message
   // so the model can verify any cited path by grep. We list the
   // paths even on the strict-schema path (which already constrains
@@ -188,6 +202,11 @@ function buildDefaultSystemPrompt(): string {
     "2. Copy the EXACT diff lines that justify the concern (a verbatim quote, 1-3 lines).",
     "3. Emit a JSON object whose `path` matches a file from the Files-in-diff list in the user message and whose `line` matches a line number that appears in the diff for that file.",
     "If you cannot complete steps 2-3, OMIT the finding entirely. Do not invent a citation.",
+    "",
+    "Verified-facts grounding:",
+    "- When the user message includes a 'Verified facts' block, those facts are authoritative for this PR. They were reconstructed from the diff by a deterministic parser. Do NOT emit a finding whose `body` contradicts any fact in the block — omit the finding entirely or rephrase it without the contradiction.",
+    "- Common contradiction patterns to avoid: claiming X is missing from a whitelist/list when X is in the verified list, claiming Y was removed when Y is in the verified list, claiming an output/input was deleted when the verified facts show it still exists.",
+    "- If you would have made such a claim and the verified facts contradict it, the verified facts are correct; your reading of the diff was wrong. Omit the finding.",
     "",
     "Forbidden (a non-exhaustive list to make the boundary explicit; the positive constraint above takes precedence):",
     "- Do NOT cite any path that is not in the Files-in-diff list. Build artifacts, generated files, and lockfiles are stripped from the diff upstream and are never reviewable here.",

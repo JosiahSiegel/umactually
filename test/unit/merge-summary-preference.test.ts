@@ -39,6 +39,7 @@ function successOutcome(summary: string, commentCount: number): LiveProviderOutc
     modelId: "auto",
     severityWarnings: [],
     parseWarnings: [],
+    verifiedFactsFilter: { kept: [], downgraded: [], downgradeReasons: [] },
   };
 }
 
@@ -64,6 +65,7 @@ function parseFailOutcome(): LiveProviderOutcome {
     modelId: "auto",
     severityWarnings: [],
     parseWarnings: [],
+    verifiedFactsFilter: { kept: [], downgraded: [], downgradeReasons: [] },
   };
 }
 
