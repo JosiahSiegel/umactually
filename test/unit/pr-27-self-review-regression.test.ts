@@ -10,8 +10,7 @@
 // test on the detectProviderError helper) and
 // test/unit/parse-fail-exit-code.test.ts (exit-code contract).
 //
-// NOTE: The github-actions Bot comment in PR #27's CI log
-// (https://github.com/JosiahSiegel/umactually/pull/27) is the exact
+// NOTE: The github-actions Bot comment in PR #27's CI log is the exact
 // regression surface — the post-hoc guard correctly caught the
 // parseFailed=true sentinel and exit-coded 2, which is why no review
 // was posted. This test file documents the catch and ensures the
