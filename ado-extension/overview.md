@@ -143,7 +143,7 @@ for the full list. The most-frequently-tuned inputs:
 - `model` — defaults to `auto` (resolves per-provider + per-URL)
 - `effort` — `low` | `medium` (default) | `high`
 - `minimumSeverity` — `info` | `low` | `medium` (default) | `high` | `critical`. **`security` and `leak` findings always bypass the threshold.**
-- `noDryRun` — `true` (default, posts threads) | `false` (logs only)
+- `noDryRun` — `true` (default, posts threads) | `false` (dry-run, logs only). The Quickstart below **overrides this default to `false`** for the first 3-5 PRs; see the comment in the YAML block.
 - `detectLeaks` — `true` (default) | `false`
 - `includeSonarqube` — `true` | `false` (default)
 - `reviewFileLimit` — cap on changed files reviewed (default 200, set to 0 to disable)

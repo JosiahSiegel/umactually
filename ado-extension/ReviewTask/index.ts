@@ -399,7 +399,13 @@ function parseSeverityCount(stdout: string, tier: string): number {
 
 async function run(): Promise<void> {
   try {
-    tl.setVariable("UMACTUALLY_REVIEWED", "false", false);
+    // isOutput: true exposes the variable to downstream *jobs* in the
+    // same pipeline, not just downstream *steps* in the same job.
+    // This is what enables a branch policy that gates a subsequent
+    // stage on the review result (e.g. a "deploy only if review
+    // passed" gate). The `false` second-to-last argument is `secret:
+    // false` (these are not credentials).
+    tl.setVariable("UMACTUALLY_REVIEWED", "false", false, true);
     const inputs = readInputs();
     const ctx = readAzureContext();
 
@@ -415,9 +421,13 @@ async function run(): Promise<void> {
     const result = await runCli(invocation, timeoutMs);
 
     // Set output variables for downstream steps / pipeline dashboard.
-    tl.setVariable("UMACTUALLY_REVIEWED", result.exitCode === 0 ? "true" : "false", false);
-    tl.setVariable("UMACTUALLY_FINDING_COUNT", String(result.findingCount), false);
-    tl.setVariable("UMACTUALLY_SEVERITY_HIGH_COUNT", String(result.severityHighCount), false);
+    // isOutput: true exposes the variable to downstream *jobs* in the
+    // same pipeline (so a subsequent stage can branch on the result).
+    // These three variables form the canonical dashboard surface for
+    // branch policies that gate on review results.
+    tl.setVariable("UMACTUALLY_REVIEWED", result.exitCode === 0 ? "true" : "false", false, true);
+    tl.setVariable("UMACTUALLY_FINDING_COUNT", String(result.findingCount), false, true);
+    tl.setVariable("UMACTUALLY_SEVERITY_HIGH_COUNT", String(result.severityHighCount), false, true);
 
     // Always upload the output artifact (regardless of pass/fail) so the
     // operator can inspect what the review found.

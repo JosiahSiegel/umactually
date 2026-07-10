@@ -42,9 +42,11 @@ The build is performed by `scripts/package-extension.sh`. It:
 
 ## Inputs
 
-See the `inputs` array in `task.json` for the full list. The 16
-inputs cover the most important CLI flags plus a few that have
-no CLI equivalent (e.g. `outputArtifact` for the pipeline attachment).
+See the `inputs` array in this directory's `task.json` for the full
+list. The 16 inputs cover the most important CLI flags plus a few
+that have no CLI equivalent (e.g. `outputArtifact` for the pipeline
+attachment). Note: `task.json` ships in this directory alongside
+the README, not in a separate PR.
 
 ## Output variables
 

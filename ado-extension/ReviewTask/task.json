@@ -27,11 +27,11 @@
     },
     {
       "name": "apiKey",
-      "type": "string",
+      "type": "secureString",
       "label": "Provider API key",
       "defaultValue": "",
       "required": false,
-      "helpMarkDown": "API key for the review provider. **Prefer setting `UMACTUALLY_API_KEY` as a secret pipeline variable.** If you must paste it here, mark this input as a secret in the YAML (`secureEnv: UMACTUALLY_API_KEY`). Never hard-code in a committed pipeline definition."
+      "helpMarkDown": "API key for the review provider. **Prefer setting `UMACTUALLY_API_KEY` as a secret pipeline variable.** This input is a `secureString` (rendered as a password field in the ADO UI; automatically masked in build logs). Never hard-code in a committed pipeline definition."
     },
     {
       "name": "model",
@@ -126,12 +126,12 @@
     },
     {
       "name": "sonarToken",
-      "type": "string",
+      "type": "secureString",
       "label": "SonarQube token",
       "defaultValue": "",
       "required": false,
       "visibleRule": "includeSonarqube = true",
-      "helpMarkDown": "SonarQube auth token. **Prefer a secret pipeline variable `UMACTUALLY_SONAR_TOKEN`.** If pasted here, mark as secret."
+      "helpMarkDown": "SonarQube auth token. **Prefer a secret pipeline variable `UMACTUALLY_SONAR_TOKEN`.** This input is a `secureString` (rendered as a password field; masked in build logs)."
     },
     {
       "name": "sonarProjectKey",

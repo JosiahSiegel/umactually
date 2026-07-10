@@ -182,6 +182,29 @@ test("ReviewTask/task.json noDryRun input is well-formed", () => {
   assert.equal(typeof noDryRun.defaultValue, "boolean", "noDryRun.defaultValue must be a boolean");
 });
 
+test("ReviewTask/task.json secret-bearing inputs are type: secureString", () => {
+  // Self-review finding #2326/#2327 caught that apiKey and
+  // sonarToken were type: string, which renders as plain text in
+  // the ADO UI and is NOT auto-masked in build logs. Both are now
+  // secureString so they render as password fields and are
+  // automatically masked. The non-secret inputs (apiUrl, model,
+  // etc.) stay type: string.
+  const taskJson = JSON.parse(fs.readFileSync(path.join(TASK_DIR, "task.json"), "utf8"));
+  const SECRET_INPUTS = ["apiKey", "sonarToken"];
+  for (const name of SECRET_INPUTS) {
+    const input = taskJson.inputs.find((i) => i.name === name);
+    assert.ok(input, `task.json must define a ${name} input`);
+    assert.equal(
+      input.type,
+      "secureString",
+      `${name} must be type: secureString (renders as password, auto-masked in logs). Got: ${input.type}`,
+    );
+  }
+  // Sanity: non-secret inputs are still type: string.
+  const apiUrl = taskJson.inputs.find((i) => i.name === "apiUrl");
+  assert.equal(apiUrl.type, "string", "apiUrl is a public URL, type: string is correct");
+});
+
 test("scripts/package-extension.sh exists with shebang", () => {
   const scriptPath = path.join(TASK_DIR, "..", "scripts", "package-extension.sh");
   const stat = fs.statSync(scriptPath);

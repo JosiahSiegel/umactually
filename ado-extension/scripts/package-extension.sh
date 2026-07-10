@@ -85,15 +85,39 @@ fi
 echo "==> Building ReviewTask/index.ts -> ReviewTask/index.js"
 cd "${EXT_DIR}/ReviewTask"
 
+# Clean stale build artifacts BEFORE tsc runs. Without this, a
+# failed build can leave a stale index.js that passes the
+# `[[ -f index.js ]]` check below but contains code from a prior
+# run, and the VSIX_PATH `ls -1t | head -1` could pick up a stale
+# .vsix from a previous run and skip the current build.
+echo "    Cleaning stale build artifacts..."
+rm -f index.js redact-secrets.js
+rm -f "${EXT_DIR}/dist"/*.vsix 2>/dev/null || true
+
 if [[ ! -d node_modules ]]; then
   echo "    Installing task dependencies (azure-pipelines-task-lib)..."
-  npm install --no-audit --no-fund --cache "${NPM_CACHE:-C:/Users/josia/AppData/Local/Temp/npm-cache}" --loglevel=error
+  # NPM_CACHE: optional override. When set, point npm at it so the
+  # install doesn't write to a system-managed cache directory
+  # (which may not be writable in CI or sandboxed environments).
+  # When unset, omit --cache entirely so npm uses its default —
+  # which is the most portable option.
+  if [[ -n "${NPM_CACHE:-}" ]]; then
+    npm install --no-audit --no-fund --cache "${NPM_CACHE}" --loglevel=error
+  else
+    npm install --no-audit --no-fund --loglevel=error
+  fi
 fi
 
 npx tsc -p tsconfig.json
 
 if [[ ! -f index.js ]]; then
   echo "ERROR: tsc did not produce index.js" >&2
+  exit 1
+fi
+# Freshness check: index.js must be newer than tsconfig.json.
+# If tsc no-ops (no source changes), this catches it.
+if [[ index.js -ot tsconfig.json ]]; then
+  echo "ERROR: index.js is older than tsconfig.json — tsc may have no-op'd. Investigate." >&2
   exit 1
 fi
 echo "    Build OK ($(wc -c < index.js) bytes)"
@@ -163,6 +187,16 @@ mkdir -p dist
 tfx "${TFX_ARGS[@]}"
 
 VSIX_PATH="$(ls -1t dist/*.vsix | head -1)"
+# Guard: if `tfx extension create` exited 0 but produced no .vsix
+# (rare, but possible on disk-full or permission issues), the
+# share/publish steps would fail with a confusing auth error.
+# Fail fast here with a clear message.
+if [[ ! -f "${VSIX_PATH}" ]]; then
+  echo "ERROR: no .vsix found in dist/ after the build step." >&2
+  echo "       VSIX_PATH resolved to: ${VSIX_PATH:-<empty>}" >&2
+  echo "       Did tfx-cli run successfully? Check the output above." >&2
+  exit 1
+fi
 echo "==> Built: ${VSIX_PATH}"
 
 # ---------------------------------------------------------------------------
