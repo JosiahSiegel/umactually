@@ -1,6 +1,13 @@
+import { statSync } from "node:fs";
+
 import { DEFAULT_PROMPT_BYTE_CAP } from "../config/defaults.js";
 import { resolveField } from "../config/field-resolution.js";
-import { readPromptFiles } from "../config/prompt-files.js";
+import {
+  DEFAULT_PROMPT_FILE_PATHS,
+  readPromptFiles,
+  resolveDefaultPromptFiles,
+  splitPromptFileList,
+} from "../config/prompt-files.js";
 import { listDiffPaths } from "../diff/filter-build-artifacts.js";
 import { ENV_KEYS } from "../util/env-keys.js";
 import {
@@ -23,6 +30,11 @@ export type ProviderPrompts = {
   readonly system: string;
   readonly user: string;
 };
+
+// Re-exports of the default-lookup and splitting primitives so callers
+// (including the CLI help and tests) can import them from the public
+// `cli/provider-prompts` surface without reaching into `config/`.
+export { DEFAULT_PROMPT_FILE_PATHS, splitPromptFileList, resolveDefaultPromptFiles };
 
 /**
  * The strict JSON schema the model must emit. We send this on the
@@ -96,7 +108,14 @@ export const REVIEW_PAYLOAD_JSON_SCHEMA = {
 } as const;
 
 export async function buildProviderPrompts(input: ProviderPromptsInput): Promise<ProviderPrompts> {
-  const additionalPrompt = await readAdditionalPrompt(input);
+  // Resolve the default-lookup list ONCE per cwd so the chunked
+  // orchestrator (which calls buildProviderPrompts PER chunk) does
+  // not race on multiple parallel fs.stat calls or break the
+  // single-threaded sink assumption that `setActiveSeveritySink`
+  // relies on. Implementation: synchronous stat() so we do NOT add a
+  // new `await` boundary at the top of buildProviderPrompts.
+  const defaultPaths = resolveDefaultPromptFilesOnce(input.cwd);
+  const additionalPrompt = await readAdditionalPrompt(input, defaultPaths);
   const userParts = [
     `Platform: ${input.platform}`,
     additionalPrompt.length > 0 ? `Additional instructions:\n${additionalPrompt}` : "Additional instructions: none",
@@ -122,9 +141,53 @@ export async function buildProviderPrompts(input: ProviderPromptsInput): Promise
   userParts.push(buildFilesInDiffBlock(input.diffText));
   userParts.push("Diff:", input.diffText);
   return {
-    system: await pickSystemPrompt(input),
+    system: await pickSystemPrompt(input, defaultPaths),
     user: userParts.join("\n\n"),
   };
+}
+
+/**
+ * Per-cwd memoized wrapper around `resolveDefaultPromptFiles`. The
+ * chunked live path invokes `buildProviderPrompts` per chunk, so a
+ * per-call resolve would multiply the fs.stat calls and (more
+ * importantly) introduce an extra `await` boundary that breaks the
+ * single-threaded event-loop assumption `setActiveSeveritySink`
+ * relies on (see `src/provider/provider-parse.ts:86-88`).
+ *
+ * Implementation note: uses synchronous fs.stat to avoid any `await`
+ * boundary in `buildProviderPrompts`. Each stat is sub-millisecond
+ * and the result is cached per cwd, so the total cost is at most 5
+ * sync stats on the FIRST `buildProviderPrompts` call per process.
+ *
+ * The cache is process-scoped. Tests that need to assert the empty
+ * path should use the un-cached `resolveDefaultPromptFiles` exported
+ * from `src/config/prompt-files.ts`.
+ */
+const DEFAULT_PROMPT_FILES_CACHE: Map<string, readonly string[]> = new Map();
+function resolveDefaultPromptFilesOnce(cwd: string): readonly string[] {
+  const cached = DEFAULT_PROMPT_FILES_CACHE.get(cwd);
+  if (cached !== undefined) return cached;
+  const out: string[] = [];
+  for (const candidate of DEFAULT_PROMPT_FILE_PATHS) {
+    try {
+      const s = statSync(`${cwd.replace(/[\\/]+$/u, "")}/${candidate}`);
+      if (s.isFile()) out.push(candidate);
+    } catch {
+      // ENOENT (or any other stat failure): silently skip.
+    }
+  }
+  const frozen = Object.freeze(out);
+  DEFAULT_PROMPT_FILES_CACHE.set(cwd, frozen);
+  return frozen;
+}
+
+/**
+ * Test-only hook to clear the per-cwd default-prompt cache. Used by
+ * tests that mutate the workspace mid-run and need the next
+ * `buildProviderPrompts` call to re-stat the disk.
+ */
+export function __resetDefaultPromptFilesCacheForTests(): void {
+  DEFAULT_PROMPT_FILES_CACHE.clear();
 }
 
 /**
@@ -151,14 +214,35 @@ async function pickSystemPrompt(input: {
   readonly parsed: ParsedCliArgs;
   readonly cwd: string;
   readonly env: NodeJS.ProcessEnv;
-}): Promise<string> {
+}, defaultPaths: readonly string[]): Promise<string> {
   const inline = input.parsed.prompt;
   if (typeof inline === "string" && inline.length > 0) {
     return inline;
   }
+  // Precedence for system prompt file resolution:
+  //   1. `--prompt-files` (array) — when set, COMPLETELY OVERRIDES the
+  //      default-lookup list. The single-file `--prompt-file` is
+  //      ignored in this branch so the array semantics are honest.
+  //   2. `--prompt-file` (single, legacy) — used as-is.
+  //   3. Auto-discover from `DEFAULT_PROMPT_FILE_PATHS` (CLAUDE.md,
+  //      AGENTS.md, .github/copilot-instructions.md, .cursorrules,
+  //      GEMINI.md). Files that do not exist are skipped.
+  //   4. Built-in `buildDefaultSystemPrompt()`.
+  const promptFilesRaw = resolveField(
+    input.parsed.promptFiles,
+    input.env[ENV_KEYS.UMACTUALLY_PROMPT_FILES],
+    "",
+  );
+  const promptFilesList = splitPromptFileList(promptFilesRaw);
+  if (promptFilesList.length > 0) {
+    return readPromptFiles(promptFilesList, DEFAULT_PROMPT_BYTE_CAP, { cwd: input.cwd });
+  }
   const filePath = resolveField(input.parsed.promptFile, input.env[ENV_KEYS.UMACTUALLY_PROMPT_FILE], "");
   if (filePath !== undefined && filePath.length > 0) {
     return readPromptFiles([filePath], DEFAULT_PROMPT_BYTE_CAP, { cwd: input.cwd });
+  }
+  if (defaultPaths.length > 0) {
+    return readPromptFiles(defaultPaths, DEFAULT_PROMPT_BYTE_CAP, { cwd: input.cwd });
   }
   return buildDefaultSystemPrompt();
 }
@@ -236,14 +320,26 @@ async function readAdditionalPrompt(input: {
   readonly parsed: ParsedCliArgs;
   readonly cwd: string;
   readonly env: NodeJS.ProcessEnv;
-}): Promise<string> {
+}, defaultPaths: readonly string[]): Promise<string> {
   const inline = input.parsed.additionalPrompt;
   if (typeof inline === "string" && inline.length > 0) {
     return inline;
   }
-  const filePath = resolveField(input.parsed.additionalPromptFile, input.env[ENV_KEYS.UMACTUALLY_ADDITIONAL_PROMPT_FILE], "");
-  if (filePath === undefined || filePath.length === 0) {
-    return "";
+  // Precedence mirrors `pickSystemPrompt`: array overrides defaults,
+  // single-file is the legacy path, then default-lookup, then empty.
+  const filesRaw = resolveField(
+    input.parsed.additionalPromptFiles,
+    input.env[ENV_KEYS.UMACTUALLY_ADDITIONAL_PROMPT_FILES],
+    "",
+  );
+  const filesList = splitPromptFileList(filesRaw);
+  if (filesList.length > 0) {
+    return readPromptFiles(filesList, DEFAULT_PROMPT_BYTE_CAP, { cwd: input.cwd });
   }
-  return readPromptFiles([filePath], DEFAULT_PROMPT_BYTE_CAP, { cwd: input.cwd });
+  const filePath = resolveField(input.parsed.additionalPromptFile, input.env[ENV_KEYS.UMACTUALLY_ADDITIONAL_PROMPT_FILE], "");
+  if (filePath !== undefined && filePath.length > 0) {
+    return readPromptFiles([filePath], DEFAULT_PROMPT_BYTE_CAP, { cwd: input.cwd });
+  }
+  if (defaultPaths.length === 0) return "";
+  return readPromptFiles(defaultPaths, DEFAULT_PROMPT_BYTE_CAP, { cwd: input.cwd });
 }

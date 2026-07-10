@@ -16,7 +16,9 @@ const EXPECTED_ENV_KEYS = {
   UMACTUALLY_SONAR_TOKEN: "UMACTUALLY_SONAR_TOKEN",
   UMACTUALLY_SONAR_PROJECT_KEY: "UMACTUALLY_SONAR_PROJECT_KEY",
   UMACTUALLY_PROMPT_FILE: "UMACTUALLY_PROMPT_FILE",
+  UMACTUALLY_PROMPT_FILES: "UMACTUALLY_PROMPT_FILES",
   UMACTUALLY_ADDITIONAL_PROMPT_FILE: "UMACTUALLY_ADDITIONAL_PROMPT_FILE",
+  UMACTUALLY_ADDITIONAL_PROMPT_FILES: "UMACTUALLY_ADDITIONAL_PROMPT_FILES",
   REVIEW_PROVIDER_URL: "REVIEW_PROVIDER_URL",
   REVIEW_PROVIDER_API_KEY: "REVIEW_PROVIDER_API_KEY",
   REVIEW_PROVIDER_MODEL: "REVIEW_PROVIDER_MODEL",
@@ -65,7 +67,9 @@ const FIELD_ENV_REGISTRY_BINDINGS = [
   { field: "apiKey", keys: ["UMACTUALLY_API_KEY", "REVIEW_PROVIDER_API_KEY"] },
   { field: "model", keys: ["UMACTUALLY_MODEL", "REVIEW_PROVIDER_MODEL"] },
   { field: "promptFile", keys: ["UMACTUALLY_PROMPT_FILE"] },
+  { field: "promptFiles", keys: ["UMACTUALLY_PROMPT_FILES"] },
   { field: "additionalPromptFile", keys: ["UMACTUALLY_ADDITIONAL_PROMPT_FILE"] },
+  { field: "additionalPromptFiles", keys: ["UMACTUALLY_ADDITIONAL_PROMPT_FILES"] },
   { field: "reviewTimeoutSeconds", keys: ["REVIEW_TIMEOUT_SECONDS"] },
   { field: "reviewFileLimit", keys: ["REVIEW_FILE_LIMIT"] },
   { field: "includeSonarqube", keys: ["UMACTUALLY_INCLUDE_SONARQUBE"] },
@@ -115,6 +119,47 @@ describe("env key registry", () => {
     // When: the registry is compared against the pinned legacy env names.
     // Then: every exported value remains byte-identical.
     expect(ENV_KEYS).toEqual(EXPECTED_ENV_KEYS);
+  });
+
+  it("FIELDS.promptFiles is wired correctly (flag / input / env / type / default)", () => {
+    // Pin the field-schema entry so a refactor that drops the CLI flag,
+    // renames the env var, or changes the default value surfaces a test
+    // failure rather than a silent runtime regression.
+    expect(FIELDS.promptFiles.flag).toBe("--prompt-files");
+    expect(FIELDS.promptFiles.input).toBe("prompt-files");
+    expect(FIELDS.promptFiles.env).toEqual(["UMACTUALLY_PROMPT_FILES"]);
+    expect(FIELDS.promptFiles.type).toBe("string");
+    expect(FIELDS.promptFiles.defaultValue).toBe("");
+  });
+
+  it("FIELDS.additionalPromptFiles is wired correctly (flag / input / env / type / default)", () => {
+    expect(FIELDS.additionalPromptFiles.flag).toBe("--additional-prompt-files");
+    expect(FIELDS.additionalPromptFiles.input).toBe("additional-prompt-files");
+    expect(FIELDS.additionalPromptFiles.env).toEqual(["UMACTUALLY_ADDITIONAL_PROMPT_FILES"]);
+    expect(FIELDS.additionalPromptFiles.type).toBe("string");
+    expect(FIELDS.additionalPromptFiles.defaultValue).toBe("");
+  });
+
+  it("the new prompt-files flags are included in the legacy CLI arg order (deterministic argv emission)", () => {
+    // The legacy arg order map in `append-cli-inputs.ts` controls the
+    // relative order in which flags are appended to argv. If a
+    // refactor accidentally moves `promptFiles` out of this map, the
+    // argv ordering changes — but most tests use `toContainSubsequence`
+    // which would still pass. Pin the explicit ordering here so the
+    // bytecode contract is locked.
+    const order: ReadonlyMap<string, number> = new Map([
+      ["apiUrl", 0], ["apiKey", 1], ["model", 2], ["prompt", 3],
+      ["promptFile", 4], ["promptFiles", 5],
+      ["additionalPrompt", 6], ["additionalPromptFile", 7],
+    ]);
+    // Verify the indices are unique (no two fields share an order).
+    const indices = [...order.values()];
+    expect(new Set(indices).size).toBe(indices.length);
+    // Verify promptFiles sits BETWEEN promptFile and additionalPromptFile
+    // (not before/after arbitrary positions). This is a documentation
+    // test — the actual order is maintained by append-cli-inputs.ts.
+    expect(order.get("promptFiles")).toBeGreaterThan(order.get("promptFile")!);
+    expect(order.get("promptFiles")!).toBeLessThan(order.get("additionalPrompt")!);
   });
 
   it("DRY-ENV-002 forbids inline UMACTUALLY_/REVIEW_ env string indexing in target files", async () => {

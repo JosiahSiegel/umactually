@@ -20,7 +20,9 @@ type ParsedCliArgs = {
   readonly apiKey: string | null;
   readonly model: string | null;
   readonly promptFile: string | null;
+  readonly promptFiles: string | null;
   readonly additionalPromptFile: string | null;
+  readonly additionalPromptFiles: string | null;
   readonly prompt: string | null;
   readonly additionalPrompt: string | null;
   readonly effort: CliEffort | null;
@@ -112,7 +114,9 @@ describe("CLI flag parsing RED contract", () => {
       apiKey: "test-key",
       model: "review-model-synthetic",
       promptFile: "prompts/review.md",
+      promptFiles: null,
       additionalPromptFile: "prompts/extra.md",
+      additionalPromptFiles: null,
       prompt: null,
       additionalPrompt: null,
       effort: null,
@@ -168,6 +172,8 @@ describe("CLI flag parsing: action.yml inputs coverage", () => {
     "--no-detect-leaks",
     "--prompt-file",
     "--additional-prompt-file",
+    "--prompt-files",
+    "--additional-prompt-files",
     "--no-walkthrough",
     "--no-diagnostic",
     "--no-debug-raw-response",
@@ -196,6 +202,8 @@ describe("CLI flag parsing: action.yml inputs coverage", () => {
     "--sonar-timeout-seconds",
     "--prompt-file",
     "--additional-prompt-file",
+    "--prompt-files",
+    "--additional-prompt-files",
     "--prompt",
     "--additional-prompt",
     "--effort",
@@ -376,6 +384,79 @@ describe("CLI flag parsing: action.yml inputs coverage", () => {
         /integer value/u,
       );
     }
+  });
+
+  it("--prompt-files accepts a raw comma/newline-separated list as a SINGLE string (split happens in provider-prompts)", async () => {
+    // The CLI parser intentionally does NOT split the value. The split
+    // is owned by `splitPromptFileList` in src/config/prompt-files.ts
+    // so the same splitting contract applies to env-var inputs and
+    // CLI inputs. Verify the parser surfaces the raw string.
+    const parseCliArgs = await expectNotImplementedExport(cliModule, cliPath, "parseCliArgs");
+    if (!isParseCliArgs(parseCliArgs)) {
+      expect.fail("RED: src/cli.ts must export parseCliArgs(args)");
+    }
+    const parsed = parseCliArgs(["--prompt-files", "a.md,b.md,c.md"]);
+    expect(parsed.promptFiles).toBe("a.md,b.md,c.md");
+    // Then: the legacy promptFile field is untouched (no implicit merge).
+    expect(parsed.promptFile).toBeNull();
+  });
+
+  it("--additional-prompt-files accepts a raw newline-separated list as a SINGLE string", async () => {
+    const parseCliArgs = await expectNotImplementedExport(cliModule, cliPath, "parseCliArgs");
+    if (!isParseCliArgs(parseCliArgs)) {
+      expect.fail("RED: src/cli.ts must export parseCliArgs(args)");
+    }
+    const parsed = parseCliArgs(["--additional-prompt-files", "x.md\ny.md"]);
+    expect(parsed.additionalPromptFiles).toBe("x.md\ny.md");
+    expect(parsed.additionalPromptFile).toBeNull();
+  });
+
+  it("defaults promptFiles / additionalPromptFiles to null when no flag is supplied", async () => {
+    // Regression for back-compat: an empty argv must surface
+    // `promptFiles: null` so the live path knows the operator did
+    // not opt in to the array (and can therefore consult the
+    // default-lookup list).
+    const parseCliArgs = await expectNotImplementedExport(cliModule, cliPath, "parseCliArgs");
+    if (!isParseCliArgs(parseCliArgs)) {
+      expect.fail("RED: src/cli.ts must export parseCliArgs(args)");
+    }
+    const parsed = parseCliArgs([]);
+    expect(parsed.promptFiles).toBeNull();
+    expect(parsed.additionalPromptFiles).toBeNull();
+  });
+
+  it("--prompt-files with no value (followed by another flag) throws CliUsageError", async () => {
+    // Edge: `parseCliArgs(["--prompt-files", "--platform"])` must reject
+    // because `--platform` looks like a flag, not a value.
+    const parseCliArgs = await expectNotImplementedExport(cliModule, cliPath, "parseCliArgs");
+    if (!isParseCliArgs(parseCliArgs)) {
+      expect.fail("RED: src/cli.ts must export parseCliArgs(args)");
+    }
+    expect(() => parseCliArgs(["--prompt-files", "--platform"])).toThrow(CliUsageError);
+    expect(() => parseCliArgs(["--additional-prompt-files", "--platform"])).toThrow(CliUsageError);
+  });
+
+  it("--prompt-files at the end of argv (no following value) throws CliUsageError", async () => {
+    const parseCliArgs = await expectNotImplementedExport(cliModule, cliPath, "parseCliArgs");
+    if (!isParseCliArgs(parseCliArgs)) {
+      expect.fail("RED: src/cli.ts must export parseCliArgs(args)");
+    }
+    expect(() => parseCliArgs(["--platform", "github", "--prompt-files"])).toThrow(CliUsageError);
+  });
+
+  it("last-flag-wins: --prompt-files supplied twice keeps the second value", async () => {
+    // The CLI parser uses `let promptFiles = null` then reassigns, so
+    // duplicate flags must reflect last-wins semantics (matching the
+    // existing behavior for every other flag in the parser).
+    const parseCliArgs = await expectNotImplementedExport(cliModule, cliPath, "parseCliArgs");
+    if (!isParseCliArgs(parseCliArgs)) {
+      expect.fail("RED: src/cli.ts must export parseCliArgs(args)");
+    }
+    const parsed = parseCliArgs([
+      "--prompt-files", "first.md",
+      "--prompt-files", "second.md,third.md",
+    ]);
+    expect(parsed.promptFiles).toBe("second.md,third.md");
   });
 });
 

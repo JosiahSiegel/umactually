@@ -9,8 +9,10 @@ export type ActionInputs = {
   readonly model: string;
   readonly prompt: string;
   readonly promptFile: string;
+  readonly promptFiles: string;
   readonly additionalPrompt: string;
   readonly additionalPromptFile: string;
+  readonly additionalPromptFiles: string;
   readonly walkthrough: boolean;
   readonly diagnostic: boolean;
   readonly dryRun: boolean;
@@ -106,8 +108,10 @@ export function readActionInputs(env: NodeJS.ProcessEnv = process.env): ActionIn
     model: get("model"),
     prompt: get("prompt"),
     promptFile: get("prompt-file"),
+    promptFiles: get("prompt-files"),
     additionalPrompt: get("additional-prompt"),
     additionalPromptFile: get("additional-prompt-file"),
+    additionalPromptFiles: get("additional-prompt-files"),
     walkthrough: getBool("walkthrough", false),
     diagnostic: getBool("diagnostic", false),
     dryRun: getDryRun(),

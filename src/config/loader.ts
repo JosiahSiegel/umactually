@@ -16,7 +16,7 @@ import {
   parseSeverityFromUnknown,
 } from "./parsers.js";
 import { normalizeApiUrl } from "./parsers.js";
-import { readPromptFiles } from "./prompt-files.js";
+import { readPromptFiles, splitPromptFileList } from "./prompt-files.js";
 import { DEFAULT_OPENAI_URL } from "../util/provider-defaults.js";
 import type {
   AzureConfig,
@@ -203,12 +203,24 @@ async function resolvePrompts(
 ): Promise<PromptConfig> {
   const systemInline = pickString(cli.promptSystem, inputs.promptSystem, undefined, "", "prompts.system.inline");
   const systemFiles = collectFiles(cli.promptSystemFile, inputs.promptSystemFile, env.promptSystemFile);
+  const systemFilesOverride = splitAndCollect(
+    cli.promptSystemFiles,
+    inputs.promptSystemFiles,
+    env.promptSystemFiles,
+  );
   const userInline = pickString(cli.promptUser, inputs.promptUser, undefined, "", "prompts.user.inline");
   const userFiles = collectFiles(cli.promptUserFile, inputs.promptUserFile, env.promptUserFile);
+  const userFilesOverride = splitAndCollect(
+    cli.promptUserFiles,
+    inputs.promptUserFiles,
+    env.promptUserFiles,
+  );
 
   let system = "";
   if (systemInline.length > 0) {
     system = systemInline;
+  } else if (systemFilesOverride.length > 0) {
+    system = await readPromptFiles(systemFilesOverride, byteCap, { cwd });
   } else if (systemFiles.length > 0) {
     system = await readPromptFiles(systemFiles, byteCap, { cwd });
   }
@@ -216,6 +228,8 @@ async function resolvePrompts(
   let user = "";
   if (userInline.length > 0) {
     user = userInline;
+  } else if (userFilesOverride.length > 0) {
+    user = await readPromptFiles(userFilesOverride, byteCap, { cwd });
   } else if (userFiles.length > 0) {
     user = await readPromptFiles(userFiles, byteCap, { cwd });
   }
@@ -224,8 +238,41 @@ async function resolvePrompts(
     system,
     user,
     systemFiles,
+    systemFilesOverride,
     userFiles,
+    userFilesOverride,
   };
+}
+
+/**
+ * Like `collectFiles` but each value is a raw comma/newline-separated
+ * list that must be split into a flat array of paths. Used for the
+ * `*Files` plural list inputs/env vars.
+ *
+ * Precedence mirrors the rest of the config: CLI > inputs > env.
+ * Unlike the legacy single-file `collectFiles` (which CONCATENATES
+ * across surfaces because each surface contributes at most one
+ * path), the plural list values are alternative overrides of the
+ * SAME list — concatenating them would load duplicate files. We
+ * pick the first non-empty surface and split it.
+ */
+function splitAndCollect(
+  cliValue: string | undefined,
+  inputValue: string | undefined,
+  envValue: string | undefined,
+): readonly string[] {
+  const raw = firstNonEmptyString(cliValue, inputValue, envValue);
+  if (raw === undefined) return [];
+  return splitPromptFileList(raw);
+}
+
+function firstNonEmptyString(
+  ...values: ReadonlyArray<string | undefined>
+): string | undefined {
+  for (const v of values) {
+    if (typeof v === "string" && v.length > 0) return v;
+  }
+  return undefined;
 }
 
 function collectFiles(cliValue: string | undefined, inputValue: string | undefined, envValue: string | undefined): readonly string[] {

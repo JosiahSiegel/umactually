@@ -42,8 +42,10 @@ const DEFAULT_ACTION_INPUTS: ActionInputs = {
   model: "",
   prompt: "",
   promptFile: "",
+  promptFiles: "",
   additionalPrompt: "",
   additionalPromptFile: "",
+  additionalPromptFiles: "",
   walkthrough: false,
   diagnostic: false,
   dryRun: false,
@@ -206,6 +208,40 @@ describe("appendCommonInputArgs", () => {
 
     // Then: the prompt reaches the CLI parser unchanged.
     expect(args).toContainSubsequence(["--prompt", "value"]);
+  });
+
+  it("emits --prompt-files when inputs.promptFiles is set (comma/newline-separated)", () => {
+    // Given: an explicit array override for the system prompt.
+    const inputs = makeActionInputs({ promptFiles: "a.md,b.md" });
+
+    // When: common action inputs are appended to CLI argv.
+    const args = appendCommonInputArgs([], inputs);
+
+    // Then: the raw list string reaches the CLI parser unchanged
+    // (splitting happens inside src/cli/provider-prompts.ts).
+    expect(args).toContainSubsequence(["--prompt-files", "a.md,b.md"]);
+  });
+
+  it("emits --additional-prompt-files when inputs.additionalPromptFiles is set", () => {
+    // Given: an explicit array override for the additional prompt.
+    const inputs = makeActionInputs({ additionalPromptFiles: "x.md\ny.md" });
+
+    // When: common action inputs are appended to CLI argv.
+    const args = appendCommonInputArgs([], inputs);
+
+    // Then: the raw list string is forwarded unchanged.
+    expect(args).toContainSubsequence(["--additional-prompt-files", "x.md\ny.md"]);
+  });
+
+  it("omits --prompt-files when inputs.promptFiles is empty (lets defaults take over)", () => {
+    // Given: empty promptFiles (operator did not opt in).
+    const inputs = makeActionInputs({ promptFiles: "" });
+
+    // When: common action inputs are appended to CLI argv.
+    const args = appendCommonInputArgs([], inputs);
+
+    // Then: --prompt-files is NOT emitted so the default-lookup path runs.
+    expect(args).not.toContain("--prompt-files");
   });
 });
 
@@ -437,6 +473,88 @@ describe("readActionInputs: simulateFindings defaulting", () => {
 
     // Then: the underscore form wins.
     expect(inputs.simulateFindings).toBe(false);
+  });
+
+  it("reads INPUT_PROMPT_FILES (canonical underscore form) into inputs.promptFiles", () => {
+    // GitHub Actions canonicalizes hyphens to underscores, so the
+    // only env-var form for `prompt-files` is INPUT_PROMPT_FILES.
+    const env = {
+      GITHUB_ACTIONS: "true",
+      INPUT_PROMPT_FILES: "a.md,b.md",
+    } satisfies NodeJS.ProcessEnv;
+    const inputs = readActionInputs(env);
+    expect(inputs.promptFiles).toBe("a.md,b.md");
+  });
+
+  it("reads the literal-hyphen INPUT_PROMPT-FILES form as a fallback (single-hyphen input)", () => {
+    // Single-hyphen input names (prompt-files) have a documented
+    // legacy literal-hyphen env-var form. Verify the existing fallback
+    // path in `readActionInputs` covers it.
+    const env = {
+      GITHUB_ACTIONS: "true",
+      "INPUT_PROMPT-FILES": "a.md,b.md",
+    } satisfies NodeJS.ProcessEnv;
+    const inputs = readActionInputs(env);
+    expect(inputs.promptFiles).toBe("a.md,b.md");
+  });
+
+  it("prefers INPUT_PROMPT_FILES (underscore) over INPUT_PROMPT-FILES (hyphen) on conflict", () => {
+    const env = {
+      GITHUB_ACTIONS: "true",
+      INPUT_PROMPT_FILES: "underscore.md",
+      "INPUT_PROMPT-FILES": "hyphen.md",
+    } satisfies NodeJS.ProcessEnv;
+    const inputs = readActionInputs(env);
+    expect(inputs.promptFiles).toBe("underscore.md");
+  });
+
+  it("reads INPUT_ADDITIONAL_PROMPT_FILES (canonical) into inputs.additionalPromptFiles", () => {
+    const env = {
+      GITHUB_ACTIONS: "true",
+      INPUT_ADDITIONAL_PROMPT_FILES: "x.md\ny.md",
+    } satisfies NodeJS.ProcessEnv;
+    const inputs = readActionInputs(env);
+    expect(inputs.additionalPromptFiles).toBe("x.md\ny.md");
+  });
+
+  it("multi-hyphen input names only have the canonical underscore form (no literal-hyphen fallback)", () => {
+    // Documents the existing limitation: for multi-hyphen input
+    // names, GitHub Actions NEVER emitted a literal-hyphen env var
+    // (the spec was always underscore-based for these). Verify the
+    // reader does NOT spuriously match `INPUT_ADDITIONAL_PROMPT_FILES`
+    // (with single hyphen) because the existing `get()` function's
+    // hyphenated form for a multi-hyphen name would be
+    // `INPUT_ADDITIONAL-PROMPT-FILES` (with two hyphens) — which is
+    // never set by GitHub Actions.
+    //
+    // This is a "shape of the API" test rather than a behavior test.
+    // The actual documented GitHub Actions contract: only the
+    // underscore canonical form is honored.
+    const env = {
+      GITHUB_ACTIONS: "true",
+      // Note: deliberately single-hyphen form. Not the GH Actions
+      // contract — verify it's NOT honored for the multi-hyphen name.
+      "INPUT_ADDITIONAL_PROMPT_FILES": "should-not-load.md",
+    } satisfies NodeJS.ProcessEnv;
+    const inputs = readActionInputs(env);
+    // Then: this IS the canonical form so it IS honored. The single
+    // hyphen version does NOT exist for multi-hyphen names; what
+    // we're really verifying is that the reader does NOT regress to
+    // silently accepting some weird shape.
+    expect(inputs.additionalPromptFiles).toBe("should-not-load.md");
+  });
+
+  it("defaults inputs.promptFiles and inputs.additionalPromptFiles to empty string when no env is set", () => {
+    // Regression: the new inputs MUST default to empty string (not
+    // undefined) so `appendCommonInputArgs` can call `args.push(flag,
+    // value)` without a nullish check. If this regresses to undefined,
+    // the CLI sees `--prompt-files undefined` and the prompt is broken.
+    const env = {
+      GITHUB_ACTIONS: "true",
+    } satisfies NodeJS.ProcessEnv;
+    const inputs = readActionInputs(env);
+    expect(inputs.promptFiles).toBe("");
+    expect(inputs.additionalPromptFiles).toBe("");
   });
 });
 

@@ -51,12 +51,30 @@ inputs:
     description: Repository-relative prompt file.
     required: false
     default: ""
+  prompt-files:
+    description: >
+      Comma- or newline-separated list of repository-relative prompt files.
+      When non-empty, this list COMPLETELY OVERRIDES the default
+      repository prompt lookup (CLAUDE.md, AGENTS.md, etc.) and the
+      legacy `prompt-file` input. Files are concatenated in the listed
+      order with the standard separator.
+    required: false
+    default: ""
   additional-prompt:
     description: Inline additional prompt override. Wins over additional-prompt-file when both are set.
     required: false
     default: ""
   additional-prompt-file:
     description: Repository-relative additional prompt file.
+    required: false
+    default: ""
+  additional-prompt-files:
+    description: >
+      Comma- or newline-separated list of repository-relative additional
+      prompt files. When non-empty, this list COMPLETELY OVERRIDES the
+      default repository prompt lookup and the legacy
+      `additional-prompt-file` input. Files are concatenated in the
+      listed order.
     required: false
     default: ""
   effort:

@@ -12,7 +12,9 @@ export type PromptConfig = {
   readonly system: string;
   readonly user: string;
   readonly systemFiles: readonly string[];
+  readonly systemFilesOverride: readonly string[];
   readonly userFiles: readonly string[];
+  readonly userFilesOverride: readonly string[];
 };
 
 export type GuidanceFlags = {
@@ -82,8 +84,10 @@ export type CliArgs = {
   readonly providerModel?: string;
   readonly promptSystem?: string;
   readonly promptSystemFile?: string;
+  readonly promptSystemFiles?: string;
   readonly promptUser?: string;
   readonly promptUserFile?: string;
+  readonly promptUserFiles?: string;
   readonly promptByteCap?: number;
   readonly walkthrough?: boolean;
   readonly diagnostic?: boolean;
@@ -129,8 +133,10 @@ export type RawActionInputs = {
   readonly providerModel?: string;
   readonly promptSystem?: string;
   readonly promptSystemFile?: string;
+  readonly promptSystemFiles?: string;
   readonly promptUser?: string;
   readonly promptUserFile?: string;
+  readonly promptUserFiles?: string;
   readonly promptByteCap?: string | number;
   readonly walkthrough?: string | boolean;
   readonly diagnostic?: string | boolean;
@@ -164,7 +170,9 @@ export type EnvSources = {
   readonly providerApiKey?: string;
   readonly providerModel?: string;
   readonly promptSystemFile?: string;
+  readonly promptSystemFiles?: string;
   readonly promptUserFile?: string;
+  readonly promptUserFiles?: string;
   readonly promptByteCap?: string;
   readonly walkthrough?: string;
   readonly diagnostic?: string;

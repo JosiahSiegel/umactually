@@ -79,6 +79,14 @@ const FIELDS = {
         type: "string",
         defaultValue: "",
     },
+    promptFiles: {
+        field: "promptFiles",
+        flag: "--prompt-files",
+        input: "prompt-files",
+        env: ["UMACTUALLY_PROMPT_FILES"],
+        type: "string",
+        defaultValue: "",
+    },
     additionalPrompt: {
         field: "additionalPrompt",
         flag: "--additional-prompt",
@@ -92,6 +100,14 @@ const FIELDS = {
         flag: "--additional-prompt-file",
         input: "additional-prompt-file",
         env: ["UMACTUALLY_ADDITIONAL_PROMPT_FILE", "REVIEW_PROMPT_USER_FILE"],
+        type: "string",
+        defaultValue: "",
+    },
+    additionalPromptFiles: {
+        field: "additionalPromptFiles",
+        flag: "--additional-prompt-files",
+        input: "additional-prompt-files",
+        env: ["UMACTUALLY_ADDITIONAL_PROMPT_FILES"],
         type: "string",
         defaultValue: "",
     },
@@ -761,7 +777,9 @@ function parseCliArgs(args) {
     let apiKey = null;
     let model = null;
     let promptFile = null;
+    let promptFiles = null;
     let additionalPromptFile = null;
+    let additionalPromptFiles = null;
     let prompt = null;
     let additionalPrompt = null;
     let effort = null;
@@ -855,8 +873,16 @@ function parseCliArgs(args) {
                 promptFile = readValue(args, index, "prompt-file");
                 index += 1;
                 break;
+            case "--prompt-files":
+                promptFiles = readValue(args, index, "prompt-files");
+                index += 1;
+                break;
             case "--additional-prompt-file":
                 additionalPromptFile = readValue(args, index, "additional-prompt-file");
+                index += 1;
+                break;
+            case "--additional-prompt-files":
+                additionalPromptFiles = readValue(args, index, "additional-prompt-files");
                 index += 1;
                 break;
             case "--prompt":
@@ -1004,7 +1030,9 @@ function parseCliArgs(args) {
         apiKey,
         model,
         promptFile,
+        promptFiles,
         additionalPromptFile,
+        additionalPromptFiles,
         prompt,
         additionalPrompt,
         effort,
@@ -1122,8 +1150,10 @@ const HELP_FLAGS = [
     { flag: "--model <id>", description: "Provider model id (default: auto)" },
     { flag: "--prompt <text>", description: "Inline system prompt override" },
     { flag: "--prompt-file <path>" },
+    { flag: "--prompt-files <paths>", description: "Comma/newline-separated system prompt files (overrides defaults)" },
     { flag: "--additional-prompt <text>" },
     { flag: "--additional-prompt-file <path>" },
+    { flag: "--additional-prompt-files <paths>", description: "Comma/newline-separated additional prompt files (overrides defaults)" },
     { flag: "--effort <low|medium|high>", description: "Reasoning effort hint (default: medium)" },
     { flag: "--provider <openai-compatible|copilot|anthropic>", description: "Provider family (anthropic uses native /v1/messages)" },
     { flag: "--github-api-base <url>", description: `GitHub API base URL (Copilot token exchange; default: ${DEFAULT_GITHUB_API_BASE})` },
@@ -3479,7 +3509,9 @@ const ENV_SOURCE_FIELDS = {
     apiKey: "providerApiKey",
     model: "providerModel",
     promptFile: "promptSystemFile",
+    promptFiles: "promptSystemFiles",
     additionalPromptFile: "promptUserFile",
+    additionalPromptFiles: "promptUserFiles",
     stallSeconds: "stallTimeoutSeconds",
     includeSonarqube: "sonarEnabled",
     sonarHostUrl: "sonarHost",
@@ -3506,7 +3538,9 @@ const DIRECT_ENV_SOURCE_KEYS = [
     "providerApiKey",
     "providerModel",
     "promptSystemFile",
+    "promptSystemFiles",
     "promptUserFile",
+    "promptUserFiles",
     "promptByteCap",
     "walkthrough",
     "diagnostic",
@@ -3711,7 +3745,9 @@ const ENV_KEYS = {
     UMACTUALLY_SONAR_TOKEN: "UMACTUALLY_SONAR_TOKEN",
     UMACTUALLY_SONAR_PROJECT_KEY: "UMACTUALLY_SONAR_PROJECT_KEY",
     UMACTUALLY_PROMPT_FILE: "UMACTUALLY_PROMPT_FILE",
+    UMACTUALLY_PROMPT_FILES: "UMACTUALLY_PROMPT_FILES",
     UMACTUALLY_ADDITIONAL_PROMPT_FILE: "UMACTUALLY_ADDITIONAL_PROMPT_FILE",
+    UMACTUALLY_ADDITIONAL_PROMPT_FILES: "UMACTUALLY_ADDITIONAL_PROMPT_FILES",
     REVIEW_PROVIDER_URL: "REVIEW_PROVIDER_URL",
     REVIEW_PROVIDER_API_KEY: "REVIEW_PROVIDER_API_KEY",
     REVIEW_PROVIDER_MODEL: "REVIEW_PROVIDER_MODEL",
@@ -11340,6 +11376,8 @@ function buildParseWarningsArtifact(input) {
     };
 }
 
+;// CONCATENATED MODULE: external "node:fs"
+const external_node_fs_namespaceObject = __WEBPACK_EXTERNAL_createRequire(import.meta.url)("node:fs");
 ;// CONCATENATED MODULE: ./src/config/prompt-files.ts
 
 
@@ -11434,6 +11472,93 @@ async function readPromptFiles(paths, byteCap, options) {
         parts.push(text);
     }
     return parts.join(PROMPT_SEPARATOR);
+}
+/**
+ * Split a newline- or comma-separated list of paths into a deduplicated,
+ * ordered, trimmed array of non-empty strings. Empty input yields an
+ * empty array. Order is preserved by first-occurrence.
+ *
+ * Public so tests can pin the splitting contract directly and so the
+ * config-loader pipeline (which receives raw env-var strings) can
+ * apply the same splitting semantics as the live prompt assembly.
+ */
+function splitPromptFileList(raw) {
+    if (typeof raw !== "string" || raw.length === 0)
+        return [];
+    const seen = new Set();
+    const out = [];
+    // Split on commas AND any newline flavor (LF, CR-LF, CR-only).
+    // The trim() on each piece also strips trailing CR that CR-LF
+    // leaves behind after the LF split, so the round-trip is safe on
+    // Windows-pasted strings.
+    for (const piece of raw.split(/[\n\r,]/u)) {
+        const trimmed = piece.trim();
+        if (trimmed.length === 0)
+            continue;
+        if (seen.has(trimmed))
+            continue;
+        seen.add(trimmed);
+        out.push(trimmed);
+    }
+    return out;
+}
+/**
+ * Repository-relative filenames UmActually auto-discovers when no explicit
+ * prompt-file or prompt-files override is supplied. Each entry is checked
+ * with `fs.stat`; missing files are silently skipped so repos that lack
+ * any of these files fall through to the built-in default system prompt
+ * (or empty additional prompt).
+ *
+ * Order matters: files are concatenated in the listed order. The
+ * recognized conventions are:
+ *
+ * - `CLAUDE.md` — Anthropic Claude Code / Cowork repo-level instructions.
+ * - `AGENTS.md` — emerging agent-agnostic convention (also adopted by
+ *   Cursor, aider, and OpenAI Codex).
+ * - `.github/copilot-instructions.md` — GitHub Copilot Coding Agent
+ *   instructions (documented at
+ *   https://docs.github.com/en/copilot/customizing-copilot/adding-custom-instructions-for-github-copilot).
+ * - `.cursorrules` — Cursor legacy single-file rules format.
+ * - `GEMINI.md` — Google Gemini CLI repo-level instructions.
+ *
+ * Excluded by design (deferred to a future iteration that needs glob
+ * support): `.github/instructions/*.md` (Copilot multi-file mode) and
+ * `.clinerules/*.md` (Cline). Glob support requires an allowlist-aware
+ * directory read; the current `readPromptFiles` API only accepts a flat
+ * list of paths.
+ */
+const DEFAULT_PROMPT_FILE_PATHS = [
+    "CLAUDE.md",
+    "AGENTS.md",
+    ".github/copilot-instructions.md",
+    ".cursorrules",
+    "GEMINI.md",
+];
+/**
+ * Resolve `DEFAULT_PROMPT_FILE_PATHS` against `cwd` and return only the
+ * paths that exist on disk and are regular files. Missing entries are
+ * silently dropped (not an error). Symlink targets are NOT followed here
+ * — `readPromptFiles` does its own realpath resolution at read time.
+ *
+ * Pure (no global fs). Accepts the same `PromptFileSystem` shape used
+ * by `readPromptFiles` so tests can inject a fake filesystem. The
+ * default implementation uses the real `node:fs`.
+ */
+async function resolveDefaultPromptFiles(cwd, fs) {
+    const existing = [];
+    for (const candidate of DEFAULT_PROMPT_FILE_PATHS) {
+        try {
+            const stat = await fs.stat(`${cwd.replace(/[\\/]+$/u, "")}/${candidate}`);
+            if (stat.isFile) {
+                existing.push(candidate);
+            }
+        }
+        catch {
+            // ENOENT (or any other stat failure): silently skip. The user did
+            // not opt in to this file; its absence is not an error.
+        }
+    }
+    return existing;
 }
 
 ;// CONCATENATED MODULE: ./src/review/verified-facts.ts
@@ -11998,6 +12123,11 @@ function parseActionOutputsYaml(text, diffText) {
 
 
 
+
+// Re-exports of the default-lookup and splitting primitives so callers
+// (including the CLI help and tests) can import them from the public
+// `cli/provider-prompts` surface without reaching into `config/`.
+
 /**
  * The strict JSON schema the model must emit. We send this on the
  * wire as `response_format: { type: "json_schema", strict: true }`
@@ -12069,7 +12199,14 @@ const REVIEW_PAYLOAD_JSON_SCHEMA = {
     },
 };
 async function buildProviderPrompts(input) {
-    const additionalPrompt = await readAdditionalPrompt(input);
+    // Resolve the default-lookup list ONCE per cwd so the chunked
+    // orchestrator (which calls buildProviderPrompts PER chunk) does
+    // not race on multiple parallel fs.stat calls or break the
+    // single-threaded sink assumption that `setActiveSeveritySink`
+    // relies on. Implementation: synchronous stat() so we do NOT add a
+    // new `await` boundary at the top of buildProviderPrompts.
+    const defaultPaths = resolveDefaultPromptFilesOnce(input.cwd);
+    const additionalPrompt = await readAdditionalPrompt(input, defaultPaths);
     const userParts = [
         `Platform: ${input.platform}`,
         additionalPrompt.length > 0 ? `Additional instructions:\n${additionalPrompt}` : "Additional instructions: none",
@@ -12095,9 +12232,54 @@ async function buildProviderPrompts(input) {
     userParts.push(buildFilesInDiffBlock(input.diffText));
     userParts.push("Diff:", input.diffText);
     return {
-        system: await pickSystemPrompt(input),
+        system: await pickSystemPrompt(input, defaultPaths),
         user: userParts.join("\n\n"),
     };
+}
+/**
+ * Per-cwd memoized wrapper around `resolveDefaultPromptFiles`. The
+ * chunked live path invokes `buildProviderPrompts` per chunk, so a
+ * per-call resolve would multiply the fs.stat calls and (more
+ * importantly) introduce an extra `await` boundary that breaks the
+ * single-threaded event-loop assumption `setActiveSeveritySink`
+ * relies on (see `src/provider/provider-parse.ts:86-88`).
+ *
+ * Implementation note: uses synchronous fs.stat to avoid any `await`
+ * boundary in `buildProviderPrompts`. Each stat is sub-millisecond
+ * and the result is cached per cwd, so the total cost is at most 5
+ * sync stats on the FIRST `buildProviderPrompts` call per process.
+ *
+ * The cache is process-scoped. Tests that need to assert the empty
+ * path should use the un-cached `resolveDefaultPromptFiles` exported
+ * from `src/config/prompt-files.ts`.
+ */
+const DEFAULT_PROMPT_FILES_CACHE = new Map();
+function resolveDefaultPromptFilesOnce(cwd) {
+    const cached = DEFAULT_PROMPT_FILES_CACHE.get(cwd);
+    if (cached !== undefined)
+        return cached;
+    const out = [];
+    for (const candidate of DEFAULT_PROMPT_FILE_PATHS) {
+        try {
+            const s = (0,external_node_fs_namespaceObject.statSync)(`${cwd.replace(/[\\/]+$/u, "")}/${candidate}`);
+            if (s.isFile())
+                out.push(candidate);
+        }
+        catch {
+            // ENOENT (or any other stat failure): silently skip.
+        }
+    }
+    const frozen = Object.freeze(out);
+    DEFAULT_PROMPT_FILES_CACHE.set(cwd, frozen);
+    return frozen;
+}
+/**
+ * Test-only hook to clear the per-cwd default-prompt cache. Used by
+ * tests that mutate the workspace mid-run and need the next
+ * `buildProviderPrompts` call to re-stat the disk.
+ */
+function __resetDefaultPromptFilesCacheForTests() {
+    DEFAULT_PROMPT_FILES_CACHE.clear();
 }
 /**
  * Format the diff's file list as an explicit, copy-pastable block the
@@ -12118,14 +12300,31 @@ function buildFilesInDiffBlock(diffText) {
         "Do NOT cite any path that is not in this list. If a finding requires a file not in the diff, omit the finding entirely rather than fabricating a path.",
     ].join("\n");
 }
-async function pickSystemPrompt(input) {
+async function pickSystemPrompt(input, defaultPaths) {
     const inline = input.parsed.prompt;
     if (typeof inline === "string" && inline.length > 0) {
         return inline;
     }
+    // Precedence for system prompt file resolution:
+    //   1. `--prompt-files` (array) — when set, COMPLETELY OVERRIDES the
+    //      default-lookup list. The single-file `--prompt-file` is
+    //      ignored in this branch so the array semantics are honest.
+    //   2. `--prompt-file` (single, legacy) — used as-is.
+    //   3. Auto-discover from `DEFAULT_PROMPT_FILE_PATHS` (CLAUDE.md,
+    //      AGENTS.md, .github/copilot-instructions.md, .cursorrules,
+    //      GEMINI.md). Files that do not exist are skipped.
+    //   4. Built-in `buildDefaultSystemPrompt()`.
+    const promptFilesRaw = resolveField(input.parsed.promptFiles, input.env[ENV_KEYS.UMACTUALLY_PROMPT_FILES], "");
+    const promptFilesList = splitPromptFileList(promptFilesRaw);
+    if (promptFilesList.length > 0) {
+        return readPromptFiles(promptFilesList, DEFAULT_PROMPT_BYTE_CAP, { cwd: input.cwd });
+    }
     const filePath = resolveField(input.parsed.promptFile, input.env[ENV_KEYS.UMACTUALLY_PROMPT_FILE], "");
     if (filePath !== undefined && filePath.length > 0) {
         return readPromptFiles([filePath], DEFAULT_PROMPT_BYTE_CAP, { cwd: input.cwd });
+    }
+    if (defaultPaths.length > 0) {
+        return readPromptFiles(defaultPaths, DEFAULT_PROMPT_BYTE_CAP, { cwd: input.cwd });
     }
     return buildDefaultSystemPrompt();
 }
@@ -12197,16 +12396,25 @@ function buildDefaultSystemPrompt() {
         "If the diff is empty or has no actionable findings, return verdict=COMMENT with an empty comments array. Do not invent findings to fill the response.",
     ].join("\n");
 }
-async function readAdditionalPrompt(input) {
+async function readAdditionalPrompt(input, defaultPaths) {
     const inline = input.parsed.additionalPrompt;
     if (typeof inline === "string" && inline.length > 0) {
         return inline;
     }
-    const filePath = resolveField(input.parsed.additionalPromptFile, input.env[ENV_KEYS.UMACTUALLY_ADDITIONAL_PROMPT_FILE], "");
-    if (filePath === undefined || filePath.length === 0) {
-        return "";
+    // Precedence mirrors `pickSystemPrompt`: array overrides defaults,
+    // single-file is the legacy path, then default-lookup, then empty.
+    const filesRaw = resolveField(input.parsed.additionalPromptFiles, input.env[ENV_KEYS.UMACTUALLY_ADDITIONAL_PROMPT_FILES], "");
+    const filesList = splitPromptFileList(filesRaw);
+    if (filesList.length > 0) {
+        return readPromptFiles(filesList, DEFAULT_PROMPT_BYTE_CAP, { cwd: input.cwd });
     }
-    return readPromptFiles([filePath], DEFAULT_PROMPT_BYTE_CAP, { cwd: input.cwd });
+    const filePath = resolveField(input.parsed.additionalPromptFile, input.env[ENV_KEYS.UMACTUALLY_ADDITIONAL_PROMPT_FILE], "");
+    if (filePath !== undefined && filePath.length > 0) {
+        return readPromptFiles([filePath], DEFAULT_PROMPT_BYTE_CAP, { cwd: input.cwd });
+    }
+    if (defaultPaths.length === 0)
+        return "";
+    return readPromptFiles(defaultPaths, DEFAULT_PROMPT_BYTE_CAP, { cwd: input.cwd });
 }
 
 ;// CONCATENATED MODULE: ./src/cli/verify-findings.ts
@@ -14863,8 +15071,10 @@ const ACTION_INPUT_FIELDS = {
     model: true,
     prompt: true,
     promptFile: true,
+    promptFiles: true,
     additionalPrompt: true,
     additionalPromptFile: true,
+    additionalPromptFiles: true,
     walkthrough: true,
     diagnostic: true,
     dryRun: true,
@@ -14902,26 +15112,28 @@ const LEGACY_ARG_ORDER_ENTRIES = [
     ["model", 2],
     ["prompt", 3],
     ["promptFile", 4],
-    ["additionalPrompt", 5],
-    ["additionalPromptFile", 6],
-    ["sonarHostUrl", 7],
-    ["sonarToken", 8],
-    ["sonarProjectKey", 9],
-    ["provider", 10],
-    ["githubApiBase", 11],
-    ["effort", 12],
-    ["minimumSeverity", 13],
-    ["reviewTimeoutSeconds", 14],
-    ["stallSeconds", 15],
-    ["maxOutputTokens", 16],
-    ["maxComments", 17],
-    ["reviewFileLimit", 18],
-    ["sonarTimeoutSeconds", 19],
+    ["promptFiles", 5],
+    ["additionalPrompt", 6],
+    ["additionalPromptFile", 7],
+    ["sonarHostUrl", 8],
+    ["sonarToken", 9],
+    ["sonarProjectKey", 10],
+    ["provider", 11],
+    ["githubApiBase", 12],
+    ["effort", 13],
+    ["minimumSeverity", 14],
+    ["reviewTimeoutSeconds", 15],
+    ["stallSeconds", 16],
+    ["maxOutputTokens", 17],
+    ["maxComments", 18],
+    ["reviewFileLimit", 19],
+    ["sonarTimeoutSeconds", 20],
     ["includeSonarqube", 21],
     ["walkthrough", 22],
     ["diagnostic", 23],
     ["debugRawResponse", 24],
     ["simulateFindings", 25],
+    ["additionalPromptFiles", 26],
 ];
 const LEGACY_ARG_ORDER = new Map(LEGACY_ARG_ORDER_ENTRIES);
 function appendCommonInputArgs(args, inputs) {
@@ -15058,8 +15270,10 @@ function readActionInputs(env = process.env) {
         model: get("model"),
         prompt: get("prompt"),
         promptFile: get("prompt-file"),
+        promptFiles: get("prompt-files"),
         additionalPrompt: get("additional-prompt"),
         additionalPromptFile: get("additional-prompt-file"),
+        additionalPromptFiles: get("additional-prompt-files"),
         walkthrough: getBool("walkthrough", false),
         diagnostic: getBool("diagnostic", false),
         dryRun: getDryRun(),

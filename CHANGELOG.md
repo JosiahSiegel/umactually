@@ -8,6 +8,27 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- **Default repository prompt auto-discovery**: UmActually now
+  auto-loads common agent-instruction files from the repository root
+  when no explicit prompt override is supplied. The default-lookup
+  list (in order) is `CLAUDE.md`, `AGENTS.md`,
+  `.github/copilot-instructions.md`, `.cursorrules`, and `GEMINI.md`.
+  Files that do not exist are silently skipped, so repos that lack
+  any of these fall through cleanly to the existing built-in default
+  system prompt. The lookup runs against the workflow
+  `working-directory` and is subject to the existing path-safety
+  refusals (absolute paths, `..` traversal, symlink escape).
+- **`prompt-files` and `additional-prompt-files` inputs** (CLI flags
+  `--prompt-files` / `--additional-prompt-files`; env vars
+  `UMACTUALLY_PROMPT_FILES` / `UMACTUALLY_ADDITIONAL_PROMPT_FILES`):
+  comma/newline-separated lists of repository-relative paths. When
+  non-empty, the list **completely overrides** the default-lookup
+  list and the legacy single-path `prompt-file` /
+  `additional-prompt-file` input. Files are concatenated in the
+  listed order with the existing `\n\n---\n\n` separator. Same
+  cwd-confinement + byte-cap security as the legacy single-file
+  reader.
+
 - **Native Anthropic Messages API provider (PR #31)**: third
   provider family alongside `openai-compatible` and `copilot`. Wire
   shape is the Anthropic Messages schema (`POST /v1/messages`,

@@ -38,6 +38,9 @@ These inputs mirror `action.yml`.
 | `prompt` | No | `""` | Inline system prompt override. Wins over `prompt-file`. |
 | `additional-prompt` | No | `""` | Inline additional prompt override. Wins over `additional-prompt-file`. |
 | `prompt-file` | No | `""` | Optional repository-relative prompt file. Absolute paths and path traversal are rejected. |
+| `prompt-files` | No | `""` | Comma/newline-separated list of repository-relative prompt files. **Completely overrides** the default-lookup list (`CLAUDE.md`, `AGENTS.md`, `.github/copilot-instructions.md`, `.cursorrules`, `GEMINI.md`) when non-empty. Files are concatenated in the listed order. |
+| `additional-prompt-file` | No | `""` | Optional repository-relative additional prompt file. Absolute paths and path traversal are rejected. |
+| `additional-prompt-files` | No | `""` | Comma/newline-separated list of repository-relative additional prompt files. **Completely overrides** the default-lookup list when non-empty. |
 | `dry-run` | No | `false` | Generate review output without posting comments or status. |
 
 See [docs/configuration.md](docs/configuration.md) for environment variables, precedence, and platform-specific defaults.
