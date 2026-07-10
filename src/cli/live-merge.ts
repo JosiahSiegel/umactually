@@ -124,9 +124,23 @@ function aggregateConfidenceFilter(
   let globalIndex = 0;
   for (const o of outcomes) {
     if (o.confidenceFilter === undefined) {
-      // Older outcomes (simulate-findings path, fixtures) may not
-      // have run the confidence filter. Treat their kept set as
-      // kept; skip the (empty) downgraded list.
+      // Legacy / older outcomes (simulate-findings path, fixtures,
+      // and outcomes from before the confidence filter was wired
+      // in `applyVerifyFilter`) do not carry a `confidenceFilter`.
+      // The most defensible default is to treat their already-post-
+      // verified-facts `review.comments` as confidence-kept. The
+      // upstream contract is: by the time an outcome is passed
+      // here, `o.review.comments` is the POST-VERIFIED-FACTS list
+      // (verified-facts drops the contradicted findings, but the
+      // confidence-filter pass had not run yet for legacy
+      // outcomes). So this is NOT a double-count of
+      // `verifiedFactsFilter.kept` — it's the next step in the
+      // chain that legacy outcomes just happen to skip. The
+      // audit-artifact count for the legacy path will therefore
+      // match `review.comments.length` (the post-merge list),
+      // not `verifiedFactsFilter.kept.length`. Pinned by
+      // `test/unit/live-merge.test.ts` MERGE-CONFIDENCE legacy
+      // compat case.
       for (const c of o.review.comments) {
         kept.push(c);
         globalIndex += 1;

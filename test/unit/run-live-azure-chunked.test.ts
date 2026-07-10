@@ -447,13 +447,18 @@ describe("runLive Azure orchestration — chunked path", () => {
     //
     // We force a 500 on the first chunk and inspect the captured
     // stderr. The provider-key secret MUST NOT appear in the warning
-    // text.
+    // text. To actually exercise the sanitization (rather than
+    // passing trivially because the 500 body doesn't echo the
+    // secret), we put the provider key into the file body so the
+    // chunk preview contains it. A buggy implementation that only
+    // sanitized the platform token would leak `provider-key-secret`
+    // into the warning via the chunk-preview line.
     const fixture = buildMultiFileFixture(2, 4_000);
     const platformOnly = buildMultiFileRoutes({
       fileCount: 2,
       changes: fixture.changes,
       perChunkProviderBody: () => "{}",
-      fileBody: FILE_BODY,
+      fileBody: (path: string) => `// ${path}\n// API key for the synthetic provider: provider-key-secret\nconst placeholder = true;\n`,
     }).filter((route) => !route.match.toString().includes("/v1/responses"));
     let counter = 0;
     const routes: FetchRoute[] = [

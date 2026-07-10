@@ -62,6 +62,14 @@ describe("buildProviderPrompts", () => {
     expect(REVIEW_PAYLOAD_JSON_SCHEMA.type).toBe("object");
     expect(REVIEW_PAYLOAD_JSON_SCHEMA.required).toContain("verdict");
     expect(REVIEW_PAYLOAD_JSON_SCHEMA.required).toContain("comments");
+    // summary and suppressed_comments are part of the documented
+    // output contract (see src/provider/provider-parse.ts and the
+    // provider prompt above) — pin them here too so an
+    // accidental drop of one of these fields from
+    // REVIEW_PAYLOAD_JSON_SCHEMA fails the test loudly rather
+    // than at runtime when the parser rejects the missing key.
+    expect(REVIEW_PAYLOAD_JSON_SCHEMA.required).toContain("summary");
+    expect(REVIEW_PAYLOAD_JSON_SCHEMA.required).toContain("suppressed_comments");
   });
 
   it("system prompt includes the quote-first workflow (Layer 2-B)", async () => {

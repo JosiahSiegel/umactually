@@ -224,9 +224,14 @@ describe("anthropic-messages provider client — RED contract", () => {
     const retryMsgContent = retryMessages[0]!["content"] as string;
     // The retry prepends a JSON-only reminder so the model emits JSON.
     expect(retryMsgContent.startsWith("Your previous response did not contain a valid JSON review payload.")).toBe(true);
-    // Critically the original user content is ALSO appended (not replaced):
-    // replacing it would cause the model to emit "no code context" prose.
-    expect(retryMsgContent).toContain("user prompt");
+    // Critically the original user content is APPENDED to the
+    // reminder (not replaced). Replacing it would cause the model
+    // to emit "no code context" prose. The "endsWith" assertion
+    // pins both that the user content is present AND that nothing
+    // was appended after it (a buggy implementation that appended
+    // a longer trailer containing the literal "user prompt"
+    // substring would still satisfy `toContain` but fails this).
+    expect(retryMsgContent.endsWith("user prompt")).toBe(true);
   });
 
   it("ANTH-RED-005 surfaces a truncated-stream parse-fail when stop_reason=max_tokens and raw is large", async () => {
