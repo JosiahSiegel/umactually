@@ -45,6 +45,14 @@ UmActually is the only one with all three of:
 
 ## Quickstart
 
+> **⚠️ Dev Preview — read before wiring into a branch policy.**
+> This task has been built and type-checked but has not been
+> sideloaded into a real ADO organization. **Before granting the
+> build service `Contribute to pull requests` and adding this as a
+> required branch policy, run it in dry-run mode for at least 3-5
+> PRs and review the output artifacts.** A broken review post is
+> harder to roll back than a failed build.
+
 ### 1. Install the extension
 
 Sideload the `.vsix` (see [`scripts/package-extension.sh`](scripts/package-extension.sh))
@@ -92,7 +100,19 @@ steps:
       provider: anthropic
       effort: medium
       minimumSeverity: medium
-      noDryRun: true   # set to false for first-time setup
+      # IMPORTANT: keep `noDryRun: false` for the first 3-5 PR builds.
+      # Dry-run mode logs the review payload to the build output and
+      # writes it to `outputArtifact` (default
+      # `artifacts/manual/s4-azure-mocked-run.json`) WITHOUT posting
+      # any inline review threads. Review the artifacts to confirm:
+      #   1. The build service identity has the right permissions
+      #   2. The provider key + URL resolve correctly
+      #   3. The findings are sensible (no fabricated paths, sensible
+      #      severity distribution)
+      # Only flip to `noDryRun: true` after the dry-run output is
+      # acceptable. Posting a broken review to a PR is harder to
+      # roll back than a failed build.
+      noDryRun: false
       reviewFileLimit: 200
       maxComments: 50
     env:
@@ -157,6 +177,51 @@ leak-detector runs) by default; the always-on redaction is independent.
 See [docs/security.md](https://github.com/JosiahSiegel/umactually/blob/main/docs/security.md)
 for the full redaction-pattern list and the scope of the
 `vso.code_write` / `vso.threads_full` permissions.
+
+### Leak-finding safety
+
+The CLI's `leak` severity tier is a documented "always-bypass" tier:
+leak findings surface as inline PR comments regardless of the
+`minimumSeverity` threshold. This is desirable for finding leaks
+early, but has a **broadcast-amplification** risk: inline PR
+comments are visible to anyone with repo read access and end up in
+email notifications, which can broadcast a real secret to a much
+wider audience than the build service identity that originally
+detected it.
+
+**Recommended patterns:**
+
+- **For most repos**: set `detectLeaks: false` on the task. The
+  always-on redaction still scrubs secrets before the diff reaches
+  the provider, so no secret ever lands in the provider. The
+  `leak` severity tier is a defense-in-depth, not a primary signal.
+- **For repos where leaks are expected** (e.g. a `.env.example`
+  update that contains realistic-looking API keys for documentation
+  purposes): set `detectLeaks: false` and add a `.gitguardian.yaml`
+  in the repo with the synthetic fixtures in `ignored_paths` to
+  suppress false positives. See the parent repo's
+  [.gitguardian.yaml](https://github.com/JosiahSiegel/umactually/blob/main/.gitguardian.yaml)
+  for the pattern.
+- **For repos that genuinely need PR-thread leak posts**: pair
+  the task with a gate step that requires a senior reviewer to
+  approve the post before it's visible. This is not currently
+  automated; the build policy must be set to "Required" + "Request
+  approval" in the ADO project settings.
+
+The CLI's `s5-redaction-report.json` artifact (written when leak
+detection is enabled) is the canonical surface for credential-leak
+auditing. The artifact stays in the build pipeline and is not
+exposed to PR-comment subscribers by default.
+
+### CLI argv secret masking
+
+The task's `console.log` of the spawned CLI's argv masks any value
+following `--api-key` or `--sonar-token` (replaced with `***`).
+The `--api-url` is logged in full (it's a non-secret URL). Build
+log redaction at the ADO agent level is independent and also
+applies to the full unredacted argv, but masking at the task level
+defense-in-depths against log-retention settings that are more
+permissive than the redaction policy expects.
 
 ## License
 
