@@ -106,6 +106,22 @@ steps:
       if [ -n "${UMACTUALLY_ADDITIONAL_PROMPT_FILES:-}" ]; then
         EXTRA_ARGS+=(--additional-prompt-files "${UMACTUALLY_ADDITIONAL_PROMPT_FILES}")
       fi
+      # Conditionally forward the strict-schema and verify-findings
+      # toggles. Both default ON in the CLI; opt out with "false".
+      if [ -n "${UMACTUALLY_STRICT_SCHEMA:-}" ]; then
+        if [ "${UMACTUALLY_STRICT_SCHEMA}" = "false" ]; then
+          EXTRA_ARGS+=(--no-strict-schema)
+        else
+          EXTRA_ARGS+=(--strict-schema)
+        fi
+      fi
+      if [ -n "${UMACTUALLY_VERIFY_FINDINGS:-}" ]; then
+        if [ "${UMACTUALLY_VERIFY_FINDINGS}" = "false" ]; then
+          EXTRA_ARGS+=(--no-verify-findings)
+        else
+          EXTRA_ARGS+=(--verify-findings)
+        fi
+      fi
       node bin/umactually-pr-review.mjs \
         --platform azure-devops \
         --event "$AZURE_EVENT_PATH" \
@@ -136,6 +152,12 @@ steps:
       # runs its default-lookup list (CLAUDE.md, AGENTS.md, etc.).
       UMACTUALLY_PROMPT_FILES: $(UMACTUALLY_PROMPT_FILES)
       UMACTUALLY_ADDITIONAL_PROMPT_FILES: $(UMACTUALLY_ADDITIONAL_PROMPT_FILES)
+      # UMACTUALLY_STRICT_SCHEMA / UMACTUALLY_VERIFY_FINDINGS are
+      # OPTIONAL boolean toggles. Default ON in the CLI; set to
+      # "false" to opt out. When unset, the CLI's default ON is
+      # preserved.
+      UMACTUALLY_STRICT_SCHEMA: $(UMACTUALLY_STRICT_SCHEMA)
+      UMACTUALLY_VERIFY_FINDINGS: $(UMACTUALLY_VERIFY_FINDINGS)
 
   - task: PublishPipelineArtifact@1
     condition: always()

@@ -82,3 +82,45 @@ describe("examples/azure/azure-pipelines.yml: UMACTUALLY_PROMPT_FILES / UMACTUAL
     expect(yaml).toContain(`EXTRA_ARGS+=(${`--additional-prompt-files`}`);
   });
 });
+
+describe("azure-pipelines.yml: UMACTUALLY_STRICT_SCHEMA / UMACTUALLY_VERIFY_FINDINGS forwarding (CLI-first coverage)", () => {
+  it("root azure-pipelines.yml forwards both toggles to the CLI conditionally", async () => {
+    // The CLI-first contract requires that every CLI flag is
+    // forwardable from the Azure DevOps pipeline. The strict-schema
+    // and verify-findings toggles are default-ON in the CLI; the
+    // pipeline forwards them only when the operator sets the env
+    // vars to opt out (the `false` value translates to
+    // --no-strict-schema / --no-verify-findings).
+    const yaml = await readFile(
+      join(process.cwd(), "azure-pipelines.yml"),
+      "utf8",
+    );
+    // Env var bindings.
+    expect(yaml).toContain("UMACTUALLY_STRICT_SCHEMA: $(UMACTUALLY_STRICT_SCHEMA)");
+    expect(yaml).toContain("UMACTUALLY_VERIFY_FINDINGS: $(UMACTUALLY_VERIFY_FINDINGS)");
+    // Conditional forward logic.
+    expect(yaml).toContain('if [ -n "${UMACTUALLY_STRICT_SCHEMA:-}" ]');
+    expect(yaml).toContain('if [ -n "${UMACTUALLY_VERIFY_FINDINGS:-}" ]');
+    // Negative-form forward for opt-out.
+    expect(yaml).toContain("EXTRA_ARGS+=(--no-strict-schema");
+    expect(yaml).toContain("EXTRA_ARGS+=(--no-verify-findings");
+    // Positive-form forward for explicit opt-in (default behavior).
+    expect(yaml).toContain("EXTRA_ARGS+=(--strict-schema");
+    expect(yaml).toContain("EXTRA_ARGS+=(--verify-findings");
+  });
+});
+
+describe("examples/azure/azure-pipelines.yml: UMACTUALLY_STRICT_SCHEMA / UMACTUALLY_VERIFY_FINDINGS forwarding", () => {
+  it("example pipeline forwards both toggles to the CLI conditionally", async () => {
+    const yaml = await readFile(
+      join(process.cwd(), "examples/azure/azure-pipelines.yml"),
+      "utf8",
+    );
+    expect(yaml).toContain("UMACTUALLY_STRICT_SCHEMA: $(UMACTUALLY_STRICT_SCHEMA)");
+    expect(yaml).toContain("UMACTUALLY_VERIFY_FINDINGS: $(UMACTUALLY_VERIFY_FINDINGS)");
+    expect(yaml).toContain('if [ -n "${UMACTUALLY_STRICT_SCHEMA:-}" ]');
+    expect(yaml).toContain('if [ -n "${UMACTUALLY_VERIFY_FINDINGS:-}" ]');
+    expect(yaml).toContain("EXTRA_ARGS+=(--no-strict-schema");
+    expect(yaml).toContain("EXTRA_ARGS+=(--no-verify-findings");
+  });
+});

@@ -51,6 +51,8 @@ const DEFAULT_ACTION_INPUTS: ActionInputs = {
   dryRun: false,
   debugRawResponse: false,
   simulateFindings: false,
+  strictSchema: true,
+  verifyFindings: true,
   reviewTimeoutSeconds: 300,
   stallSeconds: 270,
   maxOutputTokens: 16_000,
@@ -639,6 +641,49 @@ describe("action entry buildArgs: input forwarding", () => {
       "--additional-prompt-files",
       "prompts/user-a.md\nprompts/user-b.md",
     ]);
+  });
+
+  it("forwards --no-strict-schema / --no-verify-findings from GitHub Actions INPUT_* env vars to CLI argv", async () => {
+    // End-to-end smoke for the strict-schema / verify-findings
+    // toggles. Both default ON in the CLI; the action's
+    // `with: strict-schema: 'false'` opt-out must reach the CLI
+    // as `--no-strict-schema`. Same for verify-findings.
+    const env = {
+      GITHUB_ACTIONS: "true",
+      INPUT_STRICT_SCHEMA: "false",
+      INPUT_VERIFY_FINDINGS: "false",
+      INPUT_DRY_RUN: "false",
+    } satisfies NodeJS.ProcessEnv;
+
+    const args = await buildArgs(env, process.cwd());
+
+    expect(args).toContain("--no-strict-schema");
+    expect(args).toContain("--no-verify-findings");
+    // And: the positive forms MUST NOT be emitted when the value is
+    // false (pushFieldValue only emits --flag when value === true).
+    expect(args).not.toContain("--strict-schema");
+    expect(args).not.toContain("--verify-findings");
+  });
+
+  it("emits --strict-schema / --verify-findings by default (action surfaces the CLI default)", async () => {
+    // The CLI defaults are ON. The action layer is data-driven from
+    // ActionInputs.strictSchema / .verifyFindings, which the read-inputs
+    // layer initializes to true (the field-schema default). So when
+    // the workflow does NOT set the inputs, the action emits the
+    // positive form — explicit surface, no implicit CLI default
+    // dependency. This matches the existing pattern for
+    // --detect-leaks (default ON).
+    const env = {
+      GITHUB_ACTIONS: "true",
+      INPUT_DRY_RUN: "true",
+    } satisfies NodeJS.ProcessEnv;
+
+    const args = await buildArgs(env, process.cwd());
+
+    expect(args).toContain("--strict-schema");
+    expect(args).toContain("--verify-findings");
+    expect(args).not.toContain("--no-strict-schema");
+    expect(args).not.toContain("--no-verify-findings");
   });
 
   it("does NOT emit --prompt-files / --additional-prompt-files when the inputs are unset", async () => {

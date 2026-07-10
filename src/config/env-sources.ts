@@ -13,6 +13,8 @@ const ENV_SOURCE_FIELDS = {
   promptFiles: "promptSystemFiles",
   additionalPromptFile: "promptUserFile",
   additionalPromptFiles: "promptUserFiles",
+  strictSchema: "strictSchema",
+  verifyFindings: "verifyFindings",
   stallSeconds: "stallTimeoutSeconds",
   includeSonarqube: "sonarEnabled",
   sonarHostUrl: "sonarHost",

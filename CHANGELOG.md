@@ -37,6 +37,22 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   CLI so an unset value produces a clean argv (no empty
   `--prompt-files ""` flag). See
   [docs/azure-devops.md#forwarding-prompt-file-lists-overrides-the-default-lookup-list](docs/azure-devops.md#forwarding-prompt-file-lists-overrides-the-default-lookup-list).
+- **CLI-first coverage for `strict-schema` and `verify-findings`**:
+  both CLI flags are now exposed as GitHub Actions inputs
+  (`strict-schema`, `verify-findings`; underscore-key synonyms
+  `strict_schema`, `verify_findings` for runners that need them)
+  and as Azure DevOps pipeline variables
+  (`UMACTUALLY_STRICT_SCHEMA`, `UMACTUALLY_VERIFY_FINDINGS`). The
+  action emits the negation form (`--no-strict-schema` /
+  `--no-verify-findings`) when the workflow sets the input to
+  `false`, and the positive form when set to `true` (matching
+  the existing `--detect-leaks` / `--no-detect-leaks` pattern).
+  The Azure DevOps pipeline conditionally forwards the env vars
+  to the CLI. This closes the last two CLI flags that were
+  previously action-invisible — the CLI is now the canonical
+  surface for ALL functionality, and the action + ADO surfaces
+  are thin pass-through wrappers. Pinned by
+  `test/unit/cli-first-contract.test.ts`.
 
 - **Native Anthropic Messages API provider (PR #31)**: third
   provider family alongside `openai-compatible` and `copilot`. Wire

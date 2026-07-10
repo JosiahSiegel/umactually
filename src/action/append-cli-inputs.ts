@@ -18,6 +18,8 @@ const ACTION_INPUT_FIELDS = {
   dryRun: true,
   debugRawResponse: true,
   simulateFindings: true,
+  strictSchema: true,
+  verifyFindings: true,
   reviewTimeoutSeconds: true,
   stallSeconds: true,
   maxOutputTokens: true,
@@ -86,8 +88,17 @@ export function appendCommonInputArgs(args: string[], inputs: ActionInputs): str
     pushFieldValue(args, def.type, flag, inputs[def.field]);
   }
 
+  // Manual boolean handlers — these need negation because the CLI
+  // defaults are ON. The data-driven loop above only emits the
+  // positive form (--flag when value is true), so for default-ON
+  // flags the operator must be able to opt out via the negation
+  // form (--no-flag). These four are the only default-ON CLI flags
+  // exposed via the action surface; any new default-ON field-schema
+  // entry must be added here AND to isManualBooleanField().
   args.push(inputs.detectLeaks ? "--detect-leaks" : "--no-detect-leaks");
   args.push(inputs.dryRun ? "--dry-run" : "--no-dry-run");
+  args.push(inputs.strictSchema ? "--strict-schema" : "--no-strict-schema");
+  args.push(inputs.verifyFindings ? "--verify-findings" : "--no-verify-findings");
   return args;
 }
 
@@ -106,7 +117,12 @@ function isCallerOwnedField(def: FieldDef<FieldType>): boolean {
 }
 
 function isManualBooleanField(def: FieldDef<FieldType>): boolean {
-  return def.field === "detectLeaks" || def.field === "dryRun";
+  return (
+    def.field === "detectLeaks" ||
+    def.field === "dryRun" ||
+    def.field === "strictSchema" ||
+    def.field === "verifyFindings"
+  );
 }
 
 function isFieldInActionInputs(field: string): field is keyof ActionInputs {

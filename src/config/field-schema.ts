@@ -152,6 +152,22 @@ export const FIELDS = {
     type: "boolean",
     defaultValue: false,
   },
+  strictSchema: {
+    field: "strictSchema",
+    flag: "--strict-schema",
+    input: "strict-schema",
+    env: ["UMACTUALLY_STRICT_SCHEMA", "REVIEW_STRICT_SCHEMA"],
+    type: "boolean",
+    defaultValue: true,
+  },
+  verifyFindings: {
+    field: "verifyFindings",
+    flag: "--verify-findings",
+    input: "verify-findings",
+    env: ["UMACTUALLY_VERIFY_FINDINGS", "REVIEW_VERIFY_FINDINGS"],
+    type: "boolean",
+    defaultValue: true,
+  },
   reviewTimeoutSeconds: {
     field: "reviewTimeoutSeconds",
     flag: "--review-timeout-seconds",

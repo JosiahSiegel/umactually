@@ -151,6 +151,22 @@ const FIELDS = {
         type: "boolean",
         defaultValue: false,
     },
+    strictSchema: {
+        field: "strictSchema",
+        flag: "--strict-schema",
+        input: "strict-schema",
+        env: ["UMACTUALLY_STRICT_SCHEMA", "REVIEW_STRICT_SCHEMA"],
+        type: "boolean",
+        defaultValue: true,
+    },
+    verifyFindings: {
+        field: "verifyFindings",
+        flag: "--verify-findings",
+        input: "verify-findings",
+        env: ["UMACTUALLY_VERIFY_FINDINGS", "REVIEW_VERIFY_FINDINGS"],
+        type: "boolean",
+        defaultValue: true,
+    },
     reviewTimeoutSeconds: {
         field: "reviewTimeoutSeconds",
         flag: "--review-timeout-seconds",
@@ -3512,6 +3528,8 @@ const ENV_SOURCE_FIELDS = {
     promptFiles: "promptSystemFiles",
     additionalPromptFile: "promptUserFile",
     additionalPromptFiles: "promptUserFiles",
+    strictSchema: "strictSchema",
+    verifyFindings: "verifyFindings",
     stallSeconds: "stallTimeoutSeconds",
     includeSonarqube: "sonarEnabled",
     sonarHostUrl: "sonarHost",
@@ -4020,6 +4038,10 @@ const ENV_KEYS = {
     UMACTUALLY_PROMPT_FILES: "UMACTUALLY_PROMPT_FILES",
     UMACTUALLY_ADDITIONAL_PROMPT_FILE: "UMACTUALLY_ADDITIONAL_PROMPT_FILE",
     UMACTUALLY_ADDITIONAL_PROMPT_FILES: "UMACTUALLY_ADDITIONAL_PROMPT_FILES",
+    UMACTUALLY_STRICT_SCHEMA: "UMACTUALLY_STRICT_SCHEMA",
+    UMACTUALLY_VERIFY_FINDINGS: "UMACTUALLY_VERIFY_FINDINGS",
+    REVIEW_STRICT_SCHEMA: "REVIEW_STRICT_SCHEMA",
+    REVIEW_VERIFY_FINDINGS: "REVIEW_VERIFY_FINDINGS",
     REVIEW_PROVIDER_URL: "REVIEW_PROVIDER_URL",
     REVIEW_PROVIDER_API_KEY: "REVIEW_PROVIDER_API_KEY",
     REVIEW_PROVIDER_MODEL: "REVIEW_PROVIDER_MODEL",
@@ -15196,6 +15218,8 @@ const ACTION_INPUT_FIELDS = {
     dryRun: true,
     debugRawResponse: true,
     simulateFindings: true,
+    strictSchema: true,
+    verifyFindings: true,
     reviewTimeoutSeconds: true,
     stallSeconds: true,
     maxOutputTokens: true,
@@ -15261,8 +15285,17 @@ function appendCommonInputArgs(args, inputs) {
             continue;
         pushFieldValue(args, def.type, flag, inputs[def.field]);
     }
+    // Manual boolean handlers — these need negation because the CLI
+    // defaults are ON. The data-driven loop above only emits the
+    // positive form (--flag when value is true), so for default-ON
+    // flags the operator must be able to opt out via the negation
+    // form (--no-flag). These four are the only default-ON CLI flags
+    // exposed via the action surface; any new default-ON field-schema
+    // entry must be added here AND to isManualBooleanField().
     args.push(inputs.detectLeaks ? "--detect-leaks" : "--no-detect-leaks");
     args.push(inputs.dryRun ? "--dry-run" : "--no-dry-run");
+    args.push(inputs.strictSchema ? "--strict-schema" : "--no-strict-schema");
+    args.push(inputs.verifyFindings ? "--verify-findings" : "--no-verify-findings");
     return args;
 }
 function commonInputFieldDefs() {
@@ -15277,7 +15310,10 @@ function isCallerOwnedField(def) {
     return def.field === "platform" || def.field === "prNumber" || def.field === "repo";
 }
 function isManualBooleanField(def) {
-    return def.field === "detectLeaks" || def.field === "dryRun";
+    return (def.field === "detectLeaks" ||
+        def.field === "dryRun" ||
+        def.field === "strictSchema" ||
+        def.field === "verifyFindings");
 }
 function isFieldInActionInputs(field) {
     return Object.hasOwn(ACTION_INPUT_FIELDS, field);
@@ -15395,6 +15431,8 @@ function readActionInputs(env = process.env) {
         dryRun: getDryRun(),
         debugRawResponse: getBool("debug-raw-response", false),
         simulateFindings: getBool("simulate-findings", false),
+        strictSchema: getBool("strict-schema", FIELDS.strictSchema.defaultValue),
+        verifyFindings: getBool("verify-findings", FIELDS.verifyFindings.defaultValue),
         // Numeric defaults sourced from FIELDS.<x>.defaultValue so the
         // schema stays the single source of truth — adding a new integer
         // field doesn't require editing this file.

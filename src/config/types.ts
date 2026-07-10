@@ -173,6 +173,8 @@ export type EnvSources = {
   readonly promptSystemFiles?: string;
   readonly promptUserFile?: string;
   readonly promptUserFiles?: string;
+  readonly strictSchema?: string;
+  readonly verifyFindings?: string;
   readonly promptByteCap?: string;
   readonly walkthrough?: string;
   readonly diagnostic?: string;

@@ -33,6 +33,8 @@ These inputs mirror `action.yml`.
 | `review-timeout-seconds` | No | `300` | Maximum review wall-clock time in seconds. |
 | `stall-seconds` | No | `270` | Seconds without provider output before the review is considered stalled. |
 | `max-output-tokens` | No | `16000` | Maximum provider output token budget. |
+| `strict-schema` | No | `true` | Send `response_format: { type: "json_schema", strict: true }` on the wire so the provider enforces the review schema at decode time. Set to `false` for providers that reject the strict-schema payload (older Copilot routes, certain self-hosted OpenAI-compatible servers). The in-context system prompt always carries the schema, so disabling the wire constraint degrades to "shape guide only" — the post-filter still catches semantic errors. CLI flag: `--strict-schema` / `--no-strict-schema`. |
+| `verify-findings` | No | `true` | Deterministic re-verification of the model's `comments[]` against the supplied diff before posting. Any comment whose (path, line) does not anchor is dropped before posting. Set to `false` only if the caller has out-of-band validation. CLI flag: `--verify-findings` / `--no-verify-findings`. |
 | `review-file-limit` | No | `200` | Cap on the number of changed files the live review will process. PRs that exceed this get a "diff too large" parent card with zero findings — the per-chunk LLM reviews of huge initial-import diffs produce hallucinated findings. Set to `0` to disable. |
 | `detect-leaks` | No | `true` | Run secret-leak detection on the diff. Disable with the `--no-detect-leaks` CLI flag. |
 | `prompt` | No | `""` | Inline system prompt override. Wins over `prompt-file`. |

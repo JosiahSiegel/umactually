@@ -131,6 +131,34 @@ inputs:
     description: Replace an empty live provider payload with a deterministic multi-finding fixture. Live results are always preferred when the provider returns real findings.
     required: false
     default: "false"
+  strict-schema:
+    description: >
+      Send `response_format: { type: "json_schema", strict: true }` on the wire so the
+      provider enforces the review schema at decode time. Set to false via
+      `--no-strict-schema` (or the `UMACTUALLY_STRICT_SCHEMA=false` env
+      var) for providers that reject the strict-schema payload. Default
+      ON. The in-context system prompt always carries the schema, so
+      disabling the wire constraint degrades to "shape guide only" — the
+      post-filter still catches semantic errors.
+    required: false
+    default: "true"
+  strict_schema:
+    description: Synonym for strict-schema; some runners require an underscore key.
+    required: false
+    default: "true"
+  verify-findings:
+    description: >
+      Deterministic re-verification of the model's `comments[]` against
+      the supplied diff before posting. Any comment whose (path, line)
+      does not anchor is dropped before posting. Set to false via
+      `--no-verify-findings` (or the `UMACTUALLY_VERIFY_FINDINGS=false`
+      env var) only if the caller has out-of-band validation. Default ON.
+    required: false
+    default: "true"
+  verify_findings:
+    description: Synonym for verify-findings; some runners require an underscore key.
+    required: false
+    default: "true"
   review-timeout-seconds:
     description: Hard ceiling for the full model-call retry budget.
     required: false
