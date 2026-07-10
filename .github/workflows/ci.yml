@@ -8,11 +8,15 @@ on:
     branches:
       - main
 
-# Cancel in-progress CI runs on the same branch/PR to avoid wasted minutes
-# when a new commit lands on a PR before the previous run finishes.
+# Cancel in-progress CI runs on the same PR to avoid wasted minutes when
+# a new commit lands on a PR before the previous run finishes. Runs on
+# refs/heads/main get their own concurrency group ('ci-main') with
+# cancel-in-progress disabled so post-merge CI failures are never
+# silently cancelled — fast-forward merge series must surface.
 concurrency:
-  group: ci-${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
+  group: >-
+    ${{ github.workflow }}-${{ github.ref != 'refs/heads/main' && github.ref || 'ci-main' }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
 
 permissions:
   contents: read

@@ -9,6 +9,11 @@ import { existsSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
+// Node-version guard for direct CLI consumers (npm exec umactually-pr-review,
+// global install, Azure DevOps pipeline step, etc.). GitHub Actions
+// consumers are gated by action.yml's `runs.using: node24` which already
+// pins the runner to Node 24, so this guard is a backstop for direct
+// CLI invocations outside the Actions runtime.
 const MIN_NODE_MAJOR = 24;
 const currentNodeMajor = Number(process.versions.node.split(".")[0]);
 if (!Number.isFinite(currentNodeMajor) || currentNodeMajor < MIN_NODE_MAJOR) {
