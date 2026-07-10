@@ -14,8 +14,15 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 // consumers are gated by action.yml's `runs.using: node24` which already
 // pins the runner to Node 24, so this guard is a backstop for direct
 // CLI invocations outside the Actions runtime.
+//
+// process.versions.node is the form "vX.Y.Z" (with a leading 'v'); strip
+// it before parsing the major version. Number("v24") is NaN, which is
+// why the previous Number.isFinite check fired on every Node version.
 const MIN_NODE_MAJOR = 24;
-const currentNodeMajor = Number(process.versions.node.split(".")[0]);
+const currentNodeMajor = Number.parseInt(
+  process.versions.node.replace(/^v/u, "").split(".")[0] ?? "",
+  10,
+);
 if (!Number.isFinite(currentNodeMajor) || currentNodeMajor < MIN_NODE_MAJOR) {
   process.stderr.write(
     `umactually-pr-review: requires Node >= ${MIN_NODE_MAJOR}.x (detected ${process.versions.node}).\n`,

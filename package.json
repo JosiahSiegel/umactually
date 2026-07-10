@@ -6,13 +6,13 @@
   "type": "module",
   "license": "MIT",
   "author": "UmActually contributors",
-  "homepage": "https://github.com/umactually/umactually-pr-review#readme",
+  "homepage": "https://github.com/JosiahSiegel/umactually#readme",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/umactually/umactually-pr-review.git"
+    "url": "git+https://github.com/JosiahSiegel/umactually.git"
   },
   "bugs": {
-    "url": "https://github.com/umactually/umactually-pr-review/issues"
+    "url": "https://github.com/JosiahSiegel/umactually/issues"
   },
   "keywords": [
     "github-action",
