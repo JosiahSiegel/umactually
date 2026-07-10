@@ -21,9 +21,16 @@
  *     (defaults to 50, matching the post-side cap).
  *   - MERGE-5: the merged verdict is the worst across inputs
  *     (NEEDS_FIX > DISCUSS > APPROVED).
- *   - MERGE-6: the merged `summary` is the LONGEST input summary —
- *     longest text tends to be the most informative prose, which is
- *     what a reviewer wants to read in the parent card.
+ *   - MERGE-6: the merged `summary` prefers chunks that contributed
+ *     real findings (comments or suppressed comments); among the
+ *     surviving chunks, the longest summary wins. A parse-fail
+ *     fallback's summary is intentionally LONG (it embeds the raw
+ *     provider response in a `<details>` block), so the previous
+ *     "longest overall" policy let a parse-fail summary beat a
+ *     successful chunk's real summary — contradicting the findings
+ *     table. The new policy filters out empty-finding chunks and
+ *     falls back to the parse-fail summary ONLY when no chunk
+ *     contributed findings.
  *   - Plus (extra): `suppressedComments` are deduped by (path, line),
  *     and `endpoint`/`provider`/`modelId` come from the FIRST input so
  *     downstream `runAzureLive` callers still see the same identity as
