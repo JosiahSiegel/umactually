@@ -48,7 +48,8 @@
 import { REVIEW_MARKER, MANIFEST_SCHEMA, MANIFEST_MARKER_PREFIX, MANIFEST_MARKER_SUFFIX } from "../util/marker.js";
 import type { LiveReview, LiveReviewComment } from "../cli/live-shared.js";
 import { SEVERITY_ORDER, severityRank } from "../util/severity.js";
-import { BRAND, REDACTED_SECRET_TOKEN } from "../util/brand.js";
+import { BRAND } from "../util/brand.js";
+import { replaceSecretsLiterally } from "../util/redact.js";
 
 // ---------------------------------------------------------------------------
 // Public types
@@ -156,13 +157,7 @@ export type ReviewData = {
 
 /** Sanitize a value against the redaction list before it lands in markdown. */
 function redact(value: string, secrets: readonly string[]): string {
-  if (secrets.length === 0) return value;
-  let out = value;
-  for (const secret of secrets) {
-    if (secret.length === 0) continue;
-    out = out.split(secret).join(REDACTED_SECRET_TOKEN);
-  }
-  return out;
+  return replaceSecretsLiterally(value, secrets);
 }
 
 /** Total findings the model produced (posted + off-diff + filtered). */

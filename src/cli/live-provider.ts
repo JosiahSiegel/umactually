@@ -14,7 +14,7 @@ import {
   type SeverityWarning,
   type SeverityWarningSink,
 } from "../provider/provider-parse.js";
-import type { ProviderEndpoint } from "../provider/provider-error.js";
+import { isRoutableFailureForCrossProtocol, type ProviderEndpoint } from "../provider/provider-error.js";
 import { looksLikeAnthropicEndpoint, redactUrlForLog } from "../util/url.js";
 import {
   DEFAULT_ANTHROPIC_URL,
@@ -569,29 +569,6 @@ function parseFailureReasonFromProviderError(
  */
 type NamedProtocol = "openai-compatible" | "anthropic";
 
-function isRoutableFailureForDispatcher(error: {
-  readonly code: string;
-  readonly status: number | null;
-}): boolean {
-  // Cross-protocol fallback fires on 404 only — the wire-shape
-  // genuinely does not have a route for this URL at this provider.
-  // We intentionally exclude HTTP 400 from this check, even though
-  // the openai-compatible client's internal URL-candidate loop
-  // treats both 404 and 400 as "advance to next candidate":
-  //
-  // 400 typically signals a payload-level error (malformed body,
-  // missing required field, unsupported `max_tokens` value,
-  // content-policy rejection). Firing cross-protocol fallback on a
-  // payload-400 would silently mask wire-shape bugs: an Anthropic
-  // call that 400s on an unsupported parameter would retry against
-  // OpenAI's wire shape (different body layout) and possibly
-  // succeed, with the operator seeing a successful review attributed
-  // to the OTHER protocol without ever knowing their original
-  // call was malformed. So at the dispatcher boundary we
-  // restrict the cross-protocol trigger to truly-routing failures.
-  return error.status === 404;
-}
-
 async function runWithCrossProtocolFallback(
   args: {
     readonly namedProvider: NamedProtocol;
@@ -610,7 +587,7 @@ async function runWithCrossProtocolFallback(
   | { readonly ok: true; readonly endpoint: ProviderEndpoint; readonly review: ProviderReviewPayload; readonly requestId: string }
   | { readonly ok: false; readonly error: { readonly code: string; readonly status: number | null } }
 > {
-  if (!isRoutableFailureForDispatcher(args.namedResult.error)) {
+  if (!isRoutableFailureForCrossProtocol(args.namedResult.error)) {
     return args.namedResult;
   }
   // Surface the fallback so operators can SEE that the dispatcher

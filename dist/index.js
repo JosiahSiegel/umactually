@@ -4582,6 +4582,34 @@ function mergeReviewResults(outcomes, options) {
     };
 }
 
+;// CONCATENATED MODULE: ./src/util/redact.ts
+
+/**
+ * Replace each literal secret in `value` with the canonical REDACTED_SECRET_TOKEN.
+ * Uses split().join() (not regex) so secrets containing regex metacharacters
+ * (.+*?()[]{}\|^$) replace literally without surprises. Empty secrets are
+ * skipped to avoid "replace every empty string" which would clobber the value.
+ * Returns `value` unchanged when `secrets` is empty (cheap fast path).
+ *
+ * Behavior contract pinned by test/unit/redact-secrets.test.ts:
+ *   - Empty secrets → returns value unchanged (identity).
+ *   - Single secret: every occurrence of the literal string is replaced.
+ *   - Multiple secrets: replaced in array order (earlier wins on overlap).
+ *   - Secrets containing regex metacharacters are treated literally.
+ *   - Empty string in secrets array is skipped (no clobber).
+ */
+function replaceSecretsLiterally(value, secrets) {
+    if (secrets.length === 0)
+        return value;
+    let out = value;
+    for (const secret of secrets) {
+        if (secret.length === 0)
+            continue;
+        out = out.split(secret).join(REDACTED_SECRET_TOKEN);
+    }
+    return out;
+}
+
 ;// CONCATENATED MODULE: ./src/render/summary-layouts.ts
 /**
  * 20 unique markdown layout variants for the UmActually PR review summary.
@@ -4632,6 +4660,7 @@ function mergeReviewResults(outcomes, options) {
 
 
 
+
 /** The 20 replacement layouts the user requested. */
 const LAYOUTS = (/* unused pure expression or super */ null && ([
     "dashboard",
@@ -4664,15 +4693,7 @@ const VERBOSE_THRESHOLD_CHARS = 500;
 // ---------------------------------------------------------------------------
 /** Sanitize a value against the redaction list before it lands in markdown. */
 function redact(value, secrets) {
-    if (secrets.length === 0)
-        return value;
-    let out = value;
-    for (const secret of secrets) {
-        if (secret.length === 0)
-            continue;
-        out = out.split(secret).join(REDACTED_SECRET_TOKEN);
-    }
-    return out;
+    return replaceSecretsLiterally(value, secrets);
 }
 /** Total findings the model produced (posted + off-diff + filtered). */
 function totalFindings(data) {
@@ -7996,6 +8017,7 @@ function checkErrorDocUrl(rawText) {
 
 
 
+
 /**
  * @deprecated Re-export preserved for one release cycle so callers that
  * import `countBySeverity` from `cli/live-shared.js` continue to work.
@@ -8515,15 +8537,10 @@ const mapReviewVerdictToGithubEvent = mapVerdictToGithubEvent;
  */
 const mapReviewVerdictToAzureStatus = (verdict) => mapVerdictToAzureStatus(verdict, "current");
 function sanitizeForPost(value, secrets) {
-    let sanitized = value
+    const sanitized = value
         .replace(/Authorization:\s*[^\r\n]*/giu, REDACTED_AUTHORIZATION_HEADER)
         .replace(/\bBearer\s+\S+/giu, REDACTED_BEARER_TOKEN);
-    for (const secret of secrets) {
-        if (secret.length > 0) {
-            sanitized = sanitized.split(secret).join(REDACTED_SECRET_TOKEN);
-        }
-    }
-    return sanitized;
+    return replaceSecretsLiterally(sanitized, secrets);
 }
 async function readTextResponse(response) {
     try {
@@ -9625,6 +9642,33 @@ class ProviderError extends Error {
         this.providerErrorDetails = options?.providerErrorDetails;
     }
 }
+/**
+ * Routing-level failure predicates intentionally diverge by boundary:
+ *
+ * - URL-candidate fallback stays inside one OpenAI-compatible provider
+ *   client. HTTP 404 and 400 can both mean the operator's base URL shape
+ *   missed the provider's route, so the client may advance to the next
+ *   resolved candidate without changing wire protocol.
+ * - Cross-protocol fallback crosses from one provider protocol family to
+ *   another. It fires on 404 only because the wire shape genuinely does
+ *   not have a route for this URL at this provider. We intentionally
+ *   exclude HTTP 400 even though URL-candidate fallback accepts it.
+ *
+ * 400 typically signals a payload-level error (malformed body, missing
+ * required field, unsupported `max_tokens` value, content-policy
+ * rejection). Firing cross-protocol fallback on a payload-400 would silently mask wire-shape bugs:
+ * an Anthropic call that 400s on an
+ * unsupported parameter would retry against OpenAI's wire shape (different
+ * body layout) and possibly succeed, with the operator seeing a successful
+ * review attributed to the OTHER protocol without ever knowing their
+ * original call was malformed.
+ */
+function isRoutableFailureForUrlCandidate(error) {
+    return error.status === 404 || error.status === 400;
+}
+function isRoutableFailureForCrossProtocol(error) {
+    return error.status === 404;
+}
 function sanitizeHttpStatus(endpoint, status) {
     return `Provider ${endpoint} responded with HTTP ${status}.`;
 }
@@ -9937,6 +9981,7 @@ function buildTokenUrl(apiBase) {
 
 
 
+
 const ENDPOINT_RESPONSES = "responses";
 const openai_compatible_ENDPOINT_CHAT = "chat";
 const DEBUG_SECRET_PATTERNS = [
@@ -10014,7 +10059,7 @@ async function runProviderRequest(config) {
             // unless the error is NOT a 404/400 (e.g. auth failure, server
             // error) — in that case, retrying with a different URL won't
             // help, so return immediately.
-            if (!isRoutableFailure(chatAttempt.error)) {
+            if (!isRoutableFailureForUrlCandidate(chatAttempt.error)) {
                 return chatAttempt;
             }
             process.stderr.write(`::notice::${BRAND_PREFIX}Base URL ${redactUrlForLog(candidate)} returned routable failure (status=${chatAttempt.error.status}); advancing to next candidate.\n`);
@@ -10023,23 +10068,13 @@ async function runProviderRequest(config) {
         }
         // The /responses endpoint failed with a non-routable status
         // (e.g. 401, 500). Retrying with a different URL won't help.
-        if (!isRoutableFailure(firstAttempt.error)) {
+        if (!isRoutableFailureForUrlCandidate(firstAttempt.error)) {
             return firstAttempt;
         }
         process.stderr.write(`::notice::${BRAND_PREFIX}Base URL ${redactUrlForLog(candidate)} returned routable failure (status=${firstAttempt.error.status}); advancing to next candidate.\n`);
         lastAttempt = firstAttempt;
     }
     return lastAttempt;
-}
-/**
- * True when the failure was a routing-level rejection (404 Not Found
- * or 400 Bad Request) that would benefit from trying a different URL
- * shape. False for auth failures (401/403), server errors (5xx),
- * parse failures, and timeouts — those have a single root cause and
- * a different URL won't help.
- */
-function isRoutableFailure(error) {
-    return error.status === 404 || error.status === 400;
 }
 async function runWithEndpoint(config, fetchImpl, requestId, endpoint, baseUrl) {
     try {
@@ -10266,12 +10301,11 @@ function writeDebugRaw(message, config) {
     process.stderr.write(redactDebugSecrets(message, config));
 }
 function redactDebugSecrets(value, config) {
-    let redacted = value;
-    for (const secret of [config.apiKey, config.promptOverride ?? "", config.additionalPromptOverride ?? ""]) {
-        if (secret.length > 0) {
-            redacted = redacted.split(secret).join(REDACTED_SECRET_TOKEN);
-        }
-    }
+    let redacted = replaceSecretsLiterally(value, [
+        config.apiKey,
+        config.promptOverride ?? "",
+        config.additionalPromptOverride ?? "",
+    ]);
     for (const pattern of DEBUG_SECRET_PATTERNS) {
         redacted = redacted.replace(pattern, REDACTED_SECRET_TOKEN);
     }
@@ -11462,6 +11496,7 @@ async function verifyFindingsWithModel(input) {
 
 
 
+
 const live_provider_DEFAULT_REQUEST_TIMEOUT_MS = 60_000;
 const PROVIDER_NAME = "openai-compatible";
 const COPILOT_PROVIDER_NAME = "github-copilot";
@@ -11891,27 +11926,8 @@ function parseFailureReasonFromProviderError(error, maxOutputTokens) {
         },
     };
 }
-function isRoutableFailureForDispatcher(error) {
-    // Cross-protocol fallback fires on 404 only — the wire-shape
-    // genuinely does not have a route for this URL at this provider.
-    // We intentionally exclude HTTP 400 from this check, even though
-    // the openai-compatible client's internal URL-candidate loop
-    // treats both 404 and 400 as "advance to next candidate":
-    //
-    // 400 typically signals a payload-level error (malformed body,
-    // missing required field, unsupported `max_tokens` value,
-    // content-policy rejection). Firing cross-protocol fallback on a
-    // payload-400 would silently mask wire-shape bugs: an Anthropic
-    // call that 400s on an unsupported parameter would retry against
-    // OpenAI's wire shape (different body layout) and possibly
-    // succeed, with the operator seeing a successful review attributed
-    // to the OTHER protocol without ever knowing their original
-    // call was malformed. So at the dispatcher boundary we
-    // restrict the cross-protocol trigger to truly-routing failures.
-    return error.status === 404;
-}
 async function runWithCrossProtocolFallback(args) {
-    if (!isRoutableFailureForDispatcher(args.namedResult.error)) {
+    if (!isRoutableFailureForCrossProtocol(args.namedResult.error)) {
         return args.namedResult;
     }
     // Surface the fallback so operators can SEE that the dispatcher
