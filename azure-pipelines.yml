@@ -76,26 +76,39 @@ steps:
       # (CLAUDE.md, AGENTS.md, etc.). See docs/configuration.md and
       # docs/security.md. Both env vars are comma/newline-separated
       # paths; an empty value lets the default-lookup run.
+      optional_env_value() {
+        local name="$1"
+        local value="${!name:-}"
+        if [ -z "$value" ] || [[ "$value" == \$\(*\) ]]; then
+          return 0
+        fi
+        printf '%s' "$value"
+      }
+
       EXTRA_ARGS=()
-      if [ -n "${UMACTUALLY_PROMPT_FILES:-}" ]; then
-        EXTRA_ARGS+=(--prompt-files "${UMACTUALLY_PROMPT_FILES}")
+      prompt_files="$(optional_env_value UMACTUALLY_PROMPT_FILES)"
+      if [ -n "$prompt_files" ]; then
+        EXTRA_ARGS+=(--prompt-files "$prompt_files")
       fi
-      if [ -n "${UMACTUALLY_ADDITIONAL_PROMPT_FILES:-}" ]; then
-        EXTRA_ARGS+=(--additional-prompt-files "${UMACTUALLY_ADDITIONAL_PROMPT_FILES}")
+      additional_prompt_files="$(optional_env_value UMACTUALLY_ADDITIONAL_PROMPT_FILES)"
+      if [ -n "$additional_prompt_files" ]; then
+        EXTRA_ARGS+=(--additional-prompt-files "$additional_prompt_files")
       fi
       # Conditionally forward the strict-schema and verify-findings
       # toggles. Both default ON in the CLI; opt out with the
       # corresponding `false` value. Empty (unset) preserves the
       # default ON behavior — the operator only sets these to opt OUT.
-      if [ -n "${UMACTUALLY_STRICT_SCHEMA:-}" ]; then
-        if [ "${UMACTUALLY_STRICT_SCHEMA}" = "false" ]; then
+      strict_schema="$(optional_env_value UMACTUALLY_STRICT_SCHEMA)"
+      if [ -n "$strict_schema" ]; then
+        if [ "$strict_schema" = "false" ]; then
           EXTRA_ARGS+=(--no-strict-schema)
         else
           EXTRA_ARGS+=(--strict-schema)
         fi
       fi
-      if [ -n "${UMACTUALLY_VERIFY_FINDINGS:-}" ]; then
-        if [ "${UMACTUALLY_VERIFY_FINDINGS}" = "false" ]; then
+      verify_findings="$(optional_env_value UMACTUALLY_VERIFY_FINDINGS)"
+      if [ -n "$verify_findings" ]; then
+        if [ "$verify_findings" = "false" ]; then
           EXTRA_ARGS+=(--no-verify-findings)
         else
           EXTRA_ARGS+=(--verify-findings)

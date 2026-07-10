@@ -19,13 +19,15 @@ import { describe, expect, it } from "vitest";
  * pass the new inputs.
  */
 
-// String.contains regex helpers — built with the RegExp constructor
-// because the literal regex syntax chokes on `--` (the leading `-` is
-// a literal char, but the parser treats it as a flag).
-const reEnvVarBinding = (name: string): RegExp =>
-  new RegExp(`${name}:\\s+\\$\\(${name}\\)`, "u");
-const reIfBlock = (name: string): RegExp =>
-  new RegExp(`if\\s+\\[\\s+-n\\s+"\\$\\{${name}:-`, "u");
+const envVarBinding = (name: string): string => `${name}: $(${name})`;
+const optionalValueAssignment = (variable: string, target: string): string =>
+  `${target}=\"$(optional_env_value ${variable})\"`;
+
+const expectOptionalMacroGuard = (yaml: string, variable: string): void => {
+  expect(yaml).toContain("optional_env_value()");
+  expect(yaml).toContain(`[[ "$value" == \\$\\(*\\) ]]`);
+  expect(yaml).toContain(envVarBinding(variable));
+};
 
 describe("azure-pipelines.yml: UMACTUALLY_PROMPT_FILES / UMACTUALLY_ADDITIONAL_PROMPT_FILES forwarding", () => {
   it("root azure-pipelines.yml forwards UMACTUALLY_PROMPT_FILES to --prompt-files (conditionally)", async () => {
@@ -33,13 +35,12 @@ describe("azure-pipelines.yml: UMACTUALLY_PROMPT_FILES / UMACTUALLY_ADDITIONAL_P
       join(process.cwd(), "azure-pipelines.yml"),
       "utf8",
     );
-    // The pipeline MUST include the env var binding so the value
-    // reaches the script's env: block (where the conditional logic
-    // reads it).
-    expect(yaml).toMatch(reEnvVarBinding("UMACTUALLY_PROMPT_FILES"));
-    // The script body MUST conditionally append --prompt-files.
-    expect(yaml).toMatch(reIfBlock("UMACTUALLY_PROMPT_FILES"));
-    expect(yaml).toContain(`EXTRA_ARGS+=(${`--prompt-files`}`);
+    expectOptionalMacroGuard(yaml, "UMACTUALLY_PROMPT_FILES");
+    expect(yaml).toMatch(
+      optionalValueAssignment("UMACTUALLY_PROMPT_FILES", "prompt_files"),
+    );
+    expect(yaml).toContain('if [ -n "$prompt_files" ]; then');
+    expect(yaml).toContain(`EXTRA_ARGS+=(${`--prompt-files`} "$prompt_files")`);
   });
 
   it("root azure-pipelines.yml forwards UMACTUALLY_ADDITIONAL_PROMPT_FILES to --additional-prompt-files (conditionally)", async () => {
@@ -47,11 +48,17 @@ describe("azure-pipelines.yml: UMACTUALLY_PROMPT_FILES / UMACTUALLY_ADDITIONAL_P
       join(process.cwd(), "azure-pipelines.yml"),
       "utf8",
     );
+    expectOptionalMacroGuard(yaml, "UMACTUALLY_ADDITIONAL_PROMPT_FILES");
     expect(yaml).toMatch(
-      reEnvVarBinding("UMACTUALLY_ADDITIONAL_PROMPT_FILES"),
+      optionalValueAssignment(
+        "UMACTUALLY_ADDITIONAL_PROMPT_FILES",
+        "additional_prompt_files",
+      ),
     );
-    expect(yaml).toMatch(reIfBlock("UMACTUALLY_ADDITIONAL_PROMPT_FILES"));
-    expect(yaml).toContain(`EXTRA_ARGS+=(${`--additional-prompt-files`}`);
+    expect(yaml).toContain('if [ -n "$additional_prompt_files" ]; then');
+    expect(yaml).toContain(
+      `EXTRA_ARGS+=(${`--additional-prompt-files`} "$additional_prompt_files")`,
+    );
   });
 
   it("the script body uses EXTRA_ARGS expansion so unset env vars don't add empty flags", async () => {
@@ -76,10 +83,21 @@ describe("examples/azure/azure-pipelines.yml: UMACTUALLY_PROMPT_FILES / UMACTUAL
       join(process.cwd(), "examples/azure/azure-pipelines.yml"),
       "utf8",
     );
-    expect(yaml).toMatch(reEnvVarBinding("UMACTUALLY_PROMPT_FILES"));
-    expect(yaml).toMatch(reEnvVarBinding("UMACTUALLY_ADDITIONAL_PROMPT_FILES"));
-    expect(yaml).toContain(`EXTRA_ARGS+=(${`--prompt-files`}`);
-    expect(yaml).toContain(`EXTRA_ARGS+=(${`--additional-prompt-files`}`);
+    expectOptionalMacroGuard(yaml, "UMACTUALLY_PROMPT_FILES");
+    expectOptionalMacroGuard(yaml, "UMACTUALLY_ADDITIONAL_PROMPT_FILES");
+    expect(yaml).toMatch(
+      optionalValueAssignment("UMACTUALLY_PROMPT_FILES", "prompt_files"),
+    );
+    expect(yaml).toMatch(
+      optionalValueAssignment(
+        "UMACTUALLY_ADDITIONAL_PROMPT_FILES",
+        "additional_prompt_files",
+      ),
+    );
+    expect(yaml).toContain(`EXTRA_ARGS+=(${`--prompt-files`} "$prompt_files")`);
+    expect(yaml).toContain(
+      `EXTRA_ARGS+=(${`--additional-prompt-files`} "$additional_prompt_files")`,
+    );
   });
 });
 
@@ -95,12 +113,16 @@ describe("azure-pipelines.yml: UMACTUALLY_STRICT_SCHEMA / UMACTUALLY_VERIFY_FIND
       join(process.cwd(), "azure-pipelines.yml"),
       "utf8",
     );
-    // Env var bindings.
-    expect(yaml).toContain("UMACTUALLY_STRICT_SCHEMA: $(UMACTUALLY_STRICT_SCHEMA)");
-    expect(yaml).toContain("UMACTUALLY_VERIFY_FINDINGS: $(UMACTUALLY_VERIFY_FINDINGS)");
-    // Conditional forward logic.
-    expect(yaml).toContain('if [ -n "${UMACTUALLY_STRICT_SCHEMA:-}" ]');
-    expect(yaml).toContain('if [ -n "${UMACTUALLY_VERIFY_FINDINGS:-}" ]');
+    expectOptionalMacroGuard(yaml, "UMACTUALLY_STRICT_SCHEMA");
+    expectOptionalMacroGuard(yaml, "UMACTUALLY_VERIFY_FINDINGS");
+    expect(yaml).toMatch(
+      optionalValueAssignment("UMACTUALLY_STRICT_SCHEMA", "strict_schema"),
+    );
+    expect(yaml).toMatch(
+      optionalValueAssignment("UMACTUALLY_VERIFY_FINDINGS", "verify_findings"),
+    );
+    expect(yaml).toContain('if [ -n "$strict_schema" ]; then');
+    expect(yaml).toContain('if [ -n "$verify_findings" ]; then');
     // Negative-form forward for opt-out.
     expect(yaml).toContain("EXTRA_ARGS+=(--no-strict-schema");
     expect(yaml).toContain("EXTRA_ARGS+=(--no-verify-findings");
@@ -116,10 +138,16 @@ describe("examples/azure/azure-pipelines.yml: UMACTUALLY_STRICT_SCHEMA / UMACTUA
       join(process.cwd(), "examples/azure/azure-pipelines.yml"),
       "utf8",
     );
-    expect(yaml).toContain("UMACTUALLY_STRICT_SCHEMA: $(UMACTUALLY_STRICT_SCHEMA)");
-    expect(yaml).toContain("UMACTUALLY_VERIFY_FINDINGS: $(UMACTUALLY_VERIFY_FINDINGS)");
-    expect(yaml).toContain('if [ -n "${UMACTUALLY_STRICT_SCHEMA:-}" ]');
-    expect(yaml).toContain('if [ -n "${UMACTUALLY_VERIFY_FINDINGS:-}" ]');
+    expectOptionalMacroGuard(yaml, "UMACTUALLY_STRICT_SCHEMA");
+    expectOptionalMacroGuard(yaml, "UMACTUALLY_VERIFY_FINDINGS");
+    expect(yaml).toMatch(
+      optionalValueAssignment("UMACTUALLY_STRICT_SCHEMA", "strict_schema"),
+    );
+    expect(yaml).toMatch(
+      optionalValueAssignment("UMACTUALLY_VERIFY_FINDINGS", "verify_findings"),
+    );
+    expect(yaml).toContain('if [ -n "$strict_schema" ]; then');
+    expect(yaml).toContain('if [ -n "$verify_findings" ]; then');
     expect(yaml).toContain("EXTRA_ARGS+=(--no-strict-schema");
     expect(yaml).toContain("EXTRA_ARGS+=(--no-verify-findings");
   });
