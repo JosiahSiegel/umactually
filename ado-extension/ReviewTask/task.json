@@ -170,9 +170,9 @@
       "name": "outputArtifact",
       "type": "string",
       "label": "Output artifact path",
-      "defaultValue": "artifacts/manual/s4-azure-mocked-run.json",
+      "defaultValue": "artifacts/umactually-review.json",
       "required": false,
-      "helpMarkDown": "Path (relative to the build agent working directory) where the raw provider response is written. The file is published as a `umactually-review` pipeline artifact by the next `PublishPipelineArtifact@1` step in your pipeline. Set to an empty string to skip the write."
+      "helpMarkDown": "Path (relative to the build agent working directory) where the raw provider response is written. The file is published as a `umactually-review` pipeline artifact by the next `PublishPipelineArtifact@1` step in your pipeline. Set to an empty string to skip the write. **The default `artifacts/umactually-review.json` is a sensible production default; override per-pipeline if your agent has a different artifact staging directory.**"
     }
   ],
   "outputVariables": [
@@ -204,9 +204,6 @@
     "InvalidInputs": "Invalid task configuration: {0}"
   },
   "restrictions": {
-    "commands": {
-      "mode": "restricted"
-    },
     "secureFiles": []
   },
   "$todoList": [

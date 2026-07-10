@@ -205,6 +205,62 @@ test("ReviewTask/task.json secret-bearing inputs are type: secureString", () => 
   assert.equal(apiUrl.type, "string", "apiUrl is a public URL, type: string is correct");
 });
 
+test("ReviewTask/task.json outputArtifact default is NOT a mocked-test path", () => {
+  // Self-review finding #2336/#2338 caught that the default was
+  // 'artifacts/manual/s4-azure-mocked-run.json' — clearly copied
+  // from a local manual-test path. Production default must be a
+  // neutral path. The matching index.ts fallback uses the SAME
+  // default (a regression guard for divergence between the two).
+  const taskJson = JSON.parse(fs.readFileSync(path.join(TASK_DIR, "task.json"), "utf8"));
+  const outputArtifact = taskJson.inputs.find((i) => i.name === "outputArtifact");
+  assert.ok(outputArtifact, "task.json must define an outputArtifact input");
+  // The mocked-test hint is "s4-azure-mocked" or "manual/" — both
+  // are signs the default was copy-pasted from a dev script.
+  assert.ok(
+    !outputArtifact.defaultValue.includes("s4-azure-mocked"),
+    `outputArtifact.defaultValue must not reference a mocked-test path. Got: ${outputArtifact.defaultValue}`,
+  );
+  assert.ok(
+    !outputArtifact.defaultValue.includes("manual/"),
+    `outputArtifact.defaultValue must not be in artifacts/manual/ (that path is reserved for the self-review regression test). Got: ${outputArtifact.defaultValue}`,
+  );
+  // Cross-check: the index.ts fallback uses the SAME default.
+  const indexTs = fs.readFileSync(path.join(TASK_DIR, "index.ts"), "utf8");
+  const matches = [...indexTs.matchAll(/get\("outputArtifact", false\) \|\| "([^"]+)"/g)];
+  assert.ok(matches.length >= 1, "index.ts must have an outputArtifact fallback default");
+  const fallback = matches[0][1];
+  assert.equal(
+    fallback,
+    outputArtifact.defaultValue,
+    `index.ts fallback ('${fallback}') must match task.json default ('${outputArtifact.defaultValue}')`,
+  );
+});
+
+test("ReviewTask/task.json restrictions does NOT pin commands.mode: restricted", () => {
+  // Self-review finding #2339: a Node-handler task that calls
+  // child_process.spawn needs to allow 'node' in the allowlist.
+  // Setting commands.mode: 'restricted' blocks spawn() unless
+  // the allowlist explicitly names node, which is fragile. The
+  // recommended default for a Node task is to omit the commands
+  // restriction entirely (or set mode: 'restricted' with a
+  // documented allowlist that includes 'node'). We choose the
+  // former — no commands restriction.
+  const taskJson = JSON.parse(fs.readFileSync(path.join(TASK_DIR, "task.json"), "utf8"));
+  const restrictions = taskJson.restrictions;
+  if (restrictions === undefined) {
+    // OK — no restrictions block at all.
+    return;
+  }
+  // If a restrictions block exists, it must NOT pin commands.mode: 'restricted'.
+  if (restrictions.commands !== undefined) {
+    assert.notEqual(
+      restrictions.commands.mode,
+      "restricted",
+      "restrictions.commands.mode: 'restricted' blocks child_process.spawn() of node. Either remove the commands restriction or set mode: 'restricted' with a documented allowlist that includes 'node'.",
+    );
+  }
+});
+
 test("scripts/package-extension.sh exists with shebang", () => {
   const scriptPath = path.join(TASK_DIR, "..", "scripts", "package-extension.sh");
   const stat = fs.statSync(scriptPath);

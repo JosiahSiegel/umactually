@@ -122,7 +122,7 @@ function readInputs(): TaskInputs {
     noDryRun: getBool("noDryRun"),
     detectLeaks: getBool("detectLeaks"),
     reviewTimeoutSeconds: getInt("reviewTimeoutSeconds", 300),
-    outputArtifact: get("outputArtifact", false) || "artifacts/manual/s4-azure-mocked-run.json",
+    outputArtifact: get("outputArtifact", false) || "artifacts/umactually-review.json",
   };
 }
 
