@@ -63,8 +63,19 @@ export type MergeOptions = {
 /**
  * Aggregate the per-chunk verified-facts filter results into a single
  * result for the merged outcome. Concatenates kept/downgraded lists
- * across chunks and emits global indices so the downgrade reasons
- * reference the final merged comment positions.
+ * across chunks and emits global indices.
+ *
+ * **Index semantics**: the `index` on each `downgradeReasons` entry
+ * points into the AGGREGATED kept+downgraded arrays (in that
+ * concatenation order), NOT into the post-dedup/post-sort/
+ * post-truncate `review.comments` array that the operator sees in
+ * the final review body. The dedup + sort + truncate step in
+ * `mergeReviewResults` does not remap the indices. Callers that
+ * want to correlate a downgrade reason back to a specific finding
+ * MUST use `(path, line)` — the index is an internal aid for the
+ * audit artifact's order, not a stable handle into the visible
+ * review. Pinned by `test/unit/live-merge.test.ts` (the
+ * MERGE-CONFIDENCE / MERGE-FACTSAGG test cases).
  */
 function aggregateVerifiedFactsFilter(
   outcomes: readonly LiveProviderOutcome[],
@@ -97,6 +108,12 @@ function aggregateVerifiedFactsFilter(
  * verified-facts aggregation above so the merged outcome's
  * confidenceFilter field has the same shape as any single-chunk
  * outcome's confidenceFilter.
+ *
+ * **Index semantics** (same as `aggregateVerifiedFactsFilter`):
+ * `reasons[].index` points into the aggregated kept+downgraded
+ * arrays in concatenation order, NOT into the post-dedup/
+ * post-sort/post-truncate `review.comments` array. Callers
+ * correlating a reason to a finding must use `(path, line)`.
  */
 function aggregateConfidenceFilter(
   outcomes: readonly LiveProviderOutcome[],

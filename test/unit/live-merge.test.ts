@@ -391,6 +391,12 @@ describe("mergeReviewResults", () => {
     // can distinguish pattern-matched-advice from hedging-language.
     expect(merged.confidenceFilter.reasons[0]?.reason).toBe("pattern-matched-advice");
     expect(merged.confidenceFilter.reasons[1]?.reason).toBe("hedging-language");
+    // The downgraded entries MUST carry the per-chunk downgraded
+    // severity, not the original. This pins the contract that the
+    // audit artifact sees the softened severity, not the model's
+    // claimed severity.
+    expect(merged.confidenceFilter.downgraded[0]?.severity).toBe("info");
+    expect(merged.confidenceFilter.downgraded[1]?.severity).toBe("medium");
   });
 
   it("MERGE-CONFIDENCE handles older outcomes without confidenceFilter (defense for backward compat)", () => {
@@ -414,8 +420,11 @@ describe("mergeReviewResults", () => {
     } as unknown as LiveProviderOutcome;
     const merged = mergeReviewResults([oldOutcome]);
     // Legacy outcome's review.comments are surfaced as kept in the
-    // aggregated confidence filter.
-    expect(merged.confidenceFilter.kept.length).toBeGreaterThanOrEqual(0);
+    // aggregated confidence filter. We pin the actual count (1) and
+    // path so the test catches a regression that drops legacy
+    // outcomes instead of forwarding them.
+    expect(merged.confidenceFilter.kept).toHaveLength(1);
+    expect(merged.confidenceFilter.kept[0]?.path).toBe("src/x.ts");
     expect(merged.confidenceFilter.downgraded).toHaveLength(0);
   });
 });
