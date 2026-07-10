@@ -1,4 +1,9 @@
 // Contract tests for src/cli/live-merge.ts (MERGE-1 through MERGE-6).
+// MERGE-6 was clarified in the Layer 5 confidence-filter PR: the policy
+// is "longest summary among chunks that contributed real findings, with
+// the parse-fail fallback used only when no chunk contributed findings".
+// See src/cli/live-merge.ts header for the canonical contract and
+// src/cli/merge-summary-preference.ts for the bug history.
 //
 // `mergeReviewResults` combines the per-chunk LiveProviderOutcome results
 // from the chunked Azure review flow into a single LiveProviderOutcome
@@ -8,7 +13,9 @@
 // - MERGE-3 deduplicates by `(path, line)` keeping highest-severity
 // - MERGE-4 truncates to `maxComments` from `parsed.maxComments` (default 50)
 // - MERGE-5 picks the worst verdict (NEEDS_FIX > DISCUSS > APPROVED)
-// - MERGE-6 combined `summary` is the longest (most informative) summary
+// - MERGE-6 prefers summaries from chunks that contributed real findings;
+//   among those, the longest wins. Falls back to the longest parse-fail
+//   summary only when no chunk contributed findings.
 import { describe, expect, it } from "vitest";
 
 import { mergeReviewResults } from "../../src/cli/live-merge.js";
@@ -36,6 +43,11 @@ function outcome(overrides: Partial<LiveProviderOutcome>): LiveProviderOutcome {
       kept: [],
       downgraded: [],
       downgradeReasons: [],
+    },
+    confidenceFilter: overrides.confidenceFilter ?? {
+      kept: [],
+      downgraded: [],
+      reasons: [],
     },
   };
 }
@@ -217,17 +229,38 @@ describe("mergeReviewResults", () => {
     expect(merged.review.verdict).toBe("DISCUSS");
   });
 
-  it("MERGE-6 summary is the longest (most informative) of the inputs", () => {
-    // Given: three chunks with summaries of varying length.
-    const short = outcome({ review: { summary: "short summary", verdict: "COMMENT", comments: [], suppressedComments: [] } });
-    const medium = outcome({ review: { summary: "A medium length summary that has a bit more context.", verdict: "COMMENT", comments: [], suppressedComments: [] } });
-    const long = outcome({ review: { summary: "The longest summary among these merged review chunks, providing the most prose for the reviewer to scan.", verdict: "COMMENT", comments: [], suppressedComments: [] } });
+  it("MERGE-6 prefers summaries from chunks with real findings, longest among those wins", () => {
+    // MERGE-6 v2: among chunks that contributed at least one
+    // finding (comments or suppressed comments), the longest summary
+    // wins. Chunks with no findings are skipped — this prevents the
+    // old bug where an empty parse-fail chunk's long summary beat a
+    // successful chunk's real summary. The empty-finding case is
+    // covered separately in test/unit/merge-summary-preference.test.ts.
+    //
+    // Given: two chunks with real findings (1 comment each) and
+    // summaries of varying length.
+    const short = outcome({
+      review: {
+        summary: "short summary",
+        verdict: "COMMENT",
+        comments: [comment({ path: "src/a.ts", line: 1, severity: "low" })],
+        suppressedComments: [],
+      },
+    });
+    const medium = outcome({
+      review: {
+        summary: "A medium length summary that has a bit more context for the reviewer.",
+        verdict: "COMMENT",
+        comments: [comment({ path: "src/b.ts", line: 1, severity: "low" })],
+        suppressedComments: [],
+      },
+    });
 
     // When: merged.
-    const merged = mergeReviewResults([short, medium, long]);
+    const merged = mergeReviewResults([short, medium]);
 
-    // Then: the longest summary wins.
-    expect(merged.review.summary).toBe(long.review.summary);
+    // Then: the longest among finding-bearing chunks wins.
+    expect(merged.review.summary).toBe(medium.review.summary);
   });
 
   it("preserves endpoint/provider/modelId from the first chunk in input order", () => {
@@ -280,5 +313,118 @@ describe("mergeReviewResults", () => {
     // Then: the suppressed comment appears exactly once.
     expect(merged.review.suppressedComments).toHaveLength(1);
     expect(merged.review.suppressedComments[0]).toEqual(suppressed);
+  });
+
+  it("MERGE-6 prefers a finding-bearing chunk's summary over a longer empty chunk's summary", () => {
+    // Regression guard: the previous MERGE-6 implementation picked the
+    // longest summary overall, which let an empty parse-fail chunk's
+    // long diagnostic summary beat a finding-bearing chunk's real
+    // summary. The v2 policy must prefer finding-bearing chunks; the
+    // length tiebreaker runs only AMONG finding-bearing chunks.
+    const findingChunk = outcome({
+      review: {
+        summary: "Real review with findings.",
+        verdict: "COMMENT",
+        comments: [comment({ path: "src/a.ts", line: 1, severity: "low" })],
+        suppressedComments: [],
+      },
+    });
+    const longerEmptyChunk = outcome({
+      review: {
+        summary: "An enormously long parse-fail fallback summary that embeds the raw provider response in a <details> block, padded with Lorem ipsum filler to demonstrate that length alone is not the policy.",
+        verdict: "COMMENT",
+        comments: [],
+        suppressedComments: [],
+      },
+    });
+
+    const merged = mergeReviewResults([findingChunk, longerEmptyChunk]);
+
+    // The empty chunk's summary is longer but the chunk has no findings,
+    // so the v2 policy must pick the finding-bearing chunk's summary.
+    expect(merged.review.summary).toBe(findingChunk.review.summary);
+  });
+
+  it("MERGE-CONFIDENCE concatenates confidenceFilter.downgraded across chunks and emits global indices", () => {
+    // Given: two chunks each with their own confidence-filter result.
+    const kept1 = comment({ path: "src/a.ts", line: 1, severity: "medium", body: "ok" });
+    const downgraded1 = { ...comment({ path: "src/a.ts", line: 2, severity: "medium", body: "downgraded by pattern-matched advice" }), severity: "info" };
+    const kept2 = comment({ path: "src/b.ts", line: 1, severity: "high", body: "ok" });
+    const downgraded2 = { ...comment({ path: "src/b.ts", line: 2, severity: "critical", body: "downgraded by hedging" }), severity: "medium" };
+
+    const chunk1 = outcome({
+      review: {
+        summary: "x",
+        verdict: "COMMENT",
+        comments: [kept1, downgraded1],
+        suppressedComments: [],
+      },
+      confidenceFilter: {
+        kept: [kept1],
+        downgraded: [downgraded1],
+        reasons: [{ index: 0, reason: "pattern-matched-advice", explanation: "no quote" }],
+      },
+    });
+    const chunk2 = outcome({
+      review: {
+        summary: "y",
+        verdict: "COMMENT",
+        comments: [kept2, downgraded2],
+        suppressedComments: [],
+      },
+      confidenceFilter: {
+        kept: [kept2],
+        downgraded: [downgraded2],
+        reasons: [{ index: 0, reason: "hedging-language", explanation: "could potentially" }],
+      },
+    });
+
+    // When: merged.
+    const merged = mergeReviewResults([chunk1, chunk2]);
+
+    // Then: confidenceFilter is the concatenation of both chunks'.
+    expect(merged.confidenceFilter!.kept).toHaveLength(2);
+    expect(merged.confidenceFilter!.kept.map((c) => c.path)).toEqual(["src/a.ts", "src/b.ts"]);
+    expect(merged.confidenceFilter!.downgraded).toHaveLength(2);
+    expect(merged.confidenceFilter!.downgraded.map((c) => c.path)).toEqual(["src/a.ts", "src/b.ts"]);
+    // The reasons carry the original reason label so the audit artifact
+    // can distinguish pattern-matched-advice from hedging-language.
+    expect(merged.confidenceFilter!.reasons[0]?.reason).toBe("pattern-matched-advice");
+    expect(merged.confidenceFilter!.reasons[1]?.reason).toBe("hedging-language");
+    // The downgraded entries MUST carry the per-chunk downgraded
+    // severity, not the original. This pins the contract that the
+    // audit artifact sees the softened severity, not the model's
+    // claimed severity.
+    expect(merged.confidenceFilter!.downgraded[0]?.severity).toBe("info");
+    expect(merged.confidenceFilter!.downgraded[1]?.severity).toBe("medium");
+  });
+
+  it("MERGE-CONFIDENCE handles older outcomes without confidenceFilter (defense for backward compat)", () => {
+    // Older outcome (e.g. simulate-findings fixture) might not have run
+    // the confidence filter. The aggregation must not crash and must
+    // surface the older review's comments as kept.
+    const oldOutcome = {
+      review: {
+        summary: "old",
+        verdict: "COMMENT",
+        comments: [comment({ path: "src/x.ts", line: 1, severity: "low" })],
+        suppressedComments: [],
+      },
+      endpoint: "responses",
+      provider: "openai-compatible",
+      modelId: "auto",
+      severityWarnings: [],
+      parseWarnings: [],
+      verifiedFactsFilter: { kept: [], downgraded: [], downgradeReasons: [] },
+      // confidenceFilter intentionally omitted to simulate a legacy shape.
+    } as unknown as LiveProviderOutcome;
+    const merged = mergeReviewResults([oldOutcome]);
+    // Legacy outcome's review.comments are surfaced as kept in the
+    // aggregated confidence filter. We pin the actual count (1) and
+    // path so the test catches a regression that drops legacy
+    // outcomes instead of forwarding them.
+    expect(merged.confidenceFilter!.kept).toHaveLength(1);
+    expect(merged.confidenceFilter!.kept[0]?.path).toBe("src/x.ts");
+    expect(merged.confidenceFilter!.downgraded).toHaveLength(0);
   });
 });

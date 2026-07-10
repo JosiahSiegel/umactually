@@ -40,6 +40,7 @@ function successOutcome(summary: string, commentCount: number): LiveProviderOutc
     severityWarnings: [],
     parseWarnings: [],
     verifiedFactsFilter: { kept: [], downgraded: [], downgradeReasons: [] },
+    confidenceFilter: { kept: [], downgraded: [], reasons: [] },
   };
 }
 
@@ -66,6 +67,7 @@ function parseFailOutcome(): LiveProviderOutcome {
     severityWarnings: [],
     parseWarnings: [],
     verifiedFactsFilter: { kept: [], downgraded: [], downgradeReasons: [] },
+    confidenceFilter: { kept: [], downgraded: [], reasons: [] },
   };
 }
 

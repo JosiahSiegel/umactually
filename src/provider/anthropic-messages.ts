@@ -94,6 +94,17 @@ export type AnthropicProviderCallConfig = {
   readonly fetchImpl?: typeof fetch;
   readonly signal?: AbortSignal;
   readonly maxOutputTokens?: number;
+  /**
+   * Optional reasoning-effort hint forwarded from `--effort`. Anthropic's
+   * native Messages API does NOT define a `reasoning_effort` field, but
+   * some Anthropic-protocol-compatible gateways (e.g. dual-protocol
+   * gateways that also serve an OpenAI-style reasoning model) do honor
+   * it. We forward the value as `reasoning_effort` on the wire; the
+   * gateway decides what to do with it. Native Anthropic.com simply
+   * ignores unknown fields per its API spec, so the worst case is a
+   * no-op (the value is ignored), not a wire-shape error.
+   */
+  readonly reasoningEffort?: "low" | "medium" | "high";
 };
 
 export { ProviderError };
@@ -108,12 +119,14 @@ function buildBodyConfig(config: AnthropicProviderCallConfig): {
   readonly system: string;
   readonly user: string;
   readonly maxOutputTokens?: number;
+  readonly reasoningEffort?: "low" | "medium" | "high";
 } {
   return {
     model: config.model,
     system: config.system,
     user: config.user,
     ...(config.maxOutputTokens !== undefined ? { maxOutputTokens: config.maxOutputTokens } : {}),
+    ...(config.reasoningEffort !== undefined ? { reasoningEffort: config.reasoningEffort } : {}),
   };
 }
 
@@ -147,6 +160,17 @@ export function buildAnthropicBody(
     readonly system: string;
     readonly user: string;
     readonly maxOutputTokens?: number;
+    /**
+     * Optional reasoning-effort hint forwarded from `--effort`. Anthropic's
+     * native Messages API does NOT define a `reasoning_effort` field, but
+     * some Anthropic-protocol-compatible gateways (e.g. dual-protocol
+     * gateways that also serve an OpenAI-style reasoning model) do honor
+     * it. We forward the value as `reasoning_effort` on the wire; the
+     * gateway decides what to do with it. Native Anthropic.com simply
+     * ignores unknown fields per its API spec, so the worst case is a
+     * no-op (the value is ignored), not a wire-shape error.
+     */
+    readonly reasoningEffort?: "low" | "medium" | "high";
   },
   opts?: { readonly userOverride?: string },
 ): Record<string, unknown> {
@@ -168,6 +192,13 @@ export function buildAnthropicBody(
   // when the operator did not pin one so the call works even in tests
   // that omit the cap.
   body["max_tokens"] = config.maxOutputTokens ?? 4096;
+  // Forward the operator's reasoning-effort hint when set. Omitted
+  // entirely (not sent as `null`) when --effort is not set, so
+  // gateways that reject unknown fields stay happy. See the field
+  // docstring for the wire-compat rationale.
+  if (config.reasoningEffort !== undefined) {
+    body["reasoning_effort"] = config.reasoningEffort;
+  }
   return body;
 }
 

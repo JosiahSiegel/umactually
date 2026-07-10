@@ -9583,6 +9583,105 @@ function githubReviewsUrl(context) {
  * no summary so the post path can still complete (e.g. when every
  * chunk returned a parse-fail fallback).
  */
+/**
+ * Aggregate the per-chunk verified-facts filter results into a single
+ * result for the merged outcome. Concatenates kept/downgraded lists
+ * across chunks and emits global indices.
+ *
+ * **Index semantics**: the `index` on each `downgradeReasons` entry
+ * points into the AGGREGATED kept+downgraded arrays (in that
+ * concatenation order), NOT into the post-dedup/post-sort/
+ * post-truncate `review.comments` array that the operator sees in
+ * the final review body. The dedup + sort + truncate step in
+ * `mergeReviewResults` does not remap the indices. Callers that
+ * want to correlate a downgrade reason back to a specific finding
+ * MUST use `(path, line)` — the index is an internal aid for the
+ * audit artifact's order, not a stable handle into the visible
+ * review. Pinned by `test/unit/live-merge.test.ts` (the
+ * MERGE-CONFIDENCE / MERGE-FACTSAGG test cases).
+ */
+function aggregateVerifiedFactsFilter(outcomes) {
+    const kept = [];
+    const downgraded = [];
+    const downgradeReasons = [];
+    let globalIndex = 0;
+    for (const o of outcomes) {
+        for (const c of o.verifiedFactsFilter.kept) {
+            kept.push(c);
+            globalIndex += 1;
+        }
+        for (let i = 0; i < o.verifiedFactsFilter.downgraded.length; i += 1) {
+            const c = o.verifiedFactsFilter.downgraded[i];
+            const reason = o.verifiedFactsFilter.downgradeReasons[i]?.reason ?? "";
+            if (c === undefined) {
+                continue;
+            }
+            downgraded.push(c);
+            downgradeReasons.push({ index: globalIndex, reason });
+            globalIndex += 1;
+        }
+    }
+    return { kept, downgraded, downgradeReasons };
+}
+/**
+ * Aggregate the per-chunk confidence-filter results. Mirrors the
+ * verified-facts aggregation above so the merged outcome's
+ * confidenceFilter field has the same shape as any single-chunk
+ * outcome's confidenceFilter.
+ *
+ * **Index semantics** (same as `aggregateVerifiedFactsFilter`):
+ * `reasons[].index` points into the aggregated kept+downgraded
+ * arrays in concatenation order, NOT into the post-dedup/
+ * post-sort/post-truncate `review.comments` array. Callers
+ * correlating a reason to a finding must use `(path, line)`.
+ */
+function aggregateConfidenceFilter(outcomes) {
+    const kept = [];
+    const downgraded = [];
+    const reasons = [];
+    let globalIndex = 0;
+    for (const o of outcomes) {
+        if (o.confidenceFilter === undefined) {
+            // Legacy / older outcomes (simulate-findings path, fixtures,
+            // and outcomes from before the confidence filter was wired
+            // in `applyVerifyFilter`) do not carry a `confidenceFilter`.
+            // The most defensible default is to treat their already-post-
+            // verified-facts `review.comments` as confidence-kept. The
+            // upstream contract is: by the time an outcome is passed
+            // here, `o.review.comments` is the POST-VERIFIED-FACTS list
+            // (verified-facts drops the contradicted findings, but the
+            // confidence-filter pass had not run yet for legacy
+            // outcomes). So this is NOT a double-count of
+            // `verifiedFactsFilter.kept` — it's the next step in the
+            // chain that legacy outcomes just happen to skip. The
+            // audit-artifact count for the legacy path will therefore
+            // match `review.comments.length` (the post-merge list),
+            // not `verifiedFactsFilter.kept.length`. Pinned by
+            // `test/unit/live-merge.test.ts` MERGE-CONFIDENCE legacy
+            // compat case.
+            for (const c of o.review.comments) {
+                kept.push(c);
+                globalIndex += 1;
+            }
+            continue;
+        }
+        for (const c of o.confidenceFilter.kept) {
+            kept.push(c);
+            globalIndex += 1;
+        }
+        for (let i = 0; i < o.confidenceFilter.downgraded.length; i += 1) {
+            const c = o.confidenceFilter.downgraded[i];
+            const reasonRecord = o.confidenceFilter.reasons[i];
+            if (c === undefined || reasonRecord === undefined) {
+                continue;
+            }
+            downgraded.push(c);
+            reasons.push({ index: globalIndex, reason: reasonRecord.reason, explanation: reasonRecord.explanation });
+            globalIndex += 1;
+        }
+    }
+    return { kept, downgraded, reasons };
+}
 function mergeReviewResults(outcomes, options) {
     const maxComments = options?.maxComments ?? DEFAULT_MAX_COMMENTS;
     if (outcomes.length === 0) {
@@ -9594,6 +9693,8 @@ function mergeReviewResults(outcomes, options) {
             // No inputs → no warnings to surface.
             severityWarnings: [],
             parseWarnings: [],
+            verifiedFactsFilter: { kept: [], downgraded: [], downgradeReasons: [] },
+            confidenceFilter: { kept: [], downgraded: [], reasons: [] },
         };
     }
     const first = outcomes[0];
@@ -9714,6 +9815,12 @@ function mergeReviewResults(outcomes, options) {
         // review emits its own set, and the merged outcome surfaces all of
         // them so the parse-warnings.json artifact reflects the full run.
         parseWarnings: outcomes.flatMap((o) => o.parseWarnings),
+        // Aggregate verified-facts downgrades across all chunks. Each chunk's
+        // filter ran independently against the same diff so we dedup by
+        // (index, reason) so a finding flagged in two chunks doesn't double-
+        // count in the summary.
+        verifiedFactsFilter: aggregateVerifiedFactsFilter(outcomes),
+        confidenceFilter: aggregateConfidenceFilter(outcomes),
     };
 }
 
@@ -10543,6 +10650,7 @@ function anthropic_messages_buildBodyConfig(config) {
         system: config.system,
         user: config.user,
         ...(config.maxOutputTokens !== undefined ? { maxOutputTokens: config.maxOutputTokens } : {}),
+        ...(config.reasoningEffort !== undefined ? { reasoningEffort: config.reasoningEffort } : {}),
     };
 }
 /**
@@ -10588,6 +10696,13 @@ function buildAnthropicBody(config, opts) {
     // when the operator did not pin one so the call works even in tests
     // that omit the cap.
     body["max_tokens"] = config.maxOutputTokens ?? 4096;
+    // Forward the operator's reasoning-effort hint when set. Omitted
+    // entirely (not sent as `null`) when --effort is not set, so
+    // gateways that reject unknown fields stay happy. See the field
+    // docstring for the wire-compat rationale.
+    if (config.reasoningEffort !== undefined) {
+        body["reasoning_effort"] = config.reasoningEffort;
+    }
     return body;
 }
 /**
@@ -11321,7 +11436,563 @@ async function readPromptFiles(paths, byteCap, options) {
     return parts.join(PROMPT_SEPARATOR);
 }
 
+;// CONCATENATED MODULE: ./src/review/verified-facts.ts
+// SPDX-License-Identifier: MIT
+/**
+ * Verified facts layer — pre-computed repo-state assertions that the
+ * model receives in the prompt and that the post-filter uses to
+ * downgrade findings that contradict the diff.
+ *
+ * Why this exists
+ * ---------------
+ * On PR #41 the model emitted a Critical finding claiming "dist/ is not
+ * listed in files so the npm-published action will fail at runtime",
+ * even though the diff for package.json showed `dist` present both
+ * before and after the change (`npm pack --dry-run` confirmed dist/
+ * ships). The model was making a verifiable repo-state claim without
+ * grounding it in the diff.
+ *
+ * The fix has two halves:
+ *   1. Before sending to the model, scan the post-change state of a
+ *      handful of known structured fields (package.json#files,
+ *      action.yml#outputs, etc.) and produce a "Verified facts" block
+ *      the model sees BEFORE the diff. The model can then read the
+ *      facts and avoid asserting facts the action can already prove.
+ *   2. After the model responds, scan each finding's body for
+ *      contradiction patterns (e.g. "X is missing from Y" when the
+ *      verified facts say X is in Y). Downgrade such findings to
+ *      `info` rather than posting them at their claimed severity.
+ *
+ * This module only does the extraction (step 1). The post-filter is in
+ * `src/cli/verify-findings.ts`.
+ *
+ * Design constraints
+ * ------------------
+ * - Source of truth: the diff. The action runs in a consumer's
+ *   checkout where cwd/package.json is NOT UmActually's package.json
+ *   — we cannot read the worktree. We reconstruct each file's
+ *   post-change content from the diff hunks (context lines + added
+ *   lines, ignoring removed lines).
+ * - Conservative: if a fact cannot be extracted with high
+ *   confidence, it is OMITTED. The model should not see a half-baked
+ *   fact and assume it's authoritative.
+ * - Cheap: O(diff length) parse. One JSON.parse call per structured
+ *   field. No external commands, no network.
+ */
+
+/**
+ * Derive verified facts from the supplied PR diff text.
+ *
+ * Reconstructs the post-change content of `package.json` and
+ * `action.yml` from the diff hunks (the action cannot read the
+ * consumer's worktree safely — cwd is the consumer's repo, not ours).
+ */
+function collectVerifiedFacts(diffText) {
+    return {
+        filesInDiff: listDiffPaths(diffText),
+        packageJsonFiles: readPackageJsonFiles(diffText),
+        packageJsonBin: readPackageJsonBin(diffText),
+        packageJsonMain: readPackageJsonMain(diffText),
+        actionOutputs: readActionOutputs(diffText),
+    };
+}
+/**
+ * Render the verified facts as a prompt block. Empty blocks are
+ * omitted (the prompt should not signal "facts collected" when none
+ * were). The block is rendered as plain text the model can read line
+ * by line.
+ */
+function renderVerifiedFactsBlock(facts) {
+    const lines = [];
+    if (facts.packageJsonFiles !== null) {
+        lines.push(`package.json#files (post-change): ${JSON.stringify(facts.packageJsonFiles.files)}`);
+    }
+    if (facts.packageJsonBin !== null) {
+        lines.push(`package.json#bin (post-change): ${JSON.stringify(facts.packageJsonBin.binEntries)}`);
+    }
+    if (facts.packageJsonMain !== null) {
+        lines.push(`package.json#main (post-change): ${JSON.stringify(facts.packageJsonMain.main)}`);
+    }
+    if (facts.actionOutputs !== null) {
+        lines.push(`action.yml#outputs (post-change): ${JSON.stringify(facts.actionOutputs.outputKeys)}`);
+    }
+    if (lines.length === 0) {
+        return "";
+    }
+    return [
+        "Verified facts (reconstructed from the diff below; do NOT contradict these — they are authoritative for this PR):",
+        ...lines,
+        "If a finding would contradict any of the above, the finding is wrong; omit it or rephrase without the contradiction.",
+    ].join("\n");
+}
+/**
+ * Reconstruct a file's post-change content from the diff. Returns
+ * null if the file does not appear in the diff. The reconstructed
+ * content is the file content as it would appear in the post-PR
+ * worktree — context lines preserved verbatim, added lines included,
+ * removed lines excluded.
+ *
+ * Implementation note: we walk the diff linearly, tracking which file
+ * we're in, and for the target file we collect (context lines, added
+ * lines). We ignore hunk headers (`@@ -X,Y +A,B @@`) and file-path
+ * headers (`+++ b/...`, `--- a/...`).
+ */
+function reconstructFileFromDiff(diffText, filePath) {
+    const files = new Map();
+    let currentPath = null;
+    let buffer = null;
+    const flush = () => {
+        if (currentPath !== null && buffer !== null) {
+            files.set(currentPath, buffer);
+        }
+    };
+    for (const line of diffText.split(/\r?\n/u)) {
+        if (line.startsWith("diff --git ")) {
+            flush();
+            const match = /^diff --git a\/(.+) b\/(.+)$/u.exec(line);
+            currentPath = match === null ? null : (match[2] ?? null);
+            buffer = [];
+            continue;
+        }
+        if (currentPath === null || buffer === null) {
+            continue;
+        }
+        if (line.startsWith("+++") || line.startsWith("---")) {
+            continue;
+        }
+        if (line.startsWith("@@")) {
+            continue;
+        }
+        // Only process unified-diff hunk lines. A line that doesn't
+        // start with one of the three markers ('+', '-', ' ') is not
+        // a valid hunk line (e.g. a stray blank line, an annotation).
+        // Skip it rather than injecting it as a context line, which
+        // would shift line numbers and corrupt the JSON parser
+        // downstream.
+        if (line.startsWith("+")) {
+            buffer.push(line.slice(1));
+        }
+        else if (line.startsWith("-")) {
+            // removed line: skip
+        }
+        else if (line.startsWith(" ")) {
+            buffer.push(line.slice(1));
+        }
+        else {
+            // No diff marker; ignore (e.g. blank line, malformed input).
+        }
+    }
+    flush();
+    const reconstructed = files.get(filePath);
+    return reconstructed === undefined ? null : reconstructed.join("\n");
+}
+function readPackageJsonFiles(diffText) {
+    const content = reconstructFileFromDiff(diffText, "package.json");
+    if (content === null) {
+        return null;
+    }
+    // Try full JSON parse first — works when the diff includes enough
+    // of the file to form a valid document (e.g. when package.json is
+    // small enough that one hunk covers the whole `files` block).
+    const fullParse = tryParsePackageJson(content);
+    if (fullParse !== null) {
+        return extractFilesFromParsed(fullParse);
+    }
+    // Fall back to targeted extraction: find the `"files":` key and
+    // read every JSON string inside the matching brackets. This
+    // handles the common case where only the array's contents were
+    // changed (the array opener is in the unchanged context).
+    return extractFilesByScanning(content);
+}
+function readPackageJsonBin(diffText) {
+    const content = reconstructFileFromDiff(diffText, "package.json");
+    if (content === null) {
+        return null;
+    }
+    const fullParse = tryParsePackageJson(content);
+    if (fullParse !== null) {
+        return extractBinFromParsed(fullParse);
+    }
+    return extractBinByScanning(content);
+}
+function readPackageJsonMain(diffText) {
+    const content = reconstructFileFromDiff(diffText, "package.json");
+    if (content === null) {
+        return null;
+    }
+    const fullParse = tryParsePackageJson(content);
+    if (fullParse !== null) {
+        return extractMainFromParsed(fullParse);
+    }
+    return extractMainByScanning(content);
+}
+function tryParsePackageJson(content) {
+    try {
+        const parsed = JSON.parse(content);
+        if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
+            return null;
+        }
+        return parsed;
+    }
+    catch {
+        return null;
+    }
+}
+function extractFilesFromParsed(pkg) {
+    const files = pkg["files"];
+    if (files === undefined) {
+        return null;
+    }
+    if (!Array.isArray(files)) {
+        return null;
+    }
+    const out = [];
+    for (const entry of files) {
+        if (typeof entry !== "string") {
+            return null;
+        }
+        out.push(entry);
+    }
+    return { kind: "package-json-files", files: out };
+}
+function extractBinFromParsed(pkg) {
+    const bin = pkg["bin"];
+    if (bin === undefined) {
+        return { kind: "package-json-bin", binEntries: [] };
+    }
+    if (typeof bin === "string") {
+        return { kind: "package-json-bin", binEntries: [`(binary) -> ${bin}`] };
+    }
+    if (typeof bin !== "object" || bin === null || Array.isArray(bin)) {
+        return null;
+    }
+    const out = [];
+    for (const [name, value] of Object.entries(bin)) {
+        if (typeof value !== "string") {
+            return null;
+        }
+        out.push(`${name} -> ${value}`);
+    }
+    return { kind: "package-json-bin", binEntries: out };
+}
+function extractMainFromParsed(pkg) {
+    const main = pkg["main"];
+    if (main === undefined) {
+        return null;
+    }
+    if (typeof main !== "string") {
+        return null;
+    }
+    return { kind: "package-json-main", main };
+}
+// ---------------------------------------------------------------------------
+// Targeted scanners — used when the diff only contains part of the file
+// and JSON.parse fails. Each scanner locates a JSON key and reads its
+// array / object / string value with a hand-rolled walker.
+// ---------------------------------------------------------------------------
+/**
+ * Find `"files": [ ... ]` and read every string element. Returns null
+ * if the key isn't present or the array isn't a clean JSON string
+ * array. Tolerates multiline arrays.
+ */
+function extractFilesByScanning(content) {
+    const start = findKeyIndex(content, '"files"');
+    if (start === -1) {
+        return null;
+    }
+    let i = content.indexOf(":", start) + 1;
+    while (i < content.length && /\s/u.test(content[i] ?? "")) {
+        i++;
+    }
+    if (content[i] !== "[") {
+        return null;
+    }
+    i++;
+    const out = [];
+    while (i < content.length) {
+        const ch = content[i];
+        if (ch === undefined) {
+            return null;
+        }
+        if (ch === "]") {
+            return { kind: "package-json-files", files: out };
+        }
+        if (ch === '"') {
+            const end = readStringLiteral(content, i);
+            if (end === -1) {
+                return null;
+            }
+            out.push(decodeStringLiteral(content.slice(i + 1, end)));
+            i = end + 1;
+            while (i < content.length &&
+                (content[i] === " " || content[i] === "\t" || content[i] === "\n" || content[i] === "\r" || content[i] === ",")) {
+                i++;
+            }
+            continue;
+        }
+        i++;
+    }
+    return null;
+}
+/**
+ * Find `"bin": { ... }` and read every `"name": "value"` entry.
+ */
+function extractBinByScanning(content) {
+    const start = findKeyIndex(content, '"bin"');
+    if (start === -1) {
+        // `bin` was not mentioned in the diff at all — we don't know
+        // whether it was removed or simply not touched. Conservatively
+        // omit rather than misreport.
+        return null;
+    }
+    let i = content.indexOf(":", start) + 1;
+    while (i < content.length && /\s/u.test(content[i] ?? "")) {
+        i++;
+    }
+    if (content[i] === '"') {
+        // Single string form: `"bin": "bin/foo.mjs"`.
+        const end = readStringLiteral(content, i);
+        if (end === -1) {
+            return null;
+        }
+        const value = decodeStringLiteral(content.slice(i + 1, end));
+        return { kind: "package-json-bin", binEntries: [`(binary) -> ${value}`] };
+    }
+    if (content[i] !== "{") {
+        return null;
+    }
+    i++;
+    const out = [];
+    while (i < content.length) {
+        const ch = content[i];
+        if (ch === undefined) {
+            return null;
+        }
+        if (ch === "}") {
+            return { kind: "package-json-bin", binEntries: out };
+        }
+        if (ch === '"') {
+            const keyEnd = readStringLiteral(content, i);
+            if (keyEnd === -1) {
+                return null;
+            }
+            const name = decodeStringLiteral(content.slice(i + 1, keyEnd));
+            let j = keyEnd + 1;
+            while (j < content.length && (content[j] === " " || content[j] === "\t" || content[j] === "\n" || content[j] === "\r")) {
+                j++;
+            }
+            if (content[j] !== ":") {
+                return null;
+            }
+            j++;
+            while (j < content.length && (content[j] === " " || content[j] === "\t" || content[j] === "\n" || content[j] === "\r")) {
+                j++;
+            }
+            if (content[j] !== '"') {
+                return null;
+            }
+            const valEnd = readStringLiteral(content, j);
+            if (valEnd === -1) {
+                return null;
+            }
+            const value = decodeStringLiteral(content.slice(j + 1, valEnd));
+            out.push(`${name} -> ${value}`);
+            i = valEnd + 1;
+            while (i < content.length &&
+                (content[i] === " " || content[i] === "\t" || content[i] === "\n" || content[i] === "\r" || content[i] === ",")) {
+                i++;
+            }
+            continue;
+        }
+        i++;
+    }
+    return null;
+}
+/**
+ * Find `"main": "value"` and return the string.
+ */
+function extractMainByScanning(content) {
+    const start = findKeyIndex(content, '"main"');
+    if (start === -1) {
+        return null;
+    }
+    let i = content.indexOf(":", start) + 1;
+    while (i < content.length && /\s/u.test(content[i] ?? "")) {
+        i++;
+    }
+    if (content[i] !== '"') {
+        return null;
+    }
+    const end = readStringLiteral(content, i);
+    if (end === -1) {
+        return null;
+    }
+    return { kind: "package-json-main", main: decodeStringLiteral(content.slice(i + 1, end)) };
+}
+/**
+ * Locate the start index of a JSON key. Returns -1 if not present.
+ * Skips past any key-like substring that is followed by something
+ * other than `:` (after optional tabs/spaces).
+ */
+function findKeyIndex(content, quotedKey) {
+    let i = 0;
+    while (i < content.length) {
+        const idx = content.indexOf(quotedKey, i);
+        if (idx === -1) {
+            return -1;
+        }
+        let j = idx + quotedKey.length;
+        while (j < content.length && (content[j] === " " || content[j] === "\t")) {
+            j++;
+        }
+        if (content[j] === ":") {
+            return idx;
+        }
+        i = idx + 1;
+    }
+    return -1;
+}
+/**
+ * Return the closing-`"` index for a string literal that starts at
+ * `openIndex` (which must point at the opening `"`). Returns -1 on
+ * unterminated literal. Handles `\"` escapes.
+ */
+function readStringLiteral(content, openIndex) {
+    for (let i = openIndex + 1; i < content.length; i++) {
+        const ch = content[i];
+        if (ch === undefined) {
+            return -1;
+        }
+        if (ch === "\\") {
+            i++;
+            continue;
+        }
+        if (ch === '"') {
+            return i;
+        }
+    }
+    return -1;
+}
+/**
+ * Decode a JSON string-literal body (without surrounding quotes) into
+ * a JS string. Handles the common escapes \\, \", \n, \r, \t.
+ */
+function decodeStringLiteral(body) {
+    let out = "";
+    for (let i = 0; i < body.length; i++) {
+        const ch = body[i];
+        if (ch === "\\") {
+            const next = body[i + 1];
+            if (next === undefined) {
+                out += "\\";
+                continue;
+            }
+            switch (next) {
+                case '"':
+                    out += '"';
+                    i++;
+                    break;
+                case "\\":
+                    out += "\\";
+                    i++;
+                    break;
+                case "n":
+                    out += "\n";
+                    i++;
+                    break;
+                case "r":
+                    out += "\r";
+                    i++;
+                    break;
+                case "t":
+                    out += "\t";
+                    i++;
+                    break;
+                default:
+                    out += next;
+                    i++;
+                    break;
+            }
+            continue;
+        }
+        out += ch ?? "";
+    }
+    return out;
+}
+function readActionOutputs(diffText) {
+    const content = reconstructFileFromDiff(diffText, "action.yml");
+    if (content === null) {
+        return null;
+    }
+    return parseActionOutputsYaml(content, diffText);
+}
+/**
+ * Minimal YAML reader for the action.yml `outputs:` block. We do not
+ * need a full YAML parser — outputs is always a flat map of
+ * key: description pairs at 2-space indentation under the
+ * `outputs:` line. We collect keys only.
+ *
+ * Returns null when the reconstructed action.yml does NOT contain an
+ * `outputs:` line AND the diff did not explicitly remove one. This
+ * is important: returning an empty `outputKeys` array for an
+ * action.yml that never had outputs would cause the post-filter to
+ * interpret the empty list as "outputs were removed" and
+ * potentially flag findings that legitimately mention outputs in
+ * natural language.
+ *
+ * When the diff DOES contain `-outputs:` (or an entire outputs
+ * block removal), we return `{ outputKeys: [] }` because the diff
+ * itself is the signal that outputs was removed; the absence of
+ * `outputs:` in the reconstructed file is the post-change state.
+ */
+function parseActionOutputsYaml(text, diffText) {
+    const lines = text.split(/\r?\n/u);
+    const outputKeys = [];
+    let inOutputsBlock = false;
+    let sawOutputsMarker = false;
+    for (const line of lines) {
+        if (/^outputs\s*:\s*$/u.test(line)) {
+            inOutputsBlock = true;
+            sawOutputsMarker = true;
+            continue;
+        }
+        if (!inOutputsBlock) {
+            continue;
+        }
+        if (line.length > 0 && line[0] !== " " && line[0] !== "\t") {
+            inOutputsBlock = false;
+            continue;
+        }
+        const keyMatch = /^  (\w[\w-]*)\s*:/u.exec(line);
+        if (keyMatch !== null) {
+            outputKeys.push(keyMatch[1] ?? "");
+        }
+    }
+    if (sawOutputsMarker) {
+        return { kind: "action-outputs", outputKeys };
+    }
+    // Reconstructed action.yml has no `outputs:` line. Distinguish:
+    // (a) the diff explicitly removed the outputs block — in which
+    //     case the post-change state is "no outputs" and we should
+    //     report it as such.
+    // (b) action.yml never had outputs, or our reconstruction is
+    //     incomplete — in which case we should not report it.
+    if (/^-\s*outputs\s*:\s*$/um.test(diffText)) {
+        return { kind: "action-outputs", outputKeys: [] };
+    }
+    // Also detect removal of the entire outputs block (the `outputs:`
+    // line is in a `-outputs:` removal but the keys were also
+    // removed as a sequence). Check for any `-  <key>:` pattern that
+    // is a key in the outputs block. As a fallback, check whether
+    // the diff has the `outputs:` word at all in a removed line.
+    if (/^-\s*outputs\b/um.test(diffText)) {
+        return { kind: "action-outputs", outputKeys: [] };
+    }
+    return null;
+}
+
 ;// CONCATENATED MODULE: ./src/cli/provider-prompts.ts
+
 
 
 
@@ -11406,6 +12077,16 @@ async function buildProviderPrompts(input) {
     if (input.sonarContext !== undefined && input.sonarContext.length > 0) {
         userParts.push(input.sonarContext);
     }
+    // Verified facts layer — pre-computed, authoritative repo state the
+    // model sees BEFORE the diff. Without this layer the model can
+    // hallucinate verifiable repo facts (e.g. claim dist/ is missing
+    // from package.json#files when it is present in the diff). With
+    // it, the model has an explicit contradiction anchor.
+    const verifiedFacts = collectVerifiedFacts(input.diffText);
+    const verifiedBlock = renderVerifiedFactsBlock(verifiedFacts);
+    if (verifiedBlock.length > 0) {
+        userParts.push(verifiedBlock);
+    }
     // Layer 2-A: enumerate the diff's path list in the user message
     // so the model can verify any cited path by grep. We list the
     // paths even on the strict-schema path (which already constrains
@@ -11488,6 +12169,18 @@ function buildDefaultSystemPrompt() {
         "3. Emit a JSON object whose `path` matches a file from the Files-in-diff list in the user message and whose `line` matches a line number that appears in the diff for that file.",
         "If you cannot complete steps 2-3, OMIT the finding entirely. Do not invent a citation.",
         "",
+        "Verified-facts grounding:",
+        "- When the user message includes a 'Verified facts' block, those facts are authoritative for this PR. They were reconstructed from the diff by a deterministic parser. Do NOT emit a finding whose `body` contradicts any fact in the block — omit the finding entirely or rephrase it without the contradiction.",
+        "- Common contradiction patterns to avoid: claiming X is missing from a whitelist/list when X is in the verified list, claiming Y was removed when Y is in the verified list, claiming an output/input was deleted when the verified facts show it still exists.",
+        "- If you would have made such a claim and the verified facts contradict it, the verified facts are correct; your reading of the diff was wrong. Omit the finding.",
+        "",
+        "False-positive prevention (Layer 5 — calibration):",
+        "- Do NOT emit generic best-practice advice without quoting the exact diff line that demonstrates the issue. Advice like 'you should use parameterized queries', 'consider adding an index', 'this could be vulnerable to X' is only a finding if the diff shows the absence AND you can quote the relevant code. The post-filter explicitly downgrades bodies that use these phrasings without a diff anchor.",
+        "- Do NOT emit findings whose severity is medium or higher if the body uses hedging language ('could', 'might', 'potentially', 'in some cases', 'in theory'). Reserve medium+ for confirmed violations. The post-filter calibrates hedged-at-high-severity findings down to info.",
+        "- Do NOT flag code as missing error handling, validation, sanitization, or authentication if the diff's context lines already show it present. Read the surrounding lines of the cited file before claiming absence — the construct may be in the unchanged context the diff preserves. The post-filter downgrades findings whose body names a construct that the hunk actually contains.",
+        "- Do NOT flag a code pattern as a bug if the diff includes an inline comment documenting it as intentional ('// intentional:', '// by design', '// note:', '// hack:', '// workaround', '// rationale:', '// see <link>'). The model often misses the documenting comment when the pattern LOOKS problematic in isolation. The post-filter downgrades these findings so the operator can see them with softer severity.",
+        "- When a finding would be speculative ('in some edge case', 'if X were to happen', 'could theoretically lead to'), drop the severity to 'info' or 'low' AT EMISSION TIME rather than emitting at medium/high and relying on the post-filter.",
+        "",
         "Forbidden (a non-exhaustive list to make the boundary explicit; the positive constraint above takes precedence):",
         "- Do NOT cite any path that is not in the Files-in-diff list. Build artifacts, generated files, and lockfiles are stripped from the diff upstream and are never reviewable here.",
         "- Do NOT cite any line number that does not appear in the diff for the cited path. Off-by-one or hallucinated line numbers are rejected by the post-filter.",
@@ -11544,6 +12237,7 @@ async function readAdditionalPrompt(input) {
  * extra accuracy, opt in via `--verify-findings`.
  */
 
+
 /**
  * Pure post-filter that drops findings whose (path, line) doesn't anchor
  * to the supplied diff. This is the deterministic verification — the
@@ -11567,6 +12261,190 @@ function verifyFindingsAgainstDiff(input) {
         }
     }
     return { verified, dropped };
+}
+/**
+ * Downgrade findings whose body contradicts a verified fact.
+ *
+ * "Contradicts" means the body asserts something is missing/absent/
+ * removed when the verified facts show it is present. The most common
+ * pattern observed in self-review (PR #41): the model claimed "dist/ is
+ * not in package.json#files" while the verified facts showed dist/ in
+ * the list.
+ *
+ * We do NOT drop these findings — we downgrade them to `info` and
+ * surface the reason. The operator gets full visibility into what the
+ * model claimed, and the downgraded severity prevents the false
+ * positive from blocking a PR or producing noise.
+ *
+ * Conservative: only flag clear contradiction patterns (asserting
+ * something is missing from a verified list). Subjective language
+ * like "looks unusual" is not flagged.
+ */
+function applyVerifiedFactsFilter(input) {
+    const facts = collectVerifiedFacts(input.diffText);
+    const downgradeReasons = [];
+    const kept = [];
+    const downgraded = [];
+    for (let i = 0; i < input.review.comments.length; i += 1) {
+        const comment = input.review.comments[i];
+        if (comment === undefined) {
+            continue;
+        }
+        const contradiction = detectVerifiedFactsContradiction(comment.body, facts);
+        if (contradiction === null) {
+            kept.push(comment);
+        }
+        else {
+            downgradeReasons.push({ index: i, reason: contradiction });
+            downgraded.push({ ...comment, severity: "info" });
+        }
+    }
+    return { kept, downgraded, downgradeReasons };
+}
+const MISSING_PHRASES = [
+    "is missing",
+    "is not in",
+    "is not listed",
+    "is not included",
+    "are missing",
+    "are not in",
+    "are not listed",
+    "are not included",
+    "won't be",
+    "will not be",
+    "doesn't include",
+    "does not include",
+    "lacks",
+    "absent from",
+    "not present in",
+    "fails to include",
+    "fails to ship",
+    "will not ship",
+    "won't ship",
+    "was removed",
+    "is removed",
+    "were removed",
+    "are removed",
+    "orphan",
+];
+/**
+ * Tokens that frequently appear in natural-language text and
+ * SHOULD NOT be treated as candidate identifiers for contradiction
+ * detection. Without this list, a sentence like "the output is
+ * missing" would match the bareword "output" against
+ * action.yml#outputs (where "output" might coincidentally be a
+ * key) and trigger a false-positive downgrade. We seed this with
+ * every common English word plus every review-action vocabulary
+ * word we observed in PR-#41's false positives.
+ */
+const STOPWORD_TOKENS = new Set([
+    // English stop words
+    "the", "a", "an", "and", "or", "but", "if", "then", "else", "when",
+    "while", "for", "of", "to", "in", "on", "at", "by", "from", "as",
+    "is", "are", "was", "were", "be", "been", "being", "have", "has",
+    "had", "do", "does", "did", "will", "would", "should", "could", "may",
+    "might", "can", "must", "shall", "this", "that", "these", "those",
+    "with", "into", "about", "between", "through", "during", "before",
+    "after", "above", "below", "out", "off", "over", "under", "again",
+    "further", "once", "here", "there", "where", "why", "how", "all",
+    "any", "both", "each", "few", "more", "most", "other", "some",
+    "such", "no", "nor", "not", "only", "own", "same", "so", "than",
+    "too", "very", "just", "still", "now", "it", "its", "they", "them",
+    "their", "we", "our", "us", "you", "your", "i", "me", "my", "he",
+    "she", "his", "her", "what", "which", "who", "whom",
+    // Review-action vocabulary
+    "missing", "removed", "output", "outputs", "input", "inputs",
+    "block", "list", "lists", "array", "field", "entry", "entries",
+    "key", "keys", "value", "values", "file", "files", "directory",
+    "directories", "include", "includes", "including", "exclude",
+    "excludes", "see", "see-also", "per", "via", "downstream",
+    "upstream", "consumers", "consumer", "consume", "depends",
+    "depend", "callers", "caller", "post", "posted", "posting", "postable",
+    "find", "finds", "found", "want", "wants", "wanted", "need", "needs",
+    "needed", "use", "uses", "used", "using", "claim", "claims", "assert",
+    "asserts", "asserted", "appears", "appear", "show", "shows", "showed",
+    "verify", "verifies", "verified", "render", "renders", "rendered",
+    "check", "checks", "checked", "action", "actions", "comment",
+    "comments", "review", "reviews", "operator", "operators", "test",
+    "tests", "change", "changes", "changed", "add", "adds", "added",
+    "remove", "removes", "delete", "deletes", "deleted", "merge",
+    "merges", "merged", "keep", "keeps", "kept", "fail", "fails",
+    "failed", "pass", "passes", "passed", "make", "makes", "made",
+    "ensure", "ensures", "ensured", "consider", "considers", "considered",
+    "likely", "potentially", "probably", "perhaps", "may-be", "might-be",
+    "seems", "appears-to", "looks", "looks-like", "is-likely",
+]);
+/**
+ * Detect a verified-facts contradiction in a finding body.
+ *
+ * Conservative: only flag when a token that appears in a verified
+ * list is mentioned in close proximity to a "missing / removed"
+ * phrase in the same sentence. A finding body that just casually
+ * mentions a verified-list word ("dist/ is referenced in the
+ * README") does NOT trigger a downgrade.
+ *
+ * The proximity check is the critical safety property: a body must
+ * have BOTH a missing-phrase AND a verified-list token within ~80
+ * characters of each other. This drastically reduces false-positive
+ * downgrades compared to the naive "any token matches" approach.
+ */
+function detectVerifiedFactsContradiction(body, facts) {
+    const lower = body.toLowerCase();
+    // Step 1: confirm the body has a missing/removed phrase. If not,
+    // no contradiction is possible.
+    if (!MISSING_PHRASES.some((p) => lower.includes(p))) {
+        return null;
+    }
+    // Step 2: collect every verified-list token (the universe of
+    // candidates that would constitute a contradiction).
+    const verifiedCandidates = new Set();
+    if (facts.packageJsonFiles !== null) {
+        for (const f of facts.packageJsonFiles.files) {
+            verifiedCandidates.add(f);
+        }
+    }
+    if (facts.actionOutputs !== null && facts.actionOutputs.outputKeys.length > 0) {
+        for (const k of facts.actionOutputs.outputKeys) {
+            verifiedCandidates.add(k);
+        }
+    }
+    if (verifiedCandidates.size === 0) {
+        return null;
+    }
+    // Step 3: for each candidate token, check whether it appears in
+    // the SAME SENTENCE as a missing-phrase. We split the body on
+    // sentence boundaries (period, newline) and look for both the
+    // token and a missing-phrase in the same sentence. A token that
+    // appears only in a different sentence from the missing-phrase is
+    // NOT a contradiction — it's natural-language prose.
+    for (const candidate of verifiedCandidates) {
+        const candidateLower = candidate.toLowerCase();
+        if (candidateLower.length === 0)
+            continue;
+        if (STOPWORD_TOKENS.has(candidateLower))
+            continue;
+        // Split the body into sentences. We use a simple split on
+        // . ! ? and newlines. Empty sentences are skipped.
+        const sentences = lower.split(/[.!?\n]+/u).map((s) => s.trim()).filter((s) => s.length > 0);
+        for (const sentence of sentences) {
+            if (!sentence.includes(candidateLower))
+                continue;
+            const hasMissingPhrase = MISSING_PHRASES.some((p) => sentence.includes(p));
+            if (!hasMissingPhrase)
+                continue;
+            // Both the candidate and a missing-phrase appear in the same
+            // sentence. This is the contradiction.
+            if (facts.packageJsonFiles !== null &&
+                facts.packageJsonFiles.files.includes(candidate)) {
+                return `body claims "${candidate}" is missing from package.json#files, but the verified list includes "${candidate}"`;
+            }
+            if (facts.actionOutputs !== null &&
+                facts.actionOutputs.outputKeys.includes(candidate)) {
+                return `body claims "${candidate}" output was removed, but the verified list of action.yml#outputs includes "${candidate}"`;
+            }
+        }
+    }
+    return null;
 }
 /**
  * Model-based verification. Sends a per-finding prompt to the same
@@ -11615,7 +12493,595 @@ async function verifyFindingsWithModel(input) {
     return { verified, dropped };
 }
 
+;// CONCATENATED MODULE: ./src/review/filter-confidence.ts
+// SPDX-License-Identifier: MIT
+/**
+ * Filter-confidence layer — orthogonal post-filters that catch the
+ * false-positive patterns the verified-facts layer cannot detect.
+ *
+ * Why this exists
+ * ---------------
+ * PR #41 added the verified-facts layer to catch the most common FP
+ * pattern: "X is missing from Y" claims where the verified list shows
+ * X is present. That layer is necessary but not sufficient. Analysis
+ * of subsequent self-review rounds (ADO PR #68 triage: 24 findings =
+ * 13 legitimate / 7 false positive / 4 mixed) plus the production-tool
+ * survey (CodeRabbit, Sourcery, Greptile, HalluJudge, SGCR, BitsAI-CR,
+ * AdaTaint, QASecClaw) surfaces a small number of predictable,
+ * recurring FP root causes that don't depend on any structured
+ * repo-state fact:
+ *
+ *   1. **Pattern-matched advice** (training-data echo):
+ *      "you should use parameterized queries", "consider adding an
+ *      index", "this could be vulnerable to X" — generic best-practice
+ *      boilerplate the model emits regardless of the diff's actual
+ *      content. Brandom Wie (brandonwie.dev, 2026) catalogs six
+ *      patterns of invalid AI feedback; the dominant one is "pattern-
+ *      matched advice" — the model has memorized "reviewer advice for
+ *      PHP+SQL = use parameterized queries" and emits it on sight
+ *      without checking whether parameterized queries are already in
+ *      place. (Ann R., Level Up Coding, 2026.)
+ *
+ *   2. **Hypothetical concerns / over-correction**:
+ *      "in some edge case this could fail", "if X were to happen…",
+ *      "in theory…". The arXiv 2603.00539 study (Jin & Chen, 2026)
+ *      shows 87% of false-rejection rationales are Logic Error
+ *      (48.2%), Added Requirement (14.1%), Boundary Error (13.2%),
+ *      or Misread Spec (11.7%) — all variants of unverified claims.
+ *      The study explicitly recommends: "motivating prompts that
+ *      separate 'possible risk' from 'confirmed violation.'"
+ *
+ *   3. **Intentional-design blindness**:
+ *      The diff adds a code pattern that LOOKS problematic in
+ *      isolation but is documented inline (e.g. a comment explaining
+ *      "this is intentional because Y"). The model misses the
+ *      documenting comment and flags the pattern as a bug.
+ *      Brandon Wie: "Add comments explaining WHY the approach is
+ *      correct, not just WHAT it does."
+ *
+ *   4. **Severity inflation**:
+ *      Findings that should be `info` or `low` are emitted as
+ *      `medium` or `high`. The research on prompt-induced
+ *      overcorrection (Jin & Chen, 2026) shows elaborate prompts
+ *      dramatically amplify this; the recommended mitigation is
+ *      separate "possible risk" from "confirmed violation" and let
+ *      severity match certainty.
+ *
+ * The three filters below target each of these patterns
+ * deterministically. None of them require a second model call —
+ * they use diff reconstruction + body-text analysis + a small
+ * fixed vocabulary.
+ *
+ * Design constraints (same as verified-facts.ts):
+ *
+ * - Source of truth: the diff. The action runs in a consumer's
+ *   checkout where cwd/package.json is NOT UmActually's package.json
+ *   — we cannot read the worktree.
+ * - Conservative: every filter is a DOWNGRADE (severity reduction),
+ *   not a drop. The operator gets full visibility into what the
+ *   model claimed; the platform-posting path can choose to render
+ *   downgraded findings as `info` instead of `medium`/`high`.
+ * - Cheap: O(diff length + body length) per finding. No external
+ *   commands, no network, no model call.
+ * - Composable with verified-facts.ts: this layer runs AFTER the
+ *   verified-facts layer in `applyVerifyFilter`. The disjointness
+ *   contract holds — review.comments carries only the kept set; all
+ *   downgraded findings live in `confidenceFilter.downgraded`.
+ */
+
+/**
+ * Apply the three post-filters (hedging calibration, pattern-matched
+ * advice, contradicted-by-quote, intentional-design) to a review.
+ *
+ * Runs AFTER the deterministic (path,line) verification filter
+ * (`verifyFindingsAgainstDiff`) and the verified-facts contradiction
+ * filter (`applyVerifiedFactsFilter`). The caller passes the
+ * already-filtered review; we further downgrade or drop any
+ * remaining FP patterns.
+ *
+ * The result's `downgraded` list is disjoint from `kept` — callers
+ * that want to surface the downgraded set as `info`-severity
+ * informational findings read `downgraded` directly; callers that
+ * want only the high-confidence findings read `kept`.
+ */
+function applyConfidenceFilter(input) {
+    if (input.review.comments.length === 0) {
+        return { kept: [], downgraded: [], reasons: [] };
+    }
+    // Pre-compute per-path hunk content once so the inner per-finding
+    // filters don't repeat the diff walk. The map is keyed by path; the
+    // value is the joined (context + added) lines for that file's
+    // hunks. The hunk extraction is O(diff length), and we do it once
+    // for the whole review rather than once per finding.
+    const hunkContentByPath = collectHunkContentByPath(input.diffText);
+    const kept = [];
+    const downgraded = [];
+    const reasons = [];
+    for (let i = 0; i < input.review.comments.length; i += 1) {
+        const comment = input.review.comments[i];
+        if (comment === undefined) {
+            continue;
+        }
+        const hunk = hunkContentByPath.get(comment.path);
+        const verdict = classifyFinding({ comment, hunkContent: hunk ?? null });
+        if (verdict === null) {
+            kept.push(comment);
+            continue;
+        }
+        downgraded.push(applyDowngrade(comment, verdict.reason));
+        reasons.push({ index: i, reason: verdict.reason, explanation: verdict.explanation });
+    }
+    return { kept, downgraded, reasons };
+}
+/**
+ * The verdict of running the three filters against a single finding.
+ * `null` means no filter fired; keep the finding at its original
+ * severity. A non-null verdict carries the matched reason + a
+ * short human-readable explanation for the audit artifact.
+ */
+function classifyFinding(input) {
+    const body = input.comment.body;
+    const bodyLower = body.toLowerCase();
+    // 1. Hedging-language calibration. Operates on the comment's
+    //    severity, not the body alone: a body that contains hedging
+    //    is OK at `info`/`low` (already calibrated by the model) but
+    //    should be calibrated DOWN at `medium`/`high`/`critical`.
+    if (containsHedgingLanguage(bodyLower)) {
+        const severity = input.comment.severity.toLowerCase();
+        if (severity === "medium" || severity === "high" || severity === "critical") {
+            return {
+                reason: "hedging-language",
+                explanation: `Body uses hedging language ("could", "might", "potentially", "in some cases") at severity "${input.comment.severity}"; calibrating to info because the claim is not asserted as a confirmed violation.`,
+            };
+        }
+    }
+    // 2. Pattern-matched advice. The body contains generic best-
+    //    practice phrasing ("you should…", "consider adding…",
+    //    "you may want to…") AND does NOT quote any observable
+    //    diff line as evidence (i.e. no verbatim substring of the
+    //    hunk appears in the body). This is the model emitting
+    //    memorized advice with no anchor to the diff content.
+    if (looksLikePatternMatchedAdvice(bodyLower) && input.hunkContent !== null) {
+        if (!bodyContainsAnyHunkLine(body, input.hunkContent)) {
+            return {
+                reason: "pattern-matched-advice",
+                explanation: "Body uses generic best-practice phrasing without quoting any diff line as evidence; this is the model emitting pattern-matched advice rather than a finding anchored to the change.",
+            };
+        }
+    }
+    // 3. Contradicted-by-quote. The body names a code construct
+    //    ("parameterized query", "try/catch", "prepared statement",
+    //    "escape", "validate", "sanitize", etc.) AND the diff hunk
+    //    for the cited path+line already contains that construct.
+    //    The model is asserting absence while the diff shows
+    //    presence.
+    if (input.hunkContent !== null) {
+        const constructMatch = contradictsDiffPresence(bodyLower, input.hunkContent);
+        if (constructMatch !== null) {
+            return {
+                reason: "contradicted-by-quote",
+                explanation: `Body claims absence of "${constructMatch}" but the diff hunk around the cited line already contains it.`,
+            };
+        }
+    }
+    // 4. Intentional design. The body expresses a negative
+    //    assessment of code that the diff documents as intentional
+    //    (e.g. an inline comment like "// intentional: …" or
+    //    "// NOTE: …" appears near the cited line, and the body
+    //    uses phrases like "this is wrong", "however", "but" near
+    //    a code pattern). Conservative: requires BOTH the body
+    //    intent-flag and the hunk documentation — single trigger
+    //    is not enough.
+    if (input.hunkContent !== null) {
+        const intentional = looksLikeIntentionalDesign(bodyLower, input.hunkContent);
+        if (intentional !== null) {
+            return {
+                reason: "intentional-design",
+                explanation: `Body flags "${intentional.flag}" but the diff hunk documents the pattern as intentional ("${intentional.doc}"); the model missed the documenting comment.`,
+            };
+        }
+    }
+    return null;
+}
+/**
+ * Lowercase hedging-language words/phrases that signal "the model
+ * is not asserting a confirmed violation." The set is intentionally
+ * narrow — only phrases that almost always appear in speculative
+ * rather than confirmed claims. "Should" alone is too generic
+ * ("this function should return X" is a confirmed behavioral
+ * claim); we look for the specific speculative constructions
+ * below.
+ */
+const HEDGING_PHRASES = [
+    "could potentially",
+    "could lead to",
+    "could cause",
+    "could result in",
+    "could be vulnerable",
+    "could fail",
+    "could break",
+    "could trigger",
+    "might lead to",
+    "might cause",
+    "might result in",
+    "might fail",
+    "might break",
+    "might be vulnerable",
+    "may lead to",
+    "may cause",
+    "may result in",
+    "may fail",
+    "may break",
+    "may be vulnerable",
+    "in some cases",
+    "in certain cases",
+    "in edge cases",
+    "in theory",
+    "theoretically",
+    "potentially vulnerable",
+    "potentially leads to",
+    "potentially causes",
+    "potentially results in",
+    "potentially a",
+    "potentially an",
+    "if this were to",
+    "if x were to",
+    "could theoretically",
+    "could in theory",
+    "may have unintended",
+    "could have unintended",
+    "risk of",
+    "possible risk",
+    "potentially",
+];
+function containsHedgingLanguage(bodyLower) {
+    for (const phrase of HEDGING_PHRASES) {
+        if (bodyLower.includes(phrase)) {
+            return true;
+        }
+    }
+    return false;
+}
+/**
+ * Phrases that mark a body as generic best-practice advice rather
+ * than a diff-anchored finding. The match requires the phrase to
+ * appear as the LEAD of a clause (preceded by whitespace or
+ * beginning of string) — "you should also note" mid-sentence is
+ * NOT a trigger because it modifies a prior claim.
+ */
+const PATTERN_MATCHED_ADVICE_LEADS = [
+    "you should",
+    "you may want to",
+    "consider adding",
+    "consider using",
+    "consider implementing",
+    "consider refactoring",
+    "consider extracting",
+    "consider introducing",
+    "it might be worth",
+    "it may be worth",
+    "it would be better to",
+    "it would be good to",
+    "it would be helpful to",
+    "it would be nice to",
+    "we should",
+    "we may want to",
+    "we could",
+    "let's add",
+    "let's use",
+    "best practice is to",
+    "best practice would be to",
+    "a common approach is to",
+    "a common pattern is to",
+];
+function looksLikePatternMatchedAdvice(bodyLower) {
+    for (const lead of PATTERN_MATCHED_ADVICE_LEADS) {
+        if (bodyLower.startsWith(lead) || bodyLower.includes(` ${lead}`) || bodyLower.includes(`\n${lead}`)) {
+            return true;
+        }
+    }
+    return false;
+}
+/**
+ * Code constructs the model might claim are "missing" while they
+ * are in fact present in the diff. The list covers the common
+ * security/correctness constructs the LLM training data
+ * associates with "you should add this" advice. When a finding
+ * body asserts the absence of one of these AND the diff hunk
+ * already contains the construct, that's a contradiction.
+ *
+ * Each entry is a pair of (regex-literal-substring, label). The
+ * substring is matched case-insensitively in both the body
+ * (claiming absence) and the hunk (asserting presence). The label
+ * is what we surface in the explanation.
+ *
+ * The list is intentionally NARROW — we only include constructs
+ * where false absence claims are common (security advisories the
+ * model emits from training data) and the absence phrasing is
+ * SPECIFIC enough that an accidental match is unlikely. Generic
+ * constructs like `return `, `throw `, `await ` were tried and
+ * removed because they produce too many false positives — a body
+ * that mentions `return null;` AND a generic absence phrase
+ * (e.g. "no error handling") gets flagged even though `return`
+ * has nothing to do with error handling.
+ */
+const PRESENCE_CONSTRUCTS = [
+    // Note: SQL parameter placeholders like `$1`, `$2`, `?, ?` were
+    // considered as presence markers but rejected — these two-character
+    // tokens are extraordinarily common in diffs (regex substitutions,
+    // format strings, template literals, mathematical expressions) and
+    // produced false-positive contradicted-by-quote downgrades on
+    // legitimate findings about unrelated code. The
+    // "parameterized query" / "parameterised query" phrasings are
+    // anchored to actual security constructs; SQL parameter syntax is
+    // not. Pinned by the regression test that injects `$1` in an
+    // unrelated context and asserts the filter does NOT fire.
+    { presence: ["parameterized query", "parameterized queries", "parameterised query"], label: "parameterized queries" },
+    { presence: ["prepared statement", "prepared statements"], label: "prepared statements" },
+    { presence: ["bound parameter", "bound parameters", "parameter binding"], label: "bound parameters" },
+    { presence: ["escape(", "escapehtml", "escapeHtml"], label: "input escaping" },
+    { presence: ["sanitize(", "sanitise("], label: "input sanitization" },
+    { presence: ["validate(", "validation"], label: "input validation" },
+    { presence: ["authoriz", "authorisation", "authorization check"], label: "authorization" },
+    { presence: ["authenticat"], label: "authentication" },
+    { presence: ["csrf"], label: "CSRF protection" },
+    { presence: ["xss"], label: "XSS protection" },
+    { presence: ["rate limit", "rate-limit", "throttle"], label: "rate limiting" },
+];
+function contradictsDiffPresence(bodyLower, hunkLower) {
+    for (const construct of PRESENCE_CONSTRUCTS) {
+        // Body must mention the construct AND the hunk must contain it.
+        const mentionsConstruct = construct.presence.some((p) => bodyLower.includes(p));
+        if (!mentionsConstruct)
+            continue;
+        const constructInHunk = construct.presence.some((p) => hunkLower.includes(p));
+        if (!constructInHunk)
+            continue;
+        // Body must assert absence SPECIFIC TO THIS construct. The
+        // absence-phrase list is keyed by construct label so a body
+        // that says "no error handling" does not trigger when the
+        // construct being checked is "parameterized queries" — that
+        // mismatch was the source of the false positive where a body
+        // mentions `return null;` (not in the construct set) AND
+        // "no error handling" (mapped only to the error-handling
+        // construct label).
+        const absencePhrases = ABSENCE_PHRASES_BY_CONSTRUCT.get(construct.label);
+        if (absencePhrases === undefined)
+            continue;
+        const assertsAbsence = absencePhrases.some((p) => bodyLower.includes(p));
+        if (!assertsAbsence)
+            continue;
+        return construct.label;
+    }
+    return null;
+}
+/**
+ * Phrases that signal the body is asserting the absence of
+ * something. These are the same missing/removed phrases the
+ * verified-facts layer uses — duplicated here so this layer is
+ * self-contained and can be tested without importing the
+ * verified-facts module. We deliberately keep the list narrow
+ * (no "no " alone, no "never " alone) because those would
+ * over-trigger on factual negative claims ("there is no need to
+ * add tests here").
+ *
+ * Each entry pairs a "tight" absence phrase (specific to the
+ * construct) with the construct label it maps to. The
+ * contradicted-by-quote check requires the body's absence phrase
+ * AND the construct being checked to agree — a body that says
+ * "no error handling" with "return null;" nearby would NOT
+ * trigger because "return null;" is not in the construct set
+ * tagged with error handling. This binding prevents the false
+ * positive where a body mentions a generic construct (`return `)
+ * AND a generic absence phrase (`no error handling`) without
+ * those two being logically connected.
+ */
+const ABSENCE_PHRASES_BY_CONSTRUCT = new Map([
+    ["parameterized queries", ["is missing", "are missing", "isn't included", "doesn't include", "does not include", "no parameterized", "no prepared statement", "no prepared statements", "fails to use", "fails to include", "not present", "lacks"]],
+    ["prepared statements", ["is missing", "are missing", "isn't included", "doesn't include", "does not include", "no prepared", "fails to use"]],
+    ["bound parameters", ["is missing", "are missing", "doesn't bind", "no bound"]],
+    ["input escaping", ["is missing", "are missing", "isn't escaping", "no escape(", "fails to escape", "unescaped"]],
+    ["input sanitization", ["is missing", "are missing", "no sanitize(", "no sanitise(", "unsanitized", "unsanitised"]],
+    ["input validation", ["is missing", "are missing", "no validate(", "no validation", "unvalidated"]],
+    ["authorization", ["is missing", "are missing", "no authoriz", "unauthorized", "no authorization check"]],
+    ["authentication", ["is missing", "are missing", "no authenticat", "unauthenticated"]],
+    ["CSRF protection", ["is missing", "no csrf", "no csrf protection"]],
+    ["XSS protection", ["is missing", "no xss", "no xss protection"]],
+    ["rate limiting", ["is missing", "no rate limit", "no rate-limit", "no throttling"]],
+]);
+/**
+ * Detect the intentional-design pattern: the body expresses
+ * disapproval AND the hunk contains a documenting comment that
+ * explains the flagged construct. Returns the body-flag phrase
+ * and the documentation phrase for the explanation.
+ */
+const BODY_DISAPPROVAL_PHRASES = [
+    "this is wrong",
+    "this looks wrong",
+    "this seems wrong",
+    "this is incorrect",
+    "this looks incorrect",
+    "this seems incorrect",
+    "this is a bug",
+    "this looks like a bug",
+    "this seems like a bug",
+    "this is broken",
+    "this is unsafe",
+    "this is risky",
+    "this is dangerous",
+    "this will fail",
+    "this will break",
+    "this could fail",
+    "this could break",
+    "should not be",
+    "shouldn't be",
+    "must not be",
+    "this is a problem",
+    "this is an issue",
+    "this is concerning",
+    "this is suspect",
+    "looks suspicious",
+    "seems suspicious",
+    "anti-pattern",
+    "code smell",
+    "wrong way",
+    "incorrect way",
+];
+const INTENTIONAL_DOC_MARKERS = [
+    { marker: "// intentional", description: "intentional" },
+    { marker: "// by design", description: "by design" },
+    { marker: "// note:", description: "note" },
+    { marker: "// note ", description: "note" },
+    { marker: "// hack:", description: "hack" },
+    { marker: "// workaround", description: "workaround" },
+    { marker: "// documented:", description: "documented" },
+    { marker: "// see ", description: "see-comment" },
+    { marker: "// see-also", description: "see-also" },
+    { marker: "// explanation:", description: "explanation" },
+    { marker: "// rationale:", description: "rationale" },
+    { marker: "// reason:", description: "reason" },
+    { marker: "// why:", description: "why" },
+    { marker: "// context:", description: "context" },
+    { marker: "// todo:", description: "todo" },
+    { marker: "// fixme:", description: "fixme" },
+    { marker: "// note that", description: "note-that" },
+    { marker: "/* intentional", description: "intentional" },
+    { marker: "/* by design", description: "by design" },
+    { marker: "/* note:", description: "note" },
+];
+function looksLikeIntentionalDesign(bodyLower, hunkLower) {
+    // Body must express disapproval (one of BODY_DISAPPROVAL_PHRASES).
+    let matchedFlag = null;
+    for (const phrase of BODY_DISAPPROVAL_PHRASES) {
+        if (bodyLower.includes(phrase)) {
+            matchedFlag = phrase;
+            break;
+        }
+    }
+    if (matchedFlag === null) {
+        return null;
+    }
+    // Hunk must contain a documenting marker that explains the
+    // pattern (e.g. "// intentional:" or "// note:"). The marker
+    // is checked case-insensitively because we already lowercased
+    // the hunk.
+    for (const marker of INTENTIONAL_DOC_MARKERS) {
+        if (hunkLower.includes(marker.marker)) {
+            return { flag: matchedFlag, doc: marker.description };
+        }
+    }
+    return null;
+}
+/**
+ * Per-pattern severity mapping. The deterministic policy:
+ *
+ * - hedging-language: reduce by 2 tiers (`high` → `low`,
+ *   `medium` → `info`). The claim is speculative; we surface it
+ *   but not at blocking severity.
+ * - pattern-matched-advice: reduce to `info` — the model emitted
+ *   memorized advice with no diff anchor; it's not a finding.
+ * - contradicted-by-quote: reduce to `info` — the diff contradicts
+ *   the claim; the operator should still see what was said but
+ *   not at the model's claimed severity.
+ * - intentional-design: reduce by 1 tier (`high` → `medium`,
+ *   `medium` → `low`, `low` → `info`) — the model may have a
+ *   point but missed the documenting comment; we soften without
+ *   silencing.
+ */
+function applyDowngrade(comment, reason) {
+    const severityLower = comment.severity.toLowerCase();
+    let nextSeverity;
+    switch (reason) {
+        case "hedging-language":
+            nextSeverity = downgradeTwoTiers(severityLower);
+            break;
+        case "pattern-matched-advice":
+        case "contradicted-by-quote":
+            nextSeverity = "info";
+            break;
+        case "intentional-design":
+            nextSeverity = downgradeOneTier(severityLower);
+            break;
+    }
+    return { ...comment, severity: nextSeverity };
+}
+const SEVERITY_TIERS = ["info", "low", "medium", "high", "critical"];
+function downgradeOneTier(severity) {
+    const idx = SEVERITY_TIERS.indexOf(severity);
+    if (idx === -1 || idx === 0)
+        return "info";
+    return SEVERITY_TIERS[idx - 1] ?? "info";
+}
+function downgradeTwoTiers(severity) {
+    const idx = SEVERITY_TIERS.indexOf(severity);
+    if (idx === -1 || idx <= 1)
+        return "info";
+    return SEVERITY_TIERS[idx - 2] ?? "info";
+}
+/**
+ * Build a Map<path, joined-hunk-content> from the diff. Walks the
+ * diff once and groups all (context + added) lines per file.
+ * Reused across all findings to avoid repeated diff walks.
+ *
+ * Returns an empty map for an empty diff. Reconstructs content
+ * via the same logic as `verified-facts.ts:reconstructFileFromDiff`
+ * but joins all files in one pass (the verified-facts module
+ * reconstructs one file at a time).
+ */
+function collectHunkContentByPath(diffText) {
+    const result = new Map();
+    if (diffText.length === 0) {
+        return result;
+    }
+    // Use the existing single-file reconstructor for each path we
+    // encounter. The cost is acceptable because the diff walk is
+    // O(N) and the per-file content is small enough to fit in
+    // memory. We call `reconstructFileFromDiff` for each distinct
+    // path that appears in the diff, which is at most a few
+    // dozen in any realistic PR.
+    const seenPaths = new Set();
+    for (const line of diffText.split(/\r?\n/u)) {
+        const match = /^diff --git a\/(.+) b\/(.+)$/u.exec(line);
+        if (match === null)
+            continue;
+        const path = match[2];
+        if (path === undefined)
+            continue;
+        if (seenPaths.has(path))
+            continue;
+        seenPaths.add(path);
+        const content = reconstructFileFromDiff(diffText, path);
+        if (content !== null) {
+            result.set(path, content.toLowerCase());
+        }
+    }
+    return result;
+}
+/**
+ * Check whether the body contains any verbatim substring of a
+ * hunk line. Used to detect "pattern-matched advice" — a body
+ * that quotes no observable diff line is unlikely to be a
+ * diff-anchored finding.
+ *
+ * Trims each hunk line to avoid matching the leading space of
+ * every context line. Minimum 10-char match window to avoid
+ * spurious overlaps on short common words.
+ */
+function bodyContainsAnyHunkLine(body, hunkContent) {
+    const MIN_MATCH = 10;
+    for (const line of hunkContent.split(/\r?\n/u)) {
+        const trimmed = line.trim();
+        if (trimmed.length < MIN_MATCH)
+            continue;
+        if (body.includes(trimmed)) {
+            return true;
+        }
+    }
+    return false;
+}
+
 ;// CONCATENATED MODULE: ./src/cli/live-provider.ts
+
 
 
 
@@ -11709,6 +13175,21 @@ async function requestLiveReview(input) {
      */
     function handleSuccess(result, providerName) {
         const preVerifyReview = normalizeProviderReview(result.review, [providerApiKey, input.platformToken]);
+        const verifyFilterResult = input.parsed.verifyFindings !== false
+            ? applyVerifyFilter(preVerifyReview, input.diffText)
+            : {
+                review: preVerifyReview,
+                verifiedFactsFilter: {
+                    kept: preVerifyReview.comments,
+                    downgraded: [],
+                    downgradeReasons: [],
+                },
+                confidenceFilter: {
+                    kept: preVerifyReview.comments,
+                    downgraded: [],
+                    reasons: [],
+                },
+            };
         const preVerifyOutcome = withParseWarnings({
             review: preVerifyReview,
             endpoint: result.endpoint,
@@ -11716,11 +13197,10 @@ async function requestLiveReview(input) {
             modelId,
             severityWarnings: severityWarnings.slice(),
             diffText: input.diffText,
+            verifiedFactsFilter: verifyFilterResult.verifiedFactsFilter,
+            confidenceFilter: verifyFilterResult.confidenceFilter,
         });
-        const finalReview = input.parsed.verifyFindings !== false
-            ? applyVerifyFilter(preVerifyReview, input.diffText)
-            : preVerifyReview;
-        return { ...preVerifyOutcome, review: finalReview };
+        return { ...preVerifyOutcome, review: verifyFilterResult.review };
     }
     /**
      * Parse-failure path shared by all three provider families.
@@ -11802,6 +13282,7 @@ async function requestLiveReview(input) {
                 user: prompts.user,
                 requestTimeoutMs: readRequestTimeoutMs(input.parsed),
                 ...(input.parsed.maxOutputTokens !== null ? { maxOutputTokens: input.parsed.maxOutputTokens } : {}),
+                ...(input.parsed.effort !== null ? { reasoningEffort: input.parsed.effort } : {}),
                 fetchImpl: input.fetchImpl,
             });
             if (!result.ok) {
@@ -11873,6 +13354,7 @@ async function requestLiveReview(input) {
                 user: prompts.user,
                 requestTimeoutMs: readRequestTimeoutMs(input.parsed),
                 ...(input.parsed.maxOutputTokens !== null ? { maxOutputTokens: input.parsed.maxOutputTokens } : {}),
+                ...(input.parsed.effort !== null ? { reasoningEffort: input.parsed.effort } : {}),
                 fetchImpl: input.fetchImpl,
             });
         }
@@ -11957,21 +13439,57 @@ function withParseWarnings(input) {
             review: input.review,
             diffText: input.diffText,
         }).warnings,
+        verifiedFactsFilter: input.verifiedFactsFilter ?? {
+            kept: input.review.comments,
+            downgraded: [],
+            downgradeReasons: [],
+        },
+        confidenceFilter: input.confidenceFilter ?? {
+            kept: input.review.comments,
+            downgraded: [],
+            reasons: [],
+        },
     };
 }
 /**
  * Apply the deterministic (path, line) verify filter to the
  * review's comments[]. Returns a new LiveReview with the filtered
- * comments[]. The original is left untouched so callers (the
- * parse-warnings artifact builder) see the pre-filter payload.
+ * comments[] PLUS a verified-facts filter result describing
+ * findings that were downgraded because they contradicted a verified
+ * fact.
+ *
+ * The returned `review.comments` contains ONLY the KEPT findings
+ * (at their original severity). Downgraded findings live in
+ * `verifiedFactsFilter.downgraded` as a separate list — callers that
+ * want to surface downgraded findings read that list directly. This
+ * avoids double-counting: downstream code iterating
+ * `review.comments` for posting sees the kept set; downstream code
+ * reading `verifiedFactsFilter.downgraded` for audit sees the
+ * downgraded set. The two are disjoint.
+ *
+ * The original is left untouched so callers (the parse-warnings
+ * artifact builder) see the pre-filter payload.
  *
  * Defense-in-depth Layer 4: the post-filter in
  * `selectPostableComments` runs the same check, but doing it here
  * means the platform-posting paths only see anchorable findings.
+ *
+ * Layer 4.5: after the (path, line) filter, run the verified-facts
+ * contradiction filter. Findings whose body asserts something is
+ * missing from a verified list (e.g. "dist/ is missing from
+ * package.json#files" when dist/ is in fact in files) are
+ * downgraded to info severity in the downgraded list so the
+ * operator can see what the model claimed and why it was
+ * downgraded, but they do not enter `review.comments` (which is
+ * what gets posted).
  */
 function applyVerifyFilter(review, diffText) {
     if (diffText.length === 0) {
-        return review;
+        return {
+            review,
+            verifiedFactsFilter: { kept: review.comments, downgraded: [], downgradeReasons: [] },
+            confidenceFilter: { kept: review.comments, downgraded: [], reasons: [] },
+        };
     }
     // Delegate to the standalone `verifyFindingsAgainstDiff` helper
     // so the inline filter and the parse-warnings artifact agree
@@ -11979,7 +13497,30 @@ function applyVerifyFilter(review, diffText) {
     // re-implementation diverged from the helper in a way that
     // let the artifact undercount fabrication events.
     const { verified } = verifyFindingsAgainstDiff({ review, diffText });
-    return { ...review, comments: verified };
+    const filteredReview = { ...review, comments: verified };
+    const verifiedFactsFilter = applyVerifiedFactsFilter({
+        review: filteredReview,
+        diffText,
+    });
+    // Layer 5: confidence-filter pass. Catches the FP patterns the
+    // verified-facts layer cannot detect (hedging-language calibration,
+    // pattern-matched advice, contradicted-by-quote, intentional-design
+    // blindness). Runs AFTER the verified-facts filter so the post-
+    // filter sees only findings that survived prior checks.
+    const confidenceFilter = applyConfidenceFilter({
+        review: { ...filteredReview, comments: verifiedFactsFilter.kept },
+        diffText,
+    });
+    // Only the KEPT findings go into review.comments. Downgraded
+    // findings are surfaced separately via verifiedFactsFilter.downgraded
+    // AND confidenceFilter.downgraded (the operator can choose to
+    // render them; the platform-posting path ignores them). The two
+    // lists are disjoint from review.comments.
+    return {
+        review: { ...filteredReview, comments: confidenceFilter.kept },
+        verifiedFactsFilter,
+        confidenceFilter,
+    };
 }
 function normalizeProviderReview(payload, secrets) {
     // Layer 4 deterministic verification is applied in the caller
@@ -12095,6 +13636,7 @@ async function runWithCrossProtocolFallback(args) {
             user: args.prompts.user,
             requestTimeoutMs: args.readRequestTimeoutMs(),
             ...(args.parsed.maxOutputTokens !== null ? { maxOutputTokens: args.parsed.maxOutputTokens } : {}),
+            ...(args.parsed.effort !== null ? { reasoningEffort: args.parsed.effort } : {}),
             fetchImpl: args.fetchImpl,
         });
     }
@@ -12443,9 +13985,18 @@ function applySimulateFindings(input) {
             suppressedComments: sanitizeComments(fixture.suppressed_comments, input.secrets),
         },
         // Synthesized fixture — never went through the real parser, so
-        // there are no severity warnings to surface.
+        // there are no severity warnings to surface. The verified-facts
+        // filter and confidence filter did not run on the synthesized
+        // findings either, so we OMIT those fields rather than setting
+        // them to empty. The legacy-compat branch in
+        // `aggregateConfidenceFilter` keys on
+        // `o.confidenceFilter === undefined` and forwards the synthesized
+        // comments as kept; setting an empty `confidenceFilter` would
+        // bypass that branch and silently drop the comments during
+        // merge. Self-review finding on PR #43 thread 3559191395.
         severityWarnings: [],
         parseWarnings: [],
+        verifiedFactsFilter: { kept: [], downgraded: [], downgradeReasons: [] },
     };
 }
 function sanitizeComments(comments, secrets) {
@@ -12537,9 +14088,22 @@ async function requestChunkedLiveReview(input) {
                 // chunk 12 because the provider was rate-limiting".
                 failedChunkCount += 1;
                 const message = formatError(error);
-                const sanitized = sanitizeForPost(message, [input.platformToken]);
-                const redactedChunk = chunk.length > 80 ? `${chunk.slice(0, 77)}…` : chunk;
-                logWarning("", `chunk ${index + 1}/${input.chunks.length} failed (${sanitized}); substituting empty outcome. chunk preview: ${redactedChunk}`);
+                // Sanitize against the FULL secret list (not just the platform
+                // token) so an error message that quotes a 401 echo of the
+                // `Authorization` header cannot leak the provider API key into
+                // stdout. The sibling catch in `runLive` (line 207) already uses
+                // `readSecretValues(env)`; this aligns the per-chunk catch with
+                // that contract.
+                const sanitized = sanitizeForPost(message, readSecretValues(input.env));
+                // The chunk preview is the first 77 chars of the diff for this
+                // file. Sanitize it against the full secret list too: a leaked
+                // key in the first line of a changed file (e.g. a `.env`
+                // example) would otherwise be emitted to stdout via the
+                // warning. The earlier per-secret-token pass only handled the
+                // platform token and missed every other secret.
+                const preview = chunk.length > 80 ? `${chunk.slice(0, 77)}…` : chunk;
+                const sanitizedPreview = sanitizeForPost(preview, readSecretValues(input.env));
+                logWarning("", `chunk ${index + 1}/${input.chunks.length} failed (${sanitized}); substituting empty outcome. chunk preview: ${sanitizedPreview}`);
                 outcome = {
                     review: { summary: "", verdict: "COMMENT", comments: [], suppressedComments: [] },
                     endpoint: "",
@@ -12549,6 +14113,8 @@ async function requestChunkedLiveReview(input) {
                     // (the parser never ran on this chunk).
                     severityWarnings: [],
                     parseWarnings: [],
+                    verifiedFactsFilter: { kept: [], downgraded: [], downgradeReasons: [] },
+                    confidenceFilter: { kept: [], downgraded: [], reasons: [] },
                 };
             }
             outcomes[index] = outcome;
@@ -12742,6 +14308,8 @@ async function dispatchLivePlatform(input) {
                     // no severity warnings to surface.
                     severityWarnings: [],
                     parseWarnings: [],
+                    verifiedFactsFilter: { kept: [], downgraded: [], downgradeReasons: [] },
+                    confidenceFilter: { kept: [], downgraded: [], reasons: [] },
                 };
             }
             else {

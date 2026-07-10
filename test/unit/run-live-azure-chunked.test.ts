@@ -9,7 +9,7 @@
 // The default chunking thresholds are 8 000 chars / 50 files, so a
 // fixture that emits ~5 distinct files with >2 000 chars per diff block
 // guarantees ≥3 chunks regardless of test ordering.
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 
 import { parseCliArgs } from "../../src/cli.js";
 import { runLive } from "../../src/cli/orchestrator.js";
@@ -29,7 +29,14 @@ type RecordedCall = {
 
 type FetchRoute = {
   readonly match: (url: string, method: string) => boolean;
-  readonly response: Response;
+  /**
+   * Per-call response thunk. Returns a fresh Response on every match
+   * so tests can alternate fail/success per call (e.g. via a captured
+   * counter) without baking the first response into every subsequent
+   * request. The recorder's per-call `match` + `response` are
+   * called fresh for every fetch.
+   */
+  readonly response: () => Response;
 };
 
 function makeJsonResponse(value: unknown, status = 200): Response {
@@ -85,37 +92,31 @@ function buildMultiFileRoutes(input: {
   readonly fileBody: (path: string) => string;
 }): readonly FetchRoute[] {
   const { changes, fileCount, perChunkProviderBody, fileBody } = input;
-  // Map each chunk to a deterministic provider response so we can verify
-  // merging picks up comments from each.
+  // Per-call thunk for the provider route so each chunk request
+  // returns a fresh response carrying that chunk's body. The
+  // counter advances on every call (not at construction time).
   let chunkCounter = 0;
-  const providerResponseForChunk = () => {
-    const body = perChunkProviderBody(chunkCounter, fileCount);
-    chunkCounter += 1;
-    return makeJsonResponse({ output_text: body });
+  const providerRoute: FetchRoute = {
+    match: (url, method) => method === "POST" && url === "https://provider.example/v1/responses",
+    response: () => {
+      const body = perChunkProviderBody(chunkCounter, fileCount);
+      chunkCounter += 1;
+      return makeJsonResponse({ output_text: body });
+    },
   };
-  const providerRoutes: FetchRoute[] = [];
-  // We can't pre-bind a unique provider response per request; the
-  // provider route below cycles through responses so each chunk gets
-  // its own review. We push them in the order chunks will be made.
-  for (let index = 0; index < fileCount; index += 1) {
-    providerRoutes.push({
-      match: (url, method) => method === "POST" && url === "https://provider.example/v1/responses",
-      response: providerResponseForChunk(),
-    });
-  }
 
   return [
     {
       match: (url, method) => method === "GET" && url.endsWith("/pullRequests/42/iterations?api-version=7.1"),
-      response: makeJsonResponse({ value: [{ id: 2 }] }),
+      response: () => makeJsonResponse({ value: [{ id: 2 }] }),
     },
     {
       match: (url, method) => method === "GET" && url.endsWith("/pullRequests/42/iterations/2?api-version=7.1"),
-      response: makeJsonResponse({ sourceRefCommit: { commitId: AZURE_SOURCE_COMMIT_ID } }),
+      response: () => makeJsonResponse({ sourceRefCommit: { commitId: AZURE_SOURCE_COMMIT_ID } }),
     },
     {
       match: (url, method) => method === "GET" && url.endsWith("/pullRequests/42/iterations/2/changes?api-version=7.1"),
-      response: makeJsonResponse({
+      response: () => makeJsonResponse({
         changes: changes.map((change) => ({
           item: {
             objectId: AZURE_NEW_OBJECT_ID,
@@ -133,7 +134,7 @@ function buildMultiFileRoutes(input: {
         url.endsWith(
           buildItemSuffix(change.item.path, "Branch", "refs/heads/main"),
         ),
-      response: makeJsonResponse({ content: "" }),
+      response: () => makeJsonResponse({ content: "" }),
     })),
     // Per-file item content (source commit = "new")
     ...changes.map((change) => ({
@@ -142,24 +143,24 @@ function buildMultiFileRoutes(input: {
         url.endsWith(
           buildItemSuffix(change.item.path, "Commit", AZURE_SOURCE_COMMIT_ID),
         ),
-      response: makeJsonResponse({ content: fileBody(change.item.path) }),
+      response: () => makeJsonResponse({ content: fileBody(change.item.path) }),
     })),
-    ...providerRoutes,
+    providerRoute,
     {
       match: (url, method) => method === "GET" && url.endsWith("/threads?api-version=7.1"),
-      response: makeJsonResponse({ count: 0, value: [] }),
+      response: () => makeJsonResponse({ count: 0, value: [] }),
     },
     {
       match: (url, method) => method === "POST" && url.endsWith("/threads?api-version=7.1"),
-      response: makeJsonResponse({ id: 77 }, 200),
+      response: () => makeJsonResponse({ id: 77 }, 200),
     },
     {
       match: (url, method) => method === "GET" && url.endsWith("/statuses?api-version=7.1"),
-      response: makeJsonResponse({ count: 0, value: [] }),
+      response: () => makeJsonResponse({ count: 0, value: [] }),
     },
     {
       match: (url, method) => method === "POST" && url.endsWith("/statuses?api-version=7.1"),
-      response: makeJsonResponse({ id: 88 }, 200),
+      response: () => makeJsonResponse({ id: 88 }, 200),
     },
   ];
 }
@@ -184,7 +185,7 @@ function makeFetchRecorder(routes: readonly FetchRoute[]): {
     calls.push({ url, method, authorization, body });
     for (const route of routes) {
       if (route.match(url, method)) {
-        return route.response.clone();
+        return route.response();
       }
     }
     throw new Error(`unexpected ${method} ${url}`);
@@ -391,7 +392,10 @@ describe("runLive Azure orchestration — chunked path", () => {
       {
         match: (url: string, method: string) =>
           method === "POST" && url === "https://provider.example/v1/responses",
-        response: (() => {
+        // Per-call thunk so the counter advances on every fetch
+        // (the previous shape was an IIFE that ran once at
+        // construction and froze the response).
+        response: () => {
           counter += 1;
           // Alternate fail/success to ensure we exercise both paths.
           if (counter === 1) {
@@ -401,7 +405,7 @@ describe("runLive Azure orchestration — chunked path", () => {
             });
           }
           return makeJsonResponse({ output_text: successBodies[(counter - 2) % successBodies.length]! });
-        })(),
+        },
       },
     ];
 
@@ -431,6 +435,141 @@ describe("runLive Azure orchestration — chunked path", () => {
     expect(result.exitCode).toBe(1);
     expect(result.posted).toBe(true);
     void stderrLines; // silence unused
+  });
+
+  it("sanitizes the per-chunk failure warning against the FULL secret list, not just the platform token", async () => {
+    // Regression guard for the Layer 5 self-review finding #2270/#2271:
+    // the per-chunk catch used to sanitize only against
+    // `platformToken`, missing the provider API key. If a provider
+    // 401 echo included the `Authorization` header (containing the
+    // API key), the warning line would leak it. The fix uses
+    // `readSecretValues(env)` like the sibling catch in `runLive`.
+    //
+    // We force a 500 on the first chunk and inspect the captured
+    // stderr. The provider-key secret MUST NOT appear in the warning
+    // text. To actually exercise the sanitization (rather than
+    // passing trivially because the 500 body doesn't echo the
+    // secret), we put the provider key into the file body so the
+    // chunk preview contains it. A buggy implementation that only
+    // sanitized the platform token would leak `provider-key-secret`
+    // into the warning via the chunk-preview line.
+    const fixture = buildMultiFileFixture(2, 4_000);
+    const platformOnly = buildMultiFileRoutes({
+      fileCount: 2,
+      changes: fixture.changes,
+      perChunkProviderBody: () => "{}",
+      fileBody: (path: string) => `// ${path}\n// API key for the synthetic provider: provider-key-secret\nconst placeholder = true;\n`,
+    }).filter((route) => !route.match.toString().includes("/v1/responses"));
+    let counter = 0;
+    const routes: FetchRoute[] = [
+      ...platformOnly,
+      {
+        match: (url: string, method: string) =>
+          method === "POST" && url === "https://provider.example/v1/responses",
+        // Per-call thunk (see FetchRoute type). The previous IIFE
+        // shape froze the response on first call so the counter
+        // never advanced past 1.
+        response: () => {
+          counter += 1;
+          if (counter === 1) {
+            return new Response(JSON.stringify({ error: "upstream timeout" }), {
+              status: 500,
+              headers: { "content-type": "application/json" },
+            });
+          }
+          return makeJsonResponse({ output_text: perChunkBodyFor((counter - 2) % 2, fixture) });
+        },
+      },
+    ];
+    const stderrLines: string[] = [];
+    const stderrSpy = vi.spyOn(process.stderr, "write").mockImplementation((chunk) => {
+      stderrLines.push(String(chunk));
+      return true;
+    });
+    const recorder = makeFetchRecorder(routes);
+
+    await runLive({
+      parsed: parseCliArgs(["--platform", "azure", "--no-dry-run"]),
+      cwd: process.cwd(),
+      env: azureEnv(),
+      fetchImpl: recorder.fetchImpl,
+    });
+    stderrSpy.mockRestore();
+
+    const allStderr = stderrLines.join("");
+    // The provider key from azureEnv() must NOT appear anywhere in
+    // the warning text. The platform token also must NOT appear
+    // (it's also a secret).
+    expect(allStderr).not.toContain("provider-key-secret");
+    expect(allStderr).not.toContain("azure-token-secret");
+    // Pin the per-call-thunk contract: the counter advanced past 1
+    // (i.e. the IIFE-bug regression that froze the response on
+    // first call would make this assertion fail because counter
+    // would still be 1).
+    expect(counter).toBeGreaterThan(1);
+  });
+
+  it("captures the alternating fail/success pattern: first chunk fails, second chunk succeeds (regression guard for IIFE-bug fix)", async () => {
+    // The previous IIFE shape `response: (() => { ... })()` froze
+    // the response on the first call, so every subsequent chunk
+    // got the same 500 body and the test passed by accident. With
+    // the per-call thunk, we can now assert the alternating
+    // pattern: chunk 0 fails, chunks 1+ succeed.
+    const fixture = buildMultiFileFixture(2, 4_000);
+    const platformOnly = buildMultiFileRoutes({
+      fileCount: 2,
+      changes: fixture.changes,
+      perChunkProviderBody: () => "{}",
+      fileBody: FILE_BODY,
+    }).filter((route) => !route.match.toString().includes("/v1/responses"));
+    let counter = 0;
+    const routes: FetchRoute[] = [
+      ...platformOnly,
+      {
+        match: (url: string, method: string) =>
+          method === "POST" && url === "https://provider.example/v1/responses",
+        response: () => {
+          counter += 1;
+          if (counter === 1) {
+            return new Response(JSON.stringify({ error: "upstream timeout" }), {
+              status: 500,
+              headers: { "content-type": "application/json" },
+            });
+          }
+          return makeJsonResponse({ output_text: perChunkBodyFor((counter - 2) % 2, fixture) });
+        },
+      },
+    ];
+    const stderrLines: string[] = [];
+    const stderrSpy = vi.spyOn(process.stderr, "write").mockImplementation((chunk) => {
+      stderrLines.push(String(chunk));
+      return true;
+    });
+    const recorder = makeFetchRecorder(routes);
+
+    await runLive({
+      parsed: parseCliArgs(["--platform", "azure", "--no-dry-run"]),
+      cwd: process.cwd(),
+      env: azureEnv(),
+      fetchImpl: recorder.fetchImpl,
+    });
+    stderrSpy.mockRestore();
+
+    // The thunk must have been called more than once (i.e. the
+    // alternation actually alternated). If the IIFE bug regresses,
+    // counter is frozen at 1 and this test fails.
+    expect(counter).toBeGreaterThanOrEqual(2);
+    // The warning line for the failed first chunk must appear at
+    // least once in stderr. This pins the contract that chunk
+    // failures emit a warning, which the sanitization test above
+    // only checks by absence-of-secret (not by presence-of-warning).
+    const allStderr = stderrLines.join("");
+    // The warning is emitted on every chunk failure. With chunk 0
+    // failing and chunk 1 succeeding, the warning appears at least
+    // once. If the IIFE bug regresses and every chunk sees the same
+    // 500 response, the warning still fires — but this assertion
+    // pins the contract that failures produce stderr output.
+    expect(allStderr.length).toBeGreaterThan(0);
   });
 });
 

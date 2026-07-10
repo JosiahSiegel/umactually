@@ -143,6 +143,70 @@ permissions:
 
 Do not use `pull_request_target` for this action; it is not required to comment on a PR and it can expose secrets to untrusted PR code.
 
+## Secret scanning in CI (GitGuardian)
+
+The UmActually repository uses [GitGuardian's GitHub App](https://dashboard.gitguardian.com) to scan every PR for committed secrets. The detector is the industry-standard high-recall scanner — any long random-looking string assigned to a variable named `apiKey`, `token`, `secret`, etc. triggers an incident. This is the right posture for production code and surfaces the kind of accidental credential commit that would otherwise ship to a public mirror.
+
+### Why some scanner findings are false positives
+
+UmActually's test suite deliberately uses synthetic API keys to exercise the cross-protocol dispatcher, the Anthropic Messages API, and the provider-failure paths. Every synthetic key carries the literal `do-not-leak` sentinel as a suffix — for example `sk-anthropic-v2-do-not-leak`, `sk-test-openai-do-not-leak`, `sk-minimax-smoke-test-do-not-leak`. The `do-not-leak` suffix is a tripwire: a maintainer who copies a fixture into a real config file and forgets to swap it will find this section via `rg do-not-leak src/`, and the next reviewer will catch it in code review.
+
+Convention enforced across 10+ test files in `test/unit/`:
+
+- `live-provider-cross-protocol-dispatch.test.ts`
+- `live-provider-anthropic-dispatch.test.ts`
+- `anthropic-messages.test.ts`
+- `live-shared-body.test.ts`
+- `live-shared-prepare-posted-review.test.ts`
+- `live-azure-parent-clarity.test.ts`
+- `provider.test.ts`
+- `provider-retry.test.ts`
+- `redact-url-for-log.test.ts`
+- `verdict-reconciliation.test.ts`
+
+If you add a new test fixture that looks like an API key, append the `do-not-leak` suffix. A grep for `do-not-leak` should match every synthetic key in the repo.
+
+### Per-repo configuration (`.gitguardian.yaml`)
+
+The repository carries a `.gitguardian.yaml` at the root that scopes the scanner to the surfaces that matter:
+
+- **`secret.ignored_paths`** excludes `test/**`, `tests/**`, `**/*.test.ts`, `**/*.spec.ts`, `**/__tests__/**`, `**/fixtures/**`, `**/__snapshots__/**`, `dist/**`, `build/**`, `coverage/**`, `artifacts/**`, `docs/**`, `**/*.md`, `**/*.rst`, `LICENSE`, `CHANGELOG*`, and editor scratch. These are the paths where the `do-not-leak` fixtures and the per-run redaction-report / cassette artifacts live.
+- **`secret.ignored_matches`** pre-registers the 9 historical `sk-*-do-not-leak` fixture values from the cross-protocol-dispatch test file so the corresponding dashboard incidents auto-resolve on the next scan.
+- **The `Generic High Entropy Secret` detector is NOT globally disabled** — `src/**` and `bin/**` stay fully scanned. Production code is the surface that needs the most aggressive scanning; weakening it for test convenience would defeat the purpose of the gate.
+
+The full file is 144 lines and lives at `.gitguardian.yaml` in the repo root. Schema reference: <https://docs.gitguardian.com/ggshield-docs/configuration>.
+
+### Resolving a false-positive incident in the dashboard
+
+The `.gitguardian.yaml` config governs **future** scans. Pre-existing incidents in the GitGuardian workspace must be resolved manually — the config does not retroactively close them. When the scanner reports a `Generic High Entropy Secret` incident on a `do-not-leak` test fixture:
+
+1. Open the incident at the URL printed in the PR check annotation (format: `https://dashboard.gitguardian.com/workspace/<id>/incidents/<incident_id>?occurrence=<occurrence_id>`).
+2. Click **Ignore** and choose the reason **False positive**.
+3. Add a comment citing this section so the audit trail is self-explanatory: `Synthetic test fixture per the do-not-leak sentinel convention; see docs/security.md#secret-scanning-in-ci-gitguardian.`
+
+To script the resolution via the GitGuardian API instead:
+
+```bash
+curl -X POST "https://api.gitguardian.com/v1/incidents/secrets/<incident_id>/ignore" \
+  -H "Authorization: Token $GITGUARDIAN_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"ignore_reason": "false_positive_test"}'
+```
+
+`GITGUARDIAN_API_KEY` is the workspace API token from **GitGuardian dashboard → Settings → API**. Store it in your platform secret store — never commit it. The valid `ignore_reason` values are `false_positive_test`, `false_positive`, `test_credential`, `low_risk`, or `low_severity`. For `do-not-leak` fixtures, `false_positive_test` is the right choice (the value is a documented test sentinel, not a real credential).
+
+### When the scanner finds a REAL secret
+
+If GitGuardian reports a finding that is NOT a `do-not-leak` fixture in `test/`:
+
+1. **Do not merge the PR.** Treat the report as a security incident.
+2. Rotate the leaked credential at the issuing platform (GitHub PAT settings, Azure DevOps PAT settings, the provider's API-key console, etc.).
+3. Rewrite git history to remove the secret (`git filter-repo` or BFG). The UmActually repo's CONTRIBUTING guide links to GitGuardian's history-rewriting cheatsheet.
+4. Add the rotated value to your platform's secret store and reference it via `${{ secrets.* }}` (GitHub) or the variable group's secret variable (Azure DevOps).
+5. Mark the incident **Resolved** in the GitGuardian dashboard with `secret_revoked: true`.
+
+The scanner is configured to fail CI on any open incident at the `Triggered` status. A real secret will block the merge until the credential is rotated and the history is rewritten — by design.
+
 ## Reporting issues
 
 If you find a security issue in UmActually, open a private security advisory on the repository rather than a public issue. Include the input or fixture that triggered the issue, the version, and a minimal reproduction.

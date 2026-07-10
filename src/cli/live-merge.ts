@@ -21,9 +21,16 @@
  *     (defaults to 50, matching the post-side cap).
  *   - MERGE-5: the merged verdict is the worst across inputs
  *     (NEEDS_FIX > DISCUSS > APPROVED).
- *   - MERGE-6: the merged `summary` is the LONGEST input summary —
- *     longest text tends to be the most informative prose, which is
- *     what a reviewer wants to read in the parent card.
+ *   - MERGE-6: the merged `summary` prefers chunks that contributed
+ *     real findings (comments or suppressed comments); among the
+ *     surviving chunks, the longest summary wins. A parse-fail
+ *     fallback's summary is intentionally LONG (it embeds the raw
+ *     provider response in a `<details>` block), so the previous
+ *     "longest overall" policy let a parse-fail summary beat a
+ *     successful chunk's real summary — contradicting the findings
+ *     table. The new policy filters out empty-finding chunks and
+ *     falls back to the parse-fail summary ONLY when no chunk
+ *     contributed findings.
  *   - Plus (extra): `suppressedComments` are deduped by (path, line),
  *     and `endpoint`/`provider`/`modelId` come from the FIRST input so
  *     downstream `runAzureLive` callers still see the same identity as
@@ -56,8 +63,19 @@ export type MergeOptions = {
 /**
  * Aggregate the per-chunk verified-facts filter results into a single
  * result for the merged outcome. Concatenates kept/downgraded lists
- * across chunks and emits global indices so the downgrade reasons
- * reference the final merged comment positions.
+ * across chunks and emits global indices.
+ *
+ * **Index semantics**: the `index` on each `downgradeReasons` entry
+ * points into the AGGREGATED kept+downgraded arrays (in that
+ * concatenation order), NOT into the post-dedup/post-sort/
+ * post-truncate `review.comments` array that the operator sees in
+ * the final review body. The dedup + sort + truncate step in
+ * `mergeReviewResults` does not remap the indices. Callers that
+ * want to correlate a downgrade reason back to a specific finding
+ * MUST use `(path, line)` — the index is an internal aid for the
+ * audit artifact's order, not a stable handle into the visible
+ * review. Pinned by `test/unit/live-merge.test.ts` (the
+ * MERGE-CONFIDENCE / MERGE-FACTSAGG test cases).
  */
 function aggregateVerifiedFactsFilter(
   outcomes: readonly LiveProviderOutcome[],
@@ -85,6 +103,68 @@ function aggregateVerifiedFactsFilter(
   return { kept, downgraded, downgradeReasons };
 }
 
+/**
+ * Aggregate the per-chunk confidence-filter results. Mirrors the
+ * verified-facts aggregation above so the merged outcome's
+ * confidenceFilter field has the same shape as any single-chunk
+ * outcome's confidenceFilter.
+ *
+ * **Index semantics** (same as `aggregateVerifiedFactsFilter`):
+ * `reasons[].index` points into the aggregated kept+downgraded
+ * arrays in concatenation order, NOT into the post-dedup/
+ * post-sort/post-truncate `review.comments` array. Callers
+ * correlating a reason to a finding must use `(path, line)`.
+ */
+function aggregateConfidenceFilter(
+  outcomes: readonly LiveProviderOutcome[],
+): import("../review/filter-confidence.js").ConfidenceFilterResult {
+  const kept: LiveReviewComment[] = [];
+  const downgraded: LiveReviewComment[] = [];
+  const reasons: { index: number; reason: import("../review/filter-confidence.js").ConfidenceFilterReason; readonly explanation: string }[] = [];
+  let globalIndex = 0;
+  for (const o of outcomes) {
+    if (o.confidenceFilter === undefined) {
+      // Legacy / older outcomes (simulate-findings path, fixtures,
+      // and outcomes from before the confidence filter was wired
+      // in `applyVerifyFilter`) do not carry a `confidenceFilter`.
+      // The most defensible default is to treat their already-post-
+      // verified-facts `review.comments` as confidence-kept. The
+      // upstream contract is: by the time an outcome is passed
+      // here, `o.review.comments` is the POST-VERIFIED-FACTS list
+      // (verified-facts drops the contradicted findings, but the
+      // confidence-filter pass had not run yet for legacy
+      // outcomes). So this is NOT a double-count of
+      // `verifiedFactsFilter.kept` — it's the next step in the
+      // chain that legacy outcomes just happen to skip. The
+      // audit-artifact count for the legacy path will therefore
+      // match `review.comments.length` (the post-merge list),
+      // not `verifiedFactsFilter.kept.length`. Pinned by
+      // `test/unit/live-merge.test.ts` MERGE-CONFIDENCE legacy
+      // compat case.
+      for (const c of o.review.comments) {
+        kept.push(c);
+        globalIndex += 1;
+      }
+      continue;
+    }
+    for (const c of o.confidenceFilter.kept) {
+      kept.push(c);
+      globalIndex += 1;
+    }
+    for (let i = 0; i < o.confidenceFilter.downgraded.length; i += 1) {
+      const c = o.confidenceFilter.downgraded[i];
+      const reasonRecord = o.confidenceFilter.reasons[i];
+      if (c === undefined || reasonRecord === undefined) {
+        continue;
+      }
+      downgraded.push(c);
+      reasons.push({ index: globalIndex, reason: reasonRecord.reason, explanation: reasonRecord.explanation });
+      globalIndex += 1;
+    }
+  }
+  return { kept, downgraded, reasons };
+}
+
 export function mergeReviewResults(
   outcomes: readonly LiveProviderOutcome[],
   options?: MergeOptions,
@@ -101,6 +181,7 @@ export function mergeReviewResults(
       severityWarnings: [],
       parseWarnings: [],
       verifiedFactsFilter: { kept: [], downgraded: [], downgradeReasons: [] },
+      confidenceFilter: { kept: [], downgraded: [], reasons: [] },
     };
   }
 
@@ -237,5 +318,6 @@ export function mergeReviewResults(
     // (index, reason) so a finding flagged in two chunks doesn't double-
     // count in the summary.
     verifiedFactsFilter: aggregateVerifiedFactsFilter(outcomes),
+    confidenceFilter: aggregateConfidenceFilter(outcomes),
   };
 }
