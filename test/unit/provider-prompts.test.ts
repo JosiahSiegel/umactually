@@ -228,4 +228,26 @@ describe("buildProviderPrompts verified-facts block", () => {
     expect(prompts.system).toContain("Verified-facts grounding");
     expect(prompts.system).toContain("authoritative for this PR");
   });
+
+  it("system prompt includes Layer 5 negative-instruction calibration (false-positive prevention)", async () => {
+    // Pins the new Layer 5 prompt block that targets the four FP
+    // patterns the verified-facts layer cannot detect: pattern-matched
+    // advice without a diff anchor, hedging at high severity, missing
+    // constructs that are in the unchanged context, and intentional
+    // design with a documenting comment. The post-filter relies on
+    // these instructions being present so the model emits calibrated
+    // severities on first pass — the post-filter is the backstop.
+    const prompts = await buildProviderPrompts({
+      parsed: parsedArgsForTest(),
+      cwd: process.cwd(),
+      env: {},
+      platform: "github",
+      diffText: PR_41_DIFF,
+    });
+    expect(prompts.system).toContain("False-positive prevention");
+    expect(prompts.system).toContain("generic best-practice advice without quoting the exact diff line");
+    expect(prompts.system).toContain("hedging language");
+    expect(prompts.system).toContain("Do NOT flag code as missing error handling");
+    expect(prompts.system).toContain("Do NOT flag a code pattern as a bug if the diff includes an inline comment");
+  });
 });

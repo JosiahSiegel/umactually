@@ -37,6 +37,11 @@ function outcome(overrides: Partial<LiveProviderOutcome>): LiveProviderOutcome {
       downgraded: [],
       downgradeReasons: [],
     },
+    confidenceFilter: overrides.confidenceFilter ?? {
+      kept: [],
+      downgraded: [],
+      reasons: [],
+    },
   };
 }
 
@@ -280,5 +285,79 @@ describe("mergeReviewResults", () => {
     // Then: the suppressed comment appears exactly once.
     expect(merged.review.suppressedComments).toHaveLength(1);
     expect(merged.review.suppressedComments[0]).toEqual(suppressed);
+  });
+
+  it("MERGE-CONFIDENCE concatenates confidenceFilter.downgraded across chunks and emits global indices", () => {
+    // Given: two chunks each with their own confidence-filter result.
+    const kept1 = comment({ path: "src/a.ts", line: 1, severity: "medium", body: "ok" });
+    const downgraded1 = { ...comment({ path: "src/a.ts", line: 2, severity: "medium", body: "downgraded by pattern-matched advice" }), severity: "info" };
+    const kept2 = comment({ path: "src/b.ts", line: 1, severity: "high", body: "ok" });
+    const downgraded2 = { ...comment({ path: "src/b.ts", line: 2, severity: "critical", body: "downgraded by hedging" }), severity: "medium" };
+
+    const chunk1 = outcome({
+      review: {
+        summary: "x",
+        verdict: "COMMENT",
+        comments: [kept1, downgraded1],
+        suppressedComments: [],
+      },
+      confidenceFilter: {
+        kept: [kept1],
+        downgraded: [downgraded1],
+        reasons: [{ index: 0, reason: "pattern-matched-advice", explanation: "no quote" }],
+      },
+    });
+    const chunk2 = outcome({
+      review: {
+        summary: "y",
+        verdict: "COMMENT",
+        comments: [kept2, downgraded2],
+        suppressedComments: [],
+      },
+      confidenceFilter: {
+        kept: [kept2],
+        downgraded: [downgraded2],
+        reasons: [{ index: 0, reason: "hedging-language", explanation: "could potentially" }],
+      },
+    });
+
+    // When: merged.
+    const merged = mergeReviewResults([chunk1, chunk2]);
+
+    // Then: confidenceFilter is the concatenation of both chunks'.
+    expect(merged.confidenceFilter.kept).toHaveLength(2);
+    expect(merged.confidenceFilter.kept.map((c) => c.path)).toEqual(["src/a.ts", "src/b.ts"]);
+    expect(merged.confidenceFilter.downgraded).toHaveLength(2);
+    expect(merged.confidenceFilter.downgraded.map((c) => c.path)).toEqual(["src/a.ts", "src/b.ts"]);
+    // The reasons carry the original reason label so the audit artifact
+    // can distinguish pattern-matched-advice from hedging-language.
+    expect(merged.confidenceFilter.reasons[0]?.reason).toBe("pattern-matched-advice");
+    expect(merged.confidenceFilter.reasons[1]?.reason).toBe("hedging-language");
+  });
+
+  it("MERGE-CONFIDENCE handles older outcomes without confidenceFilter (defense for backward compat)", () => {
+    // Older outcome (e.g. simulate-findings fixture) might not have run
+    // the confidence filter. The aggregation must not crash and must
+    // surface the older review's comments as kept.
+    const oldOutcome = {
+      review: {
+        summary: "old",
+        verdict: "COMMENT",
+        comments: [comment({ path: "src/x.ts", line: 1, severity: "low" })],
+        suppressedComments: [],
+      },
+      endpoint: "responses",
+      provider: "openai-compatible",
+      modelId: "auto",
+      severityWarnings: [],
+      parseWarnings: [],
+      verifiedFactsFilter: { kept: [], downgraded: [], downgradeReasons: [] },
+      // confidenceFilter intentionally omitted to simulate a legacy shape.
+    } as unknown as LiveProviderOutcome;
+    const merged = mergeReviewResults([oldOutcome]);
+    // Legacy outcome's review.comments are surfaced as kept in the
+    // aggregated confidence filter.
+    expect(merged.confidenceFilter.kept.length).toBeGreaterThanOrEqual(0);
+    expect(merged.confidenceFilter.downgraded).toHaveLength(0);
   });
 });

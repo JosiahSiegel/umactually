@@ -113,6 +113,7 @@ async function requestChunkedLiveReview(input: {
             severityWarnings: [],
             parseWarnings: [],
             verifiedFactsFilter: { kept: [], downgraded: [], downgradeReasons: [] },
+            confidenceFilter: { kept: [], downgraded: [], reasons: [] },
           };
         }
         outcomes[index] = outcome;
@@ -342,6 +343,7 @@ async function dispatchLivePlatform(input: {
           severityWarnings: [],
           parseWarnings: [],
           verifiedFactsFilter: { kept: [], downgraded: [], downgradeReasons: [] },
+            confidenceFilter: { kept: [], downgraded: [], reasons: [] },
         };
       } else {
         const chunks = chunkDiffByFile(diffText);

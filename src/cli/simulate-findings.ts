@@ -46,6 +46,7 @@ export function applySimulateFindings(input: {
     severityWarnings: [],
     parseWarnings: [],
     verifiedFactsFilter: { kept: [], downgraded: [], downgradeReasons: [] },
+    confidenceFilter: { kept: [], downgraded: [], reasons: [] },
   };
 }
 

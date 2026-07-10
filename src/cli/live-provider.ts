@@ -41,6 +41,7 @@ import type { ParsedCliArgs } from "./parse-args.js";
 import { buildParseWarningsArtifact } from "./parse-warnings.js";
 import { buildProviderPrompts, REVIEW_PAYLOAD_JSON_SCHEMA } from "./provider-prompts.js";
 import { applyVerifiedFactsFilter, verifyFindingsAgainstDiff } from "./verify-findings.js";
+import { applyConfidenceFilter } from "../review/filter-confidence.js";
 
 const DEFAULT_REQUEST_TIMEOUT_MS = 60_000;
 const PROVIDER_NAME = "openai-compatible";
@@ -147,6 +148,11 @@ export async function requestLiveReview(input: {
             downgraded: [],
             downgradeReasons: [],
           },
+          confidenceFilter: {
+            kept: preVerifyReview.comments,
+            downgraded: [],
+            reasons: [],
+          },
         };
     const preVerifyOutcome = withParseWarnings({
       review: preVerifyReview,
@@ -156,6 +162,7 @@ export async function requestLiveReview(input: {
       severityWarnings: severityWarnings.slice(),
       diffText: input.diffText,
       verifiedFactsFilter: verifyFilterResult.verifiedFactsFilter,
+      confidenceFilter: verifyFilterResult.confidenceFilter,
     });
     return { ...preVerifyOutcome, review: verifyFilterResult.review };
   }
@@ -429,6 +436,7 @@ function withParseWarnings(input: {
   readonly severityWarnings: readonly import("../provider/provider-parse.js").SeverityWarning[];
   readonly diffText: string;
   readonly verifiedFactsFilter?: import("./verify-findings.js").VerifiedFactsFilterResult;
+  readonly confidenceFilter?: import("../review/filter-confidence.js").ConfidenceFilterResult;
 }): LiveProviderOutcome {
   return {
     review: input.review,
@@ -444,6 +452,11 @@ function withParseWarnings(input: {
       kept: input.review.comments,
       downgraded: [],
       downgradeReasons: [],
+    },
+    confidenceFilter: input.confidenceFilter ?? {
+      kept: input.review.comments,
+      downgraded: [],
+      reasons: [],
     },
   };
 }
@@ -483,11 +496,13 @@ function withParseWarnings(input: {
 function applyVerifyFilter(review: LiveReview, diffText: string): {
   readonly review: LiveReview;
   readonly verifiedFactsFilter: import("./verify-findings.js").VerifiedFactsFilterResult;
+  readonly confidenceFilter: import("../review/filter-confidence.js").ConfidenceFilterResult;
 } {
   if (diffText.length === 0) {
     return {
       review,
       verifiedFactsFilter: { kept: review.comments, downgraded: [], downgradeReasons: [] },
+      confidenceFilter: { kept: review.comments, downgraded: [], reasons: [] },
     };
   }
   // Delegate to the standalone `verifyFindingsAgainstDiff` helper
@@ -501,13 +516,24 @@ function applyVerifyFilter(review: LiveReview, diffText: string): {
     review: filteredReview,
     diffText,
   });
+  // Layer 5: confidence-filter pass. Catches the FP patterns the
+  // verified-facts layer cannot detect (hedging-language calibration,
+  // pattern-matched advice, contradicted-by-quote, intentional-design
+  // blindness). Runs AFTER the verified-facts filter so the post-
+  // filter sees only findings that survived prior checks.
+  const confidenceFilter = applyConfidenceFilter({
+    review: { ...filteredReview, comments: verifiedFactsFilter.kept },
+    diffText,
+  });
   // Only the KEPT findings go into review.comments. Downgraded
   // findings are surfaced separately via verifiedFactsFilter.downgraded
-  // (the operator can choose to render them; the platform-posting
-  // path ignores them).
+  // AND confidenceFilter.downgraded (the operator can choose to
+  // render them; the platform-posting path ignores them). The two
+  // lists are disjoint from review.comments.
   return {
-    review: { ...filteredReview, comments: verifiedFactsFilter.kept },
+    review: { ...filteredReview, comments: confidenceFilter.kept },
     verifiedFactsFilter,
+    confidenceFilter,
   };
 }
 

@@ -144,6 +144,19 @@ export type LiveProviderOutcome = {
    * facts were extracted from the diff.
    */
   readonly verifiedFactsFilter: import("./verify-findings.js").VerifiedFactsFilterResult;
+  /**
+   * Confidence-filter result: findings whose body matched one of
+   * the FP patterns the verified-facts layer cannot detect
+   * (hedging-language at high severity, pattern-matched advice
+   * without a diff anchor, contradicted-by-quote where the diff
+   * hunk already contains the named construct, intentional-design
+   * blindness). These are DOWNGRADED to `info` or one tier below
+   * the model's claimed severity — the operator gets full
+   * visibility but the platform-posting path sees the softer
+   * severity. Disjoint from `review.comments` and from
+   * `verifiedFactsFilter.downgraded`.
+   */
+  readonly confidenceFilter: import("../review/filter-confidence.js").ConfidenceFilterResult;
 };
 
 /**

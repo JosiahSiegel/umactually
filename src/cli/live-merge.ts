@@ -85,6 +85,48 @@ function aggregateVerifiedFactsFilter(
   return { kept, downgraded, downgradeReasons };
 }
 
+/**
+ * Aggregate the per-chunk confidence-filter results. Mirrors the
+ * verified-facts aggregation above so the merged outcome's
+ * confidenceFilter field has the same shape as any single-chunk
+ * outcome's confidenceFilter.
+ */
+function aggregateConfidenceFilter(
+  outcomes: readonly LiveProviderOutcome[],
+): import("../review/filter-confidence.js").ConfidenceFilterResult {
+  const kept: LiveReviewComment[] = [];
+  const downgraded: LiveReviewComment[] = [];
+  const reasons: { index: number; reason: import("../review/filter-confidence.js").ConfidenceFilterReason; readonly explanation: string }[] = [];
+  let globalIndex = 0;
+  for (const o of outcomes) {
+    if (o.confidenceFilter === undefined) {
+      // Older outcomes (simulate-findings path, fixtures) may not
+      // have run the confidence filter. Treat their kept set as
+      // kept; skip the (empty) downgraded list.
+      for (const c of o.review.comments) {
+        kept.push(c);
+        globalIndex += 1;
+      }
+      continue;
+    }
+    for (const c of o.confidenceFilter.kept) {
+      kept.push(c);
+      globalIndex += 1;
+    }
+    for (let i = 0; i < o.confidenceFilter.downgraded.length; i += 1) {
+      const c = o.confidenceFilter.downgraded[i];
+      const reasonRecord = o.confidenceFilter.reasons[i];
+      if (c === undefined || reasonRecord === undefined) {
+        continue;
+      }
+      downgraded.push(c);
+      reasons.push({ index: globalIndex, reason: reasonRecord.reason, explanation: reasonRecord.explanation });
+      globalIndex += 1;
+    }
+  }
+  return { kept, downgraded, reasons };
+}
+
 export function mergeReviewResults(
   outcomes: readonly LiveProviderOutcome[],
   options?: MergeOptions,
@@ -101,6 +143,7 @@ export function mergeReviewResults(
       severityWarnings: [],
       parseWarnings: [],
       verifiedFactsFilter: { kept: [], downgraded: [], downgradeReasons: [] },
+      confidenceFilter: { kept: [], downgraded: [], reasons: [] },
     };
   }
 
@@ -237,5 +280,6 @@ export function mergeReviewResults(
     // (index, reason) so a finding flagged in two chunks doesn't double-
     // count in the summary.
     verifiedFactsFilter: aggregateVerifiedFactsFilter(outcomes),
+    confidenceFilter: aggregateConfidenceFilter(outcomes),
   };
 }
