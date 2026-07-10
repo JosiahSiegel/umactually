@@ -269,6 +269,7 @@ export async function requestLiveReview(input: {
         user: prompts.user,
         requestTimeoutMs: readRequestTimeoutMs(input.parsed),
         ...(input.parsed.maxOutputTokens !== null ? { maxOutputTokens: input.parsed.maxOutputTokens } : {}),
+        ...(input.parsed.effort !== null ? { reasoningEffort: input.parsed.effort } : {}),
         fetchImpl: input.fetchImpl,
       });
       if (!result.ok) {
@@ -348,6 +349,7 @@ export async function requestLiveReview(input: {
         user: prompts.user,
         requestTimeoutMs: readRequestTimeoutMs(input.parsed),
         ...(input.parsed.maxOutputTokens !== null ? { maxOutputTokens: input.parsed.maxOutputTokens } : {}),
+        ...(input.parsed.effort !== null ? { reasoningEffort: input.parsed.effort } : {}),
         fetchImpl: input.fetchImpl,
       });
     } else {
@@ -719,6 +721,7 @@ async function runWithCrossProtocolFallback(
       user: args.prompts.user,
       requestTimeoutMs: args.readRequestTimeoutMs(),
       ...(args.parsed.maxOutputTokens !== null ? { maxOutputTokens: args.parsed.maxOutputTokens } : {}),
+      ...(args.parsed.effort !== null ? { reasoningEffort: args.parsed.effort } : {}),
       fetchImpl: args.fetchImpl,
     });
   } else {

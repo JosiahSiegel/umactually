@@ -432,6 +432,65 @@ describe("runLive Azure orchestration — chunked path", () => {
     expect(result.posted).toBe(true);
     void stderrLines; // silence unused
   });
+
+  it("sanitizes the per-chunk failure warning against the FULL secret list, not just the platform token", async () => {
+    // Regression guard for the Layer 5 self-review finding #2270/#2271:
+    // the per-chunk catch used to sanitize only against
+    // `platformToken`, missing the provider API key. If a provider
+    // 401 echo included the `Authorization` header (containing the
+    // API key), the warning line would leak it. The fix uses
+    // `readSecretValues(env)` like the sibling catch in `runLive`.
+    //
+    // We force a 500 on the first chunk and inspect the captured
+    // stderr. The provider-key secret MUST NOT appear in the warning
+    // text.
+    const fixture = buildMultiFileFixture(2, 4_000);
+    const platformOnly = buildMultiFileRoutes({
+      fileCount: 2,
+      changes: fixture.changes,
+      perChunkProviderBody: () => "{}",
+      fileBody: FILE_BODY,
+    }).filter((route) => !route.match.toString().includes("/v1/responses"));
+    let counter = 0;
+    const routes: FetchRoute[] = [
+      ...platformOnly,
+      {
+        match: (url: string, method: string) =>
+          method === "POST" && url === "https://provider.example/v1/responses",
+        response: (() => {
+          counter += 1;
+          if (counter === 1) {
+            return new Response(JSON.stringify({ error: "upstream timeout" }), {
+              status: 500,
+              headers: { "content-type": "application/json" },
+            });
+          }
+          return makeJsonResponse({ output_text: perChunkBodyFor((counter - 2) % 2, fixture) });
+        })(),
+      },
+    ];
+    const stderrLines: string[] = [];
+    const stderrSpy = vi.spyOn(process.stderr, "write").mockImplementation((chunk) => {
+      stderrLines.push(String(chunk));
+      return true;
+    });
+    const recorder = makeFetchRecorder(routes);
+
+    await runLive({
+      parsed: parseCliArgs(["--platform", "azure", "--no-dry-run"]),
+      cwd: process.cwd(),
+      env: azureEnv(),
+      fetchImpl: recorder.fetchImpl,
+    });
+    stderrSpy.mockRestore();
+
+    const allStderr = stderrLines.join("");
+    // The provider key from azureEnv() must NOT appear anywhere in
+    // the warning text. The platform token also must NOT appear
+    // (it's also a secret).
+    expect(allStderr).not.toContain("provider-key-secret");
+    expect(allStderr).not.toContain("azure-token-secret");
+  });
 });
 
 function perChunkBodyFor(chunkIndex: number, fixture: { files: readonly { path: string }[] }): string {

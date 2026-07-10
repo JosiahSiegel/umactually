@@ -334,6 +334,41 @@ describe("anthropic-messages wire-shape helpers", () => {
     });
   });
 
+  it("ANTH-SHAPE-001b buildAnthropicBody forwards reasoningEffort when supplied (dual-protocol gateway passthrough)", async () => {
+    // Pin the fix for the Layer 5 self-review finding: the anthropic
+    // branch used to silently drop --effort because the call config
+    // had no `reasoningEffort` field. We now forward the value as
+    // `reasoning_effort` on the wire so dual-protocol gateways
+    // (MiniMax etc.) that honor it get the operator's hint. Native
+    // Anthropic.com ignores unknown fields per its API spec, so the
+    // worst case is a no-op, not a wire-shape error.
+    const mod = (await expectFutureModule("../../src/provider/anthropic-messages.js")) as {
+      readonly buildAnthropicBody: (cfg: { model: string; system: string; user: string; maxOutputTokens?: number; reasoningEffort?: "low" | "medium" | "high" }) => Record<string, unknown>;
+    };
+    const bodyWithEffort = mod.buildAnthropicBody({
+      model: "claude-sonnet-4.6",
+      system: "SYSTEM",
+      user: "USER",
+      reasoningEffort: "high",
+    });
+    expect(bodyWithEffort).toEqual({
+      model: "claude-sonnet-4.6",
+      system: "SYSTEM",
+      messages: [{ role: "user", content: "USER" }],
+      max_tokens: 4096,
+      reasoning_effort: "high",
+    });
+    // When --effort is not set, the field is OMITTED (not sent as
+    // `reasoning_effort: null` or empty) so gateways that reject
+    // unknown fields stay happy.
+    const bodyWithoutEffort = mod.buildAnthropicBody({
+      model: "claude-sonnet-4.6",
+      system: "SYSTEM",
+      user: "USER",
+    });
+    expect(bodyWithoutEffort).not.toHaveProperty("reasoning_effort");
+  });
+
   it("ANTH-SHAPE-002 buildAnthropicHeaders pins x-api-key + anthropic-version, never sets Authorization", async () => {
     const mod = (await expectFutureModule("../../src/provider/anthropic-messages.js")) as {
       readonly buildAnthropicHeaders: (apiKey: string, requestId: string) => Record<string, string>;

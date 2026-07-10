@@ -10621,6 +10621,7 @@ function anthropic_messages_buildBodyConfig(config) {
         system: config.system,
         user: config.user,
         ...(config.maxOutputTokens !== undefined ? { maxOutputTokens: config.maxOutputTokens } : {}),
+        ...(config.reasoningEffort !== undefined ? { reasoningEffort: config.reasoningEffort } : {}),
     };
 }
 /**
@@ -10666,6 +10667,13 @@ function buildAnthropicBody(config, opts) {
     // when the operator did not pin one so the call works even in tests
     // that omit the cap.
     body["max_tokens"] = config.maxOutputTokens ?? 4096;
+    // Forward the operator's reasoning-effort hint when set. Omitted
+    // entirely (not sent as `null`) when --effort is not set, so
+    // gateways that reject unknown fields stay happy. See the field
+    // docstring for the wire-compat rationale.
+    if (config.reasoningEffort !== undefined) {
+        body["reasoning_effort"] = config.reasoningEffort;
+    }
     return body;
 }
 /**
@@ -13235,6 +13243,7 @@ async function requestLiveReview(input) {
                 user: prompts.user,
                 requestTimeoutMs: readRequestTimeoutMs(input.parsed),
                 ...(input.parsed.maxOutputTokens !== null ? { maxOutputTokens: input.parsed.maxOutputTokens } : {}),
+                ...(input.parsed.effort !== null ? { reasoningEffort: input.parsed.effort } : {}),
                 fetchImpl: input.fetchImpl,
             });
             if (!result.ok) {
@@ -13306,6 +13315,7 @@ async function requestLiveReview(input) {
                 user: prompts.user,
                 requestTimeoutMs: readRequestTimeoutMs(input.parsed),
                 ...(input.parsed.maxOutputTokens !== null ? { maxOutputTokens: input.parsed.maxOutputTokens } : {}),
+                ...(input.parsed.effort !== null ? { reasoningEffort: input.parsed.effort } : {}),
                 fetchImpl: input.fetchImpl,
             });
         }
@@ -13587,6 +13597,7 @@ async function runWithCrossProtocolFallback(args) {
             user: args.prompts.user,
             requestTimeoutMs: args.readRequestTimeoutMs(),
             ...(args.parsed.maxOutputTokens !== null ? { maxOutputTokens: args.parsed.maxOutputTokens } : {}),
+            ...(args.parsed.effort !== null ? { reasoningEffort: args.parsed.effort } : {}),
             fetchImpl: args.fetchImpl,
         });
     }
@@ -14031,9 +14042,22 @@ async function requestChunkedLiveReview(input) {
                 // chunk 12 because the provider was rate-limiting".
                 failedChunkCount += 1;
                 const message = formatError(error);
-                const sanitized = sanitizeForPost(message, [input.platformToken]);
-                const redactedChunk = chunk.length > 80 ? `${chunk.slice(0, 77)}…` : chunk;
-                logWarning("", `chunk ${index + 1}/${input.chunks.length} failed (${sanitized}); substituting empty outcome. chunk preview: ${redactedChunk}`);
+                // Sanitize against the FULL secret list (not just the platform
+                // token) so an error message that quotes a 401 echo of the
+                // `Authorization` header cannot leak the provider API key into
+                // stdout. The sibling catch in `runLive` (line 207) already uses
+                // `readSecretValues(env)`; this aligns the per-chunk catch with
+                // that contract.
+                const sanitized = sanitizeForPost(message, readSecretValues(input.env));
+                // The chunk preview is the first 77 chars of the diff for this
+                // file. Sanitize it against the full secret list too: a leaked
+                // key in the first line of a changed file (e.g. a `.env`
+                // example) would otherwise be emitted to stdout via the
+                // warning. The earlier per-secret-token pass only handled the
+                // platform token and missed every other secret.
+                const preview = chunk.length > 80 ? `${chunk.slice(0, 77)}…` : chunk;
+                const sanitizedPreview = sanitizeForPost(preview, readSecretValues(input.env));
+                logWarning("", `chunk ${index + 1}/${input.chunks.length} failed (${sanitized}); substituting empty outcome. chunk preview: ${sanitizedPreview}`);
                 outcome = {
                     review: { summary: "", verdict: "COMMENT", comments: [], suppressedComments: [] },
                     endpoint: "",
