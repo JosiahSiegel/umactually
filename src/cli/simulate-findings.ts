@@ -45,6 +45,7 @@ export function applySimulateFindings(input: {
     // there are no severity warnings to surface.
     severityWarnings: [],
     parseWarnings: [],
+    verifiedFactsFilter: { kept: [], downgraded: [], downgradeReasons: [] },
   };
 }
 

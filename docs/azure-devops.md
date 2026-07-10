@@ -85,9 +85,9 @@ For local inspection of PR state (reviewing posted threads, checking merge statu
 ```bash
 # .env (gitignored — never commit)
 DEVOPS_PAT=<your-pat>
-AZURE_DEVOPS_ORG=josiah-siegel
-AZURE_DEVOPS_PROJECT=DemoProject
-AZURE_DEVOPS_PULL_REQUEST_ID=51
+AZURE_DEVOPS_ORG=<your-org>
+AZURE_DEVOPS_PROJECT=<your-project>
+AZURE_DEVOPS_PULL_REQUEST_ID=<pr-id>
 
 # One-shot source for a single command
 set -a && source .env && set +a
@@ -179,12 +179,12 @@ The pattern (used for PRs #32 / ADO #62 and earlier syncs #59, #60, #61):
     ```bash
     # Find the repo id once:
     REPO_ID=$(curl -sS -u ":${DEVOPS_PAT}" \
-      "https://dev.azure.com/josiah-siegel/DemoProject/_apis/git/repositories?api-version=7.1" \
+      "https://dev.azure.com/${AZURE_DEVOPS_ORG}/${AZURE_DEVOPS_PROJECT}/_apis/git/repositories?api-version=7.1" \
       | python -c "import sys, json; print(next(r['id'] for r in json.load(sys.stdin)['value'] if r['name']=='umactually'))")
 
     # Create the PR with bypassPolicy (bypassReason required when bypassing):
     curl -sS -X POST -u ":${DEVOPS_PAT}" -H "Content-Type: application/json" \
-      "https://dev.azure.com/josiah-siegel/DemoProject/_apis/git/repositories/${REPO_ID}/pullrequests?api-version=7.1" \
+      "https://dev.azure.com/${AZURE_DEVOPS_ORG}/${AZURE_DEVOPS_PROJECT}/_apis/git/repositories/${REPO_ID}/pullrequests?api-version=7.1" \
       -d '{
         "sourceRefName": "refs/heads/sync/ado-main-with-github-main8",
         "targetRefName": "refs/heads/main",

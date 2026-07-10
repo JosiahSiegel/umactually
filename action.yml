@@ -183,21 +183,10 @@ inputs:
     required: false
     default: ""
 
-outputs:
-  marker:
-    description: Review marker emitted by the entrypoint.
-  marker_text:
-    description: Stable HTML comment marker the runner greps for.
-  inline_thread_count:
-    description: Count of inline threads posted on the diff.
-  suppressed_comment_count:
-    description: Count of comments suppressed because they fall off-diff.
-  artifact_path:
-    description: Path the entrypoint wrote the manual artifact to.
-  posted_thread_count:
-    description: Azure-only count of posted review threads.
-  posted_status_state:
-    description: Azure-only status state derived from the verdict.
+branding:
+  icon: "check-circle"
+  color: "purple"
+  label: "UmActually Review"
 
 runs:
   using: "node24"

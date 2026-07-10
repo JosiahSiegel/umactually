@@ -87,7 +87,7 @@ Dispatcher behavior:
   7. Outcome.attribution = "anthropic-messages" (recovered via providerNameForEndpoint)
 ```
 
-### Path-prefix heuristic (the `/anthropic` URL → Anthropic-protocol commit)
+### Path-prefix heuristic (the `/anthropic` URL commits to the Anthropic protocol)
 
 A subtle gotcha surfaced by the operator's actual setup (`UMACTUALLY_API_URL=https://api.minimax.io/anthropic` + default `--provider=openai-compatible`): the openai-compatible client's URL candidate loop downgrades `/anthropic` to `origin+/v1` and tries `/v1/responses` there. MiniMax serves OpenAI Responses at `/v1/responses` (just like it serves Anthropic at `/anthropic/v1/messages`), so the openai loop happily succeeds with the **OpenAI** wire shape — never triggering the cross-protocol fallback above. Result: the action posts OpenAI-Responses shape to a URL the operator typed as an Anthropic-protocol gateway.
 
