@@ -1,3 +1,5 @@
+import { ENV_KEYS } from "../util/env-keys.js";
+
 /** Canonical CI-platform union. "azure-devops" is the on-the-wire spelling
  *  (kept for parity with the Azure DevOps SDK and the action.yml platform
  *  input). Aliased to "azure" internally by the platform resolver. */
@@ -12,8 +14,8 @@ export class PlatformDetectionError extends Error {
   }
 }
 
-const GITHUB_ACTIONS_KEY = "GITHUB_ACTIONS";
-const AZURE_TF_BUILD_KEY = "TF_BUILD";
+const GITHUB_ACTIONS_KEY = ENV_KEYS.GITHUB_ACTIONS;
+const AZURE_TF_BUILD_KEY = ENV_KEYS.TF_BUILD;
 
 /**
  * GitHub precedence: GITHUB_ACTIONS is checked first, so a process that

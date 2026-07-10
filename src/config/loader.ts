@@ -17,6 +17,7 @@ import {
 } from "./parsers.js";
 import { normalizeApiUrl } from "./parsers.js";
 import { readPromptFiles } from "./prompt-files.js";
+import { DEFAULT_OPENAI_URL } from "../util/provider-defaults.js";
 import type {
   AzureConfig,
   CliArgs,
@@ -58,7 +59,6 @@ import type {
 // not the user-facing string.
 const DEFAULT_MINIMUM_SEVERITY: Severity = "major";
 const DEFAULT_PLATFORM: Platform = "auto";
-const DEFAULT_PROVIDER_URL = "https://api.openai.com/v1";
 
 /**
  * Resolves the final ReviewConfig by merging CLI > inputs > env > defaults.
@@ -69,7 +69,7 @@ export async function loadConfigFromSources(sources: LoadConfigSources): Promise
 
   const provider: ProviderConfig = {
     url: normalizeApiUrl(
-      pickString(cli.providerUrl, inputs.providerUrl, env.providerUrl, DEFAULT_PROVIDER_URL, "provider.url"),
+      pickString(cli.providerUrl, inputs.providerUrl, env.providerUrl, DEFAULT_OPENAI_URL, "provider.url"),
       "provider.url",
     ),
     apiKey: pickString(cli.providerApiKey, inputs.providerApiKey, env.providerApiKey, "", "provider.apiKey"),

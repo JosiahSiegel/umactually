@@ -20,7 +20,7 @@
 //
 //   1. Locating the existing parent marker thread (one with no
 //      `threadContext` whose first comment carries the
-//      `<!-- umactually-pr-review -->` marker).
+//      review marker (see src/util/marker.ts)).
 //   2. Deleting every comment in that thread via the documented
 //      per-comment Delete endpoint
 //      (DELETE .../threads/{threadId}/comments/{commentId}?api-version=7.1,
@@ -44,6 +44,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { parseCliArgs } from "../../src/cli.js";
 import { runLive } from "../../src/cli/orchestrator.js";
+import { REVIEW_MARKER } from "../../src/util/marker.js";
 import { azureDiffRoutes, azureReviewDiffFixture } from "./azure-diff-fixture.js";
 import type { AzureFetchRoute } from "./azure-diff-fixture.js";
 
@@ -161,15 +162,15 @@ const EXISTING_PARENT_THREAD_ID = 79;
 const EXISTING_PARENT_COMMENTS: readonly { id: number; content: string }[] = [
   {
     id: 1,
-    content: "<!-- umactually-pr-review -->\n## ⛔ NEEDS_FIX\n\nProvider response did not contain a valid JSON review payload.",
+    content: `${REVIEW_MARKER}\n## ⛔ NEEDS_FIX\n\nProvider response did not contain a valid JSON review payload.`,
   },
   {
     id: 2,
-    content: "<!-- umactually-pr-review -->\n## ⛔ NEEDS_FIX\n\nProvider response did not contain a valid JSON review payload.",
+    content: `${REVIEW_MARKER}\n## ⛔ NEEDS_FIX\n\nProvider response did not contain a valid JSON review payload.`,
   },
   {
     id: 3,
-    content: "<!-- umactually-pr-review -->\n## ⛔ NEEDS_FIX\n\nProvider response did not contain a valid JSON review payload.",
+    content: `${REVIEW_MARKER}\n## ⛔ NEEDS_FIX\n\nProvider response did not contain a valid JSON review payload.`,
   },
 ];
 
@@ -235,7 +236,7 @@ function existingParentRoutes(): readonly FreshableRoute[] {
                 rightFileStart: { line: 99, offset: 1 },
                 rightFileEnd: { line: 99, offset: 1 },
               },
-              comments: [{ id: 1, content: "<!-- umactually-pr-review -->\nOld inline finding at line 99." }],
+              comments: [{ id: 1, content: `${REVIEW_MARKER}\nOld inline finding at line 99.` }],
             },
             {
               id: 82,
@@ -265,7 +266,7 @@ function existingParentRoutes(): readonly FreshableRoute[] {
         postCount += 1;
         if (postCount === 1) {
           return makeJsonResponse(
-            { id: 8001, comments: [{ id: 9001, content: "<!-- umactually-pr-review -->\ninitial" }] },
+            { id: 8001, comments: [{ id: 9001, content: `${REVIEW_MARKER}\ninitial` }] },
             200,
           );
         }
@@ -428,7 +429,7 @@ describe("postAzurePrComment (Azure parent PR-level 'always at top of conversati
     if (typeof parentContent !== "string") {
       throw new Error("parent content must be a string");
     }
-    expect(parentContent).toContain("<!-- umactually-pr-review -->");
+    expect(parentContent).toContain(REVIEW_MARKER);
     expect(parentContent).toContain("Azure parent-top summary.");
 
     // The earlier POST(s) are the inline thread (with threadContext).
@@ -497,7 +498,7 @@ describe("postAzurePrComment (Azure parent PR-level 'always at top of conversati
           postCount += 1;
           if (postCount === 1) {
             return makeJsonResponse(
-              { id: 8001, comments: [{ id: 9001, content: "<!-- umactually-pr-review -->\ninitial" }] },
+              { id: 8001, comments: [{ id: 9001, content: `${REVIEW_MARKER}\ninitial` }] },
               200,
             );
           }

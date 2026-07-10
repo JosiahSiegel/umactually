@@ -6,6 +6,7 @@ import {
   type LiveReview,
   type LiveReviewComment,
 } from "../../src/cli/live-shared.js";
+import { REVIEW_MARKER } from "../../src/util/marker.js";
 
 const DIFF_TEXT = [
   "diff --git a/src/auth.ts b/src/auth.ts",
@@ -79,7 +80,7 @@ describe("preparePostedReview", () => {
     expect(prepared.postedComments).toEqual([]);
     expect(prepared.suppressedCommentCount).toBe(0);
     expect(prepared.severityCounts).toEqual({});
-    expect(prepared.body).toContain("<!-- umactually-pr-review -->");
+    expect(prepared.body).toContain(REVIEW_MARKER);
   });
 
   it("selects only in-diff postable comments", () => {
@@ -181,7 +182,7 @@ describe("preparePostedReview", () => {
     const prepared = prepareReview({ review });
 
     // Then: the stable marker and machine-readable manifest are both present.
-    expect(prepared.body).toContain("<!-- umactually-pr-review -->");
+    expect(prepared.body).toContain(REVIEW_MARKER);
     expect(prepared.body).toMatch(/<!--\s*umactually-pr-review:manifest\s*\{[\s\S]*?\}\s*-->/u);
   });
 });

@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import { parseCliArgs } from "../../src/cli.js";
 import { runLive } from "../../src/cli/orchestrator.js";
+import { REVIEW_MARKER } from "../../src/util/marker.js";
 import { azureDiffRoutes, azureReviewDiffFixture } from "./azure-diff-fixture.js";
 import type { AzureFetchRoute } from "./azure-diff-fixture.js";
 
@@ -158,7 +159,7 @@ describe("runLive Azure dedup edge cases", () => {
               filePath: "/src/review/example.ts",
               rightFileStart: { line: 3, offset: 1 },
               comments: [
-                { content: "Existing closed comment <!-- umactually-pr-review -->" },
+                { content: `Existing closed comment ${REVIEW_MARKER}` },
               ],
             },
           ],
@@ -195,7 +196,7 @@ describe("runLive Azure dedup edge cases", () => {
               filePath: "/src/review/example.ts",
               rightFileStart: { line: 3, offset: 1 },
               comments: [
-                { content: "Existing fixed comment <!-- umactually-pr-review -->" },
+                { content: `Existing fixed comment ${REVIEW_MARKER}` },
               ],
             },
           ],
@@ -233,7 +234,7 @@ describe("runLive Azure dedup edge cases", () => {
               rightFileStart: { line: 3, offset: 1 },
               comments: [
                 { content: "First comment without marker." },
-                { content: "<!-- umactually-pr-review --> Reply." },
+                { content: `${REVIEW_MARKER} Reply.` },
               ],
             },
           ],

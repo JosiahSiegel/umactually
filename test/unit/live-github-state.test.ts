@@ -6,6 +6,7 @@ import { afterEach, describe, expect, it } from "vitest";
 
 import { parseCliArgs } from "../../src/cli.js";
 import { runLive } from "../../src/cli/orchestrator.js";
+import { REVIEW_MARKER } from "../../src/util/marker.js";
 
 // allow: SIZE_OK — test file with 3 RED cases plus self-contained recorder,
 // fixtures, and route builder. Mirror the recorder style in
@@ -54,7 +55,7 @@ const EVENT_JSON = JSON.stringify({
   },
 });
 
-const MARKER_REVIEW_BODY = `<!-- umactually-pr-review -->\n\nold summary\n\nauto (openai-compatible)\n\nFindings: 0 inline, 0 suppressed.`;
+const MARKER_REVIEW_BODY = `${REVIEW_MARKER}\n\nold summary\n\nauto (openai-compatible)\n\nFindings: 0 inline, 0 suppressed.`;
 
 function makeJsonResponse(value: unknown, status = 200): Response {
   return new Response(JSON.stringify(value), {
@@ -230,7 +231,7 @@ describe("runLive GitHub marker-review state filter", () => {
     );
     expect(reviewPosts, "exactly one POST /pulls/42/reviews is expected").toHaveLength(1);
     const postBody = readRecord(reviewPosts[0]!.body as Record<string, unknown>, "review request");
-    expect(postBody["body"]).toContain("<!-- umactually-pr-review -->");
+    expect(postBody["body"]).toContain(REVIEW_MARKER);
     expect(result.exitCode).toBe(0);
     expect(result.posted).toBe(true);
     expect(result.reviewId).toBe(9001);

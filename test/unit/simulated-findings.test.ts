@@ -5,6 +5,7 @@ import { describe, expect, it } from "vitest";
 
 import { parseDiffPositions } from "../../src/diff/parse-positions.js";
 import { buildSimulatedFindings } from "../../src/review/simulated-findings.js";
+import { REVIEW_MARKER } from "../../src/util/marker.js";
 
 const FIXTURE_REPO = "octo-org/octo-repo";
 const FIXTURE_PR_NUMBER = 42;
@@ -199,7 +200,7 @@ describe("buildSimulatedFindings", () => {
     // Then: the fixture must never carry the marker (the marker is appended by the
     // GitHub posting layer, not by the fixture).
     const allText = JSON.stringify(payload);
-    expect(allText).not.toContain("<!-- umactually-pr-review -->");
+    expect(allText).not.toContain(REVIEW_MARKER);
 
     // Then: the fixture must never carry raw provider JSON or a fenced details block.
     expect(allText).not.toMatch(/<details[\s>]/u);

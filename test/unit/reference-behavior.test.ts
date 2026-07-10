@@ -2,6 +2,7 @@ import { readFile } from "node:fs/promises";
 import { describe, expect, it } from "vitest";
 
 import { expectNotImplementedExport } from "../helpers/assert-red-module.js";
+import { REVIEW_MARKER } from "../../src/util/marker.js";
 
 type ReviewCompatibilityInput = {
   readonly existingCommentsJson: string;
@@ -34,7 +35,7 @@ describe("reference behavior RED unit contract", () => {
     const chatFallbackJson = await readFile(new URL("../fixtures/provider/chat-fallback-success.json", import.meta.url), "utf8");
     const diffText = await readFile(new URL("../fixtures/github/full-pr.diff", import.meta.url), "utf8");
     expect(existingCommentsJson).toContain("<!-- auto-pr-review -->");
-    expect(existingCommentsJson).toContain("<!-- umactually-pr-review -->");
+    expect(existingCommentsJson).toContain(REVIEW_MARKER);
     expect(providerResponsesJson).toContain("output_text");
     expect(chatFallbackJson).toContain("choices");
 

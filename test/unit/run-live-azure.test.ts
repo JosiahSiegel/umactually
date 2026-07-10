@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import { parseCliArgs } from "../../src/cli.js";
 import { runLive } from "../../src/cli/orchestrator.js";
+import { REVIEW_MARKER } from "../../src/util/marker.js";
 import {
   azureDiffRoutes,
   azureReviewDiffFixture,
@@ -174,7 +175,7 @@ describe("runLive Azure orchestration", () => {
     const threadBody = readRecord(inlineThreadCall.body as Record<string, unknown>, "thread request");
     const comments = readArray(threadBody["comments"], "thread comments");
     const firstComment = readRecord(comments[0] as Record<string, unknown>, "first thread comment");
-    expect(firstComment["content"]).toContain("<!-- umactually-pr-review -->");
+    expect(firstComment["content"]).toContain(REVIEW_MARKER);
     expect(firstComment["content"]).toContain("Azure inline comment.");
     expect(threadBody["threadContext"]).toEqual({
       filePath: "/src/review/example.ts",
@@ -203,7 +204,7 @@ describe("runLive Azure orchestration", () => {
                 filePath: "/src/review/example.ts",
                 rightFileStart: { line: 3, offset: 1 },
               },
-              comments: [{ content: "<!-- umactually-pr-review -->\nExisting." }],
+              comments: [{ content: `${REVIEW_MARKER}\nExisting.` }],
             },
           ],
         }),

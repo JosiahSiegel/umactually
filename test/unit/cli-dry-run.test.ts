@@ -4,6 +4,8 @@ import { join } from "node:path";
 
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
+import { REVIEW_MARKER } from "../../src/util/marker.js";
+
 type RunCli = (args: readonly string[], cwd: string) => Promise<{ readonly exitCode: number }>;
 
 type CliModuleNamespace = {
@@ -161,7 +163,7 @@ describe("CLI dry-run RED contract", () => {
     const artifact = JSON.parse(artifactRaw) as Record<string, unknown>;
     expect(artifact["artifactPath"]).toBe("artifacts/manual/s4-azure-mocked-run.json");
     expect(artifact["postedStatusState"]).toBe("succeeded");
-    expect(artifact["marker"]).toBe("<!-- umactually-pr-review -->");
+    expect(artifact["marker"]).toBe(REVIEW_MARKER);
   });
 
   it("CLI-RED-003 fails with non-zero exit when required Azure flags are missing", async () => {

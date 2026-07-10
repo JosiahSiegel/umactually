@@ -21,8 +21,8 @@ import {
 import { createRequestId, joinUrl } from "../util/url.js";
 import { BRAND } from "../util/brand.js";
 import { composeSignal } from "../util/async.js";
+import { DEFAULT_GITHUB_API_BASE } from "../util/provider-defaults.js";
 
-const DEFAULT_GITHUB_API_BASE = "https://api.github.com";
 const COPILOT_EDITOR_VERSION = "vscode/1.96.0";
 const COPILOT_EDITOR_PLUGIN_VERSION = `${BRAND}/0.1.0`;
 const COPILOT_INTEGRATION_ID = "vscode-chat";

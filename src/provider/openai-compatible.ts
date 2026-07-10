@@ -12,12 +12,15 @@ import {
 } from "./provider-parse.js";
 import {
   isAbortError,
+  isRoutableFailureForUrlCandidate,
   ProviderError,
   sanitizeHttpStatus,
   sanitizeMessage,
 } from "./provider-error.js";
 import { composeSignal, sleep } from "../util/async.js";
 import { BRAND_PREFIX, REDACTED_SECRET_TOKEN } from "../util/brand.js";
+import { isDebugRawActive } from "../util/debug-raw.js";
+import { replaceSecretsLiterally } from "../util/redact.js";
 import { createRequestId, joinUrl, redactUrlForLog, resolveProviderBaseUrlCandidates } from "../util/url.js";
 
 const ENDPOINT_RESPONSES: ProviderEndpoint = "responses";
@@ -158,7 +161,7 @@ export async function runProviderRequest(config: ProviderCallConfig): Promise<Pr
       // unless the error is NOT a 404/400 (e.g. auth failure, server
       // error) — in that case, retrying with a different URL won't
       // help, so return immediately.
-      if (!isRoutableFailure(chatAttempt.error)) {
+      if (!isRoutableFailureForUrlCandidate(chatAttempt.error)) {
         return chatAttempt;
       }
       process.stderr.write(
@@ -169,7 +172,7 @@ export async function runProviderRequest(config: ProviderCallConfig): Promise<Pr
     }
     // The /responses endpoint failed with a non-routable status
     // (e.g. 401, 500). Retrying with a different URL won't help.
-    if (!isRoutableFailure(firstAttempt.error)) {
+    if (!isRoutableFailureForUrlCandidate(firstAttempt.error)) {
       return firstAttempt;
     }
     process.stderr.write(
@@ -178,17 +181,6 @@ export async function runProviderRequest(config: ProviderCallConfig): Promise<Pr
     lastAttempt = firstAttempt;
   }
   return lastAttempt;
-}
-
-/**
- * True when the failure was a routing-level rejection (404 Not Found
- * or 400 Bad Request) that would benefit from trying a different URL
- * shape. False for auth failures (401/403), server errors (5xx),
- * parse failures, and timeouts — those have a single root cause and
- * a different URL won't help.
- */
-function isRoutableFailure(error: ProviderError): boolean {
-  return error.status === 404 || error.status === 400;
 }
 
 async function runWithEndpoint(
@@ -291,7 +283,7 @@ async function callEndpoint(
   // production parse-fails without re-running the model — the action
   // does not log the raw response by default (it would dump 100+ KB to
   // the log on every run).
-  if (process.env["UMACTUALLY_DEBUG_RAW"] === "1") {
+  if (isDebugRawActive()) {
     writeDebugRaw(
       `[DEBUG-RAW] requestId=${requestId} endpoint=${endpoint} ` +
       `rawTextLength=${rawText.length} textPayloadLength=${textPayload.length}\n`,
@@ -313,7 +305,7 @@ async function callEndpoint(
   // show exactly what `parseReviewPayload` returned. Without this, we
   // see "retry fired" in the log but not WHY (null vs all-empty-fields
   // vs apology-summary-detected are all indistinguishable from outside).
-  if (process.env["UMACTUALLY_DEBUG_RAW"] === "1") {
+  if (isDebugRawActive()) {
     const trace = review === null
       ? "null"
       : `summary.len=${review.summary.length} verdict='${review.verdict}' comments=${review.comments.length} suppressed=${review.suppressed_comments.length}`;
@@ -388,7 +380,7 @@ async function callEndpoint(
   const bumpedMaxOutput = needsMoreBudget && config.maxOutputTokens !== undefined
     ? Math.min(config.maxOutputTokens * 2, 128_000)
     : config.maxOutputTokens;
-  if (process.env["UMACTUALLY_DEBUG_RAW"] === "1" && needsMoreBudget) {
+  if (isDebugRawActive() && needsMoreBudget) {
     writeDebugRaw(
       `[DEBUG-RAW] bumped-budget retry: rawText.length=${rawText.length} textPayload.length=${textPayload.length} bumpedMaxOutput=${bumpedMaxOutput}\n`,
       config,
@@ -422,7 +414,7 @@ async function callEndpoint(
     if (retryResponse.ok) {
       const retryRawText = await readBody(retryResponse, endpoint, requestId);
       const retryTextPayload = extractTextPayload(endpoint, retryRawText);
-      if (process.env["UMACTUALLY_DEBUG_RAW"] === "1") {
+      if (isDebugRawActive()) {
         writeDebugRaw(
           `[DEBUG-RAW] retry requestId=${requestId} ` +
           `rawTextLength=${retryRawText.length} textPayloadLength=${retryTextPayload.length}\n`,
@@ -474,12 +466,11 @@ function writeDebugRaw(message: string, config: ProviderCallConfig): void {
 }
 
 function redactDebugSecrets(value: string, config: ProviderCallConfig): string {
-  let redacted = value;
-  for (const secret of [config.apiKey, config.promptOverride ?? "", config.additionalPromptOverride ?? ""]) {
-    if (secret.length > 0) {
-      redacted = redacted.split(secret).join(REDACTED_SECRET_TOKEN);
-    }
-  }
+  let redacted = replaceSecretsLiterally(value, [
+    config.apiKey,
+    config.promptOverride ?? "",
+    config.additionalPromptOverride ?? "",
+  ]);
   for (const pattern of DEBUG_SECRET_PATTERNS) {
     redacted = redacted.replace(pattern, REDACTED_SECRET_TOKEN);
   }

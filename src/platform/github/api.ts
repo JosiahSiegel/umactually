@@ -3,6 +3,7 @@ import { PlatformApiError } from "../../util/platform-error.js";
 import type { FetchImpl } from "../../util/http.js";
 import { fetchTextOrThrow, githubHeaders } from "../../util/http.js";
 import { filterBuildArtifacts } from "../../diff/filter-build-artifacts.js";
+import { DEFAULT_GITHUB_API_BASE } from "../../util/provider-defaults.js";
 
 /**
  * API-layer error for the GitHub platform adapter. Inherits the
@@ -23,7 +24,7 @@ export class GithubApiError extends PlatformApiError<"GITHUB_FETCH_FAILED" | "GI
   }
 }
 
-const GITHUB_API_BASE_URL = "https://api.github.com";
+const GITHUB_API_BASE_URL = DEFAULT_GITHUB_API_BASE;
 const PULL_DIFF_MEDIA_TYPE = "application/vnd.github.v3.diff";
 
 export async function fetchGithubPrDiff(context: GithubContext, fetchImpl: FetchImpl = fetch): Promise<string> {

@@ -14,6 +14,12 @@
  * additions trivial.
  */
 
+import {
+  DEFAULT_GITHUB_API_BASE,
+  DEFAULT_OPENAI_URL,
+} from "../util/provider-defaults.js";
+import { BRAND } from "../util/brand.js";
+
 interface HelpFlag {
   /** Full flag token, e.g. `"--api-url <url>"`. */
   flag: string;
@@ -29,7 +35,7 @@ const HELP_FLAGS: readonly HelpFlag[] = [
   { flag: "--review <path>", description: "Azure provider review JSON (optional in dry-run)" },
   { flag: "--pr-number <n>", description: "Pull request number" },
   { flag: "--repo <owner/name>" },
-  { flag: "--api-url <url>", description: "Provider Responses API URL (default: https://api.openai.com/v1)" },
+  { flag: "--api-url <url>", description: `Provider Responses API URL (default: ${DEFAULT_OPENAI_URL})` },
   { flag: "--api-key <key>", description: "Provider API key" },
   { flag: "--model <id>", description: "Provider model id (default: auto)" },
   { flag: "--prompt <text>", description: "Inline system prompt override" },
@@ -38,7 +44,7 @@ const HELP_FLAGS: readonly HelpFlag[] = [
   { flag: "--additional-prompt-file <path>" },
   { flag: "--effort <low|medium|high>", description: "Reasoning effort hint (default: medium)" },
   { flag: "--provider <openai-compatible|copilot|anthropic>", description: "Provider family (anthropic uses native /v1/messages)" },
-  { flag: "--github-api-base <url>", description: "GitHub API base URL (Copilot token exchange; default: https://api.github.com)" },
+  { flag: "--github-api-base <url>", description: `GitHub API base URL (Copilot token exchange; default: ${DEFAULT_GITHUB_API_BASE})` },
   { flag: "--include-sonarqube" },
   { flag: "--sonar-host-url <url>" },
   { flag: "--sonar-token <token>" },
@@ -74,7 +80,7 @@ function renderFlagLine({ flag, description }: HelpFlag): string {
 }
 
 export const CLI_HELP_TEXT = [
-  "umactually-pr-review — provider-agnostic PR review CLI",
+  `${BRAND} — provider-agnostic PR review CLI`,
   "",
   "Flags:",
   ...HELP_FLAGS.map(renderFlagLine),

@@ -2,6 +2,7 @@ import { readFile } from "node:fs/promises";
 import { describe, expect, it } from "vitest";
 
 import { expectNotImplementedExport } from "../helpers/assert-red-module.js";
+import { REVIEW_MARKER } from "../../src/util/marker.js";
 
 type AzureReviewContract = {
   readonly pullRequestJson: string;
@@ -14,7 +15,7 @@ type AzureMockedRun = {
   readonly artifactPath: string;
   readonly postedThreadCount: number;
   readonly postedStatusState: "succeeded" | "failed" | "pending";
-  readonly marker: "<!-- umactually-pr-review -->";
+  readonly marker: typeof REVIEW_MARKER;
 };
 
 type RunAzureReview = (contract: AzureReviewContract) => Promise<AzureMockedRun>;
@@ -33,7 +34,7 @@ describe("S4 Azure DevOps mocked PR review RED contract", () => {
     const existingThreadsJson = await readFile(new URL("../fixtures/azure/threads.json", import.meta.url), "utf8");
     const reviewJson = await readFile(new URL("../fixtures/github/provider-review.json", import.meta.url), "utf8");
     expect(pullRequestJson).toContain("pullRequestId");
-    expect(existingThreadsJson).toContain("<!-- umactually-pr-review -->");
+    expect(existingThreadsJson).toContain(REVIEW_MARKER);
     expect(reviewJson).toContain("Synthetic test secret");
 
     // When: the future Azure runner processes the mocked PR surface.
@@ -53,7 +54,7 @@ describe("S4 Azure DevOps mocked PR review RED contract", () => {
       artifactPath: "artifacts/manual/s4-azure-mocked-run.json",
       postedThreadCount: 1,
       postedStatusState: "failed",
-      marker: "<!-- umactually-pr-review -->",
+      marker: REVIEW_MARKER,
     });
   });
 });

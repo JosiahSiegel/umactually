@@ -2,10 +2,11 @@ import { readFile } from "node:fs/promises";
 import { describe, expect, it } from "vitest";
 
 import { expectNotImplementedExport } from "../helpers/assert-red-module.js";
+import { REVIEW_MARKER } from "../../src/util/marker.js";
 
 type RawReviewInput = {
   readonly rawText: string;
-  readonly marker: "<!-- umactually-pr-review -->";
+  readonly marker: typeof REVIEW_MARKER;
 };
 
 type RenderedRawReview = {
@@ -42,7 +43,7 @@ describe("raw output safety RED unit contract", () => {
     }
     const result = renderRawReviewFallback({
       rawText,
-      marker: "<!-- umactually-pr-review -->",
+      marker: REVIEW_MARKER,
     });
 
     // Then: top-level markdown contains the summary, not leaked raw JSON, and debug fences stay closed.

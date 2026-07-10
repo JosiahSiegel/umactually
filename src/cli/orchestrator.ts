@@ -1,12 +1,19 @@
+import { DEFAULT_MAX_COMMENTS_MERGE, DEFAULT_REVIEW_FILE_LIMIT } from "../config/defaults.js";
+import { resolveField } from "../config/field-resolution.js";
 import { fetchAzurePrDiff } from "../platform/azure/api.js";
 import { chunkDiffByFile, countDiffFiles } from "../platform/azure/chunk.js";
 import { AzureContextError, readAzureContext } from "../platform/azure/context.js";
 import { detectPlatform, PlatformDetectionError } from "../platform/detect.js";
 import { fetchGithubPrDiff } from "../platform/github/api.js";
 import { readGithubContext } from "../platform/github/context.js";
-import { mergeReviewResults } from "./live-merge.js";
+import { BRAND_PREFIX } from "../util/brand.js";
+import { ENV_KEYS } from "../util/env-keys.js";
+import { formatError } from "../util/error.js";
+import { logError, logWarning } from "../util/log.js";
+import { RequiredConfigError, requireLiveConfig } from "../util/required-config.js";
 import { runAzureLive } from "./live-azure.js";
 import { runGithubLive } from "./live-github.js";
+import { mergeReviewResults } from "./live-merge.js";
 import {
   buildTooLargeFallback,
   evaluateLeakGate,
@@ -18,12 +25,8 @@ import {
 } from "./live-shared.js";
 import { requestLiveReview } from "./live-provider.js";
 import { readLiveSonarContext } from "./sonar-context.js";
-import { applySimulateFindings } from "./simulate-findings.js";
 import type { ParsedCliArgs } from "./parse-args.js";
-import { DEFAULT_MAX_COMMENTS_MERGE, DEFAULT_REVIEW_FILE_LIMIT } from "../config/defaults.js";
-import { BRAND_PREFIX } from "../util/brand.js";
-import { formatError } from "../util/error.js";
-import { logError, logWarning } from "../util/log.js";
+import { applySimulateFindings } from "./simulate-findings.js";
 
 /**
  * Number of chunks to process concurrently when the chunked path is
@@ -161,17 +164,24 @@ export async function runLive(input: RunLiveInput): Promise<LiveRunResult> {
   // Skip the URL check for both.
   const isCopilot = input.parsed.provider === "copilot";
   const isAnthropic = input.parsed.provider === "anthropic";
-  const providerUrl = input.parsed.apiUrl ?? env["UMACTUALLY_API_URL"];
-  if (!isCopilot && !isAnthropic && (providerUrl === undefined || providerUrl.length === 0)) {
-    const message = "UMACTUALLY_API_URL must be set for live review.";
-    process.stdout.write(`${BRAND_PREFIX}${message}\n`);
-    return failedResult(message);
-  }
-  const providerKey = input.parsed.apiKey ?? env["UMACTUALLY_API_KEY"];
-  if (providerKey === undefined || providerKey.length === 0) {
-    const message = "UMACTUALLY_API_KEY must be set for live review.";
-    process.stdout.write(`${BRAND_PREFIX}${message}\n`);
-    return failedResult(message);
+  try {
+    if (!isCopilot && !isAnthropic) {
+      requireLiveConfig(
+        resolveField(input.parsed.apiUrl, env[ENV_KEYS.UMACTUALLY_API_URL], ""),
+        ENV_KEYS.UMACTUALLY_API_URL,
+      );
+    }
+    requireLiveConfig(
+      resolveField(input.parsed.apiKey, env[ENV_KEYS.UMACTUALLY_API_KEY], ""),
+      ENV_KEYS.UMACTUALLY_API_KEY,
+    );
+  } catch (error) {
+    if (error instanceof RequiredConfigError) {
+      const message = error.userMessage;
+      process.stdout.write(`${BRAND_PREFIX}${message}\n`);
+      return failedResult(message);
+    }
+    throw error;
   }
 
   // If --include-sonarqube is set with a fully-configured SonarQube, wait
@@ -402,10 +412,10 @@ function detectLivePlatform(env: NodeJS.ProcessEnv): LivePlatform | null {
 
 function readSecretValues(env: NodeJS.ProcessEnv): readonly string[] {
   return [
-    env["UMACTUALLY_API_KEY"] ?? "",
-    env["REVIEW_PROVIDER_API_KEY"] ?? "",
-    env["GITHUB_TOKEN"] ?? "",
-    env["SYSTEM_ACCESSTOKEN"] ?? "",
+    env[ENV_KEYS.UMACTUALLY_API_KEY] ?? "",
+    env[ENV_KEYS.REVIEW_PROVIDER_API_KEY] ?? "",
+    env[ENV_KEYS.GITHUB_TOKEN] ?? "",
+    env[ENV_KEYS.SYSTEM_ACCESSTOKEN] ?? "",
     env["AZURE_DEVOPS_TOKEN"] ?? "",
   ];
 }

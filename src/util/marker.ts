@@ -8,6 +8,8 @@
  * values via this module.
  */
 
+import { BRAND } from "./brand.js";
+
 /**
  * Stable HTML marker the runner greps for in existing PR comments when
  * deciding whether to replace a previous UmActually review.
@@ -27,6 +29,12 @@ export const REVIEW_MARKER = "<!-- umactually-pr-review -->";
  * payloads.
  */
 export const MANIFEST_SCHEMA = "umactually-pr-review/v1";
+
+/** Opening HTML-comment prefix of the manifest hidden inside each UmActually review comment. */
+export const MANIFEST_MARKER_PREFIX = `<!-- ${BRAND}:manifest `;
+
+/** Closing HTML-comment suffix of the manifest hidden inside each UmActually review comment. */
+export const MANIFEST_MARKER_SUFFIX = " -->";
 
 /**
  * Legacy HTML marker from the prior action incarnation. Kept so existing

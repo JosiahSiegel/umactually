@@ -38,6 +38,7 @@ import {
   type LiveReview,
   type LiveReviewComment,
 } from "../../src/cli/live-shared.js";
+import { REVIEW_MARKER } from "../../src/util/marker.js";
 
 const SECRETS = ["sk-test-secret-do-not-leak"] as const;
 
@@ -170,7 +171,7 @@ describe("buildReviewBody — 5-second scannable clarity", () => {
     const body = buildReviewBody(STD_INPUT);
     const lines = body.split("\n").map((line) => line.trim()).filter((line) => line.length > 0);
     // The first line must be the marker; the second line must be the verdict.
-    expect(lines[0]).toBe("<!-- umactually-pr-review -->");
+    expect(lines[0]).toBe(REVIEW_MARKER);
     expect(lines[1]).toMatch(/^## /u);
     expect(lines[1]).toMatch(/[⛔✅💬]/u);
     expect(lines[1]).toMatch(/SHIP|APPROVED|NEEDS_FIX|DISCUSS|COMMENT/);
@@ -251,7 +252,7 @@ describe("buildReviewBody — 5-second scannable clarity", () => {
     });
     const lines = body.split("\n").map((line) => line.trim()).filter((line) => line.length > 0);
     // marker
-    expect(lines[0]).toBe("<!-- umactually-pr-review -->");
+    expect(lines[0]).toBe(REVIEW_MARKER);
     // verdict
     expect(lines[1]).toMatch(/^## /u);
     expect(lines[1]).toMatch(/[⛔✅💬]/u);
@@ -290,7 +291,7 @@ describe("buildReviewBody — 5-second scannable clarity", () => {
       secrets: SECRETS,
     });
     const lines = body.split("\n").map((line) => line.trim()).filter((line) => line.length > 0);
-    expect(lines[0]).toBe("<!-- umactually-pr-review -->");
+    expect(lines[0]).toBe(REVIEW_MARKER);
     expect(lines[1]).toMatch(/^## /u);
     // CLARITY-14c: zero-tally line is hidden when there are no findings
     // (parse-fail reviews have zero findings by definition).
@@ -303,7 +304,7 @@ describe("buildReviewBody — 5-second scannable clarity", () => {
 
   it("CLARITY-6: includes the stable HTML marker for dedup", () => {
     const body = buildReviewBody(STD_INPUT);
-    expect(body).toContain("<!-- umactually-pr-review -->");
+    expect(body).toContain(REVIEW_MARKER);
   });
 
   it("CLARITY-7: includes the machine-readable findings manifest", () => {
@@ -481,7 +482,7 @@ describe("buildReviewBody — 5-second scannable clarity", () => {
     // Findings table still present with the empty-row placeholder.
     expect(body).toMatch(/No findings to address/u);
     // Verdict + summary + footer are still there.
-    expect(body).toContain("<!-- umactually-pr-review -->");
+    expect(body).toContain(REVIEW_MARKER);
     expect(body).toMatch(/^## /mu);
     expect(body).toMatch(/[⛔✅💬]/u);
     expect(body).toMatch(/###\s+📝\s+Summary/u);
