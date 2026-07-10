@@ -6,9 +6,11 @@ import { describe, expect, it } from "vitest";
 import {
   buildReviewBody,
   buildInlineCommentBody,
-  countBySeverity,
+  countBySeverityFromLiveShared,
   type LiveReview,
 } from "../../src/cli/live-shared.js";
+import { countBySeverity } from "../../src/util/severity.js";
+import { REVIEW_MARKER } from "../../src/util/marker.js";
 import { renderSummary } from "../../src/render/summary-layouts.js";
 
 const SAMPLE_REVIEW: LiveReview = {
@@ -62,7 +64,7 @@ describe("buildReviewBody (shared GitHub + Azure review header)", () => {
       severityCounts: { high: 1, medium: 1, low: 1 },
       secrets: SECRETS,
     });
-    expect(body).toContain("<!-- umactually-pr-review -->");
+    expect(body).toContain(REVIEW_MARKER);
   });
 
   it("FEAT-PARITY-002 includes a verdict badge that both platforms render", () => {
@@ -267,7 +269,7 @@ describe("buildInlineCommentBody (shared per-comment format for GitHub and Azure
       secrets: SECRETS,
       includeMarker: true,
     });
-    expect(body).toContain("<!-- umactually-pr-review -->");
+    expect(body).toContain(REVIEW_MARKER);
   });
 });
 
@@ -521,5 +523,24 @@ describe("buildReviewBody — severity-tally filter marker", () => {
     });
     expect(body).toContain("🏷️ Severity breakdown");
     expect(body).not.toContain(LEGEND);
+  });
+});
+
+// DRY-SHIM-001: Pins the @deprecated re-export shim that lives in
+// cli/live-shared.ts. The original re-export carried a JSDoc that
+// explicitly warned "Do not remove without updating all callers."
+// When a future refactor wants to actually delete it, this test
+// must be updated to assert the removal — that's the audit trail.
+describe("countBySeverityFromLiveShared (deprecated re-export shim)", () => {
+  it("still resolves to the canonical util/severity.ts function", () => {
+    expect(countBySeverityFromLiveShared).toBe(countBySeverity);
+    // Sanity: the underlying function still works through the shim.
+    const counts = countBySeverityFromLiveShared([
+      { severity: "high" },
+      { severity: "high" },
+      { severity: "low" },
+    ]);
+    expect(counts["high"]).toBe(2);
+    expect(counts["low"]).toBe(1);
   });
 });

@@ -8,6 +8,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { parseCliArgs } from "../../src/cli.js";
 import { runLive } from "../../src/cli/orchestrator.js";
 import { clearCopilotTokenCache } from "../../src/provider/copilot-token.js";
+import { REVIEW_MARKER } from "../../src/util/marker.js";
 
 type RecordedCall = {
   readonly url: string;
@@ -186,7 +187,7 @@ function githubRoutesWithDiff(providerBody: string, diffText: string): readonly 
   ];
 }
 
-const EXISTING_MARKER_REVIEW_BODY = `<!-- umactually-pr-review -->
+const EXISTING_MARKER_REVIEW_BODY = `${REVIEW_MARKER}
 
 old summary
 
@@ -375,7 +376,7 @@ describe("runLive GitHub orchestration", () => {
     expect(result.posted).toBe(true);
     const postCall = findCall(recorder.calls, "POST", "/pulls/42/reviews");
     const body = readRecord(postCall.body as Record<string, unknown>, "review request");
-    expect(body["body"]).toContain("<!-- umactually-pr-review -->");
+    expect(body["body"]).toContain(REVIEW_MARKER);
     expect(body["body"]).toContain("Provider response did not contain a valid JSON review payload.");
     // The raw provider text is now included in a `<details>` block so
     // reviewers can diagnose parse-fail without leaving the PR.
@@ -481,7 +482,7 @@ describe("runLive GitHub orchestration", () => {
     const body = readRecord(postCall.body as Record<string, unknown>, "review request");
     expect(body["event"]).toBe("REQUEST_CHANGES");
     expect(body["commit_id"]).toBe("1111111111111111111111111111111111111111");
-    expect(body["body"]).toContain("<!-- umactually-pr-review -->");
+    expect(body["body"]).toContain(REVIEW_MARKER);
     expect(body["body"]).toContain("One valid inline finding.");
     const comments = readArray(body["comments"], "review comments");
     expect(comments).toHaveLength(1);
@@ -559,7 +560,7 @@ describe("runLive GitHub orchestration", () => {
     expect(result.posted).toBe(true);
     const postCall = findCall(recorder.calls, "POST", "/pulls/42/reviews");
     const body = readRecord(postCall.body as Record<string, unknown>, "review request");
-    expect(body["body"]).toContain("<!-- umactually-pr-review -->");
+    expect(body["body"]).toContain(REVIEW_MARKER);
 
     // Then: the posted comments include the deterministic fixture findings (4-6 inline threads).
     const comments = readArray(body["comments"], "review comments");
@@ -609,7 +610,7 @@ describe("runLive GitHub orchestration", () => {
     expect(result.posted).toBe(true);
     const postCall = findCall(recorder.calls, "POST", "/pulls/42/reviews");
     const body = readRecord(postCall.body as Record<string, unknown>, "review request");
-    expect(body["body"]).toContain("<!-- umactually-pr-review -->");
+    expect(body["body"]).toContain(REVIEW_MARKER);
 
     // Then: the posted body uses the LIVE summary (the fixture did NOT override).
     expect(body["body"]).toContain("One valid inline finding.");
@@ -736,7 +737,7 @@ describe("runLive GitHub orchestration", () => {
       side: "RIGHT",
       body: "`high` `correctness`\n\nTighten this changed line.",
     });
-    expect(postBody["body"]).toContain("<!-- umactually-pr-review -->");
+    expect(postBody["body"]).toContain(REVIEW_MARKER);
     expect(postBody["event"]).toBe("REQUEST_CHANGES");
     expect(postBody["commit_id"]).toBe("1111111111111111111111111111111111111111");
 
@@ -804,7 +805,7 @@ describe("runLive GitHub orchestration", () => {
     const postBody = readRecord(reviewPosts[0]!.body as Record<string, unknown>, "review request");
 
     // Then: the new POST carries the simulate-findings summary + 4-6 inline threads.
-    expect(postBody["body"]).toContain("<!-- umactually-pr-review -->");
+    expect(postBody["body"]).toContain(REVIEW_MARKER);
     expect(postBody["body"]).toContain("Simulated review for octo-org/octo-repo#42");
     const postedComments = readArray(postBody["comments"], "review comments");
     expect(postedComments.length).toBeGreaterThanOrEqual(4);

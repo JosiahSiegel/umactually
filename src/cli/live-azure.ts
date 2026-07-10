@@ -1,6 +1,6 @@
 import { type AzureContext } from "../platform/azure/context.js";
 import { AZURE_API_VERSION, azurePrBaseUrl } from "../platform/azure/urls.js";
-import { AZURE_STATUS_CONTEXT_NAME } from "../util/brand.js";
+import { AZURE_STATUS_CONTEXT_NAME, AZURE_STATUS_CONTEXT_GENRE } from "../util/brand.js";
 import { formatError } from "../util/error.js";
 import { azureHeaders, truncateBodyForLog } from "../util/http.js";
 import { isRecord, isSafeInteger, isUnknownArray } from "../util/json-guards.js";
@@ -509,12 +509,10 @@ async function postAzureThread(input: {
  * already on PR #42 (which all carry genre `"pr-review"`), so the
  * dedup helper below can locate legacy entries on the very next run.
  *
- * The context NAME is sourced from `src/util/brand.ts` (single source
- * of truth for the brand string). The local `AZURE_STATUS_CONTEXT_GENRE`
- * stays here because it's a runtime-dedup detail, not brand state.
+ * The context NAME and GENRE are both sourced from `src/util/brand.ts`
+ * (single source of truth for the brand string and Azure-specific
+ * identifiers).
  */
-const AZURE_STATUS_CONTEXT_GENRE = "pr-review";
-
 async function postAzureStatus(input: {
   readonly context: AzureContext;
   readonly fetchImpl: FetchImpl;

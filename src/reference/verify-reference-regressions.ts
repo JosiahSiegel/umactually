@@ -1,4 +1,5 @@
 import { REVIEW_MARKER, LEGACY_MARKER, LEGACY_MARKER_SLUG } from "../util/marker.js";
+import { BRAND } from "../util/brand.js";
 
 export type ReferenceRegressionInput = {
   readonly inlineQuoteReference: string;
@@ -19,7 +20,7 @@ const INLINE_QUOTE_HELPER = "wrap_inline_code";
 const RAW_JSON_LEAK_GUARD = "FenceClosureGuardTests";
 const JSON_FENCE = "```json";
 const CURRENT_MARKER = REVIEW_MARKER;
-const CURRENT_MARKER_SLUG = "umactually-pr-review";
+const CURRENT_MARKER_SLUG = BRAND;
 
 /**
  * Throws when a required contract token is missing from the supplied reference

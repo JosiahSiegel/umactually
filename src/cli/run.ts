@@ -7,7 +7,9 @@ import { scanReviewSecrets } from "../security/scan-review-secrets.js";
 import { runSonarImport } from "../sonar/run-sonar-import.js";
 import { readEnvSources } from "../config/env-sources.js";
 import type { EnvSources } from "../config/types.js";
+import { withDebugRawEnv } from "../util/debug-raw.js";
 import { formatError } from "../util/error.js";
+import { REVIEW_MARKER } from "../util/marker.js";
 import type { ParsedCliArgs } from "./parse-args.js";
 import { resolvePlatform, type ResolvedPlatform } from "./validate.js";
 import { runLive as runOrchestrator } from "./orchestrator.js";
@@ -312,14 +314,10 @@ export async function dispatchLive(parsed: ParsedCliArgs, cwd: string, env: Node
   // rather than a content-hashed dynamic chunk that would need to be committed.
   //
   // Compatibility shim: provider debug logging still reads
-  // UMACTUALLY_DEBUG_RAW from process.env. Set it only for this dispatch
-  // and restore/delete it in finally so same-process batch runs do not
-  // inherit --debug-raw-response from an earlier review.
-  const previousDebugRaw = process.env["UMACTUALLY_DEBUG_RAW"];
-  if (parsed.debugRawResponse === true) {
-    process.env["UMACTUALLY_DEBUG_RAW"] = "1";
-  }
-  try {
+  // UMACTUALLY_DEBUG_RAW from process.env. `withDebugRawEnv` sets it only
+  // for this dispatch and restores/deletes it in finally so same-process
+  // batch runs do not inherit --debug-raw-response from an earlier review.
+  return withDebugRawEnv(parsed.debugRawResponse === true, async () => {
     const result = await runOrchestrator({ parsed, cwd, env });
     // Write a summary artifact at the same path the dry-run uses so the
     // self-review CI guard (`scripts/check-self-review-output.mjs`) can
@@ -329,13 +327,7 @@ export async function dispatchLive(parsed: ParsedCliArgs, cwd: string, env: Node
     const platform = resolvePlatform(parsed.platform, env);
     await writeLiveArtifact(parsed, cwd, platform, result);
     return { exitCode: result.exitCode };
-  } finally {
-    if (previousDebugRaw === undefined) {
-      delete process.env["UMACTUALLY_DEBUG_RAW"];
-    } else {
-      process.env["UMACTUALLY_DEBUG_RAW"] = previousDebugRaw;
-    }
-  }
+  });
 }
 
 /**
@@ -391,7 +383,7 @@ async function writeLiveArtifact(
       artifactPath,
       posted: false,
       message: result.message,
-      marker: "<!-- umactually-pr-review -->",
+      marker: REVIEW_MARKER,
       inlineThreadCount: 0,
       suppressedCommentCount: 0,
       blockedRawOutput: false,
@@ -411,7 +403,7 @@ async function writeLiveArtifact(
     artifactPath,
     posted: true,
     message: result.message,
-    marker: "<!-- umactually-pr-review -->",
+    marker: REVIEW_MARKER,
     inlineThreadCount: result.inlineThreadCount ?? 0,
     suppressedCommentCount: result.suppressedCommentCount ?? 0,
     blockedRawOutput: false,
