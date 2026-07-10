@@ -172,14 +172,20 @@ export function reconstructFileFromDiff(diffText: string, filePath: string): str
     if (line.startsWith("@@")) {
       continue;
     }
+    // Only process unified-diff hunk lines. A line that doesn't
+    // start with one of the three markers ('+', '-', ' ') is not
+    // a valid hunk line (e.g. a stray blank line, an annotation).
+    // Skip it rather than injecting it as a context line, which
+    // would shift line numbers and corrupt the JSON parser
+    // downstream.
     if (line.startsWith("+")) {
       buffer.push(line.slice(1));
     } else if (line.startsWith("-")) {
       // removed line: skip
+    } else if (line.startsWith(" ")) {
+      buffer.push(line.slice(1));
     } else {
-      // Context line (starts with " " in unified diff format) or
-      // an empty line.
-      buffer.push(line.startsWith(" ") ? line.slice(1) : line);
+      // No diff marker; ignore (e.g. blank line, malformed input).
     }
   }
   flush();
@@ -543,7 +549,7 @@ function readActionOutputs(diffText: string): ActionOutputsFact | null {
   if (content === null) {
     return null;
   }
-  return parseActionOutputsYaml(content);
+  return parseActionOutputsYaml(content, diffText);
 }
 
 /**
@@ -551,14 +557,32 @@ function readActionOutputs(diffText: string): ActionOutputsFact | null {
  * need a full YAML parser — outputs is always a flat map of
  * key: description pairs at 2-space indentation under the
  * `outputs:` line. We collect keys only.
+ *
+ * Returns null when the reconstructed action.yml does NOT contain an
+ * `outputs:` line AND the diff did not explicitly remove one. This
+ * is important: returning an empty `outputKeys` array for an
+ * action.yml that never had outputs would cause the post-filter to
+ * interpret the empty list as "outputs were removed" and
+ * potentially flag findings that legitimately mention outputs in
+ * natural language.
+ *
+ * When the diff DOES contain `-outputs:` (or an entire outputs
+ * block removal), we return `{ outputKeys: [] }` because the diff
+ * itself is the signal that outputs was removed; the absence of
+ * `outputs:` in the reconstructed file is the post-change state.
  */
-function parseActionOutputsYaml(text: string): ActionOutputsFact {
+function parseActionOutputsYaml(
+  text: string,
+  diffText: string,
+): ActionOutputsFact | null {
   const lines = text.split(/\r?\n/u);
   const outputKeys: string[] = [];
   let inOutputsBlock = false;
+  let sawOutputsMarker = false;
   for (const line of lines) {
     if (/^outputs\s*:\s*$/u.test(line)) {
       inOutputsBlock = true;
+      sawOutputsMarker = true;
       continue;
     }
     if (!inOutputsBlock) {
@@ -573,5 +597,25 @@ function parseActionOutputsYaml(text: string): ActionOutputsFact {
       outputKeys.push(keyMatch[1] ?? "");
     }
   }
-  return { kind: "action-outputs", outputKeys };
+  if (sawOutputsMarker) {
+    return { kind: "action-outputs", outputKeys };
+  }
+  // Reconstructed action.yml has no `outputs:` line. Distinguish:
+  // (a) the diff explicitly removed the outputs block — in which
+  //     case the post-change state is "no outputs" and we should
+  //     report it as such.
+  // (b) action.yml never had outputs, or our reconstruction is
+  //     incomplete — in which case we should not report it.
+  if (/^-\s*outputs\s*:\s*$/um.test(diffText)) {
+    return { kind: "action-outputs", outputKeys: [] };
+  }
+  // Also detect removal of the entire outputs block (the `outputs:`
+  // line is in a `-outputs:` removal but the keys were also
+  // removed as a sequence). Check for any `-  <key>:` pattern that
+  // is a key in the outputs block. As a fallback, check whether
+  // the diff has the `outputs:` word at all in a removed line.
+  if (/^-\s*outputs\b/um.test(diffText)) {
+    return { kind: "action-outputs", outputKeys: [] };
+  }
+  return null;
 }

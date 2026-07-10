@@ -297,4 +297,129 @@ describe("applyVerifiedFactsFilter (Layer 4.5 verified-facts contradiction post-
     expect(result.downgraded[0]?.severity).toBe("info");
     expect(result.downgradeReasons[0]?.reason).toContain("marker");
   });
+
+  it("does NOT downgrade when a verified-list word appears only as natural-language prose", () => {
+    // PR-#41 review (round 3) flagged this exact false-positive
+    // pattern: the broad identifier pass would match the word
+    // "marker" against the verified list even when the body just
+    // casually mentions outputs. The proximity check should prevent
+    // this.
+    const diff = [
+      "diff --git a/action.yml b/action.yml",
+      "--- a/action.yml",
+      "+++ b/action.yml",
+      "@@ -1,1 +1,4 @@",
+      "+outputs:",
+      "+  marker:",
+      "+    description: x.",
+    ].join("\n");
+    const review: LiveReview = {
+      summary: "test",
+      verdict: "COMMENT",
+      comments: [
+        {
+          path: "action.yml",
+          line: 1,
+          // "marker" appears in the body, but it's not in proximity
+          // to a missing/removed phrase. The body merely describes
+          // the output structure; it does not claim marker was
+          // removed.
+          body: "Consider how the action marker field is consumed downstream. The output is a non-trivial design decision and reviewers should weigh in.",
+          severity: "low",
+          category: "design",
+        },
+      ],
+      suppressedComments: [],
+    };
+    const result = applyVerifiedFactsFilter({ review, diffText: diff });
+    expect(result.kept).toHaveLength(1);
+    expect(result.downgraded).toHaveLength(0);
+  });
+
+  it("does NOT downgrade when the missing-phrase is in a different sentence from the verified-list word", () => {
+    // Two separate sentences: the first mentions dist/ in natural
+    // language, the second says "files is missing" (a generic
+    // complaint, not naming any specific entry). The proximity
+    // check (per-sentence) correctly distinguishes this from a
+    // real contradiction.
+    const diff = [
+      "diff --git a/package.json b/package.json",
+      "--- a/package.json",
+      "+++ b/package.json",
+      "@@ -10,5 +35,8 @@",
+      '   "files": [',
+      '     "dist",',
+      '     "bin",',
+      '     "action.yml",',
+      '     "README.md",',
+      '     "docs",',
+      '     "examples",',
+      '     "scripts"',
+      "   ],",
+    ].join("\n");
+    const body =
+      "Consider documenting how dist/ is consumed downstream. " +
+      "Separately: the files array might be missing something the operator intended.";
+    const review: LiveReview = {
+      summary: "test",
+      verdict: "COMMENT",
+      comments: [
+        {
+          path: "package.json",
+          line: 1,
+          body,
+          severity: "low",
+          category: "test",
+        },
+      ],
+      suppressedComments: [],
+    };
+    const result = applyVerifiedFactsFilter({ review, diffText: diff });
+    // dist/ and "is missing" appear in different sentences, so no
+    // contradiction. Keep at original severity.
+    expect(result.kept).toHaveLength(1);
+    expect(result.downgraded).toHaveLength(0);
+  });
+
+  it("does NOT downgrade findings that are within proximity to a missing-phrase but the missing-phrase is about a DIFFERENT list", () => {
+    // Body says "marker" is in the outputs (true) AND says dist/ is
+    // missing from files. The dist/ part contradicts the verified
+    // list, so it should be downgraded. The marker mention in
+    // proximity to "is in" (not "is missing") should NOT be the
+    // trigger; the trigger is the dist/ + "is missing" pair.
+    const diff = [
+      "diff --git a/package.json b/package.json",
+      "--- a/package.json",
+      "+++ b/package.json",
+      "@@ -10,5 +35,8 @@",
+      '   "files": [',
+      '     "dist",',
+      '     "bin",',
+      '     "action.yml",',
+      '     "README.md",',
+      '     "docs",',
+      '     "examples",',
+      '     "scripts"',
+      "   ],",
+    ].join("\n");
+    const review: LiveReview = {
+      summary: "test",
+      verdict: "COMMENT",
+      comments: [
+        {
+          path: "package.json",
+          line: 1,
+          body: "The marker output is in the action.yml. But dist is missing from files so consumers won't get the published tarball.",
+          severity: "critical",
+          category: "packaging",
+        },
+      ],
+      suppressedComments: [],
+    };
+    const result = applyVerifiedFactsFilter({ review, diffText: diff });
+    // dist is in the verified files list; "dist is missing from
+    // files" is a contradiction → downgrade.
+    expect(result.downgraded).toHaveLength(1);
+    expect(result.downgradeReasons[0]?.reason).toContain("dist");
+  });
 });

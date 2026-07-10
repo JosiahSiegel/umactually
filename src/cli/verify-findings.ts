@@ -156,111 +156,127 @@ const MISSING_PHRASES = [
 ];
 
 /**
+ * Tokens that frequently appear in natural-language text and
+ * SHOULD NOT be treated as candidate identifiers for contradiction
+ * detection. Without this list, a sentence like "the output is
+ * missing" would match the bareword "output" against
+ * action.yml#outputs (where "output" might coincidentally be a
+ * key) and trigger a false-positive downgrade. We seed this with
+ * every common English word plus every review-action vocabulary
+ * word we observed in PR-#41's false positives.
+ */
+const STOPWORD_TOKENS = new Set([
+  // English stop words
+  "the", "a", "an", "and", "or", "but", "if", "then", "else", "when",
+  "while", "for", "of", "to", "in", "on", "at", "by", "from", "as",
+  "is", "are", "was", "were", "be", "been", "being", "have", "has",
+  "had", "do", "does", "did", "will", "would", "should", "could", "may",
+  "might", "can", "must", "shall", "this", "that", "these", "those",
+  "with", "into", "about", "between", "through", "during", "before",
+  "after", "above", "below", "out", "off", "over", "under", "again",
+  "further", "once", "here", "there", "where", "why", "how", "all",
+  "any", "both", "each", "few", "more", "most", "other", "some",
+  "such", "no", "nor", "not", "only", "own", "same", "so", "than",
+  "too", "very", "just", "still", "now", "it", "its", "they", "them",
+  "their", "we", "our", "us", "you", "your", "i", "me", "my", "he",
+  "she", "his", "her", "what", "which", "who", "whom",
+  // Review-action vocabulary
+  "missing", "removed", "output", "outputs", "input", "inputs",
+  "block", "list", "lists", "array", "field", "entry", "entries",
+  "key", "keys", "value", "values", "file", "files", "directory",
+  "directories", "include", "includes", "including", "exclude",
+  "excludes", "see", "see-also", "per", "via", "downstream",
+  "upstream", "consumers", "consumer", "consume", "depends",
+  "depend", "callers", "caller", "post", "posted", "posting", "postable",
+  "find", "finds", "found", "want", "wants", "wanted", "need", "needs",
+  "needed", "use", "uses", "used", "using", "claim", "claims", "assert",
+  "asserts", "asserted", "appears", "appear", "show", "shows", "showed",
+  "verify", "verifies", "verified", "render", "renders", "rendered",
+  "check", "checks", "checked", "action", "actions", "comment",
+  "comments", "review", "reviews", "operator", "operators", "test",
+  "tests", "change", "changes", "changed", "add", "adds", "added",
+  "remove", "removes", "delete", "deletes", "deleted", "merge",
+  "merges", "merged", "keep", "keeps", "kept", "fail", "fails",
+  "failed", "pass", "passes", "passed", "make", "makes", "made",
+  "ensure", "ensures", "ensured", "consider", "considers", "considered",
+  "likely", "potentially", "probably", "perhaps", "may-be", "might-be",
+  "seems", "appears-to", "looks", "looks-like", "is-likely",
+]);
+
+/**
  * Detect a verified-facts contradiction in a finding body.
  *
- * Heuristic: if the body contains a "missing from X" phrase and X is
- * one of our known verified lists (package.json#files,
- * action.yml#outputs), check whether any quoted token in the body
- * appears in that list. If a token IS in the list, the body is
- * contradicting a verified fact (e.g. "dist is missing from files"
- * when dist is in files).
+ * Conservative: only flag when a token that appears in a verified
+ * list is mentioned in close proximity to a "missing / removed"
+ * phrase in the same sentence. A finding body that just casually
+ * mentions a verified-list word ("dist/ is referenced in the
+ * README") does NOT trigger a downgrade.
  *
- * Returns a human-readable reason if a contradiction is detected,
- * otherwise null.
+ * The proximity check is the critical safety property: a body must
+ * have BOTH a missing-phrase AND a verified-list token within ~80
+ * characters of each other. This drastically reduces false-positive
+ * downgrades compared to the naive "any token matches" approach.
  */
 function detectVerifiedFactsContradiction(
   body: string,
   facts: import("../review/verified-facts.js").VerifiedFacts,
 ): string | null {
   const lower = body.toLowerCase();
-  const hasMissingPhrase = MISSING_PHRASES.some((p) => lower.includes(p));
-  if (!hasMissingPhrase) {
+  // Step 1: confirm the body has a missing/removed phrase. If not,
+  // no contradiction is possible.
+  if (!MISSING_PHRASES.some((p) => lower.includes(p))) {
     return null;
   }
-  // Try to match the body against known lists. We extract candidate
-  // tokens (quoted strings, plus a few common ones) and check each
-  // against the verified lists.
-  const tokens = extractCandidateTokens(body);
-  if (facts.packageJsonFiles !== null && facts.packageJsonFiles.files.length > 0) {
-    for (const token of tokens) {
-      if (facts.packageJsonFiles.files.includes(token)) {
-        return `body claims "${token}" is missing from package.json#files, but the verified list includes "${token}"`;
-      }
+  // Step 2: collect every verified-list token (the universe of
+  // candidates that would constitute a contradiction).
+  const verifiedCandidates = new Set<string>();
+  if (facts.packageJsonFiles !== null) {
+    for (const f of facts.packageJsonFiles.files) {
+      verifiedCandidates.add(f);
     }
   }
   if (facts.actionOutputs !== null && facts.actionOutputs.outputKeys.length > 0) {
-    for (const token of tokens) {
-      if (facts.actionOutputs.outputKeys.includes(token)) {
-        return `body claims "${token}" output was removed, but the verified list of action.yml#outputs includes "${token}"`;
+    for (const k of facts.actionOutputs.outputKeys) {
+      verifiedCandidates.add(k);
+    }
+  }
+  if (verifiedCandidates.size === 0) {
+    return null;
+  }
+  // Step 3: for each candidate token, check whether it appears in
+  // the SAME SENTENCE as a missing-phrase. We split the body on
+  // sentence boundaries (period, newline) and look for both the
+  // token and a missing-phrase in the same sentence. A token that
+  // appears only in a different sentence from the missing-phrase is
+  // NOT a contradiction — it's natural-language prose.
+  for (const candidate of verifiedCandidates) {
+    const candidateLower = candidate.toLowerCase();
+    if (candidateLower.length === 0) continue;
+    if (STOPWORD_TOKENS.has(candidateLower)) continue;
+    // Split the body into sentences. We use a simple split on
+    // . ! ? and newlines. Empty sentences are skipped.
+    const sentences = lower.split(/[.!?\n]+/u).map((s) => s.trim()).filter((s) => s.length > 0);
+    for (const sentence of sentences) {
+      if (!sentence.includes(candidateLower)) continue;
+      const hasMissingPhrase = MISSING_PHRASES.some((p) => sentence.includes(p));
+      if (!hasMissingPhrase) continue;
+      // Both the candidate and a missing-phrase appear in the same
+      // sentence. This is the contradiction.
+      if (
+        facts.packageJsonFiles !== null &&
+        facts.packageJsonFiles.files.includes(candidate)
+      ) {
+        return `body claims "${candidate}" is missing from package.json#files, but the verified list includes "${candidate}"`;
+      }
+      if (
+        facts.actionOutputs !== null &&
+        facts.actionOutputs.outputKeys.includes(candidate)
+      ) {
+        return `body claims "${candidate}" output was removed, but the verified list of action.yml#outputs includes "${candidate}"`;
       }
     }
   }
   return null;
-}
-
-/**
- * Extract candidate tokens from a finding body for contradiction
- * checking. We pull quoted strings, backticked identifiers, common
- * bareword file names, AND every standalone identifier in the body.
- * The identifier pass catches tokens like "marker" that aren't quoted
- * or wrapped in backticks but are exactly the keys we want to match
- * against verified lists (e.g. action.yml#outputs keys, package.json
- * files entries).
- */
-function extractCandidateTokens(body: string): readonly string[] {
-  const tokens = new Set<string>();
-  // Quoted strings: "foo", 'foo', `foo`
-  const quoted = body.matchAll(/["'`]([^"'`\s]{1,40})["'`]/gu);
-  for (const m of quoted) {
-    if (m[1] !== undefined) {
-      tokens.add(m[1]);
-    }
-  }
-  // Backtick-wrapped paths: `dist/`, `dist/index.js`, `bin/foo.mjs`
-  const backticked = body.matchAll(/`([a-zA-Z0-9_./-]+)`/gu);
-  for (const m of backticked) {
-    if (m[1] !== undefined) {
-      tokens.add(m[1]);
-    }
-  }
-  // Common bareword patterns: "dist/", "bin/", "node_modules/", "dist"
-  const barewords = body.matchAll(/\b(dist|bin|node_modules|action\.yml|package\.json|README|LICENSE|docs|examples|scripts|src|test)\b/gu);
-  for (const m of barewords) {
-    if (m[1] !== undefined) {
-      tokens.add(m[1]);
-    }
-  }
-  // All standalone identifiers (word chars + hyphens). This is the
-  // broad pass that catches output keys like "marker", "marker_text",
-  // "inline_count", etc., without us having to enumerate them. We
-  // filter out common English stop-words to avoid spurious matches.
-  const stopwords = new Set([
-    "the", "a", "an", "and", "or", "but", "if", "then", "else", "when",
-    "while", "for", "of", "to", "in", "on", "at", "by", "is", "are",
-    "was", "were", "be", "been", "being", "have", "has", "had", "do",
-    "does", "did", "will", "would", "should", "could", "may", "might",
-    "can", "this", "that", "these", "those", "with", "from", "into",
-    "about", "between", "through", "during", "before", "after", "above",
-    "below", "out", "off", "over", "under", "again", "further", "once",
-    "here", "there", "where", "why", "how", "all", "any", "both", "each",
-    "few", "more", "most", "other", "some", "such", "no", "nor", "not",
-    "only", "own", "same", "so", "than", "too", "very", "just", "still",
-    "now", "it", "its", "they", "them", "their", "we", "our", "you",
-    "your", "downstream", "consumers", "consumers", "depends",
-    "depend", "depends", "include", "includes", "including",
-    "outputs", "output", "input", "inputs", "value", "field",
-    "block", "entry", "entries", "list", "array", "key", "keys",
-    "consumers",
-  ]);
-  const allIds = body.matchAll(/[A-Za-z][A-Za-z0-9_-]*/gu);
-  for (const m of allIds) {
-    const word = m[0];
-    if (word === undefined || word.length < 2) continue;
-    if (stopwords.has(word.toLowerCase())) continue;
-    if (word.length > 40) continue; // skip very long matches (probably paths/sentences)
-    tokens.add(word);
-  }
-  return Array.from(tokens);
 }
 
 /**

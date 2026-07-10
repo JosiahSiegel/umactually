@@ -451,8 +451,21 @@ function withParseWarnings(input: {
 /**
  * Apply the deterministic (path, line) verify filter to the
  * review's comments[]. Returns a new LiveReview with the filtered
- * comments[]. The original is left untouched so callers (the
- * parse-warnings artifact builder) see the pre-filter payload.
+ * comments[] PLUS a verified-facts filter result describing
+ * findings that were downgraded because they contradicted a verified
+ * fact.
+ *
+ * The returned `review.comments` contains ONLY the KEPT findings
+ * (at their original severity). Downgraded findings live in
+ * `verifiedFactsFilter.downgraded` as a separate list — callers that
+ * want to surface downgraded findings read that list directly. This
+ * avoids double-counting: downstream code iterating
+ * `review.comments` for posting sees the kept set; downstream code
+ * reading `verifiedFactsFilter.downgraded` for audit sees the
+ * downgraded set. The two are disjoint.
+ *
+ * The original is left untouched so callers (the parse-warnings
+ * artifact builder) see the pre-filter payload.
  *
  * Defense-in-depth Layer 4: the post-filter in
  * `selectPostableComments` runs the same check, but doing it here
@@ -462,9 +475,10 @@ function withParseWarnings(input: {
  * contradiction filter. Findings whose body asserts something is
  * missing from a verified list (e.g. "dist/ is missing from
  * package.json#files" when dist/ is in fact in files) are
- * downgraded to info severity and surfaced via
- * `verifiedFactsFilter` on the outcome so the operator can see what
- * the model claimed and why it was downgraded.
+ * downgraded to info severity in the downgraded list so the
+ * operator can see what the model claimed and why it was
+ * downgraded, but they do not enter `review.comments` (which is
+ * what gets posted).
  */
 function applyVerifyFilter(review: LiveReview, diffText: string): {
   readonly review: LiveReview;
@@ -487,15 +501,12 @@ function applyVerifyFilter(review: LiveReview, diffText: string): {
     review: filteredReview,
     diffText,
   });
-  // Combine: kept findings keep their severity; downgraded findings
-  // are appended at the end so they remain visible (downgraded, but
-  // not hidden).
-  const finalComments: LiveReviewComment[] = [
-    ...verifiedFactsFilter.kept,
-    ...verifiedFactsFilter.downgraded,
-  ];
+  // Only the KEPT findings go into review.comments. Downgraded
+  // findings are surfaced separately via verifiedFactsFilter.downgraded
+  // (the operator can choose to render them; the platform-posting
+  // path ignores them).
   return {
-    review: { ...filteredReview, comments: finalComments },
+    review: { ...filteredReview, comments: verifiedFactsFilter.kept },
     verifiedFactsFilter,
   };
 }

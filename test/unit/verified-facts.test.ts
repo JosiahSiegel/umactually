@@ -274,3 +274,31 @@ describe("renderVerifiedFactsBlock", () => {
     expect(block).toContain('"examples"');
   });
 });
+describe("reconstructFileFromDiff blank-line handling", () => {
+  it("skips blank lines inside hunks (does not inject empty strings)", () => {
+    // A blank line in the middle of a hunk must not be treated as a
+    // context line — it would shift every subsequent line number by
+    // one and corrupt the JSON parser downstream. The fix to the
+    // self-review false-positive: only handle the three diff
+    // markers (+ - space); skip everything else.
+    const diff = [
+      "diff --git a/package.json b/package.json",
+      "--- a/package.json",
+      "+++ b/package.json",
+      "@@ -1,5 +1,6 @@",
+      " {",
+      '   "name": "umactually",',
+      "",
+      '   "main": "dist/index.js"',
+      "+  // added line",
+      " }",
+    ].join("\n");
+    const content = reconstructFileFromDiff(diff, "package.json");
+    expect(content).not.toBeNull();
+    // The blank line should NOT appear as a literal empty entry
+    // between "name" and "main" that the JSON parser would reject.
+    expect(content).toContain('"name": "umactually"');
+    expect(content).toContain('"main": "dist/index.js"');
+    expect(content).toContain("// added line");
+  });
+});
