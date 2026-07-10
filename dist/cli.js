@@ -12808,7 +12808,17 @@ function looksLikePatternMatchedAdvice(bodyLower) {
  * has nothing to do with error handling.
  */
 const PRESENCE_CONSTRUCTS = [
-    { presence: ["parameterized query", "parameterized queries", "parameterised query", "$1", "$2", "?, ?"], label: "parameterized queries" },
+    // Note: SQL parameter placeholders like `$1`, `$2`, `?, ?` were
+    // considered as presence markers but rejected — these two-character
+    // tokens are extraordinarily common in diffs (regex substitutions,
+    // format strings, template literals, mathematical expressions) and
+    // produced false-positive contradicted-by-quote downgrades on
+    // legitimate findings about unrelated code. The
+    // "parameterized query" / "parameterised query" phrasings are
+    // anchored to actual security constructs; SQL parameter syntax is
+    // not. Pinned by the regression test that injects `$1` in an
+    // unrelated context and asserts the filter does NOT fire.
+    { presence: ["parameterized query", "parameterized queries", "parameterised query"], label: "parameterized queries" },
     { presence: ["prepared statement", "prepared statements"], label: "prepared statements" },
     { presence: ["bound parameter", "bound parameters", "parameter binding"], label: "bound parameters" },
     { presence: ["escape(", "escapehtml", "escapeHtml"], label: "input escaping" },
@@ -13977,11 +13987,18 @@ function applySimulateFindings(input) {
             suppressedComments: sanitizeComments(fixture.suppressed_comments, input.secrets),
         },
         // Synthesized fixture — never went through the real parser, so
-        // there are no severity warnings to surface.
+        // there are no severity warnings to surface. The verified-facts
+        // filter and confidence filter did not run on the synthesized
+        // findings either, so we OMIT those fields rather than setting
+        // them to empty. The legacy-compat branch in
+        // `aggregateConfidenceFilter` keys on
+        // `o.confidenceFilter === undefined` and forwards the synthesized
+        // comments as kept; setting an empty `confidenceFilter` would
+        // bypass that branch and silently drop the comments during
+        // merge. Self-review finding on PR #43 thread 3559191395.
         severityWarnings: [],
         parseWarnings: [],
         verifiedFactsFilter: { kept: [], downgraded: [], downgradeReasons: [] },
-        confidenceFilter: { kept: [], downgraded: [], reasons: [] },
     };
 }
 function sanitizeComments(comments, secrets) {

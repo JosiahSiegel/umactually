@@ -380,7 +380,17 @@ function looksLikePatternMatchedAdvice(bodyLower: string): boolean {
  * has nothing to do with error handling.
  */
 const PRESENCE_CONSTRUCTS: readonly { readonly presence: readonly string[]; readonly label: string }[] = [
-  { presence: ["parameterized query", "parameterized queries", "parameterised query", "$1", "$2", "?, ?"], label: "parameterized queries" },
+  // Note: SQL parameter placeholders like `$1`, `$2`, `?, ?` were
+  // considered as presence markers but rejected — these two-character
+  // tokens are extraordinarily common in diffs (regex substitutions,
+  // format strings, template literals, mathematical expressions) and
+  // produced false-positive contradicted-by-quote downgrades on
+  // legitimate findings about unrelated code. The
+  // "parameterized query" / "parameterised query" phrasings are
+  // anchored to actual security constructs; SQL parameter syntax is
+  // not. Pinned by the regression test that injects `$1` in an
+  // unrelated context and asserts the filter does NOT fire.
+  { presence: ["parameterized query", "parameterized queries", "parameterised query"], label: "parameterized queries" },
   { presence: ["prepared statement", "prepared statements"], label: "prepared statements" },
   { presence: ["bound parameter", "bound parameters", "parameter binding"], label: "bound parameters" },
   { presence: ["escape(", "escapehtml", "escapeHtml"], label: "input escaping" },
