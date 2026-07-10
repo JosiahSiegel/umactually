@@ -9,6 +9,15 @@ import { existsSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
+const MIN_NODE_MAJOR = 24;
+const currentNodeMajor = Number(process.versions.node.split(".")[0]);
+if (!Number.isFinite(currentNodeMajor) || currentNodeMajor < MIN_NODE_MAJOR) {
+  process.stderr.write(
+    `umactually-pr-review: requires Node >= ${MIN_NODE_MAJOR}.x (detected ${process.versions.node}).\n`,
+  );
+  process.exit(1);
+}
+
 const here = dirname(fileURLToPath(import.meta.url));
 const packageRoot = resolve(here, "..");
 const bundledCli = join(packageRoot, "dist", "cli.js");

@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+// SPDX-License-Identifier: MIT
 // Standalone evidence script — invokes `buildReviewBody()` with realistic
 // fixture data (GitHub and Azure) and writes the actual rendered markdown
 // to artifacts/manual. This is the ground truth for "the layout renders
