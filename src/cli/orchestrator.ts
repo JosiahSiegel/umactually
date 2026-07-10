@@ -97,11 +97,24 @@ async function requestChunkedLiveReview(input: {
           // chunk 12 because the provider was rate-limiting".
           failedChunkCount += 1;
           const message = formatError(error);
-          const sanitized = sanitizeForPost(message, [input.platformToken]);
-          const redactedChunk = chunk.length > 80 ? `${chunk.slice(0, 77)}…` : chunk;
+          // Sanitize against the FULL secret list (not just the platform
+          // token) so an error message that quotes a 401 echo of the
+          // `Authorization` header cannot leak the provider API key into
+          // stdout. The sibling catch in `runLive` (line 207) already uses
+          // `readSecretValues(env)`; this aligns the per-chunk catch with
+          // that contract.
+          const sanitized = sanitizeForPost(message, readSecretValues(input.env));
+          // The chunk preview is the first 77 chars of the diff for this
+          // file. Sanitize it against the full secret list too: a leaked
+          // key in the first line of a changed file (e.g. a `.env`
+          // example) would otherwise be emitted to stdout via the
+          // warning. The earlier per-secret-token pass only handled the
+          // platform token and missed every other secret.
+          const preview = chunk.length > 80 ? `${chunk.slice(0, 77)}…` : chunk;
+          const sanitizedPreview = sanitizeForPost(preview, readSecretValues(input.env));
           logWarning(
             "",
-            `chunk ${index + 1}/${input.chunks.length} failed (${sanitized}); substituting empty outcome. chunk preview: ${redactedChunk}`,
+            `chunk ${index + 1}/${input.chunks.length} failed (${sanitized}); substituting empty outcome. chunk preview: ${sanitizedPreview}`,
           );
           outcome = {
             review: { summary: "", verdict: "COMMENT", comments: [], suppressedComments: [] },
@@ -113,6 +126,7 @@ async function requestChunkedLiveReview(input: {
             severityWarnings: [],
             parseWarnings: [],
             verifiedFactsFilter: { kept: [], downgraded: [], downgradeReasons: [] },
+            confidenceFilter: { kept: [], downgraded: [], reasons: [] },
           };
         }
         outcomes[index] = outcome;
@@ -342,6 +356,7 @@ async function dispatchLivePlatform(input: {
           severityWarnings: [],
           parseWarnings: [],
           verifiedFactsFilter: { kept: [], downgraded: [], downgradeReasons: [] },
+            confidenceFilter: { kept: [], downgraded: [], reasons: [] },
         };
       } else {
         const chunks = chunkDiffByFile(diffText);

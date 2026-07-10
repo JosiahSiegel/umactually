@@ -224,9 +224,14 @@ describe("anthropic-messages provider client — RED contract", () => {
     const retryMsgContent = retryMessages[0]!["content"] as string;
     // The retry prepends a JSON-only reminder so the model emits JSON.
     expect(retryMsgContent.startsWith("Your previous response did not contain a valid JSON review payload.")).toBe(true);
-    // Critically the original user content is ALSO appended (not replaced):
-    // replacing it would cause the model to emit "no code context" prose.
-    expect(retryMsgContent).toContain("user prompt");
+    // Critically the original user content is APPENDED to the
+    // reminder (not replaced). Replacing it would cause the model
+    // to emit "no code context" prose. The "endsWith" assertion
+    // pins both that the user content is present AND that nothing
+    // was appended after it (a buggy implementation that appended
+    // a longer trailer containing the literal "user prompt"
+    // substring would still satisfy `toContain` but fails this).
+    expect(retryMsgContent.endsWith("user prompt")).toBe(true);
   });
 
   it("ANTH-RED-005 surfaces a truncated-stream parse-fail when stop_reason=max_tokens and raw is large", async () => {
@@ -332,6 +337,41 @@ describe("anthropic-messages wire-shape helpers", () => {
       messages: [{ role: "user", content: "USER" }],
       max_tokens: 4096,
     });
+  });
+
+  it("ANTH-SHAPE-001b buildAnthropicBody forwards reasoningEffort when supplied (dual-protocol gateway passthrough)", async () => {
+    // Pin the fix for the Layer 5 self-review finding: the anthropic
+    // branch used to silently drop --effort because the call config
+    // had no `reasoningEffort` field. We now forward the value as
+    // `reasoning_effort` on the wire so dual-protocol gateways
+    // (MiniMax etc.) that honor it get the operator's hint. Native
+    // Anthropic.com ignores unknown fields per its API spec, so the
+    // worst case is a no-op, not a wire-shape error.
+    const mod = (await expectFutureModule("../../src/provider/anthropic-messages.js")) as {
+      readonly buildAnthropicBody: (cfg: { model: string; system: string; user: string; maxOutputTokens?: number; reasoningEffort?: "low" | "medium" | "high" }) => Record<string, unknown>;
+    };
+    const bodyWithEffort = mod.buildAnthropicBody({
+      model: "claude-sonnet-4.6",
+      system: "SYSTEM",
+      user: "USER",
+      reasoningEffort: "high",
+    });
+    expect(bodyWithEffort).toEqual({
+      model: "claude-sonnet-4.6",
+      system: "SYSTEM",
+      messages: [{ role: "user", content: "USER" }],
+      max_tokens: 4096,
+      reasoning_effort: "high",
+    });
+    // When --effort is not set, the field is OMITTED (not sent as
+    // `reasoning_effort: null` or empty) so gateways that reject
+    // unknown fields stay happy.
+    const bodyWithoutEffort = mod.buildAnthropicBody({
+      model: "claude-sonnet-4.6",
+      system: "SYSTEM",
+      user: "USER",
+    });
+    expect(bodyWithoutEffort).not.toHaveProperty("reasoning_effort");
   });
 
   it("ANTH-SHAPE-002 buildAnthropicHeaders pins x-api-key + anthropic-version, never sets Authorization", async () => {
