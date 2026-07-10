@@ -1,5 +1,6 @@
 import { FIELDS } from "../config/field-schema.js";
 import { parseStrictInt } from "../util/cli-args.js";
+import { ENV_KEYS } from "../util/env-keys.js";
 
 export type ActionInputs = {
   readonly githubToken: string;
@@ -37,7 +38,7 @@ export type ActionInputs = {
 };
 
 export function readActionInputs(env: NodeJS.ProcessEnv = process.env): ActionInputs {
-  const inGitHubActions = env["GITHUB_ACTIONS"] === "true";
+  const inGitHubActions = env[ENV_KEYS.GITHUB_ACTIONS] === "true";
   const get = (name: string): string => {
     // GitHub Actions normally sets INPUT_<NAME> with hyphens converted to
     // underscores, but a small set of inputs (notably longer hyphenated names
@@ -99,9 +100,9 @@ export function readActionInputs(env: NodeJS.ProcessEnv = process.env): ActionIn
   };
 
   return {
-    githubToken: getWithFallback("github_token", ["GITHUB_TOKEN"]),
-    apiKey: getWithFallback("api-key", ["UMACTUALLY_API_KEY", "REVIEW_PROVIDER_API_KEY"]),
-    apiUrl: getWithFallback("api-url", ["UMACTUALLY_API_URL", "REVIEW_PROVIDER_URL"]),
+    githubToken: getWithFallback("github_token", [ENV_KEYS.GITHUB_TOKEN]),
+    apiKey: getWithFallback("api-key", [ENV_KEYS.UMACTUALLY_API_KEY, ENV_KEYS.REVIEW_PROVIDER_API_KEY]),
+    apiUrl: getWithFallback("api-url", [ENV_KEYS.UMACTUALLY_API_URL, ENV_KEYS.REVIEW_PROVIDER_URL]),
     model: get("model"),
     prompt: get("prompt"),
     promptFile: get("prompt-file"),
@@ -149,7 +150,7 @@ export function readActionInputs(env: NodeJS.ProcessEnv = process.env): ActionIn
       FIELDS.provider.defaultValue as "openai-compatible" | "copilot" | "anthropic",
       FIELDS.provider.enumValues as readonly ("openai-compatible" | "copilot" | "anthropic")[],
     ),
-    githubApiBase: getWithFallback("github-api-base", ["UMACTUALLY_GITHUB_API_BASE"]),
+    githubApiBase: getWithFallback("github-api-base", [ENV_KEYS.UMACTUALLY_GITHUB_API_BASE]),
   };
 }
 
