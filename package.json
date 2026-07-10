@@ -4,6 +4,28 @@
   "description": "Provider-agnostic PR review action with redaction and SonarQube import.",
   "private": false,
   "type": "module",
+  "license": "MIT",
+  "author": "UmActually contributors",
+  "homepage": "https://github.com/umactually/umactually-pr-review#readme",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/umactually/umactually-pr-review.git"
+  },
+  "bugs": {
+    "url": "https://github.com/umactually/umactually-pr-review/issues"
+  },
+  "keywords": [
+    "github-action",
+    "pr-review",
+    "code-review",
+    "ai-review",
+    "anthropic",
+    "openai",
+    "copilot",
+    "redaction",
+    "secrets-scanning",
+    "sonarqube"
+  ],
   "main": "dist/index.js",
   "bin": {
     "umactually-pr-review": "bin/umactually-pr-review.mjs"
@@ -13,8 +35,14 @@
     "bin",
     "action.yml",
     "README.md",
-    "LICENSE"
+    "LICENSE",
+    "docs",
+    "examples",
+    "scripts"
   ],
+  "publishConfig": {
+    "access": "public"
+  },
   "scripts": {
     "test": "vitest",
     "test:unit": "vitest --project unit",
@@ -25,7 +53,9 @@
     "bundle": "npm run build",
     "check:dist-freshness": "node scripts/check-dist-freshness.mjs",
     "view:summary-layouts": "node scripts/view-summary-layouts.mjs",
-    "clean:summary-layouts": "node scripts/clean-viewer.mjs"
+    "clean:summary-layouts": "node scripts/clean-viewer.mjs",
+    "prepublishOnly": "npm run typecheck && npm test -- --run && npm run bundle && npm run check:dist-freshness",
+    "prepare": "npm run bundle"
   },
   "engines": {
     "node": ">=24"
