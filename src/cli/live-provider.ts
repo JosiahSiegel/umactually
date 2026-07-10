@@ -40,7 +40,7 @@ import {
 import type { ParsedCliArgs } from "./parse-args.js";
 import { buildParseWarningsArtifact } from "./parse-warnings.js";
 import { buildProviderPrompts, REVIEW_PAYLOAD_JSON_SCHEMA } from "./provider-prompts.js";
-import { verifyFindingsAgainstDiff } from "./verify-findings.js";
+import { applyVerifiedFactsFilter, verifyFindingsAgainstDiff } from "./verify-findings.js";
 
 const DEFAULT_REQUEST_TIMEOUT_MS = 60_000;
 const PROVIDER_NAME = "openai-compatible";
@@ -138,6 +138,16 @@ export async function requestLiveReview(input: {
     providerName: string,
   ): LiveProviderOutcome {
     const preVerifyReview = normalizeProviderReview(result.review, [providerApiKey, input.platformToken]);
+    const verifyFilterResult = input.parsed.verifyFindings !== false
+      ? applyVerifyFilter(preVerifyReview, input.diffText)
+      : {
+          review: preVerifyReview,
+          verifiedFactsFilter: {
+            kept: preVerifyReview.comments,
+            downgraded: [],
+            downgradeReasons: [],
+          },
+        };
     const preVerifyOutcome = withParseWarnings({
       review: preVerifyReview,
       endpoint: result.endpoint,
@@ -145,11 +155,9 @@ export async function requestLiveReview(input: {
       modelId,
       severityWarnings: severityWarnings.slice(),
       diffText: input.diffText,
+      verifiedFactsFilter: verifyFilterResult.verifiedFactsFilter,
     });
-    const finalReview = input.parsed.verifyFindings !== false
-      ? applyVerifyFilter(preVerifyReview, input.diffText)
-      : preVerifyReview;
-    return { ...preVerifyOutcome, review: finalReview };
+    return { ...preVerifyOutcome, review: verifyFilterResult.review };
   }
 
   /**
@@ -420,6 +428,7 @@ function withParseWarnings(input: {
   readonly modelId: string;
   readonly severityWarnings: readonly import("../provider/provider-parse.js").SeverityWarning[];
   readonly diffText: string;
+  readonly verifiedFactsFilter?: import("./verify-findings.js").VerifiedFactsFilterResult;
 }): LiveProviderOutcome {
   return {
     review: input.review,
@@ -431,6 +440,11 @@ function withParseWarnings(input: {
       review: input.review,
       diffText: input.diffText,
     }).warnings,
+    verifiedFactsFilter: input.verifiedFactsFilter ?? {
+      kept: input.review.comments,
+      downgraded: [],
+      downgradeReasons: [],
+    },
   };
 }
 
@@ -443,10 +457,24 @@ function withParseWarnings(input: {
  * Defense-in-depth Layer 4: the post-filter in
  * `selectPostableComments` runs the same check, but doing it here
  * means the platform-posting paths only see anchorable findings.
+ *
+ * Layer 4.5: after the (path, line) filter, run the verified-facts
+ * contradiction filter. Findings whose body asserts something is
+ * missing from a verified list (e.g. "dist/ is missing from
+ * package.json#files" when dist/ is in fact in files) are
+ * downgraded to info severity and surfaced via
+ * `verifiedFactsFilter` on the outcome so the operator can see what
+ * the model claimed and why it was downgraded.
  */
-function applyVerifyFilter(review: LiveReview, diffText: string): LiveReview {
+function applyVerifyFilter(review: LiveReview, diffText: string): {
+  readonly review: LiveReview;
+  readonly verifiedFactsFilter: import("./verify-findings.js").VerifiedFactsFilterResult;
+} {
   if (diffText.length === 0) {
-    return review;
+    return {
+      review,
+      verifiedFactsFilter: { kept: review.comments, downgraded: [], downgradeReasons: [] },
+    };
   }
   // Delegate to the standalone `verifyFindingsAgainstDiff` helper
   // so the inline filter and the parse-warnings artifact agree
@@ -454,7 +482,22 @@ function applyVerifyFilter(review: LiveReview, diffText: string): LiveReview {
   // re-implementation diverged from the helper in a way that
   // let the artifact undercount fabrication events.
   const { verified } = verifyFindingsAgainstDiff({ review, diffText });
-  return { ...review, comments: verified };
+  const filteredReview = { ...review, comments: verified };
+  const verifiedFactsFilter = applyVerifiedFactsFilter({
+    review: filteredReview,
+    diffText,
+  });
+  // Combine: kept findings keep their severity; downgraded findings
+  // are appended at the end so they remain visible (downgraded, but
+  // not hidden).
+  const finalComments: LiveReviewComment[] = [
+    ...verifiedFactsFilter.kept,
+    ...verifiedFactsFilter.downgraded,
+  ];
+  return {
+    review: { ...filteredReview, comments: finalComments },
+    verifiedFactsFilter,
+  };
 }
 
 function normalizeProviderReview(

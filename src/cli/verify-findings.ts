@@ -25,6 +25,7 @@
  * extra accuracy, opt in via `--verify-findings`.
  */
 import { parseDiffPositions } from "../diff/parse-positions.js";
+import { collectVerifiedFacts } from "../review/verified-facts.js";
 import type { LiveReviewComment, LiveReview } from "./live-shared.js";
 
 export type VerifiedFinding = {
@@ -66,6 +67,200 @@ export function verifyFindingsAgainstDiff(input: {
     }
   }
   return { verified, dropped };
+}
+
+/**
+ * Result of running the verified-facts contradiction filter. Findings
+ * whose body contradicts a verified fact are DOWNGRADED to `info`
+ * severity (kept, with the downgrade noted in `downgradeReason`) so
+ * the operator can see what the model claimed and what was wrong with
+ * it — we do not silently drop them, because the operator might
+ * still want the visibility.
+ */
+export type VerifiedFactsFilterResult = {
+  /** Findings kept at their original severity. */
+  readonly kept: readonly LiveReviewComment[];
+  /** Findings downgraded to `info` because they contradicted a verified fact. */
+  readonly downgraded: readonly LiveReviewComment[];
+  /** Human-readable description of why each downgraded finding was flagged. */
+  readonly downgradeReasons: readonly { readonly index: number; readonly reason: string }[];
+};
+
+/**
+ * Downgrade findings whose body contradicts a verified fact.
+ *
+ * "Contradicts" means the body asserts something is missing/absent/
+ * removed when the verified facts show it is present. The most common
+ * pattern observed in self-review (PR #41): the model claimed "dist/ is
+ * not in package.json#files" while the verified facts showed dist/ in
+ * the list.
+ *
+ * We do NOT drop these findings — we downgrade them to `info` and
+ * surface the reason. The operator gets full visibility into what the
+ * model claimed, and the downgraded severity prevents the false
+ * positive from blocking a PR or producing noise.
+ *
+ * Conservative: only flag clear contradiction patterns (asserting
+ * something is missing from a verified list). Subjective language
+ * like "looks unusual" is not flagged.
+ */
+export function applyVerifiedFactsFilter(input: {
+  readonly review: LiveReview;
+  readonly diffText: string;
+}): VerifiedFactsFilterResult {
+  const facts = collectVerifiedFacts(input.diffText);
+  const downgradeReasons: { index: number; reason: string }[] = [];
+  const kept: LiveReviewComment[] = [];
+  const downgraded: LiveReviewComment[] = [];
+  for (let i = 0; i < input.review.comments.length; i += 1) {
+    const comment = input.review.comments[i];
+    if (comment === undefined) {
+      continue;
+    }
+    const contradiction = detectVerifiedFactsContradiction(comment.body, facts);
+    if (contradiction === null) {
+      kept.push(comment);
+    } else {
+      downgradeReasons.push({ index: i, reason: contradiction });
+      downgraded.push({ ...comment, severity: "info" });
+    }
+  }
+  return { kept, downgraded, downgradeReasons };
+}
+
+const MISSING_PHRASES = [
+  "is missing",
+  "is not in",
+  "is not listed",
+  "is not included",
+  "are missing",
+  "are not in",
+  "are not listed",
+  "are not included",
+  "won't be",
+  "will not be",
+  "doesn't include",
+  "does not include",
+  "lacks",
+  "absent from",
+  "not present in",
+  "fails to include",
+  "fails to ship",
+  "will not ship",
+  "won't ship",
+  "was removed",
+  "is removed",
+  "were removed",
+  "are removed",
+  "orphan",
+];
+
+/**
+ * Detect a verified-facts contradiction in a finding body.
+ *
+ * Heuristic: if the body contains a "missing from X" phrase and X is
+ * one of our known verified lists (package.json#files,
+ * action.yml#outputs), check whether any quoted token in the body
+ * appears in that list. If a token IS in the list, the body is
+ * contradicting a verified fact (e.g. "dist is missing from files"
+ * when dist is in files).
+ *
+ * Returns a human-readable reason if a contradiction is detected,
+ * otherwise null.
+ */
+function detectVerifiedFactsContradiction(
+  body: string,
+  facts: import("../review/verified-facts.js").VerifiedFacts,
+): string | null {
+  const lower = body.toLowerCase();
+  const hasMissingPhrase = MISSING_PHRASES.some((p) => lower.includes(p));
+  if (!hasMissingPhrase) {
+    return null;
+  }
+  // Try to match the body against known lists. We extract candidate
+  // tokens (quoted strings, plus a few common ones) and check each
+  // against the verified lists.
+  const tokens = extractCandidateTokens(body);
+  if (facts.packageJsonFiles !== null && facts.packageJsonFiles.files.length > 0) {
+    for (const token of tokens) {
+      if (facts.packageJsonFiles.files.includes(token)) {
+        return `body claims "${token}" is missing from package.json#files, but the verified list includes "${token}"`;
+      }
+    }
+  }
+  if (facts.actionOutputs !== null && facts.actionOutputs.outputKeys.length > 0) {
+    for (const token of tokens) {
+      if (facts.actionOutputs.outputKeys.includes(token)) {
+        return `body claims "${token}" output was removed, but the verified list of action.yml#outputs includes "${token}"`;
+      }
+    }
+  }
+  return null;
+}
+
+/**
+ * Extract candidate tokens from a finding body for contradiction
+ * checking. We pull quoted strings, backticked identifiers, common
+ * bareword file names, AND every standalone identifier in the body.
+ * The identifier pass catches tokens like "marker" that aren't quoted
+ * or wrapped in backticks but are exactly the keys we want to match
+ * against verified lists (e.g. action.yml#outputs keys, package.json
+ * files entries).
+ */
+function extractCandidateTokens(body: string): readonly string[] {
+  const tokens = new Set<string>();
+  // Quoted strings: "foo", 'foo', `foo`
+  const quoted = body.matchAll(/["'`]([^"'`\s]{1,40})["'`]/gu);
+  for (const m of quoted) {
+    if (m[1] !== undefined) {
+      tokens.add(m[1]);
+    }
+  }
+  // Backtick-wrapped paths: `dist/`, `dist/index.js`, `bin/foo.mjs`
+  const backticked = body.matchAll(/`([a-zA-Z0-9_./-]+)`/gu);
+  for (const m of backticked) {
+    if (m[1] !== undefined) {
+      tokens.add(m[1]);
+    }
+  }
+  // Common bareword patterns: "dist/", "bin/", "node_modules/", "dist"
+  const barewords = body.matchAll(/\b(dist|bin|node_modules|action\.yml|package\.json|README|LICENSE|docs|examples|scripts|src|test)\b/gu);
+  for (const m of barewords) {
+    if (m[1] !== undefined) {
+      tokens.add(m[1]);
+    }
+  }
+  // All standalone identifiers (word chars + hyphens). This is the
+  // broad pass that catches output keys like "marker", "marker_text",
+  // "inline_count", etc., without us having to enumerate them. We
+  // filter out common English stop-words to avoid spurious matches.
+  const stopwords = new Set([
+    "the", "a", "an", "and", "or", "but", "if", "then", "else", "when",
+    "while", "for", "of", "to", "in", "on", "at", "by", "is", "are",
+    "was", "were", "be", "been", "being", "have", "has", "had", "do",
+    "does", "did", "will", "would", "should", "could", "may", "might",
+    "can", "this", "that", "these", "those", "with", "from", "into",
+    "about", "between", "through", "during", "before", "after", "above",
+    "below", "out", "off", "over", "under", "again", "further", "once",
+    "here", "there", "where", "why", "how", "all", "any", "both", "each",
+    "few", "more", "most", "other", "some", "such", "no", "nor", "not",
+    "only", "own", "same", "so", "than", "too", "very", "just", "still",
+    "now", "it", "its", "they", "them", "their", "we", "our", "you",
+    "your", "downstream", "consumers", "consumers", "depends",
+    "depend", "depends", "include", "includes", "including",
+    "outputs", "output", "input", "inputs", "value", "field",
+    "block", "entry", "entries", "list", "array", "key", "keys",
+    "consumers",
+  ]);
+  const allIds = body.matchAll(/[A-Za-z][A-Za-z0-9_-]*/gu);
+  for (const m of allIds) {
+    const word = m[0];
+    if (word === undefined || word.length < 2) continue;
+    if (stopwords.has(word.toLowerCase())) continue;
+    if (word.length > 40) continue; // skip very long matches (probably paths/sentences)
+    tokens.add(word);
+  }
+  return Array.from(tokens);
 }
 
 /**

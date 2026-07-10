@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import {
+  applyVerifiedFactsFilter,
   verifyFindingsAgainstDiff,
   verifyFindingsWithModel,
 } from "../../src/cli/verify-findings.js";
@@ -104,5 +105,196 @@ describe("verifyFindingsWithModel (Layer 4 model-based path)", () => {
     expect(result.verified[0]?.line).toBe(2);
     expect(result.dropped).toHaveLength(1);
     expect(result.dropped[0]?.line).toBe(99);
+  });
+});
+/**
+ * Verified-facts contradiction filter — the Layer 4.5 defensive post-filter
+ * that downgrades findings whose body asserts something is missing from a
+ * verified list (e.g. "dist/ is missing from package.json#files") when the
+ * verified list actually contains it. Pins the PR-#41 false-positive
+ * pattern that the self-review bot flagged as Critical.
+ */
+describe("applyVerifiedFactsFilter (Layer 4.5 verified-facts contradiction post-filter)", () => {
+  const PR_41_DIFF = [
+    "diff --git a/package.json b/package.json",
+    "--- a/package.json",
+    "+++ b/package.json",
+    "@@ -10,8 +35,14 @@",
+    '   "bin": {',
+    '     "umactually-pr-review": "bin/umactually-pr-review.mjs"',
+    "   },",
+    '   "files": [',
+    '     "dist",',
+    '     "bin",',
+    '     "action.yml",',
+    '     "README.md",',
+    '-    "LICENSE"',
+    '+    "LICENSE",',
+    '+    "docs",',
+    '+    "examples",',
+    '+    "scripts"',
+    "   ],",
+  ].join("\n");
+
+  it("downgrades a finding whose body claims dist/ is missing from files (the PR-#41 false-positive pattern)", () => {
+    const review: LiveReview = {
+      summary: "test",
+      verdict: "COMMENT",
+      comments: [
+        {
+          path: "package.json",
+          line: 1,
+          body: "The `outputs:` block was deleted entirely and replaced with `branding:`. dist/ is missing from package.json#files so the published package will fail at runtime.",
+          severity: "critical",
+          category: "packaging",
+        },
+      ],
+      suppressedComments: [],
+    };
+    const result = applyVerifiedFactsFilter({ review, diffText: PR_41_DIFF });
+    // The finding contradicted the verified facts (dist/ IS in files),
+    // so it should be downgraded to info, not dropped.
+    expect(result.kept).toHaveLength(0);
+    expect(result.downgraded).toHaveLength(1);
+    expect(result.downgraded[0]?.severity).toBe("info");
+    expect(result.downgradeReasons).toHaveLength(1);
+    expect(result.downgradeReasons[0]?.reason).toContain("dist");
+    expect(result.downgradeReasons[0]?.reason).toContain("missing");
+    expect(result.downgradeReasons[0]?.reason).toContain("package.json#files");
+  });
+
+  it("keeps a finding whose body mentions dist/ but does NOT claim it is missing", () => {
+    const review: LiveReview = {
+      summary: "test",
+      verdict: "COMMENT",
+      comments: [
+        {
+          path: "package.json",
+          line: 1,
+          body: "The dist/ directory is included in the published tarball via the files array. Verify the .npmignore does not conflict.",
+          severity: "low",
+          category: "verification",
+        },
+      ],
+      suppressedComments: [],
+    };
+    const result = applyVerifiedFactsFilter({ review, diffText: PR_41_DIFF });
+    expect(result.kept).toHaveLength(1);
+    expect(result.downgraded).toHaveLength(0);
+  });
+
+  it("keeps a finding whose claim is genuinely about something missing that IS missing", () => {
+    // No missing entries in the PR-#41 files array — every entry
+    // claimed missing should actually be present, so any finding
+    // claiming "scripts/ is missing from files" would be wrong.
+    // But a finding claiming "tests/ is missing from files" would
+    // be a correct observation — tests/ was never in files.
+    const review: LiveReview = {
+      summary: "test",
+      verdict: "COMMENT",
+      comments: [
+        {
+          path: "package.json",
+          line: 1,
+          body: "tests/ is missing from the files array — runtime artifacts may not ship.",
+          severity: "medium",
+          category: "packaging",
+        },
+      ],
+      suppressedComments: [],
+    };
+    const result = applyVerifiedFactsFilter({ review, diffText: PR_41_DIFF });
+    // tests/ is genuinely not in files, so the finding is NOT a
+    // contradiction — it should be kept.
+    expect(result.kept).toHaveLength(1);
+    expect(result.downgraded).toHaveLength(0);
+  });
+
+  it("preserves the original comment shape on downgraded findings except for severity", () => {
+    const review: LiveReview = {
+      summary: "test",
+      verdict: "COMMENT",
+      comments: [
+        {
+          path: "package.json",
+          line: 1,
+          body: "docs is missing from package.json#files so consumers won't get the example workflows.",
+          severity: "critical",
+          category: "packaging",
+        },
+      ],
+      suppressedComments: [],
+    };
+    const result = applyVerifiedFactsFilter({ review, diffText: PR_41_DIFF });
+    expect(result.downgraded[0]?.path).toBe("package.json");
+    expect(result.downgraded[0]?.line).toBe(1);
+    expect(result.downgraded[0]?.body).toBe(
+      review.comments[0]?.body,
+    );
+    expect(result.downgraded[0]?.category).toBe("packaging");
+    // Only severity changes (critical -> info).
+    expect(result.downgraded[0]?.severity).toBe("info");
+  });
+
+  it("returns an empty result when the diff contains no package.json/action.yml", () => {
+    const diff = [
+      "diff --git a/README.md b/README.md",
+      "--- a/README.md",
+      "+++ b/README.md",
+      "@@ -1,1 +1,1 @@",
+      "-old",
+      "+new",
+    ].join("\n");
+    const review: LiveReview = {
+      summary: "test",
+      verdict: "COMMENT",
+      comments: [
+        {
+          path: "README.md",
+          line: 1,
+          body: "dist is missing from files.",
+          severity: "low",
+          category: "test",
+        },
+      ],
+      suppressedComments: [],
+    };
+    const result = applyVerifiedFactsFilter({ review, diffText: diff });
+    // No verified facts available → no contradictions to detect →
+    // finding kept at original severity.
+    expect(result.kept).toHaveLength(1);
+    expect(result.downgraded).toHaveLength(0);
+  });
+
+  it("downgrades a finding that claims an action.yml output was removed when it still exists", () => {
+    const diff = [
+      "diff --git a/action.yml b/action.yml",
+      "--- a/action.yml",
+      "+++ b/action.yml",
+      "@@ -1,1 +1,4 @@",
+      "+outputs:",
+      "+  marker:",
+      "+    description: x.",
+    ].join("\n");
+    const review: LiveReview = {
+      summary: "test",
+      verdict: "COMMENT",
+      comments: [
+        {
+          path: "action.yml",
+          line: 1,
+          body: "The marker output was removed but downstream consumers still depend on it.",
+          severity: "high",
+          category: "api",
+        },
+      ],
+      suppressedComments: [],
+    };
+    const result = applyVerifiedFactsFilter({ review, diffText: diff });
+    // Verified facts say marker is in the outputs list — finding
+    // contradicts, downgrade to info.
+    expect(result.downgraded).toHaveLength(1);
+    expect(result.downgraded[0]?.severity).toBe("info");
+    expect(result.downgradeReasons[0]?.reason).toContain("marker");
   });
 });
