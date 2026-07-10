@@ -1,7 +1,7 @@
 {
   "$schema": "https://raw.githubusercontent.com/Microsoft/azure-pipelines-task-lib/master/tasks.schema.json",
   "$comment": "UmActually PR review task — IN DEVELOPMENT. The 'name' MUST match the folder name (ReviewTask) and the contribution 'properties.name' in vss-extension.json. The 'id' is a unique GUID; generate a fresh one before publishing. See ado-extension/README.md for the GUID generation step.",
-  "id": "REPLACE_WITH_GENERATED_GUID",
+  "id": "88b150a0-fefc-4e0b-9982-ebd533eea6f7",
   "name": "ReviewTask",
   "friendlyName": "UmActually PR Review",
   "description": "Run the UmActually PR review CLI against the current pipeline's PR context and post inline review threads. Provider-agnostic (OpenAI-compatible, Anthropic, GitHub Copilot).",

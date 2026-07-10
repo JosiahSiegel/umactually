@@ -151,6 +151,14 @@ test("ReviewTask/index.js exists (build artifact present)", () => {
 test("ReviewTask/task.json has all required fields", () => {
   const taskJson = JSON.parse(fs.readFileSync(path.join(TASK_DIR, "task.json"), "utf8"));
   assert.ok(taskJson.id, "task.json must have an id");
+  // Self-review finding #2345: the id must be a real GUID, NOT the
+  // literal placeholder. A placeholder in the shipped task.json
+  // would make the .vsix fail the marketplace schema validator.
+  assert.match(
+    taskJson.id,
+    /^[A-Fa-f0-9]{8}-[A-Fa-f0-9]{4}-[A-Fa-f0-9]{4}-[A-Fa-f0-9]{4}-[A-Fa-f0-9]{12}$/,
+    `task.json id must be a real GUID, not the placeholder. Got: ${taskJson.id}`,
+  );
   assert.ok(taskJson.name, "task.json must have a name");
   assert.equal(
     taskJson.name,

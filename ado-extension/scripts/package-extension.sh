@@ -125,9 +125,25 @@ echo "    Build OK ($(wc -c < index.js) bytes)"
 # Run the smoke tests. The test suite uses node:test (no
 # extra dependencies) and exercises redactSecretsForLog, the
 # task.json structural validator, and the build-artifact
-# presence check. If this fails the build script aborts.
+# presence check.
+#
+# We capture the test log to a temp file and check the exit code
+# explicitly. A naive `| tail -10` would mask the test exit code
+# (pipefail on the last command lets the script continue with
+# success even if the tests failed). Self-review finding #2346
+# caught this footgun.
 echo "==> Running task smoke tests"
-npm test --silent 2>&1 | tail -10
+TEST_LOG="$(mktemp -t umactually-tests.XXXXXX.log)"
+if ! npm test --silent >"${TEST_LOG}" 2>&1; then
+  echo "ERROR: smoke tests failed. Last 30 lines of test log:" >&2
+  tail -30 "${TEST_LOG}" >&2
+  rm -f "${TEST_LOG}"
+  exit 1
+fi
+# Show the last few lines for the operator's benefit (the test
+# output is short; the full log is in the temp file).
+tail -5 "${TEST_LOG}"
+rm -f "${TEST_LOG}"
 
 cd "${EXT_DIR}"
 

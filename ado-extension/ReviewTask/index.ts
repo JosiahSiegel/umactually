@@ -105,6 +105,23 @@ function readInputs(): TaskInputs {
 
   const includeSonarqube = getBool("includeSonarqube");
 
+  // Read the SonarQube fields here so the input contract is visible
+  // at the top of readInputs. The validation below (after
+  // includeSonarqube is read) fails fast if includeSonarqube=true
+  // but the token is empty — self-review finding #2343 caught that
+  // passing an empty --sonar-token to the CLI surfaces as a 401
+  // buried inside the CLI's stderr, which is hard to debug.
+  const sonarHostUrl = includeSonarqube ? get("sonarHostUrl", true) : "";
+  const sonarToken = includeSonarqube ? get("sonarToken", false) : "";
+  if (includeSonarqube && sonarToken.trim().length === 0) {
+    throw new Error(
+      "includeSonarqube is true but sonarToken is empty. " +
+      "Set the sonarToken input (or the UMACTUALLY_SONAR_TOKEN secret " +
+      "pipeline variable). The CLI will not be able to authenticate to " +
+      "SonarQube without a token.",
+    );
+  }
+
   return {
     apiUrl: get("apiUrl", false),
     apiKey: get("apiKey", false),
@@ -116,8 +133,8 @@ function readInputs(): TaskInputs {
     maxComments: getInt("maxComments", 50),
     reviewFileLimit: getInt("reviewFileLimit", 200),
     includeSonarqube,
-    sonarHostUrl: includeSonarqube ? get("sonarHostUrl", true) : "",
-    sonarToken: includeSonarqube ? get("sonarToken", false) : "",
+    sonarHostUrl,  // validated above — non-empty when includeSonarqube=true
+    sonarToken,    // validated above — non-empty when includeSonarqube=true
     sonarProjectKey: includeSonarqube ? get("sonarProjectKey", true) : "",
     noDryRun: getBool("noDryRun"),
     detectLeaks: getBool("detectLeaks"),
@@ -318,29 +335,27 @@ async function runCli(invocation: CliInvocation, timeoutMs: number): Promise<Cli
   const maskedArgs = redactSecretsForLog(args);
   console.log(`[umactually] $ ${tool} ${maskedArgs.join(" ")}`);
 
-  // Use spawn so we get a real handle for timeout/streaming.
+  // Spawn the CLI. We use stdio: ['ignore', 'inherit', 'inherit']
+  // so the CLI's stdout/stderr are written directly to the build
+  // agent's log streams by Node's spawn machinery. This eliminates
+  // the interleave / deadlock risk of stdio: 'pipe' (Node's pipe
+  // mode doesn't synchronize the two streams, and a large review
+  // can fill the buffer). Trade-off: we lose the ability to parse
+  // the summary card from stdout to extract inlineCount / high
+  // count — those output variables fall back to 0 in the result.
+  // A follow-up will add a CLI-side structured summary output
+  // (e.g. 'UMACTUALLY_SUMMARY inline=N high=M') that the task can
+  // parse from stderr without re-introducing the pipe deadlock
+  // risk.
   const { spawn } = await import("node:child_process");
   return new Promise<CliResult>((resolve) => {
     const child = spawn(tool, args, {
       cwd: process.cwd(),
       env: { ...process.env, ...env },
-      stdio: ["ignore", "pipe", "pipe"],
+      stdio: ["ignore", "inherit", "inherit"],
     });
 
-    let stdout = "";
-    let stderr = "";
     let killedByTimeout = false;
-
-    child.stdout.on("data", (chunk: Buffer | string) => {
-      const s = chunk.toString();
-      stdout += s;
-      process.stdout.write(s);
-    });
-    child.stderr.on("data", (chunk: Buffer | string) => {
-      const s = chunk.toString();
-      stderr += s;
-      process.stderr.write(s);
-    });
 
     const timer = setTimeout(() => {
       killedByTimeout = true;
@@ -354,8 +369,8 @@ async function runCli(invocation: CliInvocation, timeoutMs: number): Promise<Cli
       console.error(`[umactually] Failed to spawn CLI: ${err.message}`);
       resolve({
         exitCode: 1,
-        stdout,
-        stderr: stderr + `\n[umactually] spawn error: ${err.message}`,
+        stdout: "",
+        stderr: `[umactually] spawn error: ${err.message}`,
         findingCount: 0,
         severityHighCount: 0,
       });
@@ -364,9 +379,10 @@ async function runCli(invocation: CliInvocation, timeoutMs: number): Promise<Cli
     child.on("close", (code) => {
       clearTimeout(timer);
       const exitCode = killedByTimeout ? 124 : (code ?? 1);
-      const findingCount = parseFindingCount(stdout);
-      const severityHighCount = parseSeverityCount(stdout, "high");
-      resolve({ exitCode, stdout, stderr, findingCount, severityHighCount });
+      // With stdio: 'inherit', the CLI's output went directly to
+      // the agent's log. We don't have stdout/stderr to parse.
+      // Output variables fall back to 0 (see the comment above).
+      resolve({ exitCode, stdout: "", stderr: "", findingCount: 0, severityHighCount: 0 });
     });
   });
 }
@@ -376,8 +392,15 @@ async function runCli(invocation: CliInvocation, timeoutMs: number): Promise<Cli
  * a `📊 N inline findings` line as part of its summary card; we
  * parse it best-effort. If the format ever changes, the task still
  * succeeds — it just emits `0` for the output variable.
+ *
+ * Currently UNUSED: the task switched to stdio: 'inherit' in commit
+ * 5d8f8f4 (self-review #2344) so we don't have stdout to parse.
+ * Kept here for the v0.2 follow-up that adds a CLI-side structured
+ * summary output (e.g. 'UMACTUALLY_SUMMARY inline=N high=M') that
+ * the task can re-parse from stderr without re-introducing the
+ * pipe deadlock risk.
  */
-function parseFindingCount(stdout: string): number {
+export function parseFindingCount(stdout: string): number {
   const m = stdout.match(/(\d+)\s+inline\s+findings/);
   return m ? Number.parseInt(m[1]!, 10) : 0;
 }
@@ -388,7 +411,7 @@ function parseFindingCount(stdout: string): number {
  *   🏷️ `1` critical · `2` high · `5` medium · `3` low*
  * We use the `* N high` form (whitespace-tolerant).
  */
-function parseSeverityCount(stdout: string, tier: string): number {
+export function parseSeverityCount(stdout: string, tier: string): number {
   const m = stdout.match(new RegExp(`\`(\\d+)\`\\s+${tier}\\b`));
   return m ? Number.parseInt(m[1]!, 10) : 0;
 }
