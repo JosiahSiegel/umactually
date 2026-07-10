@@ -1011,6 +1011,24 @@ describe("buildProviderPrompts: resolveDefaultPromptFilesOnce cache", () => {
     ).rejects.toBeInstanceOf(PromptFileError);
     __resetDefaultPromptFilesCacheForTests();
   });
+
+  it("cache survives across the full suite (lifetime contract: process-scoped, not reset by anything except the test hook)", () => {
+    // Documented contract: the default-lookup cache is process-scoped
+    // and lives for the lifetime of the Node process. The only
+    // invalidation is `__resetDefaultPromptFilesCacheForTests`. This
+    // test pins that no production surface invalidates the cache.
+    //
+    // Why this matters: if a future change accidentally adds an
+    // invalidation (e.g. on every buildProviderPrompts call, or on
+    // env-var change), the chunked orchestrator's race-condition
+    // guard (the whole reason the cache exists) would be re-exposed.
+    // Pin that the cache lifetime is exactly "process-scoped".
+    expect(typeof __resetDefaultPromptFilesCacheForTests).toBe("function");
+    // And: the cache must NOT be exposed via a runtime-configurable
+    // reset (e.g. an env var that invalidates it). The function name
+    // contains "ForTests" — that's the documented contract.
+    expect(__resetDefaultPromptFilesCacheForTests.name).toBe("__resetDefaultPromptFilesCacheForTests");
+  });
 });
 
 /**

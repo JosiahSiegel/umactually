@@ -12249,9 +12249,39 @@ async function buildProviderPrompts(input) {
  * and the result is cached per cwd, so the total cost is at most 5
  * sync stats on the FIRST `buildProviderPrompts` call per process.
  *
- * The cache is process-scoped. Tests that need to assert the empty
- * path should use the un-cached `resolveDefaultPromptFiles` exported
- * from `src/config/prompt-files.ts`.
+ * ## Cache lifetime contract
+ *
+ * The cache is **process-scoped and lives for the lifetime of the
+ * Node process**. It is intentionally NOT invalidated by anything
+ * other than `__resetDefaultPromptFilesCacheForTests` (which is a
+ * test-only hook). This is acceptable for the action's documented
+ * deployment model — each `umactually-pr-review` invocation
+ * (GitHub Actions, Azure DevOps, CLI) runs as a FRESH Node
+ * process, so the cache effectively lives for one review run.
+ *
+ * What this means for callers:
+ *
+ * - **Standard usage (one process per review run):** The cache is
+ *   populated on the first `buildProviderPrompts` call (with up to
+ *   five sync `fs.stat` calls for `DEFAULT_PROMPT_FILE_PATHS`); every
+ *   subsequent call within the same run reuses the cached path list.
+ *   Per-chunk reads re-stat the disk (cheap; cache is path-list, not
+ *   file-content).
+ *
+ * - **Long-lived processes (rare):** If you reuse the bundled CLI
+ *   inside a daemon or composite step that runs the action multiple
+ *   times against the same cwd, the cache entry will persist across
+ *   runs — a `CLAUDE.md` added AFTER the first run will not be
+ *   auto-loaded by the second run. This is acceptable because the
+ *   documented deployment model is one process per review; the
+ *   alternative (cache-busting) would either add a new `await`
+ *   boundary (race) or require a per-run `reset()` call that the
+ *   caller is responsible for invoking. Documented here so the
+ *   contract is explicit; if a long-lived-process use case emerges,
+ *   revisit this design.
+ *
+ * - **Tests:** Use `__resetDefaultPromptFilesCacheForTests()` to
+ *   clear the cache between scenarios that mutate the workspace.
  */
 const DEFAULT_PROMPT_FILES_CACHE = new Map();
 function resolveDefaultPromptFilesOnce(cwd) {
@@ -12277,6 +12307,9 @@ function resolveDefaultPromptFilesOnce(cwd) {
  * Test-only hook to clear the per-cwd default-prompt cache. Used by
  * tests that mutate the workspace mid-run and need the next
  * `buildProviderPrompts` call to re-stat the disk.
+ *
+ * Production callers should NOT need this — see the cache lifetime
+ * contract on `DEFAULT_PROMPT_FILES_CACHE`.
  */
 function __resetDefaultPromptFilesCacheForTests() {
     DEFAULT_PROMPT_FILES_CACHE.clear();
