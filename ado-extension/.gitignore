@@ -1,0 +1,14 @@
+# Build artifacts
+dist/
+
+# Per-task node_modules and build output
+*/node_modules/
+*/index.js
+*/index.js.map
+
+# OS / editor scratch
+.DS_Store
+Thumbs.db
+*.swp
+*.swo
+*~

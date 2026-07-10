@@ -1,0 +1,221 @@
+{
+  "$schema": "https://raw.githubusercontent.com/Microsoft/azure-pipelines-task-lib/master/tasks.schema.json",
+  "$comment": "UmActually PR review task — IN DEVELOPMENT. The 'name' MUST match the folder name (ReviewTask) and the contribution 'properties.name' in vss-extension.json. The 'id' is a unique GUID; generate a fresh one before publishing. See ado-extension/README.md for the GUID generation step.",
+  "id": "REPLACE_WITH_GENERATED_GUID",
+  "name": "ReviewTask",
+  "friendlyName": "UmActually PR Review",
+  "description": "Run the UmActually PR review CLI against the current pipeline's PR context and post inline review threads. Provider-agnostic (OpenAI-compatible, Anthropic, GitHub Copilot).",
+  "helpMarkDown": "[UmActually PR Review](https://github.com/JosiahSiegel/umactually) — see the [Azure DevOps quickstart](https://github.com/JosiahSiegel/umactually#azure-devops-quickstart) for full pipeline setup.\n\n**Required pipeline variables** (set on the variable group or pipeline):\n- `UMACTUALLY_API_URL` — provider base URL\n- `UMACTUALLY_API_KEY` — provider API key (mark **secret**)\n\n**Required service connection**: the build service identity must have `Contribute to pull requests` permission on the target repo.\n\n**Behavior**: by default the task posts review threads (live). Set `--no-dry-run` to `false` to log the review without posting. The task exits 0 on a clean run, 1 on a failed review, 2 on misuse.",
+  "category": "Utility",
+  "author": "UmActually",
+  "preview": true,
+  "version": {
+    "Major": 0,
+    "Minor": 1,
+    "Patch": 0
+  },
+  "minimumAgentVersion": "3.224.0",
+  "instanceNameFormat": "UmActually PR Review ($(provider))",
+  "inputs": [
+    {
+      "name": "apiUrl",
+      "type": "string",
+      "label": "Provider API URL",
+      "defaultValue": "",
+      "required": false,
+      "helpMarkDown": "Base URL of the review provider. **Prefer setting `UMACTUALLY_API_URL` as a pipeline variable** so the same task can be reused across repos. Leave blank to inherit from the env var. See the [provider protocol reference](https://github.com/JosiahSiegel/umactually/blob/main/docs/providers.md) for the per-family URL resolution rules — on dual-protocol gateways (e.g. `https://api.minimax.io/anthropic`) the dispatcher auto-discovers the protocol at the URL regardless of `--provider`."
+    },
+    {
+      "name": "apiKey",
+      "type": "string",
+      "label": "Provider API key",
+      "defaultValue": "",
+      "required": false,
+      "helpMarkDown": "API key for the review provider. **Prefer setting `UMACTUALLY_API_KEY` as a secret pipeline variable.** If you must paste it here, mark this input as a secret in the YAML (`secureEnv: UMACTUALLY_API_KEY`). Never hard-code in a committed pipeline definition."
+    },
+    {
+      "name": "model",
+      "type": "string",
+      "label": "Model",
+      "defaultValue": "auto",
+      "required": false,
+      "helpMarkDown": "Provider model ID. `auto` (default) resolves per-provider + per-URL — see [provider protocol reference](https://github.com/JosiahSiegel/umactually/blob/main/docs/providers.md#model-auto-resolution-on-dual-protocol-gateways). Use a pinned synthetic name only when a maintainer asks for it."
+    },
+    {
+      "name": "provider",
+      "type": "pickList",
+      "label": "Provider family",
+      "defaultValue": "openai-compatible",
+      "required": true,
+      "options": {
+        "openai-compatible": "OpenAI-compatible (any OpenAI-protocol gateway)",
+        "anthropic": "Anthropic Messages API (native /v1/messages)",
+        "copilot": "GitHub Copilot (via token exchange)"
+      },
+      "helpMarkDown": "**openai-compatible** (default) — any OpenAI-protocol gateway. **anthropic** — uses the native Anthropic Messages API. **copilot** — uses GitHub Copilot via the GitHub API base. On dual-protocol gateways, `--provider` is advisory: the dispatcher transparently falls back to the OTHER protocol at the same URL when the named protocol returns a routing-level rejection (404). See [docs/providers.md#cross-protocol-auto-discovery-the-dispatcher](https://github.com/JosiahSiegel/umactually/blob/main/docs/providers.md)."
+    },
+    {
+      "name": "githubApiBase",
+      "type": "string",
+      "label": "GitHub API base (Copilot only)",
+      "defaultValue": "https://api.github.com",
+      "required": false,
+      "visibleRule": "provider = copilot",
+      "helpMarkDown": "GitHub API base URL for Copilot token exchange. Defaults to `https://api.github.com`. Set to `https://<tenant>.ghe.com` for GitHub Enterprise Server."
+    },
+    {
+      "name": "effort",
+      "type": "pickList",
+      "label": "Reasoning effort",
+      "defaultValue": "medium",
+      "required": true,
+      "options": {
+        "low": "Low (faster, less thorough)",
+        "medium": "Medium (default)",
+        "high": "High (slower, more thorough)"
+      },
+      "helpMarkDown": "Reasoning effort hint forwarded to the provider as `reasoning.effort` (when supported). High catches more nuanced issues but takes longer."
+    },
+    {
+      "name": "minimumSeverity",
+      "type": "pickList",
+      "label": "Minimum severity",
+      "defaultValue": "medium",
+      "required": true,
+      "options": {
+        "info": "Info (everything)",
+        "low": "Low",
+        "medium": "Medium (default — filter style/hygiene)",
+        "high": "High (only blocking findings)",
+        "critical": "Critical (most restrictive)"
+      },
+      "helpMarkDown": "Findings below this tier are suppressed. **`security` and `leak` findings ALWAYS survive any threshold** — see the [security model](https://github.com/JosiahSiegel/umactually/blob/main/docs/security.md#minimum-severity-cannot-hide-leaks-or-security-findings). Default `medium` matches `action.yml`."
+    },
+    {
+      "name": "maxComments",
+      "type": "string",
+      "label": "Max inline comments",
+      "defaultValue": "50",
+      "required": false,
+      "helpMarkDown": "Cap on inline comments posted per run. Default 50 matches the post-side cap. Set to `0` for unlimited (not recommended — large PRs produce noisy threads)."
+    },
+    {
+      "name": "reviewFileLimit",
+      "type": "string",
+      "label": "Max changed files",
+      "defaultValue": "200",
+      "required": false,
+      "helpMarkDown": "Cap on the number of changed files the live review will process. PRs that exceed this get a 'diff too large' parent card with zero findings — the per-chunk LLM reviews of huge initial-import diffs produce hallucinated findings. Set to `0` to disable."
+    },
+    {
+      "name": "includeSonarqube",
+      "type": "boolean",
+      "label": "Include SonarQube context",
+      "defaultValue": "false",
+      "required": false,
+      "helpMarkDown": "If true, fetches prior findings from SonarQube and injects them into the review prompt so the model doesn't re-report what's already known. Requires the `sonarHostUrl`, `sonarToken`, and `sonarProjectKey` inputs."
+    },
+    {
+      "name": "sonarHostUrl",
+      "type": "string",
+      "label": "SonarQube host URL",
+      "defaultValue": "",
+      "required": false,
+      "visibleRule": "includeSonarqube = true",
+      "helpMarkDown": "Base URL of your SonarQube server (e.g. `https://sonarcloud.io` or `https://sonar.example.com`)."
+    },
+    {
+      "name": "sonarToken",
+      "type": "string",
+      "label": "SonarQube token",
+      "defaultValue": "",
+      "required": false,
+      "visibleRule": "includeSonarqube = true",
+      "helpMarkDown": "SonarQube auth token. **Prefer a secret pipeline variable `UMACTUALLY_SONAR_TOKEN`.** If pasted here, mark as secret."
+    },
+    {
+      "name": "sonarProjectKey",
+      "type": "string",
+      "label": "SonarQube project key",
+      "defaultValue": "",
+      "required": false,
+      "visibleRule": "includeSonarqube = true",
+      "helpMarkDown": "SonarQube project key (often the repo name, e.g. `myorg_myrepo`)."
+    },
+    {
+      "name": "noDryRun",
+      "type": "boolean",
+      "label": "Post review (live mode)",
+      "defaultValue": true,
+      "required": true,
+      "helpMarkDown": "**Checked (default)** — the task posts inline review threads to the PR. **Unchecked** — the task generates the review payload but only logs it to the build output; no threads are posted. Use dry-run for first-time setup to verify the task works without polluting the PR."
+    },
+    {
+      "name": "detectLeaks",
+      "type": "boolean",
+      "label": "Run secret-leak detection",
+      "defaultValue": true,
+      "required": true,
+      "helpMarkDown": "The diff is ALWAYS redacted before provider submission. This flag controls the leak-DETECTOR (which tags findings as `severity=leak` for thread display) on top of the always-on redaction. Default ON. Uncheck to suppress leak-detector findings on this PR (the redaction is independent and still runs)."
+    },
+    {
+      "name": "reviewTimeoutSeconds",
+      "type": "string",
+      "label": "Review timeout (seconds)",
+      "defaultValue": "300",
+      "required": false,
+      "helpMarkDown": "Maximum review wall-clock time. Default 300s (5 minutes). The task fails with `ReviewTimeout` if exceeded. Increase for very large PRs or slow providers."
+    },
+    {
+      "name": "outputArtifact",
+      "type": "string",
+      "label": "Output artifact path",
+      "defaultValue": "artifacts/manual/s4-azure-mocked-run.json",
+      "required": false,
+      "helpMarkDown": "Path (relative to the build agent working directory) where the raw provider response is written. The file is published as a `umactually-review` pipeline artifact by the next `PublishPipelineArtifact@1` step in your pipeline. Set to an empty string to skip the write."
+    }
+  ],
+  "outputVariables": [
+    {
+      "name": "UMACTUALLY_REVIEWED",
+      "description": "Set to `true` if the review ran to completion (posted or dry-run-generated). Set to `false` on any failure."
+    },
+    {
+      "name": "UMACTUALLY_FINDING_COUNT",
+      "description": "Number of inline comments posted (live mode) or generated (dry-run mode). Zero if the review was suppressed by minimum-severity or the diff was empty."
+    },
+    {
+      "name": "UMACTUALLY_SEVERITY_HIGH_COUNT",
+      "description": "Count of high-severity findings in the review."
+    }
+  ],
+  "execution": {
+    "Node20_1": {
+      "target": "index.js",
+      "argumentFormat": ""
+    }
+  },
+  "messages": {
+    "ReviewStarting": "Starting UmActually review (provider={0}, model={1}, effort={2}, dry-run={3}).",
+    "ReviewSucceeded": "UmActually review complete. Posted {0} inline comment(s) in live mode.",
+    "DryRunSucceeded": "UmActually review complete (dry-run). Generated {0} comment(s) — see the output artifact.",
+    "ReviewFailed": "UmActually review failed: {0}",
+    "ReviewTimeout": "UmActually review exceeded the configured timeout of {0} seconds.",
+    "InvalidInputs": "Invalid task configuration: {0}"
+  },
+  "restrictions": {
+    "commands": {
+      "mode": "restricted"
+    },
+    "secureFiles": []
+  },
+  "$todoList": [
+    "1. Generate a fresh GUID for 'id' (PowerShell: [guid]::NewGuid().Guid or bash: uuidgen | tr 'A-Z' 'a-z') and replace REPLACE_WITH_GENERATED_GUID.",
+    "2. Replace REPLACE_WITH_PUBLISHER_ID in vss-extension.json with the real Visual Studio Marketplace publisher ID.",
+    "3. Add a real 128x128 extension-icon.png to images/ (replace the placeholder).",
+    "4. Add a real 32x32 icon.png to ReviewTask/ (replace the placeholder).",
+    "5. Run `tfx extension create --manifest-globs vss-extension.json` to produce the .vsix.",
+    "6. Sideload the .vsix into a private ADO organization to test.",
+    "7. Only after items 1-6 are complete: switch 'galleryFlags' to [Public] and run `tfx extension publish`."
+  ]
+}
