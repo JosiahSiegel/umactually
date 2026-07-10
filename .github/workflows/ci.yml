@@ -33,6 +33,12 @@ jobs:
         uses: actions/setup-node@v4
         with:
           node-version: "24"
+          # Restore the npm cache that the original --cache flag used to
+          # provide (the previous override hardcoded a Windows-specific
+          # path under a personal user dir and broke for any other runner).
+          # actions/setup-node manages the cache location automatically
+          # keyed on package-lock.json.
+          cache: "npm"
 
       - name: Install dependencies
         run: npm ci
