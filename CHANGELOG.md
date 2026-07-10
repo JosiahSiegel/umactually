@@ -27,7 +27,16 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   `additional-prompt-file` input. Files are concatenated in the
   listed order with the existing `\n\n---\n\n` separator. Same
   cwd-confinement + byte-cap security as the legacy single-file
-  reader.
+  reader. **Both inputs are wired through end-to-end on every
+  supported surface**: GitHub Actions `with:` block, the
+  `UMACTUALLY_PROMPT_FILES` / `UMACTUALLY_ADDITIONAL_PROMPT_FILES`
+  pipeline variables in the root `azure-pipelines.yml` (and the
+  `examples/azure/azure-pipelines.yml` example), and the bundled
+  CLI's `--prompt-files` / `--additional-prompt-files` flags. The
+  Azure DevOps pipeline conditionally forwards the env vars to the
+  CLI so an unset value produces a clean argv (no empty
+  `--prompt-files ""` flag). See
+  [docs/azure-devops.md#forwarding-prompt-file-lists-overrides-the-default-lookup-list](docs/azure-devops.md#forwarding-prompt-file-lists-overrides-the-default-lookup-list).
 
 - **Native Anthropic Messages API provider (PR #31)**: third
   provider family alongside `openai-compatible` and `copilot`. Wire

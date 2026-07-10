@@ -97,6 +97,25 @@ steps:
 
 Avoid passing `api-key` through `with:` unless a wrapper action requires it. Environment secrets are easier to rotate and less likely to appear in copied workflow snippets.
 
+### Overriding the default prompt lookup
+
+By default, UmActually auto-discovers common agent-instruction files from the repository root (CLAUDE.md, AGENTS.md, `.github/copilot-instructions.md`, `.cursorrules`, GEMINI.md — see [docs/security.md](security.md#default-repository-prompt-lookup) for the security contract). To force a specific list of prompt files instead, use the `prompt-files` / `additional-prompt-files` action inputs (or `--prompt-files` / `--additional-prompt-files` CLI flags; or `UMACTUALLY_PROMPT_FILES` / `UMACTUALLY_ADDITIONAL_PROMPT_FILES` env vars). When set, the array **completely overrides** the default-lookup list.
+
+```yaml
+- uses: ./
+  with:
+    # Comma- or newline-separated list of repository-relative paths.
+    # When non-empty, the auto-loaded CLAUDE.md/AGENTS.md/etc. lookup
+    # is NOT consulted — only the listed files are loaded.
+    prompt-files: 'prompts/review-system.md,prompts/repo-context.md'
+    additional-prompt-files: 'prompts/extra-instructions.md'
+  env:
+    UMACTUALLY_API_URL: ${{ secrets.UMACTUALLY_API_URL }}
+    UMACTUALLY_API_KEY: ${{ secrets.UMACTUALLY_API_KEY }}
+```
+
+The Azure DevOps equivalent uses pipeline variables; see [docs/azure-devops.md](azure-devops.md#forwarding-prompt-file-lists-overrides-the-default-lookup-list) for the `UMACTUALLY_PROMPT_FILES` / `UMACTUALLY_ADDITIONAL_PROMPT_FILES` pipeline variable contract and the conditional-forwarding pattern.
+
 ## Recommended Azure DevOps configuration
 
 Use the root [`azure-pipelines.yml`](../azure-pipelines.yml) as the full PR-validation entrypoint. The CLI itself must receive `--event`, `--diff`, `--pr-number`, and `--repo` for Azure validation; use `--repo` for the repository slug.

@@ -153,6 +153,34 @@ For Azure Repos, configure a branch policy build validation pipeline; the YAML `
 
 For PRs that exceed the 200-file default cap, add `--review-file-limit N` (or set `REVIEW_FILE_LIMIT=N`) to the CLI invocation. Use `0` to disable the cap entirely.
 
+## Overriding the default prompt lookup
+
+By default, UmActually auto-discovers common agent-instruction files from the repository root: `CLAUDE.md`, `AGENTS.md`, `.github/copilot-instructions.md`, `.cursorrules`, `GEMINI.md`. Missing files are silently skipped. To force a specific list of prompt files instead, pass the `prompt-files` / `additional-prompt-files` inputs (GitHub Actions), `UMACTUALLY_PROMPT_FILES` / `UMACTUALLY_ADDITIONAL_PROMPT_FILES` env vars (Azure DevOps pipeline variables), or `--prompt-files` / `--additional-prompt-files` CLI flags. When set, the array **completely overrides** the default-lookup list — files are concatenated in the listed order with the standard `\n\n---\n\n` separator.
+
+**GitHub Actions** — pass the inputs through `with:`:
+
+```yaml
+- uses: ./
+  with:
+    prompt-files: 'prompts/review-system.md,prompts/repo-context.md'
+    additional-prompt-files: 'prompts/extra-instructions.md'
+  env:
+    UMACTUALLY_API_URL: ${{ secrets.UMACTUALLY_API_URL }}
+    UMACTUALLY_API_KEY: ${{ secrets.UMACTUALLY_API_KEY }}
+```
+
+**Azure DevOps** — set the `UMACTUALLY_PROMPT_FILES` / `UMACTUALLY_ADDITIONAL_PROMPT_FILES` pipeline variables; the root pipeline (and the example) conditionally forward them to the CLI's `--prompt-files` / `--additional-prompt-files` flags:
+
+```yaml
+variables:
+  - name: UMACTUALLY_PROMPT_FILES
+    value: 'prompts/review-system.md,prompts/repo-context.md'
+  - name: UMACTUALLY_ADDITIONAL_PROMPT_FILES
+    value: 'prompts/extra-instructions.md'
+```
+
+The path-safety contract is identical to the explicit `prompt-file` / `additional-prompt-file` readers: each path must be repository-relative (absolute paths and `..` traversal are rejected). See [docs/security.md#default-repository-prompt-lookup](docs/security.md#default-repository-prompt-lookup) and [docs/azure-devops.md#forwarding-prompt-file-lists-overrides-the-default-lookup-list](docs/azure-devops.md#forwarding-prompt-file-lists-overrides-the-default-lookup-list).
+
 ## Security summary
 
 - Secrets are never intentionally logged or echoed.

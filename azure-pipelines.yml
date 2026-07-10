@@ -71,6 +71,18 @@ steps:
       # CLI can post threads with an identity that has the right ACL.
       : "${DEVOPS_PAT:?DEVOPS_PAT must be set as a pipeline variable (umactually-secrets group).}"
       export AZURE_DEVOPS_TOKEN="${DEVOPS_PAT}"
+      # Conditionally forward the optional prompt-file list inputs.
+      # When set, these override the default repository prompt lookup
+      # (CLAUDE.md, AGENTS.md, etc.). See docs/configuration.md and
+      # docs/security.md. Both env vars are comma/newline-separated
+      # paths; an empty value lets the default-lookup run.
+      EXTRA_ARGS=()
+      if [ -n "${UMACTUALLY_PROMPT_FILES:-}" ]; then
+        EXTRA_ARGS+=(--prompt-files "${UMACTUALLY_PROMPT_FILES}")
+      fi
+      if [ -n "${UMACTUALLY_ADDITIONAL_PROMPT_FILES:-}" ]; then
+        EXTRA_ARGS+=(--additional-prompt-files "${UMACTUALLY_ADDITIONAL_PROMPT_FILES}")
+      fi
       node bin/umactually-pr-review.mjs \
         --platform azure-devops \
         --event "$AZURE_EVENT_PATH" \
@@ -84,7 +96,8 @@ steps:
         --per-request-timeout-seconds 180 \
         --review-file-limit 50 \
         --no-detect-leaks \
-        --no-dry-run
+        --no-dry-run \
+        "${EXTRA_ARGS[@]}"
     displayName: Run UmActually Azure live review
     env:
       SYSTEM_ACCESSTOKEN: $(System.AccessToken)
@@ -97,6 +110,12 @@ steps:
       # from the inherited pipeline env anyway.
       UMACTUALLY_API_URL: $(UMACTUALLY_API_URL)
       UMACTUALLY_API_KEY: $(UMACTUALLY_API_KEY)
+      # UMACTUALLY_PROMPT_FILES / UMACTUALLY_ADDITIONAL_PROMPT_FILES
+      # are OPTIONAL pipeline variables — comma/newline-separated list
+      # of repository-relative prompt files. When unset, the action
+      # runs its default-lookup list (CLAUDE.md, AGENTS.md, etc.).
+      UMACTUALLY_PROMPT_FILES: $(UMACTUALLY_PROMPT_FILES)
+      UMACTUALLY_ADDITIONAL_PROMPT_FILES: $(UMACTUALLY_ADDITIONAL_PROMPT_FILES)
       DEVOPS_PAT: $(DEVOPS_PAT)
 
   - task: PublishPipelineArtifact@1

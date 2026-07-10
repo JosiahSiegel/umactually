@@ -53,6 +53,57 @@ Two prerequisites:
 
 Do not echo the token. Passing it through `env:` keeps it out of the script body and avoids accidental log disclosure.
 
+## Forwarding prompt-file lists (overrides the default-lookup list)
+
+When no override is supplied, UmActually auto-discovers the common agent-instruction files from the workflow's `working-directory` (CLAUDE.md, AGENTS.md, `.github/copilot-instructions.md`, `.cursorrules`, GEMINI.md — see [docs/configuration.md](configuration.md#prompt) and [docs/security.md](security.md#default-repository-prompt-lookup)). To force a specific list of prompt files instead, set these pipeline variables and the root pipeline (and `examples/azure/azure-pipelines.yml`) will forward them to the bundled CLI as `--prompt-files` / `--additional-prompt-files`:
+
+| Pipeline variable | CLI flag | Format |
+| --- | --- | --- |
+| `UMACTUALLY_PROMPT_FILES` | `--prompt-files` | Comma- or newline-separated list of repo-relative paths |
+| `UMACTUALLY_ADDITIONAL_PROMPT_FILES` | `--additional-prompt-files` | Comma- or newline-separated list of repo-relative paths |
+
+When either variable is set, the list **completely overrides** the default-lookup behavior — the named files are loaded and concatenated in the listed order with the standard `\n\n---\n\n` separator. When unset, the default-lookup list runs.
+
+Example — force the review to use only two specific files (skip CLAUDE.md/AGENTS.md etc.):
+
+```yaml
+variables:
+  - name: UMACTUALLY_PROMPT_FILES
+    value: 'prompts/review-system.md,prompts/repo-context.md'
+  - name: UMACTUALLY_ADDITIONAL_PROMPT_FILES
+    value: 'prompts/extra-instructions.md'
+```
+
+The root pipeline (and the example) bind these variables into the script's `env:` block, then conditionally forward them to the CLI:
+
+```yaml
+- script: |
+    set -euo pipefail
+    EXTRA_ARGS=()
+    if [ -n "${UMACTUALLY_PROMPT_FILES:-}" ]; then
+      EXTRA_ARGS+=(--prompt-files "${UMACTUALLY_PROMPT_FILES}")
+    fi
+    if [ -n "${UMACTUALLY_ADDITIONAL_PROMPT_FILES:-}" ]; then
+      EXTRA_ARGS+=(--additional-prompt-files "${UMACTUALLY_ADDITIONAL_PROMPT_FILES}")
+    fi
+    node bin/umactually-pr-review.mjs \
+      --platform azure-devops \
+      --event "$AZURE_EVENT_PATH" \
+      --diff "$AZURE_DIFF_PATH" \
+      --review "$AZURE_REVIEW_PATH" \
+      --pr-number "$UMACTUALLY_PR_NUMBER" \
+      --repo "$UMACTUALLY_REPO" \
+      --no-dry-run \
+      "${EXTRA_ARGS[@]}"
+  env:
+    UMACTUALLY_API_URL: $(UMACTUALLY_API_URL)
+    UMACTUALLY_API_KEY: $(UMACTUALLY_API_KEY)
+    UMACTUALLY_PROMPT_FILES: $(UMACTUALLY_PROMPT_FILES)
+    UMACTUALLY_ADDITIONAL_PROMPT_FILES: $(UMACTUALLY_ADDITIONAL_PROMPT_FILES)
+```
+
+The `EXTRA_ARGS` shell array keeps the argv clean when the variables are unset (no empty `--prompt-files ""` flag).
+
 ## Posting threads and PR status with an explicit PAT
 
 The project build service identity mapped to `SYSTEM_ACCESSTOKEN` does not always hold the `Contribute to pull requests` permission on the repository, which causes the threads and statuses POST endpoints to return HTTP 403. To post live PR comments without manually editing project security, store an Azure DevOps PAT with the required permissions in the `umactually-secrets` variable group as `DEVOPS_PAT`, then forward it to the CLI as `AZURE_DEVOPS_TOKEN`:

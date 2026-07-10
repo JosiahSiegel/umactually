@@ -612,6 +612,55 @@ describe("action entry buildArgs: input forwarding", () => {
     expect(args).toContainSubsequence(["--max-comments", "3"]);
     expect(args).toContainSubsequence(["--sonar-timeout-seconds", "88"]);
   });
+
+  it("forwards --prompt-files and --additional-prompt-files from GitHub Actions INPUT_* env vars to CLI argv", async () => {
+    // End-to-end smoke for the GitHub Actions input wiring:
+    // a workflow setting `with: prompt-files: 'a.md,b.md'` (or
+    // `with: additional-prompt-files: 'x.md\ny.md'`) must reach the
+    // bundled CLI as the corresponding `--prompt-files` /
+    // `--additional-prompt-files` flag with the raw string value
+    // preserved (the split happens inside provider-prompts).
+    const env = {
+      GITHUB_ACTIONS: "true",
+      INPUT_PROMPT_FILES: "prompts/system-a.md,prompts/system-b.md",
+      INPUT_ADDITIONAL_PROMPT_FILES: "prompts/user-a.md\nprompts/user-b.md",
+      INPUT_DRY_RUN: "false",
+    } satisfies NodeJS.ProcessEnv;
+
+    const args = await buildArgs(env, process.cwd());
+
+    // Then: both flags reach the CLI layer with their raw strings
+    // preserved (splitting happens inside src/cli/provider-prompts.ts).
+    expect(args).toContainSubsequence([
+      "--prompt-files",
+      "prompts/system-a.md,prompts/system-b.md",
+    ]);
+    expect(args).toContainSubsequence([
+      "--additional-prompt-files",
+      "prompts/user-a.md\nprompts/user-b.md",
+    ]);
+  });
+
+  it("does NOT emit --prompt-files / --additional-prompt-files when the inputs are unset", async () => {
+    // When the workflow does NOT opt in to the new inputs, the
+    // action MUST NOT emit empty flags — that would force an empty
+    // override (which `splitPromptFileList` resolves to an empty
+    // list, falling through to the default-lookup path correctly).
+    // Pin that empty-string inputs are NOT forwarded to argv (the
+    // existing `pushFieldValue` skips empty strings, but verify
+    // end-to-end).
+    const env = {
+      GITHUB_ACTIONS: "true",
+      INPUT_DRY_RUN: "true",
+    } satisfies NodeJS.ProcessEnv;
+
+    const args = await buildArgs(env, process.cwd());
+
+    // Then: the flags are absent (so the live path runs the
+    // default-lookup list, not the explicit-empty override).
+    expect(args).not.toContain("--prompt-files");
+    expect(args).not.toContain("--additional-prompt-files");
+  });
 });
 
 describe("readActionInputs: effort, provider, githubApiBase", () => {
