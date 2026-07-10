@@ -4,6 +4,7 @@ import {
   type ProviderCallResult,
   type ProviderReviewPayload,
 } from "../provider/openai-compatible.js";
+import { resolveField } from "../config/field-resolution.js";
 import {
   runAnthropicRequest,
   type AnthropicProviderCallResult,
@@ -14,14 +15,16 @@ import {
   type SeverityWarning,
   type SeverityWarningSink,
 } from "../provider/provider-parse.js";
-import type { ProviderEndpoint } from "../provider/provider-error.js";
-import { looksLikeAnthropicEndpoint, redactUrlForLog } from "../util/url.js";
+import { isRoutableFailureForCrossProtocol, type ProviderEndpoint } from "../provider/provider-error.js";
+import { scanReviewSecrets } from "../security/scan-review-secrets.js";
+import { BRAND_PREFIX } from "../util/brand.js";
+import { ENV_KEYS } from "../util/env-keys.js";
 import {
   DEFAULT_ANTHROPIC_URL,
   DEFAULT_GITHUB_API_BASE,
 } from "../util/provider-defaults.js";
-import { scanReviewSecrets } from "../security/scan-review-secrets.js";
-import { BRAND_PREFIX } from "../util/brand.js";
+import { requireLiveConfig } from "../util/required-config.js";
+import { looksLikeAnthropicEndpoint, redactUrlForLog } from "../util/url.js";
 import { resolveAutoModel } from "./auto-model.js";
 import {
   buildMalformedProviderFallback,
@@ -75,7 +78,10 @@ export async function requestLiveReview(input: {
     diffText: input.diffText,
     expectedArtifact: "artifacts/manual/s5-redaction-report.json",
   });
-  const providerApiKey = readRequiredConfig(input.parsed.apiKey ?? input.env["UMACTUALLY_API_KEY"], "UMACTUALLY_API_KEY");
+  const providerApiKey = requireLiveConfig(
+    resolveField(input.parsed.apiKey, input.env[ENV_KEYS.UMACTUALLY_API_KEY], ""),
+    ENV_KEYS.UMACTUALLY_API_KEY,
+  );
   const modelId = readConfiguredModel(input.parsed, input.env);
   const prompts = await buildProviderPrompts(input);
 
@@ -187,7 +193,11 @@ export async function requestLiveReview(input: {
     if (input.parsed.provider === "copilot") {
       const result = await runCopilotRequest({
         githubToken: providerApiKey,
-        apiBase: input.parsed.githubApiBase ?? input.env["UMACTUALLY_GITHUB_API_BASE"] ?? DEFAULT_GITHUB_API_BASE,
+        apiBase: resolveField(
+          input.parsed.githubApiBase,
+          input.env[ENV_KEYS.UMACTUALLY_GITHUB_API_BASE],
+          DEFAULT_GITHUB_API_BASE,
+        ),
         system: prompts.system,
         user: prompts.user,
         model: modelId,
@@ -231,9 +241,11 @@ export async function requestLiveReview(input: {
       // Messages API" block, and `validate.ts`/`orchestrator.ts`
       // which both exempt --api-url from the required check when
       // --provider anthropic is set.
-      const providerUrl = input.parsed.apiUrl
-        ?? input.env["UMACTUALLY_API_URL"]
-        ?? DEFAULT_ANTHROPIC_URL;
+      const providerUrl = resolveField(
+        input.parsed.apiUrl,
+        input.env[ENV_KEYS.UMACTUALLY_API_URL],
+        DEFAULT_ANTHROPIC_URL,
+      );
       let result = await runAnthropicRequest({
         baseUrl: providerUrl,
         apiKey: providerApiKey,
@@ -280,7 +292,10 @@ export async function requestLiveReview(input: {
       throw new LiveReviewError("PROVIDER_REQUEST_FAILED", result.error.message, { cause: result.error });
     }
 
-    const providerUrl = readRequiredConfig(input.parsed.apiUrl ?? input.env["UMACTUALLY_API_URL"], "UMACTUALLY_API_URL");
+    const providerUrl = requireLiveConfig(
+      resolveField(input.parsed.apiUrl, input.env[ENV_KEYS.UMACTUALLY_API_URL], ""),
+      ENV_KEYS.UMACTUALLY_API_URL,
+    );
 
     // Path-prefix heuristic: if the operator's URL looks like an
     // Anthropic-protocol gateway (any path segment equal to
@@ -474,13 +489,6 @@ function normalizeProviderComment(
   };
 }
 
-function readRequiredConfig(value: string | undefined | null, name: string): string {
-  if (value === undefined || value === null || value.length === 0) {
-    throw new LiveReviewError("LIVE_CONFIG_MISSING", `${name} must be set for live review.`);
-  }
-  return value;
-}
-
 function readConfiguredModel(parsed: ParsedCliArgs, env: NodeJS.ProcessEnv): string {
   const fromArgs = parsed.model;
   // Treat the literal string "auto" the same as the default
@@ -491,7 +499,7 @@ function readConfiguredModel(parsed: ParsedCliArgs, env: NodeJS.ProcessEnv): str
   if (fromArgs !== null && fromArgs.length > 0 && fromArgs !== "auto") {
     return fromArgs;
   }
-  const fromEnv = env["UMACTUALLY_MODEL"];
+  const fromEnv = env[ENV_KEYS.UMACTUALLY_MODEL];
   if (fromEnv !== undefined && fromEnv.length > 0 && fromEnv !== "auto") {
     return fromEnv;
   }
@@ -569,29 +577,6 @@ function parseFailureReasonFromProviderError(
  */
 type NamedProtocol = "openai-compatible" | "anthropic";
 
-function isRoutableFailureForDispatcher(error: {
-  readonly code: string;
-  readonly status: number | null;
-}): boolean {
-  // Cross-protocol fallback fires on 404 only — the wire-shape
-  // genuinely does not have a route for this URL at this provider.
-  // We intentionally exclude HTTP 400 from this check, even though
-  // the openai-compatible client's internal URL-candidate loop
-  // treats both 404 and 400 as "advance to next candidate":
-  //
-  // 400 typically signals a payload-level error (malformed body,
-  // missing required field, unsupported `max_tokens` value,
-  // content-policy rejection). Firing cross-protocol fallback on a
-  // payload-400 would silently mask wire-shape bugs: an Anthropic
-  // call that 400s on an unsupported parameter would retry against
-  // OpenAI's wire shape (different body layout) and possibly
-  // succeed, with the operator seeing a successful review attributed
-  // to the OTHER protocol without ever knowing their original
-  // call was malformed. So at the dispatcher boundary we
-  // restrict the cross-protocol trigger to truly-routing failures.
-  return error.status === 404;
-}
-
 async function runWithCrossProtocolFallback(
   args: {
     readonly namedProvider: NamedProtocol;
@@ -610,7 +595,7 @@ async function runWithCrossProtocolFallback(
   | { readonly ok: true; readonly endpoint: ProviderEndpoint; readonly review: ProviderReviewPayload; readonly requestId: string }
   | { readonly ok: false; readonly error: { readonly code: string; readonly status: number | null } }
 > {
-  if (!isRoutableFailureForDispatcher(args.namedResult.error)) {
+  if (!isRoutableFailureForCrossProtocol(args.namedResult.error)) {
     return args.namedResult;
   }
   // Surface the fallback so operators can SEE that the dispatcher

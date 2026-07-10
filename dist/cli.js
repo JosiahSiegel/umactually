@@ -3700,7 +3700,54 @@ async function withDebugRawEnv(enabled, fn) {
     }
 }
 
+;// CONCATENATED MODULE: ./src/util/env-keys.ts
+/** Centralised env-var name registry; eliminates inline `env["..."]` strings and keeps legacy aliases visible. */
+const ENV_KEYS = {
+    // UMACTUALLY_* canonical, REVIEW_* legacy aliases
+    UMACTUALLY_API_URL: "UMACTUALLY_API_URL",
+    UMACTUALLY_API_KEY: "UMACTUALLY_API_KEY",
+    UMACTUALLY_MODEL: "UMACTUALLY_MODEL",
+    UMACTUALLY_GITHUB_API_BASE: "UMACTUALLY_GITHUB_API_BASE",
+    UMACTUALLY_INCLUDE_SONARQUBE: "UMACTUALLY_INCLUDE_SONARQUBE",
+    UMACTUALLY_SONAR_HOST_URL: "UMACTUALLY_SONAR_HOST_URL",
+    UMACTUALLY_SONAR_TOKEN: "UMACTUALLY_SONAR_TOKEN",
+    UMACTUALLY_SONAR_PROJECT_KEY: "UMACTUALLY_SONAR_PROJECT_KEY",
+    UMACTUALLY_PROMPT_FILE: "UMACTUALLY_PROMPT_FILE",
+    UMACTUALLY_ADDITIONAL_PROMPT_FILE: "UMACTUALLY_ADDITIONAL_PROMPT_FILE",
+    REVIEW_PROVIDER_URL: "REVIEW_PROVIDER_URL",
+    REVIEW_PROVIDER_API_KEY: "REVIEW_PROVIDER_API_KEY",
+    REVIEW_PROVIDER_MODEL: "REVIEW_PROVIDER_MODEL",
+    REVIEW_TIMEOUT_SECONDS: "REVIEW_TIMEOUT_SECONDS",
+    REVIEW_FILE_LIMIT: "REVIEW_FILE_LIMIT",
+    REVIEW_LEAK_DETECTION: "REVIEW_LEAK_DETECTION",
+    // Platform runtime
+    GITHUB_ACTIONS: "GITHUB_ACTIONS",
+    GITHUB_EVENT_PATH: "GITHUB_EVENT_PATH",
+    GITHUB_TOKEN: "GITHUB_TOKEN",
+    GITHUB_REPOSITORY: "GITHUB_REPOSITORY",
+    GITHUB_REF: "GITHUB_REF",
+    GITHUB_SHA: "GITHUB_SHA",
+    // Azure DevOps runtime
+    TF_BUILD: "TF_BUILD",
+    SYSTEM_ACCESSTOKEN: "SYSTEM_ACCESSTOKEN",
+    SYSTEM_TEAMPROJECT: "SYSTEM_TEAMPROJECT",
+    SYSTEM_COLLECTIONURI: "SYSTEM_COLLECTIONURI",
+    BUILD_REPOSITORY_ID: "BUILD_REPOSITORY_ID",
+    SYSTEM_PULLREQUEST_PULLREQUESTID: "SYSTEM_PULLREQUEST_PULLREQUESTID",
+    SYSTEM_PULLREQUEST_SOURCECOMMITID: "SYSTEM_PULLREQUEST_SOURCECOMMITID",
+    SYSTEM_PULLREQUEST_TARGETBRANCHNAME: "SYSTEM_PULLREQUEST_TARGETBRANCHNAME",
+    // Inputs (already wrapped as INPUT_* by GitHub)
+    INPUT_DRY_RUN: "INPUT_DRY_RUN",
+    INPUT_EVENT: "INPUT_EVENT",
+    INPUT_DIFF: "INPUT_DIFF",
+    INPUT_REVIEW: "INPUT_REVIEW",
+    INPUT_THREADS: "INPUT_THREADS",
+    INPUT_OUTPUT_ARTIFACT: "INPUT_OUTPUT_ARTIFACT",
+    INPUT_PLATFORM: "INPUT_PLATFORM",
+};
+
 ;// CONCATENATED MODULE: ./src/platform/detect.ts
+
 class PlatformDetectionError extends Error {
     name = "PlatformDetectionError";
     code = "PLATFORM_UNKNOWN";
@@ -3708,8 +3755,8 @@ class PlatformDetectionError extends Error {
         super("Unable to detect a supported CI platform from the process environment.");
     }
 }
-const GITHUB_ACTIONS_KEY = "GITHUB_ACTIONS";
-const AZURE_TF_BUILD_KEY = "TF_BUILD";
+const GITHUB_ACTIONS_KEY = ENV_KEYS.GITHUB_ACTIONS;
+const AZURE_TF_BUILD_KEY = ENV_KEYS.TF_BUILD;
 /**
  * GitHub precedence: GITHUB_ACTIONS is checked first, so a process that
  * somehow exposes both `GITHUB_ACTIONS=true` and `TF_BUILD=True` (rare,
@@ -3833,6 +3880,87 @@ function collectValidationErrors(parsed) {
 }
 function assertNever(value) {
     throw new TypeError(`unhandled platform variant: ${JSON.stringify(value)}`);
+}
+
+;// CONCATENATED MODULE: ./src/config/defaults.ts
+
+/** Canonical prompt-file byte cap shared by config loading and live prompt assembly. */
+const DEFAULT_PROMPT_BYTE_CAP = FIELDS.promptByteCap.defaultValue;
+/** Canonical cap for posted review comments when no CLI/input override is supplied. */
+const DEFAULT_MAX_COMMENTS = FIELDS.maxComments.defaultValue;
+/** Canonical merge fallback cap for chunked live reviews. */
+const DEFAULT_MAX_COMMENTS_MERGE = DEFAULT_MAX_COMMENTS;
+/** Canonical changed-file soft cap for live reviews. */
+const DEFAULT_REVIEW_FILE_LIMIT = FIELDS.reviewFileLimit.defaultValue;
+/** Canonical wall-clock review timeout, in seconds; derived from field-schema so the loader cannot drift from the canonical default. */
+const DEFAULT_REVIEW_SECONDS = FIELDS.reviewTimeoutSeconds.defaultValue;
+/** Canonical provider-output stall timeout, in seconds; derived from field-schema. */
+const DEFAULT_STALL_SECONDS = FIELDS.stallSeconds.defaultValue;
+/** Canonical per-request HTTP timeout, in seconds; derived from field-schema. */
+const DEFAULT_PER_REQUEST_SECONDS = FIELDS.perRequestTimeoutSeconds.defaultValue;
+/**
+ * Canonical Sonar HTTP timeout, in seconds; derived from field-schema.
+ *
+ * Surfaced a real bug: `config/loader.ts` previously hard-coded `60` here
+ * while the field-schema default (and therefore the CLI / action / env
+ * surfaces) is `300`. Live SonarQube scans silently timed out at 60s
+ * when no override was supplied. This re-export makes the loader default
+ * byte-identical to the schema default.
+ */
+const DEFAULT_SONAR_TIMEOUT_SECONDS = FIELDS.sonarTimeoutSeconds.defaultValue;
+/**
+ * Canonical provider model default; derived from field-schema.
+ *
+ * Inferred as `string` (matching `pickString`'s signature in `loader.ts`),
+ * but the field-schema's literal `"auto"` default is preserved by
+ * TypeScript's widening rules because the right-hand side is a
+ * `const`-tracked object property; callers that need the literal type
+ * should re-assert at the call site.
+ */
+const DEFAULT_PROVIDER_MODEL = FIELDS.model.defaultValue;
+
+;// CONCATENATED MODULE: ./src/config/field-resolution.ts
+/**
+ * Resolve a config field through the canonical precedence chain: parsed > env > fallback.
+ *
+ * Returns the first value in the chain that is non-null, non-undefined, AND (when a
+ * string) non-empty. This matches the behavior the live path hand-rolls inline at
+ * multiple sites (`parsed.X ?? env["Y"] ?? DEFAULT_Z`).
+ *
+ * Why this exists: the config loader (`src/config/loader.ts`) has private pickX
+ * helpers used only inside loadConfigFromSources. The live path cannot call those
+ * directly — it builds parsed/env from different inputs (CLI argv + action inputs +
+ * env) and needs the same chain. Centralizing eliminates the 7+ hand-rolled
+ * `parsed.X ?? env["Y"]` occurrences scattered across cli/ that future maintainers
+ * could "fix" by adding a default to one site but not the others.
+ *
+ * Treats the empty string as "missing" for string-typed fields. This matches the
+ * CLI's existing behavior (`parseStringFromUnknown` raises on empty input, and the
+ * shell typically passes empty strings for unset flags).
+ *
+ * @param parsedValue  CLI/inputs value (already parsed).
+ * @param envValue     Env-var value (read via ENV_KEYS.X).
+ * @param fallback     The schema default (from FIELDS.<x>.defaultValue or a derived constant).
+ * @returns            The first non-null/non-empty value, or `fallback`.
+ */
+function resolveField(parsedValue, envValue, fallback) {
+    if (parsedValue !== undefined && parsedValue !== null) {
+        if (typeof parsedValue === "string" && parsedValue.length === 0) {
+            // Empty string is treated as missing for string fields.
+        }
+        else {
+            return parsedValue;
+        }
+    }
+    if (envValue !== undefined && envValue !== null) {
+        if (typeof envValue === "string" && envValue.length === 0) {
+            // Empty string from env is treated as missing.
+        }
+        else {
+            return envValue;
+        }
+    }
+    return fallback;
 }
 
 ;// CONCATENATED MODULE: ./src/platform/azure/chunk.ts
@@ -3979,6 +4107,7 @@ function findDiffHeaderIndices(diff) {
 ;// CONCATENATED MODULE: ./src/platform/azure/context.ts
 
 
+
 /**
  * Context-resolution error for the Azure DevOps platform adapter.
  * Inherits the `PlatformContextError` shape from
@@ -4029,7 +4158,7 @@ function readAzureToken(env) {
     return token;
 }
 function readAzureOrg(env) {
-    const collectionUri = env["SYSTEM_COLLECTIONURI"];
+    const collectionUri = env[ENV_KEYS.SYSTEM_COLLECTIONURI];
     if (collectionUri === undefined || collectionUri.length === 0) {
         throw new AzureContextError("AZURE_COLLECTION_URI_INVALID", "Azure Pipelines SYSTEM_COLLECTIONURI must be set.");
     }
@@ -4051,14 +4180,14 @@ function readAzureOrg(env) {
     return orgSegment;
 }
 function readAzureProject(env) {
-    const project = env["SYSTEM_TEAMPROJECT"];
+    const project = env[ENV_KEYS.SYSTEM_TEAMPROJECT];
     if (project === undefined || project.length === 0) {
         throw new AzureContextError("AZURE_TEAM_PROJECT_MISSING", "Azure Pipelines SYSTEM_TEAMPROJECT must be set.");
     }
     return project;
 }
 function readAzureRepoId(env) {
-    const repoId = env["BUILD_REPOSITORY_ID"];
+    const repoId = env[ENV_KEYS.BUILD_REPOSITORY_ID];
     if (repoId === undefined || repoId.length === 0) {
         throw new AzureContextError("AZURE_REPOSITORY_ID_MISSING", "Azure Pipelines BUILD_REPOSITORY_ID must be set.");
     }
@@ -4078,7 +4207,7 @@ function readAzurePrNumber(env, override) {
         }
         return override;
     }
-    const raw = env["SYSTEM_PULLREQUEST_PULLREQUESTID"];
+    const raw = env[ENV_KEYS.SYSTEM_PULLREQUEST_PULLREQUESTID];
     if (raw === undefined || raw.length === 0) {
         throw new AzureContextError("AZURE_PR_NUMBER_INVALID", [
             "Azure Pipelines SYSTEM_PULLREQUEST_PULLREQUESTID must be set.",
@@ -4113,14 +4242,14 @@ function readAzurePrNumber(env, override) {
     return parsed;
 }
 function readAzureSha(env) {
-    const value = env["SYSTEM_PULLREQUEST_SOURCECOMMITID"];
+    const value = env[ENV_KEYS.SYSTEM_PULLREQUEST_SOURCECOMMITID];
     if (value === undefined || value.length === 0) {
         throw new AzureContextError("AZURE_SOURCE_COMMIT_MISSING", "Azure Pipelines SYSTEM_PULLREQUEST_SOURCECOMMITID must be set.");
     }
     return value;
 }
 function readAzureTargetBranch(env) {
-    const value = env["SYSTEM_PULLREQUEST_TARGETBRANCHNAME"];
+    const value = env[ENV_KEYS.SYSTEM_PULLREQUEST_TARGETBRANCHNAME];
     if (value === undefined || value.length === 0) {
         throw new AzureContextError("AZURE_TARGET_BRANCH_MISSING", "Azure Pipelines SYSTEM_PULLREQUEST_TARGETBRANCHNAME must be set.");
     }
@@ -4187,6 +4316,7 @@ function buildPullUrl(context) {
 
 
 
+
 /**
  * Context-resolution error for the GitHub platform adapter. Inherits the
  * `PlatformContextError` shape from `src/util/platform-error.ts` so it
@@ -4215,7 +4345,7 @@ async function readGithubContext(env) {
     };
 }
 function readGithubToken(env) {
-    const fromEnv = env["GITHUB_TOKEN"];
+    const fromEnv = env[ENV_KEYS.GITHUB_TOKEN];
     if (typeof fromEnv === "string" && fromEnv.length > 0) {
         return fromEnv;
     }
@@ -4226,7 +4356,7 @@ function readGithubToken(env) {
     throw new GithubContextError("GITHUB_TOKEN_MISSING", "GitHub Actions GITHUB_TOKEN must be set.");
 }
 function readGithubRepo(env, fallback) {
-    const repository = env["GITHUB_REPOSITORY"] ?? fallback ?? "";
+    const repository = env[ENV_KEYS.GITHUB_REPOSITORY] ?? fallback ?? "";
     if (repository.length === 0) {
         throw new GithubContextError("GITHUB_REPOSITORY_INVALID", "GitHub Actions GITHUB_REPOSITORY must be set as '<owner>/<name>'.");
     }
@@ -4270,7 +4400,7 @@ function readGithubSha(env, key, fallback) {
     return value;
 }
 async function readGithubPullRequestPayload(env) {
-    const eventPath = env["GITHUB_EVENT_PATH"];
+    const eventPath = env[ENV_KEYS.GITHUB_EVENT_PATH];
     if (eventPath === undefined || eventPath.length === 0) {
         throw new GithubContextError("GITHUB_EVENT_PATH_MISSING", "GitHub Actions GITHUB_EVENT_PATH must be set for pull_request events.");
     }
@@ -4333,42 +4463,69 @@ function readString(value) {
     return typeof value === "string" ? value : "";
 }
 
-;// CONCATENATED MODULE: ./src/config/defaults.ts
+;// CONCATENATED MODULE: ./src/util/required-config.ts
+/**
+ * Thrown by requireLiveConfig when a required live-review config value is missing.
+ * Carries the same code/message shape as LiveReviewError so callers that
+ * pattern-match on `code === "LIVE_CONFIG_MISSING"` keep working without
+ * importing from cli/live-shared.ts.
+ */
+class RequiredConfigError extends Error {
+    code;
+    userMessage;
+    name = "RequiredConfigError";
+    constructor(code, userMessage) {
+        super(userMessage);
+        this.code = code;
+        this.userMessage = userMessage;
+    }
+}
+/**
+ * Validate that a required config value is set; throw LIVE_CONFIG_MISSING if not.
+ *
+ * Both the live-provider dispatcher (cli/live-provider.ts) and the orchestrator
+ * (cli/orchestrator.ts) previously hand-rolled this check with byte-identical
+ * user-facing messages. This helper is the single source of truth.
+ *
+ * @param value The config value (CLI, env, or default).
+ * @param envVarName The env-var NAME used in the user-facing error message.
+ * @returns The same value for ergonomic chaining.
+ * @throws RequiredConfigError when value is missing or empty.
+ */
+function requireLiveConfig(value, envVarName) {
+    if (value === undefined || value === null || value.length === 0) {
+        throw new RequiredConfigError("LIVE_CONFIG_MISSING", `${envVarName} must be set for live review.`);
+    }
+    return value;
+}
 
-/** Canonical prompt-file byte cap shared by config loading and live prompt assembly. */
-const DEFAULT_PROMPT_BYTE_CAP = FIELDS.promptByteCap.defaultValue;
-/** Canonical cap for posted review comments when no CLI/input override is supplied. */
-const DEFAULT_MAX_COMMENTS = FIELDS.maxComments.defaultValue;
-/** Canonical merge fallback cap for chunked live reviews. */
-const DEFAULT_MAX_COMMENTS_MERGE = DEFAULT_MAX_COMMENTS;
-/** Canonical changed-file soft cap for live reviews. */
-const DEFAULT_REVIEW_FILE_LIMIT = FIELDS.reviewFileLimit.defaultValue;
-/** Canonical wall-clock review timeout, in seconds; derived from field-schema so the loader cannot drift from the canonical default. */
-const DEFAULT_REVIEW_SECONDS = FIELDS.reviewTimeoutSeconds.defaultValue;
-/** Canonical provider-output stall timeout, in seconds; derived from field-schema. */
-const DEFAULT_STALL_SECONDS = FIELDS.stallSeconds.defaultValue;
-/** Canonical per-request HTTP timeout, in seconds; derived from field-schema. */
-const DEFAULT_PER_REQUEST_SECONDS = FIELDS.perRequestTimeoutSeconds.defaultValue;
+;// CONCATENATED MODULE: ./src/util/redact.ts
+
 /**
- * Canonical Sonar HTTP timeout, in seconds; derived from field-schema.
+ * Replace each literal secret in `value` with the canonical REDACTED_SECRET_TOKEN.
+ * Uses split().join() (not regex) so secrets containing regex metacharacters
+ * (.+*?()[]{}\|^$) replace literally without surprises. Empty secrets are
+ * skipped to avoid "replace every empty string" which would clobber the value.
+ * Returns `value` unchanged when `secrets` is empty (cheap fast path).
  *
- * Surfaced a real bug: `config/loader.ts` previously hard-coded `60` here
- * while the field-schema default (and therefore the CLI / action / env
- * surfaces) is `300`. Live SonarQube scans silently timed out at 60s
- * when no override was supplied. This re-export makes the loader default
- * byte-identical to the schema default.
+ * Behavior contract pinned by test/unit/redact-secrets.test.ts:
+ *   - Empty secrets → returns value unchanged (identity).
+ *   - Single secret: every occurrence of the literal string is replaced.
+ *   - Multiple secrets: replaced in array order (earlier wins on overlap).
+ *   - Secrets containing regex metacharacters are treated literally.
+ *   - Empty string in secrets array is skipped (no clobber).
  */
-const DEFAULT_SONAR_TIMEOUT_SECONDS = FIELDS.sonarTimeoutSeconds.defaultValue;
-/**
- * Canonical provider model default; derived from field-schema.
- *
- * Inferred as `string` (matching `pickString`'s signature in `loader.ts`),
- * but the field-schema's literal `"auto"` default is preserved by
- * TypeScript's widening rules because the right-hand side is a
- * `const`-tracked object property; callers that need the literal type
- * should re-assert at the call site.
- */
-const DEFAULT_PROVIDER_MODEL = FIELDS.model.defaultValue;
+function replaceSecretsLiterally(value, secrets) {
+    if (secrets.length === 0)
+        return value;
+    let out = value;
+    for (const secret of secrets) {
+        if (secret.length === 0)
+            continue;
+        out = out.split(secret).join(REDACTED_SECRET_TOKEN);
+    }
+    return out;
+}
 
 ;// CONCATENATED MODULE: ./src/util/severity.ts
 /**
@@ -4438,152 +4595,6 @@ function severity_countBySeverity(comments) {
     return counts;
 }
 
-;// CONCATENATED MODULE: ./src/cli/live-merge.ts
-
-
-
-/**
- * Merge per-chunk LiveProviderOutcome values into one. Pure function —
- * safe to test without I/O.
- *
- * Empty input returns an empty (COMMENT) review with no comments and
- * no summary so the post path can still complete (e.g. when every
- * chunk returned a parse-fail fallback).
- */
-function mergeReviewResults(outcomes, options) {
-    const maxComments = options?.maxComments ?? DEFAULT_MAX_COMMENTS;
-    if (outcomes.length === 0) {
-        return {
-            review: { summary: "", verdict: "COMMENT", comments: [], suppressedComments: [] },
-            endpoint: "",
-            provider: "",
-            modelId: "",
-            // No inputs → no warnings to surface.
-            severityWarnings: [],
-            parseWarnings: [],
-        };
-    }
-    const first = outcomes[0];
-    // Collect + dedup comments by (path, line), keeping highest severity.
-    const dedupedComments = new Map();
-    const dedupedSuppressed = new Map();
-    for (const outcome of outcomes) {
-        for (const comment of outcome.review.comments) {
-            const key = `${comment.path}:${comment.line}`;
-            const existing = dedupedComments.get(key);
-            if (existing === undefined || severity_severityRank(comment.severity) > severity_severityRank(existing.severity)) {
-                dedupedComments.set(key, comment);
-            }
-        }
-        for (const suppressed of outcome.review.suppressedComments) {
-            const key = `${suppressed.path}:${suppressed.line}`;
-            const existing = dedupedSuppressed.get(key);
-            if (existing === undefined || severity_severityRank(suppressed.severity) > severity_severityRank(existing.severity)) {
-                dedupedSuppressed.set(key, suppressed);
-            }
-        }
-    }
-    // MERGE-2: sort by severity desc, then path asc, then line asc.
-    const sortedComments = [...dedupedComments.values()].sort((a, b) => {
-        const rankDelta = severity_severityRank(b.severity) - severity_severityRank(a.severity);
-        if (rankDelta !== 0)
-            return rankDelta;
-        const pathDelta = a.path.localeCompare(b.path);
-        if (pathDelta !== 0)
-            return pathDelta;
-        return a.line - b.line;
-    });
-    // MERGE-4: truncate to maxComments.
-    const truncatedComments = sortedComments.slice(0, maxComments);
-    const sortedSuppressed = [...dedupedSuppressed.values()].sort((a, b) => a.path.localeCompare(b.path));
-    // MERGE-5: pick worst verdict.
-    //
-    // Apply the same severity-counts reconciliation that the live path
-    // uses (see src/util/verdict.ts:reconcileVerdictForEmptySeverityCounts)
-    // BEFORE ranking, so a chunk whose NEEDS_FIX verdict was backed only
-    // by findings that the severity filter dropped doesn't pollute the
-    // "worst verdict" pick with a contradictory blocking verdict.
-    // Without this, the merge path could re-introduce the same
-    // "NEEDS_FIX + 0 inline findings" contradiction the live path's
-    // preparePostedReview reconciliation prevents — even if every individual
-    // chunk ran preparePostedReview correctly. PR #18 self-review comment
-    // caught this regression class.
-    let worstVerdict = "";
-    let worstRank = -1;
-    for (const outcome of outcomes) {
-        const reconciledVerdict = reconcileVerdictForEmptySeverityCounts(outcome.review.verdict, severity_countBySeverity(outcome.review.comments));
-        const rank = verdictRank(reconciledVerdict);
-        if (rank > worstRank) {
-            worstRank = rank;
-            worstVerdict = reconciledVerdict;
-        }
-    }
-    // MERGE-6: pick the best summary across all chunk outcomes.
-    //
-    // The previous implementation picked the LONGEST summary. That was
-    // wrong: a parse-fail fallback's summary (built by
-    // `buildMalformedProviderFallback`) is intentionally long because it
-    // embeds a `<details>` block with the raw provider response, so it
-    // ALWAYS beat the successful chunk's real summary. The merged card
-    // then contradicted itself — real findings in the findings table,
-    // parse-fail diagnostic in the summary section.
-    //
-    // New policy: prefer summaries from chunks that contributed real
-    // findings (comments or suppressed comments). The parse-fail fallback
-    // has both arrays empty AND `parseFailed: true` set, so it's filtered
-    // out. Among the surviving chunks, pick the longest summary (real
-    // review summaries tend to vary in length and the longest is usually
-    // the most informative). If NO chunk contributed findings, fall back
-    // to the parse-fail summary as the only honest diagnostic.
-    let summarySource = null;
-    let summarySourceLength = -1;
-    let fallbackSummary = "";
-    for (const outcome of outcomes) {
-        const isParseFail = outcome.review.parseFailed === true;
-        const hasFindings = outcome.review.comments.length > 0 ||
-            outcome.review.suppressedComments.length > 0;
-        if (isParseFail || !hasFindings) {
-            if (outcome.review.summary.length > fallbackSummary.length) {
-                fallbackSummary = outcome.review.summary;
-            }
-            continue;
-        }
-        if (outcome.review.summary.length > summarySourceLength) {
-            summarySource = outcome.review.summary;
-            summarySourceLength = outcome.review.summary.length;
-        }
-    }
-    const longestSummary = summarySource ?? fallbackSummary;
-    // The merged review is parseFailed only when no chunk contributed
-    // real findings — i.e. every chunk was a parse-fail fallback OR was
-    // structurally empty (in which case summarySource is null and the
-    // fallback summary was used). When at least one chunk succeeded,
-    // the merged card has real findings and should NOT be marked
-    // parseFailed even if other chunks failed.
-    const mergedParseFailed = summarySource === null;
-    return {
-        review: {
-            summary: longestSummary,
-            verdict: worstVerdict.length > 0 ? worstVerdict : "COMMENT",
-            comments: truncatedComments,
-            suppressedComments: sortedSuppressed,
-            ...(mergedParseFailed ? { parseFailed: true } : {}),
-        },
-        endpoint: first.endpoint,
-        provider: first.provider,
-        modelId: first.modelId,
-        // MERGE severity warnings: concatenate each input outcome's warnings
-        // (each retains its own providerName + commentIndex, so the consumer
-        // can disambiguate per-source attribution). The merge itself does
-        // not generate new warnings.
-        severityWarnings: outcomes.flatMap((o) => o.severityWarnings),
-        // Same pattern for parse warnings (off-diff citations) — each chunk
-        // review emits its own set, and the merged outcome surfaces all of
-        // them so the parse-warnings.json artifact reflects the full run.
-        parseWarnings: outcomes.flatMap((o) => o.parseWarnings),
-    };
-}
-
 ;// CONCATENATED MODULE: ./src/render/summary-layouts.ts
 /**
  * 20 unique markdown layout variants for the UmActually PR review summary.
@@ -4634,6 +4645,7 @@ function mergeReviewResults(outcomes, options) {
 
 
 
+
 /** The 20 replacement layouts the user requested. */
 const LAYOUTS = (/* unused pure expression or super */ null && ([
     "dashboard",
@@ -4666,15 +4678,7 @@ const VERBOSE_THRESHOLD_CHARS = 500;
 // ---------------------------------------------------------------------------
 /** Sanitize a value against the redaction list before it lands in markdown. */
 function redact(value, secrets) {
-    if (secrets.length === 0)
-        return value;
-    let out = value;
-    for (const secret of secrets) {
-        if (secret.length === 0)
-            continue;
-        out = out.split(secret).join(REDACTED_SECRET_TOKEN);
-    }
-    return out;
+    return replaceSecretsLiterally(value, secrets);
 }
 /** Total findings the model produced (posted + off-diff + filtered). */
 function totalFindings(data) {
@@ -7998,6 +8002,7 @@ function checkErrorDocUrl(rawText) {
 
 
 
+
 /**
  * @deprecated Re-export preserved for one release cycle so callers that
  * import `countBySeverity` from `cli/live-shared.js` continue to work.
@@ -8517,15 +8522,10 @@ const mapReviewVerdictToGithubEvent = mapVerdictToGithubEvent;
  */
 const mapReviewVerdictToAzureStatus = (verdict) => mapVerdictToAzureStatus(verdict, "current");
 function sanitizeForPost(value, secrets) {
-    let sanitized = value
+    const sanitized = value
         .replace(/Authorization:\s*[^\r\n]*/giu, REDACTED_AUTHORIZATION_HEADER)
         .replace(/\bBearer\s+\S+/giu, REDACTED_BEARER_TOKEN);
-    for (const secret of secrets) {
-        if (secret.length > 0) {
-            sanitized = sanitized.split(secret).join(REDACTED_SECRET_TOKEN);
-        }
-    }
-    return sanitized;
+    return replaceSecretsLiterally(sanitized, secrets);
 }
 async function readTextResponse(response) {
     try {
@@ -9573,6 +9573,152 @@ function githubReviewsUrl(context) {
     return `https://api.github.com/repos/${owner}/${repo}/pulls/${context.prNumber}/reviews`;
 }
 
+;// CONCATENATED MODULE: ./src/cli/live-merge.ts
+
+
+
+/**
+ * Merge per-chunk LiveProviderOutcome values into one. Pure function —
+ * safe to test without I/O.
+ *
+ * Empty input returns an empty (COMMENT) review with no comments and
+ * no summary so the post path can still complete (e.g. when every
+ * chunk returned a parse-fail fallback).
+ */
+function mergeReviewResults(outcomes, options) {
+    const maxComments = options?.maxComments ?? DEFAULT_MAX_COMMENTS;
+    if (outcomes.length === 0) {
+        return {
+            review: { summary: "", verdict: "COMMENT", comments: [], suppressedComments: [] },
+            endpoint: "",
+            provider: "",
+            modelId: "",
+            // No inputs → no warnings to surface.
+            severityWarnings: [],
+            parseWarnings: [],
+        };
+    }
+    const first = outcomes[0];
+    // Collect + dedup comments by (path, line), keeping highest severity.
+    const dedupedComments = new Map();
+    const dedupedSuppressed = new Map();
+    for (const outcome of outcomes) {
+        for (const comment of outcome.review.comments) {
+            const key = `${comment.path}:${comment.line}`;
+            const existing = dedupedComments.get(key);
+            if (existing === undefined || severity_severityRank(comment.severity) > severity_severityRank(existing.severity)) {
+                dedupedComments.set(key, comment);
+            }
+        }
+        for (const suppressed of outcome.review.suppressedComments) {
+            const key = `${suppressed.path}:${suppressed.line}`;
+            const existing = dedupedSuppressed.get(key);
+            if (existing === undefined || severity_severityRank(suppressed.severity) > severity_severityRank(existing.severity)) {
+                dedupedSuppressed.set(key, suppressed);
+            }
+        }
+    }
+    // MERGE-2: sort by severity desc, then path asc, then line asc.
+    const sortedComments = [...dedupedComments.values()].sort((a, b) => {
+        const rankDelta = severity_severityRank(b.severity) - severity_severityRank(a.severity);
+        if (rankDelta !== 0)
+            return rankDelta;
+        const pathDelta = a.path.localeCompare(b.path);
+        if (pathDelta !== 0)
+            return pathDelta;
+        return a.line - b.line;
+    });
+    // MERGE-4: truncate to maxComments.
+    const truncatedComments = sortedComments.slice(0, maxComments);
+    const sortedSuppressed = [...dedupedSuppressed.values()].sort((a, b) => a.path.localeCompare(b.path));
+    // MERGE-5: pick worst verdict.
+    //
+    // Apply the same severity-counts reconciliation that the live path
+    // uses (see src/util/verdict.ts:reconcileVerdictForEmptySeverityCounts)
+    // BEFORE ranking, so a chunk whose NEEDS_FIX verdict was backed only
+    // by findings that the severity filter dropped doesn't pollute the
+    // "worst verdict" pick with a contradictory blocking verdict.
+    // Without this, the merge path could re-introduce the same
+    // "NEEDS_FIX + 0 inline findings" contradiction the live path's
+    // preparePostedReview reconciliation prevents — even if every individual
+    // chunk ran preparePostedReview correctly. PR #18 self-review comment
+    // caught this regression class.
+    let worstVerdict = "";
+    let worstRank = -1;
+    for (const outcome of outcomes) {
+        const reconciledVerdict = reconcileVerdictForEmptySeverityCounts(outcome.review.verdict, severity_countBySeverity(outcome.review.comments));
+        const rank = verdictRank(reconciledVerdict);
+        if (rank > worstRank) {
+            worstRank = rank;
+            worstVerdict = reconciledVerdict;
+        }
+    }
+    // MERGE-6: pick the best summary across all chunk outcomes.
+    //
+    // The previous implementation picked the LONGEST summary. That was
+    // wrong: a parse-fail fallback's summary (built by
+    // `buildMalformedProviderFallback`) is intentionally long because it
+    // embeds a `<details>` block with the raw provider response, so it
+    // ALWAYS beat the successful chunk's real summary. The merged card
+    // then contradicted itself — real findings in the findings table,
+    // parse-fail diagnostic in the summary section.
+    //
+    // New policy: prefer summaries from chunks that contributed real
+    // findings (comments or suppressed comments). The parse-fail fallback
+    // has both arrays empty AND `parseFailed: true` set, so it's filtered
+    // out. Among the surviving chunks, pick the longest summary (real
+    // review summaries tend to vary in length and the longest is usually
+    // the most informative). If NO chunk contributed findings, fall back
+    // to the parse-fail summary as the only honest diagnostic.
+    let summarySource = null;
+    let summarySourceLength = -1;
+    let fallbackSummary = "";
+    for (const outcome of outcomes) {
+        const isParseFail = outcome.review.parseFailed === true;
+        const hasFindings = outcome.review.comments.length > 0 ||
+            outcome.review.suppressedComments.length > 0;
+        if (isParseFail || !hasFindings) {
+            if (outcome.review.summary.length > fallbackSummary.length) {
+                fallbackSummary = outcome.review.summary;
+            }
+            continue;
+        }
+        if (outcome.review.summary.length > summarySourceLength) {
+            summarySource = outcome.review.summary;
+            summarySourceLength = outcome.review.summary.length;
+        }
+    }
+    const longestSummary = summarySource ?? fallbackSummary;
+    // The merged review is parseFailed only when no chunk contributed
+    // real findings — i.e. every chunk was a parse-fail fallback OR was
+    // structurally empty (in which case summarySource is null and the
+    // fallback summary was used). When at least one chunk succeeded,
+    // the merged card has real findings and should NOT be marked
+    // parseFailed even if other chunks failed.
+    const mergedParseFailed = summarySource === null;
+    return {
+        review: {
+            summary: longestSummary,
+            verdict: worstVerdict.length > 0 ? worstVerdict : "COMMENT",
+            comments: truncatedComments,
+            suppressedComments: sortedSuppressed,
+            ...(mergedParseFailed ? { parseFailed: true } : {}),
+        },
+        endpoint: first.endpoint,
+        provider: first.provider,
+        modelId: first.modelId,
+        // MERGE severity warnings: concatenate each input outcome's warnings
+        // (each retains its own providerName + commentIndex, so the consumer
+        // can disambiguate per-source attribution). The merge itself does
+        // not generate new warnings.
+        severityWarnings: outcomes.flatMap((o) => o.severityWarnings),
+        // Same pattern for parse warnings (off-diff citations) — each chunk
+        // review emits its own set, and the merged outcome surfaces all of
+        // them so the parse-warnings.json artifact reflects the full run.
+        parseWarnings: outcomes.flatMap((o) => o.parseWarnings),
+    };
+}
+
 ;// CONCATENATED MODULE: ./src/provider/provider-error.ts
 class ProviderError extends Error {
     code;
@@ -9626,6 +9772,33 @@ class ProviderError extends Error {
         this.usage = options?.usage;
         this.providerErrorDetails = options?.providerErrorDetails;
     }
+}
+/**
+ * Routing-level failure predicates intentionally diverge by boundary:
+ *
+ * - URL-candidate fallback stays inside one OpenAI-compatible provider
+ *   client. HTTP 404 and 400 can both mean the operator's base URL shape
+ *   missed the provider's route, so the client may advance to the next
+ *   resolved candidate without changing wire protocol.
+ * - Cross-protocol fallback crosses from one provider protocol family to
+ *   another. It fires on 404 only because the wire shape genuinely does
+ *   not have a route for this URL at this provider. We intentionally
+ *   exclude HTTP 400 even though URL-candidate fallback accepts it.
+ *
+ * 400 typically signals a payload-level error (malformed body, missing
+ * required field, unsupported `max_tokens` value, content-policy
+ * rejection). Firing cross-protocol fallback on a payload-400 would silently mask wire-shape bugs:
+ * an Anthropic call that 400s on an
+ * unsupported parameter would retry against OpenAI's wire shape (different
+ * body layout) and possibly succeed, with the operator seeing a successful
+ * review attributed to the OTHER protocol without ever knowing their
+ * original call was malformed.
+ */
+function isRoutableFailureForUrlCandidate(error) {
+    return error.status === 404 || error.status === 400;
+}
+function isRoutableFailureForCrossProtocol(error) {
+    return error.status === 404;
 }
 function sanitizeHttpStatus(endpoint, status) {
     return `Provider ${endpoint} responded with HTTP ${status}.`;
@@ -9939,6 +10112,7 @@ function buildTokenUrl(apiBase) {
 
 
 
+
 const ENDPOINT_RESPONSES = "responses";
 const openai_compatible_ENDPOINT_CHAT = "chat";
 const DEBUG_SECRET_PATTERNS = [
@@ -10016,7 +10190,7 @@ async function runProviderRequest(config) {
             // unless the error is NOT a 404/400 (e.g. auth failure, server
             // error) — in that case, retrying with a different URL won't
             // help, so return immediately.
-            if (!isRoutableFailure(chatAttempt.error)) {
+            if (!isRoutableFailureForUrlCandidate(chatAttempt.error)) {
                 return chatAttempt;
             }
             process.stderr.write(`::notice::${BRAND_PREFIX}Base URL ${redactUrlForLog(candidate)} returned routable failure (status=${chatAttempt.error.status}); advancing to next candidate.\n`);
@@ -10025,23 +10199,13 @@ async function runProviderRequest(config) {
         }
         // The /responses endpoint failed with a non-routable status
         // (e.g. 401, 500). Retrying with a different URL won't help.
-        if (!isRoutableFailure(firstAttempt.error)) {
+        if (!isRoutableFailureForUrlCandidate(firstAttempt.error)) {
             return firstAttempt;
         }
         process.stderr.write(`::notice::${BRAND_PREFIX}Base URL ${redactUrlForLog(candidate)} returned routable failure (status=${firstAttempt.error.status}); advancing to next candidate.\n`);
         lastAttempt = firstAttempt;
     }
     return lastAttempt;
-}
-/**
- * True when the failure was a routing-level rejection (404 Not Found
- * or 400 Bad Request) that would benefit from trying a different URL
- * shape. False for auth failures (401/403), server errors (5xx),
- * parse failures, and timeouts — those have a single root cause and
- * a different URL won't help.
- */
-function isRoutableFailure(error) {
-    return error.status === 404 || error.status === 400;
 }
 async function runWithEndpoint(config, fetchImpl, requestId, endpoint, baseUrl) {
     try {
@@ -10268,12 +10432,11 @@ function writeDebugRaw(message, config) {
     process.stderr.write(redactDebugSecrets(message, config));
 }
 function redactDebugSecrets(value, config) {
-    let redacted = value;
-    for (const secret of [config.apiKey, config.promptOverride ?? "", config.additionalPromptOverride ?? ""]) {
-        if (secret.length > 0) {
-            redacted = redacted.split(secret).join(REDACTED_SECRET_TOKEN);
-        }
-    }
+    let redacted = replaceSecretsLiterally(value, [
+        config.apiKey,
+        config.promptOverride ?? "",
+        config.additionalPromptOverride ?? "",
+    ]);
     for (const pattern of DEBUG_SECRET_PATTERNS) {
         redacted = redacted.replace(pattern, REDACTED_SECRET_TOKEN);
     }
@@ -10794,6 +10957,8 @@ function buildAnthropicHeaders(apiKey, requestId) {
  * Users can always override via `--model` (or `UMACTUALLY_MODEL`).
  */
 
+
+
 const COPILOT_DEFAULT_MODEL = "claude-3-5-sonnet";
 const ANTHROPIC_DEFAULT_MODEL = "claude-sonnet-4.6";
 const GOOGLE_DEFAULT_MODEL = "gemini-2.5-flash";
@@ -10823,7 +10988,7 @@ function resolveAutoModel(input) {
     if (input.provider === "anthropic") {
         return ANTHROPIC_DEFAULT_MODEL;
     }
-    const url = input.apiUrl ?? input.env["UMACTUALLY_API_URL"] ?? "";
+    const url = resolveField(input.apiUrl, input.env[ENV_KEYS.UMACTUALLY_API_URL], "");
     const hostname = url_extractHostname(url);
     if (hostname !== null) {
         const lowerHost = hostname.toLowerCase();
@@ -11162,6 +11327,8 @@ async function readPromptFiles(paths, byteCap, options) {
 
 
 
+
+
 /**
  * The strict JSON schema the model must emit. We send this on the
  * wire as `response_format: { type: "json_schema", strict: true }`
@@ -11277,7 +11444,7 @@ async function pickSystemPrompt(input) {
     if (typeof inline === "string" && inline.length > 0) {
         return inline;
     }
-    const filePath = input.parsed.promptFile ?? input.env["UMACTUALLY_PROMPT_FILE"];
+    const filePath = resolveField(input.parsed.promptFile, input.env[ENV_KEYS.UMACTUALLY_PROMPT_FILE], "");
     if (filePath !== undefined && filePath.length > 0) {
         return readPromptFiles([filePath], DEFAULT_PROMPT_BYTE_CAP, { cwd: input.cwd });
     }
@@ -11344,7 +11511,7 @@ async function readAdditionalPrompt(input) {
     if (typeof inline === "string" && inline.length > 0) {
         return inline;
     }
-    const filePath = input.parsed.additionalPromptFile ?? input.env["UMACTUALLY_ADDITIONAL_PROMPT_FILE"];
+    const filePath = resolveField(input.parsed.additionalPromptFile, input.env[ENV_KEYS.UMACTUALLY_ADDITIONAL_PROMPT_FILE], "");
     if (filePath === undefined || filePath.length === 0) {
         return "";
     }
@@ -11464,6 +11631,10 @@ async function verifyFindingsWithModel(input) {
 
 
 
+
+
+
+
 const live_provider_DEFAULT_REQUEST_TIMEOUT_MS = 60_000;
 const PROVIDER_NAME = "openai-compatible";
 const COPILOT_PROVIDER_NAME = "github-copilot";
@@ -11489,7 +11660,7 @@ async function requestLiveReview(input) {
         diffText: input.diffText,
         expectedArtifact: "artifacts/manual/s5-redaction-report.json",
     });
-    const providerApiKey = readRequiredConfig(input.parsed.apiKey ?? input.env["UMACTUALLY_API_KEY"], "UMACTUALLY_API_KEY");
+    const providerApiKey = requireLiveConfig(resolveField(input.parsed.apiKey, input.env[ENV_KEYS.UMACTUALLY_API_KEY], ""), ENV_KEYS.UMACTUALLY_API_KEY);
     const modelId = readConfiguredModel(input.parsed, input.env);
     const prompts = await buildProviderPrompts(input);
     // Install an ambient severity-warning sink for the duration of this
@@ -11581,7 +11752,7 @@ async function requestLiveReview(input) {
         if (input.parsed.provider === "copilot") {
             const result = await runCopilotRequest({
                 githubToken: providerApiKey,
-                apiBase: input.parsed.githubApiBase ?? input.env["UMACTUALLY_GITHUB_API_BASE"] ?? DEFAULT_GITHUB_API_BASE,
+                apiBase: resolveField(input.parsed.githubApiBase, input.env[ENV_KEYS.UMACTUALLY_GITHUB_API_BASE], DEFAULT_GITHUB_API_BASE),
                 system: prompts.system,
                 user: prompts.user,
                 model: modelId,
@@ -11624,9 +11795,7 @@ async function requestLiveReview(input) {
             // Messages API" block, and `validate.ts`/`orchestrator.ts`
             // which both exempt --api-url from the required check when
             // --provider anthropic is set.
-            const providerUrl = input.parsed.apiUrl
-                ?? input.env["UMACTUALLY_API_URL"]
-                ?? DEFAULT_ANTHROPIC_URL;
+            const providerUrl = resolveField(input.parsed.apiUrl, input.env[ENV_KEYS.UMACTUALLY_API_URL], DEFAULT_ANTHROPIC_URL);
             let result = await runAnthropicRequest({
                 baseUrl: providerUrl,
                 apiKey: providerApiKey,
@@ -11672,7 +11841,7 @@ async function requestLiveReview(input) {
             }
             throw new LiveReviewError("PROVIDER_REQUEST_FAILED", result.error.message, { cause: result.error });
         }
-        const providerUrl = readRequiredConfig(input.parsed.apiUrl ?? input.env["UMACTUALLY_API_URL"], "UMACTUALLY_API_URL");
+        const providerUrl = requireLiveConfig(resolveField(input.parsed.apiUrl, input.env[ENV_KEYS.UMACTUALLY_API_URL], ""), ENV_KEYS.UMACTUALLY_API_URL);
         // Path-prefix heuristic: if the operator's URL looks like an
         // Anthropic-protocol gateway (any path segment equal to
         // `anthropic`, case-insensitive — MiniMax's `/anthropic`,
@@ -11838,12 +12007,6 @@ function normalizeProviderComment(comment, secrets) {
         category: sanitizeForPost(comment.category, secrets),
     };
 }
-function readRequiredConfig(value, name) {
-    if (value === undefined || value === null || value.length === 0) {
-        throw new LiveReviewError("LIVE_CONFIG_MISSING", `${name} must be set for live review.`);
-    }
-    return value;
-}
 function readConfiguredModel(parsed, env) {
     const fromArgs = parsed.model;
     // Treat the literal string "auto" the same as the default
@@ -11854,7 +12017,7 @@ function readConfiguredModel(parsed, env) {
     if (fromArgs !== null && fromArgs.length > 0 && fromArgs !== "auto") {
         return fromArgs;
     }
-    const fromEnv = env["UMACTUALLY_MODEL"];
+    const fromEnv = env[ENV_KEYS.UMACTUALLY_MODEL];
     if (fromEnv !== undefined && fromEnv.length > 0 && fromEnv !== "auto") {
         return fromEnv;
     }
@@ -11893,27 +12056,8 @@ function parseFailureReasonFromProviderError(error, maxOutputTokens) {
         },
     };
 }
-function isRoutableFailureForDispatcher(error) {
-    // Cross-protocol fallback fires on 404 only — the wire-shape
-    // genuinely does not have a route for this URL at this provider.
-    // We intentionally exclude HTTP 400 from this check, even though
-    // the openai-compatible client's internal URL-candidate loop
-    // treats both 404 and 400 as "advance to next candidate":
-    //
-    // 400 typically signals a payload-level error (malformed body,
-    // missing required field, unsupported `max_tokens` value,
-    // content-policy rejection). Firing cross-protocol fallback on a
-    // payload-400 would silently mask wire-shape bugs: an Anthropic
-    // call that 400s on an unsupported parameter would retry against
-    // OpenAI's wire shape (different body layout) and possibly
-    // succeed, with the operator seeing a successful review attributed
-    // to the OTHER protocol without ever knowing their original
-    // call was malformed. So at the dispatcher boundary we
-    // restrict the cross-protocol trigger to truly-routing failures.
-    return error.status === 404;
-}
 async function runWithCrossProtocolFallback(args) {
-    if (!isRoutableFailureForDispatcher(args.namedResult.error)) {
+    if (!isRoutableFailureForCrossProtocol(args.namedResult.error)) {
         return args.namedResult;
     }
     // Surface the fallback so operators can SEE that the dispatcher
@@ -12334,6 +12478,9 @@ function sanitizeComments(comments, secrets) {
 
 
 
+
+
+
 /**
  * Number of chunks to process concurrently when the chunked path is
  * active. 4 is a safe default that respects provider rate-limit headers
@@ -12442,17 +12589,19 @@ async function runLive(input) {
     // Skip the URL check for both.
     const isCopilot = input.parsed.provider === "copilot";
     const isAnthropic = input.parsed.provider === "anthropic";
-    const providerUrl = input.parsed.apiUrl ?? env["UMACTUALLY_API_URL"];
-    if (!isCopilot && !isAnthropic && (providerUrl === undefined || providerUrl.length === 0)) {
-        const message = "UMACTUALLY_API_URL must be set for live review.";
-        process.stdout.write(`${BRAND_PREFIX}${message}\n`);
-        return failedResult(message);
+    try {
+        if (!isCopilot && !isAnthropic) {
+            requireLiveConfig(resolveField(input.parsed.apiUrl, env[ENV_KEYS.UMACTUALLY_API_URL], ""), ENV_KEYS.UMACTUALLY_API_URL);
+        }
+        requireLiveConfig(resolveField(input.parsed.apiKey, env[ENV_KEYS.UMACTUALLY_API_KEY], ""), ENV_KEYS.UMACTUALLY_API_KEY);
     }
-    const providerKey = input.parsed.apiKey ?? env["UMACTUALLY_API_KEY"];
-    if (providerKey === undefined || providerKey.length === 0) {
-        const message = "UMACTUALLY_API_KEY must be set for live review.";
-        process.stdout.write(`${BRAND_PREFIX}${message}\n`);
-        return failedResult(message);
+    catch (error) {
+        if (error instanceof RequiredConfigError) {
+            const message = error.userMessage;
+            process.stdout.write(`${BRAND_PREFIX}${message}\n`);
+            return failedResult(message);
+        }
+        throw error;
     }
     // If --include-sonarqube is set with a fully-configured SonarQube, wait
     // for the quality gate to reach a terminal state BEFORE posting the review.
@@ -12668,10 +12817,10 @@ function detectLivePlatform(env) {
 }
 function readSecretValues(env) {
     return [
-        env["UMACTUALLY_API_KEY"] ?? "",
-        env["REVIEW_PROVIDER_API_KEY"] ?? "",
-        env["GITHUB_TOKEN"] ?? "",
-        env["SYSTEM_ACCESSTOKEN"] ?? "",
+        env[ENV_KEYS.UMACTUALLY_API_KEY] ?? "",
+        env[ENV_KEYS.REVIEW_PROVIDER_API_KEY] ?? "",
+        env[ENV_KEYS.GITHUB_TOKEN] ?? "",
+        env[ENV_KEYS.SYSTEM_ACCESSTOKEN] ?? "",
         env["AZURE_DEVOPS_TOKEN"] ?? "",
     ];
 }
