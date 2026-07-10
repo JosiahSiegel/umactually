@@ -54,8 +54,7 @@
     "check:dist-freshness": "node scripts/check-dist-freshness.mjs",
     "view:summary-layouts": "node scripts/view-summary-layouts.mjs",
     "clean:summary-layouts": "node scripts/clean-viewer.mjs",
-    "prepublishOnly": "npm run typecheck && npm test -- --run && npm run bundle && npm run check:dist-freshness",
-    "prepare": "npm run bundle"
+    "prepublishOnly": "npm run typecheck && npm test -- --run && npm run bundle && npm run check:dist-freshness"
   },
   "engines": {
     "node": ">=24"
