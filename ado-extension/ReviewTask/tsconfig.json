@@ -20,6 +20,6 @@
     "declaration": false,
     "sourceMap": false
   },
-  "include": ["index.ts"],
-  "exclude": ["node_modules", "*.js", "*.d.ts"]
+  "include": ["index.ts", "redact-secrets.ts"],
+  "exclude": ["node_modules", "tests/**", "*.js", "*.d.ts"]
 }

@@ -11,9 +11,10 @@
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "watch": "tsc -p tsconfig.json --watch",
-    "clean": "rm -rf index.js *.js.map",
+    "clean": "rm -f index.js redact-secrets.js *.js.map",
     "lint": "tsc --noEmit -p tsconfig.json",
-    "typecheck": "tsc --noEmit -p tsconfig.json"
+    "typecheck": "tsc --noEmit -p tsconfig.json",
+    "test": "node --test tests/redact-secrets.test.cjs"
   },
   "dependencies": {
     "azure-pipelines-task-lib": "^5.1.0"

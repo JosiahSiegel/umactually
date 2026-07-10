@@ -1,6 +1,8 @@
 # Build artifacts
 index.js
 index.js.map
+redact-secrets.js
+redact-secrets.js.map
 
 # Dependencies
 node_modules/

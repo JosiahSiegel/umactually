@@ -302,9 +302,21 @@ interface CliResult {
   readonly severityHighCount: number;
 }
 
+// The redactSecretsForLog helper is in its own file (./redact-secrets.ts)
+// so it can be unit-tested without booting the full task pipeline.
+// The helper is pure: no azure-pipelines-task-lib dependencies, no
+// top-level side effects. See ./tests/redact-secrets.test.ts.
+import { redactSecretsForLog } from "./redact-secrets.js";
+
 async function runCli(invocation: CliInvocation, timeoutMs: number): Promise<CliResult> {
   const { tool, args, env } = invocation;
-  console.log(`[umactually] $ ${tool} ${args.join(" ")}`);
+  // Mask any value passed via --api-key, --sonar-token before logging.
+  // Build logs are typically retained and visible to a wider audience
+  // than the secret — leaking the key into the log would defeat the
+  // whole redaction layer. Mirrors the same concern as parent repo
+  // finding #2270 (chunk-failure sanitization in orchestrator.ts).
+  const maskedArgs = redactSecretsForLog(args);
+  console.log(`[umactually] $ ${tool} ${maskedArgs.join(" ")}`);
 
   // Use spawn so we get a real handle for timeout/streaming.
   const { spawn } = await import("node:child_process");

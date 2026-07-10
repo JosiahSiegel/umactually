@@ -87,7 +87,7 @@ cd "${EXT_DIR}/ReviewTask"
 
 if [[ ! -d node_modules ]]; then
   echo "    Installing task dependencies (azure-pipelines-task-lib)..."
-  npm install --no-audit --no-fund --loglevel=error
+  npm install --no-audit --no-fund --cache "${NPM_CACHE:-C:/Users/josia/AppData/Local/Temp/npm-cache}" --loglevel=error
 fi
 
 npx tsc -p tsconfig.json
@@ -97,6 +97,13 @@ if [[ ! -f index.js ]]; then
   exit 1
 fi
 echo "    Build OK ($(wc -c < index.js) bytes)"
+
+# Run the smoke tests. The test suite uses node:test (no
+# extra dependencies) and exercises redactSecretsForLog, the
+# task.json structural validator, and the build-artifact
+# presence check. If this fails the build script aborts.
+echo "==> Running task smoke tests"
+npm test --silent 2>&1 | tail -10
 
 cd "${EXT_DIR}"
 
@@ -163,6 +170,15 @@ echo "==> Built: ${VSIX_PATH}"
 # ---------------------------------------------------------------------------
 
 if [[ -n "${SHARE_ORG}" ]]; then
+  # Guard: tfx-cli accepts an empty --token silently and produces
+  # a confusing auth error later. Fail fast with a clear message
+  # before spawning the subprocess. Mirrors the --publish block.
+  if [[ -z "${AZURE_DEVOPS_PAT:-}${ADO_PAT:-}" ]]; then
+    echo "ERROR: --share requires AZURE_DEVOPS_PAT (or ADO_PAT) env var to be set." >&2
+    echo "       Generate a PAT at https://dev.azure.com/<org>/_usersSettings/tokens" >&2
+    echo "       with 'Marketplace (publish)' scope, then export it before running this script." >&2
+    exit 1
+  fi
   echo "==> Sharing ${VSIX_PATH} with org: ${SHARE_ORG}"
   tfx extension share \
     --vsix "${VSIX_PATH}" \
