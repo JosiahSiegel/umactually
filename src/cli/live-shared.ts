@@ -135,6 +135,15 @@ export type LiveProviderOutcome = {
    * PR #56 regression test that locks the 8-fabrication count.
    */
   readonly parseWarnings: readonly import("./parse-warnings.js").ParseWarning[];
+  /**
+   * Verified-facts contradiction filter result: findings whose body
+   * asserted something was missing from a verified list (e.g. "dist/
+   * is missing from package.json#files") when the verified list
+   * actually contains it. These are DOWNGRADED to `info` severity,
+   * not dropped — the operator gets full visibility. Empty when no
+   * facts were extracted from the diff.
+   */
+  readonly verifiedFactsFilter: import("./verify-findings.js").VerifiedFactsFilterResult;
 };
 
 /**

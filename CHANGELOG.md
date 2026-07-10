@@ -52,7 +52,7 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   through to cross-protocol fallback; false positives are bounded to
   exact-segment matches so `anthropic-v2` and `my-anthropic` do NOT
   trigger. See
-  [`docs/providers.md`](docs/providers.md#path-prefix-heuristic-the-anthropic-url--anthropic-protocol-commit).
+  [`docs/providers.md`](docs/providers.md#path-prefix-heuristic-the-anthropic-url-commits-to-the-anthropic-protocol).
 - **New `docs/providers.md`**: canonical end-to-end reference for the
   provider layer — per-family URL resolution rules, the
   Anthropic-protocol path-prefix preservation contract (with the
@@ -126,8 +126,21 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   ON. Both are no-ops when the provider doesn't support
   `response_format: json_schema`.
 
-### Changed
+### Removed
 
+- **BREAKING**: `action.yml` `outputs:` block removed. The
+  declaration named 7 outputs (`marker`, `marker_text`,
+  `inline_thread_count`, `suppressed_comment_count`, `artifact_path`,
+  `posted_thread_count`, `posted_status_state`) that the runtime
+  never wrote (zero `core.setOutput` / `GITHUB_OUTPUT` /
+  `::set-output` calls anywhere in `src/`). Any downstream consumer
+  using `steps.<id>.outputs.<name>` was silently getting empty
+  strings; the CI guard at `scripts/check-self-review-output.mjs`
+  reads the on-disk JSON artifact directly instead. The `outputs:`
+  block was removed so the action schema no longer advertises a
+  contract it does not implement. Consumers that need structured
+  review metadata should read the JSON artifact written to
+  `artifacts/manual/` (path configurable via `--output-artifact`).
 - **BREAKING**: `ignore-minor` input removed.
   The `ignore-minor` action input, CLI flag, and `UMACTUALLY_IGNORE_MINOR` /
   `REVIEW_IGNORE_MINOR` env vars have been removed. Use `minimum-severity`

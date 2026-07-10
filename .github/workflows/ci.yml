@@ -8,6 +8,16 @@ on:
     branches:
       - main
 
+# Cancel in-progress CI runs on the same PR to avoid wasted minutes when
+# a new commit lands on a PR before the previous run finishes. Runs on
+# refs/heads/main get their own concurrency group ('ci-main') with
+# cancel-in-progress disabled so post-merge CI failures are never
+# silently cancelled — fast-forward merge series must surface.
+concurrency:
+  group: >-
+    ${{ github.workflow }}-${{ github.ref != 'refs/heads/main' && github.ref || 'ci-main' }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+
 permissions:
   contents: read
 
@@ -23,9 +33,15 @@ jobs:
         uses: actions/setup-node@v4
         with:
           node-version: "24"
+          # Restore the npm cache that the original --cache flag used to
+          # provide (the previous override hardcoded a Windows-specific
+          # path under a personal user dir and broke for any other runner).
+          # actions/setup-node manages the cache location automatically
+          # keyed on package-lock.json.
+          cache: "npm"
 
       - name: Install dependencies
-        run: npm ci --cache "C:\\Users\\josia\\AppData\\Local\\Temp\\opencode\\npm-cache"
+        run: npm ci
 
       - name: Typecheck
         run: npm run typecheck

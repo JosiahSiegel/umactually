@@ -112,6 +112,7 @@ async function requestChunkedLiveReview(input: {
             // (the parser never ran on this chunk).
             severityWarnings: [],
             parseWarnings: [],
+            verifiedFactsFilter: { kept: [], downgraded: [], downgradeReasons: [] },
           };
         }
         outcomes[index] = outcome;
@@ -340,6 +341,7 @@ async function dispatchLivePlatform(input: {
           // no severity warnings to surface.
           severityWarnings: [],
           parseWarnings: [],
+          verifiedFactsFilter: { kept: [], downgraded: [], downgradeReasons: [] },
         };
       } else {
         const chunks = chunkDiffByFile(diffText);

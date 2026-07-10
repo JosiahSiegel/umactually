@@ -9583,6 +9583,35 @@ function githubReviewsUrl(context) {
  * no summary so the post path can still complete (e.g. when every
  * chunk returned a parse-fail fallback).
  */
+/**
+ * Aggregate the per-chunk verified-facts filter results into a single
+ * result for the merged outcome. Concatenates kept/downgraded lists
+ * across chunks and emits global indices so the downgrade reasons
+ * reference the final merged comment positions.
+ */
+function aggregateVerifiedFactsFilter(outcomes) {
+    const kept = [];
+    const downgraded = [];
+    const downgradeReasons = [];
+    let globalIndex = 0;
+    for (const o of outcomes) {
+        for (const c of o.verifiedFactsFilter.kept) {
+            kept.push(c);
+            globalIndex += 1;
+        }
+        for (let i = 0; i < o.verifiedFactsFilter.downgraded.length; i += 1) {
+            const c = o.verifiedFactsFilter.downgraded[i];
+            const reason = o.verifiedFactsFilter.downgradeReasons[i]?.reason ?? "";
+            if (c === undefined) {
+                continue;
+            }
+            downgraded.push(c);
+            downgradeReasons.push({ index: globalIndex, reason });
+            globalIndex += 1;
+        }
+    }
+    return { kept, downgraded, downgradeReasons };
+}
 function mergeReviewResults(outcomes, options) {
     const maxComments = options?.maxComments ?? DEFAULT_MAX_COMMENTS;
     if (outcomes.length === 0) {
@@ -9594,6 +9623,7 @@ function mergeReviewResults(outcomes, options) {
             // No inputs → no warnings to surface.
             severityWarnings: [],
             parseWarnings: [],
+            verifiedFactsFilter: { kept: [], downgraded: [], downgradeReasons: [] },
         };
     }
     const first = outcomes[0];
@@ -9714,6 +9744,11 @@ function mergeReviewResults(outcomes, options) {
         // review emits its own set, and the merged outcome surfaces all of
         // them so the parse-warnings.json artifact reflects the full run.
         parseWarnings: outcomes.flatMap((o) => o.parseWarnings),
+        // Aggregate verified-facts downgrades across all chunks. Each chunk's
+        // filter ran independently against the same diff so we dedup by
+        // (index, reason) so a finding flagged in two chunks doesn't double-
+        // count in the summary.
+        verifiedFactsFilter: aggregateVerifiedFactsFilter(outcomes),
     };
 }
 
@@ -11321,7 +11356,563 @@ async function readPromptFiles(paths, byteCap, options) {
     return parts.join(PROMPT_SEPARATOR);
 }
 
+;// CONCATENATED MODULE: ./src/review/verified-facts.ts
+// SPDX-License-Identifier: MIT
+/**
+ * Verified facts layer — pre-computed repo-state assertions that the
+ * model receives in the prompt and that the post-filter uses to
+ * downgrade findings that contradict the diff.
+ *
+ * Why this exists
+ * ---------------
+ * On PR #41 the model emitted a Critical finding claiming "dist/ is not
+ * listed in files so the npm-published action will fail at runtime",
+ * even though the diff for package.json showed `dist` present both
+ * before and after the change (`npm pack --dry-run` confirmed dist/
+ * ships). The model was making a verifiable repo-state claim without
+ * grounding it in the diff.
+ *
+ * The fix has two halves:
+ *   1. Before sending to the model, scan the post-change state of a
+ *      handful of known structured fields (package.json#files,
+ *      action.yml#outputs, etc.) and produce a "Verified facts" block
+ *      the model sees BEFORE the diff. The model can then read the
+ *      facts and avoid asserting facts the action can already prove.
+ *   2. After the model responds, scan each finding's body for
+ *      contradiction patterns (e.g. "X is missing from Y" when the
+ *      verified facts say X is in Y). Downgrade such findings to
+ *      `info` rather than posting them at their claimed severity.
+ *
+ * This module only does the extraction (step 1). The post-filter is in
+ * `src/cli/verify-findings.ts`.
+ *
+ * Design constraints
+ * ------------------
+ * - Source of truth: the diff. The action runs in a consumer's
+ *   checkout where cwd/package.json is NOT UmActually's package.json
+ *   — we cannot read the worktree. We reconstruct each file's
+ *   post-change content from the diff hunks (context lines + added
+ *   lines, ignoring removed lines).
+ * - Conservative: if a fact cannot be extracted with high
+ *   confidence, it is OMITTED. The model should not see a half-baked
+ *   fact and assume it's authoritative.
+ * - Cheap: O(diff length) parse. One JSON.parse call per structured
+ *   field. No external commands, no network.
+ */
+
+/**
+ * Derive verified facts from the supplied PR diff text.
+ *
+ * Reconstructs the post-change content of `package.json` and
+ * `action.yml` from the diff hunks (the action cannot read the
+ * consumer's worktree safely — cwd is the consumer's repo, not ours).
+ */
+function collectVerifiedFacts(diffText) {
+    return {
+        filesInDiff: listDiffPaths(diffText),
+        packageJsonFiles: readPackageJsonFiles(diffText),
+        packageJsonBin: readPackageJsonBin(diffText),
+        packageJsonMain: readPackageJsonMain(diffText),
+        actionOutputs: readActionOutputs(diffText),
+    };
+}
+/**
+ * Render the verified facts as a prompt block. Empty blocks are
+ * omitted (the prompt should not signal "facts collected" when none
+ * were). The block is rendered as plain text the model can read line
+ * by line.
+ */
+function renderVerifiedFactsBlock(facts) {
+    const lines = [];
+    if (facts.packageJsonFiles !== null) {
+        lines.push(`package.json#files (post-change): ${JSON.stringify(facts.packageJsonFiles.files)}`);
+    }
+    if (facts.packageJsonBin !== null) {
+        lines.push(`package.json#bin (post-change): ${JSON.stringify(facts.packageJsonBin.binEntries)}`);
+    }
+    if (facts.packageJsonMain !== null) {
+        lines.push(`package.json#main (post-change): ${JSON.stringify(facts.packageJsonMain.main)}`);
+    }
+    if (facts.actionOutputs !== null) {
+        lines.push(`action.yml#outputs (post-change): ${JSON.stringify(facts.actionOutputs.outputKeys)}`);
+    }
+    if (lines.length === 0) {
+        return "";
+    }
+    return [
+        "Verified facts (reconstructed from the diff below; do NOT contradict these — they are authoritative for this PR):",
+        ...lines,
+        "If a finding would contradict any of the above, the finding is wrong; omit it or rephrase without the contradiction.",
+    ].join("\n");
+}
+/**
+ * Reconstruct a file's post-change content from the diff. Returns
+ * null if the file does not appear in the diff. The reconstructed
+ * content is the file content as it would appear in the post-PR
+ * worktree — context lines preserved verbatim, added lines included,
+ * removed lines excluded.
+ *
+ * Implementation note: we walk the diff linearly, tracking which file
+ * we're in, and for the target file we collect (context lines, added
+ * lines). We ignore hunk headers (`@@ -X,Y +A,B @@`) and file-path
+ * headers (`+++ b/...`, `--- a/...`).
+ */
+function reconstructFileFromDiff(diffText, filePath) {
+    const files = new Map();
+    let currentPath = null;
+    let buffer = null;
+    const flush = () => {
+        if (currentPath !== null && buffer !== null) {
+            files.set(currentPath, buffer);
+        }
+    };
+    for (const line of diffText.split(/\r?\n/u)) {
+        if (line.startsWith("diff --git ")) {
+            flush();
+            const match = /^diff --git a\/(.+) b\/(.+)$/u.exec(line);
+            currentPath = match === null ? null : (match[2] ?? null);
+            buffer = [];
+            continue;
+        }
+        if (currentPath === null || buffer === null) {
+            continue;
+        }
+        if (line.startsWith("+++") || line.startsWith("---")) {
+            continue;
+        }
+        if (line.startsWith("@@")) {
+            continue;
+        }
+        // Only process unified-diff hunk lines. A line that doesn't
+        // start with one of the three markers ('+', '-', ' ') is not
+        // a valid hunk line (e.g. a stray blank line, an annotation).
+        // Skip it rather than injecting it as a context line, which
+        // would shift line numbers and corrupt the JSON parser
+        // downstream.
+        if (line.startsWith("+")) {
+            buffer.push(line.slice(1));
+        }
+        else if (line.startsWith("-")) {
+            // removed line: skip
+        }
+        else if (line.startsWith(" ")) {
+            buffer.push(line.slice(1));
+        }
+        else {
+            // No diff marker; ignore (e.g. blank line, malformed input).
+        }
+    }
+    flush();
+    const reconstructed = files.get(filePath);
+    return reconstructed === undefined ? null : reconstructed.join("\n");
+}
+function readPackageJsonFiles(diffText) {
+    const content = reconstructFileFromDiff(diffText, "package.json");
+    if (content === null) {
+        return null;
+    }
+    // Try full JSON parse first — works when the diff includes enough
+    // of the file to form a valid document (e.g. when package.json is
+    // small enough that one hunk covers the whole `files` block).
+    const fullParse = tryParsePackageJson(content);
+    if (fullParse !== null) {
+        return extractFilesFromParsed(fullParse);
+    }
+    // Fall back to targeted extraction: find the `"files":` key and
+    // read every JSON string inside the matching brackets. This
+    // handles the common case where only the array's contents were
+    // changed (the array opener is in the unchanged context).
+    return extractFilesByScanning(content);
+}
+function readPackageJsonBin(diffText) {
+    const content = reconstructFileFromDiff(diffText, "package.json");
+    if (content === null) {
+        return null;
+    }
+    const fullParse = tryParsePackageJson(content);
+    if (fullParse !== null) {
+        return extractBinFromParsed(fullParse);
+    }
+    return extractBinByScanning(content);
+}
+function readPackageJsonMain(diffText) {
+    const content = reconstructFileFromDiff(diffText, "package.json");
+    if (content === null) {
+        return null;
+    }
+    const fullParse = tryParsePackageJson(content);
+    if (fullParse !== null) {
+        return extractMainFromParsed(fullParse);
+    }
+    return extractMainByScanning(content);
+}
+function tryParsePackageJson(content) {
+    try {
+        const parsed = JSON.parse(content);
+        if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
+            return null;
+        }
+        return parsed;
+    }
+    catch {
+        return null;
+    }
+}
+function extractFilesFromParsed(pkg) {
+    const files = pkg["files"];
+    if (files === undefined) {
+        return null;
+    }
+    if (!Array.isArray(files)) {
+        return null;
+    }
+    const out = [];
+    for (const entry of files) {
+        if (typeof entry !== "string") {
+            return null;
+        }
+        out.push(entry);
+    }
+    return { kind: "package-json-files", files: out };
+}
+function extractBinFromParsed(pkg) {
+    const bin = pkg["bin"];
+    if (bin === undefined) {
+        return { kind: "package-json-bin", binEntries: [] };
+    }
+    if (typeof bin === "string") {
+        return { kind: "package-json-bin", binEntries: [`(binary) -> ${bin}`] };
+    }
+    if (typeof bin !== "object" || bin === null || Array.isArray(bin)) {
+        return null;
+    }
+    const out = [];
+    for (const [name, value] of Object.entries(bin)) {
+        if (typeof value !== "string") {
+            return null;
+        }
+        out.push(`${name} -> ${value}`);
+    }
+    return { kind: "package-json-bin", binEntries: out };
+}
+function extractMainFromParsed(pkg) {
+    const main = pkg["main"];
+    if (main === undefined) {
+        return null;
+    }
+    if (typeof main !== "string") {
+        return null;
+    }
+    return { kind: "package-json-main", main };
+}
+// ---------------------------------------------------------------------------
+// Targeted scanners — used when the diff only contains part of the file
+// and JSON.parse fails. Each scanner locates a JSON key and reads its
+// array / object / string value with a hand-rolled walker.
+// ---------------------------------------------------------------------------
+/**
+ * Find `"files": [ ... ]` and read every string element. Returns null
+ * if the key isn't present or the array isn't a clean JSON string
+ * array. Tolerates multiline arrays.
+ */
+function extractFilesByScanning(content) {
+    const start = findKeyIndex(content, '"files"');
+    if (start === -1) {
+        return null;
+    }
+    let i = content.indexOf(":", start) + 1;
+    while (i < content.length && /\s/u.test(content[i] ?? "")) {
+        i++;
+    }
+    if (content[i] !== "[") {
+        return null;
+    }
+    i++;
+    const out = [];
+    while (i < content.length) {
+        const ch = content[i];
+        if (ch === undefined) {
+            return null;
+        }
+        if (ch === "]") {
+            return { kind: "package-json-files", files: out };
+        }
+        if (ch === '"') {
+            const end = readStringLiteral(content, i);
+            if (end === -1) {
+                return null;
+            }
+            out.push(decodeStringLiteral(content.slice(i + 1, end)));
+            i = end + 1;
+            while (i < content.length &&
+                (content[i] === " " || content[i] === "\t" || content[i] === "\n" || content[i] === "\r" || content[i] === ",")) {
+                i++;
+            }
+            continue;
+        }
+        i++;
+    }
+    return null;
+}
+/**
+ * Find `"bin": { ... }` and read every `"name": "value"` entry.
+ */
+function extractBinByScanning(content) {
+    const start = findKeyIndex(content, '"bin"');
+    if (start === -1) {
+        // `bin` was not mentioned in the diff at all — we don't know
+        // whether it was removed or simply not touched. Conservatively
+        // omit rather than misreport.
+        return null;
+    }
+    let i = content.indexOf(":", start) + 1;
+    while (i < content.length && /\s/u.test(content[i] ?? "")) {
+        i++;
+    }
+    if (content[i] === '"') {
+        // Single string form: `"bin": "bin/foo.mjs"`.
+        const end = readStringLiteral(content, i);
+        if (end === -1) {
+            return null;
+        }
+        const value = decodeStringLiteral(content.slice(i + 1, end));
+        return { kind: "package-json-bin", binEntries: [`(binary) -> ${value}`] };
+    }
+    if (content[i] !== "{") {
+        return null;
+    }
+    i++;
+    const out = [];
+    while (i < content.length) {
+        const ch = content[i];
+        if (ch === undefined) {
+            return null;
+        }
+        if (ch === "}") {
+            return { kind: "package-json-bin", binEntries: out };
+        }
+        if (ch === '"') {
+            const keyEnd = readStringLiteral(content, i);
+            if (keyEnd === -1) {
+                return null;
+            }
+            const name = decodeStringLiteral(content.slice(i + 1, keyEnd));
+            let j = keyEnd + 1;
+            while (j < content.length && (content[j] === " " || content[j] === "\t" || content[j] === "\n" || content[j] === "\r")) {
+                j++;
+            }
+            if (content[j] !== ":") {
+                return null;
+            }
+            j++;
+            while (j < content.length && (content[j] === " " || content[j] === "\t" || content[j] === "\n" || content[j] === "\r")) {
+                j++;
+            }
+            if (content[j] !== '"') {
+                return null;
+            }
+            const valEnd = readStringLiteral(content, j);
+            if (valEnd === -1) {
+                return null;
+            }
+            const value = decodeStringLiteral(content.slice(j + 1, valEnd));
+            out.push(`${name} -> ${value}`);
+            i = valEnd + 1;
+            while (i < content.length &&
+                (content[i] === " " || content[i] === "\t" || content[i] === "\n" || content[i] === "\r" || content[i] === ",")) {
+                i++;
+            }
+            continue;
+        }
+        i++;
+    }
+    return null;
+}
+/**
+ * Find `"main": "value"` and return the string.
+ */
+function extractMainByScanning(content) {
+    const start = findKeyIndex(content, '"main"');
+    if (start === -1) {
+        return null;
+    }
+    let i = content.indexOf(":", start) + 1;
+    while (i < content.length && /\s/u.test(content[i] ?? "")) {
+        i++;
+    }
+    if (content[i] !== '"') {
+        return null;
+    }
+    const end = readStringLiteral(content, i);
+    if (end === -1) {
+        return null;
+    }
+    return { kind: "package-json-main", main: decodeStringLiteral(content.slice(i + 1, end)) };
+}
+/**
+ * Locate the start index of a JSON key. Returns -1 if not present.
+ * Skips past any key-like substring that is followed by something
+ * other than `:` (after optional tabs/spaces).
+ */
+function findKeyIndex(content, quotedKey) {
+    let i = 0;
+    while (i < content.length) {
+        const idx = content.indexOf(quotedKey, i);
+        if (idx === -1) {
+            return -1;
+        }
+        let j = idx + quotedKey.length;
+        while (j < content.length && (content[j] === " " || content[j] === "\t")) {
+            j++;
+        }
+        if (content[j] === ":") {
+            return idx;
+        }
+        i = idx + 1;
+    }
+    return -1;
+}
+/**
+ * Return the closing-`"` index for a string literal that starts at
+ * `openIndex` (which must point at the opening `"`). Returns -1 on
+ * unterminated literal. Handles `\"` escapes.
+ */
+function readStringLiteral(content, openIndex) {
+    for (let i = openIndex + 1; i < content.length; i++) {
+        const ch = content[i];
+        if (ch === undefined) {
+            return -1;
+        }
+        if (ch === "\\") {
+            i++;
+            continue;
+        }
+        if (ch === '"') {
+            return i;
+        }
+    }
+    return -1;
+}
+/**
+ * Decode a JSON string-literal body (without surrounding quotes) into
+ * a JS string. Handles the common escapes \\, \", \n, \r, \t.
+ */
+function decodeStringLiteral(body) {
+    let out = "";
+    for (let i = 0; i < body.length; i++) {
+        const ch = body[i];
+        if (ch === "\\") {
+            const next = body[i + 1];
+            if (next === undefined) {
+                out += "\\";
+                continue;
+            }
+            switch (next) {
+                case '"':
+                    out += '"';
+                    i++;
+                    break;
+                case "\\":
+                    out += "\\";
+                    i++;
+                    break;
+                case "n":
+                    out += "\n";
+                    i++;
+                    break;
+                case "r":
+                    out += "\r";
+                    i++;
+                    break;
+                case "t":
+                    out += "\t";
+                    i++;
+                    break;
+                default:
+                    out += next;
+                    i++;
+                    break;
+            }
+            continue;
+        }
+        out += ch ?? "";
+    }
+    return out;
+}
+function readActionOutputs(diffText) {
+    const content = reconstructFileFromDiff(diffText, "action.yml");
+    if (content === null) {
+        return null;
+    }
+    return parseActionOutputsYaml(content, diffText);
+}
+/**
+ * Minimal YAML reader for the action.yml `outputs:` block. We do not
+ * need a full YAML parser — outputs is always a flat map of
+ * key: description pairs at 2-space indentation under the
+ * `outputs:` line. We collect keys only.
+ *
+ * Returns null when the reconstructed action.yml does NOT contain an
+ * `outputs:` line AND the diff did not explicitly remove one. This
+ * is important: returning an empty `outputKeys` array for an
+ * action.yml that never had outputs would cause the post-filter to
+ * interpret the empty list as "outputs were removed" and
+ * potentially flag findings that legitimately mention outputs in
+ * natural language.
+ *
+ * When the diff DOES contain `-outputs:` (or an entire outputs
+ * block removal), we return `{ outputKeys: [] }` because the diff
+ * itself is the signal that outputs was removed; the absence of
+ * `outputs:` in the reconstructed file is the post-change state.
+ */
+function parseActionOutputsYaml(text, diffText) {
+    const lines = text.split(/\r?\n/u);
+    const outputKeys = [];
+    let inOutputsBlock = false;
+    let sawOutputsMarker = false;
+    for (const line of lines) {
+        if (/^outputs\s*:\s*$/u.test(line)) {
+            inOutputsBlock = true;
+            sawOutputsMarker = true;
+            continue;
+        }
+        if (!inOutputsBlock) {
+            continue;
+        }
+        if (line.length > 0 && line[0] !== " " && line[0] !== "\t") {
+            inOutputsBlock = false;
+            continue;
+        }
+        const keyMatch = /^  (\w[\w-]*)\s*:/u.exec(line);
+        if (keyMatch !== null) {
+            outputKeys.push(keyMatch[1] ?? "");
+        }
+    }
+    if (sawOutputsMarker) {
+        return { kind: "action-outputs", outputKeys };
+    }
+    // Reconstructed action.yml has no `outputs:` line. Distinguish:
+    // (a) the diff explicitly removed the outputs block — in which
+    //     case the post-change state is "no outputs" and we should
+    //     report it as such.
+    // (b) action.yml never had outputs, or our reconstruction is
+    //     incomplete — in which case we should not report it.
+    if (/^-\s*outputs\s*:\s*$/um.test(diffText)) {
+        return { kind: "action-outputs", outputKeys: [] };
+    }
+    // Also detect removal of the entire outputs block (the `outputs:`
+    // line is in a `-outputs:` removal but the keys were also
+    // removed as a sequence). Check for any `-  <key>:` pattern that
+    // is a key in the outputs block. As a fallback, check whether
+    // the diff has the `outputs:` word at all in a removed line.
+    if (/^-\s*outputs\b/um.test(diffText)) {
+        return { kind: "action-outputs", outputKeys: [] };
+    }
+    return null;
+}
+
 ;// CONCATENATED MODULE: ./src/cli/provider-prompts.ts
+
 
 
 
@@ -11406,6 +11997,16 @@ async function buildProviderPrompts(input) {
     if (input.sonarContext !== undefined && input.sonarContext.length > 0) {
         userParts.push(input.sonarContext);
     }
+    // Verified facts layer — pre-computed, authoritative repo state the
+    // model sees BEFORE the diff. Without this layer the model can
+    // hallucinate verifiable repo facts (e.g. claim dist/ is missing
+    // from package.json#files when it is present in the diff). With
+    // it, the model has an explicit contradiction anchor.
+    const verifiedFacts = collectVerifiedFacts(input.diffText);
+    const verifiedBlock = renderVerifiedFactsBlock(verifiedFacts);
+    if (verifiedBlock.length > 0) {
+        userParts.push(verifiedBlock);
+    }
     // Layer 2-A: enumerate the diff's path list in the user message
     // so the model can verify any cited path by grep. We list the
     // paths even on the strict-schema path (which already constrains
@@ -11488,6 +12089,11 @@ function buildDefaultSystemPrompt() {
         "3. Emit a JSON object whose `path` matches a file from the Files-in-diff list in the user message and whose `line` matches a line number that appears in the diff for that file.",
         "If you cannot complete steps 2-3, OMIT the finding entirely. Do not invent a citation.",
         "",
+        "Verified-facts grounding:",
+        "- When the user message includes a 'Verified facts' block, those facts are authoritative for this PR. They were reconstructed from the diff by a deterministic parser. Do NOT emit a finding whose `body` contradicts any fact in the block — omit the finding entirely or rephrase it without the contradiction.",
+        "- Common contradiction patterns to avoid: claiming X is missing from a whitelist/list when X is in the verified list, claiming Y was removed when Y is in the verified list, claiming an output/input was deleted when the verified facts show it still exists.",
+        "- If you would have made such a claim and the verified facts contradict it, the verified facts are correct; your reading of the diff was wrong. Omit the finding.",
+        "",
         "Forbidden (a non-exhaustive list to make the boundary explicit; the positive constraint above takes precedence):",
         "- Do NOT cite any path that is not in the Files-in-diff list. Build artifacts, generated files, and lockfiles are stripped from the diff upstream and are never reviewable here.",
         "- Do NOT cite any line number that does not appear in the diff for the cited path. Off-by-one or hallucinated line numbers are rejected by the post-filter.",
@@ -11544,6 +12150,7 @@ async function readAdditionalPrompt(input) {
  * extra accuracy, opt in via `--verify-findings`.
  */
 
+
 /**
  * Pure post-filter that drops findings whose (path, line) doesn't anchor
  * to the supplied diff. This is the deterministic verification — the
@@ -11567,6 +12174,190 @@ function verifyFindingsAgainstDiff(input) {
         }
     }
     return { verified, dropped };
+}
+/**
+ * Downgrade findings whose body contradicts a verified fact.
+ *
+ * "Contradicts" means the body asserts something is missing/absent/
+ * removed when the verified facts show it is present. The most common
+ * pattern observed in self-review (PR #41): the model claimed "dist/ is
+ * not in package.json#files" while the verified facts showed dist/ in
+ * the list.
+ *
+ * We do NOT drop these findings — we downgrade them to `info` and
+ * surface the reason. The operator gets full visibility into what the
+ * model claimed, and the downgraded severity prevents the false
+ * positive from blocking a PR or producing noise.
+ *
+ * Conservative: only flag clear contradiction patterns (asserting
+ * something is missing from a verified list). Subjective language
+ * like "looks unusual" is not flagged.
+ */
+function applyVerifiedFactsFilter(input) {
+    const facts = collectVerifiedFacts(input.diffText);
+    const downgradeReasons = [];
+    const kept = [];
+    const downgraded = [];
+    for (let i = 0; i < input.review.comments.length; i += 1) {
+        const comment = input.review.comments[i];
+        if (comment === undefined) {
+            continue;
+        }
+        const contradiction = detectVerifiedFactsContradiction(comment.body, facts);
+        if (contradiction === null) {
+            kept.push(comment);
+        }
+        else {
+            downgradeReasons.push({ index: i, reason: contradiction });
+            downgraded.push({ ...comment, severity: "info" });
+        }
+    }
+    return { kept, downgraded, downgradeReasons };
+}
+const MISSING_PHRASES = [
+    "is missing",
+    "is not in",
+    "is not listed",
+    "is not included",
+    "are missing",
+    "are not in",
+    "are not listed",
+    "are not included",
+    "won't be",
+    "will not be",
+    "doesn't include",
+    "does not include",
+    "lacks",
+    "absent from",
+    "not present in",
+    "fails to include",
+    "fails to ship",
+    "will not ship",
+    "won't ship",
+    "was removed",
+    "is removed",
+    "were removed",
+    "are removed",
+    "orphan",
+];
+/**
+ * Tokens that frequently appear in natural-language text and
+ * SHOULD NOT be treated as candidate identifiers for contradiction
+ * detection. Without this list, a sentence like "the output is
+ * missing" would match the bareword "output" against
+ * action.yml#outputs (where "output" might coincidentally be a
+ * key) and trigger a false-positive downgrade. We seed this with
+ * every common English word plus every review-action vocabulary
+ * word we observed in PR-#41's false positives.
+ */
+const STOPWORD_TOKENS = new Set([
+    // English stop words
+    "the", "a", "an", "and", "or", "but", "if", "then", "else", "when",
+    "while", "for", "of", "to", "in", "on", "at", "by", "from", "as",
+    "is", "are", "was", "were", "be", "been", "being", "have", "has",
+    "had", "do", "does", "did", "will", "would", "should", "could", "may",
+    "might", "can", "must", "shall", "this", "that", "these", "those",
+    "with", "into", "about", "between", "through", "during", "before",
+    "after", "above", "below", "out", "off", "over", "under", "again",
+    "further", "once", "here", "there", "where", "why", "how", "all",
+    "any", "both", "each", "few", "more", "most", "other", "some",
+    "such", "no", "nor", "not", "only", "own", "same", "so", "than",
+    "too", "very", "just", "still", "now", "it", "its", "they", "them",
+    "their", "we", "our", "us", "you", "your", "i", "me", "my", "he",
+    "she", "his", "her", "what", "which", "who", "whom",
+    // Review-action vocabulary
+    "missing", "removed", "output", "outputs", "input", "inputs",
+    "block", "list", "lists", "array", "field", "entry", "entries",
+    "key", "keys", "value", "values", "file", "files", "directory",
+    "directories", "include", "includes", "including", "exclude",
+    "excludes", "see", "see-also", "per", "via", "downstream",
+    "upstream", "consumers", "consumer", "consume", "depends",
+    "depend", "callers", "caller", "post", "posted", "posting", "postable",
+    "find", "finds", "found", "want", "wants", "wanted", "need", "needs",
+    "needed", "use", "uses", "used", "using", "claim", "claims", "assert",
+    "asserts", "asserted", "appears", "appear", "show", "shows", "showed",
+    "verify", "verifies", "verified", "render", "renders", "rendered",
+    "check", "checks", "checked", "action", "actions", "comment",
+    "comments", "review", "reviews", "operator", "operators", "test",
+    "tests", "change", "changes", "changed", "add", "adds", "added",
+    "remove", "removes", "delete", "deletes", "deleted", "merge",
+    "merges", "merged", "keep", "keeps", "kept", "fail", "fails",
+    "failed", "pass", "passes", "passed", "make", "makes", "made",
+    "ensure", "ensures", "ensured", "consider", "considers", "considered",
+    "likely", "potentially", "probably", "perhaps", "may-be", "might-be",
+    "seems", "appears-to", "looks", "looks-like", "is-likely",
+]);
+/**
+ * Detect a verified-facts contradiction in a finding body.
+ *
+ * Conservative: only flag when a token that appears in a verified
+ * list is mentioned in close proximity to a "missing / removed"
+ * phrase in the same sentence. A finding body that just casually
+ * mentions a verified-list word ("dist/ is referenced in the
+ * README") does NOT trigger a downgrade.
+ *
+ * The proximity check is the critical safety property: a body must
+ * have BOTH a missing-phrase AND a verified-list token within ~80
+ * characters of each other. This drastically reduces false-positive
+ * downgrades compared to the naive "any token matches" approach.
+ */
+function detectVerifiedFactsContradiction(body, facts) {
+    const lower = body.toLowerCase();
+    // Step 1: confirm the body has a missing/removed phrase. If not,
+    // no contradiction is possible.
+    if (!MISSING_PHRASES.some((p) => lower.includes(p))) {
+        return null;
+    }
+    // Step 2: collect every verified-list token (the universe of
+    // candidates that would constitute a contradiction).
+    const verifiedCandidates = new Set();
+    if (facts.packageJsonFiles !== null) {
+        for (const f of facts.packageJsonFiles.files) {
+            verifiedCandidates.add(f);
+        }
+    }
+    if (facts.actionOutputs !== null && facts.actionOutputs.outputKeys.length > 0) {
+        for (const k of facts.actionOutputs.outputKeys) {
+            verifiedCandidates.add(k);
+        }
+    }
+    if (verifiedCandidates.size === 0) {
+        return null;
+    }
+    // Step 3: for each candidate token, check whether it appears in
+    // the SAME SENTENCE as a missing-phrase. We split the body on
+    // sentence boundaries (period, newline) and look for both the
+    // token and a missing-phrase in the same sentence. A token that
+    // appears only in a different sentence from the missing-phrase is
+    // NOT a contradiction — it's natural-language prose.
+    for (const candidate of verifiedCandidates) {
+        const candidateLower = candidate.toLowerCase();
+        if (candidateLower.length === 0)
+            continue;
+        if (STOPWORD_TOKENS.has(candidateLower))
+            continue;
+        // Split the body into sentences. We use a simple split on
+        // . ! ? and newlines. Empty sentences are skipped.
+        const sentences = lower.split(/[.!?\n]+/u).map((s) => s.trim()).filter((s) => s.length > 0);
+        for (const sentence of sentences) {
+            if (!sentence.includes(candidateLower))
+                continue;
+            const hasMissingPhrase = MISSING_PHRASES.some((p) => sentence.includes(p));
+            if (!hasMissingPhrase)
+                continue;
+            // Both the candidate and a missing-phrase appear in the same
+            // sentence. This is the contradiction.
+            if (facts.packageJsonFiles !== null &&
+                facts.packageJsonFiles.files.includes(candidate)) {
+                return `body claims "${candidate}" is missing from package.json#files, but the verified list includes "${candidate}"`;
+            }
+            if (facts.actionOutputs !== null &&
+                facts.actionOutputs.outputKeys.includes(candidate)) {
+                return `body claims "${candidate}" output was removed, but the verified list of action.yml#outputs includes "${candidate}"`;
+            }
+        }
+    }
+    return null;
 }
 /**
  * Model-based verification. Sends a per-finding prompt to the same
@@ -11709,6 +12500,16 @@ async function requestLiveReview(input) {
      */
     function handleSuccess(result, providerName) {
         const preVerifyReview = normalizeProviderReview(result.review, [providerApiKey, input.platformToken]);
+        const verifyFilterResult = input.parsed.verifyFindings !== false
+            ? applyVerifyFilter(preVerifyReview, input.diffText)
+            : {
+                review: preVerifyReview,
+                verifiedFactsFilter: {
+                    kept: preVerifyReview.comments,
+                    downgraded: [],
+                    downgradeReasons: [],
+                },
+            };
         const preVerifyOutcome = withParseWarnings({
             review: preVerifyReview,
             endpoint: result.endpoint,
@@ -11716,11 +12517,9 @@ async function requestLiveReview(input) {
             modelId,
             severityWarnings: severityWarnings.slice(),
             diffText: input.diffText,
+            verifiedFactsFilter: verifyFilterResult.verifiedFactsFilter,
         });
-        const finalReview = input.parsed.verifyFindings !== false
-            ? applyVerifyFilter(preVerifyReview, input.diffText)
-            : preVerifyReview;
-        return { ...preVerifyOutcome, review: finalReview };
+        return { ...preVerifyOutcome, review: verifyFilterResult.review };
     }
     /**
      * Parse-failure path shared by all three provider families.
@@ -11957,21 +12756,51 @@ function withParseWarnings(input) {
             review: input.review,
             diffText: input.diffText,
         }).warnings,
+        verifiedFactsFilter: input.verifiedFactsFilter ?? {
+            kept: input.review.comments,
+            downgraded: [],
+            downgradeReasons: [],
+        },
     };
 }
 /**
  * Apply the deterministic (path, line) verify filter to the
  * review's comments[]. Returns a new LiveReview with the filtered
- * comments[]. The original is left untouched so callers (the
- * parse-warnings artifact builder) see the pre-filter payload.
+ * comments[] PLUS a verified-facts filter result describing
+ * findings that were downgraded because they contradicted a verified
+ * fact.
+ *
+ * The returned `review.comments` contains ONLY the KEPT findings
+ * (at their original severity). Downgraded findings live in
+ * `verifiedFactsFilter.downgraded` as a separate list — callers that
+ * want to surface downgraded findings read that list directly. This
+ * avoids double-counting: downstream code iterating
+ * `review.comments` for posting sees the kept set; downstream code
+ * reading `verifiedFactsFilter.downgraded` for audit sees the
+ * downgraded set. The two are disjoint.
+ *
+ * The original is left untouched so callers (the parse-warnings
+ * artifact builder) see the pre-filter payload.
  *
  * Defense-in-depth Layer 4: the post-filter in
  * `selectPostableComments` runs the same check, but doing it here
  * means the platform-posting paths only see anchorable findings.
+ *
+ * Layer 4.5: after the (path, line) filter, run the verified-facts
+ * contradiction filter. Findings whose body asserts something is
+ * missing from a verified list (e.g. "dist/ is missing from
+ * package.json#files" when dist/ is in fact in files) are
+ * downgraded to info severity in the downgraded list so the
+ * operator can see what the model claimed and why it was
+ * downgraded, but they do not enter `review.comments` (which is
+ * what gets posted).
  */
 function applyVerifyFilter(review, diffText) {
     if (diffText.length === 0) {
-        return review;
+        return {
+            review,
+            verifiedFactsFilter: { kept: review.comments, downgraded: [], downgradeReasons: [] },
+        };
     }
     // Delegate to the standalone `verifyFindingsAgainstDiff` helper
     // so the inline filter and the parse-warnings artifact agree
@@ -11979,7 +12808,19 @@ function applyVerifyFilter(review, diffText) {
     // re-implementation diverged from the helper in a way that
     // let the artifact undercount fabrication events.
     const { verified } = verifyFindingsAgainstDiff({ review, diffText });
-    return { ...review, comments: verified };
+    const filteredReview = { ...review, comments: verified };
+    const verifiedFactsFilter = applyVerifiedFactsFilter({
+        review: filteredReview,
+        diffText,
+    });
+    // Only the KEPT findings go into review.comments. Downgraded
+    // findings are surfaced separately via verifiedFactsFilter.downgraded
+    // (the operator can choose to render them; the platform-posting
+    // path ignores them).
+    return {
+        review: { ...filteredReview, comments: verifiedFactsFilter.kept },
+        verifiedFactsFilter,
+    };
 }
 function normalizeProviderReview(payload, secrets) {
     // Layer 4 deterministic verification is applied in the caller
@@ -12446,6 +13287,7 @@ function applySimulateFindings(input) {
         // there are no severity warnings to surface.
         severityWarnings: [],
         parseWarnings: [],
+        verifiedFactsFilter: { kept: [], downgraded: [], downgradeReasons: [] },
     };
 }
 function sanitizeComments(comments, secrets) {
@@ -12549,6 +13391,7 @@ async function requestChunkedLiveReview(input) {
                     // (the parser never ran on this chunk).
                     severityWarnings: [],
                     parseWarnings: [],
+                    verifiedFactsFilter: { kept: [], downgraded: [], downgradeReasons: [] },
                 };
             }
             outcomes[index] = outcome;
@@ -12742,6 +13585,7 @@ async function dispatchLivePlatform(input) {
                     // no severity warnings to surface.
                     severityWarnings: [],
                     parseWarnings: [],
+                    verifiedFactsFilter: { kept: [], downgraded: [], downgradeReasons: [] },
                 };
             }
             else {

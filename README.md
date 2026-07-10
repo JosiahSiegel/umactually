@@ -84,7 +84,7 @@ When your `UMACTUALLY_API_KEY` is a vanilla Anthropic key (no OpenAI proxy in fr
           UMACTUALLY_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
 ```
 
-Override the base URL (for a self-hosted Anthropic-protocol gateway) via `api-url: https://your-gateway.example/anthropic`. The Anthropic provider resolves the URL per the [@anthropic-ai/sdk](https://github.com/anthropics/anthropic-sdk-typescript) convention — **it preserves the operator's path prefix** so Anthropic-protocol gateways mounted under arbitrary prefixes (the documented example: [MiniMax](https://platform.minimax.io/docs/token-plan/claude-code) at `https://api.minimax.io/anthropic`) route correctly. A typo like `https://api.minimax.io/anthropic` lands at `https://api.minimax.io/anthropic/v1/messages`, not `/v1/messages` (which 404s on MiniMax).
+Override the base URL (for a self-hosted Anthropic-protocol gateway) via `api-url: https://your-gateway.example/anthropic`. The Anthropic provider resolves the URL per the [@anthropic-ai/sdk](https://github.com/anthropics/anthropic-sdk-typescript) convention — **it preserves the operator's path prefix** so Anthropic-protocol gateways mounted under arbitrary prefixes (the documented example: [MiniMax](https://platform.minimax.io/docs/token-plan/claude-code) at `https://api.minimax.io/anthropic`) route correctly. The action appends `/v1/messages` to whatever base URL you give it, so `https://api.minimax.io/anthropic` lands at `https://api.minimax.io/anthropic/v1/messages` — never at `/v1/messages` (which would 404 on MiniMax's Anthropic endpoint).
 
 ### Anthropic-compatible gateways and MiniMax
 
