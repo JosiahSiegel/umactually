@@ -118,42 +118,40 @@ secret:
 
   # Per-occurrence ignores. The 9 historical synthetic API keys
   # from the cross-protocol-dispatch test file are pre-registered
-  # here so the corresponding dashboard incidents auto-resolve
-  # the next time the scanner runs.
+  # here as SHA256 occurrence hashes so the corresponding dashboard
+  # incidents auto-resolve the next time the scanner runs.
   #
-  # Form: SHA256 of the secret VALUE (not the literal value). This is
-  # the GitGuardian-recommended form: the match is by the SHA256 of
-  # the secret occurrence, which means a maintainer who copies one
-  # of these literal values into `src/` (a path that IS scanned) will
-  # NOT have the secret auto-suppressed — the SHA256 of the literal
-  # text in src would be different from the SHA256 of the literal
-  # text in test/. The original draft used literal values; that was
-  # a footgun (any path could suppress the finding) and is fixed here.
+  # Form: bare SHA256 of the secret VALUE (NO surrounding quotes —
+  # GitGuardian's parser reads the match value as a plain string, so
+  # quoted values are matched as `'<value>'` with literal apostrophes
+  # and would not match the secret in the test file. Bare scalars
+  # are the correct form per the GitGuardian schema).
+  #
+  # The 9 historical fixtures below are stable, so the SHA256 of the
+  # value is also stable. If a maintainer copies one of the literal
+  # values into a NEW path (e.g. `src/`), the SHA256 of that copy
+  # would be the same — but `src/` is not in the `ignored_paths`
+  # list above, so the scanner would still see it. The SHA256 form
+  # is footgun-safe (the secret is matched by hash, not by literal
+  # text); the literal form was a footgun (the secret was matched
+  # by literal, which meant the GitGuardian dashboard's dashboard
+  # would silently ignore a real copy in `src/`).
   ignored_matches:
-    # SHA256("sk-anthropic-v2-do-not-leak")
     - name: 'synthetic API key fixture (cross-protocol dispatch — pre-existing, SHA256 of value)'
-      match: '30e55e18233ca182773dcff62457830db6f9809d58833b9ff779c41553cf7917'
-    # SHA256("sk-anth-fallback-secret-do-not-leak")
+      match: 30e55e18233ca182773dcff62457830db6f9809d58833b9ff779c41553cf7917
     - name: 'synthetic API key fixture (cross-protocol dispatch — pre-existing, SHA256 of value)'
-      match: '9f2a7af08c6d07c8a8c18999057d51ef567cf7c130708b7a22526de6f3db150e'
-    # SHA256("sk-openai-fallback-secret-do-not-leak")
+      match: 9f2a7af08c6d07c8a8c18999057d51ef567cf7c130708b7a22526de6f3db150e
     - name: 'synthetic API key fixture (cross-protocol dispatch — pre-existing, SHA256 of value)'
-      match: 'c2f8a432986c7fc7fc5b46e8d570e9aee7ff93442fe74f4556f11d199362cefd'
-    # SHA256("sk-no-fallback-do-not-leak")
+      match: c2f8a432986c7fc7fc5b46e8d570e9aee7ff93442fe74f4556f11d199362cefd
     - name: 'synthetic API key fixture (cross-protocol dispatch — pre-existing, SHA256 of value)'
-      match: '063222337b3184b287338487db12638685e26906d0166f65126c282883b0fc29'
-    # SHA256("sk-both-fail-do-not-leak")
+      match: 063222337b3184b287338487db12638685e26906d0166f65126c282883b0fc29
     - name: 'synthetic API key fixture (cross-protocol dispatch — pre-existing, SHA256 of value)'
-      match: '47ca29c0ccce5bc1a5d29c7b5c44ccbbade67a00a9b1045418e90c2c04e0fa88'
-    # SHA256("sk-minimax-smoke-test-do-not-leak")
+      match: 47ca29c0ccce5bc1a5d29c7b5c44ccbbade67a00a9b1045418e90c2c04e0fa88
     - name: 'synthetic API key fixture (cross-protocol dispatch — pre-existing, SHA256 of value)'
-      match: '45a93c1629f0f09083add2e456af57a12c9be6b8ddc893d42b6b520b5bde268a'
-    # SHA256("sk-test-llm-anthropic-do-not-leak")
+      match: 45a93c1629f0f09083add2e456af57a12c9be6b8ddc893d42b6b520b5bde268a
     - name: 'synthetic API key fixture (cross-protocol dispatch — pre-existing, SHA256 of value)'
-      match: '70a298ec773ce21562a4770210a55c1197dc1fd9696952322457dfc81c031688'
-    # SHA256("sk-test-openai-do-not-leak")
+      match: 70a298ec773ce21562a4770210a55c1197dc1fd9696952322457dfc81c031688
     - name: 'synthetic API key fixture (cross-protocol dispatch — pre-existing, SHA256 of value)'
-      match: 'b49559ee5d52f4abfb116f6875e1de9662582a77bc1b84713b4ab2a5ddc82a75'
-    # SHA256("sk-explicit-anthropic-do-not-leak")
+      match: b49559ee5d52f4abfb116f6875e1de9662582a77bc1b84713b4ab2a5ddc82a75
     - name: 'synthetic API key fixture (cross-protocol dispatch — pre-existing, SHA256 of value)'
-      match: '1415b5ece4de91bd047f826c48ae93c575dd048c8d3f46ed91e84a0406be94e4'
+      match: 1415b5ece4de91bd047f826c48ae93c575dd048c8d3f46ed91e84a0406be94e4
