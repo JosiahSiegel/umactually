@@ -116,29 +116,44 @@ secret:
     # Dependabot / GitHub metadata — not a code surface.
     - '.github/dependabot.yml'
 
-  # Per-occurrence ignores. The 12 historical synthetic API keys
+  # Per-occurrence ignores. The 9 historical synthetic API keys
   # from the cross-protocol-dispatch test file are pre-registered
   # here so the corresponding dashboard incidents auto-resolve
-  # the next time the scanner runs. SHA256 is the preferred form
-  # (the secret value rotates; the occurrence hash does not), but
-  # for the historical fixtures the literal value is stable and
-  # human-readable, so we register the literal for grep-ability.
+  # the next time the scanner runs.
+  #
+  # Form: SHA256 of the secret VALUE (not the literal value). This is
+  # the GitGuardian-recommended form: the match is by the SHA256 of
+  # the secret occurrence, which means a maintainer who copies one
+  # of these literal values into `src/` (a path that IS scanned) will
+  # NOT have the secret auto-suppressed — the SHA256 of the literal
+  # text in src would be different from the SHA256 of the literal
+  # text in test/. The original draft used literal values; that was
+  # a footgun (any path could suppress the finding) and is fixed here.
   ignored_matches:
-    - name: 'synthetic API key fixture (cross-protocol dispatch — pre-existing)'
-      match: 'sk-anthropic-v2-do-not-leak'
-    - name: 'synthetic API key fixture (cross-protocol dispatch — pre-existing)'
-      match: 'sk-anth-fallback-secret-do-not-leak'
-    - name: 'synthetic API key fixture (cross-protocol dispatch — pre-existing)'
-      match: 'sk-openai-fallback-secret-do-not-leak'
-    - name: 'synthetic API key fixture (cross-protocol dispatch — pre-existing)'
-      match: 'sk-no-fallback-do-not-leak'
-    - name: 'synthetic API key fixture (cross-protocol dispatch — pre-existing)'
-      match: 'sk-both-fail-do-not-leak'
-    - name: 'synthetic API key fixture (cross-protocol dispatch — pre-existing)'
-      match: 'sk-minimax-smoke-test-do-not-leak'
-    - name: 'synthetic API key fixture (cross-protocol dispatch — pre-existing)'
-      match: 'sk-test-llm-anthropic-do-not-leak'
-    - name: 'synthetic API key fixture (cross-protocol dispatch — pre-existing)'
-      match: 'sk-test-openai-do-not-leak'
-    - name: 'synthetic API key fixture (cross-protocol dispatch — pre-existing)'
-      match: 'sk-explicit-anthropic-do-not-leak'
+    # SHA256("sk-anthropic-v2-do-not-leak")
+    - name: 'synthetic API key fixture (cross-protocol dispatch — pre-existing, SHA256 of value)'
+      match: '30e55e18233ca182773dcff62457830db6f9809d58833b9ff779c41553cf7917'
+    # SHA256("sk-anth-fallback-secret-do-not-leak")
+    - name: 'synthetic API key fixture (cross-protocol dispatch — pre-existing, SHA256 of value)'
+      match: '9f2a7af08c6d07c8a8c18999057d51ef567cf7c130708b7a22526de6f3db150e'
+    # SHA256("sk-openai-fallback-secret-do-not-leak")
+    - name: 'synthetic API key fixture (cross-protocol dispatch — pre-existing, SHA256 of value)'
+      match: 'c2f8a432986c7fc7fc5b46e8d570e9aee7ff93442fe74f4556f11d199362cefd'
+    # SHA256("sk-no-fallback-do-not-leak")
+    - name: 'synthetic API key fixture (cross-protocol dispatch — pre-existing, SHA256 of value)'
+      match: '063222337b3184b287338487db12638685e26906d0166f65126c282883b0fc29'
+    # SHA256("sk-both-fail-do-not-leak")
+    - name: 'synthetic API key fixture (cross-protocol dispatch — pre-existing, SHA256 of value)'
+      match: '47ca29c0ccce5bc1a5d29c7b5c44ccbbade67a00a9b1045418e90c2c04e0fa88'
+    # SHA256("sk-minimax-smoke-test-do-not-leak")
+    - name: 'synthetic API key fixture (cross-protocol dispatch — pre-existing, SHA256 of value)'
+      match: '45a93c1629f0f09083add2e456af57a12c9be6b8ddc893d42b6b520b5bde268a'
+    # SHA256("sk-test-llm-anthropic-do-not-leak")
+    - name: 'synthetic API key fixture (cross-protocol dispatch — pre-existing, SHA256 of value)'
+      match: '70a298ec773ce21562a4770210a55c1197dc1fd9696952322457dfc81c031688'
+    # SHA256("sk-test-openai-do-not-leak")
+    - name: 'synthetic API key fixture (cross-protocol dispatch — pre-existing, SHA256 of value)'
+      match: 'b49559ee5d52f4abfb116f6875e1de9662582a77bc1b84713b4ab2a5ddc82a75'
+    # SHA256("sk-explicit-anthropic-do-not-leak")
+    - name: 'synthetic API key fixture (cross-protocol dispatch — pre-existing, SHA256 of value)'
+      match: '1415b5ece4de91bd047f826c48ae93c575dd048c8d3f46ed91e84a0406be94e4'
