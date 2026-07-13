@@ -9,13 +9,17 @@ export type ActionInputs = {
   readonly model: string;
   readonly prompt: string;
   readonly promptFile: string;
+  readonly promptFiles: string;
   readonly additionalPrompt: string;
   readonly additionalPromptFile: string;
+  readonly additionalPromptFiles: string;
   readonly walkthrough: boolean;
   readonly diagnostic: boolean;
   readonly dryRun: boolean;
   readonly debugRawResponse: boolean;
   readonly simulateFindings: boolean;
+  readonly strictSchema: boolean;
+  readonly verifyFindings: boolean;
   readonly reviewTimeoutSeconds: number;
   readonly stallSeconds: number;
   readonly maxOutputTokens: number;
@@ -106,13 +110,17 @@ export function readActionInputs(env: NodeJS.ProcessEnv = process.env): ActionIn
     model: get("model"),
     prompt: get("prompt"),
     promptFile: get("prompt-file"),
+    promptFiles: get("prompt-files"),
     additionalPrompt: get("additional-prompt"),
     additionalPromptFile: get("additional-prompt-file"),
+    additionalPromptFiles: get("additional-prompt-files"),
     walkthrough: getBool("walkthrough", false),
     diagnostic: getBool("diagnostic", false),
     dryRun: getDryRun(),
     debugRawResponse: getBool("debug-raw-response", false),
     simulateFindings: getBool("simulate-findings", false),
+    strictSchema: getBool("strict-schema", FIELDS.strictSchema.defaultValue as boolean),
+    verifyFindings: getBool("verify-findings", FIELDS.verifyFindings.defaultValue as boolean),
     // Numeric defaults sourced from FIELDS.<x>.defaultValue so the
     // schema stays the single source of truth — adding a new integer
     // field doesn't require editing this file.

@@ -339,6 +339,232 @@ describe("runLive inline prompt plumbing (Wave 2 / S7-RED)", () => {
     expect(system).toContain("INLINE-WINS");
     expect(system).not.toContain("FILE-PROMPT-MARKER-MUST-NOT-POST");
   });
+
+  it("ULW-AUTOLOAD-001: auto-loads CLAUDE.md from cwd into the system prompt by default", async () => {
+    // Given: a CLAUDE.md file in cwd; NO --prompt-file / --prompt-files override.
+    workspace = await mkdtemp(join(tmpdir(), "umactually-live-prompts-autoload-"));
+    const eventPath = join(workspace, "event.json");
+    await writeFile(eventPath, EVENT_JSON, "utf8");
+    await writeFile(
+      join(workspace, "CLAUDE.md"),
+      "AUTOLOAD-CLAUDE-MARKER",
+      "utf8",
+    );
+    const recorder = makeFetchRecorder(githubRoutes(PROVIDER_REVIEW));
+
+    // When: live orchestration runs with no prompt overrides.
+    const result = await runLive({
+      parsed: parseCliArgs(["--platform", "github", "--no-dry-run"]),
+      cwd: workspace,
+      env: githubEnv(eventPath),
+      fetchImpl: recorder.fetchImpl,
+    });
+
+    // Then: the run completes successfully.
+    expect(result.exitCode).toBe(0);
+
+    // Then: the provider receives the CLAUDE.md content as part of the system prompt.
+    const providerCall = findCall(recorder.calls, "POST", "/v1/responses");
+    const { system } = readProviderPrompts(providerCall);
+    expect(system).toContain("AUTOLOAD-CLAUDE-MARKER");
+  });
+
+  it("ULW-OVERRIDE-001: --prompt-files OVERRIDES the default-lookup list (CLAUDE.md is not loaded)", async () => {
+    // Given: BOTH a CLAUDE.md (would auto-load) AND an explicit override file.
+    workspace = await mkdtemp(join(tmpdir(), "umactually-live-prompts-override-"));
+    const eventPath = join(workspace, "event.json");
+    await writeFile(eventPath, EVENT_JSON, "utf8");
+    await writeFile(
+      join(workspace, "CLAUDE.md"),
+      "CLAUDE-MUST-NOT-POST",
+      "utf8",
+    );
+    await writeFile(
+      join(workspace, "review.md"),
+      "REVIEW-OVERRIDE-MARKER",
+      "utf8",
+    );
+    const recorder = makeFetchRecorder(githubRoutes(PROVIDER_REVIEW));
+
+    // When: live orchestration runs with --prompt-files.
+    const result = await runLive({
+      parsed: parseCliArgs([
+        "--platform",
+        "github",
+        "--no-dry-run",
+        "--prompt-files",
+        "review.md",
+      ]),
+      cwd: workspace,
+      env: githubEnv(eventPath),
+      fetchImpl: recorder.fetchImpl,
+    });
+
+    // Then: the run completes successfully.
+    expect(result.exitCode).toBe(0);
+
+    // Then: ONLY the override is in the system prompt; CLAUDE.md is NOT consulted.
+    const providerCall = findCall(recorder.calls, "POST", "/v1/responses");
+    const { system } = readProviderPrompts(providerCall);
+    expect(system).toContain("REVIEW-OVERRIDE-MARKER");
+    expect(system).not.toContain("CLAUDE-MUST-NOT-POST");
+  });
+
+  it("ULW-OVERRIDE-002: --additional-prompt-files (array) routes into the user prompt", async () => {
+    // Mirror of ULW-OVERRIDE-001 for the user-prompt side.
+    workspace = await mkdtemp(join(tmpdir(), "umactually-live-prompts-override-user-"));
+    const eventPath = join(workspace, "event.json");
+    await writeFile(eventPath, EVENT_JSON, "utf8");
+    // CLAUDE.md present but must NOT bleed into the user prompt.
+    await writeFile(
+      join(workspace, "CLAUDE.md"),
+      "CLAUDE-USER-MUST-NOT-POST",
+      "utf8",
+    );
+    await writeFile(
+      join(workspace, "extra.md"),
+      "EXTRA-OVERRIDE-USER-MARKER",
+      "utf8",
+    );
+    const recorder = makeFetchRecorder(githubRoutes(PROVIDER_REVIEW));
+
+    const result = await runLive({
+      parsed: parseCliArgs([
+        "--platform",
+        "github",
+        "--no-dry-run",
+        "--additional-prompt-files",
+        "extra.md",
+      ]),
+      cwd: workspace,
+      env: githubEnv(eventPath),
+      fetchImpl: recorder.fetchImpl,
+    });
+
+    expect(result.exitCode).toBe(0);
+    const providerCall = findCall(recorder.calls, "POST", "/v1/responses");
+    const { user } = readProviderPrompts(providerCall);
+    expect(user).toContain("Additional instructions:");
+    expect(user).toContain("EXTRA-OVERRIDE-USER-MARKER");
+    expect(user).not.toContain("CLAUDE-USER-MUST-NOT-POST");
+  });
+
+  it("ULW-ENV-001: UMACTUALLY_PROMPT_FILES env var wires through to the provider", async () => {
+    // The env var path MUST be honored end-to-end (not just at the
+    // CLI surface). The action sets INPUT_PROMPT_FILES in env, but
+    // when running via the CLI directly the operator can use
+    // UMACTUALLY_PROMPT_FILES.
+    workspace = await mkdtemp(join(tmpdir(), "umactually-live-prompts-env-"));
+    const eventPath = join(workspace, "event.json");
+    await writeFile(eventPath, EVENT_JSON, "utf8");
+    // CLAUDE.md that MUST NOT be loaded (env array wins).
+    await writeFile(
+      join(workspace, "CLAUDE.md"),
+      "CLAUDE-ENV-MUST-NOT-POST",
+      "utf8",
+    );
+    await writeFile(
+      join(workspace, "env-override.md"),
+      "ENV-OVERRIDE-MARKER",
+      "utf8",
+    );
+    const recorder = makeFetchRecorder(githubRoutes(PROVIDER_REVIEW));
+
+    const env = githubEnv(eventPath);
+    env["UMACTUALLY_PROMPT_FILES"] = "env-override.md";
+
+    const result = await runLive({
+      parsed: parseCliArgs(["--platform", "github", "--no-dry-run"]),
+      cwd: workspace,
+      env,
+      fetchImpl: recorder.fetchImpl,
+    });
+
+    expect(result.exitCode).toBe(0);
+    const providerCall = findCall(recorder.calls, "POST", "/v1/responses");
+    const { system } = readProviderPrompts(providerCall);
+    expect(system).toContain("ENV-OVERRIDE-MARKER");
+    expect(system).not.toContain("CLAUDE-ENV-MUST-NOT-POST");
+  });
+
+  it("ULW-MULTI-001: --prompt-files with multiple comma-separated paths concatenates in order", async () => {
+    workspace = await mkdtemp(join(tmpdir(), "umactually-live-prompts-multi-"));
+    const eventPath = join(workspace, "event.json");
+    await writeFile(eventPath, EVENT_JSON, "utf8");
+    await writeFile(join(workspace, "a.md"), "FIRST-FILE-MARKER", "utf8");
+    await writeFile(join(workspace, "b.md"), "SECOND-FILE-MARKER", "utf8");
+    const recorder = makeFetchRecorder(githubRoutes(PROVIDER_REVIEW));
+
+    const result = await runLive({
+      parsed: parseCliArgs([
+        "--platform",
+        "github",
+        "--no-dry-run",
+        "--prompt-files",
+        "a.md,b.md",
+      ]),
+      cwd: workspace,
+      env: githubEnv(eventPath),
+      fetchImpl: recorder.fetchImpl,
+    });
+
+    expect(result.exitCode).toBe(0);
+    const providerCall = findCall(recorder.calls, "POST", "/v1/responses");
+    const { system } = readProviderPrompts(providerCall);
+    expect(system).toContain("FIRST-FILE-MARKER");
+    expect(system).toContain("SECOND-FILE-MARKER");
+    // And: the order is preserved (a.md before b.md in the joined content).
+    const firstIdx = system.indexOf("FIRST-FILE-MARKER");
+    const secondIdx = system.indexOf("SECOND-FILE-MARKER");
+    expect(firstIdx).toBeLessThan(secondIdx);
+  });
+
+  it("ULW-CACHE-001: runLive resets the cache on each entry point — second invocation sees fresh filesystem state", async () => {
+    // Regression for the self-review concern on PR #47: the
+    // process-scoped cache MUST be invalidated on each `runLive`
+    // entry point so a long-lived process that invokes runLive
+    // multiple times against the same cwd sees fresh filesystem
+    // state on each call. Without this, a CI step that removes a
+    // prompt file between reviews would crash with "not-found".
+    workspace = await mkdtemp(join(tmpdir(), "umactually-live-prompts-cache-"));
+    const eventPath = join(workspace, "event.json");
+    await writeFile(eventPath, EVENT_JSON, "utf8");
+    await writeFile(join(workspace, "CLAUDE.md"), "CACHE-MARKER", "utf8");
+    const recorder1 = makeFetchRecorder(githubRoutes(PROVIDER_REVIEW));
+    const recorder2 = makeFetchRecorder(githubRoutes(PROVIDER_REVIEW));
+
+    // First invocation: populates the cache.
+    const first = await runLive({
+      parsed: parseCliArgs(["--platform", "github", "--no-dry-run"]),
+      cwd: workspace,
+      env: githubEnv(eventPath),
+      fetchImpl: recorder1.fetchImpl,
+    });
+    expect(first.exitCode).toBe(0);
+    const firstCall = findCall(recorder1.calls, "POST", "/v1/responses");
+    expect(readProviderPrompts(firstCall).system).toContain("CACHE-MARKER");
+
+    // Remove the file between invocations. With the entry-point
+    // reset hook, the SECOND invocation re-stats the disk and
+    // finds no CLAUDE.md — so the system prompt falls through to
+    // the built-in default. The run completes successfully
+    // (exitCode 0).
+    await rm(join(workspace, "CLAUDE.md"), { force: true });
+    const second = await runLive({
+      parsed: parseCliArgs(["--platform", "github", "--no-dry-run"]),
+      cwd: workspace,
+      env: githubEnv(eventPath),
+      fetchImpl: recorder2.fetchImpl,
+    });
+    expect(second.exitCode).toBe(0);
+    // Then: the second invocation's system prompt did NOT include
+    // CACHE-MARKER (file was gone, cache was reset, no default
+    // loaded) — fell through to the built-in default.
+    const secondCall = findCall(recorder2.calls, "POST", "/v1/responses");
+    expect(secondCall).toBeDefined();
+    expect(readProviderPrompts(secondCall).system).not.toContain("CACHE-MARKER");
+    expect(readProviderPrompts(secondCall).system).toContain("You are UmActually");
+  });
 });
 
 function githubEnv(eventPath: string): NodeJS.ProcessEnv {

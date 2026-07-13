@@ -564,6 +564,153 @@ describe("config: loadConfigFromSources precedence", () => {
     expect(result.prompts.system).toBe("FROM_ENV_FILE");
   });
 
+  it("ULW-LOADER-001: env.promptSystemFiles (array) overrides env.promptSystemFile (single)", async () => {
+    // Given: BOTH env.promptSystemFiles (new array) and env.promptSystemFile
+    // (legacy single) are supplied. The new array MUST win.
+    await writeFile(join(cwd, "old.txt"), "OLD-SINGLE-MUST-NOT-POST", "utf8");
+    await writeFile(join(cwd, "new-array-a.md"), "NEW-ARRAY-A", "utf8");
+    await writeFile(join(cwd, "new-array-b.md"), "NEW-ARRAY-B", "utf8");
+    const result = await loadConfigFromSources({
+      cli: {},
+      inputs: {},
+      env: {
+        promptSystemFile: "old.txt",
+        promptSystemFiles: "new-array-a.md,new-array-b.md",
+      },
+      cwd,
+    });
+    // Then: array wins; legacy is ignored.
+    expect(result.prompts.system).toContain("NEW-ARRAY-A");
+    expect(result.prompts.system).toContain("NEW-ARRAY-B");
+    expect(result.prompts.system).not.toContain("OLD-SINGLE-MUST-NOT-POST");
+    // Then: both override files are reflected in the surface.
+    // (splitAndCollect splits the raw env string into the flat path list.)
+    expect(result.prompts.systemFilesOverride).toEqual([
+      "new-array-a.md",
+      "new-array-b.md",
+    ]);
+  });
+
+  it("ULW-LOADER-002: env.promptUserFiles (array) populates userFilesOverride", async () => {
+    // Given: env.promptUserFiles supplied.
+    await writeFile(join(cwd, "ua.md"), "USER-ARRAY-A", "utf8");
+    await writeFile(join(cwd, "ub.md"), "USER-ARRAY-B", "utf8");
+    const result = await loadConfigFromSources({
+      cli: {},
+      inputs: {},
+      env: { promptUserFiles: "ua.md,ub.md" },
+      cwd,
+    });
+    // Then: the user prompt is the concatenated content.
+    expect(result.prompts.user).toContain("USER-ARRAY-A");
+    expect(result.prompts.user).toContain("USER-ARRAY-B");
+    expect(result.prompts.userFilesOverride).toEqual(["ua.md", "ub.md"]);
+  });
+
+  it("ULW-LOADER-003: CLI promptSystemFiles wins over env.promptSystemFiles (CLI > env)", async () => {
+    // Pin the canonical CLI > inputs > env precedence chain for the
+    // new plural list field.
+    await writeFile(join(cwd, "cli.md"), "CLI-WINS", "utf8");
+    await writeFile(join(cwd, "env.md"), "ENV-LOSES", "utf8");
+    const result = await loadConfigFromSources({
+      cli: { promptSystemFiles: "cli.md" },
+      inputs: {},
+      env: { promptSystemFiles: "env.md" },
+      cwd,
+    });
+    expect(result.prompts.system).toContain("CLI-WINS");
+    expect(result.prompts.system).not.toContain("ENV-LOSES");
+    expect(result.prompts.systemFilesOverride).toEqual(["cli.md"]);
+  });
+
+  it("ULW-LOADER-004: inputs.promptSystemFiles wins over env.promptSystemFiles (inputs > env)", async () => {
+    // When CLI omits the key, inputs must take precedence over env.
+    await writeFile(join(cwd, "inputs.md"), "INPUTS-WINS", "utf8");
+    await writeFile(join(cwd, "env.md"), "ENV-LOSES", "utf8");
+    const result = await loadConfigFromSources({
+      cli: {},
+      inputs: { promptSystemFiles: "inputs.md" },
+      env: { promptSystemFiles: "env.md" },
+      cwd,
+    });
+    expect(result.prompts.system).toContain("INPUTS-WINS");
+    expect(result.prompts.system).not.toContain("ENV-LOSES");
+    expect(result.prompts.systemFilesOverride).toEqual(["inputs.md"]);
+  });
+
+  it("ULW-LOADER-005: dedup WITHIN a single surface — same path listed twice in one value is loaded once", async () => {
+    // The splitAndCollect helper splits the raw env string on commas
+    // and dedupes WITHIN the surface — so a path listed twice in the
+    // same input (e.g. via a copy-paste artifact) is loaded once.
+    // Cross-surface dedup is NOT applied (CLI > env precedence picks
+    // ONE surface).
+    await writeFile(join(cwd, "shared.md"), "SHARED-CONTENT", "utf8");
+    const result = await loadConfigFromSources({
+      cli: { promptSystemFiles: "shared.md,shared.md,shared.md" },
+      inputs: {},
+      env: {},
+      cwd,
+    });
+    // Then: the path appears exactly once in systemFilesOverride.
+    expect(result.prompts.systemFilesOverride).toEqual(["shared.md"]);
+    // And: the content is present exactly once (no duplicated bytes).
+    const occurrences = result.prompts.system.split("SHARED-CONTENT").length - 1;
+    expect(occurrences).toBe(1);
+  });
+
+  it("ULW-LOADER-006: empty-string-after-split env value falls through to defaults", async () => {
+    // The env var contains only separators; the loader must NOT
+    // surface them as override paths. The default-lookup path is
+    // not consulted by the loader (that's only in the live path),
+    // so the system prompt ends up empty here.
+    await writeFile(join(cwd, "real.md"), "REAL-MARKER", "utf8");
+    const result = await loadConfigFromSources({
+      cli: {},
+      inputs: {},
+      env: { promptSystemFiles: ",,," },
+      cwd,
+    });
+    expect(result.prompts.systemFilesOverride).toEqual([]);
+    expect(result.prompts.system).toBe("");
+  });
+
+  it("ULW-LOADER-007: CLI promptUserFiles wins over inputs/env promptUserFiles for the user prompt", async () => {
+    // Mirror of ULW-LOADER-003 for the user-prompt side.
+    await writeFile(join(cwd, "cli-ua.md"), "CLI-USER", "utf8");
+    await writeFile(join(cwd, "env-ua.md"), "ENV-USER-MUST-NOT-POST", "utf8");
+    const result = await loadConfigFromSources({
+      cli: { promptUserFiles: "cli-ua.md" },
+      inputs: {},
+      env: { promptUserFiles: "env-ua.md" },
+      cwd,
+    });
+    expect(result.prompts.user).toContain("CLI-USER");
+    expect(result.prompts.user).not.toContain("ENV-USER-MUST-NOT-POST");
+  });
+
+  it("ULW-LOADER-008: systemFilesOverride and systemFiles are distinct lists in the returned config", async () => {
+    // The PromptConfig exposes BOTH lists so downstream consumers can
+    // tell which path was the override vs the legacy single-file
+    // path. Pin that the two lists are stored separately.
+    await writeFile(join(cwd, "over.md"), "OVERRIDE", "utf8");
+    await writeFile(join(cwd, "single.md"), "SINGLE", "utf8");
+    const result = await loadConfigFromSources({
+      cli: {},
+      inputs: {},
+      env: {
+        promptSystemFile: "single.md",
+        promptSystemFiles: "over.md",
+      },
+      cwd,
+    });
+    // Then: the surfaces are populated independently.
+    expect(result.prompts.systemFiles).toEqual(["single.md"]);
+    expect(result.prompts.systemFilesOverride).toEqual(["over.md"]);
+    // And: the system prompt reflects the OVERRIDE (override wins).
+    expect(result.prompts.system).toContain("OVERRIDE");
+    expect(result.prompts.system).not.toContain("SINGLE");
+  });
+
   it("platform auto-detect defaults to 'auto' and accepts 'github' / 'azure' from inputs", async () => {
     const r1 = await loadConfigFromSources({ ...empty(), cwd });
     expect(r1.platform).toBe("auto");
@@ -612,7 +759,9 @@ describe("config: readEnvSources", () => {
       UMACTUALLY_API_KEY: "sk_umactually_abcdef0123456789",
       UMACTUALLY_MODEL: "review-model-synthetic",
       UMACTUALLY_PROMPT_FILE: "prompts/system.md",
+      UMACTUALLY_PROMPT_FILES: "prompts/a.md,prompts/b.md",
       UMACTUALLY_ADDITIONAL_PROMPT_FILE: "prompts/extra.md",
+      UMACTUALLY_ADDITIONAL_PROMPT_FILES: "prompts/x.md\nprompts/y.md",
       UMACTUALLY_REVIEW_TIMEOUT_SECONDS: "300",
       UMACTUALLY_STALL_SECONDS: "270",
       UMACTUALLY_MAX_OUTPUT_TOKENS: "16000",
@@ -638,7 +787,9 @@ describe("config: readEnvSources", () => {
     expect(sources.providerApiKey).toBe("sk_umactually_abcdef0123456789");
     expect(sources.providerModel).toBe("review-model-synthetic");
     expect(sources.promptSystemFile).toBe("prompts/system.md");
+    expect(sources.promptSystemFiles).toBe("prompts/a.md,prompts/b.md");
     expect(sources.promptUserFile).toBe("prompts/extra.md");
+    expect(sources.promptUserFiles).toBe("prompts/x.md\nprompts/y.md");
     expect(sources.reviewTimeoutSeconds).toBe("300");
     expect(sources.stallTimeoutSeconds).toBe("270");
     expect(sources.maxOutputTokens).toBe("16000");

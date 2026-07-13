@@ -59,7 +59,7 @@ The `parse-warnings.json` artifact is the authoritative record of fabrication ev
 
 ## Prompt file path safety
 
-`prompt-file` (or `UMACTUALLY_PROMPT_FILE`) is loaded from disk and concatenated into the review request. The runtime refuses the following inputs:
+`prompt-file` / `additional-prompt-file` (or `UMACTUALLY_PROMPT_FILE` / `UMACTUALLY_ADDITIONAL_PROMPT_FILE`) is loaded from disk and concatenated into the review request. The runtime refuses the following inputs:
 
 - Absolute paths.
 - Paths containing `..` segments.
@@ -67,6 +67,30 @@ The `parse-warnings.json` artifact is the authoritative record of fabrication ev
 - Paths outside the configured allowed directories.
 
 Repository-relative paths only. The runtime resolves the file against the workflow `working-directory`, not against `process.cwd()` or `/tmp`. If you need additional prompt sources, extend the allow-list explicitly and add a regression test for each new path.
+
+### Default repository prompt lookup
+
+When **no** explicit `prompt-file` / `additional-prompt-file` AND no explicit `prompt-files` / `additional-prompt-files` list is supplied, UmActually auto-discovers common agent-instruction files from the repository root. The default-lookup list is:
+
+1. `CLAUDE.md` (Anthropic Claude Code / Cowork repo-level instructions)
+2. `AGENTS.md` (agent-agnostic convention; adopted by Cursor, aider, OpenAI Codex)
+3. `.github/copilot-instructions.md` (GitHub Copilot Coding Agent instructions)
+4. `.cursorrules` (Cursor legacy single-file rules)
+5. `GEMINI.md` (Google Gemini CLI repo-level instructions)
+
+Missing files are silently skipped — the action does not require any of these to exist. The lookup runs against the workflow `working-directory` (same cwd-resolved base as the explicit `prompt-file` reader), so every default-lookup path is subject to the same path-safety refusals above (absolute paths, `..`, symlink escape are all rejected).
+
+The default-lookup list is **completely overridden** when `prompt-files` / `additional-prompt-files` is non-empty: the array is consulted and the defaults are not. To opt out of the default lookup entirely without supplying files, set `prompt-files: ""` is already the default — there is no "skip defaults" toggle. The legacy `prompt-file` / `additional-prompt-file` (single-path) inputs also override the defaults (they take precedence over the auto-discovered list).
+
+If you need additional prompt sources beyond the documented list, extend the constants in `src/config/prompt-files.ts` (`DEFAULT_PROMPT_FILE_PATHS`) and add a regression test pinning the new path.
+
+#### Default-lookup cache lifetime
+
+The default-lookup resolution is memoized **per cwd** for the lifetime of the Node process. The cache is populated on the first `buildProviderPrompts` call (at most five synchronous `fs.stat` calls for the entries above) and reused on every subsequent call within the same run — including per-chunk reads in the chunked orchestrator.
+
+This is safe under the action's documented deployment model: each `umactually-pr-review` invocation (GitHub Actions, Azure DevOps, CLI) runs as a fresh Node process, so the cache effectively lives for one review run. A `CLAUDE.md` added to the repo mid-run will not appear until the next process restart.
+
+If you need to force a re-stat mid-process (rare; the action does not currently support this from a non-test caller), the bundled CLI exposes the same package's internal `__resetDefaultPromptFilesCacheForTests` hook, but using it from production code is unsupported — a long-lived-process deployment that needs fresh filesystem state should restart the CLI per review instead.
 
 ## Secrets handling
 

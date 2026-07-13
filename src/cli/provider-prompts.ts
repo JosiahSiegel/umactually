@@ -1,6 +1,14 @@
+import { statSync } from "node:fs";
+import { join as pathJoin } from "node:path";
+
 import { DEFAULT_PROMPT_BYTE_CAP } from "../config/defaults.js";
 import { resolveField } from "../config/field-resolution.js";
-import { readPromptFiles } from "../config/prompt-files.js";
+import {
+  DEFAULT_PROMPT_FILE_PATHS,
+  readPromptFiles,
+  resolveDefaultPromptFiles,
+  splitPromptFileList,
+} from "../config/prompt-files.js";
 import { listDiffPaths } from "../diff/filter-build-artifacts.js";
 import { ENV_KEYS } from "../util/env-keys.js";
 import {
@@ -23,6 +31,11 @@ export type ProviderPrompts = {
   readonly system: string;
   readonly user: string;
 };
+
+// Re-exports of the default-lookup and splitting primitives so callers
+// (including the CLI help and tests) can import them from the public
+// `cli/provider-prompts` surface without reaching into `config/`.
+export { DEFAULT_PROMPT_FILE_PATHS, splitPromptFileList, resolveDefaultPromptFiles };
 
 /**
  * The strict JSON schema the model must emit. We send this on the
@@ -96,7 +109,14 @@ export const REVIEW_PAYLOAD_JSON_SCHEMA = {
 } as const;
 
 export async function buildProviderPrompts(input: ProviderPromptsInput): Promise<ProviderPrompts> {
-  const additionalPrompt = await readAdditionalPrompt(input);
+  // Resolve the default-lookup list ONCE per cwd so the chunked
+  // orchestrator (which calls buildProviderPrompts PER chunk) does
+  // not race on multiple parallel fs.stat calls or break the
+  // single-threaded sink assumption that `setActiveSeveritySink`
+  // relies on. Implementation: synchronous stat() so we do NOT add a
+  // new `await` boundary at the top of buildProviderPrompts.
+  const defaultPaths = resolveDefaultPromptFilesOnce(input.cwd);
+  const additionalPrompt = await readAdditionalPrompt(input, defaultPaths);
   const userParts = [
     `Platform: ${input.platform}`,
     additionalPrompt.length > 0 ? `Additional instructions:\n${additionalPrompt}` : "Additional instructions: none",
@@ -122,9 +142,148 @@ export async function buildProviderPrompts(input: ProviderPromptsInput): Promise
   userParts.push(buildFilesInDiffBlock(input.diffText));
   userParts.push("Diff:", input.diffText);
   return {
-    system: await pickSystemPrompt(input),
+    system: await pickSystemPrompt(input, defaultPaths),
     user: userParts.join("\n\n"),
   };
+}
+
+/**
+ * Per-cwd memoized wrapper around `resolveDefaultPromptFiles`. The
+ * chunked live path invokes `buildProviderPrompts` per chunk, so a
+ * per-call resolve would multiply the fs.stat calls and (more
+ * importantly) introduce an extra `await` boundary that breaks the
+ * single-threaded event-loop assumption `setActiveSeveritySink`
+ * relies on (see `src/provider/provider-parse.ts:86-88`).
+ *
+ * Implementation note: uses synchronous fs.stat to avoid any `await`
+ * boundary in `buildProviderPrompts`. Each stat is sub-millisecond
+ * and the result is cached per cwd, so the total cost is at most 5
+ * sync stats on the FIRST `buildProviderPrompts` call per process.
+ *
+ * ## Cache lifetime contract
+ *
+ * The cache is **process-scoped and lives for the lifetime of the
+ * Node process**. It is intentionally NOT invalidated by anything
+ * other than `__resetDefaultPromptFilesCacheForTests` (which is a
+ * test-only hook). This is acceptable for the action's documented
+ * deployment model — each `umactually-pr-review` invocation
+ * (GitHub Actions, Azure DevOps, CLI) runs as a FRESH Node
+ * process, so the cache effectively lives for one review run.
+ *
+ * What this means for callers:
+ *
+ * - **Standard usage (one process per review run):** The cache is
+ *   populated on the first `buildProviderPrompts` call (with up to
+ *   five sync `fs.stat` calls for `DEFAULT_PROMPT_FILE_PATHS`); every
+ *   subsequent call within the same run reuses the cached path list.
+ *   Per-chunk reads re-stat the disk (cheap; cache is path-list, not
+ *   file-content).
+ *
+ * - **Long-lived processes (rare):** If you reuse the bundled CLI
+ *   inside a daemon or composite step that runs the action multiple
+ *   times against the same cwd, the cache entry will persist across
+ *   runs — a `CLAUDE.md` added AFTER the first run will not be
+ *   auto-loaded by the second run. This is acceptable because the
+ *   documented deployment model is one process per review; the
+ *   alternative (cache-busting) would either add a new `await`
+ *   boundary (race) or require a per-run `reset()` call that the
+ *   caller is responsible for invoking. Documented here so the
+ *   contract is explicit; if a long-lived-process use case emerges,
+ *   revisit this design.
+ *
+ * - **Tests:** Use `__resetDefaultPromptFilesCacheForTests()` to
+ *   clear the cache between scenarios that mutate the workspace.
+ */
+const DEFAULT_PROMPT_FILES_CACHE: Map<string, readonly string[]> = new Map();
+function resolveDefaultPromptFilesOnce(cwd: string): readonly string[] {
+  const cached = DEFAULT_PROMPT_FILES_CACHE.get(cwd);
+  if (cached !== undefined) return cached;
+  const out: string[] = [];
+  for (const candidate of DEFAULT_PROMPT_FILE_PATHS) {
+    // Defense in depth: every entry in DEFAULT_PROMPT_FILE_PATHS is a
+    // hardcoded relative path with no `..` segments and no leading
+    // `/`, but `path.join` would silently swallow an absolute candidate
+    // (e.g. `/etc/passwd`) and turn it into an absolute path under
+    // cwd. Reject anything that is not a plain relative path here so
+    // a future change that adds a non-conforming entry surfaces a
+    // loud failure instead of silently expanding the security
+    // boundary.
+    if (!isSafeRelativeCandidate(candidate)) {
+      throw new Error(
+        `DEFAULT_PROMPT_FILE_PATHS contains an unsafe entry: ${JSON.stringify(candidate)}. ` +
+          `Entries must be relative paths with no '..' segments and no leading '/' or drive letter.`,
+      );
+    }
+    try {
+      const s = statSync(pathJoin(cwd, candidate));
+      if (s.isFile()) out.push(candidate);
+    } catch {
+      // ENOENT (or any other stat failure): silently skip.
+    }
+  }
+  const frozen = Object.freeze(out);
+  DEFAULT_PROMPT_FILES_CACHE.set(cwd, frozen);
+  return frozen;
+}
+
+/**
+ * Returns true iff the candidate is a safe relative path: no leading
+ * `/`, no leading drive letter (Windows `C:` etc.), no `..` segments,
+ * and at least one non-separator character.
+ *
+ * This is defense in depth — DEFAULT_PROMPT_FILE_PATHS is hardcoded
+ * with safe entries today. The check exists so a future maintainer
+ * who adds an entry with `..` (e.g. `../sibling/CLAUDE.md`) sees a
+ * loud failure rather than silently allowing the action to read a
+ * path outside cwd.
+ */
+function isSafeRelativeCandidate(candidate: string): boolean {
+  if (typeof candidate !== "string" || candidate.length === 0) return false;
+  if (candidate.startsWith("/") || candidate.startsWith("\\")) return false;
+  // Windows drive-letter prefix: "C:" or "C:\" or "C:/". Reject.
+  if (/^[a-zA-Z]:[\\/]?/u.test(candidate)) return false;
+  // No `..` segments (handles both POSIX and Windows separators).
+  const segments = candidate.split(/[\\/]/u);
+  if (segments.some((seg) => seg === "..")) return false;
+  return true;
+}
+
+/**
+ * Test-only hook to clear the per-cwd default-prompt cache. Used by
+ * tests that mutate the workspace mid-run and need the next
+ * `buildProviderPrompts` call to re-stat the disk.
+ *
+ * Production callers should NOT need this — see the cache lifetime
+ * contract on `DEFAULT_PROMPT_FILES_CACHE`.
+ */
+export function __resetDefaultPromptFilesCacheForTests(): void {
+  DEFAULT_PROMPT_FILES_CACHE.clear();
+}
+
+/**
+ * Reset hook called by the CLI entry points (`runCli`, `runDryRun`,
+ * `runLive`) at the start of each invocation. Under the documented
+ * deployment model — one Node process per review run — this is
+ * effectively a no-op (the cache is fresh on the first build call).
+ *
+ * Why it exists:
+ * 1. **Tests that exercise the chunked orchestrator's per-call
+ *    buildProviderPrompts path need to invalidate the cache between
+ *    independent runLive invocations in the same process.** The
+ *    test-only hook above exists for that — but production callers
+ *    never need it.
+ * 2. **A long-lived-process deployment (out of scope; not the
+ *    action's model) would call this between reviews to force a
+ *    fresh stat of the cwd's default-lookup files.** Documented
+ *    but not used by the bundled CLI today.
+ *
+ * The function name intentionally preserves the "ForTests" pattern in
+ * the dedicated test hook above; this entry-point reset is a
+ * separate surface and is the one production callers could call if
+ * they ever needed to.
+ */
+export function resetDefaultPromptFilesCache(): void {
+  DEFAULT_PROMPT_FILES_CACHE.clear();
 }
 
 /**
@@ -151,14 +310,35 @@ async function pickSystemPrompt(input: {
   readonly parsed: ParsedCliArgs;
   readonly cwd: string;
   readonly env: NodeJS.ProcessEnv;
-}): Promise<string> {
+}, defaultPaths: readonly string[]): Promise<string> {
   const inline = input.parsed.prompt;
   if (typeof inline === "string" && inline.length > 0) {
     return inline;
   }
+  // Precedence for system prompt file resolution:
+  //   1. `--prompt-files` (array) — when set, COMPLETELY OVERRIDES the
+  //      default-lookup list. The single-file `--prompt-file` is
+  //      ignored in this branch so the array semantics are honest.
+  //   2. `--prompt-file` (single, legacy) — used as-is.
+  //   3. Auto-discover from `DEFAULT_PROMPT_FILE_PATHS` (CLAUDE.md,
+  //      AGENTS.md, .github/copilot-instructions.md, .cursorrules,
+  //      GEMINI.md). Files that do not exist are skipped.
+  //   4. Built-in `buildDefaultSystemPrompt()`.
+  const promptFilesRaw = resolveField(
+    input.parsed.promptFiles,
+    input.env[ENV_KEYS.UMACTUALLY_PROMPT_FILES],
+    "",
+  );
+  const promptFilesList = splitPromptFileList(promptFilesRaw);
+  if (promptFilesList.length > 0) {
+    return readPromptFiles(promptFilesList, DEFAULT_PROMPT_BYTE_CAP, { cwd: input.cwd });
+  }
   const filePath = resolveField(input.parsed.promptFile, input.env[ENV_KEYS.UMACTUALLY_PROMPT_FILE], "");
   if (filePath !== undefined && filePath.length > 0) {
     return readPromptFiles([filePath], DEFAULT_PROMPT_BYTE_CAP, { cwd: input.cwd });
+  }
+  if (defaultPaths.length > 0) {
+    return readPromptFiles(defaultPaths, DEFAULT_PROMPT_BYTE_CAP, { cwd: input.cwd });
   }
   return buildDefaultSystemPrompt();
 }
@@ -236,14 +416,26 @@ async function readAdditionalPrompt(input: {
   readonly parsed: ParsedCliArgs;
   readonly cwd: string;
   readonly env: NodeJS.ProcessEnv;
-}): Promise<string> {
+}, defaultPaths: readonly string[]): Promise<string> {
   const inline = input.parsed.additionalPrompt;
   if (typeof inline === "string" && inline.length > 0) {
     return inline;
   }
-  const filePath = resolveField(input.parsed.additionalPromptFile, input.env[ENV_KEYS.UMACTUALLY_ADDITIONAL_PROMPT_FILE], "");
-  if (filePath === undefined || filePath.length === 0) {
-    return "";
+  // Precedence mirrors `pickSystemPrompt`: array overrides defaults,
+  // single-file is the legacy path, then default-lookup, then empty.
+  const filesRaw = resolveField(
+    input.parsed.additionalPromptFiles,
+    input.env[ENV_KEYS.UMACTUALLY_ADDITIONAL_PROMPT_FILES],
+    "",
+  );
+  const filesList = splitPromptFileList(filesRaw);
+  if (filesList.length > 0) {
+    return readPromptFiles(filesList, DEFAULT_PROMPT_BYTE_CAP, { cwd: input.cwd });
   }
-  return readPromptFiles([filePath], DEFAULT_PROMPT_BYTE_CAP, { cwd: input.cwd });
+  const filePath = resolveField(input.parsed.additionalPromptFile, input.env[ENV_KEYS.UMACTUALLY_ADDITIONAL_PROMPT_FILE], "");
+  if (filePath !== undefined && filePath.length > 0) {
+    return readPromptFiles([filePath], DEFAULT_PROMPT_BYTE_CAP, { cwd: input.cwd });
+  }
+  if (defaultPaths.length === 0) return "";
+  return readPromptFiles(defaultPaths, DEFAULT_PROMPT_BYTE_CAP, { cwd: input.cwd });
 }
