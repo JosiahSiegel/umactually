@@ -33,7 +33,9 @@ These entries mirror `action.yml`.
 | `prompt` | `UMACTUALLY_PROMPT` | `""` | String | Inline system prompt override. Wins over `prompt-file`. |
 | `additional-prompt` | `UMACTUALLY_ADDITIONAL_PROMPT` | `""` | String | Inline additional prompt override. Wins over `additional-prompt-file`. |
 | `prompt-file` | `UMACTUALLY_PROMPT_FILE` | `""` | Repository-relative path | Optional prompt instructions file. Absolute paths and `..` traversal are rejected. |
+| `prompt-files` | `UMACTUALLY_PROMPT_FILES` | `""` | Comma/newline-separated repo-relative paths | Explicit list of prompt files. **Completely overrides** the default repository prompt lookup (`CLAUDE.md`, `AGENTS.md`, `.github/copilot-instructions.md`, `.cursorrules`, `GEMINI.md`) when non-empty. Files are concatenated in the listed order. |
 | `additional-prompt-file` | `UMACTUALLY_ADDITIONAL_PROMPT_FILE` | `""` | Repository-relative path | Optional additional prompt file. Absolute paths and `..` traversal are rejected. |
+| `additional-prompt-files` | `UMACTUALLY_ADDITIONAL_PROMPT_FILES` | `""` | Comma/newline-separated repo-relative paths | Explicit list of additional prompt files. **Completely overrides** the default repository prompt lookup when non-empty. |
 | `detect-leaks` | `UMACTUALLY_DETECT_LEAKS` | `true` | `true`, `false` | Run secret-leak detection on the diff before posting. Disable with `--no-detect-leaks` on the CLI or by setting the input/env to `false`. |
 | `include-sonarqube` | `UMACTUALLY_INCLUDE_SONARQUBE` | `false` | `true`, `false` | Pull SonarQube issues alongside the PR review. Requires `--sonar-host-url`, `--sonar-token`, and `--sonar-project-key`. |
 | `sonar-host-url` | `UMACTUALLY_SONAR_HOST_URL` | `""` | HTTPS URL | SonarQube base URL. |
@@ -94,6 +96,25 @@ steps:
 ```
 
 Avoid passing `api-key` through `with:` unless a wrapper action requires it. Environment secrets are easier to rotate and less likely to appear in copied workflow snippets.
+
+### Overriding the default prompt lookup
+
+By default, UmActually auto-discovers common agent-instruction files from the repository root (CLAUDE.md, AGENTS.md, `.github/copilot-instructions.md`, `.cursorrules`, GEMINI.md — see [docs/security.md](security.md#default-repository-prompt-lookup) for the security contract). To force a specific list of prompt files instead, use the `prompt-files` / `additional-prompt-files` action inputs (or `--prompt-files` / `--additional-prompt-files` CLI flags; or `UMACTUALLY_PROMPT_FILES` / `UMACTUALLY_ADDITIONAL_PROMPT_FILES` env vars). When set, the array **completely overrides** the default-lookup list.
+
+```yaml
+- uses: ./
+  with:
+    # Comma- or newline-separated list of repository-relative paths.
+    # When non-empty, the auto-loaded CLAUDE.md/AGENTS.md/etc. lookup
+    # is NOT consulted — only the listed files are loaded.
+    prompt-files: 'prompts/review-system.md,prompts/repo-context.md'
+    additional-prompt-files: 'prompts/extra-instructions.md'
+  env:
+    UMACTUALLY_API_URL: ${{ secrets.UMACTUALLY_API_URL }}
+    UMACTUALLY_API_KEY: ${{ secrets.UMACTUALLY_API_KEY }}
+```
+
+The Azure DevOps equivalent uses pipeline variables; see [docs/azure-devops.md](azure-devops.md#forwarding-prompt-file-lists-overrides-the-default-lookup-list) for the `UMACTUALLY_PROMPT_FILES` / `UMACTUALLY_ADDITIONAL_PROMPT_FILES` pipeline variable contract and the conditional-forwarding pattern.
 
 ## Recommended Azure DevOps configuration
 

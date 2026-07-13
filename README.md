@@ -33,11 +33,16 @@ These inputs mirror `action.yml`.
 | `review-timeout-seconds` | No | `300` | Maximum review wall-clock time in seconds. |
 | `stall-seconds` | No | `270` | Seconds without provider output before the review is considered stalled. |
 | `max-output-tokens` | No | `16000` | Maximum provider output token budget. |
+| `strict-schema` | No | `true` | Send `response_format: { type: "json_schema", strict: true }` on the wire so the provider enforces the review schema at decode time. Set to `false` for providers that reject the strict-schema payload (older Copilot routes, certain self-hosted OpenAI-compatible servers). The in-context system prompt always carries the schema, so disabling the wire constraint degrades to "shape guide only" — the post-filter still catches semantic errors. CLI flag: `--strict-schema` / `--no-strict-schema`. |
+| `verify-findings` | No | `true` | Deterministic re-verification of the model's `comments[]` against the supplied diff before posting. Any comment whose (path, line) does not anchor is dropped before posting. Set to `false` only if the caller has out-of-band validation. CLI flag: `--verify-findings` / `--no-verify-findings`. |
 | `review-file-limit` | No | `200` | Cap on the number of changed files the live review will process. PRs that exceed this get a "diff too large" parent card with zero findings — the per-chunk LLM reviews of huge initial-import diffs produce hallucinated findings. Set to `0` to disable. |
 | `detect-leaks` | No | `true` | Run secret-leak detection on the diff. Disable with the `--no-detect-leaks` CLI flag. |
 | `prompt` | No | `""` | Inline system prompt override. Wins over `prompt-file`. |
 | `additional-prompt` | No | `""` | Inline additional prompt override. Wins over `additional-prompt-file`. |
 | `prompt-file` | No | `""` | Optional repository-relative prompt file. Absolute paths and path traversal are rejected. |
+| `prompt-files` | No | `""` | Comma/newline-separated list of repository-relative prompt files. **Completely overrides** the default-lookup list (`CLAUDE.md`, `AGENTS.md`, `.github/copilot-instructions.md`, `.cursorrules`, `GEMINI.md`) when non-empty. Files are concatenated in the listed order. |
+| `additional-prompt-file` | No | `""` | Optional repository-relative additional prompt file. Absolute paths and path traversal are rejected. |
+| `additional-prompt-files` | No | `""` | Comma/newline-separated list of repository-relative additional prompt files. **Completely overrides** the default-lookup list when non-empty. |
 | `dry-run` | No | `false` | Generate review output without posting comments or status. |
 
 See [docs/configuration.md](docs/configuration.md) for environment variables, precedence, and platform-specific defaults.
@@ -149,6 +154,34 @@ Use `--repo`; there is no longer alias for that option. Azure dry-run validation
 For Azure Repos, configure a branch policy build validation pipeline; the YAML `pr:` trigger is only honored for GitHub and Bitbucket Cloud repositories in Azure Pipelines. See [`docs/azure-devops.md`](docs/azure-devops.md) and [`examples/azure/azure-pipelines.yml`](examples/azure/azure-pipelines.yml).
 
 For PRs that exceed the 200-file default cap, add `--review-file-limit N` (or set `REVIEW_FILE_LIMIT=N`) to the CLI invocation. Use `0` to disable the cap entirely.
+
+## Overriding the default prompt lookup
+
+By default, UmActually auto-discovers common agent-instruction files from the repository root: `CLAUDE.md`, `AGENTS.md`, `.github/copilot-instructions.md`, `.cursorrules`, `GEMINI.md`. Missing files are silently skipped. To force a specific list of prompt files instead, pass the `prompt-files` / `additional-prompt-files` inputs (GitHub Actions), `UMACTUALLY_PROMPT_FILES` / `UMACTUALLY_ADDITIONAL_PROMPT_FILES` env vars (Azure DevOps pipeline variables), or `--prompt-files` / `--additional-prompt-files` CLI flags. When set, the array **completely overrides** the default-lookup list — files are concatenated in the listed order with the standard `\n\n---\n\n` separator.
+
+**GitHub Actions** — pass the inputs through `with:`:
+
+```yaml
+- uses: ./
+  with:
+    prompt-files: 'prompts/review-system.md,prompts/repo-context.md'
+    additional-prompt-files: 'prompts/extra-instructions.md'
+  env:
+    UMACTUALLY_API_URL: ${{ secrets.UMACTUALLY_API_URL }}
+    UMACTUALLY_API_KEY: ${{ secrets.UMACTUALLY_API_KEY }}
+```
+
+**Azure DevOps** — set the `UMACTUALLY_PROMPT_FILES` / `UMACTUALLY_ADDITIONAL_PROMPT_FILES` pipeline variables; the root pipeline (and the example) conditionally forward them to the CLI's `--prompt-files` / `--additional-prompt-files` flags:
+
+```yaml
+variables:
+  - name: UMACTUALLY_PROMPT_FILES
+    value: 'prompts/review-system.md,prompts/repo-context.md'
+  - name: UMACTUALLY_ADDITIONAL_PROMPT_FILES
+    value: 'prompts/extra-instructions.md'
+```
+
+The path-safety contract is identical to the explicit `prompt-file` / `additional-prompt-file` readers: each path must be repository-relative (absolute paths and `..` traversal are rejected). See [docs/security.md#default-repository-prompt-lookup](docs/security.md#default-repository-prompt-lookup) and [docs/azure-devops.md#forwarding-prompt-file-lists-overrides-the-default-lookup-list](docs/azure-devops.md#forwarding-prompt-file-lists-overrides-the-default-lookup-list).
 
 ## Security summary
 

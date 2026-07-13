@@ -64,6 +64,17 @@ jobs:
         # to the GitHub Marketplace. Until then, the in-tree action is
         # exercised via `./`.
         uses: ./
+        # By default, the action auto-loads the common agent-instruction
+        # files from the repository root (CLAUDE.md, AGENTS.md, .github/
+        # copilot-instructions.md, .cursorrules, GEMINI.md). To override
+        # that lookup and supply a specific list of prompt files, pass the
+        # `prompt-files` and/or `additional-prompt-files` inputs (comma-
+        # or newline-separated repo-relative paths). When set, the array
+        # COMPLETELY overrides the default-lookup list. See
+        # docs/configuration.md#prompt and docs/security.md#default-repository-prompt-lookup.
+        with:
+          prompt-files: 'prompts/review-system.md,prompts/repo-context.md'
+          additional-prompt-files: 'prompts/extra-instructions.md'
         env:
           UMACTUALLY_API_URL: ${{ secrets.UMACTUALLY_API_URL }}
           UMACTUALLY_API_KEY: ${{ secrets.UMACTUALLY_API_KEY }}

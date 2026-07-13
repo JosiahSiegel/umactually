@@ -94,6 +94,47 @@ steps:
       : "${UMACTUALLY_REPO:?UMACTUALLY_REPO must be set by the prepare step.}"
       : "${UMACTUALLY_API_URL:?UMACTUALLY_API_URL must be set as a pipeline variable.}"
       : "${UMACTUALLY_API_KEY:?UMACTUALLY_API_KEY must be set as a pipeline variable.}"
+      # Conditionally forward the optional prompt-file list inputs.
+      # When set, these override the default repository prompt lookup
+      # (CLAUDE.md, AGENTS.md, etc.). See docs/configuration.md and
+      # docs/security.md. Both env vars are comma/newline-separated
+      # paths; an empty value lets the default-lookup run.
+      optional_env_value() {
+        local name="$1"
+        local value="${!name:-}"
+        if [ -z "$value" ] || [[ "$value" == \$\(*\) ]]; then
+          return 0
+        fi
+        printf '%s' "$value"
+      }
+
+      EXTRA_ARGS=()
+      prompt_files="$(optional_env_value UMACTUALLY_PROMPT_FILES)"
+      if [ -n "$prompt_files" ]; then
+        EXTRA_ARGS+=(--prompt-files "$prompt_files")
+      fi
+      additional_prompt_files="$(optional_env_value UMACTUALLY_ADDITIONAL_PROMPT_FILES)"
+      if [ -n "$additional_prompt_files" ]; then
+        EXTRA_ARGS+=(--additional-prompt-files "$additional_prompt_files")
+      fi
+      # Conditionally forward the strict-schema and verify-findings
+      # toggles. Both default ON in the CLI; opt out with "false".
+      strict_schema="$(optional_env_value UMACTUALLY_STRICT_SCHEMA)"
+      if [ -n "$strict_schema" ]; then
+        if [ "$strict_schema" = "false" ]; then
+          EXTRA_ARGS+=(--no-strict-schema)
+        else
+          EXTRA_ARGS+=(--strict-schema)
+        fi
+      fi
+      verify_findings="$(optional_env_value UMACTUALLY_VERIFY_FINDINGS)"
+      if [ -n "$verify_findings" ]; then
+        if [ "$verify_findings" = "false" ]; then
+          EXTRA_ARGS+=(--no-verify-findings)
+        else
+          EXTRA_ARGS+=(--verify-findings)
+        fi
+      fi
       node bin/umactually-pr-review.mjs \
         --platform azure-devops \
         --event "$AZURE_EVENT_PATH" \
@@ -104,7 +145,8 @@ steps:
         --api-url "${UMACTUALLY_API_URL}" \
         --api-key "${UMACTUALLY_API_KEY}" \
         --no-detect-leaks \
-        --no-dry-run
+        --no-dry-run \
+        "${EXTRA_ARGS[@]}"
     displayName: Run UmActually Azure live review
     env:
       SYSTEM_ACCESSTOKEN: $(System.AccessToken)
@@ -117,6 +159,18 @@ steps:
       # from the inherited pipeline env anyway.
       UMACTUALLY_API_URL: $(UMACTUALLY_API_URL)
       UMACTUALLY_API_KEY: $(UMACTUALLY_API_KEY)
+      # UMACTUALLY_PROMPT_FILES / UMACTUALLY_ADDITIONAL_PROMPT_FILES
+      # are OPTIONAL pipeline variables — comma/newline-separated list
+      # of repository-relative prompt files. When unset, the action
+      # runs its default-lookup list (CLAUDE.md, AGENTS.md, etc.).
+      UMACTUALLY_PROMPT_FILES: $(UMACTUALLY_PROMPT_FILES)
+      UMACTUALLY_ADDITIONAL_PROMPT_FILES: $(UMACTUALLY_ADDITIONAL_PROMPT_FILES)
+      # UMACTUALLY_STRICT_SCHEMA / UMACTUALLY_VERIFY_FINDINGS are
+      # OPTIONAL boolean toggles. Default ON in the CLI; set to
+      # "false" to opt out. When unset, the CLI's default ON is
+      # preserved.
+      UMACTUALLY_STRICT_SCHEMA: $(UMACTUALLY_STRICT_SCHEMA)
+      UMACTUALLY_VERIFY_FINDINGS: $(UMACTUALLY_VERIFY_FINDINGS)
 
   - task: PublishPipelineArtifact@1
     condition: always()

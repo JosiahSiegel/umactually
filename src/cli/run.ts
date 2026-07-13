@@ -11,6 +11,7 @@ import { withDebugRawEnv } from "../util/debug-raw.js";
 import { formatError } from "../util/error.js";
 import { REVIEW_MARKER } from "../util/marker.js";
 import type { ParsedCliArgs } from "./parse-args.js";
+import { resetDefaultPromptFilesCache } from "./provider-prompts.js";
 import { resolvePlatform, type ResolvedPlatform } from "./validate.js";
 import { runLive as runOrchestrator } from "./orchestrator.js";
 
@@ -28,6 +29,11 @@ const SONAR_FIXTURE_QUALITY_GATE = JSON.stringify({
 });
 
 export async function runDryRun(parsed: ParsedCliArgs, cwd: string, platform: ResolvedPlatform): Promise<CliRunResult> {
+  // Mirror runLive's reset hook so a long-lived process that invokes
+  // runDryRun repeatedly (e.g. a test runner) doesn't see stale
+  // default-lookup decisions. See
+  // src/cli/provider-prompts.ts:resetDefaultPromptFilesCache.
+  resetDefaultPromptFilesCache();
   const artifactPath = resolveArtifactPath(parsed.outputArtifact, platform, cwd);
   const envSources = readEnvSources(process.env);
   const artifactBody = await buildDryRunArtifact(parsed, platform, cwd);

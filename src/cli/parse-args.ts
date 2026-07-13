@@ -27,7 +27,9 @@ export type ParsedCliArgs = {
   readonly apiKey: string | null;
   readonly model: string | null;
   readonly promptFile: string | null;
+  readonly promptFiles: string | null;
   readonly additionalPromptFile: string | null;
+  readonly additionalPromptFiles: string | null;
   readonly prompt: string | null;
   readonly additionalPrompt: string | null;
   readonly effort: CliEffort | null;
@@ -99,7 +101,9 @@ export function parseCliArgs(args: readonly string[]): ParsedCliArgs {
   let apiKey: string | null = null;
   let model: string | null = null;
   let promptFile: string | null = null;
+  let promptFiles: string | null = null;
   let additionalPromptFile: string | null = null;
+  let additionalPromptFiles: string | null = null;
   let prompt: string | null = null;
   let additionalPrompt: string | null = null;
   let effort: CliEffort | null = null;
@@ -194,8 +198,16 @@ export function parseCliArgs(args: readonly string[]): ParsedCliArgs {
         promptFile = readValue(args, index, "prompt-file");
         index += 1;
         break;
+      case "--prompt-files":
+        promptFiles = readValue(args, index, "prompt-files");
+        index += 1;
+        break;
       case "--additional-prompt-file":
         additionalPromptFile = readValue(args, index, "additional-prompt-file");
+        index += 1;
+        break;
+      case "--additional-prompt-files":
+        additionalPromptFiles = readValue(args, index, "additional-prompt-files");
         index += 1;
         break;
       case "--prompt":
@@ -344,7 +356,9 @@ export function parseCliArgs(args: readonly string[]): ParsedCliArgs {
     apiKey,
     model,
     promptFile,
+    promptFiles,
     additionalPromptFile,
+    additionalPromptFiles,
     prompt,
     additionalPrompt,
     effort,

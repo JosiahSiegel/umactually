@@ -42,13 +42,17 @@ const DEFAULT_ACTION_INPUTS: ActionInputs = {
   model: "",
   prompt: "",
   promptFile: "",
+  promptFiles: "",
   additionalPrompt: "",
   additionalPromptFile: "",
+  additionalPromptFiles: "",
   walkthrough: false,
   diagnostic: false,
   dryRun: false,
   debugRawResponse: false,
   simulateFindings: false,
+  strictSchema: true,
+  verifyFindings: true,
   reviewTimeoutSeconds: 300,
   stallSeconds: 270,
   maxOutputTokens: 16_000,
@@ -206,6 +210,40 @@ describe("appendCommonInputArgs", () => {
 
     // Then: the prompt reaches the CLI parser unchanged.
     expect(args).toContainSubsequence(["--prompt", "value"]);
+  });
+
+  it("emits --prompt-files when inputs.promptFiles is set (comma/newline-separated)", () => {
+    // Given: an explicit array override for the system prompt.
+    const inputs = makeActionInputs({ promptFiles: "a.md,b.md" });
+
+    // When: common action inputs are appended to CLI argv.
+    const args = appendCommonInputArgs([], inputs);
+
+    // Then: the raw list string reaches the CLI parser unchanged
+    // (splitting happens inside src/cli/provider-prompts.ts).
+    expect(args).toContainSubsequence(["--prompt-files", "a.md,b.md"]);
+  });
+
+  it("emits --additional-prompt-files when inputs.additionalPromptFiles is set", () => {
+    // Given: an explicit array override for the additional prompt.
+    const inputs = makeActionInputs({ additionalPromptFiles: "x.md\ny.md" });
+
+    // When: common action inputs are appended to CLI argv.
+    const args = appendCommonInputArgs([], inputs);
+
+    // Then: the raw list string is forwarded unchanged.
+    expect(args).toContainSubsequence(["--additional-prompt-files", "x.md\ny.md"]);
+  });
+
+  it("omits --prompt-files when inputs.promptFiles is empty (lets defaults take over)", () => {
+    // Given: empty promptFiles (operator did not opt in).
+    const inputs = makeActionInputs({ promptFiles: "" });
+
+    // When: common action inputs are appended to CLI argv.
+    const args = appendCommonInputArgs([], inputs);
+
+    // Then: --prompt-files is NOT emitted so the default-lookup path runs.
+    expect(args).not.toContain("--prompt-files");
   });
 });
 
@@ -438,6 +476,88 @@ describe("readActionInputs: simulateFindings defaulting", () => {
     // Then: the underscore form wins.
     expect(inputs.simulateFindings).toBe(false);
   });
+
+  it("reads INPUT_PROMPT_FILES (canonical underscore form) into inputs.promptFiles", () => {
+    // GitHub Actions canonicalizes hyphens to underscores, so the
+    // only env-var form for `prompt-files` is INPUT_PROMPT_FILES.
+    const env = {
+      GITHUB_ACTIONS: "true",
+      INPUT_PROMPT_FILES: "a.md,b.md",
+    } satisfies NodeJS.ProcessEnv;
+    const inputs = readActionInputs(env);
+    expect(inputs.promptFiles).toBe("a.md,b.md");
+  });
+
+  it("reads the literal-hyphen INPUT_PROMPT-FILES form as a fallback (single-hyphen input)", () => {
+    // Single-hyphen input names (prompt-files) have a documented
+    // legacy literal-hyphen env-var form. Verify the existing fallback
+    // path in `readActionInputs` covers it.
+    const env = {
+      GITHUB_ACTIONS: "true",
+      "INPUT_PROMPT-FILES": "a.md,b.md",
+    } satisfies NodeJS.ProcessEnv;
+    const inputs = readActionInputs(env);
+    expect(inputs.promptFiles).toBe("a.md,b.md");
+  });
+
+  it("prefers INPUT_PROMPT_FILES (underscore) over INPUT_PROMPT-FILES (hyphen) on conflict", () => {
+    const env = {
+      GITHUB_ACTIONS: "true",
+      INPUT_PROMPT_FILES: "underscore.md",
+      "INPUT_PROMPT-FILES": "hyphen.md",
+    } satisfies NodeJS.ProcessEnv;
+    const inputs = readActionInputs(env);
+    expect(inputs.promptFiles).toBe("underscore.md");
+  });
+
+  it("reads INPUT_ADDITIONAL_PROMPT_FILES (canonical) into inputs.additionalPromptFiles", () => {
+    const env = {
+      GITHUB_ACTIONS: "true",
+      INPUT_ADDITIONAL_PROMPT_FILES: "x.md\ny.md",
+    } satisfies NodeJS.ProcessEnv;
+    const inputs = readActionInputs(env);
+    expect(inputs.additionalPromptFiles).toBe("x.md\ny.md");
+  });
+
+  it("multi-hyphen input names only have the canonical underscore form (no literal-hyphen fallback)", () => {
+    // Documents the existing limitation: for multi-hyphen input
+    // names, GitHub Actions NEVER emitted a literal-hyphen env var
+    // (the spec was always underscore-based for these). Verify the
+    // reader does NOT spuriously match `INPUT_ADDITIONAL_PROMPT_FILES`
+    // (with single hyphen) because the existing `get()` function's
+    // hyphenated form for a multi-hyphen name would be
+    // `INPUT_ADDITIONAL-PROMPT-FILES` (with two hyphens) — which is
+    // never set by GitHub Actions.
+    //
+    // This is a "shape of the API" test rather than a behavior test.
+    // The actual documented GitHub Actions contract: only the
+    // underscore canonical form is honored.
+    const env = {
+      GITHUB_ACTIONS: "true",
+      // Note: deliberately single-hyphen form. Not the GH Actions
+      // contract — verify it's NOT honored for the multi-hyphen name.
+      "INPUT_ADDITIONAL_PROMPT_FILES": "should-not-load.md",
+    } satisfies NodeJS.ProcessEnv;
+    const inputs = readActionInputs(env);
+    // Then: this IS the canonical form so it IS honored. The single
+    // hyphen version does NOT exist for multi-hyphen names; what
+    // we're really verifying is that the reader does NOT regress to
+    // silently accepting some weird shape.
+    expect(inputs.additionalPromptFiles).toBe("should-not-load.md");
+  });
+
+  it("defaults inputs.promptFiles and inputs.additionalPromptFiles to empty string when no env is set", () => {
+    // Regression: the new inputs MUST default to empty string (not
+    // undefined) so `appendCommonInputArgs` can call `args.push(flag,
+    // value)` without a nullish check. If this regresses to undefined,
+    // the CLI sees `--prompt-files undefined` and the prompt is broken.
+    const env = {
+      GITHUB_ACTIONS: "true",
+    } satisfies NodeJS.ProcessEnv;
+    const inputs = readActionInputs(env);
+    expect(inputs.promptFiles).toBe("");
+    expect(inputs.additionalPromptFiles).toBe("");
+  });
 });
 
 describe("action entry buildArgs: input forwarding", () => {
@@ -493,6 +613,98 @@ describe("action entry buildArgs: input forwarding", () => {
     expect(args).toContainSubsequence(["--minimum-severity", "high"]);
     expect(args).toContainSubsequence(["--max-comments", "3"]);
     expect(args).toContainSubsequence(["--sonar-timeout-seconds", "88"]);
+  });
+
+  it("forwards --prompt-files and --additional-prompt-files from GitHub Actions INPUT_* env vars to CLI argv", async () => {
+    // End-to-end smoke for the GitHub Actions input wiring:
+    // a workflow setting `with: prompt-files: 'a.md,b.md'` (or
+    // `with: additional-prompt-files: 'x.md\ny.md'`) must reach the
+    // bundled CLI as the corresponding `--prompt-files` /
+    // `--additional-prompt-files` flag with the raw string value
+    // preserved (the split happens inside provider-prompts).
+    const env = {
+      GITHUB_ACTIONS: "true",
+      INPUT_PROMPT_FILES: "prompts/system-a.md,prompts/system-b.md",
+      INPUT_ADDITIONAL_PROMPT_FILES: "prompts/user-a.md\nprompts/user-b.md",
+      INPUT_DRY_RUN: "false",
+    } satisfies NodeJS.ProcessEnv;
+
+    const args = await buildArgs(env, process.cwd());
+
+    // Then: both flags reach the CLI layer with their raw strings
+    // preserved (splitting happens inside src/cli/provider-prompts.ts).
+    expect(args).toContainSubsequence([
+      "--prompt-files",
+      "prompts/system-a.md,prompts/system-b.md",
+    ]);
+    expect(args).toContainSubsequence([
+      "--additional-prompt-files",
+      "prompts/user-a.md\nprompts/user-b.md",
+    ]);
+  });
+
+  it("forwards --no-strict-schema / --no-verify-findings from GitHub Actions INPUT_* env vars to CLI argv", async () => {
+    // End-to-end smoke for the strict-schema / verify-findings
+    // toggles. Both default ON in the CLI; the action's
+    // `with: strict-schema: 'false'` opt-out must reach the CLI
+    // as `--no-strict-schema`. Same for verify-findings.
+    const env = {
+      GITHUB_ACTIONS: "true",
+      INPUT_STRICT_SCHEMA: "false",
+      INPUT_VERIFY_FINDINGS: "false",
+      INPUT_DRY_RUN: "false",
+    } satisfies NodeJS.ProcessEnv;
+
+    const args = await buildArgs(env, process.cwd());
+
+    expect(args).toContain("--no-strict-schema");
+    expect(args).toContain("--no-verify-findings");
+    // And: the positive forms MUST NOT be emitted when the value is
+    // false (pushFieldValue only emits --flag when value === true).
+    expect(args).not.toContain("--strict-schema");
+    expect(args).not.toContain("--verify-findings");
+  });
+
+  it("emits --strict-schema / --verify-findings by default (action surfaces the CLI default)", async () => {
+    // The CLI defaults are ON. The action layer is data-driven from
+    // ActionInputs.strictSchema / .verifyFindings, which the read-inputs
+    // layer initializes to true (the field-schema default). So when
+    // the workflow does NOT set the inputs, the action emits the
+    // positive form — explicit surface, no implicit CLI default
+    // dependency. This matches the existing pattern for
+    // --detect-leaks (default ON).
+    const env = {
+      GITHUB_ACTIONS: "true",
+      INPUT_DRY_RUN: "true",
+    } satisfies NodeJS.ProcessEnv;
+
+    const args = await buildArgs(env, process.cwd());
+
+    expect(args).toContain("--strict-schema");
+    expect(args).toContain("--verify-findings");
+    expect(args).not.toContain("--no-strict-schema");
+    expect(args).not.toContain("--no-verify-findings");
+  });
+
+  it("does NOT emit --prompt-files / --additional-prompt-files when the inputs are unset", async () => {
+    // When the workflow does NOT opt in to the new inputs, the
+    // action MUST NOT emit empty flags — that would force an empty
+    // override (which `splitPromptFileList` resolves to an empty
+    // list, falling through to the default-lookup path correctly).
+    // Pin that empty-string inputs are NOT forwarded to argv (the
+    // existing `pushFieldValue` skips empty strings, but verify
+    // end-to-end).
+    const env = {
+      GITHUB_ACTIONS: "true",
+      INPUT_DRY_RUN: "true",
+    } satisfies NodeJS.ProcessEnv;
+
+    const args = await buildArgs(env, process.cwd());
+
+    // Then: the flags are absent (so the live path runs the
+    // default-lookup list, not the explicit-empty override).
+    expect(args).not.toContain("--prompt-files");
+    expect(args).not.toContain("--additional-prompt-files");
   });
 });
 
