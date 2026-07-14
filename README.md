@@ -24,6 +24,19 @@ curl -fsSL https://github.com/JosiahSiegel/umactually/raw/main/scripts/install.s
 irm https://github.com/JosiahSiegel/umactually/raw/main/scripts/install.ps1 | iex
 ```
 
+### Uninstall
+
+```bash
+# npm
+npm uninstall -g umactually
+
+# macOS / Linux / Windows Git Bash
+curl -fsSL https://github.com/JosiahSiegel/umactually/raw/main/scripts/uninstall.sh | sh
+
+# Windows PowerShell
+irm https://github.com/JosiahSiegel/umactually/raw/main/scripts/uninstall.ps1 | iex
+```
+
 ## Usage
 
 Run from inside any git repo with a PR diff in your working tree:
