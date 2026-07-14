@@ -8,11 +8,40 @@ AI-powered PR review that posts inline comments directly to your pull requests. 
 npm install -g umactually
 ```
 
-Prefer a one-off? `npx umactually@latest review --platform github`
+Prefer a one-off? `npx umactually@latest review`
 
 Binaries and curl/PowerShell installers: see [`docs/install.md`](docs/install.md).
 
-## GitHub Actions
+## Usage
+
+```bash
+umactually review --platform github --api-url <provider-url> --api-key <key>
+```
+
+The CLI auto-detects the platform from CI environment variables (`GITHUB_ACTIONS`, `TF_BUILD`), so `--platform` is optional in GitHub Actions and Azure DevOps.
+
+### Commands
+
+```
+umactually review                    Run PR review (default)
+umactually doctor                    Check environment is ready
+umactually check-review-artifact     Validate a review artifact
+umactually --version
+umactually --help
+```
+
+### How it works
+
+1. Fetches the PR diff from the platform API
+2. Sends it to your model provider with a review prompt
+3. Posts findings as inline review comments
+4. Updates the same review on subsequent runs (no duplicates)
+
+The CLI auto-validates its output after each run. Invalid reviews exit with code 1.
+
+## CI Integration
+
+### GitHub Actions
 
 ```yaml
 name: PR review
@@ -39,7 +68,7 @@ jobs:
           UMACTUALLY_API_KEY: ${{ secrets.UMACTUALLY_API_KEY }}
 ```
 
-## Azure DevOps
+### Azure DevOps
 
 ```yaml
 trigger: none
@@ -80,25 +109,6 @@ All options are env vars — set them as CI secrets/variables, no flags needed:
 | `UMACTUALLY_MINIMUM_SEVERITY` | medium | `low`, `medium`, or `high` |
 
 Boolean values: `true`/`false`/`1`/`0`/`yes`/`no`. Precedence: CLI flag > env var > default.
-
-## Commands
-
-```
-umactually review                    Run PR review (default)
-umactually doctor                    Check environment is ready
-umactually check-review-artifact     Validate a review artifact
-umactually --version
-umactually --help
-```
-
-## How it works
-
-1. Fetches the PR diff from the platform API
-2. Sends it to your model provider with a review prompt
-3. Posts findings as inline review comments
-4. Updates the same review on subsequent runs (no duplicates)
-
-The CLI auto-validates its output after each run. Invalid reviews exit with code 1.
 
 ## Documentation
 
