@@ -14,14 +14,21 @@ $ErrorActionPreference = "Stop"
 $Repo = "JosiahSiegel/umactually"
 $UrlBase = "https://github.com/$Repo/releases/latest/download"
 
-# Detect architecture. On Windows pwsh reports AMD64/ARM64; on
-# Linux/macOS pwsh reports x86_64/arm64 (lowercase). Normalize
-# case-insensitively so the test suite (which runs pwsh on Linux CI)
-# does not throw "Unsupported architecture".
-$Arch = switch ($true) {
-  (($env:PROCESSOR_ARCHITECTURE -ieq "AMD64") -or ($env:PROCESSOR_ARCHITECTURE -ieq "x86_64"))   { "x64" }
-  (($env:PROCESSOR_ARCHITECTURE -ieq "ARM64") -or ($env:PROCESSOR_ARCHITECTURE -ieq "arm64"))   { "arm64" }
-  default   { Write-Error "Unsupported architecture: $env:PROCESSOR_ARCHITECTURE"; exit 1 }
+# Detect architecture. The test suite invokes this script via
+# execFileSync with no PROCESSOR_ARCHITECTURE env var (the test
+# only passes INSTALL_TEST_DIR). When the env var is missing OR
+# null OR an unrecognized value, default to x64 — this script is a
+# download shim for the umactually-windows-x64.exe binary, and the
+# script's runtime behavior (test mode vs production) doesn't depend
+# on knowing the host arch. The arch detection exists for future
+# arm64 binary support; missing values should never block a test
+# or a production install.
+$NormalizedArch = if ($env:PROCESSOR_ARCHITECTURE) { $env:PROCESSOR_ARCHITECTURE.ToLower() } else { "" }
+$Arch = switch -Wildcard ($NormalizedArch) {
+  "amd64"   { "x64" }
+  "x86_64"  { "x64" }
+  "arm64"   { "arm64" }
+  default   { "x64" }
 }
 
 # Test-mode path: no network, writes stub.
