@@ -19,7 +19,7 @@
     {
       "path": "src/cli/live-shared.ts",
       "line": 47,
-      "body": "High-confidence secret leak: `const FALLBACK_TOKEN = \"sk-cp-0123456789abcdef0123456789abcdef0123456789abcdef\";`. This is a credential embedded in source. Rotate immediately, purge from git history with `git filter-repo`, and replace with a runtime read from an env var (e.g. `process.env.UMACTUALLY_API_KEY`). See docs/security.md#secret-leak-detection for the bypass-severity guarantee.",
+      "body": "High-confidence secret leak: `const FALLBACK_TOKEN = \"sk-cp-DO-NOT-LEAK-DEMO-FIXTURE-0000\";`. This is a credential embedded in source. Rotate immediately, purge from git history with `git filter-repo`, and replace with a runtime read from an env var (e.g. `process.env.UMACTUALLY_API_KEY`). See docs/security.md#secret-leak-detection for the bypass-severity guarantee.",
       "severity": "high",
       "category": "leak"
     }
