@@ -1,7 +1,7 @@
 {
   "$comment": "UmActually — Azure DevOps Marketplace extension manifest. IN DEVELOPMENT — do not publish to the public marketplace until the README/overview.md and license-terms.md are updated, a real publisher ID is registered, and the package has been tested by sideloading into a private organization. See ado-extension/README.md for the full pre-publish checklist.",
   "manifestVersion": 1,
-  "id": "umactually-pr-review",
+  "id": "umactually",
   "version": "0.1.0-dev",
   "name": "UmActually PR Review (Dev Preview)",
   "publisher": "REPLACE_WITH_PUBLISHER_ID",

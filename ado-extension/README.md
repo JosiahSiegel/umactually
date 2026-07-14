@@ -40,7 +40,7 @@ binary via `spawn` and:
    repo, PR number, source commit, target branch) from build
    variables
 3. Resolves the CLI to invoke — currently from the agent's working
-   directory's `bin/umactually-pr-review.mjs` (the repo's own bundled
+   directory's `bin/umactually.mjs` (the repo's own bundled
    CLI). Future versions will bundle the CLI as a node_modules
    dependency inside the task folder for a self-contained .vsix.
 4. Builds the CLI argv, runs the CLI with a wall-clock timeout,
@@ -99,7 +99,7 @@ Before publishing to the public Visual Studio Marketplace:
       field is already populated; add `content.privacypolicy` and a
       `CHANGELOG.md` linked from the README).
 - [ ] **Switch from `bin/` to bundled CLI.** v0.2 will bundle
-      `umactually-pr-review` as a node_modules dependency inside
+      `umactually` as a node_modules dependency inside
       `ReviewTask/`. This removes the need for the operator to
       check out the repo and run `npm run bundle` first.
 
@@ -120,7 +120,7 @@ python -c "import json; json.load(open('ReviewTask/task.json'))" && echo "task.j
 
 # 4. Package the .vsix
 bash scripts/package-extension.sh
-# -> dist/umactually-pr-review-0.1.0-dev.vsix
+# -> dist/umactually-0.1.0-dev.vsix
 ```
 
 ## Publishing (after the checklist is complete)
@@ -162,5 +162,5 @@ weeks without issues, switch the `galleryFlags` and publish.
 - `examples/azure/azure-pipelines.yml` — example pipeline that uses
   the CLI directly (the same pipeline the extension is designed to
   wrap)
-- `bin/umactually-pr-review.mjs` — the CLI the extension shells out
+- `bin/umactually.mjs` — the CLI the extension shells out
   to

@@ -1,5 +1,5 @@
 {
-  "name": "umactually-pr-review-task",
+  "name": "umactually-task",
   "version": "0.1.0",
   "private": true,
   "description": "Azure DevOps Build/Release task that wraps the UmActually CLI. IN DEVELOPMENT — not yet published to the Visual Studio Marketplace.",
