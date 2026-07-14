@@ -14,7 +14,7 @@ steps:
   - task: NodeTool@0
     inputs:
       versionSpec: "24.x"
-  - script: npx umactually@0.1.0 review --platform azure-devops
+  - script: npx github:JosiahSiegel/umactually review --platform azure-devops
     displayName: Run umactually PR review
     env:
       SYSTEM_ACCESSTOKEN: $(System.AccessToken)
