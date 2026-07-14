@@ -239,6 +239,10 @@ secret:
     # them anyway to be safe (incident 34696725 follow-up).
     - name: 'synthetic GitHub PAT fixture (platform-github)'
       match: 9e8f73021ed384a94bb7b83b35d9a0883d4c07e25f941999397faa76ba580bf5  # github-token-123
+    - name: 'synthetic API key fixture (test/cli-posting-validation bare invocation)'
+      match: ba9096204e574fa96423412796d451eab018a239f4ff6dd49807bb0feba0e941  # sk-test-do-not-leak
+    - name: 'synthetic API key fixture (test/cli-provider-anthropic bare invocation)'
+      match: 8eeec16a7c728290016159e4e5dd096b6282a79bcd28af8186ae57ee5dd28abe  # sk-ant-test-do-not-leak
     - name: 'synthetic token fixture (resolved-config-sources source)'
       match: 8c355cfbfc2932e3cb86b2b309c241b793b5c252972704459026162450eaa7ce  # source-test-secret
     - name: 'synthetic token fixture (resolved-config-sources flag-source)'

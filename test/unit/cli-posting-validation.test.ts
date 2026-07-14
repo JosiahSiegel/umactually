@@ -70,13 +70,13 @@ async function collectPostingValidationErrors(
 const GH_POSTING_ARGS = [
   "--platform", "github",
   "--api-url", "https://api.minimax.io/v1",
-  "--api-key", "sk-test",
+  "--api-key", "sk-test-do-not-leak",
 ] as const;
 
 const AZURE_POSTING_ARGS = [
   "--platform", "azure-devops",
   "--api-url", "https://api.minimax.io/v1",
-  "--api-key", "sk-test",
+  "--api-key", "sk-test-do-not-leak",
 ] as const;
 
 describe("CLI-only posting validation regression", () => {
@@ -154,7 +154,7 @@ describe("validation: posting-capability matrix", () => {
     const a = parseCliArgs([
       "--platform", "github",
       "--api-url", "https://api.minimax.io/v1",
-      "--api-key", "sk-test",
+      "--api-key", "sk-test-do-not-leak",
     ]);
     const postingErrors = await collectPostingValidationErrors(a);
     expect(postingErrors).toEqual([]);
@@ -204,7 +204,7 @@ describe("validation: posting-capability matrix", () => {
     const a = parseCliArgs([
       "--platform", "azure-devops",
       "--api-url", "https://api.minimax.io/v1",
-      "--api-key", "sk-test",
+      "--api-key", "sk-test-do-not-leak",
       "--event", "/tmp/evt.json",
       "--diff", "/tmp/diff.patch",
       "--pr-number", "42",
@@ -218,7 +218,7 @@ describe("validation: posting-capability matrix", () => {
     const a = parseCliArgs([
       "--platform", "github",
       "--provider", "anthropic",
-      "--api-key", "sk-ant-test",
+      "--api-key", "sk-ant-test-do-not-leak",
       "--review", "/tmp/out.json",
       "--event", "/tmp/evt.json",
       "--diff", "/tmp/diff.patch",
@@ -266,7 +266,7 @@ describe("validation: posting-validator is composable into collectValidationErro
     const a = parseCliArgs([
       "--platform", "github",
       "--api-url", "https://api.minimax.io/v1",
-      "--api-key", "sk-test",
+      "--api-key", "sk-test-do-not-leak",
     ]);
     const all = await collectValidationErrors(a);
     const postingOnly = await collectPostingValidationErrors(a);

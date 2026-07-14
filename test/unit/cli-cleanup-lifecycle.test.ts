@@ -48,11 +48,11 @@ describe("cleanup: generated artifacts on success", () => {
       delete env[k];
     }
     env["UMACTUALLY_API_URL"] = "https://example.invalid/v1";
-    env["UMACTUALLY_API_KEY"] = "sk-test";
+    env["UMACTUALLY_API_KEY"] = "sk-test-do-not-leak";
     // Run the CLI inside this repo (which IS a git cwd), with dry-run.
     const result = spawnSync(
       process.execPath,
-      [join(REPO_ROOT, "bin/umactually.mjs"), "--api-url", "https://example.invalid/v1", "--api-key", "sk-test", "--dry-run"],
+      [join(REPO_ROOT, "bin/umactually.mjs"), "--api-url", "https://example.invalid/v1", "--api-key", "sk-test-do-not-leak", "--dry-run"],
       {
         cwd: REPO_ROOT,
         env,
@@ -123,7 +123,7 @@ describe("ado dry-run: capability-aware consumption", () => {
       "--platform", "azure-devops",
       "--dry-run",
       "--api-url", "https://example.invalid/v1",
-      "--api-key", "sk-test",
+      "--api-key", "sk-test-do-not-leak",
       "--output-artifact", "./artifacts/manual/ado-dryrun.json",
     ]);
     expect(a.eventPath).toBeNull();
@@ -151,7 +151,7 @@ describe("ado dry-run: capability-aware consumption", () => {
       delete env[k];
     }
     env["UMACTUALLY_API_URL"] = "https://example.invalid/v1";
-    env["UMACTUALLY_API_KEY"] = "sk-test";
+    env["UMACTUALLY_API_KEY"] = "sk-test-do-not-leak";
     const result = spawnSync(
       process.execPath,
       [
@@ -159,7 +159,7 @@ describe("ado dry-run: capability-aware consumption", () => {
         "--platform", "azure-devops",
         "--dry-run",
         "--api-url", "https://example.invalid/v1",
-        "--api-key", "sk-test",
+        "--api-key", "sk-test-do-not-leak",
         "--output-artifact", "./artifacts/manual/ado-dryrun-empty.json",
       ],
       {

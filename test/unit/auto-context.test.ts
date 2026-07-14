@@ -244,10 +244,10 @@ describe("auto-context: integration with the CLI binary", () => {
       delete env[k];
     }
     env["UMACTUALLY_API_URL"] = "https://example.invalid/v1";
-    env["UMACTUALLY_API_KEY"] = "sk-test";
+    env["UMACTUALLY_API_KEY"] = "sk-test-do-not-leak";
     env["INPUT_DRY_RUN"] = "true";
 
-    const result = spawnSync(process.execPath, [resolve(REPO_ROOT, "bin/umactually.mjs"), "--api-url", "https://example.invalid/v1", "--api-key", "sk-test", "--dry-run"], {
+    const result = spawnSync(process.execPath, [resolve(REPO_ROOT, "bin/umactually.mjs"), "--api-url", "https://example.invalid/v1", "--api-key", "sk-test-do-not-leak", "--dry-run"], {
       cwd: REPO_ROOT,
       env,
       encoding: "utf8",
