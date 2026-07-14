@@ -12,7 +12,7 @@
 $ErrorActionPreference = "Stop"
 
 $Repo = "JosiahSiegel/umactually"
-$UrlBase = "https://github.com/$Repo/releases/latest/download"
+$UrlBase = if ($env:INSTALL_RELEASE_BASE) { $env:INSTALL_RELEASE_BASE } else { "https://github.com/$Repo/releases/latest/download" }
 
 # Detect architecture. The test suite invokes this script via
 # execFileSync with no PROCESSOR_ARCHITECTURE env var (the test
@@ -60,8 +60,38 @@ if (!(Test-Path $InstallDir)) {
   New-Item -ItemType Directory -Path $InstallDir -Force | Out-Null
 }
 
-Write-Host "Downloading umactually windows-${Arch}..."
-Invoke-WebRequest -Uri $Url -OutFile $InstallPath -UseBasicParsing
+$ChecksumUrl = "${UrlBase}/checksums.txt"
+$TempBinary = Join-Path $InstallDir ".$Binary.$([Guid]::NewGuid().ToString('N')).tmp"
+$TempChecksums = Join-Path $InstallDir ".checksums.$([Guid]::NewGuid().ToString('N')).tmp"
+
+try {
+  Write-Host "Downloading umactually windows-${Arch}..."
+  Invoke-WebRequest -Uri $Url -OutFile $TempBinary -UseBasicParsing
+  Invoke-WebRequest -Uri $ChecksumUrl -OutFile $TempChecksums -UseBasicParsing
+
+  $ChecksumLines = Get-Content -LiteralPath $TempChecksums
+  $ExactEntries = @($ChecksumLines | Where-Object { $_ -match "^[0-9A-Fa-f]{64} [ *]$([Regex]::Escape($Binary))$" })
+  if ($ExactEntries.Count -eq 0) {
+    $NamedEntries = @($ChecksumLines | Where-Object { $_ -match "[ *]$([Regex]::Escape($Binary))$" })
+    if ($NamedEntries.Count -gt 0) {
+      throw "Malformed SHA-256 checksum entry for $Binary in checksums.txt."
+    }
+    throw "No SHA-256 checksum entry for $Binary in checksums.txt."
+  }
+  if ($ExactEntries.Count -ne 1) {
+    throw "Malformed SHA-256 checksum entry for $Binary in checksums.txt: expected exactly one entry."
+  }
+
+  $ExpectedHash = $ExactEntries[0].Substring(0, 64)
+  $ActualHash = (Get-FileHash -LiteralPath $TempBinary -Algorithm SHA256).Hash
+  if (![String]::Equals($ExpectedHash, $ActualHash, [StringComparison]::OrdinalIgnoreCase)) {
+    throw "SHA-256 checksum mismatch for $Binary."
+  }
+
+  Move-Item -LiteralPath $TempBinary -Destination $InstallPath -Force
+} finally {
+  Remove-Item -LiteralPath $TempBinary, $TempChecksums -Force -ErrorAction SilentlyContinue
+}
 
 # Add to user PATH if not already present
 $UserPath = [Environment]::GetEnvironmentVariable("Path", "User")

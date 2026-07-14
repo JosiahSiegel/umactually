@@ -9,10 +9,12 @@
 // pwsh installed). The Windows installer variants have their own dedicated
 // tests in test/unit/install-scripts.test.ts.
 
-import { execFileSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
-import { join, resolve } from "node:path";
+import { execFileSync, spawnSync } from "node:child_process";
+import { createHash } from "node:crypto";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
+import { join, resolve } from "node:path";
+import { pathToFileURL } from "node:url";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
 const REPO_ROOT = resolve(import.meta.dirname, "..", "..");
@@ -39,24 +41,44 @@ function findPowerShell(): string | null {
 const POWERSHELL = findPowerShell();
 const PS_AVAILABLE = POWERSHELL !== null;
 
-function run(scriptPath: string, env: Record<string, string>): { stdout: string; status: number } {
+type ScriptResult = {
+  readonly stderr: string;
+  readonly stdout: string;
+  readonly status: number;
+};
+
+function run(scriptPath: string, env: Record<string, string>): ScriptResult {
   if (!PS_AVAILABLE || POWERSHELL === null) {
-    return { stdout: "POWERSHELL_UNAVAILABLE", status: 0 };
+    return { stderr: "", stdout: "POWERSHELL_UNAVAILABLE", status: 0 };
   }
-  try {
-    const stdout = execFileSync(POWERSHELL, [
-      "-NoProfile",
-      "-ExecutionPolicy", "Bypass",
-      "-File", scriptPath,
-    ], {
-      env: { ...process.env, ...env },
-      encoding: "utf8",
-    });
-    return { stdout, status: 0 };
-  } catch (err: unknown) {
-    const e = err as { stdout?: string; status?: number };
-    return { stdout: e.stdout ?? "", status: e.status ?? 1 };
-  }
+  const result = spawnSync(POWERSHELL, [
+    "-NoProfile",
+    "-ExecutionPolicy", "Bypass",
+    "-File", scriptPath,
+  ], {
+    env: { ...process.env, ...env },
+    encoding: "utf8",
+  });
+  return {
+    stderr: result.stderr,
+    stdout: result.stdout,
+    status: result.status ?? 1,
+  };
+}
+
+function runChecksumInstall(checksums: string): ScriptResult {
+  const releaseDir = join(sandbox, "release");
+  const homeDir = join(sandbox, "home");
+  mkdirSync(releaseDir);
+  mkdirSync(homeDir);
+  writeFileSync(join(releaseDir, "umactually-windows-x64.exe"), "verified binary");
+  writeFileSync(join(releaseDir, "checksums.txt"), checksums);
+  const releaseBase = pathToFileURL(releaseDir).href.replace(/\/$/, "");
+  return run(INSTALL_PS1, {
+    INSTALL_RELEASE_BASE: releaseBase,
+    PROCESSOR_ARCHITECTURE: "AMD64",
+    USERPROFILE: homeDir,
+  });
 }
 
 let sandbox: string;
@@ -104,6 +126,30 @@ describe.skipIf(!PS_AVAILABLE)("install.ps1", () => {
     });
     expect(result.status).toBe(0);
     expect(existsSync(join(nested, "umactually.exe"))).toBe(true);
+  });
+
+  it("PS-INSTALL-004: installs only after the GNU checksum entry matches", () => {
+    const hash = createHash("sha256").update("verified binary").digest("hex");
+
+    const result = runChecksumInstall(`${hash}  umactually-windows-x64.exe\n`);
+
+    const installedPath = join(sandbox, "home", ".local", "bin", "umactually.exe");
+    expect(result.status).toBe(0);
+    expect(readFileSync(installedPath, "utf8")).toBe("verified binary");
+  });
+
+  it.each([
+    ["missing", `${"a".repeat(64)}  umactually-linux-x64\n`, "No SHA-256 checksum entry"],
+    ["malformed", `not-a-sha256  umactually-windows-x64.exe\n`, "Malformed SHA-256 checksum entry"],
+    ["mismatched", `${"0".repeat(64)}  umactually-windows-x64.exe\n`, "SHA-256 checksum mismatch"],
+  ])("PS-INSTALL-005: rejects a %s checksum entry and cleans temporary files", (_case, checksums, error) => {
+    const result = runChecksumInstall(checksums);
+
+    const installDir = join(sandbox, "home", ".local", "bin");
+    expect(result.status).not.toBe(0);
+    expect(result.stderr).toContain(error);
+    expect(existsSync(join(installDir, "umactually.exe"))).toBe(false);
+    expect(existsSync(installDir) ? readdirSync(installDir) : []).toEqual([]);
   });
 });
 
