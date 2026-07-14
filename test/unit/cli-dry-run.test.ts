@@ -166,15 +166,21 @@ describe("CLI dry-run RED contract", () => {
     expect(artifact["marker"]).toBe(REVIEW_MARKER);
   });
 
-  it("CLI-RED-003 fails with non-zero exit when required Azure flags are missing", async () => {
-    // Given: an invocation missing --pr-number / --repo / --event so the CLI cannot dispatch.
+  it("CLI-RED-003: --platform azure --dry-run with no plumbing flags → capability-based validation accepts (exit 0, no posting required when --review absent)", async () => {
+    // Capability-based validation contract: --review is the posting
+    // intent signal. Without it (and without --dry-run being a kill
+    // switch), no posting-side identity is required even on --platform
+    // azure. The CLI produces an Azure-shaped artifact via the consumer
+    // path with empty pullRequestJson/diffText defaults. This replaces
+    // the pre-Task-7 expectation that any --platform azure invocation
+    // without all plumbing flags should fail loudly with exit != 0.
     const args = [
       "--platform",
       "azure",
       "--dry-run",
     ];
 
-    // When: the future CLI attempts validation against an empty argv subset.
+    // When: the future CLI runs the dry-run path inside the workspace.
     let moduleNamespace: unknown;
     try {
       moduleNamespace = await import(cliModule);
@@ -186,10 +192,8 @@ describe("CLI dry-run RED contract", () => {
     }
     const result = await moduleNamespace.runCli(args, workspaceDir);
 
-    // Then: the CLI surfaces a non-zero exit and writes no artifact.
-    expect(result.exitCode).not.toBe(0);
-    const artifactPath = join(workspaceDir, "artifacts", "azure-cli-dry-run.json");
-    await expect(readFile(artifactPath, "utf8")).rejects.toThrow();
+    // Then: the CLI succeeds (no posting identity required).
+    expect(result.exitCode).toBe(0);
   });
 });
 
@@ -394,6 +398,71 @@ describe("CLI dry-run env-sources wiring (effectiveConfig + secretsDetected)", (
 
     expect(stdoutBuf).not.toContain("sk-very-sensitive-leak-marker-12345");
     expect(stderrBuf).not.toContain("sk-very-sensitive-leak-marker-12345");
+  });
+
+  it("--dry-run writes the standalone artifact and announces it on stdout with the brand prefix", async () => {
+    // S2 contract: standalone --dry-run writes the artifact AND prints
+    // `umactually: dry-run wrote <path>` so a brand-new operator
+    // can see the outcome instead of staring at a silent success.
+    const artifactPath = join(workspaceDir, "artifacts", "s1-stdout-banner.json");
+    const args = [
+      "--platform",
+      "github",
+      "--event",
+      "test/fixtures/github/pull-request-event.json",
+      "--diff",
+      "test/fixtures/github/full-pr.diff",
+      "--review",
+      "test/fixtures/github/provider-review.json",
+      "--dry-run",
+      "--output-artifact",
+      artifactPath,
+    ];
+
+    // Capture stdout/stderr the way a CI runner would.
+    const originalStdoutWrite = process.stdout.write.bind(process.stdout);
+    const originalStderrWrite = process.stderr.write.bind(process.stderr);
+    let stdoutBuf = "";
+    let stderrBuf = "";
+    const stdoutSpy = (chunk: string | Uint8Array): boolean => {
+      stdoutBuf += typeof chunk === "string" ? chunk : Buffer.from(chunk).toString("utf8");
+      return true;
+    };
+    const stderrSpy = (chunk: string | Uint8Array): boolean => {
+      stderrBuf += typeof chunk === "string" ? chunk : Buffer.from(chunk).toString("utf8");
+      return true;
+    };
+    process.stdout.write = stdoutSpy as typeof process.stdout.write;
+    process.stderr.write = stderrSpy as typeof process.stderr.write;
+
+    // Direct import + runCli call (matches the existing RED-contract pattern
+    // at the top of this file rather than the invokeRunCli helper).
+    let moduleNamespace: unknown;
+    try {
+      moduleNamespace = await import(cliModule);
+    } catch (error) {
+      process.stdout.write = originalStdoutWrite;
+      process.stderr.write = originalStderrWrite;
+      expect.fail(new Error(`RED: ${cliPath} must be implemented`, { cause: error }).message);
+    }
+    if (!isCliModuleNamespace(moduleNamespace) || typeof moduleNamespace.runCli !== "function") {
+      process.stdout.write = originalStdoutWrite;
+      process.stderr.write = originalStderrWrite;
+      expect.fail("RED: src/cli.ts must export runCli(args, cwd)");
+    }
+
+    let exitCode: number;
+    try {
+      const result = await moduleNamespace.runCli(args, workspaceDir);
+      exitCode = result.exitCode;
+    } finally {
+      process.stdout.write = originalStdoutWrite;
+      process.stderr.write = originalStderrWrite;
+    }
+
+    expect(exitCode).toBe(0);
+    expect(stdoutBuf).toContain("umactually: dry-run wrote");
+    expect(stdoutBuf).toContain(artifactPath);
   });
 });
 

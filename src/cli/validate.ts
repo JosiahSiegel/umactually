@@ -43,33 +43,30 @@ export function resolvePlatform(
   }
 }
 
-export function collectValidationErrors(parsed: ParsedCliArgs): readonly string[] {
+/**
+ * Did the operator ask the CLI to actually post? Posting identity must
+ * be present iff true.
+ *
+ * Posting intent is signaled by `--review`: that's the only artifact path
+ * the operator must explicitly opt into. ADO requires it for thread
+ * posting; GH Actions derives it from `$GITHUB_EVENT_PATH` automatically,
+ * which the wrapper runtime fills in (`src/index.ts:resolveGithubEventPath`)
+ * before the CLI parser runs. Operator-supplied --dry-run is a hard kill
+ * switch — even with --review, dry-run never posts.
+ */
+function isPostingRequested(parsed: ParsedCliArgs): boolean {
+  if (parsed.dryRun) {
+    return false;
+  }
+  return parsed.reviewPath !== null;
+}
+
+/**
+ * Errors that ALWAYS apply regardless of whether the run is posting.
+ * These are invariants the operator must satisfy in every mode.
+ */
+function collectAlwaysValidationErrors(parsed: ParsedCliArgs): readonly string[] {
   const errors: string[] = [];
-  const resolved = resolvePlatform(parsed.platform);
-
-  if (resolved === "github") {
-    if (parsed.eventPath === null) {
-      errors.push("--event is required for --platform github");
-    }
-    if (parsed.diffPath === null) {
-      errors.push("--diff is required for --platform github");
-    }
-  }
-
-  if (resolved === "azure") {
-    if (parsed.eventPath === null) {
-      errors.push("--event is required for --platform azure");
-    }
-    if (parsed.diffPath === null) {
-      errors.push("--diff is required for --platform azure");
-    }
-    if (parsed.prNumber === null) {
-      errors.push("--pr-number is required for --platform azure");
-    }
-    if (parsed.repo === null) {
-      errors.push("--repo is required for --platform azure");
-    }
-  }
 
   if (parsed.includeSonarqube) {
     if (parsed.sonarHostUrl === null) {
@@ -83,13 +80,17 @@ export function collectValidationErrors(parsed: ParsedCliArgs): readonly string[
     }
   }
 
+  // Provider config is required in live mode (the CLI talks to a
+  // provider when it runs for real). --dry-run skips the provider call
+  // entirely, so api-url/api-key are optional there. Copilot + Anthropic-
+  // native providers don't need --api-url (Copilot → GitHub Copilot
+  // token exchange; Anthropic → api.anthropic.com default).
   if (!parsed.dryRun) {
-    // Copilot + Anthropic-native providers don't need --api-url:
-    //   - Copilot uses the GitHub Copilot token exchange endpoint
-    //     (defaulting to https://api.github.com).
-    //   - Anthropic defaults to https://api.anthropic.com — an operator
-    //     with the default key can run without specifying --api-url.
-    if (parsed.apiUrl === null && parsed.provider !== "copilot" && parsed.provider !== "anthropic") {
+    if (
+      parsed.apiUrl === null &&
+      parsed.provider !== "copilot" &&
+      parsed.provider !== "anthropic"
+    ) {
       errors.push("--api-url is required unless --dry-run is set, --provider copilot is used, or --provider anthropic is used");
     }
     if (parsed.apiKey === null) {
@@ -98,6 +99,60 @@ export function collectValidationErrors(parsed: ParsedCliArgs): readonly string[
   }
 
   return errors;
+}
+
+/**
+ * Errors that apply ONLY when posting is requested.
+ *
+ * Posting-target identity (--event, --diff, --pr-number, --repo) is
+ * genuinely required to post somewhere. If the operator did not request
+ * posting (dry-run, or no --review), these errors do NOT apply —
+ * because the CLI never reaches the posting step.
+ *
+ * ADO additionally requires prNumber + repo because the PR-event shape
+ * demands them; GitHub Actions can derive these from GITHUB_EVENT_PATH.
+ */
+export function collectPostingValidationErrors(parsed: ParsedCliArgs): readonly string[] {
+  if (!isPostingRequested(parsed)) {
+    return [];
+  }
+
+  const errors: string[] = [];
+  const resolved = resolvePlatform(parsed.platform);
+
+  // Event + diff are posting-side inputs for BOTH GitHub and Azure flows:
+  // they're read by buildGithubDryRunArtifact / buildAzureDryRunArtifact /
+  // the dispatcher's runLiveReview path.
+  if (parsed.eventPath === null) {
+    errors.push("--review requires --event");
+  }
+  if (parsed.diffPath === null) {
+    errors.push("--review requires --diff");
+  }
+
+  if (resolved === "azure") {
+    if (parsed.prNumber === null) {
+      errors.push("--review requires --pr-number for --platform azure");
+    }
+    if (parsed.repo === null) {
+      errors.push("--review requires --repo for --platform azure");
+    }
+  }
+
+  return errors;
+}
+
+/**
+ * Composed validator. Always-errors ALWAYS apply; posting-errors apply
+ * only when posting is requested. Backwards-compatible: callers expecting
+ * field-level required errors on every run will see them when posting;
+ * callers running smoke tests (no --review, dry-run) will see none.
+ */
+export function collectValidationErrors(parsed: ParsedCliArgs): readonly string[] {
+  return [
+    ...collectAlwaysValidationErrors(parsed),
+    ...collectPostingValidationErrors(parsed),
+  ];
 }
 
 function assertNever(value: never): never {
