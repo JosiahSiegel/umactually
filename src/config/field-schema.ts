@@ -304,7 +304,7 @@ export const FIELDS = {
     field: "effort",
     flag: "--effort",
     input: "effort",
-    env: [],
+    env: ["UMACTUALLY_EFFORT"],
     type: "enum",
     defaultValue: "medium",
     enumValues: ["low", "medium", "high"],
@@ -313,7 +313,7 @@ export const FIELDS = {
     field: "provider",
     flag: "--provider",
     input: "provider",
-    env: [],
+    env: ["UMACTUALLY_PROVIDER"],
     type: "enum",
     defaultValue: "openai-compatible",
     // Anthropic Messages (`api.anthropic.com/v1/messages`) was added

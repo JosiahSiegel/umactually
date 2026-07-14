@@ -87,13 +87,13 @@ function collectAlwaysValidationErrors(parsed: ParsedCliArgs): readonly string[]
   // token exchange; Anthropic → api.anthropic.com default).
   if (!parsed.dryRun) {
     if (
-      parsed.apiUrl === null &&
+      (parsed.apiUrl === null || parsed.apiUrl.length === 0) &&
       parsed.provider !== "copilot" &&
       parsed.provider !== "anthropic"
     ) {
       errors.push("--api-url is required unless --dry-run is set, --provider copilot is used, or --provider anthropic is used");
     }
-    if (parsed.apiKey === null) {
+    if (parsed.apiKey === null || parsed.apiKey.length === 0) {
       errors.push("--api-key is required unless --dry-run is set");
     }
   }

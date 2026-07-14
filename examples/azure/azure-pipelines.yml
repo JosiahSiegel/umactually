@@ -1,95 +1,22 @@
-# Azure Pipelines PR review for umactually.
-# Enable "Allow scripts to access the OAuth token" in pipeline settings,
-# otherwise $(System.AccessToken) resolves to an empty string.
-#
-# Optional pipeline variables (forwarded to the CLI):
-#   UMACTUALLY_PROMPT_FILES          comma/newline-separated list of repo-relative
-#                                    prompt file paths (overrides default lookup)
-#   UMACTUALLY_ADDITIONAL_PROMPT_FILES  same shape, for additional prompts
-#   UMACTUALLY_STRICT_SCHEMA         'true' or 'false' to toggle --strict-schema
-#   UMACTUALLY_VERIFY_FINDINGS       'true' or 'false' to toggle --verify-findings
-
+# Enable "Allow scripts to access the OAuth token" in pipeline settings.
+# UMACTUALLY_* options (prompt files, strict schema, verify findings, etc.) are
+# CLI-native: set them as ADO pipeline variables and they flow through automatically.
+# Artifact validation is automatic after each live review. SYSTEM_ACCESSTOKEN is the
+# only ADO-specific plumbing because Azure does not export $(System.AccessToken).
 trigger: none
 pr:
   branches:
-    include:
-      - main
-
+    include: [main]
 pool:
   vmImage: ubuntu-latest
-
-variables:
-  - name: NODE_VERSION
-    value: "24.x"
-
 steps:
   - checkout: self
-    persistCredentials: true
   - task: NodeTool@0
     inputs:
-      versionSpec: $(NODE_VERSION)
-  - script: npm ci
-    displayName: Install dependencies
-  - script: |
-      set -euo pipefail
-      # Conditionally forward the optional prompt-file list inputs and toggles.
-      # When set, these override the default repository prompt lookup
-      # (CLAUDE.md, AGENTS.md, etc.). See docs/configuration.md.
-      optional_env_value() {
-        local value="${1:-}"
-        if [[ "$value" == \$\(*\) ]] || [[ -z "$value" ]]; then
-          echo ""
-        else
-          echo "$value"
-        fi
-      }
-      UMACTUALLY_PROMPT_FILES: $(UMACTUALLY_PROMPT_FILES)
-      UMACTUALLY_ADDITIONAL_PROMPT_FILES: $(UMACTUALLY_ADDITIONAL_PROMPT_FILES)
-      UMACTUALLY_STRICT_SCHEMA: $(UMACTUALLY_STRICT_SCHEMA)
-      UMACTUALLY_VERIFY_FINDINGS: $(UMACTUALLY_VERIFY_FINDINGS)
-      prompt_files="$(optional_env_value UMACTUALLY_PROMPT_FILES)"
-      additional_prompt_files="$(optional_env_value UMACTUALLY_ADDITIONAL_PROMPT_FILES)"
-      strict_schema="$(optional_env_value UMACTUALLY_STRICT_SCHEMA)"
-      verify_findings="$(optional_env_value UMACTUALLY_VERIFY_FINDINGS)"
-      EXTRA_ARGS=()
-      if [ -n "$prompt_files" ]; then
-        EXTRA_ARGS+=(--prompt-files "$prompt_files")
-      fi
-      if [ -n "$additional_prompt_files" ]; then
-        EXTRA_ARGS+=(--additional-prompt-files "$additional_prompt_files")
-      fi
-      # strict_schema / verify_findings are default-ON in the CLI; the
-      # pipeline forwards them only when the operator sets the env vars.
-      # `false` translates to --no-strict-schema / --no-verify-findings.
-      if [ -n "$strict_schema" ]; then
-        if [ "$strict_schema" = "false" ]; then
-          EXTRA_ARGS+=(--no-strict-schema)
-        else
-          EXTRA_ARGS+=(--strict-schema)
-        fi
-      fi
-      if [ -n "$verify_findings" ]; then
-        if [ "$verify_findings" = "false" ]; then
-          EXTRA_ARGS+=(--no-verify-findings)
-        else
-          EXTRA_ARGS+=(--verify-findings)
-        fi
-      fi
-      npx umactually@0.1.0 review \
-        --platform azure-devops \
-        --api-url "$(UMACTUALLY_API_URL)" \
-        --api-key "$(UMACTUALLY_API_KEY)" \
-        "${EXTRA_ARGS[@]}"
+      versionSpec: "24.x"
+  - script: npx umactually@0.1.0 review --platform azure-devops
     displayName: Run umactually PR review
     env:
+      SYSTEM_ACCESSTOKEN: $(System.AccessToken)
       UMACTUALLY_API_URL: $(UMACTUALLY_API_URL)
       UMACTUALLY_API_KEY: $(UMACTUALLY_API_KEY)
-      UMACTUALLY_PR_NUMBER: $(System.PullRequest.PullRequestId)
-      UMACTUALLY_REPO: $(Build.Repository.Name)
-      SYSTEM_ACCESSTOKEN: $(System.AccessToken)
-  - script: |
-      npx umactually@0.1.0 check-review-artifact ./umactually-review.json
-    condition: always()
-    displayName: Validate review artifact
-
-# For Windows agent adaptation, see docs/azure-devops.md.

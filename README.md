@@ -45,7 +45,7 @@ umactually <command> [flags]
   --version               Print version and exit 0
   --help                  Full flag reference
 ```
-Global flag: `--no-color` (also honored via `NO_COLOR=<anything>`); `--json` on `review` is documented under [JSON output](#json-output). Run `umactually check-review-artifact ./umactually-review.json` in an always-run CI step to validate that the review artifact was produced and is usable.
+Global flag: `--no-color` (also honored via `NO_COLOR=<anything>`); `--json` on `review` is documented under [JSON output](#json-output). The CLI auto-validates the persisted artifact after every live review, so CI does not need a separate `check-review-artifact` step; the subcommand remains available for manual validation.
 
 ## Quickstart
 
@@ -62,7 +62,7 @@ umactually \
 
 ### Live CI (GitHub Actions / Azure DevOps)
 
-The CLI derives event, diff, review, and PR context automatically from the runner — do not hard-code plumbing flags in workflow YAML or pipeline variables. `--platform auto` (default) reads `GITHUB_ACTIONS` / `TF_BUILD`; explicit `--platform github` or `--platform azure-devops` is accepted.
+The CLI derives event, diff, review, and PR context automatically from the runner — do not hard-code plumbing flags in workflow YAML or pipeline variables. `--platform auto` (default) reads `GITHUB_ACTIONS` / `TF_BUILD`; explicit `--platform github` or `--platform azure-devops` is accepted. The CLI natively honors every `UMACTUALLY_*` env var: set options such as `UMACTUALLY_STRICT_SCHEMA=false`, `UMACTUALLY_VERIFY_FINDINGS`, or `UMACTUALLY_PROMPT_FILES` as pipeline variables and they flow through. It also auto-validates the persisted artifact after every live review, so no separate validation step is required.
 
 ```bash
 umactually --platform github
@@ -144,18 +144,13 @@ Two artifacts are written per live run, both tagged with the canonical marker `<
 
 ```yaml
 name: PR review
-on:
-  pull_request:
-    types: [opened, synchronize, reopened, ready_for_review]
-
+on: [pull_request]
 concurrency:
   group: umactually-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: true
-
 permissions:
   contents: read
   pull-requests: write
-
 jobs:
   review:
     runs-on: ubuntu-latest
@@ -164,23 +159,12 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: "24"
-      - name: Install dependencies
-        run: npm ci
       - name: Run umactually PR review
         env:
           GITHUB_TOKEN: ${{ github.token }}
           UMACTUALLY_API_URL: ${{ secrets.UMACTUALLY_API_URL }}
           UMACTUALLY_API_KEY: ${{ secrets.UMACTUALLY_API_KEY }}
-        run: |
-          npx umactually@0.1.0 review \
-            --platform github \
-            --api-url "$UMACTUALLY_API_URL" \
-            --api-key "$UMACTUALLY_API_KEY"
-      - name: Validate review artifact
-        if: always()
-        run: |
-          # Equivalent installed command: umactually check-review-artifact
-          npx umactually@0.1.0 check-review-artifact ./umactually-review.json
+        run: npx umactually@0.1.0 review --platform github
 ```
 
 Do not use `pull_request_target` — it is not required and exposes secrets to untrusted PR code. The pinned public CLI derives event, diff, review, and PR context from the runner. The canonical copyable workflow lives at `examples/github/pr-review.yml`.
@@ -191,88 +175,23 @@ Do not use `pull_request_target` — it is not required and exposes secrets to u
 trigger: none
 pr:
   branches:
-    include:
-      - main
-
+    include: [main]
 pool:
   vmImage: ubuntu-latest
-
-variables:
-  - name: NODE_VERSION
-    value: "24.x"
-
 steps:
   - checkout: self
-    persistCredentials: true
   - task: NodeTool@0
     inputs:
-      versionSpec: $(NODE_VERSION)
-  - script: npm ci
-    displayName: Install dependencies
-  - script: |
-      set -euo pipefail
-      # Conditionally forward the optional prompt-file list inputs and toggles.
-      # When set, these override the default repository prompt lookup
-      # (CLAUDE.md, AGENTS.md, etc.). See docs/configuration.md.
-      optional_env_value() {
-        local value="${1:-}"
-        if [[ "$value" == \$\(*\) ]] || [[ -z "$value" ]]; then
-          echo ""
-        else
-          echo "$value"
-        fi
-      }
-      UMACTUALLY_PROMPT_FILES: $(UMACTUALLY_PROMPT_FILES)
-      UMACTUALLY_ADDITIONAL_PROMPT_FILES: $(UMACTUALLY_ADDITIONAL_PROMPT_FILES)
-      UMACTUALLY_STRICT_SCHEMA: $(UMACTUALLY_STRICT_SCHEMA)
-      UMACTUALLY_VERIFY_FINDINGS: $(UMACTUALLY_VERIFY_FINDINGS)
-      prompt_files="$(optional_env_value UMACTUALLY_PROMPT_FILES)"
-      additional_prompt_files="$(optional_env_value UMACTUALLY_ADDITIONAL_PROMPT_FILES)"
-      strict_schema="$(optional_env_value UMACTUALLY_STRICT_SCHEMA)"
-      verify_findings="$(optional_env_value UMACTUALLY_VERIFY_FINDINGS)"
-      EXTRA_ARGS=()
-      if [ -n "$prompt_files" ]; then
-        EXTRA_ARGS+=(--prompt-files "$prompt_files")
-      fi
-      if [ -n "$additional_prompt_files" ]; then
-        EXTRA_ARGS+=(--additional-prompt-files "$additional_prompt_files")
-      fi
-      # strict_schema / verify_findings are default-ON in the CLI; the
-      # pipeline forwards them only when the operator sets the env vars.
-      # `false` translates to --no-strict-schema / --no-verify-findings.
-      if [ -n "$strict_schema" ]; then
-        if [ "$strict_schema" = "false" ]; then
-          EXTRA_ARGS+=(--no-strict-schema)
-        else
-          EXTRA_ARGS+=(--strict-schema)
-        fi
-      fi
-      if [ -n "$verify_findings" ]; then
-        if [ "$verify_findings" = "false" ]; then
-          EXTRA_ARGS+=(--no-verify-findings)
-        else
-          EXTRA_ARGS+=(--verify-findings)
-        fi
-      fi
-      npx umactually@0.1.0 review \
-        --platform azure-devops \
-        --api-url "$(UMACTUALLY_API_URL)" \
-        --api-key "$(UMACTUALLY_API_KEY)" \
-        "${EXTRA_ARGS[@]}"
+      versionSpec: "24.x"
+  - script: npx umactually@0.1.0 review --platform azure-devops
     displayName: Run umactually PR review
     env:
+      SYSTEM_ACCESSTOKEN: $(System.AccessToken)
       UMACTUALLY_API_URL: $(UMACTUALLY_API_URL)
       UMACTUALLY_API_KEY: $(UMACTUALLY_API_KEY)
-      UMACTUALLY_PR_NUMBER: $(System.PullRequest.PullRequestId)
-      UMACTUALLY_REPO: $(Build.Repository.Name)
-      SYSTEM_ACCESSTOKEN: $(System.AccessToken)
-  - script: |
-      npx umactually@0.1.0 check-review-artifact ./umactually-review.json
-    condition: always()
-    displayName: Validate review artifact
 ```
 
-Enable "Allow scripts to access the OAuth token" so `$(System.AccessToken)` is available. Azure Repos callers wire this pipeline into a branch policy build validation pipeline (the YAML `pr:` trigger is honored only for GitHub / Bitbucket Cloud). For PRs over the 200-file default cap, pass `--review-file-limit N` (or set `REVIEW_FILE_LIMIT=N`); use `0` to disable the cap. Full ADO playbook at [`docs/azure-devops.md`](docs/azure-devops.md) and `examples/azure/azure-pipelines.yml`.
+Enable "Allow scripts to access the OAuth token" so `$(System.AccessToken)` is available; mapping it to `SYSTEM_ACCESSTOKEN` is the only unavoidable ADO-specific plumbing. Every `UMACTUALLY_*` option is CLI-native, so set `UMACTUALLY_STRICT_SCHEMA=false` (or `UMACTUALLY_VERIFY_FINDINGS`, `UMACTUALLY_PROMPT_FILES`, and others) as pipeline variables without shell forwarding. Artifact validation runs automatically after each live review. Azure Repos callers wire this pipeline into a branch policy build validation pipeline (the YAML `pr:` trigger is honored only for GitHub / Bitbucket Cloud). For PRs over the 200-file default cap, pass `--review-file-limit N` (or set `REVIEW_FILE_LIMIT=N`); use `0` to disable the cap. Full ADO playbook at [`docs/azure-devops.md`](docs/azure-devops.md) and `examples/azure/azure-pipelines.yml`.
 
 ## Files
 
