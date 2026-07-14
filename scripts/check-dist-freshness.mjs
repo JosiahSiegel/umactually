@@ -11,7 +11,7 @@ import { fileURLToPath } from "node:url";
 const here = dirname(fileURLToPath(import.meta.url));
 const packageRoot = resolve(here, "..");
 
-const REQUIRED_BUNDLES = ["dist/index.js", "dist/cli.js"];
+const REQUIRED_BUNDLES = ["dist/cli.js"];
 const SRC_ROOT = join(packageRoot, "src");
 
 function main() {
