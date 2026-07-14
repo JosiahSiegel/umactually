@@ -60,7 +60,7 @@ jobs:
 
       - name: Verify self-review output is a real review
         if: always()
-        run: node bin/umactually.mjs check-review-artifact ./umactually-review.json
+        run: node bin/umactually.mjs check-review-artifact ./artifacts/manual/s1-github-self-review.md
 
 # Verifying the action posted a review
 # -----------------------------------
