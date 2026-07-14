@@ -96,7 +96,7 @@ describe.skipIf(!SHELL_AVAILABLE)("install.sh detection", () => {
     expect(result.status).toBe(0);
     const summary = parseKeyValue(result.stdout);
     expect(summary["TEST_MODE"]).toBe("1");
-    expect(summary["PLATFORM"]).toMatch(/^(linux|darwin)$/);
+    expect(summary["PLATFORM"]).toMatch(/^(linux|darwin|windows)$/);
     expect(summary["ARCH"]).toMatch(/^(x64|arm64)$/);
     expect(summary["BINARY"]).toBe(`umactually-${summary["PLATFORM"]}-${summary["ARCH"]}`);
     expect(summary["URL"]).toContain(summary["BINARY"]);
