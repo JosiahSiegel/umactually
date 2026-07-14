@@ -4,7 +4,7 @@
   "marker": "<!-- umactually -->",
   "inlineThreadCount": 0,
   "suppressedCommentCount": 0,
-  "note": "no --review supplied; this was a standalone dry-run smoke test, no posting path executed",
+  "note": "no --review supplied; this was a dry-run smoke test, no posting path executed",
   "effectiveConfig": {
     "providerUrl": "https://example.invalid/v1",
     "providerModel": null,
