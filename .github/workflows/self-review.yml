@@ -1,10 +1,9 @@
 name: UmActually Self Review
 
-# Runs the in-tree UmActually PR review action against pull requests opened on
-# this repository. This workflow consumes the action via ./, which means each
-# PR is reviewed by the version of the action checked out with the PR head.
-# Do NOT switch this workflow to pull_request_target: doing so would execute
-# PR head-branch code with write permissions and could expose secrets.
+# Runs the checked-out UmActually CLI against pull requests opened on this
+# repository. Do NOT switch this workflow to pull_request_target: doing so
+# would execute PR head-branch code with write permissions and could expose
+# secrets.
 
 on:
   pull_request:
@@ -41,94 +40,34 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
-      - name: Rebuild bundled dist
-        # The committed dist/ in the PR head may be older than src/ from
-        # someone else's prior commit. The action entrypoint is dist/index.js
-        # (see action.yml), so a stale bundle silently reviews with the
-        # wrong code. Re-bundle every run, then verify the freshness check
-        # passes before posting the review.
+      - name: Rebuild bundled CLI
         run: npm run build
 
       - name: Check bundled dist is fresh
         run: npm run check:dist-freshness
 
-      # Fetch the actual PR diff and write it to artifacts/manual/diff.patch
-      # so the action can review against the real changes (not the
-      # placeholder diff it auto-generates when INPUT_DIFF is missing).
-      # Regression: prior runs posted "No pull request diff was provided"
-      # parse-fail cards because INPUT_DIFF was unset and the action
-      # silently substituted its 3-line placeholder diff, which the
-      # model correctly rejected as not-a-real-diff.
-      - name: Fetch PR diff
-        if: github.event_name == 'pull_request'
-        uses: actions/github-script@v7
-        with:
-          script: |
-            const fs = require('fs');
-            const path = require('path');
-            const { data: pr } = await github.rest.pulls.get({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              pull_number: context.issue.number,
-              mediaType: { format: 'diff' },
-            });
-            const dir = 'artifacts/manual';
-            fs.mkdirSync(dir, { recursive: true });
-            fs.writeFileSync(path.join(dir, 'diff.patch'), pr, 'utf8');
-            core.info(`wrote PR diff (${pr.length} bytes) to ${dir}/diff.patch`);
-
       - name: Run UmActually self review
-        uses: ./
-        with:
-          dry-run: 'false'
-          detect-leaks: 'false'
-          # Pass the fetched diff path to the action. Without this, the
-          # action falls back to a 3-line placeholder diff and the model
-          # rejects it as "no pull request diff was provided".
-          diff: 'artifacts/manual/diff.patch'
-          # Emit the extracted payload to stderr on parse-fail so the
-          # GitHub Actions log shows what the parser actually saw. The
-          # 16 KB diagnostic in the PR comment truncates the middle of
-          # the raw response (where response.completed lives), so without
-          # this log we cannot tell whether the parser extracted the
-          # right text or the wrong one.
-          debug-raw-response: 'true'
-          # Raised from the default 16000 to 32000 so a model review of
-          # a large PR diff (e.g. this PR's 585-line diff that produced
-          # 8 inline findings + suppressed_comments) doesn't get cut
-          # off mid-stream. The action's parse-fail diagnostic surfaces
-          # a `::warning::` line when the model fills >= 90% of this
-          # budget, so leaving it at the default 16000 would also
-          # produce a useful warning instead of a silent parse-fail.
-          # Override here (not in action.yml) so other callers using
-          # the bundled action aren't affected.
-          max-output-tokens: '32000'
-          github_token: ${{ secrets.GITHUB_TOKEN }}
         env:
+          GITHUB_TOKEN: ${{ github.token }}
           UMACTUALLY_API_URL: ${{ secrets.UMACTUALLY_API_URL }}
           UMACTUALLY_API_KEY: ${{ secrets.UMACTUALLY_API_KEY }}
+        run: |
+          node bin/umactually.mjs review \
+            --platform github \
+            --no-detect-leaks \
+            --debug-raw-response \
+            --max-output-tokens 32000
 
-      # Self-review guard: refuses to pass CI when the action's output
-      # artifact is a parse-fail diagnostic card instead of a real
-      # review. Runs AFTER the action step (with if: always()) so it
-      # inspects the current run's output, not a stale artifact from a
-      # previous run. Regression context: PR #17 self-review posted
-      # the same parse-fail card 4 times in a row and every CI check
-      # passed because the action exit code was 0 — this guard catches
-      # that regression class.
       - name: Verify self-review output is a real review
         if: always()
-        run: node scripts/check-self-review-output.mjs
+        run: node bin/umactually.mjs check-review-artifact ./umactually-review.json
 
 # Verifying the action posted a review
 # -----------------------------------
 # 1. Open the pull request that triggered this workflow.
 # 2. Look for comments or review feedback containing the marker:
-#        <!-- umactually-pr-review -->
-# 3. On the PR conversation tab, the action posts a single pull request review
+#        <!-- umactually -->
+# 3. On the PR conversation tab, the CLI posts a single pull request review
 #    with inline threads on files in the diff. On the Files changed tab the
 #    inline threads are visible per file.
-# 4. If the workflow ran via workflow_dispatch, the run summary lists the
-#    number of inline threads and suppressed comments for the PR whose number
-#    was passed through the runtime; if no PR number is available, the run is
-#    treated as a no-op by the runtime.
+# 4. A workflow_dispatch run without pull request context does not post.
