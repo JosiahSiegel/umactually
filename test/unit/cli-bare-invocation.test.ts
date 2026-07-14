@@ -94,17 +94,21 @@ describe("CLI bare-invocation", () => {
     expect(stderrBuf).not.toContain("pick a mode:");
   });
 
-  it("smoke: --api-url + --api-key in the real repo cwd writes standalone artifact and exits 0 (no CI auto-derivation)", async () => {
-    // Use the real cwd: it IS a git repo, but the auto-context derivation
-    // is CI-only (skipped when neither GITHUB_ACTIONS nor TF_BUILD is set).
-    // So the standalone path sees an empty diff and writes a "no diff"
-    // artifact instead of calling the provider.
+  it("smoke: --api-url + --api-key in a non-git cwd writes a 'no diff' standalone artifact and exits 0", async () => {
+    // Use a non-git cwd so the auto-context derivation has no diff to
+    // find. The CLI then sees parsed.diffPath === null and writes the
+    // "no diff" standalone artifact (mirrors the dry-run path) without
+    // calling the provider. This is the right user experience for
+    // `umactually review` invoked in a terminal: it should not crash
+    // just because the cwd is not a git repo with uncommitted changes.
     //
-    // (Old wrapper-era behavior: required --platform and tried to call
-    // the provider unconditionally. The new behavior: standalone mode
-    // gracefully degrades to a no-diff artifact in non-CI shells, which
-    // is the right user experience for `umactually review` in a terminal.)
-    const cwd = process.cwd();
+    // (The OLD wrapper-era behavior was: always call the provider
+    // even without a diff, and require --platform. The new behavior
+    // is: standalone mode degrades gracefully. This test pins that
+    // contract.)
+    const { mkdtempSync } = await import("node:fs");
+    const { tmpdir } = await import("node:os");
+    const cwd = mkdtempSync(`${tmpdir()}/umactually-bare-`);
     const originalStdout = process.stdout.write.bind(process.stdout);
     const originalStderr = process.stderr.write.bind(process.stderr);
     let stdoutBuf = "";
