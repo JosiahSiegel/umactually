@@ -98,7 +98,8 @@ describe.skipIf(!SHELL_AVAILABLE)("install.sh detection", () => {
     expect(summary["TEST_MODE"]).toBe("1");
     expect(summary["PLATFORM"]).toMatch(/^(linux|darwin|windows)$/);
     expect(summary["ARCH"]).toMatch(/^(x64|arm64)$/);
-    expect(summary["BINARY"]).toBe(`umactually-${summary["PLATFORM"]}-${summary["ARCH"]}`);
+    const extension = summary["PLATFORM"] === "windows" ? ".exe" : "";
+    expect(summary["BINARY"]).toBe(`umactually-${summary["PLATFORM"]}-${summary["ARCH"]}${extension}`);
     expect(summary["URL"]).toContain(summary["BINARY"]);
   });
 
@@ -129,7 +130,8 @@ describe.skipIf(!SHELL_AVAILABLE)("install.sh detection", () => {
       });
       expect(result.status).toBe(0);
       const summary = parseKeyValue(result.stdout);
-      expect(summary["BINARY"]).toBe(`umactually-${t.replace("windows", "windows")}`);
+      const extension = platform === "windows" ? ".exe" : "";
+      expect(summary["BINARY"]).toBe(`umactually-${t}${extension}`);
     }
   });
 
