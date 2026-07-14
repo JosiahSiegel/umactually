@@ -344,7 +344,7 @@ const FIELDS = {
         field: "effort",
         flag: "--effort",
         input: "effort",
-        env: [],
+        env: ["UMACTUALLY_EFFORT"],
         type: "enum",
         defaultValue: "medium",
         enumValues: ["low", "medium", "high"],
@@ -353,7 +353,7 @@ const FIELDS = {
         field: "provider",
         flag: "--provider",
         input: "provider",
-        env: [],
+        env: ["UMACTUALLY_PROVIDER"],
         type: "enum",
         defaultValue: "openai-compatible",
         // Anthropic Messages (`api.anthropic.com/v1/messages`) was added
@@ -657,7 +657,7 @@ function parseBooleanFromUnknown(value, field) {
             return true;
         if (value === 0)
             return false;
-        throw new InvalidConfigError(field, `expected boolean, received number ${REDACTED}`);
+        throw new errors_InvalidConfigError(field, `expected boolean, received number ${REDACTED_PLACEHOLDER}`);
     }
     if (typeof value === "string") {
         const normalized = value.trim().toLowerCase();
@@ -665,9 +665,9 @@ function parseBooleanFromUnknown(value, field) {
             return true;
         if (FALSY_STRINGS.has(normalized))
             return false;
-        throw new InvalidConfigError(field, `expected boolean string, received ${REDACTED}`);
+        throw new errors_InvalidConfigError(field, `expected boolean string, received ${REDACTED_PLACEHOLDER}`);
     }
-    throw new InvalidConfigError(field, `expected boolean, received ${typeof value}`);
+    throw new errors_InvalidConfigError(field, `expected boolean, received ${typeof value}`);
 }
 const INTEGER_RE = /^-?\d+$/;
 /**
@@ -677,21 +677,21 @@ const INTEGER_RE = /^-?\d+$/;
 function parseIntegerFromUnknown(value, field) {
     if (typeof value === "number") {
         if (!Number.isInteger(value)) {
-            throw new InvalidConfigError(field, `expected integer, received non-integer number ${REDACTED}`);
+            throw new errors_InvalidConfigError(field, `expected integer, received non-integer number ${REDACTED_PLACEHOLDER}`);
         }
         return value;
     }
     if (typeof value === "string") {
         const trimmed = value.trim();
         if (trimmed.length === 0) {
-            throw new InvalidConfigError(field, `expected integer, received empty string`);
+            throw new errors_InvalidConfigError(field, `expected integer, received empty string`);
         }
         if (!INTEGER_RE.test(trimmed)) {
-            throw new InvalidConfigError(field, `expected integer string, received ${REDACTED}`);
+            throw new errors_InvalidConfigError(field, `expected integer string, received ${REDACTED_PLACEHOLDER}`);
         }
         const parsed = Number.parseInt(trimmed, 10);
         if (!Number.isFinite(parsed)) {
-            throw new InvalidConfigError(field, `expected finite integer, received ${REDACTED}`);
+            throw new errors_InvalidConfigError(field, `expected finite integer, received ${REDACTED_PLACEHOLDER}`);
         }
         // Reject values outside the safe-integer range so callers that
         // rely on exact equality (severity-key lookups, cache keys,
@@ -699,11 +699,11 @@ function parseIntegerFromUnknown(value, field) {
         // parseStrictInt has the same check; this is the config-loader's
         // equivalent so the two surfaces agree.
         if (!Number.isSafeInteger(parsed)) {
-            throw new InvalidConfigError(field, `expected integer in [${Number.MIN_SAFE_INTEGER}, ${Number.MAX_SAFE_INTEGER}], received ${REDACTED}`);
+            throw new errors_InvalidConfigError(field, `expected integer in [${Number.MIN_SAFE_INTEGER}, ${Number.MAX_SAFE_INTEGER}], received ${REDACTED_PLACEHOLDER}`);
         }
         return parsed;
     }
-    throw new InvalidConfigError(field, `expected integer, received ${typeof value}`);
+    throw new errors_InvalidConfigError(field, `expected integer, received ${typeof value}`);
 }
 const VALID_SEVERITIES = new Set([
     "info",
@@ -751,11 +751,11 @@ function parseSeverityFromUnknown(value, field) {
 const VALID_PLATFORMS = new Set(FIELDS.platform.enumValues ?? []);
 function parsePlatformFromUnknown(value, field) {
     if (typeof value !== "string") {
-        throw new InvalidConfigError(field, `expected platform string, received ${typeof value}`);
+        throw new errors_InvalidConfigError(field, `expected platform string, received ${typeof value}`);
     }
     const normalized = value.trim().toLowerCase();
     if (!VALID_PLATFORMS.has(normalized)) {
-        throw new InvalidConfigError(field, `unknown platform ${REDACTED}`);
+        throw new errors_InvalidConfigError(field, `unknown platform ${REDACTED_PLACEHOLDER}`);
     }
     return normalized;
 }
@@ -814,10 +814,16 @@ function appendV1(path) {
 
 
 
+const explicitFieldsByParse = new WeakMap();
+const FIELD_BY_FLAG = new Map(Object.values(FIELDS).flatMap((field) => field.flag === null ? [] : [[field.flag, field.field]]));
+function wasCliFieldExplicitlySet(parsed, field) {
+    return explicitFieldsByParse.get(parsed)?.has(field) === true;
+}
 class CliUsageError extends Error {
     name = "CliUsageError";
 }
 function parseCliArgs(args) {
+    const explicitlySet = new Set();
     let platform = "auto";
     let eventPath = null;
     let diffPath = null;
@@ -878,6 +884,13 @@ function parseCliArgs(args) {
         const token = args[index];
         if (token === undefined) {
             continue;
+        }
+        const positiveFlag = token.startsWith("--no-")
+            ? `--${token.slice("--no-".length)}`
+            : token;
+        const explicitField = FIELD_BY_FLAG.get(positiveFlag);
+        if (explicitField !== undefined) {
+            explicitlySet.add(explicitField);
         }
         switch (token) {
             case "--platform":
@@ -1070,7 +1083,7 @@ function parseCliArgs(args) {
                 throw new CliUsageError(`unknown flag: ${token}`);
         }
     }
-    return {
+    const parsed = {
         platform,
         eventPath,
         diffPath,
@@ -1115,6 +1128,8 @@ function parseCliArgs(args) {
         strictSchema,
         verifyFindings,
     };
+    explicitFieldsByParse.set(parsed, explicitlySet);
+    return parsed;
 }
 class CliHelpSignal extends Error {
     name = "CliHelpSignal";
@@ -4236,50 +4251,6 @@ const DEFAULT_SONAR_TIMEOUT_SECONDS = FIELDS.sonarTimeoutSeconds.defaultValue;
  */
 const DEFAULT_PROVIDER_MODEL = FIELDS.model.defaultValue;
 
-;// CONCATENATED MODULE: ./src/config/field-resolution.ts
-/**
- * Resolve a config field through the canonical precedence chain: parsed > env > fallback.
- *
- * Returns the first value in the chain that is non-null, non-undefined, AND (when a
- * string) non-empty. This matches the behavior the live path hand-rolls inline at
- * multiple sites (`parsed.X ?? env["Y"] ?? DEFAULT_Z`).
- *
- * Why this exists: the config loader (`src/config/loader.ts`) has private pickX
- * helpers used only inside loadConfigFromSources. The live path cannot call those
- * directly — it builds parsed/env from different inputs (CLI argv + action inputs +
- * env) and needs the same chain. Centralizing eliminates the 7+ hand-rolled
- * `parsed.X ?? env["Y"]` occurrences scattered across cli/ that future maintainers
- * could "fix" by adding a default to one site but not the others.
- *
- * Treats the empty string as "missing" for string-typed fields. This matches the
- * CLI's existing behavior (`parseStringFromUnknown` raises on empty input, and the
- * shell typically passes empty strings for unset flags).
- *
- * @param parsedValue  CLI/inputs value (already parsed).
- * @param envValue     Env-var value (read via ENV_KEYS.X).
- * @param fallback     The schema default (from FIELDS.<x>.defaultValue or a derived constant).
- * @returns            The first non-null/non-empty value, or `fallback`.
- */
-function resolveField(parsedValue, envValue, fallback) {
-    if (parsedValue !== undefined && parsedValue !== null) {
-        if (typeof parsedValue === "string" && parsedValue.length === 0) {
-            // Empty string is treated as missing for string fields.
-        }
-        else {
-            return parsedValue;
-        }
-    }
-    if (envValue !== undefined && envValue !== null) {
-        if (typeof envValue === "string" && envValue.length === 0) {
-            // Empty string from env is treated as missing.
-        }
-        else {
-            return envValue;
-        }
-    }
-    return fallback;
-}
-
 ;// CONCATENATED MODULE: ./src/config/prompt-files.ts
 
 
@@ -4469,57 +4440,125 @@ async function resolveDefaultPromptFiles(cwd, fs) {
     return existing;
 }
 
-;// CONCATENATED MODULE: ./src/util/env-keys.ts
-/** Centralised env-var name registry; eliminates inline `env["..."]` strings and keeps legacy aliases visible. */
-const ENV_KEYS = {
-    // UMACTUALLY_* canonical, REVIEW_* legacy aliases
-    UMACTUALLY_API_URL: "UMACTUALLY_API_URL",
-    UMACTUALLY_API_KEY: "UMACTUALLY_API_KEY",
-    UMACTUALLY_MODEL: "UMACTUALLY_MODEL",
-    UMACTUALLY_GITHUB_API_BASE: "UMACTUALLY_GITHUB_API_BASE",
-    UMACTUALLY_INCLUDE_SONARQUBE: "UMACTUALLY_INCLUDE_SONARQUBE",
-    UMACTUALLY_SONAR_HOST_URL: "UMACTUALLY_SONAR_HOST_URL",
-    UMACTUALLY_SONAR_TOKEN: "UMACTUALLY_SONAR_TOKEN",
-    UMACTUALLY_SONAR_PROJECT_KEY: "UMACTUALLY_SONAR_PROJECT_KEY",
-    UMACTUALLY_PROMPT_FILE: "UMACTUALLY_PROMPT_FILE",
-    UMACTUALLY_PROMPT_FILES: "UMACTUALLY_PROMPT_FILES",
-    UMACTUALLY_ADDITIONAL_PROMPT_FILE: "UMACTUALLY_ADDITIONAL_PROMPT_FILE",
-    UMACTUALLY_ADDITIONAL_PROMPT_FILES: "UMACTUALLY_ADDITIONAL_PROMPT_FILES",
-    UMACTUALLY_STRICT_SCHEMA: "UMACTUALLY_STRICT_SCHEMA",
-    UMACTUALLY_VERIFY_FINDINGS: "UMACTUALLY_VERIFY_FINDINGS",
-    REVIEW_STRICT_SCHEMA: "REVIEW_STRICT_SCHEMA",
-    REVIEW_VERIFY_FINDINGS: "REVIEW_VERIFY_FINDINGS",
-    REVIEW_PROVIDER_URL: "REVIEW_PROVIDER_URL",
-    REVIEW_PROVIDER_API_KEY: "REVIEW_PROVIDER_API_KEY",
-    REVIEW_PROVIDER_MODEL: "REVIEW_PROVIDER_MODEL",
-    REVIEW_TIMEOUT_SECONDS: "REVIEW_TIMEOUT_SECONDS",
-    REVIEW_FILE_LIMIT: "REVIEW_FILE_LIMIT",
-    REVIEW_LEAK_DETECTION: "REVIEW_LEAK_DETECTION",
-    // Platform runtime
-    GITHUB_ACTIONS: "GITHUB_ACTIONS",
-    GITHUB_EVENT_PATH: "GITHUB_EVENT_PATH",
-    GITHUB_TOKEN: "GITHUB_TOKEN",
-    GITHUB_REPOSITORY: "GITHUB_REPOSITORY",
-    GITHUB_REF: "GITHUB_REF",
-    GITHUB_SHA: "GITHUB_SHA",
-    // Azure DevOps runtime
-    TF_BUILD: "TF_BUILD",
-    SYSTEM_ACCESSTOKEN: "SYSTEM_ACCESSTOKEN",
-    SYSTEM_TEAMPROJECT: "SYSTEM_TEAMPROJECT",
-    SYSTEM_COLLECTIONURI: "SYSTEM_COLLECTIONURI",
-    BUILD_REPOSITORY_ID: "BUILD_REPOSITORY_ID",
-    SYSTEM_PULLREQUEST_PULLREQUESTID: "SYSTEM_PULLREQUEST_PULLREQUESTID",
-    SYSTEM_PULLREQUEST_SOURCECOMMITID: "SYSTEM_PULLREQUEST_SOURCECOMMITID",
-    SYSTEM_PULLREQUEST_TARGETBRANCHNAME: "SYSTEM_PULLREQUEST_TARGETBRANCHNAME",
-    // Inputs (already wrapped as INPUT_* by GitHub)
-    INPUT_DRY_RUN: "INPUT_DRY_RUN",
-    INPUT_EVENT: "INPUT_EVENT",
-    INPUT_DIFF: "INPUT_DIFF",
-    INPUT_REVIEW: "INPUT_REVIEW",
-    INPUT_THREADS: "INPUT_THREADS",
-    INPUT_OUTPUT_ARTIFACT: "INPUT_OUTPUT_ARTIFACT",
-    INPUT_PLATFORM: "INPUT_PLATFORM",
-};
+;// CONCATENATED MODULE: ./src/config/field-resolution.ts
+
+
+
+
+/**
+ * Resolve a config field through the canonical precedence chain: parsed > env > fallback.
+ *
+ * Returns the first value in the chain that is non-null, non-undefined, AND (when a
+ * string) non-empty. This matches the behavior the live path hand-rolls inline at
+ * multiple sites (`parsed.X ?? env["Y"] ?? DEFAULT_Z`).
+ *
+ * Why this exists: the config loader (`src/config/loader.ts`) has private pickX
+ * helpers used only inside loadConfigFromSources. The live path cannot call those
+ * directly — it builds parsed/env from different inputs (CLI argv + action inputs +
+ * env) and needs the same chain. Centralizing eliminates the 7+ hand-rolled
+ * `parsed.X ?? env["Y"]` occurrences scattered across cli/ that future maintainers
+ * could "fix" by adding a default to one site but not the others.
+ *
+ * Treats the empty string as "missing" for string-typed fields. This matches the
+ * CLI's existing behavior (`parseStringFromUnknown` raises on empty input, and the
+ * shell typically passes empty strings for unset flags).
+ *
+ * @param parsedValue  CLI/inputs value (already parsed).
+ * @param envValue     Env-var value (read via ENV_KEYS.X).
+ * @param fallback     The schema default (from FIELDS.<x>.defaultValue or a derived constant).
+ * @returns            The first non-null/non-empty value, or `fallback`.
+ */
+function resolveField(parsedValue, envValue, fallback) {
+    if (parsedValue !== undefined && parsedValue !== null) {
+        if (typeof parsedValue === "string" && parsedValue.length === 0) {
+            // Empty string is treated as missing for string fields.
+        }
+        else {
+            return parsedValue;
+        }
+    }
+    if (envValue !== undefined && envValue !== null) {
+        if (typeof envValue === "string" && envValue.length === 0) {
+            // Empty string from env is treated as missing.
+        }
+        else {
+            return envValue;
+        }
+    }
+    return fallback;
+}
+function resolveFromSchema(parsed, env) {
+    const resolved = { ...parsed };
+    const fieldProvenance = {};
+    for (const field of Object.values(FIELDS)) {
+        const parsedValue = parsedValueForField(parsed, field);
+        const envValue = firstNonBlankEnv(field.env, env);
+        const raw = parsedValue ?? envValue?.value ?? field.defaultValue;
+        resolved[field.field] = coerceField(field, raw);
+        fieldProvenance[field.field] = parsedValue !== undefined
+            ? { source: "flag" }
+            : envValue !== undefined
+                ? { source: "env", envName: envValue.envName }
+                : { source: "default" };
+    }
+    resolved["minimumSeverityInternal"] = parseSeverityFromUnknown(resolved["minimumSeverity"], FIELDS.minimumSeverity.field);
+    return Object.assign({}, parsed, resolved, { fieldProvenance });
+}
+function parsedValueForField(parsed, field) {
+    if (!(field.field in parsed)) {
+        return undefined;
+    }
+    if (field.flag !== null && !wasCliFieldExplicitlySet(parsed, field.field)) {
+        return undefined;
+    }
+    const value = Reflect.get(parsed, field.field);
+    return value === null ? undefined : value;
+}
+function firstNonBlankEnv(aliases, env) {
+    for (const alias of aliases) {
+        const value = env[alias];
+        if (typeof value === "string" && value.trim().length > 0) {
+            return { envName: alias, value };
+        }
+    }
+    return undefined;
+}
+function coerceField(field, raw) {
+    switch (field.type) {
+        case "string":
+            if (typeof raw !== "string") {
+                throw new errors_InvalidConfigError(field.field, `expected string, received ${typeof raw}`);
+            }
+            return raw;
+        case "boolean":
+            return parseBooleanFromUnknown(raw, field.field);
+        case "integer":
+            return parseIntegerFromUnknown(raw, field.field);
+        case "enum":
+            return parseEnumField(field, raw);
+        default:
+            return assertNever(field.type);
+    }
+}
+function parseEnumField(field, raw) {
+    if (field.field === "platform") {
+        return parsePlatformFromUnknown(raw, field.field);
+    }
+    if (field.field === "minimumSeverity") {
+        parseSeverityFromUnknown(raw, field.field);
+    }
+    if (typeof raw !== "string") {
+        throw new errors_InvalidConfigError(field.field, `expected enum string, received ${typeof raw}`);
+    }
+    const normalized = raw.trim().toLowerCase();
+    if (!(field.enumValues ?? []).includes(normalized)) {
+        throw new errors_InvalidConfigError(field.field, `unknown enum value ${REDACTED_PLACEHOLDER}`);
+    }
+    return normalized;
+}
+function assertNever(value) {
+    throw new errors_InvalidConfigError("field.type", `unknown field type ${String(value)}`);
+}
 
 ;// CONCATENATED MODULE: ./src/review/verified-facts.ts
 // SPDX-License-Identifier: MIT
@@ -5076,6 +5115,58 @@ function parseActionOutputsYaml(text, diffText) {
     return null;
 }
 
+;// CONCATENATED MODULE: ./src/util/env-keys.ts
+/** Centralised env-var name registry; eliminates inline `env["..."]` strings and keeps legacy aliases visible. */
+const ENV_KEYS = {
+    // UMACTUALLY_* canonical, REVIEW_* legacy aliases
+    UMACTUALLY_API_URL: "UMACTUALLY_API_URL",
+    UMACTUALLY_API_KEY: "UMACTUALLY_API_KEY",
+    UMACTUALLY_MODEL: "UMACTUALLY_MODEL",
+    UMACTUALLY_GITHUB_API_BASE: "UMACTUALLY_GITHUB_API_BASE",
+    UMACTUALLY_INCLUDE_SONARQUBE: "UMACTUALLY_INCLUDE_SONARQUBE",
+    UMACTUALLY_SONAR_HOST_URL: "UMACTUALLY_SONAR_HOST_URL",
+    UMACTUALLY_SONAR_TOKEN: "UMACTUALLY_SONAR_TOKEN",
+    UMACTUALLY_SONAR_PROJECT_KEY: "UMACTUALLY_SONAR_PROJECT_KEY",
+    UMACTUALLY_PROMPT_FILE: "UMACTUALLY_PROMPT_FILE",
+    UMACTUALLY_PROMPT_FILES: "UMACTUALLY_PROMPT_FILES",
+    UMACTUALLY_ADDITIONAL_PROMPT_FILE: "UMACTUALLY_ADDITIONAL_PROMPT_FILE",
+    UMACTUALLY_ADDITIONAL_PROMPT_FILES: "UMACTUALLY_ADDITIONAL_PROMPT_FILES",
+    UMACTUALLY_STRICT_SCHEMA: "UMACTUALLY_STRICT_SCHEMA",
+    UMACTUALLY_VERIFY_FINDINGS: "UMACTUALLY_VERIFY_FINDINGS",
+    REVIEW_STRICT_SCHEMA: "REVIEW_STRICT_SCHEMA",
+    REVIEW_VERIFY_FINDINGS: "REVIEW_VERIFY_FINDINGS",
+    REVIEW_PROVIDER_URL: "REVIEW_PROVIDER_URL",
+    REVIEW_PROVIDER_API_KEY: "REVIEW_PROVIDER_API_KEY",
+    REVIEW_PROVIDER_MODEL: "REVIEW_PROVIDER_MODEL",
+    REVIEW_TIMEOUT_SECONDS: "REVIEW_TIMEOUT_SECONDS",
+    REVIEW_FILE_LIMIT: "REVIEW_FILE_LIMIT",
+    REVIEW_LEAK_DETECTION: "REVIEW_LEAK_DETECTION",
+    // Platform runtime
+    GITHUB_ACTIONS: "GITHUB_ACTIONS",
+    GITHUB_EVENT_PATH: "GITHUB_EVENT_PATH",
+    GITHUB_TOKEN: "GITHUB_TOKEN",
+    GITHUB_REPOSITORY: "GITHUB_REPOSITORY",
+    GITHUB_REF: "GITHUB_REF",
+    GITHUB_SHA: "GITHUB_SHA",
+    // Azure DevOps runtime
+    TF_BUILD: "TF_BUILD",
+    SYSTEM_ACCESSTOKEN: "SYSTEM_ACCESSTOKEN",
+    SYSTEM_TEAMPROJECT: "SYSTEM_TEAMPROJECT",
+    SYSTEM_COLLECTIONURI: "SYSTEM_COLLECTIONURI",
+    BUILD_REPOSITORY_ID: "BUILD_REPOSITORY_ID",
+    SYSTEM_PULLREQUEST_PULLREQUESTID: "SYSTEM_PULLREQUEST_PULLREQUESTID",
+    SYSTEM_PULLREQUEST_SOURCECOMMITID: "SYSTEM_PULLREQUEST_SOURCECOMMITID",
+    SYSTEM_PULLREQUEST_TARGETBRANCHNAME: "SYSTEM_PULLREQUEST_TARGETBRANCHNAME",
+    // Inputs (already wrapped as INPUT_* by GitHub)
+    INPUT_DRY_RUN: "INPUT_DRY_RUN",
+    INPUT_EVENT: "INPUT_EVENT",
+    INPUT_DIFF: "INPUT_DIFF",
+    INPUT_REVIEW: "INPUT_REVIEW",
+    INPUT_THREADS: "INPUT_THREADS",
+    INPUT_OUTPUT_ARTIFACT: "INPUT_OUTPUT_ARTIFACT",
+    INPUT_PLATFORM: "INPUT_PLATFORM",
+};
+
 ;// CONCATENATED MODULE: ./src/cli/provider-prompts.ts
 
 
@@ -5376,7 +5467,7 @@ async function pickSystemPrompt(input, defaultPaths) {
         return readPromptFiles(promptFilesList, DEFAULT_PROMPT_BYTE_CAP, { cwd: input.cwd });
     }
     const filePath = resolveField(input.parsed.promptFile, input.env[ENV_KEYS.UMACTUALLY_PROMPT_FILE], "");
-    if (filePath !== undefined && filePath.length > 0) {
+    if (filePath.length > 0) {
         return readPromptFiles([filePath], DEFAULT_PROMPT_BYTE_CAP, { cwd: input.cwd });
     }
     if (defaultPaths.length > 0) {
@@ -5465,7 +5556,7 @@ async function readAdditionalPrompt(input, defaultPaths) {
         return readPromptFiles(filesList, DEFAULT_PROMPT_BYTE_CAP, { cwd: input.cwd });
     }
     const filePath = resolveField(input.parsed.additionalPromptFile, input.env[ENV_KEYS.UMACTUALLY_ADDITIONAL_PROMPT_FILE], "");
-    if (filePath !== undefined && filePath.length > 0) {
+    if (filePath.length > 0) {
         return readPromptFiles([filePath], DEFAULT_PROMPT_BYTE_CAP, { cwd: input.cwd });
     }
     if (defaultPaths.length === 0)
@@ -5551,7 +5642,7 @@ function resolvePlatform(platform, env = process.env) {
                 throw error;
             }
         default:
-            return assertNever(platform);
+            return validate_assertNever(platform);
     }
 }
 /**
@@ -5594,12 +5685,12 @@ function collectAlwaysValidationErrors(parsed) {
     // native providers don't need --api-url (Copilot → GitHub Copilot
     // token exchange; Anthropic → api.anthropic.com default).
     if (!parsed.dryRun) {
-        if (parsed.apiUrl === null &&
+        if ((parsed.apiUrl === null || parsed.apiUrl.length === 0) &&
             parsed.provider !== "copilot" &&
             parsed.provider !== "anthropic") {
             errors.push("--api-url is required unless --dry-run is set, --provider copilot is used, or --provider anthropic is used");
         }
-        if (parsed.apiKey === null) {
+        if (parsed.apiKey === null || parsed.apiKey.length === 0) {
             errors.push("--api-key is required unless --dry-run is set");
         }
     }
@@ -5653,7 +5744,7 @@ function collectValidationErrors(parsed) {
         ...collectPostingValidationErrors(parsed),
     ];
 }
-function assertNever(value) {
+function validate_assertNever(value) {
     throw new TypeError(`unhandled platform variant: ${JSON.stringify(value)}`);
 }
 
@@ -14385,10 +14476,6 @@ function readConfiguredModel(parsed, env) {
     if (fromArgs !== null && fromArgs.length > 0 && fromArgs !== "auto") {
         return fromArgs;
     }
-    const fromEnv = env[ENV_KEYS.UMACTUALLY_MODEL];
-    if (fromEnv !== undefined && fromEnv.length > 0 && fromEnv !== "auto") {
-        return fromEnv;
-    }
     // Layer 5: `auto` is no longer passed verbatim. The resolver picks
     // a less-hallucinating model based on the active provider + API
     // URL. See `src/cli/auto-model.ts` for the per-provider mapping
@@ -15263,7 +15350,7 @@ async function runStandalone(input) {
     }
     const artifactPath = (0,external_node_path_namespaceObject.resolve)(input.cwd, input.overrideArtifactPath ?? "./umactually-review.json");
     const diffText = await (0,promises_namespaceObject.readFile)(input.parsed.diffPath, "utf8");
-    const providerApiKey = input.parsed.apiKey ?? input.env["UMACTUALLY_API_KEY"] ?? "";
+    const providerApiKey = input.parsed.apiKey ?? "";
     if (diffText.length === 0) {
         const note = "No diff content was found; provider review was skipped.";
         const body = {
@@ -15274,7 +15361,7 @@ async function runStandalone(input) {
             provider: {
                 name: input.parsed.provider ?? "openai-compatible",
                 modelId: input.parsed.model ?? "auto",
-                endpoint: input.parsed.apiUrl ?? input.env["UMACTUALLY_API_URL"] ?? "",
+                endpoint: input.parsed.apiUrl ?? "",
             },
             review: { summary: note, verdict: "COMMENT", comments: [] },
             parseWarnings: 0,
@@ -15342,6 +15429,7 @@ async function runStandalone(input) {
 }
 
 ;// CONCATENATED MODULE: ./src/cli/run.ts
+
 
 
 
@@ -15653,8 +15741,17 @@ async function dispatchLive(parsed, cwd, env) {
         // guard to catch — the action exits 0 and CI sees "pass".
         const platform = resolvePlatform(parsed.platform, env);
         await writeLiveArtifact(parsed, cwd, platform, result);
-        return { exitCode: result.exitCode };
+        const artifactPath = resolveArtifactPath(parsed.outputArtifact, platform, cwd);
+        return { exitCode: validateLiveArtifact(artifactPath, result.exitCode) };
     });
+}
+function validateLiveArtifact(artifactPath, reviewExitCode) {
+    const classification = classifyReviewArtifact(artifactPath);
+    if (classification.ok) {
+        return reviewExitCode;
+    }
+    process.stderr.write(`${BRAND_PREFIX}${artifactPath}: ${classification.reason ?? "invalid review artifact"}\n`);
+    return 1;
 }
 /**
  * Persist the live review outcome to the same artifact path the dry-run
@@ -16013,6 +16110,7 @@ function resolveDefaultBranch(cwd) {
 
 
 
+
 /**
  * Read the package version.
  *
@@ -16094,52 +16192,17 @@ function buildSanitizedResolvedConfig(resolved) {
         simulateFindings: resolved.simulateFindings,
         detectLeaks: resolved.detectLeaks,
         includeSonarqube: resolved.includeSonarqube,
-        apiUrlPresent: resolved.apiUrl !== null,
-        apiKeyPresent: resolved.apiKey !== null,
-        sonarTokenPresent: resolved.sonarToken !== null,
-        promptFilePresent: resolved.promptFile !== null,
-        additionalPromptFilePresent: resolved.additionalPromptFile !== null,
-        promptPresent: resolved.prompt !== null,
-        additionalPromptPresent: resolved.additionalPrompt !== null,
+        apiUrlPresent: resolved.apiUrl !== null && resolved.apiUrl.length > 0,
+        apiKeyPresent: resolved.apiKey !== null && resolved.apiKey.length > 0,
+        sonarTokenPresent: resolved.sonarToken !== null && resolved.sonarToken.length > 0,
+        promptFilePresent: resolved.promptFile !== null && resolved.promptFile.length > 0,
+        promptFilesPresent: resolved.promptFiles !== null && resolved.promptFiles.length > 0,
+        additionalPromptFilePresent: resolved.additionalPromptFile !== null && resolved.additionalPromptFile.length > 0,
+        additionalPromptFilesPresent: resolved.additionalPromptFiles !== null && resolved.additionalPromptFiles.length > 0,
+        promptPresent: resolved.prompt !== null && resolved.prompt.length > 0,
+        additionalPromptPresent: resolved.additionalPrompt !== null && resolved.additionalPrompt.length > 0,
+        sources: resolved.fieldProvenance,
     };
-}
-/**
- * Stage 2.5: fill CLI-only env-backed flags (api-url, api-key, model) from
- * `process.env` when the operator did not supply them on the command
- * line. This is the original CLI behavior: `--api-key` and `--api-url`
- * default to `UMACTUALLY_API_KEY` / `UMACTUALLY_API_URL` (with legacy
- * `REVIEW_*` aliases). Without this stage the validator would fire
- * `--api-key is required` even when the env var supplies the value.
- *
- * Explicit flag values ALWAYS win; env values fill only NULL fields.
- *
- * The full config loader (`src/config/env-sources.ts:readEnvSources`)
- * walks ALL env-backed fields, but this stage only touches the CLI-
- * flag surface because (a) the validator only checks these fields,
- * and (b) other env-backed fields (model, provider, etc.) are already
- * parsed in src/index.ts (the action entry) before this module runs.
- */
-function resolveEnvBackedFlags(parsed, env) {
-    const firstNonEmpty = (keys) => {
-        for (const key of keys) {
-            const value = env[key];
-            if (typeof value === "string" && value.length > 0) {
-                return value;
-            }
-        }
-        return null;
-    };
-    // Build a single object with conditional overrides. ParsedCliArgs is
-    // a readonly interface (frozen fields), so we can't spread-and-mutate;
-    // we must construct the new object in one expression.
-    const apiUrl = parsed.apiUrl ??
-        firstNonEmpty(["UMACTUALLY_API_URL", "REVIEW_PROVIDER_URL"]);
-    const apiKey = parsed.apiKey ??
-        firstNonEmpty(["UMACTUALLY_API_KEY", "REVIEW_PROVIDER_API_KEY"]);
-    if (apiUrl === parsed.apiUrl && apiKey === parsed.apiKey) {
-        return parsed;
-    }
-    return { ...parsed, apiUrl, apiKey };
 }
 /**
  * Resolve missing CLI flags by consulting the cwd's git repository.
@@ -16219,8 +16282,8 @@ async function runCli(args, cwd) {
         }
         throw error;
     }
-    // Stage 2: env-backed flag fallbacks (api-url, api-key) before validation.
-    const envResolved = resolveEnvBackedFlags(parsed, process.env);
+    // Stage 2: schema-driven env fallbacks and type coercion before validation.
+    const envResolved = resolveFromSchema(parsed, process.env);
     // Stage 3: resolve missing flags from cwd (when applicable).
     const { resolved, generatedArtifacts } = resolveContext(envResolved, cwd, process.env);
     try {
