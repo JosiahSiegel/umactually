@@ -21,7 +21,7 @@ detect_platform() {
   case "$(uname -s)" in
     Linux*)           echo "linux" ;;
     Darwin*)          echo "darwin" ;;
-    MINGW*|MSYS*|CYGWIN*) echo "linux" ;;  # Git Bash etc. on Windows
+    MINGW*|MSYS*|CYGWIN*) echo "windows" ;;  # Git Bash etc. on Windows
     *)                echo ""; return 1 ;;
   esac
 }

@@ -11,7 +11,7 @@ npm install -g umactually
 # bun
 bun add -g umactually
 
-# macOS / Linux (no Node required)
+# macOS / Linux / Windows Git Bash (no Node required)
 curl -fsSL https://github.com/JosiahSiegel/umactually/raw/main/scripts/install.sh | sh
 
 # Windows PowerShell (no Node required)
