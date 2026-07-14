@@ -101,8 +101,35 @@ export async function expectNotImplementedExport(
   expect.fail(new RedExportMissingError(modulePath, exportName).message);
 }
 
-function isFutureModuleNamespace(value: unknown): value is FutureModuleNamespace {
-  return typeof value === "object" && value !== null;
+/**
+ * Sync variant — useful when the production export is synchronous and
+ * the test wants to assert that it THROWS (not that it rejects). ESM
+ * `await import()` always returns a Promise, so we synchronously capture
+ * the named export from the awaited module namespace.
+ */
+export function expectNotImplementedExportSync(
+  modulePath: string,
+  implementationPath: string,
+  exportName: string,
+): unknown {
+  // Synchronous-pretending wrapper: we synchronously return the export,
+  // but any synchronous throwing in the export itself surfaces at call time.
+  let captured: unknown;
+  try {
+    captured = require(modulePath);
+  } catch (error) {
+    if (error instanceof Error && isMissingModuleError(error, modulePath)) {
+      expect.fail(new RedModuleNotImplementedError(implementationPath, { cause: error }).message);
+    }
+    throw error;
+  }
+  if (captured === null || typeof captured !== "object") {
+    expect.fail(`module ${modulePath} did not return a namespace`);
+  }
+  if (exportName in captured) {
+    return (captured as Record<string, unknown>)[exportName];
+  }
+  expect.fail(new RedExportMissingError(modulePath, exportName).message);
 }
 
 function isMissingModuleError(error: Error, modulePath: string): boolean {
@@ -110,4 +137,8 @@ function isMissingModuleError(error: Error, modulePath: string): boolean {
   const messageNamesModule = error.message.includes(modulePath) || error.message.includes("Cannot find module");
 
   return hasMissingModuleCode || messageNamesModule;
+}
+
+function isFutureModuleNamespace(value: unknown): value is FutureModuleNamespace {
+  return typeof value === "object" && value !== null;
 }
