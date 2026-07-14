@@ -15,6 +15,21 @@ export type CliMinimumSeverity = "low" | "medium" | "high";
 export type CliEffort = "low" | "medium" | "high";
 export type CliProvider = "openai-compatible" | "copilot" | "anthropic";
 
+const explicitFieldsByParse = new WeakMap<ParsedCliArgs, ReadonlySet<string>>();
+
+const FIELD_BY_FLAG: ReadonlyMap<string, string> = new Map(
+  Object.values(FIELDS).flatMap((field) =>
+    field.flag === null ? [] : [[field.flag, field.field] as const]
+  ),
+);
+
+export function wasCliFieldExplicitlySet(
+  parsed: ParsedCliArgs,
+  field: string,
+): boolean {
+  return explicitFieldsByParse.get(parsed)?.has(field) === true;
+}
+
 export type ParsedCliArgs = {
   readonly platform: CliPlatform;
   readonly eventPath: string | null;
@@ -90,6 +105,7 @@ export class CliUsageError extends Error {
 }
 
 export function parseCliArgs(args: readonly string[]): ParsedCliArgs {
+  const explicitlySet = new Set<string>();
   let platform: CliPlatform = "auto";
   let eventPath: string | null = null;
   let diffPath: string | null = null;
@@ -151,6 +167,13 @@ export function parseCliArgs(args: readonly string[]): ParsedCliArgs {
     const token = args[index];
     if (token === undefined) {
       continue;
+    }
+    const positiveFlag = token.startsWith("--no-")
+      ? `--${token.slice("--no-".length)}`
+      : token;
+    const explicitField = FIELD_BY_FLAG.get(positiveFlag);
+    if (explicitField !== undefined) {
+      explicitlySet.add(explicitField);
     }
     switch (token) {
       case "--platform":
@@ -344,7 +367,7 @@ export function parseCliArgs(args: readonly string[]): ParsedCliArgs {
     }
   }
 
-  return {
+  const parsed: ParsedCliArgs = {
     platform,
     eventPath,
     diffPath,
@@ -389,6 +412,8 @@ export function parseCliArgs(args: readonly string[]): ParsedCliArgs {
     strictSchema,
     verifyFindings,
   };
+  explicitFieldsByParse.set(parsed, explicitlySet);
+  return parsed;
 }
 
 export class CliHelpSignal extends Error {

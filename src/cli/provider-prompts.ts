@@ -2,7 +2,6 @@ import { statSync } from "node:fs";
 import { join as pathJoin } from "node:path";
 
 import { DEFAULT_PROMPT_BYTE_CAP } from "../config/defaults.js";
-import { resolveField } from "../config/field-resolution.js";
 import {
   DEFAULT_PROMPT_FILE_PATHS,
   readPromptFiles,
@@ -10,11 +9,12 @@ import {
   splitPromptFileList,
 } from "../config/prompt-files.js";
 import { listDiffPaths } from "../diff/filter-build-artifacts.js";
-import { ENV_KEYS } from "../util/env-keys.js";
+import { resolveField } from "../config/field-resolution.js";
 import {
   collectVerifiedFacts,
   renderVerifiedFactsBlock,
 } from "../review/verified-facts.js";
+import { ENV_KEYS } from "../util/env-keys.js";
 import type { LivePlatform } from "./live-shared.js";
 import type { ParsedCliArgs } from "./parse-args.js";
 
@@ -333,8 +333,12 @@ async function pickSystemPrompt(input: {
   if (promptFilesList.length > 0) {
     return readPromptFiles(promptFilesList, DEFAULT_PROMPT_BYTE_CAP, { cwd: input.cwd });
   }
-  const filePath = resolveField(input.parsed.promptFile, input.env[ENV_KEYS.UMACTUALLY_PROMPT_FILE], "");
-  if (filePath !== undefined && filePath.length > 0) {
+  const filePath = resolveField(
+    input.parsed.promptFile,
+    input.env[ENV_KEYS.UMACTUALLY_PROMPT_FILE],
+    "",
+  );
+  if (filePath.length > 0) {
     return readPromptFiles([filePath], DEFAULT_PROMPT_BYTE_CAP, { cwd: input.cwd });
   }
   if (defaultPaths.length > 0) {
@@ -432,8 +436,12 @@ async function readAdditionalPrompt(input: {
   if (filesList.length > 0) {
     return readPromptFiles(filesList, DEFAULT_PROMPT_BYTE_CAP, { cwd: input.cwd });
   }
-  const filePath = resolveField(input.parsed.additionalPromptFile, input.env[ENV_KEYS.UMACTUALLY_ADDITIONAL_PROMPT_FILE], "");
-  if (filePath !== undefined && filePath.length > 0) {
+  const filePath = resolveField(
+    input.parsed.additionalPromptFile,
+    input.env[ENV_KEYS.UMACTUALLY_ADDITIONAL_PROMPT_FILE],
+    "",
+  );
+  if (filePath.length > 0) {
     return readPromptFiles([filePath], DEFAULT_PROMPT_BYTE_CAP, { cwd: input.cwd });
   }
   if (defaultPaths.length === 0) return "";

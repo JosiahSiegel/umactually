@@ -66,13 +66,19 @@ describe("CLI-only example workflow contract", () => {
     expect(ghSteps.some((step) => step.uses === "./")).toBe(false);
     expect(ghSteps.some((step) => step.uses?.startsWith("actions/github-script") === true)).toBe(false);
     expectNoPlumbingFlags(ghCommands);
-    expect(ghSteps.some((step) => step.run?.includes("umactually check-review-artifact") === true && step.if === "always()")).toBe(true);
+    expect(ghCommands).not.toContain("check-review-artifact");
+    expect(ghCommands.match(/umactually@\d+\.\d+\.\d+ review/gu)).toHaveLength(1);
+    expect(ghSteps).toHaveLength(3);
     expect(ghCommands).toMatch(PINNED_PACKAGE);
 
-    // And: Azure explicitly wires its OAuth token and preserves the same public-CLI contract.
+    // And: Azure explicitly wires its OAuth token and preserves the same slim public-CLI contract.
     expect(adoSteps.some((step) => step.env?.["SYSTEM_ACCESSTOKEN"] === "$(System.AccessToken)")).toBe(true);
     expectNoPlumbingFlags(adoCommands);
-    expect(adoSteps.some((step) => step.script?.includes("check-review-artifact") === true && step.condition === "always()")).toBe(true);
+    expect(adoCommands).not.toContain("check-review-artifact");
+    expect(adoCommands).not.toContain("optional_env_value");
+    expect(adoCommands).not.toContain("EXTRA_ARGS");
+    expect(adoCommands.match(/umactually@\d+\.\d+\.\d+ review/gu)).toHaveLength(1);
+    expect(adoSteps).toHaveLength(3);
     expect(adoCommands).toMatch(PINNED_PACKAGE);
   });
 });

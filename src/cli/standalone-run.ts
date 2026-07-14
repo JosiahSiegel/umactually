@@ -58,8 +58,7 @@ export async function runStandalone(input: {
     input.overrideArtifactPath ?? "./umactually-review.json",
   );
   const diffText = await readFile(input.parsed.diffPath, "utf8");
-  const providerApiKey =
-    input.parsed.apiKey ?? input.env["UMACTUALLY_API_KEY"] ?? "";
+  const providerApiKey = input.parsed.apiKey ?? "";
 
   if (diffText.length === 0) {
     const note = "No diff content was found; provider review was skipped.";
@@ -71,7 +70,7 @@ export async function runStandalone(input: {
       provider: {
         name: input.parsed.provider ?? "openai-compatible",
         modelId: input.parsed.model ?? "auto",
-        endpoint: input.parsed.apiUrl ?? input.env["UMACTUALLY_API_URL"] ?? "",
+        endpoint: input.parsed.apiUrl ?? "",
       },
       review: { summary: note, verdict: "COMMENT", comments: [] },
       parseWarnings: 0,

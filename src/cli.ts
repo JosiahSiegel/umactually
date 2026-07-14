@@ -10,6 +10,11 @@ import { dispatchLive, runDryRun, type CliRunResult } from "./cli/run.js";
 import { isStandaloneMode, runStandalone } from "./cli/standalone-run.js";
 import { collectValidationErrors, resolvePlatform } from "./cli/validate.js";
 import { deriveContextFromGit } from "./cli/auto-context.js";
+import {
+  resolveFromSchema,
+  type FieldProvenanceMap,
+  type SchemaResolvedCliArgs,
+} from "./config/field-resolution.js";
 import { BRAND_PREFIX } from "./util/brand.js";
 import { formatError } from "./util/error.js";
 import { pathToFileUrl } from "./util/url.js";
@@ -86,7 +91,7 @@ export function runVersion(_argv: readonly string[]): { readonly exitCode: 0; re
  * did NOT supply have been filled in from the cwd's git repository
  * (when applicable). Identity fields remain `null` when unparseable.
  */
-export type ResolvedCliArgs = ParsedCliArgs;
+export type ResolvedCliArgs = SchemaResolvedCliArgs;
 
 export type SanitizedResolvedConfig = {
   readonly platform: ResolvedCliArgs["platform"];
@@ -119,9 +124,12 @@ export type SanitizedResolvedConfig = {
   readonly apiKeyPresent: boolean;
   readonly sonarTokenPresent: boolean;
   readonly promptFilePresent: boolean;
+  readonly promptFilesPresent: boolean;
   readonly additionalPromptFilePresent: boolean;
+  readonly additionalPromptFilesPresent: boolean;
   readonly promptPresent: boolean;
   readonly additionalPromptPresent: boolean;
+  readonly sources: FieldProvenanceMap;
 };
 
 export function buildSanitizedResolvedConfig(
@@ -154,60 +162,17 @@ export function buildSanitizedResolvedConfig(
     simulateFindings: resolved.simulateFindings,
     detectLeaks: resolved.detectLeaks,
     includeSonarqube: resolved.includeSonarqube,
-    apiUrlPresent: resolved.apiUrl !== null,
-    apiKeyPresent: resolved.apiKey !== null,
-    sonarTokenPresent: resolved.sonarToken !== null,
-    promptFilePresent: resolved.promptFile !== null,
-    additionalPromptFilePresent: resolved.additionalPromptFile !== null,
-    promptPresent: resolved.prompt !== null,
-    additionalPromptPresent: resolved.additionalPrompt !== null,
+    apiUrlPresent: resolved.apiUrl !== null && resolved.apiUrl.length > 0,
+    apiKeyPresent: resolved.apiKey !== null && resolved.apiKey.length > 0,
+    sonarTokenPresent: resolved.sonarToken !== null && resolved.sonarToken.length > 0,
+    promptFilePresent: resolved.promptFile !== null && resolved.promptFile.length > 0,
+    promptFilesPresent: resolved.promptFiles !== null && resolved.promptFiles.length > 0,
+    additionalPromptFilePresent: resolved.additionalPromptFile !== null && resolved.additionalPromptFile.length > 0,
+    additionalPromptFilesPresent: resolved.additionalPromptFiles !== null && resolved.additionalPromptFiles.length > 0,
+    promptPresent: resolved.prompt !== null && resolved.prompt.length > 0,
+    additionalPromptPresent: resolved.additionalPrompt !== null && resolved.additionalPrompt.length > 0,
+    sources: resolved.fieldProvenance,
   };
-}
-
-/**
- * Stage 2.5: fill CLI-only env-backed flags (api-url, api-key, model) from
- * `process.env` when the operator did not supply them on the command
- * line. This is the original CLI behavior: `--api-key` and `--api-url`
- * default to `UMACTUALLY_API_KEY` / `UMACTUALLY_API_URL` (with legacy
- * `REVIEW_*` aliases). Without this stage the validator would fire
- * `--api-key is required` even when the env var supplies the value.
- *
- * Explicit flag values ALWAYS win; env values fill only NULL fields.
- *
- * The full config loader (`src/config/env-sources.ts:readEnvSources`)
- * walks ALL env-backed fields, but this stage only touches the CLI-
- * flag surface because (a) the validator only checks these fields,
- * and (b) other env-backed fields (model, provider, etc.) are already
- * parsed in src/index.ts (the action entry) before this module runs.
- */
-function resolveEnvBackedFlags(
-  parsed: ParsedCliArgs,
-  env: NodeJS.ProcessEnv,
-): ParsedCliArgs {
-  const firstNonEmpty = (keys: readonly string[]): string | null => {
-    for (const key of keys) {
-      const value = env[key];
-      if (typeof value === "string" && value.length > 0) {
-        return value;
-      }
-    }
-    return null;
-  };
-
-  // Build a single object with conditional overrides. ParsedCliArgs is
-  // a readonly interface (frozen fields), so we can't spread-and-mutate;
-  // we must construct the new object in one expression.
-  const apiUrl =
-    parsed.apiUrl ??
-    firstNonEmpty(["UMACTUALLY_API_URL", "REVIEW_PROVIDER_URL"]);
-  const apiKey =
-    parsed.apiKey ??
-    firstNonEmpty(["UMACTUALLY_API_KEY", "REVIEW_PROVIDER_API_KEY"]);
-
-  if (apiUrl === parsed.apiUrl && apiKey === parsed.apiKey) {
-    return parsed;
-  }
-  return { ...parsed, apiUrl, apiKey };
 }
 
 /**
@@ -225,7 +190,7 @@ function resolveEnvBackedFlags(
  * filesystem-writing stage entirely.
  */
 function resolveContext(
-  parsed: ParsedCliArgs,
+  parsed: ResolvedCliArgs,
   cwd: string,
   env: NodeJS.ProcessEnv,
 ): {
@@ -239,7 +204,7 @@ function resolveContext(
   const shouldDeriveFromGit =
     env["GITHUB_ACTIONS"] === undefined && env["TF_BUILD"] === undefined;
 
-  let resolved: ParsedCliArgs = parsed;
+  let resolved = parsed;
   let generated: string[] = [];
 
   if (shouldDeriveFromGit && !allPlumbingSupplied) {
@@ -258,7 +223,7 @@ function resolveContext(
       if (ctx !== null) {
         // Explicit-value precedence: explicit nulls are NOT overridden.
         // Only fill in when the operator-supplied value is null.
-        const merged: ParsedCliArgs = {
+        const merged: ResolvedCliArgs = {
           ...parsed,
           eventPath: parsed.eventPath ?? ctx.eventPath,
           diffPath: parsed.diffPath ?? ctx.diffPath,
@@ -311,8 +276,8 @@ export async function runCli(args: readonly string[], cwd: string): Promise<CliE
     throw error;
   }
 
-  // Stage 2: env-backed flag fallbacks (api-url, api-key) before validation.
-  const envResolved = resolveEnvBackedFlags(parsed, process.env);
+  // Stage 2: schema-driven env fallbacks and type coercion before validation.
+  const envResolved = resolveFromSchema(parsed, process.env);
 
   // Stage 3: resolve missing flags from cwd (when applicable).
   const { resolved, generatedArtifacts } = resolveContext(

@@ -7,8 +7,13 @@ UmActually accepts configuration from CLI flags, environment variables, and plat
 The runtime resolves configurable review options in this order:
 
 1. Explicit CLI flag.
-2. Environment variable.
-3. Built-in CLI default.
+2. Canonical `UMACTUALLY_*` environment variable.
+3. Legacy `REVIEW_*` environment variable.
+4. Built-in CLI default.
+
+The CLI natively honors every documented `UMACTUALLY_*` env var. In CI, set them as GitHub Actions env/secrets or Azure pipeline variables and they flow through without shell translation. Boolean env vars accept `true|false|1|0|yes|no|on|off|y|n`, case-insensitively after trimming. Invalid values fail configuration with a redacted error: secret values are never echoed.
+
+With `review --json`, the new `resolvedConfig.sources` object reports exactly which surface supplied each resolved field (`flag`, `env`, or `default`, plus the non-secret env name when applicable). Use it to diagnose precedence without exposing credentials.
 
 Platform variables such as `GITHUB_TOKEN`, `GITHUB_EVENT_PATH`, `SYSTEM_ACCESSTOKEN`, and Azure build metadata are discovered from the runner environment. `NO_COLOR` is also honored at the CLI level: any non-empty value disables decorative color, as does `--no-color`.
 
@@ -87,14 +92,13 @@ Use the pinned CLI workflow in [`docs/gh-actions.md`](gh-actions.md) or copy [`e
 By default, UmActually auto-discovers common agent-instruction files from the repository root (CLAUDE.md, AGENTS.md, `.github/copilot-instructions.md`, `.cursorrules`, GEMINI.md — see [docs/security.md](security.md#default-repository-prompt-lookup) for the security contract). To force a specific list instead, pass `--prompt-files` / `--additional-prompt-files` or set `UMACTUALLY_PROMPT_FILES` / `UMACTUALLY_ADDITIONAL_PROMPT_FILES`. A non-empty list **completely overrides** the corresponding default lookup.
 
 ```yaml
-run: |
-  npx umactually@0.1.0 review \
-    --platform github \
-    --prompt-files 'prompts/review-system.md,prompts/repo-context.md' \
-    --additional-prompt-files 'prompts/extra-instructions.md'
+env:
+  UMACTUALLY_PROMPT_FILES: prompts/review-system.md,prompts/repo-context.md
+  UMACTUALLY_ADDITIONAL_PROMPT_FILES: prompts/extra-instructions.md
+run: npx umactually@0.1.0 review --platform github
 ```
 
-The Azure DevOps equivalent uses optional pipeline variables; see [docs/azure-devops.md](azure-devops.md#prompt-file-forwarding) for the conditional-forwarding pattern.
+Azure DevOps uses the same CLI-native variables: define them as pipeline variables and run the slim example without a forwarding script.
 
 ## Recommended Azure DevOps configuration
 

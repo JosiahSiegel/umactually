@@ -16,6 +16,7 @@ import { resetDefaultPromptFilesCache } from "./provider-prompts.js";
 import { resolvePlatform, type ResolvedPlatform } from "./validate.js";
 import { runLive as runOrchestrator } from "./orchestrator.js";
 import { isStandaloneMode } from "./standalone-run.js";
+import { classifyReviewArtifact } from "./check-review-artifact.js";
 
 export type CliJsonOutcome = {
   readonly postedToPlatform?: boolean;
@@ -383,8 +384,23 @@ export async function dispatchLive(parsed: ParsedCliArgs, cwd: string, env: Node
     // guard to catch — the action exits 0 and CI sees "pass".
     const platform = resolvePlatform(parsed.platform, env);
     await writeLiveArtifact(parsed, cwd, platform, result);
-    return { exitCode: result.exitCode };
+    const artifactPath = resolveArtifactPath(parsed.outputArtifact, platform, cwd);
+    return { exitCode: validateLiveArtifact(artifactPath, result.exitCode) };
   });
+}
+
+export function validateLiveArtifact(
+  artifactPath: string,
+  reviewExitCode: number,
+): number {
+  const classification = classifyReviewArtifact(artifactPath);
+  if (classification.ok) {
+    return reviewExitCode;
+  }
+  process.stderr.write(
+    `${BRAND_PREFIX}${artifactPath}: ${classification.reason ?? "invalid review artifact"}\n`,
+  );
+  return 1;
 }
 
 /**
