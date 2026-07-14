@@ -1,34 +1,13 @@
-# Example: UmActually PR review on GitHub Actions.
-#
-# Copy this file to .github/workflows/pr-review.yml in a repository that wants
-# UmActually to review its pull requests. The `uses: ./` form below works for
-# local development (vendoring the action as a subtree or composite step). Once
-# the action is published to the GitHub Marketplace, replace `./` with the
-# pinned tag, e.g. `umactually/umactually-pr-review@v0`.
-#
-# Notes:
-# - Triggers on pull_request only. Do NOT use pull_request_target.
-# - Grant exactly the permissions the action needs.
-# - Secrets reach the action through env:, not through with:.
-# - On dual-protocol gateways (MiniMax serves both Anthropic-protocol at
-#   /anthropic and OpenAI-protocol at /v1 under the same hostname), the
-#   `--provider` flag becomes advisory — the dispatcher tries the OTHER
-#   protocol at the same URL when the named one 404s. See
-#   docs/providers.md#cross-protocol-auto-discovery-the-dispatcher.
+# Runs umactually as a pinned npm CLI for pull requests.
+# The CLI derives GitHub event, diff, review, and PR context from the runner.
 
-name: UmActually PR Review
-
+name: PR review
 on:
   pull_request:
     types: [opened, synchronize, reopened, ready_for_review]
 
-# Cancel in-progress runs when a new commit lands on the same PR — prevents
-# wasted API quota on rapid pushes.
-# The expression falls back to github.ref when github.event.pull_request.number
-# is undefined (e.g. on workflow_dispatch runs), so manual runs do not all
-# collapse into a single global cancellation group.
 concurrency:
-  group: umactually-pr-review-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  group: umactually-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: true
 
 permissions:
@@ -37,84 +16,26 @@ permissions:
 
 jobs:
   review:
-    name: UmActually PR review
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Setup Node
-        uses: actions/setup-node@v4
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
         with:
           node-version: "24"
-
       - name: Install dependencies
         run: npm ci
-
-      # Default: openai-compatible. Swap to anthropic for vanilla Anthropic
-      # API or an Anthropic-protocol gateway (provider=anthropic + an
-      # api-url with an `/anthropic` path-prefix posts to
-      # `<prefix>/v1/messages`). On dual-protocol gateways, --provider is
-      # advisory — see docs/providers.md#cross-protocol-auto-discovery-the-dispatcher
-      # for why you can leave --provider at its default and the action will
-      # figure out which wire shape the URL speaks.
-      - name: Run UmActually PR review
-        # Replace `./` with the published action tag (e.g.
-        # `umactually/umactually-pr-review@v0`) once this action is published
-        # to the GitHub Marketplace. Until then, the in-tree action is
-        # exercised via `./`.
-        uses: ./
-        # By default, the action auto-loads the common agent-instruction
-        # files from the repository root (CLAUDE.md, AGENTS.md, .github/
-        # copilot-instructions.md, .cursorrules, GEMINI.md). To override
-        # that lookup and supply a specific list of prompt files, pass the
-        # `prompt-files` and/or `additional-prompt-files` inputs (comma-
-        # or newline-separated repo-relative paths). When set, the array
-        # COMPLETELY overrides the default-lookup list. See
-        # docs/configuration.md#prompt and docs/security.md#default-repository-prompt-lookup.
-        with:
-          prompt-files: 'prompts/review-system.md,prompts/repo-context.md'
-          additional-prompt-files: 'prompts/extra-instructions.md'
+      - name: Run umactually PR review
         env:
+          GITHUB_TOKEN: ${{ github.token }}
           UMACTUALLY_API_URL: ${{ secrets.UMACTUALLY_API_URL }}
           UMACTUALLY_API_KEY: ${{ secrets.UMACTUALLY_API_KEY }}
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-
-# Reference: alternative step configurations. Copy/paste any of the blocks
-# below into the steps: list above to switch provider families — the existing
-# "Run UmActually PR review" step stays in place; the alternatives are
-# documentation, not executed YAML.
-#
-# ----- Anthropic-protocol gateway (vanilla Anthropic, MiniMax, LiteLLM,
-#       Portkey, OpenRouter with Anthropic compat, self-hosted, etc.) -----
-#
-#       - name: Run UmActually PR review (Anthropic)
-#         uses: ./
-#         with:
-#           provider: anthropic
-#         env:
-#           UMACTUALLY_API_URL: https://api.anthropic.com
-#             # OR https://api.minimax.io/anthropic (MiniMax path-prefix),
-#             # OR your self-hosted Anthropic-protocol gateway
-#           UMACTUALLY_API_KEY: ${{ secrets.UMACTUALLY_API_KEY }}
-#           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-#
-# ----- Cross-protocol auto-discovery on MiniMax-style gateways -----
-#
-#       Leave --provider at the default (`openai-compatible`). The
-#       dispatcher's 404-only trigger will retry the Anthropic protocol
-#       at the same URL when OpenAI candidate paths all 404.
-#
-#       Same setup, just --provider is the default. The action figures out
-#       the wire shape. Confirmed by the live validation at docs/providers.md.
-#
-# ----- Copilot with a GitHub PAT -----
-#
-#       - name: Run UmActually PR review (Copilot)
-#         uses: ./
-#         with:
-#           provider: copilot
-#           github-api-base: https://api.github.com   # GHE: https://<tenant>.ghe.com
-#         env:
-#           UMACTUALLY_API_KEY: ${{ secrets.GITHUB_PAT_AS_COPILOT_KEY }}
-#           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          npx umactually@0.1.0 review \
+            --platform github \
+            --api-url "$UMACTUALLY_API_URL" \
+            --api-key "$UMACTUALLY_API_KEY"
+      - name: Validate review artifact
+        if: always()
+        run: |
+          # Equivalent installed command: umactually check-review-artifact
+          npx umactually@0.1.0 check-review-artifact ./umactually-review.json

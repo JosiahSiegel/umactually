@@ -24,7 +24,7 @@ export class GithubApiError extends PlatformApiError<"GITHUB_FETCH_FAILED" | "GI
   }
 }
 
-const GITHUB_API_BASE_URL = DEFAULT_GITHUB_API_BASE;
+const GITHUB_API_BASE_URL = process.env["GITHUB_API_URL"]?.replace(/\/$/u, "") || DEFAULT_GITHUB_API_BASE;
 const PULL_DIFF_MEDIA_TYPE = "application/vnd.github.v3.diff";
 
 export async function fetchGithubPrDiff(context: GithubContext, fetchImpl: FetchImpl = fetch): Promise<string> {

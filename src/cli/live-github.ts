@@ -3,6 +3,7 @@ import { commentBodyHasMarker } from "../util/marker.js";
 import { githubHeaders } from "../util/http.js";
 import { isRecord, isSafeInteger } from "../util/json-guards.js";
 import { writeBrandedAnnotation } from "../util/log.js";
+import { DEFAULT_GITHUB_API_BASE } from "../util/provider-defaults.js";
 import type { ParsedCliArgs } from "./parse-args.js";
 import {
   LiveReviewError,
@@ -16,6 +17,8 @@ import {
   type LiveProviderOutcome,
   type LiveRunResult,
 } from "./live-shared.js";
+
+const GITHUB_API_BASE_URL = process.env["GITHUB_API_URL"]?.replace(/\/$/u, "") || DEFAULT_GITHUB_API_BASE;
 
 export async function runGithubLive(input: {
   readonly context: GithubContext;
@@ -238,5 +241,5 @@ function parseExistingReview(value: unknown): ExistingGithubReview | null {
 function githubReviewsUrl(context: GithubContext): string {
   const owner = encodeURIComponent(context.repo.owner);
   const repo = encodeURIComponent(context.repo.name);
-  return `https://api.github.com/repos/${owner}/${repo}/pulls/${context.prNumber}/reviews`;
+  return `${GITHUB_API_BASE_URL}/repos/${owner}/${repo}/pulls/${context.prNumber}/reviews`;
 }
