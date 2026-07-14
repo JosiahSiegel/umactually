@@ -4,11 +4,17 @@ AI-powered PR review that posts inline comments directly to your pull requests. 
 
 ## Install
 
+> **Note:** The `umactually` npm package is unreleased. The `npm`/`bun`/`npx`/`bunx` commands below will 404 until the package is published. Use `curl` or `PowerShell` to install from a GitHub Release, or pin a git ref:
+>
+> ```bash
+> npx github:JosiahSiegel/umactually review
+> ```
+
 ```bash
-# npm
+# npm (unreleased)
 npm install -g umactually
 
-# bun
+# bun (unreleased)
 bun add -g umactually
 
 # macOS / Linux / Windows Git Bash (no Node required)
@@ -17,8 +23,6 @@ curl -fsSL https://github.com/JosiahSiegel/umactually/raw/main/scripts/install.s
 # Windows PowerShell (no Node required)
 irm https://github.com/JosiahSiegel/umactually/raw/main/scripts/install.ps1 | iex
 ```
-
-Or try without installing: `npx umactually@latest review` / `bunx umactually review`
 
 ## Usage
 
@@ -73,7 +77,7 @@ jobs:
         with:
           node-version: "24"
       - name: Run umactually PR review
-        run: npx umactually@0.1.0 review --platform github
+        run: npx github:JosiahSiegel/umactually review --platform github
         env:
           GITHUB_TOKEN: ${{ github.token }}
           UMACTUALLY_API_URL: ${{ secrets.UMACTUALLY_API_URL }}
@@ -94,7 +98,7 @@ steps:
   - task: NodeTool@0
     inputs:
       versionSpec: "24.x"
-  - script: npx umactually@0.1.0 review --platform azure-devops
+  - script: npx github:JosiahSiegel/umactually review --platform azure-devops
     displayName: Run umactually PR review
     env:
       SYSTEM_ACCESSTOKEN: $(System.AccessToken)

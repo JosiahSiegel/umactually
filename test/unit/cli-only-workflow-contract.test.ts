@@ -6,7 +6,9 @@ import { parse } from "yaml";
 
 const REPO_ROOT = resolve(import.meta.dirname, "..", "..");
 const PLUMBING_FLAGS = ["--event", "--diff", "--review", "--pr-number", "--repo"] as const;
-const PINNED_PACKAGE = /umactually@\d+\.\d+\.\d+/u;
+// Pinned invocation: either `umactually@X.Y.Z review` (npm) or `npx github:JosiahSiegel/umactually review` (git ref).
+// The npm package is unreleased; the git-ref form is what actually runs today.
+const PINNED = /umactually(@\d+\.\d+\.\d+)?( review|github:JosiahSiegel\/umactually review)/u;
 
 type WorkflowStep = {
   readonly run?: string;
@@ -67,9 +69,8 @@ describe("CLI-only example workflow contract", () => {
     expect(ghSteps.some((step) => step.uses?.startsWith("actions/github-script") === true)).toBe(false);
     expectNoPlumbingFlags(ghCommands);
     expect(ghCommands).not.toContain("check-review-artifact");
-    expect(ghCommands.match(/umactually@\d+\.\d+\.\d+ review/gu)).toHaveLength(1);
+    expect(ghCommands).toMatch(PINNED);
     expect(ghSteps).toHaveLength(3);
-    expect(ghCommands).toMatch(PINNED_PACKAGE);
 
     // And: Azure explicitly wires its OAuth token and preserves the same slim public-CLI contract.
     expect(adoSteps.some((step) => step.env?.["SYSTEM_ACCESSTOKEN"] === "$(System.AccessToken)")).toBe(true);
@@ -77,8 +78,7 @@ describe("CLI-only example workflow contract", () => {
     expect(adoCommands).not.toContain("check-review-artifact");
     expect(adoCommands).not.toContain("optional_env_value");
     expect(adoCommands).not.toContain("EXTRA_ARGS");
-    expect(adoCommands.match(/umactually@\d+\.\d+\.\d+ review/gu)).toHaveLength(1);
+    expect(adoCommands).toMatch(PINNED);
     expect(adoSteps).toHaveLength(3);
-    expect(adoCommands).toMatch(PINNED_PACKAGE);
   });
 });
