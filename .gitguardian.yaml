@@ -217,7 +217,9 @@ secret:
       match: 9d8b0c156f7015e96f16e5b35369fa0fdb3ae75cbb70b4588e44547e63b53fa9  # ghp_x
     # Demo fixtures in scripts/ that simulate secrets for the
     # local layout viewer; sentinel-suffixed.
-    - name: 'synthetic API key fixture (view-summary-layouts demo data)'
+    - name: 'synthetic API key fixture (view-summary-layouts demo data, OLD)'
+      match: 337ca2ce0c81d531d7d2b6337be5b0df8aabfd465974b824c18ae617b21e1a1a  # sk-EXAMPLE-FAKE-1234567890
+    - name: 'synthetic API key fixture (view-summary-layouts demo data, NEW)'
       match: 0c8530c314c4eca2b25c6fce6ef369f54404389329bbcffc854f34c6c3003599  # sk-EXAMPLE-DO-NOT-LEAK-0000
     - name: 'synthetic API key fixture (review-artifact sample, leak demo)'
       match: d2fcdbeac3d9f2074caba95c3b894bac5d7d33ca2347a7bce80eafaf3f8c50d4  # sk-cp-DO-NOT-LEAK-DEMO-FIXTURE-0000
