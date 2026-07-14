@@ -1,8 +1,8 @@
-# Enable "Allow scripts to access the OAuth token" in pipeline settings.
+# Enable "Allow scripts to access the OAuth token" in pipeline settings,
+# otherwise $(System.AccessToken) resolves to an empty string.
 # UMACTUALLY_* options (prompt files, strict schema, verify findings, etc.) are
 # CLI-native: set them as ADO pipeline variables and they flow through automatically.
-# Artifact validation is automatic after each live review. SYSTEM_ACCESSTOKEN is the
-# only ADO-specific plumbing because Azure does not export $(System.AccessToken).
+# Artifact validation is automatic after each live review.
 trigger: none
 pr:
   branches:

@@ -1,101 +1,39 @@
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { readFile } from "node:fs/promises";
+import { join } from "node:path";
 
-import { runJsonReview } from "../../src/cli/dispatch.js";
+import { describe, expect, it } from "vitest";
 
-const TRACKED_ENV = [
-  "UMACTUALLY_PROMPT_FILES",
-  "UMACTUALLY_ADDITIONAL_PROMPT_FILES",
-  "UMACTUALLY_STRICT_SCHEMA",
-  "UMACTUALLY_VERIFY_FINDINGS",
-] as const;
-const originalEnv = Object.fromEntries(TRACKED_ENV.map((name) => [name, process.env[name]]));
+/**
+ * Wrapper-era regression guard. The CLI is now native-env-aware
+ * (every UMACTUALLY_* env var flows through automatically), so the
+ * example pipelines do NOT need bash forwarding macros.
+ *
+ * If a future refactor re-introduces the optional_env_value() macro
+ * for UMACTUALLY_PROMPT_FILES, UMACTUALLY_ADDITIONAL_PROMPT_FILES,
+ * UMACTUALLY_STRICT_SCHEMA, or UMACTUALLY_VERIFY_FINDINGS, that is
+ * almost certainly a regression — the CLI handles those natively
+ * today and the example should stay minimal.
+ */
 
-afterEach(() => {
-  for (const name of TRACKED_ENV) {
-    const value = originalEnv[name];
-    if (value === undefined) {
-      delete process.env[name];
-    } else {
-      process.env[name] = value;
-    }
-  }
-});
+const REPO_ROOT = process.cwd();
 
-async function resolvedConfig(): Promise<Record<string, unknown>> {
-  let stdout = "";
-  const spy = vi.spyOn(process.stdout, "write").mockImplementation((chunk): boolean => {
-    stdout += typeof chunk === "string" ? chunk : Buffer.from(chunk).toString("utf8");
-    return true;
-  });
-  try {
-    await runJsonReview(["--dry-run"]);
-  } finally {
-    spy.mockRestore();
-  }
-
-  const envelope: unknown = JSON.parse(stdout);
-  if (typeof envelope !== "object" || envelope === null) {
-    throw new TypeError("Expected JSON review envelope object");
-  }
-  const config = Reflect.get(envelope, "resolvedConfig");
-  if (typeof config !== "object" || config === null) {
-    throw new TypeError("Expected resolvedConfig object");
-  }
-  return Object.fromEntries(Object.entries(config));
+async function readPipeline(name: "azure-pipelines.yml" | "examples/azure/azure-pipelines.yml"): Promise<string> {
+  return readFile(join(REPO_ROOT, name), "utf8");
 }
 
-function sourceFor(config: Record<string, unknown>, field: string): Record<string, unknown> {
-  const sources = config["sources"];
-  if (typeof sources !== "object" || sources === null) {
-    throw new TypeError("Expected resolvedConfig.sources object");
-  }
-  const source = Reflect.get(sources, field);
-  if (typeof source !== "object" || source === null) {
-    throw new TypeError(`Expected source metadata for ${field}`);
-  }
-  return Object.fromEntries(Object.entries(source));
-}
-
-describe("Azure pipeline variables use the CLI-native UMACTUALLY_* environment surface", () => {
-  it("resolves prompt-file lists directly from canonical environment variables", async () => {
-    // Given: values supplied exactly as Azure pipeline variables reach the CLI.
-    process.env["UMACTUALLY_PROMPT_FILES"] = "prompts/system.md,prompts/context.md";
-    process.env["UMACTUALLY_ADDITIONAL_PROMPT_FILES"] = "prompts/extra.md";
-
-    // When: the CLI resolves its JSON configuration envelope.
-    const config = await resolvedConfig();
-
-    // Then: both lists are present and attributed to their canonical env vars.
-    expect(config["promptFilesPresent"]).toBe(true);
-    expect(config["additionalPromptFilesPresent"]).toBe(true);
-    expect(sourceFor(config, "promptFiles")).toEqual({
-      source: "env",
-      envName: "UMACTUALLY_PROMPT_FILES",
-    });
-    expect(sourceFor(config, "additionalPromptFiles")).toEqual({
-      source: "env",
-      envName: "UMACTUALLY_ADDITIONAL_PROMPT_FILES",
-    });
+describe("example pipelines do not contain wrapper-era bash forwarding", () => {
+  it("examples/azure/azure-pipelines.yml has no optional_env_value() macro", async () => {
+    const yaml = await readPipeline("examples/azure/azure-pipelines.yml");
+    expect(yaml).not.toContain("optional_env_value()");
   });
 
-  it("resolves boolean toggles directly from canonical environment variables", async () => {
-    // Given: default-on options disabled through Azure pipeline variables.
-    process.env["UMACTUALLY_STRICT_SCHEMA"] = "false";
-    process.env["UMACTUALLY_VERIFY_FINDINGS"] = "false";
+  it("examples/azure/azure-pipelines.yml has no EXTRA_ARGS array", async () => {
+    const yaml = await readPipeline("examples/azure/azure-pipelines.yml");
+    expect(yaml).not.toContain("EXTRA_ARGS=()");
+  });
 
-    // When: the CLI resolves its JSON configuration envelope.
-    const config = await resolvedConfig();
-
-    // Then: values and provenance reflect the environment without shell translation.
-    expect(config["strictSchema"]).toBe(false);
-    expect(config["verifyFindings"]).toBe(false);
-    expect(sourceFor(config, "strictSchema")).toEqual({
-      source: "env",
-      envName: "UMACTUALLY_STRICT_SCHEMA",
-    });
-    expect(sourceFor(config, "verifyFindings")).toEqual({
-      source: "env",
-      envName: "UMACTUALLY_VERIFY_FINDINGS",
-    });
+  it("examples/azure/azure-pipelines.yml has no separate check-review-artifact step", async () => {
+    const yaml = await readPipeline("examples/azure/azure-pipelines.yml");
+    expect(yaml).not.toContain("check-review-artifact");
   });
 });

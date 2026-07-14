@@ -94,9 +94,12 @@ describe("CLI bare-invocation", () => {
     expect(stderrBuf).not.toContain("pick a mode:");
   });
 
-  it("smoke: --api-url + --api-key in the real repo cwd fails with exit 1 (provider error)", async () => {
+  it("smoke: --api-url + --api-key in the real repo cwd succeeds (standalone review of local diff)", async () => {
     // Use the real cwd: it IS a git repo, so standalone mode auto-derives diff/event.
-    // localhost:1 fails fast with ECONNREFUSED — no real HTTP call, no network dependency.
+    // localhost:1 is unreachable; in standalone mode (no --platform) the CLI writes
+    // a local artifact without calling any platform API, so the unreachable URL is harmless.
+    // (Old wrapper-era behavior required --platform and tried to call the provider; that
+    // gate has been removed. Standalone review is the new default for the bare CLI.)
     const cwd = process.cwd();
     const originalStdout = process.stdout.write.bind(process.stdout);
     const originalStderr = process.stderr.write.bind(process.stderr);
@@ -123,8 +126,8 @@ describe("CLI bare-invocation", () => {
       process.stderr.write = originalStderr;
     }
 
-    expect(result!.exitCode).toBe(1);
+    expect(result!.exitCode).toBe(0);
     const combined = stdoutBuf + stderrBuf;
-    expect(combined).toMatch(/cli:|provider|Provider responses responded with/);
+    expect(combined).toMatch(/umactually-review\.json|wrote/i);
   });
 });
