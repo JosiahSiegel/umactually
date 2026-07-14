@@ -1,4 +1,4 @@
-// Structural test: ensures that `<!-- umactually-pr-review -->` literal
+// Structural test: ensures that `<!-- umactually -->` literal
 // never re-appears in Category C test files (the TS test files that are
 // NOT the marker-literal allowlist and NOT JSON fixtures). Every Category
 // C test must consume the literal via the `REVIEW_MARKER` constant
@@ -15,7 +15,7 @@ import { resolve } from "node:path";
 import { describe, expect, it } from "vitest";
 
 const REPO_ROOT = resolve(__dirname, "..", "..");
-const MARKER_LITERAL = "<!-- umactually-pr-review -->";
+const MARKER_LITERAL = "<!-- umactually -->";
 
 /**
  * Category C — TypeScript test files that the DRY cleanup is allowed to
@@ -58,7 +58,7 @@ const SANITY_FILES_THAT_MUST_CONTAIN_LITERAL: readonly string[] = [
   "test/fixtures/github/expected-surface.json",
 ] as const;
 
-describe("DRY-MARKER: no duplicated `<!-- umactually-pr-review -->` literals in test code", () => {
+describe("DRY-MARKER: no duplicated `<!-- umactually -->` literals in test code", () => {
   it("DRY-MARKER-001: every Category C test file consumes the marker via the REVIEW_MARKER constant, not as a literal", async () => {
     const offenders: string[] = [];
     for (const relPath of CATEGORY_C_FILES) {

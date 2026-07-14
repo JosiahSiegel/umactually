@@ -114,7 +114,7 @@ steps:
           EXTRA_ARGS+=(--verify-findings)
         fi
       fi
-      node bin/umactually-pr-review.mjs \
+      node bin/umactually.mjs \
         --platform azure-devops \
         --event "$AZURE_EVENT_PATH" \
         --diff "$AZURE_DIFF_PATH" \

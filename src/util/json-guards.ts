@@ -27,8 +27,7 @@ export function isPositiveSafeInteger(value: unknown): value is number {
  * Safe-integer guard (zero and negatives allowed). Centralizes the
  * predicate that was inlined at 9+ sites across `src/cli/live-azure.ts`,
  * `src/cli/live-shared.ts`, `src/cli/live-github.ts`,
- * `src/cli/parse-args.ts`, `src/action/read-inputs.ts`, and
- * the platform context modules.
+ * `src/cli/parse-args.ts` and the platform context modules.
  */
 export function isSafeInteger(value: unknown): value is number {
   return typeof value === "number" && Number.isSafeInteger(value);

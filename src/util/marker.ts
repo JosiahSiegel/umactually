@@ -13,13 +13,17 @@ import { BRAND } from "./brand.js";
 /**
  * Stable HTML marker the runner greps for in existing PR comments when
  * deciding whether to replace a previous UmActually review.
+ *
+ * Renamed from `<!-- umactually -->` in v0.1.0 because the
+ * project ships under the bare `umactually` name and never launched —
+ * no installed copies depend on the old marker.
  */
-export const REVIEW_MARKER = "<!-- umactually-pr-review -->";
+export const REVIEW_MARKER = "<!-- umactually -->";
 
 /**
  * JSON schema identifier for the UmActually manifest that lives inside
- * the `<!-- umactually-pr-review:manifest { ... } -->` HTML comment on
- * every posted review. Format is `${BRAND}/v${VERSION}`. AI agents and
+ * the `<!-- umactually:manifest { ... } -->` HTML comment on every
+ * posted review. Format is `${BRAND}/v${VERSION}`. AI agents and
  * downstream tooling parse this string to know they're reading an
  * UmActually-shaped payload.
  *
@@ -28,7 +32,7 @@ export const REVIEW_MARKER = "<!-- umactually-pr-review -->";
  * tell UmActually manifests apart from any other review tool's
  * payloads.
  */
-export const MANIFEST_SCHEMA = "umactually-pr-review/v1";
+export const MANIFEST_SCHEMA = "umactually/v1";
 
 /** Opening HTML-comment prefix of the manifest hidden inside each UmActually review comment. */
 export const MANIFEST_MARKER_PREFIX = `<!-- ${BRAND}:manifest `;

@@ -35,7 +35,7 @@ type Manifest = {
 };
 
 function readManifest(body: string): Manifest {
-  const match = body.match(/<!--\s*umactually-pr-review:manifest\s+(\{[\s\S]*?\})\s*-->/u);
+  const match = body.match(/<!--\s*umactually:manifest\s+(\{[\s\S]*?\})\s*-->/u);
   if (match === null) {
     throw new Error(`manifest comment not found in:\n${body}`);
   }

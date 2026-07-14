@@ -19,9 +19,9 @@
 //      place. The documented single-status deletion endpoint is
 //        DELETE .../pullRequests/{id}/statuses/{statusId}?api-version=7.1
 //      (status 204 No Content on success).
-//      So: when about to POST a new `umactually-pr-review-status`, the
+//      So: when about to POST a new `umactually-status`, the
 //      CLI must list the existing ones, DELETE the previous
-//      `umactually-pr-review-status` entries (best-effort), then POST
+//      `umactually-status` entries (best-effort), then POST
 //      the new one. This keeps the Checks panel at exactly one entry
 //      per run going forward.
 //
@@ -30,7 +30,7 @@
 //      with the policy check. ADO groups statuses by `context.name +
 //      context.genre`, so collapsing to a single entry per run is owned
 //      by the dedup logic, not by the name. To be unambiguous going
-//      forward we use `context.name="umactually-pr-review-status"` and
+//      forward we use `context.name="umactually-status"` and
 //      `context.genre="pr-review"`, so any status that escapes the
 //      dedup is obviously identifiable as the CLI's.
 //
@@ -194,7 +194,7 @@ describe("Azure PR status policy: verdict mapping + delete-then-post dedup", () 
     //   POST   .../statuses                (fresh status)
     //
     // The fixture pre-seeds ONE existing status with the same context
-    // (id=9001, state=failed, context.name="umactually-pr-review-status",
+    // (id=9001, state=failed, context.name="umactually-status",
     // genre="pr-review"), simulating the 34-entry mess on PR #42 before
     // the fix. After the run we assert:
     //   - DELETE was issued for id=9001
@@ -210,7 +210,7 @@ describe("Azure PR status policy: verdict mapping + delete-then-post dedup", () 
           description: "stale failed legacy status",
           creationDate: "2026-07-01T20:00:00Z",
           updatedDate: "2026-07-01T20:00:00Z",
-          context: { name: "umactually-pr-review-status", genre: "pr-review" },
+          context: { name: "umactually-status", genre: "pr-review" },
         },
       ],
     };
@@ -280,7 +280,7 @@ describe("Azure PR status policy: verdict mapping + delete-then-post dedup", () 
     const postBody = readRecord(statusPosts[0]?.body as Record<string, unknown>, "status POST body");
     expect(postBody["state"]).toBe("pending");
     const context = readRecord(postBody["context"] as Record<string, unknown>, "status POST context");
-    expect(context["name"]).toBe("umactually-pr-review-status");
+    expect(context["name"]).toBe("umactually-status");
     expect(context["genre"]).toBe("pr-review");
   });
 
@@ -297,7 +297,7 @@ describe("Azure PR status policy: verdict mapping + delete-then-post dedup", () 
           description: "policy check",
           creationDate: "2026-07-01T20:00:00Z",
           updatedDate: "2026-07-01T20:00:00Z",
-          context: { name: "codecoverage", genre: "umactually-pr-review" },
+          context: { name: "codecoverage", genre: "umactually" },
         },
       ],
     };
@@ -350,11 +350,11 @@ describe("Azure PR status policy: verdict mapping + delete-then-post dedup", () 
     const postBody = readRecord(statusPosts[0]?.body as Record<string, unknown>, "status POST body");
     expect(postBody["state"]).toBe("succeeded");
     const context = readRecord(postBody["context"] as Record<string, unknown>, "status POST context");
-    expect(context["name"]).toBe("umactually-pr-review-status");
+    expect(context["name"]).toBe("umactually-status");
     expect(context["genre"]).toBe("pr-review");
   });
 
-  it("AZURE-STATUS-POLICY-4: listStatuses returns the most recent umactually-pr-review-status entry", async () => {
+  it("AZURE-STATUS-POLICY-4: listStatuses returns the most recent umactually-status entry", async () => {
     // Same dedup contract as AZURE-STATUS-POLICY-2 but verifies that a
     // status with the right context but DIFFERENT id is still found
     // (so the helper is not memoized on a specific id) and that the
@@ -368,7 +368,7 @@ describe("Azure PR status policy: verdict mapping + delete-then-post dedup", () 
           description: "oldest entry",
           creationDate: "2026-07-01T10:00:00Z",
           updatedDate: "2026-07-01T10:00:00Z",
-          context: { name: "umactually-pr-review-status", genre: "pr-review" },
+          context: { name: "umactually-status", genre: "pr-review" },
         },
         {
           id: 5002,
@@ -376,7 +376,7 @@ describe("Azure PR status policy: verdict mapping + delete-then-post dedup", () 
           description: "newer entry",
           creationDate: "2026-07-01T11:00:00Z",
           updatedDate: "2026-07-01T11:00:00Z",
-          context: { name: "umactually-pr-review-status", genre: "pr-review" },
+          context: { name: "umactually-status", genre: "pr-review" },
         },
         {
           id: 8001,
@@ -434,7 +434,7 @@ describe("Azure PR status policy: verdict mapping + delete-then-post dedup", () 
       fetchImpl: recorder.fetchImpl,
     });
 
-    // Both `umactually-pr-review-status` entries (id 5001 and 5002)
+    // Both `umactually-status` entries (id 5001 and 5002)
     // must be removed; the unrelated entry id 8001 must NOT be touched.
     expect(deleteCount).toBe(2);
     expect(deletedIds.sort((a, b) => a - b)).toEqual([5001, 5002]);
@@ -446,6 +446,6 @@ describe("Azure PR status policy: verdict mapping + delete-then-post dedup", () 
     const postBody = readRecord(statusPosts[0]?.body as Record<string, unknown>, "status POST body");
     expect(postBody["state"]).toBe("succeeded"); // COMMENT ⇒ succeeded per the mapping fix
     const context = readRecord(postBody["context"] as Record<string, unknown>, "status POST context");
-    expect(context["name"]).toBe("umactually-pr-review-status");
+    expect(context["name"]).toBe("umactually-status");
   });
 });

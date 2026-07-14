@@ -175,8 +175,8 @@ describe("buildReviewBody (shared GitHub + Azure review header)", () => {
     });
     // The manifest is embedded in a hidden HTML comment so it does not
     // visually clutter either platform, but is parseable by agents.
-    expect(body).toMatch(/<!--\s*umactually-pr-review:manifest\s*\{[\s\S]*?\}\s*-->/);
-    const match = body.match(/<!--\s*umactually-pr-review:manifest\s*(\{[\s\S]*?\})\s*-->/);
+    expect(body).toMatch(/<!--\s*umactually:manifest\s*\{[\s\S]*?\}\s*-->/);
+    const match = body.match(/<!--\s*umactually:manifest\s*(\{[\s\S]*?\})\s*-->/);
     expect(match).not.toBeNull();
     const manifestText = match?.[1];
     expect(manifestText).toBeDefined();

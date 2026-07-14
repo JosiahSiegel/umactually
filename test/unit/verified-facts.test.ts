@@ -70,7 +70,7 @@ describe("collectVerifiedFacts", () => {
       "+++ b/package.json",
       "@@ -10,8 +35,14 @@",
       '   "bin": {',
-      '     "umactually-pr-review": "bin/umactually-pr-review.mjs"',
+      '     "umactually": "bin/umactually.mjs"',
       "   },",
       '   "files": [',
       '     "dist",',
@@ -116,14 +116,14 @@ describe("collectVerifiedFacts", () => {
       " {",
       '   "name": "umactually",',
       '-  "bin": { "old-cli": "bin/old.mjs" },',
-      '+  "bin": { "umactually-pr-review": "bin/umactually-pr-review.mjs" },',
+      '+  "bin": { "umactually": "bin/umactually.mjs" },',
       '   "main": "dist/index.js"',
       " }",
     ].join("\n");
     const facts = collectVerifiedFacts(diff);
     expect(facts.packageJsonBin).not.toBeNull();
     expect(facts.packageJsonBin?.binEntries).toContain(
-      "umactually-pr-review -> bin/umactually-pr-review.mjs",
+      "umactually -> bin/umactually.mjs",
     );
     expect(facts.packageJsonBin?.binEntries).not.toContain(
       "old-cli -> bin/old.mjs",
@@ -250,7 +250,7 @@ describe("renderVerifiedFactsBlock", () => {
       "+++ b/package.json",
       "@@ -10,8 +35,14 @@",
       '   "bin": {',
-      '     "umactually-pr-review": "bin/umactually-pr-review.mjs"',
+      '     "umactually": "bin/umactually.mjs"',
       "   },",
       '   "files": [',
       '     "dist",',

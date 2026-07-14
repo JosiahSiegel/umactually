@@ -10,11 +10,11 @@ import { MANIFEST_SCHEMA, REVIEW_MARKER } from "../../src/util/marker.js";
 
 describe("frozen marker literals", () => {
   it("REVIEW_MARKER stays the literal grep target for dedup loops", () => {
-    expect(REVIEW_MARKER).toBe("<!-- umactually-pr-review -->");
+    expect(REVIEW_MARKER).toBe("<!-- umactually -->");
   });
 
   it("MANIFEST_SCHEMA stays the brand-prefixed schema identifier", () => {
-    expect(MANIFEST_SCHEMA).toBe("umactually-pr-review/v1");
+    expect(MANIFEST_SCHEMA).toBe("umactually/v1");
   });
 
   it("REVIEW_MARKER is the only HTML comment string consumers must match", () => {
@@ -24,10 +24,10 @@ describe("frozen marker literals", () => {
     // fixture validator must be updated in the same release.
     expect(REVIEW_MARKER.startsWith("<!-- ")).toBe(true);
     expect(REVIEW_MARKER.endsWith(" -->")).toBe(true);
-    expect(REVIEW_MARKER).toContain("umactually-pr-review");
+    expect(REVIEW_MARKER).toContain("umactually");
   });
 
   it("MANIFEST_SCHEMA is grep-able and brand-prefixed", () => {
-    expect(MANIFEST_SCHEMA).toMatch(/^umactually-pr-review\/v\d+$/u);
+    expect(MANIFEST_SCHEMA).toMatch(/^umactually\/v\d+$/u);
   });
 });

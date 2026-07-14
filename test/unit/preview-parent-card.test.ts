@@ -63,7 +63,7 @@ describe("severity-table layout — actionable-only parent card", () => {
     expect(body).toContain("📍 `src/db.ts`:7");
     expect(body).toContain("📍 `README.md`:42");
     // Manifest carries the suppressed count so AI agents can reconcile.
-    const manifest = body.match(/<!--\s*umactually-pr-review:manifest\s+(\{[\s\S]*?\})\s*-->/u);
+    const manifest = body.match(/<!--\s*umactually:manifest\s+(\{[\s\S]*?\})\s*-->/u);
     expect(manifest).not.toBeNull();
     const parsed = JSON.parse(manifest?.[1] ?? "{}");
     expect(parsed.inlineCount).toBe(3);

@@ -117,7 +117,7 @@ export function parseSeverityFromUnknown(value: unknown, field: string): Severit
 
 // Derive the parser's accepted set from the canonical field-schema entry.
 // Single source of truth: changing the canonical `enumValues` here updates
-// both the parser and any future code-gen of the action.yml / CLI help.
+// both the parser and any future code-gen of the CLI help.
 const VALID_PLATFORMS: ReadonlySet<string> = new Set<string>(
   FIELDS.platform.enumValues ?? [],
 );

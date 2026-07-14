@@ -189,7 +189,7 @@ describe("preparePostedReview reconciliation", () => {
     // `verdict: "COMMENT"` (consistent with the headline and the
     // inline finding count).
     expect(prepared.body).toMatch(
-      /<!-- umactually-pr-review:manifest\s+\{[^}]*"verdict":"COMMENT"/u,
+      /<!-- umactually:manifest\s+\{[^}]*"verdict":"COMMENT"/u,
     );
   });
 

@@ -42,3 +42,5 @@ coverage/
 !.env.example
 .tool-versions
 .python-version
+umactually-review.json
+.umactually*

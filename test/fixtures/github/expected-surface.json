@@ -6,6 +6,6 @@
     "method": "POST",
     "url": "https://api.github.com/repos/example/umactually-fixture/pulls/42/reviews",
     "event": "COMMENT",
-    "marker": "<!-- umactually-pr-review -->"
+    "marker": "<!-- umactually -->"
   }
 }
