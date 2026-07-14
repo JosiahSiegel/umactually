@@ -5,12 +5,20 @@ AI-powered PR review that posts inline comments directly to your pull requests. 
 ## Install
 
 ```bash
+# npm
 npm install -g umactually
+
+# bun
+bun add -g umactually
+
+# macOS / Linux (no Node required)
+curl -fsSL https://github.com/JosiahSiegel/umactually/raw/main/scripts/install.sh | sh
+
+# Windows PowerShell (no Node required)
+irm https://github.com/JosiahSiegel/umactually/raw/main/scripts/install.ps1 | iex
 ```
 
-Prefer a one-off? `npx umactually@latest review`
-
-Binaries and curl/PowerShell installers: see [`docs/install.md`](docs/install.md).
+Or try without installing: `npx umactually@latest review` / `bunx umactually review`
 
 ## Usage
 
