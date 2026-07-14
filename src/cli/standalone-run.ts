@@ -50,7 +50,44 @@ export async function runStandalone(input: {
   readonly overrideArtifactPath?: string;
 }): Promise<StandaloneRunResult> {
   if (input.parsed.diffPath === null) {
-    throw new TypeError("runStandalone requires parsed.diffPath to be non-null.");
+    // No diff was supplied and the auto-context derivation did not
+    // find one (operator is in a non-CI shell outside a git repo with
+    // uncommitted changes, OR explicitly chose to skip the derivation
+    // with --no-context flag if implemented). Mirror the dry-run
+    // short-circuit: write a no-posting artifact body and return
+    // ok so `umactually review` in a terminal degrades gracefully
+    // instead of throwing. Old behavior (throw TypeError) was a
+    // wrapper-era assumption that the operator always has a diff to
+    // review; in the CLI-only world the operator may just want to
+    // confirm the CLI boots in their cwd.
+    const artifactPath = resolve(
+      input.cwd,
+      input.overrideArtifactPath ?? "./umactually-review.json",
+    );
+    const note = "No diff content was found; provider review was skipped.";
+    const body = {
+      mode: "standalone",
+      artifactPath,
+      posted: false,
+      note,
+      provider: {
+        name: input.parsed.provider ?? "openai-compatible",
+        modelId: input.parsed.model ?? "auto",
+        endpoint: input.parsed.apiUrl ?? "",
+      },
+      review: { summary: note, verdict: "COMMENT", comments: [] },
+      parseWarnings: 0,
+      severityWarnings: 0,
+      inlineThreadCount: 0,
+      suppressedCommentCount: 0,
+      marker: REVIEW_MARKER,
+      generatedAt: new Date().toISOString(),
+    };
+    await writeFile(artifactPath, `${JSON.stringify(body, null, 2)}\n`, "utf8");
+    process.stdout.write(
+      `${BRAND_PREFIX}standalone review (no diff) wrote ${artifactPath}\n`,
+    );
+    return { kind: "ok", artifactPath, review: body.review };
   }
 
   const artifactPath = resolve(

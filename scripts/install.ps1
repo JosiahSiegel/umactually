@@ -14,10 +14,13 @@ $ErrorActionPreference = "Stop"
 $Repo = "JosiahSiegel/umactually"
 $UrlBase = "https://github.com/$Repo/releases/latest/download"
 
-# Detect architecture
-$Arch = switch ($env:PROCESSOR_ARCHITECTURE) {
-  "AMD64"   { "x64" }
-  "ARM64"   { "arm64" }
+# Detect architecture. On Windows pwsh reports AMD64/ARM64; on
+# Linux/macOS pwsh reports x86_64/arm64 (lowercase). Normalize
+# case-insensitively so the test suite (which runs pwsh on Linux CI)
+# does not throw "Unsupported architecture".
+$Arch = switch ($true) {
+  (($env:PROCESSOR_ARCHITECTURE -ieq "AMD64") -or ($env:PROCESSOR_ARCHITECTURE -ieq "x86_64"))   { "x64" }
+  (($env:PROCESSOR_ARCHITECTURE -ieq "ARM64") -or ($env:PROCESSOR_ARCHITECTURE -ieq "arm64"))   { "arm64" }
   default   { Write-Error "Unsupported architecture: $env:PROCESSOR_ARCHITECTURE"; exit 1 }
 }
 

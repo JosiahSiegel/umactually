@@ -15318,118 +15318,7 @@ function orchestrator_assertNever(value) {
     throw new TypeError(`Unhandled live platform: ${value}`);
 }
 
-;// CONCATENATED MODULE: ./src/cli/standalone-run.ts
-/**
- * Runs provider-only reviews for local repositories without CI platform markers.
- * This module writes a standalone artifact and intentionally does not post to
- * GitHub, Azure DevOps, or any other platform.
- */
-
-
-
-
-
-
-/**
- * Detect whether `env` represents standalone mode (no CI markers).
- * True when BOTH GITHUB_ACTIONS and TF_BUILD are missing or not
- * the canonical truthy values.
- */
-function isStandaloneMode(env) {
-    const isTruthy = (value) => value === "true" || value === "True" || value === "TRUE";
-    return !isTruthy(env["GITHUB_ACTIONS"]) && !isTruthy(env["TF_BUILD"]);
-}
-/**
- * Run a standalone review: provider call only, no platform posting.
- * Writes ./umactually-review.json (or `overrideArtifactPath` if set)
- * to `cwd`. Exits via the result shape — provider failures are returned.
- */
-async function runStandalone(input) {
-    if (input.parsed.diffPath === null) {
-        throw new TypeError("runStandalone requires parsed.diffPath to be non-null.");
-    }
-    const artifactPath = (0,external_node_path_namespaceObject.resolve)(input.cwd, input.overrideArtifactPath ?? "./umactually-review.json");
-    const diffText = await (0,promises_namespaceObject.readFile)(input.parsed.diffPath, "utf8");
-    const providerApiKey = input.parsed.apiKey ?? "";
-    if (diffText.length === 0) {
-        const note = "No diff content was found; provider review was skipped.";
-        const body = {
-            mode: "standalone",
-            artifactPath,
-            posted: false,
-            note,
-            provider: {
-                name: input.parsed.provider ?? "openai-compatible",
-                modelId: input.parsed.model ?? "auto",
-                endpoint: input.parsed.apiUrl ?? "",
-            },
-            review: { summary: note, verdict: "COMMENT", comments: [] },
-            parseWarnings: 0,
-            severityWarnings: 0,
-            inlineThreadCount: 0,
-            suppressedCommentCount: 0,
-            marker: REVIEW_MARKER,
-            generatedAt: new Date().toISOString(),
-        };
-        await (0,promises_namespaceObject.writeFile)(artifactPath, `${JSON.stringify(body, null, 2)}\n`, "utf8");
-        process.stdout.write(`${BRAND_PREFIX}standalone review (no diff) wrote ${artifactPath}\n`);
-        return { kind: "ok-no-diff", artifactPath, note };
-    }
-    let outcome;
-    try {
-        const fetchImpl = input.fetchImpl ?? globalThis.fetch.bind(globalThis);
-        outcome = await requestLiveReview({
-            parsed: input.parsed,
-            cwd: input.cwd,
-            env: input.env,
-            fetchImpl,
-            platform: "github",
-            diffText,
-            platformToken: "",
-        });
-    }
-    catch (error) {
-        const message = error instanceof LiveReviewError || error instanceof Error
-            ? error.message
-            : String(error);
-        return {
-            kind: "provider-error",
-            exitCode: 1,
-            message,
-            sanitizedForLog: sanitizeForPost(message, [providerApiKey]),
-        };
-    }
-    const note = "Standalone review completed; no platform posting was attempted.";
-    const review = {
-        summary: outcome.review.summary,
-        verdict: outcome.review.verdict,
-        comments: outcome.review.comments,
-    };
-    const body = {
-        mode: "standalone",
-        artifactPath,
-        posted: false,
-        note,
-        provider: {
-            name: outcome.provider,
-            modelId: outcome.modelId,
-            endpoint: outcome.endpoint,
-        },
-        review,
-        parseWarnings: outcome.parseWarnings.length,
-        severityWarnings: outcome.severityWarnings.length,
-        inlineThreadCount: outcome.review.comments.length,
-        suppressedCommentCount: outcome.review.suppressedComments.length,
-        marker: REVIEW_MARKER,
-        generatedAt: new Date().toISOString(),
-    };
-    await (0,promises_namespaceObject.writeFile)(artifactPath, `${JSON.stringify(body, null, 2)}\n`, "utf8");
-    process.stdout.write(`${BRAND_PREFIX}standalone review wrote ${artifactPath}\n`);
-    return { kind: "ok", artifactPath, review };
-}
-
 ;// CONCATENATED MODULE: ./src/cli/run.ts
-
 
 
 
@@ -15575,20 +15464,26 @@ async function buildDryRunArtifact(parsed, platform, cwd) {
     return buildAzureDryRunArtifact(parsed, cwd);
 }
 async function buildGithubDryRunArtifact(parsed, cwd) {
-    // Standalone dry-run short-circuit: when the operator is in standalone mode
-    // (no CI markers) AND has not supplied --review, this is a smoke test, NOT
-    // a posting run. The auto-context-derived synthetic event.json has null
-    // posting identity (pull_request.number=null) that the runReview
-    // pipeline rejects. Mirror the Azure stub at the bottom of this file
-    // (lines 215-224): return a no-posting artifact body.
-    if (parsed.dryRun && parsed.reviewPath === null && isStandaloneMode(process.env)) {
+    // Dry-run short-circuit: when the operator has not supplied --review,
+    // this is a smoke test, NOT a posting run. The auto-context-derived
+    // synthetic event.json has null posting identity (pull_request.number=null)
+    // that the runReview pipeline rejects. Mirror the Azure stub at the
+    // bottom of this file (lines 215-224): return a no-posting artifact body.
+    //
+    // We deliberately do NOT also require isStandaloneMode(process.env):
+    // a CI user that runs `umactually review --dry-run` without --review
+    // gets the same no-posting body. (Old behavior was to require
+    // non-CI, but that surfaced the "runStandalone requires parsed.diffPath
+    // to be non-null" TypeError on CI, which is wrong — the operator
+    // did not ask to post, the CLI should not throw.)
+    if (parsed.dryRun && parsed.reviewPath === null) {
         return {
             artifactPath: "artifacts/manual/s1-github-self-review.md",
             posted: false,
             marker: REVIEW_MARKER,
             inlineThreadCount: 0,
             suppressedCommentCount: 0,
-            note: "no --review supplied; this was a standalone dry-run smoke test, no posting path executed",
+            note: "no --review supplied; this was a dry-run smoke test, no posting path executed",
         };
     }
     // The validator (src/cli/validate.ts:collectPostingValidationErrors)
@@ -15860,6 +15755,148 @@ async function writeParseWarningsArtifact(primaryArtifactPath, warnings) {
         warnings,
     };
     await (0,promises_namespaceObject.writeFile)(path, `${JSON.stringify(body, null, 2)}\n`, "utf8");
+}
+
+;// CONCATENATED MODULE: ./src/cli/standalone-run.ts
+/**
+ * Runs provider-only reviews for local repositories without CI platform markers.
+ * This module writes a standalone artifact and intentionally does not post to
+ * GitHub, Azure DevOps, or any other platform.
+ */
+
+
+
+
+
+
+/**
+ * Detect whether `env` represents standalone mode (no CI markers).
+ * True when BOTH GITHUB_ACTIONS and TF_BUILD are missing or not
+ * the canonical truthy values.
+ */
+function isStandaloneMode(env) {
+    const isTruthy = (value) => value === "true" || value === "True" || value === "TRUE";
+    return !isTruthy(env["GITHUB_ACTIONS"]) && !isTruthy(env["TF_BUILD"]);
+}
+/**
+ * Run a standalone review: provider call only, no platform posting.
+ * Writes ./umactually-review.json (or `overrideArtifactPath` if set)
+ * to `cwd`. Exits via the result shape — provider failures are returned.
+ */
+async function runStandalone(input) {
+    if (input.parsed.diffPath === null) {
+        // No diff was supplied and the auto-context derivation did not
+        // find one (operator is in a non-CI shell outside a git repo with
+        // uncommitted changes, OR explicitly chose to skip the derivation
+        // with --no-context flag if implemented). Mirror the dry-run
+        // short-circuit: write a no-posting artifact body and return
+        // ok so `umactually review` in a terminal degrades gracefully
+        // instead of throwing. Old behavior (throw TypeError) was a
+        // wrapper-era assumption that the operator always has a diff to
+        // review; in the CLI-only world the operator may just want to
+        // confirm the CLI boots in their cwd.
+        const artifactPath = (0,external_node_path_namespaceObject.resolve)(input.cwd, input.overrideArtifactPath ?? "./umactually-review.json");
+        const note = "No diff content was found; provider review was skipped.";
+        const body = {
+            mode: "standalone",
+            artifactPath,
+            posted: false,
+            note,
+            provider: {
+                name: input.parsed.provider ?? "openai-compatible",
+                modelId: input.parsed.model ?? "auto",
+                endpoint: input.parsed.apiUrl ?? "",
+            },
+            review: { summary: note, verdict: "COMMENT", comments: [] },
+            parseWarnings: 0,
+            severityWarnings: 0,
+            inlineThreadCount: 0,
+            suppressedCommentCount: 0,
+            marker: REVIEW_MARKER,
+            generatedAt: new Date().toISOString(),
+        };
+        await (0,promises_namespaceObject.writeFile)(artifactPath, `${JSON.stringify(body, null, 2)}\n`, "utf8");
+        process.stdout.write(`${BRAND_PREFIX}standalone review (no diff) wrote ${artifactPath}\n`);
+        return { kind: "ok", artifactPath, review: body.review };
+    }
+    const artifactPath = (0,external_node_path_namespaceObject.resolve)(input.cwd, input.overrideArtifactPath ?? "./umactually-review.json");
+    const diffText = await (0,promises_namespaceObject.readFile)(input.parsed.diffPath, "utf8");
+    const providerApiKey = input.parsed.apiKey ?? "";
+    if (diffText.length === 0) {
+        const note = "No diff content was found; provider review was skipped.";
+        const body = {
+            mode: "standalone",
+            artifactPath,
+            posted: false,
+            note,
+            provider: {
+                name: input.parsed.provider ?? "openai-compatible",
+                modelId: input.parsed.model ?? "auto",
+                endpoint: input.parsed.apiUrl ?? "",
+            },
+            review: { summary: note, verdict: "COMMENT", comments: [] },
+            parseWarnings: 0,
+            severityWarnings: 0,
+            inlineThreadCount: 0,
+            suppressedCommentCount: 0,
+            marker: REVIEW_MARKER,
+            generatedAt: new Date().toISOString(),
+        };
+        await (0,promises_namespaceObject.writeFile)(artifactPath, `${JSON.stringify(body, null, 2)}\n`, "utf8");
+        process.stdout.write(`${BRAND_PREFIX}standalone review (no diff) wrote ${artifactPath}\n`);
+        return { kind: "ok-no-diff", artifactPath, note };
+    }
+    let outcome;
+    try {
+        const fetchImpl = input.fetchImpl ?? globalThis.fetch.bind(globalThis);
+        outcome = await requestLiveReview({
+            parsed: input.parsed,
+            cwd: input.cwd,
+            env: input.env,
+            fetchImpl,
+            platform: "github",
+            diffText,
+            platformToken: "",
+        });
+    }
+    catch (error) {
+        const message = error instanceof LiveReviewError || error instanceof Error
+            ? error.message
+            : String(error);
+        return {
+            kind: "provider-error",
+            exitCode: 1,
+            message,
+            sanitizedForLog: sanitizeForPost(message, [providerApiKey]),
+        };
+    }
+    const note = "Standalone review completed; no platform posting was attempted.";
+    const review = {
+        summary: outcome.review.summary,
+        verdict: outcome.review.verdict,
+        comments: outcome.review.comments,
+    };
+    const body = {
+        mode: "standalone",
+        artifactPath,
+        posted: false,
+        note,
+        provider: {
+            name: outcome.provider,
+            modelId: outcome.modelId,
+            endpoint: outcome.endpoint,
+        },
+        review,
+        parseWarnings: outcome.parseWarnings.length,
+        severityWarnings: outcome.severityWarnings.length,
+        inlineThreadCount: outcome.review.comments.length,
+        suppressedCommentCount: outcome.review.suppressedComments.length,
+        marker: REVIEW_MARKER,
+        generatedAt: new Date().toISOString(),
+    };
+    await (0,promises_namespaceObject.writeFile)(artifactPath, `${JSON.stringify(body, null, 2)}\n`, "utf8");
+    process.stdout.write(`${BRAND_PREFIX}standalone review wrote ${artifactPath}\n`);
+    return { kind: "ok", artifactPath, review };
 }
 
 ;// CONCATENATED MODULE: ./src/cli/auto-context.ts

@@ -15,7 +15,6 @@ import type { ParsedCliArgs } from "./parse-args.js";
 import { resetDefaultPromptFilesCache } from "./provider-prompts.js";
 import { resolvePlatform, type ResolvedPlatform } from "./validate.js";
 import { runLive as runOrchestrator } from "./orchestrator.js";
-import { isStandaloneMode } from "./standalone-run.js";
 import { classifyReviewArtifact } from "./check-review-artifact.js";
 
 export type CliJsonOutcome = {
@@ -184,20 +183,26 @@ async function buildDryRunArtifact(
 }
 
 async function buildGithubDryRunArtifact(parsed: ParsedCliArgs, cwd: string): Promise<Record<string, unknown>> {
-  // Standalone dry-run short-circuit: when the operator is in standalone mode
-  // (no CI markers) AND has not supplied --review, this is a smoke test, NOT
-  // a posting run. The auto-context-derived synthetic event.json has null
-  // posting identity (pull_request.number=null) that the runReview
-  // pipeline rejects. Mirror the Azure stub at the bottom of this file
-  // (lines 215-224): return a no-posting artifact body.
-  if (parsed.dryRun && parsed.reviewPath === null && isStandaloneMode(process.env)) {
+  // Dry-run short-circuit: when the operator has not supplied --review,
+  // this is a smoke test, NOT a posting run. The auto-context-derived
+  // synthetic event.json has null posting identity (pull_request.number=null)
+  // that the runReview pipeline rejects. Mirror the Azure stub at the
+  // bottom of this file (lines 215-224): return a no-posting artifact body.
+  //
+  // We deliberately do NOT also require isStandaloneMode(process.env):
+  // a CI user that runs `umactually review --dry-run` without --review
+  // gets the same no-posting body. (Old behavior was to require
+  // non-CI, but that surfaced the "runStandalone requires parsed.diffPath
+  // to be non-null" TypeError on CI, which is wrong — the operator
+  // did not ask to post, the CLI should not throw.)
+  if (parsed.dryRun && parsed.reviewPath === null) {
     return {
       artifactPath: "artifacts/manual/s1-github-self-review.md",
       posted: false,
       marker: REVIEW_MARKER,
       inlineThreadCount: 0,
       suppressedCommentCount: 0,
-      note: "no --review supplied; this was a standalone dry-run smoke test, no posting path executed",
+      note: "no --review supplied; this was a dry-run smoke test, no posting path executed",
     };
   }
 
