@@ -55,6 +55,13 @@ jobs:
       - name: Dist freshness guard
         run: npm run check:dist-freshness
 
+      # Local pre-merge check that mirrors the GitGuardian GitHub App's
+      # secret scan. Catches new synthetic test API keys that lack a
+      # SHA256 entry in .gitguardian.yaml before the GitGuardian App
+      # flags them on the next PR. Exit 0 = all literals covered.
+      - name: GitGuardian coverage check
+        run: node scripts/verify-gitguardian-coverage.mjs
+
       # CLI smoke scenarios — each step invokes scripts/ci-smoke.mjs with a
       # scenario id. Adding a new scenario = one entry in the SCENARIOS table
       # inside scripts/ci-smoke.mjs + one thin step here.

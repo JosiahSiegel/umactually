@@ -94,13 +94,16 @@ describe("CLI bare-invocation", () => {
     expect(stderrBuf).not.toContain("pick a mode:");
   });
 
-  it("smoke: --api-url + --api-key in the real repo cwd fails with exit 1 (provider unreachable, not plumbing error)", async () => {
-    // Use the real cwd: it IS a git repo, so standalone mode auto-derives diff/event.
-    // localhost:1 is unreachable; standalone mode tries to call the provider
-    // (that's the whole point of the standalone review — it tests the provider
-    // call without any platform API). The CLI should fail with exit 1 from the
-    // provider error, NOT from a wrapper-era plumbing-flag validation.
-    // (Old wrapper-era behavior required --platform; that gate has been removed.)
+  it("smoke: --api-url + --api-key in the real repo cwd writes standalone artifact and exits 0 (no CI auto-derivation)", async () => {
+    // Use the real cwd: it IS a git repo, but the auto-context derivation
+    // is CI-only (skipped when neither GITHUB_ACTIONS nor TF_BUILD is set).
+    // So the standalone path sees an empty diff and writes a "no diff"
+    // artifact instead of calling the provider.
+    //
+    // (Old wrapper-era behavior: required --platform and tried to call
+    // the provider unconditionally. The new behavior: standalone mode
+    // gracefully degrades to a no-diff artifact in non-CI shells, which
+    // is the right user experience for `umactually review` in a terminal.)
     const cwd = process.cwd();
     const originalStdout = process.stdout.write.bind(process.stdout);
     const originalStderr = process.stderr.write.bind(process.stderr);
@@ -127,11 +130,11 @@ describe("CLI bare-invocation", () => {
       process.stderr.write = originalStderr;
     }
 
-    expect(result!.exitCode).toBe(1);
+    expect(result!.exitCode).toBe(0);
     const combined = stdoutBuf + stderrBuf;
-    // The error must be a provider fetch failure, NOT a wrapper-era
-    // plumbing-flag validation error like "cli: --event is required".
-    expect(combined).toMatch(/fetch failed|provider|connection/i);
+    // The CLI writes a standalone artifact (the "no diff" fallback)
+    // and does NOT mention wrapper-era plumbing flags.
+    expect(combined).toMatch(/standalone review.*wrote/);
     expect(combined).not.toMatch(/cli: --event is required/);
     expect(combined).not.toMatch(/cli: --diff is required/);
   });

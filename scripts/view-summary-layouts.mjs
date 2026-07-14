@@ -173,7 +173,7 @@ function sampleBusy() {
     severityCounts: { critical: 2, high: 1, medium: 1, low: 2 },
     offDiffFromComments: suppressed,
     postedComments: comments.slice(0, 6),
-    secrets: ["sk-EXAMPLE-FAKE-1234567890"],
+    secrets: ["sk-EXAMPLE-DO-NOT-LEAK-0000"],
   };
 }
 

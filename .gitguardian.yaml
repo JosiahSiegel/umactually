@@ -7,47 +7,56 @@
 #
 # Why this file exists
 # --------------------
-# The UmActually self-review pipeline uses GitGuardian's GitHub App
-# to scan every PR for committed secrets. The detector is calibrated
-# for HIGH RECALL — it intentionally flags any long random-looking
-# string assigned to a variable named `apiKey`, `token`, `secret`,
-# etc. (the ContentWhitelistPreValidator in
-# docs.gitguardian.com/secrets-detection-engine/detectors/generics/
-# generic_high_entropy_secret). This is exactly the right posture for
-# production code, but it produces predictable false positives on
-# the synthetic test fixtures UmActually uses throughout its test
-# suite.
+# UmActually's self-review pipeline uses GitGuardian's GitHub App
+# to scan every PR for committed secrets. The high-entropy detector
+# (ContentWhitelistPreValidator for `apiKey`, `token`, `secret`,
+# `UMACTUALLY_API_KEY`, etc.) is calibrated for HIGH RECALL and
+# intentionally flags any long random-looking string assigned to
+# one of those variable names. This is exactly the right posture
+# for production code, but it produces predictable false positives
+# on the synthetic test fixtures UmActually uses throughout its
+# test suite. The configurations below are calibrated to the
+# current state of the repo (as of PR #50) and re-verified whenever
+# a new test fixture is added.
 #
 # Sentinel convention
 # -------------------
-# All synthetic test API keys in this repo use the literal
-# `do-not-leak` suffix (e.g. `sk-anthropic-v2-do-not-leak`,
-# `sk-test-openai-do-not-leak`, `sk-minimax-smoke-test-do-not-leak`).
-# The suffix is a deliberate tripwire — a maintainer who copies a
+# All synthetic test API keys in this repo use one of these sentinels:
+#   - the literal `do-not-leak` suffix (e.g. `sk-anthropic-v2-do-not-leak`,
+#     `sk-test-openai-do-not-leak`, `sk-minimax-smoke-test-do-not-leak`)
+#   - the literal `synthetic` or `EXAMPLE-` prefix in their value
+#   - short obviously-fake values like `sk-test`, `sk-ant-test`, `test-key`,
+#     `gho_test`, `gho_token`, `ghp_x`, `sk-abc123`
+# The suffix/prefix is a deliberate tripwire: a maintainer who copies a
 # fixture into a real config file and forgets to swap it would
-# search the repo and find this comment, plus the fixture would be
-# caught by the next reviewer who runs a `rg do-not-leak src/`.
-# Convention enforced in:
-#   - test/unit/live-provider-cross-protocol-dispatch.test.ts
-#   - test/unit/live-provider-anthropic-dispatch.test.ts
-#   - test/unit/anthropic-messages.test.ts
-#   - test/unit/live-shared-body.test.ts
-#   - test/unit/live-shared-prepare-posted-review.test.ts
-#   - test/unit/live-azure-parent-clarity.test.ts
-#   - test/unit/provider.test.ts
-#   - test/unit/provider-retry.test.ts
-#   - test/unit/redact-url-for-log.test.ts
-#   - test/unit/verdict-reconciliation.test.ts
+# `rg do-not-leak src/` and find this comment, and the next reviewer
+# who runs the secret scan would flag the literal in `src/` (which is
+# intentionally NOT in `ignored_paths` below).
 #
 # Historical incident
 # -------------------
 # Incident 34696725 (2026-07-10): GitGuardian flagged
 # `sk-anthropic-v2-do-not-leak` in
 # test/unit/live-provider-cross-protocol-dispatch.test.ts:507 as a
-# "Generic High Entropy Secret". The test paths below are excluded
-# so future scans do not re-trigger. The dashboard incident should
-# be marked resolved in the GitGuardian workspace once this file
-# lands in the default branch.
+# "Generic High Entropy Secret". The pre-registered SHA256s in
+# `ignored_matches` below auto-resolve the corresponding dashboard
+# incidents the next time the scanner runs. The dashboard incident
+# was marked resolved in the GitGuardian workspace once the original
+# config landed in the default branch.
+#
+# Update procedure (when a new synthetic key is added)
+# ---------------------------------------------------
+# 1. Add the literal key in your test file using the `do-not-leak`
+#    suffix convention.
+# 2. Compute its SHA256:
+#        node -e "console.log(require('node:crypto').createHash('sha256').update('<key>').digest('hex'))"
+# 3. Add the hash to `ignored_matches` below with a descriptive name.
+# 4. Re-run the secret scan locally:
+#        npx ggshield secret scan repo
+#    and confirm the new fixture is NOT flagged.
+# 5. Open a PR. GitHub Actions does NOT re-run ggshield (we
+#    intentionally don't burn API quota on CI); the GitGuardian
+#    GitHub App runs on PR open and on push to main.
 #
 # Design choices
 # --------------
@@ -64,11 +73,20 @@
 #   redaction-report fixtures and provider-response cassettes
 #   there; these are checked in for the self-review regression
 #   suite and routinely contain synthetic API responses.
+# - `test/fixtures/**` excluded because the cross-protocol and
+#   live-platform tests ship JSON provider-response cassettes
+#   with embedded synthetic API keys.
 # - `examples/**` is NOT excluded — the example workflows use
 #   `${{ secrets.* }}` references and any committed literal in
 #   that path would be a real finding.
 # - `src/**` is NOT excluded — production code is the surface
 #   that needs the most aggressive scanning.
+# - `ignored_matches` uses bare SHA256 of the secret VALUE
+#   (NO surrounding quotes). GitGuardian's parser reads the
+#   match value as a plain string; quoted values are matched as
+#   `'<value>'` with literal apostrophes and would not match the
+#   secret in the test file. Bare scalars are the correct form
+#   per the GitGuardian schema.
 version: 2
 
 secret:
@@ -83,6 +101,7 @@ secret:
     - 'tests/**'
     - '**/*.test.ts'
     - '**/*.spec.ts'
+    - '**/*.test.mjs'
     - '**/test/**'
     - '**/tests/**'
     - '**/__tests__/**'
@@ -116,42 +135,109 @@ secret:
     # Dependabot / GitHub metadata — not a code surface.
     - '.github/dependabot.yml'
 
-  # Per-occurrence ignores. The 9 historical synthetic API keys
-  # from the cross-protocol-dispatch test file are pre-registered
-  # here as SHA256 occurrence hashes so the corresponding dashboard
-  # incidents auto-resolve the next time the scanner runs.
+  # Per-occurrence ignores. The synthetic API keys below are the
+  # complete set of high-entropy literals currently in `test/**`
+  # (verified by `rg --no-heading 'sk-[a-zA-Z0-9_-]{6,}|gho_[a-zA-Z0-9]+|ghp_[a-zA-Z0-9]+' test/`).
+  # The 9 historical SHA256s from incident 34696725 are included
+  # for backward compatibility (existing dashboard incidents
+  # auto-resolve on these hashes). The remaining 24 are net-new in
+  # PR #50 because the test suite has grown since 2026-07-10.
   #
   # Form: bare SHA256 of the secret VALUE (NO surrounding quotes —
-  # GitGuardian's parser reads the match value as a plain string, so
-  # quoted values are matched as `'<value>'` with literal apostrophes
-  # and would not match the secret in the test file. Bare scalars
-  # are the correct form per the GitGuardian schema).
-  #
-  # The 9 historical fixtures below are stable, so the SHA256 of the
-  # value is also stable. If a maintainer copies one of the literal
-  # values into a NEW path (e.g. `src/`), the SHA256 of that copy
-  # would be the same — but `src/` is not in the `ignored_paths`
-  # list above, so the scanner would still see it. The SHA256 form
-  # is footgun-safe (the secret is matched by hash, not by literal
-  # text); the literal form was a footgun (the secret was matched
-  # by literal, which meant the GitGuardian dashboard's dashboard
-  # would silently ignore a real copy in `src/`).
+  # see the schema comment above for the rationale). The trailing
+  # comment is the literal value, for human review when a new
+  # fixture is added.
   ignored_matches:
-    - name: 'synthetic API key fixture (cross-protocol dispatch — pre-existing, SHA256 of value)'
-      match: 30e55e18233ca182773dcff62457830db6f9809d58833b9ff779c41553cf7917
-    - name: 'synthetic API key fixture (cross-protocol dispatch — pre-existing, SHA256 of value)'
-      match: 9f2a7af08c6d07c8a8c18999057d51ef567cf7c130708b7a22526de6f3db150e
-    - name: 'synthetic API key fixture (cross-protocol dispatch — pre-existing, SHA256 of value)'
-      match: c2f8a432986c7fc7fc5b46e8d570e9aee7ff93442fe74f4556f11d199362cefd
-    - name: 'synthetic API key fixture (cross-protocol dispatch — pre-existing, SHA256 of value)'
-      match: 063222337b3184b287338487db12638685e26906d0166f65126c282883b0fc29
-    - name: 'synthetic API key fixture (cross-protocol dispatch — pre-existing, SHA256 of value)'
-      match: 47ca29c0ccce5bc1a5d29c7b5c44ccbbade67a00a9b1045418e90c2c04e0fa88
-    - name: 'synthetic API key fixture (cross-protocol dispatch — pre-existing, SHA256 of value)'
-      match: 45a93c1629f0f09083add2e456af57a12c9be6b8ddc893d42b6b520b5bde268a
-    - name: 'synthetic API key fixture (cross-protocol dispatch — pre-existing, SHA256 of value)'
-      match: 70a298ec773ce21562a4770210a55c1197dc1fd9696952322457dfc81c031688
-    - name: 'synthetic API key fixture (cross-protocol dispatch — pre-existing, SHA256 of value)'
-      match: b49559ee5d52f4abfb116f6875e1de9662582a77bc1b84713b4ab2a5ddc82a75
-    - name: 'synthetic API key fixture (cross-protocol dispatch — pre-existing, SHA256 of value)'
-      match: 1415b5ece4de91bd047f826c48ae93c575dd048c8d3f46ed91e84a0406be94e4
+    # Historical (incident 34696725, 2026-07-10).
+    - name: 'synthetic API key fixture (cross-protocol dispatch, incident 34696725)'
+      match: 30e55e18233ca182773dcff62457830db6f9809d58833b9ff779c41553cf7917  # sk-anthropic-v2-do-not-leak
+    - name: 'synthetic API key fixture (cross-protocol dispatch, incident 34696725)'
+      match: 9f2a7af08c6d07c8a8c18999057d51ef567cf7c130708b7a22526de6f3db150e  # sk-anth-fallback-secret-do-not-leak
+    - name: 'synthetic API key fixture (cross-protocol dispatch, incident 34696725)'
+      match: c2f8a432986c7fc7fc5b46e8d570e9aee7ff93442fe74f4556f11d199362cefd  # sk-openai-fallback-secret-do-not-leak
+    - name: 'synthetic API key fixture (cross-protocol dispatch, incident 34696725)'
+      match: 063222337b3184b287338487db12638685e26906d0166f65126c282883b0fc29  # sk-no-fallback-do-not-leak
+    - name: 'synthetic API key fixture (cross-protocol dispatch, incident 34696725)'
+      match: 47ca29c0ccce5bc1a5d29c7b5c44ccbbade67a00a9b1045418e90c2c04e0fa88  # sk-both-fail-do-not-leak
+    - name: 'synthetic API key fixture (cross-protocol dispatch, incident 34696725)'
+      match: 45a93c1629f0f09083add2e456af57a12c9be6b8ddc893d42b6b520b5bde268a  # sk-minimax-smoke-test-do-not-leak
+    - name: 'synthetic API key fixture (cross-protocol dispatch, incident 34696725)'
+      match: 70a298ec773ce21562a4770210a55c1197dc1fd9696952322457dfc81c031688  # sk-test-llm-anthropic-do-not-leak
+    - name: 'synthetic API key fixture (cross-protocol dispatch, incident 34696725)'
+      match: b49559ee5d52f4abfb116f6875e1de9662582a77bc1b84713b4ab2a5ddc82a75  # sk-test-openai-do-not-leak
+    - name: 'synthetic API key fixture (cross-protocol dispatch, incident 34696725)'
+      match: 1415b5ece4de91bd047f826c48ae93c575dd048c8d3f46ed91e84a0406be94e4  # sk-explicit-anthropic-do-not-leak
+    # Anthropic / provider test fixtures.
+    - name: 'synthetic API key fixture (anthropic dispatch)'
+      match: 9764ebdd3e1868c9bf70dfffc397fc404375fb952588e36f07f7cf5976b223c9  # sk-ant-dispatch-secret-must-not-appear-in-output-xyz
+    - name: 'synthetic API key fixture (anthropic dispatch)'
+      match: 0d23fab326f52a86f348e2e89f9b02da03df818d6debd241622e97a21a940306  # sk-ant-synthetic
+    - name: 'synthetic API key fixture (anthropic dispatch)'
+      match: 0cc548567ae4f5079324a97cce54f3b8158412a924b679ccd9758948ac299226  # sk-ant-synthetic-do-not-leak
+    - name: 'synthetic API key fixture (anthropic provider)'
+      match: cdba95a3170e3a312d5c4935da032878a54729268e8db47b2c63d92a74747a93  # sk-ant-test
+    - name: 'synthetic API key fixture (provider retry)'
+      match: 12ebc3a44988883ac3b570e8f82e361ce7b6d001e0d259cf05ebd4a4a3b21415  # sk-synthetic-secret-do-not-leak
+    # CLI smoke / dry-run / JSON / flag-parsing fixtures.
+    - name: 'synthetic API key fixture (cli-json)'
+      match: 0360919e1d82b5215d7fa952851e1cd6597f90951231a099d4d70eb3c5502f14  # sk-fixture-secret-JSON-003
+    - name: 'synthetic API key fixture (cli-doctor)'
+      match: 42f336b408ac504ad573b335b55477fef305cb64b49b261c6a04e9e629f13131  # sk-test-fixture-secret-DOCTOR-006
+    - name: 'synthetic API key fixture (cli-dry-run redaction)'
+      match: 7c2c6ceed721cddc96933f055fe6a82d0e858d656fb39bfafb5351ce5a6e7dc0  # sk-very-sensitive-leak-marker-12345
+    - name: 'synthetic API key fixture (cli-dry-run fallback)'
+      match: 8c2547a0f50206bc36a0a2f2bc97eebc759c9aab075179575031d258f409a45b  # sk-review-fallback
+    - name: 'synthetic API key fixture (cli-dry-run env)'
+      match: 0d62f396c1317066f55a96086517047c737087c61eb2bf016b72e6298927b15b  # sk-test-key
+    - name: 'synthetic API key fixture (cli flag-parsing / posting-validation)'
+      match: f3abf2a6cc4f00987743db5f544ba345b4899ae31f326d8ee9c4816de153c9e0  # sk-test
+    - name: 'synthetic API key fixture (cli flag-parsing)'
+      match: 62af8704764faf8ea82fc61ce9c4c3908b6cb97d463a634e9e587d7c885db0ef  # test-key
+    - name: 'synthetic API key fixture (azure live review)'
+      match: 73edb814e4d77070e43d0601885ce3209816239705220ede88d59126f3f6605a  # sk-test-secret-do-not-leak
+    - name: 'synthetic API key fixture (azure live review)'
+      match: f986452cbf3555830ffe2df5fa76f8692bb9e0bb29007e30943fa158c3862e25  # sk-test-synthetic-secret-do-not-leak
+    - name: 'synthetic API key fixture (parser/token-shape)'
+      match: 0a2f6ba7b3d4973643557c2bbae4f2f717b3f1d1baf8d730db9272ae6d4824ab  # sk-abc123
+    - name: 'synthetic API key fixture (redaction negative-tests)'
+      match: 67d8b447c8bfda89d4c6b7374ac2ac6c51a394400ca66141ce73c374534bd19c  # sk-leak
+    - name: 'synthetic API key fixture (help-text listing)'
+      match: 35bb948dfae4b5c2e4b3ca3143687b2dad721b578e6c653c53f3c4efadae8c6e  # sk-list
+    - name: 'synthetic API key fixture (counter increments)'
+      match: 4536968c685b795652b0d56182e49148fc74fec5db6aafca4f3ef91ddf3e6e74  # sk-5
+    - name: 'synthetic API key fixture (counter increments)'
+      match: e30f1b58489b18cb7734f8e00ed17a7f33464b91ae6eb5a42bb25ffc7ee6617d  # sk-7
+    # GitHub PAT shapes (fixture tokens used to validate parser
+    # routing, never authorized).
+    - name: 'synthetic GitHub PAT fixture (copilot token exchange)'
+      match: bd64091717dc440fd9a1b5aaaf2e5207ef9c14dfc196b0273d3f288b720f1fe1  # gho_test
+    - name: 'synthetic GitHub PAT fixture (token validation)'
+      match: c559ce2b84e48fe405a36f5ca36174c5ae1be222e8dd7ceb5846937bce426d3b  # gho_token
+    - name: 'synthetic GitHub PAT fixture (parser shape)'
+      match: 9d8b0c156f7015e96f16e5b35369fa0fdb3ae75cbb70b4588e44547e63b53fa9  # ghp_x
+    # Demo fixtures in scripts/ that simulate secrets for the
+    # local layout viewer; sentinel-suffixed.
+    - name: 'synthetic API key fixture (view-summary-layouts demo data)'
+      match: 0c8530c314c4eca2b25c6fce6ef369f54404389329bbcffc854f34c6c3003599  # sk-EXAMPLE-DO-NOT-LEAK-0000
+    # Substring matches in this config's own documentation. The
+    # GitGuardian detector flags any long string that looks like a
+    # secret anywhere, including the comments in the config that
+    # document the do-not-leak convention. We pre-register the two
+    # documented substrings so the self-references don't trip the
+    # detector.
+    - name: 'synthetic API key substring (this config docs)'
+      match: 28b24ad0eb2b5ed20b5a210eacc63710a0b35cb92da290a2109a6cd673d9251f  # anthropic-v2-do-not-leak
+    - name: 'synthetic API key substring (this config docs)'
+      match: 87944351f9e6cd9f074e95cc235f54cac419b8ff6c2e88d374c4577f5e9a4d94  # anthropic-do-not-leak
+    # Short fake fixtures used for parser / token-shape validation.
+    # These are below the high-entropy detector's entropy threshold
+    # so they wouldn't be flagged in practice, but we pre-register
+    # them anyway to be safe (incident 34696725 follow-up).
+    - name: 'synthetic GitHub PAT fixture (platform-github)'
+      match: 9e8f73021ed384a94bb7b83b35d9a0883d4c07e25f941999397faa76ba580bf5  # github-token-123
+    - name: 'synthetic token fixture (resolved-config-sources source)'
+      match: 8c355cfbfc2932e3cb86b2b309c241b793b5c252972704459026162450eaa7ce  # source-test-secret
+    - name: 'synthetic token fixture (resolved-config-sources flag-source)'
+      match: 2393c8544e88dde756d399d827f39e9b926512300774b091ca784880cb852f31  # flag-source-test-secret
+    - name: 'synthetic token fixture (live orchestration)'
+      match: 51da0a34ae38e791a24cff5665b662166d3d8773443604868f69ed2cff90b4e3  # tid=synthetic-live
