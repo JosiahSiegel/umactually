@@ -94,12 +94,13 @@ describe("CLI bare-invocation", () => {
     expect(stderrBuf).not.toContain("pick a mode:");
   });
 
-  it("smoke: --api-url + --api-key in the real repo cwd succeeds (standalone review of local diff)", async () => {
+  it("smoke: --api-url + --api-key in the real repo cwd fails with exit 1 (provider unreachable, not plumbing error)", async () => {
     // Use the real cwd: it IS a git repo, so standalone mode auto-derives diff/event.
-    // localhost:1 is unreachable; in standalone mode (no --platform) the CLI writes
-    // a local artifact without calling any platform API, so the unreachable URL is harmless.
-    // (Old wrapper-era behavior required --platform and tried to call the provider; that
-    // gate has been removed. Standalone review is the new default for the bare CLI.)
+    // localhost:1 is unreachable; standalone mode tries to call the provider
+    // (that's the whole point of the standalone review — it tests the provider
+    // call without any platform API). The CLI should fail with exit 1 from the
+    // provider error, NOT from a wrapper-era plumbing-flag validation.
+    // (Old wrapper-era behavior required --platform; that gate has been removed.)
     const cwd = process.cwd();
     const originalStdout = process.stdout.write.bind(process.stdout);
     const originalStderr = process.stderr.write.bind(process.stderr);
@@ -126,8 +127,12 @@ describe("CLI bare-invocation", () => {
       process.stderr.write = originalStderr;
     }
 
-    expect(result!.exitCode).toBe(0);
+    expect(result!.exitCode).toBe(1);
     const combined = stdoutBuf + stderrBuf;
-    expect(combined).toMatch(/umactually-review\.json|wrote/i);
+    // The error must be a provider fetch failure, NOT a wrapper-era
+    // plumbing-flag validation error like "cli: --event is required".
+    expect(combined).toMatch(/fetch failed|provider|connection/i);
+    expect(combined).not.toMatch(/cli: --event is required/);
+    expect(combined).not.toMatch(/cli: --diff is required/);
   });
 });
