@@ -9,12 +9,13 @@
 // pwsh installed). The Windows installer variants have their own dedicated
 // tests in test/unit/install-scripts.test.ts.
 
-import { execFileSync, spawnSync } from "node:child_process";
+import { execFileSync, spawn, spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
+import { once } from "node:events";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
-import { pathToFileURL } from "node:url";
+import { createInterface } from "node:readline";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
 const REPO_ROOT = resolve(import.meta.dirname, "..", "..");
@@ -66,19 +67,35 @@ function run(scriptPath: string, env: Record<string, string>): ScriptResult {
   };
 }
 
-function runChecksumInstall(checksums: string): ScriptResult {
+async function runChecksumInstall(checksums: string): Promise<ScriptResult> {
   const releaseDir = join(sandbox, "release");
   const homeDir = join(sandbox, "home");
   mkdirSync(releaseDir);
   mkdirSync(homeDir);
   writeFileSync(join(releaseDir, "umactually-windows-x64.exe"), "verified binary");
   writeFileSync(join(releaseDir, "checksums.txt"), checksums);
-  const releaseBase = pathToFileURL(releaseDir).href.replace(/\/$/, "");
-  return run(INSTALL_PS1, {
-    INSTALL_RELEASE_BASE: releaseBase,
-    PROCESSOR_ARCHITECTURE: "AMD64",
-    USERPROFILE: homeDir,
+
+  const server = spawn(process.execPath, [
+    "-e",
+    "const http=require('node:http'),fs=require('node:fs'),path=require('node:path');const server=http.createServer((request,response)=>fs.createReadStream(path.join(process.env.RELEASE_DIR,new URL(request.url,'http://127.0.0.1').pathname.slice(1))).pipe(response));server.listen(0,'127.0.0.1',()=>console.log(server.address().port));",
+  ], {
+    env: { ...process.env, RELEASE_DIR: releaseDir },
+    stdio: ["ignore", "pipe", "pipe"],
   });
+  const lines = createInterface({ input: server.stdout });
+  try {
+    const [line] = await once(lines, "line");
+    return run(INSTALL_PS1, {
+      INSTALL_RELEASE_BASE: `http://127.0.0.1:${line}`,
+      PROCESSOR_ARCHITECTURE: "AMD64",
+      USERPROFILE: homeDir,
+    });
+  } finally {
+    lines.close();
+    const exited = once(server, "exit");
+    server.kill();
+    await exited;
+  }
 }
 
 let sandbox: string;
@@ -128,10 +145,10 @@ describe.skipIf(!PS_AVAILABLE)("install.ps1", () => {
     expect(existsSync(join(nested, "umactually.exe"))).toBe(true);
   });
 
-  it("PS-INSTALL-004: installs only after the GNU checksum entry matches", () => {
+  it("PS-INSTALL-004: installs only after the GNU checksum entry matches", async () => {
     const hash = createHash("sha256").update("verified binary").digest("hex");
 
-    const result = runChecksumInstall(`${hash}  umactually-windows-x64.exe\n`);
+    const result = await runChecksumInstall(`${hash}  umactually-windows-x64.exe\n`);
 
     const installedPath = join(sandbox, "home", ".local", "bin", "umactually.exe");
     expect(result.status).toBe(0);
@@ -142,8 +159,8 @@ describe.skipIf(!PS_AVAILABLE)("install.ps1", () => {
     ["missing", `${"a".repeat(64)}  umactually-linux-x64\n`, "No SHA-256 checksum entry"],
     ["malformed", `not-a-sha256  umactually-windows-x64.exe\n`, "Malformed SHA-256 checksum entry"],
     ["mismatched", `${"0".repeat(64)}  umactually-windows-x64.exe\n`, "SHA-256 checksum mismatch"],
-  ])("PS-INSTALL-005: rejects a %s checksum entry and cleans temporary files", (_case, checksums, error) => {
-    const result = runChecksumInstall(checksums);
+  ])("PS-INSTALL-005: rejects a %s checksum entry and cleans temporary files", async (_case, checksums, error) => {
+    const result = await runChecksumInstall(checksums);
 
     const installDir = join(sandbox, "home", ".local", "bin");
     expect(result.status).not.toBe(0);
