@@ -13,8 +13,8 @@
 # Behaviour:
 #   1. tsc --noEmit (npm run typecheck)
 #   2. vitest run (npm test -- --run)
-#   3. ncc bundle src/index.ts + src/cli.ts via the existing build script
-#      (npm run bundle). Re-bundling every run is required because the
+#   3. ncc bundle src/cli.ts via the existing build script (npm run bundle).
+#      Re-bundling every run is required because the
 #      committed dist/ may be older than src/ from someone else's prior
 #      commit — see scripts/check-dist-freshness.mjs for the rationale.
 #   4. Verify the freshly-built dist/ is newer than every src/*.ts file

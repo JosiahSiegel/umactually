@@ -18,9 +18,9 @@ UmActually is a provider-agnostic PR review action. It:
    - `copilot` — GitHub Copilot via token exchange
    - `anthropic` — native Anthropic Messages API
 3. Parses the model's response into platform-native review comments (GitHub review threads or Azure PR threads).
-4. Posts a stable `<!-- umactually-pr-review -->` marker so repeat runs de-duplicate feedback.
+4. Posts a stable `<!-- umactually -->` marker so repeat runs de-duplicate feedback.
 
-The action lives at `src/index.ts` (entrypoint) + `src/cli.ts` (bundled CLI). The GitHub Action is a thin wrapper around the CLI.
+The runtime entrypoint is `src/cli.ts`, bundled as `dist/cli.js` and exposed through `bin/umactually.mjs`.
 
 ## Three-level onboarding order
 
