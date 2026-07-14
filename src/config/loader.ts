@@ -40,8 +40,8 @@ import type {
 // schema remains the canonical source for any value that ships through
 // the CLI / action / env surfaces.
 //
-// Must stay aligned with field-schema.ts (enumValues) and action.yml's
-// `minimum-severity` default. The user-facing enum is `low|medium|high`
+// Must stay aligned with field-schema.ts (enumValues and default). The
+// user-facing enum is `low|medium|high`
 // and maps to internal `Severity` via the parser alias table
 // (`low → minor`, `medium → major`, `high → critical`). The loader
 // stores the INTERNAL `Severity` literal — `medium` on the user surface

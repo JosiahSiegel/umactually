@@ -16,7 +16,7 @@ describe("log annotation fallback", () => {
     logWarning("scan", "warning message");
 
     expect(consoleSpy).toHaveBeenCalledTimes(1);
-    expect(consoleSpy).toHaveBeenCalledWith("::warning::umactually-pr-review: scan warning message");
+    expect(consoleSpy).toHaveBeenCalledWith("::warning::umactually: scan warning message");
   });
 
   it("falls back to console.error when stderr write throws for errors", () => {
@@ -28,7 +28,7 @@ describe("log annotation fallback", () => {
     logError("orchestrator", "fatal failure");
 
     expect(consoleSpy).toHaveBeenCalledTimes(1);
-    expect(consoleSpy).toHaveBeenCalledWith("::error::umactually-pr-review: orchestrator fatal failure");
+    expect(consoleSpy).toHaveBeenCalledWith("::error::umactually: orchestrator fatal failure");
   });
 
   it("falls back to console.error when stderr write throws for notices", () => {
@@ -40,7 +40,7 @@ describe("log annotation fallback", () => {
     logNotice("info", "notice message");
 
     expect(consoleSpy).toHaveBeenCalledTimes(1);
-    expect(consoleSpy).toHaveBeenCalledWith("::notice::umactually-pr-review: info notice message");
+    expect(consoleSpy).toHaveBeenCalledWith("::notice::umactually: info notice message");
   });
 
   it("does not fall back to console.error for debug annotations", () => {

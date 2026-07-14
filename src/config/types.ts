@@ -117,15 +117,9 @@ export type CliArgs = {
 };
 
 /**
- * Raw, partially-parsed action-input source shape. Distinct from
- * `src/action/read-inputs.ts`'s `ActionInputs` (the resolved, typed
- * shape the action entry produces). Both layers coexist because the
- * config layer is loaded from a plain record (loader.ts) where every
- * value is `string | boolean | string | number | undefined`, while the
- * action entry resolves types up-front.
- *
- * Previously named `ActionInputs` — renamed to `RawActionInputs` to
- * disambiguate from the action-entry type with the same name.
+ * Raw, partially-parsed configuration source shape loaded from a plain
+ * record by loader.ts. Values remain strings or primitive values until
+ * the config boundary resolves them into typed runtime settings.
  */
 export type RawActionInputs = {
   readonly providerUrl?: string;

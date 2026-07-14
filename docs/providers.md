@@ -107,7 +107,7 @@ https://api.example.com/anthropic?token=secret                  → anthropic (h
 Operator-visible notice on every URL that triggers the heuristic:
 
 ```
-::notice::umactually-pr-review: Operator URL contains an /anthropic path segment; using the Anthropic Messages API client (not the default openai-compatible).
+::notice::umactually: Operator URL contains an /anthropic path segment; using the Anthropic Messages API client (not the default openai-compatible).
 ```
 
 The heuristic is conservative by design. False negatives still fall through to the cross-protocol fallback chain. False positives are bounded to byte-for-byte segment matches so a path like `https://attacker.example.com/anthropic-related` does NOT trigger the heuristic (the segment is `anthropic-related`, not `anthropic`). See `src/util/url.ts:looksLikeAnthropicEndpoint` for the exact contract and `test/unit/looks-like-anthropic-endpoint.test.ts` for the boundary test matrix.
@@ -141,13 +141,13 @@ Dispatcher behavior:
 Every fallback emits two `::notice::` annotations:
 
 ```
-::notice::umactually-pr-review: Named provider "openai-compatible" returned status=404 at https://api.minimax.io/anthropic — retrying with cross-protocol fallback "anthropic".
+::notice::umactually: Named provider "openai-compatible" returned status=404 at https://api.minimax.io/anthropic — retrying with cross-protocol fallback "anthropic".
 ```
 
 (And on dual-protocol failure:)
 
 ```
-::notice::umactually-pr-review: Cross-protocol fallback "anthropic" returned status=404 at https://api.minimax.io/anthropic — surfacing named protocol's error.
+::notice::umactually: Cross-protocol fallback "anthropic" returned status=404 at https://api.minimax.io/anthropic — surfacing named protocol's error.
 ```
 
 Both lines use `redactUrlForLog` (defined in `src/util/url.ts`) which strips the query string + fragment so `?token=…`-style session ids never reach the persisted CI annotation log.

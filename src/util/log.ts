@@ -55,7 +55,7 @@ export function logNotice(action: string, message: string): void {
  * diagnostics). Pass an empty `action` to suppress the action prefix;
  * the level token (`warning` / `error`) is always emitted.
  *
- * Replaces the 15+ hand-rolled `process.stderr.write(\`::warning::umactually-pr-review: ...\`)`
+ * Replaces the 15+ hand-rolled `process.stderr.write(\`::warning::umactually: ...\`)`
  * calls scattered across `live-azure.ts`, `live-github.ts`,
  * `sonar/run-sonar-import.ts`, and `cli/sonar-context.ts`.
  */

@@ -23,7 +23,7 @@ import { fileURLToPath } from "node:url";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const packageRoot = resolve(here, "..");
-const CLI = resolve(packageRoot, "bin", "umactually-pr-review.mjs");
+const CLI = resolve(packageRoot, "bin", "umactually.mjs");
 
 const FIXTURE_EVENT_GH = "test/fixtures/github/pull-request-event.json";
 const FIXTURE_DIFF_GH = "test/fixtures/github/full-pr.diff";

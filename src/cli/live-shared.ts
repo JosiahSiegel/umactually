@@ -259,7 +259,7 @@ export async function evaluateLeakGate(input: {
  *   - Verdict badge — second line, large H2
  *   - 🏷️ Severity tally — `critical → high → medium → low` distribution
  *     of the POSTED set, hidden when all zeros
-  *   - Stable `<!-- umactually-pr-review:manifest {…} -->` for AI agents
+  *   - Stable `<!-- umactually:manifest {…} -->` for AI agents
  *   - Same byte-for-byte output on GitHub and Azure (parity invariant)
  *   - Secret redaction applied to every rendered string
  *

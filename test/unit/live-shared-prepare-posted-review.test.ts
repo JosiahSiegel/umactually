@@ -183,6 +183,6 @@ describe("preparePostedReview", () => {
 
     // Then: the stable marker and machine-readable manifest are both present.
     expect(prepared.body).toContain(REVIEW_MARKER);
-    expect(prepared.body).toMatch(/<!--\s*umactually-pr-review:manifest\s*\{[\s\S]*?\}\s*-->/u);
+    expect(prepared.body).toMatch(/<!--\s*umactually:manifest\s*\{[\s\S]*?\}\s*-->/u);
   });
 });

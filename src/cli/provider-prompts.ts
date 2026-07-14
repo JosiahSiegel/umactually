@@ -166,7 +166,7 @@ export async function buildProviderPrompts(input: ProviderPromptsInput): Promise
  * Node process**. It is intentionally NOT invalidated by anything
  * other than `__resetDefaultPromptFilesCacheForTests` (which is a
  * test-only hook). This is acceptable for the action's documented
- * deployment model — each `umactually-pr-review` invocation
+ * deployment model — each `umactually` invocation
  * (GitHub Actions, Azure DevOps, CLI) runs as a FRESH Node
  * process, so the cache effectively lives for one review run.
  *
