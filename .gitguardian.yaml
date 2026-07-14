@@ -230,7 +230,7 @@ secret:
     # documented substrings so the self-references don't trip the
     # detector.
     - name: 'synthetic API key substring (this config docs)'
-      match: 28b24ad0eb2b5ed20b5a210eacc63710a0b35cb92da290a2109a6cd673d9251f  # anthropic-v2-do-not-leak
+      match: 30e55e18233ca182773dcff62457830db6f9809d58833b9ff779c41553cf7917  # sk-anthropic-v2-do-not-leak
     - name: 'synthetic API key substring (this config docs)'
       match: 87944351f9e6cd9f074e95cc235f54cac419b8ff6c2e88d374c4577f5e9a4d94  # anthropic-do-not-leak
     # Short fake fixtures used for parser / token-shape validation.
