@@ -1,18 +1,13 @@
 /**
  * Single source of truth for every config field the runtime reads.
  *
- * Replaces three parallel lists that were previously hand-synced:
- *   1. `src/config/env-sources.ts` — env-var names → EnvSources field
- *   2. `src/action/read-inputs.ts` — INPUT_* names → ActionInputs field
- *   3. `src/action/append-cli-inputs.ts` + `src/cli/parse-args.ts` —
- *      CLI flag names → parsed-args field
+ * Replaces parallel lists that were previously hand-synced between
+ * `src/config/env-sources.ts` and `src/cli/parse-args.ts`.
  *
- * Each `FIELD` entry binds one runtime config value to the surface that
- * can set it (env vars + action INPUT + CLI flag) plus its type and default.
- *
- * The action-layer (`readActionInputs`) reads `input`; the loader reads
- * `env[]`; the CLI parser/builder reads `flag`. Adding a new field means
- * one entry here, not four edits.
+ * Each `FIELD` entry binds one runtime config value to its environment and
+ * CLI surfaces plus its type and default. The loader reads `env[]`; the CLI
+ * parser reads `flag`. The `input` name remains metadata for compatibility
+ * tooling that translates existing configuration.
  *
  * Fields NOT exposed via CLI flag still appear here for the loader + env
  * layers (azureOrg, githubToken, etc.) — only `flag` is optional.
@@ -309,7 +304,7 @@ export const FIELDS = {
     field: "effort",
     flag: "--effort",
     input: "effort",
-    env: [],
+    env: ["UMACTUALLY_EFFORT"],
     type: "enum",
     defaultValue: "medium",
     enumValues: ["low", "medium", "high"],
@@ -318,7 +313,7 @@ export const FIELDS = {
     field: "provider",
     flag: "--provider",
     input: "provider",
-    env: [],
+    env: ["UMACTUALLY_PROVIDER"],
     type: "enum",
     defaultValue: "openai-compatible",
     // Anthropic Messages (`api.anthropic.com/v1/messages`) was added

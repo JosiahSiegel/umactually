@@ -21,6 +21,19 @@ export default defineConfig({
           include: ["test/scenario/**/*.test.ts", "test/scenarios/**/*.test.ts", "test/**/*.scenario.test.ts"],
         },
       },
+      {
+        extends: true,
+        test: {
+          name: "e2e",
+          include: ["test/e2e/**/*.test.ts"],
+          // E2E suite is opt-in: the dev machine without the key
+          // reports every test as skipped rather than failing. Use
+          // `npm run test:e2e` to actually exercise the suite.
+          bail: 1,
+          testTimeout: 120_000,
+          hookTimeout: 30_000,
+        },
+      },
     ],
   },
 });

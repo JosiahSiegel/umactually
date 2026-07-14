@@ -3,6 +3,7 @@ import { dirname, isAbsolute, resolve } from "node:path";
 
 import { runAzureReview } from "../azure/run-azure-review.js";
 import { runReview } from "../review/run-review.js";
+import { BRAND_PREFIX } from "../util/brand.js";
 import { scanReviewSecrets } from "../security/scan-review-secrets.js";
 import { runSonarImport } from "../sonar/run-sonar-import.js";
 import { readEnvSources } from "../config/env-sources.js";
@@ -14,9 +15,21 @@ import type { ParsedCliArgs } from "./parse-args.js";
 import { resetDefaultPromptFilesCache } from "./provider-prompts.js";
 import { resolvePlatform, type ResolvedPlatform } from "./validate.js";
 import { runLive as runOrchestrator } from "./orchestrator.js";
+import { classifyReviewArtifact } from "./check-review-artifact.js";
+
+export type CliJsonOutcome = {
+  readonly postedToPlatform?: boolean;
+  readonly artifactPath?: string;
+  readonly parseWarnings?: readonly string[];
+  readonly suppressedCommentCount?: number;
+  readonly commentCount?: number;
+  readonly verdict?: string;
+  readonly parseFailed?: boolean;
+};
 
 export type CliRunResult = {
   readonly exitCode: number;
+  readonly jsonOutcome?: CliJsonOutcome;
 };
 
 const DEFAULT_AZURE_ARTIFACT = "artifacts/manual/s4-azure-mocked-run.json";
@@ -40,6 +53,7 @@ export async function runDryRun(parsed: ParsedCliArgs, cwd: string, platform: Re
   mergeEnvDiagnostics(artifactBody, envSources);
   await mkdir(dirname(artifactPath), { recursive: true });
   await writeFile(artifactPath, `${JSON.stringify(artifactBody, null, 2)}\n`, "utf8");
+  process.stdout.write(`${BRAND_PREFIX}dry-run wrote ${artifactPath}\n`);
   return { exitCode: 0 };
 }
 
@@ -169,10 +183,41 @@ async function buildDryRunArtifact(
 }
 
 async function buildGithubDryRunArtifact(parsed: ParsedCliArgs, cwd: string): Promise<Record<string, unknown>> {
-  const eventPath = requireArg(parsed.eventPath, "--event");
-  const diffPath = requireArg(parsed.diffPath, "--diff");
-  const eventJson = await readRequiredFile(eventPath, cwd, "--event");
-  const diffText = await readRequiredFile(diffPath, cwd, "--diff");
+  // Dry-run short-circuit: when the operator has not supplied --review,
+  // this is a smoke test, NOT a posting run. The auto-context-derived
+  // synthetic event.json has null posting identity (pull_request.number=null)
+  // that the runReview pipeline rejects. Mirror the Azure stub at the
+  // bottom of this file (lines 215-224): return a no-posting artifact body.
+  //
+  // We deliberately do NOT also require isStandaloneMode(process.env):
+  // a CI user that runs `umactually review --dry-run` without --review
+  // gets the same no-posting body. (Old behavior was to require
+  // non-CI, but that surfaced the "runStandalone requires parsed.diffPath
+  // to be non-null" TypeError on CI, which is wrong — the operator
+  // did not ask to post, the CLI should not throw.)
+  if (parsed.dryRun && parsed.reviewPath === null) {
+    return {
+      artifactPath: "artifacts/manual/s1-github-self-review.md",
+      posted: false,
+      marker: REVIEW_MARKER,
+      inlineThreadCount: 0,
+      suppressedCommentCount: 0,
+      note: "no --review supplied; this was a dry-run smoke test, no posting path executed",
+    };
+  }
+
+  // The validator (src/cli/validate.ts:collectPostingValidationErrors)
+  // is the sole gate for posting-required identity. Here in the consumer
+  // path we tolerate null event/diff when the operator is running a
+  // smoke test without posting context. Pass empty strings; the runReview
+  // pipeline tolerates empty eventJson / empty diffText (it returns zero
+  // findings, which is what a smoke test expects).
+  const eventJson = parsed.eventPath === null
+    ? ""
+    : await readRequiredFile(parsed.eventPath, cwd, "--event");
+  const diffText = parsed.diffPath === null
+    ? ""
+    : await readRequiredFile(parsed.diffPath, cwd, "--diff");
   const providerReviewJson = await readOptionalFile(
     parsed.reviewPath ?? parsed.promptFile,
     cwd,
@@ -203,9 +248,28 @@ async function buildGithubDryRunArtifact(parsed: ParsedCliArgs, cwd: string): Pr
 }
 
 async function buildAzureDryRunArtifact(parsed: ParsedCliArgs, cwd: string): Promise<Record<string, unknown>> {
-  const pullRequestPath = requireArg(parsed.eventPath, "--event");
   const reviewPath = parsed.reviewPath;
-  const pullRequestJson = await readRequiredFile(pullRequestPath, cwd, "--event");
+  if (parsed.dryRun || reviewPath === null) {
+    return {
+      artifactPath: DEFAULT_AZURE_ARTIFACT,
+      postedThreadCount: 0,
+      postedStatusState: "succeeded",
+      marker: REVIEW_MARKER,
+      postingRequested: false,
+      note: "no --review supplied; this was a capability-detection smoke run, no posting path executed",
+    };
+  }
+
+  // The validator (src/cli/validate.ts:collectPostingValidationErrors)
+  // already gated on --review requires --event / --diff for posting,
+  // so by the time we reach here those fields are non-null. Throw a
+  // defensive error if the validator let a malformed invocation slip
+  // through; don't silently produce a broken artifact.
+  if (parsed.eventPath === null || parsed.diffPath === null) {
+    throw new CliArgumentError("--review requires --event and --diff to be supplied");
+  }
+
+  const pullRequestJson = await readRequiredFile(parsed.eventPath, cwd, "--event");
   const existingThreadsJson = parsed.threadsPath === null
     ? "{\"count\":0,\"value\":[]}"
     : await readRequiredFile(parsed.threadsPath, cwd, "--threads");
@@ -280,13 +344,6 @@ async function maybeMergeSonarReport(
   body["sonarReport"] = report;
 }
 
-function requireArg(value: string | null, flag: string): string {
-  if (value === null) {
-    throw new CliArgumentError(`${flag} is required`);
-  }
-  return value;
-}
-
 async function readRequiredFile(path: string, cwd: string, label: string): Promise<string> {
   const absolute = isAbsolute(path) ? path : resolve(cwd, path);
   try {
@@ -332,8 +389,23 @@ export async function dispatchLive(parsed: ParsedCliArgs, cwd: string, env: Node
     // guard to catch — the action exits 0 and CI sees "pass".
     const platform = resolvePlatform(parsed.platform, env);
     await writeLiveArtifact(parsed, cwd, platform, result);
-    return { exitCode: result.exitCode };
+    const artifactPath = resolveArtifactPath(parsed.outputArtifact, platform, cwd);
+    return { exitCode: validateLiveArtifact(artifactPath, result.exitCode) };
   });
+}
+
+export function validateLiveArtifact(
+  artifactPath: string,
+  reviewExitCode: number,
+): number {
+  const classification = classifyReviewArtifact(artifactPath);
+  if (classification.ok) {
+    return reviewExitCode;
+  }
+  process.stderr.write(
+    `${BRAND_PREFIX}${artifactPath}: ${classification.reason ?? "invalid review artifact"}\n`,
+  );
+  return 1;
 }
 
 /**

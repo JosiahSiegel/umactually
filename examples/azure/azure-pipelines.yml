@@ -1,180 +1,22 @@
-# Example: UmActually PR review validation on Azure DevOps.
-#
-# Copy this file to azure-pipelines.yml at the repo root, then wire it into a
-# branch policy build validation policy in the Azure DevOps project UI for the
-# target branch (for example `main`).
-#
-# Notes:
-# - pr: below is honored only for GitHub or Bitbucket Cloud repositories
-#   connected to Azure Pipelines. For Azure Repos Git, configure branch policy
-#   build validation instead of relying on pr:.
-# - Enable "Allow scripts to access the OAuth token" in pipeline security.
-# - Grant the build service "Contribute to pull requests" before switching from
-#   dry-run validation to live review posting.
-# - Manual branch runs use synthetic Azure event/diff/review files so this
-#   pipeline can still prove the CLI executes without PR variables.
-# - On dual-protocol gateways (MiniMax serves Anthropic-protocol at
-#   /anthropic and OpenAI-protocol at /v1 under the same hostname), the
-#   `--provider` flag becomes advisory — the dispatcher tries the OTHER
-#   protocol at the same URL when the named one 404s. See
-#   docs/providers.md#cross-protocol-auto-discovery-the-dispatcher.
-#
-# Required pipeline variables (set these in the pipeline UI or a variable group):
-#   UMACTUALLY_API_URL   — provider base URL
-#   UMACTUALLY_API_KEY   — provider API key (mark secret)
+# Enable "Allow scripts to access the OAuth token" in pipeline settings.
+# UMACTUALLY_* options (prompt files, strict schema, verify findings, etc.) are
+# CLI-native: set them as ADO pipeline variables and they flow through automatically.
+# Artifact validation is automatic after each live review. SYSTEM_ACCESSTOKEN is the
+# only ADO-specific plumbing because Azure does not export $(System.AccessToken).
 trigger: none
-
 pr:
   branches:
-    include:
-      - main
-
+    include: [main]
 pool:
   vmImage: ubuntu-latest
-
-variables:
-  - name: NODE_VERSION
-    value: "24.x"
-  - name: AZURE_ARTIFACT_DIR
-    value: artifacts/manual
-  - name: AZURE_EVENT_PATH
-    value: artifacts/manual/azure-event.json
-  - name: AZURE_DIFF_PATH
-    value: artifacts/manual/azure-pr.diff
-  - name: AZURE_REVIEW_PATH
-    value: artifacts/manual/azure-review.json
-  - name: AZURE_OUTPUT_ARTIFACT
-    value: artifacts/manual/s4-azure-mocked-run.json
-
 steps:
   - checkout: self
-    persistCredentials: true
-
-  - script: mkdir -p artifacts/manual
-    displayName: Initialize manual artifact directory
-
   - task: NodeTool@0
-    displayName: Use Node $(NODE_VERSION)
     inputs:
-      versionSpec: $(NODE_VERSION)
-
-  - script: npm ci
-    displayName: Install dependencies
-
-  - script: bash scripts/ci-validate.sh
-    displayName: Run CI validation suite
-    # Validation step delegates to scripts/ci-validate.sh so this
-    # example pipeline runs the same typecheck + test + bundle +
-    # freshness gates as the root azure-pipelines.yml.
-
-  - script: bash scripts/prepare-azure-pr-inputs.sh
-    displayName: Prepare Azure PR inputs
-    # Prepare step delegates to scripts/prepare-azure-pr-inputs.sh so this
-    # example pipeline shares one implementation with the root pipeline.
+      versionSpec: "24.x"
+  - script: npx github:JosiahSiegel/umactually review --platform azure-devops
+    displayName: Run umactually PR review
     env:
       SYSTEM_ACCESSTOKEN: $(System.AccessToken)
-  # Live review step. Default --provider is openai-compatible; on dual-protocol
-  # gateways (MiniMax serves Anthropic-protocol at /anthropic and OpenAI-protocol
-  # at /v1 under the same hostname), the dispatcher auto-discovers the protocol
-  # at the URL regardless of which provider is named here — see
-  # docs/providers.md#cross-protocol-auto-discovery-the-dispatcher. Switch to
-  # --provider anthropic for vanilla Anthropic API or a /anthropic path-prefix
-  # gateway.
-  #
-  # --no-detect-leaks: the diff-redaction layer (always on, scrubs secrets before
-  # provider submission) is independent of the leak-detector (which tags
-  # findings with severity='leak' for PR-thread display). The live Azure path
-  # uses --no-detect-leaks so PR threads focus on review-style findings; the
-  # redaction report (artifacts/manual/s5-redaction-report.json, written when
-  # leak detection IS enabled) is the canonical surface for credential-leak
-  # auditing. Matches the root azure-pipelines.yml.
-  - script: |
-      set -euo pipefail
-      : "${UMACTUALLY_PR_NUMBER:?UMACTUALLY_PR_NUMBER must be set by the prepare step.}"
-      : "${UMACTUALLY_REPO:?UMACTUALLY_REPO must be set by the prepare step.}"
-      : "${UMACTUALLY_API_URL:?UMACTUALLY_API_URL must be set as a pipeline variable.}"
-      : "${UMACTUALLY_API_KEY:?UMACTUALLY_API_KEY must be set as a pipeline variable.}"
-      # Conditionally forward the optional prompt-file list inputs.
-      # When set, these override the default repository prompt lookup
-      # (CLAUDE.md, AGENTS.md, etc.). See docs/configuration.md and
-      # docs/security.md. Both env vars are comma/newline-separated
-      # paths; an empty value lets the default-lookup run.
-      optional_env_value() {
-        local name="$1"
-        local value="${!name:-}"
-        if [ -z "$value" ] || [[ "$value" == \$\(*\) ]]; then
-          return 0
-        fi
-        printf '%s' "$value"
-      }
-
-      EXTRA_ARGS=()
-      prompt_files="$(optional_env_value UMACTUALLY_PROMPT_FILES)"
-      if [ -n "$prompt_files" ]; then
-        EXTRA_ARGS+=(--prompt-files "$prompt_files")
-      fi
-      additional_prompt_files="$(optional_env_value UMACTUALLY_ADDITIONAL_PROMPT_FILES)"
-      if [ -n "$additional_prompt_files" ]; then
-        EXTRA_ARGS+=(--additional-prompt-files "$additional_prompt_files")
-      fi
-      # Conditionally forward the strict-schema and verify-findings
-      # toggles. Both default ON in the CLI; opt out with "false".
-      strict_schema="$(optional_env_value UMACTUALLY_STRICT_SCHEMA)"
-      if [ -n "$strict_schema" ]; then
-        if [ "$strict_schema" = "false" ]; then
-          EXTRA_ARGS+=(--no-strict-schema)
-        else
-          EXTRA_ARGS+=(--strict-schema)
-        fi
-      fi
-      verify_findings="$(optional_env_value UMACTUALLY_VERIFY_FINDINGS)"
-      if [ -n "$verify_findings" ]; then
-        if [ "$verify_findings" = "false" ]; then
-          EXTRA_ARGS+=(--no-verify-findings)
-        else
-          EXTRA_ARGS+=(--verify-findings)
-        fi
-      fi
-      node bin/umactually-pr-review.mjs \
-        --platform azure-devops \
-        --event "$AZURE_EVENT_PATH" \
-        --diff "$AZURE_DIFF_PATH" \
-        --review "$AZURE_REVIEW_PATH" \
-        --pr-number "$UMACTUALLY_PR_NUMBER" \
-        --repo "$UMACTUALLY_REPO" \
-        --api-url "${UMACTUALLY_API_URL}" \
-        --api-key "${UMACTUALLY_API_KEY}" \
-        --no-detect-leaks \
-        --no-dry-run \
-        "${EXTRA_ARGS[@]}"
-    displayName: Run UmActually Azure live review
-    env:
-      SYSTEM_ACCESSTOKEN: $(System.AccessToken)
-      # NOTE: UMACTUALLY_PR_NUMBER + UMACTUALLY_REPO are set by the
-      # prepare step via ##vso[task.setvariable]. Do NOT re-bind them
-      # here — ADO locks any variable named in this env: block as
-      # readonly for the entire pipeline run, which makes the prepare
-      # step's setvariable emit fail with "Overwriting readonly
-      # variable ... is not permitted". The script body reads them
-      # from the inherited pipeline env anyway.
       UMACTUALLY_API_URL: $(UMACTUALLY_API_URL)
       UMACTUALLY_API_KEY: $(UMACTUALLY_API_KEY)
-      # UMACTUALLY_PROMPT_FILES / UMACTUALLY_ADDITIONAL_PROMPT_FILES
-      # are OPTIONAL pipeline variables — comma/newline-separated list
-      # of repository-relative prompt files. When unset, the action
-      # runs its default-lookup list (CLAUDE.md, AGENTS.md, etc.).
-      UMACTUALLY_PROMPT_FILES: $(UMACTUALLY_PROMPT_FILES)
-      UMACTUALLY_ADDITIONAL_PROMPT_FILES: $(UMACTUALLY_ADDITIONAL_PROMPT_FILES)
-      # UMACTUALLY_STRICT_SCHEMA / UMACTUALLY_VERIFY_FINDINGS are
-      # OPTIONAL boolean toggles. Default ON in the CLI; set to
-      # "false" to opt out. When unset, the CLI's default ON is
-      # preserved.
-      UMACTUALLY_STRICT_SCHEMA: $(UMACTUALLY_STRICT_SCHEMA)
-      UMACTUALLY_VERIFY_FINDINGS: $(UMACTUALLY_VERIFY_FINDINGS)
-
-  - task: PublishPipelineArtifact@1
-    condition: always()
-    displayName: Publish review artifacts
-    inputs:
-      targetPath: artifacts/manual
-      artifact: umactually-review

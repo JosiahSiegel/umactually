@@ -11,16 +11,16 @@
 // ado-extension/README.md for the pre-publish checklist.
 //
 // Strategy: the task shells out to the system `node` (or a bundled
-// `umactually-pr-review.mjs` if shipped with the task) with the CLI
+// `umactually.mjs` if shipped with the task) with the CLI
 // flags documented in docs/providers.md. We do NOT re-implement the
 // CLI's parser — keeping the task a thin wrapper means upgrades to
 // UmActually flow through without touching the extension package.
 //
-// Alternative distribution model: ship a `node_modules/umactually-pr-review`
+// Alternative distribution model: ship a `node_modules/umactually`
 // dependency inside the task folder. That would let the task self-contain
 // its CLI version. We've kept the system-binary approach for now because
 // it matches how the rest of the UmActually repos distribute the CLI
-// (via `bin/umactually-pr-review.mjs` at the repo root or as a published
+// (via `bin/umactually.mjs` at the repo root or as a published
 // npm package). The end-state is to switch to a bundled `node_modules`
 // once the task reaches v0.2.
 
@@ -186,7 +186,7 @@ function readAzureContext(): AzureContext {
 interface CliResolution {
   /** The CLI entry path (absolute) or "node" if the CLI is on PATH. */
   readonly command: string;
-  /** The arguments that come AFTER the command (e.g. `["./bin/umactually-pr-review.mjs"]` or `[]`). */
+  /** The arguments that come AFTER the command (e.g. `["./bin/umactually.mjs"]` or `[]`). */
   readonly argsPrefix: readonly string[];
   /** Where the CLI came from (for diagnostics). */
   readonly source: "bundled" | "PATH" | "REPO_BIN";
@@ -197,35 +197,35 @@ interface CliResolution {
  *
  * Resolution order:
  *   1. Bundled with the task (when the task ships its own node_modules).
- *      Path: <taskFolder>/node_modules/umactually-pr-review/bin/umactually-pr-review.mjs
+ *      Path: <taskFolder>/node_modules/umactually/bin/umactually.mjs
  *   2. In the repo's `bin/` directory (when the task runs from a checkout).
- *      Path: <repoRoot>/bin/umactually-pr-review.mjs
- *   3. On PATH as `umactually-pr-review` (when installed via npm globally).
+ *      Path: <repoRoot>/bin/umactually.mjs
+ *   3. On PATH as `umactually` (when installed via npm globally).
  *
  * The current implementation only resolves option 2 (repo bin/). Option 1
  * (bundled) is the v0.2 plan once the task reaches a stable API. Option 3
  * is the fallback for users who installed the CLI via `npm install -g`.
  */
 function resolveCli(taskFolder: string, cwd: string): CliResolution {
-  // The v0.2 plan is to bundle `umactually-pr-review` as a
+  // The v0.2 plan is to bundle `umactually` as a
   // node_modules dependency inside the task folder at
-  // `<taskFolder>/node_modules/umactually-pr-review/bin/...`. For
+  // `<taskFolder>/node_modules/umactually/bin/...`. For
   // v0.1 we resolve from the agent cwd's `bin/` directory.
   const bundled = path.join(
     taskFolder,
     "node_modules",
-    "umactually-pr-review",
+    "umactually",
     "bin",
-    "umactually-pr-review.mjs",
+    "umactually.mjs",
   );
   if (fs.existsSync(bundled)) {
     return { command: "node", argsPrefix: [bundled], source: "bundled" };
   }
-  const repoBin = path.join(cwd, "bin", "umactually-pr-review.mjs");
+  const repoBin = path.join(cwd, "bin", "umactually.mjs");
   if (fs.existsSync(repoBin)) {
     return { command: "node", argsPrefix: [repoBin], source: "REPO_BIN" };
   }
-  const onPath = tl.which("umactually-pr-review", false);
+  const onPath = tl.which("umactually", false);
   if (onPath) {
     return { command: onPath, argsPrefix: [], source: "PATH" };
   }
@@ -233,7 +233,7 @@ function resolveCli(taskFolder: string, cwd: string): CliResolution {
     `Could not locate the UmActually CLI. Looked for:
     1. ${bundled} (bundled in the task — v0.2 layout)
     2. ${repoBin} (repo bin/ directory — run from a checkout that has npm run bundle)
-    3. 'umactually-pr-review' on PATH (npm install -g umactually-pr-review)
+    3. 'umactually' on PATH (npm install -g umactually)
     Add one of these to fix.`,
   );
 }

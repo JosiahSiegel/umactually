@@ -194,7 +194,7 @@ describe("buildProviderPrompts verified-facts block", () => {
     "+++ b/package.json",
     "@@ -10,8 +35,14 @@",
     '   "bin": {',
-    '     "umactually-pr-review": "bin/umactually-pr-review.mjs"',
+    '     "umactually": "bin/umactually.mjs"',
     "   },",
     '   "files": [',
     '     "dist",',

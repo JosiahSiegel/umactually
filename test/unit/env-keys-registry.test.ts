@@ -60,7 +60,6 @@ const TARGET_FILES = [
   "src/platform/github/context.ts",
   "src/platform/azure/context.ts",
   "src/platform/detect.ts",
-  "src/action/read-inputs.ts",
 ] as const;
 
 type EnvKeyName = keyof typeof ENV_KEYS;

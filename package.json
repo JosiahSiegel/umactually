@@ -26,14 +26,12 @@
     "secrets-scanning",
     "sonarqube"
   ],
-  "main": "dist/index.js",
   "bin": {
-    "umactually-pr-review": "bin/umactually-pr-review.mjs"
+    "umactually": "bin/umactually.mjs"
   },
   "files": [
     "dist",
     "bin",
-    "action.yml",
     "README.md",
     "LICENSE",
     "docs",
@@ -47,9 +45,12 @@
     "test": "vitest",
     "test:unit": "vitest --project unit",
     "test:scenario": "vitest --project scenario",
+    "test:e2e": "vitest --run --project e2e",
+    "test:e2e:smoke": "bash scripts/ci-e2e-smoke.sh",
     "test:config": "vitest --run --project unit test/unit/config-extended.test.ts",
     "typecheck": "tsc --noEmit",
-    "build": "ncc build src/index.ts -o dist && ncc build src/cli.ts -o dist-tmp && node scripts/post-bundle.mjs",
+    "build": "ncc build src/cli.ts -o dist && node scripts/post-bundle.mjs",
+    "build:binary": "node scripts/build-binary.mjs",
     "bundle": "npm run build",
     "check:dist-freshness": "node scripts/check-dist-freshness.mjs",
     "view:summary-layouts": "node scripts/view-summary-layouts.mjs",
@@ -61,8 +62,10 @@
   },
   "devDependencies": {
     "@types/node": "^24.0.0",
+    "@types/yaml": "^1.9.6",
     "@vercel/ncc": "0.38.4",
     "typescript": "^5.9.0",
-    "vitest": "^4.1.0"
+    "vitest": "^4.1.0",
+    "yaml": "^2.9.0"
   }
 }

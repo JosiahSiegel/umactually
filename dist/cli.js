@@ -1,6 +1,35 @@
 import { createRequire as __WEBPACK_EXTERNAL_createRequire } from "module";
-/******/ // The require scope
-/******/ var __nccwpck_require__ = {};
+/******/ var __webpack_modules__ = ({});
+/************************************************************************/
+/******/ // The module cache
+/******/ var __webpack_module_cache__ = {};
+/******/ 
+/******/ // The require function
+/******/ function __nccwpck_require__(moduleId) {
+/******/ 	// Check if module is in cache
+/******/ 	var cachedModule = __webpack_module_cache__[moduleId];
+/******/ 	if (cachedModule !== undefined) {
+/******/ 		return cachedModule.exports;
+/******/ 	}
+/******/ 	// Create a new module (and put it into the cache)
+/******/ 	var module = __webpack_module_cache__[moduleId] = {
+/******/ 		// no module.id needed
+/******/ 		// no module.loaded needed
+/******/ 		exports: {}
+/******/ 	};
+/******/ 
+/******/ 	// Execute the module function
+/******/ 	var threw = true;
+/******/ 	try {
+/******/ 		__webpack_modules__[moduleId](module, module.exports, __nccwpck_require__);
+/******/ 		threw = false;
+/******/ 	} finally {
+/******/ 		if(threw) delete __webpack_module_cache__[moduleId];
+/******/ 	}
+/******/ 
+/******/ 	// Return the exports of the module
+/******/ 	return module.exports;
+/******/ }
 /******/ 
 /************************************************************************/
 /******/ /* webpack/runtime/define property getters */
@@ -30,11 +59,20 @@ var __webpack_exports__ = {};
 // EXPORTS
 __nccwpck_require__.d(__webpack_exports__, {
   _x: () => (/* reexport */ CliUsageError),
+  WB: () => (/* binding */ buildSanitizedResolvedConfig),
+  bV: () => (/* binding */ isVersionFlag),
   iW: () => (/* binding */ main),
   hT: () => (/* reexport */ parseCliArgs),
-  ak: () => (/* binding */ runCli)
+  ak: () => (/* binding */ runCli),
+  yh: () => (/* binding */ runVersion)
 });
 
+;// CONCATENATED MODULE: external "node:fs"
+const external_node_fs_namespaceObject = __WEBPACK_EXTERNAL_createRequire(import.meta.url)("node:fs");
+;// CONCATENATED MODULE: external "node:fs/promises"
+const promises_namespaceObject = __WEBPACK_EXTERNAL_createRequire(import.meta.url)("node:fs/promises");
+;// CONCATENATED MODULE: external "node:path"
+const external_node_path_namespaceObject = __WEBPACK_EXTERNAL_createRequire(import.meta.url)("node:path");
 ;// CONCATENATED MODULE: ./src/config/field-schema.ts
 const FIELDS = {
     apiUrl: {
@@ -306,7 +344,7 @@ const FIELDS = {
         field: "effort",
         flag: "--effort",
         input: "effort",
-        env: [],
+        env: ["UMACTUALLY_EFFORT"],
         type: "enum",
         defaultValue: "medium",
         enumValues: ["low", "medium", "high"],
@@ -315,7 +353,7 @@ const FIELDS = {
         field: "provider",
         flag: "--provider",
         input: "provider",
-        env: [],
+        env: ["UMACTUALLY_PROVIDER"],
         type: "enum",
         defaultValue: "openai-compatible",
         // Anthropic Messages (`api.anthropic.com/v1/messages`) was added
@@ -533,15 +571,15 @@ function readEnum(flag, value, accepted, errorClass = CliArgError) {
 /**
  * Canonical brand string used across CLI, platform, and provider code.
  *
- * NOT a generic brand concept: this is the specific string
- * "umactually-pr-review" that downstream consumers (PR comments, HTTP
- * User-Agent headers, GitHub agents) match on. Any value other than the
- * literal "umactually-pr-review" will break dedup loops and integration
- * parsers, so this is a pinned identifier — not a configuration knob.
+ * NOT a generic brand concept: this is the specific string "umactually"
+ * that downstream consumers (PR comments, HTTP User-Agent headers, GitHub
+ * agents) match on. Renamed from "umactually" in v0.1.0 because
+ * the project ships under the bare name `umactually` and never launched
+ * with the longer string — no installed copies depend on the old value.
  */
-/** Canonical review brand string; eliminates the 50+ inline "umactually-pr-review" literals across CLI, platform, and provider code. */
-const BRAND = "umactually-pr-review";
-/** Log prefix shared by annotation helpers; eliminates hand-built "umactually-pr-review: " prefixes in stderr diagnostics. */
+/** Canonical review brand string; eliminates the 50+ inline "umactually" literals across CLI, platform, and provider code. */
+const BRAND = "umactually";
+/** Log prefix shared by annotation helpers; eliminates hand-built "umactually: " prefixes in stderr diagnostics. */
 const BRAND_PREFIX = `${BRAND}: `;
 /** HTTP User-Agent token shared by provider and platform clients; eliminates duplicated header literals. */
 const USER_AGENT = BRAND;
@@ -619,7 +657,7 @@ function parseBooleanFromUnknown(value, field) {
             return true;
         if (value === 0)
             return false;
-        throw new InvalidConfigError(field, `expected boolean, received number ${REDACTED}`);
+        throw new errors_InvalidConfigError(field, `expected boolean, received number ${REDACTED_PLACEHOLDER}`);
     }
     if (typeof value === "string") {
         const normalized = value.trim().toLowerCase();
@@ -627,9 +665,9 @@ function parseBooleanFromUnknown(value, field) {
             return true;
         if (FALSY_STRINGS.has(normalized))
             return false;
-        throw new InvalidConfigError(field, `expected boolean string, received ${REDACTED}`);
+        throw new errors_InvalidConfigError(field, `expected boolean string, received ${REDACTED_PLACEHOLDER}`);
     }
-    throw new InvalidConfigError(field, `expected boolean, received ${typeof value}`);
+    throw new errors_InvalidConfigError(field, `expected boolean, received ${typeof value}`);
 }
 const INTEGER_RE = /^-?\d+$/;
 /**
@@ -639,21 +677,21 @@ const INTEGER_RE = /^-?\d+$/;
 function parseIntegerFromUnknown(value, field) {
     if (typeof value === "number") {
         if (!Number.isInteger(value)) {
-            throw new InvalidConfigError(field, `expected integer, received non-integer number ${REDACTED}`);
+            throw new errors_InvalidConfigError(field, `expected integer, received non-integer number ${REDACTED_PLACEHOLDER}`);
         }
         return value;
     }
     if (typeof value === "string") {
         const trimmed = value.trim();
         if (trimmed.length === 0) {
-            throw new InvalidConfigError(field, `expected integer, received empty string`);
+            throw new errors_InvalidConfigError(field, `expected integer, received empty string`);
         }
         if (!INTEGER_RE.test(trimmed)) {
-            throw new InvalidConfigError(field, `expected integer string, received ${REDACTED}`);
+            throw new errors_InvalidConfigError(field, `expected integer string, received ${REDACTED_PLACEHOLDER}`);
         }
         const parsed = Number.parseInt(trimmed, 10);
         if (!Number.isFinite(parsed)) {
-            throw new InvalidConfigError(field, `expected finite integer, received ${REDACTED}`);
+            throw new errors_InvalidConfigError(field, `expected finite integer, received ${REDACTED_PLACEHOLDER}`);
         }
         // Reject values outside the safe-integer range so callers that
         // rely on exact equality (severity-key lookups, cache keys,
@@ -661,11 +699,11 @@ function parseIntegerFromUnknown(value, field) {
         // parseStrictInt has the same check; this is the config-loader's
         // equivalent so the two surfaces agree.
         if (!Number.isSafeInteger(parsed)) {
-            throw new InvalidConfigError(field, `expected integer in [${Number.MIN_SAFE_INTEGER}, ${Number.MAX_SAFE_INTEGER}], received ${REDACTED}`);
+            throw new errors_InvalidConfigError(field, `expected integer in [${Number.MIN_SAFE_INTEGER}, ${Number.MAX_SAFE_INTEGER}], received ${REDACTED_PLACEHOLDER}`);
         }
         return parsed;
     }
-    throw new InvalidConfigError(field, `expected integer, received ${typeof value}`);
+    throw new errors_InvalidConfigError(field, `expected integer, received ${typeof value}`);
 }
 const VALID_SEVERITIES = new Set([
     "info",
@@ -709,15 +747,15 @@ function parseSeverityFromUnknown(value, field) {
 }
 // Derive the parser's accepted set from the canonical field-schema entry.
 // Single source of truth: changing the canonical `enumValues` here updates
-// both the parser and any future code-gen of the action.yml / CLI help.
+// both the parser and any future code-gen of the CLI help.
 const VALID_PLATFORMS = new Set(FIELDS.platform.enumValues ?? []);
 function parsePlatformFromUnknown(value, field) {
     if (typeof value !== "string") {
-        throw new InvalidConfigError(field, `expected platform string, received ${typeof value}`);
+        throw new errors_InvalidConfigError(field, `expected platform string, received ${typeof value}`);
     }
     const normalized = value.trim().toLowerCase();
     if (!VALID_PLATFORMS.has(normalized)) {
-        throw new InvalidConfigError(field, `unknown platform ${REDACTED}`);
+        throw new errors_InvalidConfigError(field, `unknown platform ${REDACTED_PLACEHOLDER}`);
     }
     return normalized;
 }
@@ -776,10 +814,16 @@ function appendV1(path) {
 
 
 
+const explicitFieldsByParse = new WeakMap();
+const FIELD_BY_FLAG = new Map(Object.values(FIELDS).flatMap((field) => field.flag === null ? [] : [[field.flag, field.field]]));
+function wasCliFieldExplicitlySet(parsed, field) {
+    return explicitFieldsByParse.get(parsed)?.has(field) === true;
+}
 class CliUsageError extends Error {
     name = "CliUsageError";
 }
 function parseCliArgs(args) {
+    const explicitlySet = new Set();
     let platform = "auto";
     let eventPath = null;
     let diffPath = null;
@@ -840,6 +884,13 @@ function parseCliArgs(args) {
         const token = args[index];
         if (token === undefined) {
             continue;
+        }
+        const positiveFlag = token.startsWith("--no-")
+            ? `--${token.slice("--no-".length)}`
+            : token;
+        const explicitField = FIELD_BY_FLAG.get(positiveFlag);
+        if (explicitField !== undefined) {
+            explicitlySet.add(explicitField);
         }
         switch (token) {
             case "--platform":
@@ -1032,7 +1083,7 @@ function parseCliArgs(args) {
                 throw new CliUsageError(`unknown flag: ${token}`);
         }
     }
-    return {
+    const parsed = {
         platform,
         eventPath,
         diffPath,
@@ -1077,6 +1128,8 @@ function parseCliArgs(args) {
         strictSchema,
         verifyFindings,
     };
+    explicitFieldsByParse.set(parsed, explicitlySet);
+    return parsed;
 }
 class CliHelpSignal extends Error {
     name = "CliHelpSignal";
@@ -1124,6 +1177,215 @@ function readProvider(value) {
     return readEnum("--provider", value, FIELDS.provider.enumValues, CliUsageError);
 }
 
+;// CONCATENATED MODULE: external "node:child_process"
+const external_node_child_process_namespaceObject = __WEBPACK_EXTERNAL_createRequire(import.meta.url)("node:child_process");
+;// CONCATENATED MODULE: external "node:url"
+const external_node_url_namespaceObject = __WEBPACK_EXTERNAL_createRequire(import.meta.url)("node:url");
+;// CONCATENATED MODULE: external "node:util"
+const external_node_util_namespaceObject = __WEBPACK_EXTERNAL_createRequire(import.meta.url)("node:util");
+;// CONCATENATED MODULE: ./src/cli/check-review-artifact.ts
+// SPDX-License-Identifier: MIT
+
+const PARSE_FAIL_MARKERS = [
+    "Provider response did not contain a valid JSON review payload",
+    "Parse failed — provider response",
+    "Parse failed",
+];
+const CLEAN_VERDICTS = new Set(["APPROVED", "SHIP"]);
+function classifyReviewArtifact(path) {
+    let content;
+    try {
+        content = (0,external_node_fs_namespaceObject.readFileSync)(path, "utf8");
+    }
+    catch (error) {
+        if (isNodeError(error) && error.code === "ENOENT") {
+            return { ok: false, reason: "file not found" };
+        }
+        return {
+            ok: false,
+            reason: `cannot read artifact: ${error instanceof Error ? error.message : String(error)}`,
+        };
+    }
+    if (PARSE_FAIL_MARKERS.some((marker) => content.includes(marker))) {
+        return { ok: false, reason: "contains parse-fail sentinel" };
+    }
+    let parsed;
+    try {
+        parsed = JSON.parse(content);
+    }
+    catch (error) {
+        if (error instanceof SyntaxError) {
+            return { ok: false, reason: "invalid JSON" };
+        }
+        throw error;
+    }
+    if (!isRecord(parsed)) {
+        return { ok: false, reason: "invalid artifact: expected a JSON object" };
+    }
+    const event = stringField(parsed, "event");
+    const verdict = stringField(parsed, "verdict");
+    const postedStatusState = stringField(parsed, "postedStatusState");
+    const inlineThreadCount = numberField(parsed, "inlineThreadCount");
+    const postedThreadCount = numberField(parsed, "postedThreadCount");
+    const suppressedCommentCount = numberField(parsed, "suppressedCommentCount");
+    const totalFindings = inlineThreadCount + postedThreadCount;
+    if (parsed["parseFailed"] === true) {
+        return { ok: false, reason: "parse-fail: artifact explicitly flagged parseFailed=true" };
+    }
+    const hasSignal = event.length > 0 ||
+        verdict.length > 0 ||
+        postedStatusState.length > 0 ||
+        totalFindings > 0;
+    if (!hasSignal) {
+        return { ok: false, reason: "parse-fail: no event, verdict, status, or findings" };
+    }
+    if (verdict.toUpperCase() === "NEEDS_FIX" && totalFindings === 0) {
+        return {
+            ok: false,
+            reason: "contradictory review: verdict=NEEDS_FIX with 0 findings",
+        };
+    }
+    const isCleanVerdict = CLEAN_VERDICTS.has(verdict.toUpperCase()) ||
+        CLEAN_VERDICTS.has(postedStatusState.toUpperCase());
+    if (totalFindings === 0 && suppressedCommentCount === 0 && !isCleanVerdict) {
+        return { ok: true, summary: "accepted low-signal review" };
+    }
+    const reviewVerdict = verdict || postedStatusState || event;
+    return {
+        ok: true,
+        summary: `real review (${totalFindings} findings, verdict=${reviewVerdict})`,
+    };
+}
+function isRecord(value) {
+    return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+function isNodeError(error) {
+    return error instanceof Error && "code" in error;
+}
+function stringField(value, key) {
+    const field = value[key];
+    return field === undefined || field === null ? "" : String(field).trim();
+}
+function numberField(value, key) {
+    return Number(value[key] ?? 0);
+}
+
+;// CONCATENATED MODULE: ./src/cli/doctor.ts
+// SPDX-License-Identifier: MIT
+
+const MIN_NODE_MAJOR = 24;
+async function runDoctor(deps) {
+    const checks = [
+        checkNode(deps.nodeVersion ?? process.versions.node),
+        await checkDistFreshness(deps),
+        checkEnv(deps.env),
+        await checkGit(deps),
+    ];
+    const exitCode = checks.some((check) => check.status === "fail") ? 1 : 0;
+    const json = { schemaVersion: 1, command: "doctor", exitCode, checks };
+    return deps.isTTY
+        ? { exitCode, checks, json, stdout: formatDoctorHuman(checks) }
+        : { exitCode, checks, json };
+}
+function checkNode(nodeVersion) {
+    const nodeMajor = Number.parseInt(nodeVersion.split(".", 1)[0] ?? "", 10);
+    if (!Number.isFinite(nodeMajor) || nodeMajor < MIN_NODE_MAJOR) {
+        return {
+            id: "node",
+            status: "fail",
+            message: `Node ${nodeVersion} detected; ${MIN_NODE_MAJOR}.x or later required`,
+            hint: "Install Node 24+ from https://nodejs.org/",
+        };
+    }
+    return { id: "node", status: "ok", message: `Node ${nodeVersion}` };
+}
+async function checkDistFreshness(deps) {
+    const root = deps.packageRoot.replace(/[\\/]$/u, "");
+    const distPath = `${root}/dist/cli.js`;
+    const srcPath = `${root}/src/cli.ts`;
+    const distStat = await statOrNull(deps.fsAdapter, distPath);
+    if (distStat === null) {
+        return {
+            id: "dist-freshness",
+            status: "fail",
+            message: `${distPath} is missing`,
+            hint: "Run `npm run bundle` to produce dist/cli.js",
+        };
+    }
+    const srcStat = await statOrNull(deps.fsAdapter, srcPath);
+    if (srcStat === null) {
+        return {
+            id: "dist-freshness",
+            status: "skip",
+            message: `${srcPath} not present (npm install); cannot compare freshness`,
+        };
+    }
+    if (distStat.mtimeMs < srcStat.mtimeMs) {
+        return {
+            id: "dist-freshness",
+            status: "fail",
+            message: `${distPath} is older than ${srcPath}`,
+            hint: "Run `npm run bundle` to refresh dist/cli.js",
+        };
+    }
+    return { id: "dist-freshness", status: "ok", message: `${distPath} present and fresh` };
+}
+async function statOrNull(fsAdapter, path) {
+    try {
+        return await fsAdapter.stat(path);
+    }
+    catch {
+        // A diagnostic probe reports unavailable paths rather than propagating adapter errors.
+        return null;
+    }
+}
+function checkEnv(env) {
+    const presence = [...KNOWN_ENV_VAR_NAMES].map((name) => ({
+        name,
+        present: typeof env[name] === "string" && env[name].length > 0,
+    }));
+    const presentCount = presence.filter((entry) => entry.present).length;
+    return {
+        id: "env",
+        status: "ok",
+        message: `${presentCount}/${KNOWN_ENV_VAR_NAMES.size} known env vars present`,
+        presence,
+    };
+}
+async function checkGit(deps) {
+    try {
+        const result = await deps.execFile("git", ["rev-parse", "--is-inside-work-tree"], {
+            cwd: deps.cwd,
+        });
+        return result.stdout.trim() === "true"
+            ? { id: "git", status: "ok", message: "cwd is inside a git work tree" }
+            : { id: "git", status: "warn", message: "cwd is not inside a git work tree" };
+    }
+    catch {
+        return {
+            id: "git",
+            status: "warn",
+            message: "git is not on PATH or cwd is not inside a work tree",
+        };
+    }
+}
+function formatDoctorHuman(checks) {
+    const lines = checks.map((check) => {
+        const hint = check.hint === undefined ? "" : `\n  hint: ${check.hint}`;
+        return `${check.status.toUpperCase().padEnd(4)} ${check.id}: ${check.message}${hint}`;
+    });
+    return `${lines.join("\n")}\n`;
+}
+function formatDoctorJson(result) {
+    const envelope = result.json ?? {
+        schemaVersion: 1,
+        command: "doctor",
+        exitCode: result.exitCode,
+        checks: result.checks,
+    };
+    return `${JSON.stringify(envelope)}\n`;
+}
+
 ;// CONCATENATED MODULE: ./src/util/provider-defaults.ts
 /** Canonical provider/platform URL defaults. Centralizing prevents drift between the loader, live provider, help text, and platform modules. */
 /** OpenAI default base URL. Used by `config/loader.ts` and the OpenAI-compatible client as the default when `--api-url` is unset and no provider-specific override applies. */
@@ -1132,6 +1394,30 @@ const DEFAULT_OPENAI_URL = "https://api.openai.com/v1";
 const DEFAULT_ANTHROPIC_URL = "https://api.anthropic.com/v1";
 /** GitHub API default base URL. Used by Copilot token exchange (`provider/copilot.ts`) and Copilot routing in `cli/live-provider.ts`. */
 const DEFAULT_GITHUB_API_BASE = "https://api.github.com";
+
+;// CONCATENATED MODULE: ./src/cli/modes-help.ts
+/** Canonical CLI modes banner shared by help and bare invocation output. */
+const CLI_MODES_TEXT = `umactually: Modes:
+
+Standalone mode (any git repo, no CI required)
+  umactually --api-url https://api.minimax.io/v1 --api-key "$UMACTUALLY_API_KEY"
+  real review, written to ./umactually-review.json, no platform posting
+
+Live CI mode (GitHub Actions, Azure DevOps)
+  umactually --platform github
+  derive PR context from the runner and post the review through the CLI
+
+Outside a git repo (advanced)
+  umactually --api-url https://example.com --api-key "$UMACTUALLY_API_KEY" --event /tmp/event.json --diff /tmp/pr.diff --review /tmp/review.json --pr-number 42 --repo owner/name
+  provide event, diff, review, PR number, and repository explicitly
+
+Dry-run smoke test: pass --dry-run to any of the above to skip the provider call.
+`;
+/** Writes the canonical modes banner to stdout or a caller-provided stream. */
+function printModesBanner(stream) {
+    const output = stream ?? process?.stdout;
+    output?.write(CLI_MODES_TEXT);
+}
 
 ;// CONCATENATED MODULE: ./src/cli/help.ts
 /**
@@ -1151,12 +1437,13 @@ const DEFAULT_GITHUB_API_BASE = "https://api.github.com";
  */
 
 
+
 const HELP_FLAGS = [
     { flag: "--platform <auto|github|azure>" },
     { flag: "--event <path>", description: "GitHub event JSON or Azure pull-request JSON" },
     { flag: "--diff <path>", description: "PR diff text" },
-    { flag: "--threads <path>", description: "Azure existing threads JSON (optional in dry-run)" },
-    { flag: "--review <path>", description: "Azure provider review JSON (optional in dry-run)" },
+    { flag: "--threads <path>", description: "Azure existing threads JSON (ADO wrapper mode)" },
+    { flag: "--review <path>", description: "Azure provider review JSON (ADO wrapper mode)" },
     { flag: "--pr-number <n>", description: "Pull request number" },
     { flag: "--repo <owner/name>" },
     { flag: "--api-url <url>", description: `Provider Responses API URL (default: ${DEFAULT_OPENAI_URL})` },
@@ -1190,6 +1477,7 @@ const HELP_FLAGS = [
     { flag: "--debug-raw-response | --no-debug-raw-response" },
     { flag: "--detect-leaks | --no-detect-leaks" },
     { flag: "--dry-run | --no-dry-run" },
+    { flag: "--no-color", description: "Disable decorative ANSI color (also: non-empty NO_COLOR)" },
     { flag: "--simulate-findings | --no-simulate-findings" },
     { flag: "--output-artifact <path>" },
 ];
@@ -1208,15 +1496,186 @@ const CLI_HELP_TEXT = [
     "Flags:",
     ...HELP_FLAGS.map(renderFlagLine),
     "",
+    CLI_MODES_TEXT,
+    "See exit codes: docs/exit-codes.md",
 ].join("\n");
-function printHelp() {
-    process.stdout.write(CLI_HELP_TEXT);
+function renderCommands(commands) {
+    return ["Commands:", ...commands.map((command) => `  ${command}`), ""].join("\n");
+}
+function printHelp(commands = []) {
+    const helpText = commands.length === 0
+        ? CLI_HELP_TEXT
+        : `${CLI_HELP_TEXT}\n\n${renderCommands(commands)}`;
+    process.stdout.write(helpText);
+    return helpText;
 }
 
-;// CONCATENATED MODULE: external "node:fs/promises"
-const promises_namespaceObject = __WEBPACK_EXTERNAL_createRequire(import.meta.url)("node:fs/promises");
-;// CONCATENATED MODULE: external "node:path"
-const external_node_path_namespaceObject = __WEBPACK_EXTERNAL_createRequire(import.meta.url)("node:path");
+;// CONCATENATED MODULE: ./src/cli/no-color.ts
+// SPDX-License-Identifier: MIT
+/**
+ * Resolve whether decorative ANSI color should be enabled.
+ *
+ * GitHub annotation prefixes (`::notice::`, `::warning::`, and `::error::`)
+ * are workflow commands, not decorative color, and are unaffected.
+ */
+function resolveColorPolicy(opts) {
+    if (opts.noColor || opts.json) {
+        return false;
+    }
+    const noColorEnv = opts.env["NO_COLOR"];
+    if (typeof noColorEnv === "string" && noColorEnv.length > 0) {
+        return false;
+    }
+    return opts.isTTY;
+}
+
+;// CONCATENATED MODULE: ./src/cli/dispatch.ts
+// SPDX-License-Identifier: MIT
+// Subcommand dispatch layer. Pure routing apart from delegated CLI output.
+
+
+
+
+
+
+
+
+
+
+const GLOBAL_ONLY_FLAGS = new Set(["--json", "--no-color"]);
+const TOP_LEVEL_COMMANDS = [
+    "review",
+    "doctor",
+    "check-review-artifact <path>",
+    "version",
+    "--help",
+    "--version",
+];
+const execFile = (0,external_node_util_namespaceObject.promisify)(external_node_child_process_namespaceObject.execFile);
+function firstPositionalToken(argv) {
+    for (const token of argv) {
+        if (GLOBAL_ONLY_FLAGS.has(token)) {
+            continue;
+        }
+        return token.startsWith("-") ? null : token;
+    }
+    return null;
+}
+function stripLeadingCommand(argv, command) {
+    const commandIndex = argv.indexOf(command);
+    return commandIndex === -1
+        ? argv.slice()
+        : [...argv.slice(0, commandIndex), ...argv.slice(commandIndex + 1)];
+}
+async function dispatch(argv) {
+    applyColorPolicy(argv);
+    if (argv.includes("--version") || argv.includes("-V")) {
+        return runVersion(argv);
+    }
+    if (argv.includes("--help") || argv.includes("-h")) {
+        const stdout = printHelp(TOP_LEVEL_COMMANDS);
+        return argv.includes("--no-color") ? 0 : { exitCode: 0, stdout };
+    }
+    const command = firstPositionalToken(argv);
+    if (command === null) {
+        return runReviewBranch(argv);
+    }
+    switch (command) {
+        case "review":
+            return runReviewBranch(stripLeadingCommand(argv, command));
+        case "doctor":
+            return runDoctorBranch(stripLeadingCommand(argv, command));
+        case "check-review-artifact":
+            return runCheckReviewArtifactBranch(stripLeadingCommand(argv, command));
+        case "version":
+            return runVersion(stripLeadingCommand(argv, command));
+        default: {
+            const stderr = `unknown command: ${command}\n`;
+            process.stderr.write(stderr);
+            return { exitCode: 2, stderr };
+        }
+    }
+}
+function applyColorPolicy(argv) {
+    return resolveColorPolicy({
+        noColor: argv.includes("--no-color"),
+        json: argv.includes("--json"),
+        env: process.env,
+        isTTY: process.stdout.isTTY === true,
+    });
+}
+async function runReviewBranch(args) {
+    const json = args.includes("--json");
+    const reviewArgs = args.filter((arg) => arg !== "--json" && arg !== "--no-color");
+    if (json) {
+        return runJsonReview(reviewArgs);
+    }
+    const result = await runCli(reviewArgs, process.cwd());
+    return { exitCode: result.exitCode };
+}
+async function runJsonReview(argv) {
+    const reviewArgs = stripLeadingCommand(argv.filter((arg) => arg !== "--json" && arg !== "--no-color"), "review");
+    const originalWrite = process.stdout.write;
+    process.stdout.write = process.stderr.write.bind(process.stderr);
+    try {
+        const result = await runCli(reviewArgs, process.cwd());
+        const envelope = {
+            schemaVersion: 1,
+            command: "review",
+            exitCode: result.exitCode,
+            resolvedConfig: result.resolvedConfig ?? {},
+            outcome: {
+                ok: result.exitCode === 0,
+                ...result.jsonOutcome,
+            },
+        };
+        const stdout = `${JSON.stringify(envelope)}\n`;
+        originalWrite.call(process.stdout, stdout);
+        return { exitCode: result.exitCode, stdout };
+    }
+    finally {
+        process.stdout.write = originalWrite;
+    }
+}
+function runCheckReviewArtifactBranch(args) {
+    const artifactArgs = args.filter((arg) => arg !== "--no-color");
+    const path = artifactArgs[0];
+    if (path === undefined || artifactArgs.length !== 1) {
+        const stderr = "usage: umactually check-review-artifact <path>\n";
+        process.stderr.write(stderr);
+        return { exitCode: 2, stderr };
+    }
+    const result = classifyReviewArtifact(path);
+    const message = result.ok ? result.summary : result.reason;
+    const stderr = `umactually: ${path}: ${message ?? "invalid artifact"}\n`;
+    process.stderr.write(stderr);
+    return { exitCode: result.ok ? 0 : 1, stderr };
+}
+async function runDoctorBranch(args) {
+    const json = args.includes("--json");
+    // In a Bun --compile binary, import.meta.url resolves to Bun's virtual
+    // filesystem and process.execPath is the real binary. In Node (npm install
+    // or dev), process.execPath is the node binary itself, so use import.meta.url.
+    const isCompiledBinary = typeof globalThis["UMACTUALLY_VERSION"] === "string";
+    const packageRoot = isCompiledBinary
+        ? (0,external_node_path_namespaceObject.dirname)(process.execPath)
+        : (0,external_node_path_namespaceObject.resolve)((0,external_node_path_namespaceObject.dirname)((0,external_node_url_namespaceObject.fileURLToPath)(import.meta.url)), "..");
+    const result = await runDoctor({
+        cwd: process.cwd(),
+        isTTY: process.stdout.isTTY === true,
+        env: process.env,
+        fsAdapter: { stat: promises_namespaceObject.stat },
+        execFile: async (file, fileArgs, options) => {
+            const output = await execFile(file, fileArgs, options);
+            return { stdout: output.stdout, stderr: output.stderr };
+        },
+        packageRoot,
+    });
+    const stdout = json ? formatDoctorJson(result) : formatDoctorHuman(result.checks);
+    process.stdout.write(stdout);
+    return { exitCode: result.exitCode, stdout };
+}
+
 ;// CONCATENATED MODULE: ./src/security/scan-review-secrets.ts
 
 const HIGH_CONFIDENCE_SECRET_PATTERNS = [
@@ -1281,12 +1740,16 @@ function redactLineSecrets(line) {
 /**
  * Stable HTML marker the runner greps for in existing PR comments when
  * deciding whether to replace a previous UmActually review.
+ *
+ * Renamed from `<!-- umactually -->` in v0.1.0 because the
+ * project ships under the bare `umactually` name and never launched —
+ * no installed copies depend on the old marker.
  */
-const REVIEW_MARKER = "<!-- umactually-pr-review -->";
+const REVIEW_MARKER = "<!-- umactually -->";
 /**
  * JSON schema identifier for the UmActually manifest that lives inside
- * the `<!-- umactually-pr-review:manifest { ... } -->` HTML comment on
- * every posted review. Format is `${BRAND}/v${VERSION}`. AI agents and
+ * the `<!-- umactually:manifest { ... } -->` HTML comment on every
+ * posted review. Format is `${BRAND}/v${VERSION}`. AI agents and
  * downstream tooling parse this string to know they're reading an
  * UmActually-shaped payload.
  *
@@ -1295,7 +1758,7 @@ const REVIEW_MARKER = "<!-- umactually-pr-review -->";
  * tell UmActually manifests apart from any other review tool's
  * payloads.
  */
-const MANIFEST_SCHEMA = "umactually-pr-review/v1";
+const MANIFEST_SCHEMA = "umactually/v1";
 /** Opening HTML-comment prefix of the manifest hidden inside each UmActually review comment. */
 const MANIFEST_MARKER_PREFIX = `<!-- ${BRAND}:manifest `;
 /** Closing HTML-comment suffix of the manifest hidden inside each UmActually review comment. */
@@ -1323,7 +1786,7 @@ function commentBodyHasMarker(body) {
  * buggy copy in `src/azure/run-azure-review.ts:142` that does NOT exclude
  * arrays — that copy returned `true` for any JSON including arrays.
  */
-function isRecord(value) {
+function json_guards_isRecord(value) {
     return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 /**
@@ -1343,8 +1806,7 @@ function isPositiveSafeInteger(value) {
  * Safe-integer guard (zero and negatives allowed). Centralizes the
  * predicate that was inlined at 9+ sites across `src/cli/live-azure.ts`,
  * `src/cli/live-shared.ts`, `src/cli/live-github.ts`,
- * `src/cli/parse-args.ts`, `src/action/read-inputs.ts`, and
- * the platform context modules.
+ * `src/cli/parse-args.ts` and the platform context modules.
  */
 function isSafeInteger(value) {
     return typeof value === "number" && Number.isSafeInteger(value);
@@ -1418,11 +1880,11 @@ function readArrayField(record, key) {
  * function safe to call on `unknown` records.
  */
 function readRecordField(value, key) {
-    if (!isRecord(value)) {
+    if (!json_guards_isRecord(value)) {
         return null;
     }
     const inner = value[key];
-    return isRecord(inner) ? inner : null;
+    return json_guards_isRecord(inner) ? inner : null;
 }
 /**
  * Read-and-parse a JSON text body into a typed record. Returns `null`
@@ -1442,7 +1904,7 @@ function readJsonRecord(text) {
     catch {
         return null;
     }
-    return isRecord(parsed) ? parsed : null;
+    return json_guards_isRecord(parsed) ? parsed : null;
 }
 /**
  * Read-and-parse a JSON text body into a typed array. Returns `null`
@@ -1797,7 +2259,7 @@ function findFirstArray(record, keys) {
     return null;
 }
 function requireRecord(value, label) {
-    if (isRecord(value)) {
+    if (json_guards_isRecord(value)) {
         return value;
     }
     throw new AzureApiError("AZURE_FETCH_FAILED", AZURE_EMPTY_DIFF_STATUS, `${label} was not a JSON object.`);
@@ -2507,7 +2969,7 @@ function mapVerdictToStatus(verdict) {
     return mapVerdictToAzureStatus(verdict, "legacy");
 }
 function readRecord(value, label) {
-    if (!isRecord(value)) {
+    if (!json_guards_isRecord(value)) {
         throw new TypeError(`Expected ${label} to be an object, received: ${typeof value}`);
     }
     return value;
@@ -2740,7 +3202,7 @@ function parseProviderReviewPayload(value) {
     return { comments: comments, suppressed_comments: suppressedComments };
 }
 function run_review_requireRecord(value, label) {
-    if (!isRecord(value)) {
+    if (!json_guards_isRecord(value)) {
         throw new TypeError(`Expected ${label} to be an object, received: ${typeof value}`);
     }
     return value;
@@ -2818,7 +3280,7 @@ function logNotice(action, message) {
  * diagnostics). Pass an empty `action` to suppress the action prefix;
  * the level token (`warning` / `error`) is always emitted.
  *
- * Replaces the 15+ hand-rolled `process.stderr.write(\`::warning::umactually-pr-review: ...\`)`
+ * Replaces the 15+ hand-rolled `process.stderr.write(\`::warning::umactually: ...\`)`
  * calls scattered across `live-azure.ts`, `live-github.ts`,
  * `sonar/run-sonar-import.ts`, and `cli/sonar-context.ts`.
  */
@@ -3339,7 +3801,7 @@ function waitForTerminalQualityGate(qualityGateSequence) {
 }
 function parseQualityGateSequence(json) {
     const value = parseJson(json);
-    if (!isRecord(value)) {
+    if (!json_guards_isRecord(value)) {
         throw new SonarFixtureParseError("quality-gate-sequence", "a root object");
     }
     const sequence = value["sequence"];
@@ -3351,11 +3813,11 @@ function parseQualityGateSequence(json) {
     };
 }
 function parseQualityGatePoll(value) {
-    if (!isRecord(value)) {
+    if (!json_guards_isRecord(value)) {
         throw new SonarFixtureParseError("quality-gate-sequence", "poll attempt objects");
     }
     const projectStatus = value["projectStatus"];
-    if (!isRecord(projectStatus)) {
+    if (!json_guards_isRecord(projectStatus)) {
         throw new SonarFixtureParseError("quality-gate-sequence", "projectStatus objects");
     }
     return {
@@ -3372,7 +3834,7 @@ function parseQualityGateStatus(value) {
 }
 function parseSonarIssues(json) {
     const value = parseJson(json);
-    if (!isRecord(value) || !isReadonlyArray(value["issues"])) {
+    if (!json_guards_isRecord(value) || !isReadonlyArray(value["issues"])) {
         throw new SonarFixtureParseError("issues", "an issues array");
     }
     return {
@@ -3381,7 +3843,7 @@ function parseSonarIssues(json) {
 }
 function parseSonarHotspots(json) {
     const value = parseJson(json);
-    if (!isRecord(value) || !isReadonlyArray(value["hotspots"])) {
+    if (!json_guards_isRecord(value) || !isReadonlyArray(value["hotspots"])) {
         throw new SonarFixtureParseError("hotspots", "a hotspots array");
     }
     return {
@@ -3752,8 +4214,6 @@ async function withDebugRawEnv(enabled, fn) {
     }
 }
 
-;// CONCATENATED MODULE: external "node:fs"
-const external_node_fs_namespaceObject = __WEBPACK_EXTERNAL_createRequire(import.meta.url)("node:fs");
 ;// CONCATENATED MODULE: ./src/config/defaults.ts
 
 /** Canonical prompt-file byte cap shared by config loading and live prompt assembly. */
@@ -3790,50 +4250,6 @@ const DEFAULT_SONAR_TIMEOUT_SECONDS = FIELDS.sonarTimeoutSeconds.defaultValue;
  * should re-assert at the call site.
  */
 const DEFAULT_PROVIDER_MODEL = FIELDS.model.defaultValue;
-
-;// CONCATENATED MODULE: ./src/config/field-resolution.ts
-/**
- * Resolve a config field through the canonical precedence chain: parsed > env > fallback.
- *
- * Returns the first value in the chain that is non-null, non-undefined, AND (when a
- * string) non-empty. This matches the behavior the live path hand-rolls inline at
- * multiple sites (`parsed.X ?? env["Y"] ?? DEFAULT_Z`).
- *
- * Why this exists: the config loader (`src/config/loader.ts`) has private pickX
- * helpers used only inside loadConfigFromSources. The live path cannot call those
- * directly — it builds parsed/env from different inputs (CLI argv + action inputs +
- * env) and needs the same chain. Centralizing eliminates the 7+ hand-rolled
- * `parsed.X ?? env["Y"]` occurrences scattered across cli/ that future maintainers
- * could "fix" by adding a default to one site but not the others.
- *
- * Treats the empty string as "missing" for string-typed fields. This matches the
- * CLI's existing behavior (`parseStringFromUnknown` raises on empty input, and the
- * shell typically passes empty strings for unset flags).
- *
- * @param parsedValue  CLI/inputs value (already parsed).
- * @param envValue     Env-var value (read via ENV_KEYS.X).
- * @param fallback     The schema default (from FIELDS.<x>.defaultValue or a derived constant).
- * @returns            The first non-null/non-empty value, or `fallback`.
- */
-function resolveField(parsedValue, envValue, fallback) {
-    if (parsedValue !== undefined && parsedValue !== null) {
-        if (typeof parsedValue === "string" && parsedValue.length === 0) {
-            // Empty string is treated as missing for string fields.
-        }
-        else {
-            return parsedValue;
-        }
-    }
-    if (envValue !== undefined && envValue !== null) {
-        if (typeof envValue === "string" && envValue.length === 0) {
-            // Empty string from env is treated as missing.
-        }
-        else {
-            return envValue;
-        }
-    }
-    return fallback;
-}
 
 ;// CONCATENATED MODULE: ./src/config/prompt-files.ts
 
@@ -4024,57 +4440,125 @@ async function resolveDefaultPromptFiles(cwd, fs) {
     return existing;
 }
 
-;// CONCATENATED MODULE: ./src/util/env-keys.ts
-/** Centralised env-var name registry; eliminates inline `env["..."]` strings and keeps legacy aliases visible. */
-const ENV_KEYS = {
-    // UMACTUALLY_* canonical, REVIEW_* legacy aliases
-    UMACTUALLY_API_URL: "UMACTUALLY_API_URL",
-    UMACTUALLY_API_KEY: "UMACTUALLY_API_KEY",
-    UMACTUALLY_MODEL: "UMACTUALLY_MODEL",
-    UMACTUALLY_GITHUB_API_BASE: "UMACTUALLY_GITHUB_API_BASE",
-    UMACTUALLY_INCLUDE_SONARQUBE: "UMACTUALLY_INCLUDE_SONARQUBE",
-    UMACTUALLY_SONAR_HOST_URL: "UMACTUALLY_SONAR_HOST_URL",
-    UMACTUALLY_SONAR_TOKEN: "UMACTUALLY_SONAR_TOKEN",
-    UMACTUALLY_SONAR_PROJECT_KEY: "UMACTUALLY_SONAR_PROJECT_KEY",
-    UMACTUALLY_PROMPT_FILE: "UMACTUALLY_PROMPT_FILE",
-    UMACTUALLY_PROMPT_FILES: "UMACTUALLY_PROMPT_FILES",
-    UMACTUALLY_ADDITIONAL_PROMPT_FILE: "UMACTUALLY_ADDITIONAL_PROMPT_FILE",
-    UMACTUALLY_ADDITIONAL_PROMPT_FILES: "UMACTUALLY_ADDITIONAL_PROMPT_FILES",
-    UMACTUALLY_STRICT_SCHEMA: "UMACTUALLY_STRICT_SCHEMA",
-    UMACTUALLY_VERIFY_FINDINGS: "UMACTUALLY_VERIFY_FINDINGS",
-    REVIEW_STRICT_SCHEMA: "REVIEW_STRICT_SCHEMA",
-    REVIEW_VERIFY_FINDINGS: "REVIEW_VERIFY_FINDINGS",
-    REVIEW_PROVIDER_URL: "REVIEW_PROVIDER_URL",
-    REVIEW_PROVIDER_API_KEY: "REVIEW_PROVIDER_API_KEY",
-    REVIEW_PROVIDER_MODEL: "REVIEW_PROVIDER_MODEL",
-    REVIEW_TIMEOUT_SECONDS: "REVIEW_TIMEOUT_SECONDS",
-    REVIEW_FILE_LIMIT: "REVIEW_FILE_LIMIT",
-    REVIEW_LEAK_DETECTION: "REVIEW_LEAK_DETECTION",
-    // Platform runtime
-    GITHUB_ACTIONS: "GITHUB_ACTIONS",
-    GITHUB_EVENT_PATH: "GITHUB_EVENT_PATH",
-    GITHUB_TOKEN: "GITHUB_TOKEN",
-    GITHUB_REPOSITORY: "GITHUB_REPOSITORY",
-    GITHUB_REF: "GITHUB_REF",
-    GITHUB_SHA: "GITHUB_SHA",
-    // Azure DevOps runtime
-    TF_BUILD: "TF_BUILD",
-    SYSTEM_ACCESSTOKEN: "SYSTEM_ACCESSTOKEN",
-    SYSTEM_TEAMPROJECT: "SYSTEM_TEAMPROJECT",
-    SYSTEM_COLLECTIONURI: "SYSTEM_COLLECTIONURI",
-    BUILD_REPOSITORY_ID: "BUILD_REPOSITORY_ID",
-    SYSTEM_PULLREQUEST_PULLREQUESTID: "SYSTEM_PULLREQUEST_PULLREQUESTID",
-    SYSTEM_PULLREQUEST_SOURCECOMMITID: "SYSTEM_PULLREQUEST_SOURCECOMMITID",
-    SYSTEM_PULLREQUEST_TARGETBRANCHNAME: "SYSTEM_PULLREQUEST_TARGETBRANCHNAME",
-    // Inputs (already wrapped as INPUT_* by GitHub)
-    INPUT_DRY_RUN: "INPUT_DRY_RUN",
-    INPUT_EVENT: "INPUT_EVENT",
-    INPUT_DIFF: "INPUT_DIFF",
-    INPUT_REVIEW: "INPUT_REVIEW",
-    INPUT_THREADS: "INPUT_THREADS",
-    INPUT_OUTPUT_ARTIFACT: "INPUT_OUTPUT_ARTIFACT",
-    INPUT_PLATFORM: "INPUT_PLATFORM",
-};
+;// CONCATENATED MODULE: ./src/config/field-resolution.ts
+
+
+
+
+/**
+ * Resolve a config field through the canonical precedence chain: parsed > env > fallback.
+ *
+ * Returns the first value in the chain that is non-null, non-undefined, AND (when a
+ * string) non-empty. This matches the behavior the live path hand-rolls inline at
+ * multiple sites (`parsed.X ?? env["Y"] ?? DEFAULT_Z`).
+ *
+ * Why this exists: the config loader (`src/config/loader.ts`) has private pickX
+ * helpers used only inside loadConfigFromSources. The live path cannot call those
+ * directly — it builds parsed/env from different inputs (CLI argv + action inputs +
+ * env) and needs the same chain. Centralizing eliminates the 7+ hand-rolled
+ * `parsed.X ?? env["Y"]` occurrences scattered across cli/ that future maintainers
+ * could "fix" by adding a default to one site but not the others.
+ *
+ * Treats the empty string as "missing" for string-typed fields. This matches the
+ * CLI's existing behavior (`parseStringFromUnknown` raises on empty input, and the
+ * shell typically passes empty strings for unset flags).
+ *
+ * @param parsedValue  CLI/inputs value (already parsed).
+ * @param envValue     Env-var value (read via ENV_KEYS.X).
+ * @param fallback     The schema default (from FIELDS.<x>.defaultValue or a derived constant).
+ * @returns            The first non-null/non-empty value, or `fallback`.
+ */
+function resolveField(parsedValue, envValue, fallback) {
+    if (parsedValue !== undefined && parsedValue !== null) {
+        if (typeof parsedValue === "string" && parsedValue.length === 0) {
+            // Empty string is treated as missing for string fields.
+        }
+        else {
+            return parsedValue;
+        }
+    }
+    if (envValue !== undefined && envValue !== null) {
+        if (typeof envValue === "string" && envValue.length === 0) {
+            // Empty string from env is treated as missing.
+        }
+        else {
+            return envValue;
+        }
+    }
+    return fallback;
+}
+function resolveFromSchema(parsed, env) {
+    const resolved = { ...parsed };
+    const fieldProvenance = {};
+    for (const field of Object.values(FIELDS)) {
+        const parsedValue = parsedValueForField(parsed, field);
+        const envValue = firstNonBlankEnv(field.env, env);
+        const raw = parsedValue ?? envValue?.value ?? field.defaultValue;
+        resolved[field.field] = coerceField(field, raw);
+        fieldProvenance[field.field] = parsedValue !== undefined
+            ? { source: "flag" }
+            : envValue !== undefined
+                ? { source: "env", envName: envValue.envName }
+                : { source: "default" };
+    }
+    resolved["minimumSeverityInternal"] = parseSeverityFromUnknown(resolved["minimumSeverity"], FIELDS.minimumSeverity.field);
+    return Object.assign({}, parsed, resolved, { fieldProvenance });
+}
+function parsedValueForField(parsed, field) {
+    if (!(field.field in parsed)) {
+        return undefined;
+    }
+    if (field.flag !== null && !wasCliFieldExplicitlySet(parsed, field.field)) {
+        return undefined;
+    }
+    const value = Reflect.get(parsed, field.field);
+    return value === null ? undefined : value;
+}
+function firstNonBlankEnv(aliases, env) {
+    for (const alias of aliases) {
+        const value = env[alias];
+        if (typeof value === "string" && value.trim().length > 0) {
+            return { envName: alias, value };
+        }
+    }
+    return undefined;
+}
+function coerceField(field, raw) {
+    switch (field.type) {
+        case "string":
+            if (typeof raw !== "string") {
+                throw new errors_InvalidConfigError(field.field, `expected string, received ${typeof raw}`);
+            }
+            return raw;
+        case "boolean":
+            return parseBooleanFromUnknown(raw, field.field);
+        case "integer":
+            return parseIntegerFromUnknown(raw, field.field);
+        case "enum":
+            return parseEnumField(field, raw);
+        default:
+            return assertNever(field.type);
+    }
+}
+function parseEnumField(field, raw) {
+    if (field.field === "platform") {
+        return parsePlatformFromUnknown(raw, field.field);
+    }
+    if (field.field === "minimumSeverity") {
+        parseSeverityFromUnknown(raw, field.field);
+    }
+    if (typeof raw !== "string") {
+        throw new errors_InvalidConfigError(field.field, `expected enum string, received ${typeof raw}`);
+    }
+    const normalized = raw.trim().toLowerCase();
+    if (!(field.enumValues ?? []).includes(normalized)) {
+        throw new errors_InvalidConfigError(field.field, `unknown enum value ${REDACTED_PLACEHOLDER}`);
+    }
+    return normalized;
+}
+function assertNever(value) {
+    throw new errors_InvalidConfigError("field.type", `unknown field type ${String(value)}`);
+}
 
 ;// CONCATENATED MODULE: ./src/review/verified-facts.ts
 // SPDX-License-Identifier: MIT
@@ -4631,6 +5115,58 @@ function parseActionOutputsYaml(text, diffText) {
     return null;
 }
 
+;// CONCATENATED MODULE: ./src/util/env-keys.ts
+/** Centralised env-var name registry; eliminates inline `env["..."]` strings and keeps legacy aliases visible. */
+const ENV_KEYS = {
+    // UMACTUALLY_* canonical, REVIEW_* legacy aliases
+    UMACTUALLY_API_URL: "UMACTUALLY_API_URL",
+    UMACTUALLY_API_KEY: "UMACTUALLY_API_KEY",
+    UMACTUALLY_MODEL: "UMACTUALLY_MODEL",
+    UMACTUALLY_GITHUB_API_BASE: "UMACTUALLY_GITHUB_API_BASE",
+    UMACTUALLY_INCLUDE_SONARQUBE: "UMACTUALLY_INCLUDE_SONARQUBE",
+    UMACTUALLY_SONAR_HOST_URL: "UMACTUALLY_SONAR_HOST_URL",
+    UMACTUALLY_SONAR_TOKEN: "UMACTUALLY_SONAR_TOKEN",
+    UMACTUALLY_SONAR_PROJECT_KEY: "UMACTUALLY_SONAR_PROJECT_KEY",
+    UMACTUALLY_PROMPT_FILE: "UMACTUALLY_PROMPT_FILE",
+    UMACTUALLY_PROMPT_FILES: "UMACTUALLY_PROMPT_FILES",
+    UMACTUALLY_ADDITIONAL_PROMPT_FILE: "UMACTUALLY_ADDITIONAL_PROMPT_FILE",
+    UMACTUALLY_ADDITIONAL_PROMPT_FILES: "UMACTUALLY_ADDITIONAL_PROMPT_FILES",
+    UMACTUALLY_STRICT_SCHEMA: "UMACTUALLY_STRICT_SCHEMA",
+    UMACTUALLY_VERIFY_FINDINGS: "UMACTUALLY_VERIFY_FINDINGS",
+    REVIEW_STRICT_SCHEMA: "REVIEW_STRICT_SCHEMA",
+    REVIEW_VERIFY_FINDINGS: "REVIEW_VERIFY_FINDINGS",
+    REVIEW_PROVIDER_URL: "REVIEW_PROVIDER_URL",
+    REVIEW_PROVIDER_API_KEY: "REVIEW_PROVIDER_API_KEY",
+    REVIEW_PROVIDER_MODEL: "REVIEW_PROVIDER_MODEL",
+    REVIEW_TIMEOUT_SECONDS: "REVIEW_TIMEOUT_SECONDS",
+    REVIEW_FILE_LIMIT: "REVIEW_FILE_LIMIT",
+    REVIEW_LEAK_DETECTION: "REVIEW_LEAK_DETECTION",
+    // Platform runtime
+    GITHUB_ACTIONS: "GITHUB_ACTIONS",
+    GITHUB_EVENT_PATH: "GITHUB_EVENT_PATH",
+    GITHUB_TOKEN: "GITHUB_TOKEN",
+    GITHUB_REPOSITORY: "GITHUB_REPOSITORY",
+    GITHUB_REF: "GITHUB_REF",
+    GITHUB_SHA: "GITHUB_SHA",
+    // Azure DevOps runtime
+    TF_BUILD: "TF_BUILD",
+    SYSTEM_ACCESSTOKEN: "SYSTEM_ACCESSTOKEN",
+    SYSTEM_TEAMPROJECT: "SYSTEM_TEAMPROJECT",
+    SYSTEM_COLLECTIONURI: "SYSTEM_COLLECTIONURI",
+    BUILD_REPOSITORY_ID: "BUILD_REPOSITORY_ID",
+    SYSTEM_PULLREQUEST_PULLREQUESTID: "SYSTEM_PULLREQUEST_PULLREQUESTID",
+    SYSTEM_PULLREQUEST_SOURCECOMMITID: "SYSTEM_PULLREQUEST_SOURCECOMMITID",
+    SYSTEM_PULLREQUEST_TARGETBRANCHNAME: "SYSTEM_PULLREQUEST_TARGETBRANCHNAME",
+    // Inputs (already wrapped as INPUT_* by GitHub)
+    INPUT_DRY_RUN: "INPUT_DRY_RUN",
+    INPUT_EVENT: "INPUT_EVENT",
+    INPUT_DIFF: "INPUT_DIFF",
+    INPUT_REVIEW: "INPUT_REVIEW",
+    INPUT_THREADS: "INPUT_THREADS",
+    INPUT_OUTPUT_ARTIFACT: "INPUT_OUTPUT_ARTIFACT",
+    INPUT_PLATFORM: "INPUT_PLATFORM",
+};
+
 ;// CONCATENATED MODULE: ./src/cli/provider-prompts.ts
 
 
@@ -4771,7 +5307,7 @@ async function buildProviderPrompts(input) {
  * Node process**. It is intentionally NOT invalidated by anything
  * other than `__resetDefaultPromptFilesCacheForTests` (which is a
  * test-only hook). This is acceptable for the action's documented
- * deployment model — each `umactually-pr-review` invocation
+ * deployment model — each `umactually` invocation
  * (GitHub Actions, Azure DevOps, CLI) runs as a FRESH Node
  * process, so the cache effectively lives for one review run.
  *
@@ -4931,7 +5467,7 @@ async function pickSystemPrompt(input, defaultPaths) {
         return readPromptFiles(promptFilesList, DEFAULT_PROMPT_BYTE_CAP, { cwd: input.cwd });
     }
     const filePath = resolveField(input.parsed.promptFile, input.env[ENV_KEYS.UMACTUALLY_PROMPT_FILE], "");
-    if (filePath !== undefined && filePath.length > 0) {
+    if (filePath.length > 0) {
         return readPromptFiles([filePath], DEFAULT_PROMPT_BYTE_CAP, { cwd: input.cwd });
     }
     if (defaultPaths.length > 0) {
@@ -5020,7 +5556,7 @@ async function readAdditionalPrompt(input, defaultPaths) {
         return readPromptFiles(filesList, DEFAULT_PROMPT_BYTE_CAP, { cwd: input.cwd });
     }
     const filePath = resolveField(input.parsed.additionalPromptFile, input.env[ENV_KEYS.UMACTUALLY_ADDITIONAL_PROMPT_FILE], "");
-    if (filePath !== undefined && filePath.length > 0) {
+    if (filePath.length > 0) {
         return readPromptFiles([filePath], DEFAULT_PROMPT_BYTE_CAP, { cwd: input.cwd });
     }
     if (defaultPaths.length === 0)
@@ -5106,34 +5642,32 @@ function resolvePlatform(platform, env = process.env) {
                 throw error;
             }
         default:
-            return assertNever(platform);
+            return validate_assertNever(platform);
     }
 }
-function collectValidationErrors(parsed) {
+/**
+ * Did the operator ask the CLI to actually post? Posting identity must
+ * be present iff true.
+ *
+ * Posting intent is signaled by `--review`: that's the only artifact path
+ * the operator must explicitly opt into. ADO requires it for thread
+ * posting; GH Actions derives it from `$GITHUB_EVENT_PATH` automatically,
+ * which the wrapper runtime fills in (`src/index.ts:resolveGithubEventPath`)
+ * before the CLI parser runs. Operator-supplied --dry-run is a hard kill
+ * switch — even with --review, dry-run never posts.
+ */
+function isPostingRequested(parsed) {
+    if (parsed.dryRun) {
+        return false;
+    }
+    return parsed.reviewPath !== null;
+}
+/**
+ * Errors that ALWAYS apply regardless of whether the run is posting.
+ * These are invariants the operator must satisfy in every mode.
+ */
+function collectAlwaysValidationErrors(parsed) {
     const errors = [];
-    const resolved = resolvePlatform(parsed.platform);
-    if (resolved === "github") {
-        if (parsed.eventPath === null) {
-            errors.push("--event is required for --platform github");
-        }
-        if (parsed.diffPath === null) {
-            errors.push("--diff is required for --platform github");
-        }
-    }
-    if (resolved === "azure") {
-        if (parsed.eventPath === null) {
-            errors.push("--event is required for --platform azure");
-        }
-        if (parsed.diffPath === null) {
-            errors.push("--diff is required for --platform azure");
-        }
-        if (parsed.prNumber === null) {
-            errors.push("--pr-number is required for --platform azure");
-        }
-        if (parsed.repo === null) {
-            errors.push("--repo is required for --platform azure");
-        }
-    }
     if (parsed.includeSonarqube) {
         if (parsed.sonarHostUrl === null) {
             errors.push("--sonar-host-url is required when --include-sonarqube is set");
@@ -5145,22 +5679,72 @@ function collectValidationErrors(parsed) {
             errors.push("--sonar-project-key is required when --include-sonarqube is set");
         }
     }
+    // Provider config is required in live mode (the CLI talks to a
+    // provider when it runs for real). --dry-run skips the provider call
+    // entirely, so api-url/api-key are optional there. Copilot + Anthropic-
+    // native providers don't need --api-url (Copilot → GitHub Copilot
+    // token exchange; Anthropic → api.anthropic.com default).
     if (!parsed.dryRun) {
-        // Copilot + Anthropic-native providers don't need --api-url:
-        //   - Copilot uses the GitHub Copilot token exchange endpoint
-        //     (defaulting to https://api.github.com).
-        //   - Anthropic defaults to https://api.anthropic.com — an operator
-        //     with the default key can run without specifying --api-url.
-        if (parsed.apiUrl === null && parsed.provider !== "copilot" && parsed.provider !== "anthropic") {
+        if ((parsed.apiUrl === null || parsed.apiUrl.length === 0) &&
+            parsed.provider !== "copilot" &&
+            parsed.provider !== "anthropic") {
             errors.push("--api-url is required unless --dry-run is set, --provider copilot is used, or --provider anthropic is used");
         }
-        if (parsed.apiKey === null) {
+        if (parsed.apiKey === null || parsed.apiKey.length === 0) {
             errors.push("--api-key is required unless --dry-run is set");
         }
     }
     return errors;
 }
-function assertNever(value) {
+/**
+ * Errors that apply ONLY when posting is requested.
+ *
+ * Posting-target identity (--event, --diff, --pr-number, --repo) is
+ * genuinely required to post somewhere. If the operator did not request
+ * posting (dry-run, or no --review), these errors do NOT apply —
+ * because the CLI never reaches the posting step.
+ *
+ * ADO additionally requires prNumber + repo because the PR-event shape
+ * demands them; GitHub Actions can derive these from GITHUB_EVENT_PATH.
+ */
+function collectPostingValidationErrors(parsed) {
+    if (!isPostingRequested(parsed)) {
+        return [];
+    }
+    const errors = [];
+    const resolved = resolvePlatform(parsed.platform);
+    // Event + diff are posting-side inputs for BOTH GitHub and Azure flows:
+    // they're read by buildGithubDryRunArtifact / buildAzureDryRunArtifact /
+    // the dispatcher's runLiveReview path.
+    if (parsed.eventPath === null) {
+        errors.push("--review requires --event");
+    }
+    if (parsed.diffPath === null) {
+        errors.push("--review requires --diff");
+    }
+    if (resolved === "azure") {
+        if (parsed.prNumber === null) {
+            errors.push("--review requires --pr-number for --platform azure");
+        }
+        if (parsed.repo === null) {
+            errors.push("--review requires --repo for --platform azure");
+        }
+    }
+    return errors;
+}
+/**
+ * Composed validator. Always-errors ALWAYS apply; posting-errors apply
+ * only when posting is requested. Backwards-compatible: callers expecting
+ * field-level required errors on every run will see them when posting;
+ * callers running smoke tests (no --review, dry-run) will see none.
+ */
+function collectValidationErrors(parsed) {
+    return [
+        ...collectAlwaysValidationErrors(parsed),
+        ...collectPostingValidationErrors(parsed),
+    ];
+}
+function validate_assertNever(value) {
     throw new TypeError(`unhandled platform variant: ${JSON.stringify(value)}`);
 }
 
@@ -5474,7 +6058,7 @@ class GithubApiError extends PlatformApiError {
         super(code, status, message, options);
     }
 }
-const GITHUB_API_BASE_URL = DEFAULT_GITHUB_API_BASE;
+const GITHUB_API_BASE_URL = process.env["GITHUB_API_URL"]?.replace(/\/$/u, "") || DEFAULT_GITHUB_API_BASE;
 const PULL_DIFF_MEDIA_TYPE = "application/vnd.github.v3.diff";
 async function fetchGithubPrDiff(context, fetchImpl = fetch) {
     // GitHub's REST `/pulls/{n}` endpoint returns the server-side diff
@@ -5607,11 +6191,11 @@ async function readGithubPullRequestPayload(env) {
     }
     const rawPayload = await (0,promises_namespaceObject.readFile)(eventPath, "utf8");
     const parsed = JSON.parse(rawPayload);
-    if (!isRecord(parsed)) {
+    if (!json_guards_isRecord(parsed)) {
         throw new GithubContextError("GITHUB_EVENT_PAYLOAD_INVALID", "GitHub event payload must parse as a JSON object.");
     }
     const pullRequest = parsed["pull_request"];
-    if (!isRecord(pullRequest)) {
+    if (!json_guards_isRecord(pullRequest)) {
         throw new GithubContextError("GITHUB_EVENT_PAYLOAD_INVALID", "GitHub event payload must contain a 'pull_request' object.");
     }
     const repository = context_readRecord(parsed, "repository");
@@ -5627,7 +6211,7 @@ async function readGithubPullRequestPayload(env) {
 }
 function readSha(record, key) {
     const slot = record[key];
-    if (!isRecord(slot)) {
+    if (!json_guards_isRecord(slot)) {
         return null;
     }
     const sha = slot["sha"];
@@ -5640,7 +6224,7 @@ function readRepositoryName(record) {
     }
     const owner = record["owner"];
     const name = record["name"];
-    if (isRecord(owner) && typeof name === "string" && name.length > 0) {
+    if (json_guards_isRecord(owner) && typeof name === "string" && name.length > 0) {
         const ownerLogin = owner["login"];
         if (typeof ownerLogin === "string" && ownerLogin.length > 0) {
             return `${ownerLogin}/${name}`;
@@ -5652,7 +6236,7 @@ function readOptionalNumber(value) {
     return isPositiveSafeInteger(value) ? value : null;
 }
 function context_readRecord(value, label) {
-    if (!isRecord(value)) {
+    if (!json_guards_isRecord(value)) {
         throw new GithubContextError("GITHUB_EVENT_PAYLOAD_INVALID", `GitHub event payload must contain a '${label}' object.`);
     }
     return value;
@@ -6202,7 +6786,7 @@ function previewLines(data, max = 5) {
  * to `parts` and return the joined string. Every replacement layout in
  * `LAYOUT_RENDERERS` ends with this exact sequence — it is the contract
  * that keeps dedup loops and the AI manifest parser happy:
- *   1. `<!-- umactually-pr-review -->` marker (dedup key)
+ *   1. `<!-- umactually -->` marker (dedup key)
  *   2. Stable hidden manifest with verdict + severity tally
  *   3. `🤖 Generated by ...` footer at the bottom for human readers
  *
@@ -8083,7 +8667,7 @@ function extractTextPayload(endpoint, rawText) {
     }
     // 2. Plain JSON object.
     const parsed = tryParseJson(rawText);
-    if (parsed !== undefined && isRecord(parsed)) {
+    if (parsed !== undefined && json_guards_isRecord(parsed)) {
         if (endpoint === "responses") {
             const direct = readStringField(parsed, "output_text");
             if (direct !== null && direct.length > 0) {
@@ -8168,7 +8752,7 @@ function extractTextPayload(endpoint, rawText) {
  */
 function parseReviewPayload(text, context) {
     const candidate = extractJsonBlock(text);
-    if (!isRecord(candidate)) {
+    if (!json_guards_isRecord(candidate)) {
         return null;
     }
     const summary = readStringField(candidate, "summary") ?? "";
@@ -8325,7 +8909,7 @@ function extractTerminalEventPayload(rawText) {
         catch {
             continue;
         }
-        if (!isRecord(parsed))
+        if (!json_guards_isRecord(parsed))
             continue;
         const eventType = parsed["type"];
         if (eventType === "response.completed" || eventType === "response.done") {
@@ -8354,7 +8938,7 @@ function parseProviderUsage(rawText) {
         return undefined;
     }
     const usageRaw = terminalEvent["usage"];
-    if (!isRecord(usageRaw)) {
+    if (!json_guards_isRecord(usageRaw)) {
         return undefined;
     }
     let inputTokens;
@@ -8481,14 +9065,14 @@ function isApologySummary(summary) {
 function joinOutputText(output) {
     const fragments = [];
     for (const entry of output) {
-        if (!isRecord(entry)) {
+        if (!json_guards_isRecord(entry)) {
             continue;
         }
         const content = entry["content"];
         // Responses API: content is an array of parts.
         if (Array.isArray(content)) {
             for (const part of content) {
-                if (!isRecord(part)) {
+                if (!json_guards_isRecord(part)) {
                     continue;
                 }
                 // The Responses API puts reasoning content in a separate
@@ -8510,7 +9094,7 @@ function joinOutputText(output) {
             continue;
         }
         // Chat-style: content is a single object with a text field.
-        if (isRecord(content)) {
+        if (json_guards_isRecord(content)) {
             const contentType = content["type"];
             if (typeof contentType === "string" && contentType.includes("reasoning")) {
                 continue;
@@ -8546,13 +9130,13 @@ function joinOutputText(output) {
 function extractLastReviewDraftFromReasoning(output) {
     let lastDraft = null;
     for (const entry of output) {
-        if (!isRecord(entry))
+        if (!json_guards_isRecord(entry))
             continue;
         const content = entry["content"];
         if (!Array.isArray(content))
             continue;
         for (const part of content) {
-            if (!isRecord(part))
+            if (!json_guards_isRecord(part))
                 continue;
             const partType = part["type"];
             if (typeof partType === "string" && !partType.includes("reasoning")) {
@@ -8576,7 +9160,7 @@ function extractLastReviewDraftFromReasoning(output) {
                     continue;
                 try {
                     const parsed = JSON.parse(body);
-                    if (!isRecord(parsed))
+                    if (!json_guards_isRecord(parsed))
                         continue;
                     // Must look like a review: has summary or verdict or comments.
                     if ("summary" in parsed ||
@@ -8605,7 +9189,7 @@ function provider_parse_readCommentArray(value, context) {
     const effectiveProviderName = context?.providerName;
     const comments = [];
     value.forEach((entry, index) => {
-        if (!isRecord(entry)) {
+        if (!json_guards_isRecord(entry)) {
             return;
         }
         const path = entry["path"];
@@ -8824,7 +9408,7 @@ function tryExtractSse(rawText) {
             continue;
         }
         const parsed = tryParseJson(payload);
-        if (!isRecord(parsed)) {
+        if (!json_guards_isRecord(parsed)) {
             continue;
         }
         // /responses streaming (OpenAI Responses API format):
@@ -9017,7 +9601,7 @@ function detectProviderError(rawText) {
     // Try parsing the raw text as JSON. If it's not JSON, fall through
     // to the text-signal checks (error-doc URLs in plain text).
     const parsed = tryParseJson(rawText);
-    if (parsed !== undefined && isRecord(parsed)) {
+    if (parsed !== undefined && json_guards_isRecord(parsed)) {
         // Signal 1: error-envelope at the top level.
         const errorDetails = checkErrorEnvelope(parsed);
         if (errorDetails !== null) {
@@ -9052,7 +9636,7 @@ function detectProviderError(rawText) {
 function checkErrorEnvelope(parsed) {
     // Single `error` object (RFC 7807 / common shape).
     const errorField = parsed["error"];
-    if (isRecord(errorField)) {
+    if (json_guards_isRecord(errorField)) {
         const message = readStringField(errorField, "message") ??
             readStringField(errorField, "type") ??
             readStringField(errorField, "code") ??
@@ -9069,7 +9653,7 @@ function checkErrorEnvelope(parsed) {
     const errorsField = parsed["errors"];
     if (isUnknownArray(errorsField) && errorsField.length > 0) {
         const first = errorsField[0];
-        if (isRecord(first)) {
+        if (json_guards_isRecord(first)) {
             const message = readStringField(first, "message") ??
                 readStringField(first, "detail") ??
                 readStringField(first, "title") ??
@@ -9278,7 +9862,7 @@ async function evaluateLeakGate(input) {
  *   - Verdict badge — second line, large H2
  *   - 🏷️ Severity tally — `critical → high → medium → low` distribution
  *     of the POSTED set, hidden when all zeros
-  *   - Stable `<!-- umactually-pr-review:manifest {…} -->` for AI agents
+  *   - Stable `<!-- umactually:manifest {…} -->` for AI agents
  *   - Same byte-for-byte output on GitHub and Azure (parity invariant)
  *   - Secret redaction applied to every rendered string
  *
@@ -9752,7 +10336,7 @@ async function readJsonResponse(response) {
     }
 }
 function readResponseId(value) {
-    if (!isRecord(value)) {
+    if (!json_guards_isRecord(value)) {
         return undefined;
     }
     const id = value["id"];
@@ -9993,7 +10577,7 @@ async function listAzureThreads(context, fetchImpl) {
     });
     ensureHttpOk(response, "AZURE_LIST_THREADS_FAILED", "Azure list PR threads");
     const json = await readJsonResponse(response);
-    if (!isRecord(json)) {
+    if (!json_guards_isRecord(json)) {
         return [];
     }
     const value = json["value"];
@@ -10187,7 +10771,7 @@ async function postAzureThread(input) {
     });
     ensureHttpOk(response, "AZURE_CREATE_THREAD_FAILED", "Azure create PR thread");
     const json = await readJsonResponse(response);
-    if (!isRecord(json)) {
+    if (!json_guards_isRecord(json)) {
         return undefined;
     }
     const threadId = readResponseId(json);
@@ -10202,7 +10786,7 @@ async function postAzureThread(input) {
         return undefined;
     }
     const firstComment = comments[0];
-    if (!isRecord(firstComment)) {
+    if (!json_guards_isRecord(firstComment)) {
         return undefined;
     }
     const commentId = firstComment["id"];
@@ -10233,7 +10817,7 @@ async function postAzureThread(input) {
 async function postAzureStatus(input) {
     const safeDescription = sanitizeAzureStatusDescription(input.description);
     // Delete the previous CLI status entries for this PR so the
-    // Checks panel stays at exactly one `umactually-pr-review-status`
+    // Checks panel stays at exactly one `umactually-status`
     // row per run. The documented Microsoft Learn `Update` endpoint
     // (https://learn.microsoft.com/en-us/rest/api/azure/devops/git/pull-request-statuses/update?view=azure-devops-rest-7.1)
     // only supports `op:"remove"`, and `PATCH .../statuses/{id}` does
@@ -10322,7 +10906,7 @@ async function listAzureStatuses(context, fetchImpl) {
         return [];
     }
     const json = await readJsonResponse(response);
-    if (!isRecord(json)) {
+    if (!json_guards_isRecord(json)) {
         return [];
     }
     const value = json["value"];
@@ -10339,7 +10923,7 @@ async function listAzureStatuses(context, fetchImpl) {
     return entries;
 }
 function parseAzureStatusEntry(value) {
-    if (!isRecord(value)) {
+    if (!json_guards_isRecord(value)) {
         return null;
     }
     const rawId = value["id"];
@@ -10351,7 +10935,7 @@ function parseAzureStatusEntry(value) {
     const updatedDateRaw = value["updatedDate"];
     const updatedDate = typeof updatedDateRaw === "string" ? updatedDateRaw : "";
     const contextRaw = value["context"];
-    if (!isRecord(contextRaw)) {
+    if (!json_guards_isRecord(contextRaw)) {
         return null;
     }
     const nameRaw = contextRaw["name"];
@@ -10523,7 +11107,7 @@ function sanitizeAzureStatusDescription(value) {
         .slice(0, 255);
 }
 function parseAzureThread(value) {
-    if (!isRecord(value)) {
+    if (!json_guards_isRecord(value)) {
         return null;
     }
     const status = value["status"];
@@ -10541,7 +11125,7 @@ function parseAzureThread(value) {
     //   - key absent (flat fixture)     → inline thread with filePath + line at top level
     let threadContext = null;
     if (hasThreadContextKey) {
-        if (isRecord(nestedContext)) {
+        if (json_guards_isRecord(nestedContext)) {
             const parsed = live_azure_readThreadContext(nestedContext);
             if (parsed !== null) {
                 threadContext = parsed;
@@ -10575,14 +11159,14 @@ function live_azure_readThreadContext(record) {
 }
 function readRightFileStart(context) {
     const start = context["rightFileStart"];
-    if (!isRecord(start)) {
+    if (!json_guards_isRecord(start)) {
         return null;
     }
     const line = start["line"];
     return isSafeInteger(line) ? { line } : null;
 }
 function parseAzureComment(value) {
-    if (!isRecord(value)) {
+    if (!json_guards_isRecord(value)) {
         return null;
     }
     const content = value["content"];
@@ -10607,6 +11191,8 @@ function azureStatusesUrl(context) {
 
 
 
+
+const live_github_GITHUB_API_BASE_URL = process.env["GITHUB_API_URL"]?.replace(/\/$/u, "") || DEFAULT_GITHUB_API_BASE;
 async function runGithubLive(input) {
     const { context, diffText, provider, parsed, fetchImpl } = input;
     const prepared = preparePostedReview({
@@ -10755,7 +11341,7 @@ async function createGithubReview(input) {
     return readResponseId(await readJsonResponse(response));
 }
 function parseExistingReview(value) {
-    if (!isRecord(value)) {
+    if (!json_guards_isRecord(value)) {
         return null;
     }
     const id = value["id"];
@@ -10771,7 +11357,7 @@ function parseExistingReview(value) {
 function githubReviewsUrl(context) {
     const owner = encodeURIComponent(context.repo.owner);
     const repo = encodeURIComponent(context.repo.name);
-    return `https://api.github.com/repos/${owner}/${repo}/pulls/${context.prNumber}/reviews`;
+    return `${live_github_GITHUB_API_BASE_URL}/repos/${owner}/${repo}/pulls/${context.prNumber}/reviews`;
 }
 
 ;// CONCATENATED MODULE: ./src/cli/live-merge.ts
@@ -11183,7 +11769,7 @@ async function fetchAndCacheSessionToken(githubToken, tokenUrl, tokenHeaders, fe
         };
     }
     const envelope = tryParseJson(rawText);
-    if (!isRecord(envelope)) {
+    if (!json_guards_isRecord(envelope)) {
         return {
             ok: false,
             error: new ProviderError("parse", endpoint, response.status, requestId, "Copilot session token response was not a JSON object."),
@@ -11930,7 +12516,7 @@ function extractAnthropicTextPayload(rawText) {
     catch {
         return rawText;
     }
-    if (!isRecord(parsed)) {
+    if (!json_guards_isRecord(parsed)) {
         return rawText;
     }
     const content = readArrayField(parsed, "content");
@@ -11942,7 +12528,7 @@ function extractAnthropicTextPayload(rawText) {
     }
     const fragments = [];
     for (const block of content) {
-        if (!isRecord(block))
+        if (!json_guards_isRecord(block))
             continue;
         const type = readStringField(block, "type");
         if (type !== "text")
@@ -11960,7 +12546,7 @@ function extractAnthropicTextPayload(rawText) {
  * distinguish "truncated stream" from "bad JSON".
  */
 function readStopReason(parsed) {
-    if (!isRecord(parsed))
+    if (!json_guards_isRecord(parsed))
         return null;
     const stopReason = readStringField(parsed, "stop_reason");
     if (stopReason === null || stopReason.length === 0)
@@ -11973,10 +12559,10 @@ function readStopReason(parsed) {
  * surfaces usage when the provider actually reported it.
  */
 function readUsage(parsed) {
-    if (!isRecord(parsed))
+    if (!json_guards_isRecord(parsed))
         return undefined;
     const usage = readRecordField(parsed, "usage");
-    if (usage === null || !isRecord(usage))
+    if (usage === null || !json_guards_isRecord(usage))
         return undefined;
     const inputTokens = anthropic_messages_readNumberField(usage, "input_tokens");
     const outputTokens = anthropic_messages_readNumberField(usage, "output_tokens");
@@ -13890,10 +14476,6 @@ function readConfiguredModel(parsed, env) {
     if (fromArgs !== null && fromArgs.length > 0 && fromArgs !== "auto") {
         return fromArgs;
     }
-    const fromEnv = env[ENV_KEYS.UMACTUALLY_MODEL];
-    if (fromEnv !== undefined && fromEnv.length > 0 && fromEnv !== "auto") {
-        return fromEnv;
-    }
     // Layer 5: `auto` is no longer passed verbatim. The resolver picks
     // a less-hallucinating model based on the active provider + API
     // URL. See `src/cli/auto-model.ts` for the per-provider mapping
@@ -14750,6 +15332,8 @@ function orchestrator_assertNever(value) {
 
 
 
+
+
 const DEFAULT_AZURE_ARTIFACT = "artifacts/manual/s4-azure-mocked-run.json";
 const DEFAULT_REDACTION_REPORT = "artifacts/manual/s5-redaction-report.json";
 const DEFAULT_SONAR_REPORT = "artifacts/manual/s6-sonar-mocked-run.json";
@@ -14770,6 +15354,7 @@ async function runDryRun(parsed, cwd, platform) {
     mergeEnvDiagnostics(artifactBody, envSources);
     await (0,promises_namespaceObject.mkdir)((0,external_node_path_namespaceObject.dirname)(artifactPath), { recursive: true });
     await (0,promises_namespaceObject.writeFile)(artifactPath, `${JSON.stringify(artifactBody, null, 2)}\n`, "utf8");
+    process.stdout.write(`${BRAND_PREFIX}dry-run wrote ${artifactPath}\n`);
     return { exitCode: 0 };
 }
 /**
@@ -14879,10 +15464,40 @@ async function buildDryRunArtifact(parsed, platform, cwd) {
     return buildAzureDryRunArtifact(parsed, cwd);
 }
 async function buildGithubDryRunArtifact(parsed, cwd) {
-    const eventPath = requireArg(parsed.eventPath, "--event");
-    const diffPath = requireArg(parsed.diffPath, "--diff");
-    const eventJson = await readRequiredFile(eventPath, cwd, "--event");
-    const diffText = await readRequiredFile(diffPath, cwd, "--diff");
+    // Dry-run short-circuit: when the operator has not supplied --review,
+    // this is a smoke test, NOT a posting run. The auto-context-derived
+    // synthetic event.json has null posting identity (pull_request.number=null)
+    // that the runReview pipeline rejects. Mirror the Azure stub at the
+    // bottom of this file (lines 215-224): return a no-posting artifact body.
+    //
+    // We deliberately do NOT also require isStandaloneMode(process.env):
+    // a CI user that runs `umactually review --dry-run` without --review
+    // gets the same no-posting body. (Old behavior was to require
+    // non-CI, but that surfaced the "runStandalone requires parsed.diffPath
+    // to be non-null" TypeError on CI, which is wrong — the operator
+    // did not ask to post, the CLI should not throw.)
+    if (parsed.dryRun && parsed.reviewPath === null) {
+        return {
+            artifactPath: "artifacts/manual/s1-github-self-review.md",
+            posted: false,
+            marker: REVIEW_MARKER,
+            inlineThreadCount: 0,
+            suppressedCommentCount: 0,
+            note: "no --review supplied; this was a dry-run smoke test, no posting path executed",
+        };
+    }
+    // The validator (src/cli/validate.ts:collectPostingValidationErrors)
+    // is the sole gate for posting-required identity. Here in the consumer
+    // path we tolerate null event/diff when the operator is running a
+    // smoke test without posting context. Pass empty strings; the runReview
+    // pipeline tolerates empty eventJson / empty diffText (it returns zero
+    // findings, which is what a smoke test expects).
+    const eventJson = parsed.eventPath === null
+        ? ""
+        : await readRequiredFile(parsed.eventPath, cwd, "--event");
+    const diffText = parsed.diffPath === null
+        ? ""
+        : await readRequiredFile(parsed.diffPath, cwd, "--diff");
     const providerReviewJson = await readOptionalFile(parsed.reviewPath ?? parsed.promptFile, cwd, "{}", "review");
     const expectedArtifact = "artifacts/manual/s1-github-self-review.md";
     const result = await runReview({
@@ -14904,9 +15519,26 @@ async function buildGithubDryRunArtifact(parsed, cwd) {
     return body;
 }
 async function buildAzureDryRunArtifact(parsed, cwd) {
-    const pullRequestPath = requireArg(parsed.eventPath, "--event");
     const reviewPath = parsed.reviewPath;
-    const pullRequestJson = await readRequiredFile(pullRequestPath, cwd, "--event");
+    if (parsed.dryRun || reviewPath === null) {
+        return {
+            artifactPath: DEFAULT_AZURE_ARTIFACT,
+            postedThreadCount: 0,
+            postedStatusState: "succeeded",
+            marker: REVIEW_MARKER,
+            postingRequested: false,
+            note: "no --review supplied; this was a capability-detection smoke run, no posting path executed",
+        };
+    }
+    // The validator (src/cli/validate.ts:collectPostingValidationErrors)
+    // already gated on --review requires --event / --diff for posting,
+    // so by the time we reach here those fields are non-null. Throw a
+    // defensive error if the validator let a malformed invocation slip
+    // through; don't silently produce a broken artifact.
+    if (parsed.eventPath === null || parsed.diffPath === null) {
+        throw new CliArgumentError("--review requires --event and --diff to be supplied");
+    }
+    const pullRequestJson = await readRequiredFile(parsed.eventPath, cwd, "--event");
     const existingThreadsJson = parsed.threadsPath === null
         ? "{\"count\":0,\"value\":[]}"
         : await readRequiredFile(parsed.threadsPath, cwd, "--threads");
@@ -14966,12 +15598,6 @@ async function maybeMergeSonarReport(parsed, body) {
     body["skipWhenUnconfigured"] = report.skipWhenUnconfigured;
     body["sonarReport"] = report;
 }
-function requireArg(value, flag) {
-    if (value === null) {
-        throw new CliArgumentError(`${flag} is required`);
-    }
-    return value;
-}
 async function readRequiredFile(path, cwd, label) {
     const absolute = (0,external_node_path_namespaceObject.isAbsolute)(path) ? path : (0,external_node_path_namespaceObject.resolve)(cwd, path);
     try {
@@ -15010,8 +15636,17 @@ async function dispatchLive(parsed, cwd, env) {
         // guard to catch — the action exits 0 and CI sees "pass".
         const platform = resolvePlatform(parsed.platform, env);
         await writeLiveArtifact(parsed, cwd, platform, result);
-        return { exitCode: result.exitCode };
+        const artifactPath = resolveArtifactPath(parsed.outputArtifact, platform, cwd);
+        return { exitCode: validateLiveArtifact(artifactPath, result.exitCode) };
     });
+}
+function validateLiveArtifact(artifactPath, reviewExitCode) {
+    const classification = classifyReviewArtifact(artifactPath);
+    if (classification.ok) {
+        return reviewExitCode;
+    }
+    process.stderr.write(`${BRAND_PREFIX}${artifactPath}: ${classification.reason ?? "invalid review artifact"}\n`);
+    return 1;
 }
 /**
  * Persist the live review outcome to the same artifact path the dry-run
@@ -15122,6 +15757,380 @@ async function writeParseWarningsArtifact(primaryArtifactPath, warnings) {
     await (0,promises_namespaceObject.writeFile)(path, `${JSON.stringify(body, null, 2)}\n`, "utf8");
 }
 
+;// CONCATENATED MODULE: ./src/cli/standalone-run.ts
+/**
+ * Runs provider-only reviews for local repositories without CI platform markers.
+ * This module writes a standalone artifact and intentionally does not post to
+ * GitHub, Azure DevOps, or any other platform.
+ */
+
+
+
+
+
+
+/**
+ * Detect whether `env` represents standalone mode (no CI markers).
+ * True when BOTH GITHUB_ACTIONS and TF_BUILD are missing or not
+ * the canonical truthy values.
+ */
+function isStandaloneMode(env) {
+    const isTruthy = (value) => value === "true" || value === "True" || value === "TRUE";
+    return !isTruthy(env["GITHUB_ACTIONS"]) && !isTruthy(env["TF_BUILD"]);
+}
+/**
+ * Run a standalone review: provider call only, no platform posting.
+ * Writes ./umactually-review.json (or `overrideArtifactPath` if set)
+ * to `cwd`. Exits via the result shape — provider failures are returned.
+ */
+async function runStandalone(input) {
+    if (input.parsed.diffPath === null) {
+        // No diff was supplied and the auto-context derivation did not
+        // find one (operator is in a non-CI shell outside a git repo with
+        // uncommitted changes, OR explicitly chose to skip the derivation
+        // with --no-context flag if implemented). Mirror the dry-run
+        // short-circuit: write a no-posting artifact body and return
+        // ok so `umactually review` in a terminal degrades gracefully
+        // instead of throwing. Old behavior (throw TypeError) was a
+        // wrapper-era assumption that the operator always has a diff to
+        // review; in the CLI-only world the operator may just want to
+        // confirm the CLI boots in their cwd.
+        const artifactPath = (0,external_node_path_namespaceObject.resolve)(input.cwd, input.overrideArtifactPath ?? "./umactually-review.json");
+        const note = "No diff content was found; provider review was skipped.";
+        const body = {
+            mode: "standalone",
+            artifactPath,
+            posted: false,
+            note,
+            provider: {
+                name: input.parsed.provider ?? "openai-compatible",
+                modelId: input.parsed.model ?? "auto",
+                endpoint: input.parsed.apiUrl ?? "",
+            },
+            review: { summary: note, verdict: "COMMENT", comments: [] },
+            parseWarnings: 0,
+            severityWarnings: 0,
+            inlineThreadCount: 0,
+            suppressedCommentCount: 0,
+            marker: REVIEW_MARKER,
+            generatedAt: new Date().toISOString(),
+        };
+        await (0,promises_namespaceObject.writeFile)(artifactPath, `${JSON.stringify(body, null, 2)}\n`, "utf8");
+        process.stdout.write(`${BRAND_PREFIX}standalone review (no diff) wrote ${artifactPath}\n`);
+        return { kind: "ok", artifactPath, review: body.review };
+    }
+    const artifactPath = (0,external_node_path_namespaceObject.resolve)(input.cwd, input.overrideArtifactPath ?? "./umactually-review.json");
+    const diffText = await (0,promises_namespaceObject.readFile)(input.parsed.diffPath, "utf8");
+    const providerApiKey = input.parsed.apiKey ?? "";
+    if (diffText.length === 0) {
+        const note = "No diff content was found; provider review was skipped.";
+        const body = {
+            mode: "standalone",
+            artifactPath,
+            posted: false,
+            note,
+            provider: {
+                name: input.parsed.provider ?? "openai-compatible",
+                modelId: input.parsed.model ?? "auto",
+                endpoint: input.parsed.apiUrl ?? "",
+            },
+            review: { summary: note, verdict: "COMMENT", comments: [] },
+            parseWarnings: 0,
+            severityWarnings: 0,
+            inlineThreadCount: 0,
+            suppressedCommentCount: 0,
+            marker: REVIEW_MARKER,
+            generatedAt: new Date().toISOString(),
+        };
+        await (0,promises_namespaceObject.writeFile)(artifactPath, `${JSON.stringify(body, null, 2)}\n`, "utf8");
+        process.stdout.write(`${BRAND_PREFIX}standalone review (no diff) wrote ${artifactPath}\n`);
+        return { kind: "ok-no-diff", artifactPath, note };
+    }
+    let outcome;
+    try {
+        const fetchImpl = input.fetchImpl ?? globalThis.fetch.bind(globalThis);
+        outcome = await requestLiveReview({
+            parsed: input.parsed,
+            cwd: input.cwd,
+            env: input.env,
+            fetchImpl,
+            platform: "github",
+            diffText,
+            platformToken: "",
+        });
+    }
+    catch (error) {
+        const message = error instanceof LiveReviewError || error instanceof Error
+            ? error.message
+            : String(error);
+        return {
+            kind: "provider-error",
+            exitCode: 1,
+            message,
+            sanitizedForLog: sanitizeForPost(message, [providerApiKey]),
+        };
+    }
+    const note = "Standalone review completed; no platform posting was attempted.";
+    const review = {
+        summary: outcome.review.summary,
+        verdict: outcome.review.verdict,
+        comments: outcome.review.comments,
+    };
+    const body = {
+        mode: "standalone",
+        artifactPath,
+        posted: false,
+        note,
+        provider: {
+            name: outcome.provider,
+            modelId: outcome.modelId,
+            endpoint: outcome.endpoint,
+        },
+        review,
+        parseWarnings: outcome.parseWarnings.length,
+        severityWarnings: outcome.severityWarnings.length,
+        inlineThreadCount: outcome.review.comments.length,
+        suppressedCommentCount: outcome.review.suppressedComments.length,
+        marker: REVIEW_MARKER,
+        generatedAt: new Date().toISOString(),
+    };
+    await (0,promises_namespaceObject.writeFile)(artifactPath, `${JSON.stringify(body, null, 2)}\n`, "utf8");
+    process.stdout.write(`${BRAND_PREFIX}standalone review wrote ${artifactPath}\n`);
+    return { kind: "ok", artifactPath, review };
+}
+
+;// CONCATENATED MODULE: ./src/cli/auto-context.ts
+/**
+ * Auto-derive CLI platform context from a local git repository.
+ *
+ * SCOPE: this module owns ONLY git-cwd derivation. It does NOT
+ *   - Synthesize event JSON (lives at the call site, structured to avoid
+ *     cross-platform shape coupling — see plan D4).
+ *   - Synthesize fake posting identity (`prNumber="0"` was architectural rot
+ *     leaking local-smoke-test semantics into the posting path).
+ *   - Speculate on remote URL review modes (deferred — see plan D5).
+ *
+ * BEHAVIOR:
+ *   - If cwd is not inside a git working tree, returns `null` (caller
+ *     surfaces a "not in a git repo, pass --diff and --event manually"
+ *     guidance).
+ *   - Otherwise: derive (a) a diff path via `git diff <base>...HEAD`,
+ *     (b) the synthetic event JSON metadata (branch + base — all
+ *     posting-identity fields are written as `null`), and
+ *     (c) the canonical owner/name from `git remote get-url origin`
+ *     (or `null` when no canonical owner/name is parseable — caller
+ *     must supply `--repo` explicitly if posting is requested).
+ *   - Caller-supplied `diffOverride` / `eventOverride` skip generation
+ *     for those fields; other fields are still derived.
+ *
+ * CALLER RESPONSIBILITY: callers MUST resolve the base branch BEFORE
+ * invoking this function. Default-branch detection lives at the call
+ * site (src/cli.ts step 5 per plan D5) so the same resolveContext layer
+ * can serve future URL-mode inputs that don't have a cwd concept.
+ *
+ * SECURITY: `child_process.execFileSync` is used with argv as an array
+ * (NOT shell), so user-supplied `base` cannot escape into a shell command.
+ */
+
+
+
+/**
+ * Run `git <args>` in `cwd` and return trimmed stdout. Throws with the
+ * failing argv + stderr so the operator gets a clear root cause.
+ */
+function gitOrThrow(cwd, args) {
+    try {
+        const out = (0,external_node_child_process_namespaceObject.execFileSync)("git", args, {
+            cwd,
+            encoding: "utf8",
+            stdio: ["ignore", "pipe", "pipe"],
+        });
+        return String(out).trim();
+    }
+    catch (error) {
+        const stderr = typeof error === "object" && error !== null && "stderr" in error
+            ? String(error.stderr ?? "")
+            : "";
+        throw new Error(`git ${args.join(" ")} failed in ${cwd}: ${stderr.trim() || error.message}`);
+    }
+}
+/**
+ * Parse `owner/name` out of a git remote URL. Supports SSH
+ * (`git@github.com:owner/name.git`) and HTTPS
+ * (`https://github.com/owner/name.git`) forms. Returns `null` when no
+ * canonical owner/name is parseable — callers MUST NOT fall back to a
+ * slashless dirname because that leaks the local-tempdir basename as
+ * a fake identity.
+ */
+function parseRemoteSlug(remoteUrl) {
+    // SSH: [user@]host:owner/name[.git]
+    const ssh = /^[\w.-]+@[^:]+:([^/]+)\/([^/]+?)(?:\.git)?$/u.exec(remoteUrl);
+    if (ssh !== null) {
+        return `${ssh[1]}/${ssh[2]}`;
+    }
+    // HTTPS: https://host/owner/name[.git]
+    const https = /^https?:\/\/[^/]+\/([^/]+)\/([^/]+?)(?:\.git)?(?:\/.*)?$/u.exec(remoteUrl);
+    if (https !== null) {
+        return `${https[1]}/${https[2]}`;
+    }
+    return null;
+}
+/**
+ * Write the synthetic GitHub-shaped event JSON metadata to a sibling of
+ * the diff path. Identity fields are `null` — they identify a posting
+ * target; the synthetic event JSON deliberately does NOT carry fake
+ * posting identity. The downstream consumer (`src/cli/run.ts` per Task 8)
+ * is responsible for accepting `null` posting identity in non-posting mode.
+ */
+function writeSyntheticEventJson(filePath, args) {
+    const event = {
+        pull_request: {
+            number: null,
+            head: { ref: args.branch, sha: null },
+            base: { ref: args.base, sha: null },
+        },
+        repository: {
+            full_name: args.repo,
+            name: args.repo === null ? null : args.repo.split("/")[1] ?? null,
+            owner: { login: args.repo === null ? null : args.repo.split("/")[0] ?? null },
+        },
+        action: "synthetic",
+        sender: { login: "local-smoke-test" },
+    };
+    (0,external_node_fs_namespaceObject.writeFileSync)(filePath, `${JSON.stringify(event, null, 2)}\n`, "utf8");
+    return filePath;
+}
+/**
+ * Returns the directory used for auto-derived temp files (diff + event).
+ * Lives under `cwd/.umactually-auto-ctx/` so cleanup is a single
+ * recursive remove. The directory is created lazily on first write.
+ */
+function tempDirPath(cwd) {
+    return (0,external_node_path_namespaceObject.join)(cwd, ".umactually-auto-ctx");
+}
+/** True when the named local branch ref resolves. */
+function localBranchExists(cwd, branch) {
+    try {
+        gitOrThrow(cwd, ["rev-parse", "--verify", "--quiet", `refs/heads/${branch}`]);
+        return true;
+    }
+    catch {
+        return false;
+    }
+}
+/**
+ * Top-level entry point. See module docstring for the full contract.
+ *
+ * Returns null when:
+ *   - cwd is not inside a git working tree.
+ *
+ * Throws when:
+ *   - the resolved `base` branch does not exist locally — message includes
+ *     `git fetch origin <base>` remediation (per plan D5).
+ *   - any git command fails for an unrelated reason (e.g. corrupt repo).
+ *
+ * `base` parameter is OPTIONAL — when empty/null, this module falls back
+ * to default-branch detection via `git symbolic-ref refs/remotes/origin/HEAD`
+ * and a `main`/`master` fallback. Callers that already resolve the base
+ * (e.g. src/cli.ts after parsing `--base`) can pass the explicit value
+ * to skip the probe.
+ */
+function deriveContextFromGit(input) {
+    const { cwd, eventOverride, diffOverride } = input;
+    const requestedBase = input.base;
+    // 1. confirm we're inside a git working tree.
+    try {
+        gitOrThrow(cwd, ["rev-parse", "--is-inside-work-tree"]);
+    }
+    catch {
+        return null;
+    }
+    // 2. resolve the base branch. Caller-supplied value wins; otherwise
+    // probe origin/HEAD and finally fall back to main/master. If nothing
+    // resolves, throw a guidance-rich error.
+    let base;
+    if (typeof requestedBase === "string" && requestedBase.length > 0) {
+        base = requestedBase;
+    }
+    else {
+        const detected = resolveDefaultBranch(cwd);
+        if (detected === null) {
+            throw new Error(`unable to detect default branch in ${cwd}: origin/HEAD is not set and neither 'main' nor 'master' exists locally. Pass --base <branch> explicitly or fetch the default branch.`);
+        }
+        base = detected;
+    }
+    if (!localBranchExists(cwd, base)) {
+        throw new Error(`base branch '${base}' not found locally in ${cwd}. Run 'git fetch origin ${base}' or pass --base <existing-branch>.`);
+    }
+    // 3. determine current branch (for the synthetic event JSON metadata).
+    let currentBranch = "HEAD";
+    try {
+        currentBranch = gitOrThrow(cwd, ["symbolic-ref", "--quiet", "--short", "HEAD"]);
+    }
+    catch {
+        // Detached HEAD — leave as "HEAD" in the event JSON.
+    }
+    // 4. resolve the repository slug from `origin`. Returns null when
+    // unparseable. Caller MAY supply `--repo` if posting is requested.
+    let repo = null;
+    try {
+        const remoteUrl = gitOrThrow(cwd, ["remote", "get-url", "origin"]);
+        repo = parseRemoteSlug(remoteUrl);
+    }
+    catch {
+        // No origin remote or other failure; repo stays null.
+    }
+    // 5. resolve paths: caller overrides win; otherwise generate under
+    // cwd/.umactually-auto-ctx/ which Task 9 cleans up.
+    const tempDir = tempDirPath(cwd);
+    const diffPath = diffOverride !== undefined && diffOverride !== null
+        ? diffOverride
+        : (0,external_node_path_namespaceObject.join)(tempDir, "diff.patch");
+    const eventPath = eventOverride !== undefined && eventOverride !== null
+        ? eventOverride
+        : (0,external_node_path_namespaceObject.join)(tempDir, "event.json");
+    // 6. write the generated files (only if not overridden). Do NOT throw
+    // if the diff is empty — that's fine for smoke tests on the default branch.
+    if (diffOverride === undefined || diffOverride === null) {
+        const diffOutput = gitOrThrow(cwd, ["diff", `${base}...HEAD`]);
+        (0,external_node_fs_namespaceObject.mkdirSync)(tempDir, { recursive: true });
+        (0,external_node_fs_namespaceObject.writeFileSync)(diffPath, diffOutput, "utf8");
+    }
+    if (eventOverride === undefined || eventOverride === null) {
+        (0,external_node_fs_namespaceObject.mkdirSync)(tempDir, { recursive: true });
+        writeSyntheticEventJson(eventPath, { branch: currentBranch, base, repo });
+    }
+    // 7. posting identity is null. The caller (src/cli.ts) gates posting
+    // on `--review` (or the resolved dispatcher's posting token), NOT on
+    // these fields.
+    return { eventPath, diffPath, repo, prNumber: null };
+}
+/**
+ * Default-branch detection helper. Returns null when origin/HEAD is not
+ * configured and no fallback branch exists locally. Throws only on
+ * unexpected git errors (corrupt repo, exec failure, etc.).
+ */
+function resolveDefaultBranch(cwd) {
+    try {
+        const ref = gitOrThrow(cwd, [
+            "symbolic-ref",
+            "--quiet",
+            "--short",
+            "refs/remotes/origin/HEAD",
+        ]);
+        return ref.replace(/^origin\//u, "");
+    }
+    catch {
+        // origin/HEAD not set; try common names.
+        for (const candidate of ["main", "master"]) {
+            if (localBranchExists(cwd, candidate)) {
+                return candidate;
+            }
+        }
+        return null;
+    }
+}
+
 ;// CONCATENATED MODULE: ./src/cli.ts
 
 
@@ -15130,6 +16139,174 @@ async function writeParseWarningsArtifact(primaryArtifactPath, warnings) {
 
 
 
+
+
+
+
+
+
+
+
+
+/**
+ * Read the package version.
+ *
+ * In normal (Node) usage, reads `package.json` via `import.meta.url`.
+ * In Bun --compile standalone binaries, `import.meta.url` resolves to
+ * Bun's virtual `/$bunfs/` and no real `package.json` exists. The
+ * binary is compiled with `--define UMACTUALLY_VERSION='"<version>"'`
+ * so the version is embedded at compile time.
+ */
+function readPackageVersion() {
+    // Bun --compile injects this via --define. Check the global first.
+    const declared = globalThis["UMACTUALLY_VERSION"];
+    if (typeof declared === "string" && declared.length > 0) {
+        return declared;
+    }
+    const packageJsonUrl = __nccwpck_require__.ab + "package.json";
+    const raw = (0,external_node_fs_namespaceObject.readFileSync)(packageJsonUrl, "utf8");
+    const parsed = JSON.parse(raw);
+    if (typeof parsed.version !== "string" || parsed.version.length === 0) {
+        throw new Error("package.json is missing a string `version` field");
+    }
+    return parsed.version;
+}
+/**
+ * Detect `--version` / `-V` anywhere in `argv`. Per GNU conventions, the
+ * flag can appear in any position (e.g. `umactually --version`,
+ * `umactually --api-url X --version`). The check is intentionally
+ * whitespace-only — short flags like `-Vfoo` are not matched.
+ */
+function isVersionFlag(argv) {
+    for (const arg of argv) {
+        if (arg === "--version" || arg === "-V") {
+            return true;
+        }
+    }
+    return false;
+}
+/**
+ * Stage 0: print package version and signal exit 0.
+ *
+ * Returns BEFORE parse / env-resolution / git-derive / validation /
+ * standalone-run / dispatch. This guarantees `--version` works in any
+ * context (no `--api-key`, no git repo, no env vars) without touching
+ * any artifacts or downstream stage. The output is plain
+ * `${version}\n` on stdout — no brand prefix, no banner, no colour —
+ * to match the contract pinned by CLI-VERSION-001.
+ */
+function runVersion(_argv) {
+    const version = readPackageVersion();
+    const stdout = `${version}\n`;
+    process.stdout.write(stdout);
+    return { exitCode: 0, stdout };
+}
+function buildSanitizedResolvedConfig(resolved) {
+    return {
+        platform: resolved.platform,
+        dryRun: resolved.dryRun,
+        provider: resolved.provider,
+        model: resolved.model,
+        effort: resolved.effort,
+        prNumber: resolved.prNumber,
+        repo: resolved.repo,
+        githubApiBase: resolved.githubApiBase,
+        sonarHostUrl: resolved.sonarHostUrl,
+        sonarProjectKey: resolved.sonarProjectKey,
+        sonarTimeoutSeconds: resolved.sonarTimeoutSeconds,
+        reviewTimeoutSeconds: resolved.reviewTimeoutSeconds,
+        stallSeconds: resolved.stallSeconds,
+        perRequestTimeoutSeconds: resolved.perRequestTimeoutSeconds,
+        maxOutputTokens: resolved.maxOutputTokens,
+        maxComments: resolved.maxComments,
+        reviewFileLimit: resolved.reviewFileLimit,
+        minimumSeverity: resolved.minimumSeverity,
+        strictSchema: resolved.strictSchema,
+        verifyFindings: resolved.verifyFindings,
+        walkthrough: resolved.walkthrough,
+        diagnostic: resolved.diagnostic,
+        debugRawResponse: resolved.debugRawResponse,
+        simulateFindings: resolved.simulateFindings,
+        detectLeaks: resolved.detectLeaks,
+        includeSonarqube: resolved.includeSonarqube,
+        apiUrlPresent: resolved.apiUrl !== null && resolved.apiUrl.length > 0,
+        apiKeyPresent: resolved.apiKey !== null && resolved.apiKey.length > 0,
+        sonarTokenPresent: resolved.sonarToken !== null && resolved.sonarToken.length > 0,
+        promptFilePresent: resolved.promptFile !== null && resolved.promptFile.length > 0,
+        promptFilesPresent: resolved.promptFiles !== null && resolved.promptFiles.length > 0,
+        additionalPromptFilePresent: resolved.additionalPromptFile !== null && resolved.additionalPromptFile.length > 0,
+        additionalPromptFilesPresent: resolved.additionalPromptFiles !== null && resolved.additionalPromptFiles.length > 0,
+        promptPresent: resolved.prompt !== null && resolved.prompt.length > 0,
+        additionalPromptPresent: resolved.additionalPrompt !== null && resolved.additionalPrompt.length > 0,
+        sources: resolved.fieldProvenance,
+    };
+}
+/**
+ * Resolve missing CLI flags by consulting the cwd's git repository.
+ *
+ * Explicit operator-supplied values win over derived values (the GitHub
+ * Action and Azure DevOps pipeline pass every flag explicitly; their
+ * values must reach the consumers verbatim). For each field, we keep
+ * `parsed.X` if non-null; otherwise we consult `deriveContextFromGit`
+ * and substitute the derived value.
+ *
+ * Git auto-context is a standalone-local fallback only. Live GitHub Actions
+ * and Azure Pipelines runs already resolve platform context in the
+ * orchestration layer, so the presence of either CI marker bypasses this
+ * filesystem-writing stage entirely.
+ */
+function resolveContext(parsed, cwd, env) {
+    // If every plumbing field is already supplied, there's nothing to do.
+    // This is the wrapper-runtime case (GH Action / ADO pipeline).
+    const plumbingFlags = [parsed.eventPath, parsed.diffPath];
+    const allPlumbingSupplied = plumbingFlags.every((v) => v !== null);
+    const shouldDeriveFromGit = env["GITHUB_ACTIONS"] === undefined && env["TF_BUILD"] === undefined;
+    let resolved = parsed;
+    let generated = [];
+    if (shouldDeriveFromGit && !allPlumbingSupplied) {
+        // Try to derive. If cwd is not a git repo, deriveContextFromGit
+        // returns null and we keep parsed unchanged (the original "missing
+        // plumbing field" error path will surface downstream with a clearer
+        // message than the current cli.ts).
+        const effectiveBase = "";
+        try {
+            const ctx = deriveContextFromGit({
+                cwd,
+                base: effectiveBase,
+                diffOverride: parsed.diffPath,
+                eventOverride: parsed.eventPath,
+            });
+            if (ctx !== null) {
+                // Explicit-value precedence: explicit nulls are NOT overridden.
+                // Only fill in when the operator-supplied value is null.
+                const merged = {
+                    ...parsed,
+                    eventPath: parsed.eventPath ?? ctx.eventPath,
+                    diffPath: parsed.diffPath ?? ctx.diffPath,
+                };
+                resolved = merged;
+                generated = [ctx.diffPath, ctx.eventPath].filter((p) => p !== parsed.diffPath && p !== parsed.eventPath);
+            }
+        }
+        catch {
+            // Auto-derive itself failed (e.g. not a git repo); keep parsed
+            // and let the validator surface a clear "missing flags" error.
+        }
+    }
+    return { resolved, generatedArtifacts: generated };
+}
+async function cleanupGeneratedArtifacts(generatedArtifacts, cwd) {
+    if (generatedArtifacts.length === 0) {
+        return;
+    }
+    const tempDir = (0,external_node_path_namespaceObject.join)(cwd, ".umactually-auto-ctx");
+    try {
+        await (0,promises_namespaceObject.rm)(tempDir, { recursive: true, force: true });
+    }
+    catch (error) {
+        process.stderr.write(`cli: failed to clean generated artifacts at ${tempDir}: ${formatError(error)}\n`);
+    }
+}
 async function runCli(args, cwd) {
     let parsed;
     try {
@@ -15142,19 +16319,59 @@ async function runCli(args, cwd) {
         }
         throw error;
     }
-    const errors = collectValidationErrors(parsed);
-    if (errors.length > 0) {
-        process.stderr.write(`cli: ${errors.join("; ")}\n`);
-        return { exitCode: 2 };
+    // Stage 2: schema-driven env fallbacks and type coercion before validation.
+    const envResolved = resolveFromSchema(parsed, process.env);
+    // Stage 3: resolve missing flags from cwd (when applicable).
+    const { resolved, generatedArtifacts } = resolveContext(envResolved, cwd, process.env);
+    try {
+        // Stage 4: validate the resolved (post-derivation) args.
+        const errors = collectValidationErrors(resolved);
+        if (errors.length > 0) {
+            process.stderr.write(`cli: ${errors.join("; ")}\n`);
+            // Bare-invocation banner: when the operator ran the CLI with no
+            // provider flags AND validation rejected because of missing
+            // --api-url/--api-key, the actionable next step is "pick a mode"
+            // rather than reading --help. Print the modes banner so the
+            // user can copy-paste the right invocation.
+            if (args.length === 0 &&
+                !envResolved.dryRun &&
+                errors.some((e) => e.includes("--api-url") || e.includes("--api-key"))) {
+                process.stderr.write(`\n${BRAND_PREFIX}pick a mode:\n\n${CLI_MODES_TEXT}`);
+            }
+            return {
+                exitCode: 2,
+                resolvedConfig: buildSanitizedResolvedConfig(resolved),
+            };
+        }
+        if (!resolved.dryRun && isStandaloneMode(process.env)) {
+            const result = await runStandalone({ parsed: resolved, cwd, env: process.env });
+            if (result.kind === "provider-error") {
+                process.stdout.write(`${result.sanitizedForLog}\n`);
+                return {
+                    exitCode: 1,
+                    resolvedConfig: buildSanitizedResolvedConfig(resolved),
+                };
+            }
+            return {
+                exitCode: 0,
+                resolvedConfig: buildSanitizedResolvedConfig(resolved),
+            };
+        }
+        const result = resolved.dryRun
+            ? await runDryRun(resolved, cwd, resolvePlatform(resolved.platform))
+            : await dispatchLive(resolved, cwd, process.env);
+        return {
+            ...result,
+            resolvedConfig: buildSanitizedResolvedConfig(resolved),
+        };
     }
-    if (parsed.dryRun) {
-        return runDryRun(parsed, cwd, resolvePlatform(parsed.platform));
+    finally {
+        await cleanupGeneratedArtifacts(generatedArtifacts, cwd);
     }
-    return dispatchLive(parsed, cwd, process.env);
 }
 async function main(argv) {
     try {
-        const result = await runCli(argv, process.cwd());
+        const result = await dispatch(argv);
         return result.exitCode;
     }
     catch (error) {
@@ -15203,7 +16420,10 @@ if (isMainModule) {
 }
 
 var __webpack_exports__CliUsageError = __webpack_exports__._x;
+var __webpack_exports__buildSanitizedResolvedConfig = __webpack_exports__.WB;
+var __webpack_exports__isVersionFlag = __webpack_exports__.bV;
 var __webpack_exports__main = __webpack_exports__.iW;
 var __webpack_exports__parseCliArgs = __webpack_exports__.hT;
 var __webpack_exports__runCli = __webpack_exports__.ak;
-export { __webpack_exports__CliUsageError as CliUsageError, __webpack_exports__main as main, __webpack_exports__parseCliArgs as parseCliArgs, __webpack_exports__runCli as runCli };
+var __webpack_exports__runVersion = __webpack_exports__.yh;
+export { __webpack_exports__CliUsageError as CliUsageError, __webpack_exports__buildSanitizedResolvedConfig as buildSanitizedResolvedConfig, __webpack_exports__isVersionFlag as isVersionFlag, __webpack_exports__main as main, __webpack_exports__parseCliArgs as parseCliArgs, __webpack_exports__runCli as runCli, __webpack_exports__runVersion as runVersion };

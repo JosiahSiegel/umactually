@@ -173,7 +173,15 @@ function sampleBusy() {
     severityCounts: { critical: 2, high: 1, medium: 1, low: 2 },
     offDiffFromComments: suppressed,
     postedComments: comments.slice(0, 6),
-    secrets: ["sk-EXAMPLE-FAKE-1234567890"],
+    // The `secrets` array is a *demonstration field* in the review
+    // payload schema — it lists which env-var-driven secrets the
+    // review consumed. Renderers use it to display a redaction-status
+    // badge; consumers ignore it. Use a fixed placeholder string
+    // with a do-not-leak sentinel so the GitGuardian high-entropy
+    // detector recognises it as synthetic and the layout viewer
+    // doesn't need a real env var at build time. (The string is
+    // intentionally non-base64 so the detector sees it as text.)
+    secrets: ["redaction-status-placeholder-do-not-leak"],
   };
 }
 

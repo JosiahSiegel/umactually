@@ -8,7 +8,7 @@ describe("CLI surface — provider anthropic", () => {
       "--platform", "azure",
       "--dry-run",
       "--provider", "anthropic",
-      "--api-key", "sk-ant-test",
+      "--api-key", "sk-ant-test-do-not-leak",
       "--api-url", "https://api.anthropic.com/v1",
       "--event", "/tmp/x.json",
       "--diff", "/tmp/y.json",
@@ -18,7 +18,7 @@ describe("CLI surface — provider anthropic", () => {
     ]);
     expect(a.provider).toBe("anthropic");
     expect(a.apiUrl).toBe("https://api.anthropic.com/v1");
-    expect(a.apiKey).toBe("sk-ant-test");
+    expect(a.apiKey).toBe("sk-ant-test-do-not-leak");
     expect(a.dryRun).toBe(true);
     expect(a.platform).toBe("azure");
   });
@@ -30,7 +30,7 @@ describe("CLI surface — provider anthropic", () => {
       "--platform", "azure",
       "--dry-run",
       "--provider", "anthropic",
-      "--api-key", "sk-ant-test",
+      "--api-key", "sk-ant-test-do-not-leak",
       "--event", "/tmp/x.json",
       "--diff", "/tmp/y.json",
       "--review", "/tmp/z.json",
@@ -45,7 +45,7 @@ describe("CLI surface — provider anthropic", () => {
     const a = parseCliArgs([
       "--platform", "azure",
       "--provider", "openai-compatible",
-      "--api-key", "sk-test",
+      "--api-key", "sk-test-do-not-leak",
       "--event", "/tmp/x.json",
       "--diff", "/tmp/y.json",
       "--review", "/tmp/z.json",
@@ -61,7 +61,7 @@ describe("CLI surface — provider anthropic", () => {
     const a = parseCliArgs([
       "--platform", "azure",
       "--provider", "anthropic",
-      "--api-key", "sk-ant-test",
+      "--api-key", "sk-ant-test-do-not-leak",
       "--event", "/tmp/x.json",
       "--diff", "/tmp/y.json",
       "--review", "/tmp/z.json",

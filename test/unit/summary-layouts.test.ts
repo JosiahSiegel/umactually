@@ -275,15 +275,15 @@ describe("S3 — every layout includes the stable marker", () => {
 
 describe("S4 — every layout includes the hidden manifest", () => {
   for (const layout of LAYOUTS) {
-    it(`${layout} embeds the umactually-pr-review:manifest comment`, () => {
+    it(`${layout} embeds the umactually:manifest comment`, () => {
       const out = renderSummary(layout, makeBusyData());
-      expect(out).toContain("<!-- umactually-pr-review:manifest ");
+      expect(out).toContain("<!-- umactually:manifest ");
       expect(out).toContain(MANIFEST_SCHEMA);
     });
 
     it(`${layout} manifest contains the required fields`, () => {
       const out = renderSummary(layout, makeBusyData());
-      const match = /<!-- umactually-pr-review:manifest (.+?) -->/u.exec(out);
+      const match = /<!-- umactually:manifest (.+?) -->/u.exec(out);
       expect(match).not.toBeNull();
       const parsed = JSON.parse(match![1]!);
       expect(parsed["schema"]).toBe(MANIFEST_SCHEMA);
@@ -458,7 +458,7 @@ describe("S7 — baseline layout reproduces existing summary invariants", () => 
 
   it("baseline includes the manifest", () => {
     const out = renderBaseline(BASELINE, makeBusyData());
-    expect(out).toContain("<!-- umactually-pr-review:manifest ");
+    expect(out).toContain("<!-- umactually:manifest ");
   });
 
   it("baseline includes the pipeline summary line", () => {

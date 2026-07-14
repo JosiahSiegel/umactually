@@ -9,7 +9,7 @@ import { existsSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
-// Node-version guard for direct CLI consumers (npm exec umactually-pr-review,
+// Node-version guard for direct CLI consumers (npm exec umactually,
 // global install, Azure DevOps pipeline step, etc.). GitHub Actions
 // consumers are gated by action.yml's `runs.using: node24` which already
 // pins the runner to Node 24, so this guard is a backstop for direct
@@ -25,7 +25,7 @@ const currentNodeMajor = Number.parseInt(
 );
 if (!Number.isFinite(currentNodeMajor) || currentNodeMajor < MIN_NODE_MAJOR) {
   process.stderr.write(
-    `umactually-pr-review: requires Node >= ${MIN_NODE_MAJOR}.x (detected ${process.versions.node}).\n`,
+    `umactually: requires Node >= ${MIN_NODE_MAJOR}.x (detected ${process.versions.node}).\n`,
   );
   process.exit(1);
 }
@@ -37,7 +37,7 @@ const bundledCli = join(packageRoot, "dist", "cli.js");
 if (!existsSync(bundledCli)) {
   process.stderr.write(
     [
-      `umactually-pr-review: cannot locate dist/cli.js (looked under ${packageRoot}).`,
+      `umactually: cannot locate dist/cli.js (looked under ${packageRoot}).`,
       `Run "npm run bundle" to build the CLI, then retry.`,
       ``,
     ].join("\n"),
@@ -49,7 +49,7 @@ const moduleUrl = pathToFileURL(bundledCli).href;
 const mod = await import(moduleUrl);
 
 if (typeof mod.main !== "function") {
-  process.stderr.write("umactually-pr-review: bundled CLI does not export main().\n");
+  process.stderr.write("umactually: bundled CLI does not export main().\n");
   process.exit(1);
 }
 
@@ -61,6 +61,6 @@ try {
   }
 } catch (error) {
   const message = error instanceof Error ? error.message : String(error);
-  process.stderr.write(`umactually-pr-review: ${message}\n`);
+  process.stderr.write(`umactually: ${message}\n`);
   process.exit(1);
 }

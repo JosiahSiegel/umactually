@@ -1,22 +1,27 @@
 # Configuration
 
-UmActually accepts configuration from GitHub Action inputs, environment variables, and platform-provided CI variables. Do not put secrets in workflow YAML literals; pass them through GitHub Actions secrets, Azure Pipelines secret variables, or a protected variable group.
+UmActually accepts configuration from CLI flags, environment variables, and platform-provided CI variables. Do not put secrets in workflow or pipeline YAML literals; pass them through GitHub Actions secrets, Azure Pipelines secret variables, or a protected variable group.
 
 ## Precedence
 
-For options that exist both as an action input and an environment variable, the runtime resolves values in this order:
+The runtime resolves configurable review options in this order:
 
-1. Explicit GitHub Action input (`with:` in a workflow) or CLI flag.
-2. Environment variable.
-3. Built-in default from `action.yml` or the CLI.
+1. Explicit CLI flag.
+2. Canonical `UMACTUALLY_*` environment variable.
+3. Legacy `REVIEW_*` environment variable.
+4. Built-in CLI default.
 
-Platform variables such as `GITHUB_TOKEN`, `GITHUB_EVENT_PATH`, `SYSTEM_ACCESSTOKEN`, and Azure build metadata are discovered from the runner environment and do not have action inputs.
+The CLI natively honors every documented `UMACTUALLY_*` env var. In CI, set them as GitHub Actions env/secrets or Azure pipeline variables and they flow through without shell translation. Boolean env vars accept `true|false|1|0|yes|no|on|off|y|n`, case-insensitively after trimming. Invalid values fail configuration with a redacted error: secret values are never echoed.
 
-## Action inputs
+With `review --json`, the new `resolvedConfig.sources` object reports exactly which surface supplied each resolved field (`flag`, `env`, or `default`, plus the non-secret env name when applicable). Use it to diagnose precedence without exposing credentials.
 
-These entries mirror `action.yml`.
+Platform variables such as `GITHUB_TOKEN`, `GITHUB_EVENT_PATH`, `SYSTEM_ACCESSTOKEN`, and Azure build metadata are discovered from the runner environment. `NO_COLOR` is also honored at the CLI level: any non-empty value disables decorative color, as does `--no-color`.
 
-| Input | Env var | Default | Allowed values | Notes |
+## Review options
+
+CLI flag names are the kebab-case form of the option column (for example, `api-url` becomes `--api-url`).
+
+| Option | Env var | Default | Allowed values | Notes |
 | --- | --- | --- | --- | --- |
 | `api-url` | `UMACTUALLY_API_URL` | `""` | HTTPS URL | Review API base URL. Required for hosted review API use. Prefer env/secret over a literal input. |
 | `api-key` | `UMACTUALLY_API_KEY` | `""` | Secret string | Review API key. Must come from a secret store. Never log or echo it. |
@@ -41,7 +46,7 @@ These entries mirror `action.yml`.
 | `sonar-host-url` | `UMACTUALLY_SONAR_HOST_URL` | `""` | HTTPS URL | SonarQube base URL. |
 | `sonar-token` | `UMACTUALLY_SONAR_TOKEN` | `""` | Secret string | SonarQube token. Must come from a secret store. |
 | `sonar-project-key` | `UMACTUALLY_SONAR_PROJECT_KEY` | `""` | Project key string | SonarQube project key. |
-| `dry-run` | `UMACTUALLY_DRY_RUN` | `true` | `true`, `false` | Produces output without posting reviews, threads, or statuses. Defaults to dry-run; set to `false` to run the live provider path. |
+| `dry-run` | `UMACTUALLY_DRY_RUN` | `false` | `true`, `false` | Generate review output without posting comments or status. Standalone mode (no CI markers) implicitly behaves as a smoke run that writes `./umactually-review.json` without a real HTTP provider call when `--dry-run` is set. |
 | `walkthrough` | `UMACTUALLY_WALKTHROUGH` | `false` | `true`, `false` | Emit a separate PR walkthrough comment alongside the review. |
 | `diagnostic` | `UMACTUALLY_DIAGNOSTIC` | `false` | `true`, `false` | Inject a synthetic low-severity finding for pipeline smoke tests. |
 | `debug-raw-response` | `UMACTUALLY_DEBUG_RAW_RESPONSE` | `false` | `true`, `false` | Echo the raw provider response into the workflow log. |
@@ -80,78 +85,28 @@ CLI users will see `CliUsageError` for `--ignore-minor` / `--no-ignore-minor` wi
 
 ## Recommended GitHub configuration
 
-```yaml
-permissions:
-  contents: read
-  pull-requests: write
-
-steps:
-  - uses: actions/checkout@v4
-  # Replace `./` with the published action tag once this action is published.
-  # Until then, the in-tree action is exercised via `./`.
-  - uses: ./
-    env:
-      UMACTUALLY_API_URL: ${{ secrets.UMACTUALLY_API_URL }}
-      UMACTUALLY_API_KEY: ${{ secrets.UMACTUALLY_API_KEY }}
-```
-
-Avoid passing `api-key` through `with:` unless a wrapper action requires it. Environment secrets are easier to rotate and less likely to appear in copied workflow snippets.
+Use the pinned CLI workflow in [`docs/gh-actions.md`](gh-actions.md) or copy [`examples/github/pr-review.yml`](../examples/github/pr-review.yml). Pass provider credentials through `UMACTUALLY_API_URL` and `UMACTUALLY_API_KEY` secrets, and map `${{ github.token }}` explicitly to `GITHUB_TOKEN` on the review step.
 
 ### Overriding the default prompt lookup
 
-By default, UmActually auto-discovers common agent-instruction files from the repository root (CLAUDE.md, AGENTS.md, `.github/copilot-instructions.md`, `.cursorrules`, GEMINI.md — see [docs/security.md](security.md#default-repository-prompt-lookup) for the security contract). To force a specific list of prompt files instead, use the `prompt-files` / `additional-prompt-files` action inputs (or `--prompt-files` / `--additional-prompt-files` CLI flags; or `UMACTUALLY_PROMPT_FILES` / `UMACTUALLY_ADDITIONAL_PROMPT_FILES` env vars). When set, the array **completely overrides** the default-lookup list.
+By default, UmActually auto-discovers common agent-instruction files from the repository root (CLAUDE.md, AGENTS.md, `.github/copilot-instructions.md`, `.cursorrules`, GEMINI.md — see [docs/security.md](security.md#default-repository-prompt-lookup) for the security contract). To force a specific list instead, pass `--prompt-files` / `--additional-prompt-files` or set `UMACTUALLY_PROMPT_FILES` / `UMACTUALLY_ADDITIONAL_PROMPT_FILES`. A non-empty list **completely overrides** the corresponding default lookup.
 
 ```yaml
-- uses: ./
-  with:
-    # Comma- or newline-separated list of repository-relative paths.
-    # When non-empty, the auto-loaded CLAUDE.md/AGENTS.md/etc. lookup
-    # is NOT consulted — only the listed files are loaded.
-    prompt-files: 'prompts/review-system.md,prompts/repo-context.md'
-    additional-prompt-files: 'prompts/extra-instructions.md'
-  env:
-    UMACTUALLY_API_URL: ${{ secrets.UMACTUALLY_API_URL }}
-    UMACTUALLY_API_KEY: ${{ secrets.UMACTUALLY_API_KEY }}
+env:
+  UMACTUALLY_PROMPT_FILES: prompts/review-system.md,prompts/repo-context.md
+  UMACTUALLY_ADDITIONAL_PROMPT_FILES: prompts/extra-instructions.md
+run: npx umactually@0.1.0 review --platform github
 ```
 
-The Azure DevOps equivalent uses pipeline variables; see [docs/azure-devops.md](azure-devops.md#forwarding-prompt-file-lists-overrides-the-default-lookup-list) for the `UMACTUALLY_PROMPT_FILES` / `UMACTUALLY_ADDITIONAL_PROMPT_FILES` pipeline variable contract and the conditional-forwarding pattern.
+Azure DevOps uses the same CLI-native variables: define them as pipeline variables and run the slim example without a forwarding script.
 
 ## Recommended Azure DevOps configuration
 
-Use the root [`azure-pipelines.yml`](../azure-pipelines.yml) as the full PR-validation entrypoint. The CLI itself must receive `--event`, `--diff`, `--pr-number`, and `--repo` for Azure validation; use `--repo` for the repository slug.
-
-```yaml
-- script: |
-    node bin/umactually-pr-review.mjs \
-      --platform azure-devops \
-      --event "$AZURE_EVENT_PATH" \
-      --diff "$AZURE_DIFF_PATH" \
-      --review "$AZURE_REVIEW_PATH" \
-      --pr-number "$UMACTUALLY_PR_NUMBER" \
-      --repo "$UMACTUALLY_REPO" \
-      --dry-run \
-      --output-artifact artifacts/manual/s4-azure-mocked-run.json
-  displayName: Run UmActually PR review
-  env:
-    SYSTEM_ACCESSTOKEN: $(System.AccessToken)
-    UMACTUALLY_API_URL: $(UMACTUALLY_API_URL)
-    UMACTUALLY_API_KEY: $(UMACTUALLY_API_KEY)
-```
-
-To fetch PR metadata and the PR diff programmatically, the root pipeline delegates to [`scripts/prepare-azure-pr-inputs.sh`](../scripts/prepare-azure-pr-inputs.sh). The script writes a synthetic `--event`, `--diff`, and `--review` fixture so manual branch runs (without `SYSTEM_PULLREQUEST_PULLREQUESTID`) still execute end-to-end, and switches to a live Azure DevOps REST fetch when the PR ID is set. See [docs/azure-devops.md](azure-devops.md#fetching-pr-metadata-and-diff) for the full walkthrough.
-
-```yaml
-- script: bash scripts/prepare-azure-pr-inputs.sh
-  displayName: Prepare Azure PR inputs
-  env:
-    SYSTEM_ACCESSTOKEN: $(System.AccessToken)
-```
-
-Manual branch runs do not populate `SYSTEM_PULLREQUEST_PULLREQUESTID`. The synthetic inputs written by `prepare-azure-pr-inputs.sh` cover that case automatically — no extra fallback to maintain.
+Use the pinned CLI pipeline in [`docs/azure-devops.md`](azure-devops.md) or copy [`examples/azure/azure-pipelines.yml`](../examples/azure/azure-pipelines.yml). In live branch-policy runs, the CLI derives PR metadata, diff, and artifact paths from Azure's runner environment. Map `$(System.AccessToken)` to `SYSTEM_ACCESSTOKEN` and store provider credentials as secret pipeline variables.
 
 ## Provider families
 
-The action supports three provider families. For the canonical end-to-end reference (URL resolution rules, cross-protocol dispatch, the MiniMax dual-protocol matrix, model auto-resolution per provider) see [`docs/providers.md`](providers.md). This page documents the CLI surface and runtime defaults only.
+The CLI supports three provider families. For the canonical end-to-end reference (URL resolution rules, cross-protocol dispatch, the MiniMax dual-protocol matrix, model auto-resolution per provider) see [`docs/providers.md`](providers.md). This page documents the CLI surface and runtime defaults only.
 
 - **`openai-compatible`** (default): posts to any OpenAI-compatible `/responses` or `/chat/completions` endpoint. The `UMACTUALLY_API_URL` must be the base URL (e.g. `https://api.openai.com/v1`). Set `UMACTUALLY_API_KEY` to the provider key. Forwards `max_output_tokens` and `reasoning.effort` when supported by the endpoint.
 
@@ -193,12 +148,12 @@ A subtle gotcha surfaced by the operator's actual setup (`UMACTUALLY_API_URL=htt
 To prevent this, the dispatcher runs `looksLikeAnthropicEndpoint(baseUrl)` (`src/util/url.ts`) *before* choosing which provider client to call. When ANY path segment is exactly `anthropic` (case-insensitive, byte-for-byte — `anthropic-v2` and `my-anthropic` do NOT match), the dispatcher commits to the Anthropic Messages API client regardless of `--provider`. A `::notice::` is emitted on every URL that triggers the heuristic:
 
 ```
-::notice::umactually-pr-review: Operator URL contains an /anthropic path segment; using the Anthropic Messages API client (not the default openai-compatible).
+::notice::umactually: Operator URL contains an /anthropic path segment; using the Anthropic Messages API client (not the default openai-compatible).
 ```
 
 The heuristic is conservative by design. False negatives still fall through to the cross-protocol fallback chain above. False positives are bounded to byte-for-byte segment matches so a path like `https://attacker.example.com/anthropic-related` does NOT trigger the heuristic. See [`docs/providers.md#path-prefix-heuristic`](providers.md#path-prefix-heuristic-the-anthropic-url-commits-to-the-anthropic-protocol) for the full contract and the boundary test matrix (`test/unit/looks-like-anthropic-endpoint.test.ts`).
 
-The provider family is selected via `--provider` (CLI), `provider` (action input), or `UMACTUALLY_PROVIDER` env var. Default `openai-compatible`. For GitHub Enterprise Server data residency, set `UMACTUALLY_GITHUB_API_BASE=https://<tenant>.ghe.com` so the token exchange targets the tenant's API.
+The provider family is selected via `--provider` or `UMACTUALLY_PROVIDER`. The default is `openai-compatible`. `UMACTUALLY_GITHUB_API_BASE` controls Copilot token exchange only; it does not make live PR posting compatible with GitHub Enterprise Server.
 
 ## Defaults and normalization
 
@@ -209,9 +164,31 @@ Current runtime defaults are intentionally conservative:
 - `provider`: `openai-compatible`
 - `review-timeout-seconds`: `300`
 - `stall-seconds`: `270`
-- `dry-run`: `true` (default to dry-run; set to `false` for live provider calls)
+- `dry-run`: `false` (set to `true` for a smoke test that skips provider calls; standalone mode bypasses platform posting regardless)
 - `detect-leaks`: `true`
 - `prompt-file`: unset
 - `max-output-tokens`: `16000`
 
-`max-output-tokens` is documented and exposed by `action.yml` for provider integrations even when a local test fixture does not consume it directly.
+`max-output-tokens` is part of the public CLI/provider configuration even when a local test fixture does not consume it directly.
+
+## CLI commands
+
+The bundled CLI at `bin/umactually.mjs` (and `dist/cli.js`) accepts the following top-level commands:
+
+- `umactually [--version | -V]` — print version, exit 0.
+- `umactually review [...flags]` (default) — run the review; the existing public flag surface remains accepted. Bare invocation is equivalent to `umactually review`. Standalone mode derives inputs from the current git working tree, while live CI mode derives platform context from the runner environment.
+- `umactually doctor [--json]` — diagnostic self-check of the local environment (Node version, `dist/cli.js` bundle, `bin` shim, required platform env vars, `--api-url` resolver sanity). Exit 0 if every check is `ok`, exit 1 if any check is `fail`. `--json` emits a machine-readable report on stdout.
+- `umactually --no-color` — disables decorative color across all subcommands. Honored equivalently by the `NO_COLOR=<anything>` env var; either form forces monochrome output.
+- `umactually --json` on `review` — emits one JSON document on stdout with the envelope `{schemaVersion:1, command:"review", exitCode, resolvedConfig, outcome}`. `resolvedConfig` reflects the post-precedence config the CLI actually used, and `outcome` mirrors the artifact's `outcome` block. Exit code is unchanged from the underlying run.
+
+The `review` subcommand's public flag surface is unchanged from earlier releases and lives in the [Review options](#review-options) table above. CLI flags use kebab-case names and map to the documented environment variables; the [precedence rules](#precedence) apply.
+
+## Current limitations
+
+**Windows host self-review is unsupported.** The release workflow smoke-tests the packaged Windows binary, including startup and CLI dispatch, but it does not execute a live or self-review workflow on a Windows host. Use Linux for CI review jobs in the first release; the Windows binary smoke result is distribution evidence, not end-to-end platform support.
+
+**GitHub Enterprise Server is unsupported.** Live GitHub PR requests resolve from `GITHUB_API_URL` when supplied by the runner and otherwise fall back to `DEFAULT_GITHUB_API_BASE` (`https://api.github.com`) at [`src/platform/github/api.ts:27`](../src/platform/github/api.ts#L27). The first CLI-only release is tested and supported against GitHub.com, not GHES.
+
+**Azure marker deduplication is non-atomic.** Azure Pipelines has no GitHub-style workflow concurrency group with cancellation. The CLI's marker lookup/update is best effort, so rapid re-runs can race and double-post. Cancel superseded runs when practical.
+
+**The shell and PowerShell installers are not CI-grade installation paths.** `scripts/install.sh` and `scripts/install.ps1` are convenience installers for interactive machines. CI must use Node 24 and a version-pinned npm package such as `npx umactually@0.1.0`; never curl an installer or resolve an unpinned latest version in a review pipeline.

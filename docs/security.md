@@ -88,7 +88,7 @@ If you need additional prompt sources beyond the documented list, extend the con
 
 The default-lookup resolution is memoized **per cwd** for the lifetime of the Node process. The cache is populated on the first `buildProviderPrompts` call (at most five synchronous `fs.stat` calls for the entries above) and reused on every subsequent call within the same run — including per-chunk reads in the chunked orchestrator.
 
-This is safe under the action's documented deployment model: each `umactually-pr-review` invocation (GitHub Actions, Azure DevOps, CLI) runs as a fresh Node process, so the cache effectively lives for one review run. A `CLAUDE.md` added to the repo mid-run will not appear until the next process restart.
+This is safe under the action's documented deployment model: each `umactually` invocation (GitHub Actions, Azure DevOps, CLI) runs as a fresh Node process, so the cache effectively lives for one review run. A `CLAUDE.md` added to the repo mid-run will not appear until the next process restart.
 
 If you need to force a re-stat mid-process (rare; the action does not currently support this from a non-test caller), the bundled CLI exposes the same package's internal `__resetDefaultPromptFilesCacheForTests` hook, but using it from production code is unsupported — a long-lived-process deployment that needs fresh filesystem state should restart the CLI per review instead.
 

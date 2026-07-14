@@ -13,10 +13,10 @@
  * Source-file regressions covered (and the literal that USED to live
  * at each site):
  *   - `src/cli/live-azure.ts:516`      const AZURE_STATUS_CONTEXT_GENRE = "pr-review"
- *   - `src/render/summary-layouts.ts:354`  `<!-- umactually-pr-review:manifest ...`
+ *   - `src/render/summary-layouts.ts:354`  `<!-- umactually:manifest ...`
  *   - `src/render/summary-layouts.ts:354`  ` -->`
- *   - `src/cli/run.ts:385`              marker: "<!-- umactually-pr-review -->",
- *   - `src/cli/run.ts:405`              marker: "<!-- umactually-pr-review -->",
+ *   - `src/cli/run.ts:385`              marker: "<!-- umactually -->",
+ *   - `src/cli/run.ts:405`              marker: "<!-- umactually -->",
  *   - `src/cli/live-azure.ts:516`       local declaration of AZURE_STATUS_CONTEXT_GENRE
  */
 
@@ -41,7 +41,7 @@ describe("DRY-BRAND: brand/marker constants (Wave 2 task #8)", () => {
   });
 
   it("DRY-BRAND-002: MANIFEST_MARKER_PREFIX is the canonical comment prefix", () => {
-    expect(MANIFEST_MARKER_PREFIX).toBe("<!-- umactually-pr-review:manifest ");
+    expect(MANIFEST_MARKER_PREFIX).toBe("<!-- umactually:manifest ");
   });
 
   it("DRY-BRAND-003: MANIFEST_MARKER_SUFFIX is the canonical comment closer", () => {
@@ -55,7 +55,7 @@ describe("DRY-BRAND: brand/marker constants (Wave 2 task #8)", () => {
     expect(src).toMatch(/marker:\s*REVIEW_MARKER/u);
     // The exact literal that previously sat on those two lines must
     // no longer appear in run.ts.
-    expect(src).not.toContain('marker: "<!-- umactually-pr-review -->"');
+    expect(src).not.toContain('marker: "<!-- umactually -->"');
   });
 
   it("DRY-BRAND-005: src/cli/live-azure.ts imports AZURE_STATUS_CONTEXT_GENRE from brand and does not redeclare it", () => {

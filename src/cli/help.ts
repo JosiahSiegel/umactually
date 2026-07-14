@@ -19,6 +19,7 @@ import {
   DEFAULT_OPENAI_URL,
 } from "../util/provider-defaults.js";
 import { BRAND } from "../util/brand.js";
+import { CLI_MODES_TEXT } from "./modes-help.js";
 
 interface HelpFlag {
   /** Full flag token, e.g. `"--api-url <url>"`. */
@@ -31,8 +32,8 @@ const HELP_FLAGS: readonly HelpFlag[] = [
   { flag: "--platform <auto|github|azure>" },
   { flag: "--event <path>", description: "GitHub event JSON or Azure pull-request JSON" },
   { flag: "--diff <path>", description: "PR diff text" },
-  { flag: "--threads <path>", description: "Azure existing threads JSON (optional in dry-run)" },
-  { flag: "--review <path>", description: "Azure provider review JSON (optional in dry-run)" },
+  { flag: "--threads <path>", description: "Azure existing threads JSON (ADO wrapper mode)" },
+  { flag: "--review <path>", description: "Azure provider review JSON (ADO wrapper mode)" },
   { flag: "--pr-number <n>", description: "Pull request number" },
   { flag: "--repo <owner/name>" },
   { flag: "--api-url <url>", description: `Provider Responses API URL (default: ${DEFAULT_OPENAI_URL})` },
@@ -66,6 +67,7 @@ const HELP_FLAGS: readonly HelpFlag[] = [
   { flag: "--debug-raw-response | --no-debug-raw-response" },
   { flag: "--detect-leaks | --no-detect-leaks" },
   { flag: "--dry-run | --no-dry-run" },
+  { flag: "--no-color", description: "Disable decorative ANSI color (also: non-empty NO_COLOR)" },
   { flag: "--simulate-findings | --no-simulate-findings" },
   { flag: "--output-artifact <path>" },
 ];
@@ -87,8 +89,18 @@ export const CLI_HELP_TEXT = [
   "Flags:",
   ...HELP_FLAGS.map(renderFlagLine),
   "",
+  CLI_MODES_TEXT,
+  "See exit codes: docs/exit-codes.md",
 ].join("\n");
 
-export function printHelp(): void {
-  process.stdout.write(CLI_HELP_TEXT);
+function renderCommands(commands: readonly string[]): string {
+  return ["Commands:", ...commands.map((command) => `  ${command}`), ""].join("\n");
+}
+
+export function printHelp(commands: readonly string[] = []): string {
+  const helpText = commands.length === 0
+    ? CLI_HELP_TEXT
+    : `${CLI_HELP_TEXT}\n\n${renderCommands(commands)}`;
+  process.stdout.write(helpText);
+  return helpText;
 }

@@ -68,7 +68,7 @@ describe("CLARITY-10: parse-fail surface is unmistakable", () => {
       severityCounts: { critical: 0, high: 0, medium: 0, low: 0 },
       secrets: [],
     });
-    const manifestMatch = body.match(/<!--\s*umactually-pr-review:manifest\s+(\{[\s\S]*?\})\s+-->/u);
+    const manifestMatch = body.match(/<!--\s*umactually:manifest\s+(\{[\s\S]*?\})\s+-->/u);
     expect(manifestMatch).not.toBeNull();
     const manifest = JSON.parse(manifestMatch?.[1] ?? "{}");
     expect(manifest.parseFailed).toBe(true);
@@ -94,7 +94,7 @@ describe("CLARITY-10: parse-fail surface is unmistakable", () => {
       secrets: [],
     });
     expect(body).not.toMatch(/⚠️ \*\*Parse failed\*\*/u);
-    const manifestMatch = body.match(/<!--\s*umactually-pr-review:manifest\s+(\{[\s\S]*?\})\s+-->/u);
+    const manifestMatch = body.match(/<!--\s*umactually:manifest\s+(\{[\s\S]*?\})\s+-->/u);
     const manifest = JSON.parse(manifestMatch?.[1] ?? "{}");
     expect(manifest.parseFailed).toBeUndefined();
   });

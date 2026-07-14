@@ -581,10 +581,6 @@ function readConfiguredModel(parsed: ParsedCliArgs, env: NodeJS.ProcessEnv): str
   if (fromArgs !== null && fromArgs.length > 0 && fromArgs !== "auto") {
     return fromArgs;
   }
-  const fromEnv = env[ENV_KEYS.UMACTUALLY_MODEL];
-  if (fromEnv !== undefined && fromEnv.length > 0 && fromEnv !== "auto") {
-    return fromEnv;
-  }
   // Layer 5: `auto` is no longer passed verbatim. The resolver picks
   // a less-hallucinating model based on the active provider + API
   // URL. See `src/cli/auto-model.ts` for the per-provider mapping

@@ -167,9 +167,9 @@ describe("Copilot provider RED contract", () => {
     const chatBody = chatCall?.body as Record<string, unknown> | null;
     expect(chatBody?.["model"]).toBe("gpt-5");
     expect(tokenCall?.headers["editor-version"]).toBe("vscode/1.96.0");
-    expect(tokenCall?.headers["editor-plugin-version"]).toBe("umactually-pr-review/0.1.0");
+    expect(tokenCall?.headers["editor-plugin-version"]).toBe("umactually/0.1.0");
     expect(tokenCall?.headers["copilot-integration-id"]).toBe("vscode-chat");
-    expect(tokenCall?.headers["user-agent"]).toBe("umactually-pr-review/0.1.0");
+    expect(tokenCall?.headers["user-agent"]).toBe("umactually/0.1.0");
   });
 
   it("S7-RED-018 token cache: second call within expiry window skips token endpoint", async () => {

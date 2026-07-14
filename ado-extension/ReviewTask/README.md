@@ -3,7 +3,7 @@
 This is the Build/Release task that gets installed when an operator
 adds the UmActually extension to their Azure DevOps organization.
 The task is a thin wrapper around the UmActually CLI — see
-`../../../bin/umactually-pr-review.mjs` (or the bundled CLI in v0.2+)
+`../../../bin/umactually.mjs` (or the bundled CLI in v0.2+)
 for the source of truth on the review behavior.
 
 ## How the task is structured

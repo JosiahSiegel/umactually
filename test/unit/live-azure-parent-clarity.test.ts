@@ -266,7 +266,7 @@ describe("buildReviewBody — 5-second scannable clarity", () => {
     expect(body).toMatch(/📊\s+0\s+inline\s+findings/u);
     expect(body).not.toMatch(/not posted inline/u);
     // manifest still emitted
-    expect(body).toMatch(/<!--\s*umactually-pr-review:manifest\s*\{/u);
+    expect(body).toMatch(/<!--\s*umactually:manifest\s*\{/u);
   });
 
   it("CLARITY-5b: malformed-fallback review (parse-fail) also produces the same shape", () => {
@@ -299,7 +299,7 @@ describe("buildReviewBody — 5-second scannable clarity", () => {
     // The raw provider text must still surface somewhere for diagnostics.
     expect(body).toContain("not actually JSON");
     // Manifest still present so AI agents know about the parse-fail.
-    expect(body).toMatch(/<!--\s*umactually-pr-review:manifest[\s\S]*parseFailed/u);
+    expect(body).toMatch(/<!--\s*umactually:manifest[\s\S]*parseFailed/u);
   });
 
   it("CLARITY-6: includes the stable HTML marker for dedup", () => {
@@ -309,8 +309,8 @@ describe("buildReviewBody — 5-second scannable clarity", () => {
 
   it("CLARITY-7: includes the machine-readable findings manifest", () => {
     const body = buildReviewBody(STD_INPUT);
-    expect(body).toMatch(/<!--\s*umactually-pr-review:manifest\s*\{[\s\S]*?\}\s*-->/u);
-    const match = body.match(/<!--\s*umactually-pr-review:manifest\s*(\{[\s\S]*?\})\s*-->/u);
+    expect(body).toMatch(/<!--\s*umactually:manifest\s*\{[\s\S]*?\}\s*-->/u);
+    const match = body.match(/<!--\s*umactually:manifest\s*(\{[\s\S]*?\})\s*-->/u);
     expect(match).not.toBeNull();
     const manifestText = match?.[1];
     expect(manifestText).toBeDefined();
@@ -415,7 +415,7 @@ describe("buildReviewBody — 5-second scannable clarity", () => {
     // Ground-truth: there are 4 suppressed (2 model + 2 off-diff).
     expect(expectedSuppressedCount).toBe(4);
     // Manifest captures the suppressed count so AI agents can reconcile.
-    const manifestMatch = body.match(/<!--\s*umactually-pr-review:manifest\s+(\{[\s\S]*?\})\s*-->/u);
+    const manifestMatch = body.match(/<!--\s*umactually:manifest\s+(\{[\s\S]*?\})\s*-->/u);
     expect(manifestMatch).not.toBeNull();
     const manifest = JSON.parse(manifestMatch?.[1] ?? "{}");
     expect(manifest.suppressedCount).toBe(4);
@@ -521,7 +521,7 @@ describe("buildReviewBody — 5-second scannable clarity", () => {
     // Findings table still present, showing the empty placeholder row.
     expect(body).toMatch(/No findings to address/u);
     // Manifest still carries the suppressed count for AI agents.
-    const manifestMatch = body.match(/<!--\s*umactually-pr-review:manifest\s+(\{[\s\S]*?\})\s*-->/u);
+    const manifestMatch = body.match(/<!--\s*umactually:manifest\s+(\{[\s\S]*?\})\s*-->/u);
     expect(manifestMatch).not.toBeNull();
     const manifest = JSON.parse(manifestMatch?.[1] ?? "{}");
     expect(manifest.suppressedCount).toBe(2);
@@ -566,7 +566,7 @@ describe("buildReviewBody — 5-second scannable clarity", () => {
     expect(body).not.toContain("`src/old.ts`:3");
     expect(body).not.toContain("`src/older.ts`:1");
     // Manifest captures the off-diff count + per-bucket severities.
-    const manifestMatch = body.match(/<!--\s*umactually-pr-review:manifest\s+(\{[\s\S]*?\})\s*-->/u);
+    const manifestMatch = body.match(/<!--\s*umactually:manifest\s+(\{[\s\S]*?\})\s*-->/u);
     expect(manifestMatch).not.toBeNull();
     const manifest = JSON.parse(manifestMatch?.[1] ?? "{}");
     expect(manifest.inlineCount).toBe(3);
@@ -712,7 +712,7 @@ describe("buildReviewBody — 5-second scannable clarity", () => {
     // Footer matches the inline count.
     expect(body).toMatch(/9\s+inline/u);
     // Manifest's severityCounts matches the tally (1 high, 3 medium, 5 low — info excluded).
-    const manifestMatch = body.match(/<!--\s*umactually-pr-review:manifest\s+(\{[\s\S]*?\})\s*-->/u);
+    const manifestMatch = body.match(/<!--\s*umactually:manifest\s+(\{[\s\S]*?\})\s*-->/u);
     expect(manifestMatch).not.toBeNull();
     const manifest = JSON.parse(manifestMatch?.[1] ?? "{}");
     expect(manifest.severityCounts).toEqual({ critical: 0, high: 1, medium: 3, low: 5 });
@@ -877,7 +877,7 @@ describe("buildReviewBody — 5-second scannable clarity", () => {
     // Tally totals 2 (CLARITY-19: icon is 🏷️ now, 📊 is the pipeline summary).
     expect(body).toMatch(/🏷️\s+`0`\s+critical\s+·\s+`1`\s+high\s+·\s+`1`\s+medium\s+·\s+`0`\s+low/u);
     expect(body).toMatch(/2\s+inline/u);
-    const manifestMatch = body.match(/<!--\s*umactually-pr-review:manifest\s+(\{[\s\S]*?\})\s*-->/u);
+    const manifestMatch = body.match(/<!--\s*umactually:manifest\s+(\{[\s\S]*?\})\s*-->/u);
     const manifest = JSON.parse(manifestMatch?.[1] ?? "{}");
     expect(manifest.severityCounts).toEqual({ critical: 0, high: 1, medium: 1, low: 0 });
     expect(manifest.inlineCount).toBe(2);

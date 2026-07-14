@@ -522,7 +522,7 @@ async function postAzureStatus(input: {
   const safeDescription = sanitizeAzureStatusDescription(input.description);
 
   // Delete the previous CLI status entries for this PR so the
-  // Checks panel stays at exactly one `umactually-pr-review-status`
+  // Checks panel stays at exactly one `umactually-status`
   // row per run. The documented Microsoft Learn `Update` endpoint
   // (https://learn.microsoft.com/en-us/rest/api/azure/devops/git/pull-request-statuses/update?view=azure-devops-rest-7.1)
   // only supports `op:"remove"`, and `PATCH .../statuses/{id}` does
