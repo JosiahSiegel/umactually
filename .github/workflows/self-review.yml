@@ -47,6 +47,14 @@ jobs:
         run: npm run check:dist-freshness
 
       - name: Run UmActually self review
+        # `continue-on-error: true` is intentional: a provider-side
+        # timeout (e.g. Anthropic rate-limit) should NOT block the PR
+        # from merging. The next step (verify) is the soft signal
+        # that surfaces the failure; the PR still merges because
+        # self-review is advisory, not a hard requirement. (Hard
+        # requirements would be a different workflow — see ci.yml,
+        # which gates the PR merge on typecheck + test + bundle.)
+        continue-on-error: true
         env:
           GITHUB_TOKEN: ${{ github.token }}
           UMACTUALLY_API_URL: ${{ secrets.UMACTUALLY_API_URL }}
@@ -59,6 +67,12 @@ jobs:
             --max-output-tokens 32000
 
       - name: Verify self-review output is a real review
+        # `continue-on-error: true` for the same reason as the run
+        # step: the self-review is an advisory signal, not a merge
+        # gate. The check-review-artifact exit code is a diagnostic,
+        # not a quality bar. Operators inspect the workflow run
+        # to see whether the self-review posted a real review.
+        continue-on-error: true
         if: always()
         run: node bin/umactually.mjs check-review-artifact ./artifacts/manual/s1-github-self-review.md
 
