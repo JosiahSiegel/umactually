@@ -14,11 +14,15 @@ Binaries and curl/PowerShell installers: see [`docs/install.md`](docs/install.md
 
 ## Usage
 
+Run from inside any git repo with a PR diff in your working tree:
+
 ```bash
-umactually review --platform github --api-url <provider-url> --api-key <key>
+umactually review --api-url https://api.openai.com/v1 --api-key "$UMACTUALLY_API_KEY"
 ```
 
-The CLI auto-detects the platform from CI environment variables (`GITHUB_ACTIONS`, `TF_BUILD`), so `--platform` is optional in GitHub Actions and Azure DevOps.
+This reviews your local diff and writes the results to `./umactually-review.json` — no GitHub or Azure DevOps token required, nothing is posted.
+
+In CI, the CLI auto-detects the platform from environment variables (`GITHUB_ACTIONS`, `TF_BUILD`) and posts review comments directly to the PR. See [CI Integration](#ci-integration) below.
 
 ### Commands
 
