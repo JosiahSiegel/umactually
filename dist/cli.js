@@ -1077,8 +1077,13 @@ function parseCliArgs(args) {
                 verifyFindings = false;
                 break;
             case "--help":
-            case "-h":
-                throw new CliHelpSignal();
+            case "-h": {
+                // Derive the command context from non-flag tokens seen so far
+                // so CliHelpSignal carries the right subcommand for contextual
+                // help rendering.
+                const commandToken = args.slice(0, index).find((t) => !t.startsWith("-"));
+                throw new CliHelpSignal(commandToken ?? null);
+            }
             default:
                 throw new CliUsageError(`unknown flag: ${token}`);
         }
@@ -1133,6 +1138,17 @@ function parseCliArgs(args) {
 }
 class CliHelpSignal extends Error {
     name = "CliHelpSignal";
+    /**
+     * The subcommand that triggered the help signal, if any.
+     * When `--help` appears in a `review` / `doctor` / etc. argv list,
+     * this carries the subcommand name so the help printer can render
+     * context-specific help text.
+     */
+    command;
+    constructor(command = null) {
+        super();
+        this.command = command;
+    }
 }
 function consumeValue(args, index, flag, apply) {
     const value = readValue(args, index, flag);
@@ -1444,54 +1460,75 @@ function printModesBanner(stream) {
  * entries previously sat at unrelated columns (25/27/34); fixing them
  * surfaces the previously-unread descriptions and makes future flag
  * additions trivial.
+ *
+ * Help is contextual: `--help` shows the top-level overview with all
+ * commands, while `<command> --help` shows only the flags relevant to
+ * that command. This is achieved by tagging each flag with the commands
+ * it applies to (`appliesTo`) and filtering at render time.
  */
 
 
 
-const HELP_FLAGS = [
-    { flag: "--platform <auto|github|azure>" },
-    { flag: "--event <path>", description: "GitHub event JSON or Azure pull-request JSON" },
-    { flag: "--diff <path>", description: "PR diff text" },
-    { flag: "--threads <path>", description: "Azure existing threads JSON (ADO wrapper mode)" },
-    { flag: "--review <path>", description: "Azure provider review JSON (ADO wrapper mode)" },
-    { flag: "--pr-number <n>", description: "Pull request number" },
-    { flag: "--repo <owner/name>" },
-    { flag: "--api-url <url>", description: `Provider Responses API URL (default: ${DEFAULT_OPENAI_URL})` },
-    { flag: "--api-key <key>", description: "Provider API key" },
-    { flag: "--model <id>", description: "Provider model id (default: auto)" },
-    { flag: "--prompt <text>", description: "Inline system prompt override" },
-    { flag: "--prompt-file <path>" },
-    { flag: "--prompt-files <paths>", description: "Comma/newline-separated system prompt files (overrides defaults)" },
-    { flag: "--additional-prompt <text>" },
-    { flag: "--additional-prompt-file <path>" },
-    { flag: "--additional-prompt-files <paths>", description: "Comma/newline-separated additional prompt files (overrides defaults)" },
-    { flag: "--effort <low|medium|high>", description: "Reasoning effort hint (default: medium)" },
-    { flag: "--provider <openai-compatible|copilot|anthropic>", description: "Provider family (anthropic uses native /v1/messages)" },
-    { flag: "--github-api-base <url>", description: `GitHub API base URL (Copilot token exchange; default: ${DEFAULT_GITHUB_API_BASE})` },
-    { flag: "--include-sonarqube" },
-    { flag: "--sonar-host-url <url>" },
-    { flag: "--sonar-token <token>" },
-    { flag: "--sonar-project-key <key>" },
-    { flag: "--sonar-timeout-seconds <n>" },
-    { flag: "--review-timeout-seconds <n>" },
-    { flag: "--stall-seconds <n>" },
-    { flag: "--per-request-timeout-seconds <n>" },
-    { flag: "--max-output-tokens <n>" },
-    { flag: "--max-comments <n>" },
-    { flag: "--review-file-limit <n>", description: "Cap on changed files for live review (0 = disable)" },
-    { flag: "--minimum-severity <low|medium|high>", description: "default: medium" },
-    { flag: "--strict-schema | --no-strict-schema", description: "Send response_format json_schema on the wire (default: yes)" },
-    { flag: "--verify-findings | --no-verify-findings", description: "Deterministic (path,line) re-verification before posting (default: yes)" },
-    { flag: "--walkthrough | --no-walkthrough" },
-    { flag: "--diagnostic | --no-diagnostic" },
-    { flag: "--debug-raw-response | --no-debug-raw-response" },
-    { flag: "--detect-leaks | --no-detect-leaks" },
-    { flag: "--dry-run | --no-dry-run" },
+/** Global flags that appear in every help context. */
+const GLOBAL_FLAGS = [
     { flag: "--no-color", description: "Disable decorative ANSI color (also: non-empty NO_COLOR)" },
-    { flag: "--simulate-findings | --no-simulate-findings" },
-    { flag: "--output-artifact <path>" },
+    { flag: "--json", description: "Emit machine-readable JSON output (doctor, review)" },
 ];
-const FLAG_COLUMN_WIDTH = HELP_FLAGS.reduce((max, { flag }) => Math.max(max, flag.length), 0);
+const REVIEW_FLAGS = [
+    { flag: "--platform <auto|github|azure>", appliesTo: ["review"] },
+    { flag: "--event <path>", description: "GitHub event JSON or Azure pull-request JSON", appliesTo: ["review"] },
+    { flag: "--diff <path>", description: "PR diff text", appliesTo: ["review"] },
+    { flag: "--threads <path>", description: "Azure existing threads JSON (ADO wrapper mode)", appliesTo: ["review"] },
+    { flag: "--review <path>", description: "Azure provider review JSON (ADO wrapper mode)", appliesTo: ["review"] },
+    { flag: "--pr-number <n>", description: "Pull request number", appliesTo: ["review"] },
+    { flag: "--repo <owner/name>", appliesTo: ["review"] },
+    { flag: "--api-url <url>", description: `Provider Responses API URL (default: ${DEFAULT_OPENAI_URL})`, appliesTo: ["review"] },
+    { flag: "--api-key <key>", description: "Provider API key", appliesTo: ["review"] },
+    { flag: "--model <id>", description: "Provider model id (default: auto)", appliesTo: ["review"] },
+    { flag: "--prompt <text>", description: "Inline system prompt override", appliesTo: ["review"] },
+    { flag: "--prompt-file <path>", appliesTo: ["review"] },
+    { flag: "--prompt-files <paths>", description: "Comma/newline-separated system prompt files (overrides defaults)", appliesTo: ["review"] },
+    { flag: "--additional-prompt <text>", appliesTo: ["review"] },
+    { flag: "--additional-prompt-file <path>", appliesTo: ["review"] },
+    { flag: "--additional-prompt-files <paths>", description: "Comma/newline-separated additional prompt files (overrides defaults)", appliesTo: ["review"] },
+    { flag: "--effort <low|medium|high>", description: "Reasoning effort hint (default: medium)", appliesTo: ["review"] },
+    { flag: "--provider <openai-compatible|copilot|anthropic>", description: "Provider family (anthropic uses native /v1/messages)", appliesTo: ["review"] },
+    { flag: "--github-api-base <url>", description: `GitHub API base URL (Copilot token exchange; default: ${DEFAULT_GITHUB_API_BASE})`, appliesTo: ["review"] },
+    { flag: "--include-sonarqube", appliesTo: ["review"] },
+    { flag: "--sonar-host-url <url>", appliesTo: ["review"] },
+    { flag: "--sonar-token <token>", appliesTo: ["review"] },
+    { flag: "--sonar-project-key <key>", appliesTo: ["review"] },
+    { flag: "--sonar-timeout-seconds <n>", appliesTo: ["review"] },
+    { flag: "--review-timeout-seconds <n>", appliesTo: ["review"] },
+    { flag: "--stall-seconds <n>", appliesTo: ["review"] },
+    { flag: "--per-request-timeout-seconds <n>", appliesTo: ["review"] },
+    { flag: "--max-output-tokens <n>", appliesTo: ["review"] },
+    { flag: "--max-comments <n>", appliesTo: ["review"] },
+    { flag: "--review-file-limit <n>", description: "Cap on changed files for live review (0 = disable)", appliesTo: ["review"] },
+    { flag: "--minimum-severity <low|medium|high>", description: "default: medium", appliesTo: ["review"] },
+    { flag: "--strict-schema | --no-strict-schema", description: "Send response_format json_schema on the wire (default: yes)", appliesTo: ["review"] },
+    { flag: "--verify-findings | --no-verify-findings", description: "Deterministic (path,line) re-verification before posting (default: yes)", appliesTo: ["review"] },
+    { flag: "--walkthrough | --no-walkthrough", appliesTo: ["review"] },
+    { flag: "--diagnostic | --no-diagnostic", appliesTo: ["review"] },
+    { flag: "--debug-raw-response | --no-debug-raw-response", appliesTo: ["review"] },
+    { flag: "--detect-leaks | --no-detect-leaks", appliesTo: ["review"] },
+    { flag: "--dry-run | --no-dry-run", appliesTo: ["review"] },
+    { flag: "--simulate-findings | --no-simulate-findings", appliesTo: ["review"] },
+    { flag: "--output-artifact <path>", appliesTo: ["review"] },
+];
+/** All flags, used for the legacy `CLI_HELP_TEXT` export and column-width calc. */
+const HELP_FLAGS = [...REVIEW_FLAGS];
+/** The full flag set for column-width calculation. */
+const ALL_FLAGS_FOR_WIDTH = [...REVIEW_FLAGS, ...GLOBAL_FLAGS];
+function flagsForContext(context) {
+    if (context === "all") {
+        return [...REVIEW_FLAGS, ...GLOBAL_FLAGS];
+    }
+    const commandFlags = REVIEW_FLAGS.filter((f) => f.appliesTo?.includes(context) ?? false);
+    return [...commandFlags, ...GLOBAL_FLAGS];
+}
+/** Column width is always computed from the full flag set for consistency. */
+const FLAG_COLUMN_WIDTH = ALL_FLAGS_FOR_WIDTH.reduce((max, { flag }) => Math.max(max, flag.length), 0);
 const GUTTER_SPACES = 2;
 const INDENT_SPACES = 2;
 /** Render one flag with optional description, padded to the canonical description column. */
@@ -1500,18 +1537,128 @@ function renderFlagLine({ flag, description }) {
     const head = `${" ".repeat(INDENT_SPACES)}${flag}${padding}`;
     return description === undefined ? head : `${head}${description}`;
 }
+function renderFlags(flags) {
+    return flags.map(renderFlagLine).join("\n");
+}
+function renderCommands(commands) {
+    return ["Commands:", ...commands.map((command) => `  ${command}`), ""].join("\n");
+}
+// ── Top-level help (existing CLI_HELP_TEXT + Commands) ─────────────────────
+const TOP_LEVEL_COMMANDS = [
+    "review                    Run PR review (default)",
+    "doctor                    Check environment is ready",
+    "check-review-artifact <path>  Validate a review artifact",
+    "version                   Print version",
+    "--help, -h                Show this help",
+    "--version, -V             Print version",
+];
 const CLI_HELP_TEXT = [
     `${BRAND} — provider-agnostic PR review CLI`,
     "",
-    "Flags:",
+    "Commands:",
+    ...TOP_LEVEL_COMMANDS.map((c) => `  ${c}`),
+    "",
+    "Review flags (use `umactually review --help` for full details):",
     ...HELP_FLAGS.map(renderFlagLine),
+    "",
+    "Global flags:",
+    ...GLOBAL_FLAGS.map(renderFlagLine),
     "",
     CLI_MODES_TEXT,
     "See exit codes: docs/exit-codes.md",
 ].join("\n");
-function renderCommands(commands) {
-    return ["Commands:", ...commands.map((command) => `  ${command}`), ""].join("\n");
+// ── Per-command contextual help ────────────────────────────────────────────
+const REVIEW_HELP_TEXT = [
+    `${BRAND} review — run an AI-powered PR review`,
+    "",
+    "Usage:",
+    "  umactually review [flags]       Run review (also the default command)",
+    "  umactually review --help        Show this help",
+    "",
+    "Flags:",
+    ...renderFlags(flagsForContext("review")),
+    "",
+    CLI_MODES_TEXT,
+    "See exit codes: docs/exit-codes.md",
+].join("\n");
+const DOCTOR_HELP_TEXT = [
+    `${BRAND} doctor — check that your environment is ready for review`,
+    "",
+    "Usage:",
+    "  umactually doctor                Run all environment checks",
+    "  umactually doctor --json         Emit machine-readable JSON",
+    "  umactually doctor --help         Show this help",
+    "",
+    "Checks:",
+    "  node          Verifies Node.js >= 24 is on PATH",
+    "  git           Verifies git is available and the cwd is a repository",
+    "  env           Reports which UMACTUALLY_* / REVIEW_* env vars are set",
+    "  dist-freshness Verifies the bundled dist/ is up to date (dev only)",
+    "",
+    "Global flags:",
+    ...GLOBAL_FLAGS.map(renderFlagLine),
+    "",
+    "Exit codes:",
+    "  0  All checks passed",
+    "  1  One or more checks failed or warned",
+    "  2  Usage error",
+].join("\n");
+const CHECK_REVIEW_ARTIFACT_HELP_TEXT = [
+    `${BRAND} check-review-artifact — validate a review JSON artifact`,
+    "",
+    "Usage:",
+    "  umactually check-review-artifact <path>   Validate the artifact at <path>",
+    "  umactually check-review-artifact --help   Show this help",
+    "",
+    "The artifact is classified as:",
+    "  ok       Valid review with a recognized verdict",
+    "  fail     Invalid, unparseable, or parse-failed artifact",
+    "",
+    "Exit codes:",
+    "  0  Artifact is valid",
+    "  1  Artifact is invalid or unparseable",
+    "  2  Usage error (no path given, or too many arguments)",
+].join("\n");
+/** Map from command name to its dedicated help text. */
+const COMMAND_HELP = {
+    review: REVIEW_HELP_TEXT,
+    doctor: DOCTOR_HELP_TEXT,
+    "check-review-artifact": CHECK_REVIEW_ARTIFACT_HELP_TEXT,
+};
+/**
+ * Resolve which help text to print based on the argv context.
+ *
+ * If a recognized subcommand appears before `--help` / `-h`, that
+ * command's dedicated help is shown. Otherwise the top-level help is
+ * shown (which includes the Commands banner).
+ */
+function resolveHelpText(argv) {
+    const helpIndex = argv.indexOf("--help") !== -1
+        ? argv.indexOf("--help")
+        : argv.indexOf("-h");
+    if (helpIndex === -1) {
+        return CLI_HELP_TEXT;
+    }
+    // Check tokens before --help for a recognized subcommand.
+    for (let i = 0; i < helpIndex; i += 1) {
+        const token = argv[i];
+        if (token === undefined || token.startsWith("-")) {
+            continue;
+        }
+        if (token in COMMAND_HELP) {
+            return COMMAND_HELP[token];
+        }
+        // Unknown positional before --help — fall through to top-level help.
+        break;
+    }
+    return CLI_HELP_TEXT;
 }
+/**
+ * Print the help text to stdout. When `commands` is provided, renders the
+ * top-level help with the Commands banner appended (legacy callers).
+ *
+ * @returns The rendered help text that was written to stdout.
+ */
 function printHelp(commands = []) {
     const helpText = commands.length === 0
         ? CLI_HELP_TEXT
@@ -1519,6 +1666,23 @@ function printHelp(commands = []) {
     process.stdout.write(helpText);
     return helpText;
 }
+/**
+ * Print contextual help text to stdout based on the argv context.
+ *
+ * This is the preferred entry point from `dispatch.ts`. It detects whether
+ * a subcommand preceded `--help` and renders the appropriate section.
+ *
+ * @returns The rendered help text that was written to stdout.
+ */
+function printContextualHelp(argv) {
+    const helpText = resolveHelpText(argv);
+    process.stdout.write(helpText);
+    return helpText;
+}
+/** Exported for unit tests that need to assert per-command help content. */
+const REVIEW_HELP = (/* unused pure expression or super */ null && (REVIEW_HELP_TEXT));
+const DOCTOR_HELP = (/* unused pure expression or super */ null && (DOCTOR_HELP_TEXT));
+const CHECK_REVIEW_ARTIFACT_HELP = (/* unused pure expression or super */ null && (CHECK_REVIEW_ARTIFACT_HELP_TEXT));
 
 ;// CONCATENATED MODULE: ./src/cli/no-color.ts
 // SPDX-License-Identifier: MIT
@@ -1553,14 +1717,6 @@ function resolveColorPolicy(opts) {
 
 
 const GLOBAL_ONLY_FLAGS = new Set(["--json", "--no-color"]);
-const TOP_LEVEL_COMMANDS = [
-    "review",
-    "doctor",
-    "check-review-artifact <path>",
-    "version",
-    "--help",
-    "--version",
-];
 const execFile = (0,external_node_util_namespaceObject.promisify)(external_node_child_process_namespaceObject.execFile);
 function firstPositionalToken(argv) {
     for (const token of argv) {
@@ -1583,7 +1739,7 @@ async function dispatch(argv) {
         return runVersion(argv);
     }
     if (argv.includes("--help") || argv.includes("-h")) {
-        const stdout = printHelp(TOP_LEVEL_COMMANDS);
+        const stdout = printContextualHelp(argv);
         return argv.includes("--no-color") ? 0 : { exitCode: 0, stdout };
     }
     const command = firstPositionalToken(argv);
@@ -16327,7 +16483,10 @@ async function runCli(args, cwd) {
     }
     catch (error) {
         if (error instanceof CliHelpSignal) {
-            printHelp();
+            // Use the command context from the signal (if set) to resolve
+            // the appropriate help text, falling back to top-level help.
+            const helpArgv = error.command !== null ? [error.command, "--help"] : ["--help"];
+            process.stdout.write(resolveHelpText(helpArgv));
             return { exitCode: 0 };
         }
         throw error;
