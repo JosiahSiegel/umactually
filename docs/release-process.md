@@ -42,7 +42,7 @@ The script runs, in order, `npm run typecheck`, `npm test -- --run`, `npm run bu
 node scripts/render-versions.mjs --check
 ```
 
-This re-walks `README.md`, `docs/**/*.md`, and `examples/**/*.{yml,yaml,md}` and exits 1 if any token survived on disk or if any rendered value differs from what is currently committed. A clean exit means every shipped doc already references the value of `package.json` `version`. The script enforces the token contract: only `v0.4.0` and `0.4.0` are allowed in shipped docs; any other `{{UMACTUALLY_*}}` shape is a typo and exits 2.
+This re-walks `README.md`, `docs/**/*.md`, and `examples/**/*.{yml,yaml,md}` and exits 1 if any unreplaced `{{UMACTUALLY_*}}` token survived on disk or if any historical `vX.Y.Z` literal that does not equal the current `package.json` `version` would be rewritten. A clean exit means every shipped doc already references the value of `package.json` `version`. The script enforces the token contract: only `vX.Y.Z` and `X.Y.Z` matching the current version are allowed in shipped docs; any other `{{UMACTUALLY_*}}` shape is a typo and exits 2. Both passes preserve URL path segments (a `https://semver.org/spec/v2.0.0.html` reference is not rewritten or flagged) so cross-pinned historic URLs stay intact.
 
 ### 2.4 Verify the historical-pin drift guard
 
@@ -115,7 +115,32 @@ Push the tag. The Release workflow fires on the `v*` tag pattern defined in `.gi
 git push origin main --follow-tags
 ```
 
-That single push is enough: `--follow-tags` pushes the annotated `vX.Y.Z` tag along with `main`, and the `on: push: tags: ['v*']` trigger in the workflow starts the release job.
+That single push is enough: `--follow-tags` pushes every annotated tag whose commit is reachable from `main`, and the `on: push: tags: ['v*']` trigger in the workflow starts the release job for each tag. **Verify the only tag being pushed is the one you intend** — see [§ 8.4 A stale queued tag rode along](#84-a-stale-queued-tag-rode-along) if a previous release's tag was created at squash-merge time but never pushed (the workflow will publish a release for it, with this release's binaries mislabelled).
+
+Verify the tag actually corresponds to the merge commit you expect:
+
+```bash
+git show --stat vX.Y.Z                   # diff matches the release PR
+git log -1 --pretty=format:'%H %s' vX.Y.Z
+git tag --points-at HEAD                 # every tag HEAD points at should be vX.Y.Z
+```
+
+Wait for the Release workflow to finish:
+
+```bash
+gh release view "vX.Y.Z" --json name,assets
+```
+
+Expected: one asset per supported platform plus `checksums.txt`. If the asset list is shorter, or if `assets` is `null`, an earlier job failed; fetch logs via `gh run list --workflow=release` and re-tag once the fix lands on `main` (see [§ 8.1](#81-a-bad-tag-was-pushed)).
+
+Verify the public `latest` redirect points at this release:
+
+```bash
+curl -sLI https://github.com/<OWNER>/<REPO>/releases/latest | grep -i ^location
+# expected: https://github.com/<OWNER>/<REPO>/releases/tag/vX.Y.Z
+```
+
+If the redirect still points at an older tag, GitHub's CDN has stale edge cache (typically 1-2 minutes). If it persists past five minutes, see [§ 8.4](#84-a-stale-queued-tag-rode-along).
 
 ## 6. Post-tag behavior
 
@@ -198,6 +223,37 @@ A critical fix lands that cannot wait for the next scheduled release. Cut it as 
 5. Cut the tag per [§ 5 Cut the tag](#5-cut-the-tag).
 
 There is no separate "hotfix branch" model. The `main` branch is always releasable, and a hotfix is just a patch release with a smaller delta. The CI gates catch any regression before the tag is pushed.
+
+### 8.4 A stale queued tag rode along
+
+A previous release's squash-merge landed on `main` with a local tag created (the bot's job) but never pushed to GitHub. When you push `main --follow-tags` to publish the new release, every reachable tag — including the stale one — gets pushed and triggers the Release workflow. Symptom: the public `/releases/latest` badge redirects to the older tag, and the older tag has assets containing this release's binaries mislabelled as the older version.
+
+To prevent this in the first place, before pushing the tag run:
+
+```bash
+git tag --points-at HEAD
+```
+
+Expected: only `vX.Y.Z` (the release you are about to publish) is listed. If other `v*` tags appear, they are stale queued tags from earlier releases. Recover them first:
+
+```bash
+# Recover the stale tags before re-pushing the intended one.
+git push origin :refs/tags/vSTALE_1
+git push origin :refs/tags/vSTALE_2
+git push ado   :refs/tags/vSTALE_1
+git push ado   :refs/tags/vSTALE_2
+git tag -d vSTALE_1 vSTALE_2
+```
+
+Then delete the stale GitHub Releases (if they were already created) via `gh release delete vSTALE_1 vSTALE_2 --yes`, then push the intended tag:
+
+```bash
+git push origin main --follow-tags
+gh release view "vX.Y.Z" --json assets  # confirm only the intended release
+curl -sLI https://github.com/<OWNER>/<REPO>/releases/latest | grep -i ^location
+```
+
+If the redirect still resolves to the older tag after a few minutes, see [§ 5 the verification block](#5-cut-the-tag).
 
 ## 9. Appendix: helpers and references
 
