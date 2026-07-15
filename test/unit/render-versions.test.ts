@@ -183,6 +183,152 @@ describe("scripts/render-versions.mjs", () => {
   });
 });
 
+describe("scripts/render-versions.mjs — historical vX.Y.Z literal rewrite", () => {
+  it("rewrites a stale vX.Y.Z literal to the current version, idempotently", () => {
+    const tmpRoot = makeIsolatedTree();
+    seedTree(tmpRoot, "0.4.0");
+    // Plant a stale v0.3.0 literal (the kind an old release would render to).
+    writeFileSync(
+      join(tmpRoot, "README.md"),
+      "# X\n\nLatest release: **v0.3.0** — pin: v0.3.0 today.\n",
+      "utf8",
+    );
+
+    const first = invokeRenderScript([], { packageRoot: tmpRoot });
+    expect(first.status, first.stderr).toBe(0);
+
+    const rendered = readFileSync(join(tmpRoot, "README.md"), "utf8");
+    // Every standalone v0.3.0 literal becomes v0.4.0.
+    expect(rendered).not.toMatch(/\bv0\.3\.0\b/);
+    expect(rendered).toMatch(/\*\*v0\.4\.0\*\*/);
+    expect(rendered).toMatch(/pin: v0\.4\.0 today/);
+
+    // Idempotence: re-running is a no-op.
+    const second = invokeRenderScript([], { packageRoot: tmpRoot });
+    expect(second.status, second.stderr).toBe(0);
+  });
+
+  it("does NOT rewrite vX.Y.Z substrings inside URL paths or file extensions", () => {
+    const tmpRoot = makeIsolatedTree();
+    seedTree(tmpRoot, "0.4.0");
+    writeFileSync(
+      join(tmpRoot, "README.md"),
+      [
+        "# X",
+        "",
+        "Stable spec URL: https://semver.org/spec/v2.0.0.html",
+        "Older release: https://github.com/x/y/releases/tag/v0.3.0",
+        "Artifact: review.v1.2.3.html",
+        "",
+      ].join("\n"),
+      "utf8",
+    );
+
+    const result = invokeRenderScript([], { packageRoot: tmpRoot });
+    expect(result.status, result.stderr).toBe(0);
+
+    const out = readFileSync(join(tmpRoot, "README.md"), "utf8");
+    // URL path segments stay intact (SemVer spec URL, GitHub release URL).
+    expect(out).toContain("https://semver.org/spec/v2.0.0.html");
+    expect(out).toContain("https://github.com/x/y/releases/tag/v0.3.0");
+    // Filename extension stays intact.
+    expect(out).toContain("review.v1.2.3.html");
+  });
+
+  it("--check exits 1 when a stale literal would be rewritten, exits 0 after rewrite", () => {
+    const tmpRoot = makeIsolatedTree();
+    seedTree(tmpRoot, "0.4.0");
+    writeFileSync(
+      join(tmpRoot, "README.md"),
+      "# X\n\nStale pin: v0.3.0 today\n",
+      "utf8",
+    );
+
+    // Before render: --check exits 1.
+    const beforeRender = invokeRenderScript(["--check"], { packageRoot: tmpRoot });
+    expect(beforeRender.status).toBe(1);
+    expect(beforeRender.stderr + beforeRender.stdout).toMatch(/render-versions|README\.md/);
+
+    // Render once.
+    const render = invokeRenderScript([], { packageRoot: tmpRoot });
+    expect(render.status, render.stderr).toBe(0);
+
+    // After render: --check exits 0.
+    const afterRender = invokeRenderScript(["--check"], { packageRoot: tmpRoot });
+    expect(afterRender.status, afterRender.stderr).toBe(0);
+  });
+
+  it("does NOT rewrite vX.Y.Z-{prerelease} or vX.Y.Z+{build} suffixes", () => {
+    const tmpRoot = makeIsolatedTree();
+    seedTree(tmpRoot, "0.4.0");
+    // Plant suffixed literals that a maintainer may have intentionally
+    // written. They must be preserved byte-for-byte even after the render
+    // runs, because stripping the suffix would silently rewrite a real
+    // historical note.
+    const SUFFIXED_LITERALS = [
+      "v0.3.0-rc.1", // pre-release
+      "v0.3.0-beta.2", // longer pre-release identifier
+      "v0.3.0+build.7", // build metadata
+      "v0.3.0-alpha", // plain pre-release label
+    ];
+    writeFileSync(
+      join(tmpRoot, "README.md"),
+      `# X\n\n` +
+        SUFFIXED_LITERALS.map((literal) => `Tag: ${literal}`).join("\n") +
+        "\n",
+      "utf8",
+    );
+
+    const result = invokeRenderScript([], { packageRoot: tmpRoot });
+    expect(result.status, result.stderr).toBe(0);
+
+    const out = readFileSync(join(tmpRoot, "README.md"), "utf8");
+    for (const literal of SUFFIXED_LITERALS) {
+      expect(out, `expected literal '${literal}' to be preserved`).toContain(`Tag: ${literal}`);
+    }
+    // No bare 'v0.4.0' should have been injected by the rewrite —
+    // scripts/install.sh-style setup lines etc. might still mention
+    // it elsewhere, so we only assert that the suffixed lines are
+    // untouched byte-for-byte in their slot.
+  });
+
+  it("warns (informational, not a failure) when a bare literal is auto-migrated", () => {
+    const tmpRoot = makeIsolatedTree();
+    seedTree(tmpRoot, "0.4.0");
+    writeFileSync(
+      join(tmpRoot, "README.md"),
+      "# X\n\nold: v0.3.0 today\n",
+      "utf8",
+    );
+
+    const result = invokeRenderScript([], { packageRoot: tmpRoot });
+    expect(result.status, result.stderr).toBe(0);
+    expect(result.stdout).toMatch(/auto-migrated historical literals/);
+    expect(result.stdout).toMatch(/README\.md: v0\.3\.0 -> v0\.4\.0/);
+  });
+
+  it("check-version-alignment also skips suffixed vX.Y.Z-{prerelease} and vX.Y.Z+{build} forms", () => {
+    // The regex change means suffixed forms are explicitly excluded from
+    // both the auto-rewriter and the drift detector. Maintainers can leave
+    // intentional suffixed pins in shipped docs without tripping CI.
+    const tmpRoot = makeIsolatedTree();
+    seedTree(tmpRoot, "0.4.0");
+    writeFileSync(
+      join(tmpRoot, "README.md"),
+      "# X\n\nhistoric: v0.3.0-rc.1 and v0.3.0+build.7\n",
+      "utf8",
+    );
+
+    // Render first so the bare v0.3.0 pin part is migrated, leaving only
+    // the suffixed forms which must be unchanged.
+    const render = invokeRenderScript([], { packageRoot: tmpRoot });
+    expect(render.status, render.stderr).toBe(0);
+
+    const check = invokeCheckScript(["--quiet"], { packageRoot: tmpRoot });
+    expect(check.status, check.stdout + check.stderr).toBe(0);
+  });
+});
+
 describe("scripts/check-version-alignment.mjs", () => {
   it("exits 0 on a clean tree (v<package.json version> in every shipped doc)", () => {
     const tmpRoot = makeIsolatedTree();
