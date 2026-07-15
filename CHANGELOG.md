@@ -8,7 +8,50 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
-- No new changes yet.
+- **Auto-rendered version tokens across all shipped docs.** The version
+  pin (`v0.2.1`) used to be hardcoded in nine places across `README.md`,
+  `docs/configuration.md`, `docs/azure-devops.md`, `docs/gh-actions.md`,
+  `examples/azure/azure-pipelines.yml`, and `examples/github/pr-review.yml`;
+  every release required a manual sweep and they drifted in practice (the
+  v0.3.0 release shipped with `v0.2.1` still hardcoded in 22 spots). The
+  hardcodes are now template tokens `{{UMACTUALLY_VERSION}}` (tag form
+  `v0.3.0`) and `{{UMACTUALLY_VERSION_DOT}}` (bare form `0.3.0`), and
+  the new `scripts/render-versions.mjs` walks `README.md`,
+  `docs/**/*.md`, and `examples/**/*.{yml,yaml,md}` to rewrite them from
+  a single source of truth: `package.json` `version`. The script
+  refuses to leave any `{{UMACTUALLY_*}}` token unreplaced (typos fail
+  with exit 2), is fully idempotent, supports `--check` and `--dry-run`
+  modes, and accepts `--package-root <dir>` for sandboxed runs.
+
+### Added (release pipeline)
+
+- **`scripts/check-version-alignment.mjs` is a new release gate.** It
+  calls `render-versions.mjs --check` and additionally greps every shipped
+  doc for any historical `vX.Y.Z` literal that does not equal
+  `v<package.json version>`. Failing this gate exits 1 with a diff that
+  names the offending file and the exact stray pin.
+
+### Changed
+
+- **`scripts/ci-validate.sh` grew two new gates** (now six total):
+  `npm run render-docs` (re-renders tokens against the current
+  `package.json` `version`) and `npm run check:version-alignment`
+  (drift detector). Both run after `npm run bundle` and before
+  `npm run check:dist-freshness`. `package.json` `prepublishOnly` was
+  updated in lock-step so `npm publish` enforces the same gates locally.
+- **`CONTRIBUTING.md`** documents the new release-process section, the
+  token contract, the release PR checklist (`npm run render-docs` then
+  `npm run check:version-alignment`), and the post-tag push workflow.
+  The "Pre-PR validation" section's "four gates" wording was updated to
+  "six gates" to match the canonical pipeline.
+
+### Fixed
+
+- The on-disk README still claimed `Latest release: v0.2.1` after
+  v0.3.0 was tagged (and the npx install fragment was the same). The
+  re-render brought every reference up to `v0.3.0` in the same
+  commit that landed the rendering tool. Future releases can't
+  drift the same way.
 
 ## [0.3.0] - 2026-07-15
 
