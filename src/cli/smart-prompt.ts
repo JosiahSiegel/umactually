@@ -82,17 +82,37 @@ export async function readInteractiveLine(input: {
   process.stdout.write(`${BRAND_PREFIX}${input.prompt}\n`);
 
   const stdin = process.stdin;
-  const timer = setTimeout(() => {
-    stdin.destroy(new SmartPromptUnavailable(
-      "TIMEOUT",
-      `Prompt timed out after ${input.timeoutMs}ms with no input. Set --api-url / --api-key on the command line or via env vars to skip the interactive prompt.`,
-    ));
-  }, input.timeoutMs);
+  // Race the read against a timeout promise so a missed keypress
+  // surfaces the typed TIMEOUT rejection WITHOUT relying on the
+  // stream emitting `error` synchronously (which a paused TTY does
+  // NOT do — Node's read-stream destroy-with-error only surfaces
+  // via `error` if a read is mid-flight). The race pattern is the
+  // canonical fix for "Promise that should timeout"; see
+  // https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Promise/race
+  // for the underlying semantics.
+  let timeoutHandle: NodeJS.Timeout | null = null;
+  const timeoutPromise = new Promise<never>((_resolve, reject) => {
+    timeoutHandle = setTimeout(
+      () => {
+        reject(new SmartPromptUnavailable(
+          "TIMEOUT",
+          `Prompt timed out after ${input.timeoutMs}ms with no input. Set --api-url / --api-key on the command line or via env vars to skip the interactive prompt.`,
+        ));
+      },
+      input.timeoutMs,
+    );
+    // Don't keep the event loop alive solely on the timer — the read
+    // operation also references an open handle via the stream, so
+    // unref() is safe here (the read promise keeps the loop alive).
+    timeoutHandle.unref();
+  });
 
   try {
-    return await readOneLine(stdin);
+    return await Promise.race([readOneLine(stdin), timeoutPromise]);
   } finally {
-    clearTimeout(timer);
+    if (timeoutHandle !== null) {
+      clearTimeout(timeoutHandle);
+    }
   }
 }
 
@@ -105,6 +125,14 @@ export async function readInteractiveLine(input: {
  * events rather than readline so the import stays free of a
  * third-party dep at CLI boot time (ncc bundling is happier this
  * way too).
+ *
+ * Implementation note: all three event listeners (`data`, `end`,
+ * `error`) MUST be attached BEFORE `stream.resume()` is called.
+ * On a fast EOF (e.g. CI with a closed pipe), the synchronous
+ * `end` event fires from inside `resume()` itself; if listeners
+ * aren't attached by then, the Promise hangs forever. The same
+ * race applies to a synchronous `error` event on a destroyed stream.
+ * The order below is load-bearing — don't reorder.
  */
 async function readOneLine(stream: NodeJS.ReadStream): Promise<string> {
   return await new Promise((resolve, reject) => {
@@ -130,6 +158,10 @@ async function readOneLine(stream: NodeJS.ReadStream): Promise<string> {
       stream.removeListener("end", onEnd);
       reject(new SmartPromptUnavailable("READ_ERROR", `Failed to read stdin: ${err.message}. Set --api-url / --api-key on the command line or via env vars.`));
     };
+    // Attach all three listeners BEFORE resuming the stream. The
+    // previous ordering (attach → resume) attached after the same-
+    // tick end event had already fired, leaving the Promise to
+    // hang forever on a closed stdin.
     stream.on("data", onData);
     stream.once("end", onEnd);
     stream.once("error", onError);

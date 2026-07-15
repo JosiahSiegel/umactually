@@ -18,4 +18,19 @@ describe("SmartPromptUnavailable (typed boundary)", () => {
     const result = canPromptInteractively();
     expect(typeof result).toBe("boolean");
   });
+
+  it("accepts every documented code literal", () => {
+    // Guard against typos creeping into the typed boundary.
+    // `NO_TTY`, `TIMEOUT`, `CLOSED_STDIN`, and `READ_ERROR` are
+    // every value the constructor accepts; a future contributor
+    // who adds a code without considering the test list will see
+    // this fail and update both at once.
+    const codes = ["NO_TTY", "TIMEOUT", "CLOSED_STDIN", "READ_ERROR"] as const;
+    for (const code of codes) {
+      const e = new SmartPromptUnavailable(code, `synthetic ${code} message`);
+      expect(e.code).toBe(code);
+      expect(e.message).toBe(`synthetic ${code} message`);
+    }
+  });
 });
+

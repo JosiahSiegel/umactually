@@ -1,5 +1,5 @@
 import { FIELDS } from "../config/field-schema.js";
-import { didYouMean, levenshtein, parseStrictInt, readEnum } from "../util/cli-args.js";
+import { didYouMean, parseStrictInt, readEnum } from "../util/cli-args.js";
 import type { Severity } from "../config/types.js";
 import { parseSeverityFromUnknown } from "../config/parsers.js";
 
@@ -533,8 +533,5 @@ function unknownFlagUsageError(token: string, argv: readonly string[]): CliUsage
     : sawPositionalCommand
       ? `Run \`umactually review --help\` for every flag the \`review\` subcommand accepts.`
       : `Run \`umactually --help\` for a flag list, or \`umactually review --api-url <url> --api-key <key>\` for the standard standalone invocation.`;
-  // Touch `levenshtein` directly so the export stays reachable for
-  // unit tests without becoming dead code at runtime.
-  void levenshtein.length;
   return new CliUsageError(message, hint);
 }
