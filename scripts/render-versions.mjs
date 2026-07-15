@@ -81,8 +81,15 @@ const TOKEN_DOT = "{{UMACTUALLY_VERSION_DOT}}";
 
 // Files / globs the script walks. node:fs.globSync accepts the same patterns
 // as the shell, including brace expansion and recursive "**".
+//
+// CONTRIBUTING.md is walked in addition to README.md + docs/**/*.md so a
+// `vX.Y.Z` literal in the contributor guide auto-migrates with the release.
+// CHANGELOG.md is INTENTIONALLY excluded — the file is the version history
+// itself, every entry references the version that was current at the time,
+// and rewriting those literals would corrupt the historical record.
 const TARGETS = [
   "README.md",
+  "CONTRIBUTING.md",
   "docs/**/*.md",
   "examples/**/*.yml",
   "examples/**/*.yaml",

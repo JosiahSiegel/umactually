@@ -102,14 +102,7 @@ git pull --ff-only origin main
 git tag -a vX.Y.Z -m "release: vX.Y.Z (see CHANGELOG.md for the changes)"
 ```
 
-Sanity-check the tag points at the merge commit you expect:
-
-```bash
-git show --stat vX.Y.Z           # confirm the diff matches the release PR
-git log -1 --pretty=format:'%H %s' vX.Y.Z
-```
-
-Push the tag. The Release workflow fires on the `v*` tag pattern defined in `.github/workflows/release.yml`:
+Sanity-check the tag points at the merge commit you expect with `git show --stat vX.Y.Z` (diff matches the release PR) and `git log -1 --pretty=format:'%H %s' vX.Y.Z` (verify the SHA).
 
 ```bash
 git push origin main --follow-tags
@@ -120,9 +113,9 @@ That single push is enough: `--follow-tags` pushes every annotated tag whose com
 Verify the tag actually corresponds to the merge commit you expect:
 
 ```bash
+git tag --points-at HEAD                 # every tag HEAD points at should be vX.Y.Z
 git show --stat vX.Y.Z                   # diff matches the release PR
 git log -1 --pretty=format:'%H %s' vX.Y.Z
-git tag --points-at HEAD                 # every tag HEAD points at should be vX.Y.Z
 ```
 
 Wait for the Release workflow to finish:
@@ -273,39 +266,3 @@ A convenience wrapper, if present in your worktree, automates the four commands 
 - [Keep a Changelog 1.1.0](https://keepachangelog.com/en/1.1.0/): the format reference for the CHANGELOG.
 - [SemVer 2.0.0](https://semver.org/spec/v2.0.0.html): the version-bump rules summarized in [§ 3](#3-semver-decision-guide).
 
-<!-- docs/release-process.md review pass -->
-<!-- docs/release-process.md review pass -->
-
-<!--
-Review pass against the 10 must-include criteria.
-
-1. Audience ordering. Section 1 is a 2-paragraph TL;DR with the shortest safe path. Sections 2 -> 5 -> 6 -> 7 -> 8 -> 3 are in the order a maintainer landing cold needs them: checklist, step-by-step, post-tag, ADO sync, recovery, then SemVer (which is reference material rather than a procedural step). Fulfilled.
-
-2. No duplication with CONTRIBUTING.md. Section 2 explicitly references CONTRIBUTING.md Release process and defers the single-source-of-truth statement and the per-release-PR checklist there. The drift-guard description in 2.3 and 2.4 adds detail not in CONTRIBUTING.md (the --check flag, exit-code semantics for residual tokens), so it is not duplication. The SemVer guide in section 3 is new material; CONTRIBUTING.md does not state patch vs minor vs major rules. Fulfilled.
-
-3. Concrete shell commands. Every git/npm/node/curl step in sections 2, 4, 5, 8 shows copy-paste commands. No "ensure your branch is in sync" without a git fetch && git status snippet. The ADO sync in section 7 deliberately defers the full curl to azure-devops.md per the criterion. Fulfilled.
-
-4. Recovery section. Section 8 has three subsections matching the required failure modes: 8.1 bad tag pushed, 8.2 ci-validate failed mid-release, 8.3 hotfix between releases. Each has a concrete command sequence. Fulfilled.
-
-5. SemVer decision guide inline. Section 3 is a table with patch/minor/major triggers and concrete examples, written for someone deciding without re-reading semver.org. Fulfilled.
-
-6. No broken links. All docs/*.md references resolve: configuration.md, azure-devops.md, gh-actions.md, security.md, exit-codes.md, providers.md all exist per the glob. Cross-file anchors: ../CONTRIBUTING.md#release-process and ../docs/azure-devops.md#syncing-merged-github-prs-to-ado-main, both target headings present in their files. Same-file anchors map to headings in this file (GitHub-flavored slugification: lowercase, dashes for spaces, strip most punctuation). scripts/ci-validate.sh, scripts/render-versions.mjs, CHANGELOG.md, .github/workflows/release.yml are all present at the repo root. scripts/release.sh is referenced but does not currently exist in the worktree; section 9 explicitly notes it is optional and describes the manual flow as the canonical contract, so the reference is honest and the doc remains valid without it. Fulfilled.
-
-7. No emoji or unwanted cosmetic. No emoji, no <details> blocks. Tables where they help (six gates, SemVer, post-tag jobs, recovery-failure modes); prose where prose is better (TL;DR, step-by-step). Fulfilled.
-
-8. CHANGELOG guidance. Section 4 states keep-a-changelog format (link included), [Unreleased] stays at the top, the maintainer fills in Added/Changed/Fixed/Removed/Security sections by pulling bullets from git log vX.Y.Z..HEAD. Fulfilled.
-
-9. ADO sync step. Section 7 is numbered, names the bypassPolicy PATCH explicitly, includes the API shape (POST endpoint, bypassPolicy: true body field, lastMergeSourceCommit shape), and links to docs/azure-devops.md#syncing-merged-github-prs-to-ado-main for the full curl. Fulfilled.
-
-10. Scope caps. Section 9.1 describes what scripts/release.sh is (a convenience wrapper), and explicitly says the manual flow is canonical and the helper is optional. The TL;DR and section 1 also note the helper may be absent. Fulfilled.
-
-Unresolved concerns:
-
-- scripts/release.sh does not currently exist in the worktree (confirmed via ls scripts/). The doc references it as optional and explicitly states the manual flow is canonical. If a real scripts/release.sh is added later, the doc remains accurate; if it is never added, the reference is still honest because section 9.1 frames it as "if present". No action required, but worth flagging to the maintainer that the helper is currently hypothetical from this worktree's perspective.
-
-- The "single source of truth is package.json version" sentence is owned by CONTRIBUTING.md Release process and is correctly delegated. The token-contract table is also in CONTRIBUTING.md and is not duplicated; the doc references it via the appendix bullet for scripts/render-versions.mjs only. Confirmed not duplicated.
-
-- The four cross-platform binary asset names (umactually-linux-x64, umactually-windows-x64.exe, etc.) match the release.yml publish_files block. Confirmed.
-
-- Prose rules: zero em-dashes or en-dashes in the shipped prose body (sections 1-9). The review comment block was rewritten to also use colon-separated phrasing rather than em-dashes for stylistic consistency with the rest of the doc. Verified via grep.
--->
