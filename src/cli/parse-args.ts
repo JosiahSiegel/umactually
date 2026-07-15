@@ -360,8 +360,13 @@ export function parseCliArgs(args: readonly string[]): ParsedCliArgs {
         verifyFindings = false;
         break;
       case "--help":
-      case "-h":
-        throw new CliHelpSignal("review");
+      case "-h": {
+        // Derive the command context from non-flag tokens seen so far
+        // so CliHelpSignal carries the right subcommand for contextual
+        // help rendering.
+        const commandToken = args.slice(0, index).find((t) => !t.startsWith("-"));
+        throw new CliHelpSignal(commandToken ?? null);
+      }
       default:
         throw new CliUsageError(`unknown flag: ${token}`);
     }
