@@ -29,7 +29,6 @@ Concretely, the threshold behavior:
 - `low` — surfaces everything except `info`.
 - `medium` (default) — filters `info` and `low`.
 - `high` — filters `info`, `low`, and `medium`.
-- `critical` — filters everything below `critical`.
 
 The carve-out is unconditional. `security` and `leak` findings bypass every configured threshold and cannot be turned off via `minimum-severity` or any other input — to suppress them you must remove them at the source (e.g. stop posting the credential, fix the underlying code).
 
@@ -80,7 +79,7 @@ When **no** explicit `prompt-file` / `additional-prompt-file` AND no explicit `p
 
 Missing files are silently skipped — the action does not require any of these to exist. The lookup runs against the workflow `working-directory` (same cwd-resolved base as the explicit `prompt-file` reader), so every default-lookup path is subject to the same path-safety refusals above (absolute paths, `..`, symlink escape are all rejected).
 
-The default-lookup list is **completely overridden** when `prompt-files` / `additional-prompt-files` is non-empty: the array is consulted and the defaults are not. To opt out of the default lookup entirely without supplying files, set `prompt-files: ""` is already the default — there is no "skip defaults" toggle. The legacy `prompt-file` / `additional-prompt-file` (single-path) inputs also override the defaults (they take precedence over the auto-discovered list).
+The default-lookup list is **completely overridden** when `prompt-files` / `additional-prompt-files` is non-empty: the array is consulted and the defaults are not. The legacy `prompt-file` / `additional-prompt-file` (single-path) inputs also override the defaults (they take precedence over the auto-discovered list). There is no "skip defaults without supplying files" toggle — to opt out of the default lookup without naming your own files, set `prompt-files: ""` and supply `prompt-file:` (or set `UMACTUALLY_PROMPT_FILE` to a single path); the explicit single-path override still wins over the defaults.
 
 If you need additional prompt sources beyond the documented list, extend the constants in `src/config/prompt-files.ts` (`DEFAULT_PROMPT_FILE_PATHS`) and add a regression test pinning the new path.
 
