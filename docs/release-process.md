@@ -42,7 +42,7 @@ The script runs, in order, `npm run typecheck`, `npm test -- --run`, `npm run bu
 node scripts/render-versions.mjs --check
 ```
 
-This re-walks `README.md`, `docs/**/*.md`, and `examples/**/*.{yml,yaml,md}` and exits 1 if any token survived on disk or if any rendered value differs from what is currently committed. A clean exit means every shipped doc already references the value of `package.json` `version`. The script enforces the token contract: only `v0.3.0` and `0.3.0` are allowed in shipped docs; any other `{{UMACTUALLY_*}}` shape is a typo and exits 2.
+This re-walks `README.md`, `docs/**/*.md`, and `examples/**/*.{yml,yaml,md}` and exits 1 if any token survived on disk or if any rendered value differs from what is currently committed. A clean exit means every shipped doc already references the value of `package.json` `version`. The script enforces the token contract: only `v0.4.0` and `0.4.0` are allowed in shipped docs; any other `{{UMACTUALLY_*}}` shape is a typo and exits 2.
 
 ### 2.4 Verify the historical-pin drift guard
 
@@ -182,7 +182,7 @@ The six-gate pipeline exited non-zero on a release PR. Read the gate name from t
 | `npm test -- --run` | A test for a removed or renamed export. | Run `npm test` locally, read the diff between the expected and actual names, fix. |
 | `npm run bundle` | An ncc error, typically a missing file path in `src/cli.ts`. | Re-run `npm run bundle` locally; ncc's error message names the file. |
 | `npm run check:dist-freshness` | You edited `src/` after the last `npm run bundle` and forgot to re-bundle. | `npm run bundle`, commit `dist/`. |
-| `npm run render-docs` | The token contract was violated (a non-canonical `{{UMACTUALLY_*}}` token snuck in). | Read the script output for the file and token name. Replace it with `v0.3.0` or `0.3.0` as appropriate. Exit 2 means a typo; exit 1 means a token survived. |
+| `npm run render-docs` | The token contract was violated (a non-canonical `{{UMACTUALLY_*}}` token snuck in). | Read the script output for the file and token name. Replace it with `v0.4.0` or `0.4.0` as appropriate. Exit 2 means a typo; exit 1 means a token survived. |
 | `npm run check:version-alignment` | A historical `vX.Y.Z` literal exists in a shipped doc. | Read the script output for the file and the stray pin; remove or replace it. |
 
 None of these gate failures requires a tag deletion. Fix the underlying issue on `main` and the release PR picks up the fix automatically.

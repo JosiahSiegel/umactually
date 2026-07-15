@@ -12,42 +12,60 @@ ship a tag).
 
 ### Added
 
-- **Auto-rendered version tokens across all shipped docs.** The version
-  pin (`v0.2.1`) used to be hardcoded in nine places across `README.md`,
+- No new changes yet.
+
+## [0.4.0] - 2026-07-15
+
+### Added
+
+- **Auto-rendered version tokens across all shipped docs (PR #62).** The version
+  pin used to be hardcoded in nine places across `README.md`,
   `docs/configuration.md`, `docs/azure-devops.md`, `docs/gh-actions.md`,
   `examples/azure/azure-pipelines.yml`, and `examples/github/pr-review.yml`;
   every release required a manual sweep and they drifted in practice (the
   v0.3.0 release shipped with `v0.2.1` still hardcoded in 22 spots). The
-  hardcodes are now template tokens `{{UMACTUALLY_VERSION}}` (tag form
-  `v0.3.0`) and `{{UMACTUALLY_VERSION_DOT}}` (bare form `0.3.0`), and
-  the new `scripts/render-versions.mjs` walks `README.md`,
-  `docs/**/*.md`, and `examples/**/*.{yml,yaml,md}` to rewrite them from
-  a single source of truth: `package.json` `version`. The script
-  refuses to leave any `{{UMACTUALLY_*}}` token unreplaced (typos fail
-  with exit 2), is fully idempotent, supports `--check` and `--dry-run`
-  modes, and accepts `--package-root <dir>` for sandboxed runs.
-
-### Added (release pipeline)
-
-- **`scripts/check-version-alignment.mjs` is a new release gate.** It
+  hardcodes are now template tokens `{{UMACTUALLY_VERSION}}` (tag form)
+  and `{{UMACTUALLY_VERSION_DOT}}` (bare form), and the new
+  `scripts/render-versions.mjs` walks `README.md`, `docs/**/*.md`, and
+  `examples/**/*.{yml,yaml,md}` to rewrite them from a single source of
+  truth: `package.json` `version`. The script refuses to leave any
+  `{{UMACTUALLY_*}}` token unreplaced (typos fail with exit 2), is fully
+  idempotent, supports `--check` and `--dry-run` modes, and accepts
+  `--package-root <dir>` for sandboxed runs.
+- **`scripts/check-version-alignment.mjs` is a new release gate (PR #62).** It
   calls `render-versions.mjs --check` and additionally greps every shipped
   doc for any historical `vX.Y.Z` literal that does not equal
   `v<package.json version>`. Failing this gate exits 1 with a diff that
   names the offending file and the exact stray pin.
+- **Canonical release-process runbook (PR #63).** `docs/release-process.md`
+  is the one-stop maintainer reference for cutting a release: TL;DR,
+  pre-release checklist, cut-the-tag commands, post-tag workflow behavior,
+  ADO sync, recovery (bad tag, ci-validate failure, hotfix), and an
+  inline SemVer decision guide.
+- **`scripts/release.sh` pre-flight helper (PR #63).** Bumps `package.json`
+  `version`, inserts a `[X.Y.Z] - YYYY-MM-DD` placeholder under
+  `[Unreleased]` in `CHANGELOG.md`, runs `npm run render-docs`, runs
+  `bash scripts/ci-validate.sh`, and prints the exact next-step commands.
+  Does NOT auto-commit, auto-merge, auto-tag, or auto-push.
 
 ### Changed
 
-- **`scripts/ci-validate.sh` grew two new gates** (now six total):
+- **`scripts/ci-validate.sh` grew two new gates** (now six total, PR #62):
   `npm run render-docs` (re-renders tokens against the current
   `package.json` `version`) and `npm run check:version-alignment`
   (drift detector). Both run after `npm run bundle` and before
   `npm run check:dist-freshness`. `package.json` `prepublishOnly` was
   updated in lock-step so `npm publish` enforces the same gates locally.
 - **`CONTRIBUTING.md`** documents the new release-process section, the
-  token contract, the release PR checklist (`npm run render-docs` then
-  `npm run check:version-alignment`), and the post-tag push workflow.
-  The "Pre-PR validation" section's "four gates" wording was updated to
-  "six gates" to match the canonical pipeline.
+  token contract, the release PR checklist, and the post-tag push
+  workflow. The "Pre-PR validation" section's "four gates" wording was
+  updated to "six gates" to match the canonical pipeline (PR #62). The
+  Release process section was further trimmed to delegate to
+  `docs/release-process.md` as the canonical reference (PR #63).
+- **README.md** Documentation index adds `[Release process]` link
+  (PR #63).
+- **CHANGELOG.md** top-level note points at `docs/release-process.md`
+  for the maintainer release workflow (PR #63).
 
 ### Fixed
 
@@ -56,6 +74,12 @@ ship a tag).
   re-render brought every reference up to `v0.3.0` in the same
   commit that landed the rendering tool. Future releases can't
   drift the same way.
+- **Drift detector URL false positive (PR #63).**
+  `check-version-alignment.mjs` previously flagged the literal
+  `v2.0.0` substring inside `https://semver.org/spec/v2.0.0.html` as
+  historical project drift. The regex now uses boundary anchors that
+  exclude URL path segments, file extensions, and scheme separators,
+  so only standalone version literals are matched.
 
 ## [0.3.0] - 2026-07-15
 

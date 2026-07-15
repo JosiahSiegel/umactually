@@ -28,10 +28,10 @@ jobs:
           GITHUB_TOKEN: ${{ github.token }}
           UMACTUALLY_API_URL: ${{ secrets.UMACTUALLY_API_URL }}
           UMACTUALLY_API_KEY: ${{ secrets.UMACTUALLY_API_KEY }}
-        # Pin to the v0.3.0 release tag. The umactually npm package is not
+        # Pin to the v0.4.0 release tag. The umactually npm package is not
         # yet published; `npx github:owner/repo#tag` resolves to the GitHub
         # tarball at that ref so the install is reproducible.
-        run: npx github:JosiahSiegel/umactually#v0.3.0 review --platform github
+        run: npx github:JosiahSiegel/umactually#v0.4.0 review --platform github
 ```
 
 Do not use `pull_request_target`; it is unnecessary and can expose secrets to untrusted pull request code. Keep the npm version pinned and upgrade it deliberately after reviewing the release notes.
