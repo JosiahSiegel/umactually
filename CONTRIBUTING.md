@@ -7,6 +7,7 @@ This guide is for **cold-startup sessions** — anyone opening the repo on a fre
 3. **Read this first** order of source/docs when touching the provider layer
 4. ADO ↔ GitHub sync workflow (for the operator's dual-remote setup)
 5. Pre-commit + pre-PR validation sequence
+6. Release process (version pins, template tokens, publish)
 
 ## What the action does
 
@@ -73,16 +74,71 @@ Run in order, in this order:
 npm run typecheck                                                # gates: src/ types
 npm test                                                         # gates: vitest suite (≈1000 tests, ~10s)
 npm run bundle && node scripts/check-dist-freshness.mjs         # gates: bundled output is fresh
-bash scripts/ci-validate.sh                                      # gate: all four gates in one
+npm run render-docs                                              # gates: shipped docs reflect package.json version
+npm run check:version-alignment                                  # gates: no historical vX.Y.Z drift in docs
+bash scripts/ci-validate.sh                                      # gate: all six gates in one
 git push origin <branch>                                         # uploads branch
 gh pr create --base main --head <branch>                         # opens PR
 ```
 
-`scripts/ci-validate.sh` is the **single implementation** of the four gates. Both `azure-pipelines.yml` and `examples/azure/azure-pipelines.yml` invoke it — there is no inline `tsc && vitest && ncc` chain anywhere. If you find yourself running the four gates piecemeal in a workflow, write the script to replace the chain instead.
+`scripts/ci-validate.sh` is the **single implementation** of the six gates. Both `azure-pipelines.yml` and `examples/azure/azure-pipelines.yml` invoke it — there is no inline `tsc && vitest && ncc` chain anywhere. If you find yourself running the gates piecemeal in a workflow, write the script to replace the chain instead.
 
 ## ADO ↔ GitHub sync workflow
 
 If you maintain a fork of this action in Azure DevOps for ADO-side validation work and need to keep ADO `main` in lock-step with the canonical GitHub `main`, see [docs/azure-devops.md#syncing-merged-github-prs-to-ado-main](docs/azure-devops.md#syncing-merged-github-prs-to-ado-main) for the full workflow.
+
+## Release process
+
+`package.json` `version` is the single source of truth for the project's version. Every place a version appears in shipped docs — README badge, install examples, CI install fragments, the GitHub Actions workflow snippet, the Azure Pipelines example — is auto-rendered from the token set the script maintains.
+
+### Token contract
+
+| Token | Rendered as | Example |
+| --- | --- | --- |
+| `{{UMACTUALLY_VERSION}}` | `v<version>` | `v0.3.0` |
+| `{{UMACTUALLY_VERSION_DOT}}` | `<version>` | `0.3.0` |
+
+Both walk the canonical `TARGETS` glob (`README.md`, `docs/**/*.md`, `examples/**/*.{yml,yaml,md}`). ncc regenerates `dist/` during `npm run bundle`, so version tokens must never appear there; the script's `SKIP_DIRS` set enforces this.
+
+`scripts/render-versions.mjs` enforces the invariant that **the only `{{UMACTUALLY_*}}` tokens allowed in shipped docs are the two above** — any other shape is a typo and fails with exit code 2.
+
+### Pre-release checklist (release PR)
+
+When you bump `version` in `package.json` (e.g. `0.3.0` → `0.3.1`) and write the `[X.Y.Z]` CHANGELOG heading, do this in the same PR:
+
+```bash
+# 1. Update package.json "version" + add CHANGELOG [X.Y.Z] section.
+$EDITOR package.json CHANGELOG.md
+
+# 2. Re-render every {{UMACTUALLY_*}} token to the new version. This
+#    rewrites README.md, docs/, examples/ in place. The script is
+#    idempotent — running it on an already-rendered tree is a no-op.
+npm run render-docs
+
+# 3. Confirm every shipped docs file now references v<newVersion>:
+npm run render-docs:check          # exits 0 when each token-resolved file matches disk
+npm run check:version-alignment    # full drift guard (also scans for historical vX.Y.Z)
+```
+
+The re-rendered docs are committed in the release PR alongside the `package.json` bump — `README.md` and the example pipelines always show the latest release tag, with zero manual editing.
+
+### Release guards baked into `scripts/ci-validate.sh`
+
+`scripts/ci-validate.sh` runs `npm run render-docs` and `npm run check:version-alignment` after `npm run bundle` and before `npm run check:dist-freshness`. The drift guard fails CI loud when:
+
+- A canonical token is left unreplaced (`render-versions.mjs --check` → exit 1)
+- A non-canonical token (e.g. `{{UMACTUALLY_VRSION}}`) survives a render (exit 2)
+- Any historical `vX.Y.Z` literal other than the current `v<version>` appears in any shipped doc (exit 1 from `check-version-alignment.mjs`)
+
+Both rails-and-fence gates (auto-render + drift detector) are wired through the same `scripts/ci-validate.sh` so the four gates stay in lock-step with version-alignment — there is no inline `bash render-docs && bash check-version-alignment` chain anywhere outside the script.
+
+### After the tag is pushed
+
+```bash
+git tag -a vX.Y.Z -m "release: vX.Y.Z — see CHANGELOG.md for the changes"
+git push origin main --follow-tags    # GitHub Release workflow fires on the v* tag
+git push ado main                      # sync tag to ADO mirror
+```
 
 ## Coding conventions
 

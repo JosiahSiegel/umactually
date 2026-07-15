@@ -20,6 +20,14 @@
 #   4. Verify the freshly-built dist/ is newer than every src/*.ts file
 #      (npm run check:dist-freshness). Exits 1 if the bundle is stale,
 #      which would silently review with the wrong code.
+#   5. Re-render the {{UMACTUALLY_*}} template tokens in README.md, docs/,
+#      and examples/ (npm run render-docs) so the committed view always
+#      reflects the current `package.json` `version`. The render step is
+#      idempotent: a clean tree stays clean.
+#   6. Run the drift guard (npm run check:version-alignment). It asserts
+#      that no token survives on disk, no non-canonical {{UMACTUALLY_*}}
+#      token survives, and no historical `vX.Y.Z` string survives in any
+#      shipped docs file. See scripts/check-version-alignment.mjs.
 #
 # Usage from an Azure DevOps pipeline step:
 #   - script: bash scripts/ci-validate.sh
@@ -48,5 +56,11 @@ npm run bundle
 
 echo "==> dist-freshness"
 npm run check:dist-freshness
+
+echo "==> render-docs"
+npm run render-docs
+
+echo "==> version-alignment"
+npm run check:version-alignment -- --quiet
 
 echo "ci-validate: OK"

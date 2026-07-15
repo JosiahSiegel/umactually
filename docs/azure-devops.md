@@ -31,10 +31,10 @@ steps:
   - task: NodeTool@0
     inputs:
       versionSpec: "24.x"
-  # Pin to the v0.2.1 release tag. The umactually npm package is not
+  # Pin to the v0.3.0 release tag. The umactually npm package is not
   # yet published; `npx github:owner/repo#tag` resolves to the GitHub
   # tarball at that ref so the install is reproducible.
-  - script: npx github:JosiahSiegel/umactually#v0.2.1 review --platform azure-devops
+  - script: npx github:JosiahSiegel/umactually#v0.3.0 review --platform azure-devops
     displayName: Run umactually PR review
     env:
       SYSTEM_ACCESSTOKEN: $(System.AccessToken)
@@ -78,8 +78,8 @@ A missing permission normally surfaces as HTTP 403. Grant permissions narrowly, 
 Windows agents use the same single command after `NodeTool@0`:
 
 ```yaml
-# Pin to the v0.2.1 release tag.
-- powershell: npx github:JosiahSiegel/umactually#v0.2.1 review --platform azure-devops
+# Pin to the v0.3.0 release tag.
+- powershell: npx github:JosiahSiegel/umactually#v0.3.0 review --platform azure-devops
   displayName: Run umactually PR review
   env:
     SYSTEM_ACCESSTOKEN: $(System.AccessToken)
