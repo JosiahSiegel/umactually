@@ -93,7 +93,7 @@ Cutting a new release is an 11-step flow that takes one maintainer about 20 minu
 
 The TL;DR: bump `version` in `package.json`, fill in the `[X.Y.Z]` CHANGELOG heading, run `npm run render-docs` and `bash scripts/ci-validate.sh`, open a release PR, merge to main, sync to ADO, tag with `git tag -a vX.Y.Z`, push. The pre-flight helper `scripts/release.sh vX.Y.Z` automates the package.json + CHANGELOG + render-docs + ci-validate steps; the rest is manual on purpose so the maintainer sees every commit and tag.
 
-The SemVer decision guide (patch vs. minor vs. major) is in the release-process doc under "Deciding the version number". `scripts/render-versions.mjs` + `scripts/check-version-alignment.mjs` enforce the version-pin invariant that shipped docs always show `v<package.json version>` — never re-render them by hand.
+The SemVer decision guide (patch vs. minor vs. major) is in the release-process doc under "Deciding the version number". `scripts/render-versions.mjs` and `scripts/check-version-alignment.mjs` enforce the version-pin invariant that shipped docs always show `v<package.json version>` — never re-render them by hand. `render-versions.mjs` rewrites both `{{UMACTUALLY_*}}` template tokens AND historical `vX.Y.Z` literals whose `X.Y.Z ≠ package.json version`, so the first release needs the tokens replaced and every subsequent release just runs the renderer. URL path segments like `https://semver.org/spec/v2.0.0.html` are preserved (they are not rewritten or flagged as drift).
 
 ## Coding conventions
 
