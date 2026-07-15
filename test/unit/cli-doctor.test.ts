@@ -70,6 +70,10 @@ const installedPackageFs: FsAdapter = {
   },
 };
 
+const standaloneBinaryFs: FsAdapter = {
+  stat: async () => Promise.reject(new Error("ENOENT: standalone binary")),
+};
+
 const insideGit: ExecFile = async () => ({ stdout: "true\n", stderr: "" });
 const outsideGit: ExecFile = async () => Promise.reject(new Error("not a git repository"));
 
@@ -195,5 +199,20 @@ describe("CLI doctor (M5)", () => {
 
     // Then: diagnostics disclose presence only, never the secret value.
     expect(JSON.stringify(result.checks)).not.toContain(secret);
+  });
+
+  it("CLI-DOCTOR-007: skips dist-freshness for standalone binary (both dist and src absent)", async () => {
+    // Given: a Bun --compile standalone binary where neither dist/ nor src/
+    // exists on disk (the codebase is embedded in the executable).
+    const runDoctor = await loadRunDoctor();
+
+    // When: doctor checks bundle freshness.
+    const result = await runDoctor(options({ fsAdapter: standaloneBinaryFs }));
+
+    // Then: dist freshness is skipped (not failed) and the command succeeds.
+    expect(result.exitCode).toBe(0);
+    expect(result.checks).toContainEqual(
+      expect.objectContaining({ id: "dist-freshness", status: "skip" }),
+    );
   });
 });
