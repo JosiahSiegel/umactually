@@ -82,6 +82,19 @@ async function checkDistFreshness(deps: DoctorDeps): Promise<DoctorCheck> {
   const distPath = `${root}/dist/cli.js`;
   const srcPath = `${root}/src/cli.ts`;
   const distStat = await statOrNull(deps.fsAdapter, distPath);
+  const srcStat = await statOrNull(deps.fsAdapter, srcPath);
+
+  // Standalone binary: neither dist/ nor src/ exists on disk because the
+  // entire codebase is embedded in the executable. Skip the check rather
+  // than reporting a false failure.
+  if (distStat === null && srcStat === null) {
+    return {
+      id: "dist-freshness",
+      status: "skip",
+      message: "standalone binary — dist/ is embedded, not on disk",
+    };
+  }
+
   if (distStat === null) {
     return {
       id: "dist-freshness",
@@ -90,8 +103,6 @@ async function checkDistFreshness(deps: DoctorDeps): Promise<DoctorCheck> {
       hint: "Run `npm run bundle` to produce dist/cli.js",
     };
   }
-
-  const srcStat = await statOrNull(deps.fsAdapter, srcPath);
   if (srcStat === null) {
     return {
       id: "dist-freshness",
