@@ -10,6 +10,30 @@ ship a tag).
 
 ## [Unreleased]
 
+## [0.4.1] - 2026-07-15
+
+### Added
+
+- **`docs/troubleshooting.md`** is a new single-topic doc that consolidates content previously duplicated across `docs/azure-devops.md` and `docs/gh-actions.md`. Auto-artifact validation, parse-fail triage (5-step procedure), concurrency + duplicate-runs behavior per platform, the `SYSTEM_ACCESSTOKEN` mapping requirement, and the interactive recovery-prompt gate (TTY + `UMACTUALLY_NO_INTERACTIVE` escape) now live in one place.
+
+### Changed
+
+- **`scripts/render-versions.mjs`** now walks `CONTRIBUTING.md` in addition to `README.md` and `docs/**/*.md`. A `vX.Y.Z` literal in any shipped markdown auto-migrates with the release; `CHANGELOG.md` is intentionally excluded because it IS the version history. Bundled docs surface shrinks from 1496 → 1158 lines (-22.6%) without losing information: YAML quickstarts in `README.md`/azure-devops.md/gh-actions.md now point at the canonical `examples/*` files; the 29-row env-var table in `README.md` is replaced by a link to `docs/configuration.md`; the provider-families + cross-protocol-dispatcher text in `docs/configuration.md` defers to the canonical `docs/providers.md`; the GitGuardian ops deep-dive moves from `docs/security.md` to a new `CONTRIBUTING.md § CI operational notes`.
+- **`scripts/check-version-alignment.mjs`** tightened regex shared with the new `render-versions.mjs` literal-rewrite pass: URL path segments and filename extensions stay intact, suffixed `vX.Y.Z-{prerelease}` / `vX.Y.Z+{build}` literals are preserved (intentional historical context).
+- **`docs/release-process.md` § 5 (Cut the tag)** gains a post-tag verification block: `git tag --points-at HEAD`, `gh release view vX.Y.Z --json name,assets`, and `curl -sLI .../releases/latest | grep ^location`. New § 8.4 covers recovery when a stale queued tag from a previous squash-merge rides along on `--follow-tags`. The 35-line HTML "review pass" comment block at the file's bottom (left over from the doc specialist's self-audit) was deleted.
+- **`test/unit/readme-freshness.test.ts`** was rewritten to enforce README's `### GitHub Actions` and `### Azure DevOps` sections reference the right `examples/*` files (and that those example files are self-contained parseable workflows) — replacing the old assertion that README's embedded YAML matched the examples, which would have blocked the consolidation.
+- **`CONTRIBUTING.md` § CI operational notes** gained the GitGuardian + `do-not-leak` sentinel documentation that previously lived in `docs/security.md`; the security model in `docs/security.md` stays focused on runtime security guarantees.
+
+### Fixed
+
+- **`docs/exit-codes.md`** had a broken `[README](#)` self-link replaced with concrete links to `README.md` and the new `docs/troubleshooting.md`.
+
+## [0.4.0] - 2026-07-15
+
+### Added
+
+- **Auto-rendered version tokens across all shipped docs (PR #62).**
+
 ### Added
 
 - No new changes yet.
