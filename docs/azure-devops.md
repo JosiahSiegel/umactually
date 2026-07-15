@@ -78,8 +78,8 @@ A missing permission normally surfaces as HTTP 403. Grant permissions narrowly, 
 Windows agents use the same single command after `NodeTool@0`:
 
 ```yaml
-  # Pin to the v0.2.1 release tag.
-  - powershell: npx github:JosiahSiegel/umactually#v0.2.1 review --platform azure-devops
+# Pin to the v0.2.1 release tag.
+- powershell: npx github:JosiahSiegel/umactually#v0.2.1 review --platform azure-devops
   displayName: Run umactually PR review
   env:
     SYSTEM_ACCESSTOKEN: $(System.AccessToken)
