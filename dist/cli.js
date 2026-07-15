@@ -1304,6 +1304,17 @@ async function checkDistFreshness(deps) {
     const distPath = `${root}/dist/cli.js`;
     const srcPath = `${root}/src/cli.ts`;
     const distStat = await statOrNull(deps.fsAdapter, distPath);
+    const srcStat = await statOrNull(deps.fsAdapter, srcPath);
+    // Standalone binary: neither dist/ nor src/ exists on disk because the
+    // entire codebase is embedded in the executable. Skip the check rather
+    // than reporting a false failure.
+    if (distStat === null && srcStat === null) {
+        return {
+            id: "dist-freshness",
+            status: "skip",
+            message: "standalone binary — dist/ is embedded, not on disk",
+        };
+    }
     if (distStat === null) {
         return {
             id: "dist-freshness",
@@ -1312,7 +1323,6 @@ async function checkDistFreshness(deps) {
             hint: "Run `npm run bundle` to produce dist/cli.js",
         };
     }
-    const srcStat = await statOrNull(deps.fsAdapter, srcPath);
     if (srcStat === null) {
         return {
             id: "dist-freshness",
@@ -1656,7 +1666,9 @@ async function runDoctorBranch(args) {
     // In a Bun --compile binary, import.meta.url resolves to Bun's virtual
     // filesystem and process.execPath is the real binary. In Node (npm install
     // or dev), process.execPath is the node binary itself, so use import.meta.url.
-    const isCompiledBinary = typeof globalThis["UMACTUALLY_VERSION"] === "string";
+    // The bare UMACTUALLY_VERSION identifier is replaced at compile time by
+    // Bun's --define flag; in Node it is undefined.
+    const isCompiledBinary = typeof UMACTUALLY_VERSION === "string";
     const packageRoot = isCompiledBinary
         ? (0,external_node_path_namespaceObject.dirname)(process.execPath)
         : (0,external_node_path_namespaceObject.resolve)((0,external_node_path_namespaceObject.dirname)((0,external_node_url_namespaceObject.fileURLToPath)(import.meta.url)), "..");
@@ -16158,10 +16170,11 @@ function resolveDefaultBranch(cwd) {
  * so the version is embedded at compile time.
  */
 function readPackageVersion() {
-    // Bun --compile injects this via --define. Check the global first.
-    const declared = globalThis["UMACTUALLY_VERSION"];
-    if (typeof declared === "string" && declared.length > 0) {
-        return declared;
+    // Bun --compile injects this via --define. The bare identifier is
+    // replaced at compile time — using globalThis["UMACTUALLY_VERSION"]
+    // would NOT be replaced because --define only matches bare references.
+    if (typeof UMACTUALLY_VERSION === "string" && UMACTUALLY_VERSION.length > 0) {
+        return UMACTUALLY_VERSION;
     }
     const packageJsonUrl = __nccwpck_require__.ab + "package.json";
     const raw = (0,external_node_fs_namespaceObject.readFileSync)(packageJsonUrl, "utf8");
