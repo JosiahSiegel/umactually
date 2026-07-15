@@ -82,18 +82,7 @@ gh pr create --base main --head <branch>                         # opens PR
 
 ## ADO ↔ GitHub sync workflow
 
-If you maintain a fork of this action in Azure DevOps for ADO-side validation work and need to keep its `main` in lock-step with the canonical GitHub `main`, ADO main needs to catch up via a sync PR.
-
-The end-to-end workflow is documented in [`docs/azure-devops.md`](docs/azure-devops.md#syncing-merged-github-prs-to-ado-main). The summary:
-
-1. Merge the GitHub PR (squash, per the bot's preference).
-2. `git push` a new `sync/ado-main-with-github-mainN` branch to ADO.
-3. Use the ADO REST API to create a PR with `bypassPolicy: true` (bypasses the canonical-branch commit-policy check on ADO main, which the sync branch isn't subject to).
-4. If ADO reports `mergeStatus: conflicts`, resolve locally: `git merge ado/main --no-ff`, `git checkout --theirs <conflict-file>`, `git commit --no-edit`.
-5. `git push --force-with-lease ado sync/ado-main-with-github-mainN` to update the branch tip with the resolution.
-6. PATCH the PR to `status: completed` with `bypassPolicy: true` and `lastMergeSourceCommit: { commitId: <force-pushed SHA> }`.
-
-The sync PR's merge commit is one commit ahead of GitHub main in history (the merge commit itself), but the tree is identical. After the sync, run `bash scripts/ci-validate.sh` against ADO main to confirm parity.
+If you maintain a fork of this action in Azure DevOps for ADO-side validation work and need to keep ADO `main` in lock-step with the canonical GitHub `main`, see [docs/azure-devops.md#syncing-merged-github-prs-to-ado-main](docs/azure-devops.md#syncing-merged-github-prs-to-ado-main) for the full workflow.
 
 ## Coding conventions
 

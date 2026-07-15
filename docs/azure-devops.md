@@ -31,10 +31,10 @@ steps:
   - task: NodeTool@0
     inputs:
       versionSpec: "24.x"
-  # Pin to the v0.1.0 release tag. The umactually npm package is not
+  # Pin to the v0.2.1 release tag. The umactually npm package is not
   # yet published; `npx github:owner/repo#tag` resolves to the GitHub
   # tarball at that ref so the install is reproducible.
-  - script: npx github:JosiahSiegel/umactually#v0.1.0 review --platform azure-devops
+  - script: npx github:JosiahSiegel/umactually#v0.2.1 review --platform azure-devops
     displayName: Run umactually PR review
     env:
       SYSTEM_ACCESSTOKEN: $(System.AccessToken)
@@ -78,8 +78,8 @@ A missing permission normally surfaces as HTTP 403. Grant permissions narrowly, 
 Windows agents use the same single command after `NodeTool@0`:
 
 ```yaml
-# Pin to the v0.1.0 release tag.
-- powershell: npx github:JosiahSiegel/umactually#v0.1.0 review --platform azure-devops
+# Pin to the v0.2.1 release tag.
+- powershell: npx github:JosiahSiegel/umactually#v0.2.1 review --platform azure-devops
   displayName: Run umactually PR review
   env:
     SYSTEM_ACCESSTOKEN: $(System.AccessToken)
@@ -103,6 +103,15 @@ A parse-fail diagnostic card is not approval.
 
 Azure Pipelines has no direct equivalent to a GitHub Actions concurrency group with cancellation. Marker lookup and update reduce duplicates but are not atomic. Avoid overlapping runs for the same PR and cancel superseded runs when practical.
 
-## Historical repository synchronization
+## Syncing merged GitHub PRs to ADO main
 
-When GitHub and Azure DevOps host separate mirrors, merge to the canonical host first, sync from its `main`, resolve mirror conflicts by the canonical tree, run the full test suite, and update the sync branch with `--force-with-lease`.
+If you maintain a fork of this action in Azure DevOps for ADO-side validation work and need to keep ADO `main` in lock-step with the canonical GitHub `main`, ADO main needs to catch up via a sync PR after each GitHub merge:
+
+1. Merge the GitHub PR (squash, per the bot's preference).
+2. `git push` a new `sync/ado-main-with-github-mainN` branch to ADO.
+3. Use the ADO REST API to create a PR with `bypassPolicy: true` (bypasses the canonical-branch commit-policy check on ADO main, which the sync branch isn't subject to).
+4. If ADO reports `mergeStatus: conflicts`, resolve locally: `git merge ado/main --no-ff`, `git checkout --theirs <conflict-file>`, `git commit --no-edit`.
+5. `git push --force-with-lease ado sync/ado-main-with-github-mainN` to update the branch tip with the resolution.
+6. PATCH the PR to `status: completed` with `bypassPolicy: true` and `lastMergeSourceCommit: { commitId: <force-pushed SHA> }`.
+
+The sync PR's merge commit is one commit ahead of GitHub main in history (the merge commit itself), but the tree is identical. After the sync, run `bash scripts/ci-validate.sh` against ADO main to confirm parity.
