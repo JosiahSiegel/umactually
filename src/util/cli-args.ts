@@ -115,12 +115,87 @@ export function readEnum<T extends string>(
   flag: string,
   value: string,
   accepted: readonly T[],
-  errorClass: new (message: string) => Error = CliArgError,
+  errorClass: new (message: string, hint?: string) => Error = CliArgError,
 ): T {
   for (const candidate of accepted) {
     if (candidate === value) {
       return candidate;
     }
   }
-  throw new errorClass(`invalid ${flag} value: ${value}`);
+  // Hint the operator at the accepted values alongside the bare
+  // "invalid --flag value" error so they don't need to dig through
+  // --help. Cheap deterministic suggestion: list the accepted values,
+  // capped at 8 entries (enum values past 8 are usually an internal
+  // schema bug, not a user-facing surface).
+  const acceptedPreview =
+    accepted.length <= 8
+      ? accepted.join(", ")
+      : `${accepted.slice(0, 8).join(", ")}, ...`;
+  const hint = `Accepted values for ${flag}: ${acceptedPreview}. Run \`umactually --help\` or \`umactually review --help\` for the full list of flags and their accepted shapes.`;
+  throw new errorClass(`invalid ${flag} value: ${value}`, hint);
+}
+
+/**
+ * Compute a "did you mean ...?" suggestion for an unknown CLI flag.
+ *
+ * Returns the closest known flag by Levenshtein distance, or `null` when
+ * no known flag is reasonably close. Empty/null input returns null.
+ *
+ * The threshold is calibrated so single-character transpositions on
+ * longer flags ("--minimun-severity" for "--minimum-severity") still
+ * suggest a match, while completely-different flags
+ * ("--platformx" vs "--platform") do not. The exact cut-off for the
+ * returned distance is `Math.max(2, Math.floor(input.length / 4))`
+ * which scales with flag length: short flags get a tight tolerance, long
+ * flags get a looser one (intentional — typed-by-eye typos on long
+ * flags are usually 1-2 characters off).
+ *
+ * Pure function — no side effects, no I/O, deterministic. Safe to call
+ * at parse-time.
+ */
+export function didYouMean(
+  input: string,
+  candidates: readonly string[],
+): string | null {
+  if (input.length === 0) return null;
+  let bestDistance = Number.POSITIVE_INFINITY;
+  let bestCandidate: string | null = null;
+  const maxDistance = Math.max(2, Math.floor(input.length / 4));
+  for (const candidate of candidates) {
+    const distance = levenshtein(input, candidate);
+    if (distance < bestDistance) {
+      bestDistance = distance;
+      bestCandidate = candidate;
+    }
+  }
+  return bestDistance <= maxDistance ? bestCandidate : null;
+}
+
+/**
+ * Classic iterative Levenshtein distance with two rolling rows.
+ * O(n*m) time, O(min(n,m)) space. Empty-string handling: distance is
+ * the length of the other string. Use via `didYouMean`; exported for
+ * unit-test reachability rather than direct consumer use.
+ */
+export function levenshtein(a: string, b: string): number {
+  if (a === b) return 0;
+  if (a.length === 0) return b.length;
+  if (b.length === 0) return a.length;
+  let previous = new Array<number>(b.length + 1);
+  let current = new Array<number>(b.length + 1);
+  for (let j = 0; j <= b.length; j += 1) previous[j] = j;
+  for (let i = 1; i <= a.length; i += 1) {
+    current[0] = i;
+    for (let j = 1; j <= b.length; j += 1) {
+      const cost = a.charCodeAt(i - 1) === b.charCodeAt(j - 1) ? 0 : 1;
+      const deletion = (previous[j] ?? 0) + 1;
+      const insertion = (current[j - 1] ?? 0) + 1;
+      const substitution = (previous[j - 1] ?? 0) + cost;
+      current[j] = Math.min(deletion, insertion, substitution);
+    }
+    const swap = previous;
+    previous = current;
+    current = swap;
+  }
+  return previous[b.length] ?? 0;
 }

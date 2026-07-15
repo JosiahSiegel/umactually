@@ -3,7 +3,11 @@ import { resolve } from "node:path";
 
 import { describe, expect, it } from "vitest";
 
-import { RequiredConfigError, requireLiveConfig } from "../../src/util/required-config.js";
+import {
+  RequiredConfigError,
+  buildRequiredConfigMessage,
+  requireLiveConfig,
+} from "../../src/util/required-config.js";
 
 const REPO_ROOT = resolve();
 const REQUIRED_CONFIG_MESSAGE_FRAGMENT = "must be set for live review";
@@ -74,5 +78,64 @@ describe("requireLiveConfig", () => {
     // When/Then: neither file hand-rolls the required-config user-facing message.
     expect(liveProvider).not.toContain(REQUIRED_CONFIG_MESSAGE_FRAGMENT);
     expect(orchestrator).not.toContain(REQUIRED_CONFIG_MESSAGE_FRAGMENT);
+  });
+
+  it("DRY-REQCFG-005 surfaces a remediation hint naming the CLI flag for env vars with a known flag", () => {
+    // Given: UMACTUALLY_API_URL has a known CLI flag (--api-url).
+    // When: the helper throws because the value is missing.
+    // Then: the hint names the CLI flag, the env var, and --dry-run as
+    // an escape hatch.
+    try {
+      requireLiveConfig("", "UMACTUALLY_API_URL");
+      throw new Error("expected RequiredConfigError");
+    } catch (error) {
+      if (!(error instanceof RequiredConfigError)) throw error;
+      expect(error.code).toBe("LIVE_CONFIG_MISSING");
+      expect(error.hint).toBeDefined();
+      expect(error.hint).toContain("--api-url");
+      expect(error.hint).toContain("UMACTUALLY_API_URL=");
+      expect(error.hint).toContain("--dry-run");
+    }
+  });
+
+  it("DRY-REQCFG-006 surfaces a remediation hint naming the CLI flag for UMACTUALLY_API_KEY", () => {
+    // Given: UMACTUALLY_API_KEY has a known CLI flag (--api-key).
+    // When: the helper throws because the value is missing.
+    // Then: the hint names --api-key.
+    try {
+      requireLiveConfig(undefined, "UMACTUALLY_API_KEY");
+      throw new Error("expected RequiredConfigError");
+    } catch (error) {
+      if (!(error instanceof RequiredConfigError)) throw error;
+      expect(error.hint).toContain("--api-key");
+      expect(error.hint).toContain("UMACTUALLY_API_KEY=");
+    }
+  });
+
+  it("DRY-REQCFG-007 omits the CLI-flag clause for env vars without a known flag", () => {
+    // Given: an env var that doesn't have a known CLI flag (e.g. a
+    // platform-only env var like GITHUB_TOKEN).
+    // When: the helper throws because the value is missing.
+    // Then: the hint is still present and still mentions the env var
+    // and --dry-run, but does NOT invent a CLI flag.
+    try {
+      requireLiveConfig("", "GITHUB_TOKEN");
+      throw new Error("expected RequiredConfigError");
+    } catch (error) {
+      if (!(error instanceof RequiredConfigError)) throw error;
+      expect(error.hint).toBeDefined();
+      expect(error.hint).toContain("GITHUB_TOKEN=");
+      expect(error.hint).not.toContain("--githu-token");
+    }
+  });
+
+  it("DRY-REQCFG-008 exposes buildRequiredConfigMessage for reuse outside throws", () => {
+    // Given: callers that want the canonical message+hint pair without
+    // throwing (e.g. CLI parse-time, JSON envelopes).
+    // When: invoking the builder for a known env var.
+    // Then: it returns the same message and a hint that names the flag.
+    const built = buildRequiredConfigMessage("UMACTUALLY_API_KEY");
+    expect(built.message).toBe("UMACTUALLY_API_KEY must be set for live review.");
+    expect(built.hint).toContain("--api-key");
   });
 });

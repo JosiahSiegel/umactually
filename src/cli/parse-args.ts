@@ -1,5 +1,5 @@
 import { FIELDS } from "../config/field-schema.js";
-import { parseStrictInt, readEnum } from "../util/cli-args.js";
+import { didYouMean, parseStrictInt, readEnum } from "../util/cli-args.js";
 import type { Severity } from "../config/types.js";
 import { parseSeverityFromUnknown } from "../config/parsers.js";
 
@@ -102,6 +102,13 @@ export type ParsedCliArgs = {
 
 export class CliUsageError extends Error {
   override readonly name = "CliUsageError";
+
+  constructor(message: string, readonly hint?: string) {
+    super(message);
+    // Mirror the LiveReviewError pattern: hint is a separate property
+    // so message-based tests stay byte-identical and machine consumers
+    // (JSON envelopes, log scrapers) can ignore the remediation text.
+  }
 }
 
 export function parseCliArgs(args: readonly string[]): ParsedCliArgs {
@@ -278,7 +285,10 @@ export function parseCliArgs(args: readonly string[]): ParsedCliArgs {
         break;
       case "--ignore-minor":
       case "--no-ignore-minor":
-        throw new CliUsageError("--ignore-minor was removed; use --minimum-severity medium (or low/high) to suppress minor findings. Leaks and security findings are never suppressed. Environment variables UMACTUALLY_IGNORE_MINOR and REVIEW_IGNORE_MINOR are also ignored.");
+        throw new CliUsageError(
+          "--ignore-minor was removed; use --minimum-severity medium (or low/high) to suppress minor findings. Leaks and security findings are never suppressed. Environment variables UMACTUALLY_IGNORE_MINOR and REVIEW_IGNORE_MINOR are also ignored.",
+          "Run `umactually review --minimum-severity low` (or `medium`, `high`) to suppress minor findings instead of `--ignore-minor`. The legacy flag and its env-var aliases (`UMACTUALLY_IGNORE_MINOR`, `REVIEW_IGNORE_MINOR`) are intentionally ignored so CI does not silently change severity.",
+        );
       case "--minimum-severity":
         minimumSeverity = readMinimumSeverity(args, index);
         index += 1;
@@ -368,7 +378,7 @@ export function parseCliArgs(args: readonly string[]): ParsedCliArgs {
         throw new CliHelpSignal(commandToken ?? null);
       }
       default:
-        throw new CliUsageError(`unknown flag: ${token}`);
+        throw unknownFlagUsageError(token, args);
     }
   }
 
@@ -450,7 +460,10 @@ function consumeValue(
 function readValue(args: readonly string[], index: number, flag: string): string {
   const next = args[index + 1];
   if (next === undefined || next.startsWith("--")) {
-    throw new CliUsageError(`flag --${flag} requires a value`);
+    throw new CliUsageError(
+      `flag --${flag} requires a value`,
+      `Supply the value immediately after --${flag}, e.g. \`umactually review --${flag} <value>\`. Run \`umactually review --help\` to see the expected shape for --${flag}.`,
+    );
   }
   return next;
 }
@@ -462,7 +475,10 @@ function readIntValue(args: readonly string[], index: number, flag: string): num
   // is the single sentinel for "not a valid integer".
   const parsed = parseStrictInt(raw);
   if (parsed === null) {
-    throw new CliUsageError(`flag --${flag} requires an integer value (got "${raw}")`);
+    throw new CliUsageError(
+      `flag --${flag} requires an integer value (got "${raw}")`,
+      `Pass a decimal integer with no sign or whitespace, e.g. \`--${flag} 60\`. Fractions, exponents, and decimal points are not accepted. Use \`umactually review --help\` for the units and bounds.`,
+    );
   }
   return parsed;
 }
@@ -488,4 +504,34 @@ function readEffort(args: readonly string[], index: number): CliEffort {
 
 function readProvider(value: string): CliProvider {
   return readEnum<CliProvider>("--provider", value, FIELDS.provider.enumValues as readonly CliProvider[], CliUsageError);
+}
+
+/**
+ * Build a `CliUsageError` for an unknown flag token, including a
+ * "did you mean ...?" suggestion when one is close enough to be
+ * plausible. The candidate set is the canonical flag list pulled from
+ * the field schema; values from any field whose `flag` is non-null.
+ *
+ * Always includes a remediation hint pointing the operator at
+ * `--help` (so they can list every accepted flag) and at the
+ * modes banner (for the bare-invocation case where the user simply
+ * forgot to supply the provider flags).
+ */
+function unknownFlagUsageError(token: string, argv: readonly string[]): CliUsageError {
+  const candidates = [...FIELD_BY_FLAG.keys()];
+  const suggestion = didYouMean(token, candidates);
+  let message = `unknown flag: ${token}`;
+  if (suggestion !== null && suggestion !== token) {
+    message += ` (did you mean \`${suggestion}\`?)`;
+  }
+  // If the operator is running with no positional command AND no
+  // provider flags AND the unknown token isn't itself a known flag,
+  // the modes banner is the actionable next step.
+  const sawPositionalCommand = argv.slice(0, argv.indexOf(token)).some((t) => !t.startsWith("-"));
+  const hint = suggestion !== null && suggestion !== token
+    ? `Try \`${suggestion}\`. To see every flag and what it does, run \`umactually review --help\`. If you meant to provide the review API config, run \`umactually review --api-url <url> --api-key <key>\`.`
+    : sawPositionalCommand
+      ? `Run \`umactually review --help\` for every flag the \`review\` subcommand accepts.`
+      : `Run \`umactually --help\` for a flag list, or \`umactually review --api-url <url> --api-key <key>\` for the standard standalone invocation.`;
+  return new CliUsageError(message, hint);
 }

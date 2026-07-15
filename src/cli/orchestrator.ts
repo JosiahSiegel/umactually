@@ -3,9 +3,9 @@ import { resolveField } from "../config/field-resolution.js";
 import { fetchAzurePrDiff } from "../platform/azure/api.js";
 import { chunkDiffByFile, countDiffFiles } from "../platform/azure/chunk.js";
 import { AzureContextError, readAzureContext } from "../platform/azure/context.js";
+import { GithubContextError, readGithubContext } from "../platform/github/context.js";
 import { detectPlatform, PlatformDetectionError } from "../platform/detect.js";
 import { fetchGithubPrDiff } from "../platform/github/api.js";
-import { readGithubContext } from "../platform/github/context.js";
 import { BRAND_PREFIX } from "../util/brand.js";
 import { ENV_KEYS } from "../util/env-keys.js";
 import { formatError } from "../util/error.js";
@@ -15,8 +15,10 @@ import { runAzureLive } from "./live-azure.js";
 import { runGithubLive } from "./live-github.js";
 import { mergeReviewResults } from "./live-merge.js";
 import {
+  LiveReviewError,
   buildTooLargeFallback,
   evaluateLeakGate,
+  getLiveReviewHint,
   sanitizeForPost,
   type FetchImpl,
   type LivePlatform,
@@ -201,7 +203,13 @@ export async function runLive(input: RunLiveInput): Promise<LiveRunResult> {
   } catch (error) {
     if (error instanceof RequiredConfigError) {
       const message = error.userMessage;
-      process.stdout.write(`${BRAND_PREFIX}${message}\n`);
+      // Surface the remediation hint alongside the message when available.
+      // The hint lives on a second line so it's easy to grep in CI logs;
+      // it tells the operator exactly how to set the env var / flag and
+      // points to --dry-run as an escape hatch when they want to verify
+      // the CLI without contacting the provider.
+      const hintLine = error.hint === undefined ? "" : `\n${BRAND_PREFIX}hint: ${error.hint}`;
+      process.stdout.write(`${BRAND_PREFIX}${message}${hintLine}\n`);
       return failedResult(message);
     }
     throw error;
@@ -226,7 +234,21 @@ export async function runLive(input: RunLiveInput): Promise<LiveRunResult> {
   } catch (error) {
     const message = formatError(error);
     const sanitized = sanitizeForPost(message, readSecretValues(env));
-    process.stdout.write(`${BRAND_PREFIX}${sanitized}\n`);
+    // Surface the structured remediation hint when the throw carries
+    // one (LiveReviewError / RequiredConfigError). Operators run the
+    // CLI from CI logs that often lose context: printing the hint
+    // next to the failure means the next person debugging the
+    // pipeline sees exactly which token / scope / flag to fix.
+    let hint: string | undefined;
+    if (error instanceof LiveReviewError) {
+      hint = getLiveReviewHint(error);
+    } else if (error instanceof RequiredConfigError) {
+      hint = error.hint;
+    } else if (error instanceof AzureContextError || error instanceof GithubContextError) {
+      hint = buildPlatformContextHint(error);
+    }
+    const hintLine = hint === undefined ? "" : `\n${BRAND_PREFIX}hint: ${hint}`;
+    process.stdout.write(`${BRAND_PREFIX}${sanitized}${hintLine}\n`);
     return failedResult(sanitized);
   }
 
@@ -447,4 +469,59 @@ function readSecretValues(env: NodeJS.ProcessEnv): readonly string[] {
 
 function assertNever(value: never): never {
   throw new TypeError(`Unhandled live platform: ${value}`);
+}
+
+/**
+ * Build a remediation hint for a {@link AzureContextError} or
+ * {@link GithubContextError} thrown by the platform context readers.
+ *
+ * The context error classes carry a structured `code` (e.g.
+ * `AZURE_TOKEN_MISSING`, `GITHUB_EVENT_PATH_MISSING`) but the
+ * upstream `message` strings stay byte-compatible with the legacy
+ * "must be set" wording. Matching on `code` lets the CLI surface a
+ * much more actionable hint than a re-rendering of the message, while
+ * still letting the message ride through unchanged for grep-
+ * compatibility.
+ *
+ * Returns `undefined` for codes that don't yet have a curated hint
+ * (we surface the bare message instead of guessing).
+ */
+function buildPlatformContextHint(error: AzureContextError | GithubContextError): string | undefined {
+  const AZURE_HINTS: Readonly<Record<string, string>> = {
+    AZURE_TOKEN_MISSING:
+      "Set SYSTEM_ACCESSTOKEN as a pipeline variable and enable 'Allow scripts to access the OAuth token' on the Agent job. The token must have `Pull Request Contribute` permission on the target repository.",
+    AZURE_COLLECTION_URI_INVALID:
+      "Set SYSTEM_COLLECTIONURI to the org URL (e.g. https://dev.azure.com/your-org) — pipelines usually fill this in automatically; reset the job or re-queue the build if the value is `undefined`.",
+    AZURE_TEAM_PROJECT_MISSING:
+      "Set SYSTEM_TEAMPROJECT in the pipeline (or run inside a `microsoft/azure-pipelines` agent). The team project is the second segment of the repo path after `dev.azure.com/{org}/`.",
+    AZURE_REPOSITORY_ID_MISSING:
+      "Set BUILD_REPOSITORY_NAME on the pipeline, or pass --repo '<org>/<project>/<repo>' on the command line. See docs/azure-devops.md for the supported forms.",
+    AZURE_PR_NUMBER_INVALID:
+      "Set SYSTEM_PULLREQUEST_PULLREQUESTID in the pipeline (under PR trigger variables), or pass --pr-number <N> on the command line.",
+    AZURE_SOURCE_COMMIT_MISSING:
+      "Set SYSTEM_PULLREQUEST_SOURCECOMMITID in the pipeline (under PR trigger variables), or run on a pull_request-triggered build (the legacy PR_REVIEW_AUTHORING mode is not yet supported).",
+    AZURE_TARGET_BRANCH_MISSING:
+      "Set SYSTEM_PULLREQUEST_TARGETBRANCHNAME or BUILD_SOURCEBRANCHNAME in the pipeline environment. The target branch is what the review comments will be anchored against.",
+  };
+  const GITHUB_HINTS: Readonly<Record<string, string>> = {
+    GITHUB_TOKEN_MISSING:
+      "Set GITHUB_TOKEN (the default GITHUB_TOKEN provided to the runner is fine; re-check `permissions:` in the workflow file or pass `permissions: pull-requests: write`).",
+    GITHUB_REPOSITORY_INVALID:
+      "Set GITHUB_REPOSITORY to '<owner>/<name>'. On fork PRs from forks you also need GITHUB_REPOSITORY-relative paths; use `pull_request_target` workflows only with care.",
+    GITHUB_PR_NUMBER_INVALID:
+      "Pass PR_NUMBER (a positive integer) as an action input, set GITHUB_PR_NUMBER in the workflow env, or rely on the supplied `pull_request` event payload's `number` field.",
+    GITHUB_SHA_MISSING:
+      "Set GITHUB_SHA in the workflow env. For pull_request events GitHub Actions sets this automatically; for workflow_dispatch / schedule jobs you may need to pass it explicitly.",
+    GITHUB_EVENT_PATH_MISSING:
+      "Set GITHUB_EVENT_PATH to the absolute path of the `event.json` payload (GitHub Actions sets this for `pull_request` events). The CLI reads PR number, base/head SHA, and draft state from it.",
+    GITHUB_EVENT_PAYLOAD_INVALID:
+      "Re-queue the workflow: the event.json payload is malformed JSON or missing the `pull_request` object. This usually means a non-`pull_request` event type was supplied.",
+  };
+  if (error instanceof AzureContextError) {
+    return AZURE_HINTS[error.code];
+  }
+  if (error instanceof GithubContextError) {
+    return GITHUB_HINTS[error.code];
+  }
+  return undefined;
 }

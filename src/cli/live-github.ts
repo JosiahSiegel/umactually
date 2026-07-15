@@ -141,7 +141,12 @@ async function findExistingMarkerReview(context: GithubContext, fetchImpl: Fetch
     method: "GET",
     headers: githubHeaders(context.token),
   });
-  ensureHttpOk(response, "GITHUB_LIST_REVIEWS_FAILED", "GitHub list reviews");
+  ensureHttpOk(
+    response,
+    "GITHUB_LIST_REVIEWS_FAILED",
+    "GitHub list reviews",
+    "Verify GITHUB_TOKEN has `pull_requests: read` scope (or the equivalent on GitHub Enterprise), and that the PR number is correct. See https://docs.github.com/en/rest/pulls/reviews for the API contract.",
+  );
   const json = await readJsonResponse(response);
   if (!Array.isArray(json)) {
     return null;
@@ -167,7 +172,12 @@ async function updateExistingReview(input: {
       headers: githubHeaders(input.context.token),
       body: JSON.stringify({ body: input.body }),
     });
-    ensureHttpOk(response, "GITHUB_UPDATE_REVIEW_FAILED", "GitHub update review");
+    ensureHttpOk(
+      response,
+      "GITHUB_UPDATE_REVIEW_FAILED",
+      "GitHub update review",
+      "Updates only succeed on PENDING reviews. The expected fallback is DELETE+POST (handled by the caller). If you see this on a fresh run, check that the bot token has `pull_requests: write`.",
+    );
     return input.review.id;
   } catch (error) {
     if (error instanceof LiveReviewError && error.code === "GITHUB_UPDATE_REVIEW_FAILED") {
@@ -217,7 +227,12 @@ async function createGithubReview(input: {
     headers: githubHeaders(input.context.token),
     body: JSON.stringify(request),
   });
-  ensureHttpOk(response, "GITHUB_CREATE_REVIEW_FAILED", "GitHub create review");
+  ensureHttpOk(
+    response,
+    "GITHUB_CREATE_REVIEW_FAILED",
+    "GitHub create review",
+    "Check (1) GITHUB_TOKEN has `pull_requests: write` scope, (2) the commit SHA matches the head of the PR, and (3) every comment path+line exists in the diff. The most common cause is a stale SHA; rerun on a fresh `pull_request` event.",
+  );
   return readResponseId(await readJsonResponse(response));
 }
 

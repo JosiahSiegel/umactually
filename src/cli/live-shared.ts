@@ -202,9 +202,35 @@ export interface PreparedPostedReview {
 export class LiveReviewError extends Error {
   override readonly name = "LiveReviewError";
 
-  constructor(readonly code: string, message: string, options?: ErrorOptions) {
+  constructor(
+    readonly code: string,
+    message: string,
+    options?: ErrorOptions & { readonly hint?: string },
+  ) {
     super(message, options);
+    // Materialize the hint on the instance so consumers (orchestrator,
+    // standalone-run, JSON envelope, future CLI glue) can read it without
+    // destructuring `options`. Untyped (TS allows any property) because
+    // Error accepts arbitrary extension in JS land; we narrow via
+    // `getLiveReviewHint`.
+    if (options !== undefined && typeof options.hint === "string") {
+      (this as unknown as { hint: string }).hint = options.hint;
+    }
   }
+}
+
+/**
+ * Type-safe reader for the optional `hint` field on a `LiveReviewError`.
+ * Returns `undefined` when the error is not a `LiveReviewError` or when
+ * no hint was attached at construction. Use this instead of casting to
+ * keep the call site narrow.
+ */
+export function getLiveReviewHint(error: unknown): string | undefined {
+  if (error instanceof LiveReviewError === false) {
+    return undefined;
+  }
+  const hint = (error as unknown as { hint?: unknown }).hint;
+  return typeof hint === "string" ? hint : undefined;
 }
 
 export type LeakGateResult =
@@ -884,7 +910,12 @@ export function readResponseId(value: unknown): number | undefined {
   return isSafeInteger(id) ? id : undefined;
 }
 
-export function ensureHttpOk(response: Response, code: string, action: string): void {
+export function ensureHttpOk(
+  response: Response,
+  code: string,
+  action: string,
+  hint?: string,
+): void {
   if (response.ok) {
     return;
   }
@@ -908,7 +939,15 @@ export function ensureHttpOk(response: Response, code: string, action: string): 
     .catch(() => {
       // Body read failed; nothing actionable to do here.
     });
-  throw new LiveReviewError(code, `${action} failed with HTTP ${response.status}.`);
+  // `hint` is forwarded onto the LiveReviewError so upstream catch
+  // sites (orchestrator.ts, standalone-run.ts) can render the
+  // remediation text alongside the failure. Pass-through is
+  // intentional — callers that don't have an actionable hint today
+  // omit the parameter and the field stays undefined on the error.
+  const errorOptions = hint === undefined
+    ? undefined
+    : { hint } satisfies ErrorOptions & { hint: string };
+  throw new LiveReviewError(code, `${action} failed with HTTP ${response.status}.`, errorOptions);
 }
 
 export { isRecord };
