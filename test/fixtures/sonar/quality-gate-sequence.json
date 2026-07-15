@@ -1,0 +1,10 @@
+{
+  "projectStatus": {
+    "status": "IN_PROGRESS"
+  },
+  "sequence": [
+    { "projectStatus": { "status": "NONE" } },
+    { "projectStatus": { "status": "IN_PROGRESS" } },
+    { "projectStatus": { "status": "ERROR" } }
+  ]
+}

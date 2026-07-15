@@ -1,0 +1,7 @@
+Here is my review:
+
+```json
+{"summary":"Recovered without raw JSON leak.","verdict":"DISCUSS","comments":[]}
+```
+
+Synthetic prose after the fence must not escape the debug details block.

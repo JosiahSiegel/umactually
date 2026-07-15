@@ -1,0 +1,20 @@
+{
+  "number": 42,
+  "repository": {
+    "full_name": "example/umactually-fixture"
+  },
+  "pull_request": {
+    "number": 42,
+    "title": "Improve review rendering",
+    "draft": false,
+    "base": {
+      "sha": "0000000000000000000000000000000000000001",
+      "ref": "main"
+    },
+    "head": {
+      "sha": "0000000000000000000000000000000000000002",
+      "ref": "feature/red-contracts"
+    }
+  },
+  "action": "opened"
+}

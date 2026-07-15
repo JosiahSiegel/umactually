@@ -1,0 +1,12 @@
+{
+  "repositoryId": "00000000-0000-0000-0000-000000000042",
+  "pullRequestId": 42,
+  "sourceRefName": "refs/heads/feature/red-contracts",
+  "targetRefName": "refs/heads/main",
+  "lastMergeSourceCommit": {
+    "commitId": "0000000000000000000000000000000000000002"
+  },
+  "createdBy": {
+    "displayName": "Synthetic Reviewer"
+  }
+}

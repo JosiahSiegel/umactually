@@ -1,0 +1,89 @@
+{
+  "artifactPath": "artifacts/manual/s1-github-self-review.md",
+  "event": "COMMENT",
+  "marker": "<!-- umactually -->",
+  "inlineThreadCount": 2,
+  "suppressedCommentCount": 1,
+  "parseFailed": false,
+  "note": "Live review posted successfully; counts reflect what the GitHub/Azure API saw.",
+  "summary": "Two findings: one medium-severity style nit on the verify-findings short-circuit in src/cli/run.ts, and one high-severity leak on a hard-coded API key inside the diff. The leak survived suppression because high-confidence secrets always bypass minimum-severity filtering (see docs/security.md). One low-severity style finding was suppressed for not meeting the medium threshold.",
+  "verdict": "COMMENT",
+  "comments": [
+    {
+      "path": "src/cli/run.ts",
+      "line": 12,
+      "body": "When the operator passes `--no-verify-findings`, `requestLiveReview` still calls `parseDiffPositions` on the model output. The result is that off-diff citations get silently dropped even when the operator asked for them. Either honor `--no-verify-findings` end-to-end (skip `parseDiffPositions` too) or document the current behavior in `--help`. The current shape is surprising.\n\nRepro: `umactually --no-verify-findings --api-url https://api.example.com/v1 --api-key <redacted>`. Inspect the inline thread count vs the model-reported count in `artifacts/manual/s1-github-self-review.md`.",
+      "severity": "medium",
+      "category": "style"
+    },
+    {
+      "path": "src/cli/live-shared.ts",
+      "line": 47,
+      "body": "High-confidence secret leak: `const FALLBACK_TOKEN = \"sk-cp-DO-NOT-LEAK-DEMO-FIXTURE-0000\";`. This is a credential embedded in source. Rotate immediately, purge from git history with `git filter-repo`, and replace with a runtime read from an env var (e.g. `process.env.UMACTUALLY_API_KEY`). See docs/security.md#secret-leak-detection for the bypass-severity guarantee.",
+      "severity": "high",
+      "category": "leak"
+    }
+  ],
+  "suppressed_comments": [
+    {
+      "path": "src/cli/orchestrator.ts",
+      "line": 88,
+      "body": "Consider extracting the provider-dispatch matrix into a lookup table; the current if/elif chain is hard to extend.",
+      "severity": "low",
+      "category": "style",
+      "reason": "Below minimum-severity threshold (low < medium)."
+    }
+  ],
+  "parseWarnings": [],
+  "severityWarnings": [],
+  "outcome": {
+    "provider": "openai-compatible",
+    "modelId": "provider-auto-m3-2026-01",
+    "endpoint": "https://api.example.com/v1/responses",
+    "fallbackFrom": null,
+    "elapsedMs": 9842,
+    "attemptCount": 1,
+    "stalled": false,
+    "stallReason": null
+  },
+  "effectiveConfig": {
+    "providerUrl": "https://api.example.com/v1",
+    "providerModel": "auto",
+    "walkthrough": false,
+    "diagnostic": false,
+    "dryRun": false,
+    "debugRawResponse": false,
+    "reviewTimeoutSeconds": 300,
+    "stallTimeoutSeconds": 270,
+    "perRequestTimeoutSeconds": 60,
+    "minimumSeverity": "medium",
+    "maxComments": 50,
+    "sonarEnabled": false,
+    "sonarHost": null,
+    "sonarProject": null,
+    "sonarTimeoutSeconds": null,
+    "leakDetection": true,
+    "redactorEnabled": true,
+    "platform": "github",
+    "effort": "medium",
+    "strictSchema": true,
+    "verifyFindings": true,
+    "provider": "openai-compatible",
+    "githubApiBase": null,
+    "model": "auto",
+    "modelId": "provider-auto-m3-2026-01",
+    "endpoint": "https://api.example.com/v1/responses",
+    "promptFile": null,
+    "additionalPromptFile": null,
+    "promptFiles": [],
+    "additionalPromptFiles": [],
+    "reviewFileLimit": 200,
+    "maxOutputTokens": 16000
+  },
+  "secretsDetected": {
+    "apiKey": true,
+    "sonarToken": false,
+    "githubToken": true,
+    "azureToken": false
+  }
+}

@@ -1,0 +1,23 @@
+{
+  "summary": "The fixture review found one postable finding, one suppressed off-diff finding, and no raw JSON leak.",
+  "verdict": "NEEDS_FIX",
+  "comments": [
+    {
+      "path": "src/review/example.ts",
+      "line": 3,
+      "side": "RIGHT",
+      "severity": "high",
+      "category": "security",
+      "status": "post",
+      "body": "Synthetic test secret must be redacted before posting."
+    }
+  ],
+  "suppressed_comments": [
+    {
+      "path": "src/ignored/off-diff.ts",
+      "line": 99,
+      "reason": "off_diff",
+      "body": "Suppressed because the location is not in the PR diff."
+    }
+  ]
+}

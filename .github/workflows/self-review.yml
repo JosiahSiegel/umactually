@@ -1,0 +1,82 @@
+name: UmActually Self Review
+
+# Runs the checked-out UmActually CLI against pull requests opened on this
+# repository. Do NOT switch this workflow to pull_request_target: doing so
+# would execute PR head-branch code with write permissions and could expose
+# secrets.
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
+  workflow_dispatch:
+
+# Cancel in-progress self-review runs on the same PR so rapid pushes do not
+# spawn concurrent review runs that compete for the same PR comments slot
+# (and waste API quota on the provider side).
+# The expression falls back to github.ref when github.event.pull_request.number
+# is undefined (e.g. on workflow_dispatch runs), so manual runs do not all
+# collapse into a single global cancellation group.
+concurrency:
+  group: self-review-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  pull-requests: write
+
+jobs:
+  self-review:
+    name: self-review
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Rebuild bundled CLI
+        run: npm run build
+
+      - name: Check bundled dist is fresh
+        run: npm run check:dist-freshness
+
+      - name: Run UmActually self review
+        # `continue-on-error: true` is intentional: a provider-side
+        # timeout (e.g. Anthropic rate-limit) should NOT block the PR
+        # from merging. Self-review is an advisory signal, not a hard
+        # requirement. (Hard requirements live in ci.yml: typecheck +
+        # test + bundle gate the PR merge.)
+        continue-on-error: true
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          UMACTUALLY_API_URL: ${{ secrets.UMACTUALLY_API_URL }}
+          UMACTUALLY_API_KEY: ${{ secrets.UMACTUALLY_API_KEY }}
+        run: |
+          node bin/umactually.mjs review \
+            --platform github \
+            --no-detect-leaks \
+            --debug-raw-response \
+            --max-output-tokens 32000
+
+# Verifying the action posted a review
+# -----------------------------------
+# 1. Open the pull request that triggered this workflow.
+# 2. Look for comments or review feedback containing the marker:
+#        <!-- umactually -->
+# 3. On the PR conversation tab, the CLI posts a single pull request review
+#    with inline threads on files in the diff. On the Files changed tab the
+#    inline threads are visible per file.
+# 4. A workflow_dispatch run without pull request context does not post.
+# 5. The `check-review-artifact` subcommand remains available for ad-hoc
+#    diagnostics (e.g. validating an artifact produced by ci.yml's S1
+#    smoke step), but it is NOT invoked here — self-review.yml does not
+#    produce a local review-artifact file (the live review posts
+#    comments directly to the PR). The previous `check-review-artifact`
+#    step was a silent no-op that always exited 1 with `continue-on-
+#    error: true`; it has been removed.
