@@ -95,10 +95,10 @@ By default, UmActually auto-discovers common agent-instruction files from the re
 env:
   UMACTUALLY_PROMPT_FILES: prompts/review-system.md,prompts/repo-context.md
   UMACTUALLY_ADDITIONAL_PROMPT_FILES: prompts/extra-instructions.md
-# Pin to the v0.2.1 release tag. The umactually npm package is not
+# Pin to the v0.3.0 release tag. The umactually npm package is not
 # yet published; `npx github:owner/repo#tag` resolves to the GitHub
 # tarball at that ref so the install is reproducible.
-run: npx github:JosiahSiegel/umactually#v0.2.1 review --platform github
+run: npx github:JosiahSiegel/umactually#v0.3.0 review --platform github
 ```
 
 Azure DevOps uses the same CLI-native variables: define them as pipeline variables and run the slim example without a forwarding script.
@@ -194,4 +194,4 @@ The `review` subcommand's public flag surface is unchanged from earlier releases
 
 **Azure marker deduplication is non-atomic.** Azure Pipelines has no GitHub-style workflow concurrency group with cancellation. The CLI's marker lookup/update is best effort, so rapid re-runs can race and double-post. Cancel superseded runs when practical.
 
-**The shell and PowerShell installers are not CI-grade installation paths.** `scripts/install.sh` and `scripts/install.ps1` are convenience installers for interactive machines. CI must use Node 24 and a version-pinned install such as `npx github:JosiahSiegel/umactually#v0.2.1`; never curl an installer or resolve an unpinned latest version in a review pipeline.
+**The shell and PowerShell installers are not CI-grade installation paths.** `scripts/install.sh` and `scripts/install.ps1` are convenience installers for interactive machines. CI must use Node 24 and a version-pinned install such as `npx github:JosiahSiegel/umactually#v0.3.0`; never curl an installer or resolve an unpinned latest version in a review pipeline.
