@@ -360,8 +360,13 @@ export function parseCliArgs(args: readonly string[]): ParsedCliArgs {
         verifyFindings = false;
         break;
       case "--help":
-      case "-h":
-        throw new CliHelpSignal();
+      case "-h": {
+        // Derive the command context from non-flag tokens seen so far
+        // so CliHelpSignal carries the right subcommand for contextual
+        // help rendering.
+        const commandToken = args.slice(0, index).find((t) => !t.startsWith("-"));
+        throw new CliHelpSignal(commandToken ?? null);
+      }
       default:
         throw new CliUsageError(`unknown flag: ${token}`);
     }
@@ -418,6 +423,17 @@ export function parseCliArgs(args: readonly string[]): ParsedCliArgs {
 
 export class CliHelpSignal extends Error {
   override readonly name = "CliHelpSignal";
+  /**
+   * The subcommand that triggered the help signal, if any.
+   * When `--help` appears in a `review` / `doctor` / etc. argv list,
+   * this carries the subcommand name so the help printer can render
+   * context-specific help text.
+   */
+  readonly command: string | null;
+  constructor(command: string | null = null) {
+    super();
+    this.command = command;
+  }
 }
 
 function consumeValue(

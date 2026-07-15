@@ -234,12 +234,11 @@ describe("CLI subcommand dispatch RED contract (Task M1)", () => {
     expect(dispatched.exitCode).toBe(0);
   });
 
-  it("CLI-SUB-003: dispatch(['review','--help']) prints the Commands banner and exits 0", async () => {
+  it("CLI-SUB-003: dispatch(['review','--help']) prints review-specific help and exits 0", async () => {
     // Given: a `review --help` invocation routed through the dispatch
-    // layer. The future `dispatch` is the canonical entrypoint for ALL
-    // top-level help, including the per-subcommand `--help` form. The
-    // output must include the Commands banner listing every subcommand
-    // (`review`, `doctor`, `version`).
+    // layer. The help output must be contextual — showing review-specific
+    // flags and usage, not the top-level Commands banner. This validates
+    // that `<command> --help` produces command-scoped help.
     const dispatch = await expectNotImplementedExport(
       dispatchModule,
       dispatchPath,
@@ -258,10 +257,12 @@ describe("CLI subcommand dispatch RED contract (Task M1)", () => {
     }
 
     expect(result.exitCode).toBe(0);
-    // Commands banner regex — must list all three subcommands in order.
-    expect(capture.stdout.text).toMatch(
-      /Commands:[\s\S]*review[\s\S]*doctor[\s\S]*version/u,
-    );
+    // Review-specific help must include the review usage line and review flags.
+    expect(capture.stdout.text).toContain("umactually review");
+    expect(capture.stdout.text).toContain("--api-url");
+    expect(capture.stdout.text).toContain("--dry-run");
+    // Must NOT show the generic top-level Commands banner.
+    expect(capture.stdout.text).not.toMatch(/^Commands:$/m);
   });
 
   it("CLI-SUB-004: dispatch(['bogus']) exits 2 with an 'unknown command: bogus' stderr message", async () => {
