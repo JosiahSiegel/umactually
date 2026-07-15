@@ -216,5 +216,6 @@ Platform runners also provide `GITHUB_TOKEN`, `GITHUB_EVENT_PATH`, `SYSTEM_ACCES
 - [Provider setup](docs/providers.md)
 - [Security & redaction](docs/security.md)
 - [Exit codes](docs/exit-codes.md)
+- [Release process](docs/release-process.md) — for maintainers cutting a release
 - [Sample review artifact](docs/samples/review-artifact.json)
 - [CHANGELOG](CHANGELOG.md)

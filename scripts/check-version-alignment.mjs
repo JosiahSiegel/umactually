@@ -122,7 +122,23 @@ function runRenderCheck() {
 // value that does not equal v<currentVersion> is drift.
 function scanForHistoricalVersions(currentVersion) {
   const tagValue = `v${currentVersion}`;
-  const tagRe = /\bv\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?\b/g;
+  // Match a literal `vX.Y.Z` (optionally with SemVer pre-release/build
+  // suffix) that is a *standalone token* in the prose: preceded and
+  // followed by an end-of-token boundary. Crucially the boundary
+  // excludes URL path segments, so a link like
+  // `https://semver.org/spec/v2.0.0.html` does NOT trip the drift
+  // detector on the `v2.0.0` substring inside the URL.
+  //
+  // Boundary chars excluded from the previous-token match:
+  //   - / (URL path separator)   — was the source of the v2.0.0 false positive
+  //   - . (URL/filename extension) — prevents `html.v2.0.0` style matches
+  //   - :// — URL scheme
+  // Boundary chars excluded from the next-token match:
+  //   - . followed by [a-z] — `v2.0.0.html` URL
+  //   - / — path separator after
+  //   - :// — scheme separator
+  const tagRe =
+    /(?<![/.:?\w])(?:v(\d+)\.(\d+)\.(\d+)(?:[-+][0-9A-Za-z.-]+)?)(?![/.:?\w])/g;
   const drift = [];
   for (const rel of collectTargets()) {
     const abs = isAbsolute(rel) ? rel : join(packageRoot, rel);
