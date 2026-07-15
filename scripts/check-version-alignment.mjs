@@ -122,12 +122,17 @@ function runRenderCheck() {
 // value that does not equal v<currentVersion> is drift.
 function scanForHistoricalVersions(currentVersion) {
   const tagValue = `v${currentVersion}`;
-  // Match a literal `vX.Y.Z` (optionally with SemVer pre-release/build
-  // suffix) that is a *standalone token* in the prose: preceded and
-  // followed by an end-of-token boundary. Crucially the boundary
-  // excludes URL path segments, so a link like
-  // `https://semver.org/spec/v2.0.0.html` does NOT trip the drift
-  // detector on the `v2.0.0` substring inside the URL.
+  // Match a literal `vX.Y.Z` (without a SemVer pre-release/build suffix)
+  // that is a *standalone token* in the prose: preceded and followed by
+  // an end-of-token boundary. Crucially the boundary excludes URL path
+  // segments, so a link like `https://semver.org/spec/v2.0.0.html` does
+  // NOT trip the drift detector on the `v2.0.0` substring inside the
+  // URL. We deliberately do NOT flag suffixed forms (`v0.3.0-rc.1`,
+  // `v0.3.0+build.7`) here either — they are intentional historical
+  // context the maintainer introduced; render-versions.mjs also
+  // excludes them from auto-rewrite, so a suffixed literal surviving
+  // across a bump is a real "look at this" signal but is not a drift
+  // detector failure.
   //
   // Boundary chars excluded from the previous-token match:
   //   - / (URL path separator)   — was the source of the v2.0.0 false positive
@@ -137,8 +142,9 @@ function scanForHistoricalVersions(currentVersion) {
   //   - . followed by [a-z] — `v2.0.0.html` URL
   //   - / — path separator after
   //   - :// — scheme separator
+  //   - [-+] — SemVer pre-release / build suffix
   const tagRe =
-    /(?<![/.:?\w])(?:v(\d+)\.(\d+)\.(\d+)(?:[-+][0-9A-Za-z.-]+)?)(?![/.:?\w])/g;
+    /(?<![/.:?\w])(?:v\d+\.\d+\.\d+)(?![-+0-9A-Za-z.])(?![/.:?\w])/g;
   const drift = [];
   for (const rel of collectTargets()) {
     const abs = isAbsolute(rel) ? rel : join(packageRoot, rel);

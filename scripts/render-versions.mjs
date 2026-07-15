@@ -153,19 +153,30 @@ function collectTargets() {
   return [...found].sort();
 }
 
-function renderText(text, tagValue, dotValue) {
+function renderText(text, tagValue, dotValue, warnings) {
   const before = text;
   let next = text;
   next = next.split(TOKEN_TAG).join(tagValue);
   next = next.split(TOKEN_DOT).join(dotValue);
-  // Rewrite every standalone historical `vX.Y.Z` literal (optionally with
-  // SemVer pre-release/build suffix) to the current `v<version>` value,
-  // preserving URL boundaries. After the very first render the docs hold
-  // literal version strings, so this path keeps subsequent releases working
-  // without re-introducing the manual sweep this script was created to fix.
+  // Rewrite every standalone historical `vX.Y.Z` literal (without a
+  // SemVer pre-release/build suffix) to the current `v<version>` value.
+  // URL path segments and filename extensions are excluded by the look-around
+  // boundary anchors (e.g. `https://semver.org/spec/v2.0.0.html` is left
+  // alone because the `/` preceding `v2.0.0` blocks the match).
+  //
+  // We deliberately do NOT touch suffixed forms (`v0.3.0-rc.1`,
+  // `v0.3.0+build.7`): a literal with a pre-release/build suffix is
+  // intentional historical context that a maintainer introduced for a
+  // specific reason and rewriting it would strip the suffix silently. If
+  // such a literal exists when the version is bumped, warn loudly and
+  // skip the rewrite so the maintainer decides what to do.
   const literalRegex =
-    /(?<![/.:?\w])(?:v\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?)(?![/.:?\w])/g;
-  next = next.replace(literalRegex, (match) => (match === tagValue ? match : tagValue));
+    /(?<![/.:?\w])v\d+\.\d+\.\d+(?![-+0-9A-Za-z.])(?![/.:?\w])/g;
+  next = next.replace(literalRegex, (match) => {
+    if (match === tagValue) return match;
+    if (warnings) warnings.push(match);
+    return tagValue;
+  });
   return { result: next, changed: next !== before };
 }
 
@@ -189,6 +200,10 @@ function main() {
   const dirtyFiles = [];
   const stillTokenised = [];
   const mismatched = [];
+  // Collect literal-version rewrites per file so we can warn when a
+  // historical pin is being migrated (it usually is, but it tells the
+  // operator which files were touched).
+  const literalRewrites = [];
 
   for (const rel of files) {
     const abs = isAbsolute(rel) ? rel : join(packageRoot, rel);
@@ -197,7 +212,9 @@ function main() {
       throw new Error(`render-versions: missing file ${rel}`);
     }
     const original = readFileSync(abs, "utf8");
-    const { result, changed } = renderText(original, tagValue, dotValue);
+    const warnings = [];
+    const { result, changed } = renderText(original, tagValue, dotValue, warnings);
+    if (warnings.length > 0) literalRewrites.push({ rel, from: warnings });
 
     // Defensive invariant: the only `{{UMACTUALLY_*}}` tokens allowed in
     // shipped docs are the two we render. Any other shape (typo, casing
@@ -252,6 +269,18 @@ function main() {
       `render-versions: mismatched values:\n  ${mismatched.join("\n  ")}\n`,
     );
     process.exit(3);
+  }
+
+  if (literalRewrites.length > 0) {
+    // Informational: tell the operator which historical pins were
+    // auto-migrated to the current version. Not a failure.
+    process.stdout.write(
+      `render-versions: auto-migrated historical literals:\n` +
+        literalRewrites
+          .map(({ rel, from }) => `  ${rel}: ${from.join(", ")} -> ${tagValue}`)
+          .join("\n") +
+        "\n",
+    );
   }
 
   process.stdout.write("render-versions: OK\n");
