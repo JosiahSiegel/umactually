@@ -2,11 +2,11 @@
 
 AI-powered PR review that posts inline comments directly to your pull requests. Works with any model provider (OpenAI, Anthropic, Copilot) and both GitHub and Azure DevOps.
 
-[![GitHub release](https://img.shields.io/github/v/release/JosiahSiegel/umactually)](https://github.com/JosiahSiegel/umactually/releases/tag/v0.1.0)
+[![GitHub release](https://img.shields.io/github/v/release/JosiahSiegel/umactually)](https://github.com/JosiahSiegel/umactually/releases/tag/v0.2.0)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 [![Node.js >=24](https://img.shields.io/badge/node-%3E%3D24-339933.svg)](https://nodejs.org/)
 
-Latest release: **[v0.1.0](https://github.com/JosiahSiegel/umactually/releases/tag/v0.1.0)** — see [all releases](https://github.com/JosiahSiegel/umactually/releases).
+Latest release: **[v0.2.0](https://github.com/JosiahSiegel/umactually/releases/tag/v0.2.0)** — see [all releases](https://github.com/JosiahSiegel/umactually/releases).
 
 ## Install
 
@@ -41,10 +41,10 @@ Supported release assets:
 When Node.js 24 is already available, run the pinned CLI directly without a global install:
 
 ```bash
-npx github:JosiahSiegel/umactually#v0.1.0 review
+npx github:JosiahSiegel/umactually#v0.2.0 review
 ```
 
-The `#v0.1.0` fragment pins the install to the [v0.1.0 release tag](https://github.com/JosiahSiegel/umactually/releases/tag/v0.1.0). Omit the fragment only when you specifically want the latest unreleased `main` build. The `umactually` npm package is not yet published — `npm install -g umactually` will 404 until a future release.
+The `#v0.2.0` fragment pins the install to the [v0.2.0 release tag](https://github.com/JosiahSiegel/umactually/releases/tag/v0.2.0). Omit the fragment only when you specifically want the latest unreleased `main` build. The `umactually` npm package is not yet published — `npm install -g umactually` will 404 until a future release.
 
 ### Uninstall
 
@@ -91,7 +91,7 @@ The CLI auto-validates its output after each run. Invalid reviews exit with code
 
 ## CI Integration
 
-CI must use Node.js 24 and a version-pinned install. Pin to the [`v0.1.0` release tag](https://github.com/JosiahSiegel/umactually/releases/tag/v0.1.0) — never track `main` and never use the interactive binary installers in a CI step.
+CI must use Node.js 24 and a version-pinned install. Pin to the [`v0.2.0` release tag](https://github.com/JosiahSiegel/umactually/releases/tag/v0.2.0) — never track `main` and never use the interactive binary installers in a CI step.
 
 ### GitHub Actions
 
@@ -118,10 +118,10 @@ jobs:
           GITHUB_TOKEN: ${{ github.token }}
           UMACTUALLY_API_URL: ${{ secrets.UMACTUALLY_API_URL }}
           UMACTUALLY_API_KEY: ${{ secrets.UMACTUALLY_API_KEY }}
-        # Pin to the v0.1.0 release tag — `npx github:owner/repo#tag` resolves
+        # Pin to the v0.2.0 release tag — `npx github:owner/repo#tag` resolves
         # to the GitHub tarball at that ref, so the install is reproducible
         # instead of tracking `main`. The npm package is not yet published.
-        run: npx github:JosiahSiegel/umactually#v0.1.0 review --platform github
+        run: npx github:JosiahSiegel/umactually#v0.2.0 review --platform github
 ```
 
 See the [GitHub Actions guide](docs/gh-actions.md) and the canonical workflow at [`examples/github/pr-review.yml`](examples/github/pr-review.yml).
@@ -145,10 +145,10 @@ steps:
   - task: NodeTool@0
     inputs:
       versionSpec: "24.x"
-  # Pin to the v0.1.0 release tag — `npx github:owner/repo#tag` resolves
+  # Pin to the v0.2.0 release tag — `npx github:owner/repo#tag` resolves
   # to the GitHub tarball at that ref, so the install is reproducible
   # instead of tracking `main`. The npm package is not yet published.
-  - script: npx github:JosiahSiegel/umactually#v0.1.0 review --platform azure-devops
+  - script: npx github:JosiahSiegel/umactually#v0.2.0 review --platform azure-devops
     displayName: Run umactually PR review
     env:
       SYSTEM_ACCESSTOKEN: $(System.AccessToken)
