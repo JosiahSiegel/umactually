@@ -361,7 +361,7 @@ export function parseCliArgs(args: readonly string[]): ParsedCliArgs {
         break;
       case "--help":
       case "-h":
-        throw new CliHelpSignal();
+        throw new CliHelpSignal("review");
       default:
         throw new CliUsageError(`unknown flag: ${token}`);
     }
@@ -418,6 +418,17 @@ export function parseCliArgs(args: readonly string[]): ParsedCliArgs {
 
 export class CliHelpSignal extends Error {
   override readonly name = "CliHelpSignal";
+  /**
+   * The subcommand that triggered the help signal, if any.
+   * When `--help` appears in a `review` / `doctor` / etc. argv list,
+   * this carries the subcommand name so the help printer can render
+   * context-specific help text.
+   */
+  readonly command: string | null;
+  constructor(command: string | null = null) {
+    super();
+    this.command = command;
+  }
 }
 
 function consumeValue(

@@ -10,18 +10,10 @@ import { promisify } from "node:util";
 import { runCli, runVersion } from "../cli.js";
 import { classifyReviewArtifact } from "./check-review-artifact.js";
 import { formatDoctorHuman, formatDoctorJson, runDoctor } from "./doctor.js";
-import { printHelp } from "./help.js";
+import { printContextualHelp } from "./help.js";
 import { resolveColorPolicy } from "./no-color.js";
 
 const GLOBAL_ONLY_FLAGS = new Set(["--json", "--no-color"]);
-const TOP_LEVEL_COMMANDS = [
-  "review",
-  "doctor",
-  "check-review-artifact <path>",
-  "version",
-  "--help",
-  "--version",
-] as const;
 const execFile = promisify(execFileCallback);
 
 export type DispatchResult = {
@@ -56,7 +48,7 @@ export async function dispatch(argv: readonly string[]): Promise<DispatchResult 
     return runVersion(argv);
   }
   if (argv.includes("--help") || argv.includes("-h")) {
-    const stdout = printHelp(TOP_LEVEL_COMMANDS);
+    const stdout = printContextualHelp(argv);
     return argv.includes("--no-color") ? 0 : { exitCode: 0, stdout };
   }
 

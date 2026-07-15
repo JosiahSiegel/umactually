@@ -1,6 +1,12 @@
 import { describe, expect, it } from "vitest";
 
-import { CLI_HELP_TEXT } from "../../src/cli/help.js";
+import {
+  CLI_HELP_TEXT,
+  REVIEW_HELP,
+  DOCTOR_HELP,
+  CHECK_REVIEW_ARTIFACT_HELP,
+  resolveHelpText,
+} from "../../src/cli/help.js";
 
 describe("CLI help text", () => {
   it("mentions --prompt-files so operators discover the new array override", () => {
@@ -80,5 +86,64 @@ describe("CLI help text", () => {
     // test pins the cross-link so the T5 work (adding it to
     // src/cli/help.ts) is verified from the --help surface.
     expect(CLI_HELP_TEXT).toContain("docs/exit-codes.md");
+  });
+});
+
+describe("Contextual help (per-command)", () => {
+  it("review --help shows review-specific usage and flags", () => {
+    expect(REVIEW_HELP).toContain("umactually review");
+    expect(REVIEW_HELP).toContain("--api-url");
+    expect(REVIEW_HELP).toContain("--dry-run");
+    // Review help should NOT include the doctor or check-review-artifact content.
+    expect(REVIEW_HELP).not.toContain("check-review-artifact");
+    expect(REVIEW_HELP).not.toContain("Node.js >= 24");
+  });
+
+  it("doctor --help shows doctor-specific checks and exits", () => {
+    expect(DOCTOR_HELP).toContain("umactually doctor");
+    expect(DOCTOR_HELP).toContain("--json");
+    expect(DOCTOR_HELP).toContain("Checks:");
+    expect(DOCTOR_HELP).toContain("node");
+    expect(DOCTOR_HELP).toContain("git");
+    // Doctor help should NOT include review flags.
+    expect(DOCTOR_HELP).not.toContain("--api-url");
+    expect(DOCTOR_HELP).not.toContain("--dry-run");
+  });
+
+  it("check-review-artifact --help shows validation usage and exit codes", () => {
+    expect(CHECK_REVIEW_ARTIFACT_HELP).toContain("check-review-artifact");
+    expect(CHECK_REVIEW_ARTIFACT_HELP).toContain("<path>");
+    expect(CHECK_REVIEW_ARTIFACT_HELP).toContain("Exit codes:");
+    // Should NOT include review or doctor flags.
+    expect(CHECK_REVIEW_ARTIFACT_HELP).not.toContain("--api-url");
+    expect(CHECK_REVIEW_ARTIFACT_HELP).not.toContain("Checks:");
+  });
+
+  it("resolveHelpText returns review help for ['review', '--help']", () => {
+    expect(resolveHelpText(["review", "--help"])).toBe(REVIEW_HELP);
+  });
+
+  it("resolveHelpText returns doctor help for ['doctor', '--help']", () => {
+    expect(resolveHelpText(["doctor", "--help"])).toBe(DOCTOR_HELP);
+  });
+
+  it("resolveHelpText returns check-review-artifact help for ['check-review-artifact', '--help']", () => {
+    expect(resolveHelpText(["check-review-artifact", "--help"])).toBe(CHECK_REVIEW_ARTIFACT_HELP);
+  });
+
+  it("resolveHelpText returns top-level help for bare ['--help']", () => {
+    expect(resolveHelpText(["--help"])).toBe(CLI_HELP_TEXT);
+  });
+
+  it("resolveHelpText returns top-level help when no command precedes --help", () => {
+    expect(resolveHelpText(["--no-color", "--help"])).toBe(CLI_HELP_TEXT);
+  });
+
+  it("top-level CLI_HELP_TEXT includes Commands banner with all subcommands", () => {
+    expect(CLI_HELP_TEXT).toContain("Commands:");
+    expect(CLI_HELP_TEXT).toContain("review");
+    expect(CLI_HELP_TEXT).toContain("doctor");
+    expect(CLI_HELP_TEXT).toContain("check-review-artifact");
+    expect(CLI_HELP_TEXT).toContain("version");
   });
 });

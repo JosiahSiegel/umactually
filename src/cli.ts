@@ -4,7 +4,7 @@ import { join } from "node:path";
 
 import { CliHelpSignal, CliUsageError, parseCliArgs, type ParsedCliArgs } from "./cli/parse-args.js";
 import { dispatch as dispatchSubcommand } from "./cli/dispatch.js";
-import { printHelp } from "./cli/help.js";
+import { REVIEW_HELP } from "./cli/help.js";
 import { CLI_MODES_TEXT } from "./cli/modes-help.js";
 import { dispatchLive, runDryRun, type CliRunResult } from "./cli/run.js";
 import { isStandaloneMode, runStandalone } from "./cli/standalone-run.js";
@@ -271,7 +271,7 @@ export async function runCli(args: readonly string[], cwd: string): Promise<CliE
     parsed = parseCliArgs(args);
   } catch (error) {
     if (error instanceof CliHelpSignal) {
-      printHelp();
+      process.stdout.write(REVIEW_HELP);
       return { exitCode: 0 };
     }
     throw error;
