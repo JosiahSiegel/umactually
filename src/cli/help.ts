@@ -119,8 +119,8 @@ function renderFlagLine({ flag, description }: HelpFlag): string {
   return description === undefined ? head : `${head}${description}`;
 }
 
-function renderFlags(flags: readonly HelpFlag[]): string {
-  return flags.map(renderFlagLine).join("\n");
+function renderFlags(flags: readonly HelpFlag[]): readonly string[] {
+  return flags.map(renderFlagLine);
 }
 
 function renderCommands(commands: readonly string[]): string {

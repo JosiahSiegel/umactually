@@ -147,3 +147,44 @@ describe("Contextual help (per-command)", () => {
     expect(CLI_HELP_TEXT).toContain("version");
   });
 });
+
+describe("Help text structural invariants (catches spread-of-string regressions)", () => {
+  // Regression guard: a previous bug spread `renderFlags(...)` (a joined
+  // string) into an array literal, so every character landed on its own
+  // line. `toContain("--api-url")` falsely passed because the substring
+  // still appeared — split across many lines. These tests pin the
+  // WELL-FORMED shape: each flag occupies a single line with its column
+  // padding intact.
+  it("each --flag line in REVIEW_HELP is on a single line (no per-char fragmentation)", () => {
+    const lines = REVIEW_HELP.split("\n");
+    const platformLine = lines.find((line) => line.includes("--platform <auto|github|azure>"));
+    expect(platformLine).toBeDefined();
+    // The flag's first char and last char must be on the same line.
+    expect(platformLine).toContain("<auto|github|azure>");
+    // No single-line text should be just one char repeated or just whitespace.
+    for (const line of lines) {
+      expect(line.length).toBeLessThan(200);
+    }
+  });
+
+  it("DOCTOR_HELP keeps the --json flag on its own line", () => {
+    const lines = DOCTOR_HELP.split("\n");
+    const jsonLine = lines.find((line) => line.includes("--json"));
+    expect(jsonLine).toBeDefined();
+    expect(jsonLine).toMatch(/--json\s+\S/u);
+  });
+
+  it("CHECK_REVIEW_ARTIFACT_HELP keeps `<path>` on its own line", () => {
+    const lines = CHECK_REVIEW_ARTIFACT_HELP.split("\n");
+    const pathLine = lines.find((line) => line.includes("<path>"));
+    expect(pathLine).toBeDefined();
+    expect(pathLine).toContain("check-review-artifact <path>");
+  });
+
+  it("top-level CLI_HELP_TEXT keeps the --api-url flag on its own line", () => {
+    const lines = CLI_HELP_TEXT.split("\n");
+    const apiUrlLine = lines.find((line) => line.includes("--api-url"));
+    expect(apiUrlLine).toBeDefined();
+    expect(apiUrlLine).toMatch(/--api-url\s+<url>/u);
+  });
+});

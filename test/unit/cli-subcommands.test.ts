@@ -263,6 +263,11 @@ describe("CLI subcommand dispatch RED contract (Task M1)", () => {
     expect(capture.stdout.text).toContain("--dry-run");
     // Must NOT show the generic top-level Commands banner.
     expect(capture.stdout.text).not.toMatch(/^Commands:$/m);
+    // Regression guard: each flag must appear on its own line, not split
+    // character-by-character (caught a previous spread-of-string bug).
+    const apiUrlLine = capture.stdout.text.split("\n").find((line) => line.includes("--api-url"));
+    expect(apiUrlLine).toBeDefined();
+    expect(apiUrlLine).toMatch(/--api-url\s+<url>/u);
   });
 
   it("CLI-SUB-004: dispatch(['bogus']) exits 2 with an 'unknown command: bogus' stderr message", async () => {
