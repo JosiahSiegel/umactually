@@ -1,7 +1,19 @@
 #!/usr/bin/env node
 // SPDX-License-Identifier: MIT
-// Render `{{UMACTUALLY_VERSION}}` and `{{UMACTUALLY_VERSION_DOT}}` template tokens
-// inside docs/, examples/, and README.md to the current `package.json` version.
+// Render version strings across shipped docs to match `package.json` `version`.
+//
+// This script handles TWO forms of version reference, both rewritten to the
+// value of `package.json` `version`:
+//
+//   1. Template tokens:
+//      {{UMACTUALLY_VERSION}}      → "v<version>"   (e.g. v0.4.0)
+//      {{UMACTUALLY_VERSION_DOT}}  → "<version>"    (e.g. 0.4.0)
+//
+//   2. Already-rendered literal `vX.Y.Z` strings whose X.Y.Z is NOT equal
+//      to the current version. After the very first render, every doc
+//      has literal version strings (the tokens are consumed), so this
+//      path keeps future releases working — bumping v0.3.0 → v0.4.0
+//      rewrites every `v0.3.0` literal to `v0.4.0` automatically.
 //
 // Why this exists:
 //   Before this script, every release required a manual sweep of README.md,
@@ -11,26 +23,34 @@
 //   practice: the v0.3.0 release shipped with `v0.2.1` still hardcoded in the
 //   README badge URL, CI examples, and Windows agent install line.
 //
-// Token contract:
-//   {{UMACTUALLY_VERSION}}      → "v<version>"   (e.g. v0.3.0)
-//   {{UMACTUALLY_VERSION_DOT}}  → "<version>"    (e.g. 0.3.0)
+//   After the rewrite, version tokens are no longer present in shipped docs.
+//   A subsequent 0.3.0 → 0.4.0 bump would otherwise have nothing left to
+//   substitute and would require the same manual sweep we just eliminated.
+//   The literal-rewrite path closes that loop.
 //
-//   Both are rendered from `package.json` `version` — a single source of truth.
-//   `dist/package.json` is intentionally NOT walked: ncc regenerates it during
-//   `npm run bundle`, and the version there is the same string anyway.
+// Boundary rules (shared with scripts/check-version-alignment.mjs):
+//   The literal `vX.Y.Z` pattern is matched only when it appears as a
+//   standalone token — preceded and followed by end-of-token boundaries
+//   (whitespace, line start, or punctuation), and crucially NOT preceded/
+//   followed by `/`, `.`, `:`, `?`, or other URL/filename-extension chars.
+//   This avoids false-positive rewrites inside URLs like
+//   `https://semver.org/spec/v2.0.0.html` and avoids touching file
+//   extensions like `review.v1.2.3.html`.
 //
-//   The script refuses to leave any token unreplaced (exits 2) so a typo in a
-//   token name like {{UmActually_VERSION}} cannot silently leak through.
-//
-//   Idempotent: re-running on an already-rendered corpus is a no-op. The
-//   script only writes a file when at least one token replaced a substring.
+// Invariants enforced:
+//   - The only `{{UMACTUALLY_*}}` tokens allowed in shipped docs are the two
+//     canonical ones; any other shape is a typo and exits 2.
+//   - No historical `vX.Y.Z` literal may remain in shipped docs after a
+//     successful run; `--check` enforces this.
+//   - Idempotent: re-running on an already-aligned corpus is a no-op (no
+//     file is rewritten when no token or literal needs substitution).
 //
 // Usage:
 //   node scripts/render-versions.mjs            # replace and write in place
-//   node scripts/render-versions.mjs --check    # exit 1 if any replaceable
-//                                                token is still present
-//                                                (or if any token rendered
-//                                                 differs from disk state)
+//   node scripts/render-versions.mjs --check    # exit 1 if any token/
+//                                                literal-replaceable content
+//                                                survives on disk; exit 2
+//                                                for residual-typo tokens
 //   node scripts/render-versions.mjs --dry-run  # print intended changes,
 //                                                do not write
 
@@ -138,6 +158,14 @@ function renderText(text, tagValue, dotValue) {
   let next = text;
   next = next.split(TOKEN_TAG).join(tagValue);
   next = next.split(TOKEN_DOT).join(dotValue);
+  // Rewrite every standalone historical `vX.Y.Z` literal (optionally with
+  // SemVer pre-release/build suffix) to the current `v<version>` value,
+  // preserving URL boundaries. After the very first render the docs hold
+  // literal version strings, so this path keeps subsequent releases working
+  // without re-introducing the manual sweep this script was created to fix.
+  const literalRegex =
+    /(?<![/.:?\w])(?:v\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?)(?![/.:?\w])/g;
+  next = next.replace(literalRegex, (match) => (match === tagValue ? match : tagValue));
   return { result: next, changed: next !== before };
 }
 

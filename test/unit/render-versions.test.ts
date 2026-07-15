@@ -183,6 +183,82 @@ describe("scripts/render-versions.mjs", () => {
   });
 });
 
+describe("scripts/render-versions.mjs — historical vX.Y.Z literal rewrite", () => {
+  it("rewrites a stale vX.Y.Z literal to the current version, idempotently", () => {
+    const tmpRoot = makeIsolatedTree();
+    seedTree(tmpRoot, "0.4.0");
+    // Plant a stale v0.3.0 literal (the kind an old release would render to).
+    writeFileSync(
+      join(tmpRoot, "README.md"),
+      "# X\n\nLatest release: **v0.3.0** — pin: v0.3.0 today.\n",
+      "utf8",
+    );
+
+    const first = invokeRenderScript([], { packageRoot: tmpRoot });
+    expect(first.status, first.stderr).toBe(0);
+
+    const rendered = readFileSync(join(tmpRoot, "README.md"), "utf8");
+    // Every standalone v0.3.0 literal becomes v0.4.0.
+    expect(rendered).not.toMatch(/\bv0\.3\.0\b/);
+    expect(rendered).toMatch(/\*\*v0\.4\.0\*\*/);
+    expect(rendered).toMatch(/pin: v0\.4\.0 today/);
+
+    // Idempotence: re-running is a no-op.
+    const second = invokeRenderScript([], { packageRoot: tmpRoot });
+    expect(second.status, second.stderr).toBe(0);
+  });
+
+  it("does NOT rewrite vX.Y.Z substrings inside URL paths or file extensions", () => {
+    const tmpRoot = makeIsolatedTree();
+    seedTree(tmpRoot, "0.4.0");
+    writeFileSync(
+      join(tmpRoot, "README.md"),
+      [
+        "# X",
+        "",
+        "Stable spec URL: https://semver.org/spec/v2.0.0.html",
+        "Older release: https://github.com/x/y/releases/tag/v0.3.0",
+        "Artifact: review.v1.2.3.html",
+        "",
+      ].join("\n"),
+      "utf8",
+    );
+
+    const result = invokeRenderScript([], { packageRoot: tmpRoot });
+    expect(result.status, result.stderr).toBe(0);
+
+    const out = readFileSync(join(tmpRoot, "README.md"), "utf8");
+    // URL path segments stay intact (SemVer spec URL, GitHub release URL).
+    expect(out).toContain("https://semver.org/spec/v2.0.0.html");
+    expect(out).toContain("https://github.com/x/y/releases/tag/v0.3.0");
+    // Filename extension stays intact.
+    expect(out).toContain("review.v1.2.3.html");
+  });
+
+  it("--check exits 1 when a stale literal would be rewritten, exits 0 after rewrite", () => {
+    const tmpRoot = makeIsolatedTree();
+    seedTree(tmpRoot, "0.4.0");
+    writeFileSync(
+      join(tmpRoot, "README.md"),
+      "# X\n\nStale pin: v0.3.0 today\n",
+      "utf8",
+    );
+
+    // Before render: --check exits 1.
+    const beforeRender = invokeRenderScript(["--check"], { packageRoot: tmpRoot });
+    expect(beforeRender.status).toBe(1);
+    expect(beforeRender.stderr + beforeRender.stdout).toMatch(/render-versions|README\.md/);
+
+    // Render once.
+    const render = invokeRenderScript([], { packageRoot: tmpRoot });
+    expect(render.status, render.stderr).toBe(0);
+
+    // After render: --check exits 0.
+    const afterRender = invokeRenderScript(["--check"], { packageRoot: tmpRoot });
+    expect(afterRender.status, afterRender.stderr).toBe(0);
+  });
+});
+
 describe("scripts/check-version-alignment.mjs", () => {
   it("exits 0 on a clean tree (v<package.json version> in every shipped doc)", () => {
     const tmpRoot = makeIsolatedTree();
