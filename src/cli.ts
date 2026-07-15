@@ -8,7 +8,8 @@ import { resolveHelpText } from "./cli/help.js";
 import { CLI_MODES_TEXT } from "./cli/modes-help.js";
 import { dispatchLive, runDryRun, type CliRunResult } from "./cli/run.js";
 import { isStandaloneMode, runStandalone } from "./cli/standalone-run.js";
-import { collectValidationErrors, resolvePlatform } from "./cli/validate.js";
+import { canPromptInteractively, smartPromptForApiConfig } from "./cli/smart-prompt.js";
+import { collectValidationErrors, type ValidationError, resolvePlatform } from "./cli/validate.js";
 import { deriveContextFromGit } from "./cli/auto-context.js";
 import {
   resolveFromSchema,
@@ -265,6 +266,31 @@ export type CliExecutionResult = CliRunResult & {
   readonly resolvedConfig?: SanitizedResolvedConfig;
 };
 
+/**
+ * Render a list of structured validation errors to stderr.
+ *
+ * Shape:
+ *   cli: <message-1>; <message-2>; ...
+ *     hint: <hint-1>
+ *     hint: <hint-2>
+ *     ...
+ *
+ * The first line is the byte-compatible legacy join (semicolon-
+ * separated messages) so any CI log scraper or external consumer
+ * matching on `cli: --api-url is required` or
+ * `cli: --review requires --diff` keeps working. Each entry's
+ * remediation hint is rendered as a separate `hint:` line. Piping
+ * the output through `grep "cli:"` still surfaces the legacy first
+ * line; piping through `grep "hint:"` surfaces every remediation.
+ */
+function renderValidationErrors(errors: readonly ValidationError[]): string {
+  const header = `cli: ${errors.map((e) => e.message).join("; ")}\n`;
+  const hintLines = errors
+    .map((e) => `  hint: ${e.hint}`)
+    .join("\n");
+  return `${header}${hintLines}\n`;
+}
+
 export async function runCli(args: readonly string[], cwd: string): Promise<CliExecutionResult> {
   let parsed: ParsedCliArgs;
   try {
@@ -276,6 +302,16 @@ export async function runCli(args: readonly string[], cwd: string): Promise<CliE
       const helpArgv = error.command !== null ? [error.command, "--help"] : ["--help"];
       process.stdout.write(resolveHelpText(helpArgv));
       return { exitCode: 0 };
+    }
+    if (error instanceof CliUsageError && error.hint !== undefined) {
+      // Surface the parse-time remediation hint next to the usage
+      // error so the operator sees exactly what to try instead of a
+      // bare "unknown flag: --foo" or "flag requires a value". The
+      // CLI exits with code 2 (UsageError convention) AFTER the hint
+      // is printed; machines grep'ing for `cli: <msg>` find the
+      // legacy line; humans grep'ing for `hint:` find the remediation.
+      process.stderr.write(`cli: ${error.message}\n  hint: ${error.hint}\n`);
+      return { exitCode: 2 };
     }
     throw error;
   }
@@ -292,9 +328,65 @@ export async function runCli(args: readonly string[], cwd: string): Promise<CliE
 
   try {
     // Stage 4: validate the resolved (post-derivation) args.
-    const errors = collectValidationErrors(resolved);
+    let errors = collectValidationErrors(resolved);
+    // Smart-prompt safety net: when validation fails ONLY because the
+    // operator forgot `--api-url` / `--api-key`, and we're attached to
+    // a TTY (NOT a CI / piped stdin), offer to ask for the values
+    // interactively. This rescues the operator from a frustrating
+    // "run command → fail → re-read docs → re-run with secret" loop
+    // in local development.
+    //
+    // The interactive path is strictly opt-in: we only prompt when
+    // (a) we can detect an interactive terminal, (b) the only failing
+    // fields are the standard API-config pair, and (c) we haven't
+    // already been given the value via env var (the prompt would
+    // otherwise feel like a leak). ALL other validation failures
+    // bypass this branch — we don't try to be clever around
+    // required-sonar config, --platform azure identity, etc., because
+    // those have CI / globs-of-context implications.
+    if (
+      errors.length > 0 &&
+      canPromptInteractively() &&
+      !resolved.dryRun &&
+      everyErrorIsApiConfig(errors) &&
+      process.env["UMACTUALLY_NO_INTERACTIVE"] === undefined
+    ) {
+      const promptForUrl = errors.some((e) => e.flag === "--api-url");
+      const prompted = await smartPromptForApiConfig({ promptForUrl });
+      // SchemaResolvedCliArgs extends ParsedCliArgs, so the same
+      // applyPromptedConfig helper works on both.
+      const augmented = applyPromptedConfig(resolved as unknown as ParsedCliArgs, prompted);
+      errors = collectValidationErrors(augmented);
+      if (errors.length === 0) {
+        // Validation now passes — re-resolve and proceed without
+        // printing the bare-invocation modes banner (the operator
+        // clearly knows the standalone shape; they just needed
+        // credentials).
+        process.stdout.write(`${BRAND_PREFIX}received credentials from interactive prompt; continuing.\n`);
+        return await runAfterValidation({
+          resolved: augmented as unknown as ResolvedCliArgs,
+          cwd,
+          env: process.env,
+          generatedArtifacts,
+        });
+      }
+      // Some required values still missing after the prompt. Re-render
+      // the structured errors below so the operator sees what's still
+      // outstanding. Falls through to the standard error path.
+      process.stderr.write(renderValidationErrors(errors));
+      return {
+        exitCode: 2,
+        resolvedConfig: buildSanitizedResolvedConfig(augmented as unknown as ResolvedCliArgs),
+      };
+    }
     if (errors.length > 0) {
-      process.stderr.write(`cli: ${errors.join("; ")}\n`);
+      // Render the structured errors with `flag` + `message` + `hint`
+      // so the operator sees a remediation next to each failure rather
+      // than a flat semicolon-joined string. The first line stays
+      // byte-compatible with the legacy `cli: <msg>;<msg>` shape so
+      // any consumer grep'ing for `cli: --api-url is required` keeps
+      // working.
+      process.stderr.write(renderValidationErrors(errors));
       // Bare-invocation banner: when the operator ran the CLI with no
       // provider flags AND validation rejected because of missing
       // --api-url/--api-key, the actionable next step is "pick a mode"
@@ -303,7 +395,7 @@ export async function runCli(args: readonly string[], cwd: string): Promise<CliE
       if (
         args.length === 0 &&
         !envResolved.dryRun &&
-        errors.some((e) => e.includes("--api-url") || e.includes("--api-key"))
+        errors.some((e) => e.flag === "--api-url" || e.flag === "--api-key")
       ) {
         process.stderr.write(`\n${BRAND_PREFIX}pick a mode:\n\n${CLI_MODES_TEXT}`);
       }
@@ -313,31 +405,93 @@ export async function runCli(args: readonly string[], cwd: string): Promise<CliE
       };
     }
 
-    if (!resolved.dryRun && isStandaloneMode(process.env)) {
-      const result = await runStandalone({ parsed: resolved, cwd, env: process.env });
-      if (result.kind === "provider-error") {
-        process.stdout.write(`${result.sanitizedForLog}\n`);
-        return {
-          exitCode: 1,
-          resolvedConfig: buildSanitizedResolvedConfig(resolved),
-        };
-      }
-      return {
-        exitCode: 0,
-        resolvedConfig: buildSanitizedResolvedConfig(resolved),
-      };
-    }
-
-    const result = resolved.dryRun
-      ? await runDryRun(resolved, cwd, resolvePlatform(resolved.platform))
-      : await dispatchLive(resolved, cwd, process.env);
-    return {
-      ...result,
-      resolvedConfig: buildSanitizedResolvedConfig(resolved),
-    };
+    return await runAfterValidation({
+      resolved,
+      cwd,
+      env: process.env,
+      generatedArtifacts,
+    });
   } finally {
     await cleanupGeneratedArtifacts(generatedArtifacts, cwd);
   }
+}
+
+/**
+ * Dispatch the post-validation run path. Extracted so the smart-prompt
+ * branch can call into the same code without duplicating the standalone
+ * vs. live vs. dry-run routing logic. Pure orchestration: returns a
+ * `CliExecutionResult` with `exitCode` and the sanitized resolved
+ * config so callers can inspect what the operator actually provided.
+ */
+async function runAfterValidation(input: {
+  readonly resolved: ResolvedCliArgs;
+  readonly cwd: string;
+  readonly env: NodeJS.ProcessEnv;
+  readonly generatedArtifacts: readonly string[];
+}): Promise<CliExecutionResult> {
+  const { resolved, cwd, env } = input;
+  if (!resolved.dryRun && isStandaloneMode(env)) {
+    const result = await runStandalone({ parsed: resolved, cwd, env });
+    if (result.kind === "provider-error") {
+      const hintLine =
+        "hint" in result && typeof result.hint === "string"
+          ? `\n${BRAND_PREFIX}hint: ${result.hint}`
+          : "";
+      process.stdout.write(`${result.sanitizedForLog}${hintLine}\n`);
+      return {
+        exitCode: 1,
+        resolvedConfig: buildSanitizedResolvedConfig(resolved),
+      };
+    }
+    return {
+      exitCode: 0,
+      resolvedConfig: buildSanitizedResolvedConfig(resolved),
+    };
+  }
+
+  const result = resolved.dryRun
+    ? await runDryRun(resolved, cwd, resolvePlatform(resolved.platform))
+    : await dispatchLive(resolved, cwd, env);
+  return {
+    ...result,
+    resolvedConfig: buildSanitizedResolvedConfig(resolved),
+  };
+}
+
+/**
+ * Returns true when every validation error in the list refers to one of
+ * the API-config flags (`--api-url`, `--api-key`). Used to gate the
+ * smart-prompt branch so we only offer an interactive credential prompt
+ * when the operator's actual failure is "you forgot to provide the
+ * model provider config".
+ */
+function everyErrorIsApiConfig(errors: readonly ValidationError[]): boolean {
+  return errors.every((e) => e.flag === "--api-url" || e.flag === "--api-key");
+}
+
+/**
+ * Apply the prompted values to the resolved parsed CLI args. Returns a
+ * new {@link ParsedCliArgs} with `apiUrl` / `apiKey` replaced when the
+ * smart prompt returned a non-null value. The replacement is additive
+ * only — already-populated fields are NOT overwritten, so a CLI flag
+ * that was set before the prompt takes precedence over the prompt's
+ * answer. Missing values (null) keep their null state.
+ */
+function applyPromptedConfig(
+  resolved: ParsedCliArgs,
+  prompted: { readonly apiUrl: string | null; readonly apiKey: string | null },
+): ParsedCliArgs {
+  const nextApiUrl = prompted.apiUrl !== null && (resolved.apiUrl === null || resolved.apiUrl.length === 0)
+    ? prompted.apiUrl
+    : resolved.apiUrl;
+  const nextApiKey = prompted.apiKey !== null && (resolved.apiKey === null || resolved.apiKey.length === 0)
+    ? prompted.apiKey
+    : resolved.apiKey;
+  return {
+    ...resolved,
+    apiUrl: nextApiUrl,
+    apiKey: nextApiKey,
+  };
 }
 
 export async function main(argv: readonly string[]): Promise<number> {
@@ -346,7 +500,12 @@ export async function main(argv: readonly string[]): Promise<number> {
     return result.exitCode;
   } catch (error) {
     if (error instanceof CliUsageError) {
-      process.stderr.write(`cli: ${error.message}\n`);
+      // Surface the hint (when present) on a separate `hint:` line so
+      // the operator sees actionable remediation alongside the bare
+      // usage error. Print message first to preserve the legacy
+      // `cli: <msg>` byte shape that tests + log scrapers grep for.
+      const hintLine = error.hint === undefined ? "" : `\n  hint: ${error.hint}`;
+      process.stderr.write(`cli: ${error.message}${hintLine}\n`);
       return 2;
     }
     process.stderr.write(`cli: unexpected error: ${formatError(error)}\n`);

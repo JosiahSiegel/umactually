@@ -54,17 +54,17 @@ async function collectValidationErrors(
 ): Promise<readonly string[]> {
   // Dynamic import so a missing export throws at call time, not at module load.
   const mod = await import("../../src/cli/validate.js");
-  return mod.collectValidationErrors(parsed);
+  // Validate-glue returns structured { flag, message, hint } records;
+  // map to the legacy string shape so existing assertion sites (which
+  // call `includes`/`join` on the result) keep working.
+  return mod.collectValidationErrors(parsed).map((e) => e.message);
 }
 
 async function collectPostingValidationErrors(
   parsed: ParsedCliArgs,
 ): Promise<readonly string[]> {
   const mod = await import("../../src/cli/validate.js");
-  // Function does not exist yet — RED.
-  return (mod as unknown as {
-    collectPostingValidationErrors: (p: ParsedCliArgs) => readonly string[];
-  }).collectPostingValidationErrors(parsed);
+  return mod.collectPostingValidationErrors(parsed).map((e) => e.message);
 }
 
 const GH_POSTING_ARGS = [

@@ -9,6 +9,7 @@ import { resolve } from "node:path";
 
 import { BRAND_PREFIX } from "../util/brand.js";
 import { REVIEW_MARKER } from "../util/marker.js";
+import { RequiredConfigError } from "../util/required-config.js";
 import { requestLiveReview } from "./live-provider.js";
 import {
   LiveReviewError,
@@ -24,7 +25,7 @@ import type { ParsedCliArgs } from "./parse-args.js";
 export type StandaloneRunResult =
   | { readonly kind: "ok"; readonly artifactPath: string; readonly review: { readonly comments: readonly unknown[]; readonly verdict: string; readonly summary: string } }
   | { readonly kind: "ok-no-diff"; readonly artifactPath: string; readonly note: string }
-  | { readonly kind: "provider-error"; readonly exitCode: 1; readonly message: string; readonly sanitizedForLog: string };
+  | { readonly kind: "provider-error"; readonly exitCode: 1; readonly message: string; readonly sanitizedForLog: string; readonly hint?: string };
 
 /**
  * Detect whether `env` represents standalone mode (no CI markers).
@@ -85,7 +86,8 @@ export async function runStandalone(input: {
     };
     await writeFile(artifactPath, `${JSON.stringify(body, null, 2)}\n`, "utf8");
     process.stdout.write(
-      `${BRAND_PREFIX}standalone review (no diff) wrote ${artifactPath}\n`,
+      `${BRAND_PREFIX}standalone review (no diff) wrote ${artifactPath}\n` +
+      `${BRAND_PREFIX}no diff was supplied or none could be auto-derived (e.g. cwd is not a git repo with uncommitted changes or no diff was supplied). The CLI wrote a no-posting artifact instead of failing; supply --event and --diff, or run inside a git repo with uncommitted changes, or commit your changes first.\n`,
     );
     return { kind: "ok", artifactPath, review: body.review };
   }
@@ -118,7 +120,10 @@ export async function runStandalone(input: {
       generatedAt: new Date().toISOString(),
     };
     await writeFile(artifactPath, `${JSON.stringify(body, null, 2)}\n`, "utf8");
-    process.stdout.write(`${BRAND_PREFIX}standalone review (no diff) wrote ${artifactPath}\n`);
+    process.stdout.write(
+      `${BRAND_PREFIX}standalone review (no diff) wrote ${artifactPath}\n` +
+      `${BRAND_PREFIX}the supplied diff was empty; provider review was skipped. The CLI wrote a no-posting artifact instead of failing; check that --diff points to a non-empty unified diff, or run with --api-url / --api-key / --dry-run for a smoke test against the provider.\n`,
+    );
     return { kind: "ok-no-diff", artifactPath, note };
   }
 
@@ -140,11 +145,20 @@ export async function runStandalone(input: {
       error instanceof LiveReviewError || error instanceof Error
         ? error.message
         : String(error);
+    // When the throw carries a remediation hint (e.g. the typed
+    // RequiredConfigError carries the missing-env-var hint on its
+    // `hint` field), propagate it so cli.ts can render the hint next
+    // to the failure on the operator's terminal.
+    const hint =
+      error instanceof RequiredConfigError && error.hint !== undefined
+        ? error.hint
+        : undefined;
     return {
       kind: "provider-error",
       exitCode: 1,
       message,
       sanitizedForLog: sanitizeForPost(message, [providerApiKey]),
+      ...(hint !== undefined ? { hint } : {}),
     };
   }
 

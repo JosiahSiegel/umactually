@@ -54,7 +54,10 @@ describe("CLI surface — provider anthropic", () => {
     ]);
     const errs = collectValidationErrors(a);
     // dryRun is unset (false) — so URL is required.
-    expect(errs.some(e => e.includes("--api-url is required"))).toBe(true);
+    // Validate-glue returns { flag, message, hint } records; map to
+    // messages so the `includes(...)` assertion below keeps working.
+    const messages = errs.map((e) => e.message);
+    expect(messages.some(e => e.includes("--api-url is required"))).toBe(true);
   });
   it("M4 anthropic provider does NOT trigger api-url required error (negative control)", async () => {
     const { collectValidationErrors } = await import("../../src/cli/validate.js");
@@ -69,6 +72,7 @@ describe("CLI surface — provider anthropic", () => {
       "--repo", "foo/bar",
     ]);
     const errs = collectValidationErrors(a);
-    expect(errs.some(e => e.includes("--api-url is required"))).toBe(false);
+    const messages = errs.map((e) => e.message);
+    expect(messages.some(e => e.includes("--api-url is required"))).toBe(false);
   });
 });
