@@ -118,8 +118,8 @@ describe.skipIf(!SHELL_AVAILABLE)("install.sh detection", () => {
     expect(summary["URL"]).toContain("umactually-darwin-arm64");
   });
 
-  it("INSTALL-003: handles all 5 production target combinations", () => {
-    const targets = ["linux-x64", "linux-arm64", "darwin-x64", "darwin-arm64", "windows-x64"];
+  it("INSTALL-003: handles all 6 production target combinations", () => {
+    const targets = ["linux-x64", "linux-arm64", "darwin-x64", "darwin-arm64", "windows-x64", "windows-arm64"];
     for (const t of targets) {
       const [platform, arch] = t.split("-") as [string, string];
       const result = run(INSTALL_SH, {

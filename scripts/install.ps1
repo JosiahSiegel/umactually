@@ -11,6 +11,16 @@
 
 $ErrorActionPreference = "Stop"
 
+# Force TLS 1.2. PowerShell 5.1 (Windows PowerShell) defaults to TLS 1.0/1.1,
+# which GitHub rejects — causing "The connection was closed unexpectedly"
+# before the request even reaches the asset endpoint. This is a no-op on
+# PowerShell 7+ (which already uses TLS 1.2+).
+try {
+  [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+} catch {
+  # PowerShell Core doesn't support setting this; it already uses TLS 1.2+.
+}
+
 $Repo = "JosiahSiegel/umactually"
 $UrlBase = if ($env:INSTALL_RELEASE_BASE) { $env:INSTALL_RELEASE_BASE } else { "https://github.com/$Repo/releases/latest/download" }
 
