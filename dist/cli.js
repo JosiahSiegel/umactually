@@ -1538,7 +1538,7 @@ function renderFlagLine({ flag, description }) {
     return description === undefined ? head : `${head}${description}`;
 }
 function renderFlags(flags) {
-    return flags.map(renderFlagLine).join("\n");
+    return flags.map(renderFlagLine);
 }
 function renderCommands(commands) {
     return ["Commands:", ...commands.map((command) => `  ${command}`), ""].join("\n");
