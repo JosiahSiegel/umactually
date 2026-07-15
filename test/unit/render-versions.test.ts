@@ -81,6 +81,7 @@ function seedTree(tmpRoot: string, version = "9.9.9"): void {
     "utf8",
   );
   writeFileSync(join(tmpRoot, "README.md"), "# X\n\ntag: {{UMACTUALLY_VERSION}}\n", "utf8");
+  writeFileSync(join(tmpRoot, "CONTRIBUTING.md"), "# Contributing\n\norient: {{UMACTUALLY_VERSION}} today\n", "utf8");
   mkdirSync(join(tmpRoot, "docs"), { recursive: true });
   writeFileSync(
     join(tmpRoot, "docs", "configuration.md"),
@@ -115,6 +116,25 @@ describe("scripts/render-versions.mjs", () => {
     const yml = readFileSync(join(tmpRoot, "examples", "azure", "azure-pipelines.yml"), "utf8");
     expect(yml).toContain("npx github:x/y#v9.9.9");
     expect(yml).not.toContain("{{UMACTUALLY_VERSION}}");
+
+    const contributing = readFileSync(join(tmpRoot, "CONTRIBUTING.md"), "utf8");
+    expect(contributing).toContain("orient: v9.9.9 today");
+    expect(contributing).not.toContain("{{UMACTUALLY_VERSION}}");
+  });
+
+  it("walks CONTRIBUTING.md in addition to README + docs (single source of truth)", () => {
+    const tmpRoot = makeIsolatedTree();
+    seedTree(tmpRoot, "0.5.0");
+    // Plant a stale v0.4.0 literal in CONTRIBUTING.md (the kind that
+    // would survive a release if the glob did not cover CONTRIBUTING.md).
+    writeFileSync(join(tmpRoot, "CONTRIBUTING.md"), "# X\n\npin: v0.4.0 today\n", "utf8");
+
+    const result = invokeRenderScript([], { packageRoot: tmpRoot });
+    expect(result.status, result.stderr).toBe(0);
+
+    const contributing = readFileSync(join(tmpRoot, "CONTRIBUTING.md"), "utf8");
+    expect(contributing).toContain("pin: v0.5.0 today");
+    expect(contributing).not.toMatch(/\bv0\.4\.0\b/);
   });
 
   it("is idempotent — re-running on a rendered tree is a no-op", () => {
