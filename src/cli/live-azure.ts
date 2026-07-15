@@ -235,7 +235,12 @@ async function listAzureThreads(context: AzureContext, fetchImpl: FetchImpl): Pr
     method: "GET",
     headers: azureHeaders(context.token),
   });
-  ensureHttpOk(response, "AZURE_LIST_THREADS_FAILED", "Azure list PR threads");
+  ensureHttpOk(
+    response,
+    "AZURE_LIST_THREADS_FAILED",
+    "Azure list PR threads",
+    "Verify SYSTEM_ACCESSTOKEN is set and that 'Allow scripts to access the OAuth token' is enabled in pipeline settings. The token must have `Pull Request Contribute` permission on the repository.",
+  );
   const json = await readJsonResponse(response);
   if (!isRecord(json)) {
     return [];
@@ -314,7 +319,12 @@ async function postParentThread(
         // No `threadContext` field — ADO renders this as a PR-level comment.
       }),
     });
-    ensureHttpOk(response, "AZURE_CREATE_PR_COMMENT_FAILED", "Azure create PR comment");
+    ensureHttpOk(
+      response,
+      "AZURE_CREATE_PR_COMMENT_FAILED",
+      "Azure create PR comment",
+      "Verify SYSTEM_ACCESSTOKEN is set and the pipeline job has access to the OAuth token. The token needs `Pull Request Contribute` on the target repository.",
+    );
     const created = readResponseId(await readJsonResponse(response));
     return created === undefined ? undefined : { id: created };
   } catch (error) {
@@ -467,7 +477,12 @@ async function postAzureThread(input: {
       },
     }),
   });
-  ensureHttpOk(response, "AZURE_CREATE_THREAD_FAILED", "Azure create PR thread");
+  ensureHttpOk(
+    response,
+    "AZURE_CREATE_THREAD_FAILED",
+    "Azure create PR thread",
+    "Check (1) SYSTEM_ACCESSTOKEN has `Pull Request Contribute`, (2) the file path matches an actual changed file in the PR diff, and (3) the line number exists in the right-side of that file. A 400 here often means the line is outside the diff hunk; rerun after fetching a fresh diff.",
+  );
   const json = await readJsonResponse(response);
   if (!isRecord(json)) {
     return undefined;
@@ -580,7 +595,12 @@ async function postAzureStatus(input: {
     }
     writeBrandedAnnotation("error", `Azure create PR status HTTP ${response.status} body=${bodySnippet}`);
   }
-  ensureHttpOk(response, "AZURE_CREATE_STATUS_FAILED", "Azure create PR status");
+  ensureHttpOk(
+    response,
+    "AZURE_CREATE_STATUS_FAILED",
+    "Azure create PR status",
+    "Verify (1) SYSTEM_ACCESSTOKEN has `Pull Request Contribute` and `Build: read` scopes, (2) 'Allow scripts to access the OAuth token' is enabled on the pipeline, and (3) the response body above (emitted as ::error::) for the exact ADO error code (e.g. TF20507 = unparseable body, 401 = token invalid).",
+  );
 }
 
 /**
