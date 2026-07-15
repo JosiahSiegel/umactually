@@ -131,7 +131,7 @@ Wait for the Release workflow to finish:
 gh release view "vX.Y.Z" --json name,assets
 ```
 
-Expected: one asset per supported platform plus `checksums.txt`. If the asset list is shorter, or if `assets` is `null`, an earlier job failed; fetch logs via `gh run list --workflow=release` and re-tag once the fix lands on `main` (see [§ 8.1](#81-a-bad-tag-was-pushed)).
+Expected: one asset per supported platform plus `checksums.txt`. If the asset list is shorter, or if `assets` is `null`, an earlier job failed; fetch logs via `gh run list --workflow=release`. The fix is on `main` before you re-tag — but you cannot just `git tag vX.Y.Z` again, because both `origin` and `ado` still have the prior tag pointing at the same commit, and a second `git push origin vX.Y.Z` will be rejected with `! [rejected]` (nothing to push). Recover per [§ 8.1](#81-a-bad-tag-was-pushed), which uses `git tag -d` + `git push :refs/tags/<tag>` + re-tag-at-fixed-commit to create a new tag with a new SHA.
 
 Verify the public `latest` redirect points at this release:
 
@@ -181,6 +181,7 @@ You pushed `vX.Y.Z` against the wrong commit, or the version bump in `package.js
 #    Release or uploaded binaries. See step 2.
 git tag -d vX.Y.Z
 git push origin :refs/tags/vX.Y.Z
+git push ado :refs/tags/vX.Y.Z     # if a tag was pushed to ado as well
 
 # 2. If softprops/action-gh-release already created the GitHub Release,
 #    delete it from the GitHub web UI (Releases → vX.Y.Z → Delete).
