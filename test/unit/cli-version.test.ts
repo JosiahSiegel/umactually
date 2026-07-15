@@ -47,14 +47,14 @@ describe("CLI version handler (M2)", () => {
     const { result, stdout } = await captureMain(["--version"]);
 
     expect({ exitCode: result }).toEqual({ exitCode: 0 });
-    expect(stdout).toBe("0.1.0\n");
+    expect(stdout).toBe(`${packageVersion}\n`);
   });
 
   it("CLI-VERSION-002: -V exits 0 with version on stdout", async () => {
     const { result, stdout } = await captureMain(["-V"]);
 
     expect({ exitCode: result }).toEqual({ exitCode: 0 });
-    expect(stdout).toBe("0.1.0\n");
+    expect(stdout).toBe(`${packageVersion}\n`);
   });
 
   it("CLI-VERSION-003: stdout buffer equals package.json version exactly", async () => {

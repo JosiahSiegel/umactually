@@ -8,6 +8,22 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- No new changes yet.
+
+## [0.2.0] - 2026-07-15
+
+### Added
+
+- **Contextual per-command CLI help (PR #55)**: `--help` now produces
+  output scoped to the subcommand instead of always dumping the same
+  40+ flag wall. `umactually review --help` shows review-specific usage
+  and flags; `umactually doctor --help` shows the doctor checks list
+  and exit codes; `umactually check-review-artifact --help` shows the
+  artifact validation usage. The bare `umactually --help` retains the
+  top-level Commands banner plus all review flags. Flags are tagged
+  with `appliesTo` contexts so each help section shows only the flags
+  relevant to that command.
+
 - **Default repository prompt auto-discovery**: UmActually now
   auto-loads common agent-instruction files from the repository root
   when no explicit prompt override is supplied. The default-lookup
