@@ -123,6 +123,43 @@ describe.skipIf(!SHELL_AVAILABLE)("release.sh", () => {
     expect(readFileSync(join(sandbox, "CHANGELOG.md"), "utf8")).toBe(changelogBefore);
   });
 
+  it("--check is accepted in any position, not only as arg 1", () => {
+    // Regression: prior to the arg-position fix, only `--check` as arg 1
+    // worked; `bash scripts/release.sh v1.2.3 --check` showed the usage
+    // screen. Both orderings must now drive the diagnostics-only path.
+    //
+    // The sandbox's INITIAL_PACKAGE already declares v1.2.3, so passing
+    // v1.2.3 to --check trips the unchanged-version branch (exit 3) and
+    // exercises the arg parser without any writes.
+
+    // --check first.
+    const r1 = runRelease(sandbox, ["--check", "v1.2.3"]);
+    expect(r1.status, r1.stderr).toBe(3);
+    expect(r1.stderr).not.toContain("Usage:");
+
+    // --check second (the bug-fixed ordering).
+    const r2 = runRelease(sandbox, ["v1.2.3", "--check"]);
+    expect(r2.status, r2.stderr).toBe(3);
+    expect(r2.stderr).not.toContain("Usage:");
+
+    // No writes either way.
+    const pkg = JSON.parse(readFileSync(join(sandbox, "package.json"), "utf8")) as { version: string };
+    expect(pkg.version).toBe("1.2.3");
+  });
+
+  it("unknown flags are rejected with a clear error and no writes", () => {
+    // Given: a clean release checkout.
+    const packageBefore = readFileSync(join(sandbox, "package.json"), "utf8");
+
+    // When: an unrecognised flag is supplied with a valid version.
+    const result = runRelease(sandbox, ["--bogus", "v1.2.3"]);
+
+    // Then: a clear error is reported and no files are touched.
+    expect(result.status).toBe(2);
+    expect(result.stderr).toMatch(/unknown flag|Usage:/);
+    expect(readFileSync(join(sandbox, "package.json"), "utf8")).toBe(packageBefore);
+  });
+
   it("rejects a non-SemVer version without writes", () => {
     // Given: a clean release checkout.
     const packageBefore = readFileSync(join(sandbox, "package.json"), "utf8");
