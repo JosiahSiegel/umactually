@@ -10,6 +10,23 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 - No new changes yet.
 
+## [0.2.1] - 2026-07-15
+
+### Fixed
+
+- **CLI help rendered one character per line (PR #57)**: the contextual
+  help feature in v0.2.0 was broken at the bundled-CLI layer. The
+  spread `...renderFlags(flagsForContext("review"))` was spreading a
+  joined string into an array literal, so each character of a flag line
+  became its own array element and the outer `.join("\n")` emitted
+  every character on its own line. Affected every per-command help:
+  `umactually review --help`, `umactually doctor --help`, and
+  `umactually check-review-artifact --help`. The bare
+  `umactually --help` was unaffected because it uses a different code
+  path (`HELP_FLAGS.map(renderFlagLine)`). Fixed by returning an array
+  from `renderFlags` instead of a pre-joined string; added structural
+  regression tests that pin each `--flag` to a single line.
+
 ## [0.2.0] - 2026-07-15
 
 ### Added
