@@ -6,9 +6,13 @@ import { parse } from "yaml";
 
 const REPO_ROOT = resolve(import.meta.dirname, "..", "..");
 const PLUMBING_FLAGS = ["--event", "--diff", "--review", "--pr-number", "--repo"] as const;
-// Pinned invocation: either `umactually@X.Y.Z review` (npm) or `npx github:JosiahSiegel/umactually review` (git ref).
-// The npm package is unreleased; the git-ref form is what actually runs today.
-const PINNED = /umactually(@\d+\.\d+\.\d+)?( review|github:JosiahSiegel\/umactually review)/u;
+// Pinned invocation: either `umactually@X.Y.Z review` (npm, when published)
+// or `npx github:JosiahSiegel/umactually#vX.Y.Z review` (git ref, REQUIRED
+// tag pin). The npm package is unreleased; the git-ref form is what actually
+// runs today, and CI examples MUST pin to a release tag — the unpinned
+// `npx github:JosiahSiegel/umactually review` form tracks `main` and is
+// explicitly rejected by the README + docs.
+const PINNED = /umactually@\d+\.\d+\.\d+ review|npx github:JosiahSiegel\/umactually#v\d+\.\d+\.\d+ review/u;
 
 type WorkflowStep = {
   readonly run?: string;
