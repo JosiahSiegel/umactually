@@ -2,12 +2,13 @@
 // SPDX-License-Identifier: MIT
 // Cross-compile standalone binaries using Bun --compile.
 //
-// Produces 5 binaries from scripts/compile-entry.ts:
+// Produces 6 binaries from scripts/compile-entry.ts:
 //   umactually-linux-x64
 //   umactually-linux-arm64
 //   umactually-darwin-x64
 //   umactually-darwin-arm64
 //   umactually-windows-x64.exe
+//   umactually-windows-arm64.exe
 //
 // Usage:
 //   node scripts/build-binary.mjs              # build all targets
@@ -34,7 +35,8 @@ const TARGETS = [
   { id: "linux-arm64",  bunTarget: "bun-linux-arm64",          outfile: "umactually-linux-arm64" },
   { id: "darwin-x64",   bunTarget: "bun-darwin-x64",           outfile: "umactually-darwin-x64" },
   { id: "darwin-arm64", bunTarget: "bun-darwin-arm64",         outfile: "umactually-darwin-arm64" },
-  { id: "windows-x64",  bunTarget: "bun-windows-x64-baseline", outfile: "umactually-windows-x64.exe" },
+  { id: "windows-x64",    bunTarget: "bun-windows-x64-baseline", outfile: "umactually-windows-x64.exe" },
+  { id: "windows-arm64",  bunTarget: "bun-windows-arm64",         outfile: "umactually-windows-arm64.exe" },
 ];
 
 const filter = process.argv[2];
