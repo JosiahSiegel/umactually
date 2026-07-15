@@ -8,6 +8,12 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- No new changes yet.
+
+## [0.3.0] - 2026-07-15
+
+### Added
+
 - **CLI graceful recovery with structured remediation hints (PR #60)**:
   every CLI-side error now surfaces an actionable "what to do next"
   hint alongside the bare message. Three layers were threaded:
@@ -52,6 +58,23 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   `hint` field so the standalone CLI's "exited 1, here is what
   happened" message carries the same remediation the live CI
   delivers.
+
+### Fixed
+
+- **Smart-prompt timeout race + listener-attachment race (PR #60 follow-up)**:
+  the original smart-prompt timer called `stdin.destroy(error)` to
+  abort the read, but Node's read-stream destroy-with-error only
+  surfaces via the `error` event if a read is mid-flight — on a
+  paused TTY it never fires, so the read promise hung until the
+  operator pressed Enter (the typed `TIMEOUT` code was unreachable
+  in practice). Replaced with `Promise.race([readOneLine, timeoutPromise])`,
+  the canonical "Promise that should timeout" pattern. Also fixed
+  a listener-attachment race in `readOneLine`: the original code
+  registered `data` / `end` / `error` listeners AFTER calling
+  `stream.resume()`, so a fast EOF (CI with a closed pipe) had
+  the synchronous `end` event fire before listeners were bound,
+  hanging the Promise forever. Listeners are now attached before
+  `resume()`.
 
 ## [0.2.1] - 2026-07-15
 
