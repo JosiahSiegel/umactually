@@ -8,7 +8,50 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
-- No new changes yet.
+- **CLI graceful recovery with structured remediation hints (PR #60)**:
+  every CLI-side error now surfaces an actionable "what to do next"
+  hint alongside the bare message. Three layers were threaded:
+
+  1. Typed `hint` field on every CLI-reachable error class
+     (`CliUsageError`, `RequiredConfigError`, `LiveReviewError`).
+     Parse-time throws for unknown flags now include a Levenshtein-
+     based `did you mean` suggestion; `--event` without a value,
+     `--foo abc` when `--foo` needs an integer, and the legacy
+     `--ignore-minor` all carry explicit hints naming the
+     replacement flag, expected shape, or escape-hatch env var.
+  2. `validate.ts` is now structured — every error is a
+     `{ flag, message, hint }` record (was a flat string list). The
+     validator's nine error messages all carry hints naming the
+     missing flag, the env var, and the docs URL. The CLI render
+     glue preserves the legacy `cli: <msg>` first-line shape so CI
+     log scrapers grep'ing for `cli: --api-url is required` keep
+     working; new `hint:` lines render underneath.
+  3. `ensureHttpOk` (the funnel for every GitHub / Azure 4xx / 5xx)
+     grows an optional remediation hint. All 7 call sites in
+     `live-github.ts` (3) and `live-azure.ts` (4) pass a platform-
+     specific hint naming the missing scope, the right token, the
+     docs URL, or the exact `--flag` to re-run with. The
+     orchestrator's generic dispatchLivePlatform catch narrows on
+     `LiveReviewError` / `RequiredConfigError` / `AzureContextError`
+     / `GithubContextError` and surfaces the hint on a second line
+     next to the failure.
+
+  Plus an interactive recovery mode: when validation fails ONLY
+  because `--api-url` / `--api-key` is missing AND the process is
+  attached to a TTY (NOT CI / piped stdin), the CLI asks for those
+  values instead of failing. CI is never asked — `canPromptInteractively`
+  gates the branch and a `UMACTUALLY_NO_INTERACTIVE` escape hatch
+  lets operators force-off. `SmartPromptUnavailable` is a typed
+  boundary (`NO_TTY` / `TIMEOUT` / `CLOSED_STDIN` / `READ_ERROR`)
+  so the validate-glue renders a structured remediation when a
+  prompt cannot be answered.
+
+  Standalone-run now prints the no-diff reason next to the artifact
+  path so the operator can see why the CLI wrote a stub without
+  having to `cat` the JSON; the `provider-error` result carries a
+  `hint` field so the standalone CLI's "exited 1, here is what
+  happened" message carries the same remediation the live CI
+  delivers.
 
 ## [0.2.1] - 2026-07-15
 

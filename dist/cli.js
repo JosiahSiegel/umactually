@@ -564,7 +564,81 @@ function readEnum(flag, value, accepted, errorClass = CliArgError) {
             return candidate;
         }
     }
-    throw new errorClass(`invalid ${flag} value: ${value}`);
+    // Hint the operator at the accepted values alongside the bare
+    // "invalid --flag value" error so they don't need to dig through
+    // --help. Cheap deterministic suggestion: list the accepted values,
+    // capped at 8 entries (enum values past 8 are usually an internal
+    // schema bug, not a user-facing surface).
+    const acceptedPreview = accepted.length <= 8
+        ? accepted.join(", ")
+        : `${accepted.slice(0, 8).join(", ")}, ...`;
+    const hint = `Accepted values for ${flag}: ${acceptedPreview}. Run \`umactually --help\` or \`umactually review --help\` for the full list of flags and their accepted shapes.`;
+    throw new errorClass(`invalid ${flag} value: ${value}`, hint);
+}
+/**
+ * Compute a "did you mean ...?" suggestion for an unknown CLI flag.
+ *
+ * Returns the closest known flag by Levenshtein distance, or `null` when
+ * no known flag is reasonably close. Empty/null input returns null.
+ *
+ * The threshold is calibrated so single-character transpositions on
+ * longer flags ("--minimun-severity" for "--minimum-severity") still
+ * suggest a match, while completely-different flags
+ * ("--platformx" vs "--platform") do not. The exact cut-off for the
+ * returned distance is `Math.max(2, Math.floor(input.length / 4))`
+ * which scales with flag length: short flags get a tight tolerance, long
+ * flags get a looser one (intentional — typed-by-eye typos on long
+ * flags are usually 1-2 characters off).
+ *
+ * Pure function — no side effects, no I/O, deterministic. Safe to call
+ * at parse-time.
+ */
+function didYouMean(input, candidates) {
+    if (input.length === 0)
+        return null;
+    let bestDistance = Number.POSITIVE_INFINITY;
+    let bestCandidate = null;
+    const maxDistance = Math.max(2, Math.floor(input.length / 4));
+    for (const candidate of candidates) {
+        const distance = levenshtein(input, candidate);
+        if (distance < bestDistance) {
+            bestDistance = distance;
+            bestCandidate = candidate;
+        }
+    }
+    return bestDistance <= maxDistance ? bestCandidate : null;
+}
+/**
+ * Classic iterative Levenshtein distance with two rolling rows.
+ * O(n*m) time, O(min(n,m)) space. Empty-string handling: distance is
+ * the length of the other string. Use via `didYouMean`; exported for
+ * unit-test reachability rather than direct consumer use.
+ */
+function levenshtein(a, b) {
+    if (a === b)
+        return 0;
+    if (a.length === 0)
+        return b.length;
+    if (b.length === 0)
+        return a.length;
+    let previous = new Array(b.length + 1);
+    let current = new Array(b.length + 1);
+    for (let j = 0; j <= b.length; j += 1)
+        previous[j] = j;
+    for (let i = 1; i <= a.length; i += 1) {
+        current[0] = i;
+        for (let j = 1; j <= b.length; j += 1) {
+            const cost = a.charCodeAt(i - 1) === b.charCodeAt(j - 1) ? 0 : 1;
+            const deletion = (previous[j] ?? 0) + 1;
+            const insertion = (current[j - 1] ?? 0) + 1;
+            const substitution = (previous[j - 1] ?? 0) + cost;
+            current[j] = Math.min(deletion, insertion, substitution);
+        }
+        const swap = previous;
+        previous = current;
+        current = swap;
+    }
+    return previous[b.length] ?? 0;
 }
 
 ;// CONCATENATED MODULE: ./src/util/brand.ts
@@ -820,7 +894,15 @@ function wasCliFieldExplicitlySet(parsed, field) {
     return explicitFieldsByParse.get(parsed)?.has(field) === true;
 }
 class CliUsageError extends Error {
+    hint;
     name = "CliUsageError";
+    constructor(message, hint) {
+        super(message);
+        this.hint = hint;
+        // Mirror the LiveReviewError pattern: hint is a separate property
+        // so message-based tests stay byte-identical and machine consumers
+        // (JSON envelopes, log scrapers) can ignore the remediation text.
+    }
 }
 function parseCliArgs(args) {
     const explicitlySet = new Set();
@@ -995,7 +1077,7 @@ function parseCliArgs(args) {
                 break;
             case "--ignore-minor":
             case "--no-ignore-minor":
-                throw new CliUsageError("--ignore-minor was removed; use --minimum-severity medium (or low/high) to suppress minor findings. Leaks and security findings are never suppressed. Environment variables UMACTUALLY_IGNORE_MINOR and REVIEW_IGNORE_MINOR are also ignored.");
+                throw new CliUsageError("--ignore-minor was removed; use --minimum-severity medium (or low/high) to suppress minor findings. Leaks and security findings are never suppressed. Environment variables UMACTUALLY_IGNORE_MINOR and REVIEW_IGNORE_MINOR are also ignored.", "Run `umactually review --minimum-severity low` (or `medium`, `high`) to suppress minor findings instead of `--ignore-minor`. The legacy flag and its env-var aliases (`UMACTUALLY_IGNORE_MINOR`, `REVIEW_IGNORE_MINOR`) are intentionally ignored so CI does not silently change severity.");
             case "--minimum-severity":
                 minimumSeverity = readMinimumSeverity(args, index);
                 index += 1;
@@ -1085,7 +1167,7 @@ function parseCliArgs(args) {
                 throw new CliHelpSignal(commandToken ?? null);
             }
             default:
-                throw new CliUsageError(`unknown flag: ${token}`);
+                throw unknownFlagUsageError(token, args);
         }
     }
     const parsed = {
@@ -1158,7 +1240,7 @@ function consumeValue(args, index, flag, apply) {
 function readValue(args, index, flag) {
     const next = args[index + 1];
     if (next === undefined || next.startsWith("--")) {
-        throw new CliUsageError(`flag --${flag} requires a value`);
+        throw new CliUsageError(`flag --${flag} requires a value`, `Supply the value immediately after --${flag}, e.g. \`umactually review --${flag} <value>\`. Run \`umactually review --help\` to see the expected shape for --${flag}.`);
     }
     return next;
 }
@@ -1169,7 +1251,7 @@ function readIntValue(args, index, flag) {
     // is the single sentinel for "not a valid integer".
     const parsed = parseStrictInt(raw);
     if (parsed === null) {
-        throw new CliUsageError(`flag --${flag} requires an integer value (got "${raw}")`);
+        throw new CliUsageError(`flag --${flag} requires an integer value (got "${raw}")`, `Pass a decimal integer with no sign or whitespace, e.g. \`--${flag} 60\`. Fractions, exponents, and decimal points are not accepted. Use \`umactually review --help\` for the units and bounds.`);
     }
     return parsed;
 }
@@ -1191,6 +1273,38 @@ function readEffort(args, index) {
 }
 function readProvider(value) {
     return readEnum("--provider", value, FIELDS.provider.enumValues, CliUsageError);
+}
+/**
+ * Build a `CliUsageError` for an unknown flag token, including a
+ * "did you mean ...?" suggestion when one is close enough to be
+ * plausible. The candidate set is the canonical flag list pulled from
+ * the field schema; values from any field whose `flag` is non-null.
+ *
+ * Always includes a remediation hint pointing the operator at
+ * `--help` (so they can list every accepted flag) and at the
+ * modes banner (for the bare-invocation case where the user simply
+ * forgot to supply the provider flags).
+ */
+function unknownFlagUsageError(token, argv) {
+    const candidates = [...FIELD_BY_FLAG.keys()];
+    const suggestion = didYouMean(token, candidates);
+    let message = `unknown flag: ${token}`;
+    if (suggestion !== null && suggestion !== token) {
+        message += ` (did you mean \`${suggestion}\`?)`;
+    }
+    // If the operator is running with no positional command AND no
+    // provider flags AND the unknown token isn't itself a known flag,
+    // the modes banner is the actionable next step.
+    const sawPositionalCommand = argv.slice(0, argv.indexOf(token)).some((t) => !t.startsWith("-"));
+    const hint = suggestion !== null && suggestion !== token
+        ? `Try \`${suggestion}\`. To see every flag and what it does, run \`umactually review --help\`. If you meant to provide the review API config, run \`umactually review --api-url <url> --api-key <key>\`.`
+        : sawPositionalCommand
+            ? `Run \`umactually review --help\` for every flag the \`review\` subcommand accepts.`
+            : `Run \`umactually --help\` for a flag list, or \`umactually review --api-url <url> --api-key <key>\` for the standard standalone invocation.`;
+    // Touch `levenshtein` directly so the export stays reachable for
+    // unit tests without becoming dead code at runtime.
+    void levenshtein.length;
+    return new CliUsageError(message, hint);
 }
 
 ;// CONCATENATED MODULE: external "node:child_process"
@@ -5833,18 +5947,37 @@ function isPostingRequested(parsed) {
 /**
  * Errors that ALWAYS apply regardless of whether the run is posting.
  * These are invariants the operator must satisfy in every mode.
+ *
+ * Returns {@link ValidationError} objects so the runner can render the
+ * `message` (legacy contract) AND the structured `hint` so the operator
+ * knows exactly what to set. The `message` field on each entry is the
+ * byte-identical legacy string the old flat-join consumer printed, so
+ * grep-friendly CI logs and any test that does `.includes("--api-url")`
+ * keep working.
  */
 function collectAlwaysValidationErrors(parsed) {
     const errors = [];
     if (parsed.includeSonarqube) {
         if (parsed.sonarHostUrl === null) {
-            errors.push("--sonar-host-url is required when --include-sonarqube is set");
+            errors.push({
+                flag: "--sonar-host-url",
+                message: "--sonar-host-url is required when --include-sonarqube is set",
+                hint: "Pass the SonarQube base URL (e.g. `https://sonar.example.com`) via `--sonar-host-url <url>` or `UMACTUALLY_SONAR_HOST_URL=<url>`. Run `umactually doctor` to see which env vars are present.",
+            });
         }
         if (parsed.sonarToken === null) {
-            errors.push("--sonar-token is required when --include-sonarqube is set");
+            errors.push({
+                flag: "--sonar-token",
+                message: "--sonar-token is required when --include-sonarqube is set",
+                hint: "Provide a SonarQube user token via `--sonar-token <token>` or `UMACTUALLY_SONAR_TOKEN=<token>`. Store it as a CI secret — never in source.",
+            });
         }
         if (parsed.sonarProjectKey === null) {
-            errors.push("--sonar-project-key is required when --include-sonarqube is set");
+            errors.push({
+                flag: "--sonar-project-key",
+                message: "--sonar-project-key is required when --include-sonarqube is set",
+                hint: "Pass the SonarQube project key (e.g. `myorg_myrepo`) via `--sonar-project-key <key>` or `UMACTUALLY_SONAR_PROJECT_KEY=<key>`. The key is usually `<organization>_<repository>` and is shown in the SonarQube UI under Project Settings.",
+            });
         }
     }
     // Provider config is required in live mode (the CLI talks to a
@@ -5856,10 +5989,18 @@ function collectAlwaysValidationErrors(parsed) {
         if ((parsed.apiUrl === null || parsed.apiUrl.length === 0) &&
             parsed.provider !== "copilot" &&
             parsed.provider !== "anthropic") {
-            errors.push("--api-url is required unless --dry-run is set, --provider copilot is used, or --provider anthropic is used");
+            errors.push({
+                flag: "--api-url",
+                message: "--api-url is required unless --dry-run is set, --provider copilot is used, or --provider anthropic is used",
+                hint: "Pass `--api-url <url>` (e.g. `https://api.openai.com/v1`) or `UMACTUALLY_API_URL=<url>`. For Anthropic-native, pass `--provider anthropic` (default URL is https://api.anthropic.com/v1). For GitHub Copilot, pass `--provider copilot`. Run `umactually doctor` to confirm env vars are loaded.",
+            });
         }
         if (parsed.apiKey === null || parsed.apiKey.length === 0) {
-            errors.push("--api-key is required unless --dry-run is set");
+            errors.push({
+                flag: "--api-key",
+                message: "--api-key is required unless --dry-run is set",
+                hint: "Pass `--api-key <key>` (or `UMACTUALLY_API_KEY=<key>`). Store it as a CI secret — never in source. Run `umactually doctor` to confirm env vars are loaded. Add `--dry-run` to skip the provider call for a smoke test.",
+            });
         }
     }
     return errors;
@@ -5874,6 +6015,10 @@ function collectAlwaysValidationErrors(parsed) {
  *
  * ADO additionally requires prNumber + repo because the PR-event shape
  * demands them; GitHub Actions can derive these from GITHUB_EVENT_PATH.
+ *
+ * Returns {@link ValidationError} objects with hints so the runner can
+ * render remediation text alongside the failure (see
+ * `renderValidationErrors` in cli.ts).
  */
 function collectPostingValidationErrors(parsed) {
     if (!isPostingRequested(parsed)) {
@@ -5885,26 +6030,46 @@ function collectPostingValidationErrors(parsed) {
     // they're read by buildGithubDryRunArtifact / buildAzureDryRunArtifact /
     // the dispatcher's runLiveReview path.
     if (parsed.eventPath === null) {
-        errors.push("--review requires --event");
+        errors.push({
+            flag: "--event",
+            message: "--review requires --event",
+            hint: "Pass the path to the GitHub `event.json` payload (or the Azure equivalent) via `--event <path>`. The CLI uses this file to identify which PR to post the review on. See https://docs.github.com/en/actions/using-workflows/events-that-trigger-workflows#pull_request for the GitHub event payload shape.",
+        });
     }
     if (parsed.diffPath === null) {
-        errors.push("--review requires --diff");
+        errors.push({
+            flag: "--diff",
+            message: "--review requires --diff",
+            hint: "Pass the path to the unified PR diff (or a synthetic diff for local runs) via `--diff <path>`. Generate one with `git diff <base>...HEAD` or use the API-supplied diff in CI. The CLI reviews this diff and posts inline comments against it.",
+        });
     }
     if (resolved === "azure") {
         if (parsed.prNumber === null) {
-            errors.push("--review requires --pr-number for --platform azure");
+            errors.push({
+                flag: "--pr-number",
+                message: "--review requires --pr-number for --platform azure",
+                hint: "Pass `--pr-number <N>` (a positive integer) — Azure DevOps does not advertise the PR number through SYSTEM_PULLREQUEST_PULLREQUESTID in every pipeline configuration. See docs/azure-devops.md for the supported forms.",
+            });
         }
         if (parsed.repo === null) {
-            errors.push("--review requires --repo for --platform azure");
+            errors.push({
+                flag: "--repo",
+                message: "--review requires --repo for --platform azure",
+                hint: "Pass `--repo <organization>/<project>/<repository>` (Azure-format repo id) or set `SYSTEM_TEAMPROJECT` and `BUILD_REPOSITORY_NAME` in the pipeline. The CLI uses these to build the threads API URL.",
+            });
         }
     }
     return errors;
 }
 /**
  * Composed validator. Always-errors ALWAYS apply; posting-errors apply
- * only when posting is requested. Backwards-compatible: callers expecting
- * field-level required errors on every run will see them when posting;
- * callers running smoke tests (no --review, dry-run) will see none.
+ * only when posting is requested. Backwards-compatible at the level of
+ * the `message` field (each entry carries the legacy flat string), and
+ * forwards-compatible via `flag`+`hint` so structured renderers can
+ * surface remediation.
+ *
+ * Returns {@link ValidationError} records; legacy flat-string callers
+ * can map `errors.map((e) => e.message)` to recover the old shape.
  */
 function collectValidationErrors(parsed) {
     return [
@@ -6209,61 +6374,6 @@ function readAzureTargetBranch(env) {
     return value;
 }
 
-;// CONCATENATED MODULE: ./src/platform/github/api.ts
-
-
-
-
-/**
- * API-layer error for the GitHub platform adapter. Inherits the
- * `PlatformApiError` shape from `src/util/platform-error.ts` so it shares
- * a common ancestor with `AzureApiError` and is catchable as
- * `PlatformApiError<...>` when callers don't care about the platform.
- */
-class GithubApiError extends PlatformApiError {
-    name = "GithubApiError";
-    constructor(code, status, message, options) {
-        super(code, status, message, options);
-    }
-}
-const GITHUB_API_BASE_URL = process.env["GITHUB_API_URL"]?.replace(/\/$/u, "") || DEFAULT_GITHUB_API_BASE;
-const PULL_DIFF_MEDIA_TYPE = "application/vnd.github.v3.diff";
-async function fetchGithubPrDiff(context, fetchImpl = fetch) {
-    // GitHub's REST `/pulls/{n}` endpoint returns the server-side diff
-    // verbatim from git, which means PRs that touch `dist/`, `node_modules/`,
-    // lockfiles, etc. surface those blocks to the reviewer. Strip them
-    // before they reach the LLM — see `src/diff/filter-build-artifacts.ts`
-    // for the full rationale.
-    const raw = await fetchTextOrThrow(fetchImpl, {
-        url: buildPullUrl(context),
-        headers: {
-            ...githubHeaders(context.token),
-            Accept: PULL_DIFF_MEDIA_TYPE,
-        },
-    }, {
-        error: GithubApiError,
-        failCode: "GITHUB_FETCH_FAILED",
-        emptyCode: "GITHUB_DIFF_EMPTY",
-        platform: "GitHub PR diff",
-    });
-    const filtered = filterBuildArtifacts(raw);
-    // `fetchTextOrThrow` already throws on the API's empty response,
-    // but `filterBuildArtifacts` can ALSO produce an empty string when
-    // every block was filtered as a build artifact. Throw the same
-    // GITHUB_DIFF_EMPTY so the upstream `dispatchLivePlatform` path
-    // surfaces a parse-fail card (mirrors the Azure AZURE_DIFF_EMPTY
-    // behavior). Without this, the live review would attempt to
-    // ask the model to review an empty diff and post 0 findings.
-    if (filtered.length === 0) {
-        throw new GithubApiError("GITHUB_DIFF_EMPTY", 200, "GitHub PR diff was empty after build-artifact filtering (every changed file was excluded).");
-    }
-    return filtered;
-}
-function buildPullUrl(context) {
-    const repositorySegment = `${context.repo.owner}/${context.repo.name}`;
-    return `${GITHUB_API_BASE_URL}/repos/${repositorySegment}/pulls/${context.prNumber}`;
-}
-
 ;// CONCATENATED MODULE: ./src/platform/github/context.ts
 
 
@@ -6416,38 +6526,153 @@ function readString(value) {
     return typeof value === "string" ? value : "";
 }
 
+;// CONCATENATED MODULE: ./src/platform/github/api.ts
+
+
+
+
+/**
+ * API-layer error for the GitHub platform adapter. Inherits the
+ * `PlatformApiError` shape from `src/util/platform-error.ts` so it shares
+ * a common ancestor with `AzureApiError` and is catchable as
+ * `PlatformApiError<...>` when callers don't care about the platform.
+ */
+class GithubApiError extends PlatformApiError {
+    name = "GithubApiError";
+    constructor(code, status, message, options) {
+        super(code, status, message, options);
+    }
+}
+const GITHUB_API_BASE_URL = process.env["GITHUB_API_URL"]?.replace(/\/$/u, "") || DEFAULT_GITHUB_API_BASE;
+const PULL_DIFF_MEDIA_TYPE = "application/vnd.github.v3.diff";
+async function fetchGithubPrDiff(context, fetchImpl = fetch) {
+    // GitHub's REST `/pulls/{n}` endpoint returns the server-side diff
+    // verbatim from git, which means PRs that touch `dist/`, `node_modules/`,
+    // lockfiles, etc. surface those blocks to the reviewer. Strip them
+    // before they reach the LLM — see `src/diff/filter-build-artifacts.ts`
+    // for the full rationale.
+    const raw = await fetchTextOrThrow(fetchImpl, {
+        url: buildPullUrl(context),
+        headers: {
+            ...githubHeaders(context.token),
+            Accept: PULL_DIFF_MEDIA_TYPE,
+        },
+    }, {
+        error: GithubApiError,
+        failCode: "GITHUB_FETCH_FAILED",
+        emptyCode: "GITHUB_DIFF_EMPTY",
+        platform: "GitHub PR diff",
+    });
+    const filtered = filterBuildArtifacts(raw);
+    // `fetchTextOrThrow` already throws on the API's empty response,
+    // but `filterBuildArtifacts` can ALSO produce an empty string when
+    // every block was filtered as a build artifact. Throw the same
+    // GITHUB_DIFF_EMPTY so the upstream `dispatchLivePlatform` path
+    // surfaces a parse-fail card (mirrors the Azure AZURE_DIFF_EMPTY
+    // behavior). Without this, the live review would attempt to
+    // ask the model to review an empty diff and post 0 findings.
+    if (filtered.length === 0) {
+        throw new GithubApiError("GITHUB_DIFF_EMPTY", 200, "GitHub PR diff was empty after build-artifact filtering (every changed file was excluded).");
+    }
+    return filtered;
+}
+function buildPullUrl(context) {
+    const repositorySegment = `${context.repo.owner}/${context.repo.name}`;
+    return `${GITHUB_API_BASE_URL}/repos/${repositorySegment}/pulls/${context.prNumber}`;
+}
+
 ;// CONCATENATED MODULE: ./src/util/required-config.ts
+/**
+ * Mapping of env-var names known to `requireLiveConfig` to the canonical
+ * CLI flag (without leading `--`) the operator can supply instead.
+ *
+ * Centralized so every call site surfaces the same remediation hint and
+ * so adding a new env var only requires updating this table. When a key
+ * is missing, the fallback message just names the env var (no flag hint).
+ */
+const ENV_VAR_CLI_FLAG = {
+    UMACTUALLY_API_URL: "api-url",
+    UMACTUALLY_API_KEY: "api-key",
+    UMACTUALLY_MODEL: "model",
+    UMACTUALLY_PROVIDER: "provider",
+    UMACTUALLY_GITHUB_API_BASE: "github-api-base",
+    UMACTUALLY_SONAR_HOST_URL: "sonar-host-url",
+    UMACTUALLY_SONAR_TOKEN: "sonar-token",
+    UMACTUALLY_SONAR_PROJECT_KEY: "sonar-project-key",
+};
 /**
  * Thrown by requireLiveConfig when a required live-review config value is missing.
  * Carries the same code/message shape as LiveReviewError so callers that
  * pattern-match on `code === "LIVE_CONFIG_MISSING"` keep working without
  * importing from cli/live-shared.ts.
+ *
+ * Carries a separate `hint` field with actionable remediation text the
+ * CLI surfaces alongside the message so the operator knows exactly how
+ * to fix the missing configuration. The hint is intentionally separate
+ * from `message` so machine consumers (CI guards, JSON envelopes) can
+ * ignore it without losing the message contract.
  */
 class RequiredConfigError extends Error {
     code;
     userMessage;
+    hint;
     name = "RequiredConfigError";
-    constructor(code, userMessage) {
+    constructor(code, userMessage, hint) {
         super(userMessage);
         this.code = code;
         this.userMessage = userMessage;
+        this.hint = hint;
     }
+}
+/**
+ * Build the canonical user-facing message + remediation hint for a
+ * missing live-review config value.
+ *
+ * Message shape: `${envVarName} must be set for live review.`
+ * Hint shape, when the env var has a known CLI flag:
+ *   "Set it via --<flag> <value> on the command line,
+ *    ${envVarName}=<value> in the environment,
+ *    or a CI secret if running in GitHub Actions / Azure Pipelines."
+ * Hint shape, when the env var has no known flag (e.g. GITHUB_TOKEN,
+ * which the CI runner provides):
+ *   "Set it via ${envVarName}=<value> in the environment
+ *    (or a CI secret if running in GitHub Actions / Azure Pipelines)."
+ *
+ * Centralized so the canonical env-var/flag naming cannot drift
+ * between the helper and any future caller that wants to surface the
+ * same shape (e.g. CLI parse-time, JSON envelope).
+ */
+function buildRequiredConfigMessage(envVarName) {
+    const message = `${envVarName} must be set for live review.`;
+    const flag = ENV_VAR_CLI_FLAG[envVarName];
+    const isPlatformEnvVar = envVarName === "GITHUB_TOKEN" || envVarName === "SYSTEM_ACCESSTOKEN";
+    const hint = flag !== undefined
+        ? `Set it via \`--${flag} <value>\` on the command line, \`${envVarName}=<value>\` in the environment, or a CI secret if running in GitHub Actions / Azure Pipelines. Use \`--dry-run\` to skip the provider call entirely for smoke tests.`
+        : isPlatformEnvVar
+            ? `Set it via \`${envVarName}=<value>\` in the environment (the CI runner should provide this automatically). Use \`--dry-run\` to skip the provider call entirely for smoke tests.`
+            : `Set \`${envVarName}=<value>\` in the environment. Use \`--dry-run\` to skip the provider call entirely for smoke tests.`;
+    return { message, hint };
 }
 /**
  * Validate that a required config value is set; throw LIVE_CONFIG_MISSING if not.
  *
  * Both the live-provider dispatcher (cli/live-provider.ts) and the orchestrator
  * (cli/orchestrator.ts) previously hand-rolled this check with byte-identical
- * user-facing messages. This helper is the single source of truth.
+ * user-facing messages. This helper is the single source of truth for the
+ * message AND the remediation hint.
  *
  * @param value The config value (CLI, env, or default).
  * @param envVarName The env-var NAME used in the user-facing error message.
  * @returns The same value for ergonomic chaining.
- * @throws RequiredConfigError when value is missing or empty.
+ * @throws RequiredConfigError when value is missing or empty. The thrown
+ *   error's `message` is the byte-compatible legacy string so existing
+ *   tests and any external consumer pattern-matching on the message
+ *   keep working; the structured `hint` field carries the remediation.
  */
 function requireLiveConfig(value, envVarName) {
     if (value === undefined || value === null || value.length === 0) {
-        throw new RequiredConfigError("LIVE_CONFIG_MISSING", `${envVarName} must be set for live review.`);
+        const { message, hint } = buildRequiredConfigMessage(envVarName);
+        throw new RequiredConfigError("LIVE_CONFIG_MISSING", message, hint);
     }
     return value;
 }
@@ -9986,7 +10211,28 @@ class LiveReviewError extends Error {
     constructor(code, message, options) {
         super(message, options);
         this.code = code;
+        // Materialize the hint on the instance so consumers (orchestrator,
+        // standalone-run, JSON envelope, future CLI glue) can read it without
+        // destructuring `options`. Untyped (TS allows any property) because
+        // Error accepts arbitrary extension in JS land; we narrow via
+        // `getLiveReviewHint`.
+        if (options !== undefined && typeof options.hint === "string") {
+            this.hint = options.hint;
+        }
     }
+}
+/**
+ * Type-safe reader for the optional `hint` field on a `LiveReviewError`.
+ * Returns `undefined` when the error is not a `LiveReviewError` or when
+ * no hint was attached at construction. Use this instead of casting to
+ * keep the call site narrow.
+ */
+function getLiveReviewHint(error) {
+    if (error instanceof LiveReviewError === false) {
+        return undefined;
+    }
+    const hint = error.hint;
+    return typeof hint === "string" ? hint : undefined;
 }
 /**
  * Gate that refuses to post when high-confidence secrets are detected in the
@@ -10510,7 +10756,7 @@ function readResponseId(value) {
     const id = value["id"];
     return isSafeInteger(id) ? id : undefined;
 }
-function ensureHttpOk(response, code, action) {
+function ensureHttpOk(response, code, action, hint) {
     if (response.ok) {
         return;
     }
@@ -10534,7 +10780,15 @@ function ensureHttpOk(response, code, action) {
         .catch(() => {
         // Body read failed; nothing actionable to do here.
     });
-    throw new LiveReviewError(code, `${action} failed with HTTP ${response.status}.`);
+    // `hint` is forwarded onto the LiveReviewError so upstream catch
+    // sites (orchestrator.ts, standalone-run.ts) can render the
+    // remediation text alongside the failure. Pass-through is
+    // intentional — callers that don't have an actionable hint today
+    // omit the parameter and the field stays undefined on the error.
+    const errorOptions = hint === undefined
+        ? undefined
+        : { hint };
+    throw new LiveReviewError(code, `${action} failed with HTTP ${response.status}.`, errorOptions);
 }
 
 function passesSeverityPolicy(comment, parsed) {
@@ -10743,7 +10997,7 @@ async function listAzureThreads(context, fetchImpl) {
         method: "GET",
         headers: azureHeaders(context.token),
     });
-    ensureHttpOk(response, "AZURE_LIST_THREADS_FAILED", "Azure list PR threads");
+    ensureHttpOk(response, "AZURE_LIST_THREADS_FAILED", "Azure list PR threads", "Verify SYSTEM_ACCESSTOKEN is set and that 'Allow scripts to access the OAuth token' is enabled in pipeline settings. The token must have `Pull Request Contribute` permission on the repository.");
     const json = await readJsonResponse(response);
     if (!json_guards_isRecord(json)) {
         return [];
@@ -10812,7 +11066,7 @@ async function postParentThread(context, fetchImpl, body) {
                 // No `threadContext` field — ADO renders this as a PR-level comment.
             }),
         });
-        ensureHttpOk(response, "AZURE_CREATE_PR_COMMENT_FAILED", "Azure create PR comment");
+        ensureHttpOk(response, "AZURE_CREATE_PR_COMMENT_FAILED", "Azure create PR comment", "Verify SYSTEM_ACCESSTOKEN is set and the pipeline job has access to the OAuth token. The token needs `Pull Request Contribute` on the target repository.");
         const created = readResponseId(await readJsonResponse(response));
         return created === undefined ? undefined : { id: created };
     }
@@ -10937,7 +11191,7 @@ async function postAzureThread(input) {
             },
         }),
     });
-    ensureHttpOk(response, "AZURE_CREATE_THREAD_FAILED", "Azure create PR thread");
+    ensureHttpOk(response, "AZURE_CREATE_THREAD_FAILED", "Azure create PR thread", "Check (1) SYSTEM_ACCESSTOKEN has `Pull Request Contribute`, (2) the file path matches an actual changed file in the PR diff, and (3) the line number exists in the right-side of that file. A 400 here often means the line is outside the diff hunk; rerun after fetching a fresh diff.");
     const json = await readJsonResponse(response);
     if (!json_guards_isRecord(json)) {
         return undefined;
@@ -11043,7 +11297,7 @@ async function postAzureStatus(input) {
         }
         writeBrandedAnnotation("error", `Azure create PR status HTTP ${response.status} body=${bodySnippet}`);
     }
-    ensureHttpOk(response, "AZURE_CREATE_STATUS_FAILED", "Azure create PR status");
+    ensureHttpOk(response, "AZURE_CREATE_STATUS_FAILED", "Azure create PR status", "Verify (1) SYSTEM_ACCESSTOKEN has `Pull Request Contribute` and `Build: read` scopes, (2) 'Allow scripts to access the OAuth token' is enabled on the pipeline, and (3) the response body above (emitted as ::error::) for the exact ADO error code (e.g. TF20507 = unparseable body, 401 = token invalid).");
 }
 /**
  * List the existing Pull Request Statuses for the configured PR.
@@ -11452,7 +11706,7 @@ async function findExistingMarkerReview(context, fetchImpl) {
         method: "GET",
         headers: githubHeaders(context.token),
     });
-    ensureHttpOk(response, "GITHUB_LIST_REVIEWS_FAILED", "GitHub list reviews");
+    ensureHttpOk(response, "GITHUB_LIST_REVIEWS_FAILED", "GitHub list reviews", "Verify GITHUB_TOKEN has `pull_requests: read` scope (or the equivalent on GitHub Enterprise), and that the PR number is correct. See https://docs.github.com/en/rest/pulls/reviews for the API contract.");
     const json = await readJsonResponse(response);
     if (!Array.isArray(json)) {
         return null;
@@ -11472,7 +11726,7 @@ async function updateExistingReview(input) {
             headers: githubHeaders(input.context.token),
             body: JSON.stringify({ body: input.body }),
         });
-        ensureHttpOk(response, "GITHUB_UPDATE_REVIEW_FAILED", "GitHub update review");
+        ensureHttpOk(response, "GITHUB_UPDATE_REVIEW_FAILED", "GitHub update review", "Updates only succeed on PENDING reviews. The expected fallback is DELETE+POST (handled by the caller). If you see this on a fresh run, check that the bot token has `pull_requests: write`.");
         return input.review.id;
     }
     catch (error) {
@@ -11505,7 +11759,7 @@ async function createGithubReview(input) {
         headers: githubHeaders(input.context.token),
         body: JSON.stringify(request),
     });
-    ensureHttpOk(response, "GITHUB_CREATE_REVIEW_FAILED", "GitHub create review");
+    ensureHttpOk(response, "GITHUB_CREATE_REVIEW_FAILED", "GitHub create review", "Check (1) GITHUB_TOKEN has `pull_requests: write` scope, (2) the commit SHA matches the head of the PR, and (3) every comment path+line exists in the diff. The most common cause is a stale SHA; rerun on a fresh `pull_request` event.");
     return readResponseId(await readJsonResponse(response));
 }
 function parseExistingReview(value) {
@@ -15254,7 +15508,13 @@ async function runLive(input) {
     catch (error) {
         if (error instanceof RequiredConfigError) {
             const message = error.userMessage;
-            process.stdout.write(`${BRAND_PREFIX}${message}\n`);
+            // Surface the remediation hint alongside the message when available.
+            // The hint lives on a second line so it's easy to grep in CI logs;
+            // it tells the operator exactly how to set the env var / flag and
+            // points to --dry-run as an escape hatch when they want to verify
+            // the CLI without contacting the provider.
+            const hintLine = error.hint === undefined ? "" : `\n${BRAND_PREFIX}hint: ${error.hint}`;
+            process.stdout.write(`${BRAND_PREFIX}${message}${hintLine}\n`);
             return failedResult(message);
         }
         throw error;
@@ -15278,7 +15538,23 @@ async function runLive(input) {
     catch (error) {
         const message = formatError(error);
         const sanitized = sanitizeForPost(message, readSecretValues(env));
-        process.stdout.write(`${BRAND_PREFIX}${sanitized}\n`);
+        // Surface the structured remediation hint when the throw carries
+        // one (LiveReviewError / RequiredConfigError). Operators run the
+        // CLI from CI logs that often lose context: printing the hint
+        // next to the failure means the next person debugging the
+        // pipeline sees exactly which token / scope / flag to fix.
+        let hint;
+        if (error instanceof LiveReviewError) {
+            hint = getLiveReviewHint(error);
+        }
+        else if (error instanceof RequiredConfigError) {
+            hint = error.hint;
+        }
+        else if (error instanceof AzureContextError || error instanceof GithubContextError) {
+            hint = buildPlatformContextHint(error);
+        }
+        const hintLine = hint === undefined ? "" : `\n${BRAND_PREFIX}hint: ${hint}`;
+        process.stdout.write(`${BRAND_PREFIX}${sanitized}${hintLine}\n`);
         return failedResult(sanitized);
     }
     if (result.posted) {
@@ -15484,6 +15760,47 @@ function readSecretValues(env) {
 }
 function orchestrator_assertNever(value) {
     throw new TypeError(`Unhandled live platform: ${value}`);
+}
+/**
+ * Build a remediation hint for a {@link AzureContextError} or
+ * {@link GithubContextError} thrown by the platform context readers.
+ *
+ * The context error classes carry a structured `code` (e.g.
+ * `AZURE_TOKEN_MISSING`, `GITHUB_EVENT_PATH_MISSING`) but the
+ * upstream `message` strings stay byte-compatible with the legacy
+ * "must be set" wording. Matching on `code` lets the CLI surface a
+ * much more actionable hint than a re-rendering of the message, while
+ * still letting the message ride through unchanged for grep-
+ * compatibility.
+ *
+ * Returns `undefined` for codes that don't yet have a curated hint
+ * (we surface the bare message instead of guessing).
+ */
+function buildPlatformContextHint(error) {
+    const AZURE_HINTS = {
+        AZURE_TOKEN_MISSING: "Set SYSTEM_ACCESSTOKEN as a pipeline variable and enable 'Allow scripts to access the OAuth token' on the Agent job. The token must have `Pull Request Contribute` permission on the target repository.",
+        AZURE_COLLECTION_URI_INVALID: "Set SYSTEM_COLLECTIONURI to the org URL (e.g. https://dev.azure.com/your-org) — pipelines usually fill this in automatically; reset the job or re-queue the build if the value is `undefined`.",
+        AZURE_TEAM_PROJECT_MISSING: "Set SYSTEM_TEAMPROJECT in the pipeline (or run inside a `microsoft/azure-pipelines` agent). The team project is the second segment of the repo path after `dev.azure.com/{org}/`.",
+        AZURE_REPOSITORY_ID_MISSING: "Set BUILD_REPOSITORY_NAME on the pipeline, or pass --repo '<org>/<project>/<repo>' on the command line. See docs/azure-devops.md for the supported forms.",
+        AZURE_PR_NUMBER_INVALID: "Set SYSTEM_PULLREQUEST_PULLREQUESTID in the pipeline (under PR trigger variables), or pass --pr-number <N> on the command line.",
+        AZURE_SOURCE_COMMIT_MISSING: "Set SYSTEM_PULLREQUEST_SOURCECOMMITID in the pipeline (under PR trigger variables), or run on a pull_request-triggered build (the legacy PR_REVIEW_AUTHORING mode is not yet supported).",
+        AZURE_TARGET_BRANCH_MISSING: "Set SYSTEM_PULLREQUEST_TARGETBRANCHNAME or BUILD_SOURCEBRANCHNAME in the pipeline environment. The target branch is what the review comments will be anchored against.",
+    };
+    const GITHUB_HINTS = {
+        GITHUB_TOKEN_MISSING: "Set GITHUB_TOKEN (the default GITHUB_TOKEN provided to the runner is fine; re-check `permissions:` in the workflow file or pass `permissions: pull-requests: write`).",
+        GITHUB_REPOSITORY_INVALID: "Set GITHUB_REPOSITORY to '<owner>/<name>'. On fork PRs from forks you also need GITHUB_REPOSITORY-relative paths; use `pull_request_target` workflows only with care.",
+        GITHUB_PR_NUMBER_INVALID: "Pass PR_NUMBER (a positive integer) as an action input, set GITHUB_PR_NUMBER in the workflow env, or rely on the supplied `pull_request` event payload's `number` field.",
+        GITHUB_SHA_MISSING: "Set GITHUB_SHA in the workflow env. For pull_request events GitHub Actions sets this automatically; for workflow_dispatch / schedule jobs you may need to pass it explicitly.",
+        GITHUB_EVENT_PATH_MISSING: "Set GITHUB_EVENT_PATH to the absolute path of the `event.json` payload (GitHub Actions sets this for `pull_request` events). The CLI reads PR number, base/head SHA, and draft state from it.",
+        GITHUB_EVENT_PAYLOAD_INVALID: "Re-queue the workflow: the event.json payload is malformed JSON or missing the `pull_request` object. This usually means a non-`pull_request` event type was supplied.",
+    };
+    if (error instanceof AzureContextError) {
+        return AZURE_HINTS[error.code];
+    }
+    if (error instanceof GithubContextError) {
+        return GITHUB_HINTS[error.code];
+    }
+    return undefined;
 }
 
 ;// CONCATENATED MODULE: ./src/cli/run.ts
@@ -15937,6 +16254,7 @@ async function writeParseWarningsArtifact(primaryArtifactPath, warnings) {
 
 
 
+
 /**
  * Detect whether `env` represents standalone mode (no CI markers).
  * True when BOTH GITHUB_ACTIONS and TF_BUILD are missing or not
@@ -15984,7 +16302,8 @@ async function runStandalone(input) {
             generatedAt: new Date().toISOString(),
         };
         await (0,promises_namespaceObject.writeFile)(artifactPath, `${JSON.stringify(body, null, 2)}\n`, "utf8");
-        process.stdout.write(`${BRAND_PREFIX}standalone review (no diff) wrote ${artifactPath}\n`);
+        process.stdout.write(`${BRAND_PREFIX}standalone review (no diff) wrote ${artifactPath}\n` +
+            `${BRAND_PREFIX}no diff was supplied or none could be auto-derived (e.g. cwd is not a git repo with uncommitted changes or no diff was supplied). The CLI wrote a no-posting artifact instead of failing; supply --event and --diff, or run inside a git repo with uncommitted changes, or commit your changes first.\n`);
         return { kind: "ok", artifactPath, review: body.review };
     }
     const artifactPath = (0,external_node_path_namespaceObject.resolve)(input.cwd, input.overrideArtifactPath ?? "./umactually-review.json");
@@ -16011,7 +16330,8 @@ async function runStandalone(input) {
             generatedAt: new Date().toISOString(),
         };
         await (0,promises_namespaceObject.writeFile)(artifactPath, `${JSON.stringify(body, null, 2)}\n`, "utf8");
-        process.stdout.write(`${BRAND_PREFIX}standalone review (no diff) wrote ${artifactPath}\n`);
+        process.stdout.write(`${BRAND_PREFIX}standalone review (no diff) wrote ${artifactPath}\n` +
+            `${BRAND_PREFIX}the supplied diff was empty; provider review was skipped. The CLI wrote a no-posting artifact instead of failing; check that --diff points to a non-empty unified diff, or run with --api-url / --api-key / --dry-run for a smoke test against the provider.\n`);
         return { kind: "ok-no-diff", artifactPath, note };
     }
     let outcome;
@@ -16031,11 +16351,19 @@ async function runStandalone(input) {
         const message = error instanceof LiveReviewError || error instanceof Error
             ? error.message
             : String(error);
+        // When the throw carries a remediation hint (e.g. the typed
+        // RequiredConfigError carries the missing-env-var hint on its
+        // `hint` field), propagate it so cli.ts can render the hint next
+        // to the failure on the operator's terminal.
+        const hint = error instanceof RequiredConfigError && error.hint !== undefined
+            ? error.hint
+            : undefined;
         return {
             kind: "provider-error",
             exitCode: 1,
             message,
             sanitizedForLog: sanitizeForPost(message, [providerApiKey]),
+            ...(hint !== undefined ? { hint } : {}),
         };
     }
     const note = "Standalone review completed; no platform posting was attempted.";
@@ -16065,6 +16393,205 @@ async function runStandalone(input) {
     await (0,promises_namespaceObject.writeFile)(artifactPath, `${JSON.stringify(body, null, 2)}\n`, "utf8");
     process.stdout.write(`${BRAND_PREFIX}standalone review wrote ${artifactPath}\n`);
     return { kind: "ok", artifactPath, review };
+}
+
+;// CONCATENATED MODULE: ./src/cli/smart-prompt.ts
+// SPDX-License-Identifier: MIT
+/**
+ * Smart interactive prompts for the CLI.
+ *
+ * The CLI's job is to be useful in BOTH a terminal (where the operator
+ * can answer questions) AND a CI pipeline (where stdin is closed and
+ * non-zero answers must mean "fail fast, don't try"). This module is
+ * the single boundary between those two modes.
+ *
+ * Rule of engagement:
+ *   - ALL prompts MUST be guarded by `canPromptInteractively(...)` so
+ *     we never write to a piped/CI stdin. If the environment cannot
+ *     answer, we throw a typed `SmartPromptUnavailable` error that the
+ *     caller (orchestrator / validate glue) maps to a structured
+ *     validation error + remediation hint.
+ *   - Each prompt supports a `timeoutMs` so an interactive CI with no
+ *     operator on the seat doesn't hang forever. A timeout is treated
+ *     as "user chose not to answer" — the caller surfaces the
+ *     remediation hint and exits.
+ *   - Inputs are NOT echoed to stderr (else secrets like API keys
+ *     would leak into CI logs).
+ *
+ * The prompts here are intentionally minimal — no chalk, no TTY
+ * detection libraries. The CLI already uses a single brand prefix on
+ * its stdout writes; the prompts print that same prefix and let
+ * downstream formatting (color, no-color) follow the same path.
+ */
+
+/**
+ * Throw when the operator's environment cannot answer an interactive
+ * prompt (no TTY, no stdin, or timeout). Caught by the validate glue
+ * so the operator gets a structured remediation hint instead of a
+ * raw stdin EOF / hang.
+ */
+class SmartPromptUnavailable extends Error {
+    code;
+    name = "SmartPromptUnavailable";
+    constructor(code, message) {
+        super(message);
+        this.code = code;
+    }
+}
+/**
+ * Returns true when the process is attached to a real TTY and stdin
+ * is readable. The Node-side test (`process.stdin.isTTY === true`)
+ * is the canonical heuristic — Bun treats it the same.
+ *
+ * NOTE: deliberately NOT wrapping in try/catch. Read-only checks on
+ * `process.stdin.isTTY` never throw, so a try/catch here would mask
+ * a legitimate internal invariant failure.
+ */
+function canPromptInteractively() {
+    return process.stdin.isTTY === true && process.stdout.isTTY === true;
+}
+/**
+ * Render the standard prompt on stdout, read a single line from
+ * stdin, trim trailing newlines/spaces, return the trimmed result.
+ *
+ * No echoing of input — secrets typed into a terminal echo in the
+ * terminal control layer, not in our stdout/stderr, so they don't
+ * land in CI logs even when stdout is captured.
+ *
+ * Throws {@link SmartPromptUnavailable} when:
+ *   - the prompt cannot be shown (no TTY),
+ *   - stdin closes before a line arrives (e.g. on CI),
+ *   - the read times out (operator didn't answer),
+ *   - the underlying stream errors.
+ */
+async function readInteractiveLine(input) {
+    if (!canPromptInteractively()) {
+        throw new SmartPromptUnavailable("NO_TTY", "Cannot read interactive input: stdin is not a TTY. Set --api-url / --api-key on the command line or via UMACTUALLY_API_URL / UMACTUALLY_API_KEY env vars.");
+    }
+    process.stdout.write(`${BRAND_PREFIX}${input.prompt}\n`);
+    const stdin = process.stdin;
+    const timer = setTimeout(() => {
+        stdin.destroy(new SmartPromptUnavailable("TIMEOUT", `Prompt timed out after ${input.timeoutMs}ms with no input. Set --api-url / --api-key on the command line or via env vars to skip the interactive prompt.`));
+    }, input.timeoutMs);
+    try {
+        return await readOneLine(stdin);
+    }
+    finally {
+        clearTimeout(timer);
+    }
+}
+/**
+ * Read a single line from a readable stream, resolving with the
+ * trimmed value. Resolves to "" on EOF (caller distinguishes empty
+ * vs. typed-empty via the input.length === 0 check + clarifying hint).
+ *
+ * Pure Node — no external deps. Uses the standard "data" + "end"
+ * events rather than readline so the import stays free of a
+ * third-party dep at CLI boot time (ncc bundling is happier this
+ * way too).
+ */
+async function readOneLine(stream) {
+    return await new Promise((resolve, reject) => {
+        let buffer = "";
+        const onData = (chunk) => {
+            buffer += typeof chunk === "string" ? chunk : Buffer.from(chunk).toString("utf8");
+            const newline = buffer.indexOf("\n");
+            if (newline !== -1) {
+                stream.pause();
+                stream.removeListener("data", onData);
+                stream.removeListener("end", onEnd);
+                stream.removeListener("error", onError);
+                resolve(buffer.slice(0, newline).trimEnd());
+            }
+        };
+        const onEnd = () => {
+            stream.removeListener("data", onData);
+            stream.removeListener("error", onError);
+            resolve(buffer.trimEnd());
+        };
+        const onError = (err) => {
+            stream.removeListener("data", onData);
+            stream.removeListener("end", onEnd);
+            reject(new SmartPromptUnavailable("READ_ERROR", `Failed to read stdin: ${err.message}. Set --api-url / --api-key on the command line or via env vars.`));
+        };
+        stream.on("data", onData);
+        stream.once("end", onEnd);
+        stream.once("error", onError);
+        stream.resume();
+    });
+}
+/**
+ * Conditionally prompt for a single value. Skips the prompt when:
+ *   - the env var name is already populated (caller should re-check),
+ *   - the env var cannot be prompted (no TTY / piped stdin / timeout),
+ *   - the prompt times out without an answer.
+ *
+ * Returns `null` when no answer was collected — the caller should fall
+ * back to throwing the typed validation error.
+ *
+ * The optional `default` is offered as an empty-input fallback so the
+ * operator can press <Enter> to take the previously-saved value.
+ */
+async function smartPromptForValue(input) {
+    const existingFromEnv = process.env[input.envVarName];
+    if (typeof existingFromEnv === "string" && existingFromEnv.length > 0) {
+        // Already populated — no need to prompt.
+        return existingFromEnv;
+    }
+    if (!canPromptInteractively()) {
+        return null;
+    }
+    const defaultHint = input.default !== undefined && input.default.length > 0
+        ? ` [default: ${input.default}]`
+        : "";
+    const promptText = `${input.label} (${input.envVarName})${defaultHint}: `;
+    try {
+        const answer = await readInteractiveLine({
+            prompt: promptText,
+            timeoutMs: input.timeoutMs ?? 15_000,
+        });
+        if (answer.length > 0) {
+            return answer;
+        }
+        if (input.default !== undefined && input.default.length > 0) {
+            return input.default;
+        }
+        return null;
+    }
+    catch (error) {
+        if (error instanceof SmartPromptUnavailable) {
+            return null;
+        }
+        throw error;
+    }
+}
+/**
+ * Convenience: prompt for the two API-config values operators most
+ * commonly forget (`--api-url`, `--api-key`). Returns null when
+ * neither could be collected (caller should then throw the typed
+ * validation error).
+ *
+ * Both prompts share a 15-second timeout (configurable). When
+ * `promptForUrl` is false, only the API key is asked for — useful for
+ * Anthropic-native invocations where the URL is implicit.
+ */
+async function smartPromptForApiConfig(input) {
+    let apiUrl = null;
+    if (input.promptForUrl) {
+        apiUrl = await smartPromptForValue({
+            label: "Model provider base URL",
+            envVarName: "UMACTUALLY_API_URL",
+            placeholder: "https://api.openai.com/v1",
+            ...(input.timeoutMs !== undefined ? { timeoutMs: input.timeoutMs } : {}),
+        });
+    }
+    const apiKey = await smartPromptForValue({
+        label: "Model provider API key",
+        envVarName: "UMACTUALLY_API_KEY",
+        placeholder: "sk-…",
+        ...(input.timeoutMs !== undefined ? { timeoutMs: input.timeoutMs } : {}),
+    });
+    return { apiUrl, apiKey };
 }
 
 ;// CONCATENATED MODULE: ./src/cli/auto-context.ts
@@ -16316,6 +16843,7 @@ function resolveDefaultBranch(cwd) {
 
 
 
+
 /**
  * Read the package version.
  *
@@ -16476,6 +17004,30 @@ async function cleanupGeneratedArtifacts(generatedArtifacts, cwd) {
         process.stderr.write(`cli: failed to clean generated artifacts at ${tempDir}: ${formatError(error)}\n`);
     }
 }
+/**
+ * Render a list of structured validation errors to stderr.
+ *
+ * Shape:
+ *   cli: <message-1>; <message-2>; ...
+ *     hint: <hint-1>
+ *     hint: <hint-2>
+ *     ...
+ *
+ * The first line is the byte-compatible legacy join (semicolon-
+ * separated messages) so any CI log scraper or external consumer
+ * matching on `cli: --api-url is required` or
+ * `cli: --review requires --diff` keeps working. Each entry's
+ * remediation hint is rendered as a separate `hint:` line. Piping
+ * the output through `grep "cli:"` still surfaces the legacy first
+ * line; piping through `grep "hint:"` surfaces every remediation.
+ */
+function renderValidationErrors(errors) {
+    const header = `cli: ${errors.map((e) => e.message).join("; ")}\n`;
+    const hintLines = errors
+        .map((e) => `  hint: ${e.hint}`)
+        .join("\n");
+    return `${header}${hintLines}\n`;
+}
 async function runCli(args, cwd) {
     let parsed;
     try {
@@ -16489,6 +17041,16 @@ async function runCli(args, cwd) {
             process.stdout.write(resolveHelpText(helpArgv));
             return { exitCode: 0 };
         }
+        if (error instanceof CliUsageError && error.hint !== undefined) {
+            // Surface the parse-time remediation hint next to the usage
+            // error so the operator sees exactly what to try instead of a
+            // bare "unknown flag: --foo" or "flag requires a value". The
+            // CLI exits with code 2 (UsageError convention) AFTER the hint
+            // is printed; machines grep'ing for `cli: <msg>` find the
+            // legacy line; humans grep'ing for `hint:` find the remediation.
+            process.stderr.write(`cli: ${error.message}\n  hint: ${error.hint}\n`);
+            return { exitCode: 2 };
+        }
         throw error;
     }
     // Stage 2: schema-driven env fallbacks and type coercion before validation.
@@ -16497,9 +17059,63 @@ async function runCli(args, cwd) {
     const { resolved, generatedArtifacts } = resolveContext(envResolved, cwd, process.env);
     try {
         // Stage 4: validate the resolved (post-derivation) args.
-        const errors = collectValidationErrors(resolved);
+        let errors = collectValidationErrors(resolved);
+        // Smart-prompt safety net: when validation fails ONLY because the
+        // operator forgot `--api-url` / `--api-key`, and we're attached to
+        // a TTY (NOT a CI / piped stdin), offer to ask for the values
+        // interactively. This rescues the operator from a frustrating
+        // "run command → fail → re-read docs → re-run with secret" loop
+        // in local development.
+        //
+        // The interactive path is strictly opt-in: we only prompt when
+        // (a) we can detect an interactive terminal, (b) the only failing
+        // fields are the standard API-config pair, and (c) we haven't
+        // already been given the value via env var (the prompt would
+        // otherwise feel like a leak). ALL other validation failures
+        // bypass this branch — we don't try to be clever around
+        // required-sonar config, --platform azure identity, etc., because
+        // those have CI / globs-of-context implications.
+        if (errors.length > 0 &&
+            canPromptInteractively() &&
+            !resolved.dryRun &&
+            everyErrorIsApiConfig(errors) &&
+            process.env["UMACTUALLY_NO_INTERACTIVE"] === undefined) {
+            const promptForUrl = errors.some((e) => e.flag === "--api-url");
+            const prompted = await smartPromptForApiConfig({ promptForUrl });
+            // SchemaResolvedCliArgs extends ParsedCliArgs, so the same
+            // applyPromptedConfig helper works on both.
+            const augmented = applyPromptedConfig(resolved, prompted);
+            errors = collectValidationErrors(augmented);
+            if (errors.length === 0) {
+                // Validation now passes — re-resolve and proceed without
+                // printing the bare-invocation modes banner (the operator
+                // clearly knows the standalone shape; they just needed
+                // credentials).
+                process.stdout.write(`${BRAND_PREFIX}received credentials from interactive prompt; continuing.\n`);
+                return await runAfterValidation({
+                    resolved: augmented,
+                    cwd,
+                    env: process.env,
+                    generatedArtifacts,
+                });
+            }
+            // Some required values still missing after the prompt. Re-render
+            // the structured errors below so the operator sees what's still
+            // outstanding. Falls through to the standard error path.
+            process.stderr.write(renderValidationErrors(errors));
+            return {
+                exitCode: 2,
+                resolvedConfig: buildSanitizedResolvedConfig(augmented),
+            };
+        }
         if (errors.length > 0) {
-            process.stderr.write(`cli: ${errors.join("; ")}\n`);
+            // Render the structured errors with `flag` + `message` + `hint`
+            // so the operator sees a remediation next to each failure rather
+            // than a flat semicolon-joined string. The first line stays
+            // byte-compatible with the legacy `cli: <msg>;<msg>` shape so
+            // any consumer grep'ing for `cli: --api-url is required` keeps
+            // working.
+            process.stderr.write(renderValidationErrors(errors));
             // Bare-invocation banner: when the operator ran the CLI with no
             // provider flags AND validation rejected because of missing
             // --api-url/--api-key, the actionable next step is "pick a mode"
@@ -16507,7 +17123,7 @@ async function runCli(args, cwd) {
             // user can copy-paste the right invocation.
             if (args.length === 0 &&
                 !envResolved.dryRun &&
-                errors.some((e) => e.includes("--api-url") || e.includes("--api-key"))) {
+                errors.some((e) => e.flag === "--api-url" || e.flag === "--api-key")) {
                 process.stderr.write(`\n${BRAND_PREFIX}pick a mode:\n\n${CLI_MODES_TEXT}`);
             }
             return {
@@ -16515,31 +17131,81 @@ async function runCli(args, cwd) {
                 resolvedConfig: buildSanitizedResolvedConfig(resolved),
             };
         }
-        if (!resolved.dryRun && isStandaloneMode(process.env)) {
-            const result = await runStandalone({ parsed: resolved, cwd, env: process.env });
-            if (result.kind === "provider-error") {
-                process.stdout.write(`${result.sanitizedForLog}\n`);
-                return {
-                    exitCode: 1,
-                    resolvedConfig: buildSanitizedResolvedConfig(resolved),
-                };
-            }
-            return {
-                exitCode: 0,
-                resolvedConfig: buildSanitizedResolvedConfig(resolved),
-            };
-        }
-        const result = resolved.dryRun
-            ? await runDryRun(resolved, cwd, resolvePlatform(resolved.platform))
-            : await dispatchLive(resolved, cwd, process.env);
-        return {
-            ...result,
-            resolvedConfig: buildSanitizedResolvedConfig(resolved),
-        };
+        return await runAfterValidation({
+            resolved,
+            cwd,
+            env: process.env,
+            generatedArtifacts,
+        });
     }
     finally {
         await cleanupGeneratedArtifacts(generatedArtifacts, cwd);
     }
+}
+/**
+ * Dispatch the post-validation run path. Extracted so the smart-prompt
+ * branch can call into the same code without duplicating the standalone
+ * vs. live vs. dry-run routing logic. Pure orchestration: returns a
+ * `CliExecutionResult` with `exitCode` and the sanitized resolved
+ * config so callers can inspect what the operator actually provided.
+ */
+async function runAfterValidation(input) {
+    const { resolved, cwd, env } = input;
+    if (!resolved.dryRun && isStandaloneMode(env)) {
+        const result = await runStandalone({ parsed: resolved, cwd, env });
+        if (result.kind === "provider-error") {
+            const hintLine = "hint" in result && typeof result.hint === "string"
+                ? `\n${BRAND_PREFIX}hint: ${result.hint}`
+                : "";
+            process.stdout.write(`${result.sanitizedForLog}${hintLine}\n`);
+            return {
+                exitCode: 1,
+                resolvedConfig: buildSanitizedResolvedConfig(resolved),
+            };
+        }
+        return {
+            exitCode: 0,
+            resolvedConfig: buildSanitizedResolvedConfig(resolved),
+        };
+    }
+    const result = resolved.dryRun
+        ? await runDryRun(resolved, cwd, resolvePlatform(resolved.platform))
+        : await dispatchLive(resolved, cwd, env);
+    return {
+        ...result,
+        resolvedConfig: buildSanitizedResolvedConfig(resolved),
+    };
+}
+/**
+ * Returns true when every validation error in the list refers to one of
+ * the API-config flags (`--api-url`, `--api-key`). Used to gate the
+ * smart-prompt branch so we only offer an interactive credential prompt
+ * when the operator's actual failure is "you forgot to provide the
+ * model provider config".
+ */
+function everyErrorIsApiConfig(errors) {
+    return errors.every((e) => e.flag === "--api-url" || e.flag === "--api-key");
+}
+/**
+ * Apply the prompted values to the resolved parsed CLI args. Returns a
+ * new {@link ParsedCliArgs} with `apiUrl` / `apiKey` replaced when the
+ * smart prompt returned a non-null value. The replacement is additive
+ * only — already-populated fields are NOT overwritten, so a CLI flag
+ * that was set before the prompt takes precedence over the prompt's
+ * answer. Missing values (null) keep their null state.
+ */
+function applyPromptedConfig(resolved, prompted) {
+    const nextApiUrl = prompted.apiUrl !== null && (resolved.apiUrl === null || resolved.apiUrl.length === 0)
+        ? prompted.apiUrl
+        : resolved.apiUrl;
+    const nextApiKey = prompted.apiKey !== null && (resolved.apiKey === null || resolved.apiKey.length === 0)
+        ? prompted.apiKey
+        : resolved.apiKey;
+    return {
+        ...resolved,
+        apiUrl: nextApiUrl,
+        apiKey: nextApiKey,
+    };
 }
 async function main(argv) {
     try {
@@ -16548,7 +17214,12 @@ async function main(argv) {
     }
     catch (error) {
         if (error instanceof CliUsageError) {
-            process.stderr.write(`cli: ${error.message}\n`);
+            // Surface the hint (when present) on a separate `hint:` line so
+            // the operator sees actionable remediation alongside the bare
+            // usage error. Print message first to preserve the legacy
+            // `cli: <msg>` byte shape that tests + log scrapers grep for.
+            const hintLine = error.hint === undefined ? "" : `\n  hint: ${error.hint}`;
+            process.stderr.write(`cli: ${error.message}${hintLine}\n`);
             return 2;
         }
         process.stderr.write(`cli: unexpected error: ${formatError(error)}\n`);
