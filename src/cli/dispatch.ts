@@ -149,7 +149,9 @@ async function runDoctorBranch(args: readonly string[]): Promise<DispatchResult>
   // In a Bun --compile binary, import.meta.url resolves to Bun's virtual
   // filesystem and process.execPath is the real binary. In Node (npm install
   // or dev), process.execPath is the node binary itself, so use import.meta.url.
-  const isCompiledBinary = typeof (globalThis as Record<string, unknown>)["UMACTUALLY_VERSION"] === "string";
+  // The bare UMACTUALLY_VERSION identifier is replaced at compile time by
+  // Bun's --define flag; in Node it is undefined.
+  const isCompiledBinary = typeof UMACTUALLY_VERSION === "string";
   const packageRoot = isCompiledBinary
     ? dirname(process.execPath)
     : resolve(dirname(fileURLToPath(import.meta.url)), "..");

@@ -39,10 +39,11 @@ export { parseCliArgs, CliUsageError };
  * so the version is embedded at compile time.
  */
 function readPackageVersion(): string {
-  // Bun --compile injects this via --define. Check the global first.
-  const declared = (globalThis as Record<string, unknown>)["UMACTUALLY_VERSION"];
-  if (typeof declared === "string" && declared.length > 0) {
-    return declared;
+  // Bun --compile injects this via --define. The bare identifier is
+  // replaced at compile time — using globalThis["UMACTUALLY_VERSION"]
+  // would NOT be replaced because --define only matches bare references.
+  if (typeof UMACTUALLY_VERSION === "string" && UMACTUALLY_VERSION.length > 0) {
+    return UMACTUALLY_VERSION;
   }
   const packageJsonUrl = new URL("../package.json", import.meta.url);
   const raw = readFileSync(packageJsonUrl, "utf8");
