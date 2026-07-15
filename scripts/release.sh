@@ -10,17 +10,32 @@ usage() {
 }
 
 CHECK_MODE=0
-if [[ "${1:-}" == "--check" ]]; then
-  CHECK_MODE=1
-  shift
-fi
+VERSION_INPUT=""
 
-if [[ $# -ne 1 ]]; then
+# Accept `--check` in any position so maintainers do not have to
+# remember the exact arg ordering. The loop captures the single
+# non-flag argument as the version candidate; the SemVer regex below
+# is the source of truth for what counts as a valid version string,
+# so we do not validate here.
+for arg in "$@"; do
+  case "$arg" in
+    --check) CHECK_MODE=1 ;;
+    --help|-h) usage; exit 2 ;;
+    -*)
+      echo "release: unknown flag '$arg'; only --check and --help are recognized." >&2
+      usage
+      exit 2
+      ;;
+    *) VERSION_INPUT="$arg" ;;
+  esac
+done
+
+if [[ -z "$VERSION_INPUT" ]]; then
   usage
   exit 2
 fi
 
-TARGET_INPUT=$1
+TARGET_INPUT="$VERSION_INPUT"
 if [[ ! "$TARGET_INPUT" =~ ^v?[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
   echo "release: invalid version '$TARGET_INPUT'; expected vX.Y.Z or X.Y.Z." >&2
   exit 1
