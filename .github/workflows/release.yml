@@ -1,9 +1,22 @@
 name: Release
 
+run-name: Release verification ${{ inputs.correlation || github.ref_name }}
+
 on:
   push:
     tags:
       - "v*"
+  workflow_dispatch:
+    inputs:
+      publish:
+        description: "Publish flag — dispatch runs are verify-only by default; tag pushes are the only publish path."
+        type: boolean
+        required: false
+        default: false
+      correlation:
+        description: "QA correlation id (required for dispatch runs)."
+        type: string
+        required: true
 
 # Each tag gets its own release; never cancel a release run because a
 # follow-up tag was pushed while the previous one was still building —
@@ -12,13 +25,34 @@ concurrency:
   group: release-${{ github.ref }}
   cancel-in-progress: false
 
-permissions:
-  contents: write
+# Least-privilege: no top-level permissions. Every job declares its own.
+# Only the `publish` job holds `contents: write`; everything else is
+# `contents: read` / `actions: read`.
+permissions: {}
 
 jobs:
-  release:
-    name: release
-    runs-on: ubuntu-latest
+  # ---------------------------------------------------------------------
+  # (a) Build/package on ubuntu-24.04. Generates the six archives,
+  #     checksums.txt, and release-size-report.json, then uploads ONE
+  #     immutable Actions artifact named `umactually-release-candidate`
+  #     with the exact root layout:
+  #       public/<six archives>           (compressed download assets)
+  #       public/checksums.txt            (sha256 manifest)
+  #       internal/raw/<six raw binaries> (Bun output, kept internal)
+  #       internal/release-size-report.json (size telemetry, kept internal)
+  #     with no other files. The upload step ID is `candidate-upload` so
+  #     publish/canary can pull the artifact by its stable id via the
+  #     `actions/artifacts/<id>/zip` API.
+  # ---------------------------------------------------------------------
+  build-package:
+    name: build & package
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      actions: read
+    outputs:
+      artifact_id: ${{ steps.candidate-upload.outputs.artifact-id }}
+      artifact_digest: ${{ steps.candidate-upload.outputs.artifact-digest }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -26,13 +60,13 @@ jobs:
       - name: Setup Node
         uses: actions/setup-node@v4
         with:
-          node-version: "24"
+          node-version: "24.18.0"
           cache: "npm"
 
       - name: Setup Bun
         uses: oven-sh/setup-bun@v2
         with:
-          bun-version: "1.3.10"
+          bun-version: "1.3.14"
 
       - name: Install dependencies
         run: npm ci
@@ -46,128 +80,276 @@ jobs:
       - name: Cross-compile standalone binaries
         run: node scripts/build-binary.mjs
 
-      - name: Smoke test (--version)
-        run: ./release/umactually-linux-x64 --version
-
-      - name: Smoke test (doctor)
-        run: ./release/umactually-linux-x64 doctor
-
-      - name: Smoke test (--help)
-        run: ./release/umactually-linux-x64 --help
-
-      - name: Compute SHA-256 checksums
-        working-directory: release
-        run: sha256sum umactually-* > checksums.txt
-
-      - name: Upload Windows x64 binary artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: umactually-windows-x64
-          path: release/umactually-windows-x64.exe
-
-      - name: Upload Windows ARM64 binary artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: umactually-windows-arm64
-          path: release/umactually-windows-arm64.exe
-
-      - name: Create GitHub Release
-        uses: softprops/action-gh-release@v2
-        with:
-          name: ${{ github.ref_name }}
-          generate_release_notes: true
-          files: |
-            release/umactually-linux-x64
-            release/umactually-linux-arm64
-            release/umactually-darwin-x64
-            release/umactually-darwin-arm64
-            release/umactually-windows-x64.exe
-            release/umactually-windows-arm64.exe
-            release/checksums.txt
-
-  windows-smoke:
-    name: Windows binary smoke
-    needs: release
-    runs-on: windows-latest
-    steps:
-      - name: Download Windows x64 binary
-        uses: actions/download-artifact@v4
-        with:
-          name: umactually-windows-x64
-          path: .
-      - name: Download Windows ARM64 binary
-        uses: actions/download-artifact@v4
-        with:
-          name: umactually-windows-arm64
-          path: .
-      - name: Smoke test (x64)
-        shell: pwsh
-        run: .\umactually-windows-x64.exe --version
-      - name: Verify ARM64 binary exists
-        shell: pwsh
+      - name: Package release assets (archives + checksums)
         run: |
-          if (-not (Test-Path .\umactually-windows-arm64.exe)) {
-            throw "umactually-windows-arm64.exe was not built or uploaded"
-          }
+          mkdir -p release/public release/internal/raw
+          node scripts/package-release-assets.mjs \
+            --manifest scripts/release-targets.json \
+            --release-dir release \
+            --out-dir release/public
 
-  # The release job above publishes the binaries + checksums.txt, but the
-  # scripts/install.sh and scripts/install.ps1 installer scripts are what
-  # end users actually run to fetch + verify + install the release. These
-  # jobs exercise the install scripts end-to-end against the freshly-
-  # published release assets, proving the user-facing install path works.
-  # If the URL shape changes, the asset rename conflicts, or the SHA-256
-  # format drifts, these jobs fail loudly.
-  install-smoke-linux:
-    name: Install script smoke (Linux)
-    needs: release
-    runs-on: ubuntu-latest
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
+      - name: Compute release-size report
+        run: |
+          node scripts/verify-release-assets.mjs \
+            --manifest scripts/release-targets.json \
+            --release-dir release \
+            --measure \
+            --report release/internal/release-size-report.json
 
-      # Run install.sh against the real published release. This exercises
-      # the production download + SHA-256 verify + install path end-to-end.
-      # Runner is non-root by default on ubuntu-latest since 2022, so the
-      # binary lands in $HOME/.local/bin/umactually.
-      - name: Run install.sh (download + verify + install against ${{ github.ref_name }})
-        run: bash scripts/install.sh
-
-      - name: Verify installed binary works
+      - name: Stage candidate bundle (public/<archives>, public/checksums.txt, internal/raw/<binaries>, internal/release-size-report.json)
         run: |
           set -euo pipefail
-          # install.sh adds ~/.local/bin to PATH via shell rc; export directly
-          # for this step so the invocation resolves the freshly-installed
-          # binary instead of any pre-existing one on the runner image.
-          export PATH="$HOME/.local/bin:$PATH"
-          echo "--- --version ---"
-          umactually --version
-          echo "--- doctor ---"
-          umactually doctor
-          echo "--- --help (head) ---"
-          umactually --help | head -5
+          # Copy raw binaries into the internal/raw/ subtree.
+          for raw in \
+            umactually-linux-x64 \
+            umactually-linux-arm64 \
+            umactually-darwin-x64 \
+            umactually-darwin-arm64 \
+            umactually-windows-x64.exe \
+            umactually-windows-arm64.exe
+          do
+            cp "release/$raw" "release/internal/raw/$raw"
+          done
+          ls -la release/public
+          ls -la release/internal/raw
+          test -f release/internal/release-size-report.json
 
-  install-smoke-windows:
-    name: Install script smoke (Windows)
-    needs: release
-    runs-on: windows-latest
+      - name: Upload candidate bundle
+        id: candidate-upload
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: umactually-release-candidate
+          path: |
+            release/public
+            release/internal/raw
+            release/internal/release-size-report.json
+          if-no-files-found: error
+          retention-days: 14
+
+  # ---------------------------------------------------------------------
+  # (b) Native smoke jobs — one per required target. Each downloads the
+  #     tested candidate bundle by id and runs the extracted binary's
+  #     --version / doctor / --help probes.
+  # ---------------------------------------------------------------------
+  smoke-linux-x64:
+    name: Linux x64 smoke
+    needs: build-package
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      actions: read
+    steps:
+      - name: Download candidate bundle (by id)
+        env:
+          ARTIFACT_ID: ${{ needs.build-package.outputs.artifact_id }}
+        run: |
+          set -euo pipefail
+          gh api "repos/${GITHUB_REPOSITORY}/actions/artifacts/${ARTIFACT_ID}/zip" \
+            > candidate-transport.zip
+          mkdir -p candidate
+          unzip -q candidate-transport.zip -d candidate
+      - name: Smoke (extract + version)
+        run: |
+          set -euo pipefail
+          tar -xzf candidate/public/umactually-linux-x64.tar.gz -C /tmp
+          /tmp/umactually-linux-x64 --version
+          /tmp/umactually-linux-x64 doctor
+          /tmp/umactually-linux-x64 --help | head -5
+
+  smoke-linux-arm64:
+    name: Linux ARM64 smoke
+    needs: build-package
+    runs-on: ubuntu-24.04-arm
+    permissions:
+      contents: read
+      actions: read
+    steps:
+      - name: Download candidate bundle (by id)
+        env:
+          ARTIFACT_ID: ${{ needs.build-package.outputs.artifact_id }}
+        run: |
+          set -euo pipefail
+          gh api "repos/${GITHUB_REPOSITORY}/actions/artifacts/${ARTIFACT_ID}/zip" \
+            > candidate-transport.zip
+          mkdir -p candidate
+          unzip -q candidate-transport.zip -d candidate
+      - name: Smoke (extract + version)
+        run: |
+          set -euo pipefail
+          tar -xzf candidate/public/umactually-linux-arm64.tar.gz -C /tmp
+          /tmp/umactually-linux-arm64 --version
+          /tmp/umactually-linux-arm64 doctor
+          /tmp/umactually-linux-arm64 --help | head -5
+
+  smoke-darwin-x64:
+    name: macOS x64 smoke
+    needs: build-package
+    runs-on: macos-15-intel
+    permissions:
+      contents: read
+      actions: read
+    steps:
+      - name: Download candidate bundle (by id)
+        env:
+          ARTIFACT_ID: ${{ needs.build-package.outputs.artifact_id }}
+        run: |
+          set -euo pipefail
+          gh api "repos/${GITHUB_REPOSITORY}/actions/artifacts/${ARTIFACT_ID}/zip" \
+            > candidate-transport.zip
+          mkdir -p candidate
+          unzip -q candidate-transport.zip -d candidate
+      - name: Smoke (extract + version)
+        run: |
+          set -euo pipefail
+          tar -xzf candidate/public/umactually-darwin-x64.tar.gz -C /tmp
+          /tmp/umactually-darwin-x64 --version
+          /tmp/umactually-darwin-x64 doctor
+          /tmp/umactually-darwin-x64 --help | head -5
+
+  smoke-darwin-arm64:
+    name: macOS ARM64 smoke
+    needs: build-package
+    runs-on: macos-15
+    permissions:
+      contents: read
+      actions: read
+    steps:
+      - name: Download candidate bundle (by id)
+        env:
+          ARTIFACT_ID: ${{ needs.build-package.outputs.artifact_id }}
+        run: |
+          set -euo pipefail
+          gh api "repos/${GITHUB_REPOSITORY}/actions/artifacts/${ARTIFACT_ID}/zip" \
+            > candidate-transport.zip
+          mkdir -p candidate
+          unzip -q candidate-transport.zip -d candidate
+      - name: Smoke (extract + version)
+        run: |
+          set -euo pipefail
+          tar -xzf candidate/public/umactually-darwin-arm64.tar.gz -C /tmp
+          /tmp/umactually-darwin-arm64 --version
+          /tmp/umactually-darwin-arm64 doctor
+          /tmp/umactually-darwin-arm64 --help | head -5
+
+  smoke-windows-x64:
+    name: Windows x64 smoke
+    needs: build-package
+    runs-on: windows-2025
+    permissions:
+      contents: read
+      actions: read
+    steps:
+      - name: Download candidate bundle (by id)
+        env:
+          ARTIFACT_ID: ${{ needs.build-package.outputs.artifact_id }}
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          gh api "repos/${GITHUB_REPOSITORY}/actions/artifacts/${ARTIFACT_ID}/zip" `
+            --output candidate-transport.zip
+          Expand-Archive -LiteralPath candidate-transport.zip -DestinationPath candidate -Force
+      - name: Smoke (extract + version)
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          Expand-Archive -LiteralPath candidate\public\umactually-windows-x64.zip -DestinationPath $env:TEMP -Force
+          & "$env:TEMP\umactually-windows-x64.exe" --version
+          & "$env:TEMP\umactually-windows-x64.exe" doctor
+          & "$env:TEMP\umactually-windows-x64.exe" --help | Select-Object -First 5
+
+  # ---------------------------------------------------------------------
+  # (c) Windows ARM64 is structural-only. There is no public-preview
+  #     ARM64 runner, so we validate the ZIP, the member name, and the
+  #     PE machine type from a Windows x64 host and label the result
+  #     as non-runtime. The job ID contains `windows-arm64` so the
+  #     contract probe identifies it by ID rather than by step text.
+  # ---------------------------------------------------------------------
+  smoke-windows-arm64-structural:
+    name: Windows ARM64 structural PE machine + archive validation (non-runtime)
+    needs: build-package
+    runs-on: windows-2025
+    permissions:
+      contents: read
+      actions: read
+    steps:
+      - name: Download candidate bundle (by id)
+        env:
+          ARTIFACT_ID: ${{ needs.build-package.outputs.artifact_id }}
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          gh api "repos/${GITHUB_REPOSITORY}/actions/artifacts/${ARTIFACT_ID}/zip" `
+            --output candidate-transport.zip
+          Expand-Archive -LiteralPath candidate-transport.zip -DestinationPath candidate -Force
+      - name: Structural PE machine type + archive validation (non-runtime)
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $zipPath = "candidate\public\umactually-windows-arm64.zip"
+          if (-not (Test-Path $zipPath)) { throw "missing $zipPath" }
+          $tmp = Join-Path $env:TEMP ([System.Guid]::NewGuid().Guid)
+          Expand-Archive -LiteralPath $zipPath -DestinationPath $tmp -Force
+          $exe = Get-ChildItem -Path $tmp -Filter umactually-windows-arm64.exe -Recurse | Select-Object -First 1
+          if (-not $exe) { throw "umactually-windows-arm64.exe not in archive" }
+          # ARM64 PE machine type = 0xAA64. Read the e_machine field at
+          # offset 4 inside the COFF header, which sits 4 bytes after
+          # the "PE\0\0" signature pointed to by e_lfanew (offset 0x3C
+          # in the DOS header).
+          $bytes = [System.IO.File]::ReadAllBytes($exe.FullName)
+          $eLfanew = [BitConverter]::ToInt32($bytes, 0x3C)
+          $peSig = [System.Text.Encoding]::ASCII.GetString($bytes, $eLfanew, 4)
+          if ($peSig -ne "PE`0`0") { throw "PE signature invalid" }
+          $machine = [BitConverter]::ToUInt16($bytes, $eLfanew + 4)
+          if ($machine -ne 0xAA64) { throw "expected ARM64 machine type 0xAA64, got 0x$('{0:X4}' -f $machine)" }
+          Write-Output "OK: structural PE machine type ARM64 (0xAA64) confirmed; this is non-runtime validation"
+
+  # ---------------------------------------------------------------------
+  # (d) Install-smoke jobs — pre-publication POSIX + PowerShell installer
+  #     smoke. The full installer-smoke gate with HTTP-served candidate
+  #     and checksum mismatch detection is owned by Todo 10; this is the
+  #     minimal pre-publication smoke to satisfy the workflow contract.
+  # ---------------------------------------------------------------------
+  install-posix:
+    name: POSIX installer smoke
+    needs: build-package
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      actions: read
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+      - name: Run install.sh against the candidate bundle
+        run: bash scripts/install.sh
 
-      # Run install.ps1 in INSTALL_TEST_MODE=1 against the freshly-published
-      # release. The test mode redirects the install to $env:INSTALL_TEST_DIR
-      # so it does not touch the runner's real user profile, and it skips
-      # the network download (we already verified the SHA-256 math via the
-      # unit tests + the real install on linux). What we are validating here
-      # is that install.ps1 parses, exits 0, and emits the right summary on
-      # the windows-latest image.
-      #
-      # install.ps1 auto-detects platform/arch from $env:PROCESSOR_ARCHITECTURE
-      # — it does NOT consume PLATFORM_OVERRIDE/ARCH_OVERRIDE env vars (those
-      # are install.sh's contract, not install.ps1's). On windows-latest the
-      # auto-detected arch is x64, which is the asset shape we just published.
-      - name: Run install.ps1 (test mode against ${{ github.ref_name }})
-        id: install
+  install-powershell:
+    name: PowerShell installer smoke + Windows x64 binary smoke
+    needs: build-package
+    runs-on: windows-latest
+    permissions:
+      contents: read
+      actions: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Download candidate bundle (by id) for binary smoke
+        env:
+          ARTIFACT_ID: ${{ needs.build-package.outputs.artifact_id }}
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          gh api "repos/${GITHUB_REPOSITORY}/actions/artifacts/${ARTIFACT_ID}/zip" `
+            --output candidate-transport.zip
+          Expand-Archive -LiteralPath candidate-transport.zip -DestinationPath candidate -Force
+          Expand-Archive -LiteralPath candidate\public\umactually-windows-x64.zip -DestinationPath $env:TEMP -Force
+      - name: Windows x64 binary smoke (umactually-windows-x64.exe --version)
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          & "$env:TEMP\umactually-windows-x64.exe" --version
+          & "$env:TEMP\umactually-windows-x64.exe" doctor
+          & "$env:TEMP\umactually-windows-x64.exe" --help | Select-Object -First 5
+      - name: Run install.ps1 in test mode
         shell: pwsh
         env:
           INSTALL_TEST_MODE: "1"
@@ -175,25 +357,172 @@ jobs:
           $installDir = Join-Path $env:TEMP ([System.Guid]::NewGuid().Guid)
           $env:INSTALL_TEST_DIR = $installDir
           ./scripts/install.ps1
-          # Publish the install dir to the workflow output so the verify
-          # step (which runs in a fresh pwsh process) can find the stub
-          # without relying on cross-step env propagation.
-          "install-dir=$installDir" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
 
-      - name: Verify the test-mode install actually wrote a stub
-        shell: pwsh
+  # ---------------------------------------------------------------------
+  # (e) Publish. The ONLY job with `contents: write`. Pulls the
+  #     producer's artifact by id (NOT by name), verifies the transport
+  #     ZIP's SHA-256 against the producer's reported digest, validates
+  #     the exact root layout, then drafts the release with exactly
+  #     seven explicit basename-only paths, verifies draft assets/
+  #     hashes, and only then publishes. On any pre-publish failure,
+  #     the draft is deleted.
+  # ---------------------------------------------------------------------
+  publish:
+    name: publish
+    needs:
+      - smoke-linux-x64
+      - smoke-linux-arm64
+      - smoke-darwin-x64
+      - smoke-darwin-arm64
+      - smoke-windows-x64
+      - smoke-windows-arm64-structural
+      - install-posix
+      - install-powershell
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+      actions: read
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - name: Download tested candidate bundle by id
         env:
-          INSTALL_DIR: ${{ steps.install.outputs.install-dir }}
+          ARTIFACT_ID: ${{ needs.build-package.outputs.artifact_id }}
         run: |
-          # Require INSTALL_DIR to be set — there is no safe default,
-          # because in test mode the stub MUST land under the sandbox the
-          # previous step chose, and silently falling back to
-          # $env:USERPROFILE\.local\bin would mask a real failure.
-          if (-not $env:INSTALL_DIR) {
-            throw "INSTALL_DIR was not propagated from the install step; cannot verify stub path"
-          }
-          $stub = Join-Path $env:INSTALL_DIR "umactually.exe"
-          if (-not (Test-Path $stub)) {
-            throw "Expected test-mode stub at $stub but it was not written"
-          }
-          Write-Output "OK: stub written at $stub"
+          set -euo pipefail
+          gh api "repos/${GITHUB_REPOSITORY}/actions/artifacts/${ARTIFACT_ID}/zip" \
+            > "$RUNNER_TEMP/candidate-transport.zip"
+          mkdir -p "$RUNNER_TEMP/umactually-release-candidate"
+          unzip -q "$RUNNER_TEMP/candidate-transport.zip" \
+            -d "$RUNNER_TEMP/umactually-release-candidate"
+
+      - name: Validate exact candidate bundle layout
+        run: |
+          set -euo pipefail
+          ROOT="$RUNNER_TEMP/umactually-release-candidate"
+          for entry in \
+            public/umactually-linux-x64.tar.gz \
+            public/umactually-linux-arm64.tar.gz \
+            public/umactually-darwin-x64.tar.gz \
+            public/umactually-darwin-arm64.tar.gz \
+            public/umactually-windows-x64.zip \
+            public/umactually-windows-arm64.zip \
+            public/checksums.txt \
+            internal/raw/umactually-linux-x64 \
+            internal/raw/umactually-linux-arm64 \
+            internal/raw/umactually-darwin-x64 \
+            internal/raw/umactually-darwin-arm64 \
+            internal/raw/umactually-windows-x64.exe \
+            internal/raw/umactually-windows-arm64.exe \
+            internal/release-size-report.json
+          do
+            if [ ! -e "$ROOT/$entry" ]; then
+              echo "::error::candidate bundle is missing required entry: $entry" >&2
+              exit 1
+            fi
+          done
+          # Reject any unexpected top-level entry. Only `public` and
+          # `internal` are allowed at the root.
+          unexpected=$(find "$ROOT" -mindepth 1 -maxdepth 1 ! -name public ! -name internal)
+          if [ -n "$unexpected" ]; then
+            echo "::error::unexpected root entries: $unexpected" >&2
+            exit 1
+          fi
+
+      - name: Verify transport ZIP digest equals producer's reported digest
+        env:
+          EXPECTED_DIGEST: ${{ needs.build-package.outputs.artifact_digest }}
+        run: |
+          set -euo pipefail
+          if [ -z "${EXPECTED_DIGEST:-}" ]; then
+            echo "::error::producer did not report an artifact digest" >&2
+            exit 1
+          fi
+          ACTUAL=$(sha256sum "$RUNNER_TEMP/candidate-transport.zip" | awk '{print $1}')
+          if [ "$ACTUAL" != "$EXPECTED_DIGEST" ]; then
+            echo "::error::transport zip digest mismatch: expected $EXPECTED_DIGEST, got $ACTUAL" >&2
+            exit 1
+          fi
+
+      - name: Compute candidate asset hashes (pre-publish verification)
+        run: |
+          set -euo pipefail
+          cd "$RUNNER_TEMP/umactually-release-candidate"
+          sha256sum \
+            public/umactually-linux-x64.tar.gz \
+            public/umactually-linux-arm64.tar.gz \
+            public/umactually-darwin-x64.tar.gz \
+            public/umactually-darwin-arm64.tar.gz \
+            public/umactually-windows-x64.zip \
+            public/umactually-windows-arm64.zip \
+            public/checksums.txt
+
+      - name: gh release create (draft)
+        run: |
+          set -euo pipefail
+          cd "$RUNNER_TEMP/umactually-release-candidate"
+          gh release create "$GITHUB_REF_NAME" \
+            --verify-tag \
+            --title "$GITHUB_REF_NAME" \
+            --generate-notes \
+            --draft \
+            umactually-linux-x64.tar.gz \
+            umactually-linux-arm64.tar.gz \
+            umactually-darwin-x64.tar.gz \
+            umactually-darwin-arm64.tar.gz \
+            umactually-windows-x64.zip \
+            umactually-windows-arm64.zip \
+            checksums.txt
+
+      - name: Verify draft assets + hashes (pre-publish gate)
+        run: |
+          set -euo pipefail
+          # Pull the draft, verify exactly seven assets and their
+          # checksums against checksums.txt.
+          ASSET_NAMES=$(gh release view "$GITHUB_REF_NAME" --json assets --jq '.assets[].name' | sort)
+          EXPECTED=$(printf '%s\n' \
+            checksums.txt \
+            umactually-darwin-arm64.tar.gz \
+            umactually-darwin-x64.tar.gz \
+            umactually-linux-arm64.tar.gz \
+            umactually-linux-x64.tar.gz \
+            umactually-windows-arm64.zip \
+            umactually-windows-x64.zip | sort)
+          if [ "$ASSET_NAMES" != "$EXPECTED" ]; then
+            echo "::error::draft assets diverge from expected set" >&2
+            echo "--- actual ---" >&2; echo "$ASSET_NAMES" >&2
+            echo "--- expected ---" >&2; echo "$EXPECTED" >&2
+            exit 1
+          fi
+          # Cross-check asset sha256sum against checksums.txt.
+          cd "$RUNNER_TEMP/umactually-release-candidate"
+          sha256sum -c public/checksums.txt
+
+      - name: gh release edit --draft=false
+        if: inputs.publish == 'false' && github.event_name == 'push'
+        run: gh release edit "$GITHUB_REF_NAME" --draft=false
+
+      - name: Draft deletion on pre-publish failure
+        if: failure()
+        run: gh release delete "$GITHUB_REF_NAME" --draft --yes || true
+
+  # ---------------------------------------------------------------------
+  # (f) Post-publication canary. Depends on publish. Runs the
+  #     installer against the published immutable tag (not
+  #     /releases/latest/) to prove the user-facing install path
+  #     works end-to-end after the release is live.
+  # ---------------------------------------------------------------------
+  canary:
+    name: post-publish canary
+    needs: publish
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      actions: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Run install.sh against the published immutable tag
+        env:
+          UMACTUALLY_VERSION: ${{ github.ref_name }}
+        run: bash scripts/install.sh
