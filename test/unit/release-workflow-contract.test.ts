@@ -672,6 +672,56 @@ function probeContract(workflow: Workflow): readonly Violation[] {
     }
   }
 
+  // Rule 17: the build pipeline's raw-binary copy step MUST NOT
+  //          hardcode a manifest `rawName`. F1 audit identified four
+  //          places in `.github/workflows/release.yml` that duplicated
+  //          manifest data as hardcoded shell tokens with no automated
+  //          parity gate. The most concrete duplication is a literal
+  //          `cp dist/<rawName> release/<rawName>` (or `mv`, `tar`,
+  //          `ln`, `install`) line that names a manifest rawName —
+  //          that shape is ALWAYS an ungrounded duplication. Other
+  //          uses (e.g. `cd candidate/public && sha256sum -c
+  //          checksums.txt`, the `gh release create <files>` wire
+  //          format, or  the contract test's `tar -xzf` smoke) are
+  //          legitimate — they operate on the *runtime bundle* the
+  //          candidate produced, not on a hardcoded list.
+  //          This rule is narrowly scoped to RAW-binary copy/mv/ln
+  //          patterns and ONLY fires when the step does not also read
+  //          `scripts/release-targets.json`.
+  // Source: F1 audit (release-binary-download-size).
+  for (const [id, job] of Object.entries(jobs)) {
+    for (const [stepIndex, step] of job.steps.entries()) {
+      const stepText = step.run ?? "";
+      if (stepText.length === 0) continue;
+      // Steps that read the manifest at runtime are exempted — they
+      // derive basenames from the JSON, so any literal rawName
+      // elsewhere is by-construction derived.
+      if (stepText.includes("release-targets.json")) continue;
+      const lines = stepText.split("\n");
+      for (let lineIndex = 0; lineIndex < lines.length; lineIndex += 1) {
+        const line = lines[lineIndex] ?? "";
+        // Detect a copy/move-style shell line that names a manifest
+        // rawName. The shape is `<verb> <src-with-rawName>
+        // <dst-with-rawName>` where the rawName appears on the same
+        // line. This catches `cp dist/umactually-linux-x64
+        // release/umactually-linux-x64`, `mv foo/umactually-darwin-arm64
+        // bar/umactually-darwin-arm64`, etc. — exactly the F1 audit's
+        // hardcoded target/basename duplication shape.
+        for (const rawName of RAW_BASENAMES) {
+          const escaped = rawName.replace(/[.*+?^${}()|[\]\\]/gu, "\\$&");
+          const copyRe = new RegExp(`\\b(?:cp|mv|ln|install)\\b[^\\n]*\\b${escaped}\\b[^\\n]*\\b${escaped}\\b`, "u");
+          if (copyRe.test(line)) {
+            violations.push({
+              rule: "manifest-parity",
+              source: "F1 audit (release-binary-download-size)",
+              detail: `job ${id} step ${stepIndex} line ${lineIndex + 1} hardcodes copy/move of manifest rawName "${rawName}" without reading scripts/release-targets.json — manifest is the single source of truth; consume the list via \`node -e\` reading release-targets.json`,
+            });
+          }
+        }
+      }
+    }
+  }
+
   return violations;
 }
 
@@ -838,27 +888,30 @@ describe("Release workflow contract — RED against current workflow (Todo 9 fix
   });
 
   it("RELEASE-WORKFLOW-CANARY-SEVEN-ASSETS: canary asserts all six archive basenames + checksums.txt", () => {
-    // Given: the canary job and the seven canonical public asset names.
+    // Given: the canary job and the manifest-derived canonical public asset names.
+    // Manifest is the single source of truth — read `archiveName` directly so
+    // adding/renaming a target requires only a manifest edit.
     const jobs = readJobs(loadCurrentWorkflow()["jobs"]);
     const canaryEntry = findJobById(jobs, (_job, id) => /canary/u.test(id));
     if (canaryEntry === null) throw new Error("canary job not found");
     const surface = canaryEntry.job.steps
       .map((step) => step.run ?? "")
       .join("\n");
-    const expected = [
-      "umactually-linux-x64.tar.gz",
-      "umactually-linux-arm64.tar.gz",
-      "umactually-darwin-x64.tar.gz",
-      "umactually-darwin-arm64.tar.gz",
-      "umactually-windows-x64.zip",
-      "umactually-windows-arm64.zip",
-      "checksums.txt",
-    ];
+    const expected = [...ARCHIVE_BASENAMES, "checksums.txt"];
 
-    // When/Then: every canonical basename appears as a literal in the canary's
-    // run blocks. The SHA-256 verification + installer invocation also run.
-    for (const name of expected) {
+    // When/Then: every manifest-derived archive basename appears as a literal
+    // in the canary's run block (the node -e body emits them as string literals),
+    // or the step references release-targets.json at runtime. The SHA-256
+    // verification + installer invocation also run.
+    const expectedLiteralPatterns = expected.filter((n) => n === "checksums.txt");
+    for (const name of expectedLiteralPatterns) {
       expect(surface, `canary must reference public asset name: ${name}`).toContain(name);
+    }
+    // The six archive names must come from the manifest at runtime, NOT be
+    // hardcoded as a literal shell line in the workflow.
+    expect(surface, "canary must read public-asset names from release-targets.json").toContain("release-targets.json");
+    for (const name of ARCHIVE_BASENAMES) {
+      expect(surface, `canary must derive archive basename from manifest at runtime: ${name}`).not.toMatch(new RegExp(`^\\s*["']?${name.replace(/[.*+?^${}()|[\]\\]/gu, "\\$&")}["']?\\s*\\\\?$`, "mu"));
     }
     expect(surface, "canary must verify the downloaded archive's SHA-256").toContain("sha256sum");
     expect(surface, "canary must run the public installer").toContain("install.sh");
@@ -1209,6 +1262,20 @@ const MUTATIONS = {
     if (idx === -1) return yaml;
     const probe = "        env:\n          RESOLVE_LATEST: curl -fsSL https://api.github.com/repos/JosiahSiegel/umactually/releases/latest";
     // Insert AFTER the `- name:` line, before the `run:` line.
+    return [...lines.slice(0, idx + 1), probe, ...lines.slice(idx + 1)].join("\n");
+  },
+
+  // Negative 6: a hardcoded raw basename (umactually-linux-x64) appears as a
+  //             standalone shell token in a step that does NOT read the
+  //             manifest. Contract: the build pipeline must read target
+  //             lists from scripts/release-targets.json at runtime.
+  "hardcoded raw basename outside manifest read": (yaml: string): string => {
+    // Inject a hardcoded `cp dist/<raw> release/<raw>` style line into the
+    // build-package "Build candidate bundle" step's run block.
+    const lines = yaml.split("\n");
+    const idx = lines.findIndex((l) => l.includes("node scripts/build-binary.mjs"));
+    if (idx === -1) return yaml;
+    const probe = "          cp dist/umactually-linux-x64 release/umactually-linux-x64";
     return [...lines.slice(0, idx + 1), probe, ...lines.slice(idx + 1)].join("\n");
   },
 } as const satisfies Record<string, (yaml: string) => string>;

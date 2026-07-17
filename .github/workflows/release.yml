@@ -99,17 +99,16 @@ jobs:
       - name: Stage candidate bundle (public/<archives>, public/checksums.txt, internal/raw/<binaries>, internal/release-size-report.json)
         run: |
           set -euo pipefail
-          # Copy raw binaries into the internal/raw/ subtree.
-          for raw in \
-            umactually-linux-x64 \
-            umactually-linux-arm64 \
-            umactually-darwin-x64 \
-            umactually-darwin-arm64 \
-            umactually-windows-x64.exe \
-            umactually-windows-arm64.exe
-          do
-            cp "release/$raw" "release/internal/raw/$raw"
-          done
+          # Manifest is the single source of truth for raw basenames. Read it
+          # at runtime so adding/renaming a target requires only a manifest
+          # edit, not a workflow edit.
+          node -e '
+            const fs = require("node:fs");
+            const targets = JSON.parse(fs.readFileSync("scripts/release-targets.json", "utf8"));
+            for (const t of targets) {
+              fs.copyFileSync(`release/${t.rawName}`, `release/internal/raw/${t.rawName}`);
+            }
+          '
           ls -la release/public
           ls -la release/internal/raw
           test -f release/internal/release-size-report.json
@@ -605,22 +604,22 @@ jobs:
         run: |
           set -euo pipefail
           ROOT="$RUNNER_TEMP/umactually-release-candidate"
-          for entry in \
-            public/umactually-linux-x64.tar.gz \
-            public/umactually-linux-arm64.tar.gz \
-            public/umactually-darwin-x64.tar.gz \
-            public/umactually-darwin-arm64.tar.gz \
-            public/umactually-windows-x64.zip \
-            public/umactually-windows-arm64.zip \
-            public/checksums.txt \
-            internal/raw/umactually-linux-x64 \
-            internal/raw/umactually-linux-arm64 \
-            internal/raw/umactually-darwin-x64 \
-            internal/raw/umactually-darwin-arm64 \
-            internal/raw/umactually-windows-x64.exe \
-            internal/raw/umactually-windows-arm64.exe \
-            internal/release-size-report.json
-          do
+          # Manifest is the single source of truth for the candidate-bundle
+          # layout. Read it at runtime: each target contributes one archive
+          # under public/ and one raw binary under internal/raw/. Add the
+          # shared checksums.txt manifest entry and the internal-only
+          # release-size-report.json.
+          mapfile -t EXPECTED_LAYOUT < <(node -e '
+            const fs = require("node:fs");
+            const targets = JSON.parse(fs.readFileSync("scripts/release-targets.json", "utf8"));
+            for (const t of targets) {
+              console.log(`public/${t.archiveName}`);
+              console.log(`internal/raw/${t.rawName}`);
+            }
+            console.log("public/checksums.txt");
+            console.log("internal/release-size-report.json");
+          ')
+          for entry in "${EXPECTED_LAYOUT[@]}"; do
             if [ ! -e "$ROOT/$entry" ]; then
               echo "::error::candidate bundle is missing required entry: $entry" >&2
               exit 1
@@ -682,17 +681,19 @@ jobs:
       - name: Verify draft assets + hashes (pre-publish gate)
         run: |
           set -euo pipefail
-          # Pull the draft, verify exactly seven assets and their
-          # checksums against checksums.txt.
+          # Pull the draft, verify every manifest archive + checksums.txt
+          # landed and only those landed.
           ASSET_NAMES=$(gh release view "$GITHUB_REF_NAME" --json assets --jq '.assets[].name' | sort)
-          EXPECTED=$(printf '%s\n' \
-            checksums.txt \
-            umactually-darwin-arm64.tar.gz \
-            umactually-darwin-x64.tar.gz \
-            umactually-linux-arm64.tar.gz \
-            umactually-linux-x64.tar.gz \
-            umactually-windows-arm64.zip \
-            umactually-windows-x64.zip | sort)
+          # Manifest is the single source of truth for public asset names.
+          # Read it at runtime; adding/renaming a target requires only a
+          # manifest edit, not a workflow edit.
+          mapfile -t EXPECTED_ARR < <(node -e '
+            const fs = require("node:fs");
+            const targets = JSON.parse(fs.readFileSync("scripts/release-targets.json", "utf8"));
+            for (const t of targets) console.log(t.archiveName);
+            console.log("checksums.txt");
+          ')
+          EXPECTED=$(printf '%s\n' "${EXPECTED_ARR[@]}" | sort)
           if [ "$ASSET_NAMES" != "$EXPECTED" ]; then
             echo "::error::draft assets diverge from expected set" >&2
             echo "--- actual ---" >&2; echo "$ASSET_NAMES" >&2
@@ -749,20 +750,20 @@ jobs:
           set -euo pipefail
           # Fetch the release by immutable tag — NEVER /releases/latest/.
           gh api "repos/${REPO}/releases/tags/${TAG}" > release.json
-          # Probe every asset name. Use jq (preinstalled on ubuntu-24.04)
-          # to enumerate names; assert each canonical name is present
-          # exactly once and no extras leak in.
-          EXPECTED=(
-            "umactually-linux-x64.tar.gz"
-            "umactually-linux-arm64.tar.gz"
-            "umactually-darwin-x64.tar.gz"
-            "umactually-darwin-arm64.tar.gz"
-            "umactually-windows-x64.zip"
-            "umactually-windows-arm64.zip"
-            "checksums.txt"
-          )
+          # Probe every asset name. Manifest is the single source of
+          # truth for public asset names: read it at runtime and
+          # append the always-present checksums.txt. Asserting against
+          # the manifest keeps the canary honest — adding, renaming,
+          # or removing a target requires only a manifest edit and the
+          # canary follows automatically.
+          EXPECTED=$(node -e '
+            const fs = require("node:fs");
+            const targets = JSON.parse(fs.readFileSync("scripts/release-targets.json", "utf8"));
+            for (const t of targets) console.log(t.archiveName);
+            console.log("checksums.txt");
+          ')
           ACTUAL=$(jq -r '.assets[].name' release.json | sort)
-          for name in "${EXPECTED[@]}"; do
+          for name in $EXPECTED; do
             COUNT=$(printf '%s\n' "$ACTUAL" | grep -cFx "$name" || true)
             if [ "$COUNT" -ne 1 ]; then
               echo "::error::expected asset missing or duplicated: $name (count=$COUNT)" >&2
@@ -770,13 +771,15 @@ jobs:
               exit 1
             fi
           done
+          # Total must equal the manifest archive count plus checksums.txt.
+          EXPECTED_TOTAL=$(($(printf '%s\n' "$EXPECTED" | wc -l)))
           TOTAL=$(printf '%s\n' "$ACTUAL" | wc -l)
-          if [ "$TOTAL" -ne 7 ]; then
-            echo "::error::expected exactly 7 assets, got $TOTAL" >&2
+          if [ "$TOTAL" -ne "$EXPECTED_TOTAL" ]; then
+            echo "::error::expected exactly $EXPECTED_TOTAL assets, got $TOTAL" >&2
             printf '%s\n' "$ACTUAL" >&2
             exit 1
           fi
-          echo "OK: 7/7 assets present with exact names"
+          echo "OK: $EXPECTED_TOTAL/$EXPECTED_TOTAL assets present with exact names"
 
       - name: Download checksums.txt and native archive, verify SHA-256
         env:
