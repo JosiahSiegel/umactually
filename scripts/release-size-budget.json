@@ -1,0 +1,57 @@
+{
+  "schemaVersion": 1,
+  "bunVersion": "1.3.14",
+  "packagingVersion": {
+    "schema": 1,
+    "node": "24.15.0",
+    "zlib": "1.3.1-e00f703",
+    "tarStream": "3.2.0",
+    "yazl": "3.3.1",
+    "yauzl": "3.4.0"
+  },
+  "global": {
+    "maxRatio": 0.5,
+    "maxArchiveBytes": 52428800
+  },
+  "perTarget": {
+    "linux-x64": {
+      "maxArchiveBytes": 71303168
+    },
+    "linux-arm64": {
+      "maxArchiveBytes": 70254592
+    },
+    "darwin-x64": {
+      "maxArchiveBytes": 97517568
+    },
+    "darwin-arm64": {
+      "maxArchiveBytes": 97517568
+    },
+    "windows-x64": {
+      "maxArchiveBytes": 87031808
+    },
+    "windows-arm64": {
+      "maxArchiveBytes": 85983232
+    }
+  },
+  "meta": {
+    "baselineSource": "v0.4.1 release raw bytes (recorded in .omo/drafts/release-binary-download-size.md lines 21-25 / verified findings line 45)",
+    "baselineRecord": {
+      "linux-x64": "61.6 MiB",
+      "linux-arm64": "60.9 MiB",
+      "darwin-x64": "84 MiB",
+      "darwin-arm64": "84 MiB",
+      "windows-x64": "75 MiB",
+      "windows-arm64": "74 MiB"
+    },
+    "formula": "maxArchiveBytes = ceil((baselineArchiveBytes * 1.10) / 1MiB) * 1MiB",
+    "perTargetDerivation": {
+      "linux-x64": "ceil((61.6 MiB * 1.10) / 1MiB) * 1MiB = ceil(67.76) * 1MiB = 68 MiB = 71303168",
+      "linux-arm64": "ceil((60.9 MiB * 1.10) / 1MiB) * 1MiB = ceil(66.99) * 1MiB = 67 MiB = 70254592",
+      "darwin-x64": "ceil((84 MiB * 1.10) / 1MiB) * 1MiB = ceil(92.40) * 1MiB = 93 MiB = 97517568",
+      "darwin-arm64": "ceil((84 MiB * 1.10) / 1MiB) * 1MiB = ceil(92.40) * 1MiB = 93 MiB = 97517568",
+      "windows-x64": "ceil((75 MiB * 1.10) / 1MiB) * 1MiB = ceil(82.50) * 1MiB = 83 MiB = 87031808",
+      "windows-arm64": "ceil((74 MiB * 1.10) / 1MiB) * 1MiB = ceil(81.40) * 1MiB = 82 MiB = 85983232"
+    },
+    "evidence": ".omo/evidence/release-size-budget.md"
+  }
+}
