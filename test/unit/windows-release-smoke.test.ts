@@ -32,21 +32,27 @@ describe("Release binary smoke contract", () => {
     const workflow = readRecord(parse(readFileSync(join(REPO_ROOT, ".github/workflows/release.yml"), "utf8")), "release workflow");
     const jobs = readRecord(workflow["jobs"], "release jobs");
 
-    // When: Windows jobs are selected by their runner. There may be
-    // multiple (the windows-smoke job validates the freshly-built
-    // binary, the install-smoke-windows job validates the install
-    // script end-to-end). The contract is "at least one Windows job
-    // must download + invoke the x64 binary" — not "exactly one".
+    // When: Windows jobs are selected. GitHub Actions accepts either
+    // the canonical `windows-latest` alias or the explicit pinned
+    // runner label `windows-2025`; both are valid Windows runner
+    // declarations under the plan's locked-runner policy.
     const windowsJobs = Object.values(jobs)
       .map((job, index) => readRecord(job, `release job ${index}`))
-      .filter((job) => job["runs-on"] === "windows-latest");
+      .filter((job) => job["runs-on"] === "windows-latest" || job["runs-on"] === "windows-2025");
 
     // Then: at least one Windows job exists, and that job downloads the
-    // published executable and invokes its version surface.
+    // published executable and invokes its version surface. The
+    // installer-driven flow extracts the archive member
+    // `umactually-windows-x64.exe` and renames it to `umactually.exe` at
+    // install time, so the surface check accepts either name.
     expect(windowsJobs.length).toBeGreaterThanOrEqual(1);
     const targetJob = windowsJobs.find((job) => {
       const steps = readSteps(job["steps"]);
-      return steps.some((step) => step.run?.includes("umactually-windows-x64.exe") === true && step.run.includes("--version"));
+      return steps.some((step) => {
+        const run = step.run ?? "";
+        const mentionsX64 = run.includes("umactually-windows-x64.exe") || run.includes("umactually.exe");
+        return mentionsX64 && run.includes("--version");
+      });
     });
     expect(targetJob).toBeDefined();
   });
@@ -56,10 +62,11 @@ describe("Release binary smoke contract", () => {
     const workflow = readRecord(parse(readFileSync(join(REPO_ROOT, ".github/workflows/release.yml"), "utf8")), "release workflow");
     const jobs = readRecord(workflow["jobs"], "release jobs");
 
-    // When: Windows jobs are selected.
+    // When: Windows jobs are selected (accept either windows-latest
+    // alias or pinned windows-2025 label per plan §Todo 4 locked-runner policy).
     const windowsJobs = Object.values(jobs)
       .map((job, index) => readRecord(job, `release job ${index}`))
-      .filter((job) => job["runs-on"] === "windows-latest");
+      .filter((job) => job["runs-on"] === "windows-latest" || job["runs-on"] === "windows-2025");
 
     // Then: at least one Windows job invokes scripts/install.ps1 (the
     // end-user PowerShell install path), proving the user-facing
