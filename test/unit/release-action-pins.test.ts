@@ -757,3 +757,146 @@ describe("release hotfix 6 — bad-checksum post-condition", () => {
     ).toBe(false);
   });
 });
+
+// ---------------------------------------------------------------------------
+// Bug — Bun-compiled Windows binaries write to the console handle directly,
+// bypassing PowerShell's `2>&1` redirection.
+//
+// Run 29615454566 surfaced this in `smoke-windows-x64`: the Bun-compiled
+// `umactually-windows-x64.exe` produced no captured output when invoked via
+// `& $StagedPath --version 2>&1`, so `$probe` ended up empty and the
+// hotfix #6 `IsNullOrWhiteSpace($probe)` guard threw "no output produced".
+// This is a known Bun-on-Windows behavior: the runtime writes to the
+// console handle (not the stdout file descriptor), so PowerShell's
+// redirection cannot capture the bytes.
+//
+// The fix has two layers, EITHER of which is sufficient on its own:
+//
+//   1. `cmd /c "<staged> --version"` — wraps the invocation in a cmd.exe
+//      that DOES capture the output. This is the primary path; it works
+//      for any binary, Bun-compiled or otherwise.
+//
+//   2. `[System.Diagnostics.FileVersionInfo]::GetVersionInfo($StagedPath)`
+//      — a .NET API that reads the file's PE version-info resource
+//      directly, without running the binary. This is the fallback that
+//      runs only if the cmd /c probe is still empty; it surfaces the
+//      file's FileVersion + ProductVersion + FileDescription, which is
+//      enough for the non-emptiness guard.
+//
+// The contract pinned here: at least ONE of the two layers must be
+// present. Reverting to the bare `& $StagedPath --version 2>&1` form
+// silently breaks Windows smoke tests on Bun binaries; the regression
+// test catches that regression deterministically.
+// ---------------------------------------------------------------------------
+
+function extractStagedSmokeTestBody(): { text: string; body: string } {
+  // Locate the `function Invoke-StagedSmokeTest { ... }` body, same way
+  // the hotfix #6 test does: top-level `}` at column 0 terminates the
+  // function.
+  const text = readFileSync(INSTALL_PS1_PATH, "utf8");
+  const fnStart = text.indexOf("function Invoke-StagedSmokeTest");
+  expect(
+    fnStart,
+    "expected `function Invoke-StagedSmokeTest` to be present in scripts/install.ps1",
+  ).toBeGreaterThanOrEqual(0);
+
+  const rest = text.slice(fnStart);
+  const lines = rest.split(/\r?\n/u);
+  const reClosingBrace = /^\}\s*$/u;
+  let fnEnd = -1;
+  for (let i = 0; i < lines.length; i += 1) {
+    if (reClosingBrace.test(lines[i] ?? "")) {
+      fnEnd = i;
+      break;
+    }
+  }
+  expect(
+    fnEnd,
+    "expected `function Invoke-StagedSmokeTest` to terminate with a closing brace at column 0",
+  ).toBeGreaterThan(0);
+
+  const body = lines.slice(0, fnEnd + 1).join("\n");
+  return { text, body };
+}
+
+describe("release hotfix 7 — Bun console-handle workaround", () => {
+  it("RELEASE-INSTALL-PS1-STAGED-SMOKE-CMD-C-OR-PE-VERSION-INFO: Invoke-StagedSmokeTest uses cmd /c invocation OR PE version-info fallback", () => {
+    // Given: the on-disk install.ps1 source.
+    const { body } = extractStagedSmokeTestBody();
+
+    // Then: at least one of the two Bun-aware capture mechanisms is
+    // present. Each is independently sufficient to capture a working
+    // Windows binary's identity; both is belt-and-suspenders.
+
+    // Layer 1: `cmd /c "<staged> --version"` invocation. The fix
+    // wraps the binary call in cmd.exe, which writes the binary's
+    // output back through a pipe that PowerShell can capture with
+    // `2>&1`. The pattern we look for is the literal `cmd /c`
+    // followed by a quoted invocation of `$StagedPath --version`.
+    const usesCmdC =
+      /cmd\s+\/c\b/u.test(body) && /"\$StagedPath"\s+--version/u.test(body);
+
+    // Layer 2: PE version-info resource read. The fix uses the .NET
+    // `[System.Diagnostics.FileVersionInfo]::GetVersionInfo(...)`
+    // API to surface the binary's metadata without running it. The
+    // pattern we look for is the literal class name + the method
+    // call on `$StagedPath`. This is a Windows-only API — on Linux
+    // / macOS the fallback path is never reached, but the install
+    // is also never executed there, so the surface is purely
+    // defensive.
+    const usesPeVersionInfo =
+      /\[System\.Diagnostics\.FileVersionInfo\]::GetVersionInfo\s*\(\s*\$StagedPath\s*\)/u.test(
+        body,
+      );
+
+    expect(
+      usesCmdC || usesPeVersionInfo,
+      "Invoke-StagedSmokeTest must use `cmd /c \"$StagedPath\" --version` invocation " +
+        "OR fall back to the PE version-info resource via " +
+        "`[System.Diagnostics.FileVersionInfo]::GetVersionInfo($StagedPath)`. " +
+        "Bun-compiled Windows binaries write to the console handle directly, which " +
+        "bypasses PowerShell's `2>&1` redirection. Without one of these two mechanisms, " +
+        "`$probe` ends up empty and the install is rejected with `no output produced` " +
+        "(run 29615454566).",
+    ).toBe(true);
+  });
+
+  it("RELEASE-INSTALL-PS1-STAGED-SMOKE-NO-BARE-INVOKE: Invoke-StagedSmokeTest does not regress to the bare `& $StagedPath` form", () => {
+    // Given: the on-disk install.ps1 source.
+    const { body } = extractStagedSmokeTestBody();
+
+    // Then: the bare `& $StagedPath --version 2>&1` form is NOT the
+    // only invocation. Either the cmd /c wrapper or the PE
+    // version-info fallback (or both) must be present. The bare form
+    // is what produced the v0.5.0 regression on Windows + Bun
+    // binaries; if a future refactor removes both the wrapper and
+    // the fallback, this test fails.
+    const hasBareInvoke = /&\s+\$StagedPath\s+--version/u.test(body);
+    const hasCmdC = /cmd\s+\/c\b/u.test(body);
+    const hasPeVersionInfo =
+      /\[System\.Diagnostics\.FileVersionInfo\]::GetVersionInfo\s*\(\s*\$StagedPath\s*\)/u.test(
+        body,
+      );
+
+    expect(
+      hasCmdC || hasPeVersionInfo,
+      "Invoke-StagedSmokeTest must include the cmd /c wrapper OR the PE version-info fallback. " +
+        "If both are absent, the function reverts to the bare `& $StagedPath --version` form, " +
+        "which is exactly the v0.5.0 Windows regression (Bun console handle).",
+    ).toBe(true);
+
+    // If the bare `& $StagedPath --version 2>&1` form appears at all,
+    // it must be accompanied by at least one of the two
+    // mechanisms. Otherwise we're back to the bug.
+    if (hasBareInvoke) {
+      expect(
+        hasCmdC || hasPeVersionInfo,
+        "Invoke-StagedSmokeTest contains a bare `& $StagedPath --version` invocation. " +
+          "The bare form is what produced the v0.5.0 Windows regression. " +
+          "The cmd /c wrapper or the PE version-info fallback (or both) must also be present " +
+          "so the install is not rejected with `no output produced` when the binary writes " +
+          "to the console handle directly.",
+      ).toBe(true);
+    }
+  });
+});

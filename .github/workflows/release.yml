@@ -673,7 +673,20 @@ jobs:
             echo "install rejected as expected: BEFORE==AFTER, no staging residue"
           else
             # Install was NOT rejected — the security guarantee is broken.
-            cat "$INSTALL_LOG" >&2 || true
+            # Emit each captured log line as a workflow annotation so the
+            # content is visible in the GitHub Actions UI even when plain
+            # stderr lines are collapsed in the job log. The original
+            # `cat "$INSTALL_LOG" >&2` form relied on stderr being passed
+            # through unfiltered; in practice GitHub Actions collapses
+            # long bursts of stderr and the captured log is invisible.
+            # Each line is emitted as a `::error file=install.sh.log::`
+            # annotation — these show up both in the log AND in the UI's
+            # annotations panel, where they are guaranteed to be visible.
+            # The trailing summary line still uses `::error::` for the
+            # overall pass/fail signal.
+            while IFS= read -r line; do
+              printf '::error file=install.sh.log::%s\n' "$line"
+            done < "$INSTALL_LOG" || true
             echo "::error::install was NOT rejected by bad-checksum. seeded bytes match=$INSTALLED_BYTES_MATCH, stage residue=$STAGE_RESIDUE, install_exit=$INSTALL_EXIT" >&2
             exit 1
           fi

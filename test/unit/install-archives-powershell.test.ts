@@ -448,9 +448,26 @@ describe.skipIf(!PS_AVAILABLE)("install.ps1 archive-mode happy path", () => {
   });
 
   it("PS-ARCHIVE-003: smoke-test failure preserves the old binary and cleans staging", async () => {
-    // Stub payload that exits nonzero on --version.
+    // Stub payload: a Windows console host that exits non-zero with no
+    // stdout. The PowerShell installer invokes the staged binary via
+    // `cmd /c "<staged> --version" 2>&1` (hotfix #7 — Bun console-handle
+    // workaround) and then falls back to the PE version-info resource.
+    // A non-PE byte stream produces no captured output and has no
+    // embedded version metadata, so the installer's "no output" guard
+    // fires — exactly the smoke-test failure mode the test is pinning.
+    //
+    // We deliberately do NOT use a PowerShell script renamed `.exe` here:
+    // `cmd /c` would not recognize the file as a PowerShell script
+    // (no PE header), so the previous `Write-Error` / `exit 42` stub
+    // would silently produce no output even on a "successful" smoke
+    // test, hiding the regression we want to detect.
     const badPayload = Buffer.from(
-      "Write-Error 'bad version'\r\nexit 42\r\n",
+      // A minimal 16-bit DOS stub header (MZ) followed by bytes that
+      // do NOT form a valid PE image. The OS will refuse to execute
+      // it as a Windows binary, the cmd /c probe captures nothing,
+      // the PE fallback cannot find a version-info resource, and the
+      // installer rejects the install with the "no output" guard.
+      "MZ" + "\x00".repeat(58) + "\x80\x00\x00\x00" + "\x00".repeat(64),
       "binary",
     );
     const badArchive = buildArchive([
@@ -475,7 +492,18 @@ describe.skipIf(!PS_AVAILABLE)("install.ps1 archive-mode happy path", () => {
       console.error("STDERR:", result.stderr);
     }
     expect(result.status).not.toBe(0);
-    expect(result.stderr).toMatch(/--version failed/);
+    // Hotfix #7 invokes the staged binary via `cmd /c "..."`. A stub
+    // that's a non-PE byte stream (MZ header without a valid PE
+    // signature) causes Windows to print "This version of ... is not
+    // compatible ..." to stderr; cmd /c surfaces the message via
+    // PowerShell's `$?` failure path, so the installer rejects with
+    // the "PowerShell reported command failure" branch. The exact
+    // substring `Staged --version failed` matches that branch (and the
+    // exit-code / no-output branches too, all of which are valid smoke
+    // failures). The point of this assertion is to confirm the failure
+    // surfaced through the smoke-test guard, not from the installer's
+    // pre-smoke checksum / extraction path.
+    expect(result.stderr).toMatch(/Staged --version failed/u);
     expect(readFileSync(join(installDir, "umactually.exe"), "utf8")).toBe("preserve me\n");
     assertNoTempResidue(installDir, ["umactually.exe"]);
   });

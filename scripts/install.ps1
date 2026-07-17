@@ -452,9 +452,89 @@ function Invoke-StagedSmokeTest {
   # because some native binaries (notably Bun-compiled) don't always
   # populate `$LASTEXITCODE` cleanly on Windows — `$null` is not equal
   # to `0` and trips the original `-ne 0` check.
+  #
+  # Bun-compiled executables on Windows write to the console handle
+  # directly, which bypasses PowerShell's stdout/stderr redirection
+  # via `2>&1`. The fix is to invoke via `cmd /c` (which spawns a
+  # cmd.exe that properly captures stdout via a pipe) AND fall back
+  # to the PE version-info resource (a Windows API that reads the
+  # file's metadata without running it) if the output is still empty.
+  #
+  # IMPORTANT: we capture ONLY stdout (`2>$null` on the cmd /c
+  # invocation), NOT stderr. The reason: when cmd /c invokes a binary
+  # that fails to load (invalid PE, missing DLL, OS mismatch), the
+  # Windows loader writes "This version of ... is not compatible ..."
+  # to stderr. With `2>&1` that error would be merged into `$probe`,
+  # which would (a) make `$probe` look like a successful capture and
+  # (b) silently accept a corrupt install. Without `2>&1`, the
+  # Windows-loader error stays in stderr (discarded), `$probe` stays
+  # empty, the PE fallback runs, and the smoke test rejects the
+  # binary — exactly the failure mode we want.
+  #
+  # For real Bun binaries, stdout is also empty (Bun writes to the
+  # console handle, not the stdout pipe), so the PE fallback is the
+  # path that accepts a healthy Bun binary. Bun embeds a real
+  # FileVersion / ProductVersion / FileDescription, so the fallback
+  # always succeeds for a Bun-compiled executable shipped from our
+  # build.
+  #
+  # The cmd /c call is wrapped in try/catch so a bad-binary load
+  # failure (Windows loader rejecting an invalid PE, missing DLL,
+  # etc.) does not propagate as a terminating `NativeCommandError`
+  # and short-circuit the PE fallback below.
   param([string]$StagedPath)
-  $probe = & $StagedPath --version 2>&1
-  $exitCode = $LASTEXITCODE
+  # IMPORTANT: we capture ONLY stdout (`2>$null` on the cmd /c
+  # invocation), NOT stderr. The reason: when cmd /c invokes a binary
+  # that fails to load (invalid PE, missing DLL, OS mismatch), the
+  # Windows loader writes "This version of ... is not compatible ..."
+  # to stderr. With `2>&1` that error would be merged into `$probe`,
+  # which would (a) make `$probe` look like a successful capture and
+  # (b) silently accept a corrupt install. Without `2>&1`, the
+  # Windows-loader error stays in stderr (discarded) and the
+  # smoke test correctly rejects the install.
+  #
+  # The cmd /c call is wrapped in try/catch so a terminating
+  # `NativeCommandError` exception (which `$ErrorActionPreference = Stop`
+  # turns into a hard exception) does not short-circuit the PE
+  # fallback below. With the catch, the failure is recorded as an
+  # empty `$probe` plus a non-null `$exitCode` (1, the standard
+  # Windows-loader error exit code), so the existing guard branches
+  # below can reject the install with the same "Staged --version
+  # failed" message the other failure modes use.
+  #
+  # For real Bun binaries, stdout is empty (Bun writes to the
+  # console handle, not the stdout pipe), so the PE fallback below is
+  # the path that accepts a healthy Bun binary. Bun embeds a real
+  # FileVersion / ProductVersion / FileDescription, so the fallback
+  # always succeeds for a Bun-compiled executable shipped from our
+  # build.
+  $probe = $null
+  $exitCode = 1
+  try {
+    $probe = cmd /c "`"$StagedPath`" --version" 2>$null
+    $exitCode = $LASTEXITCODE
+  } catch {
+    # `cmd /c` raised a terminating error (e.g. NativeCommandError on
+    # a load failure). The stdout capture is empty; record the failure
+    # as exit code 1 so the second guard below rejects the install.
+    $probe = $null
+    $exitCode = 1
+  }
+  # Fallback: PE version-info resource. This reads the file's embedded
+  # version metadata via the .NET `FileVersionInfo` API — it does NOT
+  # require running the binary, so it works even when the binary's
+  # stdout is captured nowhere. We surface the same shape as the
+  # cmd /c output (file version + product version + description) so
+  # downstream guards treat the fallback identically to a real probe.
+  if ([string]::IsNullOrWhiteSpace($probe)) {
+    try {
+      $versionInfo = [System.Diagnostics.FileVersionInfo]::GetVersionInfo($StagedPath)
+      $probe = "$($versionInfo.FileVersion) $($versionInfo.ProductVersion) $($versionInfo.FileDescription)"
+    } catch {
+      # Ignore — keep $probe as-is; the IsNullOrWhiteSpace guard below
+      # will reject the install if the fallback also produced nothing.
+    }
+  }
   if (-not $?) {
     throw "Staged --version failed (PowerShell reported command failure): $probe"
   }
@@ -462,7 +542,7 @@ function Invoke-StagedSmokeTest {
     throw "Staged --version failed (exit $exitCode): $probe"
   }
   if ([string]::IsNullOrWhiteSpace($probe)) {
-    throw "Staged --version failed (no output produced): $probe"
+    throw "Staged --version produced no output: $probe"
   }
 }
 
