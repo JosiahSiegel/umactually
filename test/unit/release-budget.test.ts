@@ -137,16 +137,26 @@ describe("release-size-budget.json — formula correctness", () => {
     // bunVersion pinned to 1.3.14 per the plan.
     expect(budget.bunVersion).toBe("1.3.14");
 
-    // packagingVersion uses process.versions.node / process.versions.zlib
-    // exactly — not a build-time constant.
-    expect(budget.packagingVersion).toEqual({
-      schema: 1,
-      node: process.versions.node,
-      zlib: process.versions.zlib,
-      tarStream: "3.2.0",
-      yazl: "3.3.1",
-      yauzl: "3.4.0",
-    });
+    // packagingVersion is a frozen snapshot of the build environment
+    // recorded when scripts/release-size-budget.json was last
+    // regenerated. The file is committed to the repo, so its
+    // `node` / `zlib` fields reflect the Node + zlib versions of the
+    // regenerator — NOT the Node version running this test. Asserting
+    // equality against `process.versions.node` made the test pass on
+    // the regenerating machine (Node 24.15.0) and fail on every other
+    // Node version (e.g. CI's Node 24.18.0 on Linux).
+    //
+    // What this test should actually lock down:
+    //  - schema is the contract version (currently 1)
+    //  - the three npm-version pins are exact (tar-stream, yazl, yauzl)
+    //  - the node / zlib strings look like valid semver-like build
+    //    identifiers (informational, not a runtime invariant)
+    expect(budget.packagingVersion.schema).toBe(1);
+    expect(budget.packagingVersion.tarStream).toBe("3.2.0");
+    expect(budget.packagingVersion.yazl).toBe("3.3.1");
+    expect(budget.packagingVersion.yauzl).toBe("3.4.0");
+    expect(budget.packagingVersion.node).toMatch(/^\d+\.\d+\.\d+/);
+    expect(budget.packagingVersion.zlib).toMatch(/^\d+\.\d+\.\d+/);
 
     // Per-target ceilings match the formula against the v0.4.1
     // baseline values recorded in .omo/drafts/release-binary-download-size.md.

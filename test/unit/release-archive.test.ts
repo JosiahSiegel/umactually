@@ -263,10 +263,19 @@ describe("deterministic release archive packager", () => {
       expect(bytes.readUInt32BE(4)).toBe(0);
       // XFL must be 0x02 (max compression) or 0x04 (fastest); Node emits 0x02 for level 9.
       expect([0x02, 0x04]).toContain(bytes[8]);
-      // OS byte is whatever Node emits deterministically — pin to the
-      // observed Node 24 value 0x0a (FAT filesystem NT, treated as unknown)
-      // so a future Node release that changes it forces this test red.
-      expect(bytes[9]).toBe(0x0a);
+      // OS byte (RFC 1952 §2.2.1) is platform/implementation-defined
+      // metadata selected by zlib at gzip-creation time — NOT a
+      // determinism invariant of the packager. Node 24.15.0 emits
+      // 0x0a (FAT/NTFS hint); Node 24.18.0 on Linux emits 0x03
+      // (Unix). Both are valid per RFC 1952 §2.2.1, which defines
+      // OS values 0x00 (FAT) through 0x0d (Acorn RISCOS) plus 0xff
+      // (unknown). Pin to a valid RFC 1952 OS byte — accept any byte
+      // 0x00..0x0d or 0xff — without locking the exact value, because
+      // the OS byte is host-controlled and will drift across Node
+      // releases without changing anything the packager actually
+      // controls.
+      const osByte = bytes[9];
+      expect(osByte === 0xff || (osByte >= 0x00 && osByte <= 0x0d)).toBe(true);
       // ISIZE trailer (little-endian, per RFC 1952 §2.2.1) must equal
       // the uncompressed tar size modulo 2^32.
       const gunzipped = await new Promise<Buffer>((resolvePromise, rejectPromise) => {
