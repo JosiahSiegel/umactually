@@ -48,7 +48,7 @@
     "test:e2e": "vitest --run --project e2e",
     "test:e2e:smoke": "bash scripts/ci-e2e-smoke.sh",
     "test:config": "vitest --run --project unit test/unit/config-extended.test.ts",
-    "typecheck": "tsc --noEmit",
+    "typecheck": "tsc --noEmit -p tsconfig.test.json",
     "build": "ncc build src/cli.ts -o dist && node scripts/post-bundle.mjs",
     "build:binary": "node scripts/build-binary.mjs",
     "bundle": "npm run build",

@@ -18,8 +18,7 @@
     "isolatedModules": true,
     "forceConsistentCasingInFileNames": true,
     "skipLibCheck": false,
-    "allowImportingTsExtensions": true,
     "noEmit": true
   },
-  "include": ["vitest.config.ts", "src/**/*.ts", "test/**/*.ts"]
+  "include": ["src/**/*.ts"]
 }

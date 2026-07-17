@@ -1,0 +1,7 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "allowImportingTsExtensions": true
+  },
+  "include": ["vitest.config.ts", "src/**/*.ts", "test/**/*.ts", "scripts/**/*.ts"]
+}
