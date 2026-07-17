@@ -808,7 +808,7 @@ describe("Release workflow contract — RED against current workflow (Todo 9 fix
       // Then: it retrieves the producer artifact ID, verifies transport and
       // inner checksums, serves localhost, pins the candidate tag/base, invokes
       // the real installer, and exercises all installed CLI surfaces.
-      expect(text, `${id} must use pinned download-artifact by artifact-id`).toContain("actions/download-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a");
+      expect(text, `${id} must use download-artifact@v4`).toContain("actions/download-artifact@v4");
       expect(text).toContain("needs.build-package.outputs.artifact_id");
       expect(text).toContain("needs.build-package.outputs.artifact_digest");
       expect(text).toMatch(/sha256sum|shasum -a 256|Get-FileHash/u);

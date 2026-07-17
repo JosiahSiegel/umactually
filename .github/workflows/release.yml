@@ -165,7 +165,7 @@ jobs:
           mkdir -p candidate
           unzip -q candidate-transport.zip -d candidate
       - name: Download exact candidate artifact with pinned action
-        uses: actions/download-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        uses: actions/download-artifact@v4
         with:
           artifact-ids: ${{ needs.build-package.outputs.artifact_id }}
           path: candidate
@@ -217,7 +217,7 @@ jobs:
           mkdir -p candidate
           unzip -q candidate-transport.zip -d candidate
       - name: Download exact candidate artifact with pinned action
-        uses: actions/download-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        uses: actions/download-artifact@v4
         with:
           artifact-ids: ${{ needs.build-package.outputs.artifact_id }}
           path: candidate
@@ -269,7 +269,7 @@ jobs:
           mkdir -p candidate
           unzip -q candidate-transport.zip -d candidate
       - name: Download exact candidate artifact with pinned action
-        uses: actions/download-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        uses: actions/download-artifact@v4
         with:
           artifact-ids: ${{ needs.build-package.outputs.artifact_id }}
           path: candidate
@@ -321,7 +321,7 @@ jobs:
           mkdir -p candidate
           unzip -q candidate-transport.zip -d candidate
       - name: Download exact candidate artifact with pinned action
-        uses: actions/download-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        uses: actions/download-artifact@v4
         with:
           artifact-ids: ${{ needs.build-package.outputs.artifact_id }}
           path: candidate
@@ -373,7 +373,7 @@ jobs:
           mkdir -p candidate
           unzip -q candidate-transport.zip -d candidate
       - name: Download exact candidate artifact with pinned action
-        uses: actions/download-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        uses: actions/download-artifact@v4
         with:
           artifact-ids: ${{ needs.build-package.outputs.artifact_id }}
           path: candidate
@@ -486,7 +486,7 @@ jobs:
           mkdir -p candidate
           unzip -q candidate-transport.zip -d candidate
       - name: Download exact candidate artifact with pinned action
-        uses: actions/download-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        uses: actions/download-artifact@v4
         with:
           artifact-ids: ${{ needs.build-package.outputs.artifact_id }}
           path: candidate
@@ -540,7 +540,7 @@ jobs:
           mkdir -p candidate
           unzip -q candidate-transport.zip -d candidate
       - name: Download exact candidate artifact with pinned action
-        uses: actions/download-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        uses: actions/download-artifact@v4
         with:
           artifact-ids: ${{ needs.build-package.outputs.artifact_id }}
           path: candidate
