@@ -83,10 +83,12 @@ jobs:
       - name: Package release assets (archives + checksums)
         run: |
           mkdir -p release/public release/internal/raw
+          # Packager writes into --release-dir (default) so the verifier can
+          # see both archives and raws from the same root. The staging step
+          # below splits the flat layout into public/ and internal/raw/.
           node scripts/package-release-assets.mjs \
             --manifest scripts/release-targets.json \
-            --release-dir release \
-            --out-dir release/public
+            --release-dir release
 
       - name: Compute release-size report
         run: |
@@ -100,15 +102,24 @@ jobs:
       - name: Stage candidate bundle (public/<archives>, public/checksums.txt, internal/raw/<binaries>, internal/release-size-report.json)
         run: |
           set -euo pipefail
-          # Manifest is the single source of truth for raw basenames. Read it
-          # at runtime so adding/renaming a target requires only a manifest
-          # edit, not a workflow edit.
+          # After packager + verifier the flat `release/` root holds both
+          # archives and raws. Split it into the public/internal layout by
+          # renaming (rename is atomic on the same filesystem; using
+          # Node `fs.renameSync` so a stale source raises instead of being
+          # silently lost like `mv -f` would).
           node -e '
             const fs = require("node:fs");
+            const path = require("node:path");
             const targets = JSON.parse(fs.readFileSync("scripts/release-targets.json", "utf8"));
+            fs.mkdirSync("release/public", { recursive: true });
+            fs.mkdirSync("release/internal/raw", { recursive: true });
             for (const t of targets) {
-              fs.copyFileSync(`release/${t.rawName}`, `release/internal/raw/${t.rawName}`);
+              fs.renameSync(`release/${t.archiveName}`, `release/public/${t.archiveName}`);
+              fs.renameSync(`release/${t.rawName}`, `release/internal/raw/${t.rawName}`);
             }
+            // checksums.txt the verifier wrote into the release root must
+            // land under public/ so the smoke jobs can `sha256sum -c` it.
+            fs.renameSync("release/checksums.txt", "release/public/checksums.txt");
           '
           ls -la release/public
           ls -la release/internal/raw
