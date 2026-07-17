@@ -511,7 +511,9 @@ describe.skipIf(!PS_AVAILABLE)("install.ps1 8-case override matrix", () => {
       USERPROFILE: join(installDir, "..", ".."),
     });
     expect(result.status).not.toBe(0);
-    expect(result.stderr).toMatch(/without INSTALL_RELEASE_TAG/);
+    // The PowerShell throw string "INSTALL_RELEASE_BASE + INSTALL_ASSET_CONTRACT=archive without INSTALL_RELEASE_TAG is invalid (case 7 reject)" is word-wrapped by the PowerShell exception formatter with ANSI escape codes between words on multi-line terminals (CI Linux runners). Strip ANSI codes before matching.
+    const stripped = result.stderr.replace(/\u001b\[[0-9;]*m/g, "");
+    expect(stripped).toMatch(/without INSTALL_RELEASE_TAG/);
   });
 
   it("PS-MATRIX-004: rejects unknown contract value", () => {
