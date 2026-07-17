@@ -716,13 +716,75 @@ describe("Release workflow contract — RED against current workflow (Todo 9 fix
     expect(String(readRecord(inputs["correlation"] ?? {}, "correlation")["type"])).toBe("string");
   });
 
-  it("RELEASE-WORKFLOW-TAG-TRIGGER: tag-push is the only publish trigger", () => {
-    // Source: Todo 4 brief.
-    const workflow = loadCurrentWorkflow();
-    const onRecord = readOnRecord(workflow);
-    const push = onRecord["push"] as { tags?: readonly string[] } | undefined;
-    expect(push).toBeDefined();
-    expect(push?.tags).toContain("v*");
+  it("RELEASE-WORKFLOW-INSTALLER-GATES: native lanes install exact local candidates before publish", () => {
+    // Given: the parsed release workflow and the five executable native lanes.
+    const jobs = readJobs(loadCurrentWorkflow()["jobs"]);
+    const nativeIds = [
+      "smoke-linux-x64",
+      "smoke-linux-arm64",
+      "smoke-darwin-x64",
+      "smoke-darwin-arm64",
+      "smoke-windows-x64",
+    ] as const;
+
+    // When: each lane's executable step contract is inspected.
+    for (const id of nativeIds) {
+      const job = jobs[id] ?? EMPTY_JOB;
+      const text = job.steps.map((step) => `${step.uses ?? ""}\n${step.run ?? ""}\n${Object.entries(step.env ?? {}).map(([key, value]) => `${key}=${String(value)}`).join(" ")}`).join("\n");
+
+      // Then: it retrieves the producer artifact ID, verifies transport and
+      // inner checksums, serves localhost, pins the candidate tag/base, invokes
+      // the real installer, and exercises all installed CLI surfaces.
+      expect(text, `${id} must use pinned download-artifact by artifact-id`).toContain("actions/download-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a");
+      expect(text).toContain("needs.build-package.outputs.artifact_id");
+      expect(text).toContain("needs.build-package.outputs.artifact_digest");
+      expect(text).toMatch(/sha256sum|shasum -a 256|Get-FileHash/u);
+      expect(text).toContain("checksums.txt");
+      expect(text).toContain("127.0.0.1");
+      expect(text).toContain("http.server");
+      expect(text).toContain("INSTALL_RELEASE_BASE");
+      expect(text).toContain("INSTALL_RELEASE_TAG");
+      expect(text).toContain("github.ref_name");
+      expect(text).not.toContain("INSTALL_TEST_MODE");
+      expect(text).toContain("--version");
+      expect(text).toContain("--help");
+      expect(text).toContain("doctor");
+    }
+  });
+
+  it("RELEASE-WORKFLOW-FAILURE-GATES: delegation and checksum preservation gate publication", () => {
+    // Given: the delegation, failure-preservation, and publish jobs.
+    const jobs = readJobs(loadCurrentWorkflow()["jobs"]);
+    const delegate = jobs["smoke-windows-x64-git-bash-delegate"] ?? EMPTY_JOB;
+    const badChecksum = jobs["smoke-bad-checksum"] ?? EMPTY_JOB;
+    const publish = jobs["publish"] ?? EMPTY_JOB;
+
+    // When: their machine-consumed contracts are inspected.
+    const delegateText = delegate.steps.map((step) => `${step.run ?? ""}\n${Object.values(step.env ?? {}).join(" ")}`).join("\n");
+    const failureText = badChecksum.steps.map((step) => `${step.run ?? ""}\n${Object.values(step.env ?? {}).join(" ")}`).join("\n");
+
+    // Then: Git Bash delegates to the locally served PowerShell installer,
+    // checksum failure preserves the seeded binary and removes staging, and
+    // publish requires every Todo 10 gate plus the producer explicitly.
+    expect(getJobNeeds(delegate)).toContain("smoke-windows-x64");
+    expect(delegateText).toContain("INSTALL_POWERSHELL_SCRIPT_URL");
+    expect(delegateText).toContain("bash");
+    expect(delegateText).toContain("powershell.exe");
+    expect(failureText).toContain("0000000000000000000000000000000000000000000000000000000000000000");
+    expect(failureText).toMatch(/sha256sum|shasum -a 256/u);
+    expect(failureText).toMatch(/status|exit|nonzero|non-zero/iu);
+    expect(failureText).toContain(".umactually-stage");
+    expect(getJobNeeds(publish)).toEqual(expect.arrayContaining([
+      "build-package",
+      "smoke-linux-x64",
+      "smoke-linux-arm64",
+      "smoke-darwin-x64",
+      "smoke-darwin-arm64",
+      "smoke-windows-x64",
+      "smoke-windows-x64-git-bash-delegate",
+      "smoke-windows-arm64-structural",
+      "smoke-bad-checksum",
+    ]));
   });
 });
 

@@ -127,135 +127,283 @@ jobs:
           retention-days: 14
 
   # ---------------------------------------------------------------------
-  # (b) Native smoke jobs — one per required target. Each downloads the
-  #     tested candidate bundle by id and runs the extracted binary's
-  #     --version / doctor / --help probes.
+  # (b) Native installer smoke jobs. Each lane downloads the producer's
+  #     immutable artifact by numeric ID, verifies its transport digest and
+  #     inner manifest, serves public assets from loopback, then executes the
+  #     materialized installer in production mode.
   # ---------------------------------------------------------------------
   smoke-linux-x64:
-    name: Linux x64 smoke
+    name: Linux x64 installer smoke
     needs: build-package
     runs-on: ubuntu-24.04
     permissions:
       contents: read
       actions: read
     steps:
-      - name: Download candidate bundle (by id)
+      - name: Checkout installer
+        uses: actions/checkout@v4
+      - name: Download exact candidate artifact
         env:
           ARTIFACT_ID: ${{ needs.build-package.outputs.artifact_id }}
+          EXPECTED_DIGEST: ${{ needs.build-package.outputs.artifact_digest }}
         run: |
           set -euo pipefail
-          gh api "repos/${GITHUB_REPOSITORY}/actions/artifacts/${ARTIFACT_ID}/zip" \
-            > candidate-transport.zip
+          gh api "repos/${GITHUB_REPOSITORY}/actions/artifacts/${ARTIFACT_ID}/zip" > candidate-transport.zip
+          ACTUAL=$(sha256sum candidate-transport.zip | awk '{print $1}')
+          test "$ACTUAL" = "$EXPECTED_DIGEST"
           mkdir -p candidate
           unzip -q candidate-transport.zip -d candidate
-      - name: Smoke (extract + version)
+      - name: Download exact candidate artifact with pinned action
+        uses: actions/download-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          artifact-ids: ${{ needs.build-package.outputs.artifact_id }}
+          path: candidate
+      - name: Verify transport digest and inner checksums
+        env:
+          EXPECTED_DIGEST: ${{ needs.build-package.outputs.artifact_digest }}
         run: |
           set -euo pipefail
-          tar -xzf candidate/public/umactually-linux-x64.tar.gz -C /tmp
-          /tmp/umactually-linux-x64 --version
-          /tmp/umactually-linux-x64 doctor
-          /tmp/umactually-linux-x64 --help | head -5
+          ACTUAL=$(sha256sum candidate-transport.zip | awk '{print $1}')
+          test "$ACTUAL" = "$EXPECTED_DIGEST"
+          (cd candidate/public && sha256sum -c checksums.txt)
+      - name: Serve candidate and install
+        env:
+          INSTALL_RELEASE_TAG: ${{ github.ref_name }}
+          UMACTUALLY_NO_PATH_UPDATE: "1"
+        run: |
+          set -euo pipefail
+          PORT=$(python3 -c 'import socket; s=socket.socket(); s.bind(("127.0.0.1",0)); print(s.getsockname()[1]); s.close()')
+          python3 -m http.server "$PORT" --bind 127.0.0.1 --directory candidate/public &
+          SERVER_PID=$!
+          trap 'kill "$SERVER_PID" 2>/dev/null || true; rm -rf "$HOME/.local/bin" "$RUNNER_TEMP/umactually"' EXIT
+          export INSTALL_RELEASE_BASE="http://127.0.0.1:$PORT"
+          sh scripts/install.sh
+          INSTALL_DIR="$HOME/.local/bin"
+          test -x "$INSTALL_DIR/umactually"
+          "$INSTALL_DIR/umactually" --version
+          "$INSTALL_DIR/umactually" --help >/dev/null
+          "$INSTALL_DIR/umactually" doctor
 
   smoke-linux-arm64:
-    name: Linux ARM64 smoke
+    name: Linux ARM64 installer smoke
     needs: build-package
     runs-on: ubuntu-24.04-arm
     permissions:
       contents: read
       actions: read
     steps:
-      - name: Download candidate bundle (by id)
+      - name: Checkout installer
+        uses: actions/checkout@v4
+      - name: Download exact candidate artifact
         env:
           ARTIFACT_ID: ${{ needs.build-package.outputs.artifact_id }}
+          EXPECTED_DIGEST: ${{ needs.build-package.outputs.artifact_digest }}
         run: |
           set -euo pipefail
-          gh api "repos/${GITHUB_REPOSITORY}/actions/artifacts/${ARTIFACT_ID}/zip" \
-            > candidate-transport.zip
+          gh api "repos/${GITHUB_REPOSITORY}/actions/artifacts/${ARTIFACT_ID}/zip" > candidate-transport.zip
+          ACTUAL=$(sha256sum candidate-transport.zip | awk '{print $1}')
+          test "$ACTUAL" = "$EXPECTED_DIGEST"
           mkdir -p candidate
           unzip -q candidate-transport.zip -d candidate
-      - name: Smoke (extract + version)
+      - name: Download exact candidate artifact with pinned action
+        uses: actions/download-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          artifact-ids: ${{ needs.build-package.outputs.artifact_id }}
+          path: candidate
+      - name: Verify transport digest and inner checksums
+        env:
+          EXPECTED_DIGEST: ${{ needs.build-package.outputs.artifact_digest }}
         run: |
           set -euo pipefail
-          tar -xzf candidate/public/umactually-linux-arm64.tar.gz -C /tmp
-          /tmp/umactually-linux-arm64 --version
-          /tmp/umactually-linux-arm64 doctor
-          /tmp/umactually-linux-arm64 --help | head -5
+          ACTUAL=$(sha256sum candidate-transport.zip | awk '{print $1}')
+          test "$ACTUAL" = "$EXPECTED_DIGEST"
+          (cd candidate/public && sha256sum -c checksums.txt)
+      - name: Serve candidate and install
+        env:
+          INSTALL_RELEASE_TAG: ${{ github.ref_name }}
+          UMACTUALLY_NO_PATH_UPDATE: "1"
+        run: |
+          set -euo pipefail
+          PORT=$(python3 -c 'import socket; s=socket.socket(); s.bind(("127.0.0.1",0)); print(s.getsockname()[1]); s.close()')
+          python3 -m http.server "$PORT" --bind 127.0.0.1 --directory candidate/public &
+          SERVER_PID=$!
+          trap 'kill "$SERVER_PID" 2>/dev/null || true; rm -rf "$HOME/.local/bin" "$RUNNER_TEMP/umactually"' EXIT
+          export INSTALL_RELEASE_BASE="http://127.0.0.1:$PORT"
+          sh scripts/install.sh
+          INSTALL_DIR="$HOME/.local/bin"
+          test -x "$INSTALL_DIR/umactually"
+          "$INSTALL_DIR/umactually" --version
+          "$INSTALL_DIR/umactually" --help >/dev/null
+          "$INSTALL_DIR/umactually" doctor
 
   smoke-darwin-x64:
-    name: macOS x64 smoke
+    name: macOS x64 installer smoke
     needs: build-package
     runs-on: macos-15-intel
     permissions:
       contents: read
       actions: read
     steps:
-      - name: Download candidate bundle (by id)
+      - name: Checkout installer
+        uses: actions/checkout@v4
+      - name: Download exact candidate artifact
         env:
           ARTIFACT_ID: ${{ needs.build-package.outputs.artifact_id }}
+          EXPECTED_DIGEST: ${{ needs.build-package.outputs.artifact_digest }}
         run: |
           set -euo pipefail
-          gh api "repos/${GITHUB_REPOSITORY}/actions/artifacts/${ARTIFACT_ID}/zip" \
-            > candidate-transport.zip
+          gh api "repos/${GITHUB_REPOSITORY}/actions/artifacts/${ARTIFACT_ID}/zip" > candidate-transport.zip
+          ACTUAL=$(sha256sum candidate-transport.zip | awk '{print $1}')
+          test "$ACTUAL" = "$EXPECTED_DIGEST"
           mkdir -p candidate
           unzip -q candidate-transport.zip -d candidate
-      - name: Smoke (extract + version)
+      - name: Download exact candidate artifact with pinned action
+        uses: actions/download-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          artifact-ids: ${{ needs.build-package.outputs.artifact_id }}
+          path: candidate
+      - name: Verify transport digest and inner checksums
+        env:
+          EXPECTED_DIGEST: ${{ needs.build-package.outputs.artifact_digest }}
         run: |
           set -euo pipefail
-          tar -xzf candidate/public/umactually-darwin-x64.tar.gz -C /tmp
-          /tmp/umactually-darwin-x64 --version
-          /tmp/umactually-darwin-x64 doctor
-          /tmp/umactually-darwin-x64 --help | head -5
+          ACTUAL=$(shasum -a 256 candidate-transport.zip | awk '{print $1}')
+          test "$ACTUAL" = "$EXPECTED_DIGEST"
+          (cd candidate/public && shasum -a 256 -c checksums.txt)
+      - name: Serve candidate and install
+        env:
+          INSTALL_RELEASE_TAG: ${{ github.ref_name }}
+          UMACTUALLY_NO_PATH_UPDATE: "1"
+        run: |
+          set -euo pipefail
+          PORT=$(python3 -c 'import socket; s=socket.socket(); s.bind(("127.0.0.1",0)); print(s.getsockname()[1]); s.close()')
+          python3 -m http.server "$PORT" --bind 127.0.0.1 --directory candidate/public &
+          SERVER_PID=$!
+          trap 'kill "$SERVER_PID" 2>/dev/null || true; rm -rf "$HOME/.local/bin" "$RUNNER_TEMP/umactually"' EXIT
+          export INSTALL_RELEASE_BASE="http://127.0.0.1:$PORT"
+          sh scripts/install.sh
+          INSTALL_DIR="$HOME/.local/bin"
+          test -x "$INSTALL_DIR/umactually"
+          "$INSTALL_DIR/umactually" --version
+          "$INSTALL_DIR/umactually" --help >/dev/null
+          "$INSTALL_DIR/umactually" doctor
 
   smoke-darwin-arm64:
-    name: macOS ARM64 smoke
+    name: macOS ARM64 installer smoke
     needs: build-package
     runs-on: macos-15
     permissions:
       contents: read
       actions: read
     steps:
-      - name: Download candidate bundle (by id)
+      - name: Checkout installer
+        uses: actions/checkout@v4
+      - name: Download exact candidate artifact
         env:
           ARTIFACT_ID: ${{ needs.build-package.outputs.artifact_id }}
+          EXPECTED_DIGEST: ${{ needs.build-package.outputs.artifact_digest }}
         run: |
           set -euo pipefail
-          gh api "repos/${GITHUB_REPOSITORY}/actions/artifacts/${ARTIFACT_ID}/zip" \
-            > candidate-transport.zip
+          gh api "repos/${GITHUB_REPOSITORY}/actions/artifacts/${ARTIFACT_ID}/zip" > candidate-transport.zip
+          ACTUAL=$(sha256sum candidate-transport.zip | awk '{print $1}')
+          test "$ACTUAL" = "$EXPECTED_DIGEST"
           mkdir -p candidate
           unzip -q candidate-transport.zip -d candidate
-      - name: Smoke (extract + version)
+      - name: Download exact candidate artifact with pinned action
+        uses: actions/download-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          artifact-ids: ${{ needs.build-package.outputs.artifact_id }}
+          path: candidate
+      - name: Verify transport digest and inner checksums
+        env:
+          EXPECTED_DIGEST: ${{ needs.build-package.outputs.artifact_digest }}
         run: |
           set -euo pipefail
-          tar -xzf candidate/public/umactually-darwin-arm64.tar.gz -C /tmp
-          /tmp/umactually-darwin-arm64 --version
-          /tmp/umactually-darwin-arm64 doctor
-          /tmp/umactually-darwin-arm64 --help | head -5
+          ACTUAL=$(shasum -a 256 candidate-transport.zip | awk '{print $1}')
+          test "$ACTUAL" = "$EXPECTED_DIGEST"
+          (cd candidate/public && shasum -a 256 -c checksums.txt)
+      - name: Serve candidate and install
+        env:
+          INSTALL_RELEASE_TAG: ${{ github.ref_name }}
+          UMACTUALLY_NO_PATH_UPDATE: "1"
+        run: |
+          set -euo pipefail
+          PORT=$(python3 -c 'import socket; s=socket.socket(); s.bind(("127.0.0.1",0)); print(s.getsockname()[1]); s.close()')
+          python3 -m http.server "$PORT" --bind 127.0.0.1 --directory candidate/public &
+          SERVER_PID=$!
+          trap 'kill "$SERVER_PID" 2>/dev/null || true; rm -rf "$HOME/.local/bin" "$RUNNER_TEMP/umactually"' EXIT
+          export INSTALL_RELEASE_BASE="http://127.0.0.1:$PORT"
+          sh scripts/install.sh
+          INSTALL_DIR="$HOME/.local/bin"
+          test -x "$INSTALL_DIR/umactually"
+          "$INSTALL_DIR/umactually" --version
+          "$INSTALL_DIR/umactually" --help >/dev/null
+          "$INSTALL_DIR/umactually" doctor
 
   smoke-windows-x64:
-    name: Windows x64 smoke
+    name: Windows x64 installer smoke
     needs: build-package
     runs-on: windows-2025
     permissions:
       contents: read
       actions: read
     steps:
-      - name: Download candidate bundle (by id)
+      - name: Checkout installer
+        uses: actions/checkout@v4
+      - name: Download exact candidate artifact
         env:
           ARTIFACT_ID: ${{ needs.build-package.outputs.artifact_id }}
-        shell: pwsh
+          EXPECTED_DIGEST: ${{ needs.build-package.outputs.artifact_digest }}
+        run: |
+          set -euo pipefail
+          gh api "repos/${GITHUB_REPOSITORY}/actions/artifacts/${ARTIFACT_ID}/zip" > candidate-transport.zip
+          ACTUAL=$(sha256sum candidate-transport.zip | awk '{print $1}')
+          test "$ACTUAL" = "$EXPECTED_DIGEST"
+          mkdir -p candidate
+          unzip -q candidate-transport.zip -d candidate
+      - name: Download exact candidate artifact with pinned action
+        uses: actions/download-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          artifact-ids: ${{ needs.build-package.outputs.artifact_id }}
+          path: candidate
+      - name: Verify transport digest and inner checksums
+        shell: powershell
+        env:
+          EXPECTED_DIGEST: ${{ needs.build-package.outputs.artifact_digest }}
         run: |
           $ErrorActionPreference = "Stop"
-          gh api "repos/${GITHUB_REPOSITORY}/actions/artifacts/${ARTIFACT_ID}/zip" `
-            --output candidate-transport.zip
-          Expand-Archive -LiteralPath candidate-transport.zip -DestinationPath candidate -Force
-      - name: Smoke (extract + version)
-        shell: pwsh
+          $actual = (Get-FileHash -LiteralPath candidate-transport.zip -Algorithm SHA256).Hash.ToLowerInvariant()
+          if ($actual -ne $env:EXPECTED_DIGEST.ToLowerInvariant()) { throw "transport digest mismatch" }
+          Get-Content candidate\public\checksums.txt | ForEach-Object {
+            $parts = $_ -split '  ', 2
+            if ($parts.Count -ne 2) { throw "malformed checksums.txt" }
+            $asset = Join-Path candidate\public $parts[1]
+            $inner = (Get-FileHash -LiteralPath $asset -Algorithm SHA256).Hash
+            if ($inner -ne $parts[0]) { throw "inner checksum mismatch: $($parts[1])" }
+          }
+      - name: Serve candidate and install with Windows PowerShell 5.1
+        shell: powershell
+        env:
+          INSTALL_RELEASE_TAG: ${{ github.ref_name }}
         run: |
           $ErrorActionPreference = "Stop"
-          Expand-Archive -LiteralPath candidate\public\umactually-windows-x64.zip -DestinationPath $env:TEMP -Force
-          & "$env:TEMP\umactually-windows-x64.exe" --version
-          & "$env:TEMP\umactually-windows-x64.exe" doctor
-          & "$env:TEMP\umactually-windows-x64.exe" --help | Select-Object -First 5
+          $listener = [Net.Sockets.TcpListener]::new([Net.IPAddress]::Loopback, 0)
+          $listener.Start(); $port = ([Net.IPEndPoint]$listener.LocalEndpoint).Port; $listener.Stop()
+          $server = Start-Process python3 -ArgumentList @('-m','http.server',"$port",'--bind','127.0.0.1','--directory','candidate/public') -PassThru
+          try {
+            $env:INSTALL_RELEASE_BASE = "http://127.0.0.1:$port"
+            powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts\install.ps1
+            if ($LASTEXITCODE -ne 0) { throw "install.ps1 failed" }
+            $installDir = Join-Path $env:USERPROFILE '.local\bin'
+            $binary = Join-Path $installDir 'umactually.exe'
+            if (-not (Test-Path -LiteralPath $binary)) { throw "installed path missing" }
+            & $binary --version
+            & $binary --help | Out-Null
+            & $binary doctor
+          } finally {
+            Stop-Process -Id $server.Id -Force -ErrorAction SilentlyContinue
+            Remove-Item "$env:USERPROFILE\.local\bin" -Recurse -Force -ErrorAction SilentlyContinue
+          }
 
   # ---------------------------------------------------------------------
   # (c) Windows ARM64 is structural-only. There is no public-preview
@@ -303,60 +451,116 @@ jobs:
           if ($machine -ne 0xAA64) { throw "expected ARM64 machine type 0xAA64, got 0x$('{0:X4}' -f $machine)" }
           Write-Output "OK: structural PE machine type ARM64 (0xAA64) confirmed; this is non-runtime validation"
 
-  # ---------------------------------------------------------------------
-  # (d) Install-smoke jobs — pre-publication POSIX + PowerShell installer
-  #     smoke. The full installer-smoke gate with HTTP-served candidate
-  #     and checksum mismatch detection is owned by Todo 10; this is the
-  #     minimal pre-publication smoke to satisfy the workflow contract.
-  # ---------------------------------------------------------------------
-  install-posix:
-    name: POSIX installer smoke
+  smoke-windows-x64-git-bash-delegate:
+    name: Windows x64 Git Bash delegates to PowerShell
+    needs:
+      - build-package
+      - smoke-windows-x64
+    runs-on: windows-latest
+    permissions:
+      contents: read
+      actions: read
+    steps:
+      - name: Checkout installers
+        uses: actions/checkout@v4
+      - name: Download exact candidate artifact
+        env:
+          ARTIFACT_ID: ${{ needs.build-package.outputs.artifact_id }}
+          EXPECTED_DIGEST: ${{ needs.build-package.outputs.artifact_digest }}
+        run: |
+          set -euo pipefail
+          gh api "repos/${GITHUB_REPOSITORY}/actions/artifacts/${ARTIFACT_ID}/zip" > candidate-transport.zip
+          ACTUAL=$(sha256sum candidate-transport.zip | awk '{print $1}')
+          test "$ACTUAL" = "$EXPECTED_DIGEST"
+          mkdir -p candidate
+          unzip -q candidate-transport.zip -d candidate
+      - name: Download exact candidate artifact with pinned action
+        uses: actions/download-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          artifact-ids: ${{ needs.build-package.outputs.artifact_id }}
+          path: candidate
+      - name: Verify transport digest and delegate from Git Bash
+        shell: powershell
+        env:
+          EXPECTED_DIGEST: ${{ needs.build-package.outputs.artifact_digest }}
+          INSTALL_RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          $ErrorActionPreference = "Stop"
+          $actual = (Get-FileHash candidate-transport.zip -Algorithm SHA256).Hash.ToLowerInvariant()
+          if ($actual -ne $env:EXPECTED_DIGEST.ToLowerInvariant()) { throw "transport digest mismatch" }
+          Get-Content candidate\public\checksums.txt | ForEach-Object {
+            $parts = $_ -split '  ', 2
+            if ((Get-FileHash (Join-Path candidate\public $parts[1]) -Algorithm SHA256).Hash -ne $parts[0]) { throw "inner checksum mismatch" }
+          }
+          Copy-Item scripts\install.ps1 candidate\public\install.ps1
+          $listener = [Net.Sockets.TcpListener]::new([Net.IPAddress]::Loopback, 0)
+          $listener.Start(); $port = ([Net.IPEndPoint]$listener.LocalEndpoint).Port; $listener.Stop()
+          $server = Start-Process python3 -ArgumentList @('-m','http.server',"$port",'--bind','127.0.0.1','--directory','candidate/public') -PassThru
+          try {
+            $env:INSTALL_RELEASE_BASE = "http://127.0.0.1:$port"
+            $env:INSTALL_POWERSHELL_SCRIPT_URL = "http://127.0.0.1:$port/install.ps1"
+            & "C:\Program Files\Git\bin\bash.exe" scripts/install.sh
+            if ($LASTEXITCODE -ne 0) { throw "Git Bash delegation failed" }
+            powershell.exe -NoProfile -Command "& '$env:USERPROFILE\.local\bin\umactually.exe' --version; & '$env:USERPROFILE\.local\bin\umactually.exe' --help | Out-Null; & '$env:USERPROFILE\.local\bin\umactually.exe' doctor"
+          } finally {
+            Stop-Process -Id $server.Id -Force -ErrorAction SilentlyContinue
+            Remove-Item "$env:USERPROFILE\.local\bin" -Recurse -Force -ErrorAction SilentlyContinue
+          }
+
+  smoke-bad-checksum:
+    name: checksum failure preserves installed binary
     needs: build-package
     runs-on: ubuntu-latest
     permissions:
       contents: read
       actions: read
     steps:
-      - name: Checkout
+      - name: Checkout installer
         uses: actions/checkout@v4
-      - name: Run install.sh against the candidate bundle
-        run: bash scripts/install.sh
-
-  install-powershell:
-    name: PowerShell installer smoke + Windows x64 binary smoke
-    needs: build-package
-    runs-on: windows-latest
-    permissions:
-      contents: read
-      actions: read
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-      - name: Download candidate bundle (by id) for binary smoke
+      - name: Download exact candidate artifact
         env:
           ARTIFACT_ID: ${{ needs.build-package.outputs.artifact_id }}
-        shell: pwsh
+          EXPECTED_DIGEST: ${{ needs.build-package.outputs.artifact_digest }}
         run: |
-          $ErrorActionPreference = "Stop"
-          gh api "repos/${GITHUB_REPOSITORY}/actions/artifacts/${ARTIFACT_ID}/zip" `
-            --output candidate-transport.zip
-          Expand-Archive -LiteralPath candidate-transport.zip -DestinationPath candidate -Force
-          Expand-Archive -LiteralPath candidate\public\umactually-windows-x64.zip -DestinationPath $env:TEMP -Force
-      - name: Windows x64 binary smoke (umactually-windows-x64.exe --version)
-        shell: pwsh
-        run: |
-          $ErrorActionPreference = "Stop"
-          & "$env:TEMP\umactually-windows-x64.exe" --version
-          & "$env:TEMP\umactually-windows-x64.exe" doctor
-          & "$env:TEMP\umactually-windows-x64.exe" --help | Select-Object -First 5
-      - name: Run install.ps1 in test mode
-        shell: pwsh
+          set -euo pipefail
+          gh api "repos/${GITHUB_REPOSITORY}/actions/artifacts/${ARTIFACT_ID}/zip" > candidate-transport.zip
+          ACTUAL=$(sha256sum candidate-transport.zip | awk '{print $1}')
+          test "$ACTUAL" = "$EXPECTED_DIGEST"
+          mkdir -p candidate
+          unzip -q candidate-transport.zip -d candidate
+      - name: Download exact candidate artifact with pinned action
+        uses: actions/download-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          artifact-ids: ${{ needs.build-package.outputs.artifact_id }}
+          path: candidate
+      - name: Reject mismatch and preserve seeded install
         env:
-          INSTALL_TEST_MODE: "1"
+          EXPECTED_DIGEST: ${{ needs.build-package.outputs.artifact_digest }}
+          INSTALL_RELEASE_TAG: ${{ github.ref_name }}
+          UMACTUALLY_NO_PATH_UPDATE: "1"
         run: |
-          $installDir = Join-Path $env:TEMP ([System.Guid]::NewGuid().Guid)
-          $env:INSTALL_TEST_DIR = $installDir
-          ./scripts/install.ps1
+          set -euo pipefail
+          ACTUAL=$(sha256sum candidate-transport.zip | awk '{print $1}')
+          test "$ACTUAL" = "$EXPECTED_DIGEST"
+          (cd candidate/public && sha256sum -c checksums.txt)
+          mkdir -p "$HOME/.local/bin"
+          printf 'seeded-installed-binary\n' > "$HOME/.local/bin/umactually"
+          BEFORE=$(sha256sum "$HOME/.local/bin/umactually" | awk '{print $1}')
+          awk 'BEGIN{done=0} /umactually-linux-x64.tar.gz$/ && !done {print "0000000000000000000000000000000000000000000000000000000000000000  umactually-linux-x64.tar.gz"; done=1; next} {print}' candidate/public/checksums.txt > candidate/public/checksums.bad
+          mv candidate/public/checksums.bad candidate/public/checksums.txt
+          PORT=$(python3 -c 'import socket; s=socket.socket(); s.bind(("127.0.0.1",0)); print(s.getsockname()[1]); s.close()')
+          python3 -m http.server "$PORT" --bind 127.0.0.1 --directory candidate/public &
+          SERVER_PID=$!
+          trap 'kill "$SERVER_PID" 2>/dev/null || true; rm -rf "$HOME/.local/bin"' EXIT
+          export INSTALL_RELEASE_BASE="http://127.0.0.1:$PORT"
+          set +e
+          sh scripts/install.sh
+          STATUS=$?
+          set -e
+          test "$STATUS" -ne 0
+          AFTER=$(sha256sum "$HOME/.local/bin/umactually" | awk '{print $1}')
+          test "$BEFORE" = "$AFTER"
+          test -z "$(find "$HOME/.local/bin" -maxdepth 1 -name '.umactually-stage*' -print -quit)"
 
   # ---------------------------------------------------------------------
   # (e) Publish. The ONLY job with `contents: write`. Pulls the
@@ -370,14 +574,15 @@ jobs:
   publish:
     name: publish
     needs:
+      - build-package
       - smoke-linux-x64
       - smoke-linux-arm64
       - smoke-darwin-x64
       - smoke-darwin-arm64
       - smoke-windows-x64
+      - smoke-windows-x64-git-bash-delegate
       - smoke-windows-arm64-structural
-      - install-posix
-      - install-powershell
+      - smoke-bad-checksum
     runs-on: ubuntu-24.04
     permissions:
       contents: write
