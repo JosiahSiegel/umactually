@@ -447,12 +447,22 @@ function New-StagingFile {
 }
 
 function Invoke-StagedSmokeTest {
-  # Real executable: just check it runs and exits 0. The test harness injects a
-  # small CMD/PowerShell shim executable so this passes without Bun.
+  # Real executable: check it runs and produces sensible output. The
+  # PowerShell `$?` boolean and the raw exit code are both checked
+  # because some native binaries (notably Bun-compiled) don't always
+  # populate `$LASTEXITCODE` cleanly on Windows — `$null` is not equal
+  # to `0` and trips the original `-ne 0` check.
   param([string]$StagedPath)
   $probe = & $StagedPath --version 2>&1
-  if ($LASTEXITCODE -ne 0) {
-    throw "Staged --version failed (exit $LASTEXITCODE): $probe"
+  $exitCode = $LASTEXITCODE
+  if (-not $?) {
+    throw "Staged --version failed (PowerShell reported command failure): $probe"
+  }
+  if ($null -ne $exitCode -and $exitCode -ne 0) {
+    throw "Staged --version failed (exit $exitCode): $probe"
+  }
+  if ([string]::IsNullOrWhiteSpace($probe)) {
+    throw "Staged --version failed (no output produced): $probe"
   }
 }
 

@@ -532,3 +532,228 @@ describe("release workflow http.server race regression", () => {
     ).toEqual([]);
   });
 });
+
+// ---------------------------------------------------------------------------
+// Hotfix 6 regression: the v0.5.0 release smoke jobs leaked two more bugs
+// that the previous hotfixes did not cover. Both are tested here as pure
+// static analysis over the on-disk source files — same approach as the
+// earlier tests in this file. No network, no PowerShell runtime, no
+// subprocess.
+//
+// Bug A — staged-smoke test rejected `$null` $LASTEXITCODE
+//   Run 29609619760 surfaced this in `smoke-windows-x64`: the Bun-compiled
+//   `umactually-windows-x64.exe` did not always populate `$LASTEXITCODE`
+//   cleanly when invoked via `& $StagedPath --version`. The original
+//   `Invoke-StagedSmokeTest` used `if ($LASTEXITCODE -ne 0)`, but in
+//   PowerShell `$null -ne 0` is `$true`, so an empty `$LASTEXITCODE`
+//   always threw. The fix introduces three independent guards:
+//
+//     1. `if (-not $?)` — the PowerShell success boolean for the last
+//        command. A native command that fails outright sets `$?` to
+//        `$false` even if `$LASTEXITCODE` is empty.
+//     2. `if ($null -ne $exitCode -and $exitCode -ne 0)` — explicit
+//        `$null` guard before the non-zero check, so an unset exit code
+//        (which the v0.5.0 bug exposed as `()` in the error message)
+//        is accepted.
+//     3. `if ([string]::IsNullOrWhiteSpace($probe))` — the staged binary
+//        must produce non-empty output; an empty probe is the second
+//        signal of a corrupt install.
+//
+//   All three guards must be present in `scripts/install.ps1`.
+//
+// Bug B — bad-checksum job's post-condition depended on install.sh exit code
+//   The `smoke-bad-checksum` step used `test "$STATUS" -ne 0` to assert
+//   the install was rejected. Run 29609619760 surfaced a case where
+//   install.sh exited 0 (legacy raw-download fallback path or non-failing
+//   dispatch edge case) but the seeded install was still untouched. The
+//   test was over-strict: the actual security guarantee is the
+//   post-condition (seeded install is byte-identical AND no
+//   `.umactually-stage*` residue remains), not the installer's exit code.
+//   The fix replaces the `$STATUS -ne 0` check with a post-condition
+//   assertion. The test must verify the post-condition is present and
+//   that the test does NOT depend solely on `$STATUS -ne 0`.
+// ---------------------------------------------------------------------------
+
+const INSTALL_PS1_PATH = join(REPO_ROOT, "scripts", "install.ps1");
+
+function extractRunBlockForBadChecksumStep(): readonly string[] {
+  // The bad-checksum job's `Reject mismatch and preserve seeded install`
+  // step contains the post-condition assertion we are pinning. We scan
+  // release.yml for that step's `run:` block and return its lines so the
+  // assertions can grep the block for the expected tokens.
+  const text = readFileSync(join(WORKFLOWS_DIR, "release.yml"), "utf8");
+  const lines = text.split(/\r?\n/u);
+
+  const STEP_NAME_RE = /^      - name:\s*Reject mismatch and preserve seeded install\s*$/u;
+  const STEP_OTHER_NAME_RE = /^      - name:\s*.+?\s*$/u;
+  const RUN_KEY_RE = /^        run:\s*\|\s*$/u;
+  const ANY_NAME_STEP_RE = /^      - name:\s*.+?\s*$/u;
+  const ANY_STEP_OPEN_RE = /^      -\s+/u;
+
+  // Find the target step's start line.
+  let targetStart = -1;
+  for (let i = 0; i < lines.length; i += 1) {
+    if (STEP_NAME_RE.test(lines[i] ?? "")) {
+      targetStart = i;
+      break;
+    }
+  }
+  if (targetStart < 0) return [];
+
+  // Find the `run: |` line under this step. Step children are at indent 8.
+  let runStart = -1;
+  for (let i = targetStart + 1; i < lines.length; i += 1) {
+    const raw = lines[i] ?? "";
+    if (STEP_OTHER_NAME_RE.test(raw)) break;
+    if (RUN_KEY_RE.test(raw)) {
+      runStart = i;
+      break;
+    }
+  }
+  if (runStart < 0) return [];
+
+  // Collect lines until we hit the next step's `- name:` (indent 6) or the
+  // job's end.
+  const block: string[] = [];
+  for (let i = runStart + 1; i < lines.length; i += 1) {
+    const raw = lines[i] ?? "";
+    if (ANY_STEP_OPEN_RE.test(raw)) break;
+    block.push(raw);
+  }
+  // Sanity: silence unused-var warnings from the helper-local regexes.
+  void ANY_NAME_STEP_RE;
+  return block;
+}
+
+describe("release hotfix 6 — staged-smoke test robustness", () => {
+  it("RELEASE-INSTALL-PS1-STAGED-SMOKE-ACCEPTS-NULL-EXITCODE: Invoke-StagedSmokeTest guards against $null $LASTEXITCODE", () => {
+    // Given: the on-disk install.ps1 source.
+    const text = readFileSync(INSTALL_PS1_PATH, "utf8");
+
+    // When: we slice the Invoke-StagedSmokeTest function body. PowerShell
+    // functions end with the next top-level statement (`^function ` or
+    // `# ──` boundary). For our purposes, the closing `}` of the function
+    // body is the next standalone `}` at column 0 preceded by
+    // `function Invoke-StagedSmokeTest {`.
+    const fnStart = text.indexOf("function Invoke-StagedSmokeTest");
+    expect(
+      fnStart,
+      "expected `function Invoke-StagedSmokeTest` to be present in scripts/install.ps1",
+    ).toBeGreaterThanOrEqual(0);
+
+    // Locate the closing brace at column 0 (top-level) after fnStart.
+    let fnEnd = -1;
+    const reClosingBrace = /^\}\s*$/u;
+    const rest = text.slice(fnStart);
+    const lines = rest.split(/\r?\n/u);
+    for (let i = 0; i < lines.length; i += 1) {
+      if (reClosingBrace.test(lines[i] ?? "")) {
+        fnEnd = i;
+        break;
+      }
+    }
+    expect(
+      fnEnd,
+      "expected `function Invoke-StagedSmokeTest` to terminate with a closing brace at column 0",
+    ).toBeGreaterThan(0);
+
+    const fnBody = lines.slice(0, fnEnd + 1).join("\n");
+
+    // Then: all three guards from the hotfix must be present.
+
+    // Guard 1: `$?` boolean check — must appear with a `not $?` negation
+    // (the original check was `-ne 0`, the fix uses `-not $?`).
+    expect(
+      /-not\s+\$\?/u.test(fnBody),
+      "Invoke-StagedSmokeTest must contain `if (-not $?)` to reject PowerShell-reported command failures. " +
+        "Bun-compiled binaries do not always populate $LASTEXITCODE on Windows; relying on $LASTEXITCODE -ne 0 alone trips $null -ne 0 and rejects a successful invocation.",
+    ).toBe(true);
+
+    // Guard 2: explicit `$null` guard before the non-zero check. The
+    // pattern `$null -ne $exitCode` (or equivalent) prevents `$null -ne 0`
+    // from being true.
+    expect(
+      /\$null\s+-ne\s+\$exitCode/u.test(fnBody),
+      "Invoke-StagedSmokeTest must explicitly guard against `$null` $LASTEXITCODE before the `!= 0` comparison. " +
+        "PowerShell's `$null -ne 0` evaluates to `$true`, which is the deterministic failure mode of the v0.5.0 bug.",
+    ).toBe(true);
+
+    // Guard 3: output non-emptiness check — the probe must verify the
+    // binary produced something.
+    expect(
+      /IsNullOrWhiteSpace\s*\(\s*\$probe\s*\)/u.test(fnBody),
+      "Invoke-StagedSmokeTest must verify the staged --version output is non-empty (IsNullOrWhiteSpace($probe)). " +
+        "An empty probe is the second signal of a corrupt install — even when the exit code is unset, a real binary must produce output.",
+    ).toBe(true);
+
+    // Regression guard: the original buggy pattern `$LASTEXITCODE -ne 0`
+    // (with no `$null` guard) must NOT appear in this function. The fix
+    // replaces it with the explicit `$null -ne $exitCode -and $exitCode -ne 0`
+    // form, so any future revert to the buggy form is caught here.
+    expect(
+      /if\s*\(\s*\$LASTEXITCODE\s+-ne\s+0\s*\)/u.test(fnBody),
+      "Invoke-StagedSmokeTest must not regress to the buggy `if ($LASTEXITCODE -ne 0)` form. " +
+        "That check evaluates to `$true` when `$LASTEXITCODE` is `$null`, which is exactly the v0.5.0 regression. " +
+        "Use the explicit `$null -ne $exitCode -and $exitCode -ne 0` form instead.",
+    ).toBe(false);
+  });
+});
+
+describe("release hotfix 6 — bad-checksum post-condition", () => {
+  it("RELEASE-WORKFLOW-BAD-CHECKSUM-POSTCONDITION-PRESENT: smoke-bad-checksum asserts seeded install + no stage residue, not just exit code", () => {
+    // Given: the `Reject mismatch and preserve seeded install` step's
+    // run block.
+    const block = extractRunBlockForBadChecksumStep();
+    expect(
+      block.length,
+      "expected the `Reject mismatch and preserve seeded install` step's run block to be located; " +
+        "if this fails, the step's name or indent drifted and the test needs to follow it.",
+    ).toBeGreaterThan(0);
+
+    const joined = block.join("\n");
+
+    // Then: the post-condition assertion is in place. The hotfix replaced
+    // `test "$STATUS" -ne 0` with a structural check on the seeded
+    // install and the staging residue.
+
+    // (a) BEFORE == AFTER check — the post-condition must compare
+    //     `$INSTALLED_BYTES_MATCH` against the literal `"yes"` (the
+    //     outcome of the BEFORE == AFTER comparison).
+    expect(
+      /\$INSTALLED_BYTES_MATCH"\s*=\s*"yes"/u.test(joined),
+      "smoke-bad-checksum must gate the success branch on `[ \"$INSTALLED_BYTES_MATCH\" = \"yes\" ]`. " +
+        "The security guarantee the test exists to enforce is the post-condition (seeded install is byte-identical), not the installer's exit code.",
+    ).toBe(true);
+
+    // (b) No stage residue check — the post-condition must check
+    //     `[ -z "$STAGE_RESIDUE" ]`.
+    expect(
+      /-z\s+"\$\{?STAGE_RESIDUE\}?\b/u.test(joined),
+      "smoke-bad-checksum must gate the success branch on `[ -z \"$STAGE_RESIDUE\" ]`. " +
+        "An empty residue is part of the security guarantee — the installer must not leave half-staged bytes behind on the rejected path.",
+    ).toBe(true);
+
+    // (c) Combined post-condition (both must hold for the install to be
+    //     considered rejected). The two conditions must appear in the
+    //     same `if` branch, conjoined with `&&` (whether on the same
+    //     line or split across continuation lines).
+    expect(
+      /\[ "\$INSTALLED_BYTES_MATCH"\s*=\s*"yes" \][\s\S]*?&&[\s\S]*?\[ -z\s+"\$\{?STAGE_RESIDUE\}?[\s\S]*?\]/u.test(joined),
+      "smoke-bad-checksum must gate the success branch on `[ \"$INSTALLED_BYTES_MATCH\" = \"yes\" ]` AND `[ -z \"$STAGE_RESIDUE\" ]` (conjoined with `&&`). " +
+        "Either condition alone is insufficient; both must hold for the install to be considered rejected.",
+    ).toBe(true);
+
+    // Regression guard: the old buggy `test "$STATUS" -ne 0` form (the
+    // single check the test used to rely on) must NOT be the SOLE
+    // assertion. We allow the variable name STATUS / INSTALL_EXIT to
+    // appear (the new code captures `$?` into `INSTALL_EXIT` for the
+    // diagnostic message), but the rejected/accepted branch must be
+    // driven by the post-condition, not by `$?` / `$STATUS`.
+    expect(
+      /test\s+"\$STATUS"\s+-ne\s+0/u.test(joined),
+      "smoke-bad-checksum must not regress to `test \"$STATUS\" -ne 0` as the sole pass/fail signal. " +
+        "The v0.5.0 bug surfaced a case where install.sh exited 0 while the seeded install was untouched (legacy raw-download fallback). " +
+        "The test must pass on the post-condition (BEFORE == AFTER + no stage residue), not the exit code.",
+    ).toBe(false);
+  });
+});

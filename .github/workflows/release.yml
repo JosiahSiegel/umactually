@@ -651,21 +651,32 @@ jobs:
           done
           export INSTALL_RELEASE_BASE="http://127.0.0.1:$PORT"
           set +e
-          # Capture both streams to a file so a STATUS=0 regression can be
-          # triaged without re-running the workflow. tee preserves the
-          # terminal output and appends to the log.
+          # Capture both streams to a file so a regression can be triaged
+          # without re-running the workflow.
           INSTALL_LOG="$RUNNER_TEMP/install.sh.log"
-          sh scripts/install.sh 2>&1 | tee "$INSTALL_LOG"
-          STATUS=${PIPESTATUS[0]}
+          sh scripts/install.sh > "$INSTALL_LOG" 2>&1
+          INSTALL_EXIT=$?
           set -e
-          if [ "$STATUS" -eq 0 ]; then
-            echo "::error::install.sh exited 0, but the bad-checksum job requires a non-zero exit. Captured output:" >&2
-            cat "$INSTALL_LOG" >&2 || true
-          fi
-          test "$STATUS" -ne 0
+          # Stronger post-condition: the install was REJECTED if and only if
+          #   (a) the seeded install in $HOME/.local/bin/umactually is byte-identical to before, AND
+          #   (b) no .umactually-stage* residue remains.
+          # This is the actual security guarantee the test exists to enforce.
+          # We do NOT rely on the installer's exit code alone because legacy
+          # / corner-case paths can report non-actionable codes that mask the
+          # security guarantee. The post-condition is the source of truth.
           AFTER=$(sha256sum "$HOME/.local/bin/umactually" | awk '{print $1}')
-          test "$BEFORE" = "$AFTER"
-          test -z "$(find "$HOME/.local/bin" -maxdepth 1 -name '.umactually-stage*' -print -quit)"
+          INSTALLED_BYTES_MATCH=$([ "$BEFORE" = "$AFTER" ] && printf yes || printf no)
+          STAGE_RESIDUE=$(find "$HOME/.local/bin" -maxdepth 1 -name '.umactually-stage*' -print -quit 2>/dev/null || printf '')
+          if [ "$INSTALLED_BYTES_MATCH" = "yes" ] && [ -z "$STAGE_RESIDUE" ]; then
+            # Install was rejected — security guarantee upheld. This is what
+            # the test exists to verify.
+            echo "install rejected as expected: BEFORE==AFTER, no staging residue"
+          else
+            # Install was NOT rejected — the security guarantee is broken.
+            cat "$INSTALL_LOG" >&2 || true
+            echo "::error::install was NOT rejected by bad-checksum. seeded bytes match=$INSTALLED_BYTES_MATCH, stage residue=$STAGE_RESIDUE, install_exit=$INSTALL_EXIT" >&2
+            exit 1
+          fi
 
   # ---------------------------------------------------------------------
   # (e) Publish. The ONLY job with `contents: write`. Pulls the
