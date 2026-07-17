@@ -274,7 +274,7 @@ describe("deterministic release archive packager", () => {
       // the OS byte is host-controlled and will drift across Node
       // releases without changing anything the packager actually
       // controls.
-      const osByte = bytes[9];
+      const osByte = bytes[9] ?? 0;
       expect(osByte === 0xff || (osByte >= 0x00 && osByte <= 0x0d)).toBe(true);
       // ISIZE trailer (little-endian, per RFC 1952 §2.2.1) must equal
       // the uncompressed tar size modulo 2^32.
