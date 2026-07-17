@@ -335,10 +335,15 @@ fetch_latest_tag() {
     rm -f "$_tmp"
     return 1
   fi
-  # Parse tag_name/draft/prerelease out of the JSON response. POSIX-only tools.
-  _tag=$(sed -n 's/.*"tag_name"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' "$_tmp" | head -n 1)
-  _draft=$(sed -n 's/.*"draft"[[:space:]]*:[[:space:]]*\(true\|false\).*/\1/p' "$_tmp" | head -n 1)
-  _pre=$(sed -n 's/.*"prerelease"[[:space:]]*:[[:space:]]*\(true\|false\).*/\1/p' "$_tmp" | head -n 1)
+  # Parse the API response as JSON with Node rather than substring matching.
+  _metadata=$(node -e 'const d=JSON.parse(require("fs").readFileSync(0,"utf8")); console.log(d.tag_name, d.draft ? "1" : "0", d.prerelease ? "1" : "0")' < "$_tmp") || {
+    rm -f "$_tmp"
+    return 1
+  }
+  set -- $_metadata
+  _tag=$1
+  _draft=$2
+  _pre=$3
   rm -f "$_tmp"
   if [ -z "$_tag" ]; then
     return 1
