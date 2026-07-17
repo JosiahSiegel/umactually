@@ -64,6 +64,18 @@ CI is never asked — the gate is `--no-color` safe, runs with stdin piped, and 
 
 Provider credentials (`UMACTUALLY_API_URL`, `UMACTUALLY_API_KEY`) are required for live review on every surface but must always be sourced from the secret store (GitHub Actions secrets, Azure Pipelines secret variables, or a protected variable group). Never put them in workflow YAML literals.
 
+## Release download failed
+
+The installer one-liner (`curl -fsSL .../scripts/install.sh | sh` / `irm .../scripts/install.ps1 | iex`) downloads a `.tar.gz` (Linux/macOS) or `.zip` (Windows) archive from the GitHub Release page, verifies its SHA-256 against `checksums.txt`, and extracts the single member to your PATH. When that path fails end-to-end, work the recovery ladder in order:
+
+1. **Network / DNS / proxy failure.** The installer surfaces the HTTP status (e.g. `could not download archive: HTTP 503`). Re-run once; if it persists, check `https://github.com/JosiahSiegel/umactually/releases` in a browser to confirm GitHub's status. A corporate proxy may need `HTTPS_PROXY` / `NO_PROXY` exported in the same shell — the installer honors both.
+2. **Release not found for this tag.** The installer only fetches immutable tag URLs (`https://github.com/JosiahSiegel/umactually/releases/download/<tag>/...`); it never falls back to `/releases/latest/`. Confirm the tag exists at the releases page; an unreleased branch build will not have archives. Pin the install to a specific tag, not the implicit latest.
+3. **`checksums.txt` mismatch.** The installer downloads `checksums.txt` first, computes the archive's SHA-256, and refuses to extract on any mismatch. Re-running with the same tag after the maintainer has published a corrected release is the only fix — never bypass the check with `INSTALL_ASSET_CONTRACT=legacy` (legacy raw-executable contract is for back-compat with pre-archive releases, not a workaround).
+4. **Archive corruption mid-download.** The installer detects a partial download (size mismatch or `gzip`/`unzip` failure) and refuses to extract. Re-run; if the problem persists, download the archive manually via the browser, verify its SHA-256 against `checksums.txt` with `sha256sum` (POSIX) / `Get-FileHash` (PowerShell), and report the failure as a release bug if the hashes diverge.
+5. **Path / permission denied.** The installer stages inside `INSTALL_DIR` and atomically replaces the destination. A locked destination (Windows file handle held by another process, POSIX immutable bit, ACL revocation) blocks the rename. Close the conflicting process, or set `INSTALL_DIR=/path/you/own` before running the installer.
+
+The post-publish canary in `.github/workflows/release.yml` runs the public installer against the live tag on every release. A canary failure means the path is broken end-to-end for every user; it is treated as a P0 and triggers a follow-up patch release — see [`docs/release-process.md`](release-process.md#recovery).
+
 ## When the documentation disagrees with reality
 
 If you hit a behavior the docs don't cover, the source of truth is the runtime — open a PR with `test/unit/<area>.test.ts` pinning the behavior, then update the doc to match. The docs describe what the code does today; the code describes what the code does tomorrow.

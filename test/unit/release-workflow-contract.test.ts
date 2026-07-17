@@ -786,6 +786,145 @@ describe("Release workflow contract — RED against current workflow (Todo 9 fix
       "smoke-bad-checksum",
     ]));
   });
+
+  // ===========================================================================
+  // Todo 11 — immutable-tag post-publication canary + doc hygiene.
+  //
+  // Three new contract assertions, added (not replacing) so the existing 10
+  // tests remain as regression guards. Each assertion maps to a machine-
+  // consumable contract surface the maintainer-facing docs also describe:
+  //   1. The canary job MUST target the immutable tag URL, never /latest/.
+  //   2. The canary job MUST verify all six archive basenames + checksums.txt.
+  //   3. No user-facing doc may name a raw asset basename (umactually-linux-x64,
+  //      etc.) as a supported download — only the installer one-liners are.
+  // ===========================================================================
+
+  it("RELEASE-WORKFLOW-CANARY-IMMUTABLE-TAG: canary uses github.ref_name, never latest", () => {
+    // Given: the parsed workflow and the canary job (the post-publication
+    // install probe; job id contains "canary").
+    const jobs = readJobs(loadCurrentWorkflow()["jobs"]);
+    const canaryEntry = findJobById(jobs, (_job, id) => /canary/u.test(id));
+    if (canaryEntry === null) throw new Error("canary job not found");
+
+    // When: every step's env surface is scanned for tag references. We
+    // inspect env vars (the wire-format surface) rather than `run` text,
+    // because run text may legitimately contain comments that document
+    // the prohibition ("NEVER /releases/latest/") without violating it.
+    const envSurface = canaryEntry.job.steps
+      .map((step) => {
+        const envEntries = step.env ?? {};
+        return Object.entries(envEntries).map(([key, value]) => `${key}=${String(value)}`).join("\n");
+      })
+      .join("\n");
+
+    // Then: the canary uses the immutable tag form in its wire-format
+    // surface (env vars + URLs) and never /latest/.
+    expect(envSurface, "canary must use github.ref_name as the tag source").toContain("github.ref_name");
+    expect(envSurface, "canary must reference releases/download/<tag>").toMatch(/releases\/download\//u);
+    // The canary also references /releases/tags/ via the gh api call —
+    // include the `run` text only for that single purpose, then strip
+    // comments (lines starting with `#`) before the negative assertion.
+    const runNoComments = canaryEntry.job.steps
+      .map((step) => step.run ?? "")
+      .join("\n")
+      .split("\n")
+      .filter((line) => !line.trimStart().startsWith("#"))
+      .join("\n");
+    expect(runNoComments + "\n" + envSurface, "canary code (excluding comments) must use /releases/tags/ or /releases/download/").toMatch(/releases\/(tags|download)\//u);
+    // No `/releases/latest/` anywhere in the env surface — the wire-format
+    // contract.
+    expect(envSurface, "canary env vars must never include releases/latest/").not.toMatch(/releases\/latest/u);
+    expect(envSurface, "canary env vars must never include the literal `latest` as a tag value").not.toMatch(/\blatest\b/u);
+  });
+
+  it("RELEASE-WORKFLOW-CANARY-SEVEN-ASSETS: canary asserts all six archive basenames + checksums.txt", () => {
+    // Given: the canary job and the seven canonical public asset names.
+    const jobs = readJobs(loadCurrentWorkflow()["jobs"]);
+    const canaryEntry = findJobById(jobs, (_job, id) => /canary/u.test(id));
+    if (canaryEntry === null) throw new Error("canary job not found");
+    const surface = canaryEntry.job.steps
+      .map((step) => step.run ?? "")
+      .join("\n");
+    const expected = [
+      "umactually-linux-x64.tar.gz",
+      "umactually-linux-arm64.tar.gz",
+      "umactually-darwin-x64.tar.gz",
+      "umactually-darwin-arm64.tar.gz",
+      "umactually-windows-x64.zip",
+      "umactually-windows-arm64.zip",
+      "checksums.txt",
+    ];
+
+    // When/Then: every canonical basename appears as a literal in the canary's
+    // run blocks. The SHA-256 verification + installer invocation also run.
+    for (const name of expected) {
+      expect(surface, `canary must reference public asset name: ${name}`).toContain(name);
+    }
+    expect(surface, "canary must verify the downloaded archive's SHA-256").toContain("sha256sum");
+    expect(surface, "canary must run the public installer").toContain("install.sh");
+    expect(surface, "canary must assert --version / --help / doctor").toContain("--version");
+    expect(surface).toContain("--help");
+    expect(surface).toContain("doctor");
+  });
+
+  it("RELEASE-WORKFLOW-DOC-HYGIENE: no user-facing doc names a raw asset basename as a supported download", () => {
+    // Given: README.md and docs/release-process.md are the two surfaces that
+    // a release reader will land on. The raw basenames are NOT supported
+    // downloads (the installer one-liners are). They may legitimately appear
+    // inside markdown tables (where they describe the source binary that goes
+    // INTO an archive) or inside a sentence describing a ZIP's member name,
+    // but they must never be advertised as a standalone download.
+    const readme = readFileSync(join(REPO_ROOT, "README.md"), "utf8");
+    const releaseProcess = readFileSync(join(REPO_ROOT, "docs/release-process.md"), "utf8");
+    const rawBasenames = RAW_BASENAMES;
+
+    // Strip markdown tables and inline code spans so the residual check
+    // covers only "prose" prose where a raw basename would mean "download
+    // this raw file". Markdown tables (`| ... |`) and inline code spans
+    // (`` ` ``) are the legitimate contexts where source-binary names
+    // appear as documentation of what's inside an archive.
+    function stripDocumentationContexts(text: string): string {
+      const lines = text.split("\n");
+      const out: string[] = [];
+      let inTable = false;
+      for (const rawLine of lines) {
+        const line = rawLine.trimEnd();
+        // Markdown table rows begin and end with `|` after trimming.
+        const isTableRow = /^\s*\|.*\|\s*$/u.test(line);
+        if (isTableRow) {
+          inTable = true;
+          continue;
+        }
+        if (inTable && line === "") {
+          inTable = false;
+          continue;
+        }
+        if (inTable) continue;
+        // Strip inline code spans (single-backtick) from prose lines.
+        out.push(line.replace(/`[^`]*`/gu, ""));
+      }
+      return out.join("\n");
+    }
+
+    function assertNoRawAssetReference(label: string, text: string): void {
+      const residual = stripDocumentationContexts(text);
+      for (const raw of rawBasenames) {
+        const escaped = raw.replace(/[.*+?^${}()|[\]\\]/gu, "\\$&");
+        const regex = new RegExp(escaped, "gu");
+        const occurrences = residual.match(regex) ?? [];
+        expect(
+          occurrences.length,
+          `${label} must not name raw asset basename "${raw}" outside of tables / inline code ` +
+          `(found ${occurrences.length} in prose: ${occurrences.join(", ")}); raw assets are not supported downloads — use the installer one-liner`,
+        ).toBe(0);
+      }
+    }
+
+    // When/Then: neither doc exposes a raw executable basename as a
+    // download target in prose.
+    assertNoRawAssetReference("README.md", readme);
+    assertNoRawAssetReference("docs/release-process.md", releaseProcess);
+  });
 });
 
 function formatViolations(violations: readonly Violation[]): string {

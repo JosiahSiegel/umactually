@@ -22,7 +22,11 @@ curl -fsSL https://github.com/JosiahSiegel/umactually/raw/main/scripts/install.s
 irm https://github.com/JosiahSiegel/umactually/raw/main/scripts/install.ps1 | iex
 ```
 
-The installer downloads the matching release asset, verifies its SHA-256, and places `umactually` on your PATH. No Node.js required. Supported release assets: Linux x64/arm64, macOS x64/arm64, Windows x64/arm64.
+The installer downloads a `.tar.gz` (Linux/macOS) or `.zip` (Windows) archive from the release, verifies its SHA-256 against `checksums.txt`, and extracts the binary to your PATH. No Node.js required. Supported release assets: Linux x64/arm64, macOS x64/arm64, Windows x64/arm64.
+
+Compressed transfer size is ~3x smaller than the installed binary size (e.g., ~18 MB download / ~60 MB installed on Linux x64).
+
+> **Windows ARM64** is supported via ZIP archive but cannot be smoke-tested in CI (structural-only validation); see [docs/release-process.md](docs/release-process.md#windows-arm64).
 
 Verify after installation:
 

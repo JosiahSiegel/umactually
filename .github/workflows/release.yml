@@ -712,10 +712,22 @@ jobs:
         run: gh release delete "$GITHUB_REF_NAME" --draft --yes || true
 
   # ---------------------------------------------------------------------
-  # (f) Post-publication canary. Depends on publish. Runs the
-  #     installer against the published immutable tag (not
-  #     /releases/latest/) to prove the user-facing install path
-  #     works end-to-end after the release is live.
+  # (f) Post-publication canary. Depends on publish. Runs ONLY after
+  #     the release is live and exercises the user-facing install path
+  #     against the published immutable tag (NEVER /releases/latest/):
+  #
+  #       1. Query the GitHub Releases API by exact tag
+  #          (api.github.com/repos/JosiahSiegel/umactually/releases/tags/<tag>)
+  #          and assert the release has exactly SEVEN assets with the
+  #          expected names (six archives + checksums.txt).
+  #       2. Download ONE native archive (Linux x64) from the public
+  #          immutable tag URL and verify its SHA-256 against the
+  #          published checksums.txt entry.
+  #       3. Run the public installer in production mode against the
+  #          same immutable tag URL (archive contract), and verify
+  #          --version / --help / doctor all exit 0.
+  #
+  #     No test-mode env vars. No /releases/latest/. No raw executables.
   # ---------------------------------------------------------------------
   canary:
     name: post-publish canary
@@ -727,7 +739,78 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
-      - name: Run install.sh against the published immutable tag
+
+      - name: Query release by exact tag and assert seven assets
         env:
-          UMACTUALLY_VERSION: ${{ github.ref_name }}
-        run: bash scripts/install.sh
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+          REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          # Fetch the release by immutable tag — NEVER /releases/latest/.
+          gh api "repos/${REPO}/releases/tags/${TAG}" > release.json
+          # Probe every asset name. Use jq (preinstalled on ubuntu-24.04)
+          # to enumerate names; assert each canonical name is present
+          # exactly once and no extras leak in.
+          EXPECTED=(
+            "umactually-linux-x64.tar.gz"
+            "umactually-linux-arm64.tar.gz"
+            "umactually-darwin-x64.tar.gz"
+            "umactually-darwin-arm64.tar.gz"
+            "umactually-windows-x64.zip"
+            "umactually-windows-arm64.zip"
+            "checksums.txt"
+          )
+          ACTUAL=$(jq -r '.assets[].name' release.json | sort)
+          for name in "${EXPECTED[@]}"; do
+            COUNT=$(printf '%s\n' "$ACTUAL" | grep -cFx "$name" || true)
+            if [ "$COUNT" -ne 1 ]; then
+              echo "::error::expected asset missing or duplicated: $name (count=$COUNT)" >&2
+              echo "--- actual asset names ---" >&2; printf '%s\n' "$ACTUAL" >&2
+              exit 1
+            fi
+          done
+          TOTAL=$(printf '%s\n' "$ACTUAL" | wc -l)
+          if [ "$TOTAL" -ne 7 ]; then
+            echo "::error::expected exactly 7 assets, got $TOTAL" >&2
+            printf '%s\n' "$ACTUAL" >&2
+            exit 1
+          fi
+          echo "OK: 7/7 assets present with exact names"
+
+      - name: Download checksums.txt and native archive, verify SHA-256
+        env:
+          TAG: ${{ github.ref_name }}
+          REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          BASE="https://github.com/${REPO}/releases/download/${TAG}"
+          curl -fsSL -o checksums.txt "${BASE}/checksums.txt"
+          curl -fsSL -o linux-x64.tar.gz "${BASE}/umactually-linux-x64.tar.gz"
+          # Pull the expected SHA-256 for the linux-x64 archive from checksums.txt.
+          EXPECTED_SHA=$(awk '$2 == "umactually-linux-x64.tar.gz" { print $1 }' checksums.txt)
+          if [ -z "$EXPECTED_SHA" ]; then
+            echo "::error::no checksums.txt entry for umactually-linux-x64.tar.gz" >&2
+            exit 1
+          fi
+          ACTUAL_SHA=$(sha256sum linux-x64.tar.gz | awk '{print $1}')
+          if [ "$ACTUAL_SHA" != "$EXPECTED_SHA" ]; then
+            echo "::error::SHA-256 mismatch: expected $EXPECTED_SHA got $ACTUAL_SHA" >&2
+            exit 1
+          fi
+          echo "OK: SHA-256($EXPECTED_SHA) matches checksums.txt entry"
+
+      - name: Run public installer against the published immutable tag
+        env:
+          INSTALL_RELEASE_BASE: https://github.com/${{ github.repository }}/releases/download/${{ github.ref_name }}
+          INSTALL_RELEASE_TAG: ${{ github.ref_name }}
+          INSTALL_ASSET_CONTRACT: archive
+          UMACTUALLY_NO_PATH_UPDATE: "1"
+        run: |
+          set -euo pipefail
+          sh scripts/install.sh
+          INSTALL_DIR="$HOME/.local/bin"
+          test -x "$INSTALL_DIR/umactually"
+          "$INSTALL_DIR/umactually" --version
+          "$INSTALL_DIR/umactually" --help >/dev/null
+          "$INSTALL_DIR/umactually" doctor
