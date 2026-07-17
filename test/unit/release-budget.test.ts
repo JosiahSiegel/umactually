@@ -269,6 +269,14 @@ describe("verify-release-assets — budget-loader validation", () => {
     expect(result.status, `stderr: ${result.stderr}`).toBe(0);
   });
 
+  it("rejects a report bunVersion that disagrees with the budget pin", () => {
+    const wrongBudgetPath = writeBudget("wrong-bun-version.json", { ...permissiveGlobalBudget(), bunVersion: "9.9.9" });
+    const result = runVerifier([
+      "--manifest", MANIFEST, "--release-dir", measuredDir, "--enforce", "--budget", wrongBudgetPath, "--bun-version", "1.3.14",
+    ]);
+    expect(result.status).not.toBe(0);
+    expect(`${result.stderr}${result.stdout}`).toMatch(/bunVersion|bun version/i);
+  });
   it("reducing one per-target ceiling to actual-1 exits 1 and names that target", () => {
     // Read the actual archive sizes from the freshly-measured dir.
     const reportPath = join(sandbox, "report.json");

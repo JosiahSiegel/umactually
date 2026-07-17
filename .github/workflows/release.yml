@@ -90,11 +90,12 @@ jobs:
 
       - name: Compute release-size report
         run: |
-          node scripts/verify-release-assets.mjs \
-            --manifest scripts/release-targets.json \
-            --release-dir release \
-            --measure \
-            --report release/internal/release-size-report.json
+           node scripts/verify-release-assets.mjs \
+             --manifest scripts/release-targets.json \
+             --release-dir release \
+             --measure \
+             --bun-version "$(node -e 'const fs=require("node:fs"); console.log(JSON.parse(fs.readFileSync("scripts/release-size-budget.json", "utf8")).bunVersion)')" \
+             --report release/internal/release-size-report.json
 
       - name: Stage candidate bundle (public/<archives>, public/checksums.txt, internal/raw/<binaries>, internal/release-size-report.json)
         run: |

@@ -385,6 +385,10 @@ function readBudget(path, manifestIds) {
     );
   }
 
+  if (parsed["bunVersion"] !== undefined && (typeof parsed["bunVersion"] !== "string" || parsed["bunVersion"].length === 0)) {
+    throw new Error('verify-release-assets: budget field "bunVersion" must be a non-empty string when present');
+  }
+
   if (parsed["global"] !== undefined) {
     if (
       parsed["global"] === null ||
@@ -537,7 +541,7 @@ async function main() {
     }
   }
 
-  const bunVersion = process.env["BUN_VERSION"] ?? "";
+  const bunVersion = args["bun-version"] ?? process.env["BUN_VERSION"] ?? "";
   const report = buildReport(releaseDir, targets, checksumRows, bunVersion);
   if (reportPathRaw !== undefined) {
     writeReport(resolve(reportPathRaw), report);
@@ -546,6 +550,11 @@ async function main() {
   if (enforce) {
     // budgetPathRaw is guaranteed non-undefined by the upfront check above.
     const budget = readBudget(resolve(budgetPathRaw), targets.map((t) => t.id));
+    if (report.bunVersion !== "" && budget.bunVersion !== undefined && report.bunVersion !== budget.bunVersion) {
+      console.error(`verify-release-assets: report bunVersion ${JSON.stringify(report.bunVersion)} disagrees with budget bunVersion ${JSON.stringify(budget.bunVersion)}`);
+      process.exitCode = 1;
+      return;
+    }
     const failures = evaluateLimits(report, budget);
     if (failures.length > 0) {
       for (const failure of failures) {
