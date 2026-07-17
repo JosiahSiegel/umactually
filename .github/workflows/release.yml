@@ -402,6 +402,7 @@ jobs:
       - name: Checkout installer
         uses: actions/checkout@v4
       - name: Download exact candidate artifact
+        shell: bash
         env:
           ARTIFACT_ID: ${{ needs.build-package.outputs.artifact_id }}
           EXPECTED_DIGEST: ${{ needs.build-package.outputs.artifact_digest }}
@@ -528,6 +529,7 @@ jobs:
       - name: Checkout installers
         uses: actions/checkout@v4
       - name: Download exact candidate artifact
+        shell: bash
         env:
           ARTIFACT_ID: ${{ needs.build-package.outputs.artifact_id }}
           EXPECTED_DIGEST: ${{ needs.build-package.outputs.artifact_digest }}

@@ -98,6 +98,13 @@ const ENV_ENTRY_RE = /^\s+([A-Za-z_][A-Za-z0-9_]*)\s*:\s*(.*?)\s*$/u;
 // optional leading whitespace before `env:`).
 const ENV_BLOCK_OPEN_RE = /^(\s*)env:\s*$/u;
 
+const WINDOWS_SMOKE_JOB_RE = /^  (smoke-windows-[A-Za-z0-9_-]+):\s*$/u;
+const JOB_OPEN_RE = /^  [A-Za-z0-9_-]+:\s*$/u;
+const STEP_OPEN_RE = /^      - name:\s*(.+?)\s*$/u;
+const STEP_SHELL_RE = /^        shell:\s*(\S+)\s*$/u;
+const BASH_SYNTAX_RE =
+  /set -euo pipefail|\bgh\s+api\b[^\n]*(?:>|\$\(|sha256sum|awk|unzip)|\bsha256sum\b|\bawk\b|\bunzip\b|\bpython3\s+(?:-c|-m\s+http\.server)\b|\bfind\b|\btr\b|\bcut\b|\bhead\b|\btail\b/u;
+
 type UsesEntry = Readonly<{ action: string; ref: string; file: string; line: number }>;
 
 type EnvBlock = Readonly<{
@@ -112,6 +119,13 @@ type GhApiCall = Readonly<{
   indent: number;
   enclosingEnvBlocks: readonly EnvBlock[];
   hasGhToken: boolean;
+}>;
+
+type WindowsBashStep = Readonly<{
+  job: string;
+  name: string;
+  line: number;
+  shell: string | undefined;
 }>;
 
 function collectActionRefs(): readonly UsesEntry[] {
@@ -229,6 +243,55 @@ function collectAllGhApiCalls(): readonly GhApiCall[] {
   return calls;
 }
 
+function collectWindowsBashSteps(lines: readonly string[]): readonly WindowsBashStep[] {
+  const steps: WindowsBashStep[] = [];
+  let job: string | undefined;
+  let stepName: string | undefined;
+  let stepLine = 0;
+  let shell: string | undefined;
+  let hasBashSyntax = false;
+
+  const flushStep = (): void => {
+    if (job !== undefined && stepName !== undefined && hasBashSyntax) {
+      steps.push({ job, name: stepName, line: stepLine, shell });
+    }
+    stepName = undefined;
+    shell = undefined;
+    hasBashSyntax = false;
+  };
+
+  for (let index = 0; index < lines.length; index += 1) {
+    const line = lines[index] ?? "";
+    const jobMatch = WINDOWS_SMOKE_JOB_RE.exec(line);
+    if (jobMatch !== null) {
+      flushStep();
+      job = jobMatch[1];
+      continue;
+    }
+    if (JOB_OPEN_RE.test(line)) {
+      flushStep();
+      job = undefined;
+      continue;
+    }
+    if (job === undefined) continue;
+
+    const stepMatch = STEP_OPEN_RE.exec(line);
+    if (stepMatch !== null) {
+      flushStep();
+      stepName = stepMatch[1];
+      stepLine = index + 1;
+      continue;
+    }
+    if (stepName === undefined) continue;
+
+    const shellMatch = STEP_SHELL_RE.exec(line);
+    if (shellMatch !== null) shell = shellMatch[1];
+    if (BASH_SYNTAX_RE.test(line)) hasBashSyntax = true;
+  }
+  flushStep();
+  return steps;
+}
+
 describe("release workflow action pins", () => {
   it("RELEASE-ACTION-PINS-NO-BUGGY-DOWNLOAD-ARTIFACT-SHA: no workflow pins download-artifact to a SHA that only exists in upload-artifact", () => {
     // Given: every `uses: actions/<NAME>@<REF>` line across all
@@ -312,6 +375,31 @@ describe("release workflow action pins", () => {
         `GitHub CLI requires GH_TOKEN (or GITHUB_TOKEN) inside Actions workflows and aborts with ` +
         `"gh: To use GitHub CLI in a GitHub Actions workflow, set the GH_TOKEN environment variable." otherwise. ` +
         `Add \`GH_TOKEN: \${{ github.token }}\` to the step's env block (or a job-level env block above it): ${detail}`,
+    ).toEqual([]);
+  });
+
+  it("RELEASE-WORKFLOW-WINDOWS-BASH-STEPS-DECLARE-BASH: every bash-syntax step in a smoke-windows job declares shell: bash", () => {
+    // Given: every named step in each smoke-windows-* job that contains a
+    // command marker specific to bash or its Unix toolchain.
+    const releaseLines = readFileSync(join(WORKFLOWS_DIR, "release.yml"), "utf8").split(/\r?\n/u);
+    const bashSteps = collectWindowsBashSteps(releaseLines);
+    expect(
+      bashSteps.length,
+      "expected at least one bash-syntax step in a smoke-windows-* job; the regression test would silently pass on an empty corpus.",
+    ).toBeGreaterThan(0);
+
+    // When: a bash-syntax step omits shell: bash or names a different shell.
+    const offenders = bashSteps.filter((step) => step.shell !== "bash");
+
+    // Then: fail with the exact job, step, and declaration site so the shell
+    // mismatch cannot reach a Windows runner's default pwsh interpreter.
+    const detail = offenders
+      .map((step) => `${step.job} / ${step.name} (release.yml:${step.line}, shell=${step.shell ?? "missing"})`)
+      .join("; ");
+    expect(
+      offenders,
+      `the following Windows smoke step(s) contain bash syntax but do not declare \`shell: bash\`: ${detail}. ` +
+        `Windows Actions runners default run blocks to pwsh, where \`set -euo pipefail\` is parsed as Set-Variable and fails on parameter -euo.`,
     ).toEqual([]);
   });
 
