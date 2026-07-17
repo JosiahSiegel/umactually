@@ -188,6 +188,15 @@ jobs:
           python3 -m http.server "$PORT" --bind 127.0.0.1 --directory candidate/public &
           SERVER_PID=$!
           trap 'kill "$SERVER_PID" 2>/dev/null || true; rm -rf "$HOME/.local/bin" "$RUNNER_TEMP/umactually"' EXIT
+          # Wait for the server to start accepting connections (up to 5 seconds).
+          # Without this, the installer's curl can hit the port before the server
+          # has called listen(), producing a 0ms "Failed to connect" error.
+          for _i in $(seq 1 50); do
+            if curl -sf "http://127.0.0.1:$PORT/checksums.txt" -o /dev/null 2>/dev/null; then
+              break
+            fi
+            sleep 0.1
+          done
           export INSTALL_RELEASE_BASE="http://127.0.0.1:$PORT"
           sh scripts/install.sh
           INSTALL_DIR="$HOME/.local/bin"
@@ -241,6 +250,15 @@ jobs:
           python3 -m http.server "$PORT" --bind 127.0.0.1 --directory candidate/public &
           SERVER_PID=$!
           trap 'kill "$SERVER_PID" 2>/dev/null || true; rm -rf "$HOME/.local/bin" "$RUNNER_TEMP/umactually"' EXIT
+          # Wait for the server to start accepting connections (up to 5 seconds).
+          # Without this, the installer's curl can hit the port before the server
+          # has called listen(), producing a 0ms "Failed to connect" error.
+          for _i in $(seq 1 50); do
+            if curl -sf "http://127.0.0.1:$PORT/checksums.txt" -o /dev/null 2>/dev/null; then
+              break
+            fi
+            sleep 0.1
+          done
           export INSTALL_RELEASE_BASE="http://127.0.0.1:$PORT"
           sh scripts/install.sh
           INSTALL_DIR="$HOME/.local/bin"
@@ -294,6 +312,15 @@ jobs:
           python3 -m http.server "$PORT" --bind 127.0.0.1 --directory candidate/public &
           SERVER_PID=$!
           trap 'kill "$SERVER_PID" 2>/dev/null || true; rm -rf "$HOME/.local/bin" "$RUNNER_TEMP/umactually"' EXIT
+          # Wait for the server to start accepting connections (up to 5 seconds).
+          # Without this, the installer's curl can hit the port before the server
+          # has called listen(), producing a 0ms "Failed to connect" error.
+          for _i in $(seq 1 50); do
+            if curl -sf "http://127.0.0.1:$PORT/checksums.txt" -o /dev/null 2>/dev/null; then
+              break
+            fi
+            sleep 0.1
+          done
           export INSTALL_RELEASE_BASE="http://127.0.0.1:$PORT"
           sh scripts/install.sh
           INSTALL_DIR="$HOME/.local/bin"
@@ -347,6 +374,15 @@ jobs:
           python3 -m http.server "$PORT" --bind 127.0.0.1 --directory candidate/public &
           SERVER_PID=$!
           trap 'kill "$SERVER_PID" 2>/dev/null || true; rm -rf "$HOME/.local/bin" "$RUNNER_TEMP/umactually"' EXIT
+          # Wait for the server to start accepting connections (up to 5 seconds).
+          # Without this, the installer's curl can hit the port before the server
+          # has called listen(), producing a 0ms "Failed to connect" error.
+          for _i in $(seq 1 50); do
+            if curl -sf "http://127.0.0.1:$PORT/checksums.txt" -o /dev/null 2>/dev/null; then
+              break
+            fi
+            sleep 0.1
+          done
           export INSTALL_RELEASE_BASE="http://127.0.0.1:$PORT"
           sh scripts/install.sh
           INSTALL_DIR="$HOME/.local/bin"
@@ -407,6 +443,17 @@ jobs:
           $listener.Start(); $port = ([Net.IPEndPoint]$listener.LocalEndpoint).Port; $listener.Stop()
           $server = Start-Process python3 -ArgumentList @('-m','http.server',"$port",'--bind','127.0.0.1','--directory','candidate/public') -PassThru
           try {
+            # Wait for the server to start serving requests (up to 5 seconds).
+            # Start-Process returns immediately; without this loop the installer
+            # can hit the port before python's http.server has called listen().
+            $ready = $false
+            for ($i = 0; $i -lt 50; $i++) {
+              try {
+                $resp = Invoke-WebRequest -UseBasicParsing -Uri "http://127.0.0.1:$port/checksums.txt" -TimeoutSec 1
+                if ($resp.StatusCode -eq 200) { $ready = $true; break }
+              } catch { Start-Sleep -Milliseconds 100 }
+            }
+            if (-not $ready) { throw "http.server on port $port did not become ready within 5s" }
             $env:INSTALL_RELEASE_BASE = "http://127.0.0.1:$port"
             powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts\install.ps1
             if ($LASTEXITCODE -ne 0) { throw "install.ps1 failed" }
@@ -515,6 +562,17 @@ jobs:
           $listener.Start(); $port = ([Net.IPEndPoint]$listener.LocalEndpoint).Port; $listener.Stop()
           $server = Start-Process python3 -ArgumentList @('-m','http.server',"$port",'--bind','127.0.0.1','--directory','candidate/public') -PassThru
           try {
+            # Wait for the server to start serving requests (up to 5 seconds).
+            # Start-Process returns immediately; without this loop the installer
+            # can hit the port before python's http.server has called listen().
+            $ready = $false
+            for ($i = 0; $i -lt 50; $i++) {
+              try {
+                $resp = Invoke-WebRequest -UseBasicParsing -Uri "http://127.0.0.1:$port/checksums.txt" -TimeoutSec 1
+                if ($resp.StatusCode -eq 200) { $ready = $true; break }
+              } catch { Start-Sleep -Milliseconds 100 }
+            }
+            if (-not $ready) { throw "http.server on port $port did not become ready within 5s" }
             $env:INSTALL_RELEASE_BASE = "http://127.0.0.1:$port"
             $env:INSTALL_POWERSHELL_SCRIPT_URL = "http://127.0.0.1:$port/install.ps1"
             & "C:\Program Files\Git\bin\bash.exe" scripts/install.sh
@@ -579,11 +637,29 @@ jobs:
           python3 -m http.server "$PORT" --bind 127.0.0.1 --directory candidate/public &
           SERVER_PID=$!
           trap 'kill "$SERVER_PID" 2>/dev/null || true; rm -rf "$HOME/.local/bin"' EXIT
+          # Wait for the server to start accepting connections (up to 5 seconds).
+          # Without this, the installer's curl can hit the port before the server
+          # has called listen(), producing a 0ms "Failed to connect" error that
+          # would mask the real "checksum mismatch" failure this job is testing.
+          for _i in $(seq 1 50); do
+            if curl -sf "http://127.0.0.1:$PORT/checksums.txt" -o /dev/null 2>/dev/null; then
+              break
+            fi
+            sleep 0.1
+          done
           export INSTALL_RELEASE_BASE="http://127.0.0.1:$PORT"
           set +e
-          sh scripts/install.sh
-          STATUS=$?
+          # Capture both streams to a file so a STATUS=0 regression can be
+          # triaged without re-running the workflow. tee preserves the
+          # terminal output and appends to the log.
+          INSTALL_LOG="$RUNNER_TEMP/install.sh.log"
+          sh scripts/install.sh 2>&1 | tee "$INSTALL_LOG"
+          STATUS=${PIPESTATUS[0]}
           set -e
+          if [ "$STATUS" -eq 0 ]; then
+            echo "::error::install.sh exited 0, but the bad-checksum job requires a non-zero exit. Captured output:" >&2
+            cat "$INSTALL_LOG" >&2 || true
+          fi
           test "$STATUS" -ne 0
           AFTER=$(sha256sum "$HOME/.local/bin/umactually" | awk '{print $1}')
           test "$BEFORE" = "$AFTER"

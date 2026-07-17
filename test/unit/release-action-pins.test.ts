@@ -314,4 +314,133 @@ describe("release workflow action pins", () => {
         `Add \`GH_TOKEN: \${{ github.token }}\` to the step's env block (or a job-level env block above it): ${detail}`,
     ).toEqual([]);
   });
+
+  // ---------------------------------------------------------------------
+  // Hotfix 4 regression: every loopback http.server launch must be
+  // preceded by a wait-for-server loop, not a direct `&` or
+  // `Start-Process` followed by an installer call. Backgrounding the
+  // server and immediately invoking curl/Invoke-WebRequest produces a
+  // 0ms "Failed to connect" because the server has not called listen()
+  // yet. The fix is a tight retry loop (curl / Invoke-WebRequest) that
+  // polls until the server returns 200 on checksums.txt.
+  //
+  // Bug history (see `.omo/notepads/release-binary-download-size/
+  // learnings.md`, Hotfix 4):
+  //
+  // Release run 29607329886 surfaced this as a class of bugs across
+  // every smoke job that hosts the candidate bundle via
+  // `python3 -m http.server` before invoking the installer. The 0ms
+  // "Failed to connect" is the deterministic signature: curl gets a
+  // RST/ECONNREFUSED before the kernel's listen queue is wired up.
+  // ---------------------------------------------------------------------
+});
+
+// Returns the lines (trimmed) between `startLine + 1` and the next
+// `install.sh` / `install.ps1` invocation line in the same file, or
+// until the next `python3 -m http.server` / `Start-Process python3`
+// launch (whichever comes first). Returns the empty array if no
+// installer invocation appears downstream.
+function collectWindowAfterServerLaunch(
+  lines: readonly string[],
+  startLine: number,
+): readonly string[] {
+  const window: string[] = [];
+  for (let i = startLine; i < lines.length; i += 1) {
+    const raw = lines[i] ?? "";
+    const trimmed = raw.trim();
+    // Stop if we hit another http.server launch (the next smoke job).
+    if (
+      /python3\s+-m\s+http\.server/u.test(trimmed) ||
+      /Start-Process\s+python3/u.test(trimmed)
+    ) {
+      break;
+    }
+    // Stop if we hit the installer invocation itself.
+    if (
+      /sh\s+scripts\/install\.sh/u.test(trimmed) ||
+      /scripts\\install\.ps1/u.test(trimmed) ||
+      /bash\.exe[^\n]*scripts\/install\.sh/u.test(trimmed)
+    ) {
+      break;
+    }
+    window.push(trimmed);
+  }
+  return window;
+}
+
+function looksLikeWaitForServer(window: readonly string[]): boolean {
+  // Heuristic: any of these tokens is a strong signal that the script
+  // retries until the server is reachable. The test is intentionally
+  // permissive — false positives (over-eager wait) are cheap, false
+  // negatives (missing wait) reproduce the v0.5.0 bug.
+  const PATTERNS: readonly RegExp[] = [
+    /for\s+_i\s+in\s+\$\(\s*seq\s+1\s+50\s*\)/u, // bash retry loop
+    /for\s*\(\s*\$i\s*=\s*0\s*;\s*\$i\s+-lt\s+50/u, // PowerShell retry loop
+    /Invoke-WebRequest/u, // PowerShell probe
+    /Test-NetConnection/u, // PowerShell TCP probe
+    /curl\s+-sf?\b/u, // bash probe
+    /Start-Sleep\b/u, // any sleep — coarse but catches fixes the maintainer hand-rolls
+  ];
+  return window.some((line) => PATTERNS.some((re) => re.test(line)));
+}
+
+describe("release workflow http.server race regression", () => {
+  it("RELEASE-WORKFLOW-HTTPSERVER-WAIT-BEFORE-INSTALL: every loopback http.server launch is followed by a wait/retry before the installer runs", () => {
+    // Given: every workflow file under .github/workflows/.
+    const files = readdirSync(WORKFLOWS_DIR).filter(
+      (name) => name.endsWith(".yml") || name.endsWith(".yaml"),
+    );
+
+    type LaunchSite = Readonly<{ file: string; line: number; trimmed: string }>;
+    const launches: LaunchSite[] = [];
+
+    const BASH_LAUNCH_RE = /python3\s+-m\s+http\.server\b/u;
+    const PS_LAUNCH_RE = /Start-Process\s+python3\b[^]*'http\.server'/u;
+
+    for (const file of files) {
+      const text = readFileSync(join(WORKFLOWS_DIR, file), "utf8");
+      const lines = text.split(/\r?\n/u);
+      for (let i = 0; i < lines.length; i += 1) {
+        const raw = lines[i] ?? "";
+        const trimmed = raw.trim();
+        if (BASH_LAUNCH_RE.test(trimmed) || PS_LAUNCH_RE.test(trimmed)) {
+          launches.push({ file, line: i + 1, trimmed });
+        }
+      }
+    }
+
+    // Sanity: the workflow must contain at least one loopback http.server
+    // launch — otherwise the regression surface has shrunk and this test
+    // would silently pass on an empty corpus.
+    expect(
+      launches.length,
+      "expected at least one `python3 -m http.server` (or PowerShell Start-Process python3 ... http.server) launch across .github/workflows/*.yml; the regression test would silently pass on an empty corpus.",
+    ).toBeGreaterThan(0);
+
+    // When: for each launch, examine the lines that follow up to (but not
+    // including) the next installer invocation. If the window contains no
+    // wait/retry marker, the launch will race the installer against the
+    // server's listen() call.
+    const offenders: LaunchSite[] = [];
+    for (const launch of launches) {
+      const text = readFileSync(join(WORKFLOWS_DIR, launch.file), "utf8");
+      const lines = text.split(/\r?\n/u);
+      const window = collectWindowAfterServerLaunch(lines, launch.line);
+      if (!looksLikeWaitForServer(window)) {
+        offenders.push(launch);
+      }
+    }
+
+    // Then: no launch site is missing a wait/retry. The diagnostic
+    // enumerates every offender so a future regression points at the
+    // exact file:line that needs a wait/retry loop inserted before the
+    // installer invocation.
+    const detail = offenders.map((o) => `${o.file}:${o.line}  ${o.trimmed}`).join("; ");
+    expect(
+      offenders,
+      `the following ${offenders.length} http.server launch site(s) are NOT followed by a wait/retry before the installer runs. ` +
+        `Backgrounding python3 -m http.server (or Start-Process python3 ... http.server on Windows) and immediately invoking the installer produces a deterministic 0ms "Failed to connect" race ` +
+        `because the server has not called listen() yet. Insert a tight retry loop (curl / Invoke-WebRequest polling for 200 on checksums.txt) BEFORE setting INSTALL_RELEASE_BASE and invoking scripts/install.sh: ${detail}`,
+    ).toEqual([]);
+  });
 });
