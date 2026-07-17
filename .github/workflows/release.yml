@@ -545,8 +545,16 @@ jobs:
           mkdir -p "$HOME/.local/bin"
           printf 'seeded-installed-binary\n' > "$HOME/.local/bin/umactually"
           BEFORE=$(sha256sum "$HOME/.local/bin/umactually" | awk '{print $1}')
-          awk 'BEGIN{done=0} /umactually-linux-x64.tar.gz$/ && !done {print "0000000000000000000000000000000000000000000000000000000000000000  umactually-linux-x64.tar.gz"; done=1; next} {print}' candidate/public/checksums.txt > candidate/public/checksums.bad
-          mv candidate/public/checksums.bad candidate/public/checksums.txt
+           ARCHIVE_NAME=$(node -e '
+             const fs = require("node:fs");
+             const targets = JSON.parse(fs.readFileSync("scripts/release-targets.json", "utf8"));
+             const target = targets.find((t) => t.runner === "ubuntu-latest" || (t.os === "linux" && t.arch === "x64"));
+             if (!target) process.exit(1);
+             console.log(target.archiveName);
+           ')
+           awk -v archive_name="$ARCHIVE_NAME" 'BEGIN{done=0} $2 == archive_name && !done {print "0000000000000000000000000000000000000000000000000000000000000000  " archive_name; done=1; next} {print}' candidate/public/checksums.txt > candidate/public/checksums.bad
+           test "$(( $(grep -cF "  $ARCHIVE_NAME" candidate/public/checksums.bad) ))" -eq 1
+           mv candidate/public/checksums.bad candidate/public/checksums.txt
           PORT=$(python3 -c 'import socket; s=socket.socket(); s.bind(("127.0.0.1",0)); print(s.getsockname()[1]); s.close()')
           python3 -m http.server "$PORT" --bind 127.0.0.1 --directory candidate/public &
           SERVER_PID=$!
@@ -652,31 +660,29 @@ jobs:
         run: |
           set -euo pipefail
           cd "$RUNNER_TEMP/umactually-release-candidate"
-          sha256sum \
-            public/umactually-linux-x64.tar.gz \
-            public/umactually-linux-arm64.tar.gz \
-            public/umactually-darwin-x64.tar.gz \
-            public/umactually-darwin-arm64.tar.gz \
-            public/umactually-windows-x64.zip \
-            public/umactually-windows-arm64.zip \
-            public/checksums.txt
+           node -e '
+             const fs = require("node:fs");
+             const targets = JSON.parse(fs.readFileSync("scripts/release-targets.json", "utf8"));
+             const args = targets.map((t) => `public/${t.archiveName}`).concat("public/checksums.txt");
+             console.log(args.map((arg) => JSON.stringify(arg)).join(" "));
+           ' | xargs sha256sum
 
       - name: gh release create (draft)
         run: |
           set -euo pipefail
           cd "$RUNNER_TEMP/umactually-release-candidate"
-          gh release create "$GITHUB_REF_NAME" \
-            --verify-tag \
-            --title "$GITHUB_REF_NAME" \
-            --generate-notes \
-            --draft \
-            umactually-linux-x64.tar.gz \
-            umactually-linux-arm64.tar.gz \
-            umactually-darwin-x64.tar.gz \
-            umactually-darwin-arm64.tar.gz \
-            umactually-windows-x64.zip \
-            umactually-windows-arm64.zip \
-            checksums.txt
+           # CANDIDATE_BASELINE_MANIFEST: publish asset paths are generated from the manifest below.
+           ASSET_ARGS=$(node -e '
+             const fs = require("node:fs");
+             const targets = JSON.parse(fs.readFileSync("scripts/release-targets.json", "utf8"));
+             console.log(targets.map((target) => target.archiveName).concat("checksums.txt").join(" "));
+           ')
+           gh release create "$GITHUB_REF_NAME" \
+             --verify-tag \
+             --title "$GITHUB_REF_NAME" \
+             --generate-notes \
+             --draft \
+             $ASSET_ARGS
 
       - name: Verify draft assets + hashes (pre-publish gate)
         run: |

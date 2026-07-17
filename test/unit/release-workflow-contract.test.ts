@@ -471,11 +471,12 @@ function probeContract(workflow: Workflow): readonly Violation[] {
       // `.tar.gz` or `.zip` or `checksums.txt`. (Excluding flag values
       // that contain dots, e.g. `--generate-notes`, which never do.)
       const basenameRe = /[A-Za-z0-9][A-Za-z0-9._-]*\.(?:tar\.gz|zip)|checksums\.txt/gu;
-      const pathTokens = createLine.match(basenameRe) ?? [];
-      const expected = new Set(PUBLIC_BASENAMES);
-      const seen = new Set(pathTokens);
-      const missing = PUBLIC_BASENAMES.filter((n) => !seen.has(n));
-      const extra = pathTokens.filter((p) => !expected.has(p));
+       const pathTokens = createLine.match(basenameRe) ?? [];
+       const usesManifest = publishRun.includes("release-targets.json");
+       const expected = new Set(PUBLIC_BASENAMES);
+       const seen = new Set(pathTokens);
+       const missing = usesManifest ? [] : PUBLIC_BASENAMES.filter((n) => !seen.has(n));
+       const extra = pathTokens.filter((p) => !expected.has(p));
       if (missing.length > 0 || extra.length > 0) {
         violations.push({
           rule: "public-asset-basenames",
@@ -672,7 +673,29 @@ function probeContract(workflow: Workflow): readonly Violation[] {
     }
   }
 
-  // Rule 17: the build pipeline's raw-binary copy step MUST NOT
+  // Rule 17: manifest-derived publish asset lists must not hardcode archive names.
+  // Source: release-binary-download-size RC#2.
+  if (publishJob !== null) {
+    const publishRuns = publishJob.job.steps.map((s) => s.run ?? "").join("\n");
+    const publishArchiveNames = ARCHIVE_BASENAMES.filter((name) => publishRuns.includes(name));
+    if (publishArchiveNames.length > 0 && !publishRuns.includes("release-targets.json") && !publishRuns.includes("CANDIDATE_BASELINE_MANIFEST") && publishRuns.includes("ASSET_ARGS=")) {
+      violations.push({
+        rule: "manifest-parity",
+        source: "release-binary-download-size RC#2",
+        detail: `publish job hardcodes archive basenames (${publishArchiveNames.join(", ")}); derive them from scripts/release-targets.json`,
+      });
+    }
+    const hashStep = publishJob.job.steps.find((step) => /Compute candidate asset hashes/u.test(step.name ?? ""));
+    if (hashStep !== undefined && !hashStep.run?.includes("release-targets.json")) {
+      violations.push({
+        rule: "manifest-parity-hashes",
+        source: "release-binary-download-size RC#2",
+        detail: "candidate asset hashes must read archive names from scripts/release-targets.json",
+      });
+    }
+  }
+
+  // Rule 18: the build pipeline's raw-binary copy step MUST NOT
   //          hardcode a manifest `rawName`. F1 audit identified four
   //          places in `.github/workflows/release.yml` that duplicated
   //          manifest data as hardcoded shell tokens with no automated
