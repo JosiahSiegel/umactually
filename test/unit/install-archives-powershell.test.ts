@@ -511,8 +511,11 @@ describe.skipIf(!PS_AVAILABLE)("install.ps1 8-case override matrix", () => {
       USERPROFILE: join(installDir, "..", ".."),
     });
     expect(result.status).not.toBe(0);
-    // The PowerShell throw string "INSTALL_RELEASE_BASE + INSTALL_ASSET_CONTRACT=archive without INSTALL_RELEASE_TAG is invalid (case 7 reject)" is word-wrapped by the PowerShell exception formatter with ANSI escape codes AND newlines between words on multi-line terminals (CI Linux runners). Strip ANSI codes and collapse whitespace before matching.
-    const stripped = result.stderr.replace(/\u001b\[[0-9;]*m/g, "").replace(/\s+/g, " ");
+    // The PowerShell throw string "INSTALL_RELEASE_BASE + INSTALL_ASSET_CONTRACT=archive without INSTALL_RELEASE_TAG is invalid (case 7 reject)" is word-wrapped by the PowerShell exception formatter with ANSI escape codes, newlines, AND source-line pointer pipes (|) between words on multi-line terminals (CI Linux runners). Strip ANSI codes, strip source-line pointer pipes, then collapse whitespace before matching.
+    const stripped = result.stderr
+      .replace(/\u001b\[[0-9;]*m/g, "")
+      .replace(/\|/g, " ")
+      .replace(/\s+/g, " ");
     expect(stripped).toMatch(/without INSTALL_RELEASE_TAG/);
   });
 
