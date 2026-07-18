@@ -1138,6 +1138,36 @@ describe("Release workflow contract — RED against current workflow (Todo 9 fix
     ).toEqual([]);
   });
 
+  it("RELEASE-WORKFLOW-PUBLISH-CHECKOUT: publish job checks out the repo so `gh release create` can resolve the git tag (run 29635526620)", () => {
+    // Run 29635526620 surfaced this: the publish job's
+    // `gh release create (draft)` step runs inside the
+    // extracted-artifact directory which has no `.git` checkout,
+    // so `gh release create`'s internal `git` invocation fails with
+    // `fatal: not a git repository (or any of the parent directories): .git`.
+    //
+    // Fix: the publish job MUST run `actions/checkout@v4` so the
+    // workspace has a `.git` directory the `gh` CLI can introspect.
+    // (Without a `.git` directory in CWD or any parent, `gh` cannot
+    // resolve the upstream branch/tag context it needs to attach
+    // assets to the existing tag.)
+    const workflow = loadCurrentWorkflow();
+    const publish = findJobById(
+      workflow["jobs"] as Record<string, WorkflowJob>,
+      (_job, id) => id === "publish",
+    );
+    expect(publish, "publish job must exist").not.toBeNull();
+    if (publish === null) return;
+    const hasCheckout = publish.job.steps.some(
+      (s) => s.uses !== undefined && /^actions\/checkout(@v\d+)?$/u.test(s.uses),
+    );
+    expect(
+      hasCheckout,
+      "publish job must include an actions/checkout step before `gh release create` " +
+        "(the extracted candidate bundle has no .git directory, so without a checkout " +
+        "the gh CLI fails with `fatal: not a git repository (or any of the parent directories): .git`).",
+    ).toBe(true);
+  });
+
   it("RELEASE-WORKFLOW-DISPATCH: workflow_dispatch inputs are publish (boolean) and correlation (string)", () => {
     // Source: Todo 4 brief.
     const workflow = loadCurrentWorkflow();
