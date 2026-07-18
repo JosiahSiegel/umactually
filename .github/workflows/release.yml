@@ -836,18 +836,25 @@ jobs:
       - name: gh release create (draft)
         run: |
           set -euo pipefail
-          cd "$RUNNER_TEMP/umactually-release-candidate"
-           # CANDIDATE_BASELINE_MANIFEST: publish asset paths are generated from
-           # the manifest below. Each archive entry is rooted at `public/`
-           # (the bundle's archive subdirectory), and `checksums.txt` lives
-           # next to those archives. Bare basenames would not resolve —
-           # gh release create only reads files relative to its CWD.
-           ASSET_ARGS=$(node -e '
+           # gh release create internally invokes `git` to verify the
+           # tag/branch context. The bundle root has no `.git/`
+           # directory (the artifact zip extracts only the runtime
+           # files), so we cd to the workflow workspace (which DOES
+           # have `.git/`) before invoking `gh`. The asset paths
+           # are absolute so this does not affect path resolution.
+           ASSET_ARGS=$(cd "$RUNNER_TEMP/umactually-release-candidate" && node -e '
+             const path = require("node:path");
              const fs = require("node:fs");
-             const targets = JSON.parse(fs.readFileSync("internal/release-targets.json", "utf8"));
-             console.log(targets.map((target) => `public/${target.archiveName}`).concat("public/checksums.txt").join(" "));
+             const bundleRoot = process.cwd();
+             const targets = JSON.parse(fs.readFileSync(path.join(bundleRoot, "internal/release-targets.json"), "utf8"));
+             const args = targets
+               .map((target) => path.join(bundleRoot, "public", target.archiveName))
+               .concat(path.join(bundleRoot, "public", "checksums.txt"));
+             console.log(args.map((arg) => JSON.stringify(arg)).join(" "));
            ')
+           cd "$GITHUB_WORKSPACE"
            gh release create "$GITHUB_REF_NAME" \
+             --repo "$GITHUB_REPOSITORY" \
              --verify-tag \
              --title "$GITHUB_REF_NAME" \
              --generate-notes \
