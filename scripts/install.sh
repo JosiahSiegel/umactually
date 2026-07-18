@@ -395,14 +395,20 @@ resolve_dispatch() {
     esac
   fi
 
-  # Validate the base URL does not contain an embedded tag (rejects
-  # "https://host/releases/download/v0.5.0" and similar).
-  if [ -n "$_base" ]; then
+  # Validate the base URL when INSTALL_RELEASE_TAG is empty. The
+  # unguarded BASE-with-tag pattern (e.g. the canary / dry-run
+  # setting INSTALL_RELEASE_BASE=https://github.com/<repo>/releases/download/<tag>
+  # together with INSTALL_RELEASE_TAG=<tag>) is a legitimate user
+  # intent — install.sh case 5 takes BASE as-is without rewriting
+  # it. Only when no INSTALL_RELEASE_TAG is supplied do we reject an
+  # embedded tag, because case 3 (base-only) probes BASE/checksums.txt
+  # and that would 404 if BASE already pointed at /<tag>/checksums.txt.
+  if [ -n "$_base" ] && [ -z "$_tag" ]; then
     _base_path=${_base%%#*}
     _base_path=${_base_path%%\?*}
     case "$_base_path" in
       */v[0-9]*.[0-9]*.[0-9]*|*/v[0-9]*.[0-9]*.[0-9]*/)
-        log_err "INSTALL_RELEASE_BASE must not include a tag (got: '$_base')"
+        log_err "INSTALL_RELEASE_BASE must not include a tag when INSTALL_RELEASE_TAG is unset (got: '$_base')"
         exit 1
         ;;
     esac
