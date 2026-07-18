@@ -119,10 +119,15 @@ jobs:
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         with:
           name: umactually-release-candidate
+          # release/internal/release-targets.json is the bundled copy
+          # the stage step makes. publish + canary jobs run from
+          # $RUNNER_TEMP/umactually-release-candidate and cd into
+          # release/ before reading the manifest — see hotfix #11.
           path: |
             release/public
             release/internal/raw
             release/internal/release-size-report.json
+            release/internal/release-targets.json
           if-no-files-found: error
           retention-days: 14
 
@@ -763,7 +768,7 @@ jobs:
           # release-size-report.json.
           mapfile -t EXPECTED_LAYOUT < <(node -e '
             const fs = require("node:fs");
-            const targets = JSON.parse(fs.readFileSync("scripts/release-targets.json", "utf8"));
+            const targets = JSON.parse(fs.readFileSync("release/internal/release-targets.json", "utf8"));
             for (const t of targets) {
               console.log(`public/${t.archiveName}`);
               console.log(`internal/raw/${t.rawName}`);
@@ -806,7 +811,7 @@ jobs:
           cd "$RUNNER_TEMP/umactually-release-candidate"
            node -e '
              const fs = require("node:fs");
-             const targets = JSON.parse(fs.readFileSync("scripts/release-targets.json", "utf8"));
+             const targets = JSON.parse(fs.readFileSync("release/internal/release-targets.json", "utf8"));
              const args = targets.map((t) => `public/${t.archiveName}`).concat("public/checksums.txt");
              console.log(args.map((arg) => JSON.stringify(arg)).join(" "));
            ' | xargs sha256sum
@@ -818,7 +823,7 @@ jobs:
            # CANDIDATE_BASELINE_MANIFEST: publish asset paths are generated from the manifest below.
            ASSET_ARGS=$(node -e '
              const fs = require("node:fs");
-             const targets = JSON.parse(fs.readFileSync("scripts/release-targets.json", "utf8"));
+             const targets = JSON.parse(fs.readFileSync("release/internal/release-targets.json", "utf8"));
              console.log(targets.map((target) => target.archiveName).concat("checksums.txt").join(" "));
            ')
            gh release create "$GITHUB_REF_NAME" \
@@ -839,7 +844,7 @@ jobs:
           # manifest edit, not a workflow edit.
           mapfile -t EXPECTED_ARR < <(node -e '
             const fs = require("node:fs");
-            const targets = JSON.parse(fs.readFileSync("scripts/release-targets.json", "utf8"));
+            const targets = JSON.parse(fs.readFileSync("release/internal/release-targets.json", "utf8"));
             for (const t of targets) console.log(t.archiveName);
             console.log("checksums.txt");
           ')
@@ -908,7 +913,7 @@ jobs:
           # canary follows automatically.
           EXPECTED=$(node -e '
             const fs = require("node:fs");
-            const targets = JSON.parse(fs.readFileSync("scripts/release-targets.json", "utf8"));
+            const targets = JSON.parse(fs.readFileSync("release/internal/release-targets.json", "utf8"));
             for (const t of targets) console.log(t.archiveName);
             console.log("checksums.txt");
           ')
