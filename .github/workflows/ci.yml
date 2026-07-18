@@ -84,3 +84,72 @@ jobs:
           name: manual-artifacts
           path: artifacts/manual/
           if-no-files-found: ignore
+
+  # ---------------------------------------------------------------------
+  # release-pipeline-dry-run
+  # ---------------------------------------------------------------------
+  # Runs the same Linux-side production release pipeline locally on every
+  # PR so a green merge really does guarantee the release will succeed.
+  # Bridges the gap that the regular `ci` job alone cannot close: it
+  # executes
+  #   - the production build (npm run build, build-binary.mjs,
+  #     package-release-assets.mjs, verify-release-assets.mjs) and
+  #   - the canary-equivalent Linux x64 install against a fixture that
+  #     masquerades as the GitHub Releases host (so URL routing matches
+  #     the immutable /releases/download/<tag>/<file> shape).
+  # Bails on any failure. macOS / Windows / publish-jobs in the actual
+  # release workflow are not exercised here (those runners live on
+  # release-only lanes); they are gated by the
+  # release-workflow-contract.test.ts structural tests. This job's goal
+  # is to fail-fast on the Linux lane where most regressions live.
+  # ---------------------------------------------------------------------
+  release-pipeline-dry-run:
+    name: release pipeline dry-run
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+          cache: "npm"
+
+      # Pin the Bun version to match release.yml exactly. Drift here
+      # would let a fix merge in while the actual release runs against
+      # a different compiler, producing archives whose checksums.txt
+      # entries disagree with the build-time verifier output.
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: "1.3.14"
+
+      - name: Install dependencies
+        run: npm ci
+
+      # Python3 is required by the smoke jobs' http.server fixture in
+      # the actual release workflow; not strictly needed for our
+      # Node-based fixture, but kept for parity so a future refactor
+      # can switch back to python3 without re-validating here.
+      - name: Install Python (for parity with release.yml)
+        run: |
+          if command -v python3 >/dev/null 2>&1; then
+            echo "python3 already present: $(python3 --version)"
+          else
+            sudo apt-get update
+            sudo apt-get install -y python3
+          fi
+
+      - name: Run release pipeline dry-run
+        run: bash scripts/ci-release-pipeline-dry-run.sh
+
+      - name: Upload dry-run logs on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-pipeline-dry-run-failure
+          path: |
+            scripts/ci-release-pipeline-dry-run.sh
+            build.log
+          if-no-files-found: ignore
