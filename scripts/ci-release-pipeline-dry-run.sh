@@ -136,19 +136,16 @@ node scripts/verify-release-assets.mjs \
   --bun-version "${BUN_VERSION_PIN}" \
   --report "${SIZE_REPORT}"
 
-# ----- 3. Stage into release-build/public/ + internal/raw/ -----
-log "7/9  stage: split BUILD_DIR into public/<archives>+checksums.txt and internal/raw/<binaries>"
-node -e '
-  const fs = require("node:fs");
-  const targets = JSON.parse(fs.readFileSync("scripts/release-targets.json", "utf8"));
-  fs.mkdirSync("'"${PUBLIC_DIR}"'", { recursive: true });
-  fs.mkdirSync("'"${RAW_DIR}"'", { recursive: true });
-  for (const t of targets) {
-    fs.renameSync(`'"${BUILD_DIR}"'/${t.archiveName}`, `'\"${PUBLIC_DIR}/${t.archiveName}\"'`);
-    fs.renameSync(`'"${BUILD_DIR}"'/${t.rawName}`, `'\"${RAW_DIR}/${t.rawName}\"'`);
-  }
-  fs.renameSync(`'"${BUILD_DIR}"'/checksums.txt`, `'\"${PUBLIC_DIR}/checksums.txt\"'`);
-'
+# ----- 3. Stage into release/public/ + internal/raw/ -----
+# Use the same staging script the release-pipeline uses (lifted out
+# from release.yml's inline node -e block into scripts/ so the
+# bash-JSON-quoting tension goes away). After stage, public/ contains
+# the 6 archives + checksums.txt, internal/raw/ contains the 6 raws,
+# and internal/release-size-report.json is left in place.
+log "7/9  stage: split release/ into public/<archives>+checksums.txt and internal/raw/<binaries>"
+node scripts/stage-release-assets.mjs \
+  --release-dir release \
+  --manifest scripts/release-targets.json
 
 test -f "${SIZE_REPORT}"
 test -d "${PUBLIC_DIR}"

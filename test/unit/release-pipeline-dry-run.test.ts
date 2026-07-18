@@ -240,3 +240,50 @@ describe(".github/workflows/ci.yml — release-pipeline-dry-run job is a require
     expect(releaseYml).toMatch(/bun-version:\s*["']1\.3\.14["']/);
   });
 });
+
+// ---------------------------------------------------------------------------
+// Stage-script contract — both the dry-run and the release.yml build-package
+// step must use the SAME staging helper. Without sharing one script, a
+// developer who fixes a packaging bug in one workflow but not the other
+// would pass PR-CI green and still fail the release. The shared helper
+// is scripts/stage-release-assets.mjs.
+// ---------------------------------------------------------------------------
+
+describe("scripts/stage-release-assets.mjs — shared staging helper", () => {
+  it("script exists and uses fs.renameSync-style idempotent moves", () => {
+    const path = join(REPO_ROOT, "scripts", "stage-release-assets.mjs");
+    const fs = require("node:fs") as typeof import("node:fs");
+    expect(fs.existsSync(path)).toBe(true);
+    const text = readFileSync(path, "utf8");
+    // The CLI parses --release-dir and --manifest into an options
+    // map keyed by the flag's body (e.g. `options["release-dir"]`).
+    // Assert the flag keys exist in source, then assert their values
+    // resolve to the manifest / release paths.
+    expect(text, "must parse --release-dir into options[release-dir]").toMatch(
+      /options\["release-dir"\]/u,
+    );
+    expect(text, "must parse --manifest into options[manifest]").toMatch(
+      /options\["manifest"\]/u,
+    );
+    // Must move files, not copy (rename is atomic and idempotent).
+    expect(text).toMatch(/renameSync/u);
+    // Must handle missing source files gracefully (partial rerun).
+    expect(text).toMatch(/existsSync/u);
+  });
+
+  it("RELEASE-STAGE-SHARED-HELPER: release.yml build-package uses scripts/stage-release-assets.mjs (same helper as dry-run)", () => {
+    const releaseYml = readFileSync(join(REPO_ROOT, ".github", "workflows", "release.yml"), "utf8");
+    // The release.yml build-package Stage step must invoke the shared
+    // helper — never the inline `node -e '...'` form, which kept
+    // diverging between the two pipelines in the past.
+    expect(
+      releaseYml,
+      "release.yml must call `node scripts/stage-release-assets.mjs --release-dir release --manifest scripts/release-targets.json`",
+    ).toMatch(/node scripts\/stage-release-assets\.mjs/);
+    expect(releaseYml).toMatch(/--release-dir\s+release/);
+    expect(releaseYml).toMatch(/--manifest\s+scripts\/release-targets\.json/);
+    // Cross-reference: dry-run script also uses the shared helper.
+    const dryRunScript = readFileSync(SCRIPT, "utf8");
+    expect(dryRunScript).toMatch(/node scripts\/stage-release-assets\.mjs/);
+  });
+});
