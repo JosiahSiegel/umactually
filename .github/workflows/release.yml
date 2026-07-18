@@ -119,10 +119,17 @@ jobs:
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         with:
           name: umactually-release-candidate
-          # release/internal/release-targets.json is the bundled copy
-          # the stage step makes. publish + canary jobs run from
-          # $RUNNER_TEMP/umactually-release-candidate and cd into
-          # release/ before reading the manifest — see hotfix #11.
+          # This input is workspace-relative. actions/upload-artifact
+          # archives the *contents* of each `path:` and strips the
+          # shared `release/` ancestor — so the published ZIP has
+          # entries `public/...`, `internal/...`, `internal/raw/...`
+          # (no `release/` prefix). After publish unzips the candidate
+          # bundle, the manifest lives at
+          #   $RUNNER_TEMP/umactually-release-candidate/internal/release-targets.json
+          # and the publish job's Node helpers `cd` into that bundle
+          # root before reading it. The canary reads the in-repo
+          # `scripts/release-targets.json` from `GITHUB_WORKSPACE`
+          # instead — it does not download the artifact.
           path: |
             release/public
             release/internal/raw
@@ -761,14 +768,22 @@ jobs:
         run: |
           set -euo pipefail
           ROOT="$RUNNER_TEMP/umactually-release-candidate"
+          cd "$RUNNER_TEMP/umactually-release-candidate"
           # Manifest is the single source of truth for the candidate-bundle
-          # layout. Read it at runtime: each target contributes one archive
-          # under public/ and one raw binary under internal/raw/. Add the
-          # shared checksums.txt manifest entry and the internal-only
-          # release-size-report.json.
+          # layout. The candidate bundle uploaded by build-package has the
+          # workspace-relative path `release/internal/release-targets.json`,
+          # but actions/upload-artifact archives the contents of `path:`
+          # and strips the shared `release/` ancestor — so the extracted
+          # root contains the manifest at `internal/release-targets.json`,
+          # NOT `release/internal/release-targets.json`. The Node helper
+          # below reads the in-bundle path, with the CWD already set to
+          # the bundle root by the `cd` above. The layout checks below
+          # remain relative to `$ROOT` because the bundle's two top-level
+          # directories `public/` and `internal/` are direct children of
+          # the extraction target.
           mapfile -t EXPECTED_LAYOUT < <(node -e '
             const fs = require("node:fs");
-            const targets = JSON.parse(fs.readFileSync("release/internal/release-targets.json", "utf8"));
+            const targets = JSON.parse(fs.readFileSync("internal/release-targets.json", "utf8"));
             for (const t of targets) {
               console.log(`public/${t.archiveName}`);
               console.log(`internal/raw/${t.rawName}`);
@@ -811,7 +826,7 @@ jobs:
           cd "$RUNNER_TEMP/umactually-release-candidate"
            node -e '
              const fs = require("node:fs");
-             const targets = JSON.parse(fs.readFileSync("release/internal/release-targets.json", "utf8"));
+             const targets = JSON.parse(fs.readFileSync("internal/release-targets.json", "utf8"));
              const args = targets.map((t) => `public/${t.archiveName}`).concat("public/checksums.txt");
              console.log(args.map((arg) => JSON.stringify(arg)).join(" "));
            ' | xargs sha256sum
@@ -820,11 +835,15 @@ jobs:
         run: |
           set -euo pipefail
           cd "$RUNNER_TEMP/umactually-release-candidate"
-           # CANDIDATE_BASELINE_MANIFEST: publish asset paths are generated from the manifest below.
+           # CANDIDATE_BASELINE_MANIFEST: publish asset paths are generated from
+           # the manifest below. Each archive entry is rooted at `public/`
+           # (the bundle's archive subdirectory), and `checksums.txt` lives
+           # next to those archives. Bare basenames would not resolve —
+           # gh release create only reads files relative to its CWD.
            ASSET_ARGS=$(node -e '
              const fs = require("node:fs");
-             const targets = JSON.parse(fs.readFileSync("release/internal/release-targets.json", "utf8"));
-             console.log(targets.map((target) => target.archiveName).concat("checksums.txt").join(" "));
+             const targets = JSON.parse(fs.readFileSync("internal/release-targets.json", "utf8"));
+             console.log(targets.map((target) => `public/${target.archiveName}`).concat("public/checksums.txt").join(" "));
            ')
            gh release create "$GITHUB_REF_NAME" \
              --verify-tag \
@@ -841,10 +860,13 @@ jobs:
           ASSET_NAMES=$(gh release view "$GITHUB_REF_NAME" --json assets --jq '.assets[].name' | sort)
           # Manifest is the single source of truth for public asset names.
           # Read it at runtime; adding/renaming a target requires only a
-          # manifest edit, not a workflow edit.
+          # manifest edit, not a workflow edit. The manifest lives in the
+          # extracted bundle root at internal/release-targets.json, and we
+          # must cd into the bundle root before reading.
+          cd "$RUNNER_TEMP/umactually-release-candidate"
           mapfile -t EXPECTED_ARR < <(node -e '
             const fs = require("node:fs");
-            const targets = JSON.parse(fs.readFileSync("release/internal/release-targets.json", "utf8"));
+            const targets = JSON.parse(fs.readFileSync("internal/release-targets.json", "utf8"));
             for (const t of targets) console.log(t.archiveName);
             console.log("checksums.txt");
           ')
@@ -911,9 +933,15 @@ jobs:
           # the manifest keeps the canary honest — adding, renaming,
           # or removing a target requires only a manifest edit and the
           # canary follows automatically.
+          #
+          # The canary reads the manifest from the in-repo path
+          # `scripts/release-targets.json` (after `actions/checkout`),
+          # NOT from the bundle's extracted tree. The canary does not
+          # download or extract the candidate artifact — it operates
+          # against `GITHUB_WORKSPACE`.
           EXPECTED=$(node -e '
             const fs = require("node:fs");
-            const targets = JSON.parse(fs.readFileSync("release/internal/release-targets.json", "utf8"));
+            const targets = JSON.parse(fs.readFileSync("scripts/release-targets.json", "utf8"));
             for (const t of targets) console.log(t.archiveName);
             console.log("checksums.txt");
           ')

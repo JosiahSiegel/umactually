@@ -522,25 +522,24 @@ function probeContract(workflow: Workflow): readonly Violation[] {
   // Rule 11: post-publication canary depends on publish.
   // Source: Scope L42 ("retain one immutable-tag post-publication install canary")
   //         and Todo 4 brief ("post-publication canary depends on publish").
-  if (publishJob !== null) {
-    // A canary is a job whose ID contains "canary" — that's the
-    // post-publication install probe. Pre-publication install smoke jobs
-    // (e.g. install-posix, install-powershell) serve a different purpose
-    // and are NOT the canary.
-    const canary = findJobById(jobs, (_job, id) => /canary/u.test(id));
-    if (canary === null) {
-      violations.push({
-        rule: "canary-job-exists",
-        source: "Scope L42 + Todo 4 brief",
-        detail: "no post-publish canary job found (job id must contain 'canary')",
-      });
-    } else if (!getJobNeeds(canary.job).includes(publishJob.id)) {
-      violations.push({
-        rule: "canary-needs-publish",
-        source: "Scope L42 + Todo 4 brief",
-        detail: `canary job (${canary.id}) does not depend on publish (${publishJob.id})`,
-      });
-    }
+  // A canary is a job whose ID contains "canary" — that's the
+  // post-publication install probe. Pre-publication install smoke jobs
+  // (e.g. install-posix, install-powershell) serve a different purpose
+  // and are NOT the canary. Resolve once at function scope so Rule 12f
+  // (and any future rule that needs the canary job) can reference it.
+  const canary = findJobById(jobs, (_job, id) => /canary/u.test(id));
+  if (canary === null) {
+    violations.push({
+      rule: "canary-job-exists",
+      source: "Scope L42 + Todo 4 brief",
+      detail: "no post-publish canary job found (job id must contain 'canary')",
+    });
+  } else if (publishJob !== null && !getJobNeeds(canary.job).includes(publishJob.id)) {
+    violations.push({
+      rule: "canary-needs-publish",
+      source: "Scope L42 + Todo 4 brief",
+      detail: `canary job (${canary.id}) does not depend on publish (${publishJob.id})`,
+    });
   }
 
   // Rule 12: runner labels include the five pinned names; windows-arm64
@@ -658,6 +657,194 @@ function probeContract(workflow: Workflow): readonly Violation[] {
           rule: "upload-artifact-includes-manifest",
           source: "Run 29628553762",
           detail: `build-package's Upload candidate bundle step path: must include release/internal/release-targets.json so the publish + canary jobs can resolve the manifest from $RUNNER_TEMP/umactually-release-candidate/...`,
+        });
+      }
+    }
+  }
+
+  // Rule 12d: every publish-job step that consumes the manifest via
+  //           Node's `fs.readFileSync` MUST read the in-bundle path
+  //           `internal/release-targets.json` (NOT
+  //           `release/internal/release-targets.json`) and MUST `cd`
+  //           into the bundle root BEFORE the read. The bundle's
+  //           extracted root has only `public/` and `internal/` —
+  //           there is NO `release/` ancestor — because
+  //           `actions/upload-artifact` archives the contents of the
+  //           `path:` argument (it strips the shared `release/`
+  //           ancestor). Run 29629288395 surfaced this: the publish
+  //           job's Node helper read `release/internal/release-targets.json`
+  //           and exited with ENOENT.
+  //
+  //           For each named publish step that reads the manifest,
+  //           we assert:
+  //           - run contains `cd "$RUNNER_TEMP/umactually-release-candidate"`
+  //             textually BEFORE the manifest read;
+  //           - run contains `fs.readFileSync("internal/release-targets.json"`
+  //           - run does NOT contain `fs.readFileSync("release/internal/release-targets.json"`
+  //           - run does NOT contain `fs.readFileSync("scripts/release-targets.json"`
+  //             (scripts/... only exists in the canary workspace).
+  //
+  //           Steps covered: `Validate exact candidate bundle layout`,
+  //           `Compute candidate asset hashes (pre-publish verification)`,
+  //           `gh release create (draft)`, `Verify draft assets + hashes
+  //           (pre-publish gate)`.
+  if (publishJob !== null) {
+    const publishStepNames = [
+      "Validate exact candidate bundle layout",
+      "Compute candidate asset hashes (pre-publish verification)",
+      "gh release create (draft)",
+      "Verify draft assets + hashes (pre-publish gate)",
+    ];
+    for (const stepName of publishStepNames) {
+      const step = publishJob.job.steps.find((s) => (s.name ?? "") === stepName);
+      if (step === undefined) continue;
+      const run = step.run ?? "";
+      const cdMatch = /\bcd\s+"\$\{?RUNNER_TEMP\}?\/umactually-release-candidate\b/u.exec(run);
+      const readBundlePath = /fs\.readFileSync\(\s*"internal\/release-targets\.json"/u.test(run);
+      const readWrongPath = /fs\.readFileSync\(\s*"release\/internal\/release-targets\.json"/u.test(run);
+      const readScriptPath = /fs\.readFileSync\(\s*"scripts\/release-targets\.json"/u.test(run);
+      if (!readBundlePath && !readWrongPath && !readScriptPath) continue;
+      if (!readBundlePath) {
+        violations.push({
+          rule: "publish-manifest-path-incorrect",
+          source: "Run 29629288395 (publish ENOENT on scripts/release-targets.json relative path)",
+          detail: `${stepName}: must read internal/release-targets.json (the bundle's extracted manifest path), not ${readWrongPath ? "release/internal/release-targets.json" : "scripts/release-targets.json"}. actions/upload-artifact strips the release/ ancestor; the bundle root contains only public/ and internal/.`,
+        });
+        continue;
+      }
+      if (!cdMatch) {
+        violations.push({
+          rule: "publish-manifest-needs-cd",
+          source: "Run 29629288395 (publish Node helper ran from workspace cwd, ENOENT)",
+          detail: `${stepName}: must \`cd "$RUNNER_TEMP/umactually-release-candidate"\` BEFORE the Node manifest read so the relative path "internal/release-targets.json" resolves.`,
+        });
+        continue;
+      }
+      // Ensure the cd occurs textually before the read.
+      if (cdMatch.index > run.indexOf('fs.readFileSync("internal/release-targets.json"')) {
+        violations.push({
+          rule: "publish-manifest-cd-before-read",
+          source: "Run 29629288395",
+          detail: `${stepName}: the \`cd "$RUNNER_TEMP/umactually-release-candidate"\` statement must appear textually BEFORE the fs.readFileSync call to "internal/release-targets.json".`,
+        });
+      }
+    }
+  }
+
+  // Rule 12e: the publish job's `gh release create (draft)` step
+  //           must pass `public/<archive>` paths (relative to the
+  //           bundle root) and `public/checksums.txt`, NOT bare
+  //           basenames. Run 29629288395 would have surfaced this
+  //           as MISSING=7 if it had reached gh release create with
+  //           the current bare-basename form. The bundle root has
+  //           no `umactually-linux-x64.tar.gz` directly — only
+  //           `public/umactually-linux-x64.tar.gz`.
+  if (publishJob !== null) {
+    const createStep = publishJob.job.steps.find((s) => /gh release create/u.test(s.run ?? ""));
+    if (createStep !== undefined) {
+      const run = createStep.run ?? "";
+      // The publish job's `gh release create` arguments must use
+      // `public/<archive>` paths (relative to the bundle root), NOT
+      // bare basenames. Acceptable shapes:
+      //   (a) node helper template:   `public/${target.archiveName}`
+      //   (b) literal list in YAML:  `public/umactually-linux-x64.tar.gz \`
+      //   (c) variable expansion:    `$ASSET_ARGS` whose node helper
+      //                                produces `public/<archive>` paths
+      // We accept (a) directly and (b) via a literal-path check.
+      // For (c), we follow the upstream node helper reference and
+      // require the referenced variable's definition to use
+      // `public/<archive>` paths.
+      const hasLiteralPublicPath = /public\/umactually-/u.test(run);
+      const hasTemplatePublicPath = /public\/\$\{target\.archiveName\}/u.test(run);
+      // Variable form: follow the upstream node helper if the step
+      // sets $ASSET_ARGS (or any variable holding the asset list).
+      const varMatch = /\$\b([A-Z_][A-Z0-9_]*)\s*$/mu.exec(run);
+      let varDefHasPublicPath = false;
+      if (varMatch !== null) {
+        const varName = varMatch[1] ?? "";
+        // Find `varName=$(node -e '...')` definition.
+        const defRe = new RegExp(
+          "\\b" + varName + "\\s*=\\$\\(node\\s+-e\\s*['\"`]",
+          "u",
+        );
+        const defMatch = defRe.exec(run);
+        if (defMatch !== null) {
+          const defStart = defMatch.index;
+          const after = run.slice(defStart);
+          // The node -e body ends at the matching closing quote+paren.
+          // For our shape: `node -e '... ')` the body is between the
+          // opening quote and the last single quote before `)` on its
+          // own logical line. We approximate by capturing from the
+          // opening quote to the next single `\\n)` or `)` boundary.
+          const bodyMatch = /['"`]\s*([\s\S]*?)['"`]\s*\)/u.exec(after);
+          if (bodyMatch !== null) {
+            const body = bodyMatch[1] ?? "";
+            varDefHasPublicPath = /public\/\$\{target\.archiveName\}/u.test(body)
+              || /public\/\$\{target\b[^}]*\.archiveName\}/u.test(body);
+          }
+        }
+      }
+      const hasAnyPublicPath = hasLiteralPublicPath || hasTemplatePublicPath || varDefHasPublicPath;
+      // Bare basenames appear as separate `umactually-<target>` tokens
+      // after the `--draft` flag. Match a `umactually-` token that is
+      // not preceded by `public/` within ~16 chars.
+      const bareArgs = (run.match(/(?:^|\s)(umactually-(?:linux|darwin|windows)-[\w.-]+)(?=\s)/gu) ?? [])
+        .filter((token) => {
+          const idx = run.indexOf(token);
+          const prefix = run.slice(Math.max(0, idx - 16), idx);
+          return !/public\/$/.test(prefix);
+        });
+      if (!hasAnyPublicPath || bareArgs.length > 0) {
+        violations.push({
+          rule: "publish-asset-paths-must-be-public-prefixed",
+          source: "Run 29629288395 (would surface as MISSING=7 in gh release create)",
+          detail: `gh release create (draft): asset arguments must use \`public/<archive>\` paths (relative to the bundle root). Found bare basename arguments: [${bareArgs.join(", ")}]. The bundle's archives live under public/, not at the root.`,
+        });
+      }
+      // And the bundled checksums entry must be public/checksums.txt.
+      if (!/public\/checksums\.txt/u.test(run)) {
+        violations.push({
+          rule: "publish-checksums-path-must-be-public-prefixed",
+          source: "Run 29629288395",
+          detail: `gh release create (draft): must reference public/checksums.txt (the bundle's checksums entry), not bare checksums.txt.`,
+        });
+      }
+    }
+  }
+
+  // Rule 12f: the canary job's manifest reader MUST consume
+  //           `scripts/release-targets.json` (the in-repo path
+  //           available after `actions/checkout`) and MUST NOT
+  //           switch to the bundle-only path. The canary does not
+  //           download or extract the artifact — it reads the
+  //           checked-in manifest from `GITHUB_WORKSPACE`.
+  if (canary !== null) {
+    const queryStep = canary.job.steps.find(
+      (s) => (s.name ?? "") === "Query release by exact tag and assert seven assets",
+    );
+    if (queryStep !== undefined) {
+      const run = queryStep.run ?? "";
+      if (!/fs\.readFileSync\(\s*"scripts\/release-targets\.json"/u.test(run)) {
+        violations.push({
+          rule: "canary-manifest-must-read-scripts",
+          source: "Run 29629288395 (canary side, latent)",
+          detail: `Query release by exact tag: must read scripts/release-targets.json (the in-repo manifest available after actions/checkout), not release/internal/... nor internal/.... The canary does not download the artifact.`,
+        });
+      }
+      if (/fs\.readFileSync\(\s*"release\/internal\/release-targets\.json"/u.test(run)) {
+        violations.push({
+          rule: "canary-must-not-read-artifact-path",
+          source: "Run 29629288395 (canary side, latent)",
+          detail: `Query release by exact tag: must not reference release/internal/release-targets.json — the canary does not download the artifact.`,
+        });
+      }
+      // And: the canary's run-block must NOT include a `cd` to the
+      // extracted bundle root. The canary runs from GITHUB_WORKSPACE.
+      if (/\bcd\s+"\$\{?RUNNER_TEMP\}?\/umactually-release-candidate\b/u.test(run)) {
+        violations.push({
+          rule: "canary-must-not-cd-to-bundle-root",
+          source: "Run 29629288395 (canary side, latent)",
+          detail: `Query release by exact tag: must not cd into the bundle root — the canary does not extract the artifact.`,
         });
       }
     }
@@ -885,6 +1072,72 @@ describe("Release workflow contract — RED against current workflow (Todo 9 fix
           `Replace with stdout redirection (\`> <file>\` in bash, \`| Out-File ...\` in PowerShell).`,
       ).toEqual([]);
     }
+  });
+
+  it("RELEASE-WORKFLOW-PUBLISH-MANIFEST-PATH-AND-CD: publish job reads `internal/release-targets.json` after `cd` to the bundle root (run 29629288395)", () => {
+    // Run 29629288395 surfaced this: the publish job's Node helpers
+    // read `release/internal/release-targets.json`, but
+    // actions/upload-artifact archives the contents of `path:`
+    // (stripping the shared `release/` ancestor), so the extracted
+    // root contains `internal/release-targets.json`, NOT
+    // `release/internal/release-targets.json`. Every publish-step
+    // that consumes the manifest MUST (a) read `internal/...` and
+    // (b) `cd "$RUNNER_TEMP/umactually-release-candidate"` BEFORE
+    // the read. Probe must call probeContract on the on-disk
+    // workflow and find zero violations of Rule 12d.
+    const workflow = loadCurrentWorkflow();
+    const violations = probeContract(workflow);
+    const rule12d = violations.filter(
+      (v) => v.rule === "publish-manifest-path-incorrect" ||
+        v.rule === "publish-manifest-needs-cd" ||
+        v.rule === "publish-manifest-cd-before-read",
+    );
+    expect(
+      rule12d,
+      `publish job manifest read path/cd rules violated: ${formatViolations(rule12d)}. ` +
+        `Run 29629288395 surfaced ENOENT because PR #76 used "release/internal/release-targets.json" ` +
+        `and never cd'd to the bundle root before reading.`,
+    ).toEqual([]);
+  });
+
+  it("RELEASE-WORKFLOW-PUBLISH-ASSET-PATHS: gh release create receives `public/...` paths and `public/checksums.txt` (run 29629288395 latent)", () => {
+    // Even if publish ENOENT on the manifest is fixed, the next
+    // step (`gh release create`) would fail with MISSING=7 because
+    // the seven asset paths were passed as bare basenames
+    // (umactually-linux-x64.tar.gz, etc.) — files that exist only
+    // under `public/` in the bundle root. The seven CLI arguments
+    // must be `public/<archive>` paths plus `public/checksums.txt`.
+    const workflow = loadCurrentWorkflow();
+    const violations = probeContract(workflow);
+    const rule12e = violations.filter(
+      (v) => v.rule === "publish-asset-paths-must-be-public-prefixed" ||
+        v.rule === "publish-checksums-path-must-be-public-prefixed",
+    );
+    expect(
+      rule12e,
+      `publish asset path rules violated: ${formatViolations(rule12e)}. ` +
+        `Bare basenames are wrong: bundle has only public/<archive>, not <archive>.`,
+    ).toEqual([]);
+  });
+
+  it("RELEASE-WORKFLOW-CANARY-MANIFEST-PATH: canary reads `scripts/release-targets.json` from the workspace, not the artifact path", () => {
+    // The canary does NOT download or extract the candidate artifact;
+    // it operates on `GITHUB_WORKSPACE` after `actions/checkout`.
+    // Therefore it must read the in-repo manifest at
+    // `scripts/release-targets.json`, NOT the artifact-only paths.
+    const workflow = loadCurrentWorkflow();
+    const violations = probeContract(workflow);
+    const rule12f = violations.filter(
+      (v) => v.rule === "canary-manifest-must-read-scripts" ||
+        v.rule === "canary-must-not-read-artifact-path" ||
+        v.rule === "canary-must-not-cd-to-bundle-root",
+    );
+    expect(
+      rule12f,
+      `canary manifest read rules violated: ${formatViolations(rule12f)}. ` +
+        `The canary must read scripts/release-targets.json from the workspace, ` +
+        `not the artifact-only path.`,
+    ).toEqual([]);
   });
 
   it("RELEASE-WORKFLOW-DISPATCH: workflow_dispatch inputs are publish (boolean) and correlation (string)", () => {
@@ -1304,13 +1557,13 @@ jobs:
             --title "\$GITHUB_REF_NAME" \\
             --generate-notes \\
             --draft \\
-            umactually-linux-x64.tar.gz \\
-            umactually-linux-arm64.tar.gz \\
-            umactually-darwin-x64.tar.gz \\
-            umactually-darwin-arm64.tar.gz \\
-            umactually-windows-x64.zip \\
-            umactually-windows-arm64.zip \\
-            checksums.txt
+            public/umactually-linux-x64.tar.gz \\
+            public/umactually-linux-arm64.tar.gz \\
+            public/umactually-darwin-x64.tar.gz \\
+            public/umactually-darwin-arm64.tar.gz \\
+            public/umactually-windows-x64.zip \\
+            public/umactually-windows-arm64.zip \\
+            public/checksums.txt
       - name: gh release edit --draft=false
         if: inputs.publish == 'false' && github.event_name == 'push'
         run: gh release edit "\$GITHUB_REF_NAME" --draft=false
@@ -1419,6 +1672,63 @@ const MUTATIONS = {
     if (idx === -1) return yaml;
     const probe = "          cp dist/umactually-linux-x64 release/umactually-linux-x64";
     return [...lines.slice(0, idx + 1), probe, ...lines.slice(idx + 1)].join("\n");
+  },
+
+  // Negative 7: the publish job's manifest-read uses the
+  //             `release/internal/release-targets.json` path (the path
+  //             that PR #76 introduced). Run 29629288395 surfaced this
+  //             — the path is invalid because actions/upload-artifact
+  //             archives the contents of `path:`, stripping the shared
+  //             `release/` ancestor.
+  "publish reads release/internal/": (yaml: string): string => {
+    return yaml.replaceAll(
+      'readFileSync("internal/release-targets.json"',
+      'readFileSync("release/internal/release-targets.json"',
+    );
+  },
+
+  // Negative 8: the publish job's manifest-read step is missing the
+  //             `cd "$RUNNER_TEMP/umactually-release-candidate"` it
+  //             needs to make the relative `internal/release-targets.json`
+  //             path resolve.
+  "publish omits cd before manifest read": (yaml: string): string => {
+    return yaml.replaceAll(
+      'cd "$RUNNER_TEMP/umactually-release-candidate"',
+      'echo "skipped cd"',
+    );
+  },
+
+  // Negative 9: the publish job's `gh release create` step passes bare
+  //             basenames (umactually-linux-x64.tar.gz) instead of
+  //             `public/...` paths. The bundle's archives live under
+  //             `public/`, not at the root.
+  "publish passes bare basenames to gh release create": (yaml: string): string => {
+    return yaml.replaceAll(
+      'map((target) => `public/${target.archiveName}`)',
+      'map((target) => target.archiveName)',
+    );
+  },
+
+  // Negative 10: the canary job's manifest-read uses the artifact
+  //              path `internal/release-targets.json`. The canary does
+  //              NOT extract the artifact — it operates on the
+  //              workspace after `actions/checkout`.
+  "canary reads internal/release-targets.json": (yaml: string): string => {
+    return yaml.replaceAll(
+      'readFileSync("scripts/release-targets.json"',
+      'readFileSync("internal/release-targets.json"',
+    );
+  },
+
+  // Negative 11: the canary job's `gh release create`-adjacent step
+  //              path uses `public/...` instead of bare basenames.
+  //              (Asymmetric — the canary never invokes gh release
+  //              create. The mutation exercises the dual-shape guard.)
+  "canary uses public/ path with cd to bundle": (yaml: string): string => {
+    return yaml.replace(
+      /canary:\s*\n[\s\S]*?runs-on:[^\n]*\n/g,
+      (match) => match.replace(/runs-on:[^\n]*/u, 'runs-on: ubuntu-latest\n    env:\n      INSTALL_RELEASE_BASE: ${{ github.repository }}/releases/download/${{ github.ref_name }}'),
+    );
   },
 } as const satisfies Record<string, (yaml: string) => string>;
 
