@@ -32,7 +32,7 @@ import {
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { createInterface } from "node:readline";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 
 const REPO_ROOT = resolve(import.meta.dirname, "..", "..");
 const INSTALL_PS1 = join(REPO_ROOT, "scripts", "install.ps1");
@@ -74,6 +74,16 @@ function findPowerShell(): string | null {
 
 const POWERSHELL = findPowerShell();
 const PS_AVAILABLE = POWERSHELL !== null;
+
+// Hotfix #10 — bump per-test timeout so PowerShell smoke tests don't
+// flake at the 5 s default. PS-ARCHIVE-003 empirically took 5.4 s on
+// cold pwsh starts during CI run 29625115861; PS-FIXTURE-001 takes
+// 6+ s on the same setup. Apply at module scope via vi.setConfig so
+// the bump takes effect for every test in this file regardless of
+// which describe block it lives in.
+if (PS_AVAILABLE) {
+  vi.setConfig({ testTimeout: 30_000 });
+}
 
 // ---- ZIP fixture authoring ----------------------------------------------
 //
@@ -401,7 +411,23 @@ function assertIsDirectory(path: string): void {
   expect(stat.isDirectory()).toBe(true);
 }
 
+// Hotfix #10 — raise the per-test timeout for the PowerShell smoke
+// branch so a slow `cmd /c "<staged> --version"` on a CI runner (where
+// pwsh cold-start can be 4–6 s with .NET runtime initialization) does
+// NOT cause the test to flake at the 5 s default. The 30 s budget is
+// generous: locally these tests finish in 1–3 s, and on a healthy CI
+// runner the slowest test (PS-ARCHIVE-003) takes ~5 s. This is the
+// dedicated rounding-error margin that lets the assertion block report
+// a real diagnostic instead of `Test timed out in 5000ms`.
+//
+// We bump the timeout via `vi.setConfig({ testTimeout })` once inside
+// a top-level `beforeAll` (the vitest 4.x API for runtime config
+// changes — there is no per-describe option bag in this version).
+// The bump applies to every test in this file because vitest config
+// state is shared per worker. Tests in OTHER files keep their own
+// vitest config state (separate workers / separate files).
 describe.skipIf(!PS_AVAILABLE)("install.ps1 archive-mode happy path", () => {
+
   it("PS-ARCHIVE-001: streams one verified entry and atomically replaces the destination", async () => {
     const seeded = Buffer.from("legacy umactually stub v0.4.0\n");
     seedHappyArchive(seeded);
