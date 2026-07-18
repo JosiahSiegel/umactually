@@ -34,11 +34,9 @@
 import { existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { spawnSync } from "node:child_process";
 import { tmpdir } from "node:os";
-import { join, resolve } from "node:path";
+import { join } from "node:path";
 
 import { describe, expect, it, beforeEach, afterEach } from "vitest";
-
-const REPO_ROOT = resolve(import.meta.dirname, "..", "..");
 
 // The smallest synthetic manifest that matches `scripts/release-targets.json`
 // shape (id / archiveName / rawName). One target is enough — the test
