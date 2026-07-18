@@ -491,8 +491,15 @@ jobs:
         shell: pwsh
         run: |
           $ErrorActionPreference = "Stop"
-          gh api "repos/${GITHUB_REPOSITORY}/actions/artifacts/${ARTIFACT_ID}/zip" `
-            --output candidate-transport.zip
+          # Do NOT split the CLI invocation across lines with a backtick
+          # continuation. PowerShell's backtick-line-continuation is
+          # brittle across runner image updates — observed in run
+          # 29616796148: the trailing backtick newline was passed to
+          # the CLI as a trailing character, which made the artifact
+          # API client print its usage banner and exit non-zero,
+          # leaving candidate-transport.zip absent for the subsequent
+          # Expand-Archive step.
+          gh api "repos/${GITHUB_REPOSITORY}/actions/artifacts/${ARTIFACT_ID}/zip" --output candidate-transport.zip
           Expand-Archive -LiteralPath candidate-transport.zip -DestinationPath candidate -Force
       - name: Structural PE machine type + archive validation (non-runtime)
         shell: pwsh
@@ -638,7 +645,13 @@ jobs:
           PORT=$(python3 -c 'import socket; s=socket.socket(); s.bind(("127.0.0.1",0)); print(s.getsockname()[1]); s.close()')
           python3 -m http.server "$PORT" --bind 127.0.0.1 --directory candidate/public &
           SERVER_PID=$!
-          trap 'kill "$SERVER_PID" 2>/dev/null || true; rm -rf "$HOME/.local/bin"' EXIT
+          # The installer picks INSTALL_DIR by uid: root -> /usr/local/bin,
+          # non-root -> $HOME/.local/bin. GitHub-hosted runners run as root,
+          # so the real staging directory is /usr/local/bin/.umactually-stage.*;
+          # the test must look there too or this assertion falsely fails the
+          # security post-condition (the install IS rejected; the residue is
+          # just in a different directory than $HOME/.local/bin).
+          trap 'kill "$SERVER_PID" 2>/dev/null || true; rm -rf "$HOME/.local/bin"; rm -rf /usr/local/bin/.umactually-stage.* 2>/dev/null || true' EXIT
           # Wait for the server to start accepting connections (up to 5 seconds).
           # Without this, the installer's curl can hit the port before the server
           # has called listen(), producing a 0ms "Failed to connect" error that
@@ -666,7 +679,10 @@ jobs:
           # security guarantee. The post-condition is the source of truth.
           AFTER=$(sha256sum "$HOME/.local/bin/umactually" | awk '{print $1}')
           INSTALLED_BYTES_MATCH=$([ "$BEFORE" = "$AFTER" ] && printf yes || printf no)
-          STAGE_RESIDUE=$(find "$HOME/.local/bin" -maxdepth 1 -name '.umactually-stage*' -print -quit 2>/dev/null || printf '')
+          # Search both possible INSTALL_DIRs: the installer chooses by uid
+          # (root -> /usr/local/bin; non-root -> $HOME/.local/bin). GH runners
+          # are root, so the residue lives in /usr/local/bin, not $HOME.
+          STAGE_RESIDUE=$(find "$HOME/.local/bin" /usr/local/bin -maxdepth 1 -name '.umactually-stage*' -print -quit 2>/dev/null || printf '')
           if [ "$INSTALLED_BYTES_MATCH" = "yes" ] && [ -z "$STAGE_RESIDUE" ]; then
             # Install was rejected — security guarantee upheld. This is what
             # the test exists to verify.

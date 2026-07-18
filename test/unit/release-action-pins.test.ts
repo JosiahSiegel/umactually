@@ -755,6 +755,58 @@ describe("release hotfix 6 — bad-checksum post-condition", () => {
         "The v0.5.0 bug surfaced a case where install.sh exited 0 while the seeded install was untouched (legacy raw-download fallback). " +
         "The test must pass on the post-condition (BEFORE == AFTER + no stage residue), not the exit code.",
     ).toBe(false);
+
+    // (d) Stage residue search MUST include /usr/local/bin. GitHub-hosted
+    //     runners run as root and the installer picks INSTALL_DIR by uid
+    //     (root -> /usr/local/bin; non-root -> $HOME/.local/bin). The
+    //     smoke-bad-checksum job does NOT export INSTALL_DIR or override
+    //     the installer's default, so when running as root the staging
+    //     residue lives in /usr/local/bin/.umactually-stage.*, NOT in
+    //     $HOME/.local/bin. A `find` whose only target is `$HOME/.local/bin`
+    //     will return empty in CI even when staging succeeded, and the
+    //     post-condition will falsely fail.
+    expect(
+      /find\s+(?:"\$\{?HOME\}?\}\/.local\/bin"|\$\{?HOME\}?\/.local\/bin|"\$\{?HOME\}?\/"\.[^"]*\/bin"|"\$HOME\/.local\/bin"|\$HOME\/.local\/bin)\s+\/usr\/local\/bin/u.test(joined),
+      "smoke-bad-checksum stage-residue search must include `/usr/local/bin` alongside `$HOME/.local/bin`. " +
+        "The installer picks INSTALL_DIR by uid: root -> /usr/local/bin; non-root -> $HOME/.local/bin. " +
+        "GitHub-hosted runners are root, so the residue directory is /usr/local/bin/.umactually-stage.* " +
+        "and a find whose only target is $HOME/.local/bin returns empty in CI (run 29616796148 surfaced this).",
+    ).toBe(true);
+  });
+
+  it("RELEASE-WORKFLOW-BAD-CHECKSUM-TRAP-CLEANS-BOTH-INSTALL-DIRS: smoke-bad-checksum EXIT trap cleans both $HOME/.local/bin AND /usr/local/bin stage residue", () => {
+    // The trap must clean BOTH possible INSTALL_DIR choices — the
+    // installer picks by uid, and even though the test seeds
+    // $HOME/.local/bin, the install's actual staging dir is
+    // /usr/local/bin/.umactually-stage.* when the runner is root.
+    const block = extractRunBlockForBadChecksumStep();
+
+    // Find the `trap '...' EXIT` line(s). The trap is a single-line
+    // command in the workflow file (the `sh -c '...'` form is forbidden
+    // because GitHub Bash strips the handler otherwise).
+    const trapLine = block.find((line) => /^\s*trap\s+/u.test(line));
+    expect(
+      trapLine,
+      "expected the smoke-bad-checksum step to declare a `trap '...' EXIT` cleanup handler. " +
+        "Without a trap, a CI re-run leaks staging residue into the next attempt and masks the actual failure.",
+    ).toBeTruthy();
+
+    const trapBody = trapLine ?? "";
+
+    // (a) The trap must clean $HOME/.local/bin (the legacy path).
+    expect(
+      /rm\s+-rf\s+"?\$\{?HOME\}?\/.local\/bin/u.test(trapBody),
+      "smoke-bad-checksum EXIT trap must `rm -rf $HOME/.local/bin` to clean the legacy non-root staging path. " +
+        "Even when running as root, the test seeds $HOME/.local/bin/umactually and a future run would inherit a real binary.",
+    ).toBe(true);
+
+    // (b) The trap must ALSO clean /usr/local/bin/.umactually-stage.* (the
+    //     root path the installer actually uses on GH-hosted runners).
+    expect(
+      /rm\s+-rf\s+\/usr\/local\/bin\/\.umactually-stage\.\*/u.test(trapBody),
+      "smoke-bad-checksum EXIT trap must `rm -rf /usr/local/bin/.umactually-stage.*` to clean the root-path staging residue. " +
+        "Without this, a re-run inherits the prior installer's half-staged bytes even though the install was rejected.",
+    ).toBe(true);
   });
 });
 
@@ -898,5 +950,103 @@ describe("release hotfix 7 — Bun console-handle workaround", () => {
           "to the console handle directly.",
       ).toBe(true);
     }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Bug — Git Bash delegation to PowerShell failed because the temp file
+// created by `mktemp -t umactually-install-ps1.XXXXXX` does NOT end in `.ps1`.
+//
+// Run 29616796148 surfaced this in `smoke-windows-x64-git-bash-delegate`:
+// `mktemp -t prefix.XXXXXX` on Git Bash produces a file whose name is
+// `/tmp/prefix.<random>` — the trailing `.XXXXXX` is the random
+// suffix, NOT a literal `.ps1`. PowerShell then refuses to execute
+// `-File` against it:
+//
+//   Processing -File 'C:/Users/RUNNER~1/AppData/Local/Temp/umactually-install-ps1.BGSUnS'
+//   failed because the file does not have a '.ps1' extension.
+//
+// The fix renames the freshly created temp file to a `.ps1`-suffixed
+// path before invoking `powershell.exe -File`. The contract pinned here:
+// the `delegate_to_powershell` function MUST rename `$_tmp_ps` so the
+// final path ends in `.ps1` before the `powershell.exe -File` call.
+// Reverting to the bare `mktemp` form silently breaks the Git-Bash
+// delegation path on Windows; this regression test catches that.
+// ---------------------------------------------------------------------------
+
+function extractDelegateToPowershellBody(): { text: string; body: string } {
+  const text = readFileSync(
+    join(REPO_ROOT, "scripts", "install.sh"),
+    "utf8",
+  );
+  const fnStart = text.indexOf("delegate_to_powershell() {");
+  expect(
+    fnStart,
+    "expected `delegate_to_powershell() {` to be present in scripts/install.sh",
+  ).toBeGreaterThanOrEqual(0);
+
+  const lines = text.slice(fnStart).split(/\r?\n/u);
+  const reClosingBrace = /^\}\s*$/u;
+  let fnEnd = -1;
+  for (let i = 0; i < lines.length; i += 1) {
+    if (reClosingBrace.test(lines[i] ?? "")) {
+      fnEnd = i;
+      break;
+    }
+  }
+  expect(
+    fnEnd,
+    "expected `delegate_to_powershell` to terminate with a closing brace at column 0",
+  ).toBeGreaterThan(0);
+  const body = lines.slice(0, fnEnd + 1).join("\n");
+  return { text, body };
+}
+
+describe("release hotfix 8 — PowerShell delegation .ps1 suffix", () => {
+  it("RELEASE-INSTALL-SH-DELEGATE-PS1-SUFFIX: delegate_to_powershell renames the temp file to a .ps1 path before calling powershell.exe -File", () => {
+    // Given: the on-disk install.sh source.
+    const { body } = extractDelegateToPowershellBody();
+
+    // Then: `mktemp -t umactually-install-ps1.XXXXXX` is still the
+    // initial temp-file creation (preserved for the random salt).
+    expect(
+      /mktemp\s+-t\s+umactually-install-ps1\.[X]+\b/u.test(body),
+      "delegate_to_powershell must use `mktemp -t umactually-install-ps1.XXXXXX` (or equivalent) to obtain the random salt. " +
+        "Without that, the temp file collides across runs.",
+    ).toBe(true);
+
+    // And: the freshly created temp file MUST be renamed so its final
+    // path ends in `.ps1` before the `powershell.exe -File` call. The
+    // rename is the regression fix; if it disappears, PowerShell
+    // rejects the delegation with "file does not have a '.ps1'
+    // extension".
+    expect(
+      /mv\s+"?\$\{?_tmp_ps\}?"?\s+"?\$\{?_tmp_ps_renamed\}?"?/u.test(body) ||
+        /mv\s+"?\$\{?_tmp_ps\}?"?\s+\$\{?_tmp_ps_renamed\}/u.test(body),
+      "delegate_to_powershell must rename `$_tmp_ps` to a `.ps1`-suffixed path before invoking `powershell.exe`. " +
+        "Without this, PowerShell refuses `-File <path>` (run 29616796148): " +
+        "`Processing -File '<path>' failed because the file does not have a '.ps1' extension.`",
+    ).toBe(true);
+
+    // And: the powershell.exe invocation must reference the renamed
+    // path. Either via direct interpolation of the new variable, or
+    // via re-assignment of `$_tmp_ps` to the renamed path so the
+    // existing `-File "$_tmp_ps"` line continues to work.
+    const referencesRenamedPath =
+      /exec\s+powershell\.exe[^\n]*\$\{?_tmp_ps_renamed\}?[^\n]*-File[^\n]*\$\{?_tmp_ps_renamed\}?/u.test(
+        body,
+      ) ||
+      /exec\s+powershell\.exe[^\n]*-File[^\n]*\$\{?_tmp_ps_renamed\}?/u.test(body) ||
+      // The reassignment form: `_tmp_ps=$_tmp_ps_renamed` after the
+      // `mv` lets the original `-File "$_tmp_ps"` line keep working.
+      /_tmp_ps\s*=\s*\$\{?_tmp_ps_renamed\}?\b/u.test(body) ||
+      /_tmp_ps=\$\{?_tmp_ps_renamed\}?\b/u.test(body);
+
+    expect(
+      referencesRenamedPath,
+      "delegate_to_powershell must invoke `powershell.exe -File` against the `.ps1`-suffixed path. " +
+        "Either the `exec` line must reference `$_tmp_ps_renamed` directly, or `$_tmp_ps` must be reassigned to " +
+        "`$_tmp_ps_renamed` so the existing `-File \"$_tmp_ps\"` continues to point at the renamed file.",
+    ).toBe(true);
   });
 });
