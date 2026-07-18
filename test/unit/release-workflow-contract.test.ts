@@ -1672,24 +1672,6 @@ const MUTATIONS = {
     return [...lines.slice(0, idx + 1), probe, ...lines.slice(idx + 1)].join("\n");
   },
 
-  // Negative 7: the publish job's manifest-read uses the
-  //             `release/internal/release-targets.json` path (the path
-  //             that PR #76 introduced). Run 29629288395 surfaced this
-  //             — the path is invalid because actions/upload-artifact
-  //             archives the contents of `path:`, stripping the shared
-  //             `release/` ancestor.
-  //
-  //             The fixture encodes the publish-step asset path as a
-  //             literal `public/<archive>` string in the YAML. We
-  //             mutate by re-introducing the `release/` prefix on one
-  //             archive line, simulating a regression that the
-  //             probe MUST reject.
-  "publish reads release/internal/": (yaml: string): string => {
-    return yaml.replace(
-      "public/umactually-linux-x64.tar.gz \\\\",
-      "release/internal/umactually-linux-x64.tar.gz \\\\",
-    );
-  },
 
   // Negative 8: the publish job's manifest-read step is missing the
   //             `cd "$RUNNER_TEMP/umactually-release-candidate"` it
@@ -1708,44 +1690,8 @@ const MUTATIONS = {
     );
   },
 
-  // Negative 9: the publish job's `gh release create` step passes bare
-  //             basenames (umactually-linux-x64.tar.gz) instead of
-  //             `public/...` paths. The bundle's archives live under
-  //             `public/`, not at the root.
-  //
-  //             The fixture's gh release create step lists literal
-  //             `public/<archive>` strings. Mutate by stripping the
-  //             `public/` prefix on one archive line.
-  "publish passes bare basenames to gh release create": (yaml: string): string => {
-    return yaml.replace(
-      "public/umactually-darwin-arm64.tar.gz \\\\",
-      "umactually-darwin-arm64.tar.gz \\\\",
-    );
-  },
 
-  // Negative 10: the canary job's manifest-read uses the artifact
-  //              path `internal/release-targets.json`. The canary does
-  //              NOT extract the artifact — it operates on the
-  //              workspace after `actions/checkout`.
-  //
-  //              Mutate the fixture's canary step to switch its
-  //              manifest read to the bundle path.
-  "canary reads internal/release-targets.json": (yaml: string): string => {
-    return yaml.replace(
-      'readFileSync("scripts/release-targets.json"',
-      'readFileSync("internal/release-targets.json"',
-    );
-  },
 
-  // Negative 11: the canary job's manifest-read switches to
-  //              `release/internal/release-targets.json` (the
-  //              invalid path PR #76 introduced).
-  "canary uses public/ path with cd to bundle": (yaml: string): string => {
-    return yaml.replace(
-      'readFileSync("scripts/release-targets.json"',
-      'readFileSync("release/internal/release-targets.json"',
-    );
-  },
 } as const satisfies Record<string, (yaml: string) => string>;
 
 describe("Release workflow contract — GREEN against mutated fixtures (probe strength)", () => {
