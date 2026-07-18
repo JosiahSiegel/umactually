@@ -16,7 +16,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, 
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { createInterface } from "node:readline";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const REPO_ROOT = resolve(import.meta.dirname, "..", "..");
 const INSTALL_PS1 = join(REPO_ROOT, "scripts", "install.ps1");
@@ -41,6 +41,14 @@ function findPowerShell(): string | null {
 
 const POWERSHELL = findPowerShell();
 const PS_AVAILABLE = POWERSHELL !== null;
+
+// Hotfix #10 — bump per-test timeout so PowerShell tests don't flake
+// at the 5 s default during cold pwsh starts on CI runners. The
+// slowest test (PS-INSTALL-004) empirically takes 6.5 s on CI; on
+// healthy local machines it finishes in 1–3 s.
+if (PS_AVAILABLE) {
+  vi.setConfig({ testTimeout: 30_000 });
+}
 
 type ScriptResult = {
   readonly stderr: string;

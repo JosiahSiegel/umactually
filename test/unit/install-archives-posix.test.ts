@@ -265,7 +265,18 @@ describe.skipIf(!SHELL_AVAILABLE)("install.sh 8-case override matrix", () => {
     expect(result.stderr).toMatch(/INSTALL_RELEASE_TAG must match/);
   });
 
-  it("rejects a base that already contains a tag", () => {
+  it("accepts a base that already contains a tag when INSTALL_RELEASE_TAG is also set (canary-shape)", () => {
+    // The release.yml canary step and the ci-release-pipeline-dry-run
+    // canary-equivalent step both pass INSTALL_RELEASE_BASE that already
+    // embeds /releases/download/<tag>/ and INSTALL_RELEASE_TAG=<tag>.
+    // install.sh's resolve_dispatch case 5 takes BASE as-is when
+    // INSTALL_RELEASE_BASE is set, so the URLs line up exactly with the
+    // way a user would paste the github canonical URL.
+    //
+    // This test used to assert the BASE-with-tag form was rejected,
+    // but that rejected the canary path too — see the resolved
+    // hotfix discussion in scripts/install.sh. The validator was
+    // relaxed to fire only when INSTALL_RELEASE_TAG is empty.
     server = null;
     const result = runInstaller({
       fakeHome,
@@ -274,9 +285,33 @@ describe.skipIf(!SHELL_AVAILABLE)("install.sh 8-case override matrix", () => {
       tag: "v0.5.0",
       platform: "linux",
       arch: "x64",
+      base: "http://127.0.0.1:65535/releases/download/v0.5.0",
+    });
+    // The install fails for a different reason (no live server at
+    // 127.0.0.1:65535), but NOT for the BASE-with-tag reason.
+    expect(result.status).not.toBe(0);
+    expect(result.stderr).not.toMatch(/INSTALL_RELEASE_BASE must not include a tag/);
+  });
+
+  it("rejects a base that already contains a tag when INSTALL_RELEASE_TAG is empty", () => {
+    // The validator still fires for case 3 (base only, no tag): a
+    // user setting BASE=https://host/releases/download/v0.5.0 without
+    // INSTALL_RELEASE_TAG would hit the case-3 probe path which
+    // expects BASE to be a bare asset directory, not the per-tag
+    // download directory. The relaxed validator catches only this
+    // case.
+    server = null;
+    const result = runInstaller({
+      fakeHome,
+      manifestPath,
+      serverBaseUrl: "",
+      tag: "",
+      platform: "linux",
+      arch: "x64",
+      base: "http://127.0.0.1:65535/releases/download/v0.5.0",
     });
     expect(result.status).not.toBe(0);
-    expect(result.stderr).toMatch(/INSTALL_RELEASE_BASE must not include a tag/);
+    expect(result.stderr).toMatch(/INSTALL_RELEASE_BASE must not include a tag when INSTALL_RELEASE_TAG is unset/);
   });
 });
 

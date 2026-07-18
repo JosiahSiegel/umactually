@@ -103,24 +103,13 @@ jobs:
         run: |
           set -euo pipefail
           # After packager + verifier the flat `release/` root holds both
-          # archives and raws. Split it into the public/internal layout by
-          # renaming (rename is atomic on the same filesystem; using
-          # Node `fs.renameSync` so a stale source raises instead of being
-          # silently lost like `mv -f` would).
-          node -e '
-            const fs = require("node:fs");
-            const path = require("node:path");
-            const targets = JSON.parse(fs.readFileSync("scripts/release-targets.json", "utf8"));
-            fs.mkdirSync("release/public", { recursive: true });
-            fs.mkdirSync("release/internal/raw", { recursive: true });
-            for (const t of targets) {
-              fs.renameSync(`release/${t.archiveName}`, `release/public/${t.archiveName}`);
-              fs.renameSync(`release/${t.rawName}`, `release/internal/raw/${t.rawName}`);
-            }
-            // checksums.txt the verifier wrote into the release root must
-            // land under public/ so the smoke jobs can `sha256sum -c` it.
-            fs.renameSync("release/checksums.txt", "release/public/checksums.txt");
-          '
+          # archives and raws. Split it into the public/internal layout via
+          # the shared staging script — same script the CI dry-run uses so
+          # the production build and the PR-time guarantee exercise one
+          # path.
+          node scripts/stage-release-assets.mjs \
+            --release-dir release \
+            --manifest scripts/release-targets.json
           ls -la release/public
           ls -la release/internal/raw
           test -f release/internal/release-size-report.json
@@ -635,10 +624,15 @@ jobs:
           mkdir -p "$HOME/.local/bin"
           printf 'seeded-installed-binary\n' > "$HOME/.local/bin/umactually"
           BEFORE=$(sha256sum "$HOME/.local/bin/umactually" | awk '{print $1}')
+           # `bad-checksum` runs on ubuntu-latest (Linux x64). The manifest
+           # (`scripts/release-targets.json`) indexes platforms by `id` (see
+           # Hotfix #10 below); the workflow must look it up the same way
+           # or this script aborts on `node` exit 1 before the install even
+           # runs and produces a silent failure.
            ARCHIVE_NAME=$(node -e '
              const fs = require("node:fs");
              const targets = JSON.parse(fs.readFileSync("scripts/release-targets.json", "utf8"));
-             const target = targets.find((t) => t.runner === "ubuntu-latest" || (t.os === "linux" && t.arch === "x64"));
+             const target = targets.find((t) => t.id === "linux-x64");
              if (!target) process.exit(1);
              console.log(target.archiveName);
            ')
