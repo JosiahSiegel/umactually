@@ -491,15 +491,18 @@ jobs:
         shell: pwsh
         run: |
           $ErrorActionPreference = "Stop"
-          # Do NOT split the CLI invocation across lines with a backtick
-          # continuation. PowerShell's backtick-line-continuation is
-          # brittle across runner image updates — observed in run
-          # 29616796148: the trailing backtick newline was passed to
-          # the CLI as a trailing character, which made the artifact
-          # API client print its usage banner and exit non-zero,
-          # leaving candidate-transport.zip absent for the subsequent
-          # Expand-Archive step.
-          gh api "repos/${GITHUB_REPOSITORY}/actions/artifacts/${ARTIFACT_ID}/zip" --output candidate-transport.zip
+          # Use `$env:NAME` expansion, NOT `${NAME}`. In PowerShell,
+          # `${X}` is a PowerShell variable (NOT an environment
+          # variable), so `${GITHUB_REPOSITORY}` evaluates to the
+          # empty string and `gh api` gets `repos//actions/.../.../zip`
+          # as its endpoint — `gh` then prints its usage banner and
+          # exits non-zero, leaving candidate-transport.zip absent
+          # for Expand-Archive (run 29616796148 surfaced this with
+          # a backtick line-continuation smoke; the underlying bug
+          # is the variable expansion, the backtick was just the
+          # symptom). `$env:ARTIFACT_ID` reads from the step's
+          # `env:` block as a real environment variable.
+          gh api "repos/$env:GITHUB_REPOSITORY/actions/artifacts/$env:ARTIFACT_ID/zip" --output candidate-transport.zip
           Expand-Archive -LiteralPath candidate-transport.zip -DestinationPath candidate -Force
       - name: Structural PE machine type + archive validation (non-runtime)
         shell: pwsh
