@@ -624,6 +624,21 @@ delegate_to_powershell() {
     log_err "could not create temp file for install.ps1"
     exit 1
   }
+  # Git Bash's `mktemp -t prefix.XXXXXX` creates a file whose name is
+  # `<tmpdir>/prefix.<random>`, NOT `<tmpdir>/prefix.<random>.ps1`.
+  # Windows PowerShell refuses to execute `-File` against a path whose
+  # final extension is not `.ps1`, so the delegation fails with:
+  #   "Processing -File '<path>' failed because the file does not have
+  #    a '.ps1' extension."
+  # Rename the file to guarantee the trailing `.ps1` extension on all
+  # platforms without losing the random salt.
+  _tmp_ps_renamed="${_tmp_ps}.ps1"
+  mv "$_tmp_ps" "$_tmp_ps_renamed" || {
+    log_err "could not rename temp file to .ps1 extension: $_tmp_ps"
+    rm -f "$_tmp_ps"
+    exit 1
+  }
+  _tmp_ps=$_tmp_ps_renamed
   if ! http_get "$_script_url" "$_tmp_ps"; then
     rm -f "$_tmp_ps"
     log_err "could not download install.ps1 from: $_script_url"
