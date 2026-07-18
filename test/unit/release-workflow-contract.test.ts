@@ -581,6 +581,40 @@ function probeContract(workflow: Workflow): readonly Violation[] {
     }
   }
 
+  // Rule 12b: every smoke job's "Download candidate bundle (by id)" step
+  //           must redirect `gh api ...` to a file via PowerShell `>` or
+  //           bash `>` redirection. NEVER `gh api ... --output`, which
+  //           is not a gh CLI flag (run 29627957958 surface this with
+  //           `unknown flag: --output` exit code 1, silently producing
+  //           an empty/absent candidate-transport.zip and breaking
+  //           Expand-Archive on Windows ARM64 structural).
+  //
+  // Cross-reference: hotfix #11.
+  for (const [jobId, job] of Object.entries(jobs)) {
+    if (!/smoke-/u.test(jobId)) continue;
+    const runText = (job.steps ?? [])
+      .map((s) => s.run ?? "")
+      .join("\n");
+    const ghApiSteps = runText.split("\n").filter((line) => /gh api/u.test(line));
+    if (ghApiSteps.length === 0) continue;
+    for (const line of ghApiSteps) {
+      // Acceptable forms:
+      //   gh api "...zip" > candidate-transport.zip     (bash; most jobs)
+      //   gh api "...zip" | Out-File -Encoding utf8 ... (PowerShell)
+      // Reject:
+      //   gh api "...zip" --output candidate-transport.zip
+      //   gh api "...zip" -o candidate-transport.zip
+      const usesUnsupportedOutputFlag = /gh\s+api\s+[^\n]*\s+--?(?:output|o)\s+\S/u.test(line);
+      if (usesUnsupportedOutputFlag) {
+        violations.push({
+          rule: "gh-api-no-output-flag",
+          source: "Run 29627957958 (Windows ARM64 structural smoke failed with 'unknown flag: --output')",
+          detail: `job ${jobId} uses \`gh api ... --output <file>\` which is not a gh CLI flag. Replace with stdout redirection (\`> <file>\` in bash, \`| Out-File ...\` in PowerShell) so the streaming response is written to disk.`,
+        });
+      }
+    }
+  }
+
   // Rule 13: publish uses literal `gh release create` with exactly seven
   //          explicit basename-only paths and a draft.
   // Source: Todo 4 brief ("publish job uses `gh release create ...` with
@@ -776,6 +810,33 @@ describe("Release workflow contract — RED against current workflow (Todo 9 fix
     // each rule implements — making the red-phase diagnostic directly
     // actionable for the Todo 9 implementer.
     expect(violations, formatViolations(violations)).toEqual([]);
+  });
+
+  it("RELEASE-WORKFLOW-GH-API-NO-OUTPUT-FLAG: every smoke job's gh api step uses stdout redirection, never `--output` (run 29627957958)", () => {
+    // Run 29627957958 surfaced this: smoke-windows-arm64-structural
+    // passed \`gh api ... --output candidate-transport.zip\`. gh does
+    // not have an --output flag; it printed its usage banner, exited
+    // non-zero, and produced an empty candidate-transport.zip that
+    // Expand-Archive then rejected with "path ... does not exist".
+    //
+    // Pin the rule: every \`gh api ...zip\` invocation across all
+    // smoke-* jobs in the workflow must redirect via shell stdout
+    // capture (`>`, `| Out-File`, etc.) — never `--output` or `-o`,
+    // which are not flags `gh` recognizes.
+    const workflow = loadCurrentWorkflow();
+    const jobs = workflow["jobs"] as Record<string, WorkflowJob>;
+    for (const [jobId, job] of Object.entries(jobs)) {
+      if (!/smoke-/u.test(jobId)) continue;
+      const runText = job.steps.map((s) => s.run ?? "").join("\n");
+      const offenders = runText
+        .split("\n")
+        .filter((line) => /gh\s+api\s+[^\n]*\s+--?(?:output|o)\s+\S/u.test(line));
+      expect(
+        offenders,
+        `job ${jobId} uses \`gh api ... --output\` which is not a gh CLI flag. ` +
+          `Replace with stdout redirection (\`> <file>\` in bash, \`| Out-File ...\` in PowerShell).`,
+      ).toEqual([]);
+    }
   });
 
   it("RELEASE-WORKFLOW-DISPATCH: workflow_dispatch inputs are publish (boolean) and correlation (string)", () => {
