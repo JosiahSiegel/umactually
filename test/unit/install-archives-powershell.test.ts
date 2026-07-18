@@ -420,12 +420,15 @@ function assertIsDirectory(path: string): void {
 // dedicated rounding-error margin that lets the assertion block report
 // a real diagnostic instead of `Test timed out in 5000ms`.
 //
-// We bump the timeout via `vi.setConfig({ testTimeout })` once inside
-// a top-level `beforeAll` (the vitest 4.x API for runtime config
-// changes — there is no per-describe option bag in this version).
-// The bump applies to every test in this file because vitest config
-// state is shared per worker. Tests in OTHER files keep their own
-// vitest config state (separate workers / separate files).
+// We bump the timeout via `vi.setConfig({ testTimeout })` at module
+// scope (not inside `beforeAll`). This is the location that runs
+// reliably in vitest 4.x: `vi.setConfig` changes are applied to
+// the worker before the first test executes. Attempts to set config
+// from inside a top-level `beforeAll` race with vitest's file-
+// collection stage and may silently lose the change. The bump
+// applies to every test in this file because vitest config state
+// is shared per worker. Tests in OTHER files keep their own vitest
+// config state (separate workers / separate files).
 describe.skipIf(!PS_AVAILABLE)("install.ps1 archive-mode happy path", () => {
 
   it("PS-ARCHIVE-001: streams one verified entry and atomically replaces the destination", async () => {

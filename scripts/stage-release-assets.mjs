@@ -54,11 +54,30 @@ function ensureParent(path) {
   mkdirSync(dirname(path), { recursive: true });
 }
 
+function assertInside(dir, candidate, label) {
+  // Defence-in-depth: even though the caller controls the
+  // archiveName / rawName strings (they come from the manifest
+  // validated above), a future manifest entry with a path-traversal
+  // pattern (e.g. `../etc/passwd`) would otherwise let renameSync
+  // move files outside `releaseDir`. Reject anything that, after
+  // resolution, escapes the parent directory. The `sep`-terminated
+  // parent prefix check matches Node 16+'s path.resolve semantics
+  // (no trailing-separator inconsistency across platforms).
+  const rel = require("node:path").relative(dir, candidate);
+  if (rel === "" || (!rel.startsWith("..") && !rel.includes(".." + require("node:path").sep))) {
+    return;
+  }
+  throw new Error(`${SCRIPT_REL}: ${label} escapes ${dir} (resolved: ${candidate})`);
+}
+
 function safeRename(fromAbs, toRel) {
-  // fromAbs is always under releaseDir by construction; toRel is a
-  // path nested under releaseDir too. We resolve both and verify
-  // they stay inside releaseDir before renaming.
+  // toRel is always rooted under releaseDir by construction; resolve
+  // and assert both endpoints stay within releaseDir before the
+  // rename. The check is defence-in-depth for the manifest inputs —
+  // if a future build-binary.mjs emit a path-traversal raw name, we
+  // reject it before renameSync executes.
   const toAbs = resolve(releaseDir, toRel);
+  assertInside(releaseDir, toAbs, `destination ${toRel}`);
   if (existsSync(fromAbs) && statSync(fromAbs).isFile()) {
     ensureParent(toAbs);
     renameSync(fromAbs, toAbs);
@@ -69,6 +88,16 @@ function safeRename(fromAbs, toRel) {
 for (const t of targets) {
   if (typeof t.archiveName !== "string" || typeof t.rawName !== "string") {
     throw new Error(`${SCRIPT_REL}: target missing archiveName/rawName: ${JSON.stringify(t)}`);
+  }
+  // Reject any basename that, after resolution against releaseDir,
+  // still contains path-traversal segments. The manifest is the
+  // source of truth — but a typo in scripts/release-targets.json
+  // (e.g. `../etc/foo`) should fail loudly here, not silently
+  // write files outside the working tree.
+  for (const [key, value] of [["archiveName", t.archiveName], ["rawName", t.rawName]]) {
+    if (value.includes("/") || value.includes("\\") || value === ".." || value.startsWith("../") || value.endsWith("/..")) {
+      throw new Error(`${SCRIPT_REL}: target ${key}=${JSON.stringify(value)} contains path-traversal or subpath segment`);
+    }
   }
   // archive + raw: packager wrote <release>/<archiveName>; verifier
   // didn't move it. Move to public/, and the build-binary raw to
