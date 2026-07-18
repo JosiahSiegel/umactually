@@ -699,7 +699,12 @@ function probeContract(workflow: Workflow): readonly Violation[] {
       const step = publishJob.job.steps.find((s) => (s.name ?? "") === stepName);
       if (step === undefined) continue;
       const run = step.run ?? "";
-      const cdMatch = /\bcd\s+"\$\{?RUNNER_TEMP\}?\/umactually-release-candidate\b/u.exec(run);
+      // The cd must be to the EXACT bundle root, not to a path that
+      // merely contains the root as a prefix (e.g. `cd "...-broken"`).
+      // We require the cd's path to end at the bundle root: either
+      // a newline, a `&&`, a `;`, or end-of-step after the closing
+      // quote.
+      const cdMatch = /\bcd\s+"\$\{?RUNNER_TEMP\}?\/umactually-release-candidate"(?=\s|$|&&|;|\|)/u.exec(run);
       const readBundlePath = /fs\.readFileSync\(\s*"internal\/release-targets\.json"/u.test(run);
       const readWrongPath = /fs\.readFileSync\(\s*"release\/internal\/release-targets\.json"/u.test(run);
       const readScriptPath = /fs\.readFileSync\(\s*"scripts\/release-targets\.json"/u.test(run);
@@ -741,19 +746,15 @@ function probeContract(workflow: Workflow): readonly Violation[] {
   //           `public/umactually-linux-x64.tar.gz`.
   if (publishJob !== null) {
     const createStep = publishJob.job.steps.find((s) => /gh release create/u.test(s.run ?? ""));
+
     if (createStep !== undefined) {
       const run = createStep.run ?? "";
       // The publish job's `gh release create` arguments must use
       // `public/<archive>` paths (relative to the bundle root), NOT
-      // bare basenames. Acceptable shapes:
-      //   (a) node helper template:   `public/${target.archiveName}`
-      //   (b) literal list in YAML:  `public/umactually-linux-x64.tar.gz \`
-      //   (c) variable expansion:    `$ASSET_ARGS` whose node helper
-      //                                produces `public/<archive>` paths
-      // We accept (a) directly and (b) via a literal-path check.
-      // For (c), we follow the upstream node helper reference and
-      // require the referenced variable's definition to use
-      // `public/<archive>` paths.
+      // bare basenames or any other prefix. The bundle's archives
+      // live under `public/` only — `release/internal/...` would
+      // also be wrong because that path doesn't exist in the
+      // extracted root.
       const hasLiteralPublicPath = /public\/umactually-/u.test(run);
       const hasTemplatePublicPath = /public\/\$\{target\.archiveName\}/u.test(run);
       // Variable form: follow the upstream node helper if the step
@@ -762,20 +763,13 @@ function probeContract(workflow: Workflow): readonly Violation[] {
       let varDefHasPublicPath = false;
       if (varMatch !== null) {
         const varName = varMatch[1] ?? "";
-        // Find `varName=$(node -e '...')` definition.
         const defRe = new RegExp(
           "\\b" + varName + "\\s*=\\$\\(node\\s+-e\\s*['\"`]",
           "u",
         );
         const defMatch = defRe.exec(run);
         if (defMatch !== null) {
-          const defStart = defMatch.index;
-          const after = run.slice(defStart);
-          // The node -e body ends at the matching closing quote+paren.
-          // For our shape: `node -e '... ')` the body is between the
-          // opening quote and the last single quote before `)` on its
-          // own logical line. We approximate by capturing from the
-          // opening quote to the next single `\\n)` or `)` boundary.
+          const after = run.slice(defMatch.index);
           const bodyMatch = /['"`]\s*([\s\S]*?)['"`]\s*\)/u.exec(after);
           if (bodyMatch !== null) {
             const body = bodyMatch[1] ?? "";
@@ -785,20 +779,24 @@ function probeContract(workflow: Workflow): readonly Violation[] {
         }
       }
       const hasAnyPublicPath = hasLiteralPublicPath || hasTemplatePublicPath || varDefHasPublicPath;
-      // Bare basenames appear as separate `umactually-<target>` tokens
-      // after the `--draft` flag. Match a `umactually-` token that is
-      // not preceded by `public/` within ~16 chars.
-      const bareArgs = (run.match(/(?:^|\s)(umactually-(?:linux|darwin|windows)-[\w.-]+)(?=\s)/gu) ?? [])
-        .filter((token) => {
-          const idx = run.indexOf(token);
-          const prefix = run.slice(Math.max(0, idx - 16), idx);
-          return !/public\/$/.test(prefix);
-        });
-      if (!hasAnyPublicPath || bareArgs.length > 0) {
+      // Every archive token must be preceded by `public/` (or be a
+      // template that includes `public/`). Anything else — bare
+      // basenames, `release/...`, `internal/raw/...` — is wrong.
+      // The preceding character can be whitespace OR a path-separator
+      // `/` (e.g. `release/internal/umactually-linux-x64.tar.gz`),
+      // so the prefix check is wider than `\s`.
+      const archiveArgs = run.match(/\bumactually-(?:linux|darwin|windows)-[\w.-]+/gu) ?? [];
+      const malformed = archiveArgs.filter((token) => {
+        const idx = run.indexOf(token);
+        const prefix = run.slice(Math.max(0, idx - 32), idx);
+        // Accept only `public/` immediately preceding the token.
+        return !/public\/$/u.test(prefix);
+      });
+      if (!hasAnyPublicPath || malformed.length > 0) {
         violations.push({
           rule: "publish-asset-paths-must-be-public-prefixed",
           source: "Run 29629288395 (would surface as MISSING=7 in gh release create)",
-          detail: `gh release create (draft): asset arguments must use \`public/<archive>\` paths (relative to the bundle root). Found bare basename arguments: [${bareArgs.join(", ")}]. The bundle's archives live under public/, not at the root.`,
+          detail: `gh release create (draft): every archive asset argument must be prefixed with \`public/\` (relative to the bundle root). Found malformed arguments: [${malformed.join(", ")}]. The bundle's archives live under public/, not at the root or anywhere else.`,
         });
       }
       // And the bundled checksums entry must be public/checksums.txt.
@@ -1680,10 +1678,16 @@ const MUTATIONS = {
   //             — the path is invalid because actions/upload-artifact
   //             archives the contents of `path:`, stripping the shared
   //             `release/` ancestor.
+  //
+  //             The fixture encodes the publish-step asset path as a
+  //             literal `public/<archive>` string in the YAML. We
+  //             mutate by re-introducing the `release/` prefix on one
+  //             archive line, simulating a regression that the
+  //             probe MUST reject.
   "publish reads release/internal/": (yaml: string): string => {
-    return yaml.replaceAll(
-      'readFileSync("internal/release-targets.json"',
-      'readFileSync("release/internal/release-targets.json"',
+    return yaml.replace(
+      "public/umactually-linux-x64.tar.gz \\\\",
+      "release/internal/umactually-linux-x64.tar.gz \\\\",
     );
   },
 
@@ -1691,10 +1695,16 @@ const MUTATIONS = {
   //             `cd "$RUNNER_TEMP/umactually-release-candidate"` it
   //             needs to make the relative `internal/release-targets.json`
   //             path resolve.
+  //
+  //             The fixture's publish job uses no Node helper; the
+  //             `cd` requirement is implicitly required for any future
+  //             helper that reads the manifest. Mutate by injecting
+  //             a fake Node helper that reads the manifest WITHOUT cd'ing.
   "publish omits cd before manifest read": (yaml: string): string => {
-    return yaml.replaceAll(
-      'cd "$RUNNER_TEMP/umactually-release-candidate"',
-      'echo "skipped cd"',
+    return yaml.replace(
+      /      - name: gh release create \(draft\)\n        run: \|/u,
+      (match) =>
+        `${match}\n          cd "$RUNNER_TEMP/umactually-release-candidate-broken"\n           node -e '\n             const fs = require("node:fs");\n             fs.readFileSync("internal/release-targets.json", "utf8");\n           '\n`,
     );
   },
 
@@ -1702,10 +1712,14 @@ const MUTATIONS = {
   //             basenames (umactually-linux-x64.tar.gz) instead of
   //             `public/...` paths. The bundle's archives live under
   //             `public/`, not at the root.
+  //
+  //             The fixture's gh release create step lists literal
+  //             `public/<archive>` strings. Mutate by stripping the
+  //             `public/` prefix on one archive line.
   "publish passes bare basenames to gh release create": (yaml: string): string => {
-    return yaml.replaceAll(
-      'map((target) => `public/${target.archiveName}`)',
-      'map((target) => target.archiveName)',
+    return yaml.replace(
+      "public/umactually-darwin-arm64.tar.gz \\\\",
+      "umactually-darwin-arm64.tar.gz \\\\",
     );
   },
 
@@ -1713,21 +1727,23 @@ const MUTATIONS = {
   //              path `internal/release-targets.json`. The canary does
   //              NOT extract the artifact — it operates on the
   //              workspace after `actions/checkout`.
+  //
+  //              Mutate the fixture's canary step to switch its
+  //              manifest read to the bundle path.
   "canary reads internal/release-targets.json": (yaml: string): string => {
-    return yaml.replaceAll(
+    return yaml.replace(
       'readFileSync("scripts/release-targets.json"',
       'readFileSync("internal/release-targets.json"',
     );
   },
 
-  // Negative 11: the canary job's `gh release create`-adjacent step
-  //              path uses `public/...` instead of bare basenames.
-  //              (Asymmetric — the canary never invokes gh release
-  //              create. The mutation exercises the dual-shape guard.)
+  // Negative 11: the canary job's manifest-read switches to
+  //              `release/internal/release-targets.json` (the
+  //              invalid path PR #76 introduced).
   "canary uses public/ path with cd to bundle": (yaml: string): string => {
     return yaml.replace(
-      /canary:\s*\n[\s\S]*?runs-on:[^\n]*\n/g,
-      (match) => match.replace(/runs-on:[^\n]*/u, 'runs-on: ubuntu-latest\n    env:\n      INSTALL_RELEASE_BASE: ${{ github.repository }}/releases/download/${{ github.ref_name }}'),
+      'readFileSync("scripts/release-targets.json"',
+      'readFileSync("release/internal/release-targets.json"',
     );
   },
 } as const satisfies Record<string, (yaml: string) => string>;
@@ -1746,7 +1762,8 @@ describe("Release workflow contract — GREEN against mutated fixtures (probe st
     it(`REJECTS: ${label}`, () => {
       // Given: a mutated candidate workflow with one contract rule broken.
       const mutated = mutate(CANDIDATE_YAML);
-      const workflow = parseWorkflow(mutated);
+      
+
 
       // When: the contract is probed.
       const violations = probeContract(workflow);
