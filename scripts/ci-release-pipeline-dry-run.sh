@@ -191,11 +191,19 @@ log "    fixture: ${FIXTURE_BASE}"
 log "9b/9 canary-equivalent: install.sh against immutable-tag-shaped fixture"
 FAKE_HOME="$(mktemp -d -t umactually-ci-dryrun.XXXXXX)"
 export UMACTUALLY_NO_PATH_UPDATE=1
-# install.sh concatenates `${INSTALL_RELEASE_BASE}/<basename>` to
-# resolve assets, so the BASE must already include the
-# `/releases/download/<tag>/` segment — same shape the production
-# canary uses against `https://github.com/<owner>/<repo>/...`.
-export INSTALL_RELEASE_BASE="${FIXTURE_BASE}/releases/download/v0.5.0"
+# install.sh's INSTALL_RELEASE_BASE validator at line 405 of
+# scripts/install.sh rejects any BASE that ends with a `/vX.Y.Z`
+# segment. Pin BASE to the asset-directory URL (without the tag)
+# and let install.sh internal-join INSTALL_RELEASE_TAG to construct
+# the full asset URL. install.sh case 5 (base + tag, no contract)
+# sets RESOLVED_BASE=${_base} when _base_user is provided, so we
+# construct exactly the path the production canary wants:
+#   ${FIXTURE_BASE}/releases/download/${TAG}
+# This is the same shape as a user passing
+# INSTALL_RELEASE_BASE=https://github.com/<repo>/releases/download
+# and INSTALL_RELEASE_TAG=v0.5.0 — the contract that the smoke lanes
+# actually exercise.
+export INSTALL_RELEASE_BASE="${FIXTURE_BASE}/releases/download"
 export INSTALL_RELEASE_TAG="v0.5.0"
 export INSTALL_ASSET_CONTRACT="archive"
 export HOME="${FAKE_HOME}"
@@ -259,8 +267,9 @@ INSTALL_LOG="$(mktemp -t umactually-ci-bad-install.XXXXXX.log)"
 # path differs in BASE only: this fixture serves the TAMPERED
 # release/ from TMP_PUBLIC, so the installer's checksums.txt
 # verification routes to the tampered digest and the install is
-# rejected as expected.
-INSTALL_RELEASE_BASE="${BAD_FIXTURE_BASE}/releases/download/v0.5.0" \
+# rejected as expected. BASE does NOT include the tag (see the
+# canary step's comment on the INSTALL_RELEASE_BASE validator).
+INSTALL_RELEASE_BASE="${BAD_FIXTURE_BASE}/releases/download" \
 INSTALL_RELEASE_TAG="v0.5.0" \
 INSTALL_ASSET_CONTRACT="archive" \
 PLATFORM_OVERRIDE="linux" \

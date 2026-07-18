@@ -946,7 +946,15 @@ jobs:
 
       - name: Run public installer against the published immutable tag
         env:
-          INSTALL_RELEASE_BASE: https://github.com/${{ github.repository }}/releases/download/${{ github.ref_name }}
+          # INSTALL_RELEASE_BASE intentionally does NOT include the
+          # tag. install.sh's resolve_dispatch validator (line 405)
+          # rejects any BASE that ends in `/vX.Y.Z`. Pin BASE to the
+          # asset directory and let install.sh internal-join
+          # INSTALL_RELEASE_TAG to construct the full URL
+          # (.../releases/download/<tag>/<basename>). Same intent as
+          # the production user flow, just split across two env vars
+          # to satisfy the validator.
+          INSTALL_RELEASE_BASE: https://github.com/${{ github.repository }}/releases/download/
           INSTALL_RELEASE_TAG: ${{ github.ref_name }}
           INSTALL_ASSET_CONTRACT: archive
           UMACTUALLY_NO_PATH_UPDATE: "1"
