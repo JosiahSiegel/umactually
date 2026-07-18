@@ -1050,3 +1050,198 @@ describe("release hotfix 8 — PowerShell delegation .ps1 suffix", () => {
     ).toBe(true);
   });
 });
+
+// ---------------------------------------------------------------------------
+// Bug — `smoke-bad-checksum` referenced manifest fields that don't exist.
+//
+// Run 29624602869 surfaced this when the bad-checksum job exited 1 at
+// `01:10:20Z`, ~280 ms after `set -euo pipefail`, with no install.sh
+// output and no `::error file=install.sh.log::` annotation produced.
+// Root cause: the workflow's Node helper used
+//   `targets.find((t) => t.runner === "ubuntu-latest"
+//                || (t.os === "linux" && t.arch === "x64"))`
+// but the manifest (`scripts/release-targets.json`) keys each entry by
+// `id` (e.g. `"id": "linux-x64"`). Neither `runner` nor `os`/`arch`
+// exists on any entry. `find` returned `undefined`, the script's
+// `if (!target) process.exit(1);` aborted under `set -e`, and the
+// `Reject mismatch and preserve seeded install` step exited 1
+// silently (because `set +e` hadn't been reached yet).
+//
+// The fix: look up by `t.id === "linux-x64"`. The contract pinned
+// here: any `node -e ...targets.find(...)` selector inside the
+// workflow MUST return a real entry whose `id` matches a row in the
+// manifest. Otherwise the assertion block never executes and the
+// step exits 1 with no diagnostic. This is silent-failure-by-default
+// because the install was never run.
+//
+// This regression test runs the workflow's exact Node helper verbatim
+// against the on-disk manifest. Any future refactor that reverts to
+// the broken selector (or introduces another invalid field name) is
+// caught with a concrete diagnostic message.
+// ---------------------------------------------------------------------------
+
+const TARGETS_PATH = join(REPO_ROOT, "scripts", "release-targets.json");
+
+type TargetEntry = Readonly<{ id: string; archiveName: string }>;
+
+function readTargetsManifest(): readonly TargetEntry[] {
+  const text = readFileSync(TARGETS_PATH, "utf8");
+  const parsed: unknown = JSON.parse(text);
+  if (!Array.isArray(parsed)) {
+    throw new Error(
+      `expected scripts/release-targets.json to be an array, got ${typeof parsed}`,
+    );
+  }
+  return parsed.map((entry): TargetEntry => {
+    if (typeof entry !== "object" || entry === null) {
+      throw new Error(
+        `expected each manifest entry to be an object, got ${typeof entry}`,
+      );
+    }
+    const obj = entry as Record<string, unknown>;
+    const id = obj["id"];
+    const archiveName = obj["archiveName"];
+    if (typeof id !== "string" || typeof archiveName !== "string") {
+      throw new Error(
+        `expected each manifest entry to have string id + archiveName, got ${JSON.stringify(entry)}`,
+      );
+    }
+    return { id, archiveName };
+  });
+}
+
+describe("release hotfix 10 — manifest field selectors in release.yml", () => {
+  it("manifest indexable by id: every entry has a string id and an archiveName", () => {
+    // Sanity: the on-disk manifest must be indexable. Without this
+    // pre-condition, the selectors below can't validate anything.
+    const targets = readTargetsManifest();
+    expect(targets.length).toBeGreaterThanOrEqual(6);
+    for (const t of targets) {
+      expect(typeof t.id).toBe("string");
+      expect(t.id.length).toBeGreaterThan(0);
+      expect(t.archiveName.endsWith(".tar.gz") || t.archiveName.endsWith(".zip")).toBe(true);
+    }
+  });
+
+  it("RELEASE-WORKFLOW-BAD-CHECKSUM-LINUX-X64-SELECTOR: bad-checksum step looks up the linux-x64 archive by `t.id === 'linux-x64'` (not by `t.runner`/`t.os`/`t.arch`)", () => {
+    // Given: the on-disk release.yml + manifest.
+    const workflowText = readFileSync(join(WORKFLOWS_DIR, "release.yml"), "utf8");
+    const targets = readTargetsManifest();
+
+    // Locate the `Reject mismatch and preserve seeded install` step in
+    // smoke-bad-checksum. We extract the run-block verbatim so we can
+    // (a) confirm the selector uses an `id` lookup, and (b) execute
+    // the exact `node -e '<...>'` body against the real manifest and
+    // assert it produces a non-empty archiveName.
+
+    const jobStart = workflowText.indexOf("smoke-bad-checksum:");
+    expect(jobStart, "smoke-bad-checksum job must be present in release.yml").toBeGreaterThan(0);
+
+    const afterJob = workflowText.slice(jobStart);
+    const stepStart = afterJob.indexOf("name: Reject mismatch and preserve seeded install");
+    expect(stepStart, "the `Reject mismatch and preserve seeded install` step must be present in smoke-bad-checksum").toBeGreaterThan(0);
+
+    // Walk forward from the step's `name:` to the end of its `run:`
+    // block. The run-block is the first `run: |` after the step name
+    // and ends at the first line at indent <= the step's indent.
+    const stepIndent = "      "; // 6-space YAML step indent matches the rest of this file
+    const runStart = afterJob.slice(stepStart).search(/\n\s*run:\s*\|\s*\n/u);
+    expect(runStart, "the step must have a `run: |` block after its name").toBeGreaterThan(-1);
+    const runBlockStart = stepStart + runStart + 1;
+    const afterRun = afterJob.slice(runBlockStart);
+    const runLines = afterRun.split(/\r?\n/u);
+
+    // The step's `run:` block lives at indent 8 (two more than the
+    // step indent of 6). The block ends at the first line that is NOT
+    // blank AND has indent < 8.
+    let runEnd = -1;
+    for (let i = 1; i < runLines.length; i += 1) {
+      const line = runLines[i] ?? "";
+      if (line.length === 0) continue;
+      const m = /^( *)(.)/u.exec(line);
+      if (m === null) break;
+      const indent = (m[1] ?? "").length;
+      const isRunContent = indent >= stepIndent.length + 2;
+      if (!isRunContent) {
+        runEnd = i;
+        break;
+      }
+    }
+    expect(runEnd, "the run block must terminate at a sibling-step boundary").toBeGreaterThan(0);
+
+    const runBlock = runLines.slice(0, runEnd).join("\n");
+
+    // (a) The selector MUST use `t.id === "<some-id>"`, NOT
+    // `t.runner` / `t.os` / `t.arch`. The latter three do not exist on
+    // the manifest entries and cause `find` to return `undefined`,
+    // which makes the script `process.exit(1)` silently.
+    const usesIdSelector = /targets\.find\s*\(\s*\(\s*\w+\s*\)\s*=>\s*\w+\.id\s*===\s*["']linux-x64["']/u.test(
+      runBlock,
+    );
+    const usesRunnerSelector = /targets\.find\s*\([^)]*\.runner\s*===/u.test(runBlock);
+    const usesOsArchSelector = /targets\.find\s*\([^)]*\bos\s*===[^)]*\barch\s*===/u.test(runBlock);
+
+    expect(
+      usesIdSelector,
+      "smoke-bad-checksum `Reject mismatch` step must look up the linux-x64 archive by `t.id === 'linux-x64'`. " +
+        "The manifest has no `runner`/`os`/`arch` fields; using those produces `find(...) === undefined` " +
+        "and `process.exit(1)` aborts the script silently under `set -e`. " +
+        "Fix: change the Node helper to `targets.find((t) => t.id === 'linux-x64')`.",
+    ).toBe(true);
+    expect(
+      !usesRunnerSelector,
+      "smoke-bad-checksum `Reject mismatch` step uses `t.runner` in `targets.find(...)`. " +
+        "The manifest has no `runner` field — this returns undefined and aborts the script on `set -e`. " +
+        "Use `t.id === 'linux-x64'` instead. (See run 29624602869.)",
+    ).toBe(true);
+    expect(
+      !usesOsArchSelector,
+      "smoke-bad-checksum `Reject mismatch` step uses `t.os`/`t.arch` in `targets.find(...)`. " +
+        "The manifest has no `os` or `arch` fields — these `find` calls return undefined.",
+    ).toBe(true);
+
+    // (b) The Node helper, when extracted and run verbatim against the
+    // real manifest, MUST print a non-empty archiveName. We extract
+    // the body of the inner `node -e '...'` call and execute it as a
+    // Node child process to verify the contract end-to-end.
+    //
+    // The body starts at the opening `'` after `node -e ` and ends at
+    // the next `'\n` followed by either `)` (bash command-substitution
+    // close) or whitespace. The bash here-doc style is single-quoted
+    // so no escape sequences (\', \\) appear inside.
+    const nodeBodyMatch = /node -e '([\s\S]*?)'\s*\)\s*$/m.exec(runBlock);
+    expect(
+      nodeBodyMatch,
+      "expected the step to contain a `node -e '...')` invocation closing on `'`+`)`. " +
+        "If the regex doesn't match, the workflow's `ARCHIVE_NAME=$(node -e '...')` form has been refactored " +
+        "and this assertion needs to follow suit.",
+    ).not.toBeNull();
+    const nodeBody = (nodeBodyMatch?.[1] ?? "").replace(/\\'/g, "'");
+
+    // The Node body references `process.exit(1)` if the selector
+    // misses. We assert: the body, when executed against the on-disk
+    // manifest, exits 0 AND prints a single non-empty archiveName
+    // that is also present in the manifest.
+    const result = require("node:child_process").spawnSync(
+      process.execPath,
+      ["-e", nodeBody],
+      { cwd: REPO_ROOT, encoding: "utf8" },
+    );
+    expect(
+      result.status,
+      "the workflow's exact `node -e` body must exit 0 against the on-disk manifest. " +
+        `Got exit=${result.status}, stdout=${JSON.stringify(result.stdout)}, stderr=${JSON.stringify(result.stderr)}. ` +
+        "This is the regression from run 29624602869: `find` returned undefined because the selector used `t.runner`/`t.os`/`t.arch` fields that don't exist on the manifest. " +
+        "The selector must use `t.id`.",
+    ).toBe(0);
+
+    const archiveName = result.stdout.trim();
+    expect(archiveName, "the node helper must print a non-empty archiveName").not.toBe("");
+    expect(
+      targets.some((t) => t.archiveName === archiveName),
+      `the printed archiveName (${JSON.stringify(archiveName)}) must be present in the manifest. ` +
+        `The selector returned an entry whose archiveName is missing from release-targets.json — ` +
+        `the manifest and the selector are out of sync.`,
+    ).toBe(true);
+  });
+});
