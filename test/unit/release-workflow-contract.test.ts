@@ -1151,7 +1151,10 @@ describe("Release workflow contract — RED against current workflow (Todo 9 fix
     // resolve the upstream branch/tag context it needs to attach
     // assets to the existing tag.)
     const workflow = loadCurrentWorkflow();
-    const publish = findJobById(workflow["jobs"], (_job, id) => id === "publish");
+    const publish = findJobById(
+      workflow["jobs"] as Record<string, WorkflowJob>,
+      (_job, id) => id === "publish",
+    );
     expect(publish, "publish job must exist").not.toBeNull();
     if (publish === null) return;
     const hasCheckout = publish.job.steps.some(
