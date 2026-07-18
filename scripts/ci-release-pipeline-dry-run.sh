@@ -162,9 +162,14 @@ log "8/9  [must be all OK]: cd public && sha256sum -c checksums.txt"
 
 # ----- 5. Start fixture server masquerading as GitHub Releases -----
 log "9a/9 launching release-fixture-server.mjs"
+# Use a strict-semver tag — install.sh's tag validator rejects suffixes
+# like `-dry-run`. We pin to v0.5.0 (the same tag the release pipeline
+# actually publishes) so the tag-routing code path is exercised against
+# the production contract: tag matching, base-path resolution, and
+# archive lookup all see what the real release would see.
 node "test/helpers/release-fixture-server.mjs" \
   --release-dir "${PUBLIC_DIR}" \
-  --release-tag "v0.5.0-dry-run" \
+  --release-tag "v0.5.0" \
   >"${FIXTURE_PORT_FILE}" 2>&1 &
 FIXTURE_PID=$!
 
@@ -187,7 +192,7 @@ log "9b/9 canary-equivalent: install.sh against immutable-tag-shaped fixture"
 FAKE_HOME="$(mktemp -d -t umactually-ci-dryrun.XXXXXX)"
 export UMACTUALLY_NO_PATH_UPDATE=1
 export INSTALL_RELEASE_BASE="${FIXTURE_BASE}"
-export INSTALL_RELEASE_TAG="v0.5.0-dry-run"
+export INSTALL_RELEASE_TAG="v0.5.0"
 export INSTALL_ASSET_CONTRACT="archive"
 export HOME="${FAKE_HOME}"
 export PLATFORM_OVERRIDE="linux"
@@ -224,7 +229,7 @@ node -e '
 BAD_FIXTURE_PORT_FILE="$(mktemp -t umactually-ci-bad-fixture-port.XXXXXX)"
 node "test/helpers/release-fixture-server.mjs" \
   --release-dir "${TMP_PUBLIC}" \
-  --release-tag "v0.5.0-bad-dry-run" \
+  --release-tag "v0.5.0" \
   >"${BAD_FIXTURE_PORT_FILE}" 2>&1 &
 BAD_FIXTURE_PID=$!
 BAD_FIXTURE_BASE=""
@@ -246,8 +251,13 @@ printf "%s" "${SEED_BIN}" > "${FAKE_HOME}/.local/bin/umactually"
 BEFORE="$(sha256sum "${FAKE_HOME}/.local/bin/umactually" | awk '{print $1}')"
 
 INSTALL_LOG="$(mktemp -t umactually-ci-bad-install.XXXXXX.log)"
+# Same fixture tag (v0.5.0) as the canary step. The bad-checksum
+# path differs in BASE only: this fixture serves the TAMPERED
+# release/ from TMP_PUBLIC, so the installer's checksums.txt
+# verification routes to the tampered digest and the install is
+# rejected as expected.
 INSTALL_RELEASE_BASE="${BAD_FIXTURE_BASE}" \
-INSTALL_RELEASE_TAG="v0.5.0-bad-dry-run" \
+INSTALL_RELEASE_TAG="v0.5.0" \
 INSTALL_ASSET_CONTRACT="archive" \
 PLATFORM_OVERRIDE="linux" \
 ARCH_OVERRIDE="x64" \
