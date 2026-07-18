@@ -191,7 +191,11 @@ log "    fixture: ${FIXTURE_BASE}"
 log "9b/9 canary-equivalent: install.sh against immutable-tag-shaped fixture"
 FAKE_HOME="$(mktemp -d -t umactually-ci-dryrun.XXXXXX)"
 export UMACTUALLY_NO_PATH_UPDATE=1
-export INSTALL_RELEASE_BASE="${FIXTURE_BASE}"
+# install.sh concatenates `${INSTALL_RELEASE_BASE}/<basename>` to
+# resolve assets, so the BASE must already include the
+# `/releases/download/<tag>/` segment — same shape the production
+# canary uses against `https://github.com/<owner>/<repo>/...`.
+export INSTALL_RELEASE_BASE="${FIXTURE_BASE}/releases/download/v0.5.0"
 export INSTALL_RELEASE_TAG="v0.5.0"
 export INSTALL_ASSET_CONTRACT="archive"
 export HOME="${FAKE_HOME}"
@@ -256,7 +260,7 @@ INSTALL_LOG="$(mktemp -t umactually-ci-bad-install.XXXXXX.log)"
 # release/ from TMP_PUBLIC, so the installer's checksums.txt
 # verification routes to the tampered digest and the install is
 # rejected as expected.
-INSTALL_RELEASE_BASE="${BAD_FIXTURE_BASE}" \
+INSTALL_RELEASE_BASE="${BAD_FIXTURE_BASE}/releases/download/v0.5.0" \
 INSTALL_RELEASE_TAG="v0.5.0" \
 INSTALL_ASSET_CONTRACT="archive" \
 PLATFORM_OVERRIDE="linux" \
