@@ -19,7 +19,7 @@
 // scripts/ci-release-pipeline-dry-run.sh and by
 // .github/workflows/release.yml's `build-package` step.
 
-import { mkdirSync, readFileSync, renameSync, existsSync, statSync } from "node:fs";
+import { copyFileSync, mkdirSync, readFileSync, renameSync, existsSync, statSync } from "node:fs";
 import { dirname, relative, resolve, sep } from "node:path";
 
 const REPO_ROOT = resolve(import.meta.dirname, "..");
@@ -106,5 +106,23 @@ for (const t of targets) {
 
 // checksums.txt the verifier wrote into release/ moves to release/public/.
 safeRename(resolve(releaseDir, "checksums.txt"), "public/checksums.txt");
+
+// Also copy scripts/release-targets.json into the bundle under
+// internal/release-targets.json. The publish + canary jobs run from
+// $RUNNER_TEMP/umactually-release-candidate (after extracting the
+// candidate zip), so they cannot resolve scripts/release-targets.json
+// from the working tree. Copying the manifest into the bundle means
+// those jobs can read it via `release/internal/release-targets.json`
+// (or by absolute path after the helper translates it). Without this,
+// run 29628553762 (and every prior release run that reached the
+// publish job) failed with ENOENT reading scripts/release-targets.json.
+const manifestCopyDest = resolve(releaseDir, "internal", "release-targets.json");
+mkdirSync(dirname(manifestCopyDest), { recursive: true });
+if (existsSync(targetsPath)) {
+  copyFileSync(targetsPath, manifestCopyDest);
+  console.log(`  ${targetsPath} -> ${manifestCopyDest}`);
+} else {
+  throw new Error(`${SCRIPT_REL}: source manifest missing: ${targetsPath}`);
+}
 
 console.log(`${SCRIPT_REL}: stage complete.`);

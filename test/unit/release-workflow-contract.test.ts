@@ -615,6 +615,54 @@ function probeContract(workflow: Workflow): readonly Violation[] {
     }
   }
 
+  // Rule 12c: the candidate bundle uploaded by `build-package`
+  //           (path: release/public, release/internal/raw,
+  //            release/internal/release-size-report.json) MUST
+  //           include scripts/release-targets.json copied to
+  //           release/internal/release-targets.json. The publish
+  //           and canary jobs run from $RUNNER_TEMP/umactually-release-candidate
+  //           and `cd ...` into the bundle's `release/` directory
+  //           before reading the manifest. Without the bundled copy,
+  //           run 29628553762 (and every prior release run that
+  //           reached the publish job) failed with ENOENT reading
+  //           `scripts/release-targets.json` because that path is
+  //           relative to the working tree, NOT the bundle.
+  //
+  //           Pin the contract: every script that writes the
+  //           candidate-bundle layout (currently the inline node -e
+  //           block in `build-package`'s Stage step) MUST also copy
+  //           scripts/release-targets.json into release/internal/.
+  //           The pinning lives here instead of the node -e block
+  //           because that block has been refactored twice and is
+  //           easy to drift; this rule is the source of truth that
+  //           the publish path works.
+  const buildPackage = findJobById(jobs, (_job, id) => id === "build-package");
+  if (buildPackage !== null) {
+    const stageStepText = buildPackage.job.steps
+      .map((s) => `${s.name ?? ""} ${s.run ?? ""}`)
+      .join("\n");
+    const bundlesManifest = /release-targets\.json/u.test(stageStepText);
+    if (!bundlesManifest) {
+      violations.push({
+        rule: "build-package-bundles-manifest",
+        source: "Run 29628553762 (publish ENOENT for scripts/release-targets.json)",
+        detail: `build-package's Stage candidate bundle step must copy scripts/release-targets.json into the candidate bundle (e.g. into release/internal/release-targets.json). The publish + canary jobs run from $RUNNER_TEMP/umactually-release-candidate and cannot resolve scripts/release-targets.json from the working tree.`,
+      });
+    }
+    // And pin the upload-artifact path includes release/internal/release-targets.json:
+    const uploadStep = buildPackage.job.steps.find((s) => /Upload candidate bundle/u.test(s.name ?? ""));
+    if (uploadStep !== undefined) {
+      const uploadPath = String(uploadStep.with?.["path"] ?? "");
+      if (!/(^|\s)release\/internal\/release-targets\.json(\s|$)/u.test(uploadPath)) {
+        violations.push({
+          rule: "upload-artifact-includes-manifest",
+          source: "Run 29628553762",
+          detail: `build-package's Upload candidate bundle step path: must include release/internal/release-targets.json so the publish + canary jobs can resolve the manifest from $RUNNER_TEMP/umactually-release-candidate/...`,
+        });
+      }
+    }
+  }
+
   // Rule 13: publish uses literal `gh release create` with exactly seven
   //          explicit basename-only paths and a draft.
   // Source: Todo 4 brief ("publish job uses `gh release create ...` with
@@ -1119,12 +1167,22 @@ jobs:
         run: npm ci
       - name: Build candidate bundle
         run: node scripts/build-binary.mjs
+      - name: Stage candidate bundle (copies manifest into release/internal/release-targets.json)
+        run: node scripts/stage-release-assets.mjs --release-dir release --manifest scripts/release-targets.json
       - name: Upload candidate bundle
         id: candidate-upload
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         with:
           name: umactually-release-candidate
-          path: release
+          # CANDIDATE_BASELINE: the contract probe expects the
+          # candidate bundle to include the release manifest
+          # (scripts/release-targets.json copied to
+          # release/internal/release-targets.json by the stage
+          # step). See the matching path in the real release.yml
+          # upload step.
+          path: |
+            release/public
+            release/internal/release-targets.json
   smoke-linux-x64:
     name: Linux x64 smoke
     needs: build-package
