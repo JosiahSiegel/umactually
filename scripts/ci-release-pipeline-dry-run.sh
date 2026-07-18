@@ -60,9 +60,14 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 cd "${REPO_ROOT}"
 
-# All build artifacts go under BUILD_DIR so we don't disturb any
-# existing release/ directory that release.yml might leave behind.
-BUILD_DIR="release-build"
+# All build artifacts go under `release/` because that's the path
+# `scripts/build-binary.mjs` hardcodes as its output directory (no
+# CLI override). The packager + verifier in `release.yml` also use
+# `release/` as `--release-dir`. Matching that exact path keeps the
+# dry-run strictly equivalent to the production build. The cleanup
+# trap below removes `release/` at exit, so this only ever writes
+# to a path that doesn't exist outside CI.
+BUILD_DIR="release"
 PUBLIC_DIR="${BUILD_DIR}/public"
 RAW_DIR="${BUILD_DIR}/internal/raw"
 SIZE_REPORT="${BUILD_DIR}/internal/release-size-report.json"
@@ -116,7 +121,7 @@ node scripts/build-binary.mjs
 log "5/9  package-release-assets.mjs → archives + checksums.txt"
 node scripts/package-release-assets.mjs \
   --manifest scripts/release-targets.json \
-  --release-dir "${BUILD_DIR}"
+  --release-dir release
 
 log "6/9  verify-release-assets.mjs --measure"
 # Read the budget's bunVersion field directly via Node — release.yml
@@ -126,7 +131,7 @@ log "6/9  verify-release-assets.mjs --measure"
 BUN_VERSION_PIN="$(node -e "console.log(JSON.parse(require('fs').readFileSync('scripts/release-size-budget.json','utf8')).bunVersion)")"
 node scripts/verify-release-assets.mjs \
   --manifest scripts/release-targets.json \
-  --release-dir "${BUILD_DIR}" \
+  --release-dir release \
   --measure \
   --bun-version "${BUN_VERSION_PIN}" \
   --report "${SIZE_REPORT}"
