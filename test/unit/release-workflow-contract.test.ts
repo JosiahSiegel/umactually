@@ -1765,8 +1765,12 @@ describe("Release workflow contract — GREEN against mutated fixtures (probe st
       
 
 
+      const workflow = parseWorkflow(mutated);
+
       // When: the contract is probed.
       const violations = probeContract(workflow);
+      // eslint-disable-next-line no-console
+      console.error("MUTDBG", label, "violations=", violations.length, "rules=", violations.map(v => v.rule).join(","));
 
       // Then: at least one violation must be reported. A zero-length
       // violation list means the probe let the mutation through, which
