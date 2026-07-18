@@ -532,6 +532,147 @@ describe.skipIf(!SHELL_AVAILABLE)("install.sh hostile archive rejection", () => 
   });
 });
 
+describe.skipIf(!SHELL_AVAILABLE)("install.sh bad-checksum preserves seeded install", () => {
+  // PR-time regression for the smoke-bad-checksum workflow scenario.
+  // The installer's checksum validator MUST fire BEFORE any staging or
+  // overwrite of the seeded installed binary. If the install would
+  // overwrite the seeded bytes on checksum failure, the security
+  // guarantee the smoke-bad-checksum workflow enforces is broken:
+  //   "An attacker who substitutes a tampered archive + tampered
+  //    checksums.txt cannot replace an existing /usr/local/bin/umactually
+  //    or $HOME/.local/bin/umactually with malicious bytes."
+  //
+  // Run 29616796148 surfaced that v0.5.0 broke this guarantee; the
+  // PR-time tests asserted only the workflow-source regex and missed
+  // the runtime behavior. This test exercises the actual install.sh
+  // against a fixture server with a tampered checksums.txt entry, so
+  // any future regression in the installer's checksum-validation order
+  // (or the v0.5.0 install path writing to $HOME/.local/bin before
+  // validation) fails the PR-time CI.
+
+  it("a tampered checksum entry on the linux-x64 archive rejects the install and leaves the seeded installed binary byte-identical", async () => {
+    // Given: a release fixture with the canonical six archives + a
+    // checksums.txt whose linux-x64 entry has been substituted with
+    // a 64-hex-zero string (not the real archive sha256).
+    mkdirSync(releaseDir, { recursive: true });
+    const realArchiveBytes = gzipSync(
+      buildTar(
+        { name: LINUX_X64.memberName, typeflag: 0x30 },
+        Buffer.from("#!/bin/sh\necho tampered-archive-payload\n"),
+      ),
+    );
+    writeFileSync(join(releaseDir, LINUX_X64.archiveName), realArchiveBytes);
+    for (const t of TARGETS) {
+      if (t.id === LINUX_X64.id) continue;
+      writeFileSync(join(releaseDir, t.archiveName), Buffer.from(`placeholder-${t.id}`));
+    }
+    // Build the canonical checksums.txt for archive mode, then
+    // substitute the linux-x64 hash with 64 zeros. The fixture server
+    // serves the substituted file; install.sh will compute the real
+    // hash of the downloaded archive (which matches the real bytes
+    // we just wrote), see mismatch with the published 0000... entry,
+    // and exit 1 before staging.
+    const hashes: Record<string, string> = {};
+    for (const t of TARGETS) {
+      hashes[t.archiveName] = sha256(readFileSync(join(releaseDir, t.archiveName)));
+    }
+    const TAMPERED_HASH = "0".repeat(64);
+    hashes[LINUX_X64.archiveName] = TAMPERED_HASH;
+    writeFileSync(join(releaseDir, "checksums.txt"), buildChecksumFile(hashes, "archive"));
+    server = await startFixture({ releaseDir, tag: "v0.5.0" });
+
+    // The destination has been pre-seeded with a known string. After
+    // the rejection, the file's bytes must be unchanged (security
+    // guarantee upheld). $HOME is sandboxed to fakeHome so the
+    // installer targets a writable location that can be asserted.
+    const dest = join(fakeHome, ".local", "bin", "umactually");
+    mkdirSync(join(fakeHome, ".local", "bin"), { recursive: true });
+    const SEEDED = "seeded-installed-binary\n";
+    writeFileSync(dest, SEEDED);
+    const beforeBytes = readFileSync(dest, "utf8");
+
+    // When: install.sh runs against the fixture server with the
+    // tampered checksums.txt.
+    const result = runInstaller({
+      fakeHome,
+      manifestPath,
+      serverBaseUrl: server.baseUrl,
+      tag: "v0.5.0",
+      platform: "linux",
+      arch: "x64",
+    });
+
+    // Then: the install was rejected on the checksum mismatch, the
+    // seeded binary is preserved byte-identical, and no staging
+    // residue remains in either INSTALL_DIR.
+    expect(
+      result.status,
+      `bad-checksum install must exit non-zero. status=${result.status} stderr=${result.stderr} stdout=${result.stdout}`,
+    ).not.toBe(0);
+    expect(result.stderr).toMatch(/checksum verification failed/i);
+    expect(
+      readFileSync(dest, "utf8"),
+      "seeded installed binary must be byte-identical after a bad-checksum rejection",
+    ).toBe(beforeBytes);
+    // No residue in $HOME/.local/bin (the test sandbox's INSTALL_DIR).
+    const homeResidue = readdirSync(join(fakeHome, ".local", "bin")).filter((e) =>
+      e.startsWith(".umactually-stage."),
+    );
+    expect(
+      homeResidue,
+      "no .umactually-stage.* residue may remain after a bad-checksum rejection",
+    ).toEqual([]);
+  });
+
+  it("a tampered checksum entry on the linux-arm64 archive rejects the install (cross-target regression)", async () => {
+    // Same scenario, different target — proves the validator's per-line
+    // hash table covers every entry, not just the first.
+    mkdirSync(releaseDir, { recursive: true });
+    const linuxArm64 = TARGETS.find((t) => t.id === "linux-arm64")!;
+    const realArchiveBytes = gzipSync(
+      buildTar(
+        { name: linuxArm64.memberName, typeflag: 0x30 },
+        Buffer.from("#!/bin/sh\necho tampered-arm64-payload\n"),
+      ),
+    );
+    writeFileSync(join(releaseDir, linuxArm64.archiveName), realArchiveBytes);
+    for (const t of TARGETS) {
+      if (t.id === linuxArm64.id) continue;
+      writeFileSync(join(releaseDir, t.archiveName), Buffer.from(`placeholder-${t.id}`));
+    }
+    const hashes: Record<string, string> = {};
+    for (const t of TARGETS) {
+      hashes[t.archiveName] = sha256(readFileSync(join(releaseDir, t.archiveName)));
+    }
+    hashes[linuxArm64.archiveName] = "0".repeat(64);
+    writeFileSync(join(releaseDir, "checksums.txt"), buildChecksumFile(hashes, "archive"));
+    server = await startFixture({ releaseDir, tag: "v0.5.0" });
+
+    const dest = join(fakeHome, ".local", "bin", "umactually");
+    mkdirSync(join(fakeHome, ".local", "bin"), { recursive: true });
+    const SEEDED = "seeded-arm64-binary\n";
+    writeFileSync(dest, SEEDED);
+    const beforeBytes = readFileSync(dest, "utf8");
+
+    const result = runInstaller({
+      fakeHome,
+      manifestPath,
+      serverBaseUrl: server.baseUrl,
+      tag: "v0.5.0",
+      platform: "linux",
+      arch: "arm64",
+    });
+
+    expect(result.status).not.toBe(0);
+    expect(result.stderr).toMatch(/checksum verification failed/i);
+    expect(readFileSync(dest, "utf8")).toBe(beforeBytes);
+    const homeResidue = readdirSync(join(fakeHome, ".local", "bin")).filter((e) =>
+      e.startsWith(".umactually-stage."),
+    );
+    expect(homeResidue).toEqual([]);
+  });
+});
+
 describe.skipIf(!SHELL_AVAILABLE)("install.sh Windows Git Bash delegation", () => {
   it("does NOT implement a second ZIP extractor — it hands off to powershell.exe", async () => {
     // When PLATFORM_OVERRIDE=windows and PL_SCRIPT_URL points at a local
