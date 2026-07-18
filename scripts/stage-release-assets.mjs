@@ -20,7 +20,7 @@
 // .github/workflows/release.yml's `build-package` step.
 
 import { mkdirSync, readFileSync, renameSync, existsSync, statSync } from "node:fs";
-import { dirname, resolve } from "node:path";
+import { dirname, relative, resolve, sep } from "node:path";
 
 const REPO_ROOT = resolve(import.meta.dirname, "..");
 const SCRIPT_REL = "scripts/stage-release-assets.mjs";
@@ -60,11 +60,9 @@ function assertInside(dir, candidate, label) {
   // validated above), a future manifest entry with a path-traversal
   // pattern (e.g. `../etc/passwd`) would otherwise let renameSync
   // move files outside `releaseDir`. Reject anything that, after
-  // resolution, escapes the parent directory. The `sep`-terminated
-  // parent prefix check matches Node 16+'s path.resolve semantics
-  // (no trailing-separator inconsistency across platforms).
-  const rel = require("node:path").relative(dir, candidate);
-  if (rel === "" || (!rel.startsWith("..") && !rel.includes(".." + require("node:path").sep))) {
+  // resolution, escapes the parent directory.
+  const rel = relative(dir, candidate);
+  if (rel === "" || (!rel.startsWith(".." + sep) && rel !== ".." && !rel.startsWith(".."))) {
     return;
   }
   throw new Error(`${SCRIPT_REL}: ${label} escapes ${dir} (resolved: ${candidate})`);
