@@ -102,8 +102,22 @@ const WINDOWS_SMOKE_JOB_RE = /^  (smoke-windows-[A-Za-z0-9_-]+):\s*$/u;
 const JOB_OPEN_RE = /^  [A-Za-z0-9_-]+:\s*$/u;
 const STEP_OPEN_RE = /^      - name:\s*(.+?)\s*$/u;
 const STEP_SHELL_RE = /^        shell:\s*(\S+)\s*$/u;
+// Detects bash-shell-specific syntax markers in a step's run-block.
+// The `gh api ... > candidate-transport.zip` line is intentionally
+// EXCLUDED here because `>` is a valid PowerShell redirection too;
+// shell dispatch is governed by `shell:` not by the shape of
+// individual lines. Detect bash via signals that PowerShell can't
+// parse at all (`set -euo pipefail`, `python3 -m http.server`,
+// `find ... -print -quit`, `awk`, `tr`, `cut`, `head`, `tail`).
 const BASH_SYNTAX_RE =
-  /set -euo pipefail|\bgh\s+api\b[^\n]*(?:>|\$\(|sha256sum|awk|unzip)|\bsha256sum\b|\bawk\b|\bunzip\b|\bpython3\s+(?:-c|-m\s+http\.server)\b|\bfind\b|\btr\b|\bcut\b|\bhead\b|\btail\b/u;
+  /set -euo pipefail|\bsha256sum\b|\bawk\b|\bunzip\b|\bpython3\s+(?:-c|-m\s+http\.server)\b|\bfind\b[^\n]*-print|-quit|\btr\b|\bcut\b|\bhead\b|\btail\b/u;
+// Detects PowerShell-only syntax markers in a step's run-block.
+// Used by the WINDOWS-BASH-STEPS-DECLARE-BASH test to filter out
+// PowerShell steps that incidentally match BASH_SYNTAX_RE through
+// non-bash signals (e.g. a comment line mentioning `set -euo` in
+// the context of a PowerShell step).
+const POWERSHELL_SYNTAX_RE =
+  /\$ErrorActionPreference\b|\$env:[A-Za-z_][A-Za-z0-9_]*\b|Get-FileHash\b|Expand-Archive\b|Invoke-WebRequest\b|\$LASTEXITCODE\b|\$true\b|\$false\b/iu;
 
 type UsesEntry = Readonly<{ action: string; ref: string; file: string; line: number }>;
 
@@ -286,7 +300,16 @@ function collectWindowsBashSteps(lines: readonly string[]): readonly WindowsBash
 
     const shellMatch = STEP_SHELL_RE.exec(line);
     if (shellMatch !== null) shell = shellMatch[1];
-    if (BASH_SYNTAX_RE.test(line)) hasBashSyntax = true;
+    // Mark the step as bash-syntax ONLY if it has a bash signal AND
+    // does not also have a PowerShell signal. A step that's pure
+    // PowerShell contains PowerShell-specific markers
+    // ($ErrorActionPreference, $env:, Get-FileHash, etc.) even when
+    // it incidentally has a `>` redirection (which both shells
+    // support). Without the AND-NOT clause, the WINDOWS-BASH-STEPS
+    // test would mis-identify PowerShell steps as bash-syntax.
+    if (BASH_SYNTAX_RE.test(line) && !POWERSHELL_SYNTAX_RE.test(line)) {
+      hasBashSyntax = true;
+    }
   }
   flushStep();
   return steps;
