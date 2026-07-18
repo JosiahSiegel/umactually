@@ -753,6 +753,8 @@ jobs:
     env:
       GH_TOKEN: ${{ github.token }}
     steps:
+      - name: Checkout
+        uses: actions/checkout@v4
       - name: Download tested candidate bundle by id
         env:
           ARTIFACT_ID: ${{ needs.build-package.outputs.artifact_id }}
