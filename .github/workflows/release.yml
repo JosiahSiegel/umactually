@@ -934,6 +934,13 @@ jobs:
   canary:
     name: post-publish canary
     needs: publish
+    # Canary only runs after the release is actually published (not
+    # draft). On a tag push the publish job creates a draft; the
+    # `gh release edit --draft=false` step only runs on
+    # workflow_dispatch with `publish: false`, so the canary must
+    # share the same gate — otherwise it queries a still-draft
+    # release and fails.
+    if: github.event_name == 'workflow_dispatch' && inputs.publish == 'false'
     runs-on: ubuntu-24.04
     permissions:
       contents: read
