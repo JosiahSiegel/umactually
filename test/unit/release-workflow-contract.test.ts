@@ -54,6 +54,7 @@ type WorkflowJob = {
   readonly needs?: string | readonly string[];
   readonly permissions?: Readonly<Record<string, unknown>>;
   readonly steps: readonly WorkflowStep[];
+  readonly if?: string;
 };
 
 function readRecord(value: unknown, label: string): Record<string, unknown> {
@@ -1754,4 +1755,111 @@ describe("Release workflow contract — GREEN against mutated fixtures (probe st
       expect(violations.length, `mutation should produce a violation but produced none\n--- mutated yaml ---\n${mutated}`).toBeGreaterThan(0);
     });
   }
+});
+
+// ===========================================================================
+// Release workflow design contract — design rules locked in for the
+// "tag-push publishes, dispatch is dry-run" redesign. These are GREEN
+// against the current release.yml and lock in the design so a future
+// edit cannot accidentally revert to the old "draft on tag push, then
+// manually dispatch to publish" two-step pattern.
+//
+// Source: design discussion 2026-07-19 (release-yml-design-flip).
+// ===========================================================================
+
+describe("Release workflow design contract — tag-push publishes, dispatch is dry-run", () => {
+  it("tag-push-publishes: gh release edit --draft=false step is gated on push event", () => {
+    const workflow = loadCurrentWorkflow();
+    const jobs = readJobs(workflow["jobs"]);
+    const publishJob = jobs["publish"];
+    expect(publishJob, "publish job must exist").toBeDefined();
+    const editStep = publishJob?.steps.find((s) => /gh release edit[^\n]*--draft=false/u.test(s.run ?? ""));
+    expect(editStep, "publish job must contain a `gh release edit --draft=false` step").toBeDefined();
+    expect(editStep?.if ?? "", "edit step must have an `if:` gate").toMatch(/github\.event_name\s*==\s*['"]push['"]/u);
+  });
+
+  it("dispatch-dry-run-skips-publish: edit step's gate has both publish-path and dry-run-path branches", () => {
+    const workflow = loadCurrentWorkflow();
+    const jobs = readJobs(workflow["jobs"]);
+    const publishJob = jobs["publish"];
+    expect(publishJob, "publish job must exist").toBeDefined();
+    const editStep = publishJob?.steps.find((s) => /gh release edit[^\n]*--draft=false/u.test(s.run ?? ""));
+    expect(editStep, "publish job must contain a `gh release edit --draft=false` step").toBeDefined();
+    const gate = editStep?.if ?? "";
+    // The gate must (a) include the publish path (push event OR
+    // dispatch with publish=true), AND (b) explicitly NOT include
+    // the dispatch-with-publish=false case. A weak test that just
+    // checks `inputs.publish` is mentioned would pass even if the
+    // gate published on EVERY dispatch. We require both:
+    //   - `github.event_name == 'push'` (the publish trigger)
+    //   - `inputs.publish` referenced (the dispatch force-publish flag)
+    // And we require the gate to have a structure that lets the
+    // two paths diverge (e.g. an `&&` or `||` operator).
+    expect(gate, "edit step gate must include `github.event_name == 'push'`").toMatch(/github\.event_name\s*==\s*['"]push['"]/u);
+    expect(gate, "edit step gate must reference `inputs.publish`").toMatch(/inputs\.publish/u);
+    // A two-branch gate must have a logical operator somewhere.
+    expect(gate, "edit step gate must be a multi-branch expression (use && or ||)").toMatch(/&&|\|\|/u);
+  });
+
+  it("canary-gate: canary job only runs when the release is published (push or dispatch publish=true)", () => {
+    const workflow = loadCurrentWorkflow();
+    const jobs = readJobs(workflow["jobs"]);
+    const canaryJob = jobs["canary"];
+    expect(canaryJob, "canary job must exist").toBeDefined();
+    const gate = canaryJob?.if ?? "";
+    // Canary must NOT run on dispatch with publish=false (still draft).
+    // Assert by requiring `inputs.publish` in the gate.
+    expect(gate, "canary gate must reference `inputs.publish`").toMatch(/inputs\.publish/u);
+    // And it must run on push (the publish path).
+    expect(gate, "canary gate must include `github.event_name == 'push'`").toMatch(/github\.event_name\s*==\s*['"]push['"]/u);
+  });
+
+  it("sha256sum-cwd: pre-publish gate `cd`s into the public/ subdir before `sha256sum -c checksums.txt`", () => {
+    const workflow = loadCurrentWorkflow();
+    const jobs = readJobs(workflow["jobs"]);
+    const publishJob = jobs["publish"];
+    expect(publishJob, "publish job must exist").toBeDefined();
+    const verifyStep = publishJob?.steps.find((s) => /Verify draft assets \+ hashes/u.test(s.name ?? ""));
+    expect(verifyStep, "pre-publish gate must exist").toBeDefined();
+    const run = verifyStep?.run ?? "";
+    // The pre-publish gate must (a) `cd` into a `public` path at some
+    // point, AND (b) the `sha256sum -c checksums.txt` invocation must
+    // come AFTER that cd. We assert both: the cd exists anywhere
+    // in the run-block, and the `sha256sum -c` line comes after it.
+    // checksums.txt paths are relative to public/, so if the cd is
+    // missing, sha256sum -c will fail with "No such file or directory".
+    const lines = run.split("\n");
+    const shaIdx = lines.findIndex((l) => /sha256sum\s+-c\s+.*checksums\.txt/u.test(l));
+    expect(shaIdx, "verify step must invoke sha256sum -c checksums.txt").toBeGreaterThanOrEqual(0);
+    // Look anywhere in the run-block for a `cd` that references
+    // `public/`. The cd must be on a line BEFORE the sha256sum
+    // invocation, since cd only affects the current shell.
+    const cdIdx = lines.findIndex((l) => /cd\s+["']?[^"'\n]*public/u.test(l ?? ""));
+    expect(cdIdx, "verify step must `cd` into a `public/` path (checksums.txt paths are relative to public/)").toBeGreaterThanOrEqual(0);
+    expect(cdIdx, "the `cd public` line must come BEFORE the `sha256sum -c` line").toBeLessThan(shaIdx);
+  });
+
+  it("install.sh: draft + prerelease rejection compares against the node parser's literal output", () => {
+    // The node parser in install.sh's fetch_latest_tag emits
+    //   d.draft ? "1" : "0"   d.prerelease ? "1" : "0"
+    // The bash checks downstream must compare against the SAME
+    // literal string the parser emits. If the parser ever switches
+    // to "true"/"false" (or anything else), these checks silently
+    // start accepting draft + prerelease releases. This is a
+    // security-relevant regression because draft releases are not
+    // immutable and their assets can be replaced before the user
+    // installs. The end-to-end behavior is already covered by the
+    // install-archives-posix tests ('rejects a draft tag', 'rejects
+    // a prerelease tag'); this test pins the FORMAT of the
+    // assumption so a parser-output change is caught at code review.
+    const installSh = readFileSync(join(REPO_ROOT, "scripts/install.sh"), "utf8");
+    const parserMatch = installSh.match(
+      /d\.draft\s*\?\s*["']1["']\s*:\s*["']0["'].*d\.prerelease\s*\?\s*["']1["']\s*:\s*["']0["']/su,
+    );
+    expect(parserMatch, "install.sh's node parser must emit '1' / '0' for draft + prerelease").not.toBeNull();
+    // The bash check must compare against the same literal.
+    expect(installSh, "install.sh must reject draft when the parser emitted '1'").toMatch(/=\s*["']1["']/u);
+    // And explicitly NOT compare against 'true' (the previous bug).
+    expect(installSh, "install.sh must NOT compare draft/prerelease against 'true' (parser emits '1' not 'true')").not.toMatch(/=\s*["']true["']/u);
+  });
 });
