@@ -873,7 +873,8 @@ jobs:
           set -euo pipefail
           # Pull the draft, verify every manifest archive + checksums.txt
           # landed and only those landed.
-          ASSET_NAMES=$(gh release view "$GITHUB_REF_NAME" --json assets --jq '.assets[].name' | sort)
+          # Use --repo for explicitness (mirrors the create step).
+          ASSET_NAMES=$(gh release view "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --json assets --jq '.assets[].name' | sort)
           # Manifest is the single source of truth for public asset names.
           # Read it at runtime; adding/renaming a target requires only a
           # manifest edit, not a workflow edit. The manifest lives in the
@@ -894,8 +895,11 @@ jobs:
             exit 1
           fi
           # Cross-check asset sha256sum against checksums.txt.
-          cd "$RUNNER_TEMP/umactually-release-candidate"
-          sha256sum -c public/checksums.txt
+          # checksums.txt paths are relative to public/ (not the bundle
+          # root), so we must cd into public/ first. Mirrors the
+          # ci-release-pipeline-dry-run.sh logic exactly.
+          cd "$RUNNER_TEMP/umactually-release-candidate/public"
+          sha256sum -c checksums.txt
 
       - name: gh release edit --draft=false
         if: inputs.publish == 'false' && github.event_name == 'push'
