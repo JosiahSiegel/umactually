@@ -902,7 +902,7 @@ jobs:
           sha256sum -c checksums.txt
 
       - name: gh release edit --draft=false
-        if: inputs.publish == 'false' && github.event_name == 'push'
+        if: inputs.publish == 'false' && github.event_name == 'workflow_dispatch'
         run: gh release edit "$GITHUB_REF_NAME" --draft=false
 
       - name: Draft deletion on pre-publish failure
