@@ -348,11 +348,13 @@ fetch_latest_tag() {
   if [ -z "$_tag" ]; then
     return 1
   fi
-  if [ "$_draft" = "true" ]; then
+  # Note: the node parser emits "1" / "0" (not "true" / "false") for
+  # draft and prerelease, so the bash check compares against "1".
+  if [ "$_draft" = "1" ]; then
     log_err "refusing to install from draft release: $_tag"
     return 1
   fi
-  if [ "$_pre" = "true" ]; then
+  if [ "$_pre" = "1" ]; then
     log_err "refusing to install from prerelease: $_tag (must be stable GA tag)"
     return 1
   fi
