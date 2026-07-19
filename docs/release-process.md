@@ -270,7 +270,7 @@ The six-gate pipeline exited non-zero on a release PR. Read the gate name from t
 | `npm test -- --run` | A test for a removed or renamed export. | Run `npm test` locally, read the diff between the expected and actual names, fix. |
 | `npm run bundle` | An ncc error, typically a missing file path in `src/cli.ts`. | Re-run `npm run bundle` locally; ncc's error message names the file. |
 | `npm run check:dist-freshness` | You edited `src/` after the last `npm run bundle` and forgot to re-bundle. | `npm run bundle`, commit `dist/`. |
-| `npm run render-docs` | The token contract was violated (a non-canonical `{{UMACTUALLY_*}}` token snuck in). | Read the script output for the file and token name. Replace it with `v0.5.0` or `0.4.0` as appropriate. Exit 2 means a typo; exit 1 means a token survived. |
+| `npm run render-docs` | The token contract was violated (a non-canonical `{{UMACTUALLY_*}}` token snuck in). | Read the script output for the file and token name. Replace it with `v0.5.1` or `0.4.0` as appropriate. Exit 2 means a typo; exit 1 means a token survived. |
 | `npm run check:version-alignment` | A historical `vX.Y.Z` literal exists in a shipped doc. | Read the script output for the file and the stray pin; remove or replace it. |
 
 None of these gate failures requires a tag deletion. Fix the underlying issue on `main` and the release PR picks up the fix automatically.
