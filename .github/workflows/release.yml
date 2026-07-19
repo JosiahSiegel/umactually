@@ -836,18 +836,30 @@ jobs:
       - name: gh release create (draft)
         run: |
           set -euo pipefail
-          cd "$RUNNER_TEMP/umactually-release-candidate"
-           # CANDIDATE_BASELINE_MANIFEST: publish asset paths are generated from
-           # the manifest below. Each archive entry is rooted at `public/`
-           # (the bundle's archive subdirectory), and `checksums.txt` lives
-           # next to those archives. Bare basenames would not resolve —
-           # gh release create only reads files relative to its CWD.
+           # Asset paths must be absolute so that cd-ing to $GITHUB_WORKSPACE
+           # (below) does not break path resolution after the manifest moves
+           # into the bundle root (internal/release-targets.json).
            ASSET_ARGS=$(node -e '
              const fs = require("node:fs");
-             const targets = JSON.parse(fs.readFileSync("internal/release-targets.json", "utf8"));
-             console.log(targets.map((target) => `public/${target.archiveName}`).concat("public/checksums.txt").join(" "));
+             const targets = JSON.parse(fs.readFileSync(
+               process.env.RUNNER_TEMP + "/umactually-release-candidate/internal/release-targets.json",
+               "utf8"
+             ));
+             const bundle = process.env.RUNNER_TEMP + "/umactually-release-candidate";
+             console.log(
+               targets.map((t) => bundle + "/public/" + t.archiveName)
+                 .concat(bundle + "/public/checksums.txt")
+                 .join(" ")
+             );
            ')
+           # cd to $GITHUB_WORKSPACE so gh release create has .git context.
+           # gh release create's internal git invocation needs a .git directory
+           # to resolve the tag; running from the bundle root ($RUNNER_TEMP/...)
+           # has no .git parent, causing it to fail with:
+           #   fatal: not a git repository (or any of the parent directories): .git
+           cd "$GITHUB_WORKSPACE"
            gh release create "$GITHUB_REF_NAME" \
+             --repo "$GITHUB_REPOSITORY" \
              --verify-tag \
              --title "$GITHUB_REF_NAME" \
              --generate-notes \
