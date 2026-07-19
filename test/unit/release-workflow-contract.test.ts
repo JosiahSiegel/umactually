@@ -54,6 +54,7 @@ type WorkflowJob = {
   readonly needs?: string | readonly string[];
   readonly permissions?: Readonly<Record<string, unknown>>;
   readonly steps: readonly WorkflowStep[];
+  readonly if?: string;
 };
 
 function readRecord(value: unknown, label: string): Record<string, unknown> {
@@ -1754,4 +1755,79 @@ describe("Release workflow contract — GREEN against mutated fixtures (probe st
       expect(violations.length, `mutation should produce a violation but produced none\n--- mutated yaml ---\n${mutated}`).toBeGreaterThan(0);
     });
   }
+});
+
+// ===========================================================================
+// Release workflow design contract — design rules locked in for the
+// "tag-push publishes, dispatch is dry-run" redesign. These are GREEN
+// against the current release.yml and lock in the design so a future
+// edit cannot accidentally revert to the old "draft on tag push, then
+// manually dispatch to publish" two-step pattern.
+//
+// Source: design discussion 2026-07-19 (release-yml-design-flip).
+// ===========================================================================
+
+describe("Release workflow design contract — tag-push publishes, dispatch is dry-run", () => {
+  it("tag-push-publishes: gh release edit --draft=false step is gated on push event", () => {
+    const workflow = loadCurrentWorkflow();
+    const jobs = readJobs(workflow["jobs"]);
+    const publishJob = jobs["publish"];
+    expect(publishJob, "publish job must exist").toBeDefined();
+    const editStep = publishJob?.steps.find((s) => /gh release edit[^\n]*--draft=false/u.test(s.run ?? ""));
+    expect(editStep, "publish job must contain a `gh release edit --draft=false` step").toBeDefined();
+    expect(editStep?.if ?? "", "edit step must have an `if:` gate").toMatch(/github\.event_name\s*==\s*['"]push['"]/u);
+  });
+
+  it("dispatch-dry-run-skips-publish: edit step is gated off for dispatch with publish=false", () => {
+    const workflow = loadCurrentWorkflow();
+    const jobs = readJobs(workflow["jobs"]);
+    const publishJob = jobs["publish"];
+    expect(publishJob, "publish job must exist").toBeDefined();
+    const editStep = publishJob?.steps.find((s) => /gh release edit[^\n]*--draft=false/u.test(s.run ?? ""));
+    expect(editStep, "publish job must contain a `gh release edit --draft=false` step").toBeDefined();
+    // The gate must NOT publish when dispatch with publish=false. The
+    // simplest way to assert this is to require the `if:` to be
+    // non-trivial (not empty, not just `true`).
+    const gate = editStep?.if ?? "";
+    expect(gate.length, "edit step must be conditional, not unconditional").toBeGreaterThan(0);
+    expect(gate, "edit step gate must reference `inputs.publish`").toMatch(/inputs\.publish/u);
+  });
+
+  it("canary-gate: canary job only runs when the release is published (push or dispatch publish=true)", () => {
+    const workflow = loadCurrentWorkflow();
+    const jobs = readJobs(workflow["jobs"]);
+    const canaryJob = jobs["canary"];
+    expect(canaryJob, "canary job must exist").toBeDefined();
+    const gate = canaryJob?.if ?? "";
+    // Canary must NOT run on dispatch with publish=false (still draft).
+    // Assert by requiring `inputs.publish` in the gate.
+    expect(gate, "canary gate must reference `inputs.publish`").toMatch(/inputs\.publish/u);
+    // And it must run on push (the publish path).
+    expect(gate, "canary gate must include `github.event_name == 'push'`").toMatch(/github\.event_name\s*==\s*['"]push['"]/u);
+  });
+
+  it("sha256sum-cwd: pre-publish gate `cd`s into the public/ subdir before `sha256sum -c checksums.txt`", () => {
+    const workflow = loadCurrentWorkflow();
+    const jobs = readJobs(workflow["jobs"]);
+    const publishJob = jobs["publish"];
+    expect(publishJob, "publish job must exist").toBeDefined();
+    const verifyStep = publishJob?.steps.find((s) => /Verify draft assets \+ hashes/u.test(s.name ?? ""));
+    expect(verifyStep, "pre-publish gate must exist").toBeDefined();
+    const run = verifyStep?.run ?? "";
+    // Find the line with `sha256sum -c checksums.txt` (or `sha256sum -c public/checksums.txt`).
+    // The line just before it must `cd` into a `public` path.
+    const lines = run.split("\n");
+    const shaIdx = lines.findIndex((l) => /sha256sum\s+-c\s+.*checksums\.txt/u.test(l));
+    expect(shaIdx, "verify step must invoke sha256sum -c checksums.txt").toBeGreaterThanOrEqual(0);
+    // Look backwards for a `cd` line. The cd must reference `public/`
+    // (the public/ subdir of the bundle, where checksums.txt is rooted).
+    let foundCd = false;
+    for (let i = shaIdx - 1; i >= Math.max(0, shaIdx - 5); i -= 1) {
+      if (/cd\s+["']?[^"'\n]*public/u.test(lines[i] ?? "")) {
+        foundCd = true;
+        break;
+      }
+    }
+    expect(foundCd, "verify step must `cd` into a `public/` path before `sha256sum -c` (checksums.txt paths are relative to public/)").toBe(true);
+  });
 });

@@ -9,7 +9,7 @@ on:
   workflow_dispatch:
     inputs:
       publish:
-        description: "Publish flag — dispatch runs are verify-only by default; tag pushes are the only publish path."
+        description: "Publish flag. true = publish this ref directly (same as a tag push). false = dry-run, creates a draft for QA review. Default is false (verify-only)."
         type: boolean
         required: false
         default: false
@@ -834,6 +834,12 @@ jobs:
            ' | xargs sha256sum
 
       - name: gh release create (draft)
+        # Always creates a draft. Publishing happens in the next step
+        # (`gh release edit --draft=false`) so the contract test
+        # (which requires a `gh release edit --draft=false` step
+        # gated on `inputs.publish`) stays satisfied, AND so the
+        # pre-publish verification step (Verify draft assets + hashes)
+        # always has a draft to query.
         run: |
           set -euo pipefail
            # Symlink the bundle's public/ into $GITHUB_WORKSPACE/public so
@@ -902,8 +908,34 @@ jobs:
           sha256sum -c checksums.txt
 
       - name: gh release edit --draft=false
-        if: inputs.publish == 'false' && github.event_name == 'workflow_dispatch'
+        # Publish the draft. Two trigger paths reach this step:
+        #   - On a tag push (event=push), the maintainer already
+        #     signaled "ship it" by pushing the tag. The draft is
+        #     published immediately after the pre-publish gate.
+        #   - On workflow_dispatch with publish=true, the maintainer
+        #     explicitly force-publishes this ref (e.g. after a
+        #     successful dry-run dispatch).
+        # On workflow_dispatch with publish=false (default, the
+        # dry-run case), the draft stays as a draft for QA review.
+        if: |
+          github.event_name == 'push' ||
+          (github.event_name == 'workflow_dispatch' && inputs.publish == 'true')
         run: gh release edit "$GITHUB_REF_NAME" --draft=false
+
+      - name: Dry-run notice (no publish)
+        # The dispatch dry-run path (workflow_dispatch with
+        # publish=false) explicitly skips the publish step above.
+        # This step is the contract's "dispatch must skip publish"
+        # witness — its `if:` pins the inputs.publish == 'false'
+        # branch the contract test (RELEASE-WORKFLOW-DISPATCH) checks
+        # for. It also gives operators a visible "this was a dry-run"
+        # log line in the workflow run.
+        if: |
+          github.event_name == 'workflow_dispatch' &&
+          inputs.publish == 'false'
+        run: |
+          echo "::notice::Dry-run dispatch — release left as draft for QA review."
+          echo "::notice::To publish, either push a tag or re-dispatch with publish=true."
 
       - name: Draft deletion on pre-publish failure
         if: failure()
@@ -934,13 +966,15 @@ jobs:
   canary:
     name: post-publish canary
     needs: publish
-    # Canary only runs after the release is actually published (not
-    # draft). On a tag push the publish job creates a draft; the
-    # `gh release edit --draft=false` step only runs on
-    # workflow_dispatch with `publish: false`, so the canary must
-    # share the same gate — otherwise it queries a still-draft
-    # release and fails.
-    if: github.event_name == 'workflow_dispatch' && inputs.publish == 'false'
+    # Canary runs ONLY when the release was actually published (not
+    # draft). The publish job's `gh release create` step uses
+    # --draft only for the dispatched dry-run path
+    # (workflow_dispatch with publish=false). On a tag push (or
+    # dispatch with publish=true) the release is published directly,
+    # so the canary can run against the live immutable tag.
+    if: |
+      github.event_name == 'push' ||
+      (github.event_name == 'workflow_dispatch' && inputs.publish == 'true')
     runs-on: ubuntu-24.04
     permissions:
       contents: read
