@@ -411,6 +411,15 @@ function runProviderCheck({ binaryPath, provider, apiUrl, diffPath, repo, prNumb
   // it from the CLI in standalone mode, so we run each provider
   // check in its own scratch directory and copy the resulting file
   // into the shared artifact dir under a provider-specific name.
+  //
+  // IMPORTANT: GitHub Actions runners set `GITHUB_ACTIONS=true`
+  // automatically, which makes the binary take its LIVE-orchestrator
+  // path (writes `artifacts/manual/s1-github-self-review.md`,
+  // requires a real --event, and exits 1 when the post-validator
+  // finds the artifact flagged parseFailed=true because we never
+  // hit a real GitHub API). For the e2e we want the standalone
+  // path, so we explicitly override GITHUB_ACTIONS=false. The same
+  // applies to TF_BUILD (Azure Pipelines).
   const providerCwd = mkdtempSync(join(tmpdir(), "umactually-e2e-"));
   const cwdArtifact = join(providerCwd, "umactually-review.json");
   const finalArtifact = join(artifactDir, `${provider}.review.json`);
@@ -429,6 +438,11 @@ function runProviderCheck({ binaryPath, provider, apiUrl, diffPath, repo, prNumb
     encoding: "utf8",
     stdio: "pipe",
     cwd: providerCwd,
+    env: {
+      ...process.env,
+      GITHUB_ACTIONS: "false",
+      TF_BUILD: "",
+    },
   });
   let commentCount = 0;
   let reviewSummary = "";
