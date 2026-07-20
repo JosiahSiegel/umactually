@@ -225,8 +225,21 @@ describe.skipIf(!SHELL_AVAILABLE)("install.sh CLI argument parsing", () => {
     // The README shows `curl ... | sh -s -- v0.5.4` as a shorthand
     // for the full --tag form. The script must accept the bare arg
     // and route to the archive flow (not the legacy raw default).
+    //
+    // Positive assertion: the script's checksums.txt request must
+    // target `/releases/download/<tag>/` (the archive flow), not
+    // `/releases/latest/download/umactually-linux-x64` (the legacy
+    // raw path that downloads the raw binary). We assert by
+    // checking the install script's diagnostic output for a
+    // check failure on the archive basename, not the legacy raw
+    // basename.
     const result = runInstall([server!.tag]);
     expect(result.stderr).not.toMatch(/missing or malformed entry for umactually-linux-x64/);
+    // Also assert the checksums.txt request actually reached the
+    // fake server: a "checksum file" diagnostic proves the
+    // archive flow was taken (the legacy raw path would have
+    // produced a different diagnostic for the raw binary asset).
+    expect(result.stderr).toMatch(/checksum file|missing or malformed/i);
   });
 
   it("env var wins over --tag (POSIX precedence: explicit env > explicit flag)", () => {

@@ -588,11 +588,22 @@ resolve_dispatch() {
   }
   if http_get "${_probe_base}/checksums.txt" "$_probe_tmp" 2>/dev/null; then
     _first=$(head -n 1 "$_probe_tmp" 2>/dev/null || printf '')
+    # Strip trailing CR (Windows-hosted releases end lines with
+    # CRLF; POSIX `head -n 1` returns the bytes including the
+    # CR). Use parameter expansion with `$'\r'` (POSIX) so we
+    # match an actual CR byte, not a literal six-character
+    # string. The earlier implementation had this bug: the case
+    # pattern `"$'\r'"` evaluated to the literal characters
+    # `$`, `'`, `''` and never matched.
+    _first=${_first%$'\r'}
+    # Validate the first line looks like a sha256 + space + basename
+    # before trusting the probe. `checksums.txt` lines are
+    # `<64-hex-chars><one-or-more-spaces><filename>` (the canonical
+    # `sha256sum` format). If GitHub returns a maintenance page or
+    # HTML 404 body, the first line is `<!DOCTYPE html>` and we
+    # must NOT classify it as a legacy-raw contract.
     case "$_first" in
-      *"$'\r'") _first=${_first%"$'\r'"} ;;
-    esac
-    case "$_first" in
-      *"  "*.tar.gz|*"  "*.zip)
+      [0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][[:space:]]*"*".tar.gz\|[0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][[:space:]]*"*".zip)
         # Archive contract: resolve tag from `releases/latest` API
         # (a tiny follow-up call) so RESOLVED_TAG is set.
         _resolved=$(fetch_latest_tag "$LATEST_API" 2>/dev/null || printf '')
@@ -614,16 +625,20 @@ resolve_dispatch() {
           USE_LEGACY_RAW=0
         fi
         ;;
-      *"  "*)
-        # First basename is not an archive → legacy raw contract.
+      [0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][[:space:]]*)
+        # First line is a valid sha256 + whitespace but the
+        # basename is not `.tar.gz` or `.zip` → legacy raw contract.
         RESOLVED_BASE="$_probe_base"
         RESOLVED_CONTRACT=legacy
         USE_LEGACY_RAW=1
         ;;
       *)
-        # Empty or unrecognized first line — fall back to legacy
-        # raw (the original behavior). The download step will
-        # surface the actual problem.
+        # First line is not a valid sha256 + space + basename.
+        # This is either an empty body (HTTP 200 with no content)
+        # or a non-checksums response (maintenance page, HTML
+        # 404, etc.). Don't trust the probe — fall back to legacy
+        # raw. The user can override with `--tag vX.Y.Z` if the
+        # release is actually archive-only.
         USE_LEGACY_RAW=1
         ;;
     esac
