@@ -2,11 +2,11 @@
 
 AI-powered PR review that posts inline comments directly to your pull requests. Works with any model provider (OpenAI, Anthropic, Copilot) and both GitHub and Azure DevOps.
 
-[![GitHub release](https://img.shields.io/github/v/release/JosiahSiegel/umactually)](https://github.com/JosiahSiegel/umactually/releases/tag/v0.5.3)
+[![GitHub release](https://img.shields.io/github/v/release/JosiahSiegel/umactually)](https://github.com/JosiahSiegel/umactually/releases/tag/v0.5.4)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 [![Node.js >=24](https://img.shields.io/badge/node-%3E%3D24-339933.svg)](https://nodejs.org/)
 
-Latest release: **[v0.5.3](https://github.com/JosiahSiegel/umactually/releases/tag/v0.5.3)** — see [all releases](https://github.com/JosiahSiegel/umactually/releases).
+Latest release: **[v0.5.4](https://github.com/JosiahSiegel/umactually/releases/tag/v0.5.4)** — see [all releases](https://github.com/JosiahSiegel/umactually/releases).
 
 ## Install
 
@@ -37,10 +37,10 @@ umactually --version
 ### From the GitHub source tarball (Node 24 required)
 
 ```bash
-npx github:JosiahSiegel/umactually#v0.5.3 review
+npx github:JosiahSiegel/umactually#v0.5.4 review
 ```
 
-The `#v0.5.3` fragment pins the install to the tagged release. Omit the fragment only when you specifically want the latest unreleased `main` build. The `umactually` npm package is not yet published — `npm install -g umactually` will 404 until a future release.
+The `#v0.5.4` fragment pins the install to the tagged release. Omit the fragment only when you specifically want the latest unreleased `main` build. The `umactually` npm package is not yet published — `npm install -g umactually` will 404 until a future release.
 
 ### Uninstall
 
@@ -85,7 +85,7 @@ Invalid review output fails the same invocation with a non-zero exit code — no
 
 ## CI Integration
 
-CI must use Node.js 24 and a version-pinned install. Pin to the [`v0.5.3` release tag](https://github.com/JosiahSiegel/umactually/releases/tag/v0.5.3) — never track `main` and never use the interactive binary installers in a CI step.
+CI must use Node.js 24 and a version-pinned install. Pin to the [`v0.5.4` release tag](https://github.com/JosiahSiegel/umactually/releases/tag/v0.5.4) — never track `main` and never use the interactive binary installers in a CI step.
 
 The canonical CI workflows are the source of truth — copy them into your pipeline rather than re-deriving them:
 
