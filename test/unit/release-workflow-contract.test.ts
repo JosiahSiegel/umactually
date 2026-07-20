@@ -1918,10 +1918,14 @@ describe("Post-release e2e workflow contract", () => {
     const text = readFileSync(join(REPO_ROOT, POST_RELEASE_WORKFLOW), "utf8");
     const parsed = parse(text) as Workflow;
     const onValue = (parsed as Readonly<Record<string, unknown>>)["on"];
-    const onTrueFallback = (parsed as Readonly<Record<string, unknown>>)[true];
+    // `on:` is parsed as the boolean key `true` in some YAML
+    // libraries (notably the `yaml` package used here). We have to
+    // cast through `unknown` to satisfy the strict Record index
+    // signature (booleans aren't valid Record keys).
+    const onTrueFallback = (parsed as unknown as Readonly<Record<string, unknown>>)[
+      true as unknown as string
+    ];
     const onRecord = ((onValue ?? onTrueFallback) ?? {}) as Readonly<Record<string, unknown>>;
-    // `on:` is parsed as `true` in some YAML libraries, hence the
-    // dual-key fallback above.
     const release = onRecord["release"] as Readonly<Record<string, unknown>> | undefined;
     expect(release, "post-release-e2e.yml must trigger on `release:`").toBeTypeOf("object");
     expect(
