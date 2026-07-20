@@ -1,0 +1,108 @@
+# Post-release end-to-end test workflow.
+#
+# Runs on every GitHub release publication. Verifies the published
+# binary is functional end-to-end on THREE operating systems
+# (ubuntu, macos, windows) by:
+#   1. Downloading the just-published binary + checksums.txt
+#   2. Verifying SHA-256 (catches install/checksum regressions)
+#   3. Starting an in-process mock LLM that speaks BOTH provider
+#      wire formats (OpenAI-compatible + Anthropic Messages)
+#   4. Running the binary in standalone review mode against the mock
+#   5. Asserting that BOTH provider paths produce >=2 inline comments
+#
+# This is the post-release canary that catches platform-specific
+# regressions. The existing `release.yml` canary verifies install
+# + --version + doctor only; this one exercises the actual review
+# pipeline (the part that breaks most often).
+#
+# Trigger: `release.published` (every GitHub release) +
+#          `workflow_dispatch` (manual ad-hoc run for any tag).
+#
+# Cost: ~30 seconds per matrix job. Free (no external LLM calls;
+# the mock is in-process Node, no API key required).
+#
+# Output: a per-job build artifact containing the review JSON from
+# both provider runs and the mock server's stderr log for debugging.
+name: post-release e2e
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Tag to test (default: latest published release)"
+        required: false
+        default: ""
+
+permissions:
+  contents: read
+
+jobs:
+  e2e:
+    name: e2e (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        # Three OSes. We pick the x64 binary on each because that's
+        # the canonical GitHub Actions runner arch; the manifest's
+        # arm64 binaries are tested via the existing install-smoke
+        # jobs in release.yml. The x64 matrix keeps CI cost flat
+        # while still covering every OS family umactually ships.
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node 24
+        uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+
+      - name: Resolve target tag
+        id: tag
+        shell: bash
+        # IMPORTANT: never interpolate ${{ inputs.* }} or
+        # ${{ github.event.* }} directly into a shell script — they
+        # are not shell-escaped and a release tag like
+        # `v1.0.0$(rm -rf ~)` would be evaluated by bash. We pass
+        # them through env vars instead, then quote them properly
+        # in the `if` test.
+        env:
+          INPUT_TAG: ${{ inputs.tag }}
+          RELEASE_TAG: ${{ github.event.release.tag_name }}
+        run: |
+          set -euo pipefail
+          if [ -n "${INPUT_TAG:-}" ]; then
+            printf 'value=%s\n' "${INPUT_TAG}" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          # Auto-resolve from the release event when triggered by
+          # `release.published`. workflow_dispatch without a tag
+          # falls through to the harness's own resolver.
+          if [ -n "${RELEASE_TAG:-}" ]; then
+            printf 'value=%s\n' "${RELEASE_TAG}" >> "$GITHUB_OUTPUT"
+          else
+            printf 'value=\n' >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Run post-release e2e
+        shell: bash
+        env:
+          TAG: ${{ steps.tag.outputs.value }}
+          REPO: ${{ github.repository }}
+          ARTIFACT_DIR: ${{ runner.temp }}/post-release-e2e
+          MOCK_LABEL: e2e-${{ matrix.os }}
+        run: |
+          set -euo pipefail
+          node test/post-release/run-e2e.mjs
+
+      - name: Upload review artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: post-release-e2e-${{ matrix.os }}
+          path: ${{ runner.temp }}/post-release-e2e/
+          if-no-files-found: warn
+          retention-days: 7
