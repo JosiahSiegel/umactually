@@ -1917,7 +1917,7 @@ describe("Post-release e2e workflow contract", () => {
   it("POST-RELEASE-WORKFLOW-TRIGGERS: fires on release.published + workflow_dispatch (with optional `tag` input)", () => {
     const text = readFileSync(join(REPO_ROOT, POST_RELEASE_WORKFLOW), "utf8");
     const parsed = parse(text) as Workflow;
-    const onValue = (parsed as Readonly<Record<string, unknown>>).on;
+    const onValue = (parsed as Readonly<Record<string, unknown>>)["on"];
     const onTrueFallback = (parsed as Readonly<Record<string, unknown>>)[true];
     const onRecord = ((onValue ?? onTrueFallback) ?? {}) as Readonly<Record<string, unknown>>;
     // `on:` is parsed as `true` in some YAML libraries, hence the
