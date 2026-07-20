@@ -939,7 +939,10 @@ jobs:
 
       - name: Draft deletion on pre-publish failure
         if: failure()
-        run: gh release delete "$GITHUB_REF_NAME" --draft --yes || true
+        # Note: `gh release delete` has no `--draft` flag — it just
+        # deletes the release by tag. The `|| true` makes this a
+        # best-effort cleanup that doesn't fail the run.
+        run: gh release delete "$GITHUB_REF_NAME" --yes || true
 
       - name: Clean up workspace symlink
         if: always()
