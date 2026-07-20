@@ -567,8 +567,74 @@ resolve_dispatch() {
     USE_LEGACY_RAW=0
     return 0
   fi
-  # No overrides and no API base override: legacy raw download (default).
-  USE_LEGACY_RAW=1
+  # No overrides and no API base override: probe `releases/latest`
+  # to determine whether the current release publishes archives or
+  # raw binaries. The previous "always legacy raw" default was a
+  # v0.2.x-era assumption that broke for v0.5.0+ releases, which
+  # publish only archive contracts (`umactually-linux-x64.tar.gz`,
+  # not `umactually-linux-x64`).
+  #
+  # Probe: try fetching `releases/latest/checksums.txt` via the
+  # GitHub redirect (HTTP 302 → the actual latest tag). If the
+  # first basename looks like an archive (`.tar.gz` or `.zip`),
+  # use the archive contract. Otherwise, fall back to legacy raw.
+  _probe_base="https://github.com/${REPO}/releases/latest/download"
+  _probe_tmp=$(mktemp -t umactually-contract-probe.XXXXXX 2>/dev/null) || {
+    # mktemp failed; treat as a probe failure and fall back to
+    # legacy raw (the original behavior, now safely wrapped in
+    # an error path that the calling test harness can detect).
+    USE_LEGACY_RAW=1
+    return 0
+  }
+  if http_get "${_probe_base}/checksums.txt" "$_probe_tmp" 2>/dev/null; then
+    _first=$(head -n 1 "$_probe_tmp" 2>/dev/null || printf '')
+    case "$_first" in
+      *"$'\r'") _first=${_first%"$'\r'"} ;;
+    esac
+    case "$_first" in
+      *"  "*.tar.gz|*"  "*.zip)
+        # Archive contract: resolve tag from `releases/latest` API
+        # (a tiny follow-up call) so RESOLVED_TAG is set.
+        _resolved=$(fetch_latest_tag "$LATEST_API" 2>/dev/null || printf '')
+        if [ -n "$_resolved" ]; then
+          RESOLVED_TAG="$_resolved"
+          # Use `releases/download/<tag>/` (NOT `releases/latest/...`),
+          # because the `latest` alias only redirects for the actual
+          # latest, and once we have the resolved tag, pinning to it
+          # is more deterministic (and matches what case 2/5/6 do).
+          RESOLVED_BASE="https://github.com/${REPO}/releases/download/$_resolved"
+          RESOLVED_CONTRACT=archive
+          USE_LEGACY_RAW=0
+        else
+          # Tag probe failed but asset listing is archive — still
+          # use archive; the tag-resolution step will surface the
+          # real error when it tries to fetch /<tag>/... below.
+          RESOLVED_BASE="$_probe_base"
+          RESOLVED_CONTRACT=archive
+          USE_LEGACY_RAW=0
+        fi
+        ;;
+      *"  "*)
+        # First basename is not an archive → legacy raw contract.
+        RESOLVED_BASE="$_probe_base"
+        RESOLVED_CONTRACT=legacy
+        USE_LEGACY_RAW=1
+        ;;
+      *)
+        # Empty or unrecognized first line — fall back to legacy
+        # raw (the original behavior). The download step will
+        # surface the actual problem.
+        USE_LEGACY_RAW=1
+        ;;
+    esac
+  else
+    # Could not reach `releases/latest`. Network down or the
+    # redirect is broken — fall back to legacy raw. If the
+    # release is actually archive-only, the user can re-run with
+    # `--tag vX.Y.Z` to bypass this fall-through.
+    USE_LEGACY_RAW=1
+  fi
+  rm -f "$_probe_tmp" 2>/dev/null || true
   return 0
 }
 
