@@ -1,0 +1,11 @@
+# Mock LLM End-to-End Test Fixture
+
+This file is a deliberate, tiny, throwaway test fixture used to verify
+that umactually can post a real review comment to a real PR using BOTH
+provider paths:
+
+1. `--provider openai-compatible` against the OpenAI-format mock
+2. `--provider anthropic` against the Anthropic-format mock
+
+It exists so the review has a real, reviewable diff. The file is
+expected to be deleted once the test passes and the PR is closed.
