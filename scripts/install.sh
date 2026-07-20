@@ -579,7 +579,7 @@ resolve_dispatch() {
   # first basename looks like an archive (`.tar.gz` or `.zip`),
   # use the archive contract. Otherwise, fall back to legacy raw.
   _probe_base="https://github.com/${REPO}/releases/latest/download"
-  _probe_tmp=$(mktemp -t umactually-contract-probe.XXXXXX 2>/dev/null) || {
+  _probe_tmp=$(mktemp 2>/dev/null) || {
     # mktemp failed; treat as a probe failure and fall back to
     # legacy raw (the original behavior, now safely wrapped in
     # an error path that the calling test harness can detect).
@@ -596,14 +596,29 @@ resolve_dispatch() {
     # pattern `"$'\r'"` evaluated to the literal characters
     # `$`, `'`, `''` and never matched.
     _first=${_first%$'\r'}
-    # Validate the first line looks like a sha256 + space + basename
-    # before trusting the probe. `checksums.txt` lines are
-    # `<64-hex-chars><one-or-more-spaces><filename>` (the canonical
-    # `sha256sum` format). If GitHub returns a maintenance page or
-    # HTML 404 body, the first line is `<!DOCTYPE html>` and we
-    # must NOT classify it as a legacy-raw contract.
-    case "$_first" in
-      [0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][[:space:]]*"*".tar.gz\|[0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][[:space:]]*"*".zip)
+    # The first line of a real `checksums.txt` is the sha256 sum
+    # (64 hex chars) followed by whitespace and a basename. We
+    # extract just the basename (third-or-greater whitespace-
+    # separated field) and inspect its extension. The previous
+    # 64-character case-pattern was fragile and the asterisk
+    # globbing in `"*"*.tar.gz` was wrong (a literal asterisk
+    # in a case-pattern matches any sequence of chars, not an
+    # optional `*`).
+    #
+    # We use `awk` to extract the basename. The field separator
+    # is the canonical `sha256sum` format: one or more spaces.
+    # The basename is the LAST field (handles paths with spaces
+    # in the filename, which is unusual but allowed).
+    _basename=$(printf '%s' "$_first" | awk '{
+      # Strip the leading 64 hex chars + 1+ whitespace.
+      sub(/^[0-9a-fA-F]{64}[[:space:]]+/, "")
+      # Strip an optional `./` or `dist/` prefix.
+      sub(/^.*\//, "")
+      print
+    }')
+    # Treat empty / non-basename as "no archive contract".
+    case "$_basename" in
+      *.tar.gz|*.zip)
         # Archive contract: resolve tag from `releases/latest` API
         # (a tiny follow-up call) so RESOLVED_TAG is set.
         _resolved=$(fetch_latest_tag "$LATEST_API" 2>/dev/null || printf '')
@@ -625,20 +640,16 @@ resolve_dispatch() {
           USE_LEGACY_RAW=0
         fi
         ;;
-      [0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][[:space:]]*)
-        # First line is a valid sha256 + whitespace but the
-        # basename is not `.tar.gz` or `.zip` → legacy raw contract.
-        RESOLVED_BASE="$_probe_base"
-        RESOLVED_CONTRACT=legacy
-        USE_LEGACY_RAW=1
-        ;;
       *)
-        # First line is not a valid sha256 + space + basename.
-        # This is either an empty body (HTTP 200 with no content)
-        # or a non-checksums response (maintenance page, HTML
-        # 404, etc.). Don't trust the probe — fall back to legacy
-        # raw. The user can override with `--tag vX.Y.Z` if the
-        # release is actually archive-only.
+        # First line is either empty (HTTP 200 with no body, or
+        # redirect that turned into an error page) or a sha256
+        # line whose basename is not `.tar.gz` or `.zip`. In
+        # either case, don't trust the probe — fall back to
+        # legacy raw. The user can override with
+        # `--tag vX.Y.Z` if the release is actually archive-only.
+        # This includes the case where GitHub returns an HTML
+        # body (e.g. maintenance page) — `awk` would extract an
+        # empty basename for that, which falls into this arm.
         USE_LEGACY_RAW=1
         ;;
     esac

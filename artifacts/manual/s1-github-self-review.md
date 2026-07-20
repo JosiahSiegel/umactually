@@ -6,7 +6,7 @@
   "suppressedCommentCount": 0,
   "note": "no --review supplied; this was a dry-run smoke test, no posting path executed",
   "effectiveConfig": {
-    "providerUrl": "https://example.invalid/v1",
+    "providerUrl": null,
     "providerModel": null,
     "walkthrough": null,
     "diagnostic": null,
@@ -26,7 +26,7 @@
     "platform": null
   },
   "secretsDetected": {
-    "apiKey": true,
+    "apiKey": false,
     "sonarToken": false,
     "githubToken": false,
     "azureToken": false
