@@ -567,8 +567,100 @@ resolve_dispatch() {
     USE_LEGACY_RAW=0
     return 0
   fi
-  # No overrides and no API base override: legacy raw download (default).
-  USE_LEGACY_RAW=1
+  # No overrides and no API base override: probe `releases/latest`
+  # to determine whether the current release publishes archives or
+  # raw binaries. The previous "always legacy raw" default was a
+  # v0.2.x-era assumption that broke for v0.5.0+ releases, which
+  # publish only archive contracts (`umactually-linux-x64.tar.gz`,
+  # not `umactually-linux-x64`).
+  #
+  # Probe: try fetching `releases/latest/checksums.txt` via the
+  # GitHub redirect (HTTP 302 → the actual latest tag). If the
+  # first basename looks like an archive (`.tar.gz` or `.zip`),
+  # use the archive contract. Otherwise, fall back to legacy raw.
+  _probe_base="https://github.com/${REPO}/releases/latest/download"
+  _probe_tmp=$(mktemp 2>/dev/null) || {
+    # mktemp failed; treat as a probe failure and fall back to
+    # legacy raw (the original behavior, now safely wrapped in
+    # an error path that the calling test harness can detect).
+    USE_LEGACY_RAW=1
+    return 0
+  }
+  if http_get "${_probe_base}/checksums.txt" "$_probe_tmp" 2>/dev/null; then
+    _first=$(head -n 1 "$_probe_tmp" 2>/dev/null || printf '')
+    # Strip trailing CR (Windows-hosted releases end lines with
+    # CRLF; POSIX `head -n 1` returns the bytes including the
+    # CR). Use parameter expansion with `$'\r'` (POSIX) so we
+    # match an actual CR byte, not a literal six-character
+    # string. The earlier implementation had this bug: the case
+    # pattern `"$'\r'"` evaluated to the literal characters
+    # `$`, `'`, `''` and never matched.
+    _first=${_first%$'\r'}
+    # The first line of a real `checksums.txt` is the sha256 sum
+    # (64 hex chars) followed by whitespace and a basename. We
+    # extract just the basename (third-or-greater whitespace-
+    # separated field) and inspect its extension. The previous
+    # 64-character case-pattern was fragile and the asterisk
+    # globbing in `"*"*.tar.gz` was wrong (a literal asterisk
+    # in a case-pattern matches any sequence of chars, not an
+    # optional `*`).
+    #
+    # We use `awk` to extract the basename. The field separator
+    # is the canonical `sha256sum` format: one or more spaces.
+    # The basename is the LAST field (handles paths with spaces
+    # in the filename, which is unusual but allowed).
+    _basename=$(printf '%s' "$_first" | awk '{
+      # Strip the leading 64 hex chars + 1+ whitespace.
+      sub(/^[0-9a-fA-F]{64}[[:space:]]+/, "")
+      # Strip an optional `./` or `dist/` prefix.
+      sub(/^.*\//, "")
+      print
+    }')
+    # Treat empty / non-basename as "no archive contract".
+    case "$_basename" in
+      *.tar.gz|*.zip)
+        # Archive contract: resolve tag from `releases/latest` API
+        # (a tiny follow-up call) so RESOLVED_TAG is set.
+        _resolved=$(fetch_latest_tag "$LATEST_API" 2>/dev/null || printf '')
+        if [ -n "$_resolved" ]; then
+          RESOLVED_TAG="$_resolved"
+          # Use `releases/download/<tag>/` (NOT `releases/latest/...`),
+          # because the `latest` alias only redirects for the actual
+          # latest, and once we have the resolved tag, pinning to it
+          # is more deterministic (and matches what case 2/5/6 do).
+          RESOLVED_BASE="https://github.com/${REPO}/releases/download/$_resolved"
+          RESOLVED_CONTRACT=archive
+          USE_LEGACY_RAW=0
+        else
+          # Tag probe failed but asset listing is archive — still
+          # use archive; the tag-resolution step will surface the
+          # real error when it tries to fetch /<tag>/... below.
+          RESOLVED_BASE="$_probe_base"
+          RESOLVED_CONTRACT=archive
+          USE_LEGACY_RAW=0
+        fi
+        ;;
+      *)
+        # First line is either empty (HTTP 200 with no body, or
+        # redirect that turned into an error page) or a sha256
+        # line whose basename is not `.tar.gz` or `.zip`. In
+        # either case, don't trust the probe — fall back to
+        # legacy raw. The user can override with
+        # `--tag vX.Y.Z` if the release is actually archive-only.
+        # This includes the case where GitHub returns an HTML
+        # body (e.g. maintenance page) — `awk` would extract an
+        # empty basename for that, which falls into this arm.
+        USE_LEGACY_RAW=1
+        ;;
+    esac
+  else
+    # Could not reach `releases/latest`. Network down or the
+    # redirect is broken — fall back to legacy raw. If the
+    # release is actually archive-only, the user can re-run with
+    # `--tag vX.Y.Z` to bypass this fall-through.
+    USE_LEGACY_RAW=1
+  fi
+  rm -f "$_probe_tmp" 2>/dev/null || true
   return 0
 }
 
@@ -716,6 +808,140 @@ fi
 # ---- production entrypoint ----
 
 # Detect platform/arch.
+# `resolve_dispatch` already reads. The README and the `curl | sh`
+# idiom both naturally use flags (e.g. `sh -s -- --tag v0.5.4`), so
+# this function makes that form first-class. Env vars still take
+# precedence — `--tag v0.5.4` only sets INSTALL_RELEASE_TAG if it is
+# not already in the environment, matching POSIX convention for
+# "explicit flag overrides implicit env-var default".
+#
+# Supported flags:
+#   --tag <vX.Y.Z>          INSTALL_RELEASE_TAG
+#   --base <url>            INSTALL_RELEASE_BASE
+#   --contract <a|legacy>   INSTALL_ASSET_CONTRACT (archive or legacy)
+#   --install-dir <path>    INSTALL_DIR
+#   -h | --help             Print usage and exit 0
+#   -V | --version          Print version and exit 0
+parse_args() {
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --tag)
+        [ $# -ge 2 ] || { log_err "--tag requires an argument"; exit 2; }
+        if [ -z "${INSTALL_RELEASE_TAG:-}" ]; then
+          INSTALL_RELEASE_TAG="$2"
+          export INSTALL_RELEASE_TAG
+        fi
+        shift 2
+        ;;
+      --tag=*)
+        if [ -z "${INSTALL_RELEASE_TAG:-}" ]; then
+          INSTALL_RELEASE_TAG="${1#--tag=}"
+          export INSTALL_RELEASE_TAG
+        fi
+        shift 1
+        ;;
+      --base)
+        [ $# -ge 2 ] || { log_err "--base requires an argument"; exit 2; }
+        if [ -z "${INSTALL_RELEASE_BASE:-}" ]; then
+          INSTALL_RELEASE_BASE="$2"
+          export INSTALL_RELEASE_BASE
+        fi
+        shift 2
+        ;;
+      --base=*)
+        if [ -z "${INSTALL_RELEASE_BASE:-}" ]; then
+          INSTALL_RELEASE_BASE="${1#--base=}"
+          export INSTALL_RELEASE_BASE
+        fi
+        shift 1
+        ;;
+      --contract)
+        [ $# -ge 2 ] || { log_err "--contract requires an argument"; exit 2; }
+        if [ -z "${INSTALL_ASSET_CONTRACT:-}" ]; then
+          INSTALL_ASSET_CONTRACT="$2"
+          export INSTALL_ASSET_CONTRACT
+        fi
+        shift 2
+        ;;
+      --contract=*)
+        if [ -z "${INSTALL_ASSET_CONTRACT:-}" ]; then
+          INSTALL_ASSET_CONTRACT="${1#--contract=}"
+          export INSTALL_ASSET_CONTRACT
+        fi
+        shift 1
+        ;;
+      --install-dir)
+        [ $# -ge 2 ] || { log_err "--install-dir requires an argument"; exit 2; }
+        if [ -z "${INSTALL_DIR_OVERRIDE:-}" ]; then
+          INSTALL_DIR_OVERRIDE="$2"
+          export INSTALL_DIR_OVERRIDE
+        fi
+        shift 2
+        ;;
+      --install-dir=*)
+        if [ -z "${INSTALL_DIR_OVERRIDE:-}" ]; then
+          INSTALL_DIR_OVERRIDE="${1#--install-dir=}"
+          export INSTALL_DIR_OVERRIDE
+        fi
+        shift 1
+        ;;
+      -h|--help)
+        cat <<'USAGE'
+umactually installer
+
+Usage:
+  curl -fsSL https://github.com/JosiahSiegel/umactually/raw/main/scripts/install.sh | sh [flags]
+  curl -fsSL .../v0.5.4/scripts/install.sh | INSTALL_RELEASE_TAG=v0.5.4 sh
+
+Flags (also accepted as env vars):
+  --tag <vX.Y.Z>          Pin to a specific release tag.
+  --base <url>            Use a custom asset directory URL.
+  --contract <a|legacy>   Force archive or legacy raw contract.
+  --install-dir <path>    Override install destination.
+
+Env vars (override flags):
+  INSTALL_RELEASE_TAG, INSTALL_RELEASE_BASE, INSTALL_ASSET_CONTRACT
+
+The installer auto-detects the contract from the published
+checksums.txt when no flag/env is supplied: it probes
+`releases/latest/checksums.txt` and picks `archive` if any
+`<archive>.tar.gz|.zip` line is present, otherwise `legacy` raw.
+USAGE
+        exit 0
+        ;;
+      -V|--version)
+        # The standalone archive is what most users have. Print its
+        # version by running `--version` against the just-installed
+        # binary. But the script is currently running, not installed
+        # yet. Print the script's known good tag instead.
+        printf 'umactually installer (script tied to v0.5.4+ install contract)\n'
+        exit 0
+        ;;
+      --)
+        shift
+        ;;
+      -*)
+        log_err "unknown flag: $1 (try --help)"
+        exit 2
+        ;;
+      *)
+        # Bare positional arg (e.g. `sh -s -- v0.5.4`) — treat as tag.
+        if [ -z "${INSTALL_RELEASE_TAG:-}" ]; then
+          INSTALL_RELEASE_TAG="$1"
+          export INSTALL_RELEASE_TAG
+        fi
+        shift 1
+        ;;
+    esac
+  done
+}
+
+# Translate `--tag` / `--base` / `--contract` / `--install-dir` CLI flags
+# into the env-var shape the rest of the script reads. The POSIX
+# `curl | sh -s -- <flags>` form must be a first-class entry point.
+parse_args "$@"
+
+# Detect platform/arch.
 PLATFORM=${PLATFORM_OVERRIDE:-$(detect_platform || printf '')}
 ARCH=${ARCH_OVERRIDE:-$(detect_arch || printf '')}
 EXT=""
@@ -741,7 +967,9 @@ export LC_ALL
 
 # Root vs non-root install location.
 _userid=$(id -u 2>/dev/null || printf '%s' "${USER:-}")
-if [ "$_userid" = "0" ] || [ "${USER:-}" = "root" ]; then
+if [ -n "${INSTALL_DIR_OVERRIDE:-}" ]; then
+  INSTALL_DIR="$INSTALL_DIR_OVERRIDE"
+elif [ "$_userid" = "0" ] || [ "${USER:-}" = "root" ]; then
   INSTALL_DIR="/usr/local/bin"
 else
   INSTALL_DIR="${HOME}/.local/bin"

@@ -13,8 +13,17 @@ Latest release: **[v0.5.4](https://github.com/JosiahSiegel/umactually/releases/t
 ### Recommended: standalone binary (SHA-256-verified)
 
 ```bash
-# macOS / Linux / Windows Git Bash
+# macOS / Linux / Windows Git Bash — install latest
 curl -fsSL https://github.com/JosiahSiegel/umactually/raw/main/scripts/install.sh | sh
+
+# Install a pinned version
+curl -fsSL https://github.com/JosiahSiegel/umactually/raw/main/scripts/install.sh | sh -s -- --tag v0.5.4
+
+# Install to a custom directory (e.g. for non-root users without /usr/local/bin write access)
+curl -fsSL https://github.com/JosiahSiegel/umactually/raw/main/scripts/install.sh | sh -s -- --install-dir ~/.local/bin
+
+# Print the installer's flag/env-var reference
+curl -fsSL https://github.com/JosiahSiegel/umactually/raw/main/scripts/install.sh | sh -s -- --help
 ```
 
 ```powershell
@@ -23,6 +32,17 @@ irm https://github.com/JosiahSiegel/umactually/raw/main/scripts/install.ps1 | ie
 ```
 
 The installer downloads a `.tar.gz` (Linux/macOS) or `.zip` (Windows) archive from the release, verifies its SHA-256 against `checksums.txt`, and extracts the binary to your PATH. No Node.js required. Supported release assets: Linux x64/arm64, macOS x64/arm64, Windows x64/arm64.
+
+Supported installer flags (also accepted as env vars):
+
+| Flag | Env var | Default |
+| --- | --- | --- |
+| `--tag vX.Y.Z` | `INSTALL_RELEASE_TAG` | auto-detect from `releases/latest` |
+| `--base <url>` | `INSTALL_RELEASE_BASE` | GitHub releases URL |
+| `--contract archive\|legacy` | `INSTALL_ASSET_CONTRACT` | auto-detect from published `checksums.txt` |
+| `--install-dir <path>` | (none) | `/usr/local/bin` (root) or `~/.local/bin` (non-root) |
+
+Env vars take precedence over flags when both are set (POSIX convention: the env var is the deployment default, the flag is the per-call override).
 
 Compressed transfer size is ~3x smaller than the installed binary size (e.g., ~18 MB download / ~60 MB installed on Linux x64).
 
