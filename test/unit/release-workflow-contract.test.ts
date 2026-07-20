@@ -2030,6 +2030,16 @@ describe("Post-release e2e workflow contract", () => {
     // Critical: cleanup hook must exist (regression-guard for
     // orphan mock LLM processes when the harness exits early).
     expect(text, "harness must register a process-exit cleanup hook for the mock LLM").toMatch(/process\.on\(['"]beforeExit['"],\s*cleanup/);
+    // Critical: runProviderCheck must unset GITHUB_ACTIONS so the
+    // binary takes the standalone-review path on CI runners (where
+    // GITHUB_ACTIONS=true is set by the runner env). Without this
+    // the binary takes the live-orchestrator path, fails the
+    // post-validator's parseFailed check (because we never hit a
+    // real GitHub API), and exits 1.
+    expect(
+      text,
+      "harness must force GITHUB_ACTIONS=false so the binary takes the standalone path on CI runners",
+    ).toMatch(/GITHUB_ACTIONS:\s*["']false["']/);
   });
 
   it("POST-RELEASE-MOCK-SERVER-SPEAKS-BOTH: the mock exposes OpenAI + Anthropic wire formats", () => {
