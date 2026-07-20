@@ -23,10 +23,18 @@
 // Environment variables:
 //   TAG              - explicit tag to test (default: auto-resolve latest)
 //   REPO             - owner/name (default: from package.json repository)
+//   PR_NUMBER        - PR number to use for --pr-number (default: 93)
 //   MOCK_LLM_PORT    - port for the mock LLM (default: 0 = random)
 //   ARTIFACT_DIR     - where to write review JSON + logs (default: ./artifacts/post-release-e2e)
 //   SKIP_MOCK        - if "1", do not spawn the mock; assume one is
 //                      already running and reachable at MOCK_LLM_PORT
+//
+// Process lifecycle: any early-exit `die()` call (e.g. checksum
+// failure, extraction failure, missing fixture) MUST first SIGTERM
+// any mock LLM we spawned, otherwise the port stays bound and the
+// workflow's cleanup step times out. The `cleanup()` function is
+// registered against `process.on('beforeExit')` and `process.on('exit')`
+// and is the single source of truth for child-process teardown.
 //
 // Exit codes:
 //   0  all checks passed
@@ -48,12 +56,40 @@ const REPO_ROOT = resolve(__dirname, "..", "..");
 const args = parseArgs(process.argv.slice(2));
 const tag = args.tag ?? process.env.TAG ?? null;
 const repo = args.repo ?? process.env.REPO ?? readRepoFromPackage();
+const prNumber = args["pr-number"] ?? process.env.PR_NUMBER ?? "93";
 const artifactDir = args["artifact-dir"] ?? process.env.ARTIFACT_DIR ?? join(REPO_ROOT, "artifacts", "post-release-e2e");
 const skipMock = (args["skip-mock"] ?? process.env.SKIP_MOCK ?? "0") === "1";
 
 mkdirSync(artifactDir, { recursive: true });
 
-log(`post-release e2e — repo=${repo} tag=${tag ?? "(auto)"} artifact-dir=${artifactDir}`);
+// Single source of truth for child-process teardown. Registered
+// against every exit path the Node process can take (normal
+// completion, die(), uncaught exception, SIGINT). Idempotent: a
+// second call after the proc has already exited is a no-op.
+let mockProc = null;
+let cleanedUp = false;
+function cleanup() {
+  if (cleanedUp) return;
+  cleanedUp = true;
+  if (mockProc && !mockProc.killed && mockProc.exitCode === null) {
+    try {
+      mockProc.kill("SIGTERM");
+    } catch {
+      /* best-effort */
+    }
+  }
+}
+process.on("beforeExit", cleanup);
+process.on("exit", cleanup);
+// SIGINT/SIGTERM: best-effort terminate, then re-raise.
+for (const sig of ["SIGINT", "SIGTERM"]) {
+  process.on(sig, () => {
+    cleanup();
+    process.exit(130);
+  });
+}
+
+log(`post-release e2e — repo=${repo} pr=${prNumber} tag=${tag ?? "(auto)"} artifact-dir=${artifactDir}`);
 
 // Step 1-2: resolve target + manifest
 const targets = JSON.parse(readFileSync(join(REPO_ROOT, "scripts", "release-targets.json"), "utf8"));
@@ -121,7 +157,6 @@ log(`binary --version: ${v.stdout.trim()}`);
 
 // Step 6: spawn the mock LLM (unless skipped).
 let mockPort = Number(process.env.MOCK_LLM_PORT ?? 0);
-let mockProc = null;
 if (skipMock) {
   if (!mockPort) die(2, `SKIP_MOCK=1 but MOCK_LLM_PORT not set`);
   log(`using existing mock LLM at port ${mockPort}`);
@@ -146,6 +181,8 @@ const openaiResult = runProviderCheck({
   provider: "openai-compatible",
   apiUrl: `http://127.0.0.1:${mockPort}/v1`,
   diffPath,
+  repo,
+  prNumber,
 });
 log(
   `openai-compatible: artifact=${openaiResult.artifactPath} comments=${openaiResult.commentCount} exit=${openaiResult.exitCode}`,
@@ -156,6 +193,8 @@ const anthropicResult = runProviderCheck({
   provider: "anthropic",
   apiUrl: `http://127.0.0.1:${mockPort}`,
   diffPath,
+  repo,
+  prNumber,
 });
 log(
   `anthropic: artifact=${anthropicResult.artifactPath} comments=${anthropicResult.commentCount} exit=${anthropicResult.exitCode}`,
@@ -262,6 +301,21 @@ function sha256File(p) {
 
 async function startMockLlm(repoRoot, label) {
   return await new Promise((resolve, reject) => {
+    // Track every listener we register so we can detach them once
+    // the promise settles. Without this, every successful start
+    // leaks a `data`/`exit`/`error` listener onto the proc, which
+    // pin the EventEmitter in memory until the proc itself GCs.
+    let settled = false;
+    const settle = (fn, value) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(startupTimer);
+      proc.stdout.removeAllListeners("data");
+      proc.stderr.removeAllListeners("data");
+      proc.removeAllListeners("error");
+      proc.removeAllListeners("exit");
+      fn(value);
+    };
     const proc = spawn(
       process.execPath,
       [join(repoRoot, "test", "post-release", "mock-llm-server.mjs")],
@@ -272,24 +326,30 @@ async function startMockLlm(repoRoot, label) {
     );
     let out = "";
     proc.stdout.on("data", (chunk) => {
+      if (settled) return;
       out += chunk.toString("utf8");
       const port = parseInt(out.trim().split("\n")[0], 10);
       if (!Number.isNaN(port) && port > 0) {
         // Wait for the health endpoint to be ready before resolving,
         // so the test never races the bind.
         waitForHealth(port)
-          .then(() => resolve({ port, proc }))
-          .catch((err) => reject(err));
+          .then(() => settle(resolve, { port, proc }))
+          .catch((err) => settle(reject, err));
       }
     });
     proc.stderr.on("data", (chunk) => process.stderr.write(`[mock] ${chunk}`));
-    proc.on("error", (err) => reject(err));
+    proc.on("error", (err) => settle(reject, err));
     proc.on("exit", (code) => {
       if (code !== 0 && code !== null) {
-        reject(new Error(`mock LLM exited with code ${code} before becoming ready`));
+        settle(reject, new Error(`mock LLM exited with code ${code} before becoming ready`));
       }
     });
-    setTimeout(() => reject(new Error("mock LLM did not start within 5s")), 5000);
+    // Startup deadline. Cleared on success so Node's timer table
+    // doesn't keep a 5s timer alive after a fast happy-path start.
+    const startupTimer = setTimeout(
+      () => settle(reject, new Error("mock LLM did not start within 5s")),
+      5000,
+    );
   });
 }
 
@@ -345,7 +405,7 @@ function httpGet(url, onStatus) {
   return socket;
 }
 
-function runProviderCheck({ binaryPath, provider, apiUrl, diffPath }) {
+function runProviderCheck({ binaryPath, provider, apiUrl, diffPath, repo, prNumber }) {
   // The standalone-review mode writes its artifact to a fixed
   // cwd-relative path (`./umactually-review.json`). We can't override
   // it from the CLI in standalone mode, so we run each provider
@@ -360,8 +420,8 @@ function runProviderCheck({ binaryPath, provider, apiUrl, diffPath }) {
     "--api-url", apiUrl,
     "--api-key", "test-key",
     "--diff", diffPath,
-    "--repo", "JosiahSiegel/umactually",
-    "--pr-number", "93",
+    "--repo", repo,
+    "--pr-number", prNumber,
     "--no-detect-leaks",
   ];
   log(`running: ${binaryPath} ${args.join(" ")}`);

@@ -63,19 +63,28 @@ jobs:
       - name: Resolve target tag
         id: tag
         shell: bash
+        # IMPORTANT: never interpolate ${{ inputs.* }} or
+        # ${{ github.event.* }} directly into a shell script — they
+        # are not shell-escaped and a release tag like
+        # `v1.0.0$(rm -rf ~)` would be evaluated by bash. We pass
+        # them through env vars instead, then quote them properly
+        # in the `if` test.
+        env:
+          INPUT_TAG: ${{ inputs.tag }}
+          RELEASE_TAG: ${{ github.event.release.tag_name }}
         run: |
           set -euo pipefail
-          if [ -n "${{ inputs.tag }}" ]; then
-            echo "value=${{ inputs.tag }}" >> "$GITHUB_OUTPUT"
+          if [ -n "${INPUT_TAG:-}" ]; then
+            printf 'value=%s\n' "${INPUT_TAG}" >> "$GITHUB_OUTPUT"
             exit 0
           fi
           # Auto-resolve from the release event when triggered by
           # `release.published`. workflow_dispatch without a tag
           # falls through to the harness's own resolver.
-          if [ -n "${{ github.event.release.tag_name }}" ]; then
-            echo "value=${{ github.event.release.tag_name }}" >> "$GITHUB_OUTPUT"
+          if [ -n "${RELEASE_TAG:-}" ]; then
+            printf 'value=%s\n' "${RELEASE_TAG}" >> "$GITHUB_OUTPUT"
           else
-            echo "value=" >> "$GITHUB_OUTPUT"
+            printf 'value=\n' >> "$GITHUB_OUTPUT"
           fi
 
       - name: Run post-release e2e

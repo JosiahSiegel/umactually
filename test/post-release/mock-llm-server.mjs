@@ -86,9 +86,14 @@ const server = createServer(async (req, res) => {
       /* ignore */
     }
     const model = parsed?.model ?? "unknown";
-    const xapi = (req.headers["x-api-key"] ?? "none").toString().slice(0, 12);
+    // Never log the raw x-api-key (the binary may forward a real
+    // one in some setups). Show only a short fingerprint so a
+    // reader can correlate "this request came from caller X" without
+    // exposing the secret.
+    const xapi = req.headers["x-api-key"]?.toString() ?? "none";
+    const fingerprint = xapi === "none" ? "none" : `${xapi.slice(0, 4)}…(len=${xapi.length})`;
     const ver = req.headers["anthropic-version"] ?? "none";
-    logRequest(req, model, `x-api-key=${xapi}… anthropic-version=${ver}`);
+    logRequest(req, model, `x-api-key=${fingerprint} anthropic-version=${ver}`);
     const response = {
       id: `msg_${Date.now()}`,
       type: "message",

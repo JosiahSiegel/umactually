@@ -1978,11 +1978,30 @@ describe("Post-release e2e workflow contract", () => {
     );
   });
 
-  it("POST-RELEASE-WORKFLOW-HARNESS-ENV: the harness step forwards TAG, REPO, and ARTIFACT_DIR", () => {
+  it("POST-RELEASE-WORKFLOW-HARNESS-ENV: the harness step forwards TAG, REPO, and ARTIFACT_DIR via env vars (no shell interpolation)", () => {
     const text = readFileSync(join(REPO_ROOT, POST_RELEASE_WORKFLOW), "utf8");
-    expect(text, "TAG must be forwarded to the harness").toMatch(/TAG:\s*\$\{\{\s*steps\.tag\.outputs\.value\s*\}\}/);
-    expect(text, "REPO must be forwarded to the harness").toMatch(/REPO:\s*\$\{\{\s*github\.repository\s*\}\}/);
-    expect(text, "ARTIFACT_DIR must be forwarded to the harness").toMatch(/ARTIFACT_DIR:/);
+    // We deliberately forward the resolved tag via an env var
+    // (TAG: ${{ steps.tag.outputs.value }}) rather than interpolating
+    // it into a shell script, because GitHub Actions does not
+    // shell-escape `steps.*.outputs.*` and a malicious tag would
+    // otherwise be evaluated by bash. Asserting the env-var form
+    // (and explicitly NOT a shell interpolation) locks this in.
+    expect(text, "TAG must be forwarded as an env var (no shell interpolation)").toMatch(
+      /TAG:\s*\$\{\{\s*steps\.tag\.outputs\.value\s*\}\}/,
+    );
+    expect(text, "REPO must be forwarded as an env var").toMatch(/REPO:\s*\$\{\{\s*github\.repository\s*\}\}/);
+    expect(text, "ARTIFACT_DIR must be forwarded as an env var").toMatch(/ARTIFACT_DIR:/);
+    // The `inputs.tag` reference is fine in the `inputs:` schema
+    // block (where it's just a type declaration), but must NEVER
+    // appear inside a `run:` block's body (where it would be
+    // evaluated by bash). Scope the assertion to the run blocks
+    // to avoid false positives.
+    const runBlockPattern = /run:\s*\|\n([\s\S]*?)(?=\n        [a-z]|\n      [a-z])/g;
+    const runBodies = [...text.matchAll(runBlockPattern)].map((m) => m[1]).join("\n");
+    expect(
+      runBodies,
+      "tag values must NOT be inlined into a `run:` block (security: shell injection)",
+    ).not.toMatch(/\${{ inputs\.tag }}/);
   });
 
   it("POST-RELEASE-WORKFLOW-UPLOADS-ARTIFACTS: review artifacts are uploaded with actions/upload-artifact@v4 (v3 is deprecated)", () => {
@@ -1996,11 +2015,21 @@ describe("Post-release e2e workflow contract", () => {
     const path = join(REPO_ROOT, POST_RELEASE_HARNESS);
     const text = readFileSync(path, "utf8");
     expect(text, "harness must read TAG/REPO env vars").toMatch(/process\.env\.TAG/);
+    expect(text, "harness must read REPO env var").toMatch(/process\.env\.REPO/);
+    expect(text, "harness must read PR_NUMBER env var (no hardcoded fallback in runProviderCheck)").toMatch(/process\.env\.PR_NUMBER/);
     expect(text, "harness must read ARTIFACT_DIR env var").toMatch(/process\.env\.ARTIFACT_DIR/);
     expect(text, "harness must read the manifest").toMatch(/release-targets\.json/);
     expect(text, "harness must verify SHA-256 against checksums.txt").toMatch(/sha256File/);
     expect(text, "harness must run both providers").toMatch(/openai-compatible/);
     expect(text, "harness must run the anthropic provider too").toMatch(/anthropic/);
+    // Critical: runProviderCheck must thread repo + prNumber through
+    // to the CLI. The previous version hardcoded these and the e2e
+    // test would silently be exercising the wrong PR.
+    expect(text, "runProviderCheck must pass --repo from the harness-level REPO env var").toMatch(/--repo",\s*repo/);
+    expect(text, "runProviderCheck must pass --pr-number from the harness-level PR_NUMBER env var").toMatch(/--pr-number",\s*prNumber/);
+    // Critical: cleanup hook must exist (regression-guard for
+    // orphan mock LLM processes when the harness exits early).
+    expect(text, "harness must register a process-exit cleanup hook for the mock LLM").toMatch(/process\.on\(['"]beforeExit['"],\s*cleanup/);
   });
 
   it("POST-RELEASE-MOCK-SERVER-SPEAKS-BOTH: the mock exposes OpenAI + Anthropic wire formats", () => {
@@ -2015,6 +2044,10 @@ describe("Post-release e2e workflow contract", () => {
     // Anthropic-specific auth/version header handling
     expect(text, "mock must accept Anthropic x-api-key header").toMatch(/x-api-key/);
     expect(text, "mock must echo the anthropic-version header").toMatch(/anthropic-version/);
+    // x-api-key is never logged raw — only a short fingerprint.
+    // Guard against the regression where the mock logged the first
+    // 12 chars of the secret.
+    expect(text, "mock must NOT log the raw x-api-key (only a short fingerprint)").not.toMatch(/x-api-key[\s\S]{0,200}slice\(0,\s*12/);
   });
 
   it("POST-RELEASE-PACKAGE-SCRIPT: `npm run test:post-release` exists in package.json for local reproduction", () => {
