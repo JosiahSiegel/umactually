@@ -908,13 +908,21 @@ function probeContract(workflow: Workflow): readonly Violation[] {
   if (publishJob !== null) {
     const hasDraftDelete = publishJob.job.steps.some((s) => {
       const run = s.run ?? "";
-      return /gh release delete[^\n]*--draft/u.test(run) || /gh release delete[^\n]*-y/u.test(run) && /draft/u.test(run);
+      // `gh release delete <tag> --yes` is the actual API (no
+      // `--draft` flag exists on `gh release delete`; it just
+      // deletes the release by tag). The contract is satisfied as
+      // long as the step (a) gates on `failure()` so it only runs
+      // when the publish job failed, AND (b) invokes `gh release
+      // delete` with `--yes` to skip the confirmation prompt.
+      const isFailureGated = (s.if ?? "").includes("failure()");
+      const deletesRelease = /gh release delete\b/u.test(run) && /-y\b|--yes\b/u.test(run);
+      return isFailureGated && deletesRelease;
     });
     if (!hasDraftDelete) {
       violations.push({
         rule: "publish-draft-deletion",
         source: "Todo 4 brief",
-        detail: "publish job has no `gh release delete` step wired to pre-publish failure",
+        detail: "publish job has no `gh release delete` step wired to pre-publish failure (expected: a step with `if: failure()` that invokes `gh release delete <tag> --yes`)",
       });
     }
   }
