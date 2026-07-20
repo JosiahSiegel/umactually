@@ -716,6 +716,140 @@ fi
 # ---- production entrypoint ----
 
 # Detect platform/arch.
+# `resolve_dispatch` already reads. The README and the `curl | sh`
+# idiom both naturally use flags (e.g. `sh -s -- --tag v0.5.4`), so
+# this function makes that form first-class. Env vars still take
+# precedence — `--tag v0.5.4` only sets INSTALL_RELEASE_TAG if it is
+# not already in the environment, matching POSIX convention for
+# "explicit flag overrides implicit env-var default".
+#
+# Supported flags:
+#   --tag <vX.Y.Z>          INSTALL_RELEASE_TAG
+#   --base <url>            INSTALL_RELEASE_BASE
+#   --contract <a|legacy>   INSTALL_ASSET_CONTRACT (archive or legacy)
+#   --install-dir <path>    INSTALL_DIR
+#   -h | --help             Print usage and exit 0
+#   -V | --version          Print version and exit 0
+parse_args() {
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --tag)
+        [ $# -ge 2 ] || { log_err "--tag requires an argument"; exit 2; }
+        if [ -z "${INSTALL_RELEASE_TAG:-}" ]; then
+          INSTALL_RELEASE_TAG="$2"
+          export INSTALL_RELEASE_TAG
+        fi
+        shift 2
+        ;;
+      --tag=*)
+        if [ -z "${INSTALL_RELEASE_TAG:-}" ]; then
+          INSTALL_RELEASE_TAG="${1#--tag=}"
+          export INSTALL_RELEASE_TAG
+        fi
+        shift 1
+        ;;
+      --base)
+        [ $# -ge 2 ] || { log_err "--base requires an argument"; exit 2; }
+        if [ -z "${INSTALL_RELEASE_BASE:-}" ]; then
+          INSTALL_RELEASE_BASE="$2"
+          export INSTALL_RELEASE_BASE
+        fi
+        shift 2
+        ;;
+      --base=*)
+        if [ -z "${INSTALL_RELEASE_BASE:-}" ]; then
+          INSTALL_RELEASE_BASE="${1#--base=}"
+          export INSTALL_RELEASE_BASE
+        fi
+        shift 1
+        ;;
+      --contract)
+        [ $# -ge 2 ] || { log_err "--contract requires an argument"; exit 2; }
+        if [ -z "${INSTALL_ASSET_CONTRACT:-}" ]; then
+          INSTALL_ASSET_CONTRACT="$2"
+          export INSTALL_ASSET_CONTRACT
+        fi
+        shift 2
+        ;;
+      --contract=*)
+        if [ -z "${INSTALL_ASSET_CONTRACT:-}" ]; then
+          INSTALL_ASSET_CONTRACT="${1#--contract=}"
+          export INSTALL_ASSET_CONTRACT
+        fi
+        shift 1
+        ;;
+      --install-dir)
+        [ $# -ge 2 ] || { log_err "--install-dir requires an argument"; exit 2; }
+        if [ -z "${INSTALL_DIR_OVERRIDE:-}" ]; then
+          INSTALL_DIR_OVERRIDE="$2"
+          export INSTALL_DIR_OVERRIDE
+        fi
+        shift 2
+        ;;
+      --install-dir=*)
+        if [ -z "${INSTALL_DIR_OVERRIDE:-}" ]; then
+          INSTALL_DIR_OVERRIDE="${1#--install-dir=}"
+          export INSTALL_DIR_OVERRIDE
+        fi
+        shift 1
+        ;;
+      -h|--help)
+        cat <<'USAGE'
+umactually installer
+
+Usage:
+  curl -fsSL https://github.com/JosiahSiegel/umactually/raw/main/scripts/install.sh | sh [flags]
+  curl -fsSL .../v0.5.4/scripts/install.sh | INSTALL_RELEASE_TAG=v0.5.4 sh
+
+Flags (also accepted as env vars):
+  --tag <vX.Y.Z>          Pin to a specific release tag.
+  --base <url>            Use a custom asset directory URL.
+  --contract <a|legacy>   Force archive or legacy raw contract.
+  --install-dir <path>    Override install destination.
+
+Env vars (override flags):
+  INSTALL_RELEASE_TAG, INSTALL_RELEASE_BASE, INSTALL_ASSET_CONTRACT
+
+The installer auto-detects the contract from the published
+checksums.txt when no flag/env is supplied: it probes
+`releases/latest/checksums.txt` and picks `archive` if any
+`<archive>.tar.gz|.zip` line is present, otherwise `legacy` raw.
+USAGE
+        exit 0
+        ;;
+      -V|--version)
+        # The standalone archive is what most users have. Print its
+        # version by running `--version` against the just-installed
+        # binary. But the script is currently running, not installed
+        # yet. Print the script's known good tag instead.
+        printf 'umactually installer (script tied to v0.5.4+ install contract)\n'
+        exit 0
+        ;;
+      --)
+        shift
+        ;;
+      -*)
+        log_err "unknown flag: $1 (try --help)"
+        exit 2
+        ;;
+      *)
+        # Bare positional arg (e.g. `sh -s -- v0.5.4`) — treat as tag.
+        if [ -z "${INSTALL_RELEASE_TAG:-}" ]; then
+          INSTALL_RELEASE_TAG="$1"
+          export INSTALL_RELEASE_TAG
+        fi
+        shift 1
+        ;;
+    esac
+  done
+}
+
+# Translate `--tag` / `--base` / `--contract` / `--install-dir` CLI flags
+# into the env-var shape the rest of the script reads. The POSIX
+# `curl | sh -s -- <flags>` form must be a first-class entry point.
+parse_args "$@"
+
+# Detect platform/arch.
 PLATFORM=${PLATFORM_OVERRIDE:-$(detect_platform || printf '')}
 ARCH=${ARCH_OVERRIDE:-$(detect_arch || printf '')}
 EXT=""
@@ -741,7 +875,9 @@ export LC_ALL
 
 # Root vs non-root install location.
 _userid=$(id -u 2>/dev/null || printf '%s' "${USER:-}")
-if [ "$_userid" = "0" ] || [ "${USER:-}" = "root" ]; then
+if [ -n "${INSTALL_DIR_OVERRIDE:-}" ]; then
+  INSTALL_DIR="$INSTALL_DIR_OVERRIDE"
+elif [ "$_userid" = "0" ] || [ "${USER:-}" = "root" ]; then
   INSTALL_DIR="/usr/local/bin"
 else
   INSTALL_DIR="${HOME}/.local/bin"
