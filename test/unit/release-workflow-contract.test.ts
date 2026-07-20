@@ -1871,3 +1871,168 @@ describe("Release workflow design contract — tag-push publishes, dispatch is d
     expect(installSh, "install.sh must NOT compare draft/prerelease against 'true' (parser emits '1' not 'true')").not.toMatch(/=\s*["']true["']/u);
   });
 });
+
+// ===========================================================================
+// Post-release e2e workflow contract.
+//
+// These tests lock in the wire format of
+// `.github/workflows/post-release-e2e.yml` so a future change to that
+// file cannot silently break the post-release canary. The test
+// harness script and the mock LLM server are the two runtime
+// dependencies; we lock their surface here too so a refactor that
+// changes the public CLI (env vars, flag names, artifact paths) is
+// caught by the test suite, not by a failed release.
+//
+// Coverage:
+//   - The workflow file exists, parses, and has the expected trigger
+//     (release.published + workflow_dispatch with a `tag` input).
+//   - The matrix has all three OSes (ubuntu, macos, windows) so the
+//     canary actually covers the cross-platform surface.
+//   - The harness script is invoked with the right env vars (TAG,
+//     REPO, ARTIFACT_DIR) and the right entry point.
+//   - The mock LLM server exposes /v1/chat/completions,
+//     /v1/responses, and /v1/messages so both provider paths are
+//     exercised on every OS.
+//   - The harness assertion is ">=2 comments" so adding a third
+//     comment to the mock would still pass (the test is about
+//     wire-format survival, not exact comment count).
+//   - The workflow uploads the review artifacts via
+//     actions/upload-artifact@v4 (the v3 action is deprecated).
+//   - A `npm run test:post-release` script exists in package.json so
+//     developers can reproduce the e2e test locally.
+// ===========================================================================
+
+const POST_RELEASE_WORKFLOW = ".github/workflows/post-release-e2e.yml";
+const POST_RELEASE_HARNESS = "test/post-release/run-e2e.mjs";
+const POST_RELEASE_MOCK = "test/post-release/mock-llm-server.mjs";
+
+describe("Post-release e2e workflow contract", () => {
+  it("POST-RELEASE-WORKFLOW-EXISTS: the workflow file is committed and parseable", () => {
+    const path = join(REPO_ROOT, POST_RELEASE_WORKFLOW);
+    const text = readFileSync(path, "utf8");
+    const parsed = parse(text) as Workflow;
+    expect(parsed, `${POST_RELEASE_WORKFLOW} must be valid YAML`).toBeTypeOf("object");
+  });
+
+  it("POST-RELEASE-WORKFLOW-TRIGGERS: fires on release.published + workflow_dispatch (with optional `tag` input)", () => {
+    const text = readFileSync(join(REPO_ROOT, POST_RELEASE_WORKFLOW), "utf8");
+    const parsed = parse(text) as Workflow;
+    const on = parsed.on ?? parsed[true];
+    const onRecord = (on ?? {}) as Readonly<Record<string, unknown>>;
+    // `on:` is parsed as `true` in some YAML libraries, hence the
+    // dual-key fallback above.
+    const release = onRecord.release as Readonly<Record<string, unknown>> | undefined;
+    expect(release, "post-release-e2e.yml must trigger on `release:`").toBeTypeOf("object");
+    expect(
+      Array.isArray((release as { types?: readonly string[] })?.types)
+        ? (release as { types: readonly string[] }).types
+        : [],
+      "release trigger must include the `published` type",
+    ).toContain("published");
+    const dispatch = onRecord.workflow_dispatch as Readonly<Record<string, unknown>> | undefined;
+    expect(dispatch, "post-release-e2e.yml must also support `workflow_dispatch` (manual ad-hoc runs)").toBeTypeOf("object");
+    const inputs = (dispatch as { inputs?: Readonly<Record<string, unknown>> })?.inputs ?? {};
+    expect(inputs, "workflow_dispatch must accept a `tag` input").toHaveProperty("tag");
+  });
+
+  it("POST-RELEASE-WORKFLOW-MATRIX: matrix covers ubuntu, macos, AND windows (post-release must be cross-OS)", () => {
+    const text = readFileSync(join(REPO_ROOT, POST_RELEASE_WORKFLOW), "utf8");
+    const parsed = parse(text) as Workflow;
+    const jobs = (parsed.jobs ?? {}) as Readonly<Record<string, WorkflowJob>>;
+    const e2eJob = jobs.e2e;
+    expect(e2eJob, "the workflow must define a single `e2e` job").toBeTypeOf("object");
+    const strategy = (e2eJob as { strategy?: Readonly<Record<string, unknown>> })?.strategy;
+    expect(strategy, "the e2e job must have a `strategy:` block").toBeTypeOf("object");
+    const matrix = (strategy as { matrix?: Readonly<Record<string, unknown>> })?.matrix;
+    expect(matrix, "the strategy must have a `matrix:` block").toBeTypeOf("object");
+    const osList = (matrix as { os?: readonly string[] })?.os;
+    expect(osList, "the matrix must enumerate operating systems").toBeTypeOf("object");
+    const osValues = Array.isArray(osList) ? osList : [];
+    // The whole point of this workflow is cross-OS coverage; if any
+    // OS is removed the test fails. Adding a new one is allowed
+    // (the test only requires these three be present).
+    for (const required of ["ubuntu-latest", "macos-latest", "windows-latest"]) {
+      expect(osValues, `matrix.os must include "${required}"`).toContain(required);
+    }
+  });
+
+  it("POST-RELEASE-WORKFLOW-NODE-24: every job sets up Node 24 (the umactually runtime floor)", () => {
+    const text = readFileSync(join(REPO_ROOT, POST_RELEASE_WORKFLOW), "utf8");
+    // The setup-node step is the only one with `node-version: "24"`
+    // in the workflow. Asserting via literal text keeps the test
+    // independent of the YAML structure changes.
+    expect(text).toMatch(/node-version:\s*["']24["']/);
+  });
+
+  it("POST-RELEASE-WORKFLOW-RUNS-HARNESS: a step invokes `node test/post-release/run-e2e.mjs`", () => {
+    const text = readFileSync(join(REPO_ROOT, POST_RELEASE_WORKFLOW), "utf8");
+    expect(text, "the workflow must call the harness entry point").toMatch(
+      /node\s+test\/post-release\/run-e2e\.mjs/,
+    );
+  });
+
+  it("POST-RELEASE-WORKFLOW-HARNESS-ENV: the harness step forwards TAG, REPO, and ARTIFACT_DIR", () => {
+    const text = readFileSync(join(REPO_ROOT, POST_RELEASE_WORKFLOW), "utf8");
+    expect(text, "TAG must be forwarded to the harness").toMatch(/TAG:\s*\$\{\{\s*steps\.tag\.outputs\.value\s*\}\}/);
+    expect(text, "REPO must be forwarded to the harness").toMatch(/REPO:\s*\$\{\{\s*github\.repository\s*\}\}/);
+    expect(text, "ARTIFACT_DIR must be forwarded to the harness").toMatch(/ARTIFACT_DIR:/);
+  });
+
+  it("POST-RELEASE-WORKFLOW-UPLOADS-ARTIFACTS: review artifacts are uploaded with actions/upload-artifact@v4 (v3 is deprecated)", () => {
+    const text = readFileSync(join(REPO_ROOT, POST_RELEASE_WORKFLOW), "utf8");
+    expect(text).toMatch(/actions\/upload-artifact@v4/);
+    // Explicit negative: v3 is deprecated and must NOT be used.
+    expect(text).not.toMatch(/actions\/upload-artifact@v3[^0-9]/);
+  });
+
+  it("POST-RELEASE-HARNESS-EXISTS: the harness script is committed and exports a stable argv surface", () => {
+    const path = join(REPO_ROOT, POST_RELEASE_HARNESS);
+    const text = readFileSync(path, "utf8");
+    expect(text, "harness must read TAG/REPO env vars").toMatch(/process\.env\.TAG/);
+    expect(text, "harness must read ARTIFACT_DIR env var").toMatch(/process\.env\.ARTIFACT_DIR/);
+    expect(text, "harness must read the manifest").toMatch(/release-targets\.json/);
+    expect(text, "harness must verify SHA-256 against checksums.txt").toMatch(/sha256File/);
+    expect(text, "harness must run both providers").toMatch(/openai-compatible/);
+    expect(text, "harness must run the anthropic provider too").toMatch(/anthropic/);
+  });
+
+  it("POST-RELEASE-MOCK-SERVER-SPEAKS-BOTH: the mock exposes OpenAI + Anthropic wire formats", () => {
+    const path = join(REPO_ROOT, POST_RELEASE_MOCK);
+    const text = readFileSync(path, "utf8");
+    // OpenAI Chat Completions
+    expect(text, "mock must serve /v1/chat/completions").toMatch(/\/chat\/completions/);
+    // OpenAI Responses
+    expect(text, "mock must serve /v1/responses").toMatch(/\/v1\/responses/);
+    // Anthropic Messages
+    expect(text, "mock must serve /v1/messages").toMatch(/\/v1\/messages/);
+    // Anthropic-specific auth/version header handling
+    expect(text, "mock must accept Anthropic x-api-key header").toMatch(/x-api-key/);
+    expect(text, "mock must echo the anthropic-version header").toMatch(/anthropic-version/);
+  });
+
+  it("POST-RELEASE-PACKAGE-SCRIPT: `npm run test:post-release` exists in package.json for local reproduction", () => {
+    const pkg = JSON.parse(readFileSync(join(REPO_ROOT, "package.json"), "utf8")) as {
+      readonly scripts?: Readonly<Record<string, string>>;
+    };
+    expect(pkg.scripts?.["test:post-release"], "package.json must define a test:post-release script").toMatch(
+      /run-e2e\.mjs/,
+    );
+  });
+
+  it("POST-RELEASE-FIXTURE: a small diff fixture exists so the harness can exercise the diff-scope filter", () => {
+    const path = join(REPO_ROOT, "test/fixtures/e2e-canary-diff.patch");
+    const text = readFileSync(path, "utf8");
+    expect(text, "fixture must be a unified diff").toMatch(/^diff --git /m);
+    // The fixture path must match the path the mock targets, otherwise
+    // the diff-scope filter would drop every comment and the harness
+    // would always report 0 comments. Keep these two paths in lockstep.
+    const mock = readFileSync(join(REPO_ROOT, POST_RELEASE_MOCK), "utf8");
+    const mockPathMatch = mock.match(/FIXTURE_PATH\s*=\s*["']([^"']+)["']/);
+    const fixturePathMatch = text.match(/^\+\+\+ b\/(\S+)/m);
+    expect(mockPathMatch, "mock must declare FIXTURE_PATH").not.toBeNull();
+    expect(fixturePathMatch, "fixture must declare a target path via `+++ b/`").not.toBeNull();
+    expect(mockPathMatch?.[1], "mock FIXTURE_PATH must match the fixture's target path").toBe(
+      fixturePathMatch?.[1],
+    );
+  });
+});

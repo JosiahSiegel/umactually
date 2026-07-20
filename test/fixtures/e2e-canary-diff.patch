@@ -1,0 +1,19 @@
+diff --git a/test/fixtures/e2e-canary-fixture.txt b/test/fixtures/e2e-canary-fixture.txt
+new file mode 100644
+index 0000000..1111111
+--- /dev/null
++++ b/test/fixtures/e2e-canary-fixture.txt
+@@ -0,0 +1,11 @@
++# Post-Release End-to-End Canary Fixture
++
++This file is a throwaway fixture used by the post-release e2e
++test harness. The mock LLM at
++test/post-release/mock-llm-server.mjs returns canned review
++findings that target THIS path on lines 1 and 7. The harness
++asserts that the just-published binary, when wired to the mock
++in BOTH provider modes (openai-compatible and anthropic),
++produces both inline comments and writes them to the review
++artifact.
++
++If you can read this comment on a real PR created by the
++post-release workflow, end-to-end is green.
