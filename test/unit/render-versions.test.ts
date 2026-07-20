@@ -248,11 +248,85 @@ describe("scripts/render-versions.mjs — historical vX.Y.Z literal rewrite", ()
     expect(result.status, result.stderr).toBe(0);
 
     const out = readFileSync(join(tmpRoot, "README.md"), "utf8");
-    // URL path segments stay intact (SemVer spec URL, GitHub release URL).
+    // Third-party URL path segments stay intact (SemVer spec URL, a
+    // different GitHub repo's release URL — `github.com/x/y/` is a
+    // different host from our own release-tag pattern).
     expect(out).toContain("https://semver.org/spec/v2.0.0.html");
     expect(out).toContain("https://github.com/x/y/releases/tag/v0.3.0");
     // Filename extension stays intact.
     expect(out).toContain("review.v1.2.3.html");
+  });
+
+  it("rewrites the project OWN release-tag URLs to the current version (regression for v0.5.2 / v0.5.3)", () => {
+    // Before this fix, hardcoded `releases/tag/v0.5.0` URLs survived every
+    // version bump because the bare-literal regex excluded anything
+    // preceded by `/`. The self-review bot caught the bug twice in a row
+    // (PRs #87 and #88) and required manual sed-fix commits to unblock.
+    // This test locks in the fix: the second pass in renderText must
+    // rewrite the project OWN `releases/tag/vX.Y.Z` URL regardless of
+    // the look-behind boundary, because that path segment is unique to
+    // THIS repo and is always safe to bump.
+    const tmpRoot = makeIsolatedTree();
+    seedTree(tmpRoot, "0.5.3");
+    writeFileSync(
+      join(tmpRoot, "README.md"),
+      [
+        "# X",
+        "",
+        "Latest: **[v0.5.3](https://github.com/JosiahSiegel/umactually/releases/tag/v0.5.0)**",
+        "Badge: [![release](https://img.shields.io/github/v/release/JosiahSiegel/umactually)](https://github.com/JosiahSiegel/umactually/releases/tag/v0.5.0)",
+        "CI pin: [`v0.5.3` tag](https://github.com/JosiahSiegel/umactually/releases/tag/v0.5.0)",
+        "",
+      ].join("\n"),
+      "utf8",
+    );
+
+    const result = invokeRenderScript([], { packageRoot: tmpRoot });
+    expect(result.status, result.stderr).toBe(0);
+
+    const out = readFileSync(join(tmpRoot, "README.md"), "utf8");
+    // All three project-own release URLs are bumped to v0.5.3.
+    expect(out).toContain(
+      "Latest: **[v0.5.3](https://github.com/JosiahSiegel/umactually/releases/tag/v0.5.3)**",
+    );
+    expect(out).toContain(
+      "https://github.com/JosiahSiegel/umactually/releases/tag/v0.5.3",
+    );
+    expect(out).not.toContain("releases/tag/v0.5.0");
+  });
+
+  it("rewrites the project OWN release-tag URL but does NOT touch a pre-release-suffixed one", () => {
+    // Pre-release / build suffixes are intentional context (a release
+    // candidate pin, etc.). The same boundary rule from the bare-literal
+    // pass must apply here: rewrite the bare `releases/tag/v0.5.0`, but
+    // leave `releases/tag/v0.5.0-rc.1` alone so a draft pin is never
+    // silently promoted to a stable tag.
+    const tmpRoot = makeIsolatedTree();
+    seedTree(tmpRoot, "0.5.3");
+    writeFileSync(
+      join(tmpRoot, "README.md"),
+      [
+        "# X",
+        "",
+        "Stable: https://github.com/JosiahSiegel/umactually/releases/tag/v0.5.0",
+        "RC: https://github.com/JosiahSiegel/umactually/releases/tag/v0.5.0-rc.1",
+        "",
+      ].join("\n"),
+      "utf8",
+    );
+
+    const result = invokeRenderScript([], { packageRoot: tmpRoot });
+    expect(result.status, result.stderr).toBe(0);
+
+    const out = readFileSync(join(tmpRoot, "README.md"), "utf8");
+    // Bare pin is bumped to v0.5.3.
+    expect(out).toContain(
+      "Stable: https://github.com/JosiahSiegel/umactually/releases/tag/v0.5.3",
+    );
+    // Pre-release suffix is preserved.
+    expect(out).toContain(
+      "RC: https://github.com/JosiahSiegel/umactually/releases/tag/v0.5.0-rc.1",
+    );
   });
 
   it("--check exits 1 when a stale literal would be rewritten, exits 0 after rewrite", () => {

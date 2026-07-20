@@ -184,6 +184,45 @@ function renderText(text, tagValue, dotValue, warnings) {
     if (warnings) warnings.push(match);
     return tagValue;
   });
+  // Second pass: rewrite our OWN release-tag URLs to the current version.
+  //
+  // The bare-literal regex above correctly avoids `semver.org/spec/v2.0.0.html`
+  // and `review.v1.2.3.html` (the `/` and `.` look-behinds block them), but
+  // those same anchors also block `releases/tag/v0.5.0` — a string that
+  // unambiguously points at THIS repo's release and is ALWAYS safe to bump.
+  // This regex is intentionally narrow: it requires the literal path segment
+  // `releases/tag/` to precede the version, which is the GitHub release-tag
+  // URL pattern. Any future URL that uses a different host or path stays
+  // untouched, so we won't accidentally rewrite a third-party link.
+  //
+  // We also do not strip pre-release / build suffixes here — if a pin
+  // references `releases/tag/v0.3.0-rc.1` it is intentional context
+  // (a release candidate) and rewriting it to `v0.5.3` would silently
+  // point consumers at a stable tag from a draft. Same boundary rule as
+  // the bare-literal pass.
+  // Anchor the second pass to THIS repo's URL path so we don't touch
+  // third-party release URLs (a different GitHub repo's tag link, a
+  // CDN that mirrors the path layout, etc.). The literal `releases/tag/`
+  // pattern alone is too permissive — it would rewrite any `.../releases/tag/vX.Y.Z`
+  // substring. Tightening to the project URL prefix keeps the rewrite
+  // strictly within the bounds of "this repo's release URLs".
+  //
+  // We allow a configurable prefix: by default it's the canonical
+  // GitHub URL, but a `RELEASE_URL_PREFIX` env override is honored so a
+  // fork or self-hosted GHE mirror can repoint without code edits.
+  const releaseUrlPrefix = process.env.RELEASE_URL_PREFIX ??
+    "https://github.com/JosiahSiegel/umactually/";
+  const escapedPrefix = releaseUrlPrefix.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const releaseTagUrlRegex = new RegExp(
+    `${escapedPrefix}releases/tag/v\\d+\\.\\d+\\.\\d+(?![-+0-9A-Za-z./])`,
+    "g",
+  );
+  next = next.replace(releaseTagUrlRegex, (match) => {
+    const stripped = match.replace(new RegExp(`^${escapedPrefix}releases/tag/`), "");
+    if (stripped === tagValue) return match;
+    if (warnings) warnings.push(match);
+    return `${releaseUrlPrefix}releases/tag/${tagValue}`;
+  });
   return { result: next, changed: next !== before };
 }
 
