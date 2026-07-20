@@ -1917,11 +1917,12 @@ describe("Post-release e2e workflow contract", () => {
   it("POST-RELEASE-WORKFLOW-TRIGGERS: fires on release.published + workflow_dispatch (with optional `tag` input)", () => {
     const text = readFileSync(join(REPO_ROOT, POST_RELEASE_WORKFLOW), "utf8");
     const parsed = parse(text) as Workflow;
-    const on = parsed.on ?? parsed[true];
-    const onRecord = (on ?? {}) as Readonly<Record<string, unknown>>;
+    const onValue = (parsed as Readonly<Record<string, unknown>>).on;
+    const onTrueFallback = (parsed as Readonly<Record<string, unknown>>)[true];
+    const onRecord = ((onValue ?? onTrueFallback) ?? {}) as Readonly<Record<string, unknown>>;
     // `on:` is parsed as `true` in some YAML libraries, hence the
     // dual-key fallback above.
-    const release = onRecord.release as Readonly<Record<string, unknown>> | undefined;
+    const release = onRecord["release"] as Readonly<Record<string, unknown>> | undefined;
     expect(release, "post-release-e2e.yml must trigger on `release:`").toBeTypeOf("object");
     expect(
       Array.isArray((release as { types?: readonly string[] })?.types)
@@ -1929,7 +1930,7 @@ describe("Post-release e2e workflow contract", () => {
         : [],
       "release trigger must include the `published` type",
     ).toContain("published");
-    const dispatch = onRecord.workflow_dispatch as Readonly<Record<string, unknown>> | undefined;
+    const dispatch = onRecord["workflow_dispatch"] as Readonly<Record<string, unknown>> | undefined;
     expect(dispatch, "post-release-e2e.yml must also support `workflow_dispatch` (manual ad-hoc runs)").toBeTypeOf("object");
     const inputs = (dispatch as { inputs?: Readonly<Record<string, unknown>> })?.inputs ?? {};
     expect(inputs, "workflow_dispatch must accept a `tag` input").toHaveProperty("tag");
@@ -1938,8 +1939,10 @@ describe("Post-release e2e workflow contract", () => {
   it("POST-RELEASE-WORKFLOW-MATRIX: matrix covers ubuntu, macos, AND windows (post-release must be cross-OS)", () => {
     const text = readFileSync(join(REPO_ROOT, POST_RELEASE_WORKFLOW), "utf8");
     const parsed = parse(text) as Workflow;
-    const jobs = (parsed.jobs ?? {}) as Readonly<Record<string, WorkflowJob>>;
-    const e2eJob = jobs.e2e;
+    const jobs = ((parsed as Readonly<Record<string, unknown>>)["jobs"] ?? {}) as Readonly<
+      Record<string, WorkflowJob>
+    >;
+    const e2eJob = jobs["e2e"];
     expect(e2eJob, "the workflow must define a single `e2e` job").toBeTypeOf("object");
     const strategy = (e2eJob as { strategy?: Readonly<Record<string, unknown>> })?.strategy;
     expect(strategy, "the e2e job must have a `strategy:` block").toBeTypeOf("object");
