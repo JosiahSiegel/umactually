@@ -14,12 +14,14 @@ import { printContextualHelp } from "./help.js";
 import { resolveColorPolicy } from "./no-color.js";
 import {
   defaultFsAdapter,
+  defaultStdinReader,
   formatUninstallHuman,
   formatUninstallJson,
   parseUninstallArgs,
   purgeConfig,
   revertPath,
   runUninstall,
+  shouldPrompt,
   UNINSTALL_HELP_TEXT,
   userDeclinedPrompt,
   type UninstallDeps,
@@ -201,17 +203,63 @@ async function runUninstallBranch(args: readonly string[]): Promise<DispatchResu
     homeDir: require("node:os").homedir(),
     mode,
   };
+  // Gate the destructive follow-ups (--purge-config, --revert-path)
+  // behind explicit confirmation when running non-interactively. The
+  // user clearly requested destructive work but did not pass --yes,
+  // and we have no way to prompt them. Refuse to proceed rather than
+  // wipe the config silently.
+  if (
+    !deps.isTTY &&
+    mode.yes !== true &&
+    (mode.purgeConfig === true || mode.revertPath === true)
+  ) {
+    const stderr =
+      "umactually uninstall: --purge-config and --revert-path require --yes in non-interactive mode\n";
+    process.stderr.write(stderr);
+    return { exitCode: 2, stderr };
+  }
   const result = await runUninstall(deps);
   // If the user declined the prompt for the binary removal, do NOT run
   // the follow-up destructive actions. A 'n' answer should be an
   // unconditional abort, not a partial state where the binary is kept
   // but config and shell-rc edits are still wiped.
-  const additionalChecks = userDeclinedPrompt(result)
-    ? []
-    : [
+  let additionalChecks: readonly UninstallResult["checks"][number][] = [];
+  if (!userDeclinedPrompt(result) && (mode.purgeConfig === true || mode.revertPath === true)) {
+    // The binary-removal prompt covered only the binary itself. The
+    // follow-up destructive actions (config wipe, PATH revert) are
+    // separate destructive operations and need their own confirmation
+    // in interactive mode. The user can decline here and keep the
+    // binary removed but the config intact.
+    if (shouldPrompt(deps)) {
+      const parts: string[] = [];
+      if (mode.purgeConfig === true) {
+        parts.push("remove ~/.umactually/ and ~/.cache/umactually/");
+      }
+      if (mode.revertPath === true) {
+        parts.push("strip the umactually PATH block from your shell rc files");
+      }
+      const promptText = `Also ${parts.join(" and ")}? [y/N] `;
+      const reader = deps.stdinReader ?? defaultStdinReader;
+      const confirm = await reader(promptText);
+      if (confirm !== null && /^y(es)?$/i.test(confirm.trim())) {
+        additionalChecks = [
+          ...(mode.purgeConfig ? purgeConfig(deps) : []),
+          ...(mode.revertPath ? revertPath(deps) : []),
+        ];
+      }
+      // If declined or EOF, skip the follow-ups silently. The
+      // binary-removal already succeeded; the user just opted out of
+      // the additional cleanup. (We do NOT push a check here because
+      // it would clutter the output for a fully-valid "I said no" run.)
+    } else {
+      // isTTY=false + --yes (the gate at the top of this function
+      // already blocked the !--yes + !isTTY case).
+      additionalChecks = [
         ...(mode.purgeConfig ? purgeConfig(deps) : []),
         ...(mode.revertPath ? revertPath(deps) : []),
       ];
+    }
+  }
   const checks: UninstallResult["checks"] = [...result.checks, ...additionalChecks];
   const exitCode = checks.some((c) => c.status === "fail") ? 1 : result.exitCode;
   const finalResult: UninstallResult = { ...result, exitCode, checks };

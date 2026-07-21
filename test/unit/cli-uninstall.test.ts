@@ -6,7 +6,7 @@
 // adapter, purgeConfig, revertPath) so we never touch the real filesystem
 // and never need the user to confirm anything.
 
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { sep } from "node:path";
 
 import {
@@ -341,6 +341,34 @@ describe("runUninstall (binary removal)", () => {
     expect(removal?.status).toBe("skip");
     expect(removal?.message).toContain("user declined");
   });
+
+  it("--no-remove-binary skips the prompt AND keeps the binary", async () => {
+    // Without the gate, the prompt "Remove the running binary?" would
+    // fire even though --no-remove-binary was set — a stray 'n' would
+    // then wrongly abort the run, including the requested --purge-config
+    // / --revert-path follow-ups. The fix: when mode.removeBinary is
+    // false, skip the prompt entirely and record a skip check.
+    const fs = makeFs({
+      [`${HOME}/.local/bin/umactually`]: { kind: "file", content: "binary" },
+    });
+    // stdinReader would throw if called; the test passes if it isn't.
+    const result = await runUninstall(
+      makeDeps({
+        fsAdapter: fs,
+        isTTY: true,
+        stdinReader: async () => {
+          throw new Error("stdinReader must not be called when --no-remove-binary is set");
+        },
+        mode: { removeBinary: false, purgeConfig: false, revertPath: false, yes: false },
+      }),
+    );
+    expect(result.exitCode).toBe(0);
+    const removal = result.checks.find((c) => c.id === "binary-removal");
+    expect(removal?.status).toBe("skip");
+    expect(removal?.message).toContain("--no-remove-binary");
+    // Binary is still there.
+    expect(fs.files[`${HOME}/.local/bin/umactually`]).toBeDefined();
+  });
 });
 
 describe("purgeConfig", () => {
@@ -496,6 +524,43 @@ describe("defaultStdinReader", () => {
     // The function short-circuits and returns null without reading.
     const result = await defaultStdinReader("test prompt: ");
     expect(result).toBeNull();
+  });
+
+  it("settles with null and clears the timer when createInterface throws", async () => {
+    // On some platforms (e.g. CI runners where stdin is a closed pipe
+    // or a non-TTY stream that Node refuses to wrap), createInterface
+    // can throw synchronously. The previous version had a timer-leak:
+    // the function never resolved and the 30s timer kept the Node
+    // process alive for the full timeout. The fix wraps createInterface
+    // in try/catch and settles immediately on failure.
+    //
+    // We use vi.doMock to replace node:readline for this test only,
+    // then re-import uninstall.ts so it picks up the mocked module.
+    vi.doMock("node:readline", () => ({
+      createInterface: () => {
+        throw new Error("synthetic createInterface failure");
+      },
+    }));
+    const fakeStdin = { isTTY: true } as unknown as NodeJS.ReadStream;
+    const originalStdin = process.stdin;
+    Object.defineProperty(process, "stdin", { value: fakeStdin, configurable: true });
+    try {
+      // Re-import so the module picks up the doMock. The previous
+      // import is cached; dynamic import gives us a fresh copy.
+      const uninstall = await import("../../src/cli/uninstall.js");
+      const start = Date.now();
+      const result = await uninstall.defaultStdinReader("test prompt: ");
+      const elapsed = Date.now() - start;
+      expect(result).toBeNull();
+      // If the timer leaked, elapsed would be >= 30_000. With the fix
+      // it returns within a few ms.
+      expect(elapsed).toBeLessThan(1_000);
+    } finally {
+      Object.defineProperty(process, "stdin", { value: originalStdin, configurable: true });
+      vi.doUnmock("node:readline");
+      // Re-import to restore the original module for subsequent tests.
+      await import("../../src/cli/uninstall.js");
+    }
   });
 });
 

@@ -35,6 +35,7 @@ import {
   unlinkSync,
   writeFileSync,
 } from "node:fs";
+import * as readline from "node:readline";
 import { createInterface } from "node:readline";
 import * as path from "node:path";
 const { join } = path;
@@ -119,20 +120,28 @@ export async function defaultStdinReader(promptText: string): Promise<string | n
   }
   return new Promise((resolve) => {
     let settled = false;
+    let timer: NodeJS.Timeout | null = null;
+    let rl: readline.Interface | null = null;
     const settle = (value: string | null): void => {
       if (settled) {
         return;
       }
       settled = true;
-      clearTimeout(timer);
-      try {
-        rl.close();
-      } catch {
-        // rl may already be closed; ignore.
+      if (timer !== null) {
+        clearTimeout(timer);
+        timer = null;
+      }
+      if (rl !== null) {
+        try {
+          rl.close();
+        } catch {
+          // rl may already be closed; ignore.
+        }
+        rl = null;
       }
       resolve(value);
     };
-    const timer = setTimeout(() => settle(null), 30_000);
+    timer = setTimeout(() => settle(null), 30_000);
     // Write the prompt to stderr so it does not interleave with stdout
     // (the check lines, JSON output, and exit-code banners all go to
     // stdout). Stderr is the conventional channel for prompts and
@@ -141,11 +150,24 @@ export async function defaultStdinReader(promptText: string): Promise<string | n
     // `terminal: false` disables TTY-aware prompt handling. Without
     // `output`, readline writes to a discarded sink — the explicit
     // stderr.write above is what the user actually sees.
-    const rl = createInterface({
-      input: process.stdin,
-      terminal: false,
-    });
-    rl.on("line", (line) => {
+    //
+    // `createInterface` can throw synchronously on some platforms when
+    // stdin is a non-TTY stream that Node refuses to wrap (e.g. CI
+    // runners where stdin is a closed pipe). Wrap in try/catch so the
+    // function ALWAYS settles — leaking the 30s timer would keep the
+    // Node process alive for the full timeout.
+    try {
+      rl = createInterface({
+        input: process.stdin,
+        terminal: false,
+      });
+    } catch {
+      // createInterface threw before any listeners were attached.
+      // Settle immediately; the function exits with null.
+      settle(null);
+      return;
+    }
+    rl.on("line", (line: string) => {
       settle(line);
     });
     rl.on("close", () => {
@@ -353,7 +375,25 @@ export async function runUninstall(deps: UninstallDeps): Promise<UninstallResult
 
   // Confirm with the user before mutating the filesystem.
   // Non-interactive shells (CI, cron) must pass --yes.
-  if (shouldPrompt(deps)) {
+  //
+  // Gate the binary-removal prompt on `mode.removeBinary`: when the
+  // user passed `--no-remove-binary`, there is no binary removal to
+  // confirm, so the prompt would be misleading (and a stray 'n' would
+  // wrongly abort the whole run, including the requested --purge-config
+  // / --revert-path follow-ups). Record a skip check so the user gets
+  // visible confirmation that the binary was deliberately kept.
+  if (deps.mode?.removeBinary === false) {
+    checks.push({
+      id: "binary-removal",
+      status: "skip",
+      message: "--no-remove-binary was set; the running binary is being kept",
+    });
+    // Skip the rest of the binary-removal logic. The user explicitly
+    // opted to keep the binary — we should not even check symlink/file
+    // shape, because reporting "is a symlink" or "not a regular file"
+    // would imply a problem with a binary the user wants to keep.
+    return { exitCode: 0, checks };
+  } else if (shouldPrompt(deps)) {
     const reader = deps.stdinReader ?? defaultStdinReader;
     const confirm = await reader("Remove the running binary? [y/N] ");
     if (confirm === null || !/^y(es)?$/i.test(confirm.trim())) {
@@ -524,7 +564,7 @@ export function revertPath(deps: UninstallDeps): readonly UninstallCheck[] {
   return checks;
 }
 
-function shouldPrompt(deps: UninstallDeps): boolean {
+export function shouldPrompt(deps: UninstallDeps): boolean {
   // `mode.yes` (the `--yes` / `-y` CLI flag) always wins.
   if (deps.mode?.yes === true) {
     return false;

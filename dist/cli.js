@@ -1599,6 +1599,7 @@ const external_node_readline_namespaceObject = __WEBPACK_EXTERNAL_createRequire(
 
 
 
+
 const { join } = external_node_path_namespaceObject;
 
 const SHELL_RC_FILES = [".zshrc", ".bashrc", ".profile"];
@@ -1625,21 +1626,29 @@ async function defaultStdinReader(promptText) {
     }
     return new Promise((resolve) => {
         let settled = false;
+        let timer = null;
+        let rl = null;
         const settle = (value) => {
             if (settled) {
                 return;
             }
             settled = true;
-            clearTimeout(timer);
-            try {
-                rl.close();
+            if (timer !== null) {
+                clearTimeout(timer);
+                timer = null;
             }
-            catch {
-                // rl may already be closed; ignore.
+            if (rl !== null) {
+                try {
+                    rl.close();
+                }
+                catch {
+                    // rl may already be closed; ignore.
+                }
+                rl = null;
             }
             resolve(value);
         };
-        const timer = setTimeout(() => settle(null), 30_000);
+        timer = setTimeout(() => settle(null), 30_000);
         // Write the prompt to stderr so it does not interleave with stdout
         // (the check lines, JSON output, and exit-code banners all go to
         // stdout). Stderr is the conventional channel for prompts and
@@ -1648,10 +1657,24 @@ async function defaultStdinReader(promptText) {
         // `terminal: false` disables TTY-aware prompt handling. Without
         // `output`, readline writes to a discarded sink — the explicit
         // stderr.write above is what the user actually sees.
-        const rl = (0,external_node_readline_namespaceObject.createInterface)({
-            input: process.stdin,
-            terminal: false,
-        });
+        //
+        // `createInterface` can throw synchronously on some platforms when
+        // stdin is a non-TTY stream that Node refuses to wrap (e.g. CI
+        // runners where stdin is a closed pipe). Wrap in try/catch so the
+        // function ALWAYS settles — leaking the 30s timer would keep the
+        // Node process alive for the full timeout.
+        try {
+            rl = (0,external_node_readline_namespaceObject.createInterface)({
+                input: process.stdin,
+                terminal: false,
+            });
+        }
+        catch {
+            // createInterface threw before any listeners were attached.
+            // Settle immediately; the function exits with null.
+            settle(null);
+            return;
+        }
         rl.on("line", (line) => {
             settle(line);
         });
@@ -1838,7 +1861,26 @@ async function runUninstall(deps) {
     });
     // Confirm with the user before mutating the filesystem.
     // Non-interactive shells (CI, cron) must pass --yes.
-    if (shouldPrompt(deps)) {
+    //
+    // Gate the binary-removal prompt on `mode.removeBinary`: when the
+    // user passed `--no-remove-binary`, there is no binary removal to
+    // confirm, so the prompt would be misleading (and a stray 'n' would
+    // wrongly abort the whole run, including the requested --purge-config
+    // / --revert-path follow-ups). Record a skip check so the user gets
+    // visible confirmation that the binary was deliberately kept.
+    if (deps.mode?.removeBinary === false) {
+        checks.push({
+            id: "binary-removal",
+            status: "skip",
+            message: "--no-remove-binary was set; the running binary is being kept",
+        });
+        // Skip the rest of the binary-removal logic. The user explicitly
+        // opted to keep the binary — we should not even check symlink/file
+        // shape, because reporting "is a symlink" or "not a regular file"
+        // would imply a problem with a binary the user wants to keep.
+        return { exitCode: 0, checks };
+    }
+    else if (shouldPrompt(deps)) {
         const reader = deps.stdinReader ?? defaultStdinReader;
         const confirm = await reader("Remove the running binary? [y/N] ");
         if (confirm === null || !/^y(es)?$/i.test(confirm.trim())) {
@@ -2564,17 +2606,61 @@ async function runUninstallBranch(args) {
         homeDir: (__nccwpck_require__(161).homedir)(),
         mode,
     };
+    // Gate the destructive follow-ups (--purge-config, --revert-path)
+    // behind explicit confirmation when running non-interactively. The
+    // user clearly requested destructive work but did not pass --yes,
+    // and we have no way to prompt them. Refuse to proceed rather than
+    // wipe the config silently.
+    if (!deps.isTTY &&
+        mode.yes !== true &&
+        (mode.purgeConfig === true || mode.revertPath === true)) {
+        const stderr = "umactually uninstall: --purge-config and --revert-path require --yes in non-interactive mode\n";
+        process.stderr.write(stderr);
+        return { exitCode: 2, stderr };
+    }
     const result = await runUninstall(deps);
     // If the user declined the prompt for the binary removal, do NOT run
     // the follow-up destructive actions. A 'n' answer should be an
     // unconditional abort, not a partial state where the binary is kept
     // but config and shell-rc edits are still wiped.
-    const additionalChecks = userDeclinedPrompt(result)
-        ? []
-        : [
-            ...(mode.purgeConfig ? purgeConfig(deps) : []),
-            ...(mode.revertPath ? revertPath(deps) : []),
-        ];
+    let additionalChecks = [];
+    if (!userDeclinedPrompt(result) && (mode.purgeConfig === true || mode.revertPath === true)) {
+        // The binary-removal prompt covered only the binary itself. The
+        // follow-up destructive actions (config wipe, PATH revert) are
+        // separate destructive operations and need their own confirmation
+        // in interactive mode. The user can decline here and keep the
+        // binary removed but the config intact.
+        if (shouldPrompt(deps)) {
+            const parts = [];
+            if (mode.purgeConfig === true) {
+                parts.push("remove ~/.umactually/ and ~/.cache/umactually/");
+            }
+            if (mode.revertPath === true) {
+                parts.push("strip the umactually PATH block from your shell rc files");
+            }
+            const promptText = `Also ${parts.join(" and ")}? [y/N] `;
+            const reader = deps.stdinReader ?? defaultStdinReader;
+            const confirm = await reader(promptText);
+            if (confirm !== null && /^y(es)?$/i.test(confirm.trim())) {
+                additionalChecks = [
+                    ...(mode.purgeConfig ? purgeConfig(deps) : []),
+                    ...(mode.revertPath ? revertPath(deps) : []),
+                ];
+            }
+            // If declined or EOF, skip the follow-ups silently. The
+            // binary-removal already succeeded; the user just opted out of
+            // the additional cleanup. (We do NOT push a check here because
+            // it would clutter the output for a fully-valid "I said no" run.)
+        }
+        else {
+            // isTTY=false + --yes (the gate at the top of this function
+            // already blocked the !--yes + !isTTY case).
+            additionalChecks = [
+                ...(mode.purgeConfig ? purgeConfig(deps) : []),
+                ...(mode.revertPath ? revertPath(deps) : []),
+            ];
+        }
+    }
     const checks = [...result.checks, ...additionalChecks];
     const exitCode = checks.some((c) => c.status === "fail") ? 1 : result.exitCode;
     const finalResult = { ...result, exitCode, checks };
