@@ -18,7 +18,7 @@
 // already use; nothing here is new infrastructure.
 
 import { spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 
@@ -280,5 +280,111 @@ describe.skipIf(!SHELL_AVAILABLE)("install.sh CLI argument parsing", () => {
     const result = runInstall(["--tag"]);
     expect(result.status, `stderr:\n${result.stderr}`).toBe(2);
     expect(result.stderr).toMatch(/--tag requires an argument/);
+  });
+
+  it("--ssl-no-revoke is accepted (no-op in TEST_MODE)", () => {
+    // TEST_MODE 1 short-circuits before http_get, so we can only assert
+    // that the flag is parsed and accepted (no exit 2, no "unknown flag").
+    const result = runInstall(["--ssl-no-revoke"], { INSTALL_TEST_MODE: "1" });
+    expect(result.status, `stderr:\n${result.stderr}`).toBe(0);
+    expect(result.stderr).not.toMatch(/unknown flag/);
+  });
+
+  it("INSTALL_SSL_NO_REVOKE=1 is accepted (no-op in TEST_MODE)", () => {
+    const result = runInstall([], { INSTALL_TEST_MODE: "1", INSTALL_SSL_NO_REVOKE: "1" });
+    expect(result.status, `stderr:\n${result.stderr}`).toBe(0);
+    expect(result.stderr).not.toMatch(/unknown flag/);
+  });
+
+  it("--help mentions --ssl-no-revoke (so Windows users can find it)", () => {
+    // --help short-circuits before any install logic, so this is fast
+    // even without TEST_MODE.
+    const result = runInstall(["--help"]);
+    expect(result.stdout).toMatch(/--ssl-no-revoke/);
+    expect(result.stdout).toMatch(/CRYPT_E_REVOCATION_OFFLINE/);
+  });
+
+  it("proactive Schannel hint is suppressed on OpenSSL-built curl (default Linux test env)", () => {
+    // Default test env has OpenSSL-built curl. Use INSTALL_TEST_NO_SMOKE
+    // so the fake-server install runs to completion without trying to
+    // actually exec a real binary.
+    const result = runInstall(["--tag", server!.tag], { INSTALL_TEST_NO_SMOKE: "1" });
+    expect(result.stderr).not.toMatch(/curl is built against Windows Schannel/);
+  });
+
+  it("proactive Schannel hint prints when curl advertises Schannel in --version", () => {
+    // Build a fake curl that reports Schannel in its version string,
+    // then put it FIRST on PATH so the script picks it up. The fake
+    // curl succeeds for actual downloads, so the install proceeds past
+    // the hint and into download / checksum verification.
+    const fakeBin = `${sandbox}/fake-bin`;
+    mkdirSync(fakeBin, { recursive: true });
+    writeFileSync(
+      `${fakeBin}/curl`,
+      `#!/bin/sh
+if [ "$1" = "--version" ]; then
+  echo "curl 8.5.0 (x86_64-pc-msys) libcurl/8.5.0 Schannel zlib/1.3"
+  exit 0
+fi
+# For any other invocation, succeed with empty body.
+exit 0
+`,
+      { mode: 0o755 },
+    );
+    const result = runInstall(["--tag", server!.tag], {
+      INSTALL_TEST_NO_SMOKE: "1",
+      PATH: `${fakeBin}:${process.env['PATH'] ?? ""}`,
+    });
+    expect(result.stderr).toMatch(/curl is built against Windows Schannel/);
+    expect(result.stderr).toMatch(/CRYPT_E_REVOCATION_OFFLINE/);
+  });
+
+  it("proactive Schannel hint is suppressed when INSTALL_SSL_NO_REVOKE is already set", () => {
+    // User has already opted in: the hint would be noise.
+    const fakeBin = `${sandbox}/fake-bin`;
+    mkdirSync(fakeBin, { recursive: true });
+    writeFileSync(
+      `${fakeBin}/curl`,
+      `#!/bin/sh
+if [ "$1" = "--version" ]; then
+  echo "curl 8.5.0 (x86_64-pc-msys) libcurl/8.5.0 Schannel zlib/1.3"
+  exit 0
+fi
+exit 0
+`,
+      { mode: 0o755 },
+    );
+    const result = runInstall(["--tag", server!.tag], {
+      INSTALL_TEST_NO_SMOKE: "1",
+      INSTALL_SSL_NO_REVOKE: "1",
+      PATH: `${fakeBin}:${process.env['PATH'] ?? ""}`,
+    });
+    expect(result.stderr).not.toMatch(/curl is built against Windows Schannel/);
+  });
+
+  it("reactive error: CRYPT_E_REVOCATION_OFFLINE from curl produces a self-documenting message", () => {
+    // Fake curl that emits the exact Schannel error and exits 35.
+    const fakeBin = `${sandbox}/fake-bin`;
+    mkdirSync(fakeBin, { recursive: true });
+    writeFileSync(
+      `${fakeBin}/curl`,
+      `#!/bin/sh
+echo "curl: (35) schannel: next InitializeSecurityContext failed: CRYPT_E_REVOCATION_OFFLINE (0x80092013) - The revocation function was unable to check revocation because the revocation server was offline." >&2
+exit 35
+`,
+      { mode: 0o755 },
+    );
+    // Run without INSTALL_SSL_NO_REVOKE so the Schannel path is taken.
+    const result = runInstall(["--tag", "v9.9.9"], {
+      INSTALL_TEST_FAKE_SERVER: "http://127.0.0.1:1",
+      INSTALL_TEST_FAKE_TAG: "v9.9.9",
+      PLATFORM_OVERRIDE: "linux",
+      ARCH_OVERRIDE: "x64",
+      PATH: `${fakeBin}:${process.env['PATH'] ?? ""}`,
+    });
+    expect(result.status).toBe(1);
+    expect(result.stderr).toMatch(/Windows Schannel CRYPT_E_REVOCATION_OFFLINE 0x80092013/);
+    expect(result.stderr).toMatch(/NOT an umactually problem/);
+    expect(result.stderr).toMatch(/--ssl-no-revoke/);
   });
 });

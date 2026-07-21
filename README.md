@@ -24,6 +24,11 @@ curl -fsSL https://github.com/JosiahSiegel/umactually/raw/main/scripts/install.s
 
 # Print the installer's flag/env-var reference
 curl -fsSL https://github.com/JosiahSiegel/umactually/raw/main/scripts/install.sh | sh -s -- --help
+
+# Git Bash on Windows, when the OCSP responder for GitHub's cert is unreachable
+# (CRYPT_E_REVOCATION_OFFLINE 0x80092013). Cert validation is NOT disabled —
+# only the optional CRL/OCSP lookup is skipped. Requires curl >= 7.78.
+curl -fsSL https://github.com/JosiahSiegel/umactually/raw/main/scripts/install.sh | sh -s -- --ssl-no-revoke
 ```
 
 ```powershell
@@ -41,6 +46,7 @@ Supported installer flags (also accepted as env vars):
 | `--base <url>` | `INSTALL_RELEASE_BASE` | GitHub releases URL |
 | `--contract archive\|legacy` | `INSTALL_ASSET_CONTRACT` | auto-detect from published `checksums.txt` |
 | `--install-dir <path>` | (none) | `/usr/local/bin` (root) or `~/.local/bin` (non-root) |
+| `--ssl-no-revoke` | `INSTALL_SSL_NO_REVOKE` | revocation checks on (secure default) |
 
 Env vars take precedence over flags when both are set (POSIX convention: the env var is the deployment default, the flag is the per-call override).
 
