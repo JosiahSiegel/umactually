@@ -211,6 +211,22 @@ async function runWithRetry(
 ): Promise<ProviderCallResult> {
   let lastFailure: ProviderError | null = null;
   for (let attempt = 0; attempt <= RETRY_BACKOFF_MS.length; attempt += 1) {
+    // Bail out if the caller's signal is already aborted. Without this
+    // check, the next runWithEndpoint would compose its signal with an
+    // already-aborted caller signal — `AbortSignal.any([aborted, ...])`
+    // is itself aborted, so the second attempt would fail immediately
+    // with a "timeout" error, even though the underlying connection
+    // was healthy. That makes the "timeout is transient, retry it"
+    // rationale void (we'd be reporting a fake timeout, not a real one).
+    // Reporting an "aborted" error here is semantically correct and
+    // also not retryable, so we naturally exit the loop.
+    if (config.signal?.aborted === true) {
+      return {
+        ok: false,
+        error: new ProviderError("aborted", endpoint, null, requestId,
+          "Caller aborted the request before retry."),
+      };
+    }
     const result = await runWithEndpoint(config, fetchImpl, requestId, endpoint, baseUrl);
     if (result.ok) {
       return result;
@@ -233,6 +249,14 @@ function isRetryable(error: ProviderError): boolean {
   // middle of a failover, etc. Without this, a single TCP hiccup
   // kills the whole review.
   if (error.code === "network") {
+    return true;
+  }
+  // Timeouts are transient (cold-start latency, gateway reset, slow
+  // stream). A retry with the same timeout often succeeds because the
+  // provider may have started streaming by the time the abort fired.
+  // Without this, a single slow request fails the whole review even
+  // though the underlying connection is healthy.
+  if (error.code === "timeout") {
     return true;
   }
   return error.status === 429 || (typeof error.status === "number" && error.status >= 500);
