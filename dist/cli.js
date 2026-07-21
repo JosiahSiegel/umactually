@@ -1306,6 +1306,8 @@ function unknownFlagUsageError(token, argv) {
 
 ;// CONCATENATED MODULE: external "node:child_process"
 const external_node_child_process_namespaceObject = __WEBPACK_EXTERNAL_createRequire(import.meta.url)("node:child_process");
+;// CONCATENATED MODULE: external "node:os"
+const external_node_os_namespaceObject = __WEBPACK_EXTERNAL_createRequire(import.meta.url)("node:os");
 ;// CONCATENATED MODULE: external "node:url"
 const external_node_url_namespaceObject = __WEBPACK_EXTERNAL_createRequire(import.meta.url)("node:url");
 ;// CONCATENATED MODULE: external "node:util"
@@ -1556,6 +1558,727 @@ function printModesBanner(stream) {
     output?.write(CLI_MODES_TEXT);
 }
 
+;// CONCATENATED MODULE: external "node:readline"
+const external_node_readline_namespaceObject = __WEBPACK_EXTERNAL_createRequire(import.meta.url)("node:readline");
+;// CONCATENATED MODULE: ./src/cli/uninstall.ts
+// SPDX-License-Identifier: MIT
+// Built-in `umactually uninstall` subcommand.
+//
+// Removes the running binary from disk, and (optionally) the
+// `~/.umactually/` config directory, `~/.cache/umactually/` cache
+// directory, and the PATH-entry block that the installer wrote to
+// `~/.zshrc` / `~/.bashrc` / `~/.profile`.
+//
+// Usage:
+//   umactually uninstall [flags]
+//
+// Flags:
+//   --remove-binary    (default) Delete the running binary.
+//   --purge-config     Also delete ~/.umactually/ and ~/.cache/umactually/.
+//   --revert-path      Also remove the installer's PATH line from shell rc files.
+//   --yes              Skip the interactive "are you sure" prompt.
+//   --json             Emit machine-readable JSON output.
+//   --help, -h         Show this help.
+//
+// Safety:
+//   - Refuses to run if process.execPath does not look like a umactually
+//     binary (basename must be "umactually" or "umactually.exe").
+//   - Refuses to run if the binary is in a directory we don't recognise
+//     as an install target (anything outside the home-dir-local/bin,
+//     /usr/local/bin, or the same path that install.sh writes to).
+//   - On Windows, self-deletion requires a helper command spawned before
+//     the process exits (cmd /c "ping ... & del ...") because Windows
+//     holds a write lock on running executables.
+
+
+
+
+const { join } = external_node_path_namespaceObject;
+
+const SHELL_RC_FILES = [".zshrc", ".bashrc", ".profile"];
+/** Default stdin reader: a single line from /dev/tty via readline, with a
+ *  30-second safety timeout. Returns null on no-TTY, EOF, timeout, or any
+ *  other failure. Never blocks indefinitely on a pipe.
+ *
+ *  The `isTTY` parameter is REQUIRED. The caller is expected to pass the
+ *  same TTY signal it used to decide whether to prompt in the first place
+ *  (typically `deps.isTTY`). This avoids a subtle inconsistency: in JSON
+ *  mode, `deps.isTTY` is `false` (so the prompt is skipped to keep the
+ *  JSON envelope clean), but `process.stdin.isTTY` is independent and
+ *  could still be `true` if the user is running interactively. Reading
+ *  process.stdin in that case would corrupt the JSON output. The caller
+ *  is the source of truth for "should we prompt?".
+ *
+ *  The prompt text is written to STDERR (not stdout) so it does not
+ *  interleave with the human output stream. We do NOT pass
+ *  `output: process.stdout` to readline with `terminal: true` because
+ *  that path emits `
+` to stdout before reading the answer —
+ *  which would interleave a stray blank line with the check lines
+ *  emitted later. Instead we use `terminal: false` and write the
+ *  prompt via stderr.
+ *
+ *  `terminal: false` disables TTY-aware prompt handling; on a real TTY
+ *  the raw line-mode read still works. The 30s timer is the user-facing
+ *  safety: SIGINT (Ctrl+C) and EOF (Ctrl+D) both settle with `null`,
+ *  which `shouldPrompt` treats as a decline. */
+async function defaultStdinReader(promptText, isTTY) {
+    if (isTTY !== true) {
+        return null;
+    }
+    return new Promise((resolve) => {
+        let settled = false;
+        let timer = null;
+        let rl = null;
+        const settle = (value) => {
+            if (settled) {
+                return;
+            }
+            settled = true;
+            if (timer !== null) {
+                clearTimeout(timer);
+                timer = null;
+            }
+            if (rl !== null) {
+                try {
+                    rl.close();
+                }
+                catch {
+                    // rl may already be closed; ignore.
+                }
+                rl = null;
+            }
+            resolve(value);
+        };
+        timer = setTimeout(() => settle(null), 30_000);
+        // Write the prompt to stderr so it does not interleave with stdout
+        // (the check lines, JSON output, and exit-code banners all go to
+        // stdout). Stderr is the conventional channel for prompts and
+        // diagnostics.
+        process.stderr.write(promptText);
+        // `terminal: false` disables TTY-aware prompt handling. Without
+        // `output`, readline writes to a discarded sink — the explicit
+        // stderr.write above is what the user actually sees.
+        //
+        // `createInterface` can throw synchronously on some platforms when
+        // stdin is a non-TTY stream that Node refuses to wrap (e.g. CI
+        // runners where stdin is a closed pipe). Wrap in try/catch so the
+        // function ALWAYS settles — leaking the 30s timer would keep the
+        // Node process alive for the full timeout.
+        try {
+            rl = (0,external_node_readline_namespaceObject.createInterface)({
+                input: process.stdin,
+                terminal: false,
+            });
+        }
+        catch {
+            // createInterface threw before any listeners were attached.
+            // Settle immediately; the function exits with null.
+            settle(null);
+            return;
+        }
+        rl.on("line", (line) => {
+            settle(line);
+        });
+        rl.on("close", () => {
+            settle(null);
+        });
+        rl.on("SIGINT", () => {
+            settle(null);
+        });
+    });
+}
+const defaultFsAdapter = {
+    exists: (path) => (0,external_node_fs_namespaceObject.existsSync)(path),
+    isSymlink: (path) => {
+        try {
+            return (0,external_node_fs_namespaceObject.lstatSync)(path).isSymbolicLink();
+        }
+        catch {
+            return false;
+        }
+    },
+    isFile: (path) => {
+        try {
+            return (0,external_node_fs_namespaceObject.lstatSync)(path).isFile();
+        }
+        catch {
+            return false;
+        }
+    },
+    isDirectory: (path) => {
+        try {
+            return (0,external_node_fs_namespaceObject.lstatSync)(path).isDirectory();
+        }
+        catch {
+            return false;
+        }
+    },
+    unlink: (path) => {
+        (0,external_node_fs_namespaceObject.unlinkSync)(path);
+    },
+    getMode: (path) => {
+        try {
+            return (0,external_node_fs_namespaceObject.statSync)(path).mode & 0o7777;
+        }
+        catch {
+            return null;
+        }
+    },
+    setMode: (path, mode) => {
+        (0,external_node_fs_namespaceObject.chmodSync)(path, mode);
+    },
+    removeDir: (path, options) => {
+        (0,external_node_fs_namespaceObject.rmSync)(path, { recursive: options.recursive, force: true });
+    },
+    readFile: (path) => (0,external_node_fs_namespaceObject.readFileSync)(path, "utf8"),
+    writeFile: (path, content) => {
+        (0,external_node_fs_namespaceObject.writeFileSync)(path, content, "utf8");
+    },
+    writeFileAtomic: (path, content) => {
+        // Write to a sibling temp file, then rename atomically over the
+        // target. On POSIX, rename(2) is atomic on the same filesystem
+        // (the target either points to the old content or the new, never
+        // a partial state). On Windows, MoveFileEx with REPLACE_EXISTING
+        // is similarly atomic. If anything fails before the rename, the
+        // original file is untouched.
+        const tmpPath = `${path}.umactually-tmp-${process.pid}-${Date.now()}`;
+        try {
+            (0,external_node_fs_namespaceObject.writeFileSync)(tmpPath, content, "utf8");
+            (0,external_node_fs_namespaceObject.renameSync)(tmpPath, path);
+        }
+        catch (err) {
+            // Best-effort cleanup of the orphan temp file.
+            try {
+                (0,external_node_fs_namespaceObject.unlinkSync)(tmpPath);
+            }
+            catch {
+                // ignore
+            }
+            throw err;
+        }
+    },
+};
+function parseUninstallArgs(argv) {
+    const errors = [];
+    let removeBinary = true;
+    let purgeConfig = false;
+    let revertPath = false;
+    let yes = false;
+    let help = false;
+    let json = false;
+    for (let i = 0; i < argv.length; i += 1) {
+        const arg = argv[i];
+        if (arg === undefined) {
+            continue;
+        }
+        switch (arg) {
+            case "--help":
+            case "-h":
+                help = true;
+                break;
+            case "--remove-binary":
+                removeBinary = true;
+                break;
+            case "--no-remove-binary":
+                removeBinary = false;
+                break;
+            case "--purge-config":
+                purgeConfig = true;
+                break;
+            case "--revert-path":
+                revertPath = true;
+                break;
+            case "--yes":
+            case "-y":
+                yes = true;
+                break;
+            case "--json":
+                json = true;
+                break;
+            default:
+                if (arg.startsWith("-")) {
+                    errors.push(`unknown flag: ${arg}`);
+                }
+                else {
+                    errors.push(`unexpected positional arg: ${arg}`);
+                }
+        }
+    }
+    const mode = { removeBinary, purgeConfig, revertPath, yes };
+    return { mode, errors, help, json };
+}
+function classifyExecPath(execPath, platform, homeDir) {
+    const p = platform === "win32" ? external_node_path_namespaceObject.win32 : external_node_path_namespaceObject.posix;
+    const name = p.basename(execPath).toLowerCase();
+    if (platform === "win32") {
+        if (name !== "umactually.exe") {
+            return { ok: false, reason: `process.execPath basename is "${name}", expected "umactually.exe"` };
+        }
+    }
+    else if (name !== "umactually") {
+        return { ok: false, reason: `process.execPath basename is "${name}", expected "umactually"` };
+    }
+    const parent = p.dirname(execPath);
+    const homeLocalBin = p.join(homeDir, ".local", "bin");
+    if (parent === homeLocalBin) {
+        return { ok: true, installDir: parent };
+    }
+    if (platform !== "win32" && (parent === "/usr/local/bin" || parent === `${p.sep}usr${p.sep}local${p.sep}bin`)) {
+        return { ok: true, installDir: parent };
+    }
+    // Tight fallback (not "any path ending in /bin under $HOME"):
+    //   - homeDir + "/bin"  (or "/.bin")  — a *direct* child, not nested
+    //   - /opt/<single-segment>/bin       — single segment under /opt, not nested
+    // This still covers the documented install targets without accepting
+    // attacker-controlled paths like /home/alice/some/random/bin/umactually.
+    const homeBin = p.join(homeDir, "bin");
+    const homeDotBin = p.join(homeDir, ".bin");
+    if (parent === homeBin || parent === homeDotBin) {
+        return { ok: true, installDir: parent };
+    }
+    if (platform !== "win32") {
+        const rest = parent.startsWith(`/opt${p.sep}`) ? parent.slice(`/opt${p.sep}`.length) : null;
+        if (rest !== null && rest.length > 0 && rest.endsWith(`${p.sep}bin`)) {
+            const beforeBin = rest.slice(0, -`${p.sep}bin`.length);
+            if (beforeBin.length > 0 && !beforeBin.includes(p.sep)) {
+                return { ok: true, installDir: parent };
+            }
+        }
+    }
+    return {
+        ok: false,
+        reason: `process.execPath "${execPath}" is not in a recognised install directory (${homeLocalBin}, /usr/local/bin, ${homeBin}, or /opt/<name>/bin)`,
+    };
+}
+function findShellRcBlocks(content) {
+    // Matches the two-line block written by install.sh:
+    //   # Added by umactually installer
+    //   export PATH="<dir>:$PATH"
+    // (with optional trailing newline)
+    const blocks = [];
+    const re = /^[ \t]*# Added by umactually installer[^\n]*\n[ \t]*export PATH="[^"]*"[ \t]*\n?/gm;
+    let m;
+    while ((m = re.exec(content)) !== null) {
+        blocks.push({ start: m.index, end: m.index + m[0].length });
+    }
+    return blocks;
+}
+function stripShellRcBlocks(content) {
+    const blocks = findShellRcBlocks(content);
+    if (blocks.length === 0) {
+        return content;
+    }
+    let out = "";
+    let cursor = 0;
+    for (const block of blocks) {
+        out += content.slice(cursor, block.start);
+        cursor = block.end;
+    }
+    out += content.slice(cursor);
+    return out;
+}
+async function runUninstall(deps) {
+    const checks = [];
+    const classified = classifyExecPath(deps.execPath, deps.platform, deps.homeDir);
+    if (!classified.ok) {
+        checks.push({
+            id: "exec-path",
+            status: "fail",
+            message: classified.reason,
+            hint: "Run uninstall from the installed binary, not from `node` or an npm-installed copy",
+        });
+        return { exitCode: 2, checks };
+    }
+    checks.push({
+        id: "exec-path",
+        status: "ok",
+        message: `${deps.execPath} is a recognised umactually install location`,
+    });
+    // Confirm with the user before mutating the filesystem.
+    // Non-interactive shells (CI, cron) must pass --yes.
+    //
+    // Gate the binary-removal prompt on `mode.removeBinary`: when the
+    // user passed `--no-remove-binary`, there is no binary removal to
+    // confirm, so the prompt would be misleading (and a stray 'n' would
+    // wrongly abort the whole run, including the requested --purge-config
+    // / --revert-path follow-ups). Record a skip check so the user gets
+    // visible confirmation that the binary was deliberately kept.
+    if (deps.mode?.removeBinary === false) {
+        checks.push({
+            id: "binary-removal",
+            status: "skip",
+            message: "--no-remove-binary was set; the running binary is being kept",
+        });
+        // Skip the rest of the binary-removal logic. The user explicitly
+        // opted to keep the binary — we should not even check symlink/file
+        // shape, because reporting "is a symlink" or "not a regular file"
+        // would imply a problem with a binary the user wants to keep.
+        return { exitCode: 0, checks };
+    }
+    else if (shouldPrompt(deps)) {
+        const reader = deps.stdinReader ?? defaultStdinReader;
+        const confirm = await reader("Remove the running binary? [y/N] ", deps.isTTY);
+        if (confirm === null || !/^y(es)?$/i.test(confirm.trim())) {
+            checks.push({
+                id: "binary-removal",
+                status: "skip",
+                message: "user declined the confirmation prompt",
+                declined: true,
+            });
+            return { exitCode: 1, checks };
+        }
+    }
+    // Always check the symlink/file shape of the binary.
+    const isLink = deps.fsAdapter.isSymlink(deps.execPath);
+    const isFile = deps.fsAdapter.isFile(deps.execPath);
+    if (isLink) {
+        checks.push({
+            id: "binary-removal",
+            status: "fail",
+            message: `${deps.execPath} is a symlink — refusing to unlink it directly`,
+            hint: "Resolve the link and uninstall the target instead",
+        });
+        return { exitCode: 2, checks };
+    }
+    if (!isFile) {
+        checks.push({
+            id: "binary-removal",
+            status: "skip",
+            message: `${deps.execPath} is not a regular file (already removed?)`,
+        });
+    }
+    else {
+        try {
+            deps.fsAdapter.unlink(deps.execPath);
+            checks.push({
+                id: "binary-removal",
+                status: "ok",
+                message: `removed ${deps.execPath}`,
+            });
+            // On Windows the unlink of a running executable may fail; check
+            // the file is actually gone. If not, fall back to a delayed-del
+            // helper that runs after this process exits.
+            if (deps.platform === "win32" && deps.fsAdapter.exists(deps.execPath)) {
+                checks.push(scheduleWindowsDelayedDelete(deps.execPath));
+            }
+        }
+        catch (err) {
+            const message = err instanceof Error ? err.message : String(err);
+            if (deps.platform === "win32") {
+                checks.push(scheduleWindowsDelayedDelete(deps.execPath));
+                checks.push({
+                    id: "binary-removal",
+                    status: "warn",
+                    message: `could not unlink ${deps.execPath} directly (${message}); a delayed-delete helper was scheduled`,
+                });
+            }
+            else {
+                checks.push({
+                    id: "binary-removal",
+                    status: "fail",
+                    message: `could not unlink ${deps.execPath}: ${message}`,
+                });
+                return { exitCode: 1, checks };
+            }
+        }
+    }
+    return { exitCode: 0, checks };
+}
+function purgeConfig(deps) {
+    const checks = [];
+    const configDir = join(deps.homeDir, ".umactually");
+    const cacheDir = join(deps.homeDir, ".cache", "umactually");
+    // Safety: refuse to remove a directory that is NOT actually inside
+    // deps.homeDir. The check is structural — `path.join(homeDir,
+    // X)` always produces a path inside homeDir, so under normal
+    // operation this check never fires. The check exists to catch
+    // future bugs where the homeDir handling changes (e.g. a future
+    // PR adds config dir resolution that uses relative paths or
+    // follows symlinks incorrectly) — those bugs would silently
+    // expand the blast radius of `rmSync({ recursive: true, force:
+    // true })`, and this check is the safety net.
+    //
+    // We do NOT strip trailing separators (which would turn "/" into
+    // "" and break the startsWith check). Instead we handle the
+    // "/", "/foo", "C:\\", "C:\\Users\\foo" cases explicitly.
+    for (const dir of [configDir, cacheDir]) {
+        const dirNormalized = external_node_path_namespaceObject.normalize(dir);
+        const isInsideHome = dirNormalized === deps.homeDir
+            || dirNormalized.startsWith(deps.homeDir + external_node_path_namespaceObject.sep);
+        if (!isInsideHome) {
+            checks.push({
+                id: dir === cacheDir ? "cache-removal" : "config-removal",
+                status: "fail",
+                message: `${dir} is not inside ${deps.homeDir}; refusing to remove (safety check)`,
+            });
+            continue;
+        }
+        if (!deps.fsAdapter.exists(dir)) {
+            checks.push({
+                id: dir === cacheDir ? "cache-removal" : "config-removal",
+                status: "skip",
+                message: `${dir} does not exist`,
+            });
+            continue;
+        }
+        if (!deps.fsAdapter.isDirectory(dir)) {
+            checks.push({
+                id: dir === cacheDir ? "cache-removal" : "config-removal",
+                status: "warn",
+                message: `${dir} is not a directory — skipping`,
+            });
+            continue;
+        }
+        try {
+            deps.fsAdapter.removeDir(dir, { recursive: true });
+            checks.push({
+                id: dir === cacheDir ? "cache-removal" : "config-removal",
+                status: "ok",
+                message: `removed ${dir}`,
+            });
+        }
+        catch (err) {
+            const message = err instanceof Error ? err.message : String(err);
+            checks.push({
+                id: dir === cacheDir ? "cache-removal" : "config-removal",
+                status: "fail",
+                message: `could not remove ${dir}: ${message}`,
+            });
+        }
+    }
+    return checks;
+}
+function revertPath(deps) {
+    const checks = [];
+    let anyChanges = false;
+    for (const rc of SHELL_RC_FILES) {
+        const path = join(deps.homeDir, rc);
+        if (!deps.fsAdapter.exists(path)) {
+            continue;
+        }
+        if (deps.fsAdapter.isSymlink(path)) {
+            checks.push({
+                id: "path-revert",
+                status: "skip",
+                message: `${path} is a symlink — refusing to modify`,
+            });
+            continue;
+        }
+        let content;
+        try {
+            content = deps.fsAdapter.readFile(path);
+        }
+        catch (err) {
+            const message = err instanceof Error ? err.message : String(err);
+            checks.push({
+                id: "path-revert",
+                status: "warn",
+                message: `could not read ${path}: ${message}`,
+            });
+            continue;
+        }
+        const blocks = findShellRcBlocks(content);
+        if (blocks.length === 0) {
+            continue;
+        }
+        const stripped = stripShellRcBlocks(content);
+        if (stripped === content) {
+            continue;
+        }
+        // Capture the original mode BEFORE writing. The new file will be
+        // created with the default umask (typically 0o644), so we need to
+        // restore the original mode afterward. Without this, a user with
+        // a 0o600 .zshrc (privacy-sensitive) would see the new file at
+        // 0o644 — silently broadened permissions.
+        const originalMode = deps.fsAdapter.getMode(path);
+        try {
+            // writeFileAtomic writes to a sibling temp file and renames over
+            // the target. If the disk fills up or the mount goes read-only
+            // mid-write, the original .zshrc is left intact (the rename is
+            // atomic on POSIX, and MoveFileEx on Windows).
+            deps.fsAdapter.writeFileAtomic(path, stripped);
+            if (originalMode !== null && originalMode !== undefined) {
+                try {
+                    deps.fsAdapter.setMode(path, originalMode);
+                }
+                catch (err) {
+                    // Non-fatal: the content was updated successfully, but we
+                    // couldn't restore the mode. Surface as a warn so the user
+                    // can chmod manually.
+                    const message = err instanceof Error ? err.message : String(err);
+                    checks.push({
+                        id: "path-revert",
+                        status: "warn",
+                        message: `removed ${blocks.length} umactually block(s) from ${path}, but could not restore mode ${originalMode.toString(8)}: ${message}`,
+                        hint: `Run: chmod ${originalMode.toString(8)} ${path}`,
+                    });
+                    anyChanges = true;
+                    continue;
+                }
+            }
+            anyChanges = true;
+            checks.push({
+                id: "path-revert",
+                status: "ok",
+                message: `removed ${blocks.length} umactually block(s) from ${path}`,
+            });
+        }
+        catch (err) {
+            const message = err instanceof Error ? err.message : String(err);
+            checks.push({
+                id: "path-revert",
+                status: "fail",
+                message: `could not write ${path}: ${message}`,
+            });
+        }
+    }
+    if (!anyChanges) {
+        checks.push({
+            id: "path-revert",
+            status: "skip",
+            message: `no umactually PATH block found in ${SHELL_RC_FILES.join(" / ")}`,
+        });
+    }
+    return checks;
+}
+function shouldPrompt(deps) {
+    // `mode.yes` (the `--yes` / `-y` CLI flag) always wins.
+    if (deps.mode?.yes === true) {
+        return false;
+    }
+    if (!deps.isTTY) {
+        return false;
+    }
+    const yesEnv = deps.env["UMACTUALLY_UNINSTALL_YES"] ?? deps.env["UMACTUALLY_YES"];
+    return yesEnv !== "1" && yesEnv !== "true";
+}
+function scheduleWindowsDelayedDelete(targetPath) {
+    // Self-deletion of a running executable on Windows requires a helper
+    // that runs AFTER the parent exits. We write a small .cmd script to
+    // a unique temp file, then spawn it detached. The script:
+    //   1. Reads the path from `%1` (passed as a separate argv to cmd.exe).
+    //      %~1 strips the surrounding quotes so we can safely re-quote
+    //      it with del's normal double-quote rules.
+    //   2. Waits ~3s via `ping -n 4`, then deletes the binary.
+    //   3. Self-deletes the .cmd.
+    //
+    // Why pass via %1 instead of interpolating into the script body?
+    // cmd.exe performs percent-variable expansion on the script body
+    // BEFORE the script runs. If the user's binary path contains
+    // `%TEMP%` or `%PATH%` (unusual but legal), the variable is
+    // expanded at parse time to the parent's value, producing a wrong
+    // target. The previous version tried to work around this with
+    // `setlocal EnableDelayedExpansion` + `set "TARGET=..."` + `!TARGET!`,
+    // but EnableDelayedExpansion only affects `!VAR!`, not `%VAR%` —
+    // so the bug persisted. Passing the path via %1 eliminates the
+    // interpolation entirely: %1 is the literal argument, not expanded
+    // against environment variables.
+    //
+    // Returns a UninstallCheck so the caller can record success or
+    // failure in the visible output.
+    const tmpDir = process.env["TEMP"] ?? process.env["TMP"] ?? "/tmp";
+    const scriptPath = join(tmpDir, `umactually-uninstall-${process.pid}-${Date.now()}.cmd`);
+    const body = [
+        "@echo off",
+        "ping -n 4 127.0.0.1 >nul",
+        'del /f /q "%~1"',
+        `del /f /q "${scriptPath.replace(/"/gu, '""')}"`,
+        "",
+    ].join("\r\n");
+    try {
+        (0,external_node_fs_namespaceObject.writeFileSync)(scriptPath, body, "utf8");
+        // Attach an error handler so a synchronous spawn failure
+        // (e.g. on Linux where cmd.exe doesn't exist) doesn't surface
+        // as an unhandled async exception after the function returns.
+        // The error is expected on non-Windows platforms and not
+        // actionable from the caller's perspective.
+        const child = (0,external_node_child_process_namespaceObject.spawn)("cmd.exe", ["/c", scriptPath, targetPath], {
+            detached: true,
+            stdio: "ignore",
+            windowsHide: true,
+        });
+        child.on("error", () => {
+            // Swallow: the script write was the contract; the spawn is
+            // best-effort. On non-Windows, cmd.exe is missing and this
+            // fires predictably.
+        });
+        child.unref();
+        return {
+            id: "self-deletion",
+            status: "warn",
+            message: `Windows held a write lock on the running binary; a delayed-delete helper was scheduled at ${scriptPath}`,
+        };
+    }
+    catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        return {
+            id: "self-deletion",
+            status: "fail",
+            message: `could not schedule delayed-delete helper for ${targetPath}: ${message}. The binary may need to be removed manually.`,
+        };
+    }
+}
+const uninstall_UNINSTALL_HELP_TEXT = [
+    `${"umactually"} uninstall — remove the installed binary, config, and PATH entries`,
+    "",
+    "Usage:",
+    "  umactually uninstall [flags]    Remove the running binary and (optionally) related files",
+    "  umactually uninstall --help     Show this help",
+    "",
+    "Flags:",
+    "  --remove-binary     (default) Delete the running binary at process.execPath",
+    "  --no-remove-binary  Skip the binary removal (only useful with --purge-config / --revert-path)",
+    "  --purge-config      Also delete ~/.umactually/ and ~/.cache/umactually/",
+    "  --revert-path       Also remove the installer's PATH line from ~/.zshrc / ~/.bashrc / ~/.profile",
+    "  --yes, -y           Skip the interactive confirmation prompt",
+    "  --json              Emit machine-readable JSON output",
+    "  --help, -h          Show this help",
+    "",
+    "By default the binary is removed, the config/cache dirs are left alone, and the",
+    "PATH entry stays in your shell config. The confirmation prompt only appears on a",
+    "TTY. Non-interactive shells (CI, cron) must pass --yes or set UMACTUALLY_UNINSTALL_YES=1.",
+    "",
+    "Exit codes:",
+    "  0  Uninstall completed (with at least the binary removed)",
+    "  1  User declined the confirmation prompt",
+    "  2  Usage error or unsafe exec path",
+].join("\n");
+function formatUninstallHuman(result) {
+    const lines = result.checks.map((c) => {
+        const hint = c.hint === undefined ? "" : `\n  hint: ${c.hint}`;
+        return `${c.status.toUpperCase().padEnd(4)} ${c.id}: ${c.message}${hint}`;
+    });
+    return `${lines.join("\n")}\n`;
+}
+function formatUninstallJson(result, mode, execPath) {
+    const envelope = result.json ?? {
+        schemaVersion: 1,
+        command: "uninstall",
+        exitCode: result.exitCode,
+        execPath,
+        mode,
+        checks: result.checks,
+    };
+    return `${JSON.stringify(envelope)}\n`;
+}
+/**
+ * True if the runUninstall result indicates the user declined the
+ * confirmation prompt. Used by runUninstallBranch to gate the
+ * purge-config and revert-path follow-up actions so a 'n' answer
+ * to the binary prompt does not silently wipe the user's data.
+ *
+ * Detection uses the structured `check.declined === true` flag
+ * (set by runUninstall when the user types 'n' or EOFs the prompt)
+ * rather than a substring match on the human-readable message. The
+ * structured flag is compile-time linked and survives message
+ * rewordings.
+ */
+function userDeclinedPrompt(result) {
+    return result.exitCode === 1
+        && result.checks.some((c) => c.id === "binary-removal" && c.status === "skip" && c.declined === true);
+}
+
 ;// CONCATENATED MODULE: ./src/cli/help.ts
 /**
  * CLI help text. Flag descriptions are column-aligned so `--help` output is
@@ -1577,6 +2300,7 @@ function printModesBanner(stream) {
  * that command. This is achieved by tagging each flag with the commands
  * it applies to (`appliesTo`) and filtering at render time.
  */
+
 
 
 
@@ -1658,6 +2382,7 @@ function renderCommands(commands) {
 const TOP_LEVEL_COMMANDS = [
     "review                    Run PR review (default)",
     "doctor                    Check environment is ready",
+    "uninstall                 Remove the installed binary, config, and PATH entries",
     "check-review-artifact <path>  Validate a review artifact",
     "version                   Print version",
     "--help, -h                Show this help",
@@ -1734,6 +2459,7 @@ const CHECK_REVIEW_ARTIFACT_HELP_TEXT = [
 const COMMAND_HELP = {
     review: REVIEW_HELP_TEXT,
     doctor: DOCTOR_HELP_TEXT,
+    uninstall: uninstall_UNINSTALL_HELP_TEXT,
     "check-review-artifact": CHECK_REVIEW_ARTIFACT_HELP_TEXT,
 };
 /**
@@ -1793,6 +2519,7 @@ function printContextualHelp(argv) {
 /** Exported for unit tests that need to assert per-command help content. */
 const REVIEW_HELP = (/* unused pure expression or super */ null && (REVIEW_HELP_TEXT));
 const DOCTOR_HELP = (/* unused pure expression or super */ null && (DOCTOR_HELP_TEXT));
+const UNINSTALL_HELP = (/* unused pure expression or super */ null && (UNINSTALL_HELP_TEXT));
 const CHECK_REVIEW_ARTIFACT_HELP = (/* unused pure expression or super */ null && (CHECK_REVIEW_ARTIFACT_HELP_TEXT));
 
 ;// CONCATENATED MODULE: ./src/cli/no-color.ts
@@ -1817,6 +2544,8 @@ function resolveColorPolicy(opts) {
 ;// CONCATENATED MODULE: ./src/cli/dispatch.ts
 // SPDX-License-Identifier: MIT
 // Subcommand dispatch layer. Pure routing apart from delegated CLI output.
+
+
 
 
 
@@ -1862,6 +2591,8 @@ async function dispatch(argv) {
             return runReviewBranch(stripLeadingCommand(argv, command));
         case "doctor":
             return runDoctorBranch(stripLeadingCommand(argv, command));
+        case "uninstall":
+            return runUninstallBranch(stripLeadingCommand(argv, command));
         case "check-review-artifact":
             return runCheckReviewArtifactBranch(stripLeadingCommand(argv, command));
         case "version":
@@ -1953,6 +2684,128 @@ async function runDoctorBranch(args) {
     const stdout = json ? formatDoctorJson(result) : formatDoctorHuman(result.checks);
     process.stdout.write(stdout);
     return { exitCode: result.exitCode, stdout };
+}
+async function runUninstallBranch(args) {
+    const { mode, errors, help, json } = parseUninstallArgs(args);
+    if (help) {
+        process.stdout.write(uninstall_UNINSTALL_HELP_TEXT);
+        process.stdout.write("\n");
+        return { exitCode: 0, stdout: uninstall_UNINSTALL_HELP_TEXT };
+    }
+    if (errors.length > 0) {
+        const stderr = `umactually uninstall: ${errors.join("; ")}\n`;
+        process.stderr.write(stderr);
+        return { exitCode: 2, stderr };
+    }
+    const deps = {
+        isTTY: process.stdout.isTTY === true && !json,
+        env: process.env,
+        fsAdapter: defaultFsAdapter,
+        // No stdinReader injected — uninstall.ts falls back to its built-in
+        // readline-based default, which is non-blocking and timeout-safe.
+        execPath: process.execPath,
+        platform: process.platform,
+        homeDir: (0,external_node_os_namespaceObject.homedir)(),
+        mode,
+    };
+    // Gate the destructive follow-ups (--purge-config, --revert-path)
+    // behind explicit confirmation when running non-interactively. The
+    // user clearly requested destructive work but did not pass --yes
+    // (or set the corresponding env var), and we have no way to
+    // prompt them. Refuse the WHOLE command — including the binary
+    // removal — so the user gets a clean "nothing happened" state.
+    // Running the binary removal first and then refusing the
+    // follow-ups would leave the user confused about what was
+    // actually changed on disk.
+    //
+    // Honors the same env vars that shouldPrompt honors:
+    //   - UMACTUALLY_UNINSTALL_YES=1
+    //   - UMACTUALLY_YES=true
+    // so a CI job with `UMACTUALLY_UNINSTALL_YES=1 umactually uninstall
+    // --purge-config` works without also passing --yes on the command
+    // line.
+    const yesEnv = deps.env["UMACTUALLY_UNINSTALL_YES"] ?? deps.env["UMACTUALLY_YES"];
+    const envAffirmed = yesEnv === "1" || yesEnv === "true";
+    if (!deps.isTTY &&
+        mode.yes !== true &&
+        !envAffirmed &&
+        (mode.purgeConfig === true || mode.revertPath === true)) {
+        const stderr = "umactually uninstall: --purge-config and --revert-path require --yes (or UMACTUALLY_UNINSTALL_YES=1) " +
+            "in non-interactive mode. Nothing was changed; re-run with --yes to proceed, or omit the destructive flags.\n";
+        process.stderr.write(stderr);
+        return { exitCode: 2, stderr };
+    }
+    const result = await runUninstall(deps);
+    // If the user declined the prompt for the binary removal, do NOT run
+    // the follow-up destructive actions. A 'n' answer should be an
+    // unconditional abort, not a partial state where the binary is kept
+    // but config and shell-rc edits are still wiped.
+    let additionalChecks = [];
+    if (!userDeclinedPrompt(result) && (mode.purgeConfig === true || mode.revertPath === true)) {
+        // The binary-removal prompt covered only the binary itself. The
+        // follow-up destructive actions (config wipe, PATH revert) are
+        // separate destructive operations and need their own confirmation
+        // in interactive mode. The user can decline here and keep the
+        // binary removed but the config intact.
+        if (shouldPrompt(deps)) {
+            const parts = [];
+            if (mode.purgeConfig === true) {
+                parts.push("remove ~/.umactually/ and ~/.cache/umactually/");
+            }
+            if (mode.revertPath === true) {
+                parts.push("strip the umactually PATH block from your shell rc files");
+            }
+            const promptText = `Also ${parts.join(" and ")}? [y/N] `;
+            const reader = deps.stdinReader ?? defaultStdinReader;
+            const confirm = await reader(promptText, deps.isTTY);
+            if (confirm !== null && /^y(es)?$/i.test(confirm.trim())) {
+                additionalChecks = [
+                    ...(mode.purgeConfig ? purgeConfig(deps) : []),
+                    ...(mode.revertPath ? revertPath(deps) : []),
+                ];
+            }
+            else {
+                // The user declined (or EOFed) the follow-up prompt. The
+                // binary-removal already succeeded; the user just opted out
+                // of the additional cleanup. Emit visible skip checks so the
+                // output is not confusingly silent — the user ran with
+                // --purge-config / --revert-path and should see what was
+                // requested vs. what was done.
+                const declineChecks = [];
+                if (mode.purgeConfig === true) {
+                    declineChecks.push({
+                        id: "config-removal",
+                        status: "skip",
+                        message: "user declined the additional cleanup prompt; ~/.umactually/ kept",
+                    });
+                }
+                if (mode.revertPath === true) {
+                    declineChecks.push({
+                        id: "path-revert",
+                        status: "skip",
+                        message: "user declined the additional cleanup prompt; shell rc files kept",
+                    });
+                }
+                additionalChecks = declineChecks;
+            }
+        }
+        else {
+            // isTTY=false + --yes (the gate at the top of this function
+            // already blocked the !--yes + !isTTY case).
+            additionalChecks = [
+                ...(mode.purgeConfig ? purgeConfig(deps) : []),
+                ...(mode.revertPath ? revertPath(deps) : []),
+            ];
+        }
+    }
+    const checks = [...result.checks, ...additionalChecks];
+    const exitCode = checks.some((c) => c.status === "fail") ? 1 : result.exitCode;
+    const finalResult = { ...result, exitCode, checks };
+    const stdout = json
+        ? formatUninstallJson(finalResult, mode, deps.execPath)
+        : formatUninstallHuman(finalResult);
+    process.stdout.write(stdout);
+    return { exitCode, stdout };
 }
 
 ;// CONCATENATED MODULE: ./src/security/scan-review-secrets.ts
