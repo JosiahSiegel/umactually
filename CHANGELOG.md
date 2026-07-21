@@ -10,6 +10,23 @@ ship a tag).
 
 ## [Unreleased]
 
+## [0.5.9] - 2026-07-21
+
+### Added
+
+- **Built-in `umactually uninstall` subcommand** (PR #102). Mirrors the `doctor` structure: `--remove-binary` (default) / `--no-remove-binary` / `--purge-config` / `--revert-path` / `--yes, -y` / `--json` / `--help, -h`. Emits one `UninstallCheck` per action (id ∈ `exec-path`, `binary-removal`, `config-removal`, `cache-removal`, `path-revert`, `self-deletion`) and exits `0` (success), `1` (user declined), or `2` (unsafe exec path or non-interactive destructive flag without `--yes`). Refuses to unlink symlinks, refuses if `process.execPath` is not on the allowlist, and on Windows schedules a delayed-delete helper (`%TEMP%\umactually-uninstall-<pid>-<ts>.cmd`) to work around the write-lock on a running binary. `umactually uninstall --purge-config` removes both `~/.umactually/` and `~/.cache/umactually/`. The pre-existing `scripts/uninstall.sh` is kept for back-compat.
+- **`scripts/install.sh --ssl-no-revoke`** (PR #100). Windows Git Bash ships with a `curl` linked against `schannel`, which performs CRL/OCSP checks and frequently fails on offline revocation servers with `CRYPT_E_REVOCATION_OFFLINE (0x80092013)`. The installer now auto-detects `schannel` builds, prints a one-line hint pointing at `--ssl-no-revoke`, accepts `--ssl-no-revoke` as a positional argument, and reactively retries a failed `curl` with `--ssl-no-revoke` appended when the failure looks like a schannel revocation error. macOS and Linux are unaffected.
+
+### Changed
+
+- **README § Install** (PR #101). The Schannel workaround is now promoted above the first install example. Windows users with `CRYPT_E_REVOCATION_OFFLINE` see the fix before they try the one-liner.
+- **PR self-review workflow** (PR #103). `continue-on-error: true` on the self-review step is replaced with explicit failure surfacing (the workflow now fails fast on a non-zero self-review exit) and the per-request timeout is raised to 240 seconds. This makes self-review visible as a real CI gate rather than a silent advisory, and accommodates the 4s+ retry backoff added to the Anthropic + OpenAI-compatible providers. The Anthropic + OpenAI-compatible providers now treat `timeout` as a retryable error class (`isRetryable` includes "timeout"), so a transient `AbortController` fire auto-retries once before surfacing.
+
+### Stats
+
+- Tests: 1502 → 1566 passing in the full unit suite (+64 from PR #102 alone: 6 new tests in `cli-uninstall.test.ts`; 2 in `anthropic-messages.test.ts` for ANTH-RED-007/008 retry-on-timeout). 121 platform-skipped tests are unchanged.
+- Files: 10 changed / 2002 insertions / 17 deletions (PR #102 squash); 4 changed / 24 insertions (PR #103 squash); 1 changed (PR #101).
+
 ## [0.5.8] - 2026-07-21
 
 ### Fixed
