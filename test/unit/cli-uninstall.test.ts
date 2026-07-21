@@ -20,6 +20,7 @@ import {
   revertPath,
   runUninstall,
   stripShellRcBlocks,
+  userDeclinedPrompt,
   type FsAdapter,
   type UninstallDeps,
 } from "../../src/cli/uninstall.js";
@@ -63,7 +64,7 @@ function makeDeps(overrides: Partial<UninstallDeps> & { readonly fsAdapter: FsAd
   return {
     isTTY: false,
     env: {},
-    stdinReader: () => null,
+    stdinReader: async () => null,
     execPath: `${HOME}/.local/bin/umactually`,
     platform: "linux",
     homeDir: HOME,
@@ -224,30 +225,30 @@ describe("findShellRcBlocks + stripShellRcBlocks", () => {
 });
 
 describe("runUninstall (binary removal)", () => {
-  it("removes the binary and returns ok", () => {
+  it("removes the binary and returns ok", async () => {
     const fs = makeFs({
       [`${HOME}/.local/bin/umactually`]: { kind: "file", content: "binary" },
     });
-    const result = runUninstall(makeDeps({ fsAdapter: fs, isTTY: false, env: { UMACTUALLY_UNINSTALL_YES: "1" } }));
+    const result = await runUninstall(makeDeps({ fsAdapter: fs, isTTY: false, env: { UMACTUALLY_UNINSTALL_YES: "1" } }));
     expect(result.exitCode).toBe(0);
     const removal = result.checks.find((c) => c.id === "binary-removal");
     expect(removal?.status).toBe("ok");
     expect(fs.files[`${HOME}/.local/bin/umactually`]).toBeUndefined();
   });
 
-  it("rejects symlinks", () => {
+  it("rejects symlinks", async () => {
     const fs = makeFs({
       [`${HOME}/.local/bin/umactually`]: { kind: "symlink" },
     });
-    const result = runUninstall(makeDeps({ fsAdapter: fs, env: { UMACTUALLY_UNINSTALL_YES: "1" } }));
+    const result = await runUninstall(makeDeps({ fsAdapter: fs, env: { UMACTUALLY_UNINSTALL_YES: "1" } }));
     expect(result.exitCode).toBe(2);
     const removal = result.checks.find((c) => c.id === "binary-removal");
     expect(removal?.status).toBe("fail");
   });
 
-  it("rejects an exec path that is not in a known install dir", () => {
+  it("rejects an exec path that is not in a known install dir", async () => {
     const fs = makeFs({ "/tmp/umactually": { kind: "file" } });
-    const result = runUninstall(
+    const result = await runUninstall(
       makeDeps({ fsAdapter: fs, execPath: "/tmp/umactually", env: { UMACTUALLY_UNINSTALL_YES: "1" } }),
     );
     expect(result.exitCode).toBe(2);
@@ -255,20 +256,20 @@ describe("runUninstall (binary removal)", () => {
     expect(path?.status).toBe("fail");
   });
 
-  it("skips binary removal when the file is already gone", () => {
+  it("skips binary removal when the file is already gone", async () => {
     const fs = makeFs({});
-    const result = runUninstall(makeDeps({ fsAdapter: fs, env: { UMACTUALLY_UNINSTALL_YES: "1" } }));
+    const result = await runUninstall(makeDeps({ fsAdapter: fs, env: { UMACTUALLY_UNINSTALL_YES: "1" } }));
     expect(result.exitCode).toBe(0);
     const removal = result.checks.find((c) => c.id === "binary-removal");
     expect(removal?.status).toBe("skip");
   });
 
-  it("declines on non-yes TTY when stdin returns 'n'", () => {
+  it("declines on non-yes TTY when stdin returns 'n'", async () => {
     const fs = makeFs({
       [`${HOME}/.local/bin/umactually`]: { kind: "file", content: "binary" },
     });
-    const result = runUninstall(
-      makeDeps({ fsAdapter: fs, isTTY: true, stdinReader: () => "n" }),
+    const result = await runUninstall(
+      makeDeps({ fsAdapter: fs, isTTY: true, stdinReader: async () => "n" }),
     );
     expect(result.exitCode).toBe(1);
     const removal = result.checks.find((c) => c.id === "binary-removal");
@@ -276,33 +277,33 @@ describe("runUninstall (binary removal)", () => {
     expect(fs.files[`${HOME}/.local/bin/umactually`]).toBeDefined();
   });
 
-  it("proceeds on TTY when stdin returns 'y'", () => {
+  it("proceeds on TTY when stdin returns 'y'", async () => {
     const fs = makeFs({
       [`${HOME}/.local/bin/umactually`]: { kind: "file", content: "binary" },
     });
-    const result = runUninstall(makeDeps({ fsAdapter: fs, isTTY: true, stdinReader: () => "y" }));
+    const result = await runUninstall(makeDeps({ fsAdapter: fs, isTTY: true, stdinReader: async () => "y" }));
     expect(result.exitCode).toBe(0);
     expect(fs.files[`${HOME}/.local/bin/umactually`]).toBeUndefined();
   });
 
-  it("proceeds on non-TTY with --yes env var", () => {
+  it("proceeds on non-TTY with --yes env var", async () => {
     const fs = makeFs({
       [`${HOME}/.local/bin/umactually`]: { kind: "file", content: "binary" },
     });
-    const result = runUninstall(makeDeps({ fsAdapter: fs, env: { UMACTUALLY_YES: "true" } }));
+    const result = await runUninstall(makeDeps({ fsAdapter: fs, env: { UMACTUALLY_YES: "true" } }));
     expect(result.exitCode).toBe(0);
   });
 
-  it("proceeds on TTY when --yes flag is in mode (no env var, no stdin)", () => {
+  it("proceeds on TTY when --yes flag is in mode (no env var, no stdin)", async () => {
     const fs = makeFs({
       [`${HOME}/.local/bin/umactually`]: { kind: "file", content: "binary" },
     });
     // TTY would normally prompt, but mode.yes should override.
-    const result = runUninstall(
+    const result = await runUninstall(
       makeDeps({
         fsAdapter: fs,
         isTTY: true,
-        stdinReader: () => "n",
+        stdinReader: async () => "n",
         mode: { removeBinary: true, purgeConfig: false, revertPath: false, yes: true },
       }),
     );
@@ -310,20 +311,33 @@ describe("runUninstall (binary removal)", () => {
     expect(fs.files[`${HOME}/.local/bin/umactually`]).toBeUndefined();
   });
 
-  it("declines on TTY when --yes flag is absent even if env var is '0'", () => {
+  it("declines on TTY when --yes flag is absent even if env var is '0'", async () => {
     const fs = makeFs({
       [`${HOME}/.local/bin/umactually`]: { kind: "file", content: "binary" },
     });
-    const result = runUninstall(
+    const result = await runUninstall(
       makeDeps({
         fsAdapter: fs,
         isTTY: true,
-        stdinReader: () => "n",
+        stdinReader: async () => "n",
         env: { UMACTUALLY_UNINSTALL_YES: "0" },
       }),
     );
     expect(result.exitCode).toBe(1);
     expect(fs.files[`${HOME}/.local/bin/umactually`]).toBeDefined();
+  });
+
+  it("stale stdinReader returning null is treated as decline", async () => {
+    const fs = makeFs({
+      [`${HOME}/.local/bin/umactually`]: { kind: "file", content: "binary" },
+    });
+    const result = await runUninstall(
+      makeDeps({ fsAdapter: fs, isTTY: true, stdinReader: async () => null }),
+    );
+    expect(result.exitCode).toBe(1);
+    const removal = result.checks.find((c) => c.id === "binary-removal");
+    expect(removal?.status).toBe("skip");
+    expect(removal?.message).toContain("user declined");
   });
 });
 
@@ -397,11 +411,11 @@ describe("revertPath", () => {
 });
 
 describe("formatUninstallJson + formatUninstallHuman", () => {
-  it("json envelope includes schemaVersion, command, mode, checks", () => {
+  it("json envelope includes schemaVersion, command, mode, checks", async () => {
     const fs = makeFs({
       [`${HOME}/.local/bin/umactually`]: { kind: "file", content: "x" },
     });
-    const result = runUninstall(makeDeps({ fsAdapter: fs, env: { UMACTUALLY_UNINSTALL_YES: "1" } }));
+    const result = await runUninstall(makeDeps({ fsAdapter: fs, env: { UMACTUALLY_UNINSTALL_YES: "1" } }));
     const json = formatUninstallJson(result, { removeBinary: true, purgeConfig: false, revertPath: false, yes: true }, `${HOME}/.local/bin/umactually`);
     const parsed = JSON.parse(json) as {
       schemaVersion: number;
@@ -415,9 +429,9 @@ describe("formatUninstallJson + formatUninstallHuman", () => {
     expect(Array.isArray(parsed.checks)).toBe(true);
   });
 
-  it("human output lists each check on its own line", () => {
+  it("human output lists each check on its own line", async () => {
     const fs = makeFs({});
-    const result = runUninstall(makeDeps({ fsAdapter: fs, env: { UMACTUALLY_UNINSTALL_YES: "1" } }));
+    const result = await runUninstall(makeDeps({ fsAdapter: fs, env: { UMACTUALLY_UNINSTALL_YES: "1" } }));
     const text = formatUninstallHuman(result);
     const lines = text.split("\n").filter((l) => l.length > 0);
     expect(lines.length).toBeGreaterThan(0);
@@ -430,5 +444,40 @@ describe("defaultFsAdapter", () => {
     expect(defaultFsAdapter.exists("/tmp")).toBe(true);
     expect(defaultFsAdapter.isDirectory("/tmp")).toBe(true);
     expect(defaultFsAdapter.isFile("/tmp")).toBe(false);
+  });
+});
+
+describe("userDeclinedPrompt", () => {
+  it("returns true when the binary-removal check is skip with 'user declined'", () => {
+    const result: { exitCode: number; checks: { id: string; status: string; message: string }[] } = {
+      exitCode: 1,
+      checks: [
+        { id: "exec-path", status: "ok", message: "ok" },
+        { id: "binary-removal", status: "skip", message: "user declined the confirmation prompt" },
+      ],
+    };
+    // Cast through unknown to satisfy the type checker.
+    expect(userDeclinedPrompt(result as unknown as Parameters<typeof userDeclinedPrompt>[0])).toBe(true);
+  });
+
+  it("returns false when the binary was actually removed", () => {
+    const result: { exitCode: number; checks: { id: string; status: string; message: string }[] } = {
+      exitCode: 0,
+      checks: [
+        { id: "exec-path", status: "ok", message: "ok" },
+        { id: "binary-removal", status: "ok", message: "removed" },
+      ],
+    };
+    expect(userDeclinedPrompt(result as unknown as Parameters<typeof userDeclinedPrompt>[0])).toBe(false);
+  });
+
+  it("returns false on exec-path fail (no prompt was even shown)", () => {
+    const result: { exitCode: number; checks: { id: string; status: string; message: string }[] } = {
+      exitCode: 2,
+      checks: [
+        { id: "exec-path", status: "fail", message: "bad path" },
+      ],
+    };
+    expect(userDeclinedPrompt(result as unknown as Parameters<typeof userDeclinedPrompt>[0])).toBe(false);
   });
 });

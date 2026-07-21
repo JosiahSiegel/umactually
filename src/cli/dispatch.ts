@@ -21,6 +21,7 @@ import {
   revertPath,
   runUninstall,
   UNINSTALL_HELP_TEXT,
+  userDeclinedPrompt,
   type UninstallDeps,
   type UninstallResult,
 } from "./uninstall.js";
@@ -177,7 +178,7 @@ async function runDoctorBranch(args: readonly string[]): Promise<DispatchResult>
   return { exitCode: result.exitCode, stdout };
 }
 
-function runUninstallBranch(args: readonly string[]): DispatchResult {
+async function runUninstallBranch(args: readonly string[]): Promise<DispatchResult> {
   const { mode, errors, help, json } = parseUninstallArgs(args);
   if (help) {
     process.stdout.write(UNINSTALL_HELP_TEXT);
@@ -193,30 +194,24 @@ function runUninstallBranch(args: readonly string[]): DispatchResult {
     isTTY: process.stdout.isTTY === true && !json,
     env: process.env,
     fsAdapter: defaultFsAdapter,
-    stdinReader: () => {
-      // Read a single line from stdin without blocking. In test mode the
-      // caller injects a custom reader; here we use a non-blocking read of
-      // /dev/tty (POSIX) or fall back to null (CI / non-TTY).
-      try {
-        if (process.stdin.isTTY !== true) {
-          return null;
-        }
-        const buf = require("node:fs").readFileSync(0, "utf8", { encoding: "utf8" }) as string;
-        return buf.length === 0 ? null : buf;
-      } catch {
-        return null;
-      }
-    },
+    // No stdinReader injected — uninstall.ts falls back to its built-in
+    // readline-based default, which is non-blocking and timeout-safe.
     execPath: process.execPath,
     platform: process.platform,
     homeDir: require("node:os").homedir(),
     mode,
   };
-  const result = runUninstall(deps);
-  const additionalChecks = [
-    ...(mode.purgeConfig ? purgeConfig(deps) : []),
-    ...(mode.revertPath ? revertPath(deps) : []),
-  ];
+  const result = await runUninstall(deps);
+  // If the user declined the prompt for the binary removal, do NOT run
+  // the follow-up destructive actions. A 'n' answer should be an
+  // unconditional abort, not a partial state where the binary is kept
+  // but config and shell-rc edits are still wiped.
+  const additionalChecks = userDeclinedPrompt(result)
+    ? []
+    : [
+        ...(mode.purgeConfig ? purgeConfig(deps) : []),
+        ...(mode.revertPath ? revertPath(deps) : []),
+      ];
   const checks: UninstallResult["checks"] = [...result.checks, ...additionalChecks];
   const exitCode = checks.some((c) => c.status === "fail") ? 1 : result.exitCode;
   const finalResult: UninstallResult = { ...result, exitCode, checks };

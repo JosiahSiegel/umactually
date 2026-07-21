@@ -35,6 +35,7 @@ import {
   unlinkSync,
   writeFileSync,
 } from "node:fs";
+import { createInterface } from "node:readline";
 import * as path from "node:path";
 const { join } = path;
 import { spawn } from "node:child_process";
@@ -82,7 +83,7 @@ export type UninstallDeps = {
   readonly isTTY: boolean;
   readonly env: Readonly<Record<string, string | undefined>>;
   readonly fsAdapter: FsAdapter;
-  readonly stdinReader: () => string | null;
+  readonly stdinReader?: () => Promise<string | null>;
   readonly execPath: string;
   readonly platform: NodeJS.Platform;
   readonly homeDir: string;
@@ -94,6 +95,48 @@ export type UninstallDeps = {
    */
   readonly mode?: UninstallMode;
 };
+
+/** Default stdin reader: a single line from /dev/tty via readline, with a
+ *  30-second safety timeout. Returns null on no-TTY, EOF, timeout, or any
+ *  other failure. Never blocks indefinitely on a pipe. */
+export async function defaultStdinReader(): Promise<string | null> {
+  if (process.stdin.isTTY !== true) {
+    return null;
+  }
+  return new Promise((resolve) => {
+    let settled = false;
+    const settle = (value: string | null): void => {
+      if (settled) {
+        return;
+      }
+      settled = true;
+      try {
+        rl.close();
+      } catch {
+        // rl may already be closed; ignore.
+      }
+      resolve(value);
+    };
+    const timer = setTimeout(() => settle(null), 30_000);
+    const rl = createInterface({
+      input: process.stdin,
+      output: process.stdout,
+      terminal: true,
+    });
+    rl.question("", (answer) => {
+      clearTimeout(timer);
+      settle(answer);
+    });
+    rl.on("close", () => {
+      clearTimeout(timer);
+      settle(null);
+    });
+    rl.on("SIGINT", () => {
+      clearTimeout(timer);
+      settle(null);
+    });
+  });
+}
 
 export type FsAdapter = {
   readonly exists: (path: string) => boolean;
@@ -271,7 +314,7 @@ export function stripShellRcBlocks(content: string): string {
   return out;
 }
 
-export function runUninstall(deps: UninstallDeps): UninstallResult {
+export async function runUninstall(deps: UninstallDeps): Promise<UninstallResult> {
   const checks: UninstallCheck[] = [];
   const classified = classifyExecPath(deps.execPath, deps.platform, deps.homeDir);
   if (!classified.ok) {
@@ -292,7 +335,8 @@ export function runUninstall(deps: UninstallDeps): UninstallResult {
   // Confirm with the user before mutating the filesystem.
   // Non-interactive shells (CI, cron) must pass --yes.
   if (shouldPrompt(deps)) {
-    const confirm = deps.stdinReader();
+    const reader = deps.stdinReader ?? defaultStdinReader;
+    const confirm = await reader();
     if (confirm === null || !/^y(es)?$/i.test(confirm.trim())) {
       checks.push({
         id: "binary-removal",
@@ -479,13 +523,39 @@ function shouldPrompt(deps: UninstallDeps): boolean {
 }
 
 function scheduleWindowsDelayedDelete(targetPath: string): void {
-  // Use cmd.exe's ping trick to wait ~2.5s for the parent to exit, then del.
-  // The `ping -n 4 127.0.0.1` is a portable ~3-second sleep (no PowerShell dep).
-  // The `>nul` redirects ping output. We spawn detached so this function
-  // returns immediately; the cmd.exe will outlive the parent.
-  const cmd = `ping -n 4 127.0.0.1 >nul & del /f /q "${targetPath}"`;
+  // Self-deletion of a running executable on Windows requires a helper
+  // that runs AFTER the parent exits. We write a small .cmd script to
+  // a unique temp file, then spawn it detached. The script:
+  //   1. Enables delayed expansion so %VAR% in the path is not expanded
+  //      at parse time (this was the robustness bug in the previous
+  //      version: a path containing `%TEMP%` would explode the command).
+  //   2. Sets TARGET via `set "TARGET=..."` (cmd.exe's `""` escape
+  //      handles a literal `"` inside the value).
+  //   3. Waits ~3s via `ping -n 4`, then deletes the binary.
+  //   4. Self-deletes the .cmd.
+  //
+  // Passing the path as a separate argv (not interpolated into the
+  // command string) avoids all shell-quoting issues. The path is read
+  // by the script via the %1 parameter. %~1 in the script body is the
+  // path with surrounding quotes already stripped, so we re-quote it
+  // safely with del's normal double-quote rules.
+  const tmpDir = process.env["TEMP"] ?? process.env["TMP"] ?? "/tmp";
+  const scriptPath = join(tmpDir, `umactually-uninstall-${process.pid}-${Date.now()}.cmd`);
+  // `set "TARGET=foo""bar"` correctly sets TARGET to `foo"bar`. cmd.exe
+  // collapses the `""` inside the quoted value to a single literal `"`.
+  const safePath = targetPath.replace(/"/gu, '""');
+  const body = [
+    "@echo off",
+    "setlocal EnableDelayedExpansion",
+    `set "TARGET=${safePath}"`,
+    "ping -n 4 127.0.0.1 >nul",
+    "del /f /q \"!TARGET!\"",
+    `del /f /q "${scriptPath.replace(/"/gu, '""')}"`,
+    "",
+  ].join("\r\n");
   try {
-    spawn("cmd.exe", ["/c", cmd], {
+    writeFileSync(scriptPath, body, "utf8");
+    spawn("cmd.exe", ["/c", scriptPath], {
       detached: true,
       stdio: "ignore",
       windowsHide: true,
@@ -539,4 +609,18 @@ export function formatUninstallJson(result: UninstallResult, mode: UninstallMode
     checks: result.checks,
   };
   return `${JSON.stringify(envelope)}\n`;
+}
+
+/**
+ * True if the runUninstall result indicates the user declined the
+ * confirmation prompt. Used by runUninstallBranch to gate the
+ * purge-config and revert-path follow-up actions so a 'n' answer
+ * to the binary prompt does not silently wipe the user's data.
+ */
+export function userDeclinedPrompt(result: UninstallResult): boolean {
+  return result.exitCode === 1
+    && result.checks.some(
+      (c) => c.id === "binary-removal" && c.status === "skip"
+        && c.message.includes("user declined"),
+    );
 }

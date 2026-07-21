@@ -1,13 +1,6 @@
 import { createRequire as __WEBPACK_EXTERNAL_createRequire } from "module";
 /******/ var __webpack_modules__ = ({
 
-/***/ 24:
-/***/ ((module) => {
-
-module.exports = __WEBPACK_EXTERNAL_createRequire(import.meta.url)("node:fs");
-
-/***/ }),
-
 /***/ 161:
 /***/ ((module) => {
 
@@ -83,8 +76,8 @@ __nccwpck_require__.d(__webpack_exports__, {
   yh: () => (/* binding */ runVersion)
 });
 
-// EXTERNAL MODULE: external "node:fs"
-var external_node_fs_ = __nccwpck_require__(24);
+;// CONCATENATED MODULE: external "node:fs"
+const external_node_fs_namespaceObject = __WEBPACK_EXTERNAL_createRequire(import.meta.url)("node:fs");
 ;// CONCATENATED MODULE: external "node:fs/promises"
 const promises_namespaceObject = __WEBPACK_EXTERNAL_createRequire(import.meta.url)("node:fs/promises");
 ;// CONCATENATED MODULE: external "node:path"
@@ -1338,7 +1331,7 @@ const CLEAN_VERDICTS = new Set(["APPROVED", "SHIP"]);
 function classifyReviewArtifact(path) {
     let content;
     try {
-        content = (0,external_node_fs_.readFileSync)(path, "utf8");
+        content = (0,external_node_fs_namespaceObject.readFileSync)(path, "utf8");
     }
     catch (error) {
         if (isNodeError(error) && error.code === "ENOENT") {
@@ -1572,6 +1565,8 @@ function printModesBanner(stream) {
     output?.write(CLI_MODES_TEXT);
 }
 
+;// CONCATENATED MODULE: external "node:readline"
+const external_node_readline_namespaceObject = __WEBPACK_EXTERNAL_createRequire(import.meta.url)("node:readline");
 ;// CONCATENATED MODULE: ./src/cli/uninstall.ts
 // SPDX-License-Identifier: MIT
 // Built-in `umactually uninstall` subcommand.
@@ -1603,14 +1598,57 @@ function printModesBanner(stream) {
 //     holds a write lock on running executables.
 
 
+
 const { join } = external_node_path_namespaceObject;
 
 const SHELL_RC_FILES = [".zshrc", ".bashrc", ".profile"];
+/** Default stdin reader: a single line from /dev/tty via readline, with a
+ *  30-second safety timeout. Returns null on no-TTY, EOF, timeout, or any
+ *  other failure. Never blocks indefinitely on a pipe. */
+async function defaultStdinReader() {
+    if (process.stdin.isTTY !== true) {
+        return null;
+    }
+    return new Promise((resolve) => {
+        let settled = false;
+        const settle = (value) => {
+            if (settled) {
+                return;
+            }
+            settled = true;
+            try {
+                rl.close();
+            }
+            catch {
+                // rl may already be closed; ignore.
+            }
+            resolve(value);
+        };
+        const timer = setTimeout(() => settle(null), 30_000);
+        const rl = (0,external_node_readline_namespaceObject.createInterface)({
+            input: process.stdin,
+            output: process.stdout,
+            terminal: true,
+        });
+        rl.question("", (answer) => {
+            clearTimeout(timer);
+            settle(answer);
+        });
+        rl.on("close", () => {
+            clearTimeout(timer);
+            settle(null);
+        });
+        rl.on("SIGINT", () => {
+            clearTimeout(timer);
+            settle(null);
+        });
+    });
+}
 const defaultFsAdapter = {
-    exists: (path) => (0,external_node_fs_.existsSync)(path),
+    exists: (path) => (0,external_node_fs_namespaceObject.existsSync)(path),
     isSymlink: (path) => {
         try {
-            return (0,external_node_fs_.lstatSync)(path).isSymbolicLink();
+            return (0,external_node_fs_namespaceObject.lstatSync)(path).isSymbolicLink();
         }
         catch {
             return false;
@@ -1618,7 +1656,7 @@ const defaultFsAdapter = {
     },
     isFile: (path) => {
         try {
-            return (0,external_node_fs_.lstatSync)(path).isFile();
+            return (0,external_node_fs_namespaceObject.lstatSync)(path).isFile();
         }
         catch {
             return false;
@@ -1626,21 +1664,21 @@ const defaultFsAdapter = {
     },
     isDirectory: (path) => {
         try {
-            return (0,external_node_fs_.lstatSync)(path).isDirectory();
+            return (0,external_node_fs_namespaceObject.lstatSync)(path).isDirectory();
         }
         catch {
             return false;
         }
     },
     unlink: (path) => {
-        (0,external_node_fs_.unlinkSync)(path);
+        (0,external_node_fs_namespaceObject.unlinkSync)(path);
     },
     removeDir: (path, options) => {
-        (0,external_node_fs_.rmSync)(path, { recursive: options.recursive, force: true });
+        (0,external_node_fs_namespaceObject.rmSync)(path, { recursive: options.recursive, force: true });
     },
-    readFile: (path) => (0,external_node_fs_.readFileSync)(path, "utf8"),
+    readFile: (path) => (0,external_node_fs_namespaceObject.readFileSync)(path, "utf8"),
     writeFile: (path, content) => {
-        (0,external_node_fs_.writeFileSync)(path, content, "utf8");
+        (0,external_node_fs_namespaceObject.writeFileSync)(path, content, "utf8");
     },
 };
 function parseUninstallArgs(argv) {
@@ -1762,7 +1800,7 @@ function stripShellRcBlocks(content) {
     out += content.slice(cursor);
     return out;
 }
-function runUninstall(deps) {
+async function runUninstall(deps) {
     const checks = [];
     const classified = classifyExecPath(deps.execPath, deps.platform, deps.homeDir);
     if (!classified.ok) {
@@ -1782,7 +1820,8 @@ function runUninstall(deps) {
     // Confirm with the user before mutating the filesystem.
     // Non-interactive shells (CI, cron) must pass --yes.
     if (shouldPrompt(deps)) {
-        const confirm = deps.stdinReader();
+        const reader = deps.stdinReader ?? defaultStdinReader;
+        const confirm = await reader();
         if (confirm === null || !/^y(es)?$/i.test(confirm.trim())) {
             checks.push({
                 id: "binary-removal",
@@ -1969,13 +2008,39 @@ function shouldPrompt(deps) {
     return yesEnv !== "1" && yesEnv !== "true";
 }
 function scheduleWindowsDelayedDelete(targetPath) {
-    // Use cmd.exe's ping trick to wait ~2.5s for the parent to exit, then del.
-    // The `ping -n 4 127.0.0.1` is a portable ~3-second sleep (no PowerShell dep).
-    // The `>nul` redirects ping output. We spawn detached so this function
-    // returns immediately; the cmd.exe will outlive the parent.
-    const cmd = `ping -n 4 127.0.0.1 >nul & del /f /q "${targetPath}"`;
+    // Self-deletion of a running executable on Windows requires a helper
+    // that runs AFTER the parent exits. We write a small .cmd script to
+    // a unique temp file, then spawn it detached. The script:
+    //   1. Enables delayed expansion so %VAR% in the path is not expanded
+    //      at parse time (this was the robustness bug in the previous
+    //      version: a path containing `%TEMP%` would explode the command).
+    //   2. Sets TARGET via `set "TARGET=..."` (cmd.exe's `""` escape
+    //      handles a literal `"` inside the value).
+    //   3. Waits ~3s via `ping -n 4`, then deletes the binary.
+    //   4. Self-deletes the .cmd.
+    //
+    // Passing the path as a separate argv (not interpolated into the
+    // command string) avoids all shell-quoting issues. The path is read
+    // by the script via the %1 parameter. %~1 in the script body is the
+    // path with surrounding quotes already stripped, so we re-quote it
+    // safely with del's normal double-quote rules.
+    const tmpDir = process.env["TEMP"] ?? process.env["TMP"] ?? "/tmp";
+    const scriptPath = join(tmpDir, `umactually-uninstall-${process.pid}-${Date.now()}.cmd`);
+    // `set "TARGET=foo""bar"` correctly sets TARGET to `foo"bar`. cmd.exe
+    // collapses the `""` inside the quoted value to a single literal `"`.
+    const safePath = targetPath.replace(/"/gu, '""');
+    const body = [
+        "@echo off",
+        "setlocal EnableDelayedExpansion",
+        `set "TARGET=${safePath}"`,
+        "ping -n 4 127.0.0.1 >nul",
+        "del /f /q \"!TARGET!\"",
+        `del /f /q "${scriptPath.replace(/"/gu, '""')}"`,
+        "",
+    ].join("\r\n");
     try {
-        (0,external_node_child_process_namespaceObject.spawn)("cmd.exe", ["/c", cmd], {
+        (0,external_node_fs_namespaceObject.writeFileSync)(scriptPath, body, "utf8");
+        (0,external_node_child_process_namespaceObject.spawn)("cmd.exe", ["/c", scriptPath], {
             detached: true,
             stdio: "ignore",
             windowsHide: true,
@@ -2027,6 +2092,17 @@ function formatUninstallJson(result, mode, execPath) {
         checks: result.checks,
     };
     return `${JSON.stringify(envelope)}\n`;
+}
+/**
+ * True if the runUninstall result indicates the user declined the
+ * confirmation prompt. Used by runUninstallBranch to gate the
+ * purge-config and revert-path follow-up actions so a 'n' answer
+ * to the binary prompt does not silently wipe the user's data.
+ */
+function userDeclinedPrompt(result) {
+    return result.exitCode === 1
+        && result.checks.some((c) => c.id === "binary-removal" && c.status === "skip"
+            && c.message.includes("user declined"));
 }
 
 ;// CONCATENATED MODULE: ./src/cli/help.ts
@@ -2434,7 +2510,7 @@ async function runDoctorBranch(args) {
     process.stdout.write(stdout);
     return { exitCode: result.exitCode, stdout };
 }
-function runUninstallBranch(args) {
+async function runUninstallBranch(args) {
     const { mode, errors, help, json } = parseUninstallArgs(args);
     if (help) {
         process.stdout.write(uninstall_UNINSTALL_HELP_TEXT);
@@ -2450,31 +2526,24 @@ function runUninstallBranch(args) {
         isTTY: process.stdout.isTTY === true && !json,
         env: process.env,
         fsAdapter: defaultFsAdapter,
-        stdinReader: () => {
-            // Read a single line from stdin without blocking. In test mode the
-            // caller injects a custom reader; here we use a non-blocking read of
-            // /dev/tty (POSIX) or fall back to null (CI / non-TTY).
-            try {
-                if (process.stdin.isTTY !== true) {
-                    return null;
-                }
-                const buf = (__nccwpck_require__(24).readFileSync)(0, "utf8", { encoding: "utf8" });
-                return buf.length === 0 ? null : buf;
-            }
-            catch {
-                return null;
-            }
-        },
+        // No stdinReader injected — uninstall.ts falls back to its built-in
+        // readline-based default, which is non-blocking and timeout-safe.
         execPath: process.execPath,
         platform: process.platform,
         homeDir: (__nccwpck_require__(161).homedir)(),
         mode,
     };
-    const result = runUninstall(deps);
-    const additionalChecks = [
-        ...(mode.purgeConfig ? purgeConfig(deps) : []),
-        ...(mode.revertPath ? revertPath(deps) : []),
-    ];
+    const result = await runUninstall(deps);
+    // If the user declined the prompt for the binary removal, do NOT run
+    // the follow-up destructive actions. A 'n' answer should be an
+    // unconditional abort, not a partial state where the binary is kept
+    // but config and shell-rc edits are still wiped.
+    const additionalChecks = userDeclinedPrompt(result)
+        ? []
+        : [
+            ...(mode.purgeConfig ? purgeConfig(deps) : []),
+            ...(mode.revertPath ? revertPath(deps) : []),
+        ];
     const checks = [...result.checks, ...additionalChecks];
     const exitCode = checks.some((c) => c.status === "fail") ? 1 : result.exitCode;
     const finalResult = { ...result, exitCode, checks };
@@ -6164,7 +6233,7 @@ function resolveDefaultPromptFilesOnce(cwd) {
                 `Entries must be relative paths with no '..' segments and no leading '/' or drive letter.`);
         }
         try {
-            const s = (0,external_node_fs_.statSync)((0,external_node_path_namespaceObject.join)(cwd, candidate));
+            const s = (0,external_node_fs_namespaceObject.statSync)((0,external_node_path_namespaceObject.join)(cwd, candidate));
             if (s.isFile())
                 out.push(candidate);
         }
@@ -17248,7 +17317,7 @@ function writeSyntheticEventJson(filePath, args) {
         action: "synthetic",
         sender: { login: "local-smoke-test" },
     };
-    (0,external_node_fs_.writeFileSync)(filePath, `${JSON.stringify(event, null, 2)}\n`, "utf8");
+    (0,external_node_fs_namespaceObject.writeFileSync)(filePath, `${JSON.stringify(event, null, 2)}\n`, "utf8");
     return filePath;
 }
 /**
@@ -17344,11 +17413,11 @@ function deriveContextFromGit(input) {
     // if the diff is empty — that's fine for smoke tests on the default branch.
     if (diffOverride === undefined || diffOverride === null) {
         const diffOutput = gitOrThrow(cwd, ["diff", `${base}...HEAD`]);
-        (0,external_node_fs_.mkdirSync)(tempDir, { recursive: true });
-        (0,external_node_fs_.writeFileSync)(diffPath, diffOutput, "utf8");
+        (0,external_node_fs_namespaceObject.mkdirSync)(tempDir, { recursive: true });
+        (0,external_node_fs_namespaceObject.writeFileSync)(diffPath, diffOutput, "utf8");
     }
     if (eventOverride === undefined || eventOverride === null) {
-        (0,external_node_fs_.mkdirSync)(tempDir, { recursive: true });
+        (0,external_node_fs_namespaceObject.mkdirSync)(tempDir, { recursive: true });
         writeSyntheticEventJson(eventPath, { branch: currentBranch, base, repo });
     }
     // 7. posting identity is null. The caller (src/cli.ts) gates posting
@@ -17417,7 +17486,7 @@ function readPackageVersion() {
         return UMACTUALLY_VERSION;
     }
     const packageJsonUrl = __nccwpck_require__.ab + "package.json";
-    const raw = (0,external_node_fs_.readFileSync)(packageJsonUrl, "utf8");
+    const raw = (0,external_node_fs_namespaceObject.readFileSync)(packageJsonUrl, "utf8");
     const parsed = JSON.parse(raw);
     if (typeof parsed.version !== "string" || parsed.version.length === 0) {
         throw new Error("package.json is missing a string `version` field");
