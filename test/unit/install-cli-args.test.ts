@@ -333,7 +333,7 @@ exit 0
     );
     const result = runInstall(["--tag", server!.tag], {
       INSTALL_TEST_NO_SMOKE: "1",
-      PATH: `${fakeBin}:${process.env.PATH ?? ""}`,
+      PATH: `${fakeBin}:${process.env['PATH'] ?? ""}`,
     });
     expect(result.stderr).toMatch(/curl is built against Windows Schannel/);
     expect(result.stderr).toMatch(/CRYPT_E_REVOCATION_OFFLINE/);
@@ -357,7 +357,7 @@ exit 0
     const result = runInstall(["--tag", server!.tag], {
       INSTALL_TEST_NO_SMOKE: "1",
       INSTALL_SSL_NO_REVOKE: "1",
-      PATH: `${fakeBin}:${process.env.PATH ?? ""}`,
+      PATH: `${fakeBin}:${process.env['PATH'] ?? ""}`,
     });
     expect(result.stderr).not.toMatch(/curl is built against Windows Schannel/);
   });
@@ -380,7 +380,7 @@ exit 35
       INSTALL_TEST_FAKE_TAG: "v9.9.9",
       PLATFORM_OVERRIDE: "linux",
       ARCH_OVERRIDE: "x64",
-      PATH: `${fakeBin}:${process.env.PATH ?? ""}`,
+      PATH: `${fakeBin}:${process.env['PATH'] ?? ""}`,
     });
     expect(result.status).toBe(1);
     expect(result.stderr).toMatch(/Windows Schannel CRYPT_E_REVOCATION_OFFLINE 0x80092013/);
