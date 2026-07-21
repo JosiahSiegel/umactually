@@ -12535,6 +12535,21 @@ const RETRY_BACKOFF_MS = [250, 1_000];
 async function runWithRetry(config, fetchImpl, requestId, endpoint, baseUrl) {
     let lastFailure = null;
     for (let attempt = 0; attempt <= RETRY_BACKOFF_MS.length; attempt += 1) {
+        // Bail out if the caller's signal is already aborted. Without this
+        // check, the next runWithEndpoint would compose its signal with an
+        // already-aborted caller signal — `AbortSignal.any([aborted, ...])`
+        // is itself aborted, so the second attempt would fail immediately
+        // with a "timeout" error, even though the underlying connection
+        // was healthy. That makes the "timeout is transient, retry it"
+        // rationale void (we'd be reporting a fake timeout, not a real one).
+        // Reporting an "aborted" error here is semantically correct and
+        // also not retryable, so we naturally exit the loop.
+        if (config.signal?.aborted === true) {
+            return {
+                ok: false,
+                error: new ProviderError("aborted", endpoint, null, requestId, "Caller aborted the request before retry."),
+            };
+        }
         const result = await runWithEndpoint(config, fetchImpl, requestId, endpoint, baseUrl);
         if (result.ok) {
             return result;
@@ -12556,6 +12571,14 @@ function isRetryable(error) {
     // middle of a failover, etc. Without this, a single TCP hiccup
     // kills the whole review.
     if (error.code === "network") {
+        return true;
+    }
+    // Timeouts are transient (cold-start latency, gateway reset, slow
+    // stream). A retry with the same timeout often succeeds because the
+    // provider may have started streaming by the time the abort fired.
+    // Without this, a single slow request fails the whole review even
+    // though the underlying connection is healthy.
+    if (error.code === "timeout") {
         return true;
     }
     return error.status === 429 || (typeof error.status === "number" && error.status >= 500);
@@ -13034,6 +13057,21 @@ async function runAnthropicRequest(config) {
 async function anthropic_messages_runWithRetry(config, fetchImpl, requestId, url) {
     let lastFailure = null;
     for (let attempt = 0; attempt <= anthropic_messages_RETRY_BACKOFF_MS.length; attempt += 1) {
+        // Bail out if the caller's signal is already aborted. Without this
+        // check, the next runOnce would compose its signal with an
+        // already-aborted caller signal — `AbortSignal.any([aborted, ...])`
+        // is itself aborted, so the second attempt would fail immediately
+        // with a "timeout" error, even though the underlying connection
+        // was healthy. That makes the "timeout is transient, retry it"
+        // rationale void (we'd be reporting a fake timeout, not a real one).
+        // Reporting an "aborted" error here is semantically correct and
+        // also not retryable, so we naturally exit the loop.
+        if (config.signal?.aborted === true) {
+            return {
+                ok: false,
+                error: new ProviderError("aborted", ENDPOINT, null, requestId, "Caller aborted the request before retry."),
+            };
+        }
         const result = await runOnce(config, fetchImpl, requestId, url);
         if (result.ok) {
             return result;
@@ -13054,6 +13092,14 @@ async function anthropic_messages_runWithRetry(config, fetchImpl, requestId, url
 }
 function anthropic_messages_isRetryable(error) {
     if (error.code === "network") {
+        return true;
+    }
+    // Timeouts are transient (cold-start latency, TCP RST, gateway timeout).
+    // A retry with the same or longer timeout often succeeds where the first
+    // attempt failed, because the provider may have already started streaming
+    // by the time the abort fires. Without this, a single slow request kills
+    // the whole review.
+    if (error.code === "timeout") {
         return true;
     }
     return error.status === 429 || (typeof error.status === "number" && error.status >= 500);
