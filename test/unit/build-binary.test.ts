@@ -7,6 +7,7 @@ import { spawnSync } from "node:child_process";
 import { afterEach, describe, expect, it } from "vitest";
 
 import { parseReleaseTargets } from "../../scripts/release-targets.ts";
+import { NODE_24_REQUIRED } from "../helpers/node-version-gate.ts";
 
 const REPO_ROOT = resolve(import.meta.dirname, "..", "..");
 const BUILD_SCRIPT = join(REPO_ROOT, "scripts", "build-binary.mjs");
@@ -92,7 +93,7 @@ function runBuild(fakeVersion: string, targetId: string): BuildResult {
   return base;
 }
 
-describe("standalone binary build policy", () => {
+describe.skipIf(NODE_24_REQUIRED)("standalone binary build policy", () => {
   it("rejects every Bun version except exact 1.3.14 before spawning a build", () => {
     const accepted = runBuild("1.3.14", "linux-x64");
     expect(accepted.status, accepted.stderr).toBe(0);

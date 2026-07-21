@@ -36,6 +36,7 @@ import {
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { NODE_24_REQUIRED } from "../helpers/node-version-gate.ts";
 
 const REPO_ROOT = resolve(import.meta.dirname, "..", "..");
 const VERIFIER = join(REPO_ROOT, "scripts", "verify-release-assets.mjs");
@@ -126,7 +127,7 @@ afterEach(() => {
   }
 });
 
-describe("verify-release-assets — CLI surface and exit codes", () => {
+describe.skipIf(NODE_24_REQUIRED)("verify-release-assets — CLI surface and exit codes", () => {
   it("writes a six-line checksums.txt and a complete report in --measure mode", () => {
     const reportPath = join(sandbox, "report.json");
     const result = runVerifier([
@@ -222,7 +223,7 @@ describe("verify-release-assets — CLI surface and exit codes", () => {
   });
 });
 
-describe("verify-release-assets — checksum grammar rejection", () => {
+describe.skipIf(NODE_24_REQUIRED)("verify-release-assets — checksum grammar rejection", () => {
   // The verifier is a generator AND a checker. To exercise the checker
   // branch we write a hostile `checksums.txt` next to the archives and
   // invoke the script with `--enforce` (or measurement mode) and inspect

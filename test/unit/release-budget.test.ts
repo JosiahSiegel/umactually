@@ -32,6 +32,7 @@ import {
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { NODE_24_REQUIRED } from "../helpers/node-version-gate.ts";
 
 const REPO_ROOT = resolve(import.meta.dirname, "..", "..");
 const VERIFIER = join(REPO_ROOT, "scripts", "verify-release-assets.mjs");
@@ -108,7 +109,7 @@ afterEach(() => {
   }
 });
 
-describe("release-size-budget.json — formula correctness", () => {
+describe.skipIf(NODE_24_REQUIRED)("release-size-budget.json — formula correctness", () => {
   it("derives 68 MiB from a 61.6 MiB baseline", () => {
     // The plan's canonical example: 61.6 MiB → 68 MiB.
     const baselineBytes = 61.6 * MIB;
@@ -200,7 +201,7 @@ describe("release-size-budget.json — formula correctness", () => {
   });
 });
 
-describe("verify-release-assets — budget-loader validation", () => {
+describe.skipIf(NODE_24_REQUIRED)("verify-release-assets — budget-loader validation", () => {
   // Generate a checksums.txt up front (one per test) so the
   // `--enforce --budget <path>` invocation has something to verify
   // against. The verifier's CLI requires either an existing
