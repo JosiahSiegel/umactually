@@ -51,7 +51,7 @@
     "test:config": "vitest --run --project unit test/unit/config-extended.test.ts",
     "typecheck": "tsc --noEmit -p tsconfig.test.json",
     "build": "ncc build src/cli.ts -o dist && node scripts/post-bundle.mjs",
-    "build:binary": "node scripts/build-binary.mjs",
+    "build:binary": "node scripts/build-sea.mjs",
     "bundle": "npm run build",
     "render-docs": "node scripts/render-versions.mjs",
     "render-docs:check": "node scripts/render-versions.mjs --check",
@@ -59,7 +59,9 @@
     "check:dist-freshness": "node scripts/check-dist-freshness.mjs",
     "view:summary-layouts": "node scripts/view-summary-layouts.mjs",
     "clean:summary-layouts": "node scripts/clean-viewer.mjs",
-    "prepublishOnly": "npm run typecheck && npm test -- --run && npm run bundle && npm run render-docs && npm run check:version-alignment && npm run check:dist-freshness"
+    "prepublishOnly": "npm run typecheck && npm test -- --run && npm run bundle && npm run render-docs && npm run check:version-alignment && npm run check:dist-freshness",
+    "build:sea": "node scripts/build-sea.mjs",
+    "build:sea:all": "node scripts/build-sea.mjs all"
   },
   "engines": {
     "node": ">=24"
@@ -73,6 +75,8 @@
     "vitest": "^4.1.0",
     "yaml": "^2.9.0",
     "yauzl": "3.4.0",
-    "yazl": "3.3.1"
+    "yazl": "3.3.1",
+    "tsdown": "0.22.13",
+    "@tsdown/exe": "0.22.13"
   }
 }
