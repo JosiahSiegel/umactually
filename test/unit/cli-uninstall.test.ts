@@ -6,7 +6,7 @@
 // adapter, purgeConfig, revertPath) so we never touch the real filesystem
 // and never need the user to confirm anything.
 
-import { describe, expect, it, vi } from "vitest";
+import { describe, expect, it } from "vitest";
 import { sep } from "node:path";
 
 import {
