@@ -1,14 +1,5 @@
 import { createRequire as __WEBPACK_EXTERNAL_createRequire } from "module";
-/******/ var __webpack_modules__ = ({
-
-/***/ 161:
-/***/ ((module) => {
-
-module.exports = __WEBPACK_EXTERNAL_createRequire(import.meta.url)("node:os");
-
-/***/ })
-
-/******/ });
+/******/ var __webpack_modules__ = ({});
 /************************************************************************/
 /******/ // The module cache
 /******/ var __webpack_module_cache__ = {};
@@ -1315,6 +1306,8 @@ function unknownFlagUsageError(token, argv) {
 
 ;// CONCATENATED MODULE: external "node:child_process"
 const external_node_child_process_namespaceObject = __WEBPACK_EXTERNAL_createRequire(import.meta.url)("node:child_process");
+;// CONCATENATED MODULE: external "node:os"
+const external_node_os_namespaceObject = __WEBPACK_EXTERNAL_createRequire(import.meta.url)("node:os");
 ;// CONCATENATED MODULE: external "node:url"
 const external_node_url_namespaceObject = __WEBPACK_EXTERNAL_createRequire(import.meta.url)("node:url");
 ;// CONCATENATED MODULE: external "node:util"
@@ -1607,21 +1600,30 @@ const SHELL_RC_FILES = [".zshrc", ".bashrc", ".profile"];
  *  30-second safety timeout. Returns null on no-TTY, EOF, timeout, or any
  *  other failure. Never blocks indefinitely on a pipe.
  *
- *  The prompt text is written to STDERR (not stdout) so it does not
- *  interleave with the human output stream (the OK / WARN / FAIL check
- *  lines, the JSON envelope, and the exit-code banner all go to stdout).
- *  We do NOT pass `output: process.stdout` to readline with `terminal:
- *  true` because that path emits `\r\n` on stdout before reading the
- *  answer — which would interleave a stray blank line with the check
- *  lines emitted later. Instead we use `terminal: false` (no TTY-aware
- *  prompt handling) and write the prompt ourselves via stderr.
+ *  The `isTTY` parameter is REQUIRED. The caller is expected to pass the
+ *  same TTY signal it used to decide whether to prompt in the first place
+ *  (typically `deps.isTTY`). This avoids a subtle inconsistency: in JSON
+ *  mode, `deps.isTTY` is `false` (so the prompt is skipped to keep the
+ *  JSON envelope clean), but `process.stdin.isTTY` is independent and
+ *  could still be `true` if the user is running interactively. Reading
+ *  process.stdin in that case would corrupt the JSON output. The caller
+ *  is the source of truth for "should we prompt?".
  *
- *  `terminal: false` requires a TTY for line-editing support; on a real
- *  TTY the raw line-mode read still works. The 30s timer is the
- *  user-facing safety: SIGINT (Ctrl+C) and EOF (Ctrl+D) both settle
- *  with `null`, which `shouldPrompt` treats as a decline. */
-async function defaultStdinReader(promptText) {
-    if (process.stdin.isTTY !== true) {
+ *  The prompt text is written to STDERR (not stdout) so it does not
+ *  interleave with the human output stream. We do NOT pass
+ *  `output: process.stdout` to readline with `terminal: true` because
+ *  that path emits `
+` to stdout before reading the answer —
+ *  which would interleave a stray blank line with the check lines
+ *  emitted later. Instead we use `terminal: false` and write the
+ *  prompt via stderr.
+ *
+ *  `terminal: false` disables TTY-aware prompt handling; on a real TTY
+ *  the raw line-mode read still works. The 30s timer is the user-facing
+ *  safety: SIGINT (Ctrl+C) and EOF (Ctrl+D) both settle with `null`,
+ *  which `shouldPrompt` treats as a decline. */
+async function defaultStdinReader(promptText, isTTY) {
+    if (isTTY !== true) {
         return null;
     }
     return new Promise((resolve) => {
@@ -1882,7 +1884,7 @@ async function runUninstall(deps) {
     }
     else if (shouldPrompt(deps)) {
         const reader = deps.stdinReader ?? defaultStdinReader;
-        const confirm = await reader("Remove the running binary? [y/N] ");
+        const confirm = await reader("Remove the running binary? [y/N] ", deps.isTTY);
         if (confirm === null || !/^y(es)?$/i.test(confirm.trim())) {
             checks.push({
                 id: "binary-removal",
@@ -2454,6 +2456,7 @@ function resolveColorPolicy(opts) {
 
 
 
+
 const GLOBAL_ONLY_FLAGS = new Set(["--json", "--no-color"]);
 const execFile = (0,external_node_util_namespaceObject.promisify)(external_node_child_process_namespaceObject.execFile);
 function firstPositionalToken(argv) {
@@ -2603,7 +2606,7 @@ async function runUninstallBranch(args) {
         // readline-based default, which is non-blocking and timeout-safe.
         execPath: process.execPath,
         platform: process.platform,
-        homeDir: (__nccwpck_require__(161).homedir)(),
+        homeDir: (0,external_node_os_namespaceObject.homedir)(),
         mode,
     };
     // Gate the destructive follow-ups (--purge-config, --revert-path)
@@ -2640,7 +2643,7 @@ async function runUninstallBranch(args) {
             }
             const promptText = `Also ${parts.join(" and ")}? [y/N] `;
             const reader = deps.stdinReader ?? defaultStdinReader;
-            const confirm = await reader(promptText);
+            const confirm = await reader(promptText, deps.isTTY);
             if (confirm !== null && /^y(es)?$/i.test(confirm.trim())) {
                 additionalChecks = [
                     ...(mode.purgeConfig ? purgeConfig(deps) : []),

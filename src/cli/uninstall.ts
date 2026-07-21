@@ -101,21 +101,33 @@ export type UninstallDeps = {
  *  30-second safety timeout. Returns null on no-TTY, EOF, timeout, or any
  *  other failure. Never blocks indefinitely on a pipe.
  *
- *  The prompt text is written to STDERR (not stdout) so it does not
- *  interleave with the human output stream (the OK / WARN / FAIL check
- *  lines, the JSON envelope, and the exit-code banner all go to stdout).
- *  We do NOT pass `output: process.stdout` to readline with `terminal:
- *  true` because that path emits `\r\n` on stdout before reading the
- *  answer — which would interleave a stray blank line with the check
- *  lines emitted later. Instead we use `terminal: false` (no TTY-aware
- *  prompt handling) and write the prompt ourselves via stderr.
+ *  The `isTTY` parameter is REQUIRED. The caller is expected to pass the
+ *  same TTY signal it used to decide whether to prompt in the first place
+ *  (typically `deps.isTTY`). This avoids a subtle inconsistency: in JSON
+ *  mode, `deps.isTTY` is `false` (so the prompt is skipped to keep the
+ *  JSON envelope clean), but `process.stdin.isTTY` is independent and
+ *  could still be `true` if the user is running interactively. Reading
+ *  process.stdin in that case would corrupt the JSON output. The caller
+ *  is the source of truth for "should we prompt?".
  *
- *  `terminal: false` requires a TTY for line-editing support; on a real
- *  TTY the raw line-mode read still works. The 30s timer is the
- *  user-facing safety: SIGINT (Ctrl+C) and EOF (Ctrl+D) both settle
- *  with `null`, which `shouldPrompt` treats as a decline. */
-export async function defaultStdinReader(promptText: string): Promise<string | null> {
-  if (process.stdin.isTTY !== true) {
+ *  The prompt text is written to STDERR (not stdout) so it does not
+ *  interleave with the human output stream. We do NOT pass
+ *  `output: process.stdout` to readline with `terminal: true` because
+ *  that path emits `
+` to stdout before reading the answer —
+ *  which would interleave a stray blank line with the check lines
+ *  emitted later. Instead we use `terminal: false` and write the
+ *  prompt via stderr.
+ *
+ *  `terminal: false` disables TTY-aware prompt handling; on a real TTY
+ *  the raw line-mode read still works. The 30s timer is the user-facing
+ *  safety: SIGINT (Ctrl+C) and EOF (Ctrl+D) both settle with `null`,
+ *  which `shouldPrompt` treats as a decline. */
+export async function defaultStdinReader(
+  promptText: string,
+  isTTY: boolean,
+): Promise<string | null> {
+  if (isTTY !== true) {
     return null;
   }
   return new Promise((resolve) => {
@@ -395,7 +407,7 @@ export async function runUninstall(deps: UninstallDeps): Promise<UninstallResult
     return { exitCode: 0, checks };
   } else if (shouldPrompt(deps)) {
     const reader = deps.stdinReader ?? defaultStdinReader;
-    const confirm = await reader("Remove the running binary? [y/N] ");
+    const confirm = await reader("Remove the running binary? [y/N] ", deps.isTTY);
     if (confirm === null || !/^y(es)?$/i.test(confirm.trim())) {
       checks.push({
         id: "binary-removal",

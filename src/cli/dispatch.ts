@@ -3,6 +3,7 @@
 
 import { execFile as execFileCallback } from "node:child_process";
 import { stat } from "node:fs/promises";
+import { homedir } from "node:os";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
@@ -200,7 +201,7 @@ async function runUninstallBranch(args: readonly string[]): Promise<DispatchResu
     // readline-based default, which is non-blocking and timeout-safe.
     execPath: process.execPath,
     platform: process.platform,
-    homeDir: require("node:os").homedir(),
+    homeDir: homedir(),
     mode,
   };
   // Gate the destructive follow-ups (--purge-config, --revert-path)
@@ -240,7 +241,7 @@ async function runUninstallBranch(args: readonly string[]): Promise<DispatchResu
       }
       const promptText = `Also ${parts.join(" and ")}? [y/N] `;
       const reader = deps.stdinReader ?? defaultStdinReader;
-      const confirm = await reader(promptText);
+      const confirm = await reader(promptText, deps.isTTY);
       if (confirm !== null && /^y(es)?$/i.test(confirm.trim())) {
         additionalChecks = [
           ...(mode.purgeConfig ? purgeConfig(deps) : []),

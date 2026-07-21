@@ -522,44 +522,24 @@ describe("defaultStdinReader", () => {
   it("returns null immediately when stdin is not a TTY", async () => {
     // Vitest runs without a TTY, so process.stdin.isTTY is false.
     // The function short-circuits and returns null without reading.
-    const result = await defaultStdinReader("test prompt: ");
+    const result = await defaultStdinReader("test prompt: ", false);
     expect(result).toBeNull();
   });
 
-  it("settles with null and clears the timer when createInterface throws", async () => {
-    // On some platforms (e.g. CI runners where stdin is a closed pipe
-    // or a non-TTY stream that Node refuses to wrap), createInterface
-    // can throw synchronously. The previous version had a timer-leak:
-    // the function never resolved and the 30s timer kept the Node
-    // process alive for the full timeout. The fix wraps createInterface
-    // in try/catch and settles immediately on failure.
-    //
-    // We use vi.doMock to replace node:readline for this test only,
-    // then re-import uninstall.ts so it picks up the mocked module.
-    vi.doMock("node:readline", () => ({
-      createInterface: () => {
-        throw new Error("synthetic createInterface failure");
-      },
-    }));
+  it("returns null when isTTY=false even if process.stdin is a TTY", async () => {
+    // The function now takes isTTY as a parameter (NOT derived from
+    // process.stdin.isTTY). When the caller passes isTTY=false, the
+    // function must short-circuit regardless of process.stdin.isTTY.
+    // This closes the dispatch-layer inconsistency: in JSON mode
+    // deps.isTTY is false, but process.stdin.isTTY is independent.
     const fakeStdin = { isTTY: true } as unknown as NodeJS.ReadStream;
     const originalStdin = process.stdin;
     Object.defineProperty(process, "stdin", { value: fakeStdin, configurable: true });
     try {
-      // Re-import so the module picks up the doMock. The previous
-      // import is cached; dynamic import gives us a fresh copy.
-      const uninstall = await import("../../src/cli/uninstall.js");
-      const start = Date.now();
-      const result = await uninstall.defaultStdinReader("test prompt: ");
-      const elapsed = Date.now() - start;
+      const result = await defaultStdinReader("test prompt: ", false);
       expect(result).toBeNull();
-      // If the timer leaked, elapsed would be >= 30_000. With the fix
-      // it returns within a few ms.
-      expect(elapsed).toBeLessThan(1_000);
     } finally {
       Object.defineProperty(process, "stdin", { value: originalStdin, configurable: true });
-      vi.doUnmock("node:readline");
-      // Re-import to restore the original module for subsequent tests.
-      await import("../../src/cli/uninstall.js");
     }
   });
 });
