@@ -1,5 +1,21 @@
 import { createRequire as __WEBPACK_EXTERNAL_createRequire } from "module";
-/******/ var __webpack_modules__ = ({});
+/******/ var __webpack_modules__ = ({
+
+/***/ 24:
+/***/ ((module) => {
+
+module.exports = __WEBPACK_EXTERNAL_createRequire(import.meta.url)("node:fs");
+
+/***/ }),
+
+/***/ 161:
+/***/ ((module) => {
+
+module.exports = __WEBPACK_EXTERNAL_createRequire(import.meta.url)("node:os");
+
+/***/ })
+
+/******/ });
 /************************************************************************/
 /******/ // The module cache
 /******/ var __webpack_module_cache__ = {};
@@ -67,8 +83,8 @@ __nccwpck_require__.d(__webpack_exports__, {
   yh: () => (/* binding */ runVersion)
 });
 
-;// CONCATENATED MODULE: external "node:fs"
-const external_node_fs_namespaceObject = __WEBPACK_EXTERNAL_createRequire(import.meta.url)("node:fs");
+// EXTERNAL MODULE: external "node:fs"
+var external_node_fs_ = __nccwpck_require__(24);
 ;// CONCATENATED MODULE: external "node:fs/promises"
 const promises_namespaceObject = __WEBPACK_EXTERNAL_createRequire(import.meta.url)("node:fs/promises");
 ;// CONCATENATED MODULE: external "node:path"
@@ -1322,7 +1338,7 @@ const CLEAN_VERDICTS = new Set(["APPROVED", "SHIP"]);
 function classifyReviewArtifact(path) {
     let content;
     try {
-        content = (0,external_node_fs_namespaceObject.readFileSync)(path, "utf8");
+        content = (0,external_node_fs_.readFileSync)(path, "utf8");
     }
     catch (error) {
         if (isNodeError(error) && error.code === "ENOENT") {
@@ -1556,6 +1572,446 @@ function printModesBanner(stream) {
     output?.write(CLI_MODES_TEXT);
 }
 
+;// CONCATENATED MODULE: ./src/cli/uninstall.ts
+// SPDX-License-Identifier: MIT
+// Built-in `umactually uninstall` subcommand.
+//
+// Removes the running binary from disk, and (optionally) the
+// `~/.umactually/` config directory, `~/.cache/umactually/` cache
+// directory, and the PATH-entry block that the installer wrote to
+// `~/.zshrc` / `~/.bashrc` / `~/.profile`.
+//
+// Usage:
+//   umactually uninstall [flags]
+//
+// Flags:
+//   --remove-binary    (default) Delete the running binary.
+//   --purge-config     Also delete ~/.umactually/ and ~/.cache/umactually/.
+//   --revert-path      Also remove the installer's PATH line from shell rc files.
+//   --yes              Skip the interactive "are you sure" prompt.
+//   --json             Emit machine-readable JSON output.
+//   --help, -h         Show this help.
+//
+// Safety:
+//   - Refuses to run if process.execPath does not look like a umactually
+//     binary (basename must be "umactually" or "umactually.exe").
+//   - Refuses to run if the binary is in a directory we don't recognise
+//     as an install target (anything outside the home-dir-local/bin,
+//     /usr/local/bin, or the same path that install.sh writes to).
+//   - On Windows, self-deletion requires a helper command spawned before
+//     the process exits (cmd /c "ping ... & del ...") because Windows
+//     holds a write lock on running executables.
+
+
+const { join } = external_node_path_namespaceObject;
+
+const SHELL_RC_FILES = [".zshrc", ".bashrc", ".profile"];
+const defaultFsAdapter = {
+    exists: (path) => (0,external_node_fs_.existsSync)(path),
+    isSymlink: (path) => {
+        try {
+            return (0,external_node_fs_.lstatSync)(path).isSymbolicLink();
+        }
+        catch {
+            return false;
+        }
+    },
+    isFile: (path) => {
+        try {
+            return (0,external_node_fs_.lstatSync)(path).isFile();
+        }
+        catch {
+            return false;
+        }
+    },
+    isDirectory: (path) => {
+        try {
+            return (0,external_node_fs_.lstatSync)(path).isDirectory();
+        }
+        catch {
+            return false;
+        }
+    },
+    unlink: (path) => {
+        (0,external_node_fs_.unlinkSync)(path);
+    },
+    removeDir: (path, options) => {
+        (0,external_node_fs_.rmSync)(path, { recursive: options.recursive, force: true });
+    },
+    readFile: (path) => (0,external_node_fs_.readFileSync)(path, "utf8"),
+    writeFile: (path, content) => {
+        (0,external_node_fs_.writeFileSync)(path, content, "utf8");
+    },
+};
+function parseUninstallArgs(argv) {
+    const errors = [];
+    let removeBinary = true;
+    let purgeConfig = false;
+    let revertPath = false;
+    let yes = false;
+    let help = false;
+    let json = false;
+    for (let i = 0; i < argv.length; i += 1) {
+        const arg = argv[i];
+        if (arg === undefined) {
+            continue;
+        }
+        switch (arg) {
+            case "--help":
+            case "-h":
+                help = true;
+                break;
+            case "--remove-binary":
+                removeBinary = true;
+                break;
+            case "--no-remove-binary":
+                removeBinary = false;
+                break;
+            case "--purge-config":
+                purgeConfig = true;
+                break;
+            case "--revert-path":
+                revertPath = true;
+                break;
+            case "--yes":
+            case "-y":
+                yes = true;
+                break;
+            case "--json":
+                json = true;
+                break;
+            default:
+                if (arg.startsWith("-")) {
+                    errors.push(`unknown flag: ${arg}`);
+                }
+                else {
+                    errors.push(`unexpected positional arg: ${arg}`);
+                }
+        }
+    }
+    const mode = { removeBinary, purgeConfig, revertPath, yes };
+    return { mode, errors, help, json };
+}
+function classifyExecPath(execPath, platform, homeDir) {
+    const p = platform === "win32" ? external_node_path_namespaceObject.win32 : external_node_path_namespaceObject.posix;
+    const name = p.basename(execPath).toLowerCase();
+    if (platform === "win32") {
+        if (name !== "umactually.exe") {
+            return { ok: false, reason: `process.execPath basename is "${name}", expected "umactually.exe"` };
+        }
+    }
+    else if (name !== "umactually") {
+        return { ok: false, reason: `process.execPath basename is "${name}", expected "umactually"` };
+    }
+    const parent = p.dirname(execPath);
+    const homeLocalBin = p.join(homeDir, ".local", "bin");
+    if (parent === homeLocalBin) {
+        return { ok: true, installDir: parent };
+    }
+    if (platform !== "win32" && (parent === "/usr/local/bin" || parent === `${p.sep}usr${p.sep}local${p.sep}bin`)) {
+        return { ok: true, installDir: parent };
+    }
+    // Fall back: parent is *some* ".../bin" and contains the home dir as a prefix
+    // (covers /opt/<user>/bin, C:\Users\foo\bin, etc.). Refuse anything else.
+    if (parent.endsWith(`${p.sep}bin`) &&
+        (parent.startsWith(homeDir) || parent.startsWith(`/opt${p.sep}`))) {
+        return { ok: true, installDir: parent };
+    }
+    return {
+        ok: false,
+        reason: `process.execPath "${execPath}" is not in a recognised install directory (${homeLocalBin}, /usr/local/bin, or a home-dir-relative /bin)`,
+    };
+}
+function findShellRcBlocks(content) {
+    // Matches the two-line block written by install.sh:
+    //   # Added by umactually installer
+    //   export PATH="<dir>:$PATH"
+    // (with optional trailing newline)
+    const blocks = [];
+    const re = /^[ \t]*# Added by umactually installer[^\n]*\n[ \t]*export PATH="[^"]*"[ \t]*\n?/gm;
+    let m;
+    while ((m = re.exec(content)) !== null) {
+        blocks.push({ start: m.index, end: m.index + m[0].length });
+    }
+    return blocks;
+}
+function stripShellRcBlocks(content) {
+    const blocks = findShellRcBlocks(content);
+    if (blocks.length === 0) {
+        return content;
+    }
+    let out = "";
+    let cursor = 0;
+    for (const block of blocks) {
+        out += content.slice(cursor, block.start);
+        cursor = block.end;
+    }
+    out += content.slice(cursor);
+    return out;
+}
+function runUninstall(deps) {
+    const checks = [];
+    const classified = classifyExecPath(deps.execPath, deps.platform, deps.homeDir);
+    if (!classified.ok) {
+        checks.push({
+            id: "exec-path",
+            status: "fail",
+            message: classified.reason,
+            hint: "Run uninstall from the installed binary, not from `node` or an npm-installed copy",
+        });
+        return { exitCode: 2, checks };
+    }
+    checks.push({
+        id: "exec-path",
+        status: "ok",
+        message: `${deps.execPath} is a recognised umactually install location`,
+    });
+    // Confirm with the user before mutating the filesystem.
+    // Non-interactive shells (CI, cron) must pass --yes.
+    if (shouldPrompt(deps)) {
+        const confirm = deps.stdinReader();
+        if (confirm === null || !/^y(es)?$/i.test(confirm.trim())) {
+            checks.push({
+                id: "binary-removal",
+                status: "skip",
+                message: "user declined the confirmation prompt",
+            });
+            return { exitCode: 1, checks };
+        }
+    }
+    // Always check the symlink/file shape of the binary.
+    const isLink = deps.fsAdapter.isSymlink(deps.execPath);
+    const isFile = deps.fsAdapter.isFile(deps.execPath);
+    if (isLink) {
+        checks.push({
+            id: "binary-removal",
+            status: "fail",
+            message: `${deps.execPath} is a symlink — refusing to unlink it directly`,
+            hint: "Resolve the link and uninstall the target instead",
+        });
+        return { exitCode: 2, checks };
+    }
+    if (!isFile) {
+        checks.push({
+            id: "binary-removal",
+            status: "skip",
+            message: `${deps.execPath} is not a regular file (already removed?)`,
+        });
+    }
+    else {
+        try {
+            deps.fsAdapter.unlink(deps.execPath);
+            checks.push({
+                id: "binary-removal",
+                status: "ok",
+                message: `removed ${deps.execPath}`,
+            });
+            // On Windows the unlink of a running executable may fail; check
+            // the file is actually gone. If not, fall back to a delayed-del
+            // helper that runs after this process exits.
+            if (deps.platform === "win32" && deps.fsAdapter.exists(deps.execPath)) {
+                scheduleWindowsDelayedDelete(deps.execPath);
+                checks.push({
+                    id: "self-deletion",
+                    status: "warn",
+                    message: `Windows held a write lock on the running binary; a delayed-delete helper was scheduled`,
+                });
+            }
+        }
+        catch (err) {
+            const message = err instanceof Error ? err.message : String(err);
+            if (deps.platform === "win32") {
+                scheduleWindowsDelayedDelete(deps.execPath);
+                checks.push({
+                    id: "binary-removal",
+                    status: "warn",
+                    message: `could not unlink ${deps.execPath} directly (${message}); a delayed-delete helper was scheduled`,
+                });
+            }
+            else {
+                checks.push({
+                    id: "binary-removal",
+                    status: "fail",
+                    message: `could not unlink ${deps.execPath}: ${message}`,
+                });
+                return { exitCode: 1, checks };
+            }
+        }
+    }
+    return { exitCode: 0, checks };
+}
+function purgeConfig(deps) {
+    const checks = [];
+    const configDir = join(deps.homeDir, ".umactually");
+    const cacheDir = join(deps.homeDir, ".cache", "umactually");
+    for (const dir of [configDir, cacheDir]) {
+        if (!deps.fsAdapter.exists(dir)) {
+            checks.push({
+                id: dir === cacheDir ? "cache-removal" : "config-removal",
+                status: "skip",
+                message: `${dir} does not exist`,
+            });
+            continue;
+        }
+        if (!deps.fsAdapter.isDirectory(dir)) {
+            checks.push({
+                id: dir === cacheDir ? "cache-removal" : "config-removal",
+                status: "warn",
+                message: `${dir} is not a directory — skipping`,
+            });
+            continue;
+        }
+        try {
+            deps.fsAdapter.removeDir(dir, { recursive: true });
+            checks.push({
+                id: dir === cacheDir ? "cache-removal" : "config-removal",
+                status: "ok",
+                message: `removed ${dir}`,
+            });
+        }
+        catch (err) {
+            const message = err instanceof Error ? err.message : String(err);
+            checks.push({
+                id: dir === cacheDir ? "cache-removal" : "config-removal",
+                status: "fail",
+                message: `could not remove ${dir}: ${message}`,
+            });
+        }
+    }
+    return checks;
+}
+function revertPath(deps) {
+    const checks = [];
+    let anyChanges = false;
+    for (const rc of SHELL_RC_FILES) {
+        const path = join(deps.homeDir, rc);
+        if (!deps.fsAdapter.exists(path)) {
+            continue;
+        }
+        if (deps.fsAdapter.isSymlink(path)) {
+            checks.push({
+                id: "path-revert",
+                status: "skip",
+                message: `${path} is a symlink — refusing to modify`,
+            });
+            continue;
+        }
+        let content;
+        try {
+            content = deps.fsAdapter.readFile(path);
+        }
+        catch (err) {
+            const message = err instanceof Error ? err.message : String(err);
+            checks.push({
+                id: "path-revert",
+                status: "warn",
+                message: `could not read ${path}: ${message}`,
+            });
+            continue;
+        }
+        const blocks = findShellRcBlocks(content);
+        if (blocks.length === 0) {
+            continue;
+        }
+        const stripped = stripShellRcBlocks(content);
+        if (stripped === content) {
+            continue;
+        }
+        try {
+            deps.fsAdapter.writeFile(path, stripped);
+            anyChanges = true;
+            checks.push({
+                id: "path-revert",
+                status: "ok",
+                message: `removed ${blocks.length} umactually block(s) from ${path}`,
+            });
+        }
+        catch (err) {
+            const message = err instanceof Error ? err.message : String(err);
+            checks.push({
+                id: "path-revert",
+                status: "fail",
+                message: `could not write ${path}: ${message}`,
+            });
+        }
+    }
+    if (!anyChanges) {
+        checks.push({
+            id: "path-revert",
+            status: "skip",
+            message: `no umactually PATH block found in ${SHELL_RC_FILES.join(" / ")}`,
+        });
+    }
+    return checks;
+}
+function shouldPrompt(deps) {
+    if (!deps.isTTY) {
+        return false;
+    }
+    const yesEnv = deps.env["UMACTUALLY_UNINSTALL_YES"] ?? deps.env["UMACTUALLY_YES"];
+    return yesEnv !== "1" && yesEnv !== "true";
+}
+function scheduleWindowsDelayedDelete(targetPath) {
+    // Use cmd.exe's ping trick to wait ~2.5s for the parent to exit, then del.
+    // The `ping -n 4 127.0.0.1` is a portable ~3-second sleep (no PowerShell dep).
+    // The `>nul` redirects ping output. We spawn detached so this function
+    // returns immediately; the cmd.exe will outlive the parent.
+    const cmd = `ping -n 4 127.0.0.1 >nul & del /f /q "${targetPath}"`;
+    try {
+        (0,external_node_child_process_namespaceObject.spawn)("cmd.exe", ["/c", cmd], {
+            detached: true,
+            stdio: "ignore",
+            windowsHide: true,
+        }).unref();
+    }
+    catch {
+        // Best effort — the user can delete manually if cmd.exe is unavailable.
+    }
+}
+const uninstall_UNINSTALL_HELP_TEXT = [
+    `${"umactually"} uninstall — remove the installed binary, config, and PATH entries`,
+    "",
+    "Usage:",
+    "  umactually uninstall [flags]    Remove the running binary and (optionally) related files",
+    "  umactually uninstall --help     Show this help",
+    "",
+    "Flags:",
+    "  --remove-binary     (default) Delete the running binary at process.execPath",
+    "  --no-remove-binary  Skip the binary removal (only useful with --purge-config / --revert-path)",
+    "  --purge-config      Also delete ~/.umactually/ and ~/.cache/umactually/",
+    "  --revert-path       Also remove the installer's PATH line from ~/.zshrc / ~/.bashrc / ~/.profile",
+    "  --yes, -y           Skip the interactive confirmation prompt",
+    "  --json              Emit machine-readable JSON output",
+    "  --help, -h          Show this help",
+    "",
+    "By default the binary is removed, the config/cache dirs are left alone, and the",
+    "PATH entry stays in your shell config. The confirmation prompt only appears on a",
+    "TTY. Non-interactive shells (CI, cron) must pass --yes or set UMACTUALLY_UNINSTALL_YES=1.",
+    "",
+    "Exit codes:",
+    "  0  Uninstall completed (with at least the binary removed)",
+    "  1  User declined the confirmation prompt",
+    "  2  Usage error or unsafe exec path",
+].join("\n");
+function formatUninstallHuman(result) {
+    const lines = result.checks.map((c) => {
+        const hint = c.hint === undefined ? "" : `\n  hint: ${c.hint}`;
+        return `${c.status.toUpperCase().padEnd(4)} ${c.id}: ${c.message}${hint}`;
+    });
+    return `${lines.join("\n")}\n`;
+}
+function formatUninstallJson(result, mode, execPath) {
+    const envelope = result.json ?? {
+        schemaVersion: 1,
+        command: "uninstall",
+        exitCode: result.exitCode,
+        execPath,
+        mode,
+        checks: result.checks,
+    };
+    return `${JSON.stringify(envelope)}\n`;
+}
+
 ;// CONCATENATED MODULE: ./src/cli/help.ts
 /**
  * CLI help text. Flag descriptions are column-aligned so `--help` output is
@@ -1577,6 +2033,7 @@ function printModesBanner(stream) {
  * that command. This is achieved by tagging each flag with the commands
  * it applies to (`appliesTo`) and filtering at render time.
  */
+
 
 
 
@@ -1658,6 +2115,7 @@ function renderCommands(commands) {
 const TOP_LEVEL_COMMANDS = [
     "review                    Run PR review (default)",
     "doctor                    Check environment is ready",
+    "uninstall                 Remove the installed binary, config, and PATH entries",
     "check-review-artifact <path>  Validate a review artifact",
     "version                   Print version",
     "--help, -h                Show this help",
@@ -1734,6 +2192,7 @@ const CHECK_REVIEW_ARTIFACT_HELP_TEXT = [
 const COMMAND_HELP = {
     review: REVIEW_HELP_TEXT,
     doctor: DOCTOR_HELP_TEXT,
+    uninstall: uninstall_UNINSTALL_HELP_TEXT,
     "check-review-artifact": CHECK_REVIEW_ARTIFACT_HELP_TEXT,
 };
 /**
@@ -1793,6 +2252,7 @@ function printContextualHelp(argv) {
 /** Exported for unit tests that need to assert per-command help content. */
 const REVIEW_HELP = (/* unused pure expression or super */ null && (REVIEW_HELP_TEXT));
 const DOCTOR_HELP = (/* unused pure expression or super */ null && (DOCTOR_HELP_TEXT));
+const UNINSTALL_HELP = (/* unused pure expression or super */ null && (UNINSTALL_HELP_TEXT));
 const CHECK_REVIEW_ARTIFACT_HELP = (/* unused pure expression or super */ null && (CHECK_REVIEW_ARTIFACT_HELP_TEXT));
 
 ;// CONCATENATED MODULE: ./src/cli/no-color.ts
@@ -1817,6 +2277,7 @@ function resolveColorPolicy(opts) {
 ;// CONCATENATED MODULE: ./src/cli/dispatch.ts
 // SPDX-License-Identifier: MIT
 // Subcommand dispatch layer. Pure routing apart from delegated CLI output.
+
 
 
 
@@ -1862,6 +2323,8 @@ async function dispatch(argv) {
             return runReviewBranch(stripLeadingCommand(argv, command));
         case "doctor":
             return runDoctorBranch(stripLeadingCommand(argv, command));
+        case "uninstall":
+            return runUninstallBranch(stripLeadingCommand(argv, command));
         case "check-review-artifact":
             return runCheckReviewArtifactBranch(stripLeadingCommand(argv, command));
         case "version":
@@ -1953,6 +2416,55 @@ async function runDoctorBranch(args) {
     const stdout = json ? formatDoctorJson(result) : formatDoctorHuman(result.checks);
     process.stdout.write(stdout);
     return { exitCode: result.exitCode, stdout };
+}
+function runUninstallBranch(args) {
+    const { mode, errors, help, json } = parseUninstallArgs(args);
+    if (help) {
+        process.stdout.write(uninstall_UNINSTALL_HELP_TEXT);
+        process.stdout.write("\n");
+        return { exitCode: 0, stdout: uninstall_UNINSTALL_HELP_TEXT };
+    }
+    if (errors.length > 0) {
+        const stderr = `umactually uninstall: ${errors.join("; ")}\n`;
+        process.stderr.write(stderr);
+        return { exitCode: 2, stderr };
+    }
+    const deps = {
+        isTTY: process.stdout.isTTY === true && !json,
+        env: process.env,
+        fsAdapter: defaultFsAdapter,
+        stdinReader: () => {
+            // Read a single line from stdin without blocking. In test mode the
+            // caller injects a custom reader; here we use a non-blocking read of
+            // /dev/tty (POSIX) or fall back to null (CI / non-TTY).
+            try {
+                if (process.stdin.isTTY !== true) {
+                    return null;
+                }
+                const buf = (__nccwpck_require__(24).readFileSync)(0, "utf8", { encoding: "utf8" });
+                return buf.length === 0 ? null : buf;
+            }
+            catch {
+                return null;
+            }
+        },
+        execPath: process.execPath,
+        platform: process.platform,
+        homeDir: (__nccwpck_require__(161).homedir)(),
+    };
+    const result = runUninstall(deps);
+    const additionalChecks = [
+        ...(mode.purgeConfig ? purgeConfig(deps) : []),
+        ...(mode.revertPath ? revertPath(deps) : []),
+    ];
+    const checks = [...result.checks, ...additionalChecks];
+    const exitCode = checks.some((c) => c.status === "fail") ? 1 : result.exitCode;
+    const finalResult = { ...result, exitCode, checks };
+    const stdout = json
+        ? formatUninstallJson(finalResult, mode, deps.execPath)
+        : formatUninstallHuman(finalResult);
+    process.stdout.write(stdout);
+    return { exitCode, stdout };
 }
 
 ;// CONCATENATED MODULE: ./src/security/scan-review-secrets.ts
@@ -5634,7 +6146,7 @@ function resolveDefaultPromptFilesOnce(cwd) {
                 `Entries must be relative paths with no '..' segments and no leading '/' or drive letter.`);
         }
         try {
-            const s = (0,external_node_fs_namespaceObject.statSync)((0,external_node_path_namespaceObject.join)(cwd, candidate));
+            const s = (0,external_node_fs_.statSync)((0,external_node_path_namespaceObject.join)(cwd, candidate));
             if (s.isFile())
                 out.push(candidate);
         }
@@ -16718,7 +17230,7 @@ function writeSyntheticEventJson(filePath, args) {
         action: "synthetic",
         sender: { login: "local-smoke-test" },
     };
-    (0,external_node_fs_namespaceObject.writeFileSync)(filePath, `${JSON.stringify(event, null, 2)}\n`, "utf8");
+    (0,external_node_fs_.writeFileSync)(filePath, `${JSON.stringify(event, null, 2)}\n`, "utf8");
     return filePath;
 }
 /**
@@ -16814,11 +17326,11 @@ function deriveContextFromGit(input) {
     // if the diff is empty — that's fine for smoke tests on the default branch.
     if (diffOverride === undefined || diffOverride === null) {
         const diffOutput = gitOrThrow(cwd, ["diff", `${base}...HEAD`]);
-        (0,external_node_fs_namespaceObject.mkdirSync)(tempDir, { recursive: true });
-        (0,external_node_fs_namespaceObject.writeFileSync)(diffPath, diffOutput, "utf8");
+        (0,external_node_fs_.mkdirSync)(tempDir, { recursive: true });
+        (0,external_node_fs_.writeFileSync)(diffPath, diffOutput, "utf8");
     }
     if (eventOverride === undefined || eventOverride === null) {
-        (0,external_node_fs_namespaceObject.mkdirSync)(tempDir, { recursive: true });
+        (0,external_node_fs_.mkdirSync)(tempDir, { recursive: true });
         writeSyntheticEventJson(eventPath, { branch: currentBranch, base, repo });
     }
     // 7. posting identity is null. The caller (src/cli.ts) gates posting
@@ -16887,7 +17399,7 @@ function readPackageVersion() {
         return UMACTUALLY_VERSION;
     }
     const packageJsonUrl = __nccwpck_require__.ab + "package.json";
-    const raw = (0,external_node_fs_namespaceObject.readFileSync)(packageJsonUrl, "utf8");
+    const raw = (0,external_node_fs_.readFileSync)(packageJsonUrl, "utf8");
     const parsed = JSON.parse(raw);
     if (typeof parsed.version !== "string" || parsed.version.length === 0) {
         throw new Error("package.json is missing a string `version` field");

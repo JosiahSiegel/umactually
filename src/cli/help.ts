@@ -25,13 +25,14 @@ import {
 } from "../util/provider-defaults.js";
 import { BRAND } from "../util/brand.js";
 import { CLI_MODES_TEXT } from "./modes-help.js";
+import { UNINSTALL_HELP_TEXT } from "./uninstall.js";
 
 /**
  * Command identifiers used for contextual help filtering.
  * `all` means the flag appears in every help context.
  * `review` is the default subcommand so it also covers bare invocation.
  */
-type HelpContext = "all" | "review" | "doctor" | "check-review-artifact";
+type HelpContext = "all" | "review" | "doctor" | "uninstall" | "check-review-artifact";
 
 interface HelpFlag {
   /** Full flag token, e.g. `"--api-url <url>"`. */
@@ -132,6 +133,7 @@ function renderCommands(commands: readonly string[]): string {
 const TOP_LEVEL_COMMANDS = [
   "review                    Run PR review (default)",
   "doctor                    Check environment is ready",
+  "uninstall                 Remove the installed binary, config, and PATH entries",
   "check-review-artifact <path>  Validate a review artifact",
   "version                   Print version",
   "--help, -h                Show this help",
@@ -214,6 +216,7 @@ const CHECK_REVIEW_ARTIFACT_HELP_TEXT = [
 const COMMAND_HELP: Readonly<Record<string, string>> = {
   review: REVIEW_HELP_TEXT,
   doctor: DOCTOR_HELP_TEXT,
+  uninstall: UNINSTALL_HELP_TEXT,
   "check-review-artifact": CHECK_REVIEW_ARTIFACT_HELP_TEXT,
 };
 
@@ -277,4 +280,5 @@ export function printContextualHelp(argv: readonly string[]): string {
 /** Exported for unit tests that need to assert per-command help content. */
 export const REVIEW_HELP = REVIEW_HELP_TEXT;
 export const DOCTOR_HELP = DOCTOR_HELP_TEXT;
+export const UNINSTALL_HELP = UNINSTALL_HELP_TEXT;
 export const CHECK_REVIEW_ARTIFACT_HELP = CHECK_REVIEW_ARTIFACT_HELP_TEXT;

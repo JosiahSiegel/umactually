@@ -12,6 +12,18 @@ import { classifyReviewArtifact } from "./check-review-artifact.js";
 import { formatDoctorHuman, formatDoctorJson, runDoctor } from "./doctor.js";
 import { printContextualHelp } from "./help.js";
 import { resolveColorPolicy } from "./no-color.js";
+import {
+  defaultFsAdapter,
+  formatUninstallHuman,
+  formatUninstallJson,
+  parseUninstallArgs,
+  purgeConfig,
+  revertPath,
+  runUninstall,
+  UNINSTALL_HELP_TEXT,
+  type UninstallDeps,
+  type UninstallResult,
+} from "./uninstall.js";
 
 const GLOBAL_ONLY_FLAGS = new Set(["--json", "--no-color"]);
 const execFile = promisify(execFileCallback);
@@ -62,6 +74,8 @@ export async function dispatch(argv: readonly string[]): Promise<DispatchResult 
       return runReviewBranch(stripLeadingCommand(argv, command));
     case "doctor":
       return runDoctorBranch(stripLeadingCommand(argv, command));
+    case "uninstall":
+      return runUninstallBranch(stripLeadingCommand(argv, command));
     case "check-review-artifact":
       return runCheckReviewArtifactBranch(stripLeadingCommand(argv, command));
     case "version":
@@ -161,4 +175,53 @@ async function runDoctorBranch(args: readonly string[]): Promise<DispatchResult>
   const stdout = json ? formatDoctorJson(result) : formatDoctorHuman(result.checks);
   process.stdout.write(stdout);
   return { exitCode: result.exitCode, stdout };
+}
+
+function runUninstallBranch(args: readonly string[]): DispatchResult {
+  const { mode, errors, help, json } = parseUninstallArgs(args);
+  if (help) {
+    process.stdout.write(UNINSTALL_HELP_TEXT);
+    process.stdout.write("\n");
+    return { exitCode: 0, stdout: UNINSTALL_HELP_TEXT };
+  }
+  if (errors.length > 0) {
+    const stderr = `umactually uninstall: ${errors.join("; ")}\n`;
+    process.stderr.write(stderr);
+    return { exitCode: 2, stderr };
+  }
+  const deps: UninstallDeps = {
+    isTTY: process.stdout.isTTY === true && !json,
+    env: process.env,
+    fsAdapter: defaultFsAdapter,
+    stdinReader: () => {
+      // Read a single line from stdin without blocking. In test mode the
+      // caller injects a custom reader; here we use a non-blocking read of
+      // /dev/tty (POSIX) or fall back to null (CI / non-TTY).
+      try {
+        if (process.stdin.isTTY !== true) {
+          return null;
+        }
+        const buf = require("node:fs").readFileSync(0, "utf8", { encoding: "utf8" }) as string;
+        return buf.length === 0 ? null : buf;
+      } catch {
+        return null;
+      }
+    },
+    execPath: process.execPath,
+    platform: process.platform,
+    homeDir: require("node:os").homedir(),
+  };
+  const result = runUninstall(deps);
+  const additionalChecks = [
+    ...(mode.purgeConfig ? purgeConfig(deps) : []),
+    ...(mode.revertPath ? revertPath(deps) : []),
+  ];
+  const checks: UninstallResult["checks"] = [...result.checks, ...additionalChecks];
+  const exitCode = checks.some((c) => c.status === "fail") ? 1 : result.exitCode;
+  const finalResult: UninstallResult = { ...result, exitCode, checks };
+  const stdout = json
+    ? formatUninstallJson(finalResult, mode, deps.execPath)
+    : formatUninstallHuman(finalResult);
+  process.stdout.write(stdout);
+  return { exitCode, stdout };
 }
