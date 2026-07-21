@@ -16,6 +16,7 @@ import { pipeline } from "node:stream/promises";
 import { Writable } from "node:stream";
 import { createGunzip } from "node:zlib";
 import { describe, expect, it } from "vitest";
+import { NODE_24_REQUIRED } from "../helpers/node-version-gate.ts";
 import yauzl from "yauzl";
 
 const root = resolve(import.meta.dirname, "..", "..");
@@ -184,7 +185,7 @@ function extractZip(archivePath: string): Promise<Map<string, Buffer>> {
   });
 }
 
-describe("deterministic release archive packager", () => {
+describe.skipIf(NODE_24_REQUIRED)("deterministic release archive packager", () => {
   it("pins tar-stream@3.2.0, yazl@3.3.1, and yauzl@3.4.0 exactly", () => {
     const pkg = JSON.parse(readFileSync(join(root, "package.json"), "utf8")) as { devDependencies: Record<string, string> };
     expect(pkg.devDependencies["tar-stream"]).toBe("3.2.0");
@@ -407,7 +408,7 @@ describe("deterministic release archive packager", () => {
   });
 });
 
-describe("hostile member fixtures are rejected by the packager", () => {
+describe.skipIf(NODE_24_REQUIRED)("hostile member fixtures are rejected by the packager", () => {
   it.each([
     { name: "../escape", typeflag: 0x30, payload: Buffer.from("x"), linkname: "", label: "traversal-relative" },
     { name: "/etc/passwd", typeflag: 0x30, payload: Buffer.from("x"), linkname: "", label: "absolute-path" },

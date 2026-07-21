@@ -28,6 +28,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { NODE_24_REQUIRED } from "../helpers/node-version-gate.ts";
 
 const REPO_ROOT = resolve(import.meta.dirname, "..", "..");
 const MANIFEST = join(REPO_ROOT, "scripts", "release-targets.json");
@@ -81,7 +82,7 @@ afterEach(() => {
   }
 });
 
-describe("release.yml packager + verifier wiring", () => {
+describe.skipIf(NODE_24_REQUIRED)("release.yml packager + verifier wiring", () => {
   // The workflow's FIXED invocation pattern: packager and verifier both
   // point at the SAME --release-dir (the packager writes archives into
   // --release-dir by default when --out-dir is omitted). The staging

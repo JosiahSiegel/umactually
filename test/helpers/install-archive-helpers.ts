@@ -18,7 +18,7 @@ import { once } from "node:events";
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { createInterface } from "node:readline";
 import { gzipSync } from "node:zlib";
-import { resolve } from "node:path";
+import { join, resolve } from "node:path";
 
 export const REPO_ROOT = resolve(import.meta.dirname, "..", "..");
 export const INSTALL_SH = resolve(REPO_ROOT, "scripts", "install.sh");
@@ -258,9 +258,19 @@ export function runInstaller(env: InstallEnv): InstallResult {
   // The fake-server env vars are only forwarded when the test passes
   // a non-empty serverBaseUrl. Tests that want to drive the case 1
   // "no overrides" path can pass serverBaseUrl="" to skip them.
+  //
+  // INSTALL_DIR_OVERRIDE is forced to `<fakeHome>/.local/bin` so the
+  // install is sandboxed regardless of the runtime user. Without this,
+  // install.sh writes to `/usr/local/bin` when running as root
+  // (the default in Docker/CI/sandbox), and the test assertions
+  // looking at `fakeHome/.local/bin/umactually` see ENOENT. A real
+  // user explicitly setting INSTALL_DIR_OVERRIDE via `extraEnv`
+  // would still win because extraEnv is merged last.
+  const sandboxedInstallDir = join(env.fakeHome, ".local", "bin");
   const merged: NodeJS.ProcessEnv = {
     ...process.env,
     HOME: env.fakeHome,
+    INSTALL_DIR_OVERRIDE: sandboxedInstallDir,
     ...(env.serverBaseUrl !== "" ? { INSTALL_TEST_FAKE_SERVER: env.serverBaseUrl } : {}),
     ...(env.tag !== "" ? { INSTALL_TEST_FAKE_TAG: env.tag } : {}),
     INSTALL_MANIFEST: env.manifestPath,
