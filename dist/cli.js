@@ -1717,6 +1717,17 @@ const defaultFsAdapter = {
     unlink: (path) => {
         (0,external_node_fs_namespaceObject.unlinkSync)(path);
     },
+    getMode: (path) => {
+        try {
+            return (0,external_node_fs_namespaceObject.statSync)(path).mode & 0o7777;
+        }
+        catch {
+            return null;
+        }
+    },
+    setMode: (path, mode) => {
+        (0,external_node_fs_namespaceObject.chmodSync)(path, mode);
+    },
     removeDir: (path, options) => {
         (0,external_node_fs_namespaceObject.rmSync)(path, { recursive: options.recursive, force: true });
     },
@@ -2028,8 +2039,33 @@ function revertPath(deps) {
         if (stripped === content) {
             continue;
         }
+        // Capture the original mode BEFORE writing. The new file will be
+        // created with the default umask (typically 0o644), so we need to
+        // restore the original mode afterward. Without this, a user with
+        // a 0o600 .zshrc (privacy-sensitive) would see the new file at
+        // 0o644 — silently broadened permissions.
+        const originalMode = deps.fsAdapter.getMode(path);
         try {
             deps.fsAdapter.writeFile(path, stripped);
+            if (originalMode !== null && originalMode !== undefined) {
+                try {
+                    deps.fsAdapter.setMode(path, originalMode);
+                }
+                catch (err) {
+                    // Non-fatal: the content was updated successfully, but we
+                    // couldn't restore the mode. Surface as a warn so the user
+                    // can chmod manually.
+                    const message = err instanceof Error ? err.message : String(err);
+                    checks.push({
+                        id: "path-revert",
+                        status: "warn",
+                        message: `removed ${blocks.length} umactually block(s) from ${path}, but could not restore mode ${originalMode.toString(8)}: ${message}`,
+                        hint: `Run: chmod ${originalMode.toString(8)} ${path}`,
+                    });
+                    anyChanges = true;
+                    continue;
+                }
+            }
             anyChanges = true;
             checks.push({
                 id: "path-revert",
@@ -2618,12 +2654,16 @@ async function runUninstallBranch(args) {
     // Gate the destructive follow-ups (--purge-config, --revert-path)
     // behind explicit confirmation when running non-interactively. The
     // user clearly requested destructive work but did not pass --yes,
-    // and we have no way to prompt them. Refuse to proceed rather than
-    // wipe the config silently.
+    // and we have no way to prompt them. Refuse the WHOLE command —
+    // including the binary removal — so the user gets a clean
+    // "nothing happened" state. Running the binary removal first and
+    // then refusing the follow-ups would leave the user confused
+    // about what was actually changed on disk.
     if (!deps.isTTY &&
         mode.yes !== true &&
         (mode.purgeConfig === true || mode.revertPath === true)) {
-        const stderr = "umactually uninstall: --purge-config and --revert-path require --yes in non-interactive mode\n";
+        const stderr = "umactually uninstall: --purge-config and --revert-path require --yes in non-interactive mode. " +
+            "Nothing was changed; re-run with --yes to proceed, or omit the destructive flags.\n";
         process.stderr.write(stderr);
         return { exitCode: 2, stderr };
     }

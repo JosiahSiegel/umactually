@@ -28,10 +28,12 @@
 //     holds a write lock on running executables.
 
 import {
+  chmodSync,
   existsSync,
   lstatSync,
   readFileSync,
   rmSync,
+  statSync,
   unlinkSync,
   writeFileSync,
 } from "node:fs";
@@ -209,6 +211,20 @@ export type FsAdapter = {
   readonly removeDir: (path: string, options: { readonly recursive: boolean }) => void;
   readonly readFile: (path: string) => string;
   readonly writeFile: (path: string, content: string) => void;
+  /**
+   * Return the file's mode bits (e.g. 0o600) or null if the file
+   * does not exist or the mode cannot be determined. Used by
+   * revertPath to preserve permissions across the read/modify/write
+   * cycle; without this, the new file gets the default umask
+   * (typically 0o644) which silently broadens permissions on
+   * privacy-sensitive users' .zshrc / .bashrc.
+   */
+  readonly getMode: (path: string) => number | null;
+  /**
+   * Set the file's mode bits. Throws on failure. Used by revertPath
+   * to restore the original mode after writing the modified content.
+   */
+  readonly setMode: (path: string, mode: number) => void;
 };
 
 export const defaultFsAdapter: FsAdapter = {
@@ -236,6 +252,16 @@ export const defaultFsAdapter: FsAdapter = {
   },
   unlink: (path) => {
     unlinkSync(path);
+  },
+  getMode: (path) => {
+    try {
+      return statSync(path).mode & 0o7777;
+    } catch {
+      return null;
+    }
+  },
+  setMode: (path, mode) => {
+    chmodSync(path, mode);
   },
   removeDir: (path, options) => {
     rmSync(path, { recursive: options.recursive, force: true });
@@ -559,8 +585,32 @@ export function revertPath(deps: UninstallDeps): readonly UninstallCheck[] {
     if (stripped === content) {
       continue;
     }
+    // Capture the original mode BEFORE writing. The new file will be
+    // created with the default umask (typically 0o644), so we need to
+    // restore the original mode afterward. Without this, a user with
+    // a 0o600 .zshrc (privacy-sensitive) would see the new file at
+    // 0o644 — silently broadened permissions.
+    const originalMode = deps.fsAdapter.getMode(path);
     try {
       deps.fsAdapter.writeFile(path, stripped);
+      if (originalMode !== null && originalMode !== undefined) {
+        try {
+          deps.fsAdapter.setMode(path, originalMode);
+        } catch (err) {
+          // Non-fatal: the content was updated successfully, but we
+          // couldn't restore the mode. Surface as a warn so the user
+          // can chmod manually.
+          const message = err instanceof Error ? err.message : String(err);
+          checks.push({
+            id: "path-revert",
+            status: "warn",
+            message: `removed ${blocks.length} umactually block(s) from ${path}, but could not restore mode ${originalMode.toString(8)}: ${message}`,
+            hint: `Run: chmod ${originalMode.toString(8)} ${path}`,
+          });
+          anyChanges = true;
+          continue;
+        }
+      }
       anyChanges = true;
       checks.push({
         id: "path-revert",

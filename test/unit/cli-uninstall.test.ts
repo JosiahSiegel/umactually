@@ -7,7 +7,7 @@
 // and never need the user to confirm anything.
 
 import { describe, expect, it } from "vitest";
-import { sep } from "node:path";
+import { join, sep } from "node:path";
 
 import {
   classifyExecPath,
@@ -27,10 +27,21 @@ import {
   type UninstallDeps,
 } from "../../src/cli/uninstall.js";
 
-const HOME = `/home/tester${sep === "/" ? "" : sep}`.replace(/\/$/, sep);
+// Use a platform-appropriate HOME so path.join in uninstall.ts produces
+// paths that match the test fixtures. On Windows, `/home/tester` would
+// never collide with `path.win32.join(...)` output; instead we use a
+// proper Windows path. The test suite is meaningful on both platforms
+// when the HOME matches what uninstall.ts generates.
+const HOME = process.platform === "win32"
+  ? join(process.cwd().split(sep)[0] ?? "C:\\", "Users", "tester")
+  : "/home/tester";
 
 // Tiny in-memory fs adapter for the runUninstall / purge / revert paths.
-type FileEntry = { readonly kind: "file" | "dir" | "symlink"; readonly content?: string };
+type FileEntry = {
+  readonly kind: "file" | "dir" | "symlink";
+  readonly content?: string;
+  readonly mode?: number;
+};
 function makeFs(files: Record<string, FileEntry>): FsAdapter & { readonly files: typeof files } {
   const store: Record<string, FileEntry> = { ...files };
   return {
@@ -57,7 +68,24 @@ function makeFs(files: Record<string, FileEntry>): FsAdapter & { readonly files:
       return entry.content ?? "";
     },
     writeFile: (path, content) => {
-      store[path] = { kind: "file", content };
+      const existing = store[path];
+      // Preserve the original mode on overwrite. revertPath also
+      // explicitly calls setMode, but a writeFile that just
+      // re-creates the file at the default mode would lose the
+      // original — which is the bug we're guarding against.
+      const mode = existing?.mode;
+      store[path] = { kind: "file", content, ...(mode !== undefined ? { mode } : {}) };
+    },
+    getMode: (path) => {
+      const entry = store[path];
+      return entry?.mode ?? null;
+    },
+    setMode: (path, mode) => {
+      const entry = store[path];
+      if (entry === undefined) {
+        throw new Error(`ENOENT: ${path}`);
+      }
+      store[path] = { ...entry, mode };
     },
   };
 }
@@ -437,6 +465,52 @@ describe("revertPath", () => {
     });
     const checks = revertPath(makeDeps({ fsAdapter: fs }));
     expect(checks.find((c) => c.id === "path-revert")?.status).toBe("skip");
+  });
+
+  it("preserves the original file mode when writing back (regression: 0o600 -> 0o644)", () => {
+    // A privacy-sensitive user with 0o600 on their .zshrc would have
+    // their permissions silently broadened to 0o644 by the previous
+    // implementation (writeFile creates a new file with the default
+    // umask). The fix captures the mode BEFORE the write and restores
+    // it after.
+    const rcPath = `${HOME}/.zshrc`;
+    const block = "# Added by umactually installer\nexport PATH=\"$HOME/.local/bin:$PATH\"\n";
+    const originalContent = `export PATH=$PATH:/usr/local/bin\n${block}`;
+    const fs = makeFs({
+      [rcPath]: { kind: "file", content: originalContent, mode: 0o600 },
+    });
+    const checks = revertPath(makeDeps({ fsAdapter: fs }));
+    const ok = checks.find((c) => c.id === "path-revert" && c.status === "ok");
+    expect(ok).toBeDefined();
+    // The mode must have been preserved.
+    expect(fs.files[rcPath]?.mode).toBe(0o600);
+  });
+
+  it("emits a warn check (not fail) when content was written but mode restoration failed", () => {
+    // Non-fatal degradation: the content was updated successfully, but
+    // the mode could not be restored. The user should see a warn check
+    // (not a fail) and a hint to chmod manually.
+    const rcPath = `${HOME}/.zshrc`;
+    const block = "# Added by umactually installer\nexport PATH=\"$HOME/.local/bin:$PATH\"\n";
+    const originalContent = `export PATH=$PATH:/usr/local/bin\n${block}`;
+    const fs = makeFs({
+      [rcPath]: { kind: "file", content: originalContent, mode: 0o600 },
+    });
+    // Override setMode to throw.
+    const originalSetMode = fs.setMode;
+    fs.setMode = () => {
+      throw new Error("synthetic EPERM");
+    };
+    try {
+      const checks = revertPath(makeDeps({ fsAdapter: fs }));
+      const warn = checks.find((c) => c.id === "path-revert" && c.status === "warn");
+      expect(warn).toBeDefined();
+      expect(warn?.message).toContain("could not restore mode");
+      expect(warn?.message).toContain("600"); // mode printed in octal
+      expect(warn?.hint).toContain("chmod 600");
+    } finally {
+      fs.setMode = originalSetMode;
+    }
   });
 });
 

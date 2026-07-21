@@ -207,15 +207,19 @@ async function runUninstallBranch(args: readonly string[]): Promise<DispatchResu
   // Gate the destructive follow-ups (--purge-config, --revert-path)
   // behind explicit confirmation when running non-interactively. The
   // user clearly requested destructive work but did not pass --yes,
-  // and we have no way to prompt them. Refuse to proceed rather than
-  // wipe the config silently.
+  // and we have no way to prompt them. Refuse the WHOLE command —
+  // including the binary removal — so the user gets a clean
+  // "nothing happened" state. Running the binary removal first and
+  // then refusing the follow-ups would leave the user confused
+  // about what was actually changed on disk.
   if (
     !deps.isTTY &&
     mode.yes !== true &&
     (mode.purgeConfig === true || mode.revertPath === true)
   ) {
     const stderr =
-      "umactually uninstall: --purge-config and --revert-path require --yes in non-interactive mode\n";
+      "umactually uninstall: --purge-config and --revert-path require --yes in non-interactive mode. " +
+      "Nothing was changed; re-run with --yes to proceed, or omit the destructive flags.\n";
     process.stderr.write(stderr);
     return { exitCode: 2, stderr };
   }
