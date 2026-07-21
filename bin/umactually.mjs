@@ -10,22 +10,39 @@ import { dirname, join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
 // Node-version guard for direct CLI consumers (npm exec umactually,
-// global install, Azure DevOps pipeline step, etc.). GitHub Actions
-// consumers are gated by action.yml's `runs.using: node24` which already
-// pins the runner to Node 24, so this guard is a backstop for direct
-// CLI invocations outside the Actions runtime.
+// bunx umactually, global install, Azure DevOps pipeline step, etc.).
+// GitHub Actions consumers are gated by action.yml's `runs.using: node24`
+// which already pins the runner to Node 24, so this guard is a backstop
+// for direct CLI invocations outside the Actions runtime.
 //
-// process.versions.node is the form "vX.Y.Z" (with a leading 'v'); strip
-// it before parsing the major version. Number("v24") is NaN, which is
-// why the previous Number.isFinite check fired on every Node version.
+// We accept the highest of {process.versions.node, process.versions.bun}
+// so that `bunx umactually` works. Bun does not set process.versions.node;
+// it sets process.versions.bun. Both report "vX.Y.Z" with a leading 'v';
+// strip it before parsing the major version.
 const MIN_NODE_MAJOR = 24;
-const currentNodeMajor = Number.parseInt(
-  process.versions.node.replace(/^v/u, "").split(".")[0] ?? "",
-  10,
+function parseMajor(versionString) {
+  if (typeof versionString !== "string" || versionString.length === 0) {
+    return Number.NaN;
+  }
+  return Number.parseInt(
+    versionString.replace(/^v/u, "").split(".")[0] ?? "",
+    10,
+  );
+}
+const nodeMajor = parseMajor(process.versions.node);
+const bunMajor = parseMajor(process.versions.bun);
+const bestMajor = Math.max(
+  Number.isFinite(nodeMajor) ? nodeMajor : 0,
+  Number.isFinite(bunMajor) ? bunMajor : 0,
 );
-if (!Number.isFinite(currentNodeMajor) || currentNodeMajor < MIN_NODE_MAJOR) {
+if (!Number.isFinite(bestMajor) || bestMajor < MIN_NODE_MAJOR) {
+  const detected = Number.isFinite(nodeMajor)
+    ? `Node ${process.versions.node}`
+    : Number.isFinite(bunMajor)
+      ? `Bun ${process.versions.bun}`
+      : "unknown runtime";
   process.stderr.write(
-    `umactually: requires Node >= ${MIN_NODE_MAJOR}.x (detected ${process.versions.node}).\n`,
+    `umactually: requires Node >= ${MIN_NODE_MAJOR}.x (detected ${detected}).\n`,
   );
   process.exit(1);
 }
