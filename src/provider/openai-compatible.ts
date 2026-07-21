@@ -235,6 +235,14 @@ function isRetryable(error: ProviderError): boolean {
   if (error.code === "network") {
     return true;
   }
+  // Timeouts are transient (cold-start latency, gateway reset, slow
+  // stream). A retry with the same timeout often succeeds because the
+  // provider may have started streaming by the time the abort fired.
+  // Without this, a single slow request fails the whole review even
+  // though the underlying connection is healthy.
+  if (error.code === "timeout") {
+    return true;
+  }
   return error.status === 429 || (typeof error.status === "number" && error.status >= 500);
 }
 

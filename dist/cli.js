@@ -12558,6 +12558,14 @@ function isRetryable(error) {
     if (error.code === "network") {
         return true;
     }
+    // Timeouts are transient (cold-start latency, gateway reset, slow
+    // stream). A retry with the same timeout often succeeds because the
+    // provider may have started streaming by the time the abort fired.
+    // Without this, a single slow request fails the whole review even
+    // though the underlying connection is healthy.
+    if (error.code === "timeout") {
+        return true;
+    }
     return error.status === 429 || (typeof error.status === "number" && error.status >= 500);
 }
 /**
@@ -13054,6 +13062,14 @@ async function anthropic_messages_runWithRetry(config, fetchImpl, requestId, url
 }
 function anthropic_messages_isRetryable(error) {
     if (error.code === "network") {
+        return true;
+    }
+    // Timeouts are transient (cold-start latency, TCP RST, gateway timeout).
+    // A retry with the same or longer timeout often succeeds where the first
+    // attempt failed, because the provider may have already started streaming
+    // by the time the abort fires. Without this, a single slow request kills
+    // the whole review.
+    if (error.code === "timeout") {
         return true;
     }
     return error.status === 429 || (typeof error.status === "number" && error.status >= 500);
