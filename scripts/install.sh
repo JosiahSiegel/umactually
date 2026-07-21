@@ -35,6 +35,18 @@
 #   INSTALL_TEST_MEMBER          Reserved
 #   INSTALL_TEST_NO_SMOKE        If non-empty, skip the staged --version smoke test
 #   UMACTUALLY_NO_PATH_UPDATE    If non-empty, skip shell rc PATH update
+#   INSTALL_SSL_NO_REVOKE        If non-empty, pass `--ssl-no-revoke` to curl.
+#                                Use ONLY when your curl is built against
+#                                Windows Schannel and the OCSP responder for
+#                                GitHub's certificate is unreachable from your
+#                                network (typical error:
+#                                CRYPT_E_REVOCATION_OFFLINE 0x80092013).
+#                                On OpenSSL-built curl this flag is a no-op,
+#                                so it is safe to leave set as a forward
+#                                compatibility shim for Git Bash on Windows
+#                                users. It does NOT disable certificate
+#                                validation; it only skips the optional
+#                                CRL/OCSP check.
 #
 # Eight-case override matrix dispatch (mirrors scripts/install.ps1):
 #   1. No overrides => IF INSTALL_TEST_FAKE_LATEST_URL or INSTALL_GITHUB_API_BASE
@@ -304,8 +316,26 @@ normalize_crlf() {
 http_get() {
   # $1 = URL, $2 = destination path
   if command -v curl >/dev/null 2>&1; then
-    curl -fsSL "$1" -o "$2"
+    # `--ssl-no-revoke` (curl >= 7.78) skips CRL/OCSP revocation checks.
+    # On Windows Schannel, this is the only way to bypass a check failure
+    # caused by an unreachable OCSP responder. On OpenSSL-built curl the
+    # flag is silently accepted as a no-op, so passing it unconditionally
+    # when INSTALL_SSL_NO_REVOKE is set is safe on every platform.
+    if [ -n "${INSTALL_SSL_NO_REVOKE:-}" ]; then
+      curl -fsSL --ssl-no-revoke "$1" -o "$2"
+    else
+      curl -fsSL "$1" -o "$2"
+    fi
   elif command -v wget >/dev/null 2>&1; then
+    if [ -n "${INSTALL_SSL_NO_REVOKE:-}" ]; then
+      # wget has no equivalent of curl's `--ssl-no-revoke`; the only
+      # wget option that disables cert checks is `--no-check-certificate`,
+      # which is far broader (disables ALL cert validation, including
+      # hostname matching). Surface a clear error so the user knows to
+      # install curl instead, rather than silently weakening security.
+      log_err "wget does not support --ssl-no-revoke; install curl (>= 7.78) to use INSTALL_SSL_NO_REVOKE"
+      return 1
+    fi
     wget -qO "$2" "$1"
   else
     log_err "neither curl nor wget is installed"
@@ -885,6 +915,15 @@ parse_args() {
         fi
         shift 1
         ;;
+      --ssl-no-revoke)
+        # Pass `--ssl-no-revoke` to curl on every download. Use this
+        # on Git Bash on Windows when the OCSP responder for GitHub's
+        # certificate is unreachable (CRYPT_E_REVOCATION_OFFLINE).
+        # See INSTALL_SSL_NO_REVOKE in the header doc.
+        INSTALL_SSL_NO_REVOKE=1
+        export INSTALL_SSL_NO_REVOKE
+        shift 1
+        ;;
       -h|--help)
         cat <<'USAGE'
 umactually installer
@@ -898,6 +937,12 @@ Flags (also accepted as env vars):
   --base <url>            Use a custom asset directory URL.
   --contract <a|legacy>   Force archive or legacy raw contract.
   --install-dir <path>    Override install destination.
+  --ssl-no-revoke         Skip TLS certificate revocation checks (curl only).
+                          Use only if your curl is built against Windows
+                          Schannel and the OCSP responder is unreachable
+                          (CRYPT_E_REVOCATION_OFFLINE 0x80092013). Cert
+                          validation is still performed; only the optional
+                          CRL/OCSP lookup is skipped. Requires curl >= 7.78.
 
 Env vars (override flags):
   INSTALL_RELEASE_TAG, INSTALL_RELEASE_BASE, INSTALL_ASSET_CONTRACT

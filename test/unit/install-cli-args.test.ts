@@ -281,4 +281,26 @@ describe.skipIf(!SHELL_AVAILABLE)("install.sh CLI argument parsing", () => {
     expect(result.status, `stderr:\n${result.stderr}`).toBe(2);
     expect(result.stderr).toMatch(/--tag requires an argument/);
   });
+
+  it("--ssl-no-revoke is accepted (no-op in TEST_MODE)", () => {
+    // TEST_MODE 1 short-circuits before http_get, so we can only assert
+    // that the flag is parsed and accepted (no exit 2, no "unknown flag").
+    const result = runInstall(["--ssl-no-revoke"], { INSTALL_TEST_MODE: "1" });
+    expect(result.status, `stderr:\n${result.stderr}`).toBe(0);
+    expect(result.stderr).not.toMatch(/unknown flag/);
+  });
+
+  it("INSTALL_SSL_NO_REVOKE=1 is accepted (no-op in TEST_MODE)", () => {
+    const result = runInstall([], { INSTALL_TEST_MODE: "1", INSTALL_SSL_NO_REVOKE: "1" });
+    expect(result.status, `stderr:\n${result.stderr}`).toBe(0);
+    expect(result.stderr).not.toMatch(/unknown flag/);
+  });
+
+  it("--help mentions --ssl-no-revoke (so Windows users can find it)", () => {
+    // --help short-circuits before any install logic, so this is fast
+    // even without TEST_MODE.
+    const result = runInstall(["--help"]);
+    expect(result.stdout).toMatch(/--ssl-no-revoke/);
+    expect(result.stdout).toMatch(/CRYPT_E_REVOCATION_OFFLINE/);
+  });
 });
