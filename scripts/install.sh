@@ -86,6 +86,39 @@ log_err() {
 }
 
 # ---- capability probes ----
+# Detect if curl is built against Windows Schannel. On Schannel, the OCSP
+# revocation check is mandatory and may fail if the responder is offline
+# (CRYPT_E_REVOCATION_OFFLINE 0x80092013). The detection is purely
+# informational: it never changes behavior, just prints a hint so users
+# who hit the issue know about --ssl-no-revoke before they get the error.
+is_curl_schannel() {
+  if command -v curl >/dev/null 2>&1; then
+    curl --version 2>/dev/null | head -n 1 | grep -qi 'Schannel'
+  else
+    return 1
+  fi
+}
+
+# Print a one-time hint when curl is built against Windows Schannel.
+# Suppressed when the user has already opted in to --ssl-no-revoke (the
+# hint would be noise) and when running in TEST_MODE (no real network
+# involved).
+print_schannel_hint() {
+  if [ -n "${INSTALL_TEST_MODE:-}" ] && [ "${INSTALL_TEST_MODE:-0}" = "1" ]; then
+    return 0
+  fi
+  if [ -n "${INSTALL_SSL_NO_REVOKE:-}" ]; then
+    return 0
+  fi
+  if is_curl_schannel; then
+    printf '%s\n' "Note: curl is built against Windows Schannel, which checks certificate revocation." >&2
+    printf '%s\n' "If a download fails with CRYPT_E_REVOCATION_OFFLINE (0x80092013), re-run with --ssl-no-revoke on BOTH the outer and inner curl:" >&2
+    printf '%s\n' "  curl -fsSL --ssl-no-revoke https://github.com/JosiahSiegel/umactually/raw/main/scripts/install.sh | sh -s -- --ssl-no-revoke" >&2
+    printf '%s\n' "(Cert validation is still performed; only the optional CRL/OCSP lookup is skipped.)" >&2
+    printf '\n' >&2
+  fi
+}
+
 detect_sha256() {
   if command -v sha256sum >/dev/null 2>&1; then
     printf 'sha256sum'
@@ -321,11 +354,55 @@ http_get() {
     # caused by an unreachable OCSP responder. On OpenSSL-built curl the
     # flag is silently accepted as a no-op, so passing it unconditionally
     # when INSTALL_SSL_NO_REVOKE is set is safe on every platform.
+    _curl_args="-fsSL"
     if [ -n "${INSTALL_SSL_NO_REVOKE:-}" ]; then
-      curl -fsSL --ssl-no-revoke "$1" -o "$2"
-    else
-      curl -fsSL "$1" -o "$2"
+      _curl_args="$_curl_args --ssl-no-revoke"
     fi
+    # Capture curl's stderr so we can detect the specific Windows
+    # Schannel revocation-offline error and print a self-documenting
+    # message with the workaround.
+    _curl_err=$(mktemp -t umactually-curl.XXXXXX 2>/dev/null) || _curl_err=""
+    if [ -n "$_curl_err" ]; then
+      curl $_curl_args "$1" -o "$2" 2> "$_curl_err"
+      _curl_status=$?
+    else
+      # mktemp failed; fall back to inheriting stderr (we lose the
+      # friendly error message but the install still aborts cleanly).
+      curl $_curl_args "$1" -o "$2"
+      _curl_status=$?
+    fi
+    if [ "$_curl_status" -ne 0 ]; then
+      _curl_err_content=$(cat "$_curl_err" 2>/dev/null || printf '')
+      rm -f "$_curl_err" 2>/dev/null || true
+      # Detect the specific Windows Schannel revocation-offline error.
+      # The error string is stable across curl versions on Windows:
+      #   "curl: (35) schannel: ... CRYPT_E_REVOCATION_OFFLINE
+      #    (0x80092013) - The revocation function was unable to
+      #    check revocation because the revocation server was offline."
+      case "$_curl_err_content" in
+        *CRYPT_E_REVOCATION_OFFLINE*|*0x80092013*)
+          log_err "TLS certificate revocation check failed (Windows Schannel CRYPT_E_REVOCATION_OFFLINE 0x80092013)."
+          log_err "The OCSP responder for GitHub's certificate is unreachable from your network."
+          log_err "This is a Windows + Git Bash + curl-schannel issue, NOT an umactually problem."
+          log_err ""
+          log_err "To work around it, re-run with --ssl-no-revoke on BOTH the outer and inner curl:"
+          log_err "  curl -fsSL --ssl-no-revoke https://github.com/JosiahSiegel/umactually/raw/main/scripts/install.sh | sh -s -- --ssl-no-revoke"
+          log_err ""
+          log_err "(Cert validation is still performed; only the optional CRL/OCSP lookup is skipped.)"
+          return 1
+          ;;
+        *)
+          # Unrecognized curl failure. Print the raw stderr to aid
+          # debugging, but don't drown the user in a wall of text.
+          log_err "curl failed (exit $_curl_status) downloading: $1"
+          if [ -n "$_curl_err_content" ]; then
+            printf '%s\n' "$_curl_err_content" | head -n 5 >&2
+          fi
+          return 1
+          ;;
+      esac
+    fi
+    rm -f "$_curl_err" 2>/dev/null || true
   elif command -v wget >/dev/null 2>&1; then
     if [ -n "${INSTALL_SSL_NO_REVOKE:-}" ]; then
       # wget has no equivalent of curl's `--ssl-no-revoke`; the only
@@ -985,6 +1062,11 @@ USAGE
 # into the env-var shape the rest of the script reads. The POSIX
 # `curl | sh -s -- <flags>` form must be a first-class entry point.
 parse_args "$@"
+
+# Proactive hint: if curl is built against Windows Schannel, warn the
+# user about the CRYPT_E_REVOCATION_OFFLINE failure mode before any
+# download happens. No-op on OpenSSL-built curl (Linux/macOS/most CI).
+print_schannel_hint
 
 # Detect platform/arch.
 PLATFORM=${PLATFORM_OVERRIDE:-$(detect_platform || printf '')}
