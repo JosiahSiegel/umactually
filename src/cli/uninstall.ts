@@ -98,8 +98,22 @@ export type UninstallDeps = {
 
 /** Default stdin reader: a single line from /dev/tty via readline, with a
  *  30-second safety timeout. Returns null on no-TTY, EOF, timeout, or any
- *  other failure. Never blocks indefinitely on a pipe. */
-export async function defaultStdinReader(): Promise<string | null> {
+ *  other failure. Never blocks indefinitely on a pipe.
+ *
+ *  The prompt text is written to STDERR (not stdout) so it does not
+ *  interleave with the human output stream (the OK / WARN / FAIL check
+ *  lines, the JSON envelope, and the exit-code banner all go to stdout).
+ *  We do NOT pass `output: process.stdout` to readline with `terminal:
+ *  true` because that path emits `\r\n` on stdout before reading the
+ *  answer — which would interleave a stray blank line with the check
+ *  lines emitted later. Instead we use `terminal: false` (no TTY-aware
+ *  prompt handling) and write the prompt ourselves via stderr.
+ *
+ *  `terminal: false` requires a TTY for line-editing support; on a real
+ *  TTY the raw line-mode read still works. The 30s timer is the
+ *  user-facing safety: SIGINT (Ctrl+C) and EOF (Ctrl+D) both settle
+ *  with `null`, which `shouldPrompt` treats as a decline. */
+export async function defaultStdinReader(promptText: string): Promise<string | null> {
   if (process.stdin.isTTY !== true) {
     return null;
   }
@@ -110,6 +124,7 @@ export async function defaultStdinReader(): Promise<string | null> {
         return;
       }
       settled = true;
+      clearTimeout(timer);
       try {
         rl.close();
       } catch {
@@ -118,21 +133,25 @@ export async function defaultStdinReader(): Promise<string | null> {
       resolve(value);
     };
     const timer = setTimeout(() => settle(null), 30_000);
+    // Write the prompt to stderr so it does not interleave with stdout
+    // (the check lines, JSON output, and exit-code banners all go to
+    // stdout). Stderr is the conventional channel for prompts and
+    // diagnostics.
+    process.stderr.write(promptText);
+    // `terminal: false` disables TTY-aware prompt handling. Without
+    // `output`, readline writes to a discarded sink — the explicit
+    // stderr.write above is what the user actually sees.
     const rl = createInterface({
       input: process.stdin,
-      output: process.stdout,
-      terminal: true,
+      terminal: false,
     });
-    rl.question("", (answer) => {
-      clearTimeout(timer);
-      settle(answer);
+    rl.on("line", (line) => {
+      settle(line);
     });
     rl.on("close", () => {
-      clearTimeout(timer);
       settle(null);
     });
     rl.on("SIGINT", () => {
-      clearTimeout(timer);
       settle(null);
     });
   });
@@ -336,7 +355,7 @@ export async function runUninstall(deps: UninstallDeps): Promise<UninstallResult
   // Non-interactive shells (CI, cron) must pass --yes.
   if (shouldPrompt(deps)) {
     const reader = deps.stdinReader ?? defaultStdinReader;
-    const confirm = await reader();
+    const confirm = await reader("Remove the running binary? [y/N] ");
     if (confirm === null || !/^y(es)?$/i.test(confirm.trim())) {
       checks.push({
         id: "binary-removal",
@@ -377,17 +396,12 @@ export async function runUninstall(deps: UninstallDeps): Promise<UninstallResult
       // the file is actually gone. If not, fall back to a delayed-del
       // helper that runs after this process exits.
       if (deps.platform === "win32" && deps.fsAdapter.exists(deps.execPath)) {
-        scheduleWindowsDelayedDelete(deps.execPath);
-        checks.push({
-          id: "self-deletion",
-          status: "warn",
-          message: `Windows held a write lock on the running binary; a delayed-delete helper was scheduled`,
-        });
+        checks.push(scheduleWindowsDelayedDelete(deps.execPath));
       }
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       if (deps.platform === "win32") {
-        scheduleWindowsDelayedDelete(deps.execPath);
+        checks.push(scheduleWindowsDelayedDelete(deps.execPath));
         checks.push({
           id: "binary-removal",
           status: "warn",
@@ -522,7 +536,7 @@ function shouldPrompt(deps: UninstallDeps): boolean {
   return yesEnv !== "1" && yesEnv !== "true";
 }
 
-function scheduleWindowsDelayedDelete(targetPath: string): void {
+export function scheduleWindowsDelayedDelete(targetPath: string): UninstallCheck {
   // Self-deletion of a running executable on Windows requires a helper
   // that runs AFTER the parent exits. We write a small .cmd script to
   // a unique temp file, then spawn it detached. The script:
@@ -539,6 +553,13 @@ function scheduleWindowsDelayedDelete(targetPath: string): void {
   // by the script via the %1 parameter. %~1 in the script body is the
   // path with surrounding quotes already stripped, so we re-quote it
   // safely with del's normal double-quote rules.
+  //
+  // Returns a UninstallCheck so the caller can record success or
+  // failure in the visible output. A previous version swallowed the
+  // writeFileSync failure in a try/catch, which meant the user got
+  // `binary-removal: warn` and a silent failure to actually delete
+  // the binary — no visible `self-deletion` entry at all. Surfacing
+  // the result here closes that gap.
   const tmpDir = process.env["TEMP"] ?? process.env["TMP"] ?? "/tmp";
   const scriptPath = join(tmpDir, `umactually-uninstall-${process.pid}-${Date.now()}.cmd`);
   // `set "TARGET=foo""bar"` correctly sets TARGET to `foo"bar`. cmd.exe
@@ -560,8 +581,18 @@ function scheduleWindowsDelayedDelete(targetPath: string): void {
       stdio: "ignore",
       windowsHide: true,
     }).unref();
-  } catch {
-    // Best effort — the user can delete manually if cmd.exe is unavailable.
+    return {
+      id: "self-deletion",
+      status: "warn",
+      message: `Windows held a write lock on the running binary; a delayed-delete helper was scheduled at ${scriptPath}`,
+    };
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    return {
+      id: "self-deletion",
+      status: "fail",
+      message: `could not schedule delayed-delete helper for ${targetPath}: ${message}. The binary may need to be removed manually.`,
+    };
   }
 }
 

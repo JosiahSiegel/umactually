@@ -12,6 +12,7 @@ import { sep } from "node:path";
 import {
   classifyExecPath,
   defaultFsAdapter,
+  defaultStdinReader,
   findShellRcBlocks,
   formatUninstallHuman,
   formatUninstallJson,
@@ -19,6 +20,7 @@ import {
   purgeConfig,
   revertPath,
   runUninstall,
+  scheduleWindowsDelayedDelete,
   stripShellRcBlocks,
   userDeclinedPrompt,
   type FsAdapter,
@@ -479,5 +481,55 @@ describe("userDeclinedPrompt", () => {
       ],
     };
     expect(userDeclinedPrompt(result as unknown as Parameters<typeof userDeclinedPrompt>[0])).toBe(false);
+  });
+});
+
+describe("defaultStdinReader", () => {
+  // The actual readline path is hard to unit-test without mocking
+  // process.stdin/stdout. We at least verify:
+  //   1. The function now takes a promptText argument (signature
+  //      regression guard for the stdout-prompting bug).
+  //   2. It returns null immediately when process.stdin is not a TTY
+  //      (the no-TTY short-circuit, which is the path CI uses).
+  it("returns null immediately when stdin is not a TTY", async () => {
+    // Vitest runs without a TTY, so process.stdin.isTTY is false.
+    // The function short-circuits and returns null without reading.
+    const result = await defaultStdinReader("test prompt: ");
+    expect(result).toBeNull();
+  });
+});
+
+describe("scheduleWindowsDelayedDelete", () => {
+  // We only exercise the failure path here (the success path requires a
+  // real Windows cmd.exe + a writable %TEMP%, neither of which exist
+  // in CI). The success path is covered by the typecheck (return type
+  // is `UninstallCheck` and the function's caller now uses the return
+  // value).
+  const ORIGINAL_TEMP = process.env["TEMP"];
+  const ORIGINAL_TMP = process.env["TMP"];
+
+  it("returns a self-deletion: fail check when %TEMP% is unwritable", () => {
+    // Point TMP at a path that does not exist and cannot be created
+    // (e.g. /proc/null/foo). writeFileSync will throw ENOENT.
+    process.env["TEMP"] = "/proc/null/foo";
+    process.env["TMP"] = "/proc/null/foo";
+    try {
+      const check = scheduleWindowsDelayedDelete("C:\\Users\\tester\\bin\\umactually.exe");
+      expect(check.id).toBe("self-deletion");
+      expect(check.status).toBe("fail");
+      expect(check.message).toMatch(/could not schedule delayed-delete helper/);
+      expect(check.message).toContain("umactually.exe");
+    } finally {
+      if (ORIGINAL_TEMP === undefined) {
+        delete process.env["TEMP"];
+      } else {
+        process.env["TEMP"] = ORIGINAL_TEMP;
+      }
+      if (ORIGINAL_TMP === undefined) {
+        delete process.env["TMP"];
+      } else {
+        process.env["TMP"] = ORIGINAL_TMP;
+      }
+    }
   });
 });
