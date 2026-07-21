@@ -86,6 +86,13 @@ export type UninstallDeps = {
   readonly execPath: string;
   readonly platform: NodeJS.Platform;
   readonly homeDir: string;
+  /**
+   * Optional UninstallMode. When provided, `runUninstall` honors
+   * `mode.yes` (and the inverse) to skip or enforce the interactive
+   * prompt. When absent, only the `isTTY` and `UMACTUALLY_*` env-var
+   * heuristics apply (preserved for backwards-compatible callers).
+   */
+  readonly mode?: UninstallMode;
 };
 
 export type FsAdapter = {
@@ -210,17 +217,28 @@ export function classifyExecPath(
   if (platform !== "win32" && (parent === "/usr/local/bin" || parent === `${p.sep}usr${p.sep}local${p.sep}bin`)) {
     return { ok: true, installDir: parent };
   }
-  // Fall back: parent is *some* ".../bin" and contains the home dir as a prefix
-  // (covers /opt/<user>/bin, C:\Users\foo\bin, etc.). Refuse anything else.
-  if (
-    parent.endsWith(`${p.sep}bin`) &&
-    (parent.startsWith(homeDir) || parent.startsWith(`/opt${p.sep}`))
-  ) {
+  // Tight fallback (not "any path ending in /bin under $HOME"):
+  //   - homeDir + "/bin"  (or "/.bin")  — a *direct* child, not nested
+  //   - /opt/<single-segment>/bin       — single segment under /opt, not nested
+  // This still covers the documented install targets without accepting
+  // attacker-controlled paths like /home/alice/some/random/bin/umactually.
+  const homeBin = p.join(homeDir, "bin");
+  const homeDotBin = p.join(homeDir, ".bin");
+  if (parent === homeBin || parent === homeDotBin) {
     return { ok: true, installDir: parent };
+  }
+  if (platform !== "win32") {
+    const rest = parent.startsWith(`/opt${p.sep}`) ? parent.slice(`/opt${p.sep}`.length) : null;
+    if (rest !== null && rest.length > 0 && rest.endsWith(`${p.sep}bin`)) {
+      const beforeBin = rest.slice(0, -`${p.sep}bin`.length);
+      if (beforeBin.length > 0 && !beforeBin.includes(p.sep)) {
+        return { ok: true, installDir: parent };
+      }
+    }
   }
   return {
     ok: false,
-    reason: `process.execPath "${execPath}" is not in a recognised install directory (${homeLocalBin}, /usr/local/bin, or a home-dir-relative /bin)`,
+    reason: `process.execPath "${execPath}" is not in a recognised install directory (${homeLocalBin}, /usr/local/bin, ${homeBin}, or /opt/<name>/bin)`,
   };
 }
 
@@ -449,6 +467,10 @@ export function revertPath(deps: UninstallDeps): readonly UninstallCheck[] {
 }
 
 function shouldPrompt(deps: UninstallDeps): boolean {
+  // `mode.yes` (the `--yes` / `-y` CLI flag) always wins.
+  if (deps.mode?.yes === true) {
+    return false;
+  }
   if (!deps.isTTY) {
     return false;
   }

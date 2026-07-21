@@ -155,6 +155,37 @@ describe("classifyExecPath", () => {
     const result = classifyExecPath("/etc/cron.daily/bin/umactually", "linux", HOME);
     expect(result.ok).toBe(false);
   });
+
+  it("rejects nested paths under the home dir that end in /bin (security fix)", () => {
+    // Was previously accepted because parent.endsWith('/bin') && parent.startsWith(homeDir).
+    const result = classifyExecPath("/home/tester/some/random/bin/umactually", "linux", HOME);
+    expect(result.ok).toBe(false);
+  });
+
+  it("rejects paths like /home/tester/bin/evil/umactually", () => {
+    const result = classifyExecPath("/home/tester/bin/evil/umactually", "linux", HOME);
+    expect(result.ok).toBe(false);
+  });
+
+  it("accepts homeDir + '/bin' (direct child)", () => {
+    const result = classifyExecPath("/home/tester/bin/umactually", "linux", HOME);
+    expect(result.ok).toBe(true);
+  });
+
+  it("accepts homeDir + '/.bin' (direct child)", () => {
+    const result = classifyExecPath("/home/tester/.bin/umactually", "linux", HOME);
+    expect(result.ok).toBe(true);
+  });
+
+  it("accepts /opt/<single-segment>/bin", () => {
+    const result = classifyExecPath("/opt/tools/bin/umactually", "linux", HOME);
+    expect(result.ok).toBe(true);
+  });
+
+  it("rejects /opt/<multi-segment>/bin (nested)", () => {
+    const result = classifyExecPath("/opt/tools/sub/bin/umactually", "linux", HOME);
+    expect(result.ok).toBe(false);
+  });
 });
 
 describe("findShellRcBlocks + stripShellRcBlocks", () => {
@@ -260,6 +291,39 @@ describe("runUninstall (binary removal)", () => {
     });
     const result = runUninstall(makeDeps({ fsAdapter: fs, env: { UMACTUALLY_YES: "true" } }));
     expect(result.exitCode).toBe(0);
+  });
+
+  it("proceeds on TTY when --yes flag is in mode (no env var, no stdin)", () => {
+    const fs = makeFs({
+      [`${HOME}/.local/bin/umactually`]: { kind: "file", content: "binary" },
+    });
+    // TTY would normally prompt, but mode.yes should override.
+    const result = runUninstall(
+      makeDeps({
+        fsAdapter: fs,
+        isTTY: true,
+        stdinReader: () => "n",
+        mode: { removeBinary: true, purgeConfig: false, revertPath: false, yes: true },
+      }),
+    );
+    expect(result.exitCode).toBe(0);
+    expect(fs.files[`${HOME}/.local/bin/umactually`]).toBeUndefined();
+  });
+
+  it("declines on TTY when --yes flag is absent even if env var is '0'", () => {
+    const fs = makeFs({
+      [`${HOME}/.local/bin/umactually`]: { kind: "file", content: "binary" },
+    });
+    const result = runUninstall(
+      makeDeps({
+        fsAdapter: fs,
+        isTTY: true,
+        stdinReader: () => "n",
+        env: { UMACTUALLY_UNINSTALL_YES: "0" },
+      }),
+    );
+    expect(result.exitCode).toBe(1);
+    expect(fs.files[`${HOME}/.local/bin/umactually`]).toBeDefined();
   });
 });
 

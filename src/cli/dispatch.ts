@@ -210,6 +210,7 @@ function runUninstallBranch(args: readonly string[]): DispatchResult {
     execPath: process.execPath,
     platform: process.platform,
     homeDir: require("node:os").homedir(),
+    mode,
   };
   const result = runUninstall(deps);
   const additionalChecks = [
