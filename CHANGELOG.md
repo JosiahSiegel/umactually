@@ -10,6 +10,18 @@ ship a tag).
 
 ## [Unreleased]
 
+## [0.5.8] - 2026-07-21
+
+### Fixed
+
+- **Test suite fully green on Node 22 sandboxes** (PR #98). Three production scripts (`scripts/build-binary.mjs`, `scripts/package-release-assets.mjs`, `scripts/verify-release-assets.mjs`) import `scripts/release-targets.ts`, which uses Node 24's native `.ts` import. When the test suite ran on a host with Node < 24, every spawn failed with `ERR_UNKNOWN_FILE_EXTENSION` before any assertion could run. New `test/helpers/node-version-gate.ts` exports a shared `NODE_24_REQUIRED` constant; the affected `describe` blocks across 5 test files now `skipIf(NODE_24_REQUIRED)`. `test/unit/install-methods.test.ts` joins the same skip path (the installed binary enforces `engines.node >= 24` via `bin/umactually.mjs`). `ALLOW_NODE_22_SMOKE=1` overrides for debugging.
+- **`runInstaller()` always sandboxes the install path** (test helper). `scripts/install.sh` switches to `/usr/local/bin` when running as root (the default in Docker / CI / sandboxes); without an explicit `INSTALL_DIR_OVERRIDE` the test assertions looking at `<fakeHome>/.local/bin/umactually` saw `ENOENT`. The helper now pins `INSTALL_DIR_OVERRIDE` to the sandbox path so the assertion target is honored. Tests passing `INSTALL_DIR_OVERRIDE` via `extraEnv` still win (extraEnv is merged last).
+
+### Stats
+
+- Before: 50 failed / 1518 passed / 55 skipped (1,623 total).
+- After:  0 failed / 1502 passed / 121 skipped (1,623 total). All 121 skips have a documented reason (Node 24 requirement + override env var).
+
 ## [0.5.0] - 2026-07-17
 
 ### Added
