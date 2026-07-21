@@ -47,22 +47,69 @@ jobs:
         run: npm run check:dist-freshness
 
       - name: Run UmActually self review
-        # `continue-on-error: true` is intentional: a provider-side
-        # timeout (e.g. Anthropic rate-limit) should NOT block the PR
-        # from merging. Self-review is an advisory signal, not a hard
-        # requirement. (Hard requirements live in ci.yml: typecheck +
-        # test + bundle gate the PR merge.)
-        continue-on-error: true
+        # Self-review is an advisory signal: a provider-side timeout
+        # (e.g. Anthropic rate-limit) should NOT block the PR from
+        # merging. The hard requirements live in ci.yml: typecheck +
+        # test + bundle gate the PR merge. We therefore always exit 0
+        # at the shell level and rely on a follow-up step to surface
+        # failures via a step summary + ::warning:: annotation, so
+        # the failure is visible in the PR's checks view without
+        # turning the overall job red.
+        #
+        # --per-request-timeout-seconds 240 raises the default 60s
+        # timeout (live-provider.ts DEFAULT_REQUEST_TIMEOUT_MS) to 4
+        # minutes, which is enough for a 32K-token Anthropic response
+        # on a typical PR. The binary still uses the default for
+        # any caller that does not pass the flag, so the operator
+        # can revert by removing the flag without changing the
+        # binary.
+        id: review
         env:
           GITHUB_TOKEN: ${{ github.token }}
           UMACTUALLY_API_URL: ${{ secrets.UMACTUALLY_API_URL }}
           UMACTUALLY_API_KEY: ${{ secrets.UMACTUALLY_API_KEY }}
         run: |
+          set +e
           node bin/umactually.mjs review \
             --platform github \
             --no-detect-leaks \
             --debug-raw-response \
-            --max-output-tokens 32000
+            --max-output-tokens 32000 \
+            --per-request-timeout-seconds 240
+          echo "review-exit=$?" >> "$GITHUB_OUTPUT"
+          exit 0
+
+      - name: Summarise self-review outcome
+        if: always()
+        env:
+          REVIEW_EXIT: ${{ steps.review.outputs.review-exit }}
+        run: |
+          ARTIFACT="artifacts/manual/s1-github-self-review.md"
+          {
+            echo "## UmActually self-review"
+            echo ""
+            if [ "${REVIEW_EXIT:-0}" = "0" ]; then
+              echo "✅ **Self-review completed.** The umactually CLI posted a review on this PR."
+            else
+              echo "⚠️ **Self-review did NOT complete** (exit \`${REVIEW_EXIT}\`)."
+              echo ""
+              echo "The overall job is green because self-review is advisory; a provider-side"
+              echo "timeout (e.g. Anthropic rate-limit) should not block merging. Inspect the"
+              echo "artifact and the step log before merging if the review matters for this PR."
+              echo ""
+              echo "**Failure summary:**"
+              echo ""
+              echo '```json'
+              if [ -f "${ARTIFACT}" ]; then
+                jq -c '{posted, parseFailed, message, inlineThreadCount, verdict, note}' "${ARTIFACT}" 2>/dev/null || cat "${ARTIFACT}"
+              else
+                echo '{"parseFailed": null, "reason": "artifact not found at '"${ARTIFACT}"'"}'
+              fi
+              echo '```'
+              echo ""
+              echo "::warning::Self-review failed (exit ${REVIEW_EXIT}). The PR is not blocked because self-review is advisory; review the artifact at \`${ARTIFACT}\` before merging."
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
 
 # Verifying the action posted a review
 # -----------------------------------
@@ -73,10 +120,13 @@ jobs:
 #    with inline threads on files in the diff. On the Files changed tab the
 #    inline threads are visible per file.
 # 4. A workflow_dispatch run without pull request context does not post.
-# 5. The `check-review-artifact` subcommand remains available for ad-hoc
-#    diagnostics (e.g. validating an artifact produced by ci.yml's S1
-#    smoke step), but it is NOT invoked here — self-review.yml does not
-#    produce a local review-artifact file (the live review posts
-#    comments directly to the PR). The previous `check-review-artifact`
-#    step was a silent no-op that always exited 1 with `continue-on-
-#    error: true`; it has been removed.
+# 5. When the review fails (provider timeout, rate-limit, parse-failure),
+#    the **Summarise self-review outcome** step writes a step summary
+#    (visible in the Actions run view) and a `::warning::` annotation
+#    (visible on the failed step in the Actions UI). The overall job
+#    stays green because self-review is advisory and must not block
+#    merging — but the failure is no longer buried in raw logs.
+# 6. The local artifact at `artifacts/manual/s1-github-self-review.md`
+#    captures {posted, parseFailed, message, inlineThreadCount, verdict,
+#    note} even on failure (see src/cli/run.ts writeLiveArtifact), so
+#    the step summary can show a structured failure breakdown via `jq`.
