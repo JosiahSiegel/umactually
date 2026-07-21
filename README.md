@@ -12,9 +12,20 @@ Latest release: **[v0.5.8](https://github.com/JosiahSiegel/umactually/releases/t
 
 ### Recommended: standalone binary (SHA-256-verified)
 
+> **Windows Git Bash users:** the first command below can fail with
+> `curl: (35) schannel: ... CRYPT_E_REVOCATION_OFFLINE (0x80092013)`
+> if your network can't reach GitHub's OCSP responder. The fix is to
+> add `--ssl-no-revoke` to **both** the outer curl and the install
+> flag. Use the second command in that case (cert validation is
+> still performed; only the optional CRL/OCSP lookup is skipped).
+> Requires curl >= 7.78.
+
 ```bash
-# macOS / Linux / Windows Git Bash — install latest
+# macOS / Linux / Windows Git Bash (with reachable OCSP) — install latest
 curl -fsSL https://github.com/JosiahSiegel/umactually/raw/main/scripts/install.sh | sh
+
+# Windows Git Bash when the OCSP responder is unreachable (the workaround)
+curl -fsSL --ssl-no-revoke https://github.com/JosiahSiegel/umactually/raw/main/scripts/install.sh | sh -s -- --ssl-no-revoke
 
 # Install a pinned version
 curl -fsSL https://github.com/JosiahSiegel/umactually/raw/main/scripts/install.sh | sh -s -- --tag v0.5.8
@@ -24,15 +35,10 @@ curl -fsSL https://github.com/JosiahSiegel/umactually/raw/main/scripts/install.s
 
 # Print the installer's flag/env-var reference
 curl -fsSL https://github.com/JosiahSiegel/umactually/raw/main/scripts/install.sh | sh -s -- --help
-
-# Git Bash on Windows, when the OCSP responder for GitHub's cert is unreachable
-# (CRYPT_E_REVOCATION_OFFLINE 0x80092013). Cert validation is NOT disabled —
-# only the optional CRL/OCSP lookup is skipped. Requires curl >= 7.78.
-curl -fsSL https://github.com/JosiahSiegel/umactually/raw/main/scripts/install.sh | sh -s -- --ssl-no-revoke
 ```
 
 ```powershell
-# Windows PowerShell
+# Windows PowerShell (preferred for Windows users)
 irm https://github.com/JosiahSiegel/umactually/raw/main/scripts/install.ps1 | iex
 ```
 
