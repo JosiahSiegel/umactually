@@ -59,24 +59,34 @@ jobs:
         # --per-request-timeout-seconds 240 raises the default 60s
         # timeout (live-provider.ts DEFAULT_REQUEST_TIMEOUT_MS) to 4
         # minutes, which is enough for a 32K-token Anthropic response
-        # on a typical PR. The binary still uses the default for
-        # any caller that does not pass the flag, so the operator
-        # can revert by removing the flag without changing the
-        # binary.
+        # on a typical PR. The flag is parsed by `bin/umactually.mjs`
+        # via parse-args; if the flag is removed from the workflow
+        # but kept in the binary, the binary will error with
+        # "unknown flag: --per-request-timeout-seconds" and the
+        # review will fail. The reverse (flag kept here, removed
+        # from the binary) will also fail in the same way. The two
+        # must be updated together.
         id: review
         env:
           GITHUB_TOKEN: ${{ github.token }}
           UMACTUALLY_API_URL: ${{ secrets.UMACTUALLY_API_URL }}
           UMACTUALLY_API_KEY: ${{ secrets.UMACTUALLY_API_KEY }}
         run: |
+          # set +e keeps the script running even if `node` is missing or
+          # the binary errors out. We capture the exit code into a
+          # variable, write it to GITHUB_OUTPUT, and ALWAYS reach
+          # `exit 0` at the end (last line, with `|| true` on the echo
+          # to defend against $GITHUB_OUTPUT being unwritable).
           set +e
+          REVIEW_EXIT=0
           node bin/umactually.mjs review \
             --platform github \
             --no-detect-leaks \
             --debug-raw-response \
             --max-output-tokens 32000 \
             --per-request-timeout-seconds 240
-          echo "review-exit=$?" >> "$GITHUB_OUTPUT"
+          REVIEW_EXIT=$?
+          echo "review-exit=${REVIEW_EXIT}" >> "${GITHUB_OUTPUT:-/dev/null}" || true
           exit 0
 
       - name: Summarise self-review outcome

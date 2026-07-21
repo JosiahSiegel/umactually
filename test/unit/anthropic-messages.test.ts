@@ -365,6 +365,31 @@ describe("anthropic-messages provider client — RED contract", () => {
     // 3 attempts: 1 initial + 2 retries from RETRY_BACKOFF_MS.length = 2.
     expect(callIndex).toBe(3);
   });
+
+  it("ANTH-RED-009 bails out with code=aborted when the caller's signal is already aborted", async () => {
+    // The retry-on-timeout patch added 'timeout' to isRetryable, but
+    // composing an already-aborted caller signal with a fresh timeout
+    // produces a signal that is still aborted — so without an explicit
+    // bail-out check, the second attempt would fail immediately with
+    // a fake "timeout" error. The check returns an "aborted" error
+    // (not retryable) and exits the retry loop.
+    const stub = {
+      fetch: async () => {
+        throw new Error("fetch should NOT be called when the caller signal is already aborted");
+      },
+      calls: () => 0,
+    };
+    const preAbortedSignal = AbortSignal.abort();
+    const mod = await loadAnthropicModule();
+    const result = await mod.runAnthropicRequest({
+      ...BASE_CONFIG,
+      fetchImpl: stub.fetch,
+      signal: preAbortedSignal,
+    });
+    expect(result).toMatchObject({ ok: false });
+    const error = (result as { readonly error: { readonly code: string } }).error;
+    expect(error.code).toBe("aborted");
+  });
 });
 
 describe("auto-model resolver — anthropic provider", () => {

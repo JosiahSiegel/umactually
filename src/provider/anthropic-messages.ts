@@ -325,6 +325,22 @@ async function runWithRetry(
 ): Promise<AnthropicProviderCallResult> {
   let lastFailure: ProviderError | null = null;
   for (let attempt = 0; attempt <= RETRY_BACKOFF_MS.length; attempt += 1) {
+    // Bail out if the caller's signal is already aborted. Without this
+    // check, the next runOnce would compose its signal with an
+    // already-aborted caller signal — `AbortSignal.any([aborted, ...])`
+    // is itself aborted, so the second attempt would fail immediately
+    // with a "timeout" error, even though the underlying connection
+    // was healthy. That makes the "timeout is transient, retry it"
+    // rationale void (we'd be reporting a fake timeout, not a real one).
+    // Reporting an "aborted" error here is semantically correct and
+    // also not retryable, so we naturally exit the loop.
+    if (config.signal?.aborted === true) {
+      return {
+        ok: false,
+        error: new ProviderError("aborted", ENDPOINT, null, requestId,
+          "Caller aborted the request before retry."),
+      };
+    }
     const result = await runOnce(config, fetchImpl, requestId, url);
     if (result.ok) {
       return result;
