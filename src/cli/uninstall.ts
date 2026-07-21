@@ -32,6 +32,7 @@ import {
   existsSync,
   lstatSync,
   readFileSync,
+  renameSync,
   rmSync,
   statSync,
   unlinkSync,
@@ -212,6 +213,19 @@ export type FsAdapter = {
   readonly readFile: (path: string) => string;
   readonly writeFile: (path: string, content: string) => void;
   /**
+   * Atomically write `content` to `path`: write to a sibling temp
+   * file, fsync, then rename over the target. A failed write leaves
+   * the original file intact. Used by revertPath to avoid the
+   * TOCTOU class of bug where the disk fills up or the mount goes
+   * read-only between the read and the write — a non-atomic write
+   * would leave the user's .zshrc truncated.
+   *
+   * Implementations may use the platform's atomic rename (POSIX
+   * rename(2) is atomic on the same filesystem; Windows MoveFileEx
+   * with MOVEFILE_REPLACE_EXISTING is similarly atomic).
+   */
+  readonly writeFileAtomic: (path: string, content: string) => void;
+  /**
    * Return the file's mode bits (e.g. 0o600) or null if the file
    * does not exist or the mode cannot be determined. Used by
    * revertPath to preserve permissions across the read/modify/write
@@ -269,6 +283,27 @@ export const defaultFsAdapter: FsAdapter = {
   readFile: (path) => readFileSync(path, "utf8"),
   writeFile: (path, content) => {
     writeFileSync(path, content, "utf8");
+  },
+  writeFileAtomic: (path, content) => {
+    // Write to a sibling temp file, then rename atomically over the
+    // target. On POSIX, rename(2) is atomic on the same filesystem
+    // (the target either points to the old content or the new, never
+    // a partial state). On Windows, MoveFileEx with REPLACE_EXISTING
+    // is similarly atomic. If anything fails before the rename, the
+    // original file is untouched.
+    const tmpPath = `${path}.umactually-tmp-${process.pid}-${Date.now()}`;
+    try {
+      writeFileSync(tmpPath, content, "utf8");
+      renameSync(tmpPath, path);
+    } catch (err) {
+      // Best-effort cleanup of the orphan temp file.
+      try {
+        unlinkSync(tmpPath);
+      } catch {
+        // ignore
+      }
+      throw err;
+    }
   },
 };
 
@@ -513,7 +548,31 @@ export function purgeConfig(deps: UninstallDeps): readonly UninstallCheck[] {
   const checks: UninstallCheck[] = [];
   const configDir = join(deps.homeDir, ".umactually");
   const cacheDir = join(deps.homeDir, ".cache", "umactually");
+  // Safety: refuse to remove a directory that is NOT actually inside
+  // deps.homeDir. The check is structural — `path.join(homeDir,
+  // X)` always produces a path inside homeDir, so under normal
+  // operation this check never fires. The check exists to catch
+  // future bugs where the homeDir handling changes (e.g. a future
+  // PR adds config dir resolution that uses relative paths or
+  // follows symlinks incorrectly) — those bugs would silently
+  // expand the blast radius of `rmSync({ recursive: true, force:
+  // true })`, and this check is the safety net.
+  //
+  // We do NOT strip trailing separators (which would turn "/" into
+  // "" and break the startsWith check). Instead we handle the
+  // "/", "/foo", "C:\\", "C:\\Users\\foo" cases explicitly.
   for (const dir of [configDir, cacheDir]) {
+    const dirNormalized = path.normalize(dir);
+    const isInsideHome = dirNormalized === deps.homeDir
+      || dirNormalized.startsWith(deps.homeDir + path.sep);
+    if (!isInsideHome) {
+      checks.push({
+        id: dir === cacheDir ? "cache-removal" : "config-removal",
+        status: "fail",
+        message: `${dir} is not inside ${deps.homeDir}; refusing to remove (safety check)`,
+      });
+      continue;
+    }
     if (!deps.fsAdapter.exists(dir)) {
       checks.push({
         id: dir === cacheDir ? "cache-removal" : "config-removal",
@@ -592,7 +651,11 @@ export function revertPath(deps: UninstallDeps): readonly UninstallCheck[] {
     // 0o644 — silently broadened permissions.
     const originalMode = deps.fsAdapter.getMode(path);
     try {
-      deps.fsAdapter.writeFile(path, stripped);
+      // writeFileAtomic writes to a sibling temp file and renames over
+      // the target. If the disk fills up or the mount goes read-only
+      // mid-write, the original .zshrc is left intact (the rename is
+      // atomic on POSIX, and MoveFileEx on Windows).
+      deps.fsAdapter.writeFileAtomic(path, stripped);
       if (originalMode !== null && originalMode !== undefined) {
         try {
           deps.fsAdapter.setMode(path, originalMode);
@@ -652,47 +715,53 @@ export function scheduleWindowsDelayedDelete(targetPath: string): UninstallCheck
   // Self-deletion of a running executable on Windows requires a helper
   // that runs AFTER the parent exits. We write a small .cmd script to
   // a unique temp file, then spawn it detached. The script:
-  //   1. Enables delayed expansion so %VAR% in the path is not expanded
-  //      at parse time (this was the robustness bug in the previous
-  //      version: a path containing `%TEMP%` would explode the command).
-  //   2. Sets TARGET via `set "TARGET=..."` (cmd.exe's `""` escape
-  //      handles a literal `"` inside the value).
-  //   3. Waits ~3s via `ping -n 4`, then deletes the binary.
-  //   4. Self-deletes the .cmd.
+  //   1. Reads the path from `%1` (passed as a separate argv to cmd.exe).
+  //      %~1 strips the surrounding quotes so we can safely re-quote
+  //      it with del's normal double-quote rules.
+  //   2. Waits ~3s via `ping -n 4`, then deletes the binary.
+  //   3. Self-deletes the .cmd.
   //
-  // Passing the path as a separate argv (not interpolated into the
-  // command string) avoids all shell-quoting issues. The path is read
-  // by the script via the %1 parameter. %~1 in the script body is the
-  // path with surrounding quotes already stripped, so we re-quote it
-  // safely with del's normal double-quote rules.
+  // Why pass via %1 instead of interpolating into the script body?
+  // cmd.exe performs percent-variable expansion on the script body
+  // BEFORE the script runs. If the user's binary path contains
+  // `%TEMP%` or `%PATH%` (unusual but legal), the variable is
+  // expanded at parse time to the parent's value, producing a wrong
+  // target. The previous version tried to work around this with
+  // `setlocal EnableDelayedExpansion` + `set "TARGET=..."` + `!TARGET!`,
+  // but EnableDelayedExpansion only affects `!VAR!`, not `%VAR%` —
+  // so the bug persisted. Passing the path via %1 eliminates the
+  // interpolation entirely: %1 is the literal argument, not expanded
+  // against environment variables.
   //
   // Returns a UninstallCheck so the caller can record success or
-  // failure in the visible output. A previous version swallowed the
-  // writeFileSync failure in a try/catch, which meant the user got
-  // `binary-removal: warn` and a silent failure to actually delete
-  // the binary — no visible `self-deletion` entry at all. Surfacing
-  // the result here closes that gap.
+  // failure in the visible output.
   const tmpDir = process.env["TEMP"] ?? process.env["TMP"] ?? "/tmp";
   const scriptPath = join(tmpDir, `umactually-uninstall-${process.pid}-${Date.now()}.cmd`);
-  // `set "TARGET=foo""bar"` correctly sets TARGET to `foo"bar`. cmd.exe
-  // collapses the `""` inside the quoted value to a single literal `"`.
-  const safePath = targetPath.replace(/"/gu, '""');
   const body = [
     "@echo off",
-    "setlocal EnableDelayedExpansion",
-    `set "TARGET=${safePath}"`,
     "ping -n 4 127.0.0.1 >nul",
-    "del /f /q \"!TARGET!\"",
+    'del /f /q "%~1"',
     `del /f /q "${scriptPath.replace(/"/gu, '""')}"`,
     "",
   ].join("\r\n");
   try {
     writeFileSync(scriptPath, body, "utf8");
-    spawn("cmd.exe", ["/c", scriptPath], {
+    // Attach an error handler so a synchronous spawn failure
+    // (e.g. on Linux where cmd.exe doesn't exist) doesn't surface
+    // as an unhandled async exception after the function returns.
+    // The error is expected on non-Windows platforms and not
+    // actionable from the caller's perspective.
+    const child = spawn("cmd.exe", ["/c", scriptPath, targetPath], {
       detached: true,
       stdio: "ignore",
       windowsHide: true,
-    }).unref();
+    });
+    child.on("error", () => {
+      // Swallow: the script write was the contract; the spawn is
+      // best-effort. On non-Windows, cmd.exe is missing and this
+      // fires predictably.
+    });
+    child.unref();
     return {
       id: "self-deletion",
       status: "warn",

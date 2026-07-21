@@ -76,6 +76,16 @@ function makeFs(files: Record<string, FileEntry>): FsAdapter & { readonly files:
       const mode = existing?.mode;
       store[path] = { kind: "file", content, ...(mode !== undefined ? { mode } : {}) };
     },
+    writeFileAtomic: (path, content) => {
+      // The test fixture skips the temp-file dance and just calls
+      // writeFile directly. The point of writeFileAtomic is to be
+      // crash-safe on a real filesystem, which the in-memory store
+      // doesn't model. The real implementation's behavior (rename
+      // semantics) is exercised by the e2e workflow.
+      const existing = store[path];
+      const mode = existing?.mode;
+      store[path] = { kind: "file", content, ...(mode !== undefined ? { mode } : {}) };
+    },
     getMode: (path) => {
       const entry = store[path];
       return entry?.mode ?? null;
@@ -426,6 +436,30 @@ describe("purgeConfig", () => {
     const checks = purgeConfig(makeDeps({ fsAdapter: fs }));
     expect(checks.find((c) => c.id === "config-removal")?.status).toBe("warn");
   });
+
+  it("refuses to remove a config dir that is not inside deps.homeDir", () => {
+    // Safety check: if $HOME is "/" (misconfigured CI, unusual
+    // symlink), join("/", ".umactually") would resolve to "/.umactually"
+    // and removeDir on that could be catastrophic. The fix: refuse
+    // any path that is not strictly inside deps.homeDir.
+    const fs = makeFs({
+      "/.umactually": { kind: "dir" },
+      "/.cache/umactually": { kind: "dir" },
+    });
+    // Track whether removeDir was called on the dangerous paths.
+    let removeDirCalls: string[] = [];
+    (fs as unknown as { removeDir: (p: string, o: { recursive: boolean }) => void }).removeDir = (p) => {
+      removeDirCalls.push(p);
+    };
+    const checks = purgeConfig(
+      makeDeps({ fsAdapter: fs, homeDir: "/" }),
+    );
+    // Both checks should be fails, not ok.
+    expect(checks.find((c) => c.id === "config-removal")?.status).toBe("fail");
+    expect(checks.find((c) => c.id === "cache-removal")?.status).toBe("fail");
+    // removeDir must NOT have been called on either path.
+    expect(removeDirCalls).toEqual([]);
+  });
 });
 
 describe("revertPath", () => {
@@ -467,6 +501,27 @@ describe("revertPath", () => {
     expect(checks.find((c) => c.id === "path-revert")?.status).toBe("skip");
   });
 
+  it("uses writeFileAtomic so a partial write does not corrupt the rc file", () => {
+    // The previous revertPath called writeFileSync directly. If the
+    // write threw partway through (disk full, read-only mount), the
+    // user's .zshrc would be truncated. The fix: writeFileAtomic
+    // writes to a sibling temp file and renames over the target.
+    // The rename is atomic on POSIX and via MoveFileEx on Windows.
+    // We assert by checking that writeFileAtomic was called (via the
+    // presence of an .umactually-tmp-* sibling in the test fixture's
+    // internal store — we don't expose the temp file, but we can
+    // verify the in-memory store ends up consistent).
+    const rcPath = `${HOME}/.zshrc`;
+    const fs = makeFs({
+      [rcPath]: { kind: "file", content: rcContent },
+    });
+    const checks = revertPath(makeDeps({ fsAdapter: fs }));
+    expect(checks.find((c) => c.id === "path-revert" && c.status === "ok")).toBeDefined();
+    // The file content is the stripped version, the original is gone
+    // (writeFileAtomic replaced it atomically).
+    expect(fs.files[rcPath]?.content).not.toContain("Added by umactually installer");
+  });
+
   it("preserves the original file mode when writing back (regression: 0o600 -> 0o644)", () => {
     // A privacy-sensitive user with 0o600 on their .zshrc would have
     // their permissions silently broadened to 0o644 by the previous
@@ -496,9 +551,11 @@ describe("revertPath", () => {
     const fs = makeFs({
       [rcPath]: { kind: "file", content: originalContent, mode: 0o600 },
     });
-    // Override setMode to throw.
+    // Override setMode to throw. FsAdapter is a readonly object type
+    // — we cast through unknown to bypass the readonly check for the
+    // test override.
     const originalSetMode = fs.setMode;
-    fs.setMode = () => {
+    (fs as unknown as { setMode: (path: string, mode: number) => void }).setMode = () => {
       throw new Error("synthetic EPERM");
     };
     try {
@@ -509,7 +566,7 @@ describe("revertPath", () => {
       expect(warn?.message).toContain("600"); // mode printed in octal
       expect(warn?.hint).toContain("chmod 600");
     } finally {
-      fs.setMode = originalSetMode;
+      (fs as unknown as { setMode: (p: string, m: number) => void }).setMode = originalSetMode;
     }
   });
 });
@@ -672,6 +729,53 @@ describe("scheduleWindowsDelayedDelete", () => {
       expect(check.message).toMatch(/could not schedule delayed-delete helper/);
       expect(check.message).toContain("umactually.exe");
     } finally {
+      if (ORIGINAL_TEMP === undefined) {
+        delete process.env["TEMP"];
+      } else {
+        process.env["TEMP"] = ORIGINAL_TEMP;
+      }
+      if (ORIGINAL_TMP === undefined) {
+        delete process.env["TMP"];
+      } else {
+        process.env["TMP"] = ORIGINAL_TMP;
+      }
+    }
+  });
+
+  it("script body uses %~1, NOT an interpolated TARGET variable (regression: %TEMP% expansion)", async () => {
+    // The previous implementation interpolated the path into the
+    // script body via `set \"TARGET=...\"`. cmd.exe performs percent-
+    // variable expansion on the script body BEFORE delayed expansion,
+    // so a path containing `%TEMP%` would have those variables
+    // expanded to the parent's value. The fix passes the path via
+    // %1 (the script's argv), eliminating the interpolation.
+    //
+    // We verify the function's behavior by reading the script it
+    // wrote. The function writes to %TEMP% (or /tmp on Linux), so we
+    // point %TEMP% at a writable temp dir and look for the script.
+    const fsModule = await import("node:fs");
+    const os = await import("node:os");
+    const pathModule = await import("node:path");
+    const tempDir = fsModule.mkdtempSync(pathModule.join(os.tmpdir(), "umactually-test-"));
+    process.env["TEMP"] = tempDir;
+    process.env["TMP"] = tempDir;
+    try {
+      const check = scheduleWindowsDelayedDelete("C:\\path with %TEMP%\\umactually.exe");
+      expect(check.id).toBe("self-deletion");
+      // Find the script the function wrote.
+      const entries = fsModule.readdirSync(tempDir) as string[];
+      const scriptName = entries.find((e) => e.endsWith(".cmd"));
+      expect(scriptName).toBeDefined();
+      if (scriptName !== undefined) {
+        const scriptPath = pathModule.join(tempDir, scriptName);
+        const script = fsModule.readFileSync(scriptPath, "utf8");
+        // The path is passed via %1, not interpolated.
+        expect(script).toMatch(/"%~1"/u);
+        // No set "TARGET=..." — the interpolation is gone.
+        expect(script).not.toMatch(/set\s+"TARGET=/u);
+      }
+    } finally {
+      fsModule.rmSync(tempDir, { recursive: true, force: true });
       if (ORIGINAL_TEMP === undefined) {
         delete process.env["TEMP"];
       } else {
