@@ -247,11 +247,30 @@ async function runUninstallBranch(args: readonly string[]): Promise<DispatchResu
           ...(mode.purgeConfig ? purgeConfig(deps) : []),
           ...(mode.revertPath ? revertPath(deps) : []),
         ];
+      } else {
+        // The user declined (or EOFed) the follow-up prompt. The
+        // binary-removal already succeeded; the user just opted out
+        // of the additional cleanup. Emit visible skip checks so the
+        // output is not confusingly silent — the user ran with
+        // --purge-config / --revert-path and should see what was
+        // requested vs. what was done.
+        const declineChecks: UninstallResult["checks"][number][] = [];
+        if (mode.purgeConfig === true) {
+          declineChecks.push({
+            id: "config-removal",
+            status: "skip",
+            message: "user declined the additional cleanup prompt; ~/.umactually/ kept",
+          });
+        }
+        if (mode.revertPath === true) {
+          declineChecks.push({
+            id: "path-revert",
+            status: "skip",
+            message: "user declined the additional cleanup prompt; shell rc files kept",
+          });
+        }
+        additionalChecks = declineChecks;
       }
-      // If declined or EOF, skip the follow-ups silently. The
-      // binary-removal already succeeded; the user just opted out of
-      // the additional cleanup. (We do NOT push a check here because
-      // it would clutter the output for a fully-valid "I said no" run.)
     } else {
       // isTTY=false + --yes (the gate at the top of this function
       // already blocked the !--yes + !isTTY case).

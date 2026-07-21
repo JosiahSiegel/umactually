@@ -478,16 +478,49 @@ describe("defaultFsAdapter", () => {
 });
 
 describe("userDeclinedPrompt", () => {
-  it("returns true when the binary-removal check is skip with 'user declined'", () => {
-    const result: { exitCode: number; checks: { id: string; status: string; message: string }[] } = {
+  it("returns true when the binary-removal check has declined=true", () => {
+    const result: {
+      exitCode: number;
+      checks: { id: string; status: string; message: string; declined?: boolean }[];
+    } = {
       exitCode: 1,
       checks: [
         { id: "exec-path", status: "ok", message: "ok" },
-        { id: "binary-removal", status: "skip", message: "user declined the confirmation prompt" },
+        {
+          id: "binary-removal",
+          status: "skip",
+          message: "user declined the confirmation prompt",
+          declined: true,
+        },
       ],
     };
     // Cast through unknown to satisfy the type checker.
     expect(userDeclinedPrompt(result as unknown as Parameters<typeof userDeclinedPrompt>[0])).toBe(true);
+  });
+
+  it("returns false when the binary-removal skip check has NO declined flag (regression guard)", () => {
+    // The previous implementation used c.message.includes("user declined")
+    // — a fragile substring match. The new implementation uses the
+    // structured `declined: true` flag. This test asserts the new
+    // contract: a skip check without the structured flag is NOT
+    // treated as a decline, even if the message happens to contain
+    // the substring.
+    const result: {
+      exitCode: number;
+      checks: { id: string; status: string; message: string; declined?: boolean }[];
+    } = {
+      exitCode: 1,
+      checks: [
+        { id: "exec-path", status: "ok", message: "ok" },
+        {
+          id: "binary-removal",
+          status: "skip",
+          message: "user declined the confirmation prompt", // substring match
+          // declined flag MISSING — must NOT count as declined
+        },
+      ],
+    };
+    expect(userDeclinedPrompt(result as unknown as Parameters<typeof userDeclinedPrompt>[0])).toBe(false);
   });
 
   it("returns false when the binary was actually removed", () => {

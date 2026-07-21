@@ -61,6 +61,15 @@ export type UninstallCheck = {
   readonly status: "ok" | "warn" | "fail" | "skip";
   readonly message: string;
   readonly hint?: string;
+  /**
+   * Structured flag indicating the user explicitly declined this
+   * action's confirmation prompt. When true, the dispatch layer
+   * treats this check as a hard "abort the destructive follow-ups"
+   * signal, regardless of the human-readable message text. This
+   * replaces a fragile substring match on `message` that broke if
+   * anyone reworded the prompt-decline message.
+   */
+  readonly declined?: boolean;
 };
 
 export type UninstallJson = {
@@ -413,6 +422,7 @@ export async function runUninstall(deps: UninstallDeps): Promise<UninstallResult
         id: "binary-removal",
         status: "skip",
         message: "user declined the confirmation prompt",
+        declined: true,
       });
       return { exitCode: 1, checks };
     }
@@ -699,11 +709,16 @@ export function formatUninstallJson(result: UninstallResult, mode: UninstallMode
  * confirmation prompt. Used by runUninstallBranch to gate the
  * purge-config and revert-path follow-up actions so a 'n' answer
  * to the binary prompt does not silently wipe the user's data.
+ *
+ * Detection uses the structured `check.declined === true` flag
+ * (set by runUninstall when the user types 'n' or EOFs the prompt)
+ * rather than a substring match on the human-readable message. The
+ * structured flag is compile-time linked and survives message
+ * rewordings.
  */
 export function userDeclinedPrompt(result: UninstallResult): boolean {
   return result.exitCode === 1
     && result.checks.some(
-      (c) => c.id === "binary-removal" && c.status === "skip"
-        && c.message.includes("user declined"),
+      (c) => c.id === "binary-removal" && c.status === "skip" && c.declined === true,
     );
 }

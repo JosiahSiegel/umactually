@@ -1890,6 +1890,7 @@ async function runUninstall(deps) {
                 id: "binary-removal",
                 status: "skip",
                 message: "user declined the confirmation prompt",
+                declined: true,
             });
             return { exitCode: 1, checks };
         }
@@ -2173,11 +2174,16 @@ function formatUninstallJson(result, mode, execPath) {
  * confirmation prompt. Used by runUninstallBranch to gate the
  * purge-config and revert-path follow-up actions so a 'n' answer
  * to the binary prompt does not silently wipe the user's data.
+ *
+ * Detection uses the structured `check.declined === true` flag
+ * (set by runUninstall when the user types 'n' or EOFs the prompt)
+ * rather than a substring match on the human-readable message. The
+ * structured flag is compile-time linked and survives message
+ * rewordings.
  */
 function userDeclinedPrompt(result) {
     return result.exitCode === 1
-        && result.checks.some((c) => c.id === "binary-removal" && c.status === "skip"
-            && c.message.includes("user declined"));
+        && result.checks.some((c) => c.id === "binary-removal" && c.status === "skip" && c.declined === true);
 }
 
 ;// CONCATENATED MODULE: ./src/cli/help.ts
@@ -2650,10 +2656,30 @@ async function runUninstallBranch(args) {
                     ...(mode.revertPath ? revertPath(deps) : []),
                 ];
             }
-            // If declined or EOF, skip the follow-ups silently. The
-            // binary-removal already succeeded; the user just opted out of
-            // the additional cleanup. (We do NOT push a check here because
-            // it would clutter the output for a fully-valid "I said no" run.)
+            else {
+                // The user declined (or EOFed) the follow-up prompt. The
+                // binary-removal already succeeded; the user just opted out
+                // of the additional cleanup. Emit visible skip checks so the
+                // output is not confusingly silent — the user ran with
+                // --purge-config / --revert-path and should see what was
+                // requested vs. what was done.
+                const declineChecks = [];
+                if (mode.purgeConfig === true) {
+                    declineChecks.push({
+                        id: "config-removal",
+                        status: "skip",
+                        message: "user declined the additional cleanup prompt; ~/.umactually/ kept",
+                    });
+                }
+                if (mode.revertPath === true) {
+                    declineChecks.push({
+                        id: "path-revert",
+                        status: "skip",
+                        message: "user declined the additional cleanup prompt; shell rc files kept",
+                    });
+                }
+                additionalChecks = declineChecks;
+            }
         }
         else {
             // isTTY=false + --yes (the gate at the top of this function
