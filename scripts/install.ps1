@@ -157,8 +157,14 @@ function Invoke-SmartInstallNpm {
       if (-not $resolvedCmd) {
         $npmPrefix = & npm config get prefix 2>$null
         if ($LASTEXITCODE -eq 0 -and $npmPrefix) {
+          # `npm config get prefix` returns the parent of `bin/` (POSIX) or
+          # the directory that holds the .cmd shim directly (Windows).
+          # Mirror scripts/install.sh's behavior so cross-platform pwsh
+          # users get the correct hint.
+          $isPosix = [System.IO.Path]::DirectorySeparatorChar -eq '/'
+          $hintPath = if ($isPosix) { Join-Path $npmPrefix 'bin' } else { $npmPrefix }
           Write-Host "umactually: installed via npm, but 'umactually' is not on PATH."
-          Write-Host "umactually: add '$npmPrefix' to your PATH and retry."
+          Write-Host "umactually: add '$hintPath' to your PATH and retry."
         } else {
           Write-Host "umactually: installed via npm, but 'umactually' is not on PATH."
         }
