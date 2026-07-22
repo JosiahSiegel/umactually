@@ -57,6 +57,25 @@ const VALID_ARCHIVE_TYPES: ReadonlySet<ArchiveType> = new Set(["tar.gz", "zip"])
 
 const POSIX_PLATFORMS: ReadonlySet<string> = new Set(["linux", "darwin"]);
 
+/**
+ * Architectures every release target id must declare. Adding a new
+ * arch here is the only way to introduce one — the v0.6.0 manifest
+ * already enumerates `linux/darwin/windows × {x64, arm64}`, but a
+ * future target like `linux-riscv64` would otherwise slip through
+ * unnoticed because the per-row checks only inspect the platform
+ * prefix and the derived naming invariant. The id is also the
+ * canonical key in the size-report / checksums / installer routing
+ * code paths, so a malformed id would silently misroute.
+ */
+const VALID_ARCHITECTURES: ReadonlySet<string> = new Set(["x64", "arm64"]);
+
+/**
+ * Pattern: `<platform>-<arch>` (single dash, both halves required).
+ * The strict shape is what every consumer assumes (installer asset
+ * routing, archive basename derivation, smoke-test platform mapping).
+ */
+const ID_FORMAT_PATTERN = /^[a-z]+-[a-z0-9]+$/u;
+
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
@@ -106,6 +125,29 @@ function parseSingleTarget(raw: unknown, index: number): ReleaseTarget {
     );
   }
   const targetId = idValue;
+  // v0.6.0: validate the id shape (single-dash `<platform>-<arch>`)
+  // BEFORE the platform-prefix / arch checks so a malformed id
+  // (e.g. `linux_x64`, `LINUX-X64`, `linux-x64-extra`) is rejected
+  // with a single actionable diagnostic instead of a downstream
+  // error from one of the per-row name derivations. Without this
+  // gate, a typo in scripts/release-targets.json would pass the
+  // existing platform-prefix check (the string starts with `linux`)
+  // and the bug would surface only at install time as a missing
+  // asset — far away from the manifest file that needs editing.
+  if (!ID_FORMAT_PATTERN.test(targetId)) {
+    throw new Error(
+      `release-targets: target id ${JSON.stringify(targetId)} must match <platform>-<arch> (lowercase letters, single dash, no spaces)`,
+    );
+  }
+  // Validate the arch half against the known set. The platform
+  // half is checked later (via the POSIX / Windows / `else` branches)
+  // so its error message can be platform-specific.
+  const arch = targetId.split("-")[1] ?? "";
+  if (!VALID_ARCHITECTURES.has(arch)) {
+    throw new Error(
+      `release-targets: target ${targetId} has unknown arch ${JSON.stringify(arch)} (allowed: ${[...VALID_ARCHITECTURES].join(", ")})`,
+    );
+  }
 
   const presentFields = new Set(Object.keys(raw));
   for (const required of REQUIRED_FIELDS) {

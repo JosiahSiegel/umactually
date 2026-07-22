@@ -122,13 +122,43 @@ smart_install_with_npm() {
     _npm_err=$(mktemp -t umactually-npm.XXXXXX 2>/dev/null) || _npm_err=""
     _npm_status=1
     if [ -n "$_npm_err" ]; then
-      NPM_GLOBAL_PREFIX="$NPM_GLOBAL_PREFIX" npm install -g "$NPM_PKG" 2> "$_npm_err"
-      _npm_status=$?
+      # Only pass NPM_GLOBAL_PREFIX through to the npm subshell when
+      # it's actually non-empty. The previous form `NPM_GLOBAL_PREFIX=
+      # "$NPM_GLOBAL_PREFIX" npm ...` always exported the variable,
+      # which (when NPM_GLOBAL_PREFIX was unset) explicitly clobbered
+      # the user's NPM_CONFIG_PREFIX and pointed npm at the default
+      # global prefix instead of honoring the host's per-user prefix.
+      # Run the npm install and capture the exit status into
+      # `_npm_status` BEFORE the `|| true` fallback — capturing after
+      # would lose the real status because the subshell's $? is the
+      # status of `true`, not npm.
+      if [ -n "$NPM_GLOBAL_PREFIX" ]; then
+        NPM_GLOBAL_PREFIX="$NPM_GLOBAL_PREFIX" npm install -g "$NPM_PKG" 2> "$_npm_err"
+        _npm_status=$?
+      else
+        npm install -g "$NPM_PKG" 2> "$_npm_err"
+        _npm_status=$?
+      fi
     else
       # mktemp failed; fall back to capturing with a subshell redirect
       # (we still get *some* stderr into the variable, just not atomically).
-      _npm_err_content=$(NPM_GLOBAL_PREFIX="$NPM_GLOBAL_PREFIX" npm install -g "$NPM_PKG" 2>&1 >/dev/null || true)
-      _npm_status=$?
+      # Capture npm's exit status into `_npm_status` BEFORE the `|| true`
+      # — `_npm_err_content` is a $(...) subshell so the outer $? would
+      # otherwise be 0 (the status of `true`), making the success path
+      # below always fire and the "fall back to binary download"
+      # branch never trigger on npm failure. This was the root cause
+      # of the smart-router silently succeeding on every npm error in
+      # v0.6.0-dev (the install then dropped through to a binary
+      # download anyway, but the diagnostic was wrong: it claimed npm
+      # succeeded when it had failed). The PIPESTATUS save captures
+      # the real npm status whether or not the redirect succeeded.
+      if [ -n "$NPM_GLOBAL_PREFIX" ]; then
+        _npm_err_content=$(NPM_GLOBAL_PREFIX="$NPM_GLOBAL_PREFIX" npm install -g "$NPM_PKG" 2>&1 >/dev/null)
+        _npm_status=${PIPESTATUS[0]}
+      else
+        _npm_err_content=$(npm install -g "$NPM_PKG" 2>&1 >/dev/null)
+        _npm_status=${PIPESTATUS[0]}
+      fi
     fi
     if [ "$_npm_status" -eq 0 ]; then
       # PATH sanity check: npm says it succeeded, but if the binary

@@ -104,10 +104,15 @@ NODE_MAJOR="${NODE_VERSION#v}"
 NODE_MAJOR="${NODE_MAJOR%%.*}"
 # The Node SEA loader requires Node >= 25.7.0; pinning to 25.0.0
 # (or any earlier 25.x) would pass the major-version check but fail
-# the actual loader. Verify the minor.patch as well.
+# the actual loader. Verify the minor.patch as well. Use Bash's
+# `printf '%d\\n'` to coerce the "X.Y" string to a single integer
+# `X*100 + Y` so the comparison is purely numeric and the lexicographic
+# trap (where "10.0" < "9.0" because '1' < '9' as characters) cannot
+# fire even if a future Node 25.10.0 / 25.11.0 ships.
 NODE_MINOR_PATCH="${NODE_VERSION#v}"
 NODE_MINOR_PATCH="${NODE_MINOR_PATCH#*.}"
-if [[ "${NODE_MAJOR}" != "25" ]] || [[ "${NODE_MINOR_PATCH}" < "7.0" ]]; then
+NODE_MINOR_PATCH_NUM=$(( ${NODE_MINOR_PATCH%%.*} * 100 + ${NODE_MINOR_PATCH#*.} ))
+if [[ "${NODE_MAJOR}" != "25" ]] || [[ "${NODE_MINOR_PATCH_NUM}" -lt 700 ]]; then
   fail "expected node >= 25.7.0, got ${NODE_VERSION}. CI pins via actions/setup-node@v4 with node-version 25.7.0."
 fi
 log "node ${NODE_VERSION}"
@@ -138,45 +143,14 @@ log "6/9  verify stage sizes (replaces verify-release-assets.mjs --measure)"
 # internally). The smoke-sea job in ci.yml is the runtime check;
 # here we apply the same MIN/MAX sanity check the release workflow
 # applies so the dry-run and the release build enforce one set of
-# bounds. MIN_RAW_BYTES catches a partial SEA blob (existence +
-# self-consistent sha256 is not enough — it would still fail on
-# launch). MAX_RAW_BYTES catches a runaway build. As of v0.6.0
-# the largest target is darwin-x64 at ~134 MiB; 200 MiB leaves
-# ~50% headroom for legitimate growth.
-node -e '
-const fs = require("fs");
-const path = require("path");
-const manifest = JSON.parse(fs.readFileSync("scripts/release-targets.json", "utf8"));
-const releaseDir = "release";
-const MIN_RAW_BYTES = 1 * 1024 * 1024;
-const MAX_RAW_BYTES = 200 * 1024 * 1024;
-let failed = 0;
-for (const t of manifest) {
-  const p = path.join(releaseDir, t.rawName);
-  if (!fs.existsSync(p)) {
-    console.error("MISSING: " + p);
-    failed++;
-    continue;
-  }
-  const size = fs.statSync(p).size;
-  if (size < MIN_RAW_BYTES) {
-    console.error("TOO SMALL: " + p + " (" + size + " bytes; expected >= " + MIN_RAW_BYTES + ")");
-    failed++;
-    continue;
-  }
-  if (size > MAX_RAW_BYTES) {
-    console.error("TOO LARGE: " + p + " (" + size + " bytes; expected <= " + MAX_RAW_BYTES + ")");
-    failed++;
-    continue;
-  }
-  console.log("  " + t.rawName + " (" + size + " bytes)");
-}
-if (failed > 0) {
-  console.error("verify stage: " + failed + " target(s) failed size sanity check");
-  process.exit(1);
-}
-console.log("verify stage: all " + manifest.length + " targets present and within size bounds");
-'
+# bounds. The check itself lives in scripts/verify-release-sizes.mjs
+# (also called by release.yml) so the thresholds and the
+# size-report JSON shape are owned by one module — bumping
+# MIN/MAX in two places is a footgun that already bit us once
+# in the v0.6.0-dev cycle.
+node scripts/verify-release-sizes.mjs \
+  --manifest scripts/release-targets.json \
+  --release-dir release
 
 # ----- 3. Stage into release/public/ + internal/raw/ -----
 # Use the same staging script the release-pipeline uses (lifted out

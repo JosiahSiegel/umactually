@@ -107,46 +107,17 @@ jobs:
         #     room must bump this number AND the docs/ release-process
         #     section that documents it.
         run: |
-          node -e '
-            const fs = require("node:fs");
-            const path = require("node:path");
-            const manifest = JSON.parse(fs.readFileSync("scripts/release-targets.json", "utf8"));
-            const MIN_RAW_BYTES = 1 * 1024 * 1024;
-            const MAX_RAW_BYTES = 200 * 1024 * 1024;
-            const report = { targets: [], generatedAt: new Date().toISOString() };
-            let failed = 0;
-            for (const t of manifest) {
-              const p = path.join("release", t.rawName);
-              if (!fs.existsSync(p)) {
-                console.error("MISSING: " + p);
-                report.targets.push({ id: t.id, rawName: t.rawName, sizeBytes: 0, missing: true });
-                failed++;
-                continue;
-              }
-              const stat = fs.statSync(p);
-              const size = stat.size;
-              if (size < MIN_RAW_BYTES) {
-                console.error("TOO SMALL: " + p + " (" + size + " bytes; expected >= " + MIN_RAW_BYTES + ")");
-                report.targets.push({ id: t.id, rawName: t.rawName, sizeBytes: size, tooSmall: true });
-                failed++;
-                continue;
-              }
-              if (size > MAX_RAW_BYTES) {
-                console.error("TOO LARGE: " + p + " (" + size + " bytes; expected <= " + MAX_RAW_BYTES + ")");
-                report.targets.push({ id: t.id, rawName: t.rawName, sizeBytes: size, tooLarge: true });
-                failed++;
-                continue;
-              }
-              report.targets.push({ id: t.id, rawName: t.rawName, sizeBytes: size });
-            }
-            fs.mkdirSync("release/internal", { recursive: true });
-            fs.writeFileSync("release/internal/release-size-report.json", JSON.stringify(report, null, 2));
-            if (failed > 0) {
-              console.error("verify stage: " + failed + " target(s) failed size sanity check");
-              process.exit(1);
-            }
-            console.log("verify stage: all " + manifest.length + " targets present and within size bounds");
-          '
+          # MIN_RAW_BYTES (1 MiB) and MAX_RAW_BYTES (200 MiB) are owned
+          # by scripts/verify-release-sizes.mjs (also called by
+          # scripts/ci-release-pipeline-dry-run.sh). Both call sites
+          # delegate to the same module so the thresholds and the
+          # size-report JSON shape cannot drift between the release
+          # build and the PR-time dry-run. Bumping the ceiling
+          # requires editing one constant; the docs cross-reference
+          # both call sites.
+          node scripts/verify-release-sizes.mjs \
+            --manifest scripts/release-targets.json \
+            --release-dir release
 
       - name: Stage candidate bundle (public/<archives>, public/checksums.txt, internal/raw/<binaries>, internal/release-size-report.json)
         run: |

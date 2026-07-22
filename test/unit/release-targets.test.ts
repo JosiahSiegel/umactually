@@ -195,6 +195,54 @@ describe("parseReleaseTargets — schema and shape rejection", () => {
     const path = writeManifest(mutated);
     expect(() => parseReleaseTargets({ manifestPath: path })).toThrow(/darwin-x64.*rawName/);
   });
+
+  it("rejects malformed id (underscore instead of dash)", () => {
+    // Without the v0.6.0 id-format gate, this would slip past the
+    // existing platform-prefix check (the string starts with `linux`),
+    // pass the rawName invariant, and only surface as a missing asset
+    // at install time — far from the manifest file that needs editing.
+    const mutated = EXPECTED_TARGETS.map((t) =>
+      t.id === "linux-x64"
+        ? { ...t, id: "linux_x64" as unknown as "linux-x64" }
+        : t,
+    );
+    const path = writeManifest(mutated);
+    expect(() => parseReleaseTargets({ manifestPath: path })).toThrow(
+      /linux_x64.*<platform>-<arch>/,
+    );
+  });
+
+  it("rejects malformed id (extra segment after the platform-arch pair)", () => {
+    // The shape `<platform>-<arch>` is what every consumer assumes
+    // (installer asset routing, archive basename derivation, smoke-test
+    // platform mapping). A trailing `-extra` would silently misroute
+    // because the existing checks only inspect the first dash-segment.
+    const mutated = EXPECTED_TARGETS.map((t) =>
+      t.id === "darwin-arm64"
+        ? { ...t, id: "darwin-arm64-extras" as unknown as "darwin-arm64" }
+        : t,
+    );
+    const path = writeManifest(mutated);
+    expect(() => parseReleaseTargets({ manifestPath: path })).toThrow(
+      /darwin-arm64-extras.*<platform>-<arch>/,
+    );
+  });
+
+  it("rejects id with an unknown arch (caller typo / experimental arch)", () => {
+    // The arch whitelist (x64, arm64) is the only thing standing
+    // between a typo here and a silently-misrouted install. The
+    // size-report's per-id lookup, the installer's platform routing,
+    // and the Git Bash delegation all key on this string.
+    const mutated = EXPECTED_TARGETS.map((t) =>
+      t.id === "linux-x64"
+        ? { ...t, id: "linux-x86" as unknown as "linux-x64" }
+        : t,
+    );
+    const path = writeManifest(mutated);
+    expect(() => parseReleaseTargets({ manifestPath: path })).toThrow(
+      /linux-x86.*unknown arch/,
+    );
+  });
 });
 
 describe("parseReleaseTargets — uniqueness", () => {
