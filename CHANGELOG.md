@@ -34,8 +34,6 @@ ship a tag).
 
 ## [0.6.0] - 2026-07-21
 
-## [0.6.0] - 2026-07-21
-
 ### Added
 
 - **Smart installer**: `scripts/install.sh` and `scripts/install.ps1` now check for Node 24+ on PATH at the very top, before any network work. If a recent Node is available, they run `npm install -g umactually` and exit cleanly. Otherwise they fall through to the existing single-file-binary download path. This ships ~330 KB via npm instead of ~30 MB via the binary for users with Node installed.

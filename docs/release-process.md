@@ -155,14 +155,14 @@ If the redirect still points at an older tag, GitHub's CDN has stale edge cache 
 
 Each archive is a deterministic gzip-compressed tar (Linux/macOS) or ZIP (Windows) containing exactly one binary member. The compressed archive is the **transfer size** (what the installer downloads and what the user sees on the wire); the extracted member is the **installed size** (what sits on the user's PATH after extraction). They are not the same number, and the plan deliberately does not promise they will converge:
 
-- The compressed transfer size is bounded by a per-target sanity check in the release workflow's "Compute release-size report" step (1 MiB floor, 200 MiB ceiling per raw binary). tsdown's `--exe` enforces the inner bundle size; the workflow's check is a safety net for a runaway build (a new dep pulling in an unexpectedly large native module). As of v0.6.1 the largest target is `darwin-x64` at ~134 MiB; 200 MiB leaves ~50% headroom for legitimate growth. Any new target that legitimately needs more room must bump the ceiling AND document the reason in the PR — do not silently widen the global cap.
+- The compressed transfer size is bounded by a per-target sanity check in the release workflow's "Compute release-size report" step (1 MiB floor, 200 MiB ceiling per raw binary). tsdown's `--exe` enforces the inner bundle size; the workflow's check is a safety net for a runaway build (a new dep pulling in an unexpectedly large native module). As of v0.6.1 the largest target is `darwin-arm64` at ~125 MiB (darwin-x64 was dropped in v0.6.1; see [Removed] under v0.6.1 and [CHANGELOG](./CHANGELOG.md)); 200 MiB leaves ~60% headroom for legitimate growth. Any new target that legitimately needs more room must bump the ceiling AND document the reason in the PR — do not silently widen the global cap.
 - The installed binary size is determined by the Node SEA runtime and is not a release-time budget. The standalone Node 25.7 runtime is bundled in, so the installed binary is substantially larger than the archive — typically **~2.5x larger** than what the user actually downloads. See [distribution-architecture.md](./distribution-architecture.md) for the full comparison vs Bun, yao-pkg, and Deno.
 
 Treat these as two distinct telemetry numbers in any user-facing copy. The README install section explains the ratio; the size budget file governs only the transfer side.
 
 ### Pre-publication gates
 
-`.github/workflows/release.yml` runs a strict ordered graph before the GitHub Release is published. Every pre-publication gate must be GREEN; a single failure deletes the draft release and aborts the run. The order is: build → archive + checksum + size budget → six native/install gates → publish.
+`.github/workflows/release.yml` runs a strict ordered graph before the GitHub Release is published. Every pre-publication gate must be GREEN; a single failure deletes the draft release and aborts the run. The order is: build → archive + checksum + size budget → five native/install gates → publish.
 
 | Gate | Job id | What it proves |
 | --- | --- | --- |
@@ -204,7 +204,7 @@ The post-publish canary (§6 below) is a defense-in-depth check: if it ever fail
 
 ## 6. Post-tag behavior
 
-`.github/workflows/release.yml` runs the full pre-publication graph (build, six native smoke gates, Git Bash delegation, Windows ARM64 structural check, checksum-failure preservation) and then publishes. The eleventh and final job — `canary` — runs **only after `publish` succeeds**, queries the published release by exact tag (never `/releases/latest/`), and re-exercises the user-facing install path end-to-end against the live immutable tag URL.
+`.github/workflows/release.yml` runs the full pre-publication graph (build, five native smoke gates, Git Bash delegation, Windows ARM64 structural check, checksum-failure preservation) and then publishes. The eleventh and final job — `canary` — runs **only after `publish` succeeds**, queries the published release by exact tag (never `/releases/latest/`), and re-exercises the user-facing install path end-to-end against the live immutable tag URL.
 
 | Job | What it does | Failure mode to watch |
 | --- | --- | --- |
