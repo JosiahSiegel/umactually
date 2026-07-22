@@ -41,6 +41,63 @@ try {
   # PowerShell Core doesn't support setting this; it already uses TLS 1.2+.
 }
 
+# ---- smart installer: npm if Node 24+ is available, else binary ----
+# Added in v0.6.0. Runs BEFORE any network work. If Node 24+ is on PATH,
+# runs `npm install -g umactually` and exits cleanly. Otherwise falls
+# through to the existing binary download logic.
+function Invoke-SmartInstallNpm {
+  # Try the standard 'node' / 'node.exe' first, fall back to common
+  # Windows install locations if not on PATH.
+  $nodeCmd = $null
+  foreach ($candidate in @('node', 'node.exe')) {
+    $found = Get-Command $candidate -ErrorAction SilentlyContinue
+    if ($found) { $nodeCmd = $found; break }
+  }
+  if (-not $nodeCmd) {
+    foreach ($dir in @(
+      "$env:ProgramFiles\nodejs",
+      "$env:ProgramFiles(x86)\nodejs",
+      "$env:LOCALAPPDATA\Programs\nodejs"
+    )) {
+      $exe = Join-Path $dir 'node.exe'
+      if (Test-Path $exe) { $nodeCmd = $exe; break }
+    }
+  }
+  if (-not $nodeCmd) { return $false }
+
+  $versionOutput = & $nodeCmd -v 2>$null
+  if (-not $versionOutput) { return $false }
+  # $versionOutput is something like "v24.5.0". Parse the major.
+  if ($versionOutput -match '^v(\d+)\.') {
+    $major = [int]$Matches[1]
+  } else {
+    return $false
+  }
+  if ($major -lt 24) {
+    Write-Verbose "Node major is $major (< 24); falling back to binary download"
+    return $false
+  }
+
+  Write-Host "umactually: Node $versionOutput detected, using npm install"
+  $npmArgs = @('install', '-g', 'umactually')
+  try {
+    & npm @npmArgs
+    if ($LASTEXITCODE -eq 0) {
+      Write-Host "umactually: installed via npm. Run 'umactually --version' to verify."
+      exit 0
+    }
+  } catch {
+    # npm itself failed; fall through to binary download.
+  }
+  Write-Host "umactually: npm install failed, falling back to binary download"
+  return $false
+}
+
+# Only run the smart-router if no test/force-binary override is set.
+if (-not $env:INSTALL_TEST_MODE -and -not $env:INSTALL_FORCE_BINARY) {
+  $null = Invoke-SmartInstallNpm
+}
+
 # ---- constants ----
 $Repo = "JosiahSiegel/umactually"
 $LatestApi = "https://api.github.com/repos/$Repo/releases/latest"

@@ -60,9 +60,69 @@
 #   6. Base + tag + contract => use supplied base/tag/contract (validate value).
 #   7. Base + contract without tag => reject.
 #   8. INSTALL_POWERSHELL_SCRIPT_URL is independent (changes only Git Bash delegation).
+#
+# Smart installer (added in v0.6.0):
+#   If Node 24+ is on PATH, run `npm install -g umactually` and exit 0.
+#   This is the recommended path for most users — it ships ~100 KB and
+#   uses the user's existing Node, vs the ~30 MB single-file binary
+#   fallback. The binary path still works for users without Node 24+
+#   (locked-down machines, minimal containers, etc.).
+#
+# Bypass env vars (for testing + opt-out):
+#   INSTALL_FORCE_BINARY=1   Skip the npm check, always use binary.
+#   INSTALL_TEST_MODE=1      Skip the npm check, use the test-mode fake
+#                            binary (existing test contract).
+#   INSTALL_TEST_FAKE_LATEST_URL, INSTALL_GITHUB_API_BASE, etc.
+#                            Existing test overrides still bypass.
 
 set -e
 umask 077
+
+# ---- smart installer: npm if Node 24+ is available, else binary ----
+# This block runs BEFORE any network work. If it decides to delegate to
+# npm, it does so and exits cleanly without continuing the script.
+smart_install_with_npm() {
+  # Parse the major version from a "vX.Y.Z" string. Empty / missing =>
+  # returns empty, which we treat as "not recent enough".
+  node_major() {
+    case "$1" in
+      v[0-9]*.[0-9]*.[0-9]*)
+        echo "$1" | sed 's/^v//' | cut -d. -f1
+        ;;
+      *)
+        echo ""
+        ;;
+    esac
+  }
+  NODE_VER=$(node -v 2>/dev/null || true)
+  NODE_MAJOR=$(node_major "$NODE_VER")
+  if [ -n "$NODE_MAJOR" ] && [ "$NODE_MAJOR" -ge 24 ] 2>/dev/null; then
+    printf "umactually: Node %s detected, using npm install\n" "$NODE_VER" >&2
+    # Honor a per-package prefix if the user has one set.
+    NPM_GLOBAL_PREFIX=""
+    if [ -n "$NPM_CONFIG_PREFIX" ]; then
+      NPM_GLOBAL_PREFIX="$NPM_CONFIG_PREFIX"
+    fi
+    # `npm install -g` puts the umactually bin on PATH. If npm itself
+    # is missing or fails, fall through to the binary download rather
+    # than abort the install — the user gets a clear error either way.
+    if NPM_GLOBAL_PREFIX="$NPM_GLOBAL_PREFIX" npm install -g umactually; then
+      printf "umactually: installed via npm. Run 'umactually --version' to verify.\n" >&2
+      exit 0
+    fi
+    printf "umactually: npm install failed, falling back to binary download\n" >&2
+    return 1
+  fi
+  return 1
+}
+
+# Only run the smart-router if no test/force-binary override is set.
+if [ -z "$INSTALL_TEST_MODE" ] && [ -z "$INSTALL_FORCE_BINARY" ]; then
+  # shellcheck disable=SC2317  # function is defined above and called below
+  smart_install_with_npm || true
+fi
+
+# ---- constants ----
 
 # ---- constants ----
 REPO="JosiahSiegel/umactually"
