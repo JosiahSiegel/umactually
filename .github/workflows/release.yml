@@ -229,10 +229,20 @@ jobs:
     permissions:
       contents: read
       actions: read
+    # Re-export the merged-upload step's outputs at the job level so
+    # downstream smoke + publish jobs can reference them via
+    # `needs.build-package-windows.outputs.merged_artifact_id` /
+    # `outputs.merged_artifact_digest` — the standard job-output
+    # pattern (GitHub Actions doesn't allow direct
+    # `needs.<job_id>.outputs.<step_id>.<output_name>` references
+    # across jobs without the `outputs:` re-export).
+    outputs:
+      merged_artifact_id: ${{ steps.merged-upload.outputs.artifact-id }}
+      merged_artifact_digest: ${{ steps.merged-upload.outputs.artifact-digest }}
     steps:
       - name: Download stage1 candidate bundle
         env:
-          ARTIFACT_ID: ${{ needs.build-package-windows.outputs.merged-upload.outputs.artifact-id }}
+          ARTIFACT_ID: ${{ needs.build-package-windows.outputs.merged_artifact_id }}
           GH_TOKEN: ${{ github.token }}
         shell: pwsh
         run: |
@@ -450,8 +460,8 @@ jobs:
         uses: actions/checkout@v4
       - name: Download exact candidate artifact
         env:
-          ARTIFACT_ID: ${{ needs.build-package-windows.outputs.merged-upload.outputs.artifact-id }}
-          EXPECTED_DIGEST: ${{ needs.build-package-windows.outputs.merged-upload.outputs.artifact-digest }}
+          ARTIFACT_ID: ${{ needs.build-package-windows.outputs.merged_artifact_id }}
+          EXPECTED_DIGEST: ${{ needs.build-package-windows.outputs.merged_artifact_digest }}
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
@@ -463,11 +473,11 @@ jobs:
       - name: Download exact candidate artifact with pinned action
         uses: actions/download-artifact@v4
         with:
-          artifact-ids: ${{ needs.build-package-windows.outputs.merged-upload.outputs.artifact-id }}
+          artifact-ids: ${{ needs.build-package-windows.outputs.merged_artifact_id }}
           path: candidate
       - name: Verify transport digest and inner checksums
         env:
-          EXPECTED_DIGEST: ${{ needs.build-package-windows.outputs.merged-upload.outputs.artifact-digest }}
+          EXPECTED_DIGEST: ${{ needs.build-package-windows.outputs.merged_artifact_digest }}
         run: |
           set -euo pipefail
           ACTUAL=$(sha256sum candidate-transport.zip | awk '{print $1}')
@@ -514,8 +524,8 @@ jobs:
         uses: actions/checkout@v4
       - name: Download exact candidate artifact
         env:
-          ARTIFACT_ID: ${{ needs.build-package-windows.outputs.merged-upload.outputs.artifact-id }}
-          EXPECTED_DIGEST: ${{ needs.build-package-windows.outputs.merged-upload.outputs.artifact-digest }}
+          ARTIFACT_ID: ${{ needs.build-package-windows.outputs.merged_artifact_id }}
+          EXPECTED_DIGEST: ${{ needs.build-package-windows.outputs.merged_artifact_digest }}
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
@@ -527,11 +537,11 @@ jobs:
       - name: Download exact candidate artifact with pinned action
         uses: actions/download-artifact@v4
         with:
-          artifact-ids: ${{ needs.build-package-windows.outputs.merged-upload.outputs.artifact-id }}
+          artifact-ids: ${{ needs.build-package-windows.outputs.merged_artifact_id }}
           path: candidate
       - name: Verify transport digest and inner checksums
         env:
-          EXPECTED_DIGEST: ${{ needs.build-package-windows.outputs.merged-upload.outputs.artifact-digest }}
+          EXPECTED_DIGEST: ${{ needs.build-package-windows.outputs.merged_artifact_digest }}
         run: |
           set -euo pipefail
           ACTUAL=$(sha256sum candidate-transport.zip | awk '{print $1}')
@@ -578,8 +588,8 @@ jobs:
         uses: actions/checkout@v4
       - name: Download exact candidate artifact
         env:
-          ARTIFACT_ID: ${{ needs.build-package-windows.outputs.merged-upload.outputs.artifact-id }}
-          EXPECTED_DIGEST: ${{ needs.build-package-windows.outputs.merged-upload.outputs.artifact-digest }}
+          ARTIFACT_ID: ${{ needs.build-package-windows.outputs.merged_artifact_id }}
+          EXPECTED_DIGEST: ${{ needs.build-package-windows.outputs.merged_artifact_digest }}
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
@@ -591,11 +601,11 @@ jobs:
       - name: Download exact candidate artifact with pinned action
         uses: actions/download-artifact@v4
         with:
-          artifact-ids: ${{ needs.build-package-windows.outputs.merged-upload.outputs.artifact-id }}
+          artifact-ids: ${{ needs.build-package-windows.outputs.merged_artifact_id }}
           path: candidate
       - name: Verify transport digest and inner checksums
         env:
-          EXPECTED_DIGEST: ${{ needs.build-package-windows.outputs.merged-upload.outputs.artifact-digest }}
+          EXPECTED_DIGEST: ${{ needs.build-package-windows.outputs.merged_artifact_digest }}
         run: |
           set -euo pipefail
           ACTUAL=$(shasum -a 256 candidate-transport.zip | awk '{print $1}')
@@ -643,8 +653,8 @@ jobs:
       - name: Download exact candidate artifact
         shell: bash
         env:
-          ARTIFACT_ID: ${{ needs.build-package-windows.outputs.merged-upload.outputs.artifact-id }}
-          EXPECTED_DIGEST: ${{ needs.build-package-windows.outputs.merged-upload.outputs.artifact-digest }}
+          ARTIFACT_ID: ${{ needs.build-package-windows.outputs.merged_artifact_id }}
+          EXPECTED_DIGEST: ${{ needs.build-package-windows.outputs.merged_artifact_digest }}
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
@@ -656,12 +666,12 @@ jobs:
       - name: Download exact candidate artifact with pinned action
         uses: actions/download-artifact@v4
         with:
-          artifact-ids: ${{ needs.build-package-windows.outputs.merged-upload.outputs.artifact-id }}
+          artifact-ids: ${{ needs.build-package-windows.outputs.merged_artifact_id }}
           path: candidate
       - name: Verify transport digest and inner checksums
         shell: powershell
         env:
-          EXPECTED_DIGEST: ${{ needs.build-package-windows.outputs.merged-upload.outputs.artifact-digest }}
+          EXPECTED_DIGEST: ${{ needs.build-package-windows.outputs.merged_artifact_digest }}
         run: |
           $ErrorActionPreference = "Stop"
           $actual = (Get-FileHash -LiteralPath candidate-transport.zip -Algorithm SHA256).Hash.ToLowerInvariant()
@@ -727,7 +737,7 @@ jobs:
     steps:
       - name: Download candidate bundle (by id)
         env:
-          ARTIFACT_ID: ${{ needs.build-package-windows.outputs.merged-upload.outputs.artifact-id }}
+          ARTIFACT_ID: ${{ needs.build-package-windows.outputs.merged_artifact_id }}
           GH_TOKEN: ${{ github.token }}
         shell: pwsh
         run: |
@@ -792,8 +802,8 @@ jobs:
       - name: Download exact candidate artifact
         shell: bash
         env:
-          ARTIFACT_ID: ${{ needs.build-package-windows.outputs.merged-upload.outputs.artifact-id }}
-          EXPECTED_DIGEST: ${{ needs.build-package-windows.outputs.merged-upload.outputs.artifact-digest }}
+          ARTIFACT_ID: ${{ needs.build-package-windows.outputs.merged_artifact_id }}
+          EXPECTED_DIGEST: ${{ needs.build-package-windows.outputs.merged_artifact_digest }}
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
@@ -805,12 +815,12 @@ jobs:
       - name: Download exact candidate artifact with pinned action
         uses: actions/download-artifact@v4
         with:
-          artifact-ids: ${{ needs.build-package-windows.outputs.merged-upload.outputs.artifact-id }}
+          artifact-ids: ${{ needs.build-package-windows.outputs.merged_artifact_id }}
           path: candidate
       - name: Verify transport digest and delegate from Git Bash
         shell: powershell
         env:
-          EXPECTED_DIGEST: ${{ needs.build-package-windows.outputs.merged-upload.outputs.artifact-digest }}
+          EXPECTED_DIGEST: ${{ needs.build-package-windows.outputs.merged_artifact_digest }}
           INSTALL_RELEASE_TAG: ${{ github.ref_name }}
         run: |
           $ErrorActionPreference = "Stop"
@@ -860,8 +870,8 @@ jobs:
         uses: actions/checkout@v4
       - name: Download exact candidate artifact
         env:
-          ARTIFACT_ID: ${{ needs.build-package-windows.outputs.merged-upload.outputs.artifact-id }}
-          EXPECTED_DIGEST: ${{ needs.build-package-windows.outputs.merged-upload.outputs.artifact-digest }}
+          ARTIFACT_ID: ${{ needs.build-package-windows.outputs.merged_artifact_id }}
+          EXPECTED_DIGEST: ${{ needs.build-package-windows.outputs.merged_artifact_digest }}
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
@@ -873,11 +883,11 @@ jobs:
       - name: Download exact candidate artifact with pinned action
         uses: actions/download-artifact@v4
         with:
-          artifact-ids: ${{ needs.build-package-windows.outputs.merged-upload.outputs.artifact-id }}
+          artifact-ids: ${{ needs.build-package-windows.outputs.merged_artifact_id }}
           path: candidate
       - name: Reject mismatch and preserve seeded install
         env:
-          EXPECTED_DIGEST: ${{ needs.build-package-windows.outputs.merged-upload.outputs.artifact-digest }}
+          EXPECTED_DIGEST: ${{ needs.build-package-windows.outputs.merged_artifact_digest }}
           INSTALL_RELEASE_TAG: ${{ github.ref_name }}
           UMACTUALLY_NO_PATH_UPDATE: "1"
         run: |
@@ -1000,7 +1010,7 @@ jobs:
         uses: actions/checkout@v4
       - name: Download tested candidate bundle by id
         env:
-          ARTIFACT_ID: ${{ needs.build-package-windows.outputs.merged-upload.outputs.artifact-id }}
+          ARTIFACT_ID: ${{ needs.build-package-windows.outputs.merged_artifact_id }}
         run: |
           set -euo pipefail
           gh api "repos/${GITHUB_REPOSITORY}/actions/artifacts/${ARTIFACT_ID}/zip" \
@@ -1052,7 +1062,7 @@ jobs:
 
       - name: Verify transport ZIP digest equals producer's reported digest
         env:
-          EXPECTED_DIGEST: ${{ needs.build-package-windows.outputs.merged-upload.outputs.artifact-digest }}
+          EXPECTED_DIGEST: ${{ needs.build-package-windows.outputs.merged_artifact_digest }}
         run: |
           set -euo pipefail
           if [ -z "${EXPECTED_DIGEST:-}" ]; then
