@@ -10,50 +10,109 @@ Latest release: **[v0.6.0](https://github.com/JosiahSiegel/umactually/releases/t
 
 ## Install
 
-umactually ships two install paths today (the third path, `npm install -g umactually`, is documented for completeness and will become the recommended path once the npm package is published).
+Pick the path that matches your environment. Full comparison at [`docs/distribution-architecture.md`](docs/distribution-architecture.md).
 
-### 1. Curl-pipe installer (recommended — downloads the single-file binary by default; opt-in npm path via `INSTALL_TRY_NPM=1`)
-
-> **Windows Git Bash users:** the first command below can fail with
-> `curl: (35) schannel: ... CRYPT_E_REVOCATION_OFFLINE (0x80092013)`
-> if your network can't reach GitHub's OCSP responder. The fix is to
-> add `--ssl-no-revoke` to **both** the outer curl and the install
-> flag. Use the second command in that case (cert validation is
-> still performed; only the optional CRL/OCSP lookup is skipped).
-> Requires curl >= 7.78.
+### Recommended: `npm install -g umactually`
 
 ```bash
-# macOS / Linux / Windows Git Bash (with reachable OCSP) — install latest
+# Global install (Node 24+ or Bun 1.1+)
+npm install -g umactually
+
+# One-shot, no install
+npx umactually review …
+
+# Bun users
+bunx umactually review …
+```
+
+~330 KB download, uses your existing runtime. This is the canonical install path.
+
+### Alternative: curl-pipe installer (smart-routes to npm, falls back to binary)
+
+Use this if you want one command that picks the best path for you. The installer checks for Node 24+ on PATH first; if found, it runs `npm install -g umactually` and exits. Otherwise it downloads a single-file Node SEA binary that bundles Node 25.7 (~30 MB, no Node required).
+
+```bash
+# macOS / Linux / Windows Git Bash — install latest
 curl -fsSL https://github.com/JosiahSiegel/umactually/raw/main/scripts/install.sh | sh
 
-# Windows Git Bash when the OCSP responder is unreachable (the workaround)
-curl -fsSL --ssl-no-revoke https://github.com/JosiahSiegel/umactually/raw/main/scripts/install.sh | sh -s -- --ssl-no-revoke
-
-# Install a pinned version
+# Pin a specific version
 curl -fsSL https://github.com/JosiahSiegel/umactually/raw/main/scripts/install.sh | sh -s -- --tag v0.6.0
-
-# Force the single-file binary path (defense-in-depth: also blocks the smart-router)
-INSTALL_FORCE_BINARY=1 curl -fsSL https://github.com/JosiahSiegel/umactually/raw/main/scripts/install.sh | sh
-
-# Opt in to the npm smart-router (requires the umactually npm package to be
-# published; if the npm install fails the installer falls back to the binary)
-INSTALL_TRY_NPM=1 curl -fsSL https://github.com/JosiahSiegel/umactually/raw/main/scripts/install.sh | sh
-
-# Install to a custom directory (binary path only — npm uses its own prefix)
-curl -fsSL https://github.com/JosiahSiegel/umactually/raw/main/scripts/install.sh | sh -s -- --install-dir ~/.local/bin
-
-# Print the installer's flag/env-var reference
-curl -fsSL https://github.com/JosiahSiegel/umactually/raw/main/scripts/install.sh | sh -s -- --help
 ```
 
 ```powershell
-# Windows PowerShell (preferred for Windows users)
+# Windows PowerShell
 irm https://github.com/JosiahSiegel/umactually/raw/main/scripts/install.ps1 | iex
 ```
 
-The installer downloads a single-file binary (~30 MB, self-contained, no Node required) by default and verifies its SHA-256 against `checksums.txt`. The binary is built with Node SEA (`node --build-sea`) and bundles Node 25.7. Supported release assets: Linux x64/arm64, macOS x64/arm64, Windows x64/arm64.
+**Windows Git Bash note:** if you see `curl: (35) schannel: ... CRYPT_E_REVOCATION_OFFLINE (0x80092013)`, your network can't reach GitHub's OCSP responder. Re-run with `--ssl-no-revoke` on both the curl and the install:
 
-> **Opt-in npm path.** The installer has a smart-router that runs `npm install -g umactually` when both `INSTALL_TRY_NPM=1` is set AND Node 24+ is on PATH. It is **off by default** because the `umactually` npm package is not yet published to the public registry as of v0.6.0; the smart-router would hit `E404` on every fresh install until publish happens. End-user installs use the binary path by default. Once the npm package is published, the smart-router will fire by default for users who don't set `INSTALL_FORCE_BINARY=1`. The `INSTALL_FORCE_BINARY=1` env var remains a defense-in-depth opt-out for CI / locked-down environments that never want npm.
+```bash
+curl -fsSL --ssl-no-revoke https://github.com/JosiahSiegel/umactually/raw/main/scripts/install.sh | sh -s -- --ssl-no-revoke
+```
+
+**All installer flags / env vars** (also accepted as env vars, env wins):
+
+| Flag | Env var | Default |
+| --- | --- | --- |
+| `--tag vX.Y.Z` | `INSTALL_RELEASE_TAG` | auto-detect from `releases/latest` |
+| `--base <url>` | `INSTALL_RELEASE_BASE` | GitHub releases URL |
+| `--contract archive\|legacy` | `INSTALL_ASSET_CONTRACT` | auto-detect from `checksums.txt` |
+| `--install-dir <path>` | — | `/usr/local/bin` (root) or `~/.local/bin` (non-root) |
+| `--ssl-no-revoke` | `INSTALL_SSL_NO_REVOKE` | revocation checks on (secure default) |
+| `--try-npm` | `INSTALL_TRY_NPM` | opt in to the smart-router on first invocation |
+| — | `INSTALL_FORCE_BINARY=1` | skip the npm smart-router, always download the binary |
+
+Bypass options: set `INSTALL_FORCE_BINARY=1` to always use the binary, or `INSTALL_TEST_MODE=1` to skip destructive side effects during installer development.
+
+For the full flag list and edge cases, run `curl -fsSL https://github.com/JosiahSiegel/umactually/raw/main/scripts/install.sh | sh -s -- --help`.
+
+### From source (GitHub tarball, Node 24+ required)
+
+```bash
+npx github:JosiahSiegel/umactually#v0.6.0 review
+```
+
+The `#v0.6.0` fragment pins to the tagged release. Omit it only when you specifically want the latest unreleased `main` build.
+
+### Platform support
+
+| OS | Install path | Notes |
+| --- | --- | --- |
+| Linux x64 / arm64 | npm, binary, or curl-pipe | full support |
+| macOS arm64 (Apple Silicon) | npm, binary, or curl-pipe | full support |
+| macOS x64 (Intel) | **npm only** | `node --build-sea` segfaults on darwin-x64 ([nodejs/node#62893](https://github.com/nodejs/node/issues/62893)); use `npm install -g umactually` |
+| Windows x64 / arm64 | npm, binary, PowerShell, or curl-pipe | full support; Windows ARM64 is ZIP-only and not smoke-tested in CI (structural validation only) |
+
+Verify after installation:
+
+```bash
+umactually --version
+```
+
+### Uninstall
+
+```bash
+# Built-in subcommand (recommended — handles binary, config, cache, PATH)
+umactually uninstall                    # interactive confirmation
+umactually uninstall --yes              # non-interactive
+umactually uninstall --purge-config     # also remove ~/.umactually/ and ~/.cache/umactually/
+umactually uninstall --json             # machine-readable output
+
+# Legacy one-liner (kept for back-compat with v0.5.x)
+curl -fsSL https://github.com/JosiahSiegel/umactually/raw/main/scripts/uninstall.sh | sh
+```
+
+```powershell
+# Windows PowerShell
+umactually uninstall --yes
+
+# Legacy
+irm https://github.com/JosiahSiegel/umactually/raw/main/scripts/uninstall.ps1 | iex
+```
+
+The installer is **smart**: it first checks for Node 24+ on PATH. If found, it runs `npm install -g umactually` and exits. Otherwise it falls through to downloading a single-file binary (~30 MB, self-contained, no Node required) and verifying its SHA-256 against `checksums.txt`. The binary is built with Node SEA (`node --build-sea`) and bundles Node 25.7. Supported release assets: Linux x64/arm64, macOS arm64, Windows x64/arm64.
+
+> **Intel macOS (darwin-x64) is not supported by the single-file binary** — Node's `--build-sea` segfaults on darwin-x64 ([nodejs/node#62893](https://github.com/nodejs/node/issues/62893)). Intel Mac users get the npm install path: `npm install -g umactually`. The installer detects darwin-x64 and fails fast with a pointer at the npm path.
 
 Supported installer flags (also accepted as env vars):
 
@@ -77,24 +136,6 @@ Verify after installation:
 umactually --version
 ```
 
-### From the GitHub source tarball (Node 24 required)
-
-```bash
-npx github:JosiahSiegel/umactually#v0.6.0 review
-```
-
-The `#v0.6.0` fragment pins the install to the tagged release. Omit the fragment only when you specifically want the latest unreleased `main` build. The `umactually` npm package is **not yet published** as of v0.6.0 — the curl-pipe installer above is the supported install path until the npm publish happens. The installer does ship an opt-in `INSTALL_TRY_NPM=1` smart-router (see the "Opt-in npm path" callout in §1) that delegates to `npm install -g umactually@<tag>` and falls through to the single-file binary download if npm fails, so it's safe to set as a forward-compatibility flag.
-
-### Uninstall
-
-```bash
-curl -fsSL https://github.com/JosiahSiegel/umactually/raw/main/scripts/uninstall.sh | sh
-```
-
-```powershell
-irm https://github.com/JosiahSiegel/umactually/raw/main/scripts/uninstall.ps1 | iex
-```
-
 ## Usage
 
 Run from any git working tree with a diff staged or committed:
@@ -113,9 +154,12 @@ In CI the CLI auto-detects the platform from environment variables (`GITHUB_ACTI
 umactually review                    Run PR review (default)
 umactually doctor                    Check environment is ready
 umactually check-review-artifact     Validate a review artifact
+umactually uninstall                 Remove the binary, config, cache, and PATH entry
 umactually --version
 umactually --help
 ```
+
+Every subcommand supports `--json` for machine-readable output. `umactually doctor` and `umactually uninstall` share the same envelope shape so CI can drive both with one parser. See [`docs/exit-codes.md`](docs/exit-codes.md) for the per-action exit-code contract.
 
 ### How it works
 

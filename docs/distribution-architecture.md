@@ -7,19 +7,13 @@ they relate and which to use when.
 
 | Path | Download | On disk | Use when |
 |---|---|---|---|
-| `npm install -g umactually` (gated) | ~330 KB | ~1.2 MB unpacked | You already have Node 24+ or Bun 1.2.0+; will 404 until the `umactually` npm package is published |
-| `npx umactually` (one-shot, gated) | ~330 KB (cached after first use) | same as above | You don't want a global install; will 404 until publish |
-| `bunx umactually` (gated) | ~330 KB | same as above | You use Bun; will 404 until publish |
-| `curl … \| sh` (smart-router, opt-in npm path) | 0 KB if Node 24+ found, else ~30 MB | same as the chosen path | You don't know what's installed, want one command; npm path requires `INSTALL_TRY_NPM=1` until publish |
+| `npm install -g umactually` | ~330 KB | ~1.2 MB unpacked | You already have Node 24+ or Bun 1.1+ |
+| `npx umactually` (one-shot) | ~330 KB (cached after first use) | same as above | You don't want a global install |
+| `bunx umactually` | ~330 KB | same as above | You use Bun |
+| `curl … \| sh` (smart-router) | 0 KB if Node 24+ found, else ~30 MB | same as the chosen path | You don't know what's installed, want one command |
 | Direct binary download | ~30 MB (gzipped) | ~70 MB (uncompressed) | No Node 24+ available, locked-down machine, minimal container |
 
-> **Gating note (v0.6.0):** the npm, npx, and bunx paths above are
-> **gated until the `umactually` npm package is published**. Until
-> then they 404 against the public registry. The curl-pipe smart
-> router also defaults to the binary path (not npm) for the same
-> reason; pass `INSTALL_TRY_NPM=1` to opt in. The two binary
-> paths (curl-pipe and direct download) work today and are the
-> supported install surface for v0.6.0.
+The curl-pipe installer is the recommended path for "I just want to install this". It automatically picks the best of the two non-npm paths based on what's available on the system.
 
 ## Why three paths
 
@@ -55,22 +49,22 @@ Three build steps produce the release artifacts:
 
 1. **npm package** — `npm run bundle` runs ncc against `src/cli.ts`, producing `dist/cli.js` (~800 KB unminified, ~250 KB gzipped). The package layout is standard npm.
 
-2. **Node SEA single-file binary** — `node scripts/build-sea.mjs all` runs `tsdown --exe` once per platform/arch, producing 6 binaries in `release/umactually-<id>`. Each binary bundles Node 25.7 and the bundled `dist/cli.js`. Sizes:
+2. **Node SEA single-file binary** — `node scripts/build-sea.mjs` runs `tsdown --exe` once per platform/arch, producing 5 binaries in `release/umactually-<id>`. Each binary bundles Node 25.7 and the bundled `dist/cli.js`. Sizes (approximate; depend on the Node 25.7 patch version — pinned to 25.7.0 in `tsdown.config.ts`):
    - linux-x64:  ~70 MB raw, ~28 MB gzipped
    - linux-arm64: ~68 MB raw, ~27 MB gzipped
-   - darwin-x64:  ~72 MB raw, ~29 MB gzipped
    - darwin-arm64: ~70 MB raw, ~28 MB gzipped
    - windows-x64: ~72 MB raw, ~28 MB gzipped
    - windows-arm64: ~70 MB raw, ~28 MB gzipped
-   (Exact numbers depend on the Node 25.7 patch version; pinned to 25.7.0 in tsdown.config.ts.)
 
-3. **Release archives** — `node scripts/package-release-assets.mjs` zips/tars the 6 binaries into `umactually-<id>.{tar.gz,zip}` and writes `checksums.txt` (SHA-256 manifest).
+   `darwin-x64` (Intel macOS) is **not** produced — Node's `--build-sea` segfaults on darwin-x64 ([nodejs/node#62893](https://github.com/nodejs/node/issues/62893)). Intel Mac users get the npm install path; the curl-pipe installer fails fast on darwin+x64 with a pointer at `npm install -g umactually`.
+
+3. **Release archives** — `node scripts/package-release-assets.mjs` zips/tars the 5 binaries into `umactually-<id>.{tar.gz,zip}` and writes `checksums.txt` (SHA-256 manifest).
 
 The release workflow (`.github/workflows/release.yml`) runs all three steps on tag-push or `workflow_dispatch`.
 
 ## Cross-platform builds
 
-`@tsdown/exe` downloads the target Node binary from `nodejs.org` to cross-compile. The build job runs on `ubuntu-24.04` and produces all 6 platform/arch binaries without needing macOS/Windows runners. This is why the workflow matrix is now `[ubuntu-24.04]` for the build job, with the per-target smoke jobs running on the native OS.
+`@tsdown/exe` downloads the target Node binary from `nodejs.org` to cross-compile. The build job runs on `ubuntu-24.04` and produces all 5 platform/arch binaries without needing macOS/Windows runners. This is why the workflow matrix is `[ubuntu-24.04]` for the build job, with the per-target smoke jobs running on the native OS.
 
 ## Why drop Bun
 
