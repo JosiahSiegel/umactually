@@ -27,26 +27,36 @@
 
 import { describe, it, expect, beforeAll, afterAll } from "vitest";
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
+import { join, resolve, dirname } from "node:path";
 import { tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
-import { dirname, resolve } from "node:path";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = resolve(__dirname, "..", "..");
 const VERIFIER_PATH = resolve(REPO_ROOT, "scripts", "verify-release-sizes.mjs");
 
-interface VerifyResult {
-  targets: Array<{
-    id: string;
-    rawName: string;
-    sizeBytes: number;
-    missing?: boolean;
-    tooSmall?: boolean;
-    tooLarge?: boolean;
-  }>;
-  failed: number;
+interface SizeReportTarget {
+  id: string;
+  rawName: string;
+  sizeBytes: number;
+  missing?: boolean;
+  tooSmall?: boolean;
+  tooLarge?: boolean;
 }
+
+interface SizeReport {
+  targets: SizeReportTarget[];
+  generatedAt: string;
+}
+
+interface VerifyReleaseSizesFn {
+  (opts: { manifestPath: string; releaseDir: string; reportPath: string }): {
+    targets: SizeReportTarget[];
+    failed: number;
+  };
+}
+
+let verifyReleaseSizes: VerifyReleaseSizesFn;
 
 let workRoot = "";
 let manifestPath = "";
@@ -54,18 +64,9 @@ let releaseDir = "";
 let reportPath = "";
 
 beforeAll(async () => {
-  // Load the verifier module once for all tests.
-  const mod = (await import(VERIFIER_PATH)) as {
-    verifyReleaseSizes: (opts: {
-      manifestPath: string;
-      releaseDir: string;
-      reportPath: string;
-    }) => VerifyResult;
-  };
-  (globalThis as Record<string, unknown>).__verifier = mod.verifyReleaseSizes;
-});
+  const mod = (await import(VERIFIER_PATH)) as { verifyReleaseSizes: VerifyReleaseSizesFn };
+  verifyReleaseSizes = mod.verifyReleaseSizes;
 
-beforeAll(() => {
   workRoot = join(tmpdir(), `umactually-verify-release-sizes-${Date.now()}`);
   mkdirSync(workRoot, { recursive: true });
   releaseDir = join(workRoot, "release");
@@ -80,24 +81,20 @@ afterAll(() => {
   }
 });
 
-const getVerifier = () =>
-  (globalThis as Record<string, unknown>).__verifier as (opts: {
-    manifestPath: string;
-    releaseDir: string;
-    reportPath: string;
-  }) => VerifyResult;
-
-function writeTargets(targets: Array<Record<string, unknown>>) {
+function writeTargets(targets: Array<{ id: string; rawName: string }>): void {
   writeFileSync(manifestPath, JSON.stringify(targets, null, 2));
+}
+
+function cleanReleaseDir(...names: string[]): void {
+  for (const f of names) {
+    const p = join(releaseDir, f);
+    if (existsSync(p)) rmSync(p, { force: true });
+  }
 }
 
 describe("verify-release-sizes.mjs report schema (v0.6.0)", () => {
   it("writes a report with the v0.6.0 field shape (id/rawName/sizeBytes/generatedAt)", () => {
-    // Drop any leftover raw files from a prior test run.
-    for (const f of ["umactually-linux-x64", "umactually-darwin-arm64"]) {
-      const p = join(releaseDir, f);
-      if (existsSync(p)) rmSync(p, { force: true });
-    }
+    cleanReleaseDir("umactually-linux-x64", "umactually-darwin-arm64");
     writeTargets([
       { id: "linux-x64", rawName: "umactually-linux-x64" },
       { id: "darwin-arm64", rawName: "umactually-darwin-arm64" },
@@ -107,16 +104,13 @@ describe("verify-release-sizes.mjs report schema (v0.6.0)", () => {
     writeFileSync(join(releaseDir, "umactually-linux-x64"), ok);
     writeFileSync(join(releaseDir, "umactually-darwin-arm64"), ok);
 
-    const result = getVerifier()({ manifestPath, releaseDir, reportPath });
+    const result = verifyReleaseSizes({ manifestPath, releaseDir, reportPath });
     expect(result.failed).toBe(0);
 
     // The report file must exist at the pinned path.
     expect(existsSync(reportPath)).toBe(true);
 
-    const report = JSON.parse(readFileSync(reportPath, "utf8")) as {
-      targets: Array<Record<string, unknown>>;
-      generatedAt: string;
-    };
+    const report = JSON.parse(readFileSync(reportPath, "utf8")) as SizeReport;
 
     // Top-level shape: v0.6.0 dropped `failed` / `summary` and
     // only carries `targets` + `generatedAt`. Lock that here so a
@@ -135,9 +129,9 @@ describe("verify-release-sizes.mjs report schema (v0.6.0)", () => {
       expect(typeof t.id).toBe("string");
       expect(typeof t.rawName).toBe("string");
       expect(typeof t.sizeBytes).toBe("number");
-      expect(t).not.toHaveProperty("missing");
-      expect(t).not.toHaveProperty("tooSmall");
-      expect(t).not.toHaveProperty("tooLarge");
+      expect(t.missing).toBeUndefined();
+      expect(t.tooSmall).toBeUndefined();
+      expect(t.tooLarge).toBeUndefined();
       // v0.5.x fields that were dropped in v0.6.0: if any of these
       // reappear, the schema drifted and the canary probe that
       // only checks `report` existence will silently accept a
@@ -153,29 +147,20 @@ describe("verify-release-sizes.mjs report schema (v0.6.0)", () => {
   it("marks missing targets with the missing flag (no throw, no sha256 in report)", () => {
     // Drop any files left behind by the previous test so the
     // "missing" assertion is deterministic — otherwise the previous
-    // test's 100-byte linux-x64 + this test's 50 MiB linux-x64 +
-    // a leftover darwin-arm64 from the first test would mask the
-    // missing-target path.
-    for (const f of ["umactually-linux-x64", "umactually-darwin-arm64"]) {
-      const p = join(releaseDir, f);
-      if (existsSync(p)) rmSync(p, { force: true });
-    }
+    // test's leftover raw would mask the missing-target path.
+    cleanReleaseDir("umactually-linux-x64", "umactually-darwin-arm64");
     writeTargets([
       { id: "linux-x64", rawName: "umactually-linux-x64" },
       { id: "darwin-arm64", rawName: "umactually-darwin-arm64" },
     ]);
     // Only one of the two raw files is present.
-    writeFileSync(
-      join(releaseDir, "umactually-linux-x64"),
-      Buffer.alloc(50 * 1024 * 1024, 0),
-    );
+    writeFileSync(join(releaseDir, "umactually-linux-x64"), Buffer.alloc(50 * 1024 * 1024, 0));
 
-    const result = getVerifier()({ manifestPath, releaseDir, reportPath });
+    const result = verifyReleaseSizes({ manifestPath, releaseDir, reportPath });
     expect(result.failed).toBe(1);
-    const report = JSON.parse(readFileSync(reportPath, "utf8")) as {
-      targets: Array<{ id: string; missing?: boolean }>;
-    };
+    const report = JSON.parse(readFileSync(reportPath, "utf8")) as SizeReport;
     const missing = report.targets.find((t) => t.id === "darwin-arm64");
+    expect(missing).toBeDefined();
     expect(missing?.missing).toBe(true);
     // Even on the failure path, v0.5.x fields must stay out of the
     // report — a regression here would be a silent canary-pierce.
@@ -189,21 +174,17 @@ describe("verify-release-sizes.mjs report schema (v0.6.0)", () => {
     // Drop leftover raw files from the previous test so the
     // 100-byte "too small" assertion is the only failure the
     // verifier sees in this scenario.
-    for (const f of ["umactually-linux-x64", "umactually-darwin-arm64"]) {
-      const p = join(releaseDir, f);
-      if (existsSync(p)) rmSync(p, { force: true });
-    }
+    cleanReleaseDir("umactually-linux-x64", "umactually-darwin-arm64");
     writeTargets([{ id: "linux-x64", rawName: "umactually-linux-x64" }]);
     // 100 bytes < MIN_RAW_BYTES (1 MiB)
     writeFileSync(join(releaseDir, "umactually-linux-x64"), Buffer.alloc(100, 0));
 
-    const result = getVerifier()({ manifestPath, releaseDir, reportPath });
+    const result = verifyReleaseSizes({ manifestPath, releaseDir, reportPath });
     expect(result.failed).toBe(1);
-    const report = JSON.parse(readFileSync(reportPath, "utf8")) as {
-      targets: Array<Record<string, unknown>>;
-    };
-    const t = report.targets[0];
-    expect(t.tooSmall).toBe(true);
-    expect(t).not.toHaveProperty("sha256");
+    const report = JSON.parse(readFileSync(reportPath, "utf8")) as SizeReport;
+    const first = report.targets[0];
+    expect(first).toBeDefined();
+    expect(first?.tooSmall).toBe(true);
+    expect(first).not.toHaveProperty("sha256");
   });
 });
