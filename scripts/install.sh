@@ -12,6 +12,14 @@
 #
 # Usage:
 #   curl -fsSL https://github.com/JosiahSiegel/umactually/raw/main/scripts/install.sh | sh
+#     - DEFAULT: install via the single-file binary (~30 MB, no npm
+#       dependency). Always works; this is the recommended path until
+#       the umactually npm package is published to the public registry.
+#   INSTALL_TRY_NPM=1 curl -fsSL .../install.sh | sh
+#     - OPT-IN to the npm smart-router. Requires Node 24+ on PATH AND
+#       the `umactually` package to be published to npm. If npm fails
+#       (e.g. 404 on a fresh registry) the installer falls through to
+#       the binary path with a diagnostic on stderr.
 #
 # Test modes:
 #   INSTALL_TEST_MODE=1 INSTALL_TEST_DIR=/tmp/xyz PLATFORM_OVERRIDE=darwin ARCH_OVERRIDE=arm64 ./install.sh
