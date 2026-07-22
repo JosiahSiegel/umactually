@@ -10,6 +10,18 @@ ship a tag).
 
 ## [Unreleased]
 
+## [0.6.4] - 2026-07-22
+
+### Yanked
+
+- **v0.6.1, v0.6.2, v0.6.3 GitHub Releases have been deleted**. All three shipped Windows binaries that produced empty `--version` output (and consequently 0 inline comments in the review harness). The root cause is a build-time difference in the Node 25.7.0 SEA blob between the locally-built v0.6.0 binary (works on Windows) and any binary built since then (doesn't work on Windows). Investigation: both the v0.6.0 binary and the v0.6.3 binary bundle the same `runVersion` JavaScript (verified by `strings` + `grep`), embed the same Node 25.7.0 (verified by `strings | grep v25.7.0`), and use the same source code; but the v0.6.3 binary produces empty stdout when spawned from a Node 24.18.0 test harness on Windows, while the v0.6.0 binary correctly outputs the version. The 1024-byte size difference between the two binaries points to a different Node 25.7.0 SEA blob (possibly a different patch release or a different build of the same source) — `writeFileSync(1, "0.6.0\n")` lands in the parent pipe from the v0.6.0 binary but the same call from the v0.6.3 binary does not.
+- **v0.6.0 is the current working release on all 3 OSes** (linux x64/arm64, darwin arm64, windows x64/arm64). The post-release e2e at v0.6.0 (`run 29942402431`) was green on all 3 OSes. The v0.6.0 GitHub Release is unchanged. The source-of-truth alignment work from #106 (install.{sh,ps1} count checks, release-targets.{json,ts}, release.yml smoke job + publish-step asset list, build-sea.mjs comments, ci-release-pipeline-dry-run.sh ARCHIVE_COUNT, test/helpers/install-archive-helpers.ts TARGETS, the new offline-safe bidirectional live-release regression test) and the writeFileSync `--version` fix from #108 / #110 are all merged to main and will be included in the next working release.
+
+### Notes
+
+- No new release is being cut. The next release will be cut once the Node 25.7.0 SEA build difference is root-caused (likely requires pinning a specific Node 25.7.0 SHA in the GitHub Actions setup-node step, or moving the build to a fully hermetic local script that matches the v0.6.0 build path).
+- Local development and `npx umactually` are unaffected — this is purely a SEA-binary build issue.
+
 ## [0.6.3] - 2026-07-22
 
 ### Fixed
