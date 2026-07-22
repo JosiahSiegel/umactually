@@ -253,6 +253,18 @@ jobs:
           # merged bundle.
           gh api "repos/$env:GITHUB_REPOSITORY/actions/artifacts/$env:ARTIFACT_ID/zip" > stage1-transport.zip
           Expand-Archive -LiteralPath stage1-transport.zip -DestinationPath stage1 -Force
+          # The upload-artifact action on the build-package job
+          # strips the `release/` ancestor before zipping, so the
+          # unzipped bundle has entries directly at stage1/public,
+          # stage1/internal, stage1/internal/raw. Re-wrap them in
+          # a `stage1/release/` prefix so the merge-upload step's
+          # path: list (which uses `stage1/release/...`) can
+          # strip the same `stage1/release/` ancestor and produce
+          # the same top-level `public/`, `internal/` structure
+          # that downstream jobs expect.
+          New-Item -ItemType Directory -Path stage1\release -Force | Out-Null
+          Move-Item -Force stage1\public   stage1\release\public
+          Move-Item -Force stage1\internal stage1\release\internal
           Write-Host "--- stage1/release/public/ ---"
           Get-ChildItem stage1\release\public | Select-Object Name, Length
           Write-Host "--- stage1/release/internal/raw/ ---"
