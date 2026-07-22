@@ -260,6 +260,12 @@ smart_install_with_npm() {
 #   - INSTALL_TEST_TARBALL      — alternate archive fixture
 #   - INSTALL_TEST_CHECKSUMS    — alternate checksums fixture
 #   - INSTALL_TEST_FAKE_TAG     — pre-archive tag fixture
+#   - INSTALL_TEST_FAKE_LATEST_URL — local fake /releases/latest URL
+#   - INSTALL_GITHUB_API_BASE   — production override of the
+#                                 /releases/latest URL (and a test
+#                                 fixture override when pointed at a
+#                                 local http server, e.g. by
+#                                 install-archives-posix.test.ts)
 #   - INSTALL_FORCE_BINARY      — operator opt-out
 #   - INSTALL_RELEASE_BASE      — point at a local fake release server
 #     (test fixtures run a Node http server on 127.0.0.1; we MUST not
@@ -280,6 +286,8 @@ if [ "${INSTALL_TRY_NPM:-0}" = "1" ] \
   && [ -z "$INSTALL_TEST_TARBALL" ] \
   && [ -z "$INSTALL_TEST_CHECKSUMS" ] \
   && [ -z "$INSTALL_TEST_FAKE_TAG" ] \
+  && [ -z "$INSTALL_TEST_FAKE_LATEST_URL" ] \
+  && [ -z "$INSTALL_GITHUB_API_BASE" ] \
   && [ -z "$INSTALL_FORCE_BINARY" ] \
   && [ -z "$INSTALL_RELEASE_BASE" ]; then
   # shellcheck disable=SC2317  # function is defined above and called below

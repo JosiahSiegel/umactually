@@ -241,6 +241,43 @@ describe.skipIf(!SHELL_AVAILABLE || process.platform === "win32")("install.sh sm
     });
     expect(result.stderr).not.toMatch(/trying npm install/);
   });
+
+  // The smart-router bypass list is the gate that prevents npm from
+  // being invoked in test fixtures that point at a local fake
+  // /releases/latest server. Without INSTALL_TEST_FAKE_LATEST_URL or
+  // INSTALL_GITHUB_API_BASE in the bypass, a fixture that sets either
+  // var (e.g. install-archives-posix.test.ts pointing at a Node http
+  // server on 127.0.0.1) would still trigger a real `npm install -g
+  // umactually` that 404s in CI and pollutes stderr.
+  it("respects INSTALL_TEST_FAKE_LATEST_URL=... (skips smart-router)", () => {
+    const { binDir } = makeSandbox();
+    const testDir = mkdtempSync(join(tmpdir(), "umactually-smart-flu-"));
+    sandboxes.push(testDir);
+    const result = runShell({
+      PATH: `${binDir}${delimiter}${process.env["PATH"] ?? ""}`,
+      INSTALL_TEST_FAKE_LATEST_URL: "http://127.0.0.1:1/repos/JosiahSiegel/umactually/releases/latest",
+      INSTALL_TEST_MODE: "1",  // test-mode stub for the binary path
+      INSTALL_TEST_DIR: testDir,
+      PLATFORM_OVERRIDE: "linux",
+      ARCH_OVERRIDE: "x64",
+    });
+    expect(result.stderr).not.toMatch(/trying npm install/);
+  });
+
+  it("respects INSTALL_GITHUB_API_BASE=... (skips smart-router)", () => {
+    const { binDir } = makeSandbox();
+    const testDir = mkdtempSync(join(tmpdir(), "umactually-smart-gab-"));
+    sandboxes.push(testDir);
+    const result = runShell({
+      PATH: `${binDir}${delimiter}${process.env["PATH"] ?? ""}`,
+      INSTALL_GITHUB_API_BASE: "http://127.0.0.1:1/repos/JosiahSiegel/umactually/releases/latest",
+      INSTALL_TEST_MODE: "1",  // test-mode stub for the binary path
+      INSTALL_TEST_DIR: testDir,
+      PLATFORM_OVERRIDE: "linux",
+      ARCH_OVERRIDE: "x64",
+    });
+    expect(result.stderr).not.toMatch(/trying npm install/);
+  });
 });
 
 describe.skipIf(!PWSH_AVAILABLE)("install.ps1 smart-router (v0.6.0)", () => {
@@ -277,5 +314,33 @@ describe.skipIf(!PWSH_AVAILABLE)("install.ps1 smart-router (v0.6.0)", () => {
       npmCalled,
       `npm was not called. stdout=${result.stdout}\nstderr=${result.stderr}`,
     ).toBe(true);
+  });
+
+  // Mirror the bash-side bypass tests for the PowerShell side. The
+  // PowerShell smart-router must short-circuit when a local fake
+  // /releases/latest URL is set, so test fixtures using
+  // install-archives-powershell.test.ts don't leak real npm calls.
+  it("respects INSTALL_TEST_FAKE_LATEST_URL=... (skips smart-router)", () => {
+    const { binDir, dir } = makeSandbox();
+    const result = runPwsh({
+      PATH: `${binDir}${delimiter}${process.env["PATH"] ?? ""}`,
+      INSTALL_TEST_FAKE_LATEST_URL: "http://127.0.0.1:1/repos/JosiahSiegel/umactually/releases/latest",
+      INSTALL_TEST_MODE: "1",
+      PLATFORM_OVERRIDE: "linux",
+      ARCH_OVERRIDE: "x64",
+    }, dir);
+    expect(result.stdout).not.toMatch(/Node v\d+\.\d+\.\d+ detected, using npm install/u);
+  });
+
+  it("respects INSTALL_GITHUB_API_BASE=... (skips smart-router)", () => {
+    const { binDir, dir } = makeSandbox();
+    const result = runPwsh({
+      PATH: `${binDir}${delimiter}${process.env["PATH"] ?? ""}`,
+      INSTALL_GITHUB_API_BASE: "http://127.0.0.1:1/repos/JosiahSiegel/umactually/releases/latest",
+      INSTALL_TEST_MODE: "1",
+      PLATFORM_OVERRIDE: "linux",
+      ARCH_OVERRIDE: "x64",
+    }, dir);
+    expect(result.stdout).not.toMatch(/Node v\d+\.\d+\.\d+ detected, using npm install/u);
   });
 });

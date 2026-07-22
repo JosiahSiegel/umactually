@@ -67,6 +67,9 @@ Flags (also accepted as env vars):
   -InstallDir <path>     Override install destination. Env: INSTALL_DIR_OVERRIDE.
   -SChannelOptOut        Skip TLS revocation checks (Windows Schannel only).
                          Env: INSTALL_SSL_NO_REVOKE. Same caveats as install.sh.
+                         Accepts the README's `--ssl-no-revoke` and `-SslNoRevoke`
+                         aliases too so a copy/paste from the README works on
+                         Windows.
   -TryNpm                Opt in to the npm-install smart router (added in v0.6.0).
                          Env: INSTALL_TRY_NPM=1. Off by default because the
                          umactually npm package is not yet published; falls
@@ -84,6 +87,20 @@ checksums.txt when no flag/env is supplied.
   if ($arg -eq '-V' -or $arg -eq '--version') {
     Write-Output 'umactually installer (script tied to v0.6.0 install contract)'
     exit 0
+  }
+  # `--ssl-no-revoke` (README copy/paste form), `-SslNoRevoke` (PowerShell
+  # canonical alias form), and `-SChannelOptOut` (the historical install.ps1
+  # form documented above) all opt in to skipping TLS revocation checks.
+  # Without this handler a Windows Git Bash user copy/pasting the README's
+  # `irm .../install.ps1 | iex -ssl-no-revoke` line would see the flag
+  # silently dropped: the smart-router would treat it as an install arg
+  # and either call `npm install -g umactually` or fall through to a
+  # binary download that still hits CRL/OCSP via Invoke-WebRequest.
+  if ($arg -eq '-ssl-no-revoke' -or $arg -eq '--ssl-no-revoke' `
+      -or $arg -eq '-SslNoRevoke' -or $arg -eq '-SChannelOptOut') {
+    $env:INSTALL_SSL_NO_REVOKE = '1'
+    # Don't shift $args — the rest of the script reads via $env:.
+    continue
   }
 }
 
@@ -256,6 +273,12 @@ function Invoke-SmartInstallNpm {
 #   - INSTALL_TEST_TARBALL      — alternate archive fixture
 #   - INSTALL_TEST_CHECKSUMS    — alternate checksums fixture
 #   - INSTALL_TEST_FAKE_TAG     — pre-archive tag fixture
+#   - INSTALL_TEST_FAKE_LATEST_URL — local fake /releases/latest URL
+#   - INSTALL_GITHUB_API_BASE   — production override of the
+#                                 /releases/latest URL (and a test
+#                                 fixture override when pointed at a
+#                                 local http server, e.g. by
+#                                 install-archives-powershell.test.ts)
 #   - INSTALL_FORCE_BINARY      — operator opt-out
 #   - INSTALL_RELEASE_BASE      — point at a local fake release server
 #     (test fixtures run a Node http server on 127.0.0.1; we MUST not
@@ -277,6 +300,8 @@ if (
   -not $env:INSTALL_TEST_TARBALL -and
   -not $env:INSTALL_TEST_CHECKSUMS -and
   -not $env:INSTALL_TEST_FAKE_TAG -and
+  -not $env:INSTALL_TEST_FAKE_LATEST_URL -and
+  -not $env:INSTALL_GITHUB_API_BASE -and
   -not $env:INSTALL_FORCE_BINARY -and
   -not $env:INSTALL_RELEASE_BASE
 ) {

@@ -289,7 +289,7 @@ type ScriptResult = {
   readonly status: number;
 };
 
-function runInstall(env: Record<string, string>): ScriptResult {
+function runInstall(env: Record<string, string>, args: readonly string[] = []): ScriptResult {
   if (!PS_AVAILABLE || POWERSHELL === null) {
     return { stderr: "", stdout: "POWERSHELL_UNAVAILABLE", status: 0 };
   }
@@ -297,6 +297,7 @@ function runInstall(env: Record<string, string>): ScriptResult {
     "-NoProfile",
     "-ExecutionPolicy", "Bypass",
     "-File", INSTALL_PS1,
+    ...args,
   ], {
     env: { ...process.env, ...env },
     encoding: "utf8",
@@ -599,6 +600,39 @@ describe.skipIf(!PS_AVAILABLE)("install.ps1 8-case override matrix", () => {
       expect(scriptText).toContain(`"${tag}"`);
     },
   );
+
+  // The --ssl-no-revoke flag (and its aliases) MUST be handled by the
+  // early-arg handler in install.ps1 so that a Windows Git Bash user
+  // copy/pasting the README's `irm .../install.ps1 | iex -ssl-no-revoke`
+  // line gets the same behavior as install.sh's `--ssl-no-revoke`. Without
+  // the early handler the flag is silently dropped and the smart-router
+  // (or the legacy raw path) makes an Invoke-WebRequest call that still
+  // hits CRL/OCSP. The TEST_MODE 1 path short-circuits before any
+  // network call, so we can assert on the flag's acceptance alone.
+  it.each([
+    "--ssl-no-revoke",
+    "-ssl-no-revoke",
+    "-SslNoRevoke",
+    "-SChannelOptOut",
+  ])(
+    "PS-MATRIX-SSL-NO-REVOKE: %s is accepted by the early-arg handler (no 'unknown flag')",
+    (flag) => {
+      const result = runInstall(
+        { INSTALL_TEST_MODE: "1" },
+        [flag],
+      );
+      expect(result.status, `stderr:\n${result.stderr}`).toBe(0);
+      expect(result.stderr).not.toMatch(/unknown flag/);
+    },
+  );
+
+  it("PS-MATRIX-SSL-NO-REVOKE: help text documents --ssl-no-revoke", () => {
+    // README copy/paste form. The README table advertises `--ssl-no-revoke`
+    // as a flag; the install.ps1 help text must mention it so Windows
+    // users can find the option via `./install.ps1 -?`.
+    const scriptText = readFileSync(INSTALL_PS1, "utf8");
+    expect(scriptText).toMatch(/--ssl-no-revoke/);
+  });
 
   it("PS-MATRIX-006: archive-capable tag never falls back to raw on checksum mismatch", () => {
     // Seed an archive contract's checksum file but with a wrong hash. The
