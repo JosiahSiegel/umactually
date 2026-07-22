@@ -181,7 +181,6 @@ $LegacyTagAllowlist = @("v0.2.1", "v0.3.0", "v0.4.0", "v0.4.1")
 $ArchiveBasenames = @(
   "umactually-linux-x64.tar.gz",
   "umactually-linux-arm64.tar.gz",
-  "umactually-darwin-x64.tar.gz",
   "umactually-darwin-arm64.tar.gz",
   "umactually-windows-x64.zip",
   "umactually-windows-arm64.zip"
@@ -191,7 +190,6 @@ $ArchiveBasenames = @(
 $RawBasenames = @(
   "umactually-linux-x64",
   "umactually-linux-arm64",
-  "umactually-darwin-x64",
   "umactually-darwin-arm64",
   "umactually-windows-x64.exe",
   "umactually-windows-arm64.exe"

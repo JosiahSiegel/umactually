@@ -413,7 +413,7 @@ checksum_legacy_select() {
 }
 
 # Archive checksum file validation: returns 0 iff the file contains EXACTLY
-# six canonical archive-basename lines, no malformed/duplicate/unknown/
+# five canonical archive-basename lines, no malformed/duplicate/unknown/
 # opposite-contract entries. Sets EXPECTED_HASH (global) for the line that
 # matches $1.
 checksum_archive_validate() {
@@ -474,8 +474,8 @@ checksum_archive_validate() {
         ;;
     esac
   done < "$_file"
-  if [ "$_seen_count" -ne 6 ]; then
-    log_err "checksums file must contain exactly 6 canonical archive entries (found: $_seen_count)"
+  if [ "$_seen_count" -ne 5 ]; then
+    log_err "checksums file must contain exactly 5 canonical archive entries (found: $_seen_count)"
     return 1
   fi
   if [ -z "$EXPECTED_HASH" ]; then

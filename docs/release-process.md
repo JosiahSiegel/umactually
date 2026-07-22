@@ -134,7 +134,6 @@ Every GitHub Release under the `vX.Y.Z` tag ships exactly seven public assets �
 | --- | --- | --- | --- |
 | `umactually-linux-x64.tar.gz` | gzipped tar | `umactually-linux-x64` | `umactually-linux-x64` |
 | `umactually-linux-arm64.tar.gz` | gzipped tar | `umactually-linux-arm64` | `umactually-linux-arm64` |
-| `umactually-darwin-x64.tar.gz` | gzipped tar | `umactually-darwin-x64` | `umactually-darwin-x64` |
 | `umactually-darwin-arm64.tar.gz` | gzipped tar | `umactually-darwin-arm64` | `umactually-darwin-arm64` |
 | `umactually-windows-x64.zip` | ZIP | `umactually-windows-x64.exe` | `umactually-windows-x64.exe` |
 | `umactually-windows-arm64.zip` | ZIP | `umactually-windows-arm64.exe` | `umactually-windows-arm64.exe` |
@@ -155,7 +154,7 @@ If the redirect still points at an older tag, GitHub's CDN has stale edge cache 
 
 Each archive is a deterministic gzip-compressed tar (Linux/macOS) or ZIP (Windows) containing exactly one binary member. The compressed archive is the **transfer size** (what the installer downloads and what the user sees on the wire); the extracted member is the **installed size** (what sits on the user's PATH after extraction). They are not the same number, and the plan deliberately does not promise they will converge:
 
-- The compressed transfer size is bounded by a per-target sanity check in the release workflow's "Compute release-size report" step (1 MiB floor, 200 MiB ceiling per raw binary). tsdown's `--exe` enforces the inner bundle size; the workflow's check is a safety net for a runaway build (a new dep pulling in an unexpectedly large native module). As of v0.6.0 the largest target is `darwin-x64` at ~134 MiB; 200 MiB leaves ~50% headroom for legitimate growth. Any new target that legitimately needs more room must bump the ceiling AND document the reason in the PR — do not silently widen the global cap.
+- The compressed transfer size is bounded by a per-target sanity check in the release workflow's "Compute release-size report" step (1 MiB floor, 200 MiB ceiling per raw binary). tsdown's `--exe` enforces the inner bundle size; the workflow's check is a safety net for a runaway build (a new dep pulling in an unexpectedly large native module). As of v0.6.0 the largest target is `darwin-arm64` at ~125 MiB (darwin-x64 was dropped in v0.6.0 due to nodejs/node#62893); 200 MiB leaves ~50% headroom for legitimate growth. Any new target that legitimately needs more room must bump the ceiling AND document the reason in the PR — do not silently widen the global cap.
 - The installed binary size is determined by the Node SEA runtime and is not a release-time budget. The standalone Node 25.7 runtime is bundled in, so the installed binary is substantially larger than the archive — typically **~2.5x larger** than what the user actually downloads. See [distribution-architecture.md](./distribution-architecture.md) for the full comparison vs Bun, yao-pkg, and Deno.
 
 Treat these as two distinct telemetry numbers in any user-facing copy. The README install section explains the ratio; the size budget file governs only the transfer side.
@@ -169,7 +168,6 @@ Treat these as two distinct telemetry numbers in any user-facing copy. The READM
 | Cross-platform build + archive | `build-package` | Produces the candidate bundle (`public/<archives>`, `internal/raw/<binaries>`, `internal/release-size-report.json`) under one immutable artifact (`umactually-release-candidate`). |
 | Linux x64 installer smoke | `smoke-linux-x64` | Downloads the candidate by artifact id, verifies transport + inner SHA-256, runs the installer in production mode against a local serve, exercises `--version` / `--help` / `doctor`. |
 | Linux ARM64 installer smoke | `smoke-linux-arm64` | Same contract on `ubuntu-24.04-arm`. |
-| macOS x64 installer smoke | `smoke-darwin-x64` | Same contract on `macos-15-intel`. |
 | macOS ARM64 installer smoke | `smoke-darwin-arm64` | Same contract on `macos-15`. |
 | Windows x64 installer smoke | `smoke-windows-x64` | Same contract on `windows-2025`, exercising PowerShell 5.1's `install.ps1`. |
 | Windows x64 Git Bash delegation | `smoke-windows-x64-git-bash-delegate` | Confirms Git Bash invokes PowerShell correctly; this is the path most Windows users actually take. |
@@ -209,7 +207,7 @@ The post-publish canary (§6 below) is a defense-in-depth check: if it ever fail
 | Job | What it does | Failure mode to watch |
 | --- | --- | --- |
 | `build-package` | Cross-platform build + archive packaging + checksum + size report. Uploads ONE immutable candidate artifact (`umactually-release-candidate`) with three subtrees: `public/<archives>`, `internal/raw/<binaries>`, `internal/release-size-report.json`. | If this fails, no smoke gates run. Fix is on `main` and the release PR picks it up. |
-| Six native / installer smoke jobs (`smoke-linux-x64`, `smoke-linux-arm64`, `smoke-darwin-x64`, `smoke-darwin-arm64`, `smoke-windows-x64`, `smoke-windows-x64-git-bash-delegate`) | Each downloads the candidate by artifact id, verifies transport + inner SHA-256, runs the installer in production mode against a local serve, and exercises `--version` / `--help` / `doctor`. | A failure here means the user-facing install path is broken on that platform — treat as a P0 and fix before re-tagging. |
+| Five native / installer smoke jobs (`smoke-linux-x64`, `smoke-linux-arm64`, `smoke-darwin-arm64`, `smoke-windows-x64`, `smoke-windows-x64-git-bash-delegate`) | Each downloads the candidate by artifact id, verifies transport + inner SHA-256, runs the installer in production mode against a local serve, and exercises `--version` / `--help` / `doctor`. | A failure here means the user-facing install path is broken on that platform — treat as a P0 and fix before re-tagging. |
 | `smoke-windows-arm64-structural` | Validates the Windows ARM64 ZIP archive + member name + PE machine type from a `windows-2025` host. **Non-runtime** validation. | A failure here means the ARM64 ZIP is structurally broken even though no execution is attempted; cut a follow-up patch release. |
 | `smoke-bad-checksum` | Confirms a corrupted `checksums.txt` causes the installer to refuse without overwriting the seeded install. | A failure here means a malicious or corrupted release could clobber a working install — this is a security regression. |
 | `publish` | Sole holder of `contents: write`. Downloads the candidate by artifact id, verifies the transport digest, drafts the release with exactly seven explicit basename paths, re-verifies draft asset names + hashes against `checksums.txt`, then runs `gh release edit --draft=false` only if every pre-publish gate is green. | A failure here deletes the draft via `if: failure()` and surfaces the violated gate in the run log. |
