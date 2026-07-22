@@ -46,7 +46,7 @@
 #
 # Required environment (set by CI):
 #   NODE_VERSION      Node 24 (mirrors release.yml pin)
-#   BUN_VERSION       Bun 1.3.14 (mirrors release.yml pin)
+#   NODE_VERSION       Node 25.7.0 (mirrors release.yml pin)
 #
 # Local usage:
 #   bash scripts/ci-release-pipeline-dry-run.sh
@@ -92,18 +92,20 @@ cleanup() {
   rm -rf "${BUILD_DIR}" "${FAKE_HOME}" "${TMP_PUBLIC}" 2>/dev/null
 }
 
-# ----- 1. Bun + Node preamble -----
+# ----- 1. Node preamble -----
 log() { printf '[dry-run] %s\n' "$*" >&2; }
 fail() { printf '[dry-run] FAIL: %s\n' "$*" >&2; exit 1; }
 
-if ! command -v bun >/dev/null 2>&1; then
-  fail "bun not on PATH; CI installs oven-sh/setup-bun@v2 with bun-version 1.3.14"
+if ! command -v node >/dev/null 2>&1; then
+  fail "node not on PATH; CI installs actions/setup-node@v4 with node-version 25.7.0"
 fi
-BUN_VERSION="$(bun --version)"
-if [[ "${BUN_VERSION}" != "1.3.14" ]]; then
-  fail "expected bun 1.3.14, got ${BUN_VERSION}. CI pins via oven-sh/setup-bun@v2."
+NODE_VERSION="$(node --version)"
+NODE_MAJOR="${NODE_VERSION#v}"
+NODE_MAJOR="${NODE_MAJOR%%.*}"
+if [[ "${NODE_MAJOR}" != "25" ]]; then
+  fail "expected node 25.x, got ${NODE_VERSION}. CI pins via actions/setup-node@v4 with node-version 25.7.0."
 fi
-log "bun ${BUN_VERSION} + node $(node --version)"
+log "node ${NODE_VERSION}"
 
 # ----- 2. Build (mirrors build-package steps 1-7) -----
 log "1/9  npm ci"
@@ -115,26 +117,43 @@ npm run typecheck
 log "3/9  npm run build (dist/ + post-bundle)"
 npm run build
 
-log "4/9  build-binary.mjs → release-build/{internal/raw,public} after stage"
-node scripts/build-binary.mjs
+log "4/9  build-sea.mjs → release-build/{internal/raw,public} after stage"
+node scripts/build-sea.mjs
 
 log "5/9  package-release-assets.mjs → archives + checksums.txt"
 node scripts/package-release-assets.mjs \
   --manifest scripts/release-targets.json \
   --release-dir release
 
-log "6/9  verify-release-assets.mjs --measure"
-# Read the budget's bunVersion field directly via Node — release.yml
-# does this with the same `--bun-version` flag. We capture the value
-# to a variable first so the inline command substitution's quote
-# nesting doesn't fight the bash parser on multi-line continuations.
-BUN_VERSION_PIN="$(node -e "console.log(JSON.parse(require('fs').readFileSync('scripts/release-size-budget.json','utf8')).bunVersion)")"
-node scripts/verify-release-assets.mjs \
-  --manifest scripts/release-targets.json \
-  --release-dir release \
-  --measure \
-  --bun-version "${BUN_VERSION_PIN}" \
-  --report "${SIZE_REPORT}"
+log "6/9  verify stage sizes (replaces verify-release-assets.mjs --measure)"
+# The v0.5.x verify-release-assets.mjs checked Bun-version-pin
+# consistency against release-size-budget.json. In v0.6.0 we
+# dropped both the Bun pin and the budget file (Node SEA is the
+# official path; tsdown's --exe already enforces bundle size
+# internally). The smoke-sea job in ci.yml is the runtime check;
+# here we just confirm each target produced an output.
+node -e '
+const fs = require("fs");
+const path = require("path");
+const manifest = JSON.parse(fs.readFileSync("scripts/release-targets.json", "utf8"));
+const releaseDir = "release";
+let failed = 0;
+for (const t of manifest) {
+  const p = path.join(releaseDir, t.rawName);
+  if (!fs.existsSync(p)) {
+    console.error("MISSING: " + p);
+    failed++;
+    continue;
+  }
+  const size = fs.statSync(p).size;
+  console.log("  " + t.rawName + " (" + size + " bytes)");
+}
+if (failed > 0) {
+  console.error("verify stage: " + failed + " target(s) missing");
+  process.exit(1);
+}
+console.log("verify stage: all " + manifest.length + " targets present");
+'
 
 # ----- 3. Stage into release/public/ + internal/raw/ -----
 # Use the same staging script the release-pipeline uses (lifted out

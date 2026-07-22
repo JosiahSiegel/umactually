@@ -28,7 +28,6 @@ export type ArchiveType = "tar.gz" | "zip";
 /** A single canonical release target — all fields are required. */
 export type ReleaseTarget = {
   readonly id: string;
-  readonly bunTarget: string;
   readonly rawName: string;
   readonly archiveName: string;
   readonly archiveType: ArchiveType;
@@ -47,7 +46,6 @@ export type ParseOptions = {
 
 const REQUIRED_FIELDS: ReadonlyArray<keyof ReleaseTarget> = [
   "id",
-  "bunTarget",
   "rawName",
   "archiveName",
   "archiveType",
@@ -126,13 +124,6 @@ function parseSingleTarget(raw: unknown, index: number): ReleaseTarget {
     }
   }
 
-  const bunTarget = raw["bunTarget"];
-  if (!isPlainString(bunTarget)) {
-    throw new Error(
-      `release-targets: target ${targetId} field bunTarget must be a non-empty string`,
-    );
-  }
-
   const rawName = raw["rawName"];
   if (!isPlainString(rawName)) {
     throw new Error(
@@ -178,21 +169,13 @@ function parseSingleTarget(raw: unknown, index: number): ReleaseTarget {
   }
   rejectIfUnsafeName("installedName", installedName, targetId);
 
-  // Bun target triple invariant: must be `bun-<id>` with an optional
-  // `-baseline` suffix (Bun uses `-baseline` for the glibc-compatible
-  // Linux x64 and Windows x64 triples; other triples have no suffix).
-  // This preserves the existing build-binary.mjs contract exactly.
-  const baselineSuffix = "-baseline";
-  const hasBaseline = bunTarget.endsWith(baselineSuffix);
-  const bunTargetCore = hasBaseline
-    ? bunTarget.slice(0, -baselineSuffix.length)
-    : bunTarget;
-  const expectedBunTargetCore = `bun-${targetId}`;
-  if (bunTargetCore !== expectedBunTargetCore) {
-    throw new Error(
-      `release-targets: target ${targetId} bunTarget must equal ${JSON.stringify(expectedBunTargetCore)} or ${JSON.stringify(expectedBunTargetCore + baselineSuffix)} (got ${JSON.stringify(bunTarget)})`,
-    );
-  }
+  // v0.6.0: removed the Bun-target invariant (Bun's `bun-<id>` triple
+  // names with optional `-baseline` suffix). Node SEA via tsdown
+  // derives the platform/arch from the manifest `id` directly. The
+  // check below preserves the existing `rawName = umactually-<id>`
+  // invariant for POSIX targets and the `rawName = umactually-<id>.exe`
+  // for Windows, which is what the installer and archive packager
+  // depend on.
 
   const platform = targetId.split("-")[0] ?? "";
   const isPosix = POSIX_PLATFORMS.has(platform);
@@ -287,7 +270,6 @@ function parseSingleTarget(raw: unknown, index: number): ReleaseTarget {
 
   return {
     id: targetId,
-    bunTarget,
     rawName,
     archiveName,
     archiveType,
@@ -302,7 +284,7 @@ function parseSingleTarget(raw: unknown, index: number): ReleaseTarget {
  *
  * Uniqueness invariants enforced here (after per-row validation):
  *   - exactly six rows
- *   - distinct ids, bunTargets, rawNames, memberNames, archiveNames
+ *   - distinct ids, rawNames, memberNames, archiveNames
  */
 export function parseReleaseTargets(options: ParseOptions): readonly ReleaseTarget[] {
   const text = readFileSync(options.manifestPath, "utf8");
@@ -342,12 +324,11 @@ export function parseReleaseTargetsFromString(text: string): readonly ReleaseTar
     parseSingleTarget(entry, index),
   );
 
-  // Uniqueness: ids, bunTargets, rawNames, memberNames, archiveNames.
+  // Uniqueness: ids, rawNames, memberNames, archiveNames.
   // Duplicates are reported with the offender's id and the existing value so
   // the operator can locate the collision in one read.
   const seen = {
     id: new Map<string, string>(),
-    bunTarget: new Map<string, string>(),
     rawName: new Map<string, string>(),
     memberName: new Map<string, string>(),
     archiveName: new Map<string, string>(),
@@ -361,14 +342,6 @@ export function parseReleaseTargetsFromString(text: string): readonly ReleaseTar
       );
     }
     seen.id.set(target.id, target.id);
-
-    const bunExisting = seen.bunTarget.get(target.bunTarget);
-    if (bunExisting !== undefined) {
-      throw new Error(
-        `release-targets: duplicate bunTarget for target ${target.id}: ${JSON.stringify(target.bunTarget)} already used by target ${bunExisting}`,
-      );
-    }
-    seen.bunTarget.set(target.bunTarget, target.id);
 
     const rawExisting = seen.rawName.get(target.rawName);
     if (rawExisting !== undefined) {

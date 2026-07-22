@@ -46,7 +46,6 @@ const SYNTHETIC_TARGETS = [
     id: "linux-x64",
     archiveName: "umactually-linux-x64.tar.gz",
     rawName: "umactually-linux-x64",
-    bunTarget: "bun-linux-x64-baseline",
     archiveType: "tar.gz",
     memberName: "umactually-linux-x64",
     installedName: "umactually",

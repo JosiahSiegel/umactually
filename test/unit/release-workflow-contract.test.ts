@@ -1448,15 +1448,11 @@ jobs:
       - name: Setup Node
         uses: actions/setup-node@v4
         with:
-          node-version: "24"
-      - name: Setup Bun
-        uses: oven-sh/setup-bun@v2
-        with:
-          bun-version: "1.3.14"
+          node-version: "25"
       - name: Install dependencies
         run: npm ci
       - name: Build candidate bundle
-        run: node scripts/build-binary.mjs
+        run: node scripts/build-sea.mjs
       - name: Stage candidate bundle (copies manifest into release/internal/release-targets.json)
         run: node scripts/stage-release-assets.mjs --release-dir release --manifest scripts/release-targets.json
       - name: Upload candidate bundle
@@ -1705,7 +1701,7 @@ const MUTATIONS = {
     // Inject a hardcoded `cp dist/<raw> release/<raw>` style line into the
     // build-package "Build candidate bundle" step's run block.
     const lines = yaml.split("\n");
-    const idx = lines.findIndex((l) => l.includes("node scripts/build-binary.mjs"));
+    const idx = lines.findIndex((l) => l.includes("node scripts/build-sea.mjs"));
     if (idx === -1) return yaml;
     const probe = "          cp dist/umactually-linux-x64 release/umactually-linux-x64";
     return [...lines.slice(0, idx + 1), probe, ...lines.slice(idx + 1)].join("\n");

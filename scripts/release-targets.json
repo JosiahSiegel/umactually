@@ -1,7 +1,6 @@
 [
   {
     "id": "linux-x64",
-    "bunTarget": "bun-linux-x64-baseline",
     "rawName": "umactually-linux-x64",
     "archiveName": "umactually-linux-x64.tar.gz",
     "archiveType": "tar.gz",
@@ -10,7 +9,6 @@
   },
   {
     "id": "linux-arm64",
-    "bunTarget": "bun-linux-arm64",
     "rawName": "umactually-linux-arm64",
     "archiveName": "umactually-linux-arm64.tar.gz",
     "archiveType": "tar.gz",
@@ -19,7 +17,6 @@
   },
   {
     "id": "darwin-x64",
-    "bunTarget": "bun-darwin-x64",
     "rawName": "umactually-darwin-x64",
     "archiveName": "umactually-darwin-x64.tar.gz",
     "archiveType": "tar.gz",
@@ -28,7 +25,6 @@
   },
   {
     "id": "darwin-arm64",
-    "bunTarget": "bun-darwin-arm64",
     "rawName": "umactually-darwin-arm64",
     "archiveName": "umactually-darwin-arm64.tar.gz",
     "archiveType": "tar.gz",
@@ -37,7 +33,6 @@
   },
   {
     "id": "windows-x64",
-    "bunTarget": "bun-windows-x64-baseline",
     "rawName": "umactually-windows-x64.exe",
     "archiveName": "umactually-windows-x64.zip",
     "archiveType": "zip",
@@ -46,7 +41,6 @@
   },
   {
     "id": "windows-arm64",
-    "bunTarget": "bun-windows-arm64",
     "rawName": "umactually-windows-arm64.exe",
     "archiveName": "umactually-windows-arm64.zip",
     "archiveType": "zip",

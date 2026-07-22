@@ -48,7 +48,6 @@ const TSDOWN_CONFIG = join(REPO_ROOT, TSDOWN_CONFIG_RELATIVE);
 
 interface RawTarget {
   readonly id: string;
-  readonly bunTarget: string;
   readonly rawName: string;
   readonly archiveName: string;
   readonly archiveType: "tar.gz" | "zip";

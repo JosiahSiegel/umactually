@@ -36,7 +36,6 @@ const MANIFEST_PATH = join(REPO_ROOT, "scripts", "release-targets.json");
 const EXPECTED_TARGETS: readonly ReleaseTarget[] = [
   {
     id: "linux-x64",
-    bunTarget: "bun-linux-x64-baseline",
     rawName: "umactually-linux-x64",
     archiveName: "umactually-linux-x64.tar.gz",
     archiveType: "tar.gz",
@@ -45,7 +44,6 @@ const EXPECTED_TARGETS: readonly ReleaseTarget[] = [
   },
   {
     id: "linux-arm64",
-    bunTarget: "bun-linux-arm64",
     rawName: "umactually-linux-arm64",
     archiveName: "umactually-linux-arm64.tar.gz",
     archiveType: "tar.gz",
@@ -54,7 +52,6 @@ const EXPECTED_TARGETS: readonly ReleaseTarget[] = [
   },
   {
     id: "darwin-x64",
-    bunTarget: "bun-darwin-x64",
     rawName: "umactually-darwin-x64",
     archiveName: "umactually-darwin-x64.tar.gz",
     archiveType: "tar.gz",
@@ -63,7 +60,6 @@ const EXPECTED_TARGETS: readonly ReleaseTarget[] = [
   },
   {
     id: "darwin-arm64",
-    bunTarget: "bun-darwin-arm64",
     rawName: "umactually-darwin-arm64",
     archiveName: "umactually-darwin-arm64.tar.gz",
     archiveType: "tar.gz",
@@ -72,7 +68,6 @@ const EXPECTED_TARGETS: readonly ReleaseTarget[] = [
   },
   {
     id: "windows-x64",
-    bunTarget: "bun-windows-x64-baseline",
     rawName: "umactually-windows-x64.exe",
     archiveName: "umactually-windows-x64.zip",
     archiveType: "zip",
@@ -81,7 +76,6 @@ const EXPECTED_TARGETS: readonly ReleaseTarget[] = [
   },
   {
     id: "windows-arm64",
-    bunTarget: "bun-windows-arm64",
     rawName: "umactually-windows-arm64.exe",
     archiveName: "umactually-windows-arm64.zip",
     archiveType: "zip",
@@ -105,22 +99,15 @@ describe("release-targets manifest on disk", () => {
     const archiveNames = targets.map((t) => t.archiveName);
     const rawNames = targets.map((t) => t.rawName);
     const memberNames = targets.map((t) => t.memberName);
-    const bunTargets = targets.map((t) => t.bunTarget);
     expect(new Set(ids).size).toBe(6);
     expect(new Set(archiveNames).size).toBe(6);
     expect(new Set(rawNames).size).toBe(6);
     expect(new Set(memberNames).size).toBe(6);
-    expect(new Set(bunTargets).size).toBe(6);
   });
 
-  it("uses `bun-<id>` (with optional `-baseline` suffix) for bunTarget and matches the exact raw/member/installed naming rules", () => {
+  it("matches the exact raw/member/installed naming rules", () => {
     const targets = parseReleaseTargets({ manifestPath: MANIFEST_PATH });
     for (const target of targets) {
-      const expectedBunTarget =
-        target.id === "linux-x64" || target.id === "windows-x64"
-          ? `bun-${target.id}-baseline`
-          : `bun-${target.id}`;
-      expect(target.bunTarget).toBe(expectedBunTarget);
       if (target.id.startsWith("windows")) {
         expect(target.rawName).toBe(`umactually-${target.id}.exe`);
         expect(target.memberName).toBe(`umactually-${target.id}.exe`);
@@ -168,8 +155,7 @@ describe("parseReleaseTargets — schema and shape rejection", () => {
     const seven = [...EXPECTED_TARGETS, {
       ...EXPECTED_TARGETS[0]!,
       id: "linux-x64-extra",
-      bunTarget: "bun-linux-x64-extra",
-      rawName: "umactually-linux-x64-extra",
+        rawName: "umactually-linux-x64-extra",
       archiveName: "umactually-linux-x64-extra.tar.gz",
       memberName: "umactually-linux-x64-extra",
     }];
@@ -179,7 +165,7 @@ describe("parseReleaseTargets — schema and shape rejection", () => {
 
   it("rejects missing required fields with a target-specific message", () => {
     const incomplete = [
-      { id: "linux-x64", bunTarget: "bun-linux-x64-baseline" },
+      { id: "linux-x64" },
       ...EXPECTED_TARGETS.slice(1),
     ];
     const path = writeManifest(incomplete);
@@ -268,11 +254,11 @@ describe("parseReleaseTargets — uniqueness", () => {
     ).toThrow(/darwin-arm64.*darwin-x64/);
   });
 
-  it("rejects duplicate bunTarget entries (structurally unreachable when ids are unique)", () => {
-    // Given the per-row invariant bunTarget === "bun-<id>" or "bun-<id>-baseline",
-    // duplicate bunTarget implies duplicate id, which the previous test already
+  it("rejects duplicate rawName/memberName/archiveName entries", () => {
+    // Given the per-row invariant rawName/memberName/archiveName are derived from id,
+    // duplicate id is the only way to produce duplicate rawName/memberName/archiveName; the previous test already
     // rejects. This test confirms the parser surfaces the id collision first
-    // rather than emitting a confusing bunTarget-specific message.
+    // rather than emitting a confusing field-specific message.
     const darwinX64 = EXPECTED_TARGETS.find((t) => t.id === "darwin-x64");
     if (!darwinX64) throw new Error("fixture missing darwin-x64");
     const mutated = EXPECTED_TARGETS.map((t) =>

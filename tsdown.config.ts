@@ -34,7 +34,6 @@ const REPO_ROOT = resolve(HERE);
 
 interface RawTarget {
   readonly id: string;
-  readonly bunTarget: string;
   readonly rawName: string;
   readonly archiveName: string;
   readonly archiveType: "tar.gz" | "zip";
