@@ -560,6 +560,18 @@ const isMainModule = (() => {
   // always empty. The action entry's globalThis flag still gates
   // the action path (its bundle sets the flag before reaching this
   // module), so dropping the regex is safe.
+  //
+  // Regression surface to be aware of: any third-party importer that
+  // does `require('umactually/dist/cli')` from a path that does NOT
+  // end in `cli.js` (e.g. a re-exported entry under a different
+  // filename like `require('umactually/dist/cli/index')`) will now
+  // ALSO auto-invoke main() because the URL match succeeds. If we
+  // ever need to support that pattern, restore the `cli.js` regex
+  // AND add a per-runtime entry probe (e.g. a `process.versions.sea`
+  // boolean in the SEA build that the auto-invoke can check). For
+  // v0.6.0, the supported consumers are the canonical CLI (npm path
+  // and SEA binary) plus the action entry, all of which are covered
+  // by the two checks above.
   const argv1 = process.argv[1];
   if (argv1 === undefined) {
     return false;

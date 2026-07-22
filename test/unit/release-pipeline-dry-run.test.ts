@@ -184,14 +184,20 @@ describe("ci-release-pipeline-dry-run.sh — structural contract (PR-time guard)
     // dry-run script must:
     //   1. invoke `node --version`
     //   2. read it into a variable
-    //   3. compare against the expected major (25)
-    //   4. fail if the host Node is below 25
+    //   3. compare against the expected minor.floor (25.7)
+    //   4. fail if the host Node is below 25.7
     // Node-version drift between CI and the release run is exactly
     // the kind of bug that leaves PR-CI green while the release
-    // fails (because `node --build-sea` is a Node 25.5+ feature).
+    // fails (because `node --build-sea` is a Node 25.5+ feature
+    // and the SEA loader requires 25.7+). The previous assertion
+    // was `expect(text).toMatch(/25/)` which passed against any
+    // file that mentioned the number 25 anywhere — too loose to
+    // catch a regression that drops the minor.floor check. The
+    // tightened regex below locks in both the major (25) and the
+    // minor floor (.7) in the fail-call error message.
     expect(text).toMatch(/node\s+--version/);
     expect(text).toMatch(/NODE_VERSION=/);
-    expect(text).toMatch(/25/);
+    expect(text).toMatch(/25\.7\.0/);
   });
 
   it("RELEASE-PIPELINE-DRY-RUN-CLEANUP-ON-EXIT: trap must clean up fixture + build dir", () => {
