@@ -232,6 +232,152 @@ jobs:
             exit "${_doctor_status}"
           fi
 
+  # ---------------------------------------------------------------------
+  # Windows variant of smoke-sea. Mirrors the linux-x64 check above
+  # but runs on windows-latest, builds the Windows SEA binaries, and
+  # exercises the windows-x64 .exe with --version + doctor.
+  #
+  # Why this exists: the v0.6.0/v0.6.1/v0.6.2/v0.6.3 Windows binaries
+  # all produced empty `--version` output on real Windows despite
+  # passing every other CI check (lint, types, full unit suite, the
+  # Linux smoke-sea, the dry-run). The unit suite mocks
+  # `fs.writeFileSync` via `vi.doMock("node:fs", ...)`, so it never
+  # exercises a real Node-SEA pipe-drain path. The Linux smoke-sea
+  # builds the Windows .exe but only runs the linux-x64 binary (Wine
+  # isn't available on the runner). Net result: a Windows-only
+  # regression lands on main and ships in a release. This job is the
+  # only CI gate that runs the actual Windows binary on a real
+  # Windows runner BEFORE merge.
+  # ---------------------------------------------------------------------
+  smoke-sea-windows:
+    name: smoke-sea (windows x64)
+    runs-on: windows-latest
+    needs: ci
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node 25
+        uses: actions/setup-node@v4
+        with:
+          node-version: "25.7.0"
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build (dist/ + sanity-check source)
+        run: npm run build
+
+      - name: Build all 5 SEA binaries
+        # Same comment as the linux-x64 job: tsdown's --exe mode has
+        # no per-target flag, so the config-driven build always
+        # produces all 5 binaries (linux x64/arm64, darwin arm64,
+        # windows x64/arm64). The smoke step below only executes the
+        # windows-x64 .exe, but the other 4 are built as a side
+        # effect — they get uploaded as workflow artifacts and
+        # discarded. Per-target filtering is tracked in a follow-up.
+        run: node scripts/build-sea.mjs windows-x64
+
+      - name: Smoke test the Windows SEA binary
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          $binary = "release\umactually-windows-x64.exe"
+          if (-not (Test-Path $binary)) {
+            Write-Error "::error::SEA binary not built at $binary"
+            exit 1
+          }
+
+          # --version is the first code path the SEA loader runs
+          # after init (it fires before any subcommand dispatch).
+          # Capture its exit status + stderr under a separate file
+          # so a loader regression that crashes the binary on
+          # --version is detected even if the doctor subcommand
+          # below happens to mask the crash.
+          #
+          # Windows-specific note: the v0.6.0+ fix uses
+          # `fs.writeFileSync(process.stdout.fd, stdout)` to avoid
+          # the stream-buffer teardown race. On Windows, this write
+          # is what gets routed through the parent PowerShell's
+          # pipeline capture. The smoke check MUST run the binary
+          # in a real subprocess (Start-Process) and capture its
+          # stdout via RedirectStandardOutput, which is the same
+          # pipe the installer uses.
+          $versionErr = New-TemporaryFile
+          $versionOut = New-TemporaryFile
+          try {
+            $versionProc = Start-Process -FilePath $binary `
+              -ArgumentList "--version" `
+              -NoNewWindow -Wait -PassThru `
+              -RedirectStandardError $versionErr.FullName `
+              -RedirectStandardOutput $versionOut.FullName
+            $versionStatus = $versionProc.ExitCode
+          } catch {
+            $versionStatus = -1
+            $_ | Out-String | Out-File -FilePath $versionErr.FullName -Append
+          }
+
+          if ($versionStatus -ne 0) {
+            Write-Error "::error::SEA loader crash on --version (exit=$versionStatus)"
+            Get-Content $versionErr.FullName -ErrorAction SilentlyContinue | Write-Host
+            exit $versionStatus
+          }
+
+          $versionText = Get-Content $versionOut.FullName -Raw -ErrorAction SilentlyContinue
+          if ([string]::IsNullOrWhiteSpace($versionText)) {
+            Write-Error "::error::SEA --version produced empty stdout (Windows pipe-drain regression)"
+            Write-Host "exit code: $versionStatus"
+            Write-Host "stdout (length: $($versionText.Length)):"
+            Write-Host "[empty]"
+            Write-Host "stderr:"
+            Get-Content $versionErr.FullName -ErrorAction SilentlyContinue | Write-Host
+            exit 1
+          }
+
+          # Anchor the loader-fault regex to the start of a JS-level
+          # stack-trace line. Same pattern set as the linux-x64 job.
+          $errText = Get-Content $versionErr.FullName -Raw -ErrorAction SilentlyContinue
+          $loaderFaultPattern = '^\s*(Error|TypeError|SyntaxError|ReferenceError|RangeError): |bad SEA|loader fault|node:internal/'
+          if ($errText -and ($errText -match $loaderFaultPattern)) {
+            Write-Error "::error::SEA loader crash on --version (loader-fault signature on stderr)"
+            Write-Host $errText
+            exit 1
+          }
+
+          Write-Host "SEA loader OK on Windows --version output: $versionText"
+
+          # Doctor: same exit-code contract as the linux-x64 job.
+          # Expects exit 0 or 1 (missing-creds); treats any other exit
+          # code or a loader-fault signature as a crash.
+          $doctorErr = New-TemporaryFile
+          $doctorOut = New-TemporaryFile
+          try {
+            $doctorProc = Start-Process -FilePath $binary `
+              -ArgumentList "doctor" `
+              -NoNewWindow -Wait -PassThru `
+              -RedirectStandardError $doctorErr.FullName `
+              -RedirectStandardOutput $doctorOut.FullName
+            $doctorStatus = $doctorProc.ExitCode
+          } catch {
+            $doctorStatus = -1
+            $_ | Out-String | Out-File -FilePath $doctorErr.FullName -Append
+          }
+
+          $doctorErrText = Get-Content $doctorErr.FullName -Raw -ErrorAction SilentlyContinue
+          $doctorLoaderFault = $doctorErrText -and ($doctorErrText -match $loaderFaultPattern)
+
+          if ($doctorStatus -eq 0) {
+            Write-Host "SEA loader OK (doctor exit=0, all checks passed)"
+          } elseif ($doctorStatus -eq 1 -and -not $doctorLoaderFault) {
+            Write-Host "SEA loader OK (doctor exit=1 is the expected missing-creds path)"
+          } else {
+            Write-Error "::error::SEA loader crash on doctor (exit=$doctorStatus)"
+            if ($doctorErrText) { Write-Host $doctorErrText }
+            & $binary doctor | Out-Null
+            exit $doctorStatus
+          }
+
   # Comprehensive Windows + PowerShell coverage for every PR. Until
   # v0.6.0 this only ran on tag pushes (release.yml's
   # smoke-windows-x64 + smoke-windows-arm64-structural +
