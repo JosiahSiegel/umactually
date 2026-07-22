@@ -155,7 +155,7 @@ describe("parseReleaseTargets — schema and shape rejection", () => {
     const seven = [...EXPECTED_TARGETS, {
       ...EXPECTED_TARGETS[0]!,
       id: "linux-x64-extra",
-        rawName: "umactually-linux-x64-extra",
+      rawName: "umactually-linux-x64-extra",
       archiveName: "umactually-linux-x64-extra.tar.gz",
       memberName: "umactually-linux-x64-extra",
     }];

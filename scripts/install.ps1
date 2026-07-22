@@ -67,10 +67,14 @@ Flags (also accepted as env vars):
   -InstallDir <path>     Override install destination. Env: INSTALL_DIR_OVERRIDE.
   -SChannelOptOut        Skip TLS revocation checks (Windows Schannel only).
                          Env: INSTALL_SSL_NO_REVOKE. Same caveats as install.sh.
+  -TryNpm                Opt in to the npm-install smart router (added in v0.6.0).
+                         Env: INSTALL_TRY_NPM=1. Off by default because the
+                         umactually npm package is not yet published; falls
+                         through to the binary download when npm 404s.
 
 Env vars (override flags):
   INSTALL_RELEASE_TAG, INSTALL_RELEASE_BASE, INSTALL_ASSET_CONTRACT,
-  INSTALL_DIR_OVERRIDE, INSTALL_SSL_NO_REVOKE
+  INSTALL_DIR_OVERRIDE, INSTALL_SSL_NO_REVOKE, INSTALL_TRY_NPM
 
 The installer auto-detects the contract from the published
 checksums.txt when no flag/env is supplied.
