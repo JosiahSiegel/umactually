@@ -242,7 +242,7 @@ jobs:
     steps:
       - name: Download stage1 candidate bundle
         env:
-          ARTIFACT_ID: ${{ needs.build-package-windows.outputs.merged_artifact_id }}
+          ARTIFACT_ID: ${{ needs.build-package.outputs.artifact_id }}
           GH_TOKEN: ${{ github.token }}
         shell: pwsh
         run: |
