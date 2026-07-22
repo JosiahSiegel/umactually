@@ -15,7 +15,7 @@ Pick the path that matches your environment. Full comparison at [`docs/distribut
 ### Recommended: `npm install -g umactually`
 
 ```bash
-# Global install (Node 24+ or Bun 1.1+)
+# Global install (Node 24+ or Bun 1.2+)
 npm install -g umactually
 
 # One-shot, no install
@@ -108,32 +108,6 @@ umactually uninstall --yes
 
 # Legacy
 irm https://github.com/JosiahSiegel/umactually/raw/main/scripts/uninstall.ps1 | iex
-```
-
-The installer is **smart**: it first checks for Node 24+ on PATH. If found, it runs `npm install -g umactually` and exits. Otherwise it falls through to downloading a single-file binary (~30 MB, self-contained, no Node required) and verifying its SHA-256 against `checksums.txt`. The binary is built with Node SEA (`node --build-sea`) and bundles Node 25.7. Supported release assets: Linux x64/arm64, macOS arm64, Windows x64/arm64.
-
-> **Intel macOS (darwin-x64) is not supported by the single-file binary** — Node's `--build-sea` segfaults on darwin-x64 ([nodejs/node#62893](https://github.com/nodejs/node/issues/62893)). Intel Mac users get the npm install path: `npm install -g umactually`. The installer detects darwin-x64 and fails fast with a pointer at the npm path.
-
-Supported installer flags (also accepted as env vars):
-
-| Flag | Env var | Default |
-| --- | --- | --- |
-| `--tag vX.Y.Z` | `INSTALL_RELEASE_TAG` | auto-detect from `releases/latest` |
-| `--base <url>` | `INSTALL_RELEASE_BASE` | GitHub releases URL |
-| `--contract archive\|legacy` | `INSTALL_ASSET_CONTRACT` | auto-detect from published `checksums.txt` |
-| `--install-dir <path>` | (none) | `/usr/local/bin` (root) or `~/.local/bin` (non-root) |
-| `--ssl-no-revoke` | `INSTALL_SSL_NO_REVOKE` | revocation checks on (secure default) |
-
-Env vars take precedence over flags when both are set (POSIX convention: the env var is the deployment default, the flag is the per-call override).
-
-Compressed transfer size is ~3x smaller than the installed binary size (e.g., ~18 MB download / ~60 MB installed on Linux x64).
-
-> **Windows ARM64** is supported via ZIP archive but cannot be smoke-tested in CI (structural-only validation); see [docs/release-process.md](docs/release-process.md#windows-arm64).
-
-Verify after installation:
-
-```bash
-umactually --version
 ```
 
 ## Usage

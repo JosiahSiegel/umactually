@@ -7,7 +7,7 @@ they relate and which to use when.
 
 | Path | Download | On disk | Use when |
 |---|---|---|---|
-| `npm install -g umactually` | ~330 KB | ~1.2 MB unpacked | You already have Node 24+ or Bun 1.1+ |
+| `npm install -g umactually` | ~330 KB | ~1.2 MB unpacked | You already have Node 24+ or Bun 1.2+ |
 | `npx umactually` (one-shot) | ~330 KB (cached after first use) | same as above | You don't want a global install |
 | `bunx umactually` | ~330 KB | same as above | You use Bun |
 | `curl … \| sh` (smart-router) | 0 KB if Node 24+ found, else ~30 MB | same as the chosen path | You don't know what's installed, want one command |
