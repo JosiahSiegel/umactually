@@ -146,7 +146,7 @@ afterEach(() => {
 // is too tight for that path on slow runners.
 const SMART_ROUTER_TEST_TIMEOUT_MS = 30_000;
 
-describe.skipIf(!SHELL_AVAILABLE)("install.sh smart-router (v0.6.0)", () => {
+describe.skipIf(!SHELL_AVAILABLE || process.platform === "win32")("install.sh smart-router (v0.6.0)", () => {
   it("delegates to npm when Node 24+ is on PATH and no override is set", { timeout: SMART_ROUTER_TEST_TIMEOUT_MS }, () => {
     const { binDir } = makeSandbox();
     const result = runShell({

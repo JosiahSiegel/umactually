@@ -88,7 +88,7 @@ afterEach(async () => {
   }
 });
 
-describe.skipIf(!SHELL_AVAILABLE)("install.sh archive-mode happy paths", () => {
+describe.skipIf(!SHELL_AVAILABLE || process.platform === "win32")("install.sh archive-mode happy paths", () => {
   it("installs a real archive into the sandbox HOME and the binary runs", async () => {
     server = await seedServer();
     const dest = join(fakeHome, ".local", "bin", "umactually");
@@ -111,7 +111,7 @@ describe.skipIf(!SHELL_AVAILABLE)("install.sh archive-mode happy paths", () => {
   });
 });
 
-describe.skipIf(!SHELL_AVAILABLE)("install.sh 8-case override matrix", () => {
+describe.skipIf(!SHELL_AVAILABLE || process.platform === "win32")("install.sh 8-case override matrix", () => {
   it("case 2: tag only resolves the default GitHub base and installs", async () => {
     server = await seedServer("v0.5.0");
     const dest = join(fakeHome, ".local", "bin", "umactually");
@@ -315,7 +315,7 @@ describe.skipIf(!SHELL_AVAILABLE)("install.sh 8-case override matrix", () => {
   });
 });
 
-describe.skipIf(!SHELL_AVAILABLE)("install.sh legacy tag allowlist", () => {
+describe.skipIf(!SHELL_AVAILABLE || process.platform === "win32")("install.sh legacy tag allowlist", () => {
   for (const legacyTag of ["v0.2.1", "v0.3.0", "v0.4.0", "v0.4.1"]) {
     it(`accepts ${legacyTag} via the legacy contract`, async () => {
       mkdirSync(releaseDir, { recursive: true });
@@ -416,7 +416,7 @@ describe.skipIf(!SHELL_AVAILABLE)("install.sh legacy tag allowlist", () => {
   });
 });
 
-describe.skipIf(!SHELL_AVAILABLE)("install.sh hostile archive rejection", () => {
+describe.skipIf(!SHELL_AVAILABLE || process.platform === "win32")("install.sh hostile archive rejection", () => {
   // Every fixture below publishes a checksums.txt whose entries are
   // consistent with the archive bytes the fixture actually serves. The
   // installer must reject the archive by member-name/typeflag and leave
@@ -567,7 +567,7 @@ describe.skipIf(!SHELL_AVAILABLE)("install.sh hostile archive rejection", () => 
   });
 });
 
-describe.skipIf(!SHELL_AVAILABLE)("install.sh bad-checksum preserves seeded install", () => {
+describe.skipIf(!SHELL_AVAILABLE || process.platform === "win32")("install.sh bad-checksum preserves seeded install", () => {
   // PR-time regression for the smoke-bad-checksum workflow scenario.
   // The installer's checksum validator MUST fire BEFORE any staging or
   // overwrite of the seeded installed binary. If the install would
