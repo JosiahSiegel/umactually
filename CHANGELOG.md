@@ -10,6 +10,19 @@ ship a tag).
 
 ## [Unreleased]
 
+## [0.6.3] - 2026-07-22
+
+### Fixed
+
+- **v0.6.2 Windows binary regression: empty `--version` output** ([#110](https://github.com/JosiahSiegel/umactually/pull/110)). The v0.6.2 release shipped a broken Windows binary despite the v0.6.0-pattern writeFileSync fix landing in source. Post-release e2e run `29955112530` for v0.6.2: Linux + macOS passed, Windows failed with `binary --version:` empty and 0 comments for both providers. Investigation by diffing the v0.6.0 binary (works) and the v0.6.2 binary (broken) showed the difference is in the canonical-path writeFileSync call: v0.6.0 used `writeFileSync(fd, stdout)` with a string, v0.6.2 used `writeFileSync(fd, Buffer.from(stdout))` with a Buffer. This is a Windows-specific text-mode-vs-binary-mode fd handling quirk in Node 25.7.0 SEA — the Buffer form goes through a different internal code path that doesn't actually reach the parent pipe on Windows. The string form works. The v0.6.2 review-iteration refinements (Buffer.from + writeSync + typed catch) introduced this regression; reverting to the v0.6.0 exact pattern (string + bare catch + process.stdout.write fallback) restores Windows support.
+  - `src/cli.ts`: `runVersion` now uses the v0.6.0 exact pattern: `writeFileSync(process.stdout.fd, stdout)` (string, not Buffer), with a bare `catch {}` falling back to `process.stdout.write(stdout)`. The docstring documents the empirical finding.
+  - `test/unit/cli-version.test.ts`: updated to spy on `process.stdout.write` (not `writeSync`) for the fallback test, matching the reverted source.
+
+### Notes
+
+- The v0.6.3 binary differs from v0.6.2 in the `--version` write path (now `writeFileSync(fd, string)` + `process.stdout.write` fallback; was `writeFileSync(fd, Buffer.from(string))` + `writeSync(fd, Buffer.from(string))`). The version string is also updated (0.6.2 → 0.6.3). No changes to the install/upgrade/uninstall pipeline.
+- The v0.6.1 and v0.6.2 GitHub Releases are left as-is (both have broken Windows binaries). Users on Windows should upgrade to v0.6.3.
+
 ## [0.6.2] - 2026-07-22
 
 ### Fixed
