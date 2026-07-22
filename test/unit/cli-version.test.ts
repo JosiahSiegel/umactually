@@ -1,4 +1,5 @@
 import { existsSync, readFileSync } from "node:fs";
+import type { FileHandle } from "node:fs/promises";
 import { rm } from "node:fs/promises";
 import { join } from "node:path";
 
@@ -12,6 +13,32 @@ const packageJson = JSON.parse(
 const packageVersion = String(packageJson.version);
 const autoContextDirectory = join(process.cwd(), ".umactually-auto-ctx");
 
+// runVersion under SEA uses fs.writeFileSync(process.stdout.fd, stdout)
+// as the canonical synchronous write; the catch-block fallback is
+// process.stdout.write. The test must intercept BOTH write paths.
+//
+// We use vi.mock("node:fs") with a partial mock: passThrough() so the
+// real implementations of other fs functions (readFileSync for the
+// package.json read at module top, existsSync, etc.) are kept, and
+// only writeFileSync is overridden. vi.mock is hoisted by vitest above
+// the imports so the override takes effect when src/cli.ts evaluates
+// its `import { writeFileSync }` binding.
+vi.mock("node:fs", async (importOriginal) => {
+  const actual = (await importOriginal()) as typeof import("node:fs");
+  return {
+    ...actual,
+    writeFileSync: (
+      _fd: number | FileHandle,
+      data: string | Uint8Array,
+      _opts?: Parameters<typeof actual.writeFileSync>[2],
+    ): void => {
+      (globalThis as Record<string, unknown>)["__cliVersionTestStdout"] = String(
+        ((globalThis as Record<string, unknown>)["__cliVersionTestStdout"] as string | undefined) ?? "",
+      ) + String(data);
+    },
+  };
+});
+
 async function captureMain(args: readonly string[]): Promise<{
   readonly result: number;
   readonly stdout: string;
@@ -19,21 +46,24 @@ async function captureMain(args: readonly string[]): Promise<{
 }> {
   let stdout = "";
   let stderr = "";
-  const stdoutSpy = vi.spyOn(process.stdout, "write").mockImplementation((chunk) => {
+  (globalThis as Record<string, unknown>)["__cliVersionTestStdout"] = "";
+  vi.spyOn(process.stdout, "write").mockImplementation((chunk) => {
     stdout += String(chunk);
     return true;
   });
-  const stderrSpy = vi.spyOn(process.stderr, "write").mockImplementation((chunk) => {
+  vi.spyOn(process.stderr, "write").mockImplementation((chunk) => {
     stderr += String(chunk);
     return true;
   });
 
   try {
     const result = await main(args);
+    stdout = String(
+      ((globalThis as Record<string, unknown>)["__cliVersionTestStdout"] as string | undefined) ?? "",
+    ) + stdout;
     return { result, stdout, stderr };
   } finally {
-    stdoutSpy.mockRestore();
-    stderrSpy.mockRestore();
+    vi.restoreAllMocks();
   }
 }
 

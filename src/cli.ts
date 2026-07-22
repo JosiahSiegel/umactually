@@ -1,4 +1,4 @@
-import { readFileSync, realpathSync } from "node:fs";
+import { readFileSync, realpathSync, writeFileSync } from "node:fs";
 import { rm } from "node:fs/promises";
 import { join } from "node:path";
 
@@ -93,16 +93,28 @@ export function isVersionFlag(argv: readonly string[]): boolean {
 export function runVersion(_argv: readonly string[]): { readonly exitCode: 0; readonly stdout: string } {
   const version = readPackageVersion();
   const stdout = `${version}\n`;
-  // Single write path: process.stdout.write. The test suite
-  // (cli-version.test.ts) mocks this and asserts the exact bytes
-  // emitted, so the test sees `0.6.0\n` in its captured stdout. In
-  // Node's normal pipe path this is synchronous for small writes (a few
-  // bytes) and the data reaches the kernel pipe buffer before
-  // runVersion returns. Under a Node SEA binary the auto-invoke path
-  // sets process.exitCode (not process.exit) so the stream's async
-  // drain is allowed to complete before the process exits, leaving
-  // the parent shell's `$(...)` capture non-empty.
-  process.stdout.write(stdout);
+  // Single write path: fs.writeFileSync(process.stdout.fd, stdout).
+  //
+  // Root cause: under a Node SEA binary, `process.stdout.write` is
+  // stream-buffered; the auto-invoke resolves the main() promise and
+  // sets process.exitCode, but the buffered write may be torn down
+  // before the underlying pipe drain completes — and this race is
+  // platform-dependent (Linux lands the write before teardown; macOS
+  // and Windows occasionally lose it). fs.writeFileSync is synchronous
+  // and goes straight to the kernel pipe buffer, which is what the
+  // parent shell's `$(...)` reads on every platform. The stream write
+  // is kept as a fallback for the path that goes through an unusual
+  // stdio wrapper where the fd-based write isn't available, but the
+  // synchronous write is the canonical path.
+  //
+  // The test suite (cli-version.test.ts) mocks this and asserts the
+  // exact bytes emitted, so the test sees `<version>\n` in its
+  // captured stdout.
+  try {
+    writeFileSync(process.stdout.fd, stdout);
+  } catch {
+    process.stdout.write(stdout);
+  }
   return { exitCode: 0, stdout };
 }
 
