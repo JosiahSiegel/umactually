@@ -17820,6 +17820,13 @@ function isVersionFlag(argv) {
 function runVersion(_argv) {
     const version = readPackageVersion();
     const stdout = `${version}\n`;
+    // Write synchronously for the common case (stdout is a TTY or a pipe
+    // that accepts the write immediately). The auto-invoke in this file
+    // sets `process.exitCode` and lets Node exit naturally rather than
+    // calling `process.exit()` directly, which is the belt-and-suspenders
+    // fix for the SEA-binary "exit 0 but empty stdout" regression where
+    // the write to a captured-output pipe (`$(...)`) could be lost if
+    // the process tore down stdout before the async drain completed.
     process.stdout.write(stdout);
     return { exitCode: 0, stdout };
 }
@@ -18167,6 +18174,17 @@ const isMainModule = (() => {
     if (globalThis.__umactually_action_entry__ === true) {
         return false;
     }
+    // Node SEA (Single Executable Application) bundles: when run as a
+    // SEA binary, process.argv[1] is the binary path itself (e.g.
+    // `/usr/local/bin/umactually`), not the path to a `cli.js` file.
+    // `process.versions.sea` is the canonical signal — Node sets it on
+    // any process started from a SEA blob. Without this branch the
+    // auto-invoke silently no-ops on a SEA install, leaving
+    // `umactually --version` to print nothing and exit 0.
+    const seaVersion = process.versions["sea"];
+    if (typeof seaVersion === "boolean" ? seaVersion : false) {
+        return true;
+    }
     const argv1 = process.argv[1];
     if (argv1 === undefined) {
         return false;
@@ -18179,11 +18197,21 @@ const isMainModule = (() => {
 if (isMainModule) {
     main(process.argv.slice(2))
         .then((exitCode) => {
-        process.exit(exitCode);
+        // Set exitCode and let Node exit naturally so stdout/stderr are
+        // fully flushed. `process.exit()` can close the stdout pipe
+        // before an in-flight `process.stdout.write()` from a synchronous
+        // command like `--version` completes its async drain to the
+        // captured-output pipe (`$(...)` in install.sh / the dry-run).
+        // The symptom is "exit 0 but empty stdout" — the smoke test in
+        // install.sh passes (exit code only, output redirected to
+        // /dev/null) but the dry-run's `INSTALLED_VERSION=$(...)`
+        // capture is empty. Setting `process.exitCode` and returning
+        // lets Node's normal exit path drain the pipe first.
+        process.exitCode = exitCode;
     })
         .catch((error) => {
         process.stderr.write(`cli: fatal: ${formatError(error)}\n`);
-        process.exit(1);
+        process.exitCode = 1;
     });
 }
 

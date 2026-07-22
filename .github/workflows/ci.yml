@@ -184,7 +184,14 @@ jobs:
         shell: pwsh
         run: |
           $ErrorActionPreference = "Stop"
-          npx vitest run --reporter=basic `
+          # vitest 4.x removed the "basic" built-in reporter; passing
+          # `--reporter=basic` is now interpreted as "load a custom
+          # reporter module named 'basic'" and fails with
+          # "Failed to load custom Reporter from basic". Use the
+          # default reporter (TTY-aware: "default" in non-TTY CI,
+          # "verbose" in TTY local runs) which is what `npm test`
+          # already uses in the main `ci` job on Linux/macOS.
+          npx vitest run `
             test/unit/install-smart-router.test.ts `
             test/unit/install-archives-powershell.test.ts `
             test/unit/install-scripts-powershell.test.ts `

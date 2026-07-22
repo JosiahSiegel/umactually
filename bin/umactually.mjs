@@ -17,20 +17,17 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 //
 // Runtime policy:
 //   - For Node, require >= 24.0.0 (matches package.json `engines.node`).
-//   - For Bun, also require >= 24.0.0 (Bun's `process.versions.bun` is
-//     populated when running under Bun; Node-only environments leave it
-//     undefined, which we treat as "not running under Bun").
+//   - For Bun, require >= 1.2.0 (Bun's `process.versions.bun` is
+//     populated when running under Bun; Node-only environments leave
+//     it undefined, which we treat as "not running under Bun"). Bun
+//     uses a 1.x version scheme, so the gate is expressed as a
+//     (major, minor) pair rather than a single major version number.
 //   - When both runtimes are present, prefer Bun ONLY if it meets the
 //     threshold; otherwise prefer Node (so the error message surfaces
 //     Node's version, which is what downstream tooling also reports).
-//
-//   Note: Bun's version scheme is `1.x.y`, not `24.x` — the gate uses
-//   the major version (i.e. `1`) and compares against MIN_RUNTIME_MAJOR.
-//   As of v0.6.0 this is a known mismatch (the gate accepts Bun 1.x as
-//   if it were Node 24+); a follow-up PR will tighten the bound to
-//   require Bun >= 1.2 once the CLI's transitive Node-24-API usage is
-//   fully audited. See PR #104 review thread #21.
 const MIN_RUNTIME_MAJOR = 24;
+const MIN_BUN_MAJOR = 1;
+const MIN_BUN_MINOR = 2;
 function parseMajor(versionString) {
   if (typeof versionString !== "string" || versionString.length === 0) {
     return Number.NaN;
@@ -40,17 +37,35 @@ function parseMajor(versionString) {
     10,
   );
 }
+function parseMinor(versionString) {
+  if (typeof versionString !== "string" || versionString.length === 0) {
+    return Number.NaN;
+  }
+  const parts = versionString.replace(/^v/u, "").split(".");
+  return Number.parseInt(parts[1] ?? "", 10);
+}
 const nodeMajor = parseMajor(process.versions.node);
 const bunMajor = parseMajor(process.versions.bun);
+const bunMinor = parseMinor(process.versions.bun);
 const bunIsLive = Number.isFinite(bunMajor);
-const useBun = bunIsLive && bunMajor >= MIN_RUNTIME_MAJOR;
+// Bun's version scheme is 1.x.y — accept it when major >= MIN_BUN_MAJOR
+// AND (major > MIN_BUN_MAJOR || minor >= MIN_BUN_MINOR). This avoids
+// the v0.6.0 regression where Bun 1.1 was accepted as if it were
+// Node 24+ (the previous code compared bunMajor >= 24, which was
+// always false and therefore silently fell back to Node — the right
+// behavior for wrong reasons).
+const bunMeetsThreshold =
+  bunIsLive &&
+  bunMajor > MIN_BUN_MAJOR ||
+  (bunIsLive && bunMajor === MIN_BUN_MAJOR && bunMinor >= MIN_BUN_MINOR);
+const useBun = bunMeetsThreshold;
 const runtimeMajor = useBun ? bunMajor : nodeMajor;
 const runtimeLabel = useBun
   ? `Bun ${process.versions.bun}`
   : `Node ${process.versions.node}`;
 if (!Number.isFinite(runtimeMajor) || runtimeMajor < MIN_RUNTIME_MAJOR) {
   process.stderr.write(
-    `umactually: requires Node >= ${MIN_RUNTIME_MAJOR}.x (detected ${runtimeLabel}).\n`,
+    `umactually: requires Node >= ${MIN_RUNTIME_MAJOR}.x or Bun >= ${MIN_BUN_MAJOR}.${MIN_BUN_MINOR}.x (detected ${runtimeLabel}).\n`,
   );
   process.exit(1);
 }
