@@ -41,6 +41,411 @@ try {
   # PowerShell Core doesn't support setting this; it already uses TLS 1.2+.
 }
 
+# Opt-in revocation check bypass for Windows Git Bash users whose
+# network cannot reach GitHub's OCSP responder. Without this, the
+# legacy / archive / checksum / latest-endpoint Invoke-WebRequest
+# calls below hit `CRYPT_E_REVOCATION_OFFLINE (0x80092013)` and
+# fail. Setting CheckCertificateRevocationList = $false skips the
+# optional CRL/OCSP lookup while keeping cert validation enabled
+# (we are NOT using `-SkipCertificateCheck`, which would disable
+# ALL cert validation and is a security regression). The setting
+# must happen BEFORE any Invoke-WebRequest call, and it must be
+# honored by both the legacy and archive install paths.
+#
+# Only fires when the operator explicitly opts in via the early-arg
+# handler (`-ssl-no-revoke` / `-SChannelOptOut` / etc) or the env
+# var directly. The env var is the POSIX equivalent (`INSTALL_SSL_NO_REVOKE=1`)
+# that the README documents for install.sh.
+#
+# v0.6.0 caveat: this setting ONLY takes effect on Windows PowerShell
+# 5.1 (where Invoke-WebRequest uses the legacy HttpWebRequest
+# pipeline that respects ServicePointManager). On PowerShell Core
+# (the standard on `windows-latest` since 2020, and the default on
+# modern Windows installs), PowerShell 7+ routes Invoke-WebRequest
+# through HttpClient, which does NOT consult
+# ServicePointManager::CheckCertificateRevocationList. The setting
+# silently no-ops on PS Core — Invoke-WebRequest still hits
+# CRL/OCSP and the user sees the original `CRYPT_E_REVOCATION_OFFLINE`
+# failure even with `INSTALL_SSL_NO_REVOKE=1`. We surface this with
+# a visible Write-Warning (not just Write-Verbose) so a user who
+# copy/pasted the README's `irm .../install.ps1 | iex -ssl-no-revoke`
+# line on PS Core immediately knows the flag didn't work and can
+# fall back to install.sh (which honors the env var for real via
+# the `curl --ssl-no-revoke` path).
+if ($env:INSTALL_SSL_NO_REVOKE -eq '1') {
+  # $PSEdition is 'Core' on PowerShell 7+ and 'Desktop' on Windows
+  # PowerShell 5.1. We gate the user-facing warning on this so PS 5.1
+  # users (the only runtime where the setting actually takes effect)
+  # do not see a false-positive warning.
+  $isPsCore = ($PSVersionTable.PSEdition -eq 'Core') -or ($PSVersionTable.Platform -eq 'Unix')
+  # Stream-routing caveat: PowerShell's user-facing stream surface
+  # is host-dependent. Write-Warning on Linux PS Core 7+ lands on
+  # stdout, on Windows PS 5.1 on stderr, on Windows PS Core 7+ on
+  # the information stream (which Node.js's spawnSync does NOT
+  # capture in either stdout or stderr). [Console]::Error.WriteLine
+  # on Windows PS Core 7+ in non-interactive script context can
+  # also be lost if the host routes Console.Error away from fd 2
+  # (observed in CI windows + PowerShell job). To guarantee the
+  # warning is observable both by a real user and by the test
+  # harness regardless of host, we:
+  #   1. Write the message to the warning stream (interactive
+  #      terminal: yellow WARNING: prefix).
+  #   2. Write to [Console]::Error (best-effort stderr on most hosts).
+  #   3. Append to a marker file at
+  #      $env:INSTALL_SSL_NO_REVOKE_WARNING_FILE if set (test seam:
+  #      the install-archives-powershell test points this at a
+  #      tmpfile in its sandbox and reads the file to assert the
+  #      warning fired, host-agnostic).
+  function _emitSslNoRevokeWarning([string]$message) {
+    [Console]::Error.WriteLine($message)
+    Write-Warning $message
+    if ($env:INSTALL_SSL_NO_REVOKE_WARNING_FILE) {
+      # Resolve the path to an absolute form so the writer does
+      # not depend on the script's CWD (which can differ between
+      # interactive shells and the GitHub Actions CI bootstrap).
+      # We use the .NET APIs directly (rather than Split-Path /
+      # Test-Path / New-Item cmdlets) because the cmdlet
+      # parameter sets differ between Windows PowerShell 5.1
+      # (Desktop) and PowerShell Core 7+ across platforms
+      # (observed: Split-Path -LiteralPath -Parent throws
+      # "Parameter set cannot be resolved" on PS Core 7.6 on
+      # Linux in some script contexts). [System.IO.Path] and
+      # [System.IO.File] / [System.IO.Directory] are stable
+      # across all hosts we ship for.
+      $markerPath = $env:INSTALL_SSL_NO_REVOKE_WARNING_FILE
+      try {
+        $resolved = [System.IO.Path]::GetFullPath($markerPath)
+        $parentDir = [System.IO.Path]::GetDirectoryName($resolved)
+        if ($parentDir -and -not [System.IO.Directory]::Exists($parentDir)) {
+          $null = [System.IO.Directory]::CreateDirectory($parentDir)
+        }
+        [System.IO.File]::AppendAllText($resolved, $message + [Environment]::NewLine)
+      } catch {
+        # Test-seam write is best-effort. We do not let a
+        # filesystem error here change the install behavior —
+        # the warning is already on the user-facing streams.
+        # But surface the error to the host's error stream so
+        # a developer running the test interactively can see
+        # WHY the marker file wasn't written (otherwise the
+        # test fails opaquely with "ENOENT: file not found").
+        Write-Warning "INSTALL_SSL_NO_REVOKE_WARNING_FILE write failed: $_"
+      }
+    }
+  }
+  try {
+    [System.Net.ServicePointManager]::CheckCertificateRevocationList = $false
+    if ($isPsCore) {
+      _emitSslNoRevokeWarning ("--ssl-no-revoke: this PowerShell runtime (" +
+        $PSVersionTable.PSVersion.ToString() + ", edition=" +
+        $PSVersionTable.PSEdition + ") routes Invoke-WebRequest through " +
+        "HttpClient, which does NOT honor ServicePointManager's " +
+        "CheckCertificateRevocationList. The setting above is a no-op. " +
+        "Use install.sh instead (curl --ssl-no-revoke honors this env var " +
+        "for real), or run this script under Windows PowerShell 5.1.")
+    }
+  } catch {
+    # The catch path covers non-Windows PS Core where the
+    # ServicePointManager type is not even available. The warning
+    # above already tells the user to use install.sh; we do not
+    # double-warn here.
+    _emitSslNoRevokeWarning ("--ssl-no-revoke: ServicePointManager not available on " +
+      "this runtime (" + $PSVersionTable.PSVersion.ToString() + ", " +
+      "edition=" + $PSVersionTable.PSEdition + "). The bypass has no " +
+      "effect; use install.sh (curl --ssl-no-revoke) instead.")
+  }
+}
+
+# ---- early argument handling: --help / --version / --dry-run ----
+# These MUST be handled before the smart-router runs, because the
+# smart-router would otherwise treat e.g. `-h` as "install with these
+# args" and either (a) call `npm install -g umactually` on the user's
+# machine or (b) download the Windows binary. The CI smoke test
+# `install.ps1 --help` would otherwise FAIL the "script doesn't even
+# parse" guard. We deliberately do NOT accept a `-h` short form here —
+# PowerShell conventions and the install.sh twin both use `--help` and
+# `-h`, and a leading `-` with no following character is what PowerShell
+# emits when you pass a bare `-h` flag.
+foreach ($arg in $args) {
+  if ($arg -eq '-h' -or $arg -eq '--help' -or $arg -eq '-Help' -or $arg -eq '/?') {
+    Write-Output @'
+umactually installer
+
+Usage:
+  # Save first, then run with flags (most reliable across PowerShell 5.1 / 7+):
+  irm https://github.com/JosiahSiegel/umactually/raw/main/scripts/install.ps1 -OutFile install.ps1
+  .\install.ps1 -TryNpm
+
+  # Or one-shot via env var (no flag-parsing involved):
+  $env:INSTALL_TRY_NPM = '1'
+  irm https://github.com/JosiahSiegel/umactually/raw/main/scripts/install.ps1 | iex
+
+  # Or pin a specific tag via the env var:
+  $env:INSTALL_RELEASE_TAG = 'v0.5.4'
+  irm https://github.com/JosiahSiegel/umactually/raw/main/scripts/install.ps1 | iex
+
+
+Flags (also accepted as env vars):
+  -Tag <vX.Y.Z>          Pin to a specific release tag. Env: INSTALL_RELEASE_TAG.
+  -Base <url>            Use a custom asset directory URL. Env: INSTALL_RELEASE_BASE.
+  -Contract <a|legacy>   Force archive or legacy raw contract. Env: INSTALL_ASSET_CONTRACT.
+  -InstallDir <path>     Override install destination. Env: INSTALL_DIR_OVERRIDE.
+  -SChannelOptOut        Skip TLS revocation checks (Windows Schannel only).
+                         Env: INSTALL_SSL_NO_REVOKE. Same caveats as install.sh.
+                         Accepts the README's `--ssl-no-revoke` and `-SslNoRevoke`
+                         aliases too so a copy/paste from the README works on
+                         Windows.
+  -TryNpm                Opt in to the npm-install smart router (added in v0.6.0).
+                         Env: INSTALL_TRY_NPM=1. Off by default because the
+                         umactually npm package is not yet published; falls
+                         through to the binary download when npm 404s.
+
+Env vars (override flags):
+  INSTALL_RELEASE_TAG, INSTALL_RELEASE_BASE, INSTALL_ASSET_CONTRACT,
+  INSTALL_DIR_OVERRIDE, INSTALL_SSL_NO_REVOKE, INSTALL_TRY_NPM
+
+The installer auto-detects the contract from the published
+checksums.txt when no flag/env is supplied.
+'@
+    exit 0
+  }
+  if ($arg -eq '-V' -or $arg -eq '--version') {
+    Write-Output 'umactually installer (script tied to v0.6.0 install contract)'
+    exit 0
+  }
+  # `--ssl-no-revoke` (README copy/paste form), `-SslNoRevoke` (PowerShell
+  # canonical alias form), and `-SChannelOptOut` (the historical install.ps1
+  # form documented above) all opt in to skipping TLS revocation checks.
+  # Without this handler a Windows Git Bash user copy/pasting the README's
+  # `irm .../install.ps1 | iex -ssl-no-revoke` line would see the flag
+  # silently dropped: the smart-router would treat it as an install arg
+  # and either call `npm install -g umactually` or fall through to a
+  # binary download that still hits CRL/OCSP via Invoke-WebRequest.
+  if ($arg -eq '-ssl-no-revoke' -or $arg -eq '--ssl-no-revoke' `
+      -or $arg -eq '-SslNoRevoke' -or $arg -eq '-SChannelOptOut') {
+    $env:INSTALL_SSL_NO_REVOKE = '1'
+    # Don't shift $args — the rest of the script reads via $env:.
+    continue
+  }
+  # `-TryNpm` (PowerShell canonical form) and `--try-npm` (README
+  # copy/paste form, mirroring install.sh) opt in to the v0.6.0
+  # npm-install smart router. Without this handler a user following
+  # the help's `irm .../install.ps1 | iex -TryNpm` example would
+  # see the flag silently dropped: the smart-router block reads
+  # $env:INSTALL_TRY_NPM, not the positional arg, and without
+  # INSTALL_TRY_NPM=1 the smart-router is off (the umactually npm
+  # package is not yet published, so the default is the binary
+  # download path). Mirrors the install.sh twin's --try-npm handler
+  # and the install-smart-router test contract.
+  if ($arg -eq '-TryNpm' -or $arg -eq '--try-npm') {
+    $env:INSTALL_TRY_NPM = '1'
+    continue
+  }
+}
+
+# ---- smart installer: npm if Node 24+ is available, else binary ----
+# Added in v0.6.0. Runs BEFORE any network work. If Node 24+ is on PATH,
+# runs `npm install -g umactually` and exits cleanly. Otherwise falls
+# through to the existing binary download logic.
+#
+# v0.6.0-dev note: the umactually npm package is NOT yet published,
+# so the smart-router will hit E404 in production. We default it to
+# "opt-in" via INSTALL_TRY_NPM=1 until publish happens. Set
+# INSTALL_TRY_NPM=0 (or leave it unset) to always use the binary path.
+# The CI smoke test asserts on the absence of "trying npm install"
+# in stderr for this reason.
+function Invoke-SmartInstallNpm {
+  # Search for a usable Node.exe. Order of preference:
+  #   1. Get-Command -All node   — honors PATH, App Paths, and any
+  #      shell-managed location (this catches most setups including
+  #      nvm-windows / fnm when their shim is on PATH).
+  #   2. Common install roots (Program Files, Program Files (x86),
+  #      per-user Programs) — covers the standard .msi installer.
+  #   3. nvm-windows default root (%APPDATA%\nvm\v<major>.<minor>.<patch>\)
+  #      and the fnm per-user default (%LOCALAPPDATA%\fnm\node-versions\...)
+  #      — documented Node upgrade paths for contributors
+  #      (per scripts/build-sea.mjs, the repo recommends fnm use).
+  #   4. Per-user fnm version-pinned shim (%LOCALAPPDATA%\fnm_multishells).
+  $nodeCmd = $null
+  $allNode = Get-Command 'node' -All -ErrorAction SilentlyContinue
+  if ($allNode) {
+    # `Get-Command -All` returns node binaries in PATH-order, which is
+    # NOT necessarily highest-version-first. On a host with multiple
+    # node installs (nvm-windows + fnm + system), PATH-order can pick
+    # a stale 22.x binary over a fresh 25.x. Probe each candidate's
+    # version and pick the highest major.minor.patch.
+    $bestNode = $null
+    $bestVersion = $null
+    foreach ($cand in $allNode) {
+      if (-not $cand.Source) { continue }
+      $v = & $cand.Source -v 2>$null
+      if (-not $v) { continue }
+      if ($v -match '^v(\d+)\.(\d+)\.(\d+)') {
+        $ver = [version]($Matches[1] + '.' + $Matches[2] + '.' + $Matches[3])
+        if ($null -eq $bestVersion -or $ver -gt $bestVersion) {
+          $bestVersion = $ver
+          $bestNode = $cand.Source
+        }
+      }
+    }
+    if ($bestNode) { $nodeCmd = $bestNode }
+  }
+  if (-not $nodeCmd) {
+    foreach ($dir in @(
+      "$env:ProgramFiles\nodejs",
+      "$env:ProgramFiles(x86)\nodejs",
+      "$env:LOCALAPPDATA\Programs\nodejs"
+    )) {
+      $exe = Join-Path $dir 'node.exe'
+      if (Test-Path $exe) { $nodeCmd = $exe; break }
+    }
+  }
+  if (-not $nodeCmd -and $env:APPDATA) {
+    # nvm-windows default install root. Newer versions live under
+    # v<version>\node.exe; older ones had <version>\node.exe. We pick
+    # the highest version directory that contains a node.exe.
+    $nvmRoot = Join-Path $env:APPDATA 'nvm'
+    if (Test-Path $nvmRoot) {
+      $candidates = Get-ChildItem -LiteralPath $nvmRoot -Directory -ErrorAction SilentlyContinue |
+        Where-Object { Test-Path -LiteralPath (Join-Path $_.FullName 'node.exe') } |
+        Sort-Object { [version]($_.Name -replace '^v', '') } -Descending
+      if ($candidates) { $nodeCmd = Join-Path $candidates[0].FullName 'node.exe' }
+    }
+  }
+  if (-not $nodeCmd -and $env:LOCALAPPDATA) {
+    # fnm default per-user install: %LOCALAPPDATA%\fnm\node-versions\<version>\installation\node.exe
+    $fnmRoot = Join-Path $env:LOCALAPPDATA 'fnm\node-versions'
+    if (Test-Path $fnmRoot) {
+      $candidates = Get-ChildItem -LiteralPath $fnmRoot -Directory -ErrorAction SilentlyContinue |
+        Where-Object { Test-Path -LiteralPath (Join-Path $_.FullName 'installation\node.exe') } |
+        Sort-Object { [version]($_.Name -replace '^v', '') } -Descending
+      if ($candidates) { $nodeCmd = Join-Path $candidates[0].FullName 'installation\node.exe' }
+    }
+  }
+  if (-not $nodeCmd) { return $false }
+
+  $versionOutput = & $nodeCmd -v 2>$null
+  if (-not $versionOutput) { return $false }
+  # $versionOutput is something like "v24.5.0". Parse the major.
+  if ($versionOutput -match '^v(\d+)\.') {
+    $major = [int]$Matches[1]
+  } else {
+    return $false
+  }
+  if ($major -lt 24) {
+    Write-Verbose "Node major is $major (< 24); falling back to binary download"
+    return $false
+  }
+
+  Write-Output "umactually: Node $versionOutput detected, using npm install"
+  $npmArgs = @('install', '-g', 'umactually')
+  # Honor INSTALL_RELEASE_TAG (set by --tag flag) so a user can pin to
+  # a specific version. Without this, the smart-router always installs
+  # the @latest tag, silently overriding the --tag flag for the npm
+  # path. Strip a leading 'v' from the tag because npm's version
+  # specifier syntax rejects the 'v' prefix.
+  if ($env:INSTALL_RELEASE_TAG) {
+    $tagForNpm = $env:INSTALL_RELEASE_TAG -replace '^v', ''
+    $npmArgs = @('install', '-g', "umactually@$tagForNpm")
+  }
+  # Capture npm's stderr so we can surface a useful diagnostic on the
+  # fall-through path. Without this capture the user sees only the
+  # "npm install failed" line, which is unhelpful when the failure
+  # is "package not yet published to npm" (E404) vs. "permission
+  # denied writing to NPM_CONFIG_PREFIX/bin" (EACCES) — the two
+  # failure modes have completely different remediations.
+  $npmErrFile = [System.IO.Path]::GetTempFileName()
+  try {
+    & npm @npmArgs 2> $npmErrFile
+    if ($LASTEXITCODE -eq 0) {
+      # PATH sanity check: npm says it succeeded, but if the binary
+      # isn't on PATH (e.g. NPM_CONFIG_PREFIX not exported) the user
+      # will think the install failed. Detect that here and surface
+      # the prefix in the hint so they can fix PATH without
+      # re-running the installer.
+      $resolvedCmd = Get-Command umactually -ErrorAction SilentlyContinue
+      if (-not $resolvedCmd) {
+        $npmPrefix = & npm config get prefix 2>$null
+        if ($LASTEXITCODE -eq 0 -and $npmPrefix) {
+          # `npm config get prefix` returns the parent of `bin/` (POSIX) or
+          # the directory that holds the .cmd shim directly (Windows).
+          # Mirror scripts/install.sh's behavior so cross-platform pwsh
+          # users get the correct hint.
+          $isPosix = [System.IO.Path]::DirectorySeparatorChar -eq '/'
+          $hintPath = if ($isPosix) { Join-Path $npmPrefix 'bin' } else { $npmPrefix }
+          Write-Output "umactually: installed via npm, but 'umactually' is not on PATH."
+          Write-Output "umactually: add '$hintPath' to your PATH and retry."
+        } else {
+          Write-Output "umactually: installed via npm, but 'umactually' is not on PATH."
+        }
+        exit 1
+      }
+      Write-Output "umactually: installed via npm. Run 'umactually --version' to verify."
+      exit 0
+    }
+  } catch {
+    # npm itself failed; fall through to binary download.
+  }
+  # Show the captured npm stderr in the fallback message so the user
+  # knows WHY npm failed (network, E404, EACCES, etc.). Trim to one
+  # line so a verbose npm error log doesn't drown the install banner.
+  $npmErrTail = ''
+  if (Test-Path -LiteralPath $npmErrFile) {
+    $npmErrContent = Get-Content -LiteralPath $npmErrFile -Raw -ErrorAction SilentlyContinue
+    if ($npmErrContent) {
+      $firstLine = ($npmErrContent -split "`r?`n", 2)[0]
+      if ($firstLine) { $npmErrTail = " ($firstLine.Trim())" }
+    }
+    Remove-Item -LiteralPath $npmErrFile -Force -ErrorAction SilentlyContinue
+  }
+  Write-Output "umactually: npm install failed, falling back to binary download$npmErrTail"
+  return $false
+}
+
+# Only run the smart-router if no test/force-binary override is set AND
+# the operator has explicitly opted in via INSTALL_TRY_NPM=1.
+#
+# Test bypasses (any of these short-circuit the smart-router so tests can
+# exercise the binary-download / archive / checksum paths in isolation):
+#   - INSTALL_TEST_MODE         — pure stub-binary fixture (line 763+)
+#   - INSTALL_TEST_ARCHIVE_MODE — real-archive fixture (line 784+)
+#   - INSTALL_TEST_TARBALL      — alternate archive fixture
+#   - INSTALL_TEST_CHECKSUMS    — alternate checksums fixture
+#   - INSTALL_TEST_FAKE_TAG     — pre-archive tag fixture
+#   - INSTALL_TEST_FAKE_LATEST_URL — local fake /releases/latest URL
+#   - INSTALL_GITHUB_API_BASE   — production override of the
+#                                 /releases/latest URL (and a test
+#                                 fixture override when pointed at a
+#                                 local http server, e.g. by
+#                                 install-archives-powershell.test.ts)
+#   - INSTALL_FORCE_BINARY      — operator opt-out
+#   - INSTALL_RELEASE_BASE      — point at a local fake release server
+#     (test fixtures run a Node http server on 127.0.0.1; we MUST not
+#     route to npm in that case or the test's HTTP traffic is masked
+#     by a real npm call that 404s in CI)
+# Without these guards, the smart-router makes a real `npm install -g
+# umactually` call in CI, hits E404 (package not yet published to npm),
+# and prints two error lines on stderr that contaminate every test that
+# asserts on the install-script's actual error output.
+#
+# v0.6.0-dev: the umactually npm package is NOT yet published. The
+# smart-router would 404 on every fresh install. We default to the
+# binary path until publish happens; operators who want the npm
+# path can opt in via INSTALL_TRY_NPM=1.
+if (
+  $env:INSTALL_TRY_NPM -eq '1' -and
+  -not $env:INSTALL_TEST_MODE -and
+  -not $env:INSTALL_TEST_ARCHIVE_MODE -and
+  -not $env:INSTALL_TEST_TARBALL -and
+  -not $env:INSTALL_TEST_CHECKSUMS -and
+  -not $env:INSTALL_TEST_FAKE_TAG -and
+  -not $env:INSTALL_TEST_FAKE_LATEST_URL -and
+  -not $env:INSTALL_GITHUB_API_BASE -and
+  -not $env:INSTALL_FORCE_BINARY -and
+  -not $env:INSTALL_RELEASE_BASE
+) {
+  $null = Invoke-SmartInstallNpm
+}
+
 # ---- constants ----
 $Repo = "JosiahSiegel/umactually"
 $LatestApi = "https://api.github.com/repos/$Repo/releases/latest"
@@ -121,6 +526,55 @@ function Assert-InstallDirTrusted {
 }
 
 # ---- destination identity capture (TOCTOU guard) ----
+# ---- SHA-256 helper (.NET-backed, Get-FileHash fallback) ----
+#
+# Returns a lowercase 64-char hex SHA-256 digest of the file at $Path.
+#
+# Uses [System.Security.Cryptography.SHA256]::Create() directly via the
+# .NET BCL — works in *every* PowerShell environment, including the
+# GitHub Actions `windows-2025-vs2026` runner image where the built-in
+# Get-FileHash cmdlet from Microsoft.PowerShell.Utility is occasionally
+# not auto-loaded on the cold-start path we use here (the failure mode
+# is "Get-FileHash : The term 'Get-FileHash' is not recognized" and
+# surfaces in CI run 29892175955's install-archives-powershell suite).
+#
+# Keep the Get-FileHash fallback for any host where the .NET SHA256
+# stream-throws (extremely rare; v0.5.x was the only consumer).
+function Get-FileHashSha256 {
+  param([string]$Path)
+  if (!(Test-Path -LiteralPath $Path)) {
+    throw "Get-FileHashSha256: file not found: $Path"
+  }
+  try {
+    $sha = [System.Security.Cryptography.SHA256]::Create()
+    try {
+      $stream = [System.IO.File]::OpenRead($Path)
+      try {
+        $bytes = $sha.ComputeHash($stream)
+      } finally {
+        $stream.Dispose()
+      }
+    } finally {
+      $sha.Dispose()
+    }
+    # Convert to lowercase hex manually so we don't depend on
+    # BitConverter.ToString() (locale-sensitive on some hosts).
+    $sb = New-Object System.Text.StringBuilder(64)
+    foreach ($b in $bytes) {
+      [void]$sb.AppendFormat("{0:x2}", $b)
+    }
+    return $sb.ToString()
+  }
+  catch {
+    # Last-resort fallback: try the cmdlet. If that also fails, rethrow
+    # the .NET error which has the more useful stack trace.
+    if (Get-Command -Name Get-FileHash -ErrorAction SilentlyContinue) {
+      return (Get-FileHash -LiteralPath $Path -Algorithm SHA256).Hash.ToLowerInvariant()
+    }
+    throw
+  }
+}
+
 function Get-DestinationIdentity {
   param([string]$Path)
   if (!(Test-Path -LiteralPath $Path)) {
@@ -137,7 +591,7 @@ function Get-DestinationIdentity {
     Exists     = $true
     Length     = $item.Length
     LastWrite  = $item.LastWriteTimeUtc
-    Sha256     = (Get-FileHash -LiteralPath $Path -Algorithm SHA256).Hash
+    Sha256     = (Get-FileHashSha256 -Path $Path)
   }
 }
 
@@ -657,7 +1111,7 @@ function Invoke-LegacyRawInstall {
     # 8. Verify SHA-256 of the downloaded bytes against the parsed entry.
     # Get-FileHash returns uppercase hex; the canonical entry is lowercase.
     # OrdinalIgnoreCase is mandatory so casing differences don't false-fail.
-    $actualHash = (Get-FileHash -LiteralPath $TempBinary -Algorithm SHA256).Hash
+    $actualHash = (Get-FileHashSha256 -Path $TempBinary)
     if (-not [String]::Equals($expectedHash, $actualHash, [StringComparison]::OrdinalIgnoreCase)) {
       throw "SHA-256 checksum mismatch for $Binary"
     }
@@ -747,7 +1201,7 @@ if ($env:INSTALL_TEST_ARCHIVE_MODE -eq "1") {
   }
 
   # Verify zip SHA-256.
-  $actualHash = (Get-FileHash -LiteralPath $testZipPath -Algorithm SHA256).Hash
+  $actualHash = (Get-FileHashSha256 -Path $testZipPath)
   if (-not [String]::Equals($expectedHash, $actualHash, [StringComparison]::OrdinalIgnoreCase)) {
     throw "SHA-256 checksum mismatch for $testBasename."
   }
@@ -860,7 +1314,7 @@ try {
 
   Invoke-WebRequest -Uri $ArchiveUrl -OutFile $TempZip -UseBasicParsing
 
-  $actualHash = (Get-FileHash -LiteralPath $TempZip -Algorithm SHA256).Hash
+  $actualHash = (Get-FileHashSha256 -Path $TempZip)
   if (-not [String]::Equals($expectedHash, $actualHash, [StringComparison]::OrdinalIgnoreCase)) {
     throw "SHA-256 checksum mismatch for $ArchiveName"
   }

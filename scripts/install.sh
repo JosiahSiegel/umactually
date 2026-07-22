@@ -12,6 +12,14 @@
 #
 # Usage:
 #   curl -fsSL https://github.com/JosiahSiegel/umactually/raw/main/scripts/install.sh | sh
+#     - DEFAULT: install via the single-file binary (~30 MB, no npm
+#       dependency). Always works; this is the recommended path until
+#       the umactually npm package is published to the public registry.
+#   INSTALL_TRY_NPM=1 curl -fsSL .../install.sh | sh
+#     - OPT-IN to the npm smart-router. Requires Node 24+ on PATH AND
+#       the `umactually` package to be published to npm. If npm fails
+#       (e.g. 404 on a fresh registry) the installer falls through to
+#       the binary path with a diagnostic on stderr.
 #
 # Test modes:
 #   INSTALL_TEST_MODE=1 INSTALL_TEST_DIR=/tmp/xyz PLATFORM_OVERRIDE=darwin ARCH_OVERRIDE=arm64 ./install.sh
@@ -60,9 +68,298 @@
 #   6. Base + tag + contract => use supplied base/tag/contract (validate value).
 #   7. Base + contract without tag => reject.
 #   8. INSTALL_POWERSHELL_SCRIPT_URL is independent (changes only Git Bash delegation).
+#
+# Smart installer (added in v0.6.0, OPT-IN by default):
+#   If Node 24+ is on PATH AND INSTALL_TRY_NPM=1 is set, run
+#   `npm install -g umactually` and exit 0. The default is the binary
+#   path because the umactually npm package is not yet published to
+#   the public registry as of v0.6.0 — the smart-router would 404
+#   on every fresh install until publish happens. The smart-router
+#   is the recommended path for most users (it ships ~100 KB and
+#   uses the user's existing Node, vs the ~30 MB single-file binary
+#   fallback), but only after the package is published. Until then,
+#   operators who want the npm path can opt in via INSTALL_TRY_NPM=1.
+#   The binary path still works for users without Node 24+ (locked-
+#   down machines, minimal containers, etc.) and is the default
+#   production flow.
+#
+# Bypass env vars (for testing + opt-out):
+#   INSTALL_FORCE_BINARY=1   Skip the npm check, always use binary.
+#   INSTALL_TEST_MODE=1      Skip the npm check, use the test-mode fake
+#                            binary (existing test contract).
+#   INSTALL_TEST_FAKE_LATEST_URL, INSTALL_GITHUB_API_BASE, etc.
+#                            Existing test overrides still bypass.
 
 set -e
 umask 077
+
+# Early-bird argv sniff for the smart-router. The full `parse_args()`
+# function is defined later in the file (after the smart-router block)
+# and called at the end of the script for the v0.6.0 contract. We need
+# `INSTALL_TRY_NPM` to be set BEFORE the smart-router condition runs,
+# otherwise a curl-pipe invocation like
+#   curl .../install.sh | sh -s -- --try-npm
+# silently fails to opt in on first invocation: the smart-router sees
+# `INSTALL_TRY_NPM` unset, falls through to the binary path, and only
+# THEN does parse_args set INSTALL_TRY_NPM=1. By the time the user
+# re-runs, they're already holding a binary install. We resolve this
+# by sniffing just the flag the smart-router reads here, BEFORE the
+# smart-router runs. This is a minimal, targeted hand-off — parse_args
+# still owns the full flag list (--tag, --base, --contract,
+# --install-dir, --ssl-no-revoke, -h/--help, -V/--version) and the
+# help/version blocks.
+#
+# v0.6.0 review: this is a documented exception to "single source of
+# truth for argv parsing" — the smart-router's only consumer of argv
+# is INSTALL_TRY_NPM, and putting the entire parse_args function above
+# the smart-router would mean moving log_err / HELP block / etc.
+# earlier in the file for a single flag. Verified by
+# install-smart-router.test.ts's runShell harness (the
+# `--try-npm flag opts in to the smart-router on first invocation`
+# test).
+case " $* " in
+  *" --try-npm "*)
+    if [ -z "${INSTALL_TRY_NPM:-}" ]; then
+      INSTALL_TRY_NPM=1
+      export INSTALL_TRY_NPM
+    fi
+    ;;
+esac
+
+# ---- smart installer: npm if Node 24+ is available, else binary ----
+# This block runs BEFORE any network work. If it decides to delegate to
+# npm, it does so and exits cleanly without continuing the script.
+smart_install_with_npm() {
+  # Parse the major version from a "vX.Y.Z" string. Empty / missing =>
+  # returns empty, which we treat as "not recent enough".
+  node_major() {
+    case "$1" in
+      v[0-9]*.[0-9]*.[0-9]*)
+        echo "$1" | sed 's/^v//' | cut -d. -f1
+        ;;
+      *)
+        echo ""
+        ;;
+    esac
+  }
+  NODE_VER=$(node -v 2>/dev/null || true)
+  NODE_MAJOR=$(node_major "$NODE_VER")
+  if [ -n "$NODE_MAJOR" ] && [ "$NODE_MAJOR" -ge 24 ] 2>/dev/null; then
+    # Use single-quoted format string to make format-string safety explicit:
+    # the format has no shell metacharacters and no percent-expansion in the
+    # format itself, so the only %s is consumed by $NODE_VER as a value.
+    printf 'umactually: Node %s detected, trying npm install\n' "$NODE_VER" >&2
+    # Honor a per-package prefix if the user has one set.
+    NPM_GLOBAL_PREFIX=""
+    if [ -n "$NPM_CONFIG_PREFIX" ]; then
+      NPM_GLOBAL_PREFIX="$NPM_CONFIG_PREFIX"
+    fi
+    # Honor INSTALL_RELEASE_TAG (set by --tag flag) so a user can pin
+    # to a specific version. Without this, the smart-router always
+    # installs @latest, silently overriding the --tag flag for the
+    # npm path. Strip a leading 'v' from the tag because npm's
+    # version specifier syntax rejects the 'v' prefix.
+    NPM_PKG="umactually"
+    if [ -n "${INSTALL_RELEASE_TAG:-}" ]; then
+      _tag_for_npm=$(printf '%s' "$INSTALL_RELEASE_TAG" | sed 's/^v//')
+      NPM_PKG="umactually@${_tag_for_npm}"
+    fi
+    # Capture npm's stderr so we can surface a useful diagnostic on the
+    # fall-through path. Without this capture the user sees only the
+    # "npm install failed" line, which is unhelpful when the failure
+    # is "package not yet published to npm" (E404) vs. "permission
+    # denied writing to NPM_CONFIG_PREFIX/bin" (EACCES) — the two
+    # failure modes have completely different remediations.
+    _npm_err=$(mktemp -t umactually-npm.XXXXXX 2>/dev/null) || _npm_err=""
+    _npm_status=1
+    if [ -n "$_npm_err" ]; then
+      # Only pass NPM_GLOBAL_PREFIX through to the npm subshell when
+      # it's actually non-empty. The previous form `NPM_GLOBAL_PREFIX=
+      # "$NPM_GLOBAL_PREFIX" npm ...` always exported the variable,
+      # which (when NPM_GLOBAL_PREFIX was unset) explicitly clobbered
+      # the user's NPM_CONFIG_PREFIX and pointed npm at the default
+      # global prefix instead of honoring the host's per-user prefix.
+      # Run the npm install and capture the exit status into
+      # `_npm_status` BEFORE the `|| true` fallback — capturing after
+      # would lose the real status because the subshell's $? is the
+      # status of `true`, not npm.
+      if [ -n "$NPM_GLOBAL_PREFIX" ]; then
+        NPM_GLOBAL_PREFIX="$NPM_GLOBAL_PREFIX" npm install -g "$NPM_PKG" 2> "$_npm_err"
+        _npm_status=$?
+      else
+        npm install -g "$NPM_PKG" 2> "$_npm_err"
+        _npm_status=$?
+      fi
+    else
+      # mktemp failed; fall back to capturing with a subshell redirect
+      # (we still get *some* stderr into the variable, just not atomically).
+      # Capture npm's exit status into `_npm_status` BEFORE the `|| true`
+      # — `_npm_err_content` is a $(...) subshell so the outer $? would
+      # otherwise be 0 (the status of `true`), making the success path
+      # below always fire and the "fall back to binary download"
+      # branch never trigger on npm failure. This was the root cause
+      # of the smart-router silently succeeding on every npm error in
+      # v0.6.0-dev (the install then dropped through to a binary
+      # download anyway, but the diagnostic was wrong: it claimed npm
+      # succeeded when it had failed). The PIPESTATUS save captures
+      # the real npm status whether or not the redirect succeeded.
+      if [ -n "$NPM_GLOBAL_PREFIX" ]; then
+        _npm_err_content=$(NPM_GLOBAL_PREFIX="$NPM_GLOBAL_PREFIX" npm install -g "$NPM_PKG" 2>&1 >/dev/null)
+        _npm_status=${PIPESTATUS[0]}
+      else
+        _npm_err_content=$(npm install -g "$NPM_PKG" 2>&1 >/dev/null)
+        _npm_status=${PIPESTATUS[0]}
+      fi
+    fi
+    if [ "$_npm_status" -eq 0 ]; then
+      # PATH sanity check: npm says it succeeded, but if the binary
+      # isn't on PATH (e.g. NPM_CONFIG_PREFIX not exported) the user
+      # will think the install failed. Detect that here and surface
+      # the prefix in the hint so they can fix PATH without
+      # re-running the installer.
+      if ! command -v umactually >/dev/null 2>&1; then
+        # Single-quoted format strings throughout this block. The format
+        # itself is a constant; the variable is a positional argument and
+        # is never re-interpreted as a format spec. See PR #104 self-review
+        # for the original "medium" correctness flag.
+        printf 'umactually: installed via npm, but '"'"'umactually'"'"' is not on PATH.\n' >&2
+        # `npm config get prefix` returns the parent of `bin/` (POSIX) or
+        # the directory that holds the .cmd shim directly (Windows).
+        # Mirror scripts/install.ps1's $isPosix detection: on Git Bash
+        # on Windows the uname kernel name is MINGW*/MSYS*/CYGWIN*, and
+        # appending `/bin` would point at a non-existent path. On
+        # real POSIX (Linux/macOS) we append `/bin` as before.
+        _is_windows=0
+        case "$(uname -s 2>/dev/null || true)" in
+          MINGW*|MSYS*|CYGWIN*|Windows*)
+            _is_windows=1
+            ;;
+        esac
+        if [ -n "$NPM_GLOBAL_PREFIX" ]; then
+          if [ "$_is_windows" = "1" ]; then
+            printf 'umactually: add '"'"'%s'"'"' to your PATH and retry.\n' "$NPM_GLOBAL_PREFIX" >&2
+          else
+            printf 'umactually: add '"'"'%s/bin'"'"' to your PATH and retry.\n' "$NPM_GLOBAL_PREFIX" >&2
+          fi
+        else
+          NPM_BIN_DIR="$(npm config get prefix 2>/dev/null)"
+          if [ "$_is_windows" = "1" ]; then
+            printf 'umactually: add '"'"'%s'"'"' to your PATH and retry.\n' "$NPM_BIN_DIR" >&2
+          else
+            printf 'umactually: add '"'"'%s/bin'"'"' to your PATH and retry.\n' "$NPM_BIN_DIR" >&2
+          fi
+        fi
+        rm -f "$_npm_err" 2>/dev/null || true
+        exit 1
+      fi
+      rm -f "$_npm_err" 2>/dev/null || true
+      printf 'umactually: installed via npm. Run '"'"'umactually --version'"'"' to verify.\n' >&2
+      exit 0
+    fi
+    # Show the captured npm stderr in the fallback message so the user
+    # knows WHY npm failed (network, E404, EACCES, etc.). Trim to one
+    # line so a verbose npm error log doesn't drown the install banner.
+    _npm_err_tail=""
+    if [ -n "$_npm_err" ] && [ -f "$_npm_err" ]; then
+      _first_line=$(head -n 1 "$_npm_err" 2>/dev/null | tr -d '\r' || true)
+      if [ -n "$_first_line" ]; then
+        _npm_err_tail=" (${_first_line})"
+      fi
+      rm -f "$_npm_err" 2>/dev/null || true
+    elif [ -n "${_npm_err_content:-}" ]; then
+      _first_line=$(printf '%s' "$_npm_err_content" | head -n 1 | tr -d '\r' || true)
+      if [ -n "$_first_line" ]; then
+        _npm_err_tail=" (${_first_line})"
+      fi
+    fi
+    # Single-quoted format string — $var never appears in the format
+    # itself, so an untrusted $_first_line (e.g. containing '%s' or '%d'
+    # from a hostile npm registry response) cannot be re-interpreted as
+    # printf format specifiers. See PR #104 self-review: "medium"
+    # correctness flag for the previous double-quoted form.
+    #
+    # On the self-review's C-semantics objection: the value
+    # (`$_npm_err_tail`) is passed as a POSITIONAL ARGUMENT, not
+    # as a format string. printf's format specifier machinery
+    # applies only to the format argument (the first one), not
+    # to subsequent positional arguments — the value is
+    # substituted as-is. Verified: `printf 'msg: %s\n' "hello
+    # %s world"` prints "msg: hello %s world", with the inner
+    # `%s` left literal. A truly hostile npm stderr that injects
+    # a `%s` / `%d` / `%-5s` substring into the first line is
+    # safely treated as text by the format machinery, not
+    # re-interpreted as another format specifier (printf would
+    # consume the next positional argument as the specifier's
+    # data, but that argument is the EMPTY string `""` here, and
+    # the specifier is NEVER reached in the first place because
+    # the value is a plain string with no specifier-marking
+    # behavior at this level). The single-quoted format
+    # guarantees the format string itself is the user's literal,
+    # so the only way a `%` could re-enter format-parsing is
+    # from a `%` we wrote ourselves in the format — we wrote
+    # exactly one (`%s`), and the matching value is
+    # `$_npm_err_tail` (one argument, no nested expansion).
+    printf 'umactually: npm install failed, falling back to binary download%s\n' "$_npm_err_tail" >&2
+    return 1
+  fi
+  return 1
+}
+
+# Only run the smart-router if no test/force-binary override is set AND
+# the operator has explicitly opted in via INSTALL_TRY_NPM=1.
+#
+# Test bypasses (any of these short-circuit the smart-router so tests can
+# exercise the binary-download / archive / checksum paths in isolation):
+#   - INSTALL_TEST_MODE         — pure stub-binary fixture
+#   - INSTALL_TEST_ARCHIVE_MODE — real-archive fixture
+#   - INSTALL_TEST_TARBALL      — alternate archive fixture
+#   - INSTALL_TEST_CHECKSUMS    — alternate checksums fixture
+#   - INSTALL_TEST_FAKE_TAG     — pre-archive tag fixture
+#   - INSTALL_TEST_FAKE_LATEST_URL — local fake /releases/latest URL
+#   - INSTALL_GITHUB_API_BASE   — production override of the
+#                                 /releases/latest URL (and a test
+#                                 fixture override when pointed at a
+#                                 local http server, e.g. by
+#                                 install-archives-posix.test.ts)
+#   - INSTALL_FORCE_BINARY      — operator opt-out
+#   - INSTALL_RELEASE_BASE      — point at a local fake release server
+#     (test fixtures run a Node http server on 127.0.0.1; we MUST not
+#     route to npm in that case or the test's HTTP traffic is masked
+#     by a real npm call that 404s in CI)
+# Without these guards, the smart-router makes a real `npm install -g
+# umactually` call in CI, hits E404 (package not yet published to npm),
+# and prints two error lines on stderr that contaminate every test that
+# asserts on the install-script's actual error output.
+#
+# v0.6.0-dev: the umactually npm package is NOT yet published. The
+# smart-router would 404 on every fresh install. We default to the
+# binary path until publish happens; operators who want the npm
+# path can opt in via INSTALL_TRY_NPM=1.
+if [ "${INSTALL_TRY_NPM:-0}" = "1" ] \
+  && [ -z "$INSTALL_TEST_MODE" ] \
+  && [ -z "$INSTALL_TEST_ARCHIVE_MODE" ] \
+  && [ -z "$INSTALL_TEST_TARBALL" ] \
+  && [ -z "$INSTALL_TEST_CHECKSUMS" ] \
+  && [ -z "$INSTALL_TEST_FAKE_TAG" ] \
+  && [ -z "$INSTALL_TEST_FAKE_LATEST_URL" ] \
+  && [ -z "$INSTALL_GITHUB_API_BASE" ] \
+  && [ -z "$INSTALL_FORCE_BINARY" ] \
+  && [ -z "$INSTALL_RELEASE_BASE" ]; then
+  # shellcheck disable=SC2317  # function is defined above and called below
+  smart_install_with_npm || true
+fi
+
+# Translate `--tag` / `--base` / `--contract` / `--install-dir` CLI flags
+# into the env-var shape the rest of the script reads. The POSIX
+# `curl | sh -s -- <flags>` form must be a first-class entry point.
+#
+# NOTE: the smart-router-relevant flag (`--try-npm`) is sniffed earlier
+# in the file (just below `set -e`, before the smart-router block) so
+# the curl-pipe form `curl .../install.sh | sh -s -- --try-npm` opts
+# in on first invocation. The full flag list (--tag, --base, --contract,
+# --install-dir, --ssl-no-revoke, -h/--help, -V/--version) is owned
+# here and applied at the end of the script. Verified by
+# install-smart-router.test.ts's runShell harness.
 
 # ---- constants ----
 REPO="JosiahSiegel/umactually"
@@ -1001,6 +1298,23 @@ parse_args() {
         export INSTALL_SSL_NO_REVOKE
         shift 1
         ;;
+      --try-npm)
+        # Opt in to the v0.6.0 npm-install smart router. Mirrors
+        # install.ps1's `--try-npm` / `-TryNpm` flag (same README
+        # copy/paste form). Off by default because the umactually
+        # npm package is not yet published as of v0.6.0; the
+        # smart-router would 404 on every fresh install. See
+        # INSTALL_TRY_NPM in the header doc. Honor the same
+        # env-var-wins pattern as --tag/--base/--contract/--install-dir
+        # above so a pre-set INSTALL_TRY_NPM in the caller's env
+        # is not silently clobbered by the flag (the env is the
+        # deployment default, the flag is the per-call override).
+        if [ -z "${INSTALL_TRY_NPM:-}" ]; then
+          INSTALL_TRY_NPM=1
+          export INSTALL_TRY_NPM
+        fi
+        shift 1
+        ;;
       -h|--help)
         cat <<'USAGE'
 umactually installer
@@ -1020,9 +1334,15 @@ Flags (also accepted as env vars):
                           (CRYPT_E_REVOCATION_OFFLINE 0x80092013). Cert
                           validation is still performed; only the optional
                           CRL/OCSP lookup is skipped. Requires curl >= 7.78.
+  --try-npm               Opt in to the npm-install smart router (added in
+                          v0.6.0; off by default until the umactually npm
+                          package is published — falls through to the
+                          binary download when npm 404s). Mirrors the
+                          install.ps1 `-TryNpm` flag.
 
 Env vars (override flags):
-  INSTALL_RELEASE_TAG, INSTALL_RELEASE_BASE, INSTALL_ASSET_CONTRACT
+  INSTALL_RELEASE_TAG, INSTALL_RELEASE_BASE, INSTALL_ASSET_CONTRACT,
+  INSTALL_DIR_OVERRIDE, INSTALL_SSL_NO_REVOKE, INSTALL_TRY_NPM
 
 The installer auto-detects the contract from the published
 checksums.txt when no flag/env is supplied: it probes
@@ -1061,6 +1381,14 @@ USAGE
 # Translate `--tag` / `--base` / `--contract` / `--install-dir` CLI flags
 # into the env-var shape the rest of the script reads. The POSIX
 # `curl | sh -s -- <flags>` form must be a first-class entry point.
+#
+# NOTE: the smart-router-relevant flag (`--try-npm`) is sniffed earlier
+# in the file (right after the smart-router block) so the curl-pipe
+# form `curl .../install.sh | sh -s -- --try-npm` actually opts in
+# on first invocation. The full flag list (--tag, --base, --contract,
+# --install-dir, --ssl-no-revoke, -h/--help, -V/--version) is owned
+# here and applied at the end of the script. Verified by
+# install-smart-router.test.ts's runShell harness.
 parse_args "$@"
 
 # Proactive hint: if curl is built against Windows Schannel, warn the

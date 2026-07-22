@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 // SPDX-License-Identifier: MIT
-import { createWriteStream, existsSync, mkdirSync, readFileSync, renameSync, rmSync, statSync } from "node:fs";
+import { createHash } from "node:crypto";
+import { createWriteStream, existsSync, mkdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { createGzip } from "node:zlib";
 import { pipeline } from "node:stream/promises";
 import { dirname, join, resolve } from "node:path";
@@ -132,6 +133,7 @@ async function main() {
   const selected = selector ? targets.filter((target) => selector.test(target.id)) : targets;
   if (selected.length === 0) throw new Error("member selector matched no release targets");
   mkdirSync(outDir, { recursive: true });
+  const checksums = [];
   for (const target of selected) {
     assertSafeMember(target.memberName);
     const input = join(releaseDir, target.rawName);
@@ -149,7 +151,20 @@ async function main() {
     } else {
       throw new Error(`unsupported archive type: ${target.archiveType}`);
     }
+    // Compute SHA-256 of the just-written archive and record it in
+    // the checksums list. The two-space separator is what
+    // `sha256sum -c checksums.txt` expects (POSIX `cksum` format).
+    const archiveBytes = readFileSync(output);
+    const hash = createHash("sha256").update(archiveBytes).digest("hex");
+    checksums.push({ name: target.archiveName, hash });
   }
+  // Stable ordering: sort by filename so reruns produce the same
+  // checksums.txt bytes regardless of the iteration order in
+  // `selected`. This makes the file diffable across CI runs.
+  checksums.sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0));
+  const checksumsPath = join(outDir, "checksums.txt");
+  const checksumsBody = checksums.map((c) => `${c.hash}  ${c.name}\n`).join("");
+  writeFileSync(checksumsPath, checksumsBody);
 }
 
 try {

@@ -60,13 +60,8 @@ jobs:
       - name: Setup Node
         uses: actions/setup-node@v4
         with:
-          node-version: "24.18.0"
+          node-version: "25.7.0"
           cache: "npm"
-
-      - name: Setup Bun
-        uses: oven-sh/setup-bun@v2
-        with:
-          bun-version: "1.3.14"
 
       - name: Install dependencies
         run: npm ci
@@ -77,8 +72,8 @@ jobs:
       - name: Build (dist/ + sanity-check source)
         run: npm run build
 
-      - name: Cross-compile standalone binaries
-        run: node scripts/build-binary.mjs
+      - name: Cross-compile Node SEA standalone binaries
+        run: node scripts/build-sea.mjs
 
       - name: Package release assets (archives + checksums)
         run: |
@@ -91,13 +86,59 @@ jobs:
             --release-dir release
 
       - name: Compute release-size report
+        # v0.6.0: the Bun-version-pinned verify-release-assets.mjs is
+        # gone. We replaced it with a per-target output check that
+        # confirms each manifest target produced an output AND that the
+        # raw binary stays under a sane per-target ceiling. tsdown's
+        # --exe enforces bundle size internally; this ceiling is a
+        # safety net for a runaway build (e.g. a new dep pulls in a
+        # 500 MB native module). The smoke-sea job in ci.yml is the
+        # runtime check.
+        #   - MIN_RAW_BYTES (1 MiB): rejects an empty / truncated file
+        #     that "exists but is broken" — a partial SEA blob is worse
+        #     than a missing one because the installer downloads it,
+        #     sha256-passes (the chunk is self-consistent), then
+        #     crashes on launch.
+        #   - MAX_RAW_BYTES (200 MiB): hard cap. As of v0.6.0 the
+        #     largest target is darwin-x64 at ~134 MiB. 200 MiB leaves
+        #     ~50% headroom for legitimate growth (e.g. a new dep
+        #     tree) and is far below the installer's pipe-buffer
+        #     concerns. Any new target that legitimately needs more
+        #     room must bump this number AND the docs/ release-process
+        #     section that documents it.
+        #
+        # The step is split into two `run:` blocks so a verifier
+        # non-zero exit (MISSING / TOO_SMALL / TOO_LARGE) is the last
+        # command bash sees and therefore propagates as the step's
+        # exit code. Previously the verifier + `test -f` lived in one
+        # block; the `test -f` could mask a verifier silent-exit bug
+        # (a future change to verify-release-sizes.mjs that wrote the
+        # JSON but exited 0 incorrectly) and let the workflow publish
+        # with a tampered report. Fail-closed: if the verifier exits
+        # non-zero, the workflow stops before staging.
         run: |
-           node scripts/verify-release-assets.mjs \
-             --manifest scripts/release-targets.json \
-             --release-dir release \
-             --measure \
-             --bun-version "$(node -e 'const fs=require("node:fs"); console.log(JSON.parse(fs.readFileSync("scripts/release-size-budget.json", "utf8")).bunVersion)')" \
-             --report release/internal/release-size-report.json
+          set -euo pipefail
+          # MIN_RAW_BYTES (1 MiB) and MAX_RAW_BYTES (200 MiB) are owned
+          # by scripts/verify-release-sizes.mjs (also called by
+          # scripts/ci-release-pipeline-dry-run.sh). Both call sites
+          # delegate to the same module so the thresholds and the
+          # size-report JSON shape cannot drift between the release
+          # build and the PR-time dry-run. Bumping the ceiling
+          # requires editing one constant; the docs cross-reference
+          # both call sites.
+          node scripts/verify-release-sizes.mjs \
+            --manifest scripts/release-targets.json \
+            --release-dir release
+      - name: Lock release-size-report.json path
+        # Lock the report path explicitly so a future change to the
+        # verifier (e.g. a --report flag flip) doesn't silently let
+        # the file land elsewhere and break the staging step. This
+        # runs as a SEPARATE step from the verifier so the verifier's
+        # non-zero exit (MISSING / TOO_SMALL / TOO_LARGE) propagates
+        # correctly; the test does NOT mask a verifier silent-exit bug.
+        run: |
+          set -euo pipefail
+          test -f release/internal/release-size-report.json
 
       - name: Stage candidate bundle (public/<archives>, public/checksums.txt, internal/raw/<binaries>, internal/release-size-report.json)
         run: |

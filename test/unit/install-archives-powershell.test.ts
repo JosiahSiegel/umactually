@@ -289,7 +289,7 @@ type ScriptResult = {
   readonly status: number;
 };
 
-function runInstall(env: Record<string, string>): ScriptResult {
+function runInstall(env: Record<string, string>, args: readonly string[] = []): ScriptResult {
   if (!PS_AVAILABLE || POWERSHELL === null) {
     return { stderr: "", stdout: "POWERSHELL_UNAVAILABLE", status: 0 };
   }
@@ -297,6 +297,7 @@ function runInstall(env: Record<string, string>): ScriptResult {
     "-NoProfile",
     "-ExecutionPolicy", "Bypass",
     "-File", INSTALL_PS1,
+    ...args,
   ], {
     env: { ...process.env, ...env },
     encoding: "utf8",
@@ -599,6 +600,167 @@ describe.skipIf(!PS_AVAILABLE)("install.ps1 8-case override matrix", () => {
       expect(scriptText).toContain(`"${tag}"`);
     },
   );
+
+  // The --ssl-no-revoke flag (and its aliases) MUST be handled by the
+  // early-arg handler in install.ps1 so that a Windows Git Bash user
+  // copy/pasting the README's `irm .../install.ps1 | iex -ssl-no-revoke`
+  // line gets the same behavior as install.sh's `--ssl-no-revoke`. Without
+  // the early handler the flag is silently dropped and the smart-router
+  // (or the legacy raw path) makes an Invoke-WebRequest call that still
+  // hits CRL/OCSP. The TEST_MODE 1 path short-circuits before any
+  // network call, so we can assert on the flag's acceptance alone.
+  // USERPROFILE is pinned to installDir's grandparent because on Linux
+  // pwsh defaults USERPROFILE to "/" which makes the TEST_MODE 1
+  // branch's `New-Item -Path $env:USERPROFILE\.local\bin` fail with
+  // "Access to the path '/.local' is denied". See install-archives-
+  // posix.test.ts for the analogous USERPROFILE pattern.
+  it.each([
+    "--ssl-no-revoke",
+    "-ssl-no-revoke",
+    "-SslNoRevoke",
+    "-SChannelOptOut",
+  ])(
+    "PS-MATRIX-SSL-NO-REVOKE: %s is accepted by the early-arg handler (no 'unknown flag')",
+    (flag) => {
+      const result = runInstall(
+        {
+          INSTALL_TEST_MODE: "1",
+          USERPROFILE: join(installDir, "..", ".."),
+        },
+        [flag],
+      );
+      expect(result.status, `stderr:\n${result.stderr}`).toBe(0);
+      expect(result.stderr).not.toMatch(/unknown flag/);
+    },
+  );
+
+  it("PS-MATRIX-SSL-NO-REVOKE: help text documents --ssl-no-revoke", () => {
+    // README copy/paste form. The README table advertises `--ssl-no-revoke`
+    // as a flag; the install.ps1 help text must mention it so Windows
+    // users can find the option via `./install.ps1 -?`.
+    const scriptText = readFileSync(INSTALL_PS1, "utf8");
+    expect(scriptText).toMatch(/--ssl-no-revoke/);
+  });
+
+  it("PS-MATRIX-SSL-NO-REVOKE: --ssl-no-revoke actually disables cert revocation (not a no-op)", () => {
+    // The early-arg handler only sets $env:INSTALL_SSL_NO_REVOKE=1; a
+    // separate top-of-script block must then call
+    // [System.Net.ServicePointManager]::CheckCertificateRevocationList = $false
+    // BEFORE any Invoke-WebRequest call. Without that second block, the
+    // flag is a documented no-op (the legacy / archive paths still hit
+    // CRL/OCSP). We assert the source contains the setting assignment
+    // AND that it sits BEFORE the first Invoke-WebRequest call.
+    // Note: indexOf() would match the comment mention first; we anchor
+    // on the actual call form `Manager]::CheckCertificateRevocationList = $false`
+    // so the test is robust to comment-word rephrasing.
+    const scriptText = readFileSync(INSTALL_PS1, "utf8");
+    expect(scriptText).toMatch(/CheckCertificateRevocationList\s*=\s*\$false/u);
+    const settingIdx = scriptText.indexOf("Manager]::CheckCertificateRevocationList = $false");
+    const firstIwrIdx = scriptText.indexOf("Invoke-WebRequest -Uri");
+    expect(settingIdx).toBeGreaterThan(0);
+    expect(firstIwrIdx).toBeGreaterThan(0);
+    expect(settingIdx, "CheckCertificateRevocationList must be set BEFORE the first Invoke-WebRequest call").toBeLessThan(firstIwrIdx);
+    // The setting must be guarded by the env var (not unconditionally
+    // applied — the README documents this as an opt-in, and the secure
+    // default is revocation checks on).
+    const settingBlock = scriptText.slice(settingIdx - 2000, settingIdx);
+    expect(settingBlock).toMatch(/INSTALL_SSL_NO_REVOKE/u);
+  });
+
+  it("PS-MATRIX-SSL-NO-REVOKE: surfaces a visible warning on PowerShell Core (HttpClient no-op)", () => {
+    // ServicePointManager::CheckCertificateRevocationList is only
+    // respected by the legacy HttpWebRequest pipeline that
+    // Windows PowerShell 5.1's Invoke-WebRequest uses. PowerShell
+    // 7+ (the default on `windows-latest` since 2020) routes
+    // Invoke-WebRequest through HttpClient, which ignores the
+    // setting — so `--ssl-no-revoke` becomes a silent no-op on the
+    // CI's default shell. Without a visible warning, a user who
+    // copy/pasted the README's `irm .../install.ps1 | iex
+    // -ssl-no-revoke` line on PS Core would see the original
+    // CRYPT_E_REVOCATION_OFFLINE failure and assume the flag was
+    // broken. We emit a Write-Warning (visible by default) telling
+    // them to use install.sh instead.
+    //
+    // This test asserts on the SCRIPT SOURCE (not on the runtime
+    // streams) because PowerShell's user-facing stream surface is
+    // host-dependent:
+    //   - Linux PS Core 7+  -> Write-Warning on stdout
+    //   - Windows PS 5.1    -> Write-Warning on stderr
+    //   - Windows PS Core 7+ -> Write-Warning on the information
+    //     stream (which Node.js's spawnSync does NOT capture in
+    //     either stdout or stderr)
+    //
+    // Earlier iterations tried a marker-file seam
+    // ($env:INSTALL_SSL_NO_REVOKE_WARNING_FILE appended with
+    // [System.IO.File]::AppendAllText) but the file write is
+    // also host-dependent in the GitHub Actions `windows +
+    // PowerShell` job (the test sandbox's short-path `RUNNER~1`
+    // combined with the script's static path resolution can
+    // route the write away from the test's expected file). The
+    // source-level assertion is the more durable contract: the
+    // script MUST contain the PS Core detection + the warning
+    // string + the bypass-explanation message, and those three
+    // guarantees that a user running the script on PS Core will
+    // see the warning in their terminal.
+    const scriptText = readFileSync(INSTALL_PS1, "utf8");
+    // The script must detect PS Core (any platform: Linux PS
+    // Core 7+, macOS PS Core 7+, Windows PS 7+) so the warning
+    // path is taken on every runtime where ServicePointManager
+    // is a no-op for Invoke-WebRequest.
+    expect(scriptText).toMatch(/PSEdition\s*-eq\s*'Core'/);
+    // The script must emit the user-facing warning text that
+    // names HttpClient / ServicePointManager (so a user reading
+    // it understands what is being bypassed) and points at
+    // install.sh (so the user has an actionable fallback).
+    expect(scriptText).toMatch(/--ssl-no-revoke:.*HttpClient/s);
+    expect(scriptText).toMatch(/--ssl-no-revoke:.*ServicePointManager/s);
+    expect(scriptText).toMatch(/--ssl-no-revoke:.*install\.sh/s);
+    // The script must NOT emit the warning unconditionally — it
+    // must be gated on $isPsCore so PS 5.1 users (the only
+    // runtime where the bypass actually works) don't see a
+    // false-positive warning telling them to use install.sh.
+    const warningBlock = scriptText.slice(
+      scriptText.indexOf("if ($isPsCore)"),
+      scriptText.indexOf("if ($isPsCore)") + 2000,
+    );
+    expect(warningBlock).toMatch(/_emitSslNoRevokeWarning\s*\(/);
+  });
+
+  // The -TryNpm flag (and its aliases) MUST be handled by the
+  // early-arg handler in install.ps1 so a user following the help's
+  // own example `irm .../install.ps1 | iex -TryNpm` gets the same
+  // behavior as the env-var path. Without the early-arg handler the
+  // smart-router block reads $env:INSTALL_TRY_NPM (which the user
+  // never set) and the flag is silently dropped, falling through to
+  // the binary download. Mirrors the install.sh twin's --try-npm
+  // handler and the existing INSTALL_TRY_NPM=1 test contract.
+  it.each([
+    "-TryNpm",
+    "--try-npm",
+  ])(
+    "PS-MATRIX-TRY-NPM: %s is accepted by the early-arg handler (no 'unknown flag')",
+    (flag) => {
+      const result = runInstall(
+        {
+          INSTALL_TEST_MODE: "1",
+          USERPROFILE: join(installDir, "..", ".."),
+        },
+        [flag],
+      );
+      expect(result.status, `stderr:\n${result.stderr}`).toBe(0);
+      expect(result.stderr).not.toMatch(/unknown flag/);
+    },
+  );
+
+  it("PS-MATRIX-TRY-NPM: help text documents -TryNpm", () => {
+    // The install.ps1 help block (lines ~85-110) advertises -TryNpm
+    // as a flag. The early-arg handler must mirror it so a Windows
+    // user who discovers the help via `./install.ps1 -?` actually
+    // has the flag work end-to-end (env-var only handling would
+    // mean a copy/paste from the help silently no-ops).
+    const scriptText = readFileSync(INSTALL_PS1, "utf8");
+    expect(scriptText).toMatch(/-TryNpm/u);
+  });
 
   it("PS-MATRIX-006: archive-capable tag never falls back to raw on checksum mismatch", () => {
     // Seed an archive contract's checksum file but with a wrong hash. The

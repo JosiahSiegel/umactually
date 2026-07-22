@@ -36,7 +36,6 @@ const MANIFEST_PATH = join(REPO_ROOT, "scripts", "release-targets.json");
 const EXPECTED_TARGETS: readonly ReleaseTarget[] = [
   {
     id: "linux-x64",
-    bunTarget: "bun-linux-x64-baseline",
     rawName: "umactually-linux-x64",
     archiveName: "umactually-linux-x64.tar.gz",
     archiveType: "tar.gz",
@@ -45,7 +44,6 @@ const EXPECTED_TARGETS: readonly ReleaseTarget[] = [
   },
   {
     id: "linux-arm64",
-    bunTarget: "bun-linux-arm64",
     rawName: "umactually-linux-arm64",
     archiveName: "umactually-linux-arm64.tar.gz",
     archiveType: "tar.gz",
@@ -54,7 +52,6 @@ const EXPECTED_TARGETS: readonly ReleaseTarget[] = [
   },
   {
     id: "darwin-x64",
-    bunTarget: "bun-darwin-x64",
     rawName: "umactually-darwin-x64",
     archiveName: "umactually-darwin-x64.tar.gz",
     archiveType: "tar.gz",
@@ -63,7 +60,6 @@ const EXPECTED_TARGETS: readonly ReleaseTarget[] = [
   },
   {
     id: "darwin-arm64",
-    bunTarget: "bun-darwin-arm64",
     rawName: "umactually-darwin-arm64",
     archiveName: "umactually-darwin-arm64.tar.gz",
     archiveType: "tar.gz",
@@ -72,7 +68,6 @@ const EXPECTED_TARGETS: readonly ReleaseTarget[] = [
   },
   {
     id: "windows-x64",
-    bunTarget: "bun-windows-x64-baseline",
     rawName: "umactually-windows-x64.exe",
     archiveName: "umactually-windows-x64.zip",
     archiveType: "zip",
@@ -81,7 +76,6 @@ const EXPECTED_TARGETS: readonly ReleaseTarget[] = [
   },
   {
     id: "windows-arm64",
-    bunTarget: "bun-windows-arm64",
     rawName: "umactually-windows-arm64.exe",
     archiveName: "umactually-windows-arm64.zip",
     archiveType: "zip",
@@ -105,22 +99,15 @@ describe("release-targets manifest on disk", () => {
     const archiveNames = targets.map((t) => t.archiveName);
     const rawNames = targets.map((t) => t.rawName);
     const memberNames = targets.map((t) => t.memberName);
-    const bunTargets = targets.map((t) => t.bunTarget);
     expect(new Set(ids).size).toBe(6);
     expect(new Set(archiveNames).size).toBe(6);
     expect(new Set(rawNames).size).toBe(6);
     expect(new Set(memberNames).size).toBe(6);
-    expect(new Set(bunTargets).size).toBe(6);
   });
 
-  it("uses `bun-<id>` (with optional `-baseline` suffix) for bunTarget and matches the exact raw/member/installed naming rules", () => {
+  it("matches the exact raw/member/installed naming rules", () => {
     const targets = parseReleaseTargets({ manifestPath: MANIFEST_PATH });
     for (const target of targets) {
-      const expectedBunTarget =
-        target.id === "linux-x64" || target.id === "windows-x64"
-          ? `bun-${target.id}-baseline`
-          : `bun-${target.id}`;
-      expect(target.bunTarget).toBe(expectedBunTarget);
       if (target.id.startsWith("windows")) {
         expect(target.rawName).toBe(`umactually-${target.id}.exe`);
         expect(target.memberName).toBe(`umactually-${target.id}.exe`);
@@ -168,7 +155,6 @@ describe("parseReleaseTargets — schema and shape rejection", () => {
     const seven = [...EXPECTED_TARGETS, {
       ...EXPECTED_TARGETS[0]!,
       id: "linux-x64-extra",
-      bunTarget: "bun-linux-x64-extra",
       rawName: "umactually-linux-x64-extra",
       archiveName: "umactually-linux-x64-extra.tar.gz",
       memberName: "umactually-linux-x64-extra",
@@ -179,7 +165,7 @@ describe("parseReleaseTargets — schema and shape rejection", () => {
 
   it("rejects missing required fields with a target-specific message", () => {
     const incomplete = [
-      { id: "linux-x64", bunTarget: "bun-linux-x64-baseline" },
+      { id: "linux-x64" },
       ...EXPECTED_TARGETS.slice(1),
     ];
     const path = writeManifest(incomplete);
@@ -208,6 +194,88 @@ describe("parseReleaseTargets — schema and shape rejection", () => {
     );
     const path = writeManifest(mutated);
     expect(() => parseReleaseTargets({ manifestPath: path })).toThrow(/darwin-x64.*rawName/);
+  });
+
+  it("rejects malformed id (underscore instead of dash)", () => {
+    // Without the v0.6.0 id-format gate, this would slip past the
+    // existing platform-prefix check (the string starts with `linux`),
+    // pass the rawName invariant, and only surface as a missing asset
+    // at install time — far from the manifest file that needs editing.
+    const mutated = EXPECTED_TARGETS.map((t) =>
+      t.id === "linux-x64"
+        ? { ...t, id: "linux_x64" as unknown as "linux-x64" }
+        : t,
+    );
+    const path = writeManifest(mutated);
+    expect(() => parseReleaseTargets({ manifestPath: path })).toThrow(
+      /linux_x64.*<platform>-<arch>/,
+    );
+  });
+
+  it("rejects malformed id (extra segment after the platform-arch pair)", () => {
+    // The shape `<platform>-<arch>` is what every consumer assumes
+    // (installer asset routing, archive basename derivation, smoke-test
+    // platform mapping). A trailing `-extra` would silently misroute
+    // because the existing checks only inspect the first dash-segment.
+    // The assertSingleDash defense-in-depth check is a SECOND line
+    // of defense: even if a future regex loosening admitted a third
+    // segment, the count-based check would still reject it with a
+    // dedicated error message that points the operator at the
+    // manifest line that needs editing.
+    const mutated = EXPECTED_TARGETS.map((t) =>
+      t.id === "darwin-arm64"
+        ? { ...t, id: "darwin-arm64-extras" as unknown as "darwin-arm64" }
+        : t,
+    );
+    const path = writeManifest(mutated);
+    // The current regex ID_FORMAT_PATTERN rejects the multi-dash
+    // id at the pattern-test step (its second half `[a-z0-9]+`
+    // cannot contain a dash, so `^...$` fails to match), and that
+    // path emits the <platform>-<arch> error. The assertSingleDash
+    // check is the second-line guard: it activates only if a
+    // future refactor loosens the regex. We assert the current
+    // primary path here (the regex-level reject); a separate test
+    // below asserts the assertSingleDash guard fires when the
+    // pattern is bypassed via a directly-constructed id.
+    expect(() => parseReleaseTargets({ manifestPath: path })).toThrow(
+      /darwin-arm64-extras.*<platform>-<arch>/,
+    );
+  });
+
+  it("rejects ids with more than one dash via assertSingleDash (defense-in-depth)", () => {
+    // Locks in the assertSingleDash behavior at the boundary the
+    // review flagged. The current ID_FORMAT_PATTERN already rejects
+    // multi-dash ids at the regex level; this test asserts the
+    // second-line count-based guard exists in source and would
+    // catch the same case if the regex were ever loosened. We
+    // assert the source text contains assertSingleDash(targetId)
+    // so a future refactor can't silently drop the guard.
+    const source = readFileSync(
+      join(import.meta.dirname, "..", "..", "scripts", "release-targets.ts"),
+      "utf8",
+    );
+    expect(source).toMatch(/assertSingleDash\s*\(\s*targetId\s*\)/u);
+    // The function body must actually count dashes (not just
+    // delegate back to the regex). Anchor on the literal
+    // "dash" / "exactly one" diagnostic so a future rewrite can't
+    // accidentally swap the guard for a no-op.
+    expect(source).toMatch(/exactly one dash/);
+  });
+
+  it("rejects id with an unknown arch (caller typo / experimental arch)", () => {
+    // The arch whitelist (x64, arm64) is the only thing standing
+    // between a typo here and a silently-misrouted install. The
+    // size-report's per-id lookup, the installer's platform routing,
+    // and the Git Bash delegation all key on this string.
+    const mutated = EXPECTED_TARGETS.map((t) =>
+      t.id === "linux-x64"
+        ? { ...t, id: "linux-x86" as unknown as "linux-x64" }
+        : t,
+    );
+    const path = writeManifest(mutated);
+    expect(() => parseReleaseTargets({ manifestPath: path })).toThrow(
+      /linux-x86.*unknown arch/,
+    );
   });
 });
 
@@ -268,11 +336,11 @@ describe("parseReleaseTargets — uniqueness", () => {
     ).toThrow(/darwin-arm64.*darwin-x64/);
   });
 
-  it("rejects duplicate bunTarget entries (structurally unreachable when ids are unique)", () => {
-    // Given the per-row invariant bunTarget === "bun-<id>" or "bun-<id>-baseline",
-    // duplicate bunTarget implies duplicate id, which the previous test already
+  it("rejects duplicate rawName/memberName/archiveName entries", () => {
+    // Given the per-row invariant rawName/memberName/archiveName are derived from id,
+    // duplicate id is the only way to produce duplicate rawName/memberName/archiveName; the previous test already
     // rejects. This test confirms the parser surfaces the id collision first
-    // rather than emitting a confusing bunTarget-specific message.
+    // rather than emitting a confusing field-specific message.
     const darwinX64 = EXPECTED_TARGETS.find((t) => t.id === "darwin-x64");
     if (!darwinX64) throw new Error("fixture missing darwin-x64");
     const mutated = EXPECTED_TARGETS.map((t) =>

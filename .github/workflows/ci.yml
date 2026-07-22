@@ -92,7 +92,7 @@ jobs:
   # PR so a green merge really does guarantee the release will succeed.
   # Bridges the gap that the regular `ci` job alone cannot close: it
   # executes
-  #   - the production build (npm run build, build-binary.mjs,
+  #   - the production build (npm run build, build-sea.mjs,
   #     package-release-assets.mjs, verify-release-assets.mjs) and
   #   - the canary-equivalent Linux x64 install against a fixture that
   #     masquerades as the GitHub Releases host (so URL routing matches
@@ -103,9 +103,151 @@ jobs:
   # release-workflow-contract.test.ts structural tests. This job's goal
   # is to fail-fast on the Linux lane where most regressions live.
   # ---------------------------------------------------------------------
-  release-pipeline-dry-run:
-    name: release pipeline dry-run
+  # ---------------------------------------------------------------------
+  # Smoke-test the Node SEA single-file binary on Linux. This is the
+  # build target that catches the most regressions for the binary
+  # distribution path. macOS / Windows SEA smoke tests live on the
+  # release workflow's per-target jobs
+  # (smoke-darwin-x64, smoke-darwin-arm64, smoke-windows-x64,
+  # smoke-windows-arm64-structural in .github/workflows/release.yml);
+  # this is a fast Linux-only gate for the daily PR lane.
+  # ---------------------------------------------------------------------
+  smoke-sea:
+    name: smoke-sea (linux x64)
     runs-on: ubuntu-latest
+    needs: ci
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node 25
+        uses: actions/setup-node@v4
+        with:
+          node-version: "25.7.0"
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build (dist/ + sanity-check source)
+        run: npm run build
+
+      - name: Cross-compile Node SEA binaries (all 6 targets; smoke tests the linux-x64 one)
+        # scripts/build-sea.mjs's <targetId> argument is accepted for
+        # backwards-compat but is currently a no-op: tsdown's --exe mode
+        # has no per-target flag, so the config-driven build always
+        # produces all 6 binaries. The smoke step below only executes
+        # the linux-x64 binary, but the other 5 are built as a side
+        # effect — they get uploaded as workflow artifacts and discarded.
+        # Per-target filtering is tracked in a follow-up.
+        run: node scripts/build-sea.mjs linux-x64
+
+      - name: Smoke test the SEA binary
+        run: |
+          set -euo pipefail
+          chmod +x release/umactually-linux-x64
+
+          # --version is the first code path the SEA loader runs after
+          # init (it fires before any subcommand dispatch). Capture its
+          # exit status + stderr under a separate file so a loader
+          # regression that crashes the binary on --version is
+          # detected even if the doctor subcommand below happens to
+          # mask the crash (e.g. a doctor fallback path that swallows
+          # errors). The SEA loader fault contract: exit 0 with a
+          # version string on stdout. Any other outcome is a crash.
+          set +e
+          _version_err="$(mktemp)"
+          release/umactually-linux-x64 --version 2>"${_version_err}" >/dev/null
+          _version_status=$?
+          set -e
+          if [ "$_version_status" -ne 0 ]; then
+            echo "::error::SEA loader crash on --version (exit=${_version_status})"
+            cat "${_version_err}" >&2 || true
+            rm -f "${_version_err}"
+            exit "${_version_status}"
+          fi
+          # Anchor the loader-fault regex to the start of a JS-level
+          # stack-trace line. A real Node loader crash prints lines
+          # like "Error: <message>" / "TypeError: <message>" /
+          # "    at <frame> (file:line:col)" with the error line at the
+          # head of the trace. Substrings like "SEA blob" / "loader
+          # fault" in a stderr informational message are matched too
+          # (they only appear when something is wrong), but the
+          # `Error|TypeError|...:` patterns now require leading
+          # whitespace (so informational prose that happens to mention
+          # "Error:" mid-sentence doesn't match).
+          if grep -Eq '^[[:space:]]*(Error|TypeError|SyntaxError|ReferenceError|RangeError): |bad SEA|loader fault|node:internal/' "${_version_err}"; then
+            echo "::error::SEA loader crash on --version (loader-fault signature on stderr)"
+            cat "${_version_err}" >&2 || true
+            rm -f "${_version_err}"
+            exit 1
+          fi
+          rm -f "${_version_err}"
+
+          # Doctor runs the safety checks (env, deps, network). We expect
+          # it to fail (no GitHub token, no LLM key) but not crash on
+          # launch — the SEA loader must succeed. Doctor's documented
+          # contract is exit 0 (all pass) or exit 1 (any check failed —
+          # the expected missing-creds path here). Exit codes > 1 OR a
+          # stderr signature matching a Node SEA loader fault (e.g.
+          # "Error: cannot find module" thrown at module-load time) are
+          # treated as loader crashes. The loader-fault pattern check
+          # guards against a future doctor change that legitimately
+          # returns exit 2 (e.g. a "permission denied" check) being
+          # mis-classified as a loader crash. We grep stderr for the
+          # specific Node loader-shaped errors we care about, not for a
+          # raw exit code magnitude.
+          #
+          # Pattern set covers every common Node SEA loader fault:
+          #   - Error: <message>          (cannot find module, ENOENT, etc.)
+          #   - SyntaxError / TypeError / ReferenceError / RangeError
+          #     (loader throws on first import)
+          #   - bad SEA / SEA blob        (binary header corruption)
+          #   - loader fault              (explicit @tsdown/exe failure)
+          #   - node:internal/            (Node internal stack frame)
+          #   - Cannot read/access propert(y/ies), "is not a function",
+          #     "is not defined"          (typical module-load TypeErrors
+          #                                on first require)
+          set +e
+          _doctor_err="$(mktemp)"
+          release/umactually-linux-x64 doctor 2>"${_doctor_err}" >/dev/null
+          _doctor_status=$?
+          set -e
+          if [ "$_doctor_status" -eq 0 ]; then
+            echo "SEA loader OK (doctor exit=0, all checks passed)"
+            rm -f "${_doctor_err}"
+          elif [ "$_doctor_status" -eq 1 ] && ! grep -Eq '^[[:space:]]*(Error|TypeError|SyntaxError|ReferenceError|RangeError): |bad SEA|SEA blob|loader fault|node:internal/|Cannot read propert|Cannot access |is not a function|is not defined' "${_doctor_err}"; then
+            # Exit 1 with no loader-crash signature on stderr: this is
+            # the documented business failure (missing creds). The
+            # smoke goal (loader works) is satisfied.
+            echo "SEA loader OK (doctor exit=1 is the expected missing-creds path)"
+            rm -f "${_doctor_err}"
+          else
+            # Either a non-1 exit code, or exit 1 accompanied by a
+            # loader-fault signature on stderr. Either way, the
+            # loader-side guarantee is broken.
+            echo "::error::SEA loader crash on doctor (exit=${_doctor_status})"
+            cat "${_doctor_err}" >&2 || true
+            release/umactually-linux-x64 doctor || true
+            rm -f "${_doctor_err}"
+            exit "${_doctor_status}"
+          fi
+
+  # Comprehensive Windows + PowerShell coverage for every PR. Until
+  # v0.6.0 this only ran on tag pushes (release.yml's
+  # smoke-windows-x64 + smoke-windows-arm64-structural +
+  # smoke-windows-x64-git-bash-delegate), so install.ps1 regressions
+  # could land on main unnoticed. v0.6.0 promotes it to a PR gate.
+  #
+  # The job runs the full unit suite on windows-latest so the install
+  # tests (test/unit/install-*.test.ts, including install-smart-router
+  # which exercises install.ps1's smart-router via real PowerShell)
+  # plus the rest of the test surface are exercised on real Windows
+  # before merge. Windows PowerShell 5.1 is the default shell on
+  # windows-latest; pwsh is also pre-installed for the
+  # install-smart-router test (which spawns pwsh via spawnSync).
+  ci-windows:
+    name: ci (windows + PowerShell)
+    runs-on: windows-latest
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -113,17 +255,115 @@ jobs:
       - name: Setup Node
         uses: actions/setup-node@v4
         with:
-          node-version: "24"
+          node-version: "24.18.0"
           cache: "npm"
 
-      # Pin the Bun version to match release.yml exactly. Drift here
-      # would let a fix merge in while the actual release runs against
-      # a different compiler, producing archives whose checksums.txt
-      # entries disagree with the build-time verifier output.
-      - name: Setup Bun
-        uses: oven-sh/setup-bun@v2
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Typecheck
+        run: npm run typecheck
+
+      # Run the install suite (install-smart-router, install-archives-powershell,
+      # install-scripts-powershell, install-methods, install-checksum, etc.)
+      # PLUS the structural / contract tests that the release pipeline trusts
+      # but the PR lane didn't. This is the core PowerShell coverage; the
+      # release.yml smoke jobs (smoke-windows-x64, smoke-windows-arm64-structural)
+      # are still required to verify the actual binary on real Windows runners.
+      #
+      # The vitest invocation uses a glob (`test/unit/install-*.test.ts`)
+      # so a new install test added in test/unit/install-*.test.ts is
+      # picked up automatically. An earlier revision passed an
+      # explicit list, which is a drift trap: vitest 4.x does not
+      # auto-pick up new files when given an explicit `run
+      # <file...>`, so a new install test added in a PR that
+      # didn't also edit this list would silently NOT run on
+      # Windows. The glob keeps the curated-list and the actual
+      # test run in sync. The non-install test files (e.g.
+      # build-sea, release-targets) still run on Linux/macOS via
+      # `npm test` in the main `ci` job, which uses a broader
+      # glob in the package.json test script.
+      - name: Run install + PowerShell unit tests
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          # vitest 4.x removed the "basic" built-in reporter; passing
+          # `--reporter=basic` is now interpreted as "load a custom
+          # reporter module named 'basic'" and fails with
+          # "Failed to load custom Reporter from basic". Use the
+          # default reporter (TTY-aware: "default" in non-TTY CI,
+          # "verbose" in TTY local runs) which is what `npm test`
+          # already uses in the main `ci` job on Linux/macOS.
+          npx vitest run test/unit/install-*.test.ts
+
+      # Sanity check: install.ps1 --help should run cleanly (the script's
+      # own self-test under Windows PowerShell 5.1). This catches the
+      # "script doesn't even parse" class of regression in PR time.
+      - name: install.ps1 --help smoke (Windows PowerShell 5.1)
+        shell: powershell
+        run: |
+          $ErrorActionPreference = "Stop"
+          # Capture stdout AND stderr to a single string with
+          # Out-String. The naive `$out = ... 2>&1` produces an
+          # array (one entry per line), and `$out -notmatch '...'`
+          # on an array returns an array of booleans, which `if`
+          # treats as truthy as long as the array is non-empty —
+          # so the negative assertion silently passed even when no
+          # line matched. Out-String collapses to one string and
+          # -notmatch returns a single boolean.
+          $out = (powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts\install.ps1 -h 2>&1) | Out-String
+          if ($LASTEXITCODE -ne 0) { throw "install.ps1 -h exited $LASTEXITCODE" }
+          if ($out -notmatch 'Usage|usage|umactually') { throw "install.ps1 -h output did not contain 'umactually': $out" }
+          Write-Output "OK: install.ps1 -h returned a usage block"
+
+      # Sanity check: pwsh on the runner can launch install.ps1 the same
+      # way the unit tests do. Catches the "pwsh path differs on this
+      # image" class of issue.
+      - name: install.ps1 --help smoke (pwsh)
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $out = (& pwsh -NoProfile -NonInteractive -File scripts/install.ps1 -h 2>&1) | Out-String
+          if ($LASTEXITCODE -ne 0) { throw "install.ps1 -h via pwsh exited $LASTEXITCODE" }
+          if ($out -notmatch 'Usage|usage|umactually') { throw "install.ps1 -h via pwsh output did not contain 'umactually': $out" }
+          Write-Output "OK: install.ps1 -h via pwsh returned a usage block"
+
+      # Parallel smoke for install.sh: catches the "script doesn't even
+      # parse under the runner's bash" class of regression in PR time.
+      # Mirrors the install.ps1 -h smoke above so both installers get
+      # the same gate; without this the POSIX path silently rots.
+      - name: install.sh --help smoke (bash)
+        shell: bash
+        run: |
+          set -euo pipefail
+          _out="$(bash scripts/install.sh --help 2>&1)"
+          _status=$?
+          if [ "${_status}" -ne 0 ]; then
+            echo "::error::install.sh --help exited ${_status}" >&2
+            echo "${_out}" >&2
+            exit "${_status}"
+          fi
+          if ! grep -Eq 'Usage|umactually' <<<"${_out}"; then
+            echo "::error::install.sh --help output did not contain 'Usage' or 'umactually':" >&2
+            echo "${_out}" >&2
+            exit 1
+          fi
+          echo "OK: install.sh --help returned a usage block"
+
+  release-pipeline-dry-run:
+    name: release pipeline dry-run
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # Node 25.7.0 is required for `node --build-sea` (added in Node
+      # 25.5.0, used by tsdown's --exe pipeline). Matches release.yml.
+      - name: Setup Node
+        uses: actions/setup-node@v4
         with:
-          bun-version: "1.3.14"
+          node-version: "25.7.0"
+          cache: "npm"
 
       - name: Install dependencies
         run: npm ci

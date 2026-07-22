@@ -28,7 +28,6 @@ export type ArchiveType = "tar.gz" | "zip";
 /** A single canonical release target — all fields are required. */
 export type ReleaseTarget = {
   readonly id: string;
-  readonly bunTarget: string;
   readonly rawName: string;
   readonly archiveName: string;
   readonly archiveType: ArchiveType;
@@ -47,7 +46,6 @@ export type ParseOptions = {
 
 const REQUIRED_FIELDS: ReadonlyArray<keyof ReleaseTarget> = [
   "id",
-  "bunTarget",
   "rawName",
   "archiveName",
   "archiveType",
@@ -58,6 +56,77 @@ const REQUIRED_FIELDS: ReadonlyArray<keyof ReleaseTarget> = [
 const VALID_ARCHIVE_TYPES: ReadonlySet<ArchiveType> = new Set(["tar.gz", "zip"]);
 
 const POSIX_PLATFORMS: ReadonlySet<string> = new Set(["linux", "darwin"]);
+
+/**
+ * Architectures every release target id must declare. Adding a new
+ * arch here is the only way to introduce one — the v0.6.0 manifest
+ * already enumerates `linux/darwin/windows × {x64, arm64}`, but a
+ * future target like `linux-riscv64` would otherwise slip through
+ * unnoticed because the per-row checks only inspect the platform
+ * prefix and the derived naming invariant. The id is also the
+ * canonical key in the size-report / checksums / installer routing
+ * code paths, so a malformed id would silently misroute.
+ */
+const VALID_ARCHITECTURES: ReadonlySet<string> = new Set(["x64", "arm64"]);
+
+/**
+ * Pattern: `<platform>-<arch>` (exactly one dash, both halves
+ * required, no leading/trailing whitespace, no underscores, all
+ * lowercase). The pattern's `[a-z0-9]+` second half cannot contain
+ * a dash, so the `^...$` anchors already enforce the single-dash
+ * invariant. The arch whitelist below is the second layer of
+ * defense: even if a future loosening of this pattern admitted
+ * `linux-riscv64` or `linux-loongarch64`, the whitelist would
+ * reject them at the `arch` check.
+ *
+ * What this pattern rejects (verified by parseReleaseTargets tests):
+ *   - `linux-x64-bogus`, `linux-x64-extra`, `linux-x64-riscv`
+ *     (multi-segment: the second half `[a-z0-9]+` cannot contain
+ *     a dash, so the `^...$` anchors fail to match)
+ *   - `linux_64`, `LINUX-x64`, ` linux-x64`, `linux-x64 `
+ *     (underscore, uppercase, leading/trailing whitespace)
+ *   - empty halves (`-x64`, `linux-`, `-`)
+ *
+ * What this pattern allows but the arch whitelist rejects:
+ *   - `linux-riscv64` (matches the pattern, but `riscv64` is not
+ *     in VALID_ARCHITECTURES)
+ *   - `linux-loongarch64` (same — second layer catches it)
+ *
+ * The strict shape is what every consumer assumes (installer asset
+ * routing, archive basename derivation, smoke-test platform mapping).
+ */
+const ID_FORMAT_PATTERN = /^[a-z]+-[a-z0-9]+$/u;
+
+/**
+ * Defense-in-depth: count the dashes in the id and reject anything
+ * that doesn't have exactly one. The ID_FORMAT_PATTERN above already
+ * enforces this (the second half `[a-z0-9]+` cannot contain a dash,
+ * so `^...$` rejects multi-dash ids), but the regex is the only line
+ * of defense there — a future refactor that loosens the pattern (e.g.
+ * adds more character classes to the second half) would silently let
+ * `linux-x64-bogus` through. The split-then-validate path below
+ * already routes the id through `targetId.split("-")` for the
+ * platform/arch split, so the count check is cheap to add and
+ * guarantees the invariant even after pattern changes.
+ */
+function assertSingleDash(targetId: string): void {
+  let dashCount = 0;
+  for (let i = 0; i < targetId.length; i++) {
+    if (targetId.charCodeAt(i) === 0x2d /* "-" */) {
+      dashCount++;
+      if (dashCount > 1) {
+        throw new Error(
+          `release-targets: target id ${JSON.stringify(targetId)} must contain exactly one dash separating platform and arch (got ${dashCount} dashes)`,
+        );
+      }
+    }
+  }
+  if (dashCount !== 1) {
+    throw new Error(
+      `release-targets: target id ${JSON.stringify(targetId)} must contain exactly one dash separating platform and arch (got ${dashCount})`,
+    );
+  }
+}
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -108,6 +177,40 @@ function parseSingleTarget(raw: unknown, index: number): ReleaseTarget {
     );
   }
   const targetId = idValue;
+  // v0.6.0: validate the id shape (single-dash `<platform>-<arch>`)
+  // BEFORE the platform-prefix / arch checks so a malformed id
+  // (e.g. `linux_x64`, `LINUX-X64`, `linux-x64-extra`) is rejected
+  // with a single actionable diagnostic instead of a downstream
+  // error from one of the per-row name derivations. Without this
+  // gate, a typo in scripts/release-targets.json would pass the
+  // existing platform-prefix check (the string starts with `linux`)
+  // and the bug would surface only at install time as a missing
+  // asset — far away from the manifest file that needs editing.
+  if (!ID_FORMAT_PATTERN.test(targetId)) {
+    throw new Error(
+      `release-targets: target id ${JSON.stringify(targetId)} must match <platform>-<arch> (lowercase letters, single dash, no spaces)`,
+    );
+  }
+  // Defense-in-depth: assertSingleDash runs AFTER ID_FORMAT_PATTERN
+  // and rejects multi-dash ids with a more targeted error message.
+  // The pattern above already rejects these (the second half
+  // `[a-z0-9]+` cannot contain a dash), but the count-based check
+  // below survives any future loosening of the regex — e.g. if a
+  // maintainer adds the digit class to the second half and
+  // accidentally lets a third segment through. The check is cheap
+  // (single pass over the id, max 1 allocation) and gives the
+  // operator an actionable diagnostic at the exact boundary that
+  // needs editing.
+  assertSingleDash(targetId);
+  // Validate the arch half against the known set. The platform
+  // half is checked later (via the POSIX / Windows / `else` branches)
+  // so its error message can be platform-specific.
+  const arch = targetId.split("-")[1] ?? "";
+  if (!VALID_ARCHITECTURES.has(arch)) {
+    throw new Error(
+      `release-targets: target ${targetId} has unknown arch ${JSON.stringify(arch)} (allowed: ${[...VALID_ARCHITECTURES].join(", ")})`,
+    );
+  }
 
   const presentFields = new Set(Object.keys(raw));
   for (const required of REQUIRED_FIELDS) {
@@ -124,13 +227,6 @@ function parseSingleTarget(raw: unknown, index: number): ReleaseTarget {
         `release-targets: target ${targetId} has unknown field "${key}"`,
       );
     }
-  }
-
-  const bunTarget = raw["bunTarget"];
-  if (!isPlainString(bunTarget)) {
-    throw new Error(
-      `release-targets: target ${targetId} field bunTarget must be a non-empty string`,
-    );
   }
 
   const rawName = raw["rawName"];
@@ -178,21 +274,13 @@ function parseSingleTarget(raw: unknown, index: number): ReleaseTarget {
   }
   rejectIfUnsafeName("installedName", installedName, targetId);
 
-  // Bun target triple invariant: must be `bun-<id>` with an optional
-  // `-baseline` suffix (Bun uses `-baseline` for the glibc-compatible
-  // Linux x64 and Windows x64 triples; other triples have no suffix).
-  // This preserves the existing build-binary.mjs contract exactly.
-  const baselineSuffix = "-baseline";
-  const hasBaseline = bunTarget.endsWith(baselineSuffix);
-  const bunTargetCore = hasBaseline
-    ? bunTarget.slice(0, -baselineSuffix.length)
-    : bunTarget;
-  const expectedBunTargetCore = `bun-${targetId}`;
-  if (bunTargetCore !== expectedBunTargetCore) {
-    throw new Error(
-      `release-targets: target ${targetId} bunTarget must equal ${JSON.stringify(expectedBunTargetCore)} or ${JSON.stringify(expectedBunTargetCore + baselineSuffix)} (got ${JSON.stringify(bunTarget)})`,
-    );
-  }
+  // v0.6.0: removed the Bun-target invariant (Bun's `bun-<id>` triple
+  // names with optional `-baseline` suffix). Node SEA via tsdown
+  // derives the platform/arch from the manifest `id` directly. The
+  // check below preserves the existing `rawName = umactually-<id>`
+  // invariant for POSIX targets and the `rawName = umactually-<id>.exe`
+  // for Windows, which is what the installer and archive packager
+  // depend on.
 
   const platform = targetId.split("-")[0] ?? "";
   const isPosix = POSIX_PLATFORMS.has(platform);
@@ -287,7 +375,6 @@ function parseSingleTarget(raw: unknown, index: number): ReleaseTarget {
 
   return {
     id: targetId,
-    bunTarget,
     rawName,
     archiveName,
     archiveType,
@@ -302,7 +389,7 @@ function parseSingleTarget(raw: unknown, index: number): ReleaseTarget {
  *
  * Uniqueness invariants enforced here (after per-row validation):
  *   - exactly six rows
- *   - distinct ids, bunTargets, rawNames, memberNames, archiveNames
+ *   - distinct ids, rawNames, memberNames, archiveNames
  */
 export function parseReleaseTargets(options: ParseOptions): readonly ReleaseTarget[] {
   const text = readFileSync(options.manifestPath, "utf8");
@@ -342,12 +429,11 @@ export function parseReleaseTargetsFromString(text: string): readonly ReleaseTar
     parseSingleTarget(entry, index),
   );
 
-  // Uniqueness: ids, bunTargets, rawNames, memberNames, archiveNames.
+  // Uniqueness: ids, rawNames, memberNames, archiveNames.
   // Duplicates are reported with the offender's id and the existing value so
   // the operator can locate the collision in one read.
   const seen = {
     id: new Map<string, string>(),
-    bunTarget: new Map<string, string>(),
     rawName: new Map<string, string>(),
     memberName: new Map<string, string>(),
     archiveName: new Map<string, string>(),
@@ -361,14 +447,6 @@ export function parseReleaseTargetsFromString(text: string): readonly ReleaseTar
       );
     }
     seen.id.set(target.id, target.id);
-
-    const bunExisting = seen.bunTarget.get(target.bunTarget);
-    if (bunExisting !== undefined) {
-      throw new Error(
-        `release-targets: duplicate bunTarget for target ${target.id}: ${JSON.stringify(target.bunTarget)} already used by target ${bunExisting}`,
-      );
-    }
-    seen.bunTarget.set(target.bunTarget, target.id);
 
     const rawExisting = seen.rawName.get(target.rawName);
     if (rawExisting !== undefined) {

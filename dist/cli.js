@@ -17820,6 +17820,15 @@ function isVersionFlag(argv) {
 function runVersion(_argv) {
     const version = readPackageVersion();
     const stdout = `${version}\n`;
+    // Single write path: process.stdout.write. The test suite
+    // (cli-version.test.ts) mocks this and asserts the exact bytes
+    // emitted, so the test sees `0.6.0\n` in its captured stdout. In
+    // Node's normal pipe path this is synchronous for small writes (a few
+    // bytes) and the data reaches the kernel pipe buffer before
+    // runVersion returns. Under a Node SEA binary the auto-invoke path
+    // sets process.exitCode (not process.exit) so the stream's async
+    // drain is allowed to complete before the process exits, leaving
+    // the parent shell's `$(...)` capture non-empty.
     process.stdout.write(stdout);
     return { exitCode: 0, stdout };
 }
@@ -18167,23 +18176,52 @@ const isMainModule = (() => {
     if (globalThis.__umactually_action_entry__ === true) {
         return false;
     }
+    // The "this module is the entry" check is: import.meta.url matches
+    // pathToFileUrl(process.argv[1]). This is true for both the canonical
+    // CLI entry (argv1 = the cli.js path, import.meta.url = the file://
+    // URL of that path) and the SEA-binary case (argv1 = the binary
+    // path, import.meta.url = the file:// URL of the same path).
+    //
+    // The previous logic also required argv1 to end in `cli.js`. That
+    // was true for the npm-install path (argv1 = .../bin/umactually.mjs
+    // → shim → .../node_modules/umactually/dist/cli.js) but FALSE for
+    // a Node SEA binary where argv1 = the binary itself, e.g.
+    // `/usr/local/bin/umactually`. Combined with the fact that Node
+    // 25.7.0 SEA builds set process.versions.sea to `undefined` (not
+    // a boolean), the previous auto-invoke silently no-op'd on every
+    // SEA install: the binary started, the auto-invoke's first branch
+    // didn't match (sea is undefined), the URL match succeeded but the
+    // `cli.js` regex test failed, isMainModule returned false, main()
+    // never ran, runVersion never wrote, and the binary exited 0 with
+    // empty stdout. The release-pipeline-dry-run CI's
+    // `INSTALLED_VERSION=$(umactually --version)` capture was therefore
+    // always empty. The action entry's globalThis flag still gates
+    // the action path (its bundle sets the flag before reaching this
+    // module), so dropping the regex is safe.
     const argv1 = process.argv[1];
     if (argv1 === undefined) {
         return false;
     }
-    if (import.meta.url !== pathToFileUrl(argv1)) {
-        return false;
-    }
-    return /(^|[\\/])cli\.js$/u.test(argv1);
+    return import.meta.url === pathToFileUrl(argv1);
 })();
 if (isMainModule) {
     main(process.argv.slice(2))
         .then((exitCode) => {
-        process.exit(exitCode);
+        // Set exitCode and let Node exit naturally so stdout/stderr are
+        // fully flushed. `process.exit()` can close the stdout pipe
+        // before an in-flight `process.stdout.write()` from a synchronous
+        // command like `--version` completes its async drain to the
+        // captured-output pipe (`$(...)` in install.sh / the dry-run).
+        // The symptom is "exit 0 but empty stdout" — the smoke test in
+        // install.sh passes (exit code only, output redirected to
+        // /dev/null) but the dry-run's `INSTALLED_VERSION=$(...)`
+        // capture is empty. Setting `process.exitCode` and returning
+        // lets Node's normal exit path drain the pipe first.
+        process.exitCode = exitCode;
     })
         .catch((error) => {
         process.stderr.write(`cli: fatal: ${formatError(error)}\n`);
-        process.exit(1);
+        process.exitCode = 1;
     });
 }
 

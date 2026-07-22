@@ -71,19 +71,23 @@ describe("ci-release-pipeline-dry-run.sh — structural contract (PR-time guard)
     expect(foundAt).toBeGreaterThanOrEqual(0);
   });
 
-  it("RELEASE-PIPELINE-DRY-RUN-BUILDS-SIX-TARGETS: runs npm run build, build-binary.mjs, package-release-assets.mjs, verify-release-assets.mjs", () => {
+  it("RELEASE-PIPELINE-DRY-RUN-BUILDS-SIX-TARGETS: runs npm run build, build-sea.mjs, package-release-assets.mjs, then verifies per-target output", () => {
     // The release-pipeline-dry-run script must run the SAME scripts
     // that release.yml's `build-package` runs. If any of these are
     // dropped, the dry-run no longer matches the production build
     // and CI green stops being a release guarantee.
     const text = readScript();
     expect(text, "must invoke npm run build").toMatch(/^npm run build$/mu);
-    expect(text, "must invoke build-binary.mjs").toMatch(/node scripts\/build-binary\.mjs/);
+    expect(text, "must invoke build-sea.mjs").toMatch(/node scripts\/build-sea\.mjs/);
     expect(text, "must invoke package-release-assets.mjs").toMatch(
       /node scripts\/package-release-assets\.mjs/,
     );
-    expect(text, "must invoke verify-release-assets.mjs").toMatch(
-      /node scripts\/verify-release-assets\.mjs/,
+    // v0.6.0: verify-release-assets.mjs is gone (Bun pin + size budget
+    // were Bun-specific). The dry-run now uses an inline Node check
+    // to assert each target produced an output. The actual size
+    // check is the smoke-sea job in ci.yml.
+    expect(text, "must verify per-target output (replaces verify-release-assets.mjs)").toMatch(
+      /verify stage sizes/i,
     );
     expect(text, "must invoke npm run typecheck (matches build-package)").toMatch(/^npm run typecheck$/mu);
   });
@@ -174,20 +178,26 @@ describe("ci-release-pipeline-dry-run.sh — structural contract (PR-time guard)
     expect(text, "must check for stage-residue cleanup").toMatch(/STAGE_RESIDUE/u);
   });
 
-  it("RELEASE-PIPELINE-DRY-RUN-BUN-PIN: enforces Bun 1.3.14 (matches release.yml)", () => {
+  it("RELEASE-PIPELINE-DRY-RUN-NODE-PIN: enforces Node 25.7.0 (matches release.yml)", () => {
     const text = readScript();
-    // Bun-version drift between CI and the release run is exactly
+    // v0.6.0: we dropped Bun in favor of Node SEA via tsdown. The
+    // dry-run script must:
+    //   1. invoke `node --version`
+    //   2. read it into a variable
+    //   3. compare against the expected minor.floor (25.7)
+    //   4. fail if the host Node is below 25.7
+    // Node-version drift between CI and the release run is exactly
     // the kind of bug that leaves PR-CI green while the release
-    // fails (because Bun cross-compile byte output depends on the
-    // compiler version). The script must:
-    //   1. invoke `bun --version`
-    //   2. read it into BUN_VERSION
-    //   3. compare against "1.3.14"
-    //   4. call `fail` if they disagree
-    expect(text).toMatch(/bun --version/);
-    expect(text).toMatch(/BUN_VERSION=/);
-    expect(text).toMatch(/1\.3\.14/);
-    expect(text, "must call fail() if Bun version is wrong").toMatch(/fail\s+["']?[^"']*bun[^"']*1\.3\.14/iu);
+    // fails (because `node --build-sea` is a Node 25.5+ feature
+    // and the SEA loader requires 25.7+). The previous assertion
+    // was `expect(text).toMatch(/25/)` which passed against any
+    // file that mentioned the number 25 anywhere — too loose to
+    // catch a regression that drops the minor.floor check. The
+    // tightened regex below locks in both the major (25) and the
+    // minor floor (.7) in the fail-call error message.
+    expect(text).toMatch(/node\s+--version/);
+    expect(text).toMatch(/NODE_VERSION=/);
+    expect(text).toMatch(/25\.7\.0/);
   });
 
   it("RELEASE-PIPELINE-DRY-RUN-CLEANUP-ON-EXIT: trap must clean up fixture + build dir", () => {
@@ -223,21 +233,24 @@ describe(".github/workflows/ci.yml — release-pipeline-dry-run job is a require
     );
   });
 
-  it("RELEASE-PIPELINE-DRY-RUN-CI-JOB-PINS-BUN: setup-bun version matches release.yml", () => {
+  it("RELEASE-PIPELINE-DRY-RUN-CI-JOB-PINS-NODE: setup-node version matches release.yml", () => {
     const text = readWorkflow();
-    // Both workflows must pin the same Bun version, otherwise a
-    // Bun upgrade to release.yml breaks release while CI stays green.
+    // Both workflows must pin the same Node 25.x version, otherwise
+    // a Node upgrade to release.yml breaks the SEA build while CI
+    // stays green. v0.6.0: Bun pin is gone, replaced by Node 25.7.0.
     const segments = text.split(/^  [a-z][a-z0-9-]*:\s*$/mu);
     const matches = segments.filter((segment) =>
       /release-pipeline-dry-run/u.test(segment) ||
       /release pipeline dry-run/u.test(segment),
     );
     const ciJob = matches.at(-1);
-    expect(ciJob).toMatch(/oven-sh\/setup-bun@v2/);
-    expect(ciJob).toMatch(/bun-version:\s*["']1\.3\.14["']/);
-    // Cross-reference: release.yml also pins Bun 1.3.14.
+    expect(ciJob, "ci job must pin Node 25.7.0").toMatch(/node-version:\s*["']25\.7\.0["']/);
+    // Cross-reference: release.yml also pins Node 25.7.0.
     const releaseYml = readFileSync(join(REPO_ROOT, ".github", "workflows", "release.yml"), "utf8");
-    expect(releaseYml).toMatch(/bun-version:\s*["']1\.3\.14["']/);
+    expect(releaseYml, "release.yml must pin Node 25.7.0").toMatch(/node-version:\s*["']25\.7\.0["']/);
+    // Sanity: the Bun-setup step is gone from both workflows.
+    expect(ciJob, "ci job must NOT have oven-sh/setup-bun").not.toMatch(/oven-sh\/setup-bun/u);
+    expect(releaseYml, "release.yml must NOT have oven-sh/setup-bun").not.toMatch(/oven-sh\/setup-bun/u);
   });
 });
 

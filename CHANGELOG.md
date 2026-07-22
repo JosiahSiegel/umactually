@@ -10,6 +10,63 @@ ship a tag).
 
 ## [Unreleased]
 
+## [0.6.0] - 2026-07-21
+
+### Added
+
+- **Smart installer (opt-in)**: `scripts/install.sh` and `scripts/install.ps1` now check for Node 24+ on PATH at the very top, before any network work. When `INSTALL_TRY_NPM=1` is set and Node 24+ is available, they run `npm install -g umactually` and exit cleanly. The smart-router is **opt-in** for v0.6.0 because the `umactually` npm package is not yet published to the public registry — a default-on router would 404 on every fresh install until publish happens. By default the installer falls through to the existing single-file-binary download path (a ~30 MB Node SEA blob that bundles Node 25.7 and runs on any system without a pre-installed Node). When the npm package is published post-v0.6.0, the smart-router will fire by default. The `INSTALL_FORCE_BINARY=1` env var remains a defense-in-depth opt-out that always blocks the smart-router (useful for CI / locked-down environments).
+- **`npx umactually` and `bunx umactually` are first-class install paths.** The bin shim (`bin/umactually.mjs`) now does per-runtime detection: Node is gated against `>= 24.x` (matching `engines.node`), Bun against `>= 1.2.x` (Bun's actual version scheme is `1.x.y`, so the gate is a `(major, minor)` pair). When both runtimes are present, Node is preferred unless it is below the threshold; this keeps the error message honest and avoids silently accepting old Node when a modern Bun is also installed.
+- **Node SEA single-file binary via `tsdown --exe` (commit 1, 4, 6).** Replaces the Bun --compile pipeline. Built on `node --build-sea` (Node 25.5.0+, Joyee Cheung) which is the official path as of January 2026. The resulting binary bundles Node 25.7 and runs on any system without a pre-installed Node. Sizes:
+  - linux-x64 / arm64: ~70 MB raw, ~28 MB gzipped
+  - darwin-x64 / arm64: ~72 MB raw, ~29 MB gzipped
+  - windows-x64 / arm64: ~72 MB raw, ~28 MB gzipped
+- **CI smoke-sea job** (`.github/workflows/ci.yml`): builds the linux-x64 Node SEA binary on every PR and asserts `--version` and `doctor` both launch. Cross-platform smoke (macOS / Windows) is on the release workflow's per-target jobs.
+- **tsdown 0.22.13 + @tsdown/exe 0.22.13 as devDeps.** tsdown is the Rolldown-backed library bundler from the Vite team; `@tsdown/exe` downloads the target Node binary from nodejs.org for cross-platform builds.
+- **`plans/v0.6.0-distribution.md`** (commit-time, kept in the repo for posterity) and **`docs/distribution-architecture.md`** (user-facing, committed) explain the three install paths, the smart-router decision logic, and the build pipeline.
+- **New test fixtures**: `test/helpers/fake-tsdown-build.mjs` (test seam for `scripts/build-sea.mjs`) replaces `fake-bun-build.mjs`. Same shape, different tool.
+
+### Changed
+
+- **`scripts/install.sh` and `scripts/install.ps1`** now have an opt-in smart-router at the top (`INSTALL_TRY_NPM=1` gates the npm path). Default is the single-file-binary path because the `umactually` npm package is not yet published; the smart-router would 404 on every fresh install until publish happens. `INSTALL_FORCE_BINARY=1` is preserved as a defense-in-depth opt-out that always blocks the smart-router. The existing `INSTALL_TEST_MODE` contract is preserved.
+- **README § Install** now leads with the npm install path (`npm install -g umactually`), mentions `npx umactually` and `bunx umactually` as alternatives, and frames the curl-pipe installer as a "smart router" rather than the primary path.
+- **`.github/workflows/release.yml`**: Node version bumped from 24.18.0 to 25.7.0 (required for `node --build-sea`). The Bun setup step is gone. The cross-compile step now calls `scripts/build-sea.mjs` instead of `scripts/build-binary.mjs`. The `verify-release-assets.mjs --bun-version` step is replaced with an inline per-target output presence check.
+- **`scripts/release-targets.json`**: the `bunTarget` field is gone from all 6 entries. Node SEA derives platform/arch from the `id` field directly (e.g. `darwin-arm64` → darwin/arm64).
+- **`scripts/release-targets.ts`** parser drops the `bunTarget` field declaration, allowed-key list, parse logic, and duplicate-bunTarget uniqueness check.
+- **`docs/release-process.md`** § "Compressed transfer vs installed size" updated to reference Node SEA instead of Bun.
+- **`.npmrc`** added with `engine-strict=false` so Node 24 contributors can install devDeps that require Node 25.7 (tsdown, @tsdown/exe). The build scripts enforce the Node 25.7+ check themselves with a clear error.
+
+### Removed
+
+- **`scripts/build-binary.mjs`** — Bun --compile pipeline (replaced by `scripts/build-sea.mjs`).
+- **`scripts/verify-release-assets.mjs`** (and `.d.ts`) — Bun-version-pinned size check.
+- **`scripts/release-size-budget.json`** — Bun-calibrated budget. The new size check is per-target output presence + the smoke-sea CI job.
+- **`test/unit/build-binary.test.ts`**, **`test/unit/release-budget.test.ts`**, **`test/unit/release-assets.test.ts`** — replaced by `test/unit/build-sea.test.ts` (commit 1).
+- **`test/helpers/fake-bun-build.mjs`** — replaced by `fake-tsdown-build.mjs`.
+
+### Stats
+
+- Source code: +1,196 / −2,128 lines (net -932). 4 scripts deleted, 5 scripts modified, 1 new test helper, 3 new tests (`build-sea.test.ts`, `bin-shim-version-gate.test.ts`, `install-smart-router.test.ts`).
+- Test counts: 1,566 → ~1,539 unit tests (net −27). The 4 new test files add 13 cases (5 build-sea skipped on Node < 25, 4 bin-shim, 4 install-router, ~1 win-PowerShell install-archives) but 40 cases are removed by deleting the 4 v0.5.x Bun-pipeline test files (`build-binary.test.ts` ~4, `release-budget.test.ts` ~17, `release-assets.test.ts` ~16, `release-workflow-layout.test.ts` ~3) whose coverage is replaced by `build-sea.test.ts` + the smoke-sea CI job.
+- Binary size: 36 MB gzipped (Bun) → 28 MB gzipped (Node SEA) for the per-target archives. The npm package is 330 KB; the binary is the fallback for users without Node.
+- Build matrix: 6 cross-compile lanes (linux x64/arm64, darwin x64/arm64, windows x64/arm64) on `ubuntu-24.04` only. tsdown downloads the target Node binary from nodejs.org for cross-platform builds, so the matrix is `[ubuntu-24.04]` for build instead of `[ubuntu, macos, windows]`.
+
+## [0.5.9] - 2026-07-21
+
+### Added
+
+- **Built-in `umactually uninstall` subcommand** (PR #102). Mirrors the `doctor` structure: `--remove-binary` (default) / `--no-remove-binary` / `--purge-config` / `--revert-path` / `--yes, -y` / `--json` / `--help, -h`. Emits one `UninstallCheck` per action (id ∈ `exec-path`, `binary-removal`, `config-removal`, `cache-removal`, `path-revert`, `self-deletion`) and exits `0` (success), `1` (user declined), or `2` (unsafe exec path or non-interactive destructive flag without `--yes`). Refuses to unlink symlinks, refuses if `process.execPath` is not on the allowlist, and on Windows schedules a delayed-delete helper (`%TEMP%\umactually-uninstall-<pid>-<ts>.cmd`) to work around the write-lock on a running binary. `umactually uninstall --purge-config` removes both `~/.umactually/` and `~/.cache/umactually/`. The pre-existing `scripts/uninstall.sh` is kept for back-compat.
+- **`scripts/install.sh --ssl-no-revoke`** (PR #100). Windows Git Bash ships with a `curl` linked against `schannel`, which performs CRL/OCSP checks and frequently fails on offline revocation servers with `CRYPT_E_REVOCATION_OFFLINE (0x80092013)`. The installer now auto-detects `schannel` builds, prints a one-line hint pointing at `--ssl-no-revoke`, accepts `--ssl-no-revoke` as a positional argument, and reactively retries a failed `curl` with `--ssl-no-revoke` appended when the failure looks like a schannel revocation error. macOS and Linux are unaffected.
+
+### Changed
+
+- **README § Install** (PR #101). The Schannel workaround is now promoted above the first install example. Windows users with `CRYPT_E_REVOCATION_OFFLINE` see the fix before they try the one-liner.
+- **PR self-review workflow** (PR #103). `continue-on-error: true` on the self-review step is replaced with explicit failure surfacing (the workflow now fails fast on a non-zero self-review exit) and the per-request timeout is raised to 240 seconds. This makes self-review visible as a real CI gate rather than a silent advisory, and accommodates the 4s+ retry backoff added to the Anthropic + OpenAI-compatible providers. The Anthropic + OpenAI-compatible providers now treat `timeout` as a retryable error class (`isRetryable` includes "timeout"), so a transient `AbortController` fire auto-retries once before surfacing.
+
+### Stats
+
+- Tests: 1502 → 1566 passing in the full unit suite (+64 from PR #102 alone: 6 new tests in `cli-uninstall.test.ts`; 2 in `anthropic-messages.test.ts` for ANTH-RED-007/008 retry-on-timeout). 121 platform-skipped tests are unchanged.
+- Files: 10 changed / 2002 insertions / 17 deletions (PR #102 squash); 4 changed / 24 insertions (PR #103 squash); 1 changed (PR #101).
+
 ## [0.5.8] - 2026-07-21
 
 ### Fixed

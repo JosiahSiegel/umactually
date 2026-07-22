@@ -46,7 +46,7 @@
 #
 # Required environment (set by CI):
 #   NODE_VERSION      Node 24 (mirrors release.yml pin)
-#   BUN_VERSION       Bun 1.3.14 (mirrors release.yml pin)
+#   NODE_VERSION       Node 25.7.0 (mirrors release.yml pin)
 #
 # Local usage:
 #   bash scripts/ci-release-pipeline-dry-run.sh
@@ -92,18 +92,41 @@ cleanup() {
   rm -rf "${BUILD_DIR}" "${FAKE_HOME}" "${TMP_PUBLIC}" 2>/dev/null
 }
 
-# ----- 1. Bun + Node preamble -----
+# ----- 1. Node preamble -----
 log() { printf '[dry-run] %s\n' "$*" >&2; }
 fail() { printf '[dry-run] FAIL: %s\n' "$*" >&2; exit 1; }
 
-if ! command -v bun >/dev/null 2>&1; then
-  fail "bun not on PATH; CI installs oven-sh/setup-bun@v2 with bun-version 1.3.14"
+if ! command -v node >/dev/null 2>&1; then
+  fail "node not on PATH; CI installs actions/setup-node@v4 with node-version 25.7.0"
 fi
-BUN_VERSION="$(bun --version)"
-if [[ "${BUN_VERSION}" != "1.3.14" ]]; then
-  fail "expected bun 1.3.14, got ${BUN_VERSION}. CI pins via oven-sh/setup-bun@v2."
+NODE_VERSION="$(node --version)"
+NODE_MAJOR="${NODE_VERSION#v}"
+NODE_MAJOR="${NODE_MAJOR%%.*}"
+# The Node SEA loader requires Node >= 25.7.0; pinning to 25.0.0
+# (or any earlier 25.x) would pass the major-version check but fail
+# the actual loader. Verify the minor.patch as well. Use Bash's
+# `printf '%d\\n'` to coerce the "X.Y" string to a single integer
+# `X*100 + Y` so the comparison is purely numeric and the lexicographic
+# trap (where "10.0" < "9.0" because '1' < '9' as characters) cannot
+# fire even if a future Node 25.10.0 / 25.11.0 ships.
+# Pre-release tags (e.g. `v25.7.0-rc.1`) would otherwise crash the
+# arithmetic expansion because `${NODE_MINOR_PATCH#*.}` yields
+# `7.0-rc.1` which is not an integer. Guard with a regex that
+# accepts strictly `v<digit>+.<digit>+.<digit>+`; for anything else,
+# the major+min+patch string is logged verbatim and the script
+# re-runs the parse on the numeric form if available. We fail
+# closed on a pre-release tag to mirror the assertNodeVersion() check
+# in scripts/build-sea.mjs.
+NODE_MINOR_PATCH="${NODE_VERSION#v}"
+NODE_MINOR_PATCH="${NODE_MINOR_PATCH#*.}"
+if [[ ! "${NODE_MINOR_PATCH%%.*}" =~ ^[0-9]+$ ]] || [[ ! "${NODE_MINOR_PATCH#*.}" =~ ^[0-9]+$ ]]; then
+  fail "expected node >= 25.7.0 (numeric minor.patch), got ${NODE_VERSION}. CI pins via actions/setup-node@v4 with node-version 25.7.0."
 fi
-log "bun ${BUN_VERSION} + node $(node --version)"
+NODE_MINOR_PATCH_NUM=$(( ${NODE_MINOR_PATCH%%.*} * 100 + ${NODE_MINOR_PATCH#*.} ))
+if [[ "${NODE_MAJOR}" != "25" ]] || [[ "${NODE_MINOR_PATCH_NUM}" -lt 700 ]]; then
+  fail "expected node >= 25.7.0, got ${NODE_VERSION}. CI pins via actions/setup-node@v4 with node-version 25.7.0."
+fi
+log "node ${NODE_VERSION}"
 
 # ----- 2. Build (mirrors build-package steps 1-7) -----
 log "1/9  npm ci"
@@ -115,26 +138,40 @@ npm run typecheck
 log "3/9  npm run build (dist/ + post-bundle)"
 npm run build
 
-log "4/9  build-binary.mjs → release-build/{internal/raw,public} after stage"
-node scripts/build-binary.mjs
+log "4/9  build-sea.mjs → release-build/{internal/raw,public} after stage"
+node scripts/build-sea.mjs
 
 log "5/9  package-release-assets.mjs → archives + checksums.txt"
 node scripts/package-release-assets.mjs \
   --manifest scripts/release-targets.json \
   --release-dir release
 
-log "6/9  verify-release-assets.mjs --measure"
-# Read the budget's bunVersion field directly via Node — release.yml
-# does this with the same `--bun-version` flag. We capture the value
-# to a variable first so the inline command substitution's quote
-# nesting doesn't fight the bash parser on multi-line continuations.
-BUN_VERSION_PIN="$(node -e "console.log(JSON.parse(require('fs').readFileSync('scripts/release-size-budget.json','utf8')).bunVersion)")"
-node scripts/verify-release-assets.mjs \
+log "6/9  verify stage sizes (replaces verify-release-assets.mjs --measure)"
+# The v0.5.x verify-release-assets.mjs checked Bun-version-pin
+# consistency against release-size-budget.json. In v0.6.0 we
+# dropped both the Bun pin and the budget file (Node SEA is the
+# official path; tsdown's --exe already enforces bundle size
+# internally). The smoke-sea job in ci.yml is the runtime check;
+# here we apply the same MIN/MAX sanity check the release workflow
+# applies so the dry-run and the release build enforce one set of
+# bounds. The check itself lives in scripts/verify-release-sizes.mjs
+# (also called by release.yml) so the thresholds and the
+# size-report JSON shape are owned by one module — bumping
+# MIN/MAX in two places is a footgun that already bit us once
+# in the v0.6.0-dev cycle.
+node scripts/verify-release-sizes.mjs \
   --manifest scripts/release-targets.json \
-  --release-dir release \
-  --measure \
-  --bun-version "${BUN_VERSION_PIN}" \
-  --report "${SIZE_REPORT}"
+  --release-dir release
+# Lock the size-report location so a future default-path drift in
+# verify-release-sizes.mjs (or a future flag rename) cannot
+# silently leave the JSON somewhere the release workflow's
+# downstream consumers won't find. The dry-run and release.yml
+# both pass --release-dir release and rely on the default
+# <release-dir>/internal/release-size-report.json path.
+if [[ ! -f "${SIZE_REPORT}" ]]; then
+  fail "expected size report at ${SIZE_REPORT} after step 6, but it was not written. verify-release-sizes.mjs may have changed its default --report path; pin --report explicitly to ${SIZE_REPORT}."
+fi
+log "  size report: ${SIZE_REPORT} ($(wc -c < "${SIZE_REPORT}") bytes)"
 
 # ----- 3. Stage into release/public/ + internal/raw/ -----
 # Use the same staging script the release-pipeline uses (lifted out
@@ -147,7 +184,6 @@ node scripts/stage-release-assets.mjs \
   --release-dir release \
   --manifest scripts/release-targets.json
 
-test -f "${SIZE_REPORT}"
 test -d "${PUBLIC_DIR}"
 test -d "${RAW_DIR}"
 ARCHIVE_COUNT=$(ls -1 "${PUBLIC_DIR}" | wc -l | tr -d '[:space:]')
