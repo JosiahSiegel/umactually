@@ -178,7 +178,15 @@ jobs:
           # public/ directory. The merger will recompute again over
           # the merged public/, so the values here are only consumed
           # by the post-staging self-check.
-          (cd release/public && sha256sum -- *.tar.gz *.zip > checksums.txt)
+          # NOTE: we use `sha256sum -- *` (all files) rather than
+          # `sha256sum -- *.tar.gz *.zip`. The pattern *.zip is a
+          # no-op now (we just deleted the .zip files), and bash's
+          # nullglob would still pass the literal `*.zip` string to
+          # sha256sum which then fails with
+          # "'*.zip': No such file or directory". The `*` form
+          # matches whatever files remain (only *.tar.gz) and is
+          # equally self-documenting.
+          (cd release/public && sha256sum -- * > checksums.txt)
           test ! -f release/public/umactually-windows-x64.zip
           test ! -f release/public/umactually-windows-arm64.zip
           ls -la release/public
@@ -252,9 +260,26 @@ jobs:
         shell: bash
         run: npm run build
 
-      - name: Cross-compile Node SEA standalone binaries
+      - name: Build Windows SEA standalone binaries
+        # v0.6.4: switched from `node scripts/build-sea.mjs` (which
+        # delegates to @tsdown/exe) to `node scripts/build-sea-windows.mjs`.
+        # @tsdown/exe's tar-based Node binary download path is broken on
+        # Windows: tar on Windows interprets the colon in
+        # `https://nodejs.org/dist/.../node-v25.7.0-win-x64.zip` as a
+        # drive letter (`C:`) and exits with
+        # "Cannot connect to C: resolve failed" (origin: @tsdown/exe
+        # dist/index.mjs:163, `extractBinary`).
+        #
+        # The new script uses `node --build-sea=<config>` directly
+        # (Node 25.5+ core command) with config.output pointing at the
+        # final binary path. The injection happens in-place into
+        # `process.execPath` (the Windows Node binary already installed
+        # by `actions/setup-node`), so the output is a real Windows
+        # .exe. No separate download, no tar, no concat. The script is
+        # Linux-rejected (asserts process.platform === "win32") so it
+        # cannot accidentally run in the wrong job.
         shell: bash
-        run: node scripts/build-sea.mjs
+        run: node scripts/build-sea-windows.mjs
 
       - name: Package release assets (archives + checksums)
         shell: bash
