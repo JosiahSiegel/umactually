@@ -1,4 +1,4 @@
-import { readFileSync, realpathSync, writeFileSync } from "node:fs";
+import { readFileSync, realpathSync, writeFileSync, writeSync } from "node:fs";
 import { rm } from "node:fs/promises";
 import { join } from "node:path";
 
@@ -117,17 +117,26 @@ export function runVersion(_argv: readonly string[]): { readonly exitCode: 0; re
   //
   // Fallback: if the fd-based write fails (e.g. process.stdout.fd is
   // not a valid fd in an unusual stdio wrapper, or the kernel reports
-  // EBADF / EIO / EPIPE), fall back to process.stdout.write. We only
-  // catch the narrow family of "this fd is not a writable pipe" errors
-  // — TypeError and other programmer errors are deliberately not
-  // swallowed so they surface during development. The fallback path
-  // is exercised by cli-version.test.ts's "falls back to stdout.write
-  // when writeFileSync throws EBADF" case.
+  // EBADF / EIO / EPIPE), fall back to writeSync — a single write(2)
+  // syscall on the supplied fd. This is the same fix as the
+  // canonical path (synchronous fd write to the kernel pipe buffer)
+  // but with a single syscall rather than the open+write+close that
+  // writeFileSync would do if the second arg were a path. We
+  // deliberately do NOT fall back to process.stdout.write here —
+  // that re-introduces the stream-buffer race the canonical path
+  // exists to fix (the parent shell's `$(umactually --version)`
+  // would lose bytes on macOS/Windows again, exactly the bug we
+  // just fixed). We only catch the narrow family of "this fd is
+  // not a writable pipe" errors — TypeError and other programmer
+  // errors are deliberately not swallowed so they surface during
+  // development. The fallback path is exercised by cli-version.
+  // test.ts's "falls back to writeSync when writeFileSync throws
+  // EBADF" case.
   try {
     writeFileSync(process.stdout.fd, Buffer.from(stdout));
   } catch (err) {
     if (!(err instanceof Error) || !isStdIoWriteError(err)) throw err;
-    process.stdout.write(stdout);
+    writeSync(process.stdout.fd, Buffer.from(stdout));
   }
   return { exitCode: 0, stdout };
 }
