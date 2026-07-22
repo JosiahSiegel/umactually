@@ -1,4 +1,4 @@
-import { readFileSync, realpathSync, writeFileSync, writeSync } from "node:fs";
+import { readFileSync, realpathSync, writeFileSync } from "node:fs";
 import { rm } from "node:fs/promises";
 import { join } from "node:path";
 
@@ -93,7 +93,7 @@ export function isVersionFlag(argv: readonly string[]): boolean {
 export function runVersion(_argv: readonly string[]): { readonly exitCode: 0; readonly stdout: string } {
   const version = readPackageVersion();
   const stdout = `${version}\n`;
-  // Single canonical write path: writeFileSync(process.stdout.fd, Buffer.from(stdout)).
+  // Single canonical write path: writeFileSync(process.stdout.fd, stdout).
   //
   // Why synchronous: under a Node SEA binary, `process.stdout.write` is
   // stream-buffered; the auto-invoke resolves the main() promise and
@@ -106,48 +106,30 @@ export function runVersion(_argv: readonly string[]): { readonly exitCode: 0; re
   // returns. The parent shell's `$(umactually --version)` capture
   // reads from that kernel buffer and is non-empty on every platform.
   //
-  // Why Buffer.from(stdout) instead of `stdout` directly: passing a
-  // string to writeFileSync on a non-text-mode fd (which stdout is —
-  // it's a raw byte pipe, not a Node text-mode file handle) writes
-  // only the low 8 bits of each code unit, silently corrupting any
-  // non-ASCII output. The version string is ASCII-only today, but a
-  // future pre-release tag like `1.0.0-α` or a localized version would
-  // lose data. Buffer.from(stdout) keeps the write byte-faithful
-  // regardless of encoding.
+  // Why a string here, not Buffer.from(stdout): empirically (and
+  // verified by the v0.6.0 → v0.6.2 regression cycle) `writeFileSync(
+  // fd, string)` works on Windows in a Node SEA binary, but
+  // `writeFileSync(fd, Buffer.from(string))` produces an empty
+  // captured stdout in the same harness. The Node typings accept both,
+  // and on Linux / macOS the Buffer form works fine, so the
+  // difference is Windows-specific (likely a text-mode-vs-binary-mode
+  // fd handling quirk in Node's writeFileSync polyfill on Windows).
+  // The version string is ASCII-only so the theoretical
+  // non-ASCII-corruption concern doesn't apply.
   //
-  // Fallback: if the fd-based write fails (e.g. process.stdout.fd is
-  // not a valid fd in an unusual stdio wrapper, or the kernel reports
-  // EBADF / EIO / EPIPE), fall back to writeSync — a single write(2)
-  // syscall on the supplied fd. This is the same fix as the
-  // canonical path (synchronous fd write to the kernel pipe buffer)
-  // but with a single syscall rather than the open+write+close that
-  // writeFileSync would do if the second arg were a path. We
-  // deliberately do NOT fall back to process.stdout.write here —
-  // that re-introduces the stream-buffer race the canonical path
-  // exists to fix (the parent shell's `$(umactually --version)`
-  // would lose bytes on macOS/Windows again, exactly the bug we
-  // just fixed). We only catch the narrow family of "this fd is
-  // not a writable pipe" errors — TypeError and other programmer
-  // errors are deliberately not swallowed so they surface during
-  // development. The fallback path is exercised by cli-version.
-  // test.ts's "falls back to writeSync when writeFileSync throws
-  // EBADF" case.
+  // Fallback: if the fd-based write fails, fall back to
+  // process.stdout.write. We swallow the error because the fallback
+  // is best-effort (if BOTH paths fail, the user gets an empty
+  // --version output, which is no worse than the pre-fix behavior).
+  // The fallback path is exercised by cli-version.test.ts's "falls
+  // back to process.stdout.write when writeFileSync throws EBADF"
+  // case.
   try {
-    writeFileSync(process.stdout.fd, Buffer.from(stdout));
-  } catch (err) {
-    if (!(err instanceof Error) || !isStdIoWriteError(err)) throw err;
-    writeSync(process.stdout.fd, Buffer.from(stdout));
+    writeFileSync(process.stdout.fd, stdout);
+  } catch {
+    process.stdout.write(stdout);
   }
   return { exitCode: 0, stdout };
-}
-
-function isStdIoWriteError(err: Error): boolean {
-  // EBADF (fd invalid) and EIO / EPIPE (pipe closed mid-write) are the
-  // errors that mean "this write path can't reach the parent's
-  // captured stdout". Everything else (TypeError, EACCES, EMFILE,
-  // ENOSPC, etc.) is a real problem we want to surface, not swallow.
-  const code = (err as NodeJS.ErrnoException).code;
-  return code === "EBADF" || code === "EIO" || code === "EPIPE";
 }
 
 /**
