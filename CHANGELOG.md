@@ -10,6 +10,46 @@ ship a tag).
 
 ## [Unreleased]
 
+## [0.6.0] - 2026-07-21
+
+### Added
+
+- **Smart installer**: `scripts/install.sh` and `scripts/install.ps1` now check for Node 24+ on PATH at the very top, before any network work. If a recent Node is available, they run `npm install -g umactually` and exit cleanly. Otherwise they fall through to the existing single-file-binary download path. This ships ~330 KB via npm instead of ~30 MB via the binary for users with Node installed.
+- **`npx umactually` and `bunx umactually` are first-class install paths.** The bin shim (`bin/umactually.mjs`) now reads the major from `process.versions.node ?? process.versions.bun` (Math.max fallback), so it accepts both runtimes.
+- **Node SEA single-file binary via `tsdown --exe` (commit 1, 4, 6).** Replaces the Bun --compile pipeline. Built on `node --build-sea` (Node 25.5.0+, Joyee Cheung) which is the official path as of January 2026. The resulting binary bundles Node 25.7 and runs on any system without a pre-installed Node. Sizes:
+  - linux-x64 / arm64: ~70 MB raw, ~28 MB gzipped
+  - darwin-x64 / arm64: ~72 MB raw, ~29 MB gzipped
+  - windows-x64 / arm64: ~72 MB raw, ~28 MB gzipped
+- **CI smoke-sea job** (`.github/workflows/ci.yml`): builds the linux-x64 Node SEA binary on every PR and asserts `--version` and `doctor` both launch. Cross-platform smoke (macOS / Windows) is on the release workflow's per-target jobs.
+- **tsdown 0.22.13 + @tsdown/exe 0.22.13 as devDeps.** tsdown is the Rolldown-backed library bundler from the Vite team; `@tsdown/exe` downloads the target Node binary from nodejs.org for cross-platform builds.
+- **`plans/v0.6.0-distribution.md`** (commit-time, kept in the repo for posterity) and **`docs/distribution-architecture.md`** (user-facing, committed) explain the three install paths, the smart-router decision logic, and the build pipeline.
+- **New test fixtures**: `test/helpers/fake-tsdown-build.mjs` (test seam for `scripts/build-sea.mjs`) replaces `fake-bun-build.mjs`. Same shape, different tool.
+
+### Changed
+
+- **`scripts/install.sh` and `scripts/install.ps1`** now have a smart-router at the top. Bypass with `INSTALL_FORCE_BINARY=1`. The existing `INSTALL_TEST_MODE` contract is preserved.
+- **README § Install** now leads with the npm install path (`npm install -g umactually`), mentions `npx umactually` and `bunx umactually` as alternatives, and frames the curl-pipe installer as a "smart router" rather than the primary path.
+- **`.github/workflows/release.yml`**: Node version bumped from 24.18.0 to 25.7.0 (required for `node --build-sea`). The Bun setup step is gone. The cross-compile step now calls `scripts/build-sea.mjs` instead of `scripts/build-binary.mjs`. The `verify-release-assets.mjs --bun-version` step is replaced with an inline per-target output presence check.
+- **`scripts/release-targets.json`**: the `bunTarget` field is gone from all 6 entries. Node SEA derives platform/arch from the `id` field directly (e.g. `darwin-arm64` → darwin/arm64).
+- **`scripts/release-targets.ts`** parser drops the `bunTarget` field declaration, allowed-key list, parse logic, and duplicate-bunTarget uniqueness check.
+- **`docs/release-process.md`** § "Compressed transfer vs installed size" updated to reference Node SEA instead of Bun.
+- **`.npmrc`** added with `engine-strict=false` so Node 24 contributors can install devDeps that require Node 25.7 (tsdown, @tsdown/exe). The build scripts enforce the Node 25.7+ check themselves with a clear error.
+
+### Removed
+
+- **`scripts/build-binary.mjs`** — Bun --compile pipeline (replaced by `scripts/build-sea.mjs`).
+- **`scripts/verify-release-assets.mjs`** (and `.d.ts`) — Bun-version-pinned size check.
+- **`scripts/release-size-budget.json`** — Bun-calibrated budget. The new size check is per-target output presence + the smoke-sea CI job.
+- **`test/unit/build-binary.test.ts`**, **`test/unit/release-budget.test.ts`**, **`test/unit/release-assets.test.ts`** — replaced by `test/unit/build-sea.test.ts` (commit 1).
+- **`test/helpers/fake-bun-build.mjs`** — replaced by `fake-tsdown-build.mjs`.
+
+### Stats
+
+- Source code: +1,196 / −2,128 lines (net -932). 4 scripts deleted, 5 scripts modified, 1 new test helper, 3 new tests (`build-sea.test.ts`, `bin-shim-version-gate.test.ts`, `install-smart-router.test.ts`).
+- Test counts: 1,566 → ~1,575 unit tests. The 4 new test files add ~10 cases (5 build-sea skip on Node < 25, 4 bin-shim, 4 install-router; the PowerShell test skips on Linux).
+- Binary size: 36 MB gzipped (Bun) → 28 MB gzipped (Node SEA) for the per-target archives. The npm package is 330 KB; the binary is the fallback for users without Node.
+- Build matrix: 6 cross-compile lanes (linux x64/arm64, darwin x64/arm64, windows x64/arm64) on `ubuntu-24.04` only. tsdown downloads the target Node binary from nodejs.org for cross-platform builds, so the matrix is `[ubuntu-24.04]` for build instead of `[ubuntu, macos, windows]`.
+
 ## [0.5.9] - 2026-07-21
 
 ### Added
