@@ -281,19 +281,51 @@ jobs:
         shell: bash
         run: node scripts/build-sea-windows.mjs
 
-      - name: Package release assets (archives + checksums)
+      - name: Write windows-only release manifest
+        # The Windows producer only built windows-x64 + windows-arm64.
+        # The verifier and stage-release-assets iterate over the
+        # manifest and would report the missing linux/darwin raw
+        # files as MISSING. Write a filtered manifest to a side file
+        # and pass it to those two steps. The packager takes a
+        # different code path (--members regex) so it can use the
+        # full manifest.
+        #
+        # The output goes to scripts/release-targets.windows.json.
+        # scripts/ is gitignored; release/ is the uploaded artifact
+        # and would carry the filtered manifest into the public
+        # release if we wrote it there.
+        shell: bash
+        run: |
+          node scripts/write-filtered-manifest.mjs \
+            --input scripts/release-targets.json \
+            --output scripts/release-targets.windows.json \
+            --include '^windows-'
+
+      - name: Package release assets (windows-only archives + checksums)
+        # --members regex filters the packager's iteration to just
+        # the windows-* targets. The full manifest would error on
+        # the missing linux/darwin raw files because this job never
+        # built them. (parseReleaseTargets validates the full
+        # manifest has 5 targets, so we cannot pass a windows-only
+        # manifest here — the regex filter is the documented escape
+        # hatch.)
         shell: bash
         run: |
           mkdir -p release/public release/internal/raw
           node scripts/package-release-assets.mjs \
             --manifest scripts/release-targets.json \
-            --release-dir release
+            --release-dir release \
+            --members '^windows-'
 
-      - name: Compute release-size report
+      - name: Compute release-size report (windows-only)
+        # verify-release-sizes accepts any manifest shape (it does
+        # not go through parseReleaseTargets), so the windows-only
+        # manifest is fine here and only checks the windows-x64 +
+        # windows-arm64 raw files this job produced.
         shell: bash
         run: |
           node scripts/verify-release-sizes.mjs \
-            --manifest scripts/release-targets.json \
+            --manifest scripts/release-targets.windows.json \
             --release-dir release
 
       - name: Lock release-size-report.json path
@@ -301,21 +333,29 @@ jobs:
         run: test -f release/internal/release-size-report.json
 
       - name: Stage candidate bundle
+        # stage-release-assets accepts any manifest shape too, so
+        # the windows-only manifest is fine here.
         shell: bash
         run: |
           node scripts/stage-release-assets.mjs \
             --release-dir release \
-            --manifest scripts/release-targets.json
+            --manifest scripts/release-targets.windows.json
           ls -la release/public
           ls -la release/internal/raw
           test -f release/internal/release-size-report.json
 
       - name: Drop non-Windows outputs from the Windows bundle
-        # The build above produces all 5 binaries, but this job is
-        # only responsible for the Windows halves of the release.
-        # Strip the linux + darwin archives and raws from release/
-        # before uploading so the merger (build-package) only sees
-        # this job's targets in this artifact.
+        # This job only built the windows-x64 + windows-arm64
+        # binaries, so there are no non-Windows files to drop. The
+        # `rm -f` calls are no-ops (and the `test ! -f` self-check
+        # passes vacuously) — they remain as documentation of
+        # which targets this job is responsible for AND as a guard
+        # against a future change that introduces a cross-platform
+        # build step in this job (e.g. a tsdown config flip that
+        # builds linux binaries on Windows). The `sha256sum -- *`
+        # form matches whatever files exist in public/ (currently
+        # only the windows .zip files); the `*.zip` glob is fragile
+        # on Windows bash when no .tar.gz files exist.
         shell: bash
         run: |
           set -euo pipefail
@@ -325,7 +365,7 @@ jobs:
           rm -f release/internal/raw/umactually-linux-x64
           rm -f release/internal/raw/umactually-linux-arm64
           rm -f release/internal/raw/umactually-darwin-arm64
-          (cd release/public && sha256sum -- *.tar.gz *.zip > checksums.txt)
+          (cd release/public && sha256sum -- * > checksums.txt)
           test ! -f release/public/umactually-linux-x64.tar.gz
           test ! -f release/public/umactually-linux-arm64.tar.gz
           test ! -f release/public/umactually-darwin-arm64.tar.gz
