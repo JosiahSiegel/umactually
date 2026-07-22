@@ -56,16 +56,48 @@ try {
 # handler (`-ssl-no-revoke` / `-SChannelOptOut` / etc) or the env
 # var directly. The env var is the POSIX equivalent (`INSTALL_SSL_NO_REVOKE=1`)
 # that the README documents for install.sh.
+#
+# v0.6.0 caveat: this setting ONLY takes effect on Windows PowerShell
+# 5.1 (where Invoke-WebRequest uses the legacy HttpWebRequest
+# pipeline that respects ServicePointManager). On PowerShell Core
+# (the standard on `windows-latest` since 2020, and the default on
+# modern Windows installs), PowerShell 7+ routes Invoke-WebRequest
+# through HttpClient, which does NOT consult
+# ServicePointManager::CheckCertificateRevocationList. The setting
+# silently no-ops on PS Core — Invoke-WebRequest still hits
+# CRL/OCSP and the user sees the original `CRYPT_E_REVOCATION_OFFLINE`
+# failure even with `INSTALL_SSL_NO_REVOKE=1`. We surface this with
+# a visible Write-Warning (not just Write-Verbose) so a user who
+# copy/pasted the README's `irm .../install.ps1 | iex -ssl-no-revoke`
+# line on PS Core immediately knows the flag didn't work and can
+# fall back to install.sh (which honors the env var for real via
+# the `curl --ssl-no-revoke` path).
 if ($env:INSTALL_SSL_NO_REVOKE -eq '1') {
+  # $PSEdition is 'Core' on PowerShell 7+ and 'Desktop' on Windows
+  # PowerShell 5.1. We gate the user-facing warning on this so PS 5.1
+  # users (the only runtime where the setting actually takes effect)
+  # do not see a false-positive warning.
+  $isPsCore = ($PSVersionTable.PSEdition -eq 'Core') -or ($PSVersionTable.Platform -eq 'Unix')
   try {
     [System.Net.ServicePointManager]::CheckCertificateRevocationList = $false
+    if ($isPsCore) {
+      Write-Warning ("--ssl-no-revoke: this PowerShell runtime (" +
+        $PSVersionTable.PSVersion.ToString() + ", edition=" +
+        $PSVersionTable.PSEdition + ") routes Invoke-WebRequest through " +
+        "HttpClient, which does NOT honor ServicePointManager's " +
+        "CheckCertificateRevocationList. The setting above is a no-op. " +
+        "Use install.sh instead (curl --ssl-no-revoke honors this env var " +
+        "for real), or run this script under Windows PowerShell 5.1.")
+    }
   } catch {
-    # PowerShell Core's ServicePointManager does not honor this
-    # setting (it uses HttpClient internally, not HttpWebRequest).
-    # The legacy / archive paths below will fall through to a
-    # curl-equivalent on Git Bash; install.sh remains the supported
-    # path for users on this runtime.
-    Write-Verbose "ServicePointManager revocation check setting not supported on this runtime"
+    # The catch path covers non-Windows PS Core where the
+    # ServicePointManager type is not even available. The warning
+    # above already tells the user to use install.sh; we do not
+    # double-warn here.
+    Write-Warning ("--ssl-no-revoke: ServicePointManager not available on " +
+      "this runtime (" + $PSVersionTable.PSVersion.ToString() + ", " +
+      "edition=" + $PSVersionTable.PSEdition + "). The bypass has no " +
+      "effect; use install.sh (curl --ssl-no-revoke) instead.")
   }
 }
 

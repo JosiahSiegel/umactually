@@ -667,6 +667,71 @@ describe.skipIf(!PS_AVAILABLE)("install.ps1 8-case override matrix", () => {
     expect(settingBlock).toMatch(/INSTALL_SSL_NO_REVOKE/u);
   });
 
+  it("PS-MATRIX-SSL-NO-REVOKE: surfaces a visible warning on PowerShell Core (HttpClient no-op)", () => {
+    // ServicePointManager::CheckCertificateRevocationList is only
+    // respected by the legacy HttpWebRequest pipeline that
+    // Windows PowerShell 5.1's Invoke-WebRequest uses. PowerShell
+    // 7+ (the default on `windows-latest` since 2020) routes
+    // Invoke-WebRequest through HttpClient, which ignores the
+    // setting — so `--ssl-no-revoke` becomes a silent no-op on the
+    // CI's default shell. Without a visible warning, a user who
+    // copy/pasted the README's `irm .../install.ps1 | iex
+    // -ssl-no-revoke` line on PS Core would see the original
+    // CRYPT_E_REVOCATION_OFFLINE failure and assume the flag was
+    // broken. We emit a Write-Warning (visible by default) telling
+    // them to use install.sh instead.
+    //
+    // This test runs install.ps1 with INSTALL_SSL_NO_REVOKE=1 under
+    // the test harness's pwsh (which is whatever the local env
+    // exposes). On PS Core the warning MUST appear; on PS 5.1 the
+    // warning must NOT appear (the bypass actually works there).
+    //
+    // Stream-routing caveat: PowerShell Core on Linux/Unix writes
+    // Write-Warning to the inherited-host output stream, which
+    // Node.js's spawnSync surfaces as STDOUT. Windows PowerShell
+    // 5.1 routes Write-Warning to the host's warning stream
+    // (captured as STDERR by Node). We branch on $PSEdition and
+    // check the appropriate stream for each runtime.
+    const result = runInstall(
+      {
+        INSTALL_TEST_MODE: "1",
+        INSTALL_SSL_NO_REVOKE: "1",
+        USERPROFILE: join(installDir, "..", ".."),
+      },
+      [],
+    );
+    // The TEST_MODE 1 path exits 0 whether or not the warning fires
+    // (the warning is advisory, not fatal). We don't assert on
+    // status here — only on the warning's presence/absence.
+    const psEdition = execFileSync(
+      "pwsh",
+      ["-NoProfile", "-Command", "$PSVersionTable.PSEdition"],
+      { stdio: "pipe" },
+    ).toString().trim();
+    if (psEdition === "Core") {
+      // On PS Core, Write-Warning routes to stdout (per the
+      // Linux/Unix host stream). Combine both streams for the
+      // assertion so the test is robust to either routing.
+      const combined = `${result.stdout}\n${result.stderr}`;
+      expect(
+        combined,
+        `expected a visible --ssl-no-revoke warning on PS Core; got: ${combined}`,
+      ).toMatch(/--ssl-no-revoke/i);
+      expect(combined).toMatch(/HttpClient|ServicePointManager/i);
+      expect(combined).toMatch(/install\.sh/i);
+    } else {
+      // Windows PowerShell 5.1 (Desktop edition). The warning must
+      // NOT appear — the bypass actually works there, and a false
+      // warning would be a regression. Combine streams for the
+      // same reason as above.
+      const combined = `${result.stdout}\n${result.stderr}`;
+      expect(
+        combined,
+        `expected NO --ssl-no-revoke warning on PS 5.1 (Desktop); got: ${combined}`,
+      ).not.toMatch(/--ssl-no-revoke.*HttpClient/s);
+    }
+  });
+
   // The -TryNpm flag (and its aliases) MUST be handled by the
   // early-arg handler in install.ps1 so a user following the help's
   // own example `irm .../install.ps1 | iex -TryNpm` gets the same

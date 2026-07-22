@@ -37,7 +37,14 @@ import { copyFileSync, existsSync, mkdirSync, readdirSync, readFileSync, renameS
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
-import { MIN_RAW_BYTES } from "./verify-release-sizes.mjs";
+// Import the size thresholds from the constants-only module so
+// build-sea.mjs does NOT also load scripts/verify-release-sizes.mjs
+// (which has a CLI bootstrap / `invokedDirectly` IIFE / `process.exit`
+// side effects). Previously the import path forced the verifier to
+// evaluate every time this script ran, which is hostile to test
+// harnesses that import build-sea.mjs under a different argv
+// (e.g. UMACTUALLY_TSDOWN_BIN tests).
+import { MIN_RAW_BYTES } from "./release-size-limits.mjs";
 
 const EXPECTED_NODE_MAJOR = 25;
 const EXPECTED_NODE_MINOR = 7;

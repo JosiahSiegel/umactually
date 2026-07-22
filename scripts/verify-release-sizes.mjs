@@ -11,11 +11,18 @@
 // Both call sites previously inlined the same `node -e '...'` block,
 // which meant the MIN/MAX thresholds and the size-report JSON shape
 // had to be kept in sync by hand. This module owns:
-//   - MIN_RAW_BYTES / MAX_RAW_BYTES thresholds
 //   - the per-target size iteration
 //   - the release/internal/release-size-report.json write
 //
-// Rationale for the thresholds (preserved from the inline blocks):
+// The MIN/MAX thresholds live in scripts/release-size-limits.mjs so
+// other importers (notably scripts/build-sea.mjs) can pull the
+// constants without triggering this file's CLI bootstrap. We
+// re-export the constants here for back-compat with any code that
+// already imports them from this module — the verifier's
+// `verifyReleaseSizes()` itself reads them from the limits module
+// (single source of truth).
+//
+// Rationale for the thresholds (see scripts/release-size-limits.mjs):
 //   - 1 MiB floor: rejects a partial SEA blob that "exists but is
 //     broken". A truncated binary self-sha256-passes (the chunk is
 //     internally consistent) but crashes on launch.
@@ -23,18 +30,21 @@
 //     `darwin-x64` at ~134 MiB. 200 MiB leaves ~50% headroom for
 //     legitimate growth and is far below the installer's pipe-buffer
 //     concerns. Any new target that legitimately needs more room
-//     must bump this constant here AND document the reason in the
-//     PR — bumping only one call site silently widens a different
-//     gate than the docs claim.
+//     must bump the constant in scripts/release-size-limits.mjs
+//     AND document the reason in the PR — bumping only one call
+//     site silently widens a different gate than the docs claim.
 
 import { existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { dirname, isAbsolute, join, relative, resolve } from "node:path";
 
-/** @type {number} */
-export const MIN_RAW_BYTES = 1 * 1024 * 1024;
+import { MAX_RAW_BYTES, MIN_RAW_BYTES } from "./release-size-limits.mjs";
 
+// Re-exported for back-compat. The verifier itself reads
+// MIN_RAW_BYTES / MAX_RAW_BYTES from `./release-size-limits.mjs`
+// (the single source of truth), but downstream code that already
+// imports them from this module keeps working unchanged.
 /** @type {number} */
-export const MAX_RAW_BYTES = 200 * 1024 * 1024;
+export { MAX_RAW_BYTES, MIN_RAW_BYTES };
 
 /**
  * Resolve and validate a user-supplied path so the report cannot be

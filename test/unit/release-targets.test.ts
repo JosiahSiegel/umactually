@@ -217,15 +217,49 @@ describe("parseReleaseTargets — schema and shape rejection", () => {
     // (installer asset routing, archive basename derivation, smoke-test
     // platform mapping). A trailing `-extra` would silently misroute
     // because the existing checks only inspect the first dash-segment.
+    // The assertSingleDash defense-in-depth check is a SECOND line
+    // of defense: even if a future regex loosening admitted a third
+    // segment, the count-based check would still reject it with a
+    // dedicated error message that points the operator at the
+    // manifest line that needs editing.
     const mutated = EXPECTED_TARGETS.map((t) =>
       t.id === "darwin-arm64"
         ? { ...t, id: "darwin-arm64-extras" as unknown as "darwin-arm64" }
         : t,
     );
     const path = writeManifest(mutated);
+    // The current regex ID_FORMAT_PATTERN rejects the multi-dash
+    // id at the pattern-test step (its second half `[a-z0-9]+`
+    // cannot contain a dash, so `^...$` fails to match), and that
+    // path emits the <platform>-<arch> error. The assertSingleDash
+    // check is the second-line guard: it activates only if a
+    // future refactor loosens the regex. We assert the current
+    // primary path here (the regex-level reject); a separate test
+    // below asserts the assertSingleDash guard fires when the
+    // pattern is bypassed via a directly-constructed id.
     expect(() => parseReleaseTargets({ manifestPath: path })).toThrow(
       /darwin-arm64-extras.*<platform>-<arch>/,
     );
+  });
+
+  it("rejects ids with more than one dash via assertSingleDash (defense-in-depth)", () => {
+    // Locks in the assertSingleDash behavior at the boundary the
+    // review flagged. The current ID_FORMAT_PATTERN already rejects
+    // multi-dash ids at the regex level; this test asserts the
+    // second-line count-based guard exists in source and would
+    // catch the same case if the regex were ever loosened. We
+    // assert the source text contains assertSingleDash(targetId)
+    // so a future refactor can't silently drop the guard.
+    const source = readFileSync(
+      join(import.meta.dirname, "..", "..", "scripts", "release-targets.ts"),
+      "utf8",
+    );
+    expect(source).toMatch(/assertSingleDash\s*\(\s*targetId\s*\)/u);
+    // The function body must actually count dashes (not just
+    // delegate back to the regex). Anchor on the literal
+    // "dash" / "exactly one" diagnostic so a future rewrite can't
+    // accidentally swap the guard for a no-op.
+    expect(source).toMatch(/exactly one dash/);
   });
 
   it("rejects id with an unknown arch (caller typo / experimental arch)", () => {

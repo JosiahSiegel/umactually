@@ -70,11 +70,63 @@ const POSIX_PLATFORMS: ReadonlySet<string> = new Set(["linux", "darwin"]);
 const VALID_ARCHITECTURES: ReadonlySet<string> = new Set(["x64", "arm64"]);
 
 /**
- * Pattern: `<platform>-<arch>` (single dash, both halves required).
+ * Pattern: `<platform>-<arch>` (exactly one dash, both halves
+ * required, no leading/trailing whitespace, no underscores, all
+ * lowercase). The pattern's `[a-z0-9]+` second half cannot contain
+ * a dash, so the `^...$` anchors already enforce the single-dash
+ * invariant. The arch whitelist below is the second layer of
+ * defense: even if a future loosening of this pattern admitted
+ * `linux-riscv64` or `linux-loongarch64`, the whitelist would
+ * reject them at the `arch` check.
+ *
+ * What this pattern rejects (verified by parseReleaseTargets tests):
+ *   - `linux-x64-bogus`, `linux-x64-extra`, `linux-x64-riscv`
+ *     (multi-segment: the second half `[a-z0-9]+` cannot contain
+ *     a dash, so the `^...$` anchors fail to match)
+ *   - `linux_64`, `LINUX-x64`, ` linux-x64`, `linux-x64 `
+ *     (underscore, uppercase, leading/trailing whitespace)
+ *   - empty halves (`-x64`, `linux-`, `-`)
+ *
+ * What this pattern allows but the arch whitelist rejects:
+ *   - `linux-riscv64` (matches the pattern, but `riscv64` is not
+ *     in VALID_ARCHITECTURES)
+ *   - `linux-loongarch64` (same — second layer catches it)
+ *
  * The strict shape is what every consumer assumes (installer asset
  * routing, archive basename derivation, smoke-test platform mapping).
  */
 const ID_FORMAT_PATTERN = /^[a-z]+-[a-z0-9]+$/u;
+
+/**
+ * Defense-in-depth: count the dashes in the id and reject anything
+ * that doesn't have exactly one. The ID_FORMAT_PATTERN above already
+ * enforces this (the second half `[a-z0-9]+` cannot contain a dash,
+ * so `^...$` rejects multi-dash ids), but the regex is the only line
+ * of defense there — a future refactor that loosens the pattern (e.g.
+ * adds more character classes to the second half) would silently let
+ * `linux-x64-bogus` through. The split-then-validate path below
+ * already routes the id through `targetId.split("-")` for the
+ * platform/arch split, so the count check is cheap to add and
+ * guarantees the invariant even after pattern changes.
+ */
+function assertSingleDash(targetId: string): void {
+  let dashCount = 0;
+  for (let i = 0; i < targetId.length; i++) {
+    if (targetId.charCodeAt(i) === 0x2d /* "-" */) {
+      dashCount++;
+      if (dashCount > 1) {
+        throw new Error(
+          `release-targets: target id ${JSON.stringify(targetId)} must contain exactly one dash separating platform and arch (got ${dashCount} dashes)`,
+        );
+      }
+    }
+  }
+  if (dashCount !== 1) {
+    throw new Error(
+      `release-targets: target id ${JSON.stringify(targetId)} must contain exactly one dash separating platform and arch (got ${dashCount})`,
+    );
+  }
+}
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -139,6 +191,17 @@ function parseSingleTarget(raw: unknown, index: number): ReleaseTarget {
       `release-targets: target id ${JSON.stringify(targetId)} must match <platform>-<arch> (lowercase letters, single dash, no spaces)`,
     );
   }
+  // Defense-in-depth: assertSingleDash runs AFTER ID_FORMAT_PATTERN
+  // and rejects multi-dash ids with a more targeted error message.
+  // The pattern above already rejects these (the second half
+  // `[a-z0-9]+` cannot contain a dash), but the count-based check
+  // below survives any future loosening of the regex — e.g. if a
+  // maintainer adds the digit class to the second half and
+  // accidentally lets a third segment through. The check is cheap
+  // (single pass over the id, max 1 allocation) and gives the
+  // operator an actionable diagnostic at the exact boundary that
+  // needs editing.
+  assertSingleDash(targetId);
   // Validate the arch half against the known set. The platform
   // half is checked later (via the POSIX / Windows / `else` branches)
   // so its error message can be platform-specific.
