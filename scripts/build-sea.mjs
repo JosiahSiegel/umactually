@@ -7,7 +7,7 @@
 //   umactually-linux-x64      (tar.gz)
 //   umactually-linux-arm64    (tar.gz)
 //   umactually-darwin-x64     (tar.gz)
-//   umactually-darwin-arm64    (tar.gz)
+//   umactually-darwin-arm64   (tar.gz)
 //   umactually-windows-x64.exe (zip)
 //   umactually-windows-arm64.exe (zip)
 //
@@ -17,8 +17,7 @@
 //
 // Usage:
 //   node scripts/build-sea.mjs              # build all targets
-//   node scripts/build-sea.mjs <targetId>   # build one target
-//   node scripts/build-sea.mjs all          # explicit "all"
+//   node scripts/build-sea.mjs <targetId>   # accepted for compatibility, builds all
 //
 // Test seam: UMACTUALLY_TSDOWN_BIN points at a fake tsdown stub. When that
 // path ends in .mjs / .js / .cjs the script invokes it via process.execPath
@@ -27,10 +26,11 @@
 // Pinned: Node 25.7.0+ in the build environment. Any other version aborts
 // before any spawn.
 //
-// v0.6.0 note: this file is plain ESM JavaScript (no TypeScript syntax).
-// The release build runs under Node 25.7 which has experimental type
-// stripping off by default. Keeping the script in plain JS means it
-// runs unchanged under both Node 24.18 (local CI) and Node 25.7 (release).
+// v0.6.0 note: tsdown's CLI only accepts `--exe` as a flag — the per-target
+// `fileName` and `targets` are config-file only (tsdown.config.ts). So this
+// script runs `tsdown --exe` once and lets the config drive all 6 targets.
+// The optional <targetId> argument is accepted for backwards compatibility
+// (and for local debugging) but is a no-op; the script always builds all 6.
 
 import { spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync, statSync } from "node:fs";
@@ -44,7 +44,6 @@ const ENTRY_RELATIVE = "src/cli.ts";
 const OUTDIR_RELATIVE = "release";
 const RELEASE_TARGETS_RELATIVE = "scripts/release-targets.json";
 const TSDOWN_CONFIG_RELATIVE = "tsdown.config.ts";
-const SEA_NODE_VERSION = "25.7.0";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = resolve(HERE, "..");
@@ -118,34 +117,17 @@ function runTsdown(args, label) {
   }
 }
 
-function deriveSeaPlatform(target) {
-  if (target.archiveType === "zip") return "win";
-  if (target.id.startsWith("darwin-")) return "darwin";
-  if (target.id.startsWith("linux-")) return "linux";
-  throw new Error(`build-sea: cannot derive platform from id "${target.id}"`);
-}
-
-function deriveSeaArch(target) {
-  if (target.id.endsWith("-x64")) return "x64";
-  if (target.id.endsWith("-arm64")) return "arm64";
-  throw new Error(`build-sea: cannot derive arch from id "${target.id}"`);
-}
-
-function buildArgsFor(target) {
-  return [
+function buildAll() {
+  console.log(`\nBuilding all targets via tsdown --exe`);
+  // Single tsdown invocation. The config has all 6 targets + seaConfig;
+  // tsdown iterates them in one process and emits 6 binaries into OUTDIR.
+  runTsdown([
     "--config", TSDOWN_CONFIG,
     "--exe",
-    "--exe.fileName", target.rawName,
-    "--exe.targets", `${deriveSeaPlatform(target)},${deriveSeaArch(target)},${SEA_NODE_VERSION}`,
-  ];
+  ], "build all targets");
 }
 
-function buildOneTarget(target) {
-  console.log(`\nBuilding ${target.id} -> ${target.rawName}`);
-  runTsdown(buildArgsFor(target), `build ${target.id}`);
-
-  // Verify the SEA blob was produced. tsdown writes to a path derived from
-  // the fileName + platform/arch suffix (e.g. `umactually-linux-x64`).
+function verifyOutput(target) {
   const expectedPath = join(OUTDIR, target.rawName);
   if (!existsSync(expectedPath)) {
     throw new Error(
@@ -165,26 +147,30 @@ export async function main(argv = process.argv.slice(2)) {
 
   const targets = loadTargets();
   const filter = argv[0];
-  const selected = filter !== undefined && filter.length > 0 && filter !== "all"
-    ? targets.filter((t) => t.id === filter)
-    : targets;
-  if (selected.length === 0) {
-    console.error(`Unknown target: ${filter}`);
-    console.error(`Available: ${targets.map((t) => t.id).join(", ")}`);
-    process.exit(1);
+  if (filter !== undefined && filter.length > 0 && filter !== "all") {
+    // <targetId> is accepted for backwards compat and local debugging.
+    // The build always produces all 6 binaries (tsdown's --exe mode has
+    // no per-target flag; the targets are config-driven). We log the
+    // filter so users can see it took effect even though the build is
+    // not actually narrowed.
+    const known = targets.some((t) => t.id === filter);
+    if (!known) {
+      console.error(`Unknown target: ${filter}`);
+      console.error(`Available: ${targets.map((t) => t.id).join(", ")}`);
+      process.exit(1);
+    }
+    console.log(`(filter ${filter} accepted but all 6 targets are built — see tsdown.config.ts)`);
   }
 
   mkdirSync(OUTDIR, { recursive: true });
 
-  for (const target of selected) {
-    buildOneTarget(target);
+  buildAll();
+
+  for (const target of targets) {
+    verifyOutput(target);
   }
 
-  if (selected.length === targets.length) {
-    console.log(`\nAll ${selected.length} target(s) built successfully in ${OUTDIR}/`);
-  } else {
-    console.log(`\n${selected.length} target(s) built in ${OUTDIR}/`);
-  }
+  console.log(`\nAll ${targets.length} target(s) built successfully in ${OUTDIR}/`);
 }
 
 const invokedDirectly = (() => {

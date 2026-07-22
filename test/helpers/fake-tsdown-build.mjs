@@ -12,18 +12,20 @@
 //   - Writes the argv + a small metadata blob to the path in
 //     UMACTUALLY_BUILD_CAPTURE_PATH (so the test can inspect what build-sea
 //     thought it was passing to tsdown).
-//   - Optionally writes a fake "built" file to UMACTUALLY_FAKE_OUTPUT_PATH
-//     so build-sea's "verify output exists" check passes.
+//   - Writes fake "built" SEA files for every target in
+//     scripts/release-targets.json (if it can read the manifest) so
+//     build-sea's "verify output exists" check passes for all 6 targets.
 //   - Exits 0.
 //
 // This is a parallel of test/helpers/fake-bun-build.mjs but for the tsdown
 // SEA pipeline. Same shape, different tool.
 
-import { writeFileSync, existsSync, mkdirSync } from "node:fs";
-import { dirname } from "node:path";
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { dirname, join, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 
 const capturePath = process.env["UMACTUALLY_BUILD_CAPTURE_PATH"];
-const fakeOutputPath = process.env["UMACTUALLY_FAKE_OUTPUT_PATH"];
+const fakeOutputPath = process.env["UMACTUALLY_FAKE_OUTPUT_PATH"]; // legacy single-output override
 const fakeVersion = process.env["UMACTUALLY_FAKE_NODE_VERSION"] ?? "25.7.0";
 
 // Reject mismatched Node versions to mirror the real assertNodeVersion() check.
@@ -36,8 +38,6 @@ if (Number.isNaN(major) || major < expectedNodeMajor) {
   process.exit(1);
 }
 
-// Build the capture blob. process.argv[0] is `node`, [1] is this script,
-// [2..] are the args passed by build-sea.mjs.
 const tsdownArgs = process.argv.slice(2);
 
 if (capturePath !== undefined && capturePath.length > 0) {
@@ -55,9 +55,32 @@ if (capturePath !== undefined && capturePath.length > 0) {
   writeFileSync(capturePath, JSON.stringify(capture, null, 2));
 }
 
-// Optionally produce a fake "built" SEA binary. This is what build-sea.mjs
-// expects to find at release/<rawName> after the spawn completes.
-if (fakeOutputPath !== undefined && fakeOutputPath.length > 0) {
+// Produce fake "built" SEA binaries for every target in the manifest.
+// build-sea.mjs (after the v0.6.0 simplification) builds all 6 targets in
+// a single tsdown invocation, so the harness must write all 6 outputs.
+//
+// Fall back to the single-target UMACTUALLY_FAKE_OUTPUT_PATH override for
+// tests that exercise the missing-output failure path.
+const HERE = dirname(fileURLToPath(import.meta.url));
+const REPO_ROOT = resolve(HERE, "..", "..");
+const manifestPath = join(REPO_ROOT, "scripts", "release-targets.json");
+
+let producedAny = false;
+if (existsSync(manifestPath)) {
+  const targets = JSON.parse(readFileSync(manifestPath, "utf8"));
+  for (const target of targets) {
+    const outPath = join(REPO_ROOT, "release", target.rawName);
+    if (existsSync(outPath)) continue; // never clobber a real build
+    mkdirSync(dirname(outPath), { recursive: true });
+    writeFileSync(
+      outPath,
+      `#!/usr/bin/env node\n# fake SEA binary for ${target.rawName} (Node ${fakeVersion})\nconsole.log("umactually ${target.id}");\n`,
+    );
+    producedAny = true;
+  }
+}
+
+if (!producedAny && fakeOutputPath !== undefined && fakeOutputPath.length > 0) {
   mkdirSync(dirname(fakeOutputPath), { recursive: true });
   if (!existsSync(fakeOutputPath)) {
     writeFileSync(fakeOutputPath, `#!/usr/bin/env node\n# fake SEA binary for ${fakeOutputPath}\nconsole.log("umactually ${fakeVersion}");\n`);

@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: MIT
-import { existsSync, mkdirSync, readFileSync, rmSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { spawnSync } from "node:child_process";
@@ -46,29 +46,41 @@ afterEach(() => {
   }
 });
 
-function runBuild(targetId: string): BuildResult {
+// Wipe the real release/ directory before each test so the harness's
+// "produce all 6 outputs" step starts from a known-empty state. The
+// harness will NOT clobber an existing real build (defensive), so this
+// is what gives us isolation between tests.
+function wipeReleaseDir() {
+  const releaseDir = join(REPO_ROOT, "release");
+  if (existsSync(releaseDir)) {
+    for (const target of TARGETS) {
+      const p = join(releaseDir, target.rawName);
+      if (existsSync(p)) rmSync(p, { force: true });
+    }
+  }
+}
+
+function runBuild(targetId: string | undefined): BuildResult {
   const sandbox = join(tmpdir(), `umactually-sea-policy-${crypto.randomUUID()}`);
   sandboxes.push(sandbox);
   const capturePath = join(sandbox, "capture.json");
-  const releaseDir = join(sandbox, "release");
-  mkdirSync(releaseDir, { recursive: true });
 
-  const target = TARGETS.find((t) => t.id === targetId);
-  if (target === undefined) throw new Error(`runBuild: unknown target id "${targetId}"`);
-  const fakeOutputPath = join(releaseDir, target.rawName);
+  wipeReleaseDir();
 
   const env: NodeJS.ProcessEnv = {
     ...process.env,
     UMACTUALLY_FAKE_NODE_VERSION: "25.7.0",
     UMACTUALLY_BUILD_CAPTURE_PATH: capturePath,
-    UMACTUALLY_FAKE_OUTPUT_PATH: fakeOutputPath,
     UMACTUALLY_TSDOWN_BIN: HARNESS,
     NODE_OPTIONS: undefined,
   };
 
+  const args = [BUILD_SCRIPT];
+  if (targetId !== undefined) args.push(targetId);
+
   const result = spawnSync(
     process.execPath,
-    [BUILD_SCRIPT, targetId],
+    args,
     { cwd: REPO_ROOT, env, encoding: "utf8" },
   );
 
@@ -83,12 +95,6 @@ function runBuild(targetId: string): BuildResult {
   };
   if (invocation !== undefined) base.invocation = invocation;
   return base;
-}
-
-function deriveExpectedPlatform(id: string): "darwin" | "linux" | "win" {
-  if (id.startsWith("darwin-")) return "darwin";
-  if (id.startsWith("linux-")) return "linux";
-  return "win";
 }
 
 describe.skipIf(SKIP_FOR_OLD_NODE)("Node SEA build policy", () => {
@@ -108,42 +114,36 @@ describe.skipIf(SKIP_FOR_OLD_NODE)("Node SEA build policy", () => {
     expect(result.stderr).toMatch(/Node version mismatch.*expected.*25/i);
   });
 
-  it("spawns tsdown with --config + --exe + per-target fileName", () => {
-    const target = TARGETS[0];
-    if (target === undefined) throw new Error("no targets in manifest");
-    const result = runBuild(target.id);
+  it("spawns tsdown with --config + --exe (single invocation for all 6 targets)", () => {
+    const result = runBuild(undefined);
     expect(result.status, result.stderr).toBe(0);
     expect(result.invocation, "harness was never invoked").toBeDefined();
 
     const argv = result.invocation?.argv ?? [];
     expect(argv[0]).toBe("--config");
     expect(argv[1]).toBe(TSDOWN_CONFIG);
-    const exeIdx = argv.indexOf("--exe");
-    expect(exeIdx).toBeGreaterThanOrEqual(0);
-    const fileNameIdx = argv.indexOf("--exe.fileName");
-    expect(fileNameIdx).toBeGreaterThan(exeIdx);
-    expect(argv[fileNameIdx + 1]).toBe(target.rawName);
-    const targetsIdx = argv.indexOf("--exe.targets");
-    expect(targetsIdx).toBeGreaterThan(fileNameIdx);
-    const [platform, arch, nodeVersion] = (argv[targetsIdx + 1] ?? "").split(",");
-    expect(platform).toBe(deriveExpectedPlatform(target.id));
-    expect(arch).toBe(target.id.endsWith("-x64") ? "x64" : "arm64");
-    expect(nodeVersion).toBe("25.7.0");
+    expect(argv).toContain("--exe");
+    // No per-target CLI flags: targets are config-driven.
+    expect(argv).not.toContain("--exe.fileName");
+    expect(argv).not.toContain("--exe.targets");
   });
 
-  it("builds every manifest target with the right fileName + platform/arch", () => {
+  it("produces all 6 manifest targets in release/ via the single tsdown call", () => {
+    const result = runBuild(undefined);
+    expect(result.status, result.stderr).toBe(0);
     for (const target of TARGETS) {
-      const result = runBuild(target.id);
-      expect(result.status, `${target.id}: ${result.stderr}`).toBe(0);
-      const argv = result.invocation?.argv ?? [];
-      const fileNameIdx = argv.indexOf("--exe.fileName");
-      expect(fileNameIdx, `${target.id}: --exe.fileName missing`).toBeGreaterThanOrEqual(0);
-      expect(argv[fileNameIdx + 1]).toBe(target.rawName);
-      const targetsIdx = argv.indexOf("--exe.targets");
-      expect(targetsIdx, `${target.id}: --exe.targets missing`).toBeGreaterThanOrEqual(0);
-      const [platform, arch] = (argv[targetsIdx + 1] ?? "").split(",");
-      expect(platform, `${target.id}: platform`).toBe(deriveExpectedPlatform(target.id));
-      expect(arch, `${target.id}: arch`).toBe(target.id.endsWith("-x64") ? "x64" : "arm64");
+      const outPath = join(REPO_ROOT, "release", target.rawName);
+      expect(existsSync(outPath), `${target.id}: ${target.rawName} not produced`).toBe(true);
+    }
+  });
+
+  it("accepts a <targetId> argument for compatibility (no-op, builds all)", () => {
+    const result = runBuild("linux-x64");
+    expect(result.status, result.stderr).toBe(0);
+    expect(result.stdout).toMatch(/filter linux-x64 accepted/);
+    for (const target of TARGETS) {
+      const outPath = join(REPO_ROOT, "release", target.rawName);
+      expect(existsSync(outPath), `${target.id}: ${target.rawName} not produced`).toBe(true);
     }
   });
 
@@ -165,23 +165,42 @@ describe.skipIf(SKIP_FOR_OLD_NODE)("Node SEA build policy", () => {
     const sandbox = join(tmpdir(), `umactually-sea-missing-${crypto.randomUUID()}`);
     sandboxes.push(sandbox);
     const capturePath = join(sandbox, "capture.json");
-    // Don't pre-populate the fake output; the harness is told not to
-    // produce one either. The build script should detect the missing
-    // file and refuse.
-    const target = TARGETS[0];
-    if (target === undefined) throw new Error("no targets");
+    // Don't give the harness the manifest path. We do this by pointing it
+    // at a sandbox-only release-targets.json that the harness can read but
+    // that the build script will use too — actually a simpler approach: run
+    // without a manifest override and rely on the harness's
+    // "existsSync(manifestPath)" branch, then pre-wipe release/ AND tell
+    // the harness to not produce the output. The harness always writes
+    // outputs for the real manifest, so to make this test work, we use a
+    // manifest-override approach: shadow the real manifest with a manifest
+    // pointing at a target whose rawName will not be produced.
+    const shadowDir = join(sandbox, "shadow");
+    mkdirSync(shadowDir, { recursive: true });
+    // Manifest with one target that points at a path the harness won't
+    // produce (the harness only writes outputs for entries in the
+    // manifest, so we replace the manifest with the same content).
+    // The real exit: pre-wipe release/ then instruct the harness to not
+    // produce the file. Easiest: send a no-op harness that captures
+    // argv but does not write any output. We do that by overriding the
+    // harness path to point at a custom no-op fixture.
+    const noopHarness = join(sandbox, "noop-harness.mjs");
+    writeFileSync(
+      noopHarness,
+      `#!/usr/bin/env node\nprocess.exit(0);\n`,
+    );
+    chmodSync(noopHarness, 0o755);
+    wipeReleaseDir();
+
     const result = spawnSync(
       process.execPath,
-      [BUILD_SCRIPT, target.id],
+      [BUILD_SCRIPT],
       {
         cwd: REPO_ROOT,
         env: {
           ...process.env,
-          UMACTUALLY_TSDOWN_BIN: HARNESS,
+          UMACTUALLY_TSDOWN_BIN: noopHarness,
           UMACTUALLY_BUILD_CAPTURE_PATH: capturePath,
           UMACTUALLY_FAKE_NODE_VERSION: "25.7.0",
-          // Note: no UMACTUALLY_FAKE_OUTPUT_PATH → harness doesn't write
-          // the output, and OUTDIR (cwd/release/) is empty.
         },
         encoding: "utf8",
       },

@@ -60,12 +60,22 @@ function runShell(env: Record<string, string>): RunResult {
   };
 }
 
-function runPwsh(env: Record<string, string>): RunResult {
+function runPwsh(env: Record<string, string>, homeDir?: string): RunResult {
   if (!PWSH_AVAILABLE || PWSH === null) {
     return { stdout: "PWSH_UNAVAILABLE", stderr: "", status: 0 };
   }
+  // Pin pwsh's user profile to the sandbox so install.ps1's
+  // $env:USERPROFILE / $HOME lookups resolve to a writable location.
+  // On Linux, pwsh defaults $env:USERPROFILE to "/" which makes
+  // `New-Item -ItemType Directory -Path /.local/bin` fail with
+  // "Access to the path '/.local' is denied."
+  const baseEnv = { ...process.env, ...env };
+  if (homeDir !== undefined) {
+    baseEnv["USERPROFILE"] = homeDir;
+    baseEnv["HOME"] = homeDir;
+  }
   const result = spawnSync(PWSH, ["-NoProfile", "-NonInteractive", "-File", INSTALL_PS1], {
-    env: { ...process.env, ...env },
+    env: baseEnv,
     encoding: "utf8",
   });
   return {
@@ -104,8 +114,14 @@ afterEach(() => {
   }
 });
 
+// The positive test triggers a real `npm install -g umactually` which makes
+// a network call. The test allows up to 30s to cover the npm lookup +
+// 404 + fallthrough to the binary-download path. CI's default 5s timeout
+// is too tight for that path on slow runners.
+const SMART_ROUTER_TEST_TIMEOUT_MS = 30_000;
+
 describe.skipIf(!SHELL_AVAILABLE)("install.sh smart-router (v0.6.0)", () => {
-  it("delegates to npm when Node 24+ is on PATH and no override is set", () => {
+  it("delegates to npm when Node 24+ is on PATH and no override is set", { timeout: SMART_ROUTER_TEST_TIMEOUT_MS }, () => {
     const { binDir } = makeSandbox();
     const result = runShell({
       PATH: `${binDir}${sep}${process.env["PATH"] ?? ""}`,
@@ -187,13 +203,13 @@ describe.skipIf(!SHELL_AVAILABLE)("install.sh smart-router (v0.6.0)", () => {
 });
 
 describe.skipIf(!PWSH_AVAILABLE)("install.ps1 smart-router (v0.6.0)", () => {
-  it("delegates to npm when Node 24+ is on PATH and no override is set", () => {
-    const { binDir } = makeSandbox();
+  it("delegates to npm when Node 24+ is on PATH and no override is set", { timeout: SMART_ROUTER_TEST_TIMEOUT_MS }, () => {
+    const { binDir, dir } = makeSandbox();
     const result = runPwsh({
       PATH: `${binDir}${sep}${process.env["PATH"] ?? ""}`,
       INSTALL_TEST_MODE: "",
       INSTALL_FORCE_BINARY: "",
-    });
+    }, dir);
     // Smart-router picks npm and exits 0. The npm stub writes
     // "npm-stub called" to stdout.
     expect(result.status, `stdout=${result.stdout}\nstderr=${result.stderr}`).toBe(0);
