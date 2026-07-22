@@ -50,7 +50,6 @@ const MEMBER_NAME = "umactually-windows-x64.exe";
 const ARCHIVE_BASENAMES = [
   "umactually-linux-x64.tar.gz",
   "umactually-linux-arm64.tar.gz",
-  "umactually-darwin-x64.tar.gz",
   "umactually-darwin-arm64.tar.gz",
   "umactually-windows-x64.zip",
   "umactually-windows-arm64.zip",

@@ -534,7 +534,7 @@ function Resolve-ReleaseBase {
 
 function Validate-ChecksumsFile {
   # Read the full checksum file (LF/CRLF normalized) and require exactly the
-  # six canonical entries for the selected contract, with no malformed,
+  # five canonical entries for the selected contract, with no malformed,
   # duplicate, unknown, or opposite-contract basenames.
   param(
     [string]$ChecksumsPath,
