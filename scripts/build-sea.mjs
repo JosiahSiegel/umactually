@@ -147,6 +147,57 @@ function normalizeWindowsOutputs() {
   }
 }
 
+// Defensive: tsdown's documented default `exe.outDir` is "build/" (see
+// https://tsdown.dev/options/exe), and the @tsdown/exe type definitions
+// do not declare `outDir` at all. If the `exe.outDir: "release"` pin
+// in tsdown.config.ts is ever ignored, the SEA binaries land in
+// `build/<name>` or `dist/<name>` (Rolldown's normal output dir). This
+// pass sweeps every plausible output dir and copies any candidate
+// binary into the manifest-named slot under `release/`. It is a no-op
+// when tsdown already wrote to `release/` (the rename is skipped
+// because the destination already exists).
+function collectSeaOutputs() {
+  const CANDIDATE_DIRS = ["release", "build", "dist"];
+  for (const dir of CANDIDATE_DIRS) {
+    const dirPath = join(REPO_ROOT, dir);
+    if (!existsSync(dirPath)) continue;
+    // Patterns to look for, in priority order. The `umactually-` prefix
+    // matches what tsdown would produce with `fileName: "umactually"`.
+    const PATTERNS = [
+      /^umactually-linux-x64$/,
+      /^umactually-linux-arm64$/,
+      /^umactually-darwin-x64$/,
+      /^umactually-darwin-arm64$/,
+      /^umactually-win-x64\.exe$/,
+      /^umactually-win-arm64\.exe$/,
+    ];
+    for (const pattern of PATTERNS) {
+      for (const entry of require("node:fs").readdirSync(dirPath)) {
+        if (!pattern.test(entry)) continue;
+        const fromPath = join(dirPath, entry);
+        const stat = statSync(fromPath);
+        if (!stat.isFile() || stat.size === 0) continue;
+        const toName = entry.replace(/^umactually-win-/, "umactually-windows-");
+        const toPath = join(OUTDIR, toName);
+        if (existsSync(toPath)) continue; // already in place
+        const fromDisplay = `${dir}/${entry}`;
+        if (renameSync.length === 2) {
+          try {
+            renameSync(fromPath, toPath);
+            console.log(`  ↪ moved ${fromDisplay} → release/${toName}`);
+            continue;
+          } catch {
+            // Cross-device move can fail; fall through to copy.
+          }
+        }
+        require("node:fs").copyFileSync(fromPath, toPath);
+        require("node:fs").unlinkSync(fromPath);
+        console.log(`  ↪ copied ${fromDisplay} → release/${toName}`);
+      }
+    }
+  }
+}
+
 function verifyOutput(target) {
   const expectedPath = join(OUTDIR, target.rawName);
   if (!existsSync(expectedPath)) {
@@ -186,6 +237,7 @@ export async function main(argv = process.argv.slice(2)) {
 
   buildAll();
   normalizeWindowsOutputs();
+  collectSeaOutputs();
 
   for (const target of targets) {
     verifyOutput(target);

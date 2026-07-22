@@ -100,9 +100,12 @@ export default defineConfig({
   // No `platform` — SEA blobs are platform-agnostic.
   // No `clean` — we manage the release/ directory from the build script.
   exe: {
-    // Output directory for SEA binaries. We pin to "release" so build-sea.mjs
-    // can verify outputs in a single known location; tsdown's default is
-    // "build" which would require an extra move step.
+    // Output directory for SEA binaries. tsdown's documented default is
+    // "build" (see https://tsdown.dev/options/exe). We pin to "release" so
+    // build-sea.mjs can verify outputs in a single known location. If
+    // tsdown ever drops support for `exe.outDir`, build-sea.mjs falls back
+    // to scanning build/ and dist/ — see `collectSeaOutputs()` in
+    // scripts/build-sea.mjs.
     outDir: "release",
     // When invoked via build-sea.mjs, the --exe.fileName flag overrides this.
     fileName: "umactually",
@@ -111,13 +114,16 @@ export default defineConfig({
     targets: deriveExeTargets(loadTargets()),
     seaConfig: {
       disableExperimentalSEAWarning: true,
-      // useCodeCache speeds up startup by 30-50ms but requires the SEA to
-      // be built on the same arch as the target. @tsdown/exe handles this
-      // automatically per target. We keep it on because the build matrix
-      // in release.yml runs each target on a native-arch runner
-      // (ubuntu-latest = x64 for linux-x64, etc.), so the code cache is
-      // always produced by a same-arch V8 — no cross-arch hazard.
-      useCodeCache: true,
+      // Per https://tsdown.dev/options/exe: "When generating cross-platform
+      // executables (e.g., generating an executable for linux-x64 on
+      // darwin-arm64), useCodeCache and useSnapshot must be set to false
+      // to avoid generating incompatible executables." Our CI builds all
+      // 6 targets from a single Linux-x64 runner, so this is a cross-arch
+      // scenario even though @tsdown/exe uses the target's Node binary to
+      // drive --build-sea — the code cache is still arch-specific and
+      // would crash on startup if the target arch doesn't match. We
+      // accept the 30-50ms startup penalty to keep the binary portable.
+      useCodeCache: false,
       useSnapshot: false,
     },
   },
