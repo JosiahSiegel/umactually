@@ -130,6 +130,20 @@ checksums.txt when no flag/env is supplied.
     # Don't shift $args — the rest of the script reads via $env:.
     continue
   }
+  # `-TryNpm` (PowerShell canonical form) and `--try-npm` (README
+  # copy/paste form, mirroring install.sh) opt in to the v0.6.0
+  # npm-install smart router. Without this handler a user following
+  # the help's `irm .../install.ps1 | iex -TryNpm` example would
+  # see the flag silently dropped: the smart-router block reads
+  # $env:INSTALL_TRY_NPM, not the positional arg, and without
+  # INSTALL_TRY_NPM=1 the smart-router is off (the umactually npm
+  # package is not yet published, so the default is the binary
+  # download path). Mirrors the install.sh twin's --try-npm handler
+  # and the install-smart-router test contract.
+  if ($arg -eq '-TryNpm' -or $arg -eq '--try-npm') {
+    $env:INSTALL_TRY_NPM = '1'
+    continue
+  }
 }
 
 # ---- smart installer: npm if Node 24+ is available, else binary ----

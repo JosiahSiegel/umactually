@@ -667,6 +667,42 @@ describe.skipIf(!PS_AVAILABLE)("install.ps1 8-case override matrix", () => {
     expect(settingBlock).toMatch(/INSTALL_SSL_NO_REVOKE/u);
   });
 
+  // The -TryNpm flag (and its aliases) MUST be handled by the
+  // early-arg handler in install.ps1 so a user following the help's
+  // own example `irm .../install.ps1 | iex -TryNpm` gets the same
+  // behavior as the env-var path. Without the early-arg handler the
+  // smart-router block reads $env:INSTALL_TRY_NPM (which the user
+  // never set) and the flag is silently dropped, falling through to
+  // the binary download. Mirrors the install.sh twin's --try-npm
+  // handler and the existing INSTALL_TRY_NPM=1 test contract.
+  it.each([
+    "-TryNpm",
+    "--try-npm",
+  ])(
+    "PS-MATRIX-TRY-NPM: %s is accepted by the early-arg handler (no 'unknown flag')",
+    (flag) => {
+      const result = runInstall(
+        {
+          INSTALL_TEST_MODE: "1",
+          USERPROFILE: join(installDir, "..", ".."),
+        },
+        [flag],
+      );
+      expect(result.status, `stderr:\n${result.stderr}`).toBe(0);
+      expect(result.stderr).not.toMatch(/unknown flag/);
+    },
+  );
+
+  it("PS-MATRIX-TRY-NPM: help text documents -TryNpm", () => {
+    // The install.ps1 help block (lines ~85-110) advertises -TryNpm
+    // as a flag. The early-arg handler must mirror it so a Windows
+    // user who discovers the help via `./install.ps1 -?` actually
+    // has the flag work end-to-end (env-var only handling would
+    // mean a copy/paste from the help silently no-ops).
+    const scriptText = readFileSync(INSTALL_PS1, "utf8");
+    expect(scriptText).toMatch(/-TryNpm/u);
+  });
+
   it("PS-MATRIX-006: archive-capable tag never falls back to raw on checksum mismatch", () => {
     // Seed an archive contract's checksum file but with a wrong hash. The
     // production path with archive contract must reject with a checksum

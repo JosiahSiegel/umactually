@@ -106,7 +106,18 @@ jobs:
         #     concerns. Any new target that legitimately needs more
         #     room must bump this number AND the docs/ release-process
         #     section that documents it.
+        #
+        # The step is split into two `run:` blocks so a verifier
+        # non-zero exit (MISSING / TOO_SMALL / TOO_LARGE) is the last
+        # command bash sees and therefore propagates as the step's
+        # exit code. Previously the verifier + `test -f` lived in one
+        # block; the `test -f` could mask a verifier silent-exit bug
+        # (a future change to verify-release-sizes.mjs that wrote the
+        # JSON but exited 0 incorrectly) and let the workflow publish
+        # with a tampered report. Fail-closed: if the verifier exits
+        # non-zero, the workflow stops before staging.
         run: |
+          set -euo pipefail
           # MIN_RAW_BYTES (1 MiB) and MAX_RAW_BYTES (200 MiB) are owned
           # by scripts/verify-release-sizes.mjs (also called by
           # scripts/ci-release-pipeline-dry-run.sh). Both call sites
@@ -118,9 +129,15 @@ jobs:
           node scripts/verify-release-sizes.mjs \
             --manifest scripts/release-targets.json \
             --release-dir release
-          # Lock the report path explicitly so a future change to the
-          # verifier (e.g. a --report flag flip) doesn't silently let
-          # the file land elsewhere and break the staging step.
+      - name: Lock release-size-report.json path
+        # Lock the report path explicitly so a future change to the
+        # verifier (e.g. a --report flag flip) doesn't silently let
+        # the file land elsewhere and break the staging step. This
+        # runs as a SEPARATE step from the verifier so the verifier's
+        # non-zero exit (MISSING / TOO_SMALL / TOO_LARGE) propagates
+        # correctly; the test does NOT mask a verifier silent-exit bug.
+        run: |
+          set -euo pipefail
           test -f release/internal/release-size-report.json
 
       - name: Stage candidate bundle (public/<archives>, public/checksums.txt, internal/raw/<binaries>, internal/release-size-report.json)

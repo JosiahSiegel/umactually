@@ -29,6 +29,7 @@ import { defineConfig } from "tsdown";
 import { readFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { parseReleaseTargets } from "./scripts/release-targets.ts";
 
 const HERE = fileURLToPath(new URL(".", import.meta.url));
 const REPO_ROOT = resolve(HERE);
@@ -48,15 +49,6 @@ const PACKAGE_VERSION: string = (() => {
   return parsed.version;
 })();
 
-interface RawTarget {
-  readonly id: string;
-  readonly rawName: string;
-  readonly archiveName: string;
-  readonly archiveType: "tar.gz" | "zip";
-  readonly memberName: string;
-  readonly installedName: string;
-}
-
 interface SeaTarget {
   readonly id: string;
   readonly platform: "win" | "darwin" | "linux";
@@ -68,56 +60,29 @@ interface SeaTarget {
 const MANIFEST_PATH = join(REPO_ROOT, "scripts", "release-targets.json");
 const SEA_NODE_VERSION = "25.7.0";
 
+// loadTargets() now delegates to the canonical manifest parser in
+// scripts/release-targets.ts (the single source of truth for the
+// release-targets contract). Previously this function duplicated the
+// field-presence, archive-type, platform-prefix, and arch checks, and
+// the two implementations had already diverged: release-targets.ts
+// accepts any lowercase letter+digits id shape `^[a-z]+-[a-z0-9]+$`
+// while the inline check here required the platform-arch split to be
+// exactly `darwin|linux|windows` plus `x64|arm64`. A future arch
+// like `linux-riscv64` would be accepted by release-targets.ts (it
+// matches `[a-z0-9]+`) and rejected here (it only knows x64/arm64).
+// Reusing parseReleaseTargets keeps the manifest contract in one
+// place and adds the field-by-field, naming-invariant, and uniqueness
+// checks that release-targets.ts already enforces — any new
+// validation added there lands here automatically.
 function loadTargets(): readonly SeaTarget[] {
-  const raw = readFileSync(MANIFEST_PATH, "utf8");
-  const parsed: unknown = JSON.parse(raw);
-  if (!Array.isArray(parsed) || parsed.length === 0) {
-    throw new Error(
-      `release-targets.json: expected a non-empty array at ${MANIFEST_PATH}, ` +
-      `got ${Array.isArray(parsed) ? "empty array" : typeof parsed}`,
-    );
-  }
-  // Validate every entry has the required fields BEFORE .map() so a
-  // typo in the manifest produces an actionable error (the bare
-  // `parsed.map(...)` form throws a generic "Cannot read properties
-  // of undefined (reading 'id')" with no manifest context).
-  const rawTargets: readonly RawTarget[] = parsed.map((entry, idx) => {
-    if (entry === null || typeof entry !== "object") {
-      throw new Error(
-        `release-targets.json: entry #${idx} is not an object (got ${typeof entry})`,
-      );
-    }
-    const t = entry as Record<string, unknown>;
-    const missing = (
-      ["id", "rawName", "archiveName", "archiveType", "memberName", "installedName"] as const
-    ).filter((k) => typeof t[k] !== "string" || (t[k] as string).length === 0);
-    if (missing.length > 0) {
-      throw new Error(
-        `release-targets.json: entry #${idx} (id=${String(t["id"])}) missing or invalid fields: ${missing.join(", ")}`,
-      );
-    }
-    if (t["archiveType"] !== "tar.gz" && t["archiveType"] !== "zip") {
-      throw new Error(
-        `release-targets.json: entry #${idx} (id=${String(t["id"])}) archiveType must be "tar.gz" or "zip", got ${JSON.stringify(t["archiveType"])}`,
-      );
-    }
-    return t as unknown as RawTarget;
-  });
-  // Reject duplicate target ids (would silently produce duplicate
-  // binaries under the same rawName in the release/ dir).
-  const seenIds = new Set<string>();
-  for (const t of rawTargets) {
-    if (seenIds.has(t.id)) {
-      throw new Error(
-        `release-targets.json: duplicate target id "${t.id}"`,
-      );
-    }
-    seenIds.add(t.id);
-  }
-  return rawTargets.map((t) => {
-    // Derive platform + arch from the id (e.g. "darwin-arm64" → darwin/arm64).
+  const targets = parseReleaseTargets({ manifestPath: MANIFEST_PATH });
+  return targets.map((t) => {
     const [platformPrefix, arch] = t.id.split("-");
     if (platformPrefix === undefined || arch === undefined) {
+      // Defensive: parseReleaseTargets already enforces
+      // `^[a-z]+-[a-z0-9]+$` so this branch is unreachable in
+      // practice. The throw remains so a future loosening of the
+      // pattern doesn't silently produce a malformed SeaTarget.
       throw new Error(
         `release-targets.json: target id "${t.id}" must be "<platform>-<arch>"`,
       );
@@ -129,21 +94,6 @@ function loadTargets(): readonly SeaTarget[] {
       : (() => { throw new Error(`release-targets.json: unknown platform "${platformPrefix}" in id "${t.id}"`); })();
     if (arch !== "x64" && arch !== "arm64") {
       throw new Error(`release-targets.json: unknown arch "${arch}" in id "${t.id}"`);
-    }
-    // Validate rawName shape so a typo here fails at config-load time
-    // rather than producing a file at the wrong path (which would be
-    // silently missed by build-sea.mjs's normalizeWindowsOutputs
-    // pattern, since it expects a literal dot before `exe`).
-    if (platform === "win") {
-      if (!/\.exe$/.test(t.rawName)) {
-        throw new Error(
-          `release-targets.json: target "${t.id}" rawName "${t.rawName}" must end in ".exe" (Windows binaries)`,
-        );
-      }
-    } else if (/\.exe$/.test(t.rawName)) {
-      throw new Error(
-        `release-targets.json: target "${t.id}" rawName "${t.rawName}" must NOT end in ".exe" (POSIX binaries are extensionless)`,
-      );
     }
     return {
       id: t.id,
