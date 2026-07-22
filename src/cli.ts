@@ -93,29 +93,41 @@ export function isVersionFlag(argv: readonly string[]): boolean {
 export function runVersion(_argv: readonly string[]): { readonly exitCode: 0; readonly stdout: string } {
   const version = readPackageVersion();
   const stdout = `${version}\n`;
-  // Single write path: fs.writeFileSync(process.stdout.fd, stdout).
+  // Single canonical write path: writeFileSync(process.stdout.fd, stdout).
   //
-  // Root cause: under a Node SEA binary, `process.stdout.write` is
+  // Why synchronous: under a Node SEA binary, `process.stdout.write` is
   // stream-buffered; the auto-invoke resolves the main() promise and
   // sets process.exitCode, but the buffered write may be torn down
   // before the underlying pipe drain completes — and this race is
   // platform-dependent (Linux lands the write before teardown; macOS
-  // and Windows occasionally lose it). fs.writeFileSync is synchronous
-  // and goes straight to the kernel pipe buffer, which is what the
-  // parent shell's `$(...)` reads on every platform. The stream write
-  // is kept as a fallback for the path that goes through an unusual
-  // stdio wrapper where the fd-based write isn't available, but the
-  // synchronous write is the canonical path.
+  // and Windows occasionally lose it). The synchronous writeFileSync
+  // call performs a single blocking write(2) syscall on the supplied
+  // fd, which goes to the kernel pipe buffer before runVersion
+  // returns. The parent shell's `$(umactually --version)` capture
+  // reads from that kernel buffer and is non-empty on every platform.
   //
-  // The test suite (cli-version.test.ts) mocks this and asserts the
-  // exact bytes emitted, so the test sees `<version>\n` in its
-  // captured stdout.
+  // Fallback: if the fd-based write fails (e.g. process.stdout.fd is
+  // not a valid fd in an unusual stdio wrapper, or the kernel reports
+  // EBADF / EIO / EPIPE), fall back to process.stdout.write. We only
+  // catch the narrow family of "this fd is not a writable pipe" errors
+  // — TypeError and other programmer errors are deliberately not
+  // swallowed so they surface during development.
   try {
     writeFileSync(process.stdout.fd, stdout);
-  } catch {
+  } catch (err) {
+    if (!(err instanceof Error) || !isStdIoWriteError(err)) throw err;
     process.stdout.write(stdout);
   }
   return { exitCode: 0, stdout };
+}
+
+function isStdIoWriteError(err: Error): boolean {
+  // EBADF (fd invalid) and EIO / EPIPE (pipe closed mid-write) are the
+  // errors that mean "this write path can't reach the parent's
+  // captured stdout". Everything else (TypeError, EACCES, EMFILE,
+  // ENOSPC, etc.) is a real problem we want to surface, not swallow.
+  const code = (err as NodeJS.ErrnoException).code;
+  return code === "EBADF" || code === "EIO" || code === "EPIPE";
 }
 
 /**

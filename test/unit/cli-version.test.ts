@@ -1,11 +1,8 @@
 import { existsSync, readFileSync } from "node:fs";
-import type { FileHandle } from "node:fs/promises";
 import { rm } from "node:fs/promises";
 import { join } from "node:path";
 
-import { afterEach, describe, expect, it, vi } from "vitest";
-
-import { main } from "../../src/cli.js";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const packageJson = JSON.parse(
   readFileSync(new URL("../../package.json", import.meta.url), "utf8"),
@@ -13,30 +10,46 @@ const packageJson = JSON.parse(
 const packageVersion = String(packageJson.version);
 const autoContextDirectory = join(process.cwd(), ".umactually-auto-ctx");
 
-// runVersion under SEA uses fs.writeFileSync(process.stdout.fd, stdout)
-// as the canonical synchronous write; the catch-block fallback is
-// process.stdout.write. The test must intercept BOTH write paths.
-//
-// We use vi.mock("node:fs") with a partial mock: passThrough() so the
-// real implementations of other fs functions (readFileSync for the
-// package.json read at module top, existsSync, etc.) are kept, and
-// only writeFileSync is overridden. vi.mock is hoisted by vitest above
-// the imports so the override takes effect when src/cli.ts evaluates
-// its `import { writeFileSync }` binding.
-vi.mock("node:fs", async (importOriginal) => {
-  const actual = (await importOriginal()) as typeof import("node:fs");
-  return {
-    ...actual,
-    writeFileSync: (
-      _fd: number | FileHandle,
-      data: string | Uint8Array,
-      _opts?: Parameters<typeof actual.writeFileSync>[2],
-    ): void => {
-      (globalThis as Record<string, unknown>)["__cliVersionTestStdout"] = String(
-        ((globalThis as Record<string, unknown>)["__cliVersionTestStdout"] as string | undefined) ?? "",
-      ) + String(data);
-    },
-  };
+// Per-test stdout buffer. `runVersion` writes the version string here
+// via `writeFileSync(process.stdout.fd, ...)`; the test reads it back
+// to assert behaviour.
+let writeFileBuffer = "";
+
+let mainFn: typeof import("../../src/cli.js")["main"];
+
+beforeEach(async () => {
+  writeFileBuffer = "";
+  // Mock the fs module for each test so the source's destructured
+  // `writeFileSync` binding picks up our interceptor. vi.doMock is
+  // hoisted to the top of the file by vitest's transformer, but the
+  // dynamic import after vi.resetModules ensures the cli module is
+  // reloaded against the mocked fs.
+  vi.doMock("node:fs", async () => {
+    const actual = await vi.importActual<typeof import("node:fs")>("node:fs");
+    return {
+      ...actual,
+      writeFileSync: ((
+        fd: number | import("node:fs/promises").FileHandle,
+        data: string | NodeJS.ArrayBufferView,
+        ...rest: unknown[]
+      ): void => {
+        if (fd === process.stdout.fd) {
+          writeFileBuffer += typeof data === "string" ? data : data.toString();
+          return;
+        }
+        return actual.writeFileSync(fd as never, data as never, ...(rest as []));
+      }) as typeof actual.writeFileSync,
+    };
+  });
+  vi.resetModules();
+  ({ main: mainFn } = await import("../../src/cli.js"));
+});
+
+afterEach(async () => {
+  writeFileBuffer = "";
+  vi.doUnmock("node:fs");
+  vi.resetModules();
+  await rm(autoContextDirectory, { recursive: true, force: true });
 });
 
 async function captureMain(args: readonly string[]): Promise<{
@@ -44,33 +57,19 @@ async function captureMain(args: readonly string[]): Promise<{
   readonly stdout: string;
   readonly stderr: string;
 }> {
-  let stdout = "";
   let stderr = "";
-  (globalThis as Record<string, unknown>)["__cliVersionTestStdout"] = "";
-  vi.spyOn(process.stdout, "write").mockImplementation((chunk) => {
-    stdout += String(chunk);
-    return true;
-  });
-  vi.spyOn(process.stderr, "write").mockImplementation((chunk) => {
+  const stderrSpy = vi.spyOn(process.stderr, "write").mockImplementation((chunk) => {
     stderr += String(chunk);
     return true;
   });
 
   try {
-    const result = await main(args);
-    stdout = String(
-      ((globalThis as Record<string, unknown>)["__cliVersionTestStdout"] as string | undefined) ?? "",
-    ) + stdout;
-    return { result, stdout, stderr };
+    const result = await mainFn(args);
+    return { result, stdout: writeFileBuffer, stderr };
   } finally {
-    vi.restoreAllMocks();
+    stderrSpy.mockRestore();
   }
 }
-
-afterEach(async () => {
-  vi.restoreAllMocks();
-  await rm(autoContextDirectory, { recursive: true, force: true });
-});
 
 describe("CLI version handler (M2)", () => {
   it("CLI-VERSION-001: --version exits 0 with version on stdout", async () => {
