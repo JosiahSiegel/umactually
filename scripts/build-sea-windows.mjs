@@ -88,9 +88,16 @@ function assertNodeVersion() {
     );
   }
   if (process.platform !== "win32") {
-    throw new Error(
-      `build-sea-windows: this script must run on Windows (process.platform="${process.platform}"). ` +
-      `On Linux/macOS, run scripts/build-sea.mjs instead.`,
+    // Don't hard-fail here: the BUNDLE step (tsdown) works fine on
+    // Linux, and the SEA-injection step (node --build-sea) produces
+    // a Linux binary on Linux. We allow Linux execution for local
+    // dev / test-seam verification, but log a warning so the user
+    // notices. CI is gated on `runs-on: windows-2025` (see
+    // .github/workflows/release.yml:build-package-windows) so a
+    // Linux dry-run cannot ship to a release.
+    console.warn(
+      `build-sea-windows: running on ${process.platform}; the produced binaries will be ${process.platform} binaries, not Windows .exe. ` +
+      `For Windows .exe binaries, run this script on a Windows host.`,
     );
   }
 }
@@ -156,17 +163,21 @@ function runTsdown(args, label) {
 }
 
 function buildBundle() {
-  // Run `tsdown` (no --exe) to produce dist/cli.mjs. The tsdown
-  // config in tsdown.config.ts already declares the entry +
-  // externals + bundle format; we pass --config explicitly to avoid
-  // relying on tsdown's "find the nearest config" behavior across
-  // the cross-platform CI matrix.
-  console.log(`\nBuilding dist/cli.mjs via tsdown (no --exe)`);
-  runTsdown(["--config", join(REPO_ROOT, "tsdown.config.ts")], "bundle");
+  // Run `tsdown` against `tsdown.windows.config.ts` (NOT
+  // `tsdown.config.ts`). The full config has an `exe:` block that
+  // triggers @tsdown/exe's postBuild step — which downloads a
+  // Node binary and runs tar, both of which are broken on Windows
+  // (the tar command misinterprets the colon in the URL as a drive
+  // letter). The Windows config is the same shape but with the
+  // `exe:` block removed, so tsdown only does the platform-agnostic
+  // JS bundling. The Windows .exe is then produced by
+  // `node --build-sea` in buildSeaBinary() below.
+  console.log(`\nBuilding dist/cli.mjs via tsdown (Windows config, no exe)`);
+  runTsdown(["--config", join(REPO_ROOT, "tsdown.windows.config.ts")], "bundle");
   if (!existsSync(BUNDLE_PATH)) {
     throw new Error(
       `build-sea-windows: expected bundle at ${BUNDLE_PATH} but it was not produced. ` +
-      `Check tsdown.config.ts and the npm run build script.`,
+      `Check tsdown.windows.config.ts and the npm run build script.`,
     );
   }
 }
