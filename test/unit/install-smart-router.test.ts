@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MIT
 import { execFileSync, spawnSync } from "node:child_process";
-import { chmodSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve, sep } from "node:path";
 
@@ -136,7 +136,7 @@ describe.skipIf(!SHELL_AVAILABLE)("install.sh smart-router (v0.6.0)", () => {
     // npm install" message in stderr. We assert that, plus the npm
     // call attempted (via the npm 404 / "not found" output or the
     // "installed via npm" success message).
-    expect(result.stderr, `stderr: ${result.stderr}`).toMatch(/Node v\d+\.\d+\.\d+ detected, using npm install/);
+    expect(result.stderr, `stderr: ${result.stderr}`).toMatch(/Node v\d+\.\d+\.\d+ detected, trying npm install/);
     // npm was definitely called (404 or success in stderr/stdout)
     const npmCalled = /npm install -g umactually/.test(result.stdout)
       || /npm install -g umactually/.test(result.stderr)
@@ -148,12 +148,11 @@ describe.skipIf(!SHELL_AVAILABLE)("install.sh smart-router (v0.6.0)", () => {
 
   it("falls through to binary download when no node on PATH", () => {
     // Use a PATH that only contains the system dirs but excludes any
-    // node installation. We can't fully sandbox PATH, but we can verify
-    // the smart-router doesn't pick the npm path on a system that has
-    // no node. The test is forgiving: if the host happens to have
-    // node < 24, the smart-router also falls through (no crash). We
-    // just assert the smart-router didn't pick the npm branch by
-    // looking for the absence of the "using npm install" message.
+    // node installation. The test asserts the smart-router did NOT pick
+    // the npm path AND that the test-mode binary stub was installed in
+    // INSTALL_TEST_DIR — the second assertion guards against a script
+    // that silently `exit 0`s on no-node (the previous form only checked
+    // the stderr message, which was a false-negative trap).
     const testDir = mkdtempSync(join(tmpdir(), "umactually-smart-fb-"));
     sandboxes.push(testDir);
     const result = runShell({
@@ -163,10 +162,12 @@ describe.skipIf(!SHELL_AVAILABLE)("install.sh smart-router (v0.6.0)", () => {
       PLATFORM_OVERRIDE: "linux",
       ARCH_OVERRIDE: "x64",
     });
-    // The script should NOT have invoked npm. In the no-node-no-test-mode
-    // case the smart-router would fall through; with INSTALL_TEST_MODE=1
-    // it bails to the test-mode binary stub. Either way, no "using npm".
-    expect(result.stderr).not.toMatch(/using npm install/);
+    expect(result.stderr).not.toMatch(/trying npm install/);
+    // The test-mode stub binary must exist in the install dir, proving
+    // the binary-download path was actually reached (not a silent exit).
+    const installedBin = join(testDir, "umactually");
+    expect(existsSync(installedBin), `expected test-mode stub at ${installedBin}; ` +
+      `stdout=${result.stdout}\nstderr=${result.stderr}`).toBe(true);
   });
 
   it("respects INSTALL_TEST_MODE=1 (skips smart-router)", () => {
@@ -182,8 +183,8 @@ describe.skipIf(!SHELL_AVAILABLE)("install.sh smart-router (v0.6.0)", () => {
     });
     // With INSTALL_TEST_MODE=1 the smart-router is bypassed; the test-mode
     // stub binary is installed instead. Assert the smart-router did not
-    // fire (no "using npm install" message).
-    expect(result.stderr).not.toMatch(/using npm install/);
+    // fire (no "trying npm install" message).
+    expect(result.stderr).not.toMatch(/trying npm install/);
   });
 
   it("respects INSTALL_FORCE_BINARY=1 (skips smart-router)", () => {
@@ -198,7 +199,7 @@ describe.skipIf(!SHELL_AVAILABLE)("install.sh smart-router (v0.6.0)", () => {
       PLATFORM_OVERRIDE: "linux",
       ARCH_OVERRIDE: "x64",
     });
-    expect(result.stderr).not.toMatch(/using npm install/);
+    expect(result.stderr).not.toMatch(/trying npm install/);
   });
 });
 

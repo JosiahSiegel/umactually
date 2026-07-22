@@ -33,7 +33,7 @@
 // (and for local debugging) but is a no-op; the script always builds all 6.
 
 import { spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, readFileSync, statSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, renameSync, statSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -127,6 +127,26 @@ function buildAll() {
   ], "build all targets");
 }
 
+// @tsdown/exe uses the Node download URL convention for target.platform:
+// "win" for Windows (e.g. `node-v25.7.0-win-x64.zip`). That yields
+// filenames like `umactually-win-x64.exe`. Our manifest and install
+// scripts (install.sh, install.ps1) use the `windows-` prefix instead
+// (matching GitHub's release-asset convention). Normalize the Windows
+// outputs after the build so downstream consumers see a single naming.
+function normalizeWindowsOutputs() {
+  const RENAMES = [
+    ["umactually-win-x64.exe", "umactually-windows-x64.exe"],
+    ["umactually-win-arm64.exe", "umactually-windows-arm64.exe"],
+  ];
+  for (const [from, to] of RENAMES) {
+    const fromPath = join(OUTDIR, from);
+    const toPath = join(OUTDIR, to);
+    if (existsSync(fromPath) && !existsSync(toPath)) {
+      renameSync(fromPath, toPath);
+    }
+  }
+}
+
 function verifyOutput(target) {
   const expectedPath = join(OUTDIR, target.rawName);
   if (!existsSync(expectedPath)) {
@@ -165,6 +185,7 @@ export async function main(argv = process.argv.slice(2)) {
   mkdirSync(OUTDIR, { recursive: true });
 
   buildAll();
+  normalizeWindowsOutputs();
 
   for (const target of targets) {
     verifyOutput(target);

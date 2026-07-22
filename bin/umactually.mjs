@@ -15,11 +15,19 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 // which already pins the runner to Node 24, so this guard is a backstop
 // for direct CLI invocations outside the Actions runtime.
 //
-// We accept the highest of {process.versions.node, process.versions.bun}
-// so that `bunx umactually` works. Bun does not set process.versions.node;
-// it sets process.versions.bun. Both report "vX.Y.Z" with a leading 'v';
-// strip it before parsing the major version.
-const MIN_NODE_MAJOR = 24;
+// Runtime policy:
+//   - For Node, require >= 24.0.0 (matches package.json `engines.node`).
+//   - For Bun, also require >= 24.0.0 (Bun's `process.versions.bun` is
+//     populated when running under Bun; Node-only environments leave it
+//     undefined, which we treat as "not running under Bun").
+//   - We do NOT use Math.max(node, bun): a user with Bun 25 + Node 22
+//     would otherwise slip past the gate even though the CLI relies on
+//     Node 24+ APIs (`fetch`, `node:test`, etc.) that older Bun doesn't
+//     fully implement. Each runtime is gated on its own major version.
+//   - When both runtimes are present, prefer Bun ONLY if it meets the
+//     threshold; otherwise prefer Node (so the error message surfaces
+//     Node's version, which is what downstream tooling also reports).
+const MIN_RUNTIME_MAJOR = 24;
 function parseMajor(versionString) {
   if (typeof versionString !== "string" || versionString.length === 0) {
     return Number.NaN;
@@ -31,18 +39,15 @@ function parseMajor(versionString) {
 }
 const nodeMajor = parseMajor(process.versions.node);
 const bunMajor = parseMajor(process.versions.bun);
-const bestMajor = Math.max(
-  Number.isFinite(nodeMajor) ? nodeMajor : 0,
-  Number.isFinite(bunMajor) ? bunMajor : 0,
-);
-if (!Number.isFinite(bestMajor) || bestMajor < MIN_NODE_MAJOR) {
-  const detected = Number.isFinite(nodeMajor)
-    ? `Node ${process.versions.node}`
-    : Number.isFinite(bunMajor)
-      ? `Bun ${process.versions.bun}`
-      : "unknown runtime";
+const bunIsLive = Number.isFinite(bunMajor);
+const useBun = bunIsLive && bunMajor >= MIN_RUNTIME_MAJOR;
+const runtimeMajor = useBun ? bunMajor : nodeMajor;
+const runtimeLabel = useBun
+  ? `Bun ${process.versions.bun}`
+  : `Node ${process.versions.node}`;
+if (!Number.isFinite(runtimeMajor) || runtimeMajor < MIN_RUNTIME_MAJOR) {
   process.stderr.write(
-    `umactually: requires Node >= ${MIN_NODE_MAJOR}.x (detected ${detected}).\n`,
+    `umactually: requires Node >= ${MIN_RUNTIME_MAJOR}.x (detected ${runtimeLabel}).\n`,
   );
   process.exit(1);
 }

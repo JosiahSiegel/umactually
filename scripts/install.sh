@@ -97,7 +97,7 @@ smart_install_with_npm() {
   NODE_VER=$(node -v 2>/dev/null || true)
   NODE_MAJOR=$(node_major "$NODE_VER")
   if [ -n "$NODE_MAJOR" ] && [ "$NODE_MAJOR" -ge 24 ] 2>/dev/null; then
-    printf "umactually: Node %s detected, using npm install\n" "$NODE_VER" >&2
+    printf "umactually: Node %s detected, trying npm install\n" "$NODE_VER" >&2
     # Honor a per-package prefix if the user has one set.
     NPM_GLOBAL_PREFIX=""
     if [ -n "$NPM_CONFIG_PREFIX" ]; then
@@ -106,7 +106,20 @@ smart_install_with_npm() {
     # `npm install -g` puts the umactually bin on PATH. If npm itself
     # is missing or fails, fall through to the binary download rather
     # than abort the install — the user gets a clear error either way.
-    if NPM_GLOBAL_PREFIX="$NPM_GLOBAL_PREFIX" npm install -g umactually; then
+    if NPM_GLOBAL_PREFIX="$NPM_GLOBAL_PREFIX" npm install -g umactually 2>/dev/null; then
+      # PATH sanity check: if the install succeeded but the binary isn't
+      # reachable (e.g. NPM_CONFIG_PREFIX not on PATH), surface a hint
+      # rather than silently exit 0.
+      if ! command -v umactually >/dev/null 2>&1; then
+        printf "umactually: installed via npm, but 'umactually' is not on PATH.\n" >&2
+        if [ -n "$NPM_GLOBAL_PREFIX" ]; then
+          printf "umactually: add '%s/bin' to your PATH and retry.\n" "$NPM_GLOBAL_PREFIX" >&2
+        else
+          NPM_BIN_DIR="$(npm config get prefix 2>/dev/null)/bin"
+          printf "umactually: add '%s' to your PATH and retry.\n" "$NPM_BIN_DIR" >&2
+        fi
+        exit 1
+      fi
       printf "umactually: installed via npm. Run 'umactually --version' to verify.\n" >&2
       exit 0
     fi
@@ -121,8 +134,6 @@ if [ -z "$INSTALL_TEST_MODE" ] && [ -z "$INSTALL_FORCE_BINARY" ]; then
   # shellcheck disable=SC2317  # function is defined above and called below
   smart_install_with_npm || true
 fi
-
-# ---- constants ----
 
 # ---- constants ----
 REPO="JosiahSiegel/umactually"

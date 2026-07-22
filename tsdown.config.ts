@@ -100,6 +100,10 @@ export default defineConfig({
   // No `platform` — SEA blobs are platform-agnostic.
   // No `clean` — we manage the release/ directory from the build script.
   exe: {
+    // Output directory for SEA binaries. We pin to "release" so build-sea.mjs
+    // can verify outputs in a single known location; tsdown's default is
+    // "build" which would require an extra move step.
+    outDir: "release",
     // When invoked via build-sea.mjs, the --exe.fileName flag overrides this.
     fileName: "umactually",
     // The full set of targets. Per-target invocations pass the same options
@@ -109,7 +113,10 @@ export default defineConfig({
       disableExperimentalSEAWarning: true,
       // useCodeCache speeds up startup by 30-50ms but requires the SEA to
       // be built on the same arch as the target. @tsdown/exe handles this
-      // automatically per target.
+      // automatically per target. We keep it on because the build matrix
+      // in release.yml runs each target on a native-arch runner
+      // (ubuntu-latest = x64 for linux-x64, etc.), so the code cache is
+      // always produced by a same-arch V8 — no cross-arch hazard.
       useCodeCache: true,
       useSnapshot: false,
     },

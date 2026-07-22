@@ -131,7 +131,7 @@ log "6/9  verify stage sizes (replaces verify-release-assets.mjs --measure)"
 # dropped both the Bun pin and the budget file (Node SEA is the
 # official path; tsdown's --exe already enforces bundle size
 # internally). The smoke-sea job in ci.yml is the runtime check;
-# here we just confirm each target produced an output.
+# here we just confirm each target produced a non-empty output.
 node -e '
 const fs = require("fs");
 const path = require("path");
@@ -146,13 +146,18 @@ for (const t of manifest) {
     continue;
   }
   const size = fs.statSync(p).size;
+  if (size === 0) {
+    console.error("EMPTY: " + p);
+    failed++;
+    continue;
+  }
   console.log("  " + t.rawName + " (" + size + " bytes)");
 }
 if (failed > 0) {
-  console.error("verify stage: " + failed + " target(s) missing");
+  console.error("verify stage: " + failed + " target(s) missing or empty");
   process.exit(1);
 }
-console.log("verify stage: all " + manifest.length + " targets present");
+console.log("verify stage: all " + manifest.length + " targets present and non-empty");
 '
 
 # ----- 3. Stage into release/public/ + internal/raw/ -----
