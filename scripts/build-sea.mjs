@@ -37,6 +37,8 @@ import { copyFileSync, existsSync, mkdirSync, readdirSync, readFileSync, renameS
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
+import { MIN_RAW_BYTES } from "./verify-release-sizes.mjs";
+
 const EXPECTED_NODE_MAJOR = 25;
 const EXPECTED_NODE_MINOR = 7;
 const SCRIPT_DETECT = /\.(mjs|cjs|js)$/i;
@@ -200,7 +202,25 @@ function collectSeaOutputs() {
         if (!pattern.test(entry)) continue;
         const fromPath = join(dirPath, entry);
         const stat = statSync(fromPath);
-        if (!stat.isFile() || stat.size === 0) continue;
+        // Reject zero-byte files (a partially-written tsdown output) and
+        // anything under the MIN_RAW_BYTES floor (1 MiB — the same
+        // threshold scripts/verify-release-sizes.mjs enforces for
+        // already-renamed release/ outputs). Without the lower bound,
+        // a corrupted / truncated tsdown run could leave a 100KB
+        // "binary" in build/ that the smoke-sea CI on linux-x64 would
+        // catch but darwin/windows targets (no CI smoke coverage)
+        // would ship. Bail with a warning instead of promoting the
+        // half-written file into release/ — verifyOutput() further
+        // down will then fail with a clear "expected output not
+        // found" message rather than a confusing "binary crashed on
+        // launch" from a downstream consumer.
+        if (!stat.isFile() || stat.size < MIN_RAW_BYTES) {
+          console.warn(
+            `  ⚠ skipping ${dir}/${entry} ` +
+            `(${stat.size} bytes < MIN_RAW_BYTES ${MIN_RAW_BYTES})`,
+          );
+          continue;
+        }
         const toName = entry.replace(/^umactually-win-/, "umactually-windows-");
         const toPath = join(OUTDIR, toName);
         if (existsSync(toPath)) continue; // already in place
