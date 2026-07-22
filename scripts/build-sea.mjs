@@ -33,7 +33,7 @@
 // (and for local debugging) but is a no-op; the script always builds all 6.
 
 import { spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, readFileSync, renameSync, statSync } from "node:fs";
+import { copyFileSync, existsSync, mkdirSync, readdirSync, readFileSync, renameSync, statSync, unlinkSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -172,7 +172,7 @@ function collectSeaOutputs() {
       /^umactually-win-arm64\.exe$/,
     ];
     for (const pattern of PATTERNS) {
-      for (const entry of require("node:fs").readdirSync(dirPath)) {
+      for (const entry of readdirSync(dirPath)) {
         if (!pattern.test(entry)) continue;
         const fromPath = join(dirPath, entry);
         const stat = statSync(fromPath);
@@ -181,18 +181,16 @@ function collectSeaOutputs() {
         const toPath = join(OUTDIR, toName);
         if (existsSync(toPath)) continue; // already in place
         const fromDisplay = `${dir}/${entry}`;
-        if (renameSync.length === 2) {
-          try {
-            renameSync(fromPath, toPath);
-            console.log(`  ↪ moved ${fromDisplay} → release/${toName}`);
-            continue;
-          } catch {
-            // Cross-device move can fail; fall through to copy.
-          }
+        try {
+          renameSync(fromPath, toPath);
+          console.log(`  ↪ moved ${fromDisplay} → release/${toName}`);
+        } catch {
+          // Cross-device move can fail (e.g. EXDEV); fall back to
+          // copy + delete so the build still succeeds.
+          copyFileSync(fromPath, toPath);
+          unlinkSync(fromPath);
+          console.log(`  ↪ copied ${fromDisplay} → release/${toName}`);
         }
-        require("node:fs").copyFileSync(fromPath, toPath);
-        require("node:fs").unlinkSync(fromPath);
-        console.log(`  ↪ copied ${fromDisplay} → release/${toName}`);
       }
     }
   }
