@@ -99,12 +99,21 @@ checksums.txt when no flag/env is supplied.
 # The CI smoke test asserts on the absence of "trying npm install"
 # in stderr for this reason.
 function Invoke-SmartInstallNpm {
-  # Try the standard 'node' / 'node.exe' first, fall back to common
-  # Windows install locations if not on PATH.
+  # Search for a usable Node.exe. Order of preference:
+  #   1. Get-Command -All node   — honors PATH, App Paths, and any
+  #      shell-managed location (this catches most setups including
+  #      nvm-windows / fnm when their shim is on PATH).
+  #   2. Common install roots (Program Files, Program Files (x86),
+  #      per-user Programs) — covers the standard .msi installer.
+  #   3. nvm-windows default root (%APPDATA%\nvm\v<major>.<minor>.<patch>\)
+  #      and the fnm per-user default (%LOCALAPPDATA%\fnm\node-versions\...)
+  #      — documented Node upgrade paths for contributors
+  #      (per scripts/build-sea.mjs, the repo recommends fnm use).
+  #   4. Per-user fnm version-pinned shim (%LOCALAPPDATA%\fnm_multishells).
   $nodeCmd = $null
-  foreach ($candidate in @('node', 'node.exe')) {
-    $found = Get-Command $candidate -ErrorAction SilentlyContinue
-    if ($found) { $nodeCmd = $found; break }
+  $allNode = Get-Command 'node' -All -ErrorAction SilentlyContinue
+  if ($allNode) {
+    $nodeCmd = $allNode[0].Source
   }
   if (-not $nodeCmd) {
     foreach ($dir in @(
@@ -114,6 +123,28 @@ function Invoke-SmartInstallNpm {
     )) {
       $exe = Join-Path $dir 'node.exe'
       if (Test-Path $exe) { $nodeCmd = $exe; break }
+    }
+  }
+  if (-not $nodeCmd -and $env:APPDATA) {
+    # nvm-windows default install root. Newer versions live under
+    # v<version>\node.exe; older ones had <version>\node.exe. We pick
+    # the highest version directory that contains a node.exe.
+    $nvmRoot = Join-Path $env:APPDATA 'nvm'
+    if (Test-Path $nvmRoot) {
+      $candidates = Get-ChildItem -LiteralPath $nvmRoot -Directory -ErrorAction SilentlyContinue |
+        Where-Object { Test-Path -LiteralPath (Join-Path $_.FullName 'node.exe') } |
+        Sort-Object { [version]($_.Name -replace '^v', '') } -Descending
+      if ($candidates) { $nodeCmd = Join-Path $candidates[0].FullName 'node.exe' }
+    }
+  }
+  if (-not $nodeCmd -and $env:LOCALAPPDATA) {
+    # fnm default per-user install: %LOCALAPPDATA%\fnm\node-versions\<version>\installation\node.exe
+    $fnmRoot = Join-Path $env:LOCALAPPDATA 'fnm\node-versions'
+    if (Test-Path $fnmRoot) {
+      $candidates = Get-ChildItem -LiteralPath $fnmRoot -Directory -ErrorAction SilentlyContinue |
+        Where-Object { Test-Path -LiteralPath (Join-Path $_.FullName 'installation\node.exe') } |
+        Sort-Object { [version]($_.Name -replace '^v', '') } -Descending
+      if ($candidates) { $nodeCmd = Join-Path $candidates[0].FullName 'installation\node.exe' }
     }
   }
   if (-not $nodeCmd) { return $false }

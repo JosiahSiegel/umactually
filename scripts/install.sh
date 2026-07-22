@@ -112,7 +112,10 @@ smart_install_with_npm() {
   NODE_VER=$(node -v 2>/dev/null || true)
   NODE_MAJOR=$(node_major "$NODE_VER")
   if [ -n "$NODE_MAJOR" ] && [ "$NODE_MAJOR" -ge 24 ] 2>/dev/null; then
-    printf "umactually: Node %s detected, trying npm install\n" "$NODE_VER" >&2
+    # Use single-quoted format string to make format-string safety explicit:
+    # the format has no shell metacharacters and no percent-expansion in the
+    # format itself, so the only %s is consumed by $NODE_VER as a value.
+    printf 'umactually: Node %s detected, trying npm install\n' "$NODE_VER" >&2
     # Honor a per-package prefix if the user has one set.
     NPM_GLOBAL_PREFIX=""
     if [ -n "$NPM_CONFIG_PREFIX" ]; then
@@ -182,7 +185,11 @@ smart_install_with_npm() {
       # the prefix in the hint so they can fix PATH without
       # re-running the installer.
       if ! command -v umactually >/dev/null 2>&1; then
-        printf "umactually: installed via npm, but 'umactually' is not on PATH.\n" >&2
+        # Single-quoted format strings throughout this block. The format
+        # itself is a constant; the variable is a positional argument and
+        # is never re-interpreted as a format spec. See PR #104 self-review
+        # for the original "medium" correctness flag.
+        printf 'umactually: installed via npm, but '"'"'umactually'"'"' is not on PATH.\n' >&2
         # `npm config get prefix` returns the parent of `bin/` (POSIX) or
         # the directory that holds the .cmd shim directly (Windows).
         # Mirror scripts/install.ps1's $isPosix detection: on Git Bash
@@ -197,23 +204,23 @@ smart_install_with_npm() {
         esac
         if [ -n "$NPM_GLOBAL_PREFIX" ]; then
           if [ "$_is_windows" = "1" ]; then
-            printf "umactually: add '%s' to your PATH and retry.\n" "$NPM_GLOBAL_PREFIX" >&2
+            printf 'umactually: add '"'"'%s'"'"' to your PATH and retry.\n' "$NPM_GLOBAL_PREFIX" >&2
           else
-            printf "umactually: add '%s/bin' to your PATH and retry.\n" "$NPM_GLOBAL_PREFIX" >&2
+            printf 'umactually: add '"'"'%s/bin'"'"' to your PATH and retry.\n' "$NPM_GLOBAL_PREFIX" >&2
           fi
         else
           NPM_BIN_DIR="$(npm config get prefix 2>/dev/null)"
           if [ "$_is_windows" = "1" ]; then
-            printf "umactually: add '%s' to your PATH and retry.\n" "$NPM_BIN_DIR" >&2
+            printf 'umactually: add '"'"'%s'"'"' to your PATH and retry.\n' "$NPM_BIN_DIR" >&2
           else
-            printf "umactually: add '%s/bin' to your PATH and retry.\n" "$NPM_BIN_DIR" >&2
+            printf 'umactually: add '"'"'%s/bin'"'"' to your PATH and retry.\n' "$NPM_BIN_DIR" >&2
           fi
         fi
         rm -f "$_npm_err" 2>/dev/null || true
         exit 1
       fi
       rm -f "$_npm_err" 2>/dev/null || true
-      printf "umactually: installed via npm. Run 'umactually --version' to verify.\n" >&2
+      printf 'umactually: installed via npm. Run '"'"'umactually --version'"'"' to verify.\n' >&2
       exit 0
     fi
     # Show the captured npm stderr in the fallback message so the user
@@ -232,7 +239,12 @@ smart_install_with_npm() {
         _npm_err_tail=" (${_first_line})"
       fi
     fi
-    printf "umactually: npm install failed, falling back to binary download%s\n" "$_npm_err_tail" >&2
+    # Single-quoted format string — $var never appears in the format
+    # itself, so an untrusted $_first_line (e.g. containing '%s' or '%d'
+    # from a hostile npm registry response) cannot be re-interpreted as
+    # printf format specifiers. See PR #104 self-review: "medium"
+    # correctness flag for the previous double-quoted form.
+    printf 'umactually: npm install failed, falling back to binary download%s\n' "$_npm_err_tail" >&2
     return 1
   fi
   return 1
