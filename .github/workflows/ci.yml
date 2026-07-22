@@ -580,6 +580,62 @@ jobs:
           if-no-files-found: warn
           retention-days: 7
 
+  # ---------------------------------------------------------------------
+  # Windows variant of the PR-time e2e check. Same harness as the
+  # linux-x64 job above, but the binary under test is the
+  # Windows-built windows-x64 .exe (built on this windows-latest
+  # runner — not the Linux-built one from build-package, which is
+  # the broken-binary class the v0.6.0+ regression cycle
+  # surfaced). Catches wire-format regressions on Windows at
+  # PR time, mirroring the post-release-e2e.yml's Windows lane
+  # but exercising the real .exe that a Windows-build would
+  # produce.
+  # ---------------------------------------------------------------------
+  e2e-pr-windows:
+    name: e2e (PR-time, windows x64)
+    runs-on: windows-latest
+    needs: smoke-sea-windows
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node 25
+        uses: actions/setup-node@v4
+        with:
+          node-version: "25.7.0"
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build (dist/ + sanity-check source)
+        run: npm run build
+
+      - name: Build all SEA binaries (only windows-x64 is exercised here)
+        run: node scripts/build-sea.mjs windows-x64
+
+      - name: Run post-release e2e against the local Windows binary
+        env:
+          ARTIFACT_DIR: ${{ runner.temp }}/e2e-pr
+          PR_NUMBER: ${{ github.event.pull_request.number || '9999' }}
+        shell: bash
+        # The harness is OS-agnostic — it spawns the binary via
+        # Node's child_process.spawn, which handles .exe paths on
+        # Windows correctly. The mock LLM listens on a free port
+        # and serves both OpenAI + Anthropic wire formats; the
+        # e2e harness asserts >=2 inline comments per provider.
+        run: |
+          set -euo pipefail
+          node test/post-release/run-e2e.mjs --binary-path "release/umactually-windows-x64.exe"
+
+      - name: Upload e2e artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: e2e-pr-windows-x64
+          path: ${{ runner.temp }}/e2e-pr/
+          if-no-files-found: warn
+          retention-days: 7
+
   release-pipeline-dry-run:
     name: release pipeline dry-run
     runs-on: ubuntu-latest
