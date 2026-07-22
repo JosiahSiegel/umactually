@@ -43,7 +43,7 @@ const PWSH_AVAILABLE = PWSH !== null;
 
 type RunResult = { stdout: string; stderr: string; status: number };
 
-function runShell(env: Record<string, string>): RunResult {
+function runShell(env: Record<string, string>, args: string[] = []): RunResult {
   if (!SHELL_AVAILABLE || BASH === null) {
     return { stdout: "SHELL_UNAVAILABLE", stderr: "", status: 0 };
   }
@@ -63,7 +63,7 @@ function runShell(env: Record<string, string>): RunResult {
   // The PATH separator here is `path.delimiter` (':' on POSIX, ';' on
   // Windows), NOT `path.sep` ('/' or '\\') — the latter is the
   // path-component separator, not the PATH-list separator.
-  const result = spawnSync(BASH, ["--noprofile", "--norc", INSTALL_SH], {
+  const result = spawnSync(BASH, ["--noprofile", "--norc", INSTALL_SH, ...args], {
     env: { ...process.env, ...env },
     encoding: "utf8",
   });
@@ -277,6 +277,40 @@ describe.skipIf(!SHELL_AVAILABLE || process.platform === "win32")("install.sh sm
       ARCH_OVERRIDE: "x64",
     });
     expect(result.stderr).not.toMatch(/trying npm install/);
+  });
+
+  // The `--try-npm` CLI flag MUST be picked up by the smart-router on
+  // the FIRST invocation of install.sh, even though `parse_args()` is
+  // defined later in the file. Without the early-bird argv sniff (the
+  // `case " $* " in *" --try-npm "*` block right after the smart-router
+  // conditional), the curl-pipe form
+  //   curl .../install.sh | sh -s -- --try-npm
+  // silently falls through to the binary path on the first run because
+  // INSTALL_TRY_NPM is unset when the smart-router runs. Lock the
+  // contract here: `--try-npm` on argv MUST set INSTALL_TRY_NPM before
+  // the smart-router consults it.
+  it("--try-npm flag opts in to the smart-router on first invocation (no env var)", () => {
+    const { binDir } = makeSandbox();
+    // Deliberately omit INSTALL_TRY_NPM here — the test asserts that
+    // the CLI flag itself is sufficient to opt in on the FIRST run.
+    // If the early-bird argv sniff regresses, the smart-router sees
+    // INSTALL_TRY_NPM unset, falls through to the binary path, and
+    // this negative assertion passes (false negative trap). The
+    // positive "Node v... trying npm install" assertion below is the
+    // real lock — without the sniff that message would be missing.
+    const result = runShell({
+      PATH: `${binDir}${delimiter}${process.env["PATH"] ?? ""}`,
+      INSTALL_TEST_MODE: "",
+      INSTALL_FORCE_BINARY: "",
+    }, ["--try-npm"]);
+    // The flag is not "unknown flag: --try-npm" — the parser's
+    // full-flag case branch (or, in the curl-pipe form, the
+    // early-bird argv sniff above the smart-router) accepted it.
+    expect(result.stderr, `stderr: ${result.stderr}`).not.toMatch(/unknown flag: --try-npm/);
+    // The smart-router fired — proof that INSTALL_TRY_NPM was set
+    // before the smart-router condition at the top of the script
+    // read it.
+    expect(result.stderr, `stderr: ${result.stderr}`).toMatch(/Node v\d+\.\d+\.\d+ detected, trying npm install/);
   });
 });
 

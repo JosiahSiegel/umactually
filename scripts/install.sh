@@ -93,6 +93,39 @@
 set -e
 umask 077
 
+# Early-bird argv sniff for the smart-router. The full `parse_args()`
+# function is defined later in the file (after the smart-router block)
+# and called at the end of the script for the v0.6.0 contract. We need
+# `INSTALL_TRY_NPM` to be set BEFORE the smart-router condition runs,
+# otherwise a curl-pipe invocation like
+#   curl .../install.sh | sh -s -- --try-npm
+# silently fails to opt in on first invocation: the smart-router sees
+# `INSTALL_TRY_NPM` unset, falls through to the binary path, and only
+# THEN does parse_args set INSTALL_TRY_NPM=1. By the time the user
+# re-runs, they're already holding a binary install. We resolve this
+# by sniffing just the flag the smart-router reads here, BEFORE the
+# smart-router runs. This is a minimal, targeted hand-off — parse_args
+# still owns the full flag list (--tag, --base, --contract,
+# --install-dir, --ssl-no-revoke, -h/--help, -V/--version) and the
+# help/version blocks.
+#
+# v0.6.0 review: this is a documented exception to "single source of
+# truth for argv parsing" — the smart-router's only consumer of argv
+# is INSTALL_TRY_NPM, and putting the entire parse_args function above
+# the smart-router would mean moving log_err / HELP block / etc.
+# earlier in the file for a single flag. Verified by
+# install-smart-router.test.ts's runShell harness (the
+# `--try-npm flag opts in to the smart-router on first invocation`
+# test).
+case " $* " in
+  *" --try-npm "*)
+    if [ -z "${INSTALL_TRY_NPM:-}" ]; then
+      INSTALL_TRY_NPM=1
+      export INSTALL_TRY_NPM
+    fi
+    ;;
+esac
+
 # ---- smart installer: npm if Node 24+ is available, else binary ----
 # This block runs BEFORE any network work. If it decides to delegate to
 # npm, it does so and exits cleanly without continuing the script.
@@ -315,6 +348,18 @@ if [ "${INSTALL_TRY_NPM:-0}" = "1" ] \
   # shellcheck disable=SC2317  # function is defined above and called below
   smart_install_with_npm || true
 fi
+
+# Translate `--tag` / `--base` / `--contract` / `--install-dir` CLI flags
+# into the env-var shape the rest of the script reads. The POSIX
+# `curl | sh -s -- <flags>` form must be a first-class entry point.
+#
+# NOTE: the smart-router-relevant flag (`--try-npm`) is sniffed earlier
+# in the file (just below `set -e`, before the smart-router block) so
+# the curl-pipe form `curl .../install.sh | sh -s -- --try-npm` opts
+# in on first invocation. The full flag list (--tag, --base, --contract,
+# --install-dir, --ssl-no-revoke, -h/--help, -V/--version) is owned
+# here and applied at the end of the script. Verified by
+# install-smart-router.test.ts's runShell harness.
 
 # ---- constants ----
 REPO="JosiahSiegel/umactually"
@@ -1259,9 +1304,15 @@ parse_args() {
         # copy/paste form). Off by default because the umactually
         # npm package is not yet published as of v0.6.0; the
         # smart-router would 404 on every fresh install. See
-        # INSTALL_TRY_NPM in the header doc.
-        INSTALL_TRY_NPM=1
-        export INSTALL_TRY_NPM
+        # INSTALL_TRY_NPM in the header doc. Honor the same
+        # env-var-wins pattern as --tag/--base/--contract/--install-dir
+        # above so a pre-set INSTALL_TRY_NPM in the caller's env
+        # is not silently clobbered by the flag (the env is the
+        # deployment default, the flag is the per-call override).
+        if [ -z "${INSTALL_TRY_NPM:-}" ]; then
+          INSTALL_TRY_NPM=1
+          export INSTALL_TRY_NPM
+        fi
         shift 1
         ;;
       -h|--help)
@@ -1330,6 +1381,14 @@ USAGE
 # Translate `--tag` / `--base` / `--contract` / `--install-dir` CLI flags
 # into the env-var shape the rest of the script reads. The POSIX
 # `curl | sh -s -- <flags>` form must be a first-class entry point.
+#
+# NOTE: the smart-router-relevant flag (`--try-npm`) is sniffed earlier
+# in the file (right after the smart-router block) so the curl-pipe
+# form `curl .../install.sh | sh -s -- --try-npm` actually opts in
+# on first invocation. The full flag list (--tag, --base, --contract,
+# --install-dir, --ssl-no-revoke, -h/--help, -V/--version) is owned
+# here and applied at the end of the script. Verified by
+# install-smart-router.test.ts's runShell harness.
 parse_args "$@"
 
 # Proactive hint: if curl is built against Windows Schannel, warn the

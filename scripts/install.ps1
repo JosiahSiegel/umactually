@@ -171,8 +171,18 @@ foreach ($arg in $args) {
 umactually installer
 
 Usage:
-  irm https://github.com/JosiahSiegel/umactually/raw/main/scripts/install.ps1 | iex [flags]
-  iex (irm .../v0.5.4/scripts/install.ps1) -INSTALL_RELEASE_TAG v0.5.4
+  # Save first, then run with flags (most reliable across PowerShell 5.1 / 7+):
+  irm https://github.com/JosiahSiegel/umactually/raw/main/scripts/install.ps1 -OutFile install.ps1
+  .\install.ps1 -TryNpm
+
+  # Or one-shot via env var (no flag-parsing involved):
+  $env:INSTALL_TRY_NPM = '1'
+  irm https://github.com/JosiahSiegel/umactually/raw/main/scripts/install.ps1 | iex
+
+  # Or pin a specific tag via the env var:
+  $env:INSTALL_RELEASE_TAG = 'v0.5.4'
+  irm https://github.com/JosiahSiegel/umactually/raw/main/scripts/install.ps1 | iex
+
 
 Flags (also accepted as env vars):
   -Tag <vX.Y.Z>          Pin to a specific release tag. Env: INSTALL_RELEASE_TAG.
