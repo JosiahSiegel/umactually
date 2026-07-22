@@ -121,9 +121,16 @@ function buildAll() {
   console.log(`\nBuilding all targets via tsdown --exe`);
   // Single tsdown invocation. The config has all 6 targets + seaConfig;
   // tsdown iterates them in one process and emits 6 binaries into OUTDIR.
+  //
+  // We pass --exe to enable the executable feature in case the config
+  // loader doesn't pick up the nested `exe: { ... }` object. The config
+  // already declares `exe: { targets: [...], seaConfig: {...} }`, which
+  // is the source of truth for per-target settings. If `--exe` is also
+  // passed and tsdown's defu() merge collapses the two (object vs
+  // boolean `true`), the targets list could be lost. To stay safe we
+  // rely solely on the config — dropping `--exe` here.
   runTsdown([
     "--config", TSDOWN_CONFIG,
-    "--exe",
   ], "build all targets");
 }
 
