@@ -91,6 +91,16 @@ function installWith(checksums: string): { readonly status: number | null; reado
       // flow with our fake `curl` serving the test's checksums +
       // asset. This is what the test is exercising.
       INSTALL_FORCE_BINARY: "1",
+      // On Windows Git Bash, the install.sh script delegates to
+      // install.ps1 (downloaded fresh from the GitHub raw URL),
+      // which would then try to call the GitHub Releases API to
+      // resolve the latest tag — that 403s in CI and the test
+      // never reaches the checksum-verify path. Force the bash
+      // script to run in its POSIX/curl path on Windows CI so the
+      // test exercises the same code path that bash install.sh
+      // users on Linux/macOS see.
+      PLATFORM_OVERRIDE: "linux",
+      ARCH_OVERRIDE: "x64",
       PATH: `${fakeBin}${delimiter}${process.env["PATH"] ?? ""}`,
     },
   });
