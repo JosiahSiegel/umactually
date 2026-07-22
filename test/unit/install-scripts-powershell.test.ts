@@ -162,17 +162,19 @@ describe.skipIf(!PS_AVAILABLE)("install.ps1", () => {
     // handle --help/--version BEFORE the smart-router. Lock that in
     // here so a future refactor can't silently regress it.
     //
-    // We deliberately run the script with NO env overrides (so the
-    // smart-router WOULD fire if the early-arg guard broke) and
-    // assert that the output mentions "Usage" and the binary was
-    // NOT installed anywhere on disk.
-    const result = run(INSTALL_PS1, {}, ["--help"]);
+    // We set INSTALL_TRY_NPM=1 (with no other opt-out env) so the
+    // smart-router WOULD fire on this run if the early-arg guard
+    // broke — and assert that it does NOT. Without INSTALL_TRY_NPM=1,
+    // the smart-router is opt-in and would silently skip, so the
+    // negative assertion would pass even on a regression.
+    const result = run(INSTALL_PS1, { INSTALL_TRY_NPM: "1" }, ["--help"]);
     expect(result.status, `stderr=${result.stderr}\nstdout=${result.stdout}`).toBe(0);
     expect(result.stdout).toMatch(/Usage/u);
     expect(result.stdout).toMatch(/umactually/u);
     // The smart-router's "trying npm install" / "using npm install"
     // message must NOT appear — the early-arg guard short-circuits
-    // before the router is even defined.
+    // before the router is even defined. With INSTALL_TRY_NPM=1 set
+    // this assertion now actually exercises the early-arg guard.
     expect(result.stderr).not.toMatch(/trying npm install/);
     expect(result.stderr).not.toMatch(/using npm install/);
     // Nothing should have been installed.

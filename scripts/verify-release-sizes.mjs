@@ -28,7 +28,7 @@
 //     gate than the docs claim.
 
 import { existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
+import { dirname, isAbsolute, join, relative, resolve } from "node:path";
 
 /** @type {number} */
 export const MIN_RAW_BYTES = 1 * 1024 * 1024;
@@ -37,12 +37,46 @@ export const MIN_RAW_BYTES = 1 * 1024 * 1024;
 export const MAX_RAW_BYTES = 200 * 1024 * 1024;
 
 /**
+ * Resolve and validate a user-supplied path so the report cannot be
+ * written outside `releaseDir`. Both arguments are absolute after
+ * resolution; we check that `reportPath` is `releaseDir` or sits
+ * underneath it. This blocks the path-traversal class where
+ * `reportPath = "/etc/passwd"` would let `mkdirSync(parent)` and
+ * `writeFileSync` write the JSON outside the release staging area.
+ *
+ * @param {string} releaseDirRaw
+ * @param {string} reportPathRaw
+ * @returns {{ releaseDir: string, reportPath: string }}
+ */
+export function resolveReportPaths(releaseDirRaw, reportPathRaw) {
+  const releaseDir = resolve(releaseDirRaw);
+  const reportPath = resolve(reportPathRaw);
+  // `relative(releaseDir, reportPath)` returns ".." or a path starting
+  // with ".." when reportPath escapes releaseDir. It returns "" when
+  // the paths are equal (report IS the release dir — also reject) and
+  // a relative subpath otherwise.
+  const rel = relative(releaseDir, reportPath);
+  if (rel === "" || rel.startsWith("..") || isAbsolute(rel)) {
+    throw new Error(
+      `verify-release-sizes: report path ${reportPathRaw} must be inside release dir ${releaseDirRaw}`,
+    );
+  }
+  return { releaseDir, reportPath };
+}
+
+/**
  * Run the size sanity check for every manifest target.
  *
  * @param {{ manifestPath: string, releaseDir: string, reportPath: string }} options
  * @returns {{ targets: Array<{ id: string, rawName: string, sizeBytes: number, missing?: boolean, tooSmall?: boolean, tooLarge?: boolean }>, failed: number }}
  */
 export function verifyReleaseSizes({ manifestPath, releaseDir, reportPath }) {
+  // Pin the report inside releaseDir before any filesystem mutation.
+  // releaseDir / reportPath are user-supplied in the CLI, so reject
+  // any path that escapes the release staging area.
+  const { reportPath: safeReportPath } = resolveReportPaths(releaseDir, reportPath);
+  const safeReleaseDir = resolve(releaseDir);
+
   const manifest = JSON.parse(readFileSync(manifestPath, "utf8"));
   if (!Array.isArray(manifest)) {
     throw new Error(
@@ -55,7 +89,7 @@ export function verifyReleaseSizes({ manifestPath, releaseDir, reportPath }) {
   let failed = 0;
 
   for (const t of manifest) {
-    const p = join(releaseDir, t.rawName);
+    const p = join(safeReleaseDir, t.rawName);
     if (!existsSync(p)) {
       console.error(`MISSING: ${p}`);
       report.targets.push({ id: t.id, rawName: t.rawName, sizeBytes: 0, missing: true });
@@ -86,8 +120,11 @@ export function verifyReleaseSizes({ manifestPath, releaseDir, reportPath }) {
   // Write the size-report JSON atomically: this is the file the
   // release-stage and the canary probe both read. mkdirSync with
   // { recursive: true } is idempotent so a no-op when the dir exists.
-  mkdirSync(join(reportPath, ".."), { recursive: true });
-  writeFileSync(reportPath, JSON.stringify(report, null, 2));
+  // The report path was pinned inside safeReleaseDir by
+  // resolveReportPaths() above, so the parent mkdir is also inside
+  // safeReleaseDir.
+  mkdirSync(dirname(safeReportPath), { recursive: true });
+  writeFileSync(safeReportPath, JSON.stringify(report, null, 2));
 
   return { targets: report.targets, failed };
 }

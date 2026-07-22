@@ -118,6 +118,10 @@ jobs:
           node scripts/verify-release-sizes.mjs \
             --manifest scripts/release-targets.json \
             --release-dir release
+          # Lock the report path explicitly so a future change to the
+          # verifier (e.g. a --report flag flip) doesn't silently let
+          # the file land elsewhere and break the staging step.
+          test -f release/internal/release-size-report.json
 
       - name: Stage candidate bundle (public/<archives>, public/checksums.txt, internal/raw/<binaries>, internal/release-size-report.json)
         run: |

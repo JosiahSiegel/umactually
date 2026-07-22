@@ -113,7 +113,26 @@ function Invoke-SmartInstallNpm {
   $nodeCmd = $null
   $allNode = Get-Command 'node' -All -ErrorAction SilentlyContinue
   if ($allNode) {
-    $nodeCmd = $allNode[0].Source
+    # `Get-Command -All` returns node binaries in PATH-order, which is
+    # NOT necessarily highest-version-first. On a host with multiple
+    # node installs (nvm-windows + fnm + system), PATH-order can pick
+    # a stale 22.x binary over a fresh 25.x. Probe each candidate's
+    # version and pick the highest major.minor.patch.
+    $bestNode = $null
+    $bestVersion = $null
+    foreach ($cand in $allNode) {
+      if (-not $cand.Source) { continue }
+      $v = & $cand.Source -v 2>$null
+      if (-not $v) { continue }
+      if ($v -match '^v(\d+)\.(\d+)\.(\d+)') {
+        $ver = [version]($Matches[1] + '.' + $Matches[2] + '.' + $Matches[3])
+        if ($null -eq $bestVersion -or $ver -gt $bestVersion) {
+          $bestVersion = $ver
+          $bestNode = $cand.Source
+        }
+      }
+    }
+    if ($bestNode) { $nodeCmd = $bestNode }
   }
   if (-not $nodeCmd) {
     foreach ($dir in @(
@@ -162,7 +181,7 @@ function Invoke-SmartInstallNpm {
     return $false
   }
 
-  Write-Host "umactually: Node $versionOutput detected, using npm install"
+  Write-Output "umactually: Node $versionOutput detected, using npm install"
   $npmArgs = @('install', '-g', 'umactually')
   # Honor INSTALL_RELEASE_TAG (set by --tag flag) so a user can pin to
   # a specific version. Without this, the smart-router always installs
@@ -198,14 +217,14 @@ function Invoke-SmartInstallNpm {
           # users get the correct hint.
           $isPosix = [System.IO.Path]::DirectorySeparatorChar -eq '/'
           $hintPath = if ($isPosix) { Join-Path $npmPrefix 'bin' } else { $npmPrefix }
-          Write-Host "umactually: installed via npm, but 'umactually' is not on PATH."
-          Write-Host "umactually: add '$hintPath' to your PATH and retry."
+          Write-Output "umactually: installed via npm, but 'umactually' is not on PATH."
+          Write-Output "umactually: add '$hintPath' to your PATH and retry."
         } else {
-          Write-Host "umactually: installed via npm, but 'umactually' is not on PATH."
+          Write-Output "umactually: installed via npm, but 'umactually' is not on PATH."
         }
         exit 1
       }
-      Write-Host "umactually: installed via npm. Run 'umactually --version' to verify."
+      Write-Output "umactually: installed via npm. Run 'umactually --version' to verify."
       exit 0
     }
   } catch {
@@ -223,7 +242,7 @@ function Invoke-SmartInstallNpm {
     }
     Remove-Item -LiteralPath $npmErrFile -Force -ErrorAction SilentlyContinue
   }
-  Write-Host "umactually: npm install failed, falling back to binary download$npmErrTail"
+  Write-Output "umactually: npm install failed, falling back to binary download$npmErrTail"
   return $false
 }
 

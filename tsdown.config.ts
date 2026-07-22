@@ -87,6 +87,21 @@ function loadTargets(): readonly SeaTarget[] {
     if (arch !== "x64" && arch !== "arm64") {
       throw new Error(`release-targets.json: unknown arch "${arch}" in id "${t.id}"`);
     }
+    // Validate rawName shape so a typo here fails at config-load time
+    // rather than producing a file at the wrong path (which would be
+    // silently missed by build-sea.mjs's normalizeWindowsOutputs
+    // pattern, since it expects a literal dot before `exe`).
+    if (platform === "win") {
+      if (!/\.exe$/.test(t.rawName)) {
+        throw new Error(
+          `release-targets.json: target "${t.id}" rawName "${t.rawName}" must end in ".exe" (Windows binaries)`,
+        );
+      }
+    } else if (/\.exe$/.test(t.rawName)) {
+      throw new Error(
+        `release-targets.json: target "${t.id}" rawName "${t.rawName}" must NOT end in ".exe" (POSIX binaries are extensionless)`,
+      );
+    }
     return {
       id: t.id,
       platform,

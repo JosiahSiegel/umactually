@@ -165,7 +165,17 @@ jobs:
             rm -f "${_version_err}"
             exit "${_version_status}"
           fi
-          if grep -Eq 'Error: |SyntaxError|TypeError: |ReferenceError: |RangeError: |bad SEA|SEA blob|loader fault|node:internal/|Cannot read propert|Cannot access |is not a function|is not defined' "${_version_err}"; then
+          # Anchor the loader-fault regex to the start of a JS-level
+          # stack-trace line. A real Node loader crash prints lines
+          # like "Error: <message>" / "TypeError: <message>" /
+          # "    at <frame> (file:line:col)" with the error line at the
+          # head of the trace. Substrings like "SEA blob" / "loader
+          # fault" in a stderr informational message are matched too
+          # (they only appear when something is wrong), but the
+          # `Error|TypeError|...:` patterns now require leading
+          # whitespace (so informational prose that happens to mention
+          # "Error:" mid-sentence doesn't match).
+          if grep -Eq '^[[:space:]]*(Error|TypeError|SyntaxError|ReferenceError|RangeError): |bad SEA|loader fault|node:internal/' "${_version_err}"; then
             echo "::error::SEA loader crash on --version (loader-fault signature on stderr)"
             cat "${_version_err}" >&2 || true
             rm -f "${_version_err}"
@@ -311,6 +321,28 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw "install.ps1 -h via pwsh exited $LASTEXITCODE" }
           if ($out -notmatch 'Usage|usage|umactually') { throw "install.ps1 -h via pwsh output did not contain 'umactually': $out" }
           Write-Output "OK: install.ps1 -h via pwsh returned a usage block"
+
+      # Parallel smoke for install.sh: catches the "script doesn't even
+      # parse under the runner's bash" class of regression in PR time.
+      # Mirrors the install.ps1 -h smoke above so both installers get
+      # the same gate; without this the POSIX path silently rots.
+      - name: install.sh --help smoke (bash)
+        shell: bash
+        run: |
+          set -euo pipefail
+          _out="$(bash scripts/install.sh --help 2>&1)"
+          _status=$?
+          if [ "${_status}" -ne 0 ]; then
+            echo "::error::install.sh --help exited ${_status}" >&2
+            echo "${_out}" >&2
+            exit "${_status}"
+          fi
+          if ! grep -Eq 'Usage|umactually' <<<"${_out}"; then
+            echo "::error::install.sh --help output did not contain 'Usage' or 'umactually':" >&2
+            echo "${_out}" >&2
+            exit 1
+          fi
+          echo "OK: install.sh --help returned a usage block"
 
   release-pipeline-dry-run:
     name: release pipeline dry-run

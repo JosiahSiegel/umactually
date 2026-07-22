@@ -257,6 +257,21 @@ export async function main(argv = process.argv.slice(2)) {
 
   mkdirSync(OUTDIR, { recursive: true });
 
+  // Wipe every manifest target's output at the start of a build so a
+  // partial tsdown run (e.g. win-x64 succeeds, win-arm64 fails
+  // partway through) cannot leave a half-stale `release/umactually-
+  // windows-arm64.exe` from a previous run ship to users. Without
+  // this, normalizeWindowsOutputs() only handles the case where the
+  // tsdown-produced source exists; if the source is missing, the
+  // stale destination is left untouched and verifyOutput() still
+  // passes against it. The per-target loop here is narrower than a
+  // wholesale `rm -rf release/` so we don't clobber unrelated files
+  // a developer may have dropped there for debugging.
+  for (const t of targets) {
+    const p = join(OUTDIR, t.rawName);
+    if (existsSync(p)) unlinkSync(p);
+  }
+
   buildAll();
   normalizeWindowsOutputs();
   collectSeaOutputs();

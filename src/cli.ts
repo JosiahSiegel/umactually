@@ -558,18 +558,19 @@ const isMainModule = (() => {
   // was true for the npm-install path (argv1 = .../bin/umactually.mjs
   // → shim → .../node_modules/umactually/dist/cli.js) but FALSE for
   // a Node SEA binary where argv1 = the binary itself, e.g.
-  // `/usr/local/bin/umactually`. Combined with the fact that Node
-  // 25.7.0 SEA builds set process.versions.sea to `undefined` (not
-  // a boolean), the previous auto-invoke silently no-op'd on every
-  // SEA install: the binary started, the auto-invoke's first branch
-  // didn't match (sea is undefined), the URL match succeeded but the
-  // `cli.js` regex test failed, isMainModule returned false, main()
-  // never ran, runVersion never wrote, and the binary exited 0 with
-  // empty stdout. The release-pipeline-dry-run CI's
+  // `/usr/local/bin/umactually`. The `cli.js` regex test was the
+  // actual failure mode that made the previous auto-invoke silently
+  // no-op on every SEA install: argv1 was the binary path, the regex
+  // didn't match, isMainModule returned false, main() never ran,
+  // runVersion never wrote, and the binary exited 0 with empty
+  // stdout. The release-pipeline-dry-run CI's
   // `INSTALLED_VERSION=$(umactually --version)` capture was therefore
-  // always empty. The action entry's globalThis flag still gates
-  // the action path (its bundle sets the flag before reaching this
-  // module), so dropping the regex is safe.
+  // always empty. Note: process.versions.sea is a STRING (e.g.
+  // "1.0.0") on a SEA binary, not a boolean, but the previous code
+  // didn't check it — the cli.js regex was the failing branch. The
+  // action entry's globalThis flag still gates the action path (its
+  // bundle sets the flag before reaching this module), so dropping
+  // the regex is safe.
   //
   // Opt-out: setting `UMACTUALLY_DISABLE_AUTO_INVOKE=1` forces
   // isMainModule to return false, which means a third-party importer
