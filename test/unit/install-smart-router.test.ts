@@ -2,7 +2,7 @@
 import { execFileSync, spawnSync } from "node:child_process";
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join, resolve, sep } from "node:path";
+import { delimiter, join, resolve } from "node:path";
 
 import { afterEach, describe, expect, it } from "vitest";
 
@@ -53,11 +53,16 @@ function runShell(env: Record<string, string>): RunResult {
   // --noprofile --norc prevents the spawned bash from sourcing the host's
   // /etc/bash.bashrc, /etc/profile, and ~/.bashrc. Without these flags a
   // host whose rc files prepend unrelated directories to PATH (e.g. CI
-  // images that pre-stage Node under /usr/local/bin) can mask the
+  // images that pre-stage Node under /usr/local/bin or local installs
+  // that leave stale `PATH=/tmp/...` lines in ~/.bashrc) can mask the
   // sandbox's fake `node` and `npm` stubs in `env.PATH`, causing the
   // smart-router to discover the real Node 24+ and the real npm (which
   // 404s on the not-yet-published `umactually` package) instead of the
   // controlled stub. Disabling rc/profile keeps the test hermetic.
+  //
+  // The PATH separator here is `path.delimiter` (':' on POSIX, ';' on
+  // Windows), NOT `path.sep` ('/' or '\\') — the latter is the
+  // path-component separator, not the PATH-list separator.
   const result = spawnSync(BASH, ["--noprofile", "--norc", INSTALL_SH], {
     env: { ...process.env, ...env },
     encoding: "utf8",
@@ -133,7 +138,7 @@ describe.skipIf(!SHELL_AVAILABLE)("install.sh smart-router (v0.6.0)", () => {
   it("delegates to npm when Node 24+ is on PATH and no override is set", { timeout: SMART_ROUTER_TEST_TIMEOUT_MS }, () => {
     const { binDir } = makeSandbox();
     const result = runShell({
-      PATH: `${binDir}${sep}${process.env["PATH"] ?? ""}`,
+      PATH: `${binDir}${delimiter}${process.env["PATH"] ?? ""}`,
       INSTALL_TEST_MODE: "",
       INSTALL_FORCE_BINARY: "",
     });
@@ -193,7 +198,7 @@ describe.skipIf(!SHELL_AVAILABLE)("install.sh smart-router (v0.6.0)", () => {
     const testDir = mkdtempSync(join(tmpdir(), "umactually-smart-tm-"));
     sandboxes.push(testDir);
     const result = runShell({
-      PATH: `${binDir}${sep}${process.env["PATH"] ?? ""}`,
+      PATH: `${binDir}${delimiter}${process.env["PATH"] ?? ""}`,
       INSTALL_TEST_MODE: "1",
       INSTALL_TEST_DIR: testDir,
       PLATFORM_OVERRIDE: "linux",
@@ -210,7 +215,7 @@ describe.skipIf(!SHELL_AVAILABLE)("install.sh smart-router (v0.6.0)", () => {
     const testDir = mkdtempSync(join(tmpdir(), "umactually-smart-fb-"));
     sandboxes.push(testDir);
     const result = runShell({
-      PATH: `${binDir}${sep}${process.env["PATH"] ?? ""}`,
+      PATH: `${binDir}${delimiter}${process.env["PATH"] ?? ""}`,
       INSTALL_FORCE_BINARY: "1",
       INSTALL_TEST_MODE: "1",  // test-mode stub for the binary path
       INSTALL_TEST_DIR: testDir,
@@ -225,7 +230,7 @@ describe.skipIf(!PWSH_AVAILABLE)("install.ps1 smart-router (v0.6.0)", () => {
   it("delegates to npm when Node 24+ is on PATH and no override is set", { timeout: SMART_ROUTER_TEST_TIMEOUT_MS }, () => {
     const { binDir, dir } = makeSandbox();
     const result = runPwsh({
-      PATH: `${binDir}${sep}${process.env["PATH"] ?? ""}`,
+      PATH: `${binDir}${delimiter}${process.env["PATH"] ?? ""}`,
       INSTALL_TEST_MODE: "",
       INSTALL_FORCE_BINARY: "",
     }, dir);

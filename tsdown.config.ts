@@ -32,6 +32,21 @@ import { fileURLToPath } from "node:url";
 const HERE = fileURLToPath(new URL(".", import.meta.url));
 const REPO_ROOT = resolve(HERE);
 
+// Read the version from package.json at build time. We pass it to tsdown
+// as a compile-time constant so the SEA blob (which can't read
+// `../package.json` at runtime) can still report the correct version
+// for `umactually --version`. Without this constant, the auto-invoke
+// in src/cli.ts has no way to know the version and `--version` prints
+// nothing on a freshly installed SEA binary.
+const PACKAGE_VERSION: string = (() => {
+  const raw = readFileSync(join(REPO_ROOT, "package.json"), "utf8");
+  const parsed = JSON.parse(raw) as { readonly version?: unknown };
+  if (typeof parsed.version !== "string" || parsed.version.length === 0) {
+    throw new Error("package.json is missing a string `version` field");
+  }
+  return parsed.version;
+})();
+
 interface RawTarget {
   readonly id: string;
   readonly rawName: string;
@@ -99,6 +114,14 @@ export default defineConfig({
   // No `format` — tsdown auto-detects from the entry.
   // No `platform` — SEA blobs are platform-agnostic.
   // No `clean` — we manage the release/ directory from the build script.
+  // Embed the package version as a compile-time constant. The bare
+  // `UMACTUALLY_VERSION` identifier in src/cli.ts is replaced by tsdown
+  // (via rolldown's `define`) with this JSON-serialized string so the
+  // SEA binary can serve `umactually --version` without needing to
+  // read `../package.json` at runtime (which the SEA blob cannot do).
+  define: {
+    UMACTUALLY_VERSION: JSON.stringify(PACKAGE_VERSION),
+  },
   exe: {
     // Output directory for SEA binaries. tsdown's documented default is
     // "build" (see https://tsdown.dev/options/exe). We pin to "release" so

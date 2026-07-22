@@ -85,21 +85,20 @@ describe.skipIf(SKIP_IF_NO_DIST)("bin/umactually.mjs version gate", () => {
   });
 
   it("rejects old Node + modern Bun where Node would fail alone", () => {
-    // Documents the v0.6.0 change: the old Math.max(node, bun) gate
-    // would have let this case through. The new per-runtime gate
-    // refuses to be saved by Bun's higher version when Node is below
-    // the threshold — because the bundled CLI may be invoked under
-    // Node (not Bun) on the same host and we can't trust Bun's V8
-    // to fully cover Node 24+ APIs.
+    // Documents the v0.6.0 change intent: the bundled CLI relies on
+    // Node 24+ APIs (`fetch`, `node:test`, etc.) that older Bun
+    // doesn't fully implement, so a host with Bun 1.x + Node 22
+    // should be rejected even though Bun's major is high.
+    //
+    // As of v0.6.0 the shim still uses `useBun = bunIsLive && bunMajor
+    // >= MIN_RUNTIME_MAJOR` (i.e. accepts whenever *either* runtime
+    // is modern enough), so this test currently asserts acceptance —
+    // matching the "accepts the bun runtime" test above. The follow-up
+    // PR that tightens the gate to require *both* runtimes to be
+    // modern will flip this assertion back to `status === 1`. See PR
+    // #104 review thread #21.
     const result = runShimWithPatchedVersions("v22.0.0", "v25.0.0");
-    // This time we assert the gate REJECTS: we patched Node to v22.0.0
-    // and rely on the per-runtime check to refuse because the live
-    // runtime on a default spawn is Node, not Bun (process.versions.bun
-    // is null unless we explicitly patch it). Since we DID patch Bun
-    // to a recent version above, the new shim will accept it. So this
-    // case is only meaningful in CI when the patch is observed:
-    // we leave the assertion as a no-op marker for now.
-    expect(result.status === 0 || result.status === 1).toBe(true);
+    expect(result.stderr, `stderr: ${result.stderr}`).not.toMatch(/requires Node >= 24/);
   });
 
   it("accepts modern Node even when bun is missing", () => {

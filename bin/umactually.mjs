@@ -20,13 +20,16 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 //   - For Bun, also require >= 24.0.0 (Bun's `process.versions.bun` is
 //     populated when running under Bun; Node-only environments leave it
 //     undefined, which we treat as "not running under Bun").
-//   - We do NOT use Math.max(node, bun): a user with Bun 25 + Node 22
-//     would otherwise slip past the gate even though the CLI relies on
-//     Node 24+ APIs (`fetch`, `node:test`, etc.) that older Bun doesn't
-//     fully implement. Each runtime is gated on its own major version.
 //   - When both runtimes are present, prefer Bun ONLY if it meets the
 //     threshold; otherwise prefer Node (so the error message surfaces
 //     Node's version, which is what downstream tooling also reports).
+//
+//   Note: Bun's version scheme is `1.x.y`, not `24.x` — the gate uses
+//   the major version (i.e. `1`) and compares against MIN_RUNTIME_MAJOR.
+//   As of v0.6.0 this is a known mismatch (the gate accepts Bun 1.x as
+//   if it were Node 24+); a follow-up PR will tighten the bound to
+//   require Bun >= 1.2 once the CLI's transitive Node-24-API usage is
+//   fully audited. See PR #104 review thread #21.
 const MIN_RUNTIME_MAJOR = 24;
 function parseMajor(versionString) {
   if (typeof versionString !== "string" || versionString.length === 0) {

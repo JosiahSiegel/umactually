@@ -529,6 +529,17 @@ const isMainModule = (() => {
   if (globalThis.__umactually_action_entry__ === true) {
     return false;
   }
+  // Node SEA (Single Executable Application) bundles: when run as a
+  // SEA binary, process.argv[1] is the binary path itself (e.g.
+  // `/usr/local/bin/umactually`), not the path to a `cli.js` file.
+  // `process.versions.sea` is the canonical signal — Node sets it on
+  // any process started from a SEA blob. Without this branch the
+  // auto-invoke silently no-ops on a SEA install, leaving
+  // `umactually --version` to print nothing and exit 0.
+  const seaVersion = process.versions["sea"];
+  if (typeof seaVersion === "boolean" ? seaVersion : false) {
+    return true;
+  }
   const argv1 = process.argv[1];
   if (argv1 === undefined) {
     return false;
