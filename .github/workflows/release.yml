@@ -296,6 +296,27 @@ jobs:
             --manifest scripts/release-targets.json `
             --release-dir release
 
+      - name: Stage release assets on Windows
+        # Move the packager's flat `release/umactually-windows-x64.zip`
+        # + `release/umactually-windows-x64.exe` + `release/checksums.txt`
+        # into the `release/public/` + `release/internal/raw/` split
+        # that the bundle-upload step expects. Mirrors what
+        # scripts/stage-release-assets.mjs does in build-package.
+        run: |
+          node scripts/stage-release-assets.mjs `
+            --release-dir release `
+            --manifest scripts/release-targets.json
+          # Sanity: confirm 2 Windows archives in public/ and 2
+          # Windows raws in internal/raw/ before the merge step.
+          $winArchives = (Get-ChildItem release\public\umactually-windows-*.zip).Count
+          $winRaws     = (Get-ChildItem release\internal\raw\umactually-windows-*.exe).Count
+          Write-Host "windows archives staged: $winArchives (expect 2)"
+          Write-Host "windows raws staged:     $winRaws (expect 2)"
+          if ($winArchives -ne 2 -or $winRaws -ne 2) {
+            Write-Error "::error::staging produced $winArchives archives / $winRaws raws (expected 2/2)"
+            exit 1
+          }
+
       - name: Replace stage1 Windows entries with Windows-built entries
         # Overwrite the 2 Windows archives, the 2 Windows .exe raws,
         # and the checksums.txt. Linux + darwin entries from stage1
