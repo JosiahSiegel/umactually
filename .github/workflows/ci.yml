@@ -92,7 +92,7 @@ jobs:
   # PR so a green merge really does guarantee the release will succeed.
   # Bridges the gap that the regular `ci` job alone cannot close: it
   # executes
-  #   - the production build (npm run build, build-binary.mjs,
+  #   - the production build (npm run build, build-sea.mjs,
   #     package-release-assets.mjs, verify-release-assets.mjs) and
   #   - the canary-equivalent Linux x64 install against a fixture that
   #     masquerades as the GitHub Releases host (so URL routing matches
@@ -103,6 +103,45 @@ jobs:
   # release-workflow-contract.test.ts structural tests. This job's goal
   # is to fail-fast on the Linux lane where most regressions live.
   # ---------------------------------------------------------------------
+  # ---------------------------------------------------------------------
+  # Smoke-test the Node SEA single-file binary on Linux. This is the
+  # build target that catches the most regressions for the binary
+  # distribution path. macOS / Windows SEA smoke tests live on the
+  # release workflow's per-target jobs; this is a fast Linux-only
+  # gate for the daily PR lane.
+  # ---------------------------------------------------------------------
+  smoke-sea:
+    name: smoke-sea (linux x64)
+    runs-on: ubuntu-latest
+    needs: ci
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node 25
+        uses: actions/setup-node@v4
+        with:
+          node-version: "25.7.0"
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build (dist/ + sanity-check source)
+        run: npm run build
+
+      - name: Cross-compile Node SEA binary (linux-x64 only)
+        run: node scripts/build-sea.mjs linux-x64
+
+      - name: Smoke test the SEA binary
+        run: |
+          set -euo pipefail
+          chmod +x release/umactually-linux-x64
+          release/umactually-linux-x64 --version
+          # Doctor runs the safety checks (env, deps, network). We expect
+          # it to fail (no GitHub token, no LLM key) but not crash on
+          # launch — the SEA loader must succeed.
+          release/umactually-linux-x64 doctor || true
+
   release-pipeline-dry-run:
     name: release pipeline dry-run
     runs-on: ubuntu-latest
