@@ -59,6 +59,13 @@ const repo = args.repo ?? process.env.REPO ?? readRepoFromPackage();
 const prNumber = args["pr-number"] ?? process.env.PR_NUMBER ?? "93";
 const artifactDir = args["artifact-dir"] ?? process.env.ARTIFACT_DIR ?? join(REPO_ROOT, "artifacts", "post-release-e2e");
 const skipMock = (args["skip-mock"] ?? process.env.SKIP_MOCK ?? "0") === "1";
+// PR-time escape hatch: when --binary-path <path> is passed, skip
+// the download/extract/checksum-verify steps and use the locally-
+// built binary directly. The release workflow's post-release-e2e
+// job uses the default (download from GitHub Releases) path; the
+// PR-time e2e job uses --binary-path so the test runs without
+// needing a published release artifact.
+let binaryPathArg = args["binary-path"] ?? process.env.BINARY_PATH ?? null;
 
 mkdirSync(artifactDir, { recursive: true });
 
@@ -91,62 +98,86 @@ for (const sig of ["SIGINT", "SIGTERM"]) {
 
 log(`post-release e2e — repo=${repo} pr=${prNumber} tag=${tag ?? "(auto)"} artifact-dir=${artifactDir}`);
 
-// Step 1-2: resolve target + manifest
-const targets = JSON.parse(readFileSync(join(REPO_ROOT, "scripts", "release-targets.json"), "utf8"));
-const target = pickTargetForCurrentPlatform(targets);
-if (!target) {
-  die(1, `no release target for current platform (${process.platform}/${process.arch})`);
-}
-log(`picked target: ${target.id} (${target.archiveName}, member=${target.memberName})`);
-
-const resolvedTag = tag ?? (await resolveLatestTag(repo));
-if (!resolvedTag) {
-  die(1, `could not resolve latest tag for ${repo}`);
-}
-log(`resolved tag: ${resolvedTag}`);
-
-// Step 3-4: download + verify checksum
-const baseUrl = `https://github.com/${repo}/releases/download/${resolvedTag}`;
-const tmp = mkdtempSync(join(tmpdir(), "umactually-e2e-"));
-log(`workdir: ${tmp}`);
-
-const archivePath = join(tmp, target.archiveName);
-const checksumsPath = join(tmp, "checksums.txt");
-await downloadTo(`${baseUrl}/${target.archiveName}`, archivePath);
-await downloadTo(`${baseUrl}/checksums.txt`, checksumsPath);
-
-const expectedSha = pickChecksum(checksumsPath, target.archiveName);
-if (!expectedSha) {
-  die(1, `no checksums.txt entry for ${target.archiveName}`);
-}
-const actualSha = sha256File(archivePath);
-if (actualSha !== expectedSha) {
-  die(1, `SHA-256 mismatch for ${target.archiveName}: expected ${expectedSha} got ${actualSha}`);
-}
-log(`OK SHA-256(${expectedSha.slice(0, 12)}…) matches checksums.txt`);
-
-// Step 5: extract archive
-const extractDir = join(tmp, "extracted");
-mkdirSync(extractDir, { recursive: true });
-if (target.archiveType === "tar.gz") {
-  const r = spawnSync("tar", ["-xzf", archivePath, "-C", extractDir], { stdio: "inherit" });
-  if (r.status !== 0) die(1, `tar -xzf failed with status ${r.status}`);
-} else if (target.archiveType === "zip") {
-  const r = spawnSync("unzip", ["-q", archivePath, "-d", extractDir], { stdio: "inherit" });
-  if (r.status !== 0) die(1, `unzip failed with status ${r.status}`);
+// Top-level entry point wrapped in an async IIFE so we can use
+// `await` for the per-provider child_process.spawn (the v0.6.x
+// Node-25.7.0-built SEA binary has a pipe-drain race under
+// spawnSync: status=null even on a clean exit). Module top-level
+// is already async-capable (ESM TLA), but wrapping in an IIFE
+// keeps the function-level `await` usages and the synchronous
+// control flow in `run-e2e.mjs` coherent.
+async function main() {
+let target = null;
+let resolvedTag = null;
+let binaryPath = binaryPathArg ? resolve(binaryPathArg) : null; // start from CLI/env override
+if (binaryPathArg) {
+  // PR-time path: the binary is already on disk, built by the
+  // smoke-sea job. We still log the platform/arch for visibility
+  // in the workflow log.
+  if (!existsSync(binaryPathArg)) {
+    die(1, `--binary-path ${binaryPathArg} does not exist`);
+  }
+  // Resolve to an absolute path: `spawn` (used in runProviderCheck
+  // below) doesn't search the cwd for relative paths the way
+  // `spawnSync` does. Without an absolute path, the spawn call
+  // returns ENOENT.
+  log(`using local binary: ${resolve(binaryPathArg)}`);
 } else {
-  die(1, `unsupported archive type: ${target.archiveType}`);
+  const targets = JSON.parse(readFileSync(join(REPO_ROOT, "scripts", "release-targets.json"), "utf8"));
+  target = pickTargetForCurrentPlatform(targets);
+  if (!target) {
+    die(1, `no release target for current platform (${process.platform}/${process.arch})`);
+  }
+  log(`picked target: ${target.id} (${target.archiveName}, member=${target.memberName})`);
+
+  resolvedTag = tag ?? (await resolveLatestTag(repo));
+  if (!resolvedTag) {
+    die(1, `could not resolve latest tag for ${repo}`);
+  }
+  log(`resolved tag: ${resolvedTag}`);
+
+  // Step 3-4: download + verify checksum
+  const baseUrl = `https://github.com/${repo}/releases/download/${resolvedTag}`;
+  const tmp = mkdtempSync(join(tmpdir(), "umactually-e2e-"));
+  log(`workdir: ${tmp}`);
+
+  const archivePath = join(tmp, target.archiveName);
+  const checksumsPath = join(tmp, "checksums.txt");
+  await downloadTo(`${baseUrl}/${target.archiveName}`, archivePath);
+  await downloadTo(`${baseUrl}/checksums.txt`, checksumsPath);
+
+  const expectedSha = pickChecksum(checksumsPath, target.archiveName);
+  if (!expectedSha) {
+    die(1, `no checksums.txt entry for ${target.archiveName}`);
+  }
+  const actualSha = sha256File(archivePath);
+  if (actualSha !== expectedSha) {
+    die(1, `SHA-256 mismatch for ${target.archiveName}: expected ${expectedSha} got ${actualSha}`);
+  }
+  log(`OK SHA-256(${expectedSha.slice(0, 12)}…) matches checksums.txt`);
+
+  // Step 5: extract archive
+  const extractDir = join(tmp, "extracted");
+  mkdirSync(extractDir, { recursive: true });
+  if (target.archiveType === "tar.gz") {
+    const r = spawnSync("tar", ["-xzf", archivePath, "-C", extractDir], { stdio: "inherit" });
+    if (r.status !== 0) die(1, `tar -xzf failed with status ${r.status}`);
+  } else if (target.archiveType === "zip") {
+    const r = spawnSync("unzip", ["-q", archivePath, "-d", extractDir], { stdio: "inherit" });
+    if (r.status !== 0) die(1, `unzip failed with status ${r.status}`);
+  } else {
+    die(1, `unsupported archive type: ${target.archiveType}`);
+  }
+  binaryPath = join(extractDir, target.memberName);
+  if (!existsSync(binaryPath)) {
+    die(1, `extracted binary not found at ${binaryPath}`);
+  }
+  // Ensure executable on POSIX (the archive usually preserves perms; this
+  // is a defensive chmod in case the umask stripped them).
+  if (process.platform !== "win32") {
+    spawnSync("chmod", ["+x", binaryPath]);
+  }
+  log(`extracted binary: ${binaryPath}`);
 }
-const binaryPath = join(extractDir, target.memberName);
-if (!existsSync(binaryPath)) {
-  die(1, `extracted binary not found at ${binaryPath}`);
-}
-// Ensure executable on POSIX (the archive usually preserves perms; this
-// is a defensive chmod in case the umask stripped them).
-if (process.platform !== "win32") {
-  spawnSync("chmod", ["+x", binaryPath]);
-}
-log(`extracted binary: ${binaryPath}`);
 
 // Sanity: --version works.
 const v = spawnSync(binaryPath, ["--version"], { encoding: "utf8" });
@@ -176,7 +207,7 @@ if (!existsSync(diffPath)) {
   die(1, `missing test fixture: ${diffPath}`);
 }
 
-const openaiResult = runProviderCheck({
+const openaiResult = await runProviderCheck({
   binaryPath,
   provider: "openai-compatible",
   apiUrl: `http://127.0.0.1:${mockPort}/v1`,
@@ -188,7 +219,7 @@ log(
   `openai-compatible: artifact=${openaiResult.artifactPath} comments=${openaiResult.commentCount} exit=${openaiResult.exitCode}`,
 );
 
-const anthropicResult = runProviderCheck({
+const anthropicResult = await runProviderCheck({
   binaryPath,
   provider: "anthropic",
   apiUrl: `http://127.0.0.1:${mockPort}`,
@@ -218,6 +249,18 @@ if (failures.length > 0) {
 }
 log("OK: all post-release e2e checks passed");
 process.exit(0);
+}
+
+// Kick off the async IIFE. The IIFE runs the rest of the
+// pipeline (manifest resolution, mock LLM spawn, per-provider
+// child runs, assertions) and exits via process.exit() at the
+// end. Errors thrown synchronously inside main() propagate to
+// the catch block which logs + exits 1; errors in async paths
+// (e.g. mock startup) are surfaced via die() at the source.
+main().catch((err) => {
+  console.error(`[e2e] FATAL: ${err?.stack ?? err?.message ?? err}`);
+  process.exit(1);
+});
 
 // --- helpers ---
 
@@ -405,7 +448,7 @@ function httpGet(url, onStatus) {
   return socket;
 }
 
-function runProviderCheck({ binaryPath, provider, apiUrl, diffPath, repo, prNumber }) {
+async function runProviderCheck({ binaryPath, provider, apiUrl, diffPath, repo, prNumber }) {
   // The standalone-review mode writes its artifact to a fixed
   // cwd-relative path (`./umactually-review.json`). We can't override
   // it from the CLI in standalone mode, so we run each provider
@@ -434,15 +477,45 @@ function runProviderCheck({ binaryPath, provider, apiUrl, diffPath, repo, prNumb
     "--no-detect-leaks",
   ];
   log(`running: ${binaryPath} ${args.join(" ")}`);
-  const r = spawnSync(binaryPath, args, {
-    encoding: "utf8",
-    stdio: "pipe",
-    cwd: providerCwd,
-    env: {
-      ...process.env,
-      GITHUB_ACTIONS: "false",
-      TF_BUILD: "",
-    },
+  // Use event-based spawn instead of spawnSync because the
+  // Node 25.7.0-built SEA binary has a pipe-drain race when the
+  // parent's stdio is fully piped AND the parent waits
+  // synchronously via spawnSync: process.stdout.write from the
+  // child doesn't reach the parent pipe before the parent's
+  // spawnSync call resolves, leaving the child in a weird
+  // "still running" state and the parent with status=null. The
+  // v0.6.0+ --version path uses writeFileSync(process.stdout.fd,
+  // ...) to bypass this race; the review subcommand's stdout
+  // writes go through process.stdout.write and are subject to
+  // the race. spawn() with event-based I/O drains the pipes
+  // naturally and avoids the issue. See the post-release-e2e
+  // run history for context (v0.6.0 published Linux binary
+  // passes; locally-built Node 25.7.0 binary fails via
+  // spawnSync, passes via spawn).
+  const r = await new Promise((resolve) => {
+    const child = spawn(binaryPath, args, {
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "pipe"],
+      cwd: providerCwd,
+      env: {
+        ...process.env,
+        GITHUB_ACTIONS: "false",
+        TF_BUILD: "",
+      },
+    });
+    const out = { status: null, signal: null, stdout: "", stderr: "" };
+    child.stdout.on("data", (d) => { out.stdout += d.toString("utf8"); });
+    child.stderr.on("data", (d) => { out.stderr += d.toString("utf8"); });
+    child.on("error", (err) => {
+      out.stderr += `[harness] spawn error: ${err.message}\n`;
+      out.status = -1;
+      resolve(out);
+    });
+    child.on("exit", (code, signal) => {
+      out.status = code;
+      out.signal = signal;
+      resolve(out);
+    });
   });
   let commentCount = 0;
   let reviewSummary = "";
@@ -460,6 +533,7 @@ function runProviderCheck({ binaryPath, provider, apiUrl, diffPath, repo, prNumb
   } else {
     log(`WARN: artifact not written at ${cwdArtifact}`);
     if (r.stderr) log(`WARN: stderr was: ${r.stderr.slice(0, 500)}`);
+    if (r.signal) log(`WARN: killed by signal: ${r.signal}`);
   }
   return {
     artifactPath: finalArtifact,
