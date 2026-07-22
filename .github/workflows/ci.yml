@@ -131,7 +131,14 @@ jobs:
       - name: Build (dist/ + sanity-check source)
         run: npm run build
 
-      - name: Cross-compile Node SEA binary (linux-x64 only)
+      - name: Cross-compile Node SEA binaries (all 6 targets; smoke tests the linux-x64 one)
+        # scripts/build-sea.mjs's <targetId> argument is accepted for
+        # backwards-compat but is currently a no-op: tsdown's --exe mode
+        # has no per-target flag, so the config-driven build always
+        # produces all 6 binaries. The smoke step below only executes
+        # the linux-x64 binary, but the other 5 are built as a side
+        # effect — they get uploaded as workflow artifacts and discarded.
+        # Per-target filtering is tracked in a follow-up.
         run: node scripts/build-sea.mjs linux-x64
 
       - name: Smoke test the SEA binary

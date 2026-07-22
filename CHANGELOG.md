@@ -15,7 +15,7 @@ ship a tag).
 ### Added
 
 - **Smart installer**: `scripts/install.sh` and `scripts/install.ps1` now check for Node 24+ on PATH at the very top, before any network work. If a recent Node is available, they run `npm install -g umactually` and exit cleanly. Otherwise they fall through to the existing single-file-binary download path. This ships ~330 KB via npm instead of ~30 MB via the binary for users with Node installed.
-- **`npx umactually` and `bunx umactually` are first-class install paths.** The bin shim (`bin/umactually.mjs`) now reads the major from `process.versions.node ?? process.versions.bun` (Math.max fallback), so it accepts both runtimes.
+- **`npx umactually` and `bunx umactually` are first-class install paths.** The bin shim (`bin/umactually.mjs`) now does per-runtime detection: Node is gated against `>= 24.x` (matching `engines.node`), Bun against `>= 1.2.x` (Bun's actual version scheme is `1.x.y`, so the gate is a `(major, minor)` pair). When both runtimes are present, Node is preferred unless it is below the threshold; this keeps the error message honest and avoids silently accepting old Node when a modern Bun is also installed.
 - **Node SEA single-file binary via `tsdown --exe` (commit 1, 4, 6).** Replaces the Bun --compile pipeline. Built on `node --build-sea` (Node 25.5.0+, Joyee Cheung) which is the official path as of January 2026. The resulting binary bundles Node 25.7 and runs on any system without a pre-installed Node. Sizes:
   - linux-x64 / arm64: ~70 MB raw, ~28 MB gzipped
   - darwin-x64 / arm64: ~72 MB raw, ~29 MB gzipped
