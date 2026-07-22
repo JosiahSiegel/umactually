@@ -10,7 +10,22 @@ Latest release: **[v0.5.9](https://github.com/JosiahSiegel/umactually/releases/t
 
 ## Install
 
-### Recommended: standalone binary (SHA-256-verified)
+umactually ships three install paths. Pick the one that matches your environment.
+
+### 1. One-shot npm install (recommended when you already have Node 24+)
+
+```bash
+npm install -g umactually
+# or, no install:
+npx umactually review …
+
+# Bun users: bunx works too
+bunx umactually review …
+```
+
+This pulls the umactually package from npm (~330 KB) and uses your existing Node 24+ (or Bun 1.1+) runtime. No additional download, no system PATH surgery beyond what `npm install -g` already does.
+
+### 2. Curl-pipe installer (smart-routes to npm if Node 24+ is available, else downloads the single-file binary)
 
 > **Windows Git Bash users:** the first command below can fail with
 > `curl: (35) schannel: ... CRYPT_E_REVOCATION_OFFLINE (0x80092013)`
@@ -30,7 +45,10 @@ curl -fsSL --ssl-no-revoke https://github.com/JosiahSiegel/umactually/raw/main/s
 # Install a pinned version
 curl -fsSL https://github.com/JosiahSiegel/umactually/raw/main/scripts/install.sh | sh -s -- --tag v0.5.9
 
-# Install to a custom directory (e.g. for non-root users without /usr/local/bin write access)
+# Force the single-file binary path (skip the npm smart-router)
+INSTALL_FORCE_BINARY=1 curl -fsSL https://github.com/JosiahSiegel/umactually/raw/main/scripts/install.sh | sh
+
+# Install to a custom directory (binary path only — npm uses its own prefix)
 curl -fsSL https://github.com/JosiahSiegel/umactually/raw/main/scripts/install.sh | sh -s -- --install-dir ~/.local/bin
 
 # Print the installer's flag/env-var reference
@@ -42,7 +60,7 @@ curl -fsSL https://github.com/JosiahSiegel/umactually/raw/main/scripts/install.s
 irm https://github.com/JosiahSiegel/umactually/raw/main/scripts/install.ps1 | iex
 ```
 
-The installer downloads a `.tar.gz` (Linux/macOS) or `.zip` (Windows) archive from the release, verifies its SHA-256 against `checksums.txt`, and extracts the binary to your PATH. No Node.js required. Supported release assets: Linux x64/arm64, macOS x64/arm64, Windows x64/arm64.
+The installer is **smart**: it first checks for Node 24+ on PATH. If found, it runs `npm install -g umactually` and exits. Otherwise it falls through to downloading a single-file binary (~30 MB, self-contained, no Node required) and verifying its SHA-256 against `checksums.txt`. The binary is built with Node SEA (`node --build-sea`) and bundles Node 25.7. Supported release assets: Linux x64/arm64, macOS x64/arm64, Windows x64/arm64.
 
 Supported installer flags (also accepted as env vars):
 

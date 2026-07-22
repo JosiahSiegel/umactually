@@ -156,7 +156,7 @@ If the redirect still points at an older tag, GitHub's CDN has stale edge cache 
 Each archive is a deterministic gzip-compressed tar (Linux/macOS) or ZIP (Windows) containing exactly one binary member. The compressed archive is the **transfer size** (what the installer downloads and what the user sees on the wire); the extracted member is the **installed size** (what sits on the user's PATH after extraction). They are not the same number, and the plan deliberately does not promise they will converge:
 
 - The compressed transfer size is bounded by `scripts/release-size-budget.json` (`maxArchiveBytes` per target plus a `global` cap). The verifier enforces this budget at build time and the workflow fails publish if any archive exceeds its bound.
-- The installed binary size is determined by the Bun compiler and is not a release-time budget. The standalone Bun runtime is bundled in, so the installed binary is substantially larger than the archive — typically **~3x larger** than what the user actually downloads.
+- The installed binary size is determined by the Node SEA runtime and is not a release-time budget. The standalone Node 25.7 runtime is bundled in, so the installed binary is substantially larger than the archive — typically **~2.5x larger** than what the user actually downloads. See [distribution-architecture.md](./distribution-architecture.md) for the full comparison vs Bun, yao-pkg, and Deno.
 
 Treat these as two distinct telemetry numbers in any user-facing copy. The README install section explains the ratio; the size budget file governs only the transfer side.
 
