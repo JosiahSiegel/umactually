@@ -456,21 +456,24 @@ $DefaultScriptUrl = "$DefaultRawBase/install.ps1"
 # Literal allowlist of pre-archive tags that ship raw executables.
 $LegacyTagAllowlist = @("v0.2.1", "v0.3.0", "v0.4.0", "v0.4.1")
 
-# Six canonical archive basenames (manifest order, fixed for the contract).
+# Five canonical archive basenames (manifest order, fixed for the contract).
+# `darwin-x64` (Intel macOS) was dropped in v0.6.0 — Node's `--build-sea`
+# segfaults on darwin-x64 (nodejs/node#62893). Intel Mac users get the
+# npm install path; the curl-pipe installer fails fast on darwin+x64
+# with a pointer at `npm install -g umactually`. See CHANGELOG v0.6.0
+# [Removed] and README § Install.
 $ArchiveBasenames = @(
   "umactually-linux-x64.tar.gz",
   "umactually-linux-arm64.tar.gz",
-  "umactually-darwin-x64.tar.gz",
   "umactually-darwin-arm64.tar.gz",
   "umactually-windows-x64.zip",
   "umactually-windows-arm64.zip"
 )
 
-# Six canonical raw basenames for legacy contract.
+# Five canonical raw basenames for legacy contract.
 $RawBasenames = @(
   "umactually-linux-x64",
   "umactually-linux-arm64",
-  "umactually-darwin-x64",
   "umactually-darwin-arm64",
   "umactually-windows-x64.exe",
   "umactually-windows-arm64.exe"

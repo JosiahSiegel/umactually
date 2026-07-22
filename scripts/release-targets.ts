@@ -36,7 +36,7 @@ export type ReleaseTarget = {
 };
 
 /** The manifest must always describe exactly six production targets. */
-export const EXPECTED_TARGET_COUNT = 6;
+export const EXPECTED_TARGET_COUNT = 5;
 
 /** Options accepted by the parser. */
 export type ParseOptions = {

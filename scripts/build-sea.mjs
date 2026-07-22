@@ -3,11 +3,10 @@
 //
 // Cross-compile Node SEA (Single Executable Application) standalone binaries.
 //
-// Produces 6 binaries from src/cli.ts into ./release/:
+// Produces 5 binaries from src/cli.ts into ./release/:
 //   umactually-linux-x64      (tar.gz)
 //   umactually-linux-arm64    (tar.gz)
-//   umactually-darwin-x64     (tar.gz)
-//   umactually-darwin-arm64   (tar.gz)
+//   umactually-darwin-arm64   (tar.gz)  (darwin-x64 dropped in v0.6.0)
 //   umactually-windows-x64.exe (zip)
 //   umactually-windows-arm64.exe (zip)
 //
@@ -28,9 +27,9 @@
 //
 // v0.6.0 note: tsdown's CLI only accepts `--exe` as a flag — the per-target
 // `fileName` and `targets` are config-file only (tsdown.config.ts). So this
-// script runs `tsdown --exe` once and lets the config drive all 6 targets.
+// script runs `tsdown --exe` once and lets the config drive all 5 targets.
 // The optional <targetId> argument is accepted for backwards compatibility
-// (and for local debugging) but is a no-op; the script always builds all 6.
+// (and for local debugging) but is a no-op; the script always builds all 5.
 
 import { spawnSync } from "node:child_process";
 import { copyFileSync, existsSync, mkdirSync, readdirSync, readFileSync, renameSync, statSync, unlinkSync } from "node:fs";

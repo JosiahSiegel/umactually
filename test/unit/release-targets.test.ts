@@ -51,14 +51,6 @@ const EXPECTED_TARGETS: readonly ReleaseTarget[] = [
     installedName: "umactually",
   },
   {
-    id: "darwin-x64",
-    rawName: "umactually-darwin-x64",
-    archiveName: "umactually-darwin-x64.tar.gz",
-    archiveType: "tar.gz",
-    memberName: "umactually-darwin-x64",
-    installedName: "umactually",
-  },
-  {
     id: "darwin-arm64",
     rawName: "umactually-darwin-arm64",
     archiveName: "umactually-darwin-arm64.tar.gz",
@@ -94,15 +86,15 @@ describe("release-targets manifest on disk", () => {
   it("contains exactly six targets with six unique IDs and six unique archive names", () => {
     const targets = parseReleaseTargets({ manifestPath: MANIFEST_PATH });
 
-    expect(targets.length).toBe(6);
+    expect(targets.length).toBe(5);
     const ids = targets.map((t) => t.id);
     const archiveNames = targets.map((t) => t.archiveName);
     const rawNames = targets.map((t) => t.rawName);
     const memberNames = targets.map((t) => t.memberName);
-    expect(new Set(ids).size).toBe(6);
-    expect(new Set(archiveNames).size).toBe(6);
-    expect(new Set(rawNames).size).toBe(6);
-    expect(new Set(memberNames).size).toBe(6);
+    expect(new Set(ids).size).toBe(5);
+    expect(new Set(archiveNames).size).toBe(5);
+    expect(new Set(rawNames).size).toBe(5);
+    expect(new Set(memberNames).size).toBe(5);
   });
 
   it("matches the exact raw/member/installed naming rules", () => {
@@ -147,20 +139,20 @@ describe("parseReleaseTargets — schema and shape rejection", () => {
     expect(() => parseReleaseTargets({ manifestPath: path })).toThrow(/array/i);
   });
 
-  it("rejects target-count drift (five rows or seven rows)", () => {
-    const five = EXPECTED_TARGETS.slice(0, 5);
-    const path = writeManifest(five);
-    expect(() => parseReleaseTargets({ manifestPath: path })).toThrow(/exactly 6/i);
+  it("rejects target-count drift (four rows or six rows)", () => {
+    const four = EXPECTED_TARGETS.slice(0, 4);
+    const path = writeManifest(four);
+    expect(() => parseReleaseTargets({ manifestPath: path })).toThrow(/exactly 5/i);
 
-    const seven = [...EXPECTED_TARGETS, {
+    const six = [...EXPECTED_TARGETS, {
       ...EXPECTED_TARGETS[0]!,
       id: "linux-x64-extra",
       rawName: "umactually-linux-x64-extra",
       archiveName: "umactually-linux-x64-extra.tar.gz",
       memberName: "umactually-linux-x64-extra",
     }];
-    const sevenPath = writeManifest(seven);
-    expect(() => parseReleaseTargets({ manifestPath: sevenPath })).toThrow(/exactly 6/i);
+    const sixPath = writeManifest(six);
+    expect(() => parseReleaseTargets({ manifestPath: sixPath })).toThrow(/exactly 5/i);
   });
 
   it("rejects missing required fields with a target-specific message", () => {
@@ -190,10 +182,10 @@ describe("parseReleaseTargets — schema and shape rejection", () => {
 
   it("rejects non-string fields with the field name in the diagnostic", () => {
     const mutated = EXPECTED_TARGETS.map((t) =>
-      t.id === "darwin-x64" ? { ...t, rawName: 42 as unknown as string } : t,
+      t.id === "linux-arm64" ? { ...t, rawName: 42 as unknown as string } : t,
     );
     const path = writeManifest(mutated);
-    expect(() => parseReleaseTargets({ manifestPath: path })).toThrow(/darwin-x64.*rawName/);
+    expect(() => parseReleaseTargets({ manifestPath: path })).toThrow(/linux-arm64.*rawName/);
   });
 
   it("rejects malformed id (underscore instead of dash)", () => {
@@ -318,22 +310,22 @@ describe("parseReleaseTargets — uniqueness", () => {
 
   it("rejects duplicate rawName entries", () => {
     const mutated = EXPECTED_TARGETS.map((t) =>
-      t.id === "darwin-x64" ? { ...t, rawName: "umactually-darwin-arm64" } : t,
+      t.id === "linux-arm64" ? { ...t, rawName: "umactually-linux-x64" } : t,
     );
     const path = writeManifest(mutated);
     expect(() =>
       parseReleaseTargets({ manifestPath: path }),
-    ).toThrow(/darwin-x64.*darwin-arm64/);
+    ).toThrow(/linux-arm64.*linux-x64/);
   });
 
   it("rejects duplicate memberName entries", () => {
     const mutated = EXPECTED_TARGETS.map((t) =>
-      t.id === "darwin-arm64" ? { ...t, memberName: "umactually-darwin-x64" } : t,
+      t.id === "linux-x64" ? { ...t, memberName: "umactually-linux-arm64" } : t,
     );
     const path = writeManifest(mutated);
     expect(() =>
       parseReleaseTargets({ manifestPath: path }),
-    ).toThrow(/darwin-arm64.*darwin-x64/);
+    ).toThrow(/linux-x64.*linux-arm64/);
   });
 
   it("rejects duplicate rawName/memberName/archiveName entries", () => {
@@ -341,10 +333,10 @@ describe("parseReleaseTargets — uniqueness", () => {
     // duplicate id is the only way to produce duplicate rawName/memberName/archiveName; the previous test already
     // rejects. This test confirms the parser surfaces the id collision first
     // rather than emitting a confusing field-specific message.
-    const darwinX64 = EXPECTED_TARGETS.find((t) => t.id === "darwin-x64");
-    if (!darwinX64) throw new Error("fixture missing darwin-x64");
+    const linuxArm64 = EXPECTED_TARGETS.find((t) => t.id === "linux-arm64");
+    if (!linuxArm64) throw new Error("fixture missing linux-arm64");
     const mutated = EXPECTED_TARGETS.map((t) =>
-      t.id === "darwin-arm64" ? { ...darwinX64 } : t,
+      t.id === "darwin-arm64" ? { ...linuxArm64 } : t,
     );
     const path = writeManifest(mutated);
     expect(() => parseReleaseTargets({ manifestPath: path })).toThrow(/duplicate.*id/i);
@@ -378,12 +370,12 @@ describe("parseReleaseTargets — unsafe names, separators, traversal, Windows .
 
   it("rejects path separator in memberName", () => {
     const mutated = EXPECTED_TARGETS.map((t) =>
-      t.id === "darwin-x64" ? { ...t, memberName: "umactually/../darwin-x64" } : t,
+      t.id === "linux-arm64" ? { ...t, memberName: "umactually/../linux-arm64" } : t,
     );
     const path = writeManifest(mutated);
     expect(() =>
       parseReleaseTargets({ manifestPath: path }),
-    ).toThrow(/darwin-x64.*memberName/);
+    ).toThrow(/linux-arm64.*memberName/);
   });
 
   it("rejects Windows path separator in archiveName", () => {
@@ -433,7 +425,7 @@ describe("parseReleaseTargets — unsafe names, separators, traversal, Windows .
   it("rejects mismatched raw and member names", () => {
     const mutated = EXPECTED_TARGETS.map((t) =>
       t.id === "darwin-arm64"
-        ? { ...t, rawName: "umactually-darwin-arm64", memberName: "umactually-darwin-x64" }
+        ? { ...t, memberName: "umactually-linux-x64" }
         : t,
     );
     const path = writeManifest(mutated);

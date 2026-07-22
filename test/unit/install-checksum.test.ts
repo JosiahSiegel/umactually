@@ -108,7 +108,7 @@ function installWith(checksums: string): { readonly status: number | null; reado
       // legacy "64hex  basename" checksums.txt format (the only
       // format the install-checksum test fixture uses), and
       // `tag_to_contract` would map v0.6.0 to "archive" — which
-      // expects 6 lines of `archiveName  hash` and rejects single
+      // expects 5 lines of `archiveName  hash` and rejects single
       // raw entries. INSTALL_ASSET_CONTRACT=legacy selects the
       // raw path directly, which is what we want.
       INSTALL_ASSET_CONTRACT: "legacy",
@@ -152,7 +152,7 @@ describe.skipIf(!SHELL_AVAILABLE)("install.sh production checksum verification",
   });
 
   it.each([
-    ["missing", `${ASSET_HASH}  umactually-darwin-x64\n`],
+    ["missing", `${ASSET_HASH}  umactually-linux-x64.tar.gz\n`],
     ["malformed", `${ASSET_HASH} ${ASSET_NAME}\n`],
     ["mismatched", `${"0".repeat(64)}  ${ASSET_NAME}\n`],
   ])("rejects a %s checksum entry without replacing the installed binary", (_case, checksums) => {

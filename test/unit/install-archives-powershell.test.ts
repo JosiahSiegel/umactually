@@ -50,7 +50,6 @@ const MEMBER_NAME = "umactually-windows-x64.exe";
 const ARCHIVE_BASENAMES = [
   "umactually-linux-x64.tar.gz",
   "umactually-linux-arm64.tar.gz",
-  "umactually-darwin-x64.tar.gz",
   "umactually-darwin-arm64.tar.gz",
   "umactually-windows-x64.zip",
   "umactually-windows-arm64.zip",
@@ -1163,6 +1162,39 @@ describe.skipIf(!PS_AVAILABLE)("install.ps1 full HTTP fixture-server round trip"
       assertNoTempResidue(installDir, ["umactually.exe"]);
     } finally {
       server.kill();
+    }
+  });
+});
+
+describe("install.ps1 archive basenames must match the live release", () => {
+  // Regression guard for the v0.6.0 darwin-x64 drop. install.ps1 hardcodes
+  // the list of expected basenames for each asset contract (archive vs
+  // legacy raw). If that list drifts out of sync with the actual release
+  // (or, as happened, the manifest drops a target but the PowerShell
+  // installer wasn't updated), every user who runs the curl-pipe installer
+  // on Windows sees a "Missing checksum line for archive contract: <basename>"
+  // error and the install aborts. The fix is to assert that the
+  // hardcoded list is a subset of (or equal to) the live release's
+  // checksums.txt for the latest v0.6.x tag.
+  it("hardcoded $ArchiveBasenames match the live v0.6.0 release's checksums.txt", async () => {
+    const url = "https://github.com/JosiahSiegel/umactually/releases/download/v0.6.0/checksums.txt";
+    const response = await fetch(url);
+    expect(response.ok, `failed to fetch ${url}: ${response.status} ${response.statusText}`).toBe(true);
+    const checksums = await response.text();
+    const liveBasenames = new Set(
+      checksums
+        .split(/\r?\n/)
+        .map((line) => line.trim().split(/\s+/).pop() ?? "")
+        .filter((name) => name.length > 0),
+    );
+    // ARCHIVE_BASENAMES is the test-side mirror of install.ps1's
+    // $ArchiveBasenames — keep them in sync. If this drifts, the
+    // assertion below catches it.
+    for (const expected of ARCHIVE_BASENAMES) {
+      expect(
+        liveBasenames.has(expected),
+        `install.ps1 expects ${expected} but it's missing from the live v0.6.0 release's checksums.txt — did the manifest drop a target without updating install.ps1?`,
+      ).toBe(true);
     }
   });
 });
