@@ -10,12 +10,29 @@ ship a tag).
 
 ## [Unreleased]
 
-### Documentation
+## [0.6.1] - 2026-07-22
 
-- **README § Install** rewritten for clarity. Three paths (npm, curl-pipe, source tarball) now lead with the npm install path and frame the curl-pipe installer as a smart-router rather than the primary path. The `--try-npm` and `INSTALL_FORCE_BINARY=1` bypass options are now documented. The Uninstall section leads with the built-in `umactually uninstall` subcommand and demotes the legacy `scripts/uninstall.{sh,ps1}` one-liner to a back-compat footnote. The Commands list now includes `umactually uninstall`. A Platform support table replaces the inline "Supported release assets" sentence and is the single source of truth for OS × install-path support.
-- **`docs/distribution-architecture.md`** build pipeline section updated to reflect the 5-target manifest (was 6). The `darwin-x64` line is replaced with a note explaining the upstream Node.js bug ([nodejs/node#62893](https://github.com/nodejs/node/issues/62893)) and the npm install path for Intel Mac users.
-- **`docs/configuration.md`** release-assets table updated: 5 binary rows (was 6) plus `checksums.txt`. The `darwin-x64` row is replaced with a callout explaining the segfault and the npm install path.
-- **`CHANGELOG.md` v0.6.0 entry** (below) updated to record the `darwin-x64` drop in the v0.6.0 [Removed] section, since v0.6.0 was re-tagged to ship the drop. The "6 entries" / "darwin-x64 / arm64" lines in the v0.6.0 [Added] section are corrected to 5 / darwin-arm64.
+### Fixed
+
+- **Source-of-truth / release-targets drift after the v0.6.0 darwin-x64 drop** ([#106](https://github.com/JosiahSiegel/umactually/pull/106)). The v0.6.0 release correctly shipped 5 release assets (no darwin-x64), but several source-of-truth files still referenced 6 targets. The next release would have re-introduced the darwin-x64 artifact, and in the meantime the Windows curl-pipe installer rejected the live 5-entry `checksums.txt` with `Missing checksum line for archive contract: umactually-darwin-x64.tar.gz`. This release syncs the source to the published artifacts:
+  - `scripts/install.ps1`: `$ArchiveBasenames` and `$RawBasenames` reduced to 5 entries.
+  - `scripts/install.sh`: `checksum_archive_validate` count check 6 → 5.
+  - `scripts/ci-release-pipeline-dry-run.sh`: `ARCHIVE_COUNT` check 7 → 6 (5 archives + checksums.txt).
+  - `scripts/release-targets.json` / `.ts`: `EXPECTED_TARGET_COUNT` 6 → 5.
+  - `scripts/build-sea.mjs`: comments "6 binaries" → "5 binaries".
+  - `.github/workflows/release.yml`: removed the `smoke-darwin-x64` job (and its `macos-15-intel` runner requirement), removed darwin-x64 from the publish-step asset list, updated the size-budget comment to point at darwin-arm64 as the new largest target.
+  - All affected test fixtures (test counts, mutate-targets, `EXPECTED_TARGETS`, `REQUIRED_NATIVE_RUNNERS`, etc.) updated to match the 5-target reality.
+  - `test/helpers/install-archive-helpers.ts`: `TARGETS` array dropped the `darwin-x64` row (was 6, now 5). This was the missing piece: the fixture-builder was generating 6-entry checksums.txt files that install.sh now correctly rejects, which made the hostile-archive tests trip the 6/5 check before they could exercise the actual member-name validation paths.
+
+### Added
+
+- **Live-release regression test** in `test/unit/install-archives-powershell.test.ts`: fetches the live v0.6.0 `checksums.txt` from the GitHub Release and asserts **bidirectional equality** between `install.ps1`'s `$ArchiveBasenames` and the live release (every expected in live AND every live in expected, plus set-size equality). The test gracefully skips when offline (so local dev and air-gapped CI don't get a red build) and is opt-in-fail via the `UMACTUALLY_REQUIRE_LIVE_RELEASE=1` env var. Catches both directions of contract drift: install.ps1 expecting a target the release dropped (the v0.6.0 darwin-x64 bug) AND the release shipping a target install.ps1 doesn't know about.
+
+### Notes
+
+- The v0.6.1 binary differs from v0.6.0 only in the version string (0.6.0 → 0.6.1) baked in by `tsdown.config.ts:132`. No changes to the bundled CLI behavior or the install/upgrade/uninstall pipeline.
+
+## [0.6.0] - 2026-07-21
 
 ## [0.6.0] - 2026-07-21
 
