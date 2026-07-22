@@ -10,22 +10,9 @@ Latest release: **[v0.6.0](https://github.com/JosiahSiegel/umactually/releases/t
 
 ## Install
 
-umactually ships three install paths. Pick the one that matches your environment.
+umactually ships two install paths today (the third path, `npm install -g umactually`, is documented for completeness and will become the recommended path once the npm package is published).
 
-### 1. One-shot npm install (recommended when you already have Node 24+)
-
-```bash
-npm install -g umactually
-# or, no install:
-npx umactually review …
-
-# Bun users: bunx works too
-bunx umactually review …
-```
-
-This pulls the umactually package from npm (~330 KB) and uses your existing Node 24+ (or Bun 1.2.0+) runtime. No additional download, no system PATH surgery beyond what `npm install -g` already does.
-
-### 2. Curl-pipe installer (downloads the single-file binary by default; opt-in npm path via `INSTALL_TRY_NPM=1`)
+### 1. Curl-pipe installer (recommended — downloads the single-file binary by default; opt-in npm path via `INSTALL_TRY_NPM=1`)
 
 > **Windows Git Bash users:** the first command below can fail with
 > `curl: (35) schannel: ... CRYPT_E_REVOCATION_OFFLINE (0x80092013)`
@@ -96,7 +83,7 @@ umactually --version
 npx github:JosiahSiegel/umactually#v0.6.0 review
 ```
 
-The `#v0.6.0` fragment pins the install to the tagged release. Omit the fragment only when you specifically want the latest unreleased `main` build. From v0.6.0 onwards, the `umactually` npm package is published as part of the release; if you're upgrading from a pre-0.6.0 install where the package wasn't yet on npm, you can opt in to the npm path with `INSTALL_TRY_NPM=1` (the installer falls through to the single-file binary download if `npm install` fails, so it's safe to leave set as a forward-compatibility flag). See the "Opt-in npm path" callout in §2 for the full smart-router contract.
+The `#v0.6.0` fragment pins the install to the tagged release. Omit the fragment only when you specifically want the latest unreleased `main` build. The `umactually` npm package is **not yet published** as of v0.6.0 — the curl-pipe installer above is the supported install path until the npm publish happens. The installer does ship an opt-in `INSTALL_TRY_NPM=1` smart-router (see the "Opt-in npm path" callout in §1) that delegates to `npm install -g umactually@<tag>` and falls through to the single-file binary download if npm fails, so it's safe to set as a forward-compatibility flag.
 
 ### Uninstall
 

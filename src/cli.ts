@@ -571,17 +571,30 @@ const isMainModule = (() => {
   // the action path (its bundle sets the flag before reaching this
   // module), so dropping the regex is safe.
   //
+  // Opt-out: setting `UMACTUALLY_DISABLE_AUTO_INVOKE=1` forces
+  // isMainModule to return false, which means a third-party importer
+  // that does `import('umactually/dist/cli')` from a non-standard
+  // path (so the URL match would otherwise succeed) can call
+  // `await main(argv)` explicitly without the auto-invoke firing.
+  // This is the supported way to consume `dist/cli` as a library.
+  // The bin/umactually.mjs shim does NOT need this env var (it
+  // already explicitly invokes `await mod.main(argv)` after the
+  // dynamic import), and the standalone SEA binary never sets it
+  // (the auto-invoke is the whole point of the binary).
+  //
   // Regression surface to be aware of: any third-party importer that
   // does `require('umactually/dist/cli')` from a path that does NOT
   // end in `cli.js` (e.g. a re-exported entry under a different
   // filename like `require('umactually/dist/cli/index')`) will now
-  // ALSO auto-invoke main() because the URL match succeeds. If we
-  // ever need to support that pattern, restore the `cli.js` regex
-  // AND add a per-runtime entry probe (e.g. a `process.versions.sea`
-  // boolean in the SEA build that the auto-invoke can check). For
-  // v0.6.0, the supported consumers are the canonical CLI (npm path
-  // and SEA binary) plus the action entry, all of which are covered
-  // by the two checks above.
+  // ALSO auto-invoke main() because the URL match succeeds, UNLESS
+  // the importer sets `UMACTUALLY_DISABLE_AUTO_INVOKE=1` in the
+  // process env before importing. If we ever need to support that
+  // pattern by default, restore the `cli.js` regex AND add a
+  // per-runtime entry probe (e.g. a `process.versions.sea` boolean
+  // in the SEA build that the auto-invoke can check). For v0.6.0,
+  // the supported consumers are the canonical CLI (npm path and SEA
+  // binary) plus the action entry plus library consumers who set
+  // `UMACTUALLY_DISABLE_AUTO_INVOKE=1`, all of which are covered.
   //
   // npm-install path note: when installed via `npm install -g
   // umactually`, process.argv[1] is the path to bin/umactually.mjs
@@ -594,6 +607,9 @@ const isMainModule = (() => {
   // isMainModule gate is the entry-point check for the standalone
   // SEA binary (argv1 = the binary path itself) and the canonical
   // `node dist/cli.js ...` invocation.
+  if (process.env["UMACTUALLY_DISABLE_AUTO_INVOKE"] === "1") {
+    return false;
+  }
   const argv1 = process.argv[1];
   if (argv1 === undefined) {
     return false;
