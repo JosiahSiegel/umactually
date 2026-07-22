@@ -164,7 +164,16 @@ function normalizeWindowsOutputs() {
 // when tsdown already wrote to `release/` (the rename is skipped
 // because the destination already exists).
 function collectSeaOutputs() {
-  const CANDIDATE_DIRS = ["release", "build", "dist"];
+  // NOTE: do NOT include "release" in CANDIDATE_DIRS. The release/
+  // dir is the destination — if it already has a stale
+  // umactually-win-*.exe from a previous failed build, the rename
+  // in normalizeWindowsOutputs() skips (because the *-windows-*
+  // target already exists, possibly stale), and this sweep would
+  // also skip (because the destination exists). The result is
+  // silently stale Windows binaries in release/. Sweep only the
+  // tsdown / Rolldown fallback dirs (build, dist) and let
+  // normalizeWindowsOutputs() own the release/ rename.
+  const CANDIDATE_DIRS = ["build", "dist"];
   for (const dir of CANDIDATE_DIRS) {
     const dirPath = join(REPO_ROOT, dir);
     if (!existsSync(dirPath)) continue;

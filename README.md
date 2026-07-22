@@ -23,7 +23,7 @@ npx umactually review …
 bunx umactually review …
 ```
 
-This pulls the umactually package from npm (~330 KB) and uses your existing Node 24+ (or Bun 1.1+) runtime. No additional download, no system PATH surgery beyond what `npm install -g` already does.
+This pulls the umactually package from npm (~330 KB) and uses your existing Node 24+ (or Bun 1.2.0+) runtime. No additional download, no system PATH surgery beyond what `npm install -g` already does.
 
 ### 2. Curl-pipe installer (smart-routes to npm if Node 24+ is available, else downloads the single-file binary)
 
