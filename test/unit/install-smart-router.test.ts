@@ -119,6 +119,18 @@ function makeSandbox(): { dir: string; binDir: string; fakeNode: string } {
     ? `@echo off\necho v24.0.0\nexit 0\n`
     : `#!/bin/sh\necho "v24.0.0"\nexit 0\n`);
   chmodSync(fakeNode, 0o755);
+  // Fake umactually binary: installed by the sandbox stub-npm so the
+  // smart-router's "Get-Command umactually" PATH sanity check passes
+  // immediately. Without this, the smart-router prints a PATH hint
+  // and exits 1, which is fine on Linux but on Windows Git Bash the
+  // PATH-hint path can race with the real npm resolution and cause
+  // the 30s test timeout. Pre-staging the binary makes the test
+  // hermetic on both platforms.
+  const fakeUmactually = join(binDir, isWin ? `umactually${ext}` : `umactually`);
+  writeFileSync(fakeUmactually, isWin
+    ? `@echo off\necho umactually-stub %*\nexit 0\n`
+    : `#!/bin/sh\necho "umactually-stub $*"\nexit 0\n`);
+  chmodSync(fakeUmactually, 0o755);
   return { dir, binDir, fakeNode };
 }
 
