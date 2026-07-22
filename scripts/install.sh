@@ -173,7 +173,8 @@ smart_install_with_npm() {
   return 1
 }
 
-# Only run the smart-router if no test/force-binary override is set.
+# Only run the smart-router if no test/force-binary override is set AND
+# the operator has explicitly opted in via INSTALL_TRY_NPM=1.
 #
 # Test bypasses (any of these short-circuit the smart-router so tests can
 # exercise the binary-download / archive / checksum paths in isolation):
@@ -191,7 +192,13 @@ smart_install_with_npm() {
 # umactually` call in CI, hits E404 (package not yet published to npm),
 # and prints two error lines on stderr that contaminate every test that
 # asserts on the install-script's actual error output.
-if [ -z "$INSTALL_TEST_MODE" ] \
+#
+# v0.6.0-dev: the umactually npm package is NOT yet published. The
+# smart-router would 404 on every fresh install. We default to the
+# binary path until publish happens; operators who want the npm
+# path can opt in via INSTALL_TRY_NPM=1.
+if [ "${INSTALL_TRY_NPM:-0}" = "1" ] \
+  && [ -z "$INSTALL_TEST_MODE" ] \
   && [ -z "$INSTALL_TEST_ARCHIVE_MODE" ] \
   && [ -z "$INSTALL_TEST_TARBALL" ] \
   && [ -z "$INSTALL_TEST_CHECKSUMS" ] \

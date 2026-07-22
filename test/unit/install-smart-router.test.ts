@@ -153,6 +153,11 @@ describe.skipIf(!SHELL_AVAILABLE || process.platform === "win32")("install.sh sm
       PATH: `${binDir}${delimiter}${process.env["PATH"] ?? ""}`,
       INSTALL_TEST_MODE: "",
       INSTALL_FORCE_BINARY: "",
+      // v0.6.0: the smart-router is opt-in until the umactually npm
+      // package is published. Tests that exercise it must opt in
+      // explicitly so the default install path (binary) stays
+      // predictable for end users.
+      INSTALL_TRY_NPM: "1",
     });
     // The smart-router runs `npm install -g umactually` against the
     // user's npm. In a sandbox without network or with the package
@@ -245,6 +250,11 @@ describe.skipIf(!PWSH_AVAILABLE)("install.ps1 smart-router (v0.6.0)", () => {
       PATH: `${binDir}${delimiter}${process.env["PATH"] ?? ""}`,
       INSTALL_TEST_MODE: "",
       INSTALL_FORCE_BINARY: "",
+      // v0.6.0: the smart-router is opt-in until the umactually npm
+      // package is published. Tests that exercise it must opt in
+      // explicitly so the default install path (binary) stays
+      // predictable for end users.
+      INSTALL_TRY_NPM: "1",
     }, dir);
     // The smart-router must fire when Node 24+ is on PATH. We assert
     // the "Node vX.Y.Z detected, using npm install" line as the

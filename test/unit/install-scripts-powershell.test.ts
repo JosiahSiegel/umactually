@@ -56,7 +56,7 @@ type ScriptResult = {
   readonly status: number;
 };
 
-function run(scriptPath: string, env: Record<string, string>): ScriptResult {
+function run(scriptPath: string, env: Record<string, string>, scriptArgs: string[] = []): ScriptResult {
   if (!PS_AVAILABLE || POWERSHELL === null) {
     return { stderr: "", stdout: "POWERSHELL_UNAVAILABLE", status: 0 };
   }
@@ -64,6 +64,7 @@ function run(scriptPath: string, env: Record<string, string>): ScriptResult {
     "-NoProfile",
     "-ExecutionPolicy", "Bypass",
     "-File", scriptPath,
+    ...scriptArgs,
   ], {
     env: { ...process.env, ...env },
     encoding: "utf8",
@@ -151,6 +152,51 @@ describe.skipIf(!PS_AVAILABLE)("install.ps1", () => {
     });
     expect(result.status).toBe(0);
     expect(existsSync(join(nested, "umactually.exe"))).toBe(true);
+  });
+
+  it("PS-INSTALL-HELP: --help prints a usage block and exits 0 (no install attempt)", () => {
+    // Regression: the smart-router used to run BEFORE arg parsing, so
+    // `install.ps1 --help` would attempt a real install and 404 on
+    // npm. The CI smoke test `install.ps1 --help smoke` in
+    // .github/workflows/ci.yml was failing because of this. We now
+    // handle --help/--version BEFORE the smart-router. Lock that in
+    // here so a future refactor can't silently regress it.
+    //
+    // We deliberately run the script with NO env overrides (so the
+    // smart-router WOULD fire if the early-arg guard broke) and
+    // assert that the output mentions "Usage" and the binary was
+    // NOT installed anywhere on disk.
+    const result = run(INSTALL_PS1, {}, ["--help"]);
+    expect(result.status, `stderr=${result.stderr}\nstdout=${result.stdout}`).toBe(0);
+    expect(result.stdout).toMatch(/Usage/u);
+    expect(result.stdout).toMatch(/umactually/u);
+    // The smart-router's "trying npm install" / "using npm install"
+    // message must NOT appear — the early-arg guard short-circuits
+    // before the router is even defined.
+    expect(result.stderr).not.toMatch(/trying npm install/);
+    expect(result.stderr).not.toMatch(/using npm install/);
+    // Nothing should have been installed.
+    expect(existsSync(join(sandbox, "umactually.exe"))).toBe(false);
+  });
+
+  it("PS-INSTALL-HELP: -h short form also triggers the usage block", () => {
+    // POSIX installers accept -h as the short form of --help. Mirror
+    // that here so the CI smoke test (which uses both -h and --help)
+    // has a single source of truth.
+    const result = run(INSTALL_PS1, {}, ["-h"]);
+    expect(result.status, `stderr=${result.stderr}\nstdout=${result.stdout}`).toBe(0);
+    expect(result.stdout).toMatch(/Usage/u);
+  });
+
+  it("PS-INSTALL-VERSION: --version prints the installer version and exits 0", () => {
+    // The smoke test for the bin shim already covers "Node 25.7
+    // exit-on-old-version" semantics. Here we just need to confirm
+    // the --version flag is honored by install.ps1 (it must NOT
+    // trigger the smart-router either, because --version is a pure
+    // metadata query).
+    const result = run(INSTALL_PS1, {}, ["--version"]);
+    expect(result.status, `stderr=${result.stderr}\nstdout=${result.stdout}`).toBe(0);
+    expect(result.stdout).toMatch(/umactually installer/u);
   });
 
   it("PS-INSTALL-004: installs only after the GNU checksum entry matches", async () => {

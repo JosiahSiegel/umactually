@@ -41,10 +41,59 @@ try {
   # PowerShell Core doesn't support setting this; it already uses TLS 1.2+.
 }
 
+# ---- early argument handling: --help / --version / --dry-run ----
+# These MUST be handled before the smart-router runs, because the
+# smart-router would otherwise treat e.g. `-h` as "install with these
+# args" and either (a) call `npm install -g umactually` on the user's
+# machine or (b) download the Windows binary. The CI smoke test
+# `install.ps1 --help` would otherwise FAIL the "script doesn't even
+# parse" guard. We deliberately do NOT accept a `-h` short form here —
+# PowerShell conventions and the install.sh twin both use `--help` and
+# `-h`, and a leading `-` with no following character is what PowerShell
+# emits when you pass a bare `-h` flag.
+foreach ($arg in $args) {
+  if ($arg -eq '-h' -or $arg -eq '--help' -or $arg -eq '-Help' -or $arg -eq '/?') {
+    Write-Output @'
+umactually installer
+
+Usage:
+  irm https://github.com/JosiahSiegel/umactually/raw/main/scripts/install.ps1 | iex [flags]
+  iex (irm .../v0.5.4/scripts/install.ps1) -INSTALL_RELEASE_TAG v0.5.4
+
+Flags (also accepted as env vars):
+  -Tag <vX.Y.Z>          Pin to a specific release tag. Env: INSTALL_RELEASE_TAG.
+  -Base <url>            Use a custom asset directory URL. Env: INSTALL_RELEASE_BASE.
+  -Contract <a|legacy>   Force archive or legacy raw contract. Env: INSTALL_ASSET_CONTRACT.
+  -InstallDir <path>     Override install destination. Env: INSTALL_DIR_OVERRIDE.
+  -SChannelOptOut        Skip TLS revocation checks (Windows Schannel only).
+                         Env: INSTALL_SSL_NO_REVOKE. Same caveats as install.sh.
+
+Env vars (override flags):
+  INSTALL_RELEASE_TAG, INSTALL_RELEASE_BASE, INSTALL_ASSET_CONTRACT,
+  INSTALL_DIR_OVERRIDE, INSTALL_SSL_NO_REVOKE
+
+The installer auto-detects the contract from the published
+checksums.txt when no flag/env is supplied.
+'@
+    exit 0
+  }
+  if ($arg -eq '-V' -or $arg -eq '--version') {
+    Write-Output 'umactually installer (script tied to v0.6.0 install contract)'
+    exit 0
+  }
+}
+
 # ---- smart installer: npm if Node 24+ is available, else binary ----
 # Added in v0.6.0. Runs BEFORE any network work. If Node 24+ is on PATH,
 # runs `npm install -g umactually` and exits cleanly. Otherwise falls
 # through to the existing binary download logic.
+#
+# v0.6.0-dev note: the umactually npm package is NOT yet published,
+# so the smart-router will hit E404 in production. We default it to
+# "opt-in" via INSTALL_TRY_NPM=1 until publish happens. Set
+# INSTALL_TRY_NPM=0 (or leave it unset) to always use the binary path.
+# The CI smoke test asserts on the absence of "trying npm install"
+# in stderr for this reason.
 function Invoke-SmartInstallNpm {
   # Try the standard 'node' / 'node.exe' first, fall back to common
   # Windows install locations if not on PATH.
@@ -137,7 +186,8 @@ function Invoke-SmartInstallNpm {
   return $false
 }
 
-# Only run the smart-router if no test/force-binary override is set.
+# Only run the smart-router if no test/force-binary override is set AND
+# the operator has explicitly opted in via INSTALL_TRY_NPM=1.
 #
 # Test bypasses (any of these short-circuit the smart-router so tests can
 # exercise the binary-download / archive / checksum paths in isolation):
@@ -155,7 +205,13 @@ function Invoke-SmartInstallNpm {
 # umactually` call in CI, hits E404 (package not yet published to npm),
 # and prints two error lines on stderr that contaminate every test that
 # asserts on the install-script's actual error output.
+#
+# v0.6.0-dev: the umactually npm package is NOT yet published. The
+# smart-router would 404 on every fresh install. We default to the
+# binary path until publish happens; operators who want the npm
+# path can opt in via INSTALL_TRY_NPM=1.
 if (
+  $env:INSTALL_TRY_NPM -eq '1' -and
   -not $env:INSTALL_TEST_MODE -and
   -not $env:INSTALL_TEST_ARCHIVE_MODE -and
   -not $env:INSTALL_TEST_TARBALL -and

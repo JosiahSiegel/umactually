@@ -60,7 +60,9 @@ curl -fsSL https://github.com/JosiahSiegel/umactually/raw/main/scripts/install.s
 irm https://github.com/JosiahSiegel/umactually/raw/main/scripts/install.ps1 | iex
 ```
 
-The installer is **smart**: it first checks for Node 24+ on PATH. If found, it runs `npm install -g umactually` and exits. Otherwise it falls through to downloading a single-file binary (~30 MB, self-contained, no Node required) and verifying its SHA-256 against `checksums.txt`. The binary is built with Node SEA (`node --build-sea`) and bundles Node 25.7. Supported release assets: Linux x64/arm64, macOS x64/arm64, Windows x64/arm64.
+The installer is **smart**: it first checks for Node 24+ on PATH and the `INSTALL_TRY_NPM=1` opt-in. If both are set, it runs `npm install -g umactually` and exits. Otherwise it falls through to downloading a single-file binary (~30 MB, self-contained, no Node required) and verifying its SHA-256 against `checksums.txt`. The binary is built with Node SEA (`node --build-sea`) and bundles Node 25.7. Supported release assets: Linux x64/arm64, macOS x64/arm64, Windows x64/arm64.
+
+> The smart-router is **opt-in** (via `INSTALL_TRY_NPM=1`) until the `umactually` npm package is published as part of the v0.6.0 release. End-user installs use the binary path by default; once the npm package is published, the smart-router will fire by default.
 
 Supported installer flags (also accepted as env vars):
 
