@@ -7,13 +7,19 @@ they relate and which to use when.
 
 | Path | Download | On disk | Use when |
 |---|---|---|---|
-| `npm install -g umactually` | ~330 KB | ~1.2 MB unpacked | You already have Node 24+ or Bun 1.2.0+ |
-| `npx umactually` (one-shot) | ~330 KB (cached after first use) | same as above | You don't want a global install |
-| `bunx umactually` | ~330 KB | same as above | You use Bun |
-| `curl … \| sh` (smart-router) | 0 KB if Node 24+ found, else ~30 MB | same as the chosen path | You don't know what's installed, want one command |
+| `npm install -g umactually` (gated) | ~330 KB | ~1.2 MB unpacked | You already have Node 24+ or Bun 1.2.0+; will 404 until the `umactually` npm package is published |
+| `npx umactually` (one-shot, gated) | ~330 KB (cached after first use) | same as above | You don't want a global install; will 404 until publish |
+| `bunx umactually` (gated) | ~330 KB | same as above | You use Bun; will 404 until publish |
+| `curl … \| sh` (smart-router, opt-in npm path) | 0 KB if Node 24+ found, else ~30 MB | same as the chosen path | You don't know what's installed, want one command; npm path requires `INSTALL_TRY_NPM=1` until publish |
 | Direct binary download | ~30 MB (gzipped) | ~70 MB (uncompressed) | No Node 24+ available, locked-down machine, minimal container |
 
-The curl-pipe installer is the recommended path for "I just want to install this". It automatically picks the best of the two non-npm paths based on what's available on the system.
+> **Gating note (v0.6.0):** the npm, npx, and bunx paths above are
+> **gated until the `umactually` npm package is published**. Until
+> then they 404 against the public registry. The curl-pipe smart
+> router also defaults to the binary path (not npm) for the same
+> reason; pass `INSTALL_TRY_NPM=1` to opt in. The two binary
+> paths (curl-pipe and direct download) work today and are the
+> supported install surface for v0.6.0.
 
 ## Why three paths
 
