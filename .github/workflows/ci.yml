@@ -506,6 +506,80 @@ jobs:
           fi
           echo "OK: install.sh --help returned a usage block"
 
+  # ---------------------------------------------------------------------
+  # PR-time end-to-end check: run the locally-built SEA binary
+  # against the same hermetic mock LLM that the post-release-e2e
+  # workflow uses, in BOTH provider modes (openai-compatible +
+  # anthropic), and assert that each one produces >=2 inline
+  # comments against the canary fixture diff.
+  #
+  # Why this exists: the v0.6.1+ post-release failures all
+  # surfaced a wire-format regression that landed on main and
+  # shipped in a release. The unit suite + dry-run + install
+  # smokes + smoke-sea jobs all passed. The post-release e2e
+  # only ran on `release.published`, so the regression was
+  # detected AFTER the broken binary was already public. This
+  # job is the same e2e harness (`test/post-release/run-e2e.mjs`
+  # with `--binary-path <local>`) running on every PR so a
+  # wire-format regression is caught at merge time, not release
+  # time. The harness reuses the same mock LLM
+  # (`test/post-release/mock-llm-server.mjs`) and the same
+  # canary fixture (`test/fixtures/e2e-canary-diff.patch`) as
+  # the post-release job — same expectations on both lanes.
+  # ---------------------------------------------------------------------
+  e2e-pr:
+    name: e2e (PR-time, linux x64)
+    runs-on: ubuntu-latest
+    needs: smoke-sea
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node 25
+        uses: actions/setup-node@v4
+        with:
+          node-version: "25.7.0"
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build (dist/ + sanity-check source)
+        run: npm run build
+
+      - name: Build all SEA binaries (only linux-x64 is exercised here)
+        # The PR-time e2e only tests the linux-x64 binary (the
+        # other 4 targets get coverage from the per-OS smoke-sea
+        # jobs in this file + the release workflow). Building
+        # all 5 is a side effect of the config-driven tsdown
+        # build; per-target filtering is tracked in a follow-up.
+        run: node scripts/build-sea.mjs linux-x64
+
+      - name: Run post-release e2e against the local binary
+        # The harness is the same one used by
+        # `.github/workflows/post-release-e2e.yml` on `release.
+        # published`. --binary-path points it at the local
+        # build (skipping the download + checksum-verify steps)
+        # so PRs without a published release can still run the
+        # full wire-format check. The exit-code contract is
+        # 0 = all checks passed (≥2 comments per provider); the
+        # job fails on any other code.
+        env:
+          ARTIFACT_DIR: ${{ runner.temp }}/e2e-pr
+          PR_NUMBER: ${{ github.event.pull_request.number || '9999' }}
+        run: |
+          set -euo pipefail
+          chmod +x release/umactually-linux-x64
+          node test/post-release/run-e2e.mjs --binary-path release/umactually-linux-x64
+
+      - name: Upload e2e artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: e2e-pr-linux-x64
+          path: ${{ runner.temp }}/e2e-pr/
+          if-no-files-found: warn
+          retention-days: 7
+
   release-pipeline-dry-run:
     name: release pipeline dry-run
     runs-on: ubuntu-latest
