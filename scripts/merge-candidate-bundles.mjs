@@ -41,9 +41,11 @@
 //   single `public/` + `internal/raw/`) works unchanged.
 
 import { createHash } from "node:crypto";
-import { existsSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { copyFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
+import { spawnSync } from "node:child_process";
 
 function parseArgs(argv) {
   const out = {};
@@ -81,11 +83,15 @@ function ensureCleanDir(p) {
 }
 
 function copyTreeFiltered(srcRoot, dstRoot, predicate) {
-  // Shallow copy: the bundle root has only `public/`, `internal/`, and a
-  // handful of JSON files. We never need to recurse past those two
-  // subtrees, and a shallow scan makes the partition rule (archive vs
-  // raw) explicit.
-  for (const entry of ["public", "internal"]) {
+  // Shallow copy: the bundle root has only `public/`, `internal/`, and
+  // `internal/raw/`. The archives live at public/<archiveName>, the
+  // raws at internal/raw/<rawName>, and the size report + target
+  // manifest at internal/{release-size-report,release-targets}.json.
+  // We never recurse past internal/raw/ — the bundle has no further
+  // nesting. The third entry ("internal/raw") was added when the
+  // merger was extended to copy the raws too; previously only
+  // archives and the JSON metadata were copied.
+  for (const entry of ["public", "internal", "internal/raw"]) {
     const srcEntry = join(srcRoot, entry);
     if (!existsSync(srcEntry)) continue;
     const dstEntry = join(dstRoot, entry);
@@ -103,7 +109,7 @@ function readDirEntries(p) {
   // Wrapper for portability — `fs.readdirSync(p, { withFileTypes: true })`
   // is fine, but the merger intentionally avoids `withFileTypes` to keep
   // the Node-version floor low.
-  return require("node:fs").readdirSync(p);
+  return readdirSync(p);
 }
 
 function main() {
@@ -120,11 +126,17 @@ function main() {
     process.exit(2);
   }
 
+  // The three INPUTS must already exist on disk. The OUTPUT is
+  // created by ensureCleanDir() below (the merger owns the output
+  // directory lifecycle; it cannot pre-exist because the
+  // umbrella workflow runs the merger on a fresh checkout each
+  // dispatch). Previously the existence check included --output
+  // too, which would fail-closed for any caller that didn't
+  // pre-create the output dir.
   for (const [label, value] of [
     ["--non-windows", nonWindows],
     ["--windows", windows],
     ["--manifest", manifestPath],
-    ["--output", output],
   ]) {
     if (!existsSync(value)) {
       throw new Error(`${label} does not exist: ${value}`);
@@ -167,13 +179,23 @@ function main() {
     return windowsTargets.some((t) => t.archiveName === child);
   });
 
-  // Copy raws (internal/raw/<rawName>) by partition.
+  // Copy raws (internal/raw/<rawName>) by partition. The raws live
+  // at srcRoot/internal/raw/ (one level deeper than the archives at
+  // srcRoot/public/). We add a third iteration entry — "internal/raw"
+  // — to copyTreeFiltered below, AND widen the predicate's source
+  // entry check to match either "internal/raw" (for raws) or
+  // "internal" (for release-size-report.json + release-targets.json,
+  // which the read-side step after copyTreeFiltered reads directly).
+  // The previous version iterated only over ["public", "internal"]
+  // and looked for raws at internal/<rawName>, but the per-platform
+  // stage step puts them at internal/raw/<rawName> (matching the
+  // existing upload structure used by the smoke + publish jobs).
   copyTreeFiltered(nonWindows, outAbs, (entry, child) => {
-    if (entry !== "internal") return false;
+    if (entry !== "internal/raw") return false;
     return nonWindowsTargets.some((t) => t.rawName === child);
   });
   copyTreeFiltered(windows, outAbs, (entry, child) => {
-    if (entry !== "internal") return false;
+    if (entry !== "internal/raw") return false;
     return windowsTargets.some((t) => t.rawName === child);
   });
 
@@ -231,7 +253,7 @@ function main() {
   // from the non-Windows bundle) before the publish job ever sees it.
   // We do this by spawning sha256sum -c in --check mode. Failure here
   // is a programmer error, not a data error.
-  const verify = require("node:child_process").spawnSync(
+  const verify = spawnSync(
     "sha256sum",
     ["-c", "checksums.txt"],
     { cwd: join(outAbs, "public"), encoding: "utf8" },
