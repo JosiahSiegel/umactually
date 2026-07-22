@@ -15,6 +15,7 @@
 // in-memory buffer while letting every other fs call pass through.
 
 import { existsSync, readFileSync } from "node:fs";
+import type { FileHandle } from "node:fs/promises";
 import { rm } from "node:fs/promises";
 import { join } from "node:path";
 
@@ -44,7 +45,7 @@ beforeEach(async () => {
     const actual = await vi.importActual<typeof import("node:fs")>("node:fs");
     return {
       ...actual,
-      writeFileSync: ((fd: number | NodeJS.FileHandle, data: string | NodeJS.ArrayBufferView, ...rest: unknown[]): void => {
+      writeFileSync: ((fd: number | FileHandle, data: string | NodeJS.ArrayBufferView, ...rest: unknown[]): void => {
         if (fd === process.stdout.fd) {
           writeFileBuffer += typeof data === "string" ? data : data.toString();
           return;
