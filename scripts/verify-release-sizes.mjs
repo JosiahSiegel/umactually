@@ -85,6 +85,17 @@ export function verifyReleaseSizes({ manifestPath, releaseDir, reportPath }) {
   }
 
   const generatedAt = new Date().toISOString();
+  // Schema (v0.6.0): `{ targets: [{id, rawName, sizeBytes, missing?, tooSmall?, tooLarge?}], generatedAt }`.
+  // This is INTENTIONALLY smaller than the v0.5.x shape that
+  // verify-release-assets.mjs emitted (which carried per-target
+  // archiveName, rawBytes, archiveBytes, ratio, and sha256). The
+  // release-size-report.json is internal-only — uploaded to the
+  // canary pre-flight, never to the public release — and the only
+  // downstream consumer (.github/workflows/release.yml's
+  // `build-package` step + the canary pre-publish probe) checks
+  // file presence, not field shape. If a future contributor
+  // re-introduces a v0.5.x field here, the unit tests in
+  // test/unit/verify-release-sizes.test.ts will fail.
   const report = { targets: [], generatedAt };
   let failed = 0;
 
