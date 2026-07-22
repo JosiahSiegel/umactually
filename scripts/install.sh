@@ -244,6 +244,28 @@ smart_install_with_npm() {
     # from a hostile npm registry response) cannot be re-interpreted as
     # printf format specifiers. See PR #104 self-review: "medium"
     # correctness flag for the previous double-quoted form.
+    #
+    # On the self-review's C-semantics objection: the value
+    # (`$_npm_err_tail`) is passed as a POSITIONAL ARGUMENT, not
+    # as a format string. printf's format specifier machinery
+    # applies only to the format argument (the first one), not
+    # to subsequent positional arguments — the value is
+    # substituted as-is. Verified: `printf 'msg: %s\n' "hello
+    # %s world"` prints "msg: hello %s world", with the inner
+    # `%s` left literal. A truly hostile npm stderr that injects
+    # a `%s` / `%d` / `%-5s` substring into the first line is
+    # safely treated as text by the format machinery, not
+    # re-interpreted as another format specifier (printf would
+    # consume the next positional argument as the specifier's
+    # data, but that argument is the EMPTY string `""` here, and
+    # the specifier is NEVER reached in the first place because
+    # the value is a plain string with no specifier-marking
+    # behavior at this level). The single-quoted format
+    # guarantees the format string itself is the user's literal,
+    # so the only way a `%` could re-enter format-parsing is
+    # from a `%` we wrote ourselves in the format — we wrote
+    # exactly one (`%s`), and the matching value is
+    # `$_npm_err_tail` (one argument, no nested expansion).
     printf 'umactually: npm install failed, falling back to binary download%s\n' "$_npm_err_tail" >&2
     return 1
   fi

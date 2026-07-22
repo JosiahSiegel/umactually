@@ -270,6 +270,19 @@ jobs:
       # but the PR lane didn't. This is the core PowerShell coverage; the
       # release.yml smoke jobs (smoke-windows-x64, smoke-windows-arm64-structural)
       # are still required to verify the actual binary on real Windows runners.
+      #
+      # The vitest invocation uses a glob (`test/unit/install-*.test.ts`)
+      # so a new install test added in test/unit/install-*.test.ts is
+      # picked up automatically. An earlier revision passed an
+      # explicit list, which is a drift trap: vitest 4.x does not
+      # auto-pick up new files when given an explicit `run
+      # <file...>`, so a new install test added in a PR that
+      # didn't also edit this list would silently NOT run on
+      # Windows. The glob keeps the curated-list and the actual
+      # test run in sync. The non-install test files (e.g.
+      # build-sea, release-targets) still run on Linux/macOS via
+      # `npm test` in the main `ci` job, which uses a broader
+      # glob in the package.json test script.
       - name: Run install + PowerShell unit tests
         shell: pwsh
         run: |
@@ -281,14 +294,7 @@ jobs:
           # default reporter (TTY-aware: "default" in non-TTY CI,
           # "verbose" in TTY local runs) which is what `npm test`
           # already uses in the main `ci` job on Linux/macOS.
-          npx vitest run `
-            test/unit/install-smart-router.test.ts `
-            test/unit/install-archives-powershell.test.ts `
-            test/unit/install-scripts-powershell.test.ts `
-            test/unit/install-methods.test.ts `
-            test/unit/install-checksum.test.ts `
-            test/unit/install-archives-posix.test.ts `
-            test/unit/install-scripts-posix.test.ts
+          npx vitest run test/unit/install-*.test.ts
 
       # Sanity check: install.ps1 --help should run cleanly (the script's
       # own self-test under Windows PowerShell 5.1). This catches the

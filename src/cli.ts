@@ -1,4 +1,4 @@
-import { readFileSync } from "node:fs";
+import { readFileSync, realpathSync } from "node:fs";
 import { rm } from "node:fs/promises";
 import { join } from "node:path";
 
@@ -626,7 +626,34 @@ const isMainModule = (() => {
     return false;
   }
   // Primary: URL match (canonical CLI entry + SEA binary).
-  if (import.meta.url === pathToFileUrl(argv1)) {
+  //
+  // Symlink caveat: when the user invokes the CLI through a PATH
+  // symlink (e.g. `/usr/local/bin/umactually` is a symlink to
+  // `/opt/umactually/bin/umactually`, the default `umactually`
+  // install on macOS Homebrew and many Linux package managers),
+  // `pathToFileUrl(argv1)` produces the SYMLINK's URL, but
+  // `import.meta.url` for the loaded module is the REALPATH's
+  // URL. The two URL strings differ
+  // (`file:///usr/local/bin/umactually` vs.
+  // `file:///opt/umactually/bin/umactually`) and the strict
+  // equality check would silently return false → main() does not
+  // auto-invoke → the SEA binary silently exits 0 with no
+  // output. We normalize argv1 through fs.realpathSync (which
+  // resolves the symlink) before the URL comparison, and fall
+  // back to the literal argv1 if realpath throws (e.g. argv1
+  // does not exist yet because Node resolved it lazily — the
+  // original `===` comparison handles that case).
+  const argv1Real = (() => {
+    try {
+      return realpathSync(argv1);
+    } catch {
+      return argv1;
+    }
+  })();
+  if (
+    import.meta.url === pathToFileUrl(argv1) ||
+    import.meta.url === pathToFileUrl(argv1Real)
+  ) {
     return true;
   }
   // Secondary: argv1 ends in cli.js/mjs/cjs. Covers the ESM-loader
