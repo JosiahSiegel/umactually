@@ -25,7 +25,7 @@ bunx umactually review …
 
 This pulls the umactually package from npm (~330 KB) and uses your existing Node 24+ (or Bun 1.2.0+) runtime. No additional download, no system PATH surgery beyond what `npm install -g` already does.
 
-### 2. Curl-pipe installer (smart-routes to npm if Node 24+ is available, else downloads the single-file binary)
+### 2. Curl-pipe installer (downloads the single-file binary by default; opt-in npm path via `INSTALL_TRY_NPM=1`)
 
 > **Windows Git Bash users:** the first command below can fail with
 > `curl: (35) schannel: ... CRYPT_E_REVOCATION_OFFLINE (0x80092013)`
@@ -45,8 +45,12 @@ curl -fsSL --ssl-no-revoke https://github.com/JosiahSiegel/umactually/raw/main/s
 # Install a pinned version
 curl -fsSL https://github.com/JosiahSiegel/umactually/raw/main/scripts/install.sh | sh -s -- --tag v0.6.0
 
-# Force the single-file binary path (skip the npm smart-router)
+# Force the single-file binary path (defense-in-depth: also blocks the smart-router)
 INSTALL_FORCE_BINARY=1 curl -fsSL https://github.com/JosiahSiegel/umactually/raw/main/scripts/install.sh | sh
+
+# Opt in to the npm smart-router (requires the umactually npm package to be
+# published; if the npm install fails the installer falls back to the binary)
+INSTALL_TRY_NPM=1 curl -fsSL https://github.com/JosiahSiegel/umactually/raw/main/scripts/install.sh | sh
 
 # Install to a custom directory (binary path only — npm uses its own prefix)
 curl -fsSL https://github.com/JosiahSiegel/umactually/raw/main/scripts/install.sh | sh -s -- --install-dir ~/.local/bin
@@ -60,9 +64,9 @@ curl -fsSL https://github.com/JosiahSiegel/umactually/raw/main/scripts/install.s
 irm https://github.com/JosiahSiegel/umactually/raw/main/scripts/install.ps1 | iex
 ```
 
-The installer is **smart**: it first checks for Node 24+ on PATH and the `INSTALL_TRY_NPM=1` opt-in. If both are set, it runs `npm install -g umactually` and exits. Otherwise it falls through to downloading a single-file binary (~30 MB, self-contained, no Node required) and verifying its SHA-256 against `checksums.txt`. The binary is built with Node SEA (`node --build-sea`) and bundles Node 25.7. Supported release assets: Linux x64/arm64, macOS x64/arm64, Windows x64/arm64.
+The installer downloads a single-file binary (~30 MB, self-contained, no Node required) by default and verifies its SHA-256 against `checksums.txt`. The binary is built with Node SEA (`node --build-sea`) and bundles Node 25.7. Supported release assets: Linux x64/arm64, macOS x64/arm64, Windows x64/arm64.
 
-> The smart-router is **opt-in** (via `INSTALL_TRY_NPM=1`) until the `umactually` npm package is published as part of the v0.6.0 release. End-user installs use the binary path by default; once the npm package is published, the smart-router will fire by default.
+> **Opt-in npm path.** The installer has a smart-router that runs `npm install -g umactually` when both `INSTALL_TRY_NPM=1` is set AND Node 24+ is on PATH. It is **off by default** because the `umactually` npm package is not yet published to the public registry as of v0.6.0; the smart-router would hit `E404` on every fresh install until publish happens. End-user installs use the binary path by default. Once the npm package is published, the smart-router will fire by default for users who don't set `INSTALL_FORCE_BINARY=1`. The `INSTALL_FORCE_BINARY=1` env var remains a defense-in-depth opt-out for CI / locked-down environments that never want npm.
 
 Supported installer flags (also accepted as env vars):
 
@@ -92,7 +96,7 @@ umactually --version
 npx github:JosiahSiegel/umactually#v0.6.0 review
 ```
 
-The `#v0.6.0` fragment pins the install to the tagged release. Omit the fragment only when you specifically want the latest unreleased `main` build. From v0.6.0 onwards, the `umactually` npm package is published as part of the release. If you're upgrading from a pre-0.6.0 install where the package wasn't yet on npm, the curl-pipe installer's smart-router handles the transition automatically: it tries the npm path first, and falls through to the single-file binary download if npm install fails (see the smart-router section).
+The `#v0.6.0` fragment pins the install to the tagged release. Omit the fragment only when you specifically want the latest unreleased `main` build. From v0.6.0 onwards, the `umactually` npm package is published as part of the release; if you're upgrading from a pre-0.6.0 install where the package wasn't yet on npm, you can opt in to the npm path with `INSTALL_TRY_NPM=1` (the installer falls through to the single-file binary download if `npm install` fails, so it's safe to leave set as a forward-compatibility flag). See the "Opt-in npm path" callout in §2 for the full smart-router contract.
 
 ### Uninstall
 
