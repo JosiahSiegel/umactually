@@ -130,10 +130,21 @@ function resolveTsdownCommand() {
 function runTsdown(args, label) {
   const { command, prefixArgs } = resolveTsdownCommand();
   const fullArgs = [...prefixArgs, ...args];
+  // Windows-specific: spawnSync of a .cmd batch file without
+  // `shell: true` fails with EINVAL (Node refuses to execute a
+  // batch file as a direct child process). When the resolved
+  // command ends in .cmd (the typical npm-installed shim on
+  // Windows), pass `shell: true` so the OS shell handles the
+  // cmd.exe /c dispatch. On Linux/macOS the shim is an
+  // executable file and `shell: true` is unnecessary (and can
+  // add a layer of quoting complexity), so we only enable it
+  // when needed.
+  const needsShell = process.platform === "win32" && command.toLowerCase().endsWith(".cmd");
   const result = spawnSync(command, fullArgs, {
     cwd: REPO_ROOT,
     env: process.env,
     encoding: "utf8",
+    shell: needsShell,
   });
   if (result.error !== undefined && result.error !== null) {
     throw new Error(`tsdown ${label} failed to spawn: ${result.error.message}`);
