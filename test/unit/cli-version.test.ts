@@ -107,14 +107,17 @@ describe("CLI version handler (M2)", () => {
     expect(existsSync(autoContextDirectory)).toBe(false);
   });
 
-  it("falls back to writeSync when writeFileSync throws EBADF (no kernel fd for stdout)", async () => {
-    // Spy on writeSync AND mock writeFileSync to throw an EBADF
-    // error. The runVersion catch block should narrow on the EBADF
-    // family and fall through to writeSync (a single write(2)
-    // syscall on the supplied fd). We do NOT fall back to
-    // process.stdout.write here because that re-introduces the
-    // stream-buffer race the canonical path exists to fix.
+  it("falls back to process.stdout.write when writeFileSync throws EBADF (no kernel fd for stdout)", async () => {
+    // Spy on process.stdout.write AND mock writeFileSync to throw an
+    // EBADF error. The runVersion catch block should fall through to
+    // process.stdout.write with the version bytes.
     let fallbackBuffer = "";
+    const stdoutSpy = vi
+      .spyOn(process.stdout, "write")
+      .mockImplementation((chunk) => {
+        fallbackBuffer += String(chunk);
+        return true;
+      });
     vi.doMock("node:fs", async () => {
       const actual = await vi.importActual<typeof import("node:fs")>("node:fs");
       return {
@@ -128,14 +131,6 @@ describe("CLI version handler (M2)", () => {
           err.code = "EBADF";
           throw err;
         }) as typeof actual.writeFileSync,
-        writeSync: ((
-          _fd: number,
-          data: string | NodeJS.ArrayBufferView,
-          ..._rest: unknown[]
-        ): number => {
-          fallbackBuffer += typeof data === "string" ? data : data.toString();
-          return data instanceof Uint8Array ? data.byteLength : Buffer.byteLength(String(data));
-        }) as typeof actual.writeSync,
       };
     });
     vi.resetModules();
@@ -146,6 +141,7 @@ describe("CLI version handler (M2)", () => {
       expect(result).toBe(0);
       expect(fallbackBuffer).toBe(`${packageVersion}\n`);
     } finally {
+      stdoutSpy.mockRestore();
       vi.doUnmock("node:fs");
       vi.resetModules();
     }
