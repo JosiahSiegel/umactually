@@ -61,12 +61,19 @@
 #   7. Base + contract without tag => reject.
 #   8. INSTALL_POWERSHELL_SCRIPT_URL is independent (changes only Git Bash delegation).
 #
-# Smart installer (added in v0.6.0):
-#   If Node 24+ is on PATH, run `npm install -g umactually` and exit 0.
-#   This is the recommended path for most users — it ships ~100 KB and
+# Smart installer (added in v0.6.0, OPT-IN by default):
+#   If Node 24+ is on PATH AND INSTALL_TRY_NPM=1 is set, run
+#   `npm install -g umactually` and exit 0. The default is the binary
+#   path because the umactually npm package is not yet published to
+#   the public registry as of v0.6.0 — the smart-router would 404
+#   on every fresh install until publish happens. The smart-router
+#   is the recommended path for most users (it ships ~100 KB and
 #   uses the user's existing Node, vs the ~30 MB single-file binary
-#   fallback. The binary path still works for users without Node 24+
-#   (locked-down machines, minimal containers, etc.).
+#   fallback), but only after the package is published. Until then,
+#   operators who want the npm path can opt in via INSTALL_TRY_NPM=1.
+#   The binary path still works for users without Node 24+ (locked-
+#   down machines, minimal containers, etc.) and is the default
+#   production flow.
 #
 # Bypass env vars (for testing + opt-out):
 #   INSTALL_FORCE_BINARY=1   Skip the npm check, always use binary.
@@ -168,11 +175,31 @@ smart_install_with_npm() {
       # re-running the installer.
       if ! command -v umactually >/dev/null 2>&1; then
         printf "umactually: installed via npm, but 'umactually' is not on PATH.\n" >&2
+        # `npm config get prefix` returns the parent of `bin/` (POSIX) or
+        # the directory that holds the .cmd shim directly (Windows).
+        # Mirror scripts/install.ps1's $isPosix detection: on Git Bash
+        # on Windows the uname kernel name is MINGW*/MSYS*/CYGWIN*, and
+        # appending `/bin` would point at a non-existent path. On
+        # real POSIX (Linux/macOS) we append `/bin` as before.
+        _is_windows=0
+        case "$(uname -s 2>/dev/null || true)" in
+          MINGW*|MSYS*|CYGWIN*|Windows*)
+            _is_windows=1
+            ;;
+        esac
         if [ -n "$NPM_GLOBAL_PREFIX" ]; then
-          printf "umactually: add '%s/bin' to your PATH and retry.\n" "$NPM_GLOBAL_PREFIX" >&2
+          if [ "$_is_windows" = "1" ]; then
+            printf "umactually: add '%s' to your PATH and retry.\n" "$NPM_GLOBAL_PREFIX" >&2
+          else
+            printf "umactually: add '%s/bin' to your PATH and retry.\n" "$NPM_GLOBAL_PREFIX" >&2
+          fi
         else
-          NPM_BIN_DIR="$(npm config get prefix 2>/dev/null)/bin"
-          printf "umactually: add '%s' to your PATH and retry.\n" "$NPM_BIN_DIR" >&2
+          NPM_BIN_DIR="$(npm config get prefix 2>/dev/null)"
+          if [ "$_is_windows" = "1" ]; then
+            printf "umactually: add '%s' to your PATH and retry.\n" "$NPM_BIN_DIR" >&2
+          else
+            printf "umactually: add '%s/bin' to your PATH and retry.\n" "$NPM_BIN_DIR" >&2
+          fi
         fi
         rm -f "$_npm_err" 2>/dev/null || true
         exit 1

@@ -107,8 +107,10 @@ jobs:
   # Smoke-test the Node SEA single-file binary on Linux. This is the
   # build target that catches the most regressions for the binary
   # distribution path. macOS / Windows SEA smoke tests live on the
-  # release workflow's per-target jobs; this is a fast Linux-only
-  # gate for the daily PR lane.
+  # release workflow's per-target jobs
+  # (smoke-darwin-x64, smoke-darwin-arm64, smoke-windows-x64,
+  # smoke-windows-arm64-structural in .github/workflows/release.yml);
+  # this is a fast Linux-only gate for the daily PR lane.
   # ---------------------------------------------------------------------
   smoke-sea:
     name: smoke-sea (linux x64)

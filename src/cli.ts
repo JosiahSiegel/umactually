@@ -572,6 +572,18 @@ const isMainModule = (() => {
   // v0.6.0, the supported consumers are the canonical CLI (npm path
   // and SEA binary) plus the action entry, all of which are covered
   // by the two checks above.
+  //
+  // npm-install path note: when installed via `npm install -g
+  // umactually`, process.argv[1] is the path to bin/umactually.mjs
+  // (the shim), NOT to dist/cli.js. The shim's auto-invoke path
+  // (see bin/umactually.mjs) does NOT depend on this isMainModule
+  // gate — it does a dynamic `import(pathToFileURL(bundledCli))` of
+  // dist/cli.js and then explicitly calls `await mod.main(argv)`.
+  // So the npm path is correct regardless of whether isMainModule
+  // returns true or false for the dynamic-imported module. The
+  // isMainModule gate is the entry-point check for the standalone
+  // SEA binary (argv1 = the binary path itself) and the canonical
+  // `node dist/cli.js ...` invocation.
   const argv1 = process.argv[1];
   if (argv1 === undefined) {
     return false;
