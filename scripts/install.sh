@@ -1253,6 +1253,17 @@ parse_args() {
         export INSTALL_SSL_NO_REVOKE
         shift 1
         ;;
+      --try-npm)
+        # Opt in to the v0.6.0 npm-install smart router. Mirrors
+        # install.ps1's `--try-npm` / `-TryNpm` flag (same README
+        # copy/paste form). Off by default because the umactually
+        # npm package is not yet published as of v0.6.0; the
+        # smart-router would 404 on every fresh install. See
+        # INSTALL_TRY_NPM in the header doc.
+        INSTALL_TRY_NPM=1
+        export INSTALL_TRY_NPM
+        shift 1
+        ;;
       -h|--help)
         cat <<'USAGE'
 umactually installer
@@ -1272,9 +1283,15 @@ Flags (also accepted as env vars):
                           (CRYPT_E_REVOCATION_OFFLINE 0x80092013). Cert
                           validation is still performed; only the optional
                           CRL/OCSP lookup is skipped. Requires curl >= 7.78.
+  --try-npm               Opt in to the npm-install smart router (added in
+                          v0.6.0; off by default until the umactually npm
+                          package is published — falls through to the
+                          binary download when npm 404s). Mirrors the
+                          install.ps1 `-TryNpm` flag.
 
 Env vars (override flags):
-  INSTALL_RELEASE_TAG, INSTALL_RELEASE_BASE, INSTALL_ASSET_CONTRACT
+  INSTALL_RELEASE_TAG, INSTALL_RELEASE_BASE, INSTALL_ASSET_CONTRACT,
+  INSTALL_DIR_OVERRIDE, INSTALL_SSL_NO_REVOKE, INSTALL_TRY_NPM
 
 The installer auto-detects the contract from the published
 checksums.txt when no flag/env is supplied: it probes
