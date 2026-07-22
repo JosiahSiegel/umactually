@@ -609,6 +609,11 @@ describe.skipIf(!PS_AVAILABLE)("install.ps1 8-case override matrix", () => {
   // (or the legacy raw path) makes an Invoke-WebRequest call that still
   // hits CRL/OCSP. The TEST_MODE 1 path short-circuits before any
   // network call, so we can assert on the flag's acceptance alone.
+  // USERPROFILE is pinned to installDir's grandparent because on Linux
+  // pwsh defaults USERPROFILE to "/" which makes the TEST_MODE 1
+  // branch's `New-Item -Path $env:USERPROFILE\.local\bin` fail with
+  // "Access to the path '/.local' is denied". See install-archives-
+  // posix.test.ts for the analogous USERPROFILE pattern.
   it.each([
     "--ssl-no-revoke",
     "-ssl-no-revoke",
@@ -618,7 +623,10 @@ describe.skipIf(!PS_AVAILABLE)("install.ps1 8-case override matrix", () => {
     "PS-MATRIX-SSL-NO-REVOKE: %s is accepted by the early-arg handler (no 'unknown flag')",
     (flag) => {
       const result = runInstall(
-        { INSTALL_TEST_MODE: "1" },
+        {
+          INSTALL_TEST_MODE: "1",
+          USERPROFILE: join(installDir, "..", ".."),
+        },
         [flag],
       );
       expect(result.status, `stderr:\n${result.stderr}`).toBe(0);
