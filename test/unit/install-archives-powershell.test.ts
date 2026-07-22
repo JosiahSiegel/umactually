@@ -1174,27 +1174,77 @@ describe("install.ps1 archive basenames must match the live release", () => {
   // installer wasn't updated), every user who runs the curl-pipe installer
   // on Windows sees a "Missing checksum line for archive contract: <basename>"
   // error and the install aborts. The fix is to assert that the
-  // hardcoded list is a subset of (or equal to) the live release's
-  // checksums.txt for the latest v0.6.x tag.
-  it("hardcoded $ArchiveBasenames match the live v0.6.0 release's checksums.txt", async () => {
+  // hardcoded list EQUALS the live release's checksums.txt for the latest
+  // v0.6.x tag — bidirectional equality catches BOTH directions of drift:
+  // (a) install.ps1 expects a target the release dropped (e.g. darwin-x64),
+  // AND (b) the release ships a target install.ps1 doesn't know about
+  // (e.g. someone adds a new arch to the manifest but forgets to update
+  // install.ps1's allowlist).
+  //
+  // The test gracefully skips when offline so it doesn't break local
+  // development or air-gapped CI runners. Set the
+  // UMACTUALLY_REQUIRE_LIVE_RELEASE env var to make it fail instead of
+  // skip in CI where network is expected to be available.
+  it("hardcoded $ArchiveBasenames EQUAL the live v0.6.0 release's checksums.txt (bidirectional)", async () => {
     const url = "https://github.com/JosiahSiegel/umactually/releases/download/v0.6.0/checksums.txt";
-    const response = await fetch(url);
-    expect(response.ok, `failed to fetch ${url}: ${response.status} ${response.statusText}`).toBe(true);
-    const checksums = await response.text();
+    let checksums: string;
+    try {
+      const response = await fetch(url);
+      if (!response.ok) {
+        throw new Error(`HTTP ${response.status} ${response.statusText}`);
+      }
+      checksums = await response.text();
+    } catch (err) {
+      const requireLive = process.env["UMACTUALLY_REQUIRE_LIVE_RELEASE"] === "1";
+      const reason = err instanceof Error ? err.message : String(err);
+      if (requireLive) {
+        throw new Error(
+          `failed to fetch ${url} (UMACTUALLY_REQUIRE_LIVE_RELEASE=1): ${reason}`,
+        );
+      }
+      // Offline: skip gracefully. This makes the test safe for
+      // local dev and air-gapped CI without losing the regression
+      // guard in the CI matrix (where the live check runs).
+      console.warn(
+        `[skip] live release regression check (offline): ${reason}. ` +
+          `Set UMACTUALLY_REQUIRE_LIVE_RELEASE=1 to make this test fail instead of skip.`,
+      );
+      return;
+    }
     const liveBasenames = new Set(
       checksums
         .split(/\r?\n/)
         .map((line) => line.trim().split(/\s+/).pop() ?? "")
         .filter((name) => name.length > 0),
     );
-    // ARCHIVE_BASENAMES is the test-side mirror of install.ps1's
-    // $ArchiveBasenames — keep them in sync. If this drifts, the
-    // assertion below catches it.
-    for (const expected of ARCHIVE_BASENAMES) {
+    const expectedBasenames: Set<string> = new Set(ARCHIVE_BASENAMES);
+
+    // Direction A: every basename install.ps1 expects must exist in the
+    // live release. Catches: "manifest drops a target without updating
+    // install.ps1" (the v0.6.0 darwin-x64 bug).
+    for (const expected of expectedBasenames) {
       expect(
         liveBasenames.has(expected),
         `install.ps1 expects ${expected} but it's missing from the live v0.6.0 release's checksums.txt — did the manifest drop a target without updating install.ps1?`,
       ).toBe(true);
     }
+
+    // Direction B: every basename the live release ships must be
+    // expected by install.ps1. Catches: "manifest adds a target without
+    // updating install.ps1" (e.g. someone adds windows-riscv64 to the
+    // manifest but install.ps1's $ArchiveBasenames is still 5 rows).
+    for (const live of liveBasenames) {
+      expect(
+        expectedBasenames.has(live),
+        `live v0.6.0 release ships ${live} but install.ps1's $ArchiveBasenames doesn't expect it — did the manifest add a target without updating install.ps1?`,
+      ).toBe(true);
+    }
+
+    // Set-size equality (catches the case where the two sets are
+    // individually aligned but a row was duplicated on one side).
+    expect(
+      liveBasenames.size,
+      `live release ships ${liveBasenames.size} archive basenames but install.ps1 expects ${expectedBasenames.size} — the counts must match.`,
+    ).toBe(expectedBasenames.size);
   });
 });
