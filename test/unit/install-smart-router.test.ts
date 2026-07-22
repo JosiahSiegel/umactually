@@ -320,12 +320,21 @@ describe.skipIf(!PWSH_AVAILABLE)("install.ps1 smart-router (v0.6.0)", () => {
   // PowerShell smart-router must short-circuit when a local fake
   // /releases/latest URL is set, so test fixtures using
   // install-archives-powershell.test.ts don't leak real npm calls.
+  // INSTALL_TEST_DIR is required because install.ps1 resolves
+  // $InstallDir from $env:USERPROFILE when INSTALL_TEST_DIR is unset,
+  // and on Linux pwsh defaults USERPROFILE to "/" (which fails
+  // `New-Item -Path /.local/bin` with "Access to the path '/.local'
+  // is denied"). install-archives-powershell.test.ts sets
+  // USERPROFILE explicitly to avoid this; mirror that here.
   it("respects INSTALL_TEST_FAKE_LATEST_URL=... (skips smart-router)", () => {
     const { binDir, dir } = makeSandbox();
+    const testDir = mkdtempSync(join(tmpdir(), "umactually-smart-pwsh-flu-"));
+    sandboxes.push(testDir);
     const result = runPwsh({
       PATH: `${binDir}${delimiter}${process.env["PATH"] ?? ""}`,
       INSTALL_TEST_FAKE_LATEST_URL: "http://127.0.0.1:1/repos/JosiahSiegel/umactually/releases/latest",
       INSTALL_TEST_MODE: "1",
+      INSTALL_TEST_DIR: testDir,
       PLATFORM_OVERRIDE: "linux",
       ARCH_OVERRIDE: "x64",
     }, dir);
@@ -334,10 +343,13 @@ describe.skipIf(!PWSH_AVAILABLE)("install.ps1 smart-router (v0.6.0)", () => {
 
   it("respects INSTALL_GITHUB_API_BASE=... (skips smart-router)", () => {
     const { binDir, dir } = makeSandbox();
+    const testDir = mkdtempSync(join(tmpdir(), "umactually-smart-pwsh-gab-"));
+    sandboxes.push(testDir);
     const result = runPwsh({
       PATH: `${binDir}${delimiter}${process.env["PATH"] ?? ""}`,
       INSTALL_GITHUB_API_BASE: "http://127.0.0.1:1/repos/JosiahSiegel/umactually/releases/latest",
       INSTALL_TEST_MODE: "1",
+      INSTALL_TEST_DIR: testDir,
       PLATFORM_OVERRIDE: "linux",
       ARCH_OVERRIDE: "x64",
     }, dir);
