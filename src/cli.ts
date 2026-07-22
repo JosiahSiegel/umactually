@@ -572,6 +572,16 @@ const isMainModule = (() => {
   // bundle sets the flag before reaching this module), so dropping
   // the regex is safe.
   //
+  // ESM-loader fallback: when the file is invoked through an ESM
+  // loader (tsx, ts-node, vite-node, etc.), process.argv[1] is the
+  // loader's resolved entry, not the source file. The URL match
+  // fails in that case. We keep a regex on argv1 as a secondary
+  // guard so the ESM-loader case is still covered without
+  // re-introducing the SEA-binary regression. The regex accepts
+  // `cli.js`, `cli.mjs`, and `cli.cjs` (the three CommonJS/ESM
+  // variants we ship in dist/) so a developer running
+  // `node --import tsx dist/cli.js review` sees main() fire.
+  //
   // Opt-out: setting `UMACTUALLY_DISABLE_AUTO_INVOKE=1` forces
   // isMainModule to return false, which means a third-party importer
   // that does `import('umactually/dist/cli')` from a non-standard
@@ -615,7 +625,17 @@ const isMainModule = (() => {
   if (argv1 === undefined) {
     return false;
   }
-  return import.meta.url === pathToFileUrl(argv1);
+  // Primary: URL match (canonical CLI entry + SEA binary).
+  if (import.meta.url === pathToFileUrl(argv1)) {
+    return true;
+  }
+  // Secondary: argv1 ends in cli.js/mjs/cjs. Covers the ESM-loader
+  // case (tsx, ts-node) where argv1 is the loader's entry, not the
+  // source file, and the URL match silently fails. Also covers
+  // pre-2-arg invocations like `node dist/cli.js --version` where
+  // argv1 is the source file but the URL match can still race
+  // symlink resolution on some filesystems.
+  return /(?:^|[\\/])cli\.(?:js|mjs|cjs)$/u.test(argv1);
 })();
 
 if (isMainModule) {

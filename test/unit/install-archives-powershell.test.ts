@@ -642,6 +642,31 @@ describe.skipIf(!PS_AVAILABLE)("install.ps1 8-case override matrix", () => {
     expect(scriptText).toMatch(/--ssl-no-revoke/);
   });
 
+  it("PS-MATRIX-SSL-NO-REVOKE: --ssl-no-revoke actually disables cert revocation (not a no-op)", () => {
+    // The early-arg handler only sets $env:INSTALL_SSL_NO_REVOKE=1; a
+    // separate top-of-script block must then call
+    // [System.Net.ServicePointManager]::CheckCertificateRevocationList = $false
+    // BEFORE any Invoke-WebRequest call. Without that second block, the
+    // flag is a documented no-op (the legacy / archive paths still hit
+    // CRL/OCSP). We assert the source contains the setting assignment
+    // AND that it sits BEFORE the first Invoke-WebRequest call.
+    // Note: indexOf() would match the comment mention first; we anchor
+    // on the actual call form `Manager]::CheckCertificateRevocationList = $false`
+    // so the test is robust to comment-word rephrasing.
+    const scriptText = readFileSync(INSTALL_PS1, "utf8");
+    expect(scriptText).toMatch(/CheckCertificateRevocationList\s*=\s*\$false/u);
+    const settingIdx = scriptText.indexOf("Manager]::CheckCertificateRevocationList = $false");
+    const firstIwrIdx = scriptText.indexOf("Invoke-WebRequest -Uri");
+    expect(settingIdx).toBeGreaterThan(0);
+    expect(firstIwrIdx).toBeGreaterThan(0);
+    expect(settingIdx, "CheckCertificateRevocationList must be set BEFORE the first Invoke-WebRequest call").toBeLessThan(firstIwrIdx);
+    // The setting must be guarded by the env var (not unconditionally
+    // applied — the README documents this as an opt-in, and the secure
+    // default is revocation checks on).
+    const settingBlock = scriptText.slice(settingIdx - 2000, settingIdx);
+    expect(settingBlock).toMatch(/INSTALL_SSL_NO_REVOKE/u);
+  });
+
   it("PS-MATRIX-006: archive-capable tag never falls back to raw on checksum mismatch", () => {
     // Seed an archive contract's checksum file but with a wrong hash. The
     // production path with archive contract must reject with a checksum

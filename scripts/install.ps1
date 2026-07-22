@@ -41,6 +41,34 @@ try {
   # PowerShell Core doesn't support setting this; it already uses TLS 1.2+.
 }
 
+# Opt-in revocation check bypass for Windows Git Bash users whose
+# network cannot reach GitHub's OCSP responder. Without this, the
+# legacy / archive / checksum / latest-endpoint Invoke-WebRequest
+# calls below hit `CRYPT_E_REVOCATION_OFFLINE (0x80092013)` and
+# fail. Setting CheckCertificateRevocationList = $false skips the
+# optional CRL/OCSP lookup while keeping cert validation enabled
+# (we are NOT using `-SkipCertificateCheck`, which would disable
+# ALL cert validation and is a security regression). The setting
+# must happen BEFORE any Invoke-WebRequest call, and it must be
+# honored by both the legacy and archive install paths.
+#
+# Only fires when the operator explicitly opts in via the early-arg
+# handler (`-ssl-no-revoke` / `-SChannelOptOut` / etc) or the env
+# var directly. The env var is the POSIX equivalent (`INSTALL_SSL_NO_REVOKE=1`)
+# that the README documents for install.sh.
+if ($env:INSTALL_SSL_NO_REVOKE -eq '1') {
+  try {
+    [System.Net.ServicePointManager]::CheckCertificateRevocationList = $false
+  } catch {
+    # PowerShell Core's ServicePointManager does not honor this
+    # setting (it uses HttpClient internally, not HttpWebRequest).
+    # The legacy / archive paths below will fall through to a
+    # curl-equivalent on Git Bash; install.sh remains the supported
+    # path for users on this runtime.
+    Write-Verbose "ServicePointManager revocation check setting not supported on this runtime"
+  }
+}
+
 # ---- early argument handling: --help / --version / --dry-run ----
 # These MUST be handled before the smart-router runs, because the
 # smart-router would otherwise treat e.g. `-h` as "install with these
