@@ -31,7 +31,6 @@ import {
   readFileSync,
   rmSync,
   symlinkSync,
-  writeFileSync,
 } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 
