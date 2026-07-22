@@ -325,6 +325,11 @@ jobs:
           }
 
           $versionText = Get-Content $versionOut.FullName -Raw -ErrorAction SilentlyContinue
+          if ($versionText -eq $null) {
+            # Get-Content -Raw on a missing file returns $null (not "")
+            # in PowerShell; .Length would NRE. Normalize first.
+            $versionText = ""
+          }
           if ([string]::IsNullOrWhiteSpace($versionText)) {
             Write-Error "::error::SEA --version produced empty stdout (Windows pipe-drain regression)"
             Write-Host "exit code: $versionStatus"
@@ -374,7 +379,12 @@ jobs:
           } else {
             Write-Error "::error::SEA loader crash on doctor (exit=$doctorStatus)"
             if ($doctorErrText) { Write-Host $doctorErrText }
-            & $binary doctor | Out-Null
+            # Re-invoke doctor with output captured so the failure log
+            # shows the actual crash trace, not a hidden "Out-Null"
+            # # that swallows everything we wanted to demonstrate.
+            Write-Host "--- crash repro: $binary doctor ---"
+            & $binary doctor
+            Write-Host "--- end crash repro ---"
             exit $doctorStatus
           }
 
