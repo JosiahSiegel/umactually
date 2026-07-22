@@ -100,12 +100,35 @@ if ($env:INSTALL_SSL_NO_REVOKE -eq '1') {
     [Console]::Error.WriteLine($message)
     Write-Warning $message
     if ($env:INSTALL_SSL_NO_REVOKE_WARNING_FILE) {
+      # Resolve the path to an absolute form so the writer does
+      # not depend on the script's CWD (which can differ between
+      # interactive shells and the GitHub Actions CI bootstrap).
+      # We use the .NET APIs directly (rather than Split-Path /
+      # Test-Path / New-Item cmdlets) because the cmdlet
+      # parameter sets differ between Windows PowerShell 5.1
+      # (Desktop) and PowerShell Core 7+ across platforms
+      # (observed: Split-Path -LiteralPath -Parent throws
+      # "Parameter set cannot be resolved" on PS Core 7.6 on
+      # Linux in some script contexts). [System.IO.Path] and
+      # [System.IO.File] / [System.IO.Directory] are stable
+      # across all hosts we ship for.
+      $markerPath = $env:INSTALL_SSL_NO_REVOKE_WARNING_FILE
       try {
-        Add-Content -LiteralPath $env:INSTALL_SSL_NO_REVOKE_WARNING_FILE -Value $message -ErrorAction SilentlyContinue
+        $resolved = [System.IO.Path]::GetFullPath($markerPath)
+        $parentDir = [System.IO.Path]::GetDirectoryName($resolved)
+        if ($parentDir -and -not [System.IO.Directory]::Exists($parentDir)) {
+          $null = [System.IO.Directory]::CreateDirectory($parentDir)
+        }
+        [System.IO.File]::AppendAllText($resolved, $message + [Environment]::NewLine)
       } catch {
         # Test-seam write is best-effort. We do not let a
         # filesystem error here change the install behavior —
         # the warning is already on the user-facing streams.
+        # But surface the error to the host's error stream so
+        # a developer running the test interactively can see
+        # WHY the marker file wasn't written (otherwise the
+        # test fails opaquely with "ENOENT: file not found").
+        Write-Warning "INSTALL_SSL_NO_REVOKE_WARNING_FILE write failed: $_"
       }
     }
   }
