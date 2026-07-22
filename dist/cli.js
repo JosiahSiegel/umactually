@@ -2664,8 +2664,10 @@ async function runDoctorBranch(args) {
     // In a Bun --compile binary, import.meta.url resolves to Bun's virtual
     // filesystem and process.execPath is the real binary. In Node (npm install
     // or dev), process.execPath is the node binary itself, so use import.meta.url.
-    // The bare UMACTUALLY_VERSION identifier is replaced at compile time by
-    // Bun's --define flag; in Node it is undefined.
+    // The bare UMACTUALLY_VERSION identifier is replaced at compile time —
+    // either by Bun's --define flag, or by tsdown's `define` config (v0.6.0
+    // distribution pipeline; see tsdown.config.ts). In Node (npm/dev) it is
+    // undefined.
     const isCompiledBinary = typeof UMACTUALLY_VERSION === "string";
     const packageRoot = isCompiledBinary
         ? (0,external_node_path_namespaceObject.dirname)(process.execPath)
@@ -17777,11 +17779,21 @@ function resolveDefaultBranch(cwd) {
  * Bun's virtual `/$bunfs/` and no real `package.json` exists. The
  * binary is compiled with `--define UMACTUALLY_VERSION='"<version>"'`
  * so the version is embedded at compile time.
+ *
+ * The v0.6.0 distribution pipeline uses tsdown + Node SEA instead of
+ * Bun --compile, but the substitution mechanism is the same: tsdown's
+ * `define` config (see tsdown.config.ts) maps `UMACTUALLY_VERSION` to
+ * the package version JSON, and rolldown replaces the bare identifier
+ * at bundle time. The bare-reference check below is therefore the
+ * single source of truth — both the Bun --define path and the
+ * tsdown `define` path land at this same typeof check.
  */
 function readPackageVersion() {
-    // Bun --compile injects this via --define. The bare identifier is
-    // replaced at compile time — using globalThis["UMACTUALLY_VERSION"]
-    // would NOT be replaced because --define only matches bare references.
+    // Bun --compile injects this via --define. tsdown's `define` config
+    // (in tsdown.config.ts) does the same via rolldown. The bare
+    // identifier is replaced at compile time — using
+    // globalThis["UMACTUALLY_VERSION"] would NOT be replaced because
+    // --define / rolldown's define only match bare references.
     if (typeof UMACTUALLY_VERSION === "string" && UMACTUALLY_VERSION.length > 0) {
         return UMACTUALLY_VERSION;
     }
@@ -18186,23 +18198,110 @@ const isMainModule = (() => {
     // was true for the npm-install path (argv1 = .../bin/umactually.mjs
     // → shim → .../node_modules/umactually/dist/cli.js) but FALSE for
     // a Node SEA binary where argv1 = the binary itself, e.g.
-    // `/usr/local/bin/umactually`. Combined with the fact that Node
-    // 25.7.0 SEA builds set process.versions.sea to `undefined` (not
-    // a boolean), the previous auto-invoke silently no-op'd on every
-    // SEA install: the binary started, the auto-invoke's first branch
-    // didn't match (sea is undefined), the URL match succeeded but the
-    // `cli.js` regex test failed, isMainModule returned false, main()
-    // never ran, runVersion never wrote, and the binary exited 0 with
-    // empty stdout. The release-pipeline-dry-run CI's
+    // `/usr/local/bin/umactually`. The `cli.js` regex test was the
+    // actual failure mode that made the previous auto-invoke silently
+    // no-op on every SEA install: argv1 was the binary path, the regex
+    // didn't match, isMainModule returned false, main() never ran,
+    // runVersion never wrote, and the binary exited 0 with empty
+    // stdout. The release-pipeline-dry-run CI's
     // `INSTALLED_VERSION=$(umactually --version)` capture was therefore
-    // always empty. The action entry's globalThis flag still gates
-    // the action path (its bundle sets the flag before reaching this
-    // module), so dropping the regex is safe.
+    // always empty. Note: process.versions.sea is a STRING (e.g.
+    // "1.0.0") on a SEA binary, not a boolean, but the previous code
+    // didn't check it — the cli.js regex was the failing branch. The
+    // action entry's globalThis flag still gates the action path (its
+    // bundle sets the flag before reaching this module), so dropping
+    // the regex is safe.
+    //
+    // ESM-loader fallback: when the file is invoked through an ESM
+    // loader (tsx, ts-node, vite-node, etc.), process.argv[1] is the
+    // loader's resolved entry, not the source file. The URL match
+    // fails in that case. We keep a regex on argv1 as a secondary
+    // guard so the ESM-loader case is still covered without
+    // re-introducing the SEA-binary regression. The regex accepts
+    // `cli.js`, `cli.mjs`, and `cli.cjs` (the three CommonJS/ESM
+    // variants we ship in dist/) so a developer running
+    // `node --import tsx dist/cli.js review` sees main() fire.
+    //
+    // Opt-out: setting `UMACTUALLY_DISABLE_AUTO_INVOKE=1` forces
+    // isMainModule to return false, which means a third-party importer
+    // that does `import('umactually/dist/cli')` from a non-standard
+    // path (so the URL match would otherwise succeed) can call
+    // `await main(argv)` explicitly without the auto-invoke firing.
+    // This is the supported way to consume `dist/cli` as a library.
+    // The bin/umactually.mjs shim does NOT need this env var (it
+    // already explicitly invokes `await mod.main(argv)` after the
+    // dynamic import), and the standalone SEA binary never sets it
+    // (the auto-invoke is the whole point of the binary).
+    //
+    // Regression surface to be aware of: any third-party importer that
+    // does `require('umactually/dist/cli')` from a path that does NOT
+    // end in `cli.js` (e.g. a re-exported entry under a different
+    // filename like `require('umactually/dist/cli/index')`) will now
+    // ALSO auto-invoke main() because the URL match succeeds, UNLESS
+    // the importer sets `UMACTUALLY_DISABLE_AUTO_INVOKE=1` in the
+    // process env before importing. If we ever need to support that
+    // pattern by default, restore the `cli.js` regex AND add a
+    // per-runtime entry probe (e.g. a `process.versions.sea` boolean
+    // in the SEA build that the auto-invoke can check). For v0.6.0,
+    // the supported consumers are the canonical CLI (npm path and SEA
+    // binary) plus the action entry plus library consumers who set
+    // `UMACTUALLY_DISABLE_AUTO_INVOKE=1`, all of which are covered.
+    //
+    // npm-install path note: when installed via `npm install -g
+    // umactually`, process.argv[1] is the path to bin/umactually.mjs
+    // (the shim), NOT to dist/cli.js. The shim's auto-invoke path
+    // (see bin/umactually.mjs) does NOT depend on this isMainModule
+    // gate — it does a dynamic `import(pathToFileURL(bundledCli))` of
+    // dist/cli.js and then explicitly calls `await mod.main(argv)`.
+    // So the npm path is correct regardless of whether isMainModule
+    // returns true or false for the dynamic-imported module. The
+    // isMainModule gate is the entry-point check for the standalone
+    // SEA binary (argv1 = the binary path itself) and the canonical
+    // `node dist/cli.js ...` invocation.
+    if (process.env["UMACTUALLY_DISABLE_AUTO_INVOKE"] === "1") {
+        return false;
+    }
     const argv1 = process.argv[1];
     if (argv1 === undefined) {
         return false;
     }
-    return import.meta.url === pathToFileUrl(argv1);
+    // Primary: URL match (canonical CLI entry + SEA binary).
+    //
+    // Symlink caveat: when the user invokes the CLI through a PATH
+    // symlink (e.g. `/usr/local/bin/umactually` is a symlink to
+    // `/opt/umactually/bin/umactually`, the default `umactually`
+    // install on macOS Homebrew and many Linux package managers),
+    // `pathToFileUrl(argv1)` produces the SYMLINK's URL, but
+    // `import.meta.url` for the loaded module is the REALPATH's
+    // URL. The two URL strings differ
+    // (`file:///usr/local/bin/umactually` vs.
+    // `file:///opt/umactually/bin/umactually`) and the strict
+    // equality check would silently return false → main() does not
+    // auto-invoke → the SEA binary silently exits 0 with no
+    // output. We normalize argv1 through fs.realpathSync (which
+    // resolves the symlink) before the URL comparison, and fall
+    // back to the literal argv1 if realpath throws (e.g. argv1
+    // does not exist yet because Node resolved it lazily — the
+    // original `===` comparison handles that case).
+    const argv1Real = (() => {
+        try {
+            return (0,external_node_fs_namespaceObject.realpathSync)(argv1);
+        }
+        catch {
+            return argv1;
+        }
+    })();
+    if (import.meta.url === pathToFileUrl(argv1) ||
+        import.meta.url === pathToFileUrl(argv1Real)) {
+        return true;
+    }
+    // Secondary: argv1 ends in cli.js/mjs/cjs. Covers the ESM-loader
+    // case (tsx, ts-node) where argv1 is the loader's entry, not the
+    // source file, and the URL match silently fails. Also covers
+    // pre-2-arg invocations like `node dist/cli.js --version` where
+    // argv1 is the source file but the URL match can still race
+    // symlink resolution on some filesystems.
+    return /(?:^|[\\/])cli\.(?:js|mjs|cjs)$/u.test(argv1);
 })();
 if (isMainModule) {
     main(process.argv.slice(2))
