@@ -102,8 +102,13 @@ fi
 NODE_VERSION="$(node --version)"
 NODE_MAJOR="${NODE_VERSION#v}"
 NODE_MAJOR="${NODE_MAJOR%%.*}"
-if [[ "${NODE_MAJOR}" != "25" ]]; then
-  fail "expected node 25.x, got ${NODE_VERSION}. CI pins via actions/setup-node@v4 with node-version 25.7.0."
+# The Node SEA loader requires Node >= 25.7.0; pinning to 25.0.0
+# (or any earlier 25.x) would pass the major-version check but fail
+# the actual loader. Verify the minor.patch as well.
+NODE_MINOR_PATCH="${NODE_VERSION#v}"
+NODE_MINOR_PATCH="${NODE_MINOR_PATCH#*.}"
+if [[ "${NODE_MAJOR}" != "25" ]] || [[ "${NODE_MINOR_PATCH}" < "7.0" ]]; then
+  fail "expected node >= 25.7.0, got ${NODE_VERSION}. CI pins via actions/setup-node@v4 with node-version 25.7.0."
 fi
 log "node ${NODE_VERSION}"
 

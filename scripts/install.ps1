@@ -80,21 +80,85 @@ function Invoke-SmartInstallNpm {
 
   Write-Host "umactually: Node $versionOutput detected, using npm install"
   $npmArgs = @('install', '-g', 'umactually')
+  # Honor INSTALL_RELEASE_TAG (set by --tag flag) so a user can pin to
+  # a specific version. Without this, the smart-router always installs
+  # the @latest tag, silently overriding the --tag flag for the npm
+  # path. Strip a leading 'v' from the tag because npm's version
+  # specifier syntax rejects the 'v' prefix.
+  if ($env:INSTALL_RELEASE_TAG) {
+    $tagForNpm = $env:INSTALL_RELEASE_TAG -replace '^v', ''
+    $npmArgs = @('install', '-g', "umactually@$tagForNpm")
+  }
+  # Capture npm's stderr so we can surface a useful diagnostic on the
+  # fall-through path. Without this capture the user sees only the
+  # "npm install failed" line, which is unhelpful when the failure
+  # is "package not yet published to npm" (E404) vs. "permission
+  # denied writing to NPM_CONFIG_PREFIX/bin" (EACCES) — the two
+  # failure modes have completely different remediations.
+  $npmErrFile = [System.IO.Path]::GetTempFileName()
   try {
-    & npm @npmArgs
+    & npm @npmArgs 2> $npmErrFile
     if ($LASTEXITCODE -eq 0) {
+      # PATH sanity check: npm says it succeeded, but if the binary
+      # isn't on PATH (e.g. NPM_CONFIG_PREFIX not exported) the user
+      # will think the install failed. Detect that here and surface
+      # the prefix in the hint so they can fix PATH without
+      # re-running the installer.
+      $resolvedCmd = Get-Command umactually -ErrorAction SilentlyContinue
+      if (-not $resolvedCmd) {
+        $npmPrefix = & npm config get prefix 2>$null
+        if ($LASTEXITCODE -eq 0 -and $npmPrefix) {
+          Write-Host "umactually: installed via npm, but 'umactually' is not on PATH."
+          Write-Host "umactually: add '$npmPrefix' to your PATH and retry."
+        } else {
+          Write-Host "umactually: installed via npm, but 'umactually' is not on PATH."
+        }
+        exit 1
+      }
       Write-Host "umactually: installed via npm. Run 'umactually --version' to verify."
       exit 0
     }
   } catch {
     # npm itself failed; fall through to binary download.
   }
-  Write-Host "umactually: npm install failed, falling back to binary download"
+  # Show the captured npm stderr in the fallback message so the user
+  # knows WHY npm failed (network, E404, EACCES, etc.). Trim to one
+  # line so a verbose npm error log doesn't drown the install banner.
+  $npmErrTail = ''
+  if (Test-Path -LiteralPath $npmErrFile) {
+    $npmErrContent = Get-Content -LiteralPath $npmErrFile -Raw -ErrorAction SilentlyContinue
+    if ($npmErrContent) {
+      $firstLine = ($npmErrContent -split "`r?`n", 2)[0]
+      if ($firstLine) { $npmErrTail = " ($firstLine.Trim())" }
+    }
+    Remove-Item -LiteralPath $npmErrFile -Force -ErrorAction SilentlyContinue
+  }
+  Write-Host "umactually: npm install failed, falling back to binary download$npmErrTail"
   return $false
 }
 
 # Only run the smart-router if no test/force-binary override is set.
-if (-not $env:INSTALL_TEST_MODE -and -not $env:INSTALL_FORCE_BINARY) {
+#
+# Test bypasses (any of these short-circuit the smart-router so tests can
+# exercise the binary-download / archive / checksum paths in isolation):
+#   - INSTALL_TEST_MODE         — pure stub-binary fixture (line 763+)
+#   - INSTALL_TEST_ARCHIVE_MODE — real-archive fixture (line 784+)
+#   - INSTALL_TEST_TARBALL      — alternate archive fixture
+#   - INSTALL_TEST_CHECKSUMS    — alternate checksums fixture
+#   - INSTALL_TEST_FAKE_TAG     — pre-archive tag fixture
+#   - INSTALL_FORCE_BINARY      — operator opt-out
+# Without these guards, the smart-router makes a real `npm install -g
+# umactually` call in CI, hits E404 (package not yet published to npm),
+# and prints two error lines on stderr that contaminate every test that
+# asserts on the install-script's actual error output.
+if (
+  -not $env:INSTALL_TEST_MODE -and
+  -not $env:INSTALL_TEST_ARCHIVE_MODE -and
+  -not $env:INSTALL_TEST_TARBALL -and
+  -not $env:INSTALL_TEST_CHECKSUMS -and
+  -not $env:INSTALL_TEST_FAKE_TAG -and
+  -not $env:INSTALL_FORCE_BINARY
+) {
   $null = Invoke-SmartInstallNpm
 }
 

@@ -103,13 +103,39 @@ smart_install_with_npm() {
     if [ -n "$NPM_CONFIG_PREFIX" ]; then
       NPM_GLOBAL_PREFIX="$NPM_CONFIG_PREFIX"
     fi
-    # `npm install -g` puts the umactually bin on PATH. If npm itself
-    # is missing or fails, fall through to the binary download rather
-    # than abort the install — the user gets a clear error either way.
-    if NPM_GLOBAL_PREFIX="$NPM_GLOBAL_PREFIX" npm install -g umactually 2>/dev/null; then
-      # PATH sanity check: if the install succeeded but the binary isn't
-      # reachable (e.g. NPM_CONFIG_PREFIX not on PATH), surface a hint
-      # rather than silently exit 0.
+    # Honor INSTALL_RELEASE_TAG (set by --tag flag) so a user can pin
+    # to a specific version. Without this, the smart-router always
+    # installs @latest, silently overriding the --tag flag for the
+    # npm path. Strip a leading 'v' from the tag because npm's
+    # version specifier syntax rejects the 'v' prefix.
+    NPM_PKG="umactually"
+    if [ -n "${INSTALL_RELEASE_TAG:-}" ]; then
+      _tag_for_npm=$(printf '%s' "$INSTALL_RELEASE_TAG" | sed 's/^v//')
+      NPM_PKG="umactually@${_tag_for_npm}"
+    fi
+    # Capture npm's stderr so we can surface a useful diagnostic on the
+    # fall-through path. Without this capture the user sees only the
+    # "npm install failed" line, which is unhelpful when the failure
+    # is "package not yet published to npm" (E404) vs. "permission
+    # denied writing to NPM_CONFIG_PREFIX/bin" (EACCES) — the two
+    # failure modes have completely different remediations.
+    _npm_err=$(mktemp -t umactually-npm.XXXXXX 2>/dev/null) || _npm_err=""
+    _npm_status=1
+    if [ -n "$_npm_err" ]; then
+      NPM_GLOBAL_PREFIX="$NPM_GLOBAL_PREFIX" npm install -g "$NPM_PKG" 2> "$_npm_err"
+      _npm_status=$?
+    else
+      # mktemp failed; fall back to capturing with a subshell redirect
+      # (we still get *some* stderr into the variable, just not atomically).
+      _npm_err_content=$(NPM_GLOBAL_PREFIX="$NPM_GLOBAL_PREFIX" npm install -g "$NPM_PKG" 2>&1 >/dev/null || true)
+      _npm_status=$?
+    fi
+    if [ "$_npm_status" -eq 0 ]; then
+      # PATH sanity check: npm says it succeeded, but if the binary
+      # isn't on PATH (e.g. NPM_CONFIG_PREFIX not exported) the user
+      # will think the install failed. Detect that here and surface
+      # the prefix in the hint so they can fix PATH without
+      # re-running the installer.
       if ! command -v umactually >/dev/null 2>&1; then
         printf "umactually: installed via npm, but 'umactually' is not on PATH.\n" >&2
         if [ -n "$NPM_GLOBAL_PREFIX" ]; then
@@ -118,19 +144,55 @@ smart_install_with_npm() {
           NPM_BIN_DIR="$(npm config get prefix 2>/dev/null)/bin"
           printf "umactually: add '%s' to your PATH and retry.\n" "$NPM_BIN_DIR" >&2
         fi
+        rm -f "$_npm_err" 2>/dev/null || true
         exit 1
       fi
+      rm -f "$_npm_err" 2>/dev/null || true
       printf "umactually: installed via npm. Run 'umactually --version' to verify.\n" >&2
       exit 0
     fi
-    printf "umactually: npm install failed, falling back to binary download\n" >&2
+    # Show the captured npm stderr in the fallback message so the user
+    # knows WHY npm failed (network, E404, EACCES, etc.). Trim to one
+    # line so a verbose npm error log doesn't drown the install banner.
+    _npm_err_tail=""
+    if [ -n "$_npm_err" ] && [ -f "$_npm_err" ]; then
+      _first_line=$(head -n 1 "$_npm_err" 2>/dev/null | tr -d '\r' || true)
+      if [ -n "$_first_line" ]; then
+        _npm_err_tail=" (${_first_line})"
+      fi
+      rm -f "$_npm_err" 2>/dev/null || true
+    elif [ -n "${_npm_err_content:-}" ]; then
+      _first_line=$(printf '%s' "$_npm_err_content" | head -n 1 | tr -d '\r' || true)
+      if [ -n "$_first_line" ]; then
+        _npm_err_tail=" (${_first_line})"
+      fi
+    fi
+    printf "umactually: npm install failed, falling back to binary download%s\n" "$_npm_err_tail" >&2
     return 1
   fi
   return 1
 }
 
 # Only run the smart-router if no test/force-binary override is set.
-if [ -z "$INSTALL_TEST_MODE" ] && [ -z "$INSTALL_FORCE_BINARY" ]; then
+#
+# Test bypasses (any of these short-circuit the smart-router so tests can
+# exercise the binary-download / archive / checksum paths in isolation):
+#   - INSTALL_TEST_MODE         — pure stub-binary fixture
+#   - INSTALL_TEST_ARCHIVE_MODE — real-archive fixture
+#   - INSTALL_TEST_TARBALL      — alternate archive fixture
+#   - INSTALL_TEST_CHECKSUMS    — alternate checksums fixture
+#   - INSTALL_TEST_FAKE_TAG     — pre-archive tag fixture
+#   - INSTALL_FORCE_BINARY      — operator opt-out
+# Without these guards, the smart-router makes a real `npm install -g
+# umactually` call in CI, hits E404 (package not yet published to npm),
+# and prints two error lines on stderr that contaminate every test that
+# asserts on the install-script's actual error output.
+if [ -z "$INSTALL_TEST_MODE" ] \
+  && [ -z "$INSTALL_TEST_ARCHIVE_MODE" ] \
+  && [ -z "$INSTALL_TEST_TARBALL" ] \
+  && [ -z "$INSTALL_TEST_CHECKSUMS" ] \
+  && [ -z "$INSTALL_TEST_FAKE_TAG" ] \
+  && [ -z "$INSTALL_FORCE_BINARY" ]; then
   # shellcheck disable=SC2317  # function is defined above and called below
   smart_install_with_npm || true
 fi

@@ -81,6 +81,16 @@ function installWith(checksums: string): { readonly status: number | null; reado
       FAKE_ASSET: ASSET_CONTENT,
       FAKE_CHECKSUMS: checksums,
       HOME: sandbox,
+      // INSTALL_FORCE_BINARY bypasses the smart-router (which would
+      // otherwise make a real `npm install -g umactually` call against
+      // the user's npm — that 404s because the package isn't
+      // published yet, and would pollute stderr with npm's error
+      // log on every test run). Unlike INSTALL_TEST_MODE=1, this
+      // does NOT short-circuit to the stub-binary path; the script
+      // continues into the real binary-download + checksum-verify
+      // flow with our fake `curl` serving the test's checksums +
+      // asset. This is what the test is exercising.
+      INSTALL_FORCE_BINARY: "1",
       PATH: `${fakeBin}${delimiter}${process.env["PATH"] ?? ""}`,
     },
   });

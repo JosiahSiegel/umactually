@@ -139,8 +139,22 @@ jobs:
           release/umactually-linux-x64 --version
           # Doctor runs the safety checks (env, deps, network). We expect
           # it to fail (no GitHub token, no LLM key) but not crash on
-          # launch — the SEA loader must succeed.
-          release/umactually-linux-x64 doctor || true
+          # launch — the SEA loader must succeed. Split the two checks
+          # so a `doctor` crash (exit != 0 from a loader fault) is
+          # reported separately from a `doctor` business-logic failure
+          # (exit != 0 from missing creds, which is expected in CI).
+          set +e
+          release/umactually-linux-x64 doctor >/dev/null 2>&1
+          _doctor_status=$?
+          set -e
+          if [ "$_doctor_status" -gt 1 ]; then
+            # Exit codes > 1 indicate a loader/process fault, NOT the
+            # expected "missing credentials" (exit 1) business failure.
+            echo "::error::SEA loader crash on doctor (exit=$_doctor_status)"
+            release/umactually-linux-x64 doctor || true
+            exit "$_doctor_status"
+          fi
+          echo "SEA loader OK (doctor exit=$_doctor_status is the expected missing-creds path)"
 
   # Comprehensive Windows + PowerShell coverage for every PR. Until
   # v0.6.0 this only ran on tag pushes (release.yml's

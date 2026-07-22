@@ -114,7 +114,7 @@ describe.skipIf(SKIP_FOR_OLD_NODE)("Node SEA build policy", () => {
     expect(result.stderr).toMatch(/Node version mismatch.*expected.*25/i);
   });
 
-  it("spawns tsdown with --config + --exe (single invocation for all 6 targets)", () => {
+  it("spawns tsdown with --config (single invocation for all 6 targets; config-driven)", () => {
     const result = runBuild(undefined);
     expect(result.status, result.stderr).toBe(0);
     expect(result.invocation, "harness was never invoked").toBeDefined();
@@ -122,7 +122,14 @@ describe.skipIf(SKIP_FOR_OLD_NODE)("Node SEA build policy", () => {
     const argv = result.invocation?.argv ?? [];
     expect(argv[0]).toBe("--config");
     expect(argv[1]).toBe(TSDOWN_CONFIG);
-    expect(argv).toContain("--exe");
+    // We intentionally do NOT pass `--exe` on the command line. The
+    // tsdown config (tsdown.config.ts) already declares
+    // `exe: { targets: [...], seaConfig: {...} }` as the source of
+    // truth, and tsdown's defu() merge collapses `true` and the
+    // object form in surprising ways (loses per-target settings).
+    // Adding `--exe` here is a known footgun, so we rely on the
+    // config and assert the absence.
+    expect(argv).not.toContain("--exe");
     // No per-target CLI flags: targets are config-driven.
     expect(argv).not.toContain("--exe.fileName");
     expect(argv).not.toContain("--exe.targets");

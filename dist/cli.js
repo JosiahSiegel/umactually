@@ -17820,43 +17820,16 @@ function isVersionFlag(argv) {
 function runVersion(_argv) {
     const version = readPackageVersion();
     const stdout = `${version}\n`;
-    // Belt-and-suspenders for the SEA-binary "exit 0 but empty stdout"
-    // regression caught by the release-pipeline-dry-run CI job.
-    //
-    // Two write paths:
-    //   1. process.stdout.write — the standard stream interface. The
-    //      test suite (cli-version.test.ts) mocks this and asserts the
-    //      exact bytes emitted, so the test sees `0.6.0\n` in its
-    //      captured stdout. In Node's normal pipe path this is
-    //      synchronous for small writes (a few bytes) and the data
-    //      reaches the kernel pipe buffer before runVersion returns.
-    //   2. fs.writeFileSync(process.stdout.fd, stdout) — synchronous
-    //      write that bypasses the stream layer entirely. Under a
-    //      Node SEA binary the stream's async drain can race with
-    //      the auto-invoke's process.exitCode path: main() resolves,
-    //      the .then() sets process.exitCode, and Node exits before
-    //      the stream-buffered write is drained, leaving the parent
-    //      shell's `$(...)` capture empty. The fd-level sync write
-    //      commits the bytes to the kernel pipe buffer before
-    //      runVersion returns, so the captured output is never lost.
-    //
-    // The try/catch on the fd write is there because some test
-    // sandboxes and TUI harnesses expose a stdout fd that the
-    // runtime refuses to write to (e.g. when the test runner has
-    // redirected fd=1 to a closed pipe). In that path the stream
-    // write alone carries the data and the test's mock captures it.
-    // In production the fd write always succeeds and is the load-
-    // bearing path; the stream write is essentially a no-op for the
-    // user (it goes to the same fd, but the fd write already
-    // committed the bytes).
+    // Single write path: process.stdout.write. The test suite
+    // (cli-version.test.ts) mocks this and asserts the exact bytes
+    // emitted, so the test sees `0.6.0\n` in its captured stdout. In
+    // Node's normal pipe path this is synchronous for small writes (a few
+    // bytes) and the data reaches the kernel pipe buffer before
+    // runVersion returns. Under a Node SEA binary the auto-invoke path
+    // sets process.exitCode (not process.exit) so the stream's async
+    // drain is allowed to complete before the process exits, leaving
+    // the parent shell's `$(...)` capture non-empty.
     process.stdout.write(stdout);
-    try {
-        (0,external_node_fs_namespaceObject.writeFileSync)(process.stdout.fd, stdout);
-    }
-    catch {
-        // fd-based write unavailable (sandboxed test harness, TUI
-        // wrapper, etc.); rely on the stream write alone.
-    }
     return { exitCode: 0, stdout };
 }
 function buildSanitizedResolvedConfig(resolved) {

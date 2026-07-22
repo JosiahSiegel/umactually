@@ -49,16 +49,23 @@ const bunMajor = parseMajor(process.versions.bun);
 const bunMinor = parseMinor(process.versions.bun);
 const bunIsLive = Number.isFinite(bunMajor);
 // Bun's version scheme is 1.x.y — accept it when major >= MIN_BUN_MAJOR
-// AND (major > MIN_BUN_MAJOR || minor >= MIN_BUN_MINOR). This avoids
-// the v0.6.0 regression where Bun 1.1 was accepted as if it were
-// Node 24+ (the previous code compared bunMajor >= 24, which was
-// always false and therefore silently fell back to Node — the right
-// behavior for wrong reasons).
+// AND (major > MIN_BUN_MAJOR || minor >= MIN_BUN_MINOR). The expression
+// MUST wrap the right-hand disjunction in parentheses: `&&` binds
+// tighter than `||`, so without them the previous code parsed as
+// `(bunIsLive && bunMajor > MIN_BUN_MAJOR) || (bunIsLive && ...)`,
+// which is logically equivalent here but reads as a precedence trap.
+// The explicit grouping also makes the next line (useBun) read naturally.
 const bunMeetsThreshold =
   bunIsLive &&
-  bunMajor > MIN_BUN_MAJOR ||
-  (bunIsLive && bunMajor === MIN_BUN_MAJOR && bunMinor >= MIN_BUN_MINOR);
-const useBun = bunMeetsThreshold;
+  (bunMajor > MIN_BUN_MAJOR ||
+    (bunMajor === MIN_BUN_MAJOR && bunMinor >= MIN_BUN_MINOR));
+// Prefer Node when it meets the Node threshold — Node is the documented
+// primary runtime, and the test suite + GitHub Actions runner both run
+// under it. Only fall through to Bun when Node is absent or below
+// threshold. (Node-only environments leave bunIsLive false, so bunMeetsThreshold
+// is false there and useBun correctly stays false.)
+const nodeMeetsThreshold = Number.isFinite(nodeMajor) && nodeMajor >= MIN_RUNTIME_MAJOR;
+const useBun = !nodeMeetsThreshold && bunMeetsThreshold;
 const runtimeMajor = useBun ? bunMajor : nodeMajor;
 const runtimeLabel = useBun
   ? `Bun ${process.versions.bun}`
