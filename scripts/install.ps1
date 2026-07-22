@@ -78,17 +78,36 @@ if ($env:INSTALL_SSL_NO_REVOKE -eq '1') {
   # users (the only runtime where the setting actually takes effect)
   # do not see a false-positive warning.
   $isPsCore = ($PSVersionTable.PSEdition -eq 'Core') -or ($PSVersionTable.Platform -eq 'Unix')
-  # Stream-routing caveat: Write-Warning's output stream depends on
-  # the host. On Linux PS Core it lands on stdout, on Windows PS 5.1
-  # on stderr, on Windows PS Core 7+ on the information stream
-  # (which Node.js's spawnSync does NOT capture). We also write to
-  # stderr directly via [Console]::Error.WriteLine so the message
-  # lands in a single, predictable stream regardless of host. The
-  # Write-Warning call stays for the interactive terminal case
-  # (where the yellow WARNING: prefix is helpful).
+  # Stream-routing caveat: PowerShell's user-facing stream surface
+  # is host-dependent. Write-Warning on Linux PS Core 7+ lands on
+  # stdout, on Windows PS 5.1 on stderr, on Windows PS Core 7+ on
+  # the information stream (which Node.js's spawnSync does NOT
+  # capture in either stdout or stderr). [Console]::Error.WriteLine
+  # on Windows PS Core 7+ in non-interactive script context can
+  # also be lost if the host routes Console.Error away from fd 2
+  # (observed in CI windows + PowerShell job). To guarantee the
+  # warning is observable both by a real user and by the test
+  # harness regardless of host, we:
+  #   1. Write the message to the warning stream (interactive
+  #      terminal: yellow WARNING: prefix).
+  #   2. Write to [Console]::Error (best-effort stderr on most hosts).
+  #   3. Append to a marker file at
+  #      $env:INSTALL_SSL_NO_REVOKE_WARNING_FILE if set (test seam:
+  #      the install-archives-powershell test points this at a
+  #      tmpfile in its sandbox and reads the file to assert the
+  #      warning fired, host-agnostic).
   function _emitSslNoRevokeWarning([string]$message) {
     [Console]::Error.WriteLine($message)
     Write-Warning $message
+    if ($env:INSTALL_SSL_NO_REVOKE_WARNING_FILE) {
+      try {
+        Add-Content -LiteralPath $env:INSTALL_SSL_NO_REVOKE_WARNING_FILE -Value $message -ErrorAction SilentlyContinue
+      } catch {
+        # Test-seam write is best-effort. We do not let a
+        # filesystem error here change the install behavior —
+        # the warning is already on the user-facing streams.
+      }
+    }
   }
   try {
     [System.Net.ServicePointManager]::CheckCertificateRevocationList = $false

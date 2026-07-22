@@ -681,53 +681,68 @@ describe.skipIf(!PS_AVAILABLE)("install.ps1 8-case override matrix", () => {
     // broken. We emit a Write-Warning (visible by default) telling
     // them to use install.sh instead.
     //
-    // This test runs install.ps1 with INSTALL_SSL_NO_REVOKE=1 under
-    // the test harness's pwsh (which is whatever the local env
-    // exposes). On PS Core the warning MUST appear; on PS 5.1 the
-    // warning must NOT appear (the bypass actually works there).
-    //
-    // Stream-routing caveat: PowerShell Core on Linux/Unix writes
-    // Write-Warning to the inherited-host output stream, which
-    // Node.js's spawnSync surfaces as STDOUT. Windows PowerShell
-    // 5.1 routes Write-Warning to the host's warning stream
-    // (captured as STDERR by Node). We branch on $PSEdition and
-    // check the appropriate stream for each runtime.
+    // We assert on a marker FILE (not on stdout/stderr) because
+    // PowerShell's user-facing stream surface is host-dependent:
+    //   - Linux PS Core 7+  -> Write-Warning on stdout
+    //   - Windows PS 5.1    -> Write-Warning on stderr
+    //   - Windows PS Core 7+ -> Write-Warning on the information
+    //     stream (which Node.js's spawnSync does NOT capture in
+    //     either stdout or stderr)
+    // The script appends the warning text to
+    // $env:INSTALL_SSL_NO_REVOKE_WARNING_FILE when that env var
+    // is set, so the test can read the file regardless of which
+    // host stream the warning happens to land on. This is the
+    // same pattern used by the install-fixture marker files in
+    // this file's existing test suite.
+    const warningFile = join(installDir, "..", "..", "ssl-no-revoke-warning.log");
     const result = runInstall(
       {
         INSTALL_TEST_MODE: "1",
         INSTALL_SSL_NO_REVOKE: "1",
+        INSTALL_SSL_NO_REVOKE_WARNING_FILE: warningFile,
         USERPROFILE: join(installDir, "..", ".."),
       },
       [],
     );
     // The TEST_MODE 1 path exits 0 whether or not the warning fires
     // (the warning is advisory, not fatal). We don't assert on
-    // status here — only on the warning's presence/absence.
+    // status here — only on the warning's presence/absence via
+    // the marker file.
+    expect(result.status, `stderr:\n${result.stderr}`).toBe(0);
     const psEdition = execFileSync(
       "pwsh",
       ["-NoProfile", "-Command", "$PSVersionTable.PSEdition"],
       { stdio: "pipe" },
     ).toString().trim();
     if (psEdition === "Core") {
-      // On PS Core, Write-Warning routes to stdout (per the
-      // Linux/Unix host stream). Combine both streams for the
-      // assertion so the test is robust to either routing.
-      const combined = `${result.stdout}\n${result.stderr}`;
+      // On PowerShell Core (any platform: Linux, macOS, or
+      // Windows PS 7+), the warning MUST fire because
+      // Invoke-WebRequest routes through HttpClient and ignores
+      // ServicePointManager. The marker file is the host-agnostic
+      // observable.
+      const warningText = readFileSync(warningFile, "utf8");
       expect(
-        combined,
-        `expected a visible --ssl-no-revoke warning on PS Core; got: ${combined}`,
+        warningText,
+        `expected a visible --ssl-no-revoke warning on PS Core; marker file was empty or missing`,
       ).toMatch(/--ssl-no-revoke/i);
-      expect(combined).toMatch(/HttpClient|ServicePointManager/i);
-      expect(combined).toMatch(/install\.sh/i);
+      expect(warningText).toMatch(/HttpClient|ServicePointManager/i);
+      expect(warningText).toMatch(/install\.sh/i);
     } else {
       // Windows PowerShell 5.1 (Desktop edition). The warning must
-      // NOT appear — the bypass actually works there, and a false
-      // warning would be a regression. Combine streams for the
-      // same reason as above.
-      const combined = `${result.stdout}\n${result.stderr}`;
+      // NOT fire — the bypass actually works there, and a false
+      // warning would be a regression. We still set the marker
+      // file path (the script only writes to it from the warning
+      // path) so we can check the file is empty.
+      let warningText = "";
+      try {
+        warningText = readFileSync(warningFile, "utf8");
+      } catch {
+        // File not existing is the expected PS 5.1 outcome.
+        warningText = "";
+      }
       expect(
-        combined,
-        `expected NO --ssl-no-revoke warning on PS 5.1 (Desktop); got: ${combined}`,
+        warningText,
+        `expected NO --ssl-no-revoke warning on PS 5.1 (Desktop); got marker: ${warningText}`,
       ).not.toMatch(/--ssl-no-revoke.*HttpClient/s);
     }
   });
