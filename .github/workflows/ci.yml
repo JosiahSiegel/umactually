@@ -221,7 +221,15 @@ jobs:
         shell: powershell
         run: |
           $ErrorActionPreference = "Stop"
-          $out = powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts\install.ps1 -h 2>&1
+          # Capture stdout AND stderr to a single string with
+          # Out-String. The naive `$out = ... 2>&1` produces an
+          # array (one entry per line), and `$out -notmatch '...'`
+          # on an array returns an array of booleans, which `if`
+          # treats as truthy as long as the array is non-empty —
+          # so the negative assertion silently passed even when no
+          # line matched. Out-String collapses to one string and
+          # -notmatch returns a single boolean.
+          $out = (powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts\install.ps1 -h 2>&1) | Out-String
           if ($LASTEXITCODE -ne 0) { throw "install.ps1 -h exited $LASTEXITCODE" }
           if ($out -notmatch 'Usage|usage|umactually') { throw "install.ps1 -h output did not contain 'umactually': $out" }
           Write-Output "OK: install.ps1 -h returned a usage block"
@@ -233,7 +241,7 @@ jobs:
         shell: pwsh
         run: |
           $ErrorActionPreference = "Stop"
-          $out = & pwsh -NoProfile -NonInteractive -File scripts/install.ps1 -h 2>&1
+          $out = (& pwsh -NoProfile -NonInteractive -File scripts/install.ps1 -h 2>&1) | Out-String
           if ($LASTEXITCODE -ne 0) { throw "install.ps1 -h via pwsh exited $LASTEXITCODE" }
           if ($out -notmatch 'Usage|usage|umactually') { throw "install.ps1 -h via pwsh output did not contain 'umactually': $out" }
           Write-Output "OK: install.ps1 -h via pwsh returned a usage block"
