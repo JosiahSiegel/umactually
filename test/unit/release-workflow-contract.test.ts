@@ -153,7 +153,6 @@ const ARCHIVE_BASENAMES: readonly string[] = MANIFEST.map((m) => m.archiveName);
 const RAW_BASENAMES: readonly string[] = [
   "umactually-linux-x64",
   "umactually-linux-arm64",
-  "umactually-darwin-x64",
   "umactually-darwin-arm64",
   "umactually-windows-x64.exe",
   "umactually-windows-arm64.exe",
@@ -169,10 +168,10 @@ const PUBLIC_BASENAMES: readonly string[] = [...ARCHIVE_BASENAMES, "checksums.tx
 
 type Violation = { readonly rule: string; readonly source: string; readonly detail: string };
 
+// darwin-x64 dropped in v0.6.0 — macos-15-intel no longer required
 const REQUIRED_NATIVE_RUNNERS = [
   "ubuntu-24.04",
   "ubuntu-24.04-arm",
-  "macos-15-intel",
   "macos-15",
   "windows-2025",
 ] as const;
@@ -1194,7 +1193,6 @@ describe("Release workflow contract — RED against current workflow (Todo 9 fix
     const nativeIds = [
       "smoke-linux-x64",
       "smoke-linux-arm64",
-      "smoke-darwin-x64",
       "smoke-darwin-arm64",
       "smoke-windows-x64",
     ] as const;
@@ -1250,7 +1248,6 @@ describe("Release workflow contract — RED against current workflow (Todo 9 fix
       "build-package",
       "smoke-linux-x64",
       "smoke-linux-arm64",
-      "smoke-darwin-x64",
       "smoke-darwin-arm64",
       "smoke-windows-x64",
       "smoke-windows-x64-git-bash-delegate",
@@ -1493,18 +1490,6 @@ jobs:
           path: candidate
       - name: Smoke (--version)
         run: ./candidate/umactually-linux-arm64 --version
-  smoke-darwin-x64:
-    name: macOS x64 smoke
-    needs: build-package
-    runs-on: macos-15-intel
-    steps:
-      - name: Download candidate
-        uses: actions/download-artifact@v4
-        with:
-          name: umactually-release-candidate
-          path: candidate
-      - name: Smoke (--version)
-        run: ./candidate/umactually-darwin-x64 --version
   smoke-darwin-arm64:
     name: macOS ARM64 smoke
     needs: build-package
@@ -1562,7 +1547,6 @@ jobs:
     needs:
       - smoke-linux-x64
       - smoke-linux-arm64
-      - smoke-darwin-x64
       - smoke-darwin-arm64
       - smoke-windows-x64
       - smoke-windows-arm64-structural
@@ -1592,7 +1576,6 @@ jobs:
             --draft \\
             public/umactually-linux-x64.tar.gz \\
             public/umactually-linux-arm64.tar.gz \\
-            public/umactually-darwin-x64.tar.gz \\
             public/umactually-darwin-arm64.tar.gz \\
             public/umactually-windows-x64.zip \\
             public/umactually-windows-arm64.zip \\

@@ -177,7 +177,7 @@ log "  size report: ${SIZE_REPORT} ($(wc -c < "${SIZE_REPORT}") bytes)"
 # Use the same staging script the release-pipeline uses (lifted out
 # from release.yml's inline node -e block into scripts/ so the
 # bash-JSON-quoting tension goes away). After stage, public/ contains
-# the 6 archives + checksums.txt, internal/raw/ contains the 6 raws,
+# the 5 archives + checksums.txt, internal/raw/ contains the 5 raws,
 # and internal/release-size-report.json is left in place.
 log "7/9  stage: split release/ into public/<archives>+checksums.txt and internal/raw/<binaries>"
 node scripts/stage-release-assets.mjs \
@@ -187,8 +187,8 @@ node scripts/stage-release-assets.mjs \
 test -d "${PUBLIC_DIR}"
 test -d "${RAW_DIR}"
 ARCHIVE_COUNT=$(ls -1 "${PUBLIC_DIR}" | wc -l | tr -d '[:space:]')
-if [[ "${ARCHIVE_COUNT}" != "7" ]]; then
-  fail "expected 7 files in ${PUBLIC_DIR}, got ${ARCHIVE_COUNT}: $(ls -1 "${PUBLIC_DIR}")"
+if [[ "${ARCHIVE_COUNT}" != "6" ]]; then
+  fail "expected 6 files in ${PUBLIC_DIR} (5 archives + checksums.txt), got ${ARCHIVE_COUNT}: $(ls -1 "${PUBLIC_DIR}")"
 fi
 log "  public/: $(ls -1 "${PUBLIC_DIR}" | tr '\n' ' ')"
 

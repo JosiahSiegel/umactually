@@ -19,7 +19,7 @@
 // action.
 //
 // Hotfix #3 (this commit): seven smoke jobs (`smoke-linux-x64`,
-// `smoke-linux-arm64`, `smoke-darwin-x64`, `smoke-darwin-arm64`,
+// `smoke-linux-arm64`, `smoke-darwin-arm64`,
 // `smoke-windows-x64`, `smoke-windows-x64-git-bash-delegate`,
 // `smoke-bad-checksum`) called `gh api "repos/.../actions/artifacts/.../zip"`
 // in their `Download exact candidate artifact` step but did NOT set
@@ -1138,7 +1138,7 @@ describe("release hotfix 10 — manifest field selectors in release.yml", () => 
     // Sanity: the on-disk manifest must be indexable. Without this
     // pre-condition, the selectors below can't validate anything.
     const targets = readTargetsManifest();
-    expect(targets.length).toBeGreaterThanOrEqual(6);
+    expect(targets.length).toBeGreaterThanOrEqual(5);
     for (const t of targets) {
       expect(typeof t.id).toBe("string");
       expect(t.id.length).toBeGreaterThan(0);

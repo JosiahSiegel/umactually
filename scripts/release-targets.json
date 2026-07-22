@@ -16,14 +16,6 @@
     "installedName": "umactually"
   },
   {
-    "id": "darwin-x64",
-    "rawName": "umactually-darwin-x64",
-    "archiveName": "umactually-darwin-x64.tar.gz",
-    "archiveType": "tar.gz",
-    "memberName": "umactually-darwin-x64",
-    "installedName": "umactually"
-  },
-  {
     "id": "darwin-arm64",
     "rawName": "umactually-darwin-arm64",
     "archiveName": "umactually-darwin-arm64.tar.gz",

@@ -37,7 +37,6 @@ export type Target = Readonly<{
 export const TARGETS: ReadonlyArray<Target> = [
   { id: "linux-x64",      rawName: "umactually-linux-x64",        archiveName: "umactually-linux-x64.tar.gz",      memberName: "umactually-linux-x64",        installedName: "umactually",     archiveType: "tar.gz" },
   { id: "linux-arm64",    rawName: "umactually-linux-arm64",      archiveName: "umactually-linux-arm64.tar.gz",    memberName: "umactually-linux-arm64",      installedName: "umactually",     archiveType: "tar.gz" },
-  { id: "darwin-x64",     rawName: "umactually-darwin-x64",       archiveName: "umactually-darwin-x64.tar.gz",     memberName: "umactually-darwin-x64",       installedName: "umactually",     archiveType: "tar.gz" },
   { id: "darwin-arm64",   rawName: "umactually-darwin-arm64",     archiveName: "umactually-darwin-arm64.tar.gz",   memberName: "umactually-darwin-arm64",     installedName: "umactually",     archiveType: "tar.gz" },
   { id: "windows-x64",    rawName: "umactually-windows-x64.exe",  archiveName: "umactually-windows-x64.zip",      memberName: "umactually-windows-x64.exe",  installedName: "umactually.exe", archiveType: "zip" },
   { id: "windows-arm64",  rawName: "umactually-windows-arm64.exe",archiveName: "umactually-windows-arm64.zip",    memberName: "umactually-windows-arm64.exe",installedName: "umactually.exe", archiveType: "zip" },

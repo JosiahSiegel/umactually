@@ -52,8 +52,8 @@ let server: FixtureHandle | null = null;
 
 async function seedServer(tag = "v0.5.0"): Promise<FixtureHandle> {
   // Reuse the same shape as install-checksum: one real archive for linux-x64,
-  // five placeholder archives for the others, checksum file for all six
-  // archive-mode entries.
+  // four placeholder archives for the others, checksum file for all five
+  // archive-mode entries (darwin-x64 was dropped in v0.6.0).
   mkdirSync(releaseDir, { recursive: true });
   const archive = buildArchive(LINUX_X64, ASSET_PAYLOAD);
   writeFileSync(join(releaseDir, LINUX_X64.archiveName), archive.bytes);
