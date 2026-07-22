@@ -142,6 +142,81 @@ jobs:
           # launch — the SEA loader must succeed.
           release/umactually-linux-x64 doctor || true
 
+  # Comprehensive Windows + PowerShell coverage for every PR. Until
+  # v0.6.0 this only ran on tag pushes (release.yml's
+  # smoke-windows-x64 + smoke-windows-arm64-structural +
+  # smoke-windows-x64-git-bash-delegate), so install.ps1 regressions
+  # could land on main unnoticed. v0.6.0 promotes it to a PR gate.
+  #
+  # The job runs the full unit suite on windows-latest so the install
+  # tests (test/unit/install-*.test.ts, including install-smart-router
+  # which exercises install.ps1's smart-router via real PowerShell)
+  # plus the rest of the test surface are exercised on real Windows
+  # before merge. Windows PowerShell 5.1 is the default shell on
+  # windows-latest; pwsh is also pre-installed for the
+  # install-smart-router test (which spawns pwsh via spawnSync).
+  ci-windows:
+    name: ci (windows + PowerShell)
+    runs-on: windows-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "24.18.0"
+          cache: "npm"
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Typecheck
+        run: npm run typecheck
+
+      # Run the install suite (install-smart-router, install-archives-powershell,
+      # install-scripts-powershell, install-methods, install-checksum, etc.)
+      # PLUS the structural / contract tests that the release pipeline trusts
+      # but the PR lane didn't. This is the core PowerShell coverage; the
+      # release.yml smoke jobs (smoke-windows-x64, smoke-windows-arm64-structural)
+      # are still required to verify the actual binary on real Windows runners.
+      - name: Run install + PowerShell unit tests
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          npx vitest run --reporter=basic `
+            test/unit/install-smart-router.test.ts `
+            test/unit/install-archives-powershell.test.ts `
+            test/unit/install-scripts-powershell.test.ts `
+            test/unit/install-methods.test.ts `
+            test/unit/install-checksum.test.ts `
+            test/unit/install-archives-posix.test.ts `
+            test/unit/install-scripts-posix.test.ts
+
+      # Sanity check: install.ps1 --help should run cleanly (the script's
+      # own self-test under Windows PowerShell 5.1). This catches the
+      # "script doesn't even parse" class of regression in PR time.
+      - name: install.ps1 --help smoke (Windows PowerShell 5.1)
+        shell: powershell
+        run: |
+          $ErrorActionPreference = "Stop"
+          $out = powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts\install.ps1 -h 2>&1
+          if ($LASTEXITCODE -ne 0) { throw "install.ps1 -h exited $LASTEXITCODE" }
+          if ($out -notmatch 'Usage|usage|umactually') { throw "install.ps1 -h output did not contain 'umactually': $out" }
+          Write-Output "OK: install.ps1 -h returned a usage block"
+
+      # Sanity check: pwsh on the runner can launch install.ps1 the same
+      # way the unit tests do. Catches the "pwsh path differs on this
+      # image" class of issue.
+      - name: install.ps1 --help smoke (pwsh)
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $out = & pwsh -NoProfile -NonInteractive -File scripts/install.ps1 -h 2>&1
+          if ($LASTEXITCODE -ne 0) { throw "install.ps1 -h via pwsh exited $LASTEXITCODE" }
+          if ($out -notmatch 'Usage|usage|umactually') { throw "install.ps1 -h via pwsh output did not contain 'umactually': $out" }
+          Write-Output "OK: install.ps1 -h via pwsh returned a usage block"
+
   release-pipeline-dry-run:
     name: release pipeline dry-run
     runs-on: ubuntu-latest
