@@ -26,7 +26,7 @@
     "platform": null
   },
   "secretsDetected": {
-    "apiKey": false,
+    "apiKey": true,
     "sonarToken": false,
     "githubToken": false,
     "azureToken": false

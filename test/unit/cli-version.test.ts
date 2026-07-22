@@ -106,4 +106,45 @@ describe("CLI version handler (M2)", () => {
     expect(stdout).toBe(`${packageVersion}\n`);
     expect(existsSync(autoContextDirectory)).toBe(false);
   });
+
+  it("falls back to process.stdout.write when writeFileSync throws EBADF (no kernel fd for stdout)", async () => {
+    // Spy on process.stdout.write AND mock writeFileSync to throw an
+    // EBADF error. The runVersion catch block should narrow on the
+    // EBADF family and fall through to process.stdout.write. We
+    // construct a Buffer to match the canonical-path call.
+    let fallbackBuffer = "";
+    const stdoutSpy = vi
+      .spyOn(process.stdout, "write")
+      .mockImplementation((chunk) => {
+        fallbackBuffer += String(chunk);
+        return true;
+      });
+    vi.doMock("node:fs", async () => {
+      const actual = await vi.importActual<typeof import("node:fs")>("node:fs");
+      return {
+        ...actual,
+        writeFileSync: ((
+          _fd: number | import("node:fs/promises").FileHandle,
+          _data: string | NodeJS.ArrayBufferView,
+          ..._rest: unknown[]
+        ): void => {
+          const err = new Error("bad file descriptor") as NodeJS.ErrnoException;
+          err.code = "EBADF";
+          throw err;
+        }) as typeof actual.writeFileSync,
+      };
+    });
+    vi.resetModules();
+    let localMain: typeof import("../../src/cli.js")["main"];
+    ({ main: localMain } = await import("../../src/cli.js"));
+    try {
+      const result = await localMain(["--version"]);
+      expect(result).toBe(0);
+      expect(fallbackBuffer).toBe(`${packageVersion}\n`);
+    } finally {
+      stdoutSpy.mockRestore();
+      vi.doUnmock("node:fs");
+      vi.resetModules();
+    }
+  });
 });
