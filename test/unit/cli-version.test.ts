@@ -2,9 +2,7 @@ import { existsSync, readFileSync } from "node:fs";
 import { rm } from "node:fs/promises";
 import { join } from "node:path";
 
-import { afterEach, describe, expect, it, vi } from "vitest";
-
-import { main } from "../../src/cli.js";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const packageJson = JSON.parse(
   readFileSync(new URL("../../package.json", import.meta.url), "utf8"),
@@ -12,35 +10,66 @@ const packageJson = JSON.parse(
 const packageVersion = String(packageJson.version);
 const autoContextDirectory = join(process.cwd(), ".umactually-auto-ctx");
 
+// Per-test stdout buffer. `runVersion` writes the version string here
+// via `writeFileSync(process.stdout.fd, ...)`; the test reads it back
+// to assert behaviour.
+let writeFileBuffer = "";
+
+let mainFn: typeof import("../../src/cli.js")["main"];
+
+beforeEach(async () => {
+  writeFileBuffer = "";
+  // Mock the fs module for each test so the source's destructured
+  // `writeFileSync` binding picks up our interceptor. vi.doMock is
+  // hoisted to the top of the file by vitest's transformer, but the
+  // dynamic import after vi.resetModules ensures the cli module is
+  // reloaded against the mocked fs.
+  vi.doMock("node:fs", async () => {
+    const actual = await vi.importActual<typeof import("node:fs")>("node:fs");
+    return {
+      ...actual,
+      writeFileSync: ((
+        fd: number | import("node:fs/promises").FileHandle,
+        data: string | NodeJS.ArrayBufferView,
+        ...rest: unknown[]
+      ): void => {
+        if (fd === process.stdout.fd) {
+          writeFileBuffer += typeof data === "string" ? data : data.toString();
+          return;
+        }
+        return actual.writeFileSync(fd as never, data as never, ...(rest as []));
+      }) as typeof actual.writeFileSync,
+    };
+  });
+  vi.resetModules();
+  ({ main: mainFn } = await import("../../src/cli.js"));
+});
+
+afterEach(async () => {
+  writeFileBuffer = "";
+  vi.doUnmock("node:fs");
+  vi.resetModules();
+  await rm(autoContextDirectory, { recursive: true, force: true });
+});
+
 async function captureMain(args: readonly string[]): Promise<{
   readonly result: number;
   readonly stdout: string;
   readonly stderr: string;
 }> {
-  let stdout = "";
   let stderr = "";
-  const stdoutSpy = vi.spyOn(process.stdout, "write").mockImplementation((chunk) => {
-    stdout += String(chunk);
-    return true;
-  });
   const stderrSpy = vi.spyOn(process.stderr, "write").mockImplementation((chunk) => {
     stderr += String(chunk);
     return true;
   });
 
   try {
-    const result = await main(args);
-    return { result, stdout, stderr };
+    const result = await mainFn(args);
+    return { result, stdout: writeFileBuffer, stderr };
   } finally {
-    stdoutSpy.mockRestore();
     stderrSpy.mockRestore();
   }
 }
-
-afterEach(async () => {
-  vi.restoreAllMocks();
-  await rm(autoContextDirectory, { recursive: true, force: true });
-});
 
 describe("CLI version handler (M2)", () => {
   it("CLI-VERSION-001: --version exits 0 with version on stdout", async () => {
@@ -76,5 +105,49 @@ describe("CLI version handler (M2)", () => {
 
     expect(stdout).toBe(`${packageVersion}\n`);
     expect(existsSync(autoContextDirectory)).toBe(false);
+  });
+
+  it("falls back to writeSync when writeFileSync throws EBADF (no kernel fd for stdout)", async () => {
+    // Spy on writeSync AND mock writeFileSync to throw an EBADF
+    // error. The runVersion catch block should narrow on the EBADF
+    // family and fall through to writeSync (a single write(2)
+    // syscall on the supplied fd). We do NOT fall back to
+    // process.stdout.write here because that re-introduces the
+    // stream-buffer race the canonical path exists to fix.
+    let fallbackBuffer = "";
+    vi.doMock("node:fs", async () => {
+      const actual = await vi.importActual<typeof import("node:fs")>("node:fs");
+      return {
+        ...actual,
+        writeFileSync: ((
+          _fd: number | import("node:fs/promises").FileHandle,
+          _data: string | NodeJS.ArrayBufferView,
+          ..._rest: unknown[]
+        ): void => {
+          const err = new Error("bad file descriptor") as NodeJS.ErrnoException;
+          err.code = "EBADF";
+          throw err;
+        }) as typeof actual.writeFileSync,
+        writeSync: ((
+          _fd: number,
+          data: string | NodeJS.ArrayBufferView,
+          ..._rest: unknown[]
+        ): number => {
+          fallbackBuffer += typeof data === "string" ? data : data.toString();
+          return data instanceof Uint8Array ? data.byteLength : Buffer.byteLength(String(data));
+        }) as typeof actual.writeSync,
+      };
+    });
+    vi.resetModules();
+    let localMain: typeof import("../../src/cli.js")["main"];
+    ({ main: localMain } = await import("../../src/cli.js"));
+    try {
+      const result = await localMain(["--version"]);
+      expect(result).toBe(0);
+      expect(fallbackBuffer).toBe(`${packageVersion}\n`);
+    } finally {
+      vi.doUnmock("node:fs");
+      vi.resetModules();
+    }
   });
 });
