@@ -50,6 +50,17 @@ const SCENARIOS = {
       "--event", FIXTURE_EVENT_GH,
       "--diff", FIXTURE_DIFF_GH,
       "--review", FIXTURE_REVIEW_GH,
+      // The fixture diff (test/fixtures/github/full-pr.diff)
+      // intentionally contains a string that matches the leak
+      // detector's `sk-*` regex (a synthetic test secret used to
+      // exercise the S5 redaction path). S1 is not testing leak
+      // detection — it tests the GitHub review posting path —
+      // so we pass --no-detect-leaks to suppress the
+      // "Refusing to post" ::error annotation that the S5-style
+      // fixture would otherwise trigger on every PR. The S5
+      // scenario below still exercises the full
+      // detect-leaks-and-refuse path.
+      "--no-detect-leaks",
       "--output-artifact", `${ARTIFACT_DIR}/s1-github-self-review.md`,
       "--dry-run",
     ],
@@ -64,6 +75,9 @@ const SCENARIOS = {
       "--review", FIXTURE_REVIEW_GH,
       "--pr-number", FIXTURE_PR_NUMBER_AZ,
       "--repo", FIXTURE_REPO_AZ,
+      // See S1's --no-detect-leaks comment. S4 tests Azure
+      // DevOps review posting, not leak detection.
+      "--no-detect-leaks",
       "--output-artifact", `${ARTIFACT_DIR}/s4-azure-mocked-run.json`,
       "--dry-run",
     ],
@@ -75,6 +89,12 @@ const SCENARIOS = {
       "--event", FIXTURE_EVENT_GH,
       "--diff", FIXTURE_DIFF_GH,
       "--review", FIXTURE_REVIEW_GH,
+      // S5 is the only scenario that intentionally enables leak
+      // detection. It verifies the CLI's refuse-to-post behavior
+      // when a high-confidence secret pattern is present in the
+      // diff. The fixture value (sk_test_synthetic_fixture_*
+      // ) is the test secret under test — it is NOT a real
+      // credential and never leaves the runner.
       "--detect-leaks",
       "--output-artifact", `${ARTIFACT_DIR}/s5-redaction-report.json`,
       "--dry-run",
@@ -91,6 +111,9 @@ const SCENARIOS = {
       "--sonar-host-url", "https://sonar.example.test",
       "--sonar-token", "synthetic",
       "--sonar-project-key", "synthetic",
+      // See S1's --no-detect-leaks comment. S6 tests SonarQube
+      // integration, not leak detection.
+      "--no-detect-leaks",
       "--output-artifact", `${ARTIFACT_DIR}/s6-sonar-mocked-run.json`,
       "--dry-run",
     ],
