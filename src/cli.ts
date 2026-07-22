@@ -38,11 +38,21 @@ export { parseCliArgs, CliUsageError };
  * Bun's virtual `/$bunfs/` and no real `package.json` exists. The
  * binary is compiled with `--define UMACTUALLY_VERSION='"<version>"'`
  * so the version is embedded at compile time.
+ *
+ * The v0.6.0 distribution pipeline uses tsdown + Node SEA instead of
+ * Bun --compile, but the substitution mechanism is the same: tsdown's
+ * `define` config (see tsdown.config.ts) maps `UMACTUALLY_VERSION` to
+ * the package version JSON, and rolldown replaces the bare identifier
+ * at bundle time. The bare-reference check below is therefore the
+ * single source of truth — both the Bun --define path and the
+ * tsdown `define` path land at this same typeof check.
  */
 function readPackageVersion(): string {
-  // Bun --compile injects this via --define. The bare identifier is
-  // replaced at compile time — using globalThis["UMACTUALLY_VERSION"]
-  // would NOT be replaced because --define only matches bare references.
+  // Bun --compile injects this via --define. tsdown's `define` config
+  // (in tsdown.config.ts) does the same via rolldown. The bare
+  // identifier is replaced at compile time — using
+  // globalThis["UMACTUALLY_VERSION"] would NOT be replaced because
+  // --define / rolldown's define only match bare references.
   if (typeof UMACTUALLY_VERSION === "string" && UMACTUALLY_VERSION.length > 0) {
     return UMACTUALLY_VERSION;
   }

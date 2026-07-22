@@ -2,12 +2,13 @@
 //
 // tsdown configuration for the Node SEA single-file binary build.
 //
-// This file is consumed by `scripts/build-sea.mjs` (which loops over the
-// 6 platform/arch targets in `scripts/release-targets.json` and invokes
-// `tsdown --config tsdown.config.ts` once per target). The `exe.targets`
-// here is the *default* set used when `scripts/build-sea.mjs` is invoked
-// with no filter; the per-target invocation overrides the targets array
-// via the CLI.
+// This file is consumed by `scripts/build-sea.mjs`, which invokes
+// `tsdown --config tsdown.config.ts` exactly ONCE and lets tsdown's
+// `exe.targets` array (derived from `scripts/release-targets.json`)
+// drive all 6 platform/arch builds in a single process. The build
+// script does NOT loop over targets; tsdown does. Per-target tuning
+// (e.g. narrowing to a single platform) is done by editing the
+// `exe.targets` array here, not by re-invoking tsdown from the script.
 //
 // Why tsdown + Node SEA (not Bun --compile, yao-pkg, or Deno compile):
 // - tsdown is the official library bundler from VoidZero (Vite + Rolldown
