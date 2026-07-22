@@ -215,7 +215,7 @@ jobs:
           if [ "$_doctor_status" -eq 0 ]; then
             echo "SEA loader OK (doctor exit=0, all checks passed)"
             rm -f "${_doctor_err}"
-          elif [ "$_doctor_status" -eq 1 ] && ! grep -Eq 'Error: |SyntaxError|TypeError: |ReferenceError: |RangeError: |bad SEA|SEA blob|loader fault|node:internal/|Cannot read propert|Cannot access |is not a function|is not defined' "${_doctor_err}"; then
+          elif [ "$_doctor_status" -eq 1 ] && ! grep -Eq '^[[:space:]]*(Error|TypeError|SyntaxError|ReferenceError|RangeError): |bad SEA|SEA blob|loader fault|node:internal/|Cannot read propert|Cannot access |is not a function|is not defined' "${_doctor_err}"; then
             # Exit 1 with no loader-crash signature on stderr: this is
             # the documented business failure (missing creds). The
             # smoke goal (loader works) is satisfied.

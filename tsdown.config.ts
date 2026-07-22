@@ -70,8 +70,51 @@ const SEA_NODE_VERSION = "25.7.0";
 
 function loadTargets(): readonly SeaTarget[] {
   const raw = readFileSync(MANIFEST_PATH, "utf8");
-  const parsed = JSON.parse(raw) as readonly RawTarget[];
-  return parsed.map((t) => {
+  const parsed: unknown = JSON.parse(raw);
+  if (!Array.isArray(parsed) || parsed.length === 0) {
+    throw new Error(
+      `release-targets.json: expected a non-empty array at ${MANIFEST_PATH}, ` +
+      `got ${Array.isArray(parsed) ? "empty array" : typeof parsed}`,
+    );
+  }
+  // Validate every entry has the required fields BEFORE .map() so a
+  // typo in the manifest produces an actionable error (the bare
+  // `parsed.map(...)` form throws a generic "Cannot read properties
+  // of undefined (reading 'id')" with no manifest context).
+  const rawTargets: readonly RawTarget[] = parsed.map((entry, idx) => {
+    if (entry === null || typeof entry !== "object") {
+      throw new Error(
+        `release-targets.json: entry #${idx} is not an object (got ${typeof entry})`,
+      );
+    }
+    const t = entry as Record<string, unknown>;
+    const missing = (
+      ["id", "rawName", "archiveName", "archiveType", "memberName", "installedName"] as const
+    ).filter((k) => typeof t[k] !== "string" || (t[k] as string).length === 0);
+    if (missing.length > 0) {
+      throw new Error(
+        `release-targets.json: entry #${idx} (id=${String(t["id"])}) missing or invalid fields: ${missing.join(", ")}`,
+      );
+    }
+    if (t["archiveType"] !== "tar.gz" && t["archiveType"] !== "zip") {
+      throw new Error(
+        `release-targets.json: entry #${idx} (id=${String(t["id"])}) archiveType must be "tar.gz" or "zip", got ${JSON.stringify(t["archiveType"])}`,
+      );
+    }
+    return t as unknown as RawTarget;
+  });
+  // Reject duplicate target ids (would silently produce duplicate
+  // binaries under the same rawName in the release/ dir).
+  const seenIds = new Set<string>();
+  for (const t of rawTargets) {
+    if (seenIds.has(t.id)) {
+      throw new Error(
+        `release-targets.json: duplicate target id "${t.id}"`,
+      );
+    }
+    seenIds.add(t.id);
+  }
+  return rawTargets.map((t) => {
     // Derive platform + arch from the id (e.g. "darwin-arm64" → darwin/arm64).
     const [platformPrefix, arch] = t.id.split("-");
     if (platformPrefix === undefined || arch === undefined) {

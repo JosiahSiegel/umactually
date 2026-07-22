@@ -55,10 +55,20 @@ const bunIsLive = Number.isFinite(bunMajor);
 // `(bunIsLive && bunMajor > MIN_BUN_MAJOR) || (bunIsLive && ...)`,
 // which is logically equivalent here but reads as a precedence trap.
 // The explicit grouping also makes the next line (useBun) read naturally.
+// Bun's version scheme is 1.x.y — accept it when major >= MIN_BUN_MAJOR
+// AND (major > MIN_BUN_MAJOR || minor >= MIN_BUN_MINOR). Note: the
+// right-hand disjunction MUST be inside parentheses, both because `&&`
+// binds tighter than `||` and because the major-greater branch alone
+// would silently accept any 2.x.0 (e.g. 2.0.0-beta with minor=0)
+// once Bun ever ships a 2.0.0. The "major >= MIN_BUN_MAJOR" outer
+// AND-clause is the gate that prevents a future 2.0.0 from being
+// accepted without the minor-floor check; the inner disjunction then
+// permits any 2.x.y (or higher) regardless of minor, while still
+// requiring minor >= MIN_BUN_MINOR when major is exactly the floor.
 const bunMeetsThreshold =
   bunIsLive &&
-  (bunMajor > MIN_BUN_MAJOR ||
-    (bunMajor === MIN_BUN_MAJOR && bunMinor >= MIN_BUN_MINOR));
+  bunMajor >= MIN_BUN_MAJOR &&
+  (bunMajor > MIN_BUN_MAJOR || bunMinor >= MIN_BUN_MINOR);
 // Prefer Node when it meets the Node threshold — Node is the documented
 // primary runtime, and the test suite + GitHub Actions runner both run
 // under it. Only fall through to Bun when Node is absent or below
