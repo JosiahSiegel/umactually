@@ -147,6 +147,10 @@ function Invoke-SmartInstallNpm {
 #   - INSTALL_TEST_CHECKSUMS    — alternate checksums fixture
 #   - INSTALL_TEST_FAKE_TAG     — pre-archive tag fixture
 #   - INSTALL_FORCE_BINARY      — operator opt-out
+#   - INSTALL_RELEASE_BASE      — point at a local fake release server
+#     (test fixtures run a Node http server on 127.0.0.1; we MUST not
+#     route to npm in that case or the test's HTTP traffic is masked
+#     by a real npm call that 404s in CI)
 # Without these guards, the smart-router makes a real `npm install -g
 # umactually` call in CI, hits E404 (package not yet published to npm),
 # and prints two error lines on stderr that contaminate every test that
@@ -157,7 +161,8 @@ if (
   -not $env:INSTALL_TEST_TARBALL -and
   -not $env:INSTALL_TEST_CHECKSUMS -and
   -not $env:INSTALL_TEST_FAKE_TAG -and
-  -not $env:INSTALL_FORCE_BINARY
+  -not $env:INSTALL_FORCE_BINARY -and
+  -not $env:INSTALL_RELEASE_BASE
 ) {
   $null = Invoke-SmartInstallNpm
 }

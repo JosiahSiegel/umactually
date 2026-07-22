@@ -183,6 +183,10 @@ smart_install_with_npm() {
 #   - INSTALL_TEST_CHECKSUMS    — alternate checksums fixture
 #   - INSTALL_TEST_FAKE_TAG     — pre-archive tag fixture
 #   - INSTALL_FORCE_BINARY      — operator opt-out
+#   - INSTALL_RELEASE_BASE      — point at a local fake release server
+#     (test fixtures run a Node http server on 127.0.0.1; we MUST not
+#     route to npm in that case or the test's HTTP traffic is masked
+#     by a real npm call that 404s in CI)
 # Without these guards, the smart-router makes a real `npm install -g
 # umactually` call in CI, hits E404 (package not yet published to npm),
 # and prints two error lines on stderr that contaminate every test that
@@ -192,7 +196,8 @@ if [ -z "$INSTALL_TEST_MODE" ] \
   && [ -z "$INSTALL_TEST_TARBALL" ] \
   && [ -z "$INSTALL_TEST_CHECKSUMS" ] \
   && [ -z "$INSTALL_TEST_FAKE_TAG" ] \
-  && [ -z "$INSTALL_FORCE_BINARY" ]; then
+  && [ -z "$INSTALL_FORCE_BINARY" ] \
+  && [ -z "$INSTALL_RELEASE_BASE" ]; then
   # shellcheck disable=SC2317  # function is defined above and called below
   smart_install_with_npm || true
 fi
