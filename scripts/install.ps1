@@ -78,10 +78,22 @@ if ($env:INSTALL_SSL_NO_REVOKE -eq '1') {
   # users (the only runtime where the setting actually takes effect)
   # do not see a false-positive warning.
   $isPsCore = ($PSVersionTable.PSEdition -eq 'Core') -or ($PSVersionTable.Platform -eq 'Unix')
+  # Stream-routing caveat: Write-Warning's output stream depends on
+  # the host. On Linux PS Core it lands on stdout, on Windows PS 5.1
+  # on stderr, on Windows PS Core 7+ on the information stream
+  # (which Node.js's spawnSync does NOT capture). We also write to
+  # stderr directly via [Console]::Error.WriteLine so the message
+  # lands in a single, predictable stream regardless of host. The
+  # Write-Warning call stays for the interactive terminal case
+  # (where the yellow WARNING: prefix is helpful).
+  function _emitSslNoRevokeWarning([string]$message) {
+    [Console]::Error.WriteLine($message)
+    Write-Warning $message
+  }
   try {
     [System.Net.ServicePointManager]::CheckCertificateRevocationList = $false
     if ($isPsCore) {
-      Write-Warning ("--ssl-no-revoke: this PowerShell runtime (" +
+      _emitSslNoRevokeWarning ("--ssl-no-revoke: this PowerShell runtime (" +
         $PSVersionTable.PSVersion.ToString() + ", edition=" +
         $PSVersionTable.PSEdition + ") routes Invoke-WebRequest through " +
         "HttpClient, which does NOT honor ServicePointManager's " +
@@ -94,7 +106,7 @@ if ($env:INSTALL_SSL_NO_REVOKE -eq '1') {
     # ServicePointManager type is not even available. The warning
     # above already tells the user to use install.sh; we do not
     # double-warn here.
-    Write-Warning ("--ssl-no-revoke: ServicePointManager not available on " +
+    _emitSslNoRevokeWarning ("--ssl-no-revoke: ServicePointManager not available on " +
       "this runtime (" + $PSVersionTable.PSVersion.ToString() + ", " +
       "edition=" + $PSVersionTable.PSEdition + "). The bypass has no " +
       "effect; use install.sh (curl --ssl-no-revoke) instead.")
