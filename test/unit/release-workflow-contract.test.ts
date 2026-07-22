@@ -356,12 +356,24 @@ function probeContract(workflow: Workflow): readonly Violation[] {
   } else {
     // A "smoke" job is any job that gates publication: native target jobs
     // (one of the five required runners) AND install smoke jobs. We
-    // explicitly exclude the producer itself, the publish job, and the
-    // canary (which depends on publish, not the producer).
+    // explicitly exclude the producer itself, the publish job, the
+    // canary (which depends on publish, not the producer), and any
+    // `build-package-*` job (per-platform build producers that are
+    // not smoke jobs even though they run on required runners).
     const smokeJobs = allJobIds.filter((id) => {
       if (id === producer.id) return false;
       if (/publish/u.test(id)) return false;
       if (/canary/u.test(id)) return false;
+      // v0.6.4: the v0.6.0+ single-producer refactor split the build
+      // into a per-platform producer pair (build-package-cross on
+      // ubuntu-24.04 + build-package-windows on windows-2025) plus a
+      // `build-package` merger that consumes them. The producers
+      // upload their own per-platform artifacts (e.g.
+      // umactually-non-windows-candidate) — they are NOT smoke jobs
+      // and must not be required to depend on the merger (that
+      // would create a cycle). The merger is the candidate producer
+      // because it owns the `candidate-upload` step.
+      if (/^build-package-/u.test(id)) return false;
       const job: WorkflowJob | undefined = jobs[id];
       const label = runsOnLabel(job?.["runs-on"]);
       if (REQUIRED_NATIVE_RUNNERS.some((r) => label === r)) return true;

@@ -32,20 +32,27 @@ permissions: {}
 
 jobs:
   # ---------------------------------------------------------------------
-  # (a) Build/package on ubuntu-24.04. Generates the six archives,
-  #     checksums.txt, and release-size-report.json, then uploads ONE
-  #     immutable Actions artifact named `umactually-release-candidate`
-  #     with the exact root layout:
-  #       public/<six archives>           (compressed download assets)
-  #       public/checksums.txt            (sha256 manifest)
-  #       internal/raw/<six raw binaries> (Bun output, kept internal)
-  #       internal/release-size-report.json (size telemetry, kept internal)
-  #     with no other files. The upload step ID is `candidate-upload` so
-  #     publish/canary can pull the artifact by its stable id via the
-  #     `actions/artifacts/<id>/zip` API.
+  # (a) Cross-platform producer (ubuntu-24.04). Builds ALL 5 SEA
+  #     binaries (the underlying tsdown --exe mode has no per-target
+  #     flag — targets are config-driven) and packages the linux +
+  #     darwin archives and raws into a partial candidate bundle
+  #     named `umactually-non-windows-candidate`. The Windows producer
+  #     (build-package-windows) handles windows-x64 + windows-arm64;
+  #     the merger (build-package, further down) combines the two
+  #     per-platform bundles into the final `umactually-release-candidate`
+  #     the smoke + publish jobs consume.
+  #
+  #     Why two producers + a merger (vs. building everything in one
+  #     job on ubuntu-24.04): the v0.6.1+ post-release failures
+  #     shipped a Windows .exe built on Linux, which is structurally
+  #     different (1024-byte Node 25.7.0 SEA blob delta) from one
+  #     built on Windows. Building each .exe on its native platform
+  #     and merging per-platform bundles into the final candidate is
+  #     the only way to ship a working Windows binary without
+  #     cross-compiling tsdown per-target.
   # ---------------------------------------------------------------------
-  build-package:
-    name: build & package
+  build-package-cross:
+    name: build & package (linux + darwin)
     runs-on: ubuntu-24.04
     permissions:
       contents: read
@@ -155,22 +162,40 @@ jobs:
           ls -la release/internal/raw
           test -f release/internal/release-size-report.json
 
-      - name: Upload candidate bundle
-        id: candidate-upload
+      - name: Drop Windows outputs from the non-Windows bundle
+        # The build above produces all 5 binaries, but this job is
+        # only responsible for the linux + darwin halves of the
+        # release. Strip the Windows archives and raws from
+        # release/ before uploading so the merger (build-package) only
+        # sees this job's targets in this artifact.
+        run: |
+          set -euo pipefail
+          rm -f release/public/umactually-windows-x64.zip
+          rm -f release/public/umactually-windows-arm64.zip
+          rm -f release/internal/raw/umactually-windows-x64.exe
+          rm -f release/internal/raw/umactually-windows-arm64.exe
+          # Recompute checksums.txt to match the now-Windows-less
+          # public/ directory. The merger will recompute again over
+          # the merged public/, so the values here are only consumed
+          # by the post-staging self-check.
+          (cd release/public && sha256sum -- *.tar.gz *.zip > checksums.txt)
+          test ! -f release/public/umactually-windows-x64.zip
+          test ! -f release/public/umactually-windows-arm64.zip
+          ls -la release/public
+          ls -la release/internal/raw
+
+      - name: Upload non-Windows candidate bundle
+        id: non-windows-upload
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         with:
-          name: umactually-release-candidate
-          # This input is workspace-relative. actions/upload-artifact
-          # archives the *contents* of each `path:` and strips the
-          # shared `release/` ancestor — so the published ZIP has
-          # entries `public/...`, `internal/...`, `internal/raw/...`
-          # (no `release/` prefix). After publish unzips the candidate
-          # bundle, the manifest lives at
-          #   $RUNNER_TEMP/umactually-release-candidate/internal/release-targets.json
-          # and the publish job's Node helpers `cd` into that bundle
-          # root before reading it. The canary reads the in-repo
-          # `scripts/release-targets.json` from `GITHUB_WORKSPACE`
-          # instead — it does not download the artifact.
+          name: umactually-non-windows-candidate
+          # Mirrors the build-package upload path structure exactly:
+          # 4 path entries, each a single directory or file under the
+          # shared `release/` ancestor that the upload action strips.
+          # The merger (build-package) downloads this artifact via
+          # actions/download-artifact@v4, which extracts the same
+          # `public/...`, `internal/...`, `internal/raw/...` layout
+          # the existing publish + smoke jobs expect.
           path: |
             release/public
             release/internal/raw
@@ -180,6 +205,219 @@ jobs:
           retention-days: 14
 
   # ---------------------------------------------------------------------
+  # ---------------------------------------------------------------------
+  # (a.5) Windows producer (windows-2025). Builds ALL 5 SEA binaries
+  #       (the underlying tsdown --exe mode has no per-target flag —
+  #       targets are config-driven), then packages the windows-x64 +
+  #       windows-arm64 archives and raws into a partial candidate
+  #       bundle named `umactually-windows-candidate`. The merger
+  #       (build-package, further down) combines it with
+  #       umactually-non-windows-candidate from build-package-cross.
+  #
+  #       Why this job exists on a Windows runner: a Windows .exe
+  #       built on ubuntu-24.04 has a 1024-byte Node 25.7.0 SEA blob
+  #       delta from a Windows-built one, and that delta causes a
+  #       pipe-drain race that produces empty stdout on real Windows.
+  #       v0.6.1+ shipped this broken binary. Building on Windows is
+  #       the only way to ship a working Windows binary.
+  # ---------------------------------------------------------------------
+  build-package-windows:
+    name: build & package (windows)
+    runs-on: windows-2025
+    permissions:
+      contents: read
+      actions: read
+    outputs:
+      artifact_id: ${{ steps.windows-upload.outputs.artifact-id }}
+      artifact_digest: ${{ steps.windows-upload.outputs.artifact-digest }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "25.7.0"
+          cache: "npm"
+
+      - name: Install dependencies
+        shell: bash
+        run: npm ci
+
+      - name: Typecheck
+        shell: bash
+        run: npm run typecheck
+
+      - name: Build (dist/ + sanity-check source)
+        shell: bash
+        run: npm run build
+
+      - name: Cross-compile Node SEA standalone binaries
+        shell: bash
+        run: node scripts/build-sea.mjs
+
+      - name: Package release assets (archives + checksums)
+        shell: bash
+        run: |
+          mkdir -p release/public release/internal/raw
+          node scripts/package-release-assets.mjs \
+            --manifest scripts/release-targets.json \
+            --release-dir release
+
+      - name: Compute release-size report
+        shell: bash
+        run: |
+          node scripts/verify-release-sizes.mjs \
+            --manifest scripts/release-targets.json \
+            --release-dir release
+
+      - name: Lock release-size-report.json path
+        shell: bash
+        run: test -f release/internal/release-size-report.json
+
+      - name: Stage candidate bundle
+        shell: bash
+        run: |
+          node scripts/stage-release-assets.mjs \
+            --release-dir release \
+            --manifest scripts/release-targets.json
+          ls -la release/public
+          ls -la release/internal/raw
+          test -f release/internal/release-size-report.json
+
+      - name: Drop non-Windows outputs from the Windows bundle
+        # The build above produces all 5 binaries, but this job is
+        # only responsible for the Windows halves of the release.
+        # Strip the linux + darwin archives and raws from release/
+        # before uploading so the merger (build-package) only sees
+        # this job's targets in this artifact.
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -f release/public/umactually-linux-x64.tar.gz
+          rm -f release/public/umactually-linux-arm64.tar.gz
+          rm -f release/public/umactually-darwin-arm64.tar.gz
+          rm -f release/internal/raw/umactually-linux-x64
+          rm -f release/internal/raw/umactually-linux-arm64
+          rm -f release/internal/raw/umactually-darwin-arm64
+          (cd release/public && sha256sum -- *.tar.gz *.zip > checksums.txt)
+          test ! -f release/public/umactually-linux-x64.tar.gz
+          test ! -f release/public/umactually-linux-arm64.tar.gz
+          test ! -f release/public/umactually-darwin-arm64.tar.gz
+          ls -la release/public
+          ls -la release/internal/raw
+
+      - name: Upload Windows candidate bundle
+        id: windows-upload
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: umactually-windows-candidate
+          path: |
+            release/public
+            release/internal/raw
+            release/internal/release-size-report.json
+            release/internal/release-targets.json
+          if-no-files-found: error
+          retention-days: 14
+
+  # ---------------------------------------------------------------------
+  # (a.6) Merger (ubuntu-24.04). Combines the two per-platform
+  #       candidate bundles (linux+darwin from build-package-cross,
+  #       windows from build-package-windows) into a single final
+  #       bundle named `umactually-release-candidate`. The merger
+  #       re-runs on every dispatch so any divergence between the
+  #       two per-platform inputs is caught BEFORE the smoke + publish
+  #       jobs see the final candidate.
+  #
+  #       Why the merger is a separate job (not a step in either
+  #       producer): the merge needs both per-platform artifacts to
+  #       exist, and each producer is platform-bound (ubuntu-24.04
+  #       for linux+darwin, windows-2025 for windows). The merger
+  #       runs on ubuntu-24.04 because the merge script
+  #       (scripts/merge-candidate-bundles.mjs) is POSIX-only and the
+  #       publish job (which consumes the merged bundle) is also
+  #       ubuntu-24.04.
+  # ---------------------------------------------------------------------
+  build-package:
+    name: build & package (merge)
+    needs:
+      - build-package-cross
+      - build-package-windows
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      actions: read
+    outputs:
+      artifact_id: ${{ steps.candidate-upload.outputs.artifact-id }}
+      artifact_digest: ${{ steps.candidate-upload.outputs.artifact-digest }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Download non-Windows candidate bundle
+        uses: actions/download-artifact@v4
+        with:
+          name: umactually-non-windows-candidate
+          path: non-windows
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Download Windows candidate bundle
+        uses: actions/download-artifact@v4
+        with:
+          name: umactually-windows-candidate
+          path: windows
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Merge per-platform bundles into the final candidate
+        # scripts/merge-candidate-bundles.mjs:
+        #   1. copies non-windows archives + raws from `non-windows/`
+        #      to `merged/` (linux-x64, linux-arm64, darwin-arm64)
+        #   2. copies windows archives + raws from `windows/` to
+        #      `merged/` (windows-x64, windows-arm64)
+        #   3. recomputes checksums.txt from the merged public/ so a
+        #      single checksums.txt covers all 5 archives (the
+        #      per-platform checksums.txt files only cover their
+        #      respective halves)
+        #   4. recomputes release-size-report.json from the merged
+        #      raws so a single report covers all 5
+        #   5. runs `sha256sum -c checksums.txt` as a self-check
+        #      before uploading
+        # Any of those steps failing is a hard error and aborts the
+        # build (the script throws on any non-zero exit).
+        run: |
+          set -euo pipefail
+          node scripts/merge-candidate-bundles.mjs \
+            --non-windows non-windows \
+            --windows windows \
+            --manifest scripts/release-targets.json \
+            --output merged
+          ls -la merged/public
+          ls -la merged/internal/raw
+          test -f merged/public/checksums.txt
+          test -f merged/internal/release-size-report.json
+          test -f merged/internal/release-targets.json
+
+      - name: Upload final candidate bundle
+        id: candidate-upload
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: umactually-release-candidate
+          # Same 4-path form as the per-platform producers. The
+          # actions/upload-artifact action strips the shared `merged/`
+          # ancestor, so the published ZIP has top-level entries
+          # `public/...`, `internal/...`, `internal/raw/...` that
+          # unzips to the exact layout the smoke + publish jobs read
+          # (and the contract tests verify, e.g. RELEASE-WORKFLOW-
+          # CONTRACT expects `cd candidate/public && sha256sum -c
+          # checksums.txt` to work).
+          path: |
+            merged/public
+            merged/internal/raw
+            merged/internal/release-size-report.json
+            merged/internal/release-targets.json
+          if-no-files-found: error
+          retention-days: 14
+
   # (b) Native installer smoke jobs. Each lane downloads the producer's
   #     immutable artifact by numeric ID, verifies its transport digest and
   #     inner manifest, serves public assets from loopback, then executes the
@@ -717,6 +955,8 @@ jobs:
     name: publish
     needs:
       - build-package
+      - build-package-cross
+      - build-package-windows
       - smoke-linux-x64
       - smoke-linux-arm64
       - smoke-darwin-arm64
