@@ -84,21 +84,26 @@ describe.skipIf(SKIP_IF_NO_DIST)("bin/umactually.mjs version gate", () => {
     // accepted Bun 25.
   });
 
-  it("rejects old Node + modern Bun where Node would fail alone", () => {
-    // Documents the v0.6.0 change intent: the bundled CLI relies on
-    // Node 24+ APIs (`fetch`, `node:test`, etc.) that older Bun
-    // doesn't fully implement, so a host with Bun 1.x + Node 22
-    // should be rejected even though Bun's major is high.
+  it("falls back to Bun when Node is below threshold but Bun is modern", () => {
+    // Host has Node 22 (below the Node 24 threshold) and a modern Bun
+    // (1.x with major ≥ MIN_BUN_MAJOR, minor ≥ MIN_BUN_MINOR). The
+    // shim's policy is: prefer Node when it meets threshold; only fall
+    // through to Bun when Node is below threshold. In this scenario
+    // Node is below threshold, so Bun is the live runtime and the
+    // gate must accept. (The Bun 1.x APIs are not full Node 24+ parity,
+    // but the shim itself only needs the `node:fs` / `node:path` calls
+    // it actually makes — see bin/umactually.mjs.)
     //
-    // As of v0.6.0 the shim still uses `useBun = bunIsLive && bunMajor
-    // >= MIN_RUNTIME_MAJOR` (i.e. accepts whenever *either* runtime
-    // is modern enough), so this test currently asserts acceptance —
-    // matching the "accepts the bun runtime" test above. The follow-up
-    // PR that tightens the gate to require *both* runtimes to be
-    // modern will flip this assertion back to `status === 1`. See PR
-    // #104 review thread #21.
-    const result = runShimWithPatchedVersions("v22.0.0", "v25.0.0");
-    expect(result.stderr, `stderr: ${result.stderr}`).not.toMatch(/requires Node >= 24/);
+    // The CLI may still fail downstream (e.g. "no --api-url" or
+    // "missing provider config"), but that's a different error path.
+    // We only care that the gate accepted Bun 1.2.5 — which the
+    // previous "compares runtimeMajor against MIN_RUNTIME_MAJOR=24"
+    // code path silently rejected (Bun's major is always 1).
+    const result = runShimWithPatchedVersions("v22.0.0", "v1.2.5");
+    // Match the runtime-detection suffix (only emitted on rejection)
+    // so we don't false-positive on the static gate spec in the
+    // error message.
+    expect(result.stderr, `stderr: ${result.stderr}`).not.toMatch(/detected (Node|Bun)/);
   });
 
   it("accepts modern Node even when bun is missing", () => {

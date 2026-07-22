@@ -62,15 +62,23 @@ const bunMeetsThreshold =
 // Prefer Node when it meets the Node threshold — Node is the documented
 // primary runtime, and the test suite + GitHub Actions runner both run
 // under it. Only fall through to Bun when Node is absent or below
-// threshold. (Node-only environments leave bunIsLive false, so bunMeetsThreshold
-// is false there and useBun correctly stays false.)
+// threshold. (Node-only environments leave bunIsLive false, so
+// bunMeetsThreshold is false there and useBun correctly stays false.)
 const nodeMeetsThreshold = Number.isFinite(nodeMajor) && nodeMajor >= MIN_RUNTIME_MAJOR;
 const useBun = !nodeMeetsThreshold && bunMeetsThreshold;
-const runtimeMajor = useBun ? bunMajor : nodeMajor;
 const runtimeLabel = useBun
   ? `Bun ${process.versions.bun}`
   : `Node ${process.versions.node}`;
-if (!Number.isFinite(runtimeMajor) || runtimeMajor < MIN_RUNTIME_MAJOR) {
+// Per-runtime gate: Node is checked against MIN_RUNTIME_MAJOR, Bun is
+// checked against its own (major, minor) pair. The previous code
+// compared a single `runtimeMajor` (bunMajor=1 or nodeMajor=24+) against
+// MIN_RUNTIME_MAJOR=24, which silently rejected every real-world Bun
+// version (Bun's major is always 1) even though the error message
+// advertised "Bun >= 1.2.x". Per-runtime checks make the gate honest.
+const gatePasses = useBun
+  ? bunMeetsThreshold
+  : nodeMeetsThreshold;
+if (!gatePasses) {
   process.stderr.write(
     `umactually: requires Node >= ${MIN_RUNTIME_MAJOR}.x or Bun >= ${MIN_BUN_MAJOR}.${MIN_BUN_MINOR}.x (detected ${runtimeLabel}).\n`,
   );
