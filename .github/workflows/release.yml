@@ -87,27 +87,65 @@ jobs:
 
       - name: Compute release-size report
         # v0.6.0: the Bun-version-pinned verify-release-assets.mjs is
-        # gone. We replaced it with a per-target output check that just
-        # confirms each manifest target produced an output. tsdown's
-        # --exe enforces bundle size internally; the smoke-sea job in
-        # ci.yml is the runtime check.
+        # gone. We replaced it with a per-target output check that
+        # confirms each manifest target produced an output AND that the
+        # raw binary stays under a sane per-target ceiling. tsdown's
+        # --exe enforces bundle size internally; this ceiling is a
+        # safety net for a runaway build (e.g. a new dep pulls in a
+        # 500 MB native module). The smoke-sea job in ci.yml is the
+        # runtime check.
+        #   - MIN_RAW_BYTES (1 MiB): rejects an empty / truncated file
+        #     that "exists but is broken" — a partial SEA blob is worse
+        #     than a missing one because the installer downloads it,
+        #     sha256-passes (the chunk is self-consistent), then
+        #     crashes on launch.
+        #   - MAX_RAW_BYTES (200 MiB): hard cap. As of v0.6.0 the
+        #     largest target is darwin-x64 at ~134 MiB. 200 MiB leaves
+        #     ~50% headroom for legitimate growth (e.g. a new dep
+        #     tree) and is far below the installer's pipe-buffer
+        #     concerns. Any new target that legitimately needs more
+        #     room must bump this number AND the docs/ release-process
+        #     section that documents it.
         run: |
           node -e '
             const fs = require("node:fs");
             const path = require("node:path");
             const manifest = JSON.parse(fs.readFileSync("scripts/release-targets.json", "utf8"));
+            const MIN_RAW_BYTES = 1 * 1024 * 1024;
+            const MAX_RAW_BYTES = 200 * 1024 * 1024;
             const report = { targets: [], generatedAt: new Date().toISOString() };
+            let failed = 0;
             for (const t of manifest) {
               const p = path.join("release", t.rawName);
-              if (fs.existsSync(p)) {
-                const stat = fs.statSync(p);
-                report.targets.push({ id: t.id, rawName: t.rawName, sizeBytes: stat.size });
-              } else {
+              if (!fs.existsSync(p)) {
+                console.error("MISSING: " + p);
                 report.targets.push({ id: t.id, rawName: t.rawName, sizeBytes: 0, missing: true });
+                failed++;
+                continue;
               }
+              const stat = fs.statSync(p);
+              const size = stat.size;
+              if (size < MIN_RAW_BYTES) {
+                console.error("TOO SMALL: " + p + " (" + size + " bytes; expected >= " + MIN_RAW_BYTES + ")");
+                report.targets.push({ id: t.id, rawName: t.rawName, sizeBytes: size, tooSmall: true });
+                failed++;
+                continue;
+              }
+              if (size > MAX_RAW_BYTES) {
+                console.error("TOO LARGE: " + p + " (" + size + " bytes; expected <= " + MAX_RAW_BYTES + ")");
+                report.targets.push({ id: t.id, rawName: t.rawName, sizeBytes: size, tooLarge: true });
+                failed++;
+                continue;
+              }
+              report.targets.push({ id: t.id, rawName: t.rawName, sizeBytes: size });
             }
             fs.mkdirSync("release/internal", { recursive: true });
             fs.writeFileSync("release/internal/release-size-report.json", JSON.stringify(report, null, 2));
+            if (failed > 0) {
+              console.error("verify stage: " + failed + " target(s) failed size sanity check");
+              process.exit(1);
+            }
+            console.log("verify stage: all " + manifest.length + " targets present and within size bounds");
           '
 
       - name: Stage candidate bundle (public/<archives>, public/checksums.txt, internal/raw/<binaries>, internal/release-size-report.json)

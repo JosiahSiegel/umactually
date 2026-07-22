@@ -90,7 +90,7 @@ umactually --version
 npx github:JosiahSiegel/umactually#v0.6.0 review
 ```
 
-The `#v0.6.0` fragment pins the install to the tagged release. Omit the fragment only when you specifically want the latest unreleased `main` build. The `umactually` npm package is not yet published — `npm install -g umactually` will 404 until a future release. The curl-pipe installer above handles this gracefully: it tries the npm path first, catches the 404, and falls through to the single-file binary download automatically (see the smart-router section).
+The `#v0.6.0` fragment pins the install to the tagged release. Omit the fragment only when you specifically want the latest unreleased `main` build. From v0.6.0 onwards, the `umactually` npm package is published as part of the release. If you're upgrading from a pre-0.6.0 install where the package wasn't yet on npm, the curl-pipe installer's smart-router handles the transition automatically: it tries the npm path first, and falls through to the single-file binary download if npm install fails (see the smart-router section).
 
 ### Uninstall
 

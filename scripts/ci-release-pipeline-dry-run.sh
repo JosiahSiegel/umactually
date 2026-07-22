@@ -131,12 +131,20 @@ log "6/9  verify stage sizes (replaces verify-release-assets.mjs --measure)"
 # dropped both the Bun pin and the budget file (Node SEA is the
 # official path; tsdown's --exe already enforces bundle size
 # internally). The smoke-sea job in ci.yml is the runtime check;
-# here we just confirm each target produced a non-empty output.
+# here we apply the same MIN/MAX sanity check the release workflow
+# applies so the dry-run and the release build enforce one set of
+# bounds. MIN_RAW_BYTES catches a partial SEA blob (existence +
+# self-consistent sha256 is not enough — it would still fail on
+# launch). MAX_RAW_BYTES catches a runaway build. As of v0.6.0
+# the largest target is darwin-x64 at ~134 MiB; 200 MiB leaves
+# ~50% headroom for legitimate growth.
 node -e '
 const fs = require("fs");
 const path = require("path");
 const manifest = JSON.parse(fs.readFileSync("scripts/release-targets.json", "utf8"));
 const releaseDir = "release";
+const MIN_RAW_BYTES = 1 * 1024 * 1024;
+const MAX_RAW_BYTES = 200 * 1024 * 1024;
 let failed = 0;
 for (const t of manifest) {
   const p = path.join(releaseDir, t.rawName);
@@ -146,18 +154,23 @@ for (const t of manifest) {
     continue;
   }
   const size = fs.statSync(p).size;
-  if (size === 0) {
-    console.error("EMPTY: " + p);
+  if (size < MIN_RAW_BYTES) {
+    console.error("TOO SMALL: " + p + " (" + size + " bytes; expected >= " + MIN_RAW_BYTES + ")");
+    failed++;
+    continue;
+  }
+  if (size > MAX_RAW_BYTES) {
+    console.error("TOO LARGE: " + p + " (" + size + " bytes; expected <= " + MAX_RAW_BYTES + ")");
     failed++;
     continue;
   }
   console.log("  " + t.rawName + " (" + size + " bytes)");
 }
 if (failed > 0) {
-  console.error("verify stage: " + failed + " target(s) missing or empty");
+  console.error("verify stage: " + failed + " target(s) failed size sanity check");
   process.exit(1);
 }
-console.log("verify stage: all " + manifest.length + " targets present and non-empty");
+console.log("verify stage: all " + manifest.length + " targets present and within size bounds");
 '
 
 # ----- 3. Stage into release/public/ + internal/raw/ -----

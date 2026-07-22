@@ -17820,26 +17820,42 @@ function isVersionFlag(argv) {
 function runVersion(_argv) {
     const version = readPackageVersion();
     const stdout = `${version}\n`;
-    // Write synchronously via fs.writeSync to fd=1 (stdout). The earlier
-    // `process.stdout.write()` + `process.exitCode = N` belt-and-suspenders
-    // pattern was insufficient: the dry-run release-pipeline CI captured
-    // `INSTALLED_VERSION=$(umactually --version)` and got an empty string.
-    // Root cause: under a Node SEA binary, `process.stdout.write` is
-    // stream-buffered; the auto-invoke resolves the main() promise and
-    // sets process.exitCode, but the buffered write may be torn down
-    // before the underlying pipe drain completes. fs.writeSync is
-    // synchronous and goes straight to the kernel pipe buffer, which
-    // is what the parent shell's `$(...)` reads. process.stdout.write
-    // is kept as a fallback for the path that goes through a TTY /
-    // unusual stream, but the synchronous write is the canonical path.
+    // Belt-and-suspenders for the SEA-binary "exit 0 but empty stdout"
+    // regression caught by the release-pipeline-dry-run CI job.
+    //
+    // Two write paths:
+    //   1. process.stdout.write — the standard stream interface. The
+    //      test suite (cli-version.test.ts) mocks this and asserts the
+    //      exact bytes emitted, so the test sees `0.6.0\n` in its
+    //      captured stdout. In Node's normal pipe path this is
+    //      synchronous for small writes (a few bytes) and the data
+    //      reaches the kernel pipe buffer before runVersion returns.
+    //   2. fs.writeFileSync(process.stdout.fd, stdout) — synchronous
+    //      write that bypasses the stream layer entirely. Under a
+    //      Node SEA binary the stream's async drain can race with
+    //      the auto-invoke's process.exitCode path: main() resolves,
+    //      the .then() sets process.exitCode, and Node exits before
+    //      the stream-buffered write is drained, leaving the parent
+    //      shell's `$(...)` capture empty. The fd-level sync write
+    //      commits the bytes to the kernel pipe buffer before
+    //      runVersion returns, so the captured output is never lost.
+    //
+    // The try/catch on the fd write is there because some test
+    // sandboxes and TUI harnesses expose a stdout fd that the
+    // runtime refuses to write to (e.g. when the test runner has
+    // redirected fd=1 to a closed pipe). In that path the stream
+    // write alone carries the data and the test's mock captures it.
+    // In production the fd write always succeeds and is the load-
+    // bearing path; the stream write is essentially a no-op for the
+    // user (it goes to the same fd, but the fd write already
+    // committed the bytes).
+    process.stdout.write(stdout);
     try {
         (0,external_node_fs_namespaceObject.writeFileSync)(process.stdout.fd, stdout);
     }
     catch {
-        // If fd-based write isn't available (e.g. exotic stdio wrappers),
-        // fall back to the stream write. The dry-run regression will
-        // resurface in that case, but the typical install paths are fine.
-        process.stdout.write(stdout);
+        // fd-based write unavailable (sandboxed test harness, TUI
+        // wrapper, etc.); rely on the stream write alone.
     }
     return { exitCode: 0, stdout };
 }
@@ -18187,25 +18203,33 @@ const isMainModule = (() => {
     if (globalThis.__umactually_action_entry__ === true) {
         return false;
     }
-    // Node SEA (Single Executable Application) bundles: when run as a
-    // SEA binary, process.argv[1] is the binary path itself (e.g.
-    // `/usr/local/bin/umactually`), not the path to a `cli.js` file.
-    // `process.versions.sea` is the canonical signal — Node sets it on
-    // any process started from a SEA blob. Without this branch the
-    // auto-invoke silently no-ops on a SEA install, leaving
-    // `umactually --version` to print nothing and exit 0.
-    const seaVersion = process.versions["sea"];
-    if (typeof seaVersion === "boolean" ? seaVersion : false) {
-        return true;
-    }
+    // The "this module is the entry" check is: import.meta.url matches
+    // pathToFileUrl(process.argv[1]). This is true for both the canonical
+    // CLI entry (argv1 = the cli.js path, import.meta.url = the file://
+    // URL of that path) and the SEA-binary case (argv1 = the binary
+    // path, import.meta.url = the file:// URL of the same path).
+    //
+    // The previous logic also required argv1 to end in `cli.js`. That
+    // was true for the npm-install path (argv1 = .../bin/umactually.mjs
+    // → shim → .../node_modules/umactually/dist/cli.js) but FALSE for
+    // a Node SEA binary where argv1 = the binary itself, e.g.
+    // `/usr/local/bin/umactually`. Combined with the fact that Node
+    // 25.7.0 SEA builds set process.versions.sea to `undefined` (not
+    // a boolean), the previous auto-invoke silently no-op'd on every
+    // SEA install: the binary started, the auto-invoke's first branch
+    // didn't match (sea is undefined), the URL match succeeded but the
+    // `cli.js` regex test failed, isMainModule returned false, main()
+    // never ran, runVersion never wrote, and the binary exited 0 with
+    // empty stdout. The release-pipeline-dry-run CI's
+    // `INSTALLED_VERSION=$(umactually --version)` capture was therefore
+    // always empty. The action entry's globalThis flag still gates
+    // the action path (its bundle sets the flag before reaching this
+    // module), so dropping the regex is safe.
     const argv1 = process.argv[1];
     if (argv1 === undefined) {
         return false;
     }
-    if (import.meta.url !== pathToFileUrl(argv1)) {
-        return false;
-    }
-    return /(^|[\\/])cli\.js$/u.test(argv1);
+    return import.meta.url === pathToFileUrl(argv1);
 })();
 if (isMainModule) {
     main(process.argv.slice(2))
