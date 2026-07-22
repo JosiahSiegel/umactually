@@ -96,22 +96,55 @@ function resolveTsdownCommand() {
     }
     return { command: override, prefixArgs: [] };
   }
-  // Local install via `node_modules/.bin/tsdown` (npm puts it on PATH for
-  // `npm run` but we run via `node scripts/build-sea.mjs` which doesn't).
-  const localBin = join(REPO_ROOT, "node_modules", ".bin", "tsdown");
-  if (existsSync(localBin)) {
-    return { command: localBin, prefixArgs: [] };
+  // Local install via `node_modules/.bin/tsdown`. npm creates a
+  // platform-specific shim here:
+  //   - Linux/macOS:  node_modules/.bin/tsdown          (executable file)
+  //   - Windows:      node_modules/.bin/tsdown.cmd      (cmd batch file)
+  //   - Windows:      node_modules/.bin/tsdown.ps1      (PowerShell shim)
+  // On Windows, spawnSync of the bare .bin/tsdown path fails with
+  // ENOENT because the file is .cmd (or .ps1), not the literal
+  // name. Resolve the actual shim by trying the three candidates
+  // in order; fall back to `npx tsdown` (which handles platform
+  // shims automatically) if none match.
+  const binDir = join(REPO_ROOT, "node_modules", ".bin");
+  const candidates = process.platform === "win32"
+    ? ["tsdown.cmd", "tsdown.ps1", "tsdown"]
+    : ["tsdown"];
+  for (const name of candidates) {
+    const path = join(binDir, name);
+    if (existsSync(path)) {
+      // .ps1 must go through PowerShell, not spawnSync directly.
+      if (name.endsWith(".ps1")) {
+        return {
+          command: "powershell",
+          prefixArgs: ["-NoProfile", "-ExecutionPolicy", "Bypass", "-File", path],
+        };
+      }
+      return { command: path, prefixArgs: [] };
+    }
   }
-  return { command: "tsdown", prefixArgs: [] };
+  // Last resort: `npx tsdown` defers to npm's shim resolution.
+  return { command: "npx", prefixArgs: ["--no-install", "tsdown"] };
 }
 
 function runTsdown(args, label) {
   const { command, prefixArgs } = resolveTsdownCommand();
   const fullArgs = [...prefixArgs, ...args];
+  // Windows-specific: spawnSync of a .cmd batch file without
+  // `shell: true` fails with EINVAL (Node refuses to execute a
+  // batch file as a direct child process). When the resolved
+  // command ends in .cmd (the typical npm-installed shim on
+  // Windows), pass `shell: true` so the OS shell handles the
+  // cmd.exe /c dispatch. On Linux/macOS the shim is an
+  // executable file and `shell: true` is unnecessary (and can
+  // add a layer of quoting complexity), so we only enable it
+  // when needed.
+  const needsShell = process.platform === "win32" && command.toLowerCase().endsWith(".cmd");
   const result = spawnSync(command, fullArgs, {
     cwd: REPO_ROOT,
     env: process.env,
     encoding: "utf8",
+    shell: needsShell,
   });
   if (result.error !== undefined && result.error !== null) {
     throw new Error(`tsdown ${label} failed to spawn: ${result.error.message}`);
