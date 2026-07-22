@@ -17820,14 +17820,27 @@ function isVersionFlag(argv) {
 function runVersion(_argv) {
     const version = readPackageVersion();
     const stdout = `${version}\n`;
-    // Write synchronously for the common case (stdout is a TTY or a pipe
-    // that accepts the write immediately). The auto-invoke in this file
-    // sets `process.exitCode` and lets Node exit naturally rather than
-    // calling `process.exit()` directly, which is the belt-and-suspenders
-    // fix for the SEA-binary "exit 0 but empty stdout" regression where
-    // the write to a captured-output pipe (`$(...)`) could be lost if
-    // the process tore down stdout before the async drain completed.
-    process.stdout.write(stdout);
+    // Write synchronously via fs.writeSync to fd=1 (stdout). The earlier
+    // `process.stdout.write()` + `process.exitCode = N` belt-and-suspenders
+    // pattern was insufficient: the dry-run release-pipeline CI captured
+    // `INSTALLED_VERSION=$(umactually --version)` and got an empty string.
+    // Root cause: under a Node SEA binary, `process.stdout.write` is
+    // stream-buffered; the auto-invoke resolves the main() promise and
+    // sets process.exitCode, but the buffered write may be torn down
+    // before the underlying pipe drain completes. fs.writeSync is
+    // synchronous and goes straight to the kernel pipe buffer, which
+    // is what the parent shell's `$(...)` reads. process.stdout.write
+    // is kept as a fallback for the path that goes through a TTY /
+    // unusual stream, but the synchronous write is the canonical path.
+    try {
+        (0,external_node_fs_namespaceObject.writeFileSync)(process.stdout.fd, stdout);
+    }
+    catch {
+        // If fd-based write isn't available (e.g. exotic stdio wrappers),
+        // fall back to the stream write. The dry-run regression will
+        // resurface in that case, but the typical install paths are fine.
+        process.stdout.write(stdout);
+    }
     return { exitCode: 0, stdout };
 }
 function buildSanitizedResolvedConfig(resolved) {
