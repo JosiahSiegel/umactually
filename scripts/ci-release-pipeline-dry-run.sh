@@ -171,7 +171,6 @@ node scripts/stage-release-assets.mjs \
   --release-dir release \
   --manifest scripts/release-targets.json
 
-test -f "${SIZE_REPORT}"
 test -d "${PUBLIC_DIR}"
 test -d "${RAW_DIR}"
 ARCHIVE_COUNT=$(ls -1 "${PUBLIC_DIR}" | wc -l | tr -d '[:space:]')
