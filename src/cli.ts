@@ -1,6 +1,7 @@
 import { readFileSync, writeFileSync } from "node:fs";
 import { rm } from "node:fs/promises";
 import { join } from "node:path";
+import { pathToFileURL } from "node:url";
 
 import { CliHelpSignal, CliUsageError, parseCliArgs, type ParsedCliArgs } from "./cli/parse-args.js";
 import { dispatch as dispatchSubcommand } from "./cli/dispatch.js";
@@ -18,7 +19,16 @@ import {
 } from "./config/field-resolution.js";
 import { BRAND_PREFIX } from "./util/brand.js";
 import { formatError } from "./util/error.js";
-import { pathToFileUrl } from "./util/url.js";
+// `pathToFileUrl` from src/util/url.js is intentionally NOT imported
+// here. That helper does a naive `new URL("file://" + value)` which
+// preserves relative paths as-is (e.g. "./umactually" stays
+// "file://./umactually"), breaking the auto-invoke's
+// import.meta.url equality check whenever the user invokes the SEA
+// binary via a relative path. Node's built-in `pathToFileURL` from
+// `node:url` resolves relative paths against `process.cwd()` and
+// canonicalises the result, which is what we want. The legacy helper
+// is kept in src/util/url.ts for the other call sites that genuinely
+// pass absolute paths.
 
 declare global {
   // Cross-module flag set by the action entry to suppress this module's
@@ -574,7 +584,7 @@ const isMainModule = (() => {
   if (argv1 === undefined) {
     return false;
   }
-  return import.meta.url === pathToFileUrl(argv1);
+  return import.meta.url === pathToFileURL(argv1).href;
 })();
 
 if (isMainModule) {

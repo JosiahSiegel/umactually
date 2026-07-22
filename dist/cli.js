@@ -73,6 +73,8 @@ const external_node_fs_namespaceObject = __WEBPACK_EXTERNAL_createRequire(import
 const promises_namespaceObject = __WEBPACK_EXTERNAL_createRequire(import.meta.url)("node:fs/promises");
 ;// CONCATENATED MODULE: external "node:path"
 const external_node_path_namespaceObject = __WEBPACK_EXTERNAL_createRequire(import.meta.url)("node:path");
+;// CONCATENATED MODULE: external "node:url"
+const external_node_url_namespaceObject = __WEBPACK_EXTERNAL_createRequire(import.meta.url)("node:url");
 ;// CONCATENATED MODULE: ./src/config/field-schema.ts
 const FIELDS = {
     apiUrl: {
@@ -1308,8 +1310,6 @@ function unknownFlagUsageError(token, argv) {
 const external_node_child_process_namespaceObject = __WEBPACK_EXTERNAL_createRequire(import.meta.url)("node:child_process");
 ;// CONCATENATED MODULE: external "node:os"
 const external_node_os_namespaceObject = __WEBPACK_EXTERNAL_createRequire(import.meta.url)("node:os");
-;// CONCATENATED MODULE: external "node:url"
-const external_node_url_namespaceObject = __WEBPACK_EXTERNAL_createRequire(import.meta.url)("node:url");
 ;// CONCATENATED MODULE: external "node:util"
 const external_node_util_namespaceObject = __WEBPACK_EXTERNAL_createRequire(import.meta.url)("node:util");
 ;// CONCATENATED MODULE: ./src/cli/check-review-artifact.ts
@@ -17820,16 +17820,27 @@ function isVersionFlag(argv) {
 function runVersion(_argv) {
     const version = readPackageVersion();
     const stdout = `${version}\n`;
-    // Single write path: process.stdout.write. The test suite
-    // (cli-version.test.ts) mocks this and asserts the exact bytes
-    // emitted, so the test sees `0.6.0\n` in its captured stdout. In
-    // Node's normal pipe path this is synchronous for small writes (a few
-    // bytes) and the data reaches the kernel pipe buffer before
-    // runVersion returns. Under a Node SEA binary the auto-invoke path
-    // sets process.exitCode (not process.exit) so the stream's async
-    // drain is allowed to complete before the process exits, leaving
-    // the parent shell's `$(...)` capture non-empty.
-    process.stdout.write(stdout);
+    // Write synchronously via fs.writeSync to fd=1 (stdout). The earlier
+    // `process.stdout.write()` + `process.exitCode = N` belt-and-suspenders
+    // pattern was insufficient: the post-release e2e on macos-arm64 captured
+    // `INSTALLED_VERSION=$(umactually --version)` and got an empty string.
+    // Root cause: under a Node SEA binary, `process.stdout.write` is
+    // stream-buffered; the auto-invoke resolves the main() promise and
+    // sets process.exitCode, but the buffered write may be torn down
+    // before the underlying pipe drain completes — and this race is
+    // platform-dependent (Linux lands the write before teardown; macOS
+    // and Windows occasionally lose it). fs.writeFileSync is synchronous
+    // and goes straight to the kernel pipe buffer, which is what the
+    // parent shell's `$(...)` reads on every platform. The stream write
+    // is kept as a fallback for the path that goes through an unusual
+    // stdio wrapper where the fd-based write isn't available, but the
+    // synchronous write is the canonical path.
+    try {
+        (0,external_node_fs_namespaceObject.writeFileSync)(process.stdout.fd, stdout);
+    }
+    catch {
+        process.stdout.write(stdout);
+    }
     return { exitCode: 0, stdout };
 }
 function buildSanitizedResolvedConfig(resolved) {
@@ -18202,7 +18213,7 @@ const isMainModule = (() => {
     if (argv1 === undefined) {
         return false;
     }
-    return import.meta.url === pathToFileUrl(argv1);
+    return import.meta.url === (0,external_node_url_namespaceObject.pathToFileURL)(argv1).href;
 })();
 if (isMainModule) {
     main(process.argv.slice(2))
