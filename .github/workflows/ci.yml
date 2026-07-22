@@ -145,7 +145,34 @@ jobs:
         run: |
           set -euo pipefail
           chmod +x release/umactually-linux-x64
-          release/umactually-linux-x64 --version
+
+          # --version is the first code path the SEA loader runs after
+          # init (it fires before any subcommand dispatch). Capture its
+          # exit status + stderr under a separate file so a loader
+          # regression that crashes the binary on --version is
+          # detected even if the doctor subcommand below happens to
+          # mask the crash (e.g. a doctor fallback path that swallows
+          # errors). The SEA loader fault contract: exit 0 with a
+          # version string on stdout. Any other outcome is a crash.
+          set +e
+          _version_err="$(mktemp)"
+          release/umactually-linux-x64 --version 2>"${_version_err}" >/dev/null
+          _version_status=$?
+          set -e
+          if [ "$_version_status" -ne 0 ]; then
+            echo "::error::SEA loader crash on --version (exit=${_version_status})"
+            cat "${_version_err}" >&2 || true
+            rm -f "${_version_err}"
+            exit "${_version_status}"
+          fi
+          if grep -Eq 'Error: |SyntaxError|TypeError: |ReferenceError: |RangeError: |bad SEA|SEA blob|loader fault|node:internal/|Cannot read propert|Cannot access |is not a function|is not defined' "${_version_err}"; then
+            echo "::error::SEA loader crash on --version (loader-fault signature on stderr)"
+            cat "${_version_err}" >&2 || true
+            rm -f "${_version_err}"
+            exit 1
+          fi
+          rm -f "${_version_err}"
+
           # Doctor runs the safety checks (env, deps, network). We expect
           # it to fail (no GitHub token, no LLM key) but not crash on
           # launch — the SEA loader must succeed. Doctor's documented
@@ -159,6 +186,17 @@ jobs:
           # mis-classified as a loader crash. We grep stderr for the
           # specific Node loader-shaped errors we care about, not for a
           # raw exit code magnitude.
+          #
+          # Pattern set covers every common Node SEA loader fault:
+          #   - Error: <message>          (cannot find module, ENOENT, etc.)
+          #   - SyntaxError / TypeError / ReferenceError / RangeError
+          #     (loader throws on first import)
+          #   - bad SEA / SEA blob        (binary header corruption)
+          #   - loader fault              (explicit @tsdown/exe failure)
+          #   - node:internal/            (Node internal stack frame)
+          #   - Cannot read/access propert(y/ies), "is not a function",
+          #     "is not defined"          (typical module-load TypeErrors
+          #                                on first require)
           set +e
           _doctor_err="$(mktemp)"
           release/umactually-linux-x64 doctor 2>"${_doctor_err}" >/dev/null
@@ -167,7 +205,7 @@ jobs:
           if [ "$_doctor_status" -eq 0 ]; then
             echo "SEA loader OK (doctor exit=0, all checks passed)"
             rm -f "${_doctor_err}"
-          elif [ "$_doctor_status" -eq 1 ] && ! grep -Eq 'Error: cannot find module|SyntaxError|TypeError: |ReferenceError: |bad SEA|SEA blob|loader fault|node:internal/' "${_doctor_err}"; then
+          elif [ "$_doctor_status" -eq 1 ] && ! grep -Eq 'Error: |SyntaxError|TypeError: |ReferenceError: |RangeError: |bad SEA|SEA blob|loader fault|node:internal/|Cannot read propert|Cannot access |is not a function|is not defined' "${_doctor_err}"; then
             # Exit 1 with no loader-crash signature on stderr: this is
             # the documented business failure (missing creds). The
             # smoke goal (loader works) is satisfied.
