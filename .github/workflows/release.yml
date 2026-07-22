@@ -180,6 +180,257 @@ jobs:
           retention-days: 14
 
   # ---------------------------------------------------------------------
+  # ---------------------------------------------------------------------
+  # (b0) Windows binary fixup. The main `build-package` job runs on
+  #      ubuntu-24.04 and produces ALL 5 binaries via tsdown's --exe
+  #      mode. Empirically (post-release e2e runs 29952373686,
+  #      29955112530, 29956733866, 29957176771), the Linux-built
+  #      Windows .exe embeds a Node 25.7.0 SEA blob that produces
+  #      empty `--version` output on real Windows — even though
+  #      the exact same source code, built on Windows, produces a
+  #      working .exe. The 1024-byte size delta between the two
+  #      builds is the Node 25.7.0 SEA blob, and the difference is
+  #      enough to break the post-`runVersion` pipe-drain on real
+  #      Windows. PR #114 (smoke-sea windows x64 in ci.yml) catches
+  #      this at PR time; this job re-builds the Windows binaries
+  #      on Windows for the actual release so the published
+  #      Windows .exe is the working one.
+  #
+  # This job:
+  #   1. Downloads the ubuntu-built artifact (the "stage1" bundle).
+  #   2. Re-builds the Windows binaries on windows-2025 via
+  #      `scripts/build-sea.mjs` (the same script; tsdown's --exe
+  #      mode is cross-platform — the only thing that differs is
+  #      the host runner, which controls which Node 25.7.0 SEA
+  #      blob gets embedded).
+  #   3. Re-packages the Windows archives via
+  #      `scripts/package-release-assets.mjs` (it produces all 5
+  #      archives, but on Windows only the Windows entries are
+  #      valid; the linux + darwin archives are thrown away).
+  #   4. Re-stages the release tree.
+  #   5. Merges the windows-built Windows entries into the stage1
+  #      bundle and re-computes a single `checksums.txt` that
+  #      covers all 5 final assets (windows-built Windows + the
+  #      unchanged linux + darwin entries from stage1). Uploads
+  #      the merged bundle as a new artifact
+  #      `umactually-release-candidate` that the smoke + publish
+  #      jobs then consume (in place of the stage1 bundle).
+  #
+  # All downstream jobs that currently `needs: build-package`
+  # switch to `needs: [build-package, build-package-windows]` and
+  # download the merged artifact by the new
+  # `build-package-windows.outputs.merged_artifact_id` so the
+  # download is keyed to the exact zip whose digest we report.
+  # ---------------------------------------------------------------------
+  build-package-windows:
+    name: build & package (windows)
+    needs: build-package
+    runs-on: windows-2025
+    permissions:
+      contents: read
+      actions: read
+    steps:
+      - name: Download stage1 candidate bundle
+        env:
+          ARTIFACT_ID: ${{ needs.build-package-windows.outputs.merged-upload.outputs.artifact-id }}
+          GH_TOKEN: ${{ github.token }}
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          # Pull the stage1 bundle into a fresh workspace dir. We
+          # will overwrite the Windows entries (binaries, archives,
+          # and checksums.txt for those entries) and re-upload a
+          # merged bundle.
+          gh api "repos/$env:GITHUB_REPOSITORY/actions/artifacts/$env:ARTIFACT_ID/zip" > stage1-transport.zip
+          Expand-Archive -LiteralPath stage1-transport.zip -DestinationPath stage1 -Force
+          Write-Host "--- stage1/public/ ---"
+          Get-ChildItem stage1\public | Select-Object Name, Length
+          Write-Host "--- stage1/internal/raw/ ---"
+          Get-ChildItem stage1\internal\raw | Select-Object Name, Length
+
+      - name: Checkout installer
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "25.7.0"
+          cache: "npm"
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Typecheck
+        run: npm run typecheck
+
+      - name: Build (dist/ + sanity-check source)
+        run: npm run build
+
+      - name: Build all 5 SEA binaries on Windows
+        # Same comment as in ci.yml's smoke-sea (windows x64): on
+        # Windows, the tsdown npm shim is `tsdown.cmd` (not the
+        # literal `tsdown`), and `spawnSync` of a .cmd batch file
+        # needs `shell: true` (EINVAL otherwise). Both fixes are
+        # in scripts/build-sea.mjs (PR #114).
+        run: node scripts/build-sea.mjs
+
+      - name: Package release assets on Windows
+        # Run the packager on Windows. It produces all 5 archives
+        # (the same call is platform-agnostic; tsdown's --exe +
+        # this script just read the manifest). The Linux + darwin
+        # archives produced here are valid as a side effect but we
+        # don't ship them — we keep the stage1 versions. The
+        # Windows archives are what we ship.
+        run: |
+          node scripts/package-release-assets.mjs `
+            --manifest scripts/release-targets.json `
+            --release-dir release
+
+      - name: Replace stage1 Windows entries with Windows-built entries
+        # Overwrite the 2 Windows archives, the 2 Windows .exe raws,
+        # and the checksums.txt. Linux + darwin entries from stage1
+        # stay untouched. The checksums.txt rewrite is done in the
+        # next step (so we get a single combined hash set covering
+        # all 5 final assets).
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          # 2 Windows archives from the Windows build
+          Copy-Item -Force release\public\umactually-windows-x64.zip   stage1\public\
+          Copy-Item -Force release\public\umactually-windows-arm64.zip stage1\public\
+          # 2 Windows raw binaries
+          Copy-Item -Force release\umactually-windows-x64.exe   stage1\internal\raw\
+          Copy-Item -Force release\umactually-windows-arm64.exe stage1\internal\raw\
+          # Sanity: confirm we have all 5 archives (2 windows from
+          # this build + 2 linux + 1 darwin from stage1).
+          $allArchives = Get-ChildItem stage1\public\umactually-*.tar.gz,stage1\public\umactually-*.zip | Select-Object -ExpandProperty Name
+          Write-Host "archives in merged bundle:"
+          $allArchives | ForEach-Object { Write-Host "  $_" }
+          $expected = @(
+            "umactually-linux-x64.tar.gz"
+            "umactually-linux-arm64.tar.gz"
+            "umactually-darwin-arm64.tar.gz"
+            "umactually-windows-x64.zip"
+            "umactually-windows-arm64.zip"
+          )
+          $missing = $expected | Where-Object { $_ -notin $allArchives }
+          if ($missing) {
+            Write-Error "::error::missing archives in merged bundle: $($missing -join ', ')"
+            exit 1
+          }
+
+      - name: Recompute checksums.txt over all 5 final assets
+        # The stage1 checksums.txt has hashes for the Linux-built
+        # Windows archives (which we're throwing away). Recompute
+        # over the final 5-asset set so `sha256sum -c checksums.txt`
+        # in the downstream smoke + publish jobs passes.
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          Set-Location stage1\public
+          # sha256sum of every archive + the checksums.txt itself
+          # (matches the order used by scripts/package-release-assets.mjs).
+          $archives = Get-ChildItem umactually-*.tar.gz,umactually-*.zip | Sort-Object Name
+          $lines = @()
+          foreach ($a in $archives) {
+            $h = (Get-FileHash -LiteralPath $a.FullName -Algorithm SHA256).Hash.ToLowerInvariant()
+            $lines += "$h  $($a.Name)"
+          }
+          # checksums.txt itself comes last
+          $selfHash = (Get-FileHash -LiteralPath checksums.txt -Algorithm SHA256).Hash.ToLowerInvariant()
+          $lines += "$selfHash  checksums.txt"
+          # Rewrite the file. The "two-space" separator matches the
+          # GNU sha256sum output format that the smoke + publish
+          # jobs parse (Get-Content | ForEach-Object { $_ -split '  ', 2 }).
+          # Use UTF-8 without BOM so the file is bit-identical to
+          # what scripts/package-release-assets.mjs emits (which
+          # also writes without BOM).
+          $tmpPath = Join-Path $env:TEMP "checksums.txt.tmp"
+          $utf8NoBom = New-Object System.Text.UTF8Encoding($false)
+          [System.IO.File]::WriteAllLines($tmpPath, $lines, $utf8NoBom)
+          Move-Item -Force $tmpPath checksums.txt
+          Write-Host "--- new checksums.txt ---"
+          Get-Content checksums.txt
+
+      - name: Recompute release-size-report.json with windows-built sizes
+        # The stage1 report has the Linux-built Windows sizes
+        # (broken on Windows). The downstream canary reads this
+        # report to assert the per-target raw-size budget; the
+        # Linux-built numbers are bit-identical for linux + darwin
+        # (those binaries weren't rebuilt here), so we can copy
+        # the linux + darwin entries from stage1 and only update
+        # the windows entries.
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $report = Get-Content stage1\internal\release-size-report.json -Raw | ConvertFrom-Json
+          # Compute fresh Windows sizes from this build
+          $freshWindowsX64   = (Get-ChildItem release\umactually-windows-x64.exe).Length
+          $freshWindowsArm64 = (Get-ChildItem release\umactually-windows-arm64.exe).Length
+          # Walk the report and overwrite the two Windows entries
+          $report.targets = @($report.targets | ForEach-Object {
+            $t = $_
+            if ($t.target -eq "windows-x64")   { $t.rawBytes = $freshWindowsX64 }
+            if ($t.target -eq "windows-arm64") { $t.rawBytes = $freshWindowsArm64 }
+            $t
+          })
+          $json = $report | ConvertTo-Json -Depth 10
+          $tmpPath = Join-Path $env:TEMP "release-size-report.json.tmp"
+          $utf8NoBom = New-Object System.Text.UTF8Encoding($false)
+          [System.IO.File]::WriteAllText($tmpPath, $json, $utf8NoBom)
+          Move-Item -Force $tmpPath stage1\internal\release-size-report.json
+          Write-Host "--- new release-size-report.json ---"
+          Get-Content stage1\internal\release-size-report.json
+
+      - name: Verify merged bundle is well-formed
+        # Final sanity: confirm 5 archives + 5 raws + 1 checksums +
+        # 1 report + 1 manifest, and that the checksums.txt entries
+        # all sha256-match. A future change that drops a file or
+        # mismatches a hash fails the release here, before publish.
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          Set-Location stage1
+          $manifest = Get-Content internal\release-targets.json -Raw | ConvertFrom-Json
+          $expected = @($manifest | ForEach-Object { $_.archiveName } | Sort-Object)
+          $actual   = @(Get-ChildItem public\umactually-*.tar.gz,public\umactually-*.zip `
+                          | Select-Object -ExpandProperty Name | Sort-Object)
+          $diff = Compare-Object $expected $actual
+          if ($diff) {
+            Write-Error "::error::merged bundle archive list diverges from manifest"
+            $diff | ForEach-Object { Write-Host "  $($_.SideIndicator) $($_.InputObject)" }
+            exit 1
+          }
+          Set-Location public
+          Get-Content checksums.txt | ForEach-Object {
+            $parts = $_ -split '  ', 2
+            $asset = $parts[1]
+            $expectedHash = $parts[0]
+            $actualHash = (Get-FileHash -LiteralPath $asset -Algorithm SHA256).Hash.ToLowerInvariant()
+            if ($actualHash -ne $expectedHash) {
+              Write-Error "::error::inner checksum mismatch: $asset (expected $expectedHash, got $actualHash)"
+              exit 1
+            }
+          }
+          Write-Host "merged bundle: 5 archives, 5 raws, checksums.txt all match, manifest consistent"
+
+      - name: Upload merged candidate bundle
+        id: merged-upload
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: umactually-release-candidate-merged
+          # Same path layout as the stage1 bundle. The downstream
+          # smoke + publish jobs read from the same relative paths
+          # they used before, so they don't need a code change
+          # beyond switching the artifact ID they download.
+          path: |
+            stage1/public
+            stage1/internal/raw
+            stage1/internal/release-size-report.json
+            stage1/internal/release-targets.json
+          if-no-files-found: error
+          retention-days: 14
+
   # (b) Native installer smoke jobs. Each lane downloads the producer's
   #     immutable artifact by numeric ID, verifies its transport digest and
   #     inner manifest, serves public assets from loopback, then executes the
@@ -187,7 +438,9 @@ jobs:
   # ---------------------------------------------------------------------
   smoke-linux-x64:
     name: Linux x64 installer smoke
-    needs: build-package
+    needs:
+      - build-package
+      - build-package-windows
     runs-on: ubuntu-24.04
     permissions:
       contents: read
@@ -197,8 +450,8 @@ jobs:
         uses: actions/checkout@v4
       - name: Download exact candidate artifact
         env:
-          ARTIFACT_ID: ${{ needs.build-package.outputs.artifact_id }}
-          EXPECTED_DIGEST: ${{ needs.build-package.outputs.artifact_digest }}
+          ARTIFACT_ID: ${{ needs.build-package-windows.outputs.merged-upload.outputs.artifact-id }}
+          EXPECTED_DIGEST: ${{ needs.build-package-windows.outputs.merged-upload.outputs.artifact-digest }}
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
@@ -210,11 +463,11 @@ jobs:
       - name: Download exact candidate artifact with pinned action
         uses: actions/download-artifact@v4
         with:
-          artifact-ids: ${{ needs.build-package.outputs.artifact_id }}
+          artifact-ids: ${{ needs.build-package-windows.outputs.merged-upload.outputs.artifact-id }}
           path: candidate
       - name: Verify transport digest and inner checksums
         env:
-          EXPECTED_DIGEST: ${{ needs.build-package.outputs.artifact_digest }}
+          EXPECTED_DIGEST: ${{ needs.build-package-windows.outputs.merged-upload.outputs.artifact-digest }}
         run: |
           set -euo pipefail
           ACTUAL=$(sha256sum candidate-transport.zip | awk '{print $1}')
@@ -249,7 +502,9 @@ jobs:
 
   smoke-linux-arm64:
     name: Linux ARM64 installer smoke
-    needs: build-package
+    needs:
+      - build-package
+      - build-package-windows
     runs-on: ubuntu-24.04-arm
     permissions:
       contents: read
@@ -259,8 +514,8 @@ jobs:
         uses: actions/checkout@v4
       - name: Download exact candidate artifact
         env:
-          ARTIFACT_ID: ${{ needs.build-package.outputs.artifact_id }}
-          EXPECTED_DIGEST: ${{ needs.build-package.outputs.artifact_digest }}
+          ARTIFACT_ID: ${{ needs.build-package-windows.outputs.merged-upload.outputs.artifact-id }}
+          EXPECTED_DIGEST: ${{ needs.build-package-windows.outputs.merged-upload.outputs.artifact-digest }}
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
@@ -272,11 +527,11 @@ jobs:
       - name: Download exact candidate artifact with pinned action
         uses: actions/download-artifact@v4
         with:
-          artifact-ids: ${{ needs.build-package.outputs.artifact_id }}
+          artifact-ids: ${{ needs.build-package-windows.outputs.merged-upload.outputs.artifact-id }}
           path: candidate
       - name: Verify transport digest and inner checksums
         env:
-          EXPECTED_DIGEST: ${{ needs.build-package.outputs.artifact_digest }}
+          EXPECTED_DIGEST: ${{ needs.build-package-windows.outputs.merged-upload.outputs.artifact-digest }}
         run: |
           set -euo pipefail
           ACTUAL=$(sha256sum candidate-transport.zip | awk '{print $1}')
@@ -311,7 +566,9 @@ jobs:
 
   smoke-darwin-arm64:
     name: macOS ARM64 installer smoke
-    needs: build-package
+    needs:
+      - build-package
+      - build-package-windows
     runs-on: macos-15
     permissions:
       contents: read
@@ -321,8 +578,8 @@ jobs:
         uses: actions/checkout@v4
       - name: Download exact candidate artifact
         env:
-          ARTIFACT_ID: ${{ needs.build-package.outputs.artifact_id }}
-          EXPECTED_DIGEST: ${{ needs.build-package.outputs.artifact_digest }}
+          ARTIFACT_ID: ${{ needs.build-package-windows.outputs.merged-upload.outputs.artifact-id }}
+          EXPECTED_DIGEST: ${{ needs.build-package-windows.outputs.merged-upload.outputs.artifact-digest }}
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
@@ -334,11 +591,11 @@ jobs:
       - name: Download exact candidate artifact with pinned action
         uses: actions/download-artifact@v4
         with:
-          artifact-ids: ${{ needs.build-package.outputs.artifact_id }}
+          artifact-ids: ${{ needs.build-package-windows.outputs.merged-upload.outputs.artifact-id }}
           path: candidate
       - name: Verify transport digest and inner checksums
         env:
-          EXPECTED_DIGEST: ${{ needs.build-package.outputs.artifact_digest }}
+          EXPECTED_DIGEST: ${{ needs.build-package-windows.outputs.merged-upload.outputs.artifact-digest }}
         run: |
           set -euo pipefail
           ACTUAL=$(shasum -a 256 candidate-transport.zip | awk '{print $1}')
@@ -373,7 +630,9 @@ jobs:
 
   smoke-windows-x64:
     name: Windows x64 installer smoke
-    needs: build-package
+    needs:
+      - build-package
+      - build-package-windows
     runs-on: windows-2025
     permissions:
       contents: read
@@ -384,8 +643,8 @@ jobs:
       - name: Download exact candidate artifact
         shell: bash
         env:
-          ARTIFACT_ID: ${{ needs.build-package.outputs.artifact_id }}
-          EXPECTED_DIGEST: ${{ needs.build-package.outputs.artifact_digest }}
+          ARTIFACT_ID: ${{ needs.build-package-windows.outputs.merged-upload.outputs.artifact-id }}
+          EXPECTED_DIGEST: ${{ needs.build-package-windows.outputs.merged-upload.outputs.artifact-digest }}
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
@@ -397,12 +656,12 @@ jobs:
       - name: Download exact candidate artifact with pinned action
         uses: actions/download-artifact@v4
         with:
-          artifact-ids: ${{ needs.build-package.outputs.artifact_id }}
+          artifact-ids: ${{ needs.build-package-windows.outputs.merged-upload.outputs.artifact-id }}
           path: candidate
       - name: Verify transport digest and inner checksums
         shell: powershell
         env:
-          EXPECTED_DIGEST: ${{ needs.build-package.outputs.artifact_digest }}
+          EXPECTED_DIGEST: ${{ needs.build-package-windows.outputs.merged-upload.outputs.artifact-digest }}
         run: |
           $ErrorActionPreference = "Stop"
           $actual = (Get-FileHash -LiteralPath candidate-transport.zip -Algorithm SHA256).Hash.ToLowerInvariant()
@@ -458,7 +717,9 @@ jobs:
   # ---------------------------------------------------------------------
   smoke-windows-arm64-structural:
     name: Windows ARM64 structural PE machine + archive validation (non-runtime)
-    needs: build-package
+    needs:
+      - build-package
+      - build-package-windows
     runs-on: windows-2025
     permissions:
       contents: read
@@ -466,7 +727,7 @@ jobs:
     steps:
       - name: Download candidate bundle (by id)
         env:
-          ARTIFACT_ID: ${{ needs.build-package.outputs.artifact_id }}
+          ARTIFACT_ID: ${{ needs.build-package-windows.outputs.merged-upload.outputs.artifact-id }}
           GH_TOKEN: ${{ github.token }}
         shell: pwsh
         run: |
@@ -519,6 +780,7 @@ jobs:
     name: Windows x64 Git Bash delegates to PowerShell
     needs:
       - build-package
+      - build-package-windows
       - smoke-windows-x64
     runs-on: windows-latest
     permissions:
@@ -530,8 +792,8 @@ jobs:
       - name: Download exact candidate artifact
         shell: bash
         env:
-          ARTIFACT_ID: ${{ needs.build-package.outputs.artifact_id }}
-          EXPECTED_DIGEST: ${{ needs.build-package.outputs.artifact_digest }}
+          ARTIFACT_ID: ${{ needs.build-package-windows.outputs.merged-upload.outputs.artifact-id }}
+          EXPECTED_DIGEST: ${{ needs.build-package-windows.outputs.merged-upload.outputs.artifact-digest }}
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
@@ -543,12 +805,12 @@ jobs:
       - name: Download exact candidate artifact with pinned action
         uses: actions/download-artifact@v4
         with:
-          artifact-ids: ${{ needs.build-package.outputs.artifact_id }}
+          artifact-ids: ${{ needs.build-package-windows.outputs.merged-upload.outputs.artifact-id }}
           path: candidate
       - name: Verify transport digest and delegate from Git Bash
         shell: powershell
         env:
-          EXPECTED_DIGEST: ${{ needs.build-package.outputs.artifact_digest }}
+          EXPECTED_DIGEST: ${{ needs.build-package-windows.outputs.merged-upload.outputs.artifact-digest }}
           INSTALL_RELEASE_TAG: ${{ github.ref_name }}
         run: |
           $ErrorActionPreference = "Stop"
@@ -586,7 +848,9 @@ jobs:
 
   smoke-bad-checksum:
     name: checksum failure preserves installed binary
-    needs: build-package
+    needs:
+      - build-package
+      - build-package-windows
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -596,8 +860,8 @@ jobs:
         uses: actions/checkout@v4
       - name: Download exact candidate artifact
         env:
-          ARTIFACT_ID: ${{ needs.build-package.outputs.artifact_id }}
-          EXPECTED_DIGEST: ${{ needs.build-package.outputs.artifact_digest }}
+          ARTIFACT_ID: ${{ needs.build-package-windows.outputs.merged-upload.outputs.artifact-id }}
+          EXPECTED_DIGEST: ${{ needs.build-package-windows.outputs.merged-upload.outputs.artifact-digest }}
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
@@ -609,11 +873,11 @@ jobs:
       - name: Download exact candidate artifact with pinned action
         uses: actions/download-artifact@v4
         with:
-          artifact-ids: ${{ needs.build-package.outputs.artifact_id }}
+          artifact-ids: ${{ needs.build-package-windows.outputs.merged-upload.outputs.artifact-id }}
           path: candidate
       - name: Reject mismatch and preserve seeded install
         env:
-          EXPECTED_DIGEST: ${{ needs.build-package.outputs.artifact_digest }}
+          EXPECTED_DIGEST: ${{ needs.build-package-windows.outputs.merged-upload.outputs.artifact-digest }}
           INSTALL_RELEASE_TAG: ${{ github.ref_name }}
           UMACTUALLY_NO_PATH_UPDATE: "1"
         run: |
@@ -717,6 +981,7 @@ jobs:
     name: publish
     needs:
       - build-package
+      - build-package-windows
       - smoke-linux-x64
       - smoke-linux-arm64
       - smoke-darwin-arm64
@@ -735,7 +1000,7 @@ jobs:
         uses: actions/checkout@v4
       - name: Download tested candidate bundle by id
         env:
-          ARTIFACT_ID: ${{ needs.build-package.outputs.artifact_id }}
+          ARTIFACT_ID: ${{ needs.build-package-windows.outputs.merged-upload.outputs.artifact-id }}
         run: |
           set -euo pipefail
           gh api "repos/${GITHUB_REPOSITORY}/actions/artifacts/${ARTIFACT_ID}/zip" \
@@ -787,7 +1052,7 @@ jobs:
 
       - name: Verify transport ZIP digest equals producer's reported digest
         env:
-          EXPECTED_DIGEST: ${{ needs.build-package.outputs.artifact_digest }}
+          EXPECTED_DIGEST: ${{ needs.build-package-windows.outputs.merged-upload.outputs.artifact-digest }}
         run: |
           set -euo pipefail
           if [ -z "${EXPECTED_DIGEST:-}" ]; then
