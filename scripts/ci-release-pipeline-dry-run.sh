@@ -141,8 +141,9 @@ log "6/9  verify stage sizes (replaces verify-release-assets.mjs --measure)"
 # bounds. MIN_RAW_BYTES catches a partial SEA blob (existence +
 # self-consistent sha256 is not enough — it would still fail on
 # launch). MAX_RAW_BYTES catches a runaway build. As of v0.6.0
-# the largest target is darwin-x64 at ~134 MiB; 200 MiB leaves
-# ~50% headroom for legitimate growth.
+# the largest target is darwin-arm64 at ~125 MiB (darwin-x64
+# was dropped in v0.6.0 due to nodejs/node#62893); 200 MiB
+# leaves ~50% headroom for legitimate growth.
 node -e '
 const fs = require("fs");
 const path = require("path");

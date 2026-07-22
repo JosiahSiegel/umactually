@@ -100,12 +100,13 @@ jobs:
         #     sha256-passes (the chunk is self-consistent), then
         #     crashes on launch.
         #   - MAX_RAW_BYTES (200 MiB): hard cap. As of v0.6.0 the
-        #     largest target is darwin-x64 at ~134 MiB. 200 MiB leaves
-        #     ~50% headroom for legitimate growth (e.g. a new dep
-        #     tree) and is far below the installer's pipe-buffer
-        #     concerns. Any new target that legitimately needs more
-        #     room must bump this number AND the docs/ release-process
-        #     section that documents it.
+        #     largest target is darwin-arm64 at ~125 MiB (darwin-x64
+        #     was dropped in v0.6.0 due to nodejs/node#62893).
+        #     200 MiB leaves ~50% headroom for legitimate growth
+        #     (e.g. a new dep tree) and is far below the installer's
+        #     pipe-buffer concerns. Any new target that legitimately
+        #     needs more room must bump this number AND the docs/
+        #     release-process section that documents it.
         run: |
           node -e '
             const fs = require("node:fs");
@@ -290,68 +291,6 @@ jobs:
           ACTUAL=$(sha256sum candidate-transport.zip | awk '{print $1}')
           test "$ACTUAL" = "$EXPECTED_DIGEST"
           (cd candidate/public && sha256sum -c checksums.txt)
-      - name: Serve candidate and install
-        env:
-          INSTALL_RELEASE_TAG: ${{ github.ref_name }}
-          UMACTUALLY_NO_PATH_UPDATE: "1"
-        run: |
-          set -euo pipefail
-          PORT=$(python3 -c 'import socket; s=socket.socket(); s.bind(("127.0.0.1",0)); print(s.getsockname()[1]); s.close()')
-          python3 -m http.server "$PORT" --bind 127.0.0.1 --directory candidate/public &
-          SERVER_PID=$!
-          trap 'kill "$SERVER_PID" 2>/dev/null || true; rm -rf "$HOME/.local/bin" "$RUNNER_TEMP/umactually"' EXIT
-          # Wait for the server to start accepting connections (up to 5 seconds).
-          # Without this, the installer's curl can hit the port before the server
-          # has called listen(), producing a 0ms "Failed to connect" error.
-          for _i in $(seq 1 50); do
-            if curl -sf "http://127.0.0.1:$PORT/checksums.txt" -o /dev/null 2>/dev/null; then
-              break
-            fi
-            sleep 0.1
-          done
-          export INSTALL_RELEASE_BASE="http://127.0.0.1:$PORT"
-          sh scripts/install.sh
-          INSTALL_DIR="$HOME/.local/bin"
-          test -x "$INSTALL_DIR/umactually"
-          "$INSTALL_DIR/umactually" --version
-          "$INSTALL_DIR/umactually" --help >/dev/null
-          "$INSTALL_DIR/umactually" doctor
-
-  smoke-darwin-x64:
-    name: macOS x64 installer smoke
-    needs: build-package
-    runs-on: macos-15-intel
-    permissions:
-      contents: read
-      actions: read
-    steps:
-      - name: Checkout installer
-        uses: actions/checkout@v4
-      - name: Download exact candidate artifact
-        env:
-          ARTIFACT_ID: ${{ needs.build-package.outputs.artifact_id }}
-          EXPECTED_DIGEST: ${{ needs.build-package.outputs.artifact_digest }}
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          set -euo pipefail
-          gh api "repos/${GITHUB_REPOSITORY}/actions/artifacts/${ARTIFACT_ID}/zip" > candidate-transport.zip
-          ACTUAL=$(sha256sum candidate-transport.zip | awk '{print $1}')
-          test "$ACTUAL" = "$EXPECTED_DIGEST"
-          mkdir -p candidate
-          unzip -q candidate-transport.zip -d candidate
-      - name: Download exact candidate artifact with pinned action
-        uses: actions/download-artifact@v4
-        with:
-          artifact-ids: ${{ needs.build-package.outputs.artifact_id }}
-          path: candidate
-      - name: Verify transport digest and inner checksums
-        env:
-          EXPECTED_DIGEST: ${{ needs.build-package.outputs.artifact_digest }}
-        run: |
-          set -euo pipefail
-          ACTUAL=$(shasum -a 256 candidate-transport.zip | awk '{print $1}')
-          test "$ACTUAL" = "$EXPECTED_DIGEST"
-          (cd candidate/public && shasum -a 256 -c checksums.txt)
       - name: Serve candidate and install
         env:
           INSTALL_RELEASE_TAG: ${{ github.ref_name }}
@@ -789,7 +728,6 @@ jobs:
       - build-package
       - smoke-linux-x64
       - smoke-linux-arm64
-      - smoke-darwin-x64
       - smoke-darwin-arm64
       - smoke-windows-x64
       - smoke-windows-x64-git-bash-delegate

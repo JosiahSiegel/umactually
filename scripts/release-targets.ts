@@ -35,8 +35,21 @@ export type ReleaseTarget = {
   readonly installedName: string;
 };
 
-/** The manifest must always describe exactly six production targets. */
-export const EXPECTED_TARGET_COUNT = 6;
+/**
+ * The manifest must always describe exactly five production targets.
+ *
+ * History: v0.5.x and the v0.6.0-rc.1 / v0.6.0-rc.2 manifests shipped
+ * with six targets (linux x64/arm64, darwin x64/arm64, windows x64/arm64).
+ * v0.6.0 final drops `darwin-x64` because of an upstream Node.js SEA bug
+ * — see `nodejs/node#62893` and pnpm/pnpm#11423 — where Node's
+ * `--build-sea` injection produces a binary that segfaults at launch on
+ * Intel macOS, 100% of the time. The Node team has officially excluded
+ * darwin-x64 from the supported SEA platforms list; pnpm 11.0.5
+ * removed the broken artifact for the same reason. umactually follows
+ * suit. Intel Mac users get the npm install path (or build from source)
+ * — see README § Install and CHANGELOG v0.6.0.
+ */
+export const EXPECTED_TARGET_COUNT = 5;
 
 /** Options accepted by the parser. */
 export type ParseOptions = {

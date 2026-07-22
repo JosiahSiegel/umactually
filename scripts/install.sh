@@ -209,11 +209,19 @@ LATEST_API="https://api.github.com/repos/${REPO}/releases/latest"
 LEGACY_TAG_ALLOWLIST="v0.2.1 v0.3.0 v0.4.0 v0.4.1"
 MAX_EXTRACTED_BYTES=150000000
 
-# Canonical six archive basenames (archive contract).
-ARCHIVE_BASENAMES="umactually-linux-x64.tar.gz umactually-linux-arm64.tar.gz umactually-darwin-x64.tar.gz umactually-darwin-arm64.tar.gz umactually-windows-x64.zip umactually-windows-arm64.zip"
+# Canonical five archive basenames (archive contract).
+#
+# v0.6.0 dropped darwin-x64. The Node.js SEA pipeline produces a
+# binary that segfaults on launch on Intel macOS, 100% of the time
+# (nodejs/node#62893, pnpm/pnpm#11423). The Node team has officially
+# excluded darwin-x64 from the supported SEA platforms list. pnpm
+# 11.0.5 dropped the same artifact. Intel Mac users get the npm
+# install path (umactually is published as an npm package) or build
+# from source — see README § Install.
+ARCHIVE_BASENAMES="umactually-linux-x64.tar.gz umactually-linux-arm64.tar.gz umactually-darwin-arm64.tar.gz umactually-windows-x64.zip umactually-windows-arm64.zip"
 
-# Canonical six raw basenames (legacy contract).
-RAW_BASENAMES="umactually-linux-x64 umactually-linux-arm64 umactually-darwin-x64 umactually-darwin-arm64 umactually-windows-x64.exe umactually-windows-arm64.exe"
+# Canonical five raw basenames (legacy contract).
+RAW_BASENAMES="umactually-linux-x64 umactually-linux-arm64 umactually-darwin-arm64 umactually-windows-x64.exe umactually-windows-arm64.exe"
 
 # 64-character hex character class inlined in case patterns.
 HEX64="[0-9A-Fa-f][0-9A-Fa-f][0-9A-Fa-f][0-9A-Fa-f][0-9A-Fa-f][0-9A-Fa-f][0-9A-Fa-f][0-9A-Fa-f][0-9A-Fa-f][0-9A-Fa-f][0-9A-Fa-f][0-9A-Fa-f][0-9A-Fa-f][0-9A-Fa-f][0-9A-Fa-f][0-9A-Fa-f][0-9A-Fa-f][0-9A-Fa-f][0-9A-Fa-f][0-9A-Fa-f][0-9A-Fa-f][0-9A-Fa-f][0-9A-Fa-f][0-9A-Fa-f][0-9A-Fa-f][0-9A-Fa-f][0-9A-Fa-f][0-9A-Fa-f][0-9A-Fa-f][0-9A-Fa-f][0-9A-Fa-f][0-9A-Fa-f][0-9A-Fa-f][0-9A-Fa-f][0-9A-Fa-f][0-9A-Fa-f][0-9A-Fa-f][0-9A-Fa-f][0-9A-Fa-f][0-9A-Fa-f][0-9A-Fa-f][0-9A-Fa-f][0-9A-Fa-f][0-9A-Fa-f][0-9A-Fa-f][0-9A-Fa-f][0-9A-Fa-f][0-9A-Fa-f][0-9A-Fa-f][0-9A-Fa-f][0-9A-Fa-f][0-9A-Fa-f][0-9A-Fa-f][0-9A-Fa-f][0-9A-Fa-f][0-9A-Fa-f][0-9A-Fa-f][0-9A-Fa-f][0-9A-Fa-f][0-9A-Fa-f][0-9A-Fa-f][0-9A-Fa-f][0-9A-Fa-f][0-9A-Fa-f]"
@@ -762,7 +770,6 @@ resolve_dispatch() {
       case "$_first" in
         *"  umactually-linux-x64"|\
 *"  umactually-linux-arm64"|\
-*"  umactually-darwin-x64"|\
 *"  umactually-darwin-arm64"|\
 *"  umactually-windows-x64.exe"|\
 *"  umactually-windows-arm64.exe")
@@ -1214,6 +1221,30 @@ if [ "$PLATFORM" = "windows" ]; then
   EXT=".exe"
 fi
 RAW_BINARY="umactually-${PLATFORM}-${ARCH}${EXT}"
+
+# v0.6.0 dropped darwin-x64 (Intel Mac) from the binary distribution.
+# Node's --build-sea produces a binary that segfaults on launch on
+# Intel macOS, 100% of the time (nodejs/node#62893, pnpm/pnpm#11423).
+# The Node team has officially excluded darwin-x64 from the supported
+# SEA platforms list. Intel Mac users get the npm install path:
+#   npm install -g umactually
+# Detect it up front and fail fast with a clear pointer.
+if [ "$PLATFORM" = "darwin" ] && [ "$ARCH" = "x64" ] && [ -z "${INSTALL_TEST_MODE:-}" ] && [ -z "${PLATFORM_OVERRIDE:-}" ] && [ -z "${ARCH_OVERRIDE:-}" ]; then
+  cat <<'EOF' >&2
+umactually: Intel macOS (darwin-x64) is not supported by the single-file
+binary distribution. This is a known Node.js upstream bug
+(https://github.com/nodejs/node/issues/62893) that affects all Node SEA
+builds on Intel macOS — the binary segfaults on launch.
+
+umactually: install via npm instead:
+    npm install -g umactually
+
+(requires Node.js >= 24 on PATH)
+
+umactually: or build from source — see README.md.
+EOF
+  exit 1
+fi
 
 # When Git Bash on Windows is detected, hand off to PowerShell BEFORE the
 # dispatch matrix so we never make a POSIX download on a Windows machine

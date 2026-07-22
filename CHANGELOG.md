@@ -10,6 +10,32 @@ ship a tag).
 
 ## [Unreleased]
 
+### Removed
+
+- **`darwin-x64` (Intel macOS) dropped from the single-file binary distribution.**
+  Node's `--build-sea` produces a binary that segfaults at launch on Intel
+  macOS, 100% of the time — an upstream Node.js bug
+  ([nodejs/node#62893](https://github.com/nodejs/node/issues/62893),
+  [pnpm/pnpm#11423](https://github.com/pnpm/pnpm/issues/11423)). The Node
+  team has officially excluded `darwin-x64` from the supported SEA
+  platforms list; pnpm 11.0.5 dropped the same artifact for the same
+  reason. The release-targets manifest goes from six to five rows
+  (`linux-x64`, `linux-arm64`, `darwin-arm64`, `windows-x64`,
+  `windows-arm64`); the `darwin-x64` macOS-Intel smoke job is removed
+  from the release workflow; `scripts/install.sh` fails fast on Intel
+  macOS with a pointer at the npm install path
+  (`npm install -g umactually`); `EXPECTED_TARGET_COUNT` is now 5.
+  Intel Mac users get the npm install path or build from source — see
+  README § Install.
+
+### Stats
+
+- Release targets: 6 → 5. Affected contracts: `scripts/release-targets.json`,
+  `scripts/release-targets.ts` (`EXPECTED_TARGET_COUNT`), the release
+  workflow's per-target jobs and asset list, `scripts/install.sh` (fail-fast
+  on darwin+x64), and `test/unit/release-targets.test.ts` (count + fixture
+  expectations).
+
 ## [0.6.0] - 2026-07-21
 
 ### Added
