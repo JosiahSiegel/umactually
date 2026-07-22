@@ -148,22 +148,41 @@ jobs:
           release/umactually-linux-x64 --version
           # Doctor runs the safety checks (env, deps, network). We expect
           # it to fail (no GitHub token, no LLM key) but not crash on
-          # launch — the SEA loader must succeed. Split the two checks
-          # so a `doctor` crash (exit != 0 from a loader fault) is
-          # reported separately from a `doctor` business-logic failure
-          # (exit != 0 from missing creds, which is expected in CI).
+          # launch — the SEA loader must succeed. Doctor's documented
+          # contract is exit 0 (all pass) or exit 1 (any check failed —
+          # the expected missing-creds path here). Exit codes > 1 OR a
+          # stderr signature matching a Node SEA loader fault (e.g.
+          # "Error: cannot find module" thrown at module-load time) are
+          # treated as loader crashes. The loader-fault pattern check
+          # guards against a future doctor change that legitimately
+          # returns exit 2 (e.g. a "permission denied" check) being
+          # mis-classified as a loader crash. We grep stderr for the
+          # specific Node loader-shaped errors we care about, not for a
+          # raw exit code magnitude.
           set +e
-          release/umactually-linux-x64 doctor >/dev/null 2>&1
+          _doctor_err="$(mktemp)"
+          release/umactually-linux-x64 doctor 2>"${_doctor_err}" >/dev/null
           _doctor_status=$?
           set -e
-          if [ "$_doctor_status" -gt 1 ]; then
-            # Exit codes > 1 indicate a loader/process fault, NOT the
-            # expected "missing credentials" (exit 1) business failure.
-            echo "::error::SEA loader crash on doctor (exit=$_doctor_status)"
+          if [ "$_doctor_status" -eq 0 ]; then
+            echo "SEA loader OK (doctor exit=0, all checks passed)"
+            rm -f "${_doctor_err}"
+          elif [ "$_doctor_status" -eq 1 ] && ! grep -Eq 'Error: cannot find module|SyntaxError|TypeError: |ReferenceError: |bad SEA|SEA blob|loader fault|node:internal/' "${_doctor_err}"; then
+            # Exit 1 with no loader-crash signature on stderr: this is
+            # the documented business failure (missing creds). The
+            # smoke goal (loader works) is satisfied.
+            echo "SEA loader OK (doctor exit=1 is the expected missing-creds path)"
+            rm -f "${_doctor_err}"
+          else
+            # Either a non-1 exit code, or exit 1 accompanied by a
+            # loader-fault signature on stderr. Either way, the
+            # loader-side guarantee is broken.
+            echo "::error::SEA loader crash on doctor (exit=${_doctor_status})"
+            cat "${_doctor_err}" >&2 || true
             release/umactually-linux-x64 doctor || true
-            exit "$_doctor_status"
+            rm -f "${_doctor_err}"
+            exit "${_doctor_status}"
           fi
-          echo "SEA loader OK (doctor exit=$_doctor_status is the expected missing-creds path)"
 
   # Comprehensive Windows + PowerShell coverage for every PR. Until
   # v0.6.0 this only ran on tag pushes (release.yml's

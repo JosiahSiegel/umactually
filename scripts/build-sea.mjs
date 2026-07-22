@@ -148,9 +148,17 @@ function normalizeWindowsOutputs() {
   for (const [from, to] of RENAMES) {
     const fromPath = join(OUTDIR, from);
     const toPath = join(OUTDIR, to);
-    if (existsSync(fromPath) && !existsSync(toPath)) {
-      renameSync(fromPath, toPath);
+    if (!existsSync(fromPath)) continue;
+    if (existsSync(toPath)) {
+      // A previous (failed or stale) build left a `*-windows-*.exe`
+      // in `release/`. If we silently skip the rename (the previous
+      // behavior), the stale binary ships and `verifyOutput` passes
+      // against the old file even though the build produced a fresh
+      // one. Drop the stale destination first so the rename below
+      // promotes the just-built `*-win-*.exe` into its manifest slot.
+      unlinkSync(toPath);
     }
+    renameSync(fromPath, toPath);
   }
 }
 

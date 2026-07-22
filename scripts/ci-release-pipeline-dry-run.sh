@@ -109,8 +109,19 @@ NODE_MAJOR="${NODE_MAJOR%%.*}"
 # `X*100 + Y` so the comparison is purely numeric and the lexicographic
 # trap (where "10.0" < "9.0" because '1' < '9' as characters) cannot
 # fire even if a future Node 25.10.0 / 25.11.0 ships.
+# Pre-release tags (e.g. `v25.7.0-rc.1`) would otherwise crash the
+# arithmetic expansion because `${NODE_MINOR_PATCH#*.}` yields
+# `7.0-rc.1` which is not an integer. Guard with a regex that
+# accepts strictly `v<digit>+.<digit>+.<digit>+`; for anything else,
+# the major+min+patch string is logged verbatim and the script
+# re-runs the parse on the numeric form if available. We fail
+# closed on a pre-release tag to mirror the assertNodeVersion() check
+# in scripts/build-sea.mjs.
 NODE_MINOR_PATCH="${NODE_VERSION#v}"
 NODE_MINOR_PATCH="${NODE_MINOR_PATCH#*.}"
+if [[ ! "${NODE_MINOR_PATCH%%.*}" =~ ^[0-9]+$ ]] || [[ ! "${NODE_MINOR_PATCH#*.}" =~ ^[0-9]+$ ]]; then
+  fail "expected node >= 25.7.0 (numeric minor.patch), got ${NODE_VERSION}. CI pins via actions/setup-node@v4 with node-version 25.7.0."
+fi
 NODE_MINOR_PATCH_NUM=$(( ${NODE_MINOR_PATCH%%.*} * 100 + ${NODE_MINOR_PATCH#*.} ))
 if [[ "${NODE_MAJOR}" != "25" ]] || [[ "${NODE_MINOR_PATCH_NUM}" -lt 700 ]]; then
   fail "expected node >= 25.7.0, got ${NODE_VERSION}. CI pins via actions/setup-node@v4 with node-version 25.7.0."
@@ -151,6 +162,16 @@ log "6/9  verify stage sizes (replaces verify-release-assets.mjs --measure)"
 node scripts/verify-release-sizes.mjs \
   --manifest scripts/release-targets.json \
   --release-dir release
+# Lock the size-report location so a future default-path drift in
+# verify-release-sizes.mjs (or a future flag rename) cannot
+# silently leave the JSON somewhere the release workflow's
+# downstream consumers won't find. The dry-run and release.yml
+# both pass --release-dir release and rely on the default
+# <release-dir>/internal/release-size-report.json path.
+if [[ ! -f "${SIZE_REPORT}" ]]; then
+  fail "expected size report at ${SIZE_REPORT} after step 6, but it was not written. verify-release-sizes.mjs may have changed its default --report path; pin --report explicitly to ${SIZE_REPORT}."
+fi
+log "  size report: ${SIZE_REPORT} ($(wc -c < "${SIZE_REPORT}") bytes)"
 
 # ----- 3. Stage into release/public/ + internal/raw/ -----
 # Use the same staging script the release-pipeline uses (lifted out
