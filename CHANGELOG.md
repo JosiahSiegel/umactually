@@ -10,6 +10,20 @@ ship a tag).
 
 ## [Unreleased]
 
+## [0.6.2] - 2026-07-22
+
+### Fixed
+
+- **v0.6.1 Windows binary regression: empty `--version` output** ([#108](https://github.com/JosiahSiegel/umactually/pull/108)). The v0.6.1 release pipeline produced a broken Windows binary because the canonical synchronous write path `fs.writeFileSync(process.stdout.fd, stdout)` was lost in the v0.6.0 PR #104 squash (the pre-squash `bf5fe38` commit with the fix was on a parallel branch and never made it into the squash). The v0.6.0 GitHub Release was re-published with locally-built binaries that had the fix, so v0.6.0 itself works on Windows; but the fix never landed in `main`, so v0.6.1 (built from `main` via `tsdown --exe`) shipped the regression. Post-release e2e run `29952373686` caught this: Linux + macOS passed, Windows failed with `binary --version:` empty and 0 comments for both `openai-compatible` and `anthropic` providers.
+  - `src/cli.ts`: `runVersion` now calls `writeFileSync(process.stdout.fd, Buffer.from(stdout))` as the canonical path. `Buffer.from` is required to keep the write byte-faithful — passing a `string` to `writeFileSync` on a non-text-mode fd writes only the low 8 bits of each code unit, silently corrupting any non-ASCII output. The catch block (on `EBADF` / `EIO` / `EPIPE`) falls back to `writeSync(process.stdout.fd, Buffer.from(stdout))` — a single `write(2)` syscall, NOT `process.stdout.write` (which would re-introduce the stream-buffer race the canonical path exists to fix).
+  - `test/unit/cli-version.test.ts`: refactored to use `vi.doMock('node:fs')` with `vi.resetModules` / `vi.importActual`. The mocked `writeFileSync` only intercepts calls targeting `process.stdout.fd`; everything else passes through. The capture buffer is a module-scoped `let` variable. Added a new test exercising the `EBADF` → `writeSync` fallback path.
+- **vi.mock vs vi.doMock module-mock confusion**: the previous test approach used `vi.mock('node:fs')` (hoisted) with a `passThrough` spread, but ESM named imports bind at module-load time, so the destructured `writeFileSync` in `src/cli.ts` didn't pick up the mock. Replaced with the `vi.doMock` / `vi.resetModules` / `vi.importActual` pattern that was used in the original `bf5fe38` commit, which correctly reloads the cli module against the mocked fs on every test.
+
+### Notes
+
+- The v0.6.2 binary differs from v0.6.1 in the version string (0.6.1 → 0.6.2) AND in the `--version` write path (now `writeFileSync` + `Buffer.from` + `writeSync` fallback; was just `process.stdout.write`). No changes to the install/upgrade/uninstall pipeline or the user-facing CLI behavior.
+- The v0.6.1 GitHub Release is left as-is (broken Windows binary). Users on Windows should upgrade to v0.6.2 to fix the `--version` empty-output issue. Linux and macOS users on v0.6.1 are unaffected (the stream-buffer race is rare on those platforms).
+
 ## [0.6.1] - 2026-07-22
 
 ### Fixed
