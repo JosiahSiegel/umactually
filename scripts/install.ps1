@@ -247,6 +247,55 @@ function Assert-InstallDirTrusted {
 }
 
 # ---- destination identity capture (TOCTOU guard) ----
+# ---- SHA-256 helper (.NET-backed, Get-FileHash fallback) ----
+#
+# Returns a lowercase 64-char hex SHA-256 digest of the file at $Path.
+#
+# Uses [System.Security.Cryptography.SHA256]::Create() directly via the
+# .NET BCL — works in *every* PowerShell environment, including the
+# GitHub Actions `windows-2025-vs2026` runner image where the built-in
+# Get-FileHash cmdlet from Microsoft.PowerShell.Utility is occasionally
+# not auto-loaded on the cold-start path we use here (the failure mode
+# is "Get-FileHash : The term 'Get-FileHash' is not recognized" and
+# surfaces in CI run 29892175955's install-archives-powershell suite).
+#
+# Keep the Get-FileHash fallback for any host where the .NET SHA256
+# stream-throws (extremely rare; v0.5.x was the only consumer).
+function Get-FileHashSha256 {
+  param([string]$Path)
+  if (!(Test-Path -LiteralPath $Path)) {
+    throw "Get-FileHashSha256: file not found: $Path"
+  }
+  try {
+    $sha = [System.Security.Cryptography.SHA256]::Create()
+    try {
+      $stream = [System.IO.File]::OpenRead($Path)
+      try {
+        $bytes = $sha.ComputeHash($stream)
+      } finally {
+        $stream.Dispose()
+      }
+    } finally {
+      $sha.Dispose()
+    }
+    # Convert to lowercase hex manually so we don't depend on
+    # BitConverter.ToString() (locale-sensitive on some hosts).
+    $sb = New-Object System.Text.StringBuilder(64)
+    foreach ($b in $bytes) {
+      [void]$sb.AppendFormat("{0:x2}", $b)
+    }
+    return $sb.ToString()
+  }
+  catch {
+    # Last-resort fallback: try the cmdlet. If that also fails, rethrow
+    # the .NET error which has the more useful stack trace.
+    if (Get-Command -Name Get-FileHash -ErrorAction SilentlyContinue) {
+      return (Get-FileHash -LiteralPath $Path -Algorithm SHA256).Hash.ToLowerInvariant()
+    }
+    throw
+  }
+}
+
 function Get-DestinationIdentity {
   param([string]$Path)
   if (!(Test-Path -LiteralPath $Path)) {
@@ -263,7 +312,7 @@ function Get-DestinationIdentity {
     Exists     = $true
     Length     = $item.Length
     LastWrite  = $item.LastWriteTimeUtc
-    Sha256     = (Get-FileHash -LiteralPath $Path -Algorithm SHA256).Hash
+    Sha256     = (Get-FileHashSha256 -Path $Path)
   }
 }
 
@@ -783,7 +832,7 @@ function Invoke-LegacyRawInstall {
     # 8. Verify SHA-256 of the downloaded bytes against the parsed entry.
     # Get-FileHash returns uppercase hex; the canonical entry is lowercase.
     # OrdinalIgnoreCase is mandatory so casing differences don't false-fail.
-    $actualHash = (Get-FileHash -LiteralPath $TempBinary -Algorithm SHA256).Hash
+    $actualHash = (Get-FileHashSha256 -Path $TempBinary)
     if (-not [String]::Equals($expectedHash, $actualHash, [StringComparison]::OrdinalIgnoreCase)) {
       throw "SHA-256 checksum mismatch for $Binary"
     }
@@ -873,7 +922,7 @@ if ($env:INSTALL_TEST_ARCHIVE_MODE -eq "1") {
   }
 
   # Verify zip SHA-256.
-  $actualHash = (Get-FileHash -LiteralPath $testZipPath -Algorithm SHA256).Hash
+  $actualHash = (Get-FileHashSha256 -Path $testZipPath)
   if (-not [String]::Equals($expectedHash, $actualHash, [StringComparison]::OrdinalIgnoreCase)) {
     throw "SHA-256 checksum mismatch for $testBasename."
   }
@@ -986,7 +1035,7 @@ try {
 
   Invoke-WebRequest -Uri $ArchiveUrl -OutFile $TempZip -UseBasicParsing
 
-  $actualHash = (Get-FileHash -LiteralPath $TempZip -Algorithm SHA256).Hash
+  $actualHash = (Get-FileHashSha256 -Path $TempZip)
   if (-not [String]::Equals($expectedHash, $actualHash, [StringComparison]::OrdinalIgnoreCase)) {
     throw "SHA-256 checksum mismatch for $ArchiveName"
   }

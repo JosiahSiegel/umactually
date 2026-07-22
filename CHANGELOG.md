@@ -46,7 +46,7 @@ ship a tag).
 ### Stats
 
 - Source code: +1,196 / −2,128 lines (net -932). 4 scripts deleted, 5 scripts modified, 1 new test helper, 3 new tests (`build-sea.test.ts`, `bin-shim-version-gate.test.ts`, `install-smart-router.test.ts`).
-- Test counts: 1,566 → ~1,575 unit tests. The 4 new test files add ~10 cases (5 build-sea skip on Node < 25, 4 bin-shim, 4 install-router; the PowerShell test skips on Linux).
+- Test counts: 1,566 → ~1,539 unit tests (net −27). The 4 new test files add 13 cases (5 build-sea skipped on Node < 25, 4 bin-shim, 4 install-router, ~1 win-PowerShell install-archives) but 40 cases are removed by deleting the 4 v0.5.x Bun-pipeline test files (`build-binary.test.ts` ~4, `release-budget.test.ts` ~17, `release-assets.test.ts` ~16, `release-workflow-layout.test.ts` ~3) whose coverage is replaced by `build-sea.test.ts` + the smoke-sea CI job.
 - Binary size: 36 MB gzipped (Bun) → 28 MB gzipped (Node SEA) for the per-target archives. The npm package is 330 KB; the binary is the fallback for users without Node.
 - Build matrix: 6 cross-compile lanes (linux x64/arm64, darwin x64/arm64, windows x64/arm64) on `ubuntu-24.04` only. tsdown downloads the target Node binary from nodejs.org for cross-platform builds, so the matrix is `[ubuntu-24.04]` for build instead of `[ubuntu, macos, windows]`.
 
