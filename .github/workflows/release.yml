@@ -253,10 +253,10 @@ jobs:
           # merged bundle.
           gh api "repos/$env:GITHUB_REPOSITORY/actions/artifacts/$env:ARTIFACT_ID/zip" > stage1-transport.zip
           Expand-Archive -LiteralPath stage1-transport.zip -DestinationPath stage1 -Force
-          Write-Host "--- stage1/public/ ---"
-          Get-ChildItem stage1\public | Select-Object Name, Length
-          Write-Host "--- stage1/internal/raw/ ---"
-          Get-ChildItem stage1\internal\raw | Select-Object Name, Length
+          Write-Host "--- stage1/release/public/ ---"
+          Get-ChildItem stage1\release\public | Select-Object Name, Length
+          Write-Host "--- stage1/release/internal/raw/ ---"
+          Get-ChildItem stage1\release\internal\raw | Select-Object Name, Length
 
       - name: Checkout installer
         uses: actions/checkout@v4
@@ -327,14 +327,14 @@ jobs:
         run: |
           $ErrorActionPreference = "Stop"
           # 2 Windows archives from the Windows build
-          Copy-Item -Force release\public\umactually-windows-x64.zip   stage1\public\
-          Copy-Item -Force release\public\umactually-windows-arm64.zip stage1\public\
+          Copy-Item -Force release\public\umactually-windows-x64.zip   stage1\release\public\
+          Copy-Item -Force release\public\umactually-windows-arm64.zip stage1\release\public\
           # 2 Windows raw binaries
-          Copy-Item -Force release\umactually-windows-x64.exe   stage1\internal\raw\
-          Copy-Item -Force release\umactually-windows-arm64.exe stage1\internal\raw\
+          Copy-Item -Force release\umactually-windows-x64.exe   stage1\release\internal\raw\
+          Copy-Item -Force release\umactually-windows-arm64.exe stage1\release\internal\raw\
           # Sanity: confirm we have all 5 archives (2 windows from
           # this build + 2 linux + 1 darwin from stage1).
-          $allArchives = Get-ChildItem stage1\public\umactually-*.tar.gz,stage1\public\umactually-*.zip | Select-Object -ExpandProperty Name
+          $allArchives = Get-ChildItem stage1\release\public\umactually-*.tar.gz,stage1\release\public\umactually-*.zip | Select-Object -ExpandProperty Name
           Write-Host "archives in merged bundle:"
           $allArchives | ForEach-Object { Write-Host "  $_" }
           $expected = @(
@@ -358,7 +358,7 @@ jobs:
         shell: pwsh
         run: |
           $ErrorActionPreference = "Stop"
-          Set-Location stage1\public
+          Set-Location stage1\release\public
           # sha256sum of every archive + the checksums.txt itself
           # (matches the order used by scripts/package-release-assets.mjs).
           $archives = Get-ChildItem umactually-*.tar.gz,umactually-*.zip | Sort-Object Name
@@ -394,7 +394,7 @@ jobs:
         shell: pwsh
         run: |
           $ErrorActionPreference = "Stop"
-          $report = Get-Content stage1\internal\release-size-report.json -Raw | ConvertFrom-Json
+          $report = Get-Content stage1\release\internal\release-size-report.json -Raw | ConvertFrom-Json
           # Compute fresh Windows sizes from this build
           $freshWindowsX64   = (Get-ChildItem release\umactually-windows-x64.exe).Length
           $freshWindowsArm64 = (Get-ChildItem release\umactually-windows-arm64.exe).Length
@@ -409,9 +409,9 @@ jobs:
           $tmpPath = Join-Path $env:TEMP "release-size-report.json.tmp"
           $utf8NoBom = New-Object System.Text.UTF8Encoding($false)
           [System.IO.File]::WriteAllText($tmpPath, $json, $utf8NoBom)
-          Move-Item -Force $tmpPath stage1\internal\release-size-report.json
+          Move-Item -Force $tmpPath stage1\release\internal\release-size-report.json
           Write-Host "--- new release-size-report.json ---"
-          Get-Content stage1\internal\release-size-report.json
+          Get-Content stage1\release\internal\release-size-report.json
 
       - name: Verify merged bundle is well-formed
         # Final sanity: confirm 5 archives + 5 raws + 1 checksums +
@@ -450,15 +450,26 @@ jobs:
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         with:
           name: umactually-release-candidate-merged
-          # Same path layout as the stage1 bundle. The downstream
-          # smoke + publish jobs read from the same relative paths
-          # they used before, so they don't need a code change
-          # beyond switching the artifact ID they download.
+          # Mirror the build-package upload path structure exactly:
+          # 4 path entries, each a single directory or file under
+          # the shared `release/` ancestor that the upload action
+          # strips. This produces a ZIP with top-level entries
+          # `public/...`, `internal/...`, `internal/raw/...` that
+          # unzips to <dest>/public/... + <dest>/internal/... +
+          # <dest>/internal/raw/... — the same layout the existing
+          # smoke + publish jobs read.
+          #
+          # The previous attempt passed `stage1/...` paths to
+          # upload-artifact, which produced a different (broken)
+          # ZIP structure on Windows: the unzip step ended up with
+          # all files at <dest>/internal/raw/ and an empty
+          # <dest>/public/. The 4-path form below is the one
+          # that works on both Linux and Windows.
           path: |
-            stage1/public
-            stage1/internal/raw
-            stage1/internal/release-size-report.json
-            stage1/internal/release-targets.json
+            stage1/release/public
+            stage1/release/internal/raw
+            stage1/release/internal/release-size-report.json
+            stage1/release/internal/release-targets.json
           if-no-files-found: error
           retention-days: 14
 
