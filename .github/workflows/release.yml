@@ -297,7 +297,7 @@ jobs:
       # v0.6.4 DEBUG: smoke-test the binary on the build runner with
       # stderr capture. install.ps1 swallows stderr (2>$null) so the
       # smoke job can't see the real error. This step surfaces it.
-      - name: DEBUG: smoke-test windows-x64 binary
+      - name: "DEBUG: smoke-test windows-x64 binary"
         if: always()
         shell: pwsh
         run: |
