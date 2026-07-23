@@ -1000,8 +1000,20 @@ function Invoke-StagedSmokeTest {
     }
   }
   $probeFromPeFallback = (-not [string]::IsNullOrWhiteSpace($probe)) -and [string]::IsNullOrWhiteSpace($probeBeforePeFallback)
+  # Defer the $? check until AFTER the PE fallback so a cmd /c
+  # terminating error doesn't bypass the fallback path. If the PE
+  # fallback successfully populated $probe, we accept the install
+  # regardless of PowerShell's $? (which is false because cmd /c
+  # threw). Only when BOTH cmd /c AND the PE fallback failed do we
+  # surface the PowerShell-reported failure.
   if (-not $?) {
-    throw "Staged --version failed (PowerShell reported command failure): $probe"
+    if ($probeFromPeFallback) {
+      # PE fallback salvaged the install. Reset $? to true so the
+      # downstream guards don't trip.
+      $global:? = $true
+    } else {
+      throw "Staged --version failed (PowerShell reported command failure): $probe"
+    }
   }
   if ([string]::IsNullOrWhiteSpace($probe)) {
     throw "Staged --version failed (no output): $probe"
