@@ -1008,9 +1008,10 @@ function Invoke-StagedSmokeTest {
   # surface the PowerShell-reported failure.
   if (-not $?) {
     if ($probeFromPeFallback) {
-      # PE fallback salvaged the install. Reset $? to true so the
-      # downstream guards don't trip.
-      $global:? = $true
+      # PE fallback salvaged the install. Skip the throw — the
+      # downstream guards (IsNullOrWhiteSpace + non-zero exit
+      # check) will accept the install because $probe is
+      # non-empty and $probeFromPeFallback is true.
     } else {
       throw "Staged --version failed (PowerShell reported command failure): $probe"
     }

@@ -4411,35 +4411,22 @@ function writeAnnotation(level, action, message) {
     }
     catch {
         if (level !== "debug") {
-            // Fallback path: re-format with the GitHub-Actions `::error::` /
-            // `::warning::` / `::notice::` annotation prefix UNCONDITIONALLY
-            // (i.e. bypassing the quiet-mode strip in formatAnnotation). This
-            // is intentional:
-            //
-            //   - The quiet-mode strip exists so the *normal* stderr write
-            //     doesn't surface as a `##[error]` workflow annotation in
-            //     vitest. Vitest expects the error to be captured in the test
-            //     runner's output, not surfaced as a CI check failure.
-            //
-            //   - The fallback path is reached ONLY when process.stderr.write
-            //     THROWS — i.e. the normal stderr is already broken. In that
-            //     case, the brand-prefixed line we'd normally write isn't
-            //     going to reach the consumer anyway (stderr is broken); the
-            //     fallback's purpose is to surface the error via console.error
-            //     (which goes to stderr/stdout depending on the test runner
-            //     setup). Including the `::error::` prefix in the fallback
-            //     gives a consistent annotation shape if the test runner
-            //     DOES pipe console.error to GitHub Actions (rare, but
-            //     possible in custom harnesses).
-            //
-            //   - The contract test
-            //     (test/unit/log.test.ts > "falls back to console.error when
-            //     stderr write throws") asserts on the prefixed form. Quiet-
-            //     mode-ifying the fallback would break this test.
-            const actionPrefix = action.length > 0 ? `${action} ` : "";
-            const fallback = `::${level}::${BRAND_PREFIX}${actionPrefix}${message}`;
+            // Fallback path: process.stderr.write threw, so we route
+            // through console.error instead. The output is the SAME
+            // `formatted` string the normal write would have produced —
+            // i.e. it respects the quiet-mode strip in formatAnnotation.
+            // Rationale: the fallback is reached ONLY when the normal
+            // stderr is broken. If we're under vitest, the quiet-mode
+            // intent still applies (don't surface as a `##[error]`
+            // workflow annotation in the test runner). Re-formatting
+            // with the `::error::` prefix would re-introduce exactly
+            // the noise the quiet-mode strip was added to prevent.
+            // The contract test
+            // (test/unit/log.test.ts > 'falls back to console.error
+            // when stderr write throws') was updated to assert on the
+            // quiet-mode-prefixed form.
             // eslint-disable-next-line no-console
-            console.error(fallback);
+            console.error(formatted.trimEnd());
         }
     }
 }

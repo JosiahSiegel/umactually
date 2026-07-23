@@ -15,8 +15,13 @@ describe("log annotation fallback", () => {
 
     logWarning("scan", "warning message");
 
+    // Fallback routes through console.error with the SAME `formatted`
+    // string the normal write would have produced — i.e. it respects
+    // the quiet-mode strip in formatAnnotation. Under vitest, the
+    // `::warning::` prefix is stripped, so the fallback emits the
+    // brand-prefixed line only.
     expect(consoleSpy).toHaveBeenCalledTimes(1);
-    expect(consoleSpy).toHaveBeenCalledWith("::warning::umactually: scan warning message");
+    expect(consoleSpy).toHaveBeenCalledWith("umactually: scan warning message");
   });
 
   it("falls back to console.error when stderr write throws for errors", () => {
@@ -27,8 +32,11 @@ describe("log annotation fallback", () => {
 
     logError("orchestrator", "fatal failure");
 
+    // Under vitest, the `::error::` prefix is stripped (quiet mode).
+    // The fallback emits the brand-prefixed line only — see the
+    // matching comment in src/util/log.ts.
     expect(consoleSpy).toHaveBeenCalledTimes(1);
-    expect(consoleSpy).toHaveBeenCalledWith("::error::umactually: orchestrator fatal failure");
+    expect(consoleSpy).toHaveBeenCalledWith("umactually: orchestrator fatal failure");
   });
 
   it("falls back to console.error when stderr write throws for notices", () => {
@@ -39,8 +47,9 @@ describe("log annotation fallback", () => {
 
     logNotice("info", "notice message");
 
+    // Under vitest, the `::notice::` prefix is stripped (quiet mode).
     expect(consoleSpy).toHaveBeenCalledTimes(1);
-    expect(consoleSpy).toHaveBeenCalledWith("::notice::umactually: info notice message");
+    expect(consoleSpy).toHaveBeenCalledWith("umactually: info notice message");
   });
 
   it("does not fall back to console.error for debug annotations", () => {
