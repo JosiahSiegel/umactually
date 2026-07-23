@@ -18336,6 +18336,22 @@ const isMainModule = (() => {
     if (globalThis.__umactually_action_entry__ === true) {
         return false;
     }
+    // SEA-binary short-circuit. `process.versions.sea` is the string
+    // version of the embedded Node when the bundle is running as a
+    // Single Executable Application (i.e. a post-`node --build-sea`
+    // binary on disk). In that case, the bundle is unambiguously
+    // the entry — argv1 might be a Windows 8.3 short path
+    // (e.g. `C:\Users\RUNNER~1\...`) that fails to canonicalize
+    // against `import.meta.url`, and the secondary `cli.js/mjs/cjs`
+    // regex never matches `.exe`. Without this short-circuit, the
+    // post-release e2e harness on Windows sees the binary exit 0
+    // with no stdout and no artifact written (because main() never
+    // fires). The string check is safe: a non-SEA Node process has
+    // `process.versions.sea === undefined`, so this is a no-op
+    // outside the SEA context.
+    if (typeof process.versions?.["sea"] === "string" && process.versions["sea"].length > 0) {
+        return true;
+    }
     // The "this module is the entry" check is: import.meta.url matches
     // pathToFileUrl(process.argv[1]). This is true for both the canonical
     // CLI entry (argv1 = the cli.js path, import.meta.url = the file://
@@ -18448,7 +18464,15 @@ const isMainModule = (() => {
     // source file, and the URL match silently fails. Also covers
     // pre-2-arg invocations like `node dist/cli.js --version` where
     // argv1 is the source file but the URL match can still race
-    // symlink resolution on some filesystems.
+    // symlink resolution on some filesystems. Note: SEA-binary
+    // invocations where argv1 is `umactually-windows-x64.exe` are
+    // handled by the primary process.versions.sea short-circuit
+    // above; the .exe suffix is intentionally not in this regex
+    // because matching every .exe (e.g. a sibling binary like
+    // `umactually-windows-x64-git-bash-delegate`) would silently
+    // auto-invoke main() in unrelated processes that happen to
+    // import dist/cli.js. The process.versions.sea gate is the
+    // safe SEA path.
     return /(?:^|[\\/])cli\.(?:js|mjs|cjs)$/u.test(argv1);
 })();
 if (isMainModule) {

@@ -210,6 +210,20 @@ const v = await new Promise((resolve) => {
 if (v.status !== 0) {
   die(1, `binary --version failed: status=${v.status} stderr=${v.stderr}`);
 }
+if (!v.stdout.trim()) {
+  die(
+    1,
+    `binary --version produced empty stdout (status=${v.status} stderr=${v.stderr}). ` +
+      `This is the Windows + Git Bash CONOUT\$ race: the SEA binary's ` +
+      `process.stdout.fd is mapped to a CONOUT\$ handle, so the tiered ` +
+      `stdout fallback (writeFileSync → writeSync → process.stdout.write) ` +
+      `silently succeeds but does not land bytes in the consumer's pipe. ` +
+      `The primary fix is the process.versions.sea short-circuit in ` +
+      `isMainModule (src/cli.ts) so main() fires on the SEA binary. ` +
+      `If this error appears, the binary is exiting before main() — ` +
+      `rebuild with the latest src/cli.ts.`,
+  );
+}
 log(`binary --version: ${v.stdout.trim()}`);
 
 // Step 6: spawn the mock LLM (unless skipped).
