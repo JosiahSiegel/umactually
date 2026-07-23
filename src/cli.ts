@@ -651,6 +651,21 @@ const isMainModule = (() => {
   if (globalThis.__umactually_action_entry__ === true) {
     return false;
   }
+  // SEA-binary short-circuit. process.versions.sea is the embedded
+  // Node version when the bundle is running as a Single Executable
+  // Application (post `node --build-sea`). In that case the bundle
+  // is unambiguously the entry — argv1 may be a Windows 8.3 short
+  // path (e.g. `C:\Users\RUNNER~1\...\umactually-windows-x64.exe`)
+  // that fails to canonicalize against `import.meta.url`, and the
+  // secondary `cli.js/mjs/cjs` regex never matches `.exe`. Without
+  // this short-circuit the post-release e2e harness on Windows sees
+  // the binary exit 0 with no stdout and no artifact written,
+  // because main() never fires. process.versions.sea is a string
+  // (e.g. "1.0.0") on a SEA binary and undefined elsewhere, so
+  // this is a no-op for non-SEA invocations.
+  if (typeof process.versions?.["sea"] === "string" && process.versions["sea"].length > 0) {
+    return true;
+  }
   // The "this module is the entry" check is: import.meta.url matches
   // pathToFileUrl(process.argv[1]). This is true for both the canonical
   // CLI entry (argv1 = the cli.js path, import.meta.url = the file://
