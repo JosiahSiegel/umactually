@@ -77,13 +77,13 @@ const EXPECTED_TARGETS: readonly ReleaseTarget[] = [
 ] as const;
 
 describe("release-targets manifest on disk", () => {
-  it("matches the canonical Scope mapping exactly (six rows, all fields)", () => {
+  it("matches the canonical Scope mapping exactly (five rows, all fields)", () => {
     const targets = parseReleaseTargets({ manifestPath: MANIFEST_PATH });
 
     expect(targets).toEqual(EXPECTED_TARGETS);
   });
 
-  it("contains exactly six targets with six unique IDs and six unique archive names", () => {
+  it("contains exactly five targets with five unique IDs and five unique archive names", () => {
     const targets = parseReleaseTargets({ manifestPath: MANIFEST_PATH });
 
     expect(targets.length).toBe(5);

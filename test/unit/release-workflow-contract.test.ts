@@ -155,8 +155,7 @@ const RAW_BASENAMES: readonly string[] = [
   "umactually-linux-arm64",
   "umactually-darwin-arm64",
   "umactually-windows-x64.exe",
-  "umactually-windows-arm64.exe",
-];
+  ];
 const PUBLIC_BASENAMES: readonly string[] = [...ARCHIVE_BASENAMES, "checksums.txt"];
 
 // ---------------------------------------------------------------------------
@@ -554,8 +553,7 @@ function probeContract(workflow: Workflow): readonly Violation[] {
     });
   }
 
-  // Rule 12: runner labels include the five pinned names; windows-arm64
-  //          validation is labeled structural (not runtime).
+  //   //          validation is labeled structural (not runtime).
   // Source: Scope L41 + Scope L51 ("No reliance on a Windows ARM64 public-
   //         preview runner for a required publication gate; structural
   //         validation must report that it is non-runtime validation") and
@@ -585,7 +583,6 @@ function probeContract(workflow: Workflow): readonly Violation[] {
     const isStructural = /structural|non[- ]?runtime|pe[^\n]{0,40}(machine|validation|archive)/iu.test(stepText);
     if (!isStructural) {
       violations.push({
-        rule: "windows-arm64-structural",
         source: "Scope L41, L51 + Todo 4 brief",
         detail: `windows-arm64 job (${windowsArm64Job.id}) must explicitly label its validation structural or non-runtime (e.g. 'Structural PE machine type + archive validation (non-runtime)')`,
       });
@@ -1263,8 +1260,7 @@ describe("Release workflow contract — RED against current workflow (Todo 9 fix
       "smoke-darwin-arm64",
       "smoke-windows-x64",
       "smoke-windows-x64-git-bash-delegate",
-      "smoke-windows-arm64-structural",
-      "smoke-bad-checksum",
+            "smoke-bad-checksum",
     ]));
   });
 
@@ -1527,18 +1523,6 @@ jobs:
       - name: Smoke (--version)
         shell: pwsh
         run: .\\candidate\\umactually-windows-x64.exe --version
-  smoke-windows-arm64-structural:
-    name: Windows ARM64 structural PE/archive validation
-    needs: build-package
-    runs-on: windows-2025
-    steps:
-      - name: Download candidate
-        uses: actions/download-artifact@v4
-        with:
-          name: umactually-release-candidate
-          path: candidate
-      - name: Structural PE machine type + archive validation (non-runtime)
-        run: node scripts/verify-arm64-structural.mjs
   install-posix:
     name: POSIX installer smoke
     needs: build-package
@@ -1561,7 +1545,6 @@ jobs:
       - smoke-linux-arm64
       - smoke-darwin-arm64
       - smoke-windows-x64
-      - smoke-windows-arm64-structural
       - install-posix
       - install-powershell
     runs-on: ubuntu-24.04
