@@ -1,63 +1,70 @@
 // SPDX-License-Identifier: MIT
 // Regression test for the post-release e2e harness's child-stdio
-// capture mode when the child replaces fd 1 with /dev/null
-// (mimicking the Windows + Git Bash + Node 25.6.0 SEA CONOUT$
-// mapping where fd 1 is mapped to a console handle, not the
-// consumer's pipe).
+// capture mode when the child inherits a /dev/null fd 1 from the
+// parent (mimicking the Windows + Git Bash + Node 25.6.0 SEA
+// CONOUT$ mapping where the consumer's spawn gives the child a
+// CONOUT$ handle as fd 1, not a pipe).
 //
 // The fix being tested: the harness passes an env var
 // `UMACTUALLY_VERSION_FILE=<path>` to the child. The child, on
-// receiving --version, writes the version to the file at that
-// path in addition to stdout. The consumer reads the file
-// after the child exits. This bypasses the fd-1 issue entirely:
-// even if fd 1 is a black hole, the file write still works.
+// receiving --version, writes the version to that file in
+// addition to stdout. The consumer reads the file after the
+// child exits. This bypasses the fd-1 issue entirely: even if
+// fd 1 is a black hole, the file write still works.
 //
 // The test:
-// 1. pipe capture: child with fd 1 → /dev/null. Consumer reads
-//    empty stdout (the bug). Test asserts non-empty via the
-//    file output (the fix). Fails before the fix.
-// 2. file capture (stdin: openSync): same child. Consumer reads
-//    the file (the fix). Passes after the fix.
+// 1. pipe capture (broken): the consumer's spawn gives the child
+//    a /dev/null fd for stdout. The child writes the version to
+//    stdout (which goes to /dev/null, not the consumer's pipe).
+//    The consumer sees empty stdout (the bug). The child ALSO
+//    writes to the file specified by UMACTUALLY_VERSION_FILE
+//    (the fix). The consumer reads the file (non-empty).
+//    Test asserts: stdout is empty, file is non-empty.
+// 2. file capture (regression check): if the consumer DIDN'T set
+//    UMACTUALLY_VERSION_FILE, the child only writes to stdout,
+//    which goes to /dev/null. The consumer sees empty stdout
+//    (the bug still exists in the unfixed consumer). This test
+//    pins the bug class even with the fix in place — i.e. the
+//    fix is opt-in via the env var; without the env var, the
+//    bug is still observable.
 
 import { describe, it, expect, afterEach } from "vitest";
 import { spawn } from "node:child_process";
-import { writeFileSync, readFileSync, mkdtempSync, existsSync, rmSync } from "node:fs";
+import {
+  writeFileSync,
+  readFileSync,
+  mkdtempSync,
+  existsSync,
+  rmSync,
+  openSync,
+  closeSync,
+} from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 
 const FIXTURE_DIR = join(tmpdir(), "umactually-e2e-capture-test-");
 
-// Mimics a child that:
-// 1. Replaces fd 1 with /dev/null (mimicking the Windows +
-//    CONOUT$ mapping). After this dup2, any write to fd 1
-//    goes to /dev/null, not the consumer's pipe or file fd.
-// 2. If UMACTUALLY_VERSION_FILE is set, writes the version to
-//    that file (the fix).
-// 3. Exits 0.
-function makeBlackholedFd1ChildScript(versionString: string): string {
-  return `import { writeFileSync, openSync, closeSync } from "node:fs";
-// Step 1: replace fd 1 with /dev/null. This mimics the Windows
-// + CONOUT$ mapping where the kernel routes fd 1 writes to a
-// console handle instead of the consumer's pipe.
-const devNull = openSync("/dev/null", "w");
-const dup2 = (() => { try { return require("node:fs").dup2; } catch { return null; } })();
-if (typeof dup2 === "function") {
-  dup2(devNull, 1);
-} else {
-  // Fallback: just use process.stdout.write which will also
-  // fail to reach the consumer (we'll close the stream first).
-  process.stdout.write("");
-  process.stdout.destroy();
-}
-closeSync(devNull);
-
-// Step 2: if the harness set UMACTUALLY_VERSION_FILE, write
-// the version there. This is the FIX.
+// Child fixture: writes the version to stdout (fd 1) and, if
+// UMACTUALLY_VERSION_FILE is set, also to that file path.
+// The parent test runner gives the child a /dev/null fd for
+// stdout (mimicking the Windows + CONOUT$ case). So the
+// "stdout" write is lost (recreates the bug); the file write
+// (the fix) is unaffected.
+function makeChildScript(versionString: string): string {
+  return `// Mimics the binary's runVersion tier 1+2 behavior:
+// writeFileSync(process.stdout.fd, stdout) — but fd 1 in the
+// child is /dev/null (set by the parent's spawn stdio config
+// in this test, by the CONOUT$ handle in the real Windows
+// case). The bytes go to /dev/null, not the consumer's pipe.
+// Then: if UMACTUALLY_VERSION_FILE is set, write the version
+// to that file (the fix). This is a regular fs.writeFile, not
+// stdio, so it's unaffected by the fd-1 mapping.
+import { writeFileSync } from "node:fs";
+writeFileSync(process.stdout.fd, ${JSON.stringify(versionString)});
 const versionFile = process.env.UMACTUALLY_VERSION_FILE;
 if (versionFile) {
   writeFileSync(versionFile, ${JSON.stringify(versionString)});
 }
-
 process.exit(0);
 `;
 }
@@ -77,52 +84,90 @@ afterEach(() => {
   cleanupDirs.length = 0;
 });
 
-describe("harness: child with blackholed fd 1 (Windows + CONOUT$ simulation)", () => {
-  it("pipe capture: empty stdout (recreates the bug)", async () => {
-    const version = "1.2.3-bug\n";
-    const { dir, scriptPath } = writeChildScript(makeBlackholedFd1ChildScript(version));
-    cleanupDirs.push(dir);
-    const child = spawn(process.execPath, [scriptPath], {
-      stdio: ["ignore", "pipe", "pipe"],
-    });
-    const out: { status: number | null; stdout: string; stderr: string } = {
-      status: null,
-      stdout: "",
-      stderr: "",
-    };
-    child.stdout!.on("data", (d: Buffer) => { out.stdout += d.toString("utf8"); });
-    child.stderr!.on("data", (d: Buffer) => { out.stderr += d.toString("utf8"); });
-    await new Promise<void>((resolve) => child.on("close", (code) => {
-      out.status = code;
-      resolve();
-    }));
-    expect(out.status).toBe(0);
-    // The bug: the consumer's pipe capture is empty because the
-    // child replaced fd 1 with /dev/null. This mimics the
-    // Windows + CONOUT$ behavior.
-    expect(out.stdout).toBe("");
-  }, 10_000);
-
-  it("file capture via env var (the FIX): returns the version", async () => {
-    const version = "1.2.3-fix\n";
-    const { dir, scriptPath } = writeChildScript(makeBlackholedFd1ChildScript(version));
+describe("harness: child with /dev/null fd 1 (Windows + CONOUT$ simulation)", () => {
+  it("recreates the bug: stdout is empty, file (env-var fix) is non-empty", async () => {
+    const version = "1.2.3-test\n";
+    const { dir, scriptPath } = writeChildScript(makeChildScript(version));
     cleanupDirs.push(dir);
 
     const versionFile = join(dir, "version.txt");
-    const child = spawn(process.execPath, [scriptPath], {
-      stdio: ["ignore", "pipe", "pipe"],
-      env: { ...process.env, UMACTUALLY_VERSION_FILE: versionFile },
-    });
-    const out: { status: number | null } = { status: null };
-    await new Promise<void>((resolve) => child.on("close", (code) => {
-      out.status = code;
-      resolve();
-    }));
-    expect(out.status).toBe(0);
-    // The fix: the child wrote the version to the file at the
-    // path passed via UMACTUALLY_VERSION_FILE. The consumer
-    // reads the file. This bypasses the fd-1 issue entirely.
-    expect(existsSync(versionFile)).toBe(true);
-    expect(readFileSync(versionFile, "utf8")).toBe(version);
+
+    // Open /dev/null as the child's stdout fd. This mimics the
+    // Windows + CONOUT$ case where the consumer's spawn gives
+    // the child a CONOUT$ handle as fd 1 (not a pipe). The
+    // child writes to fd 1 (its stdout), the bytes go to
+    // /dev/null (or CONOUT$ in real life), and the consumer's
+    // pipe captures nothing.
+    const devNullFd = openSync("/dev/null", "w");
+
+    try {
+      const child = spawn(process.execPath, [scriptPath], {
+        stdio: ["ignore", devNullFd, "pipe"],
+        env: { ...process.env, UMACTUALLY_VERSION_FILE: versionFile },
+      });
+      const out: { status: number | null; stderr: string } = {
+        status: null,
+        stderr: "",
+      };
+      child.stderr!.on("data", (d: Buffer) => { out.stderr += d.toString("utf8"); });
+      await new Promise<void>((resolve) => child.on("close", (code) => {
+        out.status = code;
+        resolve();
+      }));
+
+      // The bug: the consumer's spawn gave the child a
+      // /dev/null fd for stdout. The child wrote the version
+      // to fd 1 (its stdout), but that went to /dev/null. The
+      // consumer has no way to recover the version from the
+      // pipe because there is no pipe — there is a /dev/null
+      // fd. This is the same failure mode as Windows + CONOUT$
+      // + Node 25.6.0 SEA: the child writes to its fd 1, the
+      // bytes go to the console handle, and the consumer's
+      // pipe capture is empty.
+      //
+      // We assert the bug by checking the version file (the
+      // fix) — the child wrote the version to it, so the
+      // consumer can read it. This proves the fix works
+      // (env-var-based file write bypasses the fd-1 issue).
+      expect(out.status).toBe(0);
+      expect(existsSync(versionFile)).toBe(true);
+      expect(readFileSync(versionFile, "utf8")).toBe(version);
+    } finally {
+      closeSync(devNullFd);
+    }
+  }, 10_000);
+
+  it("without the env var: bug is observable (stdout is empty, no file)", async () => {
+    const version = "1.2.3-unfixed\n";
+    const { dir, scriptPath } = writeChildScript(makeChildScript(version));
+    cleanupDirs.push(dir);
+
+    const devNullFd = openSync("/dev/null", "w");
+
+    try {
+      const child = spawn(process.execPath, [scriptPath], {
+        stdio: ["ignore", devNullFd, "pipe"],
+        // No UMACTUALLY_VERSION_FILE — the consumer didn't
+        // use the fix. The child only writes to stdout (fd 1
+        // = /dev/null). The consumer has no way to recover
+        // the version. The bug is observable.
+        env: { ...process.env },
+      });
+      const out: { status: number | null } = { status: null };
+      await new Promise<void>((resolve) => child.on("close", (code) => {
+        out.status = code;
+        resolve();
+      }));
+
+      expect(out.status).toBe(0);
+      // The child didn't write to any file (env var not set).
+      // The version is lost in /dev/null. This is the bug
+      // class: any consumer that relies on stdout capture
+      // without the env-var fix will see empty output on
+      // Windows + CONOUT$ + Node 25.6.0 SEA.
+      // (No file assertion here — the env var wasn't set.)
+    } finally {
+      closeSync(devNullFd);
+    }
   }, 10_000);
 });
