@@ -35,10 +35,18 @@ const PACKAGE_VERSION: string = (() => {
 
 export default defineConfig({
   entry: ["src/cli.ts"],
+  // v0.6.4: build a CJS bundle instead of ESM. Node 25.7.0's SEA
+  // runtime has a bug loading .mjs (ESM) main files — the embedded
+  // main is loaded as CJS even when the .mjs extension is used,
+  // producing "Cannot use import statement outside a module".
+  // Reproduced in /tmp/test-sea-esm.mjs. CJS bundles don't have
+  // the loading issue. The bundle's external imports (node:fs, etc.)
+  // still work because Node's CJS loader handles node:-prefixed
+  // imports fine.
+  format: ["cjs"],
   // The `exe:` block is intentionally ABSENT. See the file header.
   //
   // No `dts` because we only ship JS to the SEA blob.
-  // No `format` — tsdown auto-detects from the entry.
   // No `platform` — SEA blobs are platform-agnostic.
   // No `clean` — we manage the release/ directory from the build script.
   // Embed the package version as a compile-time constant (same as

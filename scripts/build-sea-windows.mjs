@@ -62,7 +62,7 @@ const EXPECTED_NODE_MINOR = 7;
 const HERE = dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = resolve(HERE, "..");
 const BUNDLE_DIR = join(REPO_ROOT, "dist");
-const BUNDLE_PATH = join(BUNDLE_DIR, "cli.mjs");
+const BUNDLE_PATH = join(BUNDLE_DIR, "cli.cjs");
 const SEA_CONFIG_PATH = join(BUNDLE_DIR, "sea-config.json");
 const OUTDIR = join(REPO_ROOT, "release");
 const MANIFEST_PATH = join(REPO_ROOT, "scripts", "release-targets.json");
@@ -172,7 +172,16 @@ function buildBundle() {
   // `exe:` block removed, so tsdown only does the platform-agnostic
   // JS bundling. The Windows .exe is then produced by
   // `node --build-sea` in buildSeaBinary() below.
-  console.log(`\nBuilding dist/cli.mjs via tsdown (Windows config, no exe)`);
+  //
+  // The config emits a CJS bundle (dist/cli.cjs) — not ESM
+  // (dist/cli.mjs). Node 25.7.0's SEA runtime has a real bug
+  // loading .mjs files as ESM; the embedded main is loaded as
+  // CJS even with the .mjs extension, producing
+  // "Cannot use import statement outside a module". Reproduced
+  // in /tmp/test-sea-esm.mjs on 2026-07-23. CJS bundles don't
+  // have the loading issue. node:-prefixed imports still work
+  // under CJS in Node 25.7.0.
+  console.log(`\nBuilding dist/cli.cjs via tsdown (Windows config, CJS, no exe)`);
   runTsdown(["--config", join(REPO_ROOT, "tsdown.windows.config.ts")], "bundle");
   if (!existsSync(BUNDLE_PATH)) {
     throw new Error(
