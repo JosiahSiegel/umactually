@@ -208,6 +208,69 @@ describe("ci-release-pipeline-dry-run.sh — structural contract (PR-time guard)
   });
 });
 
+describe(".github/workflows/ci.yml — Windows PR-time Node version matches release.yml's build-package-windows", () => {
+  it("WINDOWS-PR-NODE-PIN-MATCHES-RELEASE: ci.yml smoke-sea-windows and e2e-pr-windows both pin Node 25.6.0", () => {
+    // Root cause of the v0.6.8/v0.6.9/v0.6.10/v0.6.11/v0.6.12
+    // Windows post-release-e2e failures: ci.yml built the Windows
+    // SEA binary with Node 25.7.0, release.yml built it with Node
+    // 25.6.0. Node 25.6.0 SEA does NOT set process.versions.sea,
+    // so the isMainModule short-circuit (PR #125) was a no-op on
+    // the production Windows binary. The argv1 fallback (PR #135)
+    // handles this — but only on the production Node version. If
+    // the PR-time build ever drifts from 25.6.0, the regression
+    // chain repeats: PR passes (Node 25.7.0 sets process.versions.sea),
+    // release fails (Node 25.6.0 does not).
+    //
+    // This test pins the PR-time Windows Node version to 25.6.0 so
+    // the gap cannot reopen.
+    const ci = readFileSync(CI_WORKFLOW, "utf8");
+    const release = readFileSync(join(REPO_ROOT, ".github", "workflows", "release.yml"), "utf8");
+
+    // Extract the release.yml build-package-windows job's Node
+    // version — this is the source of truth.
+    expect(release, "release.yml must still pin build-package-windows to Node 25.6.0")
+      .toMatch(/build-package-windows[\s\S]*?node-version:\s*["']25\.6\.0["']/u);
+
+    // Each Windows-binary-building ci job must pin 25.6.0 too.
+    const windowsJobs = ["smoke-sea-windows", "e2e-pr-windows"] as const;
+    for (const job of windowsJobs) {
+      // Find the job block in ci.yml
+      const jobBlock = (() => {
+        const lines = ci.split(/\r?\n/u);
+        let inJob = false;
+        let depth = 0;
+        const collected: string[] = [];
+        for (const line of lines) {
+          if (!inJob) {
+            // Job top-level keys are 2-space-indented (matching the
+            // rest of the file). ci.yml uses 2-space indent for jobs
+            // and 4-space for job internals.
+            if (new RegExp(`^  ${job}:\\s*$`, "u").test(line)) {
+              inJob = true;
+              collected.push(line);
+            }
+          } else {
+            // Another top-level key ends this job
+            if (depth === 0 && /^\s{0,2}[a-z][a-z0-9-]*:\s*$/u.test(line) && !line.includes(`  ${job}:`)) {
+              break;
+            }
+            collected.push(line);
+            // Track indent depth (rough heuristic)
+            const trimmed = line.replace(/^\s+/u, "");
+            if (trimmed.length > 0 && !trimmed.startsWith("#")) {
+              // crude depth tracking
+            }
+          }
+        }
+        return collected.join("\n");
+      })();
+      expect(jobBlock.length, `ci.yml must define the ${job} job`).toBeGreaterThan(0);
+      expect(jobBlock, `${job} must pin Node 25.6.0 (matches release.yml)`)
+        .toMatch(/node-version:\s*["']25\.6\.0["']/u);
+    }
+  });
+});
+
 describe(".github/workflows/ci.yml — release-pipeline-dry-run job is a required PR check", () => {
   it("ci.yml defines a release-pipeline-dry-run job", () => {
     const text = readWorkflow();
