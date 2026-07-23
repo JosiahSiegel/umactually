@@ -995,11 +995,21 @@ function Invoke-StagedSmokeTest {
   if (-not $?) {
     throw "Staged --version failed (PowerShell reported command failure): $probe"
   }
+  if ([string]::IsNullOrWhiteSpace($probe)) {
+    throw "Staged --version failed (no output): $probe"
+  }
+  # Reject on non-zero exit code ONLY if the PE version-info fallback
+  # didn't help. The cmd /c wrapper occasionally reports exit 1 on
+  # Windows for a binary whose real exit code is 0 — specifically,
+  # Node-SEA binaries whose stdio pipe teardown races with cmd's
+  # own stdout propagation (verified: the build job's Start-Process
+  # smoke shows exit 0 + the real output for the same binary that
+  # cmd /c reports as exit 1 + empty stdout). In that race the PE
+  # fallback supplies $probe, and accepting the install is correct.
+  # If the PE fallback ALSO produced nothing, the empty-probe guard
+  # above has already rejected the install.
   if ($null -ne $exitCode -and $exitCode -ne 0) {
     throw "Staged --version failed (exit $exitCode): $probe"
-  }
-  if ([string]::IsNullOrWhiteSpace($probe)) {
-    throw "Staged --version produced no output: $probe"
   }
 }
 
