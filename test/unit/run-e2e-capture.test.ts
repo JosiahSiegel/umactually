@@ -40,7 +40,7 @@ import {
   closeSync,
 } from "node:fs";
 import { join } from "node:path";
-import { tmpdir } from "node:os";
+import { tmpdir, devNull as devnull } from "node:os";
 
 const FIXTURE_DIR = join(tmpdir(), "umactually-e2e-capture-test-");
 
@@ -98,7 +98,7 @@ describe("harness: child with /dev/null fd 1 (Windows + CONOUT$ simulation)", ()
     // child writes to fd 1 (its stdout), the bytes go to
     // /dev/null (or CONOUT$ in real life), and the consumer's
     // pipe captures nothing.
-    const devNullFd = openSync("/dev/null", "w");
+    const devNullFd = openSync(devnull, "w");
 
     try {
       const child = spawn(process.execPath, [scriptPath], {
@@ -142,7 +142,7 @@ describe("harness: child with /dev/null fd 1 (Windows + CONOUT$ simulation)", ()
     const { dir, scriptPath } = writeChildScript(makeChildScript(version));
     cleanupDirs.push(dir);
 
-    const devNullFd = openSync("/dev/null", "w");
+    const devNullFd = openSync(devnull, "w");
 
     try {
       const child = spawn(process.execPath, [scriptPath], {
