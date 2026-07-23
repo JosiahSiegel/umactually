@@ -977,6 +977,13 @@ function Invoke-StagedSmokeTest {
     $probe = $null
     $exitCode = 1
   }
+  # Snapshot the cmd /c probe before the PE fallback runs, so we can
+  # tell at the bottom whether the PE fallback supplied $probe. If
+  # it did, the binary is at least a valid Windows executable with
+  # embedded version metadata, and a spurious cmd /c exit code 1
+  # (from the stdio pipe teardown race that hits Node-SEA binaries
+  # on Windows) is not a real failure.
+  $probeBeforePeFallback = $probe
   # Fallback: PE version-info resource. This reads the file's embedded
   # version metadata via the .NET `FileVersionInfo` API — it does NOT
   # require running the binary, so it works even when the binary's
@@ -992,23 +999,22 @@ function Invoke-StagedSmokeTest {
       # will reject the install if the fallback also produced nothing.
     }
   }
+  $probeFromPeFallback = (-not [string]::IsNullOrWhiteSpace($probe)) -and [string]::IsNullOrWhiteSpace($probeBeforePeFallback)
   if (-not $?) {
     throw "Staged --version failed (PowerShell reported command failure): $probe"
   }
   if ([string]::IsNullOrWhiteSpace($probe)) {
     throw "Staged --version failed (no output): $probe"
   }
-  # Reject on non-zero exit code ONLY if the PE version-info fallback
-  # didn't help. The cmd /c wrapper occasionally reports exit 1 on
-  # Windows for a binary whose real exit code is 0 — specifically,
-  # Node-SEA binaries whose stdio pipe teardown races with cmd's
-  # own stdout propagation (verified: the build job's Start-Process
-  # smoke shows exit 0 + the real output for the same binary that
-  # cmd /c reports as exit 1 + empty stdout). In that race the PE
-  # fallback supplies $probe, and accepting the install is correct.
-  # If the PE fallback ALSO produced nothing, the empty-probe guard
-  # above has already rejected the install.
-  if ($null -ne $exitCode -and $exitCode -ne 0) {
+  # Reject on non-zero exit code ONLY if the cmd /c probe was
+  # genuinely non-empty (i.e. the binary ran, the cmd /c wrapper
+  # saw the real exit code, and that exit code was non-zero — a real
+  # failure). If the PE fallback supplied $probe, the cmd /c exit
+  # code may be a spurious 1 from the Node-SEA stdio teardown race
+  # (verified: the build job's Start-Process smoke shows exit 0 +
+  # the real output for the same binary that cmd /c reports as exit
+  # 1 + empty stdout); accept the install in that case.
+  if ($null -ne $exitCode -and $exitCode -ne 0 -and -not $probeFromPeFallback) {
     throw "Staged --version failed (exit $exitCode): $probe"
   }
 }
