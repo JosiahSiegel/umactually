@@ -124,9 +124,27 @@ export function runVersion(_argv: readonly string[]): { readonly exitCode: 0; re
   // The fallback path is exercised by cli-version.test.ts's "falls
   // back to process.stdout.write when writeFileSync throws EBADF"
   // case.
+  //
+  // v0.6.4: when the fd-based write throws (rare — typically a
+  // `process.stdout.fd` that doesn't map to a real writeable fd,
+  // e.g. some Windows spawn configurations), fall through to the
+  // stream path. This recovers the bash + child_process.spawn case
+  // on Windows where the synchronous fd write loses to a stdio
+  // teardown race. We don't unconditionally do BOTH writes because
+  // that would duplicate the version string at the consumer.
+  let fdWriteSucceeded = false;
   try {
     writeFileSync(process.stdout.fd, stdout);
+    fdWriteSucceeded = true;
   } catch {
+    // fd-based write threw — fall through to the stream path below.
+  }
+  if (!fdWriteSucceeded) {
+    // Stream path: ensures the bytes reach the consumer even when
+    // the fd-based write lost to a teardown race (verified against
+    // the v0.6.4 Windows post-release e2e harness: bash + spawn
+    // on windows-latest reliably captures this path; the fd path
+    // is unreliable in that harness).
     process.stdout.write(stdout);
   }
   return { exitCode: 0, stdout };
