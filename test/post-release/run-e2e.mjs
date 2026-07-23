@@ -179,29 +179,26 @@ if (binaryPathArg) {
   log(`extracted binary: ${binaryPath}`);
 }
 
-// Sanity: --version works. We pass UMACTUALLY_VERSION_FILE env
-// var to the child, which causes the binary to write the version
-// to that file path in addition to stdout. This bypasses the
-// Windows + Git Bash + Node 25.6.0 SEA stdio issue: the SEA
-// runtime's fd 1 is mapped to a CONOUT$ handle, so any
-// writeFileSync(fd 1, ...) / writeSync(1, ...) / process.stdout.write
-// from the binary's runVersion tier 1/2/3 silently loses the
-// output. Writing to a real file (via fs.writeFile) is
-// unaffected. The harness reads the file after the child exits.
-// This is more robust than the prior pipe/file-fd capture
-// approaches because it doesn't rely on the spawn's stdio
-// config reaching the SEA runtime (it doesn't on Windows +
-// Node 25.6.0). See test/unit/run-e2e-capture.test.ts for the
-// regression test that pins this behavior.
-const versionFile = join(tmpdir(), `umactually-e2e-version-${Date.now()}-${process.pid}.txt`);
+// Sanity: --version works. We capture the binary's stdout AND
+// stderr to pipes (the file-fd approach from PR #127 was
+// unreliable on Windows + Node 25.6.0 SEA). The binary's
+// runVersion writes the version to BOTH stdout (via the tier 1/2
+// cascade) AND stderr (via writeFileSync(2, stdout) — a defensive
+// fallback for Windows + CONOUT$ where fd 1 is mapped to a
+// console handle). The version is identified by the leading
+// `\d+\.\d+\.\d+` pattern. Other stderr noise (SEA warnings) is
+// ignored. If neither stream contains a version, the binary
+// exited before main() fired (the primary fix is the
+// process.versions.sea short-circuit in isMainModule).
 let vStdout = "";
 try {
   const v = await new Promise((resolve) => {
     const child = spawn(binaryPath, ["--version"], {
       stdio: ["ignore", "pipe", "pipe"],
-      env: { ...process.env, UMACTUALLY_VERSION_FILE: versionFile },
     });
-    const out = { status: null, signal: null };
+    const out = { status: null, signal: null, stdout: "", stderr: "" };
+    child.stdout.on("data", (d) => { out.stdout += d.toString("utf8"); });
+    child.stderr.on("data", (d) => { out.stderr += d.toString("utf8"); });
     child.on("error", (err) => { out.error = err; });
     child.on("close", (code, signal) => {
       out.status = code;
@@ -213,31 +210,30 @@ try {
     die(1, `binary --version spawn error: ${v.error.message}`);
   }
   if (v.status !== 0) {
-    die(1, `binary --version failed: status=${v.status}`);
+    die(1, `binary --version failed: status=${v.status} stderr=${v.stderr.slice(0, 500)}`);
   }
-  if (!existsSync(versionFile)) {
+  // Prefer stdout; fall back to stderr (the Windows + CONOUT$
+  // bypass in runVersion's tier 0b writes the version to fd 2).
+  // The version pattern matches `\d+\.\d+\.\d+` (semver) at the
+  // start of a line.
+  const versionRe = /^\d+\.\d+\.\d+[^\n]*/mu;
+  const stdoutMatch = v.stdout.match(versionRe);
+  const stderrMatch = v.stderr.match(versionRe);
+  vStdout = (stdoutMatch?.[0] ?? stderrMatch?.[0] ?? "").trim();
+  if (!vStdout) {
     die(
       1,
-      `binary --version did not write the version file at ${versionFile}. ` +
-        `The binary exited 0 but main() did not fire, or runVersion did not ` +
-        `honor the UMACTUALLY_VERSION_FILE env var. ` +
-        `The primary fix is the process.versions.sea short-circuit in isMainModule ` +
-        `(src/cli.ts) so main() fires on the SEA binary. If this error appears, the ` +
-        `binary exited before main() — rebuild with the latest src/cli.ts.`,
+      `binary --version produced no version string. ` +
+        `stdout=${JSON.stringify(v.stdout.slice(0, 200))} ` +
+        `stderr=${JSON.stringify(v.stderr.slice(0, 200))}. ` +
+        `The binary exited 0 but runVersion never produced a version. ` +
+        `Likely main() did not fire — rebuild with the process.versions.sea ` +
+        `short-circuit in isMainModule (src/cli.ts).`,
     );
   }
-  vStdout = readFileSync(versionFile, "utf8");
-  if (!vStdout.trim()) {
-    die(
-      1,
-      `binary --version produced empty version file (file=${versionFile}, status=${v.status}). ` +
-        `The binary honored the env var but the file is empty — main() likely ` +
-        `exited before runVersion finished.`,
-    );
-  }
-  log(`binary --version: ${vStdout.trim()}`);
-} finally {
-  try { rmSync(versionFile, { force: true }); } catch {}
+  log(`binary --version: ${vStdout}`);
+} catch (e) {
+  die(1, `binary --version harness error: ${e.message}`);
 }
 
 // Step 6: spawn the mock LLM (unless skipped).
