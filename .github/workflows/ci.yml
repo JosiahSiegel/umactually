@@ -276,14 +276,34 @@ jobs:
         run: npm run build
 
       - name: Build all 5 SEA binaries
-        # Same comment as the linux-x64 job: tsdown's --exe mode has
-        # no per-target flag, so the config-driven build always
-        # produces all 5 binaries (linux x64/arm64, darwin arm64,
-        # windows x64/arm64). The smoke step below only executes the
-        # windows-x64 .exe, but the other 4 are built as a side
-        # effect — they get uploaded as workflow artifacts and
-        # discarded. Per-target filtering is tracked in a follow-up.
-        run: node scripts/build-sea.mjs windows-x64
+        # v0.6.13: switched from `node scripts/build-sea.mjs` (which
+        # delegates to @tsdown/exe via tsdown --exe) to
+        # `node scripts/build-sea-windows.mjs`, the same script
+        # release.yml's build-package-windows job uses. The
+        # @tsdown/exe tar-based Node binary download path is
+        # broken on Windows (tar on Windows interprets the colon
+        # in the https://nodejs.org URL as a drive letter and
+        # fails with "Cannot connect to C:"). build-sea-windows.mjs
+        # sidesteps @tsdown/exe entirely: it uses `tsdown` (no
+        # --exe) to bundle, then `node --build-sea` directly to
+        # inject the blob.
+        #
+        # Critical: this script is what release.yml uses to ship
+        # the Windows binary. If ci.yml uses a different script,
+        # the PR-time smoke test is exercising a different binary
+        # than what users receive. That was the root cause of the
+        # v0.6.8-v0.6.12 Windows post-release failures: ci.yml
+        # built with build-sea.mjs (Node 25.7.0), release.yml
+        # built with build-sea-windows.mjs (Node 25.6.0). The
+        # binaries differed in subtle ways (the
+        # @tsdown/exe-tar path doesn't even run on Windows in
+        # some Node versions; the SEA runtime was 25.7.0 vs
+        # 25.6.0, which is the version that doesn't set
+        # process.versions.sea).
+        #
+        # After this change, ci.yml's smoke-sea-windows exercises
+        # the EXACT binary that release.yml ships.
+        run: node scripts/build-sea-windows.mjs
 
       - name: Smoke test the Windows SEA binary
         shell: pwsh
@@ -626,7 +646,11 @@ jobs:
         run: npm run build
 
       - name: Build all SEA binaries (only windows-x64 is exercised here)
-        run: node scripts/build-sea.mjs windows-x64
+        # v0.6.13: switched from build-sea.mjs to build-sea-windows.mjs
+        # to match release.yml. See the matching comment in the
+        # smoke-sea-windows job above. This is the binary the
+        # e2e-pr-windows harness actually exercises.
+        run: node scripts/build-sea-windows.mjs
 
       - name: Run post-release e2e against the local Windows binary
         env:
