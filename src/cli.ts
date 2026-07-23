@@ -714,6 +714,32 @@ const isMainModule = (() => {
   if (typeof process.versions?.["sea"] === "string" && process.versions["sea"].length > 0) {
     return true;
   }
+  // Fallback for Node 25.6.0 SEA binaries: process.versions.sea
+  // may not be set on this version (it IS set on Node 25.7.0+).
+  // Detect the SEA case via argv1: if argv1 ends in .exe (Windows
+  // PE binary) or has no file extension at all (Linux/macOS SEA
+  // binary that has been stripped of its extension), AND we are
+  // not the action entry, treat the binary as the entry point.
+  // This is a heuristic but it's reliable in practice: the npm
+  // install path sets argv1 to .../dist/cli.js, which never ends
+  // in .exe and is never extensionless, so the npm path is
+  // unaffected. Only the SEA-binary path triggers this branch.
+  const argv1ForSeaDetect = process.argv[1] ?? "";
+  if (argv1ForSeaDetect.length > 0) {
+    const lower = argv1ForSeaDetect.toLowerCase();
+    if (lower.endsWith(".exe") || lower.endsWith(".cmd") || lower.endsWith(".bat")) {
+      return true;
+    }
+    // Extensionless binary on POSIX: this is the SEA case. The
+    // bin/umactually.mjs shim resolves to dist/cli.js via the npm
+    // bin link, so the npm path is unaffected. SEA binaries are
+    // copied/installed without a .js extension, so an extensionless
+    // argv1 is a strong SEA signal.
+    const lastSegment = argv1ForSeaDetect.split(/[\\/]/u).pop() ?? "";
+    if (lastSegment.length > 0 && !lastSegment.includes(".")) {
+      return true;
+    }
+  }
   // The "this module is the entry" check is: import.meta.url matches
   // pathToFileUrl(process.argv[1]). This is true for both the canonical
   // CLI entry (argv1 = the cli.js path, import.meta.url = the file://
