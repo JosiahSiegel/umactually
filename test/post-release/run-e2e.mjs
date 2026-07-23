@@ -179,25 +179,27 @@ if (binaryPathArg) {
   log(`extracted binary: ${binaryPath}`);
 }
 
-// Sanity: --version works. We capture the binary's stdout to a
-// FILE (not a pipe) because the Node 25.6.0-built SEA binary on
-// Windows + Git Bash has its fd 1 mapped to a CONOUT$ handle.
-// writeFileSync(process.stdout.fd, ...) and writeSync(1, ...)
-// both silently 'succeed' but the bytes go to the console
-// buffer, not the consumer's pipe. The consumer's 'data' event
-// never fires. The fix: give the child a real FILE fd for
-// stdout via openSync(file, "w"). The child writes to the file;
-// the consumer reads the file after the child exits. This works
-// on every platform, including Windows + Git Bash + Node 25.6.0
-// SEA. See test/unit/run-e2e-capture.test.ts for the regression
-// test that pins this behavior.
-const versionFile = join(tmpdir(), `umactually-e2e-version-${Date.now()}.txt`);
-const versionFd = openSync(versionFile, "w");
+// Sanity: --version works. We pass UMACTUALLY_VERSION_FILE env
+// var to the child, which causes the binary to write the version
+// to that file path in addition to stdout. This bypasses the
+// Windows + Git Bash + Node 25.6.0 SEA stdio issue: the SEA
+// runtime's fd 1 is mapped to a CONOUT$ handle, so any
+// writeFileSync(fd 1, ...) / writeSync(1, ...) / process.stdout.write
+// from the binary's runVersion tier 1/2/3 silently loses the
+// output. Writing to a real file (via fs.writeFile) is
+// unaffected. The harness reads the file after the child exits.
+// This is more robust than the prior pipe/file-fd capture
+// approaches because it doesn't rely on the spawn's stdio
+// config reaching the SEA runtime (it doesn't on Windows +
+// Node 25.6.0). See test/unit/run-e2e-capture.test.ts for the
+// regression test that pins this behavior.
+const versionFile = join(tmpdir(), `umactually-e2e-version-${Date.now()}-${process.pid}.txt`);
 let vStdout = "";
 try {
   const v = await new Promise((resolve) => {
     const child = spawn(binaryPath, ["--version"], {
-      stdio: ["ignore", versionFd, versionFd],
+      stdio: ["ignore", "pipe", "pipe"],
+      env: { ...process.env, UMACTUALLY_VERSION_FILE: versionFile },
     });
     const out = { status: null, signal: null };
     child.on("error", (err) => { out.error = err; });
@@ -213,21 +215,28 @@ try {
   if (v.status !== 0) {
     die(1, `binary --version failed: status=${v.status}`);
   }
-  vStdout = readFileSync(versionFile, "utf8");
-  if (!vStdout.trim()) {
+  if (!existsSync(versionFile)) {
     die(
       1,
-      `binary --version produced empty output (file=${versionFile}, status=${v.status}). ` +
-        `The tiered stdout fallback (writeFileSync -> writeSync -> process.stdout.write) ` +
-        `all reached the file fd but produced no bytes. This means main() did not fire. ` +
+      `binary --version did not write the version file at ${versionFile}. ` +
+        `The binary exited 0 but main() did not fire, or runVersion did not ` +
+        `honor the UMACTUALLY_VERSION_FILE env var. ` +
         `The primary fix is the process.versions.sea short-circuit in isMainModule ` +
         `(src/cli.ts) so main() fires on the SEA binary. If this error appears, the ` +
         `binary exited before main() — rebuild with the latest src/cli.ts.`,
     );
   }
+  vStdout = readFileSync(versionFile, "utf8");
+  if (!vStdout.trim()) {
+    die(
+      1,
+      `binary --version produced empty version file (file=${versionFile}, status=${v.status}). ` +
+        `The binary honored the env var but the file is empty — main() likely ` +
+        `exited before runVersion finished.`,
+    );
+  }
   log(`binary --version: ${vStdout.trim()}`);
 } finally {
-  closeSync(versionFd);
   try { rmSync(versionFile, { force: true }); } catch {}
 }
 

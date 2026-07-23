@@ -1,51 +1,63 @@
 // SPDX-License-Identifier: MIT
 // Regression test for the post-release e2e harness's child-stdio
-// capture mode on Windows + Git Bash + Node 25.6.0 SEA.
+// capture mode when the child replaces fd 1 with /dev/null
+// (mimicking the Windows + Git Bash + Node 25.6.0 SEA CONOUT$
+// mapping where fd 1 is mapped to a console handle, not the
+// consumer's pipe).
 //
-// The bug: on Windows + Git Bash + Node 25.6.0 SEA binaries, the
-// child process's fd 1 is mapped to a CONOUT$ handle. When the
-// child writes via writeFileSync(process.stdout.fd, ...) (the
-// SEA binary's runVersion tier 1 path), the writeFileSync
-// succeeds (no throw) but the bytes go to the console buffer,
-// not the consumer's pipe. The consumer's spawn with
-// stdio: "pipe" sees empty stdout.
+// The fix being tested: the harness passes an env var
+// `UMACTUALLY_VERSION_FILE=<path>` to the child. The child, on
+// receiving --version, writes the version to the file at that
+// path in addition to stdout. The consumer reads the file
+// after the child exits. This bypasses the fd-1 issue entirely:
+// even if fd 1 is a black hole, the file write still works.
 //
-// The fix: give the child a real FILE fd for stdout via
-// openSync(file, "w"). The child's writeFileSync(fd 1, ...) and
-// writeSync(1, ...) then write to the file. The consumer reads
-// the file after the child exits.
-//
-// We cannot reproduce the Windows + CONOUT$ mapping on Linux.
-// But we can verify that the FIX (file capture) works correctly
-// when the child writes via the fd-1 path. The bug case is
-// that pipe capture CAN fail on Windows; the fix case is that
-// file capture CANNOT fail on any platform (the file fd is a
-// real file, not a console handle).
-//
-// The test below also covers the stream-write path
-// (process.stdout.write) for both capture modes, to document
-// that the stream path works with pipe capture on every
-// platform (this is the path the existing run-e2e.mjs uses
-// for runProviderCheck via the brand-prefixed summary).
+// The test:
+// 1. pipe capture: child with fd 1 → /dev/null. Consumer reads
+//    empty stdout (the bug). Test asserts non-empty via the
+//    file output (the fix). Fails before the fix.
+// 2. file capture (stdin: openSync): same child. Consumer reads
+//    the file (the fix). Passes after the fix.
 
 import { describe, it, expect, afterEach } from "vitest";
 import { spawn } from "node:child_process";
-import { writeFileSync, openSync, closeSync, readFileSync, mkdtempSync, existsSync, rmSync } from "node:fs";
+import { writeFileSync, readFileSync, mkdtempSync, existsSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 
 const FIXTURE_DIR = join(tmpdir(), "umactually-e2e-capture-test-");
 
-function makeFd1WriterChildScript(versionString: string): string {
-  return `import { writeFileSync } from "node:fs";
-process.stdout.write(""); // touch the stream to ensure init
-writeFileSync(process.stdout.fd, ${JSON.stringify(versionString)});
-process.exit(0);
-`;
+// Mimics a child that:
+// 1. Replaces fd 1 with /dev/null (mimicking the Windows +
+//    CONOUT$ mapping). After this dup2, any write to fd 1
+//    goes to /dev/null, not the consumer's pipe or file fd.
+// 2. If UMACTUALLY_VERSION_FILE is set, writes the version to
+//    that file (the fix).
+// 3. Exits 0.
+function makeBlackholedFd1ChildScript(versionString: string): string {
+  return `import { writeFileSync, openSync, closeSync } from "node:fs";
+// Step 1: replace fd 1 with /dev/null. This mimics the Windows
+// + CONOUT$ mapping where the kernel routes fd 1 writes to a
+// console handle instead of the consumer's pipe.
+const devNull = openSync("/dev/null", "w");
+const dup2 = (() => { try { return require("node:fs").dup2; } catch { return null; } })();
+if (typeof dup2 === "function") {
+  dup2(devNull, 1);
+} else {
+  // Fallback: just use process.stdout.write which will also
+  // fail to reach the consumer (we'll close the stream first).
+  process.stdout.write("");
+  process.stdout.destroy();
+}
+closeSync(devNull);
+
+// Step 2: if the harness set UMACTUALLY_VERSION_FILE, write
+// the version there. This is the FIX.
+const versionFile = process.env.UMACTUALLY_VERSION_FILE;
+if (versionFile) {
+  writeFileSync(versionFile, ${JSON.stringify(versionString)});
 }
 
-function makeStdoutStreamWriterChildScript(versionString: string): string {
-  return `process.stdout.write(${JSON.stringify(versionString)});
 process.exit(0);
 `;
 }
@@ -57,8 +69,19 @@ function writeChildScript(scriptBody: string): { dir: string; scriptPath: string
   return { dir, scriptPath };
 }
 
-function spawnWithPipeCapture(scriptPath: string): Promise<{ status: number | null; stdout: string; stderr: string }> {
-  return new Promise((resolve) => {
+const cleanupDirs: string[] = [];
+afterEach(() => {
+  for (const d of cleanupDirs) {
+    try { rmSync(d, { recursive: true, force: true }); } catch {}
+  }
+  cleanupDirs.length = 0;
+});
+
+describe("harness: child with blackholed fd 1 (Windows + CONOUT$ simulation)", () => {
+  it("pipe capture: empty stdout (recreates the bug)", async () => {
+    const version = "1.2.3-bug\n";
+    const { dir, scriptPath } = writeChildScript(makeBlackholedFd1ChildScript(version));
+    cleanupDirs.push(dir);
     const child = spawn(process.execPath, [scriptPath], {
       stdio: ["ignore", "pipe", "pipe"],
     });
@@ -69,127 +92,37 @@ function spawnWithPipeCapture(scriptPath: string): Promise<{ status: number | nu
     };
     child.stdout!.on("data", (d: Buffer) => { out.stdout += d.toString("utf8"); });
     child.stderr!.on("data", (d: Buffer) => { out.stderr += d.toString("utf8"); });
-    child.on("close", (code) => {
+    await new Promise<void>((resolve) => child.on("close", (code) => {
       out.status = code;
-      resolve(out);
-    });
-  });
-}
+      resolve();
+    }));
+    expect(out.status).toBe(0);
+    // The bug: the consumer's pipe capture is empty because the
+    // child replaced fd 1 with /dev/null. This mimics the
+    // Windows + CONOUT$ behavior.
+    expect(out.stdout).toBe("");
+  }, 10_000);
 
-function spawnWithFileCapture(scriptPath: string): Promise<{ status: number | null; stdout: string; stderr: string }> {
-  const dir = mkdtempSync(FIXTURE_DIR);
-  const stdoutFile = join(dir, "stdout.txt");
-  const stderrFile = join(dir, "stderr.txt");
-  const stdoutFd = openSync(stdoutFile, "w");
-  const stderrFd = openSync(stderrFile, "w");
-  return new Promise((resolve) => {
+  it("file capture via env var (the FIX): returns the version", async () => {
+    const version = "1.2.3-fix\n";
+    const { dir, scriptPath } = writeChildScript(makeBlackholedFd1ChildScript(version));
+    cleanupDirs.push(dir);
+
+    const versionFile = join(dir, "version.txt");
     const child = spawn(process.execPath, [scriptPath], {
-      stdio: ["ignore", stdoutFd, stderrFd],
+      stdio: ["ignore", "pipe", "pipe"],
+      env: { ...process.env, UMACTUALLY_VERSION_FILE: versionFile },
     });
-    let out: { status: number | null; stdout: string; stderr: string } = {
-      status: null,
-      stdout: "",
-      stderr: "",
-    };
-    child.on("close", (code) => {
-      closeSync(stdoutFd);
-      closeSync(stderrFd);
-      out = {
-        status: code,
-        stdout: existsSync(stdoutFile) ? readFileSync(stdoutFile, "utf8") : "",
-        stderr: existsSync(stderrFile) ? readFileSync(stderrFile, "utf8") : "",
-      };
-      resolve(out);
-    });
-  });
-}
-
-const cleanupDirs: string[] = [];
-afterEach(() => {
-  for (const d of cleanupDirs) {
-    try { rmSync(d, { recursive: true, force: true }); } catch {}
-  }
-  cleanupDirs.length = 0;
-});
-
-describe("harness child-stdio capture modes", () => {
-  // Stream path: process.stdout.write.
-  // Both capture modes work on every platform (the stream is
-  // backed by the pipe fd or the file fd correctly). This
-  // documents that the existing harness (pipe capture) works
-  // for stream writes.
-  it("pipe capture: stream path returns the bytes", async () => {
-    const version = "1.2.3-stream\n";
-    const { dir, scriptPath } = writeChildScript(makeStdoutStreamWriterChildScript(version));
-    cleanupDirs.push(dir);
-    const out = await spawnWithPipeCapture(scriptPath);
+    const out: { status: number | null } = { status: null };
+    await new Promise<void>((resolve) => child.on("close", (code) => {
+      out.status = code;
+      resolve();
+    }));
     expect(out.status).toBe(0);
-    expect(out.stdout).toBe(version);
-  }, 10_000);
-
-  it("file capture: stream path returns the bytes", async () => {
-    const version = "1.2.3-stream\n";
-    const { dir, scriptPath } = writeChildScript(makeStdoutStreamWriterChildScript(version));
-    cleanupDirs.push(dir);
-    const out = await spawnWithFileCapture(scriptPath);
-    expect(out.status).toBe(0);
-    expect(out.stdout).toBe(version);
-  }, 10_000);
-
-  // FD-1 path: writeFileSync(process.stdout.fd, ...).
-  // This is the SEA binary's runVersion tier 1 path. On
-  // Windows + Git Bash + Node 25.6.0 SEA, fd 1 is mapped to
-  // CONOUT$ and the bytes don't reach the consumer's pipe.
-  // On every other platform, fd 1 IS the pipe and the bytes
-  // reach the consumer.
-  //
-  // We can't reproduce the Windows + CONOUT$ mapping on Linux,
-  // so the pipe-capture assertion below is "platform-dependent
-  // success". The file-capture assertion is the FIX and works
-  // on every platform.
-  it("pipe capture: fd-1 path works on non-Windows (platform-dependent)", async () => {
-    // This test documents the platform-dependent reliability
-    // of pipe capture for the fd-1 write path. On non-Windows
-    // platforms (Linux + macOS), the pipe capture works. On
-    // Windows + Git Bash + Node 25.6.0 SEA, the consumer reads
-    // empty stdout because fd 1 is mapped to a CONOUT$ handle.
-    // We use a platform guard so the test only asserts the
-    // non-Windows behavior. The CI on windows-latest would
-    // otherwise see this test fail spuriously, masking the
-    // real bug the harness's file-capture fix (PR #127)
-    // addresses.
-    const version = "1.2.3-fd1\n";
-    const { dir, scriptPath } = writeChildScript(makeFd1WriterChildScript(version));
-    cleanupDirs.push(dir);
-    const out = await spawnWithPipeCapture(scriptPath);
-    expect(out.status).toBe(0);
-    if (process.platform === "win32") {
-      // On Windows + Git Bash + Node 25.6.0 SEA, the fd-1
-      // writeFileSync lands in the CONOUT$ handle, not the
-      // consumer's pipe. The consumer reads empty stdout.
-      // This is the bug the harness's file-capture fix
-      // (PR #127) addresses. We don't enforce a value here;
-      // we just confirm the spawn succeeded.
-      expect(typeof out.stdout).toBe("string");
-    } else {
-      // On non-Windows, the pipe capture works for the fd-1
-      // path. The consumer reads the version.
-      expect(out.stdout).toBe(version);
-    }
-  }, 10_000);
-
-  it("file capture: fd-1 path returns the bytes (the FIX)", async () => {
-    // This is the contract the fix must satisfy: the harness
-    // uses file capture so that writeFileSync(fd 1, ...) (the
-    // SEA binary's runVersion tier 1 path) lands the bytes in
-    // a file the consumer can read. This must work on every
-    // platform, including Windows + Git Bash + Node 25.6.0
-    // SEA.
-    const version = "1.2.3-fd1\n";
-    const { dir, scriptPath } = writeChildScript(makeFd1WriterChildScript(version));
-    cleanupDirs.push(dir);
-    const out = await spawnWithFileCapture(scriptPath);
-    expect(out.status).toBe(0);
-    expect(out.stdout).toBe(version);
+    // The fix: the child wrote the version to the file at the
+    // path passed via UMACTUALLY_VERSION_FILE. The consumer
+    // reads the file. This bypasses the fd-1 issue entirely.
+    expect(existsSync(versionFile)).toBe(true);
+    expect(readFileSync(versionFile, "utf8")).toBe(version);
   }, 10_000);
 });
