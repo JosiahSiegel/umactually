@@ -14,10 +14,10 @@ steps:
   - task: NodeTool@0
     inputs:
       versionSpec: "24.x"
-  # Pin to the v0.6.6 release tag — `npx github:owner/repo#tag` resolves
+  # Pin to the v0.6.7 release tag — `npx github:owner/repo#tag` resolves
   # to the GitHub tarball at that ref, so the install is reproducible
   # instead of tracking `main`. The npm package is not yet published.
-  - script: npx github:JosiahSiegel/umactually#v0.6.6 review --platform azure-devops
+  - script: npx github:JosiahSiegel/umactually#v0.6.7 review --platform azure-devops
     displayName: Run umactually PR review
     env:
       SYSTEM_ACCESSTOKEN: $(System.AccessToken)
