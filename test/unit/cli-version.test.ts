@@ -107,10 +107,11 @@ describe("CLI version handler (M2)", () => {
     expect(existsSync(autoContextDirectory)).toBe(false);
   });
 
-  it("falls back to process.stdout.write when writeFileSync throws EBADF (no kernel fd for stdout)", async () => {
-    // Spy on process.stdout.write AND mock writeFileSync to throw an
-    // EBADF error. The runVersion catch block should fall through to
-    // process.stdout.write with the version bytes.
+  it("falls back to process.stdout.write when writeFileSync AND writeSync throw EBADF (no kernel fd for stdout)", async () => {
+    // v0.6.5: runVersion cascades through three tiers. We mock
+    // tier 1 (writeFileSync) and tier 2 (writeSync on fd 1) to both
+    // throw EBADF, so the cascade reaches tier 3 (process.stdout.write).
+    // The spy on process.stdout.write captures the version bytes.
     let fallbackBuffer = "";
     const stdoutSpy = vi
       .spyOn(process.stdout, "write")
@@ -120,6 +121,11 @@ describe("CLI version handler (M2)", () => {
       });
     vi.doMock("node:fs", async () => {
       const actual = await vi.importActual<typeof import("node:fs")>("node:fs");
+      const ebadf = (): void => {
+        const err = new Error("bad file descriptor") as NodeJS.ErrnoException;
+        err.code = "EBADF";
+        throw err;
+      };
       return {
         ...actual,
         writeFileSync: ((
@@ -127,10 +133,16 @@ describe("CLI version handler (M2)", () => {
           _data: string | NodeJS.ArrayBufferView,
           ..._rest: unknown[]
         ): void => {
-          const err = new Error("bad file descriptor") as NodeJS.ErrnoException;
-          err.code = "EBADF";
-          throw err;
+          ebadf();
         }) as typeof actual.writeFileSync,
+        writeSync: ((
+          _fd: number,
+          _data: string | NodeJS.ArrayBufferView,
+          ..._rest: unknown[]
+        ): number => {
+          ebadf();
+          return 0;
+        }) as typeof actual.writeSync,
       };
     });
     vi.resetModules();

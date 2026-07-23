@@ -17863,10 +17863,51 @@ function runVersion(_argv) {
     // The fallback path is exercised by cli-version.test.ts's "falls
     // back to process.stdout.write when writeFileSync throws EBADF"
     // case.
+    //
+    // v0.6.5: tiered fallback. Each path is reliable in some
+    // configuration and unreliable in others; we cascade through
+    // them until one succeeds.
+    //
+    //   tier 1 — writeFileSync(process.stdout.fd, stdout) (the v0.6.0
+    //   path). Lands the bytes synchronously into the kernel pipe
+    //   buffer in the install.ps1 cmd /c harness on Windows AND in
+    //   the PowerShell Start-Process harness.
+    //
+    //   tier 2 — writeSync(1, stdout). Bypasses Node's process.stdout
+    //   layer; writes to the raw file descriptor 1. Reliable when
+    //   fd 1 is a real pipe (e.g. when the binary is spawned by bash
+    //   + child_process.spawn on Windows-latest in the post-release
+    //   e2e harness, where process.stdout.fd maps to a CONOUT$
+    //   handle rather than the consumer's pipe and tier 1 silently
+    //   loses the output).
+    //
+    //   tier 3 — process.stdout.write(stdout). The high-level Node
+    //   stream path. Stream-buffered; can be torn down before drain
+    //   in some spawn configurations. Last-resort fallback.
+    //
+    // We track which tier succeeded (or succeeded first) so we
+    // don't duplicate the version string at the consumer. The test
+    // suite's "falls back to process.stdout.write when writeFileSync
+    // throws EBADF" test pins this contract.
+    let written = false;
     try {
         (0,external_node_fs_namespaceObject.writeFileSync)(process.stdout.fd, stdout);
+        written = true;
     }
     catch {
+        // tier 1 unavailable
+    }
+    if (!written) {
+        try {
+            (0,external_node_fs_namespaceObject.writeSync)(1, stdout);
+            written = true;
+        }
+        catch {
+            // tier 2 unavailable
+        }
+    }
+    if (!written) {
+        // tier 3 — best effort, no error if it fails.
         process.stdout.write(stdout);
     }
     return { exitCode: 0, stdout };

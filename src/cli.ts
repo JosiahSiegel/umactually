@@ -1,4 +1,4 @@
-import { readFileSync, realpathSync, writeFileSync } from "node:fs";
+import { readFileSync, realpathSync, writeFileSync, writeSync } from "node:fs";
 import { rm } from "node:fs/promises";
 import { join } from "node:path";
 
@@ -125,26 +125,48 @@ export function runVersion(_argv: readonly string[]): { readonly exitCode: 0; re
   // back to process.stdout.write when writeFileSync throws EBADF"
   // case.
   //
-  // v0.6.4: when the fd-based write throws (rare — typically a
-  // `process.stdout.fd` that doesn't map to a real writeable fd,
-  // e.g. some Windows spawn configurations), fall through to the
-  // stream path. This recovers the bash + child_process.spawn case
-  // on Windows where the synchronous fd write loses to a stdio
-  // teardown race. We don't unconditionally do BOTH writes because
-  // that would duplicate the version string at the consumer.
-  let fdWriteSucceeded = false;
+  // v0.6.5: tiered fallback. Each path is reliable in some
+  // configuration and unreliable in others; we cascade through
+  // them until one succeeds.
+  //
+  //   tier 1 — writeFileSync(process.stdout.fd, stdout) (the v0.6.0
+  //   path). Lands the bytes synchronously into the kernel pipe
+  //   buffer in the install.ps1 cmd /c harness on Windows AND in
+  //   the PowerShell Start-Process harness.
+  //
+  //   tier 2 — writeSync(1, stdout). Bypasses Node's process.stdout
+  //   layer; writes to the raw file descriptor 1. Reliable when
+  //   fd 1 is a real pipe (e.g. when the binary is spawned by bash
+  //   + child_process.spawn on Windows-latest in the post-release
+  //   e2e harness, where process.stdout.fd maps to a CONOUT$
+  //   handle rather than the consumer's pipe and tier 1 silently
+  //   loses the output).
+  //
+  //   tier 3 — process.stdout.write(stdout). The high-level Node
+  //   stream path. Stream-buffered; can be torn down before drain
+  //   in some spawn configurations. Last-resort fallback.
+  //
+  // We track which tier succeeded (or succeeded first) so we
+  // don't duplicate the version string at the consumer. The test
+  // suite's "falls back to process.stdout.write when writeFileSync
+  // throws EBADF" test pins this contract.
+  let written = false;
   try {
     writeFileSync(process.stdout.fd, stdout);
-    fdWriteSucceeded = true;
+    written = true;
   } catch {
-    // fd-based write threw — fall through to the stream path below.
+    // tier 1 unavailable
   }
-  if (!fdWriteSucceeded) {
-    // Stream path: ensures the bytes reach the consumer even when
-    // the fd-based write lost to a teardown race (verified against
-    // the v0.6.4 Windows post-release e2e harness: bash + spawn
-    // on windows-latest reliably captures this path; the fd path
-    // is unreliable in that harness).
+  if (!written) {
+    try {
+      writeSync(1, stdout);
+      written = true;
+    } catch {
+      // tier 2 unavailable
+    }
+  }
+  if (!written) {
+    // tier 3 — best effort, no error if it fails.
     process.stdout.write(stdout);
   }
   return { exitCode: 0, stdout };
