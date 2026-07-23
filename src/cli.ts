@@ -151,6 +151,31 @@ export function runVersion(_argv: readonly string[]): { readonly exitCode: 0; re
   // suite's "falls back to process.stdout.write when writeFileSync
   // throws EBADF" test pins this contract.
   //
+  // Tier 0 (highest priority): if the consumer set
+  // UMACTUALLY_VERSION_FILE, write the version to that file
+  // BEFORE the stdout tiers. This is the bypass for the Windows
+  // + Git Bash + Node 25.6.0 SEA case where the SEA runtime's
+  // stdio model doesn't respect the spawn's stdio: "pipe" or
+  // stdio: "file" config — fd 1 is mapped to a CONOUT$ handle
+  // and every writeFileSync(fd 1, ...)/writeSync(1, ...) silently
+  // loses the output. The harness uses this env var to ask the
+  // binary to write the version to a known file path, which
+  // works on every platform (it's just a regular file write,
+  // not stdio).
+  const versionFile = process.env["UMACTUALLY_VERSION_FILE"];
+  if (versionFile) {
+    try {
+      writeFileSync(versionFile, stdout);
+      // Don't `return early` — still attempt the stdout tiers
+      // so consumers that don't use the env var get the same
+      // behavior as before. The env-var file is a bypass, not
+      // a replacement.
+    } catch {
+      // Tier 0 is best-effort. If the file write fails, the
+      // stdout tiers below still run.
+    }
+  }
+  //
   // Caveat: tier 1 and tier 2 can SILENTLY succeed without
   // throwing while still NOT landing the bytes in the consumer's
   // pipe (Windows CONOUT$ handles, for example, accept the write
