@@ -17960,22 +17960,30 @@ function runVersion(_argv) {
             // stdout tiers below still run.
         }
     }
-    // Tier 0b: ALWAYS also write the version to stderr via
-    // writeFileSync. On Windows + Git Bash + Node 25.6.0 SEA, fd 2
-    // (stderr) is mapped to the consumer's pipe while fd 1 (stdout)
-    // is mapped to a CONOUT$ handle. Writing the version to stderr
-    // guarantees the consumer can capture it via the stderr pipe
-    // even if fd 1 is broken. This is a defensive fallback that
-    // doesn't affect normal consumers (they pipe stdout, not stderr,
-    // and the version still goes to stdout via the tiers below).
-    // We use a prefix-free write so consumers can grep for the
-    // version pattern (`^\d+\.\d+\.\d+`) without false matches
-    // from the SEA warning or other stderr noise.
-    try {
-        (0,external_node_fs_namespaceObject.writeFileSync)(2, stdout);
-    }
-    catch {
-        // stderr write failed; not fatal
+    // Tier 0b (opt-in): if the consumer set
+    // UMACTUALLY_VERSION_TO_STDERR, write the version to stderr
+    // via process.stderr.write. On Windows + Git Bash + Node
+    // 25.6.0 SEA, the SEA runtime's stdio model maps fd 1 (stdout)
+    // to a CONOUT$ handle but leaves fd 2 (stderr) connected to
+    // the consumer's pipe. This is why the SEA warning (which
+    // uses process.stderr.write) reaches the consumer but the
+    // version (which uses writeFileSync(process.stdout.fd, ...) in
+    // tier 1) does not. Writing the version to stderr via the
+    // stream API (not writeFileSync) guarantees the bytes land in
+    // the consumer's stderr pipe on Windows + CONOUT$. The write
+    // is opt-in via the env var so the `--version` contract
+    // (writes nothing to stderr) is preserved for normal
+    // consumers. The harness sets the env var explicitly.
+    // We use a distinctive marker prefix so consumers can grep
+    // for the version pattern (after stripping the marker) without
+    // false-matches on the SEA warning or other stderr noise.
+    if (process.env["UMACTUALLY_VERSION_TO_STDERR"] === "1") {
+        try {
+            process.stderr.write(`umactually-version:${stdout}`);
+        }
+        catch {
+            // stderr write failed; not fatal
+        }
     }
     //
     // Caveat: tier 1 and tier 2 can SILENTLY succeed without
