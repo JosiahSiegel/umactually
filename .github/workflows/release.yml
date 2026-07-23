@@ -248,9 +248,17 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Setup Node
+        # v0.6.4: pinned to 25.6.0 (not 25.7.0) because Node 25.7.0's
+        # SEA runtime on Windows fails to load CJS bundles whose
+        # modules use `node:`-prefixed imports (the Windows binary
+        # exits 1 with empty --version output; the same CJS bundle
+        # built and run on Linux works correctly). v0.6.0 (the last
+        # release with a working Windows binary) was built with
+        # Node 25.6.x. Linux/darwin builds continue to use 25.7.0
+        # (unchanged) because the regression is Windows-specific.
         uses: actions/setup-node@v4
         with:
-          node-version: "25.7.0"
+          node-version: "25.6.0"
           cache: "npm"
 
       - name: Install dependencies
@@ -270,7 +278,7 @@ jobs:
         # delegates to @tsdown/exe) to `node scripts/build-sea-windows.mjs`.
         # @tsdown/exe's tar-based Node binary download path is broken on
         # Windows: tar on Windows interprets the colon in
-        # `https://nodejs.org/dist/.../node-v25.7.0-win-x64.zip` as a
+        # `https://nodejs.org/dist/.../node-v25.6.0-win-x64.zip` as a
         # drive letter (`C:`) and exits with
         # "Cannot connect to C: resolve failed" (origin: @tsdown/exe
         # dist/index.mjs:163, `extractBinary`).

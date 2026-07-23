@@ -58,7 +58,7 @@ import { fileURLToPath } from "node:url";
 import { MIN_RAW_BYTES } from "./release-size-limits.mjs";
 
 const EXPECTED_NODE_MAJOR = 25;
-const EXPECTED_NODE_MINOR = 7;
+const EXPECTED_NODE_MINOR = 6;
 const HERE = dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = resolve(HERE, "..");
 const BUNDLE_DIR = join(REPO_ROOT, "dist");
