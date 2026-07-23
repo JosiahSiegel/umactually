@@ -583,6 +583,7 @@ function probeContract(workflow: Workflow): readonly Violation[] {
     const isStructural = /structural|non[- ]?runtime|pe[^\n]{0,40}(machine|validation|archive)/iu.test(stepText);
     if (!isStructural) {
       violations.push({
+        rule: "windows-arm64-structural",
         source: "Scope L41, L51 + Todo 4 brief",
         detail: `windows-arm64 job (${windowsArm64Job.id}) must explicitly label its validation structural or non-runtime (e.g. 'Structural PE machine type + archive validation (non-runtime)')`,
       });
