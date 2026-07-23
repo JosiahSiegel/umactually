@@ -294,6 +294,33 @@ jobs:
         shell: bash
         run: node scripts/build-sea-windows.mjs
 
+      # v0.6.4 DEBUG: smoke-test the binary on the build runner with
+      # stderr capture. install.ps1 swallows stderr (2>$null) so the
+      # smoke job can't see the real error. This step surfaces it.
+      - name: DEBUG: smoke-test windows-x64 binary
+        if: always()
+        shell: pwsh
+        run: |
+          $binary = "release\umactually-windows-x64.exe"
+          if (-not (Test-Path $binary)) { Write-Host "no binary"; exit 0 }
+          Write-Host "size = $((Get-Item $binary).Length)"
+          $errFile = New-TemporaryFile
+          $outFile = New-TemporaryFile
+          try {
+            $p = Start-Process -FilePath $binary `
+              -ArgumentList "--version" `
+              -NoNewWindow -Wait -PassThru `
+              -RedirectStandardError $errFile.FullName `
+              -RedirectStandardOutput $outFile.FullName
+            Write-Host "exit = $($p.ExitCode)"
+            Write-Host "--- stdout ---"
+            Get-Content $outFile.FullName -Raw -ErrorAction SilentlyContinue
+            Write-Host "--- stderr ---"
+            Get-Content $errFile.FullName -Raw -ErrorAction SilentlyContinue
+          } finally {
+            Remove-Item $errFile.FullName,$outFile.FullName -ErrorAction SilentlyContinue
+          }
+
       - name: Write windows-only release manifest
         # The Windows producer only built windows-x64 + windows-arm64.
         # The verifier and stage-release-assets iterate over the
