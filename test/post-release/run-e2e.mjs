@@ -43,7 +43,7 @@
 
 import { createServer } from "node:http";
 import { spawn, spawnSync } from "node:child_process";
-import { mkdtempSync, readFileSync, writeFileSync, mkdirSync, existsSync, rmSync } from "node:fs";
+import { mkdtempSync, readFileSync, writeFileSync, mkdirSync, existsSync, rmSync, openSync, closeSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -179,47 +179,57 @@ if (binaryPathArg) {
   log(`extracted binary: ${binaryPath}`);
 }
 
-// Sanity: --version works. Use event-based spawn (NOT spawnSync)
-// for the same reason runProviderCheck does: the Node 25.7.0-built
-// SEA binary has a pipe-drain race when the parent's stdio is fully
-// piped AND the parent waits synchronously via spawnSync. The
-// --version path uses writeFileSync(process.stdout.fd, ...), which
-// should bypass the race — but on Windows + Git Bash (the post-
-// release e2e harness runs in bash on windows-latest), the
-// process.stdout.fd is mapped to a CONOUT$ handle that doesn't
-// drain to the consumer's pipe in time. spawn() with event-based
-// I/O drains the pipes naturally. See the runProviderCheck comment
-// below for the full analysis.
-const v = await new Promise((resolve) => {
-  const child = spawn(binaryPath, ["--version"], {
-    encoding: "utf8",
-    stdio: ["ignore", "pipe", "pipe"],
+// Sanity: --version works. We capture the binary's stdout to a
+// FILE (not a pipe) because the Node 25.6.0-built SEA binary on
+// Windows + Git Bash has its fd 1 mapped to a CONOUT$ handle.
+// writeFileSync(process.stdout.fd, ...) and writeSync(1, ...)
+// both silently 'succeed' but the bytes go to the console
+// buffer, not the consumer's pipe. The consumer's 'data' event
+// never fires. The fix: give the child a real FILE fd for
+// stdout via openSync(file, "w"). The child writes to the file;
+// the consumer reads the file after the child exits. This works
+// on every platform, including Windows + Git Bash + Node 25.6.0
+// SEA. See test/unit/run-e2e-capture.test.ts for the regression
+// test that pins this behavior.
+const versionFile = join(tmpdir(), `umactually-e2e-version-${Date.now()}.txt`);
+const versionFd = openSync(versionFile, "w");
+let vStdout = "";
+try {
+  const v = await new Promise((resolve) => {
+    const child = spawn(binaryPath, ["--version"], {
+      stdio: ["ignore", versionFd, versionFd],
+    });
+    const out = { status: null, signal: null };
+    child.on("error", (err) => { out.error = err; });
+    child.on("close", (code, signal) => {
+      out.status = code;
+      out.signal = signal;
+      resolve(out);
+    });
   });
-  const out = { status: null, signal: null, stdout: "", stderr: "" };
-  child.stdout.on("data", (d) => { out.stdout += d.toString("utf8"); });
-  child.stderr.on("data", (d) => { out.stderr += d.toString("utf8"); });
-  child.on("error", (err) => {
-    out.stderr += `[harness] spawn error: ${err.message}\n`;
-  });
-  child.on("close", (code, signal) => {
-    out.status = code;
-    out.signal = signal;
-    resolve(out);
-  });
-});
-if (v.status !== 0) {
-  die(1, `binary --version failed: status=${v.status} stderr=${v.stderr}`);
+  if (v.error) {
+    die(1, `binary --version spawn error: ${v.error.message}`);
+  }
+  if (v.status !== 0) {
+    die(1, `binary --version failed: status=${v.status}`);
+  }
+  vStdout = readFileSync(versionFile, "utf8");
+  if (!vStdout.trim()) {
+    die(
+      1,
+      `binary --version produced empty output (file=${versionFile}, status=${v.status}). ` +
+        `The tiered stdout fallback (writeFileSync -> writeSync -> process.stdout.write) ` +
+        `all reached the file fd but produced no bytes. This means main() did not fire. ` +
+        `The primary fix is the process.versions.sea short-circuit in isMainModule ` +
+        `(src/cli.ts) so main() fires on the SEA binary. If this error appears, the ` +
+        `binary exited before main() — rebuild with the latest src/cli.ts.`,
+    );
+  }
+  log(`binary --version: ${vStdout.trim()}`);
+} finally {
+  closeSync(versionFd);
+  try { rmSync(versionFile, { force: true }); } catch {}
 }
-if (!v.stdout.trim()) {
-  die(
-    1,
-    `binary --version produced empty stdout (status=${v.status} stderr=${v.stderr}). ` +
-      `This is the Windows + Git Bash CONOUT\$ race. The primary fix is ` +
-      `the process.versions.sea short-circuit in isMainModule (src/cli.ts). ` +
-      `If this error appears, the binary exited before main() — rebuild with the latest src/cli.ts.`,
-  );
-}
-log(`binary --version: ${v.stdout.trim()}`);
 
 // Step 6: spawn the mock LLM (unless skipped).
 let mockPort = Number(process.env.MOCK_LLM_PORT ?? 0);
@@ -527,31 +537,49 @@ async function runProviderCheck({ binaryPath, provider, apiUrl, diffPath, repo, 
   // run history for context (v0.6.0 published Linux binary
   // passes; locally-built Node 25.7.0 binary fails via
   // spawnSync, passes via spawn).
-  const r = await new Promise((resolve) => {
-    const child = spawn(binaryPath, args, {
-      encoding: "utf8",
-      stdio: ["ignore", "pipe", "pipe"],
-      cwd: providerCwd,
-      env: {
-        ...process.env,
-        GITHUB_ACTIONS: "false",
-        TF_BUILD: "",
-      },
+  // Capture stdout/stderr to FILES (not pipes) for the same
+  // CONOUT$ reason as the --version check above. The review
+  // subcommand's stdout (brand-prefixed summary) and stderr
+  // (warnings) both go through Node's stream layer; on Windows
+  // + Git Bash the stream's underlying fd is a CONOUT$ handle,
+  // so pipe-based capture loses everything. File fds work
+  // because the kernel's write(2) syscall to a regular file is
+  // reliable regardless of what fd 0/1/2 happen to be mapped
+  // to. The cwd-relative artifact file (./umactually-review.json)
+  // is written via fs.writeFile, which goes to a real file
+  // and is unaffected by this issue.
+  const reviewStdoutFile = join(providerCwd, "review-stdout.log");
+  const reviewStderrFile = join(providerCwd, "review-stderr.log");
+  const reviewStdoutFd = openSync(reviewStdoutFile, "w");
+  const reviewStderrFd = openSync(reviewStderrFile, "w");
+  let r;
+  try {
+    r = await new Promise((resolve) => {
+      const child = spawn(binaryPath, args, {
+        stdio: ["ignore", reviewStdoutFd, reviewStderrFd],
+        cwd: providerCwd,
+        env: {
+          ...process.env,
+          GITHUB_ACTIONS: "false",
+          TF_BUILD: "",
+        },
+      });
+      const out = { status: null, signal: null };
+      child.on("error", (err) => {
+        out.status = -1;
+        try { writeFileSync(reviewStderrFile, `[harness] spawn error: ${err.message}\n`); } catch {}
+        resolve(out);
+      });
+      child.on("exit", (code, signal) => {
+        out.status = code;
+        out.signal = signal;
+        resolve(out);
+      });
     });
-    const out = { status: null, signal: null, stdout: "", stderr: "" };
-    child.stdout.on("data", (d) => { out.stdout += d.toString("utf8"); });
-    child.stderr.on("data", (d) => { out.stderr += d.toString("utf8"); });
-    child.on("error", (err) => {
-      out.stderr += `[harness] spawn error: ${err.message}\n`;
-      out.status = -1;
-      resolve(out);
-    });
-    child.on("exit", (code, signal) => {
-      out.status = code;
-      out.signal = signal;
-      resolve(out);
-    });
-  });
+  } finally {
+    closeSync(reviewStdoutFd);
+    closeSync(reviewStderrFd);
+  }
   let commentCount = 0;
   let reviewSummary = "";
   if (existsSync(cwdArtifact)) {
@@ -567,14 +595,15 @@ async function runProviderCheck({ binaryPath, provider, apiUrl, diffPath, repo, 
     }
   } else {
     log(`WARN: artifact not written at ${cwdArtifact}`);
-    if (r.stderr) log(`WARN: stderr was: ${r.stderr.slice(0, 500)}`);
+    const reviewStderrContents = existsSync(reviewStderrFile) ? readFileSync(reviewStderrFile, "utf8") : "";
+    if (reviewStderrContents) log(`WARN: stderr was: ${reviewStderrContents.slice(0, 500)}`);
     if (r.signal) log(`WARN: killed by signal: ${r.signal}`);
   }
   return {
     artifactPath: finalArtifact,
     commentCount,
     exitCode: r.status,
-    stderr: r.stderr ?? "",
+    stderr: existsSync(reviewStderrFile) ? readFileSync(reviewStderrFile, "utf8") : "",
     summary: reviewSummary,
   };
 }
