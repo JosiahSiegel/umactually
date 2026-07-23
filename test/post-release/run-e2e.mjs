@@ -179,8 +179,34 @@ if (binaryPathArg) {
   log(`extracted binary: ${binaryPath}`);
 }
 
-// Sanity: --version works.
-const v = spawnSync(binaryPath, ["--version"], { encoding: "utf8" });
+// Sanity: --version works. Use event-based spawn (NOT spawnSync)
+// for the same reason runProviderCheck does: the Node 25.7.0-built
+// SEA binary has a pipe-drain race when the parent's stdio is fully
+// piped AND the parent waits synchronously via spawnSync. The
+// --version path uses writeFileSync(process.stdout.fd, ...), which
+// should bypass the race — but on Windows + Git Bash (the post-
+// release e2e harness runs in bash on windows-latest), the
+// process.stdout.fd is mapped to a CONOUT$ handle that doesn't
+// drain to the consumer's pipe in time. spawn() with event-based
+// I/O drains the pipes naturally. See the runProviderCheck comment
+// below for the full analysis.
+const v = await new Promise((resolve) => {
+  const child = spawn(binaryPath, ["--version"], {
+    encoding: "utf8",
+    stdio: ["ignore", "pipe", "pipe"],
+  });
+  const out = { status: null, signal: null, stdout: "", stderr: "" };
+  child.stdout.on("data", (d) => { out.stdout += d.toString("utf8"); });
+  child.stderr.on("data", (d) => { out.stderr += d.toString("utf8"); });
+  child.on("error", (err) => {
+    out.stderr += `[harness] spawn error: ${err.message}\n`;
+  });
+  child.on("close", (code, signal) => {
+    out.status = code;
+    out.signal = signal;
+    resolve(out);
+  });
+});
 if (v.status !== 0) {
   die(1, `binary --version failed: status=${v.status} stderr=${v.stderr}`);
 }
