@@ -4367,10 +4367,41 @@ function parseComment(value) {
 ;// CONCATENATED MODULE: ./src/util/log.ts
 
 /**
+ * When `true`, suppress the GitHub-Actions-specific `::error::` /
+ * `::warning::` / `::notice::` annotation prefixes and emit the
+ * brand-prefixed message as a plain line. Test scenarios that
+ * intentionally exercise error paths (e.g. the leak gate's
+ * "Refusing to post" message) would otherwise surface as
+ * `##[error]` workflow annotations in every PR CI log, which is
+ * noise — the test EXPECTS the error and asserts on it via
+ * `result.message`, but the workflow annotation makes the PR
+ * look like it has a new failure on every run.
+ *
+ * Detection: explicit `UMACTUALLY_QUIET_ANNOTATIONS=1` env var
+ * (set by vitest's setup file), OR `process.env.VITEST` is
+ * defined (vitest sets this for every test file by default).
+ */
+function isQuietAnnotationMode() {
+    if (process.env["UMACTUALLY_QUIET_ANNOTATIONS"] === "1")
+        return true;
+    if (typeof process.env["VITEST"] === "string" && process.env["VITEST"].length > 0) {
+        return true;
+    }
+    return false;
+}
+/**
  * @returns A single line ending with exactly one newline character. Do not append another newline.
  */
 function formatAnnotation(level, action, message) {
     const actionPrefix = action.length > 0 ? `${action} ` : "";
+    if (isQuietAnnotationMode()) {
+        // Plain brand-prefixed line — no `::error::` workflow annotation
+        // prefix, so the line still appears in the test log but does NOT
+        // surface as a GitHub Actions check annotation. The brand prefix
+        // is kept so test assertions that grep for `umactually: ...` still
+        // match.
+        return `${BRAND_PREFIX}${actionPrefix}${message}\n`;
+    }
     return `::${level}::${BRAND_PREFIX}${actionPrefix}${message}\n`;
 }
 function writeAnnotation(level, action, message) {
@@ -4380,8 +4411,19 @@ function writeAnnotation(level, action, message) {
     }
     catch {
         if (level !== "debug") {
+            // Fallback path: re-format WITHOUT the quiet-mode strip so
+            // the fallback always emits the GitHub-Actions `::error::` /
+            // `::warning::` / `::notice::` annotation prefix even when
+            // running under vitest. The test that exercises this fallback
+            // (test/unit/log.test.ts > "falls back to console.error when
+            // stderr write throws") asserts on the prefixed form. The
+            // fallback is a last-resort error path; if we're here, the
+            // normal stderr is broken, so we don't bother with the
+            // quiet-mode detection in this branch.
+            const actionPrefix = action.length > 0 ? `${action} ` : "";
+            const fallback = `::${level}::${BRAND_PREFIX}${actionPrefix}${message}`;
             // eslint-disable-next-line no-console
-            console.error(formatted.trimEnd());
+            console.error(fallback);
         }
     }
 }
