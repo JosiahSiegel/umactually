@@ -1028,12 +1028,21 @@ jobs:
     #      publishing against a draft-only tag.
     #
     # Real force-publish dispatches (publish=true, tag=v0.6.7) are
-    # allowed through. The maintainer MUST set `inputs.tag` to a
-    # real release tag (e.g. v0.6.7). Pushing the tag directly via
-    # git (the push.tags trigger) remains the recommended path.
+    # rejected by the `tag` input's `pattern:` validation (the pattern
+    # only allows empty or synthetic-tag values; real release tags
+    # fail dispatch with HTTP 422). Pushing the tag directly via
+    # git (the push.tags trigger) is the canonical path for real
+    # releases. The if: below therefore gates only on `publish=true`
+    # for dispatches; the synthetic tag (or empty tag, in which case
+    # github.ref_name is used) is the only thing that can reach the
+    # publish job via dispatch. Since the synthetic-tag pattern is
+    # NOT a real release tag, a dispatch force-publish would publish
+    # the wrong ref. As a defense-in-depth, the publish job's first
+    # step asserts the resolved tag matches a real release pattern
+    # (see scripts/release-tag-guard.mjs).
     if: |
       (github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')) ||
-      (github.event_name == 'workflow_dispatch' && inputs.publish == 'true' && matches(inputs.tag, '^v[0-9]+\.[0-9]+\.[0-9]+$'))
+      (github.event_name == 'workflow_dispatch' && inputs.publish == 'true')
     needs:
       - build-package
       - build-package-cross
@@ -1058,6 +1067,40 @@ jobs:
     env:
       GH_TOKEN: ${{ github.token }}
     steps:
+      - name: Validate release tag pattern (defense-in-depth)
+        run: |
+          set -euo pipefail
+          # The `if:` above allows workflow_dispatch with `publish=true`
+          # to enter the publish job. The `tag` input's `pattern:`
+          # validation only allows empty or synthetic-tag values
+          # (v0.0.0-*), so a real release tag is rejected at dispatch
+          # time (HTTP 422). The tag-push trigger is the canonical
+          # path for real releases.
+          #
+          # For dispatch with an empty `tag`, github.ref_name is
+          # used; the ref is the branch the dispatch was made on.
+          # Branches never match a real release pattern, so this
+          # guard correctly fails them.
+          #
+          # For dispatch with a synthetic tag (v0.0.0-*), the tag
+          # also doesn't match the real release pattern, so this
+          # guard correctly fails them.
+          #
+          # Only push.tags v* (with a real release tag) survives
+          # the guard. This is the desired behavior.
+          if [ "${{ github.event_name }}" = "push" ]; then
+            TAG="${GITHUB_REF_NAME}"
+          else
+            TAG="${{ inputs.tag }}"
+            if [ -z "$TAG" ]; then
+              TAG="${GITHUB_REF_NAME}"
+            fi
+          fi
+          if ! [[ "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "::error::publish job requires a real release tag matching ^v[0-9]+\.[0-9]+\.[0-9]+$ (got: '$TAG' from ${{ github.event_name }}/${{ github.ref }})"
+            exit 1
+          fi
+          echo "release tag validated: $TAG"
       - name: Checkout
         uses: actions/checkout@v4
       - name: Download tested candidate bundle by id
