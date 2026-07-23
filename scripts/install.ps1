@@ -1020,14 +1020,34 @@ function Invoke-StagedSmokeTest {
     throw "Staged --version failed (no output): $probe"
   }
   # Reject on non-zero exit code ONLY if the cmd /c probe was
-  # genuinely non-empty (i.e. the binary ran, the cmd /c wrapper
-  # saw the real exit code, and that exit code was non-zero — a real
-  # failure). If the PE fallback supplied $probe, the cmd /c exit
-  # code may be a spurious 1 from the Node-SEA stdio teardown race
-  # (verified: the build job's Start-Process smoke shows exit 0 +
-  # the real output for the same binary that cmd /c reports as exit
-  # 1 + empty stdout); accept the install in that case.
-  if ($null -ne $exitCode -and $exitCode -ne 0 -and -not $probeFromPeFallback) {
+  # genuinely non-empty AND the probe doesn't look like a real
+  # version (i.e. the binary ran, the cmd /c wrapper saw the real
+  # exit code, and that exit code was non-zero — a real failure).
+  # The cmd /c wrapper may report a spurious exit 1 for a healthy
+  # binary in two cases:
+  #
+  #   1. Empty stdout: the Node-SEA stdio teardown race drops all
+  #      bytes. The PE fallback fills $probe, so $probeFromPeFallback
+  #      is true. Accept.
+  #
+  #   2. Partial stdout: the binary started writing its version but
+  #      was killed mid-line. $probeBeforePeFallback is non-empty
+  #      (so $probeFromPeFallback is false) AND $probe contains a
+  #      partial garbage line. This case is ambiguous — the binary
+  #      may be corrupt (real failure) or just a stdio race victim.
+  #      The disambiguator: if $probe STILL contains a real version
+  #      string (the cmd /c output was complete OR the PE fallback
+  #      replaced a partial line with the full version), accept.
+  #      Otherwise reject.
+  #
+  # A "real version string" matches ^\d+\.\d+\.\d+ at the start of
+  # the line (the umactually --version output is `<version>\n`,
+  # e.g. `0.6.6\n`; the PE fallback output starts with the
+  # FileVersion field, also `\d+\.\d+\.\d+`). A partial line like
+  # `0.` doesn't match, so a real failure (binary crashed before
+  # emitting the version) is still rejected.
+  $probeLooksLikeVersion = $probe -match '^\d+\.\d+\.\d+'
+  if ($null -ne $exitCode -and $exitCode -ne 0 -and -not $probeFromPeFallback -and -not $probeLooksLikeVersion) {
     throw "Staged --version failed (exit $exitCode): $probe"
   }
 }
