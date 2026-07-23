@@ -215,4 +215,74 @@ describe("CLI version handler (M2)", () => {
       vi.resetModules();
     }
   });
+
+  it("does not crash when tier 3 process.stdout.write returns false (backpressure)", async () => {
+    // v0.6.6: the tier-3 cascade calls `process.stdout.write(stdout)`,
+    // checks the return value (false = backpressure), and attaches a
+    // one-shot `'drain'` listener to flush when the consumer is
+    // ready. This test exercises the backpressure branch.
+    let fallbackBuffer = "";
+    const stdoutSpy = vi
+      .spyOn(process.stdout, "write")
+      .mockImplementation((chunk) => {
+        fallbackBuffer += String(chunk);
+        return false; // signal backpressure
+      });
+    // The cascade calls `process.stdout.once?.("drain", ...)`. We
+    // spy on it and immediately fire the drain callback so the
+    // cascade's listener resolves without leaving an unhandled
+    // listener.
+    const drainListeners: Array<() => void> = [];
+    const drainSpy = vi
+      .spyOn(process.stdout as NodeJS.WriteStream, "once")
+      .mockImplementation(((
+        event: string,
+        listener: (...args: unknown[]) => void,
+      ) => {
+        if (event === "drain") {
+          drainListeners.push(() => listener());
+        }
+        return process.stdout;
+      }) as never);
+    // Fire drain synchronously after the cascade attaches the
+    // listener — the test doesn't care about the actual drain, it
+    // just needs the cascade's `if (!accepted)` branch to execute
+    // without crashing.
+    queueMicrotask(() => {
+      for (const l of drainListeners) l();
+    });
+    vi.doMock("node:fs", async () => {
+      const actual = await vi.importActual<typeof import("node:fs")>("node:fs");
+      const ebadf = (): void => {
+        const err = new Error("bad file descriptor") as NodeJS.ErrnoException;
+        err.code = "EBADF";
+        throw err;
+      };
+      return {
+        ...actual,
+        writeFileSync: ((..._args: unknown[]): void => {
+          ebadf();
+        }) as typeof actual.writeFileSync,
+        writeSync: ((..._args: unknown[]): number => {
+          ebadf();
+          return 0;
+        }) as typeof actual.writeSync,
+      };
+    });
+    vi.resetModules();
+    let localMain: typeof import("../../src/cli.js")["main"];
+    ({ main: localMain } = await import("../../src/cli.js"));
+    try {
+      // The cascade must NOT throw on backpressure. The drain
+      // listener is attached and fired; the cascade completes.
+      const result = await localMain(["--version"]);
+      expect(result).toBe(0);
+      expect(fallbackBuffer).toBe(`${packageVersion}\n`);
+    } finally {
+      stdoutSpy.mockRestore();
+      drainSpy.mockRestore();
+      vi.doUnmock("node:fs");
+      vi.resetModules();
+    }
+  });
 });

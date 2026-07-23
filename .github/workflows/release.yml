@@ -18,10 +18,25 @@ on:
         type: string
         required: true
       tag:
-        description: "Synthetic semver tag (e.g. v0.0.0-test) used by the smoke jobs when the real ref is a branch name (workflow_dispatch dry-runs). Leave empty to use github.ref_name (the real release tag for push.tags triggers)."
+        description: 'Synthetic semver tag (e.g. v0.0.0-test) used by the smoke jobs when the real ref is a branch name (workflow_dispatch dry-runs). MUST match the synthetic-tag pattern (see `pattern:` below); leave empty to use github.ref_name (the real release tag for push.tags triggers). A real release tag (e.g. v0.6.6) is rejected to prevent a dry-run dispatch from accidentally publishing against or racing a real release.'
         type: string
         required: false
-        default: ""
+        default: ''
+        # Pattern: enforce synthetic-tag format. The installer regex
+        # (scripts/install.sh) accepts any vX.Y.Z, so a real release
+        # tag is also a valid install target. This pattern is the
+        # inverse: rejects anything that looks like a real release
+        # tag (vX.Y.Z where X.Y.Z != 0.0.0) so a maintainer who
+        # mistypes the dispatch input as `v0.6.6` (the current real
+        # release) gets a workflow validation error instead of
+        # silently publishing against the real release. Empty
+        # string is allowed (the default — falls through to
+        # github.ref_name). Single-quoted YAML scalar: GitHub
+        # Actions' workflow YAML parser only recognises the
+        # `pattern:` field as a regex, NOT a shell glob; single
+        # quotes avoid YAML 1.2 escape-sequence processing of the
+        # backslashes.
+        pattern: '^(|v0\.0\.0-[a-z0-9-]+)$'
 
 # Each tag gets its own release; never cancel a release run because a
 # follow-up tag was pushed while the previous one was still building —
@@ -995,9 +1010,18 @@ jobs:
     # on `inputs.tag` being a real semver) so that an explicit
     # maintainer override via dispatch can still publish in
     # emergencies.
+    #
+    # Belt-and-suspenders guard against a dry-run dispatch racing a
+    # real push.tags: the publish job is skipped when `inputs.tag`
+    # is set AND looks like a synthetic tag (matches the
+    # v0.0.0-* pattern). For a real force-publish dispatch, the
+    # maintainer MUST leave `inputs.tag` empty (the default) and
+    # rely on `github.ref_name` — or, if a custom release tag is
+    # truly needed, push the tag directly via git (the push.tags
+    # trigger handles real releases).
     if: |
       (github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')) ||
-      (github.event_name == 'workflow_dispatch' && inputs.publish == 'true')
+      (github.event_name == 'workflow_dispatch' && inputs.publish == 'true' && inputs.tag == '')
     needs:
       - build-package
       - build-package-cross

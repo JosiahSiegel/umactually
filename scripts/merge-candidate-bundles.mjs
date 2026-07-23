@@ -260,7 +260,16 @@ function main() {
   };
   writeFileSync(sizeReportPath, `${JSON.stringify(recomputed, null, 2)}\n`);
 
-  // Copy the manifest verbatim from the non-Windows bundle.
+  // Copy the manifest verbatim from the --manifest CLI arg (the
+  // source-of-truth at scripts/release-targets.json, NOT from the
+  // non-Windows input bundle). The non-Windows producer only
+  // produced 3 targets; the merged manifest must cover all 5 so
+  // the publish job's `parseReleaseTargets` (which requires
+  // EXPECTED_TARGET_COUNT = 5) doesn't reject the merged bundle.
+  // The Windows producer's filtered manifest at
+  // scripts/release-targets.windows.json is gitignored and only
+  // used by the verifier + stage scripts in the Windows job; the
+  // merger deliberately does NOT use it here.
   const manifestDst = join(outAbs, "internal", "release-targets.json");
   copyFileSync(manifestPath, manifestDst);
 
