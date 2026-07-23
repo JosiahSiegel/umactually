@@ -977,6 +977,13 @@ function Invoke-StagedSmokeTest {
     $probe = $null
     $exitCode = 1
   }
+  # Snapshot the cmd /c probe before the PE fallback runs, so we can
+  # tell at the bottom whether the PE fallback supplied $probe. If
+  # it did, the binary is at least a valid Windows executable with
+  # embedded version metadata, and a spurious cmd /c exit code 1
+  # (from the stdio pipe teardown race that hits Node-SEA binaries
+  # on Windows) is not a real failure.
+  $probeBeforePeFallback = $probe
   # Fallback: PE version-info resource. This reads the file's embedded
   # version metadata via the .NET `FileVersionInfo` API — it does NOT
   # require running the binary, so it works even when the binary's
@@ -992,14 +999,56 @@ function Invoke-StagedSmokeTest {
       # will reject the install if the fallback also produced nothing.
     }
   }
+  $probeFromPeFallback = (-not [string]::IsNullOrWhiteSpace($probe)) -and [string]::IsNullOrWhiteSpace($probeBeforePeFallback)
+  # Defer the $? check until AFTER the PE fallback so a cmd /c
+  # terminating error doesn't bypass the fallback path. If the PE
+  # fallback successfully populated $probe, we accept the install
+  # regardless of PowerShell's $? (which is false because cmd /c
+  # threw). Only when BOTH cmd /c AND the PE fallback failed do we
+  # surface the PowerShell-reported failure.
   if (-not $?) {
-    throw "Staged --version failed (PowerShell reported command failure): $probe"
-  }
-  if ($null -ne $exitCode -and $exitCode -ne 0) {
-    throw "Staged --version failed (exit $exitCode): $probe"
+    if ($probeFromPeFallback) {
+      # PE fallback salvaged the install. Skip the throw — the
+      # downstream guards (IsNullOrWhiteSpace + non-zero exit
+      # check) will accept the install because $probe is
+      # non-empty and $probeFromPeFallback is true.
+    } else {
+      throw "Staged --version failed (PowerShell reported command failure): $probe"
+    }
   }
   if ([string]::IsNullOrWhiteSpace($probe)) {
-    throw "Staged --version produced no output: $probe"
+    throw "Staged --version failed (no output): $probe"
+  }
+  # Reject on non-zero exit code ONLY if the cmd /c probe was
+  # genuinely non-empty AND the probe doesn't look like a real
+  # version (i.e. the binary ran, the cmd /c wrapper saw the real
+  # exit code, and that exit code was non-zero — a real failure).
+  # The cmd /c wrapper may report a spurious exit 1 for a healthy
+  # binary in two cases:
+  #
+  #   1. Empty stdout: the Node-SEA stdio teardown race drops all
+  #      bytes. The PE fallback fills $probe, so $probeFromPeFallback
+  #      is true. Accept.
+  #
+  #   2. Partial stdout: the binary started writing its version but
+  #      was killed mid-line. $probeBeforePeFallback is non-empty
+  #      (so $probeFromPeFallback is false) AND $probe contains a
+  #      partial garbage line. This case is ambiguous — the binary
+  #      may be corrupt (real failure) or just a stdio race victim.
+  #      The disambiguator: if $probe STILL contains a real version
+  #      string (the cmd /c output was complete OR the PE fallback
+  #      replaced a partial line with the full version), accept.
+  #      Otherwise reject.
+  #
+  # A "real version string" matches ^\d+\.\d+\.\d+ at the start of
+  # the line (the umactually --version output is `<version>\n`,
+  # e.g. `0.6.6\n`; the PE fallback output starts with the
+  # FileVersion field, also `\d+\.\d+\.\d+`). A partial line like
+  # `0.` doesn't match, so a real failure (binary crashed before
+  # emitting the version) is still rejected.
+  $probeLooksLikeVersion = $probe -match '^\d+\.\d+\.\d+'
+  if ($null -ne $exitCode -and $exitCode -ne 0 -and -not $probeFromPeFallback -and -not $probeLooksLikeVersion) {
+    throw "Staged --version failed (exit $exitCode): $probe"
   }
 }
 

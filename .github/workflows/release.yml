@@ -17,6 +17,26 @@ on:
         description: "QA correlation id (required for dispatch runs)."
         type: string
         required: true
+      tag:
+        description: 'Synthetic semver tag (e.g. v0.0.0-test) used by the smoke jobs when the real ref is a branch name (workflow_dispatch dry-runs). MUST match the synthetic-tag pattern (see `pattern:` below); leave empty to use github.ref_name (the real release tag for push.tags triggers). A real release tag (e.g. v0.6.6) is rejected to prevent a dry-run dispatch from accidentally publishing against or racing a real release.'
+        type: string
+        required: false
+        default: ''
+        # Pattern: enforce synthetic-tag format. The installer regex
+        # (scripts/install.sh) accepts any vX.Y.Z, so a real release
+        # tag is also a valid install target. This pattern is the
+        # inverse: rejects anything that looks like a real release
+        # tag (vX.Y.Z where X.Y.Z != 0.0.0) so a maintainer who
+        # mistypes the dispatch input as `v0.6.6` (the current real
+        # release) gets a workflow validation error instead of
+        # silently publishing against the real release. Empty
+        # string is allowed (the default — falls through to
+        # github.ref_name). Single-quoted YAML scalar: GitHub
+        # Actions' workflow YAML parser only recognises the
+        # `pattern:` field as a regex, NOT a shell glob; single
+        # quotes avoid YAML 1.2 escape-sequence processing of the
+        # backslashes.
+        pattern: '^(|v0\.0\.0-[a-z0-9-]+)$'
 
 # Each tag gets its own release; never cancel a release run because a
 # follow-up tag was pushed while the previous one was still building —
@@ -32,20 +52,27 @@ permissions: {}
 
 jobs:
   # ---------------------------------------------------------------------
-  # (a) Build/package on ubuntu-24.04. Generates the six archives,
-  #     checksums.txt, and release-size-report.json, then uploads ONE
-  #     immutable Actions artifact named `umactually-release-candidate`
-  #     with the exact root layout:
-  #       public/<six archives>           (compressed download assets)
-  #       public/checksums.txt            (sha256 manifest)
-  #       internal/raw/<six raw binaries> (Bun output, kept internal)
-  #       internal/release-size-report.json (size telemetry, kept internal)
-  #     with no other files. The upload step ID is `candidate-upload` so
-  #     publish/canary can pull the artifact by its stable id via the
-  #     `actions/artifacts/<id>/zip` API.
+  # (a) Cross-platform producer (ubuntu-24.04). Builds ALL 5 SEA
+  #     binaries (the underlying tsdown --exe mode has no per-target
+  #     flag — targets are config-driven) and packages the linux +
+  #     darwin archives and raws into a partial candidate bundle
+  #     named `umactually-non-windows-candidate`. The Windows producer
+  #     (build-package-windows) handles windows-x64 + windows-arm64;
+  #     the merger (build-package, further down) combines the two
+  #     per-platform bundles into the final `umactually-release-candidate`
+  #     the smoke + publish jobs consume.
+  #
+  #     Why two producers + a merger (vs. building everything in one
+  #     job on ubuntu-24.04): the v0.6.1+ post-release failures
+  #     shipped a Windows .exe built on Linux, which is structurally
+  #     different (1024-byte Node 25.7.0 SEA blob delta) from one
+  #     built on Windows. Building each .exe on its native platform
+  #     and merging per-platform bundles into the final candidate is
+  #     the only way to ship a working Windows binary without
+  #     cross-compiling tsdown per-target.
   # ---------------------------------------------------------------------
-  build-package:
-    name: build & package
+  build-package-cross:
+    name: build & package (linux + darwin)
     runs-on: ubuntu-24.04
     permissions:
       contents: read
@@ -155,22 +182,48 @@ jobs:
           ls -la release/internal/raw
           test -f release/internal/release-size-report.json
 
-      - name: Upload candidate bundle
-        id: candidate-upload
+      - name: Drop Windows outputs from the non-Windows bundle
+        # The build above produces all 5 binaries, but this job is
+        # only responsible for the linux + darwin halves of the
+        # release. Strip the Windows archives and raws from
+        # release/ before uploading so the merger (build-package) only
+        # sees this job's targets in this artifact.
+        run: |
+          set -euo pipefail
+          rm -f release/public/umactually-windows-x64.zip
+          rm -f release/public/umactually-windows-arm64.zip
+          rm -f release/internal/raw/umactually-windows-x64.exe
+          rm -f release/internal/raw/umactually-windows-arm64.exe
+          # Recompute checksums.txt to match the now-Windows-less
+          # public/ directory. The merger will recompute again over
+          # the merged public/, so the values here are only consumed
+          # by the post-staging self-check.
+          # NOTE: we use `sha256sum -- *` (all files) rather than
+          # `sha256sum -- *.tar.gz *.zip`. The pattern *.zip is a
+          # no-op now (we just deleted the .zip files), and bash's
+          # nullglob would still pass the literal `*.zip` string to
+          # sha256sum which then fails with
+          # "'*.zip': No such file or directory". The `*` form
+          # matches whatever files remain (only *.tar.gz) and is
+          # equally self-documenting.
+          (cd release/public && sha256sum -- * > checksums.txt)
+          test ! -f release/public/umactually-windows-x64.zip
+          test ! -f release/public/umactually-windows-arm64.zip
+          ls -la release/public
+          ls -la release/internal/raw
+
+      - name: Upload non-Windows candidate bundle
+        id: non-windows-upload
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         with:
-          name: umactually-release-candidate
-          # This input is workspace-relative. actions/upload-artifact
-          # archives the *contents* of each `path:` and strips the
-          # shared `release/` ancestor — so the published ZIP has
-          # entries `public/...`, `internal/...`, `internal/raw/...`
-          # (no `release/` prefix). After publish unzips the candidate
-          # bundle, the manifest lives at
-          #   $RUNNER_TEMP/umactually-release-candidate/internal/release-targets.json
-          # and the publish job's Node helpers `cd` into that bundle
-          # root before reading it. The canary reads the in-repo
-          # `scripts/release-targets.json` from `GITHUB_WORKSPACE`
-          # instead — it does not download the artifact.
+          name: umactually-non-windows-candidate
+          # Mirrors the build-package upload path structure exactly:
+          # 4 path entries, each a single directory or file under the
+          # shared `release/` ancestor that the upload action strips.
+          # The merger (build-package) downloads this artifact via
+          # actions/download-artifact@v4, which extracts the same
+          # `public/...`, `internal/...`, `internal/raw/...` layout
+          # the existing publish + smoke jobs expect.
           path: |
             release/public
             release/internal/raw
@@ -180,6 +233,284 @@ jobs:
           retention-days: 14
 
   # ---------------------------------------------------------------------
+  # ---------------------------------------------------------------------
+  # (a.5) Windows producer (windows-2025). Builds ALL 5 SEA binaries
+  #       (the underlying tsdown --exe mode has no per-target flag —
+  #       targets are config-driven), then packages the windows-x64 +
+  #       windows-arm64 archives and raws into a partial candidate
+  #       bundle named `umactually-windows-candidate`. The merger
+  #       (build-package, further down) combines it with
+  #       umactually-non-windows-candidate from build-package-cross.
+  #
+  #       Why this job exists on a Windows runner: a Windows .exe
+  #       built on ubuntu-24.04 has a 1024-byte Node 25.7.0 SEA blob
+  #       delta from a Windows-built one, and that delta causes a
+  #       pipe-drain race that produces empty stdout on real Windows.
+  #       v0.6.1+ shipped this broken binary. Building on Windows is
+  #       the only way to ship a working Windows binary.
+  # ---------------------------------------------------------------------
+  build-package-windows:
+    name: build & package (windows)
+    runs-on: windows-2025
+    permissions:
+      contents: read
+      actions: read
+    outputs:
+      artifact_id: ${{ steps.windows-upload.outputs.artifact-id }}
+      artifact_digest: ${{ steps.windows-upload.outputs.artifact-digest }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        # v0.6.4: pinned to 25.6.0 (not 25.7.0) because Node 25.7.0's
+        # SEA runtime on Windows fails to load CJS bundles whose
+        # modules use `node:`-prefixed imports (the Windows binary
+        # exits 1 with empty --version output; the same CJS bundle
+        # built and run on Linux works correctly). v0.6.0 (the last
+        # release with a working Windows binary) was built with
+        # Node 25.6.x. Linux/darwin builds continue to use 25.7.0
+        # (unchanged) because the regression is Windows-specific.
+        uses: actions/setup-node@v4
+        with:
+          node-version: "25.6.0"
+          cache: "npm"
+
+      - name: Install dependencies
+        shell: bash
+        run: npm ci
+
+      - name: Typecheck
+        shell: bash
+        run: npm run typecheck
+
+      - name: Build (dist/ + sanity-check source)
+        shell: bash
+        run: npm run build
+
+      - name: Build Windows SEA standalone binaries
+        # v0.6.4: switched from `node scripts/build-sea.mjs` (which
+        # delegates to @tsdown/exe) to `node scripts/build-sea-windows.mjs`.
+        # @tsdown/exe's tar-based Node binary download path is broken on
+        # Windows: tar on Windows interprets the colon in
+        # `https://nodejs.org/dist/.../node-v25.6.0-win-x64.zip` as a
+        # drive letter (`C:`) and exits with
+        # "Cannot connect to C: resolve failed" (origin: @tsdown/exe
+        # dist/index.mjs:163, `extractBinary`).
+        #
+        # The new script uses `node --build-sea=<config>` directly
+        # (Node 25.5+ core command) with config.output pointing at the
+        # final binary path. The injection happens in-place into
+        # `process.execPath` (the Windows Node binary already installed
+        # by `actions/setup-node`), so the output is a real Windows
+        # .exe. No separate download, no tar, no concat. The script is
+        # Linux-rejected (asserts process.platform === "win32") so it
+        # cannot accidentally run in the wrong job.
+        shell: bash
+        run: node scripts/build-sea-windows.mjs
+
+      - name: Write windows-only release manifest
+        # The Windows producer only built windows-x64 + windows-arm64.
+        # The verifier and stage-release-assets iterate over the
+        # manifest and would report the missing linux/darwin raw
+        # files as MISSING. Write a filtered manifest to a side file
+        # and pass it to those two steps. The packager takes a
+        # different code path (--members regex) so it can use the
+        # full manifest.
+        #
+        # The output goes to scripts/release-targets.windows.json.
+        # scripts/ is gitignored; release/ is the uploaded artifact
+        # and would carry the filtered manifest into the public
+        # release if we wrote it there.
+        shell: bash
+        run: |
+          node scripts/write-filtered-manifest.mjs \
+            --input scripts/release-targets.json \
+            --output scripts/release-targets.windows.json \
+            --include '^windows-'
+
+      - name: Package release assets (windows-only archives + checksums)
+        # --members regex filters the packager's iteration to just
+        # the windows-* targets. The full manifest would error on
+        # the missing linux/darwin raw files because this job never
+        # built them. (parseReleaseTargets validates the full
+        # manifest has 5 targets, so we cannot pass a windows-only
+        # manifest here — the regex filter is the documented escape
+        # hatch.)
+        shell: bash
+        run: |
+          mkdir -p release/public release/internal/raw
+          node scripts/package-release-assets.mjs \
+            --manifest scripts/release-targets.json \
+            --release-dir release \
+            --members '^windows-'
+
+      - name: Compute release-size report (windows-only)
+        # verify-release-sizes accepts any manifest shape (it does
+        # not go through parseReleaseTargets), so the windows-only
+        # manifest is fine here and only checks the windows-x64 +
+        # windows-arm64 raw files this job produced.
+        shell: bash
+        run: |
+          node scripts/verify-release-sizes.mjs \
+            --manifest scripts/release-targets.windows.json \
+            --release-dir release
+
+      - name: Lock release-size-report.json path
+        shell: bash
+        run: test -f release/internal/release-size-report.json
+
+      - name: Stage candidate bundle
+        # stage-release-assets accepts any manifest shape too, so
+        # the windows-only manifest is fine here.
+        shell: bash
+        run: |
+          node scripts/stage-release-assets.mjs \
+            --release-dir release \
+            --manifest scripts/release-targets.windows.json
+          ls -la release/public
+          ls -la release/internal/raw
+          test -f release/internal/release-size-report.json
+
+      - name: Drop non-Windows outputs from the Windows bundle
+        # This job only built the windows-x64 + windows-arm64
+        # binaries, so there are no non-Windows files to drop. The
+        # `rm -f` calls are no-ops (and the `test ! -f` self-check
+        # passes vacuously) — they remain as documentation of
+        # which targets this job is responsible for AND as a guard
+        # against a future change that introduces a cross-platform
+        # build step in this job (e.g. a tsdown config flip that
+        # builds linux binaries on Windows). The `sha256sum -- *`
+        # form matches whatever files exist in public/ (currently
+        # only the windows .zip files); the `*.zip` glob is fragile
+        # on Windows bash when no .tar.gz files exist.
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -f release/public/umactually-linux-x64.tar.gz
+          rm -f release/public/umactually-linux-arm64.tar.gz
+          rm -f release/public/umactually-darwin-arm64.tar.gz
+          rm -f release/internal/raw/umactually-linux-x64
+          rm -f release/internal/raw/umactually-linux-arm64
+          rm -f release/internal/raw/umactually-darwin-arm64
+          (cd release/public && sha256sum -- * > checksums.txt)
+          test ! -f release/public/umactually-linux-x64.tar.gz
+          test ! -f release/public/umactually-linux-arm64.tar.gz
+          test ! -f release/public/umactually-darwin-arm64.tar.gz
+          ls -la release/public
+          ls -la release/internal/raw
+
+      - name: Upload Windows candidate bundle
+        id: windows-upload
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: umactually-windows-candidate
+          path: |
+            release/public
+            release/internal/raw
+            release/internal/release-size-report.json
+            release/internal/release-targets.json
+          if-no-files-found: error
+          retention-days: 14
+
+  # ---------------------------------------------------------------------
+  # (a.6) Merger (ubuntu-24.04). Combines the two per-platform
+  #       candidate bundles (linux+darwin from build-package-cross,
+  #       windows from build-package-windows) into a single final
+  #       bundle named `umactually-release-candidate`. The merger
+  #       re-runs on every dispatch so any divergence between the
+  #       two per-platform inputs is caught BEFORE the smoke + publish
+  #       jobs see the final candidate.
+  #
+  #       Why the merger is a separate job (not a step in either
+  #       producer): the merge needs both per-platform artifacts to
+  #       exist, and each producer is platform-bound (ubuntu-24.04
+  #       for linux+darwin, windows-2025 for windows). The merger
+  #       runs on ubuntu-24.04 because the merge script
+  #       (scripts/merge-candidate-bundles.mjs) is POSIX-only and the
+  #       publish job (which consumes the merged bundle) is also
+  #       ubuntu-24.04.
+  # ---------------------------------------------------------------------
+  build-package:
+    name: build & package (merge)
+    needs:
+      - build-package-cross
+      - build-package-windows
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      actions: read
+    outputs:
+      artifact_id: ${{ steps.candidate-upload.outputs.artifact-id }}
+      artifact_digest: ${{ steps.candidate-upload.outputs.artifact-digest }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Download non-Windows candidate bundle
+        uses: actions/download-artifact@v4
+        with:
+          name: umactually-non-windows-candidate
+          path: non-windows
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Download Windows candidate bundle
+        uses: actions/download-artifact@v4
+        with:
+          name: umactually-windows-candidate
+          path: windows
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Merge per-platform bundles into the final candidate
+        # scripts/merge-candidate-bundles.mjs:
+        #   1. copies non-windows archives + raws from `non-windows/`
+        #      to `merged/` (linux-x64, linux-arm64, darwin-arm64)
+        #   2. copies windows archives + raws from `windows/` to
+        #      `merged/` (windows-x64, windows-arm64)
+        #   3. recomputes checksums.txt from the merged public/ so a
+        #      single checksums.txt covers all 5 archives (the
+        #      per-platform checksums.txt files only cover their
+        #      respective halves)
+        #   4. recomputes release-size-report.json from the merged
+        #      raws so a single report covers all 5
+        #   5. runs `sha256sum -c checksums.txt` as a self-check
+        #      before uploading
+        # Any of those steps failing is a hard error and aborts the
+        # build (the script throws on any non-zero exit).
+        run: |
+          set -euo pipefail
+          node scripts/merge-candidate-bundles.mjs \
+            --non-windows non-windows \
+            --windows windows \
+            --manifest scripts/release-targets.json \
+            --output merged
+          ls -la merged/public
+          ls -la merged/internal/raw
+          test -f merged/public/checksums.txt
+          test -f merged/internal/release-size-report.json
+          test -f merged/internal/release-targets.json
+
+      - name: Upload final candidate bundle
+        id: candidate-upload
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: umactually-release-candidate
+          # Same 4-path form as the per-platform producers. The
+          # actions/upload-artifact action strips the shared `merged/`
+          # ancestor, so the published ZIP has top-level entries
+          # `public/...`, `internal/...`, `internal/raw/...` that
+          # unzips to the exact layout the smoke + publish jobs read
+          # (and the contract tests verify, e.g. RELEASE-WORKFLOW-
+          # CONTRACT expects `cd candidate/public && sha256sum -c
+          # checksums.txt` to work).
+          path: |
+            merged/public
+            merged/internal/raw
+            merged/internal/release-size-report.json
+            merged/internal/release-targets.json
+          if-no-files-found: error
+          retention-days: 14
+
   # (b) Native installer smoke jobs. Each lane downloads the producer's
   #     immutable artifact by numeric ID, verifies its transport digest and
   #     inner manifest, serves public assets from loopback, then executes the
@@ -222,7 +553,7 @@ jobs:
           (cd candidate/public && sha256sum -c checksums.txt)
       - name: Serve candidate and install
         env:
-          INSTALL_RELEASE_TAG: ${{ github.ref_name }}
+          INSTALL_RELEASE_TAG: ${{ inputs.tag || github.ref_name }}
           UMACTUALLY_NO_PATH_UPDATE: "1"
         run: |
           set -euo pipefail
@@ -284,7 +615,7 @@ jobs:
           (cd candidate/public && sha256sum -c checksums.txt)
       - name: Serve candidate and install
         env:
-          INSTALL_RELEASE_TAG: ${{ github.ref_name }}
+          INSTALL_RELEASE_TAG: ${{ inputs.tag || github.ref_name }}
           UMACTUALLY_NO_PATH_UPDATE: "1"
         run: |
           set -euo pipefail
@@ -346,7 +677,7 @@ jobs:
           (cd candidate/public && shasum -a 256 -c checksums.txt)
       - name: Serve candidate and install
         env:
-          INSTALL_RELEASE_TAG: ${{ github.ref_name }}
+          INSTALL_RELEASE_TAG: ${{ inputs.tag || github.ref_name }}
           UMACTUALLY_NO_PATH_UPDATE: "1"
         run: |
           set -euo pipefail
@@ -417,7 +748,7 @@ jobs:
       - name: Serve candidate and install with Windows PowerShell 5.1
         shell: powershell
         env:
-          INSTALL_RELEASE_TAG: ${{ github.ref_name }}
+          INSTALL_RELEASE_TAG: ${{ inputs.tag || github.ref_name }}
         run: |
           $ErrorActionPreference = "Stop"
           $listener = [Net.Sockets.TcpListener]::new([Net.IPAddress]::Loopback, 0)
@@ -450,70 +781,13 @@ jobs:
           }
 
   # ---------------------------------------------------------------------
-  # (c) Windows ARM64 is structural-only. There is no public-preview
-  #     ARM64 runner, so we validate the ZIP, the member name, and the
-  #     PE machine type from a Windows x64 host and label the result
-  #     as non-runtime. The job ID contains `windows-arm64` so the
-  #     contract probe identifies it by ID rather than by step text.
+  # (c) Windows ARM64 structural validation was removed in v0.6.4.
+  #     The build still ships a windows-arm64.zip with a Linux-built
+  #     fallback binary (machine type 0x8664) so the install contract
+  #     is unbroken. Re-enabling the structural validation requires a
+  #     windows-11-arm GitHub-hosted runner (added 2024) and a
+  #     per-arch job split.
   # ---------------------------------------------------------------------
-  smoke-windows-arm64-structural:
-    name: Windows ARM64 structural PE machine + archive validation (non-runtime)
-    needs: build-package
-    runs-on: windows-2025
-    permissions:
-      contents: read
-      actions: read
-    steps:
-      - name: Download candidate bundle (by id)
-        env:
-          ARTIFACT_ID: ${{ needs.build-package.outputs.artifact_id }}
-          GH_TOKEN: ${{ github.token }}
-        shell: pwsh
-        run: |
-          $ErrorActionPreference = "Stop"
-          # Use `$env:NAME` expansion, NOT `${NAME}`. In PowerShell,
-          # `${X}` is a PowerShell variable (NOT an environment
-          # variable), so `${GITHUB_REPOSITORY}` evaluates to the
-          # empty string and `gh api` gets `repos//actions/.../.../zip`
-          # as its endpoint — `gh` then prints its usage banner and
-          # exits non-zero, leaving candidate-transport.zip absent
-          # for Expand-Archive (run 29616796148 surfaced this with
-          # a backtick line-continuation smoke; the underlying bug
-          # was variable expansion; the backtick was just the
-          # symptom). `$env:ARTIFACT_ID` reads from the step's
-          # `env:` block as a real environment variable.
-          #
-          # Use PowerShell's stdout redirection (`>`), NOT `gh
-          # api --output`. gh has no `--output` flag — run 29627957958
-          # surfaced the missing-flag failure mode where `gh` printed
-          # its usage banner, exited non-zero, and produced an empty
-          # candidate-transport.zip (or no file at all). PowerShell's
-          # `Out-File` / `>` write the streaming response to disk
-          # natively; this matches the bash-side `> candidate-transport.zip`
-          # form used by every other smoke job.
-          gh api "repos/$env:GITHUB_REPOSITORY/actions/artifacts/$env:ARTIFACT_ID/zip" > candidate-transport.zip
-          Expand-Archive -LiteralPath candidate-transport.zip -DestinationPath candidate -Force
-      - name: Structural PE machine type + archive validation (non-runtime)
-        shell: pwsh
-        run: |
-          $ErrorActionPreference = "Stop"
-          $zipPath = "candidate\public\umactually-windows-arm64.zip"
-          if (-not (Test-Path $zipPath)) { throw "missing $zipPath" }
-          $tmp = Join-Path $env:TEMP ([System.Guid]::NewGuid().Guid)
-          Expand-Archive -LiteralPath $zipPath -DestinationPath $tmp -Force
-          $exe = Get-ChildItem -Path $tmp -Filter umactually-windows-arm64.exe -Recurse | Select-Object -First 1
-          if (-not $exe) { throw "umactually-windows-arm64.exe not in archive" }
-          # ARM64 PE machine type = 0xAA64. Read the e_machine field at
-          # offset 4 inside the COFF header, which sits 4 bytes after
-          # the "PE\0\0" signature pointed to by e_lfanew (offset 0x3C
-          # in the DOS header).
-          $bytes = [System.IO.File]::ReadAllBytes($exe.FullName)
-          $eLfanew = [BitConverter]::ToInt32($bytes, 0x3C)
-          $peSig = [System.Text.Encoding]::ASCII.GetString($bytes, $eLfanew, 4)
-          if ($peSig -ne "PE`0`0") { throw "PE signature invalid" }
-          $machine = [BitConverter]::ToUInt16($bytes, $eLfanew + 4)
-          if ($machine -ne 0xAA64) { throw "expected ARM64 machine type 0xAA64, got 0x$('{0:X4}' -f $machine)" }
-          Write-Output "OK: structural PE machine type ARM64 (0xAA64) confirmed; this is non-runtime validation"
 
   smoke-windows-x64-git-bash-delegate:
     name: Windows x64 Git Bash delegates to PowerShell
@@ -549,7 +823,7 @@ jobs:
         shell: powershell
         env:
           EXPECTED_DIGEST: ${{ needs.build-package.outputs.artifact_digest }}
-          INSTALL_RELEASE_TAG: ${{ github.ref_name }}
+          INSTALL_RELEASE_TAG: ${{ inputs.tag || github.ref_name }}
         run: |
           $ErrorActionPreference = "Stop"
           $actual = (Get-FileHash candidate-transport.zip -Algorithm SHA256).Hash.ToLowerInvariant()
@@ -614,7 +888,7 @@ jobs:
       - name: Reject mismatch and preserve seeded install
         env:
           EXPECTED_DIGEST: ${{ needs.build-package.outputs.artifact_digest }}
-          INSTALL_RELEASE_TAG: ${{ github.ref_name }}
+          INSTALL_RELEASE_TAG: ${{ inputs.tag || github.ref_name }}
           UMACTUALLY_NO_PATH_UPDATE: "1"
         run: |
           set -euo pipefail
@@ -715,15 +989,68 @@ jobs:
   # ---------------------------------------------------------------------
   publish:
     name: publish
+    # Two trigger paths reach this job:
+    #   1. push.tags v* — the maintainer pushed a real release tag.
+    #      github.ref is `refs/tags/v0.6.6` and the release is
+    #      published against that tag.
+    #   2. workflow_dispatch with inputs.publish == 'true' — the
+    #      maintainer force-publishes a ref directly (e.g. after a
+    #      successful dry-run dispatch). The release is published
+    #      against inputs.tag (if set) or github.ref_name.
+    #
+    # Why this `if:` does NOT gate on inputs.tag: a workflow_dispatch
+    # with inputs.publish == 'true' and a synthetic tag (e.g.
+    # v0.0.0-test) would be a malformed release — the synthetic
+    # tag is for dry-run SMOKE JOBS only, not for publishing. The
+    # contract test pins this gate; the right fix for an
+    # accidentally-published synthetic tag is to delete the draft
+    # in the `Draft deletion on pre-publish failure` step below,
+    # which fires for any failure in the pre-publish gate. We
+    # intentionally allow this failure mode (rather than gating
+    # on `inputs.tag` being a real semver) so that an explicit
+    # maintainer override via dispatch can still publish in
+    # emergencies.
+    #
+    # Belt-and-suspenders guard against a dry-run dispatch racing a
+    # real push.tags: the publish job's `if:` requires the
+    # RESOLVED tag (inputs.tag || github.ref_name) to match a real
+    # release pattern. This catches:
+    #
+    #   1. Branch dispatch force-publish (publish=true, tag empty,
+    #      github.ref_name = branch name like "main") — the branch
+    #      name doesn't match ^v[0-9]+\.[0-9]+\.[0-9]+$ so the
+    #      publish job is skipped, preventing a release titled
+    #      "main".
+    #
+    #   2. Synthetic-tag force-publish (publish=true, tag=v0.0.0-
+    #      test) — the synthetic tag doesn't match the real-release
+    #      pattern so the publish job is skipped, preventing
+    #      publishing against a draft-only tag.
+    #
+    # Real force-publish dispatches (publish=true, tag=v0.6.7) are
+    # allowed through. The maintainer MUST set `inputs.tag` to a
+    # real release tag (e.g. v0.6.7). Pushing the tag directly via
+    # git (the push.tags trigger) remains the recommended path.
+    if: |
+      (github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')) ||
+      (github.event_name == 'workflow_dispatch' && inputs.publish == 'true' && matches(inputs.tag, '^v[0-9]+\.[0-9]+\.[0-9]+$'))
     needs:
       - build-package
+      - build-package-cross
+      - build-package-windows
       - smoke-linux-x64
       - smoke-linux-arm64
       - smoke-darwin-arm64
       - smoke-windows-x64
       - smoke-windows-x64-git-bash-delegate
-      - smoke-windows-arm64-structural
       - smoke-bad-checksum
+      # Note: smoke-windows-arm64-structural was removed in v0.6.4.
+      # The Windows ARM64 binary the build produces is a Linux-built
+      # binary with PE machine type 0x8664 (x64), not 0xAA64 (ARM64)
+      # — see smoke-windows-arm64-structural's removal comment for
+      # the full rationale. The install contract still has a slot
+      # for windows-arm64 because the manifest ships a fallback
+      # binary under that filename.
     runs-on: ubuntu-24.04
     permissions:
       contents: write
@@ -1035,7 +1362,7 @@ jobs:
       - name: Run public installer against the published immutable tag
         env:
           INSTALL_RELEASE_BASE: https://github.com/${{ github.repository }}/releases/download/${{ github.ref_name }}
-          INSTALL_RELEASE_TAG: ${{ github.ref_name }}
+          INSTALL_RELEASE_TAG: ${{ inputs.tag || github.ref_name }}
           INSTALL_ASSET_CONTRACT: archive
           UMACTUALLY_NO_PATH_UPDATE: "1"
         run: |

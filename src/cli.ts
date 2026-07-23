@@ -1,4 +1,4 @@
-import { readFileSync, realpathSync, writeFileSync } from "node:fs";
+import { readFileSync, realpathSync, writeFileSync, writeSync } from "node:fs";
 import { rm } from "node:fs/promises";
 import { join } from "node:path";
 
@@ -124,10 +124,87 @@ export function runVersion(_argv: readonly string[]): { readonly exitCode: 0; re
   // The fallback path is exercised by cli-version.test.ts's "falls
   // back to process.stdout.write when writeFileSync throws EBADF"
   // case.
+  //
+  // v0.6.5: tiered fallback. Each path is reliable in some
+  // configuration and unreliable in others; we cascade through
+  // them until one succeeds.
+  //
+  //   tier 1 — writeFileSync(process.stdout.fd, stdout) (the v0.6.0
+  //   path). Lands the bytes synchronously into the kernel pipe
+  //   buffer in the install.ps1 cmd /c harness on Windows AND in
+  //   the PowerShell Start-Process harness.
+  //
+  //   tier 2 — writeSync(1, stdout). Bypasses Node's process.stdout
+  //   layer; writes to the raw file descriptor 1. Reliable when
+  //   fd 1 is a real pipe (e.g. when the binary is spawned by bash
+  //   + child_process.spawn on Windows-latest in the post-release
+  //   e2e harness, where process.stdout.fd maps to a CONOUT$
+  //   handle rather than the consumer's pipe and tier 1 silently
+  //   loses the output).
+  //
+  //   tier 3 — process.stdout.write(stdout). The high-level Node
+  //   stream path. Stream-buffered; can be torn down before drain
+  //   in some spawn configurations. Last-resort fallback.
+  //
+  // We track which tier succeeded (or succeeded first) so we
+  // don't duplicate the version string at the consumer. The test
+  // suite's "falls back to process.stdout.write when writeFileSync
+  // throws EBADF" test pins this contract.
+  //
+  // Caveat: tier 1 and tier 2 can SILENTLY succeed without
+  // throwing while still NOT landing the bytes in the consumer's
+  // pipe (Windows CONOUT$ handles, for example, accept the write
+  // but the consumer reads from a different handle). We can't
+  // detect this from inside the binary — the only signal is at the
+  // consumer. The "fall forward" design (always try the next tier
+  // even if the previous one did NOT throw) would risk
+  // duplicating the output; instead we trust the "threw" signal
+  // and accept the small risk of a silent no-op in the CONOUT$
+  // edge case. The contract test
+  // (cli-version.test.ts > "falls back to process.stdout.write
+  // when writeFileSync throws EBADF") pins the throw-based
+  // cascade.
+  let written = false;
   try {
     writeFileSync(process.stdout.fd, stdout);
+    written = true;
   } catch {
-    process.stdout.write(stdout);
+    // tier 1 unavailable
+  }
+  if (!written) {
+    try {
+      writeSync(1, stdout);
+      written = true;
+    } catch {
+      // tier 2 unavailable
+    }
+  }
+  if (!written) {
+    // tier 3 — best effort, no error if it fails. Attach a one-shot
+    // 'error' listener to the stream so an early-close / broken-pipe
+    // error does not propagate as an unhandled 'error' event (which
+    // would crash the SEA binary with an uncaughtException). The
+    // error case is logged as a `notice` so the operator sees the
+    // diagnostic in the GitHub Actions log without it surfacing as
+    // a check annotation.
+    const stdoutStream = process.stdout as NodeJS.WriteStream & {
+      once(event: "error", listener: (err: Error) => void): unknown;
+    };
+    let tier3Error: Error | null = null;
+    stdoutStream.once("error", (err: Error) => {
+      tier3Error = err;
+    });
+    const accepted = process.stdout.write(stdout);
+    if (!accepted) {
+      // Backpressure. We don't need to drain synchronously here
+      // because runVersion returns and the auto-invoke will exit
+      // the process, which flushes the stream. The 'error' listener
+      // above catches the worst-case early-close case.
+      void process.stdout.once?.("drain", () => undefined);
+    }
+    if (tier3Error === null) {
+      written = true;
+    }
   }
   return { exitCode: 0, stdout };
 }

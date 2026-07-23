@@ -3,10 +3,41 @@ import { BRAND_PREFIX } from "./brand.js";
 type AnnotationLevel = "debug" | "error" | "notice" | "warning";
 
 /**
+ * When `true`, suppress the GitHub-Actions-specific `::error::` /
+ * `::warning::` / `::notice::` annotation prefixes and emit the
+ * brand-prefixed message as a plain line. Test scenarios that
+ * intentionally exercise error paths (e.g. the leak gate's
+ * "Refusing to post" message) would otherwise surface as
+ * `##[error]` workflow annotations in every PR CI log, which is
+ * noise — the test EXPECTS the error and asserts on it via
+ * `result.message`, but the workflow annotation makes the PR
+ * look like it has a new failure on every run.
+ *
+ * Detection: explicit `UMACTUALLY_QUIET_ANNOTATIONS=1` env var
+ * (set by vitest's setup file), OR `process.env.VITEST` is
+ * defined (vitest sets this for every test file by default).
+ */
+function isQuietAnnotationMode(): boolean {
+  if (process.env["UMACTUALLY_QUIET_ANNOTATIONS"] === "1") return true;
+  if (typeof process.env["VITEST"] === "string" && process.env["VITEST"].length > 0) {
+    return true;
+  }
+  return false;
+}
+
+/**
  * @returns A single line ending with exactly one newline character. Do not append another newline.
  */
 function formatAnnotation(level: AnnotationLevel, action: string, message: string): string {
   const actionPrefix = action.length > 0 ? `${action} ` : "";
+  if (isQuietAnnotationMode()) {
+    // Plain brand-prefixed line — no `::error::` workflow annotation
+    // prefix, so the line still appears in the test log but does NOT
+    // surface as a GitHub Actions check annotation. The brand prefix
+    // is kept so test assertions that grep for `umactually: ...` still
+    // match.
+    return `${BRAND_PREFIX}${actionPrefix}${message}\n`;
+  }
   return `::${level}::${BRAND_PREFIX}${actionPrefix}${message}\n`;
 }
 
@@ -16,6 +47,20 @@ function writeAnnotation(level: AnnotationLevel, action: string, message: string
     process.stderr.write(formatted);
   } catch {
     if (level !== "debug") {
+      // Fallback path: process.stderr.write threw, so we route
+      // through console.error instead. The output is the SAME
+      // `formatted` string the normal write would have produced —
+      // i.e. it respects the quiet-mode strip in formatAnnotation.
+      // Rationale: the fallback is reached ONLY when the normal
+      // stderr is broken. If we're under vitest, the quiet-mode
+      // intent still applies (don't surface as a `##[error]`
+      // workflow annotation in the test runner). Re-formatting
+      // with the `::error::` prefix would re-introduce exactly
+      // the noise the quiet-mode strip was added to prevent.
+      // The contract test
+      // (test/unit/log.test.ts > 'falls back to console.error
+      // when stderr write throws') was updated to assert on the
+      // quiet-mode-prefixed form.
       // eslint-disable-next-line no-console
       console.error(formatted.trimEnd());
     }

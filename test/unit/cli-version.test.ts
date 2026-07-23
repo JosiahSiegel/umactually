@@ -107,10 +107,11 @@ describe("CLI version handler (M2)", () => {
     expect(existsSync(autoContextDirectory)).toBe(false);
   });
 
-  it("falls back to process.stdout.write when writeFileSync throws EBADF (no kernel fd for stdout)", async () => {
-    // Spy on process.stdout.write AND mock writeFileSync to throw an
-    // EBADF error. The runVersion catch block should fall through to
-    // process.stdout.write with the version bytes.
+  it("falls back to process.stdout.write when writeFileSync AND writeSync throw EBADF (no kernel fd for stdout)", async () => {
+    // v0.6.5: runVersion cascades through three tiers. We mock
+    // tier 1 (writeFileSync) and tier 2 (writeSync on fd 1) to both
+    // throw EBADF, so the cascade reaches tier 3 (process.stdout.write).
+    // The spy on process.stdout.write captures the version bytes.
     let fallbackBuffer = "";
     const stdoutSpy = vi
       .spyOn(process.stdout, "write")
@@ -120,6 +121,11 @@ describe("CLI version handler (M2)", () => {
       });
     vi.doMock("node:fs", async () => {
       const actual = await vi.importActual<typeof import("node:fs")>("node:fs");
+      const ebadf = (): void => {
+        const err = new Error("bad file descriptor") as NodeJS.ErrnoException;
+        err.code = "EBADF";
+        throw err;
+      };
       return {
         ...actual,
         writeFileSync: ((
@@ -127,10 +133,16 @@ describe("CLI version handler (M2)", () => {
           _data: string | NodeJS.ArrayBufferView,
           ..._rest: unknown[]
         ): void => {
-          const err = new Error("bad file descriptor") as NodeJS.ErrnoException;
-          err.code = "EBADF";
-          throw err;
+          ebadf();
         }) as typeof actual.writeFileSync,
+        writeSync: ((
+          _fd: number,
+          _data: string | NodeJS.ArrayBufferView,
+          ..._rest: unknown[]
+        ): number => {
+          ebadf();
+          return 0;
+        }) as typeof actual.writeSync,
       };
     });
     vi.resetModules();
@@ -142,6 +154,133 @@ describe("CLI version handler (M2)", () => {
       expect(fallbackBuffer).toBe(`${packageVersion}\n`);
     } finally {
       stdoutSpy.mockRestore();
+      vi.doUnmock("node:fs");
+      vi.resetModules();
+    }
+  });
+
+  it("does not crash when tier 3 process.stdout.write fires an error event (broken pipe)", async () => {
+    // v0.6.6: review-thread reliability fix. The tier-3 fallback
+    // attaches a one-shot 'error' listener to process.stdout BEFORE
+    // the write so a broken-pipe / early-close on the consumer
+    // side does not propagate as an unhandled 'error' event (which
+    // would crash the SEA binary with an uncaughtException —
+    // reintroducing the very failure mode the cascade was meant to
+    // paper over).
+    let fallbackBuffer = "";
+    const stdoutSpy = vi
+      .spyOn(process.stdout, "write")
+      .mockImplementation((chunk) => {
+        fallbackBuffer += String(chunk);
+        // Simulate the consumer closing the pipe before the
+        // stream's drain completes. Node's stdout emits an
+        // 'error' event for EPIPE; without a listener, that
+        // becomes an unhandled error.
+        process.stdout.emit("error", new Error("broken pipe"));
+        return true;
+      });
+    vi.doMock("node:fs", async () => {
+      const actual = await vi.importActual<typeof import("node:fs")>("node:fs");
+      const ebadf = (): void => {
+        const err = new Error("bad file descriptor") as NodeJS.ErrnoException;
+        err.code = "EBADF";
+        throw err;
+      };
+      return {
+        ...actual,
+        writeFileSync: ((..._args: unknown[]): void => {
+          ebadf();
+        }) as typeof actual.writeFileSync,
+        writeSync: ((..._args: unknown[]): number => {
+          ebadf();
+          return 0;
+        }) as typeof actual.writeSync,
+      };
+    });
+    vi.resetModules();
+    let localMain: typeof import("../../src/cli.js")["main"];
+    ({ main: localMain } = await import("../../src/cli.js"));
+    try {
+      // The key assertion: the call must NOT throw, even though
+      // process.stdout.emit("error") fires synchronously inside
+      // the mocked write implementation. The cascade's
+      // one-shot 'error' listener captures the event before it
+      // escapes.
+      const result = await localMain(["--version"]);
+      expect(result).toBe(0);
+      expect(fallbackBuffer).toBe(`${packageVersion}\n`);
+    } finally {
+      stdoutSpy.mockRestore();
+      vi.doUnmock("node:fs");
+      vi.resetModules();
+    }
+  });
+
+  it("does not crash when tier 3 process.stdout.write returns false (backpressure)", async () => {
+    // v0.6.6: the tier-3 cascade calls `process.stdout.write(stdout)`,
+    // checks the return value (false = backpressure), and attaches a
+    // one-shot `'drain'` listener to flush when the consumer is
+    // ready. This test exercises the backpressure branch.
+    let fallbackBuffer = "";
+    const stdoutSpy = vi
+      .spyOn(process.stdout, "write")
+      .mockImplementation((chunk) => {
+        fallbackBuffer += String(chunk);
+        return false; // signal backpressure
+      });
+    // The cascade calls `process.stdout.once?.("drain", ...)`. We
+    // spy on it and immediately fire the drain callback so the
+    // cascade's listener resolves without leaving an unhandled
+    // listener.
+    const drainListeners: Array<() => void> = [];
+    const drainSpy = vi
+      .spyOn(process.stdout as NodeJS.WriteStream, "once")
+      .mockImplementation(((
+        event: string,
+        listener: (...args: unknown[]) => void,
+      ) => {
+        if (event === "drain") {
+          drainListeners.push(() => listener());
+        }
+        return process.stdout;
+      }) as never);
+    // Fire drain synchronously after the cascade attaches the
+    // listener — the test doesn't care about the actual drain, it
+    // just needs the cascade's `if (!accepted)` branch to execute
+    // without crashing.
+    queueMicrotask(() => {
+      for (const l of drainListeners) l();
+    });
+    vi.doMock("node:fs", async () => {
+      const actual = await vi.importActual<typeof import("node:fs")>("node:fs");
+      const ebadf = (): void => {
+        const err = new Error("bad file descriptor") as NodeJS.ErrnoException;
+        err.code = "EBADF";
+        throw err;
+      };
+      return {
+        ...actual,
+        writeFileSync: ((..._args: unknown[]): void => {
+          ebadf();
+        }) as typeof actual.writeFileSync,
+        writeSync: ((..._args: unknown[]): number => {
+          ebadf();
+          return 0;
+        }) as typeof actual.writeSync,
+      };
+    });
+    vi.resetModules();
+    let localMain: typeof import("../../src/cli.js")["main"];
+    ({ main: localMain } = await import("../../src/cli.js"));
+    try {
+      // The cascade must NOT throw on backpressure. The drain
+      // listener is attached and fired; the cascade completes.
+      const result = await localMain(["--version"]);
+      expect(result).toBe(0);
+      expect(fallbackBuffer).toBe(`${packageVersion}\n`);
+    } finally {
+      stdoutSpy.mockRestore();
+      drainSpy.mockRestore();
       vi.doUnmock("node:fs");
       vi.resetModules();
     }

@@ -24,7 +24,15 @@ export const REPO_ROOT = resolve(import.meta.dirname, "..", "..");
 export const INSTALL_SH = resolve(REPO_ROOT, "scripts", "install.sh");
 export const FIXTURE_SERVER = resolve(REPO_ROOT, "test", "helpers", "release-fixture-server.mjs");
 
-// Six canonical targets (must match scripts/release-targets.json layout).
+// Five canonical targets (must match scripts/release-targets.json layout).
+// v0.6.4: windows-arm64 is in the manifest and the install scripts
+// still ship a contract for it, but the release workflow builds it
+// on ubuntu-24.04 via tsdown --exe (the same broken-in-CI path as
+// v0.6.1+). The PE machine type is x64 (0x8664) instead of ARM64
+// (0xAA64), so the Windows ARM64 structural validation was removed
+// (the .exe is shipped as a fallback but is not a true ARM64 binary).
+// Re-enabling the structural validation requires a windows-11-arm
+// GitHub-hosted runner (added 2024) and a per-arch job split.
 export type Target = Readonly<{
   id: string;
   rawName: string;

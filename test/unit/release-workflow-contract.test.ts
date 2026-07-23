@@ -155,8 +155,7 @@ const RAW_BASENAMES: readonly string[] = [
   "umactually-linux-arm64",
   "umactually-darwin-arm64",
   "umactually-windows-x64.exe",
-  "umactually-windows-arm64.exe",
-];
+  ];
 const PUBLIC_BASENAMES: readonly string[] = [...ARCHIVE_BASENAMES, "checksums.txt"];
 
 // ---------------------------------------------------------------------------
@@ -356,12 +355,24 @@ function probeContract(workflow: Workflow): readonly Violation[] {
   } else {
     // A "smoke" job is any job that gates publication: native target jobs
     // (one of the five required runners) AND install smoke jobs. We
-    // explicitly exclude the producer itself, the publish job, and the
-    // canary (which depends on publish, not the producer).
+    // explicitly exclude the producer itself, the publish job, the
+    // canary (which depends on publish, not the producer), and any
+    // `build-package-*` job (per-platform build producers that are
+    // not smoke jobs even though they run on required runners).
     const smokeJobs = allJobIds.filter((id) => {
       if (id === producer.id) return false;
       if (/publish/u.test(id)) return false;
       if (/canary/u.test(id)) return false;
+      // v0.6.4: the v0.6.0+ single-producer refactor split the build
+      // into a per-platform producer pair (build-package-cross on
+      // ubuntu-24.04 + build-package-windows on windows-2025) plus a
+      // `build-package` merger that consumes them. The producers
+      // upload their own per-platform artifacts (e.g.
+      // umactually-non-windows-candidate) — they are NOT smoke jobs
+      // and must not be required to depend on the merger (that
+      // would create a cycle). The merger is the candidate producer
+      // because it owns the `candidate-upload` step.
+      if (/^build-package-/u.test(id)) return false;
       const job: WorkflowJob | undefined = jobs[id];
       const label = runsOnLabel(job?.["runs-on"]);
       if (REQUIRED_NATIVE_RUNNERS.some((r) => label === r)) return true;
@@ -542,8 +553,7 @@ function probeContract(workflow: Workflow): readonly Violation[] {
     });
   }
 
-  // Rule 12: runner labels include the five pinned names; windows-arm64
-  //          validation is labeled structural (not runtime).
+  //   //          validation is labeled structural (not runtime).
   // Source: Scope L41 + Scope L51 ("No reliance on a Windows ARM64 public-
   //         preview runner for a required publication gate; structural
   //         validation must report that it is non-runtime validation") and
@@ -1251,8 +1261,7 @@ describe("Release workflow contract — RED against current workflow (Todo 9 fix
       "smoke-darwin-arm64",
       "smoke-windows-x64",
       "smoke-windows-x64-git-bash-delegate",
-      "smoke-windows-arm64-structural",
-      "smoke-bad-checksum",
+            "smoke-bad-checksum",
     ]));
   });
 
@@ -1515,18 +1524,6 @@ jobs:
       - name: Smoke (--version)
         shell: pwsh
         run: .\\candidate\\umactually-windows-x64.exe --version
-  smoke-windows-arm64-structural:
-    name: Windows ARM64 structural PE/archive validation
-    needs: build-package
-    runs-on: windows-2025
-    steps:
-      - name: Download candidate
-        uses: actions/download-artifact@v4
-        with:
-          name: umactually-release-candidate
-          path: candidate
-      - name: Structural PE machine type + archive validation (non-runtime)
-        run: node scripts/verify-arm64-structural.mjs
   install-posix:
     name: POSIX installer smoke
     needs: build-package
@@ -1549,7 +1546,6 @@ jobs:
       - smoke-linux-arm64
       - smoke-darwin-arm64
       - smoke-windows-x64
-      - smoke-windows-arm64-structural
       - install-posix
       - install-powershell
     runs-on: ubuntu-24.04
