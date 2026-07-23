@@ -45,9 +45,12 @@
 
 import { spawnSync } from "node:child_process";
 import {
+  closeSync,
   existsSync,
   mkdirSync,
+  openSync,
   readFileSync,
+  readSync,
   statSync,
   unlinkSync,
   writeFileSync,
@@ -88,16 +91,32 @@ function assertNodeVersion() {
     );
   }
   if (process.platform !== "win32") {
-    // Don't hard-fail here: the BUNDLE step (tsdown) works fine on
-    // Linux, and the SEA-injection step (node --build-sea) produces
-    // a Linux binary on Linux. We allow Linux execution for local
-    // dev / test-seam verification, but log a warning so the user
-    // notices. CI is gated on `runs-on: windows-2025` (see
-    // .github/workflows/release.yml:build-package-windows) so a
-    // Linux dry-run cannot ship to a release.
+    // Hard-fail: the BUNDLE step (tsdown) is platform-agnostic, but
+    // the SEA-injection step (node --build-sea) injects the blob
+    // into process.execPath IN-PLACE — so on a non-Windows host
+    // it produces a Linux ELF or macOS Mach-O named .exe. Without
+    // a hard-fail here, a future CI change that drops the
+    // `runs-on: windows-2025` gate, or a local dev who runs the
+    // script on macOS, would silently ship a corrupt binary. The
+    // previous "warn but allow" behaviour assumed the workflow's
+    // `runs-on: windows-2025` would always be in force; the
+    // new MZ-header sanity check above catches the same case
+    // downstream, but failing here gives a clearer error and
+    // short-circuits the wasted bundle step. To bypass this for
+    // local test-seam verification, set
+    // UMACTUALLY_ALLOW_NON_WINDOWS_BUILD=1 in the environment.
+    if (process.env["UMACTUALLY_ALLOW_NON_WINDOWS_BUILD"] !== "1") {
+      throw new Error(
+        `build-sea-windows: this script must run on Windows (process.platform="win32"). ` +
+        `Detected platform: ${process.platform}. node --build-sea injects the SEA blob in-place ` +
+        `into process.execPath, so a non-Windows host will produce a non-Windows binary named .exe. ` +
+        `CI gate: the release workflow pins this step to runs-on: windows-2025. ` +
+        `For local test-seam verification only, set UMACTUALLY_ALLOW_NON_WINDOWS_BUILD=1.`,
+      );
+    }
     console.warn(
-      `build-sea-windows: running on ${process.platform}; the produced binaries will be ${process.platform} binaries, not Windows .exe. ` +
-      `For Windows .exe binaries, run this script on a Windows host.`,
+      `build-sea-windows: running on ${process.platform} with UMACTUALLY_ALLOW_NON_WINDOWS_BUILD=1; ` +
+      `the produced binaries will be ${process.platform} binaries, not Windows .exe.`,
     );
   }
 }
@@ -254,6 +273,32 @@ function buildSeaBinary(target) {
       `build-sea-windows: binary at ${outPath} is only ${stat.size} bytes; ` +
       `expected >= ${MIN_RAW_BYTES} (suspicious — probably a build error).`,
     );
+  }
+  // Sanity: the output must be a Windows PE/MZ binary, NOT a
+  // Linux ELF or macOS Mach-O. A failed sanity check here means
+  // `node --build-sea` injected the SEA blob into a non-Windows
+  // node binary — likely because UMACTUALLY_NODE_BIN pointed at
+  // a Linux/mac shim (the documented test seam) or because
+  // actions/setup-node installed the wrong OS variant on
+  // windows-2025. Without this check, a "success" exit from
+  // node --build-sea would silently produce an ELF named
+  // .exe, and the size gate would still pass (a Linux node is
+  // 128 MB; a Windows node is 95 MB — the size difference
+  // doesn't trip the 1 MiB lower bound).
+  const fd = openSync(outPath, "r");
+  try {
+    const header = Buffer.alloc(2);
+    readSync(fd, header, 0, 2, 0);
+    if (header[0] !== 0x4d || header[1] !== 0x5a) {
+      throw new Error(
+        `build-sea-windows: output at ${outPath} is not a PE/MZ binary ` +
+        `(header bytes: 0x${header[0].toString(16)}${header[1].toString(16)}). ` +
+        `node --build-sea produced a non-Windows binary — check UMACTUALLY_NODE_BIN ` +
+        `and the runner's installed Node version.`,
+      );
+    }
+  } finally {
+    closeSync(fd);
   }
   console.log(`  ✓ ${outPath} (${stat.size} bytes)`);
 }

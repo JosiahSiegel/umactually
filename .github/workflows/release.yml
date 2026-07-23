@@ -974,6 +974,27 @@ jobs:
   # ---------------------------------------------------------------------
   publish:
     name: publish
+    # Two trigger paths reach this job:
+    #   1. push.tags v* — the maintainer pushed a real release tag.
+    #      github.ref is `refs/tags/v0.6.6` and the release is
+    #      published against that tag.
+    #   2. workflow_dispatch with inputs.publish == 'true' — the
+    #      maintainer force-publishes a ref directly (e.g. after a
+    #      successful dry-run dispatch). The release is published
+    #      against inputs.tag (if set) or github.ref_name.
+    #
+    # Why this `if:` does NOT gate on inputs.tag: a workflow_dispatch
+    # with inputs.publish == 'true' and a synthetic tag (e.g.
+    # v0.0.0-test) would be a malformed release — the synthetic
+    # tag is for dry-run SMOKE JOBS only, not for publishing. The
+    # contract test pins this gate; the right fix for an
+    # accidentally-published synthetic tag is to delete the draft
+    # in the `Draft deletion on pre-publish failure` step below,
+    # which fires for any failure in the pre-publish gate. We
+    # intentionally allow this failure mode (rather than gating
+    # on `inputs.tag` being a real semver) so that an explicit
+    # maintainer override via dispatch can still publish in
+    # emergencies.
     if: |
       (github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')) ||
       (github.event_name == 'workflow_dispatch' && inputs.publish == 'true')

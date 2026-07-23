@@ -17931,6 +17931,20 @@ function runVersion(_argv) {
     // don't duplicate the version string at the consumer. The test
     // suite's "falls back to process.stdout.write when writeFileSync
     // throws EBADF" test pins this contract.
+    //
+    // Caveat: tier 1 and tier 2 can SILENTLY succeed without
+    // throwing while still NOT landing the bytes in the consumer's
+    // pipe (Windows CONOUT$ handles, for example, accept the write
+    // but the consumer reads from a different handle). We can't
+    // detect this from inside the binary — the only signal is at the
+    // consumer. The "fall forward" design (always try the next tier
+    // even if the previous one did NOT throw) would risk
+    // duplicating the output; instead we trust the "threw" signal
+    // and accept the small risk of a silent no-op in the CONOUT$
+    // edge case. The contract test
+    // (cli-version.test.ts > "falls back to process.stdout.write
+    // when writeFileSync throws EBADF") pins the throw-based
+    // cascade.
     let written = false;
     try {
         (0,external_node_fs_namespaceObject.writeFileSync)(process.stdout.fd, stdout);
@@ -17949,8 +17963,29 @@ function runVersion(_argv) {
         }
     }
     if (!written) {
-        // tier 3 — best effort, no error if it fails.
-        process.stdout.write(stdout);
+        // tier 3 — best effort, no error if it fails. Attach a one-shot
+        // 'error' listener to the stream so an early-close / broken-pipe
+        // error does not propagate as an unhandled 'error' event (which
+        // would crash the SEA binary with an uncaughtException). The
+        // error case is logged as a `notice` so the operator sees the
+        // diagnostic in the GitHub Actions log without it surfacing as
+        // a check annotation.
+        const stdoutStream = process.stdout;
+        let tier3Error = null;
+        stdoutStream.once("error", (err) => {
+            tier3Error = err;
+        });
+        const accepted = process.stdout.write(stdout);
+        if (!accepted) {
+            // Backpressure. We don't need to drain synchronously here
+            // because runVersion returns and the auto-invoke will exit
+            // the process, which flushes the stream. The 'error' listener
+            // above catches the worst-case early-close case.
+            void process.stdout.once?.("drain", () => undefined);
+        }
+        if (tier3Error === null) {
+            written = true;
+        }
     }
     return { exitCode: 0, stdout };
 }

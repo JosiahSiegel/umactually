@@ -158,6 +158,38 @@ function main() {
     }
   }
 
+  // Early validation: every partition target must have BOTH its
+  // archive (in src/public/) AND its raw (in src/internal/raw/) in
+  // the corresponding input bundle BEFORE we start copying. Without
+  // this, a missing raw would only surface as "merged bundle is
+  // missing raw for target X" deep inside copyTreeFiltered, after
+  // we've already produced a half-merged output directory and
+  // burned the merger job's budget. Failing fast here gives the
+  // operator a clear "input bundle Y is missing target Z" message
+  // that points at the producer job, not the merger.
+  const isWindowsTarget = (id) => id.startsWith("windows-");
+  const nonWindowsManifest = manifest.filter((t) => !isWindowsTarget(t.id));
+  const windowsManifest = manifest.filter((t) => isWindowsTarget(t.id));
+  for (const [srcRoot, partitionTargets, partitionLabel] of [
+    [nonWindows, nonWindowsManifest, "non-Windows"],
+    [windows, windowsManifest, "Windows"],
+  ]) {
+    for (const t of partitionTargets) {
+      const archivePath = join(srcRoot, "public", t.archiveName);
+      if (!existsSync(archivePath)) {
+        throw new Error(
+          `${partitionLabel} input bundle is missing archive for target ${t.id}: ${archivePath}`,
+        );
+      }
+      const rawPath = join(srcRoot, "internal", "raw", t.rawName);
+      if (!existsSync(rawPath)) {
+        throw new Error(
+          `${partitionLabel} input bundle is missing raw for target ${t.id}: ${rawPath}`,
+        );
+      }
+    }
+  }
+
   const outAbs = resolve(output);
   ensureCleanDir(outAbs);
   mkdirSync(join(outAbs, "public"), { recursive: true });
