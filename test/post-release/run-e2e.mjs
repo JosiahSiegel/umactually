@@ -180,21 +180,21 @@ if (binaryPathArg) {
 }
 
 // Sanity: --version works. We capture the binary's stdout AND
-// stderr to pipes (the file-fd approach from PR #127 was
-// unreliable on Windows + Node 25.6.0 SEA). The binary's
-// runVersion writes the version to BOTH stdout (via the tier 1/2
-// cascade) AND stderr (via writeFileSync(2, stdout) — a defensive
-// fallback for Windows + CONOUT$ where fd 1 is mapped to a
-// console handle). The version is identified by the leading
-// `\d+\.\d+\.\d+` pattern. Other stderr noise (SEA warnings) is
-// ignored. If neither stream contains a version, the binary
-// exited before main() fired (the primary fix is the
-// process.versions.sea short-circuit in isMainModule).
+// stderr to pipes. The binary's runVersion tier 0b is opt-in
+// via the UMACTUALLY_VERSION_TO_STDERR env var, which we set
+// here. This is the bypass for Windows + Git Bash + Node 25.6.0
+// SEA where fd 1 is mapped to a CONOUT$ handle. With the env
+// var set, the binary writes the version to stderr with an
+// `umactually-version:` marker prefix. The harness extracts the
+// version from stderr (preferred) or stdout (fallback).
+// Without the env var, the contract is preserved (--version
+// writes nothing to stderr).
 let vStdout = "";
 try {
   const v = await new Promise((resolve) => {
     const child = spawn(binaryPath, ["--version"], {
       stdio: ["ignore", "pipe", "pipe"],
+      env: { ...process.env, UMACTUALLY_VERSION_TO_STDERR: "1" },
     });
     const out = { status: null, signal: null, stdout: "", stderr: "" };
     child.stdout.on("data", (d) => { out.stdout += d.toString("utf8"); });
@@ -212,14 +212,18 @@ try {
   if (v.status !== 0) {
     die(1, `binary --version failed: status=${v.status} stderr=${v.stderr.slice(0, 500)}`);
   }
-  // Prefer stdout; fall back to stderr (the Windows + CONOUT$
-  // bypass in runVersion's tier 0b writes the version to fd 2).
-  // The version pattern matches `\d+\.\d+\.\d+` (semver) at the
-  // start of a line.
-  const versionRe = /^\d+\.\d+\.\d+[^\n]*/mu;
-  const stdoutMatch = v.stdout.match(versionRe);
-  const stderrMatch = v.stderr.match(versionRe);
-  vStdout = (stdoutMatch?.[0] ?? stderrMatch?.[0] ?? "").trim();
+  // Prefer stderr (the tier 0b bypass for Windows + CONOUT$);
+  // fall back to stdout (the normal --version output). The
+  // tier 0b marker is `umactually-version:\d+\.\d+\.\d+`. The
+  // stdout fallback matches a leading semver.
+  const versionRe = /umactually-version:(\d+\.\d+\.\d+[^\n]*)/u;
+  const stderrVersionMatch = v.stderr.match(versionRe);
+  if (stderrVersionMatch) {
+    vStdout = stderrVersionMatch[1].trim();
+  } else {
+    const stdoutMatch = v.stdout.match(/^\d+\.\d+\.\d+[^\n]*/mu);
+    vStdout = (stdoutMatch?.[0] ?? "").trim();
+  }
   if (!vStdout) {
     die(
       1,
