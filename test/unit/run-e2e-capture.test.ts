@@ -148,17 +148,34 @@ describe("harness child-stdio capture modes", () => {
   // success". The file-capture assertion is the FIX and works
   // on every platform.
   it("pipe capture: fd-1 path works on non-Windows (platform-dependent)", async () => {
+    // This test documents the platform-dependent reliability
+    // of pipe capture for the fd-1 write path. On non-Windows
+    // platforms (Linux + macOS), the pipe capture works. On
+    // Windows + Git Bash + Node 25.6.0 SEA, the consumer reads
+    // empty stdout because fd 1 is mapped to a CONOUT$ handle.
+    // We use a platform guard so the test only asserts the
+    // non-Windows behavior. The CI on windows-latest would
+    // otherwise see this test fail spuriously, masking the
+    // real bug the harness's file-capture fix (PR #127)
+    // addresses.
     const version = "1.2.3-fd1\n";
     const { dir, scriptPath } = writeChildScript(makeFd1WriterChildScript(version));
     cleanupDirs.push(dir);
     const out = await spawnWithPipeCapture(scriptPath);
     expect(out.status).toBe(0);
-    // On non-Windows platforms (where this test runs), the
-    // pipe capture works for the fd-1 path. On Windows +
-    // Git Bash + Node 25.6.0 SEA, the consumer reads empty
-    // stdout. The test asserts the non-Windows case (where
-    // the test runner is).
-    expect(out.stdout).toBe(version);
+    if (process.platform === "win32") {
+      // On Windows + Git Bash + Node 25.6.0 SEA, the fd-1
+      // writeFileSync lands in the CONOUT$ handle, not the
+      // consumer's pipe. The consumer reads empty stdout.
+      // This is the bug the harness's file-capture fix
+      // (PR #127) addresses. We don't enforce a value here;
+      // we just confirm the spawn succeeded.
+      expect(typeof out.stdout).toBe("string");
+    } else {
+      // On non-Windows, the pipe capture works for the fd-1
+      // path. The consumer reads the version.
+      expect(out.stdout).toBe(version);
+    }
   }, 10_000);
 
   it("file capture: fd-1 path returns the bytes (the FIX)", async () => {
