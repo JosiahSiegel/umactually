@@ -20,6 +20,7 @@ export type PeMachine =
   | {
       readonly ok: false;
       readonly reason:
+        | "cannot-read"
         | "file-too-short"
         | "bad-mz-signature"
         | "bad-e_lfanew"
@@ -42,7 +43,7 @@ export function verifyPeMachine(path: string): PeMachine {
   } catch (err) {
     return {
       ok: false,
-      reason: "file-too-short",
+      reason: "cannot-read",
       detail: `cannot read file: ${err instanceof Error ? err.message : String(err)}`,
     };
   }

@@ -115,11 +115,19 @@ describe("verifyPeMachine", () => {
     }
   });
 
-  it("returns file-too-short on non-existent file (treated as unreadable)", () => {
+  it("returns cannot-read on non-existent file", () => {
     const result = verifyPeMachine(join(directory, "missing.exe"));
     expect(result.ok).toBe(false);
     if (!result.ok) {
-      expect(result.reason).toBe("file-too-short");
+      expect(result.reason).toBe("cannot-read");
+    }
+  });
+
+  it("returns cannot-read on a directory (EISDIR)", () => {
+    const result = verifyPeMachine(directory);
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.reason).toBe("cannot-read");
     }
   });
 

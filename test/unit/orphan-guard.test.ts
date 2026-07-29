@@ -8,7 +8,7 @@
 // tries to re-introduce the Bun path will fail this test before merge.
 
 import { readFileSync, readdirSync, statSync } from "node:fs";
-import { join, relative } from "node:path";
+import { join, relative, sep } from "node:path";
 
 const REPO_ROOT = join(__dirname, "..", "..");
 
@@ -64,17 +64,21 @@ function findCompileEntryReferences(): Reference[] {
 }
 
 describe("scripts/compile-entry.ts orphan guard", () => {
-  it("has zero live references outside the plan/bundle docs", () => {
+  it("has zero live references in source, scripts, workflows, or build configs", () => {
     const refs = findCompileEntryReferences();
-    const blocking = refs.filter(
-      (r) =>
-        !r.path.startsWith(".omo/") &&
-        !r.path.startsWith("docs/") &&
-        r.path !== ".omo/plans/umactually-test-audit-pr-bundle.md",
-    );
+    // Path-segment-aware check: a path under "docs/" matches if its first
+    // segment is exactly "docs" (so "docs-old/file" would NOT be skipped).
+    // This avoids substring false-positives like "docs/" matching
+    // "docs-old/..." or `.omo/` matching `something.omo/...`.
+    const isAllowedDocPath = (path: string): boolean => {
+      const firstSegment = path.split(sep)[0] ?? "";
+      return firstSegment === ".omo" || firstSegment === "docs";
+    };
+    const blocking = refs.filter((r) => !isAllowedDocPath(r.path));
     expect(
       blocking,
-      `compile-entry.ts must be orphaned (no live references in source, scripts, workflows, or build configs).\nFound blocking references: ${JSON.stringify(blocking, null, 2)}`,
+      `compile-entry.ts must be orphaned in source/scripts/workflows/build-configs.\n` +
+        `Found blocking references: ${JSON.stringify(blocking, null, 2)}`,
     ).toEqual([]);
   });
 });
