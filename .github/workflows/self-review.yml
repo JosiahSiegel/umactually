@@ -140,3 +140,8 @@ jobs:
 #    captures {posted, parseFailed, message, inlineThreadCount, verdict,
 #    note} even on failure (see src/cli/run.ts writeLiveArtifact), so
 #    the step summary can show a structured failure breakdown via `jq`.
+# 7. Reading + resolving the threads: see .github/SELF-REVIEW-RESOLUTION-GUIDE.md
+#    for the full agent-facing recipe (triage matrix, GitHub + Azure DevOps
+#    close commands, GraphQL thread resolution, common pitfalls).
+#    The audit PR #139 collapsed version of this guide is posted as a PR
+#    comment on every umactually review run for discoverability.
