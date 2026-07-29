@@ -90,17 +90,20 @@ jobs:
           exit 0
 
       - name: Post resolution-guide pointer (once per PR)
-        if: github.event_name == 'pull_request' && github.event.action != 'synchronize'
+        if: github.event_name == 'pull_request'
         env:
           GH_TOKEN: ${{ github.token }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
           GUIDE_MARKER: "<!-- umactually:resolution-guide-v1 -->"
         run: |
           # Post a collapsed comment pointing future agents at the resolution
-          # guide. Idempotent: checks for the marker comment first; only posts
-          # if not already present. Runs on 'opened' / 'reopened' /
-          # 'ready_for_review' but NOT on 'synchronize' (each new push is not
-          # a fresh chance to flood the PR with this comment).
+          # guide. Idempotency is enforced inside the step by the
+          # GUIDE_MARKER startswith check below — we DO run on every
+          # 'synchronize' (each push triggers a fresh self-review, and
+          # agents reading the new review need to see the guide), but we
+          # only post when no existing marker is found. This means the
+          # guide appears once after the step first sees the PR; later
+          # runs short-circuit on the EXISTING > 0 check.
           # set +e so a transient gh API failure doesn't fail the whole job.
           # The guide pointer is a nice-to-have, not a required gate.
           set +e
