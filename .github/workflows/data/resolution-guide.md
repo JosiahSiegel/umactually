@@ -4,17 +4,9 @@
 <details>
 <summary>📖 <b>How to read + resolve these umactually threads — click to expand</b></summary>
 
-The umactually CLI posted this review against **GitHub** (a `pull_request` event with `GITHUB_ACTIONS=true`). The marker-dedup is **best-effort** — bot inline comments stay anchored to the commit the bot saw, NOT the current head. After fixes land, threads stay open until you dismiss them.
+The umactually CLI ran with `--platform github` against this `pull_request` event on `actions/checkout@v4`, so every thread below was posted via GitHub's review API and is resolvable only via the GraphQL mutations below — **not** by replying through the GitHub UI's "Resolve conversation" button (that path is intentionally disabled for review-thread-style comments; the GraphQL mutation is the canonical dismiss path).
 
-### Step 0 — confirm the platform
-
-```bash
-[ -n "${GITHUB_ACTIONS:-}" ] && platform=github
-[ -n "${TF_BUILD:-}" ] && platform=azure
-[ -z "${platform:-}" ] && platform=auto   # default to GitHub if unsure
-```
-
-For Azure DevOps, see `.github/SELF-REVIEW-RESOLUTION-GUIDE.md` §Azure DevOps section.
+The marker-dedup is **best-effort** — bot inline comments stay anchored to the commit the bot saw, NOT the current head. After fixes land, threads stay open until you dismiss them.
 
 ### Step 1 — triage every thread
 
@@ -42,8 +34,6 @@ GH="gh" && $GH api graphql -F threadId="<THREAD_NODE_ID>" -F body="<disposition>
 
 ### Step 3 — resolve the thread (mark RESOLVED in the UI)
 
-GitHub threads from a submitted review can only be dismissed via GraphQL:
-
 ```bash
 GH="gh" && $GH api graphql -F id="<THREAD_NODE_ID>" \
   -f query='mutation($id: ID!) {
@@ -63,6 +53,6 @@ GH="gh" && $GH api graphql -F pr="$($GH pr view <N> --repo <owner>/<repo> --json
 # Expected: 0
 ```
 
-The full guide (including Azure DevOps section + common pitfalls) lives at `.github/SELF-REVIEW-RESOLUTION-GUIDE.md`.
+The full guide (including Azure DevOps-specific guidance, common pitfalls, and the matching `az repos pr thread update --status closed` recipe) lives at `.github/SELF-REVIEW-RESOLUTION-GUIDE.md`.
 
 </details>
