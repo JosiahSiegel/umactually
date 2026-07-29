@@ -66,6 +66,15 @@ jobs:
         # review will fail. The reverse (flag kept here, removed
         # from the binary) will also fail in the same way. The two
         # must be updated together.
+        #
+        # The --platform flag below is the source of truth for which
+        # platform's resolution guide the post-step appends. The
+        # corresponding env var UMACTUALLY_PLATFORM is read by the
+        # 'Append resolution-guide' step further down to pick the
+        # matching guide file. If --platform changes, that env var
+        # must change in lockstep — otherwise the appended guide
+        # references commands (\$GH api graphql vs az repos pr thread
+        # update) that don't apply to the actual review platform.
         id: review
         env:
           GITHUB_TOKEN: ${{ github.token }}
@@ -94,13 +103,19 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
+          UMACTUALLY_PLATFORM: github
         run: |
           # Find the most recent github-actions[bot] review on this PR (the
           # umactually self-review on the current head). If its body does not
           # already contain the resolution-guide marker, append the collapsed
-          # <details> section from .github/workflows/data/resolution-guide.md
+          # <details> section from
+          # .github/workflows/data/resolution-guide-${UMACTUALLY_PLATFORM}.md
           # and PUT the body back. Idempotent across pushes: the marker check
           # short-circuits subsequent runs on the same review.
+          # The platform env var must match the --platform flag passed to
+          # umactually in the 'Run UmActually self review' step above; if it
+          # diverges, the guide text will reference the wrong command surface
+          # (e.g. gh api graphql commands posted into an Azure DevOps thread).
           # The marker-dedup is best-effort by design (matching the umbrella
           # marker-dedup policy used for inline thread comments). Two
           # concurrent runs on a fast double synchronize may both append; the
@@ -112,7 +127,15 @@ jobs:
           # umactually self-review runs as advisory; this step is purely a UX
           # nicety.
           set +e
-          GUIDE_FILE="${{ github.workspace }}/.github/workflows/data/resolution-guide.md"
+          if [ "${UMACTUALLY_PLATFORM}" != "github" ] && [ "${UMACTUALLY_PLATFORM}" != "azure" ]; then
+            echo "Unsupported UMACTUALLY_PLATFORM='${UMACTUALLY_PLATFORM}'; expected github or azure. Skipping."
+            exit 0
+          fi
+          GUIDE_FILE="${{ github.workspace }}/.github/workflows/data/resolution-guide-${UMACTUALLY_PLATFORM}.md"
+          if [ ! -f "${GUIDE_FILE}" ]; then
+            echo "Guide file not found at ${GUIDE_FILE}; skipping."
+            exit 0
+          fi
           GUIDE_MARKER="<!-- umactually:resolution-guide-v1 -->"
           # Pull the latest github-actions[bot] review on the PR.
           # /reviews is sorted by id ASCENDING in REST responses; we use
