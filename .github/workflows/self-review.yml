@@ -92,6 +92,7 @@ jobs:
       - name: Post resolution-guide pointer (once per PR)
         if: github.event_name == 'pull_request' && github.event.action != 'synchronize'
         env:
+          GH_TOKEN: ${{ github.token }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
           GUIDE_MARKER: "<!-- umactually:resolution-guide-v1 -->"
         run: |
@@ -145,7 +146,7 @@ jobs:
           ### Step 2 — reply on each thread
 
           \`\`\`bash
-          gh api graphql -F threadId=\"<THREAD_NODE_ID>\" -F body=\"<disposition>\" \\
+          GH=\"gh\" && \$GH api graphql -F threadId=\"<THREAD_NODE_ID>\" -F body=\"<disposition>\" \\
             -f query='mutation(\$threadId: ID!, \$body: String!) {
               addPullRequestReviewThreadReply(input: {pullRequestReviewThreadId: \$threadId, body: \$body}) {
                 comment { id }
@@ -158,7 +159,7 @@ jobs:
           GitHub threads from a submitted review can only be dismissed via GraphQL:
 
           \`\`\`bash
-          gh api graphql -F id=\"<THREAD_NODE_ID>\" \\
+          GH=\"gh\" && \$GH api graphql -F id=\"<THREAD_NODE_ID>\" \\
             -f query='mutation(\$id: ID!) {
               resolveReviewThread(input: {threadId: \$id}) { thread { isResolved } }
             }'
@@ -167,7 +168,7 @@ jobs:
           ### Step 4 — verify all threads are resolved
 
           \`\`\`bash
-          gh api graphql -F pr=\"\$(gh pr view <N> --repo <owner>/<repo> --json id --jq .id)\" \\
+          GH=\"gh\" && \$GH api graphql -F pr=\"\$(\$GH pr view <N> --repo <owner>/<repo> --json id --jq .id)\" \\
             -f query='query(\$pr: ID!) {
               node(id: \$pr) {
                 ... on PullRequest { reviewThreads(first: 100) { nodes { id isResolved } } }
