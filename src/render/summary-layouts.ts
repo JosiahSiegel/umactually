@@ -752,10 +752,34 @@ function layoutVerdictBanner(data: ReviewData): string {
 // Classic GFM table: every finding on a row, severity + category + title.
 // Best when reviewers want to triage the full list in one glance.
 
+function renderCleanShip(data: ReviewData): string {
+  const safeSummary = redact(data.review.summary, data.secrets);
+  const parts: string[] = [REVIEW_MARKER, "", "## ✅ 0 inline findings — ship it", ""];
+  if (safeSummary.trim().length > 0) {
+    parts.push("<details>");
+    parts.push("<summary>📝 Click to expand the full review summary</summary>");
+    parts.push("");
+    parts.push(safeSummary);
+    parts.push("");
+    parts.push("</details>");
+    parts.push("");
+  }
+  parts.push(manifest(data));
+  return parts.join("\n");
+}
+
 function layoutSeverityTable(data: ReviewData): string {
   const verdict = verdictBadge(data);
   const all = sortedPosted(data);
   const parts: string[] = [];
+
+  if (
+    data.validCommentCount === 0 &&
+    data.suppressedCommentCount === 0 &&
+    data.review.parseFailed !== true
+  ) {
+    return renderCleanShip(data);
+  }
 
   // Marker first so dedup loops always find it (the contract that
   // GitHub/Azure dedup loops rely on). The verdict comes next so the

@@ -180,9 +180,10 @@ describe("preparePostedReview reconciliation", () => {
     expect(prepared.severityCounts).toEqual({});
     expect(prepared.effectiveVerdict).toBe("COMMENT");
 
-    // Body: the badge text is reconciled.
-    expect(prepared.body).toContain("💬 DISCUSS");
+    // Body: clean-ship branch fires for 0 findings + 0 suppressed.
+    expect(prepared.body).toContain("## ✅ 0 inline findings — ship it");
     expect(prepared.body).not.toContain("⛔ NEEDS_FIX");
+    expect(prepared.body).not.toContain("💬 DISCUSS");
 
     // Manifest payload: the hidden HTML comment carries the
     // effective verdict too, so AI agents parsing the manifest see
@@ -238,7 +239,7 @@ describe("preparePostedReview reconciliation", () => {
 
     expect(prepared.effectiveVerdict).toBe("APPROVED");
     expect(prepared.severityCounts).toEqual({});
-    expect(prepared.body).toContain("✅ SHIP");
+    expect(prepared.body).toContain("## ✅ 0 inline findings — ship it");
   });
 });
 
