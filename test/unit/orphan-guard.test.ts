@@ -51,7 +51,7 @@ function findCompileEntryReferences(): Reference[] {
       }
       const lines = content.split("\n");
       for (let i = 0; i < lines.length; i++) {
-        const line = lines[i];
+        const line = lines[i] ?? "";
         if (line.includes("scripts/compile-entry") || line.includes("compile-entry.ts")) {
           refs.push({ path: relative(REPO_ROOT, fullPath), line: i + 1 });
         }
