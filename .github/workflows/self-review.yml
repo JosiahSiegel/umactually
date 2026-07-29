@@ -89,100 +89,70 @@ jobs:
           echo "review-exit=${REVIEW_EXIT}" >> "${GITHUB_OUTPUT:-/dev/null}" || true
           exit 0
 
-      - name: Post resolution-guide pointer (once per PR)
+      - name: Append resolution-guide to latest review body
         if: github.event_name == 'pull_request'
         env:
           GH_TOKEN: ${{ github.token }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
-          GUIDE_MARKER: "<!-- umactually:resolution-guide-v1 -->"
         run: |
-          # Post a collapsed comment pointing future agents at the resolution
-          # guide. Idempotency is enforced inside the step by the
-          # GUIDE_MARKER startswith check below — we DO run on every
-          # 'synchronize' (each push triggers a fresh self-review, and
-          # agents reading the new review need to see the guide), but we
-          # only post when no existing marker is found. This means the
-          # guide appears once after the step first sees the PR; later
-          # runs short-circuit on the EXISTING > 0 check.
-          # set +e so a transient gh API failure doesn't fail the whole job.
-          # The guide pointer is a nice-to-have, not a required gate.
+          # Find the most recent github-actions[bot] review on this PR (the
+          # umactually self-review on the current head). If its body does not
+          # already contain the resolution-guide marker, append the collapsed
+          # <details> section from .github/workflows/data/resolution-guide.md
+          # and PUT the body back. Idempotent across pushes: the marker check
+          # short-circuits subsequent runs on the same review.
+          # The marker-dedup is best-effort by design (matching the umbrella
+          # marker-dedup policy used for inline thread comments). Two
+          # concurrent runs on a fast double synchronize may both append; the
+          # resulting guide is identical so the visible effect is one extra
+          # separator + duplicated section. Workflow-level concurrency will
+          # harden this in a follow-up; per audit bundle §L no functional
+          # changes from review-driven fixes in this PR.
+          # set +e: a transient API failure must not fail the whole job. The
+          # umactually self-review runs as advisory; this step is purely a UX
+          # nicety.
           set +e
-          EXISTING=$(gh api \
-            "/repos/${GITHUB_REPOSITORY}/issues/${PR_NUMBER}/comments" \
-            --jq '[.[] | select(.body | startswith("'"${GUIDE_MARKER}"'"))] | length' 2>/dev/null)
-          EXISTING=${EXISTING:-0}
-          if [ "${EXISTING}" -gt 0 ]; then
-            echo "Resolution-guide pointer already posted; skipping."
+          GUIDE_FILE="${{ github.workspace }}/.github/workflows/data/resolution-guide.md"
+          GUIDE_MARKER="<!-- umactually:resolution-guide-v1 -->"
+          # Pull the latest github-actions[bot] review on the PR.
+          # /reviews is sorted by id descending; the first match is the most
+          # recent. We walk up to 30 to handle humans posting reviews between
+          # bot reviews.
+          REVIEW_JSON=$(gh api \
+            -H "Accept: application/vnd.github+json" \
+            "/repos/${GITHUB_REPOSITORY}/pulls/${PR_NUMBER}/reviews?per_page=30")
+          REVIEW_ID=$(echo "${REVIEW_JSON}" | jq -r '[.[] | select(.user.login == "github-actions[bot]")][0].id // empty')
+          if [ -z "${REVIEW_ID}" ]; then
+            echo "No github-actions[bot] review on PR ${PR_NUMBER}; skipping."
             exit 0
           fi
-          gh pr comment "${PR_NUMBER}" --body "${GUIDE_MARKER}
-          ## Self-review resolution guide (for any agent reading this PR)
-
-          <details>
-          <summary><b>📖 How to read + resolve the umactually self-review threads — click to expand</b></summary>
-
-          The umactually CLI ran this review against **GitHub** (\`GITHUB_ACTIONS=true\` on a \`pull_request\` event). The marker-dedup is **best-effort** — bot inline comments stay anchored to the commit the bot saw, NOT the current head. After fixes land, threads stay open until you dismiss them.
-
-          ### Step 0 — confirm the platform
-
-          \`\`\`bash
-          [ -n \"\${GITHUB_ACTIONS:-}\" ] && platform=github
-          [ -n \"\${TF_BUILD:-}\" ] && platform=azure
-          [ -z \"\${platform:-}\" ] && platform=auto   # default to GitHub if unsure
-          \`\`\`
-
-          For Azure DevOps, see \`.github/SELF-REVIEW-RESOLUTION-GUIDE.md\` §Azure DevOps section.
-
-          ### Step 1 — triage every thread
-
-          | Disposition | When |
-          |---|---|
-          | \`accepted defect\` | Real bug; fix it + push + reply with the fix SHA. |
-          | \`false positive\` | Technically wrong; reply with the reason; do not change code. |
-          | \`duplicate\` | Overlaps an earlier thread; reply \"duplicate of <link>\". |
-          | \`off-diff\` | Line not in this PR's diff; reply \"off-diff\". |
-          | \`stale (fixed in a later commit)\` | Valid against an earlier head; **verify the fix is in the current head's source**, reply with fix SHA + line. |
-          | \`style / rejected\` | Opinion-only or violates the audit bundle's must-not list; reply \"out of scope per audit bundle §L\". |
-
-          **Never silently ignore a comment.** Either fix it or reply with a disposition.
-
-          ### Step 2 — reply on each thread
-
-          \`\`\`bash
-          GH=\"gh\" && \$GH api graphql -F threadId=\"<THREAD_NODE_ID>\" -F body=\"<disposition>\" \\
-            -f query='mutation(\$threadId: ID!, \$body: String!) {
-              addPullRequestReviewThreadReply(input: {pullRequestReviewThreadId: \$threadId, body: \$body}) {
-                comment { id }
-              }
-            }'
-          \`\`\`
-
-          ### Step 3 — resolve the thread (mark RESOLVED in the UI)
-
-          GitHub threads from a submitted review can only be dismissed via GraphQL:
-
-          \`\`\`bash
-          GH=\"gh\" && \$GH api graphql -F id=\"<THREAD_NODE_ID>\" \\
-            -f query='mutation(\$id: ID!) {
-              resolveReviewThread(input: {threadId: \$id}) { thread { isResolved } }
-            }'
-          \`\`\`
-
-          ### Step 4 — verify all threads are resolved
-
-          \`\`\`bash
-          GH=\"gh\" && \$GH api graphql -F pr=\"\$(\$GH pr view <N> --repo <owner>/<repo> --json id --jq .id)\" \\
-            -f query='query(\$pr: ID!) {
-              node(id: \$pr) {
-                ... on PullRequest { reviewThreads(first: 100) { nodes { id isResolved } } }
-              }
-            }' --jq '[.data.node.reviewThreads.nodes[] | select(.isResolved == false)] | length'
-          # Expected: 0
-          \`\`\`
-
-          The full guide (including Azure DevOps section + common pitfalls) lives at \`.github/SELF-REVIEW-RESOLUTION-GUIDE.md\`.
-
-          </details>"
+          CURRENT=$(gh api \
+            -H "Accept: application/vnd.github+json" \
+            "/repos/${GITHUB_REPOSITORY}/pulls/${PR_NUMBER}/reviews/${REVIEW_ID}" \
+            | jq -r '.body // ""')
+          if printf '%s' "${CURRENT}" | grep -qF "${GUIDE_MARKER}"; then
+            echo "Review ${REVIEW_ID} already contains the guide; skipping."
+            exit 0
+          fi
+          # Build new body: original + guide + trailing marker. Use jq for
+          # the join so we don't have to worry about how bash handles
+          # trailing newlines, embedded quotes, or backslashes in CURRENT.
+          GUIDE_CONTENT="$(cat "${GUIDE_FILE}")"
+          NEW_BODY=$(jq -nr --arg a "${CURRENT}" --arg b "${GUIDE_CONTENT}" --arg m "${GUIDE_MARKER}" \
+            '$a + $b + "\n" + $m + "\n"')
+          # Update the review body via PUT. Pass the body via an intermediate
+          # file to avoid shell-quoting headaches (the body contains
+          # backslashes, quotes, backticks, dollar signs).
+          TMPF=$(mktemp)
+          trap 'rm -f "${TMPF}"' EXIT
+          jq -n --arg body "${NEW_BODY}" '{body: $body}' > "${TMPF}"
+          gh api \
+            -X PUT \
+            -H "Accept: application/vnd.github+json" \
+            -H "Content-Type: application/json" \
+            --input "${TMPF}" \
+            "/repos/${GITHUB_REPOSITORY}/pulls/${PR_NUMBER}/reviews/${REVIEW_ID}" \
+            | jq '{id, body_len: (.body | length)}'
 
       - name: Summarise self-review outcome
         if: always()
