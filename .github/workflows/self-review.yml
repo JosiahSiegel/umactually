@@ -138,7 +138,7 @@ jobs:
           #   3. The "newest bot review" selection by database-id is fragile
           #      if other bot actors (Dependabot, step-summary bots) post
           #      comments; filtering by `commit.oid == HEAD_SHA` plus
-          #      `author.login == github-actions[bot]` is unambiguous.
+          #      `author.login == github-actions` is unambiguous.
           # The platform env var above auto-detects the target platform; the
           # upstream CLI step may use --platform auto or --platform github
           # directly, but the env var tracks the actual CI environment, so
@@ -168,7 +168,7 @@ jobs:
           fi
           GUIDE_MARKER="<!-- umactually:resolution-guide-v1 -->"
           QUERY_FILE="${{ github.workspace }}/.github/workflows/data/latest-bot-review.graphql"
-          # Pull the latest non-PENDING github-actions[bot] review on the
+          # Pull the latest non-PENDING github-actions review on the
           # current head. The query is parameterized; only the GraphQL
           # variables carry possibly-untrusted values.
           REVIEW_JSON=$(gh api graphql \
@@ -177,7 +177,7 @@ jobs:
             -F pr="${PR_NUMBER}" \
             -F query="$(cat "${QUERY_FILE}")")
           REVIEW_ROW=$(printf '%s' "${REVIEW_JSON}" | jq -r --arg sha "${HEAD_SHA}" \
-            '[(.data.repository.pullRequest.reviews.nodes // [])[] | select(.author.login == "github-actions[bot]" and .commit.oid == $sha)] | sort_by(.databaseId) | reverse | .[0] // empty')
+            '[(.data.repository.pullRequest.reviews.nodes // [])[] | select(.author.login == "github-actions" and .commit.oid == $sha)] | sort_by(.databaseId) | reverse | .[0] // empty')
           if [ -z "${REVIEW_ROW}" ] || [ "${REVIEW_ROW}" = "null" ]; then
             echo "No github-actions[bot] review on PR ${PR_NUMBER} at HEAD ${HEAD_SHA}; skipping."
             exit 0
@@ -208,7 +208,7 @@ jobs:
           # is more robust than regex on the raw blob: any `>` inside a
           # JSON string (e.g. a "...>..." value) would terminate a regex
           # capture early, but jq handles quoted strings correctly.
-          MANIFEST_JSON=$(printf '%s' "${CURRENT}" \\
+          MANIFEST_JSON=$(printf '%s' "${CURRENT}" \
             | sed -n 's|.*<!-- umactually:manifest \({.*}\) -->.*|\1|p' | head -1)
           if [ -n "${MANIFEST_JSON}" ]; then
             INLINE_COUNT=$(printf '%s' "${MANIFEST_JSON}" | jq -r '.inlineCount // 0' 2>/dev/null)

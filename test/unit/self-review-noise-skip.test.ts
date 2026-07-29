@@ -80,7 +80,14 @@ describe("self-review workflow noise-skip rule", () => {
       workflowText,
       "Append resolution-guide to latest review body",
     );
-    expect(stepBlock).toMatch(/\.author\.login == "github-actions\[bot\]"/u);
+    // The GraphQL Review.author.login field returns the bare account
+    // name "github-actions" for the bot account — NOT the
+    // "github-actions[bot]" form that REST /reviews uses. Filtering on
+    // "[bot]" silently matches nothing and the step exits without
+    // appending the guide. Pin the GraphQL-correct form here so any
+    // copy-paste from REST snippets fails this test.
+    expect(stepBlock).toMatch(/\.author\.login == "github-actions"/u);
+    expect(stepBlock).not.toMatch(/\.author\.login == "github-actions\[bot\]"/u);
     expect(stepBlock).toMatch(/\.commit\.oid == \$sha/u);
   });
 
