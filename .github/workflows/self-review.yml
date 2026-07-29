@@ -153,6 +153,18 @@ jobs:
             -H "Accept: application/vnd.github+json" \
             "/repos/${GITHUB_REPOSITORY}/pulls/${PR_NUMBER}/reviews/${REVIEW_ID}" \
             | jq -r '.body // ""')
+          # Skip when the review has no findings. The umactually summary card
+          # for an empty review already says "0 inline findings" / "No findings
+          # to address."; appending the resolution guide on top of that would
+          # add ~2KB of noise with no actionable triage to perform. The marker
+          # short-circuit on a non-zero-findings review is unaffected: only
+          # this branch sees the appendix, and it runs once per push.
+          INLINE_COUNT=$(printf '%s' "${CURRENT}" | grep -oE '📊[[:space:]]+[0-9]+[[:space:]]+inline' | grep -oE '[0-9]+' | head -1)
+          INLINE_COUNT=${INLINE_COUNT:-0}
+          if [ "${INLINE_COUNT}" = "0" ]; then
+            echo "Review ${REVIEW_ID} has 0 inline findings; nothing to resolve, skipping guide append."
+            exit 0
+          fi
           if printf '%s' "${CURRENT}" | grep -qF "${GUIDE_MARKER}"; then
             echo "Review ${REVIEW_ID} already contains the guide; skipping."
             exit 0
