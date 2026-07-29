@@ -115,13 +115,13 @@ jobs:
           GUIDE_FILE="${{ github.workspace }}/.github/workflows/data/resolution-guide.md"
           GUIDE_MARKER="<!-- umactually:resolution-guide-v1 -->"
           # Pull the latest github-actions[bot] review on the PR.
-          # /reviews is sorted by id descending; the first match is the most
-          # recent. We walk up to 30 to handle humans posting reviews between
-          # bot reviews.
+          # /reviews is sorted by id ASCENDING in REST responses; we use
+          # max_by(.id) to pick the newest. We walk up to 30 to handle
+          # humans posting reviews between bot reviews.
           REVIEW_JSON=$(gh api \
             -H "Accept: application/vnd.github+json" \
             "/repos/${GITHUB_REPOSITORY}/pulls/${PR_NUMBER}/reviews?per_page=30")
-          REVIEW_ID=$(echo "${REVIEW_JSON}" | jq -r '[.[] | select(.user.login == "github-actions[bot]")][0].id // empty')
+          REVIEW_ID=$(echo "${REVIEW_JSON}" | jq -r '[(.[] | select(.user.login == "github-actions[bot]"))] | max_by(.id).id // empty')
           if [ -z "${REVIEW_ID}" ]; then
             echo "No github-actions[bot] review on PR ${PR_NUMBER}; skipping."
             exit 0
