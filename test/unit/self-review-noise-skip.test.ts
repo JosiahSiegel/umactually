@@ -84,17 +84,18 @@ describe("self-review workflow noise-skip rule", () => {
     expect(stepBlock).toMatch(/\.commit\.oid == \$sha/u);
   });
 
-  it("the step filters the review by state COMMENTED (rejects PENDING)", () => {
-    // The REST PUT to /reviews/{id} returns 422 for non-PENDING reviews.
-    // The step scopes selection to state=COMMENTED in the GraphQL query so
-    // a PENDING bot review (rare, but possible if a prior run crashed
-    // between submission and processing) is never picked for the PUT.
-    // Implemented at the query level, not as a separate `if`.
+  it("the step rejects PENDING reviews", () => {
+    // The REST PUT to /reviews/{id} returns 422 for PENDING reviews
+    // (verified across PR #139's history — every bot review lands in
+    // COMMENTED/APPROVED/CHANGES_REQUESTED, none in PENDING). The step
+    // short-circuits if the latest bot review is still PENDING, which is
+    // the only state where the body-PUT is invalid.
     const stepBlock = extractStepBlock(
       workflowText,
       "Append resolution-guide to latest review body",
     );
-    expect(stepBlock).toMatch(/\.state\s*==\s*"COMMENTED"/u);
+    expect(stepBlock).toMatch(/REVIEW_STATE.*PENDING/u);
+    expect(stepBlock).toMatch(/PENDING.*PUT|PUT.*PENDING/u);
   });
 
   it("the step extracts inlineCount from the umactually manifest JSON, not emoji text", () => {

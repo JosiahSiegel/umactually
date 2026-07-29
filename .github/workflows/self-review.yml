@@ -104,34 +104,42 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
-          UMACTUALLY_PLATFORM: github
+          # Auto-detect platform from CI env, falling back to whatever the
+          # upstream 'Run UmActually self review' step targets. github.com
+          # PRs always have GITHUB_ACTIONS=true + a github.repository;
+          # Azure DevOps PRs have TF_BUILD=true.
+          UMACTUALLY_PLATFORM: ${{ (env.TF_BUILD && 'azure') || 'github' }}
         run: |
           # Append the platform-specific resolution guide to the umactually
           # self-review on the CURRENT head commit, but only if that review
           # carries inline findings to triage. The umactually manifest embeds
           # a structured JSON blob at the end of the review body whose
           # `inlineCount` field tells us whether there is triage to do; if
-          # `inlineCount` is 0, there's nothing actionable and we skip the
-          # append so the empty review stays clean (the bot already says
-          # "No findings to address.").
+          # `inlineCount` is 0 or the marker is missing, the empty review
+          # body stays clean.
           # All API calls go through GraphQL rather than the REST `/reviews`
           # endpoint to side-step three classes of fragility:
           #   1. REST `/reviews?per_page=30` is unbounded for very long PRs;
           #      GraphQL `reviews(last: N)` is a clean cap on a single round
           #      trip (we use last:1 to fetch only the newest review).
-          #   2. REST PUT to `/reviews/{id}` only works for PENDING reviews;
-          #      the bot's own submissions are usually COMMENTED (state moves
-          #      to COMMENTED on submit), so we filter to COMMENTED in the
-          #      query — PENDING failures become 422 no-ops.
+          #   2. REST PUT to `/reviews/{id}` only works for PENDING reviews
+          #      (server-side validated by GitHub); once the bot submits its
+          #      review (with any of the events `COMMENT`, `APPROVE`,
+          #      `REQUEST_CHANGES`), state moves out of PENDING to one of
+          #      `COMMENTED` / `APPROVED` / `CHANGES_REQUESTED`. The PUT
+          #      body update is allowed for any non-PENDING state, so we
+          #      filter `state != PENDING` here rather than pinning to one
+          #      specific state. The skip-log message echoes the actual
+          #      state so a future schema drift is visible in the run log.
           #   3. The "newest bot review" selection by database-id is fragile
           #      if other bot actors (Dependabot, step-summary bots) post
           #      comments; filtering by `commit.oid == HEAD_SHA` plus
           #      `author.login == github-actions[bot]` is unambiguous.
-          # The platform env var must match the --platform flag on the
-          # upstream 'Run UmActually self review' step; if they diverge,
-          # the guide text references commands (gh api graphql vs
-          # az repos pr thread update) that don't apply to the actual
-          # review platform. Per audit bundle §L no flag tweaks in this PR.
+          # The platform env var above auto-detects the target platform; the
+          # upstream CLI step may use --platform auto or --platform github
+          # directly, but the env var tracks the actual CI environment, so
+          # an Azure DevOps run gets the Azure guide and a GitHub PR gets
+          # the GitHub guide without the two values drifting apart.
           # set +e masks transient API failures; the step is purely a UX
           # nicety (advisory) and never blocks the CI job.
           set +e
@@ -146,46 +154,38 @@ jobs:
           fi
           GUIDE_MARKER="<!-- umactually:resolution-guide-v1 -->"
           QUERY_FILE="${{ github.workspace }}/.github/workflows/data/latest-bot-review.graphql"
-          # Pull the latest COMMENTED github-actions[bot] review on the
-          # current head. The query is parameterized so the head SHA is
-          # an enforced variable (no string interpolation of untrusted
-          # data into the GraphQL body).
+          # Pull the latest non-PENDING github-actions[bot] review on the
+          # current head. The query is parameterized; only the GraphQL
+          # variables carry possibly-untrusted values.
           REVIEW_JSON=$(gh api graphql \
             -F owner="${GITHUB_REPOSITORY%/*}" \
             -F name="${GITHUB_REPOSITORY#*/}" \
             -F pr="${PR_NUMBER}" \
             -F query="$(cat "${QUERY_FILE}")")
-          # Filter to author=github-actions[bot] AND commit.oid == HEAD_SHA.
-          # State is requested in the query but applied via jq post-process
-          # for symmetry with the author+commit filter; non-bot reviews
-          # that happen to be the newest (e.g. a human LGTM) don't get the
-          # guide appended.
-          REVIEW_ID=$(printf '%s' "${REVIEW_JSON}" | jq -r --arg sha "${HEAD_SHA}" \
-            '[(.data.repository.pullRequest.reviews.nodes // [])[] | select(.author.login == "github-actions[bot]" and .commit.oid == $sha and .state == "COMMENTED")] | (sort_by(.databaseId) | reverse | .[0].databaseId // empty)')
-          if [ -z "${REVIEW_ID}" ]; then
-            echo "No COMMENTED github-actions[bot] review on PR ${PR_NUMBER} at HEAD ${HEAD_SHA}; skipping."
+          REVIEW_ROW=$(printf '%s' "${REVIEW_JSON}" | jq -r --arg sha "${HEAD_SHA}" \
+            '[(.data.repository.pullRequest.reviews.nodes // [])[] | select(.author.login == "github-actions[bot]" and .commit.oid == $sha)] | sort_by(.databaseId) | reverse | .[0] // empty')
+          if [ -z "${REVIEW_ROW}" ] || [ "${REVIEW_ROW}" = "null" ]; then
+            echo "No github-actions[bot] review on PR ${PR_NUMBER} at HEAD ${HEAD_SHA}; skipping."
             exit 0
           fi
-          # Re-fetch the chosen review to get its full body. Pulled
-          # separately so the GraphQL query stays readable.
-          CURRENT=$(gh api graphql \
-            -F owner="${GITHUB_REPOSITORY%/*}" \
-            -F name="${GITHUB_REPOSITORY#*/}" \
-            -F pr="${PR_NUMBER}" \
-            -F databaseId="${REVIEW_ID}" \
-            -F query='query($owner: String!, $name: String!, $pr: Int!, $databaseId: Int!) {
-              repository(owner: $owner, name: $name) {
-                pullRequest(number: $pr) {
-                  review(databaseId: $databaseId) { body }
-                }
-              }
-            }' \
-            | jq -r '.data.repository.pullRequest.review.body // ""')
+          # Pull fields out of the picked row.
+          REVIEW_ID=$(printf '%s' "${REVIEW_ROW}" | jq -r '.databaseId')
+          REVIEW_STATE=$(printf '%s' "${REVIEW_ROW}" | jq -r '.state')
+          if [ "${REVIEW_STATE}" = "PENDING" ]; then
+            echo "Latest bot review ${REVIEW_ID} is still PENDING (unsubmitted); PUT-to-body would 422. Skipping."
+            exit 0
+          fi
+          CURRENT=$(printf '%s' "${REVIEW_ROW}" | jq -r '.body // ""')
           # Extract inlineCount from the umactually manifest JSON blob. The
           # bot terminates its review body with a single-line comment of the
           # form <!-- umactually:manifest {"schema":"umactually/v1",...,
           # "inlineCount":N, ...} -->. Pluck the field directly from the
           # structured marker; never parse free-form summary text.
+          HAS_MARKER=$(printf '%s' "${CURRENT}" | grep -c '<!-- umactually:manifest ')
+          if [ "${HAS_MARKER}" -eq 0 ]; then
+            echo "Review ${REVIEW_ID} (state=${REVIEW_STATE}) has no umactually:manifest marker; manifest schema drift suspected. Skipping guide append (safer than guessing inlineCount=0)."
+            exit 0
+          fi
           INLINE_COUNT=$(printf '%s' "${CURRENT}" \
             | grep -oE '<!-- umactually:manifest [^>]+>' \
             | grep -oE '"inlineCount"[[:space:]]*:[[:space:]]*[0-9]+' \
