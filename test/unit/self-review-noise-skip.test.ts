@@ -118,6 +118,16 @@ describe("self-review workflow noise-skip rule", () => {
     expect(stepBlock).toMatch(/"inlineCount"/u);
   });
 
+  it("the GraphQL query fetches enough reviews to span interleaved human LGTMs", () => {
+    // Regression: a human empty-body LGTM posted after the bot's review
+    // pushed `reviews(last: 1)` past the bot row; jq filtered it out and
+    // the step exited without appending the guide. Window must be > 1.
+    const queryFile = resolve(REPO_ROOT, ".github/workflows/data/latest-bot-review.graphql");
+    const queryText = readFileSync(queryFile, "utf8");
+    expect(queryText).toMatch(/reviews\(last:\s*[2-9]\d?\s*\)/u);
+    expect(queryText).not.toMatch(/reviews\(last:\s*1\s*\)/u);
+  });
+
   it("the step short-circuits with `exit 0` when INLINE_COUNT is 0", () => {
     const stepBlock = extractStepBlock(
       workflowText,
