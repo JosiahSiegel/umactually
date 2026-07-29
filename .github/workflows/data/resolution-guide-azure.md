@@ -1,6 +1,4 @@
 
----
-
 <details>
 <summary>📖 <b>How to read + resolve these umactually threads — click to expand</b></summary>
 
