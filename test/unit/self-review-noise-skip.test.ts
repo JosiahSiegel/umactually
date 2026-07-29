@@ -84,6 +84,17 @@ describe("self-review workflow noise-skip rule", () => {
     expect(stepBlock).toMatch(/\.commit\.oid == \$sha/u);
   });
 
+  it("the GraphQL query selects `commit { oid }` so the commit-oid filter has data to match", () => {
+    // The bash filter on the right side (`commit.oid == $sha`) is a no-op
+    // if the GraphQL query does not request the field. A previous round
+    // of this iteration had the filter but the query was missing
+    // `commit { oid }`, so the filter silently matched nothing. The
+    // query and the filter must move together.
+    const queryFile = resolve(REPO_ROOT, ".github/workflows/data/latest-bot-review.graphql");
+    const queryText = readFileSync(queryFile, "utf8");
+    expect(queryText).toMatch(/commit\s*\{\s*oid\s*\}/u);
+  });
+
   it("the step rejects PENDING reviews", () => {
     // The REST PUT to /reviews/{id} returns 422 for PENDING reviews
     // (verified across PR #139's history — every bot review lands in

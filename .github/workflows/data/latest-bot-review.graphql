@@ -5,6 +5,7 @@ query($owner: String!, $name: String!, $pr: Int!) {
         nodes {
           databaseId
           state
+          commit { oid }
           author { login }
           body
         }
