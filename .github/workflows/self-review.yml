@@ -104,11 +104,15 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
-          # Auto-detect platform from CI env, falling back to whatever the
-          # upstream 'Run UmActually self review' step targets. github.com
-          # PRs always have GITHUB_ACTIONS=true + a github.repository;
-          # Azure DevOps PRs have TF_BUILD=true.
-          UMACTUALLY_PLATFORM: ${{ (env.TF_BUILD && 'azure') || 'github' }}
+          # Auto-detect the upstream 'Run UmActually self review' step's
+          # target platform. Pass the relevant CI env through; the bash
+          # script (where string-eval actually works) picks azure vs
+          # github off TF_BUILD. UMACTUALLY_PLATFORM is left undefined
+          # here so the script sets it deterministically rather than
+          # relying on a GitHub Actions expression whose truthiness
+          # is the wrong type for string-conditional logic.
+          TF_BUILD: ${{ env.TF_BUILD }}
+          GITHUB_ACTIONS: ${{ env.GITHUB_ACTIONS }}
         run: |
           # Append the platform-specific resolution guide to the umactually
           # self-review on the CURRENT head commit, but only if that review
@@ -143,6 +147,16 @@ jobs:
           # set +e masks transient API failures; the step is purely a UX
           # nicety (advisory) and never blocks the CI job.
           set +e
+          # Auto-detect the platform: TF_BUILD is set on Azure DevOps
+          # pipelines, GITHUB_ACTIONS on GitHub Actions runs. Default to
+          # github for any other CI environment (e.g. workflow_dispatch).
+          if [ -n "${TF_BUILD:-}" ]; then
+            UMACTUALLY_PLATFORM=azure
+          elif [ -n "${GITHUB_ACTIONS:-}" ]; then
+            UMACTUALLY_PLATFORM=github
+          else
+            UMACTUALLY_PLATFORM=github
+          fi
           if [ "${UMACTUALLY_PLATFORM}" != "github" ] && [ "${UMACTUALLY_PLATFORM}" != "azure" ]; then
             echo "Unsupported UMACTUALLY_PLATFORM='${UMACTUALLY_PLATFORM}'; expected github or azure. Skipping."
             exit 0
@@ -186,11 +200,22 @@ jobs:
             echo "Review ${REVIEW_ID} (state=${REVIEW_STATE}) has no umactually:manifest marker; manifest schema drift suspected. Skipping guide append (safer than guessing inlineCount=0)."
             exit 0
           fi
-          INLINE_COUNT=$(printf '%s' "${CURRENT}" \
-            | grep -oE '<!-- umactually:manifest [^>]+>' \
-            | grep -oE '"inlineCount"[[:space:]]*:[[:space:]]*[0-9]+' \
-            | grep -oE '[0-9]+' \
-            | head -1)
+          # Extract inlineCount from the umactually manifest JSON blob.
+          # The bot terminates its review body with a single-line comment
+          # of the form <!-- umactually:manifest {"schema":"umactually/v1",...,
+          # "inlineCount":N, ...} -->. We strip the wrapper, parse the
+          # remaining JSON with jq, and read inlineCount directly. This
+          # is more robust than regex on the raw blob: any `>` inside a
+          # JSON string (e.g. a "...>..." value) would terminate a regex
+          # capture early, but jq handles quoted strings correctly.
+          MANIFEST_JSON=$(printf '%s' "${CURRENT}" \\
+            | sed -n 's|.*<!-- umactually:manifest \({.*}\) -->.*|\1|p' | head -1)
+          if [ -n "${MANIFEST_JSON}" ]; then
+            INLINE_COUNT=$(printf '%s' "${MANIFEST_JSON}" | jq -r '.inlineCount // 0' 2>/dev/null)
+            INLINE_COUNT=${INLINE_COUNT:-0}
+          else
+            INLINE_COUNT=0
+          fi
           INLINE_COUNT=${INLINE_COUNT:-0}
           if [ "${INLINE_COUNT}" = "0" ]; then
             echo "Review ${REVIEW_ID} has inlineCount=0 (per manifest); nothing to triage, skipping guide append."
