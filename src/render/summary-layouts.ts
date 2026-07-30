@@ -1728,6 +1728,12 @@ export function renderSummary(layout: LayoutId, data: ReviewData): string {
   if (data.postedComments === undefined) {
     throw new Error("renderSummary: data.postedComments is required (was undefined). Use buildReviewBody() to dispatch — it computes the post-filter set from review.comments.");
   }
+  if (data.validCommentCount === undefined) {
+    throw new Error("renderSummary: data.validCommentCount is required (was undefined). The clean-ship gate cannot fire on undefined === 0; pass the count of comments that survived all filter layers.");
+  }
+  if (data.suppressedCommentCount === undefined) {
+    throw new Error("renderSummary: data.suppressedCommentCount is required (was undefined). Pass the count of comments the verified-facts + confidence filters dropped.");
+  }
   // Clean-ship gate is enforced at the entry point so every layout
   // gets the same one-line verdict for empty, non-parse-failed reviews.
   // Suppressed findings (confidence/verified-facts filtered) don't

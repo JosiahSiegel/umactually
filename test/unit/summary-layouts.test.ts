@@ -238,6 +238,16 @@ describe("S2 — all layouts render without throwing", () => {
     expect(() => renderSummary(invalidLayout, makeBusyData())).toThrow();
   });
 
+  it("renderSummary throws when validCommentCount is undefined", () => {
+    const data = { ...makeBusyData(), validCommentCount: undefined } as unknown as Parameters<typeof renderSummary>[1];
+    expect(() => renderSummary("severity-table", data)).toThrow(/validCommentCount is required/u);
+  });
+
+  it("renderSummary throws when suppressedCommentCount is undefined", () => {
+    const data = { ...makeBusyData(), suppressedCommentCount: undefined } as unknown as Parameters<typeof renderSummary>[1];
+    expect(() => renderSummary("severity-table", data)).toThrow(/suppressedCommentCount is required/u);
+  });
+
   it("renderBaseline renders the 'current' baseline", () => {
     const out = renderBaseline(BASELINE, makeBusyData());
     expect(typeof out).toBe("string");

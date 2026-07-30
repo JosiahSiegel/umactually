@@ -159,12 +159,17 @@ describe("self-review workflow noise-skip rule", () => {
     expect(putIdx).toBeGreaterThan(restoreIdx);
   });
 
-  it("the manifest parser uses awk (not sed) so nested braces don't truncate early", () => {
-    // The previous sed regex was greedy through `{.*}` and would
+  it("the manifest parser uses awk+sed so nested braces + inline '-->' don't truncate early", () => {
+    // The original sed regex was greedy through `{.*}` and would
     // truncate at the first inner `}` (e.g. severityCounts with nested
     // values), causing the subsequent jq parse to fail and the step to
-    // silently skip the append. The fix swaps to an awk pass anchored
-    // on the LAST `} -->` segment.
+    // silently skip the append. The fix swaps to a `tac | awk | sed`
+    // pipeline: `tac` reverses line order so awk picks the LAST
+    // occurrence of `<!-- umactually:manifest ` (the real manifest,
+    // never a quoted copy in the bot's summary prose); awk strips the
+    // prefix; sed strips the trailing `-->` anchored on end-of-line so
+    // a JSON string field containing literal `-->` does not truncate
+    // the manifest mid-object.
     const stepBlock = extractStepBlock(
       workflowText,
       "Append resolution-guide to latest review body",
@@ -260,6 +265,34 @@ describe("self-review workflow noise-skip rule", () => {
     );
     expect(testText).toMatch(/state\s*!=\s*PENDING/u);
     expect(testText).not.toMatch(/`state:\s*COMMENTED`/u);
+  });
+
+  it("the workflow declares UMACTUALLY_PLATFORM at workflow-level env (single source of truth)", () => {
+    expect(workflowText).toMatch(/^env:\s*\n[\s\S]*?UMACTUALLY_PLATFORM:\s*github/m);
+    const stepBlock = extractStepBlock(
+      workflowText,
+      "Append resolution-guide to latest review body",
+    );
+    expect(stepBlock).toMatch(/steps\.review\.outputs\.platform\s*\|\|\s*env\.UMACTUALLY_PLATFORM/u);
+  });
+
+  it("the manifest inlineCount is guarded against non-numeric jq output", () => {
+    const stepBlock = extractStepBlock(
+      workflowText,
+      "Append resolution-guide to latest review body",
+    );
+    expect(stepBlock).toMatch(/case "\$\{INLINE_COUNT\}" in/u);
+    expect(stepBlock).toMatch(/\*\[!0-9\]\*/);
+  });
+
+  it("the review-body PUT is wrapped so a transient API failure does not fail the advisory job", () => {
+    const stepBlock = extractStepBlock(
+      workflowText,
+      "Append resolution-guide to latest review body",
+    );
+    expect(stepBlock).toMatch(/PUT_EXIT=\$?/u);
+    expect(stepBlock).toMatch(/PUT-to-review failed/u);
+    expect(stepBlock).toMatch(/exit 0/u);
   });
 });
 
