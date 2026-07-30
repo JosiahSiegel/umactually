@@ -19,8 +19,7 @@ export default defineConfig({
       // src/ + bin/ mirror sonar.sources=src,bin in sonar-project.properties.
       // scripts/ is excluded here AND in sonar.coverage.exclusions so both
       // metrics agree that scripts/ isn't measured (CI/release glue).
-      include: ["src/**/*.ts", "bin/**/*.mjs"],
-      exclude: [
+      include: ["src/**/*.ts", "bin/**/*.mjs"],      exclude: [
         "node_modules/**",
         "dist/**",
         "release/**",
@@ -31,8 +30,7 @@ export default defineConfig({
         "**/*.e2e.test.ts",
         "**/*.d.ts",
         "test/setup.ts",
-        "scripts/**",
-      ],
+        "scripts/**",      ],
     },
     projects: [
       {

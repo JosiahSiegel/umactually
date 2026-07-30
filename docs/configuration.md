@@ -104,8 +104,7 @@ SonarCloud analysis is optional. Without the `SONAR_TOKEN` secret the `sonarqube
 
 **Operator setup (first time only)**
 
-1. Create the SonarCloud project: https://sonarcloud.io → "+" → "Analyze new project" → select `JosiahSiegel/umactually`. SonarCloud auto-creates the project key `JosiahSiegel_umactually` against the `josiahsiegel` organisation (note: SonarCloud normalises GitHub org names to lowercase — `JosiahSiegel` on GitHub becomes `josiahsiegel` on SonarCloud; the project key, however, preserves the case from the repo name). `sonar-project.properties` is preconfigured against this org/project; no further edits to that file are needed.
-2. Generate a token: https://sonarcloud.io → Account → Security → Generate Tokens → name `umactually-ci`. Copy the token immediately; it cannot be retrieved later.
+1. Create the SonarCloud project: https://sonarcloud.io → "+" → "Analyze new project" → select `JosiahSiegel/umactually`. SonarCloud auto-creates the project key `JosiahSiegel_umactually` against the `josiahsiegel` organisation (note: SonarCloud normalises GitHub org names to lowercase — `JosiahSiegel` on GitHub becomes `josiahsiegel` on SonarCloud; the project key, however, preserves the case from the repo name). `sonar-project.properties` is preconfigured against this org/project; no further edits to that file are needed.2. Generate a token: https://sonarcloud.io → Account → Security → Generate Tokens → name `umactually-ci`. Copy the token immediately; it cannot be retrieved later.
 3. Add the secret: GitHub repo → Settings → Secrets and variables → Actions → New repository secret → Name `SONAR_TOKEN`, Value = the token from step 2.
 
 **What runs in CI**
@@ -122,7 +121,6 @@ The `SonarCloud Code Analysis` check is **intentionally advisory**, not a requir
 If you do want a tighter signal on the main repo, configure the SonarCloud project's quality gate to fail on new-code coverage dropping below a threshold and surface that as a PR-decoration status badge — operators see it on the PR without it being a GitHub merge gate.
 
 > If you later decide to make the SonarCloud check required on the main ruleset (override (1) above), the cleanest path is to gate the job at the workflow level on the secret's presence so forks report it as `skipped` rather than `success`. The synthetic-success step then becomes a documentation-only artifact for fork-PR debugging.
-
 **Quality gate tuning**
 
 The default SonarCloud "Sonar way" quality gate applies unless overridden in the SonarCloud UI (project → Administration → Quality Gate). The repo's coverage metric is fed from `coverage/lcov.info`, produced by `npm run test:coverage` inside the `sonarqube-scan` job.
