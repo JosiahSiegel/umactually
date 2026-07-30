@@ -164,29 +164,26 @@ export function extractJsonFenceBody(rawText: string): string {
 }
 
 /**
- * Locate the first balanced `{ ... }` object in `rawText`, respecting nested
- * braces and quoted strings (including \" escapes). Returns null when no
- * balanced object can be found.
+ * Locate the start and end indices of the first balanced JSON object
+ * (`{ ... }`) or array (`[ ... ]`) in `text`, respecting nested
+ * delimiters and quoted strings (including \" escapes and stray-quote
+ * disambiguation via `peekNextNonWhitespace`).
  *
- * Returns a JSON-safe substring with two repairs applied:
- *   1. Literal control characters inside JSON strings (`\n \r \t \b \f`)
- *      are escaped to their 2-char JSON-escape equivalents. This handles
- *      SSE delta concatenation, where each delta's `\n` was decoded
- *      to a real newline when the SSE payload was JSON-parsed.
- *   2. Stray `\X` sequences inside JSON strings where X is NOT a valid
- *      JSON escape char (`"`/`\`/`/`/`b`/`f`/`n`/`r`/`t`/`u`) are
- *      double-escaped so JSON.parse sees `\\X` → `\X` in the parsed
- *      output. Models writing markdown prose sometimes produce
- *      `` \` ``, `\:`, `\,`, `\.`, `\'` inside JSON body fields;
- *      these would otherwise reject with "Bad escaped character in
- *      JSON" (live evidence: PR #24 self-review run 28898948220,
- *      body 20,691 chars, fail at position 13115).
+ * When `{` is present anywhere in `text`, the search starts at the
+ * first `{`; only when no `{` exists does it fall back to the first
+ * `[`. This matches the original `repairJsonStringLiterals` behavior
+ * (prefers objects, falls back to arrays) and preserves the
+ * `extractFirstBalancedObject` constraint via a call-site check.
  *
- * Newlines/tabs OUTSIDE strings (structural whitespace between fields) are
- * preserved — they're already valid JSON whitespace.
+ * Returns `{ start, end }` (inclusive end index of the closing
+ * delimiter) or `null` when no balanced structure is found.
+ *
+ * Unified from the two first-pass loops that were duplicated between
+ * `extractFirstBalancedObject` (lines 194-263, objects only) and
+ * `repairJsonStringLiterals` (lines 405-456, objects + arrays).
  */
-export function extractFirstBalancedObject(rawText: string): string | null {
-  const startIndex = rawText.indexOf("{");
+function findBalancedJsonBounds(text: string): { readonly start: number; readonly end: number } | null {
+  const startIndex = text.indexOf("{") === -1 ? text.indexOf("[") : text.indexOf("{");
   if (startIndex === -1) {
     return null;
   }
@@ -195,11 +192,8 @@ export function extractFirstBalancedObject(rawText: string): string | null {
   let inString = false;
   let escape = false;
 
-  // First pass: find the end index of the balanced object.
-  let endIndex = -1;
-  for (let index = startIndex; index < rawText.length; index += 1) {
-    const char = rawText[index];
-
+  for (let index = startIndex; index < text.length; index += 1) {
+    const char = text[index];
     if (inString) {
       if (escape) {
         escape = false;
@@ -214,17 +208,13 @@ export function extractFirstBalancedObject(rawText: string): string | null {
         // peeking ahead. A real closing quote is followed (after
         // optional whitespace) by a structural JSON character
         // (`,`, `}`, `]`, `:`). Anything else means the model forgot
-        // to escape a `"` inside the string value (SSE delta
-        // concatenation surfaces this as an unescaped quote in the
-        // resulting textPayload). Treat the latter as a stray quote
-        // — stay inside the string so the depth tracker keeps
-        // working AND escape it in the second pass.
+        // to escape a `"` inside the string value.
         //
         // Note: `"` is NOT a structural JSON character so we don't
         // include it in the close-quote set. If we did, a stray
         // `"` followed by another `"` (e.g. `body: "value" "next":`)
         // would be misclassified as a closing quote.
-        const nextNonWs = peekNextNonWhitespace(rawText, index + 1);
+        const nextNonWs = peekNextNonWhitespace(text, index + 1);
         if (
           nextNonWs === -1 ||
           nextNonWs === ",".charCodeAt(0) ||
@@ -234,41 +224,50 @@ export function extractFirstBalancedObject(rawText: string): string | null {
         ) {
           inString = false;
         }
-        // else: stray quote inside a string. Stay inString; the second
-        // pass will escape it.
         continue;
       }
       continue;
     }
-
     if (char === '"') {
       inString = true;
       continue;
     }
-    if (char === "{") {
+    if (char === "{" || char === "[") {
       depth += 1;
       continue;
     }
-    if (char === "}") {
+    if (char === "}" || char === "]") {
       depth -= 1;
       if (depth === 0) {
-        endIndex = index;
-        break;
+        return { start: startIndex, end: index };
       }
     }
   }
+  return null;
+}
 
-  if (endIndex === -1) {
-    return null;
-  }
-
-  // Second pass: walk the balanced substring and escape literal control
-  // characters that appear INSIDE JSON strings. We re-walk because the
-  // first pass above only tracked depth, not the output positions.
-  const substring = rawText.slice(startIndex, endIndex + 1);
+/**
+ * Walk a balanced JSON substring and return a repaired copy where:
+ *   1. Literal control characters inside JSON strings (`\n \r \t \b \f`)
+ *      are escaped to their 2-char JSON-escape equivalents.
+ *   2. Stray `\X` sequences inside JSON strings (where X is NOT a valid
+ *      JSON escape char) are double-escaped so JSON.parse sees `\\X` →
+ *      `\X` in the parsed output.
+ *   3. Stray `"` inside a string (model forgot to escape a quote) is
+ *      escaped to `\"` so JSON.parse keeps the string open.
+ *
+ * Structural whitespace OUTSIDE strings is preserved unchanged.
+ *
+ * This is the shared second-pass FSM that was duplicated between
+ * `extractFirstBalancedObject` (lines 268-367) and
+ * `repairJsonStringLiterals` (lines 459-547) — byte-identical logic
+ * including the escape validation, the stray-quote peek-ahead
+ * disambiguation, and the control-char escape switch.
+ */
+function repairBalancedSubstring(substring: string): string {
   const segments: string[] = [];
-  inString = false;
-  escape = false;
+  let inString = false;
+  let escape = false;
   for (let index = 0; index < substring.length; index += 1) {
     const char = substring.charAt(index);
     if (inString) {
@@ -317,8 +316,7 @@ export function extractFirstBalancedObject(rawText: string): string | null {
           nextNonWs === ":".charCodeAt(0)
         ) {
           // Legitimate closing quote: emit the raw `"` and exit the
-          // string. The first-pass peek-ahead already determined this
-          // was the close.
+          // string.
           segments.push(char);
           inString = false;
           continue;
@@ -363,8 +361,42 @@ export function extractFirstBalancedObject(rawText: string): string | null {
     }
     segments.push(char);
   }
-
   return segments.join("");
+}
+
+/**
+ * Locate the first balanced `{ ... }` object in `rawText`, respecting nested
+ * braces and quoted strings (including \" escapes). Returns null when no
+ * balanced object can be found.
+ *
+ * Returns a JSON-safe substring with two repairs applied:
+ *   1. Literal control characters inside JSON strings (`\n \r \t \b \f`)
+ *      are escaped to their 2-char JSON-escape equivalents. This handles
+ *      SSE delta concatenation, where each delta's `\n` was decoded
+ *      to a real newline when the SSE payload was JSON-parsed.
+ *   2. Stray `\X` sequences inside JSON strings where X is NOT a valid
+ *      JSON escape char (`"`/`\`/`/`/`b`/`f`/`n`/`r`/`t`/`u`) are
+ *      double-escaped so JSON.parse sees `\\X` → `\X` in the parsed
+ *      output. Models writing markdown prose sometimes produce
+ *      `` \` ``, `\:`, `\,`, `\.`, `\'` inside JSON body fields;
+ *      these would otherwise reject with "Bad escaped character in
+ *      JSON" (live evidence: PR #24 self-review run 28898948220,
+ *      body 20,691 chars, fail at position 13115).
+ *
+ * Newlines/tabs OUTSIDE strings (structural whitespace between fields) are
+ * preserved — they're already valid JSON whitespace.
+ */
+export function extractFirstBalancedObject(rawText: string): string | null {
+  // Object-only: findBalancedJsonBounds handles both `{` and `[`,
+  // but this function is documented to return objects only.
+  if (rawText.indexOf("{") === -1) {
+    return null;
+  }
+  const bounds = findBalancedJsonBounds(rawText);
+  if (bounds === null) {
+    return null;
+  }
+  return repairBalancedSubstring(rawText.slice(bounds.start, bounds.end + 1));
 }
 
 /**
@@ -387,166 +419,17 @@ export function extractFirstBalancedObject(rawText: string): string | null {
  * Structural whitespace OUTSIDE strings (newlines/tabs between fields)
  * is preserved unchanged — that's already valid JSON whitespace.
  *
- * Uses the same peek-ahead logic for stray-quote disambiguation as
- * `extractFirstBalancedObject`'s second pass; in fact this helper is
- * the same code, factored out so the fence-body path doesn't have to
- * duplicate it.
- *
  * Returns `text` unchanged when it doesn't contain a balanced object
  * or array — the caller can fall through to the balanced-object
  * fallback.
  */
 function repairJsonStringLiterals(text: string): string {
-  const startIndex = text.indexOf("{") === -1 ? text.indexOf("[") : text.indexOf("{");
-  if (startIndex === -1) {
+  const bounds = findBalancedJsonBounds(text);
+  if (bounds === null) {
     return text;
   }
-
-  // Find the end index of the balanced top-level object/array.
-  let endIndex = -1;
-  let depth = 0;
-  let inString = false;
-  let escape = false;
-  for (let index = startIndex; index < text.length; index += 1) {
-    const char = text[index];
-    if (char === undefined) break;
-    if (inString) {
-      if (escape) {
-        escape = false;
-        continue;
-      }
-      if (char === "\\") {
-        escape = true;
-        continue;
-      }
-      if (char === '"') {
-        // Use the same stray-quote peek-ahead as extractFirstBalancedObject.
-        const nextNonWs = peekNextNonWhitespace(text, index + 1);
-        if (
-          nextNonWs === -1 ||
-          nextNonWs === ",".charCodeAt(0) ||
-          nextNonWs === "}".charCodeAt(0) ||
-          nextNonWs === "]".charCodeAt(0) ||
-          nextNonWs === ":".charCodeAt(0)
-        ) {
-          inString = false;
-        }
-        continue;
-      }
-      continue;
-    }
-    if (char === '"') {
-      inString = true;
-      continue;
-    }
-    if (char === "{" || char === "[") {
-      depth += 1;
-      continue;
-    }
-    if (char === "}" || char === "]") {
-      depth -= 1;
-      if (depth === 0) {
-        endIndex = index;
-        break;
-      }
-    }
-  }
-  if (endIndex === -1) {
-    return text;
-  }
-
-  // Second pass: walk the balanced substring and emit a repaired copy.
-  const substring = text.slice(startIndex, endIndex + 1);
-  const segments: string[] = [];
-  inString = false;
-  escape = false;
-  for (let index = 0; index < substring.length; index += 1) {
-    const char = substring.charAt(index);
-    if (inString) {
-      if (escape) {
-        // Validate that the escape sequence is one JSON.parse accepts.
-        // Two failure modes to handle:
-        //
-        //   1. `\` followed by a char outside the valid set
-        //      (`"`/`\`/`/`/`b`/`f`/`n`/`r`/`t`/`u`) — e.g.
-        //      `` \` ``, `\:`, `\,`, `\.`, `\'` from markdown
-        //      prose. JSON.parse rejects with "Bad escaped
-        //      character". Fix: double-escape the whole sequence
-        //      to `\\X` so JSON.parse sees a literal backslash +
-        //      char in the parsed output.
-        //
-        //   2. `\u` followed by anything that isn't 4 hex digits
-        //      (e.g. truncated `\u00`, `\uXYZW`, `\u000G`) —
-        //      JSON.parse rejects with "Bad Unicode escape in
-        //      JSON". Fix: same — double-escape `\u` to `\\u` so
-        //      JSON.parse sees the literal sequence in the
-        //      parsed output.
-        //
-        // The `\` itself was already pushed when `escape` was set on
-        // the previous iteration; here we only push the second
-        // character of the (possibly double-escaped) sequence.
-        const isInvalidSingleChar = !VALID_JSON_ESCAPE_CHARS.has(char);
-        const isInvalidUnicodeEscape =
-          char === "u" && !isHexQuadAt(substring, index + 1);
-        if (isInvalidSingleChar || isInvalidUnicodeEscape) {
-          segments.push("\\" + char);
-        } else {
-          segments.push(char);
-        }
-        escape = false;
-        continue;
-      }
-      if (char === "\\") {
-        segments.push(char);
-        escape = true;
-        continue;
-      }
-      if (char === '"') {
-        const nextNonWs = peekNextNonWhitespace(substring, index + 1);
-        if (
-          nextNonWs === -1 ||
-          nextNonWs === ",".charCodeAt(0) ||
-          nextNonWs === "}".charCodeAt(0) ||
-          nextNonWs === "]".charCodeAt(0) ||
-          nextNonWs === ":".charCodeAt(0)
-        ) {
-          segments.push(char);
-          inString = false;
-          continue;
-        }
-        segments.push('\\"');
-        continue;
-      }
-      if (char === "\n") {
-        segments.push("\\n");
-        continue;
-      }
-      if (char === "\r") {
-        segments.push("\\r");
-        continue;
-      }
-      if (char === "\t") {
-        segments.push("\\t");
-        continue;
-      }
-      if (char === "\b") {
-        segments.push("\\b");
-        continue;
-      }
-      if (char === "\f") {
-        segments.push("\\f");
-        continue;
-      }
-      segments.push(char);
-      continue;
-    }
-    if (char === '"') {
-      inString = true;
-    }
-    segments.push(char);
-  }
-
-  return text.slice(0, startIndex) + segments.join("") + text.slice(endIndex + 1);
+  const repaired = repairBalancedSubstring(text.slice(bounds.start, bounds.end + 1));
+  return text.slice(0, bounds.start) + repaired + text.slice(bounds.end + 1);
 }
 
 /**
