@@ -110,7 +110,7 @@ SonarCloud analysis is optional. Without the `SONAR_TOKEN` secret the `sonarqube
 
 **What runs in CI**
 
-Two jobs are added by the SonarCloud workflow. `sonarqube-scan` uploads coverage and scan results to SonarCloud and posts PR decoration. `e2e-sonar-validation` validates the `--include-sonarqube` dry-run artifact contract. Both are gated on the `SONAR_TOKEN` secret; both emit a synthetic-success notice when the secret is absent so forks and contributors without org access are not blocked.
+A single job is added by the SonarCloud workflow: `sonarqube-scan` uploads coverage and scan results to SonarCloud and posts PR decoration. The job is gated on the `SONAR_TOKEN` secret and emits a synthetic-success notice when the secret is absent so forks and contributors without org access are not blocked.
 
 **Branch protection**
 
@@ -137,7 +137,7 @@ SONAR_TOKEN=<your-token> \
 
 - Does not gate on coverage percentage thresholds — only on the SonarCloud quality gate, which is configured in the UI.
 - Does not fail on `SonarCloud` outages. The scanner action retries internally; if it times out, the job fails and the synthetic-success notice is NOT emitted (so a real outage blocks merges by design).
-- Does not validate the LIVE sonar import (the `runLiveSonarImport` HTTP poller). That path is exercised by `sonarqube-scan`'s own outcome (it would fail to upload coverage if the live HTTP path regressed). The `e2e-sonar-validation` job validates the dry-run artifact contract only.
+- Does not validate the LIVE sonar import (the `runLiveSonarImport` HTTP poller). That path is exercised by `sonarqube-scan`'s own outcome — it would fail to upload coverage if the live HTTP path regressed. Live runtime regression coverage for the `--include-sonarqube` user-facing CLI lives in the user-facing `self-review.yml` workflow (which posts a real review on every PR).
 
 ## Next
 
