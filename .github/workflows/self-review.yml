@@ -310,10 +310,13 @@ jobs:
             exit 0
           fi
           node bin/umactually.mjs check-review-artifact "${ARTIFACT}"
-          GUARD_EXIT=$?
-          echo "guard-exit=${GUARD_EXIT}" >> "${GITHUB_OUTPUT:-/dev/null}" || true
           # Always exit 0 — this step is advisory. Annotations already
           # emitted by the CLI on stdout become GitHub Actions warnings.
+          # We intentionally do NOT export guard-exit to GITHUB_OUTPUT:
+          # no downstream step references it, and `${GITHUB_OUTPUT:-/dev/null}`
+          # would silently swallow the echo on self-hosted runners where
+          # the env var is unset (addresses self-review inline finding
+          # on PR #144 round 2).
           exit 0
 
       - name: Summarise self-review outcome
