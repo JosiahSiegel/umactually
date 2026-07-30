@@ -15,6 +15,7 @@ import type { ParsedCliArgs } from "./parse-args.js";
 import { resetDefaultPromptFilesCache } from "./provider-prompts.js";
 import { resolvePlatform, type ResolvedPlatform } from "./validate.js";
 import { runLive as runOrchestrator } from "./orchestrator.js";
+import type { FetchImpl } from "../util/http.js";
 import { classifyReviewArtifact } from "./check-review-artifact.js";
 
 export type CliJsonOutcome = {
@@ -381,14 +382,25 @@ export async function dispatchLive(parsed: ParsedCliArgs, cwd: string, env: Node
   // for this dispatch and restores/deletes it in finally so same-process
   // batch runs do not inherit --debug-raw-response from an earlier review.
   return withDebugRawEnv(parsed.debugRawResponse === true, async () => {
-    const result = await runOrchestrator({ parsed, cwd, env });
+    const startedAt = Date.now();
+    const counter = { providerRoundTrips: 0 };
+    const countingFetch: FetchImpl = (input, init) => {
+      counter.providerRoundTrips += 1;
+      return globalThis.fetch(input, init);
+    };
+    const result = await runOrchestrator({ parsed, cwd, env, fetchImpl: countingFetch });
+    const reviewDurationMs = Date.now() - startedAt;
     // Write a summary artifact at the same path the dry-run uses so the
     // self-review CI guard (`scripts/check-self-review-output.mjs`) can
     // inspect the live review's outcome. Without this, a parse-fail
     // card posted via the GitHub API leaves no local trace for the
     // guard to catch — the action exits 0 and CI sees "pass".
     const platform = resolvePlatform(parsed.platform, env);
-    await writeLiveArtifact(parsed, cwd, platform, result);
+    await writeLiveArtifact(parsed, cwd, platform, {
+      ...result,
+      reviewDurationMs,
+      providerRoundTrips: counter.providerRoundTrips,
+    });
     const artifactPath = resolveArtifactPath(parsed.outputArtifact, platform, cwd);
     return { exitCode: validateLiveArtifact(artifactPath, result.exitCode) };
   });
@@ -399,6 +411,12 @@ export function validateLiveArtifact(
   reviewExitCode: number,
 ): number {
   const classification = classifyReviewArtifact(artifactPath);
+  // Mirror the CLI's `check-review-artifact` behaviour for the live
+  // path: surface advisory warnings on stderr so a local operator
+  // sees suspicious telemetry without needing to parse CI annotations.
+  for (const warning of classification.warnings) {
+    process.stderr.write(`${BRAND_PREFIX}warning: ${warning}\n`);
+  }
   if (classification.ok) {
     return reviewExitCode;
   }
@@ -447,6 +465,8 @@ async function writeLiveArtifact(
     readonly verdict?: string;
     readonly parseFailed?: boolean;
     readonly parseWarnings?: readonly import("./parse-warnings.js").ParseWarning[];
+    readonly reviewDurationMs?: number;
+    readonly providerRoundTrips?: number;
   },
 ): Promise<void> {
   // Use the same default path resolution as the dry-run path so the
@@ -487,6 +507,8 @@ async function writeLiveArtifact(
     blockedRawOutput: false,
     parseFailed: result.parseFailed === true,
     ...(result.verdict !== undefined ? { verdict: result.verdict } : {}),
+    ...(result.reviewDurationMs !== undefined ? { reviewDurationMs: result.reviewDurationMs } : {}),
+    ...(result.providerRoundTrips !== undefined ? { providerRoundTrips: result.providerRoundTrips } : {}),
     note: "Live review posted successfully; counts reflect what the GitHub/Azure API saw.",
   };
   await writeFile(artifactPath, `${JSON.stringify(body, null, 2)}\n`, "utf8");

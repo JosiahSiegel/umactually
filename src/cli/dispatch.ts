@@ -149,7 +149,16 @@ function runCheckReviewArtifactBranch(args: readonly string[]): DispatchResult {
 
   const result = classifyReviewArtifact(path);
   const message = result.ok ? result.summary : result.reason;
-  const stderr = `umactually: ${path}: ${message ?? "invalid artifact"}\n`;
+  let stderr = `umactually: ${path}: ${message ?? "invalid artifact"}\n`;
+  // Surface each advisory warning as a GitHub Actions `::warning::`
+  // annotation (stdout) and mirror to stderr so the vitest stderr
+  // spy still captures it. Format reference:
+  // https://docs.github.com/actions/using-workflows/workflow-commands-for-github-actions
+  for (const warning of result.warnings) {
+    const annotation = `::warning::${warning}\n`;
+    process.stdout.write(annotation);
+    stderr += annotation;
+  }
   process.stderr.write(stderr);
   return { exitCode: result.ok ? 0 : 1, stderr };
 }

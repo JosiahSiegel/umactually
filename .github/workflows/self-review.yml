@@ -288,6 +288,34 @@ jobs:
           fi
 
 
+      - name: Run check-review-artifact guard for suspicious signals
+        # Hardening for the rubber-stamp concern surfaced after PR #141-
+        # #143 returned consecutive clean self-reviews with no inline
+        # findings. The guard runs `umactually check-review-artifact`
+        # against the live artifact; if the artifact is well-formed but
+        # the review posted in <3s with 0 findings and 0 provider round-
+        # trips, the CLI emits `::warning::` annotations that GitHub
+        # Actions surfaces on the PR's checks view. The step is
+        # advisory: it does not fail the job. The check is structural
+        # (artifact-shape based) and does not require a provider call.
+        # We use `set +e` because the guard's exit code may be non-zero
+        # on a parse-fail sentinel — but we still want to capture the
+        # annotations emitted on stdout before the failure.
+        if: always()
+        run: |
+          set +e
+          ARTIFACT="artifacts/manual/s1-github-self-review.md"
+          if [ ! -f "${ARTIFACT}" ]; then
+            echo "Artifact not found at ${ARTIFACT}; check-review-artifact guard skipped."
+            exit 0
+          fi
+          node bin/umactually.mjs check-review-artifact "${ARTIFACT}"
+          GUARD_EXIT=$?
+          echo "guard-exit=${GUARD_EXIT}" >> "${GITHUB_OUTPUT:-/dev/null}" || true
+          # Always exit 0 — this step is advisory. Annotations already
+          # emitted by the CLI on stdout become GitHub Actions warnings.
+          exit 0
+
       - name: Summarise self-review outcome
         if: always()
         env:
@@ -310,7 +338,7 @@ jobs:
               echo ""
               echo '```json'
               if [ -f "${ARTIFACT}" ]; then
-                jq -c '{posted, parseFailed, message, inlineThreadCount, verdict, note}' "${ARTIFACT}" 2>/dev/null || cat "${ARTIFACT}"
+                jq -c '{posted, parseFailed, message, inlineThreadCount, verdict, note, reviewDurationMs, providerRoundTrips}' "${ARTIFACT}" 2>/dev/null || cat "${ARTIFACT}"
               else
                 echo '{"parseFailed": null, "reason": "artifact not found at '"${ARTIFACT}"'"}'
               fi
@@ -335,6 +363,15 @@ jobs:
 #    (visible on the failed step in the Actions UI). The overall job
 #    stays green because self-review is advisory and must not block
 #    merging — but the failure is no longer buried in raw logs.
+# 5a. The **Run check-review-artifact guard for suspicious signals** step
+#    additionally runs `umactually check-review-artifact` against the
+#    live artifact after the review completes. The guard classifies the
+#    artifact and, for clean-shaped reviews with suspicious telemetry
+#    (sub-3s duration, zero provider round-trips, rubber-stamp verdict),
+#    emits one or more `::warning::` annotations. This is the hardening
+#    for the rubber-stamp concern surfaced after PR #141-#143 returned
+#    consecutive clean self-reviews with no inline findings. The step
+#    always exits 0; the warnings are advisory and do not block the PR.
 # 6. The local artifact at `artifacts/manual/s1-github-self-review.md`
 #    captures {posted, parseFailed, message, inlineThreadCount, verdict,
 #    note} even on failure (see src/cli/run.ts writeLiveArtifact), so
