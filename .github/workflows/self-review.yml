@@ -219,17 +219,19 @@ jobs:
             echo "Review ${REVIEW_ID} (state=${REVIEW_STATE}) has no umactually:manifest marker; manifest schema drift suspected. Skipping guide append (safer than guessing inlineCount=0)."
             exit 0
           fi
-          # Extract inlineCount from the umactually manifest JSON blob. The
+# Extract inlineCount from the umactually manifest JSON blob. The
           # bot terminates its review body with a single-line comment
           # of the form <!-- umalready:manifest {"schema":"umalready/v1",...,
-          # "inlineCount":N, ...} -->. Use awk anchored on the LAST
-          # '} -->' segment so a JSON value containing inner braces
-          # (e.g. severityCounts with nested values) cannot trick a
-          # greedy regex into truncating early.
-          MANIFEST_JSON=$(printf '%s' "${CURRENT}" | awk '
-            /<!-- umactually:manifest / {
-              # Capture from after the opening marker to the next " -->".
-              sub(/^.*<!-- umactually:manifest /, "")
+          # "inlineCount":N, ...} -->. Pipe through `tac` first so the
+          # LAST occurrence (the real manifest) is processed before any
+          # earlier occurrence (which can appear inside the review
+          # summary text if the bot happens to quote the marker shape).
+          # `tac` reverses line order; awk picks the first match it sees
+          # in the reversed stream, which is the LAST occurrence of the
+          # marker in the original.
+          MANIFEST_JSON=$(printf '%s' "${CURRENT}" | tac | awk '
+            /<!-- umalready:manifest / {
+              sub(/^.*<!-- umalready:manifest /, "")
               sub(/ -->.*$/, "")
               print
               exit

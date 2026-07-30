@@ -158,7 +158,7 @@ describe("self-review workflow noise-skip rule", () => {
     expect(putIdx).toBeGreaterThan(restoreIdx);
   });
 
-  it("the manifest parser uses awk (not sed) so nested braces don't truncate early", () => {
+it("the manifest parser uses awk (not sed) so nested braces don't truncate early", () => {
     // The previous sed regex was greedy through `{.*}` and would
     // truncate at the first inner `}` (e.g. severityCounts with nested
     // values), causing the subsequent jq parse to fail and the step to
@@ -169,7 +169,23 @@ describe("self-review workflow noise-skip rule", () => {
       "Append resolution-guide to latest review body",
     );
     expect(stepBlock).toMatch(/awk\s*'/u);
-    expect(stepBlock).not.toMatch(/sed -n 's\|.\*<!-- umactually:manifest/u);
+    expect(stepBlock).not.toMatch(/sed -n 's\|.\*<!-- umalready:manifest/u);
+  });
+
+  it("the manifest parser anchors on the LAST marker (tac | awk) so quoted occurrences in summary text don't hijack the extraction", () => {
+    // Regression: a previous self-review summary quoted the marker
+    // shape (`<!-- umalready:manifest ` literal) inside its own
+    // prose, which the awk matched FIRST (earlier in the stream than
+    // the actual manifest at the end of the body) and captured as
+    // the manifest. jq then failed on the non-JSON string, INLINE_COUNT
+    // defaulted to 0, and the step skipped the append with a misleading
+    // 'inlineCount=0' log line. The fix pipes through `tac` first so
+    // awk processes the LAST marker first (which is the real manifest).
+    const stepBlock = extractStepBlock(
+      workflowText,
+      "Append resolution-guide to latest review body",
+    );
+    expect(stepBlock).toMatch(/\| tac \| awk/u);
   });
 
   it("the step short-circuits with `exit 0` when INLINE_COUNT is 0", () => {
