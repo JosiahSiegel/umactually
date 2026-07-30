@@ -210,6 +210,22 @@ describe("self-review workflow noise-skip rule", () => {
     expect(zeroBranchIdx).toBeGreaterThanOrEqual(0);
     expect(putIdx).toBeGreaterThan(zeroBranchIdx);
   });
+
+  it("each platform guide warns that unresolved threads block merge when branch protection is on", () => {
+    // Regression pin: guides must warn unresolved threads block merge under branch protection.
+    const ghGuide = readFileSync(
+      resolve(REPO_ROOT, ".github/workflows/data/resolution-guide-github.md"),
+      "utf8",
+    );
+    const azGuide = readFileSync(
+      resolve(REPO_ROOT, ".github/workflows/data/resolution-guide-azure.md"),
+      "utf8",
+    );
+    expect(ghGuide).toMatch(/Merge gate/u);
+    expect(ghGuide).toMatch(/Require conversation resolution before merging/u);
+    expect(azGuide).toMatch(/Merge gate/u);
+    expect(azGuide).toMatch(/conversation-completion policies/u);
+  });
 });
 
 /**

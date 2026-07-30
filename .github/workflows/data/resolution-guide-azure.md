@@ -51,6 +51,8 @@ az repos pr thread list \
 # Expected: 0
 ```
 
+> ⚠️ **Merge gate**: If this project enforces "Require a minimum number of reviewers" with conversation-completion policies, every open thread — including umactually review threads — must be marked **Closed** (status `closed`) before the merge policy is satisfied. A single unresolved thread blocks merge completion until Step 3 is applied to it.
+
 The full guide (including platform-agnostic context, GitHub-specific mutation recipe, and common pitfalls) lives at `.github/SELF-REVIEW-RESOLUTION-GUIDE.md`.
 
 </details>

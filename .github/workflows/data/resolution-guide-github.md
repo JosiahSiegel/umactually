@@ -51,6 +51,8 @@ GH="gh" && $GH api graphql -F pr="$($GH pr view <N> --repo <owner>/<repo> --json
 # Expected: 0
 ```
 
+> ⚠️ **Merge gate**: If this repo enforces "Require conversation resolution before merging" as a branch-protection rule, every open thread — including umactually review threads — must be marked **Resolved** before the merge button is enabled. A single unresolved thread blocks the merge until Step 3 is applied to it.
+
 The full guide (including Azure DevOps-specific guidance, common pitfalls, and the matching `az repos pr thread update --status closed` recipe) lives at `.github/SELF-REVIEW-RESOLUTION-GUIDE.md`.
 
 </details>
