@@ -693,179 +693,85 @@ export async function main(argv: readonly string[]): Promise<number> {
 // before reaching this module; that flag short-circuits the auto-invoke so the
 // action entry's own `src_main()` is the sole runtime, even though both
 // modules are concatenated into the same bundle.
-const isMainModule = (() => {
-  if (typeof process === "undefined") {
-    return false;
-  }
-  if (globalThis.__umactually_action_entry__ === true) {
-    return false;
-  }
-  // SEA-binary short-circuit. process.versions.sea is the embedded
-  // Node version when the bundle is running as a Single Executable
-  // Application (post `node --build-sea`). In that case the bundle
-  // is unambiguously the entry — argv1 may be a Windows 8.3 short
-  // path that fails to canonicalize against `import.meta.url`, and
-  // the secondary `cli.js/mjs/cjs` regex never matches `.exe`.
-  // Without this short-circuit the post-release e2e harness on
-  // Windows sees the binary exit 0 with no stdout and no artifact
-  // written, because main() never fires. process.versions.sea is
-  // a string on a SEA binary and undefined elsewhere, so this is
-  // a no-op for non-SEA invocations.
-  if (typeof process.versions?.["sea"] === "string" && process.versions["sea"].length > 0) {
+
+/**
+ * True when the action entry (`dist/index.js`) is the runtime. The flag
+ * is set by the action entry's bundle before this module loads; returning
+ * true here short-circuits the auto-invoke so the action entry's own
+ * `src_main()` is the sole main() caller.
+ */
+function isActionEntryPresent(): boolean {
+  return globalThis.__umactually_action_entry__ === true;
+}
+
+/**
+ * True when the bundle is running as a Node Single Executable Application
+ * (post `node --build-sea`). `process.versions.sea` is the embedded Node
+ * version on a SEA binary (a string like "1.0.0") and undefined elsewhere.
+ * Without this short-circuit, the post-release e2e harness on Windows sees
+ * the binary exit 0 with no stdout, because the URL match below silently
+ * misses the Windows 8.3 short path argv1 takes in that harness.
+ */
+function isProcessSeaBinary(): boolean {
+  return typeof process.versions?.["sea"] === "string"
+    && process.versions["sea"].length > 0;
+}
+
+/**
+ * Fallback for Node 25.6.0 SEA binaries where `process.versions.sea` may
+ * not be populated. The argv1 signal: a Windows PE binary ends in `.exe`,
+ * `.cmd`, or `.bat`; a Linux/macOS SEA binary has been stripped of its
+ * extension entirely. The npm-install path sets argv1 to .../dist/cli.js
+ * (never ends in .exe, never extensionless), so it is unaffected — only
+ * the SEA-binary path triggers this branch.
+ */
+function argv1LooksLikeSeaBinary(argv1: string): boolean {
+  const lower = argv1.toLowerCase();
+  if (lower.endsWith(".exe") || lower.endsWith(".cmd") || lower.endsWith(".bat")) {
     return true;
   }
-  // Fallback for Node 25.6.0 SEA binaries: process.versions.sea
-  // may not be set on this version (it IS set on Node 25.7.0+).
-  // Detect the SEA case via argv1: if argv1 ends in .exe (Windows
-  // PE binary) or has no file extension at all (Linux/macOS SEA
-  // binary that has been stripped of its extension), AND we are
-  // not the action entry, treat the binary as the entry point.
-  // This is a heuristic but it's reliable in practice: the npm
-  // install path sets argv1 to .../dist/cli.js, which never ends
-  // in .exe and is never extensionless, so the npm path is
-  // unaffected. Only the SEA-binary path triggers this branch.
-  const argv1ForSeaDetect = process.argv[1] ?? "";
-  if (argv1ForSeaDetect.length > 0) {
-    const lower = argv1ForSeaDetect.toLowerCase();
-    if (lower.endsWith(".exe") || lower.endsWith(".cmd") || lower.endsWith(".bat")) {
-      return true;
-    }
-    // Extensionless binary on POSIX: this is the SEA case. The
-    // bin/umactually.mjs shim resolves to dist/cli.js via the npm
-    // bin link, so the npm path is unaffected. SEA binaries are
-    // copied/installed without a .js extension, so an extensionless
-    // argv1 is a strong SEA signal.
-    const lastSegment = argv1ForSeaDetect.split(/[\\/]/u).pop() ?? "";
-    if (lastSegment.length > 0 && !lastSegment.includes(".")) {
-      // The npm-install path also creates an extensionless argv1:
-      // `npm install -g umactually` puts `prefix/bin/umactually` on
-      // PATH as a symlink to `prefix/lib/node_modules/umactually/bin/
-      // umactually.mjs`. Node does NOT resolve the symlink when
-      // setting process.argv[1] for a shebang-invoked script (this
-      // is documented Node behaviour since at least v20), so argv1
-      // is the extensionless symlink path. The previous heuristic
-      // treated this as a SEA binary and returned true, which
-      // caused the auto-invoke to fire on top of the shim's
-      // explicit `await mod.main(argv)` call — making `--version`
-      // print twice. Differentiate by resolving the symlink: a
-      // real SEA binary has no symlink layer, so its realpath
-      // equals argv1. The npm shim's realpath resolves to the
-      // .mjs target, so its realpath differs from argv1. Return
-      // false when realpath resolves to a source file (anything
-      // ending in a JS-family extension) to keep the npm path
-      // out of the SEA-detection branch.
-      let argv1Realpath = argv1ForSeaDetect;
-      try {
-        argv1Realpath = realpathSync(argv1ForSeaDetect);
-      } catch {
-        // argv1ForSeaDetect does not exist (Node resolved it
-        // lazily). Stay with the literal argv1.
-      }
-      if (argv1Realpath !== argv1ForSeaDetect) {
-        // argv1 is a symlink. If its target ends in a JS-family
-        // extension, it's the npm shim, not a SEA binary.
-        if (/\.(?:mjs|cjs|js)$/u.test(argv1Realpath)) {
-          return false;
-        }
-      }
-      return true;
-    }
-  }
-  // The "this module is the entry" check is: import.meta.url matches
-  // pathToFileUrl(process.argv[1]). This is true for both the canonical
-  // CLI entry (argv1 = the cli.js path, import.meta.url = the file://
-  // URL of that path) and the SEA-binary case (argv1 = the binary
-  // path, import.meta.url = the file:// URL of the same path).
-  //
-  // The previous logic also required argv1 to end in `cli.js`. That
-  // was true for the npm-install path (argv1 = .../bin/umactually.mjs
-  // → shim → .../node_modules/umactually/dist/cli.js) but FALSE for
-  // a Node SEA binary where argv1 = the binary itself, e.g.
-  // `/usr/local/bin/umactually`. The `cli.js` regex test was the
-  // actual failure mode that made the previous auto-invoke silently
-  // no-op on every SEA install: argv1 was the binary path, the regex
-  // didn't match, isMainModule returned false, main() never ran,
-  // runVersion never wrote, and the binary exited 0 with empty
-  // stdout. The release-pipeline-dry-run CI's
-  // `INSTALLED_VERSION=$(umactually --version)` capture was therefore
-  // always empty. Note: process.versions.sea is a STRING (e.g.
-  // "1.0.0") on a SEA binary, not a boolean, but the previous code
-  // didn't check it — the cli.js regex was the failing branch. The
-  // action entry's globalThis flag still gates the action path (its
-  // bundle sets the flag before reaching this module), so dropping
-  // the regex is safe.
-  //
-  // ESM-loader fallback: when the file is invoked through an ESM
-  // loader (tsx, ts-node, vite-node, etc.), process.argv[1] is the
-  // loader's resolved entry, not the source file. The URL match
-  // fails in that case. We keep a regex on argv1 as a secondary
-  // guard so the ESM-loader case is still covered without
-  // re-introducing the SEA-binary regression. The regex accepts
-  // `cli.js`, `cli.mjs`, and `cli.cjs` (the three CommonJS/ESM
-  // variants we ship in dist/) so a developer running
-  // `node --import tsx dist/cli.js review` sees main() fire.
-  //
-  // Opt-out: setting `UMACTUALLY_DISABLE_AUTO_INVOKE=1` forces
-  // isMainModule to return false, which means a third-party importer
-  // that does `import('umactually/dist/cli')` from a non-standard
-  // path (so the URL match would otherwise succeed) can call
-  // `await main(argv)` explicitly without the auto-invoke firing.
-  // This is the supported way to consume `dist/cli` as a library.
-  // The bin/umactually.mjs shim does NOT need this env var (it
-  // already explicitly invokes `await mod.main(argv)` after the
-  // dynamic import), and the standalone SEA binary never sets it
-  // (the auto-invoke is the whole point of the binary).
-  //
-  // Regression surface to be aware of: any third-party importer that
-  // does `require('umactually/dist/cli')` from a path that does NOT
-  // end in `cli.js` (e.g. a re-exported entry under a different
-  // filename like `require('umactually/dist/cli/index')`) will now
-  // ALSO auto-invoke main() because the URL match succeeds, UNLESS
-  // the importer sets `UMACTUALLY_DISABLE_AUTO_INVOKE=1` in the
-  // process env before importing. If we ever need to support that
-  // pattern by default, restore the `cli.js` regex AND add a
-  // per-runtime entry probe (e.g. a `process.versions.sea` boolean
-  // in the SEA build that the auto-invoke can check). For v0.6.0,
-  // the supported consumers are the canonical CLI (npm path and SEA
-  // binary) plus the action entry plus library consumers who set
-  // `UMACTUALLY_DISABLE_AUTO_INVOKE=1`, all of which are covered.
-  //
-  // npm-install path note: when installed via `npm install -g
-  // umactually`, process.argv[1] is the path to bin/umactually.mjs
-  // (the shim), NOT to dist/cli.js. The shim's auto-invoke path
-  // (see bin/umactually.mjs) does NOT depend on this isMainModule
-  // gate — it does a dynamic `import(pathToFileURL(bundledCli))` of
-  // dist/cli.js and then explicitly calls `await mod.main(argv)`.
-  // So the npm path is correct regardless of whether isMainModule
-  // returns true or false for the dynamic-imported module. The
-  // isMainModule gate is the entry-point check for the standalone
-  // SEA binary (argv1 = the binary path itself) and the canonical
-  // `node dist/cli.js ...` invocation.
-  if (process.env["UMACTUALLY_DISABLE_AUTO_INVOKE"] === "1") {
+  const lastSegment = argv1.split(/[\\/]/u).pop() ?? "";
+  return lastSegment.length > 0 && !lastSegment.includes(".");
+}
+
+/**
+ * Differentiates the npm-shim symlink from a real SEA binary. `npm install -g
+ * umactually` creates `prefix/bin/umactually` (no `.mjs` suffix) as a symlink
+ * to `prefix/lib/node_modules/umactually/bin/umactually.mjs`. Node does NOT
+ * resolve the symlink in `process.argv[1]` for shebang-invoked scripts, so
+ * argv1 is the extensionless symlink path — the same shape the SEA heuristic
+ * looks for. A real SEA binary has no symlink layer, so its realpath equals
+ * argv1. The npm shim's realpath resolves to the `.mjs` target.
+ *
+ * Returns true ONLY when argv1 IS the npm-shim symlink (a false return
+ * from the SEA detector; the caller treats `!argv1IsNpmShimSymlink(argv1)`
+ * as "safe to auto-invoke as SEA").
+ */
+function argv1IsNpmShimSymlink(argv1: string): boolean {
+  let argv1Realpath = argv1;
+  try {
+    argv1Realpath = realpathSync(argv1);
+  } catch {
     return false;
   }
-  const argv1 = process.argv[1];
-  if (argv1 === undefined) {
+  if (argv1Realpath === argv1) {
     return false;
   }
-  // Primary: URL match (canonical CLI entry + SEA binary).
-  //
-  // Symlink caveat: when the user invokes the CLI through a PATH
-  // symlink (e.g. `/usr/local/bin/umactually` is a symlink to
-  // `/opt/umactually/bin/umactually`, the default `umactually`
-  // install on macOS Homebrew and many Linux package managers),
-  // `pathToFileUrl(argv1)` produces the SYMLINK's URL, but
-  // `import.meta.url` for the loaded module is the REALPATH's
-  // URL. The two URL strings differ
-  // (`file:///usr/local/bin/umactually` vs.
-  // `file:///opt/umactually/bin/umactually`) and the strict
-  // equality check would silently return false → main() does not
-  // auto-invoke → the SEA binary silently exits 0 with no
-  // output. We normalize argv1 through fs.realpathSync (which
-  // resolves the symlink) before the URL comparison, and fall
-  // back to the literal argv1 if realpath throws (e.g. argv1
-  // does not exist yet because Node resolved it lazily — the
-  // original `===` comparison handles that case).
+  return /\.(?:mjs|cjs|js)$/u.test(argv1Realpath);
+}
+
+/**
+ * Primary entry-detection check: `import.meta.url` matches
+ * `pathToFileUrl(argv1)`. True for both the canonical CLI entry and the
+ * SEA-binary case (where argv1 IS the binary path).
+ *
+ * Symlink caveat: when the user invokes through a PATH symlink (Homebrew,
+ * many Linux package managers, the npm-installed bin link), argv1 is the
+ * SYMLINK path and import.meta.url is the REALPATH's URL. We normalize
+ * argv1 through `realpathSync` before the comparison and fall back to the
+ * literal argv1 if realpath throws (Node resolved the path lazily).
+ */
+function argv1MatchesModuleUrl(argv1: string): boolean {
   const argv1Real = (() => {
     try {
       return realpathSync(argv1);
@@ -873,22 +779,80 @@ const isMainModule = (() => {
       return argv1;
     }
   })();
-  if (
+  return (
     import.meta.url === pathToFileUrl(argv1) ||
     import.meta.url === pathToFileUrl(argv1Real)
-  ) {
+  );
+}
+
+/**
+ * Secondary entry-detection check: argv1 ends in `cli.js`, `cli.mjs`, or
+ * `cli.cjs`. Covers two cases the URL match misses:
+ *
+ *  - ESM loaders (tsx, ts-node, vite-node) — argv1 is the loader's entry,
+ *    not the source file, and the URL match fails.
+ *  - Pre-2-arg invocations like `node dist/cli.js --version` where argv1
+ *    is the source file but the URL match can still race symlink
+ *    resolution on some filesystems.
+ *
+ * The regex accepts the three CommonJS/ESM variants we ship in `dist/` so a
+ * developer running `node --import tsx dist/cli.js review` sees main() fire.
+ */
+function argv1MatchesCliBasename(argv1: string): boolean {
+  return /(?:^|[\\/])cli\.(?:js|mjs|cjs)$/u.test(argv1);
+}
+
+/**
+ * Composed entry-detection predicate. Each step short-circuits on its
+ * first match — the order matters. Decision tree:
+ *
+ *   1. No `process` global (rare; non-Node ESM host) → false.
+ *   2. `globalThis.__umactually_action_entry__` → false (the action entry
+ *      is already running its own main; suppress the auto-invoke).
+ *   3. `process.versions.sea` is a non-empty string → true (Node 25.7.0+
+ *      SEA binary; the bundle is unambiguously the entry).
+ *   4. argv1 has the SEA-binary shape AND argv1 is NOT the npm-shim
+ *      symlink → true (Node 25.6.0 SEA fallback).
+ *   5. `UMACTUALLY_DISABLE_AUTO_INVOKE=1` → false (library opt-out).
+ *   6. `import.meta.url` matches argv1 (literal or realpath) → true
+ *      (canonical CLI entry; covers `node dist/cli.js ...` and the
+ *      symlink-resolved path for `npm install -g`).
+ *   7. argv1 ends in `cli.js`/`cli.mjs`/`cli.cjs` → true (ESM-loader
+ *      fallback).
+ *   8. Otherwise → false (this module was imported by a third party; the
+ *      caller must invoke `main()` explicitly).
+ */
+function isMainModule(): boolean {
+  if (typeof process === "undefined") {
+    return false;
+  }
+  if (isActionEntryPresent()) {
+    return false;
+  }
+  if (isProcessSeaBinary()) {
     return true;
   }
-  // Secondary: argv1 ends in cli.js/mjs/cjs. Covers the ESM-loader
-  // case (tsx, ts-node) where argv1 is the loader's entry, not the
-  // source file, and the URL match silently fails. Also covers
-  // pre-2-arg invocations like `node dist/cli.js --version` where
-  // argv1 is the source file but the URL match can still race
-  // symlink resolution on some filesystems.
-  return /(?:^|[\\/])cli\.(?:js|mjs|cjs)$/u.test(argv1);
-})();
+  const argv1 = process.argv[1] ?? "";
+  if (argv1.length > 0 && argv1LooksLikeSeaBinary(argv1)) {
+    if (!argv1IsNpmShimSymlink(argv1)) {
+      return true;
+    }
+  }
+  if (process.env["UMACTUALLY_DISABLE_AUTO_INVOKE"] === "1") {
+    return false;
+  }
+  if (argv1.length === 0) {
+    return false;
+  }
+  if (argv1MatchesModuleUrl(argv1)) {
+    return true;
+  }
+  return argv1MatchesCliBasename(argv1);
+}
 
-if (isMainModule) {
+const isMainModuleResult = isMainModule();
+
+if (isMainModuleResult) {
   main(process.argv.slice(2))
     .then((exitCode) => {
       // Set exitCode and let Node exit naturally so stdout/stderr are
