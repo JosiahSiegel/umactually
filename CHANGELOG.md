@@ -10,6 +10,10 @@ ship a tag).
 
 ## [Unreleased]
 
+### Fixed
+
+- **`umactually --version` printed the version twice when invoked through the npm-installed bin link** (the `npm install -g umactually` path). The `isMainModule()` IIFE in `src/cli.ts` includes an extensionless-SEA-binary heuristic that treats `process.argv[1]` as a SEA binary when the last path segment has no file extension. `npm install -g` creates `prefix/bin/umactually` (no `.mjs` suffix) as a symlink to `prefix/lib/node_modules/umactually/bin/umactually.mjs`, and Node does not resolve the symlink in `process.argv[1]` for shebang-invoked scripts, so `argv1` was the extensionless symlink path. The heuristic returned `true`, the auto-invoke fired on top of the bin shim's explicit `await mod.main(argv)` call, and `runVersion` ran twice. SEA binaries have no symlink layer, so the heuristic now calls `realpathSync(argv1)` and returns `false` when the realpath is a `.js`/`.mjs`/`.cjs` file (the npm shim case). Regression in v0.6.0; pinned by `test/unit/bin-shim-auto-invoke.test.ts > does not double-invoke main() when invoked through an extensionless npm-style symlink`.
+
 ## [0.6.3] - 2026-07-22
 
 ### Fixed

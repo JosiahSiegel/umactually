@@ -89,4 +89,73 @@ describe.skipIf(SKIP_IF_NO_DIST)("bin/umactually.mjs auto-invoke interaction", (
       .filter((l) => versionLinePattern.test(l));
     expect(versionLines.length, `stdout: ${result.stdout}`).toBe(1);
   });
+
+  it("does not double-invoke main() when invoked through an extensionless npm-style symlink (the npm install -g path)", async () => {
+    // Regression: v0.6.0 introduced an extensionless SEA-binary
+    // heuristic in isMainModule() that misfired when npm creates a
+    // bin symlink named just `umactually` (no `.mjs` suffix). The
+    // heuristic treated the symlink as a SEA binary, the auto-invoke
+    // fired on top of the shim's explicit `await mod.main(argv)`
+    // call, and `--version` printed the version twice.
+    //
+    // This test reproduces the exact npm-install layout: a symlink
+    // at <tmp>/umactually pointing at bin/umactually.mjs, invoked
+    // through Node's shebang resolution (which does NOT resolve the
+    // symlink in process.argv[1]). Without the fix in src/cli.ts,
+    // versionLines.length === 2. With the fix, it stays at 1.
+    const { mkdirSync, rmSync, symlinkSync } = await import("node:fs");
+    const { join } = await import("node:path");
+    const tmpRoot = join(REPO_ROOT, "node_modules", ".tmp-bin-shim-symlink-test");
+    const symlinkPath = join(tmpRoot, "umactually");
+    try {
+      try {
+        mkdirSync(tmpRoot, { recursive: true });
+        symlinkSync(SHIM, symlinkPath);
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        if (/symlink|EPERM|ENOTSUP|EACCES/i.test(msg)) {
+          // eslint-disable-next-line no-console
+          console.warn(`[skip] symlink unsupported on this filesystem: ${msg}`);
+          return;
+        }
+        throw err;
+      }
+      // Spawn a child Node that:
+      //   1. Patches process.versions.node so the shim's Node-24
+      //      gate passes.
+      //   2. Sets process.argv[1] to the EXTENSIONLESS symlink path
+      //      (the npm-install layout).
+      //   3. Imports the shim (which in turn dynamic-imports
+      //      dist/cli.js and explicitly calls mod.main(['--version'])).
+      const loader = `
+        Object.defineProperty(process.versions, "node", { value: "v25.7.0", configurable: true });
+        process.argv = [process.argv[0], ${JSON.stringify(symlinkPath)}, "--version"];
+        try {
+          await import(${JSON.stringify(symlinkPath)});
+        } catch (err) {
+          const msg = err && err.message ? err.message : String(err);
+          process.stderr.write("[test-caught-error] " + msg + "\\n");
+        }
+      `;
+      const result = spawnSync(
+        process.execPath,
+        ["--input-type=module", "-e", loader],
+        { cwd: REPO_ROOT, encoding: "utf8", timeout: 30_000 },
+      );
+      expect(result.stderr, `stderr: ${result.stderr}`).not.toMatch(
+        /requires Node >= 24/,
+      );
+      const versionLinePattern = /^\d+\.\d+\.\d+\s*$/;
+      const versionLines = result.stdout
+        .split("\n")
+        .map((l) => l.trim())
+        .filter((l) => versionLinePattern.test(l));
+      expect(
+        versionLines.length,
+        `expected exactly one --version line, got ${versionLines.length}.\nstdout: ${result.stdout}\nstderr: ${result.stderr}`,
+      ).toBe(1);
+    } finally {
+      rmSync(tmpRoot, { recursive: true, force: true });
+    }
+  });
 });

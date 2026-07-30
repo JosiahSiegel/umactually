@@ -1321,6 +1321,28 @@ const PARSE_FAIL_MARKERS = [
     "Parse failed",
 ];
 const CLEAN_VERDICTS = new Set(["APPROVED", "SHIP"]);
+/**
+ * Floor (milliseconds) below which a successful review is flagged as
+ * suspiciously fast. A genuine provider round-trip to a hosted LLM
+ * (Anthropic, OpenAI, Copilot) is rarely under 3 seconds even for a
+ * trivial diff — TLS handshake + auth + completion latency dominates.
+ * A sub-3s "real" review almost always indicates a cache hit, a test
+ * fixture, or a short-circuit fallback rather than a fresh model call.
+ *
+ * Empirically grounded: PR #140 (legit, 440-LOC refactor) took 20.6s;
+ * PRs #141-#143 (suspected rubber-stamps) took 3-5s. The threshold
+ * sits below the rubber-stamp band so genuine small-PR reviews don't
+ * trip the warning while clearly-short-circuited runs do.
+ */
+const SUSPICIOUS_FAST_REVIEW_MS = 3000;
+/**
+ * Floor (provider round-trips) below which a successful post is
+ * flagged as having no real provider interaction. Every legitimate
+ * review (even the simplest) requires at least one completion-API
+ * call. Zero round-trips after a successful post indicates the
+ * review body was produced without contacting the configured model.
+ */
+const MIN_EXPECTED_PROVIDER_ROUND_TRIPS = 1;
 function classifyReviewArtifact(path) {
     let content;
     try {
@@ -1328,15 +1350,16 @@ function classifyReviewArtifact(path) {
     }
     catch (error) {
         if (isNodeError(error) && error.code === "ENOENT") {
-            return { ok: false, reason: "file not found" };
+            return { ok: false, reason: "file not found", warnings: [] };
         }
         return {
             ok: false,
             reason: `cannot read artifact: ${error instanceof Error ? error.message : String(error)}`,
+            warnings: [],
         };
     }
     if (PARSE_FAIL_MARKERS.some((marker) => content.includes(marker))) {
-        return { ok: false, reason: "contains parse-fail sentinel" };
+        return { ok: false, reason: "contains parse-fail sentinel", warnings: [] };
     }
     let parsed;
     try {
@@ -1344,12 +1367,12 @@ function classifyReviewArtifact(path) {
     }
     catch (error) {
         if (error instanceof SyntaxError) {
-            return { ok: false, reason: "invalid JSON" };
+            return { ok: false, reason: "invalid JSON", warnings: [] };
         }
         throw error;
     }
     if (!isRecord(parsed)) {
-        return { ok: false, reason: "invalid artifact: expected a JSON object" };
+        return { ok: false, reason: "invalid artifact: expected a JSON object", warnings: [] };
     }
     const event = stringField(parsed, "event");
     const verdict = stringField(parsed, "verdict");
@@ -1357,33 +1380,77 @@ function classifyReviewArtifact(path) {
     const inlineThreadCount = numberField(parsed, "inlineThreadCount");
     const postedThreadCount = numberField(parsed, "postedThreadCount");
     const suppressedCommentCount = numberField(parsed, "suppressedCommentCount");
+    const reviewDurationMs = numberFieldOrUndefined(parsed, "reviewDurationMs");
+    const providerRoundTrips = numberFieldOrUndefined(parsed, "providerRoundTrips");
+    const posted = parsed["posted"] === true;
     const totalFindings = inlineThreadCount + postedThreadCount;
     if (parsed["parseFailed"] === true) {
-        return { ok: false, reason: "parse-fail: artifact explicitly flagged parseFailed=true" };
+        return { ok: false, reason: "parse-fail: artifact explicitly flagged parseFailed=true", warnings: [] };
     }
     const hasSignal = event.length > 0 ||
         verdict.length > 0 ||
         postedStatusState.length > 0 ||
         totalFindings > 0;
     if (!hasSignal) {
-        return { ok: false, reason: "parse-fail: no event, verdict, status, or findings" };
+        return { ok: false, reason: "parse-fail: no event, verdict, status, or findings", warnings: [] };
     }
     if (verdict.toUpperCase() === "NEEDS_FIX" && totalFindings === 0) {
         return {
             ok: false,
             reason: "contradictory review: verdict=NEEDS_FIX with 0 findings",
+            warnings: [],
         };
     }
+    const reviewVerdict = verdict || postedStatusState || event;
+    const warnings = detectSuspiciousSignals({
+        posted,
+        reviewDurationMs,
+        providerRoundTrips,
+        totalFindings,
+        verdict: reviewVerdict,
+    });
     const isCleanVerdict = CLEAN_VERDICTS.has(verdict.toUpperCase()) ||
         CLEAN_VERDICTS.has(postedStatusState.toUpperCase());
     if (totalFindings === 0 && suppressedCommentCount === 0 && !isCleanVerdict) {
-        return { ok: true, summary: "accepted low-signal review" };
+        return { ok: true, summary: "accepted low-signal review", warnings };
     }
-    const reviewVerdict = verdict || postedStatusState || event;
     return {
         ok: true,
         summary: `real review (${totalFindings} findings, verdict=${reviewVerdict})`,
+        warnings,
     };
+}
+/**
+ * Surface advisory warnings about signals that don't fail the
+ * artifact but suggest the review body may not reflect a real
+ * provider round-trip. The self-review workflow emits each warning
+ * as a `::warning::` annotation; the artifact itself remains
+ * `ok === true` so the guard's exit code stays advisory-only.
+ *
+ * Returns an empty array when no suspicious signals fire.
+ */
+function detectSuspiciousSignals(input) {
+    const warnings = [];
+    if (input.posted) {
+        // Signal: posted=true with providerRoundTrips === 0 means the
+        // review body was published without any provider HTTP call. This
+        // is structurally impossible for a real LLM review and indicates
+        // either a cache hit or a short-circuit fallback. Flag loudly.
+        if (input.providerRoundTrips === 0) {
+            warnings.push("provider-roundtrips-zero: review posted without contacting the provider (cache hit or short-circuit fallback suspected)");
+        }
+        else if (input.providerRoundTrips !== undefined && input.providerRoundTrips < MIN_EXPECTED_PROVIDER_ROUND_TRIPS) {
+            warnings.push(`provider-roundtrips-low: only ${input.providerRoundTrips} provider round-trip${input.providerRoundTrips === 1 ? "" : "s"} for a posted review (expected at least ${MIN_EXPECTED_PROVIDER_ROUND_TRIPS})`);
+        }
+        // Signal: posted=true with reviewDurationMs below the empirical
+        // floor. Even the fastest legitimate LLM review involves a TLS
+        // handshake + auth + completion; sub-3s posts suggest the review
+        // was assembled from a cached or pre-baked response.
+        if (input.reviewDurationMs !== undefined && input.reviewDurationMs < SUSPICIOUS_FAST_REVIEW_MS) {
+            warnings.push(`review-duration-fast: review posted in ${input.reviewDurationMs}ms (below ${SUSPICIOUS_FAST_REVIEW_MS}ms floor); possible rubber-stamp or cache short-circuit`);
+        }
+    }
+    return warnings;
 }
 function isRecord(value) {
     return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -1397,6 +1464,13 @@ function stringField(value, key) {
 }
 function numberField(value, key) {
     return Number(value[key] ?? 0);
+}
+function numberFieldOrUndefined(value, key) {
+    const field = value[key];
+    if (field === undefined || field === null)
+        return undefined;
+    const parsed = Number(field);
+    return Number.isFinite(parsed) ? parsed : undefined;
 }
 
 ;// CONCATENATED MODULE: ./src/cli/doctor.ts
@@ -2655,7 +2729,16 @@ function runCheckReviewArtifactBranch(args) {
     }
     const result = classifyReviewArtifact(path);
     const message = result.ok ? result.summary : result.reason;
-    const stderr = `umactually: ${path}: ${message ?? "invalid artifact"}\n`;
+    let stderr = `umactually: ${path}: ${message ?? "invalid artifact"}\n`;
+    // Surface each advisory warning as a GitHub Actions `::warning::`
+    // annotation (stdout) and mirror to stderr so the vitest stderr
+    // spy still captures it. Format reference:
+    // https://docs.github.com/actions/using-workflows/workflow-commands-for-github-actions
+    for (const warning of result.warnings) {
+        const annotation = `::warning::${warning}\n`;
+        process.stdout.write(annotation);
+        stderr += annotation;
+    }
     process.stderr.write(stderr);
     return { exitCode: result.ok ? 0 : 1, stderr };
 }
@@ -5889,7 +5972,22 @@ function reconstructFileFromDiff(diffText, filePath) {
     const reconstructed = files.get(filePath);
     return reconstructed === undefined ? null : reconstructed.join("\n");
 }
-function readPackageJsonFiles(diffText) {
+/**
+ * Shared scaffolding for the three package.json field extractors
+ * (`readPackageJsonFiles`, `readPackageJsonBin`, `readPackageJsonMain`).
+ *
+ * The pattern is the same in all three: reconstruct the post-change
+ * `package.json` content from the diff; if absent, return null;
+ * otherwise try a full JSON parse first (covers the "the whole file
+ * fits in one hunk" case), then fall back to a targeted scanner
+ * (covers the "only the field's contents changed" case).
+ *
+ * Both branches return the same shape as `T`, so the caller picks
+ * the per-field `fromParsed` + `fromScan` functions and lets this
+ * helper route the right one. Dedupes ~30 lines of preamble across
+ * the three call sites (DRY-refactor T2h).
+ */
+function readPackageJsonField(diffText, fromParsed, fromScan) {
     const content = reconstructFileFromDiff(diffText, "package.json");
     if (content === null) {
         return null;
@@ -5899,35 +5997,22 @@ function readPackageJsonFiles(diffText) {
     // small enough that one hunk covers the whole `files` block).
     const fullParse = tryParsePackageJson(content);
     if (fullParse !== null) {
-        return extractFilesFromParsed(fullParse);
+        return fromParsed(fullParse);
     }
-    // Fall back to targeted extraction: find the `"files":` key and
-    // read every JSON string inside the matching brackets. This
-    // handles the common case where only the array's contents were
-    // changed (the array opener is in the unchanged context).
-    return extractFilesByScanning(content);
+    // Fall back to targeted extraction: find the per-field key and
+    // read its value (or scan for the array/object contents). Handles
+    // the common case where only the field's contents were changed
+    // (the field opener is in the unchanged context).
+    return fromScan(content);
+}
+function readPackageJsonFiles(diffText) {
+    return readPackageJsonField(diffText, extractFilesFromParsed, extractFilesByScanning);
 }
 function readPackageJsonBin(diffText) {
-    const content = reconstructFileFromDiff(diffText, "package.json");
-    if (content === null) {
-        return null;
-    }
-    const fullParse = tryParsePackageJson(content);
-    if (fullParse !== null) {
-        return extractBinFromParsed(fullParse);
-    }
-    return extractBinByScanning(content);
+    return readPackageJsonField(diffText, extractBinFromParsed, extractBinByScanning);
 }
 function readPackageJsonMain(diffText) {
-    const content = reconstructFileFromDiff(diffText, "package.json");
-    if (content === null) {
-        return null;
-    }
-    const fullParse = tryParsePackageJson(content);
-    if (fullParse !== null) {
-        return extractMainFromParsed(fullParse);
-    }
-    return extractMainByScanning(content);
+    return readPackageJsonField(diffText, extractMainFromParsed, extractMainByScanning);
 }
 function tryParsePackageJson(content) {
     try {
@@ -7910,6 +7995,29 @@ function severityLabel(level) {
         default: return level || "Info";
     }
 }
+/**
+ * Highest-non-zero severity tier for the current data, or `null` when
+ * nothing is reported. Returns the canonical `{ emoji, label }` shape
+ * (matching `severityEmoji` + `severityLabel`) so callers can append
+ * their own suffix.
+ *
+ * Replaces the inline ternary cascade `(critical>0 ? 🟣 : high>0 ?
+ * 🔴 : medium>0 ? 🟠 : 🟡)` that was duplicated in `layoutIncident`
+ * and `layoutStatusPage`. The two callers add different suffixes
+ * ("" vs " findings reported"), so the helper returns the shared
+ * prefix only.
+ */
+function highestSeverityBanner(data) {
+    if (data.validCommentCount === 0)
+        return null;
+    if ((data.severityCounts["critical"] ?? 0) > 0)
+        return { emoji: "🟣", label: "Critical" };
+    if ((data.severityCounts["high"] ?? 0) > 0)
+        return { emoji: "🔴", label: "High" };
+    if ((data.severityCounts["medium"] ?? 0) > 0)
+        return { emoji: "🟠", label: "Medium" };
+    return { emoji: "🟡", label: "Low" };
+}
 /** Compose the stable hidden manifest that AI agents parse. */
 function manifest(data) {
     const payload = {
@@ -8001,6 +8109,28 @@ function severityTally(data) {
     return `🏷️ ${parts.join(" · ")}`;
 }
 /**
+ * Push the canonical severity-tally + optional legend block to `parts`,
+ * guarded by the same `length > 0` check that every layout does inline.
+ *
+ * The 5-line pattern `tally.length > 0 → push(tally) → legend.length > 0
+ * → push(legend) → push("")` was duplicated verbatim in 3 layouts
+ * (`verdict-banner`, `checklist`, `sticky-notes`). Other layouts render
+ * the tally differently (inline bullet in `tweet`, heading-prefixed in
+ * `pros-cons` and `newspaper`, partial-without-trailing-newline in
+ * `severity-table`) and intentionally stay inline. This helper covers
+ * only the 3 fully-identical sites.
+ */
+function pushSeverityTally(parts, data) {
+    const tally = severityTally(data);
+    if (tally.length === 0)
+        return;
+    parts.push(tally);
+    const legend = severityTallyLegend(data);
+    if (legend.length > 0)
+        parts.push(legend);
+    parts.push("");
+}
+/**
  * Append the canonical "provider summary" section to `parts` when the
  * review has a non-empty summary. Every layout wants this section —
  * the variation is purely cosmetic (heading emoji + label, and whether
@@ -8052,10 +8182,11 @@ function summarySection(data, parts, options = {}) {
  */
 const PARSE_FAILED_BANNER = "> ⚠️ `Parse failed` — provider response was not a valid JSON review payload. The raw provider text is included in the Summary section below for diagnostics.";
 /** Compose the standard footer line. */
-function footer(data) {
+function footer(data, overrideCount) {
     const safeModel = redact(data.modelId, data.secrets);
     const safeProvider = redact(data.provider, data.secrets);
-    return `🤖 Generated by \`${safeModel}\` via \`${safeProvider}\` · ${data.validCommentCount} inline`;
+    const count = overrideCount ?? data.validCommentCount;
+    return `🤖 Generated by \`${safeModel}\` via \`${safeProvider}\` · ${count} inline`;
 }
 /** Sort posted comments by severity desc, then path asc — same invariant the existing code uses. */
 function sortedPosted(data) {
@@ -8266,14 +8397,7 @@ function layoutVerdictBanner(data) {
     parts.push("| ---: | ---: | ---: | ---: |");
     parts.push(`| **${totalFindings(data)}** | **${data.validCommentCount}** | **${offDiffCount(data)}** | **${filteredCount(data)}** |`);
     parts.push("");
-    const tally = severityTally(data);
-    if (tally.length > 0) {
-        parts.push(tally);
-        const legend = severityTallyLegend(data);
-        if (legend.length > 0)
-            parts.push(legend);
-        parts.push("");
-    }
+    pushSeverityTally(parts, data);
     if (data.postedComments.length > 0) {
         parts.push("### 📋 Findings to address");
         parts.push("");
@@ -8314,7 +8438,7 @@ function renderCleanShip(data) {
     // recognize this as a umactually body), but emits 0 inline so the
     // count stays consistent with the ship-it verdict.
     parts.push("---");
-    parts.push(`🤖 Generated by \`${redact(data.modelId, data.secrets)}\` via \`${redact(data.provider, data.secrets)}\` · 0 inline`);
+    parts.push(footer(data, 0));
     parts.push("");
     parts.push(manifest(data));
     return parts.join("\n");
@@ -8536,14 +8660,7 @@ function layoutChecklist(data) {
         parts.push("> _No findings to address._");
         parts.push("");
     }
-    const tally = severityTally(data);
-    if (tally.length > 0) {
-        parts.push(tally);
-        const legend = severityTallyLegend(data);
-        if (legend.length > 0)
-            parts.push(legend);
-        parts.push("");
-    }
+    pushSeverityTally(parts, data);
     return closeReviewBlock(data, parts);
 }
 // ---------------------------------------------------------------------------
@@ -8745,15 +8862,10 @@ function layoutIncident(data) {
     parts.push("");
     parts.push("### 📟 Incident report");
     parts.push("");
-    const severityWord = data.validCommentCount === 0
+    const topSeverity = highestSeverityBanner(data);
+    const severityWord = topSeverity === null
         ? "✅ None"
-        : (data.severityCounts["critical"] ?? 0) > 0
-            ? "🟣 Critical"
-            : (data.severityCounts["high"] ?? 0) > 0
-                ? "🔴 High"
-                : (data.severityCounts["medium"] ?? 0) > 0
-                    ? "🟠 Medium"
-                    : "🟡 Low";
+        : `${topSeverity.emoji} ${topSeverity.label}`;
     parts.push(`**Status:** ${verdict}  &nbsp;&nbsp;  **Severity:** ${severityWord}  &nbsp;&nbsp;  **Findings:** ${data.validCommentCount} of ${totalFindings(data)}`);
     parts.push("");
     parts.push("### ⏱️ Timeline of this review run");
@@ -8943,15 +9055,10 @@ function layoutStatusPage(data) {
     parts.push("");
     parts.push("### 📡 Status page");
     parts.push("");
-    const banner = data.validCommentCount === 0
+    const topSeverity = highestSeverityBanner(data);
+    const banner = topSeverity === null
         ? "✅ All clear — no findings"
-        : (data.severityCounts["critical"] ?? 0) > 0
-            ? "🟣 Critical findings reported"
-            : (data.severityCounts["high"] ?? 0) > 0
-                ? "🔴 High severity findings reported"
-                : (data.severityCounts["medium"] ?? 0) > 0
-                    ? "🟠 Medium severity findings reported"
-                    : "🟡 Low severity findings reported";
+        : `${topSeverity.emoji} ${topSeverity.label} severity findings reported`;
     parts.push(`> ## ${banner}`);
     parts.push(">");
     parts.push(`> Last updated by \`${redact(data.modelId, data.secrets)}\` via \`${redact(data.provider, data.secrets)}\``);
@@ -9053,14 +9160,7 @@ function layoutStickyNotes(data) {
         }
         parts.push("");
     }
-    const tally = severityTally(data);
-    if (tally.length > 0) {
-        parts.push(tally);
-        const legend = severityTallyLegend(data);
-        if (legend.length > 0)
-            parts.push(legend);
-        parts.push("");
-    }
+    pushSeverityTally(parts, data);
     summarySection(data, parts);
     return closeReviewBlock(data, parts);
 }
@@ -9417,39 +9517,34 @@ function extractJsonFenceBody(rawText) {
     return repairJsonStringLiterals(body);
 }
 /**
- * Locate the first balanced `{ ... }` object in `rawText`, respecting nested
- * braces and quoted strings (including \" escapes). Returns null when no
- * balanced object can be found.
+ * Locate the start and end indices of the first balanced JSON object
+ * (`{ ... }`) or array (`[ ... ]`) in `text`, respecting nested
+ * delimiters and quoted strings (including \" escapes and stray-quote
+ * disambiguation via `peekNextNonWhitespace`).
  *
- * Returns a JSON-safe substring with two repairs applied:
- *   1. Literal control characters inside JSON strings (`\n \r \t \b \f`)
- *      are escaped to their 2-char JSON-escape equivalents. This handles
- *      SSE delta concatenation, where each delta's `\n` was decoded
- *      to a real newline when the SSE payload was JSON-parsed.
- *   2. Stray `\X` sequences inside JSON strings where X is NOT a valid
- *      JSON escape char (`"`/`\`/`/`/`b`/`f`/`n`/`r`/`t`/`u`) are
- *      double-escaped so JSON.parse sees `\\X` → `\X` in the parsed
- *      output. Models writing markdown prose sometimes produce
- *      `` \` ``, `\:`, `\,`, `\.`, `\'` inside JSON body fields;
- *      these would otherwise reject with "Bad escaped character in
- *      JSON" (live evidence: PR #24 self-review run 28898948220,
- *      body 20,691 chars, fail at position 13115).
+ * When `{` is present anywhere in `text`, the search starts at the
+ * first `{`; only when no `{` exists does it fall back to the first
+ * `[`. This matches the original `repairJsonStringLiterals` behavior
+ * (prefers objects, falls back to arrays) and preserves the
+ * `extractFirstBalancedObject` constraint via a call-site check.
  *
- * Newlines/tabs OUTSIDE strings (structural whitespace between fields) are
- * preserved — they're already valid JSON whitespace.
+ * Returns `{ start, end }` (inclusive end index of the closing
+ * delimiter) or `null` when no balanced structure is found.
+ *
+ * Unified from the two first-pass loops that were duplicated between
+ * `extractFirstBalancedObject` (lines 194-263, objects only) and
+ * `repairJsonStringLiterals` (lines 405-456, objects + arrays).
  */
-function extractFirstBalancedObject(rawText) {
-    const startIndex = rawText.indexOf("{");
+function findBalancedJsonBounds(text) {
+    const startIndex = text.indexOf("{") === -1 ? text.indexOf("[") : text.indexOf("{");
     if (startIndex === -1) {
         return null;
     }
     let depth = 0;
     let inString = false;
     let escape = false;
-    // First pass: find the end index of the balanced object.
-    let endIndex = -1;
-    for (let index = startIndex; index < rawText.length; index += 1) {
-        const char = rawText[index];
+    for (let index = startIndex; index < text.length; index += 1) {
+        const char = text[index];
         if (inString) {
             if (escape) {
                 escape = false;
@@ -9464,17 +9559,13 @@ function extractFirstBalancedObject(rawText) {
                 // peeking ahead. A real closing quote is followed (after
                 // optional whitespace) by a structural JSON character
                 // (`,`, `}`, `]`, `:`). Anything else means the model forgot
-                // to escape a `"` inside the string value (SSE delta
-                // concatenation surfaces this as an unescaped quote in the
-                // resulting textPayload). Treat the latter as a stray quote
-                // — stay inside the string so the depth tracker keeps
-                // working AND escape it in the second pass.
+                // to escape a `"` inside the string value.
                 //
                 // Note: `"` is NOT a structural JSON character so we don't
                 // include it in the close-quote set. If we did, a stray
                 // `"` followed by another `"` (e.g. `body: "value" "next":`)
                 // would be misclassified as a closing quote.
-                const nextNonWs = peekNextNonWhitespace(rawText, index + 1);
+                const nextNonWs = peekNextNonWhitespace(text, index + 1);
                 if (nextNonWs === -1 ||
                     nextNonWs === ",".charCodeAt(0) ||
                     nextNonWs === "}".charCodeAt(0) ||
@@ -9482,8 +9573,6 @@ function extractFirstBalancedObject(rawText) {
                     nextNonWs === ":".charCodeAt(0)) {
                     inString = false;
                 }
-                // else: stray quote inside a string. Stay inString; the second
-                // pass will escape it.
                 continue;
             }
             continue;
@@ -9492,28 +9581,41 @@ function extractFirstBalancedObject(rawText) {
             inString = true;
             continue;
         }
-        if (char === "{") {
+        if (char === "{" || char === "[") {
             depth += 1;
             continue;
         }
-        if (char === "}") {
+        if (char === "}" || char === "]") {
             depth -= 1;
             if (depth === 0) {
-                endIndex = index;
-                break;
+                return { start: startIndex, end: index };
             }
         }
     }
-    if (endIndex === -1) {
-        return null;
-    }
-    // Second pass: walk the balanced substring and escape literal control
-    // characters that appear INSIDE JSON strings. We re-walk because the
-    // first pass above only tracked depth, not the output positions.
-    const substring = rawText.slice(startIndex, endIndex + 1);
+    return null;
+}
+/**
+ * Walk a balanced JSON substring and return a repaired copy where:
+ *   1. Literal control characters inside JSON strings (`\n \r \t \b \f`)
+ *      are escaped to their 2-char JSON-escape equivalents.
+ *   2. Stray `\X` sequences inside JSON strings (where X is NOT a valid
+ *      JSON escape char) are double-escaped so JSON.parse sees `\\X` →
+ *      `\X` in the parsed output.
+ *   3. Stray `"` inside a string (model forgot to escape a quote) is
+ *      escaped to `\"` so JSON.parse keeps the string open.
+ *
+ * Structural whitespace OUTSIDE strings is preserved unchanged.
+ *
+ * This is the shared second-pass FSM that was duplicated between
+ * `extractFirstBalancedObject` (lines 268-367) and
+ * `repairJsonStringLiterals` (lines 459-547) — byte-identical logic
+ * including the escape validation, the stray-quote peek-ahead
+ * disambiguation, and the control-char escape switch.
+ */
+function repairBalancedSubstring(substring) {
     const segments = [];
-    inString = false;
-    escape = false;
+    let inString = false;
+    let escape = false;
     for (let index = 0; index < substring.length; index += 1) {
         const char = substring.charAt(index);
         if (inString) {
@@ -9560,8 +9662,7 @@ function extractFirstBalancedObject(rawText) {
                     nextNonWs === "]".charCodeAt(0) ||
                     nextNonWs === ":".charCodeAt(0)) {
                     // Legitimate closing quote: emit the raw `"` and exit the
-                    // string. The first-pass peek-ahead already determined this
-                    // was the close.
+                    // string.
                     segments.push(char);
                     inString = false;
                     continue;
@@ -9609,6 +9710,40 @@ function extractFirstBalancedObject(rawText) {
     return segments.join("");
 }
 /**
+ * Locate the first balanced `{ ... }` object in `rawText`, respecting nested
+ * braces and quoted strings (including \" escapes). Returns null when no
+ * balanced object can be found.
+ *
+ * Returns a JSON-safe substring with two repairs applied:
+ *   1. Literal control characters inside JSON strings (`\n \r \t \b \f`)
+ *      are escaped to their 2-char JSON-escape equivalents. This handles
+ *      SSE delta concatenation, where each delta's `\n` was decoded
+ *      to a real newline when the SSE payload was JSON-parsed.
+ *   2. Stray `\X` sequences inside JSON strings where X is NOT a valid
+ *      JSON escape char (`"`/`\`/`/`/`b`/`f`/`n`/`r`/`t`/`u`) are
+ *      double-escaped so JSON.parse sees `\\X` → `\X` in the parsed
+ *      output. Models writing markdown prose sometimes produce
+ *      `` \` ``, `\:`, `\,`, `\.`, `\'` inside JSON body fields;
+ *      these would otherwise reject with "Bad escaped character in
+ *      JSON" (live evidence: PR #24 self-review run 28898948220,
+ *      body 20,691 chars, fail at position 13115).
+ *
+ * Newlines/tabs OUTSIDE strings (structural whitespace between fields) are
+ * preserved — they're already valid JSON whitespace.
+ */
+function extractFirstBalancedObject(rawText) {
+    // Object-only: findBalancedJsonBounds handles both `{` and `[`,
+    // but this function is documented to return objects only.
+    if (rawText.indexOf("{") === -1) {
+        return null;
+    }
+    const bounds = findBalancedJsonBounds(rawText);
+    if (bounds === null) {
+        return null;
+    }
+    return repairBalancedSubstring(rawText.slice(bounds.start, bounds.end + 1));
+}
+/**
  * Walk `text` (a balanced JSON document — object or array) and return
  * a JSON-safe copy where:
  *   - literal control characters inside JSON strings (`\n \r \t \b \f`)
@@ -9628,160 +9763,17 @@ function extractFirstBalancedObject(rawText) {
  * Structural whitespace OUTSIDE strings (newlines/tabs between fields)
  * is preserved unchanged — that's already valid JSON whitespace.
  *
- * Uses the same peek-ahead logic for stray-quote disambiguation as
- * `extractFirstBalancedObject`'s second pass; in fact this helper is
- * the same code, factored out so the fence-body path doesn't have to
- * duplicate it.
- *
  * Returns `text` unchanged when it doesn't contain a balanced object
  * or array — the caller can fall through to the balanced-object
  * fallback.
  */
 function repairJsonStringLiterals(text) {
-    const startIndex = text.indexOf("{") === -1 ? text.indexOf("[") : text.indexOf("{");
-    if (startIndex === -1) {
+    const bounds = findBalancedJsonBounds(text);
+    if (bounds === null) {
         return text;
     }
-    // Find the end index of the balanced top-level object/array.
-    let endIndex = -1;
-    let depth = 0;
-    let inString = false;
-    let escape = false;
-    for (let index = startIndex; index < text.length; index += 1) {
-        const char = text[index];
-        if (char === undefined)
-            break;
-        if (inString) {
-            if (escape) {
-                escape = false;
-                continue;
-            }
-            if (char === "\\") {
-                escape = true;
-                continue;
-            }
-            if (char === '"') {
-                // Use the same stray-quote peek-ahead as extractFirstBalancedObject.
-                const nextNonWs = peekNextNonWhitespace(text, index + 1);
-                if (nextNonWs === -1 ||
-                    nextNonWs === ",".charCodeAt(0) ||
-                    nextNonWs === "}".charCodeAt(0) ||
-                    nextNonWs === "]".charCodeAt(0) ||
-                    nextNonWs === ":".charCodeAt(0)) {
-                    inString = false;
-                }
-                continue;
-            }
-            continue;
-        }
-        if (char === '"') {
-            inString = true;
-            continue;
-        }
-        if (char === "{" || char === "[") {
-            depth += 1;
-            continue;
-        }
-        if (char === "}" || char === "]") {
-            depth -= 1;
-            if (depth === 0) {
-                endIndex = index;
-                break;
-            }
-        }
-    }
-    if (endIndex === -1) {
-        return text;
-    }
-    // Second pass: walk the balanced substring and emit a repaired copy.
-    const substring = text.slice(startIndex, endIndex + 1);
-    const segments = [];
-    inString = false;
-    escape = false;
-    for (let index = 0; index < substring.length; index += 1) {
-        const char = substring.charAt(index);
-        if (inString) {
-            if (escape) {
-                // Validate that the escape sequence is one JSON.parse accepts.
-                // Two failure modes to handle:
-                //
-                //   1. `\` followed by a char outside the valid set
-                //      (`"`/`\`/`/`/`b`/`f`/`n`/`r`/`t`/`u`) — e.g.
-                //      `` \` ``, `\:`, `\,`, `\.`, `\'` from markdown
-                //      prose. JSON.parse rejects with "Bad escaped
-                //      character". Fix: double-escape the whole sequence
-                //      to `\\X` so JSON.parse sees a literal backslash +
-                //      char in the parsed output.
-                //
-                //   2. `\u` followed by anything that isn't 4 hex digits
-                //      (e.g. truncated `\u00`, `\uXYZW`, `\u000G`) —
-                //      JSON.parse rejects with "Bad Unicode escape in
-                //      JSON". Fix: same — double-escape `\u` to `\\u` so
-                //      JSON.parse sees the literal sequence in the
-                //      parsed output.
-                //
-                // The `\` itself was already pushed when `escape` was set on
-                // the previous iteration; here we only push the second
-                // character of the (possibly double-escaped) sequence.
-                const isInvalidSingleChar = !VALID_JSON_ESCAPE_CHARS.has(char);
-                const isInvalidUnicodeEscape = char === "u" && !isHexQuadAt(substring, index + 1);
-                if (isInvalidSingleChar || isInvalidUnicodeEscape) {
-                    segments.push("\\" + char);
-                }
-                else {
-                    segments.push(char);
-                }
-                escape = false;
-                continue;
-            }
-            if (char === "\\") {
-                segments.push(char);
-                escape = true;
-                continue;
-            }
-            if (char === '"') {
-                const nextNonWs = peekNextNonWhitespace(substring, index + 1);
-                if (nextNonWs === -1 ||
-                    nextNonWs === ",".charCodeAt(0) ||
-                    nextNonWs === "}".charCodeAt(0) ||
-                    nextNonWs === "]".charCodeAt(0) ||
-                    nextNonWs === ":".charCodeAt(0)) {
-                    segments.push(char);
-                    inString = false;
-                    continue;
-                }
-                segments.push('\\"');
-                continue;
-            }
-            if (char === "\n") {
-                segments.push("\\n");
-                continue;
-            }
-            if (char === "\r") {
-                segments.push("\\r");
-                continue;
-            }
-            if (char === "\t") {
-                segments.push("\\t");
-                continue;
-            }
-            if (char === "\b") {
-                segments.push("\\b");
-                continue;
-            }
-            if (char === "\f") {
-                segments.push("\\f");
-                continue;
-            }
-            segments.push(char);
-            continue;
-        }
-        if (char === '"') {
-            inString = true;
-        }
-        segments.push(char);
-    }
-    return text.slice(0, startIndex) + segments.join("") + text.slice(endIndex + 1);
+    const repaired = repairBalancedSubstring(text.slice(bounds.start, bounds.end + 1));
+    return text.slice(0, bounds.start) + repaired + text.slice(bounds.end + 1);
 }
 /**
  * Peek the character code of the next non-whitespace character in
@@ -13093,6 +13085,182 @@ function readErrorCode(error) {
     return typeof code === "string" ? code : null;
 }
 
+;// CONCATENATED MODULE: ./src/provider/provider-retry.ts
+/**
+ * Shared retry-loop helpers for provider clients.
+ *
+ * The OpenAI-compatible, Anthropic Messages, and Copilot providers each
+ * implement the same retry/backoff pattern with provider-specific
+ * `runOnce` callbacks. These helpers consolidate the pieces that are
+ * byte-identical (or near-byte-identical) across the three: the
+ * backoff schedule, the retryable-error predicate, the abort-bailout
+ * block, and the bumped-budget heuristic. Provider-specific call sites
+ * wire the `runOnce` callback to their own request/parse logic.
+ */
+
+
+/**
+ * Backoff schedule for transient-error retries. Attempt 0 fires
+ * immediately; attempt 1 sleeps 250ms first; attempt 2 sleeps 1s
+ * first; then the loop returns the last failure.
+ *
+ * Three attempts total (initial + 2 retries). Empirically tuned: 250ms
+ * is enough to clear a TCP RST on the same connection pool, 1s is
+ * enough to clear a transient router/scheduler hiccup, and longer
+ * waits don't materially improve recovery rate.
+ */
+const RETRY_BACKOFF_MS = [250, 1_000];
+/**
+ * True when `error` represents a transient failure that the next retry
+ * might recover from:
+ *   - `network` (no HTTP status, e.g. connection reset, DNS hiccup)
+ *   - `timeout` (slow stream, gateway reset)
+ *   - HTTP 429 (rate limit, often retried after backoff)
+ *   - HTTP >= 500 (server-side failure, often retried after backoff)
+ *
+ * Provider-specific failures (`parse`, `provider_error`, `aborted`,
+ * `4xx other than 429`) are NOT retried — retrying them would just
+ * re-surface the same broken state.
+ */
+function isRetryable(error) {
+    if (error.code === "network")
+        return true;
+    if (error.code === "timeout")
+        return true;
+    return error.status === 429 || (typeof error.status === "number" && error.status >= 500);
+}
+/**
+ * Bail early when the caller's AbortSignal is already aborted, BEFORE
+ * composing the next retry's timeout signal.
+ *
+ * Without this guard, the next `runOnce` would compose a fresh
+ * timeout AbortController with an already-aborted caller signal.
+ * `AbortSignal.any([aborted, ...])` is itself aborted, so the next
+ * fetch would fail immediately with a "timeout" error — even though
+ * the underlying connection was healthy. That makes the
+ * "timeout is transient, retry it" rationale void (we'd be reporting
+ * a fake timeout, not a real one).
+ *
+ * Returns a `{ ok: false, error: ProviderError("aborted", ...) }`
+ * failure when the signal is aborted, otherwise `null`. The caller
+ * short-circuits its retry loop on the failure result.
+ */
+function bailIfAborted(args) {
+    if (args.signal?.aborted !== true)
+        return null;
+    return {
+        ok: false,
+        error: new ProviderError("aborted", args.endpoint, null, args.requestId, "Caller aborted the request before retry."),
+    };
+}
+/**
+ * Compute the bumped `maxOutputTokens` for the parse-fail retry.
+ *
+ * When the first attempt's raw response is "large but empty"
+ * (`rawText.length > 16_000 && textPayload.length < 200`), the model
+ * likely produced a reasoning-only response that got truncated before
+ * the JSON review. Double the budget for the retry so the model has
+ * more room. Capped at 128K to avoid blowing past provider limits.
+ *
+ * Returns `undefined` when no bump is warranted — the caller should
+ * then pass `undefined` (or simply omit the field) on the wire body
+ * to preserve `exactOptionalPropertyTypes`.
+ *
+ * The `currentBudget` argument is the cap from the call config (may
+ * itself be undefined for providers that don't pin one).
+ */
+function computeBumpedMaxOutput(args) {
+    if (args.currentBudget === undefined)
+        return undefined;
+    const needsMore = args.rawTextLength > 16_000 && args.textPayloadLength < 200;
+    return needsMore ? Math.min(args.currentBudget * 2, 128_000) : args.currentBudget;
+}
+/**
+ * Generic retry loop shared by every provider client.
+ *
+ * Calls `runOnce` repeatedly until one of three exit conditions:
+ *   1. `runOnce` succeeds (returns `{ ok: true, ... }`) — propagate as-is.
+ *   2. `runOnce` returns a non-retryable error (per `isRetryable`) — propagate
+ *      the error result without burning another attempt.
+ *   3. The retry budget (`RETRY_BACKOFF_MS.length` retries) is exhausted —
+ *      return the last failure wrapped in a generic "retry failure" envelope.
+ *
+ * Each provider client supplies its own `runOnce` callback that performs
+ * the request/parse step. The callback's return shape is provider-specific
+ * (e.g. `ProviderCallResult` for openai-compatible, `AnthropicProviderCallResult`
+ * for anthropic-messages), so the helper is generic over the result shape —
+ * callers narrow via TypeScript generics at the call site.
+ *
+ * The generic constraint says `T` must extend the union `{ ok: true } | { ok: false; error: ProviderError }`.
+ * Internally we construct failure results (the bail-if-aborted path and
+ * the exhausted-retries path) and need to return them as `T`. TypeScript
+ * can't verify the synthesized failure is assignable to the specific `T`
+ * (because `T` might be a discriminated union where the success branch
+ * has additional fields), so the function-level return type is widened
+ * to `T | { ok: false; error: ProviderError }` and the call sites narrow
+ * back to `T` at the boundary. The two `as` casts at the failure-return
+ * sites are safe because (a) the synthesized object is structurally
+ * assignable to the failure branch of any provider-specific `T`, and
+ * (b) the call site has already used the result.ok check in earlier
+ * iterations, so the call site's type narrowing on the success branch
+ * still works correctly.
+ *
+ * Before each attempt, calls `bailIfAborted` to short-circuit when the
+ * caller's `AbortSignal` is already aborted (would otherwise produce a
+ * fake-timeout error after composing with an aborted signal).
+ */
+async function runWithRetry(args) {
+    let lastFailure = null;
+    for (let attempt = 0; attempt <= RETRY_BACKOFF_MS.length; attempt += 1) {
+        const bail = bailIfAborted({ signal: args.signal, endpoint: args.endpoint, requestId: args.requestId });
+        if (bail !== null) {
+            return bail;
+        }
+        const result = await args.runOnce();
+        if (result.ok) {
+            return result;
+        }
+        lastFailure = result.error;
+        if (!isRetryable(result.error)) {
+            return result;
+        }
+        if (attempt < RETRY_BACKOFF_MS.length) {
+            const backoffMs = RETRY_BACKOFF_MS[attempt] ?? 0;
+            await sleep(backoffMs);
+        }
+    }
+    const fallback = {
+        ok: false,
+        error: lastFailure ?? new ProviderError("network", args.endpoint, null, args.requestId, args.fallbackMessage),
+    };
+    return fallback;
+}
+/**
+ * Build the canonical parse-fail `ProviderError` that every provider
+ * client returns when the self-healing retry did not produce a
+ * parseable review.
+ *
+ * The three providers (openai-compatible, anthropic-messages, copilot)
+ * each constructed this error envelope inline with the same fields:
+ *   - `code: "parse"`
+ *   - `endpoint`, `requestId`, `status`
+ *   - `message` (provider-specific wording)
+ *   - `{ rawText, truncated, usage? }`
+ *
+ * Only `message` and the `truncated` / `usage` values vary; the shape
+ * is identical. This helper takes the variable parts and produces the
+ * error, eliminating the inline option-object construction that
+ * previously drifted between the three sites.
+ */
+function buildParseFailError(args) {
+    return new ProviderError("parse", args.endpoint, args.status, args.requestId, args.message, {
+        rawText: args.rawText,
+        truncated: args.truncated,
+        ...(args.usage !== undefined ? { usage: args.usage } : {}),
+    });
+}
+
+
 ;// CONCATENATED MODULE: ./src/provider/copilot-token.ts
 
 
@@ -13182,6 +13350,7 @@ function buildCacheKey(githubToken) {
 
 
 
+
 const COPILOT_EDITOR_VERSION = "vscode/1.96.0";
 const COPILOT_EDITOR_PLUGIN_VERSION = `${BRAND}/0.1.0`;
 const COPILOT_INTEGRATION_ID = "vscode-chat";
@@ -13205,6 +13374,15 @@ async function resolveSession(githubToken, apiBase, fetchImpl, requestId) {
     return fetchAndCacheSessionToken(githubToken, buildTokenUrl(normalizedBase), buildTokenHeaders(githubToken), fetchImpl, ENDPOINT_CHAT, requestId);
 }
 async function runChatCall(config, fetchImpl, requestId, session) {
+    // Mirrors the abort-bailout guard from openai-compatible /
+    // anthropic-messages. Copilot doesn't yet accept a caller
+    // AbortSignal on `CopilotCallConfig`, so the check is a no-op
+    // today; when the signal field is added, this guard will start
+    // firing automatically.
+    const bail = bailIfAborted({ signal: undefined, endpoint: ENDPOINT_CHAT, requestId });
+    if (bail !== null) {
+        return bail;
+    }
     const url = joinUrl(session.apiBase, "/chat/completions");
     const body = buildChatBody({
         model: config.model,
@@ -13275,11 +13453,16 @@ async function runChatCall(config, fetchImpl, requestId, session) {
     // Self-healing parse-fail retry: send a follow-up message asking the
     // model to emit JSON only. Mirrors the openai-compatible path.
     // See openai-compatible.ts:callEndpoint for the full rationale.
+    const bumpedMaxOutput = computeBumpedMaxOutput({
+        currentBudget: config.maxOutputTokens,
+        rawTextLength: rawText.length,
+        textPayloadLength: textPayload.length,
+    });
     const retryBody = buildChatBody({
         model: config.model,
         system: config.system,
         user: config.user,
-        ...(config.maxOutputTokens !== undefined ? { maxOutputTokens: config.maxOutputTokens } : {}),
+        ...(bumpedMaxOutput !== undefined ? { maxOutputTokens: bumpedMaxOutput } : {}),
         ...(config.reasoningEffort !== undefined ? { reasoningEffort: config.reasoningEffort } : {}),
     }, { userOverride: PARSE_FAIL_RETRY_PROMPT });
     let retryResponse;
@@ -13314,15 +13497,14 @@ async function runChatCall(config, fetchImpl, requestId, session) {
         retryReview = parsedRetry;
     }
     if (retryReview === null) {
-        // Same parse-fail diagnostic contract as openai-compatible.ts:
-        // distinguish "truncated stream" from "completed but malformed" so
-        // the diagnostic can show actionable remediation advice. Delegates
-        // to the shared `diagnoseParseFailure` helper so the truncation
-        // detection logic is not duplicated per provider.
         const diagnosis = diagnoseParseFailure({ rawText });
         return {
             ok: false,
-            error: new ProviderError("parse", ENDPOINT_CHAT, response.status, requestId, "Provider response did not contain a JSON review payload after self-healing retry.", {
+            error: buildParseFailError({
+                endpoint: ENDPOINT_CHAT,
+                status: response.status,
+                requestId,
+                message: "Provider response did not contain a JSON review payload after self-healing retry.",
                 rawText,
                 truncated: diagnosis.truncated,
                 ...(diagnosis.usage !== undefined ? { usage: diagnosis.usage } : {}),
@@ -13366,6 +13548,7 @@ function buildTokenUrl(apiBase) {
 }
 
 ;// CONCATENATED MODULE: ./src/provider/openai-compatible.ts
+
 
 
 
@@ -13436,12 +13619,12 @@ async function runProviderRequest(config) {
     let lastAttempt = { ok: false, error: new ProviderError("network", ENDPOINT_RESPONSES, null, requestId, "No base URL candidates resolved.") };
     for (const candidate of baseUrlCandidates) {
         process.stderr.write(`::notice::${BRAND_PREFIX}Trying base URL: ${redactUrlForLog(candidate)}\n`);
-        const firstAttempt = await runWithRetry(config, fetchImpl, requestId, ENDPOINT_RESPONSES, candidate);
+        const firstAttempt = await runWithRetryLoop(config, fetchImpl, requestId, ENDPOINT_RESPONSES, candidate);
         if (firstAttempt.ok) {
             return firstAttempt;
         }
         if (shouldFallback(firstAttempt.error)) {
-            const chatAttempt = await runWithRetry(config, fetchImpl, requestId, openai_compatible_ENDPOINT_CHAT, candidate);
+            const chatAttempt = await runWithRetryLoop(config, fetchImpl, requestId, openai_compatible_ENDPOINT_CHAT, candidate);
             if (chatAttempt.ok) {
                 return chatAttempt;
             }
@@ -13478,57 +13661,14 @@ async function runWithEndpoint(config, fetchImpl, requestId, endpoint, baseUrl) 
         throw error;
     }
 }
-const RETRY_BACKOFF_MS = [250, 1_000];
-async function runWithRetry(config, fetchImpl, requestId, endpoint, baseUrl) {
-    let lastFailure = null;
-    for (let attempt = 0; attempt <= RETRY_BACKOFF_MS.length; attempt += 1) {
-        // Bail out if the caller's signal is already aborted. Without this
-        // check, the next runWithEndpoint would compose its signal with an
-        // already-aborted caller signal — `AbortSignal.any([aborted, ...])`
-        // is itself aborted, so the second attempt would fail immediately
-        // with a "timeout" error, even though the underlying connection
-        // was healthy. That makes the "timeout is transient, retry it"
-        // rationale void (we'd be reporting a fake timeout, not a real one).
-        // Reporting an "aborted" error here is semantically correct and
-        // also not retryable, so we naturally exit the loop.
-        if (config.signal?.aborted === true) {
-            return {
-                ok: false,
-                error: new ProviderError("aborted", endpoint, null, requestId, "Caller aborted the request before retry."),
-            };
-        }
-        const result = await runWithEndpoint(config, fetchImpl, requestId, endpoint, baseUrl);
-        if (result.ok) {
-            return result;
-        }
-        lastFailure = result.error;
-        if (!isRetryable(result.error)) {
-            return result;
-        }
-        if (attempt < RETRY_BACKOFF_MS.length) {
-            const backoffMs = RETRY_BACKOFF_MS[attempt] ?? 0;
-            await sleep(backoffMs);
-        }
-    }
-    return { ok: false, error: lastFailure ?? new ProviderError("network", endpoint, null, requestId, "Unknown retry failure.") };
-}
-function isRetryable(error) {
-    // Transient network failures (no HTTP status) should be retried —
-    // the connection may have been reset, the provider may be in the
-    // middle of a failover, etc. Without this, a single TCP hiccup
-    // kills the whole review.
-    if (error.code === "network") {
-        return true;
-    }
-    // Timeouts are transient (cold-start latency, gateway reset, slow
-    // stream). A retry with the same timeout often succeeds because the
-    // provider may have started streaming by the time the abort fired.
-    // Without this, a single slow request fails the whole review even
-    // though the underlying connection is healthy.
-    if (error.code === "timeout") {
-        return true;
-    }
-    return error.status === 429 || (typeof error.status === "number" && error.status >= 500);
+async function runWithRetryLoop(config, fetchImpl, requestId, endpoint, baseUrl) {
+    return runWithRetry({
+        signal: config.signal,
+        endpoint,
+        requestId,
+        fallbackMessage: "Unknown retry failure.",
+        runOnce: () => runWithEndpoint(config, fetchImpl, requestId, endpoint, baseUrl),
+    });
 }
 /**
  * Self-healing follow-up message sent to the model when its first response
@@ -13641,9 +13781,11 @@ async function callEndpoint(config, fetchImpl, requestId, endpoint, baseUrl) {
     // for the retry. Capped at 128K to avoid blowing past provider
     // limits.
     const needsMoreBudget = rawText.length > 16_000 && textPayload.length < 200;
-    const bumpedMaxOutput = needsMoreBudget && config.maxOutputTokens !== undefined
-        ? Math.min(config.maxOutputTokens * 2, 128_000)
-        : config.maxOutputTokens;
+    const bumpedMaxOutput = computeBumpedMaxOutput({
+        currentBudget: config.maxOutputTokens,
+        rawTextLength: rawText.length,
+        textPayloadLength: textPayload.length,
+    });
     if (isDebugRawActive() && needsMoreBudget) {
         writeDebugRaw(`[DEBUG-RAW] bumped-budget retry: rawText.length=${rawText.length} textPayload.length=${textPayload.length} bumpedMaxOutput=${bumpedMaxOutput}\n`, config);
     }
@@ -13695,15 +13837,12 @@ async function callEndpoint(config, fetchImpl, requestId, endpoint, baseUrl) {
         // ORIGINAL rawText. retryResponseStatus stays null in this branch.
     }
     if (retryReview === null) {
-        // Distinguish "truncated stream" (model hit its token budget before
-        // emitting response.completed) from "completed stream with malformed
-        // JSON" (model returned bad data). The former is actionable: the
-        // operator can raise --max-output-tokens and retry. The latter
-        // usually means a model regression. Both surface in the parse-fail
-        // diagnostic via `ProviderError.truncated` so the render layer can
-        // show different remediation advice.
         const diagnosis = diagnoseParseFailure({ rawText });
-        throw new ProviderError("parse", endpoint, retryResponseStatus ?? response.status, requestId, "Provider response did not contain a JSON review payload after self-healing retry.", {
+        throw buildParseFailError({
+            endpoint,
+            status: retryResponseStatus ?? response.status,
+            requestId,
+            message: "Provider response did not contain a JSON review payload after self-healing retry.",
             rawText,
             truncated: diagnosis.truncated,
             ...(diagnosis.usage !== undefined ? { usage: diagnosis.usage } : {}),
@@ -13813,9 +13952,9 @@ function shouldFallback(error) {
 
 
 
+
 const ENDPOINT = "anthropic";
 const ANTHROPIC_VERSION = "2023-06-01";
-const anthropic_messages_RETRY_BACKOFF_MS = [250, 1_000];
 
 /**
  * Project the call config down to the body shape expected by
@@ -13999,57 +14138,16 @@ async function runAnthropicRequest(config) {
     // too. Self-hosted gateways under a path prefix are the supported
     // case here.
     const url = resolveAnthropicMessagesUrl(config.baseUrl);
-    return anthropic_messages_runWithRetry(config, fetchImpl, requestId, url);
+    return anthropic_messages_runWithRetryLoop(config, fetchImpl, requestId, url);
 }
-async function anthropic_messages_runWithRetry(config, fetchImpl, requestId, url) {
-    let lastFailure = null;
-    for (let attempt = 0; attempt <= anthropic_messages_RETRY_BACKOFF_MS.length; attempt += 1) {
-        // Bail out if the caller's signal is already aborted. Without this
-        // check, the next runOnce would compose its signal with an
-        // already-aborted caller signal — `AbortSignal.any([aborted, ...])`
-        // is itself aborted, so the second attempt would fail immediately
-        // with a "timeout" error, even though the underlying connection
-        // was healthy. That makes the "timeout is transient, retry it"
-        // rationale void (we'd be reporting a fake timeout, not a real one).
-        // Reporting an "aborted" error here is semantically correct and
-        // also not retryable, so we naturally exit the loop.
-        if (config.signal?.aborted === true) {
-            return {
-                ok: false,
-                error: new ProviderError("aborted", ENDPOINT, null, requestId, "Caller aborted the request before retry."),
-            };
-        }
-        const result = await runOnce(config, fetchImpl, requestId, url);
-        if (result.ok) {
-            return result;
-        }
-        lastFailure = result.error;
-        if (!anthropic_messages_isRetryable(result.error)) {
-            return result;
-        }
-        if (attempt < anthropic_messages_RETRY_BACKOFF_MS.length) {
-            const backoffMs = anthropic_messages_RETRY_BACKOFF_MS[attempt] ?? 0;
-            await sleep(backoffMs);
-        }
-    }
-    return {
-        ok: false,
-        error: lastFailure ?? new ProviderError("network", ENDPOINT, null, requestId, "Unknown Anthropic retry failure."),
-    };
-}
-function anthropic_messages_isRetryable(error) {
-    if (error.code === "network") {
-        return true;
-    }
-    // Timeouts are transient (cold-start latency, TCP RST, gateway timeout).
-    // A retry with the same or longer timeout often succeeds where the first
-    // attempt failed, because the provider may have already started streaming
-    // by the time the abort fires. Without this, a single slow request kills
-    // the whole review.
-    if (error.code === "timeout") {
-        return true;
-    }
-    return error.status === 429 || (typeof error.status === "number" && error.status >= 500);
+async function anthropic_messages_runWithRetryLoop(config, fetchImpl, requestId, url) {
+    return runWithRetry({
+        signal: config.signal,
+        endpoint: ENDPOINT,
+        requestId,
+        fallbackMessage: "Unknown Anthropic retry failure.",
+        runOnce: () => runOnce(config, fetchImpl, requestId, url),
+    });
 }
 async function runOnce(config, fetchImpl, requestId, url) {
     // `url` is the FULL messages URL already resolved by
@@ -14134,10 +14232,11 @@ async function runOnce(config, fetchImpl, requestId, url) {
     // Bumped-budget retry heuristic: large empty stream → likely a
     // truncation / reasoning-only response. Re-issue with more budget.
     // Same heuristic as openai-compatible.ts.
-    const needsMoreBudget = rawText.length > 16_000 && textPayload.length < 200;
-    const bumpedMaxOutput = needsMoreBudget && config.maxOutputTokens !== undefined
-        ? Math.min(config.maxOutputTokens * 2, 128_000)
-        : config.maxOutputTokens;
+    const bumpedMaxOutput = computeBumpedMaxOutput({
+        currentBudget: config.maxOutputTokens,
+        rawTextLength: rawText.length,
+        textPayloadLength: textPayload.length,
+    });
     // Self-healing retry with the JSON-only reminder prefix.
     const retryBodyConfig = {
         ...anthropic_messages_buildBodyConfig(config),
@@ -14178,17 +14277,19 @@ async function runOnce(config, fetchImpl, requestId, url) {
     // so override with our explicit stop_reason check when we have one.
     const effectiveTruncated = truncatedByStopReason || diagnosis.truncated;
     // Prefer the Anthropic-reported usage over the diagnosis's
-    // SSE-completed-event-derived `usage`. Strip the `undefined` value
-    // so we satisfy `exactOptionalPropertyTypes`.
+    // SSE-completed-event-derived `usage`.
     const usage = parsedUsage ?? diagnosis.usage;
-    const errorOptions = {
-        rawText,
-        truncated: effectiveTruncated,
-        ...(usage !== undefined ? { usage } : {}),
-    };
     return {
         ok: false,
-        error: new ProviderError("parse", ENDPOINT, retryResponseStatus ?? response.status, requestId, "Anthropic response did not contain a JSON review payload after self-healing retry.", errorOptions),
+        error: buildParseFailError({
+            endpoint: ENDPOINT,
+            status: retryResponseStatus ?? response.status,
+            requestId,
+            message: "Anthropic response did not contain a JSON review payload after self-healing retry.",
+            rawText,
+            truncated: effectiveTruncated,
+            ...(usage !== undefined ? { usage } : {}),
+        }),
     };
 }
 async function anthropic_messages_performFetch(fetchImpl, url, body, signal, apiKey, requestId) {
@@ -16514,6 +16615,21 @@ async function runLive(input) {
     // This implements the user's "wait for sonarqube during that PR run"
     // requirement: the review reflects the latest quality-gate state.
     const sonarContext = await readLiveSonarContext(input.parsed, fetchImpl);
+    // Scope the fetch counter and timer to the provider-review phase
+    // only. Pre-review phases (config validation, leak-gate, SonarQube
+    // probe) MUST NOT inflate the counter, or a leak-gate fetch would
+    // suppress the `provider-roundtrips-zero` warning the guard uses
+    // to detect cache hits / short-circuit fallbacks. Likewise, the
+    // timer must measure the provider-call window so pre-review
+    // latency doesn't push a legitimately-fast review over the 3s
+    // floor. Addresses inline self-review findings #1 (HIGH) + #3
+    // (MEDIUM) on PR #144.
+    const counter = { providerRoundTrips: 0 };
+    const countingFetch = (url, init) => {
+        counter.providerRoundTrips += 1;
+        return fetchImpl(url, init);
+    };
+    const startedAt = Date.now();
     let result;
     try {
         result = await dispatchLivePlatform({
@@ -16521,7 +16637,7 @@ async function runLive(input) {
             parsed: input.parsed,
             cwd: input.cwd,
             env,
-            fetchImpl,
+            fetchImpl: countingFetch,
             ...(sonarContext !== undefined ? { sonarContext } : {}),
         });
     }
@@ -16550,7 +16666,16 @@ async function runLive(input) {
     if (result.posted) {
         process.stdout.write(`${BRAND_PREFIX}${result.message}\n`);
     }
-    return result;
+    // Attach scope-limited telemetry for the artifact writer. Failed
+    // pre-review paths return early via failedResult, so they never
+    // reach this point — the suspicious-signal guard only fires on
+    // posted=true reviews, so missing telemetry on failed paths is
+    // intentional.
+    return {
+        ...result,
+        providerRoundTrips: counter.providerRoundTrips,
+        reviewDurationMs: Date.now() - startedAt,
+    };
 }
 /**
  * Reads the action input (via the parsed CLI argv), fetches the platform diff,
@@ -17117,6 +17242,12 @@ async function dispatchLive(parsed, cwd, env) {
 }
 function validateLiveArtifact(artifactPath, reviewExitCode) {
     const classification = classifyReviewArtifact(artifactPath);
+    // Mirror the CLI's `check-review-artifact` behaviour for the live
+    // path: surface advisory warnings on stderr so a local operator
+    // sees suspicious telemetry without needing to parse CI annotations.
+    for (const warning of classification.warnings) {
+        process.stderr.write(`${BRAND_PREFIX}warning: ${warning}\n`);
+    }
     if (classification.ok) {
         return reviewExitCode;
     }
@@ -17189,6 +17320,8 @@ async function writeLiveArtifact(parsed, cwd, platform, result) {
         blockedRawOutput: false,
         parseFailed: result.parseFailed === true,
         ...(result.verdict !== undefined ? { verdict: result.verdict } : {}),
+        ...(result.reviewDurationMs !== undefined ? { reviewDurationMs: result.reviewDurationMs } : {}),
+        ...(result.providerRoundTrips !== undefined ? { providerRoundTrips: result.providerRoundTrips } : {}),
         note: "Live review posted successfully; counts reflect what the GitHub/Azure API saw.",
     };
     await (0,promises_namespaceObject.writeFile)(artifactPath, `${JSON.stringify(body, null, 2)}\n`, "utf8");
@@ -18427,148 +18560,81 @@ async function main(argv) {
 // before reaching this module; that flag short-circuits the auto-invoke so the
 // action entry's own `src_main()` is the sole runtime, even though both
 // modules are concatenated into the same bundle.
-const isMainModule = (() => {
-    if (typeof process === "undefined") {
-        return false;
-    }
-    if (globalThis.__umactually_action_entry__ === true) {
-        return false;
-    }
-    // SEA-binary short-circuit. process.versions.sea is the embedded
-    // Node version when the bundle is running as a Single Executable
-    // Application (post `node --build-sea`). In that case the bundle
-    // is unambiguously the entry — argv1 may be a Windows 8.3 short
-    // path that fails to canonicalize against `import.meta.url`, and
-    // the secondary `cli.js/mjs/cjs` regex never matches `.exe`.
-    // Without this short-circuit the post-release e2e harness on
-    // Windows sees the binary exit 0 with no stdout and no artifact
-    // written, because main() never fires. process.versions.sea is
-    // a string on a SEA binary and undefined elsewhere, so this is
-    // a no-op for non-SEA invocations.
-    if (typeof process.versions?.["sea"] === "string" && process.versions["sea"].length > 0) {
+/**
+ * True when the action entry (`dist/index.js`) is the runtime. The flag
+ * is set by the action entry's bundle before this module loads; returning
+ * true here short-circuits the auto-invoke so the action entry's own
+ * `src_main()` is the sole main() caller.
+ */
+function isActionEntryPresent() {
+    return globalThis.__umactually_action_entry__ === true;
+}
+/**
+ * True when the bundle is running as a Node Single Executable Application
+ * (post `node --build-sea`). `process.versions.sea` is the embedded Node
+ * version on a SEA binary (a string like "1.0.0") and undefined elsewhere.
+ * Without this short-circuit, the post-release e2e harness on Windows sees
+ * the binary exit 0 with no stdout, because the URL match below silently
+ * misses the Windows 8.3 short path argv1 takes in that harness.
+ */
+function isProcessSeaBinary() {
+    return typeof process.versions?.["sea"] === "string"
+        && process.versions["sea"].length > 0;
+}
+/**
+ * Fallback for Node 25.6.0 SEA binaries where `process.versions.sea` may
+ * not be populated. The argv1 signal: a Windows PE binary ends in `.exe`,
+ * `.cmd`, or `.bat`; a Linux/macOS SEA binary has been stripped of its
+ * extension entirely. The npm-install path sets argv1 to .../dist/cli.js
+ * (never ends in .exe, never extensionless), so it is unaffected — only
+ * the SEA-binary path triggers this branch.
+ */
+function argv1LooksLikeSeaBinary(argv1) {
+    const lower = argv1.toLowerCase();
+    if (lower.endsWith(".exe") || lower.endsWith(".cmd") || lower.endsWith(".bat")) {
         return true;
     }
-    // Fallback for Node 25.6.0 SEA binaries: process.versions.sea
-    // may not be set on this version (it IS set on Node 25.7.0+).
-    // Detect the SEA case via argv1: if argv1 ends in .exe (Windows
-    // PE binary) or has no file extension at all (Linux/macOS SEA
-    // binary that has been stripped of its extension), AND we are
-    // not the action entry, treat the binary as the entry point.
-    // This is a heuristic but it's reliable in practice: the npm
-    // install path sets argv1 to .../dist/cli.js, which never ends
-    // in .exe and is never extensionless, so the npm path is
-    // unaffected. Only the SEA-binary path triggers this branch.
-    const argv1ForSeaDetect = process.argv[1] ?? "";
-    if (argv1ForSeaDetect.length > 0) {
-        const lower = argv1ForSeaDetect.toLowerCase();
-        if (lower.endsWith(".exe") || lower.endsWith(".cmd") || lower.endsWith(".bat")) {
-            return true;
-        }
-        // Extensionless binary on POSIX: this is the SEA case. The
-        // bin/umactually.mjs shim resolves to dist/cli.js via the npm
-        // bin link, so the npm path is unaffected. SEA binaries are
-        // copied/installed without a .js extension, so an extensionless
-        // argv1 is a strong SEA signal.
-        const lastSegment = argv1ForSeaDetect.split(/[\\/]/u).pop() ?? "";
-        if (lastSegment.length > 0 && !lastSegment.includes(".")) {
-            return true;
-        }
+    const lastSegment = argv1.split(/[\\/]/u).pop() ?? "";
+    return lastSegment.length > 0 && !lastSegment.includes(".");
+}
+/**
+ * Differentiates the npm-shim symlink from a real SEA binary. `npm install -g
+ * umactually` creates `prefix/bin/umactually` (no `.mjs` suffix) as a symlink
+ * to `prefix/lib/node_modules/umactually/bin/umactually.mjs`. Node does NOT
+ * resolve the symlink in `process.argv[1]` for shebang-invoked scripts, so
+ * argv1 is the extensionless symlink path — the same shape the SEA heuristic
+ * looks for. A real SEA binary has no symlink layer, so its realpath equals
+ * argv1. The npm shim's realpath resolves to the `.mjs` target.
+ *
+ * Returns true ONLY when argv1 IS the npm-shim symlink (a false return
+ * from the SEA detector; the caller treats `!argv1IsNpmShimSymlink(argv1)`
+ * as "safe to auto-invoke as SEA").
+ */
+function argv1IsNpmShimSymlink(argv1) {
+    let argv1Realpath;
+    try {
+        argv1Realpath = (0,external_node_fs_namespaceObject.realpathSync)(argv1);
     }
-    // The "this module is the entry" check is: import.meta.url matches
-    // pathToFileUrl(process.argv[1]). This is true for both the canonical
-    // CLI entry (argv1 = the cli.js path, import.meta.url = the file://
-    // URL of that path) and the SEA-binary case (argv1 = the binary
-    // path, import.meta.url = the file:// URL of the same path).
-    //
-    // The previous logic also required argv1 to end in `cli.js`. That
-    // was true for the npm-install path (argv1 = .../bin/umactually.mjs
-    // → shim → .../node_modules/umactually/dist/cli.js) but FALSE for
-    // a Node SEA binary where argv1 = the binary itself, e.g.
-    // `/usr/local/bin/umactually`. The `cli.js` regex test was the
-    // actual failure mode that made the previous auto-invoke silently
-    // no-op on every SEA install: argv1 was the binary path, the regex
-    // didn't match, isMainModule returned false, main() never ran,
-    // runVersion never wrote, and the binary exited 0 with empty
-    // stdout. The release-pipeline-dry-run CI's
-    // `INSTALLED_VERSION=$(umactually --version)` capture was therefore
-    // always empty. Note: process.versions.sea is a STRING (e.g.
-    // "1.0.0") on a SEA binary, not a boolean, but the previous code
-    // didn't check it — the cli.js regex was the failing branch. The
-    // action entry's globalThis flag still gates the action path (its
-    // bundle sets the flag before reaching this module), so dropping
-    // the regex is safe.
-    //
-    // ESM-loader fallback: when the file is invoked through an ESM
-    // loader (tsx, ts-node, vite-node, etc.), process.argv[1] is the
-    // loader's resolved entry, not the source file. The URL match
-    // fails in that case. We keep a regex on argv1 as a secondary
-    // guard so the ESM-loader case is still covered without
-    // re-introducing the SEA-binary regression. The regex accepts
-    // `cli.js`, `cli.mjs`, and `cli.cjs` (the three CommonJS/ESM
-    // variants we ship in dist/) so a developer running
-    // `node --import tsx dist/cli.js review` sees main() fire.
-    //
-    // Opt-out: setting `UMACTUALLY_DISABLE_AUTO_INVOKE=1` forces
-    // isMainModule to return false, which means a third-party importer
-    // that does `import('umactually/dist/cli')` from a non-standard
-    // path (so the URL match would otherwise succeed) can call
-    // `await main(argv)` explicitly without the auto-invoke firing.
-    // This is the supported way to consume `dist/cli` as a library.
-    // The bin/umactually.mjs shim does NOT need this env var (it
-    // already explicitly invokes `await mod.main(argv)` after the
-    // dynamic import), and the standalone SEA binary never sets it
-    // (the auto-invoke is the whole point of the binary).
-    //
-    // Regression surface to be aware of: any third-party importer that
-    // does `require('umactually/dist/cli')` from a path that does NOT
-    // end in `cli.js` (e.g. a re-exported entry under a different
-    // filename like `require('umactually/dist/cli/index')`) will now
-    // ALSO auto-invoke main() because the URL match succeeds, UNLESS
-    // the importer sets `UMACTUALLY_DISABLE_AUTO_INVOKE=1` in the
-    // process env before importing. If we ever need to support that
-    // pattern by default, restore the `cli.js` regex AND add a
-    // per-runtime entry probe (e.g. a `process.versions.sea` boolean
-    // in the SEA build that the auto-invoke can check). For v0.6.0,
-    // the supported consumers are the canonical CLI (npm path and SEA
-    // binary) plus the action entry plus library consumers who set
-    // `UMACTUALLY_DISABLE_AUTO_INVOKE=1`, all of which are covered.
-    //
-    // npm-install path note: when installed via `npm install -g
-    // umactually`, process.argv[1] is the path to bin/umactually.mjs
-    // (the shim), NOT to dist/cli.js. The shim's auto-invoke path
-    // (see bin/umactually.mjs) does NOT depend on this isMainModule
-    // gate — it does a dynamic `import(pathToFileURL(bundledCli))` of
-    // dist/cli.js and then explicitly calls `await mod.main(argv)`.
-    // So the npm path is correct regardless of whether isMainModule
-    // returns true or false for the dynamic-imported module. The
-    // isMainModule gate is the entry-point check for the standalone
-    // SEA binary (argv1 = the binary path itself) and the canonical
-    // `node dist/cli.js ...` invocation.
-    if (process.env["UMACTUALLY_DISABLE_AUTO_INVOKE"] === "1") {
+    catch {
         return false;
     }
-    const argv1 = process.argv[1];
-    if (argv1 === undefined) {
+    if (argv1Realpath === argv1) {
         return false;
     }
-    // Primary: URL match (canonical CLI entry + SEA binary).
-    //
-    // Symlink caveat: when the user invokes the CLI through a PATH
-    // symlink (e.g. `/usr/local/bin/umactually` is a symlink to
-    // `/opt/umactually/bin/umactually`, the default `umactually`
-    // install on macOS Homebrew and many Linux package managers),
-    // `pathToFileUrl(argv1)` produces the SYMLINK's URL, but
-    // `import.meta.url` for the loaded module is the REALPATH's
-    // URL. The two URL strings differ
-    // (`file:///usr/local/bin/umactually` vs.
-    // `file:///opt/umactually/bin/umactually`) and the strict
-    // equality check would silently return false → main() does not
-    // auto-invoke → the SEA binary silently exits 0 with no
-    // output. We normalize argv1 through fs.realpathSync (which
-    // resolves the symlink) before the URL comparison, and fall
-    // back to the literal argv1 if realpath throws (e.g. argv1
-    // does not exist yet because Node resolved it lazily — the
-    // original `===` comparison handles that case).
+    return /\.(?:mjs|cjs|js)$/u.test(argv1Realpath);
+}
+/**
+ * Primary entry-detection check: `import.meta.url` matches
+ * `pathToFileUrl(argv1)`. True for both the canonical CLI entry and the
+ * SEA-binary case (where argv1 IS the binary path).
+ *
+ * Symlink caveat: when the user invokes through a PATH symlink (Homebrew,
+ * many Linux package managers, the npm-installed bin link), argv1 is the
+ * SYMLINK path and import.meta.url is the REALPATH's URL. We normalize
+ * argv1 through `realpathSync` before the comparison and fall back to the
+ * literal argv1 if realpath throws (Node resolved the path lazily).
+ */
+function argv1MatchesModuleUrl(argv1) {
     const argv1Real = (() => {
         try {
             return (0,external_node_fs_namespaceObject.realpathSync)(argv1);
@@ -18577,19 +18643,74 @@ const isMainModule = (() => {
             return argv1;
         }
     })();
-    if (import.meta.url === pathToFileUrl(argv1) ||
-        import.meta.url === pathToFileUrl(argv1Real)) {
+    return (import.meta.url === pathToFileUrl(argv1) ||
+        import.meta.url === pathToFileUrl(argv1Real));
+}
+/**
+ * Secondary entry-detection check: argv1 ends in `cli.js`, `cli.mjs`, or
+ * `cli.cjs`. Covers two cases the URL match misses:
+ *
+ *  - ESM loaders (tsx, ts-node, vite-node) — argv1 is the loader's entry,
+ *    not the source file, and the URL match fails.
+ *  - Pre-2-arg invocations like `node dist/cli.js --version` where argv1
+ *    is the source file but the URL match can still race symlink
+ *    resolution on some filesystems.
+ *
+ * The regex accepts the three CommonJS/ESM variants we ship in `dist/` so a
+ * developer running `node --import tsx dist/cli.js review` sees main() fire.
+ */
+function argv1MatchesCliBasename(argv1) {
+    return /(?:^|[\\/])cli\.(?:js|mjs|cjs)$/u.test(argv1);
+}
+/**
+ * Composed entry-detection predicate. Each step short-circuits on its
+ * first match — the order matters. Decision tree:
+ *
+ *   1. No `process` global (rare; non-Node ESM host) → false.
+ *   2. `globalThis.__umactually_action_entry__` → false (the action entry
+ *      is already running its own main; suppress the auto-invoke).
+ *   3. `process.versions.sea` is a non-empty string → true (Node 25.7.0+
+ *      SEA binary; the bundle is unambiguously the entry).
+ *   4. argv1 has the SEA-binary shape AND argv1 is NOT the npm-shim
+ *      symlink → true (Node 25.6.0 SEA fallback).
+ *   5. `UMACTUALLY_DISABLE_AUTO_INVOKE=1` → false (library opt-out).
+ *   6. `import.meta.url` matches argv1 (literal or realpath) → true
+ *      (canonical CLI entry; covers `node dist/cli.js ...` and the
+ *      symlink-resolved path for `npm install -g`).
+ *   7. argv1 ends in `cli.js`/`cli.mjs`/`cli.cjs` → true (ESM-loader
+ *      fallback).
+ *   8. Otherwise → false (this module was imported by a third party; the
+ *      caller must invoke `main()` explicitly).
+ */
+function isMainModule() {
+    if (typeof process === "undefined") {
+        return false;
+    }
+    if (isActionEntryPresent()) {
+        return false;
+    }
+    if (isProcessSeaBinary()) {
         return true;
     }
-    // Secondary: argv1 ends in cli.js/mjs/cjs. Covers the ESM-loader
-    // case (tsx, ts-node) where argv1 is the loader's entry, not the
-    // source file, and the URL match silently fails. Also covers
-    // pre-2-arg invocations like `node dist/cli.js --version` where
-    // argv1 is the source file but the URL match can still race
-    // symlink resolution on some filesystems.
-    return /(?:^|[\\/])cli\.(?:js|mjs|cjs)$/u.test(argv1);
-})();
-if (isMainModule) {
+    const argv1 = process.argv[1] ?? "";
+    if (argv1.length > 0 && argv1LooksLikeSeaBinary(argv1)) {
+        if (!argv1IsNpmShimSymlink(argv1)) {
+            return true;
+        }
+    }
+    if (process.env["UMACTUALLY_DISABLE_AUTO_INVOKE"] === "1") {
+        return false;
+    }
+    if (argv1.length === 0) {
+        return false;
+    }
+    if (argv1MatchesModuleUrl(argv1)) {
+        return true;
+    }
+    return argv1MatchesCliBasename(argv1);
+}
+const isMainModuleResult = isMainModule();
+if (isMainModuleResult) {
     main(process.argv.slice(2))
         .then((exitCode) => {
         // Set exitCode and let Node exit naturally so stdout/stderr are

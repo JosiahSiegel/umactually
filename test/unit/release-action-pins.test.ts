@@ -189,6 +189,13 @@ function collectGhApiCalls(file: string, lines: readonly string[]): readonly GhA
     const indent = indentMatch?.[1]?.length ?? 0;
     const content = raw.slice(indent);
 
+    // Blank lines carry no indentation signal — skip them so they don't
+    // pop env blocks that remain in scope across inter-block whitespace
+    // (common inside `run: |` multi-line scripts).
+    if (raw.trim() === "") {
+      continue;
+    }
+
     // Pop env blocks whose indent is strictly greater than this line's
     // indent (they ended on a previous line at a deeper level). Lines at
     // indent == env.indent are SIBLING keys (`run:`, `uses:`, `- name:`,
