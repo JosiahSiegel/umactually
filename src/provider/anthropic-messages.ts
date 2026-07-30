@@ -59,8 +59,8 @@ import {
   ProviderError,
   sanitizeMessage,
 } from "./provider-error.js";
-import { RETRY_BACKOFF_MS, bailIfAborted, computeBumpedMaxOutput, isRetryable } from "./provider-retry.js";
-import { composeSignal, sleep } from "../util/async.js";
+import { computeBumpedMaxOutput, runWithRetry } from "./provider-retry.js";
+import { composeSignal } from "../util/async.js";
 import {
   createRequestId,
   resolveAnthropicMessagesUrl,
@@ -314,47 +314,22 @@ export async function runAnthropicRequest(
   // case here.
   const url = resolveAnthropicMessagesUrl(config.baseUrl);
 
-  return runWithRetry(config, fetchImpl, requestId, url);
+  return runWithRetryLoop(config, fetchImpl, requestId, url);
 }
 
-async function runWithRetry(
+async function runWithRetryLoop(
   config: AnthropicProviderCallConfig,
   fetchImpl: typeof fetch,
   requestId: string,
   url: string,
 ): Promise<AnthropicProviderCallResult> {
-  let lastFailure: ProviderError | null = null;
-  for (let attempt = 0; attempt <= RETRY_BACKOFF_MS.length; attempt += 1) {
-    // Bail out if the caller's signal is already aborted. Without this
-    // check, the next runOnce would compose its signal with an
-    // already-aborted caller signal — `AbortSignal.any([aborted, ...])`
-    // is itself aborted, so the second attempt would fail immediately
-    // with a "timeout" error, even though the underlying connection
-    // was healthy. That makes the "timeout is transient, retry it"
-    // rationale void (we'd be reporting a fake timeout, not a real one).
-    // Reporting an "aborted" error here is semantically correct and
-    // also not retryable, so we naturally exit the loop.
-    const bail = bailIfAborted({ signal: config.signal, endpoint: ENDPOINT, requestId });
-    if (bail !== null) {
-      return bail;
-    }
-    const result = await runOnce(config, fetchImpl, requestId, url);
-    if (result.ok) {
-      return result;
-    }
-    lastFailure = result.error;
-    if (!isRetryable(result.error)) {
-      return result;
-    }
-    if (attempt < RETRY_BACKOFF_MS.length) {
-      const backoffMs = RETRY_BACKOFF_MS[attempt] ?? 0;
-      await sleep(backoffMs);
-    }
-  }
-  return {
-    ok: false,
-    error: lastFailure ?? new ProviderError("network", ENDPOINT, null, requestId, "Unknown Anthropic retry failure."),
-  };
+  return runWithRetry<AnthropicProviderCallResult>({
+    signal: config.signal,
+    endpoint: ENDPOINT,
+    requestId,
+    fallbackMessage: "Unknown Anthropic retry failure.",
+    runOnce: () => runOnce(config, fetchImpl, requestId, url),
+  });
 }
 
 async function runOnce(

@@ -102,4 +102,56 @@ export function computeBumpedMaxOutput(args: {
   return needsMore ? Math.min(args.currentBudget * 2, 128_000) : args.currentBudget;
 }
 
+/**
+ * Generic retry loop shared by every provider client.
+ *
+ * Calls `runOnce` repeatedly until one of three exit conditions:
+ *   1. `runOnce` succeeds (returns `{ ok: true, ... }`) — propagate as-is.
+ *   2. `runOnce` returns a non-retryable error (per `isRetryable`) — propagate
+ *      the error result without burning another attempt.
+ *   3. The retry budget (`RETRY_BACKOFF_MS.length` retries) is exhausted —
+ *      return the last failure wrapped in a generic "retry failure" envelope.
+ *
+ * Each provider client supplies its own `runOnce` callback that performs
+ * the request/parse step. The callback's return shape is provider-specific
+ * (e.g. `ProviderCallResult` for openai-compatible, `AnthropicProviderCallResult`
+ * for anthropic-messages), so the helper is generic over the result shape —
+ * callers narrow via TypeScript generics at the call site.
+ *
+ * Before each attempt, calls `bailIfAborted` to short-circuit when the
+ * caller's `AbortSignal` is already aborted (would otherwise produce a
+ * fake-timeout error after composing with an aborted signal).
+ */
+export async function runWithRetry<T extends { readonly ok: true } | { readonly ok: false; readonly error: ProviderError }>(args: {
+  readonly signal: AbortSignal | undefined;
+  readonly runOnce: () => Promise<T>;
+  readonly endpoint: ProviderEndpoint;
+  readonly requestId: string;
+  readonly fallbackMessage: string;
+}): Promise<T> {
+  let lastFailure: ProviderError | null = null;
+  for (let attempt = 0; attempt <= RETRY_BACKOFF_MS.length; attempt += 1) {
+    const bail = bailIfAborted({ signal: args.signal, endpoint: args.endpoint, requestId: args.requestId });
+    if (bail !== null) {
+      return bail as unknown as T;
+    }
+    const result = await args.runOnce();
+    if (result.ok) {
+      return result;
+    }
+    lastFailure = result.error;
+    if (!isRetryable(result.error)) {
+      return result;
+    }
+    if (attempt < RETRY_BACKOFF_MS.length) {
+      const backoffMs = RETRY_BACKOFF_MS[attempt] ?? 0;
+      await sleep(backoffMs);
+    }
+  }
+  return {
+    ok: false,
+    error: lastFailure ?? new ProviderError("network", args.endpoint, null, args.requestId, args.fallbackMessage),
+  } as unknown as T;
+}
+
 export { sleep };
