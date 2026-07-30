@@ -23,8 +23,9 @@
  *   - filters by `commit.oid == HEAD_SHA` so we never attach the guide
  *     to a review from an older commit (no more "stale bot review"
  *     ambiguity)
- *   - filters by `state: COMMENTED` so we never PUT to a PENDING review
- *     (no more 422 failures)
+ *   - filters by `state != PENDING` so we never PUT to a PENDING review
+ *     (no more 422 failures; COMMENTED, APPROVED, and CHANGES_REQUESTED
+ *     all qualify)
  *   - extracts the inline count from the umactually manifest's
  *     `<!-- umactually:manifest {"inlineCount":N, ...} -->` JSON blob
  *     (no emoji-coupling, no per-severity miscount)
@@ -240,6 +241,25 @@ describe("self-review workflow noise-skip rule", () => {
     expect(ghGuide).toMatch(/reply.*before.*resolved/us);
     expect(azGuide).toMatch(/Resolve properly/u);
     expect(azGuide).toMatch(/reply.*before.*closed/us);
+  });
+
+  it("manifest extraction anchors the JSON terminator on end-of-line, not first '-->'", () => {
+    const stepBlock = extractStepBlock(
+      workflowText,
+      "Append resolution-guide to latest review body",
+    );
+    expect(stepBlock).toMatch(/tac \| awk/u);
+    expect(stepBlock).toMatch("sed 's/[[:space:]]*-->$//'");
+    expect(stepBlock).not.toMatch('sub(/ -->.*$/', 'g');
+  });
+
+  it("the test docstring matches the workflow filter (state != PENDING, not state == COMMENTED)", () => {
+    const testText = readFileSync(
+      resolve(import.meta.dirname, "self-review-noise-skip.test.ts"),
+      "utf8",
+    );
+    expect(testText).toMatch(/state\s*!=\s*PENDING/u);
+    expect(testText).not.toMatch(/`state:\s*COMMENTED`/u);
   });
 });
 

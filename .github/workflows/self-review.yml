@@ -232,11 +232,10 @@ jobs:
           MANIFEST_JSON=$(printf '%s' "${CURRENT}" | tac | awk '
             /<!-- umactually:manifest / {
               sub(/^.*<!-- umactually:manifest /, "")
-              sub(/ -->.*$/, "")
               print
               exit
             }
-          ')
+          ' | sed 's/[[:space:]]*-->$//')
           if [ -z "${MANIFEST_JSON}" ]; then
             INLINE_COUNT=0
           else
