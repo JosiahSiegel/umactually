@@ -399,6 +399,12 @@ export function validateLiveArtifact(
   reviewExitCode: number,
 ): number {
   const classification = classifyReviewArtifact(artifactPath);
+  // Mirror the CLI's `check-review-artifact` behaviour for the live
+  // path: surface advisory warnings on stderr so a local operator
+  // sees suspicious telemetry without needing to parse CI annotations.
+  for (const warning of classification.warnings) {
+    process.stderr.write(`${BRAND_PREFIX}warning: ${warning}\n`);
+  }
   if (classification.ok) {
     return reviewExitCode;
   }
@@ -447,6 +453,8 @@ async function writeLiveArtifact(
     readonly verdict?: string;
     readonly parseFailed?: boolean;
     readonly parseWarnings?: readonly import("./parse-warnings.js").ParseWarning[];
+    readonly reviewDurationMs?: number;
+    readonly providerRoundTrips?: number;
   },
 ): Promise<void> {
   // Use the same default path resolution as the dry-run path so the
@@ -487,6 +495,8 @@ async function writeLiveArtifact(
     blockedRawOutput: false,
     parseFailed: result.parseFailed === true,
     ...(result.verdict !== undefined ? { verdict: result.verdict } : {}),
+    ...(result.reviewDurationMs !== undefined ? { reviewDurationMs: result.reviewDurationMs } : {}),
+    ...(result.providerRoundTrips !== undefined ? { providerRoundTrips: result.providerRoundTrips } : {}),
     note: "Live review posted successfully; counts reflect what the GitHub/Azure API saw.",
   };
   await writeFile(artifactPath, `${JSON.stringify(body, null, 2)}\n`, "utf8");

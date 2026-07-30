@@ -221,6 +221,21 @@ export async function runLive(input: RunLiveInput): Promise<LiveRunResult> {
   // requirement: the review reflects the latest quality-gate state.
   const sonarContext = await readLiveSonarContext(input.parsed, fetchImpl);
 
+  // Scope the fetch counter and timer to the provider-review phase
+  // only. Pre-review phases (config validation, leak-gate, SonarQube
+  // probe) MUST NOT inflate the counter, or a leak-gate fetch would
+  // suppress the `provider-roundtrips-zero` warning the guard uses
+  // to detect cache hits / short-circuit fallbacks. Likewise, the
+  // timer must measure the provider-call window so pre-review
+  // latency doesn't push a legitimately-fast review over the 3s
+  // floor. Addresses inline self-review findings #1 (HIGH) + #3
+  // (MEDIUM) on PR #144.
+  const counter = { providerRoundTrips: 0 };
+  const countingFetch: FetchImpl = (url, init) => {
+    counter.providerRoundTrips += 1;
+    return fetchImpl(url, init);
+  };
+  const startedAt = Date.now();
   let result: LiveRunResult;
   try {
     result = await dispatchLivePlatform({
@@ -228,7 +243,7 @@ export async function runLive(input: RunLiveInput): Promise<LiveRunResult> {
       parsed: input.parsed,
       cwd: input.cwd,
       env,
-      fetchImpl,
+      fetchImpl: countingFetch,
       ...(sonarContext !== undefined ? { sonarContext } : {}),
     });
   } catch (error) {
@@ -255,7 +270,16 @@ export async function runLive(input: RunLiveInput): Promise<LiveRunResult> {
   if (result.posted) {
     process.stdout.write(`${BRAND_PREFIX}${result.message}\n`);
   }
-  return result;
+  // Attach scope-limited telemetry for the artifact writer. Failed
+  // pre-review paths return early via failedResult, so they never
+  // reach this point — the suspicious-signal guard only fires on
+  // posted=true reviews, so missing telemetry on failed paths is
+  // intentional.
+  return {
+    ...result,
+    providerRoundTrips: counter.providerRoundTrips,
+    reviewDurationMs: Date.now() - startedAt,
+  };
 }
 
 /**

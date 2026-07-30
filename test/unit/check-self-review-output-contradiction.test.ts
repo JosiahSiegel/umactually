@@ -34,6 +34,7 @@ describe("review artifact contradiction regression", () => {
     expect(result).toEqual({
       ok: false,
       reason: "contradictory review: verdict=NEEDS_FIX with 0 findings",
+      warnings: [],
     });
   });
 });
