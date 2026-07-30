@@ -43,6 +43,7 @@
   },
   "scripts": {
     "test": "vitest",
+    "test:coverage": "vitest run --coverage --project unit --project scenario",
     "test:unit": "vitest --project unit",
     "test:scenario": "vitest --project scenario",
     "test:e2e": "vitest --run --project e2e",
