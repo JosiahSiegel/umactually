@@ -754,11 +754,12 @@ jobs:
         uses: SonarSource/sonarqube-scan-action@7006c4492b2e0ee0f816d36501671557c97f5995  # v8.1.0 — pinned to the commit SHA SonarCloud's UI recommends (matches StrataKit's pin at stratakitci.log:683)
         env:
           SONAR_TOKEN: ${{ env.SONAR_TOKEN }}
-          # GitHub Actions automatically injects the project key from
-          # sonar-project.properties; we override only the host URL
-          # because sonar-project.properties intentionally omits it
-          # (so local CLI runs can target a self-hosted instance).
-          SONAR_HOST_URL: https://sonarcloud.io
+          # SONAR_HOST_URL is read from sonar-project.properties
+          # (sonar.host.url=https://sonarcloud.io) so the workflow
+          # stays host-agnostic — operators targeting a self-hosted
+          # SonarQube edit sonar-project.properties and the workflow
+          # picks up the new URL on the next run, no workflow change
+          # required.
 
       - name: Upload coverage artifact
         if: ${{ always() && env.SONAR_TOKEN != '' }}

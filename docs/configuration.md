@@ -104,7 +104,7 @@ SonarCloud analysis is optional. Without the `SONAR_TOKEN` secret the `sonarqube
 
 **Operator setup (first time only)**
 
-1. Create the SonarCloud project: https://sonarcloud.io → "+" → "Analyze new project" → select `JosiahSiegel/umactually`. SonarCloud auto-creates the project key `JosiahSiegel_umactually` against the `josiahsiegel` organisation. `sonar-project.properties` is preconfigured against this org/project; no further edits to that file are needed.
+1. Create the SonarCloud project: https://sonarcloud.io → "+" → "Analyze new project" → select `JosiahSiegel/umactually`. SonarCloud auto-creates the project key `JosiahSiegel_umactually` against the `josiahsiegel` organisation (note: SonarCloud normalises GitHub org names to lowercase — `JosiahSiegel` on GitHub becomes `josiahsiegel` on SonarCloud; the project key, however, preserves the case from the repo name). `sonar-project.properties` is preconfigured against this org/project; no further edits to that file are needed.
 2. Generate a token: https://sonarcloud.io → Account → Security → Generate Tokens → name `umactually-ci`. Copy the token immediately; it cannot be retrieved later.
 3. Add the secret: GitHub repo → Settings → Secrets and variables → Actions → New repository secret → Name `SONAR_TOKEN`, Value = the token from step 2.
 
