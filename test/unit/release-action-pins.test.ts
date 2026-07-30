@@ -236,7 +236,7 @@ function collectGhApiCalls(file: string, lines: readonly string[]): readonly GhA
         entries: new Map(m.entries),
       }));
       const hasGhToken = enclosingEnvBlocks.some((b) => {
-        const v = b.entries.get("GH_TOKEN");
+        const v = b.entries.get("GH_TOKEN") ?? b.entries.get("GITHUB_TOKEN");
         return v === "${{ github.token }}" || v === "${{ secrets.GITHUB_TOKEN }}";
       });
       calls.push({ file, line: lineNumber, indent, enclosingEnvBlocks, hasGhToken });

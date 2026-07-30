@@ -1,0 +1,15 @@
+query($owner: String!, $name: String!, $pr: Int!) {
+  repository(owner: $owner, name: $name) {
+    pullRequest(number: $pr) {
+      reviews(last: 5) {
+        nodes {
+          databaseId
+          state
+          commit { oid }
+          author { login }
+          body
+        }
+      }
+    }
+  }
+}

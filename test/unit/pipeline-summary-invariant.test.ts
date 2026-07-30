@@ -154,10 +154,10 @@ describe("CLARITY-19 (new) headline invariant — off-diff callout retired (CLAR
     expect(manifest.suppressedCount).toBe(2);
   });
 
-  it("headline reads '0 inline findings' when all model findings were filtered", () => {
+  it("body collapses to the ship-it line when all model findings were filtered", () => {
     const body = buildReviewBody({
       review: {
-        summary: "All filtered.",
+        summary: "",
         verdict: "COMMENT",
         comments: [
           { path: "dist/cli.js", line: 1, body: "Bundled", severity: "info", category: "build" },
@@ -175,16 +175,16 @@ describe("CLARITY-19 (new) headline invariant — off-diff callout retired (CLAR
       secrets: SECRETS,
       postedComments: [],
     });
-    // 0 inline findings — reader sees the right number immediately.
-    expect(body).toMatch(/📊\s+0\s+inline\s+findings/u);
+    expect(body).toContain("## ✅ 0 inline findings — ship it");
+    expect(body).not.toMatch(/📊\s+0\s+inline\s+findings/u);
     // Manifest's inlineCount reflects the post-filter count of 0.
     const manifest = readManifest(body);
     expect(manifest.inlineCount).toBe(0);
   });
 
-  it("headline reads '0 inline findings' on a clean review (0 posted, 0 off-diff)", () => {
+  it("body collapses to the ship-it line on a clean review (0 posted, 0 off-diff)", () => {
     const body = buildReviewBody({
-      review: { summary: "All clear.", verdict: "SHIP", comments: [], suppressedComments: [] },
+      review: { summary: "", verdict: "SHIP", comments: [], suppressedComments: [] },
       provider: "openai-compatible",
       modelId: "auto",
       validCommentCount: 0,
@@ -193,7 +193,8 @@ describe("CLARITY-19 (new) headline invariant — off-diff callout retired (CLAR
       severityCounts: { critical: 0, high: 0, medium: 0, low: 0 },
       secrets: SECRETS,
     });
-    expect(body).toMatch(/📊\s+0\s+inline\s+findings/u);
+    expect(body).toContain("## ✅ 0 inline findings — ship it");
+    expect(body).not.toMatch(/📊\s+0\s+inline\s+findings/u);
     // No off-diff callout when offDiffCount === 0.
     expect(body).not.toMatch(/not posted inline/u);
   });

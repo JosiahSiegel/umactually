@@ -83,8 +83,8 @@ describe("severity-table layout — actionable-only parent card", () => {
     expect(body).not.toContain("&nbsp;&nbsp;&nbsp;&nbsp;");
   });
 
-  it("renders an empty placeholder when every finding was filtered out", () => {
-    // 0 posted, 0 off-diff. The findings list shows the empty placeholder.
+  it("collapses to the ship-it line when every finding was filtered out", () => {
+    // 0 posted, 0 suppressed, not parse-failed — clean-ship branch.
     const body = buildReviewBody({
       review: {
         summary: "",
@@ -105,23 +105,20 @@ describe("severity-table layout — actionable-only parent card", () => {
       secrets: [],
       postedComments: [],
     });
-    // Empty placeholder, no <details> rows (no posted findings).
-    expect(body).toContain("_No findings to address._");
+    expect(body).toContain("## ✅ 0 inline findings — ship it");
+    expect(body).not.toContain("_No findings to address._");
     expect(body).not.toContain("<details>");
-    // No legacy "Filtered preview" header.
     expect(body).not.toMatch(/🧹/u);
     expect(body).not.toMatch(/Filtered preview/u);
     expect(body).not.toMatch(/🔕/u);
-    // No severity tally (nothing in the four severity buckets).
     expect(body).not.toMatch(/🏷️/u);
-    // Verdict downgrades to DISCUSS.
-    expect(body).toMatch(/💬\s+DISCUSS/u);
+    expect(body).not.toMatch(/💬\s+DISCUSS/u);
   });
 
-  it("all-filtered model output renders a meaningful empty state", () => {
+  it("all-filtered model output collapses to the ship-it line", () => {
     const body = buildReviewBody({
       review: {
-        summary: "The model produced candidates, but policy filtered all of them.",
+        summary: "",
         verdict: "NEEDS_FIX",
         comments: [
           { path: "src/noisy.ts", line: 1, body: "Style-only candidate", severity: "info", category: "style" },
@@ -137,16 +134,10 @@ describe("severity-table layout — actionable-only parent card", () => {
       secrets: [],
       postedComments: [],
     });
-
-    expect(body).toMatch(/💬\s+DISCUSS/u);
-    // Empty placeholder, no <details> rows.
-    expect(body).toContain("_No findings to address._");
-    expect(body).not.toContain("<details>");
-    // Headline leads with the posted count (0). The model produced
-    // 1 finding but it was filtered (severity/minor policy) so 0
-    // made it to the postable set. The reader sees "0 inline
-    // findings" — they don't have to subtract.
-    expect(body).toMatch(/📊\s+0\s+inline\s+findings/u);
+    expect(body).toContain("## ✅ 0 inline findings — ship it");
+    expect(body).not.toMatch(/💬\s+DISCUSS/u);
+    expect(body).not.toContain("_No findings to address._");
+    expect(body).not.toMatch(/📊\s+0\s+inline\s+findings/u);
     expect(body).not.toMatch(/🏷️/u);
   });
 
@@ -185,9 +176,9 @@ describe("severity-table layout — actionable-only parent card", () => {
     expect(body).not.toMatch(/🔕/u);
   });
 
-  it("clean review (0 posted + 0 suppressed) shows verdict + empty placeholder + summary + footer", () => {
+  it("clean review (0 posted + 0 suppressed) collapses to the ship-it line", () => {
     const body = buildReviewBody({
-      review: { summary: "All clear.", verdict: "SHIP", comments: [], suppressedComments: [] },
+      review: { summary: "", verdict: "SHIP", comments: [], suppressedComments: [] },
       provider: "openai-compatible",
       modelId: "auto",
       validCommentCount: 0,
@@ -196,25 +187,18 @@ describe("severity-table layout — actionable-only parent card", () => {
       severityCounts: { critical: 0, high: 0, medium: 0, low: 0 },
       secrets: [],
     });
-    // No row labels, no tally, no legacy details blocks.
     expect(body).not.toMatch(/\*\*Posted:\*\*/u);
     expect(body).not.toMatch(/\*\*Considered:\*\*/u);
     expect(body).not.toMatch(/\*\*Suppressed:\*\*/u);
-    // No severity tally when zero findings.
     expect(body).not.toMatch(/🏷️/u);
-    // No 🧹 / 📋 / 📍 / 🔕 anywhere.
     expect(body).not.toMatch(/🧹/u);
     expect(body).not.toMatch(/📋\s+Posted preview/u);
     expect(body).not.toMatch(/📍/u);
     expect(body).not.toMatch(/🔕/u);
-    // No <details> rows for posted findings (none posted).
     expect(body).not.toContain("<details>");
-    // Verdict + summary + footer still present.
-    expect(body).toMatch(/✅\s+SHIP/u);
-    expect(body).toMatch(/All clear\./u);
-    expect(body).toMatch(/0\s+inline/u);
-    // Empty findings placeholder is rendered.
-    expect(body).toMatch(/No findings to address/u);
+    expect(body).not.toMatch(/✅\s+SHIP/u);
+    expect(body).not.toMatch(/No findings to address/u);
+    expect(body).toContain("## ✅ 0 inline findings — ship it");
   });
 
   it("findings list is sorted by severity desc (highest first)", () => {

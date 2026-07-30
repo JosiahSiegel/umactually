@@ -238,6 +238,16 @@ describe("S2 — all layouts render without throwing", () => {
     expect(() => renderSummary(invalidLayout, makeBusyData())).toThrow();
   });
 
+  it("renderSummary throws when validCommentCount is undefined", () => {
+    const data = { ...makeBusyData(), validCommentCount: undefined } as unknown as Parameters<typeof renderSummary>[1];
+    expect(() => renderSummary("severity-table", data)).toThrow(/validCommentCount is required/u);
+  });
+
+  it("renderSummary throws when suppressedCommentCount is undefined", () => {
+    const data = { ...makeBusyData(), suppressedCommentCount: undefined } as unknown as Parameters<typeof renderSummary>[1];
+    expect(() => renderSummary("severity-table", data)).toThrow(/suppressedCommentCount is required/u);
+  });
+
   it("renderBaseline renders the 'current' baseline", () => {
     const out = renderBaseline(BASELINE, makeBusyData());
     expect(typeof out).toBe("string");
@@ -553,6 +563,7 @@ describe("severity-table details", () => {
         postedComments: [
           { path: "src/x.ts", line: 1, body: "x", severity: c.severity, category: "general" },
         ],
+        validCommentCount: 1,
       });
       const out = renderSummary("severity-table", data);
       expect(out).toContain(c.glyph);
@@ -561,11 +572,14 @@ describe("severity-table details", () => {
 
   it("severityEmoji emits plain-⚪ fallback for unknown severities", () => {
     // Unknown severities don't match any bucket in severity-table, so use
-    // a layout that renders every comment inline (verdict-banner).
+    // a layout that renders every comment inline (verdict-banner). The
+    // posted comment keeps the input above the clean-ship gate so the
+    // layout actually runs.
     const data = makeData({
       postedComments: [
         { path: "src/x.ts", line: 1, body: "x", severity: "unknown", category: "general" },
       ],
+      validCommentCount: 1,
     });
     const out = renderSummary("verdict-banner", data);
     expect(out).toContain("⚪");
@@ -610,6 +624,7 @@ describe("severity-table details", () => {
         { path: "src/x.ts", line: 1, body: "x", severity: "medium", category: "general" },
         { path: "src/y.ts", line: 2, body: "y", severity: "critical", category: "general" },
       ],
+      validCommentCount: 2,
     });
     // severity-table is the default layout. Rows are sorted by
     // severity bucket (highest rank first), so critical is row 1,
@@ -788,13 +803,13 @@ describe("severity-table details", () => {
     expect(out).toContain("📊 2 inline findings");
   });
 
-  it("headline reads '0 inline findings' when postedComments is empty, even if model produced findings", () => {
-    // The caller says 0 posted (all filtered). The headline must
-    // read "0 inline findings" — the user's question is "how many
-    // will I see on this PR?" and the answer is 0.
+  it("body collapses to the ship-it line when postedComments is empty, even if model produced findings", () => {
+    // The caller says 0 posted (all filtered). The body must NOT
+    // pretend a non-zero headline — clean-ship branch fires and the
+    // body emits the one-line verdict.
     const data: ReviewData = makeData({
       review: {
-        summary: "All filtered.",
+        summary: "",
         verdict: "COMMENT",
         comments: [
           { path: "dist/cli.js", line: 1, body: "Bundled", severity: "info", category: "build" },
@@ -806,12 +821,11 @@ describe("severity-table details", () => {
       suppressedCommentCount: 0,
       severityCounts: { critical: 0, high: 0, medium: 0, low: 0 },
       offDiffFromComments: [],
-      // postedComments: [] — explicitly empty (not the review.comments
-      // fallback) so the headline reads 0, not 2.
       postedComments: [],
     });
     const out = renderSummary("severity-table", data);
-    expect(out).toContain("📊 0 inline findings");
+    expect(out).toContain("## ✅ 0 inline findings — ship it");
+    expect(out).not.toContain("📊 0 inline findings");
     // No off-diff callout when offDiffCount === 0.
     expect(out).not.toMatch(/not posted inline/u);
   });
@@ -849,10 +863,13 @@ describe("layout distinctness — each layout has a recognisable signature", () 
     expect(unique.size).toBe(LAYOUTS.length);
   });
 
-  it("all 20 layouts produce different strings for the clean sample", () => {
+  it("all 20 layouts produce the same clean-ship body for an empty review", () => {
+    // The clean-ship branch is hoisted to renderSummary so every layout
+    // receives the same one-line verdict for an empty review. Layout
+    // distinctness only matters for populated or parse-failed reviews.
     const outputs = LAYOUTS.map((l) => renderSummary(l, makeCleanData()));
     const unique = new Set(outputs);
-    expect(unique.size).toBe(LAYOUTS.length);
+    expect(unique.size).toBe(1);
   });
 
   it("every layout uses emoji (visually rich, not text-only)", () => {
