@@ -15,7 +15,6 @@ import type { ParsedCliArgs } from "./parse-args.js";
 import { resetDefaultPromptFilesCache } from "./provider-prompts.js";
 import { resolvePlatform, type ResolvedPlatform } from "./validate.js";
 import { runLive as runOrchestrator } from "./orchestrator.js";
-import type { FetchImpl } from "../util/http.js";
 import { classifyReviewArtifact } from "./check-review-artifact.js";
 
 export type CliJsonOutcome = {
@@ -382,25 +381,14 @@ export async function dispatchLive(parsed: ParsedCliArgs, cwd: string, env: Node
   // for this dispatch and restores/deletes it in finally so same-process
   // batch runs do not inherit --debug-raw-response from an earlier review.
   return withDebugRawEnv(parsed.debugRawResponse === true, async () => {
-    const startedAt = Date.now();
-    const counter = { providerRoundTrips: 0 };
-    const countingFetch: FetchImpl = (input, init) => {
-      counter.providerRoundTrips += 1;
-      return globalThis.fetch(input, init);
-    };
-    const result = await runOrchestrator({ parsed, cwd, env, fetchImpl: countingFetch });
-    const reviewDurationMs = Date.now() - startedAt;
+    const result = await runOrchestrator({ parsed, cwd, env });
     // Write a summary artifact at the same path the dry-run uses so the
     // self-review CI guard (`scripts/check-self-review-output.mjs`) can
     // inspect the live review's outcome. Without this, a parse-fail
     // card posted via the GitHub API leaves no local trace for the
     // guard to catch — the action exits 0 and CI sees "pass".
     const platform = resolvePlatform(parsed.platform, env);
-    await writeLiveArtifact(parsed, cwd, platform, {
-      ...result,
-      reviewDurationMs,
-      providerRoundTrips: counter.providerRoundTrips,
-    });
+    await writeLiveArtifact(parsed, cwd, platform, result);
     const artifactPath = resolveArtifactPath(parsed.outputArtifact, platform, cwd);
     return { exitCode: validateLiveArtifact(artifactPath, result.exitCode) };
   });
