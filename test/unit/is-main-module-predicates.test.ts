@@ -32,7 +32,7 @@ import {
   writeFileSync as realWriteFileSync,
 } from "node:fs";
 import { rm } from "node:fs/promises";
-import { dirname, join, resolve } from "node:path";
+import { join, resolve } from "node:path";
 
 import {
   afterEach,
