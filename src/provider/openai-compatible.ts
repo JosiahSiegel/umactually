@@ -17,7 +17,7 @@ import {
   sanitizeHttpStatus,
   sanitizeMessage,
 } from "./provider-error.js";
-import { computeBumpedMaxOutput, runWithRetry } from "./provider-retry.js";
+import { buildParseFailError, computeBumpedMaxOutput, runWithRetry } from "./provider-retry.js";
 import { composeSignal } from "../util/async.js";
 import { BRAND_PREFIX, REDACTED_SECRET_TOKEN } from "../util/brand.js";
 import { isDebugRawActive } from "../util/debug-raw.js";
@@ -417,26 +417,16 @@ async function callEndpoint(
     // ORIGINAL rawText. retryResponseStatus stays null in this branch.
   }
   if (retryReview === null) {
-    // Distinguish "truncated stream" (model hit its token budget before
-    // emitting response.completed) from "completed stream with malformed
-    // JSON" (model returned bad data). The former is actionable: the
-    // operator can raise --max-output-tokens and retry. The latter
-    // usually means a model regression. Both surface in the parse-fail
-    // diagnostic via `ProviderError.truncated` so the render layer can
-    // show different remediation advice.
     const diagnosis = diagnoseParseFailure({ rawText });
-    throw new ProviderError(
-      "parse",
+    throw buildParseFailError({
       endpoint,
-      retryResponseStatus ?? response.status,
+      status: retryResponseStatus ?? response.status,
       requestId,
-      "Provider response did not contain a JSON review payload after self-healing retry.",
-      {
-        rawText,
-        truncated: diagnosis.truncated,
-        ...(diagnosis.usage !== undefined ? { usage: diagnosis.usage } : {}),
-      },
-    );
+      message: "Provider response did not contain a JSON review payload after self-healing retry.",
+      rawText,
+      truncated: diagnosis.truncated,
+      ...(diagnosis.usage !== undefined ? { usage: diagnosis.usage } : {}),
+    });
   }
 
   return { ok: true, endpoint, review: retryReview, requestId };

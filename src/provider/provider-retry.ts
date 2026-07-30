@@ -154,4 +154,44 @@ export async function runWithRetry<T extends { readonly ok: true } | { readonly 
   } as unknown as T;
 }
 
+/**
+ * Build the canonical parse-fail `ProviderError` that every provider
+ * client returns when the self-healing retry did not produce a
+ * parseable review.
+ *
+ * The three providers (openai-compatible, anthropic-messages, copilot)
+ * each constructed this error envelope inline with the same fields:
+ *   - `code: "parse"`
+ *   - `endpoint`, `requestId`, `status`
+ *   - `message` (provider-specific wording)
+ *   - `{ rawText, truncated, usage? }`
+ *
+ * Only `message` and the `truncated` / `usage` values vary; the shape
+ * is identical. This helper takes the variable parts and produces the
+ * error, eliminating the inline option-object construction that
+ * previously drifted between the three sites.
+ */
+export function buildParseFailError(args: {
+  readonly endpoint: ProviderEndpoint;
+  readonly status: number;
+  readonly requestId: string;
+  readonly message: string;
+  readonly rawText: string;
+  readonly truncated: boolean;
+  readonly usage?: import("./provider-error.js").ProviderUsage;
+}): ProviderError {
+  return new ProviderError(
+    "parse",
+    args.endpoint,
+    args.status,
+    args.requestId,
+    args.message,
+    {
+      rawText: args.rawText,
+      truncated: args.truncated,
+      ...(args.usage !== undefined ? { usage: args.usage } : {}),
+    },
+  );
+}
+
 export { sleep };

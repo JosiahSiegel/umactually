@@ -59,7 +59,7 @@ import {
   ProviderError,
   sanitizeMessage,
 } from "./provider-error.js";
-import { computeBumpedMaxOutput, runWithRetry } from "./provider-retry.js";
+import { buildParseFailError, computeBumpedMaxOutput, runWithRetry } from "./provider-retry.js";
 import { composeSignal } from "../util/async.js";
 import {
   createRequestId,
@@ -482,30 +482,20 @@ async function runOnce(
   // so override with our explicit stop_reason check when we have one.
   const effectiveTruncated = truncatedByStopReason || diagnosis.truncated;
   // Prefer the Anthropic-reported usage over the diagnosis's
-  // SSE-completed-event-derived `usage`. Strip the `undefined` value
-  // so we satisfy `exactOptionalPropertyTypes`.
+  // SSE-completed-event-derived `usage`.
   const usage = parsedUsage ?? diagnosis.usage;
-
-  const errorOptions: {
-    readonly rawText: string;
-    readonly truncated: boolean;
-    readonly usage?: { readonly input_tokens?: number; readonly output_tokens?: number; readonly total_tokens?: number };
-  } = {
-    rawText,
-    truncated: effectiveTruncated,
-    ...(usage !== undefined ? { usage } : {}),
-  };
 
   return {
     ok: false,
-    error: new ProviderError(
-      "parse",
-      ENDPOINT,
-      retryResponseStatus ?? response.status,
+    error: buildParseFailError({
+      endpoint: ENDPOINT,
+      status: retryResponseStatus ?? response.status,
       requestId,
-      "Anthropic response did not contain a JSON review payload after self-healing retry.",
-      errorOptions,
-    ),
+      message: "Anthropic response did not contain a JSON review payload after self-healing retry.",
+      rawText,
+      truncated: effectiveTruncated,
+      ...(usage !== undefined ? { usage } : {}),
+    }),
   };
 }
 
