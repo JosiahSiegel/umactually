@@ -75,10 +75,30 @@ If `reviewDecision == "CHANGES_REQUESTED"`, you have three options, in increasin
 | Option | When to use | What it does |
 |---|---|---|
 | **Re-push + wait for re-review** | You addressed every finding the CHANGES_REQUESTED review cited | A new commit re-triggers `self-review.yml`; the bot's new review supersedes the old one (combined with `dismiss_stale_reviews_on_push: true` in the ruleset — verify this is set; if absent, the old CHANGES_REQUESTED stays). |
-| **Dismiss the stale review in the UI** | The CHANGES_REQUESTED cites code you've since removed/fixed, OR the bot mis-classified severity | Open the PR → "X changes requested" header on the bot's review → click "..." → "Dismiss review". This is a UI-only action — there's no GraphQL mutation for it. |
+| **Dismiss the stale review programmatically** | The CHANGES_REQUESTED cites code you've since removed/fixed, OR the bot mis-classified severity | Use the GitHub GraphQL `dismissPullRequestReview` mutation (see the recipe below). The UI's "Dismiss review" button is also available but unnecessary — both paths call the same backend. |
 | **Fix the underlying finding and re-push** | The finding is real and you haven't addressed it | Treat it as an accepted-defect per Step 1's triage matrix; fix + commit + push. |
 
-> 🤖 **AI-Agent note**: As of the GitHub GraphQL API there is no `dismissPullRequestReview` mutation. The dismissal flow is **UI-only** — an agent cannot programmatically clear a CHANGES_REQUESTED verdict. If you're a coding agent operating against this repo and you hit `reviewDecision == CHANGES_REQUESTED` with no path to a UI dismissal, escalate to the human operator rather than burning turns trying `gh api graphql` mutations that don't exist.
+```bash
+# Dismiss a CHANGES_REQUESTED review programmatically. First find the
+# review's GraphQL ID (the bot's review is the one with state=CHANGES_REQUESTED):
+GH="gh" && $GH api graphql -F owner="<owner>" -F repo="<repo>" -F n=<N> \
+  -f query='query($owner: String!, $repo: String!, $n: Int!) {
+    repository(owner: $owner, name: $repo) {
+      pullRequest(number: $n) {
+        reviews(first: 20) { nodes { id state author { login } submittedAt } }
+      }
+    }
+  }' --jq '.data.repository.pullRequest.reviews.nodes[] | select(.state == "CHANGES_REQUESTED") | {id, author: .author.login, submittedAt}'
+
+# Then dismiss:
+$GH api graphql -f query='mutation($id: ID!, $msg: String!) {
+  dismissPullRequestReview(input: {pullRequestReviewId: $id, message: $msg}) {
+    pullRequestReview { id state }
+  }
+}' -F id="<REVIEW_ID>" -F msg="Dismissed: <one-line justification>"
+```
+
+> 🤖 **AI-Agent note**: The `dismissPullRequestReview` GraphQL mutation exists and works. Prefer the programmatic path over UI dismissal when you have an unambiguous justification (stale review, code removed, finding already addressed in a later commit). Always include a `message` argument so the dismissal shows up in the PR's review history with the rationale. Do NOT dismiss a review whose underlying finding is still open in the current head — that's hiding a real signal from the maintainer, and the next self-review cycle will re-surface it.
 
 > 🔁 **The re-review race**: After you push a fix, the bot's self-review re-runs asynchronously (typically 30-90s after the push reaches GitHub). Re-check `reviewDecision` *after* the new self-review completes, not immediately after the push — `reviewDecision` reflects the latest review verdict, which lags the push by one bot cycle. The `gh pr checks <N>` output will show a `self-review` row that transitions `IN_PROGRESS → SUCCESS`; once it lands, re-query `reviewDecision`.
 

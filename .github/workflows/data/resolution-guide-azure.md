@@ -79,7 +79,7 @@ cat artifacts/manual/s4-azure-mocked-run.json | jq '.postedStatusState'
 gh run view <RUN_ID> --repo <owner>/<repo> --log | grep "umactually:" | tail -20
 ```
 
-If the verdict is `failed`/`pending` AND there are no underlying findings you can address (e.g. the verdict was rendered against code you've since removed), re-push and let the bot re-review. There's no GraphQL equivalent of GitHub's `dismissPullRequestReview`; on Azure, the dismissal path is **UI-only** (PR → "..." → "Reset vote" / "Re-vote") or you wait for the bot's next review to overwrite the previous state.
+If the verdict is `failed`/`pending` AND there are no underlying findings you can address (e.g. the verdict was rendered against code you've since removed), re-push and let the bot re-review. On Azure DevOps, the dismissal path is **UI-only** (PR → "..." → "Reset vote" / "Re-vote") — there is no equivalent of GitHub's `dismissPullRequestReview` GraphQL mutation in the `azure-devops` CLI extension (as of 0.30+). Alternatively, wait for the bot's next review to overwrite the previous state with a new `postedStatusState`.
 
 > 🤖 **AI-Agent note**: As of `azure-devops` extension 0.30+, `az repos pr policy` exposes evaluation results but not a programmatic "clear all blocking reviews" command. If you're a coding agent and `postedStatusState` blocks a merge you can otherwise satisfy, escalate to the human operator rather than burning turns trying CLI mutations that don't exist.
 
