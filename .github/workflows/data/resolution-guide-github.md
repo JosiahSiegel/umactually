@@ -19,6 +19,15 @@ The marker-dedup is **best-effort** — bot inline comments stay anchored to the
 
 **Never silently ignore a comment.** Either fix it or reply with a disposition.
 
+> 🔒 **Resolve properly, don't just click "Resolve".** Every thread must get a reply (Step 2) **before** it is resolved (Step 3). A bare resolve with no reply — or a reply that doesn't address the finding — leaves reviewers unable to audit your reasoning and violates the spirit of branch-protection rules. Acceptable reply examples:
+> - **Fixed** → `Fixed in <SHA>, <file>:<line> — <one-line summary of the change>.`
+> - **False positive** → `False positive: <reason>. The code does X because Y.`
+> - **Duplicate** → `Duplicate of <thread-link>.`
+> - **Stale** → `Fixed in <SHA>. Verified at <file>:<line> on current head.`
+> - **Out of scope** → `Out of scope per audit bundle §<section>.`
+>
+> Only **after** the reply lands should you run Step 3 (`resolveReviewThread`).
+
 ### Step 2 — reply on each thread
 
 ```bash

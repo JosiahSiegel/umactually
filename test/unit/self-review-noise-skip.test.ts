@@ -226,6 +226,21 @@ describe("self-review workflow noise-skip rule", () => {
     expect(azGuide).toMatch(/Merge gate/u);
     expect(azGuide).toMatch(/conversation-completion policies/u);
   });
+
+  it("each platform guide instructs to reply before resolving (no bare resolve)", () => {
+    const ghGuide = readFileSync(
+      resolve(REPO_ROOT, ".github/workflows/data/resolution-guide-github.md"),
+      "utf8",
+    );
+    const azGuide = readFileSync(
+      resolve(REPO_ROOT, ".github/workflows/data/resolution-guide-azure.md"),
+      "utf8",
+    );
+    expect(ghGuide).toMatch(/Resolve properly/u);
+    expect(ghGuide).toMatch(/reply.*before.*resolved/us);
+    expect(azGuide).toMatch(/Resolve properly/u);
+    expect(azGuide).toMatch(/reply.*before.*closed/us);
+  });
 });
 
 /**
