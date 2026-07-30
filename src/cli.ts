@@ -748,7 +748,7 @@ function argv1LooksLikeSeaBinary(argv1: string): boolean {
  * as "safe to auto-invoke as SEA").
  */
 function argv1IsNpmShimSymlink(argv1: string): boolean {
-  let argv1Realpath = argv1;
+  let argv1Realpath: string;
   try {
     argv1Realpath = realpathSync(argv1);
   } catch {

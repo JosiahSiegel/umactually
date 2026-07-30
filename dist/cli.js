@@ -18611,7 +18611,7 @@ function argv1LooksLikeSeaBinary(argv1) {
  * as "safe to auto-invoke as SEA").
  */
 function argv1IsNpmShimSymlink(argv1) {
-    let argv1Realpath = argv1;
+    let argv1Realpath;
     try {
         argv1Realpath = (0,external_node_fs_namespaceObject.realpathSync)(argv1);
     }

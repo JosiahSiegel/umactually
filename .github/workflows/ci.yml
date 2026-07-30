@@ -695,12 +695,12 @@ jobs:
   # Fork behavior: forks don't get repo secrets, so SONAR_TOKEN
   # resolves to '' and the synthetic-success step runs instead of the
   # scanner. No fork-side action needed.
-  sonarqube-scan:
+sonarqube-scan:
     name: SonarCloud Code Analysis
     runs-on: ubuntu-latest
     timeout-minutes: 15
     # Always report a conclusion so the required check is satisfiable
-    # even when there's nothing to scan. The scanner action itself
+    # even when there's to scan. The scanner action itself
     # reports quality-gate pass/fail; we never block PRs on scanner
     # infra errors at this level — the action exits non-zero if the
     # quality gate fails, which IS a block (by design).
@@ -711,6 +711,14 @@ jobs:
     # `${{ secrets.SONAR_TOKEN }}` (non-empty), breaking the skip logic.
     env:
       SONAR_TOKEN: ${{ secrets.SONAR_TOKEN || '' }}
+    permissions:
+      contents: read
+      # The "Surface SonarCloud findings as PR comments" step needs to
+      # create review comments on the PR. Granted at the job level (not
+      # the workflow level) so the rest of ci.yml keeps its read-only
+      # posture. The token is github.token, which has write access to PR
+      # comments by default.
+      pull-requests: write
     steps:
       - name: Synthetic success (no SONAR_TOKEN configured)
         # Skips the scanner when the secret is absent (fork PR, public
@@ -751,6 +759,7 @@ jobs:
 
       - name: SonarQube Scan
         if: ${{ env.SONAR_TOKEN != '' }}
+        id: sonar
         uses: SonarSource/sonarqube-scan-action@7006c4492b2e0ee0f816d36501671557c97f5995  # v8.1.0 — pinned to the commit SHA SonarCloud's UI recommends (matches StrataKit's pin at stratakitci.log:683)
         env:
           SONAR_TOKEN: ${{ env.SONAR_TOKEN }}
@@ -760,6 +769,203 @@ jobs:
           # SonarQube edit sonar-project.properties and the workflow
           # picks up the new URL on the next run, no workflow change
           # required.
+
+      - name: Surface SonarCloud findings as PR comments
+        # The SonarCloud scanner action uploads the analysis + reports the
+        # quality-gate verdict as a GitHub check (REQUIRED). It does NOT
+        # post inline review comments on the PR — the bot's separate
+        # self-review workflow runs against a mock provider and has no
+        # awareness of SonarCloud findings. Without this step, a PR with
+        # CRITICAL SonarCloud issues in new code can still get an APPROVE
+        # review from the bot ("ship it"), even though the quality gate is
+        # ERROR.
+        #
+        # This step queries the SonarCloud Web API for OPEN issues on the
+        # current PR filtered to new-code-period, then posts each as an
+        # inline review comment at the right file/line. After all issues
+        # are posted, if the quality gate is ERROR, the step ALSO posts
+        # a REQUEST_CHANGES review summarizing the SonarCloud findings
+        # (the bot's earlier APPROVE is preserved for audit; the new
+        # REQUEST_CHANGES surfaces the gate failure so the PR's check
+        # status accurately reflects "this PR has a failing quality
+        # gate").
+        #
+        # Skipped when:
+        #   - SONAR_TOKEN is absent (fork PR; same as the scanner step)
+        #   - Not running on a pull_request event (push to main has no PR
+        #     context; SonarCloud main-branch analysis surfaces via the
+        #     quality-gate check on the main push instead).
+        #   - The previous SonarQube Scan step failed (no point posting
+        #     findings when the scanner itself errored).
+        if: ${{ env.SONAR_TOKEN != '' && github.event_name == 'pull_request' && steps.sonar.outcome == 'success' }}
+        env:
+          SONAR_TOKEN: ${{ env.SONAR_TOKEN }}
+          SONAR_HOST_URL: ${{ env.SONAR_HOST_URL || 'https://sonarcloud.io' }}
+          SONAR_ORGANIZATION: josiahsiegel
+          SONAR_PROJECT_KEY: JosiahSiegel_umactually
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+
+          # Step id reference: the SonarQube Scan step above must have id
+          # 'sonar' for the steps.sonar.outcome guard to compile. If you
+          # rename it, update both this step's `if:` and this comment.
+          # (We can't easily ref the step id from a separate YAML key, so
+          # the contract is documented here.)
+          if ! curl -fsSL --max-time 15 \
+              -H "Authorization: Bearer ${SONAR_TOKEN}" \
+              "${SONAR_HOST_URL}/api/issues/search?componentKeys=${SONAR_PROJECT_KEY}&pullRequest=${PR_NUMBER}&inNewCodePeriod=true&resolved=false&ps=100" \
+              > /tmp/opencode/sonar_issues.json 2>/dev/null; then
+            echo "::warning::SonarCloud issues API call failed; skipping PR-comment surface. The scanner's quality-gate check is the authoritative block."
+            exit 0
+          fi
+
+          ISSUE_COUNT=$(jq -r '.total // 0' /tmp/opencode/sonar_issues.json)
+          echo "SonarCloud reports ${ISSUE_COUNT} new-code issue(s) on PR ${PR_NUMBER}."
+          if [ "${ISSUE_COUNT}" = "0" ]; then
+            echo "No new-code findings; nothing to surface."
+            exit 0
+          fi
+
+          # Fetch the head SHA of the latest commit on the PR — SonarCloud
+          # ties issues to a specific commit, but the API also accepts the
+          # PR number directly so we use the commit hash from the GitHub
+          # event payload. Using github.event.pull_request.head.sha (not
+          # github.sha) so a push event to the PR branch races correctly.
+
+          # Walk each issue and post one inline review comment. We use the
+          # REST POST /repos/{owner}/{repo}/pulls/{pr}/reviews endpoint
+          # with event='COMMENT' so each issue becomes a single review with
+          # its own thread (rather than a comment on the issue thread).
+          # The umactually bot's existing review body is preserved by
+          # posting a SEPARATE review for the SonarCloud findings; we
+          # don't mutate the bot's review body inline.
+          POSTED=0
+          FAILED=0
+          while IFS=$'\t' read -r file_path line severity rule message; do
+            if [ -z "${file_path}" ] || [ -z "${line}" ]; then
+              continue
+            fi
+            # SonarCloud returns the component as `<projectKey>:<filePath>`.
+            # Strip the project-key prefix.
+            relative_file="${file_path#${SONAR_PROJECT_KEY}:}"
+            # Build a comment body with the SonarCloud rule, severity, and
+            # a stable deep link to the issue on sonarcloud.io. Use a
+            # `<!-- sonarcloud -->` marker so the existing resolution
+            # guide's "find umactually threads" query can be extended
+            # without false positives.
+            body=$(jq -nr \
+              --arg rule "${rule}" \
+              --arg sev "${severity}" \
+              --arg msg "${message}" \
+              --arg url "${SONAR_HOST_URL}/project/issues?componentKeys=${SONAR_PROJECT_KEY}&pullRequest=${PR_NUMBER}&open=${rule}" \
+              '("<!-- sonarcloud -->\n" +
+               "**SonarCloud " + $sev + " — `" + $rule + "`**\n\n" +
+               $msg + "\n\n" +
+               "[Open in SonarCloud](" + $url + ")\n")')
+            payload=$(jq -n \
+              --arg commit_id "${HEAD_SHA}" \
+              --arg path "${relative_file}" \
+              --argjson line "${line}" \
+              --arg body "${body}" \
+              '{commit_id: $commit_id, path: $path, line: $line, side: "RIGHT", body: $body}')
+            if gh api \
+                -X POST \
+                -H "Accept: application/vnd.github+json" \
+                -H "Content-Type: application/json" \
+                --input <(printf '%s' "${payload}") \
+                "/repos/${GITHUB_REPOSITORY}/pulls/${PR_NUMBER}/comments" \
+                >/dev/null; then
+              POSTED=$((POSTED + 1))
+            else
+              FAILED=$((FAILED + 1))
+              echo "::warning::Failed to post inline comment for ${relative_file}:${line} (${rule})."
+            fi
+          done < <(jq -r \
+              '.issues[] | [.component, .line, .severity, .rule, (.message | gsub("\t"; " ") | gsub("\n"; " "))] | @tsv' \
+              /tmp/opencode/sonar_issues.json)
+          echo "Posted ${POSTED}/${ISSUE_COUNT} inline SonarCloud comments (${FAILED} failed)."
+
+          # If the SonarCloud quality gate is ERROR (not just because of
+          # new-code issues, but for any reason including coverage), post
+          # a REQUEST_CHANGES review so the PR's check status accurately
+          # reflects "this PR has a failing quality gate". The bot's
+          # earlier APPROVE review is preserved (PR reviewers can dismiss
+          # it once they address the gate) so the audit trail is intact.
+          #
+          # Why gate-status rather than severity-filtered: SonarCloud's
+          # quality gate already encodes the operator's policy (which
+          # severities block, what coverage threshold, etc.). We trust
+          # that policy. Filtering by severity in the workflow would
+          # duplicate the policy and risk drift.
+          GATE_STATUS=$(curl -fsSL --max-time 15 \
+            -H "Authorization: Bearer ${SONAR_TOKEN}" \
+            "${SONAR_HOST_URL}/api/qualitygates/project_status?projectKey=${SONAR_PROJECT_KEY}&pullRequest=${PR_NUMBER}" \
+            | jq -r '.projectStatus.status // "UNKNOWN"' 2>/dev/null || echo "UNKNOWN")
+          echo "SonarCloud quality gate status for PR ${PR_NUMBER}: ${GATE_STATUS}"
+          if [ "${GATE_STATUS}" != "ERROR" ]; then
+            echo "Quality gate is ${GATE_STATUS}; leaving bot's existing review verdict intact."
+            exit 0
+          fi
+
+          # Locate the umactually bot's most recent review on this PR at
+          # the current HEAD commit. If the bot has a PENDING review,
+          # posting a REQUEST_CHANGES would conflict with GitHub's review
+          # lifecycle (you can't have two PENDING reviews at once). We
+          # check state but don't need the ID since we POST a new review
+          # rather than converting the existing one.
+          QUERY_FILE=".github/workflows/data/latest-bot-review.graphql"
+          REVIEW_JSON=$(gh api graphql \
+            -F owner="${GITHUB_REPOSITORY%/*}" \
+            -F name="${GITHUB_REPOSITORY#*/}" \
+            -F pr="${PR_NUMBER}" \
+            -F query="$(cat "${QUERY_FILE}")")
+          REVIEW_ROW=$(printf '%s' "${REVIEW_JSON}" | jq -r --arg sha "${HEAD_SHA}" \
+            '[(.data.repository.pullRequest.reviews.nodes // [])[] | select(.author.login == "github-actions" and .commit.oid == $sha)] | sort_by(.databaseId) | reverse | .[0] // empty')
+          if [ -z "${REVIEW_ROW}" ] || [ "${REVIEW_ROW}" = "null" ]; then
+            echo "::warning::No umactually bot review found on PR ${PR_NUMBER} at HEAD ${HEAD_SHA}; cannot post REQUEST_CHANGES summary. The ${POSTED} inline comments will still surface the findings."
+            exit 0
+          fi
+          REVIEW_STATE=$(printf '%s' "${REVIEW_ROW}" | jq -r '.state')
+          if [ "${REVIEW_STATE}" = "PENDING" ]; then
+            echo "::warning::Latest bot review is still PENDING (unsubmitted); cannot post REQUEST_CHANGES summary. The ${POSTED} inline comments will still surface the findings."
+            exit 0
+          fi
+
+          # POST /repos/{owner}/{repo}/pulls/{pr}/reviews with event
+          # REQUEST_CHANGES creates a NEW review in that state, not a
+          # state transition on the existing one. The GitHub REST API
+          # does not support converting an existing review's event type
+          # in place. We submit a new REQUEST_CHANGES review with the
+          # SonarCloud summary as the body, and the resolution-guide
+          # step's existing logic still applies to it. The bot's
+          # earlier APPROVE review is left intact for audit; PR
+          # maintainers can dismiss it once they address the SonarCloud
+          # findings.
+          SUMMARY_BODY=$(jq -nr \
+            --arg n "${ISSUE_COUNT}" \
+            '"<!-- sonarcloud-request-changes -->\n" +
+             "## SonarCloud: REQUEST_CHANGES\n\n" +
+             "The SonarCloud quality gate is **ERROR** with **" + $n + " new-code finding(s)** on this PR. " +
+             "The bot\u0027s earlier APPROVE review has been supplemented by this REQUEST_CHANGES review; " +
+             "please address the inline comments before merging.\n\n" +
+             "See the bot\u0027s APPROVE review for the original analysis and the per-issue inline comments above for the SonarCloud findings."')
+          SUMMARY_PAYLOAD=$(jq -n \
+            --arg commit_id "${HEAD_SHA}" \
+            --arg body "${SUMMARY_BODY}" \
+            '{commit_id: $commit_id, event: "REQUEST_CHANGES", body: $body}')
+          if gh api \
+              -X POST \
+              -H "Accept: application/vnd.github+json" \
+              -H "Content-Type: application/json" \
+              --input <(printf '%s' "${SUMMARY_PAYLOAD}") \
+              "/repos/${GITHUB_REPOSITORY}/pulls/${PR_NUMBER}/reviews"; then
+            echo "Posted REQUEST_CHANGES review summarizing ${ISSUE_COUNT} SonarCloud findings on PR ${PR_NUMBER}."
+          else
+            echo "::warning::Failed to post REQUEST_CHANGES summary review on PR ${PR_NUMBER}; the ${POSTED} inline comments still surface the findings."
+          fi
 
       - name: Upload coverage artifact
         if: ${{ always() && env.SONAR_TOKEN != '' }}
