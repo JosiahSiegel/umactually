@@ -80,6 +80,12 @@ jobs:
           GITHUB_TOKEN: ${{ github.token }}
           UMACTUALLY_API_URL: ${{ secrets.UMACTUALLY_API_URL }}
           UMACTUALLY_API_KEY: ${{ secrets.UMACTUALLY_API_KEY }}
+          # Hardcoded platform echoed as a step-output so the downstream
+          # 'Append resolution-guide' step honors the SAME --platform
+          # flag value rather than re-deriving it from TF_BUILD /
+          # GITHUB_ACTIONS env (which can drift if the upstream CLI
+          # step ever runs with a non-default --platform).
+          UMACTUALLY_PLATFORM: github
         run: |
           # set +e keeps the script running even if `node` is missing or
           # the binary errors out. We capture the exit code into a
@@ -89,13 +95,14 @@ jobs:
           set +e
           REVIEW_EXIT=0
           node bin/umactually.mjs review \
-            --platform github \
+            --platform "${UMACTUALLY_PLATFORM}" \
             --no-detect-leaks \
             --debug-raw-response \
             --max-output-tokens 32000 \
             --per-request-timeout-seconds 240
           REVIEW_EXIT=$?
           echo "review-exit=${REVIEW_EXIT}" >> "${GITHUB_OUTPUT:-/dev/null}" || true
+          echo "platform=${UMACTUALLY_PLATFORM}" >> "${GITHUB_OUTPUT:-/dev/null}" || true
           exit 0
 
       - name: Append resolution-guide to latest review body
@@ -108,15 +115,10 @@ jobs:
           GITHUB_TOKEN: ${{ github.token }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
-          # Auto-detect the upstream 'Run UmActually self review' step's
-          # target platform. Pass the relevant CI env through; the bash
-          # script (where string-eval actually works) picks azure vs
-          # github off TF_BUILD. UMACTUALLY_PLATFORM is left undefined
-          # here so the script sets it deterministically rather than
-          # relying on a GitHub Actions expression whose truthiness
-          # is the wrong type for string-conditional logic.
-          TF_BUILD: ${{ env.TF_BUILD }}
-          GITHUB_ACTIONS: ${{ env.GITHUB_ACTIONS }}
+          # Honor the upstream step's --platform flag (echoed via step
+          # output). Fall back to env-based auto-detect for the rare
+          # workflow_dispatch runs that bypass the review step.
+          UMACTUALLY_PLATFORM: ${{ steps.review.outputs.platform || env.UMACTUALLY_PLATFORM }}
         run: |
           # Append the platform-specific resolution guide to the umactually
           # self-review on the CURRENT head commit, but only if that review
@@ -156,16 +158,11 @@ jobs:
           # any destructive write so a partial PUT failure does not
           # silently leave the body in an unknown state.
           set +e
-          # Auto-detect the platform: TF_BUILD is set on Azure DevOps
-          # pipelines, GITHUB_ACTIONS on GitHub Actions runs. Default to
-          # github for any other CI environment (e.g. workflow_dispatch).
-          if [ -n "${TF_BUILD:-}" ]; then
-            UMACTUALLY_PLATFORM=azure
-          elif [ -n "${GITHUB_ACTIONS:-}" ]; then
-            UMACTUALLY_PLATFORM=github
-          else
-            UMACTUALLY_PLATFORM=github
-          fi
+          # UMACTUALLY_PLATFORM is sourced from the upstream step's
+          # --platform flag (echoed as a step-output) and passed in via
+          # this step's env block. Validate the value before using it
+          # to construct a file path; any unexpected value is a config
+          # error and we exit 0 (advisory step, never blocks CI).
           if [ "${UMACTUALLY_PLATFORM}" != "github" ] && [ "${UMACTUALLY_PLATFORM}" != "azure" ]; then
             echo "Unsupported UMACTUALLY_PLATFORM='${UMACTUALLY_PLATFORM}'; expected github or azure. Skipping."
             exit 0
