@@ -114,7 +114,14 @@ A single job is added by the SonarCloud workflow: `sonarqube-scan` uploads cover
 
 **Branch protection**
 
-Once the SonarCloud project exists, add `SonarCloud Code Analysis` as a required status check on the `main` branch ruleset. Without it the scan is advisory; with it, PRs that fail the Sonar quality gate cannot merge. Path: GitHub → Settings → Branches → main → Require status checks to pass before merging → Status checks that are required → search "SonarCloud Code Analysis" → enable.
+The `SonarCloud Code Analysis` check is **intentionally advisory**, not a required status check on `main`. Two reasons:
+
+1. The job emits a synthetic-success `::notice::` whenever `SONAR_TOKEN` is absent so forks and contributors without org access are not blocked. On a fork PR without the secret, the check would pass vacuously — that would defeat the purpose of making it required. The same caveat applies to the main repo if the secret is ever cleared.
+2. The actual quality gate is enforced server-side at SonarCloud (project → Administration → Quality Gate). Configuring that gate is the canonical place to block merges on coverage / new-code / security criteria.
+
+If you do want a tighter signal on the main repo, configure the SonarCloud project's quality gate to fail on new-code coverage dropping below a threshold and surface that as a PR-decoration status badge — operators see it on the PR without it being a GitHub merge gate.
+
+> If you later decide to make the SonarCloud check required on the main ruleset (override (1) above), the cleanest path is to gate the job at the workflow level on the secret's presence so forks report it as `skipped` rather than `success`. The synthetic-success step then becomes a documentation-only artifact for fork-PR debugging.
 
 **Quality gate tuning**
 
