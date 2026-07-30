@@ -116,9 +116,10 @@ jobs:
           PR_NUMBER: ${{ github.event.pull_request.number }}
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
           # Honor the upstream step's --platform flag (echoed via step
-          # output). Fall back to env-based auto-detect for the rare
-          # workflow_dispatch runs that bypass the review step.
-          UMACTUALLY_PLATFORM: ${{ steps.review.outputs.platform || env.UMACTUALLY_PLATFORM }}
+          # output). workflow_dispatch runs without the upstream step
+          # fall back to github (this workflow only runs on
+          # github.com-hosted runners).
+          UMACTUALLY_PLATFORM: ${{ steps.review.outputs.platform || 'github' }}
         run: |
           # Append the platform-specific resolution guide to the umactually
           # self-review on the CURRENT head commit, but only if that review

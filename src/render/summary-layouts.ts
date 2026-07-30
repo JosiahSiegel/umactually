@@ -785,13 +785,10 @@ function layoutSeverityTable(data: ReviewData): string {
   const all = sortedPosted(data);
   const parts: string[] = [];
 
-  if (
-    data.validCommentCount === 0 &&
-    data.suppressedCommentCount === 0 &&
-    data.review.parseFailed !== true
-  ) {
-    return renderCleanShip(data);
-  }
+  // Clean-ship branch is hoisted to renderSummary so every layout
+  // receives the same one-line verdict for empty, non-parse-failed
+  // reviews. layoutSeverityTable only handles the populated-or-parse-failed
+  // cases from here.
 
   // Marker first so dedup loops always find it (the contract that
   // GitHub/Azure dedup loops rely on). The verdict comes next so the
@@ -1730,6 +1727,18 @@ const BASELINE_RENDERERS: Record<BaselineId, RendererFn> = {
 export function renderSummary(layout: LayoutId, data: ReviewData): string {
   if (data.postedComments === undefined) {
     throw new Error("renderSummary: data.postedComments is required (was undefined). Use buildReviewBody() to dispatch — it computes the post-filter set from review.comments.");
+  }
+  // Clean-ship gate is enforced at the entry point so every layout
+  // gets the same one-line verdict for empty, non-parse-failed reviews.
+  // Layouts that want a different shape for the empty case can opt out
+  // by NOT going through `renderSummary` (e.g. the legacy `layoutBaseline`
+  // used by the viewer for side-by-side comparison).
+  if (
+    data.validCommentCount === 0 &&
+    data.suppressedCommentCount === 0 &&
+    data.review.parseFailed !== true
+  ) {
+    return renderCleanShip(data);
   }
   const renderer = LAYOUT_RENDERERS[layout];
   if (renderer === undefined) {

@@ -562,11 +562,14 @@ describe("severity-table details", () => {
 
   it("severityEmoji emits plain-⚪ fallback for unknown severities", () => {
     // Unknown severities don't match any bucket in severity-table, so use
-    // a layout that renders every comment inline (verdict-banner).
+    // a layout that renders every comment inline (verdict-banner). The
+    // posted comment keeps the input above the clean-ship gate so the
+    // layout actually runs.
     const data = makeData({
       postedComments: [
         { path: "src/x.ts", line: 1, body: "x", severity: "unknown", category: "general" },
       ],
+      validCommentCount: 1,
     });
     const out = renderSummary("verdict-banner", data);
     expect(out).toContain("⚪");
@@ -850,10 +853,13 @@ describe("layout distinctness — each layout has a recognisable signature", () 
     expect(unique.size).toBe(LAYOUTS.length);
   });
 
-  it("all 20 layouts produce different strings for the clean sample", () => {
+  it("all 20 layouts produce the same clean-ship body for an empty review", () => {
+    // The clean-ship branch is hoisted to renderSummary so every layout
+    // receives the same one-line verdict for an empty review. Layout
+    // distinctness only matters for populated or parse-failed reviews.
     const outputs = LAYOUTS.map((l) => renderSummary(l, makeCleanData()));
     const unique = new Set(outputs);
-    expect(unique.size).toBe(LAYOUTS.length);
+    expect(unique.size).toBe(1);
   });
 
   it("every layout uses emoji (visually rich, not text-only)", () => {
