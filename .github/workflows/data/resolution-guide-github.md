@@ -60,7 +60,44 @@ GH="gh" && $GH api graphql -F pr="$($GH pr view <N> --repo <owner>/<repo> --json
 # Expected: 0
 ```
 
-> ⚠️ **Merge gate**: If this repo enforces "Require conversation resolution before merging" as a branch-protection rule, every open thread — including umactually review threads — must be marked **Resolved** before the merge button is enabled. A single unresolved thread blocks the merge until Step 3 is applied to it.
+### Step 5 — check the review verdict (a separate gate from threads)
+
+Resolving every thread is **necessary but not sufficient**. A review with state `CHANGES_REQUESTED` blocks merge independently of thread state via GitHub's standard review-verdict gate (the merge button checks "no CHANGES_REQUESTED reviews" before enabling). The umactually self-review bot submits reviews with verdict derived from its findings: any inline critical or high-severity finding produces `CHANGES_REQUESTED`.
+
+```bash
+$GH pr view <N> --repo <owner>/<repo> --json reviewDecision --jq .reviewDecision
+# Expected: APPROVED | null  (means mergeable)
+# CHANGES_REQUESTED  (means blocked — proceed below)
+```
+
+If `reviewDecision == "CHANGES_REQUESTED"`, you have three options, in increasing order of intrusiveness:
+
+| Option | When to use | What it does |
+|---|---|---|
+| **Re-push + wait for re-review** | You addressed every finding the CHANGES_REQUESTED review cited | A new commit re-triggers `self-review.yml`; the bot's new review supersedes the old one (combined with `dismiss_stale_reviews_on_push: true` in the ruleset — verify this is set; if absent, the old CHANGES_REQUESTED stays). |
+| **Dismiss the stale review in the UI** | The CHANGES_REQUESTED cites code you've since removed/fixed, OR the bot mis-classified severity | Open the PR → "X changes requested" header on the bot's review → click "..." → "Dismiss review". This is a UI-only action — there's no GraphQL mutation for it. |
+| **Fix the underlying finding and re-push** | The finding is real and you haven't addressed it | Treat it as an accepted-defect per Step 1's triage matrix; fix + commit + push. |
+
+> 🤖 **AI-Agent note**: As of the GitHub GraphQL API there is no `dismissPullRequestReview` mutation. The dismissal flow is **UI-only** — an agent cannot programmatically clear a CHANGES_REQUESTED verdict. If you're a coding agent operating against this repo and you hit `reviewDecision == CHANGES_REQUESTED` with no path to a UI dismissal, escalate to the human operator rather than burning turns trying `gh api graphql` mutations that don't exist.
+
+> 🔁 **The re-review race**: After you push a fix, the bot's self-review re-runs asynchronously (typically 30-90s after the push reaches GitHub). Re-check `reviewDecision` *after* the new self-review completes, not immediately after the push — `reviewDecision` reflects the latest review verdict, which lags the push by one bot cycle. The `gh pr checks <N>` output will show a `self-review` row that transitions `IN_PROGRESS → SUCCESS`; once it lands, re-query `reviewDecision`.
+
+### Step 6 — verify the merge is actually unblocked
+
+Both gates must clear:
+
+```bash
+# Gate 1: no unresolved threads (Step 4 expected 0)
+# Gate 2: no CHANGES_REQUESTED review verdict (Step 5 expected APPROVED or null)
+# Gate 3: required status checks passing
+$GH pr view <N> --repo <owner>/<repo> --json mergeStateStatus,mergeable,reviewDecision,statusCheckRollup \
+  --jq '{state: .mergeStateStatus, mergeable: .mergeable, decision: .reviewDecision, checks: [.statusCheckRollup[] | select(.state != "SUCCESS") | .name]}'
+# Expected: state=CLEAN, mergeable=MERGEABLE, decision in (null, "APPROVED"), checks=[]
+```
+
+If `mergeStateStatus == "BLOCKED"` with all gates green, the block is from a *ruleset* (not visible via `--json`); fetch the ruleset to see which rule is failing.
+
+> ⚠️ **Merge gate**: If this repo enforces "Require conversation resolution before merging" as a branch-protection rule, every open thread — including umactually review threads — must be marked **Resolved** before the merge button is enabled. A single unresolved thread blocks the merge until Step 3 is applied to it. **A `CHANGES_REQUESTED` review verdict blocks merge independently** — Step 6 catches what Step 4 misses.
 
 The full guide (including Azure DevOps-specific guidance, common pitfalls, and the matching `az repos pr thread update --status closed` recipe) lives at `.github/SELF-REVIEW-RESOLUTION-GUIDE.md`.
 
