@@ -845,8 +845,9 @@ jobs:
           # don't mutate the bot's review body inline.
           POSTED=0
           FAILED=0
+          FILE_LEVEL=0
           while IFS=$'\t' read -r file_path line severity rule message; do
-            if [ -z "${file_path}" ] || [ -z "${line}" ]; then
+            if [ -z "${file_path}" ]; then
               continue
             fi
             # SonarCloud returns the component as `<projectKey>:<filePath>`.
@@ -857,21 +858,41 @@ jobs:
             # `<!-- sonarcloud -->` marker so the existing resolution
             # guide's "find umactually threads" query can be extended
             # without false positives.
-            body=$(jq -nr \
+            # Build the body with jq -n (not -nr) so embedded `\n` in
+            # the string becomes a literal newline in the JSON output
+            # rather than a backslash-n escape sequence. With -nr, the
+            # raw string is concatenated verbatim and the rendered
+            # comment shows literal `\n` characters; with -n, jq
+            # produces a JSON-encoded string with proper escapes.
+            body=$(jq -n \
               --arg rule "${rule}" \
               --arg sev "${severity}" \
               --arg msg "${message}" \
               --arg url "${SONAR_HOST_URL}/project/issues?componentKeys=${SONAR_PROJECT_KEY}&pullRequest=${PR_NUMBER}&open=${rule}" \
-              '("<!-- sonarcloud -->\n" +
+              --arg marker "<!-- sonarcloud -->" \
+              '($marker + "\n" +
                "**SonarCloud " + $sev + " — `" + $rule + "`**\n\n" +
                $msg + "\n\n" +
                "[Open in SonarCloud](" + $url + ")\n")')
+            # File-level issues (line = 0, null, or empty) cannot be
+            # posted as inline PR comments — the GitHub API rejects
+            # `line: 0` with a 422, and a missing-line issue isn't tied
+            # to any one source line anyway. Collect them under a single
+            # summary comment posted to the PR conversation instead.
+            if [ -z "${line}" ] || [ "${line}" = "0" ] || [ "${line}" = "null" ]; then
+              FILE_LEVEL=$((FILE_LEVEL + 1))
+              continue
+            fi
+            # Build the inline-comment payload with --arg (string) for
+            # line so a non-numeric value (e.g. an API quirk returning
+            # the integer as a string) doesn't crash the step. The
+            # GitHub API accepts either form.
             payload=$(jq -n \
               --arg commit_id "${HEAD_SHA}" \
               --arg path "${relative_file}" \
-              --argjson line "${line}" \
+              --arg line "${line}" \
               --arg body "${body}" \
-              '{commit_id: $commit_id, path: $path, line: $line, side: "RIGHT", body: $body}')
+              '{commit_id: $commit_id, path: $path, line: ($line | tonumber), side: "RIGHT", body: $body}')
             if gh api \
                 -X POST \
                 -H "Accept: application/vnd.github+json" \
@@ -885,9 +906,9 @@ jobs:
               echo "::warning::Failed to post inline comment for ${relative_file}:${line} (${rule})."
             fi
           done < <(jq -r \
-              '.issues[] | [.component, .line, .severity, .rule, (.message | gsub("\t"; " ") | gsub("\n"; " "))] | @tsv' \
+              '[.issues[] | [.component, (.line // 0), .severity, .rule, (.message | gsub("\t"; " ") | gsub("\n"; " "))]] | .[] | @tsv' \
               "${ISSUES_FILE}")
-          echo "Posted ${POSTED}/${ISSUE_COUNT} inline SonarCloud comments (${FAILED} failed)."
+          echo "Posted ${POSTED}/${ISSUE_COUNT} inline SonarCloud comments (${FILE_LEVEL} file-level, ${FAILED} failed)."
 
           # If the SonarCloud quality gate is ERROR (not just because of
           # new-code issues, but for any reason including coverage), post
@@ -946,10 +967,13 @@ jobs:
           # maintainers can dismiss it once they address the SonarCloud
           # findings.
           SUMMARY_BODY=$(jq -nr \
-            --arg n "${ISSUE_COUNT}" \
+            --arg inline "${POSTED}" \
+            --arg file_level "${FILE_LEVEL}" \
+            --arg total "${ISSUE_COUNT}" \
             '"<!-- sonarcloud-request-changes -->\n" +
              "## SonarCloud: REQUEST_CHANGES\n\n" +
-             "The SonarCloud quality gate is **ERROR** with **" + $n + " new-code finding(s)** on this PR. " +
+             "The SonarCloud quality gate is **ERROR** with **" + $total + " new-code finding(s)** on this PR " +
+             "(" + $inline + " posted as inline comments, " + $file_level + " file-level). " +
              "The bot\u0027s earlier APPROVE review has been supplemented by this REQUEST_CHANGES review; " +
              "please address the inline comments before merging.\n\n" +
              "See the bot\u0027s APPROVE review for the original analysis and the per-issue inline comments above for the SonarCloud findings."')
