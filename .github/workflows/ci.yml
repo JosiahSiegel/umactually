@@ -825,8 +825,19 @@ jobs:
 
           ISSUE_COUNT=$(jq -r '.total // 0' "${ISSUES_FILE}")
           echo "SonarCloud reports ${ISSUE_COUNT} new-code issue(s) on PR ${PR_NUMBER}."
-          if [ "${ISSUE_COUNT}" = "0" ]; then
-            echo "No new-code findings; nothing to surface."
+          # Always check the quality gate, even when ISSUE_COUNT=0. The
+          # gate can be ERROR for non-issue reasons (coverage below
+          # threshold, duplicated lines, etc.) and the inline-comment
+          # pass is just one half of the surface; the REQUEST_CHANGES
+          # summary surfaces the gate failure regardless of whether
+          # there are new-code issues to post.
+          GATE_STATUS=$(curl -fsSL --max-time 15 \
+            -H "Authorization: Bearer ${SONAR_TOKEN}" \
+            "${SONAR_HOST_URL}/api/qualitygates/project_status?projectKey=${SONAR_PROJECT_KEY}&pullRequest=${PR_NUMBER}" \
+            | jq -r '.projectStatus.status // "UNKNOWN"' 2>/dev/null || echo "UNKNOWN")
+          echo "SonarCloud quality gate status for PR ${PR_NUMBER}: ${GATE_STATUS}"
+          if [ "${ISSUE_COUNT}" = "0" ] && [ "${GATE_STATUS}" != "ERROR" ]; then
+            echo "No new-code findings and quality gate is ${GATE_STATUS}; nothing to surface."
             exit 0
           fi
 
@@ -911,22 +922,13 @@ jobs:
           echo "Posted ${POSTED}/${ISSUE_COUNT} inline SonarCloud comments (${FILE_LEVEL} file-level, ${FAILED} failed)."
 
           # If the SonarCloud quality gate is ERROR (not just because of
-          # new-code issues, but for any reason including coverage), post
-          # a REQUEST_CHANGES review so the PR's check status accurately
-          # reflects "this PR has a failing quality gate". The bot's
-          # earlier APPROVE review is preserved (PR reviewers can dismiss
-          # it once they address the gate) so the audit trail is intact.
-          #
-          # Why gate-status rather than severity-filtered: SonarCloud's
-          # quality gate already encodes the operator's policy (which
-          # severities block, what coverage threshold, etc.). We trust
-          # that policy. Filtering by severity in the workflow would
-          # duplicate the policy and risk drift.
-          GATE_STATUS=$(curl -fsSL --max-time 15 \
-            -H "Authorization: Bearer ${SONAR_TOKEN}" \
-            "${SONAR_HOST_URL}/api/qualitygates/project_status?projectKey=${SONAR_PROJECT_KEY}&pullRequest=${PR_NUMBER}" \
-            | jq -r '.projectStatus.status // "UNKNOWN"' 2>/dev/null || echo "UNKNOWN")
-          echo "SonarCloud quality gate status for PR ${PR_NUMBER}: ${GATE_STATUS}"
+          # The bot's earlier APPROVE review is preserved (PR reviewers
+          # can dismiss it once they address the gate) so the audit trail
+          # is intact. We trust the gate as the policy source of truth
+          # (sonarcloud.io's quality-gate conditions encode severity
+          # filters, coverage thresholds, and any other operator policy;
+          # duplicating that filter logic in the workflow would invite
+          # drift).
           if [ "${GATE_STATUS}" != "ERROR" ]; then
             echo "Quality gate is ${GATE_STATUS}; leaving bot's existing review verdict intact."
             exit 0
