@@ -674,7 +674,7 @@ describe("buildReviewBody — concise empty-review body (ship-it branch)", () =>
     expect(body).not.toContain("## ✅ 0 inline findings — ship it");
   });
 
-  it("SHIP-CLEAN-008: reviews with suppressed comments are NOT collapsed (still surface the callout)", () => {
+  it("SHIP-CLEAN-008: reviews with suppressed-but-filtered comments still collapse to ship-it", () => {
     const body = buildReviewBody({
       review: { ...cleanReview, suppressedComments: [
         {
@@ -694,6 +694,6 @@ describe("buildReviewBody — concise empty-review body (ship-it branch)", () =>
       severityCounts: {},
       secrets: SECRETS,
     });
-    expect(body).not.toContain("## ✅ 0 inline findings — ship it");
+    expect(body).toContain("## ✅ 0 inline findings — ship it");
   });
 });

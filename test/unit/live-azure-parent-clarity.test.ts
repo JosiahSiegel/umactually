@@ -234,12 +234,12 @@ describe("buildReviewBody — 5-second scannable clarity", () => {
   });
 
   it("CLARITY-5: empty review (no inline + no suppressed) collapses to the ship-it body", () => {
-    // Cutover note: clean reviews (0 inline + 0 suppressed + not
-    // parse-failed) take the ship-it branch — marker + one-line
-    // verdict + manifest. No findings table, no summary section, no
-    // Generated-by footer. The provider's long summary (if any) is
-    // folded into a collapsed <details>; the test below uses an
-    // empty summary so the <details> block is omitted.
+    // Cutover note: clean reviews (0 inline + not parse-failed) take
+    // the ship-it branch — marker + one-line verdict + manifest. No
+    // findings table, no summary section, no Generated-by footer. The
+    // provider's long summary (if any) is folded into a collapsed
+    // <details>; the test below uses an empty summary so the <details>
+    // block is omitted.
     const body = buildReviewBody({
       review: buildEmptyReview(),
       provider: "openai-compatible",
@@ -479,10 +479,13 @@ describe("buildReviewBody — 5-second scannable clarity", () => {
     expect(body).not.toMatch(/###\s+📝\s+Summary/u);
   });
 
-  it("CLARITY-14c: severity tally hidden when there are zero findings (regardless of inline count)", () => {
-    // Cutover note: severity tally is hidden when no findings have
-    // any severity. The off-diff details block is GONE in the
-    // severity-table layout — off-diff info lives in the manifest only.
+  it("CLARITY-14c: 0 inline findings collapses to ship-it (suppressed is pipeline noise)", () => {
+    // Cutover note: suppressed findings are pipeline-internal noise the
+    // filter already handled — they don't penalize the reviewer with the
+    // verbose DISCUSS/FINDINGS/SUMMARY layout. The clean-ship branch
+    // fires whenever validCommentCount === 0 && parseFailed !== true.
+    // Off-diff + suppressed info still lives in the manifest for AI
+    // agents that need to audit the model output.
     const review: LiveReview = {
       summary: "Findings were all off-diff.",
       verdict: "NEEDS_FIX",
@@ -503,11 +506,10 @@ describe("buildReviewBody — 5-second scannable clarity", () => {
       severityCounts: { critical: 0, high: 0, medium: 0, low: 0 },
       secrets: SECRETS,
     });
-    expect(body).not.toMatch(/🏷️/u);
-    // No off-diff details block in the new layout.
+    // Clean-ship body wins over the old off-diff placeholder table.
+    expect(body).toContain("## ✅ 0 inline findings — ship it");
     expect(body).not.toMatch(/📍\s+Off-diff/u);
-    // Findings table still present, showing the empty placeholder row.
-    expect(body).toMatch(/No findings to address/u);
+    expect(body).not.toMatch(/No findings to address/u);
     // Manifest still carries the suppressed count for AI agents.
     const manifestMatch = body.match(/<!--\s*umactually:manifest\s+(\{[\s\S]*?\})\s*-->/u);
     expect(manifestMatch).not.toBeNull();
@@ -705,9 +707,10 @@ describe("buildReviewBody — 5-second scannable clarity", () => {
   it("CLARITY-15b: severity tally hidden when zero posted; ship-it body wins", () => {
     // Cutover note: pipeline summary is NOT in the body anymore; the
     // tally is hidden when all counts are zero. The clean-ship branch
-    // fires whenever validCommentCount === 0 && suppressedCommentCount
-    // === 0 — the model produced candidates but they were filtered
-    // out, so the reviewer sees the one-line ship-it body.
+    // fires whenever validCommentCount === 0 && parseFailed !== true —
+    // suppressed findings are pipeline-internal noise the filter
+    // already handled, so the reviewer sees the one-line ship-it body
+    // even when the model produced candidates that were all filtered out.
     const review: LiveReview = {
       summary: "Model said NEEDS_FIX but nothing actionable.",
       verdict: "NEEDS_FIX",

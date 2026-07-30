@@ -180,7 +180,7 @@ describe("preparePostedReview reconciliation", () => {
     expect(prepared.severityCounts).toEqual({});
     expect(prepared.effectiveVerdict).toBe("COMMENT");
 
-    // Body: clean-ship branch fires for 0 findings + 0 suppressed.
+    // Body: clean-ship branch fires for 0 findings (parse-failed only is exempt).
     expect(prepared.body).toContain("## ✅ 0 inline findings — ship it");
     expect(prepared.body).not.toContain("⛔ NEEDS_FIX");
     expect(prepared.body).not.toContain("💬 DISCUSS");

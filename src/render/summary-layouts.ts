@@ -1730,12 +1730,12 @@ export function renderSummary(layout: LayoutId, data: ReviewData): string {
   }
   // Clean-ship gate is enforced at the entry point so every layout
   // gets the same one-line verdict for empty, non-parse-failed reviews.
-  // Layouts that want a different shape for the empty case can opt out
-  // by NOT going through `renderSummary` (e.g. the legacy `layoutBaseline`
-  // used by the viewer for side-by-side comparison).
+  // Suppressed findings (confidence/verified-facts filtered) don't
+  // count against the reviewer — they're pipeline-internal noise the
+  // filter already handled. Only parseFailed short-circuits to a verbose
+  // layout so the operator sees the raw provider response.
   if (
     data.validCommentCount === 0 &&
-    data.suppressedCommentCount === 0 &&
     data.review.parseFailed !== true
   ) {
     return renderCleanShip(data);
