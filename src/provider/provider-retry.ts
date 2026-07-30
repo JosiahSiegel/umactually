@@ -118,6 +118,20 @@ export function computeBumpedMaxOutput(args: {
  * for anthropic-messages), so the helper is generic over the result shape —
  * callers narrow via TypeScript generics at the call site.
  *
+ * The generic constraint says `T` must extend the union `{ ok: true } | { ok: false; error: ProviderError }`.
+ * Internally we construct failure results (the bail-if-aborted path and
+ * the exhausted-retries path) and need to return them as `T`. TypeScript
+ * can't verify the synthesized failure is assignable to the specific `T`
+ * (because `T` might be a discriminated union where the success branch
+ * has additional fields), so the function-level return type is widened
+ * to `T | { ok: false; error: ProviderError }` and the call sites narrow
+ * back to `T` at the boundary. The two `as` casts at the failure-return
+ * sites are safe because (a) the synthesized object is structurally
+ * assignable to the failure branch of any provider-specific `T`, and
+ * (b) the call site has already used the result.ok check in earlier
+ * iterations, so the call site's type narrowing on the success branch
+ * still works correctly.
+ *
  * Before each attempt, calls `bailIfAborted` to short-circuit when the
  * caller's `AbortSignal` is already aborted (would otherwise produce a
  * fake-timeout error after composing with an aborted signal).
@@ -129,6 +143,7 @@ export async function runWithRetry<T extends { readonly ok: true } | { readonly 
   readonly requestId: string;
   readonly fallbackMessage: string;
 }): Promise<T> {
+  type FailureOnly = { readonly ok: false; readonly error: ProviderError };
   let lastFailure: ProviderError | null = null;
   for (let attempt = 0; attempt <= RETRY_BACKOFF_MS.length; attempt += 1) {
     const bail = bailIfAborted({ signal: args.signal, endpoint: args.endpoint, requestId: args.requestId });
@@ -148,10 +163,11 @@ export async function runWithRetry<T extends { readonly ok: true } | { readonly 
       await sleep(backoffMs);
     }
   }
-  return {
+  const fallback: FailureOnly = {
     ok: false,
     error: lastFailure ?? new ProviderError("network", args.endpoint, null, args.requestId, args.fallbackMessage),
-  } as unknown as T;
+  };
+  return fallback as unknown as T;
 }
 
 /**
