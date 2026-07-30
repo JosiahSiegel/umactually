@@ -737,6 +737,37 @@ const isMainModule = (() => {
     // argv1 is a strong SEA signal.
     const lastSegment = argv1ForSeaDetect.split(/[\\/]/u).pop() ?? "";
     if (lastSegment.length > 0 && !lastSegment.includes(".")) {
+      // The npm-install path also creates an extensionless argv1:
+      // `npm install -g umactually` puts `prefix/bin/umactually` on
+      // PATH as a symlink to `prefix/lib/node_modules/umactually/bin/
+      // umactually.mjs`. Node does NOT resolve the symlink when
+      // setting process.argv[1] for a shebang-invoked script (this
+      // is documented Node behaviour since at least v20), so argv1
+      // is the extensionless symlink path. The previous heuristic
+      // treated this as a SEA binary and returned true, which
+      // caused the auto-invoke to fire on top of the shim's
+      // explicit `await mod.main(argv)` call — making `--version`
+      // print twice. Differentiate by resolving the symlink: a
+      // real SEA binary has no symlink layer, so its realpath
+      // equals argv1. The npm shim's realpath resolves to the
+      // .mjs target, so its realpath differs from argv1. Return
+      // false when realpath resolves to a source file (anything
+      // ending in a JS-family extension) to keep the npm path
+      // out of the SEA-detection branch.
+      let argv1Realpath = argv1ForSeaDetect;
+      try {
+        argv1Realpath = realpathSync(argv1ForSeaDetect);
+      } catch {
+        // argv1ForSeaDetect does not exist (Node resolved it
+        // lazily). Stay with the literal argv1.
+      }
+      if (argv1Realpath !== argv1ForSeaDetect) {
+        // argv1 is a symlink. If its target ends in a JS-family
+        // extension, it's the npm shim, not a SEA binary.
+        if (/\.(?:mjs|cjs|js)$/u.test(argv1Realpath)) {
+          return false;
+        }
+      }
       return true;
     }
   }
