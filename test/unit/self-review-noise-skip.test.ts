@@ -250,7 +250,7 @@ describe("self-review workflow noise-skip rule", () => {
     );
     expect(stepBlock).toMatch(/tac \| awk/u);
     expect(stepBlock).toMatch("sed 's/[[:space:]]*-->$//'");
-    expect(stepBlock).not.toMatch('sub(/ -->.*$/', 'g');
+    expect(stepBlock).not.toMatch("sub(/ -->.*$/");
   });
 
   it("the test docstring matches the workflow filter (state != PENDING, not state == COMMENTED)", () => {
