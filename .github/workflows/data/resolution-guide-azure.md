@@ -60,7 +60,46 @@ az repos pr thread list \
 # Expected: 0
 ```
 
-> ⚠️ **Merge gate**: If this project enforces "Require a minimum number of reviewers" with conversation-completion policies, every open thread — including umactually review threads — must be marked **Closed** (status `closed`) before the merge policy is satisfied. A single unresolved thread blocks merge completion until Step 3 is applied to it.
+### Step 5 — check the bot's review verdict
+
+Azure DevOps does not use the GitHub-style `CHANGES_REQUESTED` review-verdict gate; the equivalent block is the PR's **status check** + **required-reviewer policy**. The umactually bot's most recent verdict is exposed as `postedStatusState` (set when the bot runs):
+
+| `postedStatusState` | Meaning | Merge impact |
+|---|---|---|
+| `succeeded` | Bot reviewed, no NEEDS_FIX findings | No block |
+| `pending` | Bot reviewed, NEEDS_FIX findings present (live CLI uses "current" policy) | May block if status-check policy is enabled |
+| `failed` | Bot reviewed under the "legacy" policy and found NEEDS_FIX (S4 dry-run only) | May block if status-check policy is enabled |
+
+Pull the bot's latest review from the live artifact or the dry-run JSON; if `postedStatusState` is `failed` or `pending`, treat that as a "CHANGES_REQUESTED equivalent" and address the underlying findings.
+
+```bash
+# Inspect the bot's most recent dry-run artifact (location depends on --output-artifact)
+cat artifacts/manual/s4-azure-mocked-run.json | jq '.postedStatusState'
+# Or, for live reviews, the run logs:
+gh run view <RUN_ID> --repo <owner>/<repo> --log | grep "umactually:" | tail -20
+```
+
+If the verdict is `failed`/`pending` AND there are no underlying findings you can address (e.g. the verdict was rendered against code you've since removed), re-push and let the bot re-review. There's no GraphQL equivalent of GitHub's `dismissPullRequestReview`; on Azure, the dismissal path is **UI-only** (PR → "..." → "Reset vote" / "Re-vote") or you wait for the bot's next review to overwrite the previous state.
+
+> 🤖 **AI-Agent note**: As of `azure-devops` extension 0.30+, `az repos pr policy` exposes evaluation results but not a programmatic "clear all blocking reviews" command. If you're a coding agent and `postedStatusState` blocks a merge you can otherwise satisfy, escalate to the human operator rather than burning turns trying CLI mutations that don't exist.
+
+### Step 6 — verify the merge is actually unblocked
+
+Both gates must clear:
+
+```bash
+# Gate 1: no unresolved threads (Step 4 expected 0)
+# Gate 2: bot's postedStatusState is 'succeeded' (Step 5)
+# Gate 3: all required policy evaluations pass
+az repos pr policy list --id "${PR_ID}" \
+  --organization <ORG> --project <PROJECT> \
+  --query "[?status.name!=='approved'] | length(@)" -o tsv
+# Expected: 0
+```
+
+If `policy list` returns a non-zero count, fetch the policy evaluations to see which policy is failing.
+
+> ⚠️ **Merge gate**: If this project enforces "Require a minimum number of reviewers" with conversation-completion policies, every open thread — including umactually review threads — must be marked **Closed** (status `closed`) before the merge policy is satisfied. A single unresolved thread blocks merge completion until Step 3 is applied to it. **A `failed` or `pending` `postedStatusState` blocks required status-check policies independently** — Step 6 catches what Step 4 misses.
 
 The full guide (including platform-agnostic context, GitHub-specific mutation recipe, and common pitfalls) lives at `.github/SELF-REVIEW-RESOLUTION-GUIDE.md`.
 

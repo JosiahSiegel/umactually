@@ -675,6 +675,100 @@ jobs:
           if-no-files-found: warn
           retention-days: 7
 
+  # SonarCloud Code Analysis — uploads coverage to SonarCloud and
+  # posts PR decoration on the `JosiahSiegel_umactually` project.
+  #
+  # Uses a synthetic-success skip pattern (vs. letting the step no-op)
+  # because GitHub treats `skipped` required checks as failing required
+  # checks, which would block PRs from forks/contributors who don't have
+  # the SONAR_TOKEN secret configured. The explicit `::notice::` step
+  # emits a real success conclusion so the merge gate stays satisfied.
+  #
+  # To activate: ensure SONAR_TOKEN is set in repo Settings -> Secrets
+  # and variables -> Actions (token from
+  # https://sonarcloud.io -> Account -> Security -> Generate Tokens).
+  # sonar-project.properties already declares sonar.projectKey +
+  # sonar.organization against the real org; only the secret is needed
+  # in repo settings. Full operator setup is in
+  # docs/configuration.md ("SonarCloud integration").
+  #
+  # Fork behavior: forks don't get repo secrets, so SONAR_TOKEN
+  # resolves to '' and the synthetic-success step runs instead of the
+  # scanner. No fork-side action needed.
+  sonarqube-scan:
+    name: SonarCloud Code Analysis
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    # Always report a conclusion so the required check is satisfiable
+    # even when there's nothing to scan. The scanner action itself
+    # reports quality-gate pass/fail; we never block PRs on scanner
+    # infra errors at this level — the action exits non-zero if the
+    # quality gate fails, which IS a block (by design).
+    if: ${{ !cancelled() }}
+    # Expose the secret as an env var so step-level `if:` conditions
+    # can branch on its presence. The `|| ''` fallback is critical:
+    # without it, a missing secret would resolve to the literal string
+    # `${{ secrets.SONAR_TOKEN }}` (non-empty), breaking the skip logic.
+    env:
+      SONAR_TOKEN: ${{ secrets.SONAR_TOKEN || '' }}
+    steps:
+      - name: Synthetic success (no SONAR_TOKEN configured)
+        # Skips the scanner when the secret is absent (fork PR, public
+        # mirror, contributor without org access). GitHub treats
+        # `skipped` required checks as failing, so we explicitly emit
+        # a synthetic success notice instead of letting the action
+        # no-op. This mirrors StrataKit's pattern at stratakitci.log
+        # lines 597-606.
+        if: ${{ env.SONAR_TOKEN == '' }}
+        run: |
+          echo "::notice::SonarCloud Code Analysis skipped — SONAR_TOKEN secret not configured."
+          echo "Required-check conclusion reported as success so the merge gate is satisfied."
+          echo "On this repo: Settings -> Secrets and variables -> Actions -> add SONAR_TOKEN from sonarcloud.io -> Account -> Security -> Generate Token."
+
+      - name: Checkout
+        if: ${{ env.SONAR_TOKEN != '' }}
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0  # SonarCloud PR scans need full history for blame + new-code detection.
+
+      - name: Setup Node 24
+        if: ${{ env.SONAR_TOKEN != '' }}
+        uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+
+      - name: Install dependencies
+        if: ${{ env.SONAR_TOKEN != '' }}
+        run: npm ci
+
+      - name: Generate coverage report
+        if: ${{ env.SONAR_TOKEN != '' }}
+        working-directory: .
+        # Produces coverage/lcov.info which SonarCloud reads via
+        # sonar.javascript.lcov.reportPaths in sonar-project.properties.
+        # Excludes the e2e project (requires live API keys, opt-in).
+        run: npm run test:coverage
+
+      - name: SonarQube Scan
+        if: ${{ env.SONAR_TOKEN != '' }}
+        uses: SonarSource/sonarqube-scan-action@7006c4492b2e0ee0f816d36501671557c97f5995  # v8.1.0 — pinned to the commit SHA SonarCloud's UI recommends (matches StrataKit's pin at stratakitci.log:683)
+        env:
+          SONAR_TOKEN: ${{ env.SONAR_TOKEN }}
+          # GitHub Actions automatically injects the project key from
+          # sonar-project.properties; we override only the host URL
+          # because sonar-project.properties intentionally omits it
+          # (so local CLI runs can target a self-hosted instance).
+          SONAR_HOST_URL: https://sonarcloud.io
+
+      - name: Upload coverage artifact
+        if: ${{ always() && env.SONAR_TOKEN != '' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: sonar-coverage
+          path: coverage/
+          if-no-files-found: warn
+          retention-days: 7
+
   release-pipeline-dry-run:
     name: release pipeline dry-run
     runs-on: ubuntu-latest

@@ -6,6 +6,40 @@ export default defineConfig({
     globals: true,
     passWithNoTests: true,
     setupFiles: ["./test/setup.ts"],
+    // Coverage config used by `npm run test:coverage` (consumed by the
+    // sonarqube-scan job in .github/workflows/ci.yml). The lcov.info output
+    // is read by SonarCloud via sonar.javascript.lcov.reportPaths.
+    // v8 provider chosen over istanbul because istanbul adds a transform
+    // pass that breaks Node 25.6 SEA builds and doesn't change the
+    // percentage materially for this codebase size.
+    coverage: {
+      provider: "v8",
+      reporter: ["lcov", "text", "text-summary"],
+      reportsDirectory: "./coverage",
+      // Track production source only. bin/ symlinks to dist/ (generated
+      // output); scripts/ is CI/release glue and would dilute coverage
+      // metrics. SonarCloud scans src/ via sonar.sources, so this aligns.
+      include: ["src/**/*.ts"],
+      exclude: [
+        "node_modules/**",
+        "dist/**",
+        "release/**",
+        "artifacts/**",
+        "test/**",
+        "**/*.test.ts",
+        "**/*.scenario.test.ts",
+        "**/*.e2e.test.ts",
+        "**/*.d.ts",
+        "test/setup.ts",
+        "scripts/prepare-azure-pr-inputs.sh",
+        "scripts/ci-*.sh",
+        "scripts/install.sh",
+        "scripts/install.ps1",
+        "scripts/uninstall.sh",
+        "scripts/uninstall.ps1",
+        "scripts/release.sh",
+      ],
+    },
     projects: [
       {
         extends: true,

@@ -98,6 +98,47 @@ Every GitHub Release under a `vX.Y.Z` tag ships exactly six public assets. Five 
 
 The archive contract is the only supported download entry point. The installer one-liners in the README (`curl | sh` / `irm | iex`) download the matching archive by immutable tag, verify its SHA-256 against `checksums.txt`, and extract the single member to your PATH. The `INSTALL_ASSET_CONTRACT=archive` env var is the wire-format selection; the legacy raw-executable contract is preserved only for back-compat and is not the supported path for any current release. See [`docs/release-process.md`](release-process.md) for the full layout, pre-publication gates, Windows ARM64 structural validation, and size budget contract.
 
+## SonarCloud integration
+
+SonarCloud analysis is optional. Without the `SONAR_TOKEN` secret the `sonarqube-scan` job in `.github/workflows/ci.yml` emits a synthetic-success notice and skips, so forks and contributors without org access are never blocked.
+
+**Operator setup (first time only)**
+
+1. Create the SonarCloud project: https://sonarcloud.io → "+" → "Analyze new project" → select `JosiahSiegel/umactually`. SonarCloud auto-creates the project key `JosiahSiegel_umactually` against the `josiahsiegel` organisation. `sonar-project.properties` is preconfigured against this org/project; no further edits to that file are needed.
+2. Generate a token: https://sonarcloud.io → Account → Security → Generate Tokens → name `umactually-ci`. Copy the token immediately; it cannot be retrieved later.
+3. Add the secret: GitHub repo → Settings → Secrets and variables → Actions → New repository secret → Name `SONAR_TOKEN`, Value = the token from step 2.
+
+**What runs in CI**
+
+A single job is added by the SonarCloud workflow: `sonarqube-scan` uploads coverage and scan results to SonarCloud and posts PR decoration. The job is gated on the `SONAR_TOKEN` secret and emits a synthetic-success notice when the secret is absent so forks and contributors without org access are not blocked.
+
+**Branch protection**
+
+Once the SonarCloud project exists, add `SonarCloud Code Analysis` as a required status check on the `main` branch ruleset. Without it the scan is advisory; with it, PRs that fail the Sonar quality gate cannot merge. Path: GitHub → Settings → Branches → main → Require status checks to pass before merging → Status checks that are required → search "SonarCloud Code Analysis" → enable.
+
+**Quality gate tuning**
+
+The default SonarCloud "Sonar way" quality gate applies unless overridden in the SonarCloud UI (project → Administration → Quality Gate). The repo's coverage metric is fed from `coverage/lcov.info`, produced by `npm run test:coverage` inside the `sonarqube-scan` job.
+
+**Local reproduction**
+
+Run `npm run test:coverage` first to refresh `coverage/lcov.info`, then:
+
+```bash
+SONAR_TOKEN=<your-token> \
+  npx --yes sonarqube-scanner \
+    -Dsonar.host.url=https://sonarcloud.io \
+    -Dsonar.token="$SONAR_TOKEN" \
+    -Dsonar.organization=<your-org> \
+    -Dsonar.projectKey=<your-org>_umactually
+```
+
+**What this does NOT do**
+
+- Does not gate on coverage percentage thresholds — only on the SonarCloud quality gate, which is configured in the UI.
+- Does not fail on `SonarCloud` outages. The scanner action retries internally; if it times out, the job fails and the synthetic-success notice is NOT emitted (so a real outage blocks merges by design).
+- Does not validate the LIVE sonar import (the `runLiveSonarImport` HTTP poller). That path is exercised by `sonarqube-scan`'s own outcome — it would fail to upload coverage if the live HTTP path regressed. Live runtime regression coverage for the `--include-sonarqube` user-facing CLI lives in the user-facing `self-review.yml` workflow (which posts a real review on every PR).
+
 ## Next
 
 - See [`docs/troubleshooting.md`](troubleshooting.md) for parse-fail triage, automatic artifact validation, and concurrency notes.
