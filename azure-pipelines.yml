@@ -116,6 +116,24 @@ steps:
       done
       unset _var
 
+      # Synthesize Azure DevOps PR-context env vars for manual builds.
+      # ADO only sets SYSTEM_PULLREQUEST_PULLREQUESTID /
+      # SYSTEM_PULLREQUEST_SOURCECOMMITID / SYSTEM_PULLREQUEST_TARGETBRANCHNAME
+      # automatically on PR-triggered builds. On a manual queue these are
+      # absent and readAzureSha() crashes with AZURE_SOURCE_COMMIT_MISSING.
+      # Synthesize from BUILD_SOURCEVERSION + constants so manual runs can
+      # exercise the live review step end-to-end. Real PR triggers are
+      # unaffected because the env vars are already set.
+      if [ -z "${SYSTEM_PULLREQUEST_SOURCECOMMITID:-}" ] && [ -n "${BUILD_SOURCEVERSION:-}" ]; then
+        export SYSTEM_PULLREQUEST_SOURCECOMMITID="${BUILD_SOURCEVERSION}"
+      fi
+      if [ -z "${SYSTEM_PULLREQUEST_TARGETBRANCHNAME:-}" ]; then
+        export SYSTEM_PULLREQUEST_TARGETBRANCHNAME="main"
+      fi
+      if [ -z "${SYSTEM_PULLREQUEST_PULLREQUESTID:-}" ]; then
+        export SYSTEM_PULLREQUEST_PULLREQUESTID="1"
+      fi
+
       # Conditionally forward the strict-schema and verify-findings
       # toggles. Both default ON in the CLI; opt out with the
       # corresponding `false` value. Empty (unset) preserves the
