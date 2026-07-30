@@ -101,7 +101,11 @@ jobs:
       - name: Append resolution-guide to latest review body
         if: github.event_name == 'pull_request'
         env:
-          GH_TOKEN: ${{ github.token }}
+          # `gh` reads GITHUB_TOKEN (not GH_TOKEN) as the primary auth
+          # env var; GH_TOKEN is a fallback. Match the upstream
+          # 'Run UmActually self review' step's auth posture so a
+          # pull_request from a fork doesn't fall back to ambient auth.
+          GITHUB_TOKEN: ${{ github.token }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
           # Auto-detect the upstream 'Run UmActually self review' step's
@@ -144,8 +148,13 @@ jobs:
           # directly, but the env var tracks the actual CI environment, so
           # an Azure DevOps run gets the Azure guide and a GitHub PR gets
           # the GitHub guide without the two values drifting apart.
-          # set +e masks transient API failures; the step is purely a UX
-          # nicety (advisory) and never blocks the CI job.
+          # Scope `set +e` to the read-only GraphQL fetch only. The
+          # upstream 'Run UmActually self review' step ran with
+          # `set +e` to mask transient API failures (it is advisory and
+          # never blocks the CI job). This step inherits that mask, so
+          # we scope our own +e to the fetch and restore `-e` before
+          # any destructive write so a partial PUT failure does not
+          # silently leave the body in an unknown state.
           set +e
           # Auto-detect the platform: TF_BUILD is set on Azure DevOps
           # pipelines, GITHUB_ACTIONS on GitHub Actions runs. Default to
@@ -176,6 +185,18 @@ jobs:
             -F name="${GITHUB_REPOSITORY#*/}" \
             -F pr="${PR_NUMBER}" \
             -F query="$(cat "${QUERY_FILE}")")
+          # Validate the GraphQL response shape. A `.errors` array
+          # (rate-limit, auth failure, schema drift) leaves `.data`
+          # null; without this check the next `jq` calls would emit
+          # null/empty and the step would skip with a misleading
+          # "No github-actions review" message.
+          if ! printf '%s' "${REVIEW_JSON}" | jq -e '.data.repository.pullRequest.reviews.nodes' >/dev/null 2>&1; then
+            echo "GraphQL response missing .data.repository.pullRequest.reviews.nodes; treating as transient and skipping."
+            printf '%s' "${REVIEW_JSON}" | jq -r '.errors // "no errors field"' 2>/dev/null | head -5
+            exit 0
+          fi
+          # Restore -e now that the read-only fetch is done.
+          set -e
           REVIEW_ROW=$(printf '%s' "${REVIEW_JSON}" | jq -r --arg sha "${HEAD_SHA}" \
             '[(.data.repository.pullRequest.reviews.nodes // [])[] | select(.author.login == "github-actions" and .commit.oid == $sha)] | sort_by(.databaseId) | reverse | .[0] // empty')
           if [ -z "${REVIEW_ROW}" ] || [ "${REVIEW_ROW}" = "null" ]; then
@@ -200,23 +221,27 @@ jobs:
             echo "Review ${REVIEW_ID} (state=${REVIEW_STATE}) has no umactually:manifest marker; manifest schema drift suspected. Skipping guide append (safer than guessing inlineCount=0)."
             exit 0
           fi
-          # Extract inlineCount from the umactually manifest JSON blob.
-          # The bot terminates its review body with a single-line comment
-          # of the form <!-- umactually:manifest {"schema":"umactually/v1",...,
-          # "inlineCount":N, ...} -->. We strip the wrapper, parse the
-          # remaining JSON with jq, and read inlineCount directly. This
-          # is more robust than regex on the raw blob: any `>` inside a
-          # JSON string (e.g. a "...>..." value) would terminate a regex
-          # capture early, but jq handles quoted strings correctly.
-          MANIFEST_JSON=$(printf '%s' "${CURRENT}" \
-            | sed -n 's|.*<!-- umactually:manifest \({.*}\) -->.*|\1|p' | head -1)
-          if [ -n "${MANIFEST_JSON}" ]; then
-            INLINE_COUNT=$(printf '%s' "${MANIFEST_JSON}" | jq -r '.inlineCount // 0' 2>/dev/null)
-            INLINE_COUNT=${INLINE_COUNT:-0}
-          else
+          # Extract inlineCount from the umactually manifest JSON blob. The
+          # bot terminates its review body with a single-line comment
+          # of the form <!-- umalready:manifest {"schema":"umalready/v1",...,
+          # "inlineCount":N, ...} -->. Use awk anchored on the LAST
+          # '} -->' segment so a JSON value containing inner braces
+          # (e.g. severityCounts with nested values) cannot trick a
+          # greedy regex into truncating early.
+          MANIFEST_JSON=$(printf '%s' "${CURRENT}" | awk '
+            /<!-- umactually:manifest / {
+              # Capture from after the opening marker to the next " -->".
+              sub(/^.*<!-- umactually:manifest /, "")
+              sub(/ -->.*$/, "")
+              print
+              exit
+            }
+          ')
+          if [ -z "${MANIFEST_JSON}" ]; then
             INLINE_COUNT=0
+          else
+            INLINE_COUNT=$(printf '%s' "${MANIFEST_JSON}" | jq -r '.inlineCount // 0' 2>/dev/null) || INLINE_COUNT=0
           fi
-          INLINE_COUNT=${INLINE_COUNT:-0}
           if [ "${INLINE_COUNT}" = "0" ]; then
             echo "Review ${REVIEW_ID} has inlineCount=0 (per manifest); nothing to triage, skipping guide append."
             exit 0

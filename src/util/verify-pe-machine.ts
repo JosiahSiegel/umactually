@@ -81,8 +81,9 @@ export function verifyPeMachine(path: string): PeMachine {
     };
   }
 
-  // COFF File Header is at e_lfanew + 4 (PE sig) + 20 (signature + COFF header).
-  // The Machine field is the FIRST 2 bytes of the COFF File Header.
+  // The PE signature ("PE\0\0") sits at offset e_lfanew (4 bytes);
+  // the COFF File Header immediately follows at e_lfanew + 4. Machine
+  // is the FIRST 2-byte field of the COFF File Header.
   const machineOffset = e_lfanew + 4;
   if (machineOffset + 2 > data.length) {
     return {

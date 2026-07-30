@@ -53,12 +53,16 @@ describe("self-review workflow noise-skip rule", () => {
     );
   });
 
-  it("the step declares GH_TOKEN env so the gh api call passes the linter", () => {
+  it("the step declares GITHUB_TOKEN env so the gh api call uses the correct auth var", () => {
+    // `gh` reads GITHUB_TOKEN as the primary auth env var (GH_TOKEN is
+    // only a fallback). The upstream 'Run UmActually self review' step
+    // declares GITHUB_TOKEN; this step must match so a pull_request from
+    // a fork doesn't fall back to ambient auth.
     const stepBlock = extractStepBlock(
       workflowText,
       "Append resolution-guide to latest review body",
     );
-    expect(stepBlock).toContain("GH_TOKEN:");
+    expect(stepBlock).toContain("GITHUB_TOKEN:");
     expect(stepBlock).toContain("github.token");
   });
 
@@ -133,6 +137,39 @@ describe("self-review workflow noise-skip rule", () => {
     const queryText = readFileSync(queryFile, "utf8");
     expect(queryText).toMatch(/reviews\(last:\s*[2-9]\d?\s*\)/u);
     expect(queryText).not.toMatch(/reviews\(last:\s*1\s*\)/u);
+  });
+
+  it("the step restores set -e before the destructive review-body PUT", () => {
+    // The upstream 'Run UmActually self review' step runs with set +e
+    // (advisory). This step's read-only GraphQL fetch must stay tolerant
+    // of transient API failures, but the destructive PUT must fail
+    // loudly on partial failure. Pin the explicit set -e before any
+    // write so a future copy-paste regression to the upstream posture
+    // doesn't silently leave the body in an unknown state.
+    const stepBlock = extractStepBlock(
+      workflowText,
+      "Append resolution-guide to latest review body",
+    );
+    const fetchIdx = stepBlock.indexOf("gh api graphql");
+    const restoreIdx = stepBlock.indexOf("set -e", fetchIdx);
+    const putIdx = stepBlock.indexOf("-X PUT");
+    expect(fetchIdx).toBeGreaterThanOrEqual(0);
+    expect(restoreIdx).toBeGreaterThan(fetchIdx);
+    expect(putIdx).toBeGreaterThan(restoreIdx);
+  });
+
+  it("the manifest parser uses awk (not sed) so nested braces don't truncate early", () => {
+    // The previous sed regex was greedy through `{.*}` and would
+    // truncate at the first inner `}` (e.g. severityCounts with nested
+    // values), causing the subsequent jq parse to fail and the step to
+    // silently skip the append. The fix swaps to an awk pass anchored
+    // on the LAST `} -->` segment.
+    const stepBlock = extractStepBlock(
+      workflowText,
+      "Append resolution-guide to latest review body",
+    );
+    expect(stepBlock).toMatch(/awk\s*'/u);
+    expect(stepBlock).not.toMatch(/sed -n 's\|.\*<!-- umactually:manifest/u);
   });
 
   it("the step short-circuits with `exit 0` when INLINE_COUNT is 0", () => {
