@@ -94,6 +94,28 @@ steps:
       if [ -n "$additional_prompt_files" ]; then
         EXTRA_ARGS+=(--additional-prompt-files "$additional_prompt_files")
       fi
+      # Purge optional env vars whose values are unresolved ADO macro
+      # literals (the string "$(VAR)" left in place when the pipeline
+      # variable group does not define VAR). The bash guards above
+      # already filter these for CLI *args*, but the CLI's own config
+      # loader reads env vars directly — a macro literal reaching
+      # parseBooleanFromUnknown crashes with "expected boolean string,
+      # received [REDACTED]". Unsetting before `node` keeps the env
+      # path from ever seeing the unresolved macro.
+      purge_if_macro() {
+        local name="$1"
+        local value="${!name:-}"
+        if [[ "$value" == \$\(*\) ]]; then
+          unset "$name"
+        fi
+      }
+      for _var in \
+        UMACTUALLY_PROMPT_FILES UMACTUALLY_ADDITIONAL_PROMPT_FILES \
+        UMACTUALLY_STRICT_SCHEMA UMACTUALLY_VERIFY_FINDINGS; do
+        purge_if_macro "$_var"
+      done
+      unset _var
+
       # Conditionally forward the strict-schema and verify-findings
       # toggles. Both default ON in the CLI; opt out with the
       # corresponding `false` value. Empty (unset) preserves the
