@@ -14,7 +14,7 @@ import {
   sanitizeHttpStatus,
   sanitizeMessage,
 } from "./provider-error.js";
-import { bailIfAborted } from "./provider-retry.js";
+import { bailIfAborted, buildParseFailError, computeBumpedMaxOutput } from "./provider-retry.js";
 import {
   fetchAndCacheSessionToken,
   getCachedSessionToken,
@@ -220,12 +220,17 @@ async function runChatCall(
   // Self-healing parse-fail retry: send a follow-up message asking the
   // model to emit JSON only. Mirrors the openai-compatible path.
   // See openai-compatible.ts:callEndpoint for the full rationale.
+  const bumpedMaxOutput = computeBumpedMaxOutput({
+    currentBudget: config.maxOutputTokens,
+    rawTextLength: rawText.length,
+    textPayloadLength: textPayload.length,
+  });
   const retryBody = buildChatBody(
     {
       model: config.model,
       system: config.system,
       user: config.user,
-      ...(config.maxOutputTokens !== undefined ? { maxOutputTokens: config.maxOutputTokens } : {}),
+      ...(bumpedMaxOutput !== undefined ? { maxOutputTokens: bumpedMaxOutput } : {}),
       ...(config.reasoningEffort !== undefined ? { reasoningEffort: config.reasoningEffort } : {}),
     },
     { userOverride: PARSE_FAIL_RETRY_PROMPT },
@@ -275,26 +280,18 @@ async function runChatCall(
     retryReview = parsedRetry;
   }
   if (retryReview === null) {
-    // Same parse-fail diagnostic contract as openai-compatible.ts:
-    // distinguish "truncated stream" from "completed but malformed" so
-    // the diagnostic can show actionable remediation advice. Delegates
-    // to the shared `diagnoseParseFailure` helper so the truncation
-    // detection logic is not duplicated per provider.
     const diagnosis = diagnoseParseFailure({ rawText });
     return {
       ok: false,
-      error: new ProviderError(
-        "parse",
-        ENDPOINT_CHAT,
-        response.status,
+      error: buildParseFailError({
+        endpoint: ENDPOINT_CHAT,
+        status: response.status,
         requestId,
-        "Provider response did not contain a JSON review payload after self-healing retry.",
-        {
-          rawText,
-          truncated: diagnosis.truncated,
-          ...(diagnosis.usage !== undefined ? { usage: diagnosis.usage } : {}),
-        },
-      ),
+        message: "Provider response did not contain a JSON review payload after self-healing retry.",
+        rawText,
+        truncated: diagnosis.truncated,
+        ...(diagnosis.usage !== undefined ? { usage: diagnosis.usage } : {}),
+      }),
     };
   }
 
