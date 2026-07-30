@@ -814,15 +814,16 @@ jobs:
           # rename it, update both this step's `if:` and this comment.
           # (We can't easily ref the step id from a separate YAML key, so
           # the contract is documented here.)
+          ISSUES_FILE="${RUNNER_TEMP:-/tmp}/sonar-issues-pr-${PR_NUMBER}.json"
           if ! curl -fsSL --max-time 15 \
               -H "Authorization: Bearer ${SONAR_TOKEN}" \
               "${SONAR_HOST_URL}/api/issues/search?componentKeys=${SONAR_PROJECT_KEY}&pullRequest=${PR_NUMBER}&inNewCodePeriod=true&resolved=false&ps=100" \
-              > /tmp/opencode/sonar_issues.json 2>/dev/null; then
+              > "${ISSUES_FILE}" 2>/dev/null; then
             echo "::warning::SonarCloud issues API call failed; skipping PR-comment surface. The scanner's quality-gate check is the authoritative block."
             exit 0
           fi
 
-          ISSUE_COUNT=$(jq -r '.total // 0' /tmp/opencode/sonar_issues.json)
+          ISSUE_COUNT=$(jq -r '.total // 0' "${ISSUES_FILE}")
           echo "SonarCloud reports ${ISSUE_COUNT} new-code issue(s) on PR ${PR_NUMBER}."
           if [ "${ISSUE_COUNT}" = "0" ]; then
             echo "No new-code findings; nothing to surface."
@@ -885,7 +886,7 @@ jobs:
             fi
           done < <(jq -r \
               '.issues[] | [.component, .line, .severity, .rule, (.message | gsub("\t"; " ") | gsub("\n"; " "))] | @tsv' \
-              /tmp/opencode/sonar_issues.json)
+              "${ISSUES_FILE}")
           echo "Posted ${POSTED}/${ISSUE_COUNT} inline SonarCloud comments (${FAILED} failed)."
 
           # If the SonarCloud quality gate is ERROR (not just because of
@@ -966,6 +967,11 @@ jobs:
           else
             echo "::warning::Failed to post REQUEST_CHANGES summary review on PR ${PR_NUMBER}; the ${POSTED} inline comments still surface the findings."
           fi
+
+          # Clean up the temp file so we don't leak it across runs on the
+          # same runner (RUNNER_TEMP is per-runner, not per-job, on
+          # self-hosted runners).
+          rm -f "${ISSUES_FILE}"
 
       - name: Upload coverage artifact
         if: ${{ always() && env.SONAR_TOKEN != '' }}
