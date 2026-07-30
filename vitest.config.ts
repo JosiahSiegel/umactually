@@ -16,7 +16,10 @@ export default defineConfig({
       provider: "v8",
       reporter: ["lcov", "text", "text-summary"],
       reportsDirectory: "./coverage",
-      include: ["src/**/*.ts", "bin/**/*.ts", "scripts/**/*.mjs", "scripts/**/*.ts"],
+      // Track production source only. bin/ symlinks to dist/ (generated
+      // output); scripts/ is CI/release glue and would dilute coverage
+      // metrics. SonarCloud scans src/ via sonar.sources, so this aligns.
+      include: ["src/**/*.ts"],
       exclude: [
         "node_modules/**",
         "dist/**",
@@ -28,19 +31,6 @@ export default defineConfig({
         "**/*.e2e.test.ts",
         "**/*.d.ts",
         "test/setup.ts",
-        "scripts/ci-smoke.mjs",
-        "scripts/release-*.mjs",
-        "scripts/build-sea*.mjs",
-        "scripts/check-*.mjs",
-        "scripts/verify-*.mjs",
-        "scripts/post-bundle.mjs",
-        "scripts/stage-release-assets.mjs",
-        "scripts/package-release-assets.mjs",
-        "scripts/merge-candidate-bundles.mjs",
-        "scripts/write-filtered-manifest.mjs",
-        "scripts/render-versions.mjs",
-        "scripts/clean-viewer.mjs",
-        "scripts/view-summary-layouts.mjs",
         "scripts/prepare-azure-pr-inputs.sh",
         "scripts/ci-*.sh",
         "scripts/install.sh",
