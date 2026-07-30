@@ -14,6 +14,7 @@ import {
   sanitizeHttpStatus,
   sanitizeMessage,
 } from "./provider-error.js";
+import { bailIfAborted } from "./provider-retry.js";
 import {
   fetchAndCacheSessionToken,
   getCachedSessionToken,
@@ -103,6 +104,15 @@ async function runChatCall(
   requestId: string,
   session: { readonly token: string; readonly apiBase: string },
 ): Promise<CopilotCallResult> {
+  // Mirrors the abort-bailout guard from openai-compatible /
+  // anthropic-messages. Copilot doesn't yet accept a caller
+  // AbortSignal on `CopilotCallConfig`, so the check is a no-op
+  // today; when the signal field is added, this guard will start
+  // firing automatically.
+  const bail = bailIfAborted({ signal: undefined, endpoint: ENDPOINT_CHAT, requestId });
+  if (bail !== null) {
+    return bail;
+  }
   const url = joinUrl(session.apiBase, "/chat/completions");
   const body = buildChatBody({
     model: config.model,

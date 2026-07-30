@@ -17,7 +17,8 @@ import {
   sanitizeHttpStatus,
   sanitizeMessage,
 } from "./provider-error.js";
-import { composeSignal, sleep } from "../util/async.js";
+import { computeBumpedMaxOutput, runWithRetry } from "./provider-retry.js";
+import { composeSignal } from "../util/async.js";
 import { BRAND_PREFIX, REDACTED_SECRET_TOKEN } from "../util/brand.js";
 import { isDebugRawActive } from "../util/debug-raw.js";
 import { replaceSecretsLiterally } from "../util/redact.js";
@@ -147,12 +148,12 @@ export async function runProviderRequest(config: ProviderCallConfig): Promise<Pr
     process.stderr.write(
       `::notice::${BRAND_PREFIX}Trying base URL: ${redactUrlForLog(candidate)}\n`,
     );
-    const firstAttempt = await runWithRetry(config, fetchImpl, requestId, ENDPOINT_RESPONSES, candidate);
+    const firstAttempt = await runWithRetryLoop(config, fetchImpl, requestId, ENDPOINT_RESPONSES, candidate);
     if (firstAttempt.ok) {
       return firstAttempt;
     }
     if (shouldFallback(firstAttempt.error)) {
-      const chatAttempt = await runWithRetry(config, fetchImpl, requestId, ENDPOINT_CHAT, candidate);
+      const chatAttempt = await runWithRetryLoop(config, fetchImpl, requestId, ENDPOINT_CHAT, candidate);
       if (chatAttempt.ok) {
         return chatAttempt;
       }
@@ -200,66 +201,20 @@ async function runWithEndpoint(
   }
 }
 
-const RETRY_BACKOFF_MS: ReadonlyArray<number> = [250, 1_000];
-
-async function runWithRetry(
+async function runWithRetryLoop(
   config: ProviderCallConfig,
   fetchImpl: typeof fetch,
   requestId: string,
   endpoint: ProviderEndpoint,
   baseUrl: string,
 ): Promise<ProviderCallResult> {
-  let lastFailure: ProviderError | null = null;
-  for (let attempt = 0; attempt <= RETRY_BACKOFF_MS.length; attempt += 1) {
-    // Bail out if the caller's signal is already aborted. Without this
-    // check, the next runWithEndpoint would compose its signal with an
-    // already-aborted caller signal — `AbortSignal.any([aborted, ...])`
-    // is itself aborted, so the second attempt would fail immediately
-    // with a "timeout" error, even though the underlying connection
-    // was healthy. That makes the "timeout is transient, retry it"
-    // rationale void (we'd be reporting a fake timeout, not a real one).
-    // Reporting an "aborted" error here is semantically correct and
-    // also not retryable, so we naturally exit the loop.
-    if (config.signal?.aborted === true) {
-      return {
-        ok: false,
-        error: new ProviderError("aborted", endpoint, null, requestId,
-          "Caller aborted the request before retry."),
-      };
-    }
-    const result = await runWithEndpoint(config, fetchImpl, requestId, endpoint, baseUrl);
-    if (result.ok) {
-      return result;
-    }
-    lastFailure = result.error;
-    if (!isRetryable(result.error)) {
-      return result;
-    }
-    if (attempt < RETRY_BACKOFF_MS.length) {
-      const backoffMs = RETRY_BACKOFF_MS[attempt] ?? 0;
-      await sleep(backoffMs);
-    }
-  }
-  return { ok: false, error: lastFailure ?? new ProviderError("network", endpoint, null, requestId, "Unknown retry failure.") };
-}
-
-function isRetryable(error: ProviderError): boolean {
-  // Transient network failures (no HTTP status) should be retried —
-  // the connection may have been reset, the provider may be in the
-  // middle of a failover, etc. Without this, a single TCP hiccup
-  // kills the whole review.
-  if (error.code === "network") {
-    return true;
-  }
-  // Timeouts are transient (cold-start latency, gateway reset, slow
-  // stream). A retry with the same timeout often succeeds because the
-  // provider may have started streaming by the time the abort fired.
-  // Without this, a single slow request fails the whole review even
-  // though the underlying connection is healthy.
-  if (error.code === "timeout") {
-    return true;
-  }
-  return error.status === 429 || (typeof error.status === "number" && error.status >= 500);
+  return runWithRetry<ProviderCallResult>({
+    signal: config.signal,
+    endpoint,
+    requestId,
+    fallbackMessage: "Unknown retry failure.",
+    runOnce: () => runWithEndpoint(config, fetchImpl, requestId, endpoint, baseUrl),
+  });
 }
 
 /**
@@ -401,9 +356,11 @@ async function callEndpoint(
   // for the retry. Capped at 128K to avoid blowing past provider
   // limits.
   const needsMoreBudget = rawText.length > 16_000 && textPayload.length < 200;
-  const bumpedMaxOutput = needsMoreBudget && config.maxOutputTokens !== undefined
-    ? Math.min(config.maxOutputTokens * 2, 128_000)
-    : config.maxOutputTokens;
+  const bumpedMaxOutput = computeBumpedMaxOutput({
+    currentBudget: config.maxOutputTokens,
+    rawTextLength: rawText.length,
+    textPayloadLength: textPayload.length,
+  });
   if (isDebugRawActive() && needsMoreBudget) {
     writeDebugRaw(
       `[DEBUG-RAW] bumped-budget retry: rawText.length=${rawText.length} textPayload.length=${textPayload.length} bumpedMaxOutput=${bumpedMaxOutput}\n`,

@@ -59,7 +59,8 @@ import {
   ProviderError,
   sanitizeMessage,
 } from "./provider-error.js";
-import { composeSignal, sleep } from "../util/async.js";
+import { computeBumpedMaxOutput, runWithRetry } from "./provider-retry.js";
+import { composeSignal } from "../util/async.js";
 import {
   createRequestId,
   resolveAnthropicMessagesUrl,
@@ -68,7 +69,6 @@ import { isRecord, readArrayField, readRecordField, readStringField } from "../u
 
 const ENDPOINT: ProviderEndpoint = "anthropic";
 const ANTHROPIC_VERSION = "2023-06-01";
-const RETRY_BACKOFF_MS: ReadonlyArray<number> = [250, 1_000];
 
 type ProviderCallSuccess = {
   readonly ok: true;
@@ -314,65 +314,22 @@ export async function runAnthropicRequest(
   // case here.
   const url = resolveAnthropicMessagesUrl(config.baseUrl);
 
-  return runWithRetry(config, fetchImpl, requestId, url);
+  return runWithRetryLoop(config, fetchImpl, requestId, url);
 }
 
-async function runWithRetry(
+async function runWithRetryLoop(
   config: AnthropicProviderCallConfig,
   fetchImpl: typeof fetch,
   requestId: string,
   url: string,
 ): Promise<AnthropicProviderCallResult> {
-  let lastFailure: ProviderError | null = null;
-  for (let attempt = 0; attempt <= RETRY_BACKOFF_MS.length; attempt += 1) {
-    // Bail out if the caller's signal is already aborted. Without this
-    // check, the next runOnce would compose its signal with an
-    // already-aborted caller signal — `AbortSignal.any([aborted, ...])`
-    // is itself aborted, so the second attempt would fail immediately
-    // with a "timeout" error, even though the underlying connection
-    // was healthy. That makes the "timeout is transient, retry it"
-    // rationale void (we'd be reporting a fake timeout, not a real one).
-    // Reporting an "aborted" error here is semantically correct and
-    // also not retryable, so we naturally exit the loop.
-    if (config.signal?.aborted === true) {
-      return {
-        ok: false,
-        error: new ProviderError("aborted", ENDPOINT, null, requestId,
-          "Caller aborted the request before retry."),
-      };
-    }
-    const result = await runOnce(config, fetchImpl, requestId, url);
-    if (result.ok) {
-      return result;
-    }
-    lastFailure = result.error;
-    if (!isRetryable(result.error)) {
-      return result;
-    }
-    if (attempt < RETRY_BACKOFF_MS.length) {
-      const backoffMs = RETRY_BACKOFF_MS[attempt] ?? 0;
-      await sleep(backoffMs);
-    }
-  }
-  return {
-    ok: false,
-    error: lastFailure ?? new ProviderError("network", ENDPOINT, null, requestId, "Unknown Anthropic retry failure."),
-  };
-}
-
-function isRetryable(error: ProviderError): boolean {
-  if (error.code === "network") {
-    return true;
-  }
-  // Timeouts are transient (cold-start latency, TCP RST, gateway timeout).
-  // A retry with the same or longer timeout often succeeds where the first
-  // attempt failed, because the provider may have already started streaming
-  // by the time the abort fires. Without this, a single slow request kills
-  // the whole review.
-  if (error.code === "timeout") {
-    return true;
-  }
-  return error.status === 429 || (typeof error.status === "number" && error.status >= 500);
+  return runWithRetry<AnthropicProviderCallResult>({
+    signal: config.signal,
+    endpoint: ENDPOINT,
+    requestId,
+    fallbackMessage: "Unknown Anthropic retry failure.",
+    runOnce: () => runOnce(config, fetchImpl, requestId, url),
+  });
 }
 
 async function runOnce(
@@ -478,10 +435,11 @@ async function runOnce(
   // Bumped-budget retry heuristic: large empty stream → likely a
   // truncation / reasoning-only response. Re-issue with more budget.
   // Same heuristic as openai-compatible.ts.
-  const needsMoreBudget = rawText.length > 16_000 && textPayload.length < 200;
-  const bumpedMaxOutput = needsMoreBudget && config.maxOutputTokens !== undefined
-    ? Math.min(config.maxOutputTokens * 2, 128_000)
-    : config.maxOutputTokens;
+  const bumpedMaxOutput = computeBumpedMaxOutput({
+    currentBudget: config.maxOutputTokens,
+    rawTextLength: rawText.length,
+    textPayloadLength: textPayload.length,
+  });
 
   // Self-healing retry with the JSON-only reminder prefix.
   const retryBodyConfig = {

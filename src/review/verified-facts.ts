@@ -194,7 +194,26 @@ export function reconstructFileFromDiff(diffText: string, filePath: string): str
   return reconstructed === undefined ? null : reconstructed.join("\n");
 }
 
-function readPackageJsonFiles(diffText: string): PackageJsonFilesFact | null {
+/**
+ * Shared scaffolding for the three package.json field extractors
+ * (`readPackageJsonFiles`, `readPackageJsonBin`, `readPackageJsonMain`).
+ *
+ * The pattern is the same in all three: reconstruct the post-change
+ * `package.json` content from the diff; if absent, return null;
+ * otherwise try a full JSON parse first (covers the "the whole file
+ * fits in one hunk" case), then fall back to a targeted scanner
+ * (covers the "only the field's contents changed" case).
+ *
+ * Both branches return the same shape as `T`, so the caller picks
+ * the per-field `fromParsed` + `fromScan` functions and lets this
+ * helper route the right one. Dedupes ~30 lines of preamble across
+ * the three call sites (DRY-refactor T2h).
+ */
+function readPackageJsonField<T>(
+  diffText: string,
+  fromParsed: (pkg: Record<string, unknown>) => T | null,
+  fromScan: (content: string) => T | null,
+): T | null {
   const content = reconstructFileFromDiff(diffText, "package.json");
   if (content === null) {
     return null;
@@ -204,37 +223,25 @@ function readPackageJsonFiles(diffText: string): PackageJsonFilesFact | null {
   // small enough that one hunk covers the whole `files` block).
   const fullParse = tryParsePackageJson(content);
   if (fullParse !== null) {
-    return extractFilesFromParsed(fullParse);
+    return fromParsed(fullParse);
   }
-  // Fall back to targeted extraction: find the `"files":` key and
-  // read every JSON string inside the matching brackets. This
-  // handles the common case where only the array's contents were
-  // changed (the array opener is in the unchanged context).
-  return extractFilesByScanning(content);
+  // Fall back to targeted extraction: find the per-field key and
+  // read its value (or scan for the array/object contents). Handles
+  // the common case where only the field's contents were changed
+  // (the field opener is in the unchanged context).
+  return fromScan(content);
+}
+
+function readPackageJsonFiles(diffText: string): PackageJsonFilesFact | null {
+  return readPackageJsonField(diffText, extractFilesFromParsed, extractFilesByScanning);
 }
 
 function readPackageJsonBin(diffText: string): PackageJsonBinFact | null {
-  const content = reconstructFileFromDiff(diffText, "package.json");
-  if (content === null) {
-    return null;
-  }
-  const fullParse = tryParsePackageJson(content);
-  if (fullParse !== null) {
-    return extractBinFromParsed(fullParse);
-  }
-  return extractBinByScanning(content);
+  return readPackageJsonField(diffText, extractBinFromParsed, extractBinByScanning);
 }
 
 function readPackageJsonMain(diffText: string): PackageJsonMainFact | null {
-  const content = reconstructFileFromDiff(diffText, "package.json");
-  if (content === null) {
-    return null;
-  }
-  const fullParse = tryParsePackageJson(content);
-  if (fullParse !== null) {
-    return extractMainFromParsed(fullParse);
-  }
-  return extractMainByScanning(content);
+  return readPackageJsonField(diffText, extractMainFromParsed, extractMainByScanning);
 }
 
 function tryParsePackageJson(content: string): Record<string, unknown> | null {
