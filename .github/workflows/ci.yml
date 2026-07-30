@@ -695,7 +695,7 @@ jobs:
   # Fork behavior: forks don't get repo secrets, so SONAR_TOKEN
   # resolves to '' and the synthetic-success step runs instead of the
   # scanner. No fork-side action needed.
-sonarqube-scan:
+  sonarqube-scan:
     name: SonarCloud Code Analysis
     runs-on: ubuntu-latest
     timeout-minutes: 15
