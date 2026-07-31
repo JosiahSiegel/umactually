@@ -147,6 +147,7 @@ function parsedArgsForTest(overrides: {
     platform: "github",
     eventPath: null,
     diffPath: null,
+    files: null,
     threadsPath: null,
     reviewPath: null,
     prNumber: null,
