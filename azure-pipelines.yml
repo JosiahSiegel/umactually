@@ -154,6 +154,18 @@ steps:
           EXTRA_ARGS+=(--verify-findings)
         fi
       fi
+      # Gate --no-dry-run on real PR-trigger builds only. The CLI's
+      # azure platform mode fetches the diff via the ADO REST API at
+      # PR #N; manual queues synthesize a fake PR id 1 which has no
+      # diff and the fetch returns 404. Fall back to --dry-run on
+      # manual queue so the step still exercises the review pipeline
+      # end-to-end (model call + filters + artifact write) against the
+      # synthetic diff the prepare step already wrote.
+      DRY_RUN_FLAGS=()
+      if [ "${BUILD_REASON:-}" != "pullRequest" ]; then
+        DRY_RUN_FLAGS=(--dry-run)
+      fi
+
       node bin/umactually.mjs \
         --platform azure-devops \
         --event "$AZURE_EVENT_PATH" \
@@ -167,7 +179,7 @@ steps:
         --per-request-timeout-seconds 180 \
         --review-file-limit 50 \
         --no-detect-leaks \
-        --no-dry-run \
+        "${DRY_RUN_FLAGS[@]}" \
         "${EXTRA_ARGS[@]}"
     displayName: Run UmActually Azure live review
     env:
