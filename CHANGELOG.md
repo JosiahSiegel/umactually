@@ -10,6 +10,17 @@ ship a tag).
 
 ## [Unreleased]
 
+## [0.6.16] - 2026-07-31
+
+### Fixed
+
+- **CLI bare-invocation output was a wall of clause-laden prose** ([#157](https://github.com/JosiahSiegel/umactually/pull/157)). The `umactually` (no flags) modes banner — the very first thing a new operator sees — listed every flag and every "unless" clause inline, while the validation hints were 2–3 sentences each. Tightened to the same one-line shape `npm`/`cargo`/`pip` use (`Pass --flag <value> or ENV_VAR=<value>`): every mode is now 2 lines (copy-paste command + one-line description), and the validation message drops the `unless --dry-run is set, --provider copilot is used, or --provider anthropic is used` tail in favor of a single hint sentence. The "outside a git repo (advanced)" example dropped its synthetic 6-flag command in favor of naming which flags to pass. The `--dry-run` smoke-test escape hatch is now a friendly closing line. No contract changes (same exit codes, same flags, same env vars); the legacy `cli: --api-url is required` / `pick a mode:` / `Modes:` / `Standalone mode` / `Live CI mode` / `Outside a git repo` substrings are preserved for regression tests.
+
+### Stats
+
+- Source code: +9 / −10 lines across 3 files (`src/cli/modes-help.ts`, `src/cli/validate.ts`, `dist/cli.js`).
+- Test counts: 1629 → 1629 passing in the unit suite (no change; the change is covered by the existing 73-test regression suite for `cli-bare-invocation`, `cli-help`, `cli-graceful-recovery-hints`, `cli-posting-validation`, `cli-subcommands`, `cli-provider-anthropic`).
+
 ## [0.6.15] - 2026-07-31
 
 ### Fixed
