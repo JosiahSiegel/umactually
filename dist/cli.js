@@ -17612,7 +17612,6 @@ async function runStandalone(input) {
 
 
 
-
 const MAX_FILE_BYTES = 256 * 1024;
 const SYNTHESIZED_HEADER_LINES = 4;
 const SYNTHESIZED_HUNK_HEADER_PREFIX = "@@ -0,0 +1,";
@@ -17688,13 +17687,21 @@ async function collectFiles(paths, cwd) {
         if (isExcludedPath(relativePath)) {
             continue;
         }
-        if (await isBinary(absolute)) {
+        let binary = false;
+        try {
+            binary = await isBinary(absolute);
+        }
+        catch (error) {
+            console.error(`${BRAND_PREFIX}--files: skipped ${relativePath} (${reasonFor(error)})`);
+            continue;
+        }
+        if (binary) {
             console.error(`${BRAND_PREFIX}--files: skipped ${relativePath} (binary)`);
             continue;
         }
         unique.add((0,external_node_fs_namespaceObject.realpathSync)(absolute));
     }
-    return Array.from(unique).sort();
+    return Array.from(unique).sort((a, b) => a.localeCompare(b));
 }
 function truncate(content) {
     const bytes = Buffer.from(content, "utf8");
@@ -17706,16 +17713,15 @@ function truncate(content) {
 function diffBlock(relativePath, content) {
     const normalized = content.endsWith("\n") ? content.slice(0, -1) : content;
     const lines = normalized.length === 0 ? [] : normalized.split("\n");
-    const header = [
-        `diff --git a/${relativePath} b/${relativePath}`,
-        `--- a/${relativePath}`,
-        `+++ b/${relativePath}`,
-        `${SYNTHESIZED_HUNK_HEADER_PREFIX}${lines.length} @@`,
-    ];
+    const diffHeader = "diff --git a/" + relativePath + " b/" + relativePath;
+    const minusHeader = "--- a/" + relativePath;
+    const plusHeader = "+++ b/" + relativePath;
+    const hunkHeader = SYNTHESIZED_HUNK_HEADER_PREFIX + lines.length + " @@";
+    const header = [diffHeader, minusHeader, plusHeader, hunkHeader];
     if (header.length !== SYNTHESIZED_HEADER_LINES) {
         throw new Error("invalid synthesized diff header");
     }
-    return `${header.join("\n")}\n${lines.map((line) => `+${line}`).join("\n")}\n`;
+    return header.join("\n") + "\n" + lines.map((line) => "+" + line).join("\n") + "\n";
 }
 async function synthesize(files, cwd) {
     const blocks = [];
