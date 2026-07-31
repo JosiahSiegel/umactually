@@ -103,7 +103,14 @@ async function collectFiles(paths: readonly string[], cwd: string): Promise<read
     if (isExcludedPath(relativePath)) {
       continue;
     }
-    if (await isBinary(absolute)) {
+    let binary = false;
+    try {
+      binary = await isBinary(absolute);
+    } catch (error) {
+      console.error(`${BRAND_PREFIX}--files: skipped ${relativePath} (${reasonFor(error)})`);
+      continue;
+    }
+    if (binary) {
       console.error(`${BRAND_PREFIX}--files: skipped ${relativePath} (binary)`);
       continue;
     }

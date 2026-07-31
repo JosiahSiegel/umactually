@@ -11,12 +11,16 @@
  * otherwise every model comment against `--files` review gets
  * suppressed as "off-diff" and the entire feature is silently broken.
  *
- * The current implementation's `diffBlock` helper omits the
- * `+++ b/<path>` line that `parseNewFilePath` (in
- * `src/diff/parse-positions.ts`) requires to bind a `currentPath` to
- * the file. Without that line, `parseDiffPositions` returns an empty
- * index, `verifyFindingsAgainstDiff` drops every comment, and the
- * --files mode posts zero findings regardless of what the model says.
+ * `diffBlock` in `src/cli/local-files-run.ts` emits the four-line
+ * header:
+ *   1. `diff --git a/<path> b/<path>`
+ *   2. `--- a/<path>`
+ *   3. `+++ b/<path>`
+ *   4. `@@ -0,0 +1,<N> @@`
+ * followed by `+<line>` rows for every content line. `parseDiffPositions`
+ * binds the new file path from line 3 and indexes the `+` rows; without
+ * any of those header lines, the position index for that path is empty
+ * and `verifyFindingsAgainstDiff` drops every comment for the file.
  *
  * This test pins the gate by:
  *   1. Running `runLocalFilesReview` end-to-end (dryRun: false) so the
@@ -26,11 +30,11 @@
  *      `verifyFindingsAgainstDiff` against the EXACT diff produced
  *      by runLocalFilesReview.
  *
- * Status (RED at first commit): the current shipped `diffBlock` does
- * NOT emit `+++ b/<path>`, so `verifyFindingsAgainstDiff` drops the
- * comment and the test fails. Fix path: add `--- a/<path>` and
- * `+++ b/<path>` lines to `diffBlock` in `src/cli/local-files-run.ts`.
- * Then this test turns GREEN.
+ * Status: this is the SHIPPED behavior gate. The gate passes because
+ * `diffBlock` emits the full four-line header. If a future refactor
+ * drops any of the three `diff --git` / `--- a/<path>` / `+++ b/<path>`
+ * lines, `verifyFindingsAgainstDiff` will drop every comment for the
+ * file and this test turns RED — that's the intended regression signal.
  */
 import {
   existsSync,
@@ -41,6 +45,7 @@ import {
   rmSync,
   writeFileSync,
 } from "node:fs";
+import { chmod } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -533,5 +538,46 @@ describe("CLI local-files review (Constraint C-1 gate)", () => {
     const lastLine = nonEmptyLines[nonEmptyLines.length - 1] as string;
     expect(lastLine.startsWith("+")).toBe(true);
     expect(lastLine.startsWith("+++")).toBe(false); // not the +++ header line
+  });
+
+  // ─────────────────────────────────────────────────────────────────
+  // Constraint C-2: unreadable or vanishing files must be SKIPPED,
+  // not propagated. Mirror `candidatePaths`'s contract: log
+  // `${BRAND_PREFIX}--files: skipped <path> (<reason>)` and continue.
+  // ─────────────────────────────────────────────────────────────────
+  it("Constraint C-2: a single unreadable file does NOT abort the walk; surviving files are still reviewed", async () => {
+    const realPath = join(tmpdirPath, "src/keep.ts");
+    writeFileSync(realPath, "export const k = 1;\n");
+    const lockedPath = join(tmpdirPath, "src/locked.ts");
+    writeFileSync(lockedPath, "export const locked = 1;\n");
+    await chmod(lockedPath, 0o000);
+
+    const stderrSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+    try {
+      const parsed = buildParsedFor(`${realPath},${lockedPath}`);
+      const result = await runLocalFilesReview({ parsed, cwd: tmpdirPath, env: {} });
+
+      expect(result.kind).toBe("ok");
+      if (result.kind !== "ok") return;
+
+      const joinedStderr = stderrSpy.mock.calls
+        .map((call) => String(call[0]))
+        .join("\n");
+      expect(joinedStderr).toContain(`${BRAND_PREFIX}--files: skipped`);
+      expect(joinedStderr).toContain("src/locked.ts");
+
+      const autoCtxDir = join(tmpdirPath, ".umactually-auto-ctx");
+      const diffFiles = readdirSync(autoCtxDir).filter(
+        (name) => /^local-files-\d+-\d+\.diff$/u.test(name),
+      );
+      expect(diffFiles.length).toBe(1);
+      const diffText = readFileSync(join(autoCtxDir, diffFiles[0] as string), "utf8");
+
+      expect(diffText).toContain("a/src/keep.ts");
+      expect(diffText).not.toContain("a/src/locked.ts");
+    } finally {
+      await chmod(lockedPath, 0o644);
+      stderrSpy.mockRestore();
+    }
   });
 });
