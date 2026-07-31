@@ -101,21 +101,21 @@ function collectAlwaysValidationErrors(parsed: ParsedCliArgs): readonly Validati
       errors.push({
         flag: "--sonar-host-url",
         message: "--sonar-host-url is required when --include-sonarqube is set",
-        hint: "Pass the SonarQube base URL (e.g. `https://sonar.example.com`) via `--sonar-host-url <url>` or `UMACTUALLY_SONAR_HOST_URL=<url>`. Run `umactually doctor` to see which env vars are present.",
+        hint: "Pass `--sonar-host-url <url>` (e.g. `https://sonar.example.com`) or `UMACTUALLY_SONAR_HOST_URL=<url>`.",
       });
     }
     if (parsed.sonarToken === null) {
       errors.push({
         flag: "--sonar-token",
         message: "--sonar-token is required when --include-sonarqube is set",
-        hint: "Provide a SonarQube user token via `--sonar-token <token>` or `UMACTUALLY_SONAR_TOKEN=<token>`. Store it as a CI secret — never in source.",
+        hint: "Pass `--sonar-token <token>` or `UMACTUALLY_SONAR_TOKEN=<token>` (use a CI secret, never source).",
       });
     }
     if (parsed.sonarProjectKey === null) {
       errors.push({
         flag: "--sonar-project-key",
         message: "--sonar-project-key is required when --include-sonarqube is set",
-        hint: "Pass the SonarQube project key (e.g. `myorg_myrepo`) via `--sonar-project-key <key>` or `UMACTUALLY_SONAR_PROJECT_KEY=<key>`. The key is usually `<organization>_<repository>` and is shown in the SonarQube UI under Project Settings.",
+        hint: "Pass `--sonar-project-key <key>` (e.g. `myorg_myrepo`) or `UMACTUALLY_SONAR_PROJECT_KEY=<key>`.",
       });
     }
   }
@@ -134,14 +134,14 @@ function collectAlwaysValidationErrors(parsed: ParsedCliArgs): readonly Validati
       errors.push({
         flag: "--api-url",
         message: "--api-url is required unless --dry-run is set, --provider copilot is used, or --provider anthropic is used",
-        hint: "Pass `--api-url <url>` (e.g. `https://api.openai.com/v1`) or `UMACTUALLY_API_URL=<url>`. For Anthropic-native, pass `--provider anthropic` (default URL is https://api.anthropic.com/v1). For GitHub Copilot, pass `--provider copilot`. Run `umactually doctor` to confirm env vars are loaded.",
+        hint: "Pass `--api-url <url>` (e.g. `https://api.openai.com/v1`) or `UMACTUALLY_API_URL=<url>`.",
       });
     }
     if (parsed.apiKey === null || parsed.apiKey.length === 0) {
       errors.push({
         flag: "--api-key",
         message: "--api-key is required unless --dry-run is set",
-        hint: "Pass `--api-key <key>` (or `UMACTUALLY_API_KEY=<key>`). Store it as a CI secret — never in source. Run `umactually doctor` to confirm env vars are loaded. Add `--dry-run` to skip the provider call for a smoke test.",
+        hint: "Pass `--api-key <key>` or set `UMACTUALLY_API_KEY=<key>` (or `--provider anthropic` for Anthropic-native, `--provider copilot` for GitHub Copilot).",
       });
     }
   }
@@ -179,14 +179,14 @@ export function collectPostingValidationErrors(parsed: ParsedCliArgs): readonly 
     errors.push({
       flag: "--event",
       message: "--review requires --event",
-      hint: "Pass the path to the GitHub `event.json` payload (or the Azure equivalent) via `--event <path>`. The CLI uses this file to identify which PR to post the review on. See https://docs.github.com/en/actions/using-workflows/events-that-trigger-workflows#pull_request for the GitHub event payload shape.",
+      hint: "Pass `--event <path>` (GitHub `event.json` or Azure equivalent).",
     });
   }
   if (parsed.diffPath === null) {
     errors.push({
       flag: "--diff",
       message: "--review requires --diff",
-      hint: "Pass the path to the unified PR diff (or a synthetic diff for local runs) via `--diff <path>`. Generate one with `git diff <base>...HEAD` or use the API-supplied diff in CI. The CLI reviews this diff and posts inline comments against it.",
+      hint: "Pass `--diff <path>` (unified PR diff). See `umactually --help`.",
     });
   }
 
@@ -195,14 +195,14 @@ export function collectPostingValidationErrors(parsed: ParsedCliArgs): readonly 
       errors.push({
         flag: "--pr-number",
         message: "--review requires --pr-number for --platform azure",
-        hint: "Pass `--pr-number <N>` (a positive integer) — Azure DevOps does not advertise the PR number through SYSTEM_PULLREQUEST_PULLREQUESTID in every pipeline configuration. See docs/azure-devops.md for the supported forms.",
+        hint: "Pass `--pr-number <N>` (positive integer).",
       });
     }
     if (parsed.repo === null) {
       errors.push({
         flag: "--repo",
         message: "--review requires --repo for --platform azure",
-        hint: "Pass `--repo <organization>/<project>/<repository>` (Azure-format repo id) or set `SYSTEM_TEAMPROJECT` and `BUILD_REPOSITORY_NAME` in the pipeline. The CLI uses these to build the threads API URL.",
+        hint: "Pass `--repo <org>/<project>/<repository>` or set `SYSTEM_TEAMPROJECT` + `BUILD_REPOSITORY_NAME`.",
       });
     }
   }

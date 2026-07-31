@@ -466,6 +466,34 @@ describe("CLI dry-run env-sources wiring (effectiveConfig + secretsDetected)", (
   });
 });
 
+describe("CLI prompt-gate: interactive prompts are opt-in (UX regression guard)", () => {
+  // After install, running bare `umactually` on a TTY should NOT
+  // freeze for stdin — the old always-prompt behavior caused
+  // `curl | sh` smoke-tests to hang. The gate requires explicit
+  // `UMACTUALLY_INTERACTIVE=1`. These tests lock the contract down.
+  it("bare invocation with no env returns exit 2 without ever attempting a stdin read", async () => {
+    const cwd = await mkTempDir("umactually-cli-prompt-gate-bare-");
+    const result = await invokeRunCli([], cwd);
+    expect(result.exitCode).toBe(2);
+  });
+
+  it("UMACTUALLY_INTERACTIVE=1 still fails fast (gate open + no stdin → exit 2)", async () => {
+    const previous = process.env["UMACTUALLY_INTERACTIVE"];
+    process.env["UMACTUALLY_INTERACTIVE"] = "1";
+    try {
+      const cwd = await mkTempDir("umactually-cli-prompt-gate-with-flag-");
+      const result = await invokeRunCli([], cwd);
+      expect(result.exitCode).toBe(2);
+    } finally {
+      if (previous === undefined) {
+        delete process.env["UMACTUALLY_INTERACTIVE"];
+      } else {
+        process.env["UMACTUALLY_INTERACTIVE"] = previous;
+      }
+    }
+  });
+});
+
 async function invokeRunCli(args: readonly string[], cwd: string): Promise<{ readonly exitCode: number }> {
   let moduleNamespace: unknown;
   try {

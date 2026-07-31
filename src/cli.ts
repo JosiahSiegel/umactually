@@ -507,20 +507,16 @@ export async function runCli(args: readonly string[], cwd: string): Promise<CliE
     // "run command → fail → re-read docs → re-run with secret" loop
     // in local development.
     //
-    // The interactive path is strictly opt-in: we only prompt when
-    // (a) we can detect an interactive terminal, (b) the only failing
-    // fields are the standard API-config pair, and (c) we haven't
-    // already been given the value via env var (the prompt would
-    // otherwise feel like a leak). ALL other validation failures
-    // bypass this branch — we don't try to be clever around
-    // required-sonar config, --platform azure identity, etc., because
-    // those have CI / globs-of-context implications.
+    // The interactive prompt is opt-in: set UMACTUALLY_INTERACTIVE=1.
+    // The old default (prompt on any TTY) froze the install smoke-test
+    // waiting for stdin that never came.
     if (
       errors.length > 0 &&
       canPromptInteractively() &&
       !resolved.dryRun &&
       everyErrorIsApiConfig(errors) &&
-      process.env["UMACTUALLY_NO_INTERACTIVE"] === undefined
+      process.env["UMACTUALLY_NO_INTERACTIVE"] === undefined &&
+      process.env["UMACTUALLY_INTERACTIVE"] === "1"
     ) {
       const promptForUrl = errors.some((e) => e.flag === "--api-url");
       const prompted = await smartPromptForApiConfig({ promptForUrl });
