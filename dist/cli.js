@@ -17612,22 +17612,16 @@ async function runStandalone(input) {
 
 
 
+
 const MAX_FILE_BYTES = 256 * 1024;
 const SYNTHESIZED_HEADER_LINES = 4;
 const SYNTHESIZED_HUNK_HEADER_PREFIX = "@@ -0,0 +1,";
 const BINARY_SAMPLE_BYTES = 8 * 1024;
-class LocalFilesPathError extends Error {
-}
 function splitPaths(files) {
     if (files === null) {
         return [];
     }
-    const paths = files.split(",").map((path) => path.trim()).filter((path) => path.length > 0);
-    const offending = paths.find((path) => path.includes(","));
-    if (offending !== undefined) {
-        throw new LocalFilesPathError(`--files does not accept paths containing commas (got '${offending}')`);
-    }
-    return paths;
+    return files.split(",").map((path) => path.trim()).filter((path) => path.length > 0);
 }
 function reasonFor(error) {
     return error instanceof Error ? error.message : String(error);
@@ -17735,7 +17729,7 @@ async function synthesize(files, cwd) {
 async function runLocalFilesReview(input) {
     const paths = splitPaths(input.parsed.files);
     const files = await collectFiles(paths, input.cwd);
-    const diffPath = (0,external_node_path_namespaceObject.join)(input.cwd, ".umactually-auto-ctx", `local-files-${process.pid}-${input.parsed.dryRun ? "dry-run" : Date.now()}.diff`);
+    const diffPath = (0,external_node_path_namespaceObject.join)(input.cwd, ".umactually-auto-ctx", `local-files-${input.parsed.dryRun ? "dry-run" : (0,external_node_crypto_namespaceObject.randomUUID)()}.diff`);
     const artifactPath = (0,external_node_path_namespaceObject.resolve)(input.cwd, input.overrideArtifactPath ?? "./umactually-review.json");
     if (files.length === 0) {
         return { kind: "ok-no-files", artifactPath, note: "no files matched (excluded or non-existent)" };
