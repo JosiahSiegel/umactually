@@ -134,14 +134,14 @@ function collectAlwaysValidationErrors(parsed: ParsedCliArgs): readonly Validati
       errors.push({
         flag: "--api-url",
         message: "--api-url is required",
-        hint: "Pass `--api-url <url>` (or `UMACTUALLY_API_URL=<url>`), or use `--dry-run` to skip the provider call.",
+        hint: "Pass --api-url <url> or UMACTUALLY_API_URL=<url>, or use --dry-run to skip the provider call.",
       });
     }
     if (parsed.apiKey === null || parsed.apiKey.length === 0) {
       errors.push({
         flag: "--api-key",
         message: "--api-key is required",
-        hint: "Pass `--api-key <key>` (or `UMACTUALLY_API_KEY=<key>`; use a CI secret, never source), or use `--dry-run` to skip the provider call.",
+        hint: "Pass --api-key <key> or UMACTUALLY_API_KEY=<key> (use a CI secret, never source), or use --dry-run to skip the provider call.",
       });
     }
   }
