@@ -7,6 +7,7 @@ import { dispatch as dispatchSubcommand } from "./cli/dispatch.js";
 import { resolveHelpText } from "./cli/help.js";
 import { CLI_MODES_TEXT } from "./cli/modes-help.js";
 import { dispatchLive, runDryRun, type CliRunResult } from "./cli/run.js";
+import { runLocalFilesReview, type LocalFilesRunResult } from "./cli/local-files-run.js";
 import { isStandaloneMode, runStandalone } from "./cli/standalone-run.js";
 import { canPromptInteractively, smartPromptForApiConfig } from "./cli/smart-prompt.js";
 import { collectValidationErrors, type ValidationError, resolvePlatform } from "./cli/validate.js";
@@ -599,6 +600,42 @@ async function runAfterValidation(input: {
   readonly generatedArtifacts: readonly string[];
 }): Promise<CliExecutionResult> {
   const { resolved, cwd, env } = input;
+  if (resolved.files !== null) {
+    const result: LocalFilesRunResult = await runLocalFilesReview({
+      parsed: resolved,
+      cwd,
+      env,
+      ...(resolved.outputArtifact !== null ? { overrideArtifactPath: resolved.outputArtifact } : {}),
+    });
+    switch (result.kind) {
+      case "ok":
+        return {
+          exitCode: 0,
+          resolvedConfig: buildSanitizedResolvedConfig(resolved),
+        };
+      case "ok-no-files":
+        process.stdout.write(`${BRAND_PREFIX}${result.note}\n`);
+        return {
+          exitCode: 0,
+          resolvedConfig: buildSanitizedResolvedConfig(resolved),
+        };
+      case "provider-error": {
+        const hintLine = result.hint === undefined ? "" : `\n${BRAND_PREFIX}hint: ${result.hint}`;
+        process.stdout.write(`${result.sanitizedForLog}${hintLine}\n`);
+        return {
+          exitCode: 1,
+          resolvedConfig: buildSanitizedResolvedConfig(resolved),
+        };
+      }
+      default: {
+        // Exhaustiveness guard: if runLocalFilesReview adds a new
+        // LocalFilesRunResult variant, this assignment fails to
+        // compile, forcing the dispatcher to handle it explicitly.
+        const _exhaustive: never = result;
+        throw new Error(`unhandled local-files run result: ${JSON.stringify(_exhaustive)}`);
+      }
+    }
+  }
   if (!resolved.dryRun && isStandaloneMode(env)) {
     const result = await runStandalone({ parsed: resolved, cwd, env });
     if (result.kind === "provider-error") {
