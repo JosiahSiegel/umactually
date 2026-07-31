@@ -143,16 +143,13 @@ describe("CLI local-files review (Constraint C-1 gate)", () => {
     if (tmpdirPath.length > 0) rmSync(tmpdirPath, { recursive: true, force: true });
   });
 
-  // ─────────────────────────────────────────────────────────────────
   // CONSTRAINT C-1 GATE: synthesized-diff hunks MUST survive
   // verifyFindingsAgainstDiff. A model comment with (path, line) that
   // anchors to the synthesized diff's +line positions MUST be kept,
-  // not dropped.
-  //
-  // This test fails RED against the current runLocalFilesReview
-  // implementation (which omits the `+++ b/<path>` line that
-  // parseDiffPositions requires). Fix runLocalFilesRun's diffBlock
-  // to include the `+++ b/<path>` line. Then this test turns GREEN.
+  // not dropped. The shipped `diffBlock` in src/cli/local-files-run.ts
+  // emits the four-line header (`diff --git` / `--- a/<path>` /
+  // `+++ b/<path>` / `@@ -0,0 +1,<N> @@`) and indexed `+<line>` rows;
+  // if any of those lines is dropped, the test turns RED.
   // ─────────────────────────────────────────────────────────────────
   it("Constraint C-1: a model comment at path='src/foo.ts', line=1 survives verifyFindingsAgainstDiff against the EXACT diff produced by runLocalFilesReview", async () => {
     const srcPath = join(tmpdirPath, "src/foo.ts");
