@@ -383,7 +383,7 @@ function resolveContext(
   let resolved = parsed;
   let generated: string[] = [];
 
-  if (shouldDeriveFromGit && !allPlumbingSupplied) {
+  if (shouldDeriveFromGit && !allPlumbingSupplied && parsed.files === null) {
     // Try to derive. If cwd is not a git repo, deriveContextFromGit
     // returns null and we keep parsed unchanged (the original "missing
     // plumbing field" error path will surface downstream with a clearer
