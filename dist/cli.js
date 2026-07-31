@@ -1610,21 +1610,20 @@ const DEFAULT_GITHUB_API_BASE = "https://api.github.com";
 
 ;// CONCATENATED MODULE: ./src/cli/modes-help.ts
 /** Canonical CLI modes banner shared by help and bare invocation output. */
-const CLI_MODES_TEXT = `umactually: Modes:
+const CLI_MODES_TEXT = `Modes:
 
 Standalone mode (any git repo, no CI required)
   umactually --api-url https://api.minimax.io/v1 --api-key "$UMACTUALLY_API_KEY"
-  real review, written to ./umactually-review.json, no platform posting
+  Writes the review to ./umactually-review.json — no posting.
 
 Live CI mode (GitHub Actions, Azure DevOps)
   umactually --platform github
-  derive PR context from the runner and post the review through the CLI
+  Discovers PR context from the runner and posts the review.
 
 Outside a git repo (advanced)
-  umactually --api-url https://example.com --api-key "$UMACTUALLY_API_KEY" --event /tmp/event.json --diff /tmp/pr.diff --review /tmp/review.json --pr-number 42 --repo owner/name
-  provide event, diff, review, PR number, and repository explicitly
+  Pass --event, --diff, --review, --pr-number, --repo explicitly.
 
-Dry-run smoke test: pass --dry-run to any of the above to skip the provider call.
+Just want to try? Add --dry-run to any of the above.
 `;
 /** Writes the canonical modes banner to stdout or a caller-provided stream. */
 function printModesBanner(stream) {
@@ -6973,15 +6972,15 @@ function collectAlwaysValidationErrors(parsed) {
             parsed.provider !== "anthropic") {
             errors.push({
                 flag: "--api-url",
-                message: "--api-url is required unless --dry-run is set, --provider copilot is used, or --provider anthropic is used",
-                hint: "Pass `--api-url <url>` or `UMACTUALLY_API_URL=<url>`. To skip: `--dry-run` (smoke test) or `--provider anthropic` / `--provider copilot`.",
+                message: "--api-url is required",
+                hint: "Pass `--api-url <url>` (or `UMACTUALLY_API_URL=<url>`), or use `--dry-run` to skip the provider call.",
             });
         }
         if (parsed.apiKey === null || parsed.apiKey.length === 0) {
             errors.push({
                 flag: "--api-key",
-                message: "--api-key is required unless --dry-run is set",
-                hint: "Pass `--api-key <key>` or `UMACTUALLY_API_KEY=<key>` (CI secret, never source). To skip: `--dry-run` or `--provider anthropic` / `--provider copilot`.",
+                message: "--api-key is required",
+                hint: "Pass `--api-key <key>` (or `UMACTUALLY_API_KEY=<key>`; use a CI secret, never source), or use `--dry-run` to skip the provider call.",
             });
         }
     }
