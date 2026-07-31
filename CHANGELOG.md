@@ -10,9 +10,11 @@ ship a tag).
 
 ## [Unreleased]
 
+## [0.6.17] - 2026-07-31
+
 ### Fixed
 
-- **CLI bare-invocation modes banner — second iteration** ([#XXX](https://github.com/JosiahSiegel/umactually/pull/XXX)). The `umactually` (no flags) modes banner now uses a 4-mode layout (Standalone / Live CI / Pre-rendered diff / Review local files or directories). Each mode is exactly 3 lines (header + command + description), no clause-laden prose. The previously-mislabeled "Outside a git repo (advanced)" section is renamed to "Pre-rendered diff (advanced)" with an accurate one-liner ("you have a pre-rendered diff file and the PR's event JSON; pass `--event` and `--diff`"). Validation hints for `--api-url` and `--api-key` are tightened to one sentence each in the `Pass --flag <value> or ENV_VAR=<value>` shape. The legacy `cli: --api-url is required` / `cli: --api-key is required` substrings are preserved for regression tests.
+- **CLI bare-invocation modes banner — second iteration** ([#159](https://github.com/JosiahSiegel/umactually/pull/159)). The `umactually` (no flags) modes banner now uses a 4-mode layout (Standalone / Live CI / Pre-rendered diff / Review local files or directories). Each mode is exactly 3 lines (header + command + description), no clause-laden prose. The previously-mislabeled "Outside a git repo (advanced)" section is renamed to "Pre-rendered diff (advanced)" with an accurate one-liner ("you have a pre-rendered diff file and the PR's event JSON; pass `--event` and `--diff`"). Validation hints for `--api-url` and `--api-key` are tightened to one sentence each in the `Pass --flag <value> or ENV_VAR=<value>` shape. The legacy `cli: --api-url is required` / `cli: --api-key is required` substrings are preserved for regression tests.
 
 ### Added
 
