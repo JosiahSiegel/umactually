@@ -295,6 +295,7 @@ export type SanitizedResolvedConfig = {
   readonly includeSonarqube: boolean;
   readonly apiUrlPresent: boolean;
   readonly apiKeyPresent: boolean;
+  readonly filesPresent: boolean;
   readonly sonarTokenPresent: boolean;
   readonly promptFilePresent: boolean;
   readonly promptFilesPresent: boolean;
@@ -337,6 +338,7 @@ export function buildSanitizedResolvedConfig(
     includeSonarqube: resolved.includeSonarqube,
     apiUrlPresent: resolved.apiUrl !== null && resolved.apiUrl.length > 0,
     apiKeyPresent: resolved.apiKey !== null && resolved.apiKey.length > 0,
+    filesPresent: resolved.files !== null && resolved.files.length > 0,
     sonarTokenPresent: resolved.sonarToken !== null && resolved.sonarToken.length > 0,
     promptFilePresent: resolved.promptFile !== null && resolved.promptFile.length > 0,
     promptFilesPresent: resolved.promptFiles !== null && resolved.promptFiles.length > 0,

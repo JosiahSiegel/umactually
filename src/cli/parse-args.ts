@@ -34,6 +34,7 @@ export type ParsedCliArgs = {
   readonly platform: CliPlatform;
   readonly eventPath: string | null;
   readonly diffPath: string | null;
+  readonly files: string | null;
   readonly threadsPath: string | null;
   readonly reviewPath: string | null;
   readonly prNumber: string | null;
@@ -116,6 +117,7 @@ export function parseCliArgs(args: readonly string[]): ParsedCliArgs {
   let platform: CliPlatform = "auto";
   let eventPath: string | null = null;
   let diffPath: string | null = null;
+  let files: string | null = null;
   let threadsPath: string | null = null;
   let reviewPath: string | null = null;
   let prNumber: string | null = null;
@@ -194,6 +196,10 @@ export function parseCliArgs(args: readonly string[]): ParsedCliArgs {
         break;
       case "--diff":
         diffPath = readValue(args, index, "diff");
+        index += 1;
+        break;
+      case "--files":
+        files = readValue(args, index, "files");
         index += 1;
         break;
       case "--threads":
@@ -386,6 +392,7 @@ export function parseCliArgs(args: readonly string[]): ParsedCliArgs {
     platform,
     eventPath,
     diffPath,
+    files,
     threadsPath,
     reviewPath,
     prNumber,
