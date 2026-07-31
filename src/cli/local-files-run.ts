@@ -6,8 +6,7 @@
  */
 import * as fsPromises from "node:fs/promises";
 import { realpathSync } from "node:fs";
-import { relative, resolve as pathResolve } from "node:path";
-import { join } from "node:path";
+import { join, relative, resolve as pathResolve } from "node:path";
 
 import { isExcludedPath } from "../diff/filter-build-artifacts.js";
 import { BRAND_PREFIX } from "../util/brand.js";
@@ -116,7 +115,7 @@ async function collectFiles(paths: readonly string[], cwd: string): Promise<read
     }
     unique.add(realpathSync(absolute));
   }
-  return Array.from(unique).sort();
+  return Array.from(unique).sort((a, b) => a.localeCompare(b));
 }
 
 function truncate(content: string): string {
@@ -130,16 +129,15 @@ function truncate(content: string): string {
 function diffBlock(relativePath: string, content: string): string {
   const normalized = content.endsWith("\n") ? content.slice(0, -1) : content;
   const lines = normalized.length === 0 ? [] : normalized.split("\n");
-  const header = [
-    `diff --git a/${relativePath} b/${relativePath}`,
-    `--- a/${relativePath}`,
-    `+++ b/${relativePath}`,
-    `${SYNTHESIZED_HUNK_HEADER_PREFIX}${lines.length} @@`,
-  ];
+  const diffHeader = "diff --git a/" + relativePath + " b/" + relativePath;
+  const minusHeader = "--- a/" + relativePath;
+  const plusHeader = "+++ b/" + relativePath;
+  const hunkHeader = SYNTHESIZED_HUNK_HEADER_PREFIX + lines.length + " @@";
+  const header = [diffHeader, minusHeader, plusHeader, hunkHeader];
   if (header.length !== SYNTHESIZED_HEADER_LINES) {
     throw new Error("invalid synthesized diff header");
   }
-  return `${header.join("\n")}\n${lines.map((line) => `+${line}`).join("\n")}\n`;
+  return header.join("\n") + "\n" + lines.map((line) => "+" + line).join("\n") + "\n";
 }
 
 async function synthesize(files: readonly string[], cwd: string): Promise<string> {
