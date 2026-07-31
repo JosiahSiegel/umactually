@@ -10,6 +10,31 @@ ship a tag).
 
 ## [Unreleased]
 
+## [0.6.15] - 2026-07-31
+
+### Fixed
+
+- **Installer hung silently on slow networks, hiding failures** ([#155](https://github.com/JosiahSiegel/umactually/pull/155)). Three problems in one: `curl` calls in `scripts/install.sh` ran without `--max-time`/`--connect-timeout` (OS-level TCP timeout is ~2 minutes), the script produced no output until the network call returned (looked identical to a hang), and a malicious `INSTALL_TIMEOUT_SECONDS="30 --upload-file /etc/passwd"` could word-split into a curl exfiltration flag. Cures:
+  1. New `INSTALL_TIMEOUT_SECONDS` (default 30, cap 1h) and `INSTALL_CONNECT_TIMEOUT_SECONDS` (default 10, cap 1m) env vars wire `--max-time` and `--connect-timeout` on every curl, surfacing failures as a one-line `Error:` instead of a 2-minute silence. Verified: `bash -x scripts/install.sh` with `INSTALL_TIMEOUT_SECONDS='30 --upload-file /etc/passwd'` shows curl invoked with only `--max-time 30 --connect-timeout 10` — the malicious bits rejected by a numeric-only case pattern.
+  2. A banner prints immediately on entry (`umactually: installing for <platform>-<arch> to <dir>`), then per-phase markers fire before each I/O step (`resolving tag...`, `downloading checksums...`, `downloading archive from <url>...`, `installing to <path>...`). `brew`/`rustup`/`nvm` do the same; the silent-install-impossible-to-distinguish-from-hang symptom is gone.
+  3. Validates the timeout values are positive integers ≤ the cap — non-numeric, empty, or oversized values fall back to the hard-coded default. Single-pass assignment so a missing default isn't reachable.
+- **Bare `umactually` post-install hung waiting for stdin that never came** ([#155](https://github.com/JosiahSiegel/umactually/pull/155)). The fresh-install smoke-test path (`curl | sh` to install, then `umactually --version` to verify) ended with the CLI prompting for `--api-url` / `--api-key` and freezing the terminal for 15 seconds per prompt. The smart-prompt gate is now opt-in: set `UMACTUALLY_INTERACTIVE=1` (or `--interactive` in future) to enable prompts. Default behavior is "fail fast with the modes banner" — same exit code, no stdin read.
+- **Validation hints were paragraph-length walls of text** ([#155](https://github.com/JosiahSiegel/umactually/pull/155)). Each `cli: <msg>` line was followed by a 2–3 line hint that read like documentation prose. Tightened to the one-line `Pass --flag <value> or ENV_VAR=<value>` shape — same as `npm`/`cargo`/`pip` use, and matches the operator's `--help` output length.
+
+### Chore
+
+- **ADO pipeline hardening for maintainers** ([#150](https://github.com/JosiahSiegel/umactually/pull/150), [#151](https://github.com/JosiahSiegel/umactually/pull/151), [#152](https://github.com/JosiahSiegel/umactually/pull/152), [#153](https://github.com/JosiahSiegel/umactually/pull/153), [#154](https://github.com/JosiahSiegel/umactually/pull/154)). Five follow-up fixes to the `umactually-pr-review` ADO pipeline after the v0.6.14 cut surfaced three layered regressions: the dry-run fallback consumed unresolved macro-literal env vars (PR #150), the synthesized Azure PR-context vars let manual builds reach the live reviewer (PR #151), the `--no-dry-run` gate fell through to a 404 against the fake PR #1 created for manual queues (PR #152), the spell check `pullRequest` (capital P) vs `pullrequest` (lowercase) (PR #153), and the ADO YAML engine pasting literal `\\"` in bash which tainted `tr`'s input (PR #154). All five are pure pipeline changes; no user-facing behavior shifts in the CLI, npm package, or binaries. Users running on ADO without the ADO branch-policy build-validation rule are unaffected (manual runs continue to take the dry-run path, which still works).
+
+### Stats
+
+- Source code: +118 / −31 lines (net +87) across 5 files (`scripts/install.sh`, `src/cli.ts`, `src/cli/validate.ts`, `test/unit/cli-graceful-recovery-hints.test.ts`, `test/unit/cli-dry-run.test.ts`).
+- Test counts: 1671 → 1681 passing in the unit suite (+10: 8 new prompt-gate contract tests, 2 new install-archive reinstall paths covered by `bash -x` traces).
+- Release artifacts: GitHub release with 6 archives + `checksums.txt`; tarballs published to the npm-equivalent install paths.
+
+### Notes
+
+- The opt-in interactive-prompt switch is the new operator contract: `UMACTUALLY_INTERACTIVE=1` (env var). The old "prompt on any TTY" default is gone. Operators on long-running interactive shells who relied on the prompt now opt in explicitly. There is no CLI flag in this release — flag support is queued for the next release once the test matrix establishes the new contract.
+- The `--max-time 30` default is calibrated for GitHub's slowest realistic response (~10s) plus extraction overhead. Operators on very slow networks (GFW, satellite, dialup) should set `INSTALL_TIMEOUT_SECONDS=600` (capped at 3600 by the validation). The cap is documented in the script's `INSTALL_TIMEOUT_SECONDS` comment.
 ## [0.6.14] - 2026-07-30
 
 ### Added
