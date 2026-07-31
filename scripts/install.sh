@@ -644,14 +644,39 @@ normalize_crlf() {
 
 # ---- download helpers ----
 http_get() {
-  # $1 = URL, $2 = destination path
+  # $1 = URL, $2 = destination path. Honors INSTALL_TIMEOUT_SECONDS
+  # (default 30) for connect+transfer total, plus a separate
+  # --connect-timeout (default 10s). Without these, curl falls back
+  # to its internal timeouts that easily exceed 2 minutes on slow /
+  # blocked networks — the user sees a silent installer that "looks
+  # hung". Failures now surface as a one-line `Error:` with a
+  # remediation, matching conventional CLI installer UX (brew,
+  # rustup, nvm).
+  # Validate user-supplied timeout vars — guard against shell injection
+  # on `INSTALL_TIMEOUT_SECONDS="30 --upload-file /etc/passwd"`.
+  # Single-pass: defaults baked into the variable up front, the case
+  # only runs when the user supplied digits.
+  _timeout_total=30
+  case "${INSTALL_TIMEOUT_SECONDS:-}" in
+    *[!0-9]*|'') ;;
+    *)
+      [ "$INSTALL_TIMEOUT_SECONDS" -gt 3600 ] \
+        && _timeout_total=3600 \
+        || _timeout_total="$INSTALL_TIMEOUT_SECONDS"
+      ;;
+  esac
+  _timeout_connect=10
+  case "${INSTALL_CONNECT_TIMEOUT_SECONDS:-}" in
+    *[!0-9]*|'') ;;
+    *)
+      [ "$INSTALL_CONNECT_TIMEOUT_SECONDS" -gt 60 ] \
+        && _timeout_connect=60 \
+        || _timeout_connect="$INSTALL_CONNECT_TIMEOUT_SECONDS"
+      ;;
+  esac
+
   if command -v curl >/dev/null 2>&1; then
-    # `--ssl-no-revoke` (curl >= 7.78) skips CRL/OCSP revocation checks.
-    # On Windows Schannel, this is the only way to bypass a check failure
-    # caused by an unreachable OCSP responder. On OpenSSL-built curl the
-    # flag is silently accepted as a no-op, so passing it unconditionally
-    # when INSTALL_SSL_NO_REVOKE is set is safe on every platform.
-    _curl_args="-fsSL"
+    _curl_args="-fsSL --max-time $_timeout_total --connect-timeout $_timeout_connect"
     if [ -n "${INSTALL_SSL_NO_REVOKE:-}" ]; then
       _curl_args="$_curl_args --ssl-no-revoke"
     fi
@@ -983,6 +1008,7 @@ resolve_dispatch() {
   # first basename looks like an archive (`.tar.gz` or `.zip`),
   # use the archive contract. Otherwise, fall back to legacy raw.
   _probe_base="https://github.com/${REPO}/releases/latest/download"
+  phase "probing ${_probe_base}/checksums.txt to detect asset contract"
   _probe_tmp=$(mktemp 2>/dev/null) || {
     # mktemp failed; treat as a probe failure and fall back to
     # legacy raw (the original behavior, now safely wrapped in
@@ -1025,6 +1051,7 @@ resolve_dispatch() {
       *.tar.gz|*.zip)
         # Archive contract: resolve tag from `releases/latest` API
         # (a tiny follow-up call) so RESOLVED_TAG is set.
+        phase "fetching latest tag from github releases API"
         _resolved=$(fetch_latest_tag "$LATEST_API" 2>/dev/null || printf '')
         if [ -n "$_resolved" ]; then
           RESOLVED_TAG="$_resolved"
@@ -1416,6 +1443,12 @@ if [ "$PLATFORM" = "windows" ]; then
   exit 1
 fi
 
+# Banner: emit a one-line marker immediately so the operator sees the
+# script is alive before any network. brew/rustup/nvm do the same;
+# silent curl-pipe installs are hard to distinguish from hangs.
+printf 'umactually: installing for %s-%s to %s\n' "$PLATFORM" "$ARCH" "PENDING"
+printf 'umactually: timeout %ss (override via INSTALL_TIMEOUT_SECONDS)\n' "${INSTALL_TIMEOUT_SECONDS:-30}"
+
 # Run under LC_ALL=C for deterministic byte-oriented text comparisons.
 LC_ALL=C
 export LC_ALL
@@ -1434,8 +1467,15 @@ mkdir -p "$INSTALL_DIR" || {
   exit 1
 }
 
+# Per-phase progress markers — emit before each I/O-bound phase so
+# the operator sees the install is moving, not stuck.
+phase() { printf 'umactually: %s\n' "$1"; }
+
+phase "resolving latest tag from github API"
 # Run dispatch matrix. Sets RESOLVED_TAG/BASE/CONTRACT/USE_LEGACY_RAW.
 resolve_dispatch
+
+phase "resolved tag ${RESOLVED_TAG:-?} (contract: ${RESOLVED_CONTRACT:-?})"
 
 # Verify install dir is not a symlink (basic reparse-equivalent guard).
 if [ -L "$INSTALL_DIR" ]; then
@@ -1501,6 +1541,7 @@ if [ "$USE_LEGACY_RAW" = "1" ]; then
   RAW_URL="${RESOLVED_BASE}/${RAW_BINARY}"
   CHECKSUMS_URL="${RESOLVED_BASE}/checksums.txt"
 
+  phase "downloading checksums from $CHECKSUMS_URL (legacy raw)"
   if ! http_get "$CHECKSUMS_URL" "$TMP_CHECKSUMS"; then
     log_err "could not download checksums: $CHECKSUMS_URL"
     exit 1
@@ -1511,6 +1552,7 @@ if [ "$USE_LEGACY_RAW" = "1" ]; then
     exit 1
   }
 
+  phase "downloading raw binary from $RAW_URL"
   if ! http_get "$RAW_URL" "${TMP_DIR}/${RAW_BINARY}"; then
     log_err "could not download raw binary: $RAW_URL"
     exit 1
@@ -1559,6 +1601,7 @@ fi
 # ---- archive flow (tar.gz) ----
 ARCHIVE_URL="${RESOLVED_BASE}/${ARCHIVE_NAME}"
 
+phase "downloading checksums from ${RESOLVED_BASE}/checksums.txt"
 if ! http_get "${RESOLVED_BASE}/checksums.txt" "$TMP_CHECKSUMS"; then
   log_err "could not download checksums: ${RESOLVED_BASE}/checksums.txt"
   exit 1
@@ -1570,6 +1613,7 @@ EXPECTED_HASH=$EXPECTED_HASH
 
 # Download archive.
 TMP_ARCHIVE="${TMP_DIR}/${ARCHIVE_NAME}"
+phase "downloading archive from $ARCHIVE_URL"
 if ! http_get "$ARCHIVE_URL" "$TMP_ARCHIVE"; then
   log_err "could not download archive: $ARCHIVE_URL"
   exit 1
@@ -1706,6 +1750,7 @@ if [ -z "${INSTALL_TEST_NO_SMOKE:-}" ]; then
   fi
 fi
 
+phase "installing to $DEST_PATH (atomic replace)"
 # Atomic mv (portable --).
 if [ "$MV_HAS_DASHDASH" = "1" ]; then
   mv -f -- "$EXTRACTED_TARGET" "$DEST_PATH"

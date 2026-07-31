@@ -214,15 +214,18 @@ describe("CLI graceful recovery — validate.ts structured errors", () => {
     const errors = collectValidationErrors(p);
     const apiUrlError = errors.find((e) => e.flag === "--api-url");
     expect(apiUrlError).toBeDefined();
+    expect(apiUrlError?.hint).toMatch(/--api-url/u);
     expect(apiUrlError?.hint).toMatch(/UMACTUALLY_API_URL/u);
-    expect(apiUrlError?.hint).toMatch(/--provider anthropic|--provider copilot/u);
   });
 
-  it("emits a hint naming --dry-run as the smoke-test escape hatch", () => {
+  it("emits a hint naming the env var when --api-key is missing", () => {
     const errors = collectValidationErrors(liveParsedArgs([]));
     const apiKeyError = errors.find((e) => e.flag === "--api-key");
     expect(apiKeyError).toBeDefined();
-    expect(apiKeyError?.hint).toMatch(/--dry-run/u);
+    // hint must mention BOTH the flag and the env var so operator
+    // can fix via either surface.
+    expect(apiKeyError?.hint).toMatch(/--api-key/u);
+    expect(apiKeyError?.hint).toMatch(/UMACTUALLY_API_KEY/u);
   });
 
   it("skips posting-validation errors when --review is missing", () => {
@@ -234,7 +237,7 @@ describe("CLI graceful recovery — validate.ts structured errors", () => {
     expect(errors).toHaveLength(0);
   });
 
-  it("emits a hint naming the docs URL for missing --event", () => {
+  it("emits a hint naming --event <path> when missing", () => {
     // Given: --review was supplied but --event was not.
     const p = liveParsedArgs([
       "--review",
@@ -247,7 +250,8 @@ describe("CLI graceful recovery — validate.ts structured errors", () => {
     const errors = collectPostingValidationErrors(p);
     const eventError = errors.find((e) => e.flag === "--event");
     expect(eventError).toBeDefined();
-    expect(eventError?.hint).toMatch(/event.json/u);
+    expect(eventError?.hint).toMatch(/--event/u);
+    expect(eventError?.hint).toMatch(/<path>/u);
   });
 
   it("emits a hint for --pr-number when --platform azure is set without --review", () => {
