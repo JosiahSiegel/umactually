@@ -202,7 +202,7 @@ describe("CLI local-files review (Constraint C-1 gate)", () => {
     const diffFiles = readdirSync(autoCtxDir).filter(
       (name) => /^local-files-\d+-\d+\.diff$/u.test(name),
     );
-    expect(diffFiles.length).toBe(1);
+    expect(diffFiles).toHaveLength(1);
     const diffPath = join(autoCtxDir, diffFiles[0] as string);
     const synthesizedDiff = readFileSync(diffPath, "utf8");
 
@@ -323,7 +323,7 @@ describe("CLI local-files review (Constraint C-1 gate)", () => {
       const diffFiles = readdirSync(autoCtxDir).filter(
         (name) => /^local-files-\d+-\d+\.diff$/u.test(name),
       );
-      expect(diffFiles.length).toBe(1);
+      expect(diffFiles).toHaveLength(1);
       const diffText = readFileSync(join(autoCtxDir, diffFiles[0] as string), "utf8");
       expect(diffText).not.toContain("a/src/asset.png");
       expect(diffText).toContain("a/src/foo.ts");
@@ -417,12 +417,12 @@ describe("CLI local-files review (Constraint C-1 gate)", () => {
     const diffFiles = readdirSync(autoCtxDir).filter(
       (name) => /^local-files-\d+-\d+\.diff$/u.test(name),
     );
-    expect(diffFiles.length).toBe(1);
+    expect(diffFiles).toHaveLength(1);
     const diffText = readFileSync(join(autoCtxDir, diffFiles[0] as string), "utf8");
 
     // Exactly one `diff --git a/src/foo.ts` block (no duplicate hunk).
     const blocks = diffText.match(/^diff --git a\/src\/foo\.ts /gum) ?? [];
-    expect(blocks.length).toBe(1);
+    expect(blocks).toHaveLength(1);
     // Synthesized diff for "export const x = 1;" contains the +line.
     expect(diffText).toContain("+export const x = 1;");
   });
@@ -445,7 +445,7 @@ describe("CLI local-files review (Constraint C-1 gate)", () => {
     const diffFiles = readdirSync(autoCtxDir).filter(
       (name) => /^local-files-\d+-\d+\.diff$/u.test(name),
     );
-    expect(diffFiles.length).toBe(1);
+    expect(diffFiles).toHaveLength(1);
     const diffText = readFileSync(join(autoCtxDir, diffFiles[0] as string), "utf8");
 
     // Relative path is preserved through the walk: `a/src/sub1/sub2/foo.ts`.
@@ -475,7 +475,7 @@ describe("CLI local-files review (Constraint C-1 gate)", () => {
     const diffFiles = readdirSync(autoCtxDir).filter(
       (name) => /^local-files-\d+-\d+\.diff$/u.test(name),
     );
-    expect(diffFiles.length).toBe(1);
+    expect(diffFiles).toHaveLength(1);
     const diffText = readFileSync(join(autoCtxDir, diffFiles[0] as string), "utf8");
 
     expect(diffText).toContain("a/src/keep.ts");
@@ -498,7 +498,7 @@ describe("CLI local-files review (Constraint C-1 gate)", () => {
     const diffFiles = readdirSync(autoCtxDir).filter(
       (name) => /^local-files-\d+-\d+\.diff$/u.test(name),
     );
-    expect(diffFiles.length).toBe(1);
+    expect(diffFiles).toHaveLength(1);
     const diffText = readFileSync(join(autoCtxDir, diffFiles[0] as string), "utf8");
 
     expect(diffText).toContain("a/src/keep.ts");
@@ -526,7 +526,7 @@ describe("CLI local-files review (Constraint C-1 gate)", () => {
     const diffFiles = readdirSync(autoCtxDir).filter(
       (name) => /^local-files-\d+-\d+\.diff$/u.test(name),
     );
-    expect(diffFiles.length).toBe(1);
+    expect(diffFiles).toHaveLength(1);
     const diffText = readFileSync(join(autoCtxDir, diffFiles[0] as string), "utf8");
 
     expect(diffText.startsWith("diff --git a/")).toBe(true);
@@ -570,7 +570,7 @@ describe("CLI local-files review (Constraint C-1 gate)", () => {
       const diffFiles = readdirSync(autoCtxDir).filter(
         (name) => /^local-files-\d+-\d+\.diff$/u.test(name),
       );
-      expect(diffFiles.length).toBe(1);
+      expect(diffFiles).toHaveLength(1);
       const diffText = readFileSync(join(autoCtxDir, diffFiles[0] as string), "utf8");
 
       expect(diffText).toContain("a/src/keep.ts");
