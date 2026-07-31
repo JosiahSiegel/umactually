@@ -106,6 +106,7 @@ describe("CLI flag parsing RED contract", () => {
       platform: "azure",
       eventPath: "test/fixtures/azure/pull-request.json",
       diffPath: "test/fixtures/github/full-pr.diff",
+      files: null,
       threadsPath: null,
       reviewPath: null,
       prNumber: "42",

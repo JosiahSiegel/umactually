@@ -909,6 +909,7 @@ function parseCliArgs(args) {
     let platform = "auto";
     let eventPath = null;
     let diffPath = null;
+    let files = null;
     let threadsPath = null;
     let reviewPath = null;
     let prNumber = null;
@@ -986,6 +987,10 @@ function parseCliArgs(args) {
                 break;
             case "--diff":
                 diffPath = readValue(args, index, "diff");
+                index += 1;
+                break;
+            case "--files":
+                files = readValue(args, index, "files");
                 index += 1;
                 break;
             case "--threads":
@@ -1174,6 +1179,7 @@ function parseCliArgs(args) {
         platform,
         eventPath,
         diffPath,
+        files,
         threadsPath,
         reviewPath,
         prNumber,
@@ -1620,8 +1626,12 @@ Live CI mode (GitHub Actions, Azure DevOps)
   umactually --platform github
   Discovers PR context from the runner and posts the review.
 
-Outside a git repo (advanced)
-  Pass --event, --diff, --review, --pr-number, --repo explicitly.
+Pre-rendered diff (advanced)
+  You have a pre-rendered diff file and the PR's event JSON; pass --event and --diff.
+
+Review local files or directories (any folder, no CI required)
+  umactually --files <path>[,<path>...] --api-key "$UMACTUALLY_API_KEY"
+  Recursively reviews the listed files or directories; writes ./umactually-review.json. No CI, no posting.
 
 Just want to try? Add --dry-run to any of the above.
 `;
@@ -2386,6 +2396,7 @@ const REVIEW_FLAGS = [
     { flag: "--platform <auto|github|azure>", appliesTo: ["review"] },
     { flag: "--event <path>", description: "GitHub event JSON or Azure pull-request JSON", appliesTo: ["review"] },
     { flag: "--diff <path>", description: "PR diff text", appliesTo: ["review"] },
+    { flag: "--files <paths>", description: "Comma-separated paths to files or directories for local-files review (no CI required)", appliesTo: ["review"] },
     { flag: "--threads <path>", description: "Azure existing threads JSON (ADO wrapper mode)", appliesTo: ["review"] },
     { flag: "--review <path>", description: "Azure provider review JSON (ADO wrapper mode)", appliesTo: ["review"] },
     { flag: "--pr-number <n>", description: "Pull request number", appliesTo: ["review"] },
@@ -3788,6 +3799,9 @@ function isBuildArtifactPath(path, patterns = DEFAULT_BUILD_ARTIFACT_PATTERNS) {
         }
     }
     return false;
+}
+function isExcludedPath(path) {
+    return isBuildArtifactPath(path);
 }
 /**
  * Strip every diff block for a path matching a build-artifact pattern.
@@ -6973,14 +6987,14 @@ function collectAlwaysValidationErrors(parsed) {
             errors.push({
                 flag: "--api-url",
                 message: "--api-url is required",
-                hint: "Pass `--api-url <url>` (or `UMACTUALLY_API_URL=<url>`), or use `--dry-run` to skip the provider call.",
+                hint: "Pass --api-url <url> or UMACTUALLY_API_URL=<url>, or use --dry-run to skip the provider call.",
             });
         }
         if (parsed.apiKey === null || parsed.apiKey.length === 0) {
             errors.push({
                 flag: "--api-key",
                 message: "--api-key is required",
-                hint: "Pass `--api-key <key>` (or `UMACTUALLY_API_KEY=<key>`; use a CI secret, never source), or use `--dry-run` to skip the provider call.",
+                hint: "Pass --api-key <key> or UMACTUALLY_API_KEY=<key> (use a CI secret, never source), or use --dry-run to skip the provider call.",
             });
         }
     }
@@ -7003,6 +7017,11 @@ function collectAlwaysValidationErrors(parsed) {
  */
 function collectPostingValidationErrors(parsed) {
     if (!isPostingRequested(parsed)) {
+        return [];
+    }
+    // Local-files mode never posts; the api-credential checks still fire
+    // from collectAlwaysValidationErrors (constraint C-2).
+    if (parsed.files !== null) {
         return [];
     }
     const errors = [];
@@ -7043,10 +7062,71 @@ function collectPostingValidationErrors(parsed) {
     return errors;
 }
 /**
+ * Errors that apply ONLY when --files is supplied AND one of the
+ * pre-rendered-diff-path flags is also supplied. --files is the
+ * local-files review mode; combining it with --diff/--event/--review
+ * would create two contradictory input pipelines in the same run.
+ * Per-flag messages so each conflicting combination is named directly.
+ */
+function collectLocalFilesExclusionErrors(parsed) {
+    if (parsed.files === null) {
+        return [];
+    }
+    const errors = [];
+    if (parsed.diffPath !== null) {
+        errors.push({
+            flag: "--files",
+            message: "--files cannot be combined with --diff",
+            hint: "Pass --files alone for local-files review, or pass --diff (and --event) without --files for the pre-rendered-diff path.",
+        });
+    }
+    if (parsed.eventPath !== null) {
+        errors.push({
+            flag: "--files",
+            message: "--files cannot be combined with --event",
+            hint: "Pass --files alone for local-files review, or pass --event (and --diff) without --files for the pre-rendered-diff path.",
+        });
+    }
+    if (parsed.reviewPath !== null) {
+        errors.push({
+            flag: "--files",
+            message: "--files cannot be combined with --review",
+            hint: "Pass --files alone for local-files review, or pass --review (and --event, --diff) without --files for the pre-rendered-diff path.",
+        });
+    }
+    return errors;
+}
+/**
+ * Defensive check for a literal `,` inside a single --files entry.
+ * The parser splits on `,` with no escape mechanism, so a path that
+ * contains a comma inside one logical entry can only land in this
+ * validator if the user's input preserves the comma through some
+ * wrapping (e.g. shell-quoted). If any trimmed split element still
+ * contains a `,`, the user's input is ambiguous and we surface one
+ * error.
+ */
+function collectLocalFilesCommaErrors(parsed) {
+    if (parsed.files === null) {
+        return [];
+    }
+    const offending = parsed.files.split(",").map((p) => p.trim()).find((p) => p.includes(","));
+    if (offending === undefined) {
+        return [];
+    }
+    return [{
+            flag: "--files",
+            message: `--files does not accept paths containing commas (got '${offending}')`,
+            hint: "Use a different separator; pass each path on a separate --files invocation if needed.",
+        }];
+}
+/**
  * Composed validator. Always-errors ALWAYS apply; posting-errors apply
- * only when posting is requested. Backwards-compatible at the level of
- * the `message` field (each entry carries the legacy flat string), and
- * forwards-compatible via `flag`+`hint` so structured renderers can
+ * only when posting is requested; local-files exclusion errors apply
+ * only when --files is supplied. Local-files comma errors apply only
+ * when --files is supplied and a single entry still contains a `,`
+ * after splitting (defensive check). Backwards-compatible at the level
+ * of the `message` field (each entry carries the legacy flat string),
+ * and forwards-compatible via `flag`+`hint` so structured renderers can
  * surface remediation.
  *
  * Returns {@link ValidationError} records; legacy flat-string callers
@@ -7056,6 +7136,8 @@ function collectValidationErrors(parsed) {
     return [
         ...collectAlwaysValidationErrors(parsed),
         ...collectPostingValidationErrors(parsed),
+        ...collectLocalFilesExclusionErrors(parsed),
+        ...collectLocalFilesCommaErrors(parsed),
     ];
 }
 function validate_assertNever(value) {
@@ -17517,6 +17599,161 @@ async function runStandalone(input) {
     return { kind: "ok", artifactPath, review };
 }
 
+;// CONCATENATED MODULE: ./src/cli/local-files-run.ts
+/**
+ * Runs a provider-only review over local files/directories for the
+ * `umactually --files <path>[,<path>...]` mode. Synthesizes a unified
+ * diff from the file contents and feeds it through the existing
+ * `runStandalone` pipeline. Never posts to a platform; standalone-only.
+ */
+
+
+
+
+
+
+
+const MAX_FILE_BYTES = 256 * 1024;
+const SYNTHESIZED_HEADER_LINES = 4;
+const SYNTHESIZED_HUNK_HEADER_PREFIX = "@@ -0,0 +1,";
+const BINARY_SAMPLE_BYTES = 8 * 1024;
+function splitPaths(files) {
+    if (files === null) {
+        return [];
+    }
+    return files.split(",").map((path) => path.trim()).filter((path) => path.length > 0);
+}
+function reasonFor(error) {
+    return error instanceof Error ? error.message : String(error);
+}
+async function candidatePaths(inputPath, cwd) {
+    const absolute = (0,external_node_path_namespaceObject.resolve)(cwd, inputPath);
+    let info;
+    try {
+        info = await promises_namespaceObject.lstat(absolute);
+    }
+    catch (error) {
+        console.error(`${BRAND_PREFIX}--files: skipped ${inputPath} (${reasonFor(error)})`);
+        return [];
+    }
+    if (info.isSymbolicLink()) {
+        return [];
+    }
+    if (!info.isDirectory()) {
+        return [absolute];
+    }
+    try {
+        const entries = await promises_namespaceObject.readdir(absolute, { recursive: true, withFileTypes: true });
+        return entries
+            .filter((entry) => entry.isFile() && !entry.isSymbolicLink())
+            .map((entry) => (0,external_node_path_namespaceObject.resolve)(entry.parentPath, entry.name));
+    }
+    catch (error) {
+        console.error(`${BRAND_PREFIX}--files: skipped ${inputPath} (${reasonFor(error)})`);
+        return [];
+    }
+}
+async function isBinary(path) {
+    const handle = await promises_namespaceObject.open(path, "r");
+    try {
+        const buffer = Buffer.alloc(BINARY_SAMPLE_BYTES);
+        const { bytesRead } = await handle.read(buffer, 0, BINARY_SAMPLE_BYTES, 0);
+        if (bytesRead === 0) {
+            return false;
+        }
+        let nulBytes = 0;
+        for (let index = 0; index < bytesRead; index += 1) {
+            if (buffer[index] === 0) {
+                nulBytes += 1;
+            }
+        }
+        return nulBytes / bytesRead > 0.05;
+    }
+    finally {
+        await handle.close();
+    }
+}
+async function collectFiles(paths, cwd) {
+    const candidates = (await Promise.all(paths.map((path) => candidatePaths(path, cwd)))).flat();
+    const unique = new Set();
+    for (const absolute of candidates) {
+        const relativePath = (0,external_node_path_namespaceObject.relative)(cwd, absolute).replaceAll("\\", "/");
+        if (isExcludedPath(relativePath)) {
+            continue;
+        }
+        let binary = false;
+        try {
+            binary = await isBinary(absolute);
+        }
+        catch (error) {
+            console.error(`${BRAND_PREFIX}--files: skipped ${relativePath} (${reasonFor(error)})`);
+            continue;
+        }
+        if (binary) {
+            console.error(`${BRAND_PREFIX}--files: skipped ${relativePath} (binary)`);
+            continue;
+        }
+        unique.add((0,external_node_fs_namespaceObject.realpathSync)(absolute));
+    }
+    return Array.from(unique).sort((a, b) => a.localeCompare(b));
+}
+function truncate(content) {
+    const bytes = Buffer.from(content, "utf8");
+    if (bytes.length <= MAX_FILE_BYTES) {
+        return content;
+    }
+    return `${bytes.subarray(0, MAX_FILE_BYTES).toString("utf8")}... (truncated)`;
+}
+function diffBlock(relativePath, content) {
+    const normalized = content.endsWith("\n") ? content.slice(0, -1) : content;
+    const lines = normalized.length === 0 ? [] : normalized.split("\n");
+    const diffHeader = "diff --git a/" + relativePath + " b/" + relativePath;
+    const minusHeader = "--- a/" + relativePath;
+    const plusHeader = "+++ b/" + relativePath;
+    const hunkHeader = SYNTHESIZED_HUNK_HEADER_PREFIX + lines.length + " @@";
+    const header = [diffHeader, minusHeader, plusHeader, hunkHeader];
+    if (header.length !== SYNTHESIZED_HEADER_LINES) {
+        throw new Error("invalid synthesized diff header");
+    }
+    return header.join("\n") + "\n" + lines.map((line) => "+" + line).join("\n") + "\n";
+}
+async function synthesize(files, cwd) {
+    const blocks = [];
+    for (const absolute of files) {
+        const content = truncate(await promises_namespaceObject.readFile(absolute, "utf8"));
+        const relativePath = (0,external_node_path_namespaceObject.relative)(cwd, absolute).replaceAll("\\", "/");
+        blocks.push(diffBlock(relativePath, content));
+    }
+    return blocks.join("\n");
+}
+async function runLocalFilesReview(input) {
+    const paths = splitPaths(input.parsed.files);
+    const files = await collectFiles(paths, input.cwd);
+    const diffPath = (0,external_node_path_namespaceObject.join)(input.cwd, ".umactually-auto-ctx", `local-files-${input.parsed.dryRun ? "dry-run" : (0,external_node_crypto_namespaceObject.randomUUID)()}.diff`);
+    const artifactPath = (0,external_node_path_namespaceObject.resolve)(input.cwd, input.overrideArtifactPath ?? "./umactually-review.json");
+    if (files.length === 0) {
+        return { kind: "ok-no-files", artifactPath, note: "no files matched (excluded or non-existent)" };
+    }
+    const diffText = await synthesize(files, input.cwd);
+    if (input.parsed.dryRun) {
+        return { kind: "ok", artifactPath: diffPath, review: { comments: [], verdict: "COMMENT", summary: "local-files dry run" } };
+    }
+    await promises_namespaceObject.mkdir((0,external_node_path_namespaceObject.join)(input.cwd, ".umactually-auto-ctx"), { recursive: true });
+    await promises_namespaceObject.writeFile(diffPath, diffText, "utf8");
+    const result = await runStandalone({
+        parsed: { ...input.parsed, diffPath, files: null }, cwd: input.cwd, env: input.env,
+        ...(input.overrideArtifactPath !== undefined ? { overrideArtifactPath: input.overrideArtifactPath } : {}),
+    });
+    switch (result.kind) {
+        case "ok":
+            return result;
+        case "ok-no-diff":
+            return { kind: "ok-no-files", artifactPath: result.artifactPath, note: "no files matched" };
+        case "provider-error":
+            return result;
+    }
+}
+
 ;// CONCATENATED MODULE: ./src/cli/smart-prompt.ts
 // SPDX-License-Identifier: MIT
 /**
@@ -17995,6 +18232,7 @@ function resolveDefaultBranch(cwd) {
 
 
 
+
 /**
  * Read the package version.
  *
@@ -18252,6 +18490,7 @@ function buildSanitizedResolvedConfig(resolved) {
         includeSonarqube: resolved.includeSonarqube,
         apiUrlPresent: resolved.apiUrl !== null && resolved.apiUrl.length > 0,
         apiKeyPresent: resolved.apiKey !== null && resolved.apiKey.length > 0,
+        filesPresent: resolved.files !== null && resolved.files.length > 0,
         sonarTokenPresent: resolved.sonarToken !== null && resolved.sonarToken.length > 0,
         promptFilePresent: resolved.promptFile !== null && resolved.promptFile.length > 0,
         promptFilesPresent: resolved.promptFiles !== null && resolved.promptFiles.length > 0,
@@ -18284,7 +18523,7 @@ function resolveContext(parsed, cwd, env) {
     const shouldDeriveFromGit = env["GITHUB_ACTIONS"] === undefined && env["TF_BUILD"] === undefined;
     let resolved = parsed;
     let generated = [];
-    if (shouldDeriveFromGit && !allPlumbingSupplied) {
+    if (shouldDeriveFromGit && !allPlumbingSupplied && parsed.files === null) {
         // Try to derive. If cwd is not a git repo, deriveContextFromGit
         // returns null and we keep parsed unchanged (the original "missing
         // plumbing field" error path will surface downstream with a clearer
@@ -18471,6 +18710,42 @@ async function runCli(args, cwd) {
  */
 async function runAfterValidation(input) {
     const { resolved, cwd, env } = input;
+    if (resolved.files !== null) {
+        const result = await runLocalFilesReview({
+            parsed: resolved,
+            cwd,
+            env,
+            ...(resolved.outputArtifact !== null ? { overrideArtifactPath: resolved.outputArtifact } : {}),
+        });
+        switch (result.kind) {
+            case "ok":
+                return {
+                    exitCode: 0,
+                    resolvedConfig: buildSanitizedResolvedConfig(resolved),
+                };
+            case "ok-no-files":
+                process.stdout.write(`${BRAND_PREFIX}${result.note}\n`);
+                return {
+                    exitCode: 0,
+                    resolvedConfig: buildSanitizedResolvedConfig(resolved),
+                };
+            case "provider-error": {
+                const hintLine = result.hint === undefined ? "" : `\n${BRAND_PREFIX}hint: ${result.hint}`;
+                process.stdout.write(`${result.sanitizedForLog}${hintLine}\n`);
+                return {
+                    exitCode: 1,
+                    resolvedConfig: buildSanitizedResolvedConfig(resolved),
+                };
+            }
+            default: {
+                // Exhaustiveness guard: if runLocalFilesReview adds a new
+                // LocalFilesRunResult variant, this assignment fails to
+                // compile, forcing the dispatcher to handle it explicitly.
+                const _exhaustive = result;
+                throw new Error(`unhandled local-files run result: ${JSON.stringify(_exhaustive)}`);
+            }
+        }
+    }
     if (!resolved.dryRun && isStandaloneMode(env)) {
         const result = await runStandalone({ parsed: resolved, cwd, env });
         if (result.kind === "provider-error") {

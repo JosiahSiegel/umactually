@@ -53,6 +53,7 @@ const REVIEW_FLAGS: readonly HelpFlag[] = [
   { flag: "--platform <auto|github|azure>", appliesTo: ["review"] },
   { flag: "--event <path>", description: "GitHub event JSON or Azure pull-request JSON", appliesTo: ["review"] },
   { flag: "--diff <path>", description: "PR diff text", appliesTo: ["review"] },
+  { flag: "--files <paths>", description: "Comma-separated paths to files or directories for local-files review (no CI required)", appliesTo: ["review"] },
   { flag: "--threads <path>", description: "Azure existing threads JSON (ADO wrapper mode)", appliesTo: ["review"] },
   { flag: "--review <path>", description: "Azure provider review JSON (ADO wrapper mode)", appliesTo: ["review"] },
   { flag: "--pr-number <n>", description: "Pull request number", appliesTo: ["review"] },

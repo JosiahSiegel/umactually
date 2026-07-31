@@ -47,6 +47,7 @@ CLI flag names are the kebab-case form of the option column (for example, `api-u
 | `sonar-token` | `UMACTUALLY_SONAR_TOKEN` | `""` | Secret string | SonarQube token. Must come from a secret store. |
 | `sonar-project-key` | `UMACTUALLY_SONAR_PROJECT_KEY` | `""` | Project key string | SonarQube project key. |
 | `dry-run` | `UMACTUALLY_DRY_RUN` | `false` | `true`, `false` | Generate review output without posting comments or status. Standalone mode (no CI markers) implicitly behaves as a smoke run that writes `./umactually-review.json` without a real HTTP provider call. |
+| `files` | `UMACTUALLY_FILES` (n/a) | — | comma-separated paths | Comma-separated paths to files or directories for local-files review (no CI required). Recurses into directories; excludes build-artifact paths (matches `src/diff/filter-build-artifacts.ts`). Skips binary files (NUL-byte detection). Does not follow symlinks. Deduplicates paths via `realpathSync`. Honors `--dry-run` and `--output-artifact`. Ignores `--platform`. Mutually exclusive with `--diff`, `--event`, `--review`. |
 | `walkthrough` | `UMACTUALLY_WALKTHROUGH` | `false` | `true`, `false` | Emit a separate PR walkthrough comment alongside the review. |
 | `diagnostic` | `UMACTUALLY_DIAGNOSTIC` | `false` | `true`, `false` | Inject a synthetic low-severity finding for pipeline smoke tests. |
 | `debug-raw-response` | `UMACTUALLY_DEBUG_RAW_RESPONSE` | `false` | `true`, `false` | Echo the raw provider response into the workflow log. |
@@ -54,6 +55,16 @@ CLI flag names are the kebab-case form of the option column (for example, `api-u
 | `strict-schema` | `UMACTUALLY_STRICT_SCHEMA` | `true` | `true`, `false` | Send `response_format: { type: "json_schema", strict: true }` on the wire. Set to `false` via `--no-strict-schema` for providers that reject the strict-schema payload. |
 | `verify-findings` | `UMACTUALLY_VERIFY_FINDINGS` | `true` | `true`, `false` | Deterministic re-verification of every `comments[]` entry against the supplied diff. Paths or lines that don't anchor are dropped. Records what was dropped in `parse-warnings.json`. |
 | `platform` | `UMACTUALLY_PLATFORM` | `auto` | `auto`, `github`, `azure` | Platform dispatch hint. `auto` selects GitHub when `GITHUB_ACTIONS=true` and Azure when `TF_BUILD=True`. |
+
+## Local-files review mode
+
+The `--files` flag runs a review over local files (or the recursive contents of local directories) without any CI runner, platform token, or pre-rendered diff. It is the right mode when you have a directory of code on disk and want the same review the live CI path produces, but you do not have a PR to post to.
+
+When to use `--files` instead of `--diff`: `--diff` requires you to have already rendered a unified diff (typically `git diff` output) and to have the PR's event JSON for context; the live CI path discovers both from the runner. `--files` reads file contents directly from disk and synthesizes a unified diff in-memory, so it works on any folder, not just git working trees.
+
+Standalone-only contract. `--files` is always standalone-only. It ignores CI markers (`GITHUB_ACTIONS`, `TF_BUILD`), so the same invocation behaves identically on a developer laptop and inside a CI step. It also ignores `--platform`: even if the runner is in CI and you pass `--platform github`, the local-files path never reaches the posting step. It honors `--dry-run` (skips the provider call, writes a stub artifact) and `--output-artifact` (writes to a custom path instead of `./umactually-review.json`). It is mutually exclusive with `--diff`, `--event`, and `--review` — the validator rejects the combination before any file is read.
+
+Synthesized diff format. For each non-excluded, non-binary file, the CLI writes a unified-diff block with the standard header (`diff --git a/<path> b/<path>`, `--- a/<path>`, `+++ b/<path>`) and a single hunk whose header is `@@ -0,0 +1,<N> @@` where `<N>` is the line count of the file's contents. Each line is emitted with a leading `+` (added-line) marker. The concatenated blocks are written to `<cwd>/.umactually-auto-ctx/local-files-<uuid>.diff`, then handed to the same `runStandalone` pipeline the local-diff path uses. The temp diff file is left in place after the run so operators can inspect what the provider saw; delete it manually if you do not want to keep it. Under `--dry-run` no file is written to disk at all — the diff is synthesized in memory and discarded.
 
 ## Removed inputs (migration map)
 

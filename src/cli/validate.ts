@@ -134,14 +134,14 @@ function collectAlwaysValidationErrors(parsed: ParsedCliArgs): readonly Validati
       errors.push({
         flag: "--api-url",
         message: "--api-url is required",
-        hint: "Pass `--api-url <url>` (or `UMACTUALLY_API_URL=<url>`), or use `--dry-run` to skip the provider call.",
+        hint: "Pass --api-url <url> or UMACTUALLY_API_URL=<url>, or use --dry-run to skip the provider call.",
       });
     }
     if (parsed.apiKey === null || parsed.apiKey.length === 0) {
       errors.push({
         flag: "--api-key",
         message: "--api-key is required",
-        hint: "Pass `--api-key <key>` (or `UMACTUALLY_API_KEY=<key>`; use a CI secret, never source), or use `--dry-run` to skip the provider call.",
+        hint: "Pass --api-key <key> or UMACTUALLY_API_KEY=<key> (use a CI secret, never source), or use --dry-run to skip the provider call.",
       });
     }
   }
@@ -166,6 +166,11 @@ function collectAlwaysValidationErrors(parsed: ParsedCliArgs): readonly Validati
  */
 export function collectPostingValidationErrors(parsed: ParsedCliArgs): readonly ValidationError[] {
   if (!isPostingRequested(parsed)) {
+    return [];
+  }
+  // Local-files mode never posts; the api-credential checks still fire
+  // from collectAlwaysValidationErrors (constraint C-2).
+  if (parsed.files !== null) {
     return [];
   }
 
@@ -211,10 +216,73 @@ export function collectPostingValidationErrors(parsed: ParsedCliArgs): readonly 
 }
 
 /**
+ * Errors that apply ONLY when --files is supplied AND one of the
+ * pre-rendered-diff-path flags is also supplied. --files is the
+ * local-files review mode; combining it with --diff/--event/--review
+ * would create two contradictory input pipelines in the same run.
+ * Per-flag messages so each conflicting combination is named directly.
+ */
+export function collectLocalFilesExclusionErrors(parsed: ParsedCliArgs): readonly ValidationError[] {
+  if (parsed.files === null) {
+    return [];
+  }
+  const errors: ValidationError[] = [];
+  if (parsed.diffPath !== null) {
+    errors.push({
+      flag: "--files",
+      message: "--files cannot be combined with --diff",
+      hint: "Pass --files alone for local-files review, or pass --diff (and --event) without --files for the pre-rendered-diff path.",
+    });
+  }
+  if (parsed.eventPath !== null) {
+    errors.push({
+      flag: "--files",
+      message: "--files cannot be combined with --event",
+      hint: "Pass --files alone for local-files review, or pass --event (and --diff) without --files for the pre-rendered-diff path.",
+    });
+  }
+  if (parsed.reviewPath !== null) {
+    errors.push({
+      flag: "--files",
+      message: "--files cannot be combined with --review",
+      hint: "Pass --files alone for local-files review, or pass --review (and --event, --diff) without --files for the pre-rendered-diff path.",
+    });
+  }
+  return errors;
+}
+
+/**
+ * Defensive check for a literal `,` inside a single --files entry.
+ * The parser splits on `,` with no escape mechanism, so a path that
+ * contains a comma inside one logical entry can only land in this
+ * validator if the user's input preserves the comma through some
+ * wrapping (e.g. shell-quoted). If any trimmed split element still
+ * contains a `,`, the user's input is ambiguous and we surface one
+ * error.
+ */
+export function collectLocalFilesCommaErrors(parsed: ParsedCliArgs): readonly ValidationError[] {
+  if (parsed.files === null) {
+    return [];
+  }
+  const offending = parsed.files.split(",").map((p) => p.trim()).find((p) => p.includes(","));
+  if (offending === undefined) {
+    return [];
+  }
+  return [{
+    flag: "--files",
+    message: `--files does not accept paths containing commas (got '${offending}')`,
+    hint: "Use a different separator; pass each path on a separate --files invocation if needed.",
+  }];
+}
+
+/**
  * Composed validator. Always-errors ALWAYS apply; posting-errors apply
- * only when posting is requested. Backwards-compatible at the level of
- * the `message` field (each entry carries the legacy flat string), and
- * forwards-compatible via `flag`+`hint` so structured renderers can
+ * only when posting is requested; local-files exclusion errors apply
+ * only when --files is supplied. Local-files comma errors apply only
+ * when --files is supplied and a single entry still contains a `,`
+ * after splitting (defensive check). Backwards-compatible at the level
+ * of the `message` field (each entry carries the legacy flat string),
+ * and forwards-compatible via `flag`+`hint` so structured renderers can
  * surface remediation.
  *
  * Returns {@link ValidationError} records; legacy flat-string callers
@@ -224,6 +292,8 @@ export function collectValidationErrors(parsed: ParsedCliArgs): readonly Validat
   return [
     ...collectAlwaysValidationErrors(parsed),
     ...collectPostingValidationErrors(parsed),
+    ...collectLocalFilesExclusionErrors(parsed),
+    ...collectLocalFilesCommaErrors(parsed),
   ];
 }
 

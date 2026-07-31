@@ -175,6 +175,10 @@ export function isBuildArtifactPath(
   return false;
 }
 
+export function isExcludedPath(path: string): boolean {
+  return isBuildArtifactPath(path);
+}
+
 /**
  * Strip every diff block for a path matching a build-artifact pattern.
  *

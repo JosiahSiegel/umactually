@@ -328,7 +328,7 @@ describe("CLI subcommand dispatch RED contract (Task M1)", () => {
     expect(capture.stderr.text).toContain("pick a mode:");
     expect(capture.stderr.text).toContain("Standalone mode");
     expect(capture.stderr.text).toContain("Live CI mode");
-    expect(capture.stderr.text).toContain("Outside a git repo");
+    expect(capture.stderr.text).toContain("Pre-rendered diff");
   });
 });
 

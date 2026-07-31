@@ -9,8 +9,12 @@ Live CI mode (GitHub Actions, Azure DevOps)
   umactually --platform github
   Discovers PR context from the runner and posts the review.
 
-Outside a git repo (advanced)
-  Pass --event, --diff, --review, --pr-number, --repo explicitly.
+Pre-rendered diff (advanced)
+  You have a pre-rendered diff file and the PR's event JSON; pass --event and --diff.
+
+Review local files or directories (any folder, no CI required)
+  umactually --files <path>[,<path>...] --api-key "$UMACTUALLY_API_KEY"
+  Recursively reviews the listed files or directories; writes ./umactually-review.json. No CI, no posting.
 
 Just want to try? Add --dry-run to any of the above.
 `;
