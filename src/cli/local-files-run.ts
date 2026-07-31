@@ -20,7 +20,7 @@ export type LocalFilesRunResult =
   | { readonly kind: "provider-error"; readonly exitCode: 1; readonly message: string; readonly sanitizedForLog: string; readonly hint?: string };
 
 const MAX_FILE_BYTES = 256 * 1024;
-const SYNTHESIZED_DIFF_HEADER_LINES = 2;
+const SYNTHESIZED_HEADER_LINES = 4;
 const SYNTHESIZED_HUNK_HEADER_PREFIX = "@@ -0,0 +1,";
 const BINARY_SAMPLE_BYTES = 8 * 1024;
 
@@ -125,9 +125,11 @@ function diffBlock(relativePath: string, content: string): string {
   const lines = normalized.length === 0 ? [] : normalized.split("\n");
   const header = [
     `diff --git a/${relativePath} b/${relativePath}`,
+    `--- a/${relativePath}`,
+    `+++ b/${relativePath}`,
     `${SYNTHESIZED_HUNK_HEADER_PREFIX}${lines.length} @@`,
   ];
-  if (header.length !== SYNTHESIZED_DIFF_HEADER_LINES) {
+  if (header.length !== SYNTHESIZED_HEADER_LINES) {
     throw new Error("invalid synthesized diff header");
   }
   return `${header.join("\n")}\n${lines.map((line) => `+${line}`).join("\n")}\n`;
