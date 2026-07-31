@@ -63,7 +63,7 @@ describe("CLI bare-invocation", () => {
     expect(stderrBuf).toContain("pick a mode:");
     expect(stderrBuf).toContain("Standalone mode");
     expect(stderrBuf).toContain("Live CI mode");
-    expect(stderrBuf).toContain("Outside a git repo");
+    expect(stderrBuf).toContain("Pre-rendered diff");
   });
 
   it("--dry-run passes validation, prints dry-run wrote, and suppresses the banner", async () => {
