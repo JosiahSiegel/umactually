@@ -652,8 +652,30 @@ http_get() {
   # hung". Failures now surface as a one-line `Error:` with a
   # remediation, matching conventional CLI installer UX (brew,
   # rustup, nvm).
-  _timeout_total="${INSTALL_TIMEOUT_SECONDS:-30}"
-  _timeout_connect="${INSTALL_CONNECT_TIMEOUT_SECONDS:-10}"
+  # Guard against shell-injection on the user-supplied timeout var:
+  # `INSTALL_TIMEOUT_SECONDS="30 --upload-file /etc/passwd"` would
+  # otherwise word-split into a curl flag that exfiltrates files.
+  # Default values are hard-coded numeric literals so no input
+  # passes through to curl un-checked.
+  case "${INSTALL_TIMEOUT_SECONDS:-30}" in
+    ''|*[!0-9]*) _timeout_total=30 ;;
+    *) _timeout_total="${INSTALL_TIMEOUT_SECONDS}" ;;
+  esac
+  case "${INSTALL_TIMEOUT_SECONDS:-30}" in
+    ''|*[!0-9]*) : ;;
+    *) [ "$_timeout_total" -gt 3600 ] && _timeout_total=3600 ;;
+  esac
+  case "${INSTALL_CONNECT_TIMEOUT_SECONDS:-10}" in
+    ''|*[!0-9]*) _timeout_connect=10 ;;
+    *) _timeout_connect="${INSTALL_CONNECT_TIMEOUT_SECONDS}" ;;
+  esac
+  case "$_timeout_connect" in
+    *[!0-9]*) _timeout_connect=10 ;;
+    *) [ "$_timeout_connect" -gt 60 ] && _timeout_connect=60 ;;
+  esac
+  unset INSTALL_TIMEOUT_SECONDS INSTALL_CONNECT_TIMEOUT_SECONDS
+  export _timeout_total _timeout_connect
+
   if command -v curl >/dev/null 2>&1; then
     _curl_args="-fsSL --max-time $_timeout_total --connect-timeout $_timeout_connect"
     if [ -n "${INSTALL_SSL_NO_REVOKE:-}" ]; then

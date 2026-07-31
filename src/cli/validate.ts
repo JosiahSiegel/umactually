@@ -134,14 +134,14 @@ function collectAlwaysValidationErrors(parsed: ParsedCliArgs): readonly Validati
       errors.push({
         flag: "--api-url",
         message: "--api-url is required unless --dry-run is set, --provider copilot is used, or --provider anthropic is used",
-        hint: "Pass `--api-url <url>` (e.g. `https://api.openai.com/v1`) or `UMACTUALLY_API_URL=<url>`.",
+        hint: "Pass `--api-url <url>` or `UMACTUALLY_API_URL=<url>`. To skip: `--dry-run` (smoke test) or `--provider anthropic` / `--provider copilot`.",
       });
     }
     if (parsed.apiKey === null || parsed.apiKey.length === 0) {
       errors.push({
         flag: "--api-key",
         message: "--api-key is required unless --dry-run is set",
-        hint: "Pass `--api-key <key>` or set `UMACTUALLY_API_KEY=<key>` (or `--provider anthropic` for Anthropic-native, `--provider copilot` for GitHub Copilot).",
+        hint: "Pass `--api-key <key>` or `UMACTUALLY_API_KEY=<key>` (CI secret, never source). To skip: `--dry-run` or `--provider anthropic` / `--provider copilot`.",
       });
     }
   }
