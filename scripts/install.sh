@@ -675,7 +675,6 @@ http_get() {
     *[!0-9]*) _timeout_connect=10 ;;
     *) [ "$_timeout_connect" -gt 60 ] && _timeout_connect=60 ;;
   esac
-  unset INSTALL_TIMEOUT_SECONDS INSTALL_CONNECT_TIMEOUT_SECONDS
 
   if command -v curl >/dev/null 2>&1; then
     _curl_args="-fsSL --max-time $_timeout_total --connect-timeout $_timeout_connect"
