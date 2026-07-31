@@ -162,7 +162,13 @@ steps:
       # end-to-end (model call + filters + artifact write) against the
       # synthetic diff the prepare step already wrote.
       DRY_RUN_FLAGS=()
-      if [ "${BUILD_REASON:-}" != "pullRequest" ]; then
+      # ADO sets Build.Reason to enum names like PullRequest /
+      # Manual / Schedule — case-sensitively. docs/configuration.md:82
+      # documents the canonical 'PullRequest' spelling. Compare
+      # case-insensitively so a future ADO rename doesn't re-break
+      # the gate silently.
+      reason_lc="$(printf '%s' \"${BUILD_REASON:-}\" | tr '[:upper:]' '[:lower:]')"
+      if [ "$reason_lc" != "pullrequest" ]; then
         DRY_RUN_FLAGS=(--dry-run)
       fi
 
