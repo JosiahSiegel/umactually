@@ -10,6 +10,14 @@ ship a tag).
 
 ## [Unreleased]
 
+### Fixed
+
+- **CLI bare-invocation modes banner — second iteration** ([#XXX](https://github.com/JosiahSiegel/umactually/pull/XXX)). The `umactually` (no flags) modes banner now uses a 4-mode layout (Standalone / Live CI / Pre-rendered diff / Review local files or directories). Each mode is exactly 3 lines (header + command + description), no clause-laden prose. The previously-mislabeled "Outside a git repo (advanced)" section is renamed to "Pre-rendered diff (advanced)" with an accurate one-liner ("you have a pre-rendered diff file and the PR's event JSON; pass `--event` and `--diff`"). Validation hints for `--api-url` and `--api-key` are tightened to one sentence each in the `Pass --flag <value> or ENV_VAR=<value>` shape. The legacy `cli: --api-url is required` / `cli: --api-key is required` substrings are preserved for regression tests.
+
+### Added
+
+- **`umactually --files <path>[,<path>...]` mode for local files/directories review**. Review the listed files (or walk directories recursively) and write the review to `./umactually-review.json`. No CI, no GitHub Actions, no Azure DevOps required. Recurses into directories; excludes build-artifact paths (matches `src/diff/filter-build-artifacts.ts` exactly — `dist/`, `build/`, `node_modules/`, `coverage/`, lockfiles, source maps, `*.min.{js,css}`). Skips binary files (NUL-byte ratio > 5% in the first 8 KiB). Does not follow symlinks. Deduplicates paths via `realpathSync`. Does not accept paths containing commas. Honors `--dry-run` and `--output-artifact`; ignores `--platform` and CI markers (`GITHUB_ACTIONS` / `TF_BUILD`) — the local-files mode is always standalone-only. Mutually exclusive with `--diff`, `--event`, and `--review`.
+
 ## [0.6.16] - 2026-07-31
 
 ### Fixed

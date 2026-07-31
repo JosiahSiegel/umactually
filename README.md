@@ -116,6 +116,7 @@ Run from any git working tree with a diff staged or committed:
 
 ```bash
 umactually review --api-url https://api.openai.com/v1 --api-key "$UMACTUALLY_API_KEY"
+umactually --files src/foo.ts,src/bar.ts --api-key "$UMACTUALLY_API_KEY"     # Local files/dirs (no CI)
 ```
 
 This reviews the local diff and writes `./umactually-review.json`. No GitHub or Azure DevOps token required, nothing is posted.
