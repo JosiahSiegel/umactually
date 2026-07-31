@@ -83,7 +83,7 @@ function buildParsedFor(files: string): ReturnType<typeof parseCliArgs> {
     apiUrl: "http://test",
     apiKey: "test",
     dryRun: false,
-  } as ReturnType<typeof parseCliArgs>;
+  };
 }
 
 /**
@@ -273,7 +273,7 @@ describe("CLI local-files review (Constraint C-1 gate)", () => {
       ...base,
       apiUrl: "http://test",
       apiKey: "test",
-    } as ReturnType<typeof parseCliArgs>;
+    };
     expect(parsed.dryRun).toBe(true);
 
     const result = await runLocalFilesReview({ parsed, cwd: tmpdirPath, env: {} });
