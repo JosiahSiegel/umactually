@@ -1,40 +1,14 @@
 // SPDX-License-Identifier: MIT
 
 /**
- * CONSTRAINT C-1 GATE TEST.
- *
- * The `--files <path>[,<path>...]` mode in `runLocalFilesReview`
- * (`src/cli/local-files-run.ts`) synthesizes a unified diff from the
- * on-disk file contents and feeds it through the existing
- * `runStandalone` pipeline. The synthesized diff MUST be in the same
- * shape that `parseDiffPositions` / `verifyFindingsAgainstDiff` accept,
- * otherwise every model comment against `--files` review gets
- * suppressed as "off-diff" and the entire feature is silently broken.
- *
- * `diffBlock` in `src/cli/local-files-run.ts` emits the four-line
- * header:
- *   1. `diff --git a/<path> b/<path>`
- *   2. `--- a/<path>`
- *   3. `+++ b/<path>`
- *   4. `@@ -0,0 +1,<N> @@`
- * followed by `+<line>` rows for every content line. `parseDiffPositions`
- * binds the new file path from line 3 and indexes the `+` rows; without
- * any of those header lines, the position index for that path is empty
- * and `verifyFindingsAgainstDiff` drops every comment for the file.
- *
- * This test pins the gate by:
- *   1. Running `runLocalFilesReview` end-to-end (dryRun: false) so the
- *      synthesized diff IS written to `.umactually-auto-ctx/`.
- *   2. Reading that exact diff from disk.
- *   3. Asserting a model comment at (src/foo.ts, line 1) survives
- *      `verifyFindingsAgainstDiff` against the EXACT diff produced
- *      by runLocalFilesReview.
- *
- * Status: this is the SHIPPED behavior gate. The gate passes because
- * `diffBlock` emits the full four-line header. If a future refactor
- * drops any of the three `diff --git` / `--- a/<path>` / `+++ b/<path>`
- * lines, `verifyFindingsAgainstDiff` will drop every comment for the
- * file and this test turns RED — that's the intended regression signal.
+ * Regression gate: a model comment at (path, line) must survive
+ * `verifyFindingsAgainstDiff` against the exact synthesized diff
+ * produced by `runLocalFilesReview`. The synthesized diff MUST be in
+ * the shape `parseDiffPositions` accepts — diff --git / --- / +++
+ * headers plus indexed `+` rows. The shipped `diffBlock` in
+ * src/cli/local-files-run.ts emits that shape; if a future refactor
+ * drops any of the three header lines, the comment is dropped and
+ * this test turns RED.
  */
 import {
   existsSync,
@@ -200,7 +174,7 @@ describe("CLI local-files review (Constraint C-1 gate)", () => {
     const autoCtxDir = join(tmpdirPath, ".umactually-auto-ctx");
     expect(existsSync(autoCtxDir)).toBe(true);
     const diffFiles = readdirSync(autoCtxDir).filter(
-      (name) => /^local-files-\d+-\d+\.diff$/u.test(name),
+      (name) => /^local-files-(?:dry-run|[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\.diff$/u.test(name),
     );
     expect(diffFiles).toHaveLength(1);
     const diffPath = join(autoCtxDir, diffFiles[0] as string);
@@ -321,7 +295,7 @@ describe("CLI local-files review (Constraint C-1 gate)", () => {
       // only the non-binary `src/foo.ts` block survives.
       const autoCtxDir = join(tmpdirPath, ".umactually-auto-ctx");
       const diffFiles = readdirSync(autoCtxDir).filter(
-        (name) => /^local-files-\d+-\d+\.diff$/u.test(name),
+        (name) => /^local-files-(?:dry-run|[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\.diff$/u.test(name),
       );
       expect(diffFiles).toHaveLength(1);
       const diffText = readFileSync(join(autoCtxDir, diffFiles[0] as string), "utf8");
@@ -415,7 +389,7 @@ describe("CLI local-files review (Constraint C-1 gate)", () => {
 
     const autoCtxDir = join(tmpdirPath, ".umactually-auto-ctx");
     const diffFiles = readdirSync(autoCtxDir).filter(
-      (name) => /^local-files-\d+-\d+\.diff$/u.test(name),
+      (name) => /^local-files-(?:dry-run|[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\.diff$/u.test(name),
     );
     expect(diffFiles).toHaveLength(1);
     const diffText = readFileSync(join(autoCtxDir, diffFiles[0] as string), "utf8");
@@ -443,7 +417,7 @@ describe("CLI local-files review (Constraint C-1 gate)", () => {
 
     const autoCtxDir = join(tmpdirPath, ".umactually-auto-ctx");
     const diffFiles = readdirSync(autoCtxDir).filter(
-      (name) => /^local-files-\d+-\d+\.diff$/u.test(name),
+      (name) => /^local-files-(?:dry-run|[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\.diff$/u.test(name),
     );
     expect(diffFiles).toHaveLength(1);
     const diffText = readFileSync(join(autoCtxDir, diffFiles[0] as string), "utf8");
@@ -473,7 +447,7 @@ describe("CLI local-files review (Constraint C-1 gate)", () => {
 
     const autoCtxDir = join(tmpdirPath, ".umactually-auto-ctx");
     const diffFiles = readdirSync(autoCtxDir).filter(
-      (name) => /^local-files-\d+-\d+\.diff$/u.test(name),
+      (name) => /^local-files-(?:dry-run|[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\.diff$/u.test(name),
     );
     expect(diffFiles).toHaveLength(1);
     const diffText = readFileSync(join(autoCtxDir, diffFiles[0] as string), "utf8");
@@ -496,7 +470,7 @@ describe("CLI local-files review (Constraint C-1 gate)", () => {
 
     const autoCtxDir = join(tmpdirPath, ".umactually-auto-ctx");
     const diffFiles = readdirSync(autoCtxDir).filter(
-      (name) => /^local-files-\d+-\d+\.diff$/u.test(name),
+      (name) => /^local-files-(?:dry-run|[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\.diff$/u.test(name),
     );
     expect(diffFiles).toHaveLength(1);
     const diffText = readFileSync(join(autoCtxDir, diffFiles[0] as string), "utf8");
@@ -524,7 +498,7 @@ describe("CLI local-files review (Constraint C-1 gate)", () => {
 
     const autoCtxDir = join(tmpdirPath, ".umactually-auto-ctx");
     const diffFiles = readdirSync(autoCtxDir).filter(
-      (name) => /^local-files-\d+-\d+\.diff$/u.test(name),
+      (name) => /^local-files-(?:dry-run|[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\.diff$/u.test(name),
     );
     expect(diffFiles).toHaveLength(1);
     const diffText = readFileSync(join(autoCtxDir, diffFiles[0] as string), "utf8");
@@ -568,7 +542,7 @@ describe("CLI local-files review (Constraint C-1 gate)", () => {
 
       const autoCtxDir = join(tmpdirPath, ".umactually-auto-ctx");
       const diffFiles = readdirSync(autoCtxDir).filter(
-        (name) => /^local-files-\d+-\d+\.diff$/u.test(name),
+        (name) => /^local-files-(?:dry-run|[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\.diff$/u.test(name),
       );
       expect(diffFiles).toHaveLength(1);
       const diffText = readFileSync(join(autoCtxDir, diffFiles[0] as string), "utf8");
