@@ -652,28 +652,27 @@ http_get() {
   # hung". Failures now surface as a one-line `Error:` with a
   # remediation, matching conventional CLI installer UX (brew,
   # rustup, nvm).
-  # Guard against shell-injection on the user-supplied timeout var:
-  # `INSTALL_TIMEOUT_SECONDS="30 --upload-file /etc/passwd"` would
-  # otherwise word-split into a curl flag that exfiltrates files.
-  # Default values are hard-coded numeric literals so no input
-  # passes through to curl un-checked.
-  # NOTE: `${VAR:-default}` substitution is single-pass — re-reading
-  # `${VAR}` after the case pattern returns empty.
-  case "${INSTALL_TIMEOUT_SECONDS:-30}" in
-    ''|*[!0-9]*) _timeout_total=30 ;;
-    *) _timeout_total="${INSTALL_TIMEOUT_SECONDS:-30}" ;;
+  # Validate user-supplied timeout vars — guard against shell injection
+  # on `INSTALL_TIMEOUT_SECONDS="30 --upload-file /etc/passwd"`.
+  # Single-pass: defaults baked into the variable up front, the case
+  # only runs when the user supplied digits.
+  _timeout_total=30
+  case "${INSTALL_TIMEOUT_SECONDS:-}" in
+    *[!0-9]*|'') ;;
+    *)
+      [ "$INSTALL_TIMEOUT_SECONDS" -gt 3600 ] \
+        && _timeout_total=3600 \
+        || _timeout_total="$INSTALL_TIMEOUT_SECONDS"
+      ;;
   esac
-  case "$_timeout_total" in
-    *[!0-9]*) _timeout_total=30 ;;
-    *) [ "$_timeout_total" -gt 3600 ] && _timeout_total=3600 ;;
-  esac
-  case "${INSTALL_CONNECT_TIMEOUT_SECONDS:-10}" in
-    ''|*[!0-9]*) _timeout_connect=10 ;;
-    *) _timeout_connect="${INSTALL_CONNECT_TIMEOUT_SECONDS:-10}" ;;
-  esac
-  case "$_timeout_connect" in
-    *[!0-9]*) _timeout_connect=10 ;;
-    *) [ "$_timeout_connect" -gt 60 ] && _timeout_connect=60 ;;
+  _timeout_connect=10
+  case "${INSTALL_CONNECT_TIMEOUT_SECONDS:-}" in
+    *[!0-9]*|'') ;;
+    *)
+      [ "$INSTALL_CONNECT_TIMEOUT_SECONDS" -gt 60 ] \
+        && _timeout_connect=60 \
+        || _timeout_connect="$INSTALL_CONNECT_TIMEOUT_SECONDS"
+      ;;
   esac
 
   if command -v curl >/dev/null 2>&1; then

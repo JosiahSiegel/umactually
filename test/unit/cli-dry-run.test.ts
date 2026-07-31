@@ -2,7 +2,7 @@ import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { REVIEW_MARKER } from "../../src/util/marker.js";
 
@@ -471,20 +471,60 @@ describe("CLI prompt-gate: interactive prompts are opt-in (UX regression guard)"
   // freeze for stdin — the old always-prompt behavior caused
   // `curl | sh` smoke-tests to hang. The gate requires explicit
   // `UMACTUALLY_INTERACTIVE=1`. These tests lock the contract down.
+
+  /** Override process.stdin.isTTY so canPromptInteractively() returns
+   * the requested value, then restore on teardown. */
+  let restoreTty: (() => void) | null = null;
+  function withFakeTty(enabled: boolean): () => void {
+    const stdinObj = process.stdin as unknown as { isTTY: boolean };
+    const stdoutObj = process.stdout as unknown as { isTTY: boolean };
+    const prevStdin = stdinObj.isTTY;
+    const prevStdout = stdoutObj.isTTY;
+    Object.defineProperty(process.stdin, "isTTY", { value: enabled, configurable: true });
+    Object.defineProperty(process.stdout, "isTTY", { value: enabled, configurable: true });
+    return () => {
+      Object.defineProperty(process.stdin, "isTTY", { value: prevStdin, configurable: true });
+      Object.defineProperty(process.stdout, "isTTY", { value: prevStdout, configurable: true });
+    };
+  }
+  afterEach(() => { if (restoreTty) restoreTty(); restoreTty = null; });
+
   it("bare invocation with no env returns exit 2 without ever attempting a stdin read", async () => {
+    // Gate is closed by default — even with a real TTY, opt-in
+    // via UMACTUALLY_INTERACTIVE=1 is required. Test that the
+    // gate stays closed.
+    restoreTty = withFakeTty(true);
     const cwd = await mkTempDir("umactually-cli-prompt-gate-bare-");
     const result = await invokeRunCli([], cwd);
     expect(result.exitCode).toBe(2);
   });
 
-  it("UMACTUALLY_INTERACTIVE=1 still fails fast (gate open + no stdin → exit 2)", async () => {
+  it("UMACTUALLY_INTERACTIVE=1 with a TTY opens the gate (smart-prompt is invoked)", async () => {
+    // Distinct from the bare case above: with the gate open, the
+    // smart-prompt path runs. Spy on the prompt function so this
+    // test fails when the gate is broken (e.g. a future revert
+    // turns it back on for TTY by default). The spy returns empty
+    // values so the post-prompt re-validation fails and exits 2.
+    restoreTty = withFakeTty(true);
     const previous = process.env["UMACTUALLY_INTERACTIVE"];
     process.env["UMACTUALLY_INTERACTIVE"] = "1";
+    const smartPromptModule = "../../src/cli/smart-prompt.js";
+    const spy = vi.fn().mockResolvedValue({ apiUrl: null, apiKey: null });
+    let restoreSpy: (() => void) | null = null;
     try {
+      const mod = await import(smartPromptModule);
+      vi.spyOn(mod, "smartPromptForApiConfig").mockImplementation(spy);
+      restoreSpy = () => {
+        // ESM module exports are read-only; vi restores via the spy itself.
+        (mod.smartPromptForApiConfig as ReturnType<typeof vi.spyOn>).mockRestore();
+      };
       const cwd = await mkTempDir("umactually-cli-prompt-gate-with-flag-");
       const result = await invokeRunCli([], cwd);
       expect(result.exitCode).toBe(2);
+      // Spy invoked at least once — proves the gate opened.
+      expect(spy).toHaveBeenCalled();
     } finally {
+      if (restoreSpy) restoreSpy();
       if (previous === undefined) {
         delete process.env["UMACTUALLY_INTERACTIVE"];
       } else {
