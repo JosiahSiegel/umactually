@@ -1516,30 +1516,28 @@ jobs:
           # 2026, PR actions/setup-node#1477) writes a per-run `.npmrc`
           # with `//registry.npmjs.org/:_authToken=${NODE_AUTH_TOKEN}` —
           # an unresolved literal the npm CLI reads as a non-empty token,
-          # suppressing the OIDC handshake. The unauthenticated PUT then
-          # gets a 404 (npm/cli#9088). npm CLI's default registry is
-          # registry.npmjs.org, so `npm ci` and `npm publish` are
-          # unchanged. OIDC auth still flows via the `id-token: write`
-          # permission on this job. See CONTRIBUTING.md and
-          # docs/release-process.md § 5.5 for the full mechanism.
+          # suppressing the OIDC handshake. Without `registry-url`, the
+          # auth flows via the `NPM_ID_TOKEN` env var set below. npm
+          # CLI's default registry is registry.npmjs.org, so `npm ci`
+          # and `npm publish` are unchanged. See CONTRIBUTING.md and
+          # docs/release-process.md § 5.5.
           cache: "npm"
+
+      - name: Mint OIDC token for npm Trusted Publishing
+        id: oidc
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const token = await core.getIDToken('npm:registry.npmjs.org');
+            core.exportVariable('NPM_ID_TOKEN', token);
+            core.setOutput('token_length', token.length);
 
       - name: Install dependencies
         run: npm ci
 
-      # The same six-gate pipeline the local maintainer runs before
-      # `npm publish` is invoked here, in the same order. See
-      # scripts/ci-validate.sh for the per-gate commentary.
       - name: prepublishOnly (typecheck + test + bundle + render-docs + drift guard)
         run: npm run prepublishOnly
 
-      # Trusted Publishing (OIDC) is the auth path. The `--provenance`
-      # flag is explicit for documentation — npm would infer it from
-      # the OIDC token automatically, but pinning it on the command
-      # line keeps the contract visible to a future reader of the
-      # workflow. `--tag latest` is the npm default for new semver
-      # releases; explicit is harmless and survives any future change
-      # to npm defaults.
       - name: Publish to npm (Trusted Publishing / OIDC)
         run: |
           set -euo pipefail
