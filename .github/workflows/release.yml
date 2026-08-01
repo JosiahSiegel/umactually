@@ -1543,14 +1543,18 @@ jobs:
           set -euo pipefail
           VERSION=$(node -e "console.log(require('./package.json').version)")
           echo "Publishing umactually@${VERSION} via OIDC Trusted Publishing to https://registry.npmjs.org/"
-          # Debug: dump the OIDC token claims the workflow mints. The
-          # audience claim (`aud`) is what the registry checks against
-          # `npm:registry.npmjs.org`. A wrong audience surfaces as E404.
-          echo "--- OIDC token (decoded payload) ---"
+          # Debug: exchange the OIDC token for a registry session token
+          # the way npm CLI does it, and try the PUT /umactually directly.
+          # This isolates whether the failure is in the OIDC exchange
+          # itself or in npm's CLI plumbing.
+          echo "--- exchanging OIDC token via registry endpoint ---"
           OIDC=$(curl -fsSL -H "Authorization: Bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" \
             "$ACTIONS_ID_TOKEN_REQUEST_URL&audience=npm:registry.npmjs.org")
-          PAYLOAD=$(echo "$OIDC" | node -e "let s='';process.stdin.on('data',d=>s+=d).on('end',()=>{const t=JSON.parse(s).value;const p=t.split('.')[1];console.log(Buffer.from(p,'base64').toString())})")
-          echo "$PAYLOAD" | node -e "let s='';process.stdin.on('data',d=>s+=d).on('end',()=>console.log(JSON.stringify(JSON.parse(s),null,2)))"
+          RESPONSE=$(curl -sS -X POST "https://registry.npmjs.org/-/npm/v1/login" \
+            -H "Authorization: Bearer $(echo "$OIDC" | node -e "let s='';process.stdin.on('data',d=>s+=d).on('end',()=>process.stdout.write(JSON.parse(s).value))")" \
+            -H "Content-Type: application/json" \
+            -d '{}' || echo "EXCHANGE_FAILED")
+          echo "exchange response: $RESPONSE" | head -c 200; echo
           echo "--- end debug ---"
           npm publish --provenance --tag latest --registry https://registry.npmjs.org/
 
