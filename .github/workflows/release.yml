@@ -1543,19 +1543,6 @@ jobs:
           set -euo pipefail
           VERSION=$(node -e "console.log(require('./package.json').version)")
           echo "Publishing umactually@${VERSION} via OIDC Trusted Publishing to https://registry.npmjs.org/"
-          # Debug: exchange the OIDC token for a registry session token
-          # the way npm CLI does it, and try the PUT /umactually directly.
-          # This isolates whether the failure is in the OIDC exchange
-          # itself or in npm's CLI plumbing.
-          echo "--- exchanging OIDC token via registry endpoint ---"
-          OIDC=$(curl -fsSL -H "Authorization: Bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" \
-            "$ACTIONS_ID_TOKEN_REQUEST_URL&audience=npm:registry.npmjs.org")
-          RESPONSE=$(curl -sS -X POST "https://registry.npmjs.org/-/npm/v1/login" \
-            -H "Authorization: Bearer $(echo "$OIDC" | node -e "let s='';process.stdin.on('data',d=>s+=d).on('end',()=>process.stdout.write(JSON.parse(s).value))")" \
-            -H "Content-Type: application/json" \
-            -d '{}' || echo "EXCHANGE_FAILED")
-          echo "exchange response: $RESPONSE" | head -c 200; echo
-          echo "--- end debug ---"
           npm publish --provenance --tag latest --registry https://registry.npmjs.org/
 
       - name: Verify npm publication
