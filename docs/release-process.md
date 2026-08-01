@@ -128,7 +128,7 @@ Expected: exactly seven assets (six archives + `checksums.txt`). If the asset li
 
 ### 5.5 npm publication (post GitHub Release)
 
-After the GitHub Release publishes, the workflow's `publish-npm` job publishes `umactually` to npmjs.org. The job is gated on the same real-release-tag pattern as `publish` and runs the same six-gate pipeline via `npm run prepublishOnly` before invoking `npm publish --provenance --tag latest`. The two publishes (GitHub Release + npm) always consume the same `git SHA` — they will never drift.
+After the GitHub Release publishes, the workflow's `publish-npm` job publishes `umactually` to npmjs.org via **Trusted Publishing (OIDC)** — no long-lived secret, no 2FA prompt at CI time. The job is gated on the same real-release-tag pattern as `publish` and runs the same six-gate pipeline via `npm run prepublishOnly` before invoking `npm publish --provenance --tag latest`. The two publishes (GitHub Release + npm) always consume the same `git SHA` — they will never drift.
 
 Wait for the `publish-npm` job to finish:
 
@@ -138,7 +138,7 @@ gh run list --workflow=release --status=success --json name,headBranch --jq '.[]
 gh run watch $(gh run list --workflow=release --limit 1 --json databaseId -q '.[0].databaseId')
 ```
 
-The job emits a `Summary` step that records the event / ref / tag / `NPM_TOKEN`-configured flag / outcome in `$GITHUB_STEP_SUMMARY`. After the summary, verify the package landed on npm:
+The job emits a `Summary` step that records the event / ref / tag / auth method (`Trusted Publishing (OIDC)`) / outcome in `$GITHUB_STEP_SUMMARY`. After the summary, verify the package landed on npm:
 
 ```bash
 curl -fsSL https://registry.npmjs.org/umactually/vX.Y.Z | jq '.dist-tags, .version'
@@ -157,22 +157,48 @@ curl -fsSL https://registry.npmjs.org/umactually/vX.Y.Z | jq '.version, .dist.in
 
 The Sigstore attestation is signed against the GitHub Actions OIDC token, so the badge on npmjs.com links to the precise workflow run that performed the publish — re-running `gh run view <id> --json headSha,event,workflow` for that run shows the same SHA as `git rev-parse HEAD` on the release commit.
 
-#### `NPM_TOKEN` ownership
+#### Authentication: Trusted Publishing (OIDC)
 
-The repo secret `NPM_TOKEN` must be a **npm Granular Access Token** scoped to publish only the `umactually` package. Full setup is in [`CONTRIBUTING.md`](../CONTRIBUTING.md#npm-publication-npm_token-setup). A missing or expired `NPM_TOKEN` does not fail the workflow — the job emits `::warning::NPM_TOKEN secret not configured — skipping npm publish.` and exits 0, because the GitHub Release publishes first and the canary must run regardless. If you see that warning, set the secret and **re-run the publish-npm job** (not the whole release workflow) via `gh run rerun <run-id> --failed`.
+Authentication for the `publish-npm` job is **Trusted Publishing (OIDC)** — the npm-recommended replacement for legacy Granular Tokens with bypass-2FA (which are now restricted for direct publishing; see https://gh.io/npm-gat-bypass2fa-deprecation). The job requests an OIDC token from GitHub Actions (`id-token: write` permission) and `npm publish` exchanges it for a short-lived registry session token. **No `NPM_TOKEN` secret is stored in repo settings**, and there is no `--otp=<code>` step at CI time.
 
-If you prefer a fully manual first-time publish to claim the package name on npmjs.org (the GitHub Actions path errors with `404 Not found` on a name that nobody owns yet):
+Why the move: npm deprecated classic tokens in 2022 and deprecated TOTP authenticator apps in 2025. Granular Tokens with `bypass_2fa: true` are being restricted. Trusted Publishing is the official replacement — see https://docs.npmjs.com/trusted-publishers.
+
+#### One-time setup (already complete on this repo)
+
+1. Manually publish the first version of `umactually` to claim the package name on npmjs.org. This is the chicken-and-egg step — Trusted Publishers cannot be configured against a name that doesn't exist yet. Use a fresh local terminal that can complete the WebAuth browser flow (or a Granular Token with "Bypass 2FA for publishing" enabled if you have one):
+
+   ```bash
+   # Local terminal with WebAuth flow (browser opens automatically):
+   npm publish --provenance --tag latest --registry https://registry.npmjs.org/
+   ```
+
+   The CLI will print a URL like `https://www.npmjs.com/auth/cli/<id>` — open it, complete the GitHub-backed sign-in, and the publish proceeds.
+
+2. Open https://www.npmjs.com/package/umactually/settings → **Publishing access** → **Add a Trusted Publisher** → **GitHub Actions** → Repository `JosiahSiegel/umactually`, Workflow filename `release.yml`, Environment (optional, leave blank for now).
+
+3. **Delete the GitHub repo secret `NPM_TOKEN`** if it exists, and revoke any old Granular Tokens at https://www.npmjs.com/settings/~/tokens. From this point forward, all publishes go through OIDC and the `publish-npm` job has no token to lose.
+
+4. (Optional, recommended) On the same npm settings page, enable **"Require two-factor authentication and disallow tokens"** so direct publishing requires a 2FA flow that only the maintainers control — preventing a future maintainer from accidentally pasting a long-lived secret into CI.
+
+#### Manual re-publish (release engineer)
+
+If the automated path fails for any reason and a maintainer needs to push a version directly (e.g. the Trusted Publisher binding got deconfigured), the same WebAuth flow used in step 1 still works for any version, including re-publishing an existing one. The WebAuth exchange grants a short-lived npm registry session token via the maintainer's npmjs.com authenticated session — there is no `--otp` step.
 
 ```bash
-npm login --registry=https://registry.npmjs.org/
-npm publish --provenance --tag latest --dry-run    # sanity
-npm publish --provenance --tag latest              # claim the name + first publish
-# Then push the tag per § 5 so the GitHub Release also creates the
-# vX.Y.Z release. The npm version will be RE-PUBLISHED by the
-# subsequent workflow run (npm overwrites same-version tags by
-# default; the package's dist-tag-latest will end up with the same
-# version because the SHA is identical).
+# Local manual publish: no GitHub Actions OIDC issuer available, so
+# pass --provenance=false to override package.json#publishConfig.provenance.
+# For the Trusted-Publisher-via-GitHub path (the canonical publish route)
+# the CI job uses OIDC and `--provenance` automatically.
+npm publish --provenance=false --tag latest --registry https://registry.npmjs.org/
 ```
+
+The CLI prints `https://www.npmjs.com/auth/cli/<authId>` to your terminal; open it, complete the GitHub-backed sign-in, and the publish proceeds.
+
+**CRITICAL TTY caveat**: npm CLI only prints the WebAuth URL `https://www.npmjs.com/auth/cli/<authId>` in full when it detects a real interactive TTY. Background jobs, redirected stderr, and captured output have the `<authId>` redacted to `***`, which is unrecoverable. Always run a manual publish from a terminal where you can read the URL directly — your laptop, a tmux pane, an interactive SSH session. An automated agent shell cannot extract the URL programmatically.
+
+If you see `403 Forbidden — Two-factor authentication or granular access token with bypass 2fa enabled is required to publish packages.`, your local npm CLI session token has expired; re-run `npm login` or re-trigger the WebAuth URL printed by the CLI. There is no short-lived "session" to lose — each `npm publish` invocation generates a fresh one.
+
+**Provenance on local manual publish**: a local CLI does not have a GitHub Actions OIDC issuer to mint provenance, so `npm publish --provenance` errors with `EUSAGE — Automatic provenance generation not supported for provider: null`. For manual publish (any version), pass `--provenance=false` on the CLI to override `package.json#publishConfig.provenance: true` for that single invocation. The CI publish path uses GitHub Actions OIDC + `--provenance` and is unaffected.
 
 ### Release assets
 
@@ -368,11 +394,11 @@ If the redirect still resolves to the older tag after a few minutes, see [§ 5 t
 
 ### 8.5 npm publish failed (GitHub Release succeeded, npm didn't)
 
-The two publishes are independent pipelines: the `publish` job created the GitHub Release and finished green, but the downstream `publish-npm` job's `npm publish --provenance --tag latest` step exited non-zero. The most common failure modes:
+The two publishes are independent pipelines: the `publish` job created the GitHub Release and finished green, but the downstream `publish-npm` job's `npm publish --provenance --tag latest` step exited non-zero. The most common failure modes (post-OIDC migration; no `NPM_TOKEN` secret exists anymore):
 
-1. **`NPM_TOKEN` is missing or expired.** Symptom: the job's first step warns `NPM_TOKEN secret not configured — skipping npm publish.` (this is intentionally not a hard failure — see [§ 5.5](#55-npm-publication-post-github-release)). Recovery: rotate the token per [`CONTRIBUTING.md`](../CONTRIBUTING.md#npm-publication-npm_token-setup), then re-run just `publish-npm` via `gh run rerun <run-id> --failed`.
-2. **`npm ERR! code ENEEDAUTH`** or **HTTP 401**: the token is rejected by the registry. Either the token is wrong (compare against `npm token list --json` on a local machine where you've logged in), or it has been revoked mid-release. Re-issue a Granular Token, paste it into `NPM_TOKEN`, and re-run.
-3. **`npm ERR! code E404 — 'umactually@*' is not in this registry`**: a fresh package name hasn't been claimed yet. Run `npm login` locally and `npm publish --provenance --tag latest` once to claim it, then re-run the workflow.
+1. **`Trusted Publisher binding is missing or stale.`** Symptom: `npm ERR! code EOTP — This operation requires a one-time password` or `npm ERR! code E401 — Invalid credentials` or `npm ERR! code E403 — Forbidden`. Recovery: open https://www.npmjs.com/package/umactually/settings → Publishing access → confirm the GitHub Actions binding is present, repo `JosiahSiegel/umactually`, workflow filename `release.yml`. If absent or pointing at the wrong repo/workflow, re-add it (no token needed — the binding itself is policy), then re-run just `publish-npm` via `gh run rerun <run-id> --failed`.
+2. **`id-token: write` permission missing from the workflow.** Symptom: the job logs `error: ID token could not be minted` or `error: insufficient permissions`. Recovery: confirm `.github/workflows/release.yml` has `permissions: { id-token: write }` at the job level for `publish-npm` (it does in the current revision). Re-run.
+3. **`npm ERR! code E404 — 'umactually@*' is not in this registry`**: a fresh package name hasn't been claimed yet. Run `npm publish --provenance --tag latest --registry https://registry.npmjs.org/` once on a local terminal that can complete the WebAuth browser flow (no `--otp`; the CLI prints a `https://www.npmjs.com/auth/cli/<id>` URL — open it, sign in, publish lands), then re-run the workflow.
 4. **`npm ERR! code E403`** with **"cannot modify existing version"**: someone (or a previous workflow run) already published this version with a different tarball. Either (a) the GitHub Release SHA and the npm publish SHA diverged — check `git rev-parse HEAD` against the GitHub Release commit; or (b) someone locally published the same version. Recovery is to bump to `vX.Y.Z+1` and cut a patch release.
 5. **`::error::umactually@<version> not found on registry.npmjs.org ...`** from the verify step: the publish step reported success but the registry hasn't synced within ~50 s. This is rare and almost always transient. Re-run `publish-npm` and the next pass usually lands clean. If it repeats, open a `npm support ticket` quoting the request id from the publish step's log.
 

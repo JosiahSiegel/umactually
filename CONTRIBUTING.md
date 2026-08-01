@@ -84,23 +84,55 @@ Cutting a new release is documented end-to-end in [`docs/release-process.md`](do
 
 `scripts/render-versions.mjs` and `scripts/check-version-alignment.mjs` enforce the version-pin invariant that shipped docs always show `v<package.json version>`. The renderer rewrites both `{{UMACTUALLY_*}}` template tokens AND historical `vX.Y.Z` literals whose `X.Y.Z ≠ package.json version`, so the first release needs the tokens replaced and every subsequent release just runs the renderer. URL path segments like `https://semver.org/spec/v2.0.0.html` are preserved (they are not rewritten or flagged as drift).
 
-### npm publication (`NPM_TOKEN` setup)
+### npm publication (Trusted Publishing / OIDC)
 
-The release workflow's `publish-npm` job publishes `umactually` to npmjs.org after the GitHub Release succeeds. The job is gated on the same real-release-tag pattern as `publish`, uses OIDC for Sigstore provenance (`id-token: write`), and the npm CLI defaults to `--provenance` because `package.json#publishConfig.provenance` is `true`. The maintainer-facing pre-flight is the existing `npm run prepublishOnly`, which runs typecheck → test → bundle → render-docs → drift-guard → dist-freshness in order.
+The release workflow's `publish-npm` job publishes `umactually` to npmjs.org after the GitHub Release succeeds. The job is gated on the same real-release-tag pattern as `publish`, and authenticates via **Trusted Publishing (OIDC)** — no long-lived secret, no 2FA prompt at CI time. `npm publish --provenance --tag latest` is invoked with `id-token: write` granted at the job level; the npm CLI exchanges the OIDC token for a short-lived registry session token. The maintainer-facing pre-flight is the existing `npm run prepublishOnly`, which runs typecheck → test → bundle → render-docs → drift-guard → dist-freshness in order.
 
-The npm auth secret lives at repo Settings → Secrets and variables → Actions → `NPM_TOKEN`. Provider:
+**There is no `NPM_TOKEN` repo secret.** Authentication is entirely via the Trusted Publisher binding configured on npmjs.org.
 
-1. **npm Granular Access Token (recommended)** — npm → Access Tokens → **Granular** → Generate. Set:
-   - **Token name**: `umactually-ci-publish` (or any descriptive string).
-   - **Expiration**: 90 days maximum. Calendar a rotation reminder at <https://github.com/JosiahSiegel/umactually/issues/new> for 30 days before expiry.
-   - **Allowed package scopes**: restrict to `@my-org/...` here if `umactually` will ever move to a scoped namespace; otherwise leave the default (publish to any package you own).
-   - **Packages**: *selectively*. Pin to the `umactually` package name only — never grant publish rights to "All packages" for a CI token.
-   - **Permissions**: **Read-only** + **Publish**. Do **not** grant `Settings`, `Signing`, or `Tokens` — those would let the CI mint child tokens.
-2. Copy the token into `NPM_TOKEN` (the workflow reads it as both `NPM_TOKEN` and `NODE_AUTH_TOKEN` for npm / pnpm / yarn compatibility).
-3. **First-time set**: also publish `umactually` once locally with the token to claim the package name on npmjs.org (the GitHub Actions path can publish only after the package exists; an attempt to publish a non-existent package errors out with `404 Not found - PUT https://registry.npmjs.org/umactually`). Run `npm login --registry=https://registry.npmjs.org/`, then `npm publish --provenance --tag latest`. The local publish's SHA must match `git rev-parse HEAD` at the release commit.
-4. **Subsequent releases** use the GitHub Actions workflow exclusively. Do not re-publish locally unless recovering from a workflow failure (the GitHub Release + npm publish share the same git SHA, and a divergent local re-publish breaks the audit trail).
+#### One-time setup (already complete)
 
-Token rotation: when the 90-day timer expires, repeat step 1 and **revoke the old token at npm → Access Tokens** before pasting the new value into `NPM_TOKEN`. The next workflow run picks up the new secret automatically. A dangling revoked token causes `npm publish` to fail with `ENEEDAUTH`, which surfaces clearly in the `publish-npm` step's log.
+1. **Manually publish the first version** of `umactually` to claim the package name on npmjs.org. Trusted Publishers cannot be configured against a name that doesn't exist yet. From a local terminal with `npm@10+`:
+
+   ```bash
+   npm publish --provenance=false --tag latest --registry https://registry.npmjs.org/
+   ```
+
+   `--provenance=false` overrides `package.json#publishConfig.provenance: true` for this single invocation — no `package.json` edit, no rollback commit, no temporary downgrade of the published provenance commitment. The CLI prints a URL like `https://www.npmjs.com/auth/cli/<id>` — open it, complete the GitHub-backed sign-in, and the publish proceeds. There is no `--otp` step.
+
+   **CRITICAL: the WebAuth URL only appears in a real interactive TTY session.** npm CLI detects whether stdout/stderr is a TTY and redacts the `<id>` portion to `***` when the output is redirected (background, piped, captured). Running `npm publish` in a CI shell, a background job, or any non-TTY context will print `https://www.npmjs.com/auth/cli/***` with no way to recover the actual ID. Always run the first-time publish from a terminal you can read interactively (your laptop, a SSH session with an active shell, a tmux pane — any of those work; an automated agent shell does not).
+
+   **Why `--provenance=false` is required locally**: a local machine has no GitHub Actions OIDC issuer to mint a Sigstore provenance attestation. With `package.json#publishConfig.provenance: true` and no CLI override, the CLI errors with `npm error code EUSAGE — Automatic provenance generation not supported for provider: null`. The CI publish path uses GitHub Actions OIDC + `--provenance`, so `provenance: true` in `package.json` stays correct for that path; the local first-time publish just needs the CLI override.
+2. **Configure the Trusted Publisher binding** on https://www.npmjs.com/package/umactually/settings → Publishing access → Add a Trusted Publisher → GitHub Actions. Repository: `JosiahSiegel/umactually`. Workflow filename: `release.yml`. Environment: (optional, leave blank). Confirm with a test tag push before relying on this binding for a real release.
+3. **(Optional, recommended)** On the same npm settings page, enable **"Require two-factor authentication and disallow tokens"** so direct publishing requires a 2FA flow that only the maintainers control — preventing a future maintainer from accidentally pasting a long-lived secret into CI.
+4. **(One-time cleanup)** If the repo previously stored an `NPM_TOKEN` secret, delete it from Settings → Secrets and variables → Actions. Revoke any old Granular Tokens at https://www.npmjs.com/settings/~/tokens. From this point forward there is no token to rotate, expire, or leak.
+
+#### Subsequent releases
+
+Use the GitHub Actions workflow exclusively. Push the version tag and `release.yml` runs the `publish-npm` job automatically. The job exchanges the OIDC token for a short-lived session token at publish time; nothing is stored in repo secrets, nothing needs rotation, nothing has a 90-day expiry. The `Verify npm publication` step in the same job runs a `curl` probe against `registry.npmjs.org` with up to ten 5-second retries, so a transient propagation delay does not falsely fail the canary.
+
+#### Manual re-publish (release engineer)
+
+If the automated path fails and a maintainer needs to push a version directly, the same WebAuth flow used in step 1 still works:
+
+```bash
+npm publish --provenance --tag latest --registry https://registry.npmjs.org/
+```
+
+The CLI prints a fresh `https://www.npmjs.com/auth/cli/<id>` URL; open it, complete the GitHub-backed sign-in, and the publish proceeds. No token to mint, no `--otp` to type, no 90-day clock.
+
+#### Failure modes and recovery
+
+See [`docs/release-process.md` § 8.5](docs/release-process.md#85-npm-publish-failed-github-release-succeeded-npm-didnt) for the full troubleshooting matrix. Common symptoms post-OIDC:
+
+| Symptom | Likely cause | Fix |
+| --- | --- | --- |
+| `npm ERR! code EOTP — requires a one-time password` | Trusted Publisher binding missing on npmjs.com | Add the GitHub Actions binding (one-time setup step 2) |
+| `error: ID token could not be minted` | `id-token: write` permission missing from `release.yml` | Confirm the job-level permission block; re-run |
+| `npm ERR! code E404 — 'umactually@*' is not in this registry` | Package name not yet claimed | One-time setup step 1: local WebAuth publish |
+| `npm ERR! code E403 — cannot modify existing version` | SHA divergence or duplicate publish | Bump to `vX.Y.Z+1` and cut a patch release |
+
+Rotation reminders and 90-day token timers are not applicable — there is no token. The only state to maintain is the Trusted Publisher binding on npmjs.com, which is a single dashboard click to add and never expires.
 
 ## Coding conventions
 

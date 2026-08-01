@@ -181,4 +181,4 @@ EOF
 # helper. The workflow consumes the same git SHA, so the npm and
 # GitHub Releases cannot diverge on the same release. See
 # docs/release-process.md § 5.5 for the npm publication flow and
-# the NPM_TOKEN setup (CONTRIBUTING.md#npm-publication-npm_token-setup).
+# the Trusted Publishing setup (CONTRIBUTING.md#npm-publication-trusted-publishing-oidc).
