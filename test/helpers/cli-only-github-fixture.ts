@@ -3,6 +3,7 @@ import { createServer, type IncomingMessage, type ServerResponse } from "node:ht
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
+import { connect } from "node:net";
 
 export const REPO_ROOT = resolve(import.meta.dirname, "..", "..");
 export const REVIEW_MARKER = "<!-- umactually -->";
@@ -105,6 +106,16 @@ export async function startGithubFixture(options: GithubFixtureOptions): Promise
   if (address === null || typeof address === "string") {
     throw new TypeError("fixture server must listen on a TCP port");
   }
+  // Hardening against a transient race: `server.listen()`'s callback
+  // fires once Node has queued the listening socket for the kernel, but
+  // the kernel-level bind can take a few extra ms under load. Without a
+  // `connect()` probe before the child process is spawned, the first
+  // outbound HTTP call can hit ECONNREFUSED on a freshly bound socket
+  // that the kernel has not yet promoted to LISTEN. Mirrors the same
+  // probe-then-spawn pattern the release-workflow smoke jobs use
+  // against `python3 -m http.server` (see
+  // .github/workflows/release.yml:smoke-linux-x64).
+  await waitForPortReady(address.port);
   return {
     apiUrl: `http://127.0.0.1:${address.port}`,
     calls,
@@ -112,6 +123,31 @@ export async function startGithubFixture(options: GithubFixtureOptions): Promise
       server.close((error) => error === undefined ? resolve() : reject(error));
     }),
   };
+}
+
+function waitForPortReady(port: number): Promise<void> {
+  const deadline = Date.now() + 5_000;
+  return new Promise<void>((resolve, reject) => {
+    const probe = (): void => {
+      const socket = connect(port, "127.0.0.1");
+      let settled = false;
+      const finish = (error: Error | null): void => {
+        if (settled) return;
+        settled = true;
+        socket.destroy();
+        if (error === null) {
+          resolve();
+        } else if (Date.now() > deadline) {
+          reject(new Error(`fixture port ${port} did not accept connections within 5s: ${error.message}`));
+        } else {
+          setTimeout(probe, 10);
+        }
+      };
+      socket.once("connect", () => finish(null));
+      socket.once("error", (error: Error) => finish(error));
+    };
+    probe();
+  });
 }
 
 function reviewEnvelopeExitCode(stdout: string): number | null {

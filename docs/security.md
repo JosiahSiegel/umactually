@@ -97,6 +97,25 @@ UmActually does not intentionally log, echo, or print secrets:
 
 When investigating a leak, the first place to look is the workflow log for `printenv`, `Set-*` debug steps, or user-supplied `run:` blocks that print secrets. The action itself is not the source.
 
+### `NPM_TOKEN` provisioning and rotation
+
+The `publish-npm` job in `.github/workflows/release.yml` consumes the repo secret `NPM_TOKEN`. The token must be a **npm Granular Access Token** that meets all of the following criteria:
+
+- **Scoped to the `umactually` package only.** Do **not** grant "All packages"; a compromised CI token must not be able to publish unrelated packages in the owner namespace.
+- **Limited to "Read" + "Publish" permissions.** Do **not** grant `Settings`, `Signing`, or `Tokens` — those would let a CI-side compromise mint child tokens or change 2FA settings on the owner account.
+- **Maximum 90-day expiry.** Calendar the rotation at <https://github.com/JosiahSiegel/umactually/issues/new> for 30 days before expiry. The next workflow run picks up the rotated secret on its next invocation; there is no need to retrigger the in-flight release.
+
+Rotation procedure (every 90 days, or immediately on suspected exposure):
+
+1. Generate the new token at npm → Access Tokens → Granular.
+2. Paste the new token into the `NPM_TOKEN` repo secret (Settings → Secrets and variables → Actions).
+3. **Revoke the old token** at npm → Access Tokens.
+4. Confirm by running the `publish-npm` job on a synthetic-tag dispatch (release.yml's `workflow_dispatch` with `inputs.publish: true, inputs.tag: v0.0.0-smoke`) — the `Verify npm publication` step cannot validate a synthetic tag (it errors on the version pattern), so instead rely on the `npm publish` step's exit code and the `Summary` step's `NPM_TOKEN configured: true` line.
+
+A revoked `NPM_TOKEN` does not silently break the release: the `publish-npm` job's first step detects a missing secret, emits `::warning::NPM_TOKEN secret not configured — skipping npm publish.`, and exits 0, so the GitHub Release + canary still complete. The next workflow run after rotation recovers automatically.
+
+**Why the workflow does not hard-fail on missing `NPM_TOKEN`**: cross-pipeline failure modes are worse than a skipped npm publish. If `publish-npm` were a hard gate, a forgotten rotation would block every GitHub Release too — the canary, the post-publish download, and the GitHub-Release-only install path would all fail alongside npm. The current shape (warning + skip + recoverable on next run) keeps the GitHub Release pipeline independent from the npm publish pipeline so a credential issue on one side never cascades into a public-release outage on the other.
+
 ## Trust boundaries
 
 The action treats the following inputs as **untrusted**:

@@ -126,6 +126,54 @@ gh release view "vX.Y.Z" --json name,assets
 
 Expected: exactly seven assets (six archives + `checksums.txt`). If the asset list is shorter, or if `assets` is `null`, an earlier job failed; fetch logs via `gh run list --workflow=release`. The fix is on `main` before you re-tag — but you cannot just `git tag vX.Y.Z` again, because both `origin` and `ado` still have the prior tag pointing at the same commit, and a second `git push origin vX.Y.Z` will be rejected with `! [rejected]` (nothing to push). Recover per [§ 8.1](#81-a-bad-tag-was-pushed), which uses `git tag -d` + `git push :refs/tags/<tag>` + re-tag-at-fixed-commit to create a new tag with a new SHA.
 
+### 5.5 npm publication (post GitHub Release)
+
+After the GitHub Release publishes, the workflow's `publish-npm` job publishes `umactually` to npmjs.org. The job is gated on the same real-release-tag pattern as `publish` and runs the same six-gate pipeline via `npm run prepublishOnly` before invoking `npm publish --provenance --tag latest`. The two publishes (GitHub Release + npm) always consume the same `git SHA` — they will never drift.
+
+Wait for the `publish-npm` job to finish:
+
+```bash
+gh run list --workflow=release --status=success --json name,headBranch --jq '.[] | select(.headBranch | contains("v"))'
+# Or:
+gh run watch $(gh run list --workflow=release --limit 1 --json databaseId -q '.[0].databaseId')
+```
+
+The job emits a `Summary` step that records the event / ref / tag / `NPM_TOKEN`-configured flag / outcome in `$GITHUB_STEP_SUMMARY`. After the summary, verify the package landed on npm:
+
+```bash
+curl -fsSL https://registry.npmjs.org/umactually/vX.Y.Z | jq '.dist-tags, .version'
+# Expected: { "latest": "X.Y.Z" } and the fetched JSON keyed by X.Y.Z
+```
+
+The `publish-npm` job's own `Verify npm publication` step runs this check with up to ten 5-second retries, so a transient registry-propagation delay does not falsely fail the canary. If it does fail, the step logs `::error::umactually@<version> not found on registry.npmjs.org ...` — recovery is below in [§ 8.5](#85-npm-publish-failed).
+
+Provenance verification (one-time, after first publish):
+
+```bash
+curl -fsSL https://registry.npmjs.org/umactually/vX.Y.Z | jq '.version, .dist.integrity, .dist.unpackedSize'
+# Visit https://www.npmjs.com/package/umactually/v/X.Y.Z and confirm the
+# "Provenance" badge links to the matching GitHub Actions run URL.
+```
+
+The Sigstore attestation is signed against the GitHub Actions OIDC token, so the badge on npmjs.com links to the precise workflow run that performed the publish — re-running `gh run view <id> --json headSha,event,workflow` for that run shows the same SHA as `git rev-parse HEAD` on the release commit.
+
+#### `NPM_TOKEN` ownership
+
+The repo secret `NPM_TOKEN` must be a **npm Granular Access Token** scoped to publish only the `umactually` package. Full setup is in [`CONTRIBUTING.md`](../CONTRIBUTING.md#npm-publication-npm_token-setup). A missing or expired `NPM_TOKEN` does not fail the workflow — the job emits `::warning::NPM_TOKEN secret not configured — skipping npm publish.` and exits 0, because the GitHub Release publishes first and the canary must run regardless. If you see that warning, set the secret and **re-run the publish-npm job** (not the whole release workflow) via `gh run rerun <run-id> --failed`.
+
+If you prefer a fully manual first-time publish to claim the package name on npmjs.org (the GitHub Actions path errors with `404 Not found` on a name that nobody owns yet):
+
+```bash
+npm login --registry=https://registry.npmjs.org/
+npm publish --provenance --tag latest --dry-run    # sanity
+npm publish --provenance --tag latest              # claim the name + first publish
+# Then push the tag per § 5 so the GitHub Release also creates the
+# vX.Y.Z release. The npm version will be RE-PUBLISHED by the
+# subsequent workflow run (npm overwrites same-version tags by
+# default; the package's dist-tag-latest will end up with the same
+# version because the SHA is identical).
+```
+
 ### Release assets
 
 Every GitHub Release under the `vX.Y.Z` tag ships exactly seven public assets — six archives and one manifest. There are no raw executables, no intermediate build artifacts, and no internal telemetry in the public asset set. The archive contract is the only supported download entry point; the installer one-liners in the README are the canonical way to fetch and verify these assets.
@@ -155,7 +203,7 @@ If the redirect still points at an older tag, GitHub's CDN has stale edge cache 
 
 Each archive is a deterministic gzip-compressed tar (Linux/macOS) or ZIP (Windows) containing exactly one binary member. The compressed archive is the **transfer size** (what the installer downloads and what the user sees on the wire); the extracted member is the **installed size** (what sits on the user's PATH after extraction). They are not the same number, and the plan deliberately does not promise they will converge:
 
-- The compressed transfer size is bounded by a per-target sanity check in the release workflow's "Compute release-size report" step (1 MiB floor, 200 MiB ceiling per raw binary). tsdown's `--exe` enforces the inner bundle size; the workflow's check is a safety net for a runaway build (a new dep pulling in an unexpectedly large native module). As of v0.6.17 the largest target is `darwin-arm64` at ~125 MiB (darwin-x64 was dropped because Node's `--build-sea` segfaults on it; see the [Removed] section of [CHANGELOG](./CHANGELOG.md) for the upstream Node.js bug context); 200 MiB leaves ~60% headroom for legitimate growth. Any new target that legitimately needs more room must bump the ceiling AND document the reason in the PR — do not silently widen the global cap.
+- The compressed transfer size is bounded by a per-target sanity check in the release workflow's "Compute release-size report" step (1 MiB floor, 200 MiB ceiling per raw binary). tsdown's `--exe` enforces the inner bundle size; the workflow's check is a safety net for a runaway build (a new dep pulling in an unexpectedly large native module). As of v0.6.18 the largest target is `darwin-arm64` at ~125 MiB (darwin-x64 was dropped because Node's `--build-sea` segfaults on it; see the [Removed] section of [CHANGELOG](./CHANGELOG.md) for the upstream Node.js bug context); 200 MiB leaves ~60% headroom for legitimate growth. Any new target that legitimately needs more room must bump the ceiling AND document the reason in the PR — do not silently widen the global cap.
 - The installed binary size is determined by the Node SEA runtime and is not a release-time budget. The standalone Node 25.7 runtime is bundled in, so the installed binary is substantially larger than the archive — typically **~2.5x larger** than what the user actually downloads. See [distribution-architecture.md](./distribution-architecture.md) for the full comparison vs Bun, yao-pkg, and Deno.
 
 Treat these as two distinct telemetry numbers in any user-facing copy. The README install section explains the ratio; the size budget file governs only the transfer side.
@@ -317,6 +365,18 @@ curl -sLI https://github.com/<OWNER>/<REPO>/releases/latest | grep -i ^location
 ```
 
 If the redirect still resolves to the older tag after a few minutes, see [§ 5 the verification block](#5-cut-the-tag).
+
+### 8.5 npm publish failed (GitHub Release succeeded, npm didn't)
+
+The two publishes are independent pipelines: the `publish` job created the GitHub Release and finished green, but the downstream `publish-npm` job's `npm publish --provenance --tag latest` step exited non-zero. The most common failure modes:
+
+1. **`NPM_TOKEN` is missing or expired.** Symptom: the job's first step warns `NPM_TOKEN secret not configured — skipping npm publish.` (this is intentionally not a hard failure — see [§ 5.5](#55-npm-publication-post-github-release)). Recovery: rotate the token per [`CONTRIBUTING.md`](../CONTRIBUTING.md#npm-publication-npm_token-setup), then re-run just `publish-npm` via `gh run rerun <run-id> --failed`.
+2. **`npm ERR! code ENEEDAUTH`** or **HTTP 401**: the token is rejected by the registry. Either the token is wrong (compare against `npm token list --json` on a local machine where you've logged in), or it has been revoked mid-release. Re-issue a Granular Token, paste it into `NPM_TOKEN`, and re-run.
+3. **`npm ERR! code E404 — 'umactually@*' is not in this registry`**: a fresh package name hasn't been claimed yet. Run `npm login` locally and `npm publish --provenance --tag latest` once to claim it, then re-run the workflow.
+4. **`npm ERR! code E403`** with **"cannot modify existing version"**: someone (or a previous workflow run) already published this version with a different tarball. Either (a) the GitHub Release SHA and the npm publish SHA diverged — check `git rev-parse HEAD` against the GitHub Release commit; or (b) someone locally published the same version. Recovery is to bump to `vX.Y.Z+1` and cut a patch release.
+5. **`::error::umactually@<version> not found on registry.npmjs.org ...`** from the verify step: the publish step reported success but the registry hasn't synced within ~50 s. This is rare and almost always transient. Re-run `publish-npm` and the next pass usually lands clean. If it repeats, open a `npm support ticket` quoting the request id from the publish step's log.
+
+After a recovery, the next workflow run for the same tag reuses the same git SHA — npm picks up the new tarball, the GitHub Release keeps the assets it already uploaded, and the `dist-tags.latest` does not change between the two publishes. **Never** force-push or delete+re-push the tag to "retry" an npm failure; that breaks the canary, the post-publish canary's URL-contract assertions, and every downstream consumer's immutable-tag pinning. Re-running the workflow with the same tag is the only correct retry.
 
 ## 9. Appendix: helpers and references
 

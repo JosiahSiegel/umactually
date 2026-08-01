@@ -10,6 +10,18 @@ ship a tag).
 
 ## [Unreleased]
 
+## [0.6.18] - 2026-08-01
+
+### Added
+
+- **npm package published to the public registry**. `umactually` is now installable via `npm install -g umactually` (the canonical install path the README has advertised since v0.6.0). The release workflow's new `publish-npm` job runs after the GitHub Release publish, gates on real release tags (`v*`), uses an `NPM_TOKEN` repo secret scoped to a **npm Granular Access Token** (`umactually-ci-publish`, 90-day expiry, `Read + Publish` only, single-package scope — see `docs/security.md#npm_token-provisioning-and-rotation` and `CONTRIBUTING.md#npm-publication-npm_token-setup`), and invokes `npm publish --provenance --tag latest` after running the same six-gate prepublishOnly pipeline (typecheck + tests + bundle + render-docs + drift-guard + dist-freshness) the local maintainer uses. Provenance is signed against the GitHub Actions OIDC token (`id-token: write`); the npmjs.com package page links the build SHA via the attestation badge. A failed publish emits a `::warning::` and exits 0 so the GitHub Release canary still runs; the maintainer re-dispatches `publish-npm` via `gh run rerun --failed` after fixing the cause (see `docs/release-process.md#85-npm-publish-failed`).
+- **`scripts/post-bundle.mjs` now strips the `bin` / `files` / `scripts` / `publishConfig` keys from `dist/package.json`** so `npm install` resolves the wrapper correctly. ncc copies the root `package.json` verbatim into `dist/`, so without the strip the inline `bin: { umactually: "bin/umactually.mjs" }` would resolve at install time to `<pkg>/dist/bin/umactually.mjs` (a path that doesn't exist; the real wrapper is at `<pkg>/bin/umactually.mjs`). The minimal `dist/package.json` shape is now `{ name, version, type, main, dependencies }` only — a future ncc change can't quietly reintroduce the stripped keys.
+- **E2E fixture hardening against a transient fixture-vs-child spawn race** (`test/helpers/cli-only-github-fixture.ts`). The fixture now probes the bound TCP port with `connect()` before resolving the start promise, mirroring the same probe-then-spawn pattern the release workflow uses against `python3 -m http.server`. 30/30 stress runs in isolation + 10/10 with the full e2e project.
+
+### Fixed
+
+- **`artifacts/` parent directory no longer shows as untracked** (`.gitignore`). The existing `artifacts/scratch/` and `artifacts/manual/` rules did not match the bare top-level `artifacts/` directory; without the parent rule, git's ignore matcher suppressed only the listed children but the bare directory entry still appeared in `git status`. Added `/artifacts/` (rooted) so the leading-slash variant won't accidentally match an `examples/*/artifacts/` subdir in the future.
+
 ## [0.6.17] - 2026-07-31
 
 ### Fixed
