@@ -174,7 +174,7 @@ permissions: publish, stage publish
 
 `stage publish` is not currently exercised by the workflow (only the `publish-npm` job runs `npm publish --provenance --tag latest`); it is enabled for symmetry with npm's defaults so an operator can switch to `npm stage publish` later without re-touching the npm settings.
 
-#### One-time setup (complete on this repo as of v0.6.20)
+#### One-time setup (complete on this repo; the first publish on 2026-08-01 claimed the name)
 
 1. Manually publish the first version of `umactually` to claim the package name on npmjs.org. This is the chicken-and-egg step — Trusted Publishers cannot be configured against a name that doesn't exist yet. From a local terminal with `npm@10+`:
 
@@ -319,7 +319,7 @@ If the redirect still points at an older tag, GitHub's CDN has stale edge cache 
 
 Each archive is a deterministic gzip-compressed tar (Linux/macOS) or ZIP (Windows) containing exactly one binary member. The compressed archive is the **transfer size** (what the installer downloads and what the user sees on the wire); the extracted member is the **installed size** (what sits on the user's PATH after extraction). They are not the same number, and the plan deliberately does not promise they will converge:
 
-- The compressed transfer size is bounded by a per-target sanity check in the release workflow's "Compute release-size report" step (1 MiB floor, 200 MiB ceiling per raw binary). tsdown's `--exe` enforces the inner bundle size; the workflow's check is a safety net for a runaway build (a new dep pulling in an unexpectedly large native module). As of v0.6.20 the largest target is `darwin-arm64` at ~125 MiB (darwin-x64 was dropped because Node's `--build-sea` segfaults on it; see the [Removed] section of [CHANGELOG](./CHANGELOG.md) for the upstream Node.js bug context); 200 MiB leaves ~60% headroom for legitimate growth. Any new target that legitimately needs more room must bump the ceiling AND document the reason in the PR — do not silently widen the global cap.
+- The compressed transfer size is bounded by a per-target sanity check in the release workflow's "Compute release-size report" step (1 MiB floor, 200 MiB ceiling per raw binary). tsdown's `--exe` enforces the inner bundle size; the workflow's check is a safety net for a runaway build (a new dep pulling in an unexpectedly large native module). As of v0.6.21 the largest target is `darwin-arm64` at ~125 MiB (darwin-x64 was dropped because Node's `--build-sea` segfaults on it; see the [Removed] section of [CHANGELOG](./CHANGELOG.md) for the upstream Node.js bug context); 200 MiB leaves ~60% headroom for legitimate growth. Any new target that legitimately needs more room must bump the ceiling AND document the reason in the PR — do not silently widen the global cap.
 - The installed binary size is determined by the Node SEA runtime and is not a release-time budget. The standalone Node 25.7 runtime is bundled in, so the installed binary is substantially larger than the archive — typically **~2.5x larger** than what the user actually downloads. See [distribution-architecture.md](./distribution-architecture.md) for the full comparison vs Bun, yao-pkg, and Deno.
 
 Treat these as two distinct telemetry numbers in any user-facing copy. The README install section explains the ratio; the size budget file governs only the transfer side.
