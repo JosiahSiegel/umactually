@@ -1529,6 +1529,7 @@ jobs:
         with:
           script: |
             const token = await core.getIDToken('npm:registry.npmjs.org');
+            core.exportVariable('NODE_AUTH_TOKEN', token);
             core.exportVariable('NPM_ID_TOKEN', token);
             core.setOutput('token_length', token.length);
 
