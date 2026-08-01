@@ -182,19 +182,23 @@ Why the move: npm deprecated classic tokens in 2022 and deprecated TOTP authenti
 
 #### Manual re-publish (release engineer)
 
-If the automated path fails for any reason and a maintainer needs to push a version directly (e.g. the Trusted Publisher binding got deconfigured), the same WebAuth flow used in step 1 still works for any version, including re-publishing an existing one:
+If the automated path fails for any reason and a maintainer needs to push a version directly (e.g. the Trusted Publisher binding got deconfigured), the same WebAuth flow used in step 1 still works for any version, including re-publishing an existing one. The WebAuth exchange grants a short-lived npm registry session token via the maintainer's npmjs.com authenticated session — there is no `--otp` step.
 
 ```bash
-npm publish --provenance --tag latest --registry https://registry.npmjs.org/
+# Local manual publish: no GitHub Actions OIDC issuer available, so
+# pass --provenance=false to override package.json#publishConfig.provenance.
+# For the Trusted-Publisher-via-GitHub path (the canonical publish route)
+# the CI job uses OIDC and `--provenance` automatically.
+npm publish --provenance=false --tag latest --registry https://registry.npmjs.org/
 ```
 
-`npm publish` will exchange the OIDC token from the local WebAuth session for a short-lived registry session token, exactly the same exchange that GitHub Actions performs automatically. There is no `--otp` step.
+The CLI prints `https://www.npmjs.com/auth/cli/<authId>` to your terminal; open it, complete the GitHub-backed sign-in, and the publish proceeds.
 
 **CRITICAL TTY caveat**: npm CLI only prints the WebAuth URL `https://www.npmjs.com/auth/cli/<authId>` in full when it detects a real interactive TTY. Background jobs, redirected stderr, and captured output have the `<authId>` redacted to `***`, which is unrecoverable. Always run a manual publish from a terminal where you can read the URL directly — your laptop, a tmux pane, an interactive SSH session. An automated agent shell cannot extract the URL programmatically.
 
 If you see `403 Forbidden — Two-factor authentication or granular access token with bypass 2fa enabled is required to publish packages.`, your local npm CLI session token has expired; re-run `npm login` or re-trigger the WebAuth URL printed by the CLI. There is no short-lived "session" to lose — each `npm publish` invocation generates a fresh one.
 
-**Provenance on local manual publish**: a local CLI does not have a GitHub Actions OIDC token to mint provenance, so `npm publish --provenance` errors with `EUSAGE — Automatic provenance generation not supported for provider: null`. For the one-time first publish (claiming the package name), set `publishConfig.provenance: false` (or omit `--provenance` on the CLI). For subsequent manual re-publishes (Trusted Publisher is configured), the OIDC exchange handles provenance automatically — keep `--provenance`. The CI publish path always uses OIDC and always sets `--provenance`.
+**Provenance on local manual publish**: a local CLI does not have a GitHub Actions OIDC issuer to mint provenance, so `npm publish --provenance` errors with `EUSAGE — Automatic provenance generation not supported for provider: null`. For manual publish (any version), pass `--provenance=false` on the CLI to override `package.json#publishConfig.provenance: true` for that single invocation. The CI publish path uses GitHub Actions OIDC + `--provenance` and is unaffected.
 
 ### Release assets
 

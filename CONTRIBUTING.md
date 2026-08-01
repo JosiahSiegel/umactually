@@ -92,18 +92,17 @@ The release workflow's `publish-npm` job publishes `umactually` to npmjs.org aft
 
 #### One-time setup (already complete)
 
-1. **Manually publish the first version** of `umactually` to claim the package name on npmjs.org. Trusted Publishers cannot be configured against a name that doesn't exist yet. Run `npm publish --provenance --tag latest --registry https://registry.npmjs.org/` on a local terminal that can complete the WebAuth browser flow. The CLI prints a URL like `https://www.npmjs.com/auth/cli/<id>` — open it, complete the GitHub-backed sign-in, and the publish proceeds. There is no `--otp` step.
+1. **Manually publish the first version** of `umactually` to claim the package name on npmjs.org. Trusted Publishers cannot be configured against a name that doesn't exist yet. From a local terminal with `npm@10+`:
+
+   ```bash
+   npm publish --provenance=false --tag latest --registry https://registry.npmjs.org/
+   ```
+
+   `--provenance=false` overrides `package.json#publishConfig.provenance: true` for this single invocation — no `package.json` edit, no rollback commit, no temporary downgrade of the published provenance commitment. The CLI prints a URL like `https://www.npmjs.com/auth/cli/<id>` — open it, complete the GitHub-backed sign-in, and the publish proceeds. There is no `--otp` step.
 
    **CRITICAL: the WebAuth URL only appears in a real interactive TTY session.** npm CLI detects whether stdout/stderr is a TTY and redacts the `<id>` portion to `***` when the output is redirected (background, piped, captured). Running `npm publish` in a CI shell, a background job, or any non-TTY context will print `https://www.npmjs.com/auth/cli/***` with no way to recover the actual ID. Always run the first-time publish from a terminal you can read interactively (your laptop, a SSH session with an active shell, a tmux pane — any of those work; an automated agent shell does not).
 
-   **Before the first publish**, also temporarily set `publishConfig.provenance` to `false` (or omit `--provenance`):
-
-   ```bash
-   # package.json before manual first publish
-   "publishConfig": { "access": "public", "provenance": false, "tag": "latest" }
-   ```
-
-   Without this, the local CLI tries to mint provenance via OIDC and fails with `npm error code EUSAGE — Automatic provenance generation not supported for provider: null`. The CI publish path (which uses GitHub Actions OIDC + `--provenance`) sets `provenance: true` — flip it back to `true` and commit that change before merging the v0.6.18 (or later) CI-tested release.
+   **Why `--provenance=false` is required locally**: a local machine has no GitHub Actions OIDC issuer to mint a Sigstore provenance attestation. With `package.json#publishConfig.provenance: true` and no CLI override, the CLI errors with `npm error code EUSAGE — Automatic provenance generation not supported for provider: null`. The CI publish path uses GitHub Actions OIDC + `--provenance`, so `provenance: true` in `package.json` stays correct for that path; the local first-time publish just needs the CLI override.
 2. **Configure the Trusted Publisher binding** on https://www.npmjs.com/package/umactually/settings → Publishing access → Add a Trusted Publisher → GitHub Actions. Repository: `JosiahSiegel/umactually`. Workflow filename: `release.yml`. Environment: (optional, leave blank). Confirm with a test tag push before relying on this binding for a real release.
 3. **(Optional, recommended)** On the same npm settings page, enable **"Require two-factor authentication and disallow tokens"** so direct publishing requires a 2FA flow that only the maintainers control — preventing a future maintainer from accidentally pasting a long-lived secret into CI.
 4. **(One-time cleanup)** If the repo previously stored an `NPM_TOKEN` secret, delete it from Settings → Secrets and variables → Actions. Revoke any old Granular Tokens at https://www.npmjs.com/settings/~/tokens. From this point forward there is no token to rotate, expire, or leak.
