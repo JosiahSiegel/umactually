@@ -6,13 +6,13 @@ import { parse } from "yaml";
 
 const REPO_ROOT = resolve(import.meta.dirname, "..", "..");
 const PLUMBING_FLAGS = ["--event", "--diff", "--review", "--pr-number", "--repo"] as const;
-// Pinned invocation: either `umactually@X.Y.Z review` (npm, when published)
-// or `npx github:JosiahSiegel/umactually#vX.Y.Z review` (git ref, REQUIRED
-// tag pin). The npm package is unreleased; the git-ref form is what actually
-// runs today, and CI examples MUST pin to a release tag — the unpinned
-// `npx github:JosiahSiegel/umactually review` form tracks `main` and is
-// explicitly rejected by the README + docs.
-const PINNED = /umactually@\d+\.\d+\.\d+ review|npx github:JosiahSiegel\/umactually#v\d+\.\d+\.\d+ review/u;
+// Pinned invocation: a specific version must appear in the example workflow.
+// Accepted forms: `umactually@X.Y.Z review` (direct npm exec),
+// `npx github:JosiahSiegel/umactually#vX.Y.Z review` (git ref),
+// `npm install -g umactually@X.Y.Z` (the canonical install path per the
+// README; the version pin lives on the install line). Unpinned
+// (`@latest` / `main`) forms are explicitly rejected by the README.
+const PINNED = /umactually@\d+\.\d+\.\d+ review|npx github:JosiahSiegel\/umactually#v\d+\.\d+\.\d+ review|npm install -g umactually@\d+\.\d+\.\d+/u;
 
 type WorkflowStep = {
   readonly run?: string;
@@ -74,7 +74,7 @@ describe("CLI-only example workflow contract", () => {
     expectNoPlumbingFlags(ghCommands);
     expect(ghCommands).not.toContain("check-review-artifact");
     expect(ghCommands).toMatch(PINNED);
-    expect(ghSteps).toHaveLength(3);
+    expect(ghSteps).toHaveLength(4);
 
     // And: Azure explicitly wires its OAuth token and preserves the same slim public-CLI contract.
     expect(adoSteps.some((step) => step.env?.["SYSTEM_ACCESSTOKEN"] === "$(System.AccessToken)")).toBe(true);
@@ -83,6 +83,6 @@ describe("CLI-only example workflow contract", () => {
     expect(adoCommands).not.toContain("optional_env_value");
     expect(adoCommands).not.toContain("EXTRA_ARGS");
     expect(adoCommands).toMatch(PINNED);
-    expect(adoSteps).toHaveLength(3);
+    expect(adoSteps).toHaveLength(4);
   });
 });
