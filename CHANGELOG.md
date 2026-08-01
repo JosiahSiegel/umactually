@@ -10,6 +10,10 @@ ship a tag).
 
 ## [Unreleased]
 
+### Changed
+
+- **`publish-npm` job migrated to npm Trusted Publishing (OIDC).** The job no longer consumes an `NPM_TOKEN` repo secret or an `env.NPM_TOKEN` / `env.NODE_AUTH_TOKEN` block; authentication is entirely via GitHub Actions' OIDC token (job-level `id-token: write`, unchanged from v0.6.18) exchanged at `npm publish` time for a short-lived registry session token. Rationale: npm deprecated classic tokens in 2022 and deprecated TOTP authenticator apps in 2025, and Granular Tokens with `bypass_2fa: true` are now restricted for direct publishing ([npm-gat-bypass2fa-deprecation](https://gh.io/npm-gat-bypass2fa-deprecation)). The "Skip if NPM_TOKEN is not configured" / "NPM_TOKEN configured" steps and the `Summary` row are gone; `actions/setup-node@v4` now uses `registry-url: https://registry.npmjs.org` without a `token:` so the auto-wired per-run `.npmrc` enters the trusted-publisher code path. One-time setup steps for the maintainer (manual first publish via WebAuth flow, then bind the GitHub Actions workflow at `https://www.npmjs.com/package/umactually/settings`) are documented in `CONTRIBUTING.md` and `docs/release-process.md` § 5.5.
+
 ## [0.6.18] - 2026-08-01
 
 ### Added

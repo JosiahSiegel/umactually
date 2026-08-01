@@ -97,24 +97,26 @@ UmActually does not intentionally log, echo, or print secrets:
 
 When investigating a leak, the first place to look is the workflow log for `printenv`, `Set-*` debug steps, or user-supplied `run:` blocks that print secrets. The action itself is not the source.
 
-### `NPM_TOKEN` provisioning and rotation
+### npm publishing authentication (Trusted Publishing / OIDC)
 
-The `publish-npm` job in `.github/workflows/release.yml` consumes the repo secret `NPM_TOKEN`. The token must be a **npm Granular Access Token** that meets all of the following criteria:
+The `publish-npm` job in `.github/workflows/release.yml` authenticates to npmjs.org via **Trusted Publishing (OIDC)** — the GitHub Actions OIDC token (from `id-token: write` permission) is exchanged at publish time for a short-lived registry session token. **There is no `NPM_TOKEN` repo secret**, no Granular Token, no `--otp=<code>` step.
 
-- **Scoped to the `umactually` package only.** Do **not** grant "All packages"; a compromised CI token must not be able to publish unrelated packages in the owner namespace.
-- **Limited to "Read" + "Publish" permissions.** Do **not** grant `Settings`, `Signing`, or `Tokens` — those would let a CI-side compromise mint child tokens or change 2FA settings on the owner account.
-- **Maximum 90-day expiry.** Calendar the rotation at <https://github.com/JosiahSiegel/umactually/issues/new> for 30 days before expiry. The next workflow run picks up the rotated secret on its next invocation; there is no need to retrigger the in-flight release.
+Why the move: npm deprecated classic tokens in 2022 and deprecated TOTP authenticator apps in 2025. Granular Tokens with `bypass_2fa: true` are now restricted for direct publishing (https://gh.io/npm-gat-bypass2fa-deprecation). Trusted Publishing is the official replacement — see https://docs.npmjs.com/trusted-publishers.
 
-Rotation procedure (every 90 days, or immediately on suspected exposure):
+**Properties of the OIDC path that NPM_TOKEN never had:**
 
-1. Generate the new token at npm → Access Tokens → Granular.
-2. Paste the new token into the `NPM_TOKEN` repo secret (Settings → Secrets and variables → Actions).
-3. **Revoke the old token** at npm → Access Tokens.
-4. Confirm by running the `publish-npm` job on a synthetic-tag dispatch (release.yml's `workflow_dispatch` with `inputs.publish: true, inputs.tag: v0.0.0-smoke`) — the `Verify npm publication` step cannot validate a synthetic tag (it errors on the version pattern), so instead rely on the `npm publish` step's exit code and the `Summary` step's `NPM_TOKEN configured: true` line.
+- **No long-lived secret to leak.** The OIDC token is minted at workflow run time, exchanged for a session token, and discarded. There is nothing in repo secrets to leak via log exposure, fork-PR exfiltration, or secret-scanner false positives.
+- **No 90-day rotation clock.** There is no expiry because there is no token. The Trusted Publisher binding on npmjs.com is a one-time dashboard click and never expires.
+- **No "revoke and rotate" runbook.** A suspected leak of an NPM_TOKEN requires (a) revoking the token at npm → Access Tokens, (b) minting a new Granular Token, (c) pasting it into the GitHub repo secret, (d) re-running the workflow. With OIDC, none of those steps exist; the binding itself cannot be exfiltrated because it lives on the npmjs.com dashboard and is keyed to a specific workflow file.
+- **Cryptographically pinned to the workflow file.** A Trusted Publisher binding names the workflow filename (`release.yml`) explicitly. A forked repo running a modified `release.yml` cannot exchange an OIDC token for a publish session — the registry rejects it.
 
-A revoked `NPM_TOKEN` does not silently break the release: the `publish-npm` job's first step detects a missing secret, emits `::warning::NPM_TOKEN secret not configured — skipping npm publish.`, and exits 0, so the GitHub Release + canary still complete. The next workflow run after rotation recovers automatically.
+**Configuration state (one-time, already complete on this repo):**
 
-**Why the workflow does not hard-fail on missing `NPM_TOKEN`**: cross-pipeline failure modes are worse than a skipped npm publish. If `publish-npm` were a hard gate, a forgotten rotation would block every GitHub Release too — the canary, the post-publish download, and the GitHub-Release-only install path would all fail alongside npm. The current shape (warning + skip + recoverable on next run) keeps the GitHub Release pipeline independent from the npm publish pipeline so a credential issue on one side never cascades into a public-release outage on the other.
+- npmjs.com → `umactually` → Settings → Publishing access → GitHub Actions binding for `JosiahSiegel/umactually` workflow filename `release.yml`.
+- GitHub repo → Settings → Secrets and variables → Actions → no `NPM_TOKEN` secret (delete if one was set previously).
+- npmjs.com → Settings → Tokens → no active Granular Tokens for the maintainer account (revoke any old ones).
+
+**Why the workflow does not hard-fail on missing Trusted Publisher binding**: cross-pipeline failure modes are worse than a skipped npm publish. If `publish-npm` were a hard gate, a binding misconfiguration would block every GitHub Release too — the canary, the post-publish download, and the GitHub-Release-only install path would all fail alongside npm. The current shape (the OIDC exchange fails fast with a clear error, the canary still runs against the GitHub Release) keeps the GitHub Release pipeline independent from the npm publish pipeline so a binding issue on one side never cascades into a public-release outage on the other.
 
 ## Trust boundaries
 
