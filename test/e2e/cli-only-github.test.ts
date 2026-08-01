@@ -12,6 +12,26 @@ import {
 
 const PROVIDER_REVIEW_URL = new URL("../fixtures/github/provider-review.json", import.meta.url);
 
+// The fixture spawns the published `bin/umactually.mjs` via `process.execPath`,
+// and that shim enforces `engines.node >= 24` (MIN_RUNTIME_MAJOR = 24). On a
+// host with Node < 24 the binary refuses to execute and writes a gate
+// rejection to stderr with empty stdout, so the JSON-envelope helper in the
+// fixture falls back to the libuv child exit code (1). The test then fails
+// at `expect(result.status).toBe(0)` — a misleading-looking flaky-test report,
+// but actually an environment mismatch. CI runs on Node 24; local sandboxes
+// that pin to 20 (or 22) need to opt out with `ALLOW_NODE_22_SMOKE=1`, or
+// upgrade Node, which is the long-term fix. Mirrors the same pattern
+// `test/unit/install-methods.test.ts` uses for the npm-install smoke test.
+const HOST_NODE_MAJOR = Number.parseInt(
+  process.versions.node.replace(/^v/u, "").split(".")[0] ?? "",
+  10,
+);
+const NODE_24_REQUIRED = Number.isFinite(HOST_NODE_MAJOR) && HOST_NODE_MAJOR < 24 && process.env["ALLOW_NODE_22_SMOKE"] !== "1";
+
+if (NODE_24_REQUIRED) {
+  console.warn(`CLI-only-GitHub live contracts skipped: host Node ${process.versions.node} < 24; the published bin shim refuses to run on < 24 and would exit 1 before the test could observe the live GitHub surface. Set ALLOW_NODE_22_SMOKE=1 to override.`);
+}
+
 function parseJsonLine(stdout: string): Record<string, unknown> {
   const lines = stdout.trimEnd().split(/\r?\n/u);
   expect(lines).toHaveLength(1);
@@ -28,7 +48,7 @@ function postedBodies(fixture: GithubFixture): readonly string[] {
     .map((call) => call.body);
 }
 
-describe("CLI-only GitHub live contracts", () => {
+describe.skipIf(NODE_24_REQUIRED)("CLI-only GitHub live contracts", () => {
   let fixture: GithubFixture | undefined;
 
   afterEach(async () => {
