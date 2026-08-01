@@ -1512,14 +1512,16 @@ jobs:
         uses: actions/setup-node@v4
         with:
           node-version: "24"
-          # registry-url + the absence of any `token:` is what triggers
-          # the OIDC/Trusted-Publisher code path inside actions/setup-node.
-          # No NPM_TOKEN / NODE_AUTH_TOKEN env vars are needed — the npm
-          # CLI uses the OIDC token (from id-token: write) for the
-          # publish step and registry.npmjs.org exchanges it for a
-          # short-lived session token. Cache the npm install against
-          # package-lock.json so the prepublishOnly gate (npm ci) is fast.
-          registry-url: "https://registry.npmjs.org"
+          # Do NOT set `registry-url` here. actions/setup-node@v4 (8 Jun
+          # 2026, PR actions/setup-node#1477) writes a per-run `.npmrc`
+          # with `//registry.npmjs.org/:_authToken=${NODE_AUTH_TOKEN}` —
+          # an unresolved literal the npm CLI reads as a non-empty token,
+          # suppressing the OIDC handshake. The unauthenticated PUT then
+          # gets a 404 (npm/cli#9088). npm CLI's default registry is
+          # registry.npmjs.org, so `npm ci` and `npm publish` are
+          # unchanged. OIDC auth still flows via the `id-token: write`
+          # permission on this job. See CONTRIBUTING.md and
+          # docs/release-process.md § 5.5 for the full mechanism.
           cache: "npm"
 
       - name: Install dependencies
