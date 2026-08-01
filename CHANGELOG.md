@@ -10,6 +10,12 @@ ship a tag).
 
 ## [Unreleased]
 
+## [0.6.22] - 2026-08-01
+
+### Fixed
+
+- **`repository.url` in `package.json`** changed from `git+https://github.com/JosiahSiegel/umactually.git` to `https://github.com/JosiahSiegel/umactually.git`. Per [npm Trusted Publishing docs](https://docs.npmjs.com/trusted-publishers/), the package's `repository.url` field must exactly match the GitHub repository used by the Trusted Publisher binding; the `git+` prefix is a normalization mismatch that triggers a misleading E404 from the registry even when the binding is correctly configured. Discovered and fixed during the v0.6.21 publish attempt (which got E404 on `PUT /umactually`).
+
 ## [0.6.21] - 2026-08-01
 
 ### Changed
