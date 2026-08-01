@@ -10,9 +10,11 @@ ship a tag).
 
 ## [Unreleased]
 
+## [0.6.21] - 2026-08-01
+
 ### Fixed
 
-- **`repository.url` in `package.json`** changed from `git+https://github.com/JosiahSiegel/umactually.git` to `https://github.com/JosiahSiegel/umactually.git`. Per [npm Trusted Publishing docs](https://docs.npmjs.com/trusted-publishers/), the package's `repository.url` field must exactly match the GitHub repository used by the Trusted Publisher binding; the `git+` prefix is a normalization mismatch that triggers a misleading E404 from the registry even when the binding is correctly configured. The current `v0.6.20` on the registry was published via the manual IP-trust-window path; the next `v*` tag push will exercise the Trusted Publisher binding end-to-end.
+- **`repository.url` in `package.json`** changed from `git+https://github.com/JosiahSiegel/umactually.git` to `https://github.com/JosiahSiegel/umactually.git`. Per [npm Trusted Publishing docs](https://docs.npmjs.com/trusted-publishers/), the package's `repository.url` field must exactly match the GitHub repository used by the Trusted Publisher binding; the `git+` prefix is a normalization mismatch that triggers a misleading E404 from the registry even when the binding is correctly configured. The current `v0.6.20` on the registry was published via the manual IP-trust-window path; this v0.6.21 release is the first to exercise the Trusted Publisher binding end-to-end via OIDC from a `v*` tag push.
 
 ## [0.6.20] - 2026-08-01
 
