@@ -10,17 +10,9 @@ ship a tag).
 
 ## [Unreleased]
 
-## [0.6.22] - 2026-08-01
-
 ### Fixed
 
-- **`repository.url` in `package.json`** changed from `git+https://github.com/JosiahSiegel/umactually.git` to `https://github.com/JosiahSiegel/umactually.git`. Per [npm Trusted Publishing docs](https://docs.npmjs.com/trusted-publishers/), the package's `repository.url` field must exactly match the GitHub repository used by the Trusted Publisher binding; the `git+` prefix is a normalization mismatch that triggers a misleading E404 from the registry even when the binding is correctly configured. Discovered and fixed during the v0.6.21 publish attempt (which got E404 on `PUT /umactually`).
-
-## [0.6.21] - 2026-08-01
-
-### Changed
-
-- **Internal version bump only.** v0.6.20 was already published to npmjs.org via the IP-trust-window path (the same path that claimed the name on 2026-08-01; see the v0.6.19 entry below for the full mechanism). The Trusted Publisher binding was configured on 2026-08-01 (verified via `npm trust list umactually`: `type: github / file: release.yml / repository: josiahsiegel/umactually / permissions: publish, stage publish`), and the first attempt to publish v0.6.20 via OIDC failed because v0.6.20 had already landed in the registry via the manual path. This patch bumps to 0.6.21 so the next `v*` tag push publishes via OIDC end-to-end with no manual step.
+- **`repository.url` in `package.json`** changed from `git+https://github.com/JosiahSiegel/umactually.git` to `https://github.com/JosiahSiegel/umactually.git`. Per [npm Trusted Publishing docs](https://docs.npmjs.com/trusted-publishers/), the package's `repository.url` field must exactly match the GitHub repository used by the Trusted Publisher binding; the `git+` prefix is a normalization mismatch that triggers a misleading E404 from the registry even when the binding is correctly configured. The current `v0.6.20` on the registry was published via the manual IP-trust-window path; the next `v*` tag push will exercise the Trusted Publisher binding end-to-end.
 
 ## [0.6.20] - 2026-08-01
 

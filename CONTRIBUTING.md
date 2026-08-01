@@ -90,7 +90,7 @@ The release workflow's `publish-npm` job publishes `umactually` to npmjs.org aft
 
 **There is no `NPM_TOKEN` repo secret.** Authentication is entirely via the Trusted Publisher binding configured on npmjs.org.
 
-#### One-time setup (already complete as of v0.6.24)
+#### One-time setup (already complete as of v0.6.20)
 
 The package name `umactually` was claimed on 2026-08-01 via `npm publish --no-provenance --ignore-scripts --tag latest` from a local terminal — see [§ Publish authentication in 2026](#publish-authentication-in-2026-webauth--device-flow) below for the exact mechanism. The Trusted Publisher binding still needs to be configured on npmjs.com after this first publish; the binding is the prerequisite for the `publish-npm` GHA job.
 
@@ -161,13 +161,13 @@ There are two browser-side actions a user can take:
 | **Approve** with the configured authenticator | Returns `{"token":"<16-digit-otp>"}` | `--otp=<token>` consumed and publish proceeds |
 | **Don't challenge requests from this IP for N minutes** | Returns `""` indefinitely (until the window expires) | Next `npm publish` from the same IP succeeds without OTP for the next N minutes |
 
-The IP-trust window is the path the v0.6.24 first publish used in practice — it lets the maintainer skip the WebAuth ceremony when they're already authenticated. It is **NOT a bypass of the security model**: the trust window is bound to (account, IP, expiry) on the registry side, expires automatically, and reverts to the WebAuth challenge on the next publish from a different IP.
+The IP-trust window is the path the v0.6.20 first publish used in practice — it lets the maintainer skip the WebAuth ceremony when they're already authenticated. It is **NOT a bypass of the security model**: the trust window is bound to (account, IP, expiry) on the registry side, expires automatically, and reverts to the WebAuth challenge on the next publish from a different IP.
 
 ##### Three publish paths, in priority order
 
 1. **Trusted Publishing (OIDC) from CI** — the canonical path. After the package exists on the registry and a Trusted Publisher binding is configured on npmjs.com, the `publish-npm` job in `.github/workflows/release.yml` publishes with `id-token: write` and no human in the loop. **Use this for every release after the first.**
 2. **Local manual publish from a TTY** — the path for the first publish and any emergency re-publish. Run `npm publish --provenance=false --tag latest --registry https://registry.npmjs.org/` from your laptop / SSH session / tmux pane. Read the `auth/cli/<id>` URL directly, click Approve or "Don't challenge this IP", and the publish proceeds. See [`scripts/publish-with-webauth.mjs`](scripts/publish-with-webauth.mjs) for a helper if you must run this from a non-TTY shell (the script uses `npm publish --json` to extract the URLs programmatically and polls `doneUrl` for the session token).
-3. **Local automated publish via the IP-trust window** — what v0.6.24 actually used. Click "Don't challenge requests from this IP for N minutes" in the browser once, then re-run `npm publish --provenance=false --tag latest --registry https://registry.npmjs.org/` from the same terminal within the window. The publish goes straight through with no OTP. This works because the registry trusts the IP for that window; it does not require any new token or configuration. **This is the lowest-friction first-publish path when a maintainer is already authenticated and just wants to claim the name.**
+3. **Local automated publish via the IP-trust window** — what v0.6.20 actually used. Click "Don't challenge requests from this IP for N minutes" in the browser once, then re-run `npm publish --provenance=false --tag latest --registry https://registry.npmjs.org/` from the same terminal within the window. The publish goes straight through with no OTP. This works because the registry trusts the IP for that window; it does not require any new token or configuration. **This is the lowest-friction first-publish path when a maintainer is already authenticated and just wants to claim the name.**
 
 ##### Programmatic WebAuth helper (non-TTY environments)
 
