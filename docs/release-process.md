@@ -174,7 +174,7 @@ permissions: publish, stage publish
 
 `stage publish` is not currently exercised by the workflow (only the `publish-npm` job runs `npm publish --provenance --tag latest`); it is enabled for symmetry with npm's defaults so an operator can switch to `npm stage publish` later without re-touching the npm settings.
 
-#### One-time setup (complete on this repo as of v0.6.20)
+#### One-time setup (complete on this repo; the first publish on 2026-08-01 claimed the name)
 
 1. Manually publish the first version of `umactually` to claim the package name on npmjs.org. This is the chicken-and-egg step — Trusted Publishers cannot be configured against a name that doesn't exist yet. From a local terminal with `npm@10+`:
 
