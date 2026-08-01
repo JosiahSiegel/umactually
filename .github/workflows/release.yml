@@ -1483,12 +1483,10 @@ jobs:
       # exchange). Job-level so the rest of release.yml keeps its
       # least-privilege posture.
       id-token: write
-    # NO NPM_TOKEN or NODE_AUTH_TOKEN env vars. Authentication is
-    # entirely via OIDC: actions/setup-node with registry-url writes
-    # a per-run .npmrc with the trusted-publisher config, and
-    # `npm publish` exchanges the OIDC token (from id-token: write)
-    # for a short-lived registry session token. No long-lived secret
-    # is ever stored or transmitted.
+    # OIDC Trusted Publishing. setup-node@v4 with registry-url injects a
+    # dummy NODE_AUTH_TOKEN placeholder that suppresses the OIDC handshake
+    # unless the Mint step below overrides it with the real token via
+    # NPM_ID_TOKEN (which npm CLI checks first per npm/cli#8336 oidc.js).
     steps:
       - name: Validate release tag pattern
         run: |
@@ -1512,15 +1510,7 @@ jobs:
         uses: actions/setup-node@v4
         with:
           node-version: "24"
-          # Do NOT set `registry-url` here. actions/setup-node@v4 (8 Jun
-          # 2026, PR actions/setup-node#1477) writes a per-run `.npmrc`
-          # with `//registry.npmjs.org/:_authToken=${NODE_AUTH_TOKEN}` —
-          # an unresolved literal the npm CLI reads as a non-empty token,
-          # suppressing the OIDC handshake. Without `registry-url`, the
-          # auth flows via the `NPM_ID_TOKEN` env var set below. npm
-          # CLI's default registry is registry.npmjs.org, so `npm ci`
-          # and `npm publish` are unchanged. See CONTRIBUTING.md and
-          # docs/release-process.md § 5.5.
+          registry-url: "https://registry.npmjs.org"
           cache: "npm"
 
       - name: Mint OIDC token for npm Trusted Publishing
