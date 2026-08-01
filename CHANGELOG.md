@@ -10,7 +10,19 @@ ship a tag).
 
 ## [Unreleased]
 
+### Added
+
+- **`scripts/publish-with-webauth.mjs`** — non-TTY helper for the local first-time `npm publish`. Parses the JSON error block of `npm publish --json` to extract the `authUrl`/`doneUrl` pair (the human-readable error path redacts the `<authId>` to `***` in non-TTY mode; the structured JSON in the same output is intact), polls `doneUrl` for the registry session token, and re-runs `npm publish --no-provenance --ignore-scripts --otp=<token>` when the user completes WebAuth in the browser. Usage: `node scripts/publish-with-webauth.mjs --timeout=300`. Documented in `CONTRIBUTING.md#publish-authentication-in-2026-webauth--device-flow` and `docs/release-process.md#authentication-mechanism-webauth--device-flow-in-2026`.
+
+### Changed
+
+- **Documented the 2026 npm publish authentication model in full** across `CONTRIBUTING.md` and `docs/release-process.md`. Captures the timeline (classic tokens deprecated 2022, TOTP frozen 2025-10, `bypass_2fa: true` GATs restricted for direct publish 2026-07-08, restricted for account/org/package management 2026-07-31, full removal ~2027-01), the WebAuth mechanism (`auth/cli/<authId>` + `/v1/done?authId=<authId>`), the two browser-side actions (Approve vs "Don't challenge this IP for N minutes" — the latter is the IP-trust window that v0.6.19 actually used to claim the package name on 2026-08-01), the three publish paths in priority order (Trusted Publishing via CI → local manual from TTY → IP-trust window), the `~/.npmrc`-overrides-`.env` precedence trap, and the non-TTY helper script. Old "or use a Granular Token with bypass 2FA" advice (which no longer works at publish time as of July 2026) is removed.
+
 ## [0.6.19] - 2026-08-01
+
+### Added
+
+- **`umactually` v0.6.19 published to the public npm registry** as the first version on the package name. The Trusted Publisher binding for the `publish-npm` job is configured at `https://www.npmjs.com/package/umactually/settings` (verified via `npm trust list umactually`: `type: github / file: release.yml / repository: josiahsiegel/umactually / permissions: publish, stage publish`), so every subsequent `v*` tag push publishes via OIDC with no token and no human in the loop. The local first publish that claimed the name used the npm CLI's WebAuth flow (the IP-trust-window option on the `auth/cli/<authId>` page) — see `CONTRIBUTING.md#publish-authentication-in-2026-webauth--device-flow` for the full mechanism.
 
 ### Changed
 

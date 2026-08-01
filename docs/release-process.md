@@ -163,42 +163,130 @@ Authentication for the `publish-npm` job is **Trusted Publishing (OIDC)** — th
 
 Why the move: npm deprecated classic tokens in 2022 and deprecated TOTP authenticator apps in 2025. Granular Tokens with `bypass_2fa: true` are being restricted. Trusted Publishing is the official replacement — see https://docs.npmjs.com/trusted-publishers.
 
-#### One-time setup (already complete on this repo)
+The current binding (verified 2026-08-01 via `npm trust list umactually`):
 
-1. Manually publish the first version of `umactually` to claim the package name on npmjs.org. This is the chicken-and-egg step — Trusted Publishers cannot be configured against a name that doesn't exist yet. Use a fresh local terminal that can complete the WebAuth browser flow (or a Granular Token with "Bypass 2FA for publishing" enabled if you have one):
+```text
+type: github
+file: release.yml
+repository: josiahsiegel/umactually
+permissions: publish, stage publish
+```
+
+`stage publish` is not currently exercised by the workflow (only the `publish-npm` job runs `npm publish --provenance --tag latest`); it is enabled for symmetry with npm's defaults so an operator can switch to `npm stage publish` later without re-touching the npm settings.
+
+#### One-time setup (complete on this repo as of v0.6.19)
+
+1. Manually publish the first version of `umactually` to claim the package name on npmjs.org. This is the chicken-and-egg step — Trusted Publishers cannot be configured against a name that doesn't exist yet. From a local terminal with `npm@10+`:
 
    ```bash
-   # Local terminal with WebAuth flow (browser opens automatically):
-   npm publish --provenance --tag latest --registry https://registry.npmjs.org/
+   # Local first publish: no GitHub Actions OIDC issuer available locally,
+   # so pass --provenance=false to override package.json#publishConfig.provenance: true
+   # for this single invocation. --ignore-scripts skips the prepublishOnly gate
+   # (CI enforces the same gate in the publish-npm job — re-running it here is
+   # redundant and slow). The publish lands with no provenance attestation,
+   # which is acceptable for the one-time name-claim; every subsequent CI
+   # publish via Trusted Publishing does carry provenance.
+   npm publish --provenance=false --ignore-scripts --tag latest --registry https://registry.npmjs.org/
    ```
 
-   The CLI will print a URL like `https://www.npmjs.com/auth/cli/<id>` — open it, complete the GitHub-backed sign-in, and the publish proceeds.
+   The CLI will print an `EOTP — This operation requires a one-time password` error with two URLs: `https://www.npmjs.com/auth/cli/<authId>` (the WebAuth challenge) and `https://registry.npmjs.org/-/v1/done?authId=<authId>` (the polling endpoint for the registry session token). The `auth/cli/<authId>` page offers two browser-side actions — see [§ Authentication mechanism: WebAuth / device flow in 2026](#authentication-mechanism-webauth--device-flow-in-2026) below for the full breakdown of what each does and which to pick for your situation.
 
-2. Open https://www.npmjs.com/package/umactually/settings → **Publishing access** → **Add a Trusted Publisher** → **GitHub Actions** → Repository `JosiahSiegel/umactually`, Workflow filename `release.yml`, Environment (optional, leave blank for now).
+   If you can't read the URL from the terminal directly (e.g. an agent shell, CI step, captured-stdout pipeline), use [`scripts/publish-with-webauth.mjs`](../scripts/publish-with-webauth.mjs) — it parses the JSON error block to extract the URLs programmatically and polls the doneUrl for the session token:
+
+   ```bash
+   node scripts/publish-with-webauth.mjs --timeout=300
+   ```
+
+   The script will print the `authUrl`, wait for you to complete the browser flow, then automatically run `npm publish --no-provenance --ignore-scripts --otp=<token>` with the registry session token it captured.
+
+2. Open https://www.npmjs.com/package/umactually/settings → **Publishing access** → **Add a Trusted Publisher** → **GitHub Actions** → Repository `JosiahSiegel/umactually`, Workflow filename `release.yml`, Environment (optional, leave blank for now). Verify with `npm trust list umactually` from an authenticated shell — the binding should print `type: github / file: release.yml / repository: josiahsiegel/umactually / permissions: publish, stage publish`.
 
 3. **Delete the GitHub repo secret `NPM_TOKEN`** if it exists, and revoke any old Granular Tokens at https://www.npmjs.com/settings/~/tokens. From this point forward, all publishes go through OIDC and the `publish-npm` job has no token to lose.
 
 4. (Optional, recommended) On the same npm settings page, enable **"Require two-factor authentication and disallow tokens"** so direct publishing requires a 2FA flow that only the maintainers control — preventing a future maintainer from accidentally pasting a long-lived secret into CI.
 
+#### Authentication mechanism: WebAuth / device flow in 2026
+
+**TL;DR (Aug 2026):** Granular Access Tokens with `bypass_2fa: true` are no longer honored at publish time. Every `npm publish` for an account with 2FA enabled — including the first publish that claims a new package name — requires an interactive WebAuth challenge (passkey, security key, Touch ID) via a browser. There is no fully automated path for the first publish; the publish only proceeds after a human approves in a browser. Sources: [github.blog 2026-07-31 — Restricting npm bypass-2FA granular access tokens](https://github.blog/changelog/2026-07-31-restricting-npm-bypass-2fa-granular-access-tokens/), [github.blog 2026-07-08 — npm install-time security and GAT bypass2fa deprecation](https://github.blog/changelog/2026-07-08-npm-install-time-security-and-gat-bypass2fa-deprecation/), [docs.npmjs.com/trusted-publishers](https://docs.npmjs.com/trusted-publishers/), [docs.npmjs.com/about-access-tokens](https://docs.npmjs.com/about-access-tokens/).
+
+##### Timeline
+
+| Date | Change | Reference |
+| --- | --- | --- |
+| 2022 | Classic tokens deprecated | npm docs |
+| 2025-10 | TOTP authenticator apps frozen (no new/reconfigure, existing still works) | [community #178140](https://github.com/orgs/community/discussions/178140) |
+| 2026-07-08 | `bypass_2fa: true` GATs lose the ability to publish directly; staged publish only | github.blog 2026-07-08 changelog |
+| 2026-07-31 | `bypass_2fa: true` GATs blocked from account/org/package management actions | github.blog 2026-07-31 changelog |
+| ~2027-01 | `bypass_2fa: true` GATs lose direct publish entirely (currently being enforced ahead of schedule) | github.blog 2026-07-08 changelog |
+
+##### What `npm publish` does today when 2FA is required
+
+The CLI returns `EOTP` with two URLs in the error detail and `--json` output:
+
+```text
+Open this URL in your browser to authenticate:
+  https://www.npmjs.com/auth/cli/<authId>
+After authenticating, your token can be retrieved from:
+  https://registry.npmjs.org/-/v1/done?authId=<authId>
+```
+
+`auth/cli/<authId>` is the WebAuthn challenge page: sign in, the browser triggers the configured authenticator (passkey, security key, Touch ID), and on approval the registry marks the authId as approved. `doneUrl` is the polling endpoint; after approval it returns `{"token":"<16-digit-otp>"}` — that token IS the registry session token that `npm publish --otp=<token>` consumes (npm calls it an "OTP" in the error message but the value IS the session token, not a TOTP code).
+
+There are two browser-side actions a user can take on the `auth/cli/<authId>` page:
+
+| Browser action | Effect on doneUrl | Effect on subsequent `npm publish` from the same IP |
+| --- | --- | --- |
+| **Approve** with the configured authenticator | Returns `{"token":"<16-digit-otp>"}` (one-shot; the authId is then consumed and subsequent polls return 404) | `--otp=<token>` consumed and publish proceeds |
+| **Don't challenge requests from this IP for N minutes** | Returns `""` indefinitely (until the window expires) | Next `npm publish` from the same IP succeeds without OTP for the next N minutes |
+
+The IP-trust window is the path v0.6.19 actually used to claim the name on 2026-08-01: the maintainer clicked "Don't challenge this IP for 5 minutes" once, then re-ran `npm publish` from the same terminal within the window and the publish went straight through. The trust window is bound to (account, IP, expiry) on the registry side, expires automatically, and reverts to the WebAuth challenge on the next publish from a different IP. It is **NOT a bypass of the security model** — it is the maintainer's own browser telling the registry "I just authenticated, give me N minutes of grace from this IP".
+
+##### Programmatic helper for non-TTY environments
+
+[`scripts/publish-with-webauth.mjs`](../scripts/publish-with-webauth.mjs) automates the polling loop for environments that can't display the `authUrl` to a human in real time (CI shells, agents, captured-stdout pipelines):
+
+```bash
+node scripts/publish-with-webauth.mjs --timeout=300
+```
+
+1. Invokes `npm publish --no-provenance --ignore-scripts --json` and parses the JSON error block to extract `authUrl` and `doneUrl`. The `--json` flag returns the URLs in full even when stderr is captured — the human-readable error path redacts the `<id>` to `***` in non-TTY mode, but the structured JSON block in the same output is intact.
+2. Prints the `authUrl` and a "waiting for OTP" banner.
+3. Polls `doneUrl` every 3s for up to `--timeout=<sec>` (default 180s), handling both `{"token":"..."}` (success) and `{"message":"not found"}` (authId consumed/expired) responses.
+4. On success, re-runs `npm publish --no-provenance --ignore-scripts --otp=<token>` with the registry session token.
+
+If the user picks the IP-trust window option in the browser instead of approving WebAuth, the script's `doneUrl` poll stalls (the registry never returns a token — it just returns `""`). The script's timeout error explains this and tells the user to re-run `npm publish --no-provenance --ignore-scripts` from the same terminal within the IP-trust window. **This is expected behavior**, not a failure — pick the right path for your auth posture before invoking the script.
+
+##### Why `--ignore-scripts` and `--provenance=false` for local manual publish
+
+- `--ignore-scripts` skips the `prepublishOnly` hook in `package.json`. The hook runs `npm run typecheck && npm test -- --run && npm run bundle && npm run render-docs && npm run check:version-alignment && npm run check:dist-freshness` — that gate is enforced by CI (the same hook runs in the `publish-npm` job), so re-running it for a manual first publish is redundant and slow. Skip it; if any gate would have failed, CI would have caught it first.
+- `--provenance=false` overrides `package.json#publishConfig.provenance: true` for this single invocation. Without the override, the registry errors with `EUSAGE — Automatic provenance generation not supported for provider: null` because the local CLI has no GitHub Actions OIDC issuer to mint a Sigstore attestation. The CI publish path uses OIDC + `--provenance` and is unaffected.
+
+##### `~/.npmrc` overrides `.env` `NPM_TOKEN`
+
+If your environment has both an `.env` `NPM_TOKEN=...` and a `~/.npmrc` line like `//registry.npmjs.org/:_authToken=...`, the `~/.npmrc` token wins (npm config layering: builtin → env → project → user → global, with user-level `.npmrc` overriding env vars). Verify which token your `npm publish` is actually using before debugging an auth failure:
+
+```bash
+# Direct API probe of the token in the env var (does not use npm config layering):
+curl -sS -H "Authorization: Bearer $NPM_TOKEN" https://registry.npmjs.org/-/npm/v1/tokens | jq '.objects[] | {name, bypass_2fa, revoked}'
+```
+
+If `~/.npmrc` holds a stale or wrong token (different account, expired, or wrong scope), the local CLI uses it and `npm publish` fails with that account's auth errors. Delete or update the line, then re-run.
+
 #### Manual re-publish (release engineer)
 
-If the automated path fails for any reason and a maintainer needs to push a version directly (e.g. the Trusted Publisher binding got deconfigured), the same WebAuth flow used in step 1 still works for any version, including re-publishing an existing one. The WebAuth exchange grants a short-lived npm registry session token via the maintainer's npmjs.com authenticated session — there is no `--otp` step.
+If the automated path fails for any reason and a maintainer needs to push a version directly (e.g. the Trusted Publisher binding got deconfigured), the same WebAuth / IP-trust-window flow used in step 1 still works for any version, including re-publishing an existing one.
 
 ```bash
 # Local manual publish: no GitHub Actions OIDC issuer available, so
 # pass --provenance=false to override package.json#publishConfig.provenance.
 # For the Trusted-Publisher-via-GitHub path (the canonical publish route)
 # the CI job uses OIDC and `--provenance` automatically.
-npm publish --provenance=false --tag latest --registry https://registry.npmjs.org/
+npm publish --provenance=false --ignore-scripts --tag latest --registry https://registry.npmjs.org/
 ```
 
-The CLI prints `https://www.npmjs.com/auth/cli/<authId>` to your terminal; open it, complete the GitHub-backed sign-in, and the publish proceeds.
+The CLI prints a fresh `https://www.npmjs.com/auth/cli/<authId>` URL; open it, complete the GitHub-backed sign-in OR click "Don't challenge this IP for N minutes", and the publish proceeds. No token to mint, no `--otp` to type, no 90-day clock.
 
-**CRITICAL TTY caveat**: npm CLI only prints the WebAuth URL `https://www.npmjs.com/auth/cli/<authId>` in full when it detects a real interactive TTY. Background jobs, redirected stderr, and captured output have the `<authId>` redacted to `***`, which is unrecoverable. Always run a manual publish from a terminal where you can read the URL directly — your laptop, a tmux pane, an interactive SSH session. An automated agent shell cannot extract the URL programmatically.
-
-If you see `403 Forbidden — Two-factor authentication or granular access token with bypass 2fa enabled is required to publish packages.`, your local npm CLI session token has expired; re-run `npm login` or re-trigger the WebAuth URL printed by the CLI. There is no short-lived "session" to lose — each `npm publish` invocation generates a fresh one.
-
-**Provenance on local manual publish**: a local CLI does not have a GitHub Actions OIDC issuer to mint provenance, so `npm publish --provenance` errors with `EUSAGE — Automatic provenance generation not supported for provider: null`. For manual publish (any version), pass `--provenance=false` on the CLI to override `package.json#publishConfig.provenance: true` for that single invocation. The CI publish path uses GitHub Actions OIDC + `--provenance` and is unaffected.
+**TTY caveat**: npm CLI redacts the WebAuth `<authId>` portion to `***` in redirected output (background jobs, piped, captured). Running `npm publish` in a CI shell, a background job, or any non-TTY context will print `https://www.npmjs.com/auth/cli/***` with no way to recover the actual ID from the text output. The structured `--json` output (and the JSON inside the human-readable error block) does include the full URLs — that's why `scripts/publish-with-webauth.mjs` uses `--json` to extract them programmatically. Always run a manual publish from a terminal where you can read the URL directly, or use the helper script.
 
 ### Release assets
 
@@ -396,11 +484,21 @@ If the redirect still resolves to the older tag after a few minutes, see [§ 5 t
 
 The two publishes are independent pipelines: the `publish` job created the GitHub Release and finished green, but the downstream `publish-npm` job's `npm publish --provenance --tag latest` step exited non-zero. The most common failure modes (post-OIDC migration; no `NPM_TOKEN` secret exists anymore):
 
-1. **`Trusted Publisher binding is missing or stale.`** Symptom: `npm ERR! code EOTP — This operation requires a one-time password` or `npm ERR! code E401 — Invalid credentials` or `npm ERR! code E403 — Forbidden`. Recovery: open https://www.npmjs.com/package/umactually/settings → Publishing access → confirm the GitHub Actions binding is present, repo `JosiahSiegel/umactually`, workflow filename `release.yml`. If absent or pointing at the wrong repo/workflow, re-add it (no token needed — the binding itself is policy), then re-run just `publish-npm` via `gh run rerun <run-id> --failed`.
+1. **`Trusted Publisher binding is missing or stale.`** Symptom: `npm ERR! code EOTP — This operation requires a one-time password` or `npm ERR! code E401 — Invalid credentials` or `npm ERR! code E403 — Forbidden`. Recovery: open https://www.npmjs.com/package/umactually/settings → Publishing access → confirm the GitHub Actions binding is present, repo `JosiahSiegel/umactually`, workflow filename `release.yml`. Verify with `npm trust list umactually` from an authenticated shell — it should print `type: github / file: release.yml / repository: josiahsiegel/umactually / permissions: publish, stage publish`. If absent or pointing at the wrong repo/workflow, re-add it (no token needed — the binding itself is policy), then re-run just `publish-npm` via `gh run rerun <run-id> --failed`.
+
 2. **`id-token: write` permission missing from the workflow.** Symptom: the job logs `error: ID token could not be minted` or `error: insufficient permissions`. Recovery: confirm `.github/workflows/release.yml` has `permissions: { id-token: write }` at the job level for `publish-npm` (it does in the current revision). Re-run.
-3. **`npm ERR! code E404 — 'umactually@*' is not in this registry`**: a fresh package name hasn't been claimed yet. Run `npm publish --provenance --tag latest --registry https://registry.npmjs.org/` once on a local terminal that can complete the WebAuth browser flow (no `--otp`; the CLI prints a `https://www.npmjs.com/auth/cli/<id>` URL — open it, sign in, publish lands), then re-run the workflow.
+
+3. **`npm ERR! code E404 — 'umactually@*' is not in this registry`**: a fresh package name hasn't been claimed yet. Run `npm publish --provenance=false --ignore-scripts --tag latest --registry https://registry.npmjs.org/` once on a local terminal that can complete the WebAuth browser flow (or use the IP-trust-window option in the browser to skip the ceremony for the next 5 minutes — see [§ 5.5 Authentication mechanism](#authentication-mechanism-webauth--device-flow-in-2026) for the full mechanism). For non-TTY environments, `node scripts/publish-with-webauth.mjs --timeout=300` automates the polling loop. After the first publish lands, re-run the workflow.
+
 4. **`npm ERR! code E403`** with **"cannot modify existing version"**: someone (or a previous workflow run) already published this version with a different tarball. Either (a) the GitHub Release SHA and the npm publish SHA diverged — check `git rev-parse HEAD` against the GitHub Release commit; or (b) someone locally published the same version. Recovery is to bump to `vX.Y.Z+1` and cut a patch release.
+
 5. **`::error::umactually@<version> not found on registry.npmjs.org ...`** from the verify step: the publish step reported success but the registry hasn't synced within ~50 s. This is rare and almost always transient. Re-run `publish-npm` and the next pass usually lands clean. If it repeats, open a `npm support ticket` quoting the request id from the publish step's log.
+
+6. **Local manual publish, the CLI prints `EOTP` with a redacted URL** (`https://www.npmjs.com/auth/cli/***`): you're in a non-TTY environment (background, piped, captured output). The `<authId>` is unrecoverable from the text output — npm redacts it deliberately. Re-run the command in an interactive TTY (laptop, SSH session, tmux pane) and read the full URL directly, OR use `node scripts/publish-with-webauth.mjs` which parses the JSON error block to recover the URL. The Trusted-Publisher-via-GitHub path (the `publish-npm` job) is unaffected — this failure mode is local-only.
+
+7. **Local manual publish fails with `403 Forbidden — Two-factor authentication or granular access token with bypass 2fa enabled is required to publish packages.`** This is a registry-level enforcement, not a token problem. Granular Access Tokens with `bypass_2fa: true` are no longer honored at publish time as of July 2026 (see [github.blog 2026-07-31 changelog](https://github.blog/changelog/2026-07-31-restricting-npm-bypass-2fa-granular-access-tokens/)). The fix is the WebAuth flow above — complete it once per IP-trust window OR use the IP-trust option for low-friction publishes. If you only need CI-driven publishes, the `publish-npm` job via Trusted Publishing is unaffected.
+
+8. **Local publish uses the wrong account**: your `~/.npmrc` holds a `//registry.npmjs.org/:_authToken=...` line that overrides `.env`'s `NPM_TOKEN=...`. npm config layering (builtin → env → project → user → global) makes user-level `.npmrc` win over env vars. Audit with `cat ~/.npmrc` and either remove the stale line or replace it with the current token. Re-run.
 
 After a recovery, the next workflow run for the same tag reuses the same git SHA — npm picks up the new tarball, the GitHub Release keeps the assets it already uploaded, and the `dist-tags.latest` does not change between the two publishes. **Never** force-push or delete+re-push the tag to "retry" an npm failure; that breaks the canary, the post-publish canary's URL-contract assertions, and every downstream consumer's immutable-tag pinning. Re-running the workflow with the same tag is the only correct retry.
 
