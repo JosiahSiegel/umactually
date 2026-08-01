@@ -9,6 +9,7 @@
 
 import { spawnSync } from "node:child_process";
 import { setTimeout as sleep } from "node:timers/promises";
+import { pathToFileURL } from "node:url";
 
 const REPO_ROOT = process.cwd();
 
@@ -22,33 +23,29 @@ function parseArgs() {
   return { timeoutSec };
 }
 
-function startPublish() {
-  // We expect this to fail with EOTP and emit authUrl/doneUrl.
-  // Capture both stdout and stderr.
+export function startPublish() {
+  // We expect this to fail with EOTP and emit authUrl/doneUrl. Capture both
+  // stdout and stderr; maxBuffer is bumped to 64 MiB so a package whose npm
+  // notice / audit stream exceeds the 1 MiB default does not throw a
+  // synchronous RangeError before we ever see the JSON.
   const result = spawnSync(
     "npm",
     ["publish", "--no-provenance", "--ignore-scripts", "--json"],
-    { cwd: REPO_ROOT, encoding: "utf8" },
+    { cwd: REPO_ROOT, encoding: "utf8", maxBuffer: 64 * 1024 * 1024 },
   );
   const out = (result.stdout ?? "") + (result.stderr ?? "");
-  if (!out.includes('"error":')) {
-    throw new Error(`npm publish did not emit an "error" JSON block.\n--- output ---\n${out}`);
-  }
-  // Find the top-level JSON object that wraps an EOTP error block. npm
-  // emits both `npm error code EOTP` text AND a JSON object in the same
-  // output. The text contains a substring like `{ "error": { ... } }`
-  // (sometimes nested inside a wrapper like `{ "type": "error", ... }`).
-  //
-  // Brute-force every `{` candidate: from each `{`, walk forward with a
-  // depth counter to find the matching `}`, JSON.parse the slice, and
-  // accept the first one whose `error.code === "EOTP"`. This tolerates
-  // any wrapper shape (no / wrapper, single wrapper, double-nested) and
-  // is robust against earlier text that happens to contain `"error":`
-  // (e.g. a deprecation notice) — those slices will JSON-parse to objects
-  // without an `error.code` field and we just skip them.
-  const parsed = findEotpErrorObject(out);
-  if (!parsed) {
-    throw new Error(`npm publish did not emit an EOTP JSON block.\n--- output ---\n${out}`);
+  // Locate the LAST top-level JSON object in the output. npm emits both
+  // `npm error code EOTP` text AND one or more JSON objects (one per npm
+  // notice line) in the same stream; the EOTP error object is the final
+  // one. We hand off to JSON.parse directly for every candidate slice —
+  // the platform parser handles escape sequences, nested wrappers, and
+  // any other JSON-correctness concern so we don't need a hand-rolled
+  // scanner.
+  const parsed = findLastJsonObject(out);
+  if (!parsed || parsed.error?.code !== "EOTP") {
+    throw new Error(
+      `npm publish did not emit an EOTP JSON block (last JSON object: ${JSON.stringify(parsed)}).\n--- output ---\n${out}`,
+    );
   }
   const { authUrl, doneUrl } = parsed.error;
   if (!authUrl || !doneUrl) {
@@ -57,44 +54,33 @@ function startPublish() {
   return { authUrl, doneUrl };
 }
 
-// Brute-force scan every `{` candidate, find the matching `}` via a depth
-// counter, JSON.parse the slice, and return the first parse that yields
-// an `error.code === "EOTP"` object. Returns `null` if no candidate matches.
-function findEotpErrorObject(out) {
-  for (let i = 0; i < out.length; i += 1) {
-    if (out[i] !== "{") continue;
+// Find the LAST top-level JSON object in `out` that JSON.parse accepts.
+// Walks backward from the end of the string; for each `}` candidate,
+// scans left with a depth counter to find the matching `{`, takes the
+// slice, and asks JSON.parse. If the slice is not valid JSON (e.g. the
+// `{` we picked is wrong because of earlier unmatched braces), move on
+// to the next `{` to its left. Returns the first valid parse found
+// scanning right-to-left, which is the LAST top-level JSON object in
+// the output.
+export function findLastJsonObject(out) {
+  for (let i = out.length - 1; i >= 0; i -= 1) {
+    if (out[i] !== "}") continue;
     let depth = 1;
-    let j = i + 1;
-    let inString = false;
-    let escape = false;
-    for (; j < out.length; j += 1) {
+    let j = i - 1;
+    for (; j >= 0; j -= 1) {
       const ch = out[j];
-      if (escape) {
-        escape = false;
-        continue;
-      }
-      if (ch === "\\") {
-        escape = true;
-        continue;
-      }
-      if (ch === '"') {
-        inString = !inString;
-        continue;
-      }
-      if (inString) continue;
-      if (ch === "{") depth += 1;
-      else if (ch === "}") {
+      if (ch === "}") depth += 1;
+      else if (ch === "{") {
         depth -= 1;
         if (depth === 0) break;
       }
     }
     if (depth !== 0) continue;
     try {
-      const obj = JSON.parse(out.slice(i, j + 1));
-      if (obj?.error?.code === "EOTP") return obj;
+      return JSON.parse(out.slice(j, i + 1));
     } catch {
-      // Not valid JSON — likely truncated by an earlier nested mismatch;
-      // try the next `{` candidate.
+      // Not valid JSON — the matching `{` we picked is not the real one
+      // for this `}`. The inner for-loop keeps scanning leftward.
     }
   }
   return null;
@@ -186,7 +172,23 @@ async function main() {
   process.exit(code);
 }
 
-main().catch((err) => {
-  process.stderr.write(`error: ${err.message}\n`);
-  process.exit(1);
-});
+// Gate the script entrypoint so importing the module from a test (or
+// otherwise evaluating this file outside a direct invocation) does NOT
+// trigger a real `npm publish` against the registry.
+const invokedDirectly = (() => {
+  if (typeof process === "undefined") return false;
+  const entry = process.argv[1];
+  if (entry === undefined) return false;
+  try {
+    return import.meta.url === pathToFileURL(entry).href;
+  } catch {
+    return false;
+  }
+})();
+
+if (invokedDirectly) {
+  main().catch((err) => {
+    process.stderr.write(`error: ${err.message}\n`);
+    process.exit(1);
+  });
+}
