@@ -84,6 +84,24 @@ Cutting a new release is documented end-to-end in [`docs/release-process.md`](do
 
 `scripts/render-versions.mjs` and `scripts/check-version-alignment.mjs` enforce the version-pin invariant that shipped docs always show `v<package.json version>`. The renderer rewrites both `{{UMACTUALLY_*}}` template tokens AND historical `vX.Y.Z` literals whose `X.Y.Z ≠ package.json version`, so the first release needs the tokens replaced and every subsequent release just runs the renderer. URL path segments like `https://semver.org/spec/v2.0.0.html` are preserved (they are not rewritten or flagged as drift).
 
+### npm publication (`NPM_TOKEN` setup)
+
+The release workflow's `publish-npm` job publishes `umactually` to npmjs.org after the GitHub Release succeeds. The job is gated on the same real-release-tag pattern as `publish`, uses OIDC for Sigstore provenance (`id-token: write`), and the npm CLI defaults to `--provenance` because `package.json#publishConfig.provenance` is `true`. The maintainer-facing pre-flight is the existing `npm run prepublishOnly`, which runs typecheck → test → bundle → render-docs → drift-guard → dist-freshness in order.
+
+The npm auth secret lives at repo Settings → Secrets and variables → Actions → `NPM_TOKEN`. Provider:
+
+1. **npm Granular Access Token (recommended)** — npm → Access Tokens → **Granular** → Generate. Set:
+   - **Token name**: `umactually-ci-publish` (or any descriptive string).
+   - **Expiration**: 90 days maximum. Calendar a rotation reminder at <https://github.com/JosiahSiegel/umactually/issues/new> for 30 days before expiry.
+   - **Allowed package scopes**: restrict to `@my-org/...` here if `umactually` will ever move to a scoped namespace; otherwise leave the default (publish to any package you own).
+   - **Packages**: *selectively*. Pin to the `umactually` package name only — never grant publish rights to "All packages" for a CI token.
+   - **Permissions**: **Read-only** + **Publish**. Do **not** grant `Settings`, `Signing`, or `Tokens` — those would let the CI mint child tokens.
+2. Copy the token into `NPM_TOKEN` (the workflow reads it as both `NPM_TOKEN` and `NODE_AUTH_TOKEN` for npm / pnpm / yarn compatibility).
+3. **First-time set**: also publish `umactually` once locally with the token to claim the package name on npmjs.org (the GitHub Actions path can publish only after the package exists; an attempt to publish a non-existent package errors out with `404 Not found - PUT https://registry.npmjs.org/umactually`). Run `npm login --registry=https://registry.npmjs.org/`, then `npm publish --provenance --tag latest`. The local publish's SHA must match `git rev-parse HEAD` at the release commit.
+4. **Subsequent releases** use the GitHub Actions workflow exclusively. Do not re-publish locally unless recovering from a workflow failure (the GitHub Release + npm publish share the same git SHA, and a divergent local re-publish breaks the audit trail).
+
+Token rotation: when the 90-day timer expires, repeat step 1 and **revoke the old token at npm → Access Tokens** before pasting the new value into `NPM_TOKEN`. The next workflow run picks up the new secret automatically. A dangling revoked token causes `npm publish` to fail with `ENEEDAUTH`, which surfaces clearly in the `publish-npm` step's log.
+
 ## Coding conventions
 
 - Atomic commits with conventional-commit messages (`fix:`, `feat:`, `docs:`, `test:`, `refactor:`). Multi-commit PRs are fine; the bot squash-merges anyway.

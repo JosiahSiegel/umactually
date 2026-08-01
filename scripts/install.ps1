@@ -247,9 +247,16 @@ checksums.txt when no flag/env is supplied.
 # runs `npm install -g umactually` and exits cleanly. Otherwise falls
 # through to the existing binary download logic.
 #
-# v0.6.0-dev note: the umactually npm package is NOT yet published,
-# so the smart-router will hit E404 in production. We default it to
-# "opt-in" via INSTALL_TRY_NPM=1 until publish happens. Set
+# v0.6.17 note: the umactually npm package is published (the
+# `publish-npm` job in .github/workflows/release.yml, gated on real
+# release tags, runs `npm publish --provenance --tag latest` after the
+# GitHub Release). The smart-router therefore succeeds on every fresh
+# install that has Node 24+ available. The default is still the binary
+# path (INSTALL_TRY_NPM opt-in) for one release cycle: flipping the
+# default is a UX change and belongs in its own minor-version bump, not
+# the first npm-publish release, so existing users on the curl|sh pipe
+# do not silently switch install paths underneath them. Operators who
+# want the npm path today can opt in via INSTALL_TRY_NPM=1. Set
 # INSTALL_TRY_NPM=0 (or leave it unset) to always use the binary path.
 # The CI smoke test asserts on the absence of "trying npm install"
 # in stderr for this reason.
@@ -423,14 +430,21 @@ function Invoke-SmartInstallNpm {
 #     route to npm in that case or the test's HTTP traffic is masked
 #     by a real npm call that 404s in CI)
 # Without these guards, the smart-router makes a real `npm install -g
-# umactually` call in CI, hits E404 (package not yet published to npm),
-# and prints two error lines on stderr that contaminate every test that
-# asserts on the install-script's actual error output.
+# umactually` call in CI even when tests have redirected INSTALL_RELEASE_BASE
+# to a local fake release server. The npm call races the fixture and lands
+# on registry.npmjs.org (not the local http server) in CI, where the
+# package may not yet have the version under test (or, during publish-day
+# tests, may genuinely 404). It also pollutes stderr with the npm output
+# and contaminates every test that asserts on the install-script's actual
+# error output.
 #
-# v0.6.0-dev: the umactually npm package is NOT yet published. The
-# smart-router would 404 on every fresh install. We default to the
-# binary path until publish happens; operators who want the npm
-# path can opt in via INSTALL_TRY_NPM=1.
+# v0.6.17: the umactually npm package is published (the `publish-npm`
+# job in .github/workflows/release.yml runs `npm publish --provenance
+# --tag latest` after the GitHub Release). The smart-router therefore
+# succeeds on every fresh install that has Node 24+ available. The
+# default is still the binary path (INSTALL_TRY_NPM opt-in) for one
+# release cycle: flipping the default is a UX change and belongs in
+# its own minor-version bump, not the first npm-publish release.
 if (
   $env:INSTALL_TRY_NPM -eq '1' -and
   -not $env:INSTALL_TEST_MODE -and

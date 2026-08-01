@@ -1,6 +1,18 @@
 .omo
 .reference
 node_modules/
+# Local review/eval artifacts produced by manual runs, e2e harnesses, and
+# the post-release canary. None of these ever need to land in git — every
+# path under artifacts/ is regenerated on demand by the script that wrote
+# it (see scripts/ci-smoke.mjs SCENARIOS table + test/post-release/).
+# The leading slash anchors to the repo root so a future `artifacts/`
+# subdir under a different package (e.g. examples/*/artifacts/) does NOT
+# inherit this ignore rule.
+# Note: even though `artifacts/scratch/` and `artifacts/manual/` are
+# covered below, the parent `artifacts/` MUST also be ignored — git only
+# ignores a path when at least one matching rule applies, and without the
+# parent rule the bare top-level directory shows as untracked.
+/artifacts/
 artifacts/scratch/
 artifacts/manual/
 .env
