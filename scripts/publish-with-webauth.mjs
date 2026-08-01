@@ -31,50 +31,73 @@ function startPublish() {
     { cwd: REPO_ROOT, encoding: "utf8" },
   );
   const out = (result.stdout ?? "") + (result.stderr ?? "");
-  // Find the JSON error block (the one with `"error":` as a key).
-  // npm emits both `npm error code EOTP` text AND a JSON object — we want
-  // only the JSON object so we can extract authUrl/doneUrl.
-  const errorIdx = out.indexOf('"error":');
-  if (errorIdx === -1) {
-    throw new Error(`npm publish did not emit JSON error block.\n--- output ---\n${out}`);
+  if (!out.includes('"error":')) {
+    throw new Error(`npm publish did not emit an "error" JSON block.\n--- output ---\n${out}`);
   }
-  // Walk backward to the opening brace of the JSON object containing "error".
-  let braceStart = errorIdx;
-  while (braceStart > 0 && out[braceStart] !== "{") braceStart -= 1;
-  if (out[braceStart] !== "{") {
-    throw new Error(`could not locate opening brace before "error": key.\n--- output ---\n${out}`);
-  }
-  // Walk forward to find the matching closing brace (top-level only).
-  let depth = 0;
-  let braceEnd = -1;
-  for (let i = braceStart; i < out.length; i += 1) {
-    const ch = out[i];
-    if (ch === "{") depth += 1;
-    else if (ch === "}") {
-      depth -= 1;
-      if (depth === 0) {
-        braceEnd = i;
-        break;
-      }
-    }
-  }
-  if (braceEnd === -1) {
-    throw new Error(`could not locate matching closing brace.\n--- output ---\n${out}`);
-  }
-  let parsed;
-  try {
-    parsed = JSON.parse(out.slice(braceStart, braceEnd + 1));
-  } catch (err) {
-    throw new Error(`npm publish JSON parse failed: ${err.message}\n--- output ---\n${out}`);
-  }
-  if (parsed?.error?.code !== "EOTP") {
-    throw new Error(`expected EOTP, got: ${JSON.stringify(parsed)}`);
+  // Find the top-level JSON object that wraps an EOTP error block. npm
+  // emits both `npm error code EOTP` text AND a JSON object in the same
+  // output. The text contains a substring like `{ "error": { ... } }`
+  // (sometimes nested inside a wrapper like `{ "type": "error", ... }`).
+  //
+  // Brute-force every `{` candidate: from each `{`, walk forward with a
+  // depth counter to find the matching `}`, JSON.parse the slice, and
+  // accept the first one whose `error.code === "EOTP"`. This tolerates
+  // any wrapper shape (no / wrapper, single wrapper, double-nested) and
+  // is robust against earlier text that happens to contain `"error":`
+  // (e.g. a deprecation notice) — those slices will JSON-parse to objects
+  // without an `error.code` field and we just skip them.
+  const parsed = findEotpErrorObject(out);
+  if (!parsed) {
+    throw new Error(`npm publish did not emit an EOTP JSON block.\n--- output ---\n${out}`);
   }
   const { authUrl, doneUrl } = parsed.error;
   if (!authUrl || !doneUrl) {
     throw new Error(`EOTP without authUrl/doneUrl: ${JSON.stringify(parsed)}`);
   }
   return { authUrl, doneUrl };
+}
+
+// Brute-force scan every `{` candidate, find the matching `}` via a depth
+// counter, JSON.parse the slice, and return the first parse that yields
+// an `error.code === "EOTP"` object. Returns `null` if no candidate matches.
+function findEotpErrorObject(out) {
+  for (let i = 0; i < out.length; i += 1) {
+    if (out[i] !== "{") continue;
+    let depth = 1;
+    let j = i + 1;
+    let inString = false;
+    let escape = false;
+    for (; j < out.length; j += 1) {
+      const ch = out[j];
+      if (escape) {
+        escape = false;
+        continue;
+      }
+      if (ch === "\\") {
+        escape = true;
+        continue;
+      }
+      if (ch === '"') {
+        inString = !inString;
+        continue;
+      }
+      if (inString) continue;
+      if (ch === "{") depth += 1;
+      else if (ch === "}") {
+        depth -= 1;
+        if (depth === 0) break;
+      }
+    }
+    if (depth !== 0) continue;
+    try {
+      const obj = JSON.parse(out.slice(i, j + 1));
+      if (obj?.error?.code === "EOTP") return obj;
+    } catch {
+      // Not valid JSON — likely truncated by an earlier nested mismatch;
+      // try the next `{` candidate.
+    }
+  }
+  return null;
 }
 
 async function pollForOtp(doneUrl, timeoutSec) {
