@@ -1512,7 +1512,20 @@ jobs:
           # automatically derived from package-lock.json by
           # actions/setup-node.
           cache: "npm"
-          registry-url: "https://registry.npmjs.org/"
+          # Deliberately NOT passing `registry-url` or `token` here.
+          # actions/setup-node@v4 auto-picks up `secrets.NPM_TOKEN` for
+          # auth wiring the moment `registry-url` is set, and writes a
+          # per-run `.npmrc` at `$NPM_CONFIG_USERCONFIG` with the
+          # `_authToken=<token>` line. With a classic (non-granular)
+          # or even a granular-2FA-on token, that line is what npm CLI
+          # sends on the wire, and registry.npmjs.org rejects it with
+          # 403 ("Two-factor authentication or granular access token
+          # with bypass 2fa enabled is required to publish packages").
+          # Keeping auth on the job-level `env:` block (NPM_TOKEN +
+          # NODE_AUTH_TOKEN) means npm reads `$NODE_AUTH_TOKEN` for
+          # the publish step and the registry's response rules apply.
+          # Failing this once before surfaced this exact issue — see
+          # v0.6.18 release attempt logs.
 
       - name: Install dependencies
         if: ${{ env.NPM_TOKEN != '' }}
