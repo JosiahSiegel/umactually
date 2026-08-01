@@ -10,6 +10,8 @@ ship a tag).
 
 ## [Unreleased]
 
+## [0.6.20] - 2026-08-01
+
 ### Added
 
 - **`scripts/publish-with-webauth.mjs`** — non-TTY helper for the local first-time `npm publish`. Parses the JSON error block of `npm publish --json` to extract the `authUrl`/`doneUrl` pair (the human-readable error path redacts the `<authId>` to `***` in non-TTY mode; the structured JSON in the same output is intact), polls `doneUrl` for the registry session token, and re-runs `npm publish --no-provenance --ignore-scripts --otp=<token>` when the user completes WebAuth in the browser. Usage: `node scripts/publish-with-webauth.mjs --timeout=300`. Documented in `CONTRIBUTING.md#publish-authentication-in-2026-webauth--device-flow` and `docs/release-process.md#authentication-mechanism-webauth--device-flow-in-2026`.
@@ -17,6 +19,11 @@ ship a tag).
 ### Changed
 
 - **Documented the 2026 npm publish authentication model in full** across `CONTRIBUTING.md` and `docs/release-process.md`. Captures the timeline (classic tokens deprecated 2022, TOTP frozen 2025-10, `bypass_2fa: true` GATs restricted for direct publish 2026-07-08, restricted for account/org/package management 2026-07-31, full removal ~2027-01), the WebAuth mechanism (`auth/cli/<authId>` + `/v1/done?authId=<authId>`), the two browser-side actions (Approve vs "Don't challenge this IP for N minutes" — the latter is the IP-trust window that v0.6.19 actually used to claim the package name on 2026-08-01), the three publish paths in priority order (Trusted Publishing via CI → local manual from TTY → IP-trust window), the `~/.npmrc`-overrides-`.env` precedence trap, and the non-TTY helper script. Old "or use a Granular Token with bypass 2FA" advice (which no longer works at publish time as of July 2026) is removed.
+- **`.env.example`** documents the local `NPM_TOKEN` use-case (first-publish name claim + emergency re-publish) with the 2026 caveats: `bypass_2fa` is still required at token-creation time but is no longer honored at publish time as of July 2026.
+
+### Fixed
+
+- **`test/setup.ts`** scrubs `UMACTUALLY_API_URL`/`UMACTUALLY_API_KEY`/`UMACTUALLY_PROVIDER`/`UMACTUALLY_MODEL` from the test env so a contributor who ran `source .env` before `npm test` sees the same results as CI. Without the scrub the cli-dry-run prompt-gate tests fail with `expected exit 2 / got exit 0` because the CLI skips the validation gate when `--api-url` / `--api-key` are pre-set by the env.
 
 ## [0.6.19] - 2026-08-01
 

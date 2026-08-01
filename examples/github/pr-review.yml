@@ -15,12 +15,12 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: "24"
+      - name: Install umactually
+        # Pin the version; never track `latest`.
+        run: npm install -g umactually@0.6.20
       - name: Run umactually PR review
         env:
           GITHUB_TOKEN: ${{ github.token }}
           UMACTUALLY_API_URL: ${{ secrets.UMACTUALLY_API_URL }}
           UMACTUALLY_API_KEY: ${{ secrets.UMACTUALLY_API_KEY }}
-        # Pin to the v0.6.19 release tag — `npx github:owner/repo#tag` resolves
-        # to the GitHub tarball at that ref, so the install is reproducible
-        # instead of tracking `main`. The npm package is not yet published.
-        run: npx github:JosiahSiegel/umactually#v0.6.19 review --platform github
+        run: umactually review --platform github
