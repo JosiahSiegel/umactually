@@ -99,7 +99,7 @@ describe.skipIf(NODE_24_REQUIRED)("CLI-only GitHub live contracts", () => {
     expect(postedBodies(fixture)).toHaveLength(1);
   });
 
-  it("E2E-C: malformed provider output posts a bounded parse-fail marker card and exits one", async () => {
+  it("E2E-C: malformed provider output posts a bounded parse-fail marker card and exits three", async () => {
     // Given: malformed output with distinct head and tail diagnostics beyond the 16 KB budget.
     const malformed = `HEAD-DIAGNOSTIC\n${"x".repeat(24_000)}\nTAIL-DIAGNOSTIC`;
     fixture = await startGithubFixture({ providerBody: malformed });
@@ -107,8 +107,9 @@ describe.skipIf(NODE_24_REQUIRED)("CLI-only GitHub live contracts", () => {
     // When: the CLI cannot parse the provider review.
     const result = await runGithubCli(fixture.apiUrl);
 
-    // Then: CI fails but GitHub still receives one bounded diagnostic review.
-    expect(result.status).toBe(1);
+    // Then: CI fails with exit code 3 (M7 additive parse-fail code) but
+    // GitHub still receives one bounded diagnostic review.
+    expect(result.status).toBe(3);
     const posts = postedBodies(fixture);
     expect(posts).toHaveLength(1);
     const body = posts[0] ?? "";
