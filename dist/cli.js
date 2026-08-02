@@ -1995,10 +1995,12 @@ async function runDoctor(deps) {
     const exitCode = checks.some((check) => check.status === "fail") ? 1 : 0;
     const suggestion = deps.suggestedConfig === true ? selectSuggestion(checks, deps.env) : null;
     let fixResult;
+    let fixExitCode = exitCode;
     if (deps.fix !== undefined && deps.fix !== null) {
-        fixResult = await runFix(deps, deps.fix, deps.fixYes === true, checks);
+        const fixOutcome = await runFix(deps, deps.fix, deps.fixYes === true, checks);
+        fixResult = fixOutcome.fix;
+        fixExitCode = fixOutcome.exitCode;
     }
-    const fixExitCode = fixResult?.outcome === "failed" ? 2 : fixResult?.outcome === "repaired" ? exitCode : exitCode;
     const json = {
         schemaVersion: 1,
         command: "doctor",
@@ -2021,16 +2023,22 @@ const SUPPORTED_FIX_IDS = ["dist-freshness", "provider-config", "node-version"];
 async function runFix(deps, rawId, fixYes, checks) {
     if (!SUPPORTED_FIX_IDS.includes(rawId)) {
         return {
-            checkId: rawId,
-            outcome: "failed",
-            message: `unknown check-id '${rawId}'. Available: ${SUPPORTED_FIX_IDS.join(", ")}`,
+            fix: {
+                checkId: rawId,
+                outcome: "failed",
+                message: `unknown check-id '${rawId}'. Available: ${SUPPORTED_FIX_IDS.join(", ")}`,
+            },
+            exitCode: 2,
         };
     }
     if (!fixYes) {
         return {
-            checkId: rawId,
-            outcome: "skipped",
-            message: `--fix requires --yes (or UMACTUALLY_DOCTOR_FIX_YES=1)`,
+            fix: {
+                checkId: rawId,
+                outcome: "skipped",
+                message: `--fix requires --yes (or UMACTUALLY_DOCTOR_FIX_YES=1)`,
+            },
+            exitCode: 0,
         };
     }
     const id = rawId;
@@ -2038,30 +2046,42 @@ async function runFix(deps, rawId, fixYes, checks) {
         if (id === "dist-freshness") {
             await deps.execFile("npm", ["run", "bundle"], { cwd: deps.cwd });
             return {
-                checkId: id,
-                outcome: "repaired",
-                message: "ran `npm run bundle`; dist/cli.js rebuilt",
+                fix: {
+                    checkId: id,
+                    outcome: "repaired",
+                    message: "ran `npm run bundle`; dist/cli.js rebuilt",
+                },
+                exitCode: 0,
             };
         }
         if (id === "provider-config") {
             const hint = "set UMACTUALLY_API_KEY and UMACTUALLY_API_URL, then run `umactually init --provider <openai|anthropic|copilot> --apply`";
             return {
-                checkId: id,
-                outcome: "skipped",
-                message: hint,
+                fix: {
+                    checkId: id,
+                    outcome: "skipped",
+                    message: hint,
+                },
+                exitCode: 0,
             };
         }
         const check = checks.find((c) => c.id === "node");
         return {
-            checkId: id,
-            outcome: "skipped",
-            message: check?.hint ??
-                "cannot install Node from this command; install Node 24+ from https://nodejs.org/ and re-run",
+            fix: {
+                checkId: id,
+                outcome: "skipped",
+                message: check?.hint ??
+                    "cannot install Node from this command; install Node 24+ from https://nodejs.org/ and re-run",
+            },
+            exitCode: 0,
         };
     }
     catch (err) {
         const message = err instanceof Error ? err.message : String(err);
-        return { checkId: id, outcome: "failed", message };
+        return {
+            fix: { checkId: id, outcome: "failed", message },
+            exitCode: 1,
+        };
     }
 }
 function checkNode(nodeVersion) {
@@ -2153,17 +2173,21 @@ async function checkGit(deps) {
     }
 }
 function selectSuggestion(checks, env) {
-    const apiKeyMissing = !hasEnvValue(env, "UMACTUALLY_API_KEY")
-        && !hasEnvValue(env, "REVIEW_PROVIDER_API_KEY");
-    if (apiKeyMissing) {
+    // Priority order per CHANGELOG v0.6.22 (matches
+    // test/cli-doctor-suggested-config.test.ts "prioritizes API key
+    // guidance over dist freshness"): api-key > api-url > provider-config >
+    // dist-freshness > node > git. Auth-derived entries are inspected
+    // from env directly (not from checks[]) so the contract surfaces a
+    // single actionable suggestion.
+    if (!hasEnvValue(env, "UMACTUALLY_API_KEY")
+        && !hasEnvValue(env, "REVIEW_PROVIDER_API_KEY")) {
         return "Set UMACTUALLY_API_KEY or pass --api-key";
     }
-    const apiUrlMissing = !hasEnvValue(env, "UMACTUALLY_API_URL")
-        && !hasEnvValue(env, "REVIEW_PROVIDER_URL");
-    if (apiUrlMissing) {
+    if (!hasEnvValue(env, "UMACTUALLY_API_URL")
+        && !hasEnvValue(env, "REVIEW_PROVIDER_URL")) {
         return "Set UMACTUALLY_API_URL or pass --api-url";
     }
-    const priority = ["dist-freshness", "node", "git", "env"];
+    const priority = ["dist-freshness", "node", "git"];
     for (const id of priority) {
         const check = checks.find((candidate) => candidate.id === id
             && (candidate.status === "fail" || candidate.status === "warn"));
@@ -2172,7 +2196,7 @@ function selectSuggestion(checks, env) {
         }
         switch (check.id) {
             case "dist-freshness":
-                return "npm run bundle";
+                return "Run `npm run bundle` to refresh dist/cli.js";
             case "node":
                 return "Install Node 24+ from https://nodejs.org/";
             case "git":
