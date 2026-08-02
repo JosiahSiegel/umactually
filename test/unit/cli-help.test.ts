@@ -201,3 +201,51 @@ describe("Help text structural invariants (catches spread-of-string regressions)
     expect(platformLine).toContain("--api-url");
   });
 });
+
+describe("CLI_HELP_TEXT line-count ceiling (M6)", () => {
+  it("top-level --help is at most 65 lines", () => {
+    const lineCount = CLI_HELP_TEXT.split("\n").length - 1;
+    expect(lineCount).toBeLessThanOrEqual(65);
+  });
+
+  it("top-level --help still includes the Modes banner (load-bearing)", () => {
+    expect(CLI_HELP_TEXT).toContain("Modes:");
+    expect(CLI_HELP_TEXT).toContain("Standalone mode");
+    expect(CLI_HELP_TEXT).toContain("Live CI mode");
+    expect(CLI_HELP_TEXT).toContain("Pre-rendered diff (advanced)");
+  });
+
+  it("top-level --help still includes the Commands banner", () => {
+    expect(CLI_HELP_TEXT).toContain("Commands:");
+    expect(CLI_HELP_TEXT).toContain("review");
+    expect(CLI_HELP_TEXT).toContain("doctor");
+    expect(CLI_HELP_TEXT).toContain("check-review-artifact");
+  });
+
+  it("top-level --help still includes the Global flags section", () => {
+    expect(CLI_HELP_TEXT).toContain("Global flags:");
+    expect(CLI_HELP_TEXT).toContain("--no-color");
+    expect(CLI_HELP_TEXT).toContain("--json");
+  });
+
+  it("top-level --help uses a pointer to `umactually review --help` for the full flag list", () => {
+    expect(CLI_HELP_TEXT).toMatch(/umactually review --help/u);
+  });
+
+  it("top-level --help no longer embeds the full 42-flag wall", () => {
+    expect(CLI_HELP_TEXT).not.toContain("--sonar-host-url");
+    expect(CLI_HELP_TEXT).not.toContain("--per-request-timeout-seconds");
+    expect(CLI_HELP_TEXT).not.toContain("--debug-raw-response");
+    expect(CLI_HELP_TEXT).not.toContain("--walkthrough");
+  });
+
+  it("common flags still surface in the top-level pointer", () => {
+    expect(CLI_HELP_TEXT).toContain("--platform");
+    expect(CLI_HELP_TEXT).toContain("--api-url");
+    expect(CLI_HELP_TEXT).toContain("--api-key");
+    expect(CLI_HELP_TEXT).toContain("--model");
+    expect(CLI_HELP_TEXT).toContain("--effort");
+    expect(CLI_HELP_TEXT).toContain("--dry-run");
+    expect(CLI_HELP_TEXT).toContain("--output-artifact");
+  });
+});
