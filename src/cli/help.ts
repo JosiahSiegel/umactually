@@ -153,7 +153,7 @@ export const CLI_HELP_TEXT = [
   ...GLOBAL_FLAGS.map(renderFlagLine),
   "",
   CLI_MODES_TEXT,
-  "See exit codes: docs/exit-codes.md",
+  "Exit codes: 0=ok, 1=provider-error, 2=usage-error, 3=parse-fail, 4=auth-required, 127=bundle-missing. See docs/exit-codes.md.",
 ].join("\n");
 
 // ── Per-command contextual help ────────────────────────────────────────────
@@ -169,7 +169,7 @@ const REVIEW_HELP_TEXT = [
   ...renderFlags(flagsForContext("review")),
   "",
   CLI_MODES_TEXT,
-  "See exit codes: docs/exit-codes.md",
+  "Exit codes: 0=ok, 1=provider-error, 2=usage-error, 3=parse-fail, 4=auth-required, 127=bundle-missing. See docs/exit-codes.md.",
 ].join("\n");
 
 const DOCTOR_HELP_TEXT = [

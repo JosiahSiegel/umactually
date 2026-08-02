@@ -1,5 +1,507 @@
 import { createRequire as __WEBPACK_EXTERNAL_createRequire } from "module";
-/******/ var __webpack_modules__ = ({});
+/******/ var __webpack_modules__ = ({
+
+/***/ 126:
+/***/ ((__unused_webpack_module, __webpack_exports__, __nccwpck_require__) => {
+
+
+// EXPORTS
+__nccwpck_require__.d(__webpack_exports__, {
+  INIT_HELP_TEXT: () => (/* binding */ INIT_HELP_TEXT),
+  yZ: () => (/* binding */ runInitFromArgv)
+});
+
+// UNUSED EXPORTS: INIT_CONFIG_DIR_NAME, INIT_CONFIG_FILE_NAME, defaultInitFsAdapter, formatInitConfig, parseInitArgs, resolveConfigDir, resolveConfigPath, runInit
+
+// EXTERNAL MODULE: external "node:fs"
+var external_node_fs_ = __nccwpck_require__(24);
+// EXTERNAL MODULE: external "node:os"
+var external_node_os_ = __nccwpck_require__(161);
+// EXTERNAL MODULE: external "node:path"
+var external_node_path_ = __nccwpck_require__(379);
+// EXTERNAL MODULE: ./src/util/env-keys.ts
+var env_keys = __nccwpck_require__(840);
+;// CONCATENATED MODULE: ./src/config/init-config.ts
+// SPDX-License-Identifier: MIT
+// Pure helper for the `umactually init` subcommand.
+//
+// `buildInitConfig` takes the parsed CLI args and the raw process env
+// and produces the config-object shape that gets serialized to
+// `~/.umactually/config.json`. It is deliberately tiny so it is easy
+// to unit-test in isolation (no I/O, no fs, no child processes).
+//
+// Field rules (per the M2 plan):
+//   - `provider` is always present (validated upstream by `parseInitArgs`).
+//   - `apiUrl`, `apiKey`, `model` are only included when the resolved
+//     value is non-empty. This keeps the on-disk file tight and avoids
+//     accidental "key= " empty-string serialization that some JSON
+//     schema validators treat as "key set".
+//   - CLI flags win over env vars. The order in `args` is:
+//     `--api-url <url>`, `--api-key <key>`, `--model <id>`. These
+//     override the corresponding UMACTUALLY_* env vars so an operator
+//     can dry-run a single change without unsetting their shell env.
+//
+// This module is intentionally I/O-free; the CLI wrapper
+// (`src/cli/init.ts`) owns the filesystem and process I/O.
+
+/** The three provider families supported by `umactually init`. */
+const INIT_PROVIDERS = ["openai", "anthropic", "copilot"];
+/** Pick the first non-empty string from the candidate list. Used to
+ *  implement "CLI flag wins over env var, env var wins over missing"
+ *  without nesting ternaries all over the builder. */
+function firstNonEmpty(...candidates) {
+    for (const candidate of candidates) {
+        if (typeof candidate === "string" && candidate.length > 0) {
+            return candidate;
+        }
+    }
+    return undefined;
+}
+/**
+ * Build the JSON-serializable config object that the `init` subcommand
+ * will write to `~/.umactually/config.json`. Pure: no I/O, no
+ * environment mutation. The caller is responsible for validating the
+ * provider string before invoking this.
+ */
+function buildInitConfig(deps) {
+    const { args, env } = deps;
+    if (args.provider === null || args.provider.length === 0) {
+        // Caller contract: provider is required. Returning a degenerate
+        // object here would let an upstream bug leak into the config file
+        // — throw so the CLI wrapper surfaces a clear error path.
+        throw new Error("buildInitConfig called without a provider");
+    }
+    const apiUrl = firstNonEmpty(args.apiUrl, env[env_keys/* ENV_KEYS */.j.UMACTUALLY_API_URL]);
+    const apiKey = firstNonEmpty(args.apiKey, env[env_keys/* ENV_KEYS */.j.UMACTUALLY_API_KEY]);
+    const model = firstNonEmpty(undefined, env[env_keys/* ENV_KEYS */.j.UMACTUALLY_MODEL]);
+    const config = { provider: args.provider };
+    return {
+        ...config,
+        ...(apiUrl === undefined ? {} : { apiUrl }),
+        ...(apiKey === undefined ? {} : { apiKey }),
+        ...(model === undefined ? {} : { model }),
+    };
+}
+/** JSON serializer that omits `undefined` keys. `JSON.stringify`
+ *  already drops `undefined` values, but we make the intent
+ *  explicit so future maintainers see the "no empty strings, no
+ *  undefined keys" contract at the call site. */
+function serializeInitConfig(config) {
+    const cleaned = {};
+    if (config.provider.length > 0) {
+        cleaned["provider"] = config.provider;
+    }
+    if (typeof config.apiUrl === "string" && config.apiUrl.length > 0) {
+        cleaned["apiUrl"] = config.apiUrl;
+    }
+    if (typeof config.apiKey === "string" && config.apiKey.length > 0) {
+        cleaned["apiKey"] = config.apiKey;
+    }
+    if (typeof config.model === "string" && config.model.length > 0) {
+        cleaned["model"] = config.model;
+    }
+    return JSON.stringify(cleaned);
+}
+
+;// CONCATENATED MODULE: ./src/cli/init.ts
+// SPDX-License-Identifier: MIT
+// Built-in `umactually init` subcommand.
+//
+// Writes a `~/.umactually/config.json` describing the provider, API
+// URL, API key, and model so subsequent `umactually review`
+// invocations can resolve their provider config from disk.
+//
+// Usage:
+//   umactually init [flags]
+//
+// Flags:
+//   --provider <openai|anthropic|copilot>  Required. Selects the provider family.
+//   --apply                                Actually write the file (default: dry-run).
+//   --api-url <url>                        Override the URL written to the file.
+//   --api-key <key>                        Override the API key written to the file.
+//   --json                                 Emit machine-readable JSON output.
+//   --help, -h                             Show this help.
+//
+// Defaults:
+//   - Dry-run unless --apply is passed or UMACTUALLY_INIT_FORCE=1.
+//   - Reads UMACTUALLY_API_URL, UMACTUALLY_API_KEY, UMACTUALLY_MODEL
+//     from the environment; CLI flags win over env vars.
+//
+// Safety:
+//   - Never touches the network; init is pure-local.
+//   - Refuses unknown provider values (exit 2).
+//   - Refuses invocation without --provider (exit 2).
+
+
+
+const { join } = external_node_path_;
+
+/** Default config directory: matches the brand used elsewhere
+ *  (`~/.umactually/`). Matches uninstall.ts:549. */
+const INIT_CONFIG_DIR_NAME = ".umactually";
+const INIT_CONFIG_FILE_NAME = "config.json";
+/** Parse the argv passed to `umactually init`. Pure. */
+function parseInitArgs(argv) {
+    const errors = [];
+    let provider = null;
+    let apply = false;
+    let json = false;
+    let help = false;
+    let apiUrl = null;
+    let apiKey = null;
+    for (let i = 0; i < argv.length; i += 1) {
+        const arg = argv[i];
+        if (arg === undefined) {
+            continue;
+        }
+        switch (arg) {
+            case "--help":
+            case "-h":
+                help = true;
+                break;
+            case "--apply":
+                apply = true;
+                break;
+            case "--json":
+                json = true;
+                break;
+            case "--provider": {
+                const next = argv[i + 1];
+                if (next === undefined || next.startsWith("-")) {
+                    errors.push("--provider requires a value (one of openai|anthropic|copilot)");
+                }
+                else {
+                    provider = next;
+                    i += 1;
+                }
+                break;
+            }
+            case "--api-url": {
+                const next = argv[i + 1];
+                if (next === undefined) {
+                    errors.push("--api-url requires a value");
+                }
+                else {
+                    apiUrl = next;
+                    i += 1;
+                }
+                break;
+            }
+            case "--api-key": {
+                const next = argv[i + 1];
+                if (next === undefined) {
+                    errors.push("--api-key requires a value");
+                }
+                else {
+                    apiKey = next;
+                    i += 1;
+                }
+                break;
+            }
+            default:
+                if (arg.startsWith("-")) {
+                    errors.push(`unknown flag: ${arg}`);
+                }
+                else {
+                    errors.push(`unexpected positional arg: ${arg}`);
+                }
+        }
+    }
+    if (provider === null && !help) {
+        errors.push(`missing required flag: --provider <openai|anthropic|copilot>`);
+    }
+    else if (provider !== null && !INIT_PROVIDERS.includes(provider)) {
+        errors.push(`invalid --provider value: ${provider} (expected one of ${INIT_PROVIDERS.join("|")})`);
+    }
+    return { provider, apply, json, help, apiUrl, apiKey, errors };
+}
+/** Resolve the config directory under `homeDir`. Pure path math —
+ *  exported for unit tests. */
+function resolveConfigDir(homeDir) {
+    return join(homeDir, INIT_CONFIG_DIR_NAME);
+}
+/** Resolve the full config file path. */
+function resolveConfigPath(homeDir) {
+    return join(resolveConfigDir(homeDir), INIT_CONFIG_FILE_NAME);
+}
+/** Human-readable serialization for stdout. Stable order:
+ *  provider, apiUrl, apiKey, model. */
+function formatInitConfig(config) {
+    return `${serializeInitConfig(config)}\n`;
+}
+/** Render the dry-run preview: a short banner + the JSON the file
+ *  WOULD contain. The banner says "dry-run" so the operator can't
+ *  mistake the output for a successful apply. */
+function formatDryRunPreview(configPath, config) {
+    const banner = `# dry-run: would write ${configPath}\n`;
+    return `${banner}${formatInitConfig(config)}`;
+}
+/** The JSON envelope emitted by `--json`. Falls back to a simple
+ *  `{ command, ok, data }` shape until M1's `src/util/envelope.ts`
+ *  lands — at which point the dispatch layer can swap to the
+ *  canonical EnvelopeV1 producer. */
+function buildJsonEnvelope(args) {
+    return `${JSON.stringify({
+        command: "init",
+        ok: args.ok,
+        data: {
+            applied: args.applied,
+            dryRun: !args.applied,
+            configPath: args.configPath,
+            provider: args.config.provider,
+            config: args.config,
+            ...(args.error === undefined ? {} : { error: args.error }),
+        },
+    })}\n`;
+}
+const INIT_HELP_TEXT = [
+    "umactually init — write ~/.umactually/config.json so `umactually review`",
+    "can resolve its provider config from disk.",
+    "",
+    "Usage:",
+    "  umactually init --provider <openai|anthropic|copilot> [flags]",
+    "  umactually init --help",
+    "",
+    "Flags:",
+    "  --provider <openai|anthropic|copilot>   Required. Selects the provider family.",
+    "  --apply                                 Actually write the config file. Without this flag,",
+    "                                          init is a dry-run: it prints what it would write",
+    "                                          and exits 0 without touching the filesystem.",
+    "                                          UMACTUALLY_INIT_FORCE=1 also enables apply.",
+    "  --api-url <url>                         Override UMACTUALLY_API_URL for this file only.",
+    "  --api-key <key>                         Override UMACTUALLY_API_KEY for this file only.",
+    "  --json                                  Emit machine-readable JSON output.",
+    "  --help, -h                              Show this help.",
+    "",
+    "The config file is a JSON object with the keys `provider`, `apiUrl`,",
+    "`apiKey`, and `model` (only the keys with non-empty values are written).",
+    "",
+    "Examples:",
+    "  umactually init --provider openai --dry-run        # preview, no write",
+    "  umactually init --provider openai --apply          # actually write the file",
+    "  UMACTUALLY_INIT_FORCE=1 umactually init --provider openai",
+    "",
+    "Exit codes:",
+    "  0  Dry-run succeeded (or --apply succeeded)",
+    "  2  Usage error (missing --provider, unknown provider, unknown flag)",
+].join("\n");
+/** Read the existing config (if any) and return it as a parsed object,
+ *  or `null` if the file does not exist or cannot be read. Used by
+ *  the dry-run preview so the operator can see what would change. */
+function readExistingConfig(fs, configPath) {
+    if (!fs.exists(configPath)) {
+        return null;
+    }
+    try {
+        const raw = fs.readFile(configPath);
+        const parsed = JSON.parse(raw);
+        if (parsed !== null && typeof parsed === "object" && !Array.isArray(parsed)) {
+            return parsed;
+        }
+        return null;
+    }
+    catch {
+        return null;
+    }
+}
+/** The main entry point. Reads the deps, parses args, builds the
+ *  config, and either writes the file (when --apply or
+ *  UMACTUALLY_INIT_FORCE=1) or just prints the dry-run preview. */
+async function runInit(deps) {
+    const args = parseInitArgs(deps.argv);
+    if (args.help) {
+        deps.stdout.write(`${INIT_HELP_TEXT}\n`);
+        return { exitCode: 0, stdout: `${INIT_HELP_TEXT}\n` };
+    }
+    if (args.errors.length > 0) {
+        const message = `umactually init: ${args.errors.join("; ")}\n`;
+        deps.stderr.write(message);
+        return { exitCode: 2, stderr: message };
+    }
+    const envForce = deps.env["UMACTUALLY_INIT_FORCE"] === "1"
+        || deps.env["UMACTUALLY_INIT_FORCE"] === "true";
+    const apply = args.apply || envForce;
+    const configDeps = {
+        args: {
+            provider: args.provider,
+            apply,
+            json: args.json,
+            help: false,
+            apiUrl: args.apiUrl,
+            apiKey: args.apiKey,
+        },
+        env: deps.env,
+    };
+    const config = buildInitConfig(configDeps);
+    const configPath = resolveConfigPath(deps.homeDir);
+    if (!apply) {
+        const existing = readExistingConfig(deps.fs, configPath);
+        const existingNote = existing === null
+            ? "(no existing file)"
+            : `(existing file: ${JSON.stringify(existing)})`;
+        const preview = formatDryRunPreview(configPath, config);
+        if (args.json) {
+            const envelope = buildJsonEnvelope({
+                ok: true,
+                applied: false,
+                configPath,
+                config,
+            });
+            deps.stdout.write(envelope);
+            return { exitCode: 0, stdout: envelope, stderr: existingNote };
+        }
+        deps.stdout.write(`${preview}# ${existingNote}\n`);
+        return { exitCode: 0, stdout: preview };
+    }
+    // Apply path: ensure the config directory exists, then write the
+    // file. We deliberately use a single writeFile (not atomic
+    // temp+rename) because the on-disk config is not concurrency-sensitive
+    // — the file is only ever touched by the operator running `init`,
+    // and a crash mid-write leaves a JSON.parse-able file (the OS
+    // guarantees writeFileSync is all-or-nothing for files smaller than
+    // PIPE_BUF, and our config is always tiny).
+    const configDir = resolveConfigDir(deps.homeDir);
+    if (!deps.fs.exists(configDir) && !deps.fs.isDirectory(configDir)) {
+        deps.fs.mkdir(configDir);
+    }
+    const payload = `${formatInitConfig(config)}`;
+    deps.fs.writeFile(configPath, payload);
+    if (args.json) {
+        const envelope = buildJsonEnvelope({
+            ok: true,
+            applied: true,
+            configPath,
+            config,
+        });
+        deps.stdout.write(envelope);
+        return { exitCode: 0, stdout: envelope };
+    }
+    const message = `wrote ${configPath}\n${payload}`;
+    deps.stdout.write(message);
+    return { exitCode: 0, stdout: message };
+}
+/** Production-mode entry: builds the deps from the live process and
+ *  delegates to `runInit`. The dispatch layer calls this so the
+ *  CLI is wired up exactly the same way as `uninstall`. */
+async function runInitFromArgv(argv, env = process.env, stdout = process.stdout, stderr = process.stderr, homeDir = (0,external_node_os_.homedir)(), fs = defaultInitFsAdapter) {
+    return runInit({ argv, env, fs, homeDir, stdout, stderr });
+}
+/** Default fs adapter for the production entry. Kept tiny — the
+ *  production CLI doesn't need atomic rename semantics for the
+ *  config file. */
+const defaultInitFsAdapter = {
+    exists: (target) => {
+        try {
+            return (0,external_node_fs_.existsSync)(target);
+        }
+        catch {
+            return false;
+        }
+    },
+    isDirectory: (target) => {
+        try {
+            return (0,external_node_fs_.statSync)(target).isDirectory();
+        }
+        catch {
+            return false;
+        }
+    },
+    mkdir: (target) => {
+        (0,external_node_fs_.mkdirSync)(target, { recursive: true });
+    },
+    readFile: (target) => {
+        return (0,external_node_fs_.readFileSync)(target, "utf8");
+    },
+    writeFile: (target, content) => {
+        (0,external_node_fs_.writeFileSync)(target, content, "utf8");
+    },
+};
+
+
+/***/ }),
+
+/***/ 840:
+/***/ ((__unused_webpack_module, __webpack_exports__, __nccwpck_require__) => {
+
+/* harmony export */ __nccwpck_require__.d(__webpack_exports__, {
+/* harmony export */   j: () => (/* binding */ ENV_KEYS)
+/* harmony export */ });
+/** Centralised env-var name registry; eliminates inline `env["..."]` strings and keeps legacy aliases visible. */
+const ENV_KEYS = {
+    // UMACTUALLY_* canonical, REVIEW_* legacy aliases
+    UMACTUALLY_API_URL: "UMACTUALLY_API_URL",
+    UMACTUALLY_API_KEY: "UMACTUALLY_API_KEY",
+    UMACTUALLY_MODEL: "UMACTUALLY_MODEL",
+    UMACTUALLY_GITHUB_API_BASE: "UMACTUALLY_GITHUB_API_BASE",
+    UMACTUALLY_INCLUDE_SONARQUBE: "UMACTUALLY_INCLUDE_SONARQUBE",
+    UMACTUALLY_SONAR_HOST_URL: "UMACTUALLY_SONAR_HOST_URL",
+    UMACTUALLY_SONAR_TOKEN: "UMACTUALLY_SONAR_TOKEN",
+    UMACTUALLY_SONAR_PROJECT_KEY: "UMACTUALLY_SONAR_PROJECT_KEY",
+    UMACTUALLY_PROMPT_FILE: "UMACTUALLY_PROMPT_FILE",
+    UMACTUALLY_PROMPT_FILES: "UMACTUALLY_PROMPT_FILES",
+    UMACTUALLY_ADDITIONAL_PROMPT_FILE: "UMACTUALLY_ADDITIONAL_PROMPT_FILE",
+    UMACTUALLY_ADDITIONAL_PROMPT_FILES: "UMACTUALLY_ADDITIONAL_PROMPT_FILES",
+    UMACTUALLY_STRICT_SCHEMA: "UMACTUALLY_STRICT_SCHEMA",
+    UMACTUALLY_VERIFY_FINDINGS: "UMACTUALLY_VERIFY_FINDINGS",
+    REVIEW_STRICT_SCHEMA: "REVIEW_STRICT_SCHEMA",
+    REVIEW_VERIFY_FINDINGS: "REVIEW_VERIFY_FINDINGS",
+    REVIEW_PROVIDER_URL: "REVIEW_PROVIDER_URL",
+    REVIEW_PROVIDER_API_KEY: "REVIEW_PROVIDER_API_KEY",
+    REVIEW_PROVIDER_MODEL: "REVIEW_PROVIDER_MODEL",
+    REVIEW_TIMEOUT_SECONDS: "REVIEW_TIMEOUT_SECONDS",
+    REVIEW_FILE_LIMIT: "REVIEW_FILE_LIMIT",
+    REVIEW_LEAK_DETECTION: "REVIEW_LEAK_DETECTION",
+    // Platform runtime
+    GITHUB_ACTIONS: "GITHUB_ACTIONS",
+    GITHUB_EVENT_PATH: "GITHUB_EVENT_PATH",
+    GITHUB_TOKEN: "GITHUB_TOKEN",
+    GITHUB_REPOSITORY: "GITHUB_REPOSITORY",
+    GITHUB_REF: "GITHUB_REF",
+    GITHUB_SHA: "GITHUB_SHA",
+    // Azure DevOps runtime
+    TF_BUILD: "TF_BUILD",
+    SYSTEM_ACCESSTOKEN: "SYSTEM_ACCESSTOKEN",
+    SYSTEM_TEAMPROJECT: "SYSTEM_TEAMPROJECT",
+    SYSTEM_COLLECTIONURI: "SYSTEM_COLLECTIONURI",
+    BUILD_REPOSITORY_ID: "BUILD_REPOSITORY_ID",
+    SYSTEM_PULLREQUEST_PULLREQUESTID: "SYSTEM_PULLREQUEST_PULLREQUESTID",
+    SYSTEM_PULLREQUEST_SOURCECOMMITID: "SYSTEM_PULLREQUEST_SOURCECOMMITID",
+    SYSTEM_PULLREQUEST_TARGETBRANCHNAME: "SYSTEM_PULLREQUEST_TARGETBRANCHNAME",
+    // Inputs (already wrapped as INPUT_* by GitHub)
+    INPUT_DRY_RUN: "INPUT_DRY_RUN",
+    INPUT_EVENT: "INPUT_EVENT",
+    INPUT_DIFF: "INPUT_DIFF",
+    INPUT_REVIEW: "INPUT_REVIEW",
+    INPUT_THREADS: "INPUT_THREADS",
+    INPUT_OUTPUT_ARTIFACT: "INPUT_OUTPUT_ARTIFACT",
+    INPUT_PLATFORM: "INPUT_PLATFORM",
+};
+
+
+/***/ }),
+
+/***/ 24:
+/***/ ((module) => {
+
+module.exports = __WEBPACK_EXTERNAL_createRequire(import.meta.url)("node:fs");
+
+/***/ }),
+
+/***/ 161:
+/***/ ((module) => {
+
+module.exports = __WEBPACK_EXTERNAL_createRequire(import.meta.url)("node:os");
+
+/***/ }),
+
+/***/ 379:
+/***/ ((module) => {
+
+module.exports = __WEBPACK_EXTERNAL_createRequire(import.meta.url)("node:path");
+
+/***/ })
+
+/******/ });
 /************************************************************************/
 /******/ // The module cache
 /******/ var __webpack_module_cache__ = {};
@@ -67,12 +569,12 @@ __nccwpck_require__.d(__webpack_exports__, {
   yh: () => (/* binding */ runVersion)
 });
 
-;// CONCATENATED MODULE: external "node:fs"
-const external_node_fs_namespaceObject = __WEBPACK_EXTERNAL_createRequire(import.meta.url)("node:fs");
+// EXTERNAL MODULE: external "node:fs"
+var external_node_fs_ = __nccwpck_require__(24);
 ;// CONCATENATED MODULE: external "node:fs/promises"
 const promises_namespaceObject = __WEBPACK_EXTERNAL_createRequire(import.meta.url)("node:fs/promises");
-;// CONCATENATED MODULE: external "node:path"
-const external_node_path_namespaceObject = __WEBPACK_EXTERNAL_createRequire(import.meta.url)("node:path");
+// EXTERNAL MODULE: external "node:path"
+var external_node_path_ = __nccwpck_require__(379);
 ;// CONCATENATED MODULE: ./src/config/field-schema.ts
 const FIELDS = {
     apiUrl: {
@@ -1312,8 +1814,8 @@ function unknownFlagUsageError(token, argv) {
 
 ;// CONCATENATED MODULE: external "node:child_process"
 const external_node_child_process_namespaceObject = __WEBPACK_EXTERNAL_createRequire(import.meta.url)("node:child_process");
-;// CONCATENATED MODULE: external "node:os"
-const external_node_os_namespaceObject = __WEBPACK_EXTERNAL_createRequire(import.meta.url)("node:os");
+// EXTERNAL MODULE: external "node:os"
+var external_node_os_ = __nccwpck_require__(161);
 ;// CONCATENATED MODULE: external "node:url"
 const external_node_url_namespaceObject = __WEBPACK_EXTERNAL_createRequire(import.meta.url)("node:url");
 ;// CONCATENATED MODULE: external "node:util"
@@ -1352,7 +1854,7 @@ const MIN_EXPECTED_PROVIDER_ROUND_TRIPS = 1;
 function classifyReviewArtifact(path) {
     let content;
     try {
-        content = (0,external_node_fs_namespaceObject.readFileSync)(path, "utf8");
+        content = (0,external_node_fs_.readFileSync)(path, "utf8");
     }
     catch (error) {
         if (isNodeError(error) && error.code === "ENOENT") {
@@ -1614,6 +2116,8 @@ const DEFAULT_ANTHROPIC_URL = "https://api.anthropic.com/v1";
 /** GitHub API default base URL. Used by Copilot token exchange (`provider/copilot.ts`) and Copilot routing in `cli/live-provider.ts`. */
 const DEFAULT_GITHUB_API_BASE = "https://api.github.com";
 
+// EXTERNAL MODULE: ./src/cli/init.ts + 1 modules
+var init = __nccwpck_require__(126);
 ;// CONCATENATED MODULE: ./src/cli/modes-help.ts
 /** Canonical CLI modes banner shared by help and bare invocation output. */
 const CLI_MODES_TEXT = `Modes:
@@ -1676,7 +2180,7 @@ const external_node_readline_namespaceObject = __WEBPACK_EXTERNAL_createRequire(
 
 
 
-const { join } = external_node_path_namespaceObject;
+const { join } = external_node_path_;
 
 const SHELL_RC_FILES = [".zshrc", ".bashrc", ".profile"];
 /** Default stdin reader: a single line from /dev/tty via readline, with a
@@ -1772,10 +2276,10 @@ async function defaultStdinReader(promptText, isTTY) {
     });
 }
 const defaultFsAdapter = {
-    exists: (path) => (0,external_node_fs_namespaceObject.existsSync)(path),
+    exists: (path) => (0,external_node_fs_.existsSync)(path),
     isSymlink: (path) => {
         try {
-            return (0,external_node_fs_namespaceObject.lstatSync)(path).isSymbolicLink();
+            return (0,external_node_fs_.lstatSync)(path).isSymbolicLink();
         }
         catch {
             return false;
@@ -1783,7 +2287,7 @@ const defaultFsAdapter = {
     },
     isFile: (path) => {
         try {
-            return (0,external_node_fs_namespaceObject.lstatSync)(path).isFile();
+            return (0,external_node_fs_.lstatSync)(path).isFile();
         }
         catch {
             return false;
@@ -1791,32 +2295,32 @@ const defaultFsAdapter = {
     },
     isDirectory: (path) => {
         try {
-            return (0,external_node_fs_namespaceObject.lstatSync)(path).isDirectory();
+            return (0,external_node_fs_.lstatSync)(path).isDirectory();
         }
         catch {
             return false;
         }
     },
     unlink: (path) => {
-        (0,external_node_fs_namespaceObject.unlinkSync)(path);
+        (0,external_node_fs_.unlinkSync)(path);
     },
     getMode: (path) => {
         try {
-            return (0,external_node_fs_namespaceObject.statSync)(path).mode & 0o7777;
+            return (0,external_node_fs_.statSync)(path).mode & 0o7777;
         }
         catch {
             return null;
         }
     },
     setMode: (path, mode) => {
-        (0,external_node_fs_namespaceObject.chmodSync)(path, mode);
+        (0,external_node_fs_.chmodSync)(path, mode);
     },
     removeDir: (path, options) => {
-        (0,external_node_fs_namespaceObject.rmSync)(path, { recursive: options.recursive, force: true });
+        (0,external_node_fs_.rmSync)(path, { recursive: options.recursive, force: true });
     },
-    readFile: (path) => (0,external_node_fs_namespaceObject.readFileSync)(path, "utf8"),
+    readFile: (path) => (0,external_node_fs_.readFileSync)(path, "utf8"),
     writeFile: (path, content) => {
-        (0,external_node_fs_namespaceObject.writeFileSync)(path, content, "utf8");
+        (0,external_node_fs_.writeFileSync)(path, content, "utf8");
     },
     writeFileAtomic: (path, content) => {
         // Write to a sibling temp file, then rename atomically over the
@@ -1827,13 +2331,13 @@ const defaultFsAdapter = {
         // original file is untouched.
         const tmpPath = `${path}.umactually-tmp-${process.pid}-${Date.now()}`;
         try {
-            (0,external_node_fs_namespaceObject.writeFileSync)(tmpPath, content, "utf8");
-            (0,external_node_fs_namespaceObject.renameSync)(tmpPath, path);
+            (0,external_node_fs_.writeFileSync)(tmpPath, content, "utf8");
+            (0,external_node_fs_.renameSync)(tmpPath, path);
         }
         catch (err) {
             // Best-effort cleanup of the orphan temp file.
             try {
-                (0,external_node_fs_namespaceObject.unlinkSync)(tmpPath);
+                (0,external_node_fs_.unlinkSync)(tmpPath);
             }
             catch {
                 // ignore
@@ -1892,7 +2396,7 @@ function parseUninstallArgs(argv) {
     return { mode, errors, help, json };
 }
 function classifyExecPath(execPath, platform, homeDir) {
-    const p = platform === "win32" ? external_node_path_namespaceObject.win32 : external_node_path_namespaceObject.posix;
+    const p = platform === "win32" ? external_node_path_.win32 : external_node_path_.posix;
     const name = p.basename(execPath).toLowerCase();
     if (platform === "win32") {
         if (name !== "umactually.exe") {
@@ -2086,9 +2590,9 @@ function purgeConfig(deps) {
     // "" and break the startsWith check). Instead we handle the
     // "/", "/foo", "C:\\", "C:\\Users\\foo" cases explicitly.
     for (const dir of [configDir, cacheDir]) {
-        const dirNormalized = external_node_path_namespaceObject.normalize(dir);
+        const dirNormalized = external_node_path_.normalize(dir);
         const isInsideHome = dirNormalized === deps.homeDir
-            || dirNormalized.startsWith(deps.homeDir + external_node_path_namespaceObject.sep);
+            || dirNormalized.startsWith(deps.homeDir + external_node_path_.sep);
         if (!isInsideHome) {
             checks.push({
                 id: dir === cacheDir ? "cache-removal" : "config-removal",
@@ -2270,7 +2774,7 @@ function scheduleWindowsDelayedDelete(targetPath) {
         "",
     ].join("\r\n");
     try {
-        (0,external_node_fs_namespaceObject.writeFileSync)(scriptPath, body, "utf8");
+        (0,external_node_fs_.writeFileSync)(scriptPath, body, "utf8");
         // Attach an error handler so a synchronous spawn failure
         // (e.g. on Linux where cmd.exe doesn't exist) doesn't surface
         // as an unhandled async exception after the function returns.
@@ -2368,7 +2872,7 @@ function userDeclinedPrompt(result) {
  * scannable instead of drifting as flags are added.
  *
  * `FLAG_COLUMN_WIDTH` is computed at runtime from the longest entry in
- * `HELP_FLAGS` (currently `--debug-raw-response | --no-debug-raw-response`
+ * `ALL_FLAGS_FOR_WIDTH` (currently `--debug-raw-response | --no-debug-raw-response`
  * at 46 chars). With the 2-space indent and 2-space gutter, the description
  * column starts at column 51 (1-indexed). Future flag additions are
  * trivially correct because adding a longer flag recomputes the width.
@@ -2383,6 +2887,7 @@ function userDeclinedPrompt(result) {
  * that command. This is achieved by tagging each flag with the commands
  * it applies to (`appliesTo`) and filtering at render time.
  */
+
 
 
 
@@ -2435,8 +2940,6 @@ const REVIEW_FLAGS = [
     { flag: "--simulate-findings | --no-simulate-findings", appliesTo: ["review"] },
     { flag: "--output-artifact <path>", appliesTo: ["review"] },
 ];
-/** All flags, used for the legacy `CLI_HELP_TEXT` export and column-width calc. */
-const HELP_FLAGS = [...REVIEW_FLAGS];
 /** The full flag set for column-width calculation. */
 const ALL_FLAGS_FOR_WIDTH = [...REVIEW_FLAGS, ...GLOBAL_FLAGS];
 function flagsForContext(context) {
@@ -2466,6 +2969,7 @@ function renderCommands(commands) {
 const TOP_LEVEL_COMMANDS = [
     "review                    Run PR review (default)",
     "doctor                    Check environment is ready",
+    "init                      Write ~/.umactually/config.json with provider defaults",
     "uninstall                 Remove the installed binary, config, and PATH entries",
     "check-review-artifact <path>  Validate a review artifact",
     "version                   Print version",
@@ -2478,14 +2982,14 @@ const CLI_HELP_TEXT = [
     "Commands:",
     ...TOP_LEVEL_COMMANDS.map((c) => `  ${c}`),
     "",
-    "Review flags (use `umactually review --help` for full details):",
-    ...HELP_FLAGS.map(renderFlagLine),
+    "Review flags: see `umactually review --help` for the full list.",
+    "Common: --platform --api-url --api-key --model --effort --dry-run --output-artifact --no-color --json.",
     "",
     "Global flags:",
     ...GLOBAL_FLAGS.map(renderFlagLine),
     "",
     CLI_MODES_TEXT,
-    "See exit codes: docs/exit-codes.md",
+    "Exit codes: 0=ok, 1=provider-error, 2=usage-error, 3=parse-fail, 4=auth-required, 127=bundle-missing. See docs/exit-codes.md.",
 ].join("\n");
 // ── Per-command contextual help ────────────────────────────────────────────
 const REVIEW_HELP_TEXT = [
@@ -2499,7 +3003,7 @@ const REVIEW_HELP_TEXT = [
     ...renderFlags(flagsForContext("review")),
     "",
     CLI_MODES_TEXT,
-    "See exit codes: docs/exit-codes.md",
+    "Exit codes: 0=ok, 1=provider-error, 2=usage-error, 3=parse-fail, 4=auth-required, 127=bundle-missing. See docs/exit-codes.md.",
 ].join("\n");
 const DOCTOR_HELP_TEXT = [
     `${BRAND} doctor — check that your environment is ready for review`,
@@ -2544,6 +3048,7 @@ const COMMAND_HELP = {
     review: REVIEW_HELP_TEXT,
     doctor: DOCTOR_HELP_TEXT,
     uninstall: uninstall_UNINSTALL_HELP_TEXT,
+    init: init.INIT_HELP_TEXT,
     "check-review-artifact": CHECK_REVIEW_ARTIFACT_HELP_TEXT,
 };
 /**
@@ -2604,6 +3109,7 @@ function printContextualHelp(argv) {
 const REVIEW_HELP = (/* unused pure expression or super */ null && (REVIEW_HELP_TEXT));
 const DOCTOR_HELP = (/* unused pure expression or super */ null && (DOCTOR_HELP_TEXT));
 const UNINSTALL_HELP = (/* unused pure expression or super */ null && (UNINSTALL_HELP_TEXT));
+const INIT_HELP = (/* unused pure expression or super */ null && (INIT_HELP_TEXT));
 const CHECK_REVIEW_ARTIFACT_HELP = (/* unused pure expression or super */ null && (CHECK_REVIEW_ARTIFACT_HELP_TEXT));
 
 ;// CONCATENATED MODULE: ./src/cli/no-color.ts
@@ -2625,9 +3131,121 @@ function resolveColorPolicy(opts) {
     return opts.isTTY;
 }
 
+;// CONCATENATED MODULE: ./src/util/envelope.ts
+// SPDX-License-Identifier: MIT
+//
+// M1 — EnvelopeV1: unified JSON output contract for every `--json`
+// subcommand (review, doctor, uninstall, verify).
+//
+// Every `--json` subcommand emits the SAME shape so CI consumers can
+// rely on a single parser. The shape is a STRICT SUPERSET of the
+// pre-M1 per-command JSON contracts: existing top-level fields like
+// `command`, `exitCode`, `schemaVersion`, `resolvedConfig`, and
+// `outcome` continue to appear at the top level (so legacy consumers
+// do not break), AND the full original payload is preserved under
+// `data` for consumers that prefer the new structure.
+//
+// See `.omo/plans/cli-simplification-hyperplan-bundle.md` §1.M1 for
+// the contract spec and §1.Insight 3 + §2.inversion #11 for the
+// rationale (M1 precedes every other M-step because all later steps
+// assume a uniform envelope).
+const ENVELOPE_SCHEMA_VERSION = 1;
+const ALLOWED_COMMANDS = ["review", "doctor", "uninstall", "verify"];
+/**
+ * Build an EnvelopeV1 record. Pure: no I/O, no clock side-effects
+ * beyond reading `new Date()` once. The `data` payload is copied by
+ * reference (envelope consumers are expected to be read-only).
+ *
+ * `ok` is derived from `exitCode`: it is `true` iff `exitCode === 0`.
+ * This is the single source of truth for the success/failure flag —
+ * callers MUST NOT set `ok` independently, otherwise the envelope
+ * could lie about its own exit code.
+ */
+function createEnvelope(command, data, opts = {}) {
+    if (!ALLOWED_COMMANDS.includes(command)) {
+        // Defensive guard: an unknown command name means the envelope
+        // would lie about its origin, which a CI consumer would not be
+        // able to detect. Surface it loudly rather than papering over.
+        throw new RangeError(`createEnvelope: unknown command "${command}". Expected one of: ${ALLOWED_COMMANDS.join(", ")}`);
+    }
+    const exitCode = opts.exitCode ?? 0;
+    return {
+        schemaVersion: ENVELOPE_SCHEMA_VERSION,
+        command,
+        exitCode,
+        ok: exitCode === 0,
+        startedAt: opts.startedAt ?? new Date().toISOString(),
+        durationMs: opts.durationMs ?? 0,
+        data,
+        errors: opts.errors ?? [],
+        hints: opts.hints ?? [],
+        warnings: opts.warnings ?? [],
+    };
+}
+/**
+ * Convenience wrapper around `createEnvelope` that measures wall-clock
+ * duration around an async worker. Errors thrown by the worker are
+ * captured as a single `{ code: "UNCAUGHT", message }` entry in
+ * `errors[]` and the envelope is marked `ok: false` with `exitCode: 1`.
+ *
+ * Use this when you want a uniform envelope-with-timing contract for
+ * a CLI subcommand body; for hand-built envelopes (e.g. inside a
+ * dispatch layer that already tracks its own clock) use
+ * `createEnvelope` directly.
+ */
+/**
+ * Convert a nanosecond bigint delta to a millisecond integer using
+ * integer division. We use `Number()` and `Math.trunc` rather than
+ * `Number(bigint / 1_000_000n)` so the result is bounded to
+ * `Number.MAX_SAFE_INTEGER` — safe durations are well within range.
+ */
+function hrtimeDeltaMs(startNs, endNs) {
+    const deltaNs = endNs - startNs;
+    return Math.max(0, Math.trunc(Number(deltaNs / 1000000n)));
+}
+async function envelopeFromCommand(command, worker, opts = {}) {
+    const startedAt = new Date().toISOString();
+    const startNs = process.hrtime.bigint();
+    try {
+        const data = await worker();
+        const durationMs = hrtimeDeltaMs(startNs, process.hrtime.bigint());
+        return createEnvelope(command, data, {
+            ...opts,
+            startedAt,
+            durationMs,
+            exitCode: 0,
+        });
+    }
+    catch (err) {
+        const durationMs = hrtimeDeltaMs(startNs, process.hrtime.bigint());
+        const message = err instanceof Error ? err.message : String(err);
+        return createEnvelope(command, {}, {
+            ...opts,
+            startedAt,
+            durationMs,
+            exitCode: 1,
+            errors: [{ code: "UNCAUGHT", message }],
+        });
+    }
+}
+/**
+ * Serialize an envelope to JSON and write it (followed by a single
+ * `\n`) to the supplied writable stream. Defaults to `process.stdout`.
+ *
+ * Uses `JSON.stringify` without indentation so the output is
+ * single-line (matches the pre-M1 wire shape); downstream tools
+ * already pipe through `jq -c` and the human output is the OTHER
+ * branch (the `format*Human` functions).
+ */
+function emitJsonEnvelope(envelope, out = process.stdout) {
+    out.write(`${JSON.stringify(envelope)}\n`);
+}
+
 ;// CONCATENATED MODULE: ./src/cli/dispatch.ts
 // SPDX-License-Identifier: MIT
 // Subcommand dispatch layer. Pure routing apart from delegated CLI output.
+
+
 
 
 
@@ -2679,6 +3297,8 @@ async function dispatch(argv) {
             return runUninstallBranch(stripLeadingCommand(argv, command));
         case "check-review-artifact":
             return runCheckReviewArtifactBranch(stripLeadingCommand(argv, command));
+        case "init":
+            return runInitBranch(stripLeadingCommand(argv, command));
         case "version":
             return runVersion(stripLeadingCommand(argv, command));
         default: {
@@ -2711,17 +3331,28 @@ async function runJsonReview(argv) {
     process.stdout.write = process.stderr.write.bind(process.stderr);
     try {
         const result = await runCli(reviewArgs, process.cwd());
-        const envelope = {
-            schemaVersion: 1,
-            command: "review",
-            exitCode: result.exitCode,
+        const legacyData = {
             resolvedConfig: result.resolvedConfig ?? {},
             outcome: {
                 ok: result.exitCode === 0,
-                ...result.jsonOutcome,
+                ...(result.jsonOutcome ?? {}),
             },
         };
-        const stdout = `${JSON.stringify(envelope)}\n`;
+        const envelope = createEnvelope("review", legacyData, { exitCode: result.exitCode });
+        const stdout = `${JSON.stringify({
+            schemaVersion: envelope.schemaVersion,
+            command: envelope.command,
+            exitCode: envelope.exitCode,
+            resolvedConfig: result.resolvedConfig ?? {},
+            outcome: legacyData["outcome"],
+            ok: envelope.ok,
+            startedAt: envelope.startedAt,
+            durationMs: envelope.durationMs,
+            data: envelope.data,
+            errors: envelope.errors,
+            hints: envelope.hints,
+            warnings: envelope.warnings,
+        })}\n`;
         originalWrite.call(process.stdout, stdout);
         return { exitCode: result.exitCode, stdout };
     }
@@ -2731,26 +3362,37 @@ async function runJsonReview(argv) {
 }
 function runCheckReviewArtifactBranch(args) {
     const artifactArgs = args.filter((arg) => arg !== "--no-color");
-    const path = artifactArgs[0];
-    if (path === undefined || artifactArgs.length !== 1) {
+    const json = artifactArgs.includes("--json");
+    const positionalArgs = artifactArgs.filter((arg) => arg !== "--json");
+    const path = positionalArgs[0];
+    if (path === undefined || positionalArgs.length !== 1) {
         const stderr = "usage: umactually check-review-artifact <path>\n";
         process.stderr.write(stderr);
         return { exitCode: 2, stderr };
     }
     const result = classifyReviewArtifact(path);
+    const exitCode = result.ok ? 0 : 1;
+    if (json) {
+        const envelope = createEnvelope("verify", {
+            path,
+            ok: result.ok,
+            classification: result.ok ? result.summary : "invalid",
+            reason: result.ok ? null : result.reason,
+            warnings: result.warnings,
+        }, { exitCode });
+        const stdout = `${JSON.stringify(envelope)}\n`;
+        process.stdout.write(stdout);
+        return { exitCode, stdout };
+    }
     const message = result.ok ? result.summary : result.reason;
     let stderr = `umactually: ${path}: ${message ?? "invalid artifact"}\n`;
-    // Surface each advisory warning as a GitHub Actions `::warning::`
-    // annotation (stdout) and mirror to stderr so the vitest stderr
-    // spy still captures it. Format reference:
-    // https://docs.github.com/actions/using-workflows/workflow-commands-for-github-actions
     for (const warning of result.warnings) {
         const annotation = `::warning::${warning}\n`;
         process.stdout.write(annotation);
         stderr += annotation;
     }
     process.stderr.write(stderr);
-    return { exitCode: result.ok ? 0 : 1, stderr };
+    return { exitCode, stderr };
 }
 async function runDoctorBranch(args) {
     const json = args.includes("--json");
@@ -2763,8 +3405,8 @@ async function runDoctorBranch(args) {
     // undefined.
     const isCompiledBinary = typeof UMACTUALLY_VERSION === "string";
     const packageRoot = isCompiledBinary
-        ? (0,external_node_path_namespaceObject.dirname)(process.execPath)
-        : (0,external_node_path_namespaceObject.resolve)((0,external_node_path_namespaceObject.dirname)((0,external_node_url_namespaceObject.fileURLToPath)(import.meta.url)), "..");
+        ? (0,external_node_path_.dirname)(process.execPath)
+        : (0,external_node_path_.resolve)((0,external_node_path_.dirname)((0,external_node_url_namespaceObject.fileURLToPath)(import.meta.url)), "..");
     const result = await runDoctor({
         cwd: process.cwd(),
         isTTY: process.stdout.isTTY === true,
@@ -2776,7 +3418,14 @@ async function runDoctorBranch(args) {
         },
         packageRoot,
     });
-    const stdout = json ? formatDoctorJson(result) : formatDoctorHuman(result.checks);
+    let stdout;
+    if (json) {
+        const envelope = createEnvelope("doctor", JSON.parse(formatDoctorJson(result)), { exitCode: result.exitCode });
+        stdout = `${JSON.stringify(envelope)}\n`;
+    }
+    else {
+        stdout = formatDoctorHuman(result.checks);
+    }
     process.stdout.write(stdout);
     return { exitCode: result.exitCode, stdout };
 }
@@ -2800,7 +3449,7 @@ async function runUninstallBranch(args) {
         // readline-based default, which is non-blocking and timeout-safe.
         execPath: process.execPath,
         platform: process.platform,
-        homeDir: (0,external_node_os_namespaceObject.homedir)(),
+        homeDir: (0,external_node_os_.homedir)(),
         mode,
     };
     // Gate the destructive follow-ups (--purge-config, --revert-path)
@@ -2896,11 +3545,34 @@ async function runUninstallBranch(args) {
     const checks = [...result.checks, ...additionalChecks];
     const exitCode = checks.some((c) => c.status === "fail") ? 1 : result.exitCode;
     const finalResult = { ...result, exitCode, checks };
-    const stdout = json
-        ? formatUninstallJson(finalResult, mode, deps.execPath)
-        : formatUninstallHuman(finalResult);
+    let stdout;
+    if (json) {
+        const envelope = createEnvelope("uninstall", JSON.parse(formatUninstallJson(finalResult, mode, deps.execPath)), { exitCode });
+        stdout = `${JSON.stringify(envelope)}\n`;
+    }
+    else {
+        stdout = formatUninstallHuman(finalResult);
+    }
     process.stdout.write(stdout);
     return { exitCode, stdout };
+}
+async function runInitBranch(args) {
+    const json = args.includes("--json");
+    const initArgs = args.filter((arg) => arg !== "--no-color");
+    if (initArgs.includes("--help") || initArgs.includes("-h")) {
+        const { INIT_HELP_TEXT } = await Promise.resolve(/* import() */).then(__nccwpck_require__.bind(__nccwpck_require__, 126));
+        process.stdout.write(INIT_HELP_TEXT);
+        return { exitCode: 0, stdout: INIT_HELP_TEXT };
+    }
+    const result = await (0,init/* runInitFromArgv */.yZ)(initArgs);
+    if (json && result.stdout !== undefined) {
+        process.stdout.write(result.stdout);
+        if (!result.stdout.endsWith("\n")) {
+            process.stdout.write("\n");
+        }
+        return { exitCode: result.exitCode, stdout: result.stdout };
+    }
+    return { exitCode: result.exitCode };
 }
 
 ;// CONCATENATED MODULE: ./src/security/scan-review-secrets.ts
@@ -5536,7 +6208,7 @@ const nodePromptFileSystem = {
         return (0,promises_namespaceObject.realpath)(cwd);
     },
     async realpathWithinCwd(path, cwdReal, _self) {
-        const absolute = (0,external_node_path_namespaceObject.resolve)(cwdReal, path);
+        const absolute = (0,external_node_path_.resolve)(cwdReal, path);
         let real;
         try {
             real = await (0,promises_namespaceObject.realpath)(absolute);
@@ -5557,13 +6229,13 @@ function isWithinCwdReal(real, cwdReal) {
     if (process.platform === "win32") {
         const r = real.toLowerCase();
         const c = cwdReal.toLowerCase();
-        return r === c || r.startsWith(`${c}${external_node_path_namespaceObject.sep}`);
+        return r === c || r.startsWith(`${c}${external_node_path_.sep}`);
     }
     return real === cwdReal || real.startsWith(`${cwdReal}/`);
 }
 function isWithinCwdLexical(absolute, cwdReal) {
-    const rel = external_node_path_namespaceObject.posix.relative(toPosix(cwdReal), toPosix(absolute));
-    return rel !== "" && !rel.startsWith("..") && !external_node_path_namespaceObject.posix.isAbsolute(rel);
+    const rel = external_node_path_.posix.relative(toPosix(cwdReal), toPosix(absolute));
+    return rel !== "" && !rel.startsWith("..") && !external_node_path_.posix.isAbsolute(rel);
 }
 function toPosix(value) {
     return process.platform === "win32" ? value.replace(/\\/g, "/") : value;
@@ -5586,7 +6258,7 @@ async function readPromptFiles(paths, byteCap, options) {
         if (typeof rawPath !== "string" || rawPath.length === 0) {
             throw new PromptFileError(String(rawPath), "not-found");
         }
-        if ((0,external_node_path_namespaceObject.isAbsolute)(rawPath)) {
+        if ((0,external_node_path_.isAbsolute)(rawPath)) {
             throw new PromptFileError(rawPath, "outside-cwd");
         }
         const resolved = await fs.realpathWithinCwd(rawPath, cwdReal, fs);
@@ -6392,58 +7064,8 @@ function parseActionOutputsYaml(text, diffText) {
     return null;
 }
 
-;// CONCATENATED MODULE: ./src/util/env-keys.ts
-/** Centralised env-var name registry; eliminates inline `env["..."]` strings and keeps legacy aliases visible. */
-const ENV_KEYS = {
-    // UMACTUALLY_* canonical, REVIEW_* legacy aliases
-    UMACTUALLY_API_URL: "UMACTUALLY_API_URL",
-    UMACTUALLY_API_KEY: "UMACTUALLY_API_KEY",
-    UMACTUALLY_MODEL: "UMACTUALLY_MODEL",
-    UMACTUALLY_GITHUB_API_BASE: "UMACTUALLY_GITHUB_API_BASE",
-    UMACTUALLY_INCLUDE_SONARQUBE: "UMACTUALLY_INCLUDE_SONARQUBE",
-    UMACTUALLY_SONAR_HOST_URL: "UMACTUALLY_SONAR_HOST_URL",
-    UMACTUALLY_SONAR_TOKEN: "UMACTUALLY_SONAR_TOKEN",
-    UMACTUALLY_SONAR_PROJECT_KEY: "UMACTUALLY_SONAR_PROJECT_KEY",
-    UMACTUALLY_PROMPT_FILE: "UMACTUALLY_PROMPT_FILE",
-    UMACTUALLY_PROMPT_FILES: "UMACTUALLY_PROMPT_FILES",
-    UMACTUALLY_ADDITIONAL_PROMPT_FILE: "UMACTUALLY_ADDITIONAL_PROMPT_FILE",
-    UMACTUALLY_ADDITIONAL_PROMPT_FILES: "UMACTUALLY_ADDITIONAL_PROMPT_FILES",
-    UMACTUALLY_STRICT_SCHEMA: "UMACTUALLY_STRICT_SCHEMA",
-    UMACTUALLY_VERIFY_FINDINGS: "UMACTUALLY_VERIFY_FINDINGS",
-    REVIEW_STRICT_SCHEMA: "REVIEW_STRICT_SCHEMA",
-    REVIEW_VERIFY_FINDINGS: "REVIEW_VERIFY_FINDINGS",
-    REVIEW_PROVIDER_URL: "REVIEW_PROVIDER_URL",
-    REVIEW_PROVIDER_API_KEY: "REVIEW_PROVIDER_API_KEY",
-    REVIEW_PROVIDER_MODEL: "REVIEW_PROVIDER_MODEL",
-    REVIEW_TIMEOUT_SECONDS: "REVIEW_TIMEOUT_SECONDS",
-    REVIEW_FILE_LIMIT: "REVIEW_FILE_LIMIT",
-    REVIEW_LEAK_DETECTION: "REVIEW_LEAK_DETECTION",
-    // Platform runtime
-    GITHUB_ACTIONS: "GITHUB_ACTIONS",
-    GITHUB_EVENT_PATH: "GITHUB_EVENT_PATH",
-    GITHUB_TOKEN: "GITHUB_TOKEN",
-    GITHUB_REPOSITORY: "GITHUB_REPOSITORY",
-    GITHUB_REF: "GITHUB_REF",
-    GITHUB_SHA: "GITHUB_SHA",
-    // Azure DevOps runtime
-    TF_BUILD: "TF_BUILD",
-    SYSTEM_ACCESSTOKEN: "SYSTEM_ACCESSTOKEN",
-    SYSTEM_TEAMPROJECT: "SYSTEM_TEAMPROJECT",
-    SYSTEM_COLLECTIONURI: "SYSTEM_COLLECTIONURI",
-    BUILD_REPOSITORY_ID: "BUILD_REPOSITORY_ID",
-    SYSTEM_PULLREQUEST_PULLREQUESTID: "SYSTEM_PULLREQUEST_PULLREQUESTID",
-    SYSTEM_PULLREQUEST_SOURCECOMMITID: "SYSTEM_PULLREQUEST_SOURCECOMMITID",
-    SYSTEM_PULLREQUEST_TARGETBRANCHNAME: "SYSTEM_PULLREQUEST_TARGETBRANCHNAME",
-    // Inputs (already wrapped as INPUT_* by GitHub)
-    INPUT_DRY_RUN: "INPUT_DRY_RUN",
-    INPUT_EVENT: "INPUT_EVENT",
-    INPUT_DIFF: "INPUT_DIFF",
-    INPUT_REVIEW: "INPUT_REVIEW",
-    INPUT_THREADS: "INPUT_THREADS",
-    INPUT_OUTPUT_ARTIFACT: "INPUT_OUTPUT_ARTIFACT",
-    INPUT_PLATFORM: "INPUT_PLATFORM",
-};
-
+// EXTERNAL MODULE: ./src/util/env-keys.ts
+var env_keys = __nccwpck_require__(840);
 ;// CONCATENATED MODULE: ./src/cli/provider-prompts.ts
 
 
@@ -6632,7 +7254,7 @@ function resolveDefaultPromptFilesOnce(cwd) {
                 `Entries must be relative paths with no '..' segments and no leading '/' or drive letter.`);
         }
         try {
-            const s = (0,external_node_fs_namespaceObject.statSync)((0,external_node_path_namespaceObject.join)(cwd, candidate));
+            const s = (0,external_node_fs_.statSync)((0,external_node_path_.join)(cwd, candidate));
             if (s.isFile())
                 out.push(candidate);
         }
@@ -6738,12 +7360,12 @@ async function pickSystemPrompt(input, defaultPaths) {
     //      AGENTS.md, .github/copilot-instructions.md, .cursorrules,
     //      GEMINI.md). Files that do not exist are skipped.
     //   4. Built-in `buildDefaultSystemPrompt()`.
-    const promptFilesRaw = resolveField(input.parsed.promptFiles, input.env[ENV_KEYS.UMACTUALLY_PROMPT_FILES], "");
+    const promptFilesRaw = resolveField(input.parsed.promptFiles, input.env[env_keys/* ENV_KEYS */.j.UMACTUALLY_PROMPT_FILES], "");
     const promptFilesList = splitPromptFileList(promptFilesRaw);
     if (promptFilesList.length > 0) {
         return readPromptFiles(promptFilesList, DEFAULT_PROMPT_BYTE_CAP, { cwd: input.cwd });
     }
-    const filePath = resolveField(input.parsed.promptFile, input.env[ENV_KEYS.UMACTUALLY_PROMPT_FILE], "");
+    const filePath = resolveField(input.parsed.promptFile, input.env[env_keys/* ENV_KEYS */.j.UMACTUALLY_PROMPT_FILE], "");
     if (filePath.length > 0) {
         return readPromptFiles([filePath], DEFAULT_PROMPT_BYTE_CAP, { cwd: input.cwd });
     }
@@ -6827,12 +7449,12 @@ async function readAdditionalPrompt(input, defaultPaths) {
     }
     // Precedence mirrors `pickSystemPrompt`: array overrides defaults,
     // single-file is the legacy path, then default-lookup, then empty.
-    const filesRaw = resolveField(input.parsed.additionalPromptFiles, input.env[ENV_KEYS.UMACTUALLY_ADDITIONAL_PROMPT_FILES], "");
+    const filesRaw = resolveField(input.parsed.additionalPromptFiles, input.env[env_keys/* ENV_KEYS */.j.UMACTUALLY_ADDITIONAL_PROMPT_FILES], "");
     const filesList = splitPromptFileList(filesRaw);
     if (filesList.length > 0) {
         return readPromptFiles(filesList, DEFAULT_PROMPT_BYTE_CAP, { cwd: input.cwd });
     }
-    const filePath = resolveField(input.parsed.additionalPromptFile, input.env[ENV_KEYS.UMACTUALLY_ADDITIONAL_PROMPT_FILE], "");
+    const filePath = resolveField(input.parsed.additionalPromptFile, input.env[env_keys/* ENV_KEYS */.j.UMACTUALLY_ADDITIONAL_PROMPT_FILE], "");
     if (filePath.length > 0) {
         return readPromptFiles([filePath], DEFAULT_PROMPT_BYTE_CAP, { cwd: input.cwd });
     }
@@ -6850,8 +7472,8 @@ class PlatformDetectionError extends Error {
         super("Unable to detect a supported CI platform from the process environment.");
     }
 }
-const GITHUB_ACTIONS_KEY = ENV_KEYS.GITHUB_ACTIONS;
-const AZURE_TF_BUILD_KEY = ENV_KEYS.TF_BUILD;
+const GITHUB_ACTIONS_KEY = env_keys/* ENV_KEYS */.j.GITHUB_ACTIONS;
+const AZURE_TF_BUILD_KEY = env_keys/* ENV_KEYS */.j.TF_BUILD;
 /**
  * GitHub precedence: GITHUB_ACTIONS is checked first, so a process that
  * somehow exposes both `GITHUB_ACTIONS=true` and `TF_BUILD=True` (rare,
@@ -7339,7 +7961,7 @@ function readAzureToken(env) {
     return token;
 }
 function readAzureOrg(env) {
-    const collectionUri = env[ENV_KEYS.SYSTEM_COLLECTIONURI];
+    const collectionUri = env[env_keys/* ENV_KEYS */.j.SYSTEM_COLLECTIONURI];
     if (collectionUri === undefined || collectionUri.length === 0) {
         throw new AzureContextError("AZURE_COLLECTION_URI_INVALID", "Azure Pipelines SYSTEM_COLLECTIONURI must be set.");
     }
@@ -7361,14 +7983,14 @@ function readAzureOrg(env) {
     return orgSegment;
 }
 function readAzureProject(env) {
-    const project = env[ENV_KEYS.SYSTEM_TEAMPROJECT];
+    const project = env[env_keys/* ENV_KEYS */.j.SYSTEM_TEAMPROJECT];
     if (project === undefined || project.length === 0) {
         throw new AzureContextError("AZURE_TEAM_PROJECT_MISSING", "Azure Pipelines SYSTEM_TEAMPROJECT must be set.");
     }
     return project;
 }
 function readAzureRepoId(env) {
-    const repoId = env[ENV_KEYS.BUILD_REPOSITORY_ID];
+    const repoId = env[env_keys/* ENV_KEYS */.j.BUILD_REPOSITORY_ID];
     if (repoId === undefined || repoId.length === 0) {
         throw new AzureContextError("AZURE_REPOSITORY_ID_MISSING", "Azure Pipelines BUILD_REPOSITORY_ID must be set.");
     }
@@ -7388,7 +8010,7 @@ function readAzurePrNumber(env, override) {
         }
         return override;
     }
-    const raw = env[ENV_KEYS.SYSTEM_PULLREQUEST_PULLREQUESTID];
+    const raw = env[env_keys/* ENV_KEYS */.j.SYSTEM_PULLREQUEST_PULLREQUESTID];
     if (raw === undefined || raw.length === 0) {
         throw new AzureContextError("AZURE_PR_NUMBER_INVALID", [
             "Azure Pipelines SYSTEM_PULLREQUEST_PULLREQUESTID must be set.",
@@ -7423,14 +8045,14 @@ function readAzurePrNumber(env, override) {
     return parsed;
 }
 function readAzureSha(env) {
-    const value = env[ENV_KEYS.SYSTEM_PULLREQUEST_SOURCECOMMITID];
+    const value = env[env_keys/* ENV_KEYS */.j.SYSTEM_PULLREQUEST_SOURCECOMMITID];
     if (value === undefined || value.length === 0) {
         throw new AzureContextError("AZURE_SOURCE_COMMIT_MISSING", "Azure Pipelines SYSTEM_PULLREQUEST_SOURCECOMMITID must be set.");
     }
     return value;
 }
 function readAzureTargetBranch(env) {
-    const value = env[ENV_KEYS.SYSTEM_PULLREQUEST_TARGETBRANCHNAME];
+    const value = env[env_keys/* ENV_KEYS */.j.SYSTEM_PULLREQUEST_TARGETBRANCHNAME];
     if (value === undefined || value.length === 0) {
         throw new AzureContextError("AZURE_TARGET_BRANCH_MISSING", "Azure Pipelines SYSTEM_PULLREQUEST_TARGETBRANCHNAME must be set.");
     }
@@ -7471,7 +8093,7 @@ async function readGithubContext(env) {
     };
 }
 function readGithubToken(env) {
-    const fromEnv = env[ENV_KEYS.GITHUB_TOKEN];
+    const fromEnv = env[env_keys/* ENV_KEYS */.j.GITHUB_TOKEN];
     if (typeof fromEnv === "string" && fromEnv.length > 0) {
         return fromEnv;
     }
@@ -7482,7 +8104,7 @@ function readGithubToken(env) {
     throw new GithubContextError("GITHUB_TOKEN_MISSING", "GitHub Actions GITHUB_TOKEN must be set.");
 }
 function readGithubRepo(env, fallback) {
-    const repository = env[ENV_KEYS.GITHUB_REPOSITORY] ?? fallback ?? "";
+    const repository = env[env_keys/* ENV_KEYS */.j.GITHUB_REPOSITORY] ?? fallback ?? "";
     if (repository.length === 0) {
         throw new GithubContextError("GITHUB_REPOSITORY_INVALID", "GitHub Actions GITHUB_REPOSITORY must be set as '<owner>/<name>'.");
     }
@@ -7526,7 +8148,7 @@ function readGithubSha(env, key, fallback) {
     return value;
 }
 async function readGithubPullRequestPayload(env) {
-    const eventPath = env[ENV_KEYS.GITHUB_EVENT_PATH];
+    const eventPath = env[env_keys/* ENV_KEYS */.j.GITHUB_EVENT_PATH];
     if (eventPath === undefined || eventPath.length === 0) {
         throw new GithubContextError("GITHUB_EVENT_PATH_MISSING", "GitHub Actions GITHUB_EVENT_PATH must be set for pull_request events.");
     }
@@ -14484,7 +15106,7 @@ function resolveAutoModel(input) {
     if (input.provider === "anthropic") {
         return ANTHROPIC_DEFAULT_MODEL;
     }
-    const url = resolveField(input.apiUrl, input.env[ENV_KEYS.UMACTUALLY_API_URL], "");
+    const url = resolveField(input.apiUrl, input.env[env_keys/* ENV_KEYS */.j.UMACTUALLY_API_URL], "");
     const hostname = url_extractHostname(url);
     if (hostname !== null) {
         const lowerHost = hostname.toLowerCase();
@@ -15638,7 +16260,7 @@ async function requestLiveReview(input) {
         diffText: input.diffText,
         expectedArtifact: "artifacts/manual/s5-redaction-report.json",
     });
-    const providerApiKey = requireLiveConfig(resolveField(input.parsed.apiKey, input.env[ENV_KEYS.UMACTUALLY_API_KEY], ""), ENV_KEYS.UMACTUALLY_API_KEY);
+    const providerApiKey = requireLiveConfig(resolveField(input.parsed.apiKey, input.env[env_keys/* ENV_KEYS */.j.UMACTUALLY_API_KEY], ""), env_keys/* ENV_KEYS */.j.UMACTUALLY_API_KEY);
     const modelId = readConfiguredModel(input.parsed, input.env);
     const prompts = await buildProviderPrompts(input);
     // Install an ambient severity-warning sink for the duration of this
@@ -15744,7 +16366,7 @@ async function requestLiveReview(input) {
         if (input.parsed.provider === "copilot") {
             const result = await runCopilotRequest({
                 githubToken: providerApiKey,
-                apiBase: resolveField(input.parsed.githubApiBase, input.env[ENV_KEYS.UMACTUALLY_GITHUB_API_BASE], DEFAULT_GITHUB_API_BASE),
+                apiBase: resolveField(input.parsed.githubApiBase, input.env[env_keys/* ENV_KEYS */.j.UMACTUALLY_GITHUB_API_BASE], DEFAULT_GITHUB_API_BASE),
                 system: prompts.system,
                 user: prompts.user,
                 model: modelId,
@@ -15787,7 +16409,7 @@ async function requestLiveReview(input) {
             // Messages API" block, and `validate.ts`/`orchestrator.ts`
             // which both exempt --api-url from the required check when
             // --provider anthropic is set.
-            const providerUrl = resolveField(input.parsed.apiUrl, input.env[ENV_KEYS.UMACTUALLY_API_URL], DEFAULT_ANTHROPIC_URL);
+            const providerUrl = resolveField(input.parsed.apiUrl, input.env[env_keys/* ENV_KEYS */.j.UMACTUALLY_API_URL], DEFAULT_ANTHROPIC_URL);
             let result = await runAnthropicRequest({
                 baseUrl: providerUrl,
                 apiKey: providerApiKey,
@@ -15834,7 +16456,7 @@ async function requestLiveReview(input) {
             }
             throw new LiveReviewError("PROVIDER_REQUEST_FAILED", result.error.message, { cause: result.error });
         }
-        const providerUrl = requireLiveConfig(resolveField(input.parsed.apiUrl, input.env[ENV_KEYS.UMACTUALLY_API_URL], ""), ENV_KEYS.UMACTUALLY_API_URL);
+        const providerUrl = requireLiveConfig(resolveField(input.parsed.apiUrl, input.env[env_keys/* ENV_KEYS */.j.UMACTUALLY_API_URL], ""), env_keys/* ENV_KEYS */.j.UMACTUALLY_API_URL);
         // Path-prefix heuristic: if the operator's URL looks like an
         // Anthropic-protocol gateway (any path segment equal to
         // `anthropic`, case-insensitive — MiniMax's `/anthropic`,
@@ -16673,9 +17295,9 @@ async function runLive(input) {
     const isAnthropic = input.parsed.provider === "anthropic";
     try {
         if (!isCopilot && !isAnthropic) {
-            requireLiveConfig(resolveField(input.parsed.apiUrl, env[ENV_KEYS.UMACTUALLY_API_URL], ""), ENV_KEYS.UMACTUALLY_API_URL);
+            requireLiveConfig(resolveField(input.parsed.apiUrl, env[env_keys/* ENV_KEYS */.j.UMACTUALLY_API_URL], ""), env_keys/* ENV_KEYS */.j.UMACTUALLY_API_URL);
         }
-        requireLiveConfig(resolveField(input.parsed.apiKey, env[ENV_KEYS.UMACTUALLY_API_KEY], ""), ENV_KEYS.UMACTUALLY_API_KEY);
+        requireLiveConfig(resolveField(input.parsed.apiKey, env[env_keys/* ENV_KEYS */.j.UMACTUALLY_API_KEY], ""), env_keys/* ENV_KEYS */.j.UMACTUALLY_API_KEY);
     }
     catch (error) {
         if (error instanceof RequiredConfigError) {
@@ -16947,10 +17569,10 @@ function detectLivePlatform(env) {
 }
 function readSecretValues(env) {
     return [
-        env[ENV_KEYS.UMACTUALLY_API_KEY] ?? "",
-        env[ENV_KEYS.REVIEW_PROVIDER_API_KEY] ?? "",
-        env[ENV_KEYS.GITHUB_TOKEN] ?? "",
-        env[ENV_KEYS.SYSTEM_ACCESSTOKEN] ?? "",
+        env[env_keys/* ENV_KEYS */.j.UMACTUALLY_API_KEY] ?? "",
+        env[env_keys/* ENV_KEYS */.j.REVIEW_PROVIDER_API_KEY] ?? "",
+        env[env_keys/* ENV_KEYS */.j.GITHUB_TOKEN] ?? "",
+        env[env_keys/* ENV_KEYS */.j.SYSTEM_ACCESSTOKEN] ?? "",
         env["AZURE_DEVOPS_TOKEN"] ?? "",
     ];
 }
@@ -17033,7 +17655,7 @@ async function runDryRun(parsed, cwd, platform) {
     const envSources = readEnvSources(process.env);
     const artifactBody = await buildDryRunArtifact(parsed, platform, cwd);
     mergeEnvDiagnostics(artifactBody, envSources);
-    await (0,promises_namespaceObject.mkdir)((0,external_node_path_namespaceObject.dirname)(artifactPath), { recursive: true });
+    await (0,promises_namespaceObject.mkdir)((0,external_node_path_.dirname)(artifactPath), { recursive: true });
     await (0,promises_namespaceObject.writeFile)(artifactPath, `${JSON.stringify(artifactBody, null, 2)}\n`, "utf8");
     process.stdout.write(`${BRAND_PREFIX}dry-run wrote ${artifactPath}\n`);
     return { exitCode: 0 };
@@ -17131,12 +17753,12 @@ function buildSecretsDetected(env) {
 }
 function resolveArtifactPath(outputArtifact, platform, cwd) {
     if (outputArtifact !== null) {
-        return (0,external_node_path_namespaceObject.isAbsolute)(outputArtifact) ? outputArtifact : (0,external_node_path_namespaceObject.resolve)(cwd, outputArtifact);
+        return (0,external_node_path_.isAbsolute)(outputArtifact) ? outputArtifact : (0,external_node_path_.resolve)(cwd, outputArtifact);
     }
     const defaultRelative = platform === "github"
         ? "artifacts/manual/s1-github-self-review.md"
         : DEFAULT_AZURE_ARTIFACT;
-    return (0,external_node_path_namespaceObject.resolve)(cwd, defaultRelative);
+    return (0,external_node_path_.resolve)(cwd, defaultRelative);
 }
 async function buildDryRunArtifact(parsed, platform, cwd) {
     if (platform === "github") {
@@ -17280,7 +17902,7 @@ async function maybeMergeSonarReport(parsed, body) {
     body["sonarReport"] = report;
 }
 async function readRequiredFile(path, cwd, label) {
-    const absolute = (0,external_node_path_namespaceObject.isAbsolute)(path) ? path : (0,external_node_path_namespaceObject.resolve)(cwd, path);
+    const absolute = (0,external_node_path_.isAbsolute)(path) ? path : (0,external_node_path_.resolve)(cwd, path);
     try {
         return await (0,promises_namespaceObject.readFile)(absolute, "utf8");
     }
@@ -17333,7 +17955,7 @@ function validateLiveArtifact(artifactPath, reviewExitCode) {
         return reviewExitCode;
     }
     process.stderr.write(`${BRAND_PREFIX}${artifactPath}: ${classification.reason ?? "invalid review artifact"}\n`);
-    return 1;
+    return 3;
 }
 /**
  * Persist the live review outcome to the same artifact path the dry-run
@@ -17369,7 +17991,7 @@ async function writeLiveArtifact(parsed, cwd, platform, result) {
     // via the GitHub/Azure API leaves no local trace and the guard sees
     // an empty artifact directory.
     const artifactPath = resolveArtifactPath(parsed.outputArtifact, platform, cwd);
-    await (0,promises_namespaceObject.mkdir)((0,external_node_path_namespaceObject.dirname)(artifactPath), { recursive: true });
+    await (0,promises_namespaceObject.mkdir)((0,external_node_path_.dirname)(artifactPath), { recursive: true });
     if (!result.posted) {
         const body = {
             artifactPath,
@@ -17485,7 +18107,7 @@ async function runStandalone(input) {
         // wrapper-era assumption that the operator always has a diff to
         // review; in the CLI-only world the operator may just want to
         // confirm the CLI boots in their cwd.
-        const artifactPath = (0,external_node_path_namespaceObject.resolve)(input.cwd, input.overrideArtifactPath ?? "./umactually-review.json");
+        const artifactPath = (0,external_node_path_.resolve)(input.cwd, input.overrideArtifactPath ?? "./umactually-review.json");
         const note = "No diff content was found; provider review was skipped.";
         const body = {
             mode: "standalone",
@@ -17510,7 +18132,7 @@ async function runStandalone(input) {
             `${BRAND_PREFIX}no diff was supplied or none could be auto-derived (e.g. cwd is not a git repo with uncommitted changes or no diff was supplied). The CLI wrote a no-posting artifact instead of failing; supply --event and --diff, or run inside a git repo with uncommitted changes, or commit your changes first.\n`);
         return { kind: "ok", artifactPath, review: body.review };
     }
-    const artifactPath = (0,external_node_path_namespaceObject.resolve)(input.cwd, input.overrideArtifactPath ?? "./umactually-review.json");
+    const artifactPath = (0,external_node_path_.resolve)(input.cwd, input.overrideArtifactPath ?? "./umactually-review.json");
     const diffText = await (0,promises_namespaceObject.readFile)(input.parsed.diffPath, "utf8");
     const providerApiKey = input.parsed.apiKey ?? "";
     if (diffText.length === 0) {
@@ -17627,7 +18249,7 @@ function reasonFor(error) {
     return error instanceof Error ? error.message : String(error);
 }
 async function candidatePaths(inputPath, cwd) {
-    const absolute = (0,external_node_path_namespaceObject.resolve)(cwd, inputPath);
+    const absolute = (0,external_node_path_.resolve)(cwd, inputPath);
     let info;
     try {
         info = await promises_namespaceObject.lstat(absolute);
@@ -17646,7 +18268,7 @@ async function candidatePaths(inputPath, cwd) {
         const entries = await promises_namespaceObject.readdir(absolute, { recursive: true, withFileTypes: true });
         return entries
             .filter((entry) => entry.isFile() && !entry.isSymbolicLink())
-            .map((entry) => (0,external_node_path_namespaceObject.resolve)(entry.parentPath, entry.name));
+            .map((entry) => (0,external_node_path_.resolve)(entry.parentPath, entry.name));
     }
     catch (error) {
         console.error(`${BRAND_PREFIX}--files: skipped ${inputPath} (${reasonFor(error)})`);
@@ -17677,7 +18299,7 @@ async function collectFiles(paths, cwd) {
     const candidates = (await Promise.all(paths.map((path) => candidatePaths(path, cwd)))).flat();
     const unique = new Set();
     for (const absolute of candidates) {
-        const relativePath = (0,external_node_path_namespaceObject.relative)(cwd, absolute).replaceAll("\\", "/");
+        const relativePath = (0,external_node_path_.relative)(cwd, absolute).replaceAll("\\", "/");
         if (isExcludedPath(relativePath)) {
             continue;
         }
@@ -17693,7 +18315,7 @@ async function collectFiles(paths, cwd) {
             console.error(`${BRAND_PREFIX}--files: skipped ${relativePath} (binary)`);
             continue;
         }
-        unique.add((0,external_node_fs_namespaceObject.realpathSync)(absolute));
+        unique.add((0,external_node_fs_.realpathSync)(absolute));
     }
     return Array.from(unique).sort((a, b) => a.localeCompare(b));
 }
@@ -17721,7 +18343,7 @@ async function synthesize(files, cwd) {
     const blocks = [];
     for (const absolute of files) {
         const content = truncate(await promises_namespaceObject.readFile(absolute, "utf8"));
-        const relativePath = (0,external_node_path_namespaceObject.relative)(cwd, absolute).replaceAll("\\", "/");
+        const relativePath = (0,external_node_path_.relative)(cwd, absolute).replaceAll("\\", "/");
         blocks.push(diffBlock(relativePath, content));
     }
     return blocks.join("\n");
@@ -17729,8 +18351,8 @@ async function synthesize(files, cwd) {
 async function runLocalFilesReview(input) {
     const paths = splitPaths(input.parsed.files);
     const files = await collectFiles(paths, input.cwd);
-    const diffPath = (0,external_node_path_namespaceObject.join)(input.cwd, ".umactually-auto-ctx", `local-files-${input.parsed.dryRun ? "dry-run" : (0,external_node_crypto_namespaceObject.randomUUID)()}.diff`);
-    const artifactPath = (0,external_node_path_namespaceObject.resolve)(input.cwd, input.overrideArtifactPath ?? "./umactually-review.json");
+    const diffPath = (0,external_node_path_.join)(input.cwd, ".umactually-auto-ctx", `local-files-${input.parsed.dryRun ? "dry-run" : (0,external_node_crypto_namespaceObject.randomUUID)()}.diff`);
+    const artifactPath = (0,external_node_path_.resolve)(input.cwd, input.overrideArtifactPath ?? "./umactually-review.json");
     if (files.length === 0) {
         return { kind: "ok-no-files", artifactPath, note: "no files matched (excluded or non-existent)" };
     }
@@ -17738,7 +18360,7 @@ async function runLocalFilesReview(input) {
     if (input.parsed.dryRun) {
         return { kind: "ok", artifactPath: diffPath, review: { comments: [], verdict: "COMMENT", summary: "local-files dry run" } };
     }
-    await promises_namespaceObject.mkdir((0,external_node_path_namespaceObject.join)(input.cwd, ".umactually-auto-ctx"), { recursive: true });
+    await promises_namespaceObject.mkdir((0,external_node_path_.join)(input.cwd, ".umactually-auto-ctx"), { recursive: true });
     await promises_namespaceObject.writeFile(diffPath, diffText, "utf8");
     const result = await runStandalone({
         parsed: { ...input.parsed, diffPath, files: null }, cwd: input.cwd, env: input.env,
@@ -18080,7 +18702,7 @@ function writeSyntheticEventJson(filePath, args) {
         action: "synthetic",
         sender: { login: "local-smoke-test" },
     };
-    (0,external_node_fs_namespaceObject.writeFileSync)(filePath, `${JSON.stringify(event, null, 2)}\n`, "utf8");
+    (0,external_node_fs_.writeFileSync)(filePath, `${JSON.stringify(event, null, 2)}\n`, "utf8");
     return filePath;
 }
 /**
@@ -18089,7 +18711,7 @@ function writeSyntheticEventJson(filePath, args) {
  * recursive remove. The directory is created lazily on first write.
  */
 function tempDirPath(cwd) {
-    return (0,external_node_path_namespaceObject.join)(cwd, ".umactually-auto-ctx");
+    return (0,external_node_path_.join)(cwd, ".umactually-auto-ctx");
 }
 /** True when the named local branch ref resolves. */
 function localBranchExists(cwd, branch) {
@@ -18168,19 +18790,19 @@ function deriveContextFromGit(input) {
     const tempDir = tempDirPath(cwd);
     const diffPath = diffOverride !== undefined && diffOverride !== null
         ? diffOverride
-        : (0,external_node_path_namespaceObject.join)(tempDir, "diff.patch");
+        : (0,external_node_path_.join)(tempDir, "diff.patch");
     const eventPath = eventOverride !== undefined && eventOverride !== null
         ? eventOverride
-        : (0,external_node_path_namespaceObject.join)(tempDir, "event.json");
+        : (0,external_node_path_.join)(tempDir, "event.json");
     // 6. write the generated files (only if not overridden). Do NOT throw
     // if the diff is empty — that's fine for smoke tests on the default branch.
     if (diffOverride === undefined || diffOverride === null) {
         const diffOutput = gitOrThrow(cwd, ["diff", `${base}...HEAD`]);
-        (0,external_node_fs_namespaceObject.mkdirSync)(tempDir, { recursive: true });
-        (0,external_node_fs_namespaceObject.writeFileSync)(diffPath, diffOutput, "utf8");
+        (0,external_node_fs_.mkdirSync)(tempDir, { recursive: true });
+        (0,external_node_fs_.writeFileSync)(diffPath, diffOutput, "utf8");
     }
     if (eventOverride === undefined || eventOverride === null) {
-        (0,external_node_fs_namespaceObject.mkdirSync)(tempDir, { recursive: true });
+        (0,external_node_fs_.mkdirSync)(tempDir, { recursive: true });
         writeSyntheticEventJson(eventPath, { branch: currentBranch, base, repo });
     }
     // 7. posting identity is null. The caller (src/cli.ts) gates posting
@@ -18260,7 +18882,7 @@ function readPackageVersion() {
         return UMACTUALLY_VERSION;
     }
     const packageJsonUrl = __nccwpck_require__.ab + "package.json";
-    const raw = (0,external_node_fs_namespaceObject.readFileSync)(packageJsonUrl, "utf8");
+    const raw = (0,external_node_fs_.readFileSync)(packageJsonUrl, "utf8");
     const parsed = JSON.parse(raw);
     if (typeof parsed.version !== "string" || parsed.version.length === 0) {
         throw new Error("package.json is missing a string `version` field");
@@ -18366,7 +18988,7 @@ function runVersion(_argv) {
     const versionFile = process.env["UMACTUALLY_VERSION_FILE"];
     if (versionFile) {
         try {
-            (0,external_node_fs_namespaceObject.writeFileSync)(versionFile, stdout);
+            (0,external_node_fs_.writeFileSync)(versionFile, stdout);
             // Don't `return early` — still attempt the stdout tiers
             // so consumers that don't use the env var get the same
             // behavior as before. The env-var file is a bypass, not
@@ -18418,7 +19040,7 @@ function runVersion(_argv) {
     // cascade.
     let written = false;
     try {
-        (0,external_node_fs_namespaceObject.writeFileSync)(process.stdout.fd, stdout);
+        (0,external_node_fs_.writeFileSync)(process.stdout.fd, stdout);
         written = true;
     }
     catch {
@@ -18426,7 +19048,7 @@ function runVersion(_argv) {
     }
     if (!written) {
         try {
-            (0,external_node_fs_namespaceObject.writeSync)(1, stdout);
+            (0,external_node_fs_.writeSync)(1, stdout);
             written = true;
         }
         catch {
@@ -18559,7 +19181,7 @@ async function cleanupGeneratedArtifacts(generatedArtifacts, cwd) {
     if (generatedArtifacts.length === 0) {
         return;
     }
-    const tempDir = (0,external_node_path_namespaceObject.join)(cwd, ".umactually-auto-ctx");
+    const tempDir = (0,external_node_path_.join)(cwd, ".umactually-auto-ctx");
     try {
         await (0,promises_namespaceObject.rm)(tempDir, { recursive: true, force: true });
     }
@@ -18685,8 +19307,13 @@ async function runCli(args, cwd) {
                 errors.some((e) => e.flag === "--api-url" || e.flag === "--api-key")) {
                 process.stderr.write(`\n${BRAND_PREFIX}pick a mode:\n\n${CLI_MODES_TEXT}`);
             }
+            // M7 (additive exit codes): when the ONLY validation errors are
+            // auth-related (every error's flag is --api-url or --api-key),
+            // exit 4 instead of 2. This is the "auth-required" path.
+            const everyErrorIsAuth = errors.length > 0 && args.length > 0 && errors.every((e) => e.flag === "--api-url" || e.flag === "--api-key");
+            const exitCode = everyErrorIsAuth ? 4 : 2;
             return {
-                exitCode: 2,
+                exitCode,
                 resolvedConfig: buildSanitizedResolvedConfig(resolved),
             };
         }
@@ -18883,7 +19510,7 @@ function argv1LooksLikeSeaBinary(argv1) {
 function argv1IsNpmShimSymlink(argv1) {
     let argv1Realpath;
     try {
-        argv1Realpath = (0,external_node_fs_namespaceObject.realpathSync)(argv1);
+        argv1Realpath = (0,external_node_fs_.realpathSync)(argv1);
     }
     catch {
         return false;
@@ -18907,7 +19534,7 @@ function argv1IsNpmShimSymlink(argv1) {
 function argv1MatchesModuleUrl(argv1) {
     const argv1Real = (() => {
         try {
-            return (0,external_node_fs_namespaceObject.realpathSync)(argv1);
+            return (0,external_node_fs_.realpathSync)(argv1);
         }
         catch {
             return argv1;
