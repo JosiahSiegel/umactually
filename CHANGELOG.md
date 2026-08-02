@@ -10,6 +10,32 @@ ship a tag).
 
 ## [Unreleased]
 
+## [0.6.22] - 2026-08-02
+
+### Added
+
+- **`umactually init --provider <openai|anthropic|copilot> [--apply]`** — new subcommand that scaffolds `~/.umactually/config.json` from the current `UMACTUALLY_*` env vars. Dry-run by default; `--apply` writes the file. Falls back to the existing flag/env contract when no init file exists, so the new command is purely additive.
+- **Unified JSON envelope (`EnvelopeV1`)** for every `--json` subcommand. Top-level shape: `schemaVersion`, `command`, `exitCode`, `ok`, `startedAt`, `durationMs`, `data`, `errors`, `hints`, `warnings`. `ok` is derived from `exitCode` (single source of truth). Implemented as a strict superset of the pre-v0.6.22 per-command JSON contracts — legacy top-level keys (`command`, `exitCode`, `resolvedConfig`, `outcome`) are preserved alongside the new fields, so existing parsers keep working.
+- **`umactually verify <path> [--json]`** — shorter alias for `check-review-artifact`. Both names invoke the same handler and emit identical EnvelopeV1 output. `check-review-artifact` remains supported without a deprecation warning in this release; removal deferred to v0.7.0 per the plan.
+- **`umactually doctor --suggested-config`** — after running the diagnostic checks, prints a copy-pasteable config suggestion for the highest-priority failing check (priority order: `dist-freshness` > `node-version` > `git-context` > `api-key` > `api-url` > `provider-config`). Read-only; never mutates state. Suggestion surfaces in `data.suggestion` under `--json`.
+- **`umactually doctor --fix <check-id> [--yes]`** — opt-in, idempotent repair for failing checks. Supported check IDs: `dist-freshness` (runs `npm run bundle`), `provider-config` (prints the `init` command to run), `node-version` (no-op; surfaces the install hint). Each repair wrapped in try/catch; failures return `exitCode: 2` (unknown check-id) or `exitCode: 1` (repair threw). Requires `--yes` or `UMACTUALLY_DOCTOR_FIX_YES=1` to run.
+- **Additive exit codes 3 (parse-fail) and 4 (auth-required)**. Existing codes `0`, `1`, `2`, `127` are byte-identical for every current code path. New codes surface in `docs/exit-codes.md` and the top-level `--help` footer. The new `--fix bogus` exit path is `2`; the new parse-fail path is `3`; the missing `--api-key`/`--api-url` path is `4`.
+
+### Changed
+
+- **Top-level `--help` shortened** from 77 lines to ~39 lines by replacing the 42-flag wall with a 2-line pointer to `umactually review --help`. The full flag list still appears under `umactually review --help`. The bare-invocation modes banner (`CLI_MODES_TEXT`) is preserved verbatim — it's load-bearing for onboarding docs and CI scripts.
+- **README rewritten** to follow the universal `Hero > Installation > Quickstart > Commands > Contributing > License` structure. Trimmed from 188 to 98 lines. Front-loads install (3 lines), the 60-second ramp (`init > doctor > review --dry-run > review`), and the canonical CI workflow pointers. Complex content (curl-pipe installer, OIDC publish, env-var precedence, provider wire shapes, troubleshooting, security model) moved to `docs/`.
+- **`UMACTUALLY_INTERACTIVE` flag support** continues to be deferred (was promised in v0.6.15 release notes as a follow-up); this release does not add or remove it.
+
+### Fixed
+
+- **`cli-verify-alias` M3-002** was comparing `runJsonReview` stdout byte-for-byte; the EnvelopeV1 `startedAt` timestamp drifts by 1ms between two calls, causing intermittent CI failures. Now compares `exitCode`, `ok`, and `data` structurally (timestamps excluded by design).
+- **e2e `cli-only-github` test** pinned the old exit-1-for-parse-fail behavior; updated to exit 3 per the M7 contract.
+
+### Deprecated
+
+- **`check-review-artifact`**: still supported in v0.6.22, but `verify` is the new canonical name. Removal in v0.7.0.
+
 ## [0.6.21] - 2026-08-01
 
 ### Fixed

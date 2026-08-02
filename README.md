@@ -6,7 +6,7 @@ AI-powered PR review that posts inline comments to your pull requests. Works wit
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 [![Node.js >=24](https://img.shields.io/badge/node-%3E%3D24-339933.svg)](https://nodejs.org/)
 
-Latest release: **[v0.6.21](https://github.com/JosiahSiegel/umactually/releases/tag/v0.6.21)** — see [all releases](https://github.com/JosiahSiegel/umactually/releases).
+Latest release: **[v0.6.22](https://github.com/JosiahSiegel/umactually/releases/tag/v0.6.22)** — see [all releases](https://github.com/JosiahSiegel/umactually/releases).
 
 ## Installation
 

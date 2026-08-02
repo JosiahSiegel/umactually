@@ -11,7 +11,7 @@
 | 4 | auth-required | the operator passed review flags but no `--api-key` / `UMACTUALLY_API_KEY` (and no `--api-url` / `UMACTUALLY_API_URL` for non-Copilot, non-Anthropic providers) was supplied and the `init` config did not provide them either |
 | 127 | missing bundle | `dist/cli.js` not built (run `npm run bundle`) |
 
-> **M7 addendum**: codes 3 and 4 are additive (added by the upcoming release). Codes 0/1/2/127 are byte-identical to v0.6.21 — no operator workflow keyed on those codes will break. The `cli: --api-key is required` legacy stderr line is still emitted on exit 4 so external CI scrapers keep working.
+> **M7 addendum**: codes 3 and 4 are additive (added by the upcoming release). Codes 0/1/2/127 are byte-identical to v0.6.22 — no operator workflow keyed on those codes will break. The `cli: --api-key is required` legacy stderr line is still emitted on exit 4 so external CI scrapers keep working.
 
 ## Wiring CI around exit codes
 
