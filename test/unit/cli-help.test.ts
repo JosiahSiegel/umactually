@@ -10,28 +10,28 @@ import {
 
 describe("CLI help text", () => {
   it("mentions --prompt-files so operators discover the new array override", () => {
-    expect(CLI_HELP_TEXT).toContain("--prompt-files");
+    // M6: trim moved the full flag list from CLI_HELP_TEXT to REVIEW_HELP
+    // (the `umactually review --help` surface); consult that for the
+    // override language.
+    expect(REVIEW_HELP).toContain("--prompt-files");
   });
 
   it("mentions --additional-prompt-files so operators discover the new array override", () => {
-    expect(CLI_HELP_TEXT).toContain("--additional-prompt-files");
+    // See the --prompt-files test above for the M6 trim context.
+    expect(REVIEW_HELP).toContain("--additional-prompt-files");
   });
 
   it("documents that --prompt-files / --additional-prompt-files OVERRIDE the default lookup list", () => {
-    // The help text MUST explain the override semantics so an operator
-    // reading `umactually --help` understands the new
-    // behavior. If a future edit drops the override-language, the
-    // operator can no longer discover the auto-lookup behavior from
-    // --help output alone.
-    expect(CLI_HELP_TEXT).toMatch(/--prompt-files[^]*overrides defaults/u);
-    expect(CLI_HELP_TEXT).toMatch(/--additional-prompt-files[^]*overrides defaults/u);
+    // M6: review-help owns the full flag documentation; top-level --help
+    // is a pointer to it.
+    expect(REVIEW_HELP).toMatch(/--prompt-files[^]*overrides defaults/u);
+    expect(REVIEW_HELP).toMatch(/--additional-prompt-files[^]*overrides defaults/u);
   });
 
   it("mentions the existing --prompt-file and --additional-prompt-file (back-compat surface)", () => {
-    // Regression: if the legacy single-file flags drop off the help
-    // text, operators who scripted against them lose discoverability.
-    expect(CLI_HELP_TEXT).toContain("--prompt-file <path>");
-    expect(CLI_HELP_TEXT).toContain("--additional-prompt-file <path>");
+    // REVIEW_HELP is the legacy single-file flag discoverability surface.
+    expect(REVIEW_HELP).toContain("--prompt-file <path>");
+    expect(REVIEW_HELP).toContain("--additional-prompt-file <path>");
   });
 
   it("contains a Modes: banner so operators can see the three invocation modes at a glance", () => {
@@ -181,10 +181,23 @@ describe("Help text structural invariants (catches spread-of-string regressions)
     expect(pathLine).toContain("check-review-artifact <path>");
   });
 
-  it("top-level CLI_HELP_TEXT keeps the --api-url flag on its own line", () => {
-    const lines = CLI_HELP_TEXT.split("\n");
+  it("REVIEW_HELP keeps the --api-url flag on its own line", () => {
+    // M6: the full flag list moved to REVIEW_HELP; that is the surface
+    // operators reach when they need the placeholder syntax.
+    const lines = REVIEW_HELP.split("\n");
     const apiUrlLine = lines.find((line) => line.includes("--api-url"));
     expect(apiUrlLine).toBeDefined();
     expect(apiUrlLine).toMatch(/--api-url\s+<url>/u);
+  });
+
+  it("CLI_HELP_TEXT keeps the --platform flag on its own line (sanity check on the trimmed pointer)", () => {
+    // M6: the pointer line lists common flags inline. The reviewer
+    // guards against the regression where the list spans multiple lines
+    // (the spread-of-string bug this section was added to catch).
+    const lines = CLI_HELP_TEXT.split("\n");
+    const platformLine = lines.find((line) => line.includes("--platform"));
+    expect(platformLine).toBeDefined();
+    expect(platformLine).toContain("--platform");
+    expect(platformLine).toContain("--api-url");
   });
 });
