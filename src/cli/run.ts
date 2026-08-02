@@ -411,7 +411,7 @@ export function validateLiveArtifact(
   process.stderr.write(
     `${BRAND_PREFIX}${artifactPath}: ${classification.reason ?? "invalid review artifact"}\n`,
   );
-  return 1;
+  return 3;
 }
 
 /**

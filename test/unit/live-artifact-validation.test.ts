@@ -67,7 +67,7 @@ describe("automatic live artifact validation", () => {
     expect(result.exitCode).toBe(0);
   });
 
-  it("maps an empty persisted artifact to runtime exit 1", () => {
+  it("maps an empty persisted artifact to runtime exit 3 (parse-fail)", () => {
     // Given
     const path = artifactWith("");
 
@@ -75,10 +75,10 @@ describe("automatic live artifact validation", () => {
     const exitCode = validateLiveArtifact(path, 0);
 
     // Then
-    expect(exitCode).toBe(1);
+    expect(exitCode).toBe(3);
   });
 
-  it("maps a parse-fail sentinel artifact to runtime exit 1", () => {
+  it("maps a parse-fail sentinel artifact to runtime exit 3", () => {
     // Given
     const path = artifactWith("Parse failed — provider response");
 
@@ -86,10 +86,10 @@ describe("automatic live artifact validation", () => {
     const exitCode = validateLiveArtifact(path, 0);
 
     // Then
-    expect(exitCode).toBe(1);
+    expect(exitCode).toBe(3);
   });
 
-  it("maps an explicitly contradictory artifact to runtime exit 1", () => {
+  it("maps an explicitly contradictory artifact to runtime exit 3", () => {
     // Given
     const path = artifactWith(JSON.stringify({
       event: "REQUEST_CHANGES",
@@ -102,10 +102,10 @@ describe("automatic live artifact validation", () => {
     const exitCode = validateLiveArtifact(path, 0);
 
     // Then
-    expect(exitCode).toBe(1);
+    expect(exitCode).toBe(3);
   });
 
-  it("maps NEEDS_FIX with zero findings to runtime exit 1", () => {
+  it("maps NEEDS_FIX with zero findings to runtime exit 3", () => {
     // Given
     const path = artifactWith(JSON.stringify({
       event: "REQUEST_CHANGES",
@@ -118,10 +118,10 @@ describe("automatic live artifact validation", () => {
     const exitCode = validateLiveArtifact(path, 0);
 
     // Then
-    expect(exitCode).toBe(1);
+    expect(exitCode).toBe(3);
   });
 
-  it("preserves the live review's existing parse-fail exit 1", async () => {
+  it("preserves the live review's parse-fail exit 3 (M7 additive code)", async () => {
     // Given
     const cwd = temporaryDirectory();
     runOrchestrator.mockResolvedValue({
@@ -135,7 +135,7 @@ describe("automatic live artifact validation", () => {
     const result = await dispatchLive(parsed(), cwd, GITHUB_ENV);
 
     // Then
-    expect(result.exitCode).toBe(1);
+    expect(result.exitCode).toBe(3);
   });
 
   it("does not auto-validate the standalone dry-run path", async () => {
@@ -172,7 +172,7 @@ describe("automatic live artifact validation", () => {
     const result = await dispatchLive(parsed(relativePath), cwd, GITHUB_ENV);
 
     // Then
-    expect(result.exitCode).toBe(1);
+    expect(result.exitCode).toBe(3);
     expect(stderr).toHaveBeenCalledWith(
       expect.stringContaining(join(cwd, relativePath)),
     );

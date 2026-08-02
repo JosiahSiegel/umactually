@@ -569,8 +569,15 @@ export async function runCli(args: readonly string[], cwd: string): Promise<CliE
       ) {
         process.stderr.write(`\n${BRAND_PREFIX}pick a mode:\n\n${CLI_MODES_TEXT}`);
       }
+      // M7 (additive exit codes): when the ONLY validation errors are
+      // auth-related (every error's flag is --api-url or --api-key),
+      // exit 4 instead of 2. This is the "auth-required" path.
+      const everyErrorIsAuth = errors.length > 0 && args.length > 0 && errors.every(
+        (e) => e.flag === "--api-url" || e.flag === "--api-key",
+      );
+      const exitCode: 2 | 4 = everyErrorIsAuth ? 4 : 2;
       return {
-        exitCode: 2,
+        exitCode,
         resolvedConfig: buildSanitizedResolvedConfig(resolved),
       };
     }

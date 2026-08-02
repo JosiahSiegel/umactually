@@ -62,12 +62,21 @@ describe("docs/exit-codes.md", () => {
     expect(docBody).toMatch(/internal/u);
   });
 
-  it("documents exit code 2 — validation error (src/cli.ts validation gate)", () => {
-    // exit 2 is the validation-gate contract: collectValidationErrors()
-    // returns non-empty in src/cli.ts:179-194. The doc MUST mention
-    // validation so operators don't conflate it with the generic 1.
+  it("documents exit code 2 — usage error (src/cli.ts validation gate)", () => {
     expect(docBody).toMatch(/\| 2 \|/u);
-    expect(docBody).toMatch(/validation error/u);
+    expect(docBody).toMatch(/usage error/u);
+  });
+
+  it("documents exit code 3 — parse-fail (M7 additive, classifyReviewArtifact reject)", () => {
+    expect(docBody).toMatch(/\| 3 \|/u);
+    expect(docBody).toMatch(/parse-fail/u);
+    expect(docBody).toMatch(/classifyReviewArtifact/u);
+  });
+
+  it("documents exit code 4 — auth-required (M7 additive, missing --api-key / --api-url)", () => {
+    expect(docBody).toMatch(/\| 4 \|/u);
+    expect(docBody).toMatch(/auth-required/u);
+    expect(docBody).toMatch(/--api-key/u);
   });
 
   it("documents exit code 127 — missing bundle (bin/...mjs dist guard)", () => {

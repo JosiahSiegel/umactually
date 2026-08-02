@@ -118,13 +118,18 @@ describe("CLI-only posting validation regression", () => {
       });
 
       // Then: runtime/provider failure is allowed, but wrapper-plumbing validation is not.
+      // M7: the parse-fail path now exits 3 (separate from provider-error exit 1).
+      // The test accepts all three of 0, 1, 3 because the failure depends on
+      // whether the orchestrator hits the network (1) or the artifact is
+      // rejected by classifyReviewArtifact (3). The KEY constraint is that
+      // the CLI does NOT report a wrapper-plumbing validation error.
       const stdout = result.stdout ?? "";
       const envelopeStatus = reviewEnvelopeExitCode(stdout);
       const status = envelopeStatus ?? result.status;
       if (process.platform === "win32" && envelopeStatus !== null && result.status !== envelopeStatus) {
         console.warn(`CLI validation ignored Windows libuv teardown status ${String(result.status)}; JSON envelope reported ${envelopeStatus}.`);
       }
-      expect([0, 1]).toContain(status);
+      expect([0, 1, 3]).toContain(status);
       expect(`${stdout}\n${result.stderr ?? ""}`).not.toMatch(/(?:--diff|--event|--pr-number|--repo|--review).*required/iu);
     } finally {
       rmSync(workspace, { recursive: true, force: true });
