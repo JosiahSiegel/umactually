@@ -87,6 +87,9 @@ export async function dispatch(argv: readonly string[]): Promise<DispatchResult 
       return runUninstallBranch(stripLeadingCommand(argv, command));
     case "check-review-artifact":
       return runCheckReviewArtifactBranch(stripLeadingCommand(argv, command));
+    case "verify":
+      // M3 alias for `check-review-artifact`; identical IO via the same handler.
+      return runCheckReviewArtifactBranch(stripLeadingCommand(argv, command));
     case "init":
       return runInitBranch(stripLeadingCommand(argv, command));
     case "version":
@@ -198,13 +201,10 @@ function runCheckReviewArtifactBranch(args: readonly string[]): DispatchResult {
 
 async function runDoctorBranch(args: readonly string[]): Promise<DispatchResult> {
   const json = args.includes("--json");
-  // In a Bun --compile binary, import.meta.url resolves to Bun's virtual
-  // filesystem and process.execPath is the real binary. In Node (npm install
-  // or dev), process.execPath is the node binary itself, so use import.meta.url.
-  // The bare UMACTUALLY_VERSION identifier is replaced at compile time —
-  // either by Bun's --define flag, or by tsdown's `define` config (v0.6.0
-  // distribution pipeline; see tsdown.config.ts). In Node (npm/dev) it is
-  // undefined.
+  const suggestedConfig = args.includes("--suggested-config");
+  const fixYes = args.includes("--yes") || process.env["UMACTUALLY_DOCTOR_FIX_YES"] === "1";
+  const fixIdx = args.indexOf("--fix");
+  const fix = fixIdx === -1 ? null : (args[fixIdx + 1] ?? null);
   const isCompiledBinary = typeof UMACTUALLY_VERSION === "string";
   const packageRoot = isCompiledBinary
     ? dirname(process.execPath)
@@ -219,6 +219,9 @@ async function runDoctorBranch(args: readonly string[]): Promise<DispatchResult>
       return { stdout: output.stdout, stderr: output.stderr };
     },
     packageRoot,
+    suggestedConfig,
+    fix,
+    fixYes,
   });
   let stdout: string;
   if (json) {
@@ -229,7 +232,7 @@ async function runDoctorBranch(args: readonly string[]): Promise<DispatchResult>
     );
     stdout = `${JSON.stringify(envelope)}\n`;
   } else {
-    stdout = formatDoctorHuman(result.checks);
+    stdout = formatDoctorHuman(result.checks, result.suggestion, result.json?.fix);
   }
   process.stdout.write(stdout);
   return { exitCode: result.exitCode, stdout };

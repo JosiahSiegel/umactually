@@ -94,15 +94,23 @@ const REVIEW_FLAGS: readonly HelpFlag[] = [
   { flag: "--output-artifact <path>", appliesTo: ["review"] },
 ];
 
+const DOCTOR_FLAGS: readonly HelpFlag[] = [
+  {
+    flag: "--suggested-config",
+    description: "Print a read-only repair suggestion for the highest-priority issue",
+    appliesTo: ["doctor"],
+  },
+];
+
 /** The full flag set for column-width calculation. */
-const ALL_FLAGS_FOR_WIDTH: readonly HelpFlag[] = [...REVIEW_FLAGS, ...GLOBAL_FLAGS];
+const ALL_FLAGS_FOR_WIDTH: readonly HelpFlag[] = [...REVIEW_FLAGS, ...DOCTOR_FLAGS, ...GLOBAL_FLAGS];
 
 function flagsForContext(context: HelpContext): readonly HelpFlag[] {
   if (context === "all") {
     return [...REVIEW_FLAGS, ...GLOBAL_FLAGS];
   }
-  const commandFlags = REVIEW_FLAGS.filter(
-    (f) => f.appliesTo?.includes(context as HelpContext) ?? false,
+  const commandFlags = [...REVIEW_FLAGS, ...DOCTOR_FLAGS].filter(
+    (f) => f.appliesTo?.includes(context) ?? false,
   );
   return [...commandFlags, ...GLOBAL_FLAGS];
 }
@@ -135,6 +143,7 @@ const TOP_LEVEL_COMMANDS = [
   "init                      Write ~/.umactually/config.json with provider defaults",
   "uninstall                 Remove the installed binary, config, and PATH entries",
   "check-review-artifact <path>  Validate a review artifact",
+  "verify <path>             Alias for check-review-artifact",
   "version                   Print version",
   "--help, -h                Show this help",
   "--version, -V             Print version",
@@ -177,6 +186,7 @@ const DOCTOR_HELP_TEXT = [
   "",
   "Usage:",
   "  umactually doctor                Run all environment checks",
+  "  umactually doctor --suggested-config  Print the top repair suggestion",
   "  umactually doctor --json         Emit machine-readable JSON",
   "  umactually doctor --help         Show this help",
   "",
@@ -185,6 +195,9 @@ const DOCTOR_HELP_TEXT = [
   "  git           Verifies git is available and the cwd is a repository",
   "  env           Reports which UMACTUALLY_* / REVIEW_* env vars are set",
   "  dist-freshness Verifies the bundled dist/ is up to date (dev only)",
+  "",
+  "Doctor flags:",
+  ...DOCTOR_FLAGS.map(renderFlagLine),
   "",
   "Global flags:",
   ...GLOBAL_FLAGS.map(renderFlagLine),
@@ -219,6 +232,7 @@ const COMMAND_HELP: Readonly<Record<string, string>> = {
   uninstall: UNINSTALL_HELP_TEXT,
   init: INIT_HELP_TEXT,
   "check-review-artifact": CHECK_REVIEW_ARTIFACT_HELP_TEXT,
+  verify: CHECK_REVIEW_ARTIFACT_HELP_TEXT,
 };
 
 /**

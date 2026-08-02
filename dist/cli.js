@@ -1993,10 +1993,76 @@ async function runDoctor(deps) {
         await checkGit(deps),
     ];
     const exitCode = checks.some((check) => check.status === "fail") ? 1 : 0;
-    const json = { schemaVersion: 1, command: "doctor", exitCode, checks };
+    const suggestion = deps.suggestedConfig === true ? selectSuggestion(checks, deps.env) : null;
+    let fixResult;
+    if (deps.fix !== undefined && deps.fix !== null) {
+        fixResult = await runFix(deps, deps.fix, deps.fixYes === true, checks);
+    }
+    const fixExitCode = fixResult?.outcome === "failed" ? 2 : fixResult?.outcome === "repaired" ? exitCode : exitCode;
+    const json = {
+        schemaVersion: 1,
+        command: "doctor",
+        exitCode: fixExitCode,
+        checks,
+        suggestion,
+        ...(fixResult !== undefined ? { fix: fixResult } : {}),
+    };
     return deps.isTTY
-        ? { exitCode, checks, json, stdout: formatDoctorHuman(checks) }
-        : { exitCode, checks, json };
+        ? {
+            exitCode: json.exitCode,
+            checks,
+            suggestion,
+            json,
+            stdout: formatDoctorHuman(checks, suggestion, fixResult),
+        }
+        : { exitCode: json.exitCode, checks, suggestion, json };
+}
+const SUPPORTED_FIX_IDS = ["dist-freshness", "provider-config", "node-version"];
+async function runFix(deps, rawId, fixYes, checks) {
+    if (!SUPPORTED_FIX_IDS.includes(rawId)) {
+        return {
+            checkId: rawId,
+            outcome: "failed",
+            message: `unknown check-id '${rawId}'. Available: ${SUPPORTED_FIX_IDS.join(", ")}`,
+        };
+    }
+    if (!fixYes) {
+        return {
+            checkId: rawId,
+            outcome: "skipped",
+            message: `--fix requires --yes (or UMACTUALLY_DOCTOR_FIX_YES=1)`,
+        };
+    }
+    const id = rawId;
+    try {
+        if (id === "dist-freshness") {
+            await deps.execFile("npm", ["run", "bundle"], { cwd: deps.cwd });
+            return {
+                checkId: id,
+                outcome: "repaired",
+                message: "ran `npm run bundle`; dist/cli.js rebuilt",
+            };
+        }
+        if (id === "provider-config") {
+            const hint = "set UMACTUALLY_API_KEY and UMACTUALLY_API_URL, then run `umactually init --provider <openai|anthropic|copilot> --apply`";
+            return {
+                checkId: id,
+                outcome: "skipped",
+                message: hint,
+            };
+        }
+        const check = checks.find((c) => c.id === "node");
+        return {
+            checkId: id,
+            outcome: "skipped",
+            message: check?.hint ??
+                "cannot install Node from this command; install Node 24+ from https://nodejs.org/ and re-run",
+        };
+    }
+    catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        return { checkId: id, outcome: "failed", message };
+    }
 }
 function checkNode(nodeVersion) {
     const nodeMajor = Number.parseInt(nodeVersion.split(".", 1)[0] ?? "", 10);
@@ -2016,9 +2082,6 @@ async function checkDistFreshness(deps) {
     const srcPath = `${root}/src/cli.ts`;
     const distStat = await statOrNull(deps.fsAdapter, distPath);
     const srcStat = await statOrNull(deps.fsAdapter, srcPath);
-    // Standalone binary: neither dist/ nor src/ exists on disk because the
-    // entire codebase is embedded in the executable. Skip the check rather
-    // than reporting a false failure.
     if (distStat === null && srcStat === null) {
         return {
             id: "dist-freshness",
@@ -2056,7 +2119,6 @@ async function statOrNull(fsAdapter, path) {
         return await fsAdapter.stat(path);
     }
     catch {
-        // A diagnostic probe reports unavailable paths rather than propagating adapter errors.
         return null;
     }
 }
@@ -2090,21 +2152,61 @@ async function checkGit(deps) {
         };
     }
 }
-function formatDoctorHuman(checks) {
+function selectSuggestion(checks, env) {
+    const apiKeyMissing = !hasEnvValue(env, "UMACTUALLY_API_KEY")
+        && !hasEnvValue(env, "REVIEW_PROVIDER_API_KEY");
+    if (apiKeyMissing) {
+        return "Set UMACTUALLY_API_KEY or pass --api-key";
+    }
+    const apiUrlMissing = !hasEnvValue(env, "UMACTUALLY_API_URL")
+        && !hasEnvValue(env, "REVIEW_PROVIDER_URL");
+    if (apiUrlMissing) {
+        return "Set UMACTUALLY_API_URL or pass --api-url";
+    }
+    const priority = ["dist-freshness", "node", "git", "env"];
+    for (const id of priority) {
+        const check = checks.find((candidate) => candidate.id === id
+            && (candidate.status === "fail" || candidate.status === "warn"));
+        if (check === undefined) {
+            continue;
+        }
+        switch (check.id) {
+            case "dist-freshness":
+                return "npm run bundle";
+            case "node":
+                return "Install Node 24+ from https://nodejs.org/";
+            case "git":
+                return "Run `umactually` inside a git working tree";
+            case "env":
+                return check.message;
+        }
+    }
+    return null;
+}
+function hasEnvValue(env, name) {
+    const value = env[name];
+    return typeof value === "string" && value.length > 0;
+}
+function formatDoctorHuman(checks, suggestion = null, fix) {
     const lines = checks.map((check) => {
         const hint = check.hint === undefined ? "" : `\n  hint: ${check.hint}`;
         return `${check.status.toUpperCase().padEnd(4)} ${check.id}: ${check.message}${hint}`;
     });
-    return `${lines.join("\n")}\n`;
+    const suggestionLine = suggestion === null ? "" : `\nSuggested config: ${suggestion}`;
+    const fixLine = fix === undefined
+        ? ""
+        : `\n--fix ${fix.checkId}: ${fix.outcome} (${fix.message})`;
+    return `${lines.join("\n")}${suggestionLine}${fixLine}\n`;
 }
 function formatDoctorJson(result) {
-    const envelope = result.json ?? {
+    const data = result.json ?? {
         schemaVersion: 1,
         command: "doctor",
         exitCode: result.exitCode,
         checks: result.checks,
+        suggestion: result.suggestion,
     };
-    return `${JSON.stringify(envelope)}\n`;
+    return `${JSON.stringify(data)}\n`;
 }
 
 ;// CONCATENATED MODULE: ./src/util/provider-defaults.ts
@@ -2940,13 +3042,20 @@ const REVIEW_FLAGS = [
     { flag: "--simulate-findings | --no-simulate-findings", appliesTo: ["review"] },
     { flag: "--output-artifact <path>", appliesTo: ["review"] },
 ];
+const DOCTOR_FLAGS = [
+    {
+        flag: "--suggested-config",
+        description: "Print a read-only repair suggestion for the highest-priority issue",
+        appliesTo: ["doctor"],
+    },
+];
 /** The full flag set for column-width calculation. */
-const ALL_FLAGS_FOR_WIDTH = [...REVIEW_FLAGS, ...GLOBAL_FLAGS];
+const ALL_FLAGS_FOR_WIDTH = [...REVIEW_FLAGS, ...DOCTOR_FLAGS, ...GLOBAL_FLAGS];
 function flagsForContext(context) {
     if (context === "all") {
         return [...REVIEW_FLAGS, ...GLOBAL_FLAGS];
     }
-    const commandFlags = REVIEW_FLAGS.filter((f) => f.appliesTo?.includes(context) ?? false);
+    const commandFlags = [...REVIEW_FLAGS, ...DOCTOR_FLAGS].filter((f) => f.appliesTo?.includes(context) ?? false);
     return [...commandFlags, ...GLOBAL_FLAGS];
 }
 /** Column width is always computed from the full flag set for consistency. */
@@ -2972,6 +3081,7 @@ const TOP_LEVEL_COMMANDS = [
     "init                      Write ~/.umactually/config.json with provider defaults",
     "uninstall                 Remove the installed binary, config, and PATH entries",
     "check-review-artifact <path>  Validate a review artifact",
+    "verify <path>             Alias for check-review-artifact",
     "version                   Print version",
     "--help, -h                Show this help",
     "--version, -V             Print version",
@@ -3010,6 +3120,7 @@ const DOCTOR_HELP_TEXT = [
     "",
     "Usage:",
     "  umactually doctor                Run all environment checks",
+    "  umactually doctor --suggested-config  Print the top repair suggestion",
     "  umactually doctor --json         Emit machine-readable JSON",
     "  umactually doctor --help         Show this help",
     "",
@@ -3018,6 +3129,9 @@ const DOCTOR_HELP_TEXT = [
     "  git           Verifies git is available and the cwd is a repository",
     "  env           Reports which UMACTUALLY_* / REVIEW_* env vars are set",
     "  dist-freshness Verifies the bundled dist/ is up to date (dev only)",
+    "",
+    "Doctor flags:",
+    ...DOCTOR_FLAGS.map(renderFlagLine),
     "",
     "Global flags:",
     ...GLOBAL_FLAGS.map(renderFlagLine),
@@ -3050,6 +3164,7 @@ const COMMAND_HELP = {
     uninstall: uninstall_UNINSTALL_HELP_TEXT,
     init: init.INIT_HELP_TEXT,
     "check-review-artifact": CHECK_REVIEW_ARTIFACT_HELP_TEXT,
+    verify: CHECK_REVIEW_ARTIFACT_HELP_TEXT,
 };
 /**
  * Resolve which help text to print based on the argv context.
@@ -3297,6 +3412,9 @@ async function dispatch(argv) {
             return runUninstallBranch(stripLeadingCommand(argv, command));
         case "check-review-artifact":
             return runCheckReviewArtifactBranch(stripLeadingCommand(argv, command));
+        case "verify":
+            // M3 alias for `check-review-artifact`; identical IO via the same handler.
+            return runCheckReviewArtifactBranch(stripLeadingCommand(argv, command));
         case "init":
             return runInitBranch(stripLeadingCommand(argv, command));
         case "version":
@@ -3396,13 +3514,10 @@ function runCheckReviewArtifactBranch(args) {
 }
 async function runDoctorBranch(args) {
     const json = args.includes("--json");
-    // In a Bun --compile binary, import.meta.url resolves to Bun's virtual
-    // filesystem and process.execPath is the real binary. In Node (npm install
-    // or dev), process.execPath is the node binary itself, so use import.meta.url.
-    // The bare UMACTUALLY_VERSION identifier is replaced at compile time —
-    // either by Bun's --define flag, or by tsdown's `define` config (v0.6.0
-    // distribution pipeline; see tsdown.config.ts). In Node (npm/dev) it is
-    // undefined.
+    const suggestedConfig = args.includes("--suggested-config");
+    const fixYes = args.includes("--yes") || process.env["UMACTUALLY_DOCTOR_FIX_YES"] === "1";
+    const fixIdx = args.indexOf("--fix");
+    const fix = fixIdx === -1 ? null : (args[fixIdx + 1] ?? null);
     const isCompiledBinary = typeof UMACTUALLY_VERSION === "string";
     const packageRoot = isCompiledBinary
         ? (0,external_node_path_.dirname)(process.execPath)
@@ -3417,6 +3532,9 @@ async function runDoctorBranch(args) {
             return { stdout: output.stdout, stderr: output.stderr };
         },
         packageRoot,
+        suggestedConfig,
+        fix,
+        fixYes,
     });
     let stdout;
     if (json) {
@@ -3424,7 +3542,7 @@ async function runDoctorBranch(args) {
         stdout = `${JSON.stringify(envelope)}\n`;
     }
     else {
-        stdout = formatDoctorHuman(result.checks);
+        stdout = formatDoctorHuman(result.checks, result.suggestion, result.json?.fix);
     }
     process.stdout.write(stdout);
     return { exitCode: result.exitCode, stdout };

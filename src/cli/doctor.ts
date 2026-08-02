@@ -33,6 +33,9 @@ export type DoctorDeps = {
   ) => Promise<{ readonly stdout: string; readonly stderr: string }>;
   readonly packageRoot: string;
   readonly nodeVersion?: string;
+  readonly suggestedConfig?: boolean;
+  readonly fix?: string | null;
+  readonly fixYes?: boolean;
 };
 
 export type DoctorJson = {
@@ -40,6 +43,12 @@ export type DoctorJson = {
   readonly command: "doctor";
   readonly exitCode: number;
   readonly checks: readonly DoctorCheck[];
+  readonly suggestion: string | null;
+  readonly fix?: {
+    readonly checkId: string;
+    readonly outcome: "repaired" | "skipped" | "failed";
+    readonly message: string;
+  };
 };
 
 export type DoctorResult = {
@@ -47,6 +56,7 @@ export type DoctorResult = {
   readonly stdout?: string;
   readonly stderr?: string;
   readonly checks: readonly DoctorCheck[];
+  readonly suggestion: string | null;
   readonly json?: DoctorJson;
 };
 
@@ -58,10 +68,89 @@ export async function runDoctor(deps: DoctorDeps): Promise<DoctorResult> {
     await checkGit(deps),
   ];
   const exitCode = checks.some((check) => check.status === "fail") ? 1 : 0;
-  const json: DoctorJson = { schemaVersion: 1, command: "doctor", exitCode, checks };
+  const suggestion = deps.suggestedConfig === true ? selectSuggestion(checks, deps.env) : null;
+
+  let fixResult: DoctorJson["fix"] | undefined;
+  if (deps.fix !== undefined && deps.fix !== null) {
+    fixResult = await runFix(deps, deps.fix, deps.fixYes === true, checks);
+  }
+
+  const fixExitCode =
+    fixResult?.outcome === "failed" ? 2 : fixResult?.outcome === "repaired" ? exitCode : exitCode;
+
+  const json: DoctorJson = {
+    schemaVersion: 1,
+    command: "doctor",
+    exitCode: fixExitCode,
+    checks,
+    suggestion,
+    ...(fixResult !== undefined ? { fix: fixResult } : {}),
+  };
   return deps.isTTY
-    ? { exitCode, checks, json, stdout: formatDoctorHuman(checks) }
-    : { exitCode, checks, json };
+    ? {
+        exitCode: json.exitCode,
+        checks,
+        suggestion,
+        json,
+        stdout: formatDoctorHuman(checks, suggestion, fixResult),
+      }
+    : { exitCode: json.exitCode, checks, suggestion, json };
+}
+
+const SUPPORTED_FIX_IDS = ["dist-freshness", "provider-config", "node-version"] as const;
+type FixId = (typeof SUPPORTED_FIX_IDS)[number];
+
+async function runFix(
+  deps: DoctorDeps,
+  rawId: string,
+  fixYes: boolean,
+  checks: readonly DoctorCheck[],
+): Promise<NonNullable<DoctorJson["fix"]>> {
+  if (!SUPPORTED_FIX_IDS.includes(rawId as FixId)) {
+    return {
+      checkId: rawId,
+      outcome: "failed",
+      message: `unknown check-id '${rawId}'. Available: ${SUPPORTED_FIX_IDS.join(", ")}`,
+    };
+  }
+  if (!fixYes) {
+    return {
+      checkId: rawId,
+      outcome: "skipped",
+      message: `--fix requires --yes (or UMACTUALLY_DOCTOR_FIX_YES=1)`,
+    };
+  }
+  const id = rawId as FixId;
+  try {
+    if (id === "dist-freshness") {
+      await deps.execFile("npm", ["run", "bundle"], { cwd: deps.cwd });
+      return {
+        checkId: id,
+        outcome: "repaired",
+        message: "ran `npm run bundle`; dist/cli.js rebuilt",
+      };
+    }
+    if (id === "provider-config") {
+      const hint =
+        "set UMACTUALLY_API_KEY and UMACTUALLY_API_URL, then run `umactually init --provider <openai|anthropic|copilot> --apply`";
+      return {
+        checkId: id,
+        outcome: "skipped",
+        message: hint,
+      };
+    }
+    const check = checks.find((c) => c.id === "node");
+    return {
+      checkId: id,
+      outcome: "skipped",
+      message:
+        check?.hint ??
+        "cannot install Node from this command; install Node 24+ from https://nodejs.org/ and re-run",
+    };
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    return { checkId: id, outcome: "failed", message };
+  }
 }
 
 function checkNode(nodeVersion: string): DoctorCheck {
@@ -84,9 +173,6 @@ async function checkDistFreshness(deps: DoctorDeps): Promise<DoctorCheck> {
   const distStat = await statOrNull(deps.fsAdapter, distPath);
   const srcStat = await statOrNull(deps.fsAdapter, srcPath);
 
-  // Standalone binary: neither dist/ nor src/ exists on disk because the
-  // entire codebase is embedded in the executable. Skip the check rather
-  // than reporting a false failure.
   if (distStat === null && srcStat === null) {
     return {
       id: "dist-freshness",
@@ -94,7 +180,6 @@ async function checkDistFreshness(deps: DoctorDeps): Promise<DoctorCheck> {
       message: "standalone binary — dist/ is embedded, not on disk",
     };
   }
-
   if (distStat === null) {
     return {
       id: "dist-freshness",
@@ -128,7 +213,6 @@ async function statOrNull(
   try {
     return await fsAdapter.stat(path);
   } catch {
-    // A diagnostic probe reports unavailable paths rather than propagating adapter errors.
     return null;
   }
 }
@@ -164,20 +248,72 @@ async function checkGit(deps: DoctorDeps): Promise<DoctorCheck> {
   }
 }
 
-export function formatDoctorHuman(checks: readonly DoctorCheck[]): string {
+function selectSuggestion(
+  checks: readonly DoctorCheck[],
+  env: DoctorDeps["env"],
+): string | null {
+  const apiKeyMissing = !hasEnvValue(env, "UMACTUALLY_API_KEY")
+    && !hasEnvValue(env, "REVIEW_PROVIDER_API_KEY");
+  if (apiKeyMissing) {
+    return "Set UMACTUALLY_API_KEY or pass --api-key";
+  }
+  const apiUrlMissing = !hasEnvValue(env, "UMACTUALLY_API_URL")
+    && !hasEnvValue(env, "REVIEW_PROVIDER_URL");
+  if (apiUrlMissing) {
+    return "Set UMACTUALLY_API_URL or pass --api-url";
+  }
+  const priority: readonly DoctorCheck["id"][] = ["dist-freshness", "node", "git", "env"];
+  for (const id of priority) {
+    const check = checks.find(
+      (candidate) => candidate.id === id
+        && (candidate.status === "fail" || candidate.status === "warn"),
+    );
+    if (check === undefined) {
+      continue;
+    }
+    switch (check.id) {
+      case "dist-freshness":
+        return "npm run bundle";
+      case "node":
+        return "Install Node 24+ from https://nodejs.org/";
+      case "git":
+        return "Run `umactually` inside a git working tree";
+      case "env":
+        return check.message;
+    }
+  }
+  return null;
+}
+
+function hasEnvValue(env: DoctorDeps["env"], name: string): boolean {
+  const value = env[name];
+  return typeof value === "string" && value.length > 0;
+}
+
+export function formatDoctorHuman(
+  checks: readonly DoctorCheck[],
+  suggestion: string | null = null,
+  fix?: DoctorJson["fix"],
+): string {
   const lines = checks.map((check) => {
     const hint = check.hint === undefined ? "" : `\n  hint: ${check.hint}`;
     return `${check.status.toUpperCase().padEnd(4)} ${check.id}: ${check.message}${hint}`;
   });
-  return `${lines.join("\n")}\n`;
+  const suggestionLine = suggestion === null ? "" : `\nSuggested config: ${suggestion}`;
+  const fixLine =
+    fix === undefined
+      ? ""
+      : `\n--fix ${fix.checkId}: ${fix.outcome} (${fix.message})`;
+  return `${lines.join("\n")}${suggestionLine}${fixLine}\n`;
 }
 
 export function formatDoctorJson(result: DoctorResult): string {
-  const envelope: DoctorJson = result.json ?? {
+  const data: DoctorJson = result.json ?? {
     schemaVersion: 1,
     command: "doctor",
     exitCode: result.exitCode,
     checks: result.checks,
+    suggestion: result.suggestion,
   };
-  return `${JSON.stringify(envelope)}\n`;
+  return `${JSON.stringify(data)}\n`;
 }
