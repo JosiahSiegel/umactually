@@ -3,7 +3,7 @@
  * scannable instead of drifting as flags are added.
  *
  * `FLAG_COLUMN_WIDTH` is computed at runtime from the longest entry in
- * `HELP_FLAGS` (currently `--debug-raw-response | --no-debug-raw-response`
+ * `ALL_FLAGS_FOR_WIDTH` (currently `--debug-raw-response | --no-debug-raw-response`
  * at 46 chars). With the 2-space indent and 2-space gutter, the description
  * column starts at column 51 (1-indexed). Future flag additions are
  * trivially correct because adding a longer flag recomputes the width.
@@ -24,6 +24,7 @@ import {
   DEFAULT_OPENAI_URL,
 } from "../util/provider-defaults.js";
 import { BRAND } from "../util/brand.js";
+import { INIT_HELP_TEXT } from "./init.js";
 import { CLI_MODES_TEXT } from "./modes-help.js";
 import { UNINSTALL_HELP_TEXT } from "./uninstall.js";
 
@@ -32,7 +33,7 @@ import { UNINSTALL_HELP_TEXT } from "./uninstall.js";
  * `all` means the flag appears in every help context.
  * `review` is the default subcommand so it also covers bare invocation.
  */
-type HelpContext = "all" | "review" | "doctor" | "uninstall" | "check-review-artifact";
+type HelpContext = "all" | "review" | "doctor" | "uninstall" | "init" | "check-review-artifact";
 
 interface HelpFlag {
   /** Full flag token, e.g. `"--api-url <url>"`. */
@@ -93,9 +94,6 @@ const REVIEW_FLAGS: readonly HelpFlag[] = [
   { flag: "--output-artifact <path>", appliesTo: ["review"] },
 ];
 
-/** All flags, used for the legacy `CLI_HELP_TEXT` export and column-width calc. */
-const HELP_FLAGS: readonly HelpFlag[] = [...REVIEW_FLAGS];
-
 /** The full flag set for column-width calculation. */
 const ALL_FLAGS_FOR_WIDTH: readonly HelpFlag[] = [...REVIEW_FLAGS, ...GLOBAL_FLAGS];
 
@@ -134,6 +132,7 @@ function renderCommands(commands: readonly string[]): string {
 const TOP_LEVEL_COMMANDS = [
   "review                    Run PR review (default)",
   "doctor                    Check environment is ready",
+  "init                      Write ~/.umactually/config.json with provider defaults",
   "uninstall                 Remove the installed binary, config, and PATH entries",
   "check-review-artifact <path>  Validate a review artifact",
   "version                   Print version",
@@ -218,6 +217,7 @@ const COMMAND_HELP: Readonly<Record<string, string>> = {
   review: REVIEW_HELP_TEXT,
   doctor: DOCTOR_HELP_TEXT,
   uninstall: UNINSTALL_HELP_TEXT,
+  init: INIT_HELP_TEXT,
   "check-review-artifact": CHECK_REVIEW_ARTIFACT_HELP_TEXT,
 };
 
@@ -282,4 +282,5 @@ export function printContextualHelp(argv: readonly string[]): string {
 export const REVIEW_HELP = REVIEW_HELP_TEXT;
 export const DOCTOR_HELP = DOCTOR_HELP_TEXT;
 export const UNINSTALL_HELP = UNINSTALL_HELP_TEXT;
+export const INIT_HELP = INIT_HELP_TEXT;
 export const CHECK_REVIEW_ARTIFACT_HELP = CHECK_REVIEW_ARTIFACT_HELP_TEXT;
