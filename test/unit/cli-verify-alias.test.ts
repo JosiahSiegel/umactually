@@ -144,8 +144,10 @@ describe("M3 — `verify` is an alias for `check-review-artifact`", () => {
     // Both are valid EnvelopeV1 records (schemaVersion 1).
     expect(verifyEnvelope.schemaVersion).toBe(1);
     expect(canonicalEnvelope.schemaVersion).toBe(1);
-    // Both are byte-for-byte identical because the handler is the same.
-    expect(verifyRun.stdout).toBe(canonicalRun.stdout);
+    // Structurally identical (startedAt can drift 1ms between invocations).
+    expect(verifyEnvelope.exitCode).toBe(canonicalEnvelope.exitCode);
+    expect(verifyEnvelope.ok).toBe(canonicalEnvelope.ok);
+    expect(verifyEnvelope.data).toEqual(canonicalEnvelope.data);
   });
 
   it("M3-003: `verify` without a path argument exits 2 with the same usage error as `check-review-artifact`", async () => {
