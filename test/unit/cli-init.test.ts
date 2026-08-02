@@ -155,12 +155,12 @@ describe("buildInitConfig", () => {
     const args: InitArgs = {
       ...baseArgs,
       apiUrl: "https://override.example/v1",
-      apiKey: "sk-override",
+      apiKey: "sk-override-do-not-leak",
     };
     const deps: InitConfigDeps = { args, env: baseEnv };
     const config = buildInitConfig(deps);
     expect(config.apiUrl).toBe("https://override.example/v1");
-    expect(config.apiKey).toBe("sk-override");
+    expect(config.apiKey).toBe("sk-override-do-not-leak");
   });
 
   it("omits env-derived fields that are not set", () => {
@@ -207,14 +207,14 @@ describe("formatInitConfig", () => {
     const config: InitConfig = {
       provider: "anthropic",
       apiUrl: "https://api.anthropic.com",
-      apiKey: "sk-ant-test",
+      apiKey: "sk-ant-test-do-not-leak",
       model: "claude-3-5-sonnet-latest",
     };
     const text = formatInitConfig(config);
     const parsed = JSON.parse(text) as Record<string, unknown>;
     expect(parsed["provider"]).toBe("anthropic");
     expect(parsed["apiUrl"]).toBe("https://api.anthropic.com");
-    expect(parsed["apiKey"]).toBe("sk-ant-test");
+    expect(parsed["apiKey"]).toBe("sk-ant-test-do-not-leak");
     expect(parsed["model"]).toBe("claude-3-5-sonnet-latest");
   });
 

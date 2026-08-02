@@ -251,3 +251,7 @@ secret:
       match: 51da0a34ae38e791a24cff5665b662166d3d8773443604868f69ed2cff90b4e3  # tid=synthetic-live
     - name: 'synthetic API key fixture (cli-init init --provider)'
       match: ba9096204e574fa96423412796d451eab018a239f4ff6dd49807bb0feba0e941  # sk-test-do-not-leak
+    - name: 'synthetic API key fixture (cli-init init --provider override)'
+      match: 988b202e6e6764147e8ce447ecc15f30e9c7484b8f8dbd4fc6818cab79ba11fb  # sk-override-do-not-leak
+    - name: 'synthetic API key fixture (cli-init init --provider anthropic)'
+      match: 8eeec16a7c728290016159e4e5dd096b6282a79bcd28af8186ae57ee5dd28abe  # sk-ant-test-do-not-leak
