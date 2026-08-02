@@ -1544,11 +1544,12 @@ jobs:
         run: |
           set -euo pipefail
           VERSION=$(node -e "console.log(require('./package.json').version)")
-          # 10 retries with exponential backoff: registry propagation
-          # typically takes 5-30s. Without retry, a fast canary that
-          # queries before the CDN has synced reports a false negative.
-          sleep 5
-          for _i in 1 2 3 4 5 6 7 8 9 10; do
+          # 30 retries at 10s intervals (5min total). The 50s budget in v0.6.21
+          # produced a false negative: publish succeeded at +0s, verify gave
+          # up at +56s before the CDN caught up. npmjs.org propagation is
+          # commonly 60-180s.
+          sleep 15
+          for _i in $(seq 1 30); do
             if response=$(curl -fsSL "https://registry.npmjs.org/umactually/${VERSION}" 2>/dev/null); then
               TAG=$(printf '%s' "$response" | node -e "
                 let s='';process.stdin.on('data',d=>s+=d).on('end',()=>{
@@ -1566,9 +1567,9 @@ jobs:
                 exit 0
               fi
             fi
-            sleep 5
+            sleep 10
           done
-          echo "::error::umactually@${VERSION} not found on registry.npmjs.org after 10 retries (or dist-tags.latest mismatch). The publish step reported success but the registry did not reflect it."
+          echo "::error::umactually@${VERSION} not found on registry.npmjs.org after 30 retries (5min). The publish step reported success but the registry did not reflect it."
           exit 1
 
       - name: Summary
