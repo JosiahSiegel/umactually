@@ -94,10 +94,10 @@ describe("parseInitArgs", () => {
     const parsed = parseInitArgs([
       "--provider", "openai",
       "--api-url", "https://api.example/v1",
-      "--api-key", "sk-test",
+      "--api-key", "sk-test-do-not-leak",
     ]);
     expect(parsed.apiUrl).toBe("https://api.example/v1");
-    expect(parsed.apiKey).toBe("sk-test");
+    expect(parsed.apiKey).toBe("sk-test-do-not-leak");
     expect(parsed.errors).toEqual([]);
   });
 
@@ -138,7 +138,7 @@ describe("buildInitConfig", () => {
 
   const baseEnv = {
     UMACTUALLY_API_URL: "https://api.openai.com/v1",
-    UMACTUALLY_API_KEY: "sk-test-1234",
+    UMACTUALLY_API_KEY: "sk-test-do-not-leak",
     UMACTUALLY_MODEL: "gpt-4o",
   } as const;
 
@@ -147,7 +147,7 @@ describe("buildInitConfig", () => {
     const config = buildInitConfig(deps);
     expect(config.provider).toBe("openai");
     expect(config.apiUrl).toBe("https://api.openai.com/v1");
-    expect(config.apiKey).toBe("sk-test-1234");
+    expect(config.apiKey).toBe("sk-test-do-not-leak");
     expect(config.model).toBe("gpt-4o");
   });
 
@@ -166,10 +166,10 @@ describe("buildInitConfig", () => {
   it("omits env-derived fields that are not set", () => {
     const deps: InitConfigDeps = {
       args: baseArgs,
-      env: { UMACTUALLY_API_KEY: "sk-test-1234" },
+      env: { UMACTUALLY_API_KEY: "sk-test-do-not-leak" },
     };
     const config = buildInitConfig(deps);
-    expect(config.apiKey).toBe("sk-test-1234");
+    expect(config.apiKey).toBe("sk-test-do-not-leak");
     expect(config.apiUrl).toBeUndefined();
     expect(config.model).toBeUndefined();
   });
@@ -230,7 +230,7 @@ describe("formatInitConfig", () => {
 describe("runInit", () => {
   const baseEnv = {
     UMACTUALLY_API_URL: "https://api.openai.com/v1",
-    UMACTUALLY_API_KEY: "sk-test-1234",
+    UMACTUALLY_API_KEY: "sk-test-do-not-leak",
     UMACTUALLY_MODEL: "gpt-4o",
   } as const;
 
@@ -266,7 +266,7 @@ describe("runInit", () => {
     const parsed = JSON.parse(written) as Record<string, unknown>;
     expect(parsed["provider"]).toBe("openai");
     expect(parsed["apiUrl"]).toBe("https://api.openai.com/v1");
-    expect(parsed["apiKey"]).toBe("sk-test-1234");
+    expect(parsed["apiKey"]).toBe("sk-test-do-not-leak");
     expect(parsed["model"]).toBe("gpt-4o");
   });
 

@@ -249,3 +249,5 @@ secret:
       match: 2393c8544e88dde756d399d827f39e9b926512300774b091ca784880cb852f31  # flag-source-test-secret
     - name: 'synthetic token fixture (live orchestration)'
       match: 51da0a34ae38e791a24cff5665b662166d3d8773443604868f69ed2cff90b4e3  # tid=synthetic-live
+    - name: 'synthetic API key fixture (cli-init init --provider)'
+      match: ba9096204e574fa96423412796d451eab018a239f4ff6dd49807bb0feba0e941  # sk-test-do-not-leak
