@@ -10,6 +10,7 @@ import { join, sep } from "node:path";
 import { describe, expect, it } from "vitest";
 
 import {
+  defaultInitFsAdapter,
   parseInitArgs,
   resolveConfigDir,
   runInit,
@@ -403,5 +404,39 @@ describe("runInit", () => {
     });
     expect(result.exitCode).toBe(0);
     expect(fs.isDirectory(CONFIG_DIR)).toBe(true);
+  });
+
+  it("covers the default fs adapter surface", async () => {
+    // Exercises defaultInitFsAdapter paths that the high-level init
+    // helpers don't reach (mkdir happy path, exists false on missing).
+    await defaultInitFsAdapter.mkdir("/tmp/umactually-test-default-fs");
+    expect(defaultInitFsAdapter.exists("/tmp/umactually-test-default-fs")).toBe(true);
+    expect(defaultInitFsAdapter.exists("/tmp/umactually-test-default-fs-missing-xyz")).toBe(false);
+    expect(defaultInitFsAdapter.isDirectory("/tmp/umactually-test-default-fs")).toBe(true);
+    expect(defaultInitFsAdapter.isDirectory("/tmp/umactually-test-default-fs-missing-xyz")).toBe(false);
+    defaultInitFsAdapter.writeFile("/tmp/umactually-test-default-fs/out.txt", "hi");
+    expect(defaultInitFsAdapter.readFile("/tmp/umactually-test-default-fs/out.txt")).toBe("hi");
+  });
+
+  it("emits the JSON envelope on --apply --json", async () => {
+    // Given: --apply with --json. The dry-run JSON path uses a
+    // different branch than the apply JSON path; cover both.
+    const fs = makeFs({});
+    const stdout = { write: (chunk: string) => { captured += chunk; return chunk.length; } };
+    let captured = "";
+    const result = await runInit({
+      argv: ["--provider", "openai", "--apply", "--json"],
+      env: baseEnv,
+      fs,
+      homeDir: HOME,
+      stdout: stdout as { write: (chunk: string) => number },
+      stderr: { write: () => 0 } as { write: (chunk: string) => number },
+    });
+
+    // Then: a JSON envelope is written to stdout and the file lands.
+    expect(result.exitCode).toBe(0);
+    expect(captured).toContain("\"ok\":true");
+    expect(fs.exists(`${HOME}/.umactually/config.json`)).toBe(true);
+    (stdout as { captured?: string }).captured = captured;
   });
 });

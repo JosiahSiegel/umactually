@@ -91,4 +91,28 @@ describe("doctor --suggested-config", () => {
     // Then: stdout includes the actionable suggestion.
     expect(stdout).toContain("Suggested config: Set UMACTUALLY_API_KEY or pass --api-key");
   });
+
+  it("suggests setting UMACTUALLY_API_URL when only the URL is missing", async () => {
+    // Given: an env that has the key but not the URL.
+    const deps = options({
+      env: { UMACTUALLY_API_KEY: "test-key" },
+    });
+
+    // When: doctor runs with suggested configuration enabled.
+    const result = await runDoctor(deps);
+
+    // Then: api-url guidance wins because api-key is set.
+    expect(result.suggestion).toBe("Set UMACTUALLY_API_URL or pass --api-url");
+  });
+
+  it("suggests dist-freshness when only the dist is stale", async () => {
+    // Given: env is healthy but dist is older than src.
+    const deps = options({ fsAdapter: staleDistFs });
+
+    // When: doctor runs with suggested configuration enabled.
+    const result = await runDoctor(deps);
+
+    // Then: dist-freshness wins because auth env is set.
+    expect(result.suggestion).toBe("Run `npm run bundle` to refresh dist/cli.js");
+  });
 });

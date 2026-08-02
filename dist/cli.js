@@ -2201,8 +2201,8 @@ function selectSuggestion(checks, env) {
                 return "Install Node 24+ from https://nodejs.org/";
             case "git":
                 return "Run `umactually` inside a git working tree";
-            case "env":
-                return check.message;
+            default:
+                return null;
         }
     }
     return null;
