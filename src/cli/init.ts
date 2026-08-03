@@ -38,6 +38,7 @@ import {
   type CiTarget,
 } from "./init-templates.js";
 import { BRAND_PREFIX, REDACTED_SECRET_TOKEN } from "../util/brand.js";
+import { lstatSync, realpathSync } from "node:fs";
 
 /**
  * Global budget for the entire wizard. Per-prompt budget is
@@ -172,180 +173,255 @@ export type ParsedInitArgs = {
   readonly show: boolean;
   readonly nonInteractive: boolean;
 };
-
 /**
  * Parse argv into typed fields. Unknown flags → errors[]. Missing
  * required values → errors[]. The caller (runInit) surfaces the
  * errors as an exit-2 envelope.
+ *
+ * Each flag is handled by a small `parse<Flag>` helper below. The
+ * helpers return `FlagStep` records — `{ kind: "value" }` for flags
+ * that consume the next argv element, `{ kind: "no-value" }` for
+ * boolean toggles, and `{ kind: "error", message }` for validation
+ * failures. Keeping each flag in its own helper keeps the
+ * cyclomatic complexity of the main switch under control (Sonar
+ * finding: parseInitArgs CC was 59; refactor target is per-flag
+ * branches ≤ 4).
  */
+type FlagHandler = {
+  readonly consume: boolean;
+  readonly validate?: (value: string | undefined) => FlagStep;
+  readonly apply: (state: ParsedInitState, value?: string) => void;
+};
+
+const FLAG_HANDLERS: Readonly<Record<string, FlagHandler>> = {
+  "--help": { consume: false, apply: (state) => { state.help = true; } },
+  "-h": { consume: false, apply: (state) => { state.help = true; } },
+  "--json": { consume: false, apply: (state) => { state.json = true; } },
+  "--force": { consume: false, apply: (state) => { state.force = true; } },
+  "--yes": { consume: false, apply: (state) => { state.yes = true; } },
+  "--apply": { consume: false, apply: (state) => { state.apply = true; } },
+  "--non-interactive": { consume: false, apply: (state) => { state.nonInteractive = true; } },
+  "--dry-run": { consume: false, apply: (state) => { state.dryRun = true; } },
+  "--show": { consume: false, apply: (state) => { state.show = true; } },
+  "--ci": { consume: true, validate: parseCi, apply: (state, value) => { state.ci = value as "auto" | CiTarget | "none"; } },
+  "--scope": { consume: true, validate: parseScope, apply: (state, value) => { state.scope = value as "global" | "repo"; } },
+  "--provider": { consume: true, validate: parseProvider, apply: (state, value) => { state.provider = value as InitProvider; } },
+  "--api-url": { consume: true, validate: parseApiUrl, apply: (state, value) => { state.apiUrl = value; } },
+  "--api-key": { consume: true, validate: parseApiKey, apply: (state, value) => { state.apiKey = value; } },
+  "--github-api-base": { consume: true, validate: parseGithubApiBase, apply: (state, value) => { state.githubApiBase = value; } },
+  "--model": { consume: true, validate: parseModel, apply: (state, value) => { state.model = value; } },
+};
+
+function parseFlagToken(
+  token: string,
+  next: string | undefined,
+  state: ParsedInitState,
+  errors: string[],
+): boolean {
+  const handler = FLAG_HANDLERS[token];
+  if (handler === undefined) {
+    errors.push(token.startsWith("--") ? `unknown flag: ${token}` : `unexpected positional argument: ${token}`);
+    return false;
+  }
+  if (!handler.consume) {
+    handler.apply(state);
+    return false;
+  }
+  const step = handler.validate?.(next) ?? flagValue();
+  if (step.kind === "error") {
+    errors.push(step.message);
+    return false;
+  }
+  handler.apply(state, next);
+  return true;
+}
+
 export function parseInitArgs(
   argv: readonly string[],
   env: Readonly<Record<string, string | undefined>>,
 ): ParsedInitArgs {
+  const state = createParsedInitState();
   const errors: string[] = [];
-  let help = false;
-  let json = false;
-  let force = false;
-  let yes = false;
-  let apply = false;
-  let ci: "auto" | CiTarget | "none" | undefined;
-  let scope: "global" | "repo" | undefined;
-  let provider: InitProvider | undefined;
-  let apiUrl: string | undefined;
-  let apiKey: string | undefined;
-  let githubApiBase: string | undefined;
-  let model: string | undefined;
-  let dryRun = false;
-  let show = false;
-  let nonInteractive = false;
 
   for (let i = 0; i < argv.length; i += 1) {
-    const tok = argv[i];
-    if (tok === undefined) break;
-    const next = argv[i + 1];
-
-    switch (tok) {
-      case "--help":
-      case "-h":
-        help = true;
-        break;
-      case "--json":
-        json = true;
-        break;
-      case "--force":
-        force = true;
-        break;
-      case "--yes":
-        yes = true;
-        break;
-      case "--apply":
-        apply = true;
-        break;
-      case "--non-interactive":
-        nonInteractive = true;
-        break;
-      case "--dry-run":
-        dryRun = true;
-        break;
-      case "--show":
-        show = true;
-        break;
-      case "--ci":
-        if (next === undefined) {
-          errors.push("--ci requires a value (auto|github|azure|none)");
-        } else if (next !== "auto" && next !== "github" && next !== "azure" && next !== "none") {
-          errors.push(`--ci must be one of auto|github|azure|none (got '${next}')`);
-        } else {
-          ci = next;
-          i += 1;
-        }
-        break;
-      case "--scope":
-        if (next === undefined) {
-          errors.push("--scope requires a value (global|repo)");
-        } else if (next !== "global" && next !== "repo") {
-          errors.push(`--scope must be 'global' or 'repo' (got '${next}')`);
-        } else {
-          scope = next;
-          i += 1;
-        }
-        break;
-      case "--provider":
-        if (next === undefined) {
-          errors.push("--provider requires a value (openai-compatible|anthropic|copilot)");
-        } else if (
-          next !== "openai-compatible" && next !== "anthropic" && next !== "copilot"
-        ) {
-          errors.push(
-            `--provider must be one of openai-compatible|anthropic|copilot (got '${next}')`,
-          );
-        } else {
-          provider = next;
-          i += 1;
-        }
-        break;
-      case "--api-url":
-        if (next === undefined) errors.push("--api-url requires a value");
-        else { apiUrl = next; i += 1; }
-        break;
-      case "--api-key":
-        if (next === undefined) errors.push("--api-key requires a value");
-        else { apiKey = next; i += 1; }
-        break;
-      case "--github-api-base":
-        if (next === undefined) errors.push("--github-api-base requires a value");
-        else { githubApiBase = next; i += 1; }
-        break;
-      case "--model":
-        if (next === undefined) errors.push("--model requires a value");
-        else { model = next; i += 1; }
-        break;
-      default:
-        if (tok.startsWith("--")) {
-          errors.push(`unknown flag: ${tok}`);
-        } else {
-          errors.push(`unexpected positional argument: ${tok}`);
-        }
-        break;
-    }
+    const token = argv[i];
+    if (token === undefined) break;
+    if (parseFlagToken(token, argv[i + 1], state, errors)) i += 1;
   }
 
-  // Env defaults (UMACTUALLY_API_URL, UMACTUALLY_API_KEY, etc.) — only
-  // used to backfill if no flag was given. The wizard never persists
-  // them (S6); they're consumed for the live provider HEAD probe only.
-  if (apiUrl === undefined && typeof env["UMACTUALLY_API_URL"] === "string") {
-    apiUrl = env["UMACTUALLY_API_URL"];
+  applyEnvDefaults(state, env);
+  const mode = resolveInitMode(state);
+  return { mode, errors, ...state };
+}
+
+// ---------------------------------------------------------------------------
+// parseInitArgs internals — small per-flag helpers to keep the main switch
+// readable. Each helper handles a single flag's validation only; the
+// surrounding switch applies the result to state. Splitting validation
+// from application keeps each helper at 1-3 branches (CC ≤ 3).
+// ---------------------------------------------------------------------------
+
+/**
+ * Mutable accumulator threaded through the parser. The exported
+ * `ParsedInitArgs` shape is identical to this state (minus `mode` and
+ * `errors`, which are derived at the end).
+ */
+type ParsedInitState = {
+  help: boolean;
+  json: boolean;
+  force: boolean;
+  yes: boolean;
+  apply: boolean;
+  ci: "auto" | CiTarget | "none" | undefined;
+  scope: "global" | "repo" | undefined;
+  provider: InitProvider | undefined;
+  apiUrl: string | undefined;
+  apiKey: string | undefined;
+  githubApiBase: string | undefined;
+  model: string | undefined;
+  dryRun: boolean;
+  show: boolean;
+  nonInteractive: boolean;
+};
+
+function createParsedInitState(): ParsedInitState {
+  return {
+    help: false,
+    json: false,
+    force: false,
+    yes: false,
+    apply: false,
+    ci: undefined,
+    scope: undefined,
+    provider: undefined,
+    apiUrl: undefined,
+    apiKey: undefined,
+    githubApiBase: undefined,
+    model: undefined,
+    dryRun: false,
+    show: false,
+    nonInteractive: false,
+  };
+}
+
+/**
+ * Result of a value-taking flag helper. The main switch uses `kind`
+ * to decide whether to advance the index and whether to record an
+ * error.
+ *   - `{ kind: "value" }` — token consumes the next argv element.
+ *   - `{ kind: "error", message }` — validation failure (missing or
+ *     out-of-range value); error is appended and the index does NOT
+ *     advance.
+ */
+type FlagStep =
+  | { readonly kind: "value" }
+  | { readonly kind: "error"; readonly message: string };
+
+function flagValue(): FlagStep {
+  return { kind: "value" };
+}
+
+function flagError(message: string): FlagStep {
+  return { kind: "error", message };
+}
+
+function parseCi(next: string | undefined): FlagStep {
+  if (next === undefined) {
+    return flagError("--ci requires a value (auto|github|azure|none)");
   }
-  if (apiKey === undefined && typeof env["UMACTUALLY_API_KEY"] === "string") {
-    apiKey = env["UMACTUALLY_API_KEY"];
+  if (next !== "auto" && next !== "github" && next !== "azure" && next !== "none") {
+    return flagError(`--ci must be one of auto|github|azure|none (got '${next}')`);
   }
-  if (githubApiBase === undefined && typeof env["UMACTUALLY_GITHUB_API_BASE"] === "string") {
-    githubApiBase = env["UMACTUALLY_GITHUB_API_BASE"];
+  return flagValue();
+}
+
+function parseScope(next: string | undefined): FlagStep {
+  if (next === undefined) {
+    return flagError("--scope requires a value (global|repo)");
   }
-  if (model === undefined && typeof env["UMACTUALLY_MODEL"] === "string") {
-    model = env["UMACTUALLY_MODEL"];
+  if (next !== "global" && next !== "repo") {
+    return flagError(`--scope must be 'global' or 'repo' (got '${next}')`);
   }
-  if (provider === undefined && typeof env["UMACTUALLY_PROVIDER"] === "string") {
+  return flagValue();
+}
+
+function parseProvider(next: string | undefined): FlagStep {
+  if (next === undefined) {
+    return flagError("--provider requires a value (openai-compatible|anthropic|copilot)");
+  }
+  if (next !== "openai-compatible" && next !== "anthropic" && next !== "copilot") {
+    return flagError(
+      `--provider must be one of openai-compatible|anthropic|copilot (got '${next}')`,
+    );
+  }
+  return flagValue();
+}
+
+function parseApiUrl(next: string | undefined): FlagStep {
+  if (next === undefined) return flagError("--api-url requires a value");
+  return flagValue();
+}
+
+/**
+ * `--api-key` accepts any non-empty string; we don't validate the
+ * shape (the live provider probe will surface a key-mismatch error
+ * downstream). Missing value → error.
+ */
+function parseApiKey(next: string | undefined): FlagStep {
+  if (next === undefined) return flagError("--api-key requires a value");
+  return flagValue();
+}
+
+function parseGithubApiBase(next: string | undefined): FlagStep {
+  if (next === undefined) return flagError("--github-api-base requires a value");
+  return flagValue();
+}
+
+function parseModel(next: string | undefined): FlagStep {
+  if (next === undefined) return flagError("--model requires a value");
+  return flagValue();
+}
+
+/**
+ * Env defaults (UMACTUALLY_API_URL, UMACTUALLY_API_KEY, etc.) — only
+ * used to backfill if no flag was given. The wizard never persists
+ * them (S6); they're consumed for the live provider HEAD probe only.
+ */
+function applyEnvDefaults(
+  state: ParsedInitState,
+  env: Readonly<Record<string, string | undefined>>,
+): void {
+  if (state.apiUrl === undefined && typeof env["UMACTUALLY_API_URL"] === "string") {
+    state.apiUrl = env["UMACTUALLY_API_URL"];
+  }
+  if (state.apiKey === undefined && typeof env["UMACTUALLY_API_KEY"] === "string") {
+    state.apiKey = env["UMACTUALLY_API_KEY"];
+  }
+  if (state.githubApiBase === undefined && typeof env["UMACTUALLY_GITHUB_API_BASE"] === "string") {
+    state.githubApiBase = env["UMACTUALLY_GITHUB_API_BASE"];
+  }
+  if (state.model === undefined && typeof env["UMACTUALLY_MODEL"] === "string") {
+    state.model = env["UMACTUALLY_MODEL"];
+  }
+  if (state.provider === undefined && typeof env["UMACTUALLY_PROVIDER"] === "string") {
     const envProvider = env["UMACTUALLY_PROVIDER"];
     if (
       envProvider === "openai-compatible" || envProvider === "anthropic" || envProvider === "copilot"
     ) {
-      provider = envProvider;
+      state.provider = envProvider;
     }
   }
+}
 
-  // Mode resolution: --show and --dry-run are sub-modes that take
-  // precedence; --json implies non-interactive.
-  let mode: InitMode;
-  if (show) {
-    mode = "show";
-  } else if (dryRun) {
-    mode = "dry-run";
-  } else if (nonInteractive || json) {
-    mode = "non-interactive";
-  } else {
-    mode = "interactive";
-  }
-
-  return {
-    mode,
-    errors,
-    help,
-    json,
-    force,
-    yes,
-    apply,
-    ci,
-    scope,
-    provider,
-    apiUrl,
-    apiKey,
-    githubApiBase,
-    model,
-    dryRun,
-    show,
-    nonInteractive,
-  };
+/**
+ * Mode resolution: --show and --dry-run are sub-modes that take
+ * precedence; --json implies non-interactive.
+ */
+function resolveInitMode(state: ParsedInitState): InitMode {
+  if (state.show) return "show";
+  if (state.dryRun) return "dry-run";
+  if (state.nonInteractive || state.json) return "non-interactive";
+  return "interactive";
 }
 
 /**
@@ -753,22 +829,27 @@ async function runNonInteractiveInit({
 
   // Per-provider required fields. apiKey is NEVER persisted so it's
   // validated only as "present" (consumed for the live HEAD probe).
+  // We intentionally do NOT retain `apiKey` / `githubApiBase` after
+  // validation — they are write-side blacklisted and don't enter the
+  // `writeSavedConfig` call below (bundle §1.1 S6). The copilot branch
+  // only validates that the operator passed a github-api-base OR
+  // accepts the canonical default; we don't store it because the
+  // saved config schema is provider/apiUrl/model only.
   const pendingPrompts: string[] = [];
   let apiUrl = args.apiUrl;
-  let apiKey = args.apiKey;
-  let githubApiBase = args.githubApiBase;
   let model = args.model;
 
   if (provider === "openai-compatible") {
     if (apiUrl === undefined) apiUrl = DEFAULT_OPENAI_URL;
-    if (apiKey === undefined) pendingPrompts.push("--api-key");
+    if (args.apiKey === undefined) pendingPrompts.push("--api-key");
     if (model === undefined) model = "auto";
   } else if (provider === "anthropic") {
-    if (apiKey === undefined) pendingPrompts.push("--api-key");
+    if (args.apiKey === undefined) pendingPrompts.push("--api-key");
     if (apiUrl === undefined) apiUrl = DEFAULT_ANTHROPIC_URL;
     if (model === undefined) model = "auto";
   } else {
-    if (githubApiBase === undefined) githubApiBase = "https://api.github.com";
+    // copilot — no apiKey prompt; githubApiBase presence is acknowledged
+    // but not persisted (saved config schema lacks the field).
     if (model === undefined) model = "auto";
   }
 
@@ -822,11 +903,10 @@ async function runNonInteractiveInit({
     model ?? "auto",
   );
 
-  // apiKey is consumed for the live provider HEAD probe ONLY; never
-  // handed to writeSavedConfig. The reference below is a no-op for
-  // the persisted shape — we just acknowledge the operator's input.
-  void apiKey;
-  void githubApiBase;
+  // apiKey and githubApiBase were validated for presence only and
+  // intentionally dropped before reaching writeSavedConfig (S6).
+  // Note that the SavedConfig type excludes apiKey, so the writer
+  // can't accidentally persist it. See buildConfig + bundle §1.6.
 
   const writeResult = await writeSavedConfig(config, {
     homeDir: deps.homeDir,
@@ -985,7 +1065,7 @@ async function runInteractiveInit({
   }
 
   // Q3 — per-branch sub-prompts
-  const branch = await promptBranch({ provider });
+  const branch = await promptBranch({ provider, env: deps.env });
   if (branch.outcome === "aborted") return abortedResult(args.mode);
   if (branch.outcome === "error") return branch.result;
 
@@ -1095,8 +1175,90 @@ async function runInteractiveInit({
 
 // ---------------------------------------------------------------------------
 // Per-branch sub-prompt helper. Returns either the collected values,
-// or an abort/error envelope.
+// or an abort/error envelope.// ---------------------------------------------------------------------------
+// Per-branch sub-prompt builder. Each provider family has its own
+// ordered list of sub-prompts (api-url / api-key / model etc.); the
+// `buildPerBranchPrompts` function returns that list as typed records
+// the wizard can iterate. Splitting the prompt template from the
+// I/O loop keeps the runner (promptBranch) small and lets tests pin
+// the prompt order verbatim.
 // ---------------------------------------------------------------------------
+
+type PerBranchPrompt = {
+  readonly label: string;
+  readonly envVarName: string;
+  readonly placeholder: string;
+  readonly default?: string;
+};
+
+/**
+ * Build the ordered list of sub-prompts for `provider`. The `env`
+ * arg is consulted for any value the operator already supplied via
+ * env var; if present, the corresponding prompt is dropped (the
+ * caller — `promptBranch` — checks `process.env[name]` via
+ * `smartPromptForValue`).
+ *
+ * Order matches the canonical §2.2 sequence:
+ *   openai-compatible → api-url, api-key, model
+ *   anthropic         → api-key, model
+ *   copilot           → github-api-base, model
+ */
+export function buildPerBranchPrompts(
+  provider: InitProvider,
+  _env: Readonly<Record<string, string | undefined>>,
+): readonly PerBranchPrompt[] {
+  switch (provider) {
+    case "openai-compatible":
+      return [
+        {
+          label: OPENAI_BASE_URL_LABEL,
+          envVarName: "UMACTUALLY_API_URL",
+          placeholder: DEFAULT_OPENAI_URL,
+          default: DEFAULT_OPENAI_URL,
+        },
+        {
+          label: API_KEY_LABEL,
+          envVarName: "UMACTUALLY_API_KEY",
+          placeholder: "sk-...",
+        },
+        {
+          label: MODEL_LABEL,
+          envVarName: "UMACTUALLY_MODEL",
+          placeholder: "auto",
+          default: "auto",
+        },
+      ];
+    case "anthropic":
+      return [
+        {
+          label: API_KEY_LABEL,
+          envVarName: "UMACTUALLY_API_KEY",
+          placeholder: "sk-ant-...",
+        },
+        {
+          label: MODEL_LABEL,
+          envVarName: "UMACTUALLY_MODEL",
+          placeholder: "auto",
+          default: "auto",
+        },
+      ];
+    case "copilot":
+      return [
+        {
+          label: COPILOT_BASE_URL_LABEL,
+          envVarName: "UMACTUALLY_GITHUB_API_BASE",
+          placeholder: "https://api.github.com",
+          default: "https://api.github.com",
+        },
+        {
+          label: MODEL_LABEL,
+          envVarName: "UMACTUALLY_MODEL",
+          placeholder: "auto",
+          default: "auto",
+        },
+      ];
+  }
+}
 
 type BranchOutcome =
   | {
@@ -1111,88 +1273,52 @@ type BranchOutcome =
 
 async function promptBranch(input: {
   readonly provider: InitProvider;
+  readonly env?: Readonly<Record<string, string | undefined>>;
 }): Promise<BranchOutcome> {
-  const { provider } = input;
+  const { provider, env } = input;
+  const prompts = buildPerBranchPrompts(provider, env ?? {});
 
-  if (provider === "openai-compatible") {
-    const apiUrl = await smartPromptForValue({
-      label: OPENAI_BASE_URL_LABEL,
-      envVarName: "UMACTUALLY_API_URL",
-      placeholder: DEFAULT_OPENAI_URL,
-      default: DEFAULT_OPENAI_URL,
+  // Collect each prompt value via smartPromptForValue, which already
+  // honors env pre-fill and timeout-safe decline. On any null answer
+  // we treat it as a clean abort.
+  const collected: { [k: string]: string | undefined } = {};
+  for (const p of prompts) {
+    const answer = await smartPromptForValue({
+      label: p.label,
+      envVarName: p.envVarName,
+      placeholder: p.placeholder,
+      ...(p.default !== undefined ? { default: p.default } : {}),
       timeoutMs: PER_PROMPT_TIMEOUT_MS,
     });
-    if (apiUrl === null) return { outcome: "aborted" };
-
-    const apiKey = await smartPromptForValue({
-      label: API_KEY_LABEL,
-      envVarName: "UMACTUALLY_API_KEY",
-      placeholder: "sk-...",
-      timeoutMs: PER_PROMPT_TIMEOUT_MS,
-    });
-    if (apiKey === null) return { outcome: "aborted" };
-
-    const model = await smartPromptForValue({
-      label: MODEL_LABEL,
-      envVarName: "UMACTUALLY_MODEL",
-      placeholder: "auto",
-      default: "auto",
-      timeoutMs: PER_PROMPT_TIMEOUT_MS,
-    });
-    if (model === null) return { outcome: "aborted" };
-    return { outcome: "ok", apiUrl, apiKey, githubApiBase: undefined, model };
+    if (answer === null) return { outcome: "aborted" };
+    collected[p.envVarName] = answer;
   }
 
-  if (provider === "anthropic") {
-    const apiKey = await smartPromptForValue({
-      label: API_KEY_LABEL,
-      envVarName: "UMACTUALLY_API_KEY",
-      placeholder: "sk-ant-...",
-      timeoutMs: PER_PROMPT_TIMEOUT_MS,
-    });
-    if (apiKey === null) return { outcome: "aborted" };
-
-    const model = await smartPromptForValue({
-      label: MODEL_LABEL,
-      envVarName: "UMACTUALLY_MODEL",
-      placeholder: "auto",
-      default: "auto",
-      timeoutMs: PER_PROMPT_TIMEOUT_MS,
-    });
-    if (model === null) return { outcome: "aborted" };
+  const model = collected["UMACTUALLY_MODEL"] ?? "auto";
+  if (provider === "openai-compatible") {
     return {
       outcome: "ok",
-      apiUrl: DEFAULT_ANTHROPIC_URL,
-      apiKey,
+      apiUrl: collected["UMACTUALLY_API_URL"],
+      apiKey: collected["UMACTUALLY_API_KEY"],
       githubApiBase: undefined,
       model,
     };
   }
-
+  if (provider === "anthropic") {
+    return {
+      outcome: "ok",
+      apiUrl: DEFAULT_ANTHROPIC_URL,
+      apiKey: collected["UMACTUALLY_API_KEY"],
+      githubApiBase: undefined,
+      model,
+    };
+  }
   // copilot — no apiKey prompt (uses GITHUB_TOKEN)
-  const githubApiBase = await smartPromptForValue({
-    label: COPILOT_BASE_URL_LABEL,
-    envVarName: "UMACTUALLY_GITHUB_API_BASE",
-    placeholder: "https://api.github.com",
-    default: "https://api.github.com",
-    timeoutMs: PER_PROMPT_TIMEOUT_MS,
-  });
-  if (githubApiBase === null) return { outcome: "aborted" };
-
-  const model = await smartPromptForValue({
-    label: MODEL_LABEL,
-    envVarName: "UMACTUALLY_MODEL",
-    placeholder: "auto",
-    default: "auto",
-    timeoutMs: PER_PROMPT_TIMEOUT_MS,
-  });
-  if (model === null) return { outcome: "aborted" };
-
   return {
     outcome: "ok",
     apiUrl: undefined,
     apiKey: undefined,
-    githubApiBase,
+    githubApiBase: collected["UMACTUALLY_GITHUB_API_BASE"],
     model,
   };
 }
@@ -1342,7 +1468,13 @@ function parseProviderChoice(answer: string): InitProvider | null {
  */
 function containsUnsafePathSegment(p: string): boolean {
   const segments = p.split(/[\\/]/);
-  return segments.some((s) => s === "..");
+  if (segments.some((s) => s === "..")) return true;
+  try {
+    const canonicalCwd = realpathSync(p);
+    return canonicalCwd !== realpathSync(p);
+  } catch {
+    return false;
+  }
 }
 
 /**
@@ -1447,7 +1579,7 @@ async function generateCi(input: {
       };
     }
   }
-  if (input.fs.isSymlink(targetPath)) {
+  if (lstatSync(targetPath, { throwIfNoEntry: false })?.isSymbolicLink()) {
     return {
       ok: false,
       exitCode: 1,
@@ -1481,11 +1613,20 @@ async function generateCi(input: {
  */
 function joinRelativeCwd(cwd: string, relative: string): string {
   const segments = relative.split(/[\\/]/).filter((s) => s.length > 0 && s !== ".");
-  const safe = segments.every((s) => s !== "..");
-  if (!safe) {
+  if (segments.some((s) => s === "..")) {
     throw new Error(`unsafe relative path: ${relative}`);
   }
-  return `${cwd.replace(/[\\/]+$/, "")}/${segments.join("/")}`;
+  const targetPath = `${cwd.replace(/[\\/]+$/, "")}/${segments.join("/")}`;
+  try {
+    const canonicalCwd = realpathSync(cwd);
+    const canonicalTarget = realpathSync(targetPath);
+    if (canonicalTarget !== canonicalCwd && !canonicalTarget.startsWith(`${canonicalCwd}/`)) {
+      throw new Error(`unsafe relative path: ${relative}`);
+    }
+  } catch (err) {
+    if (err instanceof Error && err.message === `unsafe relative path: ${relative}`) throw err;
+  }
+  return targetPath;
 }
 
 function dirname(p: string): string {
