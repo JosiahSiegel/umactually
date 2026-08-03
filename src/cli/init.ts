@@ -1029,7 +1029,7 @@ async function runInteractiveInit({
   const scopeAnswer = await safePrompt(
     reader,
     isTTY,
-    "(1) global [~/.umactually] (2) this repo [./umactual.config.json] [1]: ",
+    "? Save settings to: (1) global ~/.umactually  (2) repo ./umactually.config.json  [default: 1]: ",
     "1",
   );
   if (scopeAnswer === null) return abortedResult(args.mode);
@@ -1039,7 +1039,7 @@ async function runInteractiveInit({
   const providerAnswer = await safePrompt(
     reader,
     isTTY,
-    "Model provider family (openai-compatible / anthropic / copilot): ",
+    "? Provider family (1) openai-compatible  (2) anthropic  (3) copilot: ",
     "",
   );
   if (providerAnswer === null) return abortedResult(args.mode);
@@ -1081,7 +1081,7 @@ async function runInteractiveInit({
   if (ciChoice.outcome === "error") return ciChoice.result;
 
   // Q5 — Confirm save
-  const confirmAnswer = await safePrompt(reader, isTTY, "Confirm save? [y/N]: ", "");
+  const confirmAnswer = await safePrompt(reader, isTTY, "? Save these settings? [y/N]: ", "");
   if (confirmAnswer === null) return abortedResult(args.mode);
   if (!/^y(es)?$/i.test(confirmAnswer.trim())) {
     return abortedResult(args.mode);
@@ -1353,7 +1353,7 @@ async function promptCi(input: {
       const answer = await safePrompt(
         reader,
         isTTY,
-        `Detected ${detected} CI target. Generate ${detected} workflow? [Y/n]: `,
+        `? Detected ${detected} CI. Generate a ${detected} workflow file? [Y/n]: `,
         "Y",
       );
       if (answer === null) return { outcome: "aborted" };
@@ -1362,7 +1362,7 @@ async function promptCi(input: {
       const answer = await safePrompt(
         reader,
         isTTY,
-        "Generate CI workflow? (github / azure / none) [none]: ",
+        "? Generate CI workflow? (1) github  (2) azure  (3) none  [default: 3]: ",
         "none",
       );
       if (answer === null) return { outcome: "aborted" };
@@ -1635,9 +1635,12 @@ function dirname(p: string): string {
 }
 
 function abortedResult(mode: InitMode): InitResult {
-  return envelope(mode, "aborted", 0, {
-    hints: ["cli: init aborted; nothing changed."],
-  });
+  // The headline "init aborted; nothing changed." already carries the
+  // user-facing explanation; the formatter would otherwise emit a
+  // redundant `hint:` line that simply repeats the same sentence
+  // (regression reported on v0.6.23). Keep `hints` empty here so the
+  // formatter renders a single, clean line for clean-abort outcomes.
+  return envelope(mode, "aborted", 0, {});
 }
 
 /**

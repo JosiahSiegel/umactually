@@ -2,7 +2,7 @@
 // `umactually init` saved-config persistence.
 //
 // Stores typed, NON-SECRET provider settings at `<homeDir>/.umactually/config.json`
-// (or `<cwd>/umactual.config.json` when the user opts into repo scope). The shape
+// (or `<cwd>/umactually.config.json` when the user opts into repo scope). The shape
 // is intentionally small:
 //
 //   { schemaVersion: 1, provider, [apiUrl], [model] }
@@ -59,7 +59,7 @@ export const SAVED_CONFIG_GLOBAL_PATH = (homeDir: string): string =>
   join(homeDir, ".umactually", "config.json");
 
 export const SAVED_CONFIG_REPO_PATH = (cwd: string): string =>
-  join(cwd, "umactual.config.json");
+  join(cwd, "umactually.config.json");
 
 export const SAVED_CONFIG_GLOBAL_DIR = (homeDir: string): string =>
   join(homeDir, ".umactually");
@@ -121,7 +121,7 @@ export type WriteSavedConfigResult =
 
 /**
  * Resolve the effective saved config by checking the repo path first
- * (`<cwd>/umactual.config.json`) and falling back to the global path
+ * (`<cwd>/umactually.config.json`) and falling back to the global path
  * (`<homeDir>/.umactually/config.json`). Returns `config: null` if neither
  * file exists.
  *

@@ -329,6 +329,10 @@ describe("CLI subcommand dispatch RED contract (Task M1)", () => {
     expect(capture.stderr.text).toContain("Standalone mode");
     expect(capture.stderr.text).toContain("Live CI mode");
     expect(capture.stderr.text).toContain("Pre-rendered diff");
+    // The first-run nudge (v0.6.24) is a separate concern and is
+    // pinned in test/unit/cli-first-run-nudge.test.ts — this back-compat
+    // test deliberately does NOT assert on it (it runs without an
+    // injected TTY, so the nudge is a no-op here by design).
   });
 
   // ────────────────────────────────────────────────────────────────────────

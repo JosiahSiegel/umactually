@@ -317,7 +317,7 @@ describe("init wizard — C-* saved-config safety contract", () => {
     const repoResult = await writeSavedConfig(fixture, { homeDir, cwd, scope: "repo" });
     expect(repoResult.ok).toBe(true);
     if (!repoResult.ok) return;
-    expect(repoResult.path).toBe(join(cwd, "umactual.config.json"));
+    expect(repoResult.path).toBe(join(cwd, "umactually.config.json"));
   });
 
   it("C-11 refuses a symlinked config target (exit 1)", async () => {

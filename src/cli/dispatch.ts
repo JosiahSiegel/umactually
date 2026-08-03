@@ -2,12 +2,14 @@
 // Subcommand dispatch layer. Pure routing apart from delegated CLI output.
 
 import { execFile as execFileCallback } from "node:child_process";
+import { existsSync } from "node:fs";
 import { stat } from "node:fs/promises";
 import { homedir } from "node:os";
-import { dirname, resolve } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 
+import { BRAND_PREFIX } from "../util/brand.js";
 import { runCli, runVersion } from "../cli.js";
 import { classifyReviewArtifact } from "./check-review-artifact.js";
 import { formatDoctorHuman, formatDoctorJson, runDoctor } from "./doctor.js";
@@ -81,6 +83,7 @@ export async function dispatch(argv: readonly string[]): Promise<DispatchResult 
 
   const command = firstPositionalToken(argv);
   if (command === null) {
+    maybeFirstRunNudge(argv);
     return runReviewBranch(argv);
   }
 
@@ -112,6 +115,60 @@ function applyColorPolicy(argv: readonly string[]): boolean {
     env: process.env,
     isTTY: process.stdout.isTTY === true,
   });
+}
+
+/**
+ * Print a one-time first-run nudge to stderr when:
+ *   - the user ran `umactually` with no subcommand (bare invocation or
+ *     flags-only — the `command === null` branch in `dispatch`),
+ *   - stdout is a real TTY (no CI noise; no JSON-parser pollution),
+ *   - no saved config exists at `~/.umactually/config.json`.
+ *
+ * The nudge fires BEFORE the existing review-branch validation so the
+ * user sees both the reminder AND the existing `--api-url is required`
+ * + `pick a mode:` banner — the back-compat invariant pinned by
+ * `cli-subcommands.test.ts:CLI-SUB-005` is preserved (the nudge is
+ * additive, not a replacement).
+ *
+ * No-ops on Windows when `process.env.USERPROFILE` is unset (CI runners
+ * without HOME) — we don't want to misattribute an operator's first run.
+ */
+function maybeFirstRunNudge(argv: readonly string[]): void {
+  if (process.stdout.isTTY !== true) return;
+  if (argvIncludesProgrammaticFlags(argv)) return;
+  const configPath = resolveSavedConfigPath();
+  if (configPath === null) return;
+  if (existsSync(configPath)) return;
+  process.stderr.write(
+    `${BRAND_PREFIX}first run? Get started with: \`umactually init\`\n`,
+  );
+}
+
+function argvIncludesProgrammaticFlags(argv: readonly string[]): boolean {
+  // `--json` and `--no-color` are common programmatic flags; a user
+  // passing them is not a "first run" — they're piping output somewhere
+  // and the nudge would just be noise on stderr. `--api-*` / `--model`
+  // flags mean the operator already knows the wire shape; pointing them
+  // at the wizard is condescending.
+  return argv.some(
+    (a) =>
+      a === "--json" ||
+      a === "--no-color" ||
+      a.startsWith("--api-") ||
+      a === "--model" ||
+      a.startsWith("--platform"),
+  );
+}
+
+function resolveSavedConfigPath(): string | null {
+  // We deliberately do NOT use `readSavedConfig` here — that path is
+  // expensive (parses + validates JSON, walks both repo + global). For
+  // the nudge we only need a cheap existence check on the global path
+  // (the canonical first-install target); the repo-scope file is opt-in
+  // and would not gate the "first run" reminder.
+  const home = process.env["HOME"] ?? process.env["USERPROFILE"];
+  if (typeof home !== "string" || home.length === 0) return null;
+  return join(home, ".umactually", "config.json");
 }
 
 async function runReviewBranch(args: readonly string[]): Promise<DispatchResult> {

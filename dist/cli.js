@@ -2981,7 +2981,7 @@ async function smartPromptForValue(input) {
     const defaultHint = input.default !== undefined && input.default.length > 0
         ? ` [default: ${input.default}]`
         : "";
-    const promptText = `${input.label} (${input.envVarName})${defaultHint}: `;
+    const promptText = `? ${input.label} (${input.envVarName})${defaultHint}: `;
     try {
         const answer = await readInteractiveLine({
             prompt: promptText,
@@ -3072,7 +3072,7 @@ function tryFlockNonBlocking(lockPath) {
 // `umactually init` saved-config persistence.
 //
 // Stores typed, NON-SECRET provider settings at `<homeDir>/.umactually/config.json`
-// (or `<cwd>/umactual.config.json` when the user opts into repo scope). The shape
+// (or `<cwd>/umactually.config.json` when the user opts into repo scope). The shape
 // is intentionally small:
 //
 //   { schemaVersion: 1, provider, [apiUrl], [model] }
@@ -3107,7 +3107,7 @@ function tryFlockNonBlocking(lockPath) {
 const writeSavedConfigFlockUnavailable = { flag: false };
 const SAVED_CONFIG_SCHEMA_VERSION = 1;
 const SAVED_CONFIG_GLOBAL_PATH = (homeDir) => (0,external_node_path_namespaceObject.join)(homeDir, ".umactually", "config.json");
-const SAVED_CONFIG_REPO_PATH = (cwd) => (0,external_node_path_namespaceObject.join)(cwd, "umactual.config.json");
+const SAVED_CONFIG_REPO_PATH = (cwd) => (0,external_node_path_namespaceObject.join)(cwd, "umactually.config.json");
 const SAVED_CONFIG_GLOBAL_DIR = (homeDir) => (0,external_node_path_namespaceObject.join)(homeDir, ".umactually");
 const SAVED_CONFIG_GLOBAL_LOCK = (homeDir) => (0,external_node_path_namespaceObject.join)(homeDir, ".umactually", "init.lock");
 const saved_config_DEFAULT_OPENAI_URL = "https://api.openai.com/v1";
@@ -3128,7 +3128,7 @@ const VALID_PROVIDERS = new Set([
 // ---------------------------------------------------------------------------
 /**
  * Resolve the effective saved config by checking the repo path first
- * (`<cwd>/umactual.config.json`) and falling back to the global path
+ * (`<cwd>/umactually.config.json`) and falling back to the global path
  * (`<homeDir>/.umactually/config.json`). Returns `config: null` if neither
  * file exists.
  *
@@ -4413,12 +4413,12 @@ async function runInteractiveInit({ args, deps, }) {
     }
     const reader = deps.stdinReader ?? init_defaultStdinReader;
     // Q1 — scope (default global)
-    const scopeAnswer = await safePrompt(reader, isTTY, "(1) global [~/.umactually] (2) this repo [./umactual.config.json] [1]: ", "1");
+    const scopeAnswer = await safePrompt(reader, isTTY, "? Save settings to: (1) global ~/.umactually  (2) repo ./umactually.config.json  [default: 1]: ", "1");
     if (scopeAnswer === null)
         return abortedResult(args.mode);
     const scopeChoice = scopeAnswer === "2" ? "repo" : "global";
     // Q2 — provider family (must include all three)
-    const providerAnswer = await safePrompt(reader, isTTY, "Model provider family (openai-compatible / anthropic / copilot): ", "");
+    const providerAnswer = await safePrompt(reader, isTTY, "? Provider family (1) openai-compatible  (2) anthropic  (3) copilot: ", "");
     if (providerAnswer === null)
         return abortedResult(args.mode);
     const provider = parseProviderChoice(providerAnswer);
@@ -4460,7 +4460,7 @@ async function runInteractiveInit({ args, deps, }) {
     if (ciChoice.outcome === "error")
         return ciChoice.result;
     // Q5 — Confirm save
-    const confirmAnswer = await safePrompt(reader, isTTY, "Confirm save? [y/N]: ", "");
+    const confirmAnswer = await safePrompt(reader, isTTY, "? Save these settings? [y/N]: ", "");
     if (confirmAnswer === null)
         return abortedResult(args.mode);
     if (!/^y(es)?$/i.test(confirmAnswer.trim())) {
@@ -4675,13 +4675,13 @@ async function promptCi(input) {
     else {
         const detected = detectCiTargetHelper(fs);
         if (detected !== null) {
-            const answer = await safePrompt(reader, isTTY, `Detected ${detected} CI target. Generate ${detected} workflow? [Y/n]: `, "Y");
+            const answer = await safePrompt(reader, isTTY, `? Detected ${detected} CI. Generate a ${detected} workflow file? [Y/n]: `, "Y");
             if (answer === null)
                 return { outcome: "aborted" };
             chosen = /^(n|no)$/i.test(answer.trim()) ? "none" : detected;
         }
         else {
-            const answer = await safePrompt(reader, isTTY, "Generate CI workflow? (github / azure / none) [none]: ", "none");
+            const answer = await safePrompt(reader, isTTY, "? Generate CI workflow? (1) github  (2) azure  (3) none  [default: 3]: ", "none");
             if (answer === null)
                 return { outcome: "aborted" };
             const trimmed = answer.trim().toLowerCase();
@@ -4929,9 +4929,12 @@ function dirname(p) {
     return idx === -1 ? "." : p.slice(0, idx);
 }
 function abortedResult(mode) {
-    return envelope(mode, "aborted", 0, {
-        hints: ["cli: init aborted; nothing changed."],
-    });
+    // The headline "init aborted; nothing changed." already carries the
+    // user-facing explanation; the formatter would otherwise emit a
+    // redundant `hint:` line that simply repeats the same sentence
+    // (regression reported on v0.6.23). Keep `hints` empty here so the
+    // formatter renders a single, clean line for clean-abort outcomes.
+    return envelope(mode, "aborted", 0, {});
 }
 /**
  * Build an InitResult with sensible defaults so callers only supply
@@ -5099,6 +5102,8 @@ function emitJsonEnvelope(envelope, out = process.stdout) {
 
 
 
+
+
 const GLOBAL_ONLY_FLAGS = new Set(["--json", "--no-color"]);
 const execFile = (0,external_node_util_namespaceObject.promisify)(external_node_child_process_.execFile);
 function firstPositionalToken(argv) {
@@ -5127,6 +5132,7 @@ async function dispatch(argv) {
     }
     const command = firstPositionalToken(argv);
     if (command === null) {
+        maybeFirstRunNudge(argv);
         return runReviewBranch(argv);
     }
     switch (command) {
@@ -5156,6 +5162,57 @@ function applyColorPolicy(argv) {
         env: process.env,
         isTTY: process.stdout.isTTY === true,
     });
+}
+/**
+ * Print a one-time first-run nudge to stderr when:
+ *   - the user ran `umactually` with no subcommand (bare invocation or
+ *     flags-only — the `command === null` branch in `dispatch`),
+ *   - stdout is a real TTY (no CI noise; no JSON-parser pollution),
+ *   - no saved config exists at `~/.umactually/config.json`.
+ *
+ * The nudge fires BEFORE the existing review-branch validation so the
+ * user sees both the reminder AND the existing `--api-url is required`
+ * + `pick a mode:` banner — the back-compat invariant pinned by
+ * `cli-subcommands.test.ts:CLI-SUB-005` is preserved (the nudge is
+ * additive, not a replacement).
+ *
+ * No-ops on Windows when `process.env.USERPROFILE` is unset (CI runners
+ * without HOME) — we don't want to misattribute an operator's first run.
+ */
+function maybeFirstRunNudge(argv) {
+    if (process.stdout.isTTY !== true)
+        return;
+    if (argvIncludesProgrammaticFlags(argv))
+        return;
+    const configPath = resolveSavedConfigPath();
+    if (configPath === null)
+        return;
+    if ((0,external_node_fs_.existsSync)(configPath))
+        return;
+    process.stderr.write(`${BRAND_PREFIX}first run? Get started with: \`umactually init\`\n`);
+}
+function argvIncludesProgrammaticFlags(argv) {
+    // `--json` and `--no-color` are common programmatic flags; a user
+    // passing them is not a "first run" — they're piping output somewhere
+    // and the nudge would just be noise on stderr. `--api-*` / `--model`
+    // flags mean the operator already knows the wire shape; pointing them
+    // at the wizard is condescending.
+    return argv.some((a) => a === "--json" ||
+        a === "--no-color" ||
+        a.startsWith("--api-") ||
+        a === "--model" ||
+        a.startsWith("--platform"));
+}
+function resolveSavedConfigPath() {
+    // We deliberately do NOT use `readSavedConfig` here — that path is
+    // expensive (parses + validates JSON, walks both repo + global). For
+    // the nudge we only need a cheap existence check on the global path
+    // (the canonical first-install target); the repo-scope file is opt-in
+    // and would not gate the "first run" reminder.
+    const home = process.env["HOME"] ?? process.env["USERPROFILE"];
+    if (typeof home !== "string" || home.length === 0)
+        return null;
+    return (0,external_node_path_namespaceObject.join)(home, ".umactually", "config.json");
 }
 async function runReviewBranch(args) {
     const json = args.includes("--json");
