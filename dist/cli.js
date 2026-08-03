@@ -3050,6 +3050,12 @@ async function smartPromptForApiConfig(input) {
 // only the "second init wins cleanly" guarantee. v1 of the wizard
 // documents this as single-machine-only and the parent writeSavedConfig()
 // guards with a no-op on win32.
+class FlockUnavailableError extends Error {
+    constructor() {
+        super("flock(1) is unavailable");
+        this.name = "FlockUnavailableError";
+    }
+}
 function tryFlockNonBlocking(lockPath) {
     try {
         const { spawnSync } = __nccwpck_require__(421);
@@ -3057,8 +3063,7 @@ function tryFlockNonBlocking(lockPath) {
         return r.status === 0;
     }
     catch {
-        // flock(1) not available — see file header.
-        return true;
+        throw new FlockUnavailableError();
     }
 }
 
@@ -3093,6 +3098,13 @@ function tryFlockNonBlocking(lockPath) {
 
 
 
+/**
+ * Module-level mutable holder for the flock-availability signal. The
+ * lock acquisition block writes to it; the success-return path reads
+ * it. Avoids threading the flag through every early-return in the
+ * writer. Reset to `false` on every writer entry (see writeSavedConfig).
+ */
+const writeSavedConfigFlockUnavailable = { flag: false };
 const SAVED_CONFIG_SCHEMA_VERSION = 1;
 const SAVED_CONFIG_GLOBAL_PATH = (homeDir) => (0,external_node_path_namespaceObject.join)(homeDir, ".umactually", "config.json");
 const SAVED_CONFIG_REPO_PATH = (cwd) => (0,external_node_path_namespaceObject.join)(cwd, "umactual.config.json");
@@ -3262,6 +3274,7 @@ function validateSavedConfig(parsed, candidate) {
  * The lock fd is released in `finally`.
  */
 async function writeSavedConfig(config, deps) {
+    writeSavedConfigFlockUnavailable.flag = false;
     const fs = deps.fs ?? defaultFsAdapter;
     const platform = deps.platform ?? process.platform;
     const isPosix = platform !== "win32";
@@ -3298,11 +3311,39 @@ async function writeSavedConfig(config, deps) {
             // Non-blocking try-lock via `flock(1) -n <lockPath> true`. We pass
             // the PATH (not the fd number — see saved-config-flock.ts for why
             // the fd-number form silently no-ops in vite-node / CI sandboxes).
-            // flock(1) is in coreutils on every Linux and macOS (via brew
-            // install coreutils); on hosts without it we fall through to a
-            // lenient path (atomic-rename still prevents corruption; we lose
-            // only the "second init wins cleanly" guarantee).
-            const flockResult = tryFlockNonBlocking(lockPath);
+            //
+            // Flock availability:
+            //   - flock(1) is in coreutils on every Linux and macOS (via brew
+            //     install coreutils). When it is present, status=0 means lock
+            //     acquired; status≠0 means another init holds it (contention).
+            //   - On hosts without flock(1) (macOS without coreutils, alpine
+            //     without busybox flock, restricted CI sandboxes), the wrapper
+            //     throws `FlockUnavailableError`. We MUST surface this so the
+            //     operator knows the init-time concurrency lock is NOT
+            //     enforced: writes can still race. The atomic-rename primitive
+            //     keeps the file corruption-safe (last-writer-wins on a per-
+            //     inode basis), but a parallel `umactually init` could clobber
+            //     a half-written sibling temp file if the lock is genuinely
+            //     missing. The check below records the unavailability; the
+            //     `lockUnavailable` flag is surfaced via the WriteSavedConfigResult
+            //     so the wizard can emit a hint to the user.
+            let flockResult = true;
+            let lockUnavailable = false;
+            try {
+                flockResult = tryFlockNonBlocking(lockPath);
+            }
+            catch (err) {
+                if (err instanceof FlockUnavailableError) {
+                    // flock(1) is missing on this host. Atomic-rename still prevents
+                    // file corruption; we lose only the "second init declines"
+                    // guarantee. Surface a hint to the operator so they understand
+                    // the weakened contract — see WriteSavedConfigResult.lockUnavailable.
+                    lockUnavailable = true;
+                }
+                else {
+                    throw err;
+                }
+            }
             if (!flockResult) {
                 try {
                     (0,external_node_fs_.closeSync)(lockFd);
@@ -3315,8 +3356,15 @@ async function writeSavedConfig(config, deps) {
                     ok: false,
                     exitCode: 1,
                     message: `another init is in progress; rm ${lockPath} if stale`,
+                    lockUnavailable: false,
                 };
             }
+            // Stash `lockUnavailable` on the active function scope — the
+            // success-return branch below reads it. We use a tiny mutable
+            // holder rather than a let inside the try block so the success
+            // path at the end of writeSavedConfig() can read it without
+            // threading it through every early return.
+            writeSavedConfigFlockUnavailable.flag = lockUnavailable;
         }
         // Windows: best-effort serialization via shared-lock semantics on the
         // lock file's existence + the atomic-rename primitive. Documented above.
@@ -3443,7 +3491,7 @@ async function writeSavedConfig(config, deps) {
                 };
             }
         }
-        return { ok: true, path: targetPath, bytes: Buffer.byteLength(serialized, "utf8") };
+        return { ok: true, path: targetPath, bytes: Buffer.byteLength(serialized, "utf8"), lockUnavailable: writeSavedConfigFlockUnavailable.flag };
     }
     finally {
         // -- Release flock ---------------------------------------------------
@@ -3598,6 +3646,7 @@ function detectCiTarget(input) {
 
 
 
+
 /**
  * Global budget for the entire wizard. Per-prompt budget is
  * `PER_PROMPT_TIMEOUT_MS` (15s) and is enforced by `smartPromptForValue`.
@@ -3646,192 +3695,170 @@ const COPILOT_BASE_URL_LABEL = "GitHub API base URL";
 const OPENAI_BASE_URL_LABEL = "Model provider base URL";
 const API_KEY_LABEL = "Model provider API key";
 const MODEL_LABEL = "Model name";
-/**
- * Parse argv into typed fields. Unknown flags → errors[]. Missing
- * required values → errors[]. The caller (runInit) surfaces the
- * errors as an exit-2 envelope.
- */
+const FLAG_HANDLERS = {
+    "--help": { consume: false, apply: (state) => { state.help = true; } },
+    "-h": { consume: false, apply: (state) => { state.help = true; } },
+    "--json": { consume: false, apply: (state) => { state.json = true; } },
+    "--force": { consume: false, apply: (state) => { state.force = true; } },
+    "--yes": { consume: false, apply: (state) => { state.yes = true; } },
+    "--apply": { consume: false, apply: (state) => { state.apply = true; } },
+    "--non-interactive": { consume: false, apply: (state) => { state.nonInteractive = true; } },
+    "--dry-run": { consume: false, apply: (state) => { state.dryRun = true; } },
+    "--show": { consume: false, apply: (state) => { state.show = true; } },
+    "--ci": { consume: true, validate: parseCi, apply: (state, value) => { state.ci = value; } },
+    "--scope": { consume: true, validate: parseScope, apply: (state, value) => { state.scope = value; } },
+    "--provider": { consume: true, validate: parseProvider, apply: (state, value) => { state.provider = value; } },
+    "--api-url": { consume: true, validate: parseApiUrl, apply: (state, value) => { state.apiUrl = value; } },
+    "--api-key": { consume: true, validate: parseApiKey, apply: (state, value) => { state.apiKey = value; } },
+    "--github-api-base": { consume: true, validate: parseGithubApiBase, apply: (state, value) => { state.githubApiBase = value; } },
+    "--model": { consume: true, validate: parseModel, apply: (state, value) => { state.model = value; } },
+};
+function parseFlagToken(token, next, state, errors) {
+    const handler = FLAG_HANDLERS[token];
+    if (handler === undefined) {
+        errors.push(token.startsWith("--") ? `unknown flag: ${token}` : `unexpected positional argument: ${token}`);
+        return false;
+    }
+    if (!handler.consume) {
+        handler.apply(state);
+        return false;
+    }
+    const step = handler.validate?.(next) ?? flagValue();
+    if (step.kind === "error") {
+        errors.push(step.message);
+        return false;
+    }
+    handler.apply(state, next);
+    return true;
+}
 function parseInitArgs(argv, env) {
+    const state = createParsedInitState();
     const errors = [];
-    let help = false;
-    let json = false;
-    let force = false;
-    let yes = false;
-    let apply = false;
-    let ci;
-    let scope;
-    let provider;
-    let apiUrl;
-    let apiKey;
-    let githubApiBase;
-    let model;
-    let dryRun = false;
-    let show = false;
-    let nonInteractive = false;
     for (let i = 0; i < argv.length; i += 1) {
-        const tok = argv[i];
-        if (tok === undefined)
+        const token = argv[i];
+        if (token === undefined)
             break;
-        const next = argv[i + 1];
-        switch (tok) {
-            case "--help":
-            case "-h":
-                help = true;
-                break;
-            case "--json":
-                json = true;
-                break;
-            case "--force":
-                force = true;
-                break;
-            case "--yes":
-                yes = true;
-                break;
-            case "--apply":
-                apply = true;
-                break;
-            case "--non-interactive":
-                nonInteractive = true;
-                break;
-            case "--dry-run":
-                dryRun = true;
-                break;
-            case "--show":
-                show = true;
-                break;
-            case "--ci":
-                if (next === undefined) {
-                    errors.push("--ci requires a value (auto|github|azure|none)");
-                }
-                else if (next !== "auto" && next !== "github" && next !== "azure" && next !== "none") {
-                    errors.push(`--ci must be one of auto|github|azure|none (got '${next}')`);
-                }
-                else {
-                    ci = next;
-                    i += 1;
-                }
-                break;
-            case "--scope":
-                if (next === undefined) {
-                    errors.push("--scope requires a value (global|repo)");
-                }
-                else if (next !== "global" && next !== "repo") {
-                    errors.push(`--scope must be 'global' or 'repo' (got '${next}')`);
-                }
-                else {
-                    scope = next;
-                    i += 1;
-                }
-                break;
-            case "--provider":
-                if (next === undefined) {
-                    errors.push("--provider requires a value (openai-compatible|anthropic|copilot)");
-                }
-                else if (next !== "openai-compatible" && next !== "anthropic" && next !== "copilot") {
-                    errors.push(`--provider must be one of openai-compatible|anthropic|copilot (got '${next}')`);
-                }
-                else {
-                    provider = next;
-                    i += 1;
-                }
-                break;
-            case "--api-url":
-                if (next === undefined)
-                    errors.push("--api-url requires a value");
-                else {
-                    apiUrl = next;
-                    i += 1;
-                }
-                break;
-            case "--api-key":
-                if (next === undefined)
-                    errors.push("--api-key requires a value");
-                else {
-                    apiKey = next;
-                    i += 1;
-                }
-                break;
-            case "--github-api-base":
-                if (next === undefined)
-                    errors.push("--github-api-base requires a value");
-                else {
-                    githubApiBase = next;
-                    i += 1;
-                }
-                break;
-            case "--model":
-                if (next === undefined)
-                    errors.push("--model requires a value");
-                else {
-                    model = next;
-                    i += 1;
-                }
-                break;
-            default:
-                if (tok.startsWith("--")) {
-                    errors.push(`unknown flag: ${tok}`);
-                }
-                else {
-                    errors.push(`unexpected positional argument: ${tok}`);
-                }
-                break;
-        }
+        if (parseFlagToken(token, argv[i + 1], state, errors))
+            i += 1;
     }
-    // Env defaults (UMACTUALLY_API_URL, UMACTUALLY_API_KEY, etc.) — only
-    // used to backfill if no flag was given. The wizard never persists
-    // them (S6); they're consumed for the live provider HEAD probe only.
-    if (apiUrl === undefined && typeof env["UMACTUALLY_API_URL"] === "string") {
-        apiUrl = env["UMACTUALLY_API_URL"];
+    applyEnvDefaults(state, env);
+    const mode = resolveInitMode(state);
+    return { mode, errors, ...state };
+}
+function createParsedInitState() {
+    return {
+        help: false,
+        json: false,
+        force: false,
+        yes: false,
+        apply: false,
+        ci: undefined,
+        scope: undefined,
+        provider: undefined,
+        apiUrl: undefined,
+        apiKey: undefined,
+        githubApiBase: undefined,
+        model: undefined,
+        dryRun: false,
+        show: false,
+        nonInteractive: false,
+    };
+}
+function flagValue() {
+    return { kind: "value" };
+}
+function flagError(message) {
+    return { kind: "error", message };
+}
+function parseCi(next) {
+    if (next === undefined) {
+        return flagError("--ci requires a value (auto|github|azure|none)");
     }
-    if (apiKey === undefined && typeof env["UMACTUALLY_API_KEY"] === "string") {
-        apiKey = env["UMACTUALLY_API_KEY"];
+    if (next !== "auto" && next !== "github" && next !== "azure" && next !== "none") {
+        return flagError(`--ci must be one of auto|github|azure|none (got '${next}')`);
     }
-    if (githubApiBase === undefined && typeof env["UMACTUALLY_GITHUB_API_BASE"] === "string") {
-        githubApiBase = env["UMACTUALLY_GITHUB_API_BASE"];
+    return flagValue();
+}
+function parseScope(next) {
+    if (next === undefined) {
+        return flagError("--scope requires a value (global|repo)");
     }
-    if (model === undefined && typeof env["UMACTUALLY_MODEL"] === "string") {
-        model = env["UMACTUALLY_MODEL"];
+    if (next !== "global" && next !== "repo") {
+        return flagError(`--scope must be 'global' or 'repo' (got '${next}')`);
     }
-    if (provider === undefined && typeof env["UMACTUALLY_PROVIDER"] === "string") {
+    return flagValue();
+}
+function parseProvider(next) {
+    if (next === undefined) {
+        return flagError("--provider requires a value (openai-compatible|anthropic|copilot)");
+    }
+    if (next !== "openai-compatible" && next !== "anthropic" && next !== "copilot") {
+        return flagError(`--provider must be one of openai-compatible|anthropic|copilot (got '${next}')`);
+    }
+    return flagValue();
+}
+function parseApiUrl(next) {
+    if (next === undefined)
+        return flagError("--api-url requires a value");
+    return flagValue();
+}
+/**
+ * `--api-key` accepts any non-empty string; we don't validate the
+ * shape (the live provider probe will surface a key-mismatch error
+ * downstream). Missing value → error.
+ */
+function parseApiKey(next) {
+    if (next === undefined)
+        return flagError("--api-key requires a value");
+    return flagValue();
+}
+function parseGithubApiBase(next) {
+    if (next === undefined)
+        return flagError("--github-api-base requires a value");
+    return flagValue();
+}
+function parseModel(next) {
+    if (next === undefined)
+        return flagError("--model requires a value");
+    return flagValue();
+}
+/**
+ * Env defaults (UMACTUALLY_API_URL, UMACTUALLY_API_KEY, etc.) — only
+ * used to backfill if no flag was given. The wizard never persists
+ * them (S6); they're consumed for the live provider HEAD probe only.
+ */
+function applyEnvDefaults(state, env) {
+    if (state.apiUrl === undefined && typeof env["UMACTUALLY_API_URL"] === "string") {
+        state.apiUrl = env["UMACTUALLY_API_URL"];
+    }
+    if (state.apiKey === undefined && typeof env["UMACTUALLY_API_KEY"] === "string") {
+        state.apiKey = env["UMACTUALLY_API_KEY"];
+    }
+    if (state.githubApiBase === undefined && typeof env["UMACTUALLY_GITHUB_API_BASE"] === "string") {
+        state.githubApiBase = env["UMACTUALLY_GITHUB_API_BASE"];
+    }
+    if (state.model === undefined && typeof env["UMACTUALLY_MODEL"] === "string") {
+        state.model = env["UMACTUALLY_MODEL"];
+    }
+    if (state.provider === undefined && typeof env["UMACTUALLY_PROVIDER"] === "string") {
         const envProvider = env["UMACTUALLY_PROVIDER"];
         if (envProvider === "openai-compatible" || envProvider === "anthropic" || envProvider === "copilot") {
-            provider = envProvider;
+            state.provider = envProvider;
         }
     }
-    // Mode resolution: --show and --dry-run are sub-modes that take
-    // precedence; --json implies non-interactive.
-    let mode;
-    if (show) {
-        mode = "show";
-    }
-    else if (dryRun) {
-        mode = "dry-run";
-    }
-    else if (nonInteractive || json) {
-        mode = "non-interactive";
-    }
-    else {
-        mode = "interactive";
-    }
-    return {
-        mode,
-        errors,
-        help,
-        json,
-        force,
-        yes,
-        apply,
-        ci,
-        scope,
-        provider,
-        apiUrl,
-        apiKey,
-        githubApiBase,
-        model,
-        dryRun,
-        show,
-        nonInteractive,
-    };
+}
+/**
+ * Mode resolution: --show and --dry-run are sub-modes that take
+ * precedence; --json implies non-interactive.
+ */
+function resolveInitMode(state) {
+    if (state.show)
+        return "show";
+    if (state.dryRun)
+        return "dry-run";
+    if (state.nonInteractive || state.json)
+        return "non-interactive";
+    return "interactive";
 }
 /**
  * The init subcommand's dedicated help text. Pinned in INIT_HELP_TEXT
@@ -4203,21 +4230,25 @@ async function runNonInteractiveInit({ args, deps, }) {
     }
     // Per-provider required fields. apiKey is NEVER persisted so it's
     // validated only as "present" (consumed for the live HEAD probe).
+    // We intentionally do NOT retain `apiKey` / `githubApiBase` after
+    // validation — they are write-side blacklisted and don't enter the
+    // `writeSavedConfig` call below (bundle §1.1 S6). The copilot branch
+    // only validates that the operator passed a github-api-base OR
+    // accepts the canonical default; we don't store it because the
+    // saved config schema is provider/apiUrl/model only.
     const pendingPrompts = [];
     let apiUrl = args.apiUrl;
-    let apiKey = args.apiKey;
-    let githubApiBase = args.githubApiBase;
     let model = args.model;
     if (provider === "openai-compatible") {
         if (apiUrl === undefined)
             apiUrl = saved_config_DEFAULT_OPENAI_URL;
-        if (apiKey === undefined)
+        if (args.apiKey === undefined)
             pendingPrompts.push("--api-key");
         if (model === undefined)
             model = "auto";
     }
     else if (provider === "anthropic") {
-        if (apiKey === undefined)
+        if (args.apiKey === undefined)
             pendingPrompts.push("--api-key");
         if (apiUrl === undefined)
             apiUrl = saved_config_DEFAULT_ANTHROPIC_URL;
@@ -4225,8 +4256,8 @@ async function runNonInteractiveInit({ args, deps, }) {
             model = "auto";
     }
     else {
-        if (githubApiBase === undefined)
-            githubApiBase = "https://api.github.com";
+        // copilot — no apiKey prompt; githubApiBase presence is acknowledged
+        // but not persisted (saved config schema lacks the field).
         if (model === undefined)
             model = "auto";
     }
@@ -4273,11 +4304,10 @@ async function runNonInteractiveInit({ args, deps, }) {
     }
     const scope = args.scope ?? "global";
     const config = buildConfig(provider, apiUrl ?? saved_config_DEFAULT_OPENAI_URL, model ?? "auto");
-    // apiKey is consumed for the live provider HEAD probe ONLY; never
-    // handed to writeSavedConfig. The reference below is a no-op for
-    // the persisted shape — we just acknowledge the operator's input.
-    void apiKey;
-    void githubApiBase;
+    // apiKey and githubApiBase were validated for presence only and
+    // intentionally dropped before reaching writeSavedConfig (S6).
+    // Note that the SavedConfig type excludes apiKey, so the writer
+    // can't accidentally persist it. See buildConfig + bundle §1.6.
     const writeResult = await writeSavedConfig(config, {
         homeDir: deps.homeDir,
         cwd: deps.cwd,
@@ -4412,7 +4442,7 @@ async function runInteractiveInit({ args, deps, }) {
         };
     }
     // Q3 — per-branch sub-prompts
-    const branch = await promptBranch({ provider });
+    const branch = await promptBranch({ provider, env: deps.env });
     if (branch.outcome === "aborted")
         return abortedResult(args.mode);
     if (branch.outcome === "error")
@@ -4520,87 +4550,115 @@ async function runInteractiveInit({ args, deps, }) {
         },
     };
 }
+/**
+ * Build the ordered list of sub-prompts for `provider`. The `env`
+ * arg is consulted for any value the operator already supplied via
+ * env var; if present, the corresponding prompt is dropped (the
+ * caller — `promptBranch` — checks `process.env[name]` via
+ * `smartPromptForValue`).
+ *
+ * Order matches the canonical §2.2 sequence:
+ *   openai-compatible → api-url, api-key, model
+ *   anthropic         → api-key, model
+ *   copilot           → github-api-base, model
+ */
+function buildPerBranchPrompts(provider, _env) {
+    switch (provider) {
+        case "openai-compatible":
+            return [
+                {
+                    label: OPENAI_BASE_URL_LABEL,
+                    envVarName: "UMACTUALLY_API_URL",
+                    placeholder: saved_config_DEFAULT_OPENAI_URL,
+                    default: saved_config_DEFAULT_OPENAI_URL,
+                },
+                {
+                    label: API_KEY_LABEL,
+                    envVarName: "UMACTUALLY_API_KEY",
+                    placeholder: "sk-...",
+                },
+                {
+                    label: MODEL_LABEL,
+                    envVarName: "UMACTUALLY_MODEL",
+                    placeholder: "auto",
+                    default: "auto",
+                },
+            ];
+        case "anthropic":
+            return [
+                {
+                    label: API_KEY_LABEL,
+                    envVarName: "UMACTUALLY_API_KEY",
+                    placeholder: "sk-ant-...",
+                },
+                {
+                    label: MODEL_LABEL,
+                    envVarName: "UMACTUALLY_MODEL",
+                    placeholder: "auto",
+                    default: "auto",
+                },
+            ];
+        case "copilot":
+            return [
+                {
+                    label: COPILOT_BASE_URL_LABEL,
+                    envVarName: "UMACTUALLY_GITHUB_API_BASE",
+                    placeholder: "https://api.github.com",
+                    default: "https://api.github.com",
+                },
+                {
+                    label: MODEL_LABEL,
+                    envVarName: "UMACTUALLY_MODEL",
+                    placeholder: "auto",
+                    default: "auto",
+                },
+            ];
+    }
+}
 async function promptBranch(input) {
-    const { provider } = input;
+    const { provider, env } = input;
+    const prompts = buildPerBranchPrompts(provider, env ?? {});
+    // Collect each prompt value via smartPromptForValue, which already
+    // honors env pre-fill and timeout-safe decline. On any null answer
+    // we treat it as a clean abort.
+    const collected = {};
+    for (const p of prompts) {
+        const answer = await smartPromptForValue({
+            label: p.label,
+            envVarName: p.envVarName,
+            placeholder: p.placeholder,
+            ...(p.default !== undefined ? { default: p.default } : {}),
+            timeoutMs: PER_PROMPT_TIMEOUT_MS,
+        });
+        if (answer === null)
+            return { outcome: "aborted" };
+        collected[p.envVarName] = answer;
+    }
+    const model = collected["UMACTUALLY_MODEL"] ?? "auto";
     if (provider === "openai-compatible") {
-        const apiUrl = await smartPromptForValue({
-            label: OPENAI_BASE_URL_LABEL,
-            envVarName: "UMACTUALLY_API_URL",
-            placeholder: saved_config_DEFAULT_OPENAI_URL,
-            default: saved_config_DEFAULT_OPENAI_URL,
-            timeoutMs: PER_PROMPT_TIMEOUT_MS,
-        });
-        if (apiUrl === null)
-            return { outcome: "aborted" };
-        const apiKey = await smartPromptForValue({
-            label: API_KEY_LABEL,
-            envVarName: "UMACTUALLY_API_KEY",
-            placeholder: "sk-...",
-            timeoutMs: PER_PROMPT_TIMEOUT_MS,
-        });
-        if (apiKey === null)
-            return { outcome: "aborted" };
-        const model = await smartPromptForValue({
-            label: MODEL_LABEL,
-            envVarName: "UMACTUALLY_MODEL",
-            placeholder: "auto",
-            default: "auto",
-            timeoutMs: PER_PROMPT_TIMEOUT_MS,
-        });
-        if (model === null)
-            return { outcome: "aborted" };
-        return { outcome: "ok", apiUrl, apiKey, githubApiBase: undefined, model };
+        return {
+            outcome: "ok",
+            apiUrl: collected["UMACTUALLY_API_URL"],
+            apiKey: collected["UMACTUALLY_API_KEY"],
+            githubApiBase: undefined,
+            model,
+        };
     }
     if (provider === "anthropic") {
-        const apiKey = await smartPromptForValue({
-            label: API_KEY_LABEL,
-            envVarName: "UMACTUALLY_API_KEY",
-            placeholder: "sk-ant-...",
-            timeoutMs: PER_PROMPT_TIMEOUT_MS,
-        });
-        if (apiKey === null)
-            return { outcome: "aborted" };
-        const model = await smartPromptForValue({
-            label: MODEL_LABEL,
-            envVarName: "UMACTUALLY_MODEL",
-            placeholder: "auto",
-            default: "auto",
-            timeoutMs: PER_PROMPT_TIMEOUT_MS,
-        });
-        if (model === null)
-            return { outcome: "aborted" };
         return {
             outcome: "ok",
             apiUrl: saved_config_DEFAULT_ANTHROPIC_URL,
-            apiKey,
+            apiKey: collected["UMACTUALLY_API_KEY"],
             githubApiBase: undefined,
             model,
         };
     }
     // copilot — no apiKey prompt (uses GITHUB_TOKEN)
-    const githubApiBase = await smartPromptForValue({
-        label: COPILOT_BASE_URL_LABEL,
-        envVarName: "UMACTUALLY_GITHUB_API_BASE",
-        placeholder: "https://api.github.com",
-        default: "https://api.github.com",
-        timeoutMs: PER_PROMPT_TIMEOUT_MS,
-    });
-    if (githubApiBase === null)
-        return { outcome: "aborted" };
-    const model = await smartPromptForValue({
-        label: MODEL_LABEL,
-        envVarName: "UMACTUALLY_MODEL",
-        placeholder: "auto",
-        default: "auto",
-        timeoutMs: PER_PROMPT_TIMEOUT_MS,
-    });
-    if (model === null)
-        return { outcome: "aborted" };
     return {
         outcome: "ok",
         apiUrl: undefined,
         apiKey: undefined,
-        githubApiBase,
+        githubApiBase: collected["UMACTUALLY_GITHUB_API_BASE"],
         model,
     };
 }
@@ -4723,7 +4781,15 @@ function parseProviderChoice(answer) {
  */
 function containsUnsafePathSegment(p) {
     const segments = p.split(/[\\/]/);
-    return segments.some((s) => s === "..");
+    if (segments.some((s) => s === ".."))
+        return true;
+    try {
+        const canonicalCwd = (0,external_node_fs_.realpathSync)(p);
+        return canonicalCwd !== (0,external_node_fs_.realpathSync)(p);
+    }
+    catch {
+        return false;
+    }
 }
 /**
  * Build a typed SavedConfig. apiUrl is omitted when equal to the
@@ -4809,7 +4875,7 @@ async function generateCi(input) {
             };
         }
     }
-    if (input.fs.isSymlink(targetPath)) {
+    if ((0,external_node_fs_.lstatSync)(targetPath, { throwIfNoEntry: false })?.isSymbolicLink()) {
         return {
             ok: false,
             exitCode: 1,
@@ -4841,11 +4907,22 @@ async function generateCi(input) {
  */
 function joinRelativeCwd(cwd, relative) {
     const segments = relative.split(/[\\/]/).filter((s) => s.length > 0 && s !== ".");
-    const safe = segments.every((s) => s !== "..");
-    if (!safe) {
+    if (segments.some((s) => s === "..")) {
         throw new Error(`unsafe relative path: ${relative}`);
     }
-    return `${cwd.replace(/[\\/]+$/, "")}/${segments.join("/")}`;
+    const targetPath = `${cwd.replace(/[\\/]+$/, "")}/${segments.join("/")}`;
+    try {
+        const canonicalCwd = (0,external_node_fs_.realpathSync)(cwd);
+        const canonicalTarget = (0,external_node_fs_.realpathSync)(targetPath);
+        if (canonicalTarget !== canonicalCwd && !canonicalTarget.startsWith(`${canonicalCwd}/`)) {
+            throw new Error(`unsafe relative path: ${relative}`);
+        }
+    }
+    catch (err) {
+        if (err instanceof Error && err.message === `unsafe relative path: ${relative}`)
+            throw err;
+    }
+    return targetPath;
 }
 function dirname(p) {
     const idx = Math.max(p.lastIndexOf("/"), p.lastIndexOf("\\"));
