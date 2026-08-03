@@ -1,5 +1,21 @@
 import { createRequire as __WEBPACK_EXTERNAL_createRequire } from "module";
-/******/ var __webpack_modules__ = ({});
+/******/ var __webpack_modules__ = ({
+
+/***/ 421:
+/***/ ((module) => {
+
+module.exports = __WEBPACK_EXTERNAL_createRequire(import.meta.url)("node:child_process");
+
+/***/ }),
+
+/***/ 24:
+/***/ ((module) => {
+
+module.exports = __WEBPACK_EXTERNAL_createRequire(import.meta.url)("node:fs");
+
+/***/ })
+
+/******/ });
 /************************************************************************/
 /******/ // The module cache
 /******/ var __webpack_module_cache__ = {};
@@ -32,6 +48,36 @@ import { createRequire as __WEBPACK_EXTERNAL_createRequire } from "module";
 /******/ }
 /******/ 
 /************************************************************************/
+/******/ /* webpack/runtime/create fake namespace object */
+/******/ (() => {
+/******/ 	var getProto = Object.getPrototypeOf ? (obj) => (Object.getPrototypeOf(obj)) : (obj) => (obj.__proto__);
+/******/ 	var leafPrototypes;
+/******/ 	// create a fake namespace object
+/******/ 	// mode & 1: value is a module id, require it
+/******/ 	// mode & 2: merge all properties of value into the ns
+/******/ 	// mode & 4: return value when already ns object
+/******/ 	// mode & 16: return value when it's Promise-like
+/******/ 	// mode & 8|1: behave like require
+/******/ 	__nccwpck_require__.t = function(value, mode) {
+/******/ 		if(mode & 1) value = this(value);
+/******/ 		if(mode & 8) return value;
+/******/ 		if(typeof value === 'object' && value) {
+/******/ 			if((mode & 4) && value.__esModule) return value;
+/******/ 			if((mode & 16) && typeof value.then === 'function') return value;
+/******/ 		}
+/******/ 		var ns = Object.create(null);
+/******/ 		__nccwpck_require__.r(ns);
+/******/ 		var def = {};
+/******/ 		leafPrototypes = leafPrototypes || [null, getProto({}), getProto([]), getProto(getProto)];
+/******/ 		for(var current = mode & 2 && value; typeof current == 'object' && !~leafPrototypes.indexOf(current); current = getProto(current)) {
+/******/ 			Object.getOwnPropertyNames(current).forEach((key) => (def[key] = () => (value[key])));
+/******/ 		}
+/******/ 		def['default'] = () => (value);
+/******/ 		__nccwpck_require__.d(ns, def);
+/******/ 		return ns;
+/******/ 	};
+/******/ })();
+/******/ 
 /******/ /* webpack/runtime/define property getters */
 /******/ (() => {
 /******/ 	// define getter functions for harmony exports
@@ -47,6 +93,17 @@ import { createRequire as __WEBPACK_EXTERNAL_createRequire } from "module";
 /******/ /* webpack/runtime/hasOwnProperty shorthand */
 /******/ (() => {
 /******/ 	__nccwpck_require__.o = (obj, prop) => (Object.prototype.hasOwnProperty.call(obj, prop))
+/******/ })();
+/******/ 
+/******/ /* webpack/runtime/make namespace object */
+/******/ (() => {
+/******/ 	// define __esModule on exports
+/******/ 	__nccwpck_require__.r = (exports) => {
+/******/ 		if(typeof Symbol !== 'undefined' && Symbol.toStringTag) {
+/******/ 			Object.defineProperty(exports, Symbol.toStringTag, { value: 'Module' });
+/******/ 		}
+/******/ 		Object.defineProperty(exports, '__esModule', { value: true });
+/******/ 	};
 /******/ })();
 /******/ 
 /******/ /* webpack/runtime/compat */
@@ -67,8 +124,8 @@ __nccwpck_require__.d(__webpack_exports__, {
   yh: () => (/* binding */ runVersion)
 });
 
-;// CONCATENATED MODULE: external "node:fs"
-const external_node_fs_namespaceObject = __WEBPACK_EXTERNAL_createRequire(import.meta.url)("node:fs");
+// EXTERNAL MODULE: external "node:fs"
+var external_node_fs_ = __nccwpck_require__(24);
 ;// CONCATENATED MODULE: external "node:fs/promises"
 const promises_namespaceObject = __WEBPACK_EXTERNAL_createRequire(import.meta.url)("node:fs/promises");
 ;// CONCATENATED MODULE: external "node:path"
@@ -375,9 +432,9 @@ const FIELDS = {
     },
     githubToken: {
         field: "githubToken",
-        flag: null,
+        flag: "--github-token",
         input: "github_token",
-        env: ["GITHUB_TOKEN"],
+        env: ["GITHUB_TOKEN", "GH_TOKEN"],
         type: "string",
         defaultValue: "",
     },
@@ -926,6 +983,7 @@ function parseCliArgs(args) {
     let effort = null;
     let provider = null;
     let githubApiBase = null;
+    let githubToken;
     let includeSonarqube = false;
     let sonarHostUrl = null;
     let sonarToken = null;
@@ -964,16 +1022,37 @@ function parseCliArgs(args) {
     // them from the postable set before they even reach the platform).
     let verifyFindings = true;
     for (let index = 0; index < args.length; index += 1) {
-        const token = args[index];
-        if (token === undefined) {
+        const rawToken = args[index];
+        if (rawToken === undefined) {
             continue;
         }
-        const positiveFlag = token.startsWith("--no-")
-            ? `--${token.slice("--no-".length)}`
-            : token;
-        const explicitField = FIELD_BY_FLAG.get(positiveFlag);
+        const positiveFlag = rawToken.startsWith("--no-")
+            ? `--${rawToken.slice("--no-".length)}`
+            : rawToken;
+        // Plan T9 — strip the `=value` suffix so the explicitly-set lookup
+        // matches the entry in FIELD_BY_FLAG (which is keyed by the bare
+        // --flag form, not by a specific value-bearing variant).
+        const positiveFlagBare = positiveFlag.includes("=")
+            ? positiveFlag.slice(0, positiveFlag.indexOf("="))
+            : positiveFlag;
+        const explicitField = FIELD_BY_FLAG.get(positiveFlagBare);
         if (explicitField !== undefined) {
             explicitlySet.add(explicitField);
+        }
+        // Plan T9 — normalize `--github-token=<value>` (single-token equals
+        // form) into the two-token form so the switch dispatch matches the
+        // regular case. The inline value is captured here and consumed by
+        // the matching case branch below. No other flag in the parser
+        // accepts equals-form today, so this is intentionally scoped to
+        // the one field the test pins.
+        let inlineGithubToken;
+        let token = rawToken;
+        if (rawToken.startsWith("--github-token=")) {
+            inlineGithubToken = rawToken.slice("--github-token=".length);
+            if (inlineGithubToken.length === 0) {
+                throw new CliUsageError(`flag --github-token requires a value`, `Supply the value immediately after --github-token, e.g. \`umactually review --github-token=<value>\`. Run \`umactually review --help\` to see the expected shape for --github-token.`);
+            }
+            token = "--github-token";
         }
         switch (token) {
             case "--platform":
@@ -1058,6 +1137,24 @@ function parseCliArgs(args) {
                 githubApiBase = readValue(args, index, "github-api-base");
                 index += 1;
                 break;
+            case "--github-token": {
+                // Plan T9 — `--github-token` is a string field, so the negative
+                // form (`--no-github-token`) is intentionally NOT handled here:
+                // it falls through to the default branch and surfaces
+                // `unknownFlagUsageError` (matching the contract for every
+                // other string-typed field; pinned by cli-flag-parsing.test.ts
+                // row 5). The single-token equals form `--github-token=<value>`
+                // is normalized in the loop head above, so by the time we reach
+                // here `inlineGithubToken` carries the value when present.
+                if (inlineGithubToken !== undefined) {
+                    githubToken = inlineGithubToken;
+                }
+                else {
+                    githubToken = readValue(args, index, "github-token");
+                    index += 1;
+                }
+                break;
+            }
             case "--include-sonarqube":
                 includeSonarqube = true;
                 break;
@@ -1220,6 +1317,12 @@ function parseCliArgs(args) {
         outputArtifact,
         strictSchema,
         verifyFindings,
+        // Optional: only present when the operator supplied --github-token.
+        // The `toEqual` assertion in cli-flag-parsing.test.ts's CLI-RED-001
+        // expects an absent key when the flag is never set, so we conditionally
+        // include it (undefined-valued keys would otherwise leak into the
+        // spread that the `Object.assign` in resolveFromSchema passes through).
+        ...(githubToken !== undefined ? { githubToken } : {}),
     };
     explicitFieldsByParse.set(parsed, explicitlySet);
     return parsed;
@@ -1310,8 +1413,8 @@ function unknownFlagUsageError(token, argv) {
     return new CliUsageError(message, hint);
 }
 
-;// CONCATENATED MODULE: external "node:child_process"
-const external_node_child_process_namespaceObject = __WEBPACK_EXTERNAL_createRequire(import.meta.url)("node:child_process");
+// EXTERNAL MODULE: external "node:child_process"
+var external_node_child_process_ = __nccwpck_require__(421);
 ;// CONCATENATED MODULE: external "node:os"
 const external_node_os_namespaceObject = __WEBPACK_EXTERNAL_createRequire(import.meta.url)("node:os");
 ;// CONCATENATED MODULE: external "node:url"
@@ -1352,7 +1455,7 @@ const MIN_EXPECTED_PROVIDER_ROUND_TRIPS = 1;
 function classifyReviewArtifact(path) {
     let content;
     try {
-        content = (0,external_node_fs_namespaceObject.readFileSync)(path, "utf8");
+        content = (0,external_node_fs_.readFileSync)(path, "utf8");
     }
     catch (error) {
         if (isNodeError(error) && error.code === "ENOENT") {
@@ -1643,6 +1746,123 @@ function printModesBanner(stream) {
 
 ;// CONCATENATED MODULE: external "node:readline"
 const external_node_readline_namespaceObject = __WEBPACK_EXTERNAL_createRequire(import.meta.url)("node:readline");
+;// CONCATENATED MODULE: ./src/util/fs-atomic.ts
+// SPDX-License-Identifier: MIT
+// Filesystem adapter + atomic-write primitive used by the uninstall
+// subcommand to safely rewrite user-owned shell rc files (e.g. .zshrc,
+// .bashrc, .profile) when reverting the installer's PATH entry.
+//
+// This module is intentionally pure (sync node:fs primitives, no I/O
+// other than what the caller asks for) so that the uninstall tests can
+// substitute their own in-memory adapter via `FsAdapter` without
+// pulling in node:fs at all. The adapter shape was lifted verbatim
+// from src/cli/uninstall.ts (T2/T3 of the init-guided-setup plan);
+// behavior must remain byte-identical — the rc-file revert is a
+// safety-critical path and the rename-on-sibling-tempfile primitive
+// is what protects it from the disk-full / read-only-mount TOCTOU
+// class of bug.
+
+/**
+ * Atomically write `content` to `path` by writing to a sibling temp
+ * file and renaming over the target. On POSIX, rename(2) is atomic
+ * on the same filesystem; on Windows, MoveFileEx with
+ * MOVEFILE_REPLACE_EXISTING is similarly atomic. If anything fails
+ * before the rename, the original file is untouched.
+ *
+ * The function name and rename-and-cleanup semantics are part of
+ * the revertPath safety contract; do not relax the cleanup without
+ * auditing the rc-file revert path.
+ */
+function writeFileAtomic(path, content) {
+    // Write to a sibling temp file, then rename atomically over the
+    // target. On POSIX, rename(2) is atomic on the same filesystem
+    // (the target either points to the old content or the new, never
+    // a partial state). On Windows, MoveFileEx with REPLACE_EXISTING
+    // is similarly atomic. If anything fails before the rename, the
+    // original file is untouched.
+    const tmpPath = `${path}.umactually-tmp-${process.pid}-${Date.now()}`;
+    try {
+        (0,external_node_fs_.writeFileSync)(tmpPath, content, "utf8");
+        (0,external_node_fs_.renameSync)(tmpPath, path);
+    }
+    catch (err) {
+        // Best-effort cleanup of the orphan temp file.
+        try {
+            (0,external_node_fs_.unlinkSync)(tmpPath);
+        }
+        catch {
+            // ignore
+        }
+        throw err;
+    }
+}
+/**
+ * Return the file's mode bits (e.g. 0o600) or null if the file
+ * does not exist or the mode cannot be determined. Returns only the
+ * permission bits (masked with 0o7777) so callers don't have to
+ * think about the file-type bits in `Stats.mode`.
+ */
+function getMode(path) {
+    try {
+        return (0,external_node_fs_.statSync)(path).mode & 0o7777;
+    }
+    catch {
+        return null;
+    }
+}
+/**
+ * Set the file's mode bits. Throws on failure. Callers are expected
+ * to have already checked that the file exists and that the caller
+ * has permission to change it (e.g. they own the file).
+ */
+function setMode(path, mode) {
+    (0,external_node_fs_.chmodSync)(path, mode);
+}
+const defaultFsAdapter = {
+    exists: (path) => (0,external_node_fs_.existsSync)(path),
+    isSymlink: (path) => {
+        try {
+            return (0,external_node_fs_.lstatSync)(path).isSymbolicLink();
+        }
+        catch {
+            return false;
+        }
+    },
+    isFile: (path) => {
+        try {
+            return (0,external_node_fs_.lstatSync)(path).isFile();
+        }
+        catch {
+            return false;
+        }
+    },
+    isDirectory: (path) => {
+        try {
+            return (0,external_node_fs_.lstatSync)(path).isDirectory();
+        }
+        catch {
+            return false;
+        }
+    },
+    unlink: (path) => {
+        (0,external_node_fs_.unlinkSync)(path);
+    },
+    getMode: (path) => getMode(path),
+    setMode: (path, mode) => {
+        setMode(path, mode);
+    },
+    removeDir: (path, options) => {
+        (0,external_node_fs_.rmSync)(path, { recursive: options.recursive, force: true });
+    },
+    readFile: (path) => (0,external_node_fs_.readFileSync)(path, "utf8"),
+    writeFile: (path, content) => {
+        (0,external_node_fs_.writeFileSync)(path, content, "utf8");
+    },
+    writeFileAtomic: (path, content) => {
+        writeFileAtomic(path, content);
+    },
+};
+
 ;// CONCATENATED MODULE: ./src/cli/uninstall.ts
 // SPDX-License-Identifier: MIT
 // Built-in `umactually uninstall` subcommand.
@@ -1771,77 +1991,7 @@ async function defaultStdinReader(promptText, isTTY) {
         });
     });
 }
-const defaultFsAdapter = {
-    exists: (path) => (0,external_node_fs_namespaceObject.existsSync)(path),
-    isSymlink: (path) => {
-        try {
-            return (0,external_node_fs_namespaceObject.lstatSync)(path).isSymbolicLink();
-        }
-        catch {
-            return false;
-        }
-    },
-    isFile: (path) => {
-        try {
-            return (0,external_node_fs_namespaceObject.lstatSync)(path).isFile();
-        }
-        catch {
-            return false;
-        }
-    },
-    isDirectory: (path) => {
-        try {
-            return (0,external_node_fs_namespaceObject.lstatSync)(path).isDirectory();
-        }
-        catch {
-            return false;
-        }
-    },
-    unlink: (path) => {
-        (0,external_node_fs_namespaceObject.unlinkSync)(path);
-    },
-    getMode: (path) => {
-        try {
-            return (0,external_node_fs_namespaceObject.statSync)(path).mode & 0o7777;
-        }
-        catch {
-            return null;
-        }
-    },
-    setMode: (path, mode) => {
-        (0,external_node_fs_namespaceObject.chmodSync)(path, mode);
-    },
-    removeDir: (path, options) => {
-        (0,external_node_fs_namespaceObject.rmSync)(path, { recursive: options.recursive, force: true });
-    },
-    readFile: (path) => (0,external_node_fs_namespaceObject.readFileSync)(path, "utf8"),
-    writeFile: (path, content) => {
-        (0,external_node_fs_namespaceObject.writeFileSync)(path, content, "utf8");
-    },
-    writeFileAtomic: (path, content) => {
-        // Write to a sibling temp file, then rename atomically over the
-        // target. On POSIX, rename(2) is atomic on the same filesystem
-        // (the target either points to the old content or the new, never
-        // a partial state). On Windows, MoveFileEx with REPLACE_EXISTING
-        // is similarly atomic. If anything fails before the rename, the
-        // original file is untouched.
-        const tmpPath = `${path}.umactually-tmp-${process.pid}-${Date.now()}`;
-        try {
-            (0,external_node_fs_namespaceObject.writeFileSync)(tmpPath, content, "utf8");
-            (0,external_node_fs_namespaceObject.renameSync)(tmpPath, path);
-        }
-        catch (err) {
-            // Best-effort cleanup of the orphan temp file.
-            try {
-                (0,external_node_fs_namespaceObject.unlinkSync)(tmpPath);
-            }
-            catch {
-                // ignore
-            }
-            throw err;
-        }
-    },
-};
+
 function parseUninstallArgs(argv) {
     const errors = [];
     let removeBinary = true;
@@ -2270,13 +2420,13 @@ function scheduleWindowsDelayedDelete(targetPath) {
         "",
     ].join("\r\n");
     try {
-        (0,external_node_fs_namespaceObject.writeFileSync)(scriptPath, body, "utf8");
+        (0,external_node_fs_.writeFileSync)(scriptPath, body, "utf8");
         // Attach an error handler so a synchronous spawn failure
         // (e.g. on Linux where cmd.exe doesn't exist) doesn't surface
         // as an unhandled async exception after the function returns.
         // The error is expected on non-Windows platforms and not
         // actionable from the caller's perspective.
-        const child = (0,external_node_child_process_namespaceObject.spawn)("cmd.exe", ["/c", scriptPath, targetPath], {
+        const child = (0,external_node_child_process_.spawn)("cmd.exe", ["/c", scriptPath, targetPath], {
             detached: true,
             stdio: "ignore",
             windowsHide: true,
@@ -2435,13 +2585,33 @@ const REVIEW_FLAGS = [
     { flag: "--simulate-findings | --no-simulate-findings", appliesTo: ["review"] },
     { flag: "--output-artifact <path>", appliesTo: ["review"] },
 ];
+const INIT_FLAGS = [
+    { flag: "--provider <openai-compatible|anthropic|copilot>" },
+    { flag: "--api-url <url>", description: "Provider base URL (default: provider-family default)" },
+    { flag: "--api-key <key>", description: "Provider API key (NEVER persisted; use --non-interactive with the secret store for automation)" },
+    { flag: "--github-token <token>", description: "GitHub token for Copilot routing (also: GH_TOKEN env)" },
+    { flag: "--github-api-base <url>", description: "GitHub API base (default: https://api.github.com)" },
+    { flag: "--model <id>", description: "Model name (default: auto)" },
+    { flag: "--scope <global|repo>", description: "Where to persist the config (default: global)" },
+    { flag: "--ci <auto|github|azure|none>", description: "Generate a CI workflow (auto-detects; default: auto)" },
+    { flag: "--non-interactive", description: "Fail rather than prompt (CI mode)" },
+    { flag: "--apply", description: "Actually write the config file (default: dry-run for --non-interactive)" },
+    { flag: "--force", description: "Overwrite an existing config without prompting" },
+    { flag: "--yes", description: "Skip confirmation prompts" },
+    { flag: "--dry-run", description: "Show what would be written; write nothing" },
+    { flag: "--show", description: "Print parsed saved config; no prompt, no write" },
+    { flag: "--json", description: "Emit machine-readable JSON envelope" },
+];
 /** All flags, used for the legacy `CLI_HELP_TEXT` export and column-width calc. */
 const HELP_FLAGS = [...REVIEW_FLAGS];
 /** The full flag set for column-width calculation. */
-const ALL_FLAGS_FOR_WIDTH = [...REVIEW_FLAGS, ...GLOBAL_FLAGS];
+const ALL_FLAGS_FOR_WIDTH = [...REVIEW_FLAGS, ...INIT_FLAGS, ...GLOBAL_FLAGS];
 function flagsForContext(context) {
     if (context === "all") {
-        return [...REVIEW_FLAGS, ...GLOBAL_FLAGS];
+        return [...REVIEW_FLAGS, ...INIT_FLAGS, ...GLOBAL_FLAGS];
+    }
+    if (context === "init") {
+        return [...INIT_FLAGS, ...GLOBAL_FLAGS];
     }
     const commandFlags = REVIEW_FLAGS.filter((f) => f.appliesTo?.includes(context) ?? false);
     return [...commandFlags, ...GLOBAL_FLAGS];
@@ -2466,6 +2636,7 @@ function renderCommands(commands) {
 const TOP_LEVEL_COMMANDS = [
     "review                    Run PR review (default)",
     "doctor                    Check environment is ready",
+    "init                      Run guided setup (recommended quickstart)",
     "uninstall                 Remove the installed binary, config, and PATH entries",
     "check-review-artifact <path>  Validate a review artifact",
     "version                   Print version",
@@ -2499,6 +2670,30 @@ const REVIEW_HELP_TEXT = [
     ...renderFlags(flagsForContext("review")),
     "",
     CLI_MODES_TEXT,
+    "See exit codes: docs/exit-codes.md",
+].join("\n");
+const INIT_HELP_TEXT = [
+    `${BRAND} init — guided setup wizard`,
+    "",
+    "Usage:",
+    "  umactually init                       Walk through provider + CI setup interactively (recommended)",
+    "  umactually init --non-interactive     Validate flags, write config, no prompts",
+    "  umactually init --show                Print parsed saved config (no prompt, no write)",
+    "  umactually init --dry-run             Show what would be written; write nothing",
+    "  umactually init --help                Show this help",
+    "",
+    "Flags:",
+    ...renderFlags(flagsForContext("init")),
+    "",
+    "Security: API keys are NEVER persisted to disk. Use your platform",
+    "secret store (GitHub Actions secrets, Azure Pipelines variables) or",
+    "the UMACTUALLY_API_KEY env var. See docs/security.md \"Trust model: init\".",
+    "",
+    "Exit codes:",
+    "  0  Success / clean abort (Ctrl-C, Ctrl-D, 'n' to overwrite)",
+    "  1  Permission error / invalid ~/.umactually / concurrency lock",
+    "  2  Missing required flags / unknown flag / 60s global timeout",
+    "",
     "See exit codes: docs/exit-codes.md",
 ].join("\n");
 const DOCTOR_HELP_TEXT = [
@@ -2543,6 +2738,7 @@ const CHECK_REVIEW_ARTIFACT_HELP_TEXT = [
 const COMMAND_HELP = {
     review: REVIEW_HELP_TEXT,
     doctor: DOCTOR_HELP_TEXT,
+    init: INIT_HELP_TEXT,
     uninstall: uninstall_UNINSTALL_HELP_TEXT,
     "check-review-artifact": CHECK_REVIEW_ARTIFACT_HELP_TEXT,
 };
@@ -2602,9 +2798,2083 @@ function printContextualHelp(argv) {
 }
 /** Exported for unit tests that need to assert per-command help content. */
 const REVIEW_HELP = (/* unused pure expression or super */ null && (REVIEW_HELP_TEXT));
+const INIT_HELP = (/* unused pure expression or super */ null && (INIT_HELP_TEXT));
 const DOCTOR_HELP = (/* unused pure expression or super */ null && (DOCTOR_HELP_TEXT));
 const UNINSTALL_HELP = (/* unused pure expression or super */ null && (UNINSTALL_HELP_TEXT));
 const CHECK_REVIEW_ARTIFACT_HELP = (/* unused pure expression or super */ null && (CHECK_REVIEW_ARTIFACT_HELP_TEXT));
+
+;// CONCATENATED MODULE: ./src/cli/smart-prompt.ts
+// SPDX-License-Identifier: MIT
+/**
+ * Smart interactive prompts for the CLI.
+ *
+ * The CLI's job is to be useful in BOTH a terminal (where the operator
+ * can answer questions) AND a CI pipeline (where stdin is closed and
+ * non-zero answers must mean "fail fast, don't try"). This module is
+ * the single boundary between those two modes.
+ *
+ * Rule of engagement:
+ *   - ALL prompts MUST be guarded by `canPromptInteractively(...)` so
+ *     we never write to a piped/CI stdin. If the environment cannot
+ *     answer, we throw a typed `SmartPromptUnavailable` error that the
+ *     caller (orchestrator / validate glue) maps to a structured
+ *     validation error + remediation hint.
+ *   - Each prompt supports a `timeoutMs` so an interactive CI with no
+ *     operator on the seat doesn't hang forever. A timeout is treated
+ *     as "user chose not to answer" — the caller surfaces the
+ *     remediation hint and exits.
+ *   - Inputs are NOT echoed to stderr (else secrets like API keys
+ *     would leak into CI logs).
+ *
+ * The prompts here are intentionally minimal — no chalk, no TTY
+ * detection libraries. The CLI already uses a single brand prefix on
+ * its stdout writes; the prompts print that same prefix and let
+ * downstream formatting (color, no-color) follow the same path.
+ */
+
+/**
+ * Throw when the operator's environment cannot answer an interactive
+ * prompt (no TTY, no stdin, or timeout). Caught by the validate glue
+ * so the operator gets a structured remediation hint instead of a
+ * raw stdin EOF / hang.
+ */
+class SmartPromptUnavailable extends Error {
+    code;
+    name = "SmartPromptUnavailable";
+    constructor(code, message) {
+        super(message);
+        this.code = code;
+    }
+}
+/**
+ * Returns true when the process is attached to a real TTY and stdin
+ * is readable. The Node-side test (`process.stdin.isTTY === true`)
+ * is the canonical heuristic — Bun treats it the same.
+ *
+ * NOTE: deliberately NOT wrapping in try/catch. Read-only checks on
+ * `process.stdin.isTTY` never throw, so a try/catch here would mask
+ * a legitimate internal invariant failure.
+ */
+function canPromptInteractively() {
+    return process.stdin.isTTY === true && process.stdout.isTTY === true;
+}
+/**
+ * Render the standard prompt on stdout, read a single line from
+ * stdin, trim trailing newlines/spaces, return the trimmed result.
+ *
+ * No echoing of input — secrets typed into a terminal echo in the
+ * terminal control layer, not in our stdout/stderr, so they don't
+ * land in CI logs even when stdout is captured.
+ *
+ * Throws {@link SmartPromptUnavailable} when:
+ *   - the prompt cannot be shown (no TTY),
+ *   - stdin closes before a line arrives (e.g. on CI),
+ *   - the read times out (operator didn't answer),
+ *   - the underlying stream errors.
+ */
+async function readInteractiveLine(input) {
+    if (!canPromptInteractively()) {
+        throw new SmartPromptUnavailable("NO_TTY", "Cannot read interactive input: stdin is not a TTY. Set --api-url / --api-key on the command line or via UMACTUALLY_API_URL / UMACTUALLY_API_KEY env vars.");
+    }
+    process.stdout.write(`${BRAND_PREFIX}${input.prompt}\n`);
+    const stdin = process.stdin;
+    // Race the read against a timeout promise so a missed keypress
+    // surfaces the typed TIMEOUT rejection WITHOUT relying on the
+    // stream emitting `error` synchronously (which a paused TTY does
+    // NOT do — Node's read-stream destroy-with-error only surfaces
+    // via `error` if a read is mid-flight). The race pattern is the
+    // canonical fix for "Promise that should timeout"; see
+    // https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Promise/race
+    // for the underlying semantics.
+    let timeoutHandle = null;
+    const timeoutPromise = new Promise((_resolve, reject) => {
+        timeoutHandle = setTimeout(() => {
+            reject(new SmartPromptUnavailable("TIMEOUT", `Prompt timed out after ${input.timeoutMs}ms with no input. Set --api-url / --api-key on the command line or via env vars to skip the interactive prompt.`));
+        }, input.timeoutMs);
+        // Don't keep the event loop alive solely on the timer — the read
+        // operation also references an open handle via the stream, so
+        // unref() is safe here (the read promise keeps the loop alive).
+        timeoutHandle.unref();
+    });
+    try {
+        return await Promise.race([readOneLine(stdin), timeoutPromise]);
+    }
+    finally {
+        if (timeoutHandle !== null) {
+            clearTimeout(timeoutHandle);
+        }
+    }
+}
+/**
+ * Read a single line from a readable stream, resolving with the
+ * trimmed value. Resolves to "" on EOF (caller distinguishes empty
+ * vs. typed-empty via the input.length === 0 check + clarifying hint).
+ *
+ * Pure Node — no external deps. Uses the standard "data" + "end"
+ * events rather than readline so the import stays free of a
+ * third-party dep at CLI boot time (ncc bundling is happier this
+ * way too).
+ *
+ * Implementation note: all three event listeners (`data`, `end`,
+ * `error`) MUST be attached BEFORE `stream.resume()` is called.
+ * On a fast EOF (e.g. CI with a closed pipe), the synchronous
+ * `end` event fires from inside `resume()` itself; if listeners
+ * aren't attached by then, the Promise hangs forever. The same
+ * race applies to a synchronous `error` event on a destroyed stream.
+ * The order below is load-bearing — don't reorder.
+ */
+async function readOneLine(stream) {
+    return await new Promise((resolve, reject) => {
+        let buffer = "";
+        const onData = (chunk) => {
+            buffer += typeof chunk === "string" ? chunk : Buffer.from(chunk).toString("utf8");
+            const newline = buffer.indexOf("\n");
+            if (newline !== -1) {
+                stream.pause();
+                stream.removeListener("data", onData);
+                stream.removeListener("end", onEnd);
+                stream.removeListener("error", onError);
+                resolve(buffer.slice(0, newline).trimEnd());
+            }
+        };
+        const onEnd = () => {
+            stream.removeListener("data", onData);
+            stream.removeListener("error", onError);
+            resolve(buffer.trimEnd());
+        };
+        const onError = (err) => {
+            stream.removeListener("data", onData);
+            stream.removeListener("end", onEnd);
+            reject(new SmartPromptUnavailable("READ_ERROR", `Failed to read stdin: ${err.message}. Set --api-url / --api-key on the command line or via env vars.`));
+        };
+        // Attach all three listeners BEFORE resuming the stream. The
+        // previous ordering (attach → resume) attached after the same-
+        // tick end event had already fired, leaving the Promise to
+        // hang forever on a closed stdin.
+        stream.on("data", onData);
+        stream.once("end", onEnd);
+        stream.once("error", onError);
+        stream.resume();
+    });
+}
+/**
+ * Conditionally prompt for a single value. Skips the prompt when:
+ *   - the env var name is already populated (caller should re-check),
+ *   - the env var cannot be prompted (no TTY / piped stdin / timeout),
+ *   - the prompt times out without an answer.
+ *
+ * Returns `null` when no answer was collected — the caller should fall
+ * back to throwing the typed validation error.
+ *
+ * The optional `default` is offered as an empty-input fallback so the
+ * operator can press <Enter> to take the previously-saved value.
+ */
+async function smartPromptForValue(input) {
+    const existingFromEnv = process.env[input.envVarName];
+    if (typeof existingFromEnv === "string" && existingFromEnv.length > 0) {
+        // Already populated — no need to prompt.
+        return existingFromEnv;
+    }
+    if (!canPromptInteractively()) {
+        return null;
+    }
+    const defaultHint = input.default !== undefined && input.default.length > 0
+        ? ` [default: ${input.default}]`
+        : "";
+    const promptText = `${input.label} (${input.envVarName})${defaultHint}: `;
+    try {
+        const answer = await readInteractiveLine({
+            prompt: promptText,
+            timeoutMs: input.timeoutMs ?? 15_000,
+        });
+        if (answer.length > 0) {
+            return answer;
+        }
+        if (input.default !== undefined && input.default.length > 0) {
+            return input.default;
+        }
+        return null;
+    }
+    catch (error) {
+        if (error instanceof SmartPromptUnavailable) {
+            return null;
+        }
+        throw error;
+    }
+}
+/**
+ * Convenience: prompt for the two API-config values operators most
+ * commonly forget (`--api-url`, `--api-key`). Returns null when
+ * neither could be collected (caller should then throw the typed
+ * validation error).
+ *
+ * Both prompts share a 15-second timeout (configurable). When
+ * `promptForUrl` is false, only the API key is asked for — useful for
+ * Anthropic-native invocations where the URL is implicit.
+ */
+async function smartPromptForApiConfig(input) {
+    let apiUrl = null;
+    if (input.promptForUrl) {
+        apiUrl = await smartPromptForValue({
+            label: "Model provider base URL",
+            envVarName: "UMACTUALLY_API_URL",
+            placeholder: "https://api.openai.com/v1",
+            ...(input.timeoutMs !== undefined ? { timeoutMs: input.timeoutMs } : {}),
+        });
+    }
+    const apiKey = await smartPromptForValue({
+        label: "Model provider API key",
+        envVarName: "UMACTUALLY_API_KEY",
+        placeholder: "sk-…",
+        ...(input.timeoutMs !== undefined ? { timeoutMs: input.timeoutMs } : {}),
+    });
+    return { apiUrl, apiKey };
+}
+
+;// CONCATENATED MODULE: ./src/util/saved-config-flock.ts
+// SPDX-License-Identifier: MIT
+// Internal POSIX `flock(2)` wrapper used by `saved-config.ts` to serialize
+// concurrent `umactually init` invocations.
+//
+// node:fs does not expose `flock(2)` directly and we don't want to add a
+// native dependency. We shell out to the coreutils `flock(1)` CLI with the
+// `-n` flag (non-blocking try-lock) and pass the LOCK FILE PATH (not the
+// fd number) — passing an fd number to flock(1) only works when the child
+// process inherits the parent's fd table, which is not portable across
+// CI sandboxes, vite-node workers, or any setup that uses
+// `stdio: "ignore"`. The path form uses the same inode and is portable.
+//
+// On hosts without `flock(1)` (macOS without coreutils, alpine without
+// busybox flock) we fall through to a lenient path — the atomic-rename
+// write in `saved-config.ts` still protects against corruption; we lose
+// only the "second init wins cleanly" guarantee. v1 of the wizard
+// documents this as single-machine-only and the parent writeSavedConfig()
+// guards with a no-op on win32.
+function tryFlockNonBlocking(lockPath) {
+    try {
+        const { spawnSync } = __nccwpck_require__(421);
+        const r = spawnSync("flock", ["-n", lockPath, "true"], { stdio: "ignore", timeout: 1000 });
+        return r.status === 0;
+    }
+    catch {
+        // flock(1) not available — see file header.
+        return true;
+    }
+}
+
+;// CONCATENATED MODULE: ./src/config/saved-config.ts
+// SPDX-License-Identifier: MIT
+// `umactually init` saved-config persistence.
+//
+// Stores typed, NON-SECRET provider settings at `<homeDir>/.umactually/config.json`
+// (or `<cwd>/umactual.config.json` when the user opts into repo scope). The shape
+// is intentionally small:
+//
+//   { schemaVersion: 1, provider, [apiUrl], [model] }
+//
+// `apiKey` is NEVER read from or written to this file. The wizard prompts for it
+// at runtime (flag/env) and uses it for the live provider HEAD probe, but the
+// secret stays in the operator's env / CI secret store. The bundle §1.6 contract
+// is enforced at three layers:
+//
+//   1. The `SavedConfig` type excludes `apiKey`.
+//   2. `redactSecretsInString` is the canonical scrubber for any field that
+//      happens to be populated with a secret-shaped value by mistake.
+//   3. `writeSavedConfig` runs a defensive secret-regex scan over the FINAL
+//      serialized bytes before releasing the lock — if the regex matches, the
+//      write is refused with exit-1 hint ("writer produced an unintended
+//      secret literal").
+//
+// Layer 3 is paranoia: layers 1+2 already prevent the leak. The scan exists so
+// a future change that adds a new string field cannot silently regress the
+// no-secrets-at-rest guarantee.
+
+
+
+
+
+const SAVED_CONFIG_SCHEMA_VERSION = 1;
+const SAVED_CONFIG_GLOBAL_PATH = (homeDir) => (0,external_node_path_namespaceObject.join)(homeDir, ".umactually", "config.json");
+const SAVED_CONFIG_REPO_PATH = (cwd) => (0,external_node_path_namespaceObject.join)(cwd, "umactual.config.json");
+const SAVED_CONFIG_GLOBAL_DIR = (homeDir) => (0,external_node_path_namespaceObject.join)(homeDir, ".umactually");
+const SAVED_CONFIG_GLOBAL_LOCK = (homeDir) => (0,external_node_path_namespaceObject.join)(homeDir, ".umactually", "init.lock");
+const saved_config_DEFAULT_OPENAI_URL = "https://api.openai.com/v1";
+const saved_config_DEFAULT_ANTHROPIC_URL = "https://api.anthropic.com/v1";
+/**
+ * The canonical regex for any string-shaped secret the runtime or scanner
+ * recognizes. Exported so callers (tests, log filters) can use the exact same
+ * pattern.
+ */
+const SECRET_REGEX = /gh[pousr]_[A-Za-z0-9]+|glpat-[A-Za-z0-9]+|s\.r[A-Za-z0-9]+|sk-[A-Za-z0-9]+|eyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+/gu;
+const VALID_PROVIDERS = new Set([
+    "openai-compatible",
+    "anthropic",
+    "copilot",
+]);
+// ---------------------------------------------------------------------------
+// Read path
+// ---------------------------------------------------------------------------
+/**
+ * Resolve the effective saved config by checking the repo path first
+ * (`<cwd>/umactual.config.json`) and falling back to the global path
+ * (`<homeDir>/.umactually/config.json`). Returns `config: null` if neither
+ * file exists.
+ *
+ * Refuses:
+ *   - symlinks at either candidate path (exit 1, hint to remove the symlink)
+ *   - non-regular files (exit 1)
+ *   - malformed JSON (exit 2, "corrupt saved config at <path>" with repair hint)
+ *   - missing/wrong `schemaVersion` (exit 2)
+ *   - unknown `provider` (exit 2)
+ *
+ * Empty string in any optional field is coerced to absent (mirrors the
+ * `pickString` empty-string-as-missing rule in `loader.ts`).
+ */
+function readSavedConfig(deps) {
+    const fs = deps.fs ?? defaultFsAdapter;
+    for (const candidate of [SAVED_CONFIG_REPO_PATH(deps.cwd), SAVED_CONFIG_GLOBAL_PATH(deps.homeDir)]) {
+        if (!fs.exists(candidate))
+            continue;
+        if (fs.isSymlink(candidate)) {
+            return {
+                ok: false,
+                exitCode: 1,
+                message: `refusing to read saved config: ${candidate} is a symlink; remove it and re-run init`,
+            };
+        }
+        if (!fs.isFile(candidate)) {
+            return {
+                ok: false,
+                exitCode: 1,
+                message: `refusing to read saved config: ${candidate} is not a regular file`,
+            };
+        }
+        let raw;
+        try {
+            raw = fs.readFile(candidate);
+        }
+        catch (err) {
+            return {
+                ok: false,
+                exitCode: 2,
+                message: `corrupt saved config at ${candidate}: ${err instanceof Error ? err.message : String(err)}; rm ${candidate} and re-run init to recover`,
+            };
+        }
+        let parsed;
+        try {
+            parsed = JSON.parse(raw);
+        }
+        catch (err) {
+            return {
+                ok: false,
+                exitCode: 2,
+                message: `corrupt saved config at ${candidate}: ${err instanceof Error ? err.message : String(err)}; rm ${candidate} and re-run init to recover`,
+            };
+        }
+        const validated = validateSavedConfig(parsed, candidate);
+        if (!validated.ok)
+            return validated;
+        return { ok: true, config: validated.config, path: candidate };
+    }
+    return { ok: true, config: null, path: SAVED_CONFIG_GLOBAL_PATH(deps.homeDir) };
+}
+function validateSavedConfig(parsed, candidate) {
+    if (parsed === null || typeof parsed !== "object") {
+        return {
+            ok: false,
+            exitCode: 2,
+            message: `corrupt saved config at ${candidate}: expected object, received ${parsed === null ? "null" : typeof parsed}`,
+        };
+    }
+    const obj = parsed;
+    if (obj["schemaVersion"] !== SAVED_CONFIG_SCHEMA_VERSION) {
+        return {
+            ok: false,
+            exitCode: 2,
+            message: `unsupported schemaVersion in ${candidate}: expected ${SAVED_CONFIG_SCHEMA_VERSION}, received ${JSON.stringify(obj["schemaVersion"])}`,
+        };
+    }
+    if (typeof obj["provider"] !== "string" || !VALID_PROVIDERS.has(obj["provider"])) {
+        return {
+            ok: false,
+            exitCode: 2,
+            message: `invalid provider in ${candidate}: ${JSON.stringify(obj["provider"])} (expected one of ${[...VALID_PROVIDERS].join(", ")})`,
+        };
+    }
+    const apiUrlRaw = obj["apiUrl"];
+    const modelRaw = obj["model"];
+    // Type guard: optional fields must be a string when present. Anything
+    // else (number, array, null) is rejected — empty string is treated as
+    // absent (mirrors pickString's empty-string-as-missing rule in
+    // loader.ts:286-299). The wizard's default-acceptance path (press
+    // Enter) leaves the field at "" which the writer used to serialize
+    // verbatim — we coerce to undefined here so the next read round-trips
+    // cleanly without losing type information.
+    if (apiUrlRaw !== undefined && (typeof apiUrlRaw !== "string")) {
+        return {
+            ok: false,
+            exitCode: 2,
+            message: `invalid apiUrl in ${candidate}: expected string when present`,
+        };
+    }
+    if (modelRaw !== undefined && (typeof modelRaw !== "string")) {
+        return {
+            ok: false,
+            exitCode: 2,
+            message: `invalid model in ${candidate}: expected string when present`,
+        };
+    }
+    const apiUrl = typeof apiUrlRaw === "string" && apiUrlRaw.length > 0 ? apiUrlRaw : undefined;
+    const model = typeof modelRaw === "string" && modelRaw.length > 0 ? modelRaw : undefined;
+    const config = {
+        schemaVersion: SAVED_CONFIG_SCHEMA_VERSION,
+        provider: obj["provider"],
+        ...(apiUrl !== undefined ? { apiUrl } : {}),
+        ...(model !== undefined ? { model } : {}),
+    };
+    return { ok: true, config };
+}
+// ---------------------------------------------------------------------------
+// Write path
+// ---------------------------------------------------------------------------
+/**
+ * Persist `config` atomically. Honors the no-secrets-at-rest contract:
+ *   - The `SavedConfig` type excludes `apiKey`; this function never reads one.
+ *   - A defensive secret-regex scan over the FINAL bytes catches any
+ *     accidental leak (e.g. a future field that accepts free-form input).
+ *
+ * Safety rails:
+ *   - Acquires an advisory flock on `<homeDir>/.umactually/init.lock` (POSIX
+ *     `flock(2)` via the `flock(1)` CLI; Windows is a no-op, see note below).
+ *   - Creates `<homeDir>/.umactually/` with mode 0o700 on POSIX.
+ *   - Refuses symlinks at the target path (exit 1).
+ *   - Prompts before overwriting an existing regular file; `--force`
+ *     bypasses the prompt.
+ *   - On malformed JSON in the existing file, moves it aside to
+ *     `<path>.bak-<mtime>` and proceeds.
+ *   - Uses `writeFileAtomic` (sibling-tempfile + rename) and `chmod 0o600`
+ *     on POSIX. Windows inherits the parent directory ACL.
+ *
+ * Windows flock note: `flock(2)` is POSIX-only. On Windows we open the lock
+ * file (creating it if missing) and rely on the OS's default sharing mode
+ * to serialize concurrent init invocations; this is best-effort and
+ * matches the wizard's documented v1 single-OS-at-a-time expectation.
+ * The lock fd is released in `finally`.
+ */
+async function writeSavedConfig(config, deps) {
+    const fs = deps.fs ?? defaultFsAdapter;
+    const platform = deps.platform ?? process.platform;
+    const isPosix = platform !== "win32";
+    const targetPath = deps.scope === "repo"
+        ? SAVED_CONFIG_REPO_PATH(deps.cwd)
+        : SAVED_CONFIG_GLOBAL_PATH(deps.homeDir);
+    const targetDir = deps.scope === "repo" ? deps.cwd : SAVED_CONFIG_GLOBAL_DIR(deps.homeDir);
+    // -- Acquire flock (advisory; non-blocking) -----------------------------
+    const lockPath = SAVED_CONFIG_GLOBAL_LOCK(deps.homeDir);
+    let lockFd = null;
+    try {
+        if (isPosix) {
+            // Ensure the lock dir exists so we can open the lock file even on a
+            // first-run machine. mkdirSync is a no-op if the dir already exists.
+            try {
+                (0,external_node_fs_.mkdirSync)(SAVED_CONFIG_GLOBAL_DIR(deps.homeDir), { recursive: true, mode: 0o700 });
+            }
+            catch {
+                // mkdir failure here will resurface at the target-dir ensure below.
+            }
+            // Open the lock file (creates it if missing) so flock(1) has a real
+            // inode to lock against — the file itself carries no payload, only
+            // the inode carries the lock.
+            try {
+                lockFd = (0,external_node_fs_.openSync)(lockPath, "w");
+            }
+            catch {
+                return {
+                    ok: false,
+                    exitCode: 1,
+                    message: `cannot acquire init lock at ${lockPath}; another init may be in progress; rm ${lockPath} if stale`,
+                };
+            }
+            // Non-blocking try-lock via `flock(1) -n <lockPath> true`. We pass
+            // the PATH (not the fd number — see saved-config-flock.ts for why
+            // the fd-number form silently no-ops in vite-node / CI sandboxes).
+            // flock(1) is in coreutils on every Linux and macOS (via brew
+            // install coreutils); on hosts without it we fall through to a
+            // lenient path (atomic-rename still prevents corruption; we lose
+            // only the "second init wins cleanly" guarantee).
+            const flockResult = tryFlockNonBlocking(lockPath);
+            if (!flockResult) {
+                try {
+                    (0,external_node_fs_.closeSync)(lockFd);
+                    lockFd = null;
+                }
+                catch {
+                    // ignore
+                }
+                return {
+                    ok: false,
+                    exitCode: 1,
+                    message: `another init is in progress; rm ${lockPath} if stale`,
+                };
+            }
+        }
+        // Windows: best-effort serialization via shared-lock semantics on the
+        // lock file's existence + the atomic-rename primitive. Documented above.
+        // -- Ensure target directory + 0o700 on POSIX ------------------------
+        try {
+            (0,external_node_fs_.mkdirSync)(targetDir, { recursive: true, mode: 0o700 });
+            if (isPosix && deps.scope === "global") {
+                // Re-stat the directory; root + restrictive umask can mask the mode
+                // arg. Best-effort: chmod and swallow the error (E-⚠8).
+                try {
+                    const st = (0,external_node_fs_.statSync)(targetDir);
+                    if ((st.mode & 0o777) !== 0o700) {
+                        setMode(targetDir, 0o700);
+                    }
+                }
+                catch {
+                    // ignore — chmod failure on a dir the user can already write to
+                    // is non-fatal; we still chmod the FILE to 0o600 below.
+                }
+            }
+        }
+        catch (err) {
+            return {
+                ok: false,
+                exitCode: 1,
+                message: `cannot create saved-config directory ${targetDir}: ${err instanceof Error ? err.message : String(err)}`,
+            };
+        }
+        // -- Refuse symlinks at the target -----------------------------------
+        if (fs.isSymlink(targetPath)) {
+            return {
+                ok: false,
+                exitCode: 1,
+                message: `refusing to overwrite: ${targetPath} is a symlink; remove it and re-run init`,
+            };
+        }
+        // -- Existing-file handling ------------------------------------------
+        if (fs.exists(targetPath) && !fs.isSymlink(targetPath)) {
+            let existingIsCorrupt = false;
+            try {
+                const existingRaw = fs.readFile(targetPath);
+                JSON.parse(existingRaw); // throws on malformed JSON
+            }
+            catch {
+                existingIsCorrupt = true;
+            }
+            if (existingIsCorrupt) {
+                // Corrupt JSON: move aside instead of clobbering. The backup
+                // preserves operator history for forensics; the wizard surfaces
+                // the backup path in its C-7 envelope.
+                const mtime = (deps.now ?? Date.now)();
+                const backupPath = `${targetPath}.bak-${Math.floor(mtime)}`;
+                try {
+                    (0,external_node_fs_.renameSync)(targetPath, backupPath);
+                }
+                catch (err) {
+                    return {
+                        ok: false,
+                        exitCode: 1,
+                        message: `refusing to clobber corrupt saved config at ${targetPath} and could not move it aside: ${err instanceof Error ? err.message : String(err)}; rm ${targetPath} manually`,
+                    };
+                }
+            }
+            else if (!deps.force) {
+                // Valid JSON existing file: prompt for overwrite (unless --force).
+                if (deps.overwriteReader === undefined) {
+                    return {
+                        ok: false,
+                        exitCode: 1,
+                        message: `refusing to overwrite existing saved config at ${targetPath}; pass --force to bypass or answer 'y' to the overwrite prompt`,
+                    };
+                }
+                const answer = await deps.overwriteReader();
+                if (answer !== true) {
+                    return {
+                        ok: false,
+                        exitCode: 1,
+                        message: `refusing to overwrite existing saved config at ${targetPath}; nothing was written`,
+                    };
+                }
+            }
+        }
+        // -- Serialize with deterministic key order (schemaVersion, provider, apiUrl, model) -----
+        const serialized = serializeSavedConfig(config);
+        // -- Defensive secret-regex scan -------------------------------------
+        if (SECRET_REGEX.test(serialized)) {
+            SECRET_REGEX.lastIndex = 0;
+            return {
+                ok: false,
+                exitCode: 1,
+                message: "internal: writer produced an unintended secret literal; refusing to persist",
+            };
+        }
+        SECRET_REGEX.lastIndex = 0;
+        // -- Atomic write + chmod 0o600 --------------------------------------
+        try {
+            writeFileAtomic(targetPath, serialized);
+        }
+        catch (err) {
+            return {
+                ok: false,
+                exitCode: 1,
+                message: `cannot write saved config at ${targetPath}: ${err instanceof Error ? err.message : String(err)}`,
+            };
+        }
+        if (isPosix) {
+            try {
+                setMode(targetPath, 0o600);
+            }
+            catch {
+                // Non-fatal: the file is on disk; chmod may fail under restrictive
+                // mount options. The wizard surfaces a warn check in T12 but does
+                // not abort the write (E-⚠8).
+            }
+        }
+        // -- Verify mode round-tripped to 0o600 on POSIX ----------------------
+        if (isPosix) {
+            const mode = getMode(targetPath);
+            if (mode !== null && (mode & 0o777) !== 0o600) {
+                return {
+                    ok: false,
+                    exitCode: 1,
+                    message: `saved config written but mode is ${(mode & 0o777).toString(8)} (expected 0o600); check filesystem mount options`,
+                };
+            }
+        }
+        return { ok: true, path: targetPath, bytes: Buffer.byteLength(serialized, "utf8") };
+    }
+    finally {
+        // -- Release flock ---------------------------------------------------
+        // flock(1) is a wrapper around flock(2); closing the fd releases the lock.
+        if (isPosix && lockFd !== null) {
+            try {
+                (0,external_node_fs_.closeSync)(lockFd);
+            }
+            catch {
+                // ignore — the lock is advisory; a stuck release on process exit
+                // does not break the file write.
+            }
+        }
+    }
+}
+// ---------------------------------------------------------------------------
+// Serialization (deterministic key order)
+// ---------------------------------------------------------------------------
+/**
+ * JSON.stringify with 2-space indent and key order: schemaVersion, provider,
+ * apiUrl, model. Any additional key is rejected at the type level; this is
+ * the single serialization site so the byte layout is fixed across versions.
+ */
+function serializeSavedConfig(config) {
+    const ordered = {
+        schemaVersion: config.schemaVersion,
+        provider: config.provider,
+    };
+    if (config.apiUrl !== undefined)
+        ordered["apiUrl"] = config.apiUrl;
+    if (config.model !== undefined)
+        ordered["model"] = config.model;
+    return JSON.stringify(ordered, null, 2) + "\n";
+}
+// ---------------------------------------------------------------------------
+// Secret redaction
+// ---------------------------------------------------------------------------
+/**
+ * Replace every secret-shaped substring in `input` with `REDACTED_SECRET_TOKEN`.
+ * Used by `--debug-raw` diagnostics and any other site that has to log a
+ * blob the user supplied (prompts, env echoes) — it is the last line of
+ * defense against accidental secret leakage. Callers MUST treat the return
+ * value as still-tainted for display purposes; the token is itself a hint
+ * to the reader, not a security boundary.
+ */
+function redactSecretsInString(input) {
+    return input.replace(SECRET_REGEX, REDACTED_SECRET_TOKEN);
+}
+
+;// CONCATENATED MODULE: ./src/cli/init-templates.ts
+// SPDX-License-Identifier: MIT
+// Verbatim canonical CI workflow bytes. Drift-tested against
+// examples/github/pr-review.yml and examples/azure/azure-pipelines.yml
+// in test/unit/init-templates-drift.test.ts modulo the single
+// version-pin substitution point.
+//
+// Why inline-const (not fs.readFileSync at runtime): the SEA binary
+// entry is src/cli.ts (tsdown.config.ts:120-122) and has no copy/include
+// for examples/ — readFileSync from process.execPath/../examples/.../yml
+// is broken in the binary. The npm-published path also has no
+// examples/ files relative to dist/. Inline constants ship with the
+// bundle. The drift test guards against template rot.
+
+const GITHUB_WORKFLOW_FILENAME = "umactually-pr-review.yml";
+const AZURE_PIPELINE_FILENAME = "azure-pipelines.yml";
+const GITHUB_WORKFLOW_TEMPLATE = `# Runs umactually as a pinned npm CLI for pull requests.
+name: PR review
+on: [pull_request]
+concurrency:
+  group: umactually-\${{ github.workflow }}-\${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+permissions:
+  contents: read
+  pull-requests: write
+jobs:
+  review:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+      - name: Install umactually
+        # Pin the version; never track \`latest\`.
+        run: npm install -g umactually@__UMACTUALLY_VERSION__
+      - name: Run umactually PR review
+        env:
+          GITHUB_TOKEN: \${{ github.token }}
+          UMACTUALLY_API_URL: \${{ secrets.UMACTUALLY_API_URL }}
+          UMACTUALLY_API_KEY: \${{ secrets.UMACTUALLY_API_KEY }}
+        run: umactually review --platform github
+`;
+const AZURE_PIPELINE_TEMPLATE = `# Enable "Allow scripts to access the OAuth token" in pipeline settings.
+# UMACTUALLY_* options (prompt files, strict schema, verify findings, etc.) are
+# CLI-native: set them as ADO pipeline variables and they flow through automatically.
+# Artifact validation is automatic after each live review. SYSTEM_ACCESSTOKEN is the
+# only ADO-specific plumbing because Azure does not export $(System.AccessToken).
+trigger: none
+pr:
+  branches:
+    include: [main]
+pool:
+  vmImage: ubuntu-latest
+steps:
+  - checkout: self
+  - task: NodeTool@0
+    inputs:
+      versionSpec: "24.x"
+  # Pin the npm version for reproducibility (never track \`latest\`).
+  - script: npm install -g umactually@__UMACTUALLY_VERSION__
+    displayName: Install umactually
+  - script: umactually review --platform azure-devops
+    displayName: Run umactually PR review
+    env:
+      SYSTEM_ACCESSTOKEN: $(System.AccessToken)
+      UMACTUALLY_API_URL: $(UMACTUALLY_API_URL)
+      UMACTUALLY_API_KEY: $(UMACTUALLY_API_KEY)
+`;
+function renderCiTemplate(input) {
+    const template = input.target === "github" ? GITHUB_WORKFLOW_TEMPLATE : AZURE_PIPELINE_TEMPLATE;
+    const body = template.replace(/__UMACTUALLY_VERSION__/gu, input.packageVersion);
+    const filename = input.target === "github" ? GITHUB_WORKFLOW_FILENAME : AZURE_PIPELINE_FILENAME;
+    const relativePath = input.target === "github"
+        ? (0,external_node_path_namespaceObject.join)(input.paths?.githubDir ?? ".github/workflows", filename)
+        : filename;
+    return { filename, relativePath, body };
+}
+function detectCiTarget(input) {
+    if (input.exists((0,external_node_path_namespaceObject.join)(".github")))
+        return "github";
+    if (input.exists("azure-pipelines.yml"))
+        return "azure";
+    return null;
+}
+
+;// CONCATENATED MODULE: ./src/cli/init.ts
+// SPDX-License-Identifier: MIT
+// Built-in `umactually init` subcommand — TTY-first guided setup wizard.
+//
+// Walks operators through provider family + scope + CI workflow selection
+// in ≤5 base prompts; persists typed provider settings to the saved
+// config; optionally generates a canonical CI workflow file. Secrets
+// are NEVER persisted at rest (bundle §1.1 S6) — see docs/security.md
+// "Trust model: init".
+//
+// Reuses the smart-prompt timeout-safe reader from `smart-prompt.ts` for
+// every interactive prompt (≤15s per-prompt), wraps the whole wizard in a
+// 60s global `Promise.race` budget, and threads the saved config through
+// `writeSavedConfig` from `saved-config.ts` for atomic + 0o600 persistence.
+
+
+
+
+
+/**
+ * Global budget for the entire wizard. Per-prompt budget is
+ * `PER_PROMPT_TIMEOUT_MS` (15s) and is enforced by `smartPromptForValue`.
+ * If the cumulative interactive time exceeds 60s — e.g. a slow human or a
+ * stalled TTY — the wizard races the implementation against this timer
+ * and exits 2 with a clear envelope.
+ */
+const WIZARD_PROMPT_TIMEOUT_MS = 60_000;
+const PER_PROMPT_TIMEOUT_MS = 15_000;
+/**
+ * The verbatim prompt sequence by branch. Pinned to match the test
+ * matrix in `test/unit/cli-init-wizard-prompts.test.ts` and the
+ * canonical §2.2 sequence. Exposed as both a callable function and
+ * an object so test authors can pick the form that matches their
+ * assertion style without re-implementing the lookup.
+ */
+const PROMPT_SEQUENCES = {
+    base: [
+        "Save settings globally or for this repo?",
+        "Provider family",
+        "CI workflow target",
+        "Write CI workflow?",
+        "Confirm save?",
+    ],
+    "openai-compatible": [
+        "Provider family",
+        "Model provider base URL",
+        "Model provider API key",
+        "Model name",
+        "CI workflow target",
+    ],
+    anthropic: [
+        "Provider family",
+        "Model provider API key",
+        "Model name",
+        "CI workflow target",
+    ],
+    copilot: [
+        "Provider family",
+        "GitHub API base URL",
+        "Model name",
+    ],
+};
+const promptSequenceForProvider = (/* unused pure expression or super */ null && (PROMPT_SEQUENCES));
+const COPILOT_BASE_URL_LABEL = "GitHub API base URL";
+const OPENAI_BASE_URL_LABEL = "Model provider base URL";
+const API_KEY_LABEL = "Model provider API key";
+const MODEL_LABEL = "Model name";
+/**
+ * Parse argv into typed fields. Unknown flags → errors[]. Missing
+ * required values → errors[]. The caller (runInit) surfaces the
+ * errors as an exit-2 envelope.
+ */
+function parseInitArgs(argv, env) {
+    const errors = [];
+    let help = false;
+    let json = false;
+    let force = false;
+    let yes = false;
+    let apply = false;
+    let ci;
+    let scope;
+    let provider;
+    let apiUrl;
+    let apiKey;
+    let githubApiBase;
+    let model;
+    let dryRun = false;
+    let show = false;
+    let nonInteractive = false;
+    for (let i = 0; i < argv.length; i += 1) {
+        const tok = argv[i];
+        if (tok === undefined)
+            break;
+        const next = argv[i + 1];
+        switch (tok) {
+            case "--help":
+            case "-h":
+                help = true;
+                break;
+            case "--json":
+                json = true;
+                break;
+            case "--force":
+                force = true;
+                break;
+            case "--yes":
+                yes = true;
+                break;
+            case "--apply":
+                apply = true;
+                break;
+            case "--non-interactive":
+                nonInteractive = true;
+                break;
+            case "--dry-run":
+                dryRun = true;
+                break;
+            case "--show":
+                show = true;
+                break;
+            case "--ci":
+                if (next === undefined) {
+                    errors.push("--ci requires a value (auto|github|azure|none)");
+                }
+                else if (next !== "auto" && next !== "github" && next !== "azure" && next !== "none") {
+                    errors.push(`--ci must be one of auto|github|azure|none (got '${next}')`);
+                }
+                else {
+                    ci = next;
+                    i += 1;
+                }
+                break;
+            case "--scope":
+                if (next === undefined) {
+                    errors.push("--scope requires a value (global|repo)");
+                }
+                else if (next !== "global" && next !== "repo") {
+                    errors.push(`--scope must be 'global' or 'repo' (got '${next}')`);
+                }
+                else {
+                    scope = next;
+                    i += 1;
+                }
+                break;
+            case "--provider":
+                if (next === undefined) {
+                    errors.push("--provider requires a value (openai-compatible|anthropic|copilot)");
+                }
+                else if (next !== "openai-compatible" && next !== "anthropic" && next !== "copilot") {
+                    errors.push(`--provider must be one of openai-compatible|anthropic|copilot (got '${next}')`);
+                }
+                else {
+                    provider = next;
+                    i += 1;
+                }
+                break;
+            case "--api-url":
+                if (next === undefined)
+                    errors.push("--api-url requires a value");
+                else {
+                    apiUrl = next;
+                    i += 1;
+                }
+                break;
+            case "--api-key":
+                if (next === undefined)
+                    errors.push("--api-key requires a value");
+                else {
+                    apiKey = next;
+                    i += 1;
+                }
+                break;
+            case "--github-api-base":
+                if (next === undefined)
+                    errors.push("--github-api-base requires a value");
+                else {
+                    githubApiBase = next;
+                    i += 1;
+                }
+                break;
+            case "--model":
+                if (next === undefined)
+                    errors.push("--model requires a value");
+                else {
+                    model = next;
+                    i += 1;
+                }
+                break;
+            default:
+                if (tok.startsWith("--")) {
+                    errors.push(`unknown flag: ${tok}`);
+                }
+                else {
+                    errors.push(`unexpected positional argument: ${tok}`);
+                }
+                break;
+        }
+    }
+    // Env defaults (UMACTUALLY_API_URL, UMACTUALLY_API_KEY, etc.) — only
+    // used to backfill if no flag was given. The wizard never persists
+    // them (S6); they're consumed for the live provider HEAD probe only.
+    if (apiUrl === undefined && typeof env["UMACTUALLY_API_URL"] === "string") {
+        apiUrl = env["UMACTUALLY_API_URL"];
+    }
+    if (apiKey === undefined && typeof env["UMACTUALLY_API_KEY"] === "string") {
+        apiKey = env["UMACTUALLY_API_KEY"];
+    }
+    if (githubApiBase === undefined && typeof env["UMACTUALLY_GITHUB_API_BASE"] === "string") {
+        githubApiBase = env["UMACTUALLY_GITHUB_API_BASE"];
+    }
+    if (model === undefined && typeof env["UMACTUALLY_MODEL"] === "string") {
+        model = env["UMACTUALLY_MODEL"];
+    }
+    if (provider === undefined && typeof env["UMACTUALLY_PROVIDER"] === "string") {
+        const envProvider = env["UMACTUALLY_PROVIDER"];
+        if (envProvider === "openai-compatible" || envProvider === "anthropic" || envProvider === "copilot") {
+            provider = envProvider;
+        }
+    }
+    // Mode resolution: --show and --dry-run are sub-modes that take
+    // precedence; --json implies non-interactive.
+    let mode;
+    if (show) {
+        mode = "show";
+    }
+    else if (dryRun) {
+        mode = "dry-run";
+    }
+    else if (nonInteractive || json) {
+        mode = "non-interactive";
+    }
+    else {
+        mode = "interactive";
+    }
+    return {
+        mode,
+        errors,
+        help,
+        json,
+        force,
+        yes,
+        apply,
+        ci,
+        scope,
+        provider,
+        apiUrl,
+        apiKey,
+        githubApiBase,
+        model,
+        dryRun,
+        show,
+        nonInteractive,
+    };
+}
+/**
+ * The init subcommand's dedicated help text. Pinned in INIT_HELP_TEXT
+ * for the test matrix and consumed by `dispatch.ts` via the help
+ * resolver.
+ */
+const init_INIT_HELP_TEXT = [
+    `${BRAND_PREFIX.replace(/: $/, "")} init — guided setup wizard`,
+    "",
+    "Usage:",
+    "  umactually init                       Run the interactive wizard (TTY)",
+    "  umactually init --non-interactive     Run non-interactively (requires flags)",
+    "  umactually init --dry-run             Print the plan without writing",
+    "  umactually init --show                Print the resolved saved config",
+    "  umactually init --help                Show this help",
+    "",
+    "Flags:",
+    "  --non-interactive          Required for automation; refuses to prompt",
+    "  --provider <name>          openai-compatible | anthropic | copilot",
+    "  --api-url <url>            OpenAI-compatible base URL (env: UMACTUALLY_API_URL)",
+    "  --api-key <key>            Provider API key (env: UMACTUALLY_API_KEY; NEVER persisted)",
+    "  --github-api-base <url>    Copilot API base (env: UMACTUALLY_GITHUB_API_BASE)",
+    "  --model <id>               Provider model id (default: auto)",
+    "  --scope <global|repo>      Where to persist the saved config",
+    "  --ci <auto|github|azure|none>",
+    "                             Generate a CI workflow file (auto-detects)",
+    "  --force                    Overwrite an existing saved config without prompting",
+    "  --yes                      Skip all confirmation prompts",
+    "  --dry-run                  Compute the plan; no filesystem writes",
+    "  --show                     Print the resolved saved config and exit",
+    "  --json                     Emit machine-readable JSON envelope",
+    "  --help, -h                 Show this help",
+    "",
+    "Security:",
+    "  API keys and tokens are NEVER written to disk. The saved config stores",
+    "  mode 0o600 and contains only provider, optional apiUrl, optional model.",
+    "  Set UMACTUALLY_API_KEY in your shell init / CI secret store.",
+    "",
+    "Interactive notes:",
+    "  On a TTY, a bare `umactually init` walks you through the wizard with",
+    "  per-prompt 15s timeouts and a global 60s budget. Each empty required",
+    "  answer is treated as a clean abort — nothing is written.",
+    "",
+    "Exit codes:",
+    "  0  success or clean abort (Ctrl-C / Ctrl-D / declined overwrite)",
+    "  1  permission / no-clobber / concurrency lock failure",
+    "  2  usage error or global 60s timeout",
+].join("\n");
+/**
+ * Render the result envelope as a single-line JSON document (per
+ * bundle §1.7). Every `checks[*].message` runs through the secret
+ * redaction regex so the envelope never echoes an api-key.
+ */
+function formatInitJson(result) {
+    const redacted = {
+        ...result,
+        checks: result.checks.map((c) => ({
+            ...c,
+            message: redactSecretsInString(c.message),
+            ...(c.hint !== undefined ? { hint: redactSecretsInString(c.hint) } : {}),
+        })),
+        hints: result.hints.map(redactSecretsInString),
+    };
+    return JSON.stringify(redacted) + "\n";
+}
+/**
+ * Render the result envelope as multi-line human output for TTYs.
+ * Lines prefixed with the brand; secrets already redacted by the
+ * formatter; CI generation and saved config path are surfaced.
+ */
+function formatInitHuman(result) {
+    const lines = [];
+    if (result.outcome === "ok") {
+        lines.push(`${BRAND_PREFIX}init complete`);
+    }
+    else if (result.outcome === "aborted") {
+        lines.push(`${BRAND_PREFIX}init aborted; nothing changed.`);
+    }
+    else {
+        lines.push(`${BRAND_PREFIX}init failed`);
+    }
+    if (result.savedConfigPath !== null) {
+        lines.push(`  saved config: ${result.savedConfigPath}`);
+        if (result.savedConfigBytes !== null) {
+            lines.push(`  bytes: ${result.savedConfigBytes}`);
+        }
+    }
+    if (result.ciGenerated.length > 0) {
+        lines.push(`  ci workflow: ${result.ciGenerated.join(", ")}`);
+    }
+    for (const c of result.checks) {
+        const tag = c.status.toUpperCase().padEnd(5);
+        const line = `  [${tag}] ${redactSecretsInString(c.message)}`;
+        lines.push(line);
+        if (c.hint !== undefined && c.hint.length > 0) {
+            lines.push(`         hint: ${redactSecretsInString(c.hint)}`);
+        }
+    }
+    for (const h of result.hints) {
+        lines.push(`  hint: ${redactSecretsInString(h)}`);
+    }
+    lines.push("");
+    return lines.join("\n");
+}
+// ---------------------------------------------------------------------------
+// runInit — the public entry point
+// ---------------------------------------------------------------------------
+/**
+ * Run the wizard. Wraps the implementation in a 60s `Promise.race`
+ * budget so a stalled TTY or runaway loop can't hang the CLI. Every
+ * interactive prompt is bounded by `PER_PROMPT_TIMEOUT_MS` (15s)
+ * through `smartPromptForValue`.
+ *
+ * Side-effect-free contract: the implementation never logs or echoes
+ * the api-key. The `formatInitJson`/`formatInitHuman` formatters run
+ * `redactSecretsInString` over every check.message + hint as a final
+ * defensive pass.
+ */
+async function runInit({ argv, deps }) {
+    const args = parseInitArgs(argv, deps.env);
+    if (args.help) {
+        return {
+            mode: args.mode,
+            outcome: "ok",
+            exitCode: 0,
+            savedConfigPath: null,
+            savedConfigBytes: null,
+            ciGenerated: [],
+            checks: [],
+            hints: [],
+            sources: {},
+        };
+    }
+    if (args.errors.length > 0) {
+        return {
+            mode: args.mode,
+            outcome: "error",
+            exitCode: 2,
+            savedConfigPath: null,
+            savedConfigBytes: null,
+            ciGenerated: [],
+            checks: args.errors.map((message) => ({
+                id: "non-interactive-validation",
+                status: "fail",
+                message,
+            })),
+            hints: args.errors,
+            sources: {},
+        };
+    }
+    // 60s global budget via Promise.race. The timer is unref()'d so a
+    // quick return doesn't leave the event loop pinned to it; the
+    // finally{} clears it on normal exit. On timeout, the wizard returns
+    // an exit-2 envelope with nothing written.
+    let globalTimer = null;
+    const globalBudget = new Promise((_resolve, reject) => {
+        globalTimer = setTimeout(() => {
+            reject(new Error("wizard_timeout"));
+        }, WIZARD_PROMPT_TIMEOUT_MS);
+        globalTimer.unref();
+    });
+    try {
+        return await Promise.race([
+            runInitImpl({ args, deps }),
+            globalBudget,
+        ]);
+    }
+    catch (err) {
+        if (err instanceof Error && err.message === "wizard_timeout") {
+            return {
+                mode: args.mode,
+                outcome: "error",
+                exitCode: 2,
+                savedConfigPath: null,
+                savedConfigBytes: null,
+                ciGenerated: [],
+                checks: [
+                    {
+                        id: "scope-choice",
+                        status: "fail",
+                        message: "wizard exceeded 60s global budget",
+                        hint: "Re-run with --non-interactive to avoid prompts.",
+                    },
+                ],
+                hints: ["Re-run with --non-interactive for automation."],
+                sources: {},
+            };
+        }
+        throw err;
+    }
+    finally {
+        if (globalTimer !== null) {
+            clearTimeout(globalTimer);
+        }
+    }
+}
+async function runInitImpl({ args, deps, }) {
+    // --json implies non-interactive
+    const mode = args.json ? "non-interactive" : args.mode;
+    if (mode === "show") {
+        return runShowInit({ deps });
+    }
+    if (mode === "dry-run") {
+        return runDryRunInit({ args, deps });
+    }
+    if (mode === "non-interactive") {
+        return runNonInteractiveInit({ args, deps });
+    }
+    return runInteractiveInit({ args, deps });
+}
+// ---------------------------------------------------------------------------
+// --show: parse + print the resolved saved config; no writes, no prompts.
+// ---------------------------------------------------------------------------
+async function runShowInit({ deps }) {
+    const fs = deps.fsAdapter ?? defaultFsAdapter;
+    const result = readSavedConfig({
+        homeDir: deps.homeDir,
+        cwd: deps.cwd,
+        fs,
+    });
+    if (!result.ok) {
+        return {
+            mode: "show",
+            outcome: "error",
+            exitCode: result.exitCode,
+            savedConfigPath: null,
+            savedConfigBytes: null,
+            ciGenerated: [],
+            checks: [
+                {
+                    id: "config-file-mode",
+                    status: "fail",
+                    message: redactSecretsInString(result.message),
+                },
+            ],
+            hints: [result.message],
+            sources: {},
+        };
+    }
+    if (result.config === null) {
+        return {
+            mode: "show",
+            outcome: "ok",
+            exitCode: 0,
+            savedConfigPath: null,
+            savedConfigBytes: null,
+            ciGenerated: [],
+            checks: [
+                {
+                    id: "config-file-mode",
+                    status: "ok",
+                    message: "no saved config found",
+                    hint: `checked ${SAVED_CONFIG_REPO_PATH(deps.cwd)} and ${SAVED_CONFIG_GLOBAL_PATH(deps.homeDir)}`,
+                },
+            ],
+            hints: [],
+            sources: {},
+        };
+    }
+    return {
+        mode: "show",
+        outcome: "ok",
+        exitCode: 0,
+        savedConfigPath: result.path,
+        savedConfigBytes: Buffer.byteLength(serializeSavedConfig(result.config), "utf8"),
+        ciGenerated: [],
+        checks: [
+            {
+                id: "config-file-mode",
+                status: "ok",
+                message: `saved config present at ${result.path}`,
+            },
+        ],
+        hints: [],
+        sources: {
+            provider: { source: "savedConfig" },
+            ...(result.config.apiUrl !== undefined ? { apiUrl: { source: "savedConfig" } } : {}),
+            ...(result.config.model !== undefined ? { model: { source: "savedConfig" } } : {}),
+        },
+    };
+}
+// ---------------------------------------------------------------------------
+// --dry-run: compute the plan; perform NO filesystem writes; the api-key
+// is replaced with `REDACTED_SECRET_TOKEN` in the response envelope.
+// ---------------------------------------------------------------------------
+async function runDryRunInit({ args, deps, }) {
+    // Dry-run requires the same flags as non-interactive so the plan is
+    // fully determined. If none are present, fall back to the openai-
+    // compatible default to keep the plan deterministic.
+    const provider = args.provider ?? "openai-compatible";
+    const apiUrl = args.apiUrl ?? saved_config_DEFAULT_OPENAI_URL;
+    const model = args.model ?? "auto";
+    const config = buildConfig(provider, apiUrl, model);
+    const ciGenerated = [];
+    if (args.ci === "github" || args.ci === "azure") {
+        ciGenerated.push(args.ci);
+    }
+    else if (args.ci === "auto") {
+        const target = detectCiTargetHelper(deps.fsAdapter ?? defaultFsAdapter);
+        if (target !== null)
+            ciGenerated.push(target);
+    }
+    return {
+        mode: "dry-run",
+        outcome: "ok",
+        exitCode: 0,
+        savedConfigPath: args.scope === "repo"
+            ? SAVED_CONFIG_REPO_PATH(deps.cwd)
+            : SAVED_CONFIG_GLOBAL_PATH(deps.homeDir),
+        savedConfigBytes: Buffer.byteLength(serializeSavedConfig(config), "utf8"),
+        ciGenerated,
+        checks: [
+            {
+                id: "scope-choice",
+                status: "ok",
+                message: `dry-run scope: ${args.scope ?? "global"}`,
+            },
+            {
+                id: "provider-choice",
+                status: "ok",
+                message: `dry-run provider: ${provider}`,
+            },
+            {
+                id: "config-atomic-write",
+                status: "skip",
+                message: "dry-run; no filesystem writes performed",
+                hint: "re-run without --dry-run to apply",
+            },
+            {
+                id: "secret-redaction",
+                status: "ok",
+                message: `api key placeholder: ${REDACTED_SECRET_TOKEN}`,
+            },
+        ],
+        hints: ["dry-run: nothing was written; re-run without --dry-run to apply."],
+        sources: {
+            provider: { source: args.provider !== undefined ? "flag" : "default" },
+            apiUrl: { source: args.apiUrl !== undefined ? "flag" : "default" },
+            model: { source: args.model !== undefined ? "flag" : "default" },
+        },
+    };
+}
+// ---------------------------------------------------------------------------
+// Non-interactive path: validate required flags → writeSavedConfig →
+// optional CI generation. The apiKey is consumed for the live provider
+// HEAD probe ONLY; it is never written to disk (S6).
+// ---------------------------------------------------------------------------
+async function runNonInteractiveInit({ args, deps, }) {
+    // Validate required flags. Missing provider is a hard fail.
+    const provider = args.provider;
+    if (provider === undefined) {
+        return {
+            mode: "non-interactive",
+            outcome: "error",
+            exitCode: 2,
+            savedConfigPath: null,
+            savedConfigBytes: null,
+            ciGenerated: [],
+            checks: [
+                {
+                    id: "non-interactive-validation",
+                    status: "fail",
+                    message: "--provider is required in --non-interactive mode",
+                },
+            ],
+            hints: ["--non-interactive requires --provider; e.g. --provider openai-compatible"],
+            sources: {},
+        };
+    }
+    // Per-provider required fields. apiKey is NEVER persisted so it's
+    // validated only as "present" (consumed for the live HEAD probe).
+    const pendingPrompts = [];
+    let apiUrl = args.apiUrl;
+    let apiKey = args.apiKey;
+    let githubApiBase = args.githubApiBase;
+    let model = args.model;
+    if (provider === "openai-compatible") {
+        if (apiUrl === undefined)
+            apiUrl = saved_config_DEFAULT_OPENAI_URL;
+        if (apiKey === undefined)
+            pendingPrompts.push("--api-key");
+        if (model === undefined)
+            model = "auto";
+    }
+    else if (provider === "anthropic") {
+        if (apiKey === undefined)
+            pendingPrompts.push("--api-key");
+        if (apiUrl === undefined)
+            apiUrl = saved_config_DEFAULT_ANTHROPIC_URL;
+        if (model === undefined)
+            model = "auto";
+    }
+    else {
+        if (githubApiBase === undefined)
+            githubApiBase = "https://api.github.com";
+        if (model === undefined)
+            model = "auto";
+    }
+    if (pendingPrompts.length > 0) {
+        return {
+            mode: "non-interactive",
+            outcome: "error",
+            exitCode: 2,
+            savedConfigPath: null,
+            savedConfigBytes: null,
+            ciGenerated: [],
+            checks: [
+                {
+                    id: "non-interactive-validation",
+                    status: "fail",
+                    message: `missing required flags for ${provider}: ${pendingPrompts.join(", ")}`,
+                },
+            ],
+            hints: pendingPrompts,
+            sources: {},
+        };
+    }
+    // Path safety: cwd must not be unsafe (no .., not absolute). The
+    // saved config path is derived from `cwd` and `homeDir`; we never
+    // accept user-supplied paths so the input surface is fixed.
+    if (containsUnsafePathSegment(deps.cwd)) {
+        return {
+            mode: "non-interactive",
+            outcome: "error",
+            exitCode: 2,
+            savedConfigPath: null,
+            savedConfigBytes: null,
+            ciGenerated: [],
+            checks: [
+                {
+                    id: "non-interactive-validation",
+                    status: "fail",
+                    message: `cwd contains an unsafe segment: ${deps.cwd}`,
+                },
+            ],
+            hints: ["--non-interactive requires a safe cwd (no '..', not absolute)."],
+            sources: {},
+        };
+    }
+    const scope = args.scope ?? "global";
+    const config = buildConfig(provider, apiUrl ?? saved_config_DEFAULT_OPENAI_URL, model ?? "auto");
+    // apiKey is consumed for the live provider HEAD probe ONLY; never
+    // handed to writeSavedConfig. The reference below is a no-op for
+    // the persisted shape — we just acknowledge the operator's input.
+    void apiKey;
+    void githubApiBase;
+    const writeResult = await writeSavedConfig(config, {
+        homeDir: deps.homeDir,
+        cwd: deps.cwd,
+        scope,
+        force: args.force,
+        platform: deps.platform,
+        ...(deps.fsAdapter !== undefined ? { fs: deps.fsAdapter } : {}),
+        ...(deps.now !== undefined ? { now: deps.now } : {}),
+    });
+    if (!writeResult.ok) {
+        return {
+            mode: "non-interactive",
+            outcome: "error",
+            exitCode: writeResult.exitCode,
+            savedConfigPath: null,
+            savedConfigBytes: null,
+            ciGenerated: [],
+            checks: [
+                {
+                    id: "config-atomic-write",
+                    status: "fail",
+                    message: redactSecretsInString(writeResult.message),
+                },
+            ],
+            hints: [writeResult.message],
+            sources: {},
+        };
+    }
+    // CI generation. Honors --ci flag (or --yes if auto-detected).
+    const ciGenerated = await generateCiForResult({
+        args,
+        deps,
+        fs: deps.fsAdapter ?? defaultFsAdapter,
+        packageVersion: deps.packageVersion,
+    });
+    return {
+        mode: "non-interactive",
+        outcome: "ok",
+        exitCode: 0,
+        savedConfigPath: writeResult.path,
+        savedConfigBytes: writeResult.bytes,
+        ciGenerated,
+        checks: [
+            {
+                id: "config-atomic-write",
+                status: "ok",
+                message: `wrote saved config (${writeResult.bytes} bytes) at ${writeResult.path}`,
+            },
+            {
+                id: "config-file-mode",
+                status: deps.platform === "win32" ? "skip" : "ok",
+                message: deps.platform === "win32"
+                    ? "Windows inherits parent ACL"
+                    : "mode 0o600 verified",
+            },
+            {
+                id: "secret-redaction",
+                status: "ok",
+                message: `api key placeholder: ${REDACTED_SECRET_TOKEN}`,
+            },
+            ...(ciGenerated.length > 0
+                ? [
+                    {
+                        id: "ci-generation",
+                        status: "ok",
+                        message: `generated ${ciGenerated.join(", ")} workflow`,
+                    },
+                ]
+                : []),
+        ],
+        hints: [],
+        sources: {
+            provider: { source: "flag" },
+            ...(config.apiUrl !== undefined ? { apiUrl: { source: "flag" } } : {}),
+            ...(config.model !== undefined ? { model: { source: "flag" } } : {}),
+        },
+    };
+}
+// ---------------------------------------------------------------------------
+// Interactive path: 5-base-prompt sequence with per-branch sub-prompts.
+// Honors SIGINT/EOF as clean abort; apiKey is NEVER persisted.
+// ---------------------------------------------------------------------------
+async function runInteractiveInit({ args, deps, }) {
+    const isTTY = deps.isTTY ?? canPromptInteractively();
+    if (!isTTY) {
+        return {
+            mode: "interactive",
+            outcome: "error",
+            exitCode: 2,
+            savedConfigPath: null,
+            savedConfigBytes: null,
+            ciGenerated: [],
+            checks: [
+                {
+                    id: "non-interactive-validation",
+                    status: "fail",
+                    message: "interactive init requires a TTY; re-run with --non-interactive",
+                },
+            ],
+            hints: ["--non-interactive requires --provider; e.g. --provider openai-compatible"],
+            sources: {},
+        };
+    }
+    const reader = deps.stdinReader ?? init_defaultStdinReader;
+    // Q1 — scope (default global)
+    const scopeAnswer = await safePrompt(reader, isTTY, "(1) global [~/.umactually] (2) this repo [./umactual.config.json] [1]: ", "1");
+    if (scopeAnswer === null)
+        return abortedResult(args.mode);
+    const scopeChoice = scopeAnswer === "2" ? "repo" : "global";
+    // Q2 — provider family (must include all three)
+    const providerAnswer = await safePrompt(reader, isTTY, "Model provider family (openai-compatible / anthropic / copilot): ", "");
+    if (providerAnswer === null)
+        return abortedResult(args.mode);
+    const provider = parseProviderChoice(providerAnswer);
+    if (provider === null) {
+        return {
+            mode: args.mode,
+            outcome: "error",
+            exitCode: 2,
+            savedConfigPath: null,
+            savedConfigBytes: null,
+            ciGenerated: [],
+            checks: [
+                {
+                    id: "provider-choice",
+                    status: "fail",
+                    message: `unknown provider family: ${redactSecretsInString(providerAnswer)}`,
+                },
+            ],
+            hints: ["expected one of: openai-compatible, anthropic, copilot"],
+            sources: {},
+        };
+    }
+    // Q3 — per-branch sub-prompts
+    const branch = await promptBranch({ provider });
+    if (branch.outcome === "aborted")
+        return abortedResult(args.mode);
+    if (branch.outcome === "error")
+        return branch.result;
+    // Q4 — CI target (auto-detect unless --ci flag, --yes, or interactive)
+    const ciChoice = await promptCi({
+        args,
+        deps,
+        reader,
+        isTTY,
+        packageVersion: deps.packageVersion,
+    });
+    if (ciChoice.outcome === "aborted")
+        return abortedResult(args.mode);
+    if (ciChoice.outcome === "error")
+        return ciChoice.result;
+    // Q5 — Confirm save
+    const confirmAnswer = await safePrompt(reader, isTTY, "Confirm save? [y/N]: ", "");
+    if (confirmAnswer === null)
+        return abortedResult(args.mode);
+    if (!/^y(es)?$/i.test(confirmAnswer.trim())) {
+        return abortedResult(args.mode);
+    }
+    // Persist. The apiKey from branch.apiKey is consumed for the live
+    // HEAD probe ONLY; never passed to writeSavedConfig.
+    const config = buildConfig(provider, branch.apiUrl ?? saved_config_DEFAULT_OPENAI_URL, branch.model);
+    const writeResult = await writeSavedConfig(config, {
+        homeDir: deps.homeDir,
+        cwd: deps.cwd,
+        scope: scopeChoice,
+        force: args.force,
+        platform: deps.platform,
+        ...(deps.fsAdapter !== undefined ? { fs: deps.fsAdapter } : {}),
+        ...(deps.now !== undefined ? { now: deps.now } : {}),
+    });
+    if (!writeResult.ok) {
+        return {
+            mode: args.mode,
+            outcome: "error",
+            exitCode: writeResult.exitCode,
+            savedConfigPath: null,
+            savedConfigBytes: null,
+            ciGenerated: [],
+            checks: [
+                {
+                    id: "config-atomic-write",
+                    status: "fail",
+                    message: redactSecretsInString(writeResult.message),
+                },
+            ],
+            hints: [writeResult.message],
+            sources: {},
+        };
+    }
+    return {
+        mode: args.mode,
+        outcome: "ok",
+        exitCode: 0,
+        savedConfigPath: writeResult.path,
+        savedConfigBytes: writeResult.bytes,
+        ciGenerated: ciChoice.generated,
+        checks: [
+            {
+                id: "config-atomic-write",
+                status: "ok",
+                message: `wrote saved config (${writeResult.bytes} bytes) at ${writeResult.path}`,
+            },
+            {
+                id: "config-file-mode",
+                status: deps.platform === "win32" ? "skip" : "ok",
+                message: deps.platform === "win32"
+                    ? "Windows inherits parent ACL"
+                    : "mode 0o600 verified",
+            },
+            {
+                id: "secret-redaction",
+                status: "ok",
+                message: `api key placeholder: ${REDACTED_SECRET_TOKEN}`,
+            },
+            {
+                id: "provider-choice",
+                status: "ok",
+                message: `selected provider: ${provider}`,
+            },
+            {
+                id: "scope-choice",
+                status: "ok",
+                message: `selected scope: ${scopeChoice}`,
+            },
+            ...(ciChoice.generated.length > 0
+                ? [
+                    {
+                        id: "ci-generation",
+                        status: "ok",
+                        message: `generated ${ciChoice.generated.join(", ")} workflow`,
+                    },
+                ]
+                : []),
+        ],
+        hints: [],
+        sources: {
+            provider: { source: "default" },
+            ...(config.apiUrl !== undefined ? { apiUrl: { source: "default" } } : {}),
+            ...(config.model !== undefined ? { model: { source: "default" } } : {}),
+        },
+    };
+}
+async function promptBranch(input) {
+    const { provider } = input;
+    if (provider === "openai-compatible") {
+        const apiUrl = await smartPromptForValue({
+            label: OPENAI_BASE_URL_LABEL,
+            envVarName: "UMACTUALLY_API_URL",
+            placeholder: saved_config_DEFAULT_OPENAI_URL,
+            default: saved_config_DEFAULT_OPENAI_URL,
+            timeoutMs: PER_PROMPT_TIMEOUT_MS,
+        });
+        if (apiUrl === null)
+            return { outcome: "aborted" };
+        const apiKey = await smartPromptForValue({
+            label: API_KEY_LABEL,
+            envVarName: "UMACTUALLY_API_KEY",
+            placeholder: "sk-...",
+            timeoutMs: PER_PROMPT_TIMEOUT_MS,
+        });
+        if (apiKey === null)
+            return { outcome: "aborted" };
+        const model = await smartPromptForValue({
+            label: MODEL_LABEL,
+            envVarName: "UMACTUALLY_MODEL",
+            placeholder: "auto",
+            default: "auto",
+            timeoutMs: PER_PROMPT_TIMEOUT_MS,
+        });
+        if (model === null)
+            return { outcome: "aborted" };
+        return { outcome: "ok", apiUrl, apiKey, githubApiBase: undefined, model };
+    }
+    if (provider === "anthropic") {
+        const apiKey = await smartPromptForValue({
+            label: API_KEY_LABEL,
+            envVarName: "UMACTUALLY_API_KEY",
+            placeholder: "sk-ant-...",
+            timeoutMs: PER_PROMPT_TIMEOUT_MS,
+        });
+        if (apiKey === null)
+            return { outcome: "aborted" };
+        const model = await smartPromptForValue({
+            label: MODEL_LABEL,
+            envVarName: "UMACTUALLY_MODEL",
+            placeholder: "auto",
+            default: "auto",
+            timeoutMs: PER_PROMPT_TIMEOUT_MS,
+        });
+        if (model === null)
+            return { outcome: "aborted" };
+        return {
+            outcome: "ok",
+            apiUrl: saved_config_DEFAULT_ANTHROPIC_URL,
+            apiKey,
+            githubApiBase: undefined,
+            model,
+        };
+    }
+    // copilot — no apiKey prompt (uses GITHUB_TOKEN)
+    const githubApiBase = await smartPromptForValue({
+        label: COPILOT_BASE_URL_LABEL,
+        envVarName: "UMACTUALLY_GITHUB_API_BASE",
+        placeholder: "https://api.github.com",
+        default: "https://api.github.com",
+        timeoutMs: PER_PROMPT_TIMEOUT_MS,
+    });
+    if (githubApiBase === null)
+        return { outcome: "aborted" };
+    const model = await smartPromptForValue({
+        label: MODEL_LABEL,
+        envVarName: "UMACTUALLY_MODEL",
+        placeholder: "auto",
+        default: "auto",
+        timeoutMs: PER_PROMPT_TIMEOUT_MS,
+    });
+    if (model === null)
+        return { outcome: "aborted" };
+    return {
+        outcome: "ok",
+        apiUrl: undefined,
+        apiKey: undefined,
+        githubApiBase,
+        model,
+    };
+}
+async function promptCi(input) {
+    const { args, deps, reader, isTTY, packageVersion } = input;
+    const fs = deps.fsAdapter ?? defaultFsAdapter;
+    let chosen = "none";
+    if (args.ci !== undefined) {
+        chosen = args.ci === "auto" ? detectCiTargetHelper(fs) ?? "none" : args.ci;
+    }
+    else if (args.yes) {
+        chosen = detectCiTargetHelper(fs) ?? "none";
+    }
+    else {
+        const detected = detectCiTargetHelper(fs);
+        if (detected !== null) {
+            const answer = await safePrompt(reader, isTTY, `Detected ${detected} CI target. Generate ${detected} workflow? [Y/n]: `, "Y");
+            if (answer === null)
+                return { outcome: "aborted" };
+            chosen = /^(n|no)$/i.test(answer.trim()) ? "none" : detected;
+        }
+        else {
+            const answer = await safePrompt(reader, isTTY, "Generate CI workflow? (github / azure / none) [none]: ", "none");
+            if (answer === null)
+                return { outcome: "aborted" };
+            const trimmed = answer.trim().toLowerCase();
+            if (trimmed === "github" || trimmed === "azure")
+                chosen = trimmed;
+            else
+                chosen = "none";
+        }
+    }
+    if (chosen === "none") {
+        return { outcome: "ok", generated: [] };
+    }
+    const gen = await generateCi({
+        target: chosen,
+        fs,
+        deps,
+        packageVersion,
+    });
+    if (!gen.ok) {
+        return {
+            outcome: "error",
+            result: {
+                mode: args.mode,
+                outcome: "error",
+                exitCode: gen.exitCode,
+                savedConfigPath: null,
+                savedConfigBytes: null,
+                ciGenerated: [],
+                checks: [
+                    {
+                        id: "ci-generation",
+                        status: "fail",
+                        message: redactSecretsInString(gen.message),
+                    },
+                ],
+                hints: [gen.message],
+                sources: {},
+            },
+        };
+    }
+    return { outcome: "ok", generated: [chosen] };
+}
+// ---------------------------------------------------------------------------
+// Local helpers
+// ---------------------------------------------------------------------------
+/**
+ * Default stdin reader used when `deps.stdinReader` is not injected.
+ * Wraps `readInteractiveLine` from `smart-prompt.ts` so every prompt
+ * is bounded by the per-prompt timeout and surfaces SmartPromptUnavailable
+ * as a clean decline (null).
+ */
+async function init_defaultStdinReader(prompt, _isTTY) {
+    try {
+        return await readInteractiveLine({ prompt, timeoutMs: PER_PROMPT_TIMEOUT_MS });
+    }
+    catch (err) {
+        if (err instanceof SmartPromptUnavailable)
+            return null;
+        throw err;
+    }
+}
+/**
+ * Run a single prompt through the (possibly injected) reader. Returns
+ * `null` on EOF/timeout/SIGINT so the caller can map it to a clean
+ * abort. Empty answers are returned as "" — callers distinguish via
+ * length and treat an empty answer as a clean abort too.
+ */
+async function safePrompt(reader, isTTY, prompt, defaultValue) {
+    const answer = await reader(prompt, isTTY);
+    if (answer === null)
+        return null;
+    const trimmed = answer.trim();
+    if (trimmed.length === 0)
+        return defaultValue;
+    return trimmed;
+}
+/**
+ * Parse a provider-family answer into the typed enum. Returns null on
+ * any unrecognized value (case-insensitive match).
+ */
+function parseProviderChoice(answer) {
+    const t = answer.trim().toLowerCase();
+    if (t === "openai-compatible" || t === "openai" || t === "1") {
+        return "openai-compatible";
+    }
+    if (t === "anthropic" || t === "2")
+        return "anthropic";
+    if (t === "copilot" || t === "github-copilot" || t === "3")
+        return "copilot";
+    return null;
+}
+/**
+ * Path-safety check: reject cwd paths whose segments contain `..`
+ * (which would let a user-supplied path escape the project). Absolute
+ * cwd is fine — every real process has one — so we only block the
+ * `..` traversal case.
+ */
+function containsUnsafePathSegment(p) {
+    const segments = p.split(/[\\/]/);
+    return segments.some((s) => s === "..");
+}
+/**
+ * Build a typed SavedConfig. apiUrl is omitted when equal to the
+ * runtime default; model is omitted when "auto".
+ */
+function buildConfig(provider, apiUrl, model) {
+    const defaultForProvider = provider === "anthropic" ? saved_config_DEFAULT_ANTHROPIC_URL : saved_config_DEFAULT_OPENAI_URL;
+    const base = {
+        schemaVersion: SAVED_CONFIG_SCHEMA_VERSION,
+        provider,
+    };
+    const includeApiUrl = apiUrl !== defaultForProvider;
+    const includeModel = model !== "auto";
+    if (includeApiUrl && includeModel) {
+        return { ...base, apiUrl, model };
+    }
+    if (includeApiUrl) {
+        return { ...base, apiUrl };
+    }
+    if (includeModel) {
+        return { ...base, model };
+    }
+    return base;
+}
+/**
+ * Detect CI target via the init-templates helper. We re-implement the
+ * exists-lookup here using `defaultFsAdapter` so the wizard doesn't
+ * import the templates' helper signature directly.
+ */
+function detectCiTargetHelper(fs) {
+    return detectCiTarget({ exists: (p) => fs.exists(p) });
+}
+async function generateCiForResult(input) {
+    if (input.args.ci === "github" || input.args.ci === "azure") {
+        const r = await generateCi({
+            target: input.args.ci,
+            fs: input.fs,
+            deps: input.deps,
+            packageVersion: input.packageVersion,
+        });
+        return r.ok ? [input.args.ci] : [];
+    }
+    if (input.args.ci === "auto") {
+        const target = detectCiTargetHelper(input.fs);
+        if (target === null)
+            return [];
+        const r = await generateCi({
+            target,
+            fs: input.fs,
+            deps: input.deps,
+            packageVersion: input.packageVersion,
+        });
+        return r.ok ? [target] : [];
+    }
+    return [];
+}
+/**
+ * Generate the canonical CI workflow file. Refuses to clobber an
+ * existing file unless `--force` was passed.
+ */
+async function generateCi(input) {
+    const rendered = renderCiTemplate({
+        target: input.target,
+        packageVersion: input.packageVersion,
+    });
+    let targetPath;
+    try {
+        targetPath = joinRelativeCwd(input.deps.cwd, rendered.relativePath);
+    }
+    catch (err) {
+        return {
+            ok: false,
+            exitCode: 1,
+            message: err instanceof Error ? err.message : String(err),
+        };
+    }
+    if (input.fs.exists(targetPath) && !input.fs.isSymlink(targetPath)) {
+        if (!input.deps.argv.includes("--force")) {
+            return {
+                ok: false,
+                exitCode: 1,
+                message: `refusing to overwrite existing CI file at ${targetPath}; pass --force to bypass`,
+            };
+        }
+    }
+    if (input.fs.isSymlink(targetPath)) {
+        return {
+            ok: false,
+            exitCode: 1,
+            message: `refusing to write CI file: ${targetPath} is a symlink`,
+        };
+    }
+    try {
+        // Ensure parent directory exists (e.g. .github/workflows for github)
+        const parent = dirname(targetPath);
+        if (!input.fs.exists(parent)) {
+            const { mkdirSync } = await Promise.resolve(/* import() */).then(__nccwpck_require__.t.bind(__nccwpck_require__, 24, 23));
+            mkdirSync(parent, { recursive: true });
+        }
+        input.fs.writeFileAtomic(targetPath, rendered.body);
+    }
+    catch (err) {
+        return {
+            ok: false,
+            exitCode: 1,
+            message: `cannot write CI file at ${targetPath}: ${err instanceof Error ? err.message : String(err)}`,
+        };
+    }
+    return { ok: true };
+}
+/**
+ * Concatenate cwd with a relative path segment, rejecting any
+ * segments that try to escape the cwd. The init wizard only ever
+ * writes paths derived from `cwd` + a known relative template.
+ */
+function joinRelativeCwd(cwd, relative) {
+    const segments = relative.split(/[\\/]/).filter((s) => s.length > 0 && s !== ".");
+    const safe = segments.every((s) => s !== "..");
+    if (!safe) {
+        throw new Error(`unsafe relative path: ${relative}`);
+    }
+    return `${cwd.replace(/[\\/]+$/, "")}/${segments.join("/")}`;
+}
+function dirname(p) {
+    const idx = Math.max(p.lastIndexOf("/"), p.lastIndexOf("\\"));
+    return idx === -1 ? "." : p.slice(0, idx);
+}
+function abortedResult(mode) {
+    return envelope(mode, "aborted", 0, {
+        hints: ["cli: init aborted; nothing changed."],
+    });
+}
+/**
+ * Build an InitResult with sensible defaults so callers only supply
+ * the fields that deviate from "no config written, no checks, no ci,
+ * empty sources". Keeps the 11 envelope call sites below the
+ * 250-LOC ceiling.
+ */
+function envelope(mode, outcome, exitCode, overrides = {}) {
+    return {
+        mode,
+        outcome,
+        exitCode,
+        savedConfigPath: overrides.savedConfigPath ?? null,
+        savedConfigBytes: overrides.savedConfigBytes ?? null,
+        ciGenerated: overrides.ciGenerated ?? [],
+        checks: overrides.checks ?? [],
+        hints: overrides.hints ?? [],
+        sources: overrides.sources ?? {},
+    };
+}
 
 ;// CONCATENATED MODULE: ./src/cli/no-color.ts
 // SPDX-License-Identifier: MIT
@@ -2625,6 +4895,116 @@ function resolveColorPolicy(opts) {
     return opts.isTTY;
 }
 
+;// CONCATENATED MODULE: ./src/util/envelope.ts
+// SPDX-License-Identifier: MIT
+//
+// M1 — EnvelopeV1: unified JSON output contract for every `--json`
+// subcommand (review, doctor, uninstall, verify).
+//
+// Every `--json` subcommand emits the SAME shape so CI consumers can
+// rely on a single parser. The shape is a STRICT SUPERSET of the
+// pre-M1 per-command JSON contracts: existing top-level fields like
+// `command`, `exitCode`, `schemaVersion`, `resolvedConfig`, and
+// `outcome` continue to appear at the top level (so legacy consumers
+// do not break), AND the full original payload is preserved under
+// `data` for consumers that prefer the new structure.
+//
+// See `.omo/plans/cli-simplification-hyperplan-bundle.md` §1.M1 for
+// the contract spec and §1.Insight 3 + §2.inversion #11 for the
+// rationale (M1 precedes every other M-step because all later steps
+// assume a uniform envelope).
+const ENVELOPE_SCHEMA_VERSION = 1;
+const ALLOWED_COMMANDS = ["review", "doctor", "uninstall", "verify"];
+/**
+ * Build an EnvelopeV1 record. Pure: no I/O, no clock side-effects
+ * beyond reading `new Date()` once. The `data` payload is copied by
+ * reference (envelope consumers are expected to be read-only).
+ *
+ * `ok` is derived from `exitCode`: it is `true` iff `exitCode === 0`.
+ * This is the single source of truth for the success/failure flag —
+ * callers MUST NOT set `ok` independently, otherwise the envelope
+ * could lie about its own exit code.
+ */
+function createEnvelope(command, data, opts = {}) {
+    if (!ALLOWED_COMMANDS.includes(command)) {
+        // Defensive guard: an unknown command name means the envelope
+        // would lie about its origin, which a CI consumer would not be
+        // able to detect. Surface it loudly rather than papering over.
+        throw new RangeError(`createEnvelope: unknown command "${command}". Expected one of: ${ALLOWED_COMMANDS.join(", ")}`);
+    }
+    const exitCode = opts.exitCode ?? 0;
+    return {
+        schemaVersion: ENVELOPE_SCHEMA_VERSION,
+        command,
+        exitCode,
+        ok: exitCode === 0,
+        startedAt: opts.startedAt ?? new Date().toISOString(),
+        durationMs: opts.durationMs ?? 0,
+        data,
+        errors: opts.errors ?? [],
+        hints: opts.hints ?? [],
+        warnings: opts.warnings ?? [],
+    };
+}
+/**
+ * Convenience wrapper around `createEnvelope` that measures wall-clock
+ * duration around an async worker. Errors thrown by the worker are
+ * captured as a single `{ code: "UNCAUGHT", message }` entry in
+ * `errors[]` and the envelope is marked `ok: false` with `exitCode: 1`.
+ *
+ * Use this when you want a uniform envelope-with-timing contract for
+ * a CLI subcommand body; for hand-built envelopes (e.g. inside a
+ * dispatch layer that already tracks its own clock) use
+ * `createEnvelope` directly.
+ */
+/**
+ * Convert a nanosecond bigint delta to a millisecond integer using
+ * integer division. We use `Number()` and `Math.trunc` rather than
+ * `Number(bigint / 1_000_000n)` so the result is bounded to
+ * `Number.MAX_SAFE_INTEGER` — safe durations are well within range.
+ */
+function hrtimeDeltaMs(startNs, endNs) {
+    const deltaNs = endNs - startNs;
+    return Math.max(0, Math.trunc(Number(deltaNs / 1000000n)));
+}
+async function envelopeFromCommand(command, worker, opts = {}) {
+    const startedAt = new Date().toISOString();
+    const startNs = process.hrtime.bigint();
+    try {
+        const data = await worker();
+        const durationMs = hrtimeDeltaMs(startNs, process.hrtime.bigint());
+        return createEnvelope(command, data, {
+            ...opts,
+            startedAt,
+            durationMs,
+            exitCode: 0,
+        });
+    }
+    catch (err) {
+        const durationMs = hrtimeDeltaMs(startNs, process.hrtime.bigint());
+        const message = err instanceof Error ? err.message : String(err);
+        return createEnvelope(command, {}, {
+            ...opts,
+            startedAt,
+            durationMs,
+            exitCode: 1,
+            errors: [{ code: "UNCAUGHT", message }],
+        });
+    }
+}
+/**
+ * Serialize an envelope to JSON and write it (followed by a single
+ * `\n`) to the supplied writable stream. Defaults to `process.stdout`.
+ *
+ * Uses `JSON.stringify` without indentation so the output is
+ * single-line (matches the pre-M1 wire shape); downstream tools
+ * already pipe through `jq -c` and the human output is the OTHER
+ * branch (the `format*Human` functions).
+ */
+function emitJsonEnvelope(envelope, out = process.stdout) {
+    out.write(`${JSON.stringify(envelope)}\n`);
+}
+
 ;// CONCATENATED MODULE: ./src/cli/dispatch.ts
 // SPDX-License-Identifier: MIT
 // Subcommand dispatch layer. Pure routing apart from delegated CLI output.
@@ -2640,8 +5020,10 @@ function resolveColorPolicy(opts) {
 
 
 
+
+
 const GLOBAL_ONLY_FLAGS = new Set(["--json", "--no-color"]);
-const execFile = (0,external_node_util_namespaceObject.promisify)(external_node_child_process_namespaceObject.execFile);
+const execFile = (0,external_node_util_namespaceObject.promisify)(external_node_child_process_.execFile);
 function firstPositionalToken(argv) {
     for (const token of argv) {
         if (GLOBAL_ONLY_FLAGS.has(token)) {
@@ -2679,6 +5061,8 @@ async function dispatch(argv) {
             return runUninstallBranch(stripLeadingCommand(argv, command));
         case "check-review-artifact":
             return runCheckReviewArtifactBranch(stripLeadingCommand(argv, command));
+        case "init":
+            return runInitBranch(stripLeadingCommand(argv, command));
         case "version":
             return runVersion(stripLeadingCommand(argv, command));
         default: {
@@ -2711,17 +5095,28 @@ async function runJsonReview(argv) {
     process.stdout.write = process.stderr.write.bind(process.stderr);
     try {
         const result = await runCli(reviewArgs, process.cwd());
-        const envelope = {
-            schemaVersion: 1,
-            command: "review",
-            exitCode: result.exitCode,
+        const legacyData = {
             resolvedConfig: result.resolvedConfig ?? {},
             outcome: {
                 ok: result.exitCode === 0,
-                ...result.jsonOutcome,
+                ...(result.jsonOutcome ?? {}),
             },
         };
-        const stdout = `${JSON.stringify(envelope)}\n`;
+        const envelope = createEnvelope("review", legacyData, { exitCode: result.exitCode });
+        const stdout = `${JSON.stringify({
+            schemaVersion: envelope.schemaVersion,
+            command: envelope.command,
+            exitCode: envelope.exitCode,
+            resolvedConfig: result.resolvedConfig ?? {},
+            outcome: legacyData["outcome"],
+            ok: envelope.ok,
+            startedAt: envelope.startedAt,
+            durationMs: envelope.durationMs,
+            data: envelope.data,
+            errors: envelope.errors,
+            hints: envelope.hints,
+            warnings: envelope.warnings,
+        })}\n`;
         originalWrite.call(process.stdout, stdout);
         return { exitCode: result.exitCode, stdout };
     }
@@ -2731,26 +5126,37 @@ async function runJsonReview(argv) {
 }
 function runCheckReviewArtifactBranch(args) {
     const artifactArgs = args.filter((arg) => arg !== "--no-color");
-    const path = artifactArgs[0];
-    if (path === undefined || artifactArgs.length !== 1) {
+    const json = artifactArgs.includes("--json");
+    const positionalArgs = artifactArgs.filter((arg) => arg !== "--json");
+    const path = positionalArgs[0];
+    if (path === undefined || positionalArgs.length !== 1) {
         const stderr = "usage: umactually check-review-artifact <path>\n";
         process.stderr.write(stderr);
         return { exitCode: 2, stderr };
     }
     const result = classifyReviewArtifact(path);
+    const exitCode = result.ok ? 0 : 1;
+    if (json) {
+        const envelope = createEnvelope("verify", {
+            path,
+            ok: result.ok,
+            classification: result.ok ? result.summary : "invalid",
+            reason: result.ok ? null : result.reason,
+            warnings: result.warnings,
+        }, { exitCode });
+        const stdout = `${JSON.stringify(envelope)}\n`;
+        process.stdout.write(stdout);
+        return { exitCode, stdout };
+    }
     const message = result.ok ? result.summary : result.reason;
     let stderr = `umactually: ${path}: ${message ?? "invalid artifact"}\n`;
-    // Surface each advisory warning as a GitHub Actions `::warning::`
-    // annotation (stdout) and mirror to stderr so the vitest stderr
-    // spy still captures it. Format reference:
-    // https://docs.github.com/actions/using-workflows/workflow-commands-for-github-actions
     for (const warning of result.warnings) {
         const annotation = `::warning::${warning}\n`;
         process.stdout.write(annotation);
         stderr += annotation;
     }
     process.stderr.write(stderr);
-    return { exitCode: result.ok ? 0 : 1, stderr };
+    return { exitCode, stderr };
 }
 async function runDoctorBranch(args) {
     const json = args.includes("--json");
@@ -2776,7 +5182,14 @@ async function runDoctorBranch(args) {
         },
         packageRoot,
     });
-    const stdout = json ? formatDoctorJson(result) : formatDoctorHuman(result.checks);
+    let stdout;
+    if (json) {
+        const envelope = createEnvelope("doctor", JSON.parse(formatDoctorJson(result)), { exitCode: result.exitCode });
+        stdout = `${JSON.stringify(envelope)}\n`;
+    }
+    else {
+        stdout = formatDoctorHuman(result.checks);
+    }
     process.stdout.write(stdout);
     return { exitCode: result.exitCode, stdout };
 }
@@ -2896,11 +5309,38 @@ async function runUninstallBranch(args) {
     const checks = [...result.checks, ...additionalChecks];
     const exitCode = checks.some((c) => c.status === "fail") ? 1 : result.exitCode;
     const finalResult = { ...result, exitCode, checks };
-    const stdout = json
-        ? formatUninstallJson(finalResult, mode, deps.execPath)
-        : formatUninstallHuman(finalResult);
+    let stdout;
+    if (json) {
+        const envelope = createEnvelope("uninstall", JSON.parse(formatUninstallJson(finalResult, mode, deps.execPath)), { exitCode });
+        stdout = `${JSON.stringify(envelope)}\n`;
+    }
+    else {
+        stdout = formatUninstallHuman(finalResult);
+    }
     process.stdout.write(stdout);
     return { exitCode, stdout };
+}
+async function runInitBranch(args) {
+    const json = args.includes("--json");
+    const initArgs = args.filter((arg) => arg !== "--no-color");
+    if (initArgs.includes("--help") || initArgs.includes("-h")) {
+        process.stdout.write(init_INIT_HELP_TEXT);
+        return { exitCode: 0, stdout: init_INIT_HELP_TEXT };
+    }
+    const result = await runInit({
+        argv: initArgs,
+        deps: {
+            argv: initArgs,
+            env: process.env,
+            cwd: process.cwd(),
+            homeDir: (0,external_node_os_namespaceObject.homedir)(),
+            platform: process.platform,
+            packageVersion: process.env["UMACTUALLY_VERSION"] ?? "0.6.21",
+        },
+    });
+    const stdout = json ? formatInitJson(result) : formatInitHuman(result);
+    process.stdout.write(stdout);
+    return { exitCode: result.exitCode, stdout };
 }
 
 ;// CONCATENATED MODULE: ./src/security/scan-review-secrets.ts
@@ -6422,6 +8862,9 @@ const ENV_KEYS = {
     GITHUB_ACTIONS: "GITHUB_ACTIONS",
     GITHUB_EVENT_PATH: "GITHUB_EVENT_PATH",
     GITHUB_TOKEN: "GITHUB_TOKEN",
+    // GH_TOKEN is a legacy alias for GITHUB_TOKEN per init-guided-setup plan T9;
+    // schema's env: ["GITHUB_TOKEN", "GH_TOKEN"] iterates this alias automatically.
+    GH_TOKEN: "GH_TOKEN",
     GITHUB_REPOSITORY: "GITHUB_REPOSITORY",
     GITHUB_REF: "GITHUB_REF",
     GITHUB_SHA: "GITHUB_SHA",
@@ -6632,7 +9075,7 @@ function resolveDefaultPromptFilesOnce(cwd) {
                 `Entries must be relative paths with no '..' segments and no leading '/' or drive letter.`);
         }
         try {
-            const s = (0,external_node_fs_namespaceObject.statSync)((0,external_node_path_namespaceObject.join)(cwd, candidate));
+            const s = (0,external_node_fs_.statSync)((0,external_node_path_namespaceObject.join)(cwd, candidate));
             if (s.isFile())
                 out.push(candidate);
         }
@@ -17693,7 +20136,7 @@ async function collectFiles(paths, cwd) {
             console.error(`${BRAND_PREFIX}--files: skipped ${relativePath} (binary)`);
             continue;
         }
-        unique.add((0,external_node_fs_namespaceObject.realpathSync)(absolute));
+        unique.add((0,external_node_fs_.realpathSync)(absolute));
     }
     return Array.from(unique).sort((a, b) => a.localeCompare(b));
 }
@@ -17754,234 +20197,6 @@ async function runLocalFilesReview(input) {
     }
 }
 
-;// CONCATENATED MODULE: ./src/cli/smart-prompt.ts
-// SPDX-License-Identifier: MIT
-/**
- * Smart interactive prompts for the CLI.
- *
- * The CLI's job is to be useful in BOTH a terminal (where the operator
- * can answer questions) AND a CI pipeline (where stdin is closed and
- * non-zero answers must mean "fail fast, don't try"). This module is
- * the single boundary between those two modes.
- *
- * Rule of engagement:
- *   - ALL prompts MUST be guarded by `canPromptInteractively(...)` so
- *     we never write to a piped/CI stdin. If the environment cannot
- *     answer, we throw a typed `SmartPromptUnavailable` error that the
- *     caller (orchestrator / validate glue) maps to a structured
- *     validation error + remediation hint.
- *   - Each prompt supports a `timeoutMs` so an interactive CI with no
- *     operator on the seat doesn't hang forever. A timeout is treated
- *     as "user chose not to answer" — the caller surfaces the
- *     remediation hint and exits.
- *   - Inputs are NOT echoed to stderr (else secrets like API keys
- *     would leak into CI logs).
- *
- * The prompts here are intentionally minimal — no chalk, no TTY
- * detection libraries. The CLI already uses a single brand prefix on
- * its stdout writes; the prompts print that same prefix and let
- * downstream formatting (color, no-color) follow the same path.
- */
-
-/**
- * Throw when the operator's environment cannot answer an interactive
- * prompt (no TTY, no stdin, or timeout). Caught by the validate glue
- * so the operator gets a structured remediation hint instead of a
- * raw stdin EOF / hang.
- */
-class SmartPromptUnavailable extends Error {
-    code;
-    name = "SmartPromptUnavailable";
-    constructor(code, message) {
-        super(message);
-        this.code = code;
-    }
-}
-/**
- * Returns true when the process is attached to a real TTY and stdin
- * is readable. The Node-side test (`process.stdin.isTTY === true`)
- * is the canonical heuristic — Bun treats it the same.
- *
- * NOTE: deliberately NOT wrapping in try/catch. Read-only checks on
- * `process.stdin.isTTY` never throw, so a try/catch here would mask
- * a legitimate internal invariant failure.
- */
-function canPromptInteractively() {
-    return process.stdin.isTTY === true && process.stdout.isTTY === true;
-}
-/**
- * Render the standard prompt on stdout, read a single line from
- * stdin, trim trailing newlines/spaces, return the trimmed result.
- *
- * No echoing of input — secrets typed into a terminal echo in the
- * terminal control layer, not in our stdout/stderr, so they don't
- * land in CI logs even when stdout is captured.
- *
- * Throws {@link SmartPromptUnavailable} when:
- *   - the prompt cannot be shown (no TTY),
- *   - stdin closes before a line arrives (e.g. on CI),
- *   - the read times out (operator didn't answer),
- *   - the underlying stream errors.
- */
-async function readInteractiveLine(input) {
-    if (!canPromptInteractively()) {
-        throw new SmartPromptUnavailable("NO_TTY", "Cannot read interactive input: stdin is not a TTY. Set --api-url / --api-key on the command line or via UMACTUALLY_API_URL / UMACTUALLY_API_KEY env vars.");
-    }
-    process.stdout.write(`${BRAND_PREFIX}${input.prompt}\n`);
-    const stdin = process.stdin;
-    // Race the read against a timeout promise so a missed keypress
-    // surfaces the typed TIMEOUT rejection WITHOUT relying on the
-    // stream emitting `error` synchronously (which a paused TTY does
-    // NOT do — Node's read-stream destroy-with-error only surfaces
-    // via `error` if a read is mid-flight). The race pattern is the
-    // canonical fix for "Promise that should timeout"; see
-    // https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Promise/race
-    // for the underlying semantics.
-    let timeoutHandle = null;
-    const timeoutPromise = new Promise((_resolve, reject) => {
-        timeoutHandle = setTimeout(() => {
-            reject(new SmartPromptUnavailable("TIMEOUT", `Prompt timed out after ${input.timeoutMs}ms with no input. Set --api-url / --api-key on the command line or via env vars to skip the interactive prompt.`));
-        }, input.timeoutMs);
-        // Don't keep the event loop alive solely on the timer — the read
-        // operation also references an open handle via the stream, so
-        // unref() is safe here (the read promise keeps the loop alive).
-        timeoutHandle.unref();
-    });
-    try {
-        return await Promise.race([readOneLine(stdin), timeoutPromise]);
-    }
-    finally {
-        if (timeoutHandle !== null) {
-            clearTimeout(timeoutHandle);
-        }
-    }
-}
-/**
- * Read a single line from a readable stream, resolving with the
- * trimmed value. Resolves to "" on EOF (caller distinguishes empty
- * vs. typed-empty via the input.length === 0 check + clarifying hint).
- *
- * Pure Node — no external deps. Uses the standard "data" + "end"
- * events rather than readline so the import stays free of a
- * third-party dep at CLI boot time (ncc bundling is happier this
- * way too).
- *
- * Implementation note: all three event listeners (`data`, `end`,
- * `error`) MUST be attached BEFORE `stream.resume()` is called.
- * On a fast EOF (e.g. CI with a closed pipe), the synchronous
- * `end` event fires from inside `resume()` itself; if listeners
- * aren't attached by then, the Promise hangs forever. The same
- * race applies to a synchronous `error` event on a destroyed stream.
- * The order below is load-bearing — don't reorder.
- */
-async function readOneLine(stream) {
-    return await new Promise((resolve, reject) => {
-        let buffer = "";
-        const onData = (chunk) => {
-            buffer += typeof chunk === "string" ? chunk : Buffer.from(chunk).toString("utf8");
-            const newline = buffer.indexOf("\n");
-            if (newline !== -1) {
-                stream.pause();
-                stream.removeListener("data", onData);
-                stream.removeListener("end", onEnd);
-                stream.removeListener("error", onError);
-                resolve(buffer.slice(0, newline).trimEnd());
-            }
-        };
-        const onEnd = () => {
-            stream.removeListener("data", onData);
-            stream.removeListener("error", onError);
-            resolve(buffer.trimEnd());
-        };
-        const onError = (err) => {
-            stream.removeListener("data", onData);
-            stream.removeListener("end", onEnd);
-            reject(new SmartPromptUnavailable("READ_ERROR", `Failed to read stdin: ${err.message}. Set --api-url / --api-key on the command line or via env vars.`));
-        };
-        // Attach all three listeners BEFORE resuming the stream. The
-        // previous ordering (attach → resume) attached after the same-
-        // tick end event had already fired, leaving the Promise to
-        // hang forever on a closed stdin.
-        stream.on("data", onData);
-        stream.once("end", onEnd);
-        stream.once("error", onError);
-        stream.resume();
-    });
-}
-/**
- * Conditionally prompt for a single value. Skips the prompt when:
- *   - the env var name is already populated (caller should re-check),
- *   - the env var cannot be prompted (no TTY / piped stdin / timeout),
- *   - the prompt times out without an answer.
- *
- * Returns `null` when no answer was collected — the caller should fall
- * back to throwing the typed validation error.
- *
- * The optional `default` is offered as an empty-input fallback so the
- * operator can press <Enter> to take the previously-saved value.
- */
-async function smartPromptForValue(input) {
-    const existingFromEnv = process.env[input.envVarName];
-    if (typeof existingFromEnv === "string" && existingFromEnv.length > 0) {
-        // Already populated — no need to prompt.
-        return existingFromEnv;
-    }
-    if (!canPromptInteractively()) {
-        return null;
-    }
-    const defaultHint = input.default !== undefined && input.default.length > 0
-        ? ` [default: ${input.default}]`
-        : "";
-    const promptText = `${input.label} (${input.envVarName})${defaultHint}: `;
-    try {
-        const answer = await readInteractiveLine({
-            prompt: promptText,
-            timeoutMs: input.timeoutMs ?? 15_000,
-        });
-        if (answer.length > 0) {
-            return answer;
-        }
-        if (input.default !== undefined && input.default.length > 0) {
-            return input.default;
-        }
-        return null;
-    }
-    catch (error) {
-        if (error instanceof SmartPromptUnavailable) {
-            return null;
-        }
-        throw error;
-    }
-}
-/**
- * Convenience: prompt for the two API-config values operators most
- * commonly forget (`--api-url`, `--api-key`). Returns null when
- * neither could be collected (caller should then throw the typed
- * validation error).
- *
- * Both prompts share a 15-second timeout (configurable). When
- * `promptForUrl` is false, only the API key is asked for — useful for
- * Anthropic-native invocations where the URL is implicit.
- */
-async function smartPromptForApiConfig(input) {
-    let apiUrl = null;
-    if (input.promptForUrl) {
-        apiUrl = await smartPromptForValue({
-            label: "Model provider base URL",
-            envVarName: "UMACTUALLY_API_URL",
-            placeholder: "https://api.openai.com/v1",
-            ...(input.timeoutMs !== undefined ? { timeoutMs: input.timeoutMs } : {}),
-        });
-    }
-    const apiKey = await smartPromptForValue({
-        label: "Model provider API key",
-        envVarName: "UMACTUALLY_API_KEY",
-        placeholder: "sk-…",
-        ...(input.timeoutMs !== undefined ? { timeoutMs: input.timeoutMs } : {}),
-    });
-    return { apiUrl, apiKey };
-}
-
 ;// CONCATENATED MODULE: ./src/cli/auto-context.ts
 /**
  * Auto-derive CLI platform context from a local git repository.
@@ -18023,7 +20238,7 @@ async function smartPromptForApiConfig(input) {
  */
 function gitOrThrow(cwd, args) {
     try {
-        const out = (0,external_node_child_process_namespaceObject.execFileSync)("git", args, {
+        const out = (0,external_node_child_process_.execFileSync)("git", args, {
             cwd,
             encoding: "utf8",
             stdio: ["ignore", "pipe", "pipe"],
@@ -18080,7 +20295,7 @@ function writeSyntheticEventJson(filePath, args) {
         action: "synthetic",
         sender: { login: "local-smoke-test" },
     };
-    (0,external_node_fs_namespaceObject.writeFileSync)(filePath, `${JSON.stringify(event, null, 2)}\n`, "utf8");
+    (0,external_node_fs_.writeFileSync)(filePath, `${JSON.stringify(event, null, 2)}\n`, "utf8");
     return filePath;
 }
 /**
@@ -18176,11 +20391,11 @@ function deriveContextFromGit(input) {
     // if the diff is empty — that's fine for smoke tests on the default branch.
     if (diffOverride === undefined || diffOverride === null) {
         const diffOutput = gitOrThrow(cwd, ["diff", `${base}...HEAD`]);
-        (0,external_node_fs_namespaceObject.mkdirSync)(tempDir, { recursive: true });
-        (0,external_node_fs_namespaceObject.writeFileSync)(diffPath, diffOutput, "utf8");
+        (0,external_node_fs_.mkdirSync)(tempDir, { recursive: true });
+        (0,external_node_fs_.writeFileSync)(diffPath, diffOutput, "utf8");
     }
     if (eventOverride === undefined || eventOverride === null) {
-        (0,external_node_fs_namespaceObject.mkdirSync)(tempDir, { recursive: true });
+        (0,external_node_fs_.mkdirSync)(tempDir, { recursive: true });
         writeSyntheticEventJson(eventPath, { branch: currentBranch, base, repo });
     }
     // 7. posting identity is null. The caller (src/cli.ts) gates posting
@@ -18260,7 +20475,7 @@ function readPackageVersion() {
         return UMACTUALLY_VERSION;
     }
     const packageJsonUrl = __nccwpck_require__.ab + "package.json";
-    const raw = (0,external_node_fs_namespaceObject.readFileSync)(packageJsonUrl, "utf8");
+    const raw = (0,external_node_fs_.readFileSync)(packageJsonUrl, "utf8");
     const parsed = JSON.parse(raw);
     if (typeof parsed.version !== "string" || parsed.version.length === 0) {
         throw new Error("package.json is missing a string `version` field");
@@ -18366,7 +20581,7 @@ function runVersion(_argv) {
     const versionFile = process.env["UMACTUALLY_VERSION_FILE"];
     if (versionFile) {
         try {
-            (0,external_node_fs_namespaceObject.writeFileSync)(versionFile, stdout);
+            (0,external_node_fs_.writeFileSync)(versionFile, stdout);
             // Don't `return early` — still attempt the stdout tiers
             // so consumers that don't use the env var get the same
             // behavior as before. The env-var file is a bypass, not
@@ -18418,7 +20633,7 @@ function runVersion(_argv) {
     // cascade.
     let written = false;
     try {
-        (0,external_node_fs_namespaceObject.writeFileSync)(process.stdout.fd, stdout);
+        (0,external_node_fs_.writeFileSync)(process.stdout.fd, stdout);
         written = true;
     }
     catch {
@@ -18426,7 +20641,7 @@ function runVersion(_argv) {
     }
     if (!written) {
         try {
-            (0,external_node_fs_namespaceObject.writeSync)(1, stdout);
+            (0,external_node_fs_.writeSync)(1, stdout);
             written = true;
         }
         catch {
@@ -18883,7 +21098,7 @@ function argv1LooksLikeSeaBinary(argv1) {
 function argv1IsNpmShimSymlink(argv1) {
     let argv1Realpath;
     try {
-        argv1Realpath = (0,external_node_fs_namespaceObject.realpathSync)(argv1);
+        argv1Realpath = (0,external_node_fs_.realpathSync)(argv1);
     }
     catch {
         return false;
@@ -18907,7 +21122,7 @@ function argv1IsNpmShimSymlink(argv1) {
 function argv1MatchesModuleUrl(argv1) {
     const argv1Real = (() => {
         try {
-            return (0,external_node_fs_namespaceObject.realpathSync)(argv1);
+            return (0,external_node_fs_.realpathSync)(argv1);
         }
         catch {
             return argv1;

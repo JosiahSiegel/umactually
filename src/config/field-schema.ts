@@ -335,9 +335,9 @@ export const FIELDS = {
   },
   githubToken: {
     field: "githubToken",
-    flag: null,
+    flag: "--github-token",
     input: "github_token",
-    env: ["GITHUB_TOKEN"],
+    env: ["GITHUB_TOKEN", "GH_TOKEN"],
     type: "string",
     defaultValue: "",
   },

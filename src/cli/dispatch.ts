@@ -12,6 +12,13 @@ import { runCli, runVersion } from "../cli.js";
 import { classifyReviewArtifact } from "./check-review-artifact.js";
 import { formatDoctorHuman, formatDoctorJson, runDoctor } from "./doctor.js";
 import { printContextualHelp } from "./help.js";
+import {
+  formatInitHuman,
+  formatInitJson,
+  INIT_HELP_TEXT,
+  runInit,
+  type InitResult,
+} from "./init.js";
 import { resolveColorPolicy } from "./no-color.js";
 import {
   defaultFsAdapter,
@@ -28,6 +35,10 @@ import {
   type UninstallDeps,
   type UninstallResult,
 } from "./uninstall.js";
+import {
+  createEnvelope,
+  type EnvelopeData,
+} from "../util/envelope.js";
 
 const GLOBAL_ONLY_FLAGS = new Set(["--json", "--no-color"]);
 const execFile = promisify(execFileCallback);
@@ -82,6 +93,8 @@ export async function dispatch(argv: readonly string[]): Promise<DispatchResult 
       return runUninstallBranch(stripLeadingCommand(argv, command));
     case "check-review-artifact":
       return runCheckReviewArtifactBranch(stripLeadingCommand(argv, command));
+    case "init":
+      return runInitBranch(stripLeadingCommand(argv, command));
     case "version":
       return runVersion(stripLeadingCommand(argv, command));
     default: {
@@ -120,17 +133,28 @@ export async function runJsonReview(argv: readonly string[]): Promise<DispatchRe
   process.stdout.write = process.stderr.write.bind(process.stderr);
   try {
     const result = await runCli(reviewArgs, process.cwd());
-    const envelope = {
-      schemaVersion: 1,
-      command: "review",
-      exitCode: result.exitCode,
+    const legacyData: EnvelopeData = {
       resolvedConfig: result.resolvedConfig ?? {},
       outcome: {
         ok: result.exitCode === 0,
-        ...result.jsonOutcome,
+        ...(result.jsonOutcome ?? {}),
       },
-    } as const;
-    const stdout = `${JSON.stringify(envelope)}\n`;
+    };
+    const envelope = createEnvelope("review", legacyData, { exitCode: result.exitCode });
+    const stdout = `${JSON.stringify({
+      schemaVersion: envelope.schemaVersion,
+      command: envelope.command,
+      exitCode: envelope.exitCode,
+      resolvedConfig: result.resolvedConfig ?? {},
+      outcome: legacyData["outcome"],
+      ok: envelope.ok,
+      startedAt: envelope.startedAt,
+      durationMs: envelope.durationMs,
+      data: envelope.data,
+      errors: envelope.errors,
+      hints: envelope.hints,
+      warnings: envelope.warnings,
+    })}\n`;
     originalWrite.call(process.stdout, stdout);
     return { exitCode: result.exitCode, stdout };
   } finally {
@@ -140,27 +164,42 @@ export async function runJsonReview(argv: readonly string[]): Promise<DispatchRe
 
 function runCheckReviewArtifactBranch(args: readonly string[]): DispatchResult {
   const artifactArgs = args.filter((arg) => arg !== "--no-color");
-  const path = artifactArgs[0];
-  if (path === undefined || artifactArgs.length !== 1) {
+  const json = artifactArgs.includes("--json");
+  const positionalArgs = artifactArgs.filter((arg) => arg !== "--json");
+  const path = positionalArgs[0];
+  if (path === undefined || positionalArgs.length !== 1) {
     const stderr = "usage: umactually check-review-artifact <path>\n";
     process.stderr.write(stderr);
     return { exitCode: 2, stderr };
   }
 
   const result = classifyReviewArtifact(path);
+  const exitCode = result.ok ? 0 : 1;
+  if (json) {
+    const envelope = createEnvelope(
+      "verify",
+      {
+        path,
+        ok: result.ok,
+        classification: result.ok ? result.summary : "invalid",
+        reason: result.ok ? null : result.reason,
+        warnings: result.warnings,
+      },
+      { exitCode },
+    );
+    const stdout = `${JSON.stringify(envelope)}\n`;
+    process.stdout.write(stdout);
+    return { exitCode, stdout };
+  }
   const message = result.ok ? result.summary : result.reason;
   let stderr = `umactually: ${path}: ${message ?? "invalid artifact"}\n`;
-  // Surface each advisory warning as a GitHub Actions `::warning::`
-  // annotation (stdout) and mirror to stderr so the vitest stderr
-  // spy still captures it. Format reference:
-  // https://docs.github.com/actions/using-workflows/workflow-commands-for-github-actions
   for (const warning of result.warnings) {
     const annotation = `::warning::${warning}\n`;
     process.stdout.write(annotation);
     stderr += annotation;
   }
   process.stderr.write(stderr);
-  return { exitCode: result.ok ? 0 : 1, stderr };
+  return { exitCode, stderr };
 }
 
 async function runDoctorBranch(args: readonly string[]): Promise<DispatchResult> {
@@ -187,7 +226,17 @@ async function runDoctorBranch(args: readonly string[]): Promise<DispatchResult>
     },
     packageRoot,
   });
-  const stdout = json ? formatDoctorJson(result) : formatDoctorHuman(result.checks);
+  let stdout: string;
+  if (json) {
+    const envelope = createEnvelope(
+      "doctor",
+      JSON.parse(formatDoctorJson(result)) as EnvelopeData,
+      { exitCode: result.exitCode },
+    );
+    stdout = `${JSON.stringify(envelope)}\n`;
+  } else {
+    stdout = formatDoctorHuman(result.checks);
+  }
   process.stdout.write(stdout);
   return { exitCode: result.exitCode, stdout };
 }
@@ -309,9 +358,40 @@ async function runUninstallBranch(args: readonly string[]): Promise<DispatchResu
   const checks: UninstallResult["checks"] = [...result.checks, ...additionalChecks];
   const exitCode = checks.some((c) => c.status === "fail") ? 1 : result.exitCode;
   const finalResult: UninstallResult = { ...result, exitCode, checks };
-  const stdout = json
-    ? formatUninstallJson(finalResult, mode, deps.execPath)
-    : formatUninstallHuman(finalResult);
+  let stdout: string;
+  if (json) {
+    const envelope = createEnvelope(
+      "uninstall",
+      JSON.parse(formatUninstallJson(finalResult, mode, deps.execPath)) as EnvelopeData,
+      { exitCode },
+    );
+    stdout = `${JSON.stringify(envelope)}\n`;
+  } else {
+    stdout = formatUninstallHuman(finalResult);
+  }
   process.stdout.write(stdout);
   return { exitCode, stdout };
+}
+
+async function runInitBranch(args: readonly string[]): Promise<DispatchResult> {
+  const json = args.includes("--json");
+  const initArgs = args.filter((arg) => arg !== "--no-color");
+  if (initArgs.includes("--help") || initArgs.includes("-h")) {
+    process.stdout.write(INIT_HELP_TEXT);
+    return { exitCode: 0, stdout: INIT_HELP_TEXT };
+  }
+  const result: InitResult = await runInit({
+    argv: initArgs,
+    deps: {
+      argv: initArgs,
+      env: process.env,
+      cwd: process.cwd(),
+      homeDir: homedir(),
+      platform: process.platform,
+      packageVersion: process.env["UMACTUALLY_VERSION"] ?? "0.6.21",
+    },
+  });
+  const stdout = json ? formatInitJson(result) : formatInitHuman(result);
+  process.stdout.write(stdout);
+  return { exitCode: result.exitCode, stdout };
 }

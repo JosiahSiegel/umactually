@@ -12,3 +12,14 @@
 ## Wiring CI around exit codes
 
 Exit codes are emitted via `process.exit(code)` from `bin/umactually.mjs` and from `src/cli.ts:runCli`. Script against them in your CI by checking the process exit code. The bundled-CLI quickstart is in [`README.md`](../README.md#usage); the broader parse-fail and auto-artifact-validation behavior is in [`docs/troubleshooting.md`](troubleshooting.md).
+
+### `umactually init` exit codes
+
+| Outcome | Exit |
+|---|---|
+| Interactive success / clean abort (Ctrl-C, Ctrl-D, `n` to overwrite) | 0 |
+| `--non-interactive` success | 0 |
+| Missing required flags | 2 |
+| Permission error / invalid `~/.umactually/` / no-clobber collision / concurrency lock | 1 |
+| Unknown flag | 2 |
+| Global 60s timeout | 2 |

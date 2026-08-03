@@ -16,6 +16,22 @@ The action supports three wire-shape families:
 
 Operators point `--api-url` (or `UMACTUALLY_API_URL`) at a base URL. The action appends the appropriate endpoint path internally.
 
+## Setup wizard
+
+`umactually init` walks an operator through provider and CI setup end-to-end. Bare `umactually init` opens an interactive TTY flow; `--non-interactive` drives the same flow from flags for CI provisioners and dotfiles bootstrap.
+
+Per-branch prompts:
+
+| Family | Prompts |
+| --- | --- |
+| `openai-compatible` | `api-url` (default `https://api.openai.com/v1`), `api-key` (NEVER persisted), `model` (default `auto`) |
+| `anthropic` | `api-key` (NEVER persisted), `model` (default `auto`) |
+| `copilot` | `github-api-base` (default `https://api.github.com`), `model` (default `auto`); no `api-key` prompt — the wizard points at `GITHUB_TOKEN` / `GH_TOKEN` / `--github-token` |
+
+CI detection: `.github/` → GitHub Actions, `azure-pipelines.yml` → Azure DevOps, else prompt. The wizard generates the canonical workflow file (`examples/github/pr-review.yml` or `examples/azure/azure-pipelines.yml`) but refuses to clobber an existing one without `--force`.
+
+Secrets are NEVER written to `~/.umactually/config.json` — see [`docs/security.md#trust-model-init`](security.md#trust-model-init) for the persistence contract and rotation guidance.
+
 ## Per-family URL resolution
 
 ### `openai-compatible` — `resolveProviderBaseUrlCandidates(baseUrl)`

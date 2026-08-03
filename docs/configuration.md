@@ -9,7 +9,10 @@ The runtime resolves configurable review options in this order:
 1. Explicit CLI flag.
 2. Canonical `UMACTUALLY_*` environment variable.
 3. Legacy `REVIEW_*` environment variable.
-4. Built-in CLI default.
+4. Saved user config (`~/.umactually/config.json`; provider, optional apiUrl, optional model).
+5. Built-in CLI default.
+
+The `apiKey` field is NEVER read from or written to the saved config; it always comes from flag/env. Empty-string env wins over saved config so operators can `unset` a setting without deleting the file. The saved config is loaded via `readSavedConfig()` from `src/config/saved-config.ts` and threaded through the `pickX` helpers at `src/config/loader.ts`. See [docs/security.md#trust-model-init](security.md#trust-model-init) for what is and isn't persisted.
 
 The CLI natively honors every documented `UMACTUALLY_*` env var. In CI, set them as GitHub Actions env/secrets or Azure pipeline variables and they flow through without shell translation. Boolean env vars accept `true|false|1|0|yes|no|on|off|y|n`, case-insensitively after trimming. Invalid values fail configuration with a redacted error: secret values are never echoed.
 

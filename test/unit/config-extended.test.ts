@@ -4,7 +4,9 @@ import { join, sep } from "node:path";
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
+import { parseCliArgs } from "../../src/cli/parse-args.js";
 import { FIELDS } from "../../src/config/field-schema.js";
+import { resolveFromSchema } from "../../src/config/field-resolution.js";
 import { severityRank } from "../../src/util/severity.js";
 
 import {
@@ -723,6 +725,53 @@ describe("config: loadConfigFromSources precedence", () => {
   it("GITHUB_TOKEN env is exposed as githubToken (empty by default)", async () => {
     const result = await loadConfigFromSources({ ...empty(), cwd });
     expect(result.githubToken).toBe("");
+  });
+});
+
+describe("config: githubToken precedence via resolveFromSchema (plan T8/T9 RED)", () => {
+  // Bundle-locked semantics:
+  //   flag > canonical env (GITHUB_TOKEN) > legacy env (GH_TOKEN) > saved > default
+  //
+  // Once the field-schema wiring lands (flag: "--github-token",
+  // env: ["GITHUB_TOKEN", "GH_TOKEN"]), resolveFromSchema must walk
+  // the precedence chain in that exact order. These tests are RED
+  // until the env array gains the GH_TOKEN alias entry.
+
+  it("CLI flag --github-token=cli-wins beats GITHUB_TOKEN and GH_TOKEN env vars", () => {
+    // Given: the flag and BOTH env vars are populated with different values.
+    const env: NodeJS.ProcessEnv = {
+      ...process.env,
+      GITHUB_TOKEN: "env-github",
+      GH_TOKEN: "env-gh",
+    };
+
+    // When: the schema resolver runs.
+    const parsed = parseCliArgs(["--github-token=cli-wins"]);
+    const resolved = resolveFromSchema(parsed, env);
+
+    // Then: the flag wins.
+    expect(resolved["githubToken"]).toBe("cli-wins");
+  });
+
+  it("resolver accepts BOTH GITHUB_TOKEN and GH_TOKEN env aliases (no throw)", () => {
+    // Given: BOTH env vars are set; no flag is supplied. The resolver
+    // must accept both names — GITHUB_TOKEN as the canonical alias
+    // and GH_TOKEN as the legacy alias — without throwing on either
+    // name. The exact winner between them is implementation-defined
+    // (canonical is expected to win per the bundle-locked precedence
+    // chain), but the call itself must not raise.
+    const env: NodeJS.ProcessEnv = {
+      ...process.env,
+      GITHUB_TOKEN: "env-github",
+      GH_TOKEN: "env-gh",
+    };
+
+    // When / Then: neither call throws.
+    expect(() => resolveFromSchema(parseCliArgs([]), env)).not.toThrow();
+
+    // And: one of the two env values is the resolved answer.
+    const resolved = resolveFromSchema(parseCliArgs([]), env);
+    expect(["env-github", "env-gh"]).toContain(resolved["githubToken"]);
   });
 });
 

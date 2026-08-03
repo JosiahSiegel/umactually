@@ -32,6 +32,7 @@ const EXPECTED_ENV_KEYS = {
   GITHUB_ACTIONS: "GITHUB_ACTIONS",
   GITHUB_EVENT_PATH: "GITHUB_EVENT_PATH",
   GITHUB_TOKEN: "GITHUB_TOKEN",
+  GH_TOKEN: "GH_TOKEN",
   GITHUB_REPOSITORY: "GITHUB_REPOSITORY",
   GITHUB_REF: "GITHUB_REF",
   GITHUB_SHA: "GITHUB_SHA",
@@ -83,7 +84,7 @@ const FIELD_ENV_REGISTRY_BINDINGS = [
   { field: "sonarProjectKey", keys: ["UMACTUALLY_SONAR_PROJECT_KEY"] },
   { field: "detectLeaks", keys: ["REVIEW_LEAK_DETECTION"] },
   { field: "githubApiBase", keys: ["UMACTUALLY_GITHUB_API_BASE"] },
-  { field: "githubToken", keys: ["GITHUB_TOKEN"] },
+  { field: "githubToken", keys: ["GITHUB_TOKEN", "GH_TOKEN"] },
 ] as const satisfies ReadonlyArray<{
   readonly field: FieldName;
   readonly keys: readonly EnvKeyName[];

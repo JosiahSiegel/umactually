@@ -6,6 +6,7 @@ import {
   DOCTOR_HELP,
   CHECK_REVIEW_ARTIFACT_HELP,
   resolveHelpText,
+  INIT_HELP,
 } from "../../src/cli/help.js";
 
 describe("CLI help text", () => {
@@ -186,5 +187,95 @@ describe("Help text structural invariants (catches spread-of-string regressions)
     const apiUrlLine = lines.find((line) => line.includes("--api-url"));
     expect(apiUrlLine).toBeDefined();
     expect(apiUrlLine).toMatch(/--api-url\s+<url>/u);
+  });
+});
+
+// ────────────────────────────────────────────────────────────────────────
+// Task T13 — `umactually init` help wiring (RED).
+//
+// Current state: src/cli/help.ts:35's HelpContext union does NOT include
+// `"init"`; `INIT_HELP_TEXT` is not defined; `TOP_LEVEL_COMMANDS` (at
+// :134-142) does NOT list `init`; `COMMAND_HELP` (at :217-222) does NOT
+// map `init`. These tests pin the discoverability contract that T14's
+// wiring must satisfy.
+// ────────────────────────────────────────────────────────────────────────
+
+describe("init help wiring (RED — Task T13)", () => {
+  it("HELP-D-3: INIT_HELP exists and is byte-distinct from REVIEW_HELP", () => {
+    // Given: the help module exports a per-command help const for `init`.
+    // The const MUST exist (T14) and MUST NOT be the same string as
+    // REVIEW_HELP — a future bug that re-uses REVIEW_HELP_TEXT as
+    // INIT_HELP_TEXT would silently leave operators reading the wrong
+    // help when they run `umactually init --help`.
+    expect(INIT_HELP).toBeDefined();
+    expect(typeof INIT_HELP).toBe("string");
+    expect(INIT_HELP.length).toBeGreaterThan(0);
+    expect(INIT_HELP).not.toBe(REVIEW_HELP);
+  });
+
+  it("HELP-D-4: CLI_HELP_TEXT mentions `init` in the Commands banner", () => {
+    // Given: a top-level `--help` invocation. The Commands banner
+    // (rendered from TOP_LEVEL_COMMANDS at help.ts:134-142) MUST list
+    // `init` so a brand-new operator discovers the guided-setup
+    // quickstart from `umactually --help` alone.
+    expect(CLI_HELP_TEXT).toContain("Commands:");
+    expect(CLI_HELP_TEXT).toMatch(/^\s*init\b/im);
+  });
+
+  it("HELP-H-5: the `init` line in CLI_HELP_TEXT appears BEFORE the `uninstall` line (ordering invariant)", () => {
+    // Given: the plan mandates a specific Commands banner order —
+    // `init` is the recommended quickstart, `uninstall` is the
+    // destructive last-resort, so `init` MUST be listed first. A
+    // future edit that re-sorts the array (e.g. alphabetical) would
+    // bury init under review/doctor and bury uninstall beneath
+    // everything else — this test pins the recommended-before-destructive
+    // ordering as a load-bearing discoverability invariant.
+    const initIndex = CLI_HELP_TEXT.search(/^\s*init\b/im);
+    const uninstallIndex = CLI_HELP_TEXT.search(/^\s*uninstall\b/im);
+    expect(initIndex).toBeGreaterThan(-1);
+    expect(uninstallIndex).toBeGreaterThan(-1);
+    expect(initIndex).toBeLessThan(uninstallIndex);
+  });
+
+  it("HELP-H-1: INIT_HELP enumerates every flag from the plan (per-flag toContain)", () => {
+    // Given: the plan section "T13…H-1" enumerates the init flag
+    // surface. The init help text MUST mention every one of them so
+    // `umactually init --help` is the single discoverable source for
+    // the wizard's flag surface. A missing flag here means the
+    // operator cannot discover it from --help and must grep the
+    // source.
+    const expectedFlags = [
+      "--provider",
+      "--api-url",
+      "--api-key",
+      "--github-token",
+      "--model",
+      "--scope",
+      "--ci",
+      "--apply",
+      "--force",
+      "--yes",
+      "--dry-run",
+      "--show",
+      "--json",
+      "--non-interactive",
+      "--help",
+      "-h",
+    ] as const;
+    for (const flag of expectedFlags) {
+      expect(INIT_HELP, `INIT_HELP must mention ${flag}`).toContain(flag);
+    }
+  });
+
+  it("HELP-H-2: INIT_HELP mentions the security guarantee that apiKey is never persisted", () => {
+    // Given: the plan's S6 override ("apiKey NEVER persisted at
+    // rest"). The init help text MUST surface this guarantee so an
+    // operator reading `umactually init --help` understands that the
+    // wizard will ask for an apiKey but will NOT write it to
+    // ~/.umactually/config.json. Without this line in the help text
+    // the operator cannot discover the at-rest trust model from
+    // --help alone.
+    expect(INIT_HELP).toMatch(/api[_ -]?key/i);
+    expect(INIT_HELP).toMatch(/(never|not)\s+(persisted|saved|written|stored)/iu);
   });
 });

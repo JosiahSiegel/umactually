@@ -136,6 +136,38 @@ The action treats the following inputs as **trusted**:
 
 Never expose trusted inputs to untrusted strings. In particular, do not interpolate `secrets.*` into a script body that is later written to disk.
 
+## Trust model: init
+
+`umactually init` persists typed provider settings to `~/.umactually/config.json` (mode `0o600`; directory mode `0o700`). The file is written atomically and refuses to overwrite a regular file without confirmation (`--force` bypasses). Symlinks and regular files that fail JSON parse trigger a backup-aside rename (`<path>.bak-<unix-mtime>`) and a refuse-to-clobber prompt.
+
+### What init stores
+
+- `provider` — one of `openai-compatible`, `anthropic`, `copilot`.
+- `apiUrl` — present only when the operator picked a non-default value for the chosen provider (e.g. a MiniMax / LiteLLM / Portkey gateway URL). Omitted when the operator accepted the default.
+- `model` — present only when the operator picked a non-`auto` value. `auto` resolves per-provider at runtime (see [`docs/providers.md`](providers.md#model-auto-resolution-on-dual-protocol-gateways)).
+- `schemaVersion` — always `1` for this release. Bumping the schema is a breaking change.
+
+### What init NEVER stores
+
+- `apiKey` — never read from or written to disk. The flag/env value is consumed in-memory for the live-provider HEAD probe only and is never serialized.
+- GitHub or Azure platform tokens — `GITHUB_TOKEN`, `GH_TOKEN`, `SYSTEM_ACCESSTOKEN` are sourced from the runner env at review time, not from disk.
+- Any literal matching the secret regex `ghp_|ghs_|gho_|ghu_|ghr_|glpat-|s\.r|sk-|eyJ...` — the writer re-scans the serialized content before `fsync` and refuses to write a file that contains a match (defensive: the typed shape excludes `apiKey`, but the writer enforces the guarantee at the byte level).
+
+### Where secrets live
+
+- GitHub Actions: repo Settings → Secrets and variables → Actions → secret `UMACTUALLY_API_KEY` (and `GITHUB_TOKEN`, automatically provided).
+- Azure DevOps: Pipelines → Library → Variable group → secret variable `UMACTUALLY_API_KEY` (and `SYSTEM_ACCESSTOKEN`, mapped from `$(System.AccessToken)`).
+- Local shell: `export UMACTUALLY_API_KEY=...` — never committed, never in shell history.
+
+### Rotation guidance
+
+1. Generate a new key in the upstream provider console.
+2. Update the secret store (GitHub repo secret / Azure variable group / local `UMACTUALLY_API_KEY` env).
+3. Re-run `umactually review` once on a non-PR branch to confirm the new key is wired.
+4. Revoke the old key in the upstream console.
+
+The wizard never touches the secret store — rotation is fully decoupled from `umactually init`. Re-running `umactually init` after rotation is unnecessary; the saved config does not contain `apiKey`.
+
 ## CI log URL redaction
 
 GitHub Actions annotations are persisted on the PR's action run and visible to anyone with `actions:read`. The action emits `::notice::` lines that include the operator's `UMACTUALLY_API_URL` so operators can audit which candidate URL the dispatcher is trying.
