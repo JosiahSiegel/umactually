@@ -27,6 +27,9 @@ export const ENV_KEYS = {
   GITHUB_ACTIONS: "GITHUB_ACTIONS",
   GITHUB_EVENT_PATH: "GITHUB_EVENT_PATH",
   GITHUB_TOKEN: "GITHUB_TOKEN",
+  // GH_TOKEN is a legacy alias for GITHUB_TOKEN per init-guided-setup plan T9;
+  // schema's env: ["GITHUB_TOKEN", "GH_TOKEN"] iterates this alias automatically.
+  GH_TOKEN: "GH_TOKEN",
   GITHUB_REPOSITORY: "GITHUB_REPOSITORY",
   GITHUB_REF: "GITHUB_REF",
   GITHUB_SHA: "GITHUB_SHA",

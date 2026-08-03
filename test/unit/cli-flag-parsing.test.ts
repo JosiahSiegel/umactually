@@ -461,6 +461,91 @@ describe("CLI flag parsing: action.yml inputs coverage", () => {
   });
 });
 
+describe("CLI flag parsing: --github-token + GH_TOKEN alias (plan T8/T9 RED)", () => {
+  // Bundle-locked semantics:
+  //   flag > canonical env (GITHUB_TOKEN) > legacy env (GH_TOKEN) > saved > default
+  //
+  // --github-token does not exist on ParsedCliArgs yet (field-schema.ts
+  // currently has flag: null). Once the wiring lands, the parser must
+  // expose `parsedCliArgs.githubToken` and the field-schema must set
+  // flag: "--github-token" + env: ["GITHUB_TOKEN", "GH_TOKEN"].
+  // These tests are RED until that wiring exists.
+
+  it("--github-token=<value> populates parsedCliArgs.githubToken", async () => {
+    const parseCliArgs = await expectNotImplementedExport(cliModule, cliPath, "parseCliArgs");
+    if (!isParseCliArgs(parseCliArgs)) {
+      expect.fail("RED: src/cli.ts must export parseCliArgs(args)");
+    }
+    const parsed = parseCliArgs(["--github-token", "test"]);
+    // TODO(plan T9): githubToken not yet on ParsedCliArgs
+    // @ts-expect-error githubToken not yet on ParsedCliArgs
+    expect(parsed.githubToken).toBe("test");
+  });
+
+  it("--github-token=<value> (equals form) populates parsedCliArgs.githubToken", async () => {
+    // Matches the README's documented `--github-token=<value>` shape.
+    const parseCliArgs = await expectNotImplementedExport(cliModule, cliPath, "parseCliArgs");
+    if (!isParseCliArgs(parseCliArgs)) {
+      expect.fail("RED: src/cli.ts must export parseCliArgs(args)");
+    }
+    const parsed = parseCliArgs(["--github-token=ghp_equals_form_token"]);
+    // TODO(plan T9): githubToken not yet on ParsedCliArgs
+    // @ts-expect-error githubToken not yet on ParsedCliArgs
+    expect(parsed.githubToken).toBe("ghp_equals_form_token");
+  });
+
+  it("--github-token with no value (followed by another flag) throws CliUsageError", async () => {
+    // Edge: --github-token must require a value, like every other
+    // value-bearing flag in the parser. The next token that starts
+    // with `--` cannot be consumed as the value.
+    const parseCliArgs = await expectNotImplementedExport(cliModule, cliPath, "parseCliArgs");
+    if (!isParseCliArgs(parseCliArgs)) {
+      expect.fail("RED: src/cli.ts must export parseCliArgs(args)");
+    }
+    expect(() => parseCliArgs(["--github-token", "--platform"])).toThrow(CliUsageError);
+    expect(() => parseCliArgs(["--github-token", "--platform"])).toThrow(/--github-token/u);
+  });
+
+  it("--github-token at end of argv (no following value) throws CliUsageError", async () => {
+    const parseCliArgs = await expectNotImplementedExport(cliModule, cliPath, "parseCliArgs");
+    if (!isParseCliArgs(parseCliArgs)) {
+      expect.fail("RED: src/cli.ts must export parseCliArgs(args)");
+    }
+    expect(() => parseCliArgs(["--platform", "github", "--github-token"])).toThrow(CliUsageError);
+  });
+
+  it("--no-github-token (negative form) is rejected as an unknown flag usage error", async () => {
+    // githubToken is a string-typed field; the standard parser
+    // contract is that --no- prefixes are NOT valid for string
+    // fields (they're for boolean negations only). The parser must
+    // surface the standard unknown-flag usage error rather than
+    // silently accepting --no-github-token.
+    const parseCliArgs = await expectNotImplementedExport(cliModule, cliPath, "parseCliArgs");
+    if (!isParseCliArgs(parseCliArgs)) {
+      expect.fail("RED: src/cli.ts must export parseCliArgs(args)");
+    }
+    expect(() => parseCliArgs(["--no-github-token"])).toThrow(CliUsageError);
+    expect(() => parseCliArgs(["--no-github-token"])).toThrow(/unknown flag/u);
+  });
+
+  it("--github-token supplied twice keeps the second value (last wins)", async () => {
+    // The parser uses `let ... = null` then reassigns, so duplicate
+    // flags must reflect last-wins semantics (matching every other
+    // string flag in the parser: --api-key, --model, --repo, etc.).
+    const parseCliArgs = await expectNotImplementedExport(cliModule, cliPath, "parseCliArgs");
+    if (!isParseCliArgs(parseCliArgs)) {
+      expect.fail("RED: src/cli.ts must export parseCliArgs(args)");
+    }
+    const parsed = parseCliArgs([
+      "--github-token", "first-token",
+      "--github-token", "second-token",
+    ]);
+    // TODO(plan T9): githubToken not yet on ParsedCliArgs
+    // @ts-expect-error githubToken not yet on ParsedCliArgs
+    expect(parsed.githubToken).toBe("second-token");
+  });
+});
+
 function safePlaceholder(flag: string): string {
   if (flag === "--minimum-severity") {
     return "low";

@@ -32,7 +32,7 @@ import { UNINSTALL_HELP_TEXT } from "./uninstall.js";
  * `all` means the flag appears in every help context.
  * `review` is the default subcommand so it also covers bare invocation.
  */
-type HelpContext = "all" | "review" | "doctor" | "uninstall" | "check-review-artifact";
+type HelpContext = "all" | "review" | "doctor" | "uninstall" | "check-review-artifact" | "init";
 
 interface HelpFlag {
   /** Full flag token, e.g. `"--api-url <url>"`. */
@@ -93,15 +93,36 @@ const REVIEW_FLAGS: readonly HelpFlag[] = [
   { flag: "--output-artifact <path>", appliesTo: ["review"] },
 ];
 
+const INIT_FLAGS: readonly HelpFlag[] = [
+  { flag: "--provider <openai-compatible|anthropic|copilot>" },
+  { flag: "--api-url <url>", description: "Provider base URL (default: provider-family default)" },
+  { flag: "--api-key <key>", description: "Provider API key (NEVER persisted; use --non-interactive with the secret store for automation)" },
+  { flag: "--github-token <token>", description: "GitHub token for Copilot routing (also: GH_TOKEN env)" },
+  { flag: "--github-api-base <url>", description: "GitHub API base (default: https://api.github.com)" },
+  { flag: "--model <id>", description: "Model name (default: auto)" },
+  { flag: "--scope <global|repo>", description: "Where to persist the config (default: global)" },
+  { flag: "--ci <auto|github|azure|none>", description: "Generate a CI workflow (auto-detects; default: auto)" },
+  { flag: "--non-interactive", description: "Fail rather than prompt (CI mode)" },
+  { flag: "--apply", description: "Actually write the config file (default: dry-run for --non-interactive)" },
+  { flag: "--force", description: "Overwrite an existing config without prompting" },
+  { flag: "--yes", description: "Skip confirmation prompts" },
+  { flag: "--dry-run", description: "Show what would be written; write nothing" },
+  { flag: "--show", description: "Print parsed saved config; no prompt, no write" },
+  { flag: "--json", description: "Emit machine-readable JSON envelope" },
+];
+
 /** All flags, used for the legacy `CLI_HELP_TEXT` export and column-width calc. */
 const HELP_FLAGS: readonly HelpFlag[] = [...REVIEW_FLAGS];
 
 /** The full flag set for column-width calculation. */
-const ALL_FLAGS_FOR_WIDTH: readonly HelpFlag[] = [...REVIEW_FLAGS, ...GLOBAL_FLAGS];
+const ALL_FLAGS_FOR_WIDTH: readonly HelpFlag[] = [...REVIEW_FLAGS, ...INIT_FLAGS, ...GLOBAL_FLAGS];
 
 function flagsForContext(context: HelpContext): readonly HelpFlag[] {
   if (context === "all") {
-    return [...REVIEW_FLAGS, ...GLOBAL_FLAGS];
+    return [...REVIEW_FLAGS, ...INIT_FLAGS, ...GLOBAL_FLAGS];
+  }
+  if (context === "init") {
+    return [...INIT_FLAGS, ...GLOBAL_FLAGS];
   }
   const commandFlags = REVIEW_FLAGS.filter(
     (f) => f.appliesTo?.includes(context as HelpContext) ?? false,
@@ -134,6 +155,7 @@ function renderCommands(commands: readonly string[]): string {
 const TOP_LEVEL_COMMANDS = [
   "review                    Run PR review (default)",
   "doctor                    Check environment is ready",
+  "init                      Run guided setup (recommended quickstart)",
   "uninstall                 Remove the installed binary, config, and PATH entries",
   "check-review-artifact <path>  Validate a review artifact",
   "version                   Print version",
@@ -170,6 +192,31 @@ const REVIEW_HELP_TEXT = [
   ...renderFlags(flagsForContext("review")),
   "",
   CLI_MODES_TEXT,
+  "See exit codes: docs/exit-codes.md",
+].join("\n");
+
+const INIT_HELP_TEXT = [
+  `${BRAND} init — guided setup wizard`,
+  "",
+  "Usage:",
+  "  umactually init                       Walk through provider + CI setup interactively (recommended)",
+  "  umactually init --non-interactive     Validate flags, write config, no prompts",
+  "  umactually init --show                Print parsed saved config (no prompt, no write)",
+  "  umactually init --dry-run             Show what would be written; write nothing",
+  "  umactually init --help                Show this help",
+  "",
+  "Flags:",
+  ...renderFlags(flagsForContext("init")),
+  "",
+  "Security: API keys are NEVER persisted to disk. Use your platform",
+  "secret store (GitHub Actions secrets, Azure Pipelines variables) or",
+  "the UMACTUALLY_API_KEY env var. See docs/security.md \"Trust model: init\".",
+  "",
+  "Exit codes:",
+  "  0  Success / clean abort (Ctrl-C, Ctrl-D, 'n' to overwrite)",
+  "  1  Permission error / invalid ~/.umactually / concurrency lock",
+  "  2  Missing required flags / unknown flag / 60s global timeout",
+  "",
   "See exit codes: docs/exit-codes.md",
 ].join("\n");
 
@@ -217,6 +264,7 @@ const CHECK_REVIEW_ARTIFACT_HELP_TEXT = [
 const COMMAND_HELP: Readonly<Record<string, string>> = {
   review: REVIEW_HELP_TEXT,
   doctor: DOCTOR_HELP_TEXT,
+  init: INIT_HELP_TEXT,
   uninstall: UNINSTALL_HELP_TEXT,
   "check-review-artifact": CHECK_REVIEW_ARTIFACT_HELP_TEXT,
 };
@@ -280,6 +328,7 @@ export function printContextualHelp(argv: readonly string[]): string {
 
 /** Exported for unit tests that need to assert per-command help content. */
 export const REVIEW_HELP = REVIEW_HELP_TEXT;
+export const INIT_HELP = INIT_HELP_TEXT;
 export const DOCTOR_HELP = DOCTOR_HELP_TEXT;
 export const UNINSTALL_HELP = UNINSTALL_HELP_TEXT;
 export const CHECK_REVIEW_ARTIFACT_HELP = CHECK_REVIEW_ARTIFACT_HELP_TEXT;

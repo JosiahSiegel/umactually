@@ -51,6 +51,16 @@ export type ParsedCliArgs = {
   readonly effort: CliEffort | null;
   readonly provider: CliProvider | null;
   readonly githubApiBase: string | null;
+  /**
+   * GitHub API token. Parsed from `--github-token <value>` (or
+   * `--github-token=<value>`) and threaded through to the resolver
+   * (see `src/config/field-schema.ts` for the canonical env-var
+   * aliases `GITHUB_TOKEN` + `GH_TOKEN`). Optional on the parsed
+   * shape so the CLI's `toEqual` assertion (which only checks
+   * explicitly-set fields) stays byte-identical when the operator
+   * never supplies the flag.
+   */
+  readonly githubToken?: string;
   readonly includeSonarqube: boolean;
   readonly sonarHostUrl: string | null;
   readonly sonarToken: string | null;
@@ -134,6 +144,7 @@ export function parseCliArgs(args: readonly string[]): ParsedCliArgs {
   let effort: CliEffort | null = null;
   let provider: CliProvider | null = null;
   let githubApiBase: string | null = null;
+  let githubToken: string | undefined;
   let includeSonarqube = false;
   let sonarHostUrl: string | null = null;
   let sonarToken: string | null = null;
@@ -173,16 +184,40 @@ export function parseCliArgs(args: readonly string[]): ParsedCliArgs {
   let verifyFindings = true;
 
   for (let index = 0; index < args.length; index += 1) {
-    const token = args[index];
-    if (token === undefined) {
+    const rawToken = args[index];
+    if (rawToken === undefined) {
       continue;
     }
-    const positiveFlag = token.startsWith("--no-")
-      ? `--${token.slice("--no-".length)}`
-      : token;
-    const explicitField = FIELD_BY_FLAG.get(positiveFlag);
+    const positiveFlag = rawToken.startsWith("--no-")
+      ? `--${rawToken.slice("--no-".length)}`
+      : rawToken;
+    // Plan T9 — strip the `=value` suffix so the explicitly-set lookup
+    // matches the entry in FIELD_BY_FLAG (which is keyed by the bare
+    // --flag form, not by a specific value-bearing variant).
+    const positiveFlagBare = positiveFlag.includes("=")
+      ? positiveFlag.slice(0, positiveFlag.indexOf("="))
+      : positiveFlag;
+    const explicitField = FIELD_BY_FLAG.get(positiveFlagBare);
     if (explicitField !== undefined) {
       explicitlySet.add(explicitField);
+    }
+    // Plan T9 — normalize `--github-token=<value>` (single-token equals
+    // form) into the two-token form so the switch dispatch matches the
+    // regular case. The inline value is captured here and consumed by
+    // the matching case branch below. No other flag in the parser
+    // accepts equals-form today, so this is intentionally scoped to
+    // the one field the test pins.
+    let inlineGithubToken: string | undefined;
+    let token = rawToken;
+    if (rawToken.startsWith("--github-token=")) {
+      inlineGithubToken = rawToken.slice("--github-token=".length);
+      if (inlineGithubToken.length === 0) {
+        throw new CliUsageError(
+          `flag --github-token requires a value`,
+          `Supply the value immediately after --github-token, e.g. \`umactually review --github-token=<value>\`. Run \`umactually review --help\` to see the expected shape for --github-token.`,
+        );
+      }
+      token = "--github-token";
     }
     switch (token) {
       case "--platform":
@@ -267,6 +302,23 @@ export function parseCliArgs(args: readonly string[]): ParsedCliArgs {
         githubApiBase = readValue(args, index, "github-api-base");
         index += 1;
         break;
+      case "--github-token": {
+        // Plan T9 — `--github-token` is a string field, so the negative
+        // form (`--no-github-token`) is intentionally NOT handled here:
+        // it falls through to the default branch and surfaces
+        // `unknownFlagUsageError` (matching the contract for every
+        // other string-typed field; pinned by cli-flag-parsing.test.ts
+        // row 5). The single-token equals form `--github-token=<value>`
+        // is normalized in the loop head above, so by the time we reach
+        // here `inlineGithubToken` carries the value when present.
+        if (inlineGithubToken !== undefined) {
+          githubToken = inlineGithubToken;
+        } else {
+          githubToken = readValue(args, index, "github-token");
+          index += 1;
+        }
+        break;
+      }
       case "--include-sonarqube":
         includeSonarqube = true;
         break;
@@ -433,6 +485,12 @@ export function parseCliArgs(args: readonly string[]): ParsedCliArgs {
     outputArtifact,
     strictSchema,
     verifyFindings,
+    // Optional: only present when the operator supplied --github-token.
+    // The `toEqual` assertion in cli-flag-parsing.test.ts's CLI-RED-001
+    // expects an absent key when the flag is never set, so we conditionally
+    // include it (undefined-valued keys would otherwise leak into the
+    // spread that the `Object.assign` in resolveFromSchema passes through).
+    ...(githubToken !== undefined ? { githubToken } : {}),
   };
   explicitFieldsByParse.set(parsed, explicitlySet);
   return parsed;
