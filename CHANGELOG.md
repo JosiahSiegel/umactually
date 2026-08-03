@@ -11,8 +11,14 @@ ship a tag).
 ## [Unreleased]
 
 
-_No pending changes — last release: v0.6.22 (umactually init guided setup wizard)._
+_No pending changes — last release: v0.6.23 (`umactually init` guided setup wizard, npm republish)._
 
+
+## [0.6.23] - 2026-08-03
+
+### Fixed
+
+- **v0.6.22 npm release republished under v0.6.23.** The v0.6.22 binary that npm served was missing the `init` subcommand (it was the pre-wizard `cli-simplification-v0.6.22` build, which required `--provider` and used `--apply` instead of walking the operator through setup). The corrected v0.6.23 binary carries the `umactually init` wizard from PR #175 (`init` is the recommended quickstart in README.md). v0.6.22 has been unpublished from npm and removed from GitHub Releases; `npm install -g umactually` now resolves to v0.6.23.
 
 ## [0.6.22] - 2026-08-03
 
