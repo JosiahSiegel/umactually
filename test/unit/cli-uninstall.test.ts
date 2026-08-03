@@ -6,8 +6,9 @@
 // adapter, purgeConfig, revertPath) so we never touch the real filesystem
 // and never need the user to confirm anything.
 
-import { describe, expect, it } from "vitest";
-import { join, sep } from "node:path";
+import { describe, expect, it, vi } from "vitest";
+import * as os from "node:os";
+import { sep } from "node:path";
 
 import {
   classifyExecPath,
@@ -27,14 +28,18 @@ import {
   type UninstallDeps,
 } from "../../src/cli/uninstall.js";
 
-// Use a platform-appropriate HOME so path.join in uninstall.ts produces
-// paths that match the test fixtures. On Windows, `/home/tester` would
-// never collide with `path.win32.join(...)` output; instead we use a
-// proper Windows path. The test suite is meaningful on both platforms
-// when the HOME matches what uninstall.ts generates.
-const HOME = process.platform === "win32"
-  ? join(process.cwd().split(sep)[0] ?? "C:\\", "Users", "tester")
+vi.mock("node:os", async () => {
+  const actual = await vi.importActual<typeof import("node:os")>("node:os");
+  return { ...actual, homedir: vi.fn(() => process.env["HOME"] ?? "/tmp/tester-umactually-home") };
+});
+
+const TEST_HOME = process.platform === "win32"
+  ? `${process.cwd().split(sep)[0] ?? "C:"}\\Users\\tester`
   : "/home/tester";
+const HOME = TEST_HOME;
+process.env["HOME"] = TEST_HOME;
+vi.mocked(os.homedir).mockReturnValue(TEST_HOME);
+
 
 // Tiny in-memory fs adapter for the runUninstall / purge / revert paths.
 type FileEntry = {
