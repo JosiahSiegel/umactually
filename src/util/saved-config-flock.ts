@@ -17,13 +17,19 @@
 // documents this as single-machine-only and the parent writeSavedConfig()
 // guards with a no-op on win32.
 
+export class FlockUnavailableError extends Error {
+  public constructor() {
+    super("flock(1) is unavailable");
+    this.name = "FlockUnavailableError";
+  }
+}
+
 export function tryFlockNonBlocking(lockPath: string): boolean {
   try {
     const { spawnSync } = require("node:child_process") as typeof import("node:child_process");
     const r = spawnSync("flock", ["-n", lockPath, "true"], { stdio: "ignore", timeout: 1000 });
     return r.status === 0;
   } catch {
-    // flock(1) not available — see file header.
-    return true;
+    throw new FlockUnavailableError();
   }
 }
