@@ -10,6 +10,11 @@ ship a tag).
 
 ## [Unreleased]
 
+### Added
+
+- **`umactually init`** — guided setup wizard. Walks operators through provider family, scope, API URL/model, and CI workflow selection; persists typed provider settings to `~/.umactually/config.json` with mode 0o600. Supports `--non-interactive` for automation; auto-detects GitHub Actions vs Azure DevOps and generates the canonical workflow file. Secrets are NEVER persisted to disk — see [docs/security.md#trust-model-init](docs/security.md#trust-model-init).
+- `--github-token` CLI flag + `GH_TOKEN` env alias for Copilot routing.
+
 ## [0.6.21] - 2026-08-01
 
 ### Fixed

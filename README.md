@@ -9,11 +9,45 @@ AI-powered PR review that posts inline comments directly to your pull requests. 
 
 Latest release: **[v0.6.21](https://github.com/JosiahSiegel/umactually/releases/tag/v0.6.21)** — see [all releases](https://github.com/JosiahSiegel/umactually/releases).
 
-## Install
+## Quickstart (recommended)
+
+The guided setup wizard walks you through provider, scope, and CI in four steps. After that, every `umactually review` reads your saved choices from `~/.umactually/config.json` (mode `0o600`; never contains secrets). Full per-flag detail at [`docs/configuration.md`](docs/configuration.md) and [`docs/providers.md`](docs/providers.md#setup-wizard).
+
+1. **Run the wizard** — interactive on a TTY, non-interactive in CI:
+
+   ```bash
+   umactually init
+   ```
+
+2. **Pick a provider family** — one of `openai-compatible`, `anthropic`, or `copilot`. The wizard prompts per-branch (`api-url` + `api-key` + `model` for OpenAI-compatible; `api-key` + `model` for Anthropic; `github-api-base` + `model` for Copilot — no `api-key`, the wizard points you at the `GITHUB_TOKEN` / `GH_TOKEN` env var).
+3. **Set your API credentials in your platform secret store** — the wizard never persists the credential to disk; it only records the provider family, the optional `api-url`, and the optional `model`. Examples:
+
+   ```bash
+   # GitHub Actions: Settings → Secrets and variables → Actions → New secret UMACTUALLY_API_KEY
+   # Azure DevOps:  Pipelines → Library → Variable group → UMACTUALLY_API_KEY (secret)
+   # Local shell:
+   export UMACTUALLY_API_KEY="$UMACTUALLY_API_KEY"
+   ```
+
+4. **Run a review** — `umactually review` posts inline PR comments; `umactually --files src/foo.ts` reviews local files without CI.
+
+```bash
+# Non-interactive automation (CI provisioner, dotfiles bootstrap, etc.)
+# The CLI reads UMACTUALLY_API_KEY from the env; the flag never accepts a literal value.
+export UMACTUALLY_API_KEY="$UMACTUALLY_API_KEY"
+umactually init --non-interactive \
+  --provider openai-compatible \
+  --api-url https://api.openai.com/v1 \
+  --ci auto
+```
+
+The full exit-code contract for the wizard is at [`docs/exit-codes.md`](docs/exit-codes.md#umactually-init-exit-codes); the trust model (what is and isn't persisted) is at [`docs/security.md#trust-model-init`](docs/security.md#trust-model-init).
+
+## Install (alternative)
 
 Pick the path that matches your environment. Full comparison at [`docs/distribution-architecture.md`](docs/distribution-architecture.md).
 
-### Recommended: `npm install -g umactually`
+### npm install -g umactually
 
 ```bash
 # Global install (Node 24+ or Bun 1.2+)
@@ -26,9 +60,9 @@ npx umactually review …
 bunx umactually review …
 ```
 
-~330 KB download, uses your existing runtime. This is the canonical install path.
+~330 KB download, uses your existing runtime. This is the canonical npm path.
 
-### Alternative: curl-pipe installer (smart-routes to npm, falls back to binary)
+### curl-pipe installer (smart-routes to npm, falls back to binary)
 
 Use this if you want one command that picks the best path for you. The installer checks for Node 24+ on PATH first; if found, it runs `npm install -g umactually` and exits. Otherwise it downloads a single-file Node SEA binary that bundles Node 25.7 (~30 MB, no Node required).
 
@@ -127,6 +161,7 @@ In CI the CLI auto-detects the platform from environment variables (`GITHUB_ACTI
 ### Commands
 
 ```text
+umactually init                      Guided setup wizard (interactive or --non-interactive)
 umactually review                    Run PR review (default)
 umactually doctor                    Check environment is ready
 umactually check-review-artifact     Validate a review artifact
