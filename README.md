@@ -2,18 +2,18 @@
 
 AI-powered PR review that posts inline comments directly to your pull requests. Works with any model provider (OpenAI, Anthropic, Copilot) and both GitHub and Azure DevOps.
 
-[![GitHub release](https://img.shields.io/github/v/release/JosiahSiegel/umactually)](https://github.com/JosiahSiegel/umactually/releases/tag/v0.6.24)
+[![GitHub release](https://img.shields.io/github/v/release/JosiahSiegel/umactually)](https://github.com/JosiahSiegel/umactually/releases/tag/v0.6.25)
 [![npm](https://img.shields.io/npm/v/umactually)](https://www.npmjs.com/package/umactually)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 [![Node.js >=24](https://img.shields.io/badge/node-%3E%3D24-339933.svg)](https://nodejs.org/)
 
-Latest release: **[v0.6.24](https://github.com/JosiahSiegel/umactually/releases/tag/v0.6.24)** — see [all releases](https://github.com/JosiahSiegel/umactually/releases).
+Latest release: **[v0.6.25](https://github.com/JosiahSiegel/umactually/releases/tag/v0.6.25)** — see [all releases](https://github.com/JosiahSiegel/umactually/releases).
 
 ## Quickstart (recommended)
 
 The guided setup wizard walks you through provider, scope, and CI in four steps. After that, every `umactually review` reads your saved choices from `~/.umactually/config.json` (mode `0o600`; never contains secrets). Full per-flag detail at [`docs/configuration.md`](docs/configuration.md) and [`docs/providers.md`](docs/providers.md#setup-wizard).
 
-> **First time?** Run `umactually` with no subcommand on a fresh install and the CLI prints a one-line nudge (`umactually: first run? Get started with: \`umactually init\``) pointing you at the wizard. The nudge is a no-op in CI, when a saved config already exists, or when you pass programmatic flags (`--json`, `--api-*`, etc.) — only bare interactive invocations from a clean install see it.
+> **First time?** Run `umactually` with no subcommand on a fresh install and the CLI prints a compact quickstart leading with `umactually init` and summarizing the three review commands (`review`, `--files`, `doctor`). The quickstart replaces the noisy `cli: --api-url is required` banner only for first-time interactive users (TTY + no saved config + no programmatic flags); every other case (CI, config already exists, programmatic flags) keeps the existing loud banner so scripts that grep for the validation text keep working.
 
 1. **Run the wizard** — interactive on a TTY, non-interactive in CI:
 
@@ -73,7 +73,7 @@ Use this if you want one command that picks the best path for you. The installer
 curl -fsSL https://github.com/JosiahSiegel/umactually/raw/main/scripts/install.sh | sh
 
 # Pin a specific version
-curl -fsSL https://github.com/JosiahSiegel/umactually/raw/main/scripts/install.sh | sh -s -- --tag v0.6.24
+curl -fsSL https://github.com/JosiahSiegel/umactually/raw/main/scripts/install.sh | sh -s -- --tag v0.6.25
 ```
 
 ```powershell
@@ -106,10 +106,10 @@ For the full flag list and edge cases, run `curl -fsSL https://github.com/Josiah
 ### From source (GitHub tarball, Node 24+ required)
 
 ```bash
-npx github:JosiahSiegel/umactually#v0.6.24 review
+npx github:JosiahSiegel/umactually#v0.6.25 review
 ```
 
-The `#v0.6.24` fragment pins to the tagged release. Omit it only when you specifically want the latest unreleased `main` build.
+The `#v0.6.25` fragment pins to the tagged release. Omit it only when you specifically want the latest unreleased `main` build.
 
 ### Platform support
 
@@ -185,7 +185,7 @@ Invalid review output fails the same invocation with a non-zero exit code — no
 
 ## CI Integration
 
-CI must use Node.js 24 and a version-pinned install. Pin to the [`v0.6.24` release tag](https://github.com/JosiahSiegel/umactually/releases/tag/v0.6.24) — never track `main` and never use the interactive binary installers in a CI step.
+CI must use Node.js 24 and a version-pinned install. Pin to the [`v0.6.25` release tag](https://github.com/JosiahSiegel/umactually/releases/tag/v0.6.25) — never track `main` and never use the interactive binary installers in a CI step.
 
 The canonical CI workflows are the source of truth — copy them into your pipeline rather than re-deriving them:
 

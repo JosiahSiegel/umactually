@@ -11,7 +11,21 @@ ship a tag).
 ## [Unreleased]
 
 
-_No pending changes — last release: v0.6.24 (`umactually init` wizard UX polish + first-run nudge)._
+_No pending changes — last release: v0.6.25 (`umactually` first-run quickstart replaces loud banner)._
+
+
+## [0.6.25] - 2026-08-03
+
+### Changed
+
+- **Bare `umactually` first-run UX** now prints a compact 10-line quickstart instead of the noisy `cli: --api-url is required` + `pick a mode:` banner. The quickstart leads with `umactually init` (the most important action), summarizes the three review commands in one line each, and points at `--help` for the full reference. Exits 0. Matches the first-run UX of `rustup`, `fnm`, `volta`, `nvm`, `pip`, and `brew install`.
+
+### Behavior preserved (back-compat)
+
+- **`umactually review` with missing flags** still prints the loud `cli: --api-url is required` + `pick a mode:` banner — the back-compat invariant pinned by `test/unit/cli-subcommands.test.ts:CLI-SUB-005` and `test/unit/cli-bare-invocation.test.ts` (CI scripts that grep for the validation text keep working).
+- **Non-TTY / CI invocation** of bare `umactually` keeps the loud banner (no TTY noise, no JSON-parser pollution).
+- **`umactually` when a saved config already exists** keeps the loud banner (the operator has set up; they want validation feedback, not a wizard nudge).
+- **`umactually` with programmatic flags** (`--json`, `--no-color`, `--api-*`, `--model`, `--platform`) keeps the loud banner (the operator clearly knows what they're doing).
 
 
 ## [0.6.24] - 2026-08-03
