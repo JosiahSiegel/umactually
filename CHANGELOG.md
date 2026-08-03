@@ -11,8 +11,23 @@ ship a tag).
 ## [Unreleased]
 
 
-_No pending changes — last release: v0.6.23 (`umactually init` guided setup wizard, npm republish)._
+_No pending changes — last release: v0.6.24 (`umactually init` wizard UX polish + first-run nudge)._
 
+
+## [0.6.24] - 2026-08-03
+
+### Fixed
+
+- **`umactually init` clean-abort output** no longer emits a redundant `hint:` line that re-printed the headline text. The wizard's clean-abort path (`Ctrl-C` / `Ctrl-D` / declined overwrite / empty required answer) now prints a single clean line: `umactually: init aborted; nothing changed.` (v0.6.23 printed the same sentence twice — once as the headline, once as a `hint:` line).
+- **Repo-scope config filename typo** corrected: the on-disk filename is now `umactually.config.json` (matches every documentation reference and the on-prompt label). Previously the `SAVED_CONFIG_REPO_PATH` constant wrote `<cwd>/umactual.config.json` (missing the `ly`) — first reported when running the wizard with `--scope repo`.
+
+### Changed
+
+- **`umactually init` wizard prompts** adopt the industry-standard `?`-prefix style (matches `gh`, `pnpm`, `yarn`, `npm init`, `cargo`, `brew`). The previous numbering `[1]` (glued to the menu) is replaced with `[default: 1]`, and the Q1 / Q2 / Q4 / Q5 prompts now include the verb-first question form (e.g. `? Save settings to: (1) global ~/.umactually  (2) repo ./umactually.config.json  [default: 1]:`). `smartPromptForValue` (used by the per-branch sub-prompts) likewise adopts the `?` prefix.
+
+### Added
+
+- **First-run nudge on bare `umactually`**. When a user runs `umactually` (no subcommand) on a TTY and no `~/.umactually/config.json` exists, the CLI prints `umactually: first run? Get started with: \`umactually init\`` to stderr BEFORE the existing review-branch validation. The nudge is a no-op in CI (non-TTY), when a saved config already exists, or when the invocation carries programmatic flags (`--json`, `--no-color`, `--api-*`, `--model`, `--platform`) — i.e. only bare interactive invocations from a fresh install trigger it.
 
 ## [0.6.23] - 2026-08-03
 

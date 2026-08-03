@@ -219,11 +219,12 @@ describe.skipIf(SKIP_REASON !== null)(
         },
       });
 
-      // Then: the trace file contains the model-provider prompt text.
+      // Then: the trace file contains the provider-family prompt text
+      // (v0.6.24+ wording: "? Provider family (1) openai-compatible ...").
       const trace = await readTrace(tracePath);
       expect(pty.status).toBe(0);
-      expect(trace, "trace must contain the model-provider prompt").toMatch(
-        /model provider family/i,
+      expect(trace, "trace must contain the provider-family prompt").toMatch(
+        /\?\s*Provider family/i,
       );
       // And the scope prompt was emitted before that.
       expect(trace, "trace must contain the scope prompt").toMatch(/global|repo/i);

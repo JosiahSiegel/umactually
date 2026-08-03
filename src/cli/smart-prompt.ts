@@ -199,7 +199,7 @@ export async function smartPromptForValue(input: {
   const defaultHint = input.default !== undefined && input.default.length > 0
     ? ` [default: ${input.default}]`
     : "";
-  const promptText = `${input.label} (${input.envVarName})${defaultHint}: `;
+  const promptText = `? ${input.label} (${input.envVarName})${defaultHint}: `;
   try {
     const answer = await readInteractiveLine({
       prompt: promptText,
