@@ -34,7 +34,15 @@ import {
   type FsAdapter,
 } from "../util/fs-atomic.js";
 import { REDACTED_SECRET_TOKEN } from "../util/brand.js";
-import { tryFlockNonBlocking } from "../util/saved-config-flock.js";
+import { tryFlockNonBlocking, FlockUnavailableError } from "../util/saved-config-flock.js";
+
+/**
+ * Module-level mutable holder for the flock-availability signal. The
+ * lock acquisition block writes to it; the success-return path reads
+ * it. Avoids threading the flag through every early-return in the
+ * writer. Reset to `false` on every writer entry (see writeSavedConfig).
+ */
+const writeSavedConfigFlockUnavailable = { flag: false as boolean };
 
 export const SAVED_CONFIG_SCHEMA_VERSION = 1 as const;
 
@@ -104,8 +112,8 @@ export type ReadSavedConfigResult =
   | { readonly ok: false; readonly exitCode: 1 | 2; readonly message: string };
 
 export type WriteSavedConfigResult =
-  | { readonly ok: true; readonly path: string; readonly bytes: number }
-  | { readonly ok: false; readonly exitCode: 1 | 2; readonly message: string };
+  | { readonly ok: true; readonly path: string; readonly bytes: number; readonly lockUnavailable: boolean }
+  | { readonly ok: false; readonly exitCode: 1 | 2; readonly message: string; readonly lockUnavailable?: boolean };
 
 // ---------------------------------------------------------------------------
 // Read path
@@ -276,6 +284,7 @@ export async function writeSavedConfig(
   config: SavedConfig,
   deps: WriteSavedConfigDeps,
 ): Promise<WriteSavedConfigResult> {
+  writeSavedConfigFlockUnavailable.flag = false;
   const fs = deps.fs ?? defaultFsAdapter;
   const platform: NodeJS.Platform = deps.platform ?? process.platform;
   const isPosix = platform !== "win32";
@@ -312,11 +321,37 @@ export async function writeSavedConfig(
       // Non-blocking try-lock via `flock(1) -n <lockPath> true`. We pass
       // the PATH (not the fd number — see saved-config-flock.ts for why
       // the fd-number form silently no-ops in vite-node / CI sandboxes).
-      // flock(1) is in coreutils on every Linux and macOS (via brew
-      // install coreutils); on hosts without it we fall through to a
-      // lenient path (atomic-rename still prevents corruption; we lose
-      // only the "second init wins cleanly" guarantee).
-      const flockResult = tryFlockNonBlocking(lockPath);
+      //
+      // Flock availability:
+      //   - flock(1) is in coreutils on every Linux and macOS (via brew
+      //     install coreutils). When it is present, status=0 means lock
+      //     acquired; status≠0 means another init holds it (contention).
+      //   - On hosts without flock(1) (macOS without coreutils, alpine
+      //     without busybox flock, restricted CI sandboxes), the wrapper
+      //     throws `FlockUnavailableError`. We MUST surface this so the
+      //     operator knows the init-time concurrency lock is NOT
+      //     enforced: writes can still race. The atomic-rename primitive
+      //     keeps the file corruption-safe (last-writer-wins on a per-
+      //     inode basis), but a parallel `umactually init` could clobber
+      //     a half-written sibling temp file if the lock is genuinely
+      //     missing. The check below records the unavailability; the
+      //     `lockUnavailable` flag is surfaced via the WriteSavedConfigResult
+      //     so the wizard can emit a hint to the user.
+      let flockResult = true;
+      let lockUnavailable = false;
+      try {
+        flockResult = tryFlockNonBlocking(lockPath);
+      } catch (err) {
+        if (err instanceof FlockUnavailableError) {
+          // flock(1) is missing on this host. Atomic-rename still prevents
+          // file corruption; we lose only the "second init declines"
+          // guarantee. Surface a hint to the operator so they understand
+          // the weakened contract — see WriteSavedConfigResult.lockUnavailable.
+          lockUnavailable = true;
+        } else {
+          throw err;
+        }
+      }
       if (!flockResult) {
         try {
           closeSync(lockFd);
@@ -328,8 +363,15 @@ export async function writeSavedConfig(
           ok: false,
           exitCode: 1,
           message: `another init is in progress; rm ${lockPath} if stale`,
+          lockUnavailable: false,
         };
       }
+      // Stash `lockUnavailable` on the active function scope — the
+      // success-return branch below reads it. We use a tiny mutable
+      // holder rather than a let inside the try block so the success
+      // path at the end of writeSavedConfig() can read it without
+      // threading it through every early return.
+      writeSavedConfigFlockUnavailable.flag = lockUnavailable;
     }
     // Windows: best-effort serialization via shared-lock semantics on the
     // lock file's existence + the atomic-rename primitive. Documented above.
@@ -458,7 +500,7 @@ export async function writeSavedConfig(
       }
     }
 
-    return { ok: true, path: targetPath, bytes: Buffer.byteLength(serialized, "utf8") };
+    return { ok: true, path: targetPath, bytes: Buffer.byteLength(serialized, "utf8"), lockUnavailable: writeSavedConfigFlockUnavailable.flag };
   } finally {
     // -- Release flock ---------------------------------------------------
     // flock(1) is a wrapper around flock(2); closing the fd releases the lock.
