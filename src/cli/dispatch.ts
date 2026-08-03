@@ -155,12 +155,46 @@ function applyColorPolicy(argv: readonly string[]): boolean {
  * and fall through to the loud banner.
  */
 function isFirstRunUser(argv: readonly string[]): boolean {
+  // process.stdout.isTTY alone is NOT a reliable CI detector —
+  // interactive shells without a controlling TTY, test runners, and
+  // SSH sessions can all have isTTY=true while still being
+  // automation. The CI env vars below are the canonical signals
+  // used by every CI platform umactually integrates with; if any is
+  // set we fall through to the loud banner regardless of TTY state.
+  if (looksLikeCIEnv()) return false;
   if (process.stdout.isTTY !== true) return false;
   if (argvIncludesProgrammaticFlags(argv)) return false;
   const configPath = resolveSavedConfigPath();
   if (configPath === null) return false;
   if (existsSync(configPath)) return false;
   return true;
+}
+
+/**
+ * Returns true when a known CI platform env var is set. The set is
+ * intentionally narrow — only platforms whose presence unambiguously
+ * means "automation, not a human operator". A bare `CI=true` is
+ * NOT included because many developer shells set it locally (and
+ * the loud banner for those users is the right behavior).
+ *
+ * Boolean-valued CI vars (`GITHUB_ACTIONS`, `TF_BUILD`) are matched
+ * case-insensitively because Azure DevOps sets `TF_BUILD=True` (capital
+ * T) while GitHub Actions sets `GITHUB_ACTIONS=true` (lowercase) —
+ * any case-sensitive check would silently miss one platform.
+ */
+function looksLikeCIEnv(): boolean {
+  const env = process.env;
+  return (
+    truthyCI(env["GITHUB_ACTIONS"]) ||
+    truthyCI(env["TF_BUILD"]) ||
+    typeof env["BUILDKITE"] === "string" ||
+    typeof env["CIRCLECI"] === "string" ||
+    typeof env["JENKINS_URL"] === "string"
+  );
+}
+
+function truthyCI(v: string | undefined): boolean {
+  return typeof v === "string" && v.toLowerCase() === "true";
 }
 
 function argvIncludesProgrammaticFlags(argv: readonly string[]): boolean {
@@ -216,8 +250,12 @@ const FIRST_RUN_QUICKSTART = [
 ].join("\n");
 
 function runFirstRunQuickstart(): Promise<DispatchResult> {
+  // Pattern matches runUninstallBranch / runInitBranch / runDoctorBranch:
+  // write directly to stdout so the live stream gets the bytes, and
+  // return a minimal `{ exitCode }` result. Callers capture via
+  // `process.stdout.write` interception (see test helpers).
   process.stdout.write(`${BRAND_PREFIX}${FIRST_RUN_QUICKSTART}`);
-  return Promise.resolve({ exitCode: 0, stdout: FIRST_RUN_QUICKSTART });
+  return Promise.resolve({ exitCode: 0 });
 }
 
 async function runReviewBranch(args: readonly string[]): Promise<DispatchResult> {

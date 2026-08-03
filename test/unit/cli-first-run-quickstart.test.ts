@@ -175,6 +175,27 @@ describe("CLI first-run compact quickstart (v0.6.24)", () => {
     expect(capture.stderr.text).toContain("pick a mode:");
   });
 
+  it("QUICK-2b: bare `umactually` with CI env var set (even if TTY) keeps the loud banner", async () => {
+    // QUICK-2 only covers the non-TTY path. QUICK-6 covers the
+    // isTTY-but-CI-env path (the self-review finding). This is the
+    // half that verifies the loud banner is reachable when the CI
+    // detector fires.
+    process.stdout.isTTY = true;
+    process.env["GITHUB_ACTIONS"] = "true";
+    const dispatch = await loadDispatch();
+
+    const capture = captureStdoutStderr();
+    try {
+      await dispatch([]);
+    } finally {
+      capture.restore();
+    }
+    delete process.env["GITHUB_ACTIONS"];
+
+    expect(capture.stdout.text).not.toMatch(/Welcome to umactually/);
+    expect(capture.stderr.text).toContain("cli: --api-url is required");
+  });
+
   it("QUICK-3: bare `umactually` when a saved config exists keeps the loud banner", async () => {
     process.stdout.isTTY = true;
     // Pretend the operator already ran `umactually init` previously.
@@ -232,5 +253,54 @@ describe("CLI first-run compact quickstart (v0.6.24)", () => {
     expect(capture.stdout.text.startsWith("umactually: ")).toBe(true);
     // Trailing newline so the shell prompt doesn't glue to the output.
     expect(capture.stdout.text.endsWith("\n")).toBe(true);
+  });
+
+  it("QUICK-6: CI env vars keep the loud banner even when isTTY is true", async () => {
+    // Regression guard for the self-review finding: isTTY alone is
+    // not enough — automation can run on a pseudo-TTY (test runners,
+    // SSH sessions). When any known CI platform env var is set, the
+    // loud banner fires regardless of TTY state.
+    process.stdout.isTTY = true;
+    const dispatch = await loadDispatch();
+
+    for (const [key, value] of [
+      ["GITHUB_ACTIONS", "true"],
+      ["TF_BUILD", "True"],
+      ["BUILDKITE", "true"],
+      ["CIRCLECI", "true"],
+      ["JENKINS_URL", "https://example/jenkins"],
+    ] as const) {
+      process.env[key] = value;
+      const capture = captureStdoutStderr();
+      try {
+        await dispatch([]);
+      } finally {
+        capture.restore();
+      }
+      expect(capture.stdout.text, `${key} should suppress the quickstart`).not.toMatch(/Welcome to umactually/);
+      expect(capture.stderr.text, `${key} should still emit the loud banner`).toContain("cli: --api-url is required");
+      delete process.env[key];
+    }
+  });
+
+  it("QUICK-7: bare `CI=true` (developer-shell convention) does NOT suppress the quickstart", async () => {
+    // Regression guard: many developer shells set CI=true locally.
+    // The CI-detector deliberately excludes the bare `CI` var so
+    // those users still see the quickstart. Only platform-specific
+    // env vars (GITHUB_ACTIONS, TF_BUILD, BUILDKITE, CIRCLECI,
+    // JENKINS_URL) gate the suppression.
+    process.stdout.isTTY = true;
+    process.env["CI"] = "true";
+    const dispatch = await loadDispatch();
+
+    const capture = captureStdoutStderr();
+    try {
+      await dispatch([]);
+    } finally {
+      capture.restore();
+    }
+
+    expect(capture.stdout.text).toMatch(/Welcome to umactually/);
+    delete process.env["CI"];
   });
 });
