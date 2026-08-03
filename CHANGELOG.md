@@ -10,6 +10,12 @@ ship a tag).
 
 ## [Unreleased]
 
+
+_No pending changes — last release: v0.6.22 (umactually init guided setup wizard)._
+
+
+## [0.6.22] - 2026-08-03
+
 ### Added
 
 - **`umactually init`** — guided setup wizard. Walks operators through provider family, scope, API URL/model, and CI workflow selection; persists typed provider settings to `~/.umactually/config.json` with mode 0o600. Supports `--non-interactive` for automation; auto-detects GitHub Actions vs Azure DevOps and generates the canonical workflow file. Secrets are NEVER persisted to disk — see [docs/security.md#trust-model-init](docs/security.md#trust-model-init).
