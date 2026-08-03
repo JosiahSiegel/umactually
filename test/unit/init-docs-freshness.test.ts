@@ -157,16 +157,23 @@ describe("docs/security.md (Trust model: init)", () => {
 });
 
 describe("CHANGELOG.md ([Unreleased] entry)", () => {
-  it("INIT-DOC: CHANGELOG.md [Unreleased] section mentions `umactually init`", () => {
-    // Plan T20: the Unreleased block must include the wizard entry
-    // verbatim. Case-sensitive (per task spec) and no markdown-link
-    // wrapper requirement — the substring `umactually init` is
-    // sufficient.
+  it("INIT-DOC: CHANGELOG.md mentions `umactually init` in the most recent entry", () => {
+    // Plan T20 (generalized for v0.6.24+ release flow): every release
+    // entry that touches the wizard must include `umactually init`
+    // verbatim somewhere in its body. Originally this test pinned the
+    // [Unreleased] block, but post-release the Unreleased block is
+    // empty by design (no pending changes until the next PR), and the
+    // prior entry lives under `[X.Y.Z]`. Walk the most recent
+    // non-Unreleased `[X.Y.Z]` section instead so the invariant
+    // survives both pre-release and post-release states.
     expect(changelog.exists, "CHANGELOG.md must exist").toBe(true);
-    const unreleased = changelog.body
-      .split(/^##\s+\[Unreleased\]/mu)[1]
-      ?.split(/^##\s+\[/mu)[0]
-      ?? "";
-    expect(unreleased).toContain("umactually init");
+    // Split on every `## [` heading; the first chunk is the prose
+    // before the first versioned entry (which is the bit we want to
+    // skip). Filter out the [Unreleased] section explicitly.
+    const chunks = changelog.body.split(/^##\s+\[/mu);
+    const firstVersioned = chunks
+      .slice(1) // drop the prose preamble
+      .find((c) => !c.startsWith("Unreleased")) ?? "";
+    expect(firstVersioned).toContain("umactually init");
   });
 });

@@ -83,7 +83,20 @@ export async function dispatch(argv: readonly string[]): Promise<DispatchResult 
 
   const command = firstPositionalToken(argv);
   if (command === null) {
-    maybeFirstRunNudge(argv);
+    // First-time-user compact quickstart REPLACES the noisy
+    // validation + modes banner for bare invocations from a fresh
+    // install (TTY + no saved config + no programmatic flags). The
+    // existing loud banner is preserved for every other case:
+    //   - non-TTY / CI: existing banner, no quickstart (existing tests
+    //     in test/unit/cli-bare-invocation.test.ts and
+    //     test/unit/cli-subcommands.test.ts:CLI-SUB-005 pin this).
+    //   - saved config already exists: existing banner (operator has
+    //     set up; they want validation feedback).
+    //   - programmatic flags (`--json`, `--api-*`, etc.): existing
+    //     banner (operator clearly knows what they're doing).
+    if (isFirstRunUser(argv)) {
+      return runFirstRunQuickstart();
+    }
     return runReviewBranch(argv);
   }
 
@@ -118,38 +131,78 @@ function applyColorPolicy(argv: readonly string[]): boolean {
 }
 
 /**
- * Print a one-time first-run nudge to stderr when:
- *   - the user ran `umactually` with no subcommand (bare invocation or
- *     flags-only — the `command === null` branch in `dispatch`),
+ * Detect a "first-time user" — a bare `umactually` invocation from a
+ * fresh install. Returns true ONLY when ALL of:
  *   - stdout is a real TTY (no CI noise; no JSON-parser pollution),
- *   - no saved config exists at `~/.umactually/config.json`.
+ *   - no programmatic flags in argv (the operator isn't piping /
+ *     scripting; they're at a terminal),
+ *   - no saved config at `~/.umactually/config.json` (the wizard has
+ *     never run for this user).
  *
- * The nudge fires BEFORE the existing review-branch validation so the
- * user sees both the reminder AND the existing `--api-url is required`
- * + `pick a mode:` banner — the back-compat invariant pinned by
- * `cli-subcommands.test.ts:CLI-SUB-005` is preserved (the nudge is
- * additive, not a replacement).
+ * When this returns true, `dispatch` calls `runFirstRunQuickstart`
+ * instead of `runReviewBranch` — the loud `cli: --api-url is required`
+ * + `pick a mode:` banner is REPLACED with a compact quickstart that
+ * leads with `umactually init`. Every other case (non-TTY, programmatic
+ * flags, config-already-exists) preserves the existing loud banner so
+ * the back-compat invariants in:
+ *   - test/unit/cli-bare-invocation.test.ts (CLI_SYMBIOTIC-2)
+ *   - test/unit/cli-subcommands.test.ts:CLI-SUB-005
+ * keep passing.
  *
- * No-ops on Windows when `process.env.USERPROFILE` is unset (CI runners
- * without HOME) — we don't want to misattribute an operator's first run.
+ * No-ops on Windows when `process.env.USERPROFILE` is unset (CI
+ * runners without HOME) — we don't want to misattribute an
+ * operator's first run; treat the missing HOME as "not first-run"
+ * and fall through to the loud banner.
  */
-function maybeFirstRunNudge(argv: readonly string[]): void {
-  if (process.stdout.isTTY !== true) return;
-  if (argvIncludesProgrammaticFlags(argv)) return;
+function isFirstRunUser(argv: readonly string[]): boolean {
+  // process.stdout.isTTY alone is NOT a reliable CI detector —
+  // interactive shells without a controlling TTY, test runners, and
+  // SSH sessions can all have isTTY=true while still being
+  // automation. The CI env vars below are the canonical signals
+  // used by every CI platform umactually integrates with; if any is
+  // set we fall through to the loud banner regardless of TTY state.
+  if (looksLikeCIEnv()) return false;
+  if (process.stdout.isTTY !== true) return false;
+  if (argvIncludesProgrammaticFlags(argv)) return false;
   const configPath = resolveSavedConfigPath();
-  if (configPath === null) return;
-  if (existsSync(configPath)) return;
-  process.stderr.write(
-    `${BRAND_PREFIX}first run? Get started with: \`umactually init\`\n`,
+  if (configPath === null) return false;
+  if (existsSync(configPath)) return false;
+  return true;
+}
+
+/**
+ * Returns true when a known CI platform env var is set. The set is
+ * intentionally narrow — only platforms whose presence unambiguously
+ * means "automation, not a human operator". A bare `CI=true` is
+ * NOT included because many developer shells set it locally (and
+ * the loud banner for those users is the right behavior).
+ *
+ * Boolean-valued CI vars (`GITHUB_ACTIONS`, `TF_BUILD`) are matched
+ * case-insensitively because Azure DevOps sets `TF_BUILD=True` (capital
+ * T) while GitHub Actions sets `GITHUB_ACTIONS=true` (lowercase) —
+ * any case-sensitive check would silently miss one platform.
+ */
+function looksLikeCIEnv(): boolean {
+  const env = process.env;
+  return (
+    truthyCI(env["GITHUB_ACTIONS"]) ||
+    truthyCI(env["TF_BUILD"]) ||
+    typeof env["BUILDKITE"] === "string" ||
+    typeof env["CIRCLECI"] === "string" ||
+    typeof env["JENKINS_URL"] === "string"
   );
+}
+
+function truthyCI(v: string | undefined): boolean {
+  return typeof v === "string" && v.toLowerCase() === "true";
 }
 
 function argvIncludesProgrammaticFlags(argv: readonly string[]): boolean {
   // `--json` and `--no-color` are common programmatic flags; a user
   // passing them is not a "first run" — they're piping output somewhere
-  // and the nudge would just be noise on stderr. `--api-*` / `--model`
-  // flags mean the operator already knows the wire shape; pointing them
-  // at the wizard is condescending.
+  // and the quickstart would just be noise on stderr. `--api-*` /
+  // `--model` flags mean the operator already knows the wire shape;
+  // routing them to the wizard is condescending.
   return argv.some(
     (a) =>
       a === "--json" ||
@@ -163,12 +216,46 @@ function argvIncludesProgrammaticFlags(argv: readonly string[]): boolean {
 function resolveSavedConfigPath(): string | null {
   // We deliberately do NOT use `readSavedConfig` here — that path is
   // expensive (parses + validates JSON, walks both repo + global). For
-  // the nudge we only need a cheap existence check on the global path
-  // (the canonical first-install target); the repo-scope file is opt-in
-  // and would not gate the "first run" reminder.
+  // the quickstart gate we only need a cheap existence check on the
+  // global path (the canonical first-install target); the repo-scope
+  // file is opt-in and would not gate the "first run" reminder.
   const home = process.env["HOME"] ?? process.env["USERPROFILE"];
   if (typeof home !== "string" || home.length === 0) return null;
   return join(home, ".umactually", "config.json");
+}
+
+/**
+ * The compact first-run quickstart. Replaces the noisy
+ * `cli: --api-url is required` + `pick a mode:` banner for first-time
+ * users. Single screen, leads with `umactually init`, then summarizes
+ * the three review commands, then points at `--help` for the full
+ * reference. Exit code 0 — first run is not an error.
+ *
+ * Industry-standard model: matches `rustup`, `fnm`, `volta`, `nvm`,
+ * `pip`, `brew install` first-run output. No `--dry-run` clutter.
+ */
+const FIRST_RUN_QUICKSTART = [
+  "Welcome to umactually! Get started with the setup wizard:",
+  "",
+  "  umactually init",
+  "",
+  "Then run a review:",
+  "",
+  "  umactually review --api-url <url> --api-key <key>     PR review (CI)",
+  "  umactually --files <path>... --api-key <key>          Local files (no CI)",
+  "  umactually doctor                                   Verify your setup",
+  "",
+  "Run `umactually --help` for the full reference.",
+  "",
+].join("\n");
+
+function runFirstRunQuickstart(): Promise<DispatchResult> {
+  // Pattern matches runUninstallBranch / runInitBranch / runDoctorBranch:
+  // write directly to stdout so the live stream gets the bytes, and
+  // return a minimal `{ exitCode }` result. Callers capture via
+  // `process.stdout.write` interception (see test helpers).
+  process.stdout.write(`${BRAND_PREFIX}${FIRST_RUN_QUICKSTART}`);
+  return Promise.resolve({ exitCode: 0 });
 }
 
 async function runReviewBranch(args: readonly string[]): Promise<DispatchResult> {
