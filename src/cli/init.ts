@@ -1049,6 +1049,30 @@ function buildOverwriteReader(
   };
 }
 
+/**
+ * Build a zero-arg overwrite reader for the pre-write CI gate. Mirrors
+ * `buildOverwriteReader` but is scoped to the CI workflow target path.
+ * Empty Enter (default "") maps to `false` (no surprise overwrites);
+ * EOF/SIGINT also maps to `false`. Only an explicit `y`/`yes` answer
+ * returns `true`.
+ */
+function buildCiOverwriteReader(
+  reader: (prompt: string, isTTY: boolean) => Promise<string | null>,
+  isTTY: boolean,
+  targetPath: string,
+): () => Promise<boolean | null> {
+  return async () => {
+    const answer = await safePrompt(
+      reader,
+      isTTY,
+      `? Existing CI workflow at ${targetPath}; overwrite? [y/N]: `,
+      "",
+    );
+    if (answer === null) return false;
+    return /^y(es)?$/i.test(answer.trim());
+  };
+}
+
 async function runInteractiveInit({
   args,
   deps,
@@ -1241,7 +1265,9 @@ async function runInteractiveInit({
               message: `generated ${ciChoice.generated.join(", ")} workflow`,
             },
           ]
-        : []),
+        : "skippedCheck" in ciChoice
+          ? [ciChoice.skippedCheck]
+          : []),
     ],
     hints: [],
     sources: {
@@ -1408,6 +1434,11 @@ async function promptBranch(input: {
 
 type CiOutcome =
   | { readonly outcome: "ok"; readonly generated: readonly CiTarget[] }
+  | {
+      readonly outcome: "ok";
+      readonly generated: readonly CiTarget[];
+      readonly skippedCheck: InitCheck;
+    }
   | { readonly outcome: "aborted" }
   | { readonly outcome: "error"; readonly result: InitResult };
 
@@ -1455,13 +1486,40 @@ async function promptCi(input: {
     return { outcome: "ok", generated: [] };
   }
 
+  // Interactive overwrite gate: build the reader lazily so we only
+  // prompt when a CI file actually exists. Skip the gate when --force
+  // is set (bypass); when there is no way to prompt, `generateCi` will
+  // keep its current refusal.
+  const rendered = renderCiTemplate({ target: chosen, packageVersion });
+  const overwriteReader =
+    !deps.argv.includes("--force")
+      ? () =>
+          buildCiOverwriteReader(
+            reader,
+            isTTY,
+            joinRelativeCwd(deps.cwd, rendered.relativePath),
+          )()
+      : undefined;
+
   const gen = await generateCi({
     target: chosen,
     fs,
     deps,
     packageVersion,
+    ...(overwriteReader !== undefined ? { overwriteReader } : {}),
   });
   if (!gen.ok) {
+    if ("skipped" in gen && gen.skipped === "overwrite-declined") {
+      return {
+        outcome: "ok",
+        generated: [],
+        skippedCheck: {
+          id: "ci-generation",
+          status: "skip",
+          message: "ci workflow skipped: user declined overwrite",
+        },
+      };
+    }
     return {
       outcome: "error",
       result: {
@@ -1592,7 +1650,12 @@ function detectCiTargetHelper(fs: FsAdapter): CiTarget | null {
 
 type CiGenResult =
   | { readonly ok: true }
-  | { readonly ok: false; readonly exitCode: 1 | 2; readonly message: string };
+  | {
+      readonly ok: false;
+      readonly exitCode: 1 | 2 | 0;
+      readonly message: string;
+      readonly skipped?: "overwrite-declined";
+    };
 
 async function generateCiForResult(input: {
   readonly args: ParsedInitArgs;
@@ -1600,26 +1663,36 @@ async function generateCiForResult(input: {
   readonly fs: FsAdapter;
   readonly packageVersion: string;
 }): Promise<readonly CiTarget[]> {
-  if (input.args.ci === "github" || input.args.ci === "azure") {
-    const r = await generateCi({
-      target: input.args.ci,
-      fs: input.fs,
-      deps: input.deps,
-      packageVersion: input.packageVersion,
-    });
-    return r.ok ? [input.args.ci] : [];
-  }
-  if (input.args.ci === "auto") {
-    const target = detectCiTargetHelper(input.fs);
-    if (target === null) return [];
-    const r = await generateCi({
-      target,
-      fs: input.fs,
-      deps: input.deps,
-      packageVersion: input.packageVersion,
-    });
-    return r.ok ? [target] : [];
-  }
+  const chooseTarget = (): CiTarget | null => {
+    if (input.args.ci === "github" || input.args.ci === "azure") return input.args.ci;
+    if (input.args.ci === "auto") return detectCiTargetHelper(input.fs);
+    return null;
+  };
+  const target = chooseTarget();
+  if (target === null) return [];
+
+  const rendered = renderCiTemplate({ target, packageVersion: input.packageVersion });
+  const isTTY = input.deps.isTTY ?? canPromptInteractively();
+  const hasReader = input.deps.stdinReader !== undefined || isTTY;
+  const readerForOverwrite =
+    !input.args.force && hasReader
+      ? () =>
+          buildCiOverwriteReader(
+            input.deps.stdinReader ?? defaultStdinReader,
+            isTTY,
+            joinRelativeCwd(input.deps.cwd, rendered.relativePath),
+          )()
+      : undefined;
+
+  const r = await generateCi({
+    target,
+    fs: input.fs,
+    deps: input.deps,
+    packageVersion: input.packageVersion,
+    ...(readerForOverwrite !== undefined ? { overwriteReader: readerForOverwrite } : {}),
+  });
+  if (r.ok) return [target];
+  if ("skipped" in r && r.skipped === "overwrite-declined") return [];
   return [];
 }
 
@@ -1632,6 +1705,7 @@ async function generateCi(input: {
   readonly fs: FsAdapter;
   readonly deps: InitDeps;
   readonly packageVersion: string;
+  readonly overwriteReader?: () => Promise<boolean | null>;
 }): Promise<CiGenResult> {
   const rendered = renderCiTemplate({
     target: input.target,
@@ -1650,7 +1724,19 @@ async function generateCi(input: {
   }
 
   if (input.fs.exists(targetPath) && !input.fs.isSymlink(targetPath)) {
-    if (!input.deps.argv.includes("--force")) {
+    if (input.deps.argv.includes("--force")) {
+      // fall through to write
+    } else if (input.overwriteReader) {
+      const answer = await input.overwriteReader();
+      if (answer !== true) {
+        return {
+          ok: false,
+          exitCode: 0,
+          message: "user declined to overwrite",
+          skipped: "overwrite-declined",
+        };
+      }
+    } else {
       return {
         ok: false,
         exitCode: 1,
