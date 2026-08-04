@@ -176,6 +176,12 @@ export const CLI_HELP_TEXT = [
   ...GLOBAL_FLAGS.map(renderFlagLine),
   "",
   CLI_MODES_TEXT,
+  "Configuration sources (highest priority first): --flags > UMACTUALLY_*/REVIEW_*",
+  "env vars > saved config (~/.umactually/config.json) > defaults. --api-key is",
+  "NEVER persisted; pass it via --api-key each invocation or export",
+  "UMACTUALLY_API_KEY=<key>. Run `umactually init` to populate the saved",
+  "config (provider/api-url/model); `umactually --show-config` to inspect it.",
+  "",
   "See exit codes: docs/exit-codes.md",
 ].join("\n");
 
@@ -192,6 +198,12 @@ const REVIEW_HELP_TEXT = [
   ...renderFlags(flagsForContext("review")),
   "",
   CLI_MODES_TEXT,
+  "Configuration sources (highest priority first): --flags > UMACTUALLY_*/REVIEW_*",
+  "env vars > saved config (~/.umactually/config.json) > defaults. --api-key is",
+  "NEVER persisted; pass it via --api-key each invocation or export",
+  "UMACTUALLY_API_KEY=<key>. Run `umactually init` to populate the saved",
+  "config (provider/api-url/model); `umactually --show-config` to inspect it.",
+  "",
   "See exit codes: docs/exit-codes.md",
 ].join("\n");
 
