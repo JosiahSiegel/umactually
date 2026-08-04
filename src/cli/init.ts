@@ -909,6 +909,35 @@ async function runNonInteractiveInit({
   // Note that the SavedConfig type excludes apiKey, so the writer
   // can't accidentally persist it. See buildConfig + bundle §1.6.
 
+  // Friendly hint for overwrite refusals. Skip entirely when the
+  // operator explicitly opted into overwriting.
+  const fsForPreflight = deps.fsAdapter ?? defaultFsAdapter;
+  if (!args.force && !args.yes && !args.json) {
+    const existingTarget =
+      scope === "repo"
+        ? SAVED_CONFIG_REPO_PATH(deps.cwd)
+        : SAVED_CONFIG_GLOBAL_PATH(deps.homeDir);
+    if (targetConfigExistsValid({ homeDir: deps.homeDir, cwd: deps.cwd, scope, fs: fsForPreflight })) {
+      return {
+        mode: "non-interactive",
+        outcome: "error",
+        exitCode: 1,
+        savedConfigPath: null,
+        savedConfigBytes: null,
+        ciGenerated: [],
+        checks: [
+          {
+            id: "config-atomic-write",
+            status: "fail",
+            message: `existing saved config at ${existingTarget} would be overwritten`,
+          },
+        ],
+        hints: [`pass --force (or --yes) to overwrite the existing saved config at ${existingTarget}`],
+        sources: {},
+      };
+    }
+  }
+
   const writeResult = await writeSavedConfig(config, {
     homeDir: deps.homeDir,
     cwd: deps.cwd,
