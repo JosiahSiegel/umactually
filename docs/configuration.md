@@ -9,7 +9,7 @@ The runtime resolves configurable review options through a four-tier precedence 
 | Tier | Source | Notes |
 | --- | --- | --- |
 | 1 | `--provider`, `--api-url`, `--model`, `--api-key` flags | Always wins; lets a one-off run override saved config. |
-| 2 | `UMACTUALLY_*` then legacy `REVIEW_*` env vars | First non-empty var wins (`UMACTUALLY_PROVIDER` → `REVIEW_PROVIDER_*`). |
+| 2 | `UMACTUALLY_*` then legacy `REVIEW_*` env vars | First non-empty var wins; the legacy alias is field-specific — see the per-field table below for the exact name (e.g. `UMACTUALLY_API_URL` → `REVIEW_PROVIDER_URL`, `UMACTUALLY_API_KEY` → `REVIEW_PROVIDER_API_KEY`, `UMACTUALLY_PROMPT_FILE` → `REVIEW_PROMPT_SYSTEM_FILE`). |
 | 3 | Saved user config (`~/.umactually/config.json`) | Holds `provider` (always), optional `apiUrl`, optional `model`. Written by `umactually init`. Override with `--force` to overwrite. |
 | 4 | Built-in CLI default | Last resort; the schema default per `src/config/field-schema.ts`. |
 
