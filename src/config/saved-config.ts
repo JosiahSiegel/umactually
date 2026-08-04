@@ -194,6 +194,31 @@ type ValidatedSavedConfig =
   | { readonly ok: true; readonly config: SavedConfig }
   | { readonly ok: false; readonly path: string; readonly exitCode: 1 | 2; readonly message: string };
 
+/**
+ * Returns `true` iff a saved config already exists at the target path AND its
+ * contents parse as valid JSON. Used by the wizard to decide whether to prompt
+ * before overwriting. Any failure (missing file, read error, parse error) is
+ * treated as "not present" and returns `false`.
+ */
+export function targetConfigExistsValid(deps: {
+  readonly homeDir: string;
+  readonly cwd: string;
+  readonly scope: "repo" | "global";
+  readonly fs?: typeof defaultFsAdapter;
+}): boolean {
+  const fs = deps.fs ?? defaultFsAdapter;
+  const targetPath = deps.scope === "repo"
+    ? SAVED_CONFIG_REPO_PATH(deps.cwd)
+    : SAVED_CONFIG_GLOBAL_PATH(deps.homeDir);
+  if (!fs.exists(targetPath)) return false;
+  try {
+    JSON.parse(fs.readFile(targetPath));
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 function validateSavedConfig(parsed: unknown, candidate: string): ValidatedSavedConfig {
   if (parsed === null || typeof parsed !== "object") {
     return {

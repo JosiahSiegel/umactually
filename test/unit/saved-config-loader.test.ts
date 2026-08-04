@@ -13,6 +13,7 @@ import {
   SAVED_CONFIG_SCHEMA_VERSION,
   SECRET_REGEX,
   serializeSavedConfig,
+  targetConfigExistsValid,
   writeSavedConfig,
   type SavedConfig,
 } from "../../src/config/saved-config.js";
@@ -432,5 +433,62 @@ describe("saved-config safe-write contract (symlinks, mode, dir, prompt)", () =>
   it("exports the canonical defaults (DEFAULT_OPENAI_URL, DEFAULT_ANTHROPIC_URL)", () => {
     expect(DEFAULT_OPENAI_URL).toBe("https://api.openai.com/v1");
     expect(DEFAULT_ANTHROPIC_URL).toBe("https://api.anthropic.com/v1");
+  });
+});
+
+describe("targetConfigExistsValid", () => {
+  it("(a) returns false when the target file does not exist", () => {
+    const { homeDir, cwd } = sandbox();
+    // No file written — both repo and global paths are absent.
+    expect(targetConfigExistsValid({ homeDir, cwd, scope: "global" })).toBe(false);
+  });
+
+  it("(b) returns false when the target file contains corrupt JSON", () => {
+    const { homeDir, cwd } = sandbox();
+    const target = SAVED_CONFIG_GLOBAL_PATH(homeDir);
+    mkdirSync(join(homeDir, ".umactually"), { recursive: true });
+    writeFileSync(target, "{ not json", "utf8");
+
+    expect(targetConfigExistsValid({ homeDir, cwd, scope: "global" })).toBe(false);
+  });
+
+  it("(c) returns true when the target file contains valid JSON", () => {
+    const { homeDir, cwd } = sandbox();
+    const target = SAVED_CONFIG_GLOBAL_PATH(homeDir);
+    mkdirSync(join(homeDir, ".umactually"), { recursive: true });
+    writeFileSync(target, JSON.stringify(fixture), "utf8");
+
+    expect(targetConfigExistsValid({ homeDir, cwd, scope: "global" })).toBe(true);
+  });
+
+  it("(d) resolves scope='repo' to SAVED_CONFIG_REPO_PATH and scope='global' to SAVED_CONFIG_GLOBAL_PATH", () => {
+    const { homeDir, cwd } = sandbox();
+
+    // Seed both candidate paths with valid JSON so existence is not the
+    // gate — the helper must look at the path derived from `scope`, not
+    // just any present file.
+    const repoTarget = SAVED_CONFIG_REPO_PATH(cwd);
+    const globalTarget = SAVED_CONFIG_GLOBAL_PATH(homeDir);
+    mkdirSync(join(homeDir, ".umactually"), { recursive: true });
+    writeFileSync(globalTarget, JSON.stringify(fixture), "utf8");
+    writeFileSync(repoTarget, JSON.stringify(fixture), "utf8");
+
+    // scope='global' resolves to SAVED_CONFIG_GLOBAL_PATH(homeDir).
+    // We assert behavior by seeding ONLY the global path and checking
+    // that scope='repo' reports false (repo target absent) while
+    // scope='global' reports true.
+    const { homeDir: homeDir2, cwd: cwd2 } = sandbox();
+    mkdirSync(join(homeDir2, ".umactually"), { recursive: true });
+    writeFileSync(SAVED_CONFIG_GLOBAL_PATH(homeDir2), JSON.stringify(fixture), "utf8");
+    // CWD for this sandbox has no umactually.config.json.
+    expect(targetConfigExistsValid({ homeDir: homeDir2, cwd: cwd2, scope: "global" })).toBe(true);
+    expect(targetConfigExistsValid({ homeDir: homeDir2, cwd: cwd2, scope: "repo" })).toBe(false);
+
+    // Conversely: seed only the repo path; scope='repo' should be true,
+    // scope='global' should be false.
+    const { homeDir: homeDir3, cwd: cwd3 } = sandbox();
+    writeFileSync(SAVED_CONFIG_REPO_PATH(cwd3), JSON.stringify(fixture), "utf8");
+    expect(targetConfigExistsValid({ homeDir: homeDir3, cwd: cwd3, scope: "repo" })).toBe(true);
+    expect(targetConfigExistsValid({ homeDir: homeDir3, cwd: cwd3, scope: "global" })).toBe(false);
   });
 });
