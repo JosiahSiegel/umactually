@@ -16,6 +16,7 @@
 
 import {
   readSavedConfig,
+  SAVED_CONFIG_GLOBAL_PATH,
   type ReadSavedConfigResult,
   type SavedConfig,
 } from "../config/saved-config.js";
@@ -49,30 +50,27 @@ export type TryReadSavedConfigResult = {
 export function tryReadSavedConfig(
   deps: TryReadSavedConfigDeps = {},
 ): TryReadSavedConfigResult {
+  const homeDir = deps.homeDir ?? homedir();
   const result: ReadSavedConfigResult = readSavedConfig({
-    homeDir: deps.homeDir ?? homedir(),
+    homeDir,
     cwd: deps.cwd ?? process.cwd(),
   });
   if (result.ok) {
     return { config: result.config, path: result.path, warning: null };
   }
-  // Failure path: per `readSavedConfig` contract, `result.ok === false`
-  // implies `result.exitCode` is 1 or 2 and `result.message` is set.
-  // We return the message as a `warning` so callers can decide how
-  // prominently to surface it. `path` is the candidate we tried to
-  // read (typically the global path; we don't know which one failed
-  // without re-implementing the candidate walk — and we don't need to,
-  // because the warning message itself names the path).
+  // Failure path: synthesize the global path as the canonical
+  // "where the loader looked" pointer. The wizard's failure result
+  // doesn't carry a path field, but an operator running
+  // `umactually --show-config` against a corrupt file wants to know
+  // WHICH file failed to parse; the global-path shape is the closest
+  // meaningful answer we can give without re-implementing the
+  // candidate walk that `readSavedConfig` does. The exact failure
+  // path is also embedded in `warning` text (per the wizard's
+  // "corrupt saved config at <path>" contract) so callers needing
+  // the precise file path can parse the warning.
   return {
     config: null,
-    // The wizard's failure result is `ReadSavedConfigResult` shaped, not
-    // `{path: string}` — but its `path` is implicitly the candidate the
-    // walker hit. When `readSavedConfig` returns `ok:false` it has not
-    // returned a `path` field; for the warning case we synthesize the
-    // most-likely path (the global path) so the `path` is always a
-    // defined string. Callers that need the exact failure path can
-    // parse the warning message text.
-    path: "", // see file comment — readSavedConfig failure shape omits `path`.
+    path: SAVED_CONFIG_GLOBAL_PATH(homeDir),
     warning: result.message,
   };
 }

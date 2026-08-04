@@ -115,7 +115,7 @@ describe("docs/configuration.md precedence (§Precedence)", () => {
     // env alias is folded into the env tier rather than occupying its
     // own rung, so the chain has 4 tiers not 5.
     const tiers = precedenceTiersFromTable(configuration.body);
-    expect(tiers.length).toBe(4);
+    expect(tiers).toHaveLength(4);
   });
 
   it("INIT-DOC: §Precedence tier #3 is the saved user config rung", () => {

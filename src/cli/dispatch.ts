@@ -298,10 +298,9 @@ function renderLoadedConfigQuickstart(config: SavedConfig): string {
 
 function runLoadedConfigQuickstart(
   config: SavedConfig,
-  path: string,
+  _path: string,
 ): Promise<DispatchResult> {
   process.stdout.write(`${BRAND_PREFIX}${renderLoadedConfigQuickstart(config)}`);
-  void path;
   return Promise.resolve({ exitCode: 0 });
 }
 

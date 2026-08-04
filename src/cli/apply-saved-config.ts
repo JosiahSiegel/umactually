@@ -15,8 +15,10 @@
 // `apiKey`, so there is no value to read even if a caller passes one.
 // `apiKey` resolves via flag > `UMACTUALLY_API_KEY` env > error.
 
-import type { SchemaResolvedCliArgs } from "../config/field-resolution.js";
-import type { FieldProvenance } from "../config/field-resolution.js";
+import type {
+  FieldProvenance,
+  SchemaResolvedCliArgs,
+} from "../config/field-resolution.js";
 import type { SavedConfig } from "../config/saved-config.js";
 
 const SAVED_CONFIG_FIELDS = ["provider", "apiUrl", "model"] as const;
@@ -125,8 +127,9 @@ function maybeOverride(
     ...current.fieldProvenance,
     [field]: newProvenance,
   };
-  return Object.assign({}, current, {
+  return {
+    ...current,
     [field]: value,
     fieldProvenance: newFieldProvenance,
-  }) as SchemaResolvedCliArgs;
+  } as SchemaResolvedCliArgs;
 }
