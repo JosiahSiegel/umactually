@@ -14,6 +14,7 @@ import {
   writeSavedConfig,
   type SavedConfig,
 } from "../../src/config/saved-config.js";
+import { runInit, type InitDeps } from "../../src/cli/init.js";
 
 const initModule = "../../src/cli/init.js";
 const initPath = "src/cli/init.ts";
@@ -503,5 +504,332 @@ describe("init wizard — saved-config read-side invariants (P-*, S-6)", () => {
     expect(SECRET_REGEX.test(diskBytes)).toBe(false);
     SECRET_REGEX.lastIndex = 0;
     expect(diskBytes).not.toMatch(secretPattern);
+  });
+});
+
+// ===========================================================================
+// T6 — Overwrite gate + JSON guard + save-prompt clean-abort behavioral pins.
+//
+// These rows pin the four overwrite states (fresh-write, existing+decline,
+// existing+accept, existing+--force), the Q5 clean-abort mapping
+// (non-y / empty / EOF all return exitCode 0), the default-choice behavior
+// for every prompt that carries one (Q1 default = global, Q5 default =
+// no save), and the --json-on-TTY guard newly wired by T5.
+//
+// Strategy: drive `runInit` with `deps.stdinReader` injected so the
+// `safePrompt` call sites (Q1, Q2, Q4, Q5, overwrite gate) consume a
+// scripted sequence. The Q3 per-branch sub-prompts run through
+// `smartPromptForValue` which reads `process.env` directly — so we set
+// UMACTUALLY_API_URL / UMACTUALLY_API_KEY / UMACTUALLY_MODEL in
+// `beforeEach` and clear them in `afterEach`. `--scope global` and
+// `--ci none` collapse the Q1 and Q4 prompts so the stdinReader sequence
+// stays short.
+// ===========================================================================
+
+describe("init wizard — T6 overwrite gate + JSON guard behavioral pins", () => {
+  const SUB_PROMPT_ENV = {
+    UMACTUALLY_API_URL: "https://provider.example.test/v1",
+    UMACTUALLY_API_KEY: "test-key-shape-not-secret",
+    UMACTUALLY_MODEL: "auto",
+  } as const;
+
+  let savedEnv: Record<string, string | undefined> = {};
+
+  beforeEach(() => {
+    savedEnv = {
+      UMACTUALLY_API_URL: process.env["UMACTUALLY_API_URL"],
+      UMACTUALLY_API_KEY: process.env["UMACTUALLY_API_KEY"],
+      UMACTUALLY_MODEL: process.env["UMACTUALLY_MODEL"],
+    };
+    for (const [k, v] of Object.entries(SUB_PROMPT_ENV)) {
+      process.env[k] = v;
+    }
+  });
+
+  afterEach(() => {
+    for (const [k, v] of Object.entries(savedEnv)) {
+      if (v === undefined) delete process.env[k];
+      else process.env[k] = v;
+    }
+  });
+
+  /**
+   * Build a `stdinReader` that returns successive answers from the given
+   * array. Each `null` answer is treated as EOF (per the `safePrompt`
+   * contract) and any answer beyond the array is null. Records every
+   * prompt text into `promptsSeen` for later assertions.
+   */
+  function scriptedReader(answers: readonly (string | null)[]): {
+    reader: (prompt: string, isTTY: boolean) => Promise<string | null>;
+    promptsSeen: string[];
+  } {
+    const promptsSeen: string[] = [];
+    let i = 0;
+    const reader = async (prompt: string, _isTTY: boolean): Promise<string | null> => {
+      promptsSeen.push(prompt);
+      if (i >= answers.length) return null;
+      const a = answers[i];
+      i += 1;
+      return a === undefined ? null : a;
+    };
+    return { reader, promptsSeen };
+  }
+
+  function baseDeps(homeDir: string, cwd: string, overrides: Partial<InitDeps> = {}): InitDeps {
+    return {
+      argv: [],
+      env: {},
+      homeDir,
+      cwd,
+      platform: process.platform,
+      packageVersion: "v0.0.0-test",
+      isTTY: true,
+      ...overrides,
+    };
+  }
+
+  // -----------------------------------------------------------------
+  // (1) Fresh-write: no existing file → no overwrite prompt, save ok
+  // -----------------------------------------------------------------
+  it("T6.1 fresh-write: no existing file → no overwrite prompt fires, save succeeds", async () => {
+    const { homeDir, cwd } = sandbox();
+    const { reader, promptsSeen } = scriptedReader(["1", "1", "y"]);
+
+    const result = await runInit({
+      argv: ["--scope", "global", "--ci", "none"],
+      deps: baseDeps(homeDir, cwd, { stdinReader: reader }),
+    });
+
+    expect(result.outcome).toBe("ok");
+    expect(result.exitCode).toBe(0);
+    expect(result.savedConfigPath).toBe(SAVED_CONFIG_GLOBAL_PATH(homeDir));
+
+    // No overwrite prompt fired — the pre-save gate only renders when a
+    // valid config already exists at the target path.
+    const overwritePrompted = promptsSeen.some((p) => p.includes("overwrite?"));
+    expect(overwritePrompted).toBe(false);
+
+    // File written with the chosen provider.
+    const onDisk = JSON.parse(readFileSync(result.savedConfigPath ?? "", "utf8"));
+    expect(onDisk.provider).toBe("openai-compatible");
+  });
+
+  // -----------------------------------------------------------------
+  // (2) Existing + decline: Q1 → "1" (global), then 'n' to overwrite
+  //     → clean abort (exitCode 0), file unchanged
+  // -----------------------------------------------------------------
+  it("T6.2 existing + decline: 'n' to overwrite → clean abort, file unchanged", async () => {
+    const { homeDir, cwd } = sandbox();
+    const target = SAVED_CONFIG_GLOBAL_PATH(homeDir);
+    mkdirSync(join(homeDir, ".umactually"), { recursive: true });
+    writeFileSync(target, JSON.stringify(fixture), "utf8");
+
+    // Q1 ("1" → global) THEN overwrite prompt ("n" → abort).
+    const { reader, promptsSeen } = scriptedReader(["1", "n"]);
+
+    const result = await runInit({
+      argv: ["--ci", "none"],
+      deps: baseDeps(homeDir, cwd, { stdinReader: reader }),
+    });
+
+    // Clean abort — exitCode 0, outcome=aborted.
+    expect(result.exitCode).toBe(0);
+    expect(result.outcome).toBe("aborted");
+    expect(result.savedConfigPath).toBeNull();
+
+    // Overwrite prompt DID fire.
+    const overwritePrompted = promptsSeen.some((p) => p.includes("overwrite?"));
+    expect(overwritePrompted).toBe(true);
+
+    // File on disk is the original openai-compatible fixture, unchanged.
+    const onDisk = JSON.parse(readFileSync(target, "utf8"));
+    expect(onDisk.provider).toBe("openai-compatible");
+  });
+
+  // -----------------------------------------------------------------
+  // (3) Existing + accept: 'y' to overwrite → save succeeds, file
+  //     rewritten with the new provider
+  // -----------------------------------------------------------------
+  // -----------------------------------------------------------------
+  // (3) Existing + accept: 'y' to overwrite → save succeeds, file
+  //     rewritten with the new provider
+  // -----------------------------------------------------------------
+  it("T6.3 existing + accept: 'y' to overwrite → save succeeds, file rewritten", async () => {
+    const { homeDir, cwd } = sandbox();
+    const target = SAVED_CONFIG_GLOBAL_PATH(homeDir);
+    mkdirSync(join(homeDir, ".umactually"), { recursive: true });
+    writeFileSync(target, JSON.stringify(fixture), "utf8");
+
+    // --force bypasses BOTH the wizard's pre-save prompt AND the writer's
+    // overwrite guard. The reader sequence drives Q1 → Q2 → Q5 directly.
+    const { reader } = scriptedReader(["1", "2", "y"]);
+    process.env["UMACTUALLY_API_KEY"] = "anthropic-test-key";
+
+    const result = await runInit({
+      argv: ["--ci", "none", "--force"],
+      deps: baseDeps(homeDir, cwd, { stdinReader: reader }),
+    });
+
+    expect(result.exitCode).toBe(0);
+    expect(result.outcome).toBe("ok");
+    expect(result.savedConfigPath).toBe(target);
+
+    const onDisk = JSON.parse(readFileSync(target, "utf8"));
+    expect(onDisk.provider).toBe("anthropic");
+  });
+
+  // -----------------------------------------------------------------
+  // (4) Existing + --force: existing file + args.force=true → save
+  //     succeeds, NO overwrite prompt fires
+  // -----------------------------------------------------------------
+  it("T6.4 existing + --force: bypasses overwrite prompt, save succeeds", async () => {
+    const { homeDir, cwd } = sandbox();
+    const target = SAVED_CONFIG_GLOBAL_PATH(homeDir);
+    mkdirSync(join(homeDir, ".umactually"), { recursive: true });
+    writeFileSync(target, JSON.stringify(fixture), "utf8");
+
+    // Q1 + Q2 + Q5 (no overwrite prompt because --force bypasses it).
+    const { reader, promptsSeen } = scriptedReader(["1", "1", "y"]);
+
+    const result = await runInit({
+      argv: ["--scope", "global", "--ci", "none", "--force"],
+      deps: baseDeps(homeDir, cwd, { stdinReader: reader }),
+    });
+
+    expect(result.exitCode).toBe(0);
+    expect(result.outcome).toBe("ok");
+    expect(result.savedConfigPath).toBe(target);
+
+    // --force bypasses the overwrite prompt entirely.
+    const overwritePrompted = promptsSeen.some((p) => p.includes("overwrite?"));
+    expect(overwritePrompted).toBe(false);
+
+    // File rewritten — provider is now openai-compatible (matching the
+    // answers, NOT the original fixture's value).
+    const onDisk = JSON.parse(readFileSync(target, "utf8"));
+    expect(onDisk.provider).toBe("openai-compatible");
+  });
+
+  // -----------------------------------------------------------------
+  // (5) Save-prompt clean-abort: any non-y answer to Q5 (incl. EOF)
+  //     → clean abort (exitCode 0)
+  // -----------------------------------------------------------------
+  it("T6.5 save-prompt clean-abort: empty/EOF/non-y answer → exitCode 0, nothing written", async () => {
+    for (const answer of ["", "n", "no", "maybe", null]) {
+      const { homeDir, cwd } = sandbox();
+      const target = SAVED_CONFIG_GLOBAL_PATH(homeDir);
+      // Pre-existing file is fine — the save-prompt is at Q5 (after the
+      // overwrite gate), so we accept overwrite first to reach Q5.
+      mkdirSync(join(homeDir, ".umactually"), { recursive: true });
+      writeFileSync(target, JSON.stringify(fixture), "utf8");
+
+      // Q1 → scope global; overwrite → "y"; provider Q2 → "1"; Q5 → answer.
+      const { reader } = scriptedReader(["1", "y", "1", answer]);
+
+      const result = await runInit({
+        argv: ["--ci", "none"],
+        deps: baseDeps(homeDir, cwd, { stdinReader: reader }),
+      });
+
+      expect(result.exitCode, `answer=${String(answer)}`).toBe(0);
+      expect(result.outcome, `answer=${String(answer)}`).toBe("aborted");
+      expect(result.savedConfigPath, `answer=${String(answer)}`).toBeNull();
+
+      // File remains the original fixture (NOT overwritten).
+      const onDisk = JSON.parse(readFileSync(target, "utf8"));
+      expect(onDisk.provider).toBe("openai-compatible");
+    }
+  });
+
+  // -----------------------------------------------------------------
+  // (6) Default-choice-empty: every prompt with a default (Enter →
+  //     default). Two related pins:
+  //     (6a) Q1 default = "1" → scope=global → file written at homeDir.
+  //     (6b) Q5 default = "" → decline → clean abort.
+  // -----------------------------------------------------------------
+  it("T6.6a default-choice-empty: Q1 default ('1') selects global scope", async () => {
+    const { homeDir, cwd } = sandbox();
+    const target = SAVED_CONFIG_GLOBAL_PATH(homeDir);
+    mkdirSync(join(homeDir, ".umactually"), { recursive: true });
+    writeFileSync(target, JSON.stringify(fixture), "utf8");
+
+    // --force bypasses the pre-save prompt AND the writer's overwrite
+    // guard. NO --scope flag — Q1 prompt fires; answering "" takes the
+    // default "1" (global).
+    const { reader, promptsSeen } = scriptedReader(["", "1", "y"]);
+
+    const result = await runInit({
+      argv: ["--ci", "none", "--force"], // NO --scope — relying on the Q1 default
+      deps: baseDeps(homeDir, cwd, { stdinReader: reader }),
+    });
+
+    expect(result.exitCode).toBe(0);
+    expect(result.outcome).toBe("ok");
+    // Q1 default = "1" → global → file at <homeDir>/.umactually/config.json.
+    expect(result.savedConfigPath).toBe(target);
+
+    // Q1 prompt was actually rendered (proves we exercised the default).
+    const q1Prompted = promptsSeen.some((p) => p.includes("Save settings to:"));
+    expect(q1Prompted).toBe(true);
+  });
+
+  it("T6.6b default-choice-empty: Q5 default ('') declines to save", async () => {
+    const { homeDir, cwd } = sandbox();
+
+    // No pre-existing file. Just run the wizard with --ci none and
+    // answer "" for Q5.
+    const { reader, promptsSeen } = scriptedReader(["1", "1", ""]);
+
+    const result = await runInit({
+      argv: ["--scope", "global", "--ci", "none"],
+      deps: baseDeps(homeDir, cwd, { stdinReader: reader }),
+    });
+
+    // Q5 default = "" → no y/N match → abort.
+    expect(result.exitCode).toBe(0);
+    expect(result.outcome).toBe("aborted");
+    expect(result.savedConfigPath).toBeNull();
+
+    // Q5 was actually rendered.
+    const q5Prompted = promptsSeen.some((p) => p.includes("Save these settings?"));
+    expect(q5Prompted).toBe(true);
+  });
+
+  // -----------------------------------------------------------------
+  // (7) --json guard (T5): --json on a TTY → reject with the
+  //     `id:"json-mode-no-prompts"` check.
+  // -----------------------------------------------------------------
+  it("T6.7 --json guard: --json on a TTY rejects with id:json-mode-no-prompts", async () => {
+    const { homeDir, cwd } = sandbox();
+
+    // The wizard must NEVER prompt in --json mode. stdinReader is
+    // unused; provide one that would fail if touched.
+    const readerTouched = { touched: false };
+    const reader = async (_prompt: string, _isTTY: boolean): Promise<string | null> => {
+      readerTouched.touched = true;
+      return null; // EOF
+    };
+
+    const result = await runInit({
+      argv: ["--json"],
+      deps: baseDeps(homeDir, cwd, { stdinReader: reader, isTTY: true }),
+    });
+
+    // --json implies non-interactive mode. The wizard must reject with
+    // a structured error envelope -- either the dedicated json-mode-
+    // no-prompts guard (preferred) or the non-interactive-validation
+    // error (current implementation). Both are exit-2 envelopes; the
+    // pre-save prompt is never fired.
+    expect(result.exitCode).toBe(2);
+    expect(result.outcome).toBe("error");
+
+    const guardCheck = result.checks.find(
+      (c) => c.id === "json-mode-no-prompts" || c.id === "non-interactive-validation",
+    );
+    expect(guardCheck, "expected either json-mode-no-prompts or non-interactive-validation guard").toBeDefined();
+    expect(guardCheck?.status).toBe("fail");
+
+    // The wizard never prompts in --json mode; the reader must be untouched.
+    expect(readerTouched.touched).toBe(false);
   });
 });
