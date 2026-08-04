@@ -633,7 +633,33 @@ async function runInitImpl({
   args: ParsedInitArgs;
   deps: InitDeps;
 }): Promise<InitResult> {
-  // --json implies non-interactive
+  // --json forbids interactive prompts. Reject BEFORE the dispatch
+  // so the user-facing entry point surfaces `id:"json-mode-no-prompts"`
+  // instead of falling through to `runNonInteractiveInit`'s missing-
+  // provider branch (which produces `id:"non-interactive-validation"`).
+  if (args.json && args.mode === "interactive") {
+    return {
+      mode: "interactive",
+      outcome: "error",
+      exitCode: 2,
+      savedConfigPath: null,
+      savedConfigBytes: null,
+      ciGenerated: [],
+      checks: [
+        {
+          id: "json-mode-no-prompts",
+          status: "fail",
+          message: "--json forbids interactive init; use --non-interactive for machine-readable output",
+        },
+      ],
+      hints: ["--non-interactive requires --provider; e.g. --provider openai-compatible"],
+      sources: {},
+    };
+  }
+
+  // --json without --mode=interactive implies non-interactive mode
+  // (handled by parseInitArgs/resolveInitMode; we re-derive defensively
+  // here so runInit is the single source of truth).
   const mode: InitMode = args.json ? "non-interactive" : args.mode;
 
   if (mode === "show") {
@@ -1102,31 +1128,9 @@ async function runInteractiveInit({
     };
   }
 
-  // JSON mode forbids prompts. If the operator passed --json, they're
-  // declaring they want machine-readable output and no interactive
-  // questions; route them to --non-interactive instead. Returning a
-  // structured error envelope mirrors the non-interactive missing-flag
-  // shape so callers/CI see one consistent refusal format.
-  if (args.json) {
-    return {
-      mode: "interactive",
-      outcome: "error",
-      exitCode: 2,
-      savedConfigPath: null,
-      savedConfigBytes: null,
-      ciGenerated: [],
-      checks: [
-        {
-          id: "json-mode-no-prompts",
-          status: "fail",
-          message: "--json forbids interactive init; use --non-interactive for machine-readable output",
-        },
-      ],
-      hints: ["--non-interactive requires --provider; e.g. --provider openai-compatible"],
-      sources: {},
-    };
-  }
-
+  // --json interactivity guard moved to runInitImpl (before dispatch);
+  // this function should never be reached with args.json === true
+  // from the standard entry point.
   const reader: (prompt: string, isTTY: boolean) => Promise<string | null> =
     deps.stdinReader ?? defaultStdinReader;
 
