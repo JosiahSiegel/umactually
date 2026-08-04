@@ -1,0 +1,11 @@
+=== Task 5: --json interactivity guard ===
+Date: 2026-08-04T19:36:00Z
+
+- `pnpm test test/unit/cli-init-wizard.test.ts --reporter=verbose 2>&1 | tail -30`: exit 0; 1 file passed, 80 tests passed.
+- `pnpm typecheck`: exit 0.
+- `pnpm test`: exit 1; 171 files passed, 1 pre-existing unrelated `test/unit/install-methods.test.ts` NPM-PACK-SMOKE failure (`ENOENT` for temporary global prefix), 2 skipped.
+- LSP diagnostics unavailable: TypeScript server is not installed and was previously declined.
+
+=== Final git state ===
+T5 commit: 5ba7b2335fbe018e9360a3b22ffa1c89e90afa1a
+ git diff --stat: src/cli/init.ts | 27 insertions(+), 1 deletion(-)

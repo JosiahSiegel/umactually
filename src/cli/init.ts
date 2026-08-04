@@ -86,7 +86,8 @@ export type InitCheck = {
     | "secret-redaction"
     | "scope-choice"
     | "provider-choice"
-    | "non-interactive-validation";
+    | "non-interactive-validation"
+    | "json-mode-no-prompts";
   readonly status: "ok" | "warn" | "fail" | "skip";
   readonly message: string;
   readonly hint?: string;
@@ -1094,6 +1095,31 @@ async function runInteractiveInit({
           id: "non-interactive-validation",
           status: "fail",
           message: "interactive init requires a TTY; re-run with --non-interactive",
+        },
+      ],
+      hints: ["--non-interactive requires --provider; e.g. --provider openai-compatible"],
+      sources: {},
+    };
+  }
+
+  // JSON mode forbids prompts. If the operator passed --json, they're
+  // declaring they want machine-readable output and no interactive
+  // questions; route them to --non-interactive instead. Returning a
+  // structured error envelope mirrors the non-interactive missing-flag
+  // shape so callers/CI see one consistent refusal format.
+  if (args.json) {
+    return {
+      mode: "interactive",
+      outcome: "error",
+      exitCode: 2,
+      savedConfigPath: null,
+      savedConfigBytes: null,
+      ciGenerated: [],
+      checks: [
+        {
+          id: "json-mode-no-prompts",
+          status: "fail",
+          message: "--json forbids interactive init; use --non-interactive for machine-readable output",
         },
       ],
       hints: ["--non-interactive requires --provider; e.g. --provider openai-compatible"],
