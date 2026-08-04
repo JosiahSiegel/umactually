@@ -11,7 +11,27 @@ ship a tag).
 ## [Unreleased]
 
 
-_No pending changes — last release: v0.6.25 (`umactually` first-run quickstart replaces loud banner)._
+_No pending changes — last release: v0.6.26 (saved config supplies defaults for review + --files; new `umactually --show-config`)._
+
+
+## [0.6.26] - 2026-08-04
+
+### Added
+
+- **`umactually --show-config`** — top-level command that prints the effective saved config (path, `provider`, optional `apiUrl?`, optional `model?`, `schemaVersion`) and exits 0. Read-only; never opens a network connection; never prompts; matches the convention of `kubectl config view`, `aws configure get`, and `git config --list --show-origin`. Renders field-by-field (not JSON) so adding a future secret field to `SavedConfig` would not silently leak it through this surface. Stays at the dispatch layer (not under `umactually doctor`) for discoverability. Exits 1 with a stderr warning if the file is corrupt.
+- **Saved config supplies defaults for `umactually review` and `umactually --files`**. After `umactually init`, the three non-secret fields (`provider`, `apiUrl`, `model`) are read from `~/.umactually/config.json` whenever the operator does not pass them via flag or env var. Flag > env > saved config > default (the new tier 3 in [`docs/configuration.md`](docs/configuration.md#precedence)). Affects both `umactually review` (CI mode) and `umactually --files <path>` (local-files mode). Power users who want to override saved config for a one-off run still pass `--provider X --api-url Y --model Z` on the command line — flag always wins.
+
+### Changed
+
+- **Bare `umactually` quickstart now has two variants**: the existing first-run case (no saved config) prints `Welcome to umactually! Get started with the setup wizard:` leading with `umactually init`, and the new post-init case (saved config present) prints `Loaded config (provider=X, model=Y). Run:` and drops the `umactually init` block — the operator has already configured. Both variants are 10 lines, exit 0, and keep their positions on the three review-command lines so visual muscle memory carries over. The pre-existing loud banner is preserved for non-TTY / CI / programmatic-flag cases (no back-compat change there).
+- **`umactually --help` documents the resolution-order chain**. Both `umactually --help` and `umactually review --help` now end with a five-line block: `Configuration sources (highest priority first): --flags > UMACTUALLY_*/REVIEW_* env vars > saved config (~/.umactually/config.json) > defaults. --api-key is NEVER persisted; pass it via --api-key each invocation or export UMACTUALLY_API_KEY=<key>. Run \`umactually init\` to populate the saved config (provider/api-url/model); \`umactually --show-config\` to inspect it.` Pinned by `HELP-CFG-1..3` and `REV_HELP-CFG-1..3` in `test/unit/cli-help.test.ts`.
+
+### Behavior change (with back-compat plan)
+
+- **v0.6.25's "saved config exists → loud banner" contract is INVERTED in v0.6.26.** Previously (per `[0.6.25]` below) a bare `umactually` with a saved config on a TTY returned the loud `cli: --api-url is required` banner. v0.6.26 replaces it with the new loaded-config quickstart (`Loaded config ...`). The loud banner is still preserved verbatim for non-TTY / CI / programmatic-flag invocations, so:
+  - `test/unit/cli-subcommands.test.ts:CLI-SUB-005` (non-TTY `dispatch([])`) — still loud banner ✓
+  - `test/unit/cli-bare-invocation.test.ts` (calls `runCli` directly, bypasses the dispatch quickstart gate) — still loud banner ✓
+  - The change is gated behind the same `isQuickstartEligible` (renamed from `isFirstRunUser`; no longer checks config presence) → `tryReadSavedConfig()` lookup that the v0.6.25 first-run case uses. Pinned by the rewritten `QUICK-3` and new `QUICK-3b` in `test/unit/cli-first-run-quickstart.test.ts`.
 
 
 ## [0.6.25] - 2026-08-03

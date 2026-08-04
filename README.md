@@ -2,18 +2,18 @@
 
 AI-powered PR review that posts inline comments directly to your pull requests. Works with any model provider (OpenAI, Anthropic, Copilot) and both GitHub and Azure DevOps.
 
-[![GitHub release](https://img.shields.io/github/v/release/JosiahSiegel/umactually)](https://github.com/JosiahSiegel/umactually/releases/tag/v0.6.25)
+[![GitHub release](https://img.shields.io/github/v/release/JosiahSiegel/umactually)](https://github.com/JosiahSiegel/umactually/releases/tag/v0.6.26)
 [![npm](https://img.shields.io/npm/v/umactually)](https://www.npmjs.com/package/umactually)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 [![Node.js >=24](https://img.shields.io/badge/node-%3E%3D24-339933.svg)](https://nodejs.org/)
 
-Latest release: **[v0.6.25](https://github.com/JosiahSiegel/umactually/releases/tag/v0.6.25)** — see [all releases](https://github.com/JosiahSiegel/umactually/releases).
+Latest release: **[v0.6.26](https://github.com/JosiahSiegel/umactually/releases/tag/v0.6.26)** — see [all releases](https://github.com/JosiahSiegel/umactually/releases).
 
 ## Quickstart (recommended)
 
 The guided setup wizard walks you through provider, scope, and CI in four steps. After that, every `umactually review` reads your saved choices from `~/.umactually/config.json` (mode `0o600`; never contains secrets). Full per-flag detail at [`docs/configuration.md`](docs/configuration.md) and [`docs/providers.md`](docs/providers.md#setup-wizard).
 
-> **First time?** Run `umactually` with no subcommand on a fresh install and the CLI prints a compact quickstart leading with `umactually init` and summarizing the three review commands (`review`, `--files`, `doctor`). The quickstart replaces the noisy `cli: --api-url is required` banner only for first-time interactive users (TTY + no saved config + no programmatic flags); every other case (CI, config already exists, programmatic flags) keeps the existing loud banner so scripts that grep for the validation text keep working.
+> **First time?** Run `umactually` with no subcommand on a fresh install and the CLI prints a compact quickstart leading with `umactually init` and summarizing the three review commands (`review`, `--files`, `doctor`). After you run `umactually init`, the quickstart switches: it confirms what's loaded (`Loaded config (provider=X, model=Y). Run:`) and drops the `umactually init` block, because you've already configured. The quickstart replaces the noisy `cli: --api-url is required` banner only for interactive users (TTY + no programmatic flags); every other case (CI, programmatic flags) keeps the existing loud banner so scripts that grep for the validation text keep working. See [Saved config](#saved-config) below.
 
 1. **Run the wizard** — interactive on a TTY, non-interactive in CI:
 
@@ -45,6 +45,40 @@ umactually init --non-interactive \
 
 The full exit-code contract for the wizard is at [`docs/exit-codes.md`](docs/exit-codes.md#umactually-init-exit-codes); the trust model (what is and isn't persisted) is at [`docs/security.md#trust-model-init`](docs/security.md#trust-model-init).
 
+## Saved config
+
+After `umactually init`, the wizard writes `~/.umactually/config.json` (mode `0o600`, dir mode `0o700`). Subsequent invocations of `umactually review` and `umactually --files ...` read it back as the **third tier** of a four-layer precedence chain:
+
+| Tier | Source | Notes |
+| --- | --- | --- |
+| 1 | `--provider`, `--api-url`, `--model` flags | Highest priority; always wins. |
+| 2 | `UMACTUALLY_PROVIDER`, `UMACTUALLY_API_URL`, `UMACTUALLY_MODEL` env vars | Overrides saved config. |
+| 3 | `~/.umactually/config.json` (`provider`, optional `apiUrl`, optional `model`) | The wizard's output. |
+| 4 | Schema default (`openai-compatible`, `""`, `auto`) | Fallback. |
+
+Practical effect: once you've run `umactually init`, you can stop passing `--provider`, `--api-url`, and `--model` on every `umactually review` call. Saved config supplies them automatically; flags still win if you need to override for a one-off run.
+
+### Inspect what's loaded
+
+```bash
+umactually --show-config
+```
+
+Prints the resolved `provider`, `apiUrl?`, `model?`, and the path the loader used. Exits 0 (or 1 with a stderr message if the file is corrupt). Read-only; never opens a network connection. Matches the convention of `kubectl config view`, `aws configure get`, and `git config --list --show-origin`.
+
+### API key handling (security boundary)
+
+The saved config **NEVER** contains the API key — only the three non-secret fields above. So even with a leaked config file, an attacker can't exfiltrate the key from disk. Three ways to supply the key per invocation:
+
+```bash
+umactually review --api-url https://api.openai.com/v1 --api-key "$KEY"   # explicit (rare; CI)
+export UMACTUALLY_API_KEY="$KEY"; umactually review ...                    # env var (recommended)
+# + GitHub Actions: Settings → Secrets and variables → Actions → New secret UMACTUALLY_API_KEY
+# + Azure DevOps:   Pipelines → Library → Variable group → UMACTUALLY_API_KEY (secret)
+```
+
+Resolution order for the key: `--api-key` flag > `UMACTUALLY_API_KEY` env var > `cli: --api-key is required` error. The env var is the canonical Unix-conventional "remember a secret without writing it to disk" approach; the wizard never sees or stores the key. See [docs/security.md#trust-model-init](docs/security.md#trust-model-init) for the full trust model.
+
 ## Install (alternative)
 
 Pick the path that matches your environment. Full comparison at [`docs/distribution-architecture.md`](docs/distribution-architecture.md).
@@ -73,7 +107,7 @@ Use this if you want one command that picks the best path for you. The installer
 curl -fsSL https://github.com/JosiahSiegel/umactually/raw/main/scripts/install.sh | sh
 
 # Pin a specific version
-curl -fsSL https://github.com/JosiahSiegel/umactually/raw/main/scripts/install.sh | sh -s -- --tag v0.6.25
+curl -fsSL https://github.com/JosiahSiegel/umactually/raw/main/scripts/install.sh | sh -s -- --tag v0.6.26
 ```
 
 ```powershell
@@ -106,10 +140,10 @@ For the full flag list and edge cases, run `curl -fsSL https://github.com/Josiah
 ### From source (GitHub tarball, Node 24+ required)
 
 ```bash
-npx github:JosiahSiegel/umactually#v0.6.25 review
+npx github:JosiahSiegel/umactually#v0.6.26 review
 ```
 
-The `#v0.6.25` fragment pins to the tagged release. Omit it only when you specifically want the latest unreleased `main` build.
+The `#v0.6.26` fragment pins to the tagged release. Omit it only when you specifically want the latest unreleased `main` build.
 
 ### Platform support
 
@@ -185,7 +219,7 @@ Invalid review output fails the same invocation with a non-zero exit code — no
 
 ## CI Integration
 
-CI must use Node.js 24 and a version-pinned install. Pin to the [`v0.6.25` release tag](https://github.com/JosiahSiegel/umactually/releases/tag/v0.6.25) — never track `main` and never use the interactive binary installers in a CI step.
+CI must use Node.js 24 and a version-pinned install. Pin to the [`v0.6.26` release tag](https://github.com/JosiahSiegel/umactually/releases/tag/v0.6.26) — never track `main` and never use the interactive binary installers in a CI step.
 
 The canonical CI workflows are the source of truth — copy them into your pipeline rather than re-deriving them:
 

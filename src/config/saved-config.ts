@@ -109,7 +109,7 @@ export type WriteSavedConfigDeps = {
 
 export type ReadSavedConfigResult =
   | { readonly ok: true; readonly config: SavedConfig | null; readonly path: string }
-  | { readonly ok: false; readonly exitCode: 1 | 2; readonly message: string };
+  | { readonly ok: false; readonly path: string; readonly exitCode: 1 | 2; readonly message: string };
 
 export type WriteSavedConfigResult =
   | { readonly ok: true; readonly path: string; readonly bytes: number; readonly lockUnavailable: boolean }
@@ -143,6 +143,7 @@ export function readSavedConfig(deps: ReadSavedConfigDeps): ReadSavedConfigResul
     if (fs.isSymlink(candidate)) {
       return {
         ok: false,
+        path: candidate,
         exitCode: 1,
         message: `refusing to read saved config: ${candidate} is a symlink; remove it and re-run init`,
       };
@@ -150,6 +151,7 @@ export function readSavedConfig(deps: ReadSavedConfigDeps): ReadSavedConfigResul
     if (!fs.isFile(candidate)) {
       return {
         ok: false,
+        path: candidate,
         exitCode: 1,
         message: `refusing to read saved config: ${candidate} is not a regular file`,
       };
@@ -161,6 +163,7 @@ export function readSavedConfig(deps: ReadSavedConfigDeps): ReadSavedConfigResul
     } catch (err) {
       return {
         ok: false,
+        path: candidate,
         exitCode: 2,
         message: `corrupt saved config at ${candidate}: ${err instanceof Error ? err.message : String(err)}; rm ${candidate} and re-run init to recover`,
       };
@@ -172,6 +175,7 @@ export function readSavedConfig(deps: ReadSavedConfigDeps): ReadSavedConfigResul
     } catch (err) {
       return {
         ok: false,
+        path: candidate,
         exitCode: 2,
         message: `corrupt saved config at ${candidate}: ${err instanceof Error ? err.message : String(err)}; rm ${candidate} and re-run init to recover`,
       };
@@ -188,12 +192,13 @@ export function readSavedConfig(deps: ReadSavedConfigDeps): ReadSavedConfigResul
 
 type ValidatedSavedConfig =
   | { readonly ok: true; readonly config: SavedConfig }
-  | { readonly ok: false; readonly exitCode: 1 | 2; readonly message: string };
+  | { readonly ok: false; readonly path: string; readonly exitCode: 1 | 2; readonly message: string };
 
 function validateSavedConfig(parsed: unknown, candidate: string): ValidatedSavedConfig {
   if (parsed === null || typeof parsed !== "object") {
     return {
       ok: false,
+      path: candidate,
       exitCode: 2,
       message: `corrupt saved config at ${candidate}: expected object, received ${parsed === null ? "null" : typeof parsed}`,
     };
@@ -203,6 +208,7 @@ function validateSavedConfig(parsed: unknown, candidate: string): ValidatedSaved
   if (obj["schemaVersion"] !== SAVED_CONFIG_SCHEMA_VERSION) {
     return {
       ok: false,
+      path: candidate,
       exitCode: 2,
       message: `unsupported schemaVersion in ${candidate}: expected ${SAVED_CONFIG_SCHEMA_VERSION}, received ${JSON.stringify(obj["schemaVersion"])}`,
     };
@@ -210,6 +216,7 @@ function validateSavedConfig(parsed: unknown, candidate: string): ValidatedSaved
   if (typeof obj["provider"] !== "string" || !VALID_PROVIDERS.has(obj["provider"] as SavedConfigProvider)) {
     return {
       ok: false,
+      path: candidate,
       exitCode: 2,
       message: `invalid provider in ${candidate}: ${JSON.stringify(obj["provider"])} (expected one of ${[...VALID_PROVIDERS].join(", ")})`,
     };
@@ -228,6 +235,7 @@ function validateSavedConfig(parsed: unknown, candidate: string): ValidatedSaved
   if (apiUrlRaw !== undefined && (typeof apiUrlRaw !== "string")) {
     return {
       ok: false,
+      path: candidate,
       exitCode: 2,
       message: `invalid apiUrl in ${candidate}: expected string when present`,
     };
@@ -235,6 +243,7 @@ function validateSavedConfig(parsed: unknown, candidate: string): ValidatedSaved
   if (modelRaw !== undefined && (typeof modelRaw !== "string")) {
     return {
       ok: false,
+      path: candidate,
       exitCode: 2,
       message: `invalid model in ${candidate}: expected string when present`,
     };

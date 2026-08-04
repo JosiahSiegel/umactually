@@ -4,19 +4,28 @@ UmActually accepts configuration through CLI flags, environment variables, and p
 
 ## Precedence
 
-The runtime resolves configurable review options in this order:
+The runtime resolves configurable review options through a four-tier precedence chain (highest priority first):
 
-1. Explicit CLI flag.
-2. Canonical `UMACTUALLY_*` environment variable.
-3. Legacy `REVIEW_*` environment variable.
-4. Saved user config (`~/.umactually/config.json`; provider, optional apiUrl, optional model).
-5. Built-in CLI default.
+| Tier | Source | Notes |
+| --- | --- | --- |
+| 1 | `--provider`, `--api-url`, `--model`, `--api-key` flags | Always wins; lets a one-off run override saved config. |
+| 2 | `UMACTUALLY_*` then legacy `REVIEW_*` env vars | First non-empty var wins; the legacy alias is field-specific — see the per-field table below for the exact name (e.g. `UMACTUALLY_API_URL` → `REVIEW_PROVIDER_URL`, `UMACTUALLY_API_KEY` → `REVIEW_PROVIDER_API_KEY`, `UMACTUALLY_PROMPT_FILE` → `REVIEW_PROMPT_SYSTEM_FILE`). |
+| 3 | Saved user config (`~/.umactually/config.json`) | Holds `provider` (always), optional `apiUrl`, optional `model`. Written by `umactually init`. Override with `--force` to overwrite. |
+| 4 | Built-in CLI default | Last resort; the schema default per `src/config/field-schema.ts`. |
 
-The `apiKey` field is NEVER read from or written to the saved config; it always comes from flag/env. Empty-string env wins over saved config so operators can `unset` a setting without deleting the file. The saved config is loaded via `readSavedConfig()` from `src/config/saved-config.ts` and threaded through the `pickX` helpers at `src/config/loader.ts`. See [docs/security.md#trust-model-init](security.md#trust-model-init) for what is and isn't persisted.
+The `apiKey` field is deliberately omitted from tiers 3 and 4 — the [S6 contract](#api-key-handling) bans persisting secrets to disk. It always comes from tier 1 (`--api-key`) or tier 2 (`UMACTUALLY_API_KEY` / `REVIEW_PROVIDER_API_KEY`); if both are missing the CLI surfaces a `cli: --api-key is required` validation error with an S6-compliant remediation hint, never writes the key to disk. The saved config is loaded via `readSavedConfig()` in `src/config/saved-config.ts` and overlaid on the resolved schema via `applySavedConfig()` (`src/cli/apply-saved-config.ts`). Empty-string env is treated as missing so operators can `unset` a setting without deleting the file. See [docs/security.md#trust-model-init](security.md#trust-model-init) for what is and isn't persisted.
+
+Inspect what the loader actually resolved at runtime:
+
+```bash
+umactually --show-config
+```
+
+Prints `provider`, optional `apiUrl?`, optional `model?`, the file path the loader used, and the schema version. Field-by-field rendered (not JSON) so adding a future secret field to `SavedConfig` would not silently leak it through `--show-config`. Read-only; never opens a network connection; never prompts; exits 0 (or 1 with a stderr warning if the file is corrupt). Matches the convention of `kubectl config view`, `aws configure get`, and `git config --list --show-origin`.
 
 The CLI natively honors every documented `UMACTUALLY_*` env var. In CI, set them as GitHub Actions env/secrets or Azure pipeline variables and they flow through without shell translation. Boolean env vars accept `true|false|1|0|yes|no|on|off|y|n`, case-insensitively after trimming. Invalid values fail configuration with a redacted error: secret values are never echoed.
 
-With `review --json`, the `resolvedConfig.sources` object reports exactly which surface supplied each resolved field (`flag`, `env`, or `default`, plus the non-secret env name when applicable). Use it to diagnose precedence without exposing credentials.
+With `review --json`, the `resolvedConfig.sources` object reports exactly which surface supplied each resolved field (`flag`, `env`, `savedConfig`, or `default`, plus the non-secret env name when applicable). The `savedConfig` source entry carries the file path the loader read from so you can audit which config supplied a value without exposing credentials.
 
 `GITHUB_TOKEN`, `GITHUB_EVENT_PATH`, `SYSTEM_ACCESSTOKEN`, and Azure build metadata are discovered from the runner environment. `NO_COLOR` is honored at the CLI level: any non-empty value disables decorative color, as does `--no-color`.
 

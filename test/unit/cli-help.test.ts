@@ -88,6 +88,43 @@ describe("CLI help text", () => {
     // src/cli/help.ts) is verified from the --help surface.
     expect(CLI_HELP_TEXT).toContain("docs/exit-codes.md");
   });
+
+  // HELP-CFG-* — v0.6.26 saved-config resolution-order lines. These
+  // pin the top-level help's documentation of the four-layer precedence
+  // chain (flag > env > saved config > default) so an operator reading
+  // `umactually --help` can discover why `umactually review` suddenly
+  // picked up --api-url from `~/.umactually/config.json` without ever
+  // passing the flag. Without these lines the v0.6.26 behavior change
+  // would be invisible to anyone reading --help, and a future refactor
+  // could quietly drop the documentation while leaving the runtime
+  // behavior intact — leading to the exact "silent behavior change
+  // with no discoverable explanation" failure mode every CLI changelog
+  // tries to avoid.
+  it("HELP-CFG-1: top-level help documents the four-layer configuration resolution order", () => {
+    expect(CLI_HELP_TEXT).toContain("Configuration sources (highest priority first)");
+    // The lines are word-wrapped at 65 chars (`UMACTUALLY_*/REVIEW_*`
+    // appears at the end of one line, `env vars > saved config` at
+    // the start of the next), so the cross-line space is a newline +
+    // optional indent. Match across the newline explicitly.
+    expect(CLI_HELP_TEXT).toMatch(/--flags > UMACTUALLY_\*\/?REVIEW_\*[\s\S]*?env vars > saved config/);
+    expect(CLI_HELP_TEXT).toContain("~/.umactually/config.json");
+    expect(CLI_HELP_TEXT).toContain("> defaults");
+  });
+
+  it("HELP-CFG-2: top-level help calls out --api-key is NEVER persisted (S6 contract)", () => {
+    // S6 contract: credentials are not persisted to disk. The help
+    // MUST mention this explicitly so an operator reading --help sees
+    // both the magic ("saved config supplies defaults") AND the
+    // boundary ("but not for the key"). Without this line, the four-
+    // layer chain above could be misread as "saved config contains
+    // everything, just run it."
+    expect(CLI_HELP_TEXT).toMatch(/--api-key is[\s\S]*?NEVER persisted/);
+    expect(CLI_HELP_TEXT).toMatch(/UMACTUALLY_API_KEY=<key>/);
+  });
+
+  it("HELP-CFG-3: top-level help mentions --show-config as the inspection command", () => {
+    expect(CLI_HELP_TEXT).toContain("umactually --show-config");
+  });
 });
 
 describe("Contextual help (per-command)", () => {
@@ -98,6 +135,36 @@ describe("Contextual help (per-command)", () => {
     // Review help should NOT include the doctor or check-review-artifact content.
     expect(REVIEW_HELP).not.toContain("check-review-artifact");
     expect(REVIEW_HELP).not.toContain("Node.js >= 24");
+  });
+
+  // REV_HELP-CFG-* — REVIEW_HELP mirrors the same saved-config
+  // resolution-order lines so `umactually review --help` is also
+  // self-documenting. These cases pin REVIEW_HELP coverage even though
+  // the block text is identical to CLI_HELP_TEXT — the duplication is
+  // the contract: each context (`umactually --help` and
+  // `umactually review --help`) must surface the resolution order
+  // independently so operators don't need to read both pages.
+  it("REV_HELP-CFG-1: review --help documents the four-layer configuration resolution order", () => {
+    expect(REVIEW_HELP).toContain("Configuration sources (highest priority first)");
+    // Same cross-line word-wrap as HELP-CFG-1: the `UMACTUALLY_*/
+    // REVIEW_*` fragment and the next `env vars > saved config` line
+    // are separated by a newline, not a space.
+    expect(REVIEW_HELP).toMatch(/--flags > UMACTUALLY_\*\/?REVIEW_\*[\s\S]*?env vars > saved config/);
+    expect(REVIEW_HELP).toContain("~/.umactually/config.json");
+  });
+
+  it("REV_HELP-CFG-2: review --help calls out --api-key is NEVER persisted and routes via UMACTUALLY_API_KEY", () => {
+    // The resolution-order block exists in both CLI_HELP_TEXT and
+    // REVIEW_HELP_TEXT, but the API-key callout is the load-bearing
+    // security disclosure: an operator running `umactually review
+    // --help` to debug "where does my key go?" must find the S6
+    // answer without crossing into `umactually init --help`.
+    expect(REVIEW_HELP).toMatch(/--api-key is[\s\S]*?NEVER persisted/);
+    expect(REVIEW_HELP).toContain("UMACTUALLY_API_KEY=<key>");
+  });
+
+  it("REV_HELP-CFG-3: review --help mentions --show-config for inspecting loaded saved config", () => {
+    expect(REVIEW_HELP).toContain("umactually --show-config");
   });
 
   it("doctor --help shows doctor-specific checks and exits", () => {

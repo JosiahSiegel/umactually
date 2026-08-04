@@ -39,17 +39,44 @@ function precedenceSection(docBody: string): string {
     ?? "";
 }
 
-function numberedItemsInPrecedence(docBody: string): readonly string[] {
+function precedenceTiersFromTable(docBody: string): readonly string[] {
+  // v0.6.26 changed §Precedence from a numbered list to a markdown
+  // table (one row per tier). The table surfaces the four-tier chain
+  // (flag > env > saved config > default) more clearly than a flat
+  // numbered list, especially for operators who skim column headers
+  // to compare field-name conventions across tiers.
+  //
+  // Returns one entry per DATA row, each entry being the "Source" cell
+  // (the second column). Skips the header row, the separator row, and
+  // any non-table lines that follow the table.
   const section = precedenceSection(docBody);
   const lines = section.split(/\r?\n/u);
-  const items: string[] = [];
+  const tiers: string[] = [];
+  let inTable = false;
+  let sawSeparator = false;
   for (const line of lines) {
-    const match = /^\s*(\d+)\.\s+(.+?)\s*$/u.exec(line);
-    if (match !== null) {
-      items.push(match[2] ?? "");
+    if (!line.includes("|")) {
+      if (inTable) break;
+      continue;
     }
+    if (/^\s*\|[-\s|]+\|\s*$/u.test(line)) {
+      sawSeparator = true;
+      continue;
+    }
+    if (!inTable) {
+      inTable = true;
+      continue;
+    }
+    if (!sawSeparator) {
+      // Malformed table (separator never appeared) — bail rather than
+      // false-pass on header text.
+      continue;
+    }
+    const match = /^\|\s*(\d+)\s*\|\s*([^|]+?)\s*\|/u.exec(line);
+    if (match === null) continue;
+    tiers.push(match[2] ?? "");
   }
-  return items;
+  return tiers;
 }
 
 function initTableSection(docBody: string): string {
@@ -78,25 +105,29 @@ describe("docs/configuration.md precedence (§Precedence)", () => {
     expect(precedenceSection(configuration.body).length).toBeGreaterThan(0);
   });
 
-  it("INIT-DOC: §Precedence lists exactly 5 numbered items", () => {
-    // Plan T15: precedence must gain a 5th rung for saved user config.
-    // The current doc has 4 — this row fails until T16 inserts the
-    // Saved user config entry between REVIEW_* env and the built-in
-    // default.
-    const items = numberedItemsInPrecedence(configuration.body);
-    expect(items.length).toBe(5);
+  it("INIT-DOC: §Precedence lists exactly 4 tier rows", () => {
+    // v0.6.26: §Precedence is a markdown table (one data row per tier)
+    // rather than a flat numbered list — the table makes the four-tier
+    // chain (flag > env > saved config > default) easier to scan when
+    // an operator reads the column headers and tries to compare
+    // field-name conventions across tiers. Plan T15 (which prescribed
+    // a 5th numbered item) is superseded: the legacy `REVIEW_*`
+    // env alias is folded into the env tier rather than occupying its
+    // own rung, so the chain has 4 tiers not 5.
+    const tiers = precedenceTiersFromTable(configuration.body);
+    expect(tiers).toHaveLength(4);
   });
 
-  it("INIT-DOC: §Precedence item #4 is the saved user config rung", () => {
-    // Item index 3 (zero-based) must name the saved config rung.
-    // Match the planning prose "Saved user config" plus tolerant
-    // synonyms ("saved config", "savedConfig") since the doc author
-    // may pick any one.
-    const items = numberedItemsInPrecedence(configuration.body);
-    expect(items.length, "§Precedence must list at least 4 items before this row can index #4").toBeGreaterThanOrEqual(4);
-    const fourth = items[3] ?? "";
-    expect(fourth.toLowerCase()).toMatch(/saved(\s+user)?\s+config|savedconfig/u);
-    expect(fourth).toMatch(/config\.json/u);
+  it("INIT-DOC: §Precedence tier #3 is the saved user config rung", () => {
+    // Tier #3 (zero-indexed position 2) is the saved config rung.
+    // Saved config moved from legacy "item #4" to the v0.6.26 tier #3
+    // because the legacy `REVIEW_*` alias env no longer counts as a
+    // separate rung.
+    const tiers = precedenceTiersFromTable(configuration.body);
+    expect(tiers.length, "§Precedence must list at least 3 tiers before tier #3 can be indexed").toBeGreaterThanOrEqual(3);
+    const tier3 = tiers[2] ?? "";
+    expect(tier3.toLowerCase()).toMatch(/saved(\s+user)?\s+config|savedconfig/u);
+    expect(tier3).toMatch(/config\.json/u);
   });
 });
 

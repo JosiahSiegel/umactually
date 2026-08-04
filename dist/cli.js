@@ -2656,6 +2656,12 @@ const CLI_HELP_TEXT = [
     ...GLOBAL_FLAGS.map(renderFlagLine),
     "",
     CLI_MODES_TEXT,
+    "Configuration sources (highest priority first): --flags > UMACTUALLY_*/REVIEW_*",
+    "env vars > saved config (~/.umactually/config.json) > defaults. --api-key is",
+    "NEVER persisted; pass it via --api-key each invocation or export",
+    "UMACTUALLY_API_KEY=<key>. Run `umactually init` to populate the saved",
+    "config (provider/api-url/model); `umactually --show-config` to inspect it.",
+    "",
     "See exit codes: docs/exit-codes.md",
 ].join("\n");
 // ── Per-command contextual help ────────────────────────────────────────────
@@ -2670,6 +2676,12 @@ const REVIEW_HELP_TEXT = [
     ...renderFlags(flagsForContext("review")),
     "",
     CLI_MODES_TEXT,
+    "Configuration sources (highest priority first): --flags > UMACTUALLY_*/REVIEW_*",
+    "env vars > saved config (~/.umactually/config.json) > defaults. --api-key is",
+    "NEVER persisted; pass it via --api-key each invocation or export",
+    "UMACTUALLY_API_KEY=<key>. Run `umactually init` to populate the saved",
+    "config (provider/api-url/model); `umactually --show-config` to inspect it.",
+    "",
     "See exit codes: docs/exit-codes.md",
 ].join("\n");
 const INIT_HELP_TEXT = [
@@ -2802,234 +2814,6 @@ const INIT_HELP = (/* unused pure expression or super */ null && (INIT_HELP_TEXT
 const DOCTOR_HELP = (/* unused pure expression or super */ null && (DOCTOR_HELP_TEXT));
 const UNINSTALL_HELP = (/* unused pure expression or super */ null && (UNINSTALL_HELP_TEXT));
 const CHECK_REVIEW_ARTIFACT_HELP = (/* unused pure expression or super */ null && (CHECK_REVIEW_ARTIFACT_HELP_TEXT));
-
-;// CONCATENATED MODULE: ./src/cli/smart-prompt.ts
-// SPDX-License-Identifier: MIT
-/**
- * Smart interactive prompts for the CLI.
- *
- * The CLI's job is to be useful in BOTH a terminal (where the operator
- * can answer questions) AND a CI pipeline (where stdin is closed and
- * non-zero answers must mean "fail fast, don't try"). This module is
- * the single boundary between those two modes.
- *
- * Rule of engagement:
- *   - ALL prompts MUST be guarded by `canPromptInteractively(...)` so
- *     we never write to a piped/CI stdin. If the environment cannot
- *     answer, we throw a typed `SmartPromptUnavailable` error that the
- *     caller (orchestrator / validate glue) maps to a structured
- *     validation error + remediation hint.
- *   - Each prompt supports a `timeoutMs` so an interactive CI with no
- *     operator on the seat doesn't hang forever. A timeout is treated
- *     as "user chose not to answer" — the caller surfaces the
- *     remediation hint and exits.
- *   - Inputs are NOT echoed to stderr (else secrets like API keys
- *     would leak into CI logs).
- *
- * The prompts here are intentionally minimal — no chalk, no TTY
- * detection libraries. The CLI already uses a single brand prefix on
- * its stdout writes; the prompts print that same prefix and let
- * downstream formatting (color, no-color) follow the same path.
- */
-
-/**
- * Throw when the operator's environment cannot answer an interactive
- * prompt (no TTY, no stdin, or timeout). Caught by the validate glue
- * so the operator gets a structured remediation hint instead of a
- * raw stdin EOF / hang.
- */
-class SmartPromptUnavailable extends Error {
-    code;
-    name = "SmartPromptUnavailable";
-    constructor(code, message) {
-        super(message);
-        this.code = code;
-    }
-}
-/**
- * Returns true when the process is attached to a real TTY and stdin
- * is readable. The Node-side test (`process.stdin.isTTY === true`)
- * is the canonical heuristic — Bun treats it the same.
- *
- * NOTE: deliberately NOT wrapping in try/catch. Read-only checks on
- * `process.stdin.isTTY` never throw, so a try/catch here would mask
- * a legitimate internal invariant failure.
- */
-function canPromptInteractively() {
-    return process.stdin.isTTY === true && process.stdout.isTTY === true;
-}
-/**
- * Render the standard prompt on stdout, read a single line from
- * stdin, trim trailing newlines/spaces, return the trimmed result.
- *
- * No echoing of input — secrets typed into a terminal echo in the
- * terminal control layer, not in our stdout/stderr, so they don't
- * land in CI logs even when stdout is captured.
- *
- * Throws {@link SmartPromptUnavailable} when:
- *   - the prompt cannot be shown (no TTY),
- *   - stdin closes before a line arrives (e.g. on CI),
- *   - the read times out (operator didn't answer),
- *   - the underlying stream errors.
- */
-async function readInteractiveLine(input) {
-    if (!canPromptInteractively()) {
-        throw new SmartPromptUnavailable("NO_TTY", "Cannot read interactive input: stdin is not a TTY. Set --api-url / --api-key on the command line or via UMACTUALLY_API_URL / UMACTUALLY_API_KEY env vars.");
-    }
-    process.stdout.write(`${BRAND_PREFIX}${input.prompt}\n`);
-    const stdin = process.stdin;
-    // Race the read against a timeout promise so a missed keypress
-    // surfaces the typed TIMEOUT rejection WITHOUT relying on the
-    // stream emitting `error` synchronously (which a paused TTY does
-    // NOT do — Node's read-stream destroy-with-error only surfaces
-    // via `error` if a read is mid-flight). The race pattern is the
-    // canonical fix for "Promise that should timeout"; see
-    // https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Promise/race
-    // for the underlying semantics.
-    let timeoutHandle = null;
-    const timeoutPromise = new Promise((_resolve, reject) => {
-        timeoutHandle = setTimeout(() => {
-            reject(new SmartPromptUnavailable("TIMEOUT", `Prompt timed out after ${input.timeoutMs}ms with no input. Set --api-url / --api-key on the command line or via env vars to skip the interactive prompt.`));
-        }, input.timeoutMs);
-        // Don't keep the event loop alive solely on the timer — the read
-        // operation also references an open handle via the stream, so
-        // unref() is safe here (the read promise keeps the loop alive).
-        timeoutHandle.unref();
-    });
-    try {
-        return await Promise.race([readOneLine(stdin), timeoutPromise]);
-    }
-    finally {
-        if (timeoutHandle !== null) {
-            clearTimeout(timeoutHandle);
-        }
-    }
-}
-/**
- * Read a single line from a readable stream, resolving with the
- * trimmed value. Resolves to "" on EOF (caller distinguishes empty
- * vs. typed-empty via the input.length === 0 check + clarifying hint).
- *
- * Pure Node — no external deps. Uses the standard "data" + "end"
- * events rather than readline so the import stays free of a
- * third-party dep at CLI boot time (ncc bundling is happier this
- * way too).
- *
- * Implementation note: all three event listeners (`data`, `end`,
- * `error`) MUST be attached BEFORE `stream.resume()` is called.
- * On a fast EOF (e.g. CI with a closed pipe), the synchronous
- * `end` event fires from inside `resume()` itself; if listeners
- * aren't attached by then, the Promise hangs forever. The same
- * race applies to a synchronous `error` event on a destroyed stream.
- * The order below is load-bearing — don't reorder.
- */
-async function readOneLine(stream) {
-    return await new Promise((resolve, reject) => {
-        let buffer = "";
-        const onData = (chunk) => {
-            buffer += typeof chunk === "string" ? chunk : Buffer.from(chunk).toString("utf8");
-            const newline = buffer.indexOf("\n");
-            if (newline !== -1) {
-                stream.pause();
-                stream.removeListener("data", onData);
-                stream.removeListener("end", onEnd);
-                stream.removeListener("error", onError);
-                resolve(buffer.slice(0, newline).trimEnd());
-            }
-        };
-        const onEnd = () => {
-            stream.removeListener("data", onData);
-            stream.removeListener("error", onError);
-            resolve(buffer.trimEnd());
-        };
-        const onError = (err) => {
-            stream.removeListener("data", onData);
-            stream.removeListener("end", onEnd);
-            reject(new SmartPromptUnavailable("READ_ERROR", `Failed to read stdin: ${err.message}. Set --api-url / --api-key on the command line or via env vars.`));
-        };
-        // Attach all three listeners BEFORE resuming the stream. The
-        // previous ordering (attach → resume) attached after the same-
-        // tick end event had already fired, leaving the Promise to
-        // hang forever on a closed stdin.
-        stream.on("data", onData);
-        stream.once("end", onEnd);
-        stream.once("error", onError);
-        stream.resume();
-    });
-}
-/**
- * Conditionally prompt for a single value. Skips the prompt when:
- *   - the env var name is already populated (caller should re-check),
- *   - the env var cannot be prompted (no TTY / piped stdin / timeout),
- *   - the prompt times out without an answer.
- *
- * Returns `null` when no answer was collected — the caller should fall
- * back to throwing the typed validation error.
- *
- * The optional `default` is offered as an empty-input fallback so the
- * operator can press <Enter> to take the previously-saved value.
- */
-async function smartPromptForValue(input) {
-    const existingFromEnv = process.env[input.envVarName];
-    if (typeof existingFromEnv === "string" && existingFromEnv.length > 0) {
-        // Already populated — no need to prompt.
-        return existingFromEnv;
-    }
-    if (!canPromptInteractively()) {
-        return null;
-    }
-    const defaultHint = input.default !== undefined && input.default.length > 0
-        ? ` [default: ${input.default}]`
-        : "";
-    const promptText = `? ${input.label} (${input.envVarName})${defaultHint}: `;
-    try {
-        const answer = await readInteractiveLine({
-            prompt: promptText,
-            timeoutMs: input.timeoutMs ?? 15_000,
-        });
-        if (answer.length > 0) {
-            return answer;
-        }
-        if (input.default !== undefined && input.default.length > 0) {
-            return input.default;
-        }
-        return null;
-    }
-    catch (error) {
-        if (error instanceof SmartPromptUnavailable) {
-            return null;
-        }
-        throw error;
-    }
-}
-/**
- * Convenience: prompt for the two API-config values operators most
- * commonly forget (`--api-url`, `--api-key`). Returns null when
- * neither could be collected (caller should then throw the typed
- * validation error).
- *
- * Both prompts share a 15-second timeout (configurable). When
- * `promptForUrl` is false, only the API key is asked for — useful for
- * Anthropic-native invocations where the URL is implicit.
- */
-async function smartPromptForApiConfig(input) {
-    let apiUrl = null;
-    if (input.promptForUrl) {
-        apiUrl = await smartPromptForValue({
-            label: "Model provider base URL",
-            envVarName: "UMACTUALLY_API_URL",
-            placeholder: "https://api.openai.com/v1",
-            ...(input.timeoutMs !== undefined ? { timeoutMs: input.timeoutMs } : {}),
-        });
-    }
-    const apiKey = await smartPromptForValue({
-        label: "Model provider API key",
-        envVarName: "UMACTUALLY_API_KEY",
-        placeholder: "sk-…",
-        ...(input.timeoutMs !== undefined ? { timeoutMs: input.timeoutMs } : {}),
-    });
-    return { apiUrl, apiKey };
-}
 
 ;// CONCATENATED MODULE: ./src/util/saved-config-flock.ts
 // SPDX-License-Identifier: MIT
@@ -3539,6 +3323,295 @@ function serializeSavedConfig(config) {
  */
 function redactSecretsInString(input) {
     return input.replace(SECRET_REGEX, REDACTED_SECRET_TOKEN);
+}
+
+;// CONCATENATED MODULE: ./src/cli/load-saved-config.ts
+// SPDX-License-Identifier: MIT
+// Runtime wrapper around the CLI's `umactually init` saved-config reader.
+//
+// `readSavedConfig` in `src/config/saved-config.ts` is shaped for the wizard
+// (exit-code + message) and refuses to proceed on malformed JSON. The
+// `umactually review` and `umactually --files` entry paths, plus the bare
+// `umactually` quickstart gate, need a NON-exit-shaped variant: read the
+// file, return whatever you got, surface the failure as a `warning` the
+// caller decides whether to print. This keeps the resolver sites
+// (`apply-saved-config`, `runLoadedConfigQuickstart`) free of `process.exit`
+// concerns and keeps the wizard's strict contract intact.
+//
+// S6 contract: this function NEVER persists or transmits `apiKey`.
+// The `SavedConfig` type excludes it; `readSavedConfig` rejects attempts
+// to deserialize unknown keys at the type level.
+
+
+/**
+ * Read the runtime-effective saved config (repo path first, global fallback),
+ * without ever exiting on failure. Returns `{config: null, warning: <msg>}`
+ * when the file is missing, malformed, or refused for security reasons —
+ * callers decide whether to surface the warning to the user.
+ *
+ * Defaults `cwd` to `process.cwd()` and `homeDir` to `os.homedir()` so
+ * the common path is a no-arg call. Tests inject explicit values to
+ * avoid touching the real user's `~/.umactually/config.json`.
+ *
+ * Never throws. The wizard's `readSavedConfig` is the throwing/exiting
+ * variant; this one is the runtime-tolerant variant. They share the
+ * underlying validation through the same `SavedConfig` type.
+ */
+function tryReadSavedConfig(deps = {}) {
+    const result = readSavedConfig({
+        homeDir: deps.homeDir ?? (0,external_node_os_namespaceObject.homedir)(),
+        cwd: deps.cwd ?? process.cwd(),
+    });
+    if (result.ok) {
+        return { config: result.config, path: result.path, warning: null };
+    }
+    // Failure path: per `readSavedConfig` contract, `result.ok === false`
+    // implies `result.exitCode` is 1 or 2 and `result.message` is set.
+    // We return the message as a `warning` so callers can decide how
+    // prominently to surface it. `path` is the candidate we tried to
+    // read (typically the global path; we don't know which one failed
+    // without re-implementing the candidate walk — and we don't need to,
+    // because the warning message itself names the path).
+    return {
+        config: null,
+        // The wizard's failure result is `ReadSavedConfigResult` shaped, not
+        // `{path: string}` — but its `path` is implicitly the candidate the
+        // walker hit. When `readSavedConfig` returns `ok:false` it has not
+        // returned a `path` field; for the warning case we synthesize the
+        // most-likely path (the global path) so the `path` is always a
+        // defined string. Callers that need the exact failure path can
+        // parse the warning message text.
+        path: "", // see file comment — readSavedConfig failure shape omits `path`.
+        warning: result.message,
+    };
+}
+
+;// CONCATENATED MODULE: ./src/cli/smart-prompt.ts
+// SPDX-License-Identifier: MIT
+/**
+ * Smart interactive prompts for the CLI.
+ *
+ * The CLI's job is to be useful in BOTH a terminal (where the operator
+ * can answer questions) AND a CI pipeline (where stdin is closed and
+ * non-zero answers must mean "fail fast, don't try"). This module is
+ * the single boundary between those two modes.
+ *
+ * Rule of engagement:
+ *   - ALL prompts MUST be guarded by `canPromptInteractively(...)` so
+ *     we never write to a piped/CI stdin. If the environment cannot
+ *     answer, we throw a typed `SmartPromptUnavailable` error that the
+ *     caller (orchestrator / validate glue) maps to a structured
+ *     validation error + remediation hint.
+ *   - Each prompt supports a `timeoutMs` so an interactive CI with no
+ *     operator on the seat doesn't hang forever. A timeout is treated
+ *     as "user chose not to answer" — the caller surfaces the
+ *     remediation hint and exits.
+ *   - Inputs are NOT echoed to stderr (else secrets like API keys
+ *     would leak into CI logs).
+ *
+ * The prompts here are intentionally minimal — no chalk, no TTY
+ * detection libraries. The CLI already uses a single brand prefix on
+ * its stdout writes; the prompts print that same prefix and let
+ * downstream formatting (color, no-color) follow the same path.
+ */
+
+/**
+ * Throw when the operator's environment cannot answer an interactive
+ * prompt (no TTY, no stdin, or timeout). Caught by the validate glue
+ * so the operator gets a structured remediation hint instead of a
+ * raw stdin EOF / hang.
+ */
+class SmartPromptUnavailable extends Error {
+    code;
+    name = "SmartPromptUnavailable";
+    constructor(code, message) {
+        super(message);
+        this.code = code;
+    }
+}
+/**
+ * Returns true when the process is attached to a real TTY and stdin
+ * is readable. The Node-side test (`process.stdin.isTTY === true`)
+ * is the canonical heuristic — Bun treats it the same.
+ *
+ * NOTE: deliberately NOT wrapping in try/catch. Read-only checks on
+ * `process.stdin.isTTY` never throw, so a try/catch here would mask
+ * a legitimate internal invariant failure.
+ */
+function canPromptInteractively() {
+    return process.stdin.isTTY === true && process.stdout.isTTY === true;
+}
+/**
+ * Render the standard prompt on stdout, read a single line from
+ * stdin, trim trailing newlines/spaces, return the trimmed result.
+ *
+ * No echoing of input — secrets typed into a terminal echo in the
+ * terminal control layer, not in our stdout/stderr, so they don't
+ * land in CI logs even when stdout is captured.
+ *
+ * Throws {@link SmartPromptUnavailable} when:
+ *   - the prompt cannot be shown (no TTY),
+ *   - stdin closes before a line arrives (e.g. on CI),
+ *   - the read times out (operator didn't answer),
+ *   - the underlying stream errors.
+ */
+async function readInteractiveLine(input) {
+    if (!canPromptInteractively()) {
+        throw new SmartPromptUnavailable("NO_TTY", "Cannot read interactive input: stdin is not a TTY. Set --api-url / --api-key on the command line or via UMACTUALLY_API_URL / UMACTUALLY_API_KEY env vars.");
+    }
+    process.stdout.write(`${BRAND_PREFIX}${input.prompt}\n`);
+    const stdin = process.stdin;
+    // Race the read against a timeout promise so a missed keypress
+    // surfaces the typed TIMEOUT rejection WITHOUT relying on the
+    // stream emitting `error` synchronously (which a paused TTY does
+    // NOT do — Node's read-stream destroy-with-error only surfaces
+    // via `error` if a read is mid-flight). The race pattern is the
+    // canonical fix for "Promise that should timeout"; see
+    // https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Promise/race
+    // for the underlying semantics.
+    let timeoutHandle = null;
+    const timeoutPromise = new Promise((_resolve, reject) => {
+        timeoutHandle = setTimeout(() => {
+            reject(new SmartPromptUnavailable("TIMEOUT", `Prompt timed out after ${input.timeoutMs}ms with no input. Set --api-url / --api-key on the command line or via env vars to skip the interactive prompt.`));
+        }, input.timeoutMs);
+        // Don't keep the event loop alive solely on the timer — the read
+        // operation also references an open handle via the stream, so
+        // unref() is safe here (the read promise keeps the loop alive).
+        timeoutHandle.unref();
+    });
+    try {
+        return await Promise.race([readOneLine(stdin), timeoutPromise]);
+    }
+    finally {
+        if (timeoutHandle !== null) {
+            clearTimeout(timeoutHandle);
+        }
+    }
+}
+/**
+ * Read a single line from a readable stream, resolving with the
+ * trimmed value. Resolves to "" on EOF (caller distinguishes empty
+ * vs. typed-empty via the input.length === 0 check + clarifying hint).
+ *
+ * Pure Node — no external deps. Uses the standard "data" + "end"
+ * events rather than readline so the import stays free of a
+ * third-party dep at CLI boot time (ncc bundling is happier this
+ * way too).
+ *
+ * Implementation note: all three event listeners (`data`, `end`,
+ * `error`) MUST be attached BEFORE `stream.resume()` is called.
+ * On a fast EOF (e.g. CI with a closed pipe), the synchronous
+ * `end` event fires from inside `resume()` itself; if listeners
+ * aren't attached by then, the Promise hangs forever. The same
+ * race applies to a synchronous `error` event on a destroyed stream.
+ * The order below is load-bearing — don't reorder.
+ */
+async function readOneLine(stream) {
+    return await new Promise((resolve, reject) => {
+        let buffer = "";
+        const onData = (chunk) => {
+            buffer += typeof chunk === "string" ? chunk : Buffer.from(chunk).toString("utf8");
+            const newline = buffer.indexOf("\n");
+            if (newline !== -1) {
+                stream.pause();
+                stream.removeListener("data", onData);
+                stream.removeListener("end", onEnd);
+                stream.removeListener("error", onError);
+                resolve(buffer.slice(0, newline).trimEnd());
+            }
+        };
+        const onEnd = () => {
+            stream.removeListener("data", onData);
+            stream.removeListener("error", onError);
+            resolve(buffer.trimEnd());
+        };
+        const onError = (err) => {
+            stream.removeListener("data", onData);
+            stream.removeListener("end", onEnd);
+            reject(new SmartPromptUnavailable("READ_ERROR", `Failed to read stdin: ${err.message}. Set --api-url / --api-key on the command line or via env vars.`));
+        };
+        // Attach all three listeners BEFORE resuming the stream. The
+        // previous ordering (attach → resume) attached after the same-
+        // tick end event had already fired, leaving the Promise to
+        // hang forever on a closed stdin.
+        stream.on("data", onData);
+        stream.once("end", onEnd);
+        stream.once("error", onError);
+        stream.resume();
+    });
+}
+/**
+ * Conditionally prompt for a single value. Skips the prompt when:
+ *   - the env var name is already populated (caller should re-check),
+ *   - the env var cannot be prompted (no TTY / piped stdin / timeout),
+ *   - the prompt times out without an answer.
+ *
+ * Returns `null` when no answer was collected — the caller should fall
+ * back to throwing the typed validation error.
+ *
+ * The optional `default` is offered as an empty-input fallback so the
+ * operator can press <Enter> to take the previously-saved value.
+ */
+async function smartPromptForValue(input) {
+    const existingFromEnv = process.env[input.envVarName];
+    if (typeof existingFromEnv === "string" && existingFromEnv.length > 0) {
+        // Already populated — no need to prompt.
+        return existingFromEnv;
+    }
+    if (!canPromptInteractively()) {
+        return null;
+    }
+    const defaultHint = input.default !== undefined && input.default.length > 0
+        ? ` [default: ${input.default}]`
+        : "";
+    const promptText = `? ${input.label} (${input.envVarName})${defaultHint}: `;
+    try {
+        const answer = await readInteractiveLine({
+            prompt: promptText,
+            timeoutMs: input.timeoutMs ?? 15_000,
+        });
+        if (answer.length > 0) {
+            return answer;
+        }
+        if (input.default !== undefined && input.default.length > 0) {
+            return input.default;
+        }
+        return null;
+    }
+    catch (error) {
+        if (error instanceof SmartPromptUnavailable) {
+            return null;
+        }
+        throw error;
+    }
+}
+/**
+ * Convenience: prompt for the two API-config values operators most
+ * commonly forget (`--api-url`, `--api-key`). Returns null when
+ * neither could be collected (caller should then throw the typed
+ * validation error).
+ *
+ * Both prompts share a 15-second timeout (configurable). When
+ * `promptForUrl` is false, only the API key is asked for — useful for
+ * Anthropic-native invocations where the URL is implicit.
+ */
+async function smartPromptForApiConfig(input) {
+    let apiUrl = null;
+    if (input.promptForUrl) {
+        apiUrl = await smartPromptForValue({
+            label: "Model provider base URL",
+            envVarName: "UMACTUALLY_API_URL",
+            placeholder: "https://api.openai.com/v1",
+            ...(input.timeoutMs !== undefined ? { timeoutMs: input.timeoutMs } : {}),
+        });
+    }
+    const apiKey = await smartPromptForValue({
+        label: "Model provider API key",
+        envVarName: "UMACTUALLY_API_KEY",
+        placeholder: "sk-…",
+        ...(input.timeoutMs !== undefined ? { timeoutMs: input.timeoutMs } : {}),
+    });
+    return { apiUrl, apiKey };
 }
 
 ;// CONCATENATED MODULE: ./src/cli/init-templates.ts
@@ -5132,18 +5205,41 @@ async function dispatch(argv) {
     }
     const command = firstPositionalToken(argv);
     if (command === null) {
-        // First-time-user compact quickstart REPLACES the noisy
-        // validation + modes banner for bare invocations from a fresh
-        // install (TTY + no saved config + no programmatic flags). The
+        // Top-level `--show-config` is its own read-only command: print the
+        // effective saved config and exit 0 (or fall through to the loud
+        // banner if no saved config exists). Implemented at this layer so
+        // the operator can run `umactually --show-config` from anywhere —
+        // including CI — without going through the validator.
+        if (argv.includes("--show-config")) {
+            return runShowConfig();
+        }
+        // Compact quickstart for interactive bare invocations. Replaces
+        // the noisy validation + modes banner for fresh-install TTY users
+        // (no saved config) AND for the post-init case where the operator
+        // has run `umactually init` already (saved config present). The
         // existing loud banner is preserved for every other case:
-        //   - non-TTY / CI: existing banner, no quickstart (existing tests
-        //     in test/unit/cli-bare-invocation.test.ts and
+        //   - non-TTY / CI: existing banner, no quickstart (existing
+        //     tests in test/unit/cli-bare-invocation.test.ts and
         //     test/unit/cli-subcommands.test.ts:CLI-SUB-005 pin this).
-        //   - saved config already exists: existing banner (operator has
-        //     set up; they want validation feedback).
         //   - programmatic flags (`--json`, `--api-*`, etc.): existing
-        //     banner (operator clearly knows what they're doing).
-        if (isFirstRunUser(argv)) {
+        //     banner (operator clearly knows what they're doing; the
+        //     intended commands are `umactually review ...`).
+        //
+        // Two variants:
+        //   - First run (no saved config): quickstart leads with
+        //     `umactually init` (operator needs to run the wizard first).
+        //   - Post-init (saved config exists): quickstart drops the
+        //     `umactually init` line and confirms what's loaded (provider +
+        //     model). The three review commands below it are unchanged so
+        //     the operator's muscle memory carries over.
+        if (isQuickstartEligible(argv)) {
+            const savedRead = tryReadSavedConfig();
+            if (savedRead.config !== null) {
+                return runLoadedConfigQuickstart(savedRead.config, savedRead.path);
+            }
+            if (savedRead.warning !== null) {
+                process.stderr.write(`umactually: ${savedRead.warning}\n`);
+            }
             return runFirstRunQuickstart();
         }
         return runReviewBranch(argv);
@@ -5177,46 +5273,35 @@ function applyColorPolicy(argv) {
     });
 }
 /**
- * Detect a "first-time user" — a bare `umactually` invocation from a
- * fresh install. Returns true ONLY when ALL of:
- *   - stdout is a real TTY (no CI noise; no JSON-parser pollution),
- *   - no programmatic flags in argv (the operator isn't piping /
- *     scripting; they're at a terminal),
- *   - no saved config at `~/.umactually/config.json` (the wizard has
- *     never run for this user).
+ * Whether the bare-invocation quickstart SHOULD run — independent of
+ * whether the operator has run init. Returns true ONLY when ALL of:
+ *   - not in a CI environment (CI env vars set),
+ *   - stdout is a real TTY (no JSON-parser pollution; no piped stdin),
+ *   - no programmatic flags in argv (operator isn't scripting).
  *
- * When this returns true, `dispatch` calls `runFirstRunQuickstart`
- * instead of `runReviewBranch` — the loud `cli: --api-url is required`
- * + `pick a mode:` banner is REPLACED with a compact quickstart that
- * leads with `umactually init`. Every other case (non-TTY, programmatic
- * flags, config-already-exists) preserves the existing loud banner so
- * the back-compat invariants in:
+ * The function deliberately does NOT check whether a saved config
+ * exists. That decision is made later, inside `dispatch`, where the
+ * loader returns `null` for missing/malformed configs and the
+ * quickstart variant is picked accordingly:
+ *   - config exists → `runLoadedConfigQuickstart` (no init line)
+ *   - no config     → `runFirstRunQuickstart` (leads with init)
+ * Both variants REPLACE the loud `cli: --api-url is required` +
+ * `pick a mode:` banner that would otherwise fire when the operator
+ * runs `umactually` from a fresh shell.
+ *
+ * Every other case (non-TTY, CI, programmatic flags like `--json` /
+ * `--api-*` / `--model`) preserves the existing loud banner so the
+ * back-compat invariants in:
  *   - test/unit/cli-bare-invocation.test.ts (CLI_SYMBIOTIC-2)
  *   - test/unit/cli-subcommands.test.ts:CLI-SUB-005
  * keep passing.
- *
- * No-ops on Windows when `process.env.USERPROFILE` is unset (CI
- * runners without HOME) — we don't want to misattribute an
- * operator's first run; treat the missing HOME as "not first-run"
- * and fall through to the loud banner.
  */
-function isFirstRunUser(argv) {
-    // process.stdout.isTTY alone is NOT a reliable CI detector —
-    // interactive shells without a controlling TTY, test runners, and
-    // SSH sessions can all have isTTY=true while still being
-    // automation. The CI env vars below are the canonical signals
-    // used by every CI platform umactually integrates with; if any is
-    // set we fall through to the loud banner regardless of TTY state.
+function isQuickstartEligible(argv) {
     if (looksLikeCIEnv())
         return false;
     if (process.stdout.isTTY !== true)
         return false;
     if (argvIncludesProgrammaticFlags(argv))
-        return false;
-    const configPath = resolveSavedConfigPath();
-    if (configPath === null)
-        return false;
-    if ((0,external_node_fs_.existsSync)(configPath))
         return false;
     return true;
 }
@@ -5255,17 +5340,6 @@ function argvIncludesProgrammaticFlags(argv) {
         a === "--model" ||
         a.startsWith("--platform"));
 }
-function resolveSavedConfigPath() {
-    // We deliberately do NOT use `readSavedConfig` here — that path is
-    // expensive (parses + validates JSON, walks both repo + global). For
-    // the quickstart gate we only need a cheap existence check on the
-    // global path (the canonical first-install target); the repo-scope
-    // file is opt-in and would not gate the "first run" reminder.
-    const home = process.env["HOME"] ?? process.env["USERPROFILE"];
-    if (typeof home !== "string" || home.length === 0)
-        return null;
-    return (0,external_node_path_namespaceObject.join)(home, ".umactually", "config.json");
-}
 /**
  * The compact first-run quickstart. Replaces the noisy
  * `cli: --api-url is required` + `pick a mode:` banner for first-time
@@ -5296,6 +5370,85 @@ function runFirstRunQuickstart() {
     // return a minimal `{ exitCode }` result. Callers capture via
     // `process.stdout.write` interception (see test helpers).
     process.stdout.write(`${BRAND_PREFIX}${FIRST_RUN_QUICKSTART}`);
+    return Promise.resolve({ exitCode: 0 });
+}
+/**
+ * Loaded-config quickstart for the post-init case. Same shape as
+ * `FIRST_RUN_QUICKSTART` (three review commands + `--help` pointer)
+ * with two changes:
+ *
+ *   1. First line confirms what loaded instead of welcoming the user
+ *      to the tool. Format: `Loaded config (provider=<X>, model=<Y>).`
+ *      `apiUrl` is intentionally omitted from the confirmation line
+ *      to keep the quickstart single-screen and avoid leaking the
+ *      provider URL to anyone shoulder-surfing. Operators who want
+ *      the URL can run `umactually --show-config`.
+ *   2. The `umactually init` block is dropped — the operator has
+ *      already configured; pointing them at the wizard again would
+ *      be condescending. The two review-command lines stay in their
+ *      exact same position so visual muscle memory carries over.
+ */
+function renderLoadedConfigQuickstart(config) {
+    const providerLabel = `provider=${config.provider}`;
+    const modelLabel = config.model !== undefined ? `, model=${config.model}` : "";
+    const header = `Loaded config (${providerLabel}${modelLabel}). Run:`;
+    return [
+        header,
+        "",
+        "  umactually review --api-key <key>                       PR review (CI)",
+        "  umactually --files <path>... --api-key <key>           Local files (no CI)",
+        "  umactually doctor                                    Verify your setup",
+        "",
+        "Run `umactually --show-config` to inspect the loaded values;",
+        "run `umactually --help` for the full reference.",
+        "",
+    ].join("\n");
+}
+function runLoadedConfigQuickstart(config, path) {
+    process.stdout.write(`${BRAND_PREFIX}${renderLoadedConfigQuickstart(config)}`);
+    void path;
+    return Promise.resolve({ exitCode: 0 });
+}
+/**
+ * `umactually --show-config` — print the effective saved config and
+ * exit 0. Read-only; never opens a network connection; never prompts.
+ *
+ * The output is a field-by-field rendered multiline string so future
+ * secret fields on `SavedConfig` (the schema is intentionally future-
+ * proofed) cannot accidentally leak through this surface — any field
+ * added to `SavedConfig` must be explicitly added here AND to
+ * `serializeSavedConfig`'s "unknown key is rejected at the type level"
+ * rule, which is exactly the trust-model property the S6 contract
+ * requires.
+ *
+ * Decision: lives at the dispatch layer (not under `umactually doctor`)
+ * because every other "what's currently effective" tool (`kubectl
+ * config view`, `aws configure get`, `git config --list --show-origin`)
+ * is top-level, not under a verification subcommand. Operators look
+ * for `--show-config` at the root.
+ */
+function renderShowConfig(config, path) {
+    const lines = [
+        `saved config: ${path}`,
+        `  provider: ${config.provider}`,
+    ];
+    if (config.apiUrl !== undefined)
+        lines.push(`  apiUrl:   ${config.apiUrl}`);
+    if (config.model !== undefined)
+        lines.push(`  model:    ${config.model}`);
+    return lines.join("\n") + "\n";
+}
+function runShowConfig() {
+    const savedRead = tryReadSavedConfig();
+    if (savedRead.warning !== null) {
+        process.stderr.write(`umactually: ${savedRead.warning}\n`);
+        return Promise.resolve({ exitCode: 1 });
+    }
+    if (savedRead.config === null) {
+        process.stdout.write(`${BRAND_PREFIX}no saved config (run \`umactually init\` to create one)\n`);
+        return Promise.resolve({ exitCode: 0 });
+    }
+    process.stdout.write(renderShowConfig(savedRead.config, savedRead.path));
     return Promise.resolve({ exitCode: 0 });
 }
 async function runReviewBranch(args) {
@@ -20647,7 +20800,111 @@ function resolveDefaultBranch(cwd) {
     }
 }
 
+;// CONCATENATED MODULE: ./src/cli/apply-saved-config.ts
+// SPDX-License-Identifier: MIT
+// Apply saved-config values to fields that fell through to their schema
+// default after flag + env resolution. Single source of truth for the
+// "saved config supplies defaults" behavior shared by `umactually review`
+// and `umactually --files`.
+//
+// Resolution order (final, after this function runs):
+//   - explicit CLI flag    → source = "flag"
+//   - environment variable  → source = "env"
+//   - saved config (~/.umactually/config.json) → source = "savedConfig"
+//   - schema default        → source = "default"
+//
+// `apiKey` deliberately does NOT participate: the S6 contract (v0.6.23)
+// bans persisting credentials to disk. The `SavedConfig` type excludes
+// `apiKey`, so there is no value to read even if a caller passes one.
+// `apiKey` resolves via flag > `UMACTUALLY_API_KEY` env > error.
+const SAVED_CONFIG_FIELDS = (/* unused pure expression or super */ null && (["provider", "apiUrl", "model"]));
+/**
+ * Pure resolver. Returns a NEW `SchemaResolvedCliArgs` with `provider` /
+ * `apiUrl` / `model` overridden from `saved` when the current
+ * `fieldProvenance[field].source === "default"`. Fields whose values
+ * were already supplied by `--flag` or env var are left alone — flag
+ * and env ALWAYS win over saved config (matches the contract for every
+ * other well-behaved tool: flag > env > persisted > default).
+ *
+ * `saved === null` (no config file present, or read failed) is a
+ * no-op; the resolver returns `resolved` unchanged with an empty
+ * `applied` list.
+ *
+ * `path` is required when `saved !== null` (it tells the operator
+ * which file supplied the value). The empty-string placeholder is
+ * reserved for the `saved === null` fast path.
+ */
+function applySavedConfig(resolved, saved, path) {
+    if (saved === null) {
+        return { resolved, applied: [] };
+    }
+    let current = resolved;
+    const applied = [];
+    if (saved.provider !== undefined) {
+        const next = maybeOverride(current, "provider", saved.provider, path);
+        if (next !== null) {
+            current = next;
+            applied.push("provider");
+        }
+    }
+    // `apiUrl` and `model` are optional on SavedConfig. Skip when absent
+    // — no override, no provenance flip.
+    if (saved.apiUrl !== undefined) {
+        const next = maybeOverride(current, "apiUrl", saved.apiUrl, path);
+        if (next !== null) {
+            current = next;
+            applied.push("apiUrl");
+        }
+    }
+    if (saved.model !== undefined) {
+        const next = maybeOverride(current, "model", saved.model, path);
+        if (next !== null) {
+            current = next;
+            applied.push("model");
+        }
+    }
+    return { resolved: current, applied };
+}
+/**
+ * Override a single field IFF its current provenance is "default".
+ * Returns the new `SchemaResolvedCliArgs` on success, `null` when the
+ * field should be left alone (already supplied by flag or env).
+ *
+ * Pure function over `current.fieldProvenance[field]` and the field's
+ * current value. Does NOT mutate — returns a new object. The nested
+ * `fieldProvenance` map is also shallow-cloned so subsequent
+ * overrides to a different field don't accidentally leak the
+ * earlier provenance update.
+ */
+function maybeOverride(current, field, value, path) {
+    const provenance = current.fieldProvenance[field];
+    if (provenance === undefined) {
+        // Field wasn't resolved by `resolveFromSchema`. This shouldn't
+        // happen because we only pass through `provider` / `apiUrl` /
+        // `model`, all of which are in `FIELDS`. Refuse to override
+        // when the invariant is broken — preserves the byte-exact existing
+        // behavior for edge cases.
+        return null;
+    }
+    if (provenance.source !== "default") {
+        // Flag or env already supplied a value. Saved config is the
+        // strictly-LOWER priority layer and MUST NOT override.
+        return null;
+    }
+    const newProvenance = { source: "savedConfig", path };
+    const newFieldProvenance = {
+        ...current.fieldProvenance,
+        [field]: newProvenance,
+    };
+    return Object.assign({}, current, {
+        [field]: value,
+        fieldProvenance: newFieldProvenance,
+    });
+}
+
 ;// CONCATENATED MODULE: ./src/cli.ts
+
+
 
 
 
@@ -21051,8 +21308,25 @@ async function runCli(args, cwd) {
     }
     // Stage 2: schema-driven env fallbacks and type coercion before validation.
     const envResolved = resolveFromSchema(parsed, process.env);
+    // Stage 2.5: saved-config defaults. Reads `~/.umactually/config.json`
+    // (or `<cwd>/umactually.config.json` when present) and overrides any
+    // field whose current source is the schema default. Flag > env > saved
+    // > default. The apiKey NEVER participates in saved config (S6
+    // contract: credentials are not persisted to disk) — it resolves via
+    // --api-key > UMACTUALLY_API_KEY env > the existing `--api-key is
+    // required` validation error.
+    //
+    // A malformed config file is tolerated (the runtime path is
+    // fall-through to defaults) but the warning is surfaced to stderr
+    // so the operator can `cat` the file and decide whether to re-run
+    // `umactually init` or `rm` it.
+    const savedRead = tryReadSavedConfig({ cwd });
+    if (savedRead.warning !== null) {
+        process.stderr.write(`umactually: ${savedRead.warning}\n`);
+    }
+    const { resolved: savedResolved } = applySavedConfig(envResolved, savedRead.config, savedRead.path);
     // Stage 3: resolve missing flags from cwd (when applicable).
-    const { resolved, generatedArtifacts } = resolveContext(envResolved, cwd, process.env);
+    const { resolved, generatedArtifacts } = resolveContext(savedResolved, cwd, process.env);
     try {
         // Stage 4: validate the resolved (post-derivation) args.
         let errors = collectValidationErrors(resolved);
