@@ -25,8 +25,6 @@ import { join } from "node:path";
 
 const dispatchModule = "../../src/cli/dispatch.js";
 
-type DispatchFn = (argv: readonly string[]) => Promise<{ readonly exitCode: number }>;
-
 interface StdoutStderrCapture {
   readonly restore: () => void;
   readonly stdout: { readonly text: string };

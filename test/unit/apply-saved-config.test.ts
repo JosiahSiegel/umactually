@@ -15,7 +15,7 @@
 // boundary so a future relaxation of the S6 contract would surface as a
 // compile error here, not as a silent leak.
 
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { describe, expect, it } from "vitest";
 import { parseCliArgs } from "../../src/cli/parse-args.js";
 import { resolveFromSchema, type SchemaResolvedCliArgs } from "../../src/config/field-resolution.js";
 import { applySavedConfig } from "../../src/cli/apply-saved-config.js";
@@ -39,7 +39,6 @@ function resolvedWithFlag(
 }
 
 function resolvedWithEnv(
-  field: "provider" | "apiUrl" | "model",
   envName: string,
   envValue: string,
 ): SchemaResolvedCliArgs {
@@ -130,7 +129,7 @@ describe("applySavedConfig (v0.6.26)", () => {
 
   it("APPLY-5: env var already set → saved does NOT override (env wins)", () => {
     // UMACTUALLY_PROVIDER is the canonical env var for `provider`.
-    const before = resolvedWithEnv("provider", "UMACTUALLY_PROVIDER", "anthropic");
+    const before = resolvedWithEnv("UMACTUALLY_PROVIDER", "anthropic");
     expect(before.provider).toBe("anthropic");
     expect(before.fieldProvenance["provider"]?.source).toBe("env");
 
