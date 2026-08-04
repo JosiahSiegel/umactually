@@ -4,20 +4,25 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 /**
- * Tests for the bare-`umactually` first-run compact quickstart
- * (added in v0.6.24).
+ * Tests for the bare-`umactually` compact quickstart (added in v0.6.24,
+ * extended to the loaded-config case in v0.6.26).
  *
  * Contract (pinned):
+ *   v0.6.24 contract (unchanged):
  *   - Bare `umactually` on a TTY with no `~/.umactually/config.json`
- *     and no programmatic flags REPLACES the loud
- *     `cli: --api-url is required` + `pick a mode:` banner with a
- *     compact quickstart that leads with `umactually init`. Exits 0.
- *   - Bare `umactually` non-TTY (piped, CI) keeps the loud banner
- *     — no quickstart in CI (no TTY noise / no JSON-parser pollution).
- *   - Bare `umactually` when a saved config already exists keeps the
- *     loud banner (operator has set up; they want validation feedback).
- *   - Programmatic flag invocations (`--json`, `--no-color`, `--api-*`,
- *     `--model`, `--platform`) keep the loud banner — not first run.
+ *     and no programmatic flags REPLACES the loud `cli: --api-url is
+ *     required` + `pick a mode:` banner with a compact quickstart
+ *     that leads with `umactually init`. Exits 0.
+ *   - Bare `umactually` non-TTY (piped, CI) keeps the loud banner.
+ *   - Programmatic flag invocations (`--json`, `--no-color`,
+ *     `--api-*`, `--model`, `--platform`) keep the loud banner.
+ *
+ *   v0.6.26 contract additions:
+ *   - Bare `umactually` when a saved config ALREADY EXISTS also runs
+ *     the compact quickstart, but with a different first line that
+ *     confirms what's loaded (`Loaded config (provider=X, model=Y).`)
+ *     AND WITHOUT the `umactually init` block — the operator has
+ *     already configured.
  *
  * Back-compat regression guards (CLI-SUB-005, CLI-SYMBIOTIC-2):
  *   - `test/unit/cli-subcommands.test.ts:CLI-SUB-005` runs dispatch([])
@@ -27,8 +32,7 @@ import { join } from "node:path";
  *     quickstart branch.
  *
  * Industry-standard reference: matches `rustup`, `fnm`, `volta`,
- * `nvm`, `pip`, `brew install` first-run output. Single screen,
- * leads with the wizard, no `--dry-run` clutter, exit 0.
+ * `nvm`, `pip`, `brew install` first-run output. Single screen, exit 0.
  */
 
 const dispatchModule = "../../src/cli/dispatch.js";
@@ -196,18 +200,27 @@ describe("CLI first-run compact quickstart (v0.6.24)", () => {
     expect(capture.stderr.text).toContain("cli: --api-url is required");
   });
 
-  it("QUICK-3: bare `umactually` when a saved config exists keeps the loud banner", async () => {
+  it("QUICK-3: bare `umactually` when a saved config exists shows the loaded quickstart (no init line)", async () => {
+    // v0.6.26 contract change: previously (v0.6.25) the loud banner
+    // fired when a saved config existed. Now the compact quickstart
+    // also fires for the post-init case, but with a different first
+    // line that confirms what's loaded AND WITHOUT the `umactually
+    // init` line — the operator has already configured and pointing
+    // them at the wizard again would be condescending.
     process.stdout.isTTY = true;
-    // Pretend the operator already ran `umactually init` previously.
     if (tempHome !== null) {
       mkdirSync(join(tempHome, ".umactually"), { recursive: true });
       writeFileSync(
         join(tempHome, ".umactually", "config.json"),
-        JSON.stringify({ schemaVersion: 1, provider: "openai-compatible" }),
+        JSON.stringify({
+          schemaVersion: 1,
+          provider: "openai-compatible",
+          apiUrl: "https://api.example.com/v1",
+          model: "gpt-5-mini",
+        }),
       );
     }
     const dispatch = await loadDispatch();
-
     const capture = captureStdoutStderr();
     try {
       await dispatch([]);
@@ -215,11 +228,38 @@ describe("CLI first-run compact quickstart (v0.6.24)", () => {
       capture.restore();
     }
 
-    // No quickstart — operator already set up.
-    expect(capture.stdout.text).not.toMatch(/Welcome to umactually/);
-    // The loud banner fires — operator gets validation feedback.
-    expect(capture.stderr.text).toContain("cli: --api-url is required");
-    expect(capture.stderr.text).toContain("pick a mode:");
+    expect(capture.stdout.text).toMatch(/Loaded config \(provider=openai-compatible, model=gpt-5-mini\)/);
+    expect(capture.stdout.text).not.toContain("Get started with the setup wizard");
+    expect(capture.stdout.text).not.toContain("\n  umactually init\n");
+    expect(capture.stdout.text).toContain("umactually review --api-key");
+    expect(capture.stdout.text).toContain("umactually --files");
+    expect(capture.stdout.text).toContain("umactually doctor");
+    expect(capture.stderr.text).not.toContain("cli: --api-url is required");
+    expect(capture.stderr.text).not.toContain("pick a mode:");
+  });
+
+  it("QUICK-3b: loaded quickstart works without `model` field", async () => {
+    // Some operators run init without a custom model — the wizard
+    // leaves `model` undefined and the live path uses schema default
+    // "auto". The loaded quickstart should NOT print `(model=undefined)`.
+    process.stdout.isTTY = true;
+    if (tempHome !== null) {
+      mkdirSync(join(tempHome, ".umactually"), { recursive: true });
+      writeFileSync(
+        join(tempHome, ".umactually", "config.json"),
+        JSON.stringify({ schemaVersion: 1, provider: "anthropic" }),
+      );
+    }
+    const dispatch = await loadDispatch();
+    const capture = captureStdoutStderr();
+    try {
+      await dispatch([]);
+    } finally {
+      capture.restore();
+    }
+    expect(capture.stdout.text).toContain("Loaded config (provider=anthropic).");
+    expect(capture.stdout.text).not.toContain("model=undefined");
+    expect(capture.stdout.text).not.toContain("model=null");
   });
 
   it("QUICK-4: programmatic flags keep the loud banner (--json / --no-color / --api-* / --model / --platform)", async () => {

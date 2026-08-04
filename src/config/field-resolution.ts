@@ -10,7 +10,7 @@ import {
 } from "./parsers.js";
 
 export type FieldProvenance = {
-  readonly source: "flag" | "env" | "default";
+  readonly source: "flag" | "env" | "savedConfig" | "default";
   readonly envName?: string;
 };
 

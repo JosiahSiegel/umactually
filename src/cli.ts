@@ -17,6 +17,8 @@ import {
   type FieldProvenanceMap,
   type SchemaResolvedCliArgs,
 } from "./config/field-resolution.js";
+import { tryReadSavedConfig } from "./cli/load-saved-config.js";
+import { applySavedConfig } from "./cli/apply-saved-config.js";
 import { BRAND_PREFIX } from "./util/brand.js";
 import { formatError } from "./util/error.js";
 import { pathToFileUrl } from "./util/url.js";
@@ -493,9 +495,31 @@ export async function runCli(args: readonly string[], cwd: string): Promise<CliE
   // Stage 2: schema-driven env fallbacks and type coercion before validation.
   const envResolved = resolveFromSchema(parsed, process.env);
 
+  // Stage 2.5: saved-config defaults. Reads `~/.umactually/config.json`
+  // (or `<cwd>/umactually.config.json` when present) and overrides any
+  // field whose current source is the schema default. Flag > env > saved
+  // > default. The apiKey NEVER participates in saved config (S6
+  // contract: credentials are not persisted to disk) — it resolves via
+  // --api-key > UMACTUALLY_API_KEY env > the existing `--api-key is
+  // required` validation error.
+  //
+  // A malformed config file is tolerated (the runtime path is
+  // fall-through to defaults) but the warning is surfaced to stderr
+  // so the operator can `cat` the file and decide whether to re-run
+  // `umactually init` or `rm` it.
+  const savedRead = tryReadSavedConfig({ cwd });
+  if (savedRead.warning !== null) {
+    process.stderr.write(`umactually: ${savedRead.warning}\n`);
+  }
+  const { resolved: savedResolved } = applySavedConfig(
+    envResolved,
+    savedRead.config,
+    savedRead.path,
+  );
+
   // Stage 3: resolve missing flags from cwd (when applicable).
   const { resolved, generatedArtifacts } = resolveContext(
-    envResolved,
+    savedResolved,
     cwd,
     process.env,
   );

@@ -2,10 +2,9 @@
 // Subcommand dispatch layer. Pure routing apart from delegated CLI output.
 
 import { execFile as execFileCallback } from "node:child_process";
-import { existsSync } from "node:fs";
 import { stat } from "node:fs/promises";
 import { homedir } from "node:os";
-import { dirname, join, resolve } from "node:path";
+import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 
@@ -14,6 +13,8 @@ import { runCli, runVersion } from "../cli.js";
 import { classifyReviewArtifact } from "./check-review-artifact.js";
 import { formatDoctorHuman, formatDoctorJson, runDoctor } from "./doctor.js";
 import { printContextualHelp } from "./help.js";
+import { tryReadSavedConfig } from "./load-saved-config.js";
+import type { SavedConfig } from "../config/saved-config.js";
 import {
   formatInitHuman,
   formatInitJson,
@@ -83,18 +84,42 @@ export async function dispatch(argv: readonly string[]): Promise<DispatchResult 
 
   const command = firstPositionalToken(argv);
   if (command === null) {
-    // First-time-user compact quickstart REPLACES the noisy
-    // validation + modes banner for bare invocations from a fresh
-    // install (TTY + no saved config + no programmatic flags). The
+    // Top-level `--show-config` is its own read-only command: print the
+    // effective saved config and exit 0 (or fall through to the loud
+    // banner if no saved config exists). Implemented at this layer so
+    // the operator can run `umactually --show-config` from anywhere —
+    // including CI — without going through the validator.
+    if (argv.includes("--show-config")) {
+      return runShowConfig();
+    }
+
+    // Compact quickstart for interactive bare invocations. Replaces
+    // the noisy validation + modes banner for fresh-install TTY users
+    // (no saved config) AND for the post-init case where the operator
+    // has run `umactually init` already (saved config present). The
     // existing loud banner is preserved for every other case:
-    //   - non-TTY / CI: existing banner, no quickstart (existing tests
-    //     in test/unit/cli-bare-invocation.test.ts and
+    //   - non-TTY / CI: existing banner, no quickstart (existing
+    //     tests in test/unit/cli-bare-invocation.test.ts and
     //     test/unit/cli-subcommands.test.ts:CLI-SUB-005 pin this).
-    //   - saved config already exists: existing banner (operator has
-    //     set up; they want validation feedback).
     //   - programmatic flags (`--json`, `--api-*`, etc.): existing
-    //     banner (operator clearly knows what they're doing).
-    if (isFirstRunUser(argv)) {
+    //     banner (operator clearly knows what they're doing; the
+    //     intended commands are `umactually review ...`).
+    //
+    // Two variants:
+    //   - First run (no saved config): quickstart leads with
+    //     `umactually init` (operator needs to run the wizard first).
+    //   - Post-init (saved config exists): quickstart drops the
+    //     `umactually init` line and confirms what's loaded (provider +
+    //     model). The three review commands below it are unchanged so
+    //     the operator's muscle memory carries over.
+    if (isQuickstartEligible(argv)) {
+      const savedRead = tryReadSavedConfig();
+      if (savedRead.config !== null) {
+        return runLoadedConfigQuickstart(savedRead.config, savedRead.path);
+      }
+      if (savedRead.warning !== null) {
+        process.stderr.write(`umactually: ${savedRead.warning}\n`);
+      }
       return runFirstRunQuickstart();
     }
     return runReviewBranch(argv);
@@ -131,42 +156,33 @@ function applyColorPolicy(argv: readonly string[]): boolean {
 }
 
 /**
- * Detect a "first-time user" — a bare `umactually` invocation from a
- * fresh install. Returns true ONLY when ALL of:
- *   - stdout is a real TTY (no CI noise; no JSON-parser pollution),
- *   - no programmatic flags in argv (the operator isn't piping /
- *     scripting; they're at a terminal),
- *   - no saved config at `~/.umactually/config.json` (the wizard has
- *     never run for this user).
+ * Whether the bare-invocation quickstart SHOULD run — independent of
+ * whether the operator has run init. Returns true ONLY when ALL of:
+ *   - not in a CI environment (CI env vars set),
+ *   - stdout is a real TTY (no JSON-parser pollution; no piped stdin),
+ *   - no programmatic flags in argv (operator isn't scripting).
  *
- * When this returns true, `dispatch` calls `runFirstRunQuickstart`
- * instead of `runReviewBranch` — the loud `cli: --api-url is required`
- * + `pick a mode:` banner is REPLACED with a compact quickstart that
- * leads with `umactually init`. Every other case (non-TTY, programmatic
- * flags, config-already-exists) preserves the existing loud banner so
- * the back-compat invariants in:
+ * The function deliberately does NOT check whether a saved config
+ * exists. That decision is made later, inside `dispatch`, where the
+ * loader returns `null` for missing/malformed configs and the
+ * quickstart variant is picked accordingly:
+ *   - config exists → `runLoadedConfigQuickstart` (no init line)
+ *   - no config     → `runFirstRunQuickstart` (leads with init)
+ * Both variants REPLACE the loud `cli: --api-url is required` +
+ * `pick a mode:` banner that would otherwise fire when the operator
+ * runs `umactually` from a fresh shell.
+ *
+ * Every other case (non-TTY, CI, programmatic flags like `--json` /
+ * `--api-*` / `--model`) preserves the existing loud banner so the
+ * back-compat invariants in:
  *   - test/unit/cli-bare-invocation.test.ts (CLI_SYMBIOTIC-2)
  *   - test/unit/cli-subcommands.test.ts:CLI-SUB-005
  * keep passing.
- *
- * No-ops on Windows when `process.env.USERPROFILE` is unset (CI
- * runners without HOME) — we don't want to misattribute an
- * operator's first run; treat the missing HOME as "not first-run"
- * and fall through to the loud banner.
  */
-function isFirstRunUser(argv: readonly string[]): boolean {
-  // process.stdout.isTTY alone is NOT a reliable CI detector —
-  // interactive shells without a controlling TTY, test runners, and
-  // SSH sessions can all have isTTY=true while still being
-  // automation. The CI env vars below are the canonical signals
-  // used by every CI platform umactually integrates with; if any is
-  // set we fall through to the loud banner regardless of TTY state.
+function isQuickstartEligible(argv: readonly string[]): boolean {
   if (looksLikeCIEnv()) return false;
   if (process.stdout.isTTY !== true) return false;
   if (argvIncludesProgrammaticFlags(argv)) return false;
-  const configPath = resolveSavedConfigPath();
-  if (configPath === null) return false;
-  if (existsSync(configPath)) return false;
   return true;
 }
 
@@ -213,17 +229,6 @@ function argvIncludesProgrammaticFlags(argv: readonly string[]): boolean {
   );
 }
 
-function resolveSavedConfigPath(): string | null {
-  // We deliberately do NOT use `readSavedConfig` here — that path is
-  // expensive (parses + validates JSON, walks both repo + global). For
-  // the quickstart gate we only need a cheap existence check on the
-  // global path (the canonical first-install target); the repo-scope
-  // file is opt-in and would not gate the "first run" reminder.
-  const home = process.env["HOME"] ?? process.env["USERPROFILE"];
-  if (typeof home !== "string" || home.length === 0) return null;
-  return join(home, ".umactually", "config.json");
-}
-
 /**
  * The compact first-run quickstart. Replaces the noisy
  * `cli: --api-url is required` + `pick a mode:` banner for first-time
@@ -255,6 +260,92 @@ function runFirstRunQuickstart(): Promise<DispatchResult> {
   // return a minimal `{ exitCode }` result. Callers capture via
   // `process.stdout.write` interception (see test helpers).
   process.stdout.write(`${BRAND_PREFIX}${FIRST_RUN_QUICKSTART}`);
+  return Promise.resolve({ exitCode: 0 });
+}
+
+/**
+ * Loaded-config quickstart for the post-init case. Same shape as
+ * `FIRST_RUN_QUICKSTART` (three review commands + `--help` pointer)
+ * with two changes:
+ *
+ *   1. First line confirms what loaded instead of welcoming the user
+ *      to the tool. Format: `Loaded config (provider=<X>, model=<Y>).`
+ *      `apiUrl` is intentionally omitted from the confirmation line
+ *      to keep the quickstart single-screen and avoid leaking the
+ *      provider URL to anyone shoulder-surfing. Operators who want
+ *      the URL can run `umactually --show-config`.
+ *   2. The `umactually init` block is dropped — the operator has
+ *      already configured; pointing them at the wizard again would
+ *      be condescending. The two review-command lines stay in their
+ *      exact same position so visual muscle memory carries over.
+ */
+function renderLoadedConfigQuickstart(config: SavedConfig): string {
+  const providerLabel = `provider=${config.provider}`;
+  const modelLabel = config.model !== undefined ? `, model=${config.model}` : "";
+  const header = `Loaded config (${providerLabel}${modelLabel}). Run:`;
+  return [
+    header,
+    "",
+    "  umactually review --api-key <key>                       PR review (CI)",
+    "  umactually --files <path>... --api-key <key>           Local files (no CI)",
+    "  umactually doctor                                    Verify your setup",
+    "",
+    "Run `umactually --show-config` to inspect the loaded values;",
+    "run `umactually --help` for the full reference.",
+    "",
+  ].join("\n");
+}
+
+function runLoadedConfigQuickstart(
+  config: SavedConfig,
+  path: string,
+): Promise<DispatchResult> {
+  process.stdout.write(`${BRAND_PREFIX}${renderLoadedConfigQuickstart(config)}`);
+  void path;
+  return Promise.resolve({ exitCode: 0 });
+}
+
+/**
+ * `umactually --show-config` — print the effective saved config and
+ * exit 0. Read-only; never opens a network connection; never prompts.
+ *
+ * The output is a field-by-field rendered multiline string so future
+ * secret fields on `SavedConfig` (the schema is intentionally future-
+ * proofed) cannot accidentally leak through this surface — any field
+ * added to `SavedConfig` must be explicitly added here AND to
+ * `serializeSavedConfig`'s "unknown key is rejected at the type level"
+ * rule, which is exactly the trust-model property the S6 contract
+ * requires.
+ *
+ * Decision: lives at the dispatch layer (not under `umactually doctor`)
+ * because every other "what's currently effective" tool (`kubectl
+ * config view`, `aws configure get`, `git config --list --show-origin`)
+ * is top-level, not under a verification subcommand. Operators look
+ * for `--show-config` at the root.
+ */
+function renderShowConfig(config: SavedConfig, path: string): string {
+  const lines: string[] = [
+    `saved config: ${path}`,
+    `  provider: ${config.provider}`,
+  ];
+  if (config.apiUrl !== undefined) lines.push(`  apiUrl:   ${config.apiUrl}`);
+  if (config.model !== undefined) lines.push(`  model:    ${config.model}`);
+  return lines.join("\n") + "\n";
+}
+
+function runShowConfig(): Promise<DispatchResult> {
+  const savedRead = tryReadSavedConfig();
+  if (savedRead.warning !== null) {
+    process.stderr.write(`umactually: ${savedRead.warning}\n`);
+    return Promise.resolve({ exitCode: 1 });
+  }
+  if (savedRead.config === null) {
+    process.stdout.write(
+      `${BRAND_PREFIX}no saved config (run \`umactually init\` to create one)\n`,
+    );
+    return Promise.resolve({ exitCode: 0 });
+  }
+  process.stdout.write(renderShowConfig(savedRead.config, savedRead.path));
   return Promise.resolve({ exitCode: 0 });
 }
 
