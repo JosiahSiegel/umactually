@@ -148,5 +148,41 @@ describe("tryReadSavedConfig (v0.6.26)", () => {
     expect(result!.config).toBeNull();
     expect(result!.warning).not.toBeNull();
     expect(result!.warning).toMatch(/corrupt saved config/i);
+    // v0.6.26: the failure path now threads the actual failing file
+    // path through (not the synthesized global path). Regression
+    // guard for self-review thread #9 on PR #180.
+    expect(result!.path).toBe(join(tempHome!, ".umactually", "config.json"));
+  });
+
+  it("LOAD-5: repo-scoped corruption → path field is the repo path (regression for thread #9 on PR #180)", () => {
+    // Regression: prior to the v0.6.26 fix, tryReadSavedConfig's
+    // failure branch returned SAVED_CONFIG_GLOBAL_PATH(homeDir)
+    // even when the actual failing file was the repo-scoped
+    // `./umactually.config.json`. An operator running
+    // `umalready --show-config` against a corrupt repo file would
+    // see the wrong path in the header. The fix threads the real
+    // failing path through the ReadSavedConfigResult shape.
+    writeFileSync(
+      join(tempCwd!, "umactually.config.json"),
+      "{ not valid JSON either",
+    );
+
+    let result;
+    expect(() => {
+      result = tryReadSavedConfig({
+        homeDir: tempHome!,
+        cwd: tempCwd!,
+      });
+    }).not.toThrow();
+
+    expect(result!.config).toBeNull();
+    expect(result!.warning).not.toBeNull();
+    // The repo-scope path is checked FIRST in readSavedConfig's
+    // candidate walk, so the failure path matches the repo file.
+    expect(result!.path).toBe(join(tempCwd!, "umactually.config.json"));
+    // And specifically NOT the global path — this is the regression
+    // sentinel. If this assertion ever fires, the synthesized-path
+    // bug has regressed.
+    expect(result!.path).not.toBe(join(tempHome!, ".umactually", "config.json"));
   });
 });

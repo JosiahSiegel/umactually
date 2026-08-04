@@ -82,17 +82,24 @@ export async function dispatch(argv: readonly string[]): Promise<DispatchResult 
     return argv.includes("--no-color") ? 0 : { exitCode: 0, stdout };
   }
 
+  // Top-level `--show-config` is its own read-only command: print the
+  // effective saved config and exit 0. Implemented at this layer so
+  // the operator can run `umactually --show-config` from anywhere —
+  // including `umactually review --show-config` or
+  // `umactually init --show-config` — without going through the
+  // validator or any other command's argument parser. Self-review
+  // thread PRRT_kwDOTHG5gM6WY88P on PR #180 flagged that putting the
+  // check inside `command === null` made `umactually review
+  // --show-config` silently pass the flag through to the review
+  // validator instead of running `runShowConfig`. Hoisting above
+  // `firstPositionalToken(argv)` short-circuits on the flag presence
+  // before any command routing.
+  if (argv.includes("--show-config")) {
+    return runShowConfig();
+  }
+
   const command = firstPositionalToken(argv);
   if (command === null) {
-    // Top-level `--show-config` is its own read-only command: print the
-    // effective saved config and exit 0 (or fall through to the loud
-    // banner if no saved config exists). Implemented at this layer so
-    // the operator can run `umactually --show-config` from anywhere —
-    // including CI — without going through the validator.
-    if (argv.includes("--show-config")) {
-      return runShowConfig();
-    }
-
     // Compact quickstart for interactive bare invocations. Replaces
     // the noisy validation + modes banner for fresh-install TTY users
     // (no saved config) AND for the post-init case where the operator

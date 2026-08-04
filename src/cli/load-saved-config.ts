@@ -16,7 +16,6 @@
 
 import {
   readSavedConfig,
-  SAVED_CONFIG_GLOBAL_PATH,
   type ReadSavedConfigResult,
   type SavedConfig,
 } from "../config/saved-config.js";
@@ -70,7 +69,7 @@ export function tryReadSavedConfig(
   // the precise file path can parse the warning.
   return {
     config: null,
-    path: SAVED_CONFIG_GLOBAL_PATH(homeDir),
+    path: result.path,
     warning: result.message,
   };
 }
