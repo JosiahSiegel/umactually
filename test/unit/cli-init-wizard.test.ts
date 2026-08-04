@@ -832,4 +832,76 @@ describe("init wizard — T6 overwrite gate + JSON guard behavioral pins", () =>
     // The wizard never prompts in --json mode; the reader must be untouched.
     expect(readerTouched.touched).toBe(false);
   });
+
+  // -----------------------------------------------------------------
+  // (8) T4 CI-workflow overwrite decline (F1 audit gap): a pre-existing
+  //     CI workflow file at <cwd>/.github/workflows/umactually-pr-review.yml
+  //     with `--ci auto` triggers the interactive overwrite prompt. A
+  //     "n" answer must:
+  //       - leave the saved config save intact (outcome="ok"),
+  //       - surface `ciGenerated: []`,
+  //       - emit a `ci-generation` check with status:"skip" and the
+  //         canonical decline message,
+  //       - leave the on-disk CI workflow file byte-identical.
+  //     No saved config is pre-seeded — the saved-config overwrite
+  //     gate is owned by T6; this row is strictly the CI-workflow
+  //     overwrite surface added by T4.
+  // -----------------------------------------------------------------
+  it("T_NEW CI-workflow overwrite decline: 'n' → save ok, ciGenerated empty, ci-generation skip check, file unchanged", async () => {
+    const { homeDir, cwd } = sandbox();
+
+    // Pre-seed the GitHub workflow file. The seed bytes are intentionally
+    // NOT the rendered template — they include a unique sentinel so any
+    // accidental overwrite is detectable byte-for-byte.
+    const seedBytes = "# pre-existing user workflow — must NOT be touched by decline\nsentinel: T4-decline-pin\n";
+    const ciRelPath = join(".github", "workflows", "umactually-pr-review.yml");
+    const ciFullPath = join(cwd, ciRelPath);
+    mkdirSync(join(cwd, ".github", "workflows"), { recursive: true });
+    writeFileSync(ciFullPath, seedBytes, "utf8");
+    const mtimeBefore = statSync(ciFullPath).mtimeMs;
+    const sizeBefore = statSync(ciFullPath).size;
+
+    // No saved config seeded → pre-save overwrite gate does NOT fire.
+    // Reader sequence drives: Q1 scope → Q2 provider → (Q3 env-prefilled) →
+    // (Q4 auto-detect, no stdin because args.ci="auto" picks github) →
+    // CI overwrite prompt ("n") → Q5 save confirm ("y").
+    const { reader, promptsSeen } = scriptedReader(["1", "1", "n", "y"]);
+
+    const result = await runInit({
+      argv: ["--scope", "global", "--ci", "auto"],
+      deps: baseDeps(homeDir, cwd, { stdinReader: reader }),
+    });
+
+    // 1. Save still succeeds — decline only affects CI generation.
+    expect(result.exitCode).toBe(0);
+    expect(result.outcome).toBe("ok");
+    expect(result.savedConfigPath).toBe(SAVED_CONFIG_GLOBAL_PATH(homeDir));
+
+    // 2. ciGenerated is empty — no CI workflow was produced.
+    expect(result.ciGenerated).toEqual([]);
+
+    // 3. The canonical ci-generation skip check is emitted with the
+    //    exact message format the wizard surfaces when the user
+    //    declines overwrite.
+    const ciCheck = result.checks.find((c) => c.id === "ci-generation");
+    expect(ciCheck, "expected ci-generation check to be present").toBeDefined();
+    expect(ciCheck?.status).toBe("skip");
+    expect(ciCheck?.message).toMatch(/ci workflow skipped: user declined overwrite/i);
+
+    // 4. The CI overwrite prompt DID fire. The prompt template renders
+    //    the relative path of the existing workflow.
+    const ciOverwritePrompted = promptsSeen.some(
+      (p) => p.includes("overwrite?") && p.includes(ciRelPath),
+    );
+    expect(ciOverwritePrompted).toBe(true);
+
+    // 5. The on-disk CI workflow file is byte-identical to the seed.
+    //    We compare bytes (not just mtime) so any silent re-write path
+    //    is caught.
+    const bytesAfter = readFileSync(ciFullPath, "utf8");
+    expect(bytesAfter).toBe(seedBytes);
+    expect(bytesAfter.includes("sentinel: T4-decline-pin")).toBe(true);
+    expect(statSync(ciFullPath).size).toBe(sizeBefore);
+    expect(statSync(ciFullPath).mtimeMs).toBe(mtimeBefore);
+  });
 });
