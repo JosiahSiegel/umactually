@@ -21,6 +21,7 @@ import {
 import {
   readSavedConfig,
   writeSavedConfig,
+  targetConfigExistsValid,
   SAVED_CONFIG_GLOBAL_PATH,
   SAVED_CONFIG_REPO_PATH,
   SAVED_CONFIG_SCHEMA_VERSION,
@@ -994,6 +995,31 @@ async function runNonInteractiveInit({
 // Honors SIGINT/EOF as clean abort; apiKey is NEVER persisted.
 // ---------------------------------------------------------------------------
 
+/**
+ * Build a zero-arg overwrite reader for the pre-save gate. Wraps the
+ * injected `safePrompt` reader so the wizard can ask "overwrite? [y/N]"
+ * before clobbering an existing saved config. Empty Enter (default "")
+ * maps to `false` (no surprise overwrites); EOF/SIGINT also maps to
+ * `false` (clean abort). Only an explicit `y`/`yes` answer returns
+ * `true`.
+ */
+function buildOverwriteReader(
+  reader: (prompt: string, isTTY: boolean) => Promise<string | null>,
+  isTTY: boolean,
+  targetPath: string,
+): () => Promise<boolean | null> {
+  return async () => {
+    const answer = await safePrompt(
+      reader,
+      isTTY,
+      `? Existing saved config at ${targetPath}; overwrite? [y/N]: `,
+      "",
+    );
+    if (answer === null) return false; // EOF/SIGINT → decline to clean-abort
+    return /^y(es)?$/i.test(answer.trim());
+  };
+}
+
 async function runInteractiveInit({
   args,
   deps,
@@ -1034,6 +1060,30 @@ async function runInteractiveInit({
   );
   if (scopeAnswer === null) return abortedResult(args.mode);
   const scopeChoice: "global" | "repo" = scopeAnswer === "2" ? "repo" : "global";
+
+  // Pre-save overwrite gate. Only fires when a saved config already
+  // exists at the target path AND none of --force / --yes / --json
+  // bypass it. Decline maps to clean abort (exit 0). Fresh installs
+  // have no extra prompt. Placed BEFORE Q2-Q4 so a decline doesn't waste
+  // the operator's time on provider/branch/CI prompts.
+  if (!args.force && !args.yes && !args.json) {
+    const targetPath =
+      scopeChoice === "repo"
+        ? SAVED_CONFIG_REPO_PATH(deps.cwd)
+        : SAVED_CONFIG_GLOBAL_PATH(deps.homeDir);
+    const overwriteDeps = {
+      homeDir: deps.homeDir,
+      cwd: deps.cwd,
+      scope: scopeChoice,
+      ...(deps.fsAdapter !== undefined ? { fs: deps.fsAdapter } : {}),
+    };
+    if (targetConfigExistsValid(overwriteDeps)) {
+      const accept = await buildOverwriteReader(reader, isTTY, targetPath)();
+      if (accept !== true) {
+        return abortedResult(args.mode);
+      }
+    }
+  }
 
   // Q2 — provider family (must include all three)
   const providerAnswer = await safePrompt(
