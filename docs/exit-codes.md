@@ -17,7 +17,7 @@ Exit codes are emitted via `process.exit(code)` from `bin/umactually.mjs` and fr
 
 | Outcome | Exit |
 |---|---|
-| Interactive success / clean abort (Ctrl-C, Ctrl-D, `n` to overwrite) | 0 |
+| Interactive success / clean abort (Ctrl-C, Ctrl-D, `n` to overwrite existing saved config or `n` to save) | 0 |
 | `--non-interactive` success | 0 |
 | Missing required flags | 2 |
 | Permission error / invalid `~/.umactually/` / no-clobber collision / concurrency lock | 1 |

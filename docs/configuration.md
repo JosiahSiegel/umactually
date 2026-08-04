@@ -29,6 +29,10 @@ With `review --json`, the `resolvedConfig.sources` object reports exactly which 
 
 `GITHUB_TOKEN`, `GITHUB_EVENT_PATH`, `SYSTEM_ACCESSTOKEN`, and Azure build metadata are discovered from the runner environment. `NO_COLOR` is honored at the CLI level: any non-empty value disables decorative color, as does `--no-color`.
 
+### Re-running init on a machine with an existing saved config
+
+When `umactually init` runs on a machine that already has a valid saved config at the target path, the wizard prompts before replacing it: `? Existing saved config at <path>; overwrite? [y/N]: `. Declining (default Enter, or EOF on an empty line) maps to a clean abort (exit 0); nothing on disk changes and the existing config is left untouched. Pass `--force`, `--yes`, or `--json` to bypass the prompt.
+
 ## Review options
 
 CLI flag names are the kebab-case form of the option column (for example, `api-url` becomes `--api-url`).
