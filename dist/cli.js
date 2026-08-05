@@ -1636,10 +1636,18 @@ async function checkDistFreshness(deps) {
         };
     }
     if (srcStat === null) {
+        // dist/cli.js is present and src/cli.ts is absent. This is the
+        // normal state for a published npm install (the package's
+        // "files" array ships dist/, bin/, README, LICENSE, docs,
+        // examples, and scripts but NOT src/). Treat the dist as the
+        // source of truth and report OK; do not guess the install
+        // channel in the message (a dev worktree could also reach
+        // this state if src was deleted, and SEA binary builds are
+        // caught by the "both absent" check above).
         return {
             id: "dist-freshness",
-            status: "skip",
-            message: `${srcPath} not present (npm install); cannot compare freshness`,
+            status: "ok",
+            message: `${distPath} present; src not shipped (using shipped dist)`,
         };
     }
     if (distStat.mtimeMs < srcStat.mtimeMs) {
@@ -1719,24 +1727,12 @@ const DEFAULT_GITHUB_API_BASE = "https://api.github.com";
 
 ;// CONCATENATED MODULE: ./src/cli/modes-help.ts
 /** Canonical CLI modes banner shared by help and bare invocation output. */
-const CLI_MODES_TEXT = `Modes:
+const CLI_MODES_TEXT = `Standalone mode:   umactually --api-url <url> --api-key <key>
+Live CI mode:      umactually --platform github
+Pre-rendered diff: umactually --event <path> --diff <path>
+Local files:       umactually --files <path> --api-key <key>
 
-Standalone mode (any git repo, no CI required)
-  umactually --api-url https://api.minimax.io/v1 --api-key "$UMACTUALLY_API_KEY"
-  Writes the review to ./umactually-review.json — no posting.
-
-Live CI mode (GitHub Actions, Azure DevOps)
-  umactually --platform github
-  Discovers PR context from the runner and posts the review.
-
-Pre-rendered diff (advanced)
-  You have a pre-rendered diff file and the PR's event JSON; pass --event and --diff.
-
-Review local files or directories (any folder, no CI required)
-  umactually --files <path>[,<path>...] --api-key "$UMACTUALLY_API_KEY"
-  Recursively reviews the listed files or directories; writes ./umactually-review.json. No CI, no posting.
-
-Just want to try? Add --dry-run to any of the above.
+Run \`umactually --help\` for the full reference.
 `;
 /** Writes the canonical modes banner to stdout or a caller-provided stream. */
 function printModesBanner(stream) {
@@ -2634,20 +2630,44 @@ function renderCommands(commands) {
 }
 // ── Top-level help (existing CLI_HELP_TEXT + Commands) ─────────────────────
 const TOP_LEVEL_COMMANDS = [
-    "review                    Run PR review (default)",
-    "doctor                    Check environment is ready",
-    "init                      Run guided setup (recommended quickstart)",
-    "uninstall                 Remove the installed binary, config, and PATH entries",
-    "check-review-artifact <path>  Validate a review artifact",
-    "version                   Print version",
-    "--help, -h                Show this help",
-    "--version, -V             Print version",
+    { command: "review", description: "Run PR review (default)" },
+    { command: "doctor", description: "Check environment is ready" },
+    { command: "init", description: "Run guided setup (recommended quickstart)" },
+    { command: "uninstall", description: "Remove the installed binary, config, and PATH entries" },
+    { command: "check-review-artifact <path>", description: "Validate a review artifact" },
+    { command: "version", description: "Print version" },
+    { command: "--help, -h", description: "Show this help" },
+    { command: "--version, -V", description: "Print version" },
 ];
+/**
+ * Render one command with optional description, padded to the description
+ * column at `width + GUTTER_SPACES`. The `Math.max(0, ...)` guard makes
+ * the renderer width-agnostic: callers may mix rows of wildly different
+ * lengths and the renderer will never crash, even if a single row is
+ * longer than the computed column width.
+ */
+function renderCommandLine({ command, description }, width) {
+    const padding = " ".repeat(Math.max(0, width - command.length + GUTTER_SPACES));
+    const head = `${" ".repeat(INDENT_SPACES)}${command}${padding}`;
+    return description === undefined ? head : `${head}${description}`;
+}
+/**
+ * Render a list of command rows as a column-aligned table (one string per
+ * row). The column width is computed from the input `commands` array, so
+ * every caller gets the column width that fits its own rows — there is no
+ * shared module-level state coupling the help-text and quickstart
+ * surfaces. With the 2-space indent and 2-space gutter, the description
+ * column starts at `width + 4` (1-indexed).
+ */
+function renderCommandsTable(commands) {
+    const width = commands.reduce((max, { command }) => Math.max(max, command.length), 0);
+    return commands.map((c) => renderCommandLine(c, width));
+}
 const CLI_HELP_TEXT = [
     `${BRAND} — provider-agnostic PR review CLI`,
     "",
     "Commands:",
-    ...TOP_LEVEL_COMMANDS.map((c) => `  ${c}`),
+    ...renderCommandsTable(TOP_LEVEL_COMMANDS),
     "",
     "Review flags (use `umactually review --help` for full details):",
     ...HELP_FLAGS.map(renderFlagLine),
@@ -2708,13 +2728,16 @@ const INIT_HELP_TEXT = [
     "",
     "See exit codes: docs/exit-codes.md",
 ].join("\n");
+const DOCTOR_USAGE_COMMANDS = [
+    { command: "umactually doctor", description: "Run all environment checks" },
+    { command: "umactually doctor --json", description: "Emit machine-readable JSON" },
+    { command: "umactually doctor --help", description: "Show this help" },
+];
 const DOCTOR_HELP_TEXT = [
     `${BRAND} doctor — check that your environment is ready for review`,
     "",
     "Usage:",
-    "  umactually doctor                Run all environment checks",
-    "  umactually doctor --json         Emit machine-readable JSON",
-    "  umactually doctor --help         Show this help",
+    ...renderCommandsTable(DOCTOR_USAGE_COMMANDS),
     "",
     "Checks:",
     "  node          Verifies Node.js >= 24 is on PATH",
@@ -2934,6 +2957,7 @@ function readSavedConfig(deps) {
         if (fs.isSymlink(candidate)) {
             return {
                 ok: false,
+                path: candidate,
                 exitCode: 1,
                 message: `refusing to read saved config: ${candidate} is a symlink; remove it and re-run init`,
             };
@@ -2941,6 +2965,7 @@ function readSavedConfig(deps) {
         if (!fs.isFile(candidate)) {
             return {
                 ok: false,
+                path: candidate,
                 exitCode: 1,
                 message: `refusing to read saved config: ${candidate} is not a regular file`,
             };
@@ -2952,6 +2977,7 @@ function readSavedConfig(deps) {
         catch (err) {
             return {
                 ok: false,
+                path: candidate,
                 exitCode: 2,
                 message: `corrupt saved config at ${candidate}: ${err instanceof Error ? err.message : String(err)}; rm ${candidate} and re-run init to recover`,
             };
@@ -2963,6 +2989,7 @@ function readSavedConfig(deps) {
         catch (err) {
             return {
                 ok: false,
+                path: candidate,
                 exitCode: 2,
                 message: `corrupt saved config at ${candidate}: ${err instanceof Error ? err.message : String(err)}; rm ${candidate} and re-run init to recover`,
             };
@@ -2978,6 +3005,7 @@ function validateSavedConfig(parsed, candidate) {
     if (parsed === null || typeof parsed !== "object") {
         return {
             ok: false,
+            path: candidate,
             exitCode: 2,
             message: `corrupt saved config at ${candidate}: expected object, received ${parsed === null ? "null" : typeof parsed}`,
         };
@@ -2986,6 +3014,7 @@ function validateSavedConfig(parsed, candidate) {
     if (obj["schemaVersion"] !== SAVED_CONFIG_SCHEMA_VERSION) {
         return {
             ok: false,
+            path: candidate,
             exitCode: 2,
             message: `unsupported schemaVersion in ${candidate}: expected ${SAVED_CONFIG_SCHEMA_VERSION}, received ${JSON.stringify(obj["schemaVersion"])}`,
         };
@@ -2993,6 +3022,7 @@ function validateSavedConfig(parsed, candidate) {
     if (typeof obj["provider"] !== "string" || !VALID_PROVIDERS.has(obj["provider"])) {
         return {
             ok: false,
+            path: candidate,
             exitCode: 2,
             message: `invalid provider in ${candidate}: ${JSON.stringify(obj["provider"])} (expected one of ${[...VALID_PROVIDERS].join(", ")})`,
         };
@@ -3009,6 +3039,7 @@ function validateSavedConfig(parsed, candidate) {
     if (apiUrlRaw !== undefined && (typeof apiUrlRaw !== "string")) {
         return {
             ok: false,
+            path: candidate,
             exitCode: 2,
             message: `invalid apiUrl in ${candidate}: expected string when present`,
         };
@@ -3016,6 +3047,7 @@ function validateSavedConfig(parsed, candidate) {
     if (modelRaw !== undefined && (typeof modelRaw !== "string")) {
         return {
             ok: false,
+            path: candidate,
             exitCode: 2,
             message: `invalid model in ${candidate}: expected string when present`,
         };
@@ -3358,30 +3390,27 @@ function redactSecretsInString(input) {
  * underlying validation through the same `SavedConfig` type.
  */
 function tryReadSavedConfig(deps = {}) {
+    const homeDir = deps.homeDir ?? (0,external_node_os_namespaceObject.homedir)();
     const result = readSavedConfig({
-        homeDir: deps.homeDir ?? (0,external_node_os_namespaceObject.homedir)(),
+        homeDir,
         cwd: deps.cwd ?? process.cwd(),
     });
     if (result.ok) {
         return { config: result.config, path: result.path, warning: null };
     }
-    // Failure path: per `readSavedConfig` contract, `result.ok === false`
-    // implies `result.exitCode` is 1 or 2 and `result.message` is set.
-    // We return the message as a `warning` so callers can decide how
-    // prominently to surface it. `path` is the candidate we tried to
-    // read (typically the global path; we don't know which one failed
-    // without re-implementing the candidate walk — and we don't need to,
-    // because the warning message itself names the path).
+    // Failure path: synthesize the global path as the canonical
+    // "where the loader looked" pointer. The wizard's failure result
+    // doesn't carry a path field, but an operator running
+    // `umactually --show-config` against a corrupt file wants to know
+    // WHICH file failed to parse; the global-path shape is the closest
+    // meaningful answer we can give without re-implementing the
+    // candidate walk that `readSavedConfig` does. The exact failure
+    // path is also embedded in `warning` text (per the wizard's
+    // "corrupt saved config at <path>" contract) so callers needing
+    // the precise file path can parse the warning.
     return {
         config: null,
-        // The wizard's failure result is `ReadSavedConfigResult` shaped, not
-        // `{path: string}` — but its `path` is implicitly the candidate the
-        // walker hit. When `readSavedConfig` returns `ok:false` it has not
-        // returned a `path` field; for the warning case we synthesize the
-        // most-likely path (the global path) so the `path` is always a
-        // defined string. Callers that need the exact failure path can
-        // parse the warning message text.
-        path: "", // see file comment — readSavedConfig failure shape omits `path`.
+        path: result.path,
         warning: result.message,
     };
 }
@@ -5203,16 +5232,23 @@ async function dispatch(argv) {
         const stdout = printContextualHelp(argv);
         return argv.includes("--no-color") ? 0 : { exitCode: 0, stdout };
     }
+    // Top-level `--show-config` is its own read-only command: print the
+    // effective saved config and exit 0. Implemented at this layer so
+    // the operator can run `umactually --show-config` from anywhere —
+    // including `umactually review --show-config` or
+    // `umactually init --show-config` — without going through the
+    // validator or any other command's argument parser. Self-review
+    // thread PRRT_kwDOTHG5gM6WY88P on PR #180 flagged that putting the
+    // check inside `command === null` made `umactually review
+    // --show-config` silently pass the flag through to the review
+    // validator instead of running `runShowConfig`. Hoisting above
+    // `firstPositionalToken(argv)` short-circuits on the flag presence
+    // before any command routing.
+    if (argv.includes("--show-config")) {
+        return runShowConfig();
+    }
     const command = firstPositionalToken(argv);
     if (command === null) {
-        // Top-level `--show-config` is its own read-only command: print the
-        // effective saved config and exit 0 (or fall through to the loud
-        // banner if no saved config exists). Implemented at this layer so
-        // the operator can run `umactually --show-config` from anywhere —
-        // including CI — without going through the validator.
-        if (argv.includes("--show-config")) {
-            return runShowConfig();
-        }
         // Compact quickstart for interactive bare invocations. Replaces
         // the noisy validation + modes banner for fresh-install TTY users
         // (no saved config) AND for the post-init case where the operator
@@ -5350,6 +5386,11 @@ function argvIncludesProgrammaticFlags(argv) {
  * Industry-standard model: matches `rustup`, `fnm`, `volta`, `nvm`,
  * `pip`, `brew install` first-run output. No `--dry-run` clutter.
  */
+const QUICKSTART_REVIEW_COMMANDS = [
+    { command: "umactually review --api-key <key>", description: "PR review (CI)" },
+    { command: "umactually --files <path>... --api-key <key>", description: "Local files (no CI)" },
+    { command: "umactually doctor", description: "Verify your setup" },
+];
 const FIRST_RUN_QUICKSTART = [
     "Welcome to umactually! Get started with the setup wizard:",
     "",
@@ -5357,9 +5398,7 @@ const FIRST_RUN_QUICKSTART = [
     "",
     "Then run a review:",
     "",
-    "  umactually review --api-url <url> --api-key <key>     PR review (CI)",
-    "  umactually --files <path>... --api-key <key>          Local files (no CI)",
-    "  umactually doctor                                   Verify your setup",
+    ...renderCommandsTable(QUICKSTART_REVIEW_COMMANDS),
     "",
     "Run `umactually --help` for the full reference.",
     "",
@@ -5395,18 +5434,15 @@ function renderLoadedConfigQuickstart(config) {
     return [
         header,
         "",
-        "  umactually review --api-key <key>                       PR review (CI)",
-        "  umactually --files <path>... --api-key <key>           Local files (no CI)",
-        "  umactually doctor                                    Verify your setup",
+        ...renderCommandsTable(QUICKSTART_REVIEW_COMMANDS),
         "",
         "Run `umactually --show-config` to inspect the loaded values;",
         "run `umactually --help` for the full reference.",
         "",
     ].join("\n");
 }
-function runLoadedConfigQuickstart(config, path) {
+function runLoadedConfigQuickstart(config, _path) {
     process.stdout.write(`${BRAND_PREFIX}${renderLoadedConfigQuickstart(config)}`);
-    void path;
     return Promise.resolve({ exitCode: 0 });
 }
 /**
@@ -20896,10 +20932,11 @@ function maybeOverride(current, field, value, path) {
         ...current.fieldProvenance,
         [field]: newProvenance,
     };
-    return Object.assign({}, current, {
+    return {
+        ...current,
         [field]: value,
         fieldProvenance: newFieldProvenance,
-    });
+    };
 }
 
 ;// CONCATENATED MODULE: ./src/cli.ts
