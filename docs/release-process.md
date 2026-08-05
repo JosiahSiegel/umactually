@@ -108,6 +108,15 @@ Sanity-check the tag points at the merge commit you expect with `git show --stat
 git push origin main --follow-tags
 ```
 
+> **CRITICAL: the tag must point at the *squash-merge commit* on `main`, not the branch's pre-squash tip.** Repo policy squash-merges feature PRs, so the merge commit on `main` (e.g. `9a41f30 release: vX.Y.Z ... (#NNN)`) is a *different* SHA than the branch's last commit (e.g. `5c09ad9 release: vX.Y.Z...`). The tag must land on the squash-merge SHA so the GitHub Release's "commit" link points at the merged commit, the canary's `git rev-parse HEAD` matches the GitHub Release's commit, and downstream consumers pinning the tag get byte-identical binaries. After the release PR is merged, fetch `main` and confirm the SHA before tagging:
+>
+> ```bash
+> git fetch origin
+> git tag -a vX.Y.Z <squash-merge-sha> -m "release: vX.Y.Z (see CHANGELOG.md for the changes)"
+> ```
+>
+> If you tag the branch's pre-squash SHA by accident, the tag will still resolve to a real commit, the release workflow will still fire, and the binaries will still build — but the GitHub Release commit link will point at the branch's pre-squash commit, the README version pin will be off by one commit, and any subsequent `git show vX.Y.Z` from `origin/main` will be a *different* commit than the tag's anchor. Recovery: `git tag -d vX.Y.Z`, `git push origin :refs/tags/vX.Y.Z`, then re-tag at the squash-merge commit and `git push origin vX.Y.Z` again. Always verify the SHA before pushing.
+
 That single push is enough: `--follow-tags` pushes every annotated tag whose commit is reachable from `main`, and the `on: push: tags: ['v*']` trigger in the workflow starts the release job for each tag. **Verify the only tag being pushed is the one you intend** — see [§ 8.4 A stale queued tag rode along](#84-a-stale-queued-tag-rode-along) if a previous release's tag was created at squash-merge time but never pushed (the workflow will publish a release for it, with this release's binaries mislabelled).
 
 Verify the tag actually corresponds to the merge commit you expect:
@@ -520,4 +529,105 @@ A convenience wrapper, if present in your worktree, automates the four commands 
 - [`CHANGELOG.md`](../CHANGELOG.md): the Keep a Changelog file you update every release.
 - [Keep a Changelog 1.1.0](https://keepachangelog.com/en/1.1.0/): the format reference for the CHANGELOG.
 - [SemVer 2.0.0](https://semver.org/spec/v2.0.0.html): the version-bump rules summarized in [§ 3](#3-semver-decision-guide).
+
+## 10. "Verify npm publication" timed out — did the publish actually land?
+
+This is the most common post-OIDC confusion mode. The `publish-npm` job has two CI-visible steps: `Publish to npm (Trusted Publishing / OIDC)` (the actual `npm publish`) and `Verify npm publication` (a 5-minute polling loop on the per-version URL). The log shows `+ umactually@X.Y.Z` for the publish step, then the verify step polls `https://registry.npmjs.org/umactually/vX.Y.Z` up to 30 times at 10-second intervals. The verify step exits 1 because the **per-version URL** still returns 404 — but the publish itself already landed. The `npm view` data proves it:
+
+```bash
+# Did the publish actually land? Three signals to check:
+
+# 1. dist-tags.latest (the canonical "is this the active version?" check)
+curl -fsSL https://registry.npmjs.org/umactually | jq '.dist-tags.latest'
+# Expected: "X.Y.Z" (the version you just pushed). If this is X.Y.Z, the publish landed.
+
+# 2. The version entry in the registry's `versions` map
+curl -fsSL https://registry.npmjs.org/umactually | jq '.versions["X.Y.Z"].dist | {shasum, integrity, tarball}'
+# Expected: a non-empty shasum + integrity + tarball URL. If shasum matches the
+# "Tarball Details" log line in the publish step's output, the publish is real.
+
+# 3. The tarball itself
+curl -sS -o /tmp/umactually-X.Y.Z.tgz -w "HTTP %{http_code} size=%{size_download}\n" \
+  https://registry.npmjs.org/umactually/-/umactually-X.Y.Z.tgz
+# Expected: HTTP 200, size > 100 KB. The packument's `attestations` field (if present)
+# confirms the Sigstore provenance went through.
+```
+
+If all three signals are present, the publish landed. The verify step's 404 is the registry's URL-rewrite path lagging behind `dist-tags.latest` — the registry updated "what is the latest version" and the tarball storage before the per-version pointer on the read path. Common propagation window is 60-180 seconds; the verify step's 5-minute budget is sometimes too tight on a busy day at npmjs.org.
+
+**The proof that the publish landed** is the registry's *immutable* response to a re-publish attempt: `npm ERR! code E403 — You cannot publish over the previously published versions: X.Y.Z`. If you re-run the failed `publish-npm` job and the only error is this `E403`, the original publish is intact and the re-run was correctly rejected by the registry. **Do not retry differently** — the only safe paths are:
+
+1. **Accept the publish as real, wait for the registry CDN to catch up**, and treat the failed workflow run as a known false-positive (annotate the run with the proof above). The next workflow run for the same tag will reuse the same git SHA, npm will keep the existing tarball, and `dist-tags.latest` will not change.
+2. **If you absolutely need a clean GitHub Actions badge**: cut a `vX.Y.Z+1` patch release that re-runs the full pipeline. Cannot reuse the failed tag (registry would reject).
+3. **Never** force-push or delete+re-push the tag. That breaks the canary's URL-contract assertions and every downstream consumer's immutable-tag pinning.
+
+The "verify step" should be renamed to "verify CDN caught up" in a future workflow revision. Until then, treat the step's exit code as **advisory only** — confirm the publish via the three `npm view` signals above before taking any recovery action.
+
+## 11. Pre-release gotchas that don't fail the six gates but will fail the release PR
+
+These are real-world bumps landed in the field that the `scripts/ci-validate.sh` gates don't catch on their own. Document them inline so the next release doesn't rediscover them.
+
+### 11.1 `INIT-DOC` test fails because the CHANGELOG mentions omit `umactually init`
+
+`test/unit/init-docs-freshness.test.ts:INIT-DOC` scans the CHANGELOG and asserts that the **most recent non-`[Unreleased]` section** contains the literal string `umactually init`. The original invariant was that the `[Unreleased]` section always mentions `umactually init` (since the wizard was the first-run path); the test was generalized to the most-recent versioned section for the post-release case. Practical consequence: a `[X.Y.Z]` CHANGELOG bullet that does not mention `umactually init` anywhere in its body fails the test. If your release is a CLI-only fix that doesn't touch the wizard, the bullet reads naturally without the wizard reference — add one anyway. The fix is a one-line rephrase, e.g. "Affects the same surfaces that the bare-invocation quickstart (which leads with `umactually init`) and `umactually --help` (which lists every subcommand) already surface, so existing discoverability contracts are preserved."
+
+### 11.2 `dist/cli.js` is stale, version-pin tests fail, but `npm run bundle` was never run
+
+`scripts/ci-validate.sh` runs `npm run bundle` AFTER the test suite, not before. If `dist/cli.js` is stale (the source bundle is older than the runtime src/), the version-pin tests in `test/unit/install-methods.test.ts` and the install-smoke tests fail because they read the version string from the bundled CLI. Symptom: `AssertionError: expected '0.6.26' to contain '0.6.27'`. **Fix**: run `npm run bundle` BEFORE `scripts/ci-validate.sh` (or between the typecheck and test gates, which the script doesn't do). The flow is `npm run bundle && bash scripts/ci-validate.sh`. The `npm run check:dist-freshness` gate catches the opposite case (src edited without re-bundling) but not the version-stale case.
+
+### 11.3 The release PR's squash-merge commit is the tag's anchor, not the branch's last commit
+
+See [§ 5 Cut the tag](#5-cut-the-tag) for the explicit warning. The pre-release process produces a branch with one commit (`release: vX.Y.Z (your summary)`); after the squash-merge, `main` has a SECOND commit (the squash-merge commit on `main`) which is the canonical anchor. Always tag the squash-merge commit SHA, not the branch's pre-squash tip.
+
+### 11.4 Don't render `dist/cli.js` into the release PR's diff
+
+`npm run bundle` rewrites `dist/cli.js` and `dist/package.json`. These are tracked files (not gitignored — the bundle is the published artifact). If the release PR includes the `--dist` rewrite, the diff is large and noisy. The bundle is re-generated by the release workflow's `build-package` job from the already-pinned `src/` and `package.json` in the tag, so committing the local `dist/cli.js` is incidental. Two options:
+
+- **Commit the bundle** (current canonical flow): the release PR includes the bundle update. The release workflow's `build-package` job re-runs the same `npm run bundle` and the produced binaries are byte-identical (with the same shasum) — the SHA-256 in the GitHub Release checksums.txt matches the SHA-256 of the artifacts the PR was reviewed against.
+- **Skip the commit** (lighter diff): add `dist/` to a worktree-local `.gitignore`-style exclusion before opening the PR. The release workflow still rebuilds from the tag. This is non-canonical and may surprise reviewers who expect the bundled CLI to match the source.
+
+The current canonical flow is to commit. The doc's [§ 5.5 npm publication](#55-npm-publication-post-github-release) is unaffected either way.
+
+## 12. Recipes
+
+### 12.1 Confirm a release was published without trusting the GitHub Actions conclusion
+
+```bash
+TAG="v0.6.27"
+curl -fsSL "https://registry.npmjs.org/umactually" | jq --arg t "$TAG" '
+  {
+    "is_latest": (.dist-tags.latest == ($t | sub("^v";""))),
+    "version_present": (.versions[$t | sub("^v";"")] != null),
+    "shasum": .versions[$t | sub("^v";"")].dist.shasum,
+    "tarball_size": .versions[$t | sub("^v";"")].dist.unpackedSize,
+    "has_attestations": (.versions[$t | sub("^v";"")] | has("attestations"))
+  }
+'
+```
+
+Returns `true` for every field if the publish landed. The `has_attestations` field is the Sigstore provenance-attestation indicator; if `false`, the publish went through but the OIDC token exchange failed silently (re-run the job).
+
+### 12.2 Confirm the GitHub Release exists with all 7 assets
+
+```bash
+gh release view "v0.6.27" --json name,assets,publishedAt | jq '
+  {
+    "name": .name,
+    "published": .publishedAt,
+    "asset_count": (.assets | length),
+    "expected": 7,
+    "assets": [.assets[].name] | sort
+  }
+'
+```
+
+Expected: `asset_count == 7` (six archives + `checksums.txt`). If the asset list is shorter, the `publish` job failed mid-upload — check the release workflow's logs.
+
+### 12.3 Confirm the post-release install path works end-to-end
+
+```bash
+npm run test:post-release -- --tag v0.6.27
+```
+
+Downloads the published archive, verifies SHA-256 against `checksums.txt`, extracts the binary, spawns a mock LLM, and runs both `--provider openai-compatible` and `--provider anthropic` review paths against the prompt. Exit 0 with two `comments=2` lines is the canonical "the install path is healthy" signal. The artifacts live at `artifacts/post-release-e2e/` in the worktree.
 
