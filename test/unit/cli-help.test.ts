@@ -37,21 +37,35 @@ describe("CLI help text", () => {
 
   it("contains a Modes: banner so operators can see the three invocation modes at a glance", () => {
     // S4 — help honesty. A brand-new operator running --help must
-    // discover the Standalone / Live CI / Outside-git-repo modes
-    // without reading docs. If a future edit drops the "Modes:"
-    // header, the standalone/live-CI copy-paste examples vanish
-    // from --help output and S1/S2/S4 surface artifacts regress.
-    expect(CLI_HELP_TEXT).toContain("Modes:");
+    // discover the Standalone / Live CI / Pre-rendered / Local-files
+    // modes without reading docs. The compact banner (Wave 3) drops
+    // the literal "Modes:" header because the four body labels
+    // ("Standalone mode:", "Live CI mode:", "Pre-rendered diff:",
+    // "Local files:") already serve as discoverability anchors; the
+    // header was redundant with the body. This test pins the four
+    // anchors so a future edit that drops one of them regresses the
+    // S4 surface rather than passing silently.
+    expect(CLI_HELP_TEXT).toContain("Standalone mode:");
+    expect(CLI_HELP_TEXT).toContain("Live CI mode:");
+    expect(CLI_HELP_TEXT).toContain("Pre-rendered diff:");
+    expect(CLI_HELP_TEXT).toContain("Local files:");
   });
 
   it("shows the Standalone-mode copy-paste example", () => {
     // The standalone example is the primary use case for local
     // dev/smoke tests (README.md "Standalone mode (the primary use
     // case)" section). Operators running --help must be able to
-    // copy it directly without crossing into README.md.
-    expect(CLI_HELP_TEXT).toContain(
-      '--api-url https://api.minimax.io/v1 --api-key "$UMACTUALLY_API_KEY"',
-    );
+    // adapt it for their own endpoint without crossing into README.md.
+    // The compact banner (Wave 3) uses literal placeholders (`<url>`,
+    // `<key>`) instead of the previous vendor URL
+    // (`https://api.minimax.io/v1`) and shell-quoted env var
+    // (`$UMACTUALLY_API_KEY`) because the placeholder form is more
+    // useful for new operators — they fill in their own values
+    // rather than copying a vendor-specific URL and an env-var name
+    // they may not have set. The README documents the placeholder
+    // pattern (see "Saved config" / "Configuration sources" sections)
+    // so the placeholder is not a step backward in discoverability.
+    expect(CLI_HELP_TEXT).toContain("--api-url <url> --api-key <key>");
   });
 
   it("shows the live-CI copy-paste example without explicit plumbing", () => {
