@@ -12,7 +12,7 @@ import { BRAND_PREFIX } from "../util/brand.js";
 import { runCli, runVersion } from "../cli.js";
 import { classifyReviewArtifact } from "./check-review-artifact.js";
 import { formatDoctorHuman, formatDoctorJson, runDoctor } from "./doctor.js";
-import { printContextualHelp } from "./help.js";
+import { type HelpCommand, printContextualHelp } from "./help.js";
 import { tryReadSavedConfig } from "./load-saved-config.js";
 import type { SavedConfig } from "../config/saved-config.js";
 import {
@@ -246,6 +246,27 @@ function argvIncludesProgrammaticFlags(argv: readonly string[]): boolean {
  * Industry-standard model: matches `rustup`, `fnm`, `volta`, `nvm`,
  * `pip`, `brew install` first-run output. No `--dry-run` clutter.
  */
+const QUICKSTART_REVIEW_COMMANDS: readonly HelpCommand[] = [
+  { command: "umactually review --api-key <key>", description: "PR review (CI)" },
+  { command: "umactually --files <path>... --api-key <key>", description: "Local files (no CI)" },
+  { command: "umactually doctor", description: "Verify your setup" },
+];
+
+// `help.js`'s `renderCommandsTable` hardcodes its column width to the
+// longest entry in `TOP_LEVEL_COMMANDS` (28 chars) and throws
+// `RangeError` from `String.prototype.repeat(negative)` whenever a
+// command exceeds the width+2 gutter budget. Our longest quickstart
+// command is 44 chars, so the renderer is duplicated here with a
+// per-call width computation.
+function renderQuickstartCommandsTable(commands: readonly HelpCommand[]): readonly string[] {
+  const width = commands.reduce((max, { command }) => Math.max(max, command.length), 0);
+  return commands.map(({ command, description }) => {
+    const padding = " ".repeat(Math.max(0, width - command.length + 2));
+    const head = `${" ".repeat(2)}${command}${padding}`;
+    return description === undefined ? head : `${head}${description}`;
+  });
+}
+
 const FIRST_RUN_QUICKSTART = [
   "Welcome to umactually! Get started with the setup wizard:",
   "",
@@ -253,9 +274,7 @@ const FIRST_RUN_QUICKSTART = [
   "",
   "Then run a review:",
   "",
-  "  umactually review --api-url <url> --api-key <key>     PR review (CI)",
-  "  umactually --files <path>... --api-key <key>          Local files (no CI)",
-  "  umactually doctor                                   Verify your setup",
+  ...renderQuickstartCommandsTable(QUICKSTART_REVIEW_COMMANDS),
   "",
   "Run `umactually --help` for the full reference.",
   "",
@@ -293,9 +312,7 @@ function renderLoadedConfigQuickstart(config: SavedConfig): string {
   return [
     header,
     "",
-    "  umactually review --api-key <key>                       PR review (CI)",
-    "  umactually --files <path>... --api-key <key>           Local files (no CI)",
-    "  umactually doctor                                    Verify your setup",
+    ...renderQuickstartCommandsTable(QUICKSTART_REVIEW_COMMANDS),
     "",
     "Run `umactually --show-config` to inspect the loaded values;",
     "run `umactually --help` for the full reference.",
