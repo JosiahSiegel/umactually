@@ -104,10 +104,18 @@ async function checkDistFreshness(deps: DoctorDeps): Promise<DoctorCheck> {
     };
   }
   if (srcStat === null) {
+    // dist/cli.js is present and src/cli.ts is absent. This is the
+    // normal state for a published npm install (the package's
+    // "files" array ships dist/, bin/, README, LICENSE, docs,
+    // examples, and scripts but NOT src/). Treat the dist as the
+    // source of truth and report OK; do not guess the install
+    // channel in the message (a dev worktree could also reach
+    // this state if src was deleted, and SEA binary builds are
+    // caught by the "both absent" check above).
     return {
       id: "dist-freshness",
-      status: "skip",
-      message: `${srcPath} not present (npm install); cannot compare freshness`,
+      status: "ok",
+      message: `${distPath} present; src not shipped (using shipped dist)`,
     };
   }
   if (distStat.mtimeMs < srcStat.mtimeMs) {
