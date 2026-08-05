@@ -133,19 +133,24 @@ function freshable(routes: readonly AzureFetchRoute[]): FreshableRoute[] {
   }));
 }
 
-function providerReviewFor(verdict: string, summary: string): string {
+function providerReviewFor(
+  verdict: string,
+  summary: string,
+  input: { readonly comments?: readonly { readonly path: string; readonly line: number; readonly body: string; readonly severity: string; readonly category: string }[] } = {},
+): string {
+  const comments = input.comments ?? [
+    {
+      path: "src/review/example.ts",
+      line: 3,
+      body: "Azure inline comment.",
+      severity: "medium",
+      category: "maintainability",
+    },
+  ];
   return JSON.stringify({
     summary,
     verdict,
-    comments: [
-      {
-        path: "src/review/example.ts",
-        line: 3,
-        body: "Azure inline comment.",
-        severity: "medium",
-        category: "maintainability",
-      },
-    ],
+    comments,
     suppressed_comments: [],
   });
 }
@@ -306,7 +311,7 @@ describe("Azure PR status policy: verdict mapping + delete-then-post dedup", () 
       ...freshable(azureDiffRoutes(makeJsonResponse, azureReviewDiffFixture())),
       {
         match: (url, method) => method === "POST" && url === "https://provider.example/v1/responses",
-        response: () => makeJsonResponse({ output_text: providerReviewFor("APPROVED", "All clean.") }),
+        response: () => makeJsonResponse({ output_text: providerReviewFor("APPROVED", "All clean.", { comments: [] }) }),
       },
       {
         match: (url, method) => method === "GET" && url.endsWith("/threads?api-version=7.1"),
@@ -395,7 +400,7 @@ describe("Azure PR status policy: verdict mapping + delete-then-post dedup", () 
       ...freshable(azureDiffRoutes(makeJsonResponse, azureReviewDiffFixture())),
       {
         match: (url, method) => method === "POST" && url === "https://provider.example/v1/responses",
-        response: () => makeJsonResponse({ output_text: providerReviewFor("COMMENT", "ran cleanly") }),
+        response: () => makeJsonResponse({ output_text: providerReviewFor("COMMENT", "ran cleanly", { comments: [] }) }),
       },
       {
         match: (url, method) => method === "GET" && url.endsWith("/threads?api-version=7.1"),

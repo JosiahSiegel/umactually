@@ -891,3 +891,63 @@ describe("type safety — LayoutId union covers LAYOUTS", () => {
     expect(ids.length).toBe(LAYOUTS.length);
   });
 });
+
+// -- Verdict escalation banner (PR #183 review pass) -------------------------
+
+describe("verdict escalation banner", () => {
+  it("severity-table emits an escalation banner between the badge and the pipeline summary when SHIP is escalated to NEEDS_FIX", () => {
+    const out = renderSummary(
+      "severity-table",
+      makeData({
+        review: {
+          summary: "Looks good, ship it.",
+          verdict: "NEEDS_FIX",
+          comments: [],
+          suppressedComments: [],
+        },
+        validCommentCount: 1,
+        severityCounts: { medium: 1 },
+        verdictEscalatedFrom: "SHIP",
+        postedComments: [{
+          path: "src/x.ts",
+          line: 1,
+          body: "Extract this nested ternary operation.",
+          severity: "medium",
+          category: "correctness",
+        }],
+      }),
+    );
+    const markerIdx = out.indexOf(REVIEW_MARKER);
+    const badgeIdx = out.indexOf("## ⛔ NEEDS_FIX");
+    const bannerIdx = out.indexOf("Verdict escalated from `SHIP` → `NEEDS_FIX`");
+    const pipelineIdx = out.indexOf("📊 1 inline finding");
+    expect(markerIdx).toBeGreaterThanOrEqual(0);
+    expect(badgeIdx).toBeGreaterThan(markerIdx);
+    expect(bannerIdx).toBeGreaterThan(badgeIdx);
+    expect(pipelineIdx).toBeGreaterThan(bannerIdx);
+  });
+
+  it("no banner is emitted when verdictEscalatedFrom is omitted (raw === effective)", () => {
+    const out = renderSummary(
+      "severity-table",
+      makeData({
+        review: {
+          summary: "Reviewed.",
+          verdict: "NEEDS_FIX",
+          comments: [],
+          suppressedComments: [],
+        },
+        validCommentCount: 1,
+        severityCounts: { medium: 1 },
+        postedComments: [{
+          path: "src/x.ts",
+          line: 1,
+          body: "Fix this.",
+          severity: "medium",
+          category: "correctness",
+        }],
+      }),
+    );
+    expect(out).not.toMatch(/Verdict (escalated|downgraded)/u);
+  });
+});
