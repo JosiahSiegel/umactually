@@ -171,26 +171,29 @@ const TOP_LEVEL_COMMANDS: readonly HelpCommand[] = [
 ];
 
 /**
- * Column width is computed from the longest entry in `TOP_LEVEL_COMMANDS`
- * (currently `check-review-artifact <path>` at 28 chars). With the 2-space
- * indent and 2-space gutter, the description column starts at column 31
- * (1-indexed). Renaming or adding a longer command trivially re-aligns.
+ * Render one command with optional description, padded to the description
+ * column at `width + GUTTER_SPACES`. The `Math.max(0, ...)` guard makes
+ * the renderer width-agnostic: callers may mix rows of wildly different
+ * lengths and the renderer will never crash, even if a single row is
+ * longer than the computed column width.
  */
-const COMMAND_COLUMN_WIDTH = TOP_LEVEL_COMMANDS.reduce(
-  (max, { command }) => Math.max(max, command.length),
-  0,
-);
-
-/** Render one command with optional description, padded to the canonical description column. */
-function renderCommandLine({ command, description }: HelpCommand): string {
-  const padding = " ".repeat(Math.max(0, COMMAND_COLUMN_WIDTH - command.length + GUTTER_SPACES));
+function renderCommandLine({ command, description }: HelpCommand, width: number): string {
+  const padding = " ".repeat(Math.max(0, width - command.length + GUTTER_SPACES));
   const head = `${" ".repeat(INDENT_SPACES)}${command}${padding}`;
   return description === undefined ? head : `${head}${description}`;
 }
 
-/** Render a list of command rows as a column-aligned table (one string per row). */
+/**
+ * Render a list of command rows as a column-aligned table (one string per
+ * row). The column width is computed from the input `commands` array, so
+ * every caller gets the column width that fits its own rows — there is no
+ * shared module-level state coupling the help-text and quickstart
+ * surfaces. With the 2-space indent and 2-space gutter, the description
+ * column starts at `width + 4` (1-indexed).
+ */
 export function renderCommandsTable(commands: readonly HelpCommand[]): readonly string[] {
-  return commands.map(renderCommandLine);
+  const width = commands.reduce((max, { command }) => Math.max(max, command.length), 0);
+  return commands.map((c) => renderCommandLine(c, width));
 }
 
 export const CLI_HELP_TEXT = [
