@@ -185,7 +185,13 @@ describe("runLive Azure orchestration", () => {
 
     const statusCall = findCall(recorder.calls, "POST", "/statuses?api-version=7.1");
     const statusBody = readRecord(statusCall.body as Record<string, unknown>, "status request");
-    expect(statusBody["state"]).toBe("succeeded");
+    // Provider emitted `verdict: APPROVED` with a `medium` finding, so
+    // composeEffectiveVerdict (PR #183 review pass) escalates the
+    // effective verdict to NEEDS_FIX. Under the current Azure policy
+    // that maps to `pending`, not `succeeded` — the inline thread
+    // above still posts (it was the contradiction the escalation
+    // fixed), but the PR-status signals a blocking review.
+    expect(statusBody["state"]).toBe("pending");
     expect(statusBody["description"]).toContain("Azure live summary.");
   });
 

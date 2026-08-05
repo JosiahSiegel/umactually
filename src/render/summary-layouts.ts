@@ -149,6 +149,14 @@ export type ReviewData = {
    * unchanged (byte-identical to the original behavior).
    */
   readonly minimumSeverity?: string | null;
+  /**
+   * When `composeEffectiveVerdict` changed the effective verdict from the
+   * model's raw verdict (downgrade on empty counts OR upgrade on
+   * non-empty counts), this carries the raw model verdict so layouts
+   * can render a one-line escalation banner between the badge and the
+   * pipeline summary. Omit when the raw and effective verdicts agree.
+   */
+  readonly verdictEscalatedFrom?: string;
 };
 
 // ---------------------------------------------------------------------------
@@ -380,6 +388,39 @@ function verdictBadge(data: ReviewData): string {
 }
 
 /**
+ * Render a one-line banner explaining a verdict reconciliation. Two
+ * directions are supported: upgrade (raw non-blocking → `NEEDS_FIX`,
+ * PR #183 review pass) and downgrade (raw `NEEDS_FIX` → `COMMENT`,
+ * PR #18). Blockquote-formatted to match `PARSE_FAILED_BANNER` at
+ * the same insertion point. Returns `""` when no reconciliation was
+ * needed.
+ */
+function verdictEscalationBanner(data: ReviewData): string {
+  if (data.verdictEscalatedFrom === undefined) return "";
+  const raw = data.verdictEscalatedFrom.toUpperCase();
+  const effective = data.review.verdict.toUpperCase();
+  const direction = effective === "NEEDS_FIX" && raw !== "NEEDS_FIX" ? "escalated" : "downgraded";
+  const findingCount = data.validCommentCount;
+  const findingSuffix = findingCount === 1 ? "postable finding" : "postable findings";
+  const reason = effective === "NEEDS_FIX"
+    ? `review contains ${findingCount} ${findingSuffix}`
+    : "no postable findings to address";
+  return `> ⚠️ Verdict ${direction} from \`${raw}\` → \`${effective}\`: ${reason}.`;
+}
+
+/**
+ * Push the verdict badge (`## ⛔ NEEDS_FIX` etc.) followed by the
+ * optional escalation banner. All layouts that render a verdict must
+ * go through this helper so the banner can't be forgotten on a future
+ * layout.
+ */
+function pushVerdict(parts: string[], data: ReviewData): void {
+  parts.push(`## ${verdictBadge(data)}`);
+  const banner = verdictEscalationBanner(data);
+  if (banner.length > 0) parts.push(banner);
+}
+
+/**
  * Pipeline summary line used by most layouts.
  *
  * Leads with the number of comments that will appear inline on the diff
@@ -583,7 +624,7 @@ function layoutBaseline(data: ReviewData): string {
 
   sections.push(REVIEW_MARKER);
   sections.push("");
-  sections.push(`## ${verdictBadge(data)}`);
+  pushVerdict(sections, data);
   sections.push("");
 
   if (data.review.parseFailed === true) {
@@ -655,7 +696,7 @@ function layoutDashboard(data: ReviewData): string {
   const filtered = filteredCount(data);
   const parts: string[] = [];
 
-  parts.push(`## ${verdict}`);
+  pushVerdict(parts, data);
   parts.push("");
   parts.push("### 📊 Review dashboard");
   parts.push("");
@@ -698,10 +739,9 @@ function layoutDashboard(data: ReviewData): string {
 // blockquote block so it scans top-to-bottom like a process diagram.
 
 function layoutPipeline(data: ReviewData): string {
-  const verdict = verdictBadge(data);
   const parts: string[] = [];
 
-  parts.push(`## ${verdict}`);
+  pushVerdict(parts, data);
   parts.push("");
   parts.push("### 🔄 Review pipeline");
   parts.push("");
@@ -751,6 +791,12 @@ function layoutVerdictBanner(data: ReviewData): string {
   parts.push(`# ${verdict}`);
   parts.push("");
   parts.push(`> ## ${verdict}`);
+  const banner = verdictEscalationBanner(data);
+  if (banner.length > 0) {
+    // Re-blockquote the banner so it nests inside the `> ## verdict`
+    // blockquote above it rather than starting a new one.
+    parts.push(`> ${banner.slice(2)}`);
+  }
   parts.push(`>`);
   parts.push(`> **${data.validCommentCount}** findings to address · ${totalFindings(data)} total considered`);
   parts.push(`>`);
@@ -817,7 +863,6 @@ function renderCleanShip(data: ReviewData): string {
 }
 
 function layoutSeverityTable(data: ReviewData): string {
-  const verdict = verdictBadge(data);
   const all = sortedPosted(data);
   const parts: string[] = [];
 
@@ -831,7 +876,7 @@ function layoutSeverityTable(data: ReviewData): string {
   // first non-marker line is the verdict badge (CLARITY-1 invariant).
   parts.push(REVIEW_MARKER);
   parts.push("");
-  parts.push(`## ${verdict}`);
+  pushVerdict(parts, data);
   parts.push("");
 
   // CLARITY-10: parse-fail banner must be unmistakable. Rendered as a
@@ -930,7 +975,6 @@ parts.push("### 📋 Findings");
 // bullet findings. Reads like a stack of color-coded sticky notes.
 
 function layoutCardGrid(data: ReviewData): string {
-  const verdict = verdictBadge(data);
   const buckets: Record<string, LiveReviewComment[]> = {
     critical: [], high: [], medium: [], low: [],
   };
@@ -941,7 +985,7 @@ function layoutCardGrid(data: ReviewData): string {
   }
   const parts: string[] = [];
 
-  parts.push(`## ${verdict}`);
+  pushVerdict(parts, data);
   parts.push("");
   parts.push("### 🎴 Findings by severity");
   parts.push("");
@@ -976,7 +1020,7 @@ function layoutTldrWalkthrough(data: ReviewData): string {
   const verdict = verdictBadge(data);
   const parts: string[] = [];
 
-  parts.push(`## ${verdict}`);
+  pushVerdict(parts, data);
   parts.push("");
   parts.push("### 📌 TL;DR");
   parts.push("");
@@ -1017,10 +1061,9 @@ function layoutTldrWalkthrough(data: ReviewData): string {
 // a `path:line` reference. Reads like a todo list.
 
 function layoutChecklist(data: ReviewData): string {
-  const verdict = verdictBadge(data);
   const parts: string[] = [];
 
-  parts.push(`## ${verdict}`);
+  pushVerdict(parts, data);
   parts.push("");
   parts.push("### ✅ Review checklist");
   parts.push("");
@@ -1061,11 +1104,10 @@ function layoutChecklist(data: ReviewData): string {
 // an inline code block. Terminal-style dashboard.
 
 function layoutProgressBars(data: ReviewData): string {
-  const verdict = verdictBadge(data);
   const total = data.validCommentCount;
   const parts: string[] = [];
 
-  parts.push(`## ${verdict}`);
+  pushVerdict(parts, data);
   parts.push("");
   parts.push("### 📊 Severity distribution");
   parts.push("");
@@ -1104,10 +1146,9 @@ function layoutProgressBars(data: ReviewData): string {
 // negatives (findings to fix). Reads like a balanced review.
 
 function layoutProsCons(data: ReviewData): string {
-  const verdict = verdictBadge(data);
   const parts: string[] = [];
 
-  parts.push(`## ${verdict}`);
+  pushVerdict(parts, data);
   parts.push("");
   parts.push("### ⚖️ Strengths vs concerns");
   parts.push("");
@@ -1151,7 +1192,7 @@ function layoutTweet(data: ReviewData): string {
   const verdict = verdictBadge(data);
   const parts: string[] = [];
 
-  parts.push(`## ${verdict}`);
+  pushVerdict(parts, data);
   parts.push("");
   parts.push(`> ## ${verdict}`);
   parts.push(">");
@@ -1191,7 +1232,7 @@ function layoutFaq(data: ReviewData): string {
   const verdict = verdictBadge(data);
   const parts: string[] = [];
 
-  parts.push(`## ${verdict}`);
+  pushVerdict(parts, data);
   parts.push("");
   parts.push("### ❓ Reviewer Q&A");
   parts.push("");
@@ -1234,7 +1275,7 @@ function layoutTerminal(data: ReviewData): string {
   const verdict = verdictBadge(data);
   const parts: string[] = [];
 
-  parts.push(`## ${verdict}`);
+  pushVerdict(parts, data);
   parts.push("");
   parts.push("### 🖥️ Terminal report");
   parts.push("");
@@ -1280,7 +1321,7 @@ function layoutIncident(data: ReviewData): string {
   const verdict = verdictBadge(data);
   const parts: string[] = [];
 
-  parts.push(`## ${verdict}`);
+  pushVerdict(parts, data);
   parts.push("");
   parts.push("### 📟 Incident report");
   parts.push("");
@@ -1332,10 +1373,9 @@ function layoutIncident(data: ReviewData): string {
 // Reads like a CHANGELOG entry: Features / Fixes / Style sections.
 
 function layoutReleaseNotes(data: ReviewData): string {
-  const verdict = verdictBadge(data);
   const parts: string[] = [];
 
-  parts.push(`## ${verdict}`);
+  pushVerdict(parts, data);
   parts.push("");
   parts.push("### 📝 Review changelog");
   parts.push("");
@@ -1403,10 +1443,9 @@ function layoutReleaseNotes(data: ReviewData): string {
 // Per-file table with emoji status. Reads like a test-coverage widget.
 
 function layoutCoverage(data: ReviewData): string {
-  const verdict = verdictBadge(data);
   const parts: string[] = [];
 
-  parts.push(`## ${verdict}`);
+  pushVerdict(parts, data);
   parts.push("");
   parts.push("### 🧪 File-by-file review");
   parts.push("");
@@ -1452,10 +1491,9 @@ function layoutCoverage(data: ReviewData): string {
 // Stacked emoji severity ladder + count badges. Visual "how hot is this PR".
 
 function layoutThermometer(data: ReviewData): string {
-  const verdict = verdictBadge(data);
   const parts: string[] = [];
 
-  parts.push(`## ${verdict}`);
+  pushVerdict(parts, data);
   parts.push("");
   parts.push("### 🌡️ Risk thermometer");
   parts.push("");
@@ -1503,10 +1541,9 @@ function layoutThermometer(data: ReviewData): string {
 // Mirrors GitHub Status / statuspage.io: status banner, then per-component status.
 
 function layoutStatusPage(data: ReviewData): string {
-  const verdict = verdictBadge(data);
   const parts: string[] = [];
 
-  parts.push(`## ${verdict}`);
+  pushVerdict(parts, data);
   parts.push("");
   parts.push("### 📡 Status page");
   parts.push("");
@@ -1551,10 +1588,9 @@ function layoutStatusPage(data: ReviewData): string {
 // Per-file change summary using ASCII bars. Reads like `git diff --stat`.
 
 function layoutDiffstat(data: ReviewData): string {
-  const verdict = verdictBadge(data);
   const parts: string[] = [];
 
-  parts.push(`## ${verdict}`);
+  pushVerdict(parts, data);
   parts.push("");
   parts.push("### 📊 Review diffstat");
   parts.push("");
@@ -1604,10 +1640,9 @@ function layoutDiffstat(data: ReviewData): string {
 // wall of sticky notes.
 
 function layoutStickyNotes(data: ReviewData): string {
-  const verdict = verdictBadge(data);
   const parts: string[] = [];
 
-  parts.push(`## ${verdict}`);
+  pushVerdict(parts, data);
   parts.push("");
   parts.push("### 📌 Sticky notes");
   parts.push("");
@@ -1648,6 +1683,8 @@ function layoutNewspaper(data: ReviewData): string {
   const parts: string[] = [];
 
   parts.push(`# ${verdict}`);
+  const banner = verdictEscalationBanner(data);
+  if (banner.length > 0) parts.push(banner);
   parts.push("");
   parts.push(`### *${data.validCommentCount} of ${totalFindings(data)} findings posted; review model: \`${redact(data.modelId, data.secrets)}\`*`);
   parts.push("");

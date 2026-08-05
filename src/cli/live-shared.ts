@@ -24,7 +24,7 @@ import { countBySeverity } from "../util/severity.js";
  * at compile time; the alias keeps runtime behavior stable.
  */
 export const countBySeverityFromLiveShared = countBySeverity;
-import { mapVerdictToAzureStatus, mapVerdictToGithubEvent, reconcileVerdictForEmptySeverityCounts } from "../util/verdict.js";
+import { mapVerdictToAzureStatus, mapVerdictToGithubEvent, composeEffectiveVerdict } from "../util/verdict.js";
 import { shouldKeepFinding } from "../config/severity.js";
 import type { Severity } from "../config/types.js";
 import { normalizeProviderSeverity } from "../provider/provider-parse.js";
@@ -209,13 +209,26 @@ export interface PreparedPostedReview {
    * The verdict that callers should publish to user-facing surfaces
    * (review body badge, manifest payload, GitHub review event, Azure
    * PR status). Reconciled from the model's raw verdict against the
-   * postable severity counts via
-   * `reconcileVerdictForEmptySeverityCounts` — so a NEEDS_FIX review
-   * whose findings were all severity-filtered out surfaces as
-   * `COMMENT` instead of contradicting the `📊 0 inline findings`
-   * body. See `src/util/verdict.ts` for the rule.
+   * postable severity counts via `composeEffectiveVerdict` in
+   * `src/util/verdict.ts` — so a NEEDS_FIX review whose findings were
+   * all severity-filtered out surfaces as `COMMENT` instead of
+   * contradicting the `📊 0 inline findings` body, AND a SHIP/APPROVED
+   * review whose findings list contains postable findings is escalated
+   * to `NEEDS_FIX` instead of contradicting the inline finding list.
+   * See `src/util/verdict.ts` for the rules and the PR #18 / PR #183
+   * regression contexts.
    */
   readonly effectiveVerdict: string;
+  /**
+   * When the effective verdict was changed from the model's raw verdict
+   * (either downgraded NEEDS_FIX→COMMENT on empty counts or upgraded
+   * SHIP/APPROVED→NEEDS_FIX on non-empty counts), this carries the raw
+   * model verdict so the rendered layout can show a one-line escalation
+   * banner explaining why the headline disagrees with the model's
+   * summary prose. `undefined` when no reconciliation was needed (the
+   * model verdict and the effective verdict agree).
+   */
+  readonly verdictEscalatedFrom?: string;
 }
 
 export class LiveReviewError extends Error {
@@ -385,6 +398,16 @@ export function buildReviewBody(input: {
    * `ParsedCliArgs` in scope.
    */
   readonly minimumSeverity?: string | null;
+  /**
+   * When the effective verdict was changed from the model's raw verdict
+   * by `composeEffectiveVerdict`, this carries the raw model verdict so
+   * the rendered layout can show a one-line escalation banner between
+   * the verdict badge and the pipeline summary. Omit when no
+   * reconciliation was needed (the model verdict and the effective
+   * verdict agree). The banner text is rendered by the active layout
+   * — see `verdictEscalationBanner` in `src/render/summary-layouts.ts`.
+   */
+  readonly verdictEscalatedFrom?: string;
 }): string {
   // Delegate to the "severity-table" layout from
   // `src/render/summary-layouts.ts` — selected from the 20-layout
@@ -417,6 +440,9 @@ export function buildReviewBody(input: {
     postedComments,
     secrets: input.secrets,
     minimumSeverity: input.minimumSeverity ?? null,
+    ...(input.verdictEscalatedFrom !== undefined
+      ? { verdictEscalatedFrom: input.verdictEscalatedFrom }
+      : {}),
   };
   return renderSummary(input.layout ?? "severity-table", reviewData);
 }
@@ -815,17 +841,18 @@ export function preparePostedReview(input: {
   const suppressedCommentCount = input.review.suppressedComments.length + offDiffFromComments.length;
   const severityCounts = countBySeverity(postableComments);
   // Reconcile the model's raw verdict against the postable severity
-  // counts. If every finding was severity-filtered out, the body will
-  // render `📊 0 inline findings`, and rendering `⛔ NEEDS_FIX` against
-  // that headline is contradictory — the human reviewer would block
-  // the PR on a verdict that has no findings to act on. Downgrade to
-  // `COMMENT` in that case so the badge matches the body. See
-  // `src/util/verdict.ts:reconcileVerdictForEmptySeverityCounts` for
-  // the rule and the PR #18 regression context.
-  const effectiveVerdict = reconcileVerdictForEmptySeverityCounts(
-    input.review.verdict,
+  // counts. The body would render a `⛔ NEEDS_FIX` headline against a
+  // `📊 0 inline findings` count for a review with nothing to act on
+  // (PR #18), and a `✅ SHIP` headline with "ship it" prose against a
+  // non-empty findings list (PR #183 review pass). Both contradictions
+  // are fixed by `composeEffectiveVerdict` — see the canonical rules
+  // there.
+  const composed = composeEffectiveVerdict({
+    rawVerdict: input.review.verdict,
     severityCounts,
-  );
+  });
+  const effectiveVerdict = composed.verdict;
+  const verdictEscalatedFrom = composed.escalated ? input.review.verdict : undefined;
   const body = buildReviewBody({
     review: { ...input.review, verdict: effectiveVerdict },
     provider: input.provider,
@@ -841,6 +868,7 @@ export function preparePostedReview(input: {
     // or more tiers. Older callers (unit tests, simulate-findings) can
     // omit it and get the byte-identical legacy tally.
     minimumSeverity: input.parsed.minimumSeverity,
+    ...(verdictEscalatedFrom !== undefined ? { verdictEscalatedFrom } : {}),
   });
 
   return {
@@ -851,6 +879,7 @@ export function preparePostedReview(input: {
     body,
     postedComments: postableComments,
     effectiveVerdict,
+    ...(verdictEscalatedFrom !== undefined ? { verdictEscalatedFrom } : {}),
   };
 }
 

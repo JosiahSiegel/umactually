@@ -34,7 +34,10 @@ import {
 } from "../../src/cli/live-shared.js";
 import { parseCliArgs } from "../../src/cli/parse-args.js";
 import {
+  composeEffectiveVerdict,
+  escalateVerdictForNonEmptySeverityCounts,
   reconcileVerdictForEmptySeverityCounts,
+  totalSeverityCount,
 } from "../../src/util/verdict.js";
 
 // ---------------------------------------------------------------------------
@@ -75,6 +78,18 @@ function makeHighComment(
     body: input.body ?? "Hard-coded credential in source.",
     severity: "high",
     category: "security",
+  };
+}
+
+function makeMediumComment(
+  input: { readonly path?: string; readonly line?: number; readonly body?: string } = {},
+): LiveReviewComment {
+  return {
+    path: input.path ?? "src/example.ts",
+    line: input.line ?? 1,
+    body: input.body ?? "Extract this nested ternary operation into an independent statement.",
+    severity: "medium",
+    category: "correctness",
   };
 }
 
@@ -145,6 +160,101 @@ describe("reconcileVerdictForEmptySeverityCounts", () => {
     // behaviour (e.g. mapVerdictToAzureStatus collapses unknowns to
     // `pending`).
     expect(reconcileVerdictForEmptySeverityCounts("MAYBE", {})).toBe("MAYBE");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Inverse direction: escalate a non-blocking verdict when findings exist.
+// PR #183 review-pass regression: model emitted `verdict: SHIP` with
+// "looks good, ship it" prose while the inline findings list contained
+// a MAJOR SonarCloud finding. The badge correctly rendered `✅ SHIP` and
+// the prose said "ship it", so a reviewer scanning the top would miss
+// the MAJOR inline thread below. The fix completes the symmetry with
+// `reconcileVerdictForEmptySeverityCounts` (which handles the other
+// direction).
+// ---------------------------------------------------------------------------
+
+describe("totalSeverityCount", () => {
+  it("sums every tier's count", () => {
+    expect(totalSeverityCount({ medium: 2, high: 1 })).toBe(3);
+  });
+
+  it("returns 0 for an empty object", () => {
+    expect(totalSeverityCount({})).toBe(0);
+  });
+
+  it("treats all-zero tiers as zero (matches reconcile helper semantics)", () => {
+    expect(totalSeverityCount({ medium: 0, high: 0 })).toBe(0);
+  });
+});
+
+describe("escalateVerdictForNonEmptySeverityCounts", () => {
+  it("escalates SHIP to NEEDS_FIX when severity counts contain any finding", () => {
+    expect(escalateVerdictForNonEmptySeverityCounts("SHIP", { major: 1 })).toBe("NEEDS_FIX");
+  });
+
+  it("escalates APPROVED to NEEDS_FIX when severity counts contain any finding", () => {
+    expect(escalateVerdictForNonEmptySeverityCounts("APPROVED", { critical: 1 })).toBe("NEEDS_FIX");
+  });
+
+  it("escalates COMMENT to NEEDS_FIX when severity counts contain any finding", () => {
+    expect(escalateVerdictForNonEmptySeverityCounts("COMMENT", { medium: 2 })).toBe("NEEDS_FIX");
+  });
+
+  it("escalates DISCUSS to NEEDS_FIX when severity counts contain any finding", () => {
+    expect(escalateVerdictForNonEmptySeverityCounts("DISCUSS", { low: 1 })).toBe("NEEDS_FIX");
+  });
+
+  it("escalates unknown non-blocking verdicts to NEEDS_FIX when findings exist", () => {
+    expect(escalateVerdictForNonEmptySeverityCounts("MAYBE", { info: 1 })).toBe("NEEDS_FIX");
+  });
+
+  it("passes through NEEDS_FIX untouched (handled by the inverse helper)", () => {
+    expect(escalateVerdictForNonEmptySeverityCounts("NEEDS_FIX", { major: 1 })).toBe("NEEDS_FIX");
+  });
+
+  it("passes through SHIP untouched when counts are empty (canonical clean-ship state)", () => {
+    expect(escalateVerdictForNonEmptySeverityCounts("SHIP", {})).toBe("SHIP");
+  });
+
+  it("passes through APPROVED untouched when counts are empty", () => {
+    expect(escalateVerdictForNonEmptySeverityCounts("APPROVED", {})).toBe("APPROVED");
+  });
+
+  it("treats all-zero tiers as empty (no escalation)", () => {
+    expect(escalateVerdictForNonEmptySeverityCounts("SHIP", { medium: 0, high: 0 })).toBe("SHIP");
+  });
+});
+
+describe("composeEffectiveVerdict", () => {
+  it("downgrades NEEDS_FIX to COMMENT when counts are empty (PR #18 rule still applies)", () => {
+    const result = composeEffectiveVerdict({ rawVerdict: "NEEDS_FIX", severityCounts: {} });
+    expect(result.verdict).toBe("COMMENT");
+    expect(result.escalated).toBe(true);
+  });
+
+  it("upgrades SHIP to NEEDS_FIX when counts are non-empty (PR #183 review pass)", () => {
+    const result = composeEffectiveVerdict({ rawVerdict: "SHIP", severityCounts: { major: 1 } });
+    expect(result.verdict).toBe("NEEDS_FIX");
+    expect(result.escalated).toBe(true);
+  });
+
+  it("returns unchanged verdict + escalated=false when rules don't fire", () => {
+    const result = composeEffectiveVerdict({ rawVerdict: "SHIP", severityCounts: {} });
+    expect(result.verdict).toBe("SHIP");
+    expect(result.escalated).toBe(false);
+  });
+
+  it("returns unchanged verdict + escalated=false when NEEDS_FIX is coherent with non-empty counts", () => {
+    const result = composeEffectiveVerdict({ rawVerdict: "NEEDS_FIX", severityCounts: { major: 1 } });
+    expect(result.verdict).toBe("NEEDS_FIX");
+    expect(result.escalated).toBe(false);
+  });
+
+  it("treats lowercase raw verdict the same as uppercase", () => {
+    const result = composeEffectiveVerdict({ rawVerdict: "ship", severityCounts: { major: 1 } });
+    expect(result.verdict).toBe("NEEDS_FIX");
+    expect(result.escalated).toBe(true);
   });
 });
 
@@ -240,6 +350,90 @@ describe("preparePostedReview reconciliation", () => {
     expect(prepared.effectiveVerdict).toBe("APPROVED");
     expect(prepared.severityCounts).toEqual({});
     expect(prepared.body).toContain("## ✅ 0 inline findings — ship it");
+  });
+
+  it("escalates SHIP to NEEDS_FIX and exposes verdictEscalatedFrom when a medium finding survives the filter (PR #183 review pass)", () => {
+    // Given: the model emitted SHIP with "looks good, ship it" prose
+    // while the comments list contains a medium-severity finding
+    // (SonarCloud MAJOR — Extract this nested ternary…). The default
+    // --minimum-severity=medium keeps the medium finding. The
+    // contradiction is: badge would say `✅ SHIP` against
+    // `📊 1 inline finding` and the prose would say "ship it".
+    const review = {
+      ...makeReview({
+        verdict: "SHIP",
+        comments: [makeMediumComment()],
+      }),
+      summary: "Looks good, ship it.",
+    };
+    const prepared = preparePostedReview({
+      review,
+      provider: "openai-compatible",
+      modelId: "auto",
+      diffText: DIFF_TEXT,
+      parsed: parseCliArgs(["--minimum-severity", "medium"]),
+      secrets: SECRETS,
+    });
+
+    // Then: effective verdict is NEEDS_FIX (upgraded), and the raw
+    // verdict is exposed via verdictEscalatedFrom so the layout can
+    // render a one-line escalation banner.
+    expect(prepared.postableComments).toHaveLength(1);
+    expect(prepared.severityCounts).toEqual({ medium: 1 });
+    expect(prepared.effectiveVerdict).toBe("NEEDS_FIX");
+    expect(prepared.verdictEscalatedFrom).toBe("SHIP");
+
+    // Body: the badge is `⛔ NEEDS_FIX`, the prose is preserved for
+    // debuggability, and the escalation banner explicitly cites the
+    // raw→effective flip.
+    expect(prepared.body).toContain("⛔ NEEDS_FIX");
+    expect(prepared.body).not.toContain("✅ SHIP");
+    expect(prepared.body).toContain("Looks good, ship it.");
+    expect(prepared.body).toMatch(/Verdict escalated from `SHIP` → `NEEDS_FIX`/u);
+
+    // Manifest payload: carries the effective verdict, not the raw one,
+    // so AI agents parsing the manifest agree with the headline.
+    expect(prepared.body).toMatch(
+      /<!-- umactually:manifest\s+\{[^}]*"verdict":"NEEDS_FIX"/u,
+    );
+  });
+
+  it("escalates APPROVED to NEEDS_FIX when a high-severity finding survives the filter", () => {
+    const review = makeReview({
+      verdict: "APPROVED",
+      comments: [makeHighComment()],
+    });
+    const prepared = preparePostedReview({
+      review,
+      provider: "openai-compatible",
+      modelId: "auto",
+      diffText: DIFF_TEXT,
+      parsed: parseCliArgs(["--minimum-severity", "medium"]),
+      secrets: SECRETS,
+    });
+
+    expect(prepared.effectiveVerdict).toBe("NEEDS_FIX");
+    expect(prepared.verdictEscalatedFrom).toBe("APPROVED");
+    expect(prepared.body).toContain("⛔ NEEDS_FIX");
+  });
+
+  it("does not escalate when the raw verdict was already NEEDS_FIX and findings exist (no spurious banner)", () => {
+    const review = makeReview({
+      verdict: "NEEDS_FIX",
+      comments: [makeMediumComment()],
+    });
+    const prepared = preparePostedReview({
+      review,
+      provider: "openai-compatible",
+      modelId: "auto",
+      diffText: DIFF_TEXT,
+      parsed: parseCliArgs(["--minimum-severity", "medium"]),
+      secrets: SECRETS,
+    });
+
+    expect(prepared.effectiveVerdict).toBe("NEEDS_FIX");
+    expect(prepared.verdictEscalatedFrom).toBeUndefined();
+    expect(prepared.body).not.toMatch(/Verdict escalated/u);
   });
 });
 
