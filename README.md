@@ -2,12 +2,12 @@
 
 AI-powered PR review that posts inline comments directly to your pull requests. Works with any model provider (OpenAI, Anthropic, Copilot) and both GitHub and Azure DevOps.
 
-[![GitHub release](https://img.shields.io/github/v/release/JosiahSiegel/umactually)](https://github.com/JosiahSiegel/umactually/releases/tag/v0.6.26)
+[![GitHub release](https://img.shields.io/github/v/release/JosiahSiegel/umactually)](https://github.com/JosiahSiegel/umactually/releases/tag/v0.6.27)
 [![npm](https://img.shields.io/npm/v/umactually)](https://www.npmjs.com/package/umactually)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 [![Node.js >=24](https://img.shields.io/badge/node-%3E%3D24-339933.svg)](https://nodejs.org/)
 
-Latest release: **[v0.6.26](https://github.com/JosiahSiegel/umactually/releases/tag/v0.6.26)** — see [all releases](https://github.com/JosiahSiegel/umactually/releases).
+Latest release: **[v0.6.27](https://github.com/JosiahSiegel/umactually/releases/tag/v0.6.27)** — see [all releases](https://github.com/JosiahSiegel/umactually/releases).
 
 ## Quickstart (recommended)
 
@@ -107,7 +107,7 @@ Use this if you want one command that picks the best path for you. The installer
 curl -fsSL https://github.com/JosiahSiegel/umactually/raw/main/scripts/install.sh | sh
 
 # Pin a specific version
-curl -fsSL https://github.com/JosiahSiegel/umactually/raw/main/scripts/install.sh | sh -s -- --tag v0.6.26
+curl -fsSL https://github.com/JosiahSiegel/umactually/raw/main/scripts/install.sh | sh -s -- --tag v0.6.27
 ```
 
 ```powershell
@@ -140,10 +140,10 @@ For the full flag list and edge cases, run `curl -fsSL https://github.com/Josiah
 ### From source (GitHub tarball, Node 24+ required)
 
 ```bash
-npx github:JosiahSiegel/umactually#v0.6.26 review
+npx github:JosiahSiegel/umactually#v0.6.27 review
 ```
 
-The `#v0.6.26` fragment pins to the tagged release. Omit it only when you specifically want the latest unreleased `main` build.
+The `#v0.6.27` fragment pins to the tagged release. Omit it only when you specifically want the latest unreleased `main` build.
 
 ### Platform support
 
@@ -219,7 +219,7 @@ Invalid review output fails the same invocation with a non-zero exit code — no
 
 ## CI Integration
 
-CI must use Node.js 24 and a version-pinned install. Pin to the [`v0.6.26` release tag](https://github.com/JosiahSiegel/umactually/releases/tag/v0.6.26) — never track `main` and never use the interactive binary installers in a CI step.
+CI must use Node.js 24 and a version-pinned install. Pin to the [`v0.6.27` release tag](https://github.com/JosiahSiegel/umactually/releases/tag/v0.6.27) — never track `main` and never use the interactive binary installers in a CI step.
 
 The canonical CI workflows are the source of truth — copy them into your pipeline rather than re-deriving them:
 

@@ -11,7 +11,16 @@ ship a tag).
 ## [Unreleased]
 
 
-_No pending changes — last release: v0.6.26 (saved config supplies defaults for review + --files; new `umactually --show-config`)._
+_No pending changes — last release: v0.6.27 (CLI output polish: align command columns, fix doctor npm-installed SKIP, compact modes banner)._
+
+
+## [0.6.27] - 2026-08-05
+
+### Fixed
+
+- **CLI command tables align to a single computed column** instead of hand-padded literal spaces. `umactually --help`, `umactually doctor --help`, and the two bare-invocation quickstart banners (`FIRST_RUN_QUICKSTART` and `renderLoadedConfigQuickstart`) now use a shared `renderCommandsTable` helper that computes the column width from the longest row. Renaming or adding a command no longer breaks the visual column. The previous hand-padded literals were fragile; the new renderer mirrors the existing `renderFlagLine` pattern used for flags. Affects the same surfaces that the bare-invocation quickstart (which leads with `umactually init`) and `umactually --help` (which lists every subcommand) already surface, so existing discoverability contracts are preserved. `[src/cli/help.ts]` `[src/cli/dispatch.ts]`
+- **`umactually doctor` no longer misreports a healthy npm-installed install as `SKIP`**. The `dist-freshness` check now returns `OK` with a non-leaky message (`<distPath> present; src not shipped (using shipped dist)`) when `dist/cli.js` is present and `src/cli.ts` is absent — this is the normal state for `npm install -g umactually` because the package's published `files` array ships `dist/`, `bin/`, `README.md`, `LICENSE`, `docs/`, `examples/`, and `scripts/` but **NOT** `src/`. The previous `SKIP` message also leaked the implementation detail `(npm install)` into the user-facing output. Standalone-binary (`both absent → SKIP`) and `dist missing → FAIL` branches are unchanged. The new behavior is pinned by the renamed `CLI-DOCTOR-004` test (`installedPackageFs` → `npmInstalledPackageFs`). `[src/cli/doctor.ts]`
+- **Compact `pick a mode:` banner after a missing-flag validation error**. The 18-line `CLI_MODES_TEXT` block is now a 4-line compact pointer — one line per mode (`Standalone mode:`, `Live CI mode:`, `Pre-rendered diff:`, `Local files:`) plus a `Run \`umactually --help\` for the full reference` line. The verbose-mode prose (`Writes the review to ./umactually-review.json — no posting.`, `Discovers PR context from the runner and posts the review.`, etc.) is gone; the new shape mirrors the `rustup` / `fnm` / `volta` first-run UX. The previously-omitted "Local files" mode is now included. The substring assertions across `test/unit/cli-bare-invocation.test.ts`, `test/unit/cli-subcommands.test.ts`, and `test/unit/cli-first-run-quickstart.test.ts` still match because the new compact entries start with the same label words (`Standalone mode:`, `Live CI mode:`, `Pre-rendered diff:`). `[src/cli/modes-help.ts]`
 
 
 ## [0.6.26] - 2026-08-04
