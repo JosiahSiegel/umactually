@@ -252,7 +252,7 @@ const QUICKSTART_REVIEW_COMMANDS: readonly HelpCommand[] = [
   { command: "umactually doctor", description: "Verify your setup" },
 ];
 
-const FIRST_RUN_QUICKSTART = [
+export const FIRST_RUN_QUICKSTART = [
   "Welcome to umactually! Get started with the setup wizard:",
   "",
   "  umactually init",
@@ -290,7 +290,7 @@ function runFirstRunQuickstart(): Promise<DispatchResult> {
  *      be condescending. The two review-command lines stay in their
  *      exact same position so visual muscle memory carries over.
  */
-function renderLoadedConfigQuickstart(config: SavedConfig): string {
+export function renderLoadedConfigQuickstart(config: SavedConfig): string {
   const providerLabel = `provider=${config.provider}`;
   const modelLabel = config.model !== undefined ? `, model=${config.model}` : "";
   const header = `Loaded config (${providerLabel}${modelLabel}). Run:`;
