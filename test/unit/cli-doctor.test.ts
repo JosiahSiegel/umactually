@@ -61,7 +61,7 @@ const missingDistFs: FsAdapter = {
   },
 };
 
-const installedPackageFs: FsAdapter = {
+const npmInstalledPackageFs: FsAdapter = {
   stat: async (path) => {
     if (path.endsWith("src/cli.ts")) {
       return Promise.reject(new Error("ENOENT: src/cli.ts"));
@@ -159,18 +159,29 @@ describe("CLI doctor (M5)", () => {
     );
   });
 
-  it("CLI-DOCTOR-004: skips source freshness for an installed package", async () => {
-    // Given: npm-installed contents have dist but omit src/cli.ts.
+  it("CLI-DOCTOR-004: reports OK for an npm-installed package (dist shipped, src absent)", async () => {
+    // Given: an npm-installed copy has dist/cli.js but omits src/cli.ts (the package's
+    // published files list ships dist, bin, docs, examples, scripts, README, and LICENSE
+    // but NOT src).
     const runDoctor = await loadRunDoctor();
 
-    // When: doctor evaluates the installed package from a git worktree.
-    const result = await runDoctor(options({ fsAdapter: installedPackageFs }));
+    // When: doctor checks bundle freshness.
+    const result = await runDoctor(options({ fsAdapter: npmInstalledPackageFs }));
 
-    // Then: unavailable source freshness is skipped and is not fatal.
+    // Then: dist-freshness reports OK with a non-leaky message that does not guess the install channel.
     expect(result.exitCode).toBe(0);
     expect(result.checks).toContainEqual(
-      expect.objectContaining({ id: "dist-freshness", status: "skip" }),
+      expect.objectContaining({ id: "dist-freshness", status: "ok" }),
     );
+    expect(result.checks).toContainEqual(
+      expect.objectContaining({
+        id: "dist-freshness",
+        message: expect.stringContaining("dist/cli.js"),
+      }),
+    );
+    expect(
+      result.checks.find((c) => c.id === "dist-freshness")?.message ?? "",
+    ).not.toContain("(npm install)");
     expect(result.checks).toContainEqual(expect.objectContaining({ id: "node", status: "ok" }));
     expect(result.checks).toContainEqual(expect.objectContaining({ id: "env", status: "ok" }));
     expect(result.checks).toContainEqual(expect.objectContaining({ id: "git", status: "ok" }));

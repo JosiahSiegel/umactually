@@ -43,6 +43,13 @@ interface HelpFlag {
   appliesTo?: readonly HelpContext[];
 }
 
+export interface HelpCommand {
+  /** Command token as it appears in the Commands banner, e.g. `"review"` or `"check-review-artifact <path>"`. */
+  readonly command: string;
+  /** Optional description; omit when the placeholder fully documents the value. */
+  readonly description?: string;
+}
+
 /** Global flags that appear in every help context. */
 const GLOBAL_FLAGS: readonly HelpFlag[] = [
   { flag: "--no-color", description: "Disable decorative ANSI color (also: non-empty NO_COLOR)" },
@@ -152,22 +159,48 @@ function renderCommands(commands: readonly string[]): string {
 
 // ── Top-level help (existing CLI_HELP_TEXT + Commands) ─────────────────────
 
-const TOP_LEVEL_COMMANDS = [
-  "review                    Run PR review (default)",
-  "doctor                    Check environment is ready",
-  "init                      Run guided setup (recommended quickstart)",
-  "uninstall                 Remove the installed binary, config, and PATH entries",
-  "check-review-artifact <path>  Validate a review artifact",
-  "version                   Print version",
-  "--help, -h                Show this help",
-  "--version, -V             Print version",
-] as const;
+const TOP_LEVEL_COMMANDS: readonly HelpCommand[] = [
+  { command: "review", description: "Run PR review (default)" },
+  { command: "doctor", description: "Check environment is ready" },
+  { command: "init", description: "Run guided setup (recommended quickstart)" },
+  { command: "uninstall", description: "Remove the installed binary, config, and PATH entries" },
+  { command: "check-review-artifact <path>", description: "Validate a review artifact" },
+  { command: "version", description: "Print version" },
+  { command: "--help, -h", description: "Show this help" },
+  { command: "--version, -V", description: "Print version" },
+];
+
+/**
+ * Render one command with optional description, padded to the description
+ * column at `width + GUTTER_SPACES`. The `Math.max(0, ...)` guard makes
+ * the renderer width-agnostic: callers may mix rows of wildly different
+ * lengths and the renderer will never crash, even if a single row is
+ * longer than the computed column width.
+ */
+function renderCommandLine({ command, description }: HelpCommand, width: number): string {
+  const padding = " ".repeat(Math.max(0, width - command.length + GUTTER_SPACES));
+  const head = `${" ".repeat(INDENT_SPACES)}${command}${padding}`;
+  return description === undefined ? head : `${head}${description}`;
+}
+
+/**
+ * Render a list of command rows as a column-aligned table (one string per
+ * row). The column width is computed from the input `commands` array, so
+ * every caller gets the column width that fits its own rows — there is no
+ * shared module-level state coupling the help-text and quickstart
+ * surfaces. With the 2-space indent and 2-space gutter, the description
+ * column starts at `width + 4` (1-indexed).
+ */
+export function renderCommandsTable(commands: readonly HelpCommand[]): readonly string[] {
+  const width = commands.reduce((max, { command }) => Math.max(max, command.length), 0);
+  return commands.map((c) => renderCommandLine(c, width));
+}
 
 export const CLI_HELP_TEXT = [
   `${BRAND} — provider-agnostic PR review CLI`,
   "",
   "Commands:",
-  ...TOP_LEVEL_COMMANDS.map((c) => `  ${c}`),
+  ...renderCommandsTable(TOP_LEVEL_COMMANDS),
   "",
   "Review flags (use `umactually review --help` for full details):",
   ...HELP_FLAGS.map(renderFlagLine),
@@ -232,13 +265,17 @@ const INIT_HELP_TEXT = [
   "See exit codes: docs/exit-codes.md",
 ].join("\n");
 
+const DOCTOR_USAGE_COMMANDS: readonly HelpCommand[] = [
+  { command: "umactually doctor", description: "Run all environment checks" },
+  { command: "umactually doctor --json", description: "Emit machine-readable JSON" },
+  { command: "umactually doctor --help", description: "Show this help" },
+];
+
 const DOCTOR_HELP_TEXT = [
   `${BRAND} doctor — check that your environment is ready for review`,
   "",
   "Usage:",
-  "  umactually doctor                Run all environment checks",
-  "  umactually doctor --json         Emit machine-readable JSON",
-  "  umactually doctor --help         Show this help",
+  ...renderCommandsTable(DOCTOR_USAGE_COMMANDS),
   "",
   "Checks:",
   "  node          Verifies Node.js >= 24 is on PATH",

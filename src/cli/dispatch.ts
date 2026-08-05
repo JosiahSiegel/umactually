@@ -12,7 +12,7 @@ import { BRAND_PREFIX } from "../util/brand.js";
 import { runCli, runVersion } from "../cli.js";
 import { classifyReviewArtifact } from "./check-review-artifact.js";
 import { formatDoctorHuman, formatDoctorJson, runDoctor } from "./doctor.js";
-import { printContextualHelp } from "./help.js";
+import { type HelpCommand, printContextualHelp, renderCommandsTable } from "./help.js";
 import { tryReadSavedConfig } from "./load-saved-config.js";
 import type { SavedConfig } from "../config/saved-config.js";
 import {
@@ -246,16 +246,20 @@ function argvIncludesProgrammaticFlags(argv: readonly string[]): boolean {
  * Industry-standard model: matches `rustup`, `fnm`, `volta`, `nvm`,
  * `pip`, `brew install` first-run output. No `--dry-run` clutter.
  */
-const FIRST_RUN_QUICKSTART = [
+const QUICKSTART_REVIEW_COMMANDS: readonly HelpCommand[] = [
+  { command: "umactually review --api-key <key>", description: "PR review (CI)" },
+  { command: "umactually --files <path>... --api-key <key>", description: "Local files (no CI)" },
+  { command: "umactually doctor", description: "Verify your setup" },
+];
+
+export const FIRST_RUN_QUICKSTART = [
   "Welcome to umactually! Get started with the setup wizard:",
   "",
   "  umactually init",
   "",
   "Then run a review:",
   "",
-  "  umactually review --api-url <url> --api-key <key>     PR review (CI)",
-  "  umactually --files <path>... --api-key <key>          Local files (no CI)",
-  "  umactually doctor                                   Verify your setup",
+  ...renderCommandsTable(QUICKSTART_REVIEW_COMMANDS),
   "",
   "Run `umactually --help` for the full reference.",
   "",
@@ -286,16 +290,14 @@ function runFirstRunQuickstart(): Promise<DispatchResult> {
  *      be condescending. The two review-command lines stay in their
  *      exact same position so visual muscle memory carries over.
  */
-function renderLoadedConfigQuickstart(config: SavedConfig): string {
+export function renderLoadedConfigQuickstart(config: SavedConfig): string {
   const providerLabel = `provider=${config.provider}`;
   const modelLabel = config.model !== undefined ? `, model=${config.model}` : "";
   const header = `Loaded config (${providerLabel}${modelLabel}). Run:`;
   return [
     header,
     "",
-    "  umactually review --api-key <key>                       PR review (CI)",
-    "  umactually --files <path>... --api-key <key>           Local files (no CI)",
-    "  umactually doctor                                    Verify your setup",
+  ...renderCommandsTable(QUICKSTART_REVIEW_COMMANDS),
     "",
     "Run `umactually --show-config` to inspect the loaded values;",
     "run `umactually --help` for the full reference.",

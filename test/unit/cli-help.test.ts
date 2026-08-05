@@ -7,6 +7,8 @@ import {
   CHECK_REVIEW_ARTIFACT_HELP,
   resolveHelpText,
   INIT_HELP,
+  renderCommandsTable,
+  type HelpCommand,
 } from "../../src/cli/help.js";
 
 describe("CLI help text", () => {
@@ -37,21 +39,35 @@ describe("CLI help text", () => {
 
   it("contains a Modes: banner so operators can see the three invocation modes at a glance", () => {
     // S4 — help honesty. A brand-new operator running --help must
-    // discover the Standalone / Live CI / Outside-git-repo modes
-    // without reading docs. If a future edit drops the "Modes:"
-    // header, the standalone/live-CI copy-paste examples vanish
-    // from --help output and S1/S2/S4 surface artifacts regress.
-    expect(CLI_HELP_TEXT).toContain("Modes:");
+    // discover the Standalone / Live CI / Pre-rendered / Local-files
+    // modes without reading docs. The compact banner (Wave 3) drops
+    // the literal "Modes:" header because the four body labels
+    // ("Standalone mode:", "Live CI mode:", "Pre-rendered diff:",
+    // "Local files:") already serve as discoverability anchors; the
+    // header was redundant with the body. This test pins the four
+    // anchors so a future edit that drops one of them regresses the
+    // S4 surface rather than passing silently.
+    expect(CLI_HELP_TEXT).toContain("Standalone mode:");
+    expect(CLI_HELP_TEXT).toContain("Live CI mode:");
+    expect(CLI_HELP_TEXT).toContain("Pre-rendered diff:");
+    expect(CLI_HELP_TEXT).toContain("Local files:");
   });
 
   it("shows the Standalone-mode copy-paste example", () => {
     // The standalone example is the primary use case for local
     // dev/smoke tests (README.md "Standalone mode (the primary use
     // case)" section). Operators running --help must be able to
-    // copy it directly without crossing into README.md.
-    expect(CLI_HELP_TEXT).toContain(
-      '--api-url https://api.minimax.io/v1 --api-key "$UMACTUALLY_API_KEY"',
-    );
+    // adapt it for their own endpoint without crossing into README.md.
+    // The compact banner (Wave 3) uses literal placeholders (`<url>`,
+    // `<key>`) instead of the previous vendor URL
+    // (`https://api.minimax.io/v1`) and shell-quoted env var
+    // (`$UMACTUALLY_API_KEY`) because the placeholder form is more
+    // useful for new operators — they fill in their own values
+    // rather than copying a vendor-specific URL and an env-var name
+    // they may not have set. The README documents the placeholder
+    // pattern (see "Saved config" / "Configuration sources" sections)
+    // so the placeholder is not a step backward in discoverability.
+    expect(CLI_HELP_TEXT).toContain("--api-url <url> --api-key <key>");
   });
 
   it("shows the live-CI copy-paste example without explicit plumbing", () => {
@@ -344,5 +360,207 @@ describe("init help wiring (RED — Task T13)", () => {
     // --help alone.
     expect(INIT_HELP).toMatch(/api[_ -]?key/i);
     expect(INIT_HELP).toMatch(/(never|not)\s+(persisted|saved|written|stored)/iu);
+  });
+});
+
+// ────────────────────────────────────────────────────────────────────────
+// renderCommandsTable — column-aligned renderer for the Commands banner.
+//
+// The PR introduces `HelpCommand` + `renderCommandsTable` so the top-level
+// help, the doctor usage block, and any future quickstart surface all
+// share one width-agnostic renderer (width is computed from the input
+// `commands` array — no shared module state coupling the surfaces).
+//
+// These tests pin the *byte-exact* output of every branch so a future
+// refactor that drops padding, concatenates descriptions wrong, or breaks
+// the `Math.max(0, ...)` guard regresses loudly instead of silently
+// re-aligning some columns and not others.
+//
+// `GUTTER_SPACES = 2` and `INDENT_SPACES = 2` are inlined into the
+// expected strings so the assertions stay self-explanatory: the
+// 2-space indent, then the command token, then enough spaces to reach
+// `width + 2`, then the description (if any).
+// ────────────────────────────────────────────────────────────────────────
+
+describe("renderCommandsTable", () => {
+  it("equal-length rows: column width is the command length, every row gets the same 2-space gutter", () => {
+    // Given: two rows of identical command length (6 chars each).
+    const commands: readonly HelpCommand[] = [
+      { command: "review" },
+      { command: "doctor" },
+    ];
+
+    // When: renderCommandsTable computes a single width for the whole
+    // table and renders each row.
+    const rows = renderCommandsTable(commands);
+
+    // Then: every row is indented by 2, padded with exactly 2 spaces
+    // past the command (width 6, command 6, gutter 2), and has no
+    // description (so the head is returned verbatim).
+    expect(rows).toEqual(["  review  ", "  doctor  "]);
+  });
+
+  it("varying length with longest at index 0: width tracks the longest command, shorter rows pad to the gutter", () => {
+    // Given: the longest command is first, followed by a much shorter
+    // one. The width computation must use the MAX across the whole
+    // array, not just the first row.
+    const commands: readonly HelpCommand[] = [
+      { command: "check-review-artifact" },
+      { command: "review" },
+    ];
+
+    // When: renderCommandsTable runs.
+    const rows = renderCommandsTable(commands);
+
+    // Then: row 0 is the command + the 2-space gutter past its own
+    // length (21 - 21 + 2 = 2 trailing spaces), and row 1 is padded
+    // out to width 21 plus the 2-space gutter (21 - 6 + 2 = 17
+    // trailing spaces). The padding branch in renderCommandLine is
+    // exercised by the 17-space gap on row 1.
+    expect(rows).toEqual([
+      "  check-review-artifact  ",
+      `  review${" ".repeat(17)}`,
+    ]);
+  });
+
+  it("padding branch with descriptions: short rows get the full gutter-and-then-some, descriptions concatenate after the head", () => {
+    // Given: two rows where the short row's command is much shorter
+    // than the longest, and BOTH rows carry descriptions. This is
+    // the realistic case for the top-level Commands banner.
+    const commands: readonly HelpCommand[] = [
+      { command: "aaaa", description: "long description one" },
+      { command: "bb", description: "short desc" },
+    ];
+
+    // When: renderCommandsTable runs.
+    const rows = renderCommandsTable(commands);
+
+    // Then:
+    //   row 0: indent(2) + "aaaa" + gutter(2) + description
+    //          = "  aaaa  long description one"
+    //   row 1: indent(2) + "bb" + pad(4) + description
+    //          = "  bb    short desc"
+    //   The 4-space gap on row 1 is the padding branch — width (4) -
+    //   command length (2) + gutter (2) = 4. The 2-space gap on row
+    //   0 is the same width-equals-command case from the equal-length
+    //   test above.
+    expect(rows).toEqual([
+      "  aaaa  long description one",
+      "  bb    short desc",
+    ]);
+  });
+
+  it("no-description branch: row is returned as head only, no trailing description is concatenated", () => {
+    // Given: a single command with no description — the canonical case
+    // for a usage line where the placeholder fully documents the value.
+    const commands: readonly HelpCommand[] = [{ command: "review" }];
+
+    // When: renderCommandsTable runs.
+    const rows = renderCommandsTable(commands);
+
+    // Then: the row is exactly "  " + command + 2 trailing spaces
+    // (the canonical gutter), and nothing else. The description
+    // branch in renderCommandLine is NOT taken.
+    expect(rows).toEqual(["  review  "]);
+  });
+
+  it("empty input: returns an empty array (no rows to render, no padding to compute)", () => {
+    // Given: an empty command list — the "nothing to render" edge
+    // case. width reduce() over an empty array returns 0 (the seeded
+    // initial value), and the map over an empty array returns [].
+
+    // When + Then:
+    expect(renderCommandsTable([])).toEqual([]);
+  });
+});
+
+// ────────────────────────────────────────────────────────────────────────
+// resolveHelpText + printHelp — coverage closure for the help module.
+//
+// `resolveHelpText` has two branches that the existing tests in this
+// file don't reach: (1) the no-help-flag short-circuit that returns
+// the top-level help directly, and (2) the "unknown positional before
+// --help" fallback that also returns top-level help. `printHelp` is
+// the legacy entry point (kept for the bare-invocation dispatch path)
+// and has zero coverage without these tests.
+//
+// These cases are appended here (instead of a new file) so the
+// coverage-closure intent stays co-located with the rest of the
+// help-module tests.
+// ────────────────────────────────────────────────────────────────────────
+
+describe("resolveHelpText (coverage closure)", () => {
+  it("no-help short-circuit: returns CLI_HELP_TEXT when argv contains neither --help nor -h", () => {
+    // Given: argv with no help flag. resolveHelpText must not even
+    // enter the for-loop scan; it returns the top-level help
+    // immediately. This is the call shape bare-invocation dispatch
+    // uses when the operator did NOT pass --help.
+    expect(resolveHelpText(["review"])).toBe(CLI_HELP_TEXT);
+    expect(resolveHelpText([])).toBe(CLI_HELP_TEXT);
+  });
+
+  it("unknown-positional fallback: returns CLI_HELP_TEXT when the token before --help is not a recognized subcommand", () => {
+    // Given: an unknown subcommand name precedes --help. The for-loop
+    // hits the unrecognized branch and breaks out, then resolveHelpText
+    // returns the top-level help. Operators who fat-finger a subcommand
+    // get the same help surface as a bare --help invocation — a
+    // discoverability contract.
+    expect(resolveHelpText(["unknown-cmd", "--help"])).toBe(CLI_HELP_TEXT);
+    expect(resolveHelpText(["nope", "-h"])).toBe(CLI_HELP_TEXT);
+  });
+});
+
+describe("printHelp (legacy entry point)", () => {
+  let originalStdoutWrite: typeof process.stdout.write;
+  let stdoutBuf = "";
+
+  beforeEach(() => {
+    originalStdoutWrite = process.stdout.write.bind(process.stdout);
+    stdoutBuf = "";
+    process.stdout.write = ((c: string | Uint8Array): boolean => {
+      stdoutBuf += typeof c === "string" ? c : Buffer.from(c).toString("utf8");
+      return true;
+    }) as typeof process.stdout.write;
+  });
+
+  afterEach(() => {
+    process.stdout.write = originalStdoutWrite;
+    stdoutBuf = "";
+  });
+
+  it("default-arg path: writes CLI_HELP_TEXT to stdout and returns it", async () => {
+    // Given: printHelp is called with no commands argument. It must
+    // use the bare CLI_HELP_TEXT (no Commands banner appended) and
+    // write that to process.stdout. This is the legacy fallback path
+    // kept for direct callers that don't go through dispatch.
+    const { printHelp } = await import("../../src/cli/help.js");
+
+    // When: printHelp runs with no argument.
+    const returned = printHelp();
+
+    // Then: stdout got exactly CLI_HELP_TEXT, and the return value
+    // matches so callers can chain (e.g. log the same string the
+    // user saw).
+    expect(stdoutBuf).toBe(CLI_HELP_TEXT);
+    expect(returned).toBe(CLI_HELP_TEXT);
+  });
+
+  it("legacy commands argument: appends a 'Commands:' banner to CLI_HELP_TEXT", async () => {
+    // Given: printHelp is called with an explicit commands list. The
+    // legacy path appends a Commands banner (the "  <command>" lines
+    // rendered by renderCommands) after the top-level help, separated
+    // by a blank line. This is the path bare-invocation dispatch
+    // uses when it needs a custom Commands banner that differs from
+    // TOP_LEVEL_COMMANDS.
+    const { printHelp } = await import("../../src/cli/help.js");
+
+    // When: printHelp runs with a non-empty commands list.
+    const returned = printHelp(["my-command", "another-command"]);
+
+    // Then: stdout got CLI_HELP_TEXT + "\n\n" + "Commands:\n  my-command\n  another-command\n"
+    // and the return value matches.
+    const expected = `${CLI_HELP_TEXT}\n\nCommands:\n  my-command\n  another-command\n`;
+    expect(stdoutBuf).toBe(expected);
+    expect(returned).toBe(expected);
   });
 });
