@@ -1081,6 +1081,15 @@ describe("internal Severity vocabulary in tally + emoji", () => {
     expect(out).not.toMatch(/`\d+` security/u);
     expect(out).not.toMatch(/`\d+` leak/u);
     expect(out).toMatch(/🔒\s+`2`\s+carve-out only/u);
+    // Manifest payload is JSON; the tally string is NOT parsed. The
+    // manifest's severityCounts still carries the carve-out counts
+    // verbatim so downstream consumers (CI guards, dashboards) see
+    // the same picture as the inline threads.
+    const manifest = JSON.parse(
+      out.match(/<!--\s*umactually:manifest\s+(\{[^]*?\})\s*-->/u)?.[1] ?? "{}",
+    );
+    expect(manifest.severityCounts).toEqual({ security: 1, leak: 1 });
+    expect(manifest.inlineCount).toBe(2);
   });
 });
 
