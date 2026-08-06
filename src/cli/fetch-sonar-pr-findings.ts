@@ -133,9 +133,14 @@ function parseSonarPrCommentEntry(value: unknown): {
   //
   // The correct discriminator: raw SonarCloud posts from the
   // `Surface SonarCloud findings as PR comments` step in ci.yml ALWAYS
-  // start with `<!-- sonarcloud -->`. Umactually reposts START with
-  // `` `severity` `category`\n\n `` (the format `buildInlineCommentBody`
-  // emits). So require `body.trimStart()` to start with the sonar marker.
+  // start with `<!-- sonarcloud -->` (no leading whitespace). Umactually
+  // reposts START with `` `severity` `category`\n\n `` (the format
+  // `buildInlineCommentBody` emits). So require `body.trimStart()` to
+  // start with the sonar marker. The trimStart is defensive — if the
+  // surface step is ever refactored to lead with whitespace, this guard
+  // would silently exclude every legitimate SonarCloud comment as a
+  // "repost". The surface-step body builder is the authoritative source
+  // of the format; keep the two in sync.
   const trimmed = body.trimStart();
   if (!trimmed.startsWith(SONAR_PR_FINDING_MARKER)) return null;
   // Belt-and-braces: if the umactually marker IS present anywhere, this

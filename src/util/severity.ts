@@ -66,6 +66,13 @@ export function severityRank(severity: string): number {
  * tallest tier appears first in the tally; ties at the same rank
  * (medium vs major, low vs minor) prefer provider-vocab first to
  * preserve the original four-tier display contract.
+ *
+ * Note: `security` and `leak` are CARVE-OUT tiers — they appear in
+ * this array so `severityRank` consumers see the full vocabulary,
+ * but `severityTally` skips them at render time (they bypass the
+ * `--minimum-severity` threshold by security policy and are not
+ * part of the four-tier display vocabulary). The visible tally order
+ * is therefore critical → high → medium/major → low/minor.
  */
 export const SEVERITY_ORDER = (Object.keys(SEVERITY_RANK_BY_STRING) as readonly string[])
   .filter((k) => k !== "info")

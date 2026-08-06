@@ -2568,6 +2568,7 @@ const REVIEW_FLAGS = [
     { flag: "--provider <openai-compatible|copilot|anthropic>", description: "Provider family (anthropic uses native /v1/messages)", appliesTo: ["review"] },
     { flag: "--github-api-base <url>", description: `GitHub API base URL (Copilot token exchange; default: ${DEFAULT_GITHUB_API_BASE})`, appliesTo: ["review"] },
     { flag: "--include-sonarqube", appliesTo: ["review"] },
+    { flag: "--include-pr-sonar-findings | --no-include-pr-sonar-findings", description: "Merge SonarCloud PR inline comments into the review (default: no)", appliesTo: ["review"] },
     { flag: "--sonar-host-url <url>", appliesTo: ["review"] },
     { flag: "--sonar-token <token>", appliesTo: ["review"] },
     { flag: "--sonar-project-key <key>", appliesTo: ["review"] },
@@ -10792,6 +10793,13 @@ function severity_severityRank(severity) {
  * tallest tier appears first in the tally; ties at the same rank
  * (medium vs major, low vs minor) prefer provider-vocab first to
  * preserve the original four-tier display contract.
+ *
+ * Note: `security` and `leak` are CARVE-OUT tiers — they appear in
+ * this array so `severityRank` consumers see the full vocabulary,
+ * but `severityTally` skips them at render time (they bypass the
+ * `--minimum-severity` threshold by security policy and are not
+ * part of the four-tier display vocabulary). The visible tally order
+ * is therefore critical → high → medium/major → low/minor.
  */
 const SEVERITY_ORDER = Object.keys(SEVERITY_RANK_BY_STRING)
     .filter((k) => k !== "info")
@@ -15804,9 +15812,14 @@ function parseSonarPrCommentEntry(value) {
     //
     // The correct discriminator: raw SonarCloud posts from the
     // `Surface SonarCloud findings as PR comments` step in ci.yml ALWAYS
-    // start with `<!-- sonarcloud -->`. Umactually reposts START with
-    // `` `severity` `category`\n\n `` (the format `buildInlineCommentBody`
-    // emits). So require `body.trimStart()` to start with the sonar marker.
+    // start with `<!-- sonarcloud -->` (no leading whitespace). Umactually
+    // reposts START with `` `severity` `category`\n\n `` (the format
+    // `buildInlineCommentBody` emits). So require `body.trimStart()` to
+    // start with the sonar marker. The trimStart is defensive — if the
+    // surface step is ever refactored to lead with whitespace, this guard
+    // would silently exclude every legitimate SonarCloud comment as a
+    // "repost". The surface-step body builder is the authoritative source
+    // of the format; keep the two in sync.
     const trimmed = body.trimStart();
     if (!trimmed.startsWith(SONAR_PR_FINDING_MARKER))
         return null;

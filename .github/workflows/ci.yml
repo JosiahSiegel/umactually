@@ -893,17 +893,14 @@ jobs:
               "${GITHUB_API_URL:-https://api.github.com}/repos/${GITHUB_REPOSITORY}/pulls/${PR_NUMBER}/comments?per_page=100" \
               > "${EXISTING_FILE}" 2>/dev/null; then
             EXISTING_SIGNATURES=$(jq -r \
-              # Select every PR-comment that carries the sonar marker — not
-              # just those that start with it. Earlier cycles of this step
-              # used `startswith`, which missed umactually-prefixed reposts
-              # (the self-review bot re-posts surface comments with a
-              # `` `severity` `category`\n\n `` prefix, breaking the
-              # startswith match and letting the same (path,line,rule) be
-              # posted again). The `capture` extracts the rule id from the
-              # `**SonarCloud <SEV> — `<rule>`**` header the surface step
-              # writes verbatim — anchoring to that exact header (not a
-              # free-floating backtick scan) prevents false matches against
-              # quoted rule ids in body prose or deep-link substrings.
+              # The capture anchors to the `**SonarCloud <SEV> — \`<rule>\`**`
+              # header the surface step below writes verbatim. The em-dash
+              # literal `—` (U+2014) is intentional — the surface step's jq
+              # body builder uses the same character. If the surface step is
+              # ever refactored to use ASCII `--` or `-`, this capture breaks
+              # silently and dedup falls through to empty rule signatures.
+              # Keep the two in sync; the surface step's body builder is the
+              # authoritative source of the format.
               '[.[] | select(.body | contains("<!-- sonarcloud -->")) | {path, line, rule: (.body | capture("\\*\\*Sonar(?:Cloud|Qube)?\\s+(?:BLOCKER|CRITICAL|MAJOR|MINOR|INFO)\\s+—\\s+`(?<r>[a-z]+:S\\d+)`").r // "")}] | .[] | "\(.path)\t\(.line // 0)\t\(.rule)"' \
               "${EXISTING_FILE}" 2>/dev/null | sort -u || echo "")
           fi
