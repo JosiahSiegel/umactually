@@ -893,7 +893,15 @@ jobs:
               "${GITHUB_API_URL:-https://api.github.com}/repos/${GITHUB_REPOSITORY}/pulls/${PR_NUMBER}/comments?per_page=100" \
               > "${EXISTING_FILE}" 2>/dev/null; then
             EXISTING_SIGNATURES=$(jq -r \
-              '[.[] | select(.body | startswith("<!-- sonarcloud -->")) | {path, line, rule: (.body | capture("`(?<r>typescript:S\\d+|[a-z]+:S\\d+)`").r // "")}] | .[] | "\(.path)\t\(.line // 0)\t\(.rule)"' \
+              # Select every PR-comment that carries the sonar marker — not
+              # just those that start with it. Earlier cycles of this step
+              # used `startswith`, which missed umactually-prefixed reposts
+              # (the self-review bot re-posts surface comments with a
+              # `` `severity` `category`\n\n `` prefix, breaking the
+              # startswith match and letting the same (path,line,rule) be
+              # posted again). The `capture` below extracts the rule id from
+              # anywhere in the body regardless of prefix.
+              '[.[] | select(.body | contains("<!-- sonarcloud -->")) | {path, line, rule: (.body | capture("`(?<r>typescript:S\\d+|[a-z]+:S\\d+)`").r // "")}] | .[] | "\(.path)\t\(.line // 0)\t\(.rule)"' \
               "${EXISTING_FILE}" 2>/dev/null | sort -u || echo "")
           fi
           EXISTING_COUNT=$(printf '%s\n' "${EXISTING_SIGNATURES}" | grep -c . || echo 0)

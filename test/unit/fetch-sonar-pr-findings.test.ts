@@ -175,6 +175,56 @@ describe("fetchSonarPrFindings", () => {
     expect(findings).toEqual([]);
   });
 
+  it("filters out umactually reposts that omit the umactually marker (buildInlineCommentBody default)", async () => {
+    // The live-post path in live-github.ts calls buildInlineCommentBody
+    // WITHOUT setting `includeMarker: true`, so umactually's own reposts
+    // of SonarCloud findings NEVER carry the umactually REVIEW_MARKER.
+    // They start with the `` `severity` `category`\n\n `` prefix instead,
+    // followed by the verbatim SonarCloud body (which itself starts with
+    // `<!-- sonarcloud -->`). The guard must reject based on the leading
+    // characters, not on the presence of REVIEW_MARKER.
+    const repostedNoMarker = "`major` `sonar`\n\n<!-- sonarcloud -->\n**SonarCloud MAJOR — `typescript:S3358`**\n\nExtract this nested ternary operation.";
+    const { fetchImpl } = makeFetchRecorder([
+      {
+        match: (url, method) => method === "GET" && url.includes("/pulls/42/comments"),
+        response: () => makeJsonResponse([
+          {
+            path: "src/cli/init.ts",
+            line: 10,
+            original_line: 10,
+            body: repostedNoMarker,
+          },
+        ]),
+      },
+    ]);
+
+    const findings = await fetchSonarPrFindings({ context: makeContext(), fetchImpl });
+    expect(findings).toEqual([]);
+  });
+
+  it("rejects body that contains sonar marker but doesn't START with it", async () => {
+    // Belt-and-braces: even with a leading newline + spaces, the
+    // trimStart + startswith must reject anything that doesn't begin
+    // with `<!-- sonarcloud -->` after trimming whitespace.
+    const prefixedWithNewline = "\n\n`major` `sonar`\n\n<!-- sonarcloud -->\n**SonarCloud MAJOR — `typescript:S3358`**\n\n...";
+    const { fetchImpl } = makeFetchRecorder([
+      {
+        match: (url, method) => method === "GET" && url.includes("/pulls/42/comments"),
+        response: () => makeJsonResponse([
+          {
+            path: "src/x.ts",
+            line: 1,
+            original_line: 1,
+            body: prefixedWithNewline,
+          },
+        ]),
+      },
+    ]);
+
+    const findings = await fetchSonarPrFindings({ context: makeContext(), fetchImpl });
+    expect(findings).toEqual([]);
+  });
+
   it("accepts a raw SonarCloud comment (no umactually marker) that starts with the sonar marker", async () => {
     const rawSonarBody = "<!-- sonarcloud -->\n**SonarCloud MAJOR — `typescript:S3358`**\n\nExtract this nested ternary operation.";
     const { fetchImpl } = makeFetchRecorder([

@@ -15785,19 +15785,25 @@ function parseSonarPrCommentEntry(value) {
     // prefix. Each self-review run re-imported the previous run's output,
     // accumulating duplicate `` `major` `sonar` `` prefixes (PR #184).
     //
-    // The stronger guard: reject any body that carries the umactually
-    // REVIEW_MARKER (the inline copy always embeds it — see
-    // buildInlineCommentBody). Raw SonarCloud comments posted by the
-    // `Surface SonarCloud findings as PR comments` step in ci.yml do NOT
-    // carry the umactually marker, so this is a clean discriminator.
-    // As a belt-and-braces second check, require the sonar marker to
-    // appear before any umactually marker — if both are present, the
-    // comment is a repost, not a raw SonarCloud surface.
-    const sonarIdx = body.indexOf(SONAR_PR_FINDING_MARKER);
-    const umactuallyIdx = body.indexOf(REVIEW_MARKER);
-    if (sonarIdx < 0)
+    // A weaker "both markers" guard was attempted first: reject if the
+    // umactually REVIEW_MARKER appears before the sonar marker. That failed
+    // because `buildInlineCommentBody` is called with `includeMarker`
+    // defaulting to false on the live-post path, so umactually reposts
+    // NEVER carry the umactually marker — only the sonar marker, prefixed
+    // by `` `severity` `category`\n\n ``. So that guard never fired.
+    //
+    // The correct discriminator: raw SonarCloud posts from the
+    // `Surface SonarCloud findings as PR comments` step in ci.yml ALWAYS
+    // start with `<!-- sonarcloud -->`. Umactually reposts START with
+    // `` `severity` `category`\n\n `` (the format `buildInlineCommentBody`
+    // emits). So require `body.trimStart()` to start with the sonar marker.
+    const trimmed = body.trimStart();
+    if (!trimmed.startsWith(SONAR_PR_FINDING_MARKER))
         return null;
-    if (umactuallyIdx >= 0 && umactuallyIdx < sonarIdx)
+    // Belt-and-braces: if the umactually marker IS present anywhere, this
+    // is a repost (the raw surface step never embeds it). Defensive only;
+    // the trimStart + startswith above is the actual discriminator.
+    if (body.indexOf(REVIEW_MARKER) >= 0)
         return null;
     const severity = parseSonarSeverityFromBody(body);
     return { path, line: resolvedLine, body, severity };
