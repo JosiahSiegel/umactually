@@ -340,7 +340,7 @@ function severityLabel(level: string): string {
   switch (level.toLowerCase()) {
     case "critical":
     case "security": return "Critical";
-    case "leak":     return "Critical";
+    case "leak":     return "High";
     case "high": return "High";
     case "medium":
     case "major": return "Medium";

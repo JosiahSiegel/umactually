@@ -553,9 +553,13 @@ describe("severity-table details", () => {
     // Mirror the function under test (kept in sync — see summary-layouts.ts).
     const cases: ReadonlyArray<{ readonly severity: string; readonly glyph: string }> = [
       { severity: "critical", glyph: "🟣" },
+      { severity: "security", glyph: "🟣" },
       { severity: "high",     glyph: "🔴" },
+      { severity: "leak",     glyph: "🔴" },
       { severity: "medium",   glyph: "🟠" },
+      { severity: "major",    glyph: "🟠" },
       { severity: "low",      glyph: "🟡" },
+      { severity: "minor",    glyph: "🟡" },
       { severity: "info",     glyph: "🟡" },
     ];
     for (const c of cases) {
@@ -994,5 +998,168 @@ describe("verdict escalation banner", () => {
       }),
     );
     expect(out).toMatch(/^> ⚠️ Verdict escalated from `SHIP` → `NEEDS_FIX`/mu);
+  });
+});
+
+describe("internal Severity vocabulary in tally + emoji", () => {
+  // SonarCloud MAJOR/CRITICAL/BLOCKER findings (merged via
+  // --include-pr-sonar-findings) carry the internal Severity vocabulary
+  // (major/critical/leak). Without these cases they render as ⚪.
+  it("renders 🟠 Medium glyph for severity='major' and includes it in the tally", () => {
+    const out = renderSummary(
+      "severity-table",
+      makeData({
+        review: {
+          summary: "SonarCloud MAJOR finding.",
+          verdict: "NEEDS_FIX",
+          comments: [],
+          suppressedComments: [],
+        },
+        validCommentCount: 1,
+        severityCounts: { major: 1 },
+        postedComments: [{
+          path: "src/cli/init.ts",
+          line: 1298,
+          body: "Extract this nested ternary operation.",
+          severity: "major",
+          category: "sonar",
+        }],
+      }),
+    );
+    expect(out).toContain("🟠 Medium");
+    expect(out).toMatch(/`1` major/u);
+  });
+
+  it("renders 🟣 Critical glyph for severity='security' and includes it in the tally", () => {
+    const out = renderSummary(
+      "severity-table",
+      makeData({
+        review: {
+          summary: "SonarCloud security finding.",
+          verdict: "NEEDS_FIX",
+          comments: [],
+          suppressedComments: [],
+        },
+        validCommentCount: 1,
+        severityCounts: { security: 1 },
+        postedComments: [{
+          path: "src/auth.ts",
+          line: 12,
+          body: "Hardcoded credential.",
+          severity: "security",
+          category: "security",
+        }],
+      }),
+    );
+    expect(out).toContain("🟣 Critical");
+    expect(out).toMatch(/`1` security/u);
+  });
+
+  it("renders 🔴 High glyph for severity='leak' and includes it in the tally", () => {
+    const out = renderSummary(
+      "severity-table",
+      makeData({
+        review: {
+          summary: "SonarCloud leak finding.",
+          verdict: "NEEDS_FIX",
+          comments: [],
+          suppressedComments: [],
+        },
+        validCommentCount: 1,
+        severityCounts: { leak: 1 },
+        postedComments: [{
+          path: "src/secret.ts",
+          line: 1,
+          body: "Hardcoded API key.",
+          severity: "leak",
+          category: "security",
+        }],
+      }),
+    );
+    expect(out).toContain("🔴 High");
+    expect(out).toMatch(/`1` leak/u);
+  });
+});
+
+describe("highestSeverityBanner — internal vocabulary tier coverage", () => {
+  // Pin each cascade tier so a future refactor that drops one of the
+  // cases is caught immediately.
+  it("incident layout surfaces 🟣 Critical when security tier is the highest non-zero", () => {
+    const out = renderSummary(
+      "incident",
+      makeData({
+        validCommentCount: 1,
+        severityCounts: { security: 1 },
+        postedComments: [{
+          path: "src/x.ts",
+          line: 1,
+          body: "x",
+          severity: "security",
+          category: "security",
+        }],
+      }),
+    );
+    expect(out).toMatch(/\*\*Severity:\*\*\s+🟣 Critical/u);
+  });
+
+  it("incident layout surfaces 🟠 Medium when major tier is the highest non-zero", () => {
+    const out = renderSummary(
+      "incident",
+      makeData({
+        validCommentCount: 1,
+        severityCounts: { major: 1 },
+        postedComments: [{
+          path: "src/x.ts",
+          line: 1,
+          body: "x",
+          severity: "major",
+          category: "general",
+        }],
+      }),
+    );
+    expect(out).toMatch(/\*\*Severity:\*\*\s+🟠 Medium/u);
+  });
+
+  it("incident layout surfaces 🟡 Low when minor tier is the highest non-zero", () => {
+    const out = renderSummary(
+      "incident",
+      makeData({
+        validCommentCount: 1,
+        severityCounts: { minor: 1 },
+        postedComments: [{
+          path: "src/x.ts",
+          line: 1,
+          body: "x",
+          severity: "minor",
+          category: "style",
+        }],
+      }),
+    );
+    expect(out).toMatch(/\*\*Severity:\*\*\s+🟡 Low/u);
+  });
+
+  it("newspaper layout surfaces the escalation banner when verdictEscalatedFrom is set", () => {
+    const out = renderSummary(
+      "newspaper",
+      makeData({
+        review: {
+          summary: "Looks good, ship it.",
+          verdict: "NEEDS_FIX",
+          comments: [],
+          suppressedComments: [],
+        },
+        validCommentCount: 1,
+        severityCounts: { medium: 1 },
+        verdictEscalatedFrom: "SHIP",
+        postedComments: [{
+          path: "src/x.ts",
+          line: 1,
+          body: "x",
+          severity: "medium",
+          category: "general",
+        }],
+      }),
+    );
+    expect(out).toMatch(/Verdict escalated from `SHIP` → `NEEDS_FIX`/u);
   });
 });
