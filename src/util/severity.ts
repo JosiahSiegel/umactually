@@ -58,8 +58,22 @@ export function severityRank(severity: string): number {
   return SEVERITY_RANK_BY_STRING[severity.toLowerCase()] ?? 0;
 }
 
-/** Visual order for the counts line; eliminates repeated critical → high → medium → low ordering literals. */
-export const SEVERITY_ORDER = ["critical", "high", "medium", "low"] as const;
+/**
+ * Visual order for the counts line. Includes the provider vocabulary
+ * (critical/high/medium/low) and the internal Severity vocabulary
+ * (security/leak/major/minor) so findings carrying either vocabulary
+ * render. Order is severity-descending within each rank tier.
+ */
+export const SEVERITY_ORDER = [
+  "critical",
+  "security",
+  "leak",
+  "high",
+  "medium",
+  "major",
+  "low",
+  "minor",
+] as const;
 
 /** Tally comments by severity; eliminates repeated lowercase accumulation logic in live review paths. */
 export function countBySeverity(comments: readonly { readonly severity: string }[]): Record<string, number> {

@@ -182,7 +182,7 @@ describe("buildReviewBody — 5-second scannable clarity", () => {
     const verdictIndex = body.indexOf("## ");
     expect(verdictIndex).toBeGreaterThanOrEqual(0);
     const afterVerdict = body.slice(verdictIndex);
-    const countsIdx = afterVerdict.search(/🏷️\s+`\d+`\s+critical/u);
+    const countsIdx = afterVerdict.search(/🏷️\s+`\d+`/u);
     expect(countsIdx).toBeGreaterThanOrEqual(0);
     expect(verdictIndex + countsIdx).toBeLessThan(500);
   });
@@ -547,7 +547,7 @@ describe("buildReviewBody — 5-second scannable clarity", () => {
       postedComments: review.comments,
     });
     // Severity tally still visible (3 findings survived filtering).
-    expect(body).toMatch(/🏷️\s+`0`\s+critical\s+·\s+`1`\s+high\s+·\s+`1`\s+medium\s+·\s+`1`\s+low/u);
+    expect(body).toMatch(/🏷️\s+`1`\s+high\s+·\s+`1`\s+medium\s+·\s+`1`\s+low/u);
     // Body shows the posted findings inline in the table.
     expect(body).toContain("`src/auth.ts`:12");
     expect(body).toContain("`src/db.ts`:7");
@@ -691,7 +691,7 @@ describe("buildReviewBody — 5-second scannable clarity", () => {
     });
     // Tally shows the post-filter distribution.
     // CLARITY-19: severity tally icon is now 🏷️ (📊 is the pipeline summary).
-    expect(body).toMatch(/🏷️\s+`0`\s+critical\s+·\s+`1`\s+high\s+·\s+`3`\s+medium\s+·\s+`5`\s+low/u);
+    expect(body).toMatch(/🏷️\s+`1`\s+high\s+·\s+`3`\s+medium\s+·\s+`5`\s+low/u);
     // Footer matches the inline count.
     expect(body).toMatch(/9\s+inline/u);
     // Manifest's severityCounts matches the tally (1 high, 3 medium, 5 low — info excluded).
@@ -852,7 +852,7 @@ describe("buildReviewBody — 5-second scannable clarity", () => {
       secrets: SECRETS,
     });
     // Tally totals 2 (CLARITY-19: icon is 🏷️ now, 📊 is the pipeline summary).
-    expect(body).toMatch(/🏷️\s+`0`\s+critical\s+·\s+`1`\s+high\s+·\s+`1`\s+medium\s+·\s+`0`\s+low/u);
+    expect(body).toMatch(/🏷️\s+`1`\s+high\s+·\s+`1`\s+medium/u);
     expect(body).toMatch(/2\s+inline/u);
     const manifestMatch = body.match(/<!--\s*umactually:manifest\s+(\{[\s\S]*?\})\s*-->/u);
     const manifest = JSON.parse(manifestMatch?.[1] ?? "{}");

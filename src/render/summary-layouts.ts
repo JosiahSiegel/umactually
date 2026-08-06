@@ -322,11 +322,15 @@ function findingsDetailsRow(
  */
 function severityEmoji(level: string): string {
   switch (level.toLowerCase()) {
-    case "critical": return "🟣";
+    case "critical":
+    case "security": return "🟣";
     case "high":     return "🔴";
-    case "medium":   return "🟠";
-    case "low":      return "🟡";
+    case "medium":
+    case "major":    return "🟠";
+    case "low":
+    case "minor":    return "🟡";
     case "info":     return "🟡";
+    case "leak":     return "🔴";
     default:         return "⚪";
   }
 }
@@ -334,10 +338,14 @@ function severityEmoji(level: string): string {
 /** Severity → short label used in compact rows. */
 function severityLabel(level: string): string {
   switch (level.toLowerCase()) {
-    case "critical": return "Critical";
+    case "critical":
+    case "security": return "Critical";
+    case "leak":     return "Critical";
     case "high": return "High";
-    case "medium": return "Medium";
-    case "low": return "Low";
+    case "medium":
+    case "major": return "Medium";
+    case "low":
+    case "minor": return "Low";
     default: return level || "Info";
   }
 }
@@ -357,9 +365,14 @@ function severityLabel(level: string): string {
 function highestSeverityBanner(data: ReviewData): { readonly emoji: string; readonly label: string } | null {
   if (data.validCommentCount === 0) return null;
   if ((data.severityCounts["critical"] ?? 0) > 0) return { emoji: "🟣", label: "Critical" };
+  if ((data.severityCounts["security"] ?? 0) > 0) return { emoji: "🟣", label: "Critical" };
+  if ((data.severityCounts["leak"] ?? 0) > 0) return { emoji: "🔴", label: "High" };
   if ((data.severityCounts["high"] ?? 0) > 0) return { emoji: "🔴", label: "High" };
   if ((data.severityCounts["medium"] ?? 0) > 0) return { emoji: "🟠", label: "Medium" };
-  return { emoji: "🟡", label: "Low" };
+  if ((data.severityCounts["major"] ?? 0) > 0) return { emoji: "🟠", label: "Medium" };
+  if ((data.severityCounts["low"] ?? 0) > 0) return { emoji: "🟡", label: "Low" };
+  if ((data.severityCounts["minor"] ?? 0) > 0) return { emoji: "🟡", label: "Low" };
+  return null;
 }
 
 /** Compose the stable hidden manifest that AI agents parse. */
@@ -472,7 +485,12 @@ function severityTallyLegend(data: ReviewData): string {
   return "`* = filtered by threshold`";
 }
 
-/** Severity tally line used by most layouts. */
+/**
+ * Severity tally line. Walks `SEVERITY_ORDER` (provider + internal
+ * vocabularies interleaved) and skips tiers with count 0 — except
+ * tiers filtered by the `--minimum-severity` threshold, which keep an
+ * asterisk to surface that they were hidden.
+ */
 function severityTally(data: ReviewData): string {
   const filtered = filteredTiers(data);
   const parts: string[] = [];
@@ -480,6 +498,7 @@ function severityTally(data: ReviewData): string {
   for (const level of SEVERITY_ORDER) {
     const count = data.severityCounts[level] ?? 0;
     total += count;
+    if (count === 0 && !filtered.has(level)) continue;
     const mark = filtered.has(level) ? "*" : "";
     parts.push(`\`${count}\` ${level}${mark}`);
   }
