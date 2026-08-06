@@ -1030,54 +1030,53 @@ describe("internal Severity vocabulary in tally + emoji", () => {
     expect(out).toMatch(/`1` major/u);
   });
 
-  it("renders 🟣 Critical glyph for severity='security' and includes it in the tally", () => {
+  // The `security` and `leak` tiers are CARVE-OUT findings: they
+  // bypass the --minimum-severity threshold entirely (see
+  // config/severity.ts:shouldKeepFinding) and are intentionally
+  // hidden from the four-tier display tally. They render their
+  // finding bodies with the correct glyph (🟣 Critical for security,
+  // 🔴 High for leak) so reviewers can identify severity on the
+  // inline thread, but the headline tally omits them — see the
+  // `severity + leak carve-out` test in live-shared-body.test.ts
+  // for the canonical invariant.
+  it("renders security and leak inline with the correct glyph but hides them from the tally", () => {
     const out = renderSummary(
       "severity-table",
       makeData({
         review: {
-          summary: "SonarCloud security finding.",
+          summary: "Carve-out findings.",
           verdict: "NEEDS_FIX",
           comments: [],
           suppressedComments: [],
         },
-        validCommentCount: 1,
-        severityCounts: { security: 1 },
-        postedComments: [{
-          path: "src/auth.ts",
-          line: 12,
-          body: "Hardcoded credential.",
-          severity: "security",
-          category: "security",
-        }],
+        validCommentCount: 2,
+        severityCounts: { security: 1, leak: 1 },
+        postedComments: [
+          {
+            path: "src/auth.ts",
+            line: 12,
+            body: "Hardcoded credential.",
+            severity: "security",
+            category: "security",
+          },
+          {
+            path: "src/secret.ts",
+            line: 1,
+            body: "Hardcoded API key.",
+            severity: "leak",
+            category: "security",
+          },
+        ],
       }),
     );
+    // The inline section renders the correct severity glyph for each
+    // carve-out finding so reviewers can read the inline thread.
     expect(out).toContain("🟣 Critical");
-    expect(out).toMatch(/`1` security/u);
-  });
-
-  it("renders 🔴 High glyph for severity='leak' and includes it in the tally", () => {
-    const out = renderSummary(
-      "severity-table",
-      makeData({
-        review: {
-          summary: "SonarCloud leak finding.",
-          verdict: "NEEDS_FIX",
-          comments: [],
-          suppressedComments: [],
-        },
-        validCommentCount: 1,
-        severityCounts: { leak: 1 },
-        postedComments: [{
-          path: "src/secret.ts",
-          line: 1,
-          body: "Hardcoded API key.",
-          severity: "leak",
-          category: "security",
-        }],
-      }),
-    );
     expect(out).toContain("🔴 High");
-    expect(out).toMatch(/`1` leak/u);
+    // The headline tally does NOT include `security` or `leak` —
+    // they bypass the threshold and aren't display tiers.
+    expect(out).not.toMatch(/`\d+` security/u);
+    expect(out).not.toMatch(/`\d+` leak/u);
   });
 });
 

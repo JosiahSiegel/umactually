@@ -11202,12 +11202,22 @@ function severityTallyLegend(data) {
  * vocabularies interleaved) and skips tiers with count 0 — except
  * tiers filtered by the `--minimum-severity` threshold, which keep an
  * asterisk to surface that they were hidden.
+ *
+ * Carve-out tiers (`security`, `leak`) are ALWAYS omitted from the
+ * rendered tally regardless of their count. They bypass the
+ * `--minimum-severity` threshold (see `config/severity.ts:shouldKeepFinding`)
+ * by security policy and are not part of the four-tier display
+ * vocabulary the user opted into. The threshold marker `*` only
+ * applies to display tiers; rendering `security*` or `leak*` would
+ * falsely imply they were filtered when they actually passed.
  */
 function severityTally(data) {
     const filtered = filteredTiers(data);
     const parts = [];
     let total = 0;
     for (const level of SEVERITY_ORDER) {
+        if (level === "security" || level === "leak")
+            continue;
         const count = data.severityCounts[level] ?? 0;
         total += count;
         if (count === 0 && !filtered.has(level))
