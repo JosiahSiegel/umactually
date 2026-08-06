@@ -1000,7 +1000,7 @@ export function ensureHttpOk(
 
 export { isRecord };
 
-function passesSeverityPolicy(comment: LiveReviewComment, parsed: ParsedCliArgs): boolean {
+export function passesSeverityPolicy(comment: LiveReviewComment, parsed: ParsedCliArgs): boolean {
   // `minimumSeverityInternal` is pre-resolved at arg-parse time (CLI
   // enum → internal Severity via the alias table). Reading it here
   // avoids re-parsing on every comment and ensures a malformed value

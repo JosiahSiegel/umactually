@@ -11,6 +11,7 @@ import {
   buildInlineCommentBody,
   ensureHttpOk,
   mapReviewVerdictToGithubEvent,
+  passesSeverityPolicy,
   preparePostedReview,
   readJsonResponse,
   readResponseId,
@@ -33,17 +34,29 @@ export async function runGithubLive(input: {
   // Fetch SonarCloud PR inline comments (when the flag is set) and
   // merge them into the provider review's comments list BEFORE
   // `preparePostedReview` runs. Three invariants this preserves:
-  // (1) severity + diff-position filtering applies uniformly to the
-  // SonarCloud findings (the same `passesSeverityPolicy` +
-  // `positions.hasPosition` gates that drop model off-diff findings);
-  // (2) the PR #183 verdict-reconciliation rule sees the SonarCloud
-  // severity counts, so SonarCloud MAJOR/CRITICAL escalates the
-  // verdict from SHIP/APPROVED to NEEDS_FIX; (3) SonarCloud findings
-  // render as inline threads on the bot's own review (one place to
-  // dismiss), in addition to SonarCloud's separate reviews.
-  const sonarPrFindings = parsed.includePrSonarFindings
+  // (1) severity filtering applies uniformly to the SonarCloud findings
+  // (the same `passesSeverityPolicy` gate that drops model findings
+  // below `--minimum-severity`); position validation runs downstream
+  // in `preparePostedReview` via the same `positions.hasPosition` gate;
+  // (2) the PR #183 verdict-reconciliation rule sees the surviving
+  // SonarCloud severity counts, so a postable SonarCloud MAJOR/CRITICAL
+  // escalates the verdict from SHIP/APPROVED to NEEDS_FIX; (3)
+  // SonarCloud findings render as inline threads on the bot's own
+  // review (one place to dismiss), in addition to SonarCloud's
+  // separate reviews.
+  const rawSonarFindings = parsed.includePrSonarFindings
     ? await fetchSonarPrFindings({ context, fetchImpl })
     : [];
+  const sonarPrFindings = rawSonarFindings.filter((finding) =>
+    passesSeverityPolicy(finding, parsed),
+  );
+  const droppedBySeverity = rawSonarFindings.length - sonarPrFindings.length;
+  if (droppedBySeverity > 0) {
+    writeBrandedAnnotation(
+      "warning",
+      `filtered ${droppedBySeverity} SonarCloud PR inline finding(s) below --minimum-severity=${parsed.minimumSeverity ?? "default"}; ${sonarPrFindings.length} postable.`,
+    );
+  }
   if (sonarPrFindings.length > 0) {
     writeBrandedAnnotation(
       "warning",
