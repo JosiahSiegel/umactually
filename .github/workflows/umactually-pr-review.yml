@@ -1,4 +1,15 @@
 # Runs umactually as a pinned npm CLI for pull requests.
+#
+# DISABLED: the self-review.yml workflow (UmActually Self Review) is the
+# canonical review surface for this repo — it runs the checked-out CLI
+# from dist/, waits for SonarCloud's surface step, and includes
+# SonarCloud PR inline findings in the verdict. This outer workflow was
+# the original review surface (pre-self-review); keeping both active
+# produced two bot reviews per push with contradictory verdicts (LLM
+# non-determinism on the same diff). The `if: false` gate below
+# short-circuits the job so GitHub still recognises the workflow file
+# (required checks stay green via self-review) but no review is posted.
+# To re-enable: remove the `if: false` line OR delete this file.
 name: PR review
 on: [pull_request]
 concurrency:
@@ -10,6 +21,7 @@ permissions:
 jobs:
   review:
     runs-on: ubuntu-latest
+    if: false  # Disabled — self-review.yml is the canonical review surface.
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -17,7 +29,7 @@ jobs:
           node-version: "24"
       - name: Install umactually
         # Pin the version; never track `latest`.
-        run: npm install -g umactually@0.6.21
+        run: npm install -g umactually@0.6.27
       - name: Run umactually PR review
         env:
           GITHUB_TOKEN: ${{ github.token }}

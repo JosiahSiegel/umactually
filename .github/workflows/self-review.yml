@@ -95,7 +95,7 @@ jobs:
           GITHUB_TOKEN: ${{ github.token }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
-          WAIT_TIMEOUT_SECONDS: "480"
+          WAIT_TIMEOUT_SECONDS: "900"
           POLL_INTERVAL_SECONDS: "15"
           SONAR_CHECK_NAME: "SonarCloud Code Analysis"
         run: |
