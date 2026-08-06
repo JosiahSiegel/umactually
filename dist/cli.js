@@ -6245,7 +6245,8 @@ function composeEffectiveVerdict(input) {
     const { rawVerdict, severityCounts } = input;
     const downgraded = reconcileVerdictForEmptySeverityCounts(rawVerdict, severityCounts);
     const final = escalateVerdictForNonEmptySeverityCounts(downgraded, severityCounts);
-    return { verdict: final, escalated: final.toUpperCase() !== rawVerdict.toUpperCase() };
+    const escalated = rawVerdict !== downgraded || downgraded !== final;
+    return { verdict: final, escalated };
 }
 /** Verdict ranking used by the merge path's "worst verdict wins" rule. */
 function verdictRank(verdict) {

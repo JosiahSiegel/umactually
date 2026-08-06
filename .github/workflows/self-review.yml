@@ -118,13 +118,15 @@ jobs:
               echo "SonarCloud check completed after ${poll_count} poll(s); conclusion=${CONCLUSION}. Proceeding to self-review."
               exit 0
             fi
-            if [ "${STATUS}" = "missing" ] && [ "${poll_count}" -ge 2 ]; then
-              # Two consecutive "missing" responses (no check named
-              # `SonarCloud Code Analysis` on this SHA) means SonarCloud
-              # isn't configured for this PR — fork PRs without
-              # SONAR_TOKEN skip the sonarqube-scan job entirely. Bail
-              # out of the wait and proceed.
-              echo "SonarCloud check absent on SHA ${HEAD_SHA} (likely a fork without SONAR_TOKEN). Proceeding without waiting."
+            if [ "${STATUS}" = "missing" ] && [ "${poll_count}" -ge 6 ]; then
+              # Six consecutive "missing" responses (no check named
+              # `SonarCloud Code Analysis` on this SHA, ~90s at 15s poll
+              # interval) means SonarCloud isn't configured for this PR —
+              # fork PRs without SONAR_TOKEN skip the sonarqube-scan job
+              # entirely. The grace period covers slow runner pools where
+              # the SonarCloud job may not have started yet within the
+              # first 30s of the pull_request event firing.
+              echo "SonarCloud check absent on SHA ${HEAD_SHA} after ${poll_count} polls (likely a fork without SONAR_TOKEN). Proceeding without waiting."
               exit 0
             fi
             echo "SonarCloud check status='${STATUS}' (poll ${poll_count}); sleeping ${POLL_INTERVAL_SECONDS}s."
