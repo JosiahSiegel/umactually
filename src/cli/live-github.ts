@@ -5,6 +5,7 @@ import { isRecord, isSafeInteger } from "../util/json-guards.js";
 import { writeBrandedAnnotation } from "../util/log.js";
 import { DEFAULT_GITHUB_API_BASE } from "../util/provider-defaults.js";
 import type { ParsedCliArgs } from "./parse-args.js";
+import { fetchSonarPrFindings } from "./fetch-sonar-pr-findings.js";
 import {
   LiveReviewError,
   buildInlineCommentBody,
@@ -29,8 +30,35 @@ export async function runGithubLive(input: {
 }): Promise<LiveRunResult> {
   const { context, diffText, provider, parsed, fetchImpl } = input;
 
+  // Fetch SonarCloud PR inline comments (when the flag is set) and
+  // merge them into the provider review's comments list BEFORE
+  // `preparePostedReview` runs. Three invariants this preserves:
+  // (1) severity + diff-position filtering applies uniformly to the
+  // SonarCloud findings (the same `passesSeverityPolicy` +
+  // `positions.hasPosition` gates that drop model off-diff findings);
+  // (2) the PR #183 verdict-reconciliation rule sees the SonarCloud
+  // severity counts, so SonarCloud MAJOR/CRITICAL escalates the
+  // verdict from SHIP/APPROVED to NEEDS_FIX; (3) SonarCloud findings
+  // render as inline threads on the bot's own review (one place to
+  // dismiss), in addition to SonarCloud's separate reviews.
+  const sonarPrFindings = parsed.includePrSonarFindings
+    ? await fetchSonarPrFindings({ context, fetchImpl })
+    : [];
+  if (sonarPrFindings.length > 0) {
+    writeBrandedAnnotation(
+      "warning",
+      `merged ${sonarPrFindings.length} SonarCloud PR inline finding(s) into the review (flag --include-pr-sonar-findings).`,
+    );
+  }
+  const providerReview = sonarPrFindings.length > 0
+    ? {
+        ...provider.review,
+        comments: [...provider.review.comments, ...sonarPrFindings],
+      }
+    : provider.review;
+
   const prepared = preparePostedReview({
-    review: provider.review,
+    review: providerReview,
     provider: provider.provider,
     modelId: provider.modelId,
     diffText,

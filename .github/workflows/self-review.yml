@@ -54,6 +54,74 @@ jobs:
       - name: Check bundled dist is fresh
         run: npm run check:dist-freshness
 
+      - name: Wait for SonarCloud scan + comment-surface to finish on this PR's head SHA
+        # Without this wait, the umactually self-review can post its
+        # review BEFORE SonarCloud's `Surface SonarCloud findings as
+        # PR comments` step (a sibling of `sonarqube-scan` in ci.yml)
+        # has posted its inline comments. A reviewer scanning the PR
+        # timeline sees the umactually card land first with
+        # "0 inline findings — ship it", then sees the SonarCloud
+        # MAJOR/CRITICAL inline threads appear later — and reasonably
+        # concludes the bot missed the SonarCloud finding. The two
+        # workflows run in parallel on the same pull_request event;
+        # this step polls the head SHA's check_runs for the
+        # `SonarCloud Code Analysis` job to reach `completed` (which
+        # subsumes the inline-comment surface step that runs inside
+        # that job) before we proceed.
+        #
+        # We poll the GitHub Checks API (REST /repos/:owner/:repo/
+        # commits/<sha>/check-runs) rather than workflow_run because
+        # workflow_run only fires on default-branch workflows and is
+        # not a reliable signal for pull_request-triggered jobs.
+        #
+        # Timeout is 8 minutes (32 polls × 15s). SonarCloud's own
+        # `Surface SonarCloud findings as PR comments` step runs as
+        # the last step of the job, so a non-zero timeout means the
+        # SonarCloud job either errored or is taking unusually long.
+        # Self-review is advisory: we do NOT block the job — we log a
+        # warning and continue. PRs whose merge depends on SonarCloud
+        # are already gated by the `SonarCloud Code Analysis` check
+        # itself, which is a required status check on protected
+        # branches. The wait here exists to make the umactually review
+        # body coherent with the inline-comment timeline, not to
+        # replace the quality gate.
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          WAIT_TIMEOUT_SECONDS: "480"
+          POLL_INTERVAL_SECONDS: "15"
+          SONAR_CHECK_NAME: "SonarCloud Code Analysis"
+        run: |
+          set +e
+          deadline=$(( $(date +%s) + WAIT_TIMEOUT_SECONDS ))
+          poll_count=0
+          while [ "$(date +%s)" -lt "$deadline" ]; do
+            poll_count=$((poll_count + 1))
+            STATUS_JSON=$(gh api \
+              "repos/${GITHUB_REPOSITORY}/commits/${HEAD_SHA}/check-runs" \
+              --jq '.check_runs[] | select(.name == env.SONAR_CHECK_NAME) | {name, status, conclusion}')
+            STATUS=$(printf '%s' "${STATUS_JSON}" | jq -r '.status // "missing"' 2>/dev/null)
+            if [ "${STATUS}" = "completed" ]; then
+              CONCLUSION=$(printf '%s' "${STATUS_JSON}" | jq -r '.conclusion // "unknown"' 2>/dev/null)
+              echo "SonarCloud check completed after ${poll_count} poll(s); conclusion=${CONCLUSION}. Proceeding to self-review."
+              exit 0
+            fi
+            if [ "${STATUS}" = "missing" ] && [ "${poll_count}" -ge 2 ]; then
+              # Two consecutive "missing" responses (no check named
+              # `SonarCloud Code Analysis` on this SHA) means SonarCloud
+              # isn't configured for this PR — fork PRs without
+              # SONAR_TOKEN skip the sonarqube-scan job entirely. Bail
+              # out of the wait and proceed.
+              echo "SonarCloud check absent on SHA ${HEAD_SHA} (likely a fork without SONAR_TOKEN). Proceeding without waiting."
+              exit 0
+            fi
+            echo "SonarCloud check status='${STATUS}' (poll ${poll_count}); sleeping ${POLL_INTERVAL_SECONDS}s."
+            sleep "${POLL_INTERVAL_SECONDS}"
+          done
+          echo "::warning::SonarCloud check did not complete within ${WAIT_TIMEOUT_SECONDS}s on SHA ${HEAD_SHA}. Proceeding with self-review anyway; the bot review may land before SonarCloud's inline-comment surface step finishes."
+          exit 0
+
       - name: Run UmActually self review
         # Self-review is an advisory signal: a provider-side timeout
         # (e.g. Anthropic rate-limit) should NOT block the PR from
@@ -103,7 +171,8 @@ jobs:
             --no-detect-leaks \
             --debug-raw-response \
             --max-output-tokens 32000 \
-            --per-request-timeout-seconds 240
+            --per-request-timeout-seconds 240 \
+            --include-pr-sonar-findings
           REVIEW_EXIT=$?
           echo "review-exit=${REVIEW_EXIT}" >> "${GITHUB_OUTPUT:-/dev/null}" || true
           echo "platform=${UMACTUALLY_PLATFORM}" >> "${GITHUB_OUTPUT:-/dev/null}" || true

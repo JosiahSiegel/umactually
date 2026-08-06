@@ -186,6 +186,7 @@ function parsedArgsForTest(overrides: {
     outputArtifact: null,
     strictSchema: true,
     verifyFindings: true,
+    includePrSonarFindings: false,
   };
 }
 describe("buildProviderPrompts verified-facts block", () => {
