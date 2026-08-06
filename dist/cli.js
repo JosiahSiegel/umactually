@@ -11240,7 +11240,16 @@ function severityTally(data) {
     const filtered = filteredTiers(data);
     const parts = [];
     let total = 0;
+    // Carve-out tiers (security, leak) are counted toward `total` so the
+    // empty-string early-return doesn't fire for a review whose only
+    // postable findings are security/leak (otherwise the card renders
+    // "0 inline findings" against validCommentCount ≥ 1 — misleading).
+    // They are still skipped from the rendered tally line itself per
+    // the carve-out invariant above.
     for (const level of SEVERITY_ORDER) {
+        if (level in data.severityCounts) {
+            total += data.severityCounts[level] ?? 0;
+        }
         if (level === "security" || level === "leak")
             continue;
         const isPresent = level in data.severityCounts;
@@ -11248,7 +11257,6 @@ function severityTally(data) {
         if (!isPresent && !isFiltered)
             continue;
         const count = data.severityCounts[level] ?? 0;
-        total += count;
         const mark = isFiltered ? "*" : "";
         parts.push(`\`${count}\` ${level}${mark}`);
     }
