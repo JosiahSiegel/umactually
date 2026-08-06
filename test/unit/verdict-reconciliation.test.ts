@@ -290,10 +290,14 @@ describe("preparePostedReview reconciliation", () => {
     expect(prepared.severityCounts).toEqual({});
     expect(prepared.effectiveVerdict).toBe("COMMENT");
 
-    // Body: clean-ship branch fires for 0 findings (parse-failed only is exempt).
-    expect(prepared.body).toContain("## ✅ 0 inline findings — ship it");
+    // Body: clean-ship short-circuit normally fires for 0 findings, but the
+    // verdict-reconciliation carve-out re-routes through `layoutSeverityTable`
+    // when `verdictEscalatedFrom !== undefined` so the downgrade banner can
+    // still render. Badge: `💬 DISCUSS`. Banner cites the raw→effective flip.
+    expect(prepared.body).toContain("## 💬 DISCUSS");
     expect(prepared.body).not.toContain("⛔ NEEDS_FIX");
-    expect(prepared.body).not.toContain("💬 DISCUSS");
+    expect(prepared.body).not.toContain("✅ 0 inline findings — ship it");
+    expect(prepared.body).toMatch(/Verdict downgraded from `NEEDS_FIX` → `COMMENT`/u);
 
     // Manifest payload: the hidden HTML comment carries the
     // effective verdict too, so AI agents parsing the manifest see

@@ -950,4 +950,49 @@ describe("verdict escalation banner", () => {
     );
     expect(out).not.toMatch(/Verdict (escalated|downgraded)/u);
   });
+
+  it("emits a downgrade banner (raw NEEDS_FIX → effective COMMENT) when all findings were severity-filtered", () => {
+    const out = renderSummary(
+      "severity-table",
+      makeData({
+        review: {
+          summary: "Reviewed.",
+          verdict: "COMMENT",
+          comments: [],
+          suppressedComments: [],
+        },
+        validCommentCount: 0,
+        severityCounts: {},
+        verdictEscalatedFrom: "NEEDS_FIX",
+        postedComments: [],
+      }),
+    );
+    expect(out).toMatch(/Verdict downgraded from `NEEDS_FIX` → `COMMENT`/u);
+    expect(out).toMatch(/no postable findings to address/u);
+  });
+
+  it("verdict-banner layout nests the escalation banner inside the existing `> ## verdict` blockquote", () => {
+    const out = renderSummary(
+      "verdict-banner",
+      makeData({
+        review: {
+          summary: "Looks good, ship it.",
+          verdict: "NEEDS_FIX",
+          comments: [],
+          suppressedComments: [],
+        },
+        validCommentCount: 1,
+        severityCounts: { medium: 1 },
+        verdictEscalatedFrom: "SHIP",
+        postedComments: [{
+          path: "src/x.ts",
+          line: 1,
+          body: "Fix this.",
+          severity: "medium",
+          category: "correctness",
+        }],
+      }),
+    );
+    expect(out).toMatch(/^> ⚠️ Verdict escalated from `SHIP` → `NEEDS_FIX`/mu);
+  });
 });

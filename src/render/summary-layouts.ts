@@ -836,12 +836,16 @@ function layoutVerdictBanner(data: ReviewData): string {
 
 function renderCleanShip(data: ReviewData): string {
   const safeSummary = redact(data.review.summary, data.secrets);
+  const banner = verdictEscalationBanner(data);
   const parts: string[] = [
     REVIEW_MARKER,
     "",
     "## ✅ 0 inline findings — ship it",
-    "",
   ];
+  if (banner.length > 0) {
+    parts.push(banner);
+  }
+  parts.push("");
   if (safeSummary.trim().length > 0) {
     parts.push("<details>");
     parts.push("<summary>📝 Click to expand the full review summary</summary>");
@@ -1790,10 +1794,17 @@ export function renderSummary(layout: LayoutId, data: ReviewData): string {
   // Suppressed findings (confidence/verified-facts filtered) don't
   // count against the reviewer — they're pipeline-internal noise the
   // filter already handled. Only parseFailed short-circuits to a verbose
-  // layout so the operator sees the raw provider response.
+  // layout so the operator sees the raw response.
+  //
+  // Reconciliation-bypass carve-out: when the raw verdict was
+  // reconciled (downgraded NEEDS_FIX→COMMENT or upgraded SHIP→NEEDS_FIX)
+  // AND there are no postable findings, `renderCleanShip` still
+  // surfaces the escalation banner so the clean-ship body doesn't
+  // hide the raw→effective flip from a scanning reviewer.
   if (
     data.validCommentCount === 0 &&
-    data.review.parseFailed !== true
+    data.review.parseFailed !== true &&
+    data.verdictEscalatedFrom === undefined
   ) {
     return renderCleanShip(data);
   }
