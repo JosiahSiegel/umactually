@@ -15665,6 +15665,7 @@ function azureStatusesUrl(context) {
 
 
 
+
 const fetch_sonar_pr_findings_GITHUB_API_BASE_URL = process.env["GITHUB_API_URL"]?.replace(/\/$/u, "") ?? DEFAULT_GITHUB_API_BASE;
 const SONAR_PR_FINDING_MARKER = "<!-- sonarcloud -->";
 const MAX_SONAR_PR_FINDINGS = 50;
@@ -15755,12 +15756,26 @@ function parseSonarPrCommentEntry(value) {
         return null;
     if (typeof body !== "string")
         return null;
-    // Only accept comments whose body STARTS with the marker. umactually
-    // re-posts its own inline copies as `` `major` `sonar`\n\n<!-- sonarcloud -->…``,
-    // which would match a plain `.includes()` and cause self-reingestion
-    // (each run re-imports the previous run's output, accumulating
-    // duplicate `` `major` `sonar` `` prefixes — see PR #184).
-    if (!body.trimStart().startsWith(SONAR_PR_FINDING_MARKER))
+    // Self-reingestion guard. The original check was `body.includes(SONAR_PR_FINDING_MARKER)`;
+    // that matched umactually's own re-posted copies because the inline
+    // comment body built by `buildInlineCommentBody` embeds the raw
+    // SonarCloud body verbatim AFTER the `` `severity` `category`\n\n ``
+    // prefix. Each self-review run re-imported the previous run's output,
+    // accumulating duplicate `` `major` `sonar` `` prefixes (PR #184).
+    //
+    // The stronger guard: reject any body that carries the umactually
+    // REVIEW_MARKER (the inline copy always embeds it — see
+    // buildInlineCommentBody). Raw SonarCloud comments posted by the
+    // `Surface SonarCloud findings as PR comments` step in ci.yml do NOT
+    // carry the umactually marker, so this is a clean discriminator.
+    // As a belt-and-braces second check, require the sonar marker to
+    // appear before any umactually marker — if both are present, the
+    // comment is a repost, not a raw SonarCloud surface.
+    const sonarIdx = body.indexOf(SONAR_PR_FINDING_MARKER);
+    const umactuallyIdx = body.indexOf(REVIEW_MARKER);
+    if (sonarIdx < 0)
+        return null;
+    if (umactuallyIdx >= 0 && umactuallyIdx < sonarIdx)
         return null;
     const severity = parseSonarSeverityFromBody(body);
     return { path, line: resolvedLine, body, severity };

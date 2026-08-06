@@ -144,6 +144,13 @@ describe("fetchSonarPrFindings", () => {
   });
 
   it("filters out umactually's own re-posted SonarCloud copies (self-reingestion prevention)", async () => {
+    // Both bodies mirror what buildInlineCommentBody emits for a
+    // SonarCloud-merged finding: the umactually REVIEW_MARKER first
+    // (so the bot can find/replace the comment), then the
+    // `severity` `category` prefix, then the raw SonarCloud body
+    // (which itself starts with SONAR_PR_FINDING_MARKER).
+    const repostedWithSinglePrefix = "<!-- umactually -->\n`major` `sonar`\n\n<!-- sonarcloud -->\n**SonarCloud MAJOR — `typescript:S3358`**\n\nExtract this nested ternary operation.";
+    const repostedWithDoublePrefix = "<!-- umactually -->\n`major` `sonar`\n`major` `sonar`\n\n<!-- sonarcloud -->\n**SonarCloud MAJOR — `typescript:S5976`**\n\nReplace these 3 tests.";
     const { fetchImpl } = makeFetchRecorder([
       {
         match: (url, method) => method === "GET" && url.includes("/pulls/42/comments"),
@@ -152,13 +159,13 @@ describe("fetchSonarPrFindings", () => {
             path: "src/cli/init.ts",
             line: 10,
             original_line: 10,
-            body: "`major` `sonar`\n\n<!-- sonarcloud -->\n**SonarCloud MAJOR — `typescript:S3358`**\n\nExtract this nested ternary operation.",
+            body: repostedWithSinglePrefix,
           },
           {
             path: "src/cli/init.ts",
             line: 20,
             original_line: 20,
-            body: "`major` `sonar`\n`major` `sonar`\n\n<!-- sonarcloud -->\n**SonarCloud MAJOR — `typescript:S5976`**\n\nReplace these 3 tests.",
+            body: repostedWithDoublePrefix,
           },
         ]),
       },
@@ -166,5 +173,33 @@ describe("fetchSonarPrFindings", () => {
 
     const findings = await fetchSonarPrFindings({ context: makeContext(), fetchImpl });
     expect(findings).toEqual([]);
+  });
+
+  it("accepts a raw SonarCloud comment (no umactually marker) that starts with the sonar marker", async () => {
+    const rawSonarBody = "<!-- sonarcloud -->\n**SonarCloud MAJOR — `typescript:S3358`**\n\nExtract this nested ternary operation.";
+    const { fetchImpl } = makeFetchRecorder([
+      {
+        match: (url, method) => method === "GET" && url.includes("/pulls/42/comments"),
+        response: () => makeJsonResponse([
+          {
+            path: "src/cli/init.ts",
+            line: 1298,
+            original_line: 1298,
+            body: rawSonarBody,
+          },
+        ]),
+      },
+    ]);
+
+    const findings = await fetchSonarPrFindings({ context: makeContext(), fetchImpl });
+    expect(findings).toEqual([
+      {
+        path: "src/cli/init.ts",
+        line: 1298,
+        body: rawSonarBody,
+        severity: "major",
+        category: "sonar",
+      },
+    ]);
   });
 });

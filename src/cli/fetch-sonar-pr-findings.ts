@@ -4,6 +4,7 @@ import { isRecord, isSafeInteger } from "../util/json-guards.js";
 import { writeBrandedAnnotation } from "../util/log.js";
 import { DEFAULT_GITHUB_API_BASE } from "../util/provider-defaults.js";
 import { ensureHttpOk, readJsonResponse, type FetchImpl, type LiveReviewComment } from "./live-shared.js";
+import { REVIEW_MARKER } from "../util/marker.js";
 
 const GITHUB_API_BASE_URL = process.env["GITHUB_API_URL"]?.replace(/\/$/u, "") ?? DEFAULT_GITHUB_API_BASE;
 
@@ -116,12 +117,25 @@ function parseSonarPrCommentEntry(value: unknown): {
   const resolvedLine = resolveCommentLine(line, originalLine);
   if (resolvedLine === null) return null;
   if (typeof body !== "string") return null;
-  // Only accept comments whose body STARTS with the marker. umactually
-  // re-posts its own inline copies as `` `major` `sonar`\n\n<!-- sonarcloud -->…``,
-  // which would match a plain `.includes()` and cause self-reingestion
-  // (each run re-imports the previous run's output, accumulating
-  // duplicate `` `major` `sonar` `` prefixes — see PR #184).
-  if (!body.trimStart().startsWith(SONAR_PR_FINDING_MARKER)) return null;
+  // Self-reingestion guard. The original check was `body.includes(SONAR_PR_FINDING_MARKER)`;
+  // that matched umactually's own re-posted copies because the inline
+  // comment body built by `buildInlineCommentBody` embeds the raw
+  // SonarCloud body verbatim AFTER the `` `severity` `category`\n\n ``
+  // prefix. Each self-review run re-imported the previous run's output,
+  // accumulating duplicate `` `major` `sonar` `` prefixes (PR #184).
+  //
+  // The stronger guard: reject any body that carries the umactually
+  // REVIEW_MARKER (the inline copy always embeds it — see
+  // buildInlineCommentBody). Raw SonarCloud comments posted by the
+  // `Surface SonarCloud findings as PR comments` step in ci.yml do NOT
+  // carry the umactually marker, so this is a clean discriminator.
+  // As a belt-and-braces second check, require the sonar marker to
+  // appear before any umactually marker — if both are present, the
+  // comment is a repost, not a raw SonarCloud surface.
+  const sonarIdx = body.indexOf(SONAR_PR_FINDING_MARKER);
+  const umactuallyIdx = body.indexOf(REVIEW_MARKER);
+  if (sonarIdx < 0) return null;
+  if (umactuallyIdx >= 0 && umactuallyIdx < sonarIdx) return null;
   const severity = parseSonarSeverityFromBody(body);
   return { path, line: resolvedLine, body, severity };
 }
