@@ -689,9 +689,10 @@ describe("buildReviewBody — 5-second scannable clarity", () => {
       severityCounts: { critical: 0, high: 1, medium: 3, low: 5 },
       secrets: SECRETS,
     });
-    // Tally shows the post-filter distribution.
-    // CLARITY-19: severity tally icon is now 🏷️ (📊 is the pipeline summary).
-    expect(body).toMatch(/🏷️\s+`1`\s+high\s+·\s+`3`\s+medium\s+·\s+`5`\s+low/u);
+    // Tally shows the post-filter distribution (zero-count tiers that are
+    // present in severityCounts render as `0` so reviewers see the full
+    // distribution; CLARITY-19: severity tally icon is now 🏷️).
+    expect(body).toMatch(/🏷️\s+`0`\s+critical\s+·\s+`1`\s+high\s+·\s+`3`\s+medium\s+·\s+`5`\s+low/u);
     // Footer matches the inline count.
     expect(body).toMatch(/9\s+inline/u);
     // Manifest's severityCounts matches the tally (1 high, 3 medium, 5 low — info excluded).
@@ -852,7 +853,7 @@ describe("buildReviewBody — 5-second scannable clarity", () => {
       secrets: SECRETS,
     });
     // Tally totals 2 (CLARITY-19: icon is 🏷️ now, 📊 is the pipeline summary).
-    expect(body).toMatch(/🏷️\s+`1`\s+high\s+·\s+`1`\s+medium/u);
+    expect(body).toMatch(/🏷️\s+`0`\s+critical\s+·\s+`1`\s+high\s+·\s+`1`\s+medium\s+·\s+`0`\s+low/u);
     expect(body).toMatch(/2\s+inline/u);
     const manifestMatch = body.match(/<!--\s*umactually:manifest\s+(\{[\s\S]*?\})\s*-->/u);
     const manifest = JSON.parse(manifestMatch?.[1] ?? "{}");

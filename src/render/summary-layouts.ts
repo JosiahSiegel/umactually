@@ -505,10 +505,12 @@ function severityTally(data: ReviewData): string {
   let total = 0;
   for (const level of SEVERITY_ORDER) {
     if (level === "security" || level === "leak") continue;
+    const isPresent = level in data.severityCounts;
+    const isFiltered = filtered.has(level);
+    if (!isPresent && !isFiltered) continue;
     const count = data.severityCounts[level] ?? 0;
     total += count;
-    if (count === 0 && !filtered.has(level)) continue;
-    const mark = filtered.has(level) ? "*" : "";
+    const mark = isFiltered ? "*" : "";
     parts.push(`\`${count}\` ${level}${mark}`);
   }
   if (total === 0) return "";
