@@ -227,35 +227,20 @@ describe("escalateVerdictForNonEmptySeverityCounts", () => {
 });
 
 describe("composeEffectiveVerdict", () => {
-  it("downgrades NEEDS_FIX to COMMENT when counts are empty (PR #18 rule still applies)", () => {
-    const result = composeEffectiveVerdict({ rawVerdict: "NEEDS_FIX", severityCounts: {} });
-    expect(result.verdict).toBe("COMMENT");
-    expect(result.escalated).toBe(true);
-  });
-
-  it("upgrades SHIP to NEEDS_FIX when counts are non-empty (PR #183 review pass)", () => {
-    const result = composeEffectiveVerdict({ rawVerdict: "SHIP", severityCounts: { major: 1 } });
-    expect(result.verdict).toBe("NEEDS_FIX");
-    expect(result.escalated).toBe(true);
-  });
-
-  it("returns unchanged verdict + escalated=false when rules don't fire", () => {
-    const result = composeEffectiveVerdict({ rawVerdict: "SHIP", severityCounts: {} });
-    expect(result.verdict).toBe("SHIP");
-    expect(result.escalated).toBe(false);
-  });
-
-  it("returns unchanged verdict + escalated=false when NEEDS_FIX is coherent with non-empty counts", () => {
-    const result = composeEffectiveVerdict({ rawVerdict: "NEEDS_FIX", severityCounts: { major: 1 } });
-    expect(result.verdict).toBe("NEEDS_FIX");
-    expect(result.escalated).toBe(false);
-  });
-
-  it("treats lowercase raw verdict the same as uppercase", () => {
-    const result = composeEffectiveVerdict({ rawVerdict: "ship", severityCounts: { major: 1 } });
-    expect(result.verdict).toBe("NEEDS_FIX");
-    expect(result.escalated).toBe(true);
-  });
+  it.each([
+    { raw: "NEEDS_FIX", counts: {}, expected: "COMMENT", escalated: true },
+    { raw: "SHIP", counts: { major: 1 }, expected: "NEEDS_FIX", escalated: true },
+    { raw: "SHIP", counts: {}, expected: "SHIP", escalated: false },
+    { raw: "NEEDS_FIX", counts: { major: 1 }, expected: "NEEDS_FIX", escalated: false },
+    { raw: "ship", counts: { major: 1 }, expected: "NEEDS_FIX", escalated: true },
+  ] as const)(
+    "maps raw=$raw counts=$counts → $expected escalated=$escalated",
+    ({ raw, counts, expected, escalated }) => {
+      const result = composeEffectiveVerdict({ rawVerdict: raw, severityCounts: counts });
+      expect(result.verdict).toBe(expected);
+      expect(result.escalated).toBe(escalated);
+    },
+  );
 });
 
 // ---------------------------------------------------------------------------

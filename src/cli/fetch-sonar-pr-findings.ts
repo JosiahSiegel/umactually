@@ -69,6 +69,10 @@ export async function fetchSonarPrFindings(input: {
     return [];
   }
   if (!Array.isArray(raw)) {
+    writeBrandedAnnotation(
+      "warning",
+      "SonarCloud PR comments endpoint returned a non-array JSON body; treating as zero findings.",
+    );
     return [];
   }
   const findings: LiveReviewComment[] = [];
@@ -87,6 +91,12 @@ export async function fetchSonarPrFindings(input: {
   return findings;
 }
 
+function resolveCommentLine(line: unknown, originalLine: unknown): number | null {
+  if (isSafeInteger(line)) return line;
+  if (isSafeInteger(originalLine)) return originalLine;
+  return null;
+}
+
 function parseSonarPrCommentEntry(value: unknown): {
   readonly path: string;
   readonly line: number;
@@ -100,12 +110,18 @@ function parseSonarPrCommentEntry(value: unknown): {
   const originalLine = value["original_line"];
   if (typeof path !== "string") return null;
   // GitHub returns `line: null` for comments on lines outside the diff
-  // (e.g. file-level comments anchored to the file header). Use
-  // `original_line` as a fallback so we still anchor the comment
-  // somewhere postable.
-  const resolvedLine = isSafeInteger(line) ? line : isSafeInteger(originalLine) ? originalLine : 1;
+  // (e.g. file-level comments anchored to the file header). Fall back to
+  // `original_line`, then to `null` so the caller can filter out
+  // unanchorable comments instead of posting them at a meaningless line.
+  const resolvedLine = resolveCommentLine(line, originalLine);
+  if (resolvedLine === null) return null;
   if (typeof body !== "string") return null;
-  if (!body.includes(SONAR_PR_FINDING_MARKER)) return null;
+  // Only accept comments whose body STARTS with the marker. umactually
+  // re-posts its own inline copies as `` `major` `sonar`\n\n<!-- sonarcloud -->…``,
+  // which would match a plain `.includes()` and cause self-reingestion
+  // (each run re-imports the previous run's output, accumulating
+  // duplicate `` `major` `sonar` `` prefixes — see PR #184).
+  if (!body.trimStart().startsWith(SONAR_PR_FINDING_MARKER)) return null;
   const severity = parseSonarSeverityFromBody(body);
   return { path, line: resolvedLine, body, severity };
 }

@@ -61,7 +61,7 @@ describe("fetchSonarPrFindings", () => {
 
     const findings = await fetchSonarPrFindings({ context: makeContext(), fetchImpl });
 
-    expect(calls.length).toBe(1);
+    expect(calls).toHaveLength(1);
     expect(calls[0]?.url).toContain("/pulls/42/comments");
     expect(findings).toEqual([
       {
@@ -112,7 +112,7 @@ describe("fetchSonarPrFindings", () => {
     expect(findings).toEqual([]);
   });
 
-  it("falls back to line=1 when GitHub returns line=null (file-level anchor)", async () => {
+  it("returns empty when both line and original_line are null (file-level anchor, no postable position)", async () => {
     const { fetchImpl } = makeFetchRecorder([
       {
         match: (url, method) => method === "GET" && url.includes("/pulls/42/comments"),
@@ -128,7 +128,7 @@ describe("fetchSonarPrFindings", () => {
     ]);
 
     const findings = await fetchSonarPrFindings({ context: makeContext(), fetchImpl });
-    expect(findings[0]?.line).toBe(1);
+    expect(findings).toEqual([]);
   });
 
   it("returns an empty array on a 404 (no SonarCloud comments posted yet)", async () => {
@@ -136,6 +136,31 @@ describe("fetchSonarPrFindings", () => {
       {
         match: (url, method) => method === "GET" && url.includes("/pulls/42/comments"),
         response: () => makeJsonResponse({ message: "Not Found" }, 404),
+      },
+    ]);
+
+    const findings = await fetchSonarPrFindings({ context: makeContext(), fetchImpl });
+    expect(findings).toEqual([]);
+  });
+
+  it("filters out umactually's own re-posted SonarCloud copies (self-reingestion prevention)", async () => {
+    const { fetchImpl } = makeFetchRecorder([
+      {
+        match: (url, method) => method === "GET" && url.includes("/pulls/42/comments"),
+        response: () => makeJsonResponse([
+          {
+            path: "src/cli/init.ts",
+            line: 10,
+            original_line: 10,
+            body: "`major` `sonar`\n\n<!-- sonarcloud -->\n**SonarCloud MAJOR — `typescript:S3358`**\n\nExtract this nested ternary operation.",
+          },
+          {
+            path: "src/cli/init.ts",
+            line: 20,
+            original_line: 20,
+            body: "`major` `sonar`\n`major` `sonar`\n\n<!-- sonarcloud -->\n**SonarCloud MAJOR — `typescript:S5976`**\n\nReplace these 3 tests.",
+          },
+        ]),
       },
     ]);
 

@@ -1162,4 +1162,26 @@ describe("highestSeverityBanner — internal vocabulary tier coverage", () => {
     );
     expect(out).toMatch(/Verdict escalated from `SHIP` → `NEEDS_FIX`/u);
   });
+
+  it("escalation banner uses postedComments.length, not validCommentCount (they diverge when some findings are off-diff)", () => {
+    const out = renderSummary(
+      "severity-table",
+      makeData({
+        review: {
+          summary: "Looks good, ship it.",
+          verdict: "NEEDS_FIX",
+          comments: [],
+          suppressedComments: [],
+        },
+        validCommentCount: 3,
+        severityCounts: { medium: 2, high: 1 },
+        verdictEscalatedFrom: "SHIP",
+        postedComments: [
+          { path: "src/a.ts", line: 1, body: "a", severity: "high", category: "correctness" },
+          { path: "src/b.ts", line: 1, body: "b", severity: "medium", category: "style" },
+        ],
+      }),
+    );
+    expect(out).toMatch(/review contains 2 postable findings/u);
+  });
 });

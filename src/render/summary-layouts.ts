@@ -413,7 +413,7 @@ function verdictEscalationBanner(data: ReviewData): string {
   const raw = data.verdictEscalatedFrom.toUpperCase();
   const effective = data.review.verdict.toUpperCase();
   const direction = effective === "NEEDS_FIX" && raw !== "NEEDS_FIX" ? "escalated" : "downgraded";
-  const findingCount = data.validCommentCount;
+  const findingCount = data.postedComments.length;
   const findingSuffix = findingCount === 1 ? "postable finding" : "postable findings";
   const reason = effective === "NEEDS_FIX"
     ? `review contains ${findingCount} ${findingSuffix}`
