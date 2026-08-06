@@ -62,12 +62,19 @@ export function severityRank(severity: string): number {
  * Visual order for the counts line. Includes the provider vocabulary
  * (critical/high/medium/low) and the internal Severity vocabulary
  * (security/leak/major/minor) so findings carrying either vocabulary
- * render. Order is severity-descending within each rank tier.
+ * render. Order is severity-DESCENDING by `severityRank` so the
+ * tallest tier appears first in the tally. Tier rank is the canonical
+ * source of truth (leak=6, security=5, critical=4, high=3,
+ * medium/major=2, low/minor=1); ties between provider + internal
+ * aliases at the same rank (e.g. medium vs major) collapse to one
+ * tier in the visual tally because both keys map to the same rank
+ * and the `severityTally` skip-zero path renders the count from the
+ * whichever key the upstream producer emitted.
  */
 export const SEVERITY_ORDER = [
-  "critical",
-  "security",
   "leak",
+  "security",
+  "critical",
   "high",
   "medium",
   "major",

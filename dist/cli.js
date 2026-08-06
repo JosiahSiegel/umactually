@@ -6167,10 +6167,15 @@ function totalSeverityCount(severityCounts) {
  *     because the model missed what its own findings list implies.
  *
  * `NEEDS_FIX` passes through (the inverse helper handles the empty-counts
- * downgrade direction). Unknown verdict strings also pass through — this
- * helper is a contradiction guard, not a verdict normaliser; the existing
- * verdict mappers (`mapVerdictToAzureStatus`, `mapVerdictToGithubEvent`)
- * collapse unknowns to their own safe defaults.
+ * downgrade direction). Unknown verdict strings ALSO upgrade to
+ * `NEEDS_FIX` when counts are non-empty — the same "model said one thing,
+ * its findings imply another" contradiction applies regardless of whether
+ * the verdict string is one of the canonical four. This helper is a
+ * contradiction guard, NOT a verdict normaliser: it doesn't try to map
+ * "MAYBE" or "looks_ok" onto the canonical vocabulary, only to decide
+ * whether the body and verdict disagree. The existing verdict mappers
+ * (`mapVerdictToAzureStatus`, `mapVerdictToGithubEvent`) still see the
+ * raw verdict and collapse unknowns to their own safe defaults there.
  *
  * Regression: PR #183 self-review (verdict-severity-contradiction review
  * pass). The model emitted `verdict: "SHIP"` with `summary: "looks good,
@@ -10774,12 +10779,19 @@ function severity_severityRank(severity) {
  * Visual order for the counts line. Includes the provider vocabulary
  * (critical/high/medium/low) and the internal Severity vocabulary
  * (security/leak/major/minor) so findings carrying either vocabulary
- * render. Order is severity-descending within each rank tier.
+ * render. Order is severity-DESCENDING by `severityRank` so the
+ * tallest tier appears first in the tally. Tier rank is the canonical
+ * source of truth (leak=6, security=5, critical=4, high=3,
+ * medium/major=2, low/minor=1); ties between provider + internal
+ * aliases at the same rank (e.g. medium vs major) collapse to one
+ * tier in the visual tally because both keys map to the same rank
+ * and the `severityTally` skip-zero path renders the count from the
+ * whichever key the upstream producer emitted.
  */
 const SEVERITY_ORDER = [
-    "critical",
-    "security",
     "leak",
+    "security",
+    "critical",
     "high",
     "medium",
     "major",

@@ -13,11 +13,17 @@ on:
 # Cancel in-progress self-review runs on the same PR so rapid pushes do not
 # spawn concurrent review runs that compete for the same PR comments slot
 # (and waste API quota on the provider side).
+# Concurrency key includes the head SHA so a single push can never spawn
+# multiple parallel runs (e.g. when GitHub fires `synchronize` + `opened`
+# + `ready_for_review` events for the same SHA within seconds — without
+# the SHA key, all three land in the same concurrency group but the
+# cancellation lag lets them POST reviews in parallel, leaving orphan
+# empty `COMMENTED` reviews that accumulate per SHA).
 # The expression falls back to github.ref when github.event.pull_request.number
 # is undefined (e.g. on workflow_dispatch runs), so manual runs do not all
 # collapse into a single global cancellation group.
 concurrency:
-  group: self-review-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  group: self-review-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}-${{ github.event.pull_request.head.sha || github.run_id }}
   cancel-in-progress: true
 
 permissions:

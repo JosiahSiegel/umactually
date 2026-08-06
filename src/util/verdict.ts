@@ -158,10 +158,15 @@ export function totalSeverityCount(
  *     because the model missed what its own findings list implies.
  *
  * `NEEDS_FIX` passes through (the inverse helper handles the empty-counts
- * downgrade direction). Unknown verdict strings also pass through — this
- * helper is a contradiction guard, not a verdict normaliser; the existing
- * verdict mappers (`mapVerdictToAzureStatus`, `mapVerdictToGithubEvent`)
- * collapse unknowns to their own safe defaults.
+ * downgrade direction). Unknown verdict strings ALSO upgrade to
+ * `NEEDS_FIX` when counts are non-empty — the same "model said one thing,
+ * its findings imply another" contradiction applies regardless of whether
+ * the verdict string is one of the canonical four. This helper is a
+ * contradiction guard, NOT a verdict normaliser: it doesn't try to map
+ * "MAYBE" or "looks_ok" onto the canonical vocabulary, only to decide
+ * whether the body and verdict disagree. The existing verdict mappers
+ * (`mapVerdictToAzureStatus`, `mapVerdictToGithubEvent`) still see the
+ * raw verdict and collapse unknowns to their own safe defaults there.
  *
  * Regression: PR #183 self-review (verdict-severity-contradiction review
  * pass). The model emitted `verdict: "SHIP"` with `summary: "looks good,
