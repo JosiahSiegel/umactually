@@ -115,7 +115,29 @@ git push origin main --follow-tags
 > git tag -a vX.Y.Z <squash-merge-sha> -m "release: vX.Y.Z (see CHANGELOG.md for the changes)"
 > ```
 >
-> If you tag the branch's pre-squash SHA by accident, the tag will still resolve to a real commit, the release workflow will still fire, and the binaries will still build — but the GitHub Release commit link will point at the branch's pre-squash commit, the README version pin will be off by one commit, and any subsequent `git show vX.Y.Z` from `origin/main` will be a *different* commit than the tag's anchor. Recovery: `git tag -d vX.Y.Z`, `git push origin :refs/tags/vX.Y.Z`, then re-tag at the squash-merge commit and `git push origin vX.Y.Z` again. Always verify the SHA before pushing.
+> If you tag the branch's pre-squash SHA by accident, the tag will still resolve to a real commit, the release workflow will still fire, and the binaries will still build — but the GitHub Release commit link will point at the branch's pre-squash commit, the README version pin will be off by one commit, and any subsequent `git show vX.Y.Z` from `origin/main` will be a *different* commit than the tag's anchor. Recovery (do all of this; missing the GitHub Release step leaves a stale release pointing at the wrong commit):
+>
+> ```bash
+> # 1. Move the tag to the correct squash-merge commit.
+> git tag -d vX.Y.Z
+> git push origin :refs/tags/vX.Y.Z
+> git tag -a vX.Y.Z <squash-merge-sha> -m "release: vX.Y.Z (see CHANGELOG.md for the changes)"
+> git push origin vX.Y.Z
+> # 2. Recreate the GitHub Release against the re-anchored tag. The release
+> #    workflow re-fires on `git push origin vX.Y.Z` and publishes a fresh
+> #    release page, but if it had already fired once on the wrong SHA, the
+> #    old release page is still live and must be deleted manually — `gh
+> #    release view` against the new tag returns the NEW page only.
+> gh release view "vX.Y.Z" --json name,tagName,targetCommitish  # confirm the new page exists
+> # If a stale release from the wrong SHA is still published (look for a
+> # release page whose tagCommitish points at the pre-squash SHA):
+> gh release list --json tagName,targetCommitish | jq '.[] | select(.tagName == "vX.Y.Z")'
+> # Delete the stale release; the workflow's next push (or a manual
+> # workflow_dispatch re-run) will recreate it on the correct SHA.
+> gh release delete "vX.Y.Z" --yes --cleanup-tag
+> ```
+>
+> Always verify the SHA before pushing the tag, AND verify the GitHub Release's `targetCommitish` after the recovery.
 
 That single push is enough: `--follow-tags` pushes every annotated tag whose commit is reachable from `main`, and the `on: push: tags: ['v*']` trigger in the workflow starts the release job for each tag. **Verify the only tag being pushed is the one you intend** — see [§ 8.4 A stale queued tag rode along](#84-a-stale-queued-tag-rode-along) if a previous release's tag was created at squash-merge time but never pushed (the workflow will publish a release for it, with this release's binaries mislabelled).
 

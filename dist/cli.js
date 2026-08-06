@@ -6167,13 +6167,22 @@ function totalSeverityCount(severityCounts) {
  *     because the model missed what its own findings list implies.
  *
  * `NEEDS_FIX` passes through (the inverse helper handles the empty-counts
- * downgrade direction). Unknown verdict strings ALSO upgrade to
- * `NEEDS_FIX` when counts are non-empty — the same "model said one thing,
- * its findings imply another" contradiction applies regardless of whether
- * the verdict string is one of the canonical four. This helper is a
- * contradiction guard, NOT a verdict normaliser: it doesn't try to map
- * "MAYBE" or "looks_ok" onto the canonical vocabulary, only to decide
- * whether the body and verdict disagree. The existing verdict mappers
+ * downgrade direction). The blocking-discriminator comparison is
+ * case-insensitive (`"needs_fix"`, `"Needs-Fix"`, and `"NEEDS_FIX"` all
+ * pass through) — a model emitting a non-canonical-case blocking verdict
+ * must not be re-stamped. When the helper DOES upgrade, it emits the
+ * canonical `"NEEDS_FIX"` regardless of input casing so downstream
+ * renderers and the manifest see a stable vocabulary. When the helper
+ * does NOT upgrade (counts empty, or already-blocking input), it returns
+ * the raw input string so the original model prose is preserved — same
+ * discipline as `reconcileVerdictForEmptySeverityCounts` two functions
+ * above. Unknown verdict strings ALSO upgrade to `NEEDS_FIX` when counts
+ * are non-empty — the same "model said one thing, its findings imply
+ * another" contradiction applies regardless of whether the verdict
+ * string is one of the canonical four. This helper is a contradiction
+ * guard, NOT a verdict normaliser: it doesn't try to map "MAYBE" or
+ * "looks_ok" onto the canonical vocabulary, only to decide whether the
+ * body and verdict disagree. The existing verdict mappers
  * (`mapVerdictToAzureStatus`, `mapVerdictToGithubEvent`) still see the
  * raw verdict and collapse unknowns to their own safe defaults there.
  *
@@ -6188,7 +6197,7 @@ function totalSeverityCount(severityCounts) {
  * inverse; this helper completes the symmetry.
  */
 function escalateVerdictForNonEmptySeverityCounts(verdict, severityCounts) {
-    const normalized = verdict.toUpperCase();
+    const normalized = verdict.toUpperCase().replace(/[-\s]+/gu, "_");
     if (normalized === "NEEDS_FIX") {
         return verdict;
     }
@@ -10780,24 +10789,23 @@ function severity_severityRank(severity) {
  * (critical/high/medium/low) and the internal Severity vocabulary
  * (security/leak/major/minor) so findings carrying either vocabulary
  * render. Order is severity-DESCENDING by `severityRank` so the
- * tallest tier appears first in the tally. Tier rank is the canonical
- * source of truth (leak=6, security=5, critical=4, high=3,
- * medium/major=2, low/minor=1); ties between provider + internal
- * aliases at the same rank (e.g. medium vs major) collapse to one
- * tier in the visual tally because both keys map to the same rank
- * and the `severityTally` skip-zero path renders the count from the
- * whichever key the upstream producer emitted.
+ * tallest tier appears first in the tally; ties at the same rank
+ * (medium vs major, low vs minor) prefer provider-vocab first to
+ * preserve the original four-tier display contract.
  */
-const SEVERITY_ORDER = [
-    "leak",
-    "security",
-    "critical",
-    "high",
-    "medium",
-    "major",
-    "low",
-    "minor",
-];
+const SEVERITY_ORDER = Object.keys(SEVERITY_RANK_BY_STRING)
+    .filter((k) => k !== "info")
+    .slice()
+    .sort((a, b) => {
+    const rankDiff = severity_severityRank(b) - severity_severityRank(a);
+    if (rankDiff !== 0)
+        return rankDiff;
+    const aProvider = ["critical", "high", "medium", "low"].includes(a);
+    const bProvider = ["critical", "high", "medium", "low"].includes(b);
+    if (aProvider !== bProvider)
+        return aProvider ? -1 : 1;
+    return 0;
+});
 /** Tally comments by severity; eliminates repeated lowercase accumulation logic in live review paths. */
 function severity_countBySeverity(comments) {
     const counts = {};
@@ -11510,7 +11518,9 @@ function layoutVerdictBanner(data) {
     if (banner.length > 0) {
         // Re-blockquote the banner so it nests inside the `> ## verdict`
         // blockquote above it rather than starting a new one.
+        parts.push("");
         parts.push(`> ${banner.slice(2)}`);
+        parts.push("");
     }
     parts.push(`>`);
     parts.push(`> **${data.validCommentCount}** findings to address · ${totalFindings(data)} total considered`);

@@ -224,6 +224,14 @@ describe("escalateVerdictForNonEmptySeverityCounts", () => {
   it("treats all-zero tiers as empty (no escalation)", () => {
     expect(escalateVerdictForNonEmptySeverityCounts("SHIP", { medium: 0, high: 0 })).toBe("SHIP");
   });
+
+  it("is case-insensitive on the blocking-verdict discriminator (lowercase 'needs_fix' passes through)", () => {
+    expect(escalateVerdictForNonEmptySeverityCounts("needs_fix", { major: 1 })).toBe("needs_fix");
+  });
+
+  it("is case-insensitive on the blocking-verdict discriminator (mixed case 'Needs-Fix' passes through)", () => {
+    expect(escalateVerdictForNonEmptySeverityCounts("Needs-Fix", { major: 1 })).toBe("Needs-Fix");
+  });
 });
 
 describe("composeEffectiveVerdict", () => {

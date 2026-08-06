@@ -899,9 +899,12 @@ jobs:
               # (the self-review bot re-posts surface comments with a
               # `` `severity` `category`\n\n `` prefix, breaking the
               # startswith match and letting the same (path,line,rule) be
-              # posted again). The `capture` below extracts the rule id from
-              # anywhere in the body regardless of prefix.
-              '[.[] | select(.body | contains("<!-- sonarcloud -->")) | {path, line, rule: (.body | capture("`(?<r>typescript:S\\d+|[a-z]+:S\\d+)`").r // "")}] | .[] | "\(.path)\t\(.line // 0)\t\(.rule)"' \
+              # posted again). The `capture` extracts the rule id from the
+              # `**SonarCloud <SEV> — `<rule>`**` header the surface step
+              # writes verbatim — anchoring to that exact header (not a
+              # free-floating backtick scan) prevents false matches against
+              # quoted rule ids in body prose or deep-link substrings.
+              '[.[] | select(.body | contains("<!-- sonarcloud -->")) | {path, line, rule: (.body | capture("\\*\\*Sonar(?:Cloud|Qube)?\\s+(?:BLOCKER|CRITICAL|MAJOR|MINOR|INFO)\\s+—\\s+`(?<r>[a-z]+:S\\d+)`").r // "")}] | .[] | "\(.path)\t\(.line // 0)\t\(.rule)"' \
               "${EXISTING_FILE}" 2>/dev/null | sort -u || echo "")
           fi
           EXISTING_COUNT=$(printf '%s\n' "${EXISTING_SIGNATURES}" | grep -c . || echo 0)

@@ -158,13 +158,22 @@ export function totalSeverityCount(
  *     because the model missed what its own findings list implies.
  *
  * `NEEDS_FIX` passes through (the inverse helper handles the empty-counts
- * downgrade direction). Unknown verdict strings ALSO upgrade to
- * `NEEDS_FIX` when counts are non-empty — the same "model said one thing,
- * its findings imply another" contradiction applies regardless of whether
- * the verdict string is one of the canonical four. This helper is a
- * contradiction guard, NOT a verdict normaliser: it doesn't try to map
- * "MAYBE" or "looks_ok" onto the canonical vocabulary, only to decide
- * whether the body and verdict disagree. The existing verdict mappers
+ * downgrade direction). The blocking-discriminator comparison is
+ * case-insensitive (`"needs_fix"`, `"Needs-Fix"`, and `"NEEDS_FIX"` all
+ * pass through) — a model emitting a non-canonical-case blocking verdict
+ * must not be re-stamped. When the helper DOES upgrade, it emits the
+ * canonical `"NEEDS_FIX"` regardless of input casing so downstream
+ * renderers and the manifest see a stable vocabulary. When the helper
+ * does NOT upgrade (counts empty, or already-blocking input), it returns
+ * the raw input string so the original model prose is preserved — same
+ * discipline as `reconcileVerdictForEmptySeverityCounts` two functions
+ * above. Unknown verdict strings ALSO upgrade to `NEEDS_FIX` when counts
+ * are non-empty — the same "model said one thing, its findings imply
+ * another" contradiction applies regardless of whether the verdict
+ * string is one of the canonical four. This helper is a contradiction
+ * guard, NOT a verdict normaliser: it doesn't try to map "MAYBE" or
+ * "looks_ok" onto the canonical vocabulary, only to decide whether the
+ * body and verdict disagree. The existing verdict mappers
  * (`mapVerdictToAzureStatus`, `mapVerdictToGithubEvent`) still see the
  * raw verdict and collapse unknowns to their own safe defaults there.
  *
@@ -182,7 +191,7 @@ export function escalateVerdictForNonEmptySeverityCounts(
   verdict: string,
   severityCounts: Readonly<Record<string, number>>,
 ): string {
-  const normalized = verdict.toUpperCase();
+  const normalized = verdict.toUpperCase().replace(/[-\s]+/gu, "_");
   if (normalized === "NEEDS_FIX") {
     return verdict;
   }

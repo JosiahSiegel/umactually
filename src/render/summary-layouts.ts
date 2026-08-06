@@ -823,7 +823,9 @@ function layoutVerdictBanner(data: ReviewData): string {
   if (banner.length > 0) {
     // Re-blockquote the banner so it nests inside the `> ## verdict`
     // blockquote above it rather than starting a new one.
+    parts.push("");
     parts.push(`> ${banner.slice(2)}`);
+    parts.push("");
   }
   parts.push(`>`);
   parts.push(`> **${data.validCommentCount}** findings to address · ${totalFindings(data)} total considered`);
