@@ -124,6 +124,7 @@ describe("CLI flag parsing RED contract", () => {
       provider: null,
       githubApiBase: null,
       includeSonarqube: true,
+      includePrSonarFindings: false,
       sonarHostUrl: "https://sonar.example.test",
       sonarToken: "sonar-token",
       sonarProjectKey: "umactually",

@@ -985,6 +985,7 @@ function parseCliArgs(args) {
     let githubApiBase = null;
     let githubToken;
     let includeSonarqube = false;
+    let includePrSonarFindings = false;
     let sonarHostUrl = null;
     let sonarToken = null;
     let sonarProjectKey = null;
@@ -1161,6 +1162,12 @@ function parseCliArgs(args) {
             case "--no-include-sonarqube":
                 includeSonarqube = false;
                 break;
+            case "--include-pr-sonar-findings":
+                includePrSonarFindings = true;
+                break;
+            case "--no-include-pr-sonar-findings":
+                includePrSonarFindings = false;
+                break;
             case "--sonar-host-url":
                 sonarHostUrl = readValue(args, index, "sonar-host-url");
                 index += 1;
@@ -1294,6 +1301,7 @@ function parseCliArgs(args) {
         provider,
         githubApiBase,
         includeSonarqube,
+        includePrSonarFindings,
         sonarHostUrl,
         sonarToken,
         sonarProjectKey,
@@ -2560,6 +2568,7 @@ const REVIEW_FLAGS = [
     { flag: "--provider <openai-compatible|copilot|anthropic>", description: "Provider family (anthropic uses native /v1/messages)", appliesTo: ["review"] },
     { flag: "--github-api-base <url>", description: `GitHub API base URL (Copilot token exchange; default: ${DEFAULT_GITHUB_API_BASE})`, appliesTo: ["review"] },
     { flag: "--include-sonarqube", appliesTo: ["review"] },
+    { flag: "--include-pr-sonar-findings | --no-include-pr-sonar-findings", description: "Merge SonarCloud PR inline comments into the review (default: no)", appliesTo: ["review"] },
     { flag: "--sonar-host-url <url>", appliesTo: ["review"] },
     { flag: "--sonar-token <token>", appliesTo: ["review"] },
     { flag: "--sonar-project-key <key>", appliesTo: ["review"] },
@@ -6127,6 +6136,117 @@ function reconcileVerdictForEmptySeverityCounts(verdict, severityCounts) {
         return "COMMENT";
     }
     return verdict;
+}
+/**
+ * Sum the postable severity counts into a single "are there findings?"
+ * boolean. Used by both `reconcileVerdictForEmptySeverityCounts` and
+ * `escalateVerdictForNonEmptySeverityCounts` so the empty/non-empty
+ * check is defined exactly once. A non-empty `severityCounts` object
+ * with all zero-valued tiers (e.g. `{"medium": 0, "high": 0}` from a
+ * malformed upstream producer) is treated as empty — same contract as
+ * the existing reconcile helper.
+ */
+function totalSeverityCount(severityCounts) {
+    let total = 0;
+    for (const value of Object.values(severityCounts)) {
+        total += value;
+    }
+    return total;
+}
+/**
+ * Reconcile a non-blocking verdict (SHIP / APPROVED / COMMENT / DISCUSS /
+ * unknown) against the postable severity counts. The model emits a verdict
+ * string from its JSON payload verbatim, but a verdict that says "ship it"
+ * or "looks good" is incoherent with a body that lists postable findings
+ * the user explicitly opted into via `--minimum-severity`.
+ *
+ * This is the inverse direction of `reconcileVerdictForEmptySeverityCounts`:
+ *   - empty counts + non-blocking verdict → coherent state, pass through
+ *     (`✅ SHIP` on zero findings IS the canonical "no findings, looks good"
+ *     outcome — must NOT be re-stamped).
+ *   - non-empty counts + non-blocking verdict → upgrade to `NEEDS_FIX`
+ *     because the model missed what its own findings list implies.
+ *
+ * `NEEDS_FIX` passes through (the inverse helper handles the empty-counts
+ * downgrade direction). The blocking-discriminator comparison is
+ * case-insensitive (`"needs_fix"`, `"Needs-Fix"`, and `"NEEDS_FIX"` all
+ * pass through) — a model emitting a non-canonical-case blocking verdict
+ * must not be re-stamped. When the helper DOES upgrade, it emits the
+ * canonical `"NEEDS_FIX"` regardless of input casing so downstream
+ * renderers and the manifest see a stable vocabulary. When the helper
+ * does NOT upgrade (counts empty, or already-blocking input), it returns
+ * the raw input string so the original model prose is preserved — same
+ * discipline as `reconcileVerdictForEmptySeverityCounts` two functions
+ * above. Unknown verdict strings ALSO upgrade to `NEEDS_FIX` when counts
+ * are non-empty — the same "model said one thing, its findings imply
+ * another" contradiction applies regardless of whether the verdict
+ * string is one of the canonical four. This helper is a contradiction
+ * guard, NOT a verdict normaliser: it doesn't try to map "MAYBE" or
+ * "looks_ok" onto the canonical vocabulary, only to decide whether the
+ * body and verdict disagree. The existing verdict mappers
+ * (`mapVerdictToAzureStatus`, `mapVerdictToGithubEvent`) still see the
+ * raw verdict and collapse unknowns to their own safe defaults there.
+ *
+ * Regression: PR #183 self-review (verdict-severity-contradiction review
+ * pass). The model emitted `verdict: "SHIP"` with `summary: "looks good,
+ * ship it"` while the inline comments contained a SonarCloud MAJOR
+ * finding. The badge rendered `✅ SHIP` against `📊 1 inline finding`, the
+ * prose at the top of the body said "ship it", and a reviewer scanning
+ * the top would miss the MAJOR inline thread below. The
+ * `reconcileVerdictForEmptySeverityCounts` helper that already handles
+ * the reverse case (NEEDS_FIX + empty counts → COMMENT) only fires on the
+ * inverse; this helper completes the symmetry.
+ */
+function escalateVerdictForNonEmptySeverityCounts(verdict, severityCounts) {
+    const normalized = verdict.toUpperCase().replace(/[-\s]+/gu, "_");
+    if (normalized === "NEEDS_FIX") {
+        return verdict;
+    }
+    // Only escalate KNOWN non-blocking verdicts. Unknown verdicts pass
+    // through untouched so the verdict mappers (mapVerdictToAzureStatus,
+    // mapVerdictToGithubEvent) can apply their own safe defaults — same
+    // discipline as reconcileVerdictForEmptySeverityCounts above. This
+    // prevents a model emitting a coherent non-canonical verdict (e.g.
+    // "LGTM_NIT" against an info-severity comment) from being stamped to
+    // NEEDS_FIX just because counts are non-empty.
+    const KNOWN_NON_BLOCKING = new Set(["SHIP", "APPROVED", "COMMENT", "DISCUSS"]);
+    if (KNOWN_NON_BLOCKING.has(normalized) && totalSeverityCount(severityCounts) > 0) {
+        return "NEEDS_FIX";
+    }
+    return verdict;
+}
+/**
+ * Apply both reconciliation rules in order and report whether the verdict
+ * was changed from the model's raw value. Single-call helper for the
+ * user-facing surfaces that need both rules (badge, manifest, GitHub
+ * review event, Azure PR status, merge worst-verdict pick).
+ *
+ * Reconciliation order matters:
+ *   1. First downgrade `NEEDS_FIX` + empty counts to `COMMENT`
+ *      (existing rule, prevents the `⛔ NEEDS_FIX` + `📊 0 inline findings`
+ *      contradiction — PR #18).
+ *   2. Then upgrade any non-blocking verdict with non-empty counts to
+ *      `NEEDS_FIX` (new rule, prevents the `✅ SHIP` + `📊 N inline findings`
+ *      contradiction where N ≥ 1 — PR #183 review pass).
+ *
+ * The two rules are not contradictory on the same input: rule 1 fires
+ * only on empty counts; rule 2 fires only on non-empty counts. A review
+ * that fires rule 1 will never fire rule 2.
+ *
+ * Returned `escalated: true` means the caller should render a one-line
+ * banner so a reviewer scanning the headline sees why the verdict
+ * disagrees with the model's prose summary. Kept as a separate boolean
+ * (not a sentence) so callers can format it consistently with the rest
+ * of the rendered layout — the banner text lives in
+ * `src/render/summary-layouts.ts` so the verdict utility stays
+ * pure-data.
+ */
+function composeEffectiveVerdict(input) {
+    const { rawVerdict, severityCounts } = input;
+    const downgraded = reconcileVerdictForEmptySeverityCounts(rawVerdict, severityCounts);
+    const final = escalateVerdictForNonEmptySeverityCounts(downgraded, severityCounts);
+    const escalated = rawVerdict !== downgraded || downgraded !== final;
+    return { verdict: final, escalated };
 }
 /** Verdict ranking used by the merge path's "worst verdict wins" rule. */
 function verdictRank(verdict) {
@@ -10674,8 +10794,35 @@ const SEVERITY_RANK_BY_STRING = Object.freeze({
 function severity_severityRank(severity) {
     return SEVERITY_RANK_BY_STRING[severity.toLowerCase()] ?? 0;
 }
-/** Visual order for the counts line; eliminates repeated critical → high → medium → low ordering literals. */
-const SEVERITY_ORDER = ["critical", "high", "medium", "low"];
+/**
+ * Visual order for the counts line. Includes the provider vocabulary
+ * (critical/high/medium/low) and the internal Severity vocabulary
+ * (security/leak/major/minor) so findings carrying either vocabulary
+ * render. Order is severity-DESCENDING by `severityRank` so the
+ * tallest tier appears first in the tally; ties at the same rank
+ * (medium vs major, low vs minor) prefer provider-vocab first to
+ * preserve the original four-tier display contract.
+ *
+ * Note: `security` and `leak` are CARVE-OUT tiers — they appear in
+ * this array so `severityRank` consumers see the full vocabulary,
+ * but `severityTally` skips them at render time (they bypass the
+ * `--minimum-severity` threshold by security policy and are not
+ * part of the four-tier display vocabulary). The visible tally order
+ * is therefore critical → high → medium/major → low/minor.
+ */
+const SEVERITY_ORDER = Object.keys(SEVERITY_RANK_BY_STRING)
+    .filter((k) => k !== "info")
+    .slice()
+    .sort((a, b) => {
+    const rankDiff = severity_severityRank(b) - severity_severityRank(a);
+    if (rankDiff !== 0)
+        return rankDiff;
+    const aProvider = ["critical", "high", "medium", "low"].includes(a);
+    const bProvider = ["critical", "high", "medium", "low"].includes(b);
+    if (aProvider !== bProvider)
+        return aProvider ? -1 : 1;
+    return 0;
+});
 /** Tally comments by severity; eliminates repeated lowercase accumulation logic in live review paths. */
 function severity_countBySeverity(comments) {
     const counts = {};
@@ -10908,21 +11055,29 @@ function findingsDetailsRow(index, c, secrets, summaryCap) {
  */
 function severityEmoji(level) {
     switch (level.toLowerCase()) {
-        case "critical": return "🟣";
+        case "critical":
+        case "security": return "🟣";
         case "high": return "🔴";
-        case "medium": return "🟠";
-        case "low": return "🟡";
+        case "medium":
+        case "major": return "🟠";
+        case "low":
+        case "minor": return "🟡";
         case "info": return "🟡";
+        case "leak": return "🔴";
         default: return "⚪";
     }
 }
 /** Severity → short label used in compact rows. */
 function severityLabel(level) {
     switch (level.toLowerCase()) {
-        case "critical": return "Critical";
+        case "critical":
+        case "security": return "Critical";
+        case "leak": return "High";
         case "high": return "High";
-        case "medium": return "Medium";
-        case "low": return "Low";
+        case "medium":
+        case "major": return "Medium";
+        case "low":
+        case "minor": return "Low";
         default: return level || "Info";
     }
 }
@@ -10943,11 +11098,21 @@ function highestSeverityBanner(data) {
         return null;
     if ((data.severityCounts["critical"] ?? 0) > 0)
         return { emoji: "🟣", label: "Critical" };
+    if ((data.severityCounts["security"] ?? 0) > 0)
+        return { emoji: "🟣", label: "Critical" };
+    if ((data.severityCounts["leak"] ?? 0) > 0)
+        return { emoji: "🔴", label: "High" };
     if ((data.severityCounts["high"] ?? 0) > 0)
         return { emoji: "🔴", label: "High" };
     if ((data.severityCounts["medium"] ?? 0) > 0)
         return { emoji: "🟠", label: "Medium" };
-    return { emoji: "🟡", label: "Low" };
+    if ((data.severityCounts["major"] ?? 0) > 0)
+        return { emoji: "🟠", label: "Medium" };
+    if ((data.severityCounts["low"] ?? 0) > 0)
+        return { emoji: "🟡", label: "Low" };
+    if ((data.severityCounts["minor"] ?? 0) > 0)
+        return { emoji: "🟡", label: "Low" };
+    return null;
 }
 /** Compose the stable hidden manifest that AI agents parse. */
 function manifest(data) {
@@ -10972,6 +11137,39 @@ function verdictBadge(data) {
     if (normalized === "APPROVED" || normalized === "SHIP")
         return "✅ SHIP";
     return "💬 DISCUSS";
+}
+/**
+ * Render a one-line banner explaining a verdict reconciliation. Two
+ * directions are supported: upgrade (raw non-blocking → `NEEDS_FIX`,
+ * PR #183 review pass) and downgrade (raw `NEEDS_FIX` → `COMMENT`,
+ * PR #18). Blockquote-formatted to match `PARSE_FAILED_BANNER` at
+ * the same insertion point. Returns `""` when no reconciliation was
+ * needed.
+ */
+function verdictEscalationBanner(data) {
+    if (data.verdictEscalatedFrom === undefined)
+        return "";
+    const raw = data.verdictEscalatedFrom.toUpperCase();
+    const effective = data.review.verdict.toUpperCase();
+    const direction = effective === "NEEDS_FIX" && raw !== "NEEDS_FIX" ? "escalated" : "downgraded";
+    const findingCount = data.postedComments.length;
+    const findingSuffix = findingCount === 1 ? "postable finding" : "postable findings";
+    const reason = effective === "NEEDS_FIX"
+        ? `review contains ${findingCount} ${findingSuffix}`
+        : "no postable findings to address";
+    return `> ⚠️ Verdict ${direction} from \`${raw}\` → \`${effective}\`: ${reason}.`;
+}
+/**
+ * Push the verdict badge (`## ⛔ NEEDS_FIX` etc.) followed by the
+ * optional escalation banner. All layouts that render a verdict must
+ * go through this helper so the banner can't be forgotten on a future
+ * layout.
+ */
+function pushVerdict(parts, data) {
+    parts.push(`## ${verdictBadge(data)}`);
+    const banner = verdictEscalationBanner(data);
+    if (banner.length > 0)
+        parts.push(banner);
 }
 /**
  * Pipeline summary line used by most layouts.
@@ -11024,19 +11222,58 @@ function severityTallyLegend(data) {
         return "";
     return "`* = filtered by threshold`";
 }
-/** Severity tally line used by most layouts. */
+/**
+ * Severity tally line. Walks `SEVERITY_ORDER` (provider + internal
+ * vocabularies interleaved) and skips tiers with count 0 — except
+ * tiers filtered by the `--minimum-severity` threshold, which keep an
+ * asterisk to surface that they were hidden.
+ *
+ * Carve-out tiers (`security`, `leak`) are ALWAYS omitted from the
+ * rendered tally regardless of their count. They bypass the
+ * `--minimum-severity` threshold (see `config/severity.ts:shouldKeepFinding`)
+ * by security policy and are not part of the four-tier display
+ * vocabulary the user opted into. The threshold marker `*` only
+ * applies to display tiers; rendering `security*` or `leak*` would
+ * falsely imply they were filtered when they actually passed.
+ */
 function severityTally(data) {
     const filtered = filteredTiers(data);
     const parts = [];
     let total = 0;
+    // Carve-out tiers (security, leak) are counted toward `total` so the
+    // empty-string early-return doesn't fire for a review whose only
+    // postable findings are security/leak (otherwise the card renders
+    // "0 inline findings" against validCommentCount ≥ 1 — misleading).
+    // They are still skipped from the rendered tally line itself per
+    // the carve-out invariant above.
     for (const level of SEVERITY_ORDER) {
+        if (level in data.severityCounts) {
+            total += data.severityCounts[level] ?? 0;
+        }
+        if (level === "security" || level === "leak")
+            continue;
+        const isPresent = level in data.severityCounts;
+        const isFiltered = filtered.has(level);
+        if (!isPresent && !isFiltered)
+            continue;
         const count = data.severityCounts[level] ?? 0;
-        total += count;
-        const mark = filtered.has(level) ? "*" : "";
+        const mark = isFiltered ? "*" : "";
         parts.push(`\`${count}\` ${level}${mark}`);
     }
     if (total === 0)
         return "";
+    // When the display tiers render no parts (all postable findings are
+    // carve-outs — security/leak), emit a special marker so the card
+    // doesn't show a bare 🏷️ with no breakdown. Operators see at a
+    // glance that findings exist but are carved out of the four-tier
+    // display. Use wording that does NOT match the per-tier render
+    // pattern `\`N\` security` so the existing carve-out invariant
+    // (security/leak absent from the rendered tally) still holds.
+    if (parts.length === 0) {
+        const carveOutCount = (data.severityCounts["security"] ?? 0) +
+            (data.severityCounts["leak"] ?? 0);
+        return `🏷️ 🔒 \`${carveOutCount}\` carve-out only`;
+    }
     return `🏷️ ${parts.join(" · ")}`;
 }
 /**
@@ -11167,7 +11404,7 @@ function layoutBaseline(data) {
     const sections = [];
     sections.push(REVIEW_MARKER);
     sections.push("");
-    sections.push(`## ${verdictBadge(data)}`);
+    pushVerdict(sections, data);
     sections.push("");
     if (data.review.parseFailed === true) {
         sections.push(PARSE_FAILED_BANNER);
@@ -11234,7 +11471,7 @@ function layoutDashboard(data) {
     const offDiff = offDiffCount(data);
     const filtered = filteredCount(data);
     const parts = [];
-    parts.push(`## ${verdict}`);
+    pushVerdict(parts, data);
     parts.push("");
     parts.push("### 📊 Review dashboard");
     parts.push("");
@@ -11271,9 +11508,8 @@ function layoutDashboard(data) {
 // Reads as a flow: input → review → output. Each step is a numbered
 // blockquote block so it scans top-to-bottom like a process diagram.
 function layoutPipeline(data) {
-    const verdict = verdictBadge(data);
     const parts = [];
-    parts.push(`## ${verdict}`);
+    pushVerdict(parts, data);
     parts.push("");
     parts.push("### 🔄 Review pipeline");
     parts.push("");
@@ -11317,6 +11553,14 @@ function layoutVerdictBanner(data) {
     parts.push(`# ${verdict}`);
     parts.push("");
     parts.push(`> ## ${verdict}`);
+    const banner = verdictEscalationBanner(data);
+    if (banner.length > 0) {
+        // Re-blockquote the banner so it nests inside the `> ## verdict`
+        // blockquote above it rather than starting a new one.
+        parts.push("");
+        parts.push(`> ${banner.slice(2)}`);
+        parts.push("");
+    }
     parts.push(`>`);
     parts.push(`> **${data.validCommentCount}** findings to address · ${totalFindings(data)} total considered`);
     parts.push(`>`);
@@ -11349,12 +11593,16 @@ function layoutVerdictBanner(data) {
 // Best when reviewers want to triage the full list in one glance.
 function renderCleanShip(data) {
     const safeSummary = redact(data.review.summary, data.secrets);
+    const banner = verdictEscalationBanner(data);
     const parts = [
         REVIEW_MARKER,
         "",
         "## ✅ 0 inline findings — ship it",
-        "",
     ];
+    if (banner.length > 0) {
+        parts.push(banner);
+    }
+    parts.push("");
     if (safeSummary.trim().length > 0) {
         parts.push("<details>");
         parts.push("<summary>📝 Click to expand the full review summary</summary>");
@@ -11375,7 +11623,6 @@ function renderCleanShip(data) {
     return parts.join("\n");
 }
 function layoutSeverityTable(data) {
-    const verdict = verdictBadge(data);
     const all = sortedPosted(data);
     const parts = [];
     // Clean-ship branch is hoisted to renderSummary so every layout
@@ -11387,7 +11634,7 @@ function layoutSeverityTable(data) {
     // first non-marker line is the verdict badge (CLARITY-1 invariant).
     parts.push(REVIEW_MARKER);
     parts.push("");
-    parts.push(`## ${verdict}`);
+    pushVerdict(parts, data);
     parts.push("");
     // CLARITY-10: parse-fail banner must be unmistakable. Rendered as a
     // blockquote immediately after the verdict so a 0-finding review
@@ -11484,7 +11731,6 @@ function layoutSeverityTable(data) {
 // Each severity bucket is its own ## section. Inside: a short list of
 // bullet findings. Reads like a stack of color-coded sticky notes.
 function layoutCardGrid(data) {
-    const verdict = verdictBadge(data);
     const buckets = {
         critical: [], high: [], medium: [], low: [],
     };
@@ -11495,7 +11741,7 @@ function layoutCardGrid(data) {
             target.push(c);
     }
     const parts = [];
-    parts.push(`## ${verdict}`);
+    pushVerdict(parts, data);
     parts.push("");
     parts.push("### 🎴 Findings by severity");
     parts.push("");
@@ -11525,7 +11771,7 @@ function layoutCardGrid(data) {
 function layoutTldrWalkthrough(data) {
     const verdict = verdictBadge(data);
     const parts = [];
-    parts.push(`## ${verdict}`);
+    pushVerdict(parts, data);
     parts.push("");
     parts.push("### 📌 TL;DR");
     parts.push("");
@@ -11562,9 +11808,8 @@ function layoutTldrWalkthrough(data) {
 // Plain bulleted list grouped by category. Each item has an emoji and
 // a `path:line` reference. Reads like a todo list.
 function layoutChecklist(data) {
-    const verdict = verdictBadge(data);
     const parts = [];
-    parts.push(`## ${verdict}`);
+    pushVerdict(parts, data);
     parts.push("");
     parts.push("### ✅ Review checklist");
     parts.push("");
@@ -11600,10 +11845,9 @@ function layoutChecklist(data) {
 // Per-severity bar made of `█` (filled) and `░` (empty) blocks inside
 // an inline code block. Terminal-style dashboard.
 function layoutProgressBars(data) {
-    const verdict = verdictBadge(data);
     const total = data.validCommentCount;
     const parts = [];
-    parts.push(`## ${verdict}`);
+    pushVerdict(parts, data);
     parts.push("");
     parts.push("### 📊 Severity distribution");
     parts.push("");
@@ -11637,9 +11881,8 @@ function layoutProgressBars(data) {
 // Splits the list into positives (low/critical-clean items) and
 // negatives (findings to fix). Reads like a balanced review.
 function layoutProsCons(data) {
-    const verdict = verdictBadge(data);
     const parts = [];
-    parts.push(`## ${verdict}`);
+    pushVerdict(parts, data);
     parts.push("");
     parts.push("### ⚖️ Strengths vs concerns");
     parts.push("");
@@ -11676,7 +11919,7 @@ function layoutProsCons(data) {
 function layoutTweet(data) {
     const verdict = verdictBadge(data);
     const parts = [];
-    parts.push(`## ${verdict}`);
+    pushVerdict(parts, data);
     parts.push("");
     parts.push(`> ## ${verdict}`);
     parts.push(">");
@@ -11711,7 +11954,7 @@ function layoutTweet(data) {
 function layoutFaq(data) {
     const verdict = verdictBadge(data);
     const parts = [];
-    parts.push(`## ${verdict}`);
+    pushVerdict(parts, data);
     parts.push("");
     parts.push("### ❓ Reviewer Q&A");
     parts.push("");
@@ -11748,7 +11991,7 @@ function layoutFaq(data) {
 function layoutTerminal(data) {
     const verdict = verdictBadge(data);
     const parts = [];
-    parts.push(`## ${verdict}`);
+    pushVerdict(parts, data);
     parts.push("");
     parts.push("### 🖥️ Terminal report");
     parts.push("");
@@ -11789,7 +12032,7 @@ function layoutTerminal(data) {
 function layoutIncident(data) {
     const verdict = verdictBadge(data);
     const parts = [];
-    parts.push(`## ${verdict}`);
+    pushVerdict(parts, data);
     parts.push("");
     parts.push("### 📟 Incident report");
     parts.push("");
@@ -11833,9 +12076,8 @@ function layoutIncident(data) {
 // ---------------------------------------------------------------------------
 // Reads like a CHANGELOG entry: Features / Fixes / Style sections.
 function layoutReleaseNotes(data) {
-    const verdict = verdictBadge(data);
     const parts = [];
-    parts.push(`## ${verdict}`);
+    pushVerdict(parts, data);
     parts.push("");
     parts.push("### 📝 Review changelog");
     parts.push("");
@@ -11893,9 +12135,8 @@ function layoutReleaseNotes(data) {
 // ---------------------------------------------------------------------------
 // Per-file table with emoji status. Reads like a test-coverage widget.
 function layoutCoverage(data) {
-    const verdict = verdictBadge(data);
     const parts = [];
-    parts.push(`## ${verdict}`);
+    pushVerdict(parts, data);
     parts.push("");
     parts.push("### 🧪 File-by-file review");
     parts.push("");
@@ -11936,9 +12177,8 @@ function layoutCoverage(data) {
 // ---------------------------------------------------------------------------
 // Stacked emoji severity ladder + count badges. Visual "how hot is this PR".
 function layoutThermometer(data) {
-    const verdict = verdictBadge(data);
     const parts = [];
-    parts.push(`## ${verdict}`);
+    pushVerdict(parts, data);
     parts.push("");
     parts.push("### 🌡️ Risk thermometer");
     parts.push("");
@@ -11980,9 +12220,8 @@ function layoutThermometer(data) {
 // ---------------------------------------------------------------------------
 // Mirrors GitHub Status / statuspage.io: status banner, then per-component status.
 function layoutStatusPage(data) {
-    const verdict = verdictBadge(data);
     const parts = [];
-    parts.push(`## ${verdict}`);
+    pushVerdict(parts, data);
     parts.push("");
     parts.push("### 📡 Status page");
     parts.push("");
@@ -12019,9 +12258,8 @@ function layoutStatusPage(data) {
 // ---------------------------------------------------------------------------
 // Per-file change summary using ASCII bars. Reads like `git diff --stat`.
 function layoutDiffstat(data) {
-    const verdict = verdictBadge(data);
     const parts = [];
-    parts.push(`## ${verdict}`);
+    pushVerdict(parts, data);
     parts.push("");
     parts.push("### 📊 Review diffstat");
     parts.push("");
@@ -12066,9 +12304,8 @@ function layoutDiffstat(data) {
 // Each finding is its own blockquote with a 📌 prefix. Reads like a
 // wall of sticky notes.
 function layoutStickyNotes(data) {
-    const verdict = verdictBadge(data);
     const parts = [];
-    parts.push(`## ${verdict}`);
+    pushVerdict(parts, data);
     parts.push("");
     parts.push("### 📌 Sticky notes");
     parts.push("");
@@ -12103,6 +12340,9 @@ function layoutNewspaper(data) {
     const verdict = verdictBadge(data);
     const parts = [];
     parts.push(`# ${verdict}`);
+    const banner = verdictEscalationBanner(data);
+    if (banner.length > 0)
+        parts.push(banner);
     parts.push("");
     parts.push(`### *${data.validCommentCount} of ${totalFindings(data)} findings posted; review model: \`${redact(data.modelId, data.secrets)}\`*`);
     parts.push("");
@@ -12196,9 +12436,16 @@ function renderSummary(layout, data) {
     // Suppressed findings (confidence/verified-facts filtered) don't
     // count against the reviewer — they're pipeline-internal noise the
     // filter already handled. Only parseFailed short-circuits to a verbose
-    // layout so the operator sees the raw provider response.
+    // layout so the operator sees the raw response.
+    //
+    // Reconciliation-bypass carve-out: when the raw verdict was
+    // reconciled (downgraded NEEDS_FIX→COMMENT or upgraded SHIP→NEEDS_FIX)
+    // AND there are no postable findings, `renderCleanShip` still
+    // surfaces the escalation banner so the clean-ship body doesn't
+    // hide the raw→effective flip from a scanning reviewer.
     if (data.validCommentCount === 0 &&
-        data.review.parseFailed !== true) {
+        data.review.parseFailed !== true &&
+        data.verdictEscalatedFrom === undefined) {
         return renderCleanShip(data);
     }
     const renderer = LAYOUT_RENDERERS[layout];
@@ -14208,6 +14455,9 @@ function buildReviewBody(input) {
         postedComments,
         secrets: input.secrets,
         minimumSeverity: input.minimumSeverity ?? null,
+        ...(input.verdictEscalatedFrom !== undefined
+            ? { verdictEscalatedFrom: input.verdictEscalatedFrom }
+            : {}),
     };
     return renderSummary(input.layout ?? "severity-table", reviewData);
 }
@@ -14521,14 +14771,18 @@ function preparePostedReview(input) {
     const suppressedCommentCount = input.review.suppressedComments.length + offDiffFromComments.length;
     const severityCounts = severity_countBySeverity(postableComments);
     // Reconcile the model's raw verdict against the postable severity
-    // counts. If every finding was severity-filtered out, the body will
-    // render `📊 0 inline findings`, and rendering `⛔ NEEDS_FIX` against
-    // that headline is contradictory — the human reviewer would block
-    // the PR on a verdict that has no findings to act on. Downgrade to
-    // `COMMENT` in that case so the badge matches the body. See
-    // `src/util/verdict.ts:reconcileVerdictForEmptySeverityCounts` for
-    // the rule and the PR #18 regression context.
-    const effectiveVerdict = reconcileVerdictForEmptySeverityCounts(input.review.verdict, severityCounts);
+    // counts. The body would render a `⛔ NEEDS_FIX` headline against a
+    // `📊 0 inline findings` count for a review with nothing to act on
+    // (PR #18), and a `✅ SHIP` headline with "ship it" prose against a
+    // non-empty findings list (PR #183 review pass). Both contradictions
+    // are fixed by `composeEffectiveVerdict` — see the canonical rules
+    // there.
+    const composed = composeEffectiveVerdict({
+        rawVerdict: input.review.verdict,
+        severityCounts,
+    });
+    const effectiveVerdict = composed.verdict;
+    const verdictEscalatedFrom = composed.escalated ? input.review.verdict : undefined;
     const body = buildReviewBody({
         review: { ...input.review, verdict: effectiveVerdict },
         provider: input.provider,
@@ -14544,6 +14798,7 @@ function preparePostedReview(input) {
         // or more tiers. Older callers (unit tests, simulate-findings) can
         // omit it and get the byte-identical legacy tally.
         minimumSeverity: input.parsed.minimumSeverity,
+        ...(verdictEscalatedFrom !== undefined ? { verdictEscalatedFrom } : {}),
     });
     return {
         postableComments,
@@ -14553,6 +14808,7 @@ function preparePostedReview(input) {
         body,
         postedComments: postableComments,
         effectiveVerdict,
+        ...(verdictEscalatedFrom !== undefined ? { verdictEscalatedFrom } : {}),
     };
 }
 /**
@@ -15473,7 +15729,177 @@ function azureStatusesUrl(context) {
     return `${azurePrBaseUrl(context)}/statuses?api-version=${AZURE_API_VERSION}`;
 }
 
+;// CONCATENATED MODULE: ./src/cli/fetch-sonar-pr-findings.ts
+
+
+
+
+
+
+
+const fetch_sonar_pr_findings_GITHUB_API_BASE_URL = process.env["GITHUB_API_URL"]?.replace(/\/$/u, "") ?? DEFAULT_GITHUB_API_BASE;
+const SONAR_PR_FINDING_MARKER = "<!-- sonarcloud -->";
+const MAX_SONAR_PR_FINDINGS = 50;
+/**
+ * Fetch inline review comments on the current PR that carry the
+ * `<!-- sonarcloud -->` marker, and convert each into a synthetic
+ * `LiveReviewComment` so the existing severity policy + verdict
+ * reconciliation treat them exactly like model-emitted findings.
+ *
+ * SonarCloud's CI integration in this repo (the `Surface SonarCloud
+ * findings as PR comments` step in ci.yml) posts a separate review
+ * per finding with that marker. After the bot waits for SonarCloud's
+ * scan + surface step to finish (see the `Wait for SonarCloud scan +
+ * comment-surface` step in self-review.yml), this fetcher pulls them
+ * so the umactually self-review can:
+ *   1. see them in `severityCounts` and trigger the verdict-escalation
+ *      rule from PR #183 (any postable finding escalates SHIP/APPROVED
+ *      → NEEDS_FIX), and
+ *   2. post them as inline review threads on the bot's own review so
+ *      the umactually card and SonarCloud's threads share a single
+ *      review context (one place to dismiss).
+ *
+ * Returns an empty array on any fetch error — the bot never blocks on
+ * the PR-comment fetch because self-review is advisory. The fetch is
+ * best-effort by design; the SonarCloud `Surface SonarCloud findings
+ * as PR comments` step is the authoritative surface for SonarCloud
+ * findings, and the `SonarCloud Code Analysis` check status is the
+ * authoritative policy gate.
+ */
+async function fetchSonarPrFindings(input) {
+    const url = `${fetch_sonar_pr_findings_GITHUB_API_BASE_URL}/repos/${encodeURIComponent(input.context.repo.owner)}/${encodeURIComponent(input.context.repo.name)}/pulls/${input.context.prNumber}/comments?per_page=${MAX_SONAR_PR_FINDINGS}`;
+    let raw;
+    try {
+        const response = await input.fetchImpl(url, {
+            method: "GET",
+            headers: githubHeaders(input.context.token),
+        });
+        ensureHttpOk(response, "GITHUB_LIST_PR_COMMENTS_FAILED", "GitHub list PR review comments", "Verify GITHUB_TOKEN has `pull_requests: read` scope and that the PR number is correct. The fetch is best-effort; SonarCloud's own surface step is authoritative for its findings.");
+        raw = await readJsonResponse(response);
+    }
+    catch (error) {
+        writeBrandedAnnotation("warning", `failed to fetch SonarCloud PR inline comments; treating as zero findings (best-effort fetch). ${error instanceof Error ? error.message : String(error)}`);
+        return [];
+    }
+    if (!Array.isArray(raw)) {
+        writeBrandedAnnotation("warning", "SonarCloud PR comments endpoint returned a non-array JSON body; treating as zero findings.");
+        return [];
+    }
+    const findings = [];
+    for (const entry of raw) {
+        const finding = parseSonarPrCommentEntry(entry);
+        if (finding === null)
+            continue;
+        findings.push({
+            path: finding.path,
+            line: finding.line,
+            body: finding.body,
+            severity: finding.severity,
+            category: "sonar",
+        });
+        if (findings.length >= MAX_SONAR_PR_FINDINGS) {
+            writeBrandedAnnotation("warning", `SonarCloud PR comments truncated at ${MAX_SONAR_PR_FINDINGS}; additional findings were not imported. Increase MAX_SONAR_PR_FINDINGS or add pagination if this PR has more.`);
+            break;
+        }
+    }
+    return findings;
+}
+function resolveCommentLine(line, originalLine) {
+    if (isSafeInteger(line))
+        return line;
+    if (isSafeInteger(originalLine))
+        return originalLine;
+    return null;
+}
+function parseSonarPrCommentEntry(value) {
+    if (!json_guards_isRecord(value))
+        return null;
+    const path = value["path"];
+    const line = value["line"];
+    const body = value["body"];
+    const originalLine = value["original_line"];
+    if (typeof path !== "string")
+        return null;
+    // GitHub returns `line: null` for comments on lines outside the diff
+    // (e.g. file-level comments anchored to the file header). Fall back to
+    // `original_line`, then to `null` so the caller can filter out
+    // unanchorable comments instead of posting them at a meaningless line.
+    const resolvedLine = resolveCommentLine(line, originalLine);
+    if (resolvedLine === null)
+        return null;
+    if (typeof body !== "string")
+        return null;
+    // Self-reingestion guard. The original check was `body.includes(SONAR_PR_FINDING_MARKER)`;
+    // that matched umactually's own re-posted copies because the inline
+    // comment body built by `buildInlineCommentBody` embeds the raw
+    // SonarCloud body verbatim AFTER the `` `severity` `category`\n\n ``
+    // prefix. Each self-review run re-imported the previous run's output,
+    // accumulating duplicate `` `major` `sonar` `` prefixes (PR #184).
+    //
+    // A weaker "both markers" guard was attempted first: reject if the
+    // umactually REVIEW_MARKER appears before the sonar marker. That failed
+    // because `buildInlineCommentBody` is called with `includeMarker`
+    // defaulting to false on the live-post path, so umactually reposts
+    // NEVER carry the umactually marker — only the sonar marker, prefixed
+    // by `` `severity` `category`\n\n ``. So that guard never fired.
+    //
+    // The correct discriminator: raw SonarCloud posts from the
+    // `Surface SonarCloud findings as PR comments` step in ci.yml ALWAYS
+    // start with `<!-- sonarcloud -->` (no leading whitespace). Umactually
+    // reposts START with `` `severity` `category`\n\n `` (the format
+    // `buildInlineCommentBody` emits). So require `body.trimStart()` to
+    // start with the sonar marker. The trimStart is defensive — if the
+    // surface step is ever refactored to lead with whitespace, this guard
+    // would silently exclude every legitimate SonarCloud comment as a
+    // "repost". The surface-step body builder is the authoritative source
+    // of the format; keep the two in sync.
+    const trimmed = body.trimStart();
+    if (!trimmed.startsWith(SONAR_PR_FINDING_MARKER))
+        return null;
+    // Belt-and-braces: if the umactually marker IS present anywhere, this
+    // is a repost (the raw surface step never embeds it). Defensive only;
+    // the trimStart + startswith above is the actual discriminator.
+    if (body.indexOf(REVIEW_MARKER) >= 0)
+        return null;
+    const severity = parseSonarSeverityFromBody(body);
+    return { path, line: resolvedLine, body, severity };
+}
+/**
+ * Map SonarCloud's severity label (rendered as **MAJOR**, **CRITICAL**,
+ * **BLOCKER**, **MINOR**, **INFO** in the comment body) to the
+ * internal `Severity` vocabulary the verdict-reconciliation + manifest
+ * pipeline already understands. The marker is the inline prefix the
+ * `Surface SonarCloud findings as PR comments` step in ci.yml writes
+ * verbatim:
+ *   `<!-- sonarcloud -->\n**SonarCloud MAJOR — \`typescript:S3358\`**\n\n<msg>`
+ *
+ * The label word is matched case-insensitively at the start of a `MAJOR`
+ * / `CRITICAL` / `BLOCKER` / `MINOR` / `INFO` token. Unknown labels fall
+ * back to `medium` so the comment still passes the default
+ * `--minimum-severity=medium` filter; this is the same default-fallback
+ * discipline the provider-severity parser uses for unknown provider
+ * severities (see src/provider/provider-parse.ts:normalizeProviderSeverity).
+ */
+function parseSonarSeverityFromBody(body) {
+    // Match the first capitalized severity word inside `**SonarCloud <WORD> — \`...`.
+    const match = /\*\*\s*Sonar(?:Cloud|Qube)?\s+(BLOCKER|CRITICAL|MAJOR|MINOR|INFO)\b/u.exec(body);
+    if (match === null)
+        return "major";
+    const label = match[1];
+    if (label === undefined)
+        return "major";
+    switch (label.toUpperCase()) {
+        case "BLOCKER": return "critical";
+        case "CRITICAL": return "critical";
+        case "MAJOR": return "major";
+        case "MINOR": return "minor";
+        case "INFO": return "info";
+        default: return "major";
+    }
+}
+
 ;// CONCATENATED MODULE: ./src/cli/live-github.ts
+
 
 
 
@@ -15484,8 +15910,39 @@ function azureStatusesUrl(context) {
 const live_github_GITHUB_API_BASE_URL = process.env["GITHUB_API_URL"]?.replace(/\/$/u, "") || DEFAULT_GITHUB_API_BASE;
 async function runGithubLive(input) {
     const { context, diffText, provider, parsed, fetchImpl } = input;
+    // Fetch SonarCloud PR inline comments (when the flag is set) and
+    // merge them into the provider review's comments list BEFORE
+    // `preparePostedReview` runs. Three invariants this preserves:
+    // (1) severity filtering applies uniformly to the SonarCloud findings
+    // (the same `passesSeverityPolicy` gate that drops model findings
+    // below `--minimum-severity`); position validation runs downstream
+    // in `preparePostedReview` via the same `positions.hasPosition` gate;
+    // (2) the PR #183 verdict-reconciliation rule sees the surviving
+    // SonarCloud severity counts, so a postable SonarCloud MAJOR/CRITICAL
+    // escalates the verdict from SHIP/APPROVED to NEEDS_FIX; (3)
+    // SonarCloud findings render as inline threads on the bot's own
+    // review (one place to dismiss), in addition to SonarCloud's
+    // separate reviews.
+    const rawSonarFindings = parsed.includePrSonarFindings
+        ? await fetchSonarPrFindings({ context, fetchImpl })
+        : [];
+    const sonarPrFindings = rawSonarFindings.filter((finding) => passesSeverityPolicy(finding, parsed));
+    const droppedBySeverity = rawSonarFindings.length - sonarPrFindings.length;
+    if (droppedBySeverity > 0) {
+        writeBrandedAnnotation("warning", `filtered ${droppedBySeverity} SonarCloud PR inline finding(s) below --minimum-severity=${parsed.minimumSeverity ?? "default"}; ${sonarPrFindings.length} postable.`);
+    }
+    // (Defer the "merged N findings" annotation until AFTER preparePostedReview
+    // so the count reflects what actually posts, not just what passed the
+    // severity filter — preparePostedReview's position-validation may drop
+    // further findings whose line numbers don't appear in the diff.)
+    const providerReview = sonarPrFindings.length > 0
+        ? {
+            ...provider.review,
+            comments: [...provider.review.comments, ...sonarPrFindings],
+        }
+        : provider.review;
     const prepared = preparePostedReview({
-        review: provider.review,
+        review: providerReview,
         provider: provider.provider,
         modelId: provider.modelId,
         diffText,
@@ -15493,6 +15950,14 @@ async function runGithubLive(input) {
         secrets: [context.token],
     });
     const { postableComments: comments, body } = prepared;
+    // SonarCloud finding count in the postable set — accurate after position
+    // validation. Filter the postable comments to the ones that originated as
+    // SonarCloud findings (category === 'sonar') so the annotation matches
+    // what actually posts.
+    if (sonarPrFindings.length > 0) {
+        const postableSonarCount = comments.filter((comment) => comment.category === "sonar").length;
+        writeBrandedAnnotation("warning", `merged ${postableSonarCount} of ${sonarPrFindings.length} SonarCloud PR inline finding(s) into the review (flag --include-pr-sonar-findings; ${sonarPrFindings.length - postableSonarCount} dropped by position validation).`);
+    }
     const postableComments = comments.map((comment) => ({
         path: comment.path,
         line: comment.line,
@@ -15810,24 +16275,22 @@ function mergeReviewResults(outcomes, options) {
     const sortedSuppressed = [...dedupedSuppressed.values()].sort((a, b) => a.path.localeCompare(b.path));
     // MERGE-5: pick worst verdict.
     //
-    // Apply the same severity-counts reconciliation that the live path
-    // uses (see src/util/verdict.ts:reconcileVerdictForEmptySeverityCounts)
-    // BEFORE ranking, so a chunk whose NEEDS_FIX verdict was backed only
-    // by findings that the severity filter dropped doesn't pollute the
-    // "worst verdict" pick with a contradictory blocking verdict.
-    // Without this, the merge path could re-introduce the same
-    // "NEEDS_FIX + 0 inline findings" contradiction the live path's
-    // preparePostedReview reconciliation prevents — even if every individual
-    // chunk ran preparePostedReview correctly. PR #18 self-review comment
-    // caught this regression class.
+    // Apply the same severity-counts reconciliation the live path uses
+    // (`composeEffectiveVerdict`) BEFORE ranking, so a chunk whose
+    // verdict contradicts its own findings list (NEEDS_FIX + empty
+    // counts from PR #18, or non-blocking + non-empty counts from PR
+    // #183 review pass) doesn't pollute the "worst verdict" pick.
     let worstVerdict = "";
     let worstRank = -1;
     for (const outcome of outcomes) {
-        const reconciledVerdict = reconcileVerdictForEmptySeverityCounts(outcome.review.verdict, severity_countBySeverity(outcome.review.comments));
-        const rank = verdictRank(reconciledVerdict);
+        const composed = composeEffectiveVerdict({
+            rawVerdict: outcome.review.verdict,
+            severityCounts: severity_countBySeverity(outcome.review.comments),
+        });
+        const rank = verdictRank(composed.verdict);
         if (rank > worstRank) {
             worstRank = rank;
-            worstVerdict = reconciledVerdict;
+            worstVerdict = composed.verdict;
         }
     }
     // MERGE-6: pick the best summary across all chunk outcomes.

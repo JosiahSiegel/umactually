@@ -58,8 +58,33 @@ export function severityRank(severity: string): number {
   return SEVERITY_RANK_BY_STRING[severity.toLowerCase()] ?? 0;
 }
 
-/** Visual order for the counts line; eliminates repeated critical → high → medium → low ordering literals. */
-export const SEVERITY_ORDER = ["critical", "high", "medium", "low"] as const;
+/**
+ * Visual order for the counts line. Includes the provider vocabulary
+ * (critical/high/medium/low) and the internal Severity vocabulary
+ * (security/leak/major/minor) so findings carrying either vocabulary
+ * render. Order is severity-DESCENDING by `severityRank` so the
+ * tallest tier appears first in the tally; ties at the same rank
+ * (medium vs major, low vs minor) prefer provider-vocab first to
+ * preserve the original four-tier display contract.
+ *
+ * Note: `security` and `leak` are CARVE-OUT tiers — they appear in
+ * this array so `severityRank` consumers see the full vocabulary,
+ * but `severityTally` skips them at render time (they bypass the
+ * `--minimum-severity` threshold by security policy and are not
+ * part of the four-tier display vocabulary). The visible tally order
+ * is therefore critical → high → medium/major → low/minor.
+ */
+export const SEVERITY_ORDER = (Object.keys(SEVERITY_RANK_BY_STRING) as readonly string[])
+  .filter((k) => k !== "info")
+  .slice()
+  .sort((a, b) => {
+    const rankDiff = severityRank(b) - severityRank(a);
+    if (rankDiff !== 0) return rankDiff;
+    const aProvider = ["critical", "high", "medium", "low"].includes(a);
+    const bProvider = ["critical", "high", "medium", "low"].includes(b);
+    if (aProvider !== bProvider) return aProvider ? -1 : 1;
+    return 0;
+  }) as readonly string[];
 
 /** Tally comments by severity; eliminates repeated lowercase accumulation logic in live review paths. */
 export function countBySeverity(comments: readonly { readonly severity: string }[]): Record<string, number> {

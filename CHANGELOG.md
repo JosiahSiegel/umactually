@@ -10,8 +10,12 @@ ship a tag).
 
 ## [Unreleased]
 
+### Fixed
 
-_No pending changes — last release: v0.6.27 (CLI output polish: align command columns, fix doctor npm-installed SKIP, compact modes banner)._
+- **Verdict reconciliation now escalates non-blocking verdicts (SHIP / APPROVED / COMMENT / DISCUSS) to `NEEDS_FIX` when the postable findings list is non-empty** (PR #183 review pass). Previously the badge rendered `✅ SHIP` against `📊 N inline findings` and the model-supplied summary prose said "looks good, ship it" while a MAJOR (or any postable) inline finding sat below it — the body contradicted itself and a reviewer scanning the headline would miss the inline thread. The fix is the inverse of the PR #18 reconciliation (which downgraded `NEEDS_FIX` + empty counts to `COMMENT`): `composeEffectiveVerdict` in `src/util/verdict.ts` now threads both rules and exposes a `verdictEscalatedFrom` field that the active layout renders as a one-line escalation banner between the badge and the pipeline summary. Applied at all five user-facing surfaces (badge, manifest, GitHub review event, Azure PR status, merge worst-verdict pick). Regression tests added in `test/unit/verdict-reconciliation.test.ts`, `test/unit/summary-layouts.test.ts`, and `test/unit/live-merge.test.ts`.
+
+
+_No other pending changes — last release: v0.6.27 (CLI output polish: align command columns, fix doctor npm-installed SKIP, compact modes banner)._
 
 
 ## [0.6.27] - 2026-08-05

@@ -162,10 +162,10 @@ describe("mergeReviewResults", () => {
   it("MERGE-5 picks the worst verdict (NEEDS_FIX > DISCUSS > APPROVED)", () => {
     // Given: three chunks with three different verdicts, each
     // carrying enough severity-tagged comments to back its verdict
-    // (otherwise the verdict reconciliation in
-    // src/util/verdict.ts:reconcileVerdictForEmptySeverityCounts
-    // would downgrade the NEEDS_FIX chunk to COMMENT, mirroring the
-    // PR #18 contradiction-class fix at the live-path boundary).
+    // (otherwise `composeEffectiveVerdict` in src/util/verdict.ts would
+    // reconcile the verdict against the severity counts: PR #18
+    // downgrades NEEDS_FIX + empty counts, PR #183 review pass
+    // upgrades non-blocking verdicts when findings exist).
     const needsFix = outcome({
       review: {
         summary: "needs fix",
@@ -186,29 +186,25 @@ describe("mergeReviewResults", () => {
       review: {
         summary: "ship",
         verdict: "APPROVED",
-        comments: [comment({ severity: "low", path: "src/c.ts", line: 3, body: "Nit on naming." })],
+        comments: [],
         suppressedComments: [],
       },
     });
 
-    // When: merged in any order, the worst (NEEDS_FIX) wins.
     const merged = mergeReviewResults([discuss, approved, needsFix]);
     expect(merged.review.verdict).toBe("NEEDS_FIX");
 
-    // When: merged without a NEEDS_FIX chunk, DISCUSS wins over APPROVED.
     const merged2 = mergeReviewResults([approved, discuss]);
-    expect(merged2.review.verdict).toBe("DISCUSS");
+    expect(merged2.review.verdict).toBe("NEEDS_FIX");
   });
 
-  it("MERGE-5 reconciliation: a NEEDS_FIX chunk with empty comments is downgraded to COMMENT before worst-verdict pick", () => {
+  it("MERGE-5 reconciliation: a NEEDS_FIX chunk with empty comments is downgraded AND a DISCUSS chunk with real findings is escalated, so NEEDS_FIX still wins", () => {
     // Given: a NEEDS_FIX chunk whose comments are all-empty (no
-    // severity counts to back the verdict) AND a DISCUSS chunk with
-    // real findings. PR #18 self-review caught this regression class:
-    // the merge path used verdictRank(outcome.review.verdict) on the
-    // raw verdict, so a chunk whose findings were severity-filtered
-    // out would still poison the worst-verdict pick with NEEDS_FIX
-    // and re-introduce the contradiction the live-path reconciliation
-    // prevents.
+    // severity counts to back the verdict, so PR #18 reconciliation
+    // downgrades it to COMMENT) AND a DISCUSS chunk with real
+    // findings (so PR #183 review-pass reconciliation escalates it
+    // to NEEDS_FIX). The two rules together mean NEEDS_FIX still
+    // wins the worst-verdict pick.
     const needsFixEmpty = outcome({
       review: { summary: "filtered out", verdict: "NEEDS_FIX", comments: [], suppressedComments: [] },
     });
@@ -221,12 +217,12 @@ describe("mergeReviewResults", () => {
       },
     });
 
-    // When: merged.
     const merged = mergeReviewResults([needsFixEmpty, discussWithFindings]);
 
-    // Then: the NEEDS_FIX chunk is downgraded to COMMENT, and
-    // DISCUSS wins as the worst surviving verdict.
-    expect(merged.review.verdict).toBe("DISCUSS");
+    // Then: the downgraded-NEEDS_FIX chunk is COMMENT and the
+    // DISCUSS chunk is escalated to NEEDS_FIX, so NEEDS_FIX wins
+    // (no contradiction with the chunk's own findings list).
+    expect(merged.review.verdict).toBe("NEEDS_FIX");
   });
 
   it("MERGE-6 prefers summaries from chunks with real findings, longest among those wins", () => {

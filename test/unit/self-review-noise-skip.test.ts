@@ -1,40 +1,39 @@
 /**
- * Workflow noise-skip test.
+ * Workflow contract test for the 'Append resolution-guide to latest
+ * review body' step in .github/workflows/self-review.yml.
  *
- * Validates that the 'Append resolution-guide to latest review body' step
- * in .github/workflows/self-review.yml correctly short-circuits when the
- * latest github-actions[bot] review on the PR has 0 inline findings.
+ * Originally titled the "noise-skip rule", this test pinned the
+ * short-circuit on `INLINE_COUNT=0`. That short-circuit was removed
+ * after the observation that the guide is the agent-facing handbook
+ * for reading AND resolving umactually reviews — it documents the
+ * GraphQL close protocol, the disposition taxonomy, and how to
+ * interpret every verdict including ✅ SHIP / 💬 DISCUSS. An agent
+ * reading a clean 0-finding review still needs that protocol to
+ * formally close the review (Step 1 disposition "ship it" / "no
+ * findings"). Appending the guide unconditionally is correct; the
+ * marker-based idempotency check (GUIDE_MARKER in body) prevents
+ * duplicate appends on reruns.
  *
- * The PR #139 self-review iteration showed the rule needed to fire:
- * - The umactually summary card for an empty review already says
- *   "0 inline findings" and "No findings to address." — appending
- *   a ~2KB collapsed-guide footer on top of that adds visual noise
- *   with no actionable triage to perform.
- *
- * The rule went through several revisions. Earlier versions:
- *   - parsed free-form emoji text in the summary card (coupled to
- *     umactually's exact wording)
- *   - paginated /reviews via REST with `per_page=30` (limit-capped)
- *   - PUT'd without checking review state (PENDING reviews 422)
- *
- * The current implementation:
- *   - reads the latest review via GraphQL `pullRequest.reviews(last:N)`
+ * The PR #139 self-review iteration established several contracts that
+ * still hold after the unconditional-append change:
+ *   - the step reads the latest review via GraphQL `pullRequest.reviews(last:N)`
  *     (clean pagination, single round-trip)
- *   - filters by `commit.oid == HEAD_SHA` so we never attach the guide
+ *   - it filters by `commit.oid == HEAD_SHA` so we never attach the guide
  *     to a review from an older commit (no more "stale bot review"
  *     ambiguity)
- *   - filters by `state != PENDING` so we never PUT to a PENDING review
+ *   - it filters by `state != PENDING` so we never PUT to a PENDING review
  *     (no more 422 failures; COMMENTED, APPROVED, and CHANGES_REQUESTED
  *     all qualify)
- *   - extracts the inline count from the umactually manifest's
+ *   - it extracts the inline count from the umactually manifest's
  *     `<!-- umactually:manifest {"inlineCount":N, ...} -->` JSON blob
  *     (no emoji-coupling, no per-severity miscount)
  *
- * This test enforces every contract in the new shape so the rule cannot
- * regress silently in future edits. End-to-end verification (a real
- * push + workflow run returning a 0-findings review) is impractical on
- * this PR because the umactually CLI flags substantive workflow concerns
- * on every run, so we trust the structural contract instead.
+ * The tests in this file enforce every contract in the new shape so
+ * the rule cannot regress silently in future edits. End-to-end
+ * verification (a real push + workflow run returning a 0-findings
+ * review) is impractical on this PR because the umactually CLI flags
+ * substantive workflow concerns on every run, so we trust the
+ * structural contract instead.
  */
 
 import { readFileSync } from "node:fs";
@@ -194,7 +193,14 @@ describe("self-review workflow noise-skip rule", () => {
     expect(stepBlock).toMatch(/\| tac \| awk/u);
   });
 
-  it("the step short-circuits with `exit 0` when INLINE_COUNT is 0", () => {
+  it("the step does NOT short-circuit when INLINE_COUNT is 0 (guide appends unconditionally)", () => {
+    // Contract change: the guide is the agent-facing handbook for ANY
+    // umactually review, including clean 0-finding ones. The previous
+    // `exit 0` short-circuit removed visual noise on empty reviews but
+    // also hid the close protocol from agents who needed to formally
+    // resolve a clean review. The marker-based idempotency check
+    // (GUIDE_MARKER in body) below prevents duplicate appends on
+    // reruns — that's the only legitimate skip path now.
     const stepBlock = extractStepBlock(
       workflowText,
       "Append resolution-guide to latest review body",
@@ -203,18 +209,25 @@ describe("self-review workflow noise-skip rule", () => {
       /if \[\s*"\$\{INLINE_COUNT\}"\s*=\s*"0"\s*\]; then\n([\s\S]*?)\n {10}fi/u,
     );
     expect(zeroBranch, "the 0-finding branch exists").not.toBeNull();
-    expect(zeroBranch?.[1] ?? "").toMatch(/exit 0/u);
+    expect(zeroBranch?.[1] ?? "").not.toMatch(/exit 0/u);
   });
 
-  it("the 0-finding short-circuit runs before the PUT-to-review call", () => {
+  it("the 0-finding branch falls through to the marker-based idempotency check (then the PUT)", () => {
+    // The 0-finding branch must NOT terminate the step. After the
+    // branch ends, the marker-based skip (`grep -qF "${GUIDE_MARKER}"`)
+    // is the only early-exit gate, and it must sit BEFORE the PUT.
     const stepBlock = extractStepBlock(
       workflowText,
       "Append resolution-guide to latest review body",
     );
     const zeroBranchIdx = stepBlock.indexOf('if [ "${INLINE_COUNT}" = "0" ]');
+    const zeroBranchEndIdx = stepBlock.indexOf("\n          fi", zeroBranchIdx);
+    const markerCheckIdx = stepBlock.indexOf('grep -qF "${GUIDE_MARKER}"');
     const putIdx = stepBlock.indexOf("-X PUT");
     expect(zeroBranchIdx).toBeGreaterThanOrEqual(0);
-    expect(putIdx).toBeGreaterThan(zeroBranchIdx);
+    expect(zeroBranchEndIdx).toBeGreaterThan(zeroBranchIdx);
+    expect(markerCheckIdx).toBeGreaterThan(zeroBranchEndIdx);
+    expect(putIdx).toBeGreaterThan(markerCheckIdx);
   });
 
   it("each platform guide warns that unresolved threads block merge when branch protection is on", () => {

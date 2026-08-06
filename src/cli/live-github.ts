@@ -5,11 +5,13 @@ import { isRecord, isSafeInteger } from "../util/json-guards.js";
 import { writeBrandedAnnotation } from "../util/log.js";
 import { DEFAULT_GITHUB_API_BASE } from "../util/provider-defaults.js";
 import type { ParsedCliArgs } from "./parse-args.js";
+import { fetchSonarPrFindings } from "./fetch-sonar-pr-findings.js";
 import {
   LiveReviewError,
   buildInlineCommentBody,
   ensureHttpOk,
   mapReviewVerdictToGithubEvent,
+  passesSeverityPolicy,
   preparePostedReview,
   readJsonResponse,
   readResponseId,
@@ -29,8 +31,45 @@ export async function runGithubLive(input: {
 }): Promise<LiveRunResult> {
   const { context, diffText, provider, parsed, fetchImpl } = input;
 
+  // Fetch SonarCloud PR inline comments (when the flag is set) and
+  // merge them into the provider review's comments list BEFORE
+  // `preparePostedReview` runs. Three invariants this preserves:
+  // (1) severity filtering applies uniformly to the SonarCloud findings
+  // (the same `passesSeverityPolicy` gate that drops model findings
+  // below `--minimum-severity`); position validation runs downstream
+  // in `preparePostedReview` via the same `positions.hasPosition` gate;
+  // (2) the PR #183 verdict-reconciliation rule sees the surviving
+  // SonarCloud severity counts, so a postable SonarCloud MAJOR/CRITICAL
+  // escalates the verdict from SHIP/APPROVED to NEEDS_FIX; (3)
+  // SonarCloud findings render as inline threads on the bot's own
+  // review (one place to dismiss), in addition to SonarCloud's
+  // separate reviews.
+  const rawSonarFindings = parsed.includePrSonarFindings
+    ? await fetchSonarPrFindings({ context, fetchImpl })
+    : [];
+  const sonarPrFindings = rawSonarFindings.filter((finding) =>
+    passesSeverityPolicy(finding, parsed),
+  );
+  const droppedBySeverity = rawSonarFindings.length - sonarPrFindings.length;
+  if (droppedBySeverity > 0) {
+    writeBrandedAnnotation(
+      "warning",
+      `filtered ${droppedBySeverity} SonarCloud PR inline finding(s) below --minimum-severity=${parsed.minimumSeverity ?? "default"}; ${sonarPrFindings.length} postable.`,
+    );
+  }
+  // (Defer the "merged N findings" annotation until AFTER preparePostedReview
+  // so the count reflects what actually posts, not just what passed the
+  // severity filter — preparePostedReview's position-validation may drop
+  // further findings whose line numbers don't appear in the diff.)
+  const providerReview = sonarPrFindings.length > 0
+    ? {
+        ...provider.review,
+        comments: [...provider.review.comments, ...sonarPrFindings],
+      }
+    : provider.review;
+
   const prepared = preparePostedReview({
-    review: provider.review,
+    review: providerReview,
     provider: provider.provider,
     modelId: provider.modelId,
     diffText,
@@ -38,6 +77,19 @@ export async function runGithubLive(input: {
     secrets: [context.token],
   });
   const { postableComments: comments, body } = prepared;
+  // SonarCloud finding count in the postable set — accurate after position
+  // validation. Filter the postable comments to the ones that originated as
+  // SonarCloud findings (category === 'sonar') so the annotation matches
+  // what actually posts.
+  if (sonarPrFindings.length > 0) {
+    const postableSonarCount = comments.filter(
+      (comment) => comment.category === "sonar",
+    ).length;
+    writeBrandedAnnotation(
+      "warning",
+      `merged ${postableSonarCount} of ${sonarPrFindings.length} SonarCloud PR inline finding(s) into the review (flag --include-pr-sonar-findings; ${sonarPrFindings.length - postableSonarCount} dropped by position validation).`,
+    );
+  }
   const postableComments = comments.map((comment) => ({
     path: comment.path,
     line: comment.line,

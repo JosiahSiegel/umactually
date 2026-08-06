@@ -62,6 +62,16 @@ export type ParsedCliArgs = {
    */
   readonly githubToken?: string;
   readonly includeSonarqube: boolean;
+  /**
+   * When true, the GitHub live path fetches the PR's inline review
+   * comments carrying the `<!-- sonarcloud -->` marker and merges them
+   * into the review's comments list before `preparePostedReview`. The
+   * self-review workflow enables this so the bot's verdict reflects
+   * SonarCloud findings even when the model emits zero findings on its
+   * own. Off by default so existing user workflows that don't gate on
+   * SonarCloud don't suddenly start posting duplicate inline threads.
+   */
+  readonly includePrSonarFindings: boolean;
   readonly sonarHostUrl: string | null;
   readonly sonarToken: string | null;
   readonly sonarProjectKey: string | null;
@@ -146,6 +156,7 @@ export function parseCliArgs(args: readonly string[]): ParsedCliArgs {
   let githubApiBase: string | null = null;
   let githubToken: string | undefined;
   let includeSonarqube = false;
+  let includePrSonarFindings = false;
   let sonarHostUrl: string | null = null;
   let sonarToken: string | null = null;
   let sonarProjectKey: string | null = null;
@@ -325,6 +336,12 @@ export function parseCliArgs(args: readonly string[]): ParsedCliArgs {
       case "--no-include-sonarqube":
         includeSonarqube = false;
         break;
+      case "--include-pr-sonar-findings":
+        includePrSonarFindings = true;
+        break;
+      case "--no-include-pr-sonar-findings":
+        includePrSonarFindings = false;
+        break;
       case "--sonar-host-url":
         sonarHostUrl = readValue(args, index, "sonar-host-url");
         index += 1;
@@ -462,6 +479,7 @@ export function parseCliArgs(args: readonly string[]): ParsedCliArgs {
     provider,
     githubApiBase,
     includeSonarqube,
+    includePrSonarFindings,
     sonarHostUrl,
     sonarToken,
     sonarProjectKey,

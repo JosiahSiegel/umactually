@@ -149,6 +149,14 @@ export type ReviewData = {
    * unchanged (byte-identical to the original behavior).
    */
   readonly minimumSeverity?: string | null;
+  /**
+   * When `composeEffectiveVerdict` changed the effective verdict from the
+   * model's raw verdict (downgrade on empty counts OR upgrade on
+   * non-empty counts), this carries the raw model verdict so layouts
+   * can render a one-line escalation banner between the badge and the
+   * pipeline summary. Omit when the raw and effective verdicts agree.
+   */
+  readonly verdictEscalatedFrom?: string;
 };
 
 // ---------------------------------------------------------------------------
@@ -314,11 +322,15 @@ function findingsDetailsRow(
  */
 function severityEmoji(level: string): string {
   switch (level.toLowerCase()) {
-    case "critical": return "🟣";
+    case "critical":
+    case "security": return "🟣";
     case "high":     return "🔴";
-    case "medium":   return "🟠";
-    case "low":      return "🟡";
+    case "medium":
+    case "major":    return "🟠";
+    case "low":
+    case "minor":    return "🟡";
     case "info":     return "🟡";
+    case "leak":     return "🔴";
     default:         return "⚪";
   }
 }
@@ -326,10 +338,14 @@ function severityEmoji(level: string): string {
 /** Severity → short label used in compact rows. */
 function severityLabel(level: string): string {
   switch (level.toLowerCase()) {
-    case "critical": return "Critical";
+    case "critical":
+    case "security": return "Critical";
+    case "leak":     return "High";
     case "high": return "High";
-    case "medium": return "Medium";
-    case "low": return "Low";
+    case "medium":
+    case "major": return "Medium";
+    case "low":
+    case "minor": return "Low";
     default: return level || "Info";
   }
 }
@@ -349,9 +365,14 @@ function severityLabel(level: string): string {
 function highestSeverityBanner(data: ReviewData): { readonly emoji: string; readonly label: string } | null {
   if (data.validCommentCount === 0) return null;
   if ((data.severityCounts["critical"] ?? 0) > 0) return { emoji: "🟣", label: "Critical" };
+  if ((data.severityCounts["security"] ?? 0) > 0) return { emoji: "🟣", label: "Critical" };
+  if ((data.severityCounts["leak"] ?? 0) > 0) return { emoji: "🔴", label: "High" };
   if ((data.severityCounts["high"] ?? 0) > 0) return { emoji: "🔴", label: "High" };
   if ((data.severityCounts["medium"] ?? 0) > 0) return { emoji: "🟠", label: "Medium" };
-  return { emoji: "🟡", label: "Low" };
+  if ((data.severityCounts["major"] ?? 0) > 0) return { emoji: "🟠", label: "Medium" };
+  if ((data.severityCounts["low"] ?? 0) > 0) return { emoji: "🟡", label: "Low" };
+  if ((data.severityCounts["minor"] ?? 0) > 0) return { emoji: "🟡", label: "Low" };
+  return null;
 }
 
 /** Compose the stable hidden manifest that AI agents parse. */
@@ -377,6 +398,39 @@ function verdictBadge(data: ReviewData): string {
   if (normalized === "NEEDS_FIX" && !nothingActionable) return "⛔ NEEDS_FIX";
   if (normalized === "APPROVED" || normalized === "SHIP") return "✅ SHIP";
   return "💬 DISCUSS";
+}
+
+/**
+ * Render a one-line banner explaining a verdict reconciliation. Two
+ * directions are supported: upgrade (raw non-blocking → `NEEDS_FIX`,
+ * PR #183 review pass) and downgrade (raw `NEEDS_FIX` → `COMMENT`,
+ * PR #18). Blockquote-formatted to match `PARSE_FAILED_BANNER` at
+ * the same insertion point. Returns `""` when no reconciliation was
+ * needed.
+ */
+function verdictEscalationBanner(data: ReviewData): string {
+  if (data.verdictEscalatedFrom === undefined) return "";
+  const raw = data.verdictEscalatedFrom.toUpperCase();
+  const effective = data.review.verdict.toUpperCase();
+  const direction = effective === "NEEDS_FIX" && raw !== "NEEDS_FIX" ? "escalated" : "downgraded";
+  const findingCount = data.postedComments.length;
+  const findingSuffix = findingCount === 1 ? "postable finding" : "postable findings";
+  const reason = effective === "NEEDS_FIX"
+    ? `review contains ${findingCount} ${findingSuffix}`
+    : "no postable findings to address";
+  return `> ⚠️ Verdict ${direction} from \`${raw}\` → \`${effective}\`: ${reason}.`;
+}
+
+/**
+ * Push the verdict badge (`## ⛔ NEEDS_FIX` etc.) followed by the
+ * optional escalation banner. All layouts that render a verdict must
+ * go through this helper so the banner can't be forgotten on a future
+ * layout.
+ */
+function pushVerdict(parts: string[], data: ReviewData): void {
+  parts.push(`## ${verdictBadge(data)}`);
+  const banner = verdictEscalationBanner(data);
+  if (banner.length > 0) parts.push(banner);
 }
 
 /**
@@ -431,18 +485,55 @@ function severityTallyLegend(data: ReviewData): string {
   return "`* = filtered by threshold`";
 }
 
-/** Severity tally line used by most layouts. */
+/**
+ * Severity tally line. Walks `SEVERITY_ORDER` (provider + internal
+ * vocabularies interleaved) and skips tiers with count 0 — except
+ * tiers filtered by the `--minimum-severity` threshold, which keep an
+ * asterisk to surface that they were hidden.
+ *
+ * Carve-out tiers (`security`, `leak`) are ALWAYS omitted from the
+ * rendered tally regardless of their count. They bypass the
+ * `--minimum-severity` threshold (see `config/severity.ts:shouldKeepFinding`)
+ * by security policy and are not part of the four-tier display
+ * vocabulary the user opted into. The threshold marker `*` only
+ * applies to display tiers; rendering `security*` or `leak*` would
+ * falsely imply they were filtered when they actually passed.
+ */
 function severityTally(data: ReviewData): string {
   const filtered = filteredTiers(data);
   const parts: string[] = [];
   let total = 0;
+  // Carve-out tiers (security, leak) are counted toward `total` so the
+  // empty-string early-return doesn't fire for a review whose only
+  // postable findings are security/leak (otherwise the card renders
+  // "0 inline findings" against validCommentCount ≥ 1 — misleading).
+  // They are still skipped from the rendered tally line itself per
+  // the carve-out invariant above.
   for (const level of SEVERITY_ORDER) {
+    if (level in data.severityCounts) {
+      total += data.severityCounts[level] ?? 0;
+    }
+    if (level === "security" || level === "leak") continue;
+    const isPresent = level in data.severityCounts;
+    const isFiltered = filtered.has(level);
+    if (!isPresent && !isFiltered) continue;
     const count = data.severityCounts[level] ?? 0;
-    total += count;
-    const mark = filtered.has(level) ? "*" : "";
+    const mark = isFiltered ? "*" : "";
     parts.push(`\`${count}\` ${level}${mark}`);
   }
   if (total === 0) return "";
+  // When the display tiers render no parts (all postable findings are
+  // carve-outs — security/leak), emit a special marker so the card
+  // doesn't show a bare 🏷️ with no breakdown. Operators see at a
+  // glance that findings exist but are carved out of the four-tier
+  // display. Use wording that does NOT match the per-tier render
+  // pattern `\`N\` security` so the existing carve-out invariant
+  // (security/leak absent from the rendered tally) still holds.
+  if (parts.length === 0) {
+    const carveOutCount = (data.severityCounts["security"] ?? 0) +
+      (data.severityCounts["leak"] ?? 0);
+    return `🏷️ 🔒 \`${carveOutCount}\` carve-out only`;
+  }
   return `🏷️ ${parts.join(" · ")}`;
 }
 
@@ -583,7 +674,7 @@ function layoutBaseline(data: ReviewData): string {
 
   sections.push(REVIEW_MARKER);
   sections.push("");
-  sections.push(`## ${verdictBadge(data)}`);
+  pushVerdict(sections, data);
   sections.push("");
 
   if (data.review.parseFailed === true) {
@@ -655,7 +746,7 @@ function layoutDashboard(data: ReviewData): string {
   const filtered = filteredCount(data);
   const parts: string[] = [];
 
-  parts.push(`## ${verdict}`);
+  pushVerdict(parts, data);
   parts.push("");
   parts.push("### 📊 Review dashboard");
   parts.push("");
@@ -698,10 +789,9 @@ function layoutDashboard(data: ReviewData): string {
 // blockquote block so it scans top-to-bottom like a process diagram.
 
 function layoutPipeline(data: ReviewData): string {
-  const verdict = verdictBadge(data);
   const parts: string[] = [];
 
-  parts.push(`## ${verdict}`);
+  pushVerdict(parts, data);
   parts.push("");
   parts.push("### 🔄 Review pipeline");
   parts.push("");
@@ -751,6 +841,14 @@ function layoutVerdictBanner(data: ReviewData): string {
   parts.push(`# ${verdict}`);
   parts.push("");
   parts.push(`> ## ${verdict}`);
+  const banner = verdictEscalationBanner(data);
+  if (banner.length > 0) {
+    // Re-blockquote the banner so it nests inside the `> ## verdict`
+    // blockquote above it rather than starting a new one.
+    parts.push("");
+    parts.push(`> ${banner.slice(2)}`);
+    parts.push("");
+  }
   parts.push(`>`);
   parts.push(`> **${data.validCommentCount}** findings to address · ${totalFindings(data)} total considered`);
   parts.push(`>`);
@@ -790,12 +888,16 @@ function layoutVerdictBanner(data: ReviewData): string {
 
 function renderCleanShip(data: ReviewData): string {
   const safeSummary = redact(data.review.summary, data.secrets);
+  const banner = verdictEscalationBanner(data);
   const parts: string[] = [
     REVIEW_MARKER,
     "",
     "## ✅ 0 inline findings — ship it",
-    "",
   ];
+  if (banner.length > 0) {
+    parts.push(banner);
+  }
+  parts.push("");
   if (safeSummary.trim().length > 0) {
     parts.push("<details>");
     parts.push("<summary>📝 Click to expand the full review summary</summary>");
@@ -817,7 +919,6 @@ function renderCleanShip(data: ReviewData): string {
 }
 
 function layoutSeverityTable(data: ReviewData): string {
-  const verdict = verdictBadge(data);
   const all = sortedPosted(data);
   const parts: string[] = [];
 
@@ -831,7 +932,7 @@ function layoutSeverityTable(data: ReviewData): string {
   // first non-marker line is the verdict badge (CLARITY-1 invariant).
   parts.push(REVIEW_MARKER);
   parts.push("");
-  parts.push(`## ${verdict}`);
+  pushVerdict(parts, data);
   parts.push("");
 
   // CLARITY-10: parse-fail banner must be unmistakable. Rendered as a
@@ -930,7 +1031,6 @@ parts.push("### 📋 Findings");
 // bullet findings. Reads like a stack of color-coded sticky notes.
 
 function layoutCardGrid(data: ReviewData): string {
-  const verdict = verdictBadge(data);
   const buckets: Record<string, LiveReviewComment[]> = {
     critical: [], high: [], medium: [], low: [],
   };
@@ -941,7 +1041,7 @@ function layoutCardGrid(data: ReviewData): string {
   }
   const parts: string[] = [];
 
-  parts.push(`## ${verdict}`);
+  pushVerdict(parts, data);
   parts.push("");
   parts.push("### 🎴 Findings by severity");
   parts.push("");
@@ -976,7 +1076,7 @@ function layoutTldrWalkthrough(data: ReviewData): string {
   const verdict = verdictBadge(data);
   const parts: string[] = [];
 
-  parts.push(`## ${verdict}`);
+  pushVerdict(parts, data);
   parts.push("");
   parts.push("### 📌 TL;DR");
   parts.push("");
@@ -1017,10 +1117,9 @@ function layoutTldrWalkthrough(data: ReviewData): string {
 // a `path:line` reference. Reads like a todo list.
 
 function layoutChecklist(data: ReviewData): string {
-  const verdict = verdictBadge(data);
   const parts: string[] = [];
 
-  parts.push(`## ${verdict}`);
+  pushVerdict(parts, data);
   parts.push("");
   parts.push("### ✅ Review checklist");
   parts.push("");
@@ -1061,11 +1160,10 @@ function layoutChecklist(data: ReviewData): string {
 // an inline code block. Terminal-style dashboard.
 
 function layoutProgressBars(data: ReviewData): string {
-  const verdict = verdictBadge(data);
   const total = data.validCommentCount;
   const parts: string[] = [];
 
-  parts.push(`## ${verdict}`);
+  pushVerdict(parts, data);
   parts.push("");
   parts.push("### 📊 Severity distribution");
   parts.push("");
@@ -1104,10 +1202,9 @@ function layoutProgressBars(data: ReviewData): string {
 // negatives (findings to fix). Reads like a balanced review.
 
 function layoutProsCons(data: ReviewData): string {
-  const verdict = verdictBadge(data);
   const parts: string[] = [];
 
-  parts.push(`## ${verdict}`);
+  pushVerdict(parts, data);
   parts.push("");
   parts.push("### ⚖️ Strengths vs concerns");
   parts.push("");
@@ -1151,7 +1248,7 @@ function layoutTweet(data: ReviewData): string {
   const verdict = verdictBadge(data);
   const parts: string[] = [];
 
-  parts.push(`## ${verdict}`);
+  pushVerdict(parts, data);
   parts.push("");
   parts.push(`> ## ${verdict}`);
   parts.push(">");
@@ -1191,7 +1288,7 @@ function layoutFaq(data: ReviewData): string {
   const verdict = verdictBadge(data);
   const parts: string[] = [];
 
-  parts.push(`## ${verdict}`);
+  pushVerdict(parts, data);
   parts.push("");
   parts.push("### ❓ Reviewer Q&A");
   parts.push("");
@@ -1234,7 +1331,7 @@ function layoutTerminal(data: ReviewData): string {
   const verdict = verdictBadge(data);
   const parts: string[] = [];
 
-  parts.push(`## ${verdict}`);
+  pushVerdict(parts, data);
   parts.push("");
   parts.push("### 🖥️ Terminal report");
   parts.push("");
@@ -1280,7 +1377,7 @@ function layoutIncident(data: ReviewData): string {
   const verdict = verdictBadge(data);
   const parts: string[] = [];
 
-  parts.push(`## ${verdict}`);
+  pushVerdict(parts, data);
   parts.push("");
   parts.push("### 📟 Incident report");
   parts.push("");
@@ -1332,10 +1429,9 @@ function layoutIncident(data: ReviewData): string {
 // Reads like a CHANGELOG entry: Features / Fixes / Style sections.
 
 function layoutReleaseNotes(data: ReviewData): string {
-  const verdict = verdictBadge(data);
   const parts: string[] = [];
 
-  parts.push(`## ${verdict}`);
+  pushVerdict(parts, data);
   parts.push("");
   parts.push("### 📝 Review changelog");
   parts.push("");
@@ -1403,10 +1499,9 @@ function layoutReleaseNotes(data: ReviewData): string {
 // Per-file table with emoji status. Reads like a test-coverage widget.
 
 function layoutCoverage(data: ReviewData): string {
-  const verdict = verdictBadge(data);
   const parts: string[] = [];
 
-  parts.push(`## ${verdict}`);
+  pushVerdict(parts, data);
   parts.push("");
   parts.push("### 🧪 File-by-file review");
   parts.push("");
@@ -1452,10 +1547,9 @@ function layoutCoverage(data: ReviewData): string {
 // Stacked emoji severity ladder + count badges. Visual "how hot is this PR".
 
 function layoutThermometer(data: ReviewData): string {
-  const verdict = verdictBadge(data);
   const parts: string[] = [];
 
-  parts.push(`## ${verdict}`);
+  pushVerdict(parts, data);
   parts.push("");
   parts.push("### 🌡️ Risk thermometer");
   parts.push("");
@@ -1503,10 +1597,9 @@ function layoutThermometer(data: ReviewData): string {
 // Mirrors GitHub Status / statuspage.io: status banner, then per-component status.
 
 function layoutStatusPage(data: ReviewData): string {
-  const verdict = verdictBadge(data);
   const parts: string[] = [];
 
-  parts.push(`## ${verdict}`);
+  pushVerdict(parts, data);
   parts.push("");
   parts.push("### 📡 Status page");
   parts.push("");
@@ -1551,10 +1644,9 @@ function layoutStatusPage(data: ReviewData): string {
 // Per-file change summary using ASCII bars. Reads like `git diff --stat`.
 
 function layoutDiffstat(data: ReviewData): string {
-  const verdict = verdictBadge(data);
   const parts: string[] = [];
 
-  parts.push(`## ${verdict}`);
+  pushVerdict(parts, data);
   parts.push("");
   parts.push("### 📊 Review diffstat");
   parts.push("");
@@ -1604,10 +1696,9 @@ function layoutDiffstat(data: ReviewData): string {
 // wall of sticky notes.
 
 function layoutStickyNotes(data: ReviewData): string {
-  const verdict = verdictBadge(data);
   const parts: string[] = [];
 
-  parts.push(`## ${verdict}`);
+  pushVerdict(parts, data);
   parts.push("");
   parts.push("### 📌 Sticky notes");
   parts.push("");
@@ -1648,6 +1739,8 @@ function layoutNewspaper(data: ReviewData): string {
   const parts: string[] = [];
 
   parts.push(`# ${verdict}`);
+  const banner = verdictEscalationBanner(data);
+  if (banner.length > 0) parts.push(banner);
   parts.push("");
   parts.push(`### *${data.validCommentCount} of ${totalFindings(data)} findings posted; review model: \`${redact(data.modelId, data.secrets)}\`*`);
   parts.push("");
@@ -1753,10 +1846,17 @@ export function renderSummary(layout: LayoutId, data: ReviewData): string {
   // Suppressed findings (confidence/verified-facts filtered) don't
   // count against the reviewer — they're pipeline-internal noise the
   // filter already handled. Only parseFailed short-circuits to a verbose
-  // layout so the operator sees the raw provider response.
+  // layout so the operator sees the raw response.
+  //
+  // Reconciliation-bypass carve-out: when the raw verdict was
+  // reconciled (downgraded NEEDS_FIX→COMMENT or upgraded SHIP→NEEDS_FIX)
+  // AND there are no postable findings, `renderCleanShip` still
+  // surfaces the escalation banner so the clean-ship body doesn't
+  // hide the raw→effective flip from a scanning reviewer.
   if (
     data.validCommentCount === 0 &&
-    data.review.parseFailed !== true
+    data.review.parseFailed !== true &&
+    data.verdictEscalatedFrom === undefined
   ) {
     return renderCleanShip(data);
   }

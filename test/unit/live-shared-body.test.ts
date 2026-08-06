@@ -414,7 +414,7 @@ describe("buildReviewBody — severity-tally filter marker", () => {
       secrets: SECRETS,
       minimumSeverity: "medium",
     });
-    expect(body).toContain("🏷️ `1` critical · `1` high · `1` medium · `0` low*");
+    expect(body).toContain("🏷️ `1` critical · `1` high · `1` medium · `0` low* · `0` minor*");
     expect(body).toContain(LEGEND);
   });
 
@@ -430,7 +430,7 @@ describe("buildReviewBody — severity-tally filter marker", () => {
       secrets: SECRETS,
       minimumSeverity: "high",
     });
-    expect(body).toContain("🏷️ `1` critical · `1` high · `0` medium* · `0` low*");
+    expect(body).toContain("🏷️ `1` critical · `1` high · `0` medium* · `0` major* · `0` low* · `0` minor*");
     expect(body).toContain(LEGEND);
   });
 
@@ -478,7 +478,7 @@ describe("buildReviewBody — severity-tally filter marker", () => {
     // not from the carve-out. With minimumSeverity='high' and only
     // critical+security+leak in the postable set, no medium/low
     // tiers are visible to be marked.
-    expect(body).toMatch(/`0` medium\* · `0` low\*/u);
+    expect(body).toMatch(/`0` medium\* · `0` major\* · `0` low\* · `0` minor\*/u);
   });
 
   it("asterisk + legend appear on the `severity-table` default layout (the one buildReviewBody dispatches to)", () => {
@@ -498,7 +498,7 @@ describe("buildReviewBody — severity-tally filter marker", () => {
       minimumSeverity: "high",
     });
     // The asterisk appears on filtered tiers and the legend is below.
-    expect(body).toMatch(/`0` medium\* · `0` low\*/);
+    expect(body).toMatch(/`0` medium\* · `0` major\* · `0` low\* · `0` minor\*/);
     expect(body).toContain(LEGEND);
   });
 

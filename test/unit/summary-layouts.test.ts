@@ -553,9 +553,13 @@ describe("severity-table details", () => {
     // Mirror the function under test (kept in sync — see summary-layouts.ts).
     const cases: ReadonlyArray<{ readonly severity: string; readonly glyph: string }> = [
       { severity: "critical", glyph: "🟣" },
+      { severity: "security", glyph: "🟣" },
       { severity: "high",     glyph: "🔴" },
+      { severity: "leak",     glyph: "🔴" },
       { severity: "medium",   glyph: "🟠" },
+      { severity: "major",    glyph: "🟠" },
       { severity: "low",      glyph: "🟡" },
+      { severity: "minor",    glyph: "🟡" },
       { severity: "info",     glyph: "🟡" },
     ];
     for (const c of cases) {
@@ -889,5 +893,307 @@ describe("type safety — LayoutId union covers LAYOUTS", () => {
   it("every LAYOUTS entry is assignable to LayoutId", () => {
     const ids: LayoutId[] = [...LAYOUTS];
     expect(ids.length).toBe(LAYOUTS.length);
+  });
+});
+
+// -- Verdict escalation banner (PR #183 review pass) -------------------------
+
+describe("verdict escalation banner", () => {
+  it("severity-table emits an escalation banner between the badge and the pipeline summary when SHIP is escalated to NEEDS_FIX", () => {
+    const out = renderSummary(
+      "severity-table",
+      makeData({
+        review: {
+          summary: "Looks good, ship it.",
+          verdict: "NEEDS_FIX",
+          comments: [],
+          suppressedComments: [],
+        },
+        validCommentCount: 1,
+        severityCounts: { medium: 1 },
+        verdictEscalatedFrom: "SHIP",
+        postedComments: [{
+          path: "src/x.ts",
+          line: 1,
+          body: "Extract this nested ternary operation.",
+          severity: "medium",
+          category: "correctness",
+        }],
+      }),
+    );
+    const markerIdx = out.indexOf(REVIEW_MARKER);
+    const badgeIdx = out.indexOf("## ⛔ NEEDS_FIX");
+    const bannerIdx = out.indexOf("Verdict escalated from `SHIP` → `NEEDS_FIX`");
+    const pipelineIdx = out.indexOf("📊 1 inline finding");
+    expect(markerIdx).toBeGreaterThanOrEqual(0);
+    expect(badgeIdx).toBeGreaterThan(markerIdx);
+    expect(bannerIdx).toBeGreaterThan(badgeIdx);
+    expect(pipelineIdx).toBeGreaterThan(bannerIdx);
+  });
+
+  it("no banner is emitted when verdictEscalatedFrom is omitted (raw === effective)", () => {
+    const out = renderSummary(
+      "severity-table",
+      makeData({
+        review: {
+          summary: "Reviewed.",
+          verdict: "NEEDS_FIX",
+          comments: [],
+          suppressedComments: [],
+        },
+        validCommentCount: 1,
+        severityCounts: { medium: 1 },
+        postedComments: [{
+          path: "src/x.ts",
+          line: 1,
+          body: "Fix this.",
+          severity: "medium",
+          category: "correctness",
+        }],
+      }),
+    );
+    expect(out).not.toMatch(/Verdict (escalated|downgraded)/u);
+  });
+
+  it("emits a downgrade banner (raw NEEDS_FIX → effective COMMENT) when all findings were severity-filtered", () => {
+    const out = renderSummary(
+      "severity-table",
+      makeData({
+        review: {
+          summary: "Reviewed.",
+          verdict: "COMMENT",
+          comments: [],
+          suppressedComments: [],
+        },
+        validCommentCount: 0,
+        severityCounts: {},
+        verdictEscalatedFrom: "NEEDS_FIX",
+        postedComments: [],
+      }),
+    );
+    expect(out).toMatch(/Verdict downgraded from `NEEDS_FIX` → `COMMENT`/u);
+    expect(out).toMatch(/no postable findings to address/u);
+  });
+
+  it("verdict-banner layout nests the escalation banner inside the existing `> ## verdict` blockquote", () => {
+    const out = renderSummary(
+      "verdict-banner",
+      makeData({
+        review: {
+          summary: "Looks good, ship it.",
+          verdict: "NEEDS_FIX",
+          comments: [],
+          suppressedComments: [],
+        },
+        validCommentCount: 1,
+        severityCounts: { medium: 1 },
+        verdictEscalatedFrom: "SHIP",
+        postedComments: [{
+          path: "src/x.ts",
+          line: 1,
+          body: "Fix this.",
+          severity: "medium",
+          category: "correctness",
+        }],
+      }),
+    );
+    expect(out).toMatch(/^> ⚠️ Verdict escalated from `SHIP` → `NEEDS_FIX`/mu);
+  });
+});
+
+describe("internal Severity vocabulary in tally + emoji", () => {
+  // SonarCloud MAJOR/CRITICAL/BLOCKER findings (merged via
+  // --include-pr-sonar-findings) carry the internal Severity vocabulary
+  // (major/critical/leak). Without these cases they render as ⚪.
+  it("renders 🟠 Medium glyph for severity='major' and includes it in the tally", () => {
+    const out = renderSummary(
+      "severity-table",
+      makeData({
+        review: {
+          summary: "SonarCloud MAJOR finding.",
+          verdict: "NEEDS_FIX",
+          comments: [],
+          suppressedComments: [],
+        },
+        validCommentCount: 1,
+        severityCounts: { major: 1 },
+        postedComments: [{
+          path: "src/cli/init.ts",
+          line: 1298,
+          body: "Extract this nested ternary operation.",
+          severity: "major",
+          category: "sonar",
+        }],
+      }),
+    );
+    expect(out).toContain("🟠 Medium");
+    expect(out).toMatch(/`1` major/u);
+  });
+
+  // The `security` and `leak` tiers are CARVE-OUT findings: they
+  // bypass the --minimum-severity threshold entirely (see
+  // config/severity.ts:shouldKeepFinding) and are intentionally
+  // hidden from the four-tier display tally. They render their
+  // finding bodies with the correct glyph (🟣 Critical for security,
+  // 🔴 High for leak) so reviewers can identify severity on the
+  // inline thread, but the headline tally omits them — see the
+  // `severity + leak carve-out` test in live-shared-body.test.ts
+  // for the canonical invariant.
+  it("renders security and leak inline with the correct glyph but hides them from the tally", () => {
+    const out = renderSummary(
+      "severity-table",
+      makeData({
+        review: {
+          summary: "Carve-out findings.",
+          verdict: "NEEDS_FIX",
+          comments: [],
+          suppressedComments: [],
+        },
+        validCommentCount: 2,
+        severityCounts: { security: 1, leak: 1 },
+        postedComments: [
+          {
+            path: "src/auth.ts",
+            line: 12,
+            body: "Hardcoded credential.",
+            severity: "security",
+            category: "security",
+          },
+          {
+            path: "src/secret.ts",
+            line: 1,
+            body: "Hardcoded API key.",
+            severity: "leak",
+            category: "security",
+          },
+        ],
+      }),
+    );
+    // The inline section renders the correct severity glyph for each
+    // carve-out finding so reviewers can read the inline thread.
+    expect(out).toContain("🟣 Critical");
+    expect(out).toContain("🔴 High");
+    // The headline tally does NOT include `security` or `leak` —
+    // they bypass the threshold and aren't display tiers. When
+    // all postable findings are carve-outs the tally emits a
+    // `🔒 \`N\` carve-out only` marker instead (see severityTally's
+    // carve-out fallback).
+    expect(out).not.toMatch(/`\d+` security/u);
+    expect(out).not.toMatch(/`\d+` leak/u);
+    expect(out).toMatch(/🔒\s+`2`\s+carve-out only/u);
+    // Manifest payload is JSON; the tally string is NOT parsed. The
+    // manifest's severityCounts still carries the carve-out counts
+    // verbatim so downstream consumers (CI guards, dashboards) see
+    // the same picture as the inline threads.
+    const manifest = JSON.parse(
+      out.match(/<!--\s*umactually:manifest\s+(\{[^]*?\})\s*-->/u)?.[1] ?? "{}",
+    );
+    expect(manifest.severityCounts).toEqual({ security: 1, leak: 1 });
+    expect(manifest.inlineCount).toBe(2);
+  });
+});
+
+describe("highestSeverityBanner — internal vocabulary tier coverage", () => {
+  // Pin each cascade tier so a future refactor that drops one of the
+  // cases is caught immediately.
+  it("incident layout surfaces 🟣 Critical when security tier is the highest non-zero", () => {
+    const out = renderSummary(
+      "incident",
+      makeData({
+        validCommentCount: 1,
+        severityCounts: { security: 1 },
+        postedComments: [{
+          path: "src/x.ts",
+          line: 1,
+          body: "x",
+          severity: "security",
+          category: "security",
+        }],
+      }),
+    );
+    expect(out).toMatch(/\*\*Severity:\*\*\s+🟣 Critical/u);
+  });
+
+  it("incident layout surfaces 🟠 Medium when major tier is the highest non-zero", () => {
+    const out = renderSummary(
+      "incident",
+      makeData({
+        validCommentCount: 1,
+        severityCounts: { major: 1 },
+        postedComments: [{
+          path: "src/x.ts",
+          line: 1,
+          body: "x",
+          severity: "major",
+          category: "general",
+        }],
+      }),
+    );
+    expect(out).toMatch(/\*\*Severity:\*\*\s+🟠 Medium/u);
+  });
+
+  it("incident layout surfaces 🟡 Low when minor tier is the highest non-zero", () => {
+    const out = renderSummary(
+      "incident",
+      makeData({
+        validCommentCount: 1,
+        severityCounts: { minor: 1 },
+        postedComments: [{
+          path: "src/x.ts",
+          line: 1,
+          body: "x",
+          severity: "minor",
+          category: "style",
+        }],
+      }),
+    );
+    expect(out).toMatch(/\*\*Severity:\*\*\s+🟡 Low/u);
+  });
+
+  it("newspaper layout surfaces the escalation banner when verdictEscalatedFrom is set", () => {
+    const out = renderSummary(
+      "newspaper",
+      makeData({
+        review: {
+          summary: "Looks good, ship it.",
+          verdict: "NEEDS_FIX",
+          comments: [],
+          suppressedComments: [],
+        },
+        validCommentCount: 1,
+        severityCounts: { medium: 1 },
+        verdictEscalatedFrom: "SHIP",
+        postedComments: [{
+          path: "src/x.ts",
+          line: 1,
+          body: "x",
+          severity: "medium",
+          category: "general",
+        }],
+      }),
+    );
+    expect(out).toMatch(/Verdict escalated from `SHIP` → `NEEDS_FIX`/u);
+  });
+
+  it("escalation banner uses postedComments.length, not validCommentCount (they diverge when some findings are off-diff)", () => {
+    const out = renderSummary(
+      "severity-table",
+      makeData({
+        review: {
+          summary: "Looks good, ship it.",
+          verdict: "NEEDS_FIX",
+          comments: [],
+          suppressedComments: [],
+        },
+        validCommentCount: 3,
+        severityCounts: { medium: 2, high: 1 },
+        verdictEscalatedFrom: "SHIP",
+        postedComments: [
+          { path: "src/a.ts", line: 1, body: "a", severity: "high", category: "correctness" },
+          { path: "src/b.ts", line: 1, body: "b", severity: "medium", category: "style" },
+        ],
+      }),
+    );
+    expect(out).toMatch(/review contains 2 postable findings/u);
   });
 });
