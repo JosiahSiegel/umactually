@@ -200,12 +200,16 @@ jobs:
           UMACTUALLY_PLATFORM: ${{ steps.review.outputs.platform || env.UMACTUALLY_PLATFORM }}
         run: |
           # Append the platform-specific resolution guide to the umactually
-          # self-review on the CURRENT head commit, but only if that review
-          # carries inline findings to triage. The umactually manifest embeds
-          # a structured JSON blob at the end of the review body whose
-          # `inlineCount` field tells us whether there is triage to do; if
-          # `inlineCount` is 0 or the marker is missing, the empty review
-          # body stays clean.
+          # self-review on the CURRENT head commit. The guide is the
+          # agent-facing handbook for reading AND resolving umactually
+          # reviews (GraphQL close protocol, disposition taxonomy,
+          # verdict interpretation) — it applies to EVERY review, not
+          # only finding-bearing ones. An agent reading a clean
+          # 0-finding review still needs the protocol to formally close
+          # the review (Step 1 disposition "ship it" / "no findings").
+          # Idempotency: the marker-based skip below prevents duplicate
+          # appends on reruns; the inlineCount=0 skip was removed because
+          # a clean review IS a review.
           # All API calls go through GraphQL rather than the REST `/reviews`
           # endpoint to side-step three classes of fragility:
           #   1. REST `/reviews?per_page=30` is unbounded for very long PRs;
@@ -328,8 +332,18 @@ jobs:
             esac
           fi
           if [ "${INLINE_COUNT}" = "0" ]; then
-            echo "Review ${REVIEW_ID} has inlineCount=0 (per manifest); nothing to triage, skipping guide append."
-            exit 0
+            # The guide is the agent-facing handbook for reading AND
+            # resolving umactually reviews, NOT a triage cheatsheet. It
+            # documents the GraphQL close protocol, the disposition
+            # taxonomy, and how to interpret every verdict including
+            # ✅ SHIP / 💬 DISCUSS. An agent reading a clean 0-finding
+            # review still needs that protocol to formally close the
+            # review (Step 1 disposition "ship it" / "no findings").
+            # The previous skip was wrong: a clean review IS a review,
+            # and an agent following the protocol must still see the
+            # protocol. Append unconditionally; the marker-based idempotency
+            # check below prevents duplicate appends on reruns.
+            echo "Review ${REVIEW_ID} has inlineCount=0 (per manifest); appending guide anyway — the resolution protocol is required for any review, not just finding-bearing ones."
           fi
           if printf '%s' "${CURRENT}" | grep -qF "${GUIDE_MARKER}"; then
             echo "Review ${REVIEW_ID} already contains the guide; skipping."
