@@ -869,7 +869,38 @@ jobs:
           # The umactually bot's existing review body is preserved by
           # posting a SEPARATE review for the SonarCloud findings; we
           # don't mutate the bot's review body inline.
+          #
+          # Dedup: SonarCloud's API returns the same OPEN issue for every
+          # push, and this step has historically reposted it on each run,
+          # accumulating duplicate inline threads per (path, line, rule)
+          # combination (e.g. 22 threads for S5976 across this PR's
+          # history). Query the PR's existing inline comments once,
+          # extract every sonarcloud-marked entry's (path, line, rule)
+          # signature into a tab-separated lookup, and skip posting when
+          # a signature already exists. Open and unresolved comments
+          # both block — even a RESOLVED comment blocks because we don't
+          # want to undo the operator's resolution with a fresh thread.
+          # Trade-off: a genuinely-fixed SonarCloud issue that gets
+          # re-flagged on a later push won't be re-surfaced here. The
+          # authoritative surface for that case is the SonarCloud Code
+          # Analysis check status (which fires fresh on every push),
+          # not the inline-comment thread — so losing a re-surfaced
+          # thread on a genuinely-fixed issue is acceptable.
+          EXISTING_FILE="${RUNNER_TEMP:-/tmp}/sonar-existing-comments-pr-${PR_NUMBER}.json"
+          EXISTING_SIGNATURES=""
+          if curl -fsSL --max-time 15 \
+              -H "Authorization: Bearer ${GITHUB_TOKEN}" \
+              "${GITHUB_API_URL:-https://api.github.com}/repos/${GITHUB_REPOSITORY}/pulls/${PR_NUMBER}/comments?per_page=100" \
+              > "${EXISTING_FILE}" 2>/dev/null; then
+            EXISTING_SIGNATURES=$(jq -r \
+              '[.[] | select(.body | startswith("<!-- sonarcloud -->")) | {path, line, rule: (.body | capture("`(?<r>typescript:S\\d+|[a-z]+:S\\d+)`").r // "")}] | .[] | "\(.path)\t\(.line // 0)\t\(.rule)"' \
+              "${EXISTING_FILE}" 2>/dev/null | sort -u || echo "")
+          fi
+          EXISTING_COUNT=$(printf '%s\n' "${EXISTING_SIGNATURES}" | grep -c . || echo 0)
+          echo "Existing SonarCloud inline comments on PR ${PR_NUMBER}: ${EXISTING_COUNT}."
+
           POSTED=0
+          SKIPPED=0
           FAILED=0
           FILE_LEVEL=0
           while IFS=$'\t' read -r file_path line severity rule message; do
@@ -879,6 +910,17 @@ jobs:
             # SonarCloud returns the component as `<projectKey>:<filePath>`.
             # Strip the project-key prefix.
             relative_file="${file_path#${SONAR_PROJECT_KEY}:}"
+            # Dedup: skip when an inline comment with the same (path,
+            # line, rule) signature already exists on the PR. The
+            # signature lookup above captured every sonarcloud-marked
+            # comment's signature; match against it before posting.
+            # `line` is already integer-normalised by `(.line // 0)` in
+            # the upstream `jq -r '@tsv'` query, so no further
+            # normalisation is needed here.
+            if printf '%s\n' "${EXISTING_SIGNATURES}" | grep -qxF "${relative_file}	${line}	${rule}"; then
+              SKIPPED=$((SKIPPED + 1))
+              continue
+            fi
             # Build a comment body with the SonarCloud rule, severity, and
             # a stable deep link to the issue on sonarcloud.io. Use a
             # `<!-- sonarcloud -->` marker so the existing resolution
@@ -934,7 +976,7 @@ jobs:
           done < <(jq -r \
               '[.issues[] | [.component, (.line // 0), .severity, .rule, (.message | gsub("\t"; " ") | gsub("\n"; " "))]] | .[] | @tsv' \
               "${ISSUES_FILE}")
-          echo "Posted ${POSTED}/${ISSUE_COUNT} inline SonarCloud comments (${FILE_LEVEL} file-level, ${FAILED} failed)."
+          echo "Posted ${POSTED}, skipped ${SKIPPED} (already on PR), ${FILE_LEVEL} file-level, ${FAILED} failed; ${ISSUE_COUNT} total SonarCloud issues."
 
           # Quality gate status is reflected in the `SonarCloud Code
           # Analysis` check run from the scanner step above; that check
