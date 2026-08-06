@@ -522,6 +522,18 @@ function severityTally(data: ReviewData): string {
     parts.push(`\`${count}\` ${level}${mark}`);
   }
   if (total === 0) return "";
+  // When the display tiers render no parts (all postable findings are
+  // carve-outs — security/leak), emit a special marker so the card
+  // doesn't show a bare 🏷️ with no breakdown. Operators see at a
+  // glance that findings exist but are carved out of the four-tier
+  // display. Use wording that does NOT match the per-tier render
+  // pattern `\`N\` security` so the existing carve-out invariant
+  // (security/leak absent from the rendered tally) still holds.
+  if (parts.length === 0) {
+    const carveOutCount = (data.severityCounts["security"] ?? 0) +
+      (data.severityCounts["leak"] ?? 0);
+    return `🏷️ 🔒 \`${carveOutCount}\` carve-out only`;
+  }
   return `🏷️ ${parts.join(" · ")}`;
 }
 

@@ -1074,9 +1074,13 @@ describe("internal Severity vocabulary in tally + emoji", () => {
     expect(out).toContain("🟣 Critical");
     expect(out).toContain("🔴 High");
     // The headline tally does NOT include `security` or `leak` —
-    // they bypass the threshold and aren't display tiers.
+    // they bypass the threshold and aren't display tiers. When
+    // all postable findings are carve-outs the tally emits a
+    // `🔒 \`N\` carve-out only` marker instead (see severityTally's
+    // carve-out fallback).
     expect(out).not.toMatch(/`\d+` security/u);
     expect(out).not.toMatch(/`\d+` leak/u);
+    expect(out).toMatch(/🔒\s+`2`\s+carve-out only/u);
   });
 });
 

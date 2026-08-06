@@ -11262,6 +11262,18 @@ function severityTally(data) {
     }
     if (total === 0)
         return "";
+    // When the display tiers render no parts (all postable findings are
+    // carve-outs — security/leak), emit a special marker so the card
+    // doesn't show a bare 🏷️ with no breakdown. Operators see at a
+    // glance that findings exist but are carved out of the four-tier
+    // display. Use wording that does NOT match the per-tier render
+    // pattern `\`N\` security` so the existing carve-out invariant
+    // (security/leak absent from the rendered tally) still holds.
+    if (parts.length === 0) {
+        const carveOutCount = (data.severityCounts["security"] ?? 0) +
+            (data.severityCounts["leak"] ?? 0);
+        return `🏷️ 🔒 \`${carveOutCount}\` carve-out only`;
+    }
     return `🏷️ ${parts.join(" · ")}`;
 }
 /**
@@ -15919,9 +15931,10 @@ async function runGithubLive(input) {
     if (droppedBySeverity > 0) {
         writeBrandedAnnotation("warning", `filtered ${droppedBySeverity} SonarCloud PR inline finding(s) below --minimum-severity=${parsed.minimumSeverity ?? "default"}; ${sonarPrFindings.length} postable.`);
     }
-    if (sonarPrFindings.length > 0) {
-        writeBrandedAnnotation("warning", `merged ${sonarPrFindings.length} SonarCloud PR inline finding(s) into the review (flag --include-pr-sonar-findings).`);
-    }
+    // (Defer the "merged N findings" annotation until AFTER preparePostedReview
+    // so the count reflects what actually posts, not just what passed the
+    // severity filter — preparePostedReview's position-validation may drop
+    // further findings whose line numbers don't appear in the diff.)
     const providerReview = sonarPrFindings.length > 0
         ? {
             ...provider.review,
@@ -15937,6 +15950,14 @@ async function runGithubLive(input) {
         secrets: [context.token],
     });
     const { postableComments: comments, body } = prepared;
+    // SonarCloud finding count in the postable set — accurate after position
+    // validation. Filter the postable comments to the ones that originated as
+    // SonarCloud findings (category === 'sonar') so the annotation matches
+    // what actually posts.
+    if (sonarPrFindings.length > 0) {
+        const postableSonarCount = comments.filter((comment) => comment.category === "sonar").length;
+        writeBrandedAnnotation("warning", `merged ${postableSonarCount} of ${sonarPrFindings.length} SonarCloud PR inline finding(s) into the review (flag --include-pr-sonar-findings; ${sonarPrFindings.length - postableSonarCount} dropped by position validation).`);
+    }
     const postableComments = comments.map((comment) => ({
         path: comment.path,
         line: comment.line,
