@@ -205,8 +205,12 @@ describe("escalateVerdictForNonEmptySeverityCounts", () => {
     expect(escalateVerdictForNonEmptySeverityCounts("DISCUSS", { low: 1 })).toBe("NEEDS_FIX");
   });
 
-  it("escalates unknown non-blocking verdicts to NEEDS_FIX when findings exist", () => {
-    expect(escalateVerdictForNonEmptySeverityCounts("MAYBE", { info: 1 })).toBe("NEEDS_FIX");
+  it("passes through unknown verdicts untouched even when findings exist (let verdict mappers handle)", () => {
+    expect(escalateVerdictForNonEmptySeverityCounts("MAYBE", { info: 1 })).toBe("MAYBE");
+  });
+
+  it("passes through non-canonical verdicts like LGTM_NIT untouched (info-only findings)", () => {
+    expect(escalateVerdictForNonEmptySeverityCounts("LGTM_NIT", { info: 1 })).toBe("LGTM_NIT");
   });
 
   it("passes through NEEDS_FIX untouched (handled by the inverse helper)", () => {

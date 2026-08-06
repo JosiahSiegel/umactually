@@ -87,7 +87,13 @@ export async function fetchSonarPrFindings(input: {
       severity: finding.severity,
       category: "sonar",
     });
-    if (findings.length >= MAX_SONAR_PR_FINDINGS) break;
+    if (findings.length >= MAX_SONAR_PR_FINDINGS) {
+      writeBrandedAnnotation(
+        "warning",
+        `SonarCloud PR comments truncated at ${MAX_SONAR_PR_FINDINGS}; additional findings were not imported. Increase MAX_SONAR_PR_FINDINGS or add pagination if this PR has more.`,
+      );
+      break;
+    }
   }
   return findings;
 }

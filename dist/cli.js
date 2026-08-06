@@ -6202,7 +6202,15 @@ function escalateVerdictForNonEmptySeverityCounts(verdict, severityCounts) {
     if (normalized === "NEEDS_FIX") {
         return verdict;
     }
-    if (totalSeverityCount(severityCounts) > 0) {
+    // Only escalate KNOWN non-blocking verdicts. Unknown verdicts pass
+    // through untouched so the verdict mappers (mapVerdictToAzureStatus,
+    // mapVerdictToGithubEvent) can apply their own safe defaults — same
+    // discipline as reconcileVerdictForEmptySeverityCounts above. This
+    // prevents a model emitting a coherent non-canonical verdict (e.g.
+    // "LGTM_NIT" against an info-severity comment) from being stamped to
+    // NEEDS_FIX just because counts are non-empty.
+    const KNOWN_NON_BLOCKING = new Set(["SHIP", "APPROVED", "COMMENT", "DISCUSS"]);
+    if (KNOWN_NON_BLOCKING.has(normalized) && totalSeverityCount(severityCounts) > 0) {
         return "NEEDS_FIX";
     }
     return verdict;
@@ -15768,8 +15776,10 @@ async function fetchSonarPrFindings(input) {
             severity: finding.severity,
             category: "sonar",
         });
-        if (findings.length >= MAX_SONAR_PR_FINDINGS)
+        if (findings.length >= MAX_SONAR_PR_FINDINGS) {
+            writeBrandedAnnotation("warning", `SonarCloud PR comments truncated at ${MAX_SONAR_PR_FINDINGS}; additional findings were not imported. Increase MAX_SONAR_PR_FINDINGS or add pagination if this PR has more.`);
             break;
+        }
     }
     return findings;
 }
