@@ -100,10 +100,15 @@ jobs:
             poll_count=$((poll_count + 1))
             STATUS_JSON=$(gh api \
               "repos/${GITHUB_REPOSITORY}/commits/${HEAD_SHA}/check-runs" \
-              --jq '.check_runs[] | select(.name == env.SONAR_CHECK_NAME) | {name, status, conclusion}')
-            STATUS=$(printf '%s' "${STATUS_JSON}" | jq -r '.status // "missing"' 2>/dev/null)
-            if [ "${STATUS}" = "completed" ]; then
+              --jq '[.check_runs[] | select(.name == env.SONAR_CHECK_NAME)] | .[0] // null')
+            if [ "${STATUS_JSON}" = "null" ] || [ -z "${STATUS_JSON}" ]; then
+              STATUS="missing"
+              CONCLUSION="unknown"
+            else
+              STATUS=$(printf '%s' "${STATUS_JSON}" | jq -r '.status // "missing"' 2>/dev/null)
               CONCLUSION=$(printf '%s' "${STATUS_JSON}" | jq -r '.conclusion // "unknown"' 2>/dev/null)
+            fi
+            if [ "${STATUS}" = "completed" ]; then
               echo "SonarCloud check completed after ${poll_count} poll(s); conclusion=${CONCLUSION}. Proceeding to self-review."
               exit 0
             fi
