@@ -9,7 +9,8 @@
 
 import { spawnSync } from "node:child_process";
 import { setTimeout as sleep } from "node:timers/promises";
-import { pathToFileURL } from "node:url";
+
+import { invokedDirectly } from "./lib/cli-shared.mjs";
 
 const REPO_ROOT = process.cwd();
 
@@ -175,18 +176,7 @@ async function main() {
 // Gate the script entrypoint so importing the module from a test (or
 // otherwise evaluating this file outside a direct invocation) does NOT
 // trigger a real `npm publish` against the registry.
-const invokedDirectly = (() => {
-  if (typeof process === "undefined") return false;
-  const entry = process.argv[1];
-  if (entry === undefined) return false;
-  try {
-    return import.meta.url === pathToFileURL(entry).href;
-  } catch {
-    return false;
-  }
-})();
-
-if (invokedDirectly) {
+if (invokedDirectly(import.meta.url)) {
   main().catch((err) => {
     process.stderr.write(`error: ${err.message}\n`);
     process.exit(1);

@@ -59,6 +59,7 @@ import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { MIN_RAW_BYTES } from "./release-size-limits.mjs";
+import { invokedDirectly } from "./lib/cli-shared.mjs";
 
 const EXPECTED_NODE_MAJOR = 25;
 const EXPECTED_NODE_MINOR = 6;
@@ -337,16 +338,7 @@ export async function main() {
   console.log(`\nAll ${targets.length} Windows target(s) built successfully in ${OUTDIR}/`);
 }
 
-const invokedDirectly = (() => {
-  if (typeof process.argv[1] !== "string") return false;
-  try {
-    return resolve(process.argv[1]) === fileURLToPath(import.meta.url);
-  } catch {
-    return false;
-  }
-})();
-
-if (invokedDirectly) {
+if (invokedDirectly(import.meta.url)) {
   main().catch((err) => {
     const message = err instanceof Error ? err.message : String(err);
     console.error(`\nbuild-sea-windows: ${message}`);

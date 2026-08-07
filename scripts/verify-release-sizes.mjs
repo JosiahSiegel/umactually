@@ -38,6 +38,7 @@ import { existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from "no
 import { dirname, isAbsolute, join, relative, resolve } from "node:path";
 
 import { MAX_RAW_BYTES, MIN_RAW_BYTES } from "./release-size-limits.mjs";
+import { invokedDirectly } from "./lib/cli-shared.mjs";
 
 // Re-exported for back-compat. The verifier itself reads
 // MIN_RAW_BYTES / MAX_RAW_BYTES from `./release-size-limits.mjs`
@@ -150,16 +151,7 @@ export function verifyReleaseSizes({ manifestPath, releaseDir, reportPath }) {
   return { targets: report.targets, failed };
 }
 
-const invokedDirectly = (() => {
-  if (typeof process.argv[1] !== "string") return false;
-  try {
-    return process.argv[1].endsWith("verify-release-sizes.mjs");
-  } catch {
-    return false;
-  }
-})();
-
-if (invokedDirectly) {
+if (invokedDirectly(import.meta.url)) {
   // CLI shape: `node scripts/verify-release-sizes.mjs --manifest <path>
   // --release-dir <dir> [--report <path>]`. The report path defaults to
   // `<release-dir>/internal/release-size-report.json` to match the

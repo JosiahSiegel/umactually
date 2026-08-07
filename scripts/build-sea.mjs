@@ -44,6 +44,7 @@ import { fileURLToPath } from "node:url";
 // harnesses that import build-sea.mjs under a different argv
 // (e.g. UMACTUALLY_TSDOWN_BIN tests).
 import { MIN_RAW_BYTES } from "./release-size-limits.mjs";
+import { invokedDirectly } from "./lib/cli-shared.mjs";
 
 const EXPECTED_NODE_MAJOR = 25;
 const EXPECTED_NODE_MINOR = 7;
@@ -342,16 +343,7 @@ export async function main(argv = process.argv.slice(2)) {
   console.log(`\nAll ${targets.length} target(s) built successfully in ${OUTDIR}/`);
 }
 
-const invokedDirectly = (() => {
-  if (typeof process.argv[1] !== "string") return false;
-  try {
-    return resolve(process.argv[1]) === fileURLToPath(import.meta.url);
-  } catch {
-    return false;
-  }
-})();
-
-if (invokedDirectly) {
+if (invokedDirectly(import.meta.url)) {
   main().catch((err) => {
     const message = err instanceof Error ? err.message : String(err);
     console.error(`\nbuild-sea: ${message}`);

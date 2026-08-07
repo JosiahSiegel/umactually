@@ -44,8 +44,9 @@ import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { copyFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
-import { fileURLToPath } from "node:url";
 import { spawnSync } from "node:child_process";
+
+import { invokedDirectly } from "./lib/cli-shared.mjs";
 
 function parseArgs(argv) {
   const out = {};
@@ -312,15 +313,6 @@ function main() {
   console.log(`  checksums.txt self-check: OK`);
 }
 
-const invokedDirectly = (() => {
-  if (typeof process.argv[1] !== "string") return false;
-  try {
-    return resolve(process.argv[1]) === fileURLToPath(import.meta.url);
-  } catch {
-    return false;
-  }
-})();
-
-if (invokedDirectly) {
+if (invokedDirectly(import.meta.url)) {
   main();
 }
