@@ -44,11 +44,10 @@ import { fileURLToPath } from "node:url";
 // harnesses that import build-sea.mjs under a different argv
 // (e.g. UMACTUALLY_TSDOWN_BIN tests).
 import { MIN_RAW_BYTES } from "./release-size-limits.mjs";
-import { invokedDirectly } from "./lib/cli-shared.mjs";
+import { assertNodeVersion, invokedDirectly, resolveTsdownCommand } from "./lib/cli-shared.mjs";
 
 const EXPECTED_NODE_MAJOR = 25;
 const EXPECTED_NODE_MINOR = 7;
-const SCRIPT_DETECT = /\.(mjs|cjs|js)$/i;
 const ENTRY_RELATIVE = "src/cli.ts";
 const OUTDIR_RELATIVE = "release";
 const RELEASE_TARGETS_RELATIVE = "scripts/release-targets.json";
@@ -66,70 +65,8 @@ function loadTargets() {
   return JSON.parse(raw);
 }
 
-function assertNodeVersion() {
-  const version = process.versions.node ?? "";
-  const match = /^(\d+)\.(\d+)\.(\d+)/.exec(version);
-  if (match === null) {
-    throw new Error(
-      `Node version parse failed: process.versions.node="${version}". ` +
-      `Expected >= ${EXPECTED_NODE_MAJOR}.${EXPECTED_NODE_MINOR}.0.`,
-    );
-  }
-  const major = Number(match[1]);
-  const minor = Number(match[2]);
-  if (
-    major < EXPECTED_NODE_MAJOR ||
-    (major === EXPECTED_NODE_MAJOR && minor < EXPECTED_NODE_MINOR)
-  ) {
-    throw new Error(
-      `Node version mismatch: expected >= ${EXPECTED_NODE_MAJOR}.${EXPECTED_NODE_MINOR}.0 ` +
-      `(for Node SEA --build-sea) but found ${version}. ` +
-      `Upgrade Node via 'nvm install ${EXPECTED_NODE_MAJOR}' or use 'fnm use' with the repo's .nvmrc.`,
-    );
-  }
-}
-
-function resolveTsdownCommand() {
-  const override = process.env["UMACTUALLY_TSDOWN_BIN"];
-  if (override !== undefined && override.length > 0) {
-    if (SCRIPT_DETECT.test(override)) {
-      return { command: process.execPath, prefixArgs: [override] };
-    }
-    return { command: override, prefixArgs: [] };
-  }
-  // Local install via `node_modules/.bin/tsdown`. npm creates a
-  // platform-specific shim here:
-  //   - Linux/macOS:  node_modules/.bin/tsdown          (executable file)
-  //   - Windows:      node_modules/.bin/tsdown.cmd      (cmd batch file)
-  //   - Windows:      node_modules/.bin/tsdown.ps1      (PowerShell shim)
-  // On Windows, spawnSync of the bare .bin/tsdown path fails with
-  // ENOENT because the file is .cmd (or .ps1), not the literal
-  // name. Resolve the actual shim by trying the three candidates
-  // in order; fall back to `npx tsdown` (which handles platform
-  // shims automatically) if none match.
-  const binDir = join(REPO_ROOT, "node_modules", ".bin");
-  const candidates = process.platform === "win32"
-    ? ["tsdown.cmd", "tsdown.ps1", "tsdown"]
-    : ["tsdown"];
-  for (const name of candidates) {
-    const path = join(binDir, name);
-    if (existsSync(path)) {
-      // .ps1 must go through PowerShell, not spawnSync directly.
-      if (name.endsWith(".ps1")) {
-        return {
-          command: "powershell",
-          prefixArgs: ["-NoProfile", "-ExecutionPolicy", "Bypass", "-File", path],
-        };
-      }
-      return { command: path, prefixArgs: [] };
-    }
-  }
-  // Last resort: `npx tsdown` defers to npm's shim resolution.
-  return { command: "npx", prefixArgs: ["--no-install", "tsdown"] };
-}
-
 function runTsdown(args, label) {
-  const { command, prefixArgs } = resolveTsdownCommand();
+  const { command, prefixArgs } = resolveTsdownCommand(REPO_ROOT);
   const fullArgs = [...prefixArgs, ...args];
   // Windows-specific: spawnSync of a .cmd batch file without
   // `shell: true` fails with EINVAL (Node refuses to execute a
@@ -296,7 +233,13 @@ function verifyOutput(target) {
 }
 
 export async function main(argv = process.argv.slice(2)) {
-  assertNodeVersion();
+  assertNodeVersion(
+    EXPECTED_NODE_MAJOR,
+    EXPECTED_NODE_MINOR,
+    "",
+    "Node SEA",
+    ` Upgrade Node via 'nvm install ${EXPECTED_NODE_MAJOR}' or use 'fnm use' with the repo's .nvmrc.`,
+  );
 
   const targets = loadTargets();
   const filter = argv[0];

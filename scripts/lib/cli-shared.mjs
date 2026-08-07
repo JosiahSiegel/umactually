@@ -17,6 +17,11 @@ import { existsSync, globSync, readFileSync } from "node:fs";
 import { isAbsolute, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
+// Regex used by resolveTsdownCommand() to detect when the
+// UMACTUALLY_TSDOWN_BIN override points at a Node-runnable script
+// (rather than a compiled binary).
+const TSDOWN_SCRIPT_DETECT = /\.(mjs|cjs|js)$/i;
+
 /**
  * True when the calling script is the entrypoint of the current `node`
  * invocation.
@@ -180,4 +185,109 @@ export function collectTargets(packageRoot, targets, skipDirs) {
     }
   }
   return [...found].sort();
+}
+
+/**
+ * Assert that the running Node version is at least `minMajor.minMinor`.
+ *
+ * Mirrors `assertNodeVersion()` in `scripts/build-sea.mjs` and
+ * `scripts/build-sea-windows.mjs`. The two originals differed ONLY in
+ * their error-message label (`"Node version mismatch"` vs.
+ * `"build-sea-windows: Node version mismatch"`), the inline feature
+ * label (`"Node SEA"` vs `"node"`), and the upgrade-hint sentence
+ * (Linux/macOS got the `nvm install` hint; Windows got nothing). The
+ * `errorLabel`, `featureLabel`, and `upgradeHint` parameters let each
+ * caller keep its own message byte-identical to before the extraction.
+ *
+ * The Windows-only platform gate (`process.platform !== "win32"` and
+ * `UMACTUALLY_ALLOW_NON_WINDOWS_BUILD`) is NOT included here — it
+ * belongs to the build-sea-windows script's specific surface, not to
+ * the shared Node-version check.
+ *
+ * @param {number} minMajor
+ * @param {number} minMinor
+ * @param {string} errorLabel  Prefix for the thrown error message
+ *   (e.g. `""` for the build-sea form, or `"build-sea-windows: "` for
+ *   the Windows form).
+ * @param {string} featureLabel  Inline label between the parenthesised
+ *   description (e.g. `"Node SEA"` or `"node"`).
+ * @param {string} upgradeHint  Optional trailing sentence appended to
+ *   the mismatch error (the Linux/macOS caller passes
+ *   `" Upgrade Node via 'nvm install 25' or use 'fnm use' with the repo's .nvmrc."`).
+ */
+export function assertNodeVersion(minMajor, minMinor, errorLabel, featureLabel, upgradeHint) {
+  const version = process.versions.node ?? "";
+  const match = /^(\d+)\.(\d+)\.(\d+)/.exec(version);
+  if (match === null) {
+    throw new Error(
+      `Node version parse failed: process.versions.node="${version}". ` +
+      `Expected >= ${minMajor}.${minMinor}.0.`,
+    );
+  }
+  const major = Number(match[1]);
+  const minor = Number(match[2]);
+  if (
+    major < minMajor ||
+    (major === minMajor && minor < minMinor)
+  ) {
+    throw new Error(
+      `${errorLabel}Node version mismatch: expected >= ${minMajor}.${minMinor}.0 ` +
+      `(for ${featureLabel} --build-sea) but found ${version}.${upgradeHint ?? ""}`,
+    );
+  }
+}
+
+/**
+ * Resolve the tsdown binary path. Returns `{ command, prefixArgs }`
+ * suitable for `spawnSync(command, [...prefixArgs, ...args])`.
+ *
+ * Honors the `UMACTUALLY_TSDOWN_BIN` test-seam env var (when set,
+ * points at either a Node-runnable script — `.mjs`/`.cjs`/`.js`, in
+ * which case it's invoked via `process.execPath` — or a compiled
+ * binary, in which case it's spawned directly). When unset, walks
+ * `node_modules/.bin/tsdown` candidates (`tsdown.cmd`, `tsdown.ps1`,
+ * `tsdown`) in the order appropriate for the current platform; falls
+ * back to `npx --no-install tsdown`.
+ *
+ * @param {string} repoRoot  Absolute path to the repo root
+ *   (i.e. the directory containing `node_modules`).
+ * @returns {{ command: string, prefixArgs: string[] }}
+ */
+export function resolveTsdownCommand(repoRoot) {
+  const override = process.env["UMACTUALLY_TSDOWN_BIN"];
+  if (override !== undefined && override.length > 0) {
+    if (TSDOWN_SCRIPT_DETECT.test(override)) {
+      return { command: process.execPath, prefixArgs: [override] };
+    }
+    return { command: override, prefixArgs: [] };
+  }
+  // Local install via `node_modules/.bin/tsdown`. npm creates a
+  // platform-specific shim here:
+  //   - Linux/macOS:  node_modules/.bin/tsdown          (executable file)
+  //   - Windows:      node_modules/.bin/tsdown.cmd      (cmd batch file)
+  //   - Windows:      node_modules/.bin/tsdown.ps1      (PowerShell shim)
+  // On Windows, spawnSync of the bare .bin/tsdown path fails with
+  // ENOENT because the file is .cmd (or .ps1), not the literal
+  // name. Resolve the actual shim by trying the three candidates
+  // in order; fall back to `npx tsdown` (which handles platform
+  // shims automatically) if none match.
+  const binDir = join(repoRoot, "node_modules", ".bin");
+  const candidates = process.platform === "win32"
+    ? ["tsdown.cmd", "tsdown.ps1", "tsdown"]
+    : ["tsdown"];
+  for (const name of candidates) {
+    const path = join(binDir, name);
+    if (existsSync(path)) {
+      // .ps1 must go through PowerShell, not spawnSync directly.
+      if (name.endsWith(".ps1")) {
+        return {
+          command: "powershell",
+          prefixArgs: ["-NoProfile", "-ExecutionPolicy", "Bypass", "-File", path],
+        };
+      }
+      return { command: path, prefixArgs: [] };
+    }
+  }
+  // Last resort: `npx tsdown` defers to npm's shim resolution.
+  return { command: "npx", prefixArgs: ["--no-install", "tsdown"] };
 }
