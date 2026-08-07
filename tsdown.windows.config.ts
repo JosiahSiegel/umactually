@@ -35,6 +35,20 @@ const PACKAGE_VERSION: string = (() => {
 
 export default defineConfig({
   entry: ["src/cli.ts"],
+  // Force these `@clack/*` + sisteransi packages into the Windows SEA blob.
+  // Without this, tsdown leaves them as bare `require("@clack/prompts")`
+  // calls in the embedder input, and Node 25.6.0's SEA embedder
+  // rejects them as if they were built-in module names (Windows builds
+  // use Node 25.6.0 because @tsdown/exe's tar-based download path is
+  // broken on Windows, so they fall back to `node --build-sea` directly).
+  // Mirrors the same fix in tsdown.config.ts for the Linux/macOS path.
+  noExternal: [
+    "@clack/prompts",
+    "@clack/core",
+    "sisteransi",
+    "fast-string-width",
+    "fast-wrap-ansi",
+  ],
   // v0.6.4: build a CJS bundle instead of ESM. Node 25.7.0's SEA
   // runtime has a bug loading .mjs (ESM) main files — the embedded
   // main is loaded as CJS even when the .mjs extension is used,
