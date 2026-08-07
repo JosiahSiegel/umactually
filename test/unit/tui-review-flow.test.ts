@@ -14,10 +14,23 @@ import { isCancel, password, select, stream, text } from "@clack/prompts";
 import { runStandalone } from "../../src/cli/standalone-run.js";
 import { runReviewFlow } from "../../src/cli/tui/flows/review.js";
 
-const setAnswers = (answers: readonly [string | symbol, ...(string | symbol)[]]): void => {
+// Throws when production code makes more select/text/password calls than
+// the test provided answers for. The previous helper used `answers[0]`
+// as a silent fallback, which masked bugs where the wizard gained an
+// extra prompt. Tests exercising the cancel-mid-flow branch mock
+// `isCancel` directly so they stop consuming answers at the right call.
+const setAnswers = (answers: readonly (string | symbol)[]): void => {
   let index = 0;
-  const fallback = answers[0];
-  const nextAnswer = (): string | symbol => answers[index++] ?? fallback;
+  const nextAnswer = (): string | symbol => {
+    const current = answers[index];
+    if (current === undefined) {
+      throw new Error(
+        `setAnswers: production code made more prompt calls than answers provided (consumed ${index}, provided ${answers.length})`,
+      );
+    }
+    index += 1;
+    return current;
+  };
   vi.mocked(select).mockImplementation(async () => nextAnswer());
   vi.mocked(text).mockImplementation(async () => nextAnswer());
   vi.mocked(password).mockImplementation(async () => nextAnswer());
@@ -46,14 +59,17 @@ describe("Run Review wizard", () => {
   });
 
   it("C: shows provider error and retry/menu choices", async () => {
-    setAnswers(["copilot", "model-x", "diff", "menu"]);
+    // provider, model, apiKey (no env var), diff source, retry/menu
+    setAnswers(["copilot", "model-x", "secret", "diff", "menu"]);
     vi.mocked(runStandalone).mockResolvedValue({ kind: "provider-error", exitCode: 1, message: "failed", sanitizedForLog: "failed" });
     await runReviewFlow();
     expect(stream.error).toHaveBeenCalledWith("failed");
   });
 
   it("D: returns successfully when cancelled mid-flow", async () => {
-    setAnswers(["cancelled"]);
+    // isCancel short-circuits on the first call so a single placeholder
+    // answer is sufficient.
+    setAnswers(["copilot"]);
     vi.mocked(isCancel).mockReturnValue(true);
     await expect(runReviewFlow()).resolves.toEqual({ exitCode: 0 });
   });
@@ -76,6 +92,9 @@ describe("Run Review wizard", () => {
   });
 
   it("G: retry restarts the wizard from provider", async () => {
+    // First pass: provider, model, apiKey, diff source → provider-error.
+    // Retry path prompts again: provider, model, apiKey, diff source,
+    // then the post-error retry/menu select ("menu").
     setAnswers(["copilot", "model-x", "secret", "diff", "retry", "copilot", "model-y", "secret-2", "diff", "menu"]);
     vi.mocked(runStandalone).mockResolvedValue({ kind: "provider-error", exitCode: 1, message: "failed", sanitizedForLog: "failed" });
     await runReviewFlow();

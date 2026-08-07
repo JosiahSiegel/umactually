@@ -34,10 +34,22 @@ function emptyParsedArgs(): ParsedCliArgs {
   return parseCliArgs([]);
 }
 
-function buildReviewData(review: LiveReview, parsed: ParsedCliArgs): ReviewData {
+function buildReviewData(
+  review: LiveReview,
+  parsed: ParsedCliArgs,
+  diffText: string = "",
+): ReviewData {
+  // `diffText` defaults to "" so existing callers that don't pass a diff
+  // (e.g. the legacy no-diff path or test mocks) keep working. When the
+  // wizard picks "Use git diff (cwd)", `showSuccess` reads the temp
+  // diff file produced by `resolveGitDiffPath()` and forwards its
+  // contents here — without that, every finding is classified as
+  // off-diff by `selectPostableComments`'s position index, and the
+  // review flow renders zero inline comments even when the model
+  // emitted perfectly valid findings.
   const postedComments = selectPostableComments({
     review,
-    diffText: "",
+    diffText,
     parsed,
     secrets: [],
   });
@@ -58,13 +70,17 @@ function buildReviewData(review: LiveReview, parsed: ParsedCliArgs): ReviewData 
   };
 }
 
-async function showSuccess(result: Extract<StandaloneRunResult, { kind: "ok" | "ok-no-diff" }>, parsed: ParsedCliArgs): Promise<void> {
+async function showSuccess(
+  result: Extract<StandaloneRunResult, { kind: "ok" | "ok-no-diff" }>,
+  parsed: ParsedCliArgs,
+  diffText: string = "",
+): Promise<void> {
   if (result.kind === "ok-no-diff") {
     await stream.message([result.note]);
     return;
   }
   const artifact = JSON.parse(await readFile(result.artifactPath, "utf8")) as { review: LiveReview };
-  await stream.message([renderSummary(buildReviewData(artifact.review, parsed))]);
+  await stream.message([renderSummary(buildReviewData(artifact.review, parsed, diffText))]);
 }
 
 /**
@@ -135,18 +151,23 @@ export async function runReviewFlow(): Promise<{ exitCode: 0 }> {
       if (source === "diff") {
         tempDiffPath = diffPath;
       }
-      const parsed = emptyParsedArgs();
-      Object.assign(parsed, {
-        provider,
+      // Read the diff text so the post-review summary panel can route
+      // findings through selectPostableComments's position index.
+      // Passing "" would classify every comment as off-diff and render
+      // zero inline comments regardless of what the model produced.
+      const diffText: string = diffPath === null ? "" : await readFile(diffPath, "utf8");
+      const parsed: ParsedCliArgs = {
+        ...emptyParsedArgs(),
+        provider: provider as ParsedCliArgs["provider"],
         apiUrl,
-        model,
+        model: model as ParsedCliArgs["model"],
         apiKey: apiKeyLocal,
         diffPath,
         files: source === "files" ? "." : null,
-      });
+      };
       const result = await runStandalone({ parsed, cwd: process.cwd(), env: process.env });
       if (result.kind === "ok" || result.kind === "ok-no-diff") {
-        await showSuccess(result, parsed);
+        await showSuccess(result, parsed, diffText);
         return { exitCode: 0 };
       }
       stream.error(result.message);
