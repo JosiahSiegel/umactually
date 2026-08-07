@@ -359,29 +359,23 @@ function extractJsonFieldByScanning<S extends JsonFieldShape>(
     return null;
   }
   let i = content.indexOf(":", start) + 1;
-  while (i < content.length && isHorizontalWhitespace(content[i] ?? "")) {
-    i++;
-  }
+  i = skipWhitespace(content, i);
   const ch = content[i];
   if (ch === undefined) {
     return null;
   }
-  if (ch === '"') {
-    const end = readStringLiteral(content, i);
-    if (end === -1) {
-      return null;
-    }
-    const value = decodeStringLiteral(content.slice(i + 1, end));
+  const quoted = readQuotedStringAt(content, i);
+  if (quoted !== null) {
     if (shape === "string") {
-      return value as ShapeReturn<S>;
+      return quoted.value as ShapeReturn<S>;
     }
     if (shape === "string|string[]") {
-      return [value] as ShapeReturn<S>;
+      return [quoted.value] as ShapeReturn<S>;
     }
     // Single-string form is the npm `"bin": "path/to/script"` shorthand.
     // Surface it as one entry tagged with "(binary) ->" so callers
     // can disambiguate from the map form (which uses "name -> value").
-    return [`(binary) -> ${value}`] as ShapeReturn<S>;
+    return [`(binary) -> ${quoted.value}`] as ShapeReturn<S>;
   }
   if (ch === "[") {
     if (shape !== "string|string[]") {
@@ -402,23 +396,17 @@ function scanStringArray(content: string, openIndex: number): string[] | null {
   let i = openIndex;
   const out: string[] = [];
   while (i < content.length) {
-    const ch = content[i];
-    if (ch === undefined) {
-      return null;
-    }
+    const ch = content[i] ?? "";
     if (ch === "]") {
       return out;
     }
     if (ch === '"') {
-      const end = readStringLiteral(content, i);
-      if (end === -1) {
+      const quoted = readQuotedStringAt(content, i);
+      if (quoted === null) {
         return null;
       }
-      out.push(decodeStringLiteral(content.slice(i + 1, end)));
-      i = end + 1;
-      while (i < content.length && isArrayElementSeparator(content[i] ?? "")) {
-        i++;
-      }
+      out.push(quoted.value);
+      i = skipWhitespaceAndComma(content, quoted.end + 1);
       continue;
     }
     i++;
@@ -430,43 +418,26 @@ function scanStringMap(content: string, openIndex: number): string[] | null {
   let i = openIndex;
   const out: string[] = [];
   while (i < content.length) {
-    const ch = content[i];
-    if (ch === undefined) {
-      return null;
-    }
+    const ch = content[i] ?? "";
     if (ch === "}") {
       return out;
     }
     if (ch === '"') {
-      const keyEnd = readStringLiteral(content, i);
-      if (keyEnd === -1) {
+      const keyQ = readQuotedStringAt(content, i);
+      if (keyQ === null) {
         return null;
       }
-      const name = decodeStringLiteral(content.slice(i + 1, keyEnd));
-      let j = keyEnd + 1;
-      while (j < content.length && isHorizontalWhitespace(content[j] ?? "")) {
-        j++;
-      }
+      let j = skipWhitespace(content, keyQ.end + 1);
       if (content[j] !== ":") {
         return null;
       }
-      j++;
-      while (j < content.length && isHorizontalWhitespace(content[j] ?? "")) {
-        j++;
-      }
-      if (content[j] !== '"') {
+      j = skipWhitespace(content, j + 1);
+      const valQ = readQuotedStringAt(content, j);
+      if (valQ === null) {
         return null;
       }
-      const valEnd = readStringLiteral(content, j);
-      if (valEnd === -1) {
-        return null;
-      }
-      const value = decodeStringLiteral(content.slice(j + 1, valEnd));
-      out.push(`${name} -> ${value}`);
-      i = valEnd + 1;
-      while (i < content.length && isArrayElementSeparator(content[i] ?? "")) {
-        i++;
-      }
+      out.push(`${keyQ.value} -> ${valQ.value}`);
+      i = skipWhitespaceAndComma(content, valQ.end + 1);
       continue;
     }
     i++;
@@ -482,6 +453,57 @@ function isArrayElementSeparator(ch: string): boolean {
   return (
     ch === " " || ch === "\t" || ch === "\n" || ch === "\r" || ch === ","
   );
+}
+
+/**
+ * Advance `i` past any `/\s/u` characters in `content`, starting at
+ * `i`. Returns the new index. If `i` is already at end-of-content
+ * or at a non-whitespace byte, returns `i` unchanged.
+ *
+ * One of three pure scanner-scaffolding primitives (the others are
+ * `skipWhitespaceAndComma` and `readQuotedStringAt`) extracted so the
+ * three scanners above can stay declarative instead of inlining the
+ * same `while` / `readStringLiteral` + `decode` pattern five times.
+ */
+function skipWhitespace(content: string, i: number): number {
+  let j = i;
+  while (j < content.length && isHorizontalWhitespace(content[j] ?? "")) {
+    j++;
+  }
+  return j;
+}
+
+/**
+ * Same as `skipWhitespace` but also skips `,`. Used to advance past
+ * the separator after an array / map element.
+ */
+function skipWhitespaceAndComma(content: string, i: number): number {
+  let j = i;
+  while (j < content.length && isArrayElementSeparator(content[j] ?? "")) {
+    j++;
+  }
+  return j;
+}
+
+/**
+ * If `content[i]` is a `"`, read the JSON string literal that starts
+ * at `i`, decode its body, and return `{ value, end }` where `end` is
+ * the index of the closing `"`. Returns `null` if `content[i] !== '"'`
+ * (caller is not at a string literal) or if the literal is
+ * unterminated (`readStringLiteral` returned `-1`).
+ */
+function readQuotedStringAt(
+  content: string,
+  i: number,
+): { readonly value: string; readonly end: number } | null {
+  if (content[i] !== '"') {
+    return null;
+  }
+  const end = readStringLiteral(content, i);
+  if (end === -1) {
+    return null;
+  }
+  return { value: decodeStringLiteral(content.slice(i + 1, end)), end };
 }
 
 /**
