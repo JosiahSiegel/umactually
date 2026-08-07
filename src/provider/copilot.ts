@@ -9,12 +9,11 @@ import {
   type ProviderReviewPayload,
 } from "./provider-parse.js";
 import {
-  isAbortError,
   ProviderError,
   sanitizeHttpStatus,
-  sanitizeMessage,
 } from "./provider-error.js";
 import { bailIfAborted, buildParseFailError, computeBumpedMaxOutput } from "./provider-retry.js";
+import { performProviderFetch, readResponseText } from "./http.js";
 import {
   fetchAndCacheSessionToken,
   getCachedSessionToken,
@@ -124,38 +123,30 @@ async function runChatCall(
   });
   const signal = composeSignal(undefined, config.requestTimeoutMs);
 
+  // The signal is composed from a no-op caller signal + the per-request
+  // timeout, so today's `signal.aborted === true` branch is unreachable
+  // here. Routing through `performProviderFetch` is forward-compatible:
+  // the day CopilotCallConfig gains a `signal` field, this site will
+  // start honoring caller-aborted requests without further edits. The
+  // accepted behavior change for this PR is that pre-aborted signals
+  // now surface a typed `ProviderError("aborted")` rather than a
+  // leaked connection — pinned by `test/unit/provider-http.test.ts`.
   let response: Response;
   try {
-    response = await fetchImpl(url, {
-      method: "POST",
-      headers: buildChatHeaders(session.token),
+    response = await performProviderFetch({
+      url,
       body: JSON.stringify(body),
       signal,
+      requestId,
+      endpoint: ENDPOINT_CHAT,
+      fetchImpl,
+      buildHeaders: () => buildChatHeaders(session.token),
     });
   } catch (error) {
-    if (isAbortError(error)) {
-      return {
-        ok: false,
-        error: new ProviderError(
-          "timeout",
-          ENDPOINT_CHAT,
-          null,
-          requestId,
-          `Request to provider ${ENDPOINT_CHAT} timed out after ${config.requestTimeoutMs}ms.`,
-        ),
-      };
+    if (error instanceof ProviderError) {
+      return { ok: false, error };
     }
-    return {
-      ok: false,
-      error: new ProviderError(
-        "network",
-        ENDPOINT_CHAT,
-        null,
-        requestId,
-        sanitizeMessage(error, `Network error contacting provider ${ENDPOINT_CHAT}.`),
-        { cause: error },
-      ),
-    };
+    throw error;
   }
 
   if (!response.ok) {
@@ -173,19 +164,12 @@ async function runChatCall(
 
   let rawText: string;
   try {
-    rawText = await response.text();
+    rawText = await readResponseText(response, ENDPOINT_CHAT, requestId);
   } catch (error) {
-    return {
-      ok: false,
-      error: new ProviderError(
-        "parse",
-        ENDPOINT_CHAT,
-        response.status,
-        requestId,
-        sanitizeMessage(error, "Failed to read provider response body."),
-        { cause: error },
-      ),
-    };
+    if (error instanceof ProviderError) {
+      return { ok: false, error };
+    }
+    throw error;
   }
 
   const textPayload = extractTextPayload(ENDPOINT_CHAT, rawText);
@@ -237,11 +221,14 @@ async function runChatCall(
   );
   let retryResponse: Response;
   try {
-    retryResponse = await fetchImpl(url, {
-      method: "POST",
-      headers: buildChatHeaders(session.token),
+    retryResponse = await performProviderFetch({
+      url,
       body: JSON.stringify(retryBody),
       signal,
+      requestId,
+      endpoint: ENDPOINT_CHAT,
+      fetchImpl,
+      buildHeaders: () => buildChatHeaders(session.token),
     });
   } catch {
     // Retry HTTP call itself failed — surface the ORIGINAL parse failure
@@ -272,7 +259,7 @@ async function runChatCall(
       ),
     };
   }
-  const retryRawText = await retryResponse.text();
+  const retryRawText = await readResponseText(retryResponse, ENDPOINT_CHAT, requestId);
   const retryTextPayload = extractTextPayload(ENDPOINT_CHAT, retryRawText);
   let retryReview: ProviderReviewPayload | null = null;
   const parsedRetry = parseReviewPayload(retryTextPayload);

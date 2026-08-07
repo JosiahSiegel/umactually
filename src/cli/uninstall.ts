@@ -202,6 +202,8 @@ export {
   type FsAdapter,
 } from "../util/fs-atomic.js";
 
+import { formatCheckLines } from "../util/check-format.js";
+
 export function parseUninstallArgs(argv: readonly string[]): {
   mode: UninstallMode;
   errors: readonly string[];
@@ -699,11 +701,7 @@ export const UNINSTALL_HELP_TEXT = [
 ].join("\n");
 
 export function formatUninstallHuman(result: UninstallResult): string {
-  const lines = result.checks.map((c) => {
-    const hint = c.hint === undefined ? "" : `\n  hint: ${c.hint}`;
-    return `${c.status.toUpperCase().padEnd(4)} ${c.id}: ${c.message}${hint}`;
-  });
-  return `${lines.join("\n")}\n`;
+  return formatCheckLines(result.checks);
 }
 
 export function formatUninstallJson(result: UninstallResult, mode: UninstallMode, execPath: string): string {

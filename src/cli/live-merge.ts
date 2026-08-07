@@ -61,108 +61,147 @@ export type MergeOptions = {
  * chunk returned a parse-fail fallback).
  */
 /**
- * Aggregate the per-chunk verified-facts filter results into a single
- * result for the merged outcome. Concatenates kept/downgraded lists
- * across chunks and emits global indices.
+ * Generic concat-aggregator for per-chunk filter results (verified-
+ * facts and confidence). Walks each outcome in order, concatenates
+ * `kept` and `downgraded`, and stamps a `globalIndex` onto every
+ * `reasons[]` entry that points at the entry's slot in the merged
+ * kept+downgraded array.
  *
- * **Index semantics**: the `index` on each `downgradeReasons` entry
- * points into the AGGREGATED kept+downgraded arrays (in that
- * concatenation order), NOT into the post-dedup/post-sort/
- * post-truncate `review.comments` array that the operator sees in
- * the final review body. The dedup + sort + truncate step in
- * `mergeReviewResults` does not remap the indices. Callers that
- * want to correlate a downgrade reason back to a specific finding
+ * The per-chunk "extract" is delegated to a `derive` callback so the
+ * generic only owns the outer loop + index bookkeeping; each filter's
+ * per-record shape (verified-facts uses `{ index, reason: string }`,
+ * confidence uses `{ index, reason: ConfidenceFilterReason, explanation }`)
+ * lives in its own derive callback.
+ *
+ * **Index semantics** (load-bearing invariant — pinned by
+ * `test/unit/live-merge.test.ts` MERGE-CONFIDENCE / MERGE-FACTSAGG):
+ * the `index` on each `reasons` entry points into the AGGREGATED
+ * kept+downgraded arrays in concatenation order (kept first, then
+ * downgraded, in the order chunks were fed to the merge), NOT into
+ * the post-dedup/post-sort/post-truncate `review.comments` array
+ * the operator sees in the final review body. The dedup + sort +
+ * truncate step in `mergeReviewResults` does not remap the indices.
+ * Callers that want to correlate a reason back to a specific finding
  * MUST use `(path, line)` — the index is an internal aid for the
  * audit artifact's order, not a stable handle into the visible
- * review. Pinned by `test/unit/live-merge.test.ts` (the
- * MERGE-CONFIDENCE / MERGE-FACTSAGG test cases).
- */
-function aggregateVerifiedFactsFilter(
-  outcomes: readonly LiveProviderOutcome[],
-): import("./verify-findings.js").VerifiedFactsFilterResult {
-  const kept: LiveReviewComment[] = [];
-  const downgraded: LiveReviewComment[] = [];
-  const downgradeReasons: { index: number; reason: string }[] = [];
-  let globalIndex = 0;
-  for (const o of outcomes) {
-    for (const c of o.verifiedFactsFilter.kept) {
-      kept.push(c);
-      globalIndex += 1;
-    }
-    for (let i = 0; i < o.verifiedFactsFilter.downgraded.length; i += 1) {
-      const c = o.verifiedFactsFilter.downgraded[i];
-      const reason = o.verifiedFactsFilter.downgradeReasons[i]?.reason ?? "";
-      if (c === undefined) {
-        continue;
-      }
-      downgraded.push(c);
-      downgradeReasons.push({ index: globalIndex, reason });
-      globalIndex += 1;
-    }
-  }
-  return { kept, downgraded, downgradeReasons };
-}
-
-/**
- * Aggregate the per-chunk confidence-filter results. Mirrors the
- * verified-facts aggregation above so the merged outcome's
- * confidenceFilter field has the same shape as any single-chunk
- * outcome's confidenceFilter.
+ * review.
  *
- * **Index semantics** (same as `aggregateVerifiedFactsFilter`):
- * `reasons[].index` points into the aggregated kept+downgraded
- * arrays in concatenation order, NOT into the post-dedup/
- * post-sort/post-truncate `review.comments` array. Callers
- * correlating a reason to a finding must use `(path, line)`.
+ * Why this is not a stable handle: `review.comments` is deduped by
+ * `(path, line)` keeping the highest-severity occurrence (so two
+ * chunks reporting the same anchor produce ONE entry), sorted by
+ * severity desc → path asc → line asc, then truncated to
+ * `maxComments` (default 50). None of those operations preserve the
+ * pre-merge order, so the audit artifact's `reasons[].index` is only
+ * meaningful inside the aggregated kept+downgraded arrays — not
+ * against `review.comments[i]`.
+ *
+ * `T` is the per-record reason shape; its `index` field is what the
+ * generic overwrites as it walks.
  */
-function aggregateConfidenceFilter(
+function aggregateMergeFilter<T extends { index: number }>(
   outcomes: readonly LiveProviderOutcome[],
-): import("../review/filter-confidence.js").ConfidenceFilterResult {
+  derive: (outcome: LiveProviderOutcome) => {
+    readonly kept: readonly LiveReviewComment[];
+    readonly downgraded: readonly LiveReviewComment[];
+    readonly reasons: readonly T[];
+  },
+): { kept: LiveReviewComment[]; downgraded: LiveReviewComment[]; reasons: T[] } {
   const kept: LiveReviewComment[] = [];
   const downgraded: LiveReviewComment[] = [];
-  const reasons: { index: number; reason: import("../review/filter-confidence.js").ConfidenceFilterReason; readonly explanation: string }[] = [];
+  const reasons: T[] = [];
   let globalIndex = 0;
   for (const o of outcomes) {
-    if (o.confidenceFilter === undefined) {
-      // Legacy / older outcomes (simulate-findings path, fixtures,
-      // and outcomes from before the confidence filter was wired
-      // in `applyVerifyFilter`) do not carry a `confidenceFilter`.
-      // The most defensible default is to treat their already-post-
-      // verified-facts `review.comments` as confidence-kept. The
-      // upstream contract is: by the time an outcome is passed
-      // here, `o.review.comments` is the POST-VERIFIED-FACTS list
-      // (verified-facts drops the contradicted findings, but the
-      // confidence-filter pass had not run yet for legacy
-      // outcomes). So this is NOT a double-count of
-      // `verifiedFactsFilter.kept` — it's the next step in the
-      // chain that legacy outcomes just happen to skip. The
-      // audit-artifact count for the legacy path will therefore
-      // match `review.comments.length` (the post-merge list),
-      // not `verifiedFactsFilter.kept.length`. Pinned by
-      // `test/unit/live-merge.test.ts` MERGE-CONFIDENCE legacy
-      // compat case.
-      for (const c of o.review.comments) {
-        kept.push(c);
-        globalIndex += 1;
-      }
-      continue;
-    }
-    for (const c of o.confidenceFilter.kept) {
+    const slice = derive(o);
+    for (const c of slice.kept) {
       kept.push(c);
       globalIndex += 1;
     }
-    for (let i = 0; i < o.confidenceFilter.downgraded.length; i += 1) {
-      const c = o.confidenceFilter.downgraded[i];
-      const reasonRecord = o.confidenceFilter.reasons[i];
+    for (let i = 0; i < slice.downgraded.length; i += 1) {
+      const c = slice.downgraded[i];
+      const reasonRecord = slice.reasons[i];
       if (c === undefined || reasonRecord === undefined) {
         continue;
       }
       downgraded.push(c);
-      reasons.push({ index: globalIndex, reason: reasonRecord.reason, explanation: reasonRecord.explanation });
+      reasons.push({ ...reasonRecord, index: globalIndex });
       globalIndex += 1;
     }
   }
   return { kept, downgraded, reasons };
+}
+
+/**
+ * Aggregate the per-chunk verified-facts filter results into a
+ * single result for the merged outcome. Concatenates kept/
+ * downgraded lists across chunks and emits global indices.
+ *
+ * See `aggregateMergeFilter` for the index-stability contract —
+ * the same invariant applies here.
+ */
+function aggregateVerifiedFactsFilter(
+  outcomes: readonly LiveProviderOutcome[],
+): import("./verify-findings.js").VerifiedFactsFilterResult {
+  const merged = aggregateMergeFilter<{ index: number; reason: string }>(outcomes, (o) => ({
+    kept: o.verifiedFactsFilter.kept,
+    downgraded: o.verifiedFactsFilter.downgraded,
+    reasons: o.verifiedFactsFilter.downgradeReasons,
+  }));
+  return {
+    kept: merged.kept,
+    downgraded: merged.downgraded,
+    downgradeReasons: merged.reasons,
+  };
+}
+
+/**
+ * Aggregate the per-chunk confidence-filter results. Mirrors the
+ * verified-facts aggregation so the merged outcome's
+ * confidenceFilter field has the same shape as any single-chunk
+ * outcome's confidenceFilter.
+ *
+ * Legacy compatibility: when an outcome lacks `confidenceFilter`
+ * (simulate-findings path, fixtures, and outcomes from before the
+ * confidence filter was wired in `applyVerifyFilter`), we treat
+ * its already-post-verified-facts `review.comments` as confidence-
+ * kept. The upstream contract is: by the time an outcome is passed
+ * here, `o.review.comments` is the POST-VERIFIED-FACTS list
+ * (verified-facts drops the contradicted findings, but the
+ * confidence-filter pass had not run yet for legacy outcomes). So
+ * this is NOT a double-count of `verifiedFactsFilter.kept` — it's
+ * the next step in the chain that legacy outcomes just happen to
+ * skip. The audit-artifact count for the legacy path will therefore
+ * match `review.comments.length` (the post-merge list), not
+ * `verifiedFactsFilter.kept.length`. Pinned by
+ * `test/unit/live-merge.test.ts` MERGE-CONFIDENCE legacy compat
+ * case.
+ *
+ * See `aggregateMergeFilter` for the index-stability contract.
+ */
+function aggregateConfidenceFilter(
+  outcomes: readonly LiveProviderOutcome[],
+): import("../review/filter-confidence.js").ConfidenceFilterResult {
+  return aggregateMergeFilter<{ index: number; reason: import("../review/filter-confidence.js").ConfidenceFilterReason; readonly explanation: string }>(
+    outcomes,
+    (o) => {
+      if (o.confidenceFilter === undefined) {
+        // Legacy: synthesize a "kept-only" slice where every
+        // post-verified-facts comment is treated as confidence-kept.
+        // Reasons are intentionally absent — there is no per-chunk
+        // downgrade to attribute on the legacy path.
+        const keptComments = o.review.comments;
+        return {
+          kept: keptComments,
+          downgraded: [],
+          reasons: [],
+        };
+      }
+      return {
+        kept: o.confidenceFilter.kept,
+        downgraded: o.confidenceFilter.downgraded,
+        reasons: o.confidenceFilter.reasons,
+      };
+    },
+  );
 }
 
 export function mergeReviewResults(

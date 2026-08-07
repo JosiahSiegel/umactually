@@ -19,7 +19,8 @@
 
 import { readFileSync, writeFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
-import { fileURLToPath } from "node:url";
+
+import { invokedDirectly } from "./lib/cli-shared.mjs";
 
 function args(argv) {
   const out = {};
@@ -66,16 +67,7 @@ function main() {
   console.log(`write-filtered-manifest: wrote ${filtered.length}/${parsed.length} targets to ${outputPath}`);
 }
 
-const invokedDirectly = (() => {
-  if (typeof process.argv[1] !== "string") return false;
-  try {
-    return resolve(process.argv[1]) === fileURLToPath(import.meta.url);
-  } catch {
-    return false;
-  }
-})();
-
-if (invokedDirectly) {
+if (invokedDirectly(import.meta.url)) {
   try {
     main();
   } catch (err) {

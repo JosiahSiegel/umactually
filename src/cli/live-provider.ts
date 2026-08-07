@@ -186,13 +186,14 @@ export async function requestLiveReview(input: {
     },
     providerName: string,
     rawText: string,
+    maxOutputTokens: number | null,
   ): LiveProviderOutcome {
     const review = buildMalformedProviderFallback({
       provider: providerName,
       modelId,
       rawText,
       secrets: [providerApiKey, input.platformToken],
-      ...parseFailureReasonFromProviderError(result.error, input.parsed.maxOutputTokens),
+      ...parseFailureReasonFromProviderError(result.error, maxOutputTokens),
     });
     return withParseWarnings({
       review,
@@ -206,33 +207,29 @@ export async function requestLiveReview(input: {
 
   try {
     if (input.parsed.provider === "copilot") {
-      const result = await runCopilotRequest({
-        githubToken: providerApiKey,
-        apiBase: resolveField(
-          input.parsed.githubApiBase,
-          input.env[ENV_KEYS.UMACTUALLY_GITHUB_API_BASE],
-          DEFAULT_GITHUB_API_BASE,
-        ),
-        system: prompts.system,
-        user: prompts.user,
-        model: modelId,
-        requestTimeoutMs: readRequestTimeoutMs(input.parsed),
-        ...(input.parsed.maxOutputTokens !== null ? { maxOutputTokens: input.parsed.maxOutputTokens } : {}),
-        ...(input.parsed.effort !== null ? { reasoningEffort: input.parsed.effort } : {}),
-        ...(responseFormat !== undefined ? { responseFormat } : {}),
-        fetchImpl: input.fetchImpl as typeof fetch,
-      });
-      if (result.ok) {
-        return handleSuccess(result, COPILOT_PROVIDER_NAME);
-      }
-      if (result.error.code === "parse") {
-        return handleParse(result, COPILOT_PROVIDER_NAME, result.error.rawText ?? "");
-      }
-      if (result.error.code === "provider_error") {
-        const details = result.error.providerErrorDetails;
-        throw new LiveReviewError("PROVIDER_ERROR", details?.message ?? result.error.message, { cause: result.error });
-      }
-      throw new LiveReviewError("PROVIDER_REQUEST_FAILED", result.error.message, { cause: result.error });
+      const result = await runCopilotRequest(
+        buildProviderRequestConfig({
+          protocol: "copilot",
+          parsed: input.parsed,
+          env: input.env,
+          modelId,
+          prompts,
+          fetchImpl: input.fetchImpl,
+          responseFormat,
+          providerApiKey,
+          githubApiBase: resolveField(
+            input.parsed.githubApiBase,
+            input.env[ENV_KEYS.UMACTUALLY_GITHUB_API_BASE],
+            DEFAULT_GITHUB_API_BASE,
+          ),
+        }),
+      );
+      return dispatchProviderResult(
+        result,
+        COPILOT_PROVIDER_NAME,
+        input.parsed.maxOutputTokens,
+        { handleSuccess, handleParse },
+      );
     }
 
     if (input.parsed.provider === "anthropic") {
@@ -261,17 +258,19 @@ export async function requestLiveReview(input: {
         input.env[ENV_KEYS.UMACTUALLY_API_URL],
         DEFAULT_ANTHROPIC_URL,
       );
-      let result = await runAnthropicRequest({
-        baseUrl: providerUrl,
-        apiKey: providerApiKey,
-        model: modelId,
-        system: prompts.system,
-        user: prompts.user,
-        requestTimeoutMs: readRequestTimeoutMs(input.parsed),
-        ...(input.parsed.maxOutputTokens !== null ? { maxOutputTokens: input.parsed.maxOutputTokens } : {}),
-        ...(input.parsed.effort !== null ? { reasoningEffort: input.parsed.effort } : {}),
-        fetchImpl: input.fetchImpl,
-      });
+      let result = await runAnthropicRequest(
+        buildProviderRequestConfig({
+          protocol: "anthropic",
+          parsed: input.parsed,
+          env: input.env,
+          modelId,
+          prompts,
+          fetchImpl: input.fetchImpl,
+          responseFormat,
+          providerApiKey,
+          baseUrl: providerUrl,
+        }),
+      );
       if (!result.ok) {
         // Cross-protocol fallback to the OpenAI client at the same URL.
         // If the fallback also fails, surface the original anthropic error
@@ -293,19 +292,12 @@ export async function requestLiveReview(input: {
           result = fallback;
         }
       }
-      if (result.ok) {
-        const providerName = providerNameForEndpoint(result.endpoint);
-        return handleSuccess(result, providerName);
-      }
-      if (result.error.code === "parse") {
-        const providerName = providerNameForEndpoint(result.error.endpoint);
-        return handleParse(result, providerName, result.error.rawText ?? "");
-      }
-      if (result.error.code === "provider_error") {
-        const details = result.error.providerErrorDetails;
-        throw new LiveReviewError("PROVIDER_ERROR", details?.message ?? result.error.message, { cause: result.error });
-      }
-      throw new LiveReviewError("PROVIDER_REQUEST_FAILED", result.error.message, { cause: result.error });
+      return dispatchProviderResult(
+        result,
+        providerNameForEndpoint(result.ok ? result.endpoint : result.error.endpoint),
+        input.parsed.maxOutputTokens,
+        { handleSuccess, handleParse },
+      );
     }
 
     const providerUrl = requireLiveConfig(
@@ -341,30 +333,33 @@ export async function requestLiveReview(input: {
 
     let result: ProviderCallResult | AnthropicProviderCallResult;
     if (useAnthropicProtocol) {
-      result = await runAnthropicRequest({
-        baseUrl: providerUrl,
-        apiKey: providerApiKey,
-        model: modelId,
-        system: prompts.system,
-        user: prompts.user,
-        requestTimeoutMs: readRequestTimeoutMs(input.parsed),
-        ...(input.parsed.maxOutputTokens !== null ? { maxOutputTokens: input.parsed.maxOutputTokens } : {}),
-        ...(input.parsed.effort !== null ? { reasoningEffort: input.parsed.effort } : {}),
-        fetchImpl: input.fetchImpl,
-      });
+      result = await runAnthropicRequest(
+        buildProviderRequestConfig({
+          protocol: "anthropic",
+          parsed: input.parsed,
+          env: input.env,
+          modelId,
+          prompts,
+          fetchImpl: input.fetchImpl,
+          responseFormat,
+          providerApiKey,
+          baseUrl: providerUrl,
+        }),
+      );
     } else {
-      result = await runProviderRequest({
-        baseUrl: providerUrl,
-        apiKey: providerApiKey,
-        model: modelId,
-        system: prompts.system,
-        user: prompts.user,
-        requestTimeoutMs: readRequestTimeoutMs(input.parsed),
-        ...(input.parsed.maxOutputTokens !== null ? { maxOutputTokens: input.parsed.maxOutputTokens } : {}),
-        ...(input.parsed.effort !== null ? { reasoningEffort: input.parsed.effort } : {}),
-        ...(responseFormat !== undefined ? { responseFormat } : {}),
-        fetchImpl: input.fetchImpl,
-      });
+      result = await runProviderRequest(
+        buildProviderRequestConfig({
+          protocol: "openai",
+          parsed: input.parsed,
+          env: input.env,
+          modelId,
+          prompts,
+          fetchImpl: input.fetchImpl,
+          responseFormat,
+          providerApiKey,
+          baseUrl: providerUrl,
+        }),
+      );
     }
 
     if (!result.ok) {
@@ -395,28 +390,12 @@ export async function requestLiveReview(input: {
       }
     }
 
-    if (result.ok) {
-      const providerName = providerNameForEndpoint(result.endpoint);
-      return handleSuccess(result, providerName);
-    }
-
-    if (result.error.code === "parse") {
-      const providerName = providerNameForEndpoint(result.error.endpoint);
-      return handleParse(result, providerName, result.error.rawText ?? "");
-    }
-    // Provider errors (router misconfig, no providers configured,
-    // invalid API key, etc.) are NOT parse failures and must NOT
-    // be posted as a COMMENT review. Hard-fail so CI sees the error.
-    if (result.error.code === "provider_error") {
-      const details = result.error.providerErrorDetails;
-      throw new LiveReviewError(
-        "PROVIDER_ERROR",
-        details?.message ?? result.error.message,
-        { cause: result.error },
-      );
-    }
-
-    throw new LiveReviewError("PROVIDER_REQUEST_FAILED", result.error.message, { cause: result.error });
+    return dispatchProviderResult(
+      result,
+      providerNameForEndpoint(result.ok ? result.endpoint : result.error.endpoint),
+      input.parsed.maxOutputTokens,
+      { handleSuccess, handleParse },
+    );
   } finally {
     // Always clear the sink so a subsequent, unrelated request does not
     // inherit this request's warnings array.
@@ -709,34 +688,37 @@ async function runWithCrossProtocolFallback(
     readonly ok: true; readonly endpoint: ProviderEndpoint; readonly review: ProviderReviewPayload; readonly requestId: string;
   } | { readonly ok: false; readonly error: { readonly code: string; readonly status: number | null } };
   if (args.fallbackProvider === "anthropic") {
-    fallbackResult = await runAnthropicRequest({
-      baseUrl: args.baseUrl,
-      apiKey: args.providerApiKey,
-      model: args.modelId,
-      system: args.prompts.system,
-      user: args.prompts.user,
-      requestTimeoutMs: args.readRequestTimeoutMs(),
-      ...(args.parsed.maxOutputTokens !== null ? { maxOutputTokens: args.parsed.maxOutputTokens } : {}),
-      ...(args.parsed.effort !== null ? { reasoningEffort: args.parsed.effort } : {}),
-      fetchImpl: args.fetchImpl,
-    });
+    fallbackResult = await runAnthropicRequest(
+      buildProviderRequestConfig({
+        protocol: "anthropic",
+        parsed: args.parsed,
+        env: {} as NodeJS.ProcessEnv,
+        modelId: args.modelId,
+        prompts: args.prompts,
+        fetchImpl: args.fetchImpl,
+        responseFormat: args.responseFormat,
+        providerApiKey: args.providerApiKey,
+        baseUrl: args.baseUrl,
+      }),
+    );
   } else {
-    fallbackResult = await runProviderRequest({
-      baseUrl: args.baseUrl,
-      apiKey: args.providerApiKey,
-      model: args.modelId,
-      system: args.prompts.system,
-      user: args.prompts.user,
-      requestTimeoutMs: args.readRequestTimeoutMs(),
-      ...(args.parsed.maxOutputTokens !== null ? { maxOutputTokens: args.parsed.maxOutputTokens } : {}),
-      ...(args.parsed.effort !== null ? { reasoningEffort: args.parsed.effort } : {}),
-      // Carry the strict-JSON-schema constraint from the named call:
-      // if the operator enabled `--strict-schema`/`responseFormat`,
-      // the fallback should match (otherwise payload variance between
-      // protocols can silently leak through).
-      ...(args.responseFormat !== undefined ? { responseFormat: args.responseFormat } : {}),
-      fetchImpl: args.fetchImpl,
-    });
+    fallbackResult = await runProviderRequest(
+      buildProviderRequestConfig({
+        protocol: "openai",
+        parsed: args.parsed,
+        env: {} as NodeJS.ProcessEnv,
+        modelId: args.modelId,
+        prompts: args.prompts,
+        fetchImpl: args.fetchImpl,
+        // Carry the strict-JSON-schema constraint from the named call:
+        // if the operator enabled `--strict-schema`/`responseFormat`,
+        // the fallback should match (otherwise payload variance between
+        // protocols can silently leak through).
+        responseFormat: args.responseFormat,
+        providerApiKey: args.providerApiKey,
+        baseUrl: args.baseUrl,
+      }),
+    );
   }
   // Diagnostic on dual-protocol failure: if both protocols fail,
   // we surface the named error (per the contract), but we still log
@@ -749,4 +731,189 @@ async function runWithCrossProtocolFallback(
     );
   }
   return fallbackResult;
+}
+
+/**
+ * Build the per-protocol request config consumed by `runCopilotRequest`,
+ * `runProviderRequest`, or `runAnthropicRequest`. The 5 inline config-build
+ * sites (Copilot, Anthropic named, Anthropic-protocol fallback inside the
+ * openai-compatible branch, OpenAI-compatible, and cross-protocol fallback
+ * for both Anthropic + OpenAI arms) each become a single call to this
+ * helper. The per-protocol field mapping preserves the pre-refactor wire
+ * shape — `responseFormat` is intentionally forwarded for OpenAI + Copilot
+ * only; Anthropic drops it (the native Messages API has no
+ * `response_format` field, so the in-context system prompt is the only
+ * constraint).
+ */
+type BuildProviderRequestConfigCopilot = {
+  readonly protocol: "copilot";
+  readonly parsed: ParsedCliArgs;
+  readonly env: NodeJS.ProcessEnv;
+  readonly modelId: string;
+  readonly prompts: { readonly system: string; readonly user: string };
+  readonly fetchImpl: FetchImpl;
+  readonly responseFormat: ResponseFormat | undefined;
+  readonly providerApiKey: string;
+  readonly githubApiBase: string;
+};
+
+type BuildProviderRequestConfigOpenai = {
+  readonly protocol: "openai";
+  readonly parsed: ParsedCliArgs;
+  readonly env: NodeJS.ProcessEnv;
+  readonly modelId: string;
+  readonly prompts: { readonly system: string; readonly user: string };
+  readonly fetchImpl: FetchImpl;
+  readonly responseFormat: ResponseFormat | undefined;
+  readonly providerApiKey: string;
+  readonly baseUrl: string;
+};
+
+type BuildProviderRequestConfigAnthropic = {
+  readonly protocol: "anthropic";
+  readonly parsed: ParsedCliArgs;
+  readonly env: NodeJS.ProcessEnv;
+  readonly modelId: string;
+  readonly prompts: { readonly system: string; readonly user: string };
+  readonly fetchImpl: FetchImpl;
+  readonly responseFormat: ResponseFormat | undefined;
+  readonly providerApiKey: string;
+  readonly baseUrl: string;
+};
+
+export function buildProviderRequestConfig(
+  input: BuildProviderRequestConfigCopilot,
+): import("../provider/copilot.js").CopilotCallConfig;
+export function buildProviderRequestConfig(
+  input: BuildProviderRequestConfigOpenai,
+): import("../provider/openai-compatible.js").ProviderCallConfig;
+export function buildProviderRequestConfig(
+  input: BuildProviderRequestConfigAnthropic,
+): import("../provider/anthropic-messages.js").AnthropicProviderCallConfig;
+export function buildProviderRequestConfig(
+  input:
+    | BuildProviderRequestConfigCopilot
+    | BuildProviderRequestConfigOpenai
+    | BuildProviderRequestConfigAnthropic,
+):
+  | import("../provider/copilot.js").CopilotCallConfig
+  | import("../provider/openai-compatible.js").ProviderCallConfig
+  | import("../provider/anthropic-messages.js").AnthropicProviderCallConfig {
+  const requestTimeoutMs = readRequestTimeoutMs(input.parsed);
+  const maxOutputTokensSpread = input.parsed.maxOutputTokens !== null
+    ? { maxOutputTokens: input.parsed.maxOutputTokens } as const
+    : {};
+  const reasoningEffortSpread = input.parsed.effort !== null
+    ? { reasoningEffort: input.parsed.effort } as const
+    : {};
+  if (input.protocol === "copilot") {
+    return {
+      githubToken: input.providerApiKey,
+      apiBase: input.githubApiBase,
+      system: input.prompts.system,
+      user: input.prompts.user,
+      model: input.modelId,
+      requestTimeoutMs,
+      ...maxOutputTokensSpread,
+      ...reasoningEffortSpread,
+      ...(input.responseFormat !== undefined ? { responseFormat: input.responseFormat } : {}),
+      fetchImpl: input.fetchImpl as typeof fetch,
+    };
+  }
+  if (input.protocol === "anthropic") {
+    return {
+      baseUrl: input.baseUrl,
+      apiKey: input.providerApiKey,
+      model: input.modelId,
+      system: input.prompts.system,
+      user: input.prompts.user,
+      requestTimeoutMs,
+      ...maxOutputTokensSpread,
+      ...reasoningEffortSpread,
+      fetchImpl: input.fetchImpl,
+    };
+  }
+  return {
+    baseUrl: input.baseUrl,
+    apiKey: input.providerApiKey,
+    model: input.modelId,
+    system: input.prompts.system,
+    user: input.prompts.user,
+    requestTimeoutMs,
+    ...maxOutputTokensSpread,
+    ...reasoningEffortSpread,
+    ...(input.responseFormat !== undefined ? { responseFormat: input.responseFormat } : {}),
+    fetchImpl: input.fetchImpl,
+  };
+}
+
+/**
+ * Dispatch a provider result to the success / parse / error path. Owns the
+ * `if (ok) → handleSuccess / if (parse) → handleParse / if (provider_error)
+ * → throw / else throw` decision tree. The 3 dispatch trees (Copilot,
+ * Anthropic, OpenAI-compatible) collapse to one call site each.
+ *
+ * `handleSuccess` / `handleParse` are caller-supplied closures so the
+ * helper stays protocol-agnostic — the success / parse machinery depends
+ * on ambient closure state (severity warnings, model id, etc.) that lives
+ * inside `requestLiveReview`. `maxOutputTokens` is forwarded to the
+ * `handleParse` closure so the parse-fail truncation diagnostic can report
+ * the configured cap alongside the model's usage.
+ */
+export type DispatchProviderResult =
+  | {
+    readonly ok: true;
+    readonly endpoint: ProviderEndpoint;
+    readonly review: ProviderReviewPayload;
+    readonly requestId: string;
+  }
+  | {
+    readonly ok: false;
+    readonly error: {
+      readonly code: string;
+      readonly endpoint: ProviderEndpoint;
+      readonly message: string;
+      readonly rawText: string | undefined;
+      readonly truncated: boolean | undefined;
+      readonly usage: { input_tokens?: number; output_tokens?: number; total_tokens?: number } | undefined;
+      readonly providerErrorDetails: { readonly kind: string; readonly message: string } | undefined;
+    };
+  };
+
+export function dispatchProviderResult(
+  result: DispatchProviderResult,
+  providerName: string,
+  maxOutputTokens: number | null,
+  ctx: {
+    readonly handleSuccess: (
+      result: { readonly ok: true; readonly endpoint: ProviderEndpoint; readonly review: ProviderReviewPayload },
+      providerName: string,
+    ) => LiveProviderOutcome;
+    readonly handleParse: (
+      result: {
+        readonly ok: false;
+        readonly error: {
+          readonly code: string;
+          readonly endpoint: ProviderEndpoint;
+          readonly truncated: boolean | undefined;
+          readonly usage: { input_tokens?: number; output_tokens?: number; total_tokens?: number } | undefined;
+        };
+      },
+      providerName: string,
+      rawText: string,
+      maxOutputTokens: number | null,
+    ) => LiveProviderOutcome;
+  },
+): LiveProviderOutcome {
+  if (result.ok) {
+    return ctx.handleSuccess(result, providerName);
+  }
+  if (result.error.code === "parse") {
+    return ctx.handleParse(result, providerName, result.error.rawText ?? "", maxOutputTokens);
+  }
+  if (result.error.code === "provider_error") {
+    const details = result.error.providerErrorDetails;
+    throw new LiveReviewError("PROVIDER_ERROR", details?.message ?? result.error.message, { cause: result.error });
+  }
+  throw new LiveReviewError("PROVIDER_REQUEST_FAILED", result.error.message, { cause: result.error });
 }

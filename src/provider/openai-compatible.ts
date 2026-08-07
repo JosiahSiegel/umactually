@@ -11,13 +11,12 @@ import {
   type ProviderReviewPayload,
 } from "./provider-parse.js";
 import {
-  isAbortError,
   isRoutableFailureForUrlCandidate,
   ProviderError,
   sanitizeHttpStatus,
-  sanitizeMessage,
 } from "./provider-error.js";
 import { buildParseFailError, computeBumpedMaxOutput, runWithRetry } from "./provider-retry.js";
+import { performProviderFetch, readResponseText } from "./http.js";
 import { composeSignal } from "../util/async.js";
 import { BRAND_PREFIX, REDACTED_SECRET_TOKEN } from "../util/brand.js";
 import { isDebugRawActive } from "../util/debug-raw.js";
@@ -242,7 +241,15 @@ async function callEndpoint(
     : buildChatBody(buildBodyConfig(config));
   const signal = composeSignal(config.signal, config.requestTimeoutMs);
 
-  const response = await performFetch(fetchImpl, url, body, signal, config, requestId, endpoint);
+  const response = await performProviderFetch({
+    url,
+    body: JSON.stringify(body),
+    signal,
+    requestId,
+    endpoint,
+    fetchImpl,
+    buildHeaders: () => buildOpenAiCompatibleHeaders(config, requestId),
+  });
 
   if (!response.ok) {
     throw new ProviderError(
@@ -254,7 +261,7 @@ async function callEndpoint(
     );
   }
 
-  const rawText = await readBody(response, endpoint, requestId);
+  const rawText = await readResponseText(response, endpoint, requestId);
   const textPayload = extractTextPayload(endpoint, rawText);
   // [DEBUG-RAW] Emit extracted text length + first/last 200 chars so the
   // GitHub Actions log shows what the parser actually saw. Pinned by the
@@ -390,10 +397,18 @@ async function callEndpoint(
     // Some models (e.g. MiniMax-M3 with bumped-budget retry) need
     // 3-5 minutes per attempt.
     const retrySignal = composeSignal(config.signal, config.requestTimeoutMs);
-    const retryResponse = await performFetch(fetchImpl, url, retryBody, retrySignal, config, requestId, endpoint);
+    const retryResponse = await performProviderFetch({
+      url,
+      body: JSON.stringify(retryBody),
+      signal: retrySignal,
+      requestId,
+      endpoint,
+      fetchImpl,
+      buildHeaders: () => buildOpenAiCompatibleHeaders(config, requestId),
+    });
     retryResponseStatus = retryResponse.status;
     if (retryResponse.ok) {
-      const retryRawText = await readBody(retryResponse, endpoint, requestId);
+      const retryRawText = await readResponseText(retryResponse, endpoint, requestId);
       const retryTextPayload = extractTextPayload(endpoint, retryRawText);
       if (isDebugRawActive()) {
         writeDebugRaw(
@@ -448,67 +463,20 @@ function redactDebugSecrets(value: string, config: ProviderCallConfig): string {
   return redacted;
 }
 
-async function performFetch(
-  fetchImpl: typeof fetch,
-  url: string,
-  body: Record<string, unknown>,
-  signal: AbortSignal,
+/**
+ * Build the headers for an OpenAI-compatible provider request. Exported
+ * via `performProviderFetch.buildHeaders` so the helper owns the
+ * transport concern and this file owns the wire shape.
+ */
+function buildOpenAiCompatibleHeaders(
   config: ProviderCallConfig,
   requestId: string,
-  endpoint: ProviderEndpoint,
-): Promise<Response> {
-  try {
-    return await fetchImpl(url, {
-      method: "POST",
-      headers: {
-        "content-type": "application/json",
-        authorization: `Bearer ${config.apiKey}`,
-        "x-request-id": requestId,
-      },
-      body: JSON.stringify(body),
-      signal,
-    });
-  } catch (error) {
-    if (isAbortError(error)) {
-      if (config.signal?.aborted === true) {
-        throw new ProviderError("aborted", endpoint, null, requestId, "Request was aborted by the caller.");
-      }
-      throw new ProviderError(
-        "timeout",
-        endpoint,
-        null,
-        requestId,
-        `Request to provider ${endpoint} timed out after ${config.requestTimeoutMs}ms.`,
-      );
-    }
-    throw new ProviderError(
-      "network",
-      endpoint,
-      null,
-      requestId,
-      sanitizeMessage(error, `Network error contacting provider ${endpoint}.`),
-      { cause: error },
-    );
-  }
-}
-
-async function readBody(
-  response: Response,
-  endpoint: ProviderEndpoint,
-  requestId: string,
-): Promise<string> {
-  try {
-    return await response.text();
-  } catch (error) {
-    throw new ProviderError(
-      "parse",
-      endpoint,
-      response.status,
-      requestId,
-      sanitizeMessage(error, "Failed to read provider response body."),
-      { cause: error },
-    );
-  }
+): Record<string, string> {
+  return {
+    "content-type": "application/json",
+    authorization: `Bearer ${config.apiKey}`,
+    "x-request-id": requestId,
+  };
 }
 
 function shouldFallback(error: ProviderError): boolean {

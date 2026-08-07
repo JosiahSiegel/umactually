@@ -310,48 +310,103 @@ function extractMainFromParsed(pkg: Record<string, unknown>): PackageJsonMainFac
 // Targeted scanners — used when the diff only contains part of the file
 // and JSON.parse fails. Each scanner locates a JSON key and reads its
 // array / object / string value with a hand-rolled walker.
+//
+// The generic `extractJsonFieldByScanning` below owns the locate-key,
+// skip-whitespace, dispatch-on-first-byte logic. Per-field callers are
+// thin wrappers that pass their `shape` and map the result into the
+// field's fact shape.
+//
+// IMPORTANT: this helper does NOT require the surrounding file to be
+// valid JSON. It only needs the post-change content reconstructed
+// from the diff (see reconstructFileFromDiff above), and even that
+// may be a partial / malformed slice of package.json. This is
+// load-bearing: the full-parse path already handles the fully-valid
+// case; this scanner exists precisely to recover the fact when the
+// diff only carries the field's opening line and its added lines.
 // ---------------------------------------------------------------------------
 
+type JsonFieldShape = "string" | "string|string[]" | "Record<string,string>";
+
+type ShapeReturn<S extends JsonFieldShape> = S extends "string"
+  ? string
+  : string[];
+
 /**
- * Find `"files": [ ... ]` and read every string element. Returns null
- * if the key isn't present or the array isn't a clean JSON string
- * array. Tolerates multiline arrays.
+ * Generic "find a JSON key in possibly-malformed JSON and read its
+ * value". Used by the three package.json fallback scanners when
+ * JSON.parse fails. Walks past the key, the colon, and whitespace,
+ * then dispatches on the value's first non-whitespace byte:
+ *
+ *   `"string"`           expects a JSON string literal only
+ *   `"string|string[]"`  accepts either a string literal OR a string array
+ *   `"Record<string,string>"`
+ *                        accepts either a string literal OR a
+ *                        string-keyed map of string-string pairs
+ *                        (e.g. `"bin": "foo.mjs"` or `"bin": { "x": "y" }`)
+ *
+ * The walker is hand-rolled on purpose — we cannot import a JSON
+ * parser because the surrounding file is intentionally allowed to
+ * be malformed (the scanner exists to recover a fact from partial
+ * diff content, not to validate the file).
  */
-function extractFilesByScanning(content: string): PackageJsonFilesFact | null {
-  const start = findKeyIndex(content, '"files"');
+function extractJsonFieldByScanning<S extends JsonFieldShape>(
+  content: string,
+  key: string,
+  shape: S,
+): ShapeReturn<S> | null {
+  const start = findKeyIndex(content, `"${key}"`);
   if (start === -1) {
     return null;
   }
   let i = content.indexOf(":", start) + 1;
-  while (i < content.length && /\s/u.test(content[i] ?? "")) {
-    i++;
-  }
-  if (content[i] !== "[") {
+  i = skipWhitespace(content, i);
+  const ch = content[i];
+  if (ch === undefined) {
     return null;
   }
-  i++;
-  const out: string[] = [];
-  while (i < content.length) {
-    const ch = content[i];
-    if (ch === undefined) {
+  const quoted = readQuotedStringAt(content, i);
+  if (quoted !== null) {
+    if (shape === "string") {
+      return quoted.value as ShapeReturn<S>;
+    }
+    if (shape === "string|string[]") {
+      return [quoted.value] as ShapeReturn<S>;
+    }
+    // Single-string form is the npm `"bin": "path/to/script"` shorthand.
+    // Surface it as one entry tagged with "(binary) ->" so callers
+    // can disambiguate from the map form (which uses "name -> value").
+    return [`(binary) -> ${quoted.value}`] as ShapeReturn<S>;
+  }
+  if (ch === "[") {
+    if (shape !== "string|string[]") {
       return null;
     }
+    return scanStringArray(content, i + 1) as ShapeReturn<S> | null;
+  }
+  if (ch === "{") {
+    if (shape !== "Record<string,string>") {
+      return null;
+    }
+    return scanStringMap(content, i + 1) as ShapeReturn<S> | null;
+  }
+  return null;
+}
+
+function scanStringArray(content: string, openIndex: number): string[] | null {
+  let i = openIndex;
+  const out: string[] = [];
+  while (i < content.length) {
+    const ch = content[i] ?? "";
     if (ch === "]") {
-      return { kind: "package-json-files", files: out };
+      return out;
     }
     if (ch === '"') {
-      const end = readStringLiteral(content, i);
-      if (end === -1) {
+      const quoted = readQuotedStringAt(content, i);
+      if (quoted === null) {
         return null;
       }
-      out.push(decodeStringLiteral(content.slice(i + 1, end)));
-      i = end + 1;
-      while (
-        i < content.length &&
-        (content[i] === " " || content[i] === "\t" || content[i] === "\n" || content[i] === "\r" || content[i] === ",")
-      ) {
-        i++;
-      }
+      out.push(quoted.value);
+      i = skipWhitespaceAndComma(content, quoted.end + 1);
       continue;
     }
     i++;
@@ -359,76 +414,30 @@ function extractFilesByScanning(content: string): PackageJsonFilesFact | null {
   return null;
 }
 
-/**
- * Find `"bin": { ... }` and read every `"name": "value"` entry.
- */
-function extractBinByScanning(content: string): PackageJsonBinFact | null {
-  const start = findKeyIndex(content, '"bin"');
-  if (start === -1) {
-    // `bin` was not mentioned in the diff at all — we don't know
-    // whether it was removed or simply not touched. Conservatively
-    // omit rather than misreport.
-    return null;
-  }
-  let i = content.indexOf(":", start) + 1;
-  while (i < content.length && /\s/u.test(content[i] ?? "")) {
-    i++;
-  }
-  if (content[i] === '"') {
-    // Single string form: `"bin": "bin/foo.mjs"`.
-    const end = readStringLiteral(content, i);
-    if (end === -1) {
-      return null;
-    }
-    const value = decodeStringLiteral(content.slice(i + 1, end));
-    return { kind: "package-json-bin", binEntries: [`(binary) -> ${value}`] };
-  }
-  if (content[i] !== "{") {
-    return null;
-  }
-  i++;
+function scanStringMap(content: string, openIndex: number): string[] | null {
+  let i = openIndex;
   const out: string[] = [];
   while (i < content.length) {
-    const ch = content[i];
-    if (ch === undefined) {
-      return null;
-    }
+    const ch = content[i] ?? "";
     if (ch === "}") {
-      return { kind: "package-json-bin", binEntries: out };
+      return out;
     }
     if (ch === '"') {
-      const keyEnd = readStringLiteral(content, i);
-      if (keyEnd === -1) {
+      const keyQ = readQuotedStringAt(content, i);
+      if (keyQ === null) {
         return null;
       }
-      const name = decodeStringLiteral(content.slice(i + 1, keyEnd));
-      let j = keyEnd + 1;
-      while (j < content.length && (content[j] === " " || content[j] === "\t" || content[j] === "\n" || content[j] === "\r")) {
-        j++;
-      }
+      let j = skipWhitespace(content, keyQ.end + 1);
       if (content[j] !== ":") {
         return null;
       }
-      j++;
-      while (j < content.length && (content[j] === " " || content[j] === "\t" || content[j] === "\n" || content[j] === "\r")) {
-        j++;
-      }
-      if (content[j] !== '"') {
+      j = skipWhitespace(content, j + 1);
+      const valQ = readQuotedStringAt(content, j);
+      if (valQ === null) {
         return null;
       }
-      const valEnd = readStringLiteral(content, j);
-      if (valEnd === -1) {
-        return null;
-      }
-      const value = decodeStringLiteral(content.slice(j + 1, valEnd));
-      out.push(`${name} -> ${value}`);
-      i = valEnd + 1;
-      while (
-        i < content.length &&
-        (content[i] === " " || content[i] === "\t" || content[i] === "\n" || content[i] === "\r" || content[i] === ",")
-      ) {
-        i++;
-      }
+      out.push(`${keyQ.value} -> ${valQ.value}`);
+      i = skipWhitespaceAndComma(content, valQ.end + 1);
       continue;
     }
     i++;
@@ -436,18 +445,57 @@ function extractBinByScanning(content: string): PackageJsonBinFact | null {
   return null;
 }
 
+function isHorizontalWhitespace(ch: string): boolean {
+  return ch === " " || ch === "\t" || ch === "\n" || ch === "\r";
+}
+
+function isArrayElementSeparator(ch: string): boolean {
+  return (
+    ch === " " || ch === "\t" || ch === "\n" || ch === "\r" || ch === ","
+  );
+}
+
 /**
- * Find `"main": "value"` and return the string.
+ * Advance `i` past any `/\s/u` characters in `content`, starting at
+ * `i`. Returns the new index. If `i` is already at end-of-content
+ * or at a non-whitespace byte, returns `i` unchanged.
+ *
+ * One of three pure scanner-scaffolding primitives (the others are
+ * `skipWhitespaceAndComma` and `readQuotedStringAt`) extracted so the
+ * three scanners above can stay declarative instead of inlining the
+ * same `while` / `readStringLiteral` + `decode` pattern five times.
  */
-function extractMainByScanning(content: string): PackageJsonMainFact | null {
-  const start = findKeyIndex(content, '"main"');
-  if (start === -1) {
-    return null;
+function skipWhitespace(content: string, i: number): number {
+  let j = i;
+  while (j < content.length && isHorizontalWhitespace(content[j] ?? "")) {
+    j++;
   }
-  let i = content.indexOf(":", start) + 1;
-  while (i < content.length && /\s/u.test(content[i] ?? "")) {
-    i++;
+  return j;
+}
+
+/**
+ * Same as `skipWhitespace` but also skips `,`. Used to advance past
+ * the separator after an array / map element.
+ */
+function skipWhitespaceAndComma(content: string, i: number): number {
+  let j = i;
+  while (j < content.length && isArrayElementSeparator(content[j] ?? "")) {
+    j++;
   }
+  return j;
+}
+
+/**
+ * If `content[i]` is a `"`, read the JSON string literal that starts
+ * at `i`, decode its body, and return `{ value, end }` where `end` is
+ * the index of the closing `"`. Returns `null` if `content[i] !== '"'`
+ * (caller is not at a string literal) or if the literal is
+ * unterminated (`readStringLiteral` returned `-1`).
+ */
+function readQuotedStringAt(
+  content: string,
+  i: number,
+): { readonly value: string; readonly end: number } | null {
   if (content[i] !== '"') {
     return null;
   }
@@ -455,7 +503,48 @@ function extractMainByScanning(content: string): PackageJsonMainFact | null {
   if (end === -1) {
     return null;
   }
-  return { kind: "package-json-main", main: decodeStringLiteral(content.slice(i + 1, end)) };
+  return { value: decodeStringLiteral(content.slice(i + 1, end)), end };
+}
+
+/**
+ * Find `"files": [ ... ]` and read every string element.
+ */
+function extractFilesByScanning(content: string): PackageJsonFilesFact | null {
+  const files = extractJsonFieldByScanning(content, "files", "string|string[]");
+  if (files === null) {
+    return null;
+  }
+  return { kind: "package-json-files", files };
+}
+
+/**
+ * Find `"bin": "value"` or `"bin": { ... }` and surface entries.
+ *
+ * When `bin` is absent from the diff entirely we don't know whether
+ * it was removed or simply not touched — conservatively omit rather
+ * than misreport. (The generic also returns null in this case, but
+ * call it out at the field site so the rationale stays visible.)
+ */
+function extractBinByScanning(content: string): PackageJsonBinFact | null {
+  if (findKeyIndex(content, '"bin"') === -1) {
+    return null;
+  }
+  const binEntries = extractJsonFieldByScanning(content, "bin", "Record<string,string>");
+  if (binEntries === null) {
+    return null;
+  }
+  return { kind: "package-json-bin", binEntries };
+}
+
+/**
+ * Find `"main": "value"` and return the string.
+ */
+function extractMainByScanning(content: string): PackageJsonMainFact | null {
+  const main = extractJsonFieldByScanning(content, "main", "string");
+  if (main === null) {
+    return null;
+  }
+  return { kind: "package-json-main", main };
 }
 
 /**

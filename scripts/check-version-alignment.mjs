@@ -29,10 +29,12 @@
 //   node scripts/check-version-alignment.mjs         # CI mode (exits non-zero on drift)
 //   node scripts/check-version-alignment.mjs --quiet # Mute OK message (used when chaining)
 
-import { existsSync, globSync, readFileSync } from "node:fs";
-import { dirname, isAbsolute, join, relative, resolve } from "node:path";
+import { existsSync, readFileSync } from "node:fs";
+import { dirname, isAbsolute, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { execFileSync } from "node:child_process";
+
+import { collectTargets, readPackageVersion } from "./lib/cli-shared.mjs";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const defaultPackageRoot = resolve(here, "..");
@@ -62,47 +64,6 @@ const TARGETS = [
 ];
 
 const SKIP_DIRS = new Set(["node_modules", "dist", "release", ".git"]);
-
-function readPackageVersion() {
-  const pkg = JSON.parse(readFileSync(join(packageRoot, "package.json"), "utf8"));
-  if (typeof pkg.version !== "string" || !/^\d+\.\d+\.\d+/.test(pkg.version)) {
-    throw new Error(
-      `check-version-alignment: package.json "version" is missing or not a semver triple: ${JSON.stringify(pkg.version)}`,
-    );
-  }
-  return pkg.version;
-}
-
-function isPathInSkippedDir(relPath) {
-  return relPath.split(/[\\/]/).some((segment) => SKIP_DIRS.has(segment));
-}
-
-function collectTargets() {
-  const found = new Set();
-  for (const pattern of TARGETS) {
-    const matches = globSync(pattern, { cwd: packageRoot });
-    for (const match of matches) {
-      // Same Windows-aware relative-path guard as scripts/render-versions.mjs.
-      // Without this, `path.relative("C:\\foo", "README.md")` resolves the
-      // second arg against process.cwd() and returns a wrong drive's path.
-      let rel;
-      if (isAbsolute(match)) {
-        rel = match;
-      } else {
-        const candidate = relative(packageRoot, match);
-        const isStillInside =
-          candidate === "" ||
-          (!candidate.startsWith("..") && !isAbsolute(candidate));
-        rel = isStillInside
-          ? (candidate === "." ? match : candidate)
-          : match;
-      }
-      rel = rel.replace(/[\\/]/g, "/");
-      if (!isPathInSkippedDir(rel)) found.add(rel);
-    }
-  }
-  return [...found].sort();
-}
 
 // Step 1: invoke render-versions.mjs --check. Non-zero exit means drift.
 function runRenderCheck() {
@@ -146,7 +107,7 @@ function scanForHistoricalVersions(currentVersion) {
   const tagRe =
     /(?<![/.:?\w])(?:v\d+\.\d+\.\d+)(?![-+0-9A-Za-z.])(?![/.:?\w])/g;
   const drift = [];
-  for (const rel of collectTargets()) {
+  for (const rel of collectTargets(packageRoot, TARGETS, SKIP_DIRS)) {
     const abs = isAbsolute(rel) ? rel : join(packageRoot, rel);
     if (!existsSync(abs)) continue;
     const content = readFileSync(abs, "utf8");
@@ -160,7 +121,7 @@ function scanForHistoricalVersions(currentVersion) {
 }
 
 function main() {
-  const currentVersion = readPackageVersion();
+  const currentVersion = readPackageVersion(packageRoot, "check-version-alignment");
   if (!quiet) {
     process.stdout.write(`check-version-alignment: target = v${currentVersion}\n`);
   }
