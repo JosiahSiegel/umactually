@@ -206,9 +206,11 @@ type RunOutcome =
 
 /**
  * Invoke `runStandalone` with the freshly captured key propagated to
- * `env`, then dispatch the result. The success path zeroizes the key
- * before `showSuccess` runs (Fix D); the error path zeroizes before
- * the retry/menu prompt so the secret never survives the decision.
+ * `env`, then dispatch the result. The outer loop's `finally` block
+ * in `runWizardLoopIteration` is the sole zeroize site for the key
+ * — having the helper null its parameter here would be redundant
+ * because callers always invoke this from inside a try-finally that
+ * handles cleanup once on every exit path.
  *
  * Returns a small `RunOutcome` so the outer loop can keep its
  * `retry` flag out of the helper's scope.
@@ -218,18 +220,14 @@ async function runAndHandle(
   diffText: string,
   apiKeyLocal: string | null,
 ): Promise<RunOutcome> {
-  // Fix C: build the env so the freshly captured key reaches the
-  // provider even when the operator typed it into the wizard.
+  // Build the env so the freshly captured key reaches the provider
+  // even when the operator typed it into the wizard.
   const env = {
     ...process.env,
     ...(apiKeyLocal !== null && { UMACTUALLY_API_KEY: apiKeyLocal }),
   };
   const result = await runStandalone({ parsed, cwd: process.cwd(), env });
   if (result.kind === "ok" || result.kind === "ok-no-diff") {
-    // Fix D: zeroize before any awaitable that doesn't depend on the
-    // key (Fix D explicitly notes this is stack-dwell mitigation, not
-    // a security guarantee).
-    apiKeyLocal = null;
     await showSuccess(result, parsed, diffText);
     return { exit: true };
   }
@@ -241,57 +239,79 @@ async function runAndHandle(
       { value: "menu", label: "Back to menu" },
     ] as const,
   });
-  apiKeyLocal = null;
   if (isCancel(next) || next === "menu") return { exit: true };
   return { exit: false, retry: next === "retry" };
+}
+
+/**
+ * Run one iteration of the wizard loop. Extracted from `runReviewFlow`
+ * so the outer loop stays below the SonarCloud cognitive-complexity
+ * threshold (15).
+ *
+ * Returns `RunOutcome`:
+ *   - `{ exit: true }` → caller should exit the TUI's wizard loop
+ *     (user cancelled at the prompt, success path, or thrown error
+ *     surfaced to the hub).
+ *   - `{ exit: false; retry: true }` → caller should loop again.
+ *   - `{ exit: false; retry: false }` → caller should exit (currently
+ *     unreachable — kept for symmetry with `runAndHandle`'s outcome).
+ *
+ * The `finally` block is the SOLE zeroize site for `apiKeyLocal`.
+ * Because `finally` runs on every exit path (early return, success,
+ * throw), inner branches don't need to re-null the key — that would
+ * be redundant (SonarCloud S4165).
+ */
+async function runWizardLoopIteration(): Promise<RunOutcome> {
+  let apiKeyLocal: string | null = null;
+  let tempDiffPath: string | null = null;
+  try {
+    const saved = tryReadSavedConfig().config;
+    const prompt = await runWizardPrompts(saved);
+    if (prompt.cancel) return { exit: true };
+    apiKeyLocal = prompt.apiKeyLocal;
+    if (prompt.source === "diff") tempDiffPath = prompt.diffPath;
+    const parsed: ParsedCliArgs = {
+      ...emptyParsedArgs(),
+      provider: prompt.provider,
+      apiUrl: prompt.apiUrl,
+      model: prompt.model,
+      apiKey: apiKeyLocal,
+      diffPath: prompt.diffPath,
+      files: prompt.source === "files" ? "." : null,
+    };
+    const outcome = await runAndHandle(parsed, prompt.diffText, apiKeyLocal);
+    if (outcome.exit) return { exit: true };
+    return { exit: false, retry: outcome.retry };
+  } catch (err) {
+    // Every return path must be { exitCode: 0 }; if runStandalone or
+    // a future provider bug throws, surface the message and return
+    // to the hub instead of unwinding the whole TUI.
+    const message = err instanceof Error ? err.message : String(err);
+    stream.error(message);
+    return { exit: true };
+  } finally {
+    apiKeyLocal = null;
+    if (tempDiffPath !== null) {
+      // Best-effort cleanup; the temp file lives in cwd and is only
+      // ever consumed by runStandalone in the body above.
+      const path = tempDiffPath;
+      tempDiffPath = null;
+      try {
+        const { unlink } = await import("node:fs/promises");
+        await unlink(path);
+      } catch {
+        // ignore — file may not exist if git diff returned empty
+      }
+    }
+  }
 }
 
 export async function runReviewFlow(): Promise<{ exitCode: 0 }> {
   let retry = false;
   do {
-    let apiKeyLocal: string | null = null;
-    let tempDiffPath: string | null = null;
-    try {
-      const saved = tryReadSavedConfig().config;
-      const prompt = await runWizardPrompts(saved);
-      if (prompt.cancel) return { exitCode: 0 };
-      apiKeyLocal = prompt.apiKeyLocal;
-      if (prompt.source === "diff") tempDiffPath = prompt.diffPath;
-      const parsed: ParsedCliArgs = {
-        ...emptyParsedArgs(),
-        provider: prompt.provider,
-        apiUrl: prompt.apiUrl,
-        model: prompt.model,
-        apiKey: apiKeyLocal,
-        diffPath: prompt.diffPath,
-        files: prompt.source === "files" ? "." : null,
-      };
-      const outcome = await runAndHandle(parsed, prompt.diffText, apiKeyLocal);
-      apiKeyLocal = null;
-      if (outcome.exit) return { exitCode: 0 };
-      retry = outcome.retry;
-    } catch (err) {
-      // Every return path must be { exitCode: 0 }; if runStandalone or
-      // a future provider bug throws, surface the message and return
-      // to the hub instead of unwinding the whole TUI.
-      const message = err instanceof Error ? err.message : String(err);
-      stream.error(message);
-      return { exitCode: 0 };
-    } finally {
-      apiKeyLocal = null;
-      if (tempDiffPath !== null) {
-        // Best-effort cleanup; the temp file lives in cwd and is only
-        // ever consumed by runStandalone in the body above.
-        const path = tempDiffPath;
-        tempDiffPath = null;
-        try {
-          const { unlink } = await import("node:fs/promises");
-          await unlink(path);
-        } catch {
-          // ignore — file may not exist if git diff returned empty
-        }
-      }
-    }
+    const result = await runWizardLoopIteration();
+    if (result.exit) return { exitCode: 0 };
+    retry = result.retry;
   } while (retry);
   return { exitCode: 0 };
 }
