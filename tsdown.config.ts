@@ -119,6 +119,22 @@ function deriveExeTargets(targets: readonly SeaTarget[]) {
 // no per-target filter (i.e. `npm run build:sea:all`).
 export default defineConfig({
   entry: ["src/cli.ts"],
+  // Force these `@clack/*` + sisteransi packages into the SEA blob.
+  // Without this, tsdown leaves them as bare `require("@clack/prompts")`
+  // calls in the embedder input, and Node 25.7+'s SEA embedder
+  // (https://github.com/nodejs/node/issues/62726) rejects them as if
+  // they were built-in module names — see scripts/build-sea.mjs's
+  // smoke-sea CI job for the exact failure mode
+  // (`ERR_UNKNOWN_BUILTIN_MODULE: @clack/prompts`). Inlining costs
+  // ~30 KB of bundle size, which is the price of supporting the TUI in
+  // a standalone binary.
+  noExternal: [
+    "@clack/prompts",
+    "@clack/core",
+    "sisteransi",
+    "fast-string-width",
+    "fast-wrap-ansi",
+  ],
   // No `dts` because we only ship JS to the SEA blob.
   // No `format` — tsdown auto-detects from the entry.
   // No `platform` — SEA blobs are platform-agnostic.
