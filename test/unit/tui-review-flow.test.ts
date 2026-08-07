@@ -5,12 +5,12 @@ vi.mock("@clack/prompts", () => ({
   text: vi.fn(),
   password: vi.fn(),
   isCancel: vi.fn(() => false),
-  stream: { message: vi.fn(), error: vi.fn() },
+  stream: { message: vi.fn(), error: vi.fn(), warn: vi.fn() },
 }));
 vi.mock("../../src/cli/standalone-run.js", () => ({ runStandalone: vi.fn() }));
 vi.mock("../../src/cli/load-saved-config.js", () => ({ tryReadSavedConfig: vi.fn(() => ({ config: null, path: "", warning: null })) }));
 
-import * as prompts from "@clack/prompts";
+import { isCancel, password, select, stream, text } from "@clack/prompts";
 import { runStandalone } from "../../src/cli/standalone-run.js";
 import { runReviewFlow } from "../../src/cli/tui/flows/review.js";
 
@@ -18,10 +18,10 @@ const setAnswers = (answers: readonly [string | symbol, ...(string | symbol)[]])
   let index = 0;
   const fallback = answers[0];
   const nextAnswer = (): string | symbol => answers[index++] ?? fallback;
-  vi.mocked(prompts.select).mockImplementation(async () => nextAnswer());
-  vi.mocked(prompts.text).mockImplementation(async () => nextAnswer());
-  vi.mocked(prompts.password).mockImplementation(async () => nextAnswer());
-  vi.mocked(prompts.isCancel).mockReturnValue(false);
+  vi.mocked(select).mockImplementation(async () => nextAnswer());
+  vi.mocked(text).mockImplementation(async () => nextAnswer());
+  vi.mocked(password).mockImplementation(async () => nextAnswer());
+  vi.mocked(isCancel).mockReturnValue(false);
 };
 
 describe("Run Review wizard", () => {
@@ -41,7 +41,7 @@ describe("Run Review wizard", () => {
     setAnswers(["copilot", "model-x", "diff"]);
     vi.mocked(runStandalone).mockResolvedValue({ kind: "ok-no-diff", artifactPath: "x", note: "done" });
     await runReviewFlow();
-    expect(prompts.password).not.toHaveBeenCalled();
+    expect(password).not.toHaveBeenCalled();
     delete process.env["UMACTUALLY_API_KEY"];
   });
 
@@ -49,12 +49,12 @@ describe("Run Review wizard", () => {
     setAnswers(["copilot", "model-x", "diff", "menu"]);
     vi.mocked(runStandalone).mockResolvedValue({ kind: "provider-error", exitCode: 1, message: "failed", sanitizedForLog: "failed" });
     await runReviewFlow();
-    expect(prompts.stream.error).toHaveBeenCalledWith("failed");
+    expect(stream.error).toHaveBeenCalledWith("failed");
   });
 
   it("D: returns successfully when cancelled mid-flow", async () => {
     setAnswers(["cancelled"]);
-    vi.mocked(prompts.isCancel).mockReturnValue(true);
+    vi.mocked(isCancel).mockReturnValue(true);
     await expect(runReviewFlow()).resolves.toEqual({ exitCode: 0 });
   });
 
@@ -79,6 +79,6 @@ describe("Run Review wizard", () => {
     setAnswers(["copilot", "model-x", "secret", "diff", "retry", "copilot", "model-y", "secret-2", "diff", "menu"]);
     vi.mocked(runStandalone).mockResolvedValue({ kind: "provider-error", exitCode: 1, message: "failed", sanitizedForLog: "failed" });
     await runReviewFlow();
-    expect(prompts.select).toHaveBeenCalledTimes(6);
+    expect(select).toHaveBeenCalledTimes(6);
   });
 });
