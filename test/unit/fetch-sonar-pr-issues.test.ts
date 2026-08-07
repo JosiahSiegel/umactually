@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { expect, it } from "vitest";
 
 import { fetchSonarPrIssues } from "../../src/sonar/fetch-sonar-pr-issues.js";
 import type { FetchImpl } from "../../src/cli/live-shared.js";
@@ -36,7 +36,23 @@ const CONFIG = {
   prNumber: 42,
 } as const;
 
-describe("fetchSonarPrIssues", () => {
+  it("fetches multiple pages and merges findings", async () => {
+    const { fetchImpl, calls } = makeFetchRecorder([
+      {
+        match: (url) => url.includes("p=1"),
+        response: () => makeJsonResponse({ total: 101, issues: Array.from({ length: 100 }, (_, index) => ({ component: `JosiahSiegel_umactually:src/${index}.ts`, rule: `r${index}`, line: 1 })) }),
+      },
+      {
+        match: (url) => url.includes("p=2"),
+        response: () => makeJsonResponse({ total: 101, issues: [{ component: "JosiahSiegel_umactually:src/last.ts", rule: "last", line: 2 }] }),
+      },
+    ]);
+    const result = await fetchSonarPrIssues({ config: CONFIG, fetchImpl });
+    expect(calls).toHaveLength(2);
+    expect(result.findings).toHaveLength(101);
+    expect(result.findings.at(-1)?.path).toBe("src/last.ts");
+  });
+
   it("returns parsed findings with category: 'sonar' for a 200 with non-empty issues", async () => {
     const { fetchImpl, calls } = makeFetchRecorder([
       {
@@ -161,6 +177,7 @@ describe("fetchSonarPrIssues", () => {
     expect(result.findings).toEqual([]);
     expect(result.droppedMalformedCount).toBe(3);
     expect(result.cappedAtIssueCount).toBe(0);
+  });
 
   it("strips the projectKey prefix from the component path", async () => {
     const { fetchImpl } = makeFetchRecorder([
@@ -284,4 +301,3 @@ describe("fetchSonarPrIssues", () => {
     await fetchSonarPrIssues({ config: CONFIG, fetchImpl });
     expect(observedAuth).toBe("Bearer test-token");
   });
-});

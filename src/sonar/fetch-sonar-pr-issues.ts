@@ -18,7 +18,8 @@ export type FetchSonarPrIssuesResult = {
   readonly cappedAtIssueCount: number;
 };
 
-const DEFAULT_PAGE_SIZE = 100;
+const MAX_SONAR_ISSUES = 100;
+const MAX_PAGES = 10;
 const SEVERITY_MAP: Readonly<Record<string, LiveReviewComment["severity"]>> = {
   BLOCKER: "critical",
   CRITICAL: "critical",
@@ -54,100 +55,66 @@ function parseIssue(value: unknown, projectKey: string, prNumber: number): LiveR
   const bodyMessage = typeof message === "string" ? message : "";
   const url = `https://sonarcloud.io/project/issues?id=${encodeURIComponent(projectKey)}&pullRequest=${encodeURIComponent(String(prNumber))}&open=${encodeURIComponent(rule)}`;
   const body = `**SonarCloud ${typeof severity === "string" ? severity : "MAJOR"} — \`${rule}\`**\n\n${bodyMessage}\n\n[Open in SonarCloud](${url})`;
-  return {
-    path,
-    line,
-    body,
-    severity: mapSeverity(severity),
-    category: "sonar",
-  };
+  return { path, line, body, severity: mapSeverity(severity), category: "sonar" };
 }
 
-/**
- * Fetch SonarCloud issues for the given PR directly from the SonarCloud Web
- * API and convert each one to a `LiveReviewComment`. This is the new
- * api-direct path that replaces the prior PR-comment-fetch loop — it
- * queries `/api/issues/search` with the `pullRequest` filter, so every
- * reported issue is for THIS PR (no comment-fetch dedup needed) and the
- * component is `projectKey:filePath` (strip the prefix before posting).
- *
- * Each finding carries `category: "sonar"` so the downstream
- * `preparePostedReview` → `selectPostableComments` → position-validation
- * pipeline can detect them and the severity-policy + verdict-reconciliation
- * rules treat them like model findings. The author of the inline comment
- * in the bot's review (see `buildInlineCommentBody`) prefixes with
- * `` `severity` `sonar` `` so a reviewer can tell the thread came from
- * SonarCloud without the legacy `<!-- sonarcloud -->` marker.
- *
- * Failure modes:
- *   - Any non-OK HTTP response → emit `::warning::`, return empty result.
- *   - Malformed JSON / non-record response → emit `::warning::`, return empty result.
- *   - Missing fields on an individual issue (no rule, no component, no
- *     positive integer line, no projectKey prefix) → drop the issue
- *     silently and continue. File-level issues (`line === 0` / null /
- *     absent) are dropped because GitHub's inline-comment API rejects
- *     `line: 0` with 422 — surfacing them would require a separate
- *     conversation comment, which the bot review body already covers via
- *     the `Findings (N sonar)` block.
- */
 export async function fetchSonarPrIssues(input: {
   readonly config: FetchSonarPrIssuesConfig;
   readonly fetchImpl: FetchImpl;
 }): Promise<FetchSonarPrIssuesResult> {
   const { config, fetchImpl } = input;
   const baseUrl = stripTrailingSlash(config.hostUrl);
-  const url = `${baseUrl}/api/issues/search?componentKeys=${encodeURIComponent(config.projectKey)}&pullRequest=${encodeURIComponent(String(config.prNumber))}&inNewCodePeriod=true&resolved=false&ps=${DEFAULT_PAGE_SIZE}`;
   const headers: Record<string, string> = {
     Authorization: `Bearer ${config.token}`,
     Accept: "application/json",
   };
-
-  let raw: unknown;
-  try {
-    const response = await fetchImpl(url, {
-      method: "GET",
-      headers,
-      ...(config.timeoutMs !== undefined ? { signal: AbortSignal.timeout(config.timeoutMs) } : {}),
-    });
-    ensureHttpOk(
-      response,
-      "SONAR_ISSUES_API_FAILED",
-      "SonarCloud issues API",
-      "Verify SONAR_TOKEN, SONAR_HOST_URL, and SONAR_PROJECT_KEY are set; the SonarCloud API responds with 401 when the token is invalid and 403 when the project is not visible to the token's account. The SonarCloud Code Analysis check is still the authoritative merge gate.",
-    );
-    raw = await readJsonResponse(response);
-  } catch (error) {
-    writeBrandedAnnotation(
-      "warning",
-      `failed to fetch SonarCloud PR issues; treating as zero findings (best-effort fetch). ${error instanceof Error ? error.message : String(error)}`,
-    );
-    return { findings: [], total: 0, droppedMalformedCount: 0, cappedAtIssueCount: 0 };
-  }
-  if (!isRecord(raw)) {
-    writeBrandedAnnotation(
-      "warning",
-      "SonarCloud issues API returned a non-record JSON body; treating as zero findings.",
-    );
-    return { findings: [], total: 0, droppedMalformedCount: 0, cappedAtIssueCount: 0 };
-  }
-  const total = isSafeInteger(raw["total"]) ? raw["total"] : 0;
-  const issues = raw["issues"];
-  if (!isUnknownArray(issues)) {
-    writeBrandedAnnotation(
-      "warning",
-      "SonarCloud issues API returned a body without an `issues` array; treating as zero findings.",
-    );
-    return { findings: [], total, droppedMalformedCount: 0, cappedAtIssueCount: total };
-  }
+  const findings: LiveReviewComment[] = [];
   let droppedMalformedCount = 0;
-  for (const entry of issues) {
-    const finding = parseIssue(entry, config.projectKey, config.prNumber);
-    if (finding !== null) {
-      findings.push(finding);
-    } else {
-      droppedMalformedCount += 1;
+  let total = 0;
+  let page = 1;
+
+  while (page <= MAX_PAGES) {
+    const url = new URL(`${baseUrl}/api/issues/search`);
+    url.searchParams.set("componentKeys", config.projectKey);
+    url.searchParams.set("pullRequest", String(config.prNumber));
+    url.searchParams.set("inNewCodePeriod", "true");
+    url.searchParams.set("resolved", "false");
+    url.searchParams.set("ps", String(MAX_SONAR_ISSUES));
+    url.searchParams.set("p", String(page));
+
+    let raw: unknown;
+    try {
+      const response = await fetchImpl(url.toString(), {
+        method: "GET",
+        headers,
+        ...(config.timeoutMs !== undefined ? { signal: AbortSignal.timeout(config.timeoutMs) } : {}),
+      });
+      ensureHttpOk(response, "SONAR_ISSUES_API_FAILED", "SonarCloud issues API", "Verify SonarCloud configuration and token.");
+      raw = await readJsonResponse(response);
+    } catch (error) {
+      writeBrandedAnnotation("warning", `failed to fetch SonarCloud PR issues; treating as zero findings (best-effort fetch). ${error instanceof Error ? error.message : String(error)}`);
+      return { findings, total, droppedMalformedCount, cappedAtIssueCount: Math.max(0, total - findings.length - droppedMalformedCount) };
     }
+    if (!isRecord(raw)) {
+      writeBrandedAnnotation("warning", "SonarCloud issues API returned a non-record JSON body; treating as zero findings.");
+      return { findings, total, droppedMalformedCount, cappedAtIssueCount: Math.max(0, total - findings.length - droppedMalformedCount) };
+    }
+    total = isSafeInteger(raw["total"]) ? raw["total"] : total;
+    const issues = raw["issues"];
+    if (!isUnknownArray(issues)) {
+      writeBrandedAnnotation("warning", "SonarCloud issues API returned a body without an `issues` array; treating as zero findings.");
+      return { findings, total, droppedMalformedCount, cappedAtIssueCount: Math.max(0, total - findings.length - droppedMalformedCount) };
+    }
+    for (const entry of issues) {
+      const finding = parseIssue(entry, config.projectKey, config.prNumber);
+      if (finding === null) droppedMalformedCount += 1;
+      else findings.push(finding);
+    }
+    if (issues.length < MAX_SONAR_ISSUES || findings.length + droppedMalformedCount >= total) break;
+    page += 1;
   }
-  const cappedAtIssueCount = Math.max(0, total - findings.length - droppedMalformedCount);
-  return { findings, total, droppedMalformedCount, cappedAtIssueCount };
+  if (page > MAX_PAGES && findings.length + droppedMalformedCount < total) {
+    writeBrandedAnnotation("warning", `SonarCloud PR issues pagination guard tripped at ${MAX_PAGES} pages (${findings.length + droppedMalformedCount} of ${total} findings collected); the remainder is not imported.`);
+  }
+  return { findings, total, droppedMalformedCount, cappedAtIssueCount: Math.max(0, total - findings.length - droppedMalformedCount) };
 }
