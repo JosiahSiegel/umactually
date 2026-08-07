@@ -128,7 +128,13 @@ export default defineConfig({
   // (`ERR_UNKNOWN_BUILTIN_MODULE: @clack/prompts`). Inlining costs
   // ~30 KB of bundle size, which is the price of supporting the TUI in
   // a standalone binary.
-  // Test: noExternal removed to diagnose Windows SEA regression
+  noExternal: [
+    "@clack/prompts",
+    "@clack/core",
+    "sisteransi",
+    "fast-string-width",
+    "fast-wrap-ansi",
+  ],
   // No `dts` because we only ship JS to the SEA blob.
   // No `format` — tsdown auto-detects from the entry.
   // No `platform` — SEA blobs are platform-agnostic.
