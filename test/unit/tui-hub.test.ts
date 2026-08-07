@@ -6,6 +6,7 @@
 //   - Test B: mocked `isCancel` returns true for whatever `select` yields
 //             → runHub resolves to { exitCode: 0 } (no error thrown, even
 //             though the underlying value isn't a real menu choice).
+//   - Test C: runFlow throws → hub catches, logs, and re-prompts (Fix E).
 //
 // The hub uses @clack/prompts' `select` and `isCancel`. We mock the whole
 // module so the test is hermetic and never depends on stdin/stdout being
@@ -16,9 +17,10 @@ import { describe, expect, it, vi } from "vitest";
 vi.mock("@clack/prompts", () => ({
   select: vi.fn(),
   isCancel: vi.fn(),
+  log: { error: vi.fn() },
 }));
 
-import { isCancel, select } from "@clack/prompts";
+import { isCancel, log, select } from "@clack/prompts";
 
 import { runHub, type HubFlowKind } from "../../src/cli/tui/hub.js";
 
@@ -59,5 +61,40 @@ describe("tui hub menu (runHub)", () => {
     // without invoking the injected flow.
     expect(result).toEqual({ exitCode: 0 });
     expect(runFlow).not.toHaveBeenCalled();
+  });
+
+  it("HUB-C: runFlow throws → hub catches, logs the error, and re-prompts (Fix E)", async () => {
+    // Given: the user picks "review", then a subsequent "exit" to break
+    // the loop. The injected runFlow throws on the first call so the
+    // hub's catch path must run, log via `log.error`, and re-prompt.
+    vi.mocked(select)
+      .mockResolvedValueOnce("review")
+      .mockResolvedValueOnce("exit");
+    vi.mocked(isCancel).mockReturnValue(false);
+
+    const flowError = new Error("review wizard blew up");
+    const runFlow = vi.fn<(kind: HubFlowKind) => Promise<{ exitCode: number }>>(
+      async () => {
+        throw flowError;
+      },
+    );
+
+    // When: the hub is invoked. Without the catch, this would throw and
+    // the test would fail. With the catch, the hub stays open and loops
+    // back to the menu.
+    const result = await runHub({ runFlow });
+
+    // Then: the flow was invoked once (threw), the error was logged with
+    // its message, and the hub returned cleanly after the user's second
+    // select resolved to "exit".
+    expect(runFlow).toHaveBeenCalledTimes(1);
+    expect(runFlow).toHaveBeenCalledWith("review");
+    expect(log.error).toHaveBeenCalledWith(
+      expect.stringContaining("Flow crashed"),
+    );
+    expect(log.error).toHaveBeenCalledWith(
+      expect.stringContaining(flowError.message),
+    );
+    expect(result).toEqual({ exitCode: 0 });
   });
 });
