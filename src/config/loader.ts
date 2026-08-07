@@ -283,6 +283,22 @@ function collectFiles(cliValue: string | undefined, inputValue: string | undefin
   return out;
 }
 
+function pickFromPrecedence<T>(
+  cliValue: unknown,
+  inputValue: unknown,
+  envValue: unknown,
+  fallback: T | undefined,
+  parse: (raw: unknown, field: string) => T | undefined,
+  field: string,
+): T | undefined {
+  for (const raw of [cliValue, inputValue, envValue]) {
+    if (raw === undefined) continue;
+    const parsed = parse(raw, field);
+    if (parsed !== undefined) return parsed;
+  }
+  return fallback;
+}
+
 function pickString(
   cliValue: string | undefined,
   inputValue: string | undefined,
@@ -290,12 +306,19 @@ function pickString(
   fallback: string,
   field: string,
 ): string {
-  const value = firstDefined<string>(cliValue, inputValue, envValue);
-  if (value === undefined) return fallback;
-  if (typeof value !== "string") {
-    throw new InvalidConfigError(field, `expected string, received ${typeof value}`);
-  }
-  return value;
+  return pickFromPrecedence<string>(
+    cliValue,
+    inputValue,
+    envValue,
+    fallback,
+    (raw, name) => {
+      if (typeof raw !== "string") {
+        throw new InvalidConfigError(name, `expected string, received ${typeof raw}`);
+      }
+      return raw;
+    },
+    field,
+  ) as string;
 }
 
 function pickRawString(
@@ -303,10 +326,14 @@ function pickRawString(
   inputValue: unknown,
   envValue: string | undefined,
 ): string | undefined {
-  if (typeof cliValue === "string" && cliValue.trim().length > 0) return cliValue;
-  if (typeof inputValue === "string" && inputValue.trim().length > 0) return inputValue;
-  if (typeof envValue === "string" && envValue.trim().length > 0) return envValue;
-  return undefined;
+  return pickFromPrecedence<string>(
+    cliValue,
+    inputValue,
+    envValue,
+    undefined,
+    (raw) => (typeof raw === "string" && raw.trim().length > 0 ? raw : undefined),
+    "raw",
+  );
 }
 
 function pickInt(
@@ -316,10 +343,17 @@ function pickInt(
   fallback: number,
   field: string,
 ): number {
-  if (cliValue !== undefined) return parseIntegerFromUnknown(cliValue, field);
-  if (inputValue !== undefined) return parseIntegerFromUnknown(inputValue, field);
-  if (envValue !== undefined) return parseIntegerFromUnknown(envValue, field);
-  return fallback;
+  return pickFromPrecedence<number>(
+    cliValue,
+    inputValue,
+    envValue,
+    fallback,
+    (raw, name) => {
+      if (raw === undefined) return undefined;
+      return parseIntegerFromUnknown(raw, name);
+    },
+    field,
+  ) as number;
 }
 
 function pickBool(
@@ -329,15 +363,15 @@ function pickBool(
   fallback: boolean,
   field: string,
 ): boolean {
-  if (cliValue !== undefined) return parseBooleanFromUnknown(cliValue, field);
-  if (inputValue !== undefined) return parseBooleanFromUnknown(inputValue, field);
-  if (envValue !== undefined) return parseBooleanFromUnknown(envValue, field);
-  return fallback;
-}
-
-function firstDefined<T>(...values: readonly (T | undefined)[]): T | undefined {
-  for (const v of values) {
-    if (v !== undefined) return v;
-  }
-  return undefined;
+  return pickFromPrecedence<boolean>(
+    cliValue,
+    inputValue,
+    envValue,
+    fallback,
+    (raw, name) => {
+      if (raw === undefined) return undefined;
+      return parseBooleanFromUnknown(raw, name);
+    },
+    field,
+  ) as boolean;
 }
