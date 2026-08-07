@@ -60,37 +60,35 @@ jobs:
       - name: Check bundled dist is fresh
         run: npm run check:dist-freshness
 
-      - name: Wait for SonarCloud scan + comment-surface to finish on this PR's head SHA
+      - name: Wait for SonarCloud scan to finish on this PR's head SHA
         # Without this wait, the umactually self-review can post its
-        # review BEFORE SonarCloud's `Surface SonarCloud findings as
-        # PR comments` step (a sibling of `sonarqube-scan` in ci.yml)
-        # has posted its inline comments. A reviewer scanning the PR
-        # timeline sees the umactually card land first with
-        # "0 inline findings — ship it", then sees the SonarCloud
-        # MAJOR/CRITICAL inline threads appear later — and reasonably
-        # concludes the bot missed the SonarCloud finding. The two
+        # review BEFORE SonarCloud's `SonarCloud Code Analysis` job has
+        # completed, and the bot's `fetchSonarPrIssues` call would then
+        # either race against the scanner (returning zero issues while
+        # the scanner is still analyzing) or skip the SonarCloud
+        # findings entirely for this run. A reviewer scanning the PR
+        # timeline would then see the umactually card land with
+        # "0 inline findings — ship it", even though SonarCloud has
+        # MAJOR/CRITICAL findings waiting on the same SHA. The two
         # workflows run in parallel on the same pull_request event;
         # this step polls the head SHA's check_runs for the
-        # `SonarCloud Code Analysis` job to reach `completed` (which
-        # subsumes the inline-comment surface step that runs inside
-        # that job) before we proceed.
+        # `SonarCloud Code Analysis` job to reach `completed` before we
+        # proceed so the api-direct fetcher sees a fully-populated
+        # issue set.
         #
         # We poll the GitHub Checks API (REST /repos/:owner/:repo/
         # commits/<sha>/check-runs) rather than workflow_run because
         # workflow_run only fires on default-branch workflows and is
         # not a reliable signal for pull_request-triggered jobs.
         #
-        # Timeout is 8 minutes (32 polls × 15s). SonarCloud's own
-        # `Surface SonarCloud findings as PR comments` step runs as
-        # the last step of the job, so a non-zero timeout means the
-        # SonarCloud job either errored or is taking unusually long.
-        # Self-review is advisory: we do NOT block the job — we log a
-        # warning and continue. PRs whose merge depends on SonarCloud
-        # are already gated by the `SonarCloud Code Analysis` check
-        # itself, which is a required status check on protected
-        # branches. The wait here exists to make the umactually review
-        # body coherent with the inline-comment timeline, not to
-        # replace the quality gate.
+        # Timeout is 8 minutes (32 polls × 15s). Self-review is
+        # advisory: we do NOT block the job — we log a warning and
+        # continue. PRs whose merge depends on SonarCloud are already
+        # gated by the `SonarCloud Code Analysis` check itself, which
+        # is a required status check on protected branches. The wait
+        # here exists to make the umactually review body coherent with
+        # the SonarCloud issue timeline, not to replace the quality
+        # gate.
         env:
           GITHUB_TOKEN: ${{ github.token }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
@@ -169,6 +167,18 @@ jobs:
           GITHUB_TOKEN: ${{ github.token }}
           UMACTUALLY_API_URL: ${{ secrets.UMACTUALLY_API_URL }}
           UMACTUALLY_API_KEY: ${{ secrets.UMACTUALLY_API_KEY }}
+          # SonarCloud credentials for `--include-pr-sonar-findings`:
+          # the bot now queries the SonarCloud Web API directly (instead
+          # of ingesting comments posted by a sibling step), so it needs
+          # the token, host URL, and project key at review time. SONAR_HOST_URL
+          # is read from workflow vars (defaults to sonarcloud.io); the
+          # project key is hardcoded to the canonical repo key. When
+          # SONAR_TOKEN is absent (fork PR) the new api-direct fetcher
+          # degrades gracefully to zero findings via the env-var guards
+          # in `parse-args.ts` + `live-github.ts`.
+          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+          SONAR_HOST_URL: ${{ vars.SONAR_HOST_URL || 'https://sonarcloud.io' }}
+          SONAR_PROJECT_KEY: JosiahSiegel_umactually
           # UMACTUALLY_PLATFORM is inherited from the workflow-level env
           # (single source of truth — see comment above 'jobs:').
         run: |
@@ -185,7 +195,10 @@ jobs:
             --debug-raw-response \
             --max-output-tokens 32000 \
             --per-request-timeout-seconds 240 \
-            --include-pr-sonar-findings
+            --include-pr-sonar-findings \
+            --sonar-host-url "${SONAR_HOST_URL:-https://sonarcloud.io}" \
+            --sonar-token "${SONAR_TOKEN}" \
+            --sonar-project-key JosiahSiegel_umactually
           REVIEW_EXIT=$?
           echo "review-exit=${REVIEW_EXIT}" >> "${GITHUB_OUTPUT:-/dev/null}" || true
           echo "platform=${UMACTUALLY_PLATFORM}" >> "${GITHUB_OUTPUT:-/dev/null}" || true

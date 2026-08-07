@@ -733,7 +733,19 @@ function selectPostableCommentsWithPositions(input: {
     if (comments.length >= maxComments) {
       break;
     }
-    if (!input.positions.hasPosition(comment)) {
+    // Position validation is bypassed for `category: "sonar"`
+    // findings. SonarCloud's reported line numbers are authoritative
+    // for the source FILE (not the diff context), so a finding on a
+    // line that the diff doesn't touch is still a valid inline-comment
+    // anchor — GitHub's API accepts any positive line number within
+    // the file. Without the bypass, `positions.hasPosition` would
+    // drop every SonarCloud finding whose flagged line is outside the
+    // changed region, leaving the bot's review body saying
+    // "0 inline findings — ship it" while SonarCloud MAJOR/CRITICAL
+    // findings sit ignored in the same PR. See the merge block in
+    // live-github.ts for the inline-finding pipeline.
+    const isSonarFinding = comment.category === "sonar";
+    if (!isSonarFinding && !input.positions.hasPosition(comment)) {
       continue;
     }
     if (!passesSeverityPolicy(comment, input.parsed)) {

@@ -1,4 +1,5 @@
 import { FIELDS } from "../config/field-schema.js";
+import { ENV_KEYS } from "../util/env-keys.js";
 import { didYouMean, parseStrictInt, readEnum } from "../util/cli-args.js";
 import type { Severity } from "../config/types.js";
 import { parseSeverityFromUnknown } from "../config/parsers.js";
@@ -480,9 +481,15 @@ export function parseCliArgs(args: readonly string[]): ParsedCliArgs {
     githubApiBase,
     includeSonarqube,
     includePrSonarFindings,
-    sonarHostUrl,
-    sonarToken,
-    sonarProjectKey,
+    // Sonar fields fall back to the UMACTUALLY_SONAR_* env vars when
+    // the CLI flag was not supplied. The standard env-var path goes
+    // through `resolveFromSchema` (config-loader), but `--include-pr-
+    // sonar-findings` is consumed inside the live path BEFORE the
+    // loader runs, so we resolve here to keep parity with the
+    // `field > env > null` precedence every other field uses.
+    sonarHostUrl: sonarHostUrl ?? process.env[ENV_KEYS.UMACTUALLY_SONAR_HOST_URL] ?? null,
+    sonarToken: sonarToken ?? process.env[ENV_KEYS.UMACTUALLY_SONAR_TOKEN] ?? null,
+    sonarProjectKey: sonarProjectKey ?? process.env[ENV_KEYS.UMACTUALLY_SONAR_PROJECT_KEY] ?? null,
     sonarTimeoutSeconds,
     minimumSeverity,
     minimumSeverityInternal: minimumSeverity === null

@@ -5,7 +5,7 @@ import { isRecord, isSafeInteger } from "../util/json-guards.js";
 import { writeBrandedAnnotation } from "../util/log.js";
 import { DEFAULT_GITHUB_API_BASE } from "../util/provider-defaults.js";
 import type { ParsedCliArgs } from "./parse-args.js";
-import { fetchSonarPrFindings } from "./fetch-sonar-pr-findings.js";
+import { fetchSonarPrIssues } from "../sonar/fetch-sonar-pr-issues.js";
 import {
   LiveReviewError,
   buildInlineCommentBody,
@@ -17,6 +17,7 @@ import {
   readResponseId,
   type FetchImpl,
   type LiveProviderOutcome,
+  type LiveReviewComment,
   type LiveRunResult,
 } from "./live-shared.js";
 
@@ -31,9 +32,10 @@ export async function runGithubLive(input: {
 }): Promise<LiveRunResult> {
   const { context, diffText, provider, parsed, fetchImpl } = input;
 
-  // Fetch SonarCloud PR inline comments (when the flag is set) and
-  // merge them into the provider review's comments list BEFORE
-  // `preparePostedReview` runs. Three invariants this preserves:
+  // Fetch SonarCloud PR issues (when the flag is set) directly from the
+  // SonarCloud Web API and merge them into the provider review's
+  // comments list BEFORE `preparePostedReview` runs. Three invariants
+  // this preserves:
   // (1) severity filtering applies uniformly to the SonarCloud findings
   // (the same `passesSeverityPolicy` gate that drops model findings
   // below `--minimum-severity`); position validation runs downstream
@@ -41,12 +43,43 @@ export async function runGithubLive(input: {
   // (2) the PR #183 verdict-reconciliation rule sees the surviving
   // SonarCloud severity counts, so a postable SonarCloud MAJOR/CRITICAL
   // escalates the verdict from SHIP/APPROVED to NEEDS_FIX; (3)
-  // SonarCloud findings render as inline threads on the bot's own
-  // review (one place to dismiss), in addition to SonarCloud's
-  // separate reviews.
-  const rawSonarFindings = parsed.includePrSonarFindings
-    ? await fetchSonarPrFindings({ context, fetchImpl })
-    : [];
+  // SonarCloud findings render as inline threads NESTED under the
+  // bot's own review (one place to dismiss), instead of as separate
+  // github-actions comments that land above the bot review.
+  //
+  // Graceful degradation: when any of sonarHostUrl / sonarToken /
+  // sonarProjectKey is missing (fork PR, operator never configured
+  // sonar, env var not exported), skip the fetch and emit a
+  // `::warning::` annotation so the operator can see why the bot
+  // review carries zero sonar findings. This matches the
+  // best-effort posture of the prior PR-comment fetch.
+  let rawSonarFindings: readonly LiveReviewComment[];
+  if (!parsed.includePrSonarFindings) {
+    rawSonarFindings = [];
+  } else if (
+    parsed.sonarHostUrl === null ||
+    parsed.sonarToken === null ||
+    parsed.sonarProjectKey === null
+  ) {
+    writeBrandedAnnotation(
+      "warning",
+      "SonarCloud PR issues skipped: --include-pr-sonar-findings was set but sonarHostUrl / sonarToken / sonarProjectKey is not configured. Pass --sonar-host-url, --sonar-token, --sonar-project-key, or set UMACTUALLY_SONAR_HOST_URL / UMACTUALLY_SONAR_TOKEN / UMACTUALLY_SONAR_PROJECT_KEY.",
+    );
+    rawSonarFindings = [];
+  } else {
+    const timeoutMs = parsed.sonarTimeoutSeconds !== null ? parsed.sonarTimeoutSeconds * 1000 : undefined;
+    const fetched = await fetchSonarPrIssues({
+      config: {
+        hostUrl: parsed.sonarHostUrl,
+        token: parsed.sonarToken,
+        projectKey: parsed.sonarProjectKey,
+        prNumber: context.prNumber,
+        ...(timeoutMs !== undefined ? { timeoutMs } : {}),
+      },
+      fetchImpl,
+    });
+    rawSonarFindings = fetched.findings;
+  }
   const sonarPrFindings = rawSonarFindings.filter((finding) =>
     passesSeverityPolicy(finding, parsed),
   );
