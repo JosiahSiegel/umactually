@@ -38,7 +38,7 @@ function stripProjectKeyPrefix(component: string, projectKey: string): string | 
   return stripped.length === 0 ? null : stripped;
 }
 
-function parseIssue(value: unknown, projectKey: string): LiveReviewComment | null {
+function parseIssue(value: unknown, projectKey: string, prNumber: number): LiveReviewComment | null {
   if (!isRecord(value)) return null;
   const component = value["component"];
   const rule = value["rule"];
@@ -51,7 +51,7 @@ function parseIssue(value: unknown, projectKey: string): LiveReviewComment | nul
   const path = stripProjectKeyPrefix(component, projectKey);
   if (path === null) return null;
   const bodyMessage = typeof message === "string" ? message : "";
-  const url = `https://sonarcloud.io/project/issues?id=${encodeURIComponent(projectKey)}&pullRequest=${encodeURIComponent(String(component))}&open=${encodeURIComponent(rule)}`;
+  const url = `https://sonarcloud.io/project/issues?id=${encodeURIComponent(projectKey)}&pullRequest=${encodeURIComponent(String(prNumber))}&open=${encodeURIComponent(rule)}`;
   const body = `**SonarCloud ${typeof severity === "string" ? severity : "MAJOR"} — \`${rule}\`**\n\n${bodyMessage}\n\n[Open in SonarCloud](${url})`;
   return {
     path,
@@ -140,7 +140,7 @@ export async function fetchSonarPrIssues(input: {
   }
   const findings: LiveReviewComment[] = [];
   for (const entry of issues) {
-    const finding = parseIssue(entry, config.projectKey);
+    const finding = parseIssue(entry, config.projectKey, config.prNumber);
     if (finding !== null) {
       findings.push(finding);
     }
