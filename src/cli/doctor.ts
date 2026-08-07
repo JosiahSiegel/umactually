@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MIT
 
 import { KNOWN_ENV_VAR_NAMES } from "../config/field-schema.js";
+import { formatCheckLines } from "../util/check-format.js";
 
 const MIN_NODE_MAJOR = 24;
 
@@ -173,11 +174,7 @@ async function checkGit(deps: DoctorDeps): Promise<DoctorCheck> {
 }
 
 export function formatDoctorHuman(checks: readonly DoctorCheck[]): string {
-  const lines = checks.map((check) => {
-    const hint = check.hint === undefined ? "" : `\n  hint: ${check.hint}`;
-    return `${check.status.toUpperCase().padEnd(4)} ${check.id}: ${check.message}${hint}`;
-  });
-  return `${lines.join("\n")}\n`;
+  return formatCheckLines(checks, { emojiPrefix: false });
 }
 
 export function formatDoctorJson(result: DoctorResult): string {
