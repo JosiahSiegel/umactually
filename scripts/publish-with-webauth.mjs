@@ -10,18 +10,17 @@
 import { spawnSync } from "node:child_process";
 import { setTimeout as sleep } from "node:timers/promises";
 
-import { invokedDirectly } from "./lib/cli-shared.mjs";
+import { invokedDirectly, parseArgs } from "./lib/cli-shared.mjs";
 
 const REPO_ROOT = process.cwd();
 
-function parseArgs() {
-  const args = process.argv.slice(2);
-  let timeoutSec = 180;
-  for (const a of args) {
-    const m = a.match(/^--timeout=(\d+)$/u);
-    if (m) timeoutSec = Number.parseInt(m[1], 10);
-  }
-  return { timeoutSec };
+function parseTimeoutSec(argv) {
+  const { timeout } = parseArgs(argv);
+  if (timeout === undefined) return 180;
+  const parsed = Number.parseInt(timeout, 10);
+  // Original behavior: a non-numeric timeout (or unparseable integer)
+  // falls back to the 180s default rather than throwing — preserve.
+  return Number.isFinite(parsed) ? parsed : 180;
 }
 
 export function startPublish() {
@@ -161,7 +160,7 @@ function runPublishWithOtp(otp) {
 }
 
 async function main() {
-  const { timeoutSec } = parseArgs();
+  const timeoutSec = parseTimeoutSec(process.argv.slice(2));
   process.stdout.write("Starting npm publish to capture WebAuth challenge...\n");
   const { authUrl, doneUrl } = startPublish();
   process.stdout.write(`\n=== ACTION REQUIRED ===\n`);

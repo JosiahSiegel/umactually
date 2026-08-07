@@ -46,20 +46,7 @@ import { copyFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { spawnSync } from "node:child_process";
 
-import { invokedDirectly } from "./lib/cli-shared.mjs";
-
-function parseArgs(argv) {
-  const out = {};
-  for (let i = 0; i < argv.length; i += 1) {
-    const flag = argv[i];
-    if (!flag?.startsWith("--")) throw new Error(`unexpected argument ${flag ?? ""}`);
-    const value = argv[i + 1];
-    if (!value || value.startsWith("--")) throw new Error(`missing value for ${flag}`);
-    out[flag.slice(2)] = value;
-    i += 1;
-  }
-  return out;
-}
+import { invokedDirectly, parseArgs } from "./lib/cli-shared.mjs";
 
 function isWindowsTargetId(id) {
   return typeof id === "string" && id.startsWith("windows-");

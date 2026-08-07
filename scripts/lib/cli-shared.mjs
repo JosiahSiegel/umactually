@@ -53,3 +53,54 @@ export function invokedDirectly(callerUrl) {
     return false;
   }
 }
+
+/**
+ * Parse a `--key value` / `--key=value` argv array into a `{ key: value }` map.
+ *
+ * Mirrors the parser that `merge-candidate-bundles.mjs` used to inline:
+ *
+ *   for (let i = 0; i < argv.length; i += 1) {
+ *     const flag = argv[i];
+ *     if (!flag?.startsWith("--")) throw new Error(...);
+ *     const value = argv[i + 1];
+ *     if (!value || value.startsWith("--")) throw new Error(...);
+ *     out[flag.slice(2)] = value;
+ *     i += 1;
+ *   }
+ *
+ * `publish-with-webauth.mjs` used the related `--key=value` form (regex
+ * match `/^--timeout=(\d+)$/u`); this helper accepts BOTH forms so the
+ * caller can do `const { timeout = "180" } = parseArgs(argv)` and pick up
+ * either `--timeout 300` or `--timeout=300`. Whichever form the caller
+ * passes, the resulting value is a string — coercion (e.g.
+ * `Number.parseInt(value, 10)` for numeric flags) is the caller's job,
+ * matching the original scripts.
+ *
+ * Throws on positional (non-`--`) arguments and on `--key` without a
+ * following non-`--` value, matching the original error messages.
+ *
+ * @param {readonly string[]} argv
+ * @returns {Record<string, string>}
+ */
+export function parseArgs(argv) {
+  const out = {};
+  for (let i = 0; i < argv.length; i += 1) {
+    const arg = argv[i];
+    if (typeof arg !== "string" || !arg.startsWith("--")) {
+      throw new Error(`unexpected argument ${arg ?? ""}`);
+    }
+    const eqIdx = arg.indexOf("=");
+    if (eqIdx >= 0) {
+      out[arg.slice(2, eqIdx)] = arg.slice(eqIdx + 1);
+      continue;
+    }
+    const key = arg.slice(2);
+    const value = argv[i + 1];
+    if (typeof value !== "string" || value.startsWith("--")) {
+      throw new Error(`missing value for ${arg}`);
+    }
+    out[key] = value;
+    i += 1;
+  }
+  return out;
+}
