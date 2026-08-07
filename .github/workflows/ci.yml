@@ -713,12 +713,6 @@ jobs:
       SONAR_TOKEN: ${{ secrets.SONAR_TOKEN || '' }}
     permissions:
       contents: read
-      # The "Surface SonarCloud findings as PR comments" step needs to
-      # create review comments on the PR. Granted at the job level (not
-      # the workflow level) so the rest of ci.yml keeps its read-only
-      # posture. The token is github.token, which has write access to PR
-      # comments by default.
-      pull-requests: write
     steps:
       - name: Synthetic success (no SONAR_TOKEN configured)
         # Skips the scanner when the secret is absent (fork PR, public
@@ -770,39 +764,25 @@ jobs:
           # picks up the new URL on the next run, no workflow change
           # required.
 
-      - name: Surface SonarCloud findings as PR comments
+      - name: Surface SonarCloud issue count to workflow logs
         # The SonarCloud scanner action uploads the analysis + reports the
         # quality-gate verdict as a GitHub check (REQUIRED). It does NOT
-        # post inline review comments on the PR — the bot's separate
-        # self-review workflow runs against a mock provider and has no
-        # awareness of SonarCloud findings. Without this step, a PR with
-        # CRITICAL SonarCloud issues in new code can still get an APPROVE
-        # review from the bot ("ship it"), even though the quality gate is
-        # ERROR.
+        # post inline review comments on the PR — those are owned by the
+        # umactually self-review workflow, which queries the SonarCloud
+        # Web API directly (see `src/sonar/fetch-sonar-pr-issues.ts`) and
+        # folds the findings into the bot's own review. That keeps every
+        # SonarCloud thread NESTED under the umactually card in the PR
+        # conversation tab — instead of landing ABOVE the bot's review as
+        # standalone github-actions comments, which previously made it
+        # look like the bot had missed the finding.
         #
-        # This step queries the SonarCloud Web API for OPEN issues on the
-        # current PR filtered to new-code-period, then posts each as an
-        # inline PR review comment at the right file/line via the
-        # /repos/{owner}/{repo}/pulls/{pr}/comments endpoint. Inline PR
-        # comments appear in the same "Files changed" tab as the umactually
-        # self-review's findings — they are NOT tied to a specific review,
-        # so they surface alongside the umactually review's inline threads
-        # without creating a separate bot review in the PR conversation.
-        #
-        # Why NOT post a separate github-actions REQUEST_CHANGES review:
-        # prior to v0.6.22, this step ALSO posted a standalone
-        # REQUEST_CHANGES review summarizing the findings, on the rationale
-        # that "the bot's APPROVE is preserved for audit." That created a
-        # confusing UX: the PR conversation tab showed two bot reviews (an
-        # APPROVE and a REQUEST_CHANGES), operators had to read both to
-        # understand the verdict, and the review decision displayed as
-        # CHANGES_REQUESTED even when the actual CI checks all passed. The
-        # current implementation surfaces SonarCloud findings purely via
-        # inline PR review comments. The quality gate violation is
-        # already reflected in the `SonarCloud Code Analysis` check run
-        # status, which is a required status check on protected branches
-        # and blocks merges on its own. No separate review is needed to
-        # surface the policy decision — the check status does it.
+        # This step is therefore the lightweight companion: it pulls the
+        # new-code issue count and the quality-gate status for this PR
+        # and prints them to the workflow log. No PR write access is
+        # required, and the SonarCloud Code Analysis check (run by the
+        # SonarQube Scan step above) remains the authoritative surface
+        # for the policy decision — it is a required status check on
+        # protected branches and blocks merges on ERROR on its own.
         #
         # Skipped when:
         #   - SONAR_TOKEN is absent (fork PR; same as the scanner step)
@@ -818,8 +798,6 @@ jobs:
           SONAR_ORGANIZATION: josiahsiegel
           SONAR_PROJECT_KEY: JosiahSiegel_umactually
           PR_NUMBER: ${{ github.event.pull_request.number }}
-          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
-          GITHUB_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
 
@@ -828,174 +806,23 @@ jobs:
           # rename it, update both this step's `if:` and this comment.
           # (We can't easily ref the step id from a separate YAML key, so
           # the contract is documented here.)
-          ISSUES_FILE="${RUNNER_TEMP:-/tmp}/sonar-issues-pr-${PR_NUMBER}.json"
-          if ! curl -fsSL --max-time 15 \
+          ISSUE_COUNT=$(curl -fsSL --max-time 15 \
               -H "Authorization: Bearer ${SONAR_TOKEN}" \
-              "${SONAR_HOST_URL}/api/issues/search?componentKeys=${SONAR_PROJECT_KEY}&pullRequest=${PR_NUMBER}&inNewCodePeriod=true&resolved=false&ps=100" \
-              > "${ISSUES_FILE}" 2>/dev/null; then
-            echo "::warning::SonarCloud issues API call failed; skipping PR-comment surface. The scanner's quality-gate check is the authoritative block."
-            exit 0
-          fi
-
-          ISSUE_COUNT=$(jq -r '.total // 0' "${ISSUES_FILE}")
+              "${SONAR_HOST_URL}/api/issues/search?componentKeys=${SONAR_PROJECT_KEY}&pullRequest=${PR_NUMBER}&inNewCodePeriod=true&resolved=false&ps=1" \
+              | jq -r '.total // 0' 2>/dev/null || echo "0")
           echo "SonarCloud reports ${ISSUE_COUNT} new-code issue(s) on PR ${PR_NUMBER}."
-          # Check the quality gate so we can skip the inline-comment
-          # pass when both gates are clear (no findings AND gate is
-          # not ERROR). The gate can be ERROR for non-issue reasons
-          # (coverage below threshold, duplicated lines, etc.) — that
-          # case still falls through to post the inline comments AND
-          # is reflected in the `SonarCloud Code Analysis` check run,
-          # which is the authoritative policy surface.
+
+          # Print the quality-gate status so reviewers can see the
+          # authoritative verdict in the same log line. The gate can be
+          # ERROR for non-issue reasons (coverage below threshold,
+          # duplicated lines, etc.); the SonarCloud Code Analysis check
+          # is the policy surface that reflects that status to the
+          # protected-branch required-check list.
           GATE_STATUS=$(curl -fsSL --max-time 15 \
             -H "Authorization: Bearer ${SONAR_TOKEN}" \
             "${SONAR_HOST_URL}/api/qualitygates/project_status?projectKey=${SONAR_PROJECT_KEY}&pullRequest=${PR_NUMBER}" \
             | jq -r '.projectStatus.status // "UNKNOWN"' 2>/dev/null || echo "UNKNOWN")
-          echo "SonarCloud quality gate status for PR ${PR_NUMBER}: ${GATE_STATUS}"
-          if [ "${ISSUE_COUNT}" = "0" ] && [ "${GATE_STATUS}" != "ERROR" ]; then
-            echo "No new-code findings and quality gate is ${GATE_STATUS}; nothing to surface."
-            exit 0
-          fi
-
-          # Fetch the head SHA of the latest commit on the PR — SonarCloud
-          # ties issues to a specific commit, but the API also accepts the
-          # PR number directly so we use the commit hash from the GitHub
-          # event payload. Using github.event.pull_request.head.sha (not
-          # github.sha) so a push event to the PR branch races correctly.
-
-          # Walk each issue and post one inline review comment. We use the
-          # REST POST /repos/{owner}/{repo}/pulls/{pr}/reviews endpoint
-          # with event='COMMENT' so each issue becomes a single review with
-          # its own thread (rather than a comment on the issue thread).
-          # The umactually bot's existing review body is preserved by
-          # posting a SEPARATE review for the SonarCloud findings; we
-          # don't mutate the bot's review body inline.
-          #
-          # Dedup: SonarCloud's API returns the same OPEN issue for every
-          # push, and this step has historically reposted it on each run,
-          # accumulating duplicate inline threads per (path, line, rule)
-          # combination (e.g. 22 threads for S5976 across this PR's
-          # history). Query the PR's existing inline comments once,
-          # extract every sonarcloud-marked entry's (path, line, rule)
-          # signature into a tab-separated lookup, and skip posting when
-          # a signature already exists. Open and unresolved comments
-          # both block — even a RESOLVED comment blocks because we don't
-          # want to undo the operator's resolution with a fresh thread.
-          # Trade-off: a genuinely-fixed SonarCloud issue that gets
-          # re-flagged on a later push won't be re-surfaced here. The
-          # authoritative surface for that case is the SonarCloud Code
-          # Analysis check status (which fires fresh on every push),
-          # not the inline-comment thread — so losing a re-surfaced
-          # thread on a genuinely-fixed issue is acceptable.
-          EXISTING_FILE="${RUNNER_TEMP:-/tmp}/sonar-existing-comments-pr-${PR_NUMBER}.json"
-          EXISTING_SIGNATURES=""
-          if curl -fsSL --max-time 15 \
-              -H "Authorization: Bearer ${GITHUB_TOKEN}" \
-              "${GITHUB_API_URL:-https://api.github.com}/repos/${GITHUB_REPOSITORY}/pulls/${PR_NUMBER}/comments?per_page=100" \
-              > "${EXISTING_FILE}" 2>/dev/null; then
-            EXISTING_SIGNATURES=$(jq -r \
-              # The capture anchors to the `**SonarCloud <SEV> — \`<rule>\`**`
-              # header the surface step below writes verbatim. The em-dash
-              # literal `—` (U+2014) is intentional — the surface step's jq
-              # body builder uses the same character. If the surface step is
-              # ever refactored to use ASCII `--` or `-`, this capture breaks
-              # silently and dedup falls through to empty rule signatures.
-              # Keep the two in sync; the surface step's body builder is the
-              # authoritative source of the format.
-              '[.[] | select(.body | contains("<!-- sonarcloud -->")) | {path, line, rule: (.body | capture("\\*\\*Sonar(?:Cloud|Qube)?\\s+(?:BLOCKER|CRITICAL|MAJOR|MINOR|INFO)\\s+—\\s+`(?<r>[a-z]+:S\\d+)`").r // "")}] | .[] | "\(.path)\t\(.line // 0)\t\(.rule)"' \
-              "${EXISTING_FILE}" 2>/dev/null | sort -u || echo "")
-          fi
-          EXISTING_COUNT=$(printf '%s\n' "${EXISTING_SIGNATURES}" | grep -c . || echo 0)
-          echo "Existing SonarCloud inline comments on PR ${PR_NUMBER}: ${EXISTING_COUNT}."
-
-          POSTED=0
-          SKIPPED=0
-          FAILED=0
-          FILE_LEVEL=0
-          while IFS=$'\t' read -r file_path line severity rule message; do
-            if [ -z "${file_path}" ]; then
-              continue
-            fi
-            # SonarCloud returns the component as `<projectKey>:<filePath>`.
-            # Strip the project-key prefix.
-            relative_file="${file_path#${SONAR_PROJECT_KEY}:}"
-            # Dedup: skip when an inline comment with the same (path,
-            # line, rule) signature already exists on the PR. The
-            # signature lookup above captured every sonarcloud-marked
-            # comment's signature; match against it before posting.
-            # `line` is already integer-normalised by `(.line // 0)` in
-            # the upstream `jq -r '@tsv'` query, so no further
-            # normalisation is needed here.
-            if printf '%s\n' "${EXISTING_SIGNATURES}" | grep -qxF "${relative_file}	${line}	${rule}"; then
-              SKIPPED=$((SKIPPED + 1))
-              continue
-            fi
-            # Build a comment body with the SonarCloud rule, severity, and
-            # a stable deep link to the issue on sonarcloud.io. Use a
-            # `<!-- sonarcloud -->` marker so the existing resolution
-            # guide's "find umactually threads" query can be extended
-            # without false positives.
-            # Build the body with jq -n (not -nr) so embedded `\n` in
-            # the string becomes a literal newline in the JSON output
-            # rather than a backslash-n escape sequence. With -nr, the
-            # raw string is concatenated verbatim and the rendered
-            # comment shows literal `\n` characters; with -n, jq
-            # produces a JSON-encoded string with proper escapes.
-            body=$(jq -n \
-              --arg rule "${rule}" \
-              --arg sev "${severity}" \
-              --arg msg "${message}" \
-              --arg url "${SONAR_HOST_URL}/project/issues?componentKeys=${SONAR_PROJECT_KEY}&pullRequest=${PR_NUMBER}&open=${rule}" \
-              --arg marker "<!-- sonarcloud -->" \
-              '($marker + "\n" +
-               "**SonarCloud " + $sev + " — `" + $rule + "`**\n\n" +
-               $msg + "\n\n" +
-               "[Open in SonarCloud](" + $url + ")\n")')
-            # File-level issues (line = 0, null, or empty) cannot be
-            # posted as inline PR comments — the GitHub API rejects
-            # `line: 0` with a 422, and a missing-line issue isn't tied
-            # to any one source line anyway. Collect them under a single
-            # summary comment posted to the PR conversation instead.
-            if [ -z "${line}" ] || [ "${line}" = "0" ] || [ "${line}" = "null" ]; then
-              FILE_LEVEL=$((FILE_LEVEL + 1))
-              continue
-            fi
-            # Build the inline-comment payload with --arg (string) for
-            # line so a non-numeric value (e.g. an API quirk returning
-            # the integer as a string) doesn't crash the step. The
-            # GitHub API accepts either form.
-            payload=$(jq -n \
-              --arg commit_id "${HEAD_SHA}" \
-              --arg path "${relative_file}" \
-              --arg line "${line}" \
-              --arg body "${body}" \
-              '{commit_id: $commit_id, path: $path, line: ($line | tonumber), side: "RIGHT", body: $body}')
-            if gh api \
-                -X POST \
-                -H "Accept: application/vnd.github+json" \
-                -H "Content-Type: application/json" \
-                --input <(printf '%s' "${payload}") \
-                "/repos/${GITHUB_REPOSITORY}/pulls/${PR_NUMBER}/comments" \
-                >/dev/null; then
-              POSTED=$((POSTED + 1))
-            else
-              FAILED=$((FAILED + 1))
-              echo "::warning::Failed to post inline comment for ${relative_file}:${line} (${rule})."
-            fi
-          done < <(jq -r \
-              '[.issues[] | [.component, (.line // 0), .severity, .rule, (.message | gsub("\t"; " ") | gsub("\n"; " "))]] | .[] | @tsv' \
-              "${ISSUES_FILE}")
-          echo "Posted ${POSTED}, skipped ${SKIPPED} (already on PR), ${FILE_LEVEL} file-level, ${FAILED} failed; ${ISSUE_COUNT} total SonarCloud issues."
-
-          # Quality gate status is reflected in the `SonarCloud Code
-          # Analysis` check run from the scanner step above; that check
-          # is REQUIRED on protected branches and blocks merges on
-          # ERROR. No additional review post is needed — see the step
-          # header for the rationale on avoiding a separate bot review.
-
-          # Clean up the temp file so we don't leak it across runs on
-          # the same runner (RUNNER_TEMP is per-runner, not per-job,
-          # on self-hosted runners).
-          rm -f "${ISSUES_FILE}"
+          echo "SonarCloud quality gate status for PR ${PR_NUMBER}: ${GATE_STATUS}."
 
       - name: Upload coverage artifact
         if: ${{ always() && env.SONAR_TOKEN != '' }}
