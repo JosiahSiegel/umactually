@@ -1,26 +1,16 @@
-// Smoke + invariant tests for the 20 review summary layouts.
+// Smoke + invariant tests for the review summary layout.
 //
 // Scenario contract (see ulw-notepad):
-//   S1: Module exports 20 distinct layout IDs (smoke test).
-//   S2: All 20 layouts render without throwing given sample data.
-//   S3: All 20 layouts include the stable review marker (see src/util/marker.ts).
-//   S4: All 20 layouts include the manifest JSON.
-//   S5: No layout uses <details>/<summary> (Azure-incompatible).
-//   S6: No layout uses raw <table> HTML (Azure-incompatible).
-//
-// The "current" baseline is a SEPARATE identifier (BaselineId) and is
-// pinned to byte-identical parity with the existing buildReviewBody
-// output for the cases it covers (see live-shared-body.test.ts).
+//   S2: The layout renders without throwing given sample data.
+//   S3: The layout includes the stable review marker (see src/util/marker.ts).
+//   S4: The layout includes the manifest JSON.
+//   S5: The summary section avoids <details>/<summary> (Azure-incompatible).
+//   S6: The layout uses no raw <table> HTML (Azure-incompatible).
 
 import { describe, expect, it } from "vitest";
 
 import {
-  BASELINE,
-  LAYOUTS,
-  LAYOUT_LABELS,
-  renderBaseline,
   renderSummary,
-  type LayoutId,
   type ReviewData,
 } from "../../src/render/summary-layouts.js";
 import { REVIEW_MARKER, MANIFEST_SCHEMA } from "../../src/util/marker.js";
@@ -179,132 +169,82 @@ function makeParseFailedData(): ReviewData {
   });
 }
 
-// -- S1: 20 distinct layouts ----------------------------------------------
+// -- S2: The layout renders without throwing -------------------------------
 
-describe("S1 — module exports 20 distinct layout IDs", () => {
-  it("LAYOUTS has exactly 20 entries", () => {
-    expect(LAYOUTS.length).toBe(20);
-  });
-
-  it("LAYOUTS entries are unique", () => {
-    const unique = new Set(LAYOUTS);
-    expect(unique.size).toBe(LAYOUTS.length);
-  });
-
-  it("LAYOUTS is non-empty and contains real layout IDs", () => {
-    expect(LAYOUTS.length).toBeGreaterThan(0);
-    for (const id of LAYOUTS) {
-      expect(id.length).toBeGreaterThan(0);
-    }
-  });
-
-  it("LAYOUT_LABELS covers every layout in LAYOUTS", () => {
-    for (const id of LAYOUTS) {
-      expect(LAYOUT_LABELS[id]).toBeDefined();
-      expect(LAYOUT_LABELS[id].length).toBeGreaterThan(0);
-    }
-  });
-
-  it("BASELINE identifier exists and is distinct from any LayoutId", () => {
-    expect(BASELINE).toBe("current");
-  });
-});
-
-// -- S2: All layouts render without throwing -------------------------------
-
-describe("S2 — all layouts render without throwing", () => {
-  for (const layout of LAYOUTS) {
-    it(`${layout} renders on busy data`, () => {
-      const out = renderSummary(layout, makeBusyData());
-      expect(typeof out).toBe("string");
-      expect(out.length).toBeGreaterThan(0);
-    });
-
-    it(`${layout} renders on clean data`, () => {
-      const out = renderSummary(layout, makeCleanData());
-      expect(typeof out).toBe("string");
-      expect(out.length).toBeGreaterThan(0);
-    });
-
-    it(`${layout} renders on parse-failed data`, () => {
-      const out = renderSummary(layout, makeParseFailedData());
-      expect(typeof out).toBe("string");
-      expect(out.length).toBeGreaterThan(0);
-    });
-  }
-
-  it("renderSummary throws on unknown layout", () => {
-    const invalidLayout: LayoutId = JSON.parse('"nope"');
-    expect(() => renderSummary(invalidLayout, makeBusyData())).toThrow();
-  });
-
-  it("renderSummary throws when validCommentCount is undefined", () => {
-    const data = { ...makeBusyData(), validCommentCount: undefined } as unknown as Parameters<typeof renderSummary>[1];
-    expect(() => renderSummary("severity-table", data)).toThrow(/validCommentCount is required/u);
-  });
-
-  it("renderSummary throws when suppressedCommentCount is undefined", () => {
-    const data = { ...makeBusyData(), suppressedCommentCount: undefined } as unknown as Parameters<typeof renderSummary>[1];
-    expect(() => renderSummary("severity-table", data)).toThrow(/suppressedCommentCount is required/u);
-  });
-
-  it("renderBaseline renders the 'current' baseline", () => {
-    const out = renderBaseline(BASELINE, makeBusyData());
+describe("S2 — the layout renders without throwing", () => {
+  it("renders on busy data", () => {
+    const out = renderSummary(makeBusyData());
     expect(typeof out).toBe("string");
     expect(out.length).toBeGreaterThan(0);
   });
 
-  it("renderBaseline throws a descriptive error when postedComments is omitted", () => {
-    // The guard mirrors renderSummary's: callers who construct
-    // ReviewData manually (not via buildReviewBody) get a clear error
-    // pointing at the right entry point rather than a confusing crash
-    // deep inside a layout helper. Pin the contract so the next
-    // refactor that breaks the guard surfaces as a test failure.
+  it("renders on clean data", () => {
+    const out = renderSummary(makeCleanData());
+    expect(typeof out).toBe("string");
+    expect(out.length).toBeGreaterThan(0);
+  });
+
+  it("renders on parse-failed data", () => {
+    const out = renderSummary(makeParseFailedData());
+    expect(typeof out).toBe("string");
+    expect(out.length).toBeGreaterThan(0);
+  });
+
+  it("renderSummary throws when validCommentCount is undefined", () => {
+    const data = { ...makeBusyData(), validCommentCount: undefined } as unknown as Parameters<typeof renderSummary>[0];
+    expect(() => renderSummary(data)).toThrow(/validCommentCount is required/u);
+  });
+
+  it("renderSummary throws when suppressedCommentCount is undefined", () => {
+    const data = { ...makeBusyData(), suppressedCommentCount: undefined } as unknown as Parameters<typeof renderSummary>[0];
+    expect(() => renderSummary(data)).toThrow(/suppressedCommentCount is required/u);
+  });
+
+  it("renderSummary throws a descriptive error when postedComments is omitted", () => {
+    // The guard gives callers who construct ReviewData manually (not
+    // via buildReviewBody) a clear error pointing at the right entry
+    // point rather than a confusing crash deep inside a layout helper.
     const dataWithoutPostedComments = {
       ...makeBusyData(),
-      postedComments: undefined as unknown as typeof makeBusyData extends { postedComments: infer T } ? T : never,
-    };
-    expect(() => renderBaseline(BASELINE, dataWithoutPostedComments)).toThrow(
+      postedComments: undefined,
+    } as unknown as Parameters<typeof renderSummary>[0];
+    expect(() => renderSummary(dataWithoutPostedComments)).toThrow(
       /postedComments is required/u,
     );
   });
 });
 
-// -- S3: Stable marker present in every layout -----------------------------
+// -- S3: Stable marker present ---------------------------------------------
 
-describe("S3 — every layout includes the stable marker", () => {
-  for (const layout of LAYOUTS) {
-    it(`${layout} includes the REVIEW_MARKER`, () => {
-      const out = renderSummary(layout, makeBusyData());
-      expect(out).toContain(REVIEW_MARKER);
-    });
-  }
+describe("S3 — the layout includes the stable marker", () => {
+  it("includes the REVIEW_MARKER", () => {
+    const out = renderSummary(makeBusyData());
+    expect(out).toContain(REVIEW_MARKER);
+  });
 });
 
-// -- S4: Manifest present in every layout ----------------------------------
+// -- S4: Manifest present --------------------------------------------------
 
-describe("S4 — every layout includes the hidden manifest", () => {
-  for (const layout of LAYOUTS) {
-    it(`${layout} embeds the umactually:manifest comment`, () => {
-      const out = renderSummary(layout, makeBusyData());
-      expect(out).toContain("<!-- umactually:manifest ");
-      expect(out).toContain(MANIFEST_SCHEMA);
-    });
+describe("S4 — the layout includes the hidden manifest", () => {
+  it("embeds the umactually:manifest comment", () => {
+    const out = renderSummary(makeBusyData());
+    expect(out).toContain("<!-- umactually:manifest ");
+    expect(out).toContain(MANIFEST_SCHEMA);
+  });
 
-    it(`${layout} manifest contains the required fields`, () => {
-      const out = renderSummary(layout, makeBusyData());
-      const match = /<!-- umactually:manifest (.+?) -->/u.exec(out);
-      expect(match).not.toBeNull();
-      const parsed = JSON.parse(match![1]!);
-      expect(parsed["schema"]).toBe(MANIFEST_SCHEMA);
-      expect(parsed["verdict"]).toBe("NEEDS_FIX");
-      expect(parsed["provider"]).toBe("openai-compatible");
-      expect(parsed["modelId"]).toBe("claude-opus-4-5");
-      expect(parsed["inlineCount"]).toBe(6);
-      expect(parsed["suppressedCount"]).toBe(1);
-      expect(parsed["severityCounts"]).toEqual({ critical: 2, high: 1, medium: 1, low: 2 });
-    });
-  }
+  it("manifest contains the required fields", () => {
+    const out = renderSummary(makeBusyData());
+    const match = /<!-- umactually:manifest (.+?) -->/u.exec(out);
+    expect(match).not.toBeNull();
+    const parsed = JSON.parse(match![1]!);
+    expect(parsed["schema"]).toBe(MANIFEST_SCHEMA);
+    expect(parsed["verdict"]).toBe("NEEDS_FIX");
+    expect(parsed["provider"]).toBe("openai-compatible");
+    expect(parsed["modelId"]).toBe("claude-opus-4-5");
+    expect(parsed["inlineCount"]).toBe(6);
+    expect(parsed["suppressedCount"]).toBe(1);
+    expect(parsed["severityCounts"]).toEqual({ critical: 2, high: 1, medium: 1, low: 2 });
+  });
 });
 
 // -- S5: <details>/<summary> policy ----------------------------------------
@@ -347,21 +287,19 @@ describe("S5a — short summary section is NOT wrapped in <details>/<summary> ta
     return afterStart.slice(0, stop);
   }
 
-  for (const layout of LAYOUTS) {
-    it(`${layout} summary section has no <details> tag for short summary`, () => {
-      const out = renderSummary(layout, makeBusyData());
-      const summary = summarySection(out);
-      expect(summary).not.toContain("<details>");
-      expect(summary).not.toContain("</details>");
-    });
+  it("summary section has no <details> tag for short summary", () => {
+    const out = renderSummary(makeBusyData());
+    const summary = summarySection(out);
+    expect(summary).not.toContain("<details>");
+    expect(summary).not.toContain("</details>");
+  });
 
-    it(`${layout} summary section has no <summary> tag for short summary`, () => {
-      const out = renderSummary(layout, makeBusyData());
-      const summary = summarySection(out);
-      expect(summary).not.toContain("<summary>");
-      expect(summary).not.toContain("</summary>");
-    });
-  }
+  it("summary section has no <summary> tag for short summary", () => {
+    const out = renderSummary(makeBusyData());
+    const summary = summarySection(out);
+    expect(summary).not.toContain("<summary>");
+    expect(summary).not.toContain("</summary>");
+  });
 });
 
 describe("S5b — verbose summary (>500 chars) is wrapped in <details> for collapsibility", () => {
@@ -369,7 +307,7 @@ describe("S5b — verbose summary (>500 chars) is wrapped in <details> for colla
   // self-review on PR #9 where the model emits `Key correctness
   // concerns I spotted: ... I cannot approve without addressing: ...`
   // sections that are too long to be inline.
-  function makeVerboseData(): Parameters<typeof renderSummary>[1] {
+  function makeVerboseData(): Parameters<typeof renderSummary>[0] {
     const verboseSummary = [
       "Reviewed the PR. This PR refactors `buildReviewBody` to delegate to a new `severity-table` layout in `src/render/summary-layouts.ts`, adds 20 alternative layouts + viewer scripts, fixes SSE JSON extraction by escaping literal control chars, and rewrites several existing clarity tests to match the new output shape.",
       "",
@@ -404,7 +342,7 @@ describe("S5b — verbose summary (>500 chars) is wrapped in <details> for colla
   }
 
   it("severity-table wraps verbose summary in a <details> block", () => {
-    const out = renderSummary("severity-table", makeVerboseData());
+    const out = renderSummary(makeVerboseData());
     // Must have a <details>...</details> wrapping the summary
     expect(out).toContain("<details>");
     expect(out).toContain("</details>");
@@ -414,7 +352,7 @@ describe("S5b — verbose summary (>500 chars) is wrapped in <details> for colla
 
   it("verbose summary's <details> contains the model output (no truncation)", () => {
     const data = makeVerboseData();
-    const out = renderSummary("severity-table", data);
+    const out = renderSummary(data);
     // The summary text MUST appear inside the details block — we
     // should NOT silently truncate just because we wrapped it.
     expect(out).toContain("Key correctness concerns I spotted:");
@@ -423,7 +361,7 @@ describe("S5b — verbose summary (>500 chars) is wrapped in <details> for colla
   });
 
   it("verbose summary <details> body is correctly closed before the next section", () => {
-    const out = renderSummary("severity-table", makeVerboseData());
+    const out = renderSummary(makeVerboseData());
     // The </details> must appear BEFORE the horizontal rule (---)
     // that separates Summary from the Footer.
     const detailsClose = out.indexOf("</details>");
@@ -433,7 +371,7 @@ describe("S5b — verbose summary (>500 chars) is wrapped in <details> for colla
   });
 
   it("verbose summary length fits inside the body well below 65,536 chars", () => {
-    const out = renderSummary("severity-table", makeVerboseData());
+    const out = renderSummary(makeVerboseData());
     // Wrapping in <details> shouldn't bloat the body past GitHub's limit
     expect(out.length).toBeLessThan(65_536);
   });
@@ -441,64 +379,12 @@ describe("S5b — verbose summary (>500 chars) is wrapped in <details> for colla
 
 // -- S6: No raw <table> HTML -----------------------------------------------
 
-describe("S6 — no layout uses raw <table> HTML (Azure-incompatible)", () => {
-  for (const layout of LAYOUTS) {
-    it(`${layout} has no <table>/<tr>/<td> tags`, () => {
-      const out = renderSummary(layout, makeBusyData());
-      expect(out).not.toMatch(/<table[\s>]/iu);
-      expect(out).not.toContain("<tr>");
-      expect(out).not.toContain("<td");
-    });
-  }
-});
-
-// -- S7: Baseline byte-identical to the existing buildReviewBody ----------
-//
-// We don't import the existing buildReviewBody here because that would
-// pull in the live-shared.ts module's full dependency graph (cli's
-// parse-args, etc.) and complicate the smoke test. Instead we pin a few
-// high-value invariants of the baseline that downstream consumers rely
-// on: marker present, manifest present, verdict+severity tally present.
-
-describe("S7 — baseline layout reproduces existing summary invariants", () => {
-  it("baseline includes the REVIEW_MARKER", () => {
-    const out = renderBaseline(BASELINE, makeBusyData());
-    expect(out).toContain(REVIEW_MARKER);
-  });
-
-  it("baseline includes the manifest", () => {
-    const out = renderBaseline(BASELINE, makeBusyData());
-    expect(out).toContain("<!-- umactually:manifest ");
-  });
-
-  it("baseline includes the pipeline summary line", () => {
-    // Headline leads with the posted count (6) — the reader's question
-    // is "how many findings will appear inline on this PR?", not "how
-    // many did the model produce?". The model's gross output (7) is
-    // surfaced separately as the off-diff callout, not jammed into
-    // the headline number. See pipelineLine() doc for the rationale.
-    const out = renderBaseline(BASELINE, makeBusyData());
-    expect(out).toContain("📊 6 inline findings");
-  });
-
-  it("baseline includes the severity tally", () => {
-    const out = renderBaseline(BASELINE, makeBusyData());
-    expect(out).toContain("🏷️ `2` critical · `1` high · `1` medium · `2` low");
-  });
-
-  it("baseline uses NEEDS_FIX verdict for the busy sample", () => {
-    const out = renderBaseline(BASELINE, makeBusyData());
-    expect(out).toContain("⛔ NEEDS_FIX");
-  });
-
-  it("baseline uses SHIP verdict for the clean sample", () => {
-    const out = renderBaseline(BASELINE, makeCleanData());
-    expect(out).toContain("✅ SHIP");
-  });
-
-  it("baseline shows the parse-failed banner when parseFailed is true", () => {
-    const out = renderBaseline(BASELINE, makeParseFailedData());
-    expect(out).toContain("> ⚠️ `Parse failed`");
+describe("S6 — the layout uses no raw <table> HTML (Azure-incompatible)", () => {
+  it("has no <table>/<tr>/<td> tags", () => {
+    const out = renderSummary(makeBusyData());
+    expect(out).not.toMatch(/<table[\s>]/iu);
+    expect(out).not.toContain("<tr>");
+    expect(out).not.toContain("<td");
   });
 });
 
@@ -527,7 +413,7 @@ describe("severity-table details", () => {
       secrets: [],
     }));
 
-    const out = renderSummary("severity-table", data);
+    const out = renderSummary(data);
     // severity-table renders each finding as a <details> collapsible
     // block. The summary line carries "N · emoji label — truncated
     // title" and the expanded body carries the full path + line +
@@ -569,7 +455,7 @@ describe("severity-table details", () => {
         ],
         validCommentCount: 1,
       });
-      const out = renderSummary("severity-table", data);
+      const out = renderSummary(data);
       expect(out).toContain(c.glyph);
     }
   });
@@ -585,7 +471,7 @@ describe("severity-table details", () => {
       ],
       validCommentCount: 1,
     });
-    const out = renderSummary("verdict-banner", data);
+    const out = renderSummary(data);
     expect(out).toContain("⚪");
   });
 
@@ -633,7 +519,7 @@ describe("severity-table details", () => {
     // severity-table is the default layout. Rows are sorted by
     // severity bucket (highest rank first), so critical is row 1,
     // medium is row 2.
-    const severityOut = renderSummary("severity-table", data);
+    const severityOut = renderSummary(data);
     expect(severityOut).toContain(
       "<summary>1 · 🟣 Critical — y</summary>",
     );
@@ -649,7 +535,7 @@ describe("severity-table details", () => {
     expect(severityOut).not.toContain("&nbsp;&nbsp;&nbsp;&nbsp;");
     // dashboard also has a "🔝 Top findings" block that uses the
     // same <details> shape.
-    const dashboardOut = renderSummary("dashboard", data);
+    const dashboardOut = renderSummary(data);
     expect(dashboardOut).toContain(
       "<summary>1 · 🟣 Critical — y</summary>",
     );
@@ -694,7 +580,7 @@ describe("severity-table details", () => {
       ],
     });
 
-    const out = renderSummary("severity-table", data);
+    const out = renderSummary(data);
     // Headline still leads with the posted count.
     expect(out).toContain("📊 1 inline finding");
     // CLARITY-19a retired: no off-diff callout in the body.
@@ -723,7 +609,7 @@ describe("severity-table details", () => {
       ],
     });
 
-    const out = renderSummary("severity-table", data);
+    const out = renderSummary(data);
     expect(out).toContain("📊 1 inline finding");
     expect(out).not.toContain("not posted inline");
   });
@@ -747,7 +633,7 @@ describe("severity-table details", () => {
       postedComments: [],
     });
 
-    const out = renderSummary("severity-table", data);
+    const out = renderSummary(data);
     // ⚠️ banner present, no 📊 headline, no off-diff callout.
     expect(out).toContain("> ⚠️ `Parse failed`");
     expect(out).not.toMatch(/📊/u);
@@ -772,7 +658,7 @@ describe("severity-table details", () => {
       offDiffFromComments: [],
       postedComments: [{ path: "src/a.ts", line: 1, body: "x", severity: "high", category: "bug" }],
     });
-    const out = renderSummary("severity-table", data);
+    const out = renderSummary(data);
     // Singular form (no trailing "s").
     expect(out).toContain("📊 1 inline finding");
     expect(out).not.toContain("📊 1 inline findings");
@@ -803,7 +689,7 @@ describe("severity-table details", () => {
         { path: "src/b.ts", line: 1, body: "y", severity: "medium", category: "bug" },
       ],
     });
-    const out = renderSummary("severity-table", data);
+    const out = renderSummary(data);
     expect(out).toContain("📊 2 inline findings");
   });
 
@@ -827,7 +713,7 @@ describe("severity-table details", () => {
       offDiffFromComments: [],
       postedComments: [],
     });
-    const out = renderSummary("severity-table", data);
+    const out = renderSummary(data);
     expect(out).toContain("## ✅ 0 inline findings — ship it");
     expect(out).not.toContain("📊 0 inline findings");
     // No off-diff callout when offDiffCount === 0.
@@ -835,64 +721,30 @@ describe("severity-table details", () => {
   });
 });
 
-describe("cross-cutting invariants — all layouts", () => {
-  for (const layout of LAYOUTS) {
-    it(`${layout} stays under GitHub's 65,536-char body limit on busy data`, () => {
-      const out = renderSummary(layout, makeBusyData());
-      expect(out.length).toBeLessThanOrEqual(65_536);
-    });
-  }
-
-  // The terminal layout only emits path:line metadata (no body content)
-  // so it is exempt from the body-content redaction invariant. Every
-  // other layout embeds c.body somewhere and must therefore redact.
-  const BODY_REDACTING_LAYOUTS: LayoutId[] = LAYOUTS.filter((l) => l !== "terminal");
-  for (const layout of BODY_REDACTING_LAYOUTS) {
-    it(`${layout} redacts secrets in the body when present`, () => {
-      const base = makeBusyData();
-      const data: ReviewData = { ...base, secrets: ["Hardcoded secret."] };
-      const out = renderSummary(layout, data);
-      expect(out).not.toContain("Hardcoded secret.");
-      expect(out).toContain("[REDACTED_SECRET]");
-    });
-  }
-});
-
-// -- Layouts are visually distinct (smoke check via size + content shape) --
-
-describe("layout distinctness — each layout has a recognisable signature", () => {
-  it("all 20 layouts produce different strings for the busy sample", () => {
-    const outputs = LAYOUTS.map((l) => renderSummary(l, makeBusyData()));
-    const unique = new Set(outputs);
-    expect(unique.size).toBe(LAYOUTS.length);
+describe("cross-cutting invariants", () => {
+  it("stays under GitHub's 65,536-char body limit on busy data", () => {
+    const out = renderSummary(makeBusyData());
+    expect(out.length).toBeLessThanOrEqual(65_536);
   });
 
-  it("all 20 layouts produce the same clean-ship body for an empty review", () => {
-    // The clean-ship branch is hoisted to renderSummary so every layout
-    // receives the same one-line verdict for an empty review. Layout
-    // distinctness only matters for populated or parse-failed reviews.
-    const outputs = LAYOUTS.map((l) => renderSummary(l, makeCleanData()));
-    const unique = new Set(outputs);
-    expect(unique.size).toBe(1);
+  it("redacts secrets in the body when present", () => {
+    const base = makeBusyData();
+    const data: ReviewData = { ...base, secrets: ["Hardcoded secret."] };
+    const out = renderSummary(data);
+    expect(out).not.toContain("Hardcoded secret.");
+    expect(out).toContain("[REDACTED_SECRET]");
   });
 
-  it("every layout uses emoji (visually rich, not text-only)", () => {
-    // Smoke check — each layout should have at least one emoji glyph.
-    // We use a broad Unicode range to catch common emoji blocks.
+  it("emits the clean-ship body for an empty review", () => {
+    const out = renderSummary(makeCleanData());
+    expect(out).toContain("ship it");
+  });
+
+  it("uses emoji (visually rich, not text-only)", () => {
+    // Broad Unicode range covering the common emoji blocks.
     const emojiRe = /[\u{1F300}-\u{1FAFF}\u{2600}-\u{27BF}\u{1F1E6}-\u{1F1FF}]/u;
-    for (const layout of LAYOUTS) {
-      const out = renderSummary(layout, makeBusyData());
-      expect(out).toMatch(emojiRe);
-    }
-  });
-});
-
-// -- Type safety smoke ------------------------------------------------------
-
-describe("type safety — LayoutId union covers LAYOUTS", () => {
-  it("every LAYOUTS entry is assignable to LayoutId", () => {
-    const ids: LayoutId[] = [...LAYOUTS];
-    expect(ids.length).toBe(LAYOUTS.length);
+    const out = renderSummary(makeBusyData());
+    expect(out).toMatch(emojiRe);
   });
 });
 
@@ -901,7 +753,6 @@ describe("type safety — LayoutId union covers LAYOUTS", () => {
 describe("verdict escalation banner", () => {
   it("severity-table emits an escalation banner between the badge and the pipeline summary when SHIP is escalated to NEEDS_FIX", () => {
     const out = renderSummary(
-      "severity-table",
       makeData({
         review: {
           summary: "Looks good, ship it.",
@@ -933,7 +784,6 @@ describe("verdict escalation banner", () => {
 
   it("no banner is emitted when verdictEscalatedFrom is omitted (raw === effective)", () => {
     const out = renderSummary(
-      "severity-table",
       makeData({
         review: {
           summary: "Reviewed.",
@@ -957,7 +807,6 @@ describe("verdict escalation banner", () => {
 
   it("emits a downgrade banner (raw NEEDS_FIX → effective COMMENT) when all findings were severity-filtered", () => {
     const out = renderSummary(
-      "severity-table",
       makeData({
         review: {
           summary: "Reviewed.",
@@ -977,7 +826,6 @@ describe("verdict escalation banner", () => {
 
   it("verdict-banner layout nests the escalation banner inside the existing `> ## verdict` blockquote", () => {
     const out = renderSummary(
-      "verdict-banner",
       makeData({
         review: {
           summary: "Looks good, ship it.",
@@ -1007,7 +855,6 @@ describe("internal Severity vocabulary in tally + emoji", () => {
   // (major/critical/leak). Without these cases they render as ⚪.
   it("renders 🟠 Medium glyph for severity='major' and includes it in the tally", () => {
     const out = renderSummary(
-      "severity-table",
       makeData({
         review: {
           summary: "SonarCloud MAJOR finding.",
@@ -1041,7 +888,6 @@ describe("internal Severity vocabulary in tally + emoji", () => {
   // for the canonical invariant.
   it("renders security and leak inline with the correct glyph but hides them from the tally", () => {
     const out = renderSummary(
-      "severity-table",
       makeData({
         review: {
           summary: "Carve-out findings.",
@@ -1093,66 +939,9 @@ describe("internal Severity vocabulary in tally + emoji", () => {
   });
 });
 
-describe("highestSeverityBanner — internal vocabulary tier coverage", () => {
-  // Pin each cascade tier so a future refactor that drops one of the
-  // cases is caught immediately.
-  it("incident layout surfaces 🟣 Critical when security tier is the highest non-zero", () => {
+describe("escalation banner — posted-count sourcing", () => {
+  it("surfaces the escalation banner when verdictEscalatedFrom is set", () => {
     const out = renderSummary(
-      "incident",
-      makeData({
-        validCommentCount: 1,
-        severityCounts: { security: 1 },
-        postedComments: [{
-          path: "src/x.ts",
-          line: 1,
-          body: "x",
-          severity: "security",
-          category: "security",
-        }],
-      }),
-    );
-    expect(out).toMatch(/\*\*Severity:\*\*\s+🟣 Critical/u);
-  });
-
-  it("incident layout surfaces 🟠 Medium when major tier is the highest non-zero", () => {
-    const out = renderSummary(
-      "incident",
-      makeData({
-        validCommentCount: 1,
-        severityCounts: { major: 1 },
-        postedComments: [{
-          path: "src/x.ts",
-          line: 1,
-          body: "x",
-          severity: "major",
-          category: "general",
-        }],
-      }),
-    );
-    expect(out).toMatch(/\*\*Severity:\*\*\s+🟠 Medium/u);
-  });
-
-  it("incident layout surfaces 🟡 Low when minor tier is the highest non-zero", () => {
-    const out = renderSummary(
-      "incident",
-      makeData({
-        validCommentCount: 1,
-        severityCounts: { minor: 1 },
-        postedComments: [{
-          path: "src/x.ts",
-          line: 1,
-          body: "x",
-          severity: "minor",
-          category: "style",
-        }],
-      }),
-    );
-    expect(out).toMatch(/\*\*Severity:\*\*\s+🟡 Low/u);
-  });
-
-  it("newspaper layout surfaces the escalation banner when verdictEscalatedFrom is set", () => {
-    const out = renderSummary(
-      "newspaper",
       makeData({
         review: {
           summary: "Looks good, ship it.",
@@ -1177,7 +966,6 @@ describe("highestSeverityBanner — internal vocabulary tier coverage", () => {
 
   it("escalation banner uses postedComments.length, not validCommentCount (they diverge when some findings are off-diff)", () => {
     const out = renderSummary(
-      "severity-table",
       makeData({
         review: {
           summary: "Looks good, ship it.",

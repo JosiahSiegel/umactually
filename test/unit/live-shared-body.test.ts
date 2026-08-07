@@ -11,7 +11,6 @@ import {
 } from "../../src/cli/live-shared.js";
 import { countBySeverity } from "../../src/util/severity.js";
 import { REVIEW_MARKER } from "../../src/util/marker.js";
-import { renderSummary } from "../../src/render/summary-layouts.js";
 
 const SAMPLE_REVIEW: LiveReview = {
   summary: "Three issues need attention before merge.",
@@ -502,28 +501,6 @@ describe("buildReviewBody — severity-tally filter marker", () => {
     expect(body).toContain(LEGEND);
   });
 
-  it("asterisk + legend are absent from the `dashboard` layout (which uses a GFM table)", () => {
-    // The `dashboard` layout renders the counts as a GFM table —
-    // "🏷️ Severity breakdown" + a `| Critical | High | Medium | Low |` row.
-    // The inline `🏷️ \`X\` critical · \`X\` high · …` tally does NOT appear
-    // there. Verify the asterisk + legend are NOT emitted there —
-    // the marker is a property of the inline tally form, not the table
-    // form (the dashboard also surfaces a separate "Filtered: N" KPI).
-    const body = renderSummary("dashboard", {
-      review: reviewWithMixedSeverities,
-      provider: "openai-compatible",
-      modelId: "auto",
-      validCommentCount: 2,
-      suppressedCommentCount: 0,
-      offDiffFromComments: [],
-      postedComments: [],
-      severityCounts: { critical: 1, high: 1 },
-      secrets: SECRETS,
-      minimumSeverity: "high",
-    });
-    expect(body).toContain("🏷️ Severity breakdown");
-    expect(body).not.toContain(LEGEND);
-  });
 });
 
 // DRY-SHIM-001: Pins the @deprecated re-export shim that lives in

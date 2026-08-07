@@ -164,6 +164,7 @@ const TOP_LEVEL_COMMANDS: readonly HelpCommand[] = [
   { command: "review", description: "Run PR review (default)" },
   { command: "doctor", description: "Check environment is ready" },
   { command: "init", description: "Run guided setup (recommended quickstart)" },
+  { command: "tui", description: "Launch interactive terminal UI (review, config, debug)" },
   { command: "uninstall", description: "Remove the installed binary, config, and PATH entries" },
   { command: "check-review-artifact <path>", description: "Validate a review artifact" },
   { command: "version", description: "Print version" },

@@ -23,6 +23,8 @@ import {
   type InitResult,
 } from "./init.js";
 import { resolveColorPolicy } from "./no-color.js";
+import { runTui } from "./tui/index.js";
+import { runTtyGate } from "./tui/tty-gate.js";
 import {
   defaultFsAdapter,
   defaultStdinReader,
@@ -143,6 +145,8 @@ export async function dispatch(argv: readonly string[]): Promise<DispatchResult 
       return runCheckReviewArtifactBranch(stripLeadingCommand(argv, command));
     case "init":
       return runInitBranch(stripLeadingCommand(argv, command));
+    case "tui":
+      return runTuiBranch(stripLeadingCommand(argv, command));
     case "version":
       return runVersion(stripLeadingCommand(argv, command));
     default: {
@@ -443,6 +447,27 @@ function runCheckReviewArtifactBranch(args: readonly string[]): DispatchResult {
   }
   process.stderr.write(stderr);
   return { exitCode, stderr };
+}
+
+/**
+ * `umactually tui` — launch the interactive terminal UI.
+ *
+ * This branch is the SINGLE place where TTY gating happens for the
+ * `tui` subcommand. The hub itself (src/cli/tui/hub.ts) does NOT
+ * gate — it's only invoked after `runTtyGate` returns `{ ok: true }`.
+ *
+ * The gate is delegated to `runTtyGate` rather than re-implemented
+ * inline so the gate's behavior (CI detection, TTY heuristic, hint
+ * wording) lives in one place and can be unit-tested in isolation.
+ */
+async function runTuiBranch(args: readonly string[]): Promise<DispatchResult> {
+  const gate = runTtyGate();
+  if (gate.ok === false) {
+    process.stderr.write(gate.hint);
+    return { exitCode: gate.exitCode, stderr: gate.hint };
+  }
+  const result = await runTui(args);
+  return { exitCode: result.exitCode };
 }
 
 async function runDoctorBranch(args: readonly string[]): Promise<DispatchResult> {
