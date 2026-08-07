@@ -7982,7 +7982,6 @@ ${r}
 
 ;// CONCATENATED MODULE: ./src/cli/tui/flows/config.ts
 // src/cli/tui/flows/config.ts — View Config flow.
-// Shape + stub created by todo:8; body filled in by todo:13.
 //
 // Read-only display surface for the operator: shows the effective saved
 // config (path, provider, optional apiUrl, optional model) and the
@@ -8004,8 +8003,8 @@ ${r}
 //
 // After the read-only display, the flow blocks on a single-option
 // `select` with `{ value: 'menu', label: 'Back to menu' }` so the hub
-// gets a sentinel it can route on — this is consistent with todo:14's
-// Debug flow and matches the hub's select-based dispatch.
+// gets a sentinel it can route on — matches the hub's select-based
+// dispatch.
 
 
 
@@ -8109,7 +8108,7 @@ async function runConfigFlow() {
 // Pattern references:
 //   - src/cli/doctor.ts:53-65 (runDoctor signature + DoctorResult shape)
 //   - src/cli/doctor.ts:175-181 (formatDoctorHuman — reuse, do NOT duplicate)
-//   - src/cli/tui/flows/config.ts (todo:13 — same single-option "Back to menu"
+//   - src/cli/tui/flows/config.ts (same single-option "Back to menu"
 //     select pattern, so the hub's menu loop keeps the same UX)
 
 
@@ -17647,66 +17646,137 @@ async function resolveGitDiffPath() {
     await (0,promises_.writeFile)(tempPath, stdout, "utf8");
     return tempPath;
 }
+/**
+ * Run the wizard's prompt sequence (provider, apiUrl, model, apiKey,
+ * diff source). Returns a discriminated union: `{ cancel: true }`
+ * short-circuits the loop; otherwise the ok-branch carries the parsed
+ * user choices plus the resolved diff path and text.
+ *
+ * Extracted from `runReviewFlow` to keep the outer loop below the
+ * SonarCloud cognitive-complexity threshold (15). Each `isCancel`
+ * return is a true early-exit so the helper bails out before any
+ * nested state accumulates.
+ */
+async function runWizardPrompts(savedConfig) {
+    const providerAnswer = await dist_select({
+        message: "Provider",
+        options: providerOptions,
+        initialValue: savedConfig?.provider ?? "openai-compatible",
+    });
+    if (dist_isCancel(providerAnswer))
+        return { cancel: true };
+    const provider = providerAnswer;
+    let apiUrl = null;
+    if (provider !== "copilot") {
+        const answer = await dist_text({
+            message: "API URL",
+            initialValue: savedConfig?.apiUrl ?? "",
+            validate: (value) => value?.startsWith("http") === true ? undefined : "must be http(s)",
+        });
+        if (dist_isCancel(answer))
+            return { cancel: true };
+        apiUrl = answer;
+    }
+    const modelAnswer = await dist_text({
+        message: "Model",
+        initialValue: savedConfig?.model ?? "auto",
+    });
+    if (dist_isCancel(modelAnswer))
+        return { cancel: true };
+    const model = modelAnswer;
+    let apiKeyLocal = null;
+    if (process.env["UMACTUALLY_API_KEY"] === undefined) {
+        const answer = await dist_password({ message: "API key", mask: "*" });
+        if (dist_isCancel(answer))
+            return { cancel: true };
+        apiKeyLocal = answer;
+    }
+    const source = await dist_select({ message: "Diff source", options: diffOptions });
+    if (dist_isCancel(source) || source === "cancel")
+        return { cancel: true };
+    const diffSource = source;
+    const diffPath = diffSource === "diff" ? await resolveGitDiffPath() : null;
+    // Read the diff text so the post-review summary panel can route
+    // findings through selectPostableComments's position index.
+    // Passing "" would classify every comment as off-diff and render
+    // zero inline comments regardless of what the model produced.
+    const diffText = diffPath === null ? "" : await (0,promises_.readFile)(diffPath, "utf8");
+    return {
+        cancel: false,
+        provider: provider,
+        apiUrl,
+        model: model,
+        apiKeyLocal,
+        source: diffSource,
+        diffPath,
+        diffText,
+    };
+}
+/**
+ * Invoke `runStandalone` with the freshly captured key propagated to
+ * `env`, then dispatch the result. The success path zeroizes the key
+ * before `showSuccess` runs (Fix D); the error path zeroizes before
+ * the retry/menu prompt so the secret never survives the decision.
+ *
+ * Returns a small `RunOutcome` so the outer loop can keep its
+ * `retry` flag out of the helper's scope.
+ */
+async function runAndHandle(parsed, diffText, apiKeyLocal) {
+    // Fix C: build the env so the freshly captured key reaches the
+    // provider even when the operator typed it into the wizard.
+    const env = {
+        ...process.env,
+        ...(apiKeyLocal !== null && { UMACTUALLY_API_KEY: apiKeyLocal }),
+    };
+    const result = await runStandalone({ parsed, cwd: process.cwd(), env });
+    if (result.kind === "ok" || result.kind === "ok-no-diff") {
+        // Fix D: zeroize before any awaitable that doesn't depend on the
+        // key (Fix D explicitly notes this is stack-dwell mitigation, not
+        // a security guarantee).
+        apiKeyLocal = null;
+        await showSuccess(result, parsed, diffText);
+        return { exit: true };
+    }
+    stream.error(result.message);
+    const next = await dist_select({
+        message: "Provider error",
+        options: [
+            { value: "retry", label: "Retry" },
+            { value: "menu", label: "Back to menu" },
+        ],
+    });
+    apiKeyLocal = null;
+    if (dist_isCancel(next) || next === "menu")
+        return { exit: true };
+    return { exit: false, retry: next === "retry" };
+}
 async function runReviewFlow() {
     let retry = false;
     do {
-        retry = false;
         let apiKeyLocal = null;
         let tempDiffPath = null;
         try {
             const saved = tryReadSavedConfig().config;
-            const providerAnswer = await dist_select({ message: "Provider", options: providerOptions, initialValue: saved?.provider ?? "openai-compatible" });
-            if (dist_isCancel(providerAnswer))
+            const prompt = await runWizardPrompts(saved);
+            if (prompt.cancel)
                 return { exitCode: 0 };
-            const provider = providerAnswer;
-            let apiUrl = null;
-            if (provider !== "copilot") {
-                const answer = await dist_text({ message: "API URL", initialValue: saved?.apiUrl ?? "", validate: (value) => value?.startsWith("http") === true ? undefined : "must be http(s)" });
-                if (dist_isCancel(answer))
-                    return { exitCode: 0 };
-                apiUrl = answer;
-            }
-            const modelAnswer = await dist_text({ message: "Model", initialValue: saved?.model ?? "auto" });
-            if (dist_isCancel(modelAnswer))
-                return { exitCode: 0 };
-            const model = modelAnswer;
-            if (process.env["UMACTUALLY_API_KEY"] === undefined) {
-                const answer = await dist_password({ message: "API key", mask: "*" });
-                if (dist_isCancel(answer))
-                    return { exitCode: 0 };
-                apiKeyLocal = answer;
-            }
-            const source = await dist_select({ message: "Diff source", options: diffOptions });
-            if (dist_isCancel(source) || source === "cancel")
-                return { exitCode: 0 };
-            const diffPath = source === "diff" ? await resolveGitDiffPath() : null;
-            if (source === "diff") {
-                tempDiffPath = diffPath;
-            }
-            // Read the diff text so the post-review summary panel can route
-            // findings through selectPostableComments's position index.
-            // Passing "" would classify every comment as off-diff and render
-            // zero inline comments regardless of what the model produced.
-            const diffText = diffPath === null ? "" : await (0,promises_.readFile)(diffPath, "utf8");
+            apiKeyLocal = prompt.apiKeyLocal;
+            if (prompt.source === "diff")
+                tempDiffPath = prompt.diffPath;
             const parsed = {
                 ...emptyParsedArgs(),
-                provider: provider,
-                apiUrl,
-                model: model,
+                provider: prompt.provider,
+                apiUrl: prompt.apiUrl,
+                model: prompt.model,
                 apiKey: apiKeyLocal,
-                diffPath,
-                files: source === "files" ? "." : null,
+                diffPath: prompt.diffPath,
+                files: prompt.source === "files" ? "." : null,
             };
-            const result = await runStandalone({ parsed, cwd: process.cwd(), env: process.env });
-            if (result.kind === "ok" || result.kind === "ok-no-diff") {
-                await showSuccess(result, parsed, diffText);
+            const outcome = await runAndHandle(parsed, prompt.diffText, apiKeyLocal);
+            apiKeyLocal = null;
+            if (outcome.exit)
                 return { exitCode: 0 };
-            }
-            stream.error(result.message);
-            const next = await dist_select({ message: "Provider error", options: [{ value: "retry", label: "Retry" }, { value: "menu", label: "Back to menu" }] });
-            if (dist_isCancel(next) || next === "menu")
-                return { exitCode: 0 };
-            retry = next === "retry";
+            retry = outcome.retry;
         }
         catch (err) {
             // Every return path must be { exitCode: 0 }; if runStandalone or
@@ -17738,7 +17808,6 @@ async function runReviewFlow() {
 
 ;// CONCATENATED MODULE: ./src/cli/tui/hub.ts
 // src/cli/tui/hub.ts — hub menu for the tui subcommand.
-// Shape pinned by todo:8; body filled in by todo:10.
 // Takes a `runFlow` injection point so the hub can be tested without real flows.
 
 async function runHub(opts) {
@@ -17746,11 +17815,16 @@ async function runHub(opts) {
     // Only `exit` and `isCancel` break the loop.
     //
     // The hub itself does NOT perform TTY gating; that's `runTuiBranch`'s
-    // job (todo:9). The hub assumes TTY is already verified.
+    // job. The hub assumes TTY is already verified.
     //
     // `isCancel` is the canonical @clack/prompts cancel pattern; the
     // underlying cancel sentinel is an internal implementation detail and
     // not part of the public API — do NOT try/catch it.
+    //
+    // A flow that throws (rather than returning `{ exitCode: N }`) is
+    // caught here so the hub stays open: log the error and re-prompt.
+    // Silently swallowing would leave the operator stranded without a
+    // reason; `p.log.error` keeps the message visible alongside the menu.
     while (true) {
         const choice = await dist_select({
             message: "What would you like to do?",
@@ -17767,8 +17841,14 @@ async function runHub(opts) {
         if (choice === "exit") {
             return { exitCode: 0 };
         }
-        await opts.runFlow(choice);
-        // After flow returns, loop back to the menu.
+        try {
+            await opts.runFlow(choice);
+        }
+        catch (err) {
+            const message = err instanceof Error ? err.message : String(err);
+            log.error(`Flow crashed: ${message}`);
+        }
+        // After flow returns (or throws), loop back to the menu.
     }
 }
 
