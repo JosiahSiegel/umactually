@@ -1,5 +1,5 @@
 /**
- * 20 unique markdown layout variants for the UmActually PR review summary.
+ * Markdown rendering for the UmActually PR review summary.
  *
  * The "review summary" is the parent PR-level card posted alongside the
  * per-finding inline threads on a GitHub Pull Request review or an Azure
@@ -12,11 +12,11 @@
  *   3. What kinds of things are wrong?
  *   4. Where in the diff should I look first?
  *
- * This module defines twenty visually distinct layouts that all answer
- * those questions but organize the answer differently. The default
- * (`LAYOUT_DEFAULT`) is byte-identical to the existing `buildReviewBody`
- * output so that all existing tests continue to pass without modification.
- * The other nineteen are opt-in alternatives.
+ * A single shipped layout answers those questions. The previous twenty
+ * layout variants and the comparison sheet that wrapped them have been
+ * collapsed out; `renderSummary` now hardcodes the production layout. The
+ * nineteen alternative renderer functions below are kept temporarily and
+ * will be removed in a follow-up purge step.
  *
  * Cross-platform rules (GitHub PR review body + Azure DevOps PR thread):
  *   - DO use GFM tables, headings, blockquote, lists, fenced code,
@@ -55,71 +55,11 @@ import { replaceSecretsLiterally } from "../util/redact.js";
 // Public types
 // ---------------------------------------------------------------------------
 
-/**
- * Stable identifier for every layout in this module. Listed in `LAYOUTS`
- * below and exported so callers can pick one without re-typing the union.
- *
- * `BASELINE` is the byte-identical reproduction of the existing
- * `buildReviewBody` output; it is exported separately so callers can
- * pin it as the "what we have now" comparison but it is NOT part of
- * the 20 replacement layouts the user asked for.
- */
-export type LayoutId =
-  | "dashboard" // 1: KPI tiles
-  | "pipeline" // 2: sequential step diagram
-  | "verdict-banner" // 3: single oversized banner
-  | "severity-table" // 4: classic SonarQube-style table
-  | "card-grid" // 5: one card per severity bucket
-  | "tldr-walkthrough" // 6: TL;DR + per-file sections
-  | "checklist" // 7: bulleted checklist grouped by category
-  | "progress-bars" // 8: ASCII block bars
-  | "pros-cons" // 9: two-column GFM table
-  | "tweet" // 10: announcement-style TL;DR
-  | "faq" // 11: Q/A pairs
-  | "terminal" // 12: fenced-code terminal output
-  | "incident" // 13: status-page timeline
-  | "release-notes" // 14: changelog-style lists
-  | "coverage" // 15: per-file coverage table
-  | "thermometer" // 16: vertical severity ladder
-  | "status-page" // 17: status banner + components
-  | "diffstat" // 18: per-file +/- with bars
-  | "sticky-notes" // 19: push-pin quote blocks
-  | "newspaper"; // 20: headline-lede-body
-
-/**
- * Identifier for the baseline layout (byte-identical reproduction of
- * the existing `buildReviewBody` output). NOT part of the 20-sheet
- * `LAYOUTS` list — it is exposed separately so callers can render the
- * "what we have now" reference for side-by-side comparison.
- */
-export type BaselineId = "current";
-
-/** The 20 replacement layouts the user requested. */
-export const LAYOUTS: readonly LayoutId[] = [
-  "dashboard",
-  "pipeline",
-  "verdict-banner",
-  "severity-table",
-  "card-grid",
-  "tldr-walkthrough",
-  "checklist",
-  "progress-bars",
-  "pros-cons",
-  "tweet",
-  "faq",
-  "terminal",
-  "incident",
-  "release-notes",
-  "coverage",
-  "thermometer",
-  "status-page",
-  "diffstat",
-  "sticky-notes",
-  "newspaper",
-];
-
-/** Singleton baseline identifier. */
-export const BASELINE: BaselineId = "current";
+// The previous twenty-variant layout union and its sibling exports have
+// been collapsed out. The single shipped layout is selected by
+// `renderSummary` directly; the alternative renderer functions below
+// remain temporarily until the follow-up purge step removes them along
+// with the registry maps.
 
 /** Summary length above which the default layout uses a collapsed details block. */
 export const VERBOSE_THRESHOLD_CHARS = 500;
@@ -1795,7 +1735,7 @@ function layoutNewspaper(data: ReviewData): string {
 
 type RendererFn = (data: ReviewData) => string;
 
-const LAYOUT_RENDERERS: Record<LayoutId, RendererFn> = {
+const LAYOUT_RENDERERS: Record<string, RendererFn> = {
   "dashboard": layoutDashboard,
   "pipeline": layoutPipeline,
   "verdict-banner": layoutVerdictBanner,
@@ -1818,20 +1758,20 @@ const LAYOUT_RENDERERS: Record<LayoutId, RendererFn> = {
   "newspaper": layoutNewspaper,
 };
 
-const BASELINE_RENDERERS: Record<BaselineId, RendererFn> = {
+const BASELINE_RENDERERS: Record<string, RendererFn> = {
   "current": layoutBaseline,
 };
 
 /**
  * Render a review summary using one of the 20 replacement layouts.
  *
- * @param layout  Layout identifier (see {@link LayoutId}).
+ * @param layout  Layout identifier.
  * @param data    Review data shape; same inputs as the existing
  *                `buildReviewBody` in `src/cli/live-shared.ts`.
  * @returns Markdown body string safe to post to GitHub PR reviews
  *          and Azure DevOps PR threads.
  */
-export function renderSummary(layout: LayoutId, data: ReviewData): string {
+export function renderSummary(layout: string, data: ReviewData): string {
   if (data.postedComments === undefined) {
     throw new Error("renderSummary: data.postedComments is required (was undefined). Use buildReviewBody() to dispatch — it computes the post-filter set from review.comments.");
   }
@@ -1868,12 +1808,12 @@ export function renderSummary(layout: LayoutId, data: ReviewData): string {
 }
 
 /**
- * Render the BASELINE review summary (byte-identical reproduction of
- * the existing `buildReviewBody` output). Use this for side-by-side
- * comparison in the viewer and for the regression test that pins
- * `LAYOUTS` parity with `buildReviewBody`.
+ * Render the baseline review summary (byte-identical reproduction of
+ * the existing `buildReviewBody` output). Retained temporarily during
+ * the layout-purge wave; the follow-up step will remove it together
+ * with the registry maps.
  */
-export function renderBaseline(baseline: BaselineId, data: ReviewData): string {
+export function renderBaseline(baseline: string, data: ReviewData): string {
   if (data.postedComments === undefined) {
     throw new Error("renderBaseline: data.postedComments is required (was undefined). Use buildReviewBody() to dispatch — it computes the post-filter set from review.comments.");
   }
@@ -1883,27 +1823,3 @@ export function renderBaseline(baseline: BaselineId, data: ReviewData): string {
   }
   return renderer(data);
 }
-
-/** Human-readable label for each of the 20 layouts. */
-export const LAYOUT_LABELS: Record<LayoutId, string> = {
-  "dashboard": "1 · Dashboard — KPI tiles",
-  "pipeline": "2 · Pipeline — step diagram",
-  "verdict-banner": "3 · Verdict banner — single oversized callout",
-  "severity-table": "4 · Severity table — SonarQube-style",
-  "card-grid": "5 · Card grid — one card per severity",
-  "tldr-walkthrough": "6 · TL;DR + walkthrough",
-  "checklist": "7 · Checklist — grouped by category",
-  "progress-bars": "8 · Progress bars — ASCII block bars",
-  "pros-cons": "9 · Pros & Cons — two-column GFM table",
-  "tweet": "10 · Tweet — announcement card",
-  "faq": "11 · FAQ — Q/A pairs",
-  "terminal": "12 · Terminal — fenced code block",
-  "incident": "13 · Incident report — timeline",
-  "release-notes": "14 · Release notes — categorized changelog",
-  "coverage": "15 · Coverage report — per-file table",
-  "thermometer": "16 · Thermometer — vertical severity ladder",
-  "status-page": "17 · Status page — components & incidents",
-  "diffstat": "18 · Diffstat — per-file +/- with ASCII bars",
-  "sticky-notes": "19 · Sticky notes — push-pin quote blocks",
-  "newspaper": "20 · Newspaper — headline-lede-body",
-};
