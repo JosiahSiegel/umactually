@@ -11,6 +11,7 @@ import {
 } from "@clack/prompts";
 
 import { tryReadSavedConfig } from "../../load-saved-config.js";
+import type { SavedConfig } from "../../../config/saved-config.js";
 import { runStandalone, type StandaloneRunResult } from "../../standalone-run.js";
 import { selectPostableComments, type LiveReview } from "../../live-shared.js";
 import { parseCliArgs, type ParsedCliArgs } from "../../parse-args.js";
@@ -120,60 +121,155 @@ async function resolveGitDiffPath(): Promise<string | null> {
   return tempPath;
 }
 
+type WizardPrompt =
+  | { cancel: true }
+  | {
+      cancel: false;
+      provider: ParsedCliArgs["provider"];
+      apiUrl: string | null;
+      model: ParsedCliArgs["model"];
+      apiKeyLocal: string | null;
+      source: "diff" | "files";
+      diffPath: string | null;
+      diffText: string;
+    };
+
+/**
+ * Run the wizard's prompt sequence (provider, apiUrl, model, apiKey,
+ * diff source). Returns a discriminated union: `{ cancel: true }`
+ * short-circuits the loop; otherwise the ok-branch carries the parsed
+ * user choices plus the resolved diff path and text.
+ *
+ * Extracted from `runReviewFlow` to keep the outer loop below the
+ * SonarCloud cognitive-complexity threshold (15). Each `isCancel`
+ * return is a true early-exit so the helper bails out before any
+ * nested state accumulates.
+ */
+async function runWizardPrompts(
+  savedConfig: SavedConfig | null | undefined,
+): Promise<WizardPrompt> {
+  const providerAnswer = await select({
+    message: "Provider",
+    options: providerOptions,
+    initialValue: savedConfig?.provider ?? "openai-compatible",
+  });
+  if (isCancel(providerAnswer)) return { cancel: true };
+  const provider = providerAnswer;
+  let apiUrl: string | null = null;
+  if (provider !== "copilot") {
+    const answer = await text({
+      message: "API URL",
+      initialValue: savedConfig?.apiUrl ?? "",
+      validate: (value) =>
+        value?.startsWith("http") === true ? undefined : "must be http(s)",
+    });
+    if (isCancel(answer)) return { cancel: true };
+    apiUrl = answer;
+  }
+  const modelAnswer = await text({
+    message: "Model",
+    initialValue: savedConfig?.model ?? "auto",
+  });
+  if (isCancel(modelAnswer)) return { cancel: true };
+  const model = modelAnswer;
+  let apiKeyLocal: string | null = null;
+  if (process.env["UMACTUALLY_API_KEY"] === undefined) {
+    const answer = await password({ message: "API key", mask: "*" });
+    if (isCancel(answer)) return { cancel: true };
+    apiKeyLocal = answer;
+  }
+  const source = await select({ message: "Diff source", options: diffOptions });
+  if (isCancel(source) || source === "cancel") return { cancel: true };
+  const diffSource: "diff" | "files" = source as "diff" | "files";
+  const diffPath: string | null = diffSource === "diff" ? await resolveGitDiffPath() : null;
+  // Read the diff text so the post-review summary panel can route
+  // findings through selectPostableComments's position index.
+  // Passing "" would classify every comment as off-diff and render
+  // zero inline comments regardless of what the model produced.
+  const diffText: string = diffPath === null ? "" : await readFile(diffPath, "utf8");
+  return {
+    cancel: false,
+    provider: provider as ParsedCliArgs["provider"],
+    apiUrl,
+    model: model as ParsedCliArgs["model"],
+    apiKeyLocal,
+    source: diffSource,
+    diffPath,
+    diffText,
+  };
+}
+
+type RunOutcome =
+  | { exit: true }
+  | { exit: false; retry: true }
+  | { exit: false; retry: false };
+
+/**
+ * Invoke `runStandalone` with the freshly captured key propagated to
+ * `env`, then dispatch the result. The success path zeroizes the key
+ * before `showSuccess` runs (Fix D); the error path zeroizes before
+ * the retry/menu prompt so the secret never survives the decision.
+ *
+ * Returns a small `RunOutcome` so the outer loop can keep its
+ * `retry` flag out of the helper's scope.
+ */
+async function runAndHandle(
+  parsed: ParsedCliArgs,
+  diffText: string,
+  apiKeyLocal: string | null,
+): Promise<RunOutcome> {
+  // Fix C: build the env so the freshly captured key reaches the
+  // provider even when the operator typed it into the wizard.
+  const env = {
+    ...process.env,
+    ...(apiKeyLocal !== null && { UMACTUALLY_API_KEY: apiKeyLocal }),
+  };
+  const result = await runStandalone({ parsed, cwd: process.cwd(), env });
+  if (result.kind === "ok" || result.kind === "ok-no-diff") {
+    // Fix D: zeroize before any awaitable that doesn't depend on the
+    // key (Fix D explicitly notes this is stack-dwell mitigation, not
+    // a security guarantee).
+    apiKeyLocal = null;
+    await showSuccess(result, parsed, diffText);
+    return { exit: true };
+  }
+  stream.error(result.message);
+  const next = await select({
+    message: "Provider error",
+    options: [
+      { value: "retry", label: "Retry" },
+      { value: "menu", label: "Back to menu" },
+    ] as const,
+  });
+  apiKeyLocal = null;
+  if (isCancel(next) || next === "menu") return { exit: true };
+  return { exit: false, retry: next === "retry" };
+}
+
 export async function runReviewFlow(): Promise<{ exitCode: 0 }> {
   let retry = false;
   do {
-    retry = false;
     let apiKeyLocal: string | null = null;
     let tempDiffPath: string | null = null;
     try {
       const saved = tryReadSavedConfig().config;
-      const providerAnswer = await select({ message: "Provider", options: providerOptions, initialValue: saved?.provider ?? "openai-compatible" });
-      if (isCancel(providerAnswer)) return { exitCode: 0 };
-      const provider = providerAnswer;
-      let apiUrl: string | null = null;
-      if (provider !== "copilot") {
-        const answer = await text({ message: "API URL", initialValue: saved?.apiUrl ?? "", validate: (value) => value?.startsWith("http") === true ? undefined : "must be http(s)" });
-        if (isCancel(answer)) return { exitCode: 0 };
-        apiUrl = answer;
-      }
-      const modelAnswer = await text({ message: "Model", initialValue: saved?.model ?? "auto" });
-      if (isCancel(modelAnswer)) return { exitCode: 0 };
-      const model = modelAnswer;
-      if (process.env["UMACTUALLY_API_KEY"] === undefined) {
-        const answer = await password({ message: "API key", mask: "*" });
-        if (isCancel(answer)) return { exitCode: 0 };
-        apiKeyLocal = answer;
-      }
-      const source = await select({ message: "Diff source", options: diffOptions });
-      if (isCancel(source) || source === "cancel") return { exitCode: 0 };
-      const diffPath: string | null = source === "diff" ? await resolveGitDiffPath() : null;
-      if (source === "diff") {
-        tempDiffPath = diffPath;
-      }
-      // Read the diff text so the post-review summary panel can route
-      // findings through selectPostableComments's position index.
-      // Passing "" would classify every comment as off-diff and render
-      // zero inline comments regardless of what the model produced.
-      const diffText: string = diffPath === null ? "" : await readFile(diffPath, "utf8");
+      const prompt = await runWizardPrompts(saved);
+      if (prompt.cancel) return { exitCode: 0 };
+      apiKeyLocal = prompt.apiKeyLocal;
+      if (prompt.source === "diff") tempDiffPath = prompt.diffPath;
       const parsed: ParsedCliArgs = {
         ...emptyParsedArgs(),
-        provider: provider as ParsedCliArgs["provider"],
-        apiUrl,
-        model: model as ParsedCliArgs["model"],
+        provider: prompt.provider,
+        apiUrl: prompt.apiUrl,
+        model: prompt.model,
         apiKey: apiKeyLocal,
-        diffPath,
-        files: source === "files" ? "." : null,
+        diffPath: prompt.diffPath,
+        files: prompt.source === "files" ? "." : null,
       };
-      const result = await runStandalone({ parsed, cwd: process.cwd(), env: process.env });
-      if (result.kind === "ok" || result.kind === "ok-no-diff") {
-        await showSuccess(result, parsed, diffText);
-        return { exitCode: 0 };
-      }
-      stream.error(result.message);
-      const next = await select({ message: "Provider error", options: [{ value: "retry", label: "Retry" }, { value: "menu", label: "Back to menu" }] as const });
-      if (isCancel(next) || next === "menu") return { exitCode: 0 };
-      retry = next === "retry";
+      const outcome = await runAndHandle(parsed, prompt.diffText, apiKeyLocal);
+      apiKeyLocal = null;
+      if (outcome.exit) return { exitCode: 0 };
+      retry = outcome.retry;
     } catch (err) {
       // Every return path must be { exitCode: 0 }; if runStandalone or
       // a future provider bug throws, surface the message and return
