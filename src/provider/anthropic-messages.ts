@@ -55,11 +55,11 @@ import {
   type ProviderReviewPayload,
 } from "./provider-parse.js";
 import {
-  isAbortError,
   ProviderError,
   sanitizeMessage,
 } from "./provider-error.js";
 import { buildParseFailError, computeBumpedMaxOutput, runWithRetry } from "./provider-retry.js";
+import { performProviderFetch, readResponseText } from "./http.js";
 import { composeSignal } from "../util/async.js";
 import {
   createRequestId,
@@ -349,7 +349,15 @@ async function runOnce(
 
   let response: Response;
   try {
-    response = await performFetch(fetchImpl, url, body, signal, config.apiKey, requestId);
+    response = await performProviderFetch({
+      url,
+      body: JSON.stringify(body),
+      signal,
+      requestId,
+      endpoint: ENDPOINT,
+      fetchImpl,
+      buildHeaders: () => buildAnthropicHeaders(config.apiKey, requestId),
+    });
   } catch (error) {
     if (error instanceof ProviderError) {
       return { ok: false, error };
@@ -365,7 +373,7 @@ async function runOnce(
     // body text is read ONLY so the diagnostic can cite it.
     let errorBodyText = "";
     try {
-      errorBodyText = await response.text();
+      errorBodyText = await readResponseText(response, ENDPOINT, requestId);
     } catch {
       // Body read failure shouldn't mask the original status.
     }
@@ -384,7 +392,7 @@ async function runOnce(
 
   let rawText: string;
   try {
-    rawText = await response.text();
+    rawText = await readResponseText(response, ENDPOINT, requestId);
   } catch (error) {
     return {
       ok: false,
@@ -452,10 +460,18 @@ async function runOnce(
   try {
     // Fresh signal: same rationale as openai-compatible.
     const retrySignal = composeSignal(config.signal, config.requestTimeoutMs);
-    const retryResponse = await performFetch(fetchImpl, url, retryBody, retrySignal, config.apiKey, requestId);
+    const retryResponse = await performProviderFetch({
+      url,
+      body: JSON.stringify(retryBody),
+      signal: retrySignal,
+      requestId,
+      endpoint: ENDPOINT,
+      fetchImpl,
+      buildHeaders: () => buildAnthropicHeaders(config.apiKey, requestId),
+    });
     retryResponseStatus = retryResponse.status;
     if (retryResponse.ok) {
-      const retryRawText = await retryResponse.text();
+      const retryRawText = await readResponseText(retryResponse, ENDPOINT, requestId);
       const retryTextPayload = extractAnthropicTextPayload(retryRawText);
       const parsedRetry = parseReviewPayload(retryTextPayload);
       if (isNonEmptyReview(parsedRetry)) {
@@ -497,42 +513,6 @@ async function runOnce(
       ...(usage !== undefined ? { usage } : {}),
     }),
   };
-}
-
-async function performFetch(
-  fetchImpl: typeof fetch,
-  url: string,
-  body: Record<string, unknown>,
-  signal: AbortSignal,
-  apiKey: string,
-  requestId: string,
-): Promise<Response> {
-  try {
-    return await fetchImpl(url, {
-      method: "POST",
-      headers: {
-        "content-type": "application/json",
-        // Anthropic BANS the `Authorization: Bearer ...` header. The
-        // correct auth header is `x-api-key`, with the required
-        // `anthropic-version` pin. Sending Bearer instead results in a
-        // 401 with no useful error message. Test fixtures pin both
-        // headers (no `authorization`).
-        "x-api-key": apiKey,
-        "anthropic-version": ANTHROPIC_VERSION,
-        "x-request-id": requestId,
-      },
-      body: JSON.stringify(body),
-      signal,
-    });
-  } catch (error) {
-    if (isAbortError(error)) {
-      throw new ProviderError("timeout", ENDPOINT, null, requestId,
-        "Anthropic request timed out.");
-    }
-    throw new ProviderError("network", ENDPOINT, null, requestId,
-      sanitizeMessage(error, "Network error contacting Anthropic."),
-      { cause: error });
-  }
 }
 
 /**
