@@ -67,13 +67,14 @@ export async function runGithubLive(input: {
     );
     rawSonarFindings = [];
   } else {
+    const timeoutMs = parsed.sonarTimeoutSeconds !== null ? parsed.sonarTimeoutSeconds * 1000 : undefined;
     const fetched = await fetchSonarPrIssues({
       config: {
         hostUrl: parsed.sonarHostUrl,
         token: parsed.sonarToken,
         projectKey: parsed.sonarProjectKey,
         prNumber: context.prNumber,
-        timeoutMs: parsed.sonarTimeoutSeconds !== null ? parsed.sonarTimeoutSeconds * 1000 : undefined,
+        ...(timeoutMs !== undefined ? { timeoutMs } : {}),
       },
       fetchImpl,
     });
