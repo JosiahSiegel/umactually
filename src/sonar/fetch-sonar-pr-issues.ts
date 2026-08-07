@@ -58,6 +58,62 @@ function parseIssue(value: unknown, projectKey: string, prNumber: number): LiveR
   return { path, line, body, severity: mapSeverity(severity), category: "sonar" };
 }
 
+type FetchSonarIssuesPageInput = {
+  readonly baseUrl: string;
+  readonly projectKey: string;
+  readonly prNumber: number;
+  readonly page: number;
+  readonly headers: Record<string, string>;
+  readonly timeoutMs?: number;
+  readonly fetchImpl: FetchImpl;
+};
+
+type FetchSonarIssuesPageResult = {
+  readonly findings: readonly LiveReviewComment[];
+  readonly total: number;
+  readonly issues: readonly unknown[];
+};
+
+async function fetchSonarIssuesPage(input: FetchSonarIssuesPageInput): Promise<FetchSonarIssuesPageResult | null> {
+  const { baseUrl, projectKey, prNumber, page, headers, timeoutMs, fetchImpl } = input;
+  const url = new URL(`${baseUrl}/api/issues/search`);
+  url.searchParams.set("componentKeys", projectKey);
+  url.searchParams.set("pullRequest", String(prNumber));
+  url.searchParams.set("inNewCodePeriod", "true");
+  url.searchParams.set("resolved", "false");
+  url.searchParams.set("ps", String(MAX_SONAR_ISSUES));
+  url.searchParams.set("p", String(page));
+  let raw: unknown;
+  try {
+    const response = await fetchImpl(url.toString(), {
+      method: "GET",
+      headers,
+      ...(timeoutMs !== undefined ? { signal: AbortSignal.timeout(timeoutMs) } : {}),
+    });
+    ensureHttpOk(response, "SONAR_ISSUES_API_FAILED", "SonarCloud issues API", "Verify SonarCloud configuration and token.");
+    raw = await readJsonResponse(response);
+  } catch (error) {
+    writeBrandedAnnotation("warning", `failed to fetch SonarCloud PR issues; treating as zero findings (best-effort fetch). ${error instanceof Error ? error.message : String(error)}`);
+    return null;
+  }
+  if (!isRecord(raw)) {
+    writeBrandedAnnotation("warning", "SonarCloud issues API returned a non-record JSON body; treating as zero findings.");
+    return null;
+  }
+  const total = isSafeInteger(raw["total"]) ? raw["total"] : 0;
+  const issues = raw["issues"];
+  if (!isUnknownArray(issues)) {
+    writeBrandedAnnotation("warning", "SonarCloud issues API returned a body without an `issues` array; treating as zero findings.");
+    return null;
+  }
+  const findings: LiveReviewComment[] = [];
+  for (const entry of issues) {
+    const finding = parseIssue(entry, projectKey, prNumber);
+    if (finding !== null) findings.push(finding);
+  }
+  return { findings, total, issues };
+}
+
 export async function fetchSonarPrIssues(input: {
   readonly config: FetchSonarPrIssuesConfig;
   readonly fetchImpl: FetchImpl;
@@ -74,43 +130,20 @@ export async function fetchSonarPrIssues(input: {
   let page = 1;
 
   while (page <= MAX_PAGES) {
-    const url = new URL(`${baseUrl}/api/issues/search`);
-    url.searchParams.set("componentKeys", config.projectKey);
-    url.searchParams.set("pullRequest", String(config.prNumber));
-    url.searchParams.set("inNewCodePeriod", "true");
-    url.searchParams.set("resolved", "false");
-    url.searchParams.set("ps", String(MAX_SONAR_ISSUES));
-    url.searchParams.set("p", String(page));
-
-    let raw: unknown;
-    try {
-      const response = await fetchImpl(url.toString(), {
-        method: "GET",
-        headers,
-        ...(config.timeoutMs !== undefined ? { signal: AbortSignal.timeout(config.timeoutMs) } : {}),
-      });
-      ensureHttpOk(response, "SONAR_ISSUES_API_FAILED", "SonarCloud issues API", "Verify SonarCloud configuration and token.");
-      raw = await readJsonResponse(response);
-    } catch (error) {
-      writeBrandedAnnotation("warning", `failed to fetch SonarCloud PR issues; treating as zero findings (best-effort fetch). ${error instanceof Error ? error.message : String(error)}`);
-      return { findings, total, droppedMalformedCount, cappedAtIssueCount: Math.max(0, total - findings.length - droppedMalformedCount) };
-    }
-    if (!isRecord(raw)) {
-      writeBrandedAnnotation("warning", "SonarCloud issues API returned a non-record JSON body; treating as zero findings.");
-      return { findings, total, droppedMalformedCount, cappedAtIssueCount: Math.max(0, total - findings.length - droppedMalformedCount) };
-    }
-    total = isSafeInteger(raw["total"]) ? raw["total"] : total;
-    const issues = raw["issues"];
-    if (!isUnknownArray(issues)) {
-      writeBrandedAnnotation("warning", "SonarCloud issues API returned a body without an `issues` array; treating as zero findings.");
-      return { findings, total, droppedMalformedCount, cappedAtIssueCount: Math.max(0, total - findings.length - droppedMalformedCount) };
-    }
-    for (const entry of issues) {
-      const finding = parseIssue(entry, config.projectKey, config.prNumber);
-      if (finding === null) droppedMalformedCount += 1;
-      else findings.push(finding);
-    }
-    if (issues.length < MAX_SONAR_ISSUES || findings.length + droppedMalformedCount >= total) break;
+    const pageResult = await fetchSonarIssuesPage({
+      baseUrl,
+      projectKey: config.projectKey,
+      prNumber: config.prNumber,
+      page,
+      headers,
+      ...(config.timeoutMs !== undefined ? { timeoutMs: config.timeoutMs } : {}),
+      fetchImpl,
+    });
+    if (pageResult === null) break;
+    for (const finding of pageResult.findings) findings.push(finding);
+    droppedMalformedCount += pageResult.issues.length - pageResult.findings.length;
+    total = pageResult.total;
+    if (pageResult.issues.length < MAX_SONAR_ISSUES || findings.length + droppedMalformedCount >= total) break;
     page += 1;
   }
   if (page > MAX_PAGES && findings.length + droppedMalformedCount < total) {
