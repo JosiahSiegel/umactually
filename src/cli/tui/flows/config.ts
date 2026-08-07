@@ -24,7 +24,7 @@
 // gets a sentinel it can route on — this is consistent with todo:14's
 // Debug flow and matches the hub's select-based dispatch.
 
-import * as p from "@clack/prompts";
+import { isCancel, note, select, stream } from "@clack/prompts";
 
 import { KNOWN_ENV_VAR_NAMES } from "../../../config/field-schema.js";
 import { tryReadSavedConfig } from "../../load-saved-config.js";
@@ -80,21 +80,21 @@ export async function runConfigFlow(): Promise<{ exitCode: 0 }> {
   // schema mismatch) via the clack `stream.warn` so it appears as a
   // proper warning block rather than as part of the config block.
   if (saved.warning !== null) {
-    p.stream.warn(saved.warning);
+    stream.warn(saved.warning);
   }
 
   // Step 2: display the saved config OR the "no saved config" hint.
   if (saved.config !== null) {
-    p.note(renderSavedConfig(saved.config, saved.path), "Saved config");
+    note(renderSavedConfig(saved.config, saved.path), "Saved config");
   } else {
-    p.note(
+    note(
       `No saved config found at ${saved.path}\n(run \`umactually init\` to create one)`,
       "Saved config",
     );
   }
 
   // Step 3: env-presence table (read process.env only — no mutation).
-  p.note(renderEnvPresence(process.env), "Environment");
+  note(renderEnvPresence(process.env), "Environment");
 
   // Step 4: block on the single-option "Back to menu" sentinel so the
   // hub can route back here. The sentinel value is the public API the
@@ -102,11 +102,11 @@ export async function runConfigFlow(): Promise<{ exitCode: 0 }> {
   // @clack/prompts requires the array form). `isCancel` returns the
   // hub to its loop; selecting the option returns the operator to the
   // hub menu.
-  const choice = await p.select({
+  const choice = await select({
     message: "What next?",
     options: [{ value: "menu", label: "Back to menu" }],
   });
-  if (p.isCancel(choice)) {
+  if (isCancel(choice)) {
     return { exitCode: 0 };
   }
   return { exitCode: 0 };

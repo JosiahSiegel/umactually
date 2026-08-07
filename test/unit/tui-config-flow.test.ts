@@ -38,15 +38,15 @@ vi.mock("../../src/cli/load-saved-config.js", () => ({
   tryReadSavedConfig: vi.fn(),
 }));
 
-import * as p from "@clack/prompts";
+import { isCancel, note, select, stream } from "@clack/prompts";
 
 import { runConfigFlow } from "../../src/cli/tui/flows/config.js";
 import { tryReadSavedConfig } from "../../src/cli/load-saved-config.js";
 
-const MOCKED_SELECT = vi.mocked(p.select);
-const MOCKED_NOTE = vi.mocked(p.note);
-const MOCKED_IS_CANCEL = vi.mocked(p.isCancel);
-const MOCKED_STREAM_WARN = vi.mocked(p.stream.warn);
+const MOCKED_SELECT = vi.mocked(select);
+const MOCKED_NOTE = vi.mocked(note);
+const MOCKED_IS_CANCEL = vi.mocked(isCancel);
+const MOCKED_STREAM_WARN = vi.mocked(stream.warn);
 const MOCKED_TRY_READ_SAVED_CONFIG = vi.mocked(tryReadSavedConfig);
 
 describe("tui config flow (runConfigFlow)", () => {

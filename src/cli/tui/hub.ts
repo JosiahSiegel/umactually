@@ -1,7 +1,7 @@
 // src/cli/tui/hub.ts — hub menu for the tui subcommand.
 // Shape pinned by todo:8; body filled in by todo:10.
 // Takes a `runFlow` injection point so the hub can be tested without real flows.
-import * as p from "@clack/prompts";
+import { isCancel, select } from "@clack/prompts";
 
 export type HubFlowKind = "review" | "config" | "debug";
 export type FlowResult = { exitCode: number };
@@ -19,7 +19,7 @@ export async function runHub(opts: {
   // underlying cancel sentinel is an internal implementation detail and
   // not part of the public API — do NOT try/catch it.
   while (true) {
-    const choice = await p.select({
+    const choice = await select({
       message: "What would you like to do?",
       options: [
         { value: "review", label: "Run review" },
@@ -28,7 +28,7 @@ export async function runHub(opts: {
         { value: "exit", label: "Exit" },
       ],
     });
-    if (p.isCancel(choice)) {
+    if (isCancel(choice)) {
       return { exitCode: 0 };
     }
     if (choice === "exit") {

@@ -33,7 +33,7 @@ import { stat } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 
-import * as p from "@clack/prompts";
+import { isCancel, log, note, select } from "@clack/prompts";
 
 import {
   formatDoctorHuman,
@@ -84,8 +84,8 @@ export async function runDebugFlow(deps: RunDebugFlowDeps = {}): Promise<{ exitC
     // error on the dist or a segfault in `git`. Render an error panel
     // and bounce back to the menu so the operator is never stranded.
     const message = err instanceof Error ? err.message : String(err);
-    p.log.error(`Debug panel failed: ${message}`);
-    await p.select({
+    log.error(`Debug panel failed: ${message}`);
+    await select({
       message: "Return to menu?",
       options: [{ value: "menu", label: "Back to menu" }],
     });
@@ -96,13 +96,13 @@ export async function runDebugFlow(deps: RunDebugFlowDeps = {}): Promise<{ exitC
   // Reuse `formatDoctorHuman` for the per-check lines (so the TUI
   // matches the CLI's `umactually doctor` output byte-for-byte), then
   // append the synthetic exit-code summary on top of the note.
-  p.note(`${formatDoctorHuman(result.checks).trimEnd()}\n\n${summary}`, "Debug environment");
+  note(`${formatDoctorHuman(result.checks).trimEnd()}\n\n${summary}`, "Debug environment");
 
-  const choice = await p.select({
+  const choice = await select({
     message: "Return to menu?",
     options: [{ value: "menu", label: "Back to menu" }],
   });
-  if (p.isCancel(choice)) {
+  if (isCancel(choice)) {
     return { exitCode: 0 };
   }
   return { exitCode: 0 };
