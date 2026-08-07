@@ -5,14 +5,18 @@ export type TtyGateResult =
   | { ok: true }
   | { ok: false; exitCode: 2; hint: string };
 
+const TTY_HINT = "umactually tui requires a TTY; run from an interactive terminal (or use 'umactually review' for non-interactive flows).\n";
+
 export function defaultCheckTTY(): boolean {
-  // Body filled in by todo:11 — see plan lines 262-271.
-  throw new Error("defaultCheckTTY: not yet implemented (filled in by todo:11)");
+  return process.stdin.isTTY === true && process.stdout.isTTY === true;
 }
 
 export function runTtyGate(
-  _opts: { checkTTY?: () => boolean } = {},
+  opts: { checkTTY?: () => boolean } = {},
 ): TtyGateResult {
-  // Body filled in by todo:11.
-  throw new Error("runTtyGate: not yet implemented (filled in by todo:11)");
+  const checkTTY = opts.checkTTY ?? defaultCheckTTY;
+  if (checkTTY()) {
+    return { ok: true };
+  }
+  return { ok: false, exitCode: 2, hint: TTY_HINT };
 }
