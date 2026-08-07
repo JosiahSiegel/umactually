@@ -1,6 +1,7 @@
 import type { Severity, Platform } from "./types.js";
 import { InvalidConfigError, REDACTED } from "./errors.js";
 import { FIELDS } from "./field-schema.js";
+import { tryParseStrictInt } from "../util/strict-integer.js";
 import { stripTrailingSlash } from "../util/url.js";
 
 const TRUTHY_STRINGS: ReadonlySet<string> = new Set(["1", "true", "yes", "on", "y"]);
@@ -29,8 +30,6 @@ export function parseBooleanFromUnknown(value: unknown, field: string): boolean 
   throw new InvalidConfigError(field, `expected boolean, received ${typeof value}`);
 }
 
-const INTEGER_RE = /^-?\d+$/;
-
 /**
  * Parses an integer from an unknown boundary. Accepts native integers
  * and decimal-integer strings. Rejects floats, NaN, Infinity, empty strings.
@@ -47,12 +46,9 @@ export function parseIntegerFromUnknown(value: unknown, field: string): number {
     if (trimmed.length === 0) {
       throw new InvalidConfigError(field, `expected integer, received empty string`);
     }
-    if (!INTEGER_RE.test(trimmed)) {
+    const parsed = tryParseStrictInt(trimmed);
+    if (parsed === null) {
       throw new InvalidConfigError(field, `expected integer string, received ${REDACTED}`);
-    }
-    const parsed = Number.parseInt(trimmed, 10);
-    if (!Number.isFinite(parsed)) {
-      throw new InvalidConfigError(field, `expected finite integer, received ${REDACTED}`);
     }
     // Reject values outside the safe-integer range so callers that
     // rely on exact equality (severity-key lookups, cache keys,

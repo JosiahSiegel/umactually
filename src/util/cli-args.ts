@@ -1,3 +1,5 @@
+import { tryParseStrictInt } from "./strict-integer.js";
+
 /**
  * Default error class thrown by `readEnum` when an enum value is invalid.
  * The class lives here so `readEnum` can throw it without circular
@@ -52,13 +54,8 @@ export class CliArgError extends Error {
  * `platform/azure/context.ts` so the parsing semantics cannot drift.
  */
 export function parseStrictInt(raw: string): number | null {
-  if (raw.length === 0) return null;
-  // A single optional sign followed by 1+ ASCII digits, and nothing else.
-  // Using a regex (rather than a manual loop) keeps the intent grep-able
-  // and the cost trivial (this runs only at CLI/env boundary).
-  if (!/^[+-]?\d+$/u.test(raw)) return null;
-  const parsed = Number.parseInt(raw, 10);
-  return Number.isSafeInteger(parsed) ? parsed : null;
+  const n = tryParseStrictInt(raw);
+  return n !== null && Number.isSafeInteger(n) ? n : null;
 }
 
 /**
