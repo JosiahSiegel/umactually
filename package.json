@@ -60,8 +60,6 @@
     "render-docs:check": "node scripts/render-versions.mjs --check",
     "check:version-alignment": "node scripts/check-version-alignment.mjs",
     "check:dist-freshness": "node scripts/check-dist-freshness.mjs",
-    "view:summary-layouts": "node scripts/view-summary-layouts.mjs",
-    "clean:summary-layouts": "node scripts/clean-viewer.mjs",
     "prepublishOnly": "npm run typecheck && npm test -- --run && npm run bundle && npm run render-docs && npm run check:version-alignment && npm run check:dist-freshness",
     "build:sea": "node scripts/build-sea.mjs",
     "build:sea:all": "node scripts/build-sea.mjs all"

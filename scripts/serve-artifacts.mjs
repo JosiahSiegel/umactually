@@ -3,7 +3,7 @@
  * Tiny static file server used for local visual QA of generated HTML
  * artifacts. Run from the project root:
  *   node scripts/serve-artifacts.mjs
- * Then open http://127.0.0.1:7891/summary-layouts.html in a browser.
+ * Then open http://127.0.0.1:7891/ in a browser.
  *
  * Stop with Ctrl-C. NOT for production use — no auth, no caching,
  * single-threaded, no logging.
