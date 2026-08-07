@@ -54,9 +54,11 @@
 //   node scripts/render-versions.mjs --dry-run  # print intended changes,
 //                                                do not write
 
-import { existsSync, globSync, readFileSync, writeFileSync } from "node:fs";
-import { dirname, isAbsolute, join, relative, resolve } from "node:path";
+import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import { dirname, isAbsolute, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+
+import { collectTargets, readPackageVersion } from "./lib/cli-shared.mjs";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const defaultPackageRoot = resolve(here, "..");
@@ -106,59 +108,7 @@ const modeCheck = flags.has("--check");
 const modeDryRun = flags.has("--dry-run");
 const packageRoot = resolvePackageRootFromCli(argv);
 
-function readPackageVersion() {
-  const raw = readFileSync(join(packageRoot, "package.json"), "utf8");
-  const pkg = JSON.parse(raw);
-  if (typeof pkg.version !== "string" || !/^\d+\.\d+\.\d+/.test(pkg.version)) {
-    throw new Error(
-      `render-versions: package.json "version" is missing or not a semver triple: ${JSON.stringify(pkg.version)}`,
-    );
-  }
-  return pkg.version;
-}
 
-function isPathInSkippedDir(relPath) {
-  const segments = relPath.split(/[\\/]/);
-  return segments.some((segment) => SKIP_DIRS.has(segment));
-}
-
-function collectTargets() {
-  const found = new Set();
-  for (const pattern of TARGETS) {
-    const matches = globSync(pattern, {
-      cwd: packageRoot,
-      withFileTypes: false,
-    });
-    for (const match of matches) {
-      // Two cases to disambiguate on Windows:
-      //   1. globSync returned a path relative to packageRoot (the
-      //      common case). Use `path.relative` to canonicalize it.
-      //   2. globSync returned an absolute path (rare — happens on
-      //      cross-drive sandboxes). Trust the absolute path as-is.
-      //
-      // The trap on Windows: `path.relative("C:\\foo", "README.md")`
-      // resolves "README.md" against the *process's cwd*, NOT against
-      // "C:\\foo", and returns e.g. "D:\\somewhere\\README.md". So we
-      // cannot blindly trust relative()'s output — verify the result
-      // is still under packageRoot before using it.
-      let rel;
-      if (isAbsolute(match)) {
-        rel = match;
-      } else {
-        const candidate = relative(packageRoot, match);
-        const isStillInside =
-          candidate === "" ||
-          (!candidate.startsWith("..") && !isAbsolute(candidate));
-        rel = isStillInside
-          ? (candidate === "." ? match : candidate)
-          : match;
-      }
-      rel = rel.replace(/[\\/]/g, "/");
-      if (!isPathInSkippedDir(rel)) found.add(rel);
-    }
-  }
-  return [...found].sort();
-}
 
 function renderText(text, tagValue, dotValue, warnings) {
   const before = text;
@@ -227,7 +177,7 @@ function renderText(text, tagValue, dotValue, warnings) {
 }
 
 function main() {
-  const version = readPackageVersion();
+  const version = readPackageVersion(packageRoot, "render-versions");
   const tagValue = `v${version}`;
   const dotValue = version;
   process.stdout.write(`render-versions: package.json version = ${version}\n`);
@@ -235,7 +185,7 @@ function main() {
     `render-versions: ${TOKEN_TAG} → ${tagValue}; ${TOKEN_DOT} → ${dotValue}\n`,
   );
 
-  const files = collectTargets();
+  const files = collectTargets(packageRoot, TARGETS, SKIP_DIRS);
   if (files.length === 0) {
     throw new Error(
       "render-versions: TARGETS glob matched zero files — check the patterns.",

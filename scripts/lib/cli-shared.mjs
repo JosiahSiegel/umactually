@@ -13,7 +13,8 @@
 // UMACTUALLY_ALLOW_NON_WINDOWS_BUILD, etc.) live with the scripts that
 // own them, and the helpers below forward the relevant env reads.
 
-import { resolve } from "node:path";
+import { existsSync, globSync, readFileSync } from "node:fs";
+import { isAbsolute, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 /**
@@ -103,4 +104,80 @@ export function parseArgs(argv) {
     i += 1;
   }
   return out;
+}
+
+/**
+ * Read `package.json` at `packageRoot` and return the `version` string.
+ *
+ * Mirrors `readPackageVersion()` in `scripts/check-version-alignment.mjs`
+ * and `scripts/render-versions.mjs`. Both originals used the same
+ * `/^\d+\.\d+\.\d+/` semver check and only differed in the error-message
+ * label — we accept that label as a parameter (`errorLabel`) so each
+ * caller can keep its own error message prefix byte-identical to before
+ * the extraction.
+ *
+ * @param {string} packageRoot
+ * @param {string} errorLabel  Prefix for the thrown error message (e.g.
+ *   `"check-version-alignment"` or `"render-versions"`).
+ * @returns {string} The `version` field from `package.json`.
+ */
+export function readPackageVersion(packageRoot, errorLabel) {
+  const pkg = JSON.parse(readFileSync(join(packageRoot, "package.json"), "utf8"));
+  if (typeof pkg.version !== "string" || !/^\d+\.\d+\.\d+/.test(pkg.version)) {
+    throw new Error(
+      `${errorLabel}: package.json "version" is missing or not a semver triple: ${JSON.stringify(pkg.version)}`,
+    );
+  }
+  return pkg.version;
+}
+
+/**
+ * Walk a list of glob patterns relative to `packageRoot` and return the
+ * matching files, sorted, with any path under `skipDirs` filtered out.
+ *
+ * Mirrors `collectTargets()` in `scripts/check-version-alignment.mjs` and
+ * `scripts/render-versions.mjs`. Both originals used the same Windows-aware
+ * `relative()` guard (because `path.relative("C:\\foo", "README.md")`
+ * resolves the second arg against process.cwd() and returns a wrong
+ * drive's path on cross-drive sandboxes). The `globSync` `withFileTypes`
+ * flag was explicitly `false` in render-versions.mjs and unset in
+ * check-version-alignment.mjs; both default to false, so the explicit
+ * `withFileTypes: false` is preserved here to keep behavior identical.
+ *
+ * @param {string} packageRoot
+ * @param {readonly string[]} targets  Glob patterns to walk.
+ * @param {ReadonlySet<string>} skipDirs  Directory names (any path segment
+ *   matching one of these is dropped from the result).
+ * @returns {string[]} Sorted, forward-slash-normalized relative paths.
+ */
+export function collectTargets(packageRoot, targets, skipDirs) {
+  const found = new Set();
+  for (const pattern of targets) {
+    const matches = globSync(pattern, { cwd: packageRoot, withFileTypes: false });
+    for (const match of matches) {
+      // Two cases to disambiguate on Windows:
+      //   1. globSync returned a path relative to packageRoot (the
+      //      common case). Use `path.relative` to canonicalize it.
+      //   2. globSync returned an absolute path (rare — happens on
+      //      cross-drive sandboxes). Trust the absolute path as-is.
+      let rel;
+      if (isAbsolute(match)) {
+        rel = match;
+      } else {
+        const candidate = relative(packageRoot, match);
+        const isStillInside =
+          candidate === "" ||
+          (!candidate.startsWith("..") && !isAbsolute(candidate));
+        rel = isStillInside
+          ? (candidate === "." ? match : candidate)
+          : match;
+      }
+      rel = rel.replace(/[\\/]/g, "/");
+      const segments = rel.split(/[\\/]/);
+      if (!segments.some((segment) => skipDirs.has(segment))) {
+        found.add(rel);
+      }
+    }
+  }
+  return [...found].sort();
 }
