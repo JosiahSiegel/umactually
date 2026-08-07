@@ -8,7 +8,7 @@ import { truncateBodyForLog } from "../util/http.js";
 import { replaceSecretsLiterally } from "../util/redact.js";
 import type { FetchImpl } from "../util/http.js";
 import { isPositiveSafeInteger, isRecord, isSafeInteger } from "../util/json-guards.js";
-import { renderSummary, type LayoutId, type ReviewData as LayoutReviewData } from "../render/summary-layouts.js";
+import { renderSummary, type ReviewData as LayoutReviewData } from "../render/summary-layouts.js";
 import { countBySeverity } from "../util/severity.js";
 
 /**
@@ -305,12 +305,7 @@ export async function evaluateLeakGate(input: {
  * agents and humans see the same information regardless of platform.
  *
  * Implementation: delegates to the `severity-table` layout defined in
- * `src/render/summary-layouts.ts` (one of the 20 alternatives surfaced
- * during the layout review — see the local viewer at
- * `scripts/view-summary-layouts.mjs` for the full design sheet and
- * baseline comparison). The other 19 layouts are still reachable via
- * `renderSummary(layout, data)` for callers that want a different
- * visual personality; this function is the single wired default.
+ * `src/render/summary-layouts.ts`, which is the single shipped layout.
  *
  * Contract invariants preserved across the cutover:
  *   - Stable HTML marker (used for dedup) — first line of body
@@ -388,7 +383,6 @@ export function buildReviewBody(input: {
    */
   readonly severityCounts: Record<string, number>;
   readonly secrets: readonly string[];
-  readonly layout?: LayoutId;
   /**
    * Optional threshold context forwarded to the rendered layout so the
    * `🏷️ …` severity tally can append a `*` marker when the active
@@ -410,18 +404,7 @@ export function buildReviewBody(input: {
   readonly verdictEscalatedFrom?: string;
 }): string {
   // Delegate to the "severity-table" layout from
-  // `src/render/summary-layouts.ts` — selected from the 20-layout
-  // sheet after side-by-side review. The other 19 layouts remain
-  // available via `renderSummary(layout, data)` for callers that want
-  // a different visual personality. See the local viewer
-  // (`scripts/view-summary-layouts.mjs`) for the design rationale and
-  // before/after comparison.
-  //
-  // The legacy in-place assembly of the parent card (verdict + pipeline
-  // summary + posted preview + off-diff block + summary <details> +
-  // footer + manifest) is preserved verbatim as the "current"
-  // baseline inside `renderBaseline("current", data)` so the viewer
-  // can render the old shape side-by-side with the new one.
+  // `src/render/summary-layouts.ts` — the single shipped layout.
   //
   // Compatibility shim: callers that omit `postedComments` (older
   // fixtures, `simulate-findings`) used to fall back to
@@ -444,7 +427,7 @@ export function buildReviewBody(input: {
       ? { verdictEscalatedFrom: input.verdictEscalatedFrom }
       : {}),
   };
-  return renderSummary(input.layout ?? "severity-table", reviewData);
+  return renderSummary(reviewData);
 }
 
 /**
