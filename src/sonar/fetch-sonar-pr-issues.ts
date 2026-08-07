@@ -14,7 +14,8 @@ export type FetchSonarPrIssuesConfig = {
 export type FetchSonarPrIssuesResult = {
   readonly findings: readonly LiveReviewComment[];
   readonly total: number;
-  readonly truncated: boolean;
+  readonly droppedMalformedCount: number;
+  readonly cappedAtIssueCount: number;
 };
 
 const DEFAULT_PAGE_SIZE = 100;
@@ -120,14 +121,14 @@ export async function fetchSonarPrIssues(input: {
       "warning",
       `failed to fetch SonarCloud PR issues; treating as zero findings (best-effort fetch). ${error instanceof Error ? error.message : String(error)}`,
     );
-    return { findings: [], total: 0, truncated: false };
+    return { findings: [], total: 0, droppedMalformedCount: 0, cappedAtIssueCount: 0 };
   }
   if (!isRecord(raw)) {
     writeBrandedAnnotation(
       "warning",
       "SonarCloud issues API returned a non-record JSON body; treating as zero findings.",
     );
-    return { findings: [], total: 0, truncated: false };
+    return { findings: [], total: 0, droppedMalformedCount: 0, cappedAtIssueCount: 0 };
   }
   const total = isSafeInteger(raw["total"]) ? raw["total"] : 0;
   const issues = raw["issues"];
@@ -136,15 +137,17 @@ export async function fetchSonarPrIssues(input: {
       "warning",
       "SonarCloud issues API returned a body without an `issues` array; treating as zero findings.",
     );
-    return { findings: [], total, truncated: false };
+    return { findings: [], total, droppedMalformedCount: 0, cappedAtIssueCount: total };
   }
-  const findings: LiveReviewComment[] = [];
+  let droppedMalformedCount = 0;
   for (const entry of issues) {
     const finding = parseIssue(entry, config.projectKey, config.prNumber);
     if (finding !== null) {
       findings.push(finding);
+    } else {
+      droppedMalformedCount += 1;
     }
   }
-  const truncated = findings.length < issues.length || total > findings.length;
-  return { findings, total, truncated };
+  const cappedAtIssueCount = Math.max(0, total - findings.length - droppedMalformedCount);
+  return { findings, total, droppedMalformedCount, cappedAtIssueCount };
 }

@@ -100,7 +100,8 @@ describe("fetchSonarPrIssues", () => {
     const result = await fetchSonarPrIssues({ config: CONFIG, fetchImpl });
     expect(result.findings).toEqual([]);
     expect(result.total).toBe(0);
-    expect(result.truncated).toBe(false);
+    expect(result.droppedMalformedCount).toBe(0);
+    expect(result.cappedAtIssueCount).toBe(0);
   });
 
   it("returns empty result on network failure (without throwing)", async () => {
@@ -108,7 +109,8 @@ describe("fetchSonarPrIssues", () => {
     const result = await fetchSonarPrIssues({ config: CONFIG, fetchImpl });
     expect(result.findings).toEqual([]);
     expect(result.total).toBe(0);
-    expect(result.truncated).toBe(false);
+    expect(result.droppedMalformedCount).toBe(0);
+    expect(result.cappedAtIssueCount).toBe(0);
   });
 
   it("returns empty result on HTTP error (no throw)", async () => {
@@ -157,8 +159,8 @@ describe("fetchSonarPrIssues", () => {
     ]);
     const result = await fetchSonarPrIssues({ config: CONFIG, fetchImpl });
     expect(result.findings).toEqual([]);
-    expect(result.total).toBe(3);
-  });
+    expect(result.droppedMalformedCount).toBe(3);
+    expect(result.cappedAtIssueCount).toBe(0);
 
   it("strips the projectKey prefix from the component path", async () => {
     const { fetchImpl } = makeFetchRecorder([
