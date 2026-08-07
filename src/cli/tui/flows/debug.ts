@@ -25,7 +25,7 @@
 // Pattern references:
 //   - src/cli/doctor.ts:53-65 (runDoctor signature + DoctorResult shape)
 //   - src/cli/doctor.ts:175-181 (formatDoctorHuman — reuse, do NOT duplicate)
-//   - src/cli/tui/flows/config.ts (todo:13 — same single-option "Back to menu"
+//   - src/cli/tui/flows/config.ts (same single-option "Back to menu"
 //     select pattern, so the hub's menu loop keeps the same UX)
 
 import { execFile as execFileCallback } from "node:child_process";

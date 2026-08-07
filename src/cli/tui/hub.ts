@@ -1,7 +1,6 @@
 // src/cli/tui/hub.ts — hub menu for the tui subcommand.
-// Shape pinned by todo:8; body filled in by todo:10.
 // Takes a `runFlow` injection point so the hub can be tested without real flows.
-import { isCancel, select } from "@clack/prompts";
+import { isCancel, log, select } from "@clack/prompts";
 
 export type HubFlowKind = "review" | "config" | "debug";
 export type FlowResult = { exitCode: number };
@@ -13,11 +12,16 @@ export async function runHub(opts: {
   // Only `exit` and `isCancel` break the loop.
   //
   // The hub itself does NOT perform TTY gating; that's `runTuiBranch`'s
-  // job (todo:9). The hub assumes TTY is already verified.
+  // job. The hub assumes TTY is already verified.
   //
   // `isCancel` is the canonical @clack/prompts cancel pattern; the
   // underlying cancel sentinel is an internal implementation detail and
   // not part of the public API — do NOT try/catch it.
+  //
+  // A flow that throws (rather than returning `{ exitCode: N }`) is
+  // caught here so the hub stays open: log the error and re-prompt.
+  // Silently swallowing would leave the operator stranded without a
+  // reason; `p.log.error` keeps the message visible alongside the menu.
   while (true) {
     const choice = await select({
       message: "What would you like to do?",
@@ -34,7 +38,12 @@ export async function runHub(opts: {
     if (choice === "exit") {
       return { exitCode: 0 };
     }
-    await opts.runFlow(choice as HubFlowKind);
-    // After flow returns, loop back to the menu.
+    try {
+      await opts.runFlow(choice as HubFlowKind);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      log.error(`Flow crashed: ${message}`);
+    }
+    // After flow returns (or throws), loop back to the menu.
   }
 }

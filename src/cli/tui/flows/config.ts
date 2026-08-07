@@ -1,5 +1,4 @@
 // src/cli/tui/flows/config.ts — View Config flow.
-// Shape + stub created by todo:8; body filled in by todo:13.
 //
 // Read-only display surface for the operator: shows the effective saved
 // config (path, provider, optional apiUrl, optional model) and the
@@ -21,8 +20,8 @@
 //
 // After the read-only display, the flow blocks on a single-option
 // `select` with `{ value: 'menu', label: 'Back to menu' }` so the hub
-// gets a sentinel it can route on — this is consistent with todo:14's
-// Debug flow and matches the hub's select-based dispatch.
+// gets a sentinel it can route on — matches the hub's select-based
+// dispatch.
 
 import { isCancel, note, select, stream } from "@clack/prompts";
 
