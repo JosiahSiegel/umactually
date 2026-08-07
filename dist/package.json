@@ -3,5 +3,7 @@
   "version": "0.7.0",
   "type": "module",
   "main": "cli.js",
-  "dependencies": {}
+  "dependencies": {
+    "@clack/prompts": "^1.7.0"
+  }
 }
