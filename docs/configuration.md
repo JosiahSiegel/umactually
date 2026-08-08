@@ -8,8 +8,8 @@ The runtime resolves configurable review options through a four-tier precedence 
 
 | Tier | Source | Notes |
 | --- | --- | --- |
-| 1 | `--provider`, `--api-url`, `--model`, `--api-key` flags | Always wins; lets a one-off run override saved config. |
-| 2 | `UMACTUALLY_*` then legacy `REVIEW_*` env vars | First non-empty var wins; the legacy alias is field-specific — see the per-field table below for the exact name (e.g. `UMACTUALLY_API_URL` → `REVIEW_PROVIDER_URL`, `UMACTUALLY_API_KEY` → `REVIEW_PROVIDER_API_KEY`, `UMACTUALLY_PROMPT_FILE` → `REVIEW_PROMPT_SYSTEM_FILE`). |
+| 1 | `--provider`, `--api-url`, `--model`, `--api-key`, `--github-token` flags | Always wins; lets a one-off run override saved config. |
+| 2 | `UMACTUALLY_*` then legacy `REVIEW_*` env vars | First non-empty var wins; the legacy alias is field-specific — see the per-field table below for the exact name (e.g. `UMACTUALLY_API_URL` → `REVIEW_PROVIDER_URL`, `UMACTUALLY_API_KEY` → `REVIEW_PROVIDER_API_KEY`, `UMACTUALLY_PROMPT_FILE` → `REVIEW_PROMPT_SYSTEM_FILE`). `GITHUB_TOKEN` / `GH_TOKEN` are the equivalent env for `--github-token`. |
 | 3 | Saved user config (`~/.umactually/config.json`) | Holds `provider` (always), optional `apiUrl`, optional `model`. Written by `umactually init`. Override with `--force` to overwrite. |
 | 4 | Built-in CLI default | Last resort; the schema default per `src/config/field-schema.ts`. |
 
@@ -31,18 +31,26 @@ With `review --json`, the `resolvedConfig.sources` object reports exactly which 
 
 ## Review options
 
-CLI flag names are the kebab-case form of the option column (for example, `api-url` becomes `--api-url`).
+CLI flag names are the kebab-case form of the option column (for example, `api-url` becomes `--api-url`). Plumbing flags (`--event`, `--diff`, `--threads`, `--review`, `--pr-number`, `--repo`) are also surfaced under the umbrella — they are required only when the wrapper runtime does not already supply them.
 
 | Option | Env var | Default | Allowed values | Notes |
 | --- | --- | --- | --- | --- |
+| `event` | — | `null` | File path | GitHub event JSON or Azure PR JSON. The CLI auto-derives this from the runner in CI; pass it explicitly only when running standalone with a pre-rendered diff. |
+| `diff` | — | `null` | File path | PR diff text. The CLI auto-derives this from `git diff` outside CI; pass it explicitly only when the diff is pre-rendered. |
+| `threads` | — | `null` | File path | Azure existing threads JSON (ADO wrapper mode). |
+| `review` | — | `null` | File path | Azure provider review JSON (ADO wrapper mode). |
+| `pr-number` | — | `""` | PR number | Pull request number. |
+| `repo` | — | `""` | `<owner>/<name>` | Repository slug. |
 | `api-url` | `UMACTUALLY_API_URL` | `""` | HTTPS URL | Review API base URL. Required for hosted review API use. Prefer env/secret over a literal input. |
 | `api-key` | `UMACTUALLY_API_KEY` | `""` | Secret string | Review API key. Must come from a secret store. Never log or echo it. |
 | `model` | `UMACTUALLY_MODEL` | `auto` | `auto`, `review-model-synthetic` | `review-model-synthetic` is intended for fixtures and deterministic tests. `auto` resolves to the lower-citation-hallucination model per provider — see the Vectara HHEM-derived table in [`docs/providers.md`](providers.md#model-auto-resolution-on-dual-protocol-gateways). Set a literal model name to override. |
 | `effort` | `UMACTUALLY_EFFORT` | `medium` | `low`, `medium`, `high` | Reasoning effort hint. Forwarded as `reasoning.effort` to providers that support it. |
 | `provider` | `UMACTUALLY_PROVIDER` | `openai-compatible` | `openai-compatible`, `copilot`, `anthropic` | Provider family. See [`docs/providers.md`](providers.md) for the wire-shape contract per family and the cross-protocol dispatcher that handles dual-protocol gateways. |
 | `github-api-base` | `UMACTUALLY_GITHUB_API_BASE` | `""` | HTTPS URL | GitHub API base URL for Copilot token exchange. Set to `https://<tenant>.ghe.com` for GitHub Enterprise Server. |
+| `github-token` | `GITHUB_TOKEN` (or `GH_TOKEN` legacy alias) | `""` | Secret string | GitHub token used by the `--provider copilot` token-exchange flow and by live GitHub posting in CI. The CLI accepts `--github-token=<value>` or `--github-token <value>` (single-token equals form); the literal value is never accepted from an env var that contains the secret, so use a secret store. |
 | `review-timeout-seconds` | `UMACTUALLY_REVIEW_TIMEOUT_SECONDS` | `300` | Positive integer seconds | Overall review wall-clock budget. |
 | `stall-seconds` | `UMACTUALLY_STALL_SECONDS` | `270` | Positive integer seconds | Provider-output stall budget. |
+| `per-request-timeout-seconds` | `REVIEW_PER_REQUEST_TIMEOUT_SECONDS` | `60` | Positive integer seconds | Per-request HTTP timeout for provider calls. |
 | `max-output-tokens` | `UMACTUALLY_MAX_OUTPUT_TOKENS` | `16000` | Positive integer | Provider output budget. |
 | `max-comments` | — | `50` | Positive integer | Cap on posted inline comments per review. `0` disables the cap. |
 | `review-file-limit` | `REVIEW_FILE_LIMIT` | `200` | Positive integer, or `0` to disable | Soft cap on changed files the live path processes. Above this the CLI skips the live review and posts a "diff too large to review" parent card — chunked LLM reviews on arbitrary initial-import diffs produce hallucinated findings not grounded in the code. Set to `0` to disable. |
@@ -55,9 +63,11 @@ CLI flag names are the kebab-case form of the option column (for example, `api-u
 | `additional-prompt-files` | `UMACTUALLY_ADDITIONAL_PROMPT_FILES` | `""` | Comma/newline-separated repo-relative paths | Explicit list of additional prompt files. **Completely overrides** the default repository prompt lookup when non-empty. |
 | `detect-leaks` | `UMACTUALLY_DETECT_LEAKS` | `true` | `true`, `false` | Run secret-leak detection on the diff before posting. |
 | `include-sonarqube` | `UMACTUALLY_INCLUDE_SONARQUBE` | `false` | `true`, `false` | Pull SonarQube issues alongside the PR review. Requires `--sonar-host-url`, `--sonar-token`, `--sonar-project-key`. |
+| `include-pr-sonar-findings` | — | `false` | `true`, `false` | **New in v0.7.0.** When true, the live GitHub path fetches the PR's inline review comments carrying the `<!-- sonarcloud -->` marker (via `${sonarHostUrl}/api/issues/search?componentKeys=…&pullRequest=<pr>&inNewCodePeriod=true&resolved=false`) and merges them into the review's `comments[]` before `preparePostedReview`. The self-review workflow enables this so the bot's verdict reflects SonarCloud findings even when the model emits zero findings on its own. Off by default so existing user workflows that don't gate on SonarCloud don't suddenly start posting duplicate inline threads. Severity mapping: `BLOCKER` / `CRITICAL` → `critical`, `MAJOR` → `major`, `MINOR` → `minor`, `INFO` → `info`. Up to 10 pages × 100 issues; `droppedMalformedCount` + `cappedAtIssueCount` are recorded when the run truncates. |
 | `sonar-host-url` | `UMACTUALLY_SONAR_HOST_URL` | `""` | HTTPS URL | SonarQube base URL. |
 | `sonar-token` | `UMACTUALLY_SONAR_TOKEN` | `""` | Secret string | SonarQube token. Must come from a secret store. |
 | `sonar-project-key` | `UMACTUALLY_SONAR_PROJECT_KEY` | `""` | Project key string | SonarQube project key. |
+| `sonar-timeout-seconds` | `REVIEW_SONAR_TIMEOUT_SECONDS` | `300` | Positive integer seconds | SonarQube HTTP timeout for the quality-gate poll and issue/hotspot fetch. |
 | `dry-run` | `UMACTUALLY_DRY_RUN` | `false` | `true`, `false` | Generate review output without posting comments or status. Standalone mode (no CI markers) implicitly behaves as a smoke run that writes `./umactually-review.json` without a real HTTP provider call. |
 | `files` | `UMACTUALLY_FILES` (n/a) | — | comma-separated paths | Comma-separated paths to files or directories for local-files review (no CI required). Recurses into directories; excludes build-artifact paths (matches `src/diff/filter-build-artifacts.ts`). Skips binary files (NUL-byte detection). Does not follow symlinks. Deduplicates paths via `realpathSync`. Honors `--dry-run` and `--output-artifact`. Ignores `--platform`. Mutually exclusive with `--diff`, `--event`, `--review`. |
 | `walkthrough` | `UMACTUALLY_WALKTHROUGH` | `false` | `true`, `false` | Emit a separate PR walkthrough comment alongside the review. |
@@ -66,7 +76,8 @@ CLI flag names are the kebab-case form of the option column (for example, `api-u
 | `simulate-findings` | `UMACTUALLY_SIMULATE_FINDINGS` | `false` | `true`, `false` | Replaces an empty live result with the deterministic multi-finding fixture from `src/review/simulated-findings.ts`. Live findings always win. |
 | `strict-schema` | `UMACTUALLY_STRICT_SCHEMA` | `true` | `true`, `false` | Send `response_format: { type: "json_schema", strict: true }` on the wire. Set to `false` via `--no-strict-schema` for providers that reject the strict-schema payload. |
 | `verify-findings` | `UMACTUALLY_VERIFY_FINDINGS` | `true` | `true`, `false` | Deterministic re-verification of every `comments[]` entry against the supplied diff. Paths or lines that don't anchor are dropped. Records what was dropped in `parse-warnings.json`. |
-| `platform` | `UMACTUALLY_PLATFORM` | `auto` | `auto`, `github`, `azure` | Platform dispatch hint. `auto` selects GitHub when `GITHUB_ACTIONS=true` and Azure when `TF_BUILD=True`. |
+| `platform` | `UMACTUALLY_PLATFORM` | `auto` | `auto`, `github`, `azure` | Platform dispatch hint. `auto` selects GitHub when `GITHUB_ACTIONS=true` and Azure when `TF_BUILD=True`. `azure-devops` is accepted as an alias and normalized to `azure` before the resolver runs. |
+| `output-artifact` | — | `./umactually-review.json` (standalone) / `artifacts/manual/<name>` (live CI) | File path | Override the artifact write path. Standalone runs default to `./umactually-review.json`; live CI runs default to `artifacts/manual/s1-github-self-review.md` (GitHub) or `artifacts/manual/s4-azure-mocked-run.json` (Azure). |
 
 ## Local-files review mode
 
@@ -117,7 +128,9 @@ Every GitHub Release under a `vX.Y.Z` tag ships exactly six public assets. Five 
 | `umactually-windows-arm64.zip` | ZIP | `umactually-windows-arm64.exe` | same |
 | `checksums.txt` | manifest | — | generated by the release workflow's size report step |
 
-`darwin-x64` (Intel macOS) is not produced — Node's `--build-sea` segfaults on darwin-x64 ([nodejs/node#62893](https://github.com/nodejs/node/issues/62893)). Intel Mac users get the npm install path: `npm install -g umactually`. The curl-pipe installer detects darwin-x64 and fails fast with a pointer at the npm path.
+`darwin-x64` (Intel macOS) is **not** produced — Node's `--build-sea` segfaults on darwin-x64 ([nodejs/node#62893](https://github.com/nodejs/node/issues/62893)). Intel Mac users get the npm install path: `npm install -g umactually`. The curl-pipe installer detects darwin-x64 and fails fast with a pointer at the npm path.
+
+The archive contract is the only supported download entry point. The installer one-liners in the README (`curl | sh` / `irm | iex`) download the matching archive by immutable tag, verify its SHA-256 against `checksums.txt`, and extract the single member to your PATH. The `INSTALL_ASSET_CONTRACT=archive` env var is the wire-format selection; the legacy raw-executable contract is preserved only for back-compat and is not the supported path for any current release. See [`docs/release-process.md`](release-process.md) for the full layout, pre-publication gates, Windows ARM64 structural validation, and size budget contract.
 
 The archive contract is the only supported download entry point. The installer one-liners in the README (`curl | sh` / `irm | iex`) download the matching archive by immutable tag, verify its SHA-256 against `checksums.txt`, and extract the single member to your PATH. The `INSTALL_ASSET_CONTRACT=archive` env var is the wire-format selection; the legacy raw-executable contract is preserved only for back-compat and is not the supported path for any current release. See [`docs/release-process.md`](release-process.md) for the full layout, pre-publication gates, Windows ARM64 structural validation, and size budget contract.
 

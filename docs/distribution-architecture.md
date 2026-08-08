@@ -7,7 +7,7 @@ they relate and which to use when.
 
 | Path | Download | On disk | Use when |
 |---|---|---|---|
-| `npm install -g umactually` | ~330 KB | ~1.2 MB unpacked | You already have Node 24+ or Bun 1.2+ |
+| `npm install -g umactually` | ~330 KB | ~1.2 MB unpacked | You already have Node 24+ (Bun 1.2+ can run the installed package, but the installer smart-router only checks for `node -v`) |
 | `npx umactually` (one-shot) | ~330 KB (cached after first use) | same as above | You don't want a global install |
 | `bunx umactually` | ~330 KB | same as above | You use Bun |
 | `curl … \| sh` (smart-router) | 0 KB if Node 24+ found, else ~30 MB | same as the chosen path | You don't know what's installed, want one command |
@@ -54,9 +54,11 @@ Three build steps produce the release artifacts:
    - linux-arm64: ~68 MB raw, ~27 MB gzipped
    - darwin-arm64: ~70 MB raw, ~28 MB gzipped
    - windows-x64: ~72 MB raw, ~28 MB gzipped
-   - windows-arm64: ~70 MB raw, ~28 MB gzipped
+   - windows-arm64: ~70 MB raw, ~28 MB gzipped — **see Windows ARM64 note below**
 
    `darwin-x64` (Intel macOS) is **not** produced — Node's `--build-sea` segfaults on darwin-x64 ([nodejs/node#62893](https://github.com/nodejs/node/issues/62893)). Intel Mac users get the npm install path; the curl-pipe installer fails fast on darwin+x64 with a pointer at `npm install -g umactually`.
+
+   **Windows ARM64 caveat (v0.6.4+):** the published `umactually-windows-arm64.zip` ships for parity with the install contract (five archives + `checksums.txt` is the manifest shape), but the binary inside is a Linux-built x64 fallback (PE machine type `0x8664`), not an ARM64 PE (`0xAA64`). It runs on Windows-on-ARM via the x64 emulation layer (Windows 11 22H2+). See [`docs/release-process.md` § Windows ARM64](release-process.md#windows-arm64) for the full explanation.
 
 3. **Release archives** — `node scripts/package-release-assets.mjs` zips/tars the 5 binaries into `umactually-<id>.{tar.gz,zip}` and writes `checksums.txt` (SHA-256 manifest).
 

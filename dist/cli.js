@@ -622,7 +622,225 @@ const ALL_FIELDS = Object.values(FIELDS);
  */
 const KNOWN_ENV_VAR_NAMES = new Set(ALL_FIELDS.flatMap((def) => def.env));
 
+;// CONCATENATED MODULE: ./src/util/env-keys.ts
+/** Centralised env-var name registry; eliminates inline `env["..."]` strings and keeps legacy aliases visible. */
+const ENV_KEYS = {
+    // UMACTUALLY_* canonical, REVIEW_* legacy aliases
+    UMACTUALLY_API_URL: "UMACTUALLY_API_URL",
+    UMACTUALLY_API_KEY: "UMACTUALLY_API_KEY",
+    UMACTUALLY_MODEL: "UMACTUALLY_MODEL",
+    UMACTUALLY_GITHUB_API_BASE: "UMACTUALLY_GITHUB_API_BASE",
+    UMACTUALLY_INCLUDE_SONARQUBE: "UMACTUALLY_INCLUDE_SONARQUBE",
+    UMACTUALLY_SONAR_HOST_URL: "UMACTUALLY_SONAR_HOST_URL",
+    UMACTUALLY_SONAR_TOKEN: "UMACTUALLY_SONAR_TOKEN",
+    UMACTUALLY_SONAR_PROJECT_KEY: "UMACTUALLY_SONAR_PROJECT_KEY",
+    UMACTUALLY_PROMPT_FILE: "UMACTUALLY_PROMPT_FILE",
+    UMACTUALLY_PROMPT_FILES: "UMACTUALLY_PROMPT_FILES",
+    UMACTUALLY_ADDITIONAL_PROMPT_FILE: "UMACTUALLY_ADDITIONAL_PROMPT_FILE",
+    UMACTUALLY_ADDITIONAL_PROMPT_FILES: "UMACTUALLY_ADDITIONAL_PROMPT_FILES",
+    UMACTUALLY_STRICT_SCHEMA: "UMACTUALLY_STRICT_SCHEMA",
+    UMACTUALLY_VERIFY_FINDINGS: "UMACTUALLY_VERIFY_FINDINGS",
+    REVIEW_STRICT_SCHEMA: "REVIEW_STRICT_SCHEMA",
+    REVIEW_VERIFY_FINDINGS: "REVIEW_VERIFY_FINDINGS",
+    REVIEW_PROVIDER_URL: "REVIEW_PROVIDER_URL",
+    REVIEW_PROVIDER_API_KEY: "REVIEW_PROVIDER_API_KEY",
+    REVIEW_PROVIDER_MODEL: "REVIEW_PROVIDER_MODEL",
+    REVIEW_TIMEOUT_SECONDS: "REVIEW_TIMEOUT_SECONDS",
+    REVIEW_FILE_LIMIT: "REVIEW_FILE_LIMIT",
+    REVIEW_LEAK_DETECTION: "REVIEW_LEAK_DETECTION",
+    // Platform runtime
+    GITHUB_ACTIONS: "GITHUB_ACTIONS",
+    GITHUB_EVENT_PATH: "GITHUB_EVENT_PATH",
+    GITHUB_TOKEN: "GITHUB_TOKEN",
+    // GH_TOKEN is a legacy alias for GITHUB_TOKEN per init-guided-setup plan T9;
+    // schema's env: ["GITHUB_TOKEN", "GH_TOKEN"] iterates this alias automatically.
+    GH_TOKEN: "GH_TOKEN",
+    GITHUB_REPOSITORY: "GITHUB_REPOSITORY",
+    GITHUB_REF: "GITHUB_REF",
+    GITHUB_SHA: "GITHUB_SHA",
+    // Azure DevOps runtime
+    TF_BUILD: "TF_BUILD",
+    SYSTEM_ACCESSTOKEN: "SYSTEM_ACCESSTOKEN",
+    SYSTEM_TEAMPROJECT: "SYSTEM_TEAMPROJECT",
+    SYSTEM_COLLECTIONURI: "SYSTEM_COLLECTIONURI",
+    BUILD_REPOSITORY_ID: "BUILD_REPOSITORY_ID",
+    SYSTEM_PULLREQUEST_PULLREQUESTID: "SYSTEM_PULLREQUEST_PULLREQUESTID",
+    SYSTEM_PULLREQUEST_SOURCECOMMITID: "SYSTEM_PULLREQUEST_SOURCECOMMITID",
+    SYSTEM_PULLREQUEST_TARGETBRANCHNAME: "SYSTEM_PULLREQUEST_TARGETBRANCHNAME",
+    // Inputs (already wrapped as INPUT_* by GitHub)
+    INPUT_DRY_RUN: "INPUT_DRY_RUN",
+    INPUT_EVENT: "INPUT_EVENT",
+    INPUT_DIFF: "INPUT_DIFF",
+    INPUT_REVIEW: "INPUT_REVIEW",
+    INPUT_THREADS: "INPUT_THREADS",
+    INPUT_OUTPUT_ARTIFACT: "INPUT_OUTPUT_ARTIFACT",
+    INPUT_PLATFORM: "INPUT_PLATFORM",
+};
+
+;// CONCATENATED MODULE: ./src/util/brand.ts
+/**
+ * Canonical brand string used across CLI, platform, and provider code.
+ *
+ * NOT a generic brand concept: this is the specific string "umactually"
+ * that downstream consumers (PR comments, HTTP User-Agent headers, GitHub
+ * agents) match on. Renamed from "umactually" in v0.1.0 because
+ * the project ships under the bare name `umactually` and never launched
+ * with the longer string — no installed copies depend on the old value.
+ */
+/** Canonical review brand string; eliminates the 50+ inline "umactually" literals across CLI, platform, and provider code. */
+const BRAND = "umactually";
+/** Log prefix shared by annotation helpers; eliminates hand-built "umactually: " prefixes in stderr diagnostics. */
+const BRAND_PREFIX = `${BRAND}: `;
+/** HTTP User-Agent token shared by provider and platform clients; eliminates duplicated header literals. */
+const USER_AGENT = BRAND;
+/** Azure DevOps PR status context name; prevents status updates from drifting away from the review brand. */
+const AZURE_STATUS_CONTEXT_NAME = `${BRAND}-status`;
+/** Azure DevOps PR status context genre; the discriminator that keeps our status updates distinct from any other tool's. */
+const AZURE_STATUS_CONTEXT_GENRE = "pr-review";
+/**
+ * Redaction token emitted by secret scanners and runtime sanitizers
+ * when a high-confidence secret or per-secret value is replaced. The
+ * runtime sanitizer (`live-shared.ts:sanitizeForPost`) and the
+ * scanner (`scan-review-secrets.ts`) must emit the SAME token so the
+ * downstream log-filter and dedup heuristics agree on what counts as
+ * "already-redacted". Single source of truth — any future rename must
+ * touch this constant only.
+ */
+const REDACTED_SECRET_TOKEN = "[REDACTED_SECRET]";
+/**
+ * Placeholder string substituted into config-parse error messages instead of
+ * leaking values. Re-exported from `src/config/errors.ts` as `REDACTED` to
+ * preserve the existing import surface in that module (the parser chain in
+ * `src/config/parsers.ts` already imports `REDACTED` from `errors.ts`).
+ */
+const REDACTED_PLACEHOLDER = "[REDACTED]";
+/** Replaces an entire `Authorization: ...` header value in logged request bodies. */
+const REDACTED_AUTHORIZATION_HEADER = "[REDACTED_AUTHORIZATION_HEADER]";
+/** Replaces a `Bearer <token>` segment inside a logged request body. */
+const REDACTED_BEARER_TOKEN = "[REDACTED_BEARER_TOKEN]";
+
+;// CONCATENATED MODULE: ./src/config/errors.ts
+class errors_InvalidConfigError extends Error {
+    field;
+    reason;
+    name = "InvalidConfigError";
+    constructor(field, reason, options) {
+        super(`Invalid config for '${field}': ${reason}`, options);
+        this.field = field;
+        this.reason = reason;
+    }
+}
+class PromptFileError extends Error {
+    path;
+    reason;
+    name = "PromptFileError";
+    constructor(path, reason, options) {
+        super(`Prompt file error: ${reason}`, options);
+        this.path = path;
+        this.reason = reason;
+    }
+}
+/**
+ * Marker used in error messages to replace any user-supplied value
+ * (URLs, tokens, prompt content). Never echo the raw value.
+ */
+
+
+;// CONCATENATED MODULE: ./src/util/strict-integer.ts
+
+/**
+ * Strict-integer parsing helpers — leaf module that breaks the
+ * `cli/parse-args.ts ↔ config/parsers.ts` circular-import cycle.
+ *
+ * This module's only upstream is `src/config/errors.ts`, which is itself
+ * a leaf (no `cli/` imports, no back-reference to either call site). The
+ * dependency direction stays strictly: `cli-args.ts → strict-integer.ts
+ * → config/errors.ts` and `parsers.ts → strict-integer.ts →
+ * config/errors.ts`, with `config/errors.ts` as a sink. No cycle is
+ * re-introduced. Both call sites (`src/util/cli-args.ts` and
+ * `src/config/parsers.ts`) consume the helper below; neither needs to
+ * import the other through this path.
+ *
+ * ## Sign tolerance
+ *
+ * The helper is **sign-tolerant by design**: it accepts `"+1"`, `"-1"`,
+ * `"+0"`, `"-0"` etc. The positivity / non-negativity check is the
+ * CALLER's responsibility. This split keeps the helper reusable for
+ * signed CLI flags (none today, but the schema may grow) while every
+ * existing caller that wants positive-integer semantics already adds
+ * its own `parsed <= 0` guard.
+ *
+ * ## Accepted shapes
+ *   - Optional leading `+` or `-` sign
+ *   - One or more ASCII digits
+ *   - Any integer that fits in `Number.isSafeInteger` (±(2^53 - 1))
+ *
+ * ## Rejected shapes
+ *   - Empty strings
+ *   - Whitespace-only or whitespace-padded strings (callers that need
+ *     to tolerate trim should `.trim()` first)
+ *   - Any non-digit content anywhere (decimal points, exponent notation,
+ *     trailing letters, internal whitespace)
+ *
+ * ## Caller contract
+ *   - `tryParseStrictInt` does NOT do a `Number.isSafeInteger` check;
+ *     that bound is the caller's responsibility (the CLI returns `null`
+ *     for out-of-range; the config loader throws).
+ *   - `parsed === 0` is a successful parse. Caller decides whether
+ *     `0` is in-range.
+ *   - `parsed < 0` is a successful parse. Caller decides whether
+ *     negatives are in-range.
+ */
+/**
+ * Regex matching an optional leading sign followed by one or more ASCII
+ * digits, and nothing else. Anchored at both ends (no implicit matches).
+ * The `u` flag is a future-proofing choice (no current consumers use
+ * Unicode digits; the ASCII class is intentional — non-ASCII digits
+ * silently round-trip through `Number.parseInt` with locale surprises).
+ */
+const STRICT_INTEGER_RE = /^[+-]?\d+$/u;
+/**
+ * Parse a string as a strict decimal integer.
+ *
+ * Returns the parsed number on success, or `null` if `raw` is empty,
+ * contains non-digit characters, or has any whitespace. Does NOT
+ * enforce the safe-integer bound — the caller decides whether
+ * `Number.isSafeInteger` is required.
+ *
+ * The caller is also responsible for the in-range semantics (positive
+ * only, non-negative only, min/max bounds, etc.). This helper only
+ * answers the syntactic question "is this string a well-formed
+ * integer literal?".
+ */
+function tryParseStrictInt(raw) {
+    if (raw.length === 0)
+        return null;
+    if (!STRICT_INTEGER_RE.test(raw))
+        return null;
+    return Number.parseInt(raw, 10);
+}
+/**
+ * Throwing variant of {@link tryParseStrictInt}. Used by the config
+ * loader (and any future strict-integer surface that wants a hard
+ * failure) to convert a malformed input into a typed `InvalidConfigError`
+ * that carries the offending `field` name. Throws `InvalidConfigError`
+ * (from `src/config/errors.ts`) so error-handling code can
+ * catch by class without re-parsing the message.
+ *
+ * The caller is still responsible for the safe-integer bound; this
+ * helper only throws on a malformed string. Add a `Number.isSafeInteger`
+ * guard at the call site when the bound matters.
+ */
+function parseStrictIntegerOrThrow(field, raw) {
+    const parsed = tryParseStrictInt(raw);
+    if (parsed === null) {
+        throw new InvalidConfigError(field, `expected integer string, received not-a-strict-integer`);
+    }
+    return parsed;
+}
+
 ;// CONCATENATED MODULE: ./src/util/cli-args.ts
+
 /**
  * Default error class thrown by `readEnum` when an enum value is invalid.
  * The class lives here so `readEnum` can throw it without circular
@@ -633,31 +851,6 @@ const KNOWN_ENV_VAR_NAMES = new Set(ALL_FIELDS.flatMap((def) => def.env));
  */
 class CliArgError extends Error {
     name = "CliArgError";
-}
-/** Push optional CLI flag values consistently; eliminates duplicated non-empty string guards in CLI builders. */
-function pushFlagValue(args, flag, value) {
-    if (value !== undefined && value.length > 0) {
-        args.push(flag, value);
-    }
-}
-/** Push numeric CLI flag values consistently; eliminates repeated number-to-string flag handling. */
-function pushNumber(args, flag, value) {
-    args.push(flag, String(value));
-}
-/** Push boolean CLI flags consistently; eliminates duplicated conditional flag append logic. */
-function pushBool(args, condition, flag) {
-    if (condition) {
-        args.push(flag);
-    }
-}
-/** Resolve env aliases consistently; eliminates duplicated first-non-empty fallback loops. */
-function envFallback(...values) {
-    for (const value of values) {
-        if (value !== undefined && value.length > 0) {
-            return value;
-        }
-    }
-    return "";
 }
 /**
  * Strict decimal-integer parser that REJECTS partial numeric garbage.
@@ -701,15 +894,8 @@ function envFallback(...values) {
  * `platform/azure/context.ts` so the parsing semantics cannot drift.
  */
 function parseStrictInt(raw) {
-    if (raw.length === 0)
-        return null;
-    // A single optional sign followed by 1+ ASCII digits, and nothing else.
-    // Using a regex (rather than a manual loop) keeps the intent grep-able
-    // and the cost trivial (this runs only at CLI/env boundary).
-    if (!/^[+-]?\d+$/u.test(raw))
-        return null;
-    const parsed = Number.parseInt(raw, 10);
-    return Number.isSafeInteger(parsed) ? parsed : null;
+    const n = tryParseStrictInt(raw);
+    return n !== null && Number.isSafeInteger(n) ? n : null;
 }
 /**
  * Validate a CLI enum value against an accepted set, returning the value
@@ -815,76 +1001,8 @@ function levenshtein(a, b) {
     return previous[b.length] ?? 0;
 }
 
-;// CONCATENATED MODULE: ./src/util/brand.ts
-/**
- * Canonical brand string used across CLI, platform, and provider code.
- *
- * NOT a generic brand concept: this is the specific string "umactually"
- * that downstream consumers (PR comments, HTTP User-Agent headers, GitHub
- * agents) match on. Renamed from "umactually" in v0.1.0 because
- * the project ships under the bare name `umactually` and never launched
- * with the longer string — no installed copies depend on the old value.
- */
-/** Canonical review brand string; eliminates the 50+ inline "umactually" literals across CLI, platform, and provider code. */
-const BRAND = "umactually";
-/** Log prefix shared by annotation helpers; eliminates hand-built "umactually: " prefixes in stderr diagnostics. */
-const BRAND_PREFIX = `${BRAND}: `;
-/** HTTP User-Agent token shared by provider and platform clients; eliminates duplicated header literals. */
-const USER_AGENT = BRAND;
-/** Azure DevOps PR status context name; prevents status updates from drifting away from the review brand. */
-const AZURE_STATUS_CONTEXT_NAME = `${BRAND}-status`;
-/** Azure DevOps PR status context genre; the discriminator that keeps our status updates distinct from any other tool's. */
-const AZURE_STATUS_CONTEXT_GENRE = "pr-review";
-/**
- * Redaction token emitted by secret scanners and runtime sanitizers
- * when a high-confidence secret or per-secret value is replaced. The
- * runtime sanitizer (`live-shared.ts:sanitizeForPost`) and the
- * scanner (`scan-review-secrets.ts`) must emit the SAME token so the
- * downstream log-filter and dedup heuristics agree on what counts as
- * "already-redacted". Single source of truth — any future rename must
- * touch this constant only.
- */
-const REDACTED_SECRET_TOKEN = "[REDACTED_SECRET]";
-/**
- * Placeholder string substituted into config-parse error messages instead of
- * leaking values. Re-exported from `src/config/errors.ts` as `REDACTED` to
- * preserve the existing import surface in that module (the parser chain in
- * `src/config/parsers.ts` already imports `REDACTED` from `errors.ts`).
- */
-const REDACTED_PLACEHOLDER = "[REDACTED]";
-/** Replaces an entire `Authorization: ...` header value in logged request bodies. */
-const REDACTED_AUTHORIZATION_HEADER = "[REDACTED_AUTHORIZATION_HEADER]";
-/** Replaces a `Bearer <token>` segment inside a logged request body. */
-const REDACTED_BEARER_TOKEN = "[REDACTED_BEARER_TOKEN]";
-
-;// CONCATENATED MODULE: ./src/config/errors.ts
-class errors_InvalidConfigError extends Error {
-    field;
-    reason;
-    name = "InvalidConfigError";
-    constructor(field, reason, options) {
-        super(`Invalid config for '${field}': ${reason}`, options);
-        this.field = field;
-        this.reason = reason;
-    }
-}
-class PromptFileError extends Error {
-    path;
-    reason;
-    name = "PromptFileError";
-    constructor(path, reason, options) {
-        super(`Prompt file error: ${reason}`, options);
-        this.path = path;
-        this.reason = reason;
-    }
-}
-/**
- * Marker used in error messages to replace any user-supplied value
- * (URLs, tokens, prompt content). Never echo the raw value.
- */
-
-
 ;// CONCATENATED MODULE: ./src/config/parsers.ts
+
 
 
 
@@ -917,7 +1035,6 @@ function parseBooleanFromUnknown(value, field) {
     }
     throw new errors_InvalidConfigError(field, `expected boolean, received ${typeof value}`);
 }
-const INTEGER_RE = /^-?\d+$/;
 /**
  * Parses an integer from an unknown boundary. Accepts native integers
  * and decimal-integer strings. Rejects floats, NaN, Infinity, empty strings.
@@ -934,12 +1051,9 @@ function parseIntegerFromUnknown(value, field) {
         if (trimmed.length === 0) {
             throw new errors_InvalidConfigError(field, `expected integer, received empty string`);
         }
-        if (!INTEGER_RE.test(trimmed)) {
+        const parsed = tryParseStrictInt(trimmed);
+        if (parsed === null) {
             throw new errors_InvalidConfigError(field, `expected integer string, received ${REDACTED_PLACEHOLDER}`);
-        }
-        const parsed = Number.parseInt(trimmed, 10);
-        if (!Number.isFinite(parsed)) {
-            throw new errors_InvalidConfigError(field, `expected finite integer, received ${REDACTED_PLACEHOLDER}`);
         }
         // Reject values outside the safe-integer range so callers that
         // rely on exact equality (severity-key lookups, cache keys,
@@ -1059,6 +1173,7 @@ function appendV1(path) {
 }
 
 ;// CONCATENATED MODULE: ./src/cli/parse-args.ts
+
 
 
 
@@ -1419,9 +1534,15 @@ function parseCliArgs(args) {
         githubApiBase,
         includeSonarqube,
         includePrSonarFindings,
-        sonarHostUrl,
-        sonarToken,
-        sonarProjectKey,
+        // Sonar fields fall back to the UMACTUALLY_SONAR_* env vars when
+        // the CLI flag was not supplied. The standard env-var path goes
+        // through `resolveFromSchema` (config-loader), but `--include-pr-
+        // sonar-findings` is consumed inside the live path BEFORE the
+        // loader runs, so we resolve here to keep parity with the
+        // `field > env > null` precedence every other field uses.
+        sonarHostUrl: sonarHostUrl ?? process.env[ENV_KEYS.UMACTUALLY_SONAR_HOST_URL] ?? null,
+        sonarToken: sonarToken ?? process.env[ENV_KEYS.UMACTUALLY_SONAR_TOKEN] ?? null,
+        sonarProjectKey: sonarProjectKey ?? process.env[ENV_KEYS.UMACTUALLY_SONAR_PROJECT_KEY] ?? null,
         sonarTimeoutSeconds,
         minimumSeverity,
         minimumSeverityInternal: minimumSeverity === null
@@ -1707,8 +1828,81 @@ function numberFieldOrUndefined(value, key) {
     return Number.isFinite(parsed) ? parsed : undefined;
 }
 
+;// CONCATENATED MODULE: ./src/util/check-format.ts
+// SPDX-License-Identifier: MIT
+//
+// Shared human formatter for "checks" — the array of `{ id, status,
+// message, hint? }` rows emitted by the `doctor` and `uninstall`
+// subcommands. Both commands used to carry an identical
+// `${STATUS.padEnd(4)} ${id}: ${message}\n  hint: ${hint}` inline copy
+// (see `src/cli/doctor.ts:formatDoctorHuman` and
+// `src/cli/uninstall.ts:formatUninstallHuman` before this refactor). This
+// helper centralises the shape so future commands (e.g. verify) can
+// reuse it without re-deriving the per-check line.
+//
+// The `padEnd(4)` is HARDCODED — both original call sites used `4` at
+// HEAD, and the existing unit tests (`test/unit/cli-doctor.test.ts` and
+// `test/unit/cli-uninstall.test.ts`) pin that width implicitly. Changing
+// it would change the byte shape of every diagnostic line and is a
+// breaking change for any downstream consumer that greps for `STATUS id:`
+// in CI logs.
+//
+// The `emojiPrefix` option is OFF by default — the canonical wire shape
+// is the plain `STATUS id: message` line. When a caller opts in, the
+// status column gains a status-keyed emoji (`✅` ok / `⚠️` warn / `❌`
+// fail / `⏭` skip), inserted between the emoji and the padded status
+// so the column alignment is preserved. The emoji is appended BEFORE the
+// `padEnd(4)` width, which means the status word still lines up at
+// column N+1 regardless of whether emojis are enabled — the prefix is
+// outside the column that tests pin.
+//
+// Pure: no I/O, no clock side-effects. Safe to call from synchronous
+// dispatch sites (the human-output branch of `formatDoctorHuman` /
+// `formatUninstallHuman`).
+/**
+ * Status → emoji lookup used when `emojiPrefix` is enabled. The mapping
+ * is exhaustive over the canonical DoctorStatus / UninstallStatus
+ * vocabulary (`"ok" | "warn" | "fail" | "skip"`); unknown statuses fall
+ * back to `⏭` so a malformed upstream producer cannot crash the
+ * renderer.
+ */
+const STATUS_EMOJI = {
+    ok: "\u2705",
+    warn: "\u26A0\uFE0F",
+    fail: "\u274C",
+    skip: "\u23ED\uFE0F",
+};
+/**
+ * Render a list of check rows as a single human-readable string.
+ *
+ * Each check produces one or two lines:
+ *   - `${status} ${id}: ${message}` (the per-check row)
+ *   - `  hint: ${hint}` (only when `check.hint` is set; 2-space indent
+ *     is preserved from the pre-refactor shape)
+ *
+ * Lines are joined with `\n` and the function appends a single trailing
+ * `\n` so the output is line-terminated exactly like the pre-refactor
+ * `formatDoctorHuman` / `formatUninstallHuman` did.
+ *
+ * The function is intentionally not exported with a per-command name
+ * (no `formatDoctorHuman` / `formatUninstallHuman` re-export) — those
+ * wrappers stay in their respective command modules so callers continue
+ * to import the command-specific symbol without churn.
+ */
+function formatCheckLines(checks, options = {}) {
+    const emojiPrefix = options.emojiPrefix === true;
+    const lines = checks.map((check) => {
+        const status = check.status.toUpperCase().padEnd(4);
+        const prefix = emojiPrefix ? `${STATUS_EMOJI[check.status.toLowerCase()] ?? STATUS_EMOJI["skip"]} ` : "";
+        const hint = check.hint === undefined ? "" : `\n  hint: ${check.hint}`;
+        return `${prefix}${status} ${check.id}: ${check.message}${hint}`;
+    });
+    return `${lines.join("\n")}\n`;
+}
+
 ;// CONCATENATED MODULE: ./src/cli/doctor.ts
 // SPDX-License-Identifier: MIT
+
 
 const MIN_NODE_MAJOR = 24;
 async function runDoctor(deps) {
@@ -1825,11 +2019,7 @@ async function checkGit(deps) {
     }
 }
 function formatDoctorHuman(checks) {
-    const lines = checks.map((check) => {
-        const hint = check.hint === undefined ? "" : `\n  hint: ${check.hint}`;
-        return `${check.status.toUpperCase().padEnd(4)} ${check.id}: ${check.message}${hint}`;
-    });
-    return `${lines.join("\n")}\n`;
+    return formatCheckLines(checks, { emojiPrefix: false });
 }
 function formatDoctorJson(result) {
     const envelope = result.json ?? {
@@ -2112,6 +2302,7 @@ async function defaultStdinReader(promptText, isTTY) {
         });
     });
 }
+
 
 function parseUninstallArgs(argv) {
     const errors = [];
@@ -2599,11 +2790,7 @@ const uninstall_UNINSTALL_HELP_TEXT = [
     "  2  Usage error or unsafe exec path",
 ].join("\n");
 function formatUninstallHuman(result) {
-    const lines = result.checks.map((c) => {
-        const hint = c.hint === undefined ? "" : `\n  hint: ${c.hint}`;
-        return `${c.status.toUpperCase().padEnd(4)} ${c.id}: ${c.message}${hint}`;
-    });
-    return `${lines.join("\n")}\n`;
+    return formatCheckLines(result.checks);
 }
 function formatUninstallJson(result, mode, execPath) {
     const envelope = result.json ?? {
@@ -10602,6 +10789,82 @@ function buildParseFailError(args) {
 }
 
 
+;// CONCATENATED MODULE: ./src/provider/http.ts
+/**
+ * Shared HTTP transport helpers for provider clients.
+ *
+ * `performProviderFetch` and `readResponseText` consolidate the
+ * fetch-level concerns that every provider client previously
+ * re-implemented inline:
+ *
+ *  - `performProviderFetch` — POST a JSON body with provider-specific
+ *    headers, pre-flight abort check, and try/catch around the fetch
+ *    call that maps abort / network failures to typed `ProviderError`s.
+ *    Returns the raw `Response`; the caller still owns the
+ *    `response.ok` / status-code mapping so each provider's specific
+ *    4xx code (`responses_4xx` / `chat_4xx` / `anthropic_4xx`) stays
+ *    at the call site.
+ *  - `readResponseText` — best-effort `response.text()` wrapper that
+ *    maps a body-read failure to `ProviderError("parse")`.
+ *
+ * The three provider clients (`openai-compatible`, `anthropic-messages`,
+ * `copilot`) each had a near-byte-identical inline fetch wrapper; this
+ * module is the single byte-identical implementation they all now
+ * delegate to.
+ */
+
+/**
+ * POST `body` to `url` using `fetchImpl` with the headers returned by
+ * `buildHeaders`. Throws `ProviderError("aborted")` when `signal` is
+ * already aborted before the call (caller-initiated abort), `ProviderError("timeout")`
+ * when `fetchImpl` itself throws an abort error during the request
+ * (the composed timeout fired), or `ProviderError("network")` on any
+ * other fetch failure. Returns the raw `Response` so the caller can
+ * inspect `response.ok` and decide its own 4xx mapping.
+ */
+async function performProviderFetch(input) {
+    // Pre-flight abort check. The Copilot call site did not have this
+    // branch before the refactor (its inline fetchImpl just called fetch
+    // without checking signal.aborted). Routing through this helper is
+    // the strict bug fix the PR accepts as a Copilot behavior change:
+    // pre-aborted signals now surface a typed "aborted" error rather
+    // than the leaked-connection / leaked-timeout mix that used to
+    // result. Pinned by a test in `test/unit/provider-http.test.ts`.
+    if (input.signal?.aborted === true) {
+        throw new ProviderError("aborted", input.endpoint, null, input.requestId, "Request was aborted by the caller.");
+    }
+    try {
+        return await input.fetchImpl(input.url, {
+            method: "POST",
+            headers: input.buildHeaders(),
+            body: input.body,
+            ...(input.signal !== undefined ? { signal: input.signal } : {}),
+        });
+    }
+    catch (error) {
+        if (isAbortError(error)) {
+            // fetchImpl threw an abort — that's the composed timeout firing
+            // (the pre-abort case above already returned for caller-aborts).
+            throw new ProviderError("timeout", input.endpoint, null, input.requestId, `Request to provider ${input.endpoint} timed out.`);
+        }
+        throw new ProviderError("network", input.endpoint, null, input.requestId, sanitizeMessage(error, `Network error contacting provider ${input.endpoint}.`), { cause: error });
+    }
+}
+/**
+ * Read the response body as text. Throws `ProviderError("parse")` when
+ * `response.text()` itself throws (truncated stream, broken socket,
+ * decode failure). Provider-specific JSON-shape parse failures are
+ * handled at the call sites — this helper only owns the read step.
+ */
+async function readResponseText(response, endpoint, requestId) {
+    try {
+        return await response.text();
+    }
+    catch (error) {
+        throw new ProviderError("parse", endpoint, response.status, requestId, sanitizeMessage(error, "Failed to read provider response body."), { cause: error });
+    }
+}
+
 ;// CONCATENATED MODULE: ./src/provider/copilot-token.ts
 
 
@@ -11123,6 +11386,7 @@ function createRequestId() {
 
 
 
+
 const COPILOT_EDITOR_VERSION = "vscode/1.96.0";
 const COPILOT_EDITOR_PLUGIN_VERSION = `${BRAND}/0.1.0`;
 const COPILOT_INTEGRATION_ID = "vscode-chat";
@@ -11165,26 +11429,31 @@ async function runChatCall(config, fetchImpl, requestId, session) {
         ...(config.responseFormat !== undefined ? { responseFormat: config.responseFormat } : {}),
     });
     const signal = composeSignal(undefined, config.requestTimeoutMs);
+    // The signal is composed from a no-op caller signal + the per-request
+    // timeout, so today's `signal.aborted === true` branch is unreachable
+    // here. Routing through `performProviderFetch` is forward-compatible:
+    // the day CopilotCallConfig gains a `signal` field, this site will
+    // start honoring caller-aborted requests without further edits. The
+    // accepted behavior change for this PR is that pre-aborted signals
+    // now surface a typed `ProviderError("aborted")` rather than a
+    // leaked connection — pinned by `test/unit/provider-http.test.ts`.
     let response;
     try {
-        response = await fetchImpl(url, {
-            method: "POST",
-            headers: buildChatHeaders(session.token),
+        response = await performProviderFetch({
+            url,
             body: JSON.stringify(body),
             signal,
+            requestId,
+            endpoint: ENDPOINT_CHAT,
+            fetchImpl,
+            buildHeaders: () => buildChatHeaders(session.token),
         });
     }
     catch (error) {
-        if (isAbortError(error)) {
-            return {
-                ok: false,
-                error: new ProviderError("timeout", ENDPOINT_CHAT, null, requestId, `Request to provider ${ENDPOINT_CHAT} timed out after ${config.requestTimeoutMs}ms.`),
-            };
+        if (error instanceof ProviderError) {
+            return { ok: false, error };
         }
-        return {
-            ok: false,
-            error: new ProviderError("network", ENDPOINT_CHAT, null, requestId, sanitizeMessage(error, `Network error contacting provider ${ENDPOINT_CHAT}.`), { cause: error }),
-        };
+        throw error;
     }
     if (!response.ok) {
         return {
@@ -11194,13 +11463,13 @@ async function runChatCall(config, fetchImpl, requestId, session) {
     }
     let rawText;
     try {
-        rawText = await response.text();
+        rawText = await readResponseText(response, ENDPOINT_CHAT, requestId);
     }
     catch (error) {
-        return {
-            ok: false,
-            error: new ProviderError("parse", ENDPOINT_CHAT, response.status, requestId, sanitizeMessage(error, "Failed to read provider response body."), { cause: error }),
-        };
+        if (error instanceof ProviderError) {
+            return { ok: false, error };
+        }
+        throw error;
     }
     const textPayload = extractTextPayload(ENDPOINT_CHAT, rawText);
     const review = parseReviewPayload(textPayload);
@@ -11239,11 +11508,14 @@ async function runChatCall(config, fetchImpl, requestId, session) {
     }, { userOverride: PARSE_FAIL_RETRY_PROMPT });
     let retryResponse;
     try {
-        retryResponse = await fetchImpl(url, {
-            method: "POST",
-            headers: buildChatHeaders(session.token),
+        retryResponse = await performProviderFetch({
+            url,
             body: JSON.stringify(retryBody),
             signal,
+            requestId,
+            endpoint: ENDPOINT_CHAT,
+            fetchImpl,
+            buildHeaders: () => buildChatHeaders(session.token),
         });
     }
     catch {
@@ -11261,7 +11533,7 @@ async function runChatCall(config, fetchImpl, requestId, session) {
             error: new ProviderError("parse", ENDPOINT_CHAT, retryResponse.status, requestId, `Provider self-healing retry failed with status ${retryResponse.status}; original parse error remains the root cause.`, { rawText }),
         };
     }
-    const retryRawText = await retryResponse.text();
+    const retryRawText = await readResponseText(retryResponse, ENDPOINT_CHAT, requestId);
     const retryTextPayload = extractTextPayload(ENDPOINT_CHAT, retryRawText);
     let retryReview = null;
     const parsedRetry = parseReviewPayload(retryTextPayload);
@@ -11348,6 +11620,7 @@ function replaceSecretsLiterally(value, secrets) {
 }
 
 ;// CONCATENATED MODULE: ./src/provider/openai-compatible.ts
+
 
 
 
@@ -11487,11 +11760,19 @@ async function callEndpoint(config, fetchImpl, requestId, endpoint, baseUrl) {
         ? buildResponsesBody(buildBodyConfig(config))
         : buildChatBody(buildBodyConfig(config));
     const signal = composeSignal(config.signal, config.requestTimeoutMs);
-    const response = await performFetch(fetchImpl, url, body, signal, config, requestId, endpoint);
+    const response = await performProviderFetch({
+        url,
+        body: JSON.stringify(body),
+        signal,
+        requestId,
+        endpoint,
+        fetchImpl,
+        buildHeaders: () => buildOpenAiCompatibleHeaders(config, requestId),
+    });
     if (!response.ok) {
         throw new ProviderError(endpoint === ENDPOINT_RESPONSES ? "responses_4xx" : "chat_4xx", endpoint, response.status, requestId, sanitizeHttpStatus(endpoint, response.status));
     }
-    const rawText = await readBody(response, endpoint, requestId);
+    const rawText = await readResponseText(response, endpoint, requestId);
     const textPayload = extractTextPayload(endpoint, rawText);
     // [DEBUG-RAW] Emit extracted text length + first/last 200 chars so the
     // GitHub Actions log shows what the parser actually saw. Pinned by the
@@ -11612,10 +11893,18 @@ async function callEndpoint(config, fetchImpl, requestId, endpoint, baseUrl) {
         // Some models (e.g. MiniMax-M3 with bumped-budget retry) need
         // 3-5 minutes per attempt.
         const retrySignal = composeSignal(config.signal, config.requestTimeoutMs);
-        const retryResponse = await performFetch(fetchImpl, url, retryBody, retrySignal, config, requestId, endpoint);
+        const retryResponse = await performProviderFetch({
+            url,
+            body: JSON.stringify(retryBody),
+            signal: retrySignal,
+            requestId,
+            endpoint,
+            fetchImpl,
+            buildHeaders: () => buildOpenAiCompatibleHeaders(config, requestId),
+        });
         retryResponseStatus = retryResponse.status;
         if (retryResponse.ok) {
-            const retryRawText = await readBody(retryResponse, endpoint, requestId);
+            const retryRawText = await readResponseText(retryResponse, endpoint, requestId);
             const retryTextPayload = extractTextPayload(endpoint, retryRawText);
             if (isDebugRawActive()) {
                 writeDebugRaw(`[DEBUG-RAW] retry requestId=${requestId} ` +
@@ -11664,36 +11953,17 @@ function redactDebugSecrets(value, config) {
     }
     return redacted;
 }
-async function performFetch(fetchImpl, url, body, signal, config, requestId, endpoint) {
-    try {
-        return await fetchImpl(url, {
-            method: "POST",
-            headers: {
-                "content-type": "application/json",
-                authorization: `Bearer ${config.apiKey}`,
-                "x-request-id": requestId,
-            },
-            body: JSON.stringify(body),
-            signal,
-        });
-    }
-    catch (error) {
-        if (isAbortError(error)) {
-            if (config.signal?.aborted === true) {
-                throw new ProviderError("aborted", endpoint, null, requestId, "Request was aborted by the caller.");
-            }
-            throw new ProviderError("timeout", endpoint, null, requestId, `Request to provider ${endpoint} timed out after ${config.requestTimeoutMs}ms.`);
-        }
-        throw new ProviderError("network", endpoint, null, requestId, sanitizeMessage(error, `Network error contacting provider ${endpoint}.`), { cause: error });
-    }
-}
-async function readBody(response, endpoint, requestId) {
-    try {
-        return await response.text();
-    }
-    catch (error) {
-        throw new ProviderError("parse", endpoint, response.status, requestId, sanitizeMessage(error, "Failed to read provider response body."), { cause: error });
-    }
+/**
+ * Build the headers for an OpenAI-compatible provider request. Exported
+ * via `performProviderFetch.buildHeaders` so the helper owns the
+ * transport concern and this file owns the wire shape.
+ */
+function buildOpenAiCompatibleHeaders(config, requestId) {
+    return {
+        "content-type": "application/json",
+        authorization: `Bearer ${config.apiKey}`,
+        "x-request-id": requestId,
+    };
 }
 function shouldFallback(error) {
     return error.status === 404 || error.status === 400;
@@ -11867,6 +12137,7 @@ function assertNever(value) {
  * diagnostic, hard-fail on router errors) is identical regardless of which
  * provider family the operator picks.
  */
+
 
 
 
@@ -12080,7 +12351,15 @@ async function runOnce(config, fetchImpl, requestId, url) {
     const signal = composeSignal(config.signal, config.requestTimeoutMs);
     let response;
     try {
-        response = await anthropic_messages_performFetch(fetchImpl, url, body, signal, config.apiKey, requestId);
+        response = await performProviderFetch({
+            url,
+            body: JSON.stringify(body),
+            signal,
+            requestId,
+            endpoint: ENDPOINT,
+            fetchImpl,
+            buildHeaders: () => buildAnthropicHeaders(config.apiKey, requestId),
+        });
     }
     catch (error) {
         if (error instanceof ProviderError) {
@@ -12096,7 +12375,7 @@ async function runOnce(config, fetchImpl, requestId, url) {
         // body text is read ONLY so the diagnostic can cite it.
         let errorBodyText = "";
         try {
-            errorBodyText = await response.text();
+            errorBodyText = await readResponseText(response, ENDPOINT, requestId);
         }
         catch {
             // Body read failure shouldn't mask the original status.
@@ -12108,7 +12387,7 @@ async function runOnce(config, fetchImpl, requestId, url) {
     }
     let rawText;
     try {
-        rawText = await response.text();
+        rawText = await readResponseText(response, ENDPOINT, requestId);
     }
     catch (error) {
         return {
@@ -12168,10 +12447,18 @@ async function runOnce(config, fetchImpl, requestId, url) {
     try {
         // Fresh signal: same rationale as openai-compatible.
         const retrySignal = composeSignal(config.signal, config.requestTimeoutMs);
-        const retryResponse = await anthropic_messages_performFetch(fetchImpl, url, retryBody, retrySignal, config.apiKey, requestId);
+        const retryResponse = await performProviderFetch({
+            url,
+            body: JSON.stringify(retryBody),
+            signal: retrySignal,
+            requestId,
+            endpoint: ENDPOINT,
+            fetchImpl,
+            buildHeaders: () => buildAnthropicHeaders(config.apiKey, requestId),
+        });
         retryResponseStatus = retryResponse.status;
         if (retryResponse.ok) {
-            const retryRawText = await retryResponse.text();
+            const retryRawText = await readResponseText(retryResponse, ENDPOINT, requestId);
             const retryTextPayload = extractAnthropicTextPayload(retryRawText);
             const parsedRetry = parseReviewPayload(retryTextPayload);
             if (isNonEmptyReview(parsedRetry)) {
@@ -12211,32 +12498,6 @@ async function runOnce(config, fetchImpl, requestId, url) {
             ...(usage !== undefined ? { usage } : {}),
         }),
     };
-}
-async function anthropic_messages_performFetch(fetchImpl, url, body, signal, apiKey, requestId) {
-    try {
-        return await fetchImpl(url, {
-            method: "POST",
-            headers: {
-                "content-type": "application/json",
-                // Anthropic BANS the `Authorization: Bearer ...` header. The
-                // correct auth header is `x-api-key`, with the required
-                // `anthropic-version` pin. Sending Bearer instead results in a
-                // 401 with no useful error message. Test fixtures pin both
-                // headers (no `authorization`).
-                "x-api-key": apiKey,
-                "anthropic-version": ANTHROPIC_VERSION,
-                "x-request-id": requestId,
-            },
-            body: JSON.stringify(body),
-            signal,
-        });
-    }
-    catch (error) {
-        if (isAbortError(error)) {
-            throw new ProviderError("timeout", ENDPOINT, null, requestId, "Anthropic request timed out.");
-        }
-        throw new ProviderError("network", ENDPOINT, null, requestId, sanitizeMessage(error, "Network error contacting Anthropic."), { cause: error });
-    }
 }
 /**
  * Build the headers for an Anthropic Messages request. Exported so the
@@ -12302,61 +12563,6 @@ function redactLineSecrets(line) {
     }
     return redactedLine;
 }
-
-;// CONCATENATED MODULE: ./src/util/env-keys.ts
-/** Centralised env-var name registry; eliminates inline `env["..."]` strings and keeps legacy aliases visible. */
-const ENV_KEYS = {
-    // UMACTUALLY_* canonical, REVIEW_* legacy aliases
-    UMACTUALLY_API_URL: "UMACTUALLY_API_URL",
-    UMACTUALLY_API_KEY: "UMACTUALLY_API_KEY",
-    UMACTUALLY_MODEL: "UMACTUALLY_MODEL",
-    UMACTUALLY_GITHUB_API_BASE: "UMACTUALLY_GITHUB_API_BASE",
-    UMACTUALLY_INCLUDE_SONARQUBE: "UMACTUALLY_INCLUDE_SONARQUBE",
-    UMACTUALLY_SONAR_HOST_URL: "UMACTUALLY_SONAR_HOST_URL",
-    UMACTUALLY_SONAR_TOKEN: "UMACTUALLY_SONAR_TOKEN",
-    UMACTUALLY_SONAR_PROJECT_KEY: "UMACTUALLY_SONAR_PROJECT_KEY",
-    UMACTUALLY_PROMPT_FILE: "UMACTUALLY_PROMPT_FILE",
-    UMACTUALLY_PROMPT_FILES: "UMACTUALLY_PROMPT_FILES",
-    UMACTUALLY_ADDITIONAL_PROMPT_FILE: "UMACTUALLY_ADDITIONAL_PROMPT_FILE",
-    UMACTUALLY_ADDITIONAL_PROMPT_FILES: "UMACTUALLY_ADDITIONAL_PROMPT_FILES",
-    UMACTUALLY_STRICT_SCHEMA: "UMACTUALLY_STRICT_SCHEMA",
-    UMACTUALLY_VERIFY_FINDINGS: "UMACTUALLY_VERIFY_FINDINGS",
-    REVIEW_STRICT_SCHEMA: "REVIEW_STRICT_SCHEMA",
-    REVIEW_VERIFY_FINDINGS: "REVIEW_VERIFY_FINDINGS",
-    REVIEW_PROVIDER_URL: "REVIEW_PROVIDER_URL",
-    REVIEW_PROVIDER_API_KEY: "REVIEW_PROVIDER_API_KEY",
-    REVIEW_PROVIDER_MODEL: "REVIEW_PROVIDER_MODEL",
-    REVIEW_TIMEOUT_SECONDS: "REVIEW_TIMEOUT_SECONDS",
-    REVIEW_FILE_LIMIT: "REVIEW_FILE_LIMIT",
-    REVIEW_LEAK_DETECTION: "REVIEW_LEAK_DETECTION",
-    // Platform runtime
-    GITHUB_ACTIONS: "GITHUB_ACTIONS",
-    GITHUB_EVENT_PATH: "GITHUB_EVENT_PATH",
-    GITHUB_TOKEN: "GITHUB_TOKEN",
-    // GH_TOKEN is a legacy alias for GITHUB_TOKEN per init-guided-setup plan T9;
-    // schema's env: ["GITHUB_TOKEN", "GH_TOKEN"] iterates this alias automatically.
-    GH_TOKEN: "GH_TOKEN",
-    GITHUB_REPOSITORY: "GITHUB_REPOSITORY",
-    GITHUB_REF: "GITHUB_REF",
-    GITHUB_SHA: "GITHUB_SHA",
-    // Azure DevOps runtime
-    TF_BUILD: "TF_BUILD",
-    SYSTEM_ACCESSTOKEN: "SYSTEM_ACCESSTOKEN",
-    SYSTEM_TEAMPROJECT: "SYSTEM_TEAMPROJECT",
-    SYSTEM_COLLECTIONURI: "SYSTEM_COLLECTIONURI",
-    BUILD_REPOSITORY_ID: "BUILD_REPOSITORY_ID",
-    SYSTEM_PULLREQUEST_PULLREQUESTID: "SYSTEM_PULLREQUEST_PULLREQUESTID",
-    SYSTEM_PULLREQUEST_SOURCECOMMITID: "SYSTEM_PULLREQUEST_SOURCECOMMITID",
-    SYSTEM_PULLREQUEST_TARGETBRANCHNAME: "SYSTEM_PULLREQUEST_TARGETBRANCHNAME",
-    // Inputs (already wrapped as INPUT_* by GitHub)
-    INPUT_DRY_RUN: "INPUT_DRY_RUN",
-    INPUT_EVENT: "INPUT_EVENT",
-    INPUT_DIFF: "INPUT_DIFF",
-    INPUT_REVIEW: "INPUT_REVIEW",
-    INPUT_THREADS: "INPUT_THREADS",
-    INPUT_OUTPUT_ARTIFACT: "INPUT_OUTPUT_ARTIFACT",
-    INPUT_PLATFORM: "INPUT_PLATFORM",
-};
 
 ;// CONCATENATED MODULE: ./src/cli/auto-model.ts
 /**
@@ -14157,7 +14363,19 @@ function selectPostableCommentsWithPositions(input) {
         if (comments.length >= maxComments) {
             break;
         }
-        if (!input.positions.hasPosition(comment)) {
+        // Position validation is bypassed for `category: "sonar"`
+        // findings. SonarCloud's reported line numbers are authoritative
+        // for the source FILE (not the diff context), so a finding on a
+        // line that the diff doesn't touch is still a valid inline-comment
+        // anchor — GitHub's API accepts any positive line number within
+        // the file. Without the bypass, `positions.hasPosition` would
+        // drop every SonarCloud finding whose flagged line is outside the
+        // changed region, leaving the bot's review body saying
+        // "0 inline findings — ship it" while SonarCloud MAJOR/CRITICAL
+        // findings sit ignored in the same PR. See the merge block in
+        // live-github.ts for the inline-finding pipeline.
+        const isSonarFinding = comment.category === "sonar";
+        if (!isSonarFinding && !input.positions.hasPosition(comment)) {
             continue;
         }
         if (!passesSeverityPolicy(comment, input.parsed)) {
@@ -15234,141 +15452,155 @@ function extractMainFromParsed(pkg) {
     }
     return { kind: "package-json-main", main };
 }
-// ---------------------------------------------------------------------------
-// Targeted scanners — used when the diff only contains part of the file
-// and JSON.parse fails. Each scanner locates a JSON key and reads its
-// array / object / string value with a hand-rolled walker.
-// ---------------------------------------------------------------------------
 /**
- * Find `"files": [ ... ]` and read every string element. Returns null
- * if the key isn't present or the array isn't a clean JSON string
- * array. Tolerates multiline arrays.
+ * Generic "find a JSON key in possibly-malformed JSON and read its
+ * value". Used by the three package.json fallback scanners when
+ * JSON.parse fails. Walks past the key, the colon, and whitespace,
+ * then dispatches on the value's first non-whitespace byte:
+ *
+ *   `"string"`           expects a JSON string literal only
+ *   `"string|string[]"`  accepts either a string literal OR a string array
+ *   `"Record<string,string>"`
+ *                        accepts either a string literal OR a
+ *                        string-keyed map of string-string pairs
+ *                        (e.g. `"bin": "foo.mjs"` or `"bin": { "x": "y" }`)
+ *
+ * The walker is hand-rolled on purpose — we cannot import a JSON
+ * parser because the surrounding file is intentionally allowed to
+ * be malformed (the scanner exists to recover a fact from partial
+ * diff content, not to validate the file).
  */
-function extractFilesByScanning(content) {
-    const start = findKeyIndex(content, '"files"');
+function extractJsonFieldByScanning(content, key, shape) {
+    const start = findKeyIndex(content, `"${key}"`);
     if (start === -1) {
         return null;
     }
     let i = content.indexOf(":", start) + 1;
-    while (i < content.length && /\s/u.test(content[i] ?? "")) {
-        i++;
-    }
-    if (content[i] !== "[") {
+    i = skipWhitespace(content, i);
+    const ch = content[i];
+    if (ch === undefined) {
         return null;
     }
-    i++;
-    const out = [];
-    while (i < content.length) {
-        const ch = content[i];
-        if (ch === undefined) {
+    const quoted = readQuotedStringAt(content, i);
+    if (quoted !== null) {
+        if (shape === "string") {
+            return quoted.value;
+        }
+        if (shape === "string|string[]") {
+            return [quoted.value];
+        }
+        // Single-string form is the npm `"bin": "path/to/script"` shorthand.
+        // Surface it as one entry tagged with "(binary) ->" so callers
+        // can disambiguate from the map form (which uses "name -> value").
+        return [`(binary) -> ${quoted.value}`];
+    }
+    if (ch === "[") {
+        if (shape !== "string|string[]") {
             return null;
         }
+        return scanStringArray(content, i + 1);
+    }
+    if (ch === "{") {
+        if (shape !== "Record<string,string>") {
+            return null;
+        }
+        return scanStringMap(content, i + 1);
+    }
+    return null;
+}
+function scanStringArray(content, openIndex) {
+    let i = openIndex;
+    const out = [];
+    while (i < content.length) {
+        const ch = content[i] ?? "";
         if (ch === "]") {
-            return { kind: "package-json-files", files: out };
+            return out;
         }
         if (ch === '"') {
-            const end = readStringLiteral(content, i);
-            if (end === -1) {
+            const quoted = readQuotedStringAt(content, i);
+            if (quoted === null) {
                 return null;
             }
-            out.push(decodeStringLiteral(content.slice(i + 1, end)));
-            i = end + 1;
-            while (i < content.length &&
-                (content[i] === " " || content[i] === "\t" || content[i] === "\n" || content[i] === "\r" || content[i] === ",")) {
-                i++;
-            }
+            out.push(quoted.value);
+            i = skipWhitespaceAndComma(content, quoted.end + 1);
             continue;
         }
         i++;
     }
     return null;
 }
-/**
- * Find `"bin": { ... }` and read every `"name": "value"` entry.
- */
-function extractBinByScanning(content) {
-    const start = findKeyIndex(content, '"bin"');
-    if (start === -1) {
-        // `bin` was not mentioned in the diff at all — we don't know
-        // whether it was removed or simply not touched. Conservatively
-        // omit rather than misreport.
-        return null;
-    }
-    let i = content.indexOf(":", start) + 1;
-    while (i < content.length && /\s/u.test(content[i] ?? "")) {
-        i++;
-    }
-    if (content[i] === '"') {
-        // Single string form: `"bin": "bin/foo.mjs"`.
-        const end = readStringLiteral(content, i);
-        if (end === -1) {
-            return null;
-        }
-        const value = decodeStringLiteral(content.slice(i + 1, end));
-        return { kind: "package-json-bin", binEntries: [`(binary) -> ${value}`] };
-    }
-    if (content[i] !== "{") {
-        return null;
-    }
-    i++;
+function scanStringMap(content, openIndex) {
+    let i = openIndex;
     const out = [];
     while (i < content.length) {
-        const ch = content[i];
-        if (ch === undefined) {
-            return null;
-        }
+        const ch = content[i] ?? "";
         if (ch === "}") {
-            return { kind: "package-json-bin", binEntries: out };
+            return out;
         }
         if (ch === '"') {
-            const keyEnd = readStringLiteral(content, i);
-            if (keyEnd === -1) {
+            const keyQ = readQuotedStringAt(content, i);
+            if (keyQ === null) {
                 return null;
             }
-            const name = decodeStringLiteral(content.slice(i + 1, keyEnd));
-            let j = keyEnd + 1;
-            while (j < content.length && (content[j] === " " || content[j] === "\t" || content[j] === "\n" || content[j] === "\r")) {
-                j++;
-            }
+            let j = skipWhitespace(content, keyQ.end + 1);
             if (content[j] !== ":") {
                 return null;
             }
-            j++;
-            while (j < content.length && (content[j] === " " || content[j] === "\t" || content[j] === "\n" || content[j] === "\r")) {
-                j++;
-            }
-            if (content[j] !== '"') {
+            j = skipWhitespace(content, j + 1);
+            const valQ = readQuotedStringAt(content, j);
+            if (valQ === null) {
                 return null;
             }
-            const valEnd = readStringLiteral(content, j);
-            if (valEnd === -1) {
-                return null;
-            }
-            const value = decodeStringLiteral(content.slice(j + 1, valEnd));
-            out.push(`${name} -> ${value}`);
-            i = valEnd + 1;
-            while (i < content.length &&
-                (content[i] === " " || content[i] === "\t" || content[i] === "\n" || content[i] === "\r" || content[i] === ",")) {
-                i++;
-            }
+            out.push(`${keyQ.value} -> ${valQ.value}`);
+            i = skipWhitespaceAndComma(content, valQ.end + 1);
             continue;
         }
         i++;
     }
     return null;
 }
+function isHorizontalWhitespace(ch) {
+    return ch === " " || ch === "\t" || ch === "\n" || ch === "\r";
+}
+function isArrayElementSeparator(ch) {
+    return (ch === " " || ch === "\t" || ch === "\n" || ch === "\r" || ch === ",");
+}
 /**
- * Find `"main": "value"` and return the string.
+ * Advance `i` past any `/\s/u` characters in `content`, starting at
+ * `i`. Returns the new index. If `i` is already at end-of-content
+ * or at a non-whitespace byte, returns `i` unchanged.
+ *
+ * One of three pure scanner-scaffolding primitives (the others are
+ * `skipWhitespaceAndComma` and `readQuotedStringAt`) extracted so the
+ * three scanners above can stay declarative instead of inlining the
+ * same `while` / `readStringLiteral` + `decode` pattern five times.
  */
-function extractMainByScanning(content) {
-    const start = findKeyIndex(content, '"main"');
-    if (start === -1) {
-        return null;
+function skipWhitespace(content, i) {
+    let j = i;
+    while (j < content.length && isHorizontalWhitespace(content[j] ?? "")) {
+        j++;
     }
-    let i = content.indexOf(":", start) + 1;
-    while (i < content.length && /\s/u.test(content[i] ?? "")) {
-        i++;
+    return j;
+}
+/**
+ * Same as `skipWhitespace` but also skips `,`. Used to advance past
+ * the separator after an array / map element.
+ */
+function skipWhitespaceAndComma(content, i) {
+    let j = i;
+    while (j < content.length && isArrayElementSeparator(content[j] ?? "")) {
+        j++;
     }
+    return j;
+}
+/**
+ * If `content[i]` is a `"`, read the JSON string literal that starts
+ * at `i`, decode its body, and return `{ value, end }` where `end` is
+ * the index of the closing `"`. Returns `null` if `content[i] !== '"'`
+ * (caller is not at a string literal) or if the literal is
+ * unterminated (`readStringLiteral` returned `-1`).
+ */
+function readQuotedStringAt(content, i) {
     if (content[i] !== '"') {
         return null;
     }
@@ -15376,7 +15608,45 @@ function extractMainByScanning(content) {
     if (end === -1) {
         return null;
     }
-    return { kind: "package-json-main", main: decodeStringLiteral(content.slice(i + 1, end)) };
+    return { value: decodeStringLiteral(content.slice(i + 1, end)), end };
+}
+/**
+ * Find `"files": [ ... ]` and read every string element.
+ */
+function extractFilesByScanning(content) {
+    const files = extractJsonFieldByScanning(content, "files", "string|string[]");
+    if (files === null) {
+        return null;
+    }
+    return { kind: "package-json-files", files };
+}
+/**
+ * Find `"bin": "value"` or `"bin": { ... }` and surface entries.
+ *
+ * When `bin` is absent from the diff entirely we don't know whether
+ * it was removed or simply not touched — conservatively omit rather
+ * than misreport. (The generic also returns null in this case, but
+ * call it out at the field site so the rationale stays visible.)
+ */
+function extractBinByScanning(content) {
+    if (findKeyIndex(content, '"bin"') === -1) {
+        return null;
+    }
+    const binEntries = extractJsonFieldByScanning(content, "bin", "Record<string,string>");
+    if (binEntries === null) {
+        return null;
+    }
+    return { kind: "package-json-bin", binEntries };
+}
+/**
+ * Find `"main": "value"` and return the string.
+ */
+function extractMainByScanning(content) {
+    const main = extractJsonFieldByScanning(content, "main", "string");
+    if (main === null) {
+        return null;
+    }
+    return { kind: "package-json-main", main };
 }
 /**
  * Locate the start index of a JSON key. Returns -1 if not present.
@@ -16937,13 +17207,13 @@ async function requestLiveReview(input) {
      * model's response (off-diff citations, missed severity classification,
      * truncated-stream marker, etc.) before the action exits non-zero.
      */
-    function handleParse(result, providerName, rawText) {
+    function handleParse(result, providerName, rawText, maxOutputTokens) {
         const review = buildMalformedProviderFallback({
             provider: providerName,
             modelId,
             rawText,
             secrets: [providerApiKey, input.platformToken],
-            ...parseFailureReasonFromProviderError(result.error, input.parsed.maxOutputTokens),
+            ...parseFailureReasonFromProviderError(result.error, maxOutputTokens),
         });
         return withParseWarnings({
             review,
@@ -16956,29 +17226,18 @@ async function requestLiveReview(input) {
     }
     try {
         if (input.parsed.provider === "copilot") {
-            const result = await runCopilotRequest({
-                githubToken: providerApiKey,
-                apiBase: resolveField(input.parsed.githubApiBase, input.env[ENV_KEYS.UMACTUALLY_GITHUB_API_BASE], DEFAULT_GITHUB_API_BASE),
-                system: prompts.system,
-                user: prompts.user,
-                model: modelId,
-                requestTimeoutMs: readRequestTimeoutMs(input.parsed),
-                ...(input.parsed.maxOutputTokens !== null ? { maxOutputTokens: input.parsed.maxOutputTokens } : {}),
-                ...(input.parsed.effort !== null ? { reasoningEffort: input.parsed.effort } : {}),
-                ...(responseFormat !== undefined ? { responseFormat } : {}),
+            const result = await runCopilotRequest(buildProviderRequestConfig({
+                protocol: "copilot",
+                parsed: input.parsed,
+                env: input.env,
+                modelId,
+                prompts,
                 fetchImpl: input.fetchImpl,
-            });
-            if (result.ok) {
-                return handleSuccess(result, COPILOT_PROVIDER_NAME);
-            }
-            if (result.error.code === "parse") {
-                return handleParse(result, COPILOT_PROVIDER_NAME, result.error.rawText ?? "");
-            }
-            if (result.error.code === "provider_error") {
-                const details = result.error.providerErrorDetails;
-                throw new LiveReviewError("PROVIDER_ERROR", details?.message ?? result.error.message, { cause: result.error });
-            }
-            throw new LiveReviewError("PROVIDER_REQUEST_FAILED", result.error.message, { cause: result.error });
+                responseFormat,
+                providerApiKey,
+                githubApiBase: resolveField(input.parsed.githubApiBase, input.env[ENV_KEYS.UMACTUALLY_GITHUB_API_BASE], DEFAULT_GITHUB_API_BASE),
+            }));
+            return dispatchProviderResult(result, COPILOT_PROVIDER_NAME, input.parsed.maxOutputTokens, { handleSuccess, handleParse });
         }
         if (input.parsed.provider === "anthropic") {
             // Anthropic native provider (`/v1/messages`). The wire body uses
@@ -17002,17 +17261,17 @@ async function requestLiveReview(input) {
             // which both exempt --api-url from the required check when
             // --provider anthropic is set.
             const providerUrl = resolveField(input.parsed.apiUrl, input.env[ENV_KEYS.UMACTUALLY_API_URL], DEFAULT_ANTHROPIC_URL);
-            let result = await runAnthropicRequest({
-                baseUrl: providerUrl,
-                apiKey: providerApiKey,
-                model: modelId,
-                system: prompts.system,
-                user: prompts.user,
-                requestTimeoutMs: readRequestTimeoutMs(input.parsed),
-                ...(input.parsed.maxOutputTokens !== null ? { maxOutputTokens: input.parsed.maxOutputTokens } : {}),
-                ...(input.parsed.effort !== null ? { reasoningEffort: input.parsed.effort } : {}),
+            let result = await runAnthropicRequest(buildProviderRequestConfig({
+                protocol: "anthropic",
+                parsed: input.parsed,
+                env: input.env,
+                modelId,
+                prompts,
                 fetchImpl: input.fetchImpl,
-            });
+                responseFormat,
+                providerApiKey,
+                baseUrl: providerUrl,
+            }));
             if (!result.ok) {
                 // Cross-protocol fallback to the OpenAI client at the same URL.
                 // If the fallback also fails, surface the original anthropic error
@@ -17034,19 +17293,7 @@ async function requestLiveReview(input) {
                     result = fallback;
                 }
             }
-            if (result.ok) {
-                const providerName = providerNameForEndpoint(result.endpoint);
-                return handleSuccess(result, providerName);
-            }
-            if (result.error.code === "parse") {
-                const providerName = providerNameForEndpoint(result.error.endpoint);
-                return handleParse(result, providerName, result.error.rawText ?? "");
-            }
-            if (result.error.code === "provider_error") {
-                const details = result.error.providerErrorDetails;
-                throw new LiveReviewError("PROVIDER_ERROR", details?.message ?? result.error.message, { cause: result.error });
-            }
-            throw new LiveReviewError("PROVIDER_REQUEST_FAILED", result.error.message, { cause: result.error });
+            return dispatchProviderResult(result, providerNameForEndpoint(result.ok ? result.endpoint : result.error.endpoint), input.parsed.maxOutputTokens, { handleSuccess, handleParse });
         }
         const providerUrl = requireLiveConfig(resolveField(input.parsed.apiUrl, input.env[ENV_KEYS.UMACTUALLY_API_URL], ""), ENV_KEYS.UMACTUALLY_API_URL);
         // Path-prefix heuristic: if the operator's URL looks like an
@@ -17074,31 +17321,30 @@ async function requestLiveReview(input) {
         }
         let result;
         if (useAnthropicProtocol) {
-            result = await runAnthropicRequest({
-                baseUrl: providerUrl,
-                apiKey: providerApiKey,
-                model: modelId,
-                system: prompts.system,
-                user: prompts.user,
-                requestTimeoutMs: readRequestTimeoutMs(input.parsed),
-                ...(input.parsed.maxOutputTokens !== null ? { maxOutputTokens: input.parsed.maxOutputTokens } : {}),
-                ...(input.parsed.effort !== null ? { reasoningEffort: input.parsed.effort } : {}),
+            result = await runAnthropicRequest(buildProviderRequestConfig({
+                protocol: "anthropic",
+                parsed: input.parsed,
+                env: input.env,
+                modelId,
+                prompts,
                 fetchImpl: input.fetchImpl,
-            });
+                responseFormat,
+                providerApiKey,
+                baseUrl: providerUrl,
+            }));
         }
         else {
-            result = await runProviderRequest({
-                baseUrl: providerUrl,
-                apiKey: providerApiKey,
-                model: modelId,
-                system: prompts.system,
-                user: prompts.user,
-                requestTimeoutMs: readRequestTimeoutMs(input.parsed),
-                ...(input.parsed.maxOutputTokens !== null ? { maxOutputTokens: input.parsed.maxOutputTokens } : {}),
-                ...(input.parsed.effort !== null ? { reasoningEffort: input.parsed.effort } : {}),
-                ...(responseFormat !== undefined ? { responseFormat } : {}),
+            result = await runProviderRequest(buildProviderRequestConfig({
+                protocol: "openai",
+                parsed: input.parsed,
+                env: input.env,
+                modelId,
+                prompts,
                 fetchImpl: input.fetchImpl,
-            });
+                responseFormat,
+                providerApiKey,
+                baseUrl: providerUrl,
+            }));
         }
         if (!result.ok) {
             // Cross-protocol fallback: if the named (openai-compatible) client
@@ -17127,22 +17373,7 @@ async function requestLiveReview(input) {
                 result = fallback;
             }
         }
-        if (result.ok) {
-            const providerName = providerNameForEndpoint(result.endpoint);
-            return handleSuccess(result, providerName);
-        }
-        if (result.error.code === "parse") {
-            const providerName = providerNameForEndpoint(result.error.endpoint);
-            return handleParse(result, providerName, result.error.rawText ?? "");
-        }
-        // Provider errors (router misconfig, no providers configured,
-        // invalid API key, etc.) are NOT parse failures and must NOT
-        // be posted as a COMMENT review. Hard-fail so CI sees the error.
-        if (result.error.code === "provider_error") {
-            const details = result.error.providerErrorDetails;
-            throw new LiveReviewError("PROVIDER_ERROR", details?.message ?? result.error.message, { cause: result.error });
-        }
-        throw new LiveReviewError("PROVIDER_REQUEST_FAILED", result.error.message, { cause: result.error });
+        return dispatchProviderResult(result, providerNameForEndpoint(result.ok ? result.endpoint : result.error.endpoint), input.parsed.maxOutputTokens, { handleSuccess, handleParse });
     }
     finally {
         // Always clear the sink so a subsequent, unrelated request does not
@@ -17352,35 +17583,34 @@ async function runWithCrossProtocolFallback(args) {
     // is where the key goes, exactly once per protocol.
     let fallbackResult;
     if (args.fallbackProvider === "anthropic") {
-        fallbackResult = await runAnthropicRequest({
-            baseUrl: args.baseUrl,
-            apiKey: args.providerApiKey,
-            model: args.modelId,
-            system: args.prompts.system,
-            user: args.prompts.user,
-            requestTimeoutMs: args.readRequestTimeoutMs(),
-            ...(args.parsed.maxOutputTokens !== null ? { maxOutputTokens: args.parsed.maxOutputTokens } : {}),
-            ...(args.parsed.effort !== null ? { reasoningEffort: args.parsed.effort } : {}),
+        fallbackResult = await runAnthropicRequest(buildProviderRequestConfig({
+            protocol: "anthropic",
+            parsed: args.parsed,
+            env: {},
+            modelId: args.modelId,
+            prompts: args.prompts,
             fetchImpl: args.fetchImpl,
-        });
+            responseFormat: args.responseFormat,
+            providerApiKey: args.providerApiKey,
+            baseUrl: args.baseUrl,
+        }));
     }
     else {
-        fallbackResult = await runProviderRequest({
-            baseUrl: args.baseUrl,
-            apiKey: args.providerApiKey,
-            model: args.modelId,
-            system: args.prompts.system,
-            user: args.prompts.user,
-            requestTimeoutMs: args.readRequestTimeoutMs(),
-            ...(args.parsed.maxOutputTokens !== null ? { maxOutputTokens: args.parsed.maxOutputTokens } : {}),
-            ...(args.parsed.effort !== null ? { reasoningEffort: args.parsed.effort } : {}),
+        fallbackResult = await runProviderRequest(buildProviderRequestConfig({
+            protocol: "openai",
+            parsed: args.parsed,
+            env: {},
+            modelId: args.modelId,
+            prompts: args.prompts,
+            fetchImpl: args.fetchImpl,
             // Carry the strict-JSON-schema constraint from the named call:
             // if the operator enabled `--strict-schema`/`responseFormat`,
             // the fallback should match (otherwise payload variance between
             // protocols can silently leak through).
-            ...(args.responseFormat !== undefined ? { responseFormat: args.responseFormat } : {}),
-            fetchImpl: args.fetchImpl,
-        });
+            responseFormat: args.responseFormat,
+            providerApiKey: args.providerApiKey,
+            baseUrl: args.baseUrl,
+        }));
     }
     // Diagnostic on dual-protocol failure: if both protocols fail,
     // we surface the named error (per the contract), but we still log
@@ -17391,6 +17621,67 @@ async function runWithCrossProtocolFallback(args) {
         process.stderr.write(`::notice::${BRAND_PREFIX}Cross-protocol fallback "${args.fallbackProvider}" returned status=${fallbackResult.error.status} at ${redactUrlForLog(args.baseUrl)} — surfacing named protocol's error.\n`);
     }
     return fallbackResult;
+}
+function buildProviderRequestConfig(input) {
+    const requestTimeoutMs = readRequestTimeoutMs(input.parsed);
+    const maxOutputTokensSpread = input.parsed.maxOutputTokens !== null
+        ? { maxOutputTokens: input.parsed.maxOutputTokens }
+        : {};
+    const reasoningEffortSpread = input.parsed.effort !== null
+        ? { reasoningEffort: input.parsed.effort }
+        : {};
+    if (input.protocol === "copilot") {
+        return {
+            githubToken: input.providerApiKey,
+            apiBase: input.githubApiBase,
+            system: input.prompts.system,
+            user: input.prompts.user,
+            model: input.modelId,
+            requestTimeoutMs,
+            ...maxOutputTokensSpread,
+            ...reasoningEffortSpread,
+            ...(input.responseFormat !== undefined ? { responseFormat: input.responseFormat } : {}),
+            fetchImpl: input.fetchImpl,
+        };
+    }
+    if (input.protocol === "anthropic") {
+        return {
+            baseUrl: input.baseUrl,
+            apiKey: input.providerApiKey,
+            model: input.modelId,
+            system: input.prompts.system,
+            user: input.prompts.user,
+            requestTimeoutMs,
+            ...maxOutputTokensSpread,
+            ...reasoningEffortSpread,
+            fetchImpl: input.fetchImpl,
+        };
+    }
+    return {
+        baseUrl: input.baseUrl,
+        apiKey: input.providerApiKey,
+        model: input.modelId,
+        system: input.prompts.system,
+        user: input.prompts.user,
+        requestTimeoutMs,
+        ...maxOutputTokensSpread,
+        ...reasoningEffortSpread,
+        ...(input.responseFormat !== undefined ? { responseFormat: input.responseFormat } : {}),
+        fetchImpl: input.fetchImpl,
+    };
+}
+function dispatchProviderResult(result, providerName, maxOutputTokens, ctx) {
+    if (result.ok) {
+        return ctx.handleSuccess(result, providerName);
+    }
+    if (result.error.code === "parse") {
+        return ctx.handleParse(result, providerName, result.error.rawText ?? "", maxOutputTokens);
+    }
+    if (result.error.code === "provider_error") {
+        const details = result.error.providerErrorDetails;
+        throw new LiveReviewError("PROVIDER_ERROR", details?.message ?? result.error.message, { cause: result.error });
+    }
+    throw new LiveReviewError("PROVIDER_REQUEST_FAILED", result.error.message, { cause: result.error });
 }
 
 ;// CONCATENATED MODULE: ./src/cli/standalone-run.ts
@@ -17714,26 +18005,24 @@ async function runWizardPrompts(savedConfig) {
 }
 /**
  * Invoke `runStandalone` with the freshly captured key propagated to
- * `env`, then dispatch the result. The success path zeroizes the key
- * before `showSuccess` runs (Fix D); the error path zeroizes before
- * the retry/menu prompt so the secret never survives the decision.
+ * `env`, then dispatch the result. The outer loop's `finally` block
+ * in `runWizardLoopIteration` is the sole zeroize site for the key
+ * — having the helper null its parameter here would be redundant
+ * because callers always invoke this from inside a try-finally that
+ * handles cleanup once on every exit path.
  *
  * Returns a small `RunOutcome` so the outer loop can keep its
  * `retry` flag out of the helper's scope.
  */
 async function runAndHandle(parsed, diffText, apiKeyLocal) {
-    // Fix C: build the env so the freshly captured key reaches the
-    // provider even when the operator typed it into the wizard.
+    // Build the env so the freshly captured key reaches the provider
+    // even when the operator typed it into the wizard.
     const env = {
         ...process.env,
         ...(apiKeyLocal !== null && { UMACTUALLY_API_KEY: apiKeyLocal }),
     };
     const result = await runStandalone({ parsed, cwd: process.cwd(), env });
     if (result.kind === "ok" || result.kind === "ok-no-diff") {
-        // Fix D: zeroize before any awaitable that doesn't depend on the
-        // key (Fix D explicitly notes this is stack-dwell mitigation, not
-        // a security guarantee).
-        apiKeyLocal = null;
         await showSuccess(result, parsed, diffText);
         return { exit: true };
     }
@@ -17745,63 +18034,85 @@ async function runAndHandle(parsed, diffText, apiKeyLocal) {
             { value: "menu", label: "Back to menu" },
         ],
     });
-    apiKeyLocal = null;
     if (dist_isCancel(next) || next === "menu")
         return { exit: true };
     return { exit: false, retry: next === "retry" };
 }
+/**
+ * Run one iteration of the wizard loop. Extracted from `runReviewFlow`
+ * so the outer loop stays below the SonarCloud cognitive-complexity
+ * threshold (15).
+ *
+ * Returns `RunOutcome`:
+ *   - `{ exit: true }` → caller should exit the TUI's wizard loop
+ *     (user cancelled at the prompt, success path, or thrown error
+ *     surfaced to the hub).
+ *   - `{ exit: false; retry: true }` → caller should loop again.
+ *   - `{ exit: false; retry: false }` → caller should exit (currently
+ *     unreachable — kept for symmetry with `runAndHandle`'s outcome).
+ *
+ * The `finally` block is the SOLE zeroize site for `apiKeyLocal`.
+ * Because `finally` runs on every exit path (early return, success,
+ * throw), inner branches don't need to re-null the key — that would
+ * be redundant (SonarCloud S4165).
+ */
+async function runWizardLoopIteration() {
+    let apiKeyLocal = null;
+    let tempDiffPath = null;
+    try {
+        const saved = tryReadSavedConfig().config;
+        const prompt = await runWizardPrompts(saved);
+        if (prompt.cancel)
+            return { exit: true };
+        apiKeyLocal = prompt.apiKeyLocal;
+        if (prompt.source === "diff")
+            tempDiffPath = prompt.diffPath;
+        const parsed = {
+            ...emptyParsedArgs(),
+            provider: prompt.provider,
+            apiUrl: prompt.apiUrl,
+            model: prompt.model,
+            apiKey: apiKeyLocal,
+            diffPath: prompt.diffPath,
+            files: prompt.source === "files" ? "." : null,
+        };
+        const outcome = await runAndHandle(parsed, prompt.diffText, apiKeyLocal);
+        if (outcome.exit)
+            return { exit: true };
+        return { exit: false, retry: outcome.retry };
+    }
+    catch (err) {
+        // Every return path must be { exitCode: 0 }; if runStandalone or
+        // a future provider bug throws, surface the message and return
+        // to the hub instead of unwinding the whole TUI.
+        const message = err instanceof Error ? err.message : String(err);
+        stream.error(message);
+        return { exit: true };
+    }
+    finally {
+        apiKeyLocal = null;
+        if (tempDiffPath !== null) {
+            // Best-effort cleanup; the temp file lives in cwd and is only
+            // ever consumed by runStandalone in the body above.
+            const path = tempDiffPath;
+            tempDiffPath = null;
+            try {
+                const { unlink } = await Promise.resolve(/* import() */).then(__nccwpck_require__.t.bind(__nccwpck_require__, 455, 23));
+                await unlink(path);
+            }
+            catch {
+                // ignore — file may not exist if git diff returned empty
+            }
+        }
+    }
+}
 async function runReviewFlow() {
     let retry = false;
     do {
-        let apiKeyLocal = null;
-        let tempDiffPath = null;
-        try {
-            const saved = tryReadSavedConfig().config;
-            const prompt = await runWizardPrompts(saved);
-            if (prompt.cancel)
-                return { exitCode: 0 };
-            apiKeyLocal = prompt.apiKeyLocal;
-            if (prompt.source === "diff")
-                tempDiffPath = prompt.diffPath;
-            const parsed = {
-                ...emptyParsedArgs(),
-                provider: prompt.provider,
-                apiUrl: prompt.apiUrl,
-                model: prompt.model,
-                apiKey: apiKeyLocal,
-                diffPath: prompt.diffPath,
-                files: prompt.source === "files" ? "." : null,
-            };
-            const outcome = await runAndHandle(parsed, prompt.diffText, apiKeyLocal);
-            apiKeyLocal = null;
-            if (outcome.exit)
-                return { exitCode: 0 };
-            retry = outcome.retry;
-        }
-        catch (err) {
-            // Every return path must be { exitCode: 0 }; if runStandalone or
-            // a future provider bug throws, surface the message and return
-            // to the hub instead of unwinding the whole TUI.
-            const message = err instanceof Error ? err.message : String(err);
-            stream.error(message);
+        const result = await runWizardLoopIteration();
+        if (result.exit)
             return { exitCode: 0 };
-        }
-        finally {
-            apiKeyLocal = null;
-            if (tempDiffPath !== null) {
-                // Best-effort cleanup; the temp file lives in cwd and is only
-                // ever consumed by runStandalone in the body above.
-                const path = tempDiffPath;
-                tempDiffPath = null;
-                try {
-                    const { unlink } = await Promise.resolve(/* import() */).then(__nccwpck_require__.t.bind(__nccwpck_require__, 455, 23));
-                    await unlink(path);
-                }
-                catch {
-                    // ignore — file may not exist if git diff returned empty
-                }
-            }
-        }
+        retry = result.retry;
     } while (retry);
     return { exitCode: 0 };
 }
@@ -21346,173 +21657,130 @@ function azureStatusesUrl(context) {
     return `${azurePrBaseUrl(context)}/statuses?api-version=${AZURE_API_VERSION}`;
 }
 
-;// CONCATENATED MODULE: ./src/cli/fetch-sonar-pr-findings.ts
+;// CONCATENATED MODULE: ./src/sonar/fetch-sonar-pr-issues.ts
 
 
 
 
-
-
-
-const fetch_sonar_pr_findings_GITHUB_API_BASE_URL = process.env["GITHUB_API_URL"]?.replace(/\/$/u, "") ?? DEFAULT_GITHUB_API_BASE;
-const SONAR_PR_FINDING_MARKER = "<!-- sonarcloud -->";
-const MAX_SONAR_PR_FINDINGS = 50;
-/**
- * Fetch inline review comments on the current PR that carry the
- * `<!-- sonarcloud -->` marker, and convert each into a synthetic
- * `LiveReviewComment` so the existing severity policy + verdict
- * reconciliation treat them exactly like model-emitted findings.
- *
- * SonarCloud's CI integration in this repo (the `Surface SonarCloud
- * findings as PR comments` step in ci.yml) posts a separate review
- * per finding with that marker. After the bot waits for SonarCloud's
- * scan + surface step to finish (see the `Wait for SonarCloud scan +
- * comment-surface` step in self-review.yml), this fetcher pulls them
- * so the umactually self-review can:
- *   1. see them in `severityCounts` and trigger the verdict-escalation
- *      rule from PR #183 (any postable finding escalates SHIP/APPROVED
- *      → NEEDS_FIX), and
- *   2. post them as inline review threads on the bot's own review so
- *      the umactually card and SonarCloud's threads share a single
- *      review context (one place to dismiss).
- *
- * Returns an empty array on any fetch error — the bot never blocks on
- * the PR-comment fetch because self-review is advisory. The fetch is
- * best-effort by design; the SonarCloud `Surface SonarCloud findings
- * as PR comments` step is the authoritative surface for SonarCloud
- * findings, and the `SonarCloud Code Analysis` check status is the
- * authoritative policy gate.
- */
-async function fetchSonarPrFindings(input) {
-    const url = `${fetch_sonar_pr_findings_GITHUB_API_BASE_URL}/repos/${encodeURIComponent(input.context.repo.owner)}/${encodeURIComponent(input.context.repo.name)}/pulls/${input.context.prNumber}/comments?per_page=${MAX_SONAR_PR_FINDINGS}`;
+const MAX_SONAR_ISSUES = 100;
+const MAX_PAGES = 10;
+const SEVERITY_MAP = {
+    BLOCKER: "critical",
+    CRITICAL: "critical",
+    MAJOR: "major",
+    MINOR: "minor",
+    INFO: "info",
+};
+function mapSeverity(raw) {
+    if (typeof raw !== "string")
+        return "major";
+    return SEVERITY_MAP[raw.toUpperCase()] ?? "major";
+}
+function stripProjectKeyPrefix(component, projectKey) {
+    const prefix = `${projectKey}:`;
+    if (!component.startsWith(prefix))
+        return null;
+    const stripped = component.slice(prefix.length);
+    return stripped.length === 0 ? null : stripped;
+}
+function parseIssue(value, projectKey, prNumber) {
+    if (!json_guards_isRecord(value))
+        return null;
+    const component = value["component"];
+    const rule = value["rule"];
+    const line = value["line"];
+    const severity = value["severity"];
+    const message = value["message"];
+    if (typeof component !== "string")
+        return null;
+    if (typeof rule !== "string" || rule.length === 0)
+        return null;
+    if (!isSafeInteger(line) || line <= 0)
+        return null;
+    const path = stripProjectKeyPrefix(component, projectKey);
+    if (path === null)
+        return null;
+    const bodyMessage = typeof message === "string" ? message : "";
+    const url = `https://sonarcloud.io/project/issues?id=${encodeURIComponent(projectKey)}&pullRequest=${encodeURIComponent(String(prNumber))}&open=${encodeURIComponent(rule)}`;
+    const body = `**SonarCloud ${typeof severity === "string" ? severity : "MAJOR"} — \`${rule}\`**\n\n${bodyMessage}\n\n[Open in SonarCloud](${url})`;
+    return { path, line, body, severity: mapSeverity(severity), category: "sonar" };
+}
+async function fetchSonarIssuesPage(input) {
+    const { baseUrl, projectKey, prNumber, page, headers, timeoutMs, fetchImpl } = input;
+    const url = new URL(`${baseUrl}/api/issues/search`);
+    url.searchParams.set("componentKeys", projectKey);
+    url.searchParams.set("pullRequest", String(prNumber));
+    url.searchParams.set("inNewCodePeriod", "true");
+    url.searchParams.set("resolved", "false");
+    url.searchParams.set("ps", String(MAX_SONAR_ISSUES));
+    url.searchParams.set("p", String(page));
     let raw;
     try {
-        const response = await input.fetchImpl(url, {
+        const response = await fetchImpl(url.toString(), {
             method: "GET",
-            headers: githubHeaders(input.context.token),
+            headers,
+            ...(timeoutMs !== undefined ? { signal: AbortSignal.timeout(timeoutMs) } : {}),
         });
-        ensureHttpOk(response, "GITHUB_LIST_PR_COMMENTS_FAILED", "GitHub list PR review comments", "Verify GITHUB_TOKEN has `pull_requests: read` scope and that the PR number is correct. The fetch is best-effort; SonarCloud's own surface step is authoritative for its findings.");
+        ensureHttpOk(response, "SONAR_ISSUES_API_FAILED", "SonarCloud issues API", "Verify SonarCloud configuration and token.");
         raw = await readJsonResponse(response);
     }
     catch (error) {
-        writeBrandedAnnotation("warning", `failed to fetch SonarCloud PR inline comments; treating as zero findings (best-effort fetch). ${error instanceof Error ? error.message : String(error)}`);
-        return [];
+        writeBrandedAnnotation("warning", `failed to fetch SonarCloud PR issues; treating as zero findings (best-effort fetch). ${error instanceof Error ? error.message : String(error)}`);
+        return null;
     }
-    if (!Array.isArray(raw)) {
-        writeBrandedAnnotation("warning", "SonarCloud PR comments endpoint returned a non-array JSON body; treating as zero findings.");
-        return [];
+    if (!json_guards_isRecord(raw)) {
+        writeBrandedAnnotation("warning", "SonarCloud issues API returned a non-record JSON body; treating as zero findings.");
+        return null;
+    }
+    const total = isSafeInteger(raw["total"]) ? raw["total"] : 0;
+    const issues = raw["issues"];
+    if (!isUnknownArray(issues)) {
+        writeBrandedAnnotation("warning", "SonarCloud issues API returned a body without an `issues` array; treating as zero findings.");
+        return null;
     }
     const findings = [];
-    for (const entry of raw) {
-        const finding = parseSonarPrCommentEntry(entry);
-        if (finding === null)
-            continue;
-        findings.push({
-            path: finding.path,
-            line: finding.line,
-            body: finding.body,
-            severity: finding.severity,
-            category: "sonar",
+    for (const entry of issues) {
+        const finding = parseIssue(entry, projectKey, prNumber);
+        if (finding !== null)
+            findings.push(finding);
+    }
+    return { findings, total, issues };
+}
+async function fetchSonarPrIssues(input) {
+    const { config, fetchImpl } = input;
+    const baseUrl = url_stripTrailingSlash(config.hostUrl);
+    const headers = {
+        Authorization: `Bearer ${config.token}`,
+        Accept: "application/json",
+    };
+    const findings = [];
+    let droppedMalformedCount = 0;
+    let total = 0;
+    let page = 1;
+    while (page <= MAX_PAGES) {
+        const pageResult = await fetchSonarIssuesPage({
+            baseUrl,
+            projectKey: config.projectKey,
+            prNumber: config.prNumber,
+            page,
+            headers,
+            ...(config.timeoutMs !== undefined ? { timeoutMs: config.timeoutMs } : {}),
+            fetchImpl,
         });
-        if (findings.length >= MAX_SONAR_PR_FINDINGS) {
-            writeBrandedAnnotation("warning", `SonarCloud PR comments truncated at ${MAX_SONAR_PR_FINDINGS}; additional findings were not imported. Increase MAX_SONAR_PR_FINDINGS or add pagination if this PR has more.`);
+        if (pageResult === null)
             break;
-        }
+        for (const finding of pageResult.findings)
+            findings.push(finding);
+        droppedMalformedCount += pageResult.issues.length - pageResult.findings.length;
+        total = pageResult.total;
+        if (pageResult.issues.length < MAX_SONAR_ISSUES || findings.length + droppedMalformedCount >= total)
+            break;
+        page += 1;
     }
-    return findings;
-}
-function resolveCommentLine(line, originalLine) {
-    if (isSafeInteger(line))
-        return line;
-    if (isSafeInteger(originalLine))
-        return originalLine;
-    return null;
-}
-function parseSonarPrCommentEntry(value) {
-    if (!json_guards_isRecord(value))
-        return null;
-    const path = value["path"];
-    const line = value["line"];
-    const body = value["body"];
-    const originalLine = value["original_line"];
-    if (typeof path !== "string")
-        return null;
-    // GitHub returns `line: null` for comments on lines outside the diff
-    // (e.g. file-level comments anchored to the file header). Fall back to
-    // `original_line`, then to `null` so the caller can filter out
-    // unanchorable comments instead of posting them at a meaningless line.
-    const resolvedLine = resolveCommentLine(line, originalLine);
-    if (resolvedLine === null)
-        return null;
-    if (typeof body !== "string")
-        return null;
-    // Self-reingestion guard. The original check was `body.includes(SONAR_PR_FINDING_MARKER)`;
-    // that matched umactually's own re-posted copies because the inline
-    // comment body built by `buildInlineCommentBody` embeds the raw
-    // SonarCloud body verbatim AFTER the `` `severity` `category`\n\n ``
-    // prefix. Each self-review run re-imported the previous run's output,
-    // accumulating duplicate `` `major` `sonar` `` prefixes (PR #184).
-    //
-    // A weaker "both markers" guard was attempted first: reject if the
-    // umactually REVIEW_MARKER appears before the sonar marker. That failed
-    // because `buildInlineCommentBody` is called with `includeMarker`
-    // defaulting to false on the live-post path, so umactually reposts
-    // NEVER carry the umactually marker — only the sonar marker, prefixed
-    // by `` `severity` `category`\n\n ``. So that guard never fired.
-    //
-    // The correct discriminator: raw SonarCloud posts from the
-    // `Surface SonarCloud findings as PR comments` step in ci.yml ALWAYS
-    // start with `<!-- sonarcloud -->` (no leading whitespace). Umactually
-    // reposts START with `` `severity` `category`\n\n `` (the format
-    // `buildInlineCommentBody` emits). So require `body.trimStart()` to
-    // start with the sonar marker. The trimStart is defensive — if the
-    // surface step is ever refactored to lead with whitespace, this guard
-    // would silently exclude every legitimate SonarCloud comment as a
-    // "repost". The surface-step body builder is the authoritative source
-    // of the format; keep the two in sync.
-    const trimmed = body.trimStart();
-    if (!trimmed.startsWith(SONAR_PR_FINDING_MARKER))
-        return null;
-    // Belt-and-braces: if the umactually marker IS present anywhere, this
-    // is a repost (the raw surface step never embeds it). Defensive only;
-    // the trimStart + startswith above is the actual discriminator.
-    if (body.indexOf(REVIEW_MARKER) >= 0)
-        return null;
-    const severity = parseSonarSeverityFromBody(body);
-    return { path, line: resolvedLine, body, severity };
-}
-/**
- * Map SonarCloud's severity label (rendered as **MAJOR**, **CRITICAL**,
- * **BLOCKER**, **MINOR**, **INFO** in the comment body) to the
- * internal `Severity` vocabulary the verdict-reconciliation + manifest
- * pipeline already understands. The marker is the inline prefix the
- * `Surface SonarCloud findings as PR comments` step in ci.yml writes
- * verbatim:
- *   `<!-- sonarcloud -->\n**SonarCloud MAJOR — \`typescript:S3358\`**\n\n<msg>`
- *
- * The label word is matched case-insensitively at the start of a `MAJOR`
- * / `CRITICAL` / `BLOCKER` / `MINOR` / `INFO` token. Unknown labels fall
- * back to `medium` so the comment still passes the default
- * `--minimum-severity=medium` filter; this is the same default-fallback
- * discipline the provider-severity parser uses for unknown provider
- * severities (see src/provider/provider-parse.ts:normalizeProviderSeverity).
- */
-function parseSonarSeverityFromBody(body) {
-    // Match the first capitalized severity word inside `**SonarCloud <WORD> — \`...`.
-    const match = /\*\*\s*Sonar(?:Cloud|Qube)?\s+(BLOCKER|CRITICAL|MAJOR|MINOR|INFO)\b/u.exec(body);
-    if (match === null)
-        return "major";
-    const label = match[1];
-    if (label === undefined)
-        return "major";
-    switch (label.toUpperCase()) {
-        case "BLOCKER": return "critical";
-        case "CRITICAL": return "critical";
-        case "MAJOR": return "major";
-        case "MINOR": return "minor";
-        case "INFO": return "info";
-        default: return "major";
+    if (page > MAX_PAGES && findings.length + droppedMalformedCount < total) {
+        writeBrandedAnnotation("warning", `SonarCloud PR issues pagination guard tripped at ${MAX_PAGES} pages (${findings.length + droppedMalformedCount} of ${total} findings collected); the remainder is not imported.`);
     }
+    return { findings, total, droppedMalformedCount, cappedAtIssueCount: Math.max(0, total - findings.length - droppedMalformedCount) };
 }
 
 ;// CONCATENATED MODULE: ./src/cli/live-github.ts
@@ -21527,9 +21795,10 @@ function parseSonarSeverityFromBody(body) {
 const live_github_GITHUB_API_BASE_URL = process.env["GITHUB_API_URL"]?.replace(/\/$/u, "") || DEFAULT_GITHUB_API_BASE;
 async function runGithubLive(input) {
     const { context, diffText, provider, parsed, fetchImpl } = input;
-    // Fetch SonarCloud PR inline comments (when the flag is set) and
-    // merge them into the provider review's comments list BEFORE
-    // `preparePostedReview` runs. Three invariants this preserves:
+    // Fetch SonarCloud PR issues (when the flag is set) directly from the
+    // SonarCloud Web API and merge them into the provider review's
+    // comments list BEFORE `preparePostedReview` runs. Three invariants
+    // this preserves:
     // (1) severity filtering applies uniformly to the SonarCloud findings
     // (the same `passesSeverityPolicy` gate that drops model findings
     // below `--minimum-severity`); position validation runs downstream
@@ -21537,12 +21806,40 @@ async function runGithubLive(input) {
     // (2) the PR #183 verdict-reconciliation rule sees the surviving
     // SonarCloud severity counts, so a postable SonarCloud MAJOR/CRITICAL
     // escalates the verdict from SHIP/APPROVED to NEEDS_FIX; (3)
-    // SonarCloud findings render as inline threads on the bot's own
-    // review (one place to dismiss), in addition to SonarCloud's
-    // separate reviews.
-    const rawSonarFindings = parsed.includePrSonarFindings
-        ? await fetchSonarPrFindings({ context, fetchImpl })
-        : [];
+    // SonarCloud findings render as inline threads NESTED under the
+    // bot's own review (one place to dismiss), instead of as separate
+    // github-actions comments that land above the bot review.
+    //
+    // Graceful degradation: when any of sonarHostUrl / sonarToken /
+    // sonarProjectKey is missing (fork PR, operator never configured
+    // sonar, env var not exported), skip the fetch and emit a
+    // `::warning::` annotation so the operator can see why the bot
+    // review carries zero sonar findings. This matches the
+    // best-effort posture of the prior PR-comment fetch.
+    let rawSonarFindings;
+    if (!parsed.includePrSonarFindings) {
+        rawSonarFindings = [];
+    }
+    else if (parsed.sonarHostUrl === null ||
+        parsed.sonarToken === null ||
+        parsed.sonarProjectKey === null) {
+        writeBrandedAnnotation("warning", "SonarCloud PR issues skipped: --include-pr-sonar-findings was set but sonarHostUrl / sonarToken / sonarProjectKey is not configured. Pass --sonar-host-url, --sonar-token, --sonar-project-key, or set UMACTUALLY_SONAR_HOST_URL / UMACTUALLY_SONAR_TOKEN / UMACTUALLY_SONAR_PROJECT_KEY.");
+        rawSonarFindings = [];
+    }
+    else {
+        const timeoutMs = parsed.sonarTimeoutSeconds !== null ? parsed.sonarTimeoutSeconds * 1000 : undefined;
+        const fetched = await fetchSonarPrIssues({
+            config: {
+                hostUrl: parsed.sonarHostUrl,
+                token: parsed.sonarToken,
+                projectKey: parsed.sonarProjectKey,
+                prNumber: context.prNumber,
+                ...(timeoutMs !== undefined ? { timeoutMs } : {}),
+            },
+            fetchImpl,
+        });
+        rawSonarFindings = fetched.findings;
+    }
     const sonarPrFindings = rawSonarFindings.filter((finding) => passesSeverityPolicy(finding, parsed));
     const droppedBySeverity = rawSonarFindings.length - sonarPrFindings.length;
     if (droppedBySeverity > 0) {
@@ -21744,103 +22041,131 @@ function githubReviewsUrl(context) {
  * chunk returned a parse-fail fallback).
  */
 /**
- * Aggregate the per-chunk verified-facts filter results into a single
- * result for the merged outcome. Concatenates kept/downgraded lists
- * across chunks and emits global indices.
+ * Generic concat-aggregator for per-chunk filter results (verified-
+ * facts and confidence). Walks each outcome in order, concatenates
+ * `kept` and `downgraded`, and stamps a `globalIndex` onto every
+ * `reasons[]` entry that points at the entry's slot in the merged
+ * kept+downgraded array.
  *
- * **Index semantics**: the `index` on each `downgradeReasons` entry
- * points into the AGGREGATED kept+downgraded arrays (in that
- * concatenation order), NOT into the post-dedup/post-sort/
- * post-truncate `review.comments` array that the operator sees in
- * the final review body. The dedup + sort + truncate step in
- * `mergeReviewResults` does not remap the indices. Callers that
- * want to correlate a downgrade reason back to a specific finding
+ * The per-chunk "extract" is delegated to a `derive` callback so the
+ * generic only owns the outer loop + index bookkeeping; each filter's
+ * per-record shape (verified-facts uses `{ index, reason: string }`,
+ * confidence uses `{ index, reason: ConfidenceFilterReason, explanation }`)
+ * lives in its own derive callback.
+ *
+ * **Index semantics** (load-bearing invariant — pinned by
+ * `test/unit/live-merge.test.ts` MERGE-CONFIDENCE / MERGE-FACTSAGG):
+ * the `index` on each `reasons` entry points into the AGGREGATED
+ * kept+downgraded arrays in concatenation order (kept first, then
+ * downgraded, in the order chunks were fed to the merge), NOT into
+ * the post-dedup/post-sort/post-truncate `review.comments` array
+ * the operator sees in the final review body. The dedup + sort +
+ * truncate step in `mergeReviewResults` does not remap the indices.
+ * Callers that want to correlate a reason back to a specific finding
  * MUST use `(path, line)` — the index is an internal aid for the
  * audit artifact's order, not a stable handle into the visible
- * review. Pinned by `test/unit/live-merge.test.ts` (the
- * MERGE-CONFIDENCE / MERGE-FACTSAGG test cases).
- */
-function aggregateVerifiedFactsFilter(outcomes) {
-    const kept = [];
-    const downgraded = [];
-    const downgradeReasons = [];
-    let globalIndex = 0;
-    for (const o of outcomes) {
-        for (const c of o.verifiedFactsFilter.kept) {
-            kept.push(c);
-            globalIndex += 1;
-        }
-        for (let i = 0; i < o.verifiedFactsFilter.downgraded.length; i += 1) {
-            const c = o.verifiedFactsFilter.downgraded[i];
-            const reason = o.verifiedFactsFilter.downgradeReasons[i]?.reason ?? "";
-            if (c === undefined) {
-                continue;
-            }
-            downgraded.push(c);
-            downgradeReasons.push({ index: globalIndex, reason });
-            globalIndex += 1;
-        }
-    }
-    return { kept, downgraded, downgradeReasons };
-}
-/**
- * Aggregate the per-chunk confidence-filter results. Mirrors the
- * verified-facts aggregation above so the merged outcome's
- * confidenceFilter field has the same shape as any single-chunk
- * outcome's confidenceFilter.
+ * review.
  *
- * **Index semantics** (same as `aggregateVerifiedFactsFilter`):
- * `reasons[].index` points into the aggregated kept+downgraded
- * arrays in concatenation order, NOT into the post-dedup/
- * post-sort/post-truncate `review.comments` array. Callers
- * correlating a reason to a finding must use `(path, line)`.
+ * Why this is not a stable handle: `review.comments` is deduped by
+ * `(path, line)` keeping the highest-severity occurrence (so two
+ * chunks reporting the same anchor produce ONE entry), sorted by
+ * severity desc → path asc → line asc, then truncated to
+ * `maxComments` (default 50). None of those operations preserve the
+ * pre-merge order, so the audit artifact's `reasons[].index` is only
+ * meaningful inside the aggregated kept+downgraded arrays — not
+ * against `review.comments[i]`.
+ *
+ * `T` is the per-record reason shape; its `index` field is what the
+ * generic overwrites as it walks.
  */
-function aggregateConfidenceFilter(outcomes) {
+function aggregateMergeFilter(outcomes, derive) {
     const kept = [];
     const downgraded = [];
     const reasons = [];
     let globalIndex = 0;
     for (const o of outcomes) {
-        if (o.confidenceFilter === undefined) {
-            // Legacy / older outcomes (simulate-findings path, fixtures,
-            // and outcomes from before the confidence filter was wired
-            // in `applyVerifyFilter`) do not carry a `confidenceFilter`.
-            // The most defensible default is to treat their already-post-
-            // verified-facts `review.comments` as confidence-kept. The
-            // upstream contract is: by the time an outcome is passed
-            // here, `o.review.comments` is the POST-VERIFIED-FACTS list
-            // (verified-facts drops the contradicted findings, but the
-            // confidence-filter pass had not run yet for legacy
-            // outcomes). So this is NOT a double-count of
-            // `verifiedFactsFilter.kept` — it's the next step in the
-            // chain that legacy outcomes just happen to skip. The
-            // audit-artifact count for the legacy path will therefore
-            // match `review.comments.length` (the post-merge list),
-            // not `verifiedFactsFilter.kept.length`. Pinned by
-            // `test/unit/live-merge.test.ts` MERGE-CONFIDENCE legacy
-            // compat case.
-            for (const c of o.review.comments) {
-                kept.push(c);
-                globalIndex += 1;
-            }
-            continue;
-        }
-        for (const c of o.confidenceFilter.kept) {
+        const slice = derive(o);
+        for (const c of slice.kept) {
             kept.push(c);
             globalIndex += 1;
         }
-        for (let i = 0; i < o.confidenceFilter.downgraded.length; i += 1) {
-            const c = o.confidenceFilter.downgraded[i];
-            const reasonRecord = o.confidenceFilter.reasons[i];
+        for (let i = 0; i < slice.downgraded.length; i += 1) {
+            const c = slice.downgraded[i];
+            const reasonRecord = slice.reasons[i];
             if (c === undefined || reasonRecord === undefined) {
                 continue;
             }
             downgraded.push(c);
-            reasons.push({ index: globalIndex, reason: reasonRecord.reason, explanation: reasonRecord.explanation });
+            reasons.push({ ...reasonRecord, index: globalIndex });
             globalIndex += 1;
         }
     }
     return { kept, downgraded, reasons };
+}
+/**
+ * Aggregate the per-chunk verified-facts filter results into a
+ * single result for the merged outcome. Concatenates kept/
+ * downgraded lists across chunks and emits global indices.
+ *
+ * See `aggregateMergeFilter` for the index-stability contract —
+ * the same invariant applies here.
+ */
+function aggregateVerifiedFactsFilter(outcomes) {
+    const merged = aggregateMergeFilter(outcomes, (o) => ({
+        kept: o.verifiedFactsFilter.kept,
+        downgraded: o.verifiedFactsFilter.downgraded,
+        reasons: o.verifiedFactsFilter.downgradeReasons,
+    }));
+    return {
+        kept: merged.kept,
+        downgraded: merged.downgraded,
+        downgradeReasons: merged.reasons,
+    };
+}
+/**
+ * Aggregate the per-chunk confidence-filter results. Mirrors the
+ * verified-facts aggregation so the merged outcome's
+ * confidenceFilter field has the same shape as any single-chunk
+ * outcome's confidenceFilter.
+ *
+ * Legacy compatibility: when an outcome lacks `confidenceFilter`
+ * (simulate-findings path, fixtures, and outcomes from before the
+ * confidence filter was wired in `applyVerifyFilter`), we treat
+ * its already-post-verified-facts `review.comments` as confidence-
+ * kept. The upstream contract is: by the time an outcome is passed
+ * here, `o.review.comments` is the POST-VERIFIED-FACTS list
+ * (verified-facts drops the contradicted findings, but the
+ * confidence-filter pass had not run yet for legacy outcomes). So
+ * this is NOT a double-count of `verifiedFactsFilter.kept` — it's
+ * the next step in the chain that legacy outcomes just happen to
+ * skip. The audit-artifact count for the legacy path will therefore
+ * match `review.comments.length` (the post-merge list), not
+ * `verifiedFactsFilter.kept.length`. Pinned by
+ * `test/unit/live-merge.test.ts` MERGE-CONFIDENCE legacy compat
+ * case.
+ *
+ * See `aggregateMergeFilter` for the index-stability contract.
+ */
+function aggregateConfidenceFilter(outcomes) {
+    return aggregateMergeFilter(outcomes, (o) => {
+        if (o.confidenceFilter === undefined) {
+            // Legacy: synthesize a "kept-only" slice where every
+            // post-verified-facts comment is treated as confidence-kept.
+            // Reasons are intentionally absent — there is no per-chunk
+            // downgrade to attribute on the legacy path.
+            const keptComments = o.review.comments;
+            return {
+                kept: keptComments,
+                downgraded: [],
+                reasons: [],
+            };
+        }
+        return {
+            kept: o.confidenceFilter.kept,
+            downgraded: o.confidenceFilter.downgraded,
+            reasons: o.confidenceFilter.reasons,
+        };
+    });
 }
 function mergeReviewResults(outcomes, options) {
     const maxComments = options?.maxComments ?? DEFAULT_MAX_COMMENTS;
