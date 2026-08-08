@@ -484,7 +484,6 @@ function detectLivePlatform(env: NodeJS.ProcessEnv): LivePlatform | null {
 function readSecretValues(env: NodeJS.ProcessEnv): readonly string[] {
   return [
     env[ENV_KEYS.UMACTUALLY_API_KEY] ?? "",
-    env[ENV_KEYS.REVIEW_PROVIDER_API_KEY] ?? "",
     env[ENV_KEYS.GITHUB_TOKEN] ?? "",
     env[ENV_KEYS.SYSTEM_ACCESSTOKEN] ?? "",
     env["AZURE_DEVOPS_TOKEN"] ?? "",

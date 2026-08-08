@@ -415,7 +415,7 @@ describe("config: loadConfigFromSources precedence", () => {
   it("applies all defaults when nothing is provided", async () => {
     const result = await loadConfigFromSources({ ...empty(), cwd });
     expect(result.provider.url).toBe("https://api.openai.com/v1");
-    expect(result.provider.model).toBe("auto");
+    expect(result.provider.model).toBe("");
     expect(result.platform).toBe("auto");
     expect(result.guidance.dryRun).toBe(false);
     expect(result.leakDetection).toBe(true);
@@ -776,9 +776,9 @@ describe("config: githubToken precedence via resolveFromSchema (plan T8/T9 RED)"
 });
 
 describe("config: readEnvSources", () => {
-  it("extracts only known keys from process.env", () => {
+  it("extracts only supported public and runner-owned keys from process.env", () => {
     const sources = readEnvSources({
-      REVIEW_PROVIDER_URL: "https://example.com",
+      UMACTUALLY_API_URL: "https://example.com",
       REVIEW_DRY_RUN: "true",
       REVIEW_MINIMUM_SEVERITY: "major",
       GITHUB_TOKEN: "ghp_x",
@@ -786,8 +786,8 @@ describe("config: readEnvSources", () => {
       UNKNOWN_KEY: "ignore-me",
     });
     expect(sources.providerUrl).toBe("https://example.com");
-    expect(sources.dryRun).toBe("true");
-    expect(sources.minimumSeverity).toBe("major");
+    expect(sources.dryRun).toBeUndefined();
+    expect(sources.minimumSeverity).toBeUndefined();
     expect(sources.githubToken).toBe("ghp_x");
     expect(sources.azureOrg).toBe("myorg");
     expect("UNKNOWN_KEY" in sources).toBe(false);
@@ -802,7 +802,7 @@ describe("config: readEnvSources", () => {
     expect(sources.githubToken).toBeUndefined();
   });
 
-  it("recognizes UMACTUALLY_* env vars with REVIEW_* as fallback", () => {
+  it("recognizes only supported public and runner-owned env vars", () => {
     const sources = readEnvSources({
       UMACTUALLY_API_URL: "https://vmi.example.test/v1",
       UMACTUALLY_API_KEY: "sk_umactually_abcdef0123456789",
@@ -835,47 +835,39 @@ describe("config: readEnvSources", () => {
     expect(sources.providerUrl).toBe("https://vmi.example.test/v1");
     expect(sources.providerApiKey).toBe("sk_umactually_abcdef0123456789");
     expect(sources.providerModel).toBe("review-model-synthetic");
-    expect(sources.promptSystemFile).toBe("prompts/system.md");
-    expect(sources.promptSystemFiles).toBe("prompts/a.md,prompts/b.md");
-    expect(sources.promptUserFile).toBe("prompts/extra.md");
-    expect(sources.promptUserFiles).toBe("prompts/x.md\nprompts/y.md");
-    expect(sources.reviewTimeoutSeconds).toBe("300");
-    expect(sources.stallTimeoutSeconds).toBe("270");
-    expect(sources.maxOutputTokens).toBe("16000");
-    expect(sources.promptByteCap).toBe("4096");
-    expect(sources.perRequestTimeoutSeconds).toBe("30");
-    expect(sources.maxComments).toBe("8");
-    expect(sources.reviewFileLimit).toBe("12");
-    expect(sources.platform).toBe("azure");
+    expect(sources.promptSystemFile).toBeUndefined();
+    expect(sources.promptSystemFiles).toBeUndefined();
+    expect(sources.promptUserFile).toBeUndefined();
+    expect(sources.promptUserFiles).toBeUndefined();
+    expect(sources.reviewTimeoutSeconds).toBeUndefined();
+    expect(sources.stallTimeoutSeconds).toBeUndefined();
+    expect(sources.maxOutputTokens).toBeUndefined();
+    expect(sources.promptByteCap).toBeUndefined();
+    expect(sources.perRequestTimeoutSeconds).toBeUndefined();
+    expect(sources.maxComments).toBeUndefined();
+    expect(sources.reviewFileLimit).toBeUndefined();
+    expect(sources.platform).toBeUndefined();
     expect(sources.githubApiBase).toBe("https://ghe.example.test");
     expect(sources.githubToken).toBe("gho_token");
     expect(sources.azureProject).toBe("ado-project");
     expect(sources.azureRepo).toBe("ado-repo");
     expect(sources.azurePullRequestId).toBe("42");
     expect(sources.azureToken).toBe("ado-token");
-    expect(sources.sonarHost).toBe("https://sonar.example.test");
-    expect(sources.sonarToken).toBe("sonar-token");
-    expect(sources.sonarProject).toBe("umactually");
-    expect(sources.sonarEnabled).toBe("true");
-    expect(sources.leakDetection).toBe("true");
-    expect(sources.redactorEnabled).toBe("false");
+    expect(sources.sonarHost).toBeUndefined();
+    expect(sources.sonarToken).toBeUndefined();
+    expect(sources.sonarProject).toBeUndefined();
+    expect(sources.sonarEnabled).toBeUndefined();
+    expect(sources.leakDetection).toBeUndefined();
+    expect(sources.redactorEnabled).toBeUndefined();
   });
 
-  it("UMACTUALLY_* takes precedence over REVIEW_* when both are set", () => {
-    const sources = readEnvSources({
-      UMACTUALLY_API_URL: "https://primary.example.test/v1",
-      REVIEW_PROVIDER_URL: "https://fallback.example.test/v1",
-    });
-    expect(sources.providerUrl).toBe("https://primary.example.test/v1");
-  });
-
-  it("falls back to REVIEW_* when UMACTUALLY_* is absent", () => {
+  it("ignores legacy REVIEW provider aliases", () => {
     const sources = readEnvSources({
       REVIEW_PROVIDER_URL: "https://legacy.example.test/v1",
       REVIEW_PROVIDER_API_KEY: "legacy-key",
     });
-    expect(sources.providerUrl).toBe("https://legacy.example.test/v1");
-    expect(sources.providerApiKey).toBe("legacy-key");
+    expect(sources.providerUrl).toBeUndefined();
+    expect(sources.providerApiKey).toBeUndefined();
   });
 });
 

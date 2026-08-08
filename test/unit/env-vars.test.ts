@@ -1,7 +1,6 @@
 import { describe, expect, it } from "vitest";
 
 import { parseCliArgs } from "../../src/cli/parse-args.js";
-import { InvalidConfigError } from "../../src/config/errors.js";
 import { FIELDS } from "../../src/config/field-schema.js";
 import { resolveFromSchema } from "../../src/config/field-resolution.js";
 
@@ -15,188 +14,102 @@ function resolve(
 }
 
 describe("schema-driven CLI environment resolution", () => {
-  it("uses the canonical API URL environment variable when the flag is absent", () => {
-    // Given
-    const env = { UMACTUALLY_API_URL: "https://canonical.example/v1" };
-
-    // When
-    const resolved = resolve([], env);
-
-    // Then
-    expect(resolved.apiUrl).toBe("https://canonical.example/v1");
-  });
-
-  it("prefers the canonical API URL environment variable to its legacy alias", () => {
-    // Given
+  it("resolves the five public user configuration variables", () => {
+    // Given: every supported public environment variable has a distinct value.
     const env = {
-      UMACTUALLY_API_URL: "https://canonical.example/v1",
-      REVIEW_PROVIDER_URL: "https://legacy.example/v1",
+      UMACTUALLY_API_KEY: "supported-key",
+      UMACTUALLY_API_URL: "https://supported.example/v1",
+      UMACTUALLY_GITHUB_API_BASE: "https://github.supported.example",
+      UMACTUALLY_MODEL: "supported-model",
+      UMACTUALLY_PROVIDER: "anthropic",
     };
 
-    // When
+    // When: the schema resolves environment configuration.
     const resolved = resolve([], env);
 
-    // Then
-    expect(resolved.apiUrl).toBe("https://canonical.example/v1");
-  });
-
-  it("coerces a false boolean environment value", () => {
-    // Given / When
-    const resolved = resolve([], { UMACTUALLY_STRICT_SCHEMA: "false" });
-
-    // Then
-    expect(resolved.strictSchema).toBe(false);
-  });
-
-  it.each(["1", "true", "yes", "on", "y"])(
-    "coerces boolean true form %s",
-    (value) => {
-      // Given / When
-      const resolved = resolve([], { UMACTUALLY_WALKTHROUGH: value });
-
-      // Then
-      expect(resolved.walkthrough).toBe(true);
-    },
-  );
-
-  it.each(["0", "false", "no", "off", "n"])(
-    "coerces boolean false form %s",
-    (value) => {
-      // Given / When
-      const resolved = resolve([], { UMACTUALLY_STRICT_SCHEMA: value });
-
-      // Then
-      expect(resolved.strictSchema).toBe(false);
-    },
-  );
-
-  it("rejects an invalid boolean without exposing its raw value", () => {
-    // Given
-    const env = { UMACTUALLY_STRICT_SCHEMA: "banana" };
-
-    // When
-    const act = () => resolve([], env);
-
-    // Then
-    expect(act).toThrow(InvalidConfigError);
-    expect(act).toThrow(/strictSchema/u);
-    expect(act).not.toThrow(/banana/u);
-  });
-
-  it("coerces an integer environment value to a number", () => {
-    // Given / When
-    const resolved = resolve([], { UMACTUALLY_MAX_OUTPUT_TOKENS: "32000" });
-
-    // Then
-    expect(resolved.maxOutputTokens).toBe(32_000);
-  });
-
-  it("rejects a non-integer environment value", () => {
-    // Given
-    const env = { UMACTUALLY_MAX_OUTPUT_TOKENS: "abc" };
-
-    // When
-    const act = () => resolve([], env);
-
-    // Then
-    expect(act).toThrow(InvalidConfigError);
-    expect(act).toThrow(/maxOutputTokens/u);
-    expect(act).not.toThrow(/abc/u);
-  });
-
-  it("rejects an integer outside the safe range", () => {
-    // Given
-    const env = { UMACTUALLY_MAX_OUTPUT_TOKENS: "99999999999999999999" };
-
-    // When
-    const act = () => resolve([], env);
-
-    // Then
-    expect(act).toThrow(InvalidConfigError);
-    expect(act).toThrow(/maxOutputTokens/u);
-    expect(act).not.toThrow(/99999999999999999999/u);
-  });
-
-  it("coerces a provider enum environment value", () => {
-    // Given / When
-    const resolved = resolve([], { UMACTUALLY_PROVIDER: "anthropic" });
-
-    // Then
+    // Then: every supported value reaches its field.
+    expect(resolved.apiKey).toBe("supported-key");
+    expect(resolved.apiUrl).toBe("https://supported.example/v1");
+    expect(resolved.githubApiBase).toBe("https://github.supported.example");
+    expect(resolved.model).toBe("supported-model");
     expect(resolved.provider).toBe("anthropic");
   });
 
-  it("rejects an invalid provider enum without exposing its raw value", () => {
-    // Given
-    const env = { UMACTUALLY_PROVIDER: "invalid" };
+  it("ignores legacy provider environment variables", () => {
+    // Given: only removed provider aliases are set.
+    const env = {
+      REVIEW_PROVIDER_API_KEY: "legacy-key",
+      REVIEW_PROVIDER_URL: "https://legacy.example/v1",
+      REVIEW_PROVIDER_MODEL: "legacy-model",
+    };
 
-    // When
-    const act = () => resolve([], env);
+    // When: the schema resolves environment configuration.
+    const resolved = resolve([], env);
 
-    // Then
-    expect(act).toThrow(InvalidConfigError);
-    expect(act).toThrow(/provider/u);
-    expect(act).not.toThrow(/invalid'/u);
+    // Then: legacy values do not resolve.
+    expect(resolved.apiKey).toBe(FIELDS.apiKey.defaultValue);
+    expect(resolved.apiUrl).toBe(FIELDS.apiUrl.defaultValue);
+    expect(resolved.model).toBe(FIELDS.model.defaultValue);
   });
 
-  it("lets an explicit positive boolean flag beat the environment", () => {
-    // Given / When
-    const resolved = resolve(
-      ["--strict-schema"],
-      { UMACTUALLY_STRICT_SCHEMA: "false" },
-    );
+  it("ignores behavioral environment variables", () => {
+    // Given: removed behavioral aliases attempt to override defaults.
+    const env = {
+      UMACTUALLY_PROMPT_FILES: "legacy.md",
+      UMACTUALLY_STRICT_SCHEMA: "false",
+      UMACTUALLY_WALKTHROUGH: "true",
+      REVIEW_PLATFORM: "github",
+    };
 
-    // Then
-    expect(resolved.strictSchema).toBe(true);
+    // When: the schema resolves environment configuration.
+    const resolved = resolve([], env);
+
+    // Then: defaults remain authoritative.
+    expect(resolved.promptFiles).toBe(FIELDS.promptFiles.defaultValue);
+    expect(resolved.strictSchema).toBe(FIELDS.strictSchema.defaultValue);
+    expect(resolved.walkthrough).toBe(FIELDS.walkthrough.defaultValue);
+    expect(resolved.platform).toBe(FIELDS.platform.defaultValue);
   });
 
-  it("lets an explicit negative boolean flag beat the environment", () => {
-    // Given / When
-    const resolved = resolve(
-      ["--no-strict-schema"],
-      { UMACTUALLY_STRICT_SCHEMA: "true" },
-    );
+  it("keeps behavioral CLI flags", () => {
+    const resolved = resolve([
+      "--prompt-files",
+      "one.md,two.md",
+      "--no-strict-schema",
+      "--walkthrough",
+      "--platform",
+      "github",
+    ]);
 
-    // Then
+    expect(resolved.promptFiles).toBe("one.md,two.md");
     expect(resolved.strictSchema).toBe(false);
+    expect(resolved.walkthrough).toBe(true);
+    expect(resolved.platform).toBe("github");
   });
 
-  it.each(["", "  \t  "])(
-    "treats API URL environment value %j as missing",
-    (value) => {
-      // Given / When
-      const resolved = resolve([], { UMACTUALLY_API_URL: value });
+  it("keeps GitHub and Azure runner-owned environment inputs", () => {
+    const resolved = resolve([], {
+      GITHUB_TOKEN: "github-token",
+      AZURE_DEVOPS_ORG: "azure-org",
+      AZURE_DEVOPS_PROJECT: "azure-project",
+      AZURE_DEVOPS_REPO: "azure-repo",
+      AZURE_DEVOPS_PULL_REQUEST_ID: "42",
+      AZURE_DEVOPS_TOKEN: "azure-token",
+    });
 
-      // Then
-      expect(resolved.apiUrl).toBe(FIELDS.apiUrl.defaultValue);
-    },
-  );
+    expect(resolved.githubToken).toBe("github-token");
+    expect(resolved["azureOrg"]).toBe("azure-org");
+    expect(resolved["azureProject"]).toBe("azure-project");
+    expect(resolved["azureRepo"]).toBe("azure-repo");
+    expect(resolved["azurePullRequestId"]).toBe(42);
+    expect(resolved["azureToken"]).toBe("azure-token");
+  });
 
   it("uses the schema default for every field when flags and environment are absent", () => {
-    // Given / When
     const resolved = resolve();
 
-    // Then
     for (const field of Object.values(FIELDS)) {
       expect(resolved[field.field], field.field).toBe(field.defaultValue);
     }
-  });
-
-  it("coerces every enum field from its first declared environment alias", () => {
-    // Given
-    const env: NodeJS.ProcessEnv = {
-      UMACTUALLY_PROVIDER: "anthropic",
-      UMACTUALLY_EFFORT: "high",
-      REVIEW_PLATFORM: "github",
-      REVIEW_MINIMUM_SEVERITY: "low",
-    };
-
-    // When
-    const resolved = resolve([], env);
-
-    // Then
-    expect(resolved.provider).toBe("anthropic");
-    expect(resolved.effort).toBe("high");
-    expect(resolved.platform).toBe("github");
-    expect(resolved.minimumSeverity).toBe("low");
   });
 });

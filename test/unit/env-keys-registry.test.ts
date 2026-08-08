@@ -10,25 +10,8 @@ const EXPECTED_ENV_KEYS = {
   UMACTUALLY_API_URL: "UMACTUALLY_API_URL",
   UMACTUALLY_API_KEY: "UMACTUALLY_API_KEY",
   UMACTUALLY_MODEL: "UMACTUALLY_MODEL",
+  UMACTUALLY_PROVIDER: "UMACTUALLY_PROVIDER",
   UMACTUALLY_GITHUB_API_BASE: "UMACTUALLY_GITHUB_API_BASE",
-  UMACTUALLY_INCLUDE_SONARQUBE: "UMACTUALLY_INCLUDE_SONARQUBE",
-  UMACTUALLY_SONAR_HOST_URL: "UMACTUALLY_SONAR_HOST_URL",
-  UMACTUALLY_SONAR_TOKEN: "UMACTUALLY_SONAR_TOKEN",
-  UMACTUALLY_SONAR_PROJECT_KEY: "UMACTUALLY_SONAR_PROJECT_KEY",
-  UMACTUALLY_PROMPT_FILE: "UMACTUALLY_PROMPT_FILE",
-  UMACTUALLY_PROMPT_FILES: "UMACTUALLY_PROMPT_FILES",
-  UMACTUALLY_ADDITIONAL_PROMPT_FILE: "UMACTUALLY_ADDITIONAL_PROMPT_FILE",
-  UMACTUALLY_ADDITIONAL_PROMPT_FILES: "UMACTUALLY_ADDITIONAL_PROMPT_FILES",
-  UMACTUALLY_STRICT_SCHEMA: "UMACTUALLY_STRICT_SCHEMA",
-  UMACTUALLY_VERIFY_FINDINGS: "UMACTUALLY_VERIFY_FINDINGS",
-  REVIEW_STRICT_SCHEMA: "REVIEW_STRICT_SCHEMA",
-  REVIEW_VERIFY_FINDINGS: "REVIEW_VERIFY_FINDINGS",
-  REVIEW_PROVIDER_URL: "REVIEW_PROVIDER_URL",
-  REVIEW_PROVIDER_API_KEY: "REVIEW_PROVIDER_API_KEY",
-  REVIEW_PROVIDER_MODEL: "REVIEW_PROVIDER_MODEL",
-  REVIEW_TIMEOUT_SECONDS: "REVIEW_TIMEOUT_SECONDS",
-  REVIEW_FILE_LIMIT: "REVIEW_FILE_LIMIT",
-  REVIEW_LEAK_DETECTION: "REVIEW_LEAK_DETECTION",
   GITHUB_ACTIONS: "GITHUB_ACTIONS",
   GITHUB_EVENT_PATH: "GITHUB_EVENT_PATH",
   GITHUB_TOKEN: "GITHUB_TOKEN",
@@ -63,31 +46,24 @@ const TARGET_FILES = [
   "src/platform/detect.ts",
 ] as const;
 
-type EnvKeyName = keyof typeof ENV_KEYS;
-type FieldName = keyof typeof FIELDS;
+const PUBLIC_ENV_NAMES = [
+  "UMACTUALLY_API_KEY",
+  "UMACTUALLY_API_URL",
+  "UMACTUALLY_GITHUB_API_BASE",
+  "UMACTUALLY_MODEL",
+  "UMACTUALLY_PROVIDER",
+] as const;
 
 const FIELD_ENV_REGISTRY_BINDINGS = [
-  { field: "apiUrl", keys: ["UMACTUALLY_API_URL", "REVIEW_PROVIDER_URL"] },
-  { field: "apiKey", keys: ["UMACTUALLY_API_KEY", "REVIEW_PROVIDER_API_KEY"] },
-  { field: "model", keys: ["UMACTUALLY_MODEL", "REVIEW_PROVIDER_MODEL"] },
-  { field: "promptFile", keys: ["UMACTUALLY_PROMPT_FILE"] },
-  { field: "promptFiles", keys: ["UMACTUALLY_PROMPT_FILES"] },
-  { field: "additionalPromptFile", keys: ["UMACTUALLY_ADDITIONAL_PROMPT_FILE"] },
-  { field: "additionalPromptFiles", keys: ["UMACTUALLY_ADDITIONAL_PROMPT_FILES"] },
-  { field: "strictSchema", keys: ["UMACTUALLY_STRICT_SCHEMA", "REVIEW_STRICT_SCHEMA"] },
-  { field: "verifyFindings", keys: ["UMACTUALLY_VERIFY_FINDINGS", "REVIEW_VERIFY_FINDINGS"] },
-  { field: "reviewTimeoutSeconds", keys: ["REVIEW_TIMEOUT_SECONDS"] },
-  { field: "reviewFileLimit", keys: ["REVIEW_FILE_LIMIT"] },
-  { field: "includeSonarqube", keys: ["UMACTUALLY_INCLUDE_SONARQUBE"] },
-  { field: "sonarHostUrl", keys: ["UMACTUALLY_SONAR_HOST_URL"] },
-  { field: "sonarToken", keys: ["UMACTUALLY_SONAR_TOKEN"] },
-  { field: "sonarProjectKey", keys: ["UMACTUALLY_SONAR_PROJECT_KEY"] },
-  { field: "detectLeaks", keys: ["REVIEW_LEAK_DETECTION"] },
+  { field: "apiUrl", keys: ["UMACTUALLY_API_URL"] },
+  { field: "apiKey", keys: ["UMACTUALLY_API_KEY"] },
+  { field: "model", keys: ["UMACTUALLY_MODEL"] },
+  { field: "provider", keys: ["UMACTUALLY_PROVIDER"] },
   { field: "githubApiBase", keys: ["UMACTUALLY_GITHUB_API_BASE"] },
   { field: "githubToken", keys: ["GITHUB_TOKEN", "GH_TOKEN"] },
 ] as const satisfies ReadonlyArray<{
-  readonly field: FieldName;
-  readonly keys: readonly EnvKeyName[];
+  readonly field: keyof typeof FIELDS;
+  readonly keys: readonly (keyof typeof ENV_KEYS)[];
 }>;
 
 type InlineEnvLookup = {
@@ -120,67 +96,48 @@ async function findInlineEnvLookups(): Promise<readonly InlineEnvLookup[]> {
 }
 
 describe("env key registry", () => {
-  it("DRY-ENV-001 pins every ENV_KEYS literal byte-for-byte", () => {
-    // Given: the centralized env-var registry is the single source of truth.
-    // When: the registry is compared against the pinned legacy env names.
-    // Then: every exported value remains byte-identical.
+  it("exposes exactly the five supported public UMACTUALLY variables", () => {
+    // Given: field-schema is the public user-controlled environment contract.
+    // When: all UMACTUALLY-prefixed field bindings are enumerated.
+    const publicEnvNames = Object.values(FIELDS)
+      .flatMap((field) => field.env)
+      .filter((name) => name.startsWith("UMACTUALLY_"))
+      .sort();
+
+    // Then: only credentials and connection settings remain environment-controlled.
+    expect(publicEnvNames).toEqual(PUBLIC_ENV_NAMES);
+  });
+
+  it("pins every supported ENV_KEYS literal byte-for-byte", () => {
     expect(ENV_KEYS).toEqual(EXPECTED_ENV_KEYS);
   });
 
-  it("FIELDS.promptFiles is wired correctly (flag / input / env / type / default)", () => {
-    // Pin the field-schema entry so a refactor that drops the CLI flag,
-    // renames the env var, or changes the default value surfaces a test
-    // failure rather than a silent runtime regression.
-    expect(FIELDS.promptFiles.flag).toBe("--prompt-files");
-    expect(FIELDS.promptFiles.input).toBe("prompt-files");
-    expect(FIELDS.promptFiles.env).toEqual(["UMACTUALLY_PROMPT_FILES"]);
-    expect(FIELDS.promptFiles.type).toBe("string");
-    expect(FIELDS.promptFiles.defaultValue).toBe("");
+  it("keeps prompt-files flags and defaults while removing their env bindings", () => {
+    expect(FIELDS.promptFiles).toMatchObject({
+      flag: "--prompt-files",
+      input: "prompt-files",
+      env: [],
+      type: "string",
+      defaultValue: "",
+    });
+    expect(FIELDS.additionalPromptFiles).toMatchObject({
+      flag: "--additional-prompt-files",
+      input: "additional-prompt-files",
+      env: [],
+      type: "string",
+      defaultValue: "",
+    });
   });
 
-  it("FIELDS.additionalPromptFiles is wired correctly (flag / input / env / type / default)", () => {
-    expect(FIELDS.additionalPromptFiles.flag).toBe("--additional-prompt-files");
-    expect(FIELDS.additionalPromptFiles.input).toBe("additional-prompt-files");
-    expect(FIELDS.additionalPromptFiles.env).toEqual(["UMACTUALLY_ADDITIONAL_PROMPT_FILES"]);
-    expect(FIELDS.additionalPromptFiles.type).toBe("string");
-    expect(FIELDS.additionalPromptFiles.defaultValue).toBe("");
+  it("omits the model default rather than using the auto sentinel", () => {
+    expect(FIELDS.model.defaultValue).toBe("");
   });
 
-  it("the new prompt-files flags are included in the legacy CLI arg order (deterministic argv emission)", () => {
-    // The legacy arg order map in `append-cli-inputs.ts` controls the
-    // relative order in which flags are appended to argv. If a
-    // refactor accidentally moves `promptFiles` out of this map, the
-    // argv ordering changes — but most tests use `toContainSubsequence`
-    // which would still pass. Pin the explicit ordering here so the
-    // bytecode contract is locked.
-    const order: ReadonlyMap<string, number> = new Map([
-      ["apiUrl", 0], ["apiKey", 1], ["model", 2], ["prompt", 3],
-      ["promptFile", 4], ["promptFiles", 5],
-      ["additionalPrompt", 6], ["additionalPromptFile", 7],
-    ]);
-    // Verify the indices are unique (no two fields share an order).
-    const indices = [...order.values()];
-    expect(new Set(indices).size).toBe(indices.length);
-    // Verify promptFiles sits BETWEEN promptFile and additionalPromptFile
-    // (not before/after arbitrary positions). This is a documentation
-    // test — the actual order is maintained by append-cli-inputs.ts.
-    expect(order.get("promptFiles")).toBeGreaterThan(order.get("promptFile")!);
-    expect(order.get("promptFiles")!).toBeLessThan(order.get("additionalPrompt")!);
+  it("forbids inline public or legacy env string indexing in target files", async () => {
+    expect(await findInlineEnvLookups()).toEqual([]);
   });
 
-  it("DRY-ENV-002 forbids inline UMACTUALLY_/REVIEW_ env string indexing in target files", async () => {
-    // Given: the task-5 target files are the only files being migrated.
-    // When: their source is scanned for direct env["UMACTUALLY_..."] / env["REVIEW_..."] lookups.
-    const findings = await findInlineEnvLookups();
-
-    // Then: runtime env reads use ENV_KEYS instead of duplicated string literals.
-    expect(findings).toEqual([]);
-  });
-
-  it("DRY-ENV-003 keeps registry values aligned with field-schema env arrays", () => {
-    // Given: field-schema owns config-field env precedence arrays.
-    // When: registry-backed config keys are cross-referenced against those arrays.
-    // Then: each registry value still appears under the field that consumes it.
+  it("keeps registry values aligned with field-schema env arrays", () => {
     for (const binding of FIELD_ENV_REGISTRY_BINDINGS) {
       const fieldEnv = FIELDS[binding.field].env;
       for (const key of binding.keys) {
