@@ -871,68 +871,48 @@ describe("config: readEnvSources", () => {
   });
 });
 
-describe("config: legacy ignore-minor env-var warning", () => {
-  // The `ignore-minor` removal leaves UMACTUALLY_IGNORE_MINOR and
-  // REVIEW_IGNORE_MINOR as silently-dropped env vars. CI pipelines
-  // that still set these will get a one-time stderr warning pointing
-  // them at minimum-severity. Without this test, a future refactor
-  // could drop the warning and silently regress the migration nudge.
-  beforeEach(() => {
-    // Reset the module-scoped dedupe set between tests by clearing
-    // the module cache for env-sources. Otherwise a test that warns
-    // would suppress the warning in the next test.
-    vi.resetModules();
-  });
-  it("emits a stderr warning when UMACTUALLY_IGNORE_MINOR is set", async () => {
-    const { readEnvSources: readFresh } = await import("../../src/config/env-sources.js");
+describe("config: removed ignore-minor environment variables", () => {
+  it("silently ignores UMACTUALLY_IGNORE_MINOR", () => {
     const stderr = vi.spyOn(process.stderr, "write").mockImplementation(() => true);
     try {
-      readFresh({ UMACTUALLY_IGNORE_MINOR: "true" });
-      expect(stderr).toHaveBeenCalled();
-      const message = stderr.mock.calls.map((call) => String(call[0])).join("");
-      expect(message).toMatch(/UMACTUALLY_IGNORE_MINOR/u);
-      expect(message).toMatch(/minimum-severity/u);
+      const sources = readEnvSources({ UMACTUALLY_IGNORE_MINOR: "true" });
+      expect(sources).toEqual({});
+      expect(stderr).not.toHaveBeenCalled();
     } finally {
       stderr.mockRestore();
     }
   });
-  it("emits a stderr warning when REVIEW_IGNORE_MINOR is set", async () => {
-    const { readEnvSources: readFresh } = await import("../../src/config/env-sources.js");
+  it("silently ignores REVIEW_IGNORE_MINOR", () => {
     const stderr = vi.spyOn(process.stderr, "write").mockImplementation(() => true);
     try {
-      readFresh({ REVIEW_IGNORE_MINOR: "true" });
-      expect(stderr).toHaveBeenCalled();
-      const message = stderr.mock.calls.map((call) => String(call[0])).join("");
-      expect(message).toMatch(/REVIEW_IGNORE_MINOR/u);
+      const sources = readEnvSources({ REVIEW_IGNORE_MINOR: "true" });
+      expect(sources).toEqual({});
+      expect(stderr).not.toHaveBeenCalled();
     } finally {
       stderr.mockRestore();
     }
   });
-  it("combines both legacy env vars into a single warning line when both are set", async () => {
-    const { readEnvSources: readFresh } = await import("../../src/config/env-sources.js");
+  it("silently ignores both removed variables while preserving current config", () => {
     const stderr = vi.spyOn(process.stderr, "write").mockImplementation(() => true);
     try {
-      readFresh({ UMACTUALLY_IGNORE_MINOR: "true", REVIEW_IGNORE_MINOR: "true" });
-      // Single warning line covering both names — no back-to-back spam.
-      const message = stderr.mock.calls.map((call) => String(call[0])).join("");
-      expect(message).toMatch(/UMACTUALLY_IGNORE_MINOR/u);
-      expect(message).toMatch(/REVIEW_IGNORE_MINOR/u);
-      // Exactly one stderr write for the migration warning.
-      expect(stderr.mock.calls.length).toBe(1);
+      const sources = readEnvSources({
+        UMACTUALLY_API_URL: "https://current.example/v1",
+        UMACTUALLY_IGNORE_MINOR: "true",
+        REVIEW_IGNORE_MINOR: "true",
+      });
+      expect(sources).toEqual({ providerUrl: "https://current.example/v1" });
+      expect(stderr).not.toHaveBeenCalled();
     } finally {
       stderr.mockRestore();
     }
   });
-  it("does not warn twice when readEnvSources is called multiple times", async () => {
-    const { readEnvSources: readFresh } = await import("../../src/config/env-sources.js");
+  it("remains silent across repeated reads", () => {
     const stderr = vi.spyOn(process.stderr, "write").mockImplementation(() => true);
     try {
-      readFresh({ UMACTUALLY_IGNORE_MINOR: "true" });
-      readFresh({ UMACTUALLY_IGNORE_MINOR: "true" });
-      readFresh({ UMACTUALLY_IGNORE_MINOR: "true" });
-      // The module-scoped dedupe set survives across calls within
-      // the same process — only the first call warns.
-      expect(stderr.mock.calls.length).toBe(1);
+      expect(readEnvSources({ UMACTUALLY_IGNORE_MINOR: "true" })).toEqual({});
+      expect(readEnvSources({ REVIEW_IGNORE_MINOR: "true" })).toEqual({});
+      expect(readEnvSources({ UMACTUALLY_IGNORE_MINOR: "true", REVIEW_IGNORE_MINOR: "true" })).toEqual({});
+      expect(stderr).not.toHaveBeenCalled();
     } finally {
       stderr.mockRestore();
     }
