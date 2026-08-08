@@ -216,7 +216,7 @@ describe.skipIf(!SHELL_AVAILABLE)("install.sh CLI argument parsing", () => {
     // (`not.toMatch(legacy-raw-symptom)`) locks in the routing.
     const customDir = join(sandbox, "user-bin");
     mkdirSync(customDir, { recursive: true });
-    const result = runInstall(["--tag", server!.tag, "--install-dir", customDir, "--contract", "archive"]);
+    const result = runInstall(["--tag", server!.tag, "--install-dir", customDir]);
     expect(result.stderr).not.toMatch(/missing or malformed entry for umactually-linux-x64/);
   });
 
@@ -267,6 +267,12 @@ describe.skipIf(!SHELL_AVAILABLE)("install.sh CLI argument parsing", () => {
       { INSTALL_RELEASE_TAG: server!.tag },
     );
     expect(result.stderr).not.toMatch(/missing or malformed entry for umactually-linux-x64/);
+  });
+
+  it("--contract legacy is rejected as unsupported", () => {
+    const result = runInstall(["--contract", "legacy"]);
+    expect(result.status, `stderr:\n${result.stderr}`).not.toBe(0);
+    expect(result.stderr).toMatch(/unknown flag|unsupported contract/i);
   });
 
   it("unknown --flag exits 2 (no silent fall-through)", () => {

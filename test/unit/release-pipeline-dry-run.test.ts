@@ -121,9 +121,8 @@ describe("ci-release-pipeline-dry-run.sh — structural contract (PR-time guard)
     );
     // The dry-run is meant to mirror the canary's `Run public
     // installer against the published immutable tag` step. That step
-    // sets INSTALL_RELEASE_BASE, INSTALL_RELEASE_TAG, and
-    // INSTALL_ASSET_CONTRACT=archive. The dry-run must do the same
-    // so URL routing matches production. Pin each env var.
+    // sets INSTALL_RELEASE_BASE and INSTALL_RELEASE_TAG. The dry-run must
+    // do the same so URL routing matches production. Pin each env var.
     expect(
       text,
       "must set INSTALL_RELEASE_BASE for the canary-equivalent step",
@@ -132,10 +131,6 @@ describe("ci-release-pipeline-dry-run.sh — structural contract (PR-time guard)
       text,
       "must set INSTALL_RELEASE_TAG for the canary-equivalent step",
     ).toMatch(/INSTALL_RELEASE_TAG=/u);
-    expect(
-      text,
-      "must set INSTALL_ASSET_CONTRACT=archive so the archive contract path is exercised",
-    ).toMatch(/INSTALL_ASSET_CONTRACT=["']?archive["']?/);
     // And it must actually run install.sh — that's the user-facing
     // path. Anything else mocks or short-circuits the install path.
     expect(text, "must run `sh scripts/install.sh`").toMatch(/sh\s+scripts\/install\.sh/);

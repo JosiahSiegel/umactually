@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: MIT
-// Tests for the install.ps1 / uninstall.ps1 PowerShell scripts.
+// Tests for the install.ps1 PowerShell script.
 //
 // Like the bash tests, these use the *_TEST_MODE=1 environment variable
 // which makes the scripts safe to run in CI: no network calls, no writes
@@ -20,7 +20,6 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const REPO_ROOT = resolve(import.meta.dirname, "..", "..");
 const INSTALL_PS1 = join(REPO_ROOT, "scripts", "install.ps1");
-const UNINSTALL_PS1 = join(REPO_ROOT, "scripts", "uninstall.ps1");
 
 // PowerShell discovery. On Windows: powershell.exe. On Mac/Linux: pwsh
 // (PowerShell Core). Skip the entire suite when neither is available.
@@ -223,68 +222,5 @@ describe.skipIf(!PS_AVAILABLE)("install.ps1", () => {
     expect(result.stderr).toContain(error);
     expect(existsSync(join(installDir, "umactually.exe"))).toBe(false);
     expect(existsSync(installDir) ? readdirSync(installDir) : []).toEqual([]);
-  });
-});
-
-describe.skipIf(!PS_AVAILABLE)("uninstall.ps1", () => {
-  beforeEach(() => {
-    // Seed: write a fake umactually.exe into the sandbox
-    mkdirSync(sandbox, { recursive: true });
-    writeFileSync(join(sandbox, "umactually.exe"), "# umactually stub\n");
-    expect(existsSync(join(sandbox, "umactually.exe"))).toBe(true);
-  });
-
-  it("PS-UNINSTALL-001: removes the binary cleanly", () => {
-    const result = run(UNINSTALL_PS1, {
-      UNINSTALL_TEST_MODE: "1",
-      UNINSTALL_TEST_DIR: sandbox,
-    });
-    expect(result.status).toBe(0);
-    expect(existsSync(join(sandbox, "umactually.exe"))).toBe(false);
-  });
-
-  it("PS-UNINSTALL-002: idempotent — second run is a no-op", () => {
-    const first = run(UNINSTALL_PS1, {
-      UNINSTALL_TEST_MODE: "1",
-      UNINSTALL_TEST_DIR: sandbox,
-    });
-    expect(first.status).toBe(0);
-
-    const second = run(UNINSTALL_PS1, {
-      UNINSTALL_TEST_MODE: "1",
-      UNINSTALL_TEST_DIR: sandbox,
-    });
-    expect(second.status).toBe(0);
-  });
-
-  it("PS-UNINSTALL-003: handles missing binary gracefully", () => {
-    const empty = mkdtempSync(join(tmpdir(), "empty-ps-"));
-    try {
-      const result = run(UNINSTALL_PS1, {
-        UNINSTALL_TEST_MODE: "1",
-        UNINSTALL_TEST_DIR: empty,
-      });
-      expect(result.status).toBe(0);
-    } finally {
-      rmSync(empty, { recursive: true, force: true });
-    }
-  });
-});
-
-describe.skipIf(!PS_AVAILABLE)("install + uninstall round-trip (PowerShell)", () => {
-  it("PS-ROUNDTRIP-001: install then uninstall leaves sandbox empty", () => {
-    const install = run(INSTALL_PS1, {
-      INSTALL_TEST_MODE: "1",
-      INSTALL_TEST_DIR: sandbox,
-    });
-    expect(install.status).toBe(0);
-    expect(existsSync(join(sandbox, "umactually.exe"))).toBe(true);
-
-    const uninstall = run(UNINSTALL_PS1, {
-      UNINSTALL_TEST_MODE: "1",
-      UNINSTALL_TEST_DIR: sandbox,
-    });
-    expect(uninstall.status).toBe(0);
-    expect(existsSync(join(sandbox, "umactually.exe"))).toBe(false);
   });
 });

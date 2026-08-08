@@ -4,11 +4,8 @@
 // What this suite covers (per the Todo 5 acceptance criteria):
 //   1. Happy Linux archive install via local HTTP server (real archive,
 //      real checksum file, real `mv` into the sandboxed HOME).
-//   2. Full 8-case override matrix (each case that must succeed is exercised;
-//      each case that must reject is exercised with the exact diagnostic).
-//   3. Every literal legacy tag `v0.2.1`, `v0.3.0`, `v0.4.0`, `v0.4.1`
-//      is accepted (legacy contract + raw binary), and `v0.1.0`, an
-//      unknown tag, and a prerelease tag are rejected.
+//   2. Tag/base override handling and malformed tag rejection.
+//   3. Old release tags remain archive-only; unknown and prerelease tags reject.
 //   4. Hostile archive fixtures: traversal name, absolute path, nested
 //      path, newline-bearing name, duplicate member, directory-plus-file,
 //      symlink, hardlink, FIFO, device — every rejection preserves the
@@ -115,7 +112,7 @@ describe.skipIf(!SHELL_AVAILABLE || process.platform === "win32")("install.sh 8-
   it("case 2: tag only resolves the default GitHub base and installs", async () => {
     server = await seedServer("v0.5.0");
     const dest = join(fakeHome, ".local", "bin", "umactually");
-    // Tag only — no INSTALL_RELEASE_BASE, no INSTALL_ASSET_CONTRACT.
+    // Tag only — no INSTALL_RELEASE_BASE.
     const result = runInstaller({
       fakeHome,
       manifestPath,
@@ -145,21 +142,6 @@ describe.skipIf(!SHELL_AVAILABLE || process.platform === "win32")("install.sh 8-
     expect(result.stderr).toMatch(/INSTALL_RELEASE_BASE without INSTALL_RELEASE_TAG/);
   });
 
-  it("case 4: contract only (no base, no tag) is rejected", () => {
-    server = null;
-    const result = runInstaller({
-      fakeHome,
-      manifestPath,
-      serverBaseUrl: "",
-      tag: "",
-      platform: "linux",
-      arch: "x64",
-      contract: "archive",
-    });
-    expect(result.status).not.toBe(0);
-    expect(result.stderr).toMatch(/INSTALL_ASSET_CONTRACT requires INSTALL_RELEASE_BASE/);
-  });
-
   it("case 5: base + tag installs with the supplied base", async () => {
     server = await seedServer("v0.5.0");
     const dest = join(fakeHome, ".local", "bin", "umactually");
@@ -173,82 +155,6 @@ describe.skipIf(!SHELL_AVAILABLE || process.platform === "win32")("install.sh 8-
     });
     expect(result.status).toBe(0);
     expect(readFileSync(dest, "utf8")).toBe(ASSET_PAYLOAD.toString("utf8"));
-  });
-
-  it("case 6: base + tag + contract=archive installs", async () => {
-    server = await seedServer("v0.5.0");
-    const dest = join(fakeHome, ".local", "bin", "umactually");
-    const result = runInstaller({
-      fakeHome,
-      manifestPath,
-      serverBaseUrl: server.baseUrl,
-      tag: "v0.5.0",
-      platform: "linux",
-      arch: "x64",
-      contract: "archive",
-    });
-    expect(result.status).toBe(0);
-    expect(readFileSync(dest, "utf8")).toBe(ASSET_PAYLOAD.toString("utf8"));
-  });
-
-  it("case 6: base + tag + contract=legacy selects raw binary for legacy allowlist", async () => {
-    // Seed a v0.4.1 release with raw binary (legacy contract).
-    mkdirSync(releaseDir, { recursive: true });
-    const rawBytes = ASSET_PAYLOAD;
-    writeFileSync(join(releaseDir, LINUX_X64.rawName), rawBytes);
-    for (const t of TARGETS) {
-      if (t.id === LINUX_X64.id) continue;
-      writeFileSync(join(releaseDir, t.rawName), Buffer.from(`placeholder-${t.id}`));
-    }
-    const hashes: Record<string, string> = {};
-    for (const t of TARGETS) {
-      hashes[t.rawName] = sha256(readFileSync(join(releaseDir, t.rawName)));
-    }
-    writeFileSync(join(releaseDir, "checksums.txt"), buildChecksumFile(hashes, "raw"));
-    server = await startFixture({ releaseDir, tag: "v0.4.1" });
-
-    const dest = join(fakeHome, ".local", "bin", "umactually");
-    const result = runInstaller({
-      fakeHome,
-      manifestPath,
-      serverBaseUrl: server.baseUrl,
-      tag: "v0.4.1",
-      platform: "linux",
-      arch: "x64",
-      contract: "legacy",
-    });
-    expect(result.status).toBe(0);
-    expect(readFileSync(dest, "utf8")).toBe(rawBytes.toString("utf8"));
-  });
-
-  it("case 7: base + contract without tag is rejected", () => {
-    server = null;
-    const result = runInstaller({
-      fakeHome,
-      manifestPath,
-      serverBaseUrl: "http://127.0.0.1:65535",
-      tag: "",
-      platform: "linux",
-      arch: "x64",
-      contract: "archive",
-    });
-    expect(result.status).not.toBe(0);
-    expect(result.stderr).toMatch(/INSTALL_ASSET_CONTRACT without INSTALL_RELEASE_TAG/);
-  });
-
-  it("rejects an invalid contract string in case 6", () => {
-    server = null;
-    const result = runInstaller({
-      fakeHome,
-      manifestPath,
-      serverBaseUrl: "http://127.0.0.1:65535",
-      tag: "v0.5.0",
-      platform: "linux",
-      arch: "x64",
-      contract: "bogus",
-    });
-    expect(result.status).not.toBe(0);
-    expect(result.stderr).toMatch(/INSTALL_ASSET_CONTRACT must be 'archive' or 'legacy'/);
   });
 
   it("rejects a tag that does not match the strict semver grammar", () => {
@@ -315,37 +221,7 @@ describe.skipIf(!SHELL_AVAILABLE || process.platform === "win32")("install.sh 8-
   });
 });
 
-describe.skipIf(!SHELL_AVAILABLE || process.platform === "win32")("install.sh legacy tag allowlist", () => {
-  for (const legacyTag of ["v0.2.1", "v0.3.0", "v0.4.0", "v0.4.1"]) {
-    it(`accepts ${legacyTag} via the legacy contract`, async () => {
-      mkdirSync(releaseDir, { recursive: true });
-      writeFileSync(join(releaseDir, LINUX_X64.rawName), ASSET_PAYLOAD);
-      for (const t of TARGETS) {
-        if (t.id === LINUX_X64.id) continue;
-        writeFileSync(join(releaseDir, t.rawName), Buffer.from(`placeholder-${t.id}`));
-      }
-      const hashes: Record<string, string> = {};
-      for (const t of TARGETS) {
-        hashes[t.rawName] = sha256(readFileSync(join(releaseDir, t.rawName)));
-      }
-      writeFileSync(join(releaseDir, "checksums.txt"), buildChecksumFile(hashes, "raw"));
-      server = await startFixture({ releaseDir, tag: legacyTag });
-
-      const dest = join(fakeHome, ".local", "bin", "umactually");
-      const result = runInstaller({
-        fakeHome,
-        manifestPath,
-        serverBaseUrl: server.baseUrl,
-        tag: legacyTag,
-        platform: "linux",
-        arch: "x64",
-        // No contract override — the installer must infer legacy from the tag.
-      });
-      expect(result.status).toBe(0);
-      expect(readFileSync(dest, "utf8")).toBe(ASSET_PAYLOAD.toString("utf8"));
-    });
-  }
-
+describe.skipIf(!SHELL_AVAILABLE || process.platform === "win32")("install.sh archive-only tag handling", () => {
   it("rejects v0.1.0 (pre-allowlist tag) and forces archive contract", async () => {
     // v0.1.0 is not in the legacy allowlist and not a strict-semver tag
     // by default; but it IS strict semver. So it falls through to archive
@@ -759,7 +635,6 @@ describe.skipIf(!SHELL_AVAILABLE)("install.sh Windows Git Bash delegation", () =
       tag: "v0.4.1",
       platform: "windows",
       arch: "x64",
-      contract: "legacy",
       extraEnv: { PATH: `${fakeBin}${process.platform === "win32" ? ";" : ":"}${process.env["PATH"] ?? ""}` },
     });
     // Two acceptable outcomes:

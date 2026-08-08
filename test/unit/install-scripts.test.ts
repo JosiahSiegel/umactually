@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: MIT
-// Tests for the install.sh / uninstall.sh shell scripts.
+// Tests for the install.sh shell script.
 //
 // These tests use the *_TEST_MODE=1 environment variables which make the
 // scripts safe to run in CI: no network calls, no writes outside a sandbox
@@ -9,25 +9,21 @@
 //   1. install.sh: OS+arch detection maps to the correct binary name
 //   2. install.sh: produces a working executable in the install dir
 //   3. install.sh: respects PLATFORM_OVERRIDE / ARCH_OVERRIDE
-//   4. uninstall.sh: removes the binary cleanly
-//   5. uninstall.sh: idempotent (safe to run twice)
-//   6. install+uninstall round-trip: dir empty after uninstall
-//   7. The installed binary is on PATH when its install dir is prepended
+//   4. The installed binary is on PATH when its install dir is prepended
 
 import { execFileSync } from "node:child_process";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, rmSync, statSync } from "node:fs";
+import { existsSync, mkdtempSync, rmSync, statSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { tmpdir } from "node:os";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
 const REPO_ROOT = resolve(import.meta.dirname, "..", "..");
 const INSTALL_SH = join(REPO_ROOT, "scripts", "install.sh");
-const UNINSTALL_SH = join(REPO_ROOT, "scripts", "uninstall.sh");
 
 // POSIX shell. On Windows we look for bash.exe (ships with Git for Windows,
 // WSL, MSYS2, Cygwin). When bash is absent — e.g. stock Windows with only
-// PowerShell — the install.sh / uninstall.sh shell scripts cannot be exercised
-// here. The Windows PowerShell variants (install.ps1, uninstall.ps1) have
+// PowerShell — the install.sh shell script cannot be exercised here. The
+// Windows PowerShell variant (install.ps1) has
 // their own dedicated tests in test/unit/install-scripts-powershell.test.ts.
 //
 // If bash is missing, we skip every test in this file with a clear message
@@ -211,85 +207,7 @@ describe.skipIf(!SHELL_AVAILABLE)("install.sh side effects", () => {
   });
 });
 
-describe.skipIf(!SHELL_AVAILABLE)("uninstall.sh", () => {
-  beforeEach(() => {
-    // Seed an installed binary in the sandbox
-    mkdirSync(sandbox, { recursive: true });
-    const stubPath = join(sandbox, "umactually");
-    if (SHELL !== null) {
-      execFileSync(SHELL, ["-c", `printf '#!/bin/sh\necho stub\\n' > "${stubPath}"`]);
-    } else {
-      // Pure-Node fallback (no shell): just write the file directly.
-      const fs = require("node:fs") as typeof import("node:fs");
-      fs.writeFileSync(stubPath, "#!/bin/sh\necho stub\n");
-    }
-    chmodSync(stubPath, 0o755);
-    expect(existsSync(stubPath)).toBe(true);
-  });
-
-  it("UNINSTALL-001: removes the binary cleanly", () => {
-    const result = run(UNINSTALL_SH, {
-      UNINSTALL_TEST_MODE: "1",
-      UNINSTALL_TEST_DIR: sandbox,
-    });
-    expect(result.status).toBe(0);
-    const summary = parseKeyValue(result.stdout);
-    expect(summary["FOUND"]).toBe("1");
-    expect(summary["REMOVED"]).toBe("1");
-    expect(existsSync(join(sandbox, "umactually"))).toBe(false);
-  });
-
-  it("UNINSTALL-002: idempotent — second run reports no-op", () => {
-    const first = run(UNINSTALL_SH, {
-      UNINSTALL_TEST_MODE: "1",
-      UNINSTALL_TEST_DIR: sandbox,
-    });
-    expect(first.status).toBe(0);
-    expect(parseKeyValue(first.stdout)["REMOVED"]).toBe("1");
-
-    const second = run(UNINSTALL_SH, {
-      UNINSTALL_TEST_MODE: "1",
-      UNINSTALL_TEST_DIR: sandbox,
-    });
-    expect(second.status).toBe(0);
-    expect(parseKeyValue(second.stdout)["FOUND"]).toBe("0");
-    expect(parseKeyValue(second.stdout)["REMOVED"]).toBe("0");
-  });
-
-  it("UNINSTALL-003: handles missing dir gracefully", () => {
-    const empty = mkdtempSync(join(tmpdir(), "empty-"));
-    try {
-      const result = run(UNINSTALL_SH, {
-        UNINSTALL_TEST_MODE: "1",
-        UNINSTALL_TEST_DIR: empty,
-      });
-      expect(result.status).toBe(0);
-      expect(parseKeyValue(result.stdout)["FOUND"]).toBe("0");
-    } finally {
-      rmSync(empty, { recursive: true, force: true });
-    }
-  });
-});
-
-describe.skipIf(!SHELL_AVAILABLE)("install + uninstall round-trip", () => {
-  it("ROUNDTRIP-001: install then uninstall leaves sandbox empty", () => {
-    const install = run(INSTALL_SH, {
-      INSTALL_TEST_MODE: "1",
-      INSTALL_TEST_DIR: sandbox,
-      PLATFORM_OVERRIDE: "linux",
-      ARCH_OVERRIDE: "arm64",
-    });
-    expect(install.status).toBe(0);
-    expect(existsSync(join(sandbox, "umactually"))).toBe(true);
-
-    const uninstall = run(UNINSTALL_SH, {
-      UNINSTALL_TEST_MODE: "1",
-      UNINSTALL_TEST_DIR: sandbox,
-    });
-    expect(uninstall.status).toBe(0);
-    expect(existsSync(join(sandbox, "umactually"))).toBe(false);
-  });
-
+describe.skipIf(!SHELL_AVAILABLE)("installed command", () => {
   it("ROUNDTRIP-002: installed binary is invocable from any cwd via PATH", () => {
     // Install into sandbox
     run(INSTALL_SH, {

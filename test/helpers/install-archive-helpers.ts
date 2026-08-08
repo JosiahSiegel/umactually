@@ -246,7 +246,6 @@ export type InstallEnv = Readonly<{
   tag: string;
   platform?: string;
   arch?: string;
-  contract?: string;
   base?: string;
   psScriptUrl?: string;
   extraEnv?: Readonly<Record<string, string>>;
@@ -283,7 +282,6 @@ export function runInstaller(env: InstallEnv): InstallResult {
     INSTALL_MANIFEST: env.manifestPath,
     ...(env.platform !== undefined ? { PLATFORM_OVERRIDE: env.platform } : {}),
     ...(env.arch !== undefined ? { ARCH_OVERRIDE: env.arch } : {}),
-    ...(env.contract !== undefined ? { INSTALL_ASSET_CONTRACT: env.contract } : {}),
     ...(env.base !== undefined && env.base !== "" ? { INSTALL_RELEASE_BASE: env.base } : {}),
     ...(env.psScriptUrl !== undefined ? { INSTALL_POWERSHELL_SCRIPT_URL: env.psScriptUrl } : {}),
     ...(env.extraEnv ?? {}),

@@ -550,62 +550,12 @@ describe.skipIf(!PS_AVAILABLE)("install.ps1 8-case override matrix", () => {
     expect(result.stderr).toMatch(/INSTALL_RELEASE_BASE without INSTALL_RELEASE_TAG/);
   });
 
-  it("PS-MATRIX-002: rejects contract without tag", () => {
-    const result = runInstall({
-      INSTALL_ASSET_CONTRACT: "archive",
-      PROCESSOR_ARCHITECTURE: "AMD64",
-      USERPROFILE: join(installDir, "..", ".."),
-    });
-    expect(result.status).not.toBe(0);
-    expect(result.stderr).toMatch(/INSTALL_ASSET_CONTRACT without INSTALL_RELEASE_TAG/);
-  });
-
-  it("PS-MATRIX-003: rejects base + contract without tag", () => {
-    const result = runInstall({
-      INSTALL_RELEASE_BASE: "http://127.0.0.1:1",
-      INSTALL_ASSET_CONTRACT: "archive",
-      PROCESSOR_ARCHITECTURE: "AMD64",
-      USERPROFILE: join(installDir, "..", ".."),
-    });
-    expect(result.status).not.toBe(0);
-    // The PowerShell throw string "INSTALL_RELEASE_BASE + INSTALL_ASSET_CONTRACT=archive without INSTALL_RELEASE_TAG is invalid (case 7 reject)" is word-wrapped by the PowerShell exception formatter with ANSI escape codes, newlines, AND source-line pointer pipes (|) between words on multi-line terminals (CI Linux runners). Strip ANSI codes, strip source-line pointer pipes, then collapse whitespace before matching.
-    const stripped = result.stderr
-      .replace(/\u001b\[[0-9;]*m/g, "")
-      .replace(/\|/g, " ")
-      .replace(/\s+/g, " ");
-    expect(stripped).toMatch(/without INSTALL_RELEASE_TAG/);
-  });
-
-  it("PS-MATRIX-004: rejects unknown contract value", () => {
-    // Production path with explicit invalid contract — the override validator
-    // fires before Resolve-Tag so the network call is never made.
-    const result = runInstall({
-      INSTALL_RELEASE_TAG: "v0.5.0",
-      INSTALL_RELEASE_BASE: "http://127.0.0.1:1",
-      INSTALL_ASSET_CONTRACT: "garbage",
-      PROCESSOR_ARCHITECTURE: "AMD64",
-      USERPROFILE: join(installDir, "..", ".."),
-    });
-    expect(result.status).not.toBe(0);
-    expect(result.stderr).toMatch(/Invalid INSTALL_ASSET_CONTRACT/);
-  });
-
-  it.each(["v0.2.1", "v0.3.0", "v0.4.0", "v0.4.1"])(
-    "PS-MATRIX-005: legacy tag %s is recognized by the contract resolver",
-    (tag) => {
-      // Verify the script source contains the literal allowlist with each tag.
-      const scriptText = readFileSync(INSTALL_PS1, "utf8");
-      expect(scriptText).toMatch(/\$LegacyTagAllowlist\s*=\s*@\(/);
-      expect(scriptText).toContain(`"${tag}"`);
-    },
-  );
-
   // The --ssl-no-revoke flag (and its aliases) MUST be handled by the
   // early-arg handler in install.ps1 so that a Windows Git Bash user
   // copy/pasting the README's `irm .../install.ps1 | iex -ssl-no-revoke`
   // line gets the same behavior as install.sh's `--ssl-no-revoke`. Without
   // the early handler the flag is silently dropped and the smart-router
-  // (or the legacy raw path) makes an Invoke-WebRequest call that still
+  // archive path makes an Invoke-WebRequest call that still
   // hits CRL/OCSP. The TEST_MODE 1 path short-circuits before any
   // network call, so we can assert on the flag's acceptance alone.
   // USERPROFILE is pinned to installDir's grandparent because on Linux
@@ -764,7 +714,7 @@ describe.skipIf(!PS_AVAILABLE)("install.ps1 8-case override matrix", () => {
   it("PS-MATRIX-006: archive-capable tag never falls back to raw on checksum mismatch", () => {
     // Seed an archive contract's checksum file but with a wrong hash. The
     // production path with archive contract must reject with a checksum
-    // error, not silently fall back to legacy raw download.
+    // error without changing the installed binary.
     seedHappyArchive();
     writeFileSync(
       join(releaseDir, "checksums.txt"),
@@ -773,7 +723,6 @@ describe.skipIf(!PS_AVAILABLE)("install.ps1 8-case override matrix", () => {
     const result = runInstall({
       INSTALL_RELEASE_TAG: "v0.5.0",
       INSTALL_RELEASE_BASE: "http://127.0.0.1:1",
-      INSTALL_ASSET_CONTRACT: "archive",
       PROCESSOR_ARCHITECTURE: "AMD64",
       USERPROFILE: join(installDir, "..", ".."),
     });
@@ -1145,8 +1094,7 @@ describe.skipIf(!PS_AVAILABLE)("install.ps1 full HTTP fixture-server round trip"
       const env: Record<string, string> = {
         INSTALL_RELEASE_BASE: assetBase,
         INSTALL_RELEASE_TAG: "v0.5.0",
-        INSTALL_ASSET_CONTRACT: "archive",
-        PROCESSOR_ARCHITECTURE: "AMD64",
+          PROCESSOR_ARCHITECTURE: "AMD64",
         USERPROFILE: join(installDir, "..", ".."),
         INSTALL_TEST_NO_SMOKE: "1",
       };
@@ -1168,8 +1116,8 @@ describe.skipIf(!PS_AVAILABLE)("install.ps1 full HTTP fixture-server round trip"
 
 describe("install.ps1 archive basenames must match the live release", () => {
   // Regression guard for the v0.6.0 darwin-x64 drop. install.ps1 hardcodes
-  // the list of expected basenames for each asset contract (archive vs
-  // legacy raw). If that list drifts out of sync with the actual release
+  // the list of expected archive basenames. If that list drifts out of sync
+  // with the actual release
   // (or, as happened, the manifest drops a target but the PowerShell
   // installer wasn't updated), every user who runs the curl-pipe installer
   // on Windows sees a "Missing checksum line for archive contract: <basename>"

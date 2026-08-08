@@ -3,12 +3,8 @@
 # Universal installer for umactually standalone binary.
 #
 # Supports Linux, macOS, and Windows under Git Bash (delegates to PowerShell).
-# Default flow downloads a legacy raw executable (matches pre-archive releases
-# v0.2.1..v0.4.1 and the existing install-checksum test fixture). When any of
-# INSTALL_RELEASE_TAG, INSTALL_RELEASE_BASE, INSTALL_ASSET_CONTRACT, or
-# INSTALL_TEST_FAKE_TAG is supplied, the eight-case override matrix takes over
-# and dispatches into the archive flow (for non-legacy tags) or the legacy raw
-# flow (for the four legacy allowlist tags).
+# Default flow resolves the latest stable release, downloads its platform
+# archive, and verifies it against the published checksums.txt.
 #
 # Usage:
 #   curl -fsSL https://github.com/JosiahSiegel/umactually/raw/main/scripts/install.sh | sh
@@ -30,7 +26,6 @@
 # Override matrix env vars (see plan section "Install scripts"):
 #   INSTALL_RELEASE_TAG          Strict semver tag (vMAJOR.MINOR.PATCH)
 #   INSTALL_RELEASE_BASE         Immutable asset directory base URL (no tag)
-#   INSTALL_ASSET_CONTRACT       archive | legacy
 #   INSTALL_TEST_FAKE_TAG        Test-mode tag override (alias of INSTALL_RELEASE_TAG)
 #   INSTALL_TEST_FAKE_SERVER     Test-mode base URL override (alias of INSTALL_RELEASE_BASE)
 #   INSTALL_TEST_FAKE_LATEST_URL Test-mode override of the GitHub /releases/latest URL
@@ -58,8 +53,7 @@
 #
 # Eight-case override matrix dispatch (mirrors scripts/install.ps1):
 #   1. No overrides => IF INSTALL_TEST_FAKE_LATEST_URL or INSTALL_GITHUB_API_BASE
-#      is set, resolve from that GitHub /releases/latest endpoint; else fall back
-#      to legacy raw download (default production flow).
+#      is set, resolve from that GitHub /releases/latest endpoint.
 #   2. Tag only => use default GitHub base, infer contract from tag.
 #   3. Base only => probe the supplied base's checksums.txt; if first basename
 #      is a raw basename, accept legacy; otherwise reject.
@@ -105,7 +99,7 @@ umask 077
 # re-runs, they're already holding a binary install. We resolve this
 # by sniffing just the flag the smart-router reads here, BEFORE the
 # smart-router runs. This is a minimal, targeted hand-off — parse_args
-# still owns the full flag list (--tag, --base, --contract,
+# still owns the full flag list (--tag, --base,
 # --install-dir, --ssl-no-revoke, -h/--help, -V/--version) and the
 # help/version blocks.
 #
@@ -360,14 +354,14 @@ if [ "${INSTALL_TRY_NPM:-0}" = "1" ] \
   smart_install_with_npm || true
 fi
 
-# Translate `--tag` / `--base` / `--contract` / `--install-dir` CLI flags
+# Translate `--tag` / `--base` / `--install-dir` CLI flags
 # into the env-var shape the rest of the script reads. The POSIX
 # `curl | sh -s -- <flags>` form must be a first-class entry point.
 #
 # NOTE: the smart-router-relevant flag (`--try-npm`) is sniffed earlier
 # in the file (just below `set -e`, before the smart-router block) so
 # the curl-pipe form `curl .../install.sh | sh -s -- --try-npm` opts
-# in on first invocation. The full flag list (--tag, --base, --contract,
+# in on first invocation. The full flag list (--tag, --base,
 # --install-dir, --ssl-no-revoke, -h/--help, -V/--version) is owned
 # here and applied at the end of the script. Verified by
 # install-smart-router.test.ts's runShell harness.
@@ -376,14 +370,10 @@ fi
 REPO="JosiahSiegel/umactually"
 URL_BASE="https://github.com/${REPO}/releases/latest/download"
 LATEST_API="https://api.github.com/repos/${REPO}/releases/latest"
-LEGACY_TAG_ALLOWLIST="v0.2.1 v0.3.0 v0.4.0 v0.4.1"
 MAX_EXTRACTED_BYTES=150000000
 
 # Canonical six archive basenames (archive contract).
 ARCHIVE_BASENAMES="umactually-linux-x64.tar.gz umactually-linux-arm64.tar.gz umactually-darwin-x64.tar.gz umactually-darwin-arm64.tar.gz umactually-windows-x64.zip umactually-windows-arm64.zip"
-
-# Canonical six raw basenames (legacy contract).
-RAW_BASENAMES="umactually-linux-x64 umactually-linux-arm64 umactually-darwin-x64 umactually-darwin-arm64 umactually-windows-x64.exe umactually-windows-arm64.exe"
 
 # 64-character hex character class inlined in case patterns.
 HEX64="[0-9A-Fa-f][0-9A-Fa-f][0-9A-Fa-f][0-9A-Fa-f][0-9A-Fa-f][0-9A-Fa-f][0-9A-Fa-f][0-9A-Fa-f][0-9A-Fa-f][0-9A-Fa-f][0-9A-Fa-f][0-9A-Fa-f][0-9A-Fa-f][0-9A-Fa-f][0-9A-Fa-f][0-9A-Fa-f][0-9A-Fa-f][0-9A-Fa-f][0-9A-Fa-f][0-9A-Fa-f][0-9A-Fa-f][0-9A-Fa-f][0-9A-Fa-f][0-9A-Fa-f][0-9A-Fa-f][0-9A-Fa-f][0-9A-Fa-f][0-9A-Fa-f][0-9A-Fa-f][0-9A-Fa-f][0-9A-Fa-f][0-9A-Fa-f][0-9A-Fa-f][0-9A-Fa-f][0-9A-Fa-f][0-9A-Fa-f][0-9A-Fa-f][0-9A-Fa-f][0-9A-Fa-f][0-9A-Fa-f][0-9A-Fa-f][0-9A-Fa-f][0-9A-Fa-f][0-9A-Fa-f][0-9A-Fa-f][0-9A-Fa-f][0-9A-Fa-f][0-9A-Fa-f][0-9A-Fa-f][0-9A-Fa-f][0-9A-Fa-f][0-9A-Fa-f][0-9A-Fa-f][0-9A-Fa-f][0-9A-Fa-f][0-9A-Fa-f][0-9A-Fa-f][0-9A-Fa-f][0-9A-Fa-f][0-9A-Fa-f][0-9A-Fa-f][0-9A-Fa-f][0-9A-Fa-f][0-9A-Fa-f]"
@@ -545,35 +535,6 @@ tar_list_long() {
 }
 
 # ---- checksum file validation ----
-# Legacy raw checksum entry parser: echoes the 64-hex hash for the target
-# basename on stdout, exit 0 iff exactly one well-formed entry exists.
-checksum_legacy_select() {
-  _file="$1"
-  _target="$2"
-  _count=0
-  _hash=""
-  while IFS= read -r _line; do
-    # Strip trailing CR (already normalized but defensive).
-    case "$_line" in
-      *"$'\r'") _line=${_line%"$'\r'"} ;;
-    esac
-    # Strict grammar: 64 hex + two spaces + basename. POSIX case patterns
-    # require the parameter expansion to be UNQUOTED for the var to
-    # expand into the pattern; quoted forms become literal text.
-    case "$_line" in
-      ${HEX64}*"  "${_target})
-        _count=$((_count + 1))
-        _hash=$(printf '%s' "$_line" | cut -c1-64)
-        ;;
-    esac
-  done < "$_file"
-  if [ "$_count" -ne 1 ]; then
-    return 1
-  fi
-  printf '%s\n' "$_hash"
-  return 0
-}
-
 # Archive checksum file validation: returns 0 iff the file contains EXACTLY
 # five canonical archive-basename lines, no malformed/duplicate/unknown/
 # opposite-contract entries. Sets EXPECTED_HASH (global) for the line that
@@ -603,17 +564,6 @@ checksum_archive_validate() {
             break
           fi
         done
-        _is_raw=0
-        for _r in $RAW_BASENAMES; do
-          if [ "$_r" = "$_basename" ]; then
-            _is_raw=1
-            break
-          fi
-        done
-        if [ "$_is_raw" = "1" ]; then
-          log_err "opposite-contract checksum line rejected for archive: $_basename"
-          return 1
-        fi
         if [ "$_is_archive" = "0" ]; then
           log_err "unknown checksum basename for archive contract: $_basename"
           return 1
@@ -753,19 +703,6 @@ http_get() {
   fi
 }
 
-# ---- tag inference from contract & legacy allowlist ----
-tag_to_contract() {
-  # $1 = tag. Outputs "archive" or "legacy".
-  for _t in $LEGACY_TAG_ALLOWLIST; do
-    if [ "$_t" = "$1" ]; then
-      printf 'legacy'
-      return 0
-    fi
-  done
-  printf 'archive'
-  return 0
-}
-
 # ---- HTTP fetch latest tag from GitHub API ----
 fetch_latest_tag() {
   # $1 = API base URL. Echoes the resolved tag on stdout, exit 0 on success.
@@ -810,10 +747,9 @@ fetch_latest_tag() {
   esac
 }
 
-# ---- 8-case override matrix dispatch ----
-# Sets global vars:
-#   RESOLVED_TAG, RESOLVED_BASE, RESOLVED_CONTRACT, USE_LEGACY_RAW
-# On reject, exits 1 with a diagnostic on stderr.
+# ---- archive release dispatch ----
+# Sets RESOLVED_TAG and RESOLVED_BASE. Archive assets plus checksums.txt are
+# the only supported binary distribution contract.
 resolve_dispatch() {
   _tag=${INSTALL_RELEASE_TAG:-${INSTALL_TEST_FAKE_TAG:-}}
   _base_user=${INSTALL_RELEASE_BASE:-}
@@ -822,20 +758,11 @@ resolve_dispatch() {
   if [ -z "$_base" ]; then
     _base=$_base_fake
   fi
-  _contract=${INSTALL_ASSET_CONTRACT:-}
 
   # Strip a single trailing slash from the base for consistent concatenation.
   case "$_base" in
     */) _base=${_base%/} ;;
   esac
-
-  # Validate explicit contract value up front (case-6 helper).
-  if [ -n "$_contract" ]; then
-    case "$_contract" in
-      archive|legacy) ;;
-      *) log_err "INSTALL_ASSET_CONTRACT must be 'archive' or 'legacy' (got: '$_contract')"; exit 1 ;;
-    esac
-  fi
 
   # Validate the base URL when INSTALL_RELEASE_TAG is empty. The
   # unguarded BASE-with-tag pattern (e.g. the canary / dry-run
@@ -889,7 +816,7 @@ resolve_dispatch() {
   fi
 
   # Case dispatch (order matters; case 7 must precede case 3).
-  if [ -n "$_tag" ] && [ -z "$_base" ] && [ -z "$_contract" ]; then
+  if [ -n "$_tag" ] && [ -z "$_base" ]; then
     # Case 2: tag only. Default base = GitHub /releases/download/<tag>.
     RESOLVED_TAG=$_tag
     if [ -n "$_base_fake" ]; then
@@ -898,11 +825,9 @@ resolve_dispatch() {
     else
       RESOLVED_BASE="https://github.com/${REPO}/releases/download/$_tag"
     fi
-    RESOLVED_CONTRACT=$(tag_to_contract "$_tag")
-    USE_LEGACY_RAW=0
     return 0
   fi
-  if [ -n "$_tag" ] && [ -n "$_base" ] && [ -z "$_contract" ]; then
+  if [ -n "$_tag" ] && [ -n "$_base" ]; then
     # Case 5: base + tag. Inferred contract.
     # INSTALL_TEST_FAKE_SERVER is a bare host; INSTALL_RELEASE_BASE is already
     # the asset-directory URL. Normalize accordingly.
@@ -912,28 +837,9 @@ resolve_dispatch() {
     else
       RESOLVED_BASE=$_base
     fi
-    RESOLVED_CONTRACT=$(tag_to_contract "$_tag")
-    USE_LEGACY_RAW=0
     return 0
   fi
-  if [ -n "$_tag" ] && [ -n "$_base" ] && [ -n "$_contract" ]; then
-    # Case 6: base + tag + contract.
-    RESOLVED_TAG=$_tag
-    if [ -n "$_base_fake" ] && [ -z "$_base_user" ]; then
-      RESOLVED_BASE="${_base_fake}/releases/download/$_tag"
-    else
-      RESOLVED_BASE=$_base
-    fi
-    RESOLVED_CONTRACT=$_contract
-    USE_LEGACY_RAW=0
-    return 0
-  fi
-  if [ -z "$_tag" ] && [ -n "$_base" ] && [ -n "$_contract" ]; then
-    # Case 7 reject: contract without tag.
-    log_err "INSTALL_ASSET_CONTRACT without INSTALL_RELEASE_TAG is invalid (case 7 reject)"
-    exit 1
-  fi
-  if [ -z "$_tag" ] && [ -n "$_base" ] && [ -z "$_contract" ]; then
+  if [ -z "$_tag" ] && [ -n "$_base" ]; then
     # Case 3: base only. Probe the supplied base's checksums.txt first line.
     # For INSTALL_TEST_FAKE_SERVER (bare host), probe /<tag>/checksums.txt
     # patterns aren't relevant — INSTALL_TEST_FAKE_TAG isn't set in case 3.
@@ -949,38 +855,12 @@ resolve_dispatch() {
       log_err "could not create temp file for case 3 probe"
       exit 1
     }
-    if http_get "${_probe_base}/checksums.txt" "$_probe_tmp" 2>/dev/null; then
-      _first=$(head -n 1 "$_probe_tmp" 2>/dev/null || printf '')
-      case "$_first" in
-        *"$'\r'") _first=${_first%"$'\r'"} ;;
-      esac
-      case "$_first" in
-        *"  umactually-linux-x64"|\
-*"  umactually-linux-arm64"|\
-*"  umactually-darwin-x64"|\
-*"  umactually-darwin-arm64"|\
-*"  umactually-windows-x64.exe"|\
-*"  umactually-windows-arm64.exe")
-          # Probe sees raw basenames; accept legacy.
-          RESOLVED_BASE=$_probe_base
-          RESOLVED_CONTRACT=legacy
-          USE_LEGACY_RAW=1
-          rm -f "$_probe_tmp"
-          return 0
-          ;;
-      esac
-    fi
+    http_get "${_probe_base}/checksums.txt" "$_probe_tmp" 2>/dev/null || true
     rm -f "$_probe_tmp"
     log_err "INSTALL_RELEASE_BASE without INSTALL_RELEASE_TAG is invalid (case 3 reject)"
     exit 1
   fi
-  if [ -z "$_tag" ] && [ -z "$_base" ] && [ -n "$_contract" ]; then
-    # Case 4: contract only.
-    log_err "INSTALL_ASSET_CONTRACT requires INSTALL_RELEASE_BASE (case 4 reject)"
-    exit 1
-  fi
-  # Case 1: no overrides. Resolve from GitHub /releases/latest if an explicit
-  # API base override is set; otherwise fall back to legacy raw download.
+  # Case 1: no overrides. Resolve from GitHub /releases/latest.
   if [ -n "${INSTALL_TEST_FAKE_LATEST_URL:-}" ]; then
     _resolved=$(fetch_latest_tag "$INSTALL_TEST_FAKE_LATEST_URL") || {
       log_err "could not resolve latest tag from INSTALL_TEST_FAKE_LATEST_URL"
@@ -992,8 +872,6 @@ resolve_dispatch() {
     else
       RESOLVED_BASE="https://github.com/${REPO}/releases/download/$_resolved"
     fi
-    RESOLVED_CONTRACT=$(tag_to_contract "$_resolved")
-    USE_LEGACY_RAW=0
     return 0
   fi
   if [ -n "${INSTALL_GITHUB_API_BASE:-}" ]; then
@@ -1003,106 +881,14 @@ resolve_dispatch() {
     }
     RESOLVED_TAG=$_resolved
     RESOLVED_BASE="https://github.com/${REPO}/releases/download/$_resolved"
-    RESOLVED_CONTRACT=$(tag_to_contract "$_resolved")
-    USE_LEGACY_RAW=0
     return 0
   fi
-  # No overrides and no API base override: probe `releases/latest`
-  # to determine whether the current release publishes archives or
-  # raw binaries. The previous "always legacy raw" default was a
-  # v0.2.x-era assumption that broke for v0.5.0+ releases, which
-  # publish only archive contracts (`umactually-linux-x64.tar.gz`,
-  # not `umactually-linux-x64`).
-  #
-  # Probe: try fetching `releases/latest/checksums.txt` via the
-  # GitHub redirect (HTTP 302 → the actual latest tag). If the
-  # first basename looks like an archive (`.tar.gz` or `.zip`),
-  # use the archive contract. Otherwise, fall back to legacy raw.
-  _probe_base="https://github.com/${REPO}/releases/latest/download"
-  phase "probing ${_probe_base}/checksums.txt to detect asset contract"
-  _probe_tmp=$(mktemp 2>/dev/null) || {
-    # mktemp failed; treat as a probe failure and fall back to
-    # legacy raw (the original behavior, now safely wrapped in
-    # an error path that the calling test harness can detect).
-    USE_LEGACY_RAW=1
-    return 0
+  _resolved=$(fetch_latest_tag "$LATEST_API") || {
+    log_err "could not resolve latest stable release tag"
+    exit 1
   }
-  if http_get "${_probe_base}/checksums.txt" "$_probe_tmp" 2>/dev/null; then
-    _first=$(head -n 1 "$_probe_tmp" 2>/dev/null || printf '')
-    # Strip trailing CR (Windows-hosted releases end lines with
-    # CRLF; POSIX `head -n 1` returns the bytes including the
-    # CR). Use parameter expansion with `$'\r'` (POSIX) so we
-    # match an actual CR byte, not a literal six-character
-    # string. The earlier implementation had this bug: the case
-    # pattern `"$'\r'"` evaluated to the literal characters
-    # `$`, `'`, `''` and never matched.
-    _first=${_first%$'\r'}
-    # The first line of a real `checksums.txt` is the sha256 sum
-    # (64 hex chars) followed by whitespace and a basename. We
-    # extract just the basename (third-or-greater whitespace-
-    # separated field) and inspect its extension. The previous
-    # 64-character case-pattern was fragile and the asterisk
-    # globbing in `"*"*.tar.gz` was wrong (a literal asterisk
-    # in a case-pattern matches any sequence of chars, not an
-    # optional `*`).
-    #
-    # We use `awk` to extract the basename. The field separator
-    # is the canonical `sha256sum` format: one or more spaces.
-    # The basename is the LAST field (handles paths with spaces
-    # in the filename, which is unusual but allowed).
-    _basename=$(printf '%s' "$_first" | awk '{
-      # Strip the leading 64 hex chars + 1+ whitespace.
-      sub(/^[0-9a-fA-F]{64}[[:space:]]+/, "")
-      # Strip an optional `./` or `dist/` prefix.
-      sub(/^.*\//, "")
-      print
-    }')
-    # Treat empty / non-basename as "no archive contract".
-    case "$_basename" in
-      *.tar.gz|*.zip)
-        # Archive contract: resolve tag from `releases/latest` API
-        # (a tiny follow-up call) so RESOLVED_TAG is set.
-        phase "fetching latest tag from github releases API"
-        _resolved=$(fetch_latest_tag "$LATEST_API" 2>/dev/null || printf '')
-        if [ -n "$_resolved" ]; then
-          RESOLVED_TAG="$_resolved"
-          # Use `releases/download/<tag>/` (NOT `releases/latest/...`),
-          # because the `latest` alias only redirects for the actual
-          # latest, and once we have the resolved tag, pinning to it
-          # is more deterministic (and matches what case 2/5/6 do).
-          RESOLVED_BASE="https://github.com/${REPO}/releases/download/$_resolved"
-          RESOLVED_CONTRACT=archive
-          USE_LEGACY_RAW=0
-        else
-          # Tag probe failed but asset listing is archive — still
-          # use archive; the tag-resolution step will surface the
-          # real error when it tries to fetch /<tag>/... below.
-          RESOLVED_BASE="$_probe_base"
-          RESOLVED_CONTRACT=archive
-          USE_LEGACY_RAW=0
-        fi
-        ;;
-      *)
-        # First line is either empty (HTTP 200 with no body, or
-        # redirect that turned into an error page) or a sha256
-        # line whose basename is not `.tar.gz` or `.zip`. In
-        # either case, don't trust the probe — fall back to
-        # legacy raw. The user can override with
-        # `--tag vX.Y.Z` if the release is actually archive-only.
-        # This includes the case where GitHub returns an HTML
-        # body (e.g. maintenance page) — `awk` would extract an
-        # empty basename for that, which falls into this arm.
-        USE_LEGACY_RAW=1
-        ;;
-    esac
-  else
-    # Could not reach `releases/latest`. Network down or the
-    # redirect is broken — fall back to legacy raw. If the
-    # release is actually archive-only, the user can re-run with
-    # `--tag vX.Y.Z` to bypass this fall-through.
-    USE_LEGACY_RAW=1
-  fi
-  rm -f "$_probe_tmp" 2>/dev/null || true
+  RESOLVED_TAG=$_resolved
+  RESOLVED_BASE="https://github.com/${REPO}/releases/download/$_resolved"
   return 0
 }
 
@@ -1260,7 +1046,6 @@ fi
 # Supported flags:
 #   --tag <vX.Y.Z>          INSTALL_RELEASE_TAG
 #   --base <url>            INSTALL_RELEASE_BASE
-#   --contract <a|legacy>   INSTALL_ASSET_CONTRACT (archive or legacy)
 #   --install-dir <path>    INSTALL_DIR
 #   -h | --help             Print usage and exit 0
 #   -V | --version          Print version and exit 0
@@ -1297,21 +1082,6 @@ parse_args() {
         fi
         shift 1
         ;;
-      --contract)
-        [ $# -ge 2 ] || { log_err "--contract requires an argument"; exit 2; }
-        if [ -z "${INSTALL_ASSET_CONTRACT:-}" ]; then
-          INSTALL_ASSET_CONTRACT="$2"
-          export INSTALL_ASSET_CONTRACT
-        fi
-        shift 2
-        ;;
-      --contract=*)
-        if [ -z "${INSTALL_ASSET_CONTRACT:-}" ]; then
-          INSTALL_ASSET_CONTRACT="${1#--contract=}"
-          export INSTALL_ASSET_CONTRACT
-        fi
-        shift 1
-        ;;
       --install-dir)
         [ $# -ge 2 ] || { log_err "--install-dir requires an argument"; exit 2; }
         if [ -z "${INSTALL_DIR_OVERRIDE:-}" ]; then
@@ -1343,7 +1113,7 @@ parse_args() {
         # npm package is not yet published as of v0.6.0; the
         # smart-router would 404 on every fresh install. See
         # INSTALL_TRY_NPM in the header doc. Honor the same
-        # env-var-wins pattern as --tag/--base/--contract/--install-dir
+        # env-var-wins pattern as --tag/--base/--install-dir
         # above so a pre-set INSTALL_TRY_NPM in the caller's env
         # is not silently clobbered by the flag (the env is the
         # deployment default, the flag is the per-call override).
@@ -1364,7 +1134,6 @@ Usage:
 Flags (also accepted as env vars):
   --tag <vX.Y.Z>          Pin to a specific release tag.
   --base <url>            Use a custom asset directory URL.
-  --contract <a|legacy>   Force archive or legacy raw contract.
   --install-dir <path>    Override install destination.
   --ssl-no-revoke         Skip TLS certificate revocation checks (curl only).
                           Use only if your curl is built against Windows
@@ -1379,13 +1148,11 @@ Flags (also accepted as env vars):
                           install.ps1 `-TryNpm` flag.
 
 Env vars (override flags):
-  INSTALL_RELEASE_TAG, INSTALL_RELEASE_BASE, INSTALL_ASSET_CONTRACT,
-  INSTALL_DIR_OVERRIDE, INSTALL_SSL_NO_REVOKE, INSTALL_TRY_NPM
+  INSTALL_RELEASE_TAG, INSTALL_RELEASE_BASE, INSTALL_DIR_OVERRIDE,
+  INSTALL_SSL_NO_REVOKE, INSTALL_TRY_NPM
 
-The installer auto-detects the contract from the published
-checksums.txt when no flag/env is supplied: it probes
-`releases/latest/checksums.txt` and picks `archive` if any
-`<archive>.tar.gz|.zip` line is present, otherwise `legacy` raw.
+The installer downloads a release archive and verifies it against the
+published checksums.txt before installation.
 USAGE
         exit 0
         ;;
@@ -1416,14 +1183,14 @@ USAGE
   done
 }
 
-# Translate `--tag` / `--base` / `--contract` / `--install-dir` CLI flags
+# Translate `--tag` / `--base` / `--install-dir` CLI flags
 # into the env-var shape the rest of the script reads. The POSIX
 # `curl | sh -s -- <flags>` form must be a first-class entry point.
 #
 # NOTE: the smart-router-relevant flag (`--try-npm`) is sniffed earlier
 # in the file (right after the smart-router block) so the curl-pipe
 # form `curl .../install.sh | sh -s -- --try-npm` actually opts in
-# on first invocation. The full flag list (--tag, --base, --contract,
+# on first invocation. The full flag list (--tag, --base,
 # --install-dir, --ssl-no-revoke, -h/--help, -V/--version) is owned
 # here and applied at the end of the script. Verified by
 # install-smart-router.test.ts's runShell harness.
@@ -1441,8 +1208,6 @@ EXT=""
 if [ "$PLATFORM" = "windows" ]; then
   EXT=".exe"
 fi
-RAW_BINARY="umactually-${PLATFORM}-${ARCH}${EXT}"
-
 # When Git Bash on Windows is detected, hand off to PowerShell BEFORE the
 # dispatch matrix so we never make a POSIX download on a Windows machine
 # even if the user set overrides.
@@ -1483,10 +1248,9 @@ mkdir -p "$INSTALL_DIR" || {
 phase() { printf 'umactually: %s\n' "$1"; }
 
 phase "resolving latest tag from github API"
-# Run dispatch matrix. Sets RESOLVED_TAG/BASE/CONTRACT/USE_LEGACY_RAW.
 resolve_dispatch
 
-phase "resolved tag ${RESOLVED_TAG:-?} (contract: ${RESOLVED_CONTRACT:-?})"
+phase "resolved tag ${RESOLVED_TAG:-?} (archive contract)"
 
 # Verify install dir is not a symlink (basic reparse-equivalent guard).
 if [ -L "$INSTALL_DIR" ]; then
@@ -1535,79 +1299,6 @@ fi
 # Capture destination identity BEFORE any download (TOCTOU pre-check).
 DEST_PATH="${INSTALL_DIR}/${INSTALLED_NAME}"
 DEST_IDENTITY=$(capture_dest_identity "$DEST_PATH")
-
-# ---- ARCHIVE FLOW ----
-# If contract resolved to legacy raw (e.g. tag is in legacy allowlist), route
-# to the legacy raw path. Archive-capable tags NEVER fall back to raw.
-USE_LEGACY_RAW="${USE_LEGACY_RAW:-0}"
-if [ "$USE_LEGACY_RAW" = "0" ] && [ "${RESOLVED_CONTRACT:-}" = "legacy" ]; then
-  USE_LEGACY_RAW=1
-fi
-
-if [ "$USE_LEGACY_RAW" = "1" ]; then
-  # ---- legacy raw flow ----
-  if [ -z "${RESOLVED_BASE:-}" ]; then
-    RESOLVED_BASE="$URL_BASE"
-  fi
-  RAW_URL="${RESOLVED_BASE}/${RAW_BINARY}"
-  CHECKSUMS_URL="${RESOLVED_BASE}/checksums.txt"
-
-  phase "downloading checksums from $CHECKSUMS_URL (legacy raw)"
-  if ! http_get "$CHECKSUMS_URL" "$TMP_CHECKSUMS"; then
-    log_err "could not download checksums: $CHECKSUMS_URL"
-    exit 1
-  fi
-  normalize_crlf "$TMP_CHECKSUMS" "$TMP_CHECKSUMS_NORM"
-  EXPECTED=$(checksum_legacy_select "$TMP_CHECKSUMS_NORM" "$RAW_BINARY") || {
-    log_err "checksum file missing or malformed entry for $RAW_BINARY"
-    exit 1
-  }
-
-  phase "downloading raw binary from $RAW_URL"
-  if ! http_get "$RAW_URL" "${TMP_DIR}/${RAW_BINARY}"; then
-    log_err "could not download raw binary: $RAW_URL"
-    exit 1
-  fi
-  ACTUAL=$(sha256_file "$SHA_TOOL" "${TMP_DIR}/${RAW_BINARY}")
-  if [ "$ACTUAL" != "$EXPECTED" ]; then
-    log_err "checksum verification failed for ${RAW_BINARY}"
-    exit 1
-  fi
-
-  # Stream into staging file inside INSTALL_DIR (mode 0700).
-  STAGING_DIR="${INSTALL_DIR}/.umactually-stage.$$"
-  mkdir -m 0700 -p "$STAGING_DIR" || {
-    log_err "could not create staging dir: $STAGING_DIR"
-    exit 1
-  }
-  STAGED="${STAGING_DIR}/${INSTALLED_NAME}"
-  cp "${TMP_DIR}/${RAW_BINARY}" "$STAGED" || {
-    log_err "could not stage raw binary"
-    rm -rf "$STAGING_DIR" 2>/dev/null || true
-    exit 1
-  }
-  chmod 0755 "$STAGED"
-
-  # Re-validate destination identity.
-  assert_dest_identity_stable "$DEST_PATH" "$DEST_IDENTITY"
-
-  # Atomic mv (portable --).
-  if [ "$MV_HAS_DASHDASH" = "1" ]; then
-    mv -f -- "$STAGED" "$DEST_PATH"
-  else
-    mv -f "$STAGED" "$DEST_PATH"
-  fi
-  rm -rf "$STAGING_DIR" 2>/dev/null || true
-
-  # Verify the final installed binary is a regular non-link file.
-  if [ -L "$DEST_PATH" ] || [ ! -f "$DEST_PATH" ]; then
-    log_err "post-install verification failed: $DEST_PATH is not a regular file"
-    exit 1
-  fi
-
-  printf '\nInstalled umactually to %s\n\n  %s --version\n' "$DEST_PATH" "$DEST_PATH"
-  exit 0
-fi
 
 # ---- archive flow (tar.gz) ----
 ARCHIVE_URL="${RESOLVED_BASE}/${ARCHIVE_NAME}"
