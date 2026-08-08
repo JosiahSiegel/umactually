@@ -120,7 +120,7 @@ describe("ado dry-run: capability-aware consumption", () => {
     // and throws on null. After Task 8 that throws away, this test passes.
     const { parseCliArgs } = await import("../../src/cli/parse-args.js");
     const a = parseCliArgs([
-      "--platform", "azure-devops",
+      "--platform", "azure",
       "--dry-run",
       "--api-url", "https://example.invalid/v1",
       "--api-key", "sk-test-do-not-leak",
@@ -156,7 +156,7 @@ describe("ado dry-run: capability-aware consumption", () => {
       process.execPath,
       [
         join(REPO_ROOT, "bin/umactually.mjs"),
-        "--platform", "azure-devops",
+        "--platform", "azure",
         "--dry-run",
         "--api-url", "https://example.invalid/v1",
         "--api-key", "sk-test-do-not-leak",

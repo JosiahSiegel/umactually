@@ -1,7 +1,6 @@
 import { describe, expect, it } from "vitest";
 
 import {
-  CLI_HELP_TEXT,
   REVIEW_HELP,
   DOCTOR_HELP,
   CHECK_REVIEW_ARTIFACT_HELP,
@@ -11,13 +10,15 @@ import {
   type HelpCommand,
 } from "../../src/cli/help.js";
 
+const topLevelHelp = resolveHelpText(["--help"]);
+
 describe("CLI help text", () => {
   it("mentions --prompt-files so operators discover the new array override", () => {
-    expect(CLI_HELP_TEXT).toContain("--prompt-files");
+    expect(topLevelHelp).toContain("--prompt-files");
   });
 
   it("mentions --additional-prompt-files so operators discover the new array override", () => {
-    expect(CLI_HELP_TEXT).toContain("--additional-prompt-files");
+    expect(topLevelHelp).toContain("--additional-prompt-files");
   });
 
   it("documents that --prompt-files / --additional-prompt-files OVERRIDE the default lookup list", () => {
@@ -26,15 +27,15 @@ describe("CLI help text", () => {
     // behavior. If a future edit drops the override-language, the
     // operator can no longer discover the auto-lookup behavior from
     // --help output alone.
-    expect(CLI_HELP_TEXT).toMatch(/--prompt-files[^]*overrides defaults/u);
-    expect(CLI_HELP_TEXT).toMatch(/--additional-prompt-files[^]*overrides defaults/u);
+    expect(topLevelHelp).toMatch(/--prompt-files[^]*overrides defaults/u);
+    expect(topLevelHelp).toMatch(/--additional-prompt-files[^]*overrides defaults/u);
   });
 
   it("mentions the existing --prompt-file and --additional-prompt-file (back-compat surface)", () => {
     // Regression: if the legacy single-file flags drop off the help
     // text, operators who scripted against them lose discoverability.
-    expect(CLI_HELP_TEXT).toContain("--prompt-file <path>");
-    expect(CLI_HELP_TEXT).toContain("--additional-prompt-file <path>");
+    expect(topLevelHelp).toContain("--prompt-file <path>");
+    expect(topLevelHelp).toContain("--additional-prompt-file <path>");
   });
 
   it("contains a Modes: banner so operators can see the three invocation modes at a glance", () => {
@@ -47,10 +48,10 @@ describe("CLI help text", () => {
     // header was redundant with the body. This test pins the four
     // anchors so a future edit that drops one of them regresses the
     // S4 surface rather than passing silently.
-    expect(CLI_HELP_TEXT).toContain("Standalone mode:");
-    expect(CLI_HELP_TEXT).toContain("Live CI mode:");
-    expect(CLI_HELP_TEXT).toContain("Pre-rendered diff:");
-    expect(CLI_HELP_TEXT).toContain("Local files:");
+    expect(topLevelHelp).toContain("Standalone mode:");
+    expect(topLevelHelp).toContain("Live CI mode:");
+    expect(topLevelHelp).toContain("Pre-rendered diff:");
+    expect(topLevelHelp).toContain("Local files:");
   });
 
   it("shows the Standalone-mode copy-paste example", () => {
@@ -67,14 +68,14 @@ describe("CLI help text", () => {
     // they may not have set. The README documents the placeholder
     // pattern (see "Saved config" / "Configuration sources" sections)
     // so the placeholder is not a step backward in discoverability.
-    expect(CLI_HELP_TEXT).toContain("--api-url <url> --api-key <key>");
+    expect(topLevelHelp).toContain("--api-url <url> --api-key <key>");
   });
 
   it("shows the live-CI copy-paste example without explicit plumbing", () => {
     // Live CI derives event, diff, review, and PR context from the runner.
-    expect(CLI_HELP_TEXT).toContain("Live CI mode");
-    expect(CLI_HELP_TEXT).toContain("umactually --platform github");
-    expect(CLI_HELP_TEXT).not.toContain('--platform github --event "$GITHUB_EVENT_PATH"');
+    expect(topLevelHelp).toContain("Live CI mode");
+    expect(topLevelHelp).toContain("umactually --platform github");
+    expect(topLevelHelp).not.toContain('--platform github --event "$GITHUB_EVENT_PATH"');
   });
 
   it("does not advertise the misleading 'optional in dry-run' annotation", () => {
@@ -83,7 +84,7 @@ describe("CLI help text", () => {
     // those flags do not apply at all. That misleading wording has
     // been removed from the help text; this test pins the removal
     // so a future refactor can't accidentally re-introduce it.
-    expect(CLI_HELP_TEXT).not.toContain("optional in dry-run");
+    expect(topLevelHelp).not.toContain("optional in dry-run");
   });
 
   it("grew to include the modes banner block (sanity check on total length)", () => {
@@ -91,7 +92,7 @@ describe("CLI help text", () => {
     // outside-git-repo examples; help text grew from ~88 lines to
     // ~98. A floor of 1500 chars catches accidental banner
     // truncation without depending on a specific line count.
-    expect(CLI_HELP_TEXT.length).toBeGreaterThanOrEqual(1500);
+    expect(topLevelHelp.length).toBeGreaterThanOrEqual(1500);
   });
 
   it("cross-links docs/exit-codes.md so operators find the exit-code reference from --help", () => {
@@ -102,7 +103,7 @@ describe("CLI help text", () => {
     // the reference from --help alone and must guess or grep. This
     // test pins the cross-link so the T5 work (adding it to
     // src/cli/help.ts) is verified from the --help surface.
-    expect(CLI_HELP_TEXT).toContain("docs/exit-codes.md");
+    expect(topLevelHelp).toContain("docs/exit-codes.md");
   });
 
   // HELP-CFG-* — v0.6.26 saved-config resolution-order lines. These
@@ -117,14 +118,10 @@ describe("CLI help text", () => {
   // with no discoverable explanation" failure mode every CLI changelog
   // tries to avoid.
   it("HELP-CFG-1: top-level help documents the four-layer configuration resolution order", () => {
-    expect(CLI_HELP_TEXT).toContain("Configuration sources (highest priority first)");
-    // The lines are word-wrapped at 65 chars (`UMACTUALLY_*/REVIEW_*`
-    // appears at the end of one line, `env vars > saved config` at
-    // the start of the next), so the cross-line space is a newline +
-    // optional indent. Match across the newline explicitly.
-    expect(CLI_HELP_TEXT).toMatch(/--flags > UMACTUALLY_\*\/?REVIEW_\*[\s\S]*?env vars > saved config/);
-    expect(CLI_HELP_TEXT).toContain("~/.umactually/config.json");
-    expect(CLI_HELP_TEXT).toContain("> defaults");
+    expect(topLevelHelp).toContain("Configuration sources (highest priority first)");
+    expect(topLevelHelp).toMatch(/--flags > UMACTUALLY_\*\/?REVIEW_\*[\s\S]*?env vars > saved config/);
+    expect(topLevelHelp).toContain("~/.umactually/config.json");
+    expect(topLevelHelp).toContain("> defaults");
   });
 
   it("HELP-CFG-2: top-level help calls out --api-key is NEVER persisted (S6 contract)", () => {
@@ -134,12 +131,12 @@ describe("CLI help text", () => {
     // boundary ("but not for the key"). Without this line, the four-
     // layer chain above could be misread as "saved config contains
     // everything, just run it."
-    expect(CLI_HELP_TEXT).toMatch(/--api-key is[\s\S]*?NEVER persisted/);
-    expect(CLI_HELP_TEXT).toMatch(/UMACTUALLY_API_KEY=<key>/);
+    expect(topLevelHelp).toMatch(/--api-key is[\s\S]*?NEVER persisted/);
+    expect(topLevelHelp).toMatch(/UMACTUALLY_API_KEY=<key>/);
   });
 
   it("HELP-CFG-3: top-level help mentions --show-config as the inspection command", () => {
-    expect(CLI_HELP_TEXT).toContain("umactually --show-config");
+    expect(topLevelHelp).toContain("umactually --show-config");
   });
 });
 
@@ -156,21 +153,18 @@ describe("Contextual help (per-command)", () => {
   // REV_HELP-CFG-* — REVIEW_HELP mirrors the same saved-config
   // resolution-order lines so `umactually review --help` is also
   // self-documenting. These cases pin REVIEW_HELP coverage even though
-  // the block text is identical to CLI_HELP_TEXT — the duplication is
+  // the block text is identical to top-level help — the duplication is
   // the contract: each context (`umactually --help` and
   // `umactually review --help`) must surface the resolution order
   // independently so operators don't need to read both pages.
   it("REV_HELP-CFG-1: review --help documents the four-layer configuration resolution order", () => {
     expect(REVIEW_HELP).toContain("Configuration sources (highest priority first)");
-    // Same cross-line word-wrap as HELP-CFG-1: the `UMACTUALLY_*/
-    // REVIEW_*` fragment and the next `env vars > saved config` line
-    // are separated by a newline, not a space.
     expect(REVIEW_HELP).toMatch(/--flags > UMACTUALLY_\*\/?REVIEW_\*[\s\S]*?env vars > saved config/);
     expect(REVIEW_HELP).toContain("~/.umactually/config.json");
   });
 
   it("REV_HELP-CFG-2: review --help calls out --api-key is NEVER persisted and routes via UMACTUALLY_API_KEY", () => {
-    // The resolution-order block exists in both CLI_HELP_TEXT and
+    // The resolution-order block exists in both top-level and
     // REVIEW_HELP_TEXT, but the API-key callout is the load-bearing
     // security disclosure: an operator running `umactually review
     // --help` to debug "where does my key go?" must find the S6
@@ -216,19 +210,19 @@ describe("Contextual help (per-command)", () => {
   });
 
   it("resolveHelpText returns top-level help for bare ['--help']", () => {
-    expect(resolveHelpText(["--help"])).toBe(CLI_HELP_TEXT);
+    expect(resolveHelpText(["--help"])).toBe(topLevelHelp);
   });
 
   it("resolveHelpText returns top-level help when no command precedes --help", () => {
-    expect(resolveHelpText(["--no-color", "--help"])).toBe(CLI_HELP_TEXT);
+    expect(resolveHelpText(["--no-color", "--help"])).toBe(topLevelHelp);
   });
 
-  it("top-level CLI_HELP_TEXT includes Commands banner with all subcommands", () => {
-    expect(CLI_HELP_TEXT).toContain("Commands:");
-    expect(CLI_HELP_TEXT).toContain("review");
-    expect(CLI_HELP_TEXT).toContain("doctor");
-    expect(CLI_HELP_TEXT).toContain("check-review-artifact");
-    expect(CLI_HELP_TEXT).toContain("version");
+  it("top-level help includes Commands banner with all subcommands", () => {
+    expect(topLevelHelp).toContain("Commands:");
+    expect(topLevelHelp).toContain("review");
+    expect(topLevelHelp).toContain("doctor");
+    expect(topLevelHelp).toContain("check-review-artifact");
+    expect(topLevelHelp).toContain("version");
   });
 });
 
@@ -265,8 +259,8 @@ describe("Help text structural invariants (catches spread-of-string regressions)
     expect(pathLine).toContain("check-review-artifact <path>");
   });
 
-  it("top-level CLI_HELP_TEXT keeps the --api-url flag on its own line", () => {
-    const lines = CLI_HELP_TEXT.split("\n");
+  it("top-level help keeps the --api-url flag on its own line", () => {
+    const lines = topLevelHelp.split("\n");
     const apiUrlLine = lines.find((line) => line.includes("--api-url"));
     expect(apiUrlLine).toBeDefined();
     expect(apiUrlLine).toMatch(/--api-url\s+<url>/u);
@@ -296,16 +290,16 @@ describe("init help wiring (RED — Task T13)", () => {
     expect(INIT_HELP).not.toBe(REVIEW_HELP);
   });
 
-  it("HELP-D-4: CLI_HELP_TEXT mentions `init` in the Commands banner", () => {
+  it("HELP-D-4: topLevelHelp mentions `init` in the Commands banner", () => {
     // Given: a top-level `--help` invocation. The Commands banner
     // (rendered from TOP_LEVEL_COMMANDS at help.ts:134-142) MUST list
     // `init` so a brand-new operator discovers the guided-setup
     // quickstart from `umactually --help` alone.
-    expect(CLI_HELP_TEXT).toContain("Commands:");
-    expect(CLI_HELP_TEXT).toMatch(/^\s*init\b/im);
+    expect(topLevelHelp).toContain("Commands:");
+    expect(topLevelHelp).toMatch(/^\s*init\b/im);
   });
 
-  it("HELP-H-5: the `init` line in CLI_HELP_TEXT appears BEFORE the `uninstall` line (ordering invariant)", () => {
+  it("HELP-H-5: the `init` line in topLevelHelp appears BEFORE the `uninstall` line (ordering invariant)", () => {
     // Given: the plan mandates a specific Commands banner order —
     // `init` is the recommended quickstart, `uninstall` is the
     // destructive last-resort, so `init` MUST be listed first. A
@@ -313,8 +307,8 @@ describe("init help wiring (RED — Task T13)", () => {
     // bury init under review/doctor and bury uninstall beneath
     // everything else — this test pins the recommended-before-destructive
     // ordering as a load-bearing discoverability invariant.
-    const initIndex = CLI_HELP_TEXT.search(/^\s*init\b/im);
-    const uninstallIndex = CLI_HELP_TEXT.search(/^\s*uninstall\b/im);
+    const initIndex = topLevelHelp.search(/^\s*init\b/im);
+    const uninstallIndex = topLevelHelp.search(/^\s*uninstall\b/im);
     expect(initIndex).toBeGreaterThan(-1);
     expect(uninstallIndex).toBeGreaterThan(-1);
     expect(initIndex).toBeLessThan(uninstallIndex);
@@ -474,93 +468,35 @@ describe("renderCommandsTable", () => {
   });
 });
 
-// ────────────────────────────────────────────────────────────────────────
-// resolveHelpText + printHelp — coverage closure for the help module.
-//
-// `resolveHelpText` has two branches that the existing tests in this
-// file don't reach: (1) the no-help-flag short-circuit that returns
-// the top-level help directly, and (2) the "unknown positional before
-// --help" fallback that also returns top-level help. `printHelp` is
-// the legacy entry point (kept for the bare-invocation dispatch path)
-// and has zero coverage without these tests.
-//
-// These cases are appended here (instead of a new file) so the
-// coverage-closure intent stays co-located with the rest of the
-// help-module tests.
-// ────────────────────────────────────────────────────────────────────────
-
 describe("resolveHelpText (coverage closure)", () => {
-  it("no-help short-circuit: returns CLI_HELP_TEXT when argv contains neither --help nor -h", () => {
+  it("no-help short-circuit: returns topLevelHelp when argv contains neither --help nor -h", () => {
     // Given: argv with no help flag. resolveHelpText must not even
     // enter the for-loop scan; it returns the top-level help
     // immediately. This is the call shape bare-invocation dispatch
     // uses when the operator did NOT pass --help.
-    expect(resolveHelpText(["review"])).toBe(CLI_HELP_TEXT);
-    expect(resolveHelpText([])).toBe(CLI_HELP_TEXT);
+    expect(resolveHelpText(["review"])).toBe(topLevelHelp);
+    expect(resolveHelpText([])).toBe(topLevelHelp);
   });
 
-  it("unknown-positional fallback: returns CLI_HELP_TEXT when the token before --help is not a recognized subcommand", () => {
+  it("unknown-positional fallback: returns topLevelHelp when the token before --help is not a recognized subcommand", () => {
     // Given: an unknown subcommand name precedes --help. The for-loop
     // hits the unrecognized branch and breaks out, then resolveHelpText
     // returns the top-level help. Operators who fat-finger a subcommand
     // get the same help surface as a bare --help invocation — a
     // discoverability contract.
-    expect(resolveHelpText(["unknown-cmd", "--help"])).toBe(CLI_HELP_TEXT);
-    expect(resolveHelpText(["nope", "-h"])).toBe(CLI_HELP_TEXT);
+    expect(resolveHelpText(["unknown-cmd", "--help"])).toBe(topLevelHelp);
+    expect(resolveHelpText(["nope", "-h"])).toBe(topLevelHelp);
   });
 });
 
-describe("printHelp (legacy entry point)", () => {
-  let originalStdoutWrite: typeof process.stdout.write;
-  let stdoutBuf = "";
+describe("help module exports", () => {
+  it("does not expose removed compatibility help symbols", async () => {
+    // Given / When: the contextual help module is loaded.
+    const helpModule = await import("../../src/cli/help.js");
 
-  beforeEach(() => {
-    originalStdoutWrite = process.stdout.write.bind(process.stdout);
-    stdoutBuf = "";
-    process.stdout.write = ((c: string | Uint8Array): boolean => {
-      stdoutBuf += typeof c === "string" ? c : Buffer.from(c).toString("utf8");
-      return true;
-    }) as typeof process.stdout.write;
-  });
-
-  afterEach(() => {
-    process.stdout.write = originalStdoutWrite;
-    stdoutBuf = "";
-  });
-
-  it("default-arg path: writes CLI_HELP_TEXT to stdout and returns it", async () => {
-    // Given: printHelp is called with no commands argument. It must
-    // use the bare CLI_HELP_TEXT (no Commands banner appended) and
-    // write that to process.stdout. This is the legacy fallback path
-    // kept for direct callers that don't go through dispatch.
-    const { printHelp } = await import("../../src/cli/help.js");
-
-    // When: printHelp runs with no argument.
-    const returned = printHelp();
-
-    // Then: stdout got exactly CLI_HELP_TEXT, and the return value
-    // matches so callers can chain (e.g. log the same string the
-    // user saw).
-    expect(stdoutBuf).toBe(CLI_HELP_TEXT);
-    expect(returned).toBe(CLI_HELP_TEXT);
-  });
-
-  it("legacy commands argument: appends a 'Commands:' banner to CLI_HELP_TEXT", async () => {
-    // Given: printHelp is called with an explicit commands list. The
-    // legacy path appends a Commands banner (the "  <command>" lines
-    // rendered by renderCommands) after the top-level help, separated
-    // by a blank line. This is the path bare-invocation dispatch
-    // uses when it needs a custom Commands banner that differs from
-    // TOP_LEVEL_COMMANDS.
-    const { printHelp } = await import("../../src/cli/help.js");
-
-    // When: printHelp runs with a non-empty commands list.
-    const returned = printHelp(["my-command", "another-command"]);
-
-    // Then: stdout got CLI_HELP_TEXT + "\n\n" + "Commands:\n  my-command\n  another-command\n"
-    // and the return value matches.
-    const expected = `${CLI_HELP_TEXT}\n\nCommands:\n  my-command\n  another-command\n`;
-    expect(stdoutBuf).toBe(expected);
-    expect(returned).toBe(expected);
+    // Then: only contextual entry points remain public.
+    expect("CLI_HELP_TEXT" in helpModule).toBe(false);
+    expect("printHelp" in helpModule).toBe(false);
+    expect(typeof helpModule.printContextualHelp).toBe("function");
   });
 });

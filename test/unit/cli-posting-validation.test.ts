@@ -74,7 +74,7 @@ const GH_POSTING_ARGS = [
 ] as const;
 
 const AZURE_POSTING_ARGS = [
-  "--platform", "azure-devops",
+  "--platform", "azure",
   "--api-url", "https://api.minimax.io/v1",
   "--api-key", "sk-test-do-not-leak",
 ] as const;
@@ -202,7 +202,7 @@ describe("validation: posting-capability matrix", () => {
     // Operator supplies event + diff + pr-number + repo but NO --review.
     // They did NOT request posting. The posting validator must not flag.
     const a = parseCliArgs([
-      "--platform", "azure-devops",
+      "--platform", "azure",
       "--api-url", "https://api.minimax.io/v1",
       "--api-key", "sk-test-do-not-leak",
       "--event", "/tmp/evt.json",

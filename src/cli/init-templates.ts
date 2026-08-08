@@ -65,7 +65,7 @@ steps:
   # Pin the npm version for reproducibility (never track \`latest\`).
   - script: npm install -g umactually@__UMACTUALLY_VERSION__
     displayName: Install umactually
-  - script: umactually review --platform azure-devops
+  - script: umactually review --platform azure
     displayName: Run umactually PR review
     env:
       SYSTEM_ACCESSTOKEN: $(System.AccessToken)

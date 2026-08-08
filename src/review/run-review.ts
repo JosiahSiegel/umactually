@@ -19,9 +19,6 @@ export type PostedGithubReview = {
   readonly suppressedCommentCount: number;
 };
 
-// Re-exported for backward compatibility; canonical source is src/util/marker.ts.
-export { REVIEW_MARKER };
-
 type ProviderComment = {
   readonly path: string;
   readonly line: number;

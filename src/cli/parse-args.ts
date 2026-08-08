@@ -3,13 +3,6 @@ import { didYouMean, parseStrictInt, readEnum } from "../util/cli-args.js";
 import type { Severity } from "../config/types.js";
 import { parseSeverityFromUnknown } from "../config/parsers.js";
 
-/**
- * CLI-side normalized platform union. The CLI parser accepts `"azure-devops"`
- * as an input alias for `"azure"`, then normalizes it before returning
- * `ParsedCliArgs`, so this type intentionally exposes only the canonical
- * downstream variants. Distinct from `Platform` in `src/config/types.ts`
- * (which is the config-side canonical set).
- */
 export type CliPlatform = "auto" | "github" | "azure";
 export type CliMinimumSeverity = "low" | "medium" | "high";
 export type CliEffort = "low" | "medium" | "high";
@@ -572,11 +565,6 @@ function readMinimumSeverity(args: readonly string[], index: number): CliMinimum
 }
 
 function readPlatform(value: string): CliPlatform {
-  // Accept "azure-devops" as a CLI-only alias for "azure" so callers
-  // familiar with the older name keep working.
-  if (value === "azure-devops") {
-    return "azure";
-  }
   return readEnum<CliPlatform>("--platform", value, FIELDS.platform.enumValues as readonly CliPlatform[], CliUsageError);
 }
 

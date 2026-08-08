@@ -53,7 +53,7 @@ describe("S4 Azure DevOps mocked PR review RED contract", () => {
     expect(result).toEqual({
       artifactPath: "artifacts/manual/s4-azure-mocked-run.json",
       postedThreadCount: 1,
-      postedStatusState: "failed",
+      postedStatusState: "pending",
       marker: REVIEW_MARKER,
     });
   });

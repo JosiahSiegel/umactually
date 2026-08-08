@@ -10,20 +10,6 @@ import type { FetchImpl } from "../util/http.js";
 import { isPositiveSafeInteger, isRecord, isSafeInteger } from "../util/json-guards.js";
 import { renderSummary, type ReviewData as LayoutReviewData } from "../render/summary-layouts.js";
 import { countBySeverity } from "../util/severity.js";
-
-/**
- * @deprecated Re-export preserved for one release cycle so callers that
- * import `countBySeverity` from `cli/live-shared.js` continue to work.
- * Import directly from `src/util/severity.js` instead.
- *
- * The original JSDoc explicitly warned: "Do not remove without updating
- * all callers." Since the symbol has been part of this module's surface
- * (and is referenced from tests and any downstream that pulls from
- * `dist/cli.js`), removing it outright would silently break those
- * consumers. The deprecation lets type-aware consumers see the warning
- * at compile time; the alias keeps runtime behavior stable.
- */
-export const countBySeverityFromLiveShared = countBySeverity;
 import { mapVerdictToAzureStatus, mapVerdictToGithubEvent, composeEffectiveVerdict } from "../util/verdict.js";
 import { shouldKeepFinding } from "../config/severity.js";
 import type { Severity } from "../config/types.js";
@@ -907,13 +893,10 @@ export const mapReviewVerdictToGithubEvent: (verdict: string) => "COMMENT" | "RE
  *     `"succeeded"` and reserve `"pending"` for "ran and found things
  *     to look at" (`NEEDS_FIX`) plus the safe-default fallthrough.
  *
- * Delegates to `src/util/verdict.ts` with the `"current"` policy so the
- * legacy S4 RED-contract mapping (NEEDS_FIX → "failed") stays in one
- * place and is selectable per call site.
+ * Delegates to the canonical mapping in `src/util/verdict.ts`.
  */
-export const mapReviewVerdictToAzureStatus: (verdict: string) => "succeeded" | "failed" | "pending" = (
-  verdict: string,
-) => mapVerdictToAzureStatus(verdict, "current");
+export const mapReviewVerdictToAzureStatus: (verdict: string) => "succeeded" | "failed" | "pending" =
+  mapVerdictToAzureStatus;
 
 export function sanitizeForPost(value: string, secrets: readonly string[]): string {
   const sanitized = value

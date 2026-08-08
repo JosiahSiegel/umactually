@@ -60,6 +60,8 @@ describe("CLI bare-invocation", () => {
 
     expect(result!.exitCode).toBe(2);
     expect(stderrBuf).toContain("cli: --api-url is required");
+    expect(stderrBuf).toContain("cli: --api-key is required");
+    expect(stderrBuf).not.toContain("; --api-key is required");
     expect(stderrBuf).toContain("pick a mode:");
     expect(stderrBuf).toContain("Standalone mode");
     expect(stderrBuf).toContain("Live CI mode");

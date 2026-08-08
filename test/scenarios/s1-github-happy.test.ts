@@ -30,6 +30,14 @@ function isRunReview(value: unknown): value is RunReview {
 }
 
 describe("S1 GitHub self-review RED contract", () => {
+  it("does not re-export REVIEW_MARKER from the review runner", async () => {
+    // Given / When: the review runner module is loaded.
+    const reviewModule = await import("../../src/review/run-review.js");
+
+    // Then: callers use the canonical marker module directly.
+    expect("REVIEW_MARKER" in reviewModule).toBe(false);
+  });
+
   it("GH-S1-RED-001 posts a GitHub PR review with inline threads, suppressed comments, and manual artifact", async () => {
     // Given: a synthetic GitHub PR event, full PR diff, and provider review payload.
     const eventJson = await readFile(new URL("../fixtures/github/pull-request-event.json", import.meta.url), "utf8");

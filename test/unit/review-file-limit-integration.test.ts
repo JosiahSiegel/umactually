@@ -189,7 +189,7 @@ describe("review-file-limit gates the chunked review path (TEST-LIMIT-1..4)", ()
       UMACTUALLY_API_KEY: "sk-test-key",
     }, async () => {
       const parsed = parseCliArgs([
-        "--platform", "azure-devops",
+        "--platform", "azure",
         "--api-url", "https://provider.example/v1",
         "--api-key", "sk-test-key",
         "--pr-number", "42",
@@ -230,7 +230,7 @@ describe("review-file-limit gates the chunked review path (TEST-LIMIT-1..4)", ()
       UMACTUALLY_API_KEY: "sk-test-key",
     }, async () => {
       const parsed = parseCliArgs([
-        "--platform", "azure-devops",
+        "--platform", "azure",
         "--api-url", "https://provider.example/v1",
         "--api-key", "sk-test-key",
         "--pr-number", "42",
