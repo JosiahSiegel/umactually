@@ -113,7 +113,7 @@ function makeBase(args: Args) {
     repo: "smoke/test",
     apiUrl: args.apiUrl,
     apiKey: args.apiKey,
-    model: null,
+    model: "dispatch-test-model",
     promptFile: null,
     additionalPromptFile: null,
     prompt: null,

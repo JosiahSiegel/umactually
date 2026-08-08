@@ -38,6 +38,11 @@ import {
 } from "./live-shared.js";
 import type { ParsedCliArgs } from "./parse-args.js";
 import { buildParseWarningsArtifact } from "./parse-warnings.js";
+import {
+  discoverAutoModel,
+  type ModelDiscoveryError,
+  type ModelDiscoveryInput,
+} from "./auto-model.js";
 import { buildProviderPrompts, REVIEW_PAYLOAD_JSON_SCHEMA } from "./provider-prompts.js";
 import { applyVerifiedFactsFilter, verifyFindingsAgainstDiff } from "./verify-findings.js";
 import { applyConfidenceFilter } from "../review/filter-confidence.js";
@@ -73,6 +78,7 @@ export async function requestLiveReview(input: {
   readonly diffText: string;
   readonly platformToken: string;
   readonly sonarContext?: string;
+  readonly signal?: AbortSignal;
 }): Promise<LiveProviderOutcome> {
   await scanReviewSecrets({
     diffText: input.diffText,
@@ -82,7 +88,16 @@ export async function requestLiveReview(input: {
     resolveField(input.parsed.apiKey, input.env[ENV_KEYS.UMACTUALLY_API_KEY], ""),
     ENV_KEYS.UMACTUALLY_API_KEY,
   );
-  const modelId = readConfiguredModel(input.parsed);
+  const providerUrl = resolveProviderUrl(input.parsed, input.env);
+  const modelId = await resolveRequestModel({
+    configuredModel: input.parsed.model,
+    provider: input.parsed.provider ?? "openai-compatible",
+    apiUrl: providerUrl,
+    apiKey: providerApiKey,
+    fetchImpl: input.fetchImpl,
+    ...(input.signal === undefined ? {} : { signal: input.signal }),
+    timeoutMs: readRequestTimeoutMs(input.parsed),
+  });
   const prompts = await buildProviderPrompts(input);
 
   // Install an ambient severity-warning sink for the duration of this
@@ -252,11 +267,7 @@ export async function requestLiveReview(input: {
       // Messages API" block, and `validate.ts`/`orchestrator.ts`
       // which both exempt --api-url from the required check when
       // --provider anthropic is set.
-      const providerUrl = resolveField(
-        input.parsed.apiUrl,
-        input.env[ENV_KEYS.UMACTUALLY_API_URL],
-        DEFAULT_ANTHROPIC_URL,
-      );
+      const anthropicUrl = providerUrl ?? DEFAULT_ANTHROPIC_URL;
       let result = await runAnthropicRequest(
         buildProviderRequestConfig({
           protocol: "anthropic",
@@ -267,7 +278,7 @@ export async function requestLiveReview(input: {
           fetchImpl: input.fetchImpl,
           responseFormat,
           providerApiKey,
-          baseUrl: providerUrl,
+          baseUrl: anthropicUrl,
         }),
       );
       if (!result.ok) {
@@ -278,7 +289,7 @@ export async function requestLiveReview(input: {
           namedProvider: "anthropic",
           namedResult: result,
           fallbackProvider: "openai-compatible",
-          baseUrl: providerUrl,
+          baseUrl: anthropicUrl,
           providerApiKey,
           modelId,
           prompts,
@@ -299,10 +310,7 @@ export async function requestLiveReview(input: {
       );
     }
 
-    const providerUrl = requireLiveConfig(
-      resolveField(input.parsed.apiUrl, input.env[ENV_KEYS.UMACTUALLY_API_URL], ""),
-      ENV_KEYS.UMACTUALLY_API_URL,
-    );
+    const openaiUrl = requireLiveConfig(providerUrl ?? "", ENV_KEYS.UMACTUALLY_API_URL);
 
     // Path-prefix heuristic: if the operator's URL looks like an
     // Anthropic-protocol gateway (any path segment equal to
@@ -323,7 +331,7 @@ export async function requestLiveReview(input: {
     // Emit a ::notice:: even when --provider=anthropic so operators see
     // the dispatcher considered and committed to the right protocol —
     // invisible-to-the-eye but logged for audit.
-    const useAnthropicProtocol = looksLikeAnthropicEndpoint(providerUrl);
+    const useAnthropicProtocol = looksLikeAnthropicEndpoint(openaiUrl);
     if (useAnthropicProtocol) {
       process.stderr.write(
         `::notice::${BRAND_PREFIX}Operator URL contains an /anthropic path segment; using the Anthropic Messages API client (regardless of --provider).\n`,
@@ -342,7 +350,7 @@ export async function requestLiveReview(input: {
           fetchImpl: input.fetchImpl,
           responseFormat,
           providerApiKey,
-          baseUrl: providerUrl,
+          baseUrl: openaiUrl,
         }),
       );
     } else {
@@ -356,7 +364,7 @@ export async function requestLiveReview(input: {
           fetchImpl: input.fetchImpl,
           responseFormat,
           providerApiKey,
-          baseUrl: providerUrl,
+          baseUrl: openaiUrl,
         }),
       );
     }
@@ -375,7 +383,7 @@ export async function requestLiveReview(input: {
         namedProvider: "openai-compatible",
         namedResult: result,
         fallbackProvider: "anthropic",
-        baseUrl: providerUrl,
+        baseUrl: openaiUrl,
         providerApiKey,
         modelId,
         prompts,
@@ -549,12 +557,61 @@ function normalizeProviderComment(
   };
 }
 
-function readConfiguredModel(parsed: ParsedCliArgs): string {
-  const fromArgs = parsed.model;
-  if (fromArgs !== null && fromArgs.length > 0 && fromArgs !== "auto") {
-    return fromArgs;
+function resolveProviderUrl(parsed: ParsedCliArgs, env: NodeJS.ProcessEnv): string | null {
+  if (parsed.provider === "copilot") return null;
+  const fallback = parsed.provider === "anthropic" ? DEFAULT_ANTHROPIC_URL : "";
+  const resolved = resolveField(parsed.apiUrl, env[ENV_KEYS.UMACTUALLY_API_URL], fallback);
+  return resolved.trim().length === 0 ? null : resolved;
+}
+
+async function resolveRequestModel(input: {
+  readonly configuredModel: string | null;
+  readonly provider: ModelDiscoveryInput["provider"];
+  readonly apiUrl: string | null;
+  readonly apiKey: string;
+  readonly fetchImpl: FetchImpl;
+  readonly signal?: AbortSignal;
+  readonly timeoutMs: number;
+}): Promise<string> {
+  const configured = input.configuredModel?.trim();
+  if (configured !== undefined && configured.length > 0 && configured !== "auto") {
+    return configured;
   }
-  return "auto";
+  const discovery = await discoverAutoModel({
+    provider: input.provider,
+    apiUrl: input.apiUrl,
+    apiKey: input.apiKey,
+    dependencies: {
+      fetchImpl: input.fetchImpl as typeof fetch,
+      timeoutMs: input.timeoutMs,
+      ...(input.signal === undefined ? {} : { signal: input.signal }),
+    },
+  });
+  if (discovery.ok) return discovery.modelId;
+  throw new LiveReviewError(
+    "PROVIDER_ERROR",
+    formatModelDiscoveryFailure(discovery.error),
+    { cause: discovery.error },
+  );
+}
+
+function formatModelDiscoveryFailure(error: ModelDiscoveryError): string {
+  switch (error.kind) {
+    case "empty":
+      return "Provider model discovery returned no usable models. Set an available model explicitly with --model.";
+    case "ambiguous":
+      return `Provider model discovery returned ${error.modelIds.length} models and cannot choose safely. Set one explicitly with --model.`;
+    case "unauthorized":
+      return `Provider model discovery was not authorized (HTTP ${error.status}). Check provider credentials or set a known model explicitly with --model.`;
+    case "malformed":
+      return "Provider model discovery returned an invalid model catalog. Set a known model explicitly with --model.";
+    case "unsupported":
+      return `Automatic model discovery is unsupported for provider ${error.provider}. Set a model explicitly with --model.`;
+    case "aborted":
+      return "Provider model discovery was cancelled or timed out. Retry or set a known model explicitly with --model.";
+    case "network":
+      return "Provider model discovery could not reach the model catalog. Check the provider connection or set a known model explicitly with --model.";
+  }
 }
 
 function readRequestTimeoutMs(parsed: ParsedCliArgs): number {

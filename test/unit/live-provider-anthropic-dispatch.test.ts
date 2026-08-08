@@ -126,7 +126,7 @@ function makeBaseArgs(providerValue: "openai-compatible" | "copilot" | "anthropi
     repo: "foo/bar",
     apiUrl: (providerValue === "anthropic" ? "https://api.anthropic.com/v1" : "https://api.openai.com/v1") as string | null,
     apiKey: "sk-test-synthetic-secret-do-not-leak",
-    model: null,
+    model: "dispatch-test-model",
     promptFile: null,
     additionalPromptFile: null,
     prompt: null,
