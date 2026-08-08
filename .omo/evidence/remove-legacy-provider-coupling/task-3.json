@@ -1,0 +1,69 @@
+{
+  "task": 3,
+  "claim": "prior review-marker recognition and compatibility verifier removed while current marker and manifest contracts remain",
+  "baseline": {
+    "command": "npx vitest run test/unit/reference-behavior.test.ts test/scenarios/s3-reference-regression.test.ts test/unit/marker-literal.test.ts test/unit/brand-literals.test.ts",
+    "result": "4 files passed, 11 tests passed",
+    "note": "An initial pre-edit invocation occurred before worktree dependencies were available and failed with ERR_MODULE_NOT_FOUND; after dependencies appeared, the required baseline passed before edits."
+  },
+  "failingFirst": {
+    "command": "npx vitest run test/unit/reference-behavior.test.ts",
+    "result": "1 file failed; 2 failed, 1 passed",
+    "expectedFailures": [
+      "fixture still contained the prior marker",
+      "src/review/compatibility.ts still existed"
+    ]
+  },
+  "changes": [
+    "removed LEGACY_MARKER and LEGACY_MARKER_SLUG",
+    "deleted src/review/compatibility.ts",
+    "made reference regression verifier require REVIEW_MARKER only",
+    "made existing-review fixture current-marker-only",
+    "updated direct regression tests to current-marker-only behavior"
+  ],
+  "preserved": [
+    "REVIEW_MARKER",
+    "MANIFEST_SCHEMA",
+    "MANIFEST_MARKER_PREFIX",
+    "MANIFEST_MARKER_SUFFIX",
+    "src/render/summary-layouts.ts manifest() implementation and JSON payload shape"
+  ],
+  "verification": {
+    "typecheck": {
+      "command": "npm run typecheck",
+      "result": "passed"
+    },
+    "focusedTests": {
+      "command": "npx vitest run test/unit/reference-behavior.test.ts test/scenarios/s3-reference-regression.test.ts test/unit/marker-literal.test.ts test/unit/brand-literals.test.ts",
+      "result": "4 files passed, 13 tests passed",
+      "repeat": "4 files passed, 13 tests passed"
+    },
+    "manualQa": {
+      "runner": "vite-node temporary script outside worktree",
+      "parsedResult": {
+        "current": true,
+        "priorOnly": false
+      }
+    },
+    "forbiddenTokenSweep": "no matches under src/ or test/ for prior marker literal or removed legacy compatibility symbols",
+    "lspDiagnostics": "The LSP tool rejected absolute paths outside the session cwd; npm typecheck completed cleanly for all changed TypeScript files.",
+    "changedPureLoc": {
+      "src/util/marker.ts": 44,
+      "src/reference/verify-reference-regressions.ts": 45,
+      "test/unit/reference-behavior.test.ts": 32,
+      "test/scenarios/s3-reference-regression.test.ts": 70
+    }
+  },
+  "adversarialClasses": {
+    "untrustedExternalText": "current-marker body parsed true and prior-marker-only body parsed false",
+    "dirty_worktree": "pre-existing unrelated changes in scripts/install.sh, src/config/field-schema.ts, test/unit/env-keys-registry.test.ts, and test/unit/install-cli-args.test.ts were identified and excluded from this task commit",
+    "stale_state": "fixture and runtime detector agree on current-marker-only behavior; focused test GH-S1-002 locks the fixture",
+    "flaky_tests": "required focused suite passed twice consecutively with 13/13 tests",
+    "misleading_success_output": "Vitest test/file counts and manual QA JSON booleans were parsed, not inferred from exit status alone"
+  },
+  "scope": {
+    "changelogUntouched": true,
+    "distUntouched": true,
+    "outOfScopeProductAreasUntouched": true
+  }
+}
