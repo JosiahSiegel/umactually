@@ -1,3 +1,4 @@
+import { isAbortError } from "../provider/provider-error.js";
 import { redactUrlForLog } from "../util/url.js";
 
 export type ModelProvider = "openai-compatible" | "anthropic" | "copilot";
@@ -36,10 +37,6 @@ function modelsUrl(apiUrl: string): string {
 function redactNetworkReason(error: unknown): string {
   if (!(error instanceof Error)) return "model discovery request failed";
   return error.message.replace(/https?:\/\/\S+/gu, (url) => redactUrlForLog(url));
-}
-
-function isAbortError(error: unknown): boolean {
-  return error instanceof Error && error.name === "AbortError";
 }
 
 type ParsedModelIds =

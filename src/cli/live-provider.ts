@@ -573,8 +573,9 @@ async function resolveRequestModel(input: {
   readonly signal?: AbortSignal;
   readonly timeoutMs: number;
 }): Promise<string> {
-  const configured = input.configuredModel?.trim();
-  if (configured !== undefined && configured.length > 0 && configured !== "auto") {
+  const configured = input.configuredModel;
+  const normalized = configured?.trim();
+  if (configured !== null && normalized !== undefined && normalized.length > 0 && normalized !== "auto") {
     return configured;
   }
   const discovery = await discoverAutoModel({

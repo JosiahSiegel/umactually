@@ -144,16 +144,17 @@ async function captureFailure(catalog: StubResponse): Promise<{
 }
 
 describe("requestLiveReview model discovery", () => {
-  it("uses an explicit model without listing models", async () => {
-    // Given: the operator selected a concrete model.
+  it("uses an explicit model unchanged without listing models", async () => {
+    // Given: the operator selected a concrete opaque model ID.
+    const explicitModel = ` ${MODEL_ID} `;
     const stub = makeFetchStub([inferenceResponse()]);
     // When: the live request runs.
-    const outcome = await run(MODEL_ID, stub.fetchImpl);
+    const outcome = await run(explicitModel, stub.fetchImpl);
     // Then: only inference runs with that exact model.
     expect(stub.calls).toHaveLength(1);
     expect(stub.calls[0]?.url).toBe(`${API_URL}/responses`);
-    expect(stub.calls[0]?.body).toMatchObject({ model: MODEL_ID });
-    expect(outcome.modelId).toBe(MODEL_ID);
+    expect(stub.calls[0]?.body).toMatchObject({ model: explicitModel });
+    expect(outcome.modelId).toBe(explicitModel);
   });
 
   it.each([null, "", "auto"])("discovers one model before inference when configured model is %j", async (model) => {

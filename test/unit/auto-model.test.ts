@@ -118,6 +118,18 @@ describe("discoverAutoModel: OpenAI-compatible", () => {
       dependencies: { fetchImpl, timeoutMs: 1_000 },
     })).resolves.toEqual({ ok: true, modelId: "one" });
   });
+
+  it("classifies a request timeout as aborted", async () => {
+    const fetchImpl = vi.fn<typeof fetch>(async () => {
+      throw new DOMException("The operation was aborted due to timeout", "TimeoutError");
+    });
+    await expect(discoverAutoModel({
+      provider: "openai-compatible",
+      apiUrl: OPENAI_URL,
+      apiKey: API_KEY,
+      dependencies: { fetchImpl, timeoutMs: 1 },
+    })).resolves.toEqual({ ok: false, error: { kind: "aborted" } });
+  });
 });
 
 describe("discoverAutoModel: Anthropic", () => {
