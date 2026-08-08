@@ -13,7 +13,7 @@ Latest release: **[v0.7.0](https://github.com/JosiahSiegel/umactually/releases/t
 
 The guided setup wizard walks you through provider, scope, and CI in four steps. After that, every `umactually review` reads your saved choices from `~/.umactually/config.json` (mode `0o600`; never contains secrets). Full per-flag detail at [`docs/configuration.md`](docs/configuration.md) and [`docs/providers.md`](docs/providers.md#setup-wizard).
 
-> **First time?** Run `umactually` with no subcommand on a fresh install and the CLI prints a compact quickstart leading with `umactually init` and summarizing the three review commands (`review`, `--files`, `doctor`). After you run `umactually init`, the quickstart switches: it confirms what's loaded (`Loaded config (provider=X, model=Y). Run:`) and drops the `umactually init` block, because you've already configured. The quickstart replaces the noisy `cli: --api-url is required` banner only for interactive users (TTY + no programmatic flags); every other case (CI, programmatic flags) keeps the existing loud banner so scripts that grep for the validation text keep working. See [Saved config](#saved-config) below.
+> **First time?** Run `umactually` with no subcommand on a fresh install and the CLI prints a compact quickstart leading with `umactually init` and summarizing the three review commands (`review`, `--files`, `doctor`). After you run `umactually init`, the quickstart switches: it confirms what's loaded (`Loaded config (provider=X, model=Y). Run:`) and drops the `umactually init` block, because you've already configured. The quickstart replaces the noisy `cli: --api-url is required` banner only for interactive users (real TTY stdout AND no CI marker — `GITHUB_ACTIONS`, `TF_BUILD`, `BUILDKITE`, `CIRCLECI`, or `JENKINS_URL` — AND no programmatic flag like `--api-*`, `--model`, `--platform*`, `--json`, `--no-color`); every other case (CI, programmatic flags) keeps the existing loud banner so scripts that grep for the validation text keep working. See [Saved config](#saved-config) below.
 
 1. **Run the wizard** — interactive on a TTY, non-interactive in CI:
 
@@ -86,13 +86,14 @@ Pick the path that matches your environment. Full comparison at [`docs/distribut
 ### npm install -g umactually
 
 ```bash
-# Global install (Node 24+ or Bun 1.2+)
+# Global install (Node 24+)
 npm install -g umactually
 
 # One-shot, no install
 npx umactually review …
 
-# Bun users
+# Bun users (Bun runs the npm-installed package; the install.sh smart-router
+# still only checks for Node, so Bun-only machines fall through to the binary)
 bunx umactually review …
 ```
 
@@ -152,7 +153,8 @@ The `#v0.7.0` fragment pins to the tagged release. Omit it only when you specifi
 | Linux x64 / arm64 | npm, binary, or curl-pipe | full support |
 | macOS arm64 (Apple Silicon) | npm, binary, or curl-pipe | full support |
 | macOS x64 (Intel) | **npm only** | `node --build-sea` segfaults on darwin-x64 ([nodejs/node#62893](https://github.com/nodejs/node/issues/62893)); use `npm install -g umactually` |
-| Windows x64 / arm64 | npm, binary, PowerShell, or curl-pipe | full support; Windows ARM64 is ZIP-only and not smoke-tested in CI (structural validation only) |
+| Windows x64 | npm, binary, PowerShell, or curl-pipe | full support; x64 binary is the only runtime-validated Windows target |
+| Windows arm64 | npm only (recommended); binary download via PowerShell / curl-pipe works on Windows 11 22H2+ via x64 emulation | partial support; the published `umactually-windows-arm64.zip` ships for install-contract parity but the underlying binary is an x64 fallback (PE `0x8664`), not a real ARM64 PE. See [`docs/release-process.md` § Windows ARM64](docs/release-process.md#windows-arm64). |
 
 Verify after installation:
 
@@ -200,13 +202,15 @@ In CI the CLI auto-detects the platform from environment variables (`GITHUB_ACTI
 umactually init                      Guided setup wizard (interactive or --non-interactive)
 umactually review                    Run PR review (default)
 umactually doctor                    Check environment is ready
-umactually check-review-artifact     Validate a review artifact
+umactually tui                       Launch the interactive terminal UI (review, config, debug)
 umactually uninstall                 Remove the binary, config, cache, and PATH entry
+umactually check-review-artifact     Validate a review artifact
+umactually version                   Print version (alias for --version)
 umactually --version
 umactually --help
 ```
 
-Every subcommand supports `--json` for machine-readable output. `umactually doctor` and `umactually uninstall` share the same envelope shape so CI can drive both with one parser. See [`docs/exit-codes.md`](docs/exit-codes.md) for the per-action exit-code contract.
+Every subcommand that emits output (`review`, `doctor`, `uninstall`, `check-review-artifact`, `init`) supports `--json` for machine-readable output. `doctor`, `uninstall`, and `check-review-artifact` share the same envelope shape so CI can drive them with one parser. See [`docs/exit-codes.md`](docs/exit-codes.md) for the per-action exit-code contract.
 
 ### How it works
 

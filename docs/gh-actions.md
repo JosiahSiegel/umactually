@@ -4,7 +4,7 @@ Run UmActually as a version-pinned npm CLI in pull request workflows. Copy the c
 
 ## Setup
 
-The canonical workflow uses Node.js 24, pinned via `actions/setup-node@v4`, and invokes the CLI once per pull request. `npx github:owner/repo#tag` resolves to the GitHub tarball at that ref, so the install is reproducible instead of tracking `main`. The `umactually` npm package is not yet published — `npm install -g umactually` will 404 until a future release.
+The canonical workflow uses Node.js 24, pinned via `actions/setup-node@v4`, and invokes the CLI once per pull request. `npx github:owner/repo#tag` resolves to the GitHub tarball at that ref, so the install is reproducible instead of tracking `main`. The `umactually` npm package is published via **Trusted Publishing (OIDC)** by the release workflow; install it with `npm install -g umactually` or pin to a specific tag with `npx umactually@X.Y.Z review`. See [`docs/release-process.md` § npm publication](release-process.md#55-npm-publication-post-github-release) for the publishing mechanism.
 
 Do not use `pull_request_target`. It is not required to comment on a PR and can expose secrets to untrusted PR code.
 

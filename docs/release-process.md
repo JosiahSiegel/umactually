@@ -155,7 +155,7 @@ Wait for the Release workflow to finish:
 gh release view "vX.Y.Z" --json name,assets
 ```
 
-Expected: exactly seven assets (six archives + `checksums.txt`). If the asset list is shorter, or if `assets` is `null`, an earlier job failed; fetch logs via `gh run list --workflow=release`. The fix is on `main` before you re-tag — but you cannot just `git tag vX.Y.Z` again, because both `origin` and `ado` still have the prior tag pointing at the same commit, and a second `git push origin vX.Y.Z` will be rejected with `! [rejected]` (nothing to push). Recover per [§ 8.1](#81-a-bad-tag-was-pushed), which uses `git tag -d` + `git push :refs/tags/<tag>` + re-tag-at-fixed-commit to create a new tag with a new SHA.
+Expected: exactly six assets (five archives + `checksums.txt`). If the asset list is shorter, or if `assets` is `null`, an earlier job failed; fetch logs via `gh run list --workflow=release`. The fix is on `main` before you re-tag — but you cannot just `git tag vX.Y.Z` again, because both `origin` and `ado` still have the prior tag pointing at the same commit, and a second `git push origin vX.Y.Z` will be rejected with `! [rejected]` (nothing to push). Recover per [§ 8.1](#81-a-bad-tag-was-pushed), which uses `git tag -d` + `git push :refs/tags/<tag>` + re-tag-at-fixed-commit to create a new tag with a new SHA.
 
 ### 5.5 npm publication (post GitHub Release)
 
@@ -323,13 +323,12 @@ The CLI prints a fresh `https://www.npmjs.com/auth/cli/<authId>` URL; open it, c
 
 ### Release assets
 
-Every GitHub Release under the `vX.Y.Z` tag ships exactly seven public assets — six archives and one manifest. There are no raw executables, no intermediate build artifacts, and no internal telemetry in the public asset set. The archive contract is the only supported download entry point; the installer one-liners in the README are the canonical way to fetch and verify these assets.
+Every GitHub Release under the `vX.Y.Z` tag ships exactly six public assets — five archives and one manifest. There are no raw executables, no intermediate build artifacts, and no internal telemetry in the public asset set. The archive contract is the only supported download entry point; the installer one-liners in the README are the canonical way to fetch and verify these assets.
 
 | Asset | Format | Source binary | Archive member |
 | --- | --- | --- | --- |
 | `umactually-linux-x64.tar.gz` | gzipped tar | `umactually-linux-x64` | `umactually-linux-x64` |
 | `umactually-linux-arm64.tar.gz` | gzipped tar | `umactually-linux-arm64` | `umactually-linux-arm64` |
-| `umactually-darwin-x64.tar.gz` | gzipped tar | `umactually-darwin-x64` | `umactually-darwin-x64` |
 | `umactually-darwin-arm64.tar.gz` | gzipped tar | `umactually-darwin-arm64` | `umactually-darwin-arm64` |
 | `umactually-windows-x64.zip` | ZIP | `umactually-windows-x64.exe` | `umactually-windows-x64.exe` |
 | `umactually-windows-arm64.zip` | ZIP | `umactually-windows-arm64.exe` | `umactually-windows-arm64.exe` |
@@ -364,23 +363,26 @@ Treat these as two distinct telemetry numbers in any user-facing copy. The READM
 | Cross-platform build + archive | `build-package` | Produces the candidate bundle (`public/<archives>`, `internal/raw/<binaries>`, `internal/release-size-report.json`) under one immutable artifact (`umactually-release-candidate`). |
 | Linux x64 installer smoke | `smoke-linux-x64` | Downloads the candidate by artifact id, verifies transport + inner SHA-256, runs the installer in production mode against a local serve, exercises `--version` / `--help` / `doctor`. |
 | Linux ARM64 installer smoke | `smoke-linux-arm64` | Same contract on `ubuntu-24.04-arm`. |
-| macOS x64 installer smoke | `smoke-darwin-x64` | Same contract on `macos-15-intel`. |
+| macOS x64 installer smoke | _(none — see Note)_ | Darwin-x64 has no native smoke job because Node `--build-sea` segfaults on Intel macOS (see [nodejs/node#62893](https://github.com/nodejs/node/issues/62893)). Intel Mac users get the npm install path: the matrix above covers all five binaries the workflow actually produces, and the README "Platform support" table points Intel Mac users at `npm install -g umactually`. |
 | macOS ARM64 installer smoke | `smoke-darwin-arm64` | Same contract on `macos-15`. |
 | Windows x64 installer smoke | `smoke-windows-x64` | Same contract on `windows-2025`, exercising PowerShell 5.1's `install.ps1`. |
 | Windows x64 Git Bash delegation | `smoke-windows-x64-git-bash-delegate` | Confirms Git Bash invokes PowerShell correctly; this is the path most Windows users actually take. |
-| Windows ARM64 structural validation | `smoke-windows-arm64-structural` | Proves the ZIP archive exists, contains the correct member, and the member is a genuine ARM64 PE binary (`e_machine == 0xAA64`). **Non-runtime validation** — see [Windows ARM64](#windows-arm64) below. |
+| Windows ARM64 structural validation | _(removed in v0.6.4+)_ | See [Windows ARM64](#windows-arm64) below. The build still ships a `umactually-windows-arm64.zip` for parity with the install contract, but the underlying binary is a Linux-built x64 fallback (PE machine type `0x8664`, not `0xAA64`). The job was removed because re-enabling it requires a `windows-11-arm` GitHub-hosted runner and a per-arch job split — see the comment in `.github/workflows/release.yml` for the full rationale. |
 | Checksum-failure preservation | `smoke-bad-checksum` | Seeds a known-good install, presents a deliberately-corrupted `checksums.txt`, and asserts the installer refuses to overwrite the seeded binary and removes any staging residue. |
-| Publish | `publish` | Sole holder of `contents: write`. Downloads the candidate by artifact id, verifies the transport digest, drafts the release with exactly seven explicit basename paths, re-verifies draft asset names + hashes against `checksums.txt`, then runs `gh release edit --draft=false` only if every gate is green. A pre-publish failure deletes the draft. |
+| Publish | `publish` | Sole holder of `contents: write`. Downloads the candidate by artifact id, verifies the transport digest, drafts the release with exactly six explicit basename paths (the five archives + `checksums.txt`), re-verifies draft asset names + hashes against `checksums.txt`, then runs `gh release edit --draft=false` only if every gate is green. A pre-publish failure deletes the draft. |
 
 ### Windows ARM64
 
-There is no public-preview Windows ARM64 GitHub Actions runner, so the `smoke-windows-arm64-structural` job deliberately runs on `windows-2025` (x64) and **does not execute the binary**. It performs three checks instead:
+**Status as of v0.6.4+:** the `smoke-windows-arm64-structural` job was **removed** because the cross-compiled binary the Linux build produces is an x64 fallback (PE machine type `0x8664`), not an ARM64 binary (`0xAA64`). The release still ships a `umactually-windows-arm64.zip` so the installer contract (`umactually-windows-arm64.exe` resolves, SHA-256 verifies, single-member archive) is unbroken, but the underlying executable is x64. On an actual ARM64 Windows host, Windows will refuse to load a non-native PE machine type, so the binary will not run there today.
 
-1. The candidate bundle contains `public/umactually-windows-arm64.zip`.
-2. The ZIP archive expands cleanly to a single member named `umactually-windows-arm64.exe`.
-3. That member's PE header carries `Machine == 0xAA64` (ARM64) — read from the COFF header at `e_lfanew + 4`.
+This means **Windows ARM64 is not a runtime-supported platform today** — the asset ships for parity with the manifest and install contract, but the binary is x64. Windows ARM64 users have two working paths:
 
-The job name and step labels explicitly contain the words `structural` and `non-runtime` so a future reviewer cannot mistake the validation for a runtime smoke. Windows ARM64 users are a supported audience: they install via the README PowerShell one-liner, and the installer downloads / verifies / extracts the ZIP exactly like every other platform. We just cannot prove end-to-end execution inside GitHub Actions today.
+1. `npm install -g umactually` (Node 24+ ARM64 build), or
+2. The PowerShell one-liner (`irm .../install.ps1 | iex`) downloads the x64 binary which Windows-on-ARM can run via the x64 emulation layer (works on Windows 11 22H2+ with the x64 emulation feature enabled).
+
+The README's "Platform support" table reflects this: "Windows ARM64 is ZIP-only" — the ZIP is part of the install contract, but the binary inside is x64.
+
+Re-enabling a real ARM64 build requires a `windows-11-arm` GitHub-hosted runner (added 2024) and a per-arch job split — see the comment in `.github/workflows/release.yml` around line 785.
 
 ### Size budgets
 
@@ -399,16 +401,16 @@ The post-publish canary (§6 below) is a defense-in-depth check: if it ever fail
 
 ## 6. Post-tag behavior
 
-`.github/workflows/release.yml` runs the full pre-publication graph (build, five native smoke gates, Git Bash delegation, Windows ARM64 structural check, checksum-failure preservation) and then publishes. The eleventh and final job — `canary` — runs **only after `publish` succeeds**, queries the published release by exact tag (never `/releases/latest/`), and re-exercises the user-facing install path end-to-end against the live immutable tag URL.
+`.github/workflows/release.yml` runs the full pre-publication graph (build, the six native / installer smoke jobs in the table above, plus the Windows ARM64 structural note — removed in v0.6.4+, see [Windows ARM64](#windows-arm64), and the checksum-failure preservation job) and then publishes. The `publish` job is the sole holder of `contents: write`. The post-publish `canary` job runs **only after `publish` succeeds**, queries the published release by exact tag (never `/releases/latest/`), and re-exercises the user-facing install path end-to-end against the live immutable tag URL.
 
 | Job | What it does | Failure mode to watch |
 | --- | --- | --- |
 | `build-package` | Cross-platform build + archive packaging + checksum + size report. Uploads ONE immutable candidate artifact (`umactually-release-candidate`) with three subtrees: `public/<archives>`, `internal/raw/<binaries>`, `internal/release-size-report.json`. | If this fails, no smoke gates run. Fix is on `main` and the release PR picks it up. |
-| Six native / installer smoke jobs (`smoke-linux-x64`, `smoke-linux-arm64`, `smoke-darwin-x64`, `smoke-darwin-arm64`, `smoke-windows-x64`, `smoke-windows-x64-git-bash-delegate`) | Each downloads the candidate by artifact id, verifies transport + inner SHA-256, runs the installer in production mode against a local serve, and exercises `--version` / `--help` / `doctor`. | A failure here means the user-facing install path is broken on that platform — treat as a P0 and fix before re-tagging. |
-| `smoke-windows-arm64-structural` | Validates the Windows ARM64 ZIP archive + member name + PE machine type from a `windows-2025` host. **Non-runtime** validation. | A failure here means the ARM64 ZIP is structurally broken even though no execution is attempted; cut a follow-up patch release. |
+| Six native / installer smoke jobs (`smoke-linux-x64`, `smoke-linux-arm64`, `smoke-darwin-arm64`, `smoke-windows-x64`, `smoke-windows-x64-git-bash-delegate`; see `smoke-darwin-x64` note in the table above) | Each downloads the candidate by artifact id, verifies transport + inner SHA-256, runs the installer in production mode against a local serve, and exercises `--version` / `--help` / `doctor`. | A failure here means the user-facing install path is broken on that platform — treat as a P0 and fix before re-tagging. |
+| `smoke-windows-arm64-structural` | _(removed in v0.6.4+)_ | Validated the Windows ARM64 ZIP archive + member name + PE machine type from a `windows-2025` host. Removed because the cross-compiled binary the Linux build produces is an x64 fallback, not an ARM64 PE — see [Windows ARM64](#windows-arm64) for the full rationale and the supported install paths on Windows-on-ARM. |
 | `smoke-bad-checksum` | Confirms a corrupted `checksums.txt` causes the installer to refuse without overwriting the seeded install. | A failure here means a malicious or corrupted release could clobber a working install — this is a security regression. |
-| `publish` | Sole holder of `contents: write`. Downloads the candidate by artifact id, verifies the transport digest, drafts the release with exactly seven explicit basename paths, re-verifies draft asset names + hashes against `checksums.txt`, then runs `gh release edit --draft=false` only if every pre-publish gate is green. | A failure here deletes the draft via `if: failure()` and surfaces the violated gate in the run log. |
-| `canary` | Post-publish probe. Queries `api.github.com/repos/JosiahSiegel/umactually/releases/tags/${{ github.ref_name }}` (NEVER `/releases/latest/`), asserts exactly seven assets with the expected names, downloads one native archive + `checksums.txt` from the public immutable tag URL, verifies the archive's SHA-256 against the manifest, then runs the public installer (`INSTALL_ASSET_CONTRACT=archive`, `INSTALL_RELEASE_BASE=...`, `INSTALL_RELEASE_TAG=...`) and asserts `--version` / `--help` / `doctor` all exit 0. | A failure here means the public install path is broken end-to-end against the live tag. Treat as a P0; cut a follow-up patch release. |
+| `publish` | Sole holder of `contents: write`. Downloads the candidate by artifact id, verifies the transport digest, drafts the release with exactly six explicit basename paths (the five archives + `checksums.txt`), re-verifies draft asset names + hashes against `checksums.txt`, then runs `gh release edit --draft=false` only if every pre-publish gate is green. | A failure here deletes the draft via `if: failure()` and surfaces the violated gate in the run log. |
+| `canary` | Post-publish probe. Queries `api.github.com/repos/JosiahSiegel/umactually/releases/tags/${{ github.ref_name }}` (NEVER `/releases/latest/`), asserts exactly six assets with the expected names, downloads one native archive + `checksums.txt` from the public immutable tag URL, verifies the archive's SHA-256 against the manifest, then runs the public installer (`INSTALL_ASSET_CONTRACT=archive`, `INSTALL_RELEASE_BASE=...`, `INSTALL_RELEASE_TAG=...`) and asserts `--version` / `--help` / `doctor` all exit 0. | A failure here means the public install path is broken end-to-end against the live tag. Treat as a P0; cut a follow-up patch release. |
 
 The workflow uses `concurrency: { group: release-${{ github.ref }}, cancel-in-progress: false }` deliberately: a follow-up tag must not cancel an in-flight release of the previous tag.
 
@@ -629,7 +631,7 @@ curl -fsSL "https://registry.npmjs.org/umactually" | jq --arg t "$TAG" '
 
 Returns `true` for every field if the publish landed. The `has_attestations` field is the Sigstore provenance-attestation indicator; if `false`, the publish went through but the OIDC token exchange failed silently (re-run the job).
 
-### 12.2 Confirm the GitHub Release exists with all 7 assets
+### 12.2 Confirm the GitHub Release exists with all 6 assets
 
 ```bash
 gh release view "v0.7.0" --json name,assets,publishedAt | jq '
@@ -637,7 +639,7 @@ gh release view "v0.7.0" --json name,assets,publishedAt | jq '
     "name": .name,
     "published": .publishedAt,
     "asset_count": (.assets | length),
-    "expected": 7,
+    "expected": 6,
     "assets": [.assets[].name] | sort
   }
 '
