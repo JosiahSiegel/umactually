@@ -11,15 +11,11 @@
  * https://github.com/xemantic/anthropic-sdk-kotlin/pull/145.
  *
  * Path-preserving matters because Anthropic-compatible gateways
- * commonly mount the protocol under a path prefix — the documented
- * case is MiniMax's Anthropic endpoint at
- * `https://api.minimax.io/anthropic`, which resolves to
- * `https://api.minimax.io/anthropic/v1/messages` per
- * https://platform.minimax.io/docs/token-plan/claude-code (and similar
- * for the openai-compatible `/v1` endpoint at
- * https://platform.minimax.io/docs/token-plan/codex). The previous
- * "always strip the path" version of this helper silently 404'd that
- * gateway.
+ * commonly mount the protocol under a path prefix. For example,
+ * `https://gateway.example.invalid/llm/anthropic` resolves to
+ * `https://gateway.example.invalid/llm/anthropic/v1/messages`. The
+ * previous "always strip the path" version of this helper silently
+ * returned 404 for such gateways.
  *
  * The wire shape differs from the OpenAI Chat Completions / Responses
  * API in three meaningful ways:
@@ -300,11 +296,10 @@ export async function runAnthropicRequest(
   // becomes `<baseURL>/v1/messages`) and the path-preserving fix in
   // https://github.com/xemantic/anthropic-sdk-kotlin/pull/145.
   //
-  // Critically, this UNBLOCKS Anthropic-compatible gateways whose
-  // endpoints live under a path prefix — the documented case is
-  // `https://api.minimax.io/anthropic` →
-  // `https://api.minimax.io/anthropic/v1/messages` per
-  // https://platform.minimax.io/docs/token-plan/claude-code.
+  // Critically, this supports Anthropic-compatible gateways whose
+  // endpoints live under a path prefix, such as
+  // `https://gateway.example.invalid/llm/anthropic` →
+  // `https://gateway.example.invalid/llm/anthropic/v1/messages`.
   //
   // Anthropic.com itself only serves `/v1/messages` at the bare host,
   // so an operator pointing at `https://api.anthropic.com/anthropic`

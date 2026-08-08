@@ -1,10 +1,9 @@
 // Pins the regression that motivated the provider-error detection fix
 // (PR #27) and the parse-fail exit-code contract (PR #27). The GitHub
-// self-review bot previously returned M101 ("no providers configured")
-// and silently exited 0 — the operator saw "no findings" and the
-// build passed. This test pins the dynamic provider-error detection
-// layer end-to-end so any future regression that lets an M101-style
-// response through the parse-fail path fails CI.
+// self-review bot previously received a router error-doc payload and
+// silently exited 0 — the operator saw "no findings" and the build
+// passed. This test pins the dynamic provider-error detection layer
+// end-to-end so a future router error cannot enter the parse-fail path.
 //
 // Companion test to test/unit/provider-error-detection.test.ts (unit
 // test on the detectProviderError helper) and
@@ -19,13 +18,11 @@ import { describe, expect, it } from "vitest";
 
 import { detectProviderError } from "../../src/provider/provider-parse.js";
 
-describe("PR #27 regression: self-review M101 silent-pass bug", () => {
-  it("locks the M101 raw response shape (GitHub self-review incident)", () => {
-    // The exact response body captured from the GitHub Actions
-    // self-review bot on PR #27 (commit a9a8945). Reproduces verbatim
-    // so any future drift in the Manifest M101 response shape that
-    // would defeat detectProviderError fails this test.
-    const m101Response = JSON.stringify({
+describe("PR #27 regression: router error-doc silent-pass bug", () => {
+  it("classifies the captured router response shape as a provider error", () => {
+    // This behaviorally equivalent generic payload keeps the captured
+    // HTTP-200 response structure while avoiding a third-party fixture.
+    const routerErrorResponse = JSON.stringify({
       id: "resp_f91ce484877d43a19f2b5df2cd4eb180",
       object: "response",
       created_at: 1783488508,
@@ -35,7 +32,7 @@ describe("PR #27 regression: self-review M101 silent-pass bug", () => {
       incomplete_details: null,
       instructions: null,
       max_output_tokens: null,
-      model: "manifest",
+      model: "router-model",
       output: [
         {
           type: "message",
@@ -46,9 +43,8 @@ describe("PR #27 regression: self-review M101 silent-pass bug", () => {
             {
               type: "output_text",
               text:
-                "[🦚 Manifest M101] You're connected, but no providers are set up yet. " +
-                "Add one here: https://vmi3298966.tailcad1ad.ts.net/agents/agentrouter/routing " +
-                "See https://manifest.build/docs/errors/M101",
+                "No providers are configured for this router. " +
+                "See https://router.example.invalid/docs/errors/R101",
               annotations: [],
             },
           ],
@@ -77,14 +73,13 @@ describe("PR #27 regression: self-review M101 silent-pass bug", () => {
 
     // Pre-fix: this response would have been classified as a parse
     // failure and posted as a 0-finding COMMENT review with exit 0.
-    // Post-fix: detected as a provider error via BOTH the zero-usage
-    // signal AND the error-doc-URL signal.
-    const result = detectProviderError(m101Response);
+    // Post-fix: detected as a provider error via both the zero-usage
+    // signal and the generic error-doc-URL signal.
+    const result = detectProviderError(routerErrorResponse);
     expect(result).not.toBeNull();
     // The detection order is: error-envelope → zero-usage → error-doc-URL.
-    // M101 has no top-level `error` field (the `error: null` is a
-    // null literal, not a record), so the first matching signal is
-    // zero-usage. Lock that so any future reordering is intentional.
+    // The top-level `error` is null, so zero-usage matches first. Lock
+    // that ordering so any future reordering is intentional.
     expect(result?.kind).toBe("zero-usage");
     expect(result?.message.length).toBeGreaterThan(0);
   });
@@ -108,12 +103,17 @@ describe("PR #27 regression: self-review M101 silent-pass bug", () => {
       JSON.stringify({
         id: "x",
         object: "response",
-        model: "manifest",
-        output: [],
-        usage: { input_tokens: 0, output_tokens: 0, total_tokens: 0 },
+        model: "router-model",
+        output: [{
+          type: "message",
+          content: [{
+            type: "output_text",
+            text: "See https://router.example.invalid/docs/errors/R101",
+          }],
+        }],
       }),
     );
     expect(result).not.toBeNull();
-    expect(result?.kind).toBe("zero-usage");
+    expect(result?.kind).toBe("error-doc-url");
   });
 });

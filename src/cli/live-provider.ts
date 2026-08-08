@@ -252,13 +252,13 @@ export async function requestLiveReview(input: {
       // `messages[]`, `max_tokens` instead of `max_output_tokens`,
       // `x-api-key`/`anthropic-version` headers). The URL resolution
       // (in `resolveAnthropicMessagesUrl`) preserves the operator's
-      // path prefix so Anthropic-compatible gateways like
-      // `https://api.minimax.io/anthropic` route correctly.
+      // path prefix so Anthropic-compatible gateways mounted under
+      // paths such as `/llm/anthropic` route correctly.
       //
       // When the URL fails with a routing-level rejection (404/400),
       // `runWithCrossProtocolFallback` transparently retries with the
       // OpenAI-compatible client at the same base URL — operators
-      // pointing MiniMax-style gateways at the action don't have to
+      // pointing dual-protocol gateways at the action don't have to
       // know which protocol lives under which path prefix.
       //
       // Anthropic defaults to https://api.anthropic.com/v1 when
@@ -314,9 +314,9 @@ export async function requestLiveReview(input: {
 
     // Path-prefix heuristic: if the operator's URL looks like an
     // Anthropic-protocol gateway (any path segment equal to
-    // `anthropic`, case-insensitive — MiniMax's `/anthropic`,
-    // self-hosted LiteLLM `/llm/anthropic`, etc.) commit to the
-    // Anthropic Messages API client regardless of which `--provider`
+    // `anthropic`, case-insensitive — for example `/anthropic` or
+    // `/llm/anthropic`) commit to the Anthropic Messages API client
+    // regardless of which `--provider`
     // was set. Otherwise the openai-compatible client's URL
     // candidate loop downgrades the URL to origin+`/v1` and may
     // happily succeed there, silently routing an `/anthropic`-prefix
@@ -373,7 +373,7 @@ export async function requestLiveReview(input: {
       // Cross-protocol fallback: if the named (openai-compatible) client
       // exhausted its URL candidates with a routing-level failure, try
       // the Anthropic client at the same URL. On dual-protocol gateways
-      // (MiniMax at /anthropic/, etc.) this lets `--provider
+      // with an `/anthropic/` path, this lets `--provider
       // openai-compatible` discover the Anthropic-protocol endpoint at
       // `/anthropic/v1/messages` without operator intervention.
       //
@@ -646,14 +646,11 @@ function parseFailureReasonFromProviderError(
 /**
  * Cross-protocol fallback wrapper for the live dispatcher.
  *
- * Some operators point `--api-url` at an Anthropic-protocol-capable
- * gateway (the documented example is `https://api.minimax.io/anthropic`
- * per https://platform.minimax.io/docs/token-plan/claude-code) but
- * choose `--provider openai-compatible` (or vice versa — `--api-url
- * https://api.minimax.io/v1` with `--provider anthropic` per
- * https://platform.minimax.io/docs/token-plan/codex). MiniMax serves
- * BOTH protocols at the same hostname — Anthropic-protocol at
- * `/anthropic/v1/messages`, OpenAI-protocol at `/v1/responses`.
+ * Some operators point `--api-url` at a gateway that serves both
+ * Anthropic and OpenAI-compatible protocols but choose the other
+ * provider family. Such gateways commonly expose Anthropic at
+ * `/anthropic/v1/messages` and OpenAI-compatible responses at
+ * `/v1/responses` on the same hostname.
  *
  * When the operator's chosen provider returns a routing-level failure
  * (404 / 400 — the named protocol doesn't recognize the path), we
@@ -718,8 +715,8 @@ async function runWithCrossProtocolFallback(
   //
   // SECURITY NOTE: the operator's API key is passed to BOTH the
   // named and the fallback protocol client. This is correct on
-  // dual-protocol gateways (MiniMax at /anthropic and /v1 accepts
-  // the same key for both protocols). The 404-only trigger (see
+  // dual-protocol gateways that accept the same key for both protocols.
+  // The 404-only trigger (see
   // isRoutableFailureForDispatcher) keeps this from happening for
   // payload-level errors, but operators pointing the action at a
   // non-dual-protocol URL can still expect this dispatcher's
