@@ -296,8 +296,7 @@ describe("CLI dry-run env-sources wiring (effectiveConfig + secretsDetected)", (
     expect(secrets["sonarToken"]).toBe(false);
   });
 
-  it("falls back to REVIEW_* when UMACTUALLY_* is empty/absent", async () => {
-    // UMACTUALLY_API_KEY is unset; REVIEW_PROVIDER_API_KEY is the fallback.
+  it("ignores REVIEW_* when current public environment variables are absent", async () => {
     process.env["REVIEW_PROVIDER_API_KEY"] = "sk-review-fallback";
     process.env["REVIEW_PROVIDER_URL"] = "https://fallback.example.test/v1";
 
@@ -324,12 +323,12 @@ describe("CLI dry-run env-sources wiring (effectiveConfig + secretsDetected)", (
 
     const artifact = JSON.parse(artifactRaw) as Record<string, unknown>;
     const effective = artifact["effectiveConfig"] as Record<string, unknown>;
-    expect(effective["providerUrl"]).toBe("https://fallback.example.test/v1");
+    expect(effective["providerUrl"]).toBeNull();
     const secrets = artifact["secretsDetected"] as Record<string, boolean>;
-    expect(secrets["apiKey"]).toBe(true);
+    expect(secrets["apiKey"]).toBe(false);
   });
 
-  it("UMACTUALLY_* wins over REVIEW_* when both are set", async () => {
+  it("uses UMACTUALLY_* while ignoring REVIEW_*", async () => {
     process.env["UMACTUALLY_API_URL"] = "https://primary.example.test/v1";
     process.env["REVIEW_PROVIDER_URL"] = "https://legacy.example.test/v1";
 

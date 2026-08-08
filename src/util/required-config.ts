@@ -12,9 +12,6 @@ const ENV_VAR_CLI_FLAG: Readonly<Record<string, string>> = {
   UMACTUALLY_MODEL: "model",
   UMACTUALLY_PROVIDER: "provider",
   UMACTUALLY_GITHUB_API_BASE: "github-api-base",
-  UMACTUALLY_SONAR_HOST_URL: "sonar-host-url",
-  UMACTUALLY_SONAR_TOKEN: "sonar-token",
-  UMACTUALLY_SONAR_PROJECT_KEY: "sonar-project-key",
 };
 
 /**

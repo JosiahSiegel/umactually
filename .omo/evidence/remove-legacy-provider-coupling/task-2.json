@@ -1,0 +1,66 @@
+{
+  "task": "2. Simplify env loading, provenance, required-config hints, and env-focused tests",
+  "plan": ".omo/plans/remove-legacy-provider-coupling.md",
+  "status": "done-claim",
+  "baseline": {
+    "command": "npx vitest run --project unit test/unit/env-vars.test.ts test/unit/config-extended.test.ts test/unit/resolved-config-sources.test.ts test/unit/required-config.test.ts test/unit/cli-help.test.ts test/unit/cli-dry-run.test.ts test/unit/cli-bare-invocation.test.ts test/unit/cli-local-files.test.ts test/unit/cli-subcommands.test.ts",
+    "result": "176 passed, 3 failed; one stale REVIEW_* fallback assertion belonged to Todo 2, while cli-help and cli-bare-invocation failures belonged to pre-existing dirty Todo 4 work"
+  },
+  "red": {
+    "command": "restore HEAD src/config/env-sources.ts temporarily, then npx vitest run --project unit test/unit/resolved-config-sources.test.ts -t reports-only-current-public-environment-names-in-provenance",
+    "result": "failed because stderr contained UMACTUALLY_IGNORE_MINOR and REVIEW_IGNORE_MINOR migration warning"
+  },
+  "verification": [
+    {
+      "command": "npx vitest run --project unit test/unit/env-vars.test.ts test/unit/config-extended.test.ts test/unit/resolved-config-sources.test.ts test/unit/required-config.test.ts test/unit/cli-dry-run.test.ts test/unit/cli-local-files.test.ts test/unit/cli-subcommands.test.ts",
+      "result": "133 passed, 1 skipped; repeated twice with identical result"
+    },
+    {
+      "command": "temporarily restore HEAD test/unit/verdict-policy.test.ts; npm run typecheck; restore dirty file",
+      "result": "passed; normal typecheck is blocked only by unrelated pre-existing Todo 4 verdict test edits"
+    },
+    {
+      "command": "npx tsx -e manual imports of readEnvSources and buildRequiredConfigMessage",
+      "result": "public source keys were githubApiBase/providerApiKey/providerModel/providerUrl, legacy provider URL was ignored, and API URL hint retained --api-url"
+    },
+    {
+      "command": "grep LEGACY_IGNORE_MINOR_ENV_VARS|WARNED_LEGACY_ENV_VARS|warnIfLegacyIgnoreMinorEnvVarsAreSet src and git diff --check",
+      "result": "no matches; clean"
+    }
+  ],
+  "scope": {
+    "allowed": [
+      "src/config/env-sources.ts",
+      "src/util/required-config.ts",
+      "test/setup.ts",
+      "test/unit/cli-dry-run.test.ts",
+      "test/unit/resolved-config-sources.test.ts"
+    ],
+    "excluded": "No provider, marker, verdict, installer, docs, dist, CHANGELOG, unknown-env scanner, or plan checkbox changes"
+  },
+  "DoneClaim": {
+    "task": "Todo 2 legacy environment resolution removal",
+    "changed_files": [
+      "src/config/env-sources.ts",
+      "src/util/required-config.ts",
+      "test/setup.ts",
+      "test/unit/cli-dry-run.test.ts",
+      "test/unit/resolved-config-sources.test.ts"
+    ],
+    "tests": [
+      "focused env/provenance/config tests passed twice",
+      "typecheck passed with unrelated dirty Todo 4 test temporarily restored",
+      "manual TypeScript import QA passed"
+    ],
+    "manual_qa": [
+      ".omo/evidence/remove-legacy-provider-coupling/task-2.json"
+    ],
+    "cleanup": [
+      "temporary restored copies replaced with original dirty worktree files",
+      "no process, port, container, or temp QA resource left running"
+    ],
+    "risks": [
+      "full-tree typecheck remains blocked until Todo 4 verdict implementation catches up with its already-dirty tests"
+    ]
+  }
+}
