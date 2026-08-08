@@ -392,20 +392,6 @@ describe("anthropic-messages provider client — RED contract", () => {
   });
 });
 
-describe("auto-model resolver — anthropic provider", () => {
-  it("ANTH-AUTO-001 returns claude-sonnet-4.6 for provider=anthropic regardless of apiUrl", async () => {
-    const autoMod = (await expectFutureModule("../../src/cli/auto-model.js")) as {
-      readonly resolveAutoModel: (input: {
-        readonly provider: "openai-compatible" | "copilot" | "anthropic";
-        readonly apiUrl: string | null;
-        readonly env: NodeJS.ProcessEnv;
-      }) => string;
-    };
-    expect(autoMod.resolveAutoModel({ provider: "anthropic", apiUrl: null, env: {} })).toBe("claude-sonnet-4.6");
-    expect(autoMod.resolveAutoModel({ provider: "anthropic", apiUrl: "https://example.com", env: {} })).toBe("claude-sonnet-4.6");
-  });
-});
-
 describe("cli/parse-args — anthropic provider value", () => {
   it("ANTH-CLI-001 --provider anthropic is accepted by parseCliArgs", async () => {
     const parseMod = (await expectFutureModule("../../src/cli/parse-args.js")) as {

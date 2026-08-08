@@ -25,7 +25,6 @@ import {
 } from "../util/provider-defaults.js";
 import { requireLiveConfig } from "../util/required-config.js";
 import { looksLikeAnthropicEndpoint, redactUrlForLog } from "../util/url.js";
-import { resolveAutoModel } from "./auto-model.js";
 import {
   buildMalformedProviderFallback,
   LiveReviewError,
@@ -83,7 +82,7 @@ export async function requestLiveReview(input: {
     resolveField(input.parsed.apiKey, input.env[ENV_KEYS.UMACTUALLY_API_KEY], ""),
     ENV_KEYS.UMACTUALLY_API_KEY,
   );
-  const modelId = readConfiguredModel(input.parsed, input.env);
+  const modelId = readConfiguredModel(input.parsed);
   const prompts = await buildProviderPrompts(input);
 
   // Install an ambient severity-warning sink for the duration of this
@@ -550,26 +549,12 @@ function normalizeProviderComment(
   };
 }
 
-function readConfiguredModel(parsed: ParsedCliArgs, env: NodeJS.ProcessEnv): string {
+function readConfiguredModel(parsed: ParsedCliArgs): string {
   const fromArgs = parsed.model;
-  // Treat the literal string "auto" the same as the default
-  // (unset): the user is asking for the opinionated resolver,
-  // not for the provider's "auto" pass-through. Without this,
-  // `--model auto` would short-circuit before the resolver
-  // runs and send the literal string "auto" to the provider.
   if (fromArgs !== null && fromArgs.length > 0 && fromArgs !== "auto") {
     return fromArgs;
   }
-  // Layer 5: `auto` is no longer passed verbatim. The resolver picks
-  // a less-hallucinating model based on the active provider + API
-  // URL. See `src/cli/auto-model.ts` for the per-provider mapping
-  // and the Vectara HHEM rationale.
-  const provider = (parsed.provider ?? "openai-compatible") as "openai-compatible" | "copilot" | "anthropic";
-  return resolveAutoModel({
-    provider,
-    apiUrl: parsed.apiUrl,
-    env,
-  });
+  return "auto";
 }
 
 function readRequestTimeoutMs(parsed: ParsedCliArgs): number {
