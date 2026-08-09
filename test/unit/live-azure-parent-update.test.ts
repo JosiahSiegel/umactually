@@ -242,7 +242,7 @@ describe("postAzurePrComment (Azure parent PR-level replace-not-patch)", () => {
 
     // When: the live Azure path runs.
     const result = await runLive({
-      parsed: parseCliArgs(["--platform", "azure", "--no-dry-run"]),
+      parsed: parseCliArgs(["--platform", "azure", "--no-dry-run", "--model", "review-model-synthetic"]),
       cwd: process.cwd(),
       env: azureEnv(),
       fetchImpl: recorder.fetchImpl,
@@ -309,7 +309,7 @@ describe("postAzurePrComment (Azure parent PR-level replace-not-patch)", () => {
 
     // When: the live Azure path runs.
     await runLive({
-      parsed: parseCliArgs(["--platform", "azure", "--no-dry-run"]),
+      parsed: parseCliArgs(["--platform", "azure", "--no-dry-run", "--model", "review-model-synthetic"]),
       cwd: process.cwd(),
       env: azureEnv(),
       fetchImpl: recorder.fetchImpl,
@@ -368,7 +368,7 @@ describe("postAzurePrComment (Azure parent PR-level replace-not-patch)", () => {
 
     // When: the live Azure path runs.
     await runLive({
-      parsed: parseCliArgs(["--platform", "azure", "--no-dry-run"]),
+      parsed: parseCliArgs(["--platform", "azure", "--no-dry-run", "--model", "review-model-synthetic"]),
       cwd: process.cwd(),
       env: azureEnv(),
       fetchImpl: recorder.fetchImpl,

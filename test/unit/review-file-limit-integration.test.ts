@@ -192,6 +192,7 @@ describe("review-file-limit gates the chunked review path (TEST-LIMIT-1..4)", ()
         "--platform", "azure",
         "--api-url", "https://provider.example/v1",
         "--api-key", "sk-test-key",
+        "--model", "review-model-synthetic",
         "--pr-number", "42",
         "--repo", "Example Project/repo-42",
         "--no-dry-run",
@@ -233,9 +234,11 @@ describe("review-file-limit gates the chunked review path (TEST-LIMIT-1..4)", ()
         "--platform", "azure",
         "--api-url", "https://provider.example/v1",
         "--api-key", "sk-test-key",
+        "--model", "review-model-synthetic",
         "--pr-number", "42",
         "--repo", "Example Project/repo-42",
         "--no-dry-run",
+        // No --review-file-limit → default 200 (TEST-LIMIT-2)
       ]);
       await runLive({ parsed, cwd: process.cwd(), fetchImpl: recorder.fetchImpl });
     });

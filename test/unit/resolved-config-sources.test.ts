@@ -63,7 +63,11 @@ function sourceFor(config: Record<string, unknown>, field: string): Record<strin
   return source;
 }
 
-describe("resolvedConfig source provenance", () => {
+// Per-file timeout bump: these tests call runJsonReview which
+// dispatches into runCli → deriveContextFromGit (spawns `git diff`
+// against HEAD). On machines where the local git diff is large the
+// round-trip is slower than vitest's default 5s timeout.
+describe("resolvedConfig source provenance", { timeout: 30_000 }, () => {
   it("reports an object of field sources", async () => {
     const config = await resolvedConfig(["--dry-run"]);
 

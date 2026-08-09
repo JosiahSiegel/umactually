@@ -264,7 +264,7 @@ describe("runLive GitHub orchestration", () => {
 
     // When: live orchestration starts.
     const result = await runLive({
-      parsed: parseCliArgs(["--platform", "github", "--no-dry-run"]),
+      parsed: parseCliArgs(["--platform", "github", "--no-dry-run", "--model", "review-model-synthetic"]),
       cwd: workspace,
       env,
       fetchImpl: makeFetchRecorder([]).fetchImpl,
@@ -331,6 +331,8 @@ describe("runLive GitHub orchestration", () => {
         "--api-key",
         "gho_test_copilot",
         "--no-dry-run",
+        "--model",
+        "review-model-synthetic",
       ]),
       cwd: workspace,
       env,
@@ -355,7 +357,7 @@ describe("runLive GitHub orchestration", () => {
 
     // When: live orchestration runs against GitHub.
     const result = await runLive({
-      parsed: parseCliArgs(["--platform", "github", "--no-dry-run"]),
+      parsed: parseCliArgs(["--platform", "github", "--no-dry-run", "--model", "review-model-synthetic"]),
       cwd: workspace,
       env: githubEnv(eventPath),
       fetchImpl: recorder.fetchImpl,
@@ -397,7 +399,7 @@ describe("runLive GitHub orchestration", () => {
 
     // When: the live GitHub path runs with leak detection enabled.
     const result = await runLive({
-      parsed: parseCliArgs(["--platform", "github", "--no-dry-run"]),
+      parsed: parseCliArgs(["--platform", "github", "--no-dry-run", "--model", "review-model-synthetic"]),
       cwd: workspace,
       env: githubEnv(eventPath),
       fetchImpl: recorder.fetchImpl,
@@ -437,6 +439,8 @@ describe("runLive GitHub orchestration", () => {
         "--platform",
         "github",
         "--no-dry-run",
+        "--model",
+        "review-model-synthetic",
         "--include-sonarqube",
         "--sonar-host-url",
         "https://sonar.example.test",
@@ -470,7 +474,7 @@ describe("runLive GitHub orchestration", () => {
 
     // When: the live GitHub path posts the review.
     const result = await runLive({
-      parsed: parseCliArgs(["--platform", "github", "--no-dry-run"]),
+      parsed: parseCliArgs(["--platform", "github", "--no-dry-run", "--model", "review-model-synthetic"]),
       cwd: workspace,
       env: githubEnv(eventPath),
       fetchImpl: recorder.fetchImpl,
@@ -517,7 +521,7 @@ describe("runLive GitHub orchestration", () => {
 
     // When: the review is posted.
     const result = await runLive({
-      parsed: parseCliArgs(["--platform", "github", "--no-dry-run"]),
+      parsed: parseCliArgs(["--platform", "github", "--no-dry-run", "--model", "review-model-synthetic"]),
       cwd: workspace,
       env: githubEnv(eventPath),
       fetchImpl: recorder.fetchImpl,
@@ -549,7 +553,7 @@ describe("runLive GitHub orchestration", () => {
 
     // When: --simulate-findings is set on the live path.
     const result = await runLive({
-      parsed: parseCliArgs(["--platform", "github", "--no-dry-run", "--simulate-findings"]),
+      parsed: parseCliArgs(["--platform", "github", "--no-dry-run", "--model", "review-model-synthetic", "--simulate-findings"]),
       cwd: workspace,
       env: githubEnv(eventPath),
       fetchImpl: recorder.fetchImpl,
@@ -598,7 +602,7 @@ describe("runLive GitHub orchestration", () => {
     // When: --simulate-findings is set but the live result has real findings.
     // Live findings always win — the fixture is a fallback for empty results only.
     const result = await runLive({
-      parsed: parseCliArgs(["--platform", "github", "--no-dry-run", "--simulate-findings"]),
+      parsed: parseCliArgs(["--platform", "github", "--no-dry-run", "--model", "review-model-synthetic", "--simulate-findings"]),
       cwd: workspace,
       env: githubEnv(eventPath),
       fetchImpl: recorder.fetchImpl,
@@ -644,7 +648,7 @@ describe("runLive GitHub orchestration", () => {
 
     // When: live orchestration runs without the simulate-findings flag.
     const result = await runLive({
-      parsed: parseCliArgs(["--platform", "github", "--no-dry-run"]),
+      parsed: parseCliArgs(["--platform", "github", "--no-dry-run", "--model", "review-model-synthetic"]),
       cwd: workspace,
       env: githubEnv(eventPath),
       fetchImpl: recorder.fetchImpl,
@@ -681,7 +685,7 @@ describe("runLive GitHub orchestration", () => {
 
     // When: live orchestration runs (simulate-findings is OFF so no fixture is injected).
     const result = await runLive({
-      parsed: parseCliArgs(["--platform", "github", "--no-dry-run"]),
+      parsed: parseCliArgs(["--platform", "github", "--no-dry-run", "--model", "review-model-synthetic"]),
       cwd: workspace,
       env: githubEnv(eventPath),
       fetchImpl: recorder.fetchImpl,
@@ -713,7 +717,7 @@ describe("runLive GitHub orchestration", () => {
 
     // When: live orchestration runs with a non-empty provider payload.
     const result = await runLive({
-      parsed: parseCliArgs(["--platform", "github", "--no-dry-run"]),
+      parsed: parseCliArgs(["--platform", "github", "--no-dry-run", "--model", "review-model-synthetic"]),
       cwd: workspace,
       env: githubEnv(eventPath),
       fetchImpl: recorder.fetchImpl,
@@ -773,7 +777,7 @@ describe("runLive GitHub orchestration", () => {
 
     // When: live orchestration runs with --simulate-findings.
     const result = await runLive({
-      parsed: parseCliArgs(["--platform", "github", "--no-dry-run", "--simulate-findings"]),
+      parsed: parseCliArgs(["--platform", "github", "--no-dry-run", "--model", "review-model-synthetic", "--simulate-findings"]),
       cwd: workspace,
       env: githubEnv(eventPath),
       fetchImpl: recorder.fetchImpl,
@@ -831,7 +835,7 @@ describe("runLive GitHub orchestration", () => {
 
     // When: live orchestration runs.
     const result = await runLive({
-      parsed: parseCliArgs(["--platform", "github", "--no-dry-run"]),
+      parsed: parseCliArgs(["--platform", "github", "--no-dry-run", "--model", "review-model-synthetic"]),
       cwd: workspace,
       env: githubEnv(eventPath),
       fetchImpl: recorder.fetchImpl,

@@ -55,7 +55,11 @@ function captureStdout(fn: () => Promise<unknown>): Promise<CapturedStdout> {
   });
 }
 
-describe("CLI --json envelope RED contract", () => {
+// Per-file timeout bump: these tests call runJsonReview which
+// dispatches into runCli → deriveContextFromGit (spawns `git diff`
+// against HEAD). On machines where the local git diff is large the
+// round-trip is slower than vitest's default 5s timeout.
+describe("CLI --json envelope RED contract", { timeout: 30_000 }, () => {
   it("CLI-JSON-001: --dry-run writes exactly one parseable JSON object to stdout", async () => {
     // Given: the future dispatch.ts must export runJsonReview(argv).
     let runJsonReview: RunJsonReview;

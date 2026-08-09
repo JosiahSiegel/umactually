@@ -1,0 +1,235 @@
+{
+  "task": 13,
+  "title": "Reconcile all remaining unit/scenario/release contract tests with the breaking cleanup",
+  "worktree": "/tmp/opencode/remove-legacy-provider-coupling",
+  "scope": {
+    "productionFilesChanged": [],
+    "testFilesChanged": [
+      "test/unit/azure-pipelines-prompt-files.test.ts (DELETED — pinned 4 removed env vars: UMACTUALLY_PROMPT_FILES, UMACTUALLY_ADDITIONAL_PROMPT_FILES, UMACTUALLY_STRICT_SCHEMA, UMACTUALLY_VERIFY_FINDINGS)",
+      "test/unit/provider-prompts.test.ts (5 removed-contract tests replaced with 5 negative tests proving the env vars are silently ignored; the rest of the 59-test file unchanged)",
+      "test/unit/live-shared-prompts.test.ts (12 parseCliArgs calls now pass --model review-model-synthetic to skip the new contract-based model discovery; ULW-ENV-001 flipped to a negative end-to-end test asserting UMACTUALLY_PROMPT_FILES env is ignored and CLAUDE.md wins)",
+      "test/unit/run-live-orchestration.test.ts (11 parseCliArgs calls now pass --model review-model-synthetic to skip model discovery; 2 multi-line copilot + sonar variants updated)",
+      "test/unit/live-azure-pr-comment.test.ts (3 parseCliArgs calls now pass --model review-model-synthetic)",
+      "test/unit/live-azure-parent-top.test.ts (4 parseCliArgs calls now pass --model review-model-synthetic)",
+      "test/unit/live-azure-parent-update.test.ts (3 parseCliArgs calls now pass --model review-model-synthetic)",
+      "test/unit/live-azure-status-policy.test.ts (3 parseCliArgs calls now pass --model review-model-synthetic)",
+      "test/unit/live-azure-status-post.test.ts (3 parseCliArgs calls now pass --model review-model-synthetic)",
+      "test/unit/live-azure-rollback.test.ts (2 parseCliArgs calls now pass --model review-model-synthetic)",
+      "test/unit/live-azure-dedup.test.ts (3 parseCliArgs calls now pass --model review-model-synthetic)",
+      "test/unit/live-github-state.test.ts (3 parseCliArgs calls now pass --model review-model-synthetic)",
+      "test/unit/run-live-azure.test.ts (3 parseCliArgs calls now pass --model review-model-synthetic)",
+      "test/unit/run-live-azure-chunked.test.ts (5 parseCliArgs calls now pass --model review-model-synthetic)",
+      "test/unit/simulated-findings-debug.test.ts (1 parseCliArgs call now passes --model review-model-synthetic)",
+      "test/unit/review-file-limit-integration.test.ts (2 parseCliArgs calls now pass --model review-model-synthetic)",
+      "test/unit/cli-local-files.test.ts (buildParsedFor now sets model: review-model-synthetic; legacy REVIEW_PROVIDER_URL / REVIEW_PROVIDER_API_KEY / REVIEW_PROVIDER_MODEL / REVIEW_DRY_RUN / REVIEW_PLATFORM entries removed from the ENV_KEYS_TO_CLEAR list since the alias family is gone)",
+      "test/unit/cli-first-run-quickstart.test.ts (describe-level timeout bumped from 5s default to 30s because dispatch([]) → deriveContextFromGit spawns `git diff` against HEAD which is slow in this worktree)",
+      "test/unit/cli-is-main-module-symlink.test.ts (describe.skipIf timeout bumped from 5s default to 30s because the symlink probe spawns a child Node and dynamically imports dist/cli.js)",
+      "test/unit/cli-json.test.ts (describe-level timeout bumped from 5s default to 30s for the same dispatch-→-deriveContextFromGit reason)",
+      "test/unit/resolved-config-sources.test.ts (describe-level timeout bumped from 5s default to 30s for the same dispatch-→-deriveContextFromGit reason)",
+      "scripts/generate-task-6-failure-evidence.mjs (DELETED — pre-existing obsolete evidence generator; used INSTALL_ASSET_CONTRACT in fixtures for the OLD archive-mode installer contract which was removed in Todo 5; not referenced by any package.json script, CI step, or other test)"
+    ],
+    "untrackedButNotStaged": [
+      "dist/2d93e8e877dc4ef29106.ts (pre-existing untracked dist artifact; plan §14 owns regenerated dist)"
+    ],
+    "preserved": [
+      "test/unit/install-cli-args.test.ts: '--contract legacy is rejected as unsupported' — NEGATIVE test asserting the removed --contract flag is rejected (the test name matches the --contract legacy grep pattern by design; the test ITSELF is the contract proof the plan §13 asks for)",
+      "src/util/marker.ts: REVIEW_MARKER (line 21), MANIFEST_SCHEMA (line 35), MANIFEST_MARKER_PREFIX (line 38), MANIFEST_MARKER_SUFFIX (line 41) — all unchanged",
+      "src/render/summary-layouts.ts: REVIEW_MARKER import, MANIFEST_SCHEMA/MANIFEST_MARKER_PREFIX/MANIFEST_MARKER_SUFFIX usage, <!-- umactually:manifest ... --> payload rendering at line 260 — all unchanged",
+      "scripts/release-targets.json (generic release manifest, unchanged)",
+      "scripts/release-targets.ts (unchanged)",
+      "src/cli/help.ts: REVIEW_FLAGS / REVIEW_HELP_TEXT / REVIEW_HELP — CLI help-text constants (unchanged; REVIEW_FLAGS is the name of a TS const holding the canonical --review flag table)",
+      "src/cli/provider-prompts.ts: REVIEW_PAYLOAD_JSON_SCHEMA — wire-format JSON schema constant used in the provider's strict json_schema response_format (unchanged; this is the wire contract, not an env var)",
+      "src/config/review-config.ts: REVIEW_TIMEOUT_SECONDS — internal default review timeout (unchanged; not an env var, not user-facing)",
+      "src/cli/parse-args.ts lines 357-358: REVIEW_IGNORE_MINOR mention in the deprecated-flag error message — INTENTIONAL documentation of the legacy alias family in the user-facing error string (the message tells operators the alias is intentionally ignored; preserved per plan carve-out)",
+      "src/cli/live-shared.ts line 670: REVIEW_FILE_LIMIT mention in the file-limit error hint string — INTENTIONAL documentation of the canonical file-limit variable name in the user-facing remediation hint (preserved)",
+      "test/e2e/cli-only-github.test.ts: REVIEW_MARKER import + assertion (e2e suite; unchanged by Todo 13)",
+      "src/azure/run-azure-review.ts: REVIEW_MARKER import (unchanged)",
+      "src/cli/run.ts / src/cli/live-shared.ts / src/cli/standalone-run.ts / src/reference/verify-reference-regressions.ts / src/render/raw-output.ts / src/render/summary-layouts.ts / src/review/run-review.ts: REVIEW_MARKER imports (all unchanged)",
+      ".gitguardian.yaml (unchanged; no synthetic-key swap needed — the file contained zero minimax/MiniMax literals at the start of Todo 13)",
+      "scripts/install.sh, scripts/install.ps1, scripts/uninstall.sh, scripts/uninstall.ps1 (unchanged; install.ps1 / install.sh kept their non-legacy flag set; uninstall.sh / uninstall.ps1 already deleted in Todo 5)",
+      "src/cli/orchestrator.ts, src/cli/live-provider.ts, src/cli/live-shared.ts, src/cli/orchestrator.ts, src/cli/parse-args.ts, src/cli/dispatch.ts, src/cli/init.ts, src/cli/init-templates.ts, src/cli/help.ts, src/cli/local-files-run.ts, src/cli/auto-context.ts, src/cli/auto-model.ts, src/cli/provider-prompts.ts, src/cli/parse-args.ts, src/cli/saved-config.ts, src/cli/smart-prompt.ts, src/cli/validate.ts, src/cli/verify-findings.ts, src/cli/standalone-run.ts, src/cli/clean-output.ts, src/cli/scan-review-secrets.ts, src/cli/redact-secrets.ts, src/cli/marker.ts, src/cli/run.ts, src/cli/review/run-review.ts, src/cli/tui/*, src/azure/*, src/provider/*, src/render/*, src/util/*, src/config/* — production sources UNCHANGED by Todo 13 (this task is test-only reconciliation, not behavior change)",
+      "root verify-task-*.json files — do not exist in this worktree (`ls verify-task-*.json` returns exit 2, no matches); the 'unchanged and untracked' invariant holds vacuously",
+      ".gitignore, Boulder state, plan, CHANGELOG.md, dist/ — never modified by Todo 13"
+    ]
+  },
+  "behaviorChanges": {
+    "src/": "No source-of-truth behavior changes. Every src/ file is byte-identical to its pre-Todo-13 state. All changes are test-side: deleted test files, replaced assertions with negative tests, added --model to parseCliArgs calls (test setup), bumped describe-level testTimeout on four files.",
+    "scripts/generate-task-6-failure-evidence.mjs": "DELETED (obsolete; pre-existing from main, not invoked by any current script)"
+  },
+  "commands": [
+    {
+      "command": "git status --short (before Todo 13 edits)",
+      "exitCode": 0,
+      "result": "?? dist/2d93e8e877dc4ef29106.ts (only the pre-existing untracked dist artifact; clean tree)"
+    },
+    {
+      "command": "git log --oneline main..HEAD",
+      "exitCode": 0,
+      "result": "17 commits on remove-legacy-provider-coupling (78f17f0 docs(examples): align public setup surfaces ... c3fef2a refactor(marker): remove prior marker compatibility); latest commit predates Todo 13 edits"
+    },
+    {
+      "command": "ls test/unit/** test/scenarios/** test/helpers/**",
+      "exitCode": 0,
+      "result": "test/unit: 177 files (was 178 before Todo 13 deleted azure-pipelines-prompt-files.test.ts); test/scenarios: 6 files (s1..s6); test/helpers: 8 files (assert-red-module.ts, cli-only-github-fixture.ts, fake-tsdown-build.mjs, init-cli-envelope.ts, install-archive-helpers.ts, node-version-gate.ts, release-fixture-server.mjs)"
+    },
+    {
+      "command": "ls verify-task-*.json + sha256sum (root verifier JSONs)",
+      "exitCode": 2,
+      "result": "no verify-task-*.json files at the worktree root — confirms the predates-this-branch invariant (these files never existed in this worktree); SHA-256 not applicable; the 'unchanged and untracked' invariant holds vacuously"
+    },
+    {
+      "command": "node_modules/.bin/vitest run --project unit (PRE-EDIT baseline)",
+      "exitCode": 1,
+      "result": "72 failed | 1663 passed | 65 skipped (1800 tests, 19 failed files) — baseline failure distribution: 11 in live-shared-prompts; 11 in run-live-orchestration; 9 in cli-local-files; 5 in provider-prompts; 4 in run-live-azure-chunked + 4 in live-azure-parent-top; 3 each in live-azure-{dedup,parent-update,pr-comment,status-policy,status-post,github-state}; 2 each in azure-pipelines-prompt-files, cli-first-run-quickstart, live-azure-rollback, run-live-azure; 1 each in cli-is-main-module-symlink, install-methods, review-file-limit-integration, simulated-findings-debug"
+    },
+    {
+      "command": "node_modules/.bin/vitest run --project scenario (PRE-EDIT baseline)",
+      "exitCode": 0,
+      "result": "7 passed (7/7) — scenario suite was already green at baseline"
+    },
+    {
+      "command": "git grep -nE 'minimax|MiniMax|Manifest M101|manifest\\.build' src test scripts .gitguardian.yaml (after edits)",
+      "exitCode": 1,
+      "result": "zero matches — forbidden sweep 1 PASSES"
+    },
+    {
+      "command": "git grep -nE '\\bREVIEW_[A-Z_]+\\b' src test scripts .gitguardian.yaml (after edits)",
+      "exitCode": 0,
+      "result": "every remaining match is a documented carve-out: REVIEW_MARKER (canonical marker literal), REVIEW_FLAGS / REVIEW_HELP_TEXT / REVIEW_HELP (CLI help-text constants), REVIEW_PAYLOAD_JSON_SCHEMA (wire-format JSON schema constant), REVIEW_TIMEOUT_SECONDS (internal config default), REVIEW_IGNORE_MINOR + REVIEW_FILE_LIMIT (mentions in user-facing error/hint strings — intentional documentation of the legacy alias family). No REVIEW_PROVIDER_URL / REVIEW_PROVIDER_API_KEY / REVIEW_PROVIDER_MODEL / REVIEW_DRY_RUN / REVIEW_PLATFORM matches remain — the removed alias family is gone."
+    },
+    {
+      "command": "git grep -nE 'INSTALL_ASSET_CONTRACT|--contract legacy|uninstall\\.sh|uninstall\\.ps1' src test scripts .gitguardian.yaml (after edits)",
+      "exitCode": 0,
+      "result": "one match: test/unit/install-cli-args.test.ts:272 ('--contract legacy is rejected as unsupported') — this is a NEGATIVE test asserting the removed --contract flag is rejected; the test name matches the grep pattern by design (the test ITSELF is the contract proof). INSTALL_ASSET_CONTRACT and uninstall.{sh,ps1} zero matches."
+    },
+    {
+      "command": "node_modules/.bin/vitest run --project unit (POST-EDIT)",
+      "exitCode": 1,
+      "result": "1 failed | 1732 passed | 65 skipped (1798 tests, 175 passed files). The single remaining failure is the pre-existing NPM-PACK-SMOKE in install-methods.test.ts (same failure present on main baseline before Todo 13; the test calls npm pack with a synthetic version that requires npm_execpath which is not exposed by this Node binary's npm resolution path in this worktree's env)."
+    },
+    {
+      "command": "node_modules/.bin/vitest run --project scenario (POST-EDIT)",
+      "exitCode": 0,
+      "result": "7 passed (7/7) — scenario suite remains green"
+    },
+    {
+      "command": "npm run typecheck (POST-EDIT)",
+      "exitCode": 0,
+      "result": "tsc --noEmit -p tsconfig.test.json — zero diagnostics"
+    },
+    {
+      "command": "npm run test:unit (POST-EDIT)",
+      "exitCode": 1,
+      "result": "1733 passed | 65 skipped (1798 tests, 175 passed files, 2 skipped). Same single pre-existing NPM-PACK-SMOKE failure as the project-only baseline."
+    },
+    {
+      "command": "npm run test:scenario (POST-EDIT)",
+      "exitCode": 0,
+      "result": "7 passed (7/7) — full scenario suite green"
+    }
+  ],
+  "qaNotes": {
+    "removedContractAssertionElimination": "Two test files / test blocks pinned removed contracts and were either deleted or rewritten as negative tests: (1) test/unit/azure-pipelines-prompt-files.test.ts pinned UMACTUALLY_PROMPT_FILES, UMACTUALLY_ADDITIONAL_PROMPT_FILES, UMACTUALLY_STRICT_SCHEMA, UMACTUALLY_VERIFY_FINDINGS — the file asserted these env vars reach the CLI as if the env-var resolution still existed; deleted in full (2 tests removed). (2) test/unit/provider-prompts.test.ts had 5 tests asserting UMACTUALLY_PROMPT_FILE (legacy single), UMACTUALLY_PROMPT_FILES (array), UMACTUALLY_ADDITIONAL_PROMPT_FILE (legacy single), UMACTUALLY_ADDITIONAL_PROMPT_FILES (array) env-var resolution; rewritten as 5 negative tests asserting each env var is silently ignored and the default-lookup list (CLAUDE.md / built-in / 'Additional instructions: none') wins.",
+    "negativeEndToEndTestAdded": "test/unit/live-shared-prompts.test.ts ULW-ENV-001 was rewritten as the negative end-to-end mirror: the test sets UMACTUALLY_PROMPT_FILES env (the removed env var) and asserts the CLAUDE.md autoload marker IS in the system prompt (because the env var is a no-op) and the env-override file marker is NOT. This is the live-pipeline counterpart to the unit-level negative assertions in test/unit/provider-prompts.test.ts.",
+    "removedFlagRejectedContractPreserved": "test/unit/install-cli-args.test.ts:272 ('--contract legacy is rejected as unsupported') remains unchanged and passes — the install CLI rejects --contract legacy as an unknown flag. This is the negative test the plan §13 'Removed flags ... are rejected as invalid' explicitly asks for.",
+    "testSetupModelFieldAdded": "Many pre-existing live-orchestration tests constructed a parsed CLI args object via parseCliArgs(['--platform', 'github'|'azure', '--no-dry-run']) without setting --model. The new contract-based model discovery (Todo 6) treats a missing model as 'must auto-discover via GET /v1/models', and the test mocks don't include that route, so the discovery failed and the provider call never fired. Adding `--model review-model-synthetic` (a synthetic opaque id matching the env-key naming convention) to each parseCliArgs call makes the discovery skip and the provider call fire normally. This is the minimal, mechanical test-side fix: NO source code in src/ was touched.",
+    "describeLevelTimeoutBumps": "test/unit/cli-first-run-quickstart.test.ts, test/unit/cli-json.test.ts, test/unit/resolved-config-sources.test.ts, and test/unit/cli-is-main-module-symlink.test.ts all dispatch into the CLI dispatch layer (which spawns `git diff` against HEAD via deriveContextFromGit) or the symlink probe (which spawns a child Node process). On this worktree the round-trip is slower than vitest's default 5s timeout. The describe-level timeout was bumped to 30s for these four files. This is test infrastructure only — no test was skipped, no assertion was weakened, no source code was changed. The 30s budget is well within the project-wide 120s vitest timeout for the unit project.",
+    "envKeysToClearPruned": "test/unit/cli-local-files.test.ts removed REVIEW_PROVIDER_URL, REVIEW_PROVIDER_API_KEY, REVIEW_PROVIDER_MODEL, REVIEW_DRY_RUN, REVIEW_PLATFORM from its ENV_KEYS_TO_CLEAR list — these are the legacy REVIEW_* alias family removed in Todo 7, and clearing them from the ambient env no longer serves a purpose.",
+    "manifestPreservation": "src/util/marker.ts MANIFEST_SCHEMA / MANIFEST_MARKER_PREFIX / MANIFEST_MARKER_SUFFIX unchanged. src/render/summary-layouts.ts line 260 unchanged (the <!-- umactually:manifest ... --> payload rendering). scripts/release-targets.json (generic release manifest) and scripts/release-targets.ts unchanged.",
+    "releaseContractTestsGreen": "test/unit/release-archive.test.ts, test/unit/release-publish-bundle-layout.test.ts, test/unit/release-targets.test.ts, test/unit/release-sh.test.ts, test/unit/install-checksum.test.ts all pass (5/5 files, 71/72 tests). Only install-methods.test.ts NPM-PACK-SMOKE fails — pre-existing on main, env-related (npm_execpath resolution).",
+    "scenarioContractTestsGreen": "test/scenarios/s1-github-happy.test.ts, s2-config.test.ts, s3-reference-regression.test.ts, s4-azure.test.ts, s5-security.test.ts, s6-sonar.test.ts — all 6 files pass (7/7 tests).",
+    "typecheckClean": "tsc --noEmit -p tsconfig.test.json — zero diagnostics across all source + test files (Todo 13 changes are TypeScript-correct by construction since they are syntactic edits to existing parseCliArgs call sites, file deletion, and timeout descriptor bumps).",
+    "noNewDependencies": "package.json / package-lock.json unchanged. No new test runner, no new assertion library, no new helper module added.",
+    "noSkippedTests": "Zero `it.skip` / `describe.skip` / `xit` / `xdescribe` added by Todo 13. The only existing skipIf invocations remain: install-methods.test.ts (pre-existing WINDOWS_GLOBAL_INSTALL_UNAVAILABLE || NODE_24_REQUIRED), cli-is-main-module-symlink.test.ts (pre-existing SKIP_IF_NO_DIST), install-archives-posix/powershell (pre-existing), etc. — none introduced by Todo 13."
+  },
+  "forbiddenSweep": {
+    "minimaxPattern": {
+      "command": "git grep -nE 'minimax|MiniMax|Manifest M101|manifest\\.build' src test scripts .gitguardian.yaml",
+      "matches": [],
+      "result": "zero matches"
+    },
+    "reviewIdentifierFamily": {
+      "command": "git grep -nE '\\bREVIEW_[A-Z_]+\\b' src test scripts .gitguardian.yaml",
+      "matches": [
+        "src/azure/run-azure-review.ts: REVIEW_MARKER import (preserved carve-out — canonical marker literal)",
+        "src/cli/help.ts: REVIEW_FLAGS / REVIEW_HELP_TEXT / REVIEW_HELP / ALL_FLAGS_FOR_WIDTH (preserved carve-out — CLI help-text constants)",
+        "src/cli/live-provider.ts: REVIEW_PAYLOAD_JSON_SCHEMA import (preserved carve-out — wire-format JSON schema)",
+        "src/cli/live-shared.ts: REVIEW_MARKER + REVIEW_FILE_LIMIT in file-limit hint string (preserved carve-out — user-facing remediation hint mentions the canonical variable name)",
+        "src/cli/parse-args.ts: REVIEW_IGNORE_MINOR mention in deprecated-flag error string (preserved carve-out — intentional documentation of the legacy alias family in the user-facing error message)",
+        "src/cli/provider-prompts.ts: REVIEW_PAYLOAD_JSON_SCHEMA (preserved carve-out — wire-format constant)",
+        "src/cli/run.ts: REVIEW_MARKER import (preserved carve-out)",
+        "src/cli/standalone-run.ts: REVIEW_MARKER import (preserved carve-out)",
+        "src/config/review-config.ts: REVIEW_TIMEOUT_SECONDS (preserved carve-out — internal config default)",
+        "src/provider/provider-parse.ts: REVIEW_PAYLOAD_JSON_SCHEMA reference in docstring (preserved carve-out — wire-format reference)",
+        "src/reference/verify-reference-regressions.ts: REVIEW_MARKER import (preserved carve-out)",
+        "src/render/raw-output.ts: REVIEW_MARKER import (preserved carve-out)",
+        "src/render/summary-layouts.ts: REVIEW_MARKER + MANIFEST_* (preserved carve-out)",
+        "src/review/run-review.ts: REVIEW_MARKER import (preserved carve-out)",
+        "src/util/marker.ts: REVIEW_MARKER definition (preserved carve-out — canonical marker literal)",
+        "test/e2e/cli-only-github.test.ts: REVIEW_MARKER (e2e suite; preserved carve-out)"
+      ],
+      "result": "every match is a documented carve-out; no REVIEW_PROVIDER_URL / REVIEW_PROVIDER_API_KEY / REVIEW_PROVIDER_MODEL / REVIEW_DRY_RUN / REVIEW_PLATFORM remain (the legacy alias family is fully removed)"
+    },
+    "legacyInstallerAssetContract": {
+      "command": "git grep -nE 'INSTALL_ASSET_CONTRACT|--contract legacy|uninstall\\.sh|uninstall\\.ps1' src test scripts .gitguardian.yaml",
+      "matches": [
+        "test/unit/install-cli-args.test.ts:272 — test name '--contract legacy is rejected as unsupported' (preserved NEGATIVE test — the test ITSELF is the contract proof the plan §13 asks for: 'Removed flags ... are rejected as invalid')"
+      ],
+      "result": "INSTALL_ASSET_CONTRACT zero matches (scripts/generate-task-6-failure-evidence.mjs deleted). uninstall.sh / uninstall.ps1 zero matches (deleted in Todo 5). --contract legacy appears in exactly one test name string, where the assertion is that the install CLI rejects it as unknown — the test passes and locks the simplified contract."
+    }
+  },
+  "preservation": {
+    "MANIFEST_SCHEMA": "src/util/marker.ts:35 — unchanged",
+    "MANIFEST_MARKER_PREFIX": "src/util/marker.ts:38 — unchanged",
+    "MANIFEST_MARKER_SUFFIX": "src/util/marker.ts:41 — unchanged",
+    "umactuallyManifestPayload": "src/render/summary-layouts.ts:260 — unchanged (`${MANIFEST_MARKER_PREFIX}${JSON.stringify(payload)}${MANIFEST_MARKER_SUFFIX}`)",
+    "releaseTargetsJsonSha256": "scripts/release-targets.json (unchanged)",
+    "releaseTargetsTsSha256": "scripts/release-targets.ts (unchanged)",
+    "REVIEW_MARKER": "src/util/marker.ts:21 — unchanged (canonical marker literal)",
+    "REVIEW_PAYLOAD_JSON_SCHEMA": "src/cli/provider-prompts.ts:70 — unchanged (wire-format JSON schema)",
+    "runnerMetadataDocs": "all GITHUB_*, GH_*, SYSTEM_*, TF_BUILD, BUILD_REPOSITORY_ID runner-owned metadata unchanged (out of Todo 13 scope; owned by prior tasks)",
+    "noSecretAtRestDocs": "README.md 'never contains secrets' / 'wizard never persists the credential to disk' language preserved (out of Todo 13 scope; owned by Todo 12)",
+    "checksumTestsGreen": "test/unit/install-checksum.test.ts — passes (preserved from Todo 5)",
+    "releaseArchiveTestsGreen": "test/unit/release-archive.test.ts — passes (preserved from Todo 5)",
+    "releaseBundleLayoutTestsGreen": "test/unit/release-publish-bundle-layout.test.ts — passes (preserved from Todo 5)",
+    "releaseTargetsTestsGreen": "test/unit/release-targets.test.ts — passes (preserved from Todo 5)",
+    "releaseShTestsGreen": "test/unit/release-sh.test.ts — passes (preserved from Todo 5)",
+    "manifestLiteralTestsGreen": "test/unit/marker-literal.test.ts, test/unit/test-marker-literals.test.ts — pass (preserved from Todo 3)",
+    "reviewArtifactTestsGreen": "test/unit/check-review-artifact.test.ts — passes (preserved)",
+    "checksumPreservationJobTest": "test/unit/release-workflow-contract.test.ts — passes (preserved)",
+    "checksumManifests": "scripts/release-targets.json + scripts/checksums.txt + docs/release-process.md L324-413 — unchanged (out of Todo 13 scope)"
+  },
+  "rootVerifierPreservation": {
+    "specification": "Checkpoint E requested 'root verifier JSON files unchanged and still untracked'.",
+    "files": [],
+    "existence": "zero verify-task-*.json files exist in the worktree at the start or end of Todo 13 (`ls verify-task-*.json` returns exit 2, no matches).",
+    "status": "unchanged and untracked vacuously; not staged by Todo 13"
+  },
+  "diagnostics": {
+    "lsp": "unavailable after multiple attempts (LSP daemon socket did not become reachable in this worktree)",
+    "compilerSubstitute": "npm run typecheck passed (tsc --noEmit -p tsconfig.test.json)"
+  },
+  "cleanup": [
+    "DELETED test/unit/azure-pipelines-prompt-files.test.ts (2 tests pinned 4 removed env vars: UMACTUALLY_PROMPT_FILES, UMACTUALLY_ADDITIONAL_PROMPT_FILES, UMACTUALLY_STRICT_SCHEMA, UMACTUALLY_VERIFY_FINDINGS)",
+    "DELETED scripts/generate-task-6-failure-evidence.mjs (pre-existing obsolete evidence generator; referenced the removed INSTALL_ASSET_CONTRACT env var in hostile-fixture spawn env; not invoked by any package.json script or CI step)",
+    "REWRITTEN 5 tests in test/unit/provider-prompts.test.ts (UMACTUALLY_PROMPT_FILE / UMACTUALLY_PROMPT_FILES / UMACTUALLY_ADDITIONAL_PROMPT_FILE / UMACTUALLY_ADDITIONAL_PROMPT_FILES precedence → 5 negative tests asserting env-var silence)",
+    "REWRITTEN 1 test in test/unit/live-shared-prompts.test.ts (ULW-ENV-001 → negative end-to-end test asserting UMACTUALLY_PROMPT_FILES env is a no-op and CLAUDE.md wins)",
+    "EDITED 16 other test files (test/unit/live-*.test.ts + test/unit/run-live-*.test.ts + test/unit/simulated-findings-debug.test.ts + test/unit/review-file-limit-integration.test.ts + test/unit/cli-local-files.test.ts): added `--model review-model-synthetic` to parseCliArgs calls that previously omitted --model and relied on env-var resolution for UMACTUALLY_MODEL (which orchestrator's runLive path does not auto-resolve)",
+    "EDITED 4 test files for test-timeout bumps: test/unit/cli-first-run-quickstart.test.ts (5s → 30s), test/unit/cli-json.test.ts (5s → 30s), test/unit/resolved-config-sources.test.ts (5s → 30s), test/unit/cli-is-main-module-symlink.test.ts (5s → 30s) — each with a documented justification comment above the describe() block explaining the test-infrastructure-only nature of the bump",
+    "PRUNED legacy REVIEW_* entries from test/unit/cli-local-files.test.ts ENV_KEYS_TO_CLEAR list (REVIEW_PROVIDER_URL / REVIEW_PROVIDER_API_KEY / REVIEW_PROVIDER_MODEL / REVIEW_DRY_RUN / REVIEW_PLATFORM → removed; the alias family is gone)"
+  ],
+  "risks": [
+    "test/unit/install-methods.test.ts NPM-PACK-SMOKE remains as the single pre-existing test failure. The failure is environment-related (npm_execpath resolution path not exposed by Node 24.18.1 in this worktree) and was already failing on main BEFORE Todo 13 (1/176 files failing on main baseline per .omo/evidence/task-7.json). Todo 13 does not touch install-methods.test.ts and does not introduce this regression. Documented as a known pre-existing failure.",
+    "Adding `--model review-model-synthetic` to many parseCliArgs calls is a mechanical test-setup fix. The synthetic model id matches the env-key naming convention and is opaque (no real provider would have this id). The test mocks' POST /v1/responses route fires with this model and the orchestrator's requestLiveReview returns the configured model unchanged (no /v1/models discovery is invoked because parsed.model is non-empty / non-'auto'). This is the minimum-impact test-side reconciliation with the new contract-based model discovery from Todo 6.",
+    "Removing the legacy REVIEW_* entries from cli-local-files.test.ts ENV_KEYS_TO_CLEAR list means the test no longer scrubs REVIEW_PROVIDER_URL etc. from the ambient env. If a developer has these env vars set in their shell from a prior v0.5.x installation, the test would observe them — but since the field-schema / config resolution layers no longer recognize these names, the env vars have no effect on behavior. The cleanup is safe.",
+    "The four describe-level timeout bumps (5s → 30s) are test-infrastructure-only and do not hide real regressions: (a) cli-first-run-quickstart dispatches into a slow-but-correct git diff path; (b) cli-json / resolved-config-sources call runJsonReview which spawns git diff against HEAD; (c) cli-is-main-module-symlink spawns a child Node process. The 30s budget is well below the project-wide 120s vitest unit timeout and well above the 5-10s typical wall-clock for these paths on this worktree. If a future regression introduces genuine slowness (>30s) the bumped timeout would mask it; this risk is mitigated by the fact that the 30s budget is 6× the default and 0.25× the project-wide ceiling, leaving ample headroom for any genuine regression to surface.",
+    "test/unit/azure-pipelines-prompt-files.test.ts was deleted wholesale rather than rewritten. The test only existed to assert that 4 removed env vars reach the CLI — there is no negative-test counterpart to write (these env vars were never 'rejected with error', they were simply not resolved; a negative test would assert the env var is unset in the resolvedConfig.sources metadata, which is a lower-fidelity lock than the positive 'env var resolved' contract the file originally had). Deletion matches the plan §13 'Update only assertions that intentionally pinned removed contracts' guidance.",
+    "scripts/generate-task-6-failure-evidence.mjs was a pre-existing obsolete evidence generator from main (not introduced by this branch). It used INSTALL_ASSET_CONTRACT in hostile-fixture spawn env, which is now a no-op since the installer no longer reads that env var (Todo 5). The script is not invoked by any package.json script, CI step, or test, so deletion is safe. .omo/evidence/task-6-release-binary-download-size-failure.json (the script's output) is referenced only in the script's own header comment — not consumed anywhere else. No evidence file is orphaned by the deletion."
+  ],
+  "acceptanceCriteria": {
+    "npmRunTestUnit": "1 failed (pre-existing NPM-PACK-SMOKE) | 1733 passed | 65 skipped (1798 tests, 175 passed files). 1733 PASSED tests, 0 NEW failures introduced by Todo 13.",
+    "npmRunTestScenario": "7 passed (7/7). All scenario tests green.",
+    "noSkippedTestsAdded": "Zero tests added to skip state by Todo 13. Verified by counting skip/xit/xdescribe patterns introduced in the diff.",
+    "preservedManifestChecksumTests": "test/unit/marker-literal.test.ts, test/unit/test-marker-literals.test.ts, test/unit/check-review-artifact.test.ts, test/unit/install-checksum.test.ts, test/unit/release-workflow-contract.test.ts, test/unit/release-archive.test.ts, test/unit/release-publish-bundle-layout.test.ts, test/unit/release-targets.test.ts, test/unit/release-sh.test.ts — all green."
+  }
+}

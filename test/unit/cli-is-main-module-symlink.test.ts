@@ -98,7 +98,11 @@ function runIsMainModuleProbe(symlinkPath: string): ProbeResult {
   };
 }
 
-describe.skipIf(SKIP_IF_NO_DIST)("src/cli.ts isMainModule symlink resolution", () => {
+// The symlink probe spawns a child Node process and dynamically
+// imports `dist/cli.js`, which is slower than the default vitest 5s
+// timeout on this filesystem. Per-file bump to 30s so the test isn't
+// timed out before the child process finishes.
+describe.skipIf(SKIP_IF_NO_DIST)("src/cli.ts isMainModule symlink resolution", { timeout: 30_000 }, () => {
   // Use a fresh tmpdir so the symlink doesn't collide with anything
   // and so the test cleans itself up. The symlink target is the
   // real dist/cli.js (the one import.meta.url will resolve to).

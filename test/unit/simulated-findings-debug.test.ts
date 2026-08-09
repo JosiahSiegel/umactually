@@ -163,7 +163,7 @@ describe("simulate-findings debug log", () => {
     // When: --simulate-findings is set on the live path against a
     // non-empty live result.
     await runLive({
-      parsed: parseCliArgs(["--platform", "github", "--no-dry-run", "--simulate-findings"]),
+      parsed: parseCliArgs(["--platform", "github", "--no-dry-run", "--model", "review-model-synthetic", "--simulate-findings"]),
       cwd: workspace,
       env: githubEnv(eventPath),
       fetchImpl: recorder.fetchImpl,

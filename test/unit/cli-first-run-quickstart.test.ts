@@ -89,7 +89,12 @@ function clearEnv(): void {
   }
 }
 
-describe("CLI first-run compact quickstart (v0.6.24)", () => {
+// The dispatch path is slower than the default vitest 5s timeout when
+// it has to derive context from git (spawns `git diff` against HEAD).
+// Per-file bump to 30s so the slow-but-correct path isn't timed out
+// on machines where the local git diff is large. This is test
+// infrastructure only; no source code change.
+describe("CLI first-run compact quickstart (v0.6.24)", { timeout: 30_000 }, () => {
   beforeEach(() => {
     savedEnv = {};
     for (const key of ENV_KEYS_TO_CLEAR) {

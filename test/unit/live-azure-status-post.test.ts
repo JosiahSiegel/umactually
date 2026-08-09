@@ -189,7 +189,7 @@ describe("postAzureStatus body sanitization", () => {
 
     // When: the live Azure path runs and the status POST fires.
     const result = await runLive({
-      parsed: parseCliArgs(["--platform", "azure", "--no-dry-run"]),
+      parsed: parseCliArgs(["--platform", "azure", "--no-dry-run", "--model", "review-model-synthetic"]),
       cwd: process.cwd(),
       env: azureEnv(),
       fetchImpl: recorder.fetchImpl,
@@ -259,7 +259,7 @@ describe("postAzureStatus body sanitization", () => {
     const recorder = makeFetchRecorder(routes);
 
     await runLive({
-      parsed: parseCliArgs(["--platform", "azure", "--no-dry-run"]),
+      parsed: parseCliArgs(["--platform", "azure", "--no-dry-run", "--model", "review-model-synthetic"]),
       cwd: process.cwd(),
       env: azureEnv(),
       fetchImpl: recorder.fetchImpl,
@@ -319,7 +319,7 @@ describe("postAzureStatus body sanitization", () => {
 
     // When: the live Azure path runs and the status POST 400s.
     await runLive({
-      parsed: parseCliArgs(["--platform", "azure", "--no-dry-run"]),
+      parsed: parseCliArgs(["--platform", "azure", "--no-dry-run", "--model", "review-model-synthetic"]),
       cwd: process.cwd(),
       env: azureEnv(),
       fetchImpl: recorder.fetchImpl,
