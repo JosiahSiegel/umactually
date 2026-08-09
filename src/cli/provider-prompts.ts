@@ -238,7 +238,15 @@ function resolveDefaultPromptFilesOnce(cwd: string): readonly string[] {
   for (const candidate of expanded) {
     try {
       const s = statSync(pathJoin(cwd, candidate));
-      if (s.isFile()) out.push(candidate);
+      if (!s.isFile()) continue;
+      // Auto-discovery skips over-cap files silently: throwing here
+      // would abort the review for any repo whose own auto-discovered
+      // files (e.g. CHANGELOG.md) exceed the per-file cap. The
+      // explicit --prompt-files override still throws via
+      // readPromptFiles — the loud failure is reserved for the
+      // operator-controlled surface, not the auto-discovery surface.
+      if (s.size > DEFAULT_PROMPT_BYTE_CAP) continue;
+      out.push(candidate);
     } catch {
       // ENOENT (or any other stat failure): silently skip.
     }

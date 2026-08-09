@@ -72,6 +72,7 @@ describe("Azure DevOps platform unit contract", () => {
       prNumber: 42,
       sourceCommit: "1111111111111111111111111111111111111111",
       targetBranch: "refs/heads/main",
+      baseCommit: "1111111111111111111111111111111111111111",
     });
   });
 
