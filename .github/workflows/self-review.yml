@@ -190,6 +190,7 @@ jobs:
           set +e
           REVIEW_EXIT=0
           node bin/umactually.mjs review \
+            --model "${UMACTUALLY_MODEL:-review-model-synthetic}" \
             --platform "${UMACTUALLY_PLATFORM}" \
             --no-detect-leaks \
             --debug-raw-response \
