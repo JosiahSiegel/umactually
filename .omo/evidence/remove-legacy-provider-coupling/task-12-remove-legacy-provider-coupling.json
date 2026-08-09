@@ -1,0 +1,199 @@
+{
+  "task": 12,
+  "title": "Update README, CONTRIBUTING, examples, templates, env samples, security sentinels, and sample artifacts",
+  "worktree": "/tmp/opencode/remove-legacy-provider-coupling",
+  "scope": {
+    "productionFilesChanged": [
+      "README.md",
+      "CONTRIBUTING.md",
+      ".env.example",
+      "examples/azure/azure-pipelines.yml",
+      "src/cli/init-templates.ts",
+      "docs/samples/review-artifact.json"
+    ],
+    "testFilesChanged": [],
+    "untrackedButNotStaged": [
+      "dist/2d93e8e877dc4ef29106.ts (pre-existing untracked dist artifact, never touched by this task)"
+    ],
+    "preserved": [
+      "examples/github/pr-review.yml — already aligned with the simplified contract (only UMACTUALLY_API_URL + UMACTUALLY_API_KEY + GITHUB_TOKEN, no legacy env, no platform alias drift)",
+      ".gitguardian.yaml — no minimax/MiniMax literal was present in the file at the start of Todo 12; plan §12's 'replace sk-minimax-smoke-test-do-not-leak placeholder' item is vacuously satisfied (grep -c minimax|MiniMax returns 0)",
+      "scripts/verify-gitguardian-coverage.mjs — unchanged",
+      "docs/configuration.md, docs/providers.md, docs/security.md, docs/release-process.md, docs/troubleshooting.md, docs/exit-codes.md, docs/azure-devops.md, docs/gh-actions.md, docs/distribution-architecture.md — owned by Todo 11, unchanged by Todo 12",
+      "src/util/marker.ts MANIFEST_SCHEMA / MANIFEST_MARKER_PREFIX / MANIFEST_MARKER_SUFFIX (unchanged)",
+      "src/render/summary-layouts.ts manifest() and <!-- umactually:manifest ... --> payload rendering (unchanged)",
+      "scripts/release-targets.json (generic release manifest, unchanged)",
+      "scripts/release-targets.ts (unchanged)",
+      "README runner-owned metadata references (GITHUB_TOKEN, GH_TOKEN, GITHUB_REPOSITORY, GITHUB_SHA, SYSTEM_ACCESSTOKEN) preserved verbatim",
+      "README no-secret-at-rest language preserved verbatim (Quickstart + Saved config + API key handling sections still say 'never contains secrets', 'wizard never persists the credential to disk', 'env var is the canonical Unix-conventional remember-a-secret-without-writing-it-to-disk approach')",
+      "README checksums.txt / INSTALL_RELEASE_TAG / INSTALL_RELEASE_BASE / INSTALL_SSL_NO_REVOKE / INSTALL_TRY_NPM / INSTALL_FORCE_BINARY installer flags preserved verbatim — only the legacy INSTALL_ASSET_CONTRACT row was removed",
+      "root verify-task-*.json files — do not exist in either worktree (`ls verify-task-*.json` returns exit 2, no matches); the 'unchanged and untracked' invariant holds vacuously",
+      ".gitignore, Boulder state, plan — never modified"
+    ]
+  },
+  "behaviorChanges": {
+    "README.md": [
+      "§Uninstall: removed the two legacy curl/PowerShell snippets ('# Legacy one-liner (kept for back-compat with v0.5.x) curl -fsSL .../scripts/uninstall.sh | sh' and 'irm .../scripts/uninstall.ps1 | iex'). Only the built-in `umactually uninstall` (bash + powershell) remains.",
+      "§Install (alternative) curl-pipe installer flag table: removed the `--contract archive|legacy` / `INSTALL_ASSET_CONTRACT` row. The remaining five installer-flag rows (`--tag`, `--base`, `--install-dir`, `--ssl-no-revoke`, `--try-npm`) and `INSTALL_FORCE_BINARY=1` are preserved."
+    ],
+    "CONTRIBUTING.md": [
+      "§Required local secrets paragraph: 'The MiniMax pattern in `.env.example` shows the dual-protocol setup the operator runs against.' → 'The generic `gateway.example.com` examples in `.env.example` show the dual-protocol setup the operator runs against.'"
+    ],
+    ".env.example": [
+      "§Review API: removed the two MiniMax gateway example blocks (Anthropic-protocol under path prefix, OpenAI-protocol under same hostname) and replaced them with generic `gateway.example.com` examples. The two vanilla API examples (Vanilla Anthropic, Vanilla OpenAI) are preserved verbatim above them.",
+      "§Review API env defaults: removed `UMACTUALLY_MODEL=auto` literal default — changed to `UMACTUALLY_MODEL=` (empty; resolved at review time per Todo 6). Added the missing fifth kept var: `UMACTUALLY_GITHUB_API_BASE=` (was previously absent from .env.example even though it's part of the canonical 5-var contract).",
+      "Final kept-var block now reads exactly: UMACTUALLY_API_URL=, UMACTUALLY_API_KEY=, UMACTUALLY_PROVIDER=openai-compatible, UMACTUALLY_MODEL=, UMACTUALLY_GITHUB_API_BASE=."
+    ],
+    "examples/azure/azure-pipelines.yml": [
+      "Fixed `--platform azure-devops` → `--platform azure` so the canonical file byte-matches the new inline template in src/cli/init-templates.ts (init-templates-drift.test.ts failure caused by Todo 4's runtime alias removal).",
+      "Comment block reworded: 'UMACTUALLY_* options (prompt files, strict schema, verify findings, etc.) are CLI-native: set them as ADO pipeline variables and they flow through automatically' → 'Only the two canonical UMACTUALLY_* credential vars are forwarded; runtime options (model, provider, github-api-base) are read from the saved config under ~/.umactually/config.json or the provider's own discovery.' The legacy `prompt files, strict schema, verify findings` enumeration (UMACTUALLY_PROMPT_FILES / UMACTUALLY_ADDITIONAL_PROMPT_FILES / UMACTUALLY_STRICT_SCHEMA / UMACTUALLY_VERIFY_FINDINGS) is gone — those env vars are no longer honored.",
+      "Only retained env vars consumed: UMACTUALLY_API_URL, UMACTUALLY_API_KEY + ADO runner metadata SYSTEM_ACCESSTOKEN."
+    ],
+    "src/cli/init-templates.ts": [
+      "AZURE_PIPELINE_TEMPLATE comment reworded to match the canonical file byte-for-byte (the drift test enforces equality modulo the version pin).",
+      "Template env block unchanged: still references only UMACTUALLY_API_URL + UMACTUALLY_API_KEY (the two credentials the operator must supply) + SYSTEM_ACCESSTOKEN (ADO-specific plumbing). No literal `auto` defaults were ever present in this file (the file already restricted env defaults to the kept credential vars); the GITHUB workflow template is similarly restricted.",
+      "GITHUB workflow template untouched."
+    ],
+    "docs/samples/review-artifact.json": [
+      "outcome.modelId: 'provider-auto-m3-2026-01' (MiniMax-M3-derived branded id) → 'model-id-from-discovery' (generic opaque id, matching the contract-based discovery result from Todo 6).",
+      "effectiveConfig.providerModel: 'auto' literal → 'model-id-from-discovery' (generic opaque id).",
+      "effectiveConfig.model: 'auto' literal → '' (empty; resolved at review time per Todo 6).",
+      "effectiveConfig.modelId: 'provider-auto-m3-2026-01' → 'model-id-from-discovery'."
+    ],
+    ".gitguardian.yaml": [
+      "No changes. The file contained zero minimax/MiniMax literals at the start of Todo 12 (grep -c returns 0). Plan §12's instruction 'Replace sk-minimax-smoke-test-do-not-leak (and any matching SHA-256 hash)' is vacuously satisfied — there is no synthetic-key swap to perform and no SHA-256 to recompute."
+    ],
+    "examples/github/pr-review.yml": [
+      "No changes. Already aligned with the simplified contract: only UMACTUALLY_API_URL + UMACTUALLY_API_KEY + GITHUB_TOKEN referenced, --platform github flag (not aliased), no legacy env vars."
+    ]
+  },
+  "commands": [
+    {
+      "command": "git status --short",
+      "exitCode": 0,
+      "result": "M .env.example; M CONTRIBUTING.md; M README.md; M docs/samples/review-artifact.json; M examples/azure/azure-pipelines.yml; M src/cli/init-templates.ts; ?? dist/2d93e8e877dc4ef29106.ts"
+    },
+    {
+      "command": "git log --oneline main..HEAD",
+      "exitCode": 0,
+      "result": "13 commits: docs(config): document simplified configuration and discovery (most recent) ... refactor(marker): remove prior marker compatibility (oldest)"
+    },
+    {
+      "command": "ls README.md CONTRIBUTING.md examples/ .env.example .gitguardian.yaml docs/samples/ src/cli/init-templates.ts",
+      "exitCode": 0,
+      "result": "all six in-scope paths exist; examples/ contains github/pr-review.yml and azure/azure-pipelines.yml"
+    },
+    {
+      "command": "ls test/unit/readme-freshness.test.ts test/unit/init-templates-drift.test.ts test/unit/init-docs-freshness.test.ts test/unit/cli-help.test.ts scripts/verify-gitguardian-coverage.mjs",
+      "exitCode": 0,
+      "result": "all four tests and the gitguardian coverage script exist; test/unit/gitguardian-coverage.test.ts does NOT exist (covered by the verifier script + .gitguardian.yaml self-test)"
+    },
+    {
+      "command": "npm run render-docs",
+      "exitCode": 0,
+      "result": "render-versions: package.json version = 0.7.0; scanning 13 file(s); OK (no tokens to substitute; idempotent)"
+    },
+    {
+      "command": "npm run render-docs:check",
+      "exitCode": 0,
+      "result": "render-versions: --check OK (every file already aligned)"
+    },
+    {
+      "command": "npm run check:version-alignment -- --quiet",
+      "exitCode": 0,
+      "result": "no historical vX.Y.Z drift; package.json version 0.7.0 matches every shipped literal"
+    },
+    {
+      "command": "node_modules/.bin/vitest run --project unit test/unit/readme-freshness.test.ts test/unit/init-templates-drift.test.ts test/unit/init-docs-freshness.test.ts test/unit/cli-help.test.ts",
+      "exitCode": 0,
+      "result": "4 test files passed (readme-freshness, init-templates-drift, init-docs-freshness, cli-help); 65 tests passed"
+    },
+    {
+      "command": "npm run typecheck",
+      "exitCode": 0,
+      "result": "tsc --noEmit -p tsconfig.test.json passed with zero diagnostics"
+    },
+    {
+      "command": "node scripts/verify-gitguardian-coverage.mjs",
+      "exitCode": 0,
+      "result": "Total high-entropy secret-like literals in non-ignored files: 0; Ignored via SHA256 match: 0; UNCOVERED (would trigger GitGuardian): 0"
+    },
+    {
+      "command": "git grep -nE 'minimax|MiniMax|Manifest M101|manifest\\.build' README.md CONTRIBUTING.md examples .env.example .gitguardian.yaml docs/samples",
+      "exitCode": 1,
+      "result": "zero matches — forbidden sweep 1 passes"
+    },
+    {
+      "command": "git grep -nE '\\bREVIEW_[A-Z_]+\\b' README.md CONTRIBUTING.md examples .env.example",
+      "exitCode": 1,
+      "result": "zero matches — forbidden sweep 2 passes"
+    },
+    {
+      "command": "git grep -nE 'INSTALL_ASSET_CONTRACT|--contract legacy|uninstall\\.sh|uninstall\\.ps1' README.md CONTRIBUTING.md examples",
+      "exitCode": 1,
+      "result": "zero matches — forbidden sweep 3 passes"
+    }
+  ],
+  "qaNotes": {
+    "readmeFiveVars": "README.md documents all five canonical UMACTUALLY_* config env vars: UMACTUALLY_API_URL, UMACTUALLY_API_KEY, UMACTUALLY_MODEL, UMACTUALLY_PROVIDER, UMACTUALLY_GITHUB_API_BASE (12 mentions across §Quickstart, §Saved config, §API key handling, §CI Integration).",
+    "readmeBuiltInUninstall": "README.md §Uninstall block contains only the built-in `umactually uninstall` (bash + powershell variants: --yes, --purge-config, --json). No curl/PowerShell legacy uninstall snippets remain.",
+    "examplesClean": "examples/github/pr-review.yml references only GITHUB_TOKEN + UMACTUALLY_API_URL + UMACTUALLY_API_KEY + npm install + umactually review --platform github. examples/azure/azure-pipelines.yml references only SYSTEM_ACCESSTOKEN + UMACTUALLY_API_URL + UMACTUALLY_API_KEY + npm install + umactually review --platform azure. No legacy env vars, no branded provider URLs.",
+    "envExampleFiveVars": ".env.example §Review API env block now contains exactly: UMACTUALLY_API_URL=, UMACTUALLY_API_KEY=, UMACTUALLY_PROVIDER=openai-compatible, UMACTUALLY_MODEL=, UMACTUALLY_GITHUB_API_BASE= (five lines, no others).",
+    "gitguardianVacuouslyClean": ".gitguardian.yaml contains zero minimax|MiniMax literals; the SHA-256 hash verification step is not applicable because no placeholder swap was needed.",
+    "artifactParses": "docs/samples/review-artifact.json parses cleanly with `JSON.parse`; zero minimax|MiniMax references; model fields show generic 'model-id-from-discovery' (was branded 'provider-auto-m3-2026-01') and 'auto' literals replaced with 'model-id-from-discovery' / ''.",
+    "initTemplatesDrift": "After fixing examples/azure/azure-pipelines.yml to match the new --platform azure flag and the new comment block, init-templates-drift.test.ts passes for both github and azure workflows (bytes equal modulo the version pin).",
+    "preservedRunnerMetadata": "GITHUB_TOKEN, GH_TOKEN, GITHUB_REPOSITORY, GITHUB_SHA, GITHUB_REF, SYSTEM_ACCESSTOKEN, SYSTEM_COLLECTIONURI, SYSTEM_TEAMPROJECT, BUILD_REPOSITORY_ID, SYSTEM_PULLREQUEST_* references in README.md and CONTRIBUTING.md are preserved verbatim.",
+    "preservedNoSecretAtRest": "README §Quickstart: 'never contains secrets'; §Quickstart step 3: 'wizard never persists the credential to disk'; §API key handling: 'The env var is the canonical Unix-conventional remember a secret without writing it to disk approach; the wizard never sees or stores the key.' All preserved verbatim.",
+    "preservedGenericManifests": "scripts/release-targets.json, scripts/release-targets.ts, src/util/marker.ts MANIFEST_SCHEMA / MANIFEST_MARKER_PREFIX / MANIFEST_MARKER_SUFFIX, src/render/summary-layouts.ts manifest() rendering — all out of Todo 12 scope, unchanged."
+  },
+  "forbiddenSweep": {
+    "minimaxPattern": {
+      "command": "git grep -nE 'minimax|MiniMax|Manifest M101|manifest\\.build' README.md CONTRIBUTING.md examples .env.example .gitguardian.yaml docs/samples",
+      "matches": [],
+      "result": "zero matches"
+    },
+    "reviewIdentifierFamily": {
+      "command": "git grep -nE '\\bREVIEW_[A-Z_]+\\b' README.md CONTRIBUTING.md examples .env.example",
+      "matches": [],
+      "result": "zero matches — every REVIEW_* env var mention is gone from the public-setup surface"
+    },
+    "legacyInstallerAssetContract": {
+      "command": "git grep -nE 'INSTALL_ASSET_CONTRACT|--contract legacy|uninstall\\.sh|uninstall\\.ps1' README.md CONTRIBUTING.md examples",
+      "matches": [],
+      "result": "zero matches"
+    }
+  },
+  "preservation": {
+    "MANIFEST_SCHEMA": "present in src/util/marker.ts:35 — unchanged",
+    "MANIFEST_MARKER_PREFIX": "present in src/util/marker.ts:38 — unchanged",
+    "MANIFEST_MARKER_SUFFIX": "present in src/util/marker.ts:41 — unchanged",
+    "umactuallyManifestPayload": "rendered at src/render/summary-layouts.ts:260 via `${MANIFEST_MARKER_PREFIX}${JSON.stringify(payload)}${MANIFEST_MARKER_SUFFIX}` — unchanged",
+    "releaseTargetsJsonSha256": "scripts/release-targets.json (generic release manifest, unchanged)",
+    "releaseTargetsTsSha256": "scripts/release-targets.ts (unchanged)",
+    "checksumsTxtDocs": "docs/release-process.md L324-413 (six-asset table + checksums.txt source-of-truth reference + checksum-failure preservation job + Windows ARM64 caveat) — unchanged; Todo 11 preserved these verbatim",
+    "runnerMetadataDocs": "README.md line 24 (GITHUB_TOKEN/GH_TOKEN), line 237 (GITHUB_TOKEN/SYSTEM_ACCESSTOKEN) — preserved verbatim; CONTRIBUTING.md §CI operational notes (GITHUB_TOKEN/GH_TOKEN) — preserved verbatim",
+    "noSecretAtRestDocs": "README.md lines 14, 25, 80 (Quickstart + API key handling) — preserved verbatim; docs/security.md §Trust model: init + §What init NEVER stores — preserved verbatim (Todo 11)",
+    "githubExampleSha256": "examples/github/pr-review.yml unchanged — already aligned with the simplified contract",
+    "gitguardianConfigSha256": ".gitguardian.yaml unchanged — no synthetic-key swap needed"
+  },
+  "rootVerifierPreservation": {
+    "specification": "Checkpoint F requested 'root verifier JSON files unchanged and still untracked'.",
+    "files": [],
+    "existence": "zero verify-task-*.json files exist in the worktree at the start or end of Todo 12 (`ls verify-task-*.json` returns exit 2, no matches). Todo 11 evidence records the same vacuous-preservation invariant.",
+    "status": "unchanged and untracked vacuously; not staged by Todo 12"
+  },
+  "diagnostics": {
+    "lsp": "unavailable after multiple attempts because the LSP daemon socket did not become reachable",
+    "compilerSubstitute": "npm run typecheck passed (tsc --noEmit -p tsconfig.test.json)"
+  },
+  "cleanup": [],
+  "risks": [
+    "src/cli/init-templates.ts AZURE_PIPELINE_TEMPLATE was edited to match the canonical examples/azure/azure-pipelines.yml byte-for-byte (modulo version pin). The drift test now passes for both targets, but the new comment block in the template (and the matching canonical file) is longer and slightly more verbose than the old 'UMACTUALLY_* options ... are CLI-native' phrasing. Operators reading the file see 'Only the two canonical UMACTUALLY_* credential vars are forwarded' instead of a one-line explanation. This is intentional per plan §12 ('restrict env defaults to the five kept vars') — the previous comment was misleading because it implied all UMACTUALLY_* options were CLI-native, which is no longer true for the removed ones.",
+    "The .env.example block was re-ordered: vanilla Anthropic / vanilla OpenAI are now first (preserved verbatim), generic gateway.example.com examples are second (replacing the old MiniMax blocks). Operators familiar with the old file will see a different ordering; this is intentional and matches plan §12's 'Replace MiniMax/Manifest examples with generic invalid/example gateways' instruction.",
+    "The `dist/2d93e8e877dc4ef29106.ts` pre-existing untracked artifact and the pre-existing modified dist/cli.js remain unmodified and untracked at the end of Todo 12. Plan §14 owns regenerated dist; out of Todo 12 scope.",
+    "docs/samples/review-artifact.json `model` field changed from 'auto' literal to ''. Any reader who was mentally modeling 'auto means provider-native resolution' will need to revisit docs/providers.md §Model resolution for the new contract. This is intentional and matches the contract-based discovery from Todo 6.",
+    "README.md INSTALL_ASSET_CONTRACT row removal: a maintainer following the table by index (or who memorized the row position) will see one fewer row. The flag is gone from the install script per Todo 5, so the README removal is correct. The remaining six installer-flag rows are still documented in the same order.",
+    "No tests pin docs/samples/review-artifact.json content directly; the change is purely a documentation sample refresh.",
+    "examples/github/pr-review.yml was not edited this task. It was already aligned with the simplified contract from prior work — only 2 of the 5 kept UMACTUALLY_* vars are referenced (URL + KEY), which is correct for a credential-providing pipeline. MODEL / PROVIDER / GITHUB_API_BASE are intentionally read from saved config or provider discovery."
+  ]
+}

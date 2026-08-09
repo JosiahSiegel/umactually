@@ -38,7 +38,7 @@
   "severityWarnings": [],
   "outcome": {
     "provider": "openai-compatible",
-    "modelId": "provider-auto-m3-2026-01",
+    "modelId": "model-id-from-discovery",
     "endpoint": "https://api.example.com/v1/responses",
     "fallbackFrom": null,
     "elapsedMs": 9842,
@@ -48,7 +48,7 @@
   },
   "effectiveConfig": {
     "providerUrl": "https://api.example.com/v1",
-    "providerModel": "auto",
+    "providerModel": "model-id-from-discovery",
     "walkthrough": false,
     "diagnostic": false,
     "dryRun": false,
@@ -70,8 +70,8 @@
     "verifyFindings": true,
     "provider": "openai-compatible",
     "githubApiBase": null,
-    "model": "auto",
-    "modelId": "provider-auto-m3-2026-01",
+    "model": "",
+    "modelId": "model-id-from-discovery",
     "endpoint": "https://api.example.com/v1/responses",
     "promptFile": null,
     "additionalPromptFile": null,

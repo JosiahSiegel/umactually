@@ -53,7 +53,7 @@ npm run bundle                    # rebuild dist/ (required before pushing)
 
 ### Required local secrets (`.env` — gitignored)
 
-`UMACTUALLY_API_URL`, `UMACTUALLY_API_KEY`, `DEVOPS_PAT`. Copy `.env.example` to `.env` and fill in real values. The MiniMax pattern in `.env.example` shows the dual-protocol setup the operator runs against.
+`UMACTUALLY_API_URL`, `UMACTUALLY_API_KEY`, `DEVOPS_PAT`. Copy `.env.example` to `.env` and fill in real values. The generic `gateway.example.com` examples in `.env.example` show the dual-protocol setup the operator runs against.
 
 ### Fast inner loop for the provider layer
 

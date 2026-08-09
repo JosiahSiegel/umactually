@@ -47,8 +47,9 @@ jobs:
 `;
 
 const AZURE_PIPELINE_TEMPLATE = `# Enable "Allow scripts to access the OAuth token" in pipeline settings.
-# UMACTUALLY_* options (prompt files, strict schema, verify findings, etc.) are
-# CLI-native: set them as ADO pipeline variables and they flow through automatically.
+# Only the two canonical UMACTUALLY_* credential vars are forwarded; runtime
+# options (model, provider, github-api-base) are read from the saved config
+# under ~/.umactually/config.json or the provider's own discovery.
 # Artifact validation is automatic after each live review. SYSTEM_ACCESSTOKEN is the
 # only ADO-specific plumbing because Azure does not export $(System.AccessToken).
 trigger: none
