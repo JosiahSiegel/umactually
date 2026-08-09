@@ -525,6 +525,15 @@ async function runProviderCheck({ binaryPath, provider, apiUrl, diffPath, repo, 
     "--provider", provider,
     "--api-url", apiUrl,
     "--api-key", "test-key",
+    // Seed an explicit opaque model so the new contract-based
+    // discovery does not trigger a `GET /v1/models` call that the
+    // HTTP fixture does not serve. Same rationale as the
+    // GitHub live-contract fixture (see 9d939bc): post-Plan §10
+    // removed the literal `"auto"` fallback, so an omitted model
+    // would route to provider discovery and exit 1 before
+    // inference, producing zero comments. The opaque id is the
+    // same synthetic value used by the GitHub live fixture.
+    "--model", "review-model-test",
     "--diff", diffPath,
     "--repo", repo,
     "--pr-number", prNumber,
