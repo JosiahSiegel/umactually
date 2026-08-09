@@ -49,6 +49,111 @@ export async function fetchAzurePrDiff(context: AzureContext, fetchImpl: FetchIm
   return filtered;
 }
 
+/**
+ * Concurrency cap for `fetchAzurePrInstructions`. Four parallel
+ * fetches is enough to hide Azure DevOps Git `items` API latency on a
+ * typical repo without tripping the per-token rate-limit bucket.
+ */
+const INSTRUCTIONS_FETCH_CONCURRENCY = 4;
+
+/** Azure DevOps Git API version pinned by the `items` endpoint we use here. The repository-level preview namespace is required for the `versionDescriptor.*` query string. */
+const AZURE_GIT_ITEMS_API_VERSION = "7.1-preview.1";
+
+/**
+ * Fetch the contents of instruction files from the PR's base commit.
+ * Reads each path via the Azure DevOps Git `items` API pinned to
+ * `baseCommit` (not `sourceCommit`) so a PR cannot rewrite its own
+ * reviewer instructions. Per-path: 2xx decodes the JSON `content`
+ * field; 404 is silently skipped; any other failure throws
+ * `AzureApiError` with code `"AZURE_FETCH_FAILED"` so the caller can
+ * fall back to cwd reading. Concurrency 4 via a manual pool (no
+ * `p-limit` dependency in this project).
+ */
+export async function fetchAzurePrInstructions(
+  context: AzureContext,
+  paths: readonly string[],
+  fetchImpl: FetchImpl = fetch,
+): Promise<Map<string, string>> {
+  const results = new Map<string, string>();
+  if (paths.length === 0) {
+    return results;
+  }
+
+  const tasks = paths.map((path) => (): Promise<string | null> => fetchAzurePrInstruction(context, path, fetchImpl));
+
+  // Workers share a single monotonically advancing cursor; JS single-
+  // threadedness makes the increment atomic at each `await` boundary.
+  let cursor = 0;
+  const worker = async (): Promise<void> => {
+    while (true) {
+      const index = cursor++;
+      if (index >= tasks.length) {
+        return;
+      }
+      const value = await tasks[index]!();
+      if (value !== null) {
+        const path = paths[index]!;
+        results.set(path, value);
+      }
+    }
+  };
+
+  const workers: Promise<void>[] = [];
+  const poolSize = Math.min(INSTRUCTIONS_FETCH_CONCURRENCY, tasks.length);
+  for (let i = 0; i < poolSize; i++) {
+    workers.push(worker());
+  }
+  await Promise.all(workers);
+  return results;
+}
+
+async function fetchAzurePrInstruction(
+  context: AzureContext,
+  path: string,
+  fetchImpl: FetchImpl,
+): Promise<string | null> {
+  const url = buildInstructionItemUrl(context, path);
+  const response = await fetchImpl(url, buildAzureRequestInit(context));
+
+  if (response.status === 404) {
+    return null;
+  }
+
+  if (!response.ok) {
+    throw new AzureApiError(
+      "AZURE_FETCH_FAILED",
+      response.status,
+      `Azure DevOps PR instructions fetch failed for '${path}' with status ${response.status}.`,
+    );
+  }
+
+  const bodyText = await response.text();
+  if (bodyText.length === 0) {
+    throw new AzureApiError(
+      "AZURE_FETCH_FAILED",
+      response.status,
+      `Azure DevOps PR instructions response for '${path}' was empty.`,
+    );
+  }
+
+  let payload: unknown;
+  try {
+    payload = JSON.parse(bodyText);
+  } catch (error) {
+    if (error instanceof SyntaxError) {
+      throw new AzureApiError(
+        "AZURE_FETCH_FAILED",
+        response.status,
+        `Azure DevOps PR instructions response for '${path}' was not valid JSON.`,
+        { cause: error },
+      );
+    }
+    throw error;
+  }
+
+  return parseItemContent(payload);
+}
+
 async function reconstructUnifiedDiff(
   client: AzureJsonClient,
   sourceCommitId: string,
@@ -185,6 +290,17 @@ function parseItemBaseUrl(value: string | null): URL | null {
 function azureRepositoryBaseUrl(context: AzureContext): string {
   const projectSegment = encodeURIComponent(context.project);
   return `${AZURE_DEVOPS_BASE_URL}/${context.org}/${projectSegment}/_apis/git/repositories/${context.repoId}`;
+}
+
+function buildInstructionItemUrl(context: AzureContext, path: string): string {
+  const url = new URL(`${azureRepositoryBaseUrl(context)}/items`);
+  url.searchParams.set("path", path);
+  url.searchParams.set("versionDescriptor.version", context.baseCommit);
+  url.searchParams.set("versionDescriptor.versionType", "commit");
+  url.searchParams.set("includeContent", "true");
+  url.searchParams.set("api-version", AZURE_GIT_ITEMS_API_VERSION);
+
+  return url.toString();
 }
 
 /** Active Azure thread statuses — a thread still in flight. */

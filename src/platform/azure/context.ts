@@ -10,6 +10,7 @@ export type AzureContext = {
   readonly prNumber: number;
   readonly sourceCommit: string;
   readonly targetBranch: string;
+  readonly baseCommit: string;
 };
 
 /**
@@ -46,6 +47,7 @@ export function readAzureContext(
   const prNumber = readAzurePrNumber(env, overrides?.prNumber);
   const sourceCommit = readAzureSha(env);
   const targetBranch = readAzureTargetBranch(env);
+  const baseCommit = readAzureBaseCommit(env, sourceCommit);
 
   return {
     token,
@@ -55,6 +57,7 @@ export function readAzureContext(
     prNumber,
     sourceCommit,
     targetBranch,
+    baseCommit,
   };
 }
 
@@ -196,4 +199,20 @@ function readAzureTargetBranch(env: NodeJS.ProcessEnv): string {
     throw new AzureContextError("AZURE_TARGET_BRANCH_MISSING", "Azure Pipelines SYSTEM_PULLREQUEST_TARGETBRANCHNAME must be set.");
   }
   return value;
+}
+
+function readAzureBaseCommit(env: NodeJS.ProcessEnv, sourceCommit: string): string {
+  // Azure Pipelines does not expose a dedicated "base commit" env var.
+  // Operators who want the umbrella-instruction-files fetch to read from
+  // the PR's base SHA (so a PR cannot rewrite its own reviewer
+  // instructions) should set SYSTEM_PULLREQUEST_MERGECOMMITID to the
+  // tip of the target branch as resolved at PR creation time. When the
+  // var is missing, fall back to the source commit so manual/dry-run
+  // callers — which historically had only one SHA available — keep
+  // working. Real PR-validation builds should set this var explicitly.
+  const explicit = env["SYSTEM_PULLREQUEST_MERGECOMMITID"];
+  if (typeof explicit === "string" && explicit.length > 0) {
+    return explicit;
+  }
+  return sourceCommit;
 }
