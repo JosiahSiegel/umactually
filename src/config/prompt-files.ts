@@ -347,8 +347,11 @@ function globToRegexSource(pattern: string): string {
         i = end;
       }
     } else {
-      // Regex-escape any literal so `.`, `+`, `(`, etc. don't break out.
-      out += ch.replace(/[\\^$.+()|]/gu, "\\$&");
+      // Regex-escape any literal so `.`, `+`, `(`, `{`, etc. don't
+      // break out. Brace-expansion patterns (`{a,b}`) are detected at
+      // the gate but never expanded here — the braces are treated as
+      // literal regex characters.
+      out += ch.replace(/[\\^$.+()|{}]/gu, "\\$&");
     }
   }
   return out;
@@ -383,8 +386,13 @@ export function resolveGlobs(paths: readonly string[], cwd: string): readonly st
   const cwdReal = fsRealpathSync(cwd);
   const cwdRealWithSep = cwdReal.endsWith(pathSep) ? cwdReal : cwdReal + pathSep;
   // Walk the cwd tree once. `readdirSync` with `recursive: true` returns
-  // Dirent objects tagged with their parent path, so we can reconstruct
-  // the relative-to-cwd path without re-joining against the filesystem.
+  // Dirent objects tagged with their parent path. `Dirent.parentPath` is
+  // ABSOLUTE (not relative to the readdir root), so we strip the cwd
+  // prefix to reconstruct the repo-relative path used by the matcher.
+  // We use the unresolved `cwd` here (not `cwdReal`) because
+  // `parentPath` was produced by the same kernel walk that produced
+  // the entries — they share the same unresolved spelling.
+  const cwdWithSep = cwd.endsWith(pathSep) ? cwd : cwd + pathSep;
   const entries = fsReaddirSync(cwd, { recursive: true, withFileTypes: true });
   const out: string[] = [];
   for (const raw of paths) {
@@ -395,12 +403,17 @@ export function resolveGlobs(paths: readonly string[], cwd: string): readonly st
     const re = globToRegExp(raw);
     for (const entry of entries) {
       if (!entry.isFile()) continue;
-      // `Dirent.path` is the parent directory relative to the readdir
-      // root (i.e. relative to `cwd`). Compose the full relative path;
-      // an empty parent means the entry sits at the cwd root.
-      const rel = entry.parentPath === undefined || entry.parentPath === null || entry.parentPath === ""
-        ? entry.name
-        : `${entry.parentPath}/${entry.name}`;
+      // `Dirent.parentPath` is absolute (e.g. `/repo/.cursor/rules`).
+      // An entry whose parent is exactly `cwd` sits at the cwd root;
+      // anything deeper gets its cwd-prefix stripped.
+      const parent = entry.parentPath;
+      const rel =
+        parent === undefined || parent === null || parent === cwd
+          ? entry.name
+          : parent.startsWith(cwdWithSep)
+            ? `${parent.slice(cwdWithSep.length)}/${entry.name}`
+            : null;
+      if (rel === null) continue;
       if (!re.test(rel)) continue;
       // Realpath guard: skip anything that resolves outside cwd. We
       // resolve against `cwdReal` (the symlink-free root) so that a
