@@ -26,8 +26,12 @@
 name: post-release e2e
 
 on:
+  # Widen release trigger filter to include GitHub's newer canonical
+  # `released` signal and forward-compatible `prereleased` for future
+  # vX.Y.Z-rc.N releases (v0.8.0 ship observation: `gh release edit
+  # --draft=false` did not reliably auto-fire this workflow on `[published]` alone).
   release:
-    types: [published]
+    types: [published, released, prereleased]
   workflow_dispatch:
     inputs:
       tag:
