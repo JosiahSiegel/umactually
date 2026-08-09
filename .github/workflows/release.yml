@@ -1541,16 +1541,23 @@ jobs:
         # success log but cannot suppress a registry fetch; if the
         # published version is missing or has the wrong provenance
         # summary, this step fails the run.
+        #
+        # Two-phase probe (v0.8.0 follow-up): Phase 1 polls the
+        # package-level URL for `dist-tags.latest` (this signal is
+        # updated on the write path before the per-version URL
+        # propagates, so it's the fast happy-path). Phase 2 then
+        # cross-validates the per-version URL for the `attestations`
+        # field (Sigstore provenance) with a longer budget.
         run: |
           set -euo pipefail
           VERSION=$(node -e "console.log(require('./package.json').version)")
-          # 30 retries at 10s intervals (5min total). The 50s budget in v0.6.21
-          # produced a false negative: publish succeeded at +0s, verify gave
-          # up at +56s before the CDN caught up. npmjs.org propagation is
-          # commonly 60-180s.
-          sleep 15
-          for _i in $(seq 1 30); do
-            if response=$(curl -fsSL "https://registry.npmjs.org/umactually/${VERSION}" 2>/dev/null); then
+          # Phase 1: package-level `dist-tags.latest` probe (12 x 5s = 60s).
+          # The package-level doc is written on the publish write-path before
+          # the per-version URL propagates to the CDN, so it succeeds first
+          # for fresh publishes. v0.8.0 timed out at ~315s probing only the
+          # per-version URL despite dist-tags.latest already pointing at 0.8.0.
+          for _i in $(seq 1 12); do
+            if response=$(curl -fsSL "https://registry.npmjs.org/umactually" 2>/dev/null); then
               TAG=$(printf '%s' "$response" | node -e "
                 let s='';process.stdin.on('data',d=>s+=d).on('end',()=>{
                   const o=JSON.parse(s);
@@ -1558,18 +1565,32 @@ jobs:
                 })
               ")
               if [ "$TAG" = "$VERSION" ]; then
-                echo "OK: registry.npmjs.org/umactually@${VERSION} published (dist-tags.latest=${TAG})"
-                if printf '%s' "$response" | grep -q '"attestations"'; then
-                  echo "OK: provenance attestation present"
-                else
-                  echo "::warning::no 'attestations' field found in registry response — provenance may have failed silently. Verify on https://www.npmjs.com/package/umactually/v/${VERSION}"
-                fi
+                echo "OK: registry.npmjs.org/umactually published — dist-tags.latest=${TAG} matches"
+                break
+              fi
+            fi
+            sleep 5
+          done
+          if [ "$TAG" != "$VERSION" ]; then
+            echo "::error::Phase 1: umactually@${VERSION} not yet reflected as dist-tags.latest on registry.npmjs.org after 12 retries (60s). The publish step reported success but the package-level dist-tags did not update."
+            exit 1
+          fi
+          # Phase 2: per-version URL cross-validation for Sigstore provenance.
+          # Initial 15s sleep then 60 x 10s = 600s budget. The per-version URL
+          # commonly lags the package-level write by 60-180s during CDN
+          # propagation, so we keep the long budget here but only after the
+          # fast happy-path has already confirmed the publish landed.
+          sleep 15
+          for _i in $(seq 1 60); do
+            if response=$(curl -fsSL "https://registry.npmjs.org/umactually/${VERSION}" 2>/dev/null); then
+              if printf '%s' "$response" | grep -q '"attestations"'; then
+                echo "OK: registry.npmjs.org/umactually@${VERSION} reachable with 'attestations' field (Sigstore provenance present)"
                 exit 0
               fi
             fi
             sleep 10
           done
-          echo "::error::umactually@${VERSION} not found on registry.npmjs.org after 30 retries (5min). The publish step reported success but the registry did not reflect it."
+          echo "::error::Phase 2: umactually@${VERSION} reachable but 'attestations' field not found on registry.npmjs.org after 60 retries (600s). dist-tags.latest already matched, but per-version provenance did not propagate. Verify on https://www.npmjs.com/package/umactually/v/${VERSION}"
           exit 1
 
       - name: Summary

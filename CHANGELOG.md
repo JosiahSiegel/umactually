@@ -10,8 +10,9 @@ ship a tag).
 
 ## [Unreleased]
 
+### Fixed
 
-_No pending changes — last release: v0.8.0 (simplify public surface + coverage floor)._
+- **`Verify npm publication` step in the release workflow is now a two-phase probe**, eliminating the false-negative timeout the v0.8.0 release cut exposed. Phase 1 fast-paths on the package-level `dist-tags.latest` signal (12 × 5s = 60s budget); Phase 2 cross-validates with a longer-budget per-version URL probe (60 × 10s = 600s). `[.github/workflows/release.yml]`
 
 
 ## [0.8.0] - 2026-08-09

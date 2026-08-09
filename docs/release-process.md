@@ -176,7 +176,7 @@ curl -fsSL https://registry.npmjs.org/umactually/vX.Y.Z | jq '.dist-tags, .versi
 # Expected: { "latest": "X.Y.Z" } and the fetched JSON keyed by X.Y.Z
 ```
 
-The `publish-npm` job's own `Verify npm publication` step runs this check with up to ten 5-second retries, so a transient registry-propagation delay does not falsely fail the canary. If it does fail, the step logs `::error::umactually@<version> not found on registry.npmjs.org ...` — recovery is below in [§ 8.5](#85-npm-publish-failed).
+The `publish-npm` job's own `Verify npm publication` step runs a two-phase probe against the npm registry, so a transient registry-propagation delay does not falsely fail the canary. Phase 1 polls the package-level URL `https://registry.npmjs.org/umactually` up to 12 times at 5-second intervals (≈60s budget) and fast-paths on the `dist-tags.latest` signal that the publish has landed. Phase 2 cross-validates by polling the per-version URL `https://registry.npmjs.org/umactually/vX.Y.Z` up to 60 times at 10-second intervals (≈600s / 10-min budget). If both phases fail, the step logs `::error::umactually@<version> not found on registry.npmjs.org ...` — recovery is below in [§ 8.5](#85-npm-publish-failed), and the false-positive diagnostic is in [§ 10](#10-verify-npm-publication-timed-out--did-the-publish-actually-land).
 
 Provenance verification (one-time, after first publish):
 
@@ -556,7 +556,14 @@ A convenience wrapper, if present in your worktree, automates the four commands 
 
 ## 10. "Verify npm publication" timed out — did the publish actually land?
 
-This is the most common post-OIDC confusion mode. The `publish-npm` job has two CI-visible steps: `Publish to npm (Trusted Publishing / OIDC)` (the actual `npm publish`) and `Verify npm publication` (a 5-minute polling loop on the per-version URL). The log shows `+ umactually@X.Y.Z` for the publish step, then the verify step polls `https://registry.npmjs.org/umactually/vX.Y.Z` up to 30 times at 10-second intervals. The verify step exits 1 because the **per-version URL** still returns 404 — but the publish itself already landed. The `npm view` data proves it:
+This is the most common post-OIDC confusion mode. The `publish-npm` job has two CI-visible steps: `Publish to npm (Trusted Publishing / OIDC)` (the actual `npm publish`) and `Verify npm publication` (a **two-phase probe** against the npm registry). The log shows `+ umactually@X.Y.Z` for the publish step, then the verify step runs:
+
+- **Phase 1 — package-level `dist-tags.latest` fast-path** (`https://registry.npmjs.org/umactually`): polls up to 12 times at 5-second intervals (≈60s budget). Phase 1 maps directly to the canonical "did the publish land?" signal (see recipe below) — happy-path latency is ≈30s.
+- **Phase 2 — per-version URL cross-validation** (`https://registry.npmjs.org/umactually/vX.Y.Z`): polls up to 60 times at 10-second intervals (≈600s / 10-min budget). Phase 2 catches genuine regressions (malicious publish, missing attestations) that Phase 1 cannot see.
+- A genuine publish failure (e.g. OIDC misconfig) still fails the workflow — the step does **not** carry `continue-on-error: true`. A false negative only happens when Phase 1 returns `X.Y.Z` (publish landed) but Phase 2's per-version URL still 404s on the read path (registry CDN lag). Worst-case latency rises from ~315s to ~660s; the budget is intentionally generous.
+- The verify step exits 1 because Phase 2's **per-version URL** still returns 404 — but Phase 1 has already proven the publish landed (see recipe below).
+- The `npm view` data is the operator's ground truth: confirm it via the three-signal recipe below before taking any recovery action.
+- If you are reading this section because the step failed, jump to the recipe, run the three signals, then re-read the rest of this section in order. The proof is the recipe, not the step's exit code.
 
 ```bash
 # Did the publish actually land? Three signals to check:
@@ -585,7 +592,7 @@ If all three signals are present, the publish landed. The verify step's 404 is t
 2. **If you absolutely need a clean GitHub Actions badge**: cut a `vX.Y.Z+1` patch release that re-runs the full pipeline. Cannot reuse the failed tag (registry would reject).
 3. **Never** force-push or delete+re-push the tag. That breaks the canary's URL-contract assertions and every downstream consumer's immutable-tag pinning.
 
-The "verify step" should be renamed to "verify CDN caught up" in a future workflow revision. Until then, treat the step's exit code as **advisory only** — confirm the publish via the three `npm view` signals above before taking any recovery action.
+The "verify step" should be renamed to "verify CDN caught up". Until then, treat the step's exit code as **advisory only** — confirm the publish via the three `npm view` signals above before taking any recovery action.
 
 ## 11. Pre-release gotchas that don't fail the six gates but will fail the release PR
 
