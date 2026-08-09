@@ -25,6 +25,7 @@ type ProviderPromptsInput = {
   readonly env: NodeJS.ProcessEnv;
   readonly platform: LivePlatform;
   readonly diffText: string;
+  readonly instructionFilesByBaseBranch?: Map<string, string>;
   readonly sonarContext?: string;
 };
 
@@ -116,7 +117,10 @@ export async function buildProviderPrompts(input: ProviderPromptsInput): Promise
   // single-threaded sink assumption that `setActiveSeveritySink`
   // relies on. Implementation: synchronous stat() so we do NOT add a
   // new `await` boundary at the top of buildProviderPrompts.
-  const defaultPaths = resolveDefaultPromptFilesOnce(input.cwd);
+  const defaultPaths = input.instructionFilesByBaseBranch !== undefined
+    && input.instructionFilesByBaseBranch.size > 0
+    ? [...input.instructionFilesByBaseBranch.keys()]
+    : resolveDefaultPromptFilesOnce(input.cwd);
   const additionalPrompt = await readAdditionalPrompt(input, defaultPaths);
   const userParts = [
     `Platform: ${input.platform}`,
@@ -306,6 +310,7 @@ async function pickSystemPrompt(input: {
   readonly parsed: ParsedCliArgs;
   readonly cwd: string;
   readonly env: NodeJS.ProcessEnv;
+  readonly instructionFilesByBaseBranch?: Map<string, string>;
 }, defaultPaths: readonly string[]): Promise<string> {
   const inline = input.parsed.prompt;
   if (typeof inline === "string" && inline.length > 0) {
@@ -339,7 +344,7 @@ async function pickSystemPrompt(input: {
     return buildDefaultSystemPrompt();
   }
   if (defaultPaths.length > 0) {
-    return readPromptFiles(defaultPaths, DEFAULT_PROMPT_BYTE_CAP, { cwd: input.cwd });
+    return readResolvedDefaultPromptFiles(input, defaultPaths);
   }
   return buildDefaultSystemPrompt();
 }
@@ -359,6 +364,17 @@ async function pickSystemPrompt(input: {
 function isInstructionFilesExplicitlyFalse(parsed: ParsedCliArgs): boolean {
   const value = Reflect.get(parsed, "instructionFiles");
   return value === false;
+}
+
+function readResolvedDefaultPromptFiles(
+  input: { readonly cwd: string; readonly instructionFilesByBaseBranch?: Map<string, string> },
+  defaultPaths: readonly string[],
+): Promise<string> {
+  const baseBranch = input.instructionFilesByBaseBranch;
+  if (baseBranch !== undefined && baseBranch.size > 0) {
+    return Promise.resolve([...baseBranch.values()].join("\n\n"));
+  }
+  return readPromptFiles(defaultPaths, DEFAULT_PROMPT_BYTE_CAP, { cwd: input.cwd });
 }
 
 /**
