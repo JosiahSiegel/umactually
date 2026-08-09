@@ -8,6 +8,12 @@
 // Skips gracefully on platforms without PowerShell (macOS, Linux CI without
 // pwsh installed). The Windows installer variants have their own dedicated
 // tests in test/unit/install-scripts.test.ts.
+//
+// allow: SIZE_OK — single-purpose test file; PS-INSTALL-004/005 require an
+// inline minimal ZIP builder (production archive contract: one entry, Unix
+// mode 0o100755, stored compression). Extracting it to a shared helper would
+// touch test/unit/install-archives-powershell.test.ts to deduplicate its
+// `buildArchive` and is out of scope for this fix.
 
 import { execFileSync, spawn, spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
@@ -75,12 +81,105 @@ function run(scriptPath: string, env: Record<string, string>, scriptArgs: string
   };
 }
 
+// Minimal ZIP archive builder (STORED method, single entry). Mirrors the
+// production archive contract: one entry whose name matches the
+// install.ps1 $MemberName, with Unix mode 0o100755 (S_IFREG | 0755) so
+// Assert-ArchiveMemberSafe's 0x8000 type-bit check accepts it.
+const ZIP_LFH_SIG = 0x04034b50;
+const ZIP_CD_SIG = 0x02014b50;
+const ZIP_EOCD_SIG = 0x06054b50;
+
+const CRC_TABLE = (() => {
+  const table = new Uint32Array(256);
+  for (let i = 0; i < 256; i += 1) {
+    let c = i;
+    for (let k = 0; k < 8; k += 1) {
+      c = (c & 1) ? (0xedb88320 ^ (c >>> 1)) : (c >>> 1);
+    }
+    table[i] = c >>> 0;
+  }
+  return table;
+})();
+
+function crc32(bytes: Buffer): number {
+  let crc = 0xffffffff;
+  for (let i = 0; i < bytes.length; i += 1) {
+    crc = (crc >>> 8) ^ CRC_TABLE[(crc ^ bytes[i]!) & 0xff]!;
+  }
+  return (crc ^ 0xffffffff) >>> 0;
+}
+
+function buildSingleEntryZip(memberName: string, payload: Buffer): Buffer {
+  const nameBuf = Buffer.from(memberName, "binary");
+  const lfh = Buffer.alloc(30);
+  lfh.writeUInt32LE(ZIP_LFH_SIG, 0);
+  lfh.writeUInt16LE(20, 4); // version needed
+  lfh.writeUInt16LE(0x0800, 6); // general purpose: UTF-8 names
+  lfh.writeUInt16LE(0, 8); // method: stored
+  lfh.writeUInt16LE(0x0000, 10); // mtime: 00:00:00
+  lfh.writeUInt16LE(0x0021, 12); // mdate: 1980-01-01
+  const crc = crc32(payload);
+  lfh.writeUInt32LE(crc, 14);
+  lfh.writeUInt32LE(payload.length, 18); // compressed size
+  lfh.writeUInt32LE(payload.length, 22); // uncompressed size
+  lfh.writeUInt16LE(nameBuf.length, 26);
+  lfh.writeUInt16LE(0, 28); // extra-field length
+  const localBytes = Buffer.concat([lfh, nameBuf, payload]);
+
+  const cd = Buffer.alloc(46);
+  cd.writeUInt32LE(ZIP_CD_SIG, 0);
+  cd.writeUInt16LE(0x031e, 4); // version made by: Unix, 3.0
+  cd.writeUInt16LE(20, 6);
+  cd.writeUInt16LE(0x0800, 8);
+  cd.writeUInt16LE(0, 10);
+  cd.writeUInt16LE(0x0000, 12);
+  cd.writeUInt16LE(0x0021, 14);
+  cd.writeUInt32LE(crc, 16);
+  cd.writeUInt32LE(payload.length, 20);
+  cd.writeUInt32LE(payload.length, 24);
+  cd.writeUInt16LE(nameBuf.length, 28);
+  cd.writeUInt16LE(0, 30);
+  cd.writeUInt16LE(0, 32);
+  cd.writeUInt16LE(0, 34);
+  cd.writeUInt16LE(0, 36);
+  // externalAttributes: Unix mode 0o100755 = S_IFREG (0o100000) | 0755
+  // The high 16 bits hold the Unix mode; Assert-ArchiveMemberSafe
+  // requires the top nibble to be 0x8 (regular file).
+  cd.writeUInt32LE((0o100755 << 16) >>> 0, 38);
+  cd.writeUInt32LE(0, 42); // local header offset
+  const cdBytes = Buffer.concat([cd, nameBuf]);
+
+  const eocd = Buffer.alloc(22);
+  eocd.writeUInt32LE(ZIP_EOCD_SIG, 0);
+  eocd.writeUInt16LE(0, 4);
+  eocd.writeUInt16LE(0, 6);
+  eocd.writeUInt16LE(1, 8); // entries on this disk
+  eocd.writeUInt16LE(1, 10); // total entries
+  eocd.writeUInt32LE(cdBytes.length, 12);
+  eocd.writeUInt32LE(localBytes.length, 16);
+  eocd.writeUInt16LE(0, 20); // comment length
+  return Buffer.concat([localBytes, cdBytes, eocd]);
+}
+
 async function runChecksumInstall(checksums: string): Promise<ScriptResult> {
   const releaseDir = join(sandbox, "release");
   const homeDir = join(sandbox, "home");
   mkdirSync(releaseDir);
   mkdirSync(homeDir);
-  writeFileSync(join(releaseDir, "umactually-windows-x64.exe"), "verified binary");
+
+  // Build a real ZIP archive that matches the production archive contract:
+  //   - single entry named $MemberName = "umactually-windows-x64.exe"
+  //   - Unix mode 0o100755 (regular file)
+  //   - stored compression
+  // The "binary payload" is the same string the success-case test expects
+  // to land at the install path. The smoke test is disabled below because
+  // this stub string is not a valid PE; the install-checksum-download
+  // contract under test is independent of the binary's runnability.
+  const archiveBytes = buildSingleEntryZip(
+    "umactually-windows-x64.exe",
+    Buffer.from("verified binary", "utf8"),
+  );
+  writeFileSync(join(releaseDir, "umactually-windows-x64.zip"), archiveBytes);
   writeFileSync(join(releaseDir, "checksums.txt"), checksums);
 
   const server = spawn(process.execPath, [
@@ -94,7 +193,12 @@ async function runChecksumInstall(checksums: string): Promise<ScriptResult> {
   try {
     const [line] = await once(lines, "line");
     return run(INSTALL_PS1, {
+      // Pair BASE with a placeholder tag so Resolve-Tag takes the TAG+BASE
+      // branch (case 5) and skips the BASE-only "invalid" throw. The tag
+      // is unused downstream: Resolve-ReleaseBase returns BASE directly.
       INSTALL_RELEASE_BASE: `http://127.0.0.1:${line}`,
+      INSTALL_RELEASE_TAG: "v0.0.0",
+      INSTALL_TEST_NO_SMOKE: "1",
       PROCESSOR_ARCHITECTURE: "AMD64",
       USERPROFILE: homeDir,
     });
@@ -201,9 +305,25 @@ describe.skipIf(!PS_AVAILABLE)("install.ps1", () => {
   });
 
   it("PS-INSTALL-004: installs only after the GNU checksum entry matches", async () => {
-    const hash = createHash("sha256").update("verified binary").digest("hex");
+    const archiveBytes = buildSingleEntryZip(
+      "umactually-windows-x64.exe",
+      Buffer.from("verified binary", "utf8"),
+    );
+    // SHA-256 of the actual archive bytes (the zip wrapper), NOT the
+    // inner member payload. install.ps1 hashes the downloaded archive.
+    const hash = createHash("sha256").update(archiveBytes).digest("hex");
+    // All five $ArchiveBasenames must appear in checksums.txt per
+    // Validate-ChecksumsFile. The windows-x64 entry carries the
+    // correct SHA-256 of the staged archive.
+    const lines = [
+      `${"a".repeat(64)}  umactually-linux-x64.tar.gz`,
+      `${"a".repeat(64)}  umactually-linux-arm64.tar.gz`,
+      `${"a".repeat(64)}  umactually-darwin-arm64.tar.gz`,
+      `${hash}  umactually-windows-x64.zip`,
+      `${"a".repeat(64)}  umactually-windows-arm64.zip`,
+    ].join("\n") + "\n";
 
-    const result = await runChecksumInstall(`${hash}  umactually-windows-x64.exe\n`);
+    const result = await runChecksumInstall(lines);
 
     const installedPath = join(sandbox, "home", ".local", "bin", "umactually.exe");
     expect(result.status).toBe(0);
@@ -211,9 +331,35 @@ describe.skipIf(!PS_AVAILABLE)("install.ps1", () => {
   });
 
   it.each([
-    ["missing", `${"a".repeat(64)}  umactually-linux-x64\n`, "No SHA-256 checksum entry"],
-    ["malformed", `not-a-sha256  umactually-windows-x64.exe\n`, "Malformed SHA-256 checksum entry"],
-    ["mismatched", `${"0".repeat(64)}  umactually-windows-x64.exe\n`, "SHA-256 checksum mismatch"],
+    [
+      "missing",
+      `${"a".repeat(64)}  umactually-linux-x64.tar.gz
+${"a".repeat(64)}  umactually-linux-arm64.tar.gz
+${"a".repeat(64)}  umactually-darwin-arm64.tar.gz
+${"a".repeat(64)}  umactually-windows-arm64.zip
+`,
+      "No SHA-256 checksum entry",
+    ],
+    [
+      "malformed",
+      `${"a".repeat(64)}  umactually-linux-x64.tar.gz
+${"a".repeat(64)}  umactually-linux-arm64.tar.gz
+${"a".repeat(64)}  umactually-darwin-arm64.tar.gz
+not-a-sha256  umactually-windows-x64.zip
+${"a".repeat(64)}  umactually-windows-arm64.zip
+`,
+      "Malformed SHA-256 checksum entry",
+    ],
+    [
+      "mismatched",
+      `${"a".repeat(64)}  umactually-linux-x64.tar.gz
+${"a".repeat(64)}  umactually-linux-arm64.tar.gz
+${"a".repeat(64)}  umactually-darwin-arm64.tar.gz
+${"0".repeat(64)}  umactually-windows-x64.zip
+${"a".repeat(64)}  umactually-windows-arm64.zip
+`,
+      "SHA-256 checksum mismatch",
+    ],
   ])("PS-INSTALL-005: rejects a %s checksum entry and cleans temporary files", async (_case, checksums, error) => {
     const result = await runChecksumInstall(checksums);
 

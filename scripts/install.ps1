@@ -691,7 +691,7 @@ function Validate-ChecksumsFile {
   foreach ($line in $raw) {
     $parsed = Parse-ChecksumLine -Line $line
     if ($null -eq $parsed) {
-      throw "Malformed checksum line: '$line'"
+      throw "Malformed SHA-256 checksum entry in checksums.txt: '$line'"
     }
     if ($parsed.Basename -notin $allowed) {
       throw "Unknown checksum basename for archive contract: $($parsed.Basename)"
@@ -703,7 +703,7 @@ function Validate-ChecksumsFile {
   }
   foreach ($expected in $allowed) {
     if (-not $found.ContainsKey($expected)) {
-      throw "Missing checksum line for archive contract: $expected"
+      throw "No SHA-256 checksum entry in checksums.txt for archive contract: $expected"
     }
   }
   return $found
@@ -1068,7 +1068,7 @@ try {
   $hashes = Validate-ChecksumsFile -ChecksumsPath $TempChecksums
   $expectedHash = $hashes[$ArchiveName]
   if (-not $expectedHash) {
-    throw "No checksum entry for $ArchiveName in checksums.txt"
+    throw "No SHA-256 checksum entry for $ArchiveName in checksums.txt"
   }
 
   Invoke-WebRequest -Uri $ArchiveUrl -OutFile $TempZip -UseBasicParsing
