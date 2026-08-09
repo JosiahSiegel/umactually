@@ -1553,10 +1553,10 @@ jobs:
            VERSION=$(node -e "console.log(require('./package.json').version)")
            TAG=""
            # Phase 1: package-level `dist-tags.latest` probe (12 x 5s = 60s).
-          # The package-level doc is written on the publish write-path before
-          # the per-version URL propagates to the CDN, so it succeeds first
-          # for fresh publishes. v0.8.0 timed out at ~315s probing only the
-          # per-version URL despite dist-tags.latest already pointing at 0.8.0.
+           # The package-level doc is written on the publish write-path before
+           # the per-version URL propagates to the CDN, so it succeeds first
+           # for fresh publishes. v0.8.0 timed out at ~315s probing only the
+           # per-version URL despite dist-tags.latest already pointing at 0.8.0.
           for _i in $(seq 1 12); do
             if response=$(curl -fsSL "https://registry.npmjs.org/umactually" 2>/dev/null); then
               TAG=$(printf '%s' "$response" | node -e "
