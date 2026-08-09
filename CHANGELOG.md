@@ -13,6 +13,7 @@ ship a tag).
 ### Fixed
 
 - **`Verify npm publication` step in the release workflow is now a two-phase probe**, eliminating the false-negative timeout the v0.8.0 release cut exposed. Phase 1 fast-paths on the package-level `dist-tags.latest` signal (12 × 5s = 60s budget); Phase 2 cross-validates with a longer-budget per-version URL probe (60 × 10s = 600s). `[.github/workflows/release.yml]`
+- **`post-release-e2e.yml` `on.release.types` filter widened from `[published]` to `[published, released, prereleased]`**, so the post-release e2e workflow fires reliably for releases published via `gh release edit --draft=false` and for future prereleases, not just the initial draft-to-published transition. The existing `Resolve target tag` step reads `github.event.release.tag_name` from whichever event type fires, so no downstream changes were required. `[.github/workflows/post-release-e2e.yml]`
 
 
 ## [0.8.0] - 2026-08-09
