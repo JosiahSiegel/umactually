@@ -399,12 +399,12 @@ async function dispatchLivePlatform(input: {
             fileCount,
             reviewFileLimit,
             provider: parsed.provider ?? "openai-compatible",
-            modelId: parsed.model ?? "auto",
+            modelId: parsed.model ?? "(auto)",
             secrets: [context.token],
           }),
           endpoint: "skipped",
           provider: parsed.provider ?? "openai-compatible",
-          modelId: parsed.model ?? "auto",
+          modelId: parsed.model ?? "(auto)",
           // Skipped-due-to-file-limit placeholder — no parser ran, so
           // no severity warnings to surface.
           severityWarnings: [],

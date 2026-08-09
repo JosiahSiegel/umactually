@@ -445,7 +445,7 @@ export const INIT_HELP_TEXT = [
   "  --api-url <url>            OpenAI-compatible base URL (env: UMACTUALLY_API_URL)",
   "  --api-key <key>            Provider API key (env: UMACTUALLY_API_KEY; NEVER persisted)",
   "  --github-api-base <url>    Copilot API base (env: UMACTUALLY_GITHUB_API_BASE)",
-  "  --model <id>               Provider model id (default: auto)",
+  "  --model <id>               Provider model id (optional; resolved at review time)",
   "  --scope <global|repo>      Where to persist the saved config",
   "  --ci <auto|github|azure|none>",
   "                             Generate a CI workflow file (auto-detects)",
@@ -739,7 +739,7 @@ async function runDryRunInit({
   // compatible default to keep the plan deterministic.
   const provider: InitProvider = args.provider ?? "openai-compatible";
   const apiUrl = args.apiUrl ?? DEFAULT_OPENAI_URL;
-  const model = args.model ?? "auto";
+  const model = args.model;
 
   const config: SavedConfig = buildConfig(provider, apiUrl, model);
 
@@ -842,15 +842,12 @@ async function runNonInteractiveInit({
   if (provider === "openai-compatible") {
     if (apiUrl === undefined) apiUrl = DEFAULT_OPENAI_URL;
     if (args.apiKey === undefined) pendingPrompts.push("--api-key");
-    if (model === undefined) model = "auto";
   } else if (provider === "anthropic") {
     if (args.apiKey === undefined) pendingPrompts.push("--api-key");
     if (apiUrl === undefined) apiUrl = DEFAULT_ANTHROPIC_URL;
-    if (model === undefined) model = "auto";
   } else {
     // copilot — no apiKey prompt; githubApiBase presence is acknowledged
     // but not persisted (saved config schema lacks the field).
-    if (model === undefined) model = "auto";
   }
 
   if (pendingPrompts.length > 0) {
@@ -900,7 +897,7 @@ async function runNonInteractiveInit({
   const config: SavedConfig = buildConfig(
     provider,
     apiUrl ?? DEFAULT_OPENAI_URL,
-    model ?? "auto",
+    model,
   );
 
   // apiKey and githubApiBase were validated for presence only and
@@ -1224,8 +1221,7 @@ export function buildPerBranchPrompts(
         {
           label: MODEL_LABEL,
           envVarName: "UMACTUALLY_MODEL",
-          placeholder: "auto",
-          default: "auto",
+          placeholder: "(resolved at review time)",
         },
       ];
     case "anthropic":
@@ -1238,8 +1234,7 @@ export function buildPerBranchPrompts(
         {
           label: MODEL_LABEL,
           envVarName: "UMACTUALLY_MODEL",
-          placeholder: "auto",
-          default: "auto",
+          placeholder: "(resolved at review time)",
         },
       ];
     case "copilot":
@@ -1253,8 +1248,7 @@ export function buildPerBranchPrompts(
         {
           label: MODEL_LABEL,
           envVarName: "UMACTUALLY_MODEL",
-          placeholder: "auto",
-          default: "auto",
+          placeholder: "(resolved at review time)",
         },
       ];
   }
@@ -1266,7 +1260,7 @@ type BranchOutcome =
       readonly apiUrl: string | undefined;
       readonly apiKey: string | undefined;
       readonly githubApiBase: string | undefined;
-      readonly model: string;
+      readonly model: string | undefined;
     }
   | { readonly outcome: "aborted" }
   | { readonly outcome: "error"; readonly result: InitResult };
@@ -1294,7 +1288,7 @@ async function promptBranch(input: {
     collected[p.envVarName] = answer;
   }
 
-  const model = collected["UMACTUALLY_MODEL"] ?? "auto";
+  const model = collected["UMACTUALLY_MODEL"];
   if (provider === "openai-compatible") {
     return {
       outcome: "ok",
@@ -1479,9 +1473,15 @@ function containsUnsafePathSegment(p: string): boolean {
 
 /**
  * Build a typed SavedConfig. apiUrl is omitted when equal to the
- * runtime default; model is omitted when "auto".
+ * runtime default; model is omitted when undefined or empty so the
+ * saved-config bytes never carry the literal "auto" sentinel — model
+ * is truly optional, and the runtime resolves it at review time.
  */
-function buildConfig(provider: InitProvider, apiUrl: string, model: string): SavedConfig {
+function buildConfig(
+  provider: InitProvider,
+  apiUrl: string,
+  model: string | undefined,
+): SavedConfig {
   const defaultForProvider =
     provider === "anthropic" ? DEFAULT_ANTHROPIC_URL : DEFAULT_OPENAI_URL;
   const base: SavedConfig = {
@@ -1489,7 +1489,7 @@ function buildConfig(provider: InitProvider, apiUrl: string, model: string): Sav
     provider,
   };
   const includeApiUrl = apiUrl !== defaultForProvider;
-  const includeModel = model !== "auto";
+  const includeModel = typeof model === "string" && model.length > 0;
   if (includeApiUrl && includeModel) {
     return { ...base, apiUrl, model };
   }
