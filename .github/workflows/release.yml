@@ -1549,9 +1549,10 @@ jobs:
         # cross-validates the per-version URL for the `attestations`
         # field (Sigstore provenance) with a longer budget.
         run: |
-          set -euo pipefail
-          VERSION=$(node -e "console.log(require('./package.json').version)")
-          # Phase 1: package-level `dist-tags.latest` probe (12 x 5s = 60s).
+           set -euo pipefail
+           VERSION=$(node -e "console.log(require('./package.json').version)")
+           TAG=""
+           # Phase 1: package-level `dist-tags.latest` probe (12 x 5s = 60s).
           # The package-level doc is written on the publish write-path before
           # the per-version URL propagates to the CDN, so it succeeds first
           # for fresh publishes. v0.8.0 timed out at ~315s probing only the
@@ -1583,10 +1584,15 @@ jobs:
           sleep 15
           for _i in $(seq 1 60); do
             if response=$(curl -fsSL "https://registry.npmjs.org/umactually/${VERSION}" 2>/dev/null); then
-              if printf '%s' "$response" | grep -q '"attestations"'; then
-                echo "OK: registry.npmjs.org/umactually@${VERSION} reachable with 'attestations' field (Sigstore provenance present)"
-                exit 0
-              fi
+               if node -e "
+                 let s='';process.stdin.on('data',d=>s+=d).on('end',()=>{
+                   const o=JSON.parse(s);
+                   process.exit(Object.hasOwn(o, 'attestations') ? 0 : 1);
+                 })
+               " <<< "$response"; then
+                 echo "OK: registry.npmjs.org/umactually@${VERSION} reachable with 'attestations' field (Sigstore provenance present)"
+                 exit 0
+               fi
             fi
             sleep 10
           done
