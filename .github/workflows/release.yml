@@ -1576,13 +1576,13 @@ jobs:
              echo "::error::Phase 1: umactually@${VERSION} not yet reflected as dist-tags.latest on registry.npmjs.org after 12 retries (60s). The publish step reported success but the package-level dist-tags did not update."
              exit 1
            fi
-          # Phase 2: per-version URL cross-validation for Sigstore provenance.
-          # Initial 15s sleep then 60 x 10s = 600s budget. The per-version URL
-          # commonly lags the package-level write by 60-180s during CDN
-          # propagation, so we keep the long budget here but only after the
-          # fast happy-path has already confirmed the publish landed.
-          sleep 15
-          for _i in $(seq 1 60); do
+           # Phase 2: per-version URL cross-validation for Sigstore provenance.
+           # Initial 15s sleep then 60 x 10s = 600s budget. The per-version URL
+           # commonly lags the package-level write by 60-180s during CDN
+           # propagation, so we keep the long budget here but only after the
+           # fast happy-path has already confirmed the publish landed.
+           sleep 15
+           for _i in $(seq 1 60); do
             if response=$(curl -fsSL "https://registry.npmjs.org/umactually/${VERSION}" 2>/dev/null); then
                if node -e "
                  let s='';process.stdin.on('data',d=>s+=d).on('end',()=>{
@@ -1595,9 +1595,9 @@ jobs:
                fi
             fi
             sleep 10
-          done
-          echo "::error::Phase 2: umactually@${VERSION} reachable but 'attestations' field not found on registry.npmjs.org after 60 retries (600s). dist-tags.latest already matched, but per-version provenance did not propagate. Verify on https://www.npmjs.com/package/umactually/v/${VERSION}"
-          exit 1
+           done
+           echo "::error::Phase 2: umactually@${VERSION} reachable but 'attestations' field not found on registry.npmjs.org after 60 retries (600s). dist-tags.latest already matched, but per-version provenance did not propagate. Verify on https://www.npmjs.com/package/umactually/v/${VERSION}"
+           exit 1
 
       - name: Summary
         if: ${{ always() }}
