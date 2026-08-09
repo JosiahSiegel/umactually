@@ -49,6 +49,9 @@ jobs:
       - name: Test
         run: npm test -- --run
 
+      - name: Coverage floor
+        run: npm run test:coverage
+
       - name: Bundle
         run: npm run bundle
 

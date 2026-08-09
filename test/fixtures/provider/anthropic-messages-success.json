@@ -1,0 +1,17 @@
+{
+  "id": "msg_synthetic_001",
+  "type": "message",
+  "role": "assistant",
+  "model": "review-model-synthetic",
+  "content": [
+    {
+      "type": "text",
+      "text": "{\"summary\":\"Synthetic anthropic messages review.\",\"verdict\":\"COMMENT\",\"comments\":[],\"suppressed_comments\":[]}"
+    }
+  ],
+  "stop_reason": "end_turn",
+  "usage": {
+    "input_tokens": 120,
+    "output_tokens": 24
+  }
+}

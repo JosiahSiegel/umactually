@@ -45,7 +45,7 @@
   },
   "scripts": {
     "test": "vitest",
-    "test:coverage": "vitest run --coverage --project unit --project scenario",
+    "test:coverage": "vitest run --project unit --coverage --coverage.thresholds.statements=78 --coverage.thresholds.branches=70 --coverage.thresholds.functions=80 --coverage.thresholds.lines=78",
     "test:unit": "vitest --project unit",
     "test:scenario": "vitest --project scenario",
     "test:e2e": "vitest --run --project e2e",
