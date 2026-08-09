@@ -69,7 +69,7 @@ module.exports = { cursor, scroll, erase, beep };
 /***/ 28:
 /***/ ((module, __unused_webpack_exports, __nccwpck_require__) => {
 
-module.exports = __nccwpck_require__.p + "55c2bc67b7049e4c7cd2.ts";
+module.exports = __nccwpck_require__.p + "2d93e8e877dc4ef29106.ts";
 
 /***/ }),
 
@@ -253,7 +253,7 @@ const FIELDS = {
         field: "apiUrl",
         flag: "--api-url",
         input: "api-url",
-        env: ["UMACTUALLY_API_URL", "REVIEW_PROVIDER_URL"],
+        env: ["UMACTUALLY_API_URL"],
         type: "string",
         defaultValue: "",
     },
@@ -261,7 +261,7 @@ const FIELDS = {
         field: "apiKey",
         flag: "--api-key",
         input: "api-key",
-        env: ["UMACTUALLY_API_KEY", "REVIEW_PROVIDER_API_KEY"],
+        env: ["UMACTUALLY_API_KEY"],
         type: "string",
         defaultValue: "",
     },
@@ -269,9 +269,9 @@ const FIELDS = {
         field: "model",
         flag: "--model",
         input: "model",
-        env: ["UMACTUALLY_MODEL", "REVIEW_PROVIDER_MODEL"],
+        env: ["UMACTUALLY_MODEL"],
         type: "string",
-        defaultValue: "auto",
+        defaultValue: "",
     },
     prompt: {
         field: "prompt",
@@ -285,7 +285,7 @@ const FIELDS = {
         field: "promptFile",
         flag: "--prompt-file",
         input: "prompt-file",
-        env: ["UMACTUALLY_PROMPT_FILE", "REVIEW_PROMPT_SYSTEM_FILE"],
+        env: [],
         type: "string",
         defaultValue: "",
     },
@@ -293,7 +293,7 @@ const FIELDS = {
         field: "promptFiles",
         flag: "--prompt-files",
         input: "prompt-files",
-        env: ["UMACTUALLY_PROMPT_FILES"],
+        env: [],
         type: "string",
         defaultValue: "",
     },
@@ -309,7 +309,7 @@ const FIELDS = {
         field: "additionalPromptFile",
         flag: "--additional-prompt-file",
         input: "additional-prompt-file",
-        env: ["UMACTUALLY_ADDITIONAL_PROMPT_FILE", "REVIEW_PROMPT_USER_FILE"],
+        env: [],
         type: "string",
         defaultValue: "",
     },
@@ -317,7 +317,7 @@ const FIELDS = {
         field: "additionalPromptFiles",
         flag: "--additional-prompt-files",
         input: "additional-prompt-files",
-        env: ["UMACTUALLY_ADDITIONAL_PROMPT_FILES"],
+        env: [],
         type: "string",
         defaultValue: "",
     },
@@ -325,7 +325,7 @@ const FIELDS = {
         field: "walkthrough",
         flag: "--walkthrough",
         input: "walkthrough",
-        env: ["UMACTUALLY_WALKTHROUGH", "REVIEW_WALKTHROUGH"],
+        env: [],
         type: "boolean",
         defaultValue: false,
     },
@@ -333,7 +333,7 @@ const FIELDS = {
         field: "diagnostic",
         flag: "--diagnostic",
         input: "diagnostic",
-        env: ["UMACTUALLY_DIAGNOSTIC", "REVIEW_DIAGNOSTIC"],
+        env: [],
         type: "boolean",
         defaultValue: false,
     },
@@ -341,7 +341,7 @@ const FIELDS = {
         field: "dryRun",
         flag: "--dry-run",
         input: "dry-run",
-        env: ["UMACTUALLY_DRY_RUN", "REVIEW_DRY_RUN"],
+        env: [],
         type: "boolean",
         defaultValue: false,
     },
@@ -349,7 +349,7 @@ const FIELDS = {
         field: "debugRawResponse",
         flag: "--debug-raw-response",
         input: "debug-raw-response",
-        env: ["REVIEW_DEBUG_RAW_RESPONSE"],
+        env: [],
         type: "boolean",
         defaultValue: false,
     },
@@ -357,7 +357,7 @@ const FIELDS = {
         field: "simulateFindings",
         flag: "--simulate-findings",
         input: "simulate-findings",
-        env: ["UMACTUALLY_SIMULATE_FINDINGS", "REVIEW_SIMULATE_FINDINGS"],
+        env: [],
         type: "boolean",
         defaultValue: false,
     },
@@ -365,7 +365,7 @@ const FIELDS = {
         field: "strictSchema",
         flag: "--strict-schema",
         input: "strict-schema",
-        env: ["UMACTUALLY_STRICT_SCHEMA", "REVIEW_STRICT_SCHEMA"],
+        env: [],
         type: "boolean",
         defaultValue: true,
     },
@@ -373,7 +373,7 @@ const FIELDS = {
         field: "verifyFindings",
         flag: "--verify-findings",
         input: "verify-findings",
-        env: ["UMACTUALLY_VERIFY_FINDINGS", "REVIEW_VERIFY_FINDINGS"],
+        env: [],
         type: "boolean",
         defaultValue: true,
     },
@@ -381,7 +381,7 @@ const FIELDS = {
         field: "reviewTimeoutSeconds",
         flag: "--review-timeout-seconds",
         input: "review-timeout-seconds",
-        env: ["UMACTUALLY_REVIEW_TIMEOUT_SECONDS", "REVIEW_TIMEOUT_SECONDS"],
+        env: [],
         type: "integer",
         defaultValue: 300,
     },
@@ -389,7 +389,7 @@ const FIELDS = {
         field: "stallSeconds",
         flag: "--stall-seconds",
         input: "stall-seconds",
-        env: ["UMACTUALLY_STALL_SECONDS", "REVIEW_STALL_SECONDS"],
+        env: [],
         type: "integer",
         defaultValue: 270,
     },
@@ -397,7 +397,7 @@ const FIELDS = {
         field: "perRequestTimeoutSeconds",
         flag: "--per-request-timeout-seconds",
         input: "per-request-timeout-seconds",
-        env: ["REVIEW_PER_REQUEST_TIMEOUT_SECONDS"],
+        env: [],
         type: "integer",
         defaultValue: 60,
     },
@@ -405,7 +405,7 @@ const FIELDS = {
         field: "maxOutputTokens",
         flag: "--max-output-tokens",
         input: "max-output-tokens",
-        env: ["UMACTUALLY_MAX_OUTPUT_TOKENS"],
+        env: [],
         type: "integer",
         defaultValue: 16_000,
     },
@@ -413,7 +413,7 @@ const FIELDS = {
         field: "minimumSeverity",
         flag: "--minimum-severity",
         input: "minimum-severity",
-        env: ["REVIEW_MINIMUM_SEVERITY"],
+        env: [],
         type: "enum",
         // BREAKING CHANGE (unreleased): default flipped from "low" to "medium"
         // so low-severity (style/hygiene) findings are filtered out of the
@@ -426,7 +426,7 @@ const FIELDS = {
         field: "maxComments",
         flag: "--max-comments",
         input: "max-comments",
-        env: ["REVIEW_MAX_COMMENTS"],
+        env: [],
         type: "integer",
         defaultValue: 50,
     },
@@ -434,7 +434,7 @@ const FIELDS = {
         field: "reviewFileLimit",
         flag: "--review-file-limit",
         input: "review-file-limit",
-        env: ["REVIEW_FILE_LIMIT"],
+        env: [],
         type: "integer",
         defaultValue: 200,
     },
@@ -442,7 +442,7 @@ const FIELDS = {
         field: "includeSonarqube",
         flag: "--include-sonarqube",
         input: "include-sonarqube",
-        env: ["UMACTUALLY_INCLUDE_SONARQUBE", "REVIEW_SONAR_ENABLED"],
+        env: [],
         type: "boolean",
         defaultValue: false,
     },
@@ -450,7 +450,7 @@ const FIELDS = {
         field: "sonarHostUrl",
         flag: "--sonar-host-url",
         input: "sonar-host-url",
-        env: ["UMACTUALLY_SONAR_HOST_URL", "REVIEW_SONAR_HOST"],
+        env: [],
         type: "string",
         defaultValue: "",
     },
@@ -458,7 +458,7 @@ const FIELDS = {
         field: "sonarToken",
         flag: "--sonar-token",
         input: "sonar-token",
-        env: ["UMACTUALLY_SONAR_TOKEN", "REVIEW_SONAR_TOKEN"],
+        env: [],
         type: "string",
         defaultValue: "",
     },
@@ -466,7 +466,7 @@ const FIELDS = {
         field: "sonarProjectKey",
         flag: "--sonar-project-key",
         input: "sonar-project-key",
-        env: ["UMACTUALLY_SONAR_PROJECT_KEY", "REVIEW_SONAR_PROJECT"],
+        env: [],
         type: "string",
         defaultValue: "",
     },
@@ -474,7 +474,7 @@ const FIELDS = {
         field: "sonarTimeoutSeconds",
         flag: "--sonar-timeout-seconds",
         input: "sonar-timeout-seconds",
-        env: ["REVIEW_SONAR_TIMEOUT_SECONDS"],
+        env: [],
         type: "integer",
         defaultValue: 300,
     },
@@ -482,7 +482,7 @@ const FIELDS = {
         field: "detectLeaks",
         flag: "--detect-leaks",
         input: "detect-leaks",
-        env: ["UMACTUALLY_DETECT_LEAKS", "REVIEW_LEAK_DETECTION"],
+        env: [],
         type: "boolean",
         defaultValue: true,
     },
@@ -490,7 +490,7 @@ const FIELDS = {
         field: "platform",
         flag: "--platform",
         input: "platform",
-        env: ["REVIEW_PLATFORM"],
+        env: [],
         type: "enum",
         defaultValue: "auto",
         // Canonical three variants. The CLI parser accepts the `"azure-devops"`
@@ -518,7 +518,7 @@ const FIELDS = {
         field: "effort",
         flag: "--effort",
         input: "effort",
-        env: ["UMACTUALLY_EFFORT"],
+        env: [],
         type: "enum",
         defaultValue: "medium",
         enumValues: ["low", "medium", "high"],
@@ -559,7 +559,7 @@ const FIELDS = {
         field: "promptByteCap",
         flag: null,
         input: "prompt-byte-cap",
-        env: ["REVIEW_PROMPT_BYTE_CAP"],
+        env: [],
         type: "integer",
         defaultValue: 65_536,
     },
@@ -567,7 +567,7 @@ const FIELDS = {
         field: "redactorEnabled",
         flag: null,
         input: "redactor-enabled",
-        env: ["REVIEW_REDACTOR_ENABLED"],
+        env: [],
         type: "boolean",
         defaultValue: true,
     },
@@ -621,61 +621,6 @@ const ALL_FIELDS = Object.values(FIELDS);
  * here keeps the set in sync without any other code changes.
  */
 const KNOWN_ENV_VAR_NAMES = new Set(ALL_FIELDS.flatMap((def) => def.env));
-
-;// CONCATENATED MODULE: ./src/util/env-keys.ts
-/** Centralised env-var name registry; eliminates inline `env["..."]` strings and keeps legacy aliases visible. */
-const ENV_KEYS = {
-    // UMACTUALLY_* canonical, REVIEW_* legacy aliases
-    UMACTUALLY_API_URL: "UMACTUALLY_API_URL",
-    UMACTUALLY_API_KEY: "UMACTUALLY_API_KEY",
-    UMACTUALLY_MODEL: "UMACTUALLY_MODEL",
-    UMACTUALLY_GITHUB_API_BASE: "UMACTUALLY_GITHUB_API_BASE",
-    UMACTUALLY_INCLUDE_SONARQUBE: "UMACTUALLY_INCLUDE_SONARQUBE",
-    UMACTUALLY_SONAR_HOST_URL: "UMACTUALLY_SONAR_HOST_URL",
-    UMACTUALLY_SONAR_TOKEN: "UMACTUALLY_SONAR_TOKEN",
-    UMACTUALLY_SONAR_PROJECT_KEY: "UMACTUALLY_SONAR_PROJECT_KEY",
-    UMACTUALLY_PROMPT_FILE: "UMACTUALLY_PROMPT_FILE",
-    UMACTUALLY_PROMPT_FILES: "UMACTUALLY_PROMPT_FILES",
-    UMACTUALLY_ADDITIONAL_PROMPT_FILE: "UMACTUALLY_ADDITIONAL_PROMPT_FILE",
-    UMACTUALLY_ADDITIONAL_PROMPT_FILES: "UMACTUALLY_ADDITIONAL_PROMPT_FILES",
-    UMACTUALLY_STRICT_SCHEMA: "UMACTUALLY_STRICT_SCHEMA",
-    UMACTUALLY_VERIFY_FINDINGS: "UMACTUALLY_VERIFY_FINDINGS",
-    REVIEW_STRICT_SCHEMA: "REVIEW_STRICT_SCHEMA",
-    REVIEW_VERIFY_FINDINGS: "REVIEW_VERIFY_FINDINGS",
-    REVIEW_PROVIDER_URL: "REVIEW_PROVIDER_URL",
-    REVIEW_PROVIDER_API_KEY: "REVIEW_PROVIDER_API_KEY",
-    REVIEW_PROVIDER_MODEL: "REVIEW_PROVIDER_MODEL",
-    REVIEW_TIMEOUT_SECONDS: "REVIEW_TIMEOUT_SECONDS",
-    REVIEW_FILE_LIMIT: "REVIEW_FILE_LIMIT",
-    REVIEW_LEAK_DETECTION: "REVIEW_LEAK_DETECTION",
-    // Platform runtime
-    GITHUB_ACTIONS: "GITHUB_ACTIONS",
-    GITHUB_EVENT_PATH: "GITHUB_EVENT_PATH",
-    GITHUB_TOKEN: "GITHUB_TOKEN",
-    // GH_TOKEN is a legacy alias for GITHUB_TOKEN per init-guided-setup plan T9;
-    // schema's env: ["GITHUB_TOKEN", "GH_TOKEN"] iterates this alias automatically.
-    GH_TOKEN: "GH_TOKEN",
-    GITHUB_REPOSITORY: "GITHUB_REPOSITORY",
-    GITHUB_REF: "GITHUB_REF",
-    GITHUB_SHA: "GITHUB_SHA",
-    // Azure DevOps runtime
-    TF_BUILD: "TF_BUILD",
-    SYSTEM_ACCESSTOKEN: "SYSTEM_ACCESSTOKEN",
-    SYSTEM_TEAMPROJECT: "SYSTEM_TEAMPROJECT",
-    SYSTEM_COLLECTIONURI: "SYSTEM_COLLECTIONURI",
-    BUILD_REPOSITORY_ID: "BUILD_REPOSITORY_ID",
-    SYSTEM_PULLREQUEST_PULLREQUESTID: "SYSTEM_PULLREQUEST_PULLREQUESTID",
-    SYSTEM_PULLREQUEST_SOURCECOMMITID: "SYSTEM_PULLREQUEST_SOURCECOMMITID",
-    SYSTEM_PULLREQUEST_TARGETBRANCHNAME: "SYSTEM_PULLREQUEST_TARGETBRANCHNAME",
-    // Inputs (already wrapped as INPUT_* by GitHub)
-    INPUT_DRY_RUN: "INPUT_DRY_RUN",
-    INPUT_EVENT: "INPUT_EVENT",
-    INPUT_DIFF: "INPUT_DIFF",
-    INPUT_REVIEW: "INPUT_REVIEW",
-    INPUT_THREADS: "INPUT_THREADS",
-    INPUT_OUTPUT_ARTIFACT: "INPUT_OUTPUT_ARTIFACT",
-    INPUT_PLATFORM: "INPUT_PLATFORM",
-};
 
 ;// CONCATENATED MODULE: ./src/util/brand.ts
 /**
@@ -1176,7 +1121,6 @@ function appendV1(path) {
 
 
 
-
 const explicitFieldsByParse = new WeakMap();
 const FIELD_BY_FLAG = new Map(Object.values(FIELDS).flatMap((field) => field.flag === null ? [] : [[field.flag, field.field]]));
 function wasCliFieldExplicitlySet(parsed, field) {
@@ -1534,15 +1478,9 @@ function parseCliArgs(args) {
         githubApiBase,
         includeSonarqube,
         includePrSonarFindings,
-        // Sonar fields fall back to the UMACTUALLY_SONAR_* env vars when
-        // the CLI flag was not supplied. The standard env-var path goes
-        // through `resolveFromSchema` (config-loader), but `--include-pr-
-        // sonar-findings` is consumed inside the live path BEFORE the
-        // loader runs, so we resolve here to keep parity with the
-        // `field > env > null` precedence every other field uses.
-        sonarHostUrl: sonarHostUrl ?? process.env[ENV_KEYS.UMACTUALLY_SONAR_HOST_URL] ?? null,
-        sonarToken: sonarToken ?? process.env[ENV_KEYS.UMACTUALLY_SONAR_TOKEN] ?? null,
-        sonarProjectKey: sonarProjectKey ?? process.env[ENV_KEYS.UMACTUALLY_SONAR_PROJECT_KEY] ?? null,
+        sonarHostUrl,
+        sonarToken,
+        sonarProjectKey,
         sonarTimeoutSeconds,
         minimumSeverity,
         minimumSeverityInternal: minimumSeverity === null
@@ -1615,11 +1553,6 @@ function readMinimumSeverity(args, index) {
     return readEnum("--minimum-severity", raw, FIELDS.minimumSeverity.enumValues, CliUsageError);
 }
 function readPlatform(value) {
-    // Accept "azure-devops" as a CLI-only alias for "azure" so callers
-    // familiar with the older name keep working.
-    if (value === "azure-devops") {
-        return "azure";
-    }
     return readEnum("--platform", value, FIELDS.platform.enumValues, CliUsageError);
 }
 function readEffort(args, index) {
@@ -2861,7 +2794,7 @@ const REVIEW_FLAGS = [
     { flag: "--repo <owner/name>", appliesTo: ["review"] },
     { flag: "--api-url <url>", description: `Provider Responses API URL (default: ${DEFAULT_OPENAI_URL})`, appliesTo: ["review"] },
     { flag: "--api-key <key>", description: "Provider API key", appliesTo: ["review"] },
-    { flag: "--model <id>", description: "Provider model id (default: auto)", appliesTo: ["review"] },
+    { flag: "--model <id>", description: "Provider model id (optional; resolved at review time)", appliesTo: ["review"] },
     { flag: "--prompt <text>", description: "Inline system prompt override", appliesTo: ["review"] },
     { flag: "--prompt-file <path>", appliesTo: ["review"] },
     { flag: "--prompt-files <paths>", description: "Comma/newline-separated system prompt files (overrides defaults)", appliesTo: ["review"] },
@@ -2900,7 +2833,7 @@ const INIT_FLAGS = [
     { flag: "--api-key <key>", description: "Provider API key (NEVER persisted; use --non-interactive with the secret store for automation)" },
     { flag: "--github-token <token>", description: "GitHub token for Copilot routing (also: GH_TOKEN env)" },
     { flag: "--github-api-base <url>", description: "GitHub API base (default: https://api.github.com)" },
-    { flag: "--model <id>", description: "Model name (default: auto)" },
+    { flag: "--model <id>", description: "Model name (optional; resolved at review time)" },
     { flag: "--scope <global|repo>", description: "Where to persist the config (default: global)" },
     { flag: "--ci <auto|github|azure|none>", description: "Generate a CI workflow (auto-detects; default: auto)" },
     { flag: "--non-interactive", description: "Fail rather than prompt (CI mode)" },
@@ -2911,7 +2844,6 @@ const INIT_FLAGS = [
     { flag: "--show", description: "Print parsed saved config; no prompt, no write" },
     { flag: "--json", description: "Emit machine-readable JSON envelope" },
 ];
-/** All flags, used for the legacy `CLI_HELP_TEXT` export and column-width calc. */
 const HELP_FLAGS = [...REVIEW_FLAGS];
 /** The full flag set for column-width calculation. */
 const ALL_FLAGS_FOR_WIDTH = [...REVIEW_FLAGS, ...INIT_FLAGS, ...GLOBAL_FLAGS];
@@ -2938,10 +2870,6 @@ function renderFlagLine({ flag, description }) {
 function renderFlags(flags) {
     return flags.map(renderFlagLine);
 }
-function renderCommands(commands) {
-    return ["Commands:", ...commands.map((command) => `  ${command}`), ""].join("\n");
-}
-// ── Top-level help (existing CLI_HELP_TEXT + Commands) ─────────────────────
 const TOP_LEVEL_COMMANDS = [
     { command: "review", description: "Run PR review (default)" },
     { command: "doctor", description: "Check environment is ready" },
@@ -2977,7 +2905,7 @@ function renderCommandsTable(commands) {
     const width = commands.reduce((max, { command }) => Math.max(max, command.length), 0);
     return commands.map((c) => renderCommandLine(c, width));
 }
-const CLI_HELP_TEXT = [
+const TOP_LEVEL_HELP_TEXT = [
     `${BRAND} — provider-agnostic PR review CLI`,
     "",
     "Commands:",
@@ -3103,7 +3031,7 @@ function resolveHelpText(argv) {
         ? argv.indexOf("--help")
         : argv.indexOf("-h");
     if (helpIndex === -1) {
-        return CLI_HELP_TEXT;
+        return TOP_LEVEL_HELP_TEXT;
     }
     // Check tokens before --help for a recognized subcommand.
     for (let i = 0; i < helpIndex; i += 1) {
@@ -3117,20 +3045,7 @@ function resolveHelpText(argv) {
         // Unknown positional before --help — fall through to top-level help.
         break;
     }
-    return CLI_HELP_TEXT;
-}
-/**
- * Print the help text to stdout. When `commands` is provided, renders the
- * top-level help with the Commands banner appended (legacy callers).
- *
- * @returns The rendered help text that was written to stdout.
- */
-function printHelp(commands = []) {
-    const helpText = commands.length === 0
-        ? CLI_HELP_TEXT
-        : `${CLI_HELP_TEXT}\n\n${renderCommands(commands)}`;
-    process.stdout.write(helpText);
-    return helpText;
+    return TOP_LEVEL_HELP_TEXT;
 }
 /**
  * Print contextual help text to stdout based on the argv context.
@@ -4001,8 +3916,9 @@ jobs:
         run: umactually review --platform github
 `;
 const AZURE_PIPELINE_TEMPLATE = `# Enable "Allow scripts to access the OAuth token" in pipeline settings.
-# UMACTUALLY_* options (prompt files, strict schema, verify findings, etc.) are
-# CLI-native: set them as ADO pipeline variables and they flow through automatically.
+# Only the two canonical UMACTUALLY_* credential vars are forwarded; runtime
+# options (model, provider, github-api-base) are read from the saved config
+# under ~/.umactually/config.json or the provider's own discovery.
 # Artifact validation is automatic after each live review. SYSTEM_ACCESSTOKEN is the
 # only ADO-specific plumbing because Azure does not export $(System.AccessToken).
 trigger: none
@@ -4019,7 +3935,7 @@ steps:
   # Pin the npm version for reproducibility (never track \`latest\`).
   - script: npm install -g umactually@__UMACTUALLY_VERSION__
     displayName: Install umactually
-  - script: umactually review --platform azure-devops
+  - script: umactually review --platform azure
     displayName: Run umactually PR review
     env:
       SYSTEM_ACCESSTOKEN: $(System.AccessToken)
@@ -4297,7 +4213,7 @@ const init_INIT_HELP_TEXT = [
     "  --api-url <url>            OpenAI-compatible base URL (env: UMACTUALLY_API_URL)",
     "  --api-key <key>            Provider API key (env: UMACTUALLY_API_KEY; NEVER persisted)",
     "  --github-api-base <url>    Copilot API base (env: UMACTUALLY_GITHUB_API_BASE)",
-    "  --model <id>               Provider model id (default: auto)",
+    "  --model <id>               Provider model id (optional; resolved at review time)",
     "  --scope <global|repo>      Where to persist the saved config",
     "  --ci <auto|github|azure|none>",
     "                             Generate a CI workflow file (auto-detects)",
@@ -4566,7 +4482,7 @@ async function runDryRunInit({ args, deps, }) {
     // compatible default to keep the plan deterministic.
     const provider = args.provider ?? "openai-compatible";
     const apiUrl = args.apiUrl ?? saved_config_DEFAULT_OPENAI_URL;
-    const model = args.model ?? "auto";
+    const model = args.model;
     const config = buildConfig(provider, apiUrl, model);
     const ciGenerated = [];
     if (args.ci === "github" || args.ci === "azure") {
@@ -4660,22 +4576,16 @@ async function runNonInteractiveInit({ args, deps, }) {
             apiUrl = saved_config_DEFAULT_OPENAI_URL;
         if (args.apiKey === undefined)
             pendingPrompts.push("--api-key");
-        if (model === undefined)
-            model = "auto";
     }
     else if (provider === "anthropic") {
         if (args.apiKey === undefined)
             pendingPrompts.push("--api-key");
         if (apiUrl === undefined)
             apiUrl = saved_config_DEFAULT_ANTHROPIC_URL;
-        if (model === undefined)
-            model = "auto";
     }
     else {
         // copilot — no apiKey prompt; githubApiBase presence is acknowledged
         // but not persisted (saved config schema lacks the field).
-        if (model === undefined)
-            model = "auto";
     }
     if (pendingPrompts.length > 0) {
         return {
@@ -4719,7 +4629,7 @@ async function runNonInteractiveInit({ args, deps, }) {
         };
     }
     const scope = args.scope ?? "global";
-    const config = buildConfig(provider, apiUrl ?? saved_config_DEFAULT_OPENAI_URL, model ?? "auto");
+    const config = buildConfig(provider, apiUrl ?? saved_config_DEFAULT_OPENAI_URL, model);
     // apiKey and githubApiBase were validated for presence only and
     // intentionally dropped before reaching writeSavedConfig (S6).
     // Note that the SavedConfig type excludes apiKey, so the writer
@@ -4996,8 +4906,7 @@ function buildPerBranchPrompts(provider, _env) {
                 {
                     label: MODEL_LABEL,
                     envVarName: "UMACTUALLY_MODEL",
-                    placeholder: "auto",
-                    default: "auto",
+                    placeholder: "(resolved at review time)",
                 },
             ];
         case "anthropic":
@@ -5010,8 +4919,7 @@ function buildPerBranchPrompts(provider, _env) {
                 {
                     label: MODEL_LABEL,
                     envVarName: "UMACTUALLY_MODEL",
-                    placeholder: "auto",
-                    default: "auto",
+                    placeholder: "(resolved at review time)",
                 },
             ];
         case "copilot":
@@ -5025,8 +4933,7 @@ function buildPerBranchPrompts(provider, _env) {
                 {
                     label: MODEL_LABEL,
                     envVarName: "UMACTUALLY_MODEL",
-                    placeholder: "auto",
-                    default: "auto",
+                    placeholder: "(resolved at review time)",
                 },
             ];
     }
@@ -5050,7 +4957,7 @@ async function promptBranch(input) {
             return { outcome: "aborted" };
         collected[p.envVarName] = answer;
     }
-    const model = collected["UMACTUALLY_MODEL"] ?? "auto";
+    const model = collected["UMACTUALLY_MODEL"];
     if (provider === "openai-compatible") {
         return {
             outcome: "ok",
@@ -5209,7 +5116,9 @@ function containsUnsafePathSegment(p) {
 }
 /**
  * Build a typed SavedConfig. apiUrl is omitted when equal to the
- * runtime default; model is omitted when "auto".
+ * runtime default; model is omitted when undefined or empty so the
+ * saved-config bytes never carry the literal "auto" sentinel — model
+ * is truly optional, and the runtime resolves it at review time.
  */
 function buildConfig(provider, apiUrl, model) {
     const defaultForProvider = provider === "anthropic" ? saved_config_DEFAULT_ANTHROPIC_URL : saved_config_DEFAULT_OPENAI_URL;
@@ -5218,7 +5127,7 @@ function buildConfig(provider, apiUrl, model) {
         provider,
     };
     const includeApiUrl = apiUrl !== defaultForProvider;
-    const includeModel = model !== "auto";
+    const includeModel = typeof model === "string" && model.length > 0;
     if (includeApiUrl && includeModel) {
         return { ...base, apiUrl, model };
     }
@@ -8212,8 +8121,7 @@ function renderSavedConfig(config, path) {
     ];
     if (config.apiUrl !== undefined)
         lines.push(`  apiUrl:   ${config.apiUrl}`);
-    if (config.model !== undefined)
-        lines.push(`  model:    ${config.model}`);
+    lines.push(`  model:    ${config.model ?? "auto (resolved at review time)"}`);
     return lines.join("\n");
 }
 /**
@@ -8396,13 +8304,6 @@ const MANIFEST_MARKER_PREFIX = `<!-- ${BRAND}:manifest `;
 /** Closing HTML-comment suffix of the manifest hidden inside each UmActually review comment. */
 const MANIFEST_MARKER_SUFFIX = " -->";
 /**
- * Legacy HTML marker from the prior action incarnation. Kept so existing
- * PR comments authored under that scheme can still be detected for replacement.
- */
-const LEGACY_MARKER = "<!-- auto-pr-review -->";
-/** Slug of the legacy marker, for body-text matching without the HTML comment delimiters. */
-const LEGACY_MARKER_SLUG = "auto-pr-review";
-/**
  * Returns true when `body` contains the UmActually review marker.
  * Centralized so future marker variants (e.g. parent-vs-inline) only need
  * to be added here.
@@ -8426,9 +8327,6 @@ const ENV_VAR_CLI_FLAG = {
     UMACTUALLY_MODEL: "model",
     UMACTUALLY_PROVIDER: "provider",
     UMACTUALLY_GITHUB_API_BASE: "github-api-base",
-    UMACTUALLY_SONAR_HOST_URL: "sonar-host-url",
-    UMACTUALLY_SONAR_TOKEN: "sonar-token",
-    UMACTUALLY_SONAR_PROJECT_KEY: "sonar-project-key",
 };
 /**
  * Thrown by requireLiveConfig when a required live-review config value is missing.
@@ -9390,7 +9288,7 @@ function extractTextPayload(endpoint, rawText) {
                 // strict-empty-fields check downstream classifies it as
                 // a parse failure.
                 if (output.length > 0) {
-                    // Reasoning-fallback: some providers (notably MiniMax-M3)
+                    // Reasoning-fallback: some reasoning-capable providers
                     // write a draft of the final review JSON inside their
                     // reasoning block, then run out of output budget before
                     // emitting it as the formal `output_text` answer. The
@@ -9809,7 +9707,7 @@ function joinOutputText(output) {
     return fragments.join("\n");
 }
 /**
- * Some providers (notably MiniMax-M3) write a draft of the final
+ * Some reasoning-capable providers write a draft of the final
  * review JSON inside their reasoning block — the model narrates
  * "let me write the JSON: ```json\n{...}\n```" as part of its
  * chain-of-thought — then runs out of the output budget before the
@@ -10042,7 +9940,7 @@ function normalizeProviderSeverity(value, body, options) {
     }
 }
 /**
- * Some providers (e.g. Manifest, MiniMax) ignore `stream: false` and always
+ * Some OpenAI-compatible gateways ignore `stream: false` and always
  * return Server-Sent Events. Detect the SSE format and concatenate text
  * fragments from all chunks into a single string.
  *
@@ -10067,7 +9965,7 @@ function normalizeProviderSeverity(value, body, options) {
 function tryExtractSse(rawText) {
     const trimmed = rawText.trim();
     // Detect SSE format: either starts with "data:" or "event:" (some providers
-    // like Manifest prepend event: lines before data: lines).
+    // prepend event: lines before data: lines).
     if (!trimmed.startsWith("data:") && !trimmed.startsWith("event:")) {
         return null;
     }
@@ -10121,8 +10019,8 @@ function tryExtractSse(rawText) {
         const wrappedResponse = readRecordField(parsed, "response");
         if (wrappedResponse !== null) {
             const eventType = readStringField(parsed, "type");
-            // Skip reasoning-text deltas entirely. Some providers (e.g.
-            // MiniMax-M3) emit `response.reasoning_text.delta` events
+            // Skip reasoning-text deltas entirely. Some providers emit
+            // `response.reasoning_text.delta` events
             // alongside the final answer. Concat-ing them into `fragments`
             // would prepend 100+ KB of chain-of-thought prose ahead of the
             // JSON review, breaking `parseReviewPayload` (the first
@@ -10187,8 +10085,7 @@ function tryExtractSse(rawText) {
     // Prefer the completed-response text (full output) over accumulated
     // fragments — but ONLY if the completed text looks like real content.
     //
-    // Some providers (notably MiniMax-M3 observed in Azure DevOps PR #43
-    // thread 589) emit a `response.completed` event whose `output[]` carries
+    // Some providers emit a `response.completed` event whose `output[]` carries
     // a stub/placeholder string (e.g. "placeholder", the model wrapper
     // metadata, or just the prompt echo) — and the real review text only
     // appears in the per-fragment `response.output_text.delta` events.
@@ -10224,8 +10121,8 @@ function tryExtractSse(rawText) {
  * This is intentionally permissive: false positives (treating a real
  * short review as a stub) are rare because real reviews always contain
  * `{`. The test suite in `test/unit/azure-thread-589-repro.test.ts`
- * pins the behavior end-to-end with the production failure mode
- * (MiniMax-M3 `response.completed` stub "placeholder").
+ * pins the behavior end-to-end with a captured production failure mode
+ * (`response.completed` stub "placeholder").
  */
 function isStubCompletedText(text) {
     if (text.length === 0)
@@ -10263,9 +10160,9 @@ function isStubCompletedText(text) {
  *
  *   2. **Error-doc-URL signal**: The response text contains a
  *      documentation URL with an error-code path
- *      (`/docs/errors/M101`, `/docs/errors/`, `/help/error/`). This
- *      is universal across LLM routers (Manifest, LiteLLM, OpenRouter,
- *      custom gateways) — they all link to their error documentation.
+ *      (`/docs/errors/R101`, `/docs/errors/`, `/help/error/`). This
+ *      is common across LLM routers and custom gateways, which link to
+ *      their error documentation.
  *
  *   3. **Error-envelope signal**: The response JSON has an `error`
  *      object or `errors` array at the top level with `type`/`message`/
@@ -10280,8 +10177,8 @@ function isStubCompletedText(text) {
  *      envelope but with no actual model output — the "connected but
  *      no providers" case.
  *
- * IMPORTANT: The function intentionally does NOT match on substrings
- * like "Manifest M101" or "model not supported" — those are
+ * IMPORTANT: The function intentionally does NOT match on branded
+ * error labels or phrases like "model not supported" — those are
  * provider-specific and would miss new providers. The four signals
  * above are structural and work for any provider.
  *
@@ -10452,7 +10349,7 @@ function checkHasReviewContent(parsed) {
  * across LLM routers and gateways — they all link to their error docs.
  *
  * Matches patterns like:
- *   - `/docs/errors/M101`
+ *   - `/docs/errors/R101`
  *   - `/docs/errors/`
  *   - `/help/error/`
  *   - `/docs/error-codes#`
@@ -10461,8 +10358,8 @@ function checkHasReviewContent(parsed) {
  * responses.
  */
 function checkErrorDocUrl(rawText) {
-    // Match `/docs/errors/` (Manifest, generic), `/help/error/` (some
-    // enterprise gateways), `/docs/error-codes` (Azure-style).
+    // Match `/docs/errors/`, `/help/error/` (some enterprise gateways),
+    // and `/docs/error-codes` (Azure-style).
     const ERROR_DOC_PATTERN = /\/(?:docs|help)\/errors?[-_/a-z0-9]*/iu;
     if (ERROR_DOC_PATTERN.test(rawText)) {
         // Extract the matched substring for the detail field so the
@@ -11030,10 +10927,9 @@ function extractOrigin(baseUrl) {
  * default when null is returned.
  *
  * Why hostname-only: substring matching on the full URL is too
- * loose. A URL like `https://example.com/minimax-router` would
- * falsely match `url.includes("minimax")` and pick a MiniMax
- * model. The hostname extract prevents that — `example.com`
- * doesn't contain `minimax`, so the model is the default.
+ * loose. A URL like `https://example.com/provider-router` could
+ * falsely match a provider keyword in the path. The hostname extract
+ * prevents path text from influencing hostname-based decisions.
  *
  * The returned hostname is always lowercased so callers can compare
  * directly against lowercase host keys. `URL.hostname` is already
@@ -11044,13 +10940,13 @@ function extractOrigin(baseUrl) {
  *
  * Examples:
  *   - `https://api.example.com/v1`        → `api.example.com`
- *   - `API.MINIMAX.IO`                    → `api.minimax.io`
+ *   - `ROUTER.EXAMPLE.COM`                → `router.example.com`
  *   - `localhost:8080`                    → null (`new URL("localhost:8080")`
  *     parses with empty hostname because `localhost` is not a
  *     special scheme; the function returns null for empty hosts)
  *   - `` (empty string)                   → null
  */
-function url_extractHostname(baseUrl) {
+function extractHostname(baseUrl) {
     const trimmed = baseUrl.trim();
     if (trimmed.length === 0)
         return null;
@@ -11059,7 +10955,7 @@ function url_extractHostname(baseUrl) {
         host = new URL(trimmed).hostname;
     }
     catch {
-        // Fallback: scheme-less URLs (`API.MINIMAX.IO`, `localhost:8080`)
+        // Fallback: scheme-less URLs (`ROUTER.EXAMPLE.COM`, `localhost:8080`)
         // don't parse with `new URL()`. Strip the scheme manually, then
         // read up to the first `/` or `:`.
         const schemeSep = trimmed.indexOf("://");
@@ -11133,14 +11029,13 @@ function resolveProviderBaseUrlCandidates(baseUrl, defaultPrefix = "/v1") {
  * providers whose endpoints live under a path prefix."
  *
  * Anthropic-compatible gateways commonly mount the protocol under a
- * path prefix. The canonical example is MiniMax's Anthropic endpoint:
+ * path prefix. For example:
  *
- *   `--api-url https://api.minimax.io/anthropic` →
- *   `POST https://api.minimax.io/anthropic/v1/messages`
+ *   `--api-url https://gateway.example.com/llm/anthropic` →
+ *   `POST https://gateway.example.com/llm/anthropic/v1/messages`
  *
- * NOT `https://api.minimax.io/v1/messages` (which 404s on MiniMax — see
- * https://platform.minimax.io/docs/token-plan/claude-code). The path
- * on the operator's URL is real routing, not decorative noise.
+ * NOT `https://gateway.example.com/v1/messages`. The path on the
+ * operator's URL is real routing, not decorative noise.
  *
  * Behavior:
  *
@@ -11169,8 +11064,8 @@ function resolveProviderBaseUrlCandidates(baseUrl, defaultPrefix = "/v1") {
  *   - `https://api.anthropic.com`                        → `https://api.anthropic.com/v1/messages`
  *   - `https://api.anthropic.com/v1`                     → `https://api.anthropic.com/v1/messages`
  *   - `https://api.anthropic.com/v1/`                    → `https://api.anthropic.com/v1/messages`
- *   - `https://api.minimax.io/anthropic`                 → `https://api.minimax.io/anthropic/v1/messages`
- *   - `https://api.minimax.io/anthropic/`                → `https://api.minimax.io/anthropic/v1/messages`
+ *   - `https://gateway.example.com/anthropic`            → `https://gateway.example.com/anthropic/v1/messages`
+ *   - `https://gateway.example.com/anthropic/`           → `https://gateway.example.com/anthropic/v1/messages`
  *   - `https://gateway.example.com/llm/anthropic`        → `https://gateway.example.com/llm/anthropic/v1/messages`
  *   - `https://api.anthropic.com/v1/messages`            → `https://api.anthropic.com/v1/messages` (idempotent)
  *   - `https://api.anthropic.com/v1?token=abc`           → `https://api.anthropic.com/v1/messages` (query dropped)
@@ -11181,8 +11076,8 @@ function resolveProviderBaseUrlCandidates(baseUrl, defaultPrefix = "/v1") {
  * `resolveProviderBaseUrlCandidates` because OpenAI gateways
  * (`/openai`, `/api/v2`, etc.) live at the host root + `/v1`, so the
  * try-as-pasted-then-origin-with-`/v1` fallback is the right
- * contract there. Anthropic's path-prefix gateways (MiniMax's
- * `/anthropic`) need the path preserved.
+ * contract there. Anthropic path-prefix gateways need their configured
+ * path preserved.
  */
 function resolveAnthropicMessagesUrl(baseUrl) {
     // Parse once and split origin / path. Drop query string and fragment
@@ -11238,10 +11133,9 @@ function resolveAnthropicMessagesUrl(baseUrl) {
  * Messages API client even when `--provider` defaults to
  * `openai-compatible`. Without this, the openai-compatible client's
  * URL candidate loop downgrades paths like
- * `https://api.minimax.io/anthropic` to the origin+`/v1` fallback
- * (which on MiniMax also serves OpenAI-protocol at `/v1/responses`),
- * and the action ends up POSTing OpenAI wire-shape requests to an
- * Anthropic-protocol gateway — silently breaking operator intent.
+ * `https://gateway.example.com/llm/anthropic` to the origin+`/v1`
+ * fallback, and the action ends up POSTing OpenAI wire-shape requests
+ * to an Anthropic-protocol gateway — silently breaking operator intent.
  *
  * Contract: returns `true` when ANY path segment **exactly** equals
  * `anthropic` (case-insensitive, byte-for-byte match — no prefix or
@@ -11262,8 +11156,8 @@ function resolveAnthropicMessagesUrl(baseUrl) {
  *
  * Examples (see `test/unit/looks-like-anthropic-endpoint.test.ts`):
  *
- *   `https://api.minimax.io/anthropic`                 → true  (segment "anthropic")
- *   `https://api.minimax.io/anthropic/v1`              → true  (segment "anthropic")
+ *   `https://gateway.example.com/anthropic`            → true  (segment "anthropic")
+ *   `https://gateway.example.com/anthropic/v1`         → true  (segment "anthropic")
  *   `https://gateway.example.com/llm/anthropic`        → true  (segment "anthropic")
  *   `https://gateway.example.com/v1/anthropic`        → true  (segment "anthropic")
  *   `https://api.openai.com/v1`                        → false (no "anthropic" segment)
@@ -11846,7 +11740,7 @@ async function callEndpoint(config, fetchImpl, requestId, endpoint, baseUrl) {
     // couldn't produce a parseable review, regardless of whether the retry
     // request itself reached the provider.
     //
-    // Bumped-budget retry: some providers (notably MiniMax-M3) emit
+    // Bumped-budget retry: some reasoning-capable providers emit
     // long reasoning blocks that consume the entire output budget
     // before the model can write the JSON review. When the first
     // attempt's raw response is large (suggests the model produced
@@ -11890,7 +11784,7 @@ async function callEndpoint(config, fetchImpl, requestId, endpoint, baseUrl) {
         // Fresh signal for the retry so it gets the full timeout budget.
         // Reusing the first-attempt signal would give the retry only
         // whatever time was left on the original 300s AbortSignal.
-        // Some models (e.g. MiniMax-M3 with bumped-budget retry) need
+        // Some reasoning-capable models need
         // 3-5 minutes per attempt.
         const retrySignal = composeSignal(config.signal, config.requestTimeoutMs);
         const retryResponse = await performProviderFetch({
@@ -12103,15 +11997,11 @@ function assertNever(value) {
  * https://github.com/xemantic/anthropic-sdk-kotlin/pull/145.
  *
  * Path-preserving matters because Anthropic-compatible gateways
- * commonly mount the protocol under a path prefix — the documented
- * case is MiniMax's Anthropic endpoint at
- * `https://api.minimax.io/anthropic`, which resolves to
- * `https://api.minimax.io/anthropic/v1/messages` per
- * https://platform.minimax.io/docs/token-plan/claude-code (and similar
- * for the openai-compatible `/v1` endpoint at
- * https://platform.minimax.io/docs/token-plan/codex). The previous
- * "always strip the path" version of this helper silently 404'd that
- * gateway.
+ * commonly mount the protocol under a path prefix. For example,
+ * `https://gateway.example.invalid/llm/anthropic` resolves to
+ * `https://gateway.example.invalid/llm/anthropic/v1/messages`. The
+ * previous "always strip the path" version of this helper silently
+ * returned 404 for such gateways.
  *
  * The wire shape differs from the OpenAI Chat Completions / Responses
  * API in three meaningful ways:
@@ -12316,11 +12206,10 @@ async function runAnthropicRequest(config) {
     // becomes `<baseURL>/v1/messages`) and the path-preserving fix in
     // https://github.com/xemantic/anthropic-sdk-kotlin/pull/145.
     //
-    // Critically, this UNBLOCKS Anthropic-compatible gateways whose
-    // endpoints live under a path prefix — the documented case is
-    // `https://api.minimax.io/anthropic` →
-    // `https://api.minimax.io/anthropic/v1/messages` per
-    // https://platform.minimax.io/docs/token-plan/claude-code.
+    // Critically, this supports Anthropic-compatible gateways whose
+    // endpoints live under a path prefix, such as
+    // `https://gateway.example.invalid/llm/anthropic` →
+    // `https://gateway.example.invalid/llm/anthropic/v1/messages`.
     //
     // Anthropic.com itself only serves `/v1/messages` at the bare host,
     // so an operator pointing at `https://api.anthropic.com/anthropic`
@@ -12564,215 +12453,41 @@ function redactLineSecrets(line) {
     return redactedLine;
 }
 
-;// CONCATENATED MODULE: ./src/cli/auto-model.ts
-/**
- * Layer 5: opinionated `model: "auto"` resolution.
- *
- * The default `auto` was previously passed verbatim to the provider,
- * which on most OpenAI-compatible endpoints resolves to whatever the
- * provider's "auto" picks (often gpt-4o or gpt-4-turbo). Per the
- * Vectara HHEM 2026-05-11 leaderboard, those models have a 9-12%
- * hallucination rate on grounded summarization tasks, vs 3-5% for
- * gpt-5-mini / gemini-2.5-flash-lite / claude-haiku-4.5.
- *
- * PR-Agent (qodo-ai) made the same switch in 2025: their default
- * went from gpt-4o to gpt-5 explicitly to reduce path fabrication.
- *
- * The resolver here picks a model with the best cost-vs-hallucination
- * trade-off for the active provider. Hostname match (not full-URL
- * match) — a URL like `https://api.minimax.io/anthropic` correctly
- * routes to MiniMax-M3 because the hostname is `api.minimax.io`,
- * even though the path contains "anthropic":
- *   - provider=copilot  → claude-3-5-sonnet (Copilot's Claude backend;
- *     this is the model string the GitHub Copilot Chat Completions
- *     endpoint actually accepts — the v3.x and v3.5 Sonnet line is
- *     the Copilot-routable Claude. claude-sonnet-4.6 is NOT a
- *     Copilot-routable string and would 404.)
- *   - provider=openai-compatible + URL hostname contains "minimax"  → MiniMax-M3
- *   - provider=openai-compatible + URL hostname contains "anthropic"  → claude-sonnet-4.6
- *   - provider=openai-compatible + URL hostname contains "generativelanguage" or "googleapis"  → gemini-2.5-flash
- *   - provider=openai-compatible otherwise (incl. api.openai.com)  → gpt-5-mini
- *
- * The MiniMax branch was added when PR #28's self-review hit HTTP
- * 400 on every OpenAI/Anthropic model name — the MiniMax provider
- * only serves `MiniMax-M3` and `MiniMax-Text-01` (plus `abab*`
- * aliases). Default is `MiniMax-M3`; `MiniMax-Text-01` is the
- * fallback if M3 has a bad day. Detected by the URL hostname
- * containing `minimax`.
- *
- * Users can always override via `--model` (or `UMACTUALLY_MODEL`).
- */
-
-
-
-const COPILOT_DEFAULT_MODEL = "claude-3-5-sonnet";
-const ANTHROPIC_DEFAULT_MODEL = "claude-sonnet-4.6";
-const GOOGLE_DEFAULT_MODEL = "gemini-2.5-flash";
-const MINIMAX_DEFAULT_MODEL = "MiniMax-M3";
-const OPENAI_DEFAULT_MODEL = "gpt-5-mini";
-const HOST_ROUTES = [
-    // MiniMax: the api.minimax.io gateway only accepts MiniMax-M3,
-    // MiniMax-Text-01, and abab* aliases. Any OpenAI/Anthropic
-    // model name returns HTTP 400. Detected by hostname substring.
-    { hostSubstring: "minimax", model: MINIMAX_DEFAULT_MODEL },
-    // Anthropic: api.anthropic.com serves the claude-* line.
-    { hostSubstring: "anthropic", model: ANTHROPIC_DEFAULT_MODEL },
-    // Google: generativelanguage.googleapis.com (Gemini API) and
-    // aiplatform.googleapis.com (Vertex AI) both serve gemini-*.
-    { hostSubstring: "generativelanguage", model: GOOGLE_DEFAULT_MODEL },
-    { hostSubstring: "googleapis", model: GOOGLE_DEFAULT_MODEL },
-];
-function resolveAutoModel(input) {
-    if (input.provider === "copilot") {
-        return COPILOT_DEFAULT_MODEL;
-    }
-    // Anthropic provider: the operator picked the Anthropic-native
-    // `/v1/messages` protocol. Return the Anthropic default regardless of
-    // the URL — the protocol is Anthropic-only, so hostname routing does
-    // not apply. Operators who want a different Anthropic model can
-    // override via `--model`.
-    if (input.provider === "anthropic") {
-        return ANTHROPIC_DEFAULT_MODEL;
-    }
-    const url = resolveField(input.apiUrl, input.env[ENV_KEYS.UMACTUALLY_API_URL], "");
-    const hostname = url_extractHostname(url);
-    if (hostname !== null) {
-        const lowerHost = hostname.toLowerCase();
-        for (const route of HOST_ROUTES) {
-            if (lowerHost.includes(route.hostSubstring)) {
-                return route.model;
-            }
-        }
-    }
-    return OPENAI_DEFAULT_MODEL;
-}
-/**
- * The fallback chain used when a primary model returns a parse-fail
- * or a non-parseable response. Each entry is a model name the
- * provider accepts. The current implementation is sequential (try
- * the first, fall back to the next on parse-fail), not parallel —
- * keeps the per-request cost predictable and matches the
- * PR-Agent `retry_with_fallback_models` pattern.
- *
- * IMPORTANT: the fallback chain is provider-specific. Trying
- * `claude-sonnet-4.6` as a Copilot fallback would 404 (per the
- * Copilot model routing documented in `resolveAutoModel`).
- * `fallbackModelsFor` filters the list to provider-routable models
- * so the parse-fail recovery doesn't itself fail.
- */
-const PROVIDER_FALLBACKS = {
-    "openai-compatible": [
-        OPENAI_DEFAULT_MODEL,
-        "gpt-4.1",
-        "gpt-4.1-mini",
-        ANTHROPIC_DEFAULT_MODEL,
-        GOOGLE_DEFAULT_MODEL,
-    ],
-    copilot: [
-        // The Copilot fallback chain is intentionally short: the
-        // provider only accepts Copilot-routable model strings, and
-        // a parse-fail retry on a different model that's still
-        // Copilot-routable would 404 too. The retry loop should fall
-        // back to the same model with a parse-fail retry prompt
-        // (handled in provider-parse.ts:PARSE_FAIL_RETRY_PROMPT);
-        // a model-level fallback is a no-op for Copilot today.
-        COPILOT_DEFAULT_MODEL,
-    ],
-    anthropic: [
-        // The Anthropic native provider (`/v1/messages`) only accepts
-        // Anthropic claude-* model names. Other provider families' model
-        // strings would 400 on the wire. The chain is intentionally
-        // bare-bones — operators who need a multi-model fallback chain
-        // for Anthropic can pass `--fallback-models` explicitly.
-        ANTHROPIC_DEFAULT_MODEL,
-        "claude-haiku-4.5",
-        "claude-opus-4.6",
-    ],
+;// CONCATENATED MODULE: ./src/util/env-keys.ts
+/** Centralized registry for supported user configuration and runner-owned environment keys. */
+const ENV_KEYS = {
+    // User-controlled credentials and connection settings
+    UMACTUALLY_API_URL: "UMACTUALLY_API_URL",
+    UMACTUALLY_API_KEY: "UMACTUALLY_API_KEY",
+    UMACTUALLY_MODEL: "UMACTUALLY_MODEL",
+    UMACTUALLY_PROVIDER: "UMACTUALLY_PROVIDER",
+    UMACTUALLY_GITHUB_API_BASE: "UMACTUALLY_GITHUB_API_BASE",
+    // GitHub runner metadata
+    GITHUB_ACTIONS: "GITHUB_ACTIONS",
+    GITHUB_EVENT_PATH: "GITHUB_EVENT_PATH",
+    GITHUB_TOKEN: "GITHUB_TOKEN",
+    GH_TOKEN: "GH_TOKEN",
+    GITHUB_REPOSITORY: "GITHUB_REPOSITORY",
+    GITHUB_REF: "GITHUB_REF",
+    GITHUB_SHA: "GITHUB_SHA",
+    // Azure DevOps runner metadata
+    TF_BUILD: "TF_BUILD",
+    SYSTEM_ACCESSTOKEN: "SYSTEM_ACCESSTOKEN",
+    SYSTEM_TEAMPROJECT: "SYSTEM_TEAMPROJECT",
+    SYSTEM_COLLECTIONURI: "SYSTEM_COLLECTIONURI",
+    BUILD_REPOSITORY_ID: "BUILD_REPOSITORY_ID",
+    SYSTEM_PULLREQUEST_PULLREQUESTID: "SYSTEM_PULLREQUEST_PULLREQUESTID",
+    SYSTEM_PULLREQUEST_SOURCECOMMITID: "SYSTEM_PULLREQUEST_SOURCECOMMITID",
+    SYSTEM_PULLREQUEST_TARGETBRANCHNAME: "SYSTEM_PULLREQUEST_TARGETBRANCHNAME",
+    // GitHub action inputs
+    INPUT_DRY_RUN: "INPUT_DRY_RUN",
+    INPUT_EVENT: "INPUT_EVENT",
+    INPUT_DIFF: "INPUT_DIFF",
+    INPUT_REVIEW: "INPUT_REVIEW",
+    INPUT_THREADS: "INPUT_THREADS",
+    INPUT_OUTPUT_ARTIFACT: "INPUT_OUTPUT_ARTIFACT",
+    INPUT_PLATFORM: "INPUT_PLATFORM",
 };
-/**
- * Per-URL fallback chains for providers that only accept their own
- * model names. The MiniMax provider (`api.minimax.io`) returns
- * HTTP 400 for any OpenAI/Anthropic/Google model name, so the
- * generic openai-compatible fallback chain would 400 too.
- *
- * The map key is the host substring used by `HOST_ROUTES` so a
- * single source of truth drives both primary and fallback model
- * selection. Adding a new provider means adding ONE entry to
- * `HOST_ROUTES` and (if it needs custom fallbacks) ONE entry here
- * with the same key.
- */
-const URL_SPECIFIC_FALLBACKS = {
-    // `toLowerCase()` is applied to the URL before lookup so this
-    // map is case-insensitive — `api.minimax.io` and `API.MINIMAX.IO`
-    // both resolve to the same chain.
-    "minimax": [
-        MINIMAX_DEFAULT_MODEL,
-        "MiniMax-Text-01",
-        "abab6.5s-chat",
-        "abab5.5-chat",
-    ],
-};
-const DEFAULT_FALLBACK_MODELS = PROVIDER_FALLBACKS["openai-compatible"];
-/**
- * Return the fallback chain for a specific provider. Use this
- * instead of the bare `DEFAULT_FALLBACK_MODELS` constant in any
- * path that might be Copilot-routed — otherwise the parse-fail
- * recovery would itself fail with a 404.
- *
- * If `apiUrl` is provided and the URL hostname matches a
- * URL-specific chain (e.g. `api.minimax.io`), the URL-specific
- * chain wins — the generic OpenAI chain would 400 on those
- * providers.
- *
- * Hostname-only matching: matches against the URL hostname, not
- * the full URL, so a path like `/minimax-router` in
- * `https://example.com/minimax-router` does NOT falsely trigger
- * the MiniMax fallback chain. This is the same contract as
- * `resolveAutoModel`'s hostname-based routing — both functions
- * use `extractHostname` so the match is consistent.
- */
-function fallbackModelsFor(provider, apiUrl) {
-    if (apiUrl !== undefined && apiUrl !== null && apiUrl.length > 0) {
-        const hostname = extractHostname(apiUrl);
-        if (hostname !== null) {
-            for (const [hostKey, chain] of Object.entries(URL_SPECIFIC_FALLBACKS)) {
-                if (hostname.includes(hostKey)) {
-                    return chain;
-                }
-            }
-        }
-    }
-    return PROVIDER_FALLBACKS[provider];
-}
-/**
- * Parse a `--fallback-models` CLI value (comma-separated) into a
- * list. Empty parts and duplicate entries are dropped.
- *
- * When `apiUrl` is provided, the default fallback chain uses the
- * URL-specific model list when the URL matches a known provider
- * (e.g. `api.minimax.io` → MiniMax-M3 then MiniMax-Text-01, not
- * the generic openai-compatible chain). This makes `--fallback-models`
- * consistent with `resolveAutoModel`'s URL-aware behavior.
- */
-function parseFallbackModels(value, apiUrl) {
-    const defaultChain = apiUrl !== undefined && apiUrl !== null && apiUrl.length > 0
-        ? fallbackModelsFor("openai-compatible", apiUrl)
-        : DEFAULT_FALLBACK_MODELS;
-    if (value === null || value === undefined || value.length === 0) {
-        return defaultChain;
-    }
-    const seen = new Set();
-    const out = [];
-    for (const part of value.split(",")) {
-        const trimmed = part.trim();
-        if (trimmed.length === 0 || seen.has(trimmed)) {
-            continue;
-        }
-        seen.add(trimmed);
-        out.push(trimmed);
-    }
-    return out.length > 0 ? out : defaultChain;
-}
 
 ;// CONCATENATED MODULE: ./src/diff/parse-positions.ts
 
@@ -12906,15 +12621,6 @@ const DEFAULT_PER_REQUEST_SECONDS = FIELDS.perRequestTimeoutSeconds.defaultValue
  * byte-identical to the schema default.
  */
 const DEFAULT_SONAR_TIMEOUT_SECONDS = FIELDS.sonarTimeoutSeconds.defaultValue;
-/**
- * Canonical provider model default; derived from field-schema.
- *
- * Inferred as `string` (matching `pickString`'s signature in `loader.ts`),
- * but the field-schema's literal `"auto"` default is preserved by
- * TypeScript's widening rules because the right-hand side is a
- * `const`-tracked object property; callers that need the literal type
- * should re-assert at the call site.
- */
 const DEFAULT_PROVIDER_MODEL = FIELDS.model.defaultValue;
 
 ;// CONCATENATED MODULE: ./src/util/http.ts
@@ -13119,7 +12825,7 @@ const SEVERITY_ORDER = Object.keys(SEVERITY_RANK_BY_STRING)
     return 0;
 });
 /** Tally comments by severity; eliminates repeated lowercase accumulation logic in live review paths. */
-function severity_countBySeverity(comments) {
+function countBySeverity(comments) {
     const counts = {};
     for (const comment of comments) {
         const key = comment.severity.toLowerCase();
@@ -13687,67 +13393,14 @@ function renderSummary(data) {
     return layoutSeverityTable(data);
 }
 
-;// CONCATENATED MODULE: external "node:crypto"
-const external_node_crypto_namespaceObject = __WEBPACK_EXTERNAL_createRequire(import.meta.url)("node:crypto");
 ;// CONCATENATED MODULE: ./src/util/verdict.ts
-/**
- * Verdict → Azure PR-status mapping. Centralised so the live CLI
- * (`live-shared.ts`) and the S4 mocked-run fixture (`azure/run-azure-review.ts`)
- * share one rank table.
- *
- * Two policies exist because they were written at different times:
- *   - `legacy`: NEEDS_FIX → "failed" (S4 RED contract — fixture pinned).
- *     Throws on unknown verdicts via an explicit `TypeError` (preserves
- *     the throw-on-unknown guarantee the original
- *     `azure/run-azure-review.ts:mapVerdictToStatus` had — there is no
- *     `assertNever` helper in this module).
- *   - `current`: NEEDS_FIX → "pending" (live behavior — see CLARITY-2 in
- *     live-azure-status-policy.test.ts for the rationale: a failing review
- *     is a finding, not a merge-blocking check). Unknowns collapse to
- *     "pending" so a malformed verdict doesn't crash the runner.
- *
- * The umbrella strings (APPROVED / COMMENT / DISCUSS / SHIP) are always
- * "succeeded" under both policies — only NEEDS_FIX differs.
- *
- * GitHub verdict mapping (REQUEST_CHANGES vs COMMENT) is also exported
- * for symmetry; it has a single canonical mapping.
- */
-
-/** Known verdict strings accepted by either policy. */
 const KNOWN_UMBRELLA_VERDICTS = ["APPROVED", "COMMENT", "DISCUSS", "SHIP"];
-const KNOWN_BLOCKING_VERDICT = "NEEDS_FIX";
-function mapVerdictToAzureStatus(verdict, policy) {
+function mapVerdictToAzureStatus(verdict) {
     const normalized = verdict.toUpperCase();
-    // Umbrella strings → succeeded under both policies.
     if (KNOWN_UMBRELLA_VERDICTS.includes(normalized)) {
         return "succeeded";
     }
-    if (policy === "legacy") {
-        // Legacy policy throws on unknown verdicts — preserves the original
-        // `assertNever(verdict)`-style guard from
-        // `azure/run-azure-review.ts:mapVerdictToStatus` that the S4 RED
-        // contract depends on. (There is no `assertNever` function in this
-        // module; the same effect is achieved via the explicit TypeError
-        // below.)
-        if (normalized === KNOWN_BLOCKING_VERDICT)
-            return "failed";
-        throw new TypeError(`unknown verdict for legacy Azure status mapping: ${redactVerdictForError(verdict)}`);
-    }
-    // Current policy: NEEDS_FIX → "pending"; anything unknown (including
-    // empty string) also collapses to "pending" so a malformed verdict
-    // can't crash the live runner.
     return "pending";
-}
-/**
- * Redact a user-supplied verdict for inclusion in an error message.
- * Replaces the raw input with `len=<utf8 bytes>, sha256=<12 hex chars>`
- * so the error is informative for log correlation without echoing
- * PII, control characters, or terminal-escape sequences from the input.
- */
-function redactVerdictForError(verdict) {
-    const bytes = Buffer.byteLength(verdict, "utf8");
-    const hash = (0,external_node_crypto_namespaceObject.createHash)("sha256").update(verdict).digest("hex").slice(0, 12);
-    return `len=${bytes}, sha256=${hash}`;
 }
 /** GitHub verdict → review-submission event. */
 function mapVerdictToGithubEvent(verdict) {
@@ -13977,19 +13630,6 @@ function shouldKeepFinding(controls, finding) {
 
 
 
-/**
- * @deprecated Re-export preserved for one release cycle so callers that
- * import `countBySeverity` from `cli/live-shared.js` continue to work.
- * Import directly from `src/util/severity.js` instead.
- *
- * The original JSDoc explicitly warned: "Do not remove without updating
- * all callers." Since the symbol has been part of this module's surface
- * (and is referenced from tests and any downstream that pulls from
- * `dist/cli.js`), removing it outright would silently break those
- * consumers. The deprecation lets type-aware consumers see the warning
- * at compile time; the alias keeps runtime behavior stable.
- */
-const countBySeverityFromLiveShared = (/* unused pure expression or super */ null && (countBySeverity));
 
 
 
@@ -14447,7 +14087,7 @@ function preparePostedReview(input) {
     // the count inline rather than calling the helper.
     const offDiffFromComments = selectOffDiffCommentsWithPositions(input.review, positions);
     const suppressedCommentCount = input.review.suppressedComments.length + offDiffFromComments.length;
-    const severityCounts = severity_countBySeverity(postableComments);
+    const severityCounts = countBySeverity(postableComments);
     // Reconcile the model's raw verdict against the postable severity
     // counts. The body would render a `⛔ NEEDS_FIX` headline against a
     // `📊 0 inline findings` count for a review with nothing to act on
@@ -14516,11 +14156,9 @@ const mapReviewVerdictToGithubEvent = mapVerdictToGithubEvent;
  *     `"succeeded"` and reserve `"pending"` for "ran and found things
  *     to look at" (`NEEDS_FIX`) plus the safe-default fallthrough.
  *
- * Delegates to `src/util/verdict.ts` with the `"current"` policy so the
- * legacy S4 RED-contract mapping (NEEDS_FIX → "failed") stays in one
- * place and is selectable per call site.
+ * Delegates to the canonical mapping in `src/util/verdict.ts`.
  */
-const mapReviewVerdictToAzureStatus = (verdict) => mapVerdictToAzureStatus(verdict, "current");
+const mapReviewVerdictToAzureStatus = mapVerdictToAzureStatus;
 function sanitizeForPost(value, secrets) {
     const sanitized = value
         .replace(/Authorization:\s*[^\r\n]*/giu, REDACTED_AUTHORIZATION_HEADER)
@@ -14711,6 +14349,92 @@ function buildParseWarningsArtifact(input) {
         },
         warnings,
     };
+}
+
+;// CONCATENATED MODULE: ./src/cli/auto-model.ts
+
+
+function modelsUrl(apiUrl) {
+    const base = apiUrl.replace(/\/+$/u, "");
+    return base.endsWith("/v1") ? `${base}/models` : `${base}/v1/models`;
+}
+function redactNetworkReason(error) {
+    if (!(error instanceof Error))
+        return "model discovery request failed";
+    return error.message.replace(/https?:\/\/\S+/gu, (url) => redactUrlForLog(url));
+}
+function parseModelIds(body) {
+    if (typeof body !== "object" || body === null || !("data" in body) || !Array.isArray(body.data)) {
+        return { ok: false, error: { kind: "malformed", reason: "missing data array" } };
+    }
+    const ids = body.data.flatMap((entry) => {
+        if (typeof entry !== "object" || entry === null || !("id" in entry))
+            return [];
+        const id = entry.id;
+        return typeof id === "string" && id.trim().length > 0 ? [id.trim()] : [];
+    });
+    if (ids.length === 0)
+        return { ok: false, error: { kind: "empty" } };
+    if (ids.length > 1)
+        return { ok: false, error: { kind: "ambiguous", modelIds: ids } };
+    return { ok: true, ids };
+}
+function discoverySignal(dependencies) {
+    const timeoutSignal = dependencies.timeoutMs === undefined
+        ? undefined
+        : AbortSignal.timeout(dependencies.timeoutMs);
+    if (dependencies.signal === undefined)
+        return timeoutSignal;
+    if (timeoutSignal === undefined)
+        return dependencies.signal;
+    return AbortSignal.any([dependencies.signal, timeoutSignal]);
+}
+async function discoverAutoModel(input) {
+    if (input.provider === "copilot")
+        return { ok: true, modelId: "auto" };
+    if (input.apiUrl === null || input.apiUrl.trim().length === 0 || input.apiKey === null || input.apiKey.length === 0) {
+        return { ok: false, error: { kind: "unsupported", provider: input.provider } };
+    }
+    const dependencies = input.dependencies ?? {};
+    const signal = discoverySignal(dependencies);
+    if (signal?.aborted === true)
+        return { ok: false, error: { kind: "aborted" } };
+    const headers = input.provider === "anthropic"
+        ? { accept: "application/json", "anthropic-version": "2023-06-01", "x-api-key": input.apiKey }
+        : { accept: "application/json", authorization: `Bearer ${input.apiKey}` };
+    let response;
+    try {
+        response = await (dependencies.fetchImpl ?? globalThis.fetch)(modelsUrl(input.apiUrl), {
+            method: "GET",
+            headers,
+            ...(signal === undefined ? {} : { signal }),
+        });
+    }
+    catch (error) {
+        return isAbortError(error)
+            ? { ok: false, error: { kind: "aborted" } }
+            : { ok: false, error: { kind: "network", reason: redactNetworkReason(error) } };
+    }
+    if (response.status === 401 || response.status === 403) {
+        return { ok: false, error: { kind: "unauthorized", status: response.status } };
+    }
+    if (!response.ok) {
+        return { ok: false, error: { kind: "network", reason: `model discovery returned HTTP ${response.status}` } };
+    }
+    let body;
+    try {
+        body = await response.json();
+    }
+    catch {
+        return { ok: false, error: { kind: "malformed", reason: "response body is not JSON" } };
+    }
+    const parsed = parseModelIds(body);
+    if (!parsed.ok)
+        return { ok: false, error: parsed.error };
+    const modelId = parsed.ids[0];
+    return modelId === undefined
+        ? { ok: false, error: { kind: "empty" } }
+        : { ok: true, modelId };
 }
 
 ;// CONCATENATED MODULE: ./src/config/prompt-files.ts
@@ -15818,7 +15542,6 @@ function parseActionOutputsYaml(text, diffText) {
 
 
 
-
 // Re-exports of the default-lookup and splitting primitives so callers
 // (including the CLI help and tests) can import them from the public
 // `cli/provider-prompts` surface without reaching into `config/`.
@@ -16104,12 +15827,12 @@ async function pickSystemPrompt(input, defaultPaths) {
     //      AGENTS.md, .github/copilot-instructions.md, .cursorrules,
     //      GEMINI.md). Files that do not exist are skipped.
     //   4. Built-in `buildDefaultSystemPrompt()`.
-    const promptFilesRaw = resolveField(input.parsed.promptFiles, input.env[ENV_KEYS.UMACTUALLY_PROMPT_FILES], "");
+    const promptFilesRaw = resolveField(input.parsed.promptFiles, undefined, "");
     const promptFilesList = splitPromptFileList(promptFilesRaw);
     if (promptFilesList.length > 0) {
         return readPromptFiles(promptFilesList, DEFAULT_PROMPT_BYTE_CAP, { cwd: input.cwd });
     }
-    const filePath = resolveField(input.parsed.promptFile, input.env[ENV_KEYS.UMACTUALLY_PROMPT_FILE], "");
+    const filePath = resolveField(input.parsed.promptFile, undefined, "");
     if (filePath.length > 0) {
         return readPromptFiles([filePath], DEFAULT_PROMPT_BYTE_CAP, { cwd: input.cwd });
     }
@@ -16193,12 +15916,12 @@ async function readAdditionalPrompt(input, defaultPaths) {
     }
     // Precedence mirrors `pickSystemPrompt`: array overrides defaults,
     // single-file is the legacy path, then default-lookup, then empty.
-    const filesRaw = resolveField(input.parsed.additionalPromptFiles, input.env[ENV_KEYS.UMACTUALLY_ADDITIONAL_PROMPT_FILES], "");
+    const filesRaw = resolveField(input.parsed.additionalPromptFiles, undefined, "");
     const filesList = splitPromptFileList(filesRaw);
     if (filesList.length > 0) {
         return readPromptFiles(filesList, DEFAULT_PROMPT_BYTE_CAP, { cwd: input.cwd });
     }
-    const filePath = resolveField(input.parsed.additionalPromptFile, input.env[ENV_KEYS.UMACTUALLY_ADDITIONAL_PROMPT_FILE], "");
+    const filePath = resolveField(input.parsed.additionalPromptFile, undefined, "");
     if (filePath.length > 0) {
         return readPromptFiles([filePath], DEFAULT_PROMPT_BYTE_CAP, { cwd: input.cwd });
     }
@@ -17123,7 +16846,16 @@ async function requestLiveReview(input) {
         expectedArtifact: "artifacts/manual/s5-redaction-report.json",
     });
     const providerApiKey = requireLiveConfig(resolveField(input.parsed.apiKey, input.env[ENV_KEYS.UMACTUALLY_API_KEY], ""), ENV_KEYS.UMACTUALLY_API_KEY);
-    const modelId = readConfiguredModel(input.parsed, input.env);
+    const providerUrl = resolveProviderUrl(input.parsed, input.env);
+    const modelId = await resolveRequestModel({
+        configuredModel: input.parsed.model,
+        provider: input.parsed.provider ?? "openai-compatible",
+        apiUrl: providerUrl,
+        apiKey: providerApiKey,
+        fetchImpl: input.fetchImpl,
+        ...(input.signal === undefined ? {} : { signal: input.signal }),
+        timeoutMs: readRequestTimeoutMs(input.parsed),
+    });
     const prompts = await buildProviderPrompts(input);
     // Install an ambient severity-warning sink for the duration of this
     // request. Any `parseReviewPayload` call inside `runCopilotRequest` /
@@ -17245,13 +16977,13 @@ async function requestLiveReview(input) {
             // `messages[]`, `max_tokens` instead of `max_output_tokens`,
             // `x-api-key`/`anthropic-version` headers). The URL resolution
             // (in `resolveAnthropicMessagesUrl`) preserves the operator's
-            // path prefix so Anthropic-compatible gateways like
-            // `https://api.minimax.io/anthropic` route correctly.
+            // path prefix so Anthropic-compatible gateways mounted under
+            // paths such as `/llm/anthropic` route correctly.
             //
             // When the URL fails with a routing-level rejection (404/400),
             // `runWithCrossProtocolFallback` transparently retries with the
             // OpenAI-compatible client at the same base URL — operators
-            // pointing MiniMax-style gateways at the action don't have to
+            // pointing dual-protocol gateways at the action don't have to
             // know which protocol lives under which path prefix.
             //
             // Anthropic defaults to https://api.anthropic.com/v1 when
@@ -17260,7 +16992,7 @@ async function requestLiveReview(input) {
             // Messages API" block, and `validate.ts`/`orchestrator.ts`
             // which both exempt --api-url from the required check when
             // --provider anthropic is set.
-            const providerUrl = resolveField(input.parsed.apiUrl, input.env[ENV_KEYS.UMACTUALLY_API_URL], DEFAULT_ANTHROPIC_URL);
+            const anthropicUrl = providerUrl ?? DEFAULT_ANTHROPIC_URL;
             let result = await runAnthropicRequest(buildProviderRequestConfig({
                 protocol: "anthropic",
                 parsed: input.parsed,
@@ -17270,7 +17002,7 @@ async function requestLiveReview(input) {
                 fetchImpl: input.fetchImpl,
                 responseFormat,
                 providerApiKey,
-                baseUrl: providerUrl,
+                baseUrl: anthropicUrl,
             }));
             if (!result.ok) {
                 // Cross-protocol fallback to the OpenAI client at the same URL.
@@ -17280,7 +17012,7 @@ async function requestLiveReview(input) {
                     namedProvider: "anthropic",
                     namedResult: result,
                     fallbackProvider: "openai-compatible",
-                    baseUrl: providerUrl,
+                    baseUrl: anthropicUrl,
                     providerApiKey,
                     modelId,
                     prompts,
@@ -17295,12 +17027,12 @@ async function requestLiveReview(input) {
             }
             return dispatchProviderResult(result, providerNameForEndpoint(result.ok ? result.endpoint : result.error.endpoint), input.parsed.maxOutputTokens, { handleSuccess, handleParse });
         }
-        const providerUrl = requireLiveConfig(resolveField(input.parsed.apiUrl, input.env[ENV_KEYS.UMACTUALLY_API_URL], ""), ENV_KEYS.UMACTUALLY_API_URL);
+        const openaiUrl = requireLiveConfig(providerUrl ?? "", ENV_KEYS.UMACTUALLY_API_URL);
         // Path-prefix heuristic: if the operator's URL looks like an
         // Anthropic-protocol gateway (any path segment equal to
-        // `anthropic`, case-insensitive — MiniMax's `/anthropic`,
-        // self-hosted LiteLLM `/llm/anthropic`, etc.) commit to the
-        // Anthropic Messages API client regardless of which `--provider`
+        // `anthropic`, case-insensitive — for example `/anthropic` or
+        // `/llm/anthropic`) commit to the Anthropic Messages API client
+        // regardless of which `--provider`
         // was set. Otherwise the openai-compatible client's URL
         // candidate loop downgrades the URL to origin+`/v1` and may
         // happily succeed there, silently routing an `/anthropic`-prefix
@@ -17315,7 +17047,7 @@ async function requestLiveReview(input) {
         // Emit a ::notice:: even when --provider=anthropic so operators see
         // the dispatcher considered and committed to the right protocol —
         // invisible-to-the-eye but logged for audit.
-        const useAnthropicProtocol = looksLikeAnthropicEndpoint(providerUrl);
+        const useAnthropicProtocol = looksLikeAnthropicEndpoint(openaiUrl);
         if (useAnthropicProtocol) {
             process.stderr.write(`::notice::${BRAND_PREFIX}Operator URL contains an /anthropic path segment; using the Anthropic Messages API client (regardless of --provider).\n`);
         }
@@ -17330,7 +17062,7 @@ async function requestLiveReview(input) {
                 fetchImpl: input.fetchImpl,
                 responseFormat,
                 providerApiKey,
-                baseUrl: providerUrl,
+                baseUrl: openaiUrl,
             }));
         }
         else {
@@ -17343,14 +17075,14 @@ async function requestLiveReview(input) {
                 fetchImpl: input.fetchImpl,
                 responseFormat,
                 providerApiKey,
-                baseUrl: providerUrl,
+                baseUrl: openaiUrl,
             }));
         }
         if (!result.ok) {
             // Cross-protocol fallback: if the named (openai-compatible) client
             // exhausted its URL candidates with a routing-level failure, try
             // the Anthropic client at the same URL. On dual-protocol gateways
-            // (MiniMax at /anthropic/, etc.) this lets `--provider
+            // with an `/anthropic/` path, this lets `--provider
             // openai-compatible` discover the Anthropic-protocol endpoint at
             // `/anthropic/v1/messages` without operator intervention.
             //
@@ -17360,7 +17092,7 @@ async function requestLiveReview(input) {
                 namedProvider: "openai-compatible",
                 namedResult: result,
                 fallbackProvider: "anthropic",
-                baseUrl: providerUrl,
+                baseUrl: openaiUrl,
                 providerApiKey,
                 modelId,
                 prompts,
@@ -17505,26 +17237,50 @@ function normalizeProviderComment(comment, secrets) {
         category: sanitizeForPost(comment.category, secrets),
     };
 }
-function readConfiguredModel(parsed, env) {
-    const fromArgs = parsed.model;
-    // Treat the literal string "auto" the same as the default
-    // (unset): the user is asking for the opinionated resolver,
-    // not for the provider's "auto" pass-through. Without this,
-    // `--model auto` would short-circuit before the resolver
-    // runs and send the literal string "auto" to the provider.
-    if (fromArgs !== null && fromArgs.length > 0 && fromArgs !== "auto") {
-        return fromArgs;
+function resolveProviderUrl(parsed, env) {
+    if (parsed.provider === "copilot")
+        return null;
+    const fallback = parsed.provider === "anthropic" ? DEFAULT_ANTHROPIC_URL : "";
+    const resolved = resolveField(parsed.apiUrl, env[ENV_KEYS.UMACTUALLY_API_URL], fallback);
+    return resolved.trim().length === 0 ? null : resolved;
+}
+async function resolveRequestModel(input) {
+    const configured = input.configuredModel;
+    const normalized = configured?.trim();
+    if (configured !== null && normalized !== undefined && normalized.length > 0 && normalized !== "auto") {
+        return configured;
     }
-    // Layer 5: `auto` is no longer passed verbatim. The resolver picks
-    // a less-hallucinating model based on the active provider + API
-    // URL. See `src/cli/auto-model.ts` for the per-provider mapping
-    // and the Vectara HHEM rationale.
-    const provider = (parsed.provider ?? "openai-compatible");
-    return resolveAutoModel({
-        provider,
-        apiUrl: parsed.apiUrl,
-        env,
+    const discovery = await discoverAutoModel({
+        provider: input.provider,
+        apiUrl: input.apiUrl,
+        apiKey: input.apiKey,
+        dependencies: {
+            fetchImpl: input.fetchImpl,
+            timeoutMs: input.timeoutMs,
+            ...(input.signal === undefined ? {} : { signal: input.signal }),
+        },
     });
+    if (discovery.ok)
+        return discovery.modelId;
+    throw new LiveReviewError("PROVIDER_ERROR", formatModelDiscoveryFailure(discovery.error), { cause: discovery.error });
+}
+function formatModelDiscoveryFailure(error) {
+    switch (error.kind) {
+        case "empty":
+            return "Provider model discovery returned no usable models. Set an available model explicitly with --model.";
+        case "ambiguous":
+            return `Provider model discovery returned ${error.modelIds.length} models and cannot choose safely. Set one explicitly with --model.`;
+        case "unauthorized":
+            return `Provider model discovery was not authorized (HTTP ${error.status}). Check provider credentials or set a known model explicitly with --model.`;
+        case "malformed":
+            return "Provider model discovery returned an invalid model catalog. Set a known model explicitly with --model.";
+        case "unsupported":
+            return `Automatic model discovery is unsupported for provider ${error.provider}. Set a model explicitly with --model.`;
+        case "aborted":
+            return "Provider model discovery was cancelled or timed out. Retry or set a known model explicitly with --model.";
+        case "network":
+            return "Provider model discovery could not reach the model catalog. Check the provider connection or set a known model explicitly with --model.";
+    }
 }
 function readRequestTimeoutMs(parsed) {
     const seconds = parsed.perRequestTimeoutSeconds ?? parsed.reviewTimeoutSeconds;
@@ -17573,8 +17329,8 @@ async function runWithCrossProtocolFallback(args) {
     //
     // SECURITY NOTE: the operator's API key is passed to BOTH the
     // named and the fallback protocol client. This is correct on
-    // dual-protocol gateways (MiniMax at /anthropic and /v1 accepts
-    // the same key for both protocols). The 404-only trigger (see
+    // dual-protocol gateways that accept the same key for both protocols.
+    // The 404-only trigger (see
     // isRoutableFailureForDispatcher) keeps this from happening for
     // payload-level errors, but operators pointing the action at a
     // non-dual-protocol URL can still expect this dispatcher's
@@ -17732,7 +17488,7 @@ async function runStandalone(input) {
             note,
             provider: {
                 name: input.parsed.provider ?? "openai-compatible",
-                modelId: input.parsed.model ?? "auto",
+                modelId: input.parsed.model ?? "(auto)",
                 endpoint: input.parsed.apiUrl ?? "",
             },
             review: { summary: note, verdict: "COMMENT", comments: [] },
@@ -17760,7 +17516,7 @@ async function runStandalone(input) {
             note,
             provider: {
                 name: input.parsed.provider ?? "openai-compatible",
-                modelId: input.parsed.model ?? "auto",
+                modelId: input.parsed.model ?? "(auto)",
                 endpoint: input.parsed.apiUrl ?? "",
             },
             review: { summary: note, verdict: "COMMENT", comments: [] },
@@ -17883,7 +17639,7 @@ function buildReviewData(review, parsed, diffText = "") {
     return {
         review,
         provider: parsed.provider ?? "openai-compatible",
-        modelId: parsed.model ?? "auto",
+        modelId: parsed.model ?? "(auto)",
         validCommentCount: postedComments.length,
         suppressedCommentCount: 0,
         severityCounts,
@@ -17970,7 +17726,7 @@ async function runWizardPrompts(savedConfig) {
     }
     const modelAnswer = await dist_text({
         message: "Model",
-        initialValue: savedConfig?.model ?? "auto",
+        initialValue: savedConfig?.model ?? "",
     });
     if (dist_isCancel(modelAnswer))
         return { cancel: true };
@@ -18600,8 +18356,7 @@ function renderShowConfig(config, path) {
     ];
     if (config.apiUrl !== undefined)
         lines.push(`  apiUrl:   ${config.apiUrl}`);
-    if (config.model !== undefined)
-        lines.push(`  model:    ${config.model}`);
+    lines.push(`  model:    ${config.model ?? "auto (resolved at review time)"}`);
     return lines.join("\n") + "\n";
 }
 function runShowConfig() {
@@ -18783,13 +18538,12 @@ async function runUninstallBranch(args) {
     // follow-ups would leave the user confused about what was
     // actually changed on disk.
     //
-    // Honors the same env vars that shouldPrompt honors:
+    // Honors the env var that shouldPrompt honors:
     //   - UMACTUALLY_UNINSTALL_YES=1
-    //   - UMACTUALLY_YES=true
     // so a CI job with `UMACTUALLY_UNINSTALL_YES=1 umactually uninstall
     // --purge-config` works without also passing --yes on the command
     // line.
-    const yesEnv = deps.env["UMACTUALLY_UNINSTALL_YES"] ?? deps.env["UMACTUALLY_YES"];
+    const yesEnv = deps.env["UMACTUALLY_UNINSTALL_YES"];
     const envAffirmed = yesEnv === "1" || yesEnv === "true";
     if (!deps.isTTY &&
         mode.yes !== true &&
@@ -19380,11 +19134,7 @@ function countCommentsMatchingExistingThread(comments, existingThreads) {
     return count;
 }
 function mapVerdictToStatus(verdict) {
-    // Use the legacy policy (NEEDS_FIX → "failed") to preserve the S4 RED contract;
-    // the live CLI uses the "current" policy (NEEDS_FIX → "pending") via
-    // src/util/verdict.ts. The two are intentionally divergent — the live CLI
-    // considers NEEDS_FIX a "finding", not a merge-blocking check.
-    return mapVerdictToAzureStatus(verdict, "legacy");
+    return mapVerdictToAzureStatus(verdict);
 }
 function readRecord(value, label) {
     if (!json_guards_isRecord(value)) {
@@ -19449,8 +19199,6 @@ function readThreadComments(value) {
 
 
 
-
-// Re-exported for backward compatibility; canonical source is src/util/marker.ts.
 
 async function runReview(contract) {
     parseEvent(contract.eventJson);
@@ -19893,17 +19641,6 @@ const ENV_SOURCE_FIELDS = {
     apiUrl: "providerUrl",
     apiKey: "providerApiKey",
     model: "providerModel",
-    promptFile: "promptSystemFile",
-    promptFiles: "promptSystemFiles",
-    additionalPromptFile: "promptUserFile",
-    additionalPromptFiles: "promptUserFiles",
-    strictSchema: "strictSchema",
-    verifyFindings: "verifyFindings",
-    stallSeconds: "stallTimeoutSeconds",
-    includeSonarqube: "sonarEnabled",
-    sonarHostUrl: "sonarHost",
-    sonarProjectKey: "sonarProject",
-    detectLeaks: "leakDetection",
 };
 // Reverse index: FIELDS-side field name → EnvSources-side field name.
 // Derived entirely from `ENV_SOURCE_FIELDS` so it stays in sync.
@@ -19921,34 +19658,6 @@ const FIELDS_TO_ENV_SOURCE = new Map(Object.entries(ENV_SOURCE_FIELDS).map(([env
 // `src/config/types.ts` AND a new FIELDS entry that references it
 // (with non-empty env vars), append the new EnvSources-side key here.
 const DIRECT_ENV_SOURCE_KEYS = [
-    "providerUrl",
-    "providerApiKey",
-    "providerModel",
-    "promptSystemFile",
-    "promptSystemFiles",
-    "promptUserFile",
-    "promptUserFiles",
-    "promptByteCap",
-    "walkthrough",
-    "diagnostic",
-    "dryRun",
-    "debugRawResponse",
-    "simulateFindings",
-    "reviewTimeoutSeconds",
-    "stallTimeoutSeconds",
-    "perRequestTimeoutSeconds",
-    "maxOutputTokens",
-    "minimumSeverity",
-    "maxComments",
-    "reviewFileLimit",
-    "sonarEnabled",
-    "sonarHost",
-    "sonarToken",
-    "sonarProject",
-    "sonarTimeoutSeconds",
-    "leakDetection",
-    "redactorEnabled",
-    "platform",
     "githubApiBase",
     "githubToken",
     "azureOrg",
@@ -19998,14 +19707,12 @@ function isEnvSourceField(field) {
 }
 /**
  * Pure: extracts the known env-var keys from `env` into an EnvSources object.
- * UMACTUALLY_* takes precedence over REVIEW_* when both are set.
  * Never logs values. Empty/missing keys are simply omitted.
  *
  * The canonical env-var set is derived from `FIELDS` in
  * `src/config/field-schema.ts`.
  */
 function readEnvSources(env = process.env) {
-    warnIfLegacyIgnoreMinorEnvVarsAreSet(env);
     const out = {};
     for (const def of ALL_FIELDS) {
         if (def.env.length === 0) {
@@ -20024,41 +19731,6 @@ function readEnvSources(env = process.env) {
         }
     }
     return out;
-}
-// Set of env-var names that were honored by previous versions of this
-// action but are now silently ignored after the `ignore-minor` removal.
-// We surface a one-time warning on stderr so CI pipelines that still
-// carry these env vars (often baked into runner images / variable
-// groups months ago) get a migration nudge they would otherwise miss.
-// The CLI counterpart fails loudly via `CliUsageError`; env vars are
-// weaker because they are inherited invisibly, which is exactly the
-// case where a warning helps.
-const LEGACY_IGNORE_MINOR_ENV_VARS = new Set([
-    "UMACTUALLY_IGNORE_MINOR",
-    "REVIEW_IGNORE_MINOR",
-]);
-// Per-process dedupe so a single CLI invocation that calls
-// `readEnvSources` multiple times (config loader, scenario tests, etc.)
-// doesn't spam stderr with the same warning. The set is module-scoped
-// so it lives for the lifetime of the process — the warning is meant
-// to be "once per session", not "once per call".
-const WARNED_LEGACY_ENV_VARS = new Set();
-function warnIfLegacyIgnoreMinorEnvVarsAreSet(env) {
-    const setNow = [];
-    for (const name of LEGACY_IGNORE_MINOR_ENV_VARS) {
-        if (WARNED_LEGACY_ENV_VARS.has(name))
-            continue;
-        const value = env[name];
-        if (typeof value === "string" && value.trim().length > 0) {
-            setNow.push(name);
-        }
-    }
-    if (setNow.length === 0)
-        return;
-    for (const name of setNow)
-        WARNED_LEGACY_ENV_VARS.add(name);
-    process.stderr.write(`[umactually] env ${setNow.join(", ")} is set but no longer honored. ` +
-        `Use minimum-severity (low|medium|high, default medium) instead.\n`);
 }
 
 ;// CONCATENATED MODULE: ./src/platform/detect.ts
@@ -22227,7 +21899,7 @@ function mergeReviewResults(outcomes, options) {
     for (const outcome of outcomes) {
         const composed = composeEffectiveVerdict({
             rawVerdict: outcome.review.verdict,
-            severityCounts: severity_countBySeverity(outcome.review.comments),
+            severityCounts: countBySeverity(outcome.review.comments),
         });
         const rank = verdictRank(composed.verdict);
         if (rank > worstRank) {
@@ -22990,12 +22662,12 @@ async function dispatchLivePlatform(input) {
                         fileCount,
                         reviewFileLimit,
                         provider: parsed.provider ?? "openai-compatible",
-                        modelId: parsed.model ?? "auto",
+                        modelId: parsed.model ?? "(auto)",
                         secrets: [context.token],
                     }),
                     endpoint: "skipped",
                     provider: parsed.provider ?? "openai-compatible",
-                    modelId: parsed.model ?? "auto",
+                    modelId: parsed.model ?? "(auto)",
                     // Skipped-due-to-file-limit placeholder — no parser ran, so
                     // no severity warnings to surface.
                     severityWarnings: [],
@@ -23076,7 +22748,6 @@ function detectLivePlatform(env) {
 function readSecretValues(env) {
     return [
         env[ENV_KEYS.UMACTUALLY_API_KEY] ?? "",
-        env[ENV_KEYS.REVIEW_PROVIDER_API_KEY] ?? "",
         env[ENV_KEYS.GITHUB_TOKEN] ?? "",
         env[ENV_KEYS.SYSTEM_ACCESSTOKEN] ?? "",
         env["AZURE_DEVOPS_TOKEN"] ?? "",
@@ -23574,6 +23245,8 @@ async function writeParseWarningsArtifact(primaryArtifactPath, warnings) {
     await (0,promises_.writeFile)(path, `${JSON.stringify(body, null, 2)}\n`, "utf8");
 }
 
+;// CONCATENATED MODULE: external "node:crypto"
+const external_node_crypto_namespaceObject = __WEBPACK_EXTERNAL_createRequire(import.meta.url)("node:crypto");
 ;// CONCATENATED MODULE: ./src/cli/local-files-run.ts
 /**
  * Runs a provider-only review over local files/directories for the
@@ -24419,29 +24092,10 @@ async function cleanupGeneratedArtifacts(generatedArtifacts, cwd) {
         process.stderr.write(`cli: failed to clean generated artifacts at ${tempDir}: ${formatError(error)}\n`);
     }
 }
-/**
- * Render a list of structured validation errors to stderr.
- *
- * Shape:
- *   cli: <message-1>; <message-2>; ...
- *     hint: <hint-1>
- *     hint: <hint-2>
- *     ...
- *
- * The first line is the byte-compatible legacy join (semicolon-
- * separated messages) so any CI log scraper or external consumer
- * matching on `cli: --api-url is required` or
- * `cli: --review requires --diff` keeps working. Each entry's
- * remediation hint is rendered as a separate `hint:` line. Piping
- * the output through `grep "cli:"` still surfaces the legacy first
- * line; piping through `grep "hint:"` surfaces every remediation.
- */
 function renderValidationErrors(errors) {
-    const header = `cli: ${errors.map((e) => e.message).join("; ")}\n`;
-    const hintLines = errors
-        .map((e) => `  hint: ${e.hint}`)
-        .join("\n");
-    return `${header}${hintLines}\n`;
+    return errors
+        .map((error) => `cli: ${error.message}\n  hint: ${error.hint}`)
+        .join("\n") + "\n";
 }
 async function runCli(args, cwd) {
     let parsed;
@@ -24537,12 +24191,6 @@ async function runCli(args, cwd) {
             };
         }
         if (errors.length > 0) {
-            // Render the structured errors with `flag` + `message` + `hint`
-            // so the operator sees a remediation next to each failure rather
-            // than a flat semicolon-joined string. The first line stays
-            // byte-compatible with the legacy `cli: <msg>;<msg>` shape so
-            // any consumer grep'ing for `cli: --api-url is required` keeps
-            // working.
             process.stderr.write(renderValidationErrors(errors));
             // Bare-invocation banner: when the operator ran the CLI with no
             // provider flags AND validation rejected because of missing
