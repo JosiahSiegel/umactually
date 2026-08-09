@@ -4,8 +4,10 @@ import { join as pathJoin } from "node:path";
 import { DEFAULT_PROMPT_BYTE_CAP } from "../config/defaults.js";
 import {
   DEFAULT_PROMPT_FILE_PATHS,
+  readHumanConventionFiles,
   readPromptFiles,
   resolveDefaultPromptFiles,
+  resolveGlobs,
   splitPromptFileList,
 } from "../config/prompt-files.js";
 import { listDiffPaths } from "../diff/filter-build-artifacts.js";
@@ -140,8 +142,32 @@ export async function buildProviderPrompts(input: ProviderPromptsInput): Promise
   // string the post-filter then validates against this list.
   userParts.push(buildFilesInDiffBlock(input.diffText));
   userParts.push("Diff:", input.diffText);
+  // Human convention files (README, CONTRIBUTING, LICENSE, …) layer:
+  // loaded AFTER pickSystemPrompt so they precede every other system
+  // content the model sees. The labelled separator + header makes the
+  // boundary explicit so the model treats the human docs as a distinct
+  // "ground-truth repo contract" layer (vs. the AI instruction files
+  // layered behind it). Read is silent on per-file failures by design
+  // (see `readHumanConventionFiles` doc), so a missing README never
+  // aborts the review — the system prompt simply degrades to the
+  // pickSystemPrompt-only content.
+  //
+  // The opt-out (`--no-instruction-files`) suppresses the AI-files
+  // lookup inside `pickSystemPrompt`; this gate mirrors it for the
+  // human-files load so the entire default-lookup surface (AI + human)
+  // is skipped in one shot. Inline + --prompt-files + --prompt-file
+  // overrides inside `pickSystemPrompt` still take precedence (those
+  // branches early-return BEFORE this code runs).
+  const baseSystem = await pickSystemPrompt(input, defaultPaths);
+  const humanConventionFiles = isInstructionFilesExplicitlyFalse(input.parsed)
+    ? ""
+    : await readHumanConventionFiles({ cwd: input.cwd });
+  const system =
+    humanConventionFiles.length > 0
+      ? `\n---\nHuman convention files (README, CONTRIBUTING, …):\n${humanConventionFiles}\n${baseSystem}`
+      : baseSystem;
   return {
-    system: await pickSystemPrompt(input, defaultPaths),
+    system,
     user: userParts.join("\n\n"),
   };
 }
@@ -197,22 +223,15 @@ const DEFAULT_PROMPT_FILES_CACHE: Map<string, readonly string[]> = new Map();
 function resolveDefaultPromptFilesOnce(cwd: string): readonly string[] {
   const cached = DEFAULT_PROMPT_FILES_CACHE.get(cwd);
   if (cached !== undefined) return cached;
+  // Expand DEFAULT_PROMPT_FILE_PATHS through `resolveGlobs` so glob
+  // patterns (e.g. `.cursor/rules/*.md`) yield their matches alongside
+  // the flat-path entries. `resolveGlobs` enforces the same realpath
+  // boundary as `readPromptFiles` (drops anything that escapes cwd)
+  // and only emits cwd-relative paths, so the per-candidate defensive
+  // check that lived here before is now redundant.
+  const expanded = resolveGlobs(DEFAULT_PROMPT_FILE_PATHS, cwd);
   const out: string[] = [];
-  for (const candidate of DEFAULT_PROMPT_FILE_PATHS) {
-    // Defense in depth: every entry in DEFAULT_PROMPT_FILE_PATHS is a
-    // hardcoded relative path with no `..` segments and no leading
-    // `/`, but `path.join` would silently swallow an absolute candidate
-    // (e.g. `/etc/passwd`) and turn it into an absolute path under
-    // cwd. Reject anything that is not a plain relative path here so
-    // a future change that adds a non-conforming entry surfaces a
-    // loud failure instead of silently expanding the security
-    // boundary.
-    if (!isSafeRelativeCandidate(candidate)) {
-      throw new Error(
-        `DEFAULT_PROMPT_FILE_PATHS contains an unsafe entry: ${JSON.stringify(candidate)}. ` +
-          `Entries must be relative paths with no '..' segments and no leading '/' or drive letter.`,
-      );
-    }
+  for (const candidate of expanded) {
     try {
       const s = statSync(pathJoin(cwd, candidate));
       if (s.isFile()) out.push(candidate);
@@ -223,28 +242,6 @@ function resolveDefaultPromptFilesOnce(cwd: string): readonly string[] {
   const frozen = Object.freeze(out);
   DEFAULT_PROMPT_FILES_CACHE.set(cwd, frozen);
   return frozen;
-}
-
-/**
- * Returns true iff the candidate is a safe relative path: no leading
- * `/`, no leading drive letter (Windows `C:` etc.), no `..` segments,
- * and at least one non-separator character.
- *
- * This is defense in depth — DEFAULT_PROMPT_FILE_PATHS is hardcoded
- * with safe entries today. The check exists so a future maintainer
- * who adds an entry with `..` (e.g. `../sibling/CLAUDE.md`) sees a
- * loud failure rather than silently allowing the action to read a
- * path outside cwd.
- */
-function isSafeRelativeCandidate(candidate: string): boolean {
-  if (typeof candidate !== "string" || candidate.length === 0) return false;
-  if (candidate.startsWith("/") || candidate.startsWith("\\")) return false;
-  // Windows drive-letter prefix: "C:" or "C:\" or "C:/". Reject.
-  if (/^[a-zA-Z]:[\\/]?/u.test(candidate)) return false;
-  // No `..` segments (handles both POSIX and Windows separators).
-  const segments = candidate.split(/[\\/]/u);
-  if (segments.some((seg) => seg === "..")) return false;
-  return true;
 }
 
 /**
