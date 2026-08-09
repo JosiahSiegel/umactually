@@ -10,6 +10,15 @@ ship a tag).
 
 ## [Unreleased]
 
+### Added
+
+- **`Instruction-file auto-discovery now covers the full convention ecosystem`**: `DEFAULT_PROMPT_FILE_PATHS` expanded from 5 hand-picked filenames (`CLAUDE.md`, `AGENTS.md`, `.github/copilot-instructions.md`, `.cursorrules`, `GEMINI.md`) to 32 entries covering the full convention ecosystem — Tier 1 cross-tool (AGENTS.md variants, CLAUDE.md variants, GEMINI.md), Tier 2 single-tool (Copilot, Cursor, Cline, Roo, Kilo, Continue, Windsurf, OpenCode, JetBrains Copilot), Tier 3 directory modes (`.cursor/rules/*.mdc`, `.clinerules/**/*.md`, `.roo/rules/**/*.md`, `.github/instructions/*.instructions.md`, etc.), and human convention files (README.md, CONTRIBUTING.md, CODE_OF_CONDUCT.md, SECURITY.md, CHANGELOG.md, LICENSE with a 16 KiB per-file cap). Globs are expanded synchronously via a new `resolveGlobs` helper; per-file and aggregate byte caps remain enforced. `[src/config/prompt-files.ts]`
+- **`Instruction files in PR mode are now read from the PR's base branch (not the head)`**: live GitHub + live Azure paths fetch instruction files via the new `fetchGithubPrInstructions` / `fetchAzurePrInstructions` from the base SHA (the same defense GitHub Copilot code review uses), defeating the attacker-injected AGENTS.md attack vector where an attacker adds a malicious instruction file in their PR. Local `--files` mode and standalone mode keep reading from cwd. `[src/platform/github/api.ts]` `[src/platform/azure/api.ts]` `[src/cli/orchestrator.ts]`
+
+### Changed
+
+- **`--no-instruction-files` opt-out flag** (and `UMACTUALLY_INSTRUCTION_FILES=false` env var) disables the entire default-lookup for operators who want full control of the prompt contents. Off-by-default behavior is unchanged for `--prompt-files` / `--prompt-files` / `--additional-prompt-files` overrides. `[src/cli/parse-args.ts]` `[src/config/field-schema.ts]`
+
 ### Fixed
 
 - **`Verify npm publication` step in the release workflow is now a two-phase probe**, eliminating the false-negative timeout the v0.8.0 release cut exposed. Phase 1 fast-paths on the package-level `dist-tags.latest` signal (12 × 5s = 60s budget); Phase 2 cross-validates with a longer-budget per-version URL probe (60 × 10s = 600s). `[.github/workflows/release.yml]`
