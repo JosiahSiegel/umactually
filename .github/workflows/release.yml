@@ -1557,25 +1557,25 @@ jobs:
            # the per-version URL propagates to the CDN, so it succeeds first
            # for fresh publishes. v0.8.0 timed out at ~315s probing only the
            # per-version URL despite dist-tags.latest already pointing at 0.8.0.
-          for _i in $(seq 1 12); do
-            if response=$(curl -fsSL "https://registry.npmjs.org/umactually" 2>/dev/null); then
-              TAG=$(printf '%s' "$response" | node -e "
-                let s='';process.stdin.on('data',d=>s+=d).on('end',()=>{
-                  const o=JSON.parse(s);
-                  process.stdout.write(String(o['dist-tags']?.latest ?? ''));
-                })
-              ")
-              if [ "$TAG" = "$VERSION" ]; then
-                echo "OK: registry.npmjs.org/umactually published — dist-tags.latest=${TAG} matches"
-                break
-              fi
-            fi
-            sleep 5
-          done
-          if [ "$TAG" != "$VERSION" ]; then
-            echo "::error::Phase 1: umactually@${VERSION} not yet reflected as dist-tags.latest on registry.npmjs.org after 12 retries (60s). The publish step reported success but the package-level dist-tags did not update."
-            exit 1
-          fi
+           for _i in $(seq 1 12); do
+             if response=$(curl -fsSL "https://registry.npmjs.org/umactually" 2>/dev/null); then
+               TAG=$(printf '%s' "$response" | node -e "
+                 let s='';process.stdin.on('data',d=>s+=d).on('end',()=>{
+                   const o=JSON.parse(s);
+                   process.stdout.write(String(o['dist-tags']?.latest ?? ''));
+                 })
+               ")
+               if [ "$TAG" = "$VERSION" ]; then
+                 echo "OK: registry.npmjs.org/umactually published — dist-tags.latest=${TAG} matches"
+                 break
+               fi
+             fi
+             sleep 5
+           done
+           if [ "$TAG" != "$VERSION" ]; then
+             echo "::error::Phase 1: umactually@${VERSION} not yet reflected as dist-tags.latest on registry.npmjs.org after 12 retries (60s). The publish step reported success but the package-level dist-tags did not update."
+             exit 1
+           fi
           # Phase 2: per-version URL cross-validation for Sigstore provenance.
           # Initial 15s sleep then 60 x 10s = 600s budget. The per-version URL
           # commonly lags the package-level write by 60-180s during CDN
