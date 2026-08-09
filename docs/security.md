@@ -34,8 +34,6 @@ The carve-out is unconditional. `security` and `leak` findings bypass every conf
 
 `high` and `critical` findings are filtered by `minimum-severity` like any other tier. Setting `minimum-severity: high` suppresses `critical` along with everything below it. Only `security` and `leak` are unconditionally preserved — nothing else is exempt from the threshold.
 
-**Migration note for users coming from the old `ignore-minor` semantics:** the previous carve-out phrasing implied `high` and `critical` findings were also exempt in some configurations; that exemption is gone. With `minimum-severity: high`, both `high` and `critical` findings are filtered like any other tier — only `security` and `leak` are unconditionally preserved. If you relied on the old `high`/`critical` exemption, raise `minimum-severity` to `critical` (which keeps `critical` and `security`/`leak`) rather than `high`.
-
 If the default review output is too noisy, raise `minimum-severity` before reaching for model-side changes. Lowering it is the right move only when you specifically need style/hygiene findings inline.
 
 ## LLM citation hallucination defenses
@@ -46,7 +44,7 @@ LLMs occasionally cite files and line numbers that do not exist in the supplied 
 2. **System-prompt path enum** — the user message lists every file the model is permitted to cite, paired with an explicit "quote the diff lines that justify the finding" workflow. The positive constraint (cite only what's in the list) is paired with a "do not cite off-list" constraint to avoid the "negative-instructions backfire" failure mode.
 3. **Wire-format `response_format: json_schema`** — the strict schema is sent to providers that support it. `--strict-schema` (default ON) / `--no-strict-schema`.
 4. **Deterministic verify-findings filter** — before posting, every comment is re-checked against the diff. Any (path, line) pair not in the diff is dropped. The same filter records what was dropped in `parse-warnings.json` so operators can see fabrication events.
-5. **Model auto-resolver** — `model: "auto"` resolves to the less-hallucinating model for the active provider per the [Vectara HHEM](https://github.com/vectara/HHEM-Leaderboard) — see the hostname-table in [`docs/providers.md`](providers.md#model-auto-resolution-on-dual-protocol-gateways). Set `model: <string>` explicitly to override.
+5. **Explicit model recommended** — the runtime uses the operator-supplied `model` (flag / env / saved config) verbatim. Discovery per provider happens only when `model` is omitted — see [`docs/providers.md`](providers.md#model-resolution). Set `model: <string>` explicitly to bypass discovery and pin a known model.
 
 The `parse-warnings.json` artifact is the authoritative record of fabrication events. If the file shows a non-zero `summary.invalidCount`, the review dropped at least one comment the model cited. The `summary.byReason` field splits the drop into `path-not-in-diff` and `line-not-in-diff` for triage.
 
@@ -68,7 +66,7 @@ When **no** explicit `prompt-file` / `additional-prompt-file` AND no explicit `p
 1. `CLAUDE.md` (Anthropic Claude Code / Cowork)
 2. `AGENTS.md` (agent-agnostic; Cursor, aider, OpenAI Codex)
 3. `.github/copilot-inructions.md` (GitHub Copilot Coding Agent)
-4. `.cursorrules` (Cursor legacy single-file rules)
+4. `.cursorrules` (Cursor single-file rules)
 5. `GEMINI.md` (Google Gemini CLI)
 
 Missing files are silently skipped. Default-lookup entries share the same path-safety refusals as explicit paths (absolute, `..`, symlink escape rejected).
@@ -143,8 +141,8 @@ Never expose trusted inputs to untrusted strings. In particular, do not interpol
 ### What init stores
 
 - `provider` — one of `openai-compatible`, `anthropic`, `copilot`.
-- `apiUrl` — present only when the operator picked a non-default value for the chosen provider (e.g. a MiniMax / LiteLLM / Portkey gateway URL). Omitted when the operator accepted the default.
-- `model` — present only when the operator picked a non-`auto` value. `auto` resolves per-provider at runtime (see [`docs/providers.md`](providers.md#model-auto-resolution-on-dual-protocol-gateways)).
+- `apiUrl` — present only when the operator picked a non-default value for the chosen provider (e.g. a self-hosted gateway URL that does not match the provider's built-in default). Omitted when the operator accepted the default.
+- `model` — present only when the operator picked a non-empty value. When omitted, the runtime resolves per-provider at review time — see [`docs/providers.md`](providers.md#model-resolution).
 - `schemaVersion` — always `1` for this release. Bumping the schema is a breaking change.
 
 ### What init NEVER stores
@@ -179,7 +177,7 @@ https://api.example.com                              → https://api.example.com
 https://api.example.com/v1/responses                 → https://api.example.com/v1/responses
 https://gateway.example.com/session=abc              → https://gateway.example.com
 https://gateway.example.com/oauth?token=secret-leak  → https://gateway.example.com/oauth
-https://api.minimax.io/anthropic?session=abc123      → https://api.minimax.io/anthropic
+https://gateway.example.com/anthropic?session=abc123 → https://gateway.example.com/anthropic
 ```
 
 The helper uses the WHATWG `URL` parser and falls back to substring-strip if the input is unparseable. It is wired into every `::notice::` URL log site in `src/provider/openai-compatible.ts` and `src/cli/live-provider.ts`.
@@ -208,7 +206,7 @@ Do not use `pull_request_target` for this action; it is not required to comment 
 
 ## Synthetic test API keys (the `do-not-leak` sentinel)
 
-UmActually's test suite uses synthetic API keys to exercise the cross-protocol dispatcher, the Anthropic Messages API, and the provider-failure paths. Every synthetic key carries the literal `do-not-leak` sentinel — for example `sk-anthropic-v2-do-not-leak`, `sk-test-openai-do-not-leak`, `sk-minimax-smoke-test-do-not-leak`. The `do-not-leak` suffix is a tripwire: a maintainer who copies a fixture into a real config file and forgets to swap it will find this section via `rg do-not-leak src/`, and the next reviewer will catch it in code review.
+UmActually's test suite uses synthetic API keys to exercise the cross-protocol dispatcher, the Anthropic Messages API, and the provider-failure paths. Every synthetic key carries the literal `do-not-leak` sentinel — for example `sk-anthropic-v2-do-not-leak`, `sk-test-openai-do-not-leak`, `sk-gateway-smoke-test-do-not-leak`. The `do-not-leak` suffix is a tripwire: a maintainer who copies a fixture into a real config file and forgets to swap it will find this section via `rg do-not-leak src/`, and the next reviewer will catch it in code review.
 
 If you add a new test fixture that looks like an API key, append the `do-not-leak` suffix. A grep for `do-not-leak` should match every synthetic key in the repo.
 

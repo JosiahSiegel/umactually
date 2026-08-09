@@ -24,9 +24,9 @@ Per-branch prompts:
 
 | Family | Prompts |
 | --- | --- |
-| `openai-compatible` | `api-url` (default `https://api.openai.com/v1`), `api-key` (NEVER persisted), `model` (default `auto`) |
-| `anthropic` | `api-key` (NEVER persisted), `model` (default `auto`) |
-| `copilot` | `github-api-base` (default `https://api.github.com`), `model` (default `auto`); no `api-key` prompt — the wizard points at `GITHUB_TOKEN` / `GH_TOKEN` / `--github-token` |
+| `openai-compatible` | `api-url` (default `https://api.openai.com/v1`), `api-key` (NEVER persisted), `model` (optional; resolved at review time) |
+| `anthropic` | `api-key` (NEVER persisted), `model` (optional; resolved at review time) |
+| `copilot` | `github-api-base` (default `https://api.github.com`), `model` (optional; resolved at review time); no `api-key` prompt — the wizard points at `GITHUB_TOKEN` / `GH_TOKEN` / `--github-token` |
 
 CI detection: `.github/` → GitHub Actions, `azure-pipelines.yml` → Azure DevOps, else prompt. The wizard generates the canonical workflow file (`examples/github/pr-review.yml` or `examples/azure/azure-pipelines.yml`) but refuses to clobber an existing one without `--force`.
 
@@ -59,7 +59,7 @@ https://api.anthropic.com/v1                      → https://api.anthropic.com/
 https://api.anthropic.com/v1/                     → https://api.anthropic.com/v1/messages  (trailing / trimmed)
 https://api.anthropic.com/v1/messages             → https://api.anthropic.com/v1/messages  (idempotent)
 https://gateway.example.com/llm/anthropic         → https://gateway.example.com/llm/anthropic/v1/messages
-https://api.minimax.io/anthropic                  → https://api.minimax.io/anthropic/v1/messages  ← MiniMax Anthropic-protocol
+https://api.example.com/anthropic                 → https://api.example.com/anthropic/v1/messages  ← generic Anthropic-protocol gateway
 https://api.example.com/v1?token=abc              → https://api.example.com/v1/messages  (query dropped)
 ```
 
@@ -71,30 +71,30 @@ Copilot does its own token exchange at `${UMACTUALLY_GITHUB_API_BASE}/copilot_in
 
 ## The path-prefix matrix (why both protocols are real)
 
-Some providers serve **more than one wire shape** under the same hostname at different path prefixes. The canonical example is **MiniMax**, whose docs (see refs section) prescribe two distinct URLs for the same API key:
+Some providers serve **more than one wire shape** under the same hostname at different path prefixes. Two distinct URLs for the same API key are common on gateways that mount Anthropic-protocol and OpenAI-protocol endpoints side by side:
 
-| Provider | URL the operator types | Maps to | Wire shape |
-| --- | --- | --- | --- |
-| MiniMax (Anthropic) | `https://api.minimax.io/anthropic` | `https://api.minimax.io/anthropic/v1/messages` | Anthropic Messages |
-| MiniMax (OpenAI) | `https://api.minimax.io/v1` | `https://api.minimax.io/v1/responses` | OpenAI Responses / Chat Completions |
+| URL the operator types | Maps to | Wire shape |
+| --- | --- | --- |
+| `https://gateway.example.com/anthropic` | `https://gateway.example.com/anthropic/v1/messages` | Anthropic Messages |
+| `https://gateway.example.com/v1` | `https://gateway.example.com/v1/responses` | OpenAI Responses / Chat Completions |
 
 These are NOT interchangeable — the Anthropic-protocol endpoint only speaks Anthropic Messages API; the OpenAI-protocol endpoint only speaks OpenAI-shaped requests. The same API key works for both.
 
-Other providers we have seen follow the same pattern (gateways that mount multiple protocol families under a hostname):
+Other gateways we have seen follow the same pattern (gateways that mount multiple protocol families under a hostname):
 - **Anthropic SDK convention**: `ANTHROPIC_BASE_URL=https://example.com/anthropic-prefix` → POST `…/anthropic-prefix/v1/messages`. Per the official `@anthropic-ai/sdk` and `anthropic-sdk-kotlin`'s [path-preserving fix](https://github.com/xemantic/anthropic-sdk-kotlin/pull/145).
-- **Self-hosted Anthropic-protocol gateways** (LiteLLM, Portkey, OpenRouter with Anthropic compat) commonly use arbitrary path prefixes to disambiguate from the same gateway's OpenAI compat endpoints.
+- **Self-hosted Anthropic-protocol gateways** commonly use arbitrary path prefixes to disambiguate from the same gateway's OpenAI compat endpoints.
 
-OpenAI-protocol gateways (LiteLLM, Portkey, OpenRouter, etc.) generally do NOT use a path prefix — `/v1` is canonical. So `resolveProviderBaseUrlCandidates` tries the as-pasted URL first (to honor operator intent) and falls back to origin + `/v1` if both endpoints 404 there.
+OpenAI-protocol gateways generally do NOT use a path prefix — `/v1` is canonical. So `resolveProviderBaseUrlCandidates` tries the as-pasted URL first (to honor operator intent) and falls back to origin + `/v1` if both endpoints 404 there.
 
 ## Cross-protocol auto-discovery (the dispatcher)
 
-When the operator points `--api-url` at a dual-protocol gateway like MiniMax, they often do not know (or do not care) which protocol lives under which path prefix. The dispatcher (`src/cli/live-provider.ts:runWithCrossProtocolFallback`) makes `--provider` advisory on these gateways:
+When the operator points `--api-url` at a dual-protocol gateway, they often do not know (or do not care) which protocol lives under which path prefix. The dispatcher (`src/cli/live-provider.ts:runWithCrossProtocolFallback`) makes `--provider` advisory on these gateways:
 
 ```text
-Operator: --provider openai-compatible --api-url https://api.minimax.io/anthropic
+Operator: --provider openai-compatible --api-url https://gateway.example.com/anthropic
 
 Dispatcher behavior:
-  1. Try OpenAI at /anthropic/responses      → 404  (no OpenAI-protocol at this prefix on MiniMax)
+  1. Try OpenAI at /anthropic/responses      → 404  (no OpenAI-protocol at this prefix)
   2. Try OpenAI at /anthropic/chat/completions → 404 (same — chat completion is also a /responses-prefixed alternative)
   3. Advance to origin fallback: try /v1/responses        → try /v1/chat/completions  → all 404
   4. Named protocol exhausted → call cross-protocol fallback
@@ -105,15 +105,15 @@ Dispatcher behavior:
 
 ### Path-prefix heuristic (the `/anthropic` URL commits to the Anthropic protocol)
 
-A subtle gotcha surfaced by the operator's actual setup (`UMACTUALLY_API_URL=https://api.minimax.io/anthropic` + default `--provider=openai-compatible`): the openai-compatible client's URL candidate loop downgrades `/anthropic` to `origin+/v1` and tries `/v1/responses` there. MiniMax serves OpenAI Responses at `/v1/responses` (just like it serves Anthropic at `/anthropic/v1/messages`), so the openai loop happily succeeds with the **OpenAI** wire shape — never triggering the cross-protocol fallback above. Result: the action posts OpenAI-Responses shape to a URL the operator typed as an Anthropic-protocol gateway.
+A subtle gotcha on a dual-protocol gateway: the openai-compatible client's URL candidate loop downgrades `/anthropic` to `origin+/v1` and tries `/v1/responses` there. If the gateway serves OpenAI Responses at `/v1/responses` (just like it serves Anthropic at `/anthropic/v1/messages`), the openai loop happily succeeds with the **OpenAI** wire shape — never triggering the cross-protocol fallback above. Result: the action posts OpenAI-Responses shape to a URL the operator typed as an Anthropic-protocol gateway.
 
 To prevent this, the dispatcher runs `looksLikeAnthropicEndpoint(baseUrl)` *before* choosing which provider client to call. If ANY path segment is exactly `anthropic` (case-insensitive, byte-for-byte match — `anthropic-v2` and `my-anthropic` do NOT match), the dispatcher commits to the Anthropic Messages API client regardless of `--provider`. The cross-protocol fallback still fires if the committed Anthropic call also fails.
 
 ```text
 URL                                                             → committed protocol
-https://api.minimax.io/anthropic                               → anthropic (heuristic)
-https://gateway.example.com/llm/anthropic                     → anthropic (heuristic)
-https://gateway.example.com/v1/anthropic                       → anthropic (heuristic)
+https://gateway.example.com/anthropic                           → anthropic (heuristic)
+https://gateway.example.com/llm/anthropic                       → anthropic (heuristic)
+https://gateway.example.com/v1/anthropic                        → anthropic (heuristic)
 https://api.openai.com/v1                                       → openai-compatible (default)
 https://api.example.com/                                        → openai-compatible (default)
 https://api.example.com/anthropic-v2                            → openai-compatible (heuristic does NOT match)
@@ -139,12 +139,12 @@ The heuristic is conservative by design. False negatives still fall through to t
 And the inverse:
 
 ```text
-Operator: --provider anthropic --api-url https://api.minimax.io/v1
+Operator: --provider anthropic --api-url https://gateway.example.com/v1
 
 Dispatcher behavior:
-  1. Try Anthropic at /v1/messages            → 404  (no Anthropic-protocol at this prefix on MiniMax)
+  1. Try Anthropic at /v1/messages            → 404  (no Anthropic-protocol at this prefix)
   2. Cross-protocol fallback → call OpenAI provider at the SAME base URL
-  3. OpenAI tries /v1/responses, then /v1/chat/completions  → 200 (or 400 if M3 body shape mismatch)
+  3. OpenAI tries /v1/responses, then /v1/chat/completions  → 200 (or 400 on wire-shape mismatch)
   4. Outcome.attribution = "openai-compatible"
 ```
 
@@ -157,13 +157,13 @@ Dispatcher behavior:
 Every fallback emits two `::notice::` annotations:
 
 ```
-::notice::umactually: Named provider "openai-compatible" returned status=404 at https://api.minimax.io/anthropic — retrying with cross-protocol fallback "anthropic".
+::notice::umactually: Named provider "openai-compatible" returned status=404 at https://gateway.example.com/anthropic — retrying with cross-protocol fallback "anthropic".
 ```
 
 (And on dual-protocol failure:)
 
 ```
-::notice::umactually: Cross-protocol fallback "anthropic" returned status=404 at https://api.minimax.io/anthropic — surfacing named protocol's error.
+::notice::umactually: Cross-protocol fallback "anthropic" returned status=404 at https://gateway.example.com/anthropic — surfacing named protocol's error.
 ```
 
 Both lines use `redactUrlForLog` (defined in `src/util/url.ts`) which strips the query string + fragment so `?token=…`-style session ids never reach the persisted CI annotation log.
@@ -172,20 +172,17 @@ Both lines use `redactUrlForLog` (defined in `src/util/url.ts`) which strips the
 
 The dispatcher surfaces the named provider's error on dual-protocol failure rather than the fallback's. Rationale: the operator typed `--provider anthropic` (or `openai-compatible`), and the most actionable diagnostic for them is what their chosen protocol returned. The fallback's error is logged via the diagnostic notice (above) so audit trail is preserved; the surfaced error keeps operator intent honored.
 
-## Model auto-resolution on dual-protocol gateways
+## Model resolution
 
-`src/cli/auto-model.ts:resolveAutoModel` resolves `model: "auto"` per-provider + URL hostname. On MiniMax-style gateways the same `MiniMax-M3` model works for both protocols, so the operator's choice of `--provider` does not change the model. The auto-detected defaults:
+The runtime resolves `model` exactly once, at review time, in this order:
 
-```text
-hostname                    → resolved model
-api.openai.com / *.openai.* → gpt-5-mini            (HHEM ~6%, Vectara 2026-05-11)
-api.anthropic.com / anthropic-* → claude-sonnet-4.6  (HHEM ~6%, Vectara 2026-05-11)
-api.minimax.io / *.minimax.* → MiniMax-M3
-copilot (any URL)           → claude-3-5-sonnet
-generativelanguage.*, ai.google.* → gemini-2.5-flash
-```
+1. **Explicit `--model <id>` or `UMACTUALLY_MODEL=<id>`** — used verbatim. The CLI never queries the provider for this value; the request body carries it as typed.
+2. **Saved config `model`** — used verbatim when present.
+3. **Provider-native `auto`** — for `--provider copilot`, the runtime passes the documented `model: "auto"` sentinel to the Copilot transport without any network call. Copilot selects the model server-side.
+4. **`GET /v1/models` discovery** — for `--provider openai-compatible` and `--provider anthropic`, the runtime makes an authenticated list-models request against the operator's `--api-url`. The selection rule is exactly-one-model: if the catalog returns one valid opaque non-blank model id, that id is used; if the catalog returns zero, two, or more valid ids, the runtime fails fast with a `--model` remediation hint (no ranking, no probing inference, no first-of-many guess).
+5. **Failure modes that produce a typed error with `--model` guidance** — HTTP 401 (unauthorized), HTTP 403 (forbidden), HTTP 5xx on `/v1/models`, malformed JSON, or any transport error during the list-models call. The CLI surfaces `cli: --model <id> is required when discovery fails` (with the actual HTTP status and a hint pointing at `--model`) and never falls back to guessing.
 
-Per the Vectara HHEM leaderboard, these are the lower-hallucination choices for code review in 2026. Set `model: <string>` explicitly to override.
+Set `model: <string>` explicitly to bypass discovery entirely. Discovery never overrides an explicit choice.
 
 ## `api-url` precedence
 
@@ -195,7 +192,7 @@ For all three providers, the order of resolution is:
 2. `UMACTUALLY_API_URL` env var.
 3. Provider default (`openai-compatible` → `""` (required), `anthropic` → `https://api.anthropic.com/v1`, `copilot` → empty).
 
-`api-url` is **NOT required** when `--provider anthropic` (the provider has a sensible default). `--provider anthropic --api-url https://api.minimax.io/anthropic` is the typical MiniMax setup.
+`api-url` is **NOT required** when `--provider anthropic` (the provider has a sensible default).
 
 `api-url` IS required when `--provider openai-compatible` (no default). The CLI surfaces this in `validate.ts:readRequiredConfig("UMACTUALLY_API_URL", …)` and `orchestrator.ts`.
 
@@ -209,16 +206,11 @@ The Anthropic URL resolution pattern matches:
 - [`anthropic-sdk-kotlin/pull/145`](https://github.com/xemantic/anthropic-sdk-kotlin/pull/145) — "previously, `client.post('/v1/messages')` replaced any path on a configured baseUrl, breaking Anthropic-compatible providers whose endpoints live under a path prefix."
 - The [Vercel AI SDK issue #15580](https://github.com/vercel/ai/issues/15580) — documented failure mode when providers strip the path prefix.
 
-The MiniMax dual-protocol behavior is documented at:
-
-- [MiniMax Claude Code docs](https://platform.minimax.io/docs/token-plan/claude-code) — Anthropic-protocol endpoint.
-- [MiniMax Codex docs](https://platform.minimax.io/docs/token-plan/codex) — OpenAI-protocol endpoint.
-
 ## When to add a new provider family
 
 Before adding a new provider, check that:
 
-1. The wire shape differs from all three current families in a way the existing dispatcher's cross-protocol logic can't accommodate (the Anthropic and OpenAI families cover the bulk of the LLM API universe; LiteLLM, Portkey, etc. usually proxy one or both of them).
+1. The wire shape differs from all three current families in a way the existing dispatcher's cross-protocol logic can't accommodate (the Anthropic and OpenAI families cover the bulk of the LLM API universe; most gateways proxy one or both of them).
 2. The auth header isn't a small variant on Bearer / x-api-key (e.g. AWS SigV4 for Bedrock would be a real new family).
 3. The provider has stable documented endpoint paths so URL resolution rules can be encoded as deterministic string rules (not pure routing-by-probe).
 
