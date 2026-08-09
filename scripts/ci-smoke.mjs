@@ -68,7 +68,7 @@ const SCENARIOS = {
   S4: {
     label: "S4 Azure dry-run",
     args: [
-      "--platform", "azure-devops",
+      "--platform", "azure",
       "--event", FIXTURE_EVENT_AZ,
       "--diff", FIXTURE_DIFF_GH,
       "--threads", FIXTURE_THREADS_AZ,
