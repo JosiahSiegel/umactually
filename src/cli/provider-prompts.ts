@@ -332,10 +332,36 @@ async function pickSystemPrompt(input: {
   if (filePath.length > 0) {
     return readPromptFiles([filePath], DEFAULT_PROMPT_BYTE_CAP, { cwd: input.cwd });
   }
+  // Opt-out: `--no-instruction-files` (or UMACTUALLY_INSTRUCTION_FILES=false)
+  // suppresses the AI-files default-lookup entirely and falls through to the
+  // built-in default. Read via `Reflect.get` so the file compiles whether or
+  // not the sibling parse-args type-declaration commit has landed; only the
+  // literal `false` value is treated as the opt-out (a missing field, `null`,
+  // `undefined`, or `true` is opt-in, matching the schema default).
+  if (isInstructionFilesExplicitlyFalse(input.parsed)) {
+    return buildDefaultSystemPrompt();
+  }
   if (defaultPaths.length > 0) {
     return readPromptFiles(defaultPaths, DEFAULT_PROMPT_BYTE_CAP, { cwd: input.cwd });
   }
   return buildDefaultSystemPrompt();
+}
+
+/**
+ * Read the `instructionFiles` opt-out flag from `parsed` without
+ * requiring the field to be declared on the `ParsedCliArgs` type.
+ * The runtime wiring in `parseCliArgs` populates the field as a
+ * boolean (`true` by default, `false` only when the operator passes
+ * `--no-instruction-files`); a sibling commit is expected to add the
+ * corresponding `readonly instructionFiles: boolean` field on the
+ * `ParsedCliArgs` type. `Reflect.get` lets this file compile against
+ * either version of the type. Returns true ONLY when the field is the
+ * literal `false` value — a missing or non-boolean field is treated
+ * as "opt-in" (the default).
+ */
+function isInstructionFilesExplicitlyFalse(parsed: ParsedCliArgs): boolean {
+  const value = Reflect.get(parsed, "instructionFiles");
+  return value === false;
 }
 
 /**
@@ -427,6 +453,11 @@ async function readAdditionalPrompt(input: {
   if (filePath.length > 0) {
     return readPromptFiles([filePath], DEFAULT_PROMPT_BYTE_CAP, { cwd: input.cwd });
   }
+  // Opt-out mirrors `pickSystemPrompt`: with `--no-instruction-files` the
+  // additional prompt's default-lookup is suppressed and the function
+  // returns `""` so the user message renders "Additional instructions: none".
+  // Inline + array + single-file overrides above still take precedence.
+  if (isInstructionFilesExplicitlyFalse(input.parsed)) return "";
   if (defaultPaths.length === 0) return "";
   return readPromptFiles(defaultPaths, DEFAULT_PROMPT_BYTE_CAP, { cwd: input.cwd });
 }
