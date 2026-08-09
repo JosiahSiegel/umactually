@@ -28,10 +28,20 @@ const SOURCE_DIFF = [
 ].join("\n");
 
 describe("buildProviderPrompts", () => {
+  let cwd: string;
+
+  beforeEach(async () => {
+    cwd = await mkdtemp(join(tmpdir(), "uma-buildprompts-"));
+  });
+
+  afterEach(async () => {
+    await rm(cwd, { recursive: true, force: true });
+  });
+
   it("embeds the diff's file list in the user message (Layer 2-A: path enum)", async () => {
     const prompts = await buildProviderPrompts({
       parsed: parsedArgsForTest(),
-      cwd: process.cwd(),
+      cwd,
       env: {},
       platform: "github",
       diffText: SOURCE_DIFF,
@@ -47,7 +57,7 @@ describe("buildProviderPrompts", () => {
   it("warns when the diff is empty (no path is anchorable)", async () => {
     const prompts = await buildProviderPrompts({
       parsed: parsedArgsForTest(),
-      cwd: process.cwd(),
+      cwd,
       env: {},
       platform: "github",
       diffText: "",
@@ -58,7 +68,7 @@ describe("buildProviderPrompts", () => {
   it("system prompt documents the strict JSON schema (Layer 2-C)", async () => {
     const prompts = await buildProviderPrompts({
       parsed: parsedArgsForTest(),
-      cwd: process.cwd(),
+      cwd,
       env: {},
       platform: "github",
       diffText: SOURCE_DIFF,
@@ -84,7 +94,7 @@ describe("buildProviderPrompts", () => {
   it("system prompt includes the quote-first workflow (Layer 2-B)", async () => {
     const prompts = await buildProviderPrompts({
       parsed: parsedArgsForTest(),
-      cwd: process.cwd(),
+      cwd,
       env: {},
       platform: "github",
       diffText: SOURCE_DIFF,
@@ -98,7 +108,7 @@ describe("buildProviderPrompts", () => {
   it("system prompt forbids fabrication (Layer 2-D: negative constraint with positive anchor)", async () => {
     const prompts = await buildProviderPrompts({
       parsed: parsedArgsForTest(),
-      cwd: process.cwd(),
+      cwd,
       env: {},
       platform: "github",
       diffText: SOURCE_DIFF,
@@ -110,7 +120,7 @@ describe("buildProviderPrompts", () => {
   it("respects an inline --prompt override", async () => {
     const prompts = await buildProviderPrompts({
       parsed: parsedArgsForTest({ prompt: "Custom system prompt for this run." }),
-      cwd: process.cwd(),
+      cwd,
       env: {},
       platform: "github",
       diffText: SOURCE_DIFF,
@@ -124,7 +134,7 @@ describe("buildProviderPrompts", () => {
   it("appends the additional prompt to the user message, not the system", async () => {
     const prompts = await buildProviderPrompts({
       parsed: parsedArgsForTest({ additionalPrompt: "Be terse. Focus on security findings only." }),
-      cwd: process.cwd(),
+      cwd,
       env: {},
       platform: "github",
       diffText: SOURCE_DIFF,
@@ -187,9 +197,20 @@ function parsedArgsForTest(overrides: {
     strictSchema: true,
     verifyFindings: true,
     includePrSonarFindings: false,
+    instructionFiles: true,
   };
 }
 describe("buildProviderPrompts verified-facts block", () => {
+  let cwd: string;
+
+  beforeEach(async () => {
+    cwd = await mkdtemp(join(tmpdir(), "uma-verifiedfacts-"));
+  });
+
+  afterEach(async () => {
+    await rm(cwd, { recursive: true, force: true });
+  });
+
   const PR_41_DIFF = [
     "diff --git a/package.json b/package.json",
     "--- a/package.json",
@@ -214,7 +235,7 @@ describe("buildProviderPrompts verified-facts block", () => {
   it("embeds the verified-facts block before the diff when package.json is changed", async () => {
     const prompts = await buildProviderPrompts({
       parsed: parsedArgsForTest(),
-      cwd: process.cwd(),
+      cwd,
       env: {},
       platform: "github",
       diffText: PR_41_DIFF,
@@ -230,7 +251,7 @@ describe("buildProviderPrompts verified-facts block", () => {
   it("does not include the verified-facts block when neither package.json nor action.yml is in the diff", async () => {
     const prompts = await buildProviderPrompts({
       parsed: parsedArgsForTest(),
-      cwd: process.cwd(),
+      cwd,
       env: {},
       platform: "github",
       diffText: SOURCE_DIFF,
@@ -243,7 +264,7 @@ describe("buildProviderPrompts verified-facts block", () => {
   it("system prompt includes verified-facts grounding instructions", async () => {
     const prompts = await buildProviderPrompts({
       parsed: parsedArgsForTest(),
-      cwd: process.cwd(),
+      cwd,
       env: {},
       platform: "github",
       diffText: PR_41_DIFF,
@@ -262,7 +283,7 @@ describe("buildProviderPrompts verified-facts block", () => {
     // severities on first pass — the post-filter is the backstop.
     const prompts = await buildProviderPrompts({
       parsed: parsedArgsForTest(),
-      cwd: process.cwd(),
+      cwd,
       env: {},
       platform: "github",
       diffText: PR_41_DIFF,
@@ -360,16 +381,40 @@ describe("DEFAULT_PROMPT_FILE_PATHS", () => {
       ".github/copilot-instructions.md",
       ".cursorrules",
       "GEMINI.md",
+      "AGENTS.local.md",
+      "AGENTS.override.md",
+      "CLAUDE.local.md",
+      ".windsurfrules",
+      ".clinerules",
+      ".roorules",
+      ".kilocoderules",
+      ".github/git-commit-instructions.md",
+      ".opencode/AGENTS.md",
+      ".github/instructions/*.instructions.md",
+      ".cursor/rules/*.mdc",
+      ".clinerules/**/*.md",
+      ".roo/rules/**/*.md",
+      ".roo/rules-*/**/*.md",
+      ".kilocode/rules/**/*.md",
+      ".kilocode/rules-*/**/*.md",
+      ".continue/rules/*.md",
+      ".windsurf/rules/**/*.md",
+      ".claude/rules/**/*.md",
+      "README.md",
+      "CONTRIBUTING.md",
+      "CODE_OF_CONDUCT.md",
+      "SECURITY.md",
+      "CHANGELOG.md",
+      "LICENSE",
     ]);
   });
 
-  it("contains exactly 5 entries (regression guard against accidental additions)", () => {
-    // Adding an entry is a documented user-visible change. Globs like
-    // `.github/instructions/*.md` and `.clinerules/*.md` are deferred
-    // because the current reader API cannot accept globs. If this count
-    // changes, the README/changelog/action.yml all need a matching
-    // update — pin it here so a casual add surfaces a test failure.
-    expect(DEFAULT_PROMPT_FILE_PATHS).toHaveLength(5);
+  it("contains exactly 30 entries (regression guard against accidental additions)", () => {
+    // Adding an entry is a documented user-visible change. If this
+    // count changes, the README / CHANGELOG / action.yml all need a
+    // matching update — pin it here so a casual add surfaces a test
+    // failure.
+    expect(DEFAULT_PROMPT_FILE_PATHS.length).toBe(30);
   });
 });
 
@@ -394,11 +439,13 @@ describe("resolveDefaultPromptFiles", () => {
 
   it("returns ONLY the paths that actually exist on disk", async () => {
     // Given: a workspace with only AGENTS.md present.
+    // The fake fs matches by basename, so AGENTS.md also satisfies
+    // the .opencode/AGENTS.md candidate (same basename).
     const fs = makeFakeFs(cwd, { "AGENTS.md": "AGENTS-MARKER" });
     const result = await resolveDefaultPromptFiles(cwd, fs);
-    // Then: only AGENTS.md is reported; missing entries are skipped
-    // silently (NOT thrown).
-    expect(result).toEqual(["AGENTS.md"]);
+    // Then: existing entries are reported; missing entries are
+    // skipped silently (NOT thrown).
+    expect(result).toEqual(["AGENTS.md", ".opencode/AGENTS.md"]);
   });
 
   it("preserves the documented default-list order in the returned subset", async () => {
@@ -409,7 +456,7 @@ describe("resolveDefaultPromptFiles", () => {
     });
     const result = await resolveDefaultPromptFiles(cwd, fs);
     // Then: the returned order matches DEFAULT_PROMPT_FILE_PATHS.
-    expect(result).toEqual(["CLAUDE.md", "AGENTS.md"]);
+    expect(result).toEqual(["CLAUDE.md", "AGENTS.md", ".opencode/AGENTS.md"]);
   });
 
   it("silently skips directories (does not error on a placeholder .cursorrules dir)", async () => {
