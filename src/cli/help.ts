@@ -79,6 +79,7 @@ const REVIEW_FLAGS: readonly HelpFlag[] = [
   { flag: "--github-api-base <url>", description: `GitHub API base URL (Copilot token exchange; default: ${DEFAULT_GITHUB_API_BASE})`, appliesTo: ["review"] },
   { flag: "--include-sonarqube", appliesTo: ["review"] },
   { flag: "--include-pr-sonar-findings | --no-include-pr-sonar-findings", description: "Merge SonarCloud PR inline comments into the review (default: no)", appliesTo: ["review"] },
+  { flag: "--no-instruction-files", description: "Disable auto-loading of AI agent and human instruction files (CLAUDE.md, AGENTS.md, README.md, …) from the target repo.", appliesTo: ["review"] },
   { flag: "--sonar-host-url <url>", appliesTo: ["review"] },
   { flag: "--sonar-token <token>", appliesTo: ["review"] },
   { flag: "--sonar-project-key <key>", appliesTo: ["review"] },
