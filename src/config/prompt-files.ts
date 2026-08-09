@@ -3,6 +3,7 @@ import { realpath as fsRealpath, stat as fsStat, readFile as fsReadFile } from "
 import { isAbsolute, join as pathJoin, resolve as pathResolve, sep as pathSep, posix } from "node:path";
 
 import { InvalidConfigError, PromptFileError } from "./errors.js";
+import { DEFAULT_HUMAN_FILE_BYTE_CAP, DEFAULT_PROMPT_BYTE_CAP } from "./defaults.js";
 
 const PROMPT_SEPARATOR = "\n\n---\n\n";
 
@@ -115,6 +116,107 @@ export async function readPromptFiles(
 
   return parts.join(PROMPT_SEPARATOR);
 }
+
+/**
+ * Read the six human-convention files (`README.md`, `CONTRIBUTING.md`,
+ * `CODE_OF_CONDUCT.md`, `SECURITY.md`, `CHANGELOG.md`, `LICENSE`) under
+ * `cwd` and return their concatenated contents joined by
+ * `"\n\n---\n\n"`. These files give the model the project context a
+ * human contributor would read on day one — they are NOT AI-instruction
+ * files, but they share the default-lookup pipeline so the review has
+ * the same "first day on the project" framing as the auto-loaded
+ * `CLAUDE.md` / `AGENTS.md` umbrella conventions.
+ *
+ * Behavior mirrors `readPromptFiles` for everything except the
+ * error-handling contract: every file is processed independently, and
+ * per-file failures (missing, not-a-file, over-cap, read-failed) are
+ * SILENTLY SKIPPED rather than thrown. Long READMEs / LICENSES are
+ * common, and we explicitly do not want one oversized file to abort
+ * the review — that would force users to disable the human-file
+ * loading entirely instead of just trimming the over-cap entry.
+ *
+ * Two byte caps govern the loader:
+ * - **Per-file cap** = `DEFAULT_HUMAN_FILE_BYTE_CAP` (16 KiB). Each
+ *   file is checked against this individually; over-cap files are
+ *   silently skipped.
+ * - **Aggregate cap** = `DEFAULT_PROMPT_BYTE_CAP` (65 KiB), shared
+ *   with the umbrella-convention loader. Once the running total of
+ *   included files exceeds the aggregate cap, the next file is
+ *   silently skipped (NOT thrown — see "silent skip" above).
+ *
+ * The same security boundary as `readPromptFiles` is enforced: any
+ * path whose resolved realpath escapes `cwd` is silently skipped (a
+ * prompt-file path that resolves outside the repo is not a "missing
+ * file" — but for human files there is no `prompt-files` override
+ * surface, so the same guard is the simplest defense and keeps the
+ * two readers behaviorally aligned).
+ */
+export async function readHumanConventionFiles(
+  options: { readonly cwd: string; readonly fs?: PromptFileSystem },
+): Promise<string> {
+  const fs = options.fs ?? nodePromptFileSystem;
+  const cwdReal = await fs.realpath(options.cwd);
+
+  const parts: string[] = [];
+  let aggregateBytes = 0;
+
+  for (const rawPath of HUMAN_CONVENTION_FILE_PATHS) {
+    if (typeof rawPath !== "string" || rawPath.length === 0) {
+      continue;
+    }
+    if (isAbsolute(rawPath)) {
+      continue;
+    }
+    let resolved: { readonly absolute: string; readonly withinCwd: boolean };
+    try {
+      resolved = await fs.realpathWithinCwd(rawPath, cwdReal, fs);
+    } catch {
+      continue;
+    }
+    if (!resolved.withinCwd) {
+      continue;
+    }
+    let stat: { readonly isFile: boolean; readonly size: number };
+    try {
+      stat = await fs.stat(resolved.absolute);
+    } catch {
+      continue;
+    }
+    if (!stat.isFile) {
+      continue;
+    }
+    if (stat.size > DEFAULT_HUMAN_FILE_BYTE_CAP) {
+      // Long READMEs / LICENSES are common; an over-cap human file
+      // must not abort the review — skip it instead of throwing.
+      continue;
+    }
+    if (aggregateBytes + stat.size > DEFAULT_PROMPT_BYTE_CAP) {
+      // Same rationale as the per-file cap: a single oversized entry
+      // must not consume the aggregate budget for the rest of the
+      // human-file load. Skip rather than throw.
+      continue;
+    }
+    let text: string;
+    try {
+      text = await fs.readFile(resolved.absolute);
+    } catch {
+      continue;
+    }
+    parts.push(text);
+    aggregateBytes += stat.size;
+  }
+
+  return parts.join(PROMPT_SEPARATOR);
+}
+
+const HUMAN_CONVENTION_FILE_PATHS: readonly string[] = [
+  "README.md",
+  "CONTRIBUTING.md",
+  "CODE_OF_CONDUCT.md",
+  "SECURITY.md",
+  "CHANGELOG.md",
+  "LICENSE",
+];
 
 /**
  * Split a newline- or comma-separated list of paths into a deduplicated,
