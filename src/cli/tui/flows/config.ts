@@ -47,7 +47,9 @@ function renderSavedConfig(
     `  provider: ${config.provider}`,
   ];
   if (config.apiUrl !== undefined) lines.push(`  apiUrl:   ${config.apiUrl}`);
-  if (config.model !== undefined) lines.push(`  model:    ${config.model}`);
+  lines.push(
+    `  model:    ${config.model ?? "auto (resolved at review time)"}`,
+  );
   return lines.join("\n");
 }
 

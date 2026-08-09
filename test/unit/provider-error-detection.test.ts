@@ -5,14 +5,14 @@
 // a COMMENT review with zero findings and exiting 0, so CI sees green
 // even though the model never ran.
 //
-// The regression that motivated this: PR self-review bot posted
+// The regression that motivated this: a PR self-review bot posted
 // "Parse failed — provider response was not a valid JSON review payload"
-// because the Manifest router returned M101 ("no providers configured")
-// as an HTTP 200 response with zero token usage. The action posted a
-// 0-finding COMMENT review and exited 0 — CI green, model never ran.
+// because a router returned "no providers configured" as an HTTP 200
+// response with zero token usage. The action posted a 0-finding COMMENT
+// review and exited 0 — CI green, model never ran.
 //
 // Test matrix:
-//   1. Manifest M101 (the exact regression) → provider_error
+//   1. Generic router error-doc payload → provider_error
 //   2. Zero-usage with no output → provider_error
 //   3. Error envelope (RFC 7807 shape) → provider_error
 //   4. Error-doc URL in plain text → provider_error
@@ -24,39 +24,32 @@ import { describe, expect, it } from "vitest";
 import { detectProviderError } from "../../src/provider/provider-parse.js";
 
 describe("detectProviderError: dynamic provider-error detection", () => {
-  it("detects Manifest M101 (the exact regression from the self-review bug)", () => {
-    const m101Response = JSON.stringify({
-      id: "resp_f91ce484877d43a19f2b5df2cd4eb180",
+  it("detects a generic router error-doc payload", () => {
+    const routerErrorResponse = JSON.stringify({
+      id: "resp_router_error",
       object: "response",
-      created_at: 1783488508,
       status: "completed",
-      model: "manifest",
+      model: "router-model",
       output: [
         {
           type: "message",
-          id: "msg_45bdd83300224885a52ca476271016c4",
+          id: "msg_router_error",
           status: "completed",
           role: "assistant",
           content: [
             {
               type: "output_text",
-              text: "[🦚 Manifest M101] You're connected, but no providers are set up yet. Add one here: https://vmi3298966.tailcad1ad.ts.net/agents/agentrouter/routing See https://manifest.build/docs/errors/M101",
+              text: "No providers are configured. See https://router.example.invalid/docs/errors/R101",
               annotations: [],
             },
           ],
         },
       ],
-      usage: { input_tokens: 0, output_tokens: 0, total_tokens: 0 },
     });
-    const result = detectProviderError(m101Response);
+    const result = detectProviderError(routerErrorResponse);
     expect(result).not.toBeNull();
-    // M101 triggers via BOTH zero-usage and error-doc-URL; the
-    // detection checks error-envelope first, then zero-usage, then
-    // error-doc-URL. The M101 response has no top-level `error`
-    // field, so it should trigger via zero-usage (signal 2) or
-    // error-doc-URL (signal 3) depending on order.
-    expect(result?.kind).toMatch(/^(zero-usage|error-doc-url)$/);
-    expect(result?.message.length).toBeGreaterThan(0);
+    expect(result?.kind).toBe("error-doc-url");
+    expect(result?.detail).toBe("/docs/errors/R101");
   });
 
   it("detects zero-usage with no output (connected but no model ran)", () => {

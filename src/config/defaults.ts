@@ -32,13 +32,4 @@ export const DEFAULT_PER_REQUEST_SECONDS = FIELDS.perRequestTimeoutSeconds.defau
  */
 export const DEFAULT_SONAR_TIMEOUT_SECONDS = FIELDS.sonarTimeoutSeconds.defaultValue as number;
 
-/**
- * Canonical provider model default; derived from field-schema.
- *
- * Inferred as `string` (matching `pickString`'s signature in `loader.ts`),
- * but the field-schema's literal `"auto"` default is preserved by
- * TypeScript's widening rules because the right-hand side is a
- * `const`-tracked object property; callers that need the literal type
- * should re-assert at the call site.
- */
 export const DEFAULT_PROVIDER_MODEL = FIELDS.model.defaultValue;

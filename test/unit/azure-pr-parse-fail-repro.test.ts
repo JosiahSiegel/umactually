@@ -27,7 +27,7 @@ function buildLiveEvidenceStream(opts: {
 }): string {
   const lines: string[] = [
     "event: response.created",
-    'data: {"type":"response.created","response":{"id":"resp_x","object":"response","status":"in_progress","model":"MiniMax-M3","output":[]}}',
+    'data: {"type":"response.created","response":{"id":"resp_x","object":"response","status":"in_progress","model":"opaque-sse-model","output":[]}}',
     "",
     "event: response.in_progress",
     'data: {"type":"response.in_progress","response":{"id":"resp_x","status":"in_progress"}}',
@@ -127,7 +127,7 @@ describe("Azure DevOps PR parse-fail repro — raw-fragment delta streams", () =
   });
 
   it("handles the response.completed event with output[] legacy shape AND stub text", () => {
-    // MiniMax-M3 sometimes emits the completed event with the legacy
+    // opaque-sse-model sometimes emits the completed event with the legacy
     // `output[].content[].text` shape (instead of `output_text`). When
     // that text is a stub like "placeholder", the parser must prefer
     // the concatenated deltas.

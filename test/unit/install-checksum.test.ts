@@ -9,12 +9,22 @@ import { join, resolve } from "node:path";
 import { createInterface } from "node:readline";
 import { once } from "node:events";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { buildArchive, buildChecksumFile, sha256, TARGETS, type Target } from "../helpers/install-archive-helpers.js";
 
 const REPO_ROOT = resolve(import.meta.dirname, "..", "..");
 const INSTALL_SH = join(REPO_ROOT, "scripts", "install.sh");
-const ASSET_NAME = "umactually-linux-x64";
-const ASSET_CONTENT = "#!/bin/sh\necho verified\n";
-const ASSET_HASH = createHash("sha256").update(ASSET_CONTENT).digest("hex");
+const TARGET: Target = {
+  id: "linux-x64",
+  rawName: "umactually-linux-x64",
+  archiveName: "umactually-linux-x64.tar.gz",
+  memberName: "umactually-linux-x64",
+  installedName: "umactually",
+  archiveType: "tar.gz",
+};
+const ASSET_NAME = TARGET.archiveName;
+const ASSET_CONTENT = Buffer.from("#!/bin/sh\necho verified\n");
+const ARCHIVE_CONTENT = buildArchive(TARGET, ASSET_CONTENT).bytes;
+const ASSET_HASH = createHash("sha256").update(ARCHIVE_CONTENT).digest("hex");
 
 function findBash(): string | null {
   const candidates: readonly string[] = process.platform === "win32"
@@ -87,7 +97,7 @@ function installWith(checksums: string): { readonly status: number | null; reado
   // Refresh the served files for each test case so the test can change
   // the checksums (the "mismatched" / "malformed" / "missing" cases
   // all share the same server instance from beforeEach).
-  writeFileSync(join(releaseDir, ASSET_NAME), ASSET_CONTENT);
+  writeFileSync(join(releaseDir, ASSET_NAME), ARCHIVE_CONTENT);
   writeFileSync(join(releaseDir, "checksums.txt"), checksums);
   const result = spawnSync(SHELL, [INSTALL_SH], {
     encoding: "utf8",
@@ -104,14 +114,6 @@ function installWith(checksums: string): { readonly status: number | null; reado
       // flow with the local Node http server providing the
       // checksums + asset. This is what the test is exercising.
       INSTALL_FORCE_BINARY: "1",
-      // Force the legacy raw contract: this test exercises the
-      // legacy "64hex  basename" checksums.txt format (the only
-      // format the install-checksum test fixture uses), and
-      // `tag_to_contract` would map v0.6.0 to "archive" — which
-      // expects 5 lines of `archiveName  hash` and rejects single
-      // raw entries. INSTALL_ASSET_CONTRACT=legacy selects the
-      // raw path directly, which is what we want.
-      INSTALL_ASSET_CONTRACT: "legacy",
       // Point the script at the local http server. The /download/<tag>
       // suffix matches the URL shape the script constructs from
       // RESOLVED_BASE; the test's server strips it before joining
@@ -141,20 +143,21 @@ function installWith(checksums: string): { readonly status: number | null; reado
 describe.skipIf(!SHELL_AVAILABLE)("install.sh production checksum verification", () => {
   it("installs the temporary asset when its exact GNU checksum entry matches", () => {
     // Given
-    const checksums = `${ASSET_HASH}  ${ASSET_NAME}\n`;
+    const hashes = Object.fromEntries(TARGETS.map((target) => [target.archiveName, target.archiveName === ASSET_NAME ? ASSET_HASH : sha256(Buffer.from(target.id))]));
+    const checksums = buildChecksumFile(hashes, "archive");
 
     // When
     const result = installWith(checksums);
 
     // Then
     expect(result.status).toBe(0);
-    expect(readFileSync(installTarget, "utf8")).toBe(ASSET_CONTENT);
+    expect(readFileSync(installTarget)).toEqual(ASSET_CONTENT);
   });
 
   it.each([
-    ["missing", `${ASSET_HASH}  umactually-linux-x64.tar.gz\n`],
+    ["missing", `${ASSET_HASH}  ${ASSET_NAME}\n`],
     ["malformed", `${ASSET_HASH} ${ASSET_NAME}\n`],
-    ["mismatched", `${"0".repeat(64)}  ${ASSET_NAME}\n`],
+    ["mismatched", buildChecksumFile(Object.fromEntries(TARGETS.map((target) => [target.archiveName, "0".repeat(64)])), "archive")],
   ])("rejects a %s checksum entry without replacing the installed binary", (_case, checksums) => {
     // Given
     const existing = readFileSync(installTarget, "utf8");

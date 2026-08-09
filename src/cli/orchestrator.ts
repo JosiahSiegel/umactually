@@ -399,12 +399,12 @@ async function dispatchLivePlatform(input: {
             fileCount,
             reviewFileLimit,
             provider: parsed.provider ?? "openai-compatible",
-            modelId: parsed.model ?? "auto",
+            modelId: parsed.model ?? "(auto)",
             secrets: [context.token],
           }),
           endpoint: "skipped",
           provider: parsed.provider ?? "openai-compatible",
-          modelId: parsed.model ?? "auto",
+          modelId: parsed.model ?? "(auto)",
           // Skipped-due-to-file-limit placeholder — no parser ran, so
           // no severity warnings to surface.
           severityWarnings: [],
@@ -484,7 +484,6 @@ function detectLivePlatform(env: NodeJS.ProcessEnv): LivePlatform | null {
 function readSecretValues(env: NodeJS.ProcessEnv): readonly string[] {
   return [
     env[ENV_KEYS.UMACTUALLY_API_KEY] ?? "",
-    env[ENV_KEYS.REVIEW_PROVIDER_API_KEY] ?? "",
     env[ENV_KEYS.GITHUB_TOKEN] ?? "",
     env[ENV_KEYS.SYSTEM_ACCESSTOKEN] ?? "",
     env["AZURE_DEVOPS_TOKEN"] ?? "",

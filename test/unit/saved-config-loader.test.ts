@@ -434,3 +434,108 @@ describe("saved-config safe-write contract (symlinks, mode, dir, prompt)", () =>
     expect(DEFAULT_ANTHROPIC_URL).toBe("https://api.anthropic.com/v1");
   });
 });
+
+// ===========================================================================
+// Todo 10 — model is truly optional. The saved config round-trips WITHOUT a
+// `model` key when the operator omits it. Explicit model round-trips with
+// the literal string. The serialized bytes MUST NOT contain `"model"` when
+// the saved config carries no model — proves the new contract from below
+// and acts as the regression lock for the wizard's "no default `auto`"
+// behavior.
+// ===========================================================================
+
+describe("Todo 10: saved-config model round-trip is truly optional", () => {
+  it("Omit-Model-1: write + read a config with no model key — JSON on disk has no `model` field", async () => {
+    // Given: a typed SavedConfig with provider only (no model, no apiUrl).
+    const { homeDir, cwd } = sandbox();
+    const noModelConfig: SavedConfig = {
+      schemaVersion: SAVED_CONFIG_SCHEMA_VERSION,
+      provider: "openai-compatible",
+    };
+
+    // When: the writer persists the config.
+    const writeResult = await writeSavedConfig(noModelConfig, {
+      homeDir,
+      cwd,
+      scope: "global",
+    });
+    expect(writeResult.ok).toBe(true);
+    if (!writeResult.ok) return;
+
+    // Then: the serialized bytes on disk contain NO `"model"` literal —
+    // proves the serializer drops the optional field when absent.
+    const bytes = readFileSync(writeResult.path, "utf8");
+    expect(bytes).not.toMatch(/"model"/);
+
+    // And: a fresh read round-trips with `model === undefined`.
+    const readResult = readSavedConfig({ homeDir, cwd });
+    expect(readResult.ok).toBe(true);
+    if (!readResult.ok) return;
+    expect(readResult.config?.model).toBeUndefined();
+    expect(readResult.config?.provider).toBe("openai-compatible");
+    // Object.keys pins that no decorative field leaked through.
+    expect(Object.keys(readResult.config ?? {}).sort()).toEqual(
+      ["provider", "schemaVersion"].sort(),
+    );
+  });
+
+  it("Omit-Model-2: write + read a config with explicit model — JSON on disk carries the literal", async () => {
+    // Given: an explicit model id.
+    const { homeDir, cwd } = sandbox();
+    const withModel: SavedConfig = {
+      schemaVersion: SAVED_CONFIG_SCHEMA_VERSION,
+      provider: "anthropic",
+      model: "claude-sonnet-4-5",
+    };
+
+    // When: the writer persists.
+    const writeResult = await writeSavedConfig(withModel, {
+      homeDir,
+      cwd,
+      scope: "global",
+    });
+    expect(writeResult.ok).toBe(true);
+    if (!writeResult.ok) return;
+
+    // Then: the literal model is in the bytes.
+    const bytes = readFileSync(writeResult.path, "utf8");
+    expect(bytes).toContain('"model"');
+    expect(bytes).toContain('"claude-sonnet-4-5"');
+
+    // And: a fresh read returns it.
+    const readResult = readSavedConfig({ homeDir, cwd });
+    expect(readResult.ok).toBe(true);
+    if (!readResult.ok) return;
+    expect(readResult.config?.model).toBe("claude-sonnet-4-5");
+  });
+
+  it("Omit-Model-3: an empty-string model on read is treated as absent (lock the empty-string-as-missing rule for the wizard)", async () => {
+    // Given: a config with model set to "" (the wizard's "no default"
+    // path will pass an empty string when the operator hits Enter).
+    const { homeDir, cwd } = sandbox();
+    const emptyModel: SavedConfig = {
+      schemaVersion: SAVED_CONFIG_SCHEMA_VERSION,
+      provider: "openai-compatible",
+      model: "",
+    };
+    const writeResult = await writeSavedConfig(emptyModel, {
+      homeDir,
+      cwd,
+      scope: "global",
+    });
+    expect(writeResult.ok).toBe(true);
+    if (!writeResult.ok) return;
+
+    // When: a fresh read round-trips.
+    const readResult = readSavedConfig({ homeDir, cwd });
+    expect(readResult.ok).toBe(true);
+    if (!readResult.ok) return;
+
+    // Then: model is undefined (empty-string-as-missing — the
+    // canonical loader rule, mirrored in `pickString`).
+    expect(readResult.config?.model).toBeUndefined();
+    expect(Object.keys(readResult.config ?? {}).sort()).toEqual(
+      ["provider", "schemaVersion"].sort(),
+    );
+  });
+});

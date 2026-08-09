@@ -622,11 +622,15 @@ describe("buildProviderPrompts: --prompt-files / --additional-prompt-files array
     expect(prompts.system).toBe("INLINE-ALWAYS-WINS");
   });
 
-  it("UMACTUALLY_PROMPT_FILES env var is honored when no CLI/inputs override is set", async () => {
-    // Given: a file referenced via env (not via CLI).
+  it("UMACTUALLY_PROMPT_FILES env var is silently ignored when no CLI/inputs override is set (simplified contract)", async () => {
+    // Given: a file referenced via env (NOT via CLI) — the env var
+    // was removed in the simplified contract (Todo 4 / Todo 7). The
+    // array-override surface is `--prompt-files` (CLI) only; the env
+    // var is a no-op and the default-lookup list (CLAUDE.md / built-in)
+    // is consulted instead.
     await writeFile(join(cwd, "env-override.md"), "ENV-ARRAY-MARKER", "utf8");
-    // And: a CLAUDE.md that must NOT be loaded (env array wins).
-    await writeFile(join(cwd, "CLAUDE.md"), "CLAUDE-MUST-NOT-POST", "utf8");
+    // And: a CLAUDE.md that MUST be loaded (env var is ignored).
+    await writeFile(join(cwd, "CLAUDE.md"), "AUTOLOAD-WINS-NOW", "utf8");
     const prompts = await buildProviderPrompts({
       parsed: parsedArgsForTest(),
       cwd,
@@ -634,9 +638,9 @@ describe("buildProviderPrompts: --prompt-files / --additional-prompt-files array
       platform: "github",
       diffText: SOURCE_DIFF,
     });
-    // Then: env array wins; defaults are skipped.
-    expect(prompts.system).toContain("ENV-ARRAY-MARKER");
-    expect(prompts.system).not.toContain("CLAUDE-MUST-NOT-POST");
+    // Then: env var is a no-op — the default-lookup list wins.
+    expect(prompts.system).not.toContain("ENV-ARRAY-MARKER");
+    expect(prompts.system).toContain("AUTOLOAD-WINS-NOW");
   });
 
   it("--additional-prompt-files OVERRIDES the default-lookup list for the user prompt", async () => {
@@ -703,11 +707,14 @@ describe("buildProviderPrompts: complete precedence matrix (system prompt)", () 
     expect(prompts.system).not.toContain("You are UmActually, a precise pull request reviewer.");
   });
 
-  it("UMACTUALLY_PROMPT_FILE (legacy env var, single path) still works without --prompt-files", async () => {
-    // Regression for back-compat: the legacy env var must still resolve
-    // to a single-file read when --prompt-files / UMACTUALLY_PROMPT_FILES
-    // is unset.
+  it("UMACTUALLY_PROMPT_FILE (legacy single-path env var) is silently ignored (simplified contract)", async () => {
+    // The legacy single-path env var was removed in the simplified
+    // contract (Todo 4 / Todo 7). The CLI-only surface is
+    // `--prompt-file` (single) or `--prompt-files` (array). Setting
+    // the env var MUST NOT resolve to a file read — the default-lookup
+    // list (CLAUDE.md / built-in) is consulted instead.
     await writeFile(join(cwd, "env.md"), "ENV-SINGLE-MARKER", "utf8");
+    await writeFile(join(cwd, "CLAUDE.md"), "AUTOLOAD-WINS-NOW-SINGLE", "utf8");
     const prompts = await buildProviderPrompts({
       parsed: parsedArgsForTest(),
       cwd,
@@ -715,14 +722,18 @@ describe("buildProviderPrompts: complete precedence matrix (system prompt)", () 
       platform: "github",
       diffText: SOURCE_DIFF,
     });
-    expect(prompts.system).toContain("ENV-SINGLE-MARKER");
+    expect(prompts.system).not.toContain("ENV-SINGLE-MARKER");
+    expect(prompts.system).toContain("AUTOLOAD-WINS-NOW-SINGLE");
   });
 
-  it("UMACTUALLY_PROMPT_FILES (array env var) wins over UMACTUALLY_PROMPT_FILE (legacy env var)", async () => {
-    // Both env vars set; the array env wins.
+  it("Both UMACTUALLY_PROMPT_FILE + UMACTUALLY_PROMPT_FILES env vars are silently ignored (simplified contract)", async () => {
+    // Both legacy env vars were removed. With neither honored, the
+    // default-lookup list (CLAUDE.md / built-in) is the only resolved
+    // source. This is a regression guard for the simplified contract.
     await writeFile(join(cwd, "single.md"), "LEGACY-ENV-MUST-NOT-POST", "utf8");
-    await writeFile(join(cwd, "array-a.md"), "ARRAY-A", "utf8");
-    await writeFile(join(cwd, "array-b.md"), "ARRAY-B", "utf8");
+    await writeFile(join(cwd, "array-a.md"), "ARRAY-A-MUST-NOT-POST", "utf8");
+    await writeFile(join(cwd, "array-b.md"), "ARRAY-B-MUST-NOT-POST", "utf8");
+    await writeFile(join(cwd, "CLAUDE.md"), "AUTOLOAD-WINS-NOW-BOTH", "utf8");
     const prompts = await buildProviderPrompts({
       parsed: parsedArgsForTest(),
       cwd,
@@ -733,9 +744,10 @@ describe("buildProviderPrompts: complete precedence matrix (system prompt)", () 
       platform: "github",
       diffText: SOURCE_DIFF,
     });
-    expect(prompts.system).toContain("ARRAY-A");
-    expect(prompts.system).toContain("ARRAY-B");
     expect(prompts.system).not.toContain("LEGACY-ENV-MUST-NOT-POST");
+    expect(prompts.system).not.toContain("ARRAY-A-MUST-NOT-POST");
+    expect(prompts.system).not.toContain("ARRAY-B-MUST-NOT-POST");
+    expect(prompts.system).toContain("AUTOLOAD-WINS-NOW-BOTH");
   });
 
   it("parsed.promptFiles (CLI) wins over UMACTUALLY_PROMPT_FILES (env) — CLI > env precedence", async () => {
@@ -815,8 +827,13 @@ describe("buildProviderPrompts: complete precedence matrix (additional / user pr
     expect(prompts.user).not.toContain("CLAUDE-USER-MUST-NOT-POST");
   });
 
-  it("UMACTUALLY_ADDITIONAL_PROMPT_FILE (legacy env, single) still works without --additional-prompt-files", async () => {
-    // Regression for back-compat.
+  it("UMACTUALLY_ADDITIONAL_PROMPT_FILE (legacy single-path env) is silently ignored (simplified contract)", async () => {
+    // The legacy single-path env var was removed in the simplified
+    // contract (Todo 4 / Todo 7). The CLI-only surface is
+    // `--additional-prompt-file` (single) or
+    // `--additional-prompt-files` (array). With no CLI flag set and
+    // no CLAUDE.md, the user prompt carries the empty default
+    // ("Additional instructions: none").
     await writeFile(join(cwd, "env.md"), "ENV-SINGLE-USER-MARKER", "utf8");
     const prompts = await buildProviderPrompts({
       parsed: parsedArgsForTest(),
@@ -825,13 +842,18 @@ describe("buildProviderPrompts: complete precedence matrix (additional / user pr
       platform: "github",
       diffText: SOURCE_DIFF,
     });
-    expect(prompts.user).toContain("ENV-SINGLE-USER-MARKER");
+    expect(prompts.user).not.toContain("ENV-SINGLE-USER-MARKER");
+    expect(prompts.user).toContain("Additional instructions: none");
   });
 
-  it("UMACTUALLY_ADDITIONAL_PROMPT_FILES (array env) wins over UMACTUALLY_ADDITIONAL_PROMPT_FILE (legacy env)", async () => {
+  it("Both UMACTUALLY_ADDITIONAL_PROMPT_FILE + UMACTUALLY_ADDITIONAL_PROMPT_FILES env vars are silently ignored (simplified contract)", async () => {
+    // Both legacy env vars were removed in the simplified contract
+    // (Todo 4 / Todo 7). Neither is honored; the user prompt falls
+    // through to "Additional instructions: none" when no CLI override
+    // or CLAUDE.md is present.
     await writeFile(join(cwd, "single.md"), "LEGACY-USER-ENV-MUST-NOT-POST", "utf8");
-    await writeFile(join(cwd, "ua.md"), "USER-ARRAY-A", "utf8");
-    await writeFile(join(cwd, "ub.md"), "USER-ARRAY-B", "utf8");
+    await writeFile(join(cwd, "ua.md"), "USER-ARRAY-A-MUST-NOT-POST", "utf8");
+    await writeFile(join(cwd, "ub.md"), "USER-ARRAY-B-MUST-NOT-POST", "utf8");
     const prompts = await buildProviderPrompts({
       parsed: parsedArgsForTest(),
       cwd,
@@ -842,9 +864,10 @@ describe("buildProviderPrompts: complete precedence matrix (additional / user pr
       platform: "github",
       diffText: SOURCE_DIFF,
     });
-    expect(prompts.user).toContain("USER-ARRAY-A");
-    expect(prompts.user).toContain("USER-ARRAY-B");
     expect(prompts.user).not.toContain("LEGACY-USER-ENV-MUST-NOT-POST");
+    expect(prompts.user).not.toContain("USER-ARRAY-A-MUST-NOT-POST");
+    expect(prompts.user).not.toContain("USER-ARRAY-B-MUST-NOT-POST");
+    expect(prompts.user).toContain("Additional instructions: none");
   });
 
   it("empty fall-through: no overrides + no defaults → user prompt says 'Additional instructions: none'", async () => {

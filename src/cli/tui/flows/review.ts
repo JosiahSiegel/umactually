@@ -61,7 +61,7 @@ function buildReviewData(
   return {
     review,
     provider: parsed.provider ?? "openai-compatible",
-    modelId: parsed.model ?? "auto",
+    modelId: parsed.model ?? "(auto)",
     validCommentCount: postedComments.length,
     suppressedCommentCount: 0,
     severityCounts,
@@ -168,7 +168,7 @@ async function runWizardPrompts(
   }
   const modelAnswer = await text({
     message: "Model",
-    initialValue: savedConfig?.model ?? "auto",
+    initialValue: savedConfig?.model ?? "",
   });
   if (isCancel(modelAnswer)) return { cancel: true };
   const model = modelAnswer;

@@ -128,7 +128,6 @@ curl -fsSL --ssl-no-revoke https://github.com/JosiahSiegel/umactually/raw/main/s
 | --- | --- | --- |
 | `--tag vX.Y.Z` | `INSTALL_RELEASE_TAG` | auto-detect from `releases/latest` |
 | `--base <url>` | `INSTALL_RELEASE_BASE` | GitHub releases URL |
-| `--contract archive\|legacy` | `INSTALL_ASSET_CONTRACT` | auto-detect from `checksums.txt` |
 | `--install-dir <path>` | — | `/usr/local/bin` (root) or `~/.local/bin` (non-root) |
 | `--ssl-no-revoke` | `INSTALL_SSL_NO_REVOKE` | revocation checks on (secure default) |
 | `--try-npm` | `INSTALL_TRY_NPM` | opt in to the smart-router on first invocation |
@@ -165,22 +164,16 @@ umactually --version
 ### Uninstall
 
 ```bash
-# Built-in subcommand (recommended — handles binary, config, cache, PATH)
+# Built-in subcommand — handles binary, config, cache, PATH.
 umactually uninstall                    # interactive confirmation
 umactually uninstall --yes              # non-interactive
 umactually uninstall --purge-config     # also remove ~/.umactually/ and ~/.cache/umactually/
 umactually uninstall --json             # machine-readable output
-
-# Legacy one-liner (kept for back-compat with v0.5.x)
-curl -fsSL https://github.com/JosiahSiegel/umactually/raw/main/scripts/uninstall.sh | sh
 ```
 
 ```powershell
 # Windows PowerShell
 umactually uninstall --yes
-
-# Legacy
-irm https://github.com/JosiahSiegel/umactually/raw/main/scripts/uninstall.ps1 | iex
 ```
 
 ## Usage

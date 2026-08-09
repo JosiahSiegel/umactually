@@ -208,7 +208,7 @@ describe("runLive GitHub marker-review state filter", () => {
 
     // When: live orchestration runs.
     const result = await runLive({
-      parsed: parseCliArgs(["--platform", "github", "--no-dry-run"]),
+      parsed: parseCliArgs(["--platform", "github", "--no-dry-run", "--model", "review-model-synthetic"]),
       cwd: workspace,
       env: githubEnv(eventPath),
       fetchImpl: recorder.fetchImpl,
@@ -256,7 +256,7 @@ describe("runLive GitHub marker-review state filter", () => {
 
     // When: live orchestration runs.
     const result = await runLive({
-      parsed: parseCliArgs(["--platform", "github", "--no-dry-run"]),
+      parsed: parseCliArgs(["--platform", "github", "--no-dry-run", "--model", "review-model-synthetic"]),
       cwd: workspace,
       env: githubEnv(eventPath),
       fetchImpl: recorder.fetchImpl,
@@ -306,7 +306,7 @@ describe("runLive GitHub marker-review state filter", () => {
 
     // When: live orchestration runs.
     const result = await runLive({
-      parsed: parseCliArgs(["--platform", "github", "--no-dry-run"]),
+      parsed: parseCliArgs(["--platform", "github", "--no-dry-run", "--model", "review-model-synthetic"]),
       cwd: workspace,
       env: githubEnv(eventPath),
       fetchImpl: recorder.fetchImpl,

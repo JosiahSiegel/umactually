@@ -190,6 +190,8 @@ describe("runLive inline prompt plumbing (Wave 2 / S7-RED)", () => {
         "--platform",
         "github",
         "--no-dry-run",
+        "--model",
+        "review-model-synthetic",
         "--additional-prompt",
         "EXTRA-INSTRUCTIONS-MARKER",
       ]),
@@ -222,6 +224,8 @@ describe("runLive inline prompt plumbing (Wave 2 / S7-RED)", () => {
         "--platform",
         "github",
         "--no-dry-run",
+        "--model",
+        "review-model-synthetic",
         "--prompt",
         "CUSTOM-SYSTEM-MARKER",
       ]),
@@ -258,6 +262,8 @@ describe("runLive inline prompt plumbing (Wave 2 / S7-RED)", () => {
         "--platform",
         "github",
         "--no-dry-run",
+        "--model",
+        "review-model-synthetic",
         "--prompt-file",
         "prompts/system.md",
       ]),
@@ -287,6 +293,8 @@ describe("runLive inline prompt plumbing (Wave 2 / S7-RED)", () => {
         "--platform",
         "github",
         "--no-dry-run",
+        "--model",
+        "review-model-synthetic",
         "--additional-prompt-file",
         "../outside.md",
       ]),
@@ -318,6 +326,8 @@ describe("runLive inline prompt plumbing (Wave 2 / S7-RED)", () => {
         "--platform",
         "github",
         "--no-dry-run",
+        "--model",
+        "review-model-synthetic",
         "--prompt",
         "INLINE-WINS",
         "--prompt-file",
@@ -354,7 +364,7 @@ describe("runLive inline prompt plumbing (Wave 2 / S7-RED)", () => {
 
     // When: live orchestration runs with no prompt overrides.
     const result = await runLive({
-      parsed: parseCliArgs(["--platform", "github", "--no-dry-run"]),
+      parsed: parseCliArgs(["--platform", "github", "--no-dry-run", "--model", "review-model-synthetic"]),
       cwd: workspace,
       env: githubEnv(eventPath),
       fetchImpl: recorder.fetchImpl,
@@ -392,6 +402,8 @@ describe("runLive inline prompt plumbing (Wave 2 / S7-RED)", () => {
         "--platform",
         "github",
         "--no-dry-run",
+        "--model",
+        "review-model-synthetic",
         "--prompt-files",
         "review.md",
       ]),
@@ -433,6 +445,8 @@ describe("runLive inline prompt plumbing (Wave 2 / S7-RED)", () => {
         "--platform",
         "github",
         "--no-dry-run",
+        "--model",
+        "review-model-synthetic",
         "--additional-prompt-files",
         "extra.md",
       ]),
@@ -449,23 +463,27 @@ describe("runLive inline prompt plumbing (Wave 2 / S7-RED)", () => {
     expect(user).not.toContain("CLAUDE-USER-MUST-NOT-POST");
   });
 
-  it("ULW-ENV-001: UMACTUALLY_PROMPT_FILES env var wires through to the provider", async () => {
-    // The env var path MUST be honored end-to-end (not just at the
-    // CLI surface). The action sets INPUT_PROMPT_FILES in env, but
-    // when running via the CLI directly the operator can use
-    // UMACTUALLY_PROMPT_FILES.
+  it("ULW-ENV-001: UMACTUALLY_PROMPT_FILES env var is silently ignored (simplified contract)", async () => {
+    // The legacy UMACTUALLY_PROMPT_FILES env var was removed in the
+    // simplified contract (Todo 4 / Todo 7). The end-to-end CLI
+    // surface honors `--prompt-files` (CLI flag) only; the env var
+    // is a no-op and the default-lookup list (CLAUDE.md / built-in)
+    // is consulted instead. This is the negative end-to-end mirror
+    // of the unit-level assertion in
+    // test/unit/provider-prompts.test.ts (UMACTUALLY_PROMPT_FILES
+    // env var is silently ignored).
     workspace = await mkdtemp(join(tmpdir(), "umactually-live-prompts-env-"));
     const eventPath = join(workspace, "event.json");
     await writeFile(eventPath, EVENT_JSON, "utf8");
-    // CLAUDE.md that MUST NOT be loaded (env array wins).
+    // CLAUDE.md that MUST be loaded (env var is a no-op).
     await writeFile(
       join(workspace, "CLAUDE.md"),
-      "CLAUDE-ENV-MUST-NOT-POST",
+      "CLAUDE-ENV-NOW-POSTS",
       "utf8",
     );
     await writeFile(
       join(workspace, "env-override.md"),
-      "ENV-OVERRIDE-MARKER",
+      "ENV-OVERRIDE-MUST-NOT-POST",
       "utf8",
     );
     const recorder = makeFetchRecorder(githubRoutes(PROVIDER_REVIEW));
@@ -474,7 +492,7 @@ describe("runLive inline prompt plumbing (Wave 2 / S7-RED)", () => {
     env["UMACTUALLY_PROMPT_FILES"] = "env-override.md";
 
     const result = await runLive({
-      parsed: parseCliArgs(["--platform", "github", "--no-dry-run"]),
+      parsed: parseCliArgs(["--platform", "github", "--no-dry-run", "--model", "review-model-synthetic"]),
       cwd: workspace,
       env,
       fetchImpl: recorder.fetchImpl,
@@ -483,8 +501,8 @@ describe("runLive inline prompt plumbing (Wave 2 / S7-RED)", () => {
     expect(result.exitCode).toBe(0);
     const providerCall = findCall(recorder.calls, "POST", "/v1/responses");
     const { system } = readProviderPrompts(providerCall);
-    expect(system).toContain("ENV-OVERRIDE-MARKER");
-    expect(system).not.toContain("CLAUDE-ENV-MUST-NOT-POST");
+    expect(system).not.toContain("ENV-OVERRIDE-MUST-NOT-POST");
+    expect(system).toContain("CLAUDE-ENV-NOW-POSTS");
   });
 
   it("ULW-MULTI-001: --prompt-files with multiple comma-separated paths concatenates in order", async () => {
@@ -500,6 +518,8 @@ describe("runLive inline prompt plumbing (Wave 2 / S7-RED)", () => {
         "--platform",
         "github",
         "--no-dry-run",
+        "--model",
+        "review-model-synthetic",
         "--prompt-files",
         "a.md,b.md",
       ]),
@@ -535,7 +555,7 @@ describe("runLive inline prompt plumbing (Wave 2 / S7-RED)", () => {
 
     // First invocation: populates the cache.
     const first = await runLive({
-      parsed: parseCliArgs(["--platform", "github", "--no-dry-run"]),
+      parsed: parseCliArgs(["--platform", "github", "--no-dry-run", "--model", "review-model-synthetic"]),
       cwd: workspace,
       env: githubEnv(eventPath),
       fetchImpl: recorder1.fetchImpl,
@@ -551,7 +571,7 @@ describe("runLive inline prompt plumbing (Wave 2 / S7-RED)", () => {
     // (exitCode 0).
     await rm(join(workspace, "CLAUDE.md"), { force: true });
     const second = await runLive({
-      parsed: parseCliArgs(["--platform", "github", "--no-dry-run"]),
+      parsed: parseCliArgs(["--platform", "github", "--no-dry-run", "--model", "review-model-synthetic"]),
       cwd: workspace,
       env: githubEnv(eventPath),
       fetchImpl: recorder2.fetchImpl,

@@ -86,10 +86,9 @@ export function extractOrigin(baseUrl: string): string {
  * default when null is returned.
  *
  * Why hostname-only: substring matching on the full URL is too
- * loose. A URL like `https://example.com/minimax-router` would
- * falsely match `url.includes("minimax")` and pick a MiniMax
- * model. The hostname extract prevents that — `example.com`
- * doesn't contain `minimax`, so the model is the default.
+ * loose. A URL like `https://example.com/provider-router` could
+ * falsely match a provider keyword in the path. The hostname extract
+ * prevents path text from influencing hostname-based decisions.
  *
  * The returned hostname is always lowercased so callers can compare
  * directly against lowercase host keys. `URL.hostname` is already
@@ -100,7 +99,7 @@ export function extractOrigin(baseUrl: string): string {
  *
  * Examples:
  *   - `https://api.example.com/v1`        → `api.example.com`
- *   - `API.MINIMAX.IO`                    → `api.minimax.io`
+ *   - `ROUTER.EXAMPLE.COM`                → `router.example.com`
  *   - `localhost:8080`                    → null (`new URL("localhost:8080")`
  *     parses with empty hostname because `localhost` is not a
  *     special scheme; the function returns null for empty hosts)
@@ -113,7 +112,7 @@ export function extractHostname(baseUrl: string): string | null {
   try {
     host = new URL(trimmed).hostname;
   } catch {
-    // Fallback: scheme-less URLs (`API.MINIMAX.IO`, `localhost:8080`)
+    // Fallback: scheme-less URLs (`ROUTER.EXAMPLE.COM`, `localhost:8080`)
     // don't parse with `new URL()`. Strip the scheme manually, then
     // read up to the first `/` or `:`.
     const schemeSep = trimmed.indexOf("://");
@@ -192,14 +191,13 @@ export function resolveProviderBaseUrlCandidates(
  * providers whose endpoints live under a path prefix."
  *
  * Anthropic-compatible gateways commonly mount the protocol under a
- * path prefix. The canonical example is MiniMax's Anthropic endpoint:
+ * path prefix. For example:
  *
- *   `--api-url https://api.minimax.io/anthropic` →
- *   `POST https://api.minimax.io/anthropic/v1/messages`
+ *   `--api-url https://gateway.example.com/llm/anthropic` →
+ *   `POST https://gateway.example.com/llm/anthropic/v1/messages`
  *
- * NOT `https://api.minimax.io/v1/messages` (which 404s on MiniMax — see
- * https://platform.minimax.io/docs/token-plan/claude-code). The path
- * on the operator's URL is real routing, not decorative noise.
+ * NOT `https://gateway.example.com/v1/messages`. The path on the
+ * operator's URL is real routing, not decorative noise.
  *
  * Behavior:
  *
@@ -228,8 +226,8 @@ export function resolveProviderBaseUrlCandidates(
  *   - `https://api.anthropic.com`                        → `https://api.anthropic.com/v1/messages`
  *   - `https://api.anthropic.com/v1`                     → `https://api.anthropic.com/v1/messages`
  *   - `https://api.anthropic.com/v1/`                    → `https://api.anthropic.com/v1/messages`
- *   - `https://api.minimax.io/anthropic`                 → `https://api.minimax.io/anthropic/v1/messages`
- *   - `https://api.minimax.io/anthropic/`                → `https://api.minimax.io/anthropic/v1/messages`
+ *   - `https://gateway.example.com/anthropic`            → `https://gateway.example.com/anthropic/v1/messages`
+ *   - `https://gateway.example.com/anthropic/`           → `https://gateway.example.com/anthropic/v1/messages`
  *   - `https://gateway.example.com/llm/anthropic`        → `https://gateway.example.com/llm/anthropic/v1/messages`
  *   - `https://api.anthropic.com/v1/messages`            → `https://api.anthropic.com/v1/messages` (idempotent)
  *   - `https://api.anthropic.com/v1?token=abc`           → `https://api.anthropic.com/v1/messages` (query dropped)
@@ -240,8 +238,8 @@ export function resolveProviderBaseUrlCandidates(
  * `resolveProviderBaseUrlCandidates` because OpenAI gateways
  * (`/openai`, `/api/v2`, etc.) live at the host root + `/v1`, so the
  * try-as-pasted-then-origin-with-`/v1` fallback is the right
- * contract there. Anthropic's path-prefix gateways (MiniMax's
- * `/anthropic`) need the path preserved.
+ * contract there. Anthropic path-prefix gateways need their configured
+ * path preserved.
  */
 export function resolveAnthropicMessagesUrl(baseUrl: string): string {
   // Parse once and split origin / path. Drop query string and fragment
@@ -297,10 +295,9 @@ export function resolveAnthropicMessagesUrl(baseUrl: string): string {
  * Messages API client even when `--provider` defaults to
  * `openai-compatible`. Without this, the openai-compatible client's
  * URL candidate loop downgrades paths like
- * `https://api.minimax.io/anthropic` to the origin+`/v1` fallback
- * (which on MiniMax also serves OpenAI-protocol at `/v1/responses`),
- * and the action ends up POSTing OpenAI wire-shape requests to an
- * Anthropic-protocol gateway — silently breaking operator intent.
+ * `https://gateway.example.com/llm/anthropic` to the origin+`/v1`
+ * fallback, and the action ends up POSTing OpenAI wire-shape requests
+ * to an Anthropic-protocol gateway — silently breaking operator intent.
  *
  * Contract: returns `true` when ANY path segment **exactly** equals
  * `anthropic` (case-insensitive, byte-for-byte match — no prefix or
@@ -321,8 +318,8 @@ export function resolveAnthropicMessagesUrl(baseUrl: string): string {
  *
  * Examples (see `test/unit/looks-like-anthropic-endpoint.test.ts`):
  *
- *   `https://api.minimax.io/anthropic`                 → true  (segment "anthropic")
- *   `https://api.minimax.io/anthropic/v1`              → true  (segment "anthropic")
+ *   `https://gateway.example.com/anthropic`            → true  (segment "anthropic")
+ *   `https://gateway.example.com/anthropic/v1`         → true  (segment "anthropic")
  *   `https://gateway.example.com/llm/anthropic`        → true  (segment "anthropic")
  *   `https://gateway.example.com/v1/anthropic`        → true  (segment "anthropic")
  *   `https://api.openai.com/v1`                        → false (no "anthropic" segment)

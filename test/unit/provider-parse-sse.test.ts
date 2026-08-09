@@ -15,7 +15,7 @@ import {
 
 describe("extractTextPayload: SSE streaming coverage", () => {
   it("parses the OpenAI Responses API streaming format (response.output_text.delta)", () => {
-    // This is the exact shape the opencode/MiniMax model returned
+    // This is the exact captured SSE shape returned by a compatible gateway
     // against PR #3 — fragment events wrapped in a {type, delta}
     // envelope with `type: "response.output_text.delta"`. The parser
     // must accumulate the per-fragment `delta` strings into a single

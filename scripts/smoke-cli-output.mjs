@@ -15,7 +15,7 @@
 // The .mjs extension is intentional — the runtime is TypeScript via tsx,
 // and the .ts imports are resolved by tsx's loader, not by Node's ESM.
 
-import { CLI_HELP_TEXT, resolveHelpText } from "../src/cli/help.ts";
+import { resolveHelpText } from "../src/cli/help.ts";
 import { BRAND_PREFIX } from "../src/util/brand.ts";
 import {
   FIRST_RUN_QUICKSTART,
@@ -53,7 +53,7 @@ if (mode === "review") {
     `path: /tmp/cfg.json\n` +
     `${BRAND_PREFIX}${renderLoadedConfigQuickstart(syntheticConfig)}`;
 } else {
-  out = CLI_HELP_TEXT;
+  out = resolveHelpText([]);
 }
 
 process.stdout.write(out);

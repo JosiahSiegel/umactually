@@ -442,29 +442,10 @@ export type CliExecutionResult = CliRunResult & {
   readonly resolvedConfig?: SanitizedResolvedConfig;
 };
 
-/**
- * Render a list of structured validation errors to stderr.
- *
- * Shape:
- *   cli: <message-1>; <message-2>; ...
- *     hint: <hint-1>
- *     hint: <hint-2>
- *     ...
- *
- * The first line is the byte-compatible legacy join (semicolon-
- * separated messages) so any CI log scraper or external consumer
- * matching on `cli: --api-url is required` or
- * `cli: --review requires --diff` keeps working. Each entry's
- * remediation hint is rendered as a separate `hint:` line. Piping
- * the output through `grep "cli:"` still surfaces the legacy first
- * line; piping through `grep "hint:"` surfaces every remediation.
- */
 function renderValidationErrors(errors: readonly ValidationError[]): string {
-  const header = `cli: ${errors.map((e) => e.message).join("; ")}\n`;
-  const hintLines = errors
-    .map((e) => `  hint: ${e.hint}`)
-    .join("\n");
-  return `${header}${hintLines}\n`;
+  return errors
+    .map((error) => `cli: ${error.message}\n  hint: ${error.hint}`)
+    .join("\n") + "\n";
 }
 
 export async function runCli(args: readonly string[], cwd: string): Promise<CliExecutionResult> {
@@ -574,12 +555,6 @@ export async function runCli(args: readonly string[], cwd: string): Promise<CliE
       };
     }
     if (errors.length > 0) {
-      // Render the structured errors with `flag` + `message` + `hint`
-      // so the operator sees a remediation next to each failure rather
-      // than a flat semicolon-joined string. The first line stays
-      // byte-compatible with the legacy `cli: <msg>;<msg>` shape so
-      // any consumer grep'ing for `cli: --api-url is required` keeps
-      // working.
       process.stderr.write(renderValidationErrors(errors));
       // Bare-invocation banner: when the operator ran the CLI with no
       // provider flags AND validation rejected because of missing

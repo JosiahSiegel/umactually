@@ -36,12 +36,12 @@ import {
 } from "../../src/cli/validate.js";
 import { BRAND_PREFIX } from "../../src/util/brand.js";
 
-// Same env-clear shape as `test/unit/cli-bare-invocation.test.ts`.
+// Same env-clear shape as `test/unit/cli-bare-invocation.test.ts` (with
+// the legacy REVIEW_* alias family removed — they are gone from the
+// simplified contract and no longer pollute the ambient env).
 const ENV_KEYS_TO_CLEAR = [
   "UMACTUALLY_API_URL", "UMACTUALLY_API_KEY", "UMACTUALLY_MODEL",
-  "UMACTUALLY_DRY_RUN", "UMACTUALLY_PROMPT_FILE", "UMACTUALLY_ADDITIONAL_PROMPT_FILE",
-  "REVIEW_PROVIDER_URL", "REVIEW_PROVIDER_API_KEY", "REVIEW_PROVIDER_MODEL",
-  "REVIEW_DRY_RUN", "REVIEW_PLATFORM",
+  "UMACTUALLY_PROVIDER", "UMACTUALLY_GITHUB_API_BASE",
   "GITHUB_ACTIONS", "TF_BUILD",
 ] as const;
 
@@ -52,10 +52,14 @@ function buildParsedFor(files: string): ReturnType<typeof parseCliArgs> {
   // don't reject the object — `runLocalFilesReview` will call the
   // provider, which we stub out via globalThis.fetch below. These
   // values are never read by the stub.
+  // The model field is set to a synthetic opaque id so the new
+  // contract-based model discovery (Todo 6) skips the auto-discovery
+  // step and proceeds directly to inference against the stub.
   return {
     ...base,
     apiUrl: "http://test",
     apiKey: "test",
+    model: "review-model-synthetic",
     dryRun: false,
   };
 }

@@ -1,251 +1,114 @@
-/**
- * Layer 5: opinionated `model: "auto"` resolution.
- *
- * The default `auto` was previously passed verbatim to the provider,
- * which on most OpenAI-compatible endpoints resolves to whatever the
- * provider's "auto" picks (often gpt-4o or gpt-4-turbo). Per the
- * Vectara HHEM 2026-05-11 leaderboard, those models have a 9-12%
- * hallucination rate on grounded summarization tasks, vs 3-5% for
- * gpt-5-mini / gemini-2.5-flash-lite / claude-haiku-4.5.
- *
- * PR-Agent (qodo-ai) made the same switch in 2025: their default
- * went from gpt-4o to gpt-5 explicitly to reduce path fabrication.
- *
- * The resolver here picks a model with the best cost-vs-hallucination
- * trade-off for the active provider. Hostname match (not full-URL
- * match) — a URL like `https://api.minimax.io/anthropic` correctly
- * routes to MiniMax-M3 because the hostname is `api.minimax.io`,
- * even though the path contains "anthropic":
- *   - provider=copilot  → claude-3-5-sonnet (Copilot's Claude backend;
- *     this is the model string the GitHub Copilot Chat Completions
- *     endpoint actually accepts — the v3.x and v3.5 Sonnet line is
- *     the Copilot-routable Claude. claude-sonnet-4.6 is NOT a
- *     Copilot-routable string and would 404.)
- *   - provider=openai-compatible + URL hostname contains "minimax"  → MiniMax-M3
- *   - provider=openai-compatible + URL hostname contains "anthropic"  → claude-sonnet-4.6
- *   - provider=openai-compatible + URL hostname contains "generativelanguage" or "googleapis"  → gemini-2.5-flash
- *   - provider=openai-compatible otherwise (incl. api.openai.com)  → gpt-5-mini
- *
- * The MiniMax branch was added when PR #28's self-review hit HTTP
- * 400 on every OpenAI/Anthropic model name — the MiniMax provider
- * only serves `MiniMax-M3` and `MiniMax-Text-01` (plus `abab*`
- * aliases). Default is `MiniMax-M3`; `MiniMax-Text-01` is the
- * fallback if M3 has a bad day. Detected by the URL hostname
- * containing `minimax`.
- *
- * Users can always override via `--model` (or `UMACTUALLY_MODEL`).
- */
-import { resolveField } from "../config/field-resolution.js";
-import { ENV_KEYS } from "../util/env-keys.js";
-import { extractHostname } from "../util/url.js";
+import { isAbortError } from "../provider/provider-error.js";
+import { redactUrlForLog } from "../util/url.js";
 
-const COPILOT_DEFAULT_MODEL = "claude-3-5-sonnet";
-const ANTHROPIC_DEFAULT_MODEL = "claude-sonnet-4.6";
-const GOOGLE_DEFAULT_MODEL = "gemini-2.5-flash";
-const MINIMAX_DEFAULT_MODEL = "MiniMax-M3";
-const OPENAI_DEFAULT_MODEL = "gpt-5-mini";
+export type ModelProvider = "openai-compatible" | "anthropic" | "copilot";
 
-/**
- * Hostname-based routing table for the openai-compatible provider.
- * Each entry maps a host substring to the model name that host
- * actually serves — i.e. the model the provider will accept without
- * returning HTTP 400. Hostname match wins over path-substring match
- * so a URL like `https://api.minimax.io/anthropic` (which contains
- * the substring "anthropic") correctly routes to MiniMax-M3
- * rather than the Anthropic-default claude-sonnet-4.6 (which the
- * MiniMax provider would 400 on).
- *
- * The substring match is on the **hostname**, not the full URL —
- * `apiUrl.includes("minimax")` is too loose (any URL with the word
- * "minimax" in the path would match). We use a URL-parsed hostname
- * to keep the match precise.
- *
- * Order matters: each entry is checked in order. The MiniMax
- * entry comes BEFORE the Anthropic entry so `api.minimax.io` is
- * detected as MiniMax even when the URL path contains
- * `/anthropic`.
- */
-type HostRoute = {
-  readonly hostSubstring: string;
-  readonly model: string;
+export type ModelDiscoveryError =
+  | { readonly kind: "empty" }
+  | { readonly kind: "ambiguous"; readonly modelIds: readonly string[] }
+  | { readonly kind: "unauthorized"; readonly status: 401 | 403 }
+  | { readonly kind: "malformed"; readonly reason: string }
+  | { readonly kind: "unsupported"; readonly provider: ModelProvider }
+  | { readonly kind: "aborted" }
+  | { readonly kind: "network"; readonly reason: string };
+
+export type ModelDiscoveryResult =
+  | { readonly ok: true; readonly modelId: string }
+  | { readonly ok: false; readonly error: ModelDiscoveryError };
+
+export type ModelDiscoveryDependencies = {
+  readonly fetchImpl?: typeof fetch;
+  readonly signal?: AbortSignal;
+  readonly timeoutMs?: number;
 };
-const HOST_ROUTES: readonly HostRoute[] = [
-  // MiniMax: the api.minimax.io gateway only accepts MiniMax-M3,
-  // MiniMax-Text-01, and abab* aliases. Any OpenAI/Anthropic
-  // model name returns HTTP 400. Detected by hostname substring.
-  { hostSubstring: "minimax", model: MINIMAX_DEFAULT_MODEL },
-  // Anthropic: api.anthropic.com serves the claude-* line.
-  { hostSubstring: "anthropic", model: ANTHROPIC_DEFAULT_MODEL },
-  // Google: generativelanguage.googleapis.com (Gemini API) and
-  // aiplatform.googleapis.com (Vertex AI) both serve gemini-*.
-  { hostSubstring: "generativelanguage", model: GOOGLE_DEFAULT_MODEL },
-  { hostSubstring: "googleapis", model: GOOGLE_DEFAULT_MODEL },
-];
 
-export function resolveAutoModel(input: {
-  readonly provider: "openai-compatible" | "copilot" | "anthropic";
+export type ModelDiscoveryInput = {
+  readonly provider: ModelProvider;
   readonly apiUrl: string | null;
-  readonly env: NodeJS.ProcessEnv;
-}): string {
-  if (input.provider === "copilot") {
-    return COPILOT_DEFAULT_MODEL;
-  }
-  // Anthropic provider: the operator picked the Anthropic-native
-  // `/v1/messages` protocol. Return the Anthropic default regardless of
-  // the URL — the protocol is Anthropic-only, so hostname routing does
-  // not apply. Operators who want a different Anthropic model can
-  // override via `--model`.
-  if (input.provider === "anthropic") {
-    return ANTHROPIC_DEFAULT_MODEL;
-  }
-  const url = resolveField(input.apiUrl, input.env[ENV_KEYS.UMACTUALLY_API_URL], "");
-  const hostname = extractHostname(url);
-  if (hostname !== null) {
-    const lowerHost = hostname.toLowerCase();
-    for (const route of HOST_ROUTES) {
-      if (lowerHost.includes(route.hostSubstring)) {
-        return route.model;
-      }
-    }
-  }
-  return OPENAI_DEFAULT_MODEL;
-}
-
-/**
- * The fallback chain used when a primary model returns a parse-fail
- * or a non-parseable response. Each entry is a model name the
- * provider accepts. The current implementation is sequential (try
- * the first, fall back to the next on parse-fail), not parallel —
- * keeps the per-request cost predictable and matches the
- * PR-Agent `retry_with_fallback_models` pattern.
- *
- * IMPORTANT: the fallback chain is provider-specific. Trying
- * `claude-sonnet-4.6` as a Copilot fallback would 404 (per the
- * Copilot model routing documented in `resolveAutoModel`).
- * `fallbackModelsFor` filters the list to provider-routable models
- * so the parse-fail recovery doesn't itself fail.
- */
-const PROVIDER_FALLBACKS: Readonly<Record<"openai-compatible" | "copilot" | "anthropic", readonly string[]>> = {
-  "openai-compatible": [
-    OPENAI_DEFAULT_MODEL,
-    "gpt-4.1",
-    "gpt-4.1-mini",
-    ANTHROPIC_DEFAULT_MODEL,
-    GOOGLE_DEFAULT_MODEL,
-  ],
-  copilot: [
-    // The Copilot fallback chain is intentionally short: the
-    // provider only accepts Copilot-routable model strings, and
-    // a parse-fail retry on a different model that's still
-    // Copilot-routable would 404 too. The retry loop should fall
-    // back to the same model with a parse-fail retry prompt
-    // (handled in provider-parse.ts:PARSE_FAIL_RETRY_PROMPT);
-    // a model-level fallback is a no-op for Copilot today.
-    COPILOT_DEFAULT_MODEL,
-  ],
-  anthropic: [
-    // The Anthropic native provider (`/v1/messages`) only accepts
-    // Anthropic claude-* model names. Other provider families' model
-    // strings would 400 on the wire. The chain is intentionally
-    // bare-bones — operators who need a multi-model fallback chain
-    // for Anthropic can pass `--fallback-models` explicitly.
-    ANTHROPIC_DEFAULT_MODEL,
-    "claude-haiku-4.5",
-    "claude-opus-4.6",
-  ],
+  readonly apiKey: string | null;
+  readonly dependencies?: ModelDiscoveryDependencies;
 };
 
-/**
- * Per-URL fallback chains for providers that only accept their own
- * model names. The MiniMax provider (`api.minimax.io`) returns
- * HTTP 400 for any OpenAI/Anthropic/Google model name, so the
- * generic openai-compatible fallback chain would 400 too.
- *
- * The map key is the host substring used by `HOST_ROUTES` so a
- * single source of truth drives both primary and fallback model
- * selection. Adding a new provider means adding ONE entry to
- * `HOST_ROUTES` and (if it needs custom fallbacks) ONE entry here
- * with the same key.
- */
-const URL_SPECIFIC_FALLBACKS: Readonly<Record<string, readonly string[]>> = {
-  // `toLowerCase()` is applied to the URL before lookup so this
-  // map is case-insensitive — `api.minimax.io` and `API.MINIMAX.IO`
-  // both resolve to the same chain.
-  "minimax": [
-    MINIMAX_DEFAULT_MODEL,
-    "MiniMax-Text-01",
-    "abab6.5s-chat",
-    "abab5.5-chat",
-  ],
-};
-
-export const DEFAULT_FALLBACK_MODELS: readonly string[] = PROVIDER_FALLBACKS["openai-compatible"];
-
-/**
- * Return the fallback chain for a specific provider. Use this
- * instead of the bare `DEFAULT_FALLBACK_MODELS` constant in any
- * path that might be Copilot-routed — otherwise the parse-fail
- * recovery would itself fail with a 404.
- *
- * If `apiUrl` is provided and the URL hostname matches a
- * URL-specific chain (e.g. `api.minimax.io`), the URL-specific
- * chain wins — the generic OpenAI chain would 400 on those
- * providers.
- *
- * Hostname-only matching: matches against the URL hostname, not
- * the full URL, so a path like `/minimax-router` in
- * `https://example.com/minimax-router` does NOT falsely trigger
- * the MiniMax fallback chain. This is the same contract as
- * `resolveAutoModel`'s hostname-based routing — both functions
- * use `extractHostname` so the match is consistent.
- */
-export function fallbackModelsFor(
-  provider: "openai-compatible" | "copilot" | "anthropic",
-  apiUrl?: string | null,
-): readonly string[] {
-  if (apiUrl !== undefined && apiUrl !== null && apiUrl.length > 0) {
-    const hostname = extractHostname(apiUrl);
-    if (hostname !== null) {
-      for (const [hostKey, chain] of Object.entries(URL_SPECIFIC_FALLBACKS)) {
-        if (hostname.includes(hostKey)) {
-          return chain;
-        }
-      }
-    }
-  }
-  return PROVIDER_FALLBACKS[provider];
+function modelsUrl(apiUrl: string): string {
+  const base = apiUrl.replace(/\/+$/u, "");
+  return base.endsWith("/v1") ? `${base}/models` : `${base}/v1/models`;
 }
 
-/**
- * Parse a `--fallback-models` CLI value (comma-separated) into a
- * list. Empty parts and duplicate entries are dropped.
- *
- * When `apiUrl` is provided, the default fallback chain uses the
- * URL-specific model list when the URL matches a known provider
- * (e.g. `api.minimax.io` → MiniMax-M3 then MiniMax-Text-01, not
- * the generic openai-compatible chain). This makes `--fallback-models`
- * consistent with `resolveAutoModel`'s URL-aware behavior.
- */
-export function parseFallbackModels(
-  value: string | null | undefined,
-  apiUrl?: string | null,
-): readonly string[] {
-  const defaultChain =
-    apiUrl !== undefined && apiUrl !== null && apiUrl.length > 0
-      ? fallbackModelsFor("openai-compatible", apiUrl)
-      : DEFAULT_FALLBACK_MODELS;
-  if (value === null || value === undefined || value.length === 0) {
-    return defaultChain;
+function redactNetworkReason(error: unknown): string {
+  if (!(error instanceof Error)) return "model discovery request failed";
+  return error.message.replace(/https?:\/\/\S+/gu, (url) => redactUrlForLog(url));
+}
+
+type ParsedModelIds =
+  | { readonly ok: true; readonly ids: readonly string[] }
+  | { readonly ok: false; readonly error: ModelDiscoveryError };
+
+function parseModelIds(body: unknown): ParsedModelIds {
+  if (typeof body !== "object" || body === null || !("data" in body) || !Array.isArray(body.data)) {
+    return { ok: false, error: { kind: "malformed", reason: "missing data array" } };
   }
-  const seen = new Set<string>();
-  const out: string[] = [];
-  for (const part of value.split(",")) {
-    const trimmed = part.trim();
-    if (trimmed.length === 0 || seen.has(trimmed)) {
-      continue;
-    }
-    seen.add(trimmed);
-    out.push(trimmed);
+  const ids = body.data.flatMap((entry): readonly string[] => {
+    if (typeof entry !== "object" || entry === null || !("id" in entry)) return [];
+    const id = entry.id;
+    return typeof id === "string" && id.trim().length > 0 ? [id.trim()] : [];
+  });
+  if (ids.length === 0) return { ok: false, error: { kind: "empty" } };
+  if (ids.length > 1) return { ok: false, error: { kind: "ambiguous", modelIds: ids } };
+  return { ok: true, ids };
+}
+
+function discoverySignal(dependencies: ModelDiscoveryDependencies): AbortSignal | undefined {
+  const timeoutSignal = dependencies.timeoutMs === undefined
+    ? undefined
+    : AbortSignal.timeout(dependencies.timeoutMs);
+  if (dependencies.signal === undefined) return timeoutSignal;
+  if (timeoutSignal === undefined) return dependencies.signal;
+  return AbortSignal.any([dependencies.signal, timeoutSignal]);
+}
+
+export async function discoverAutoModel(input: ModelDiscoveryInput): Promise<ModelDiscoveryResult> {
+  if (input.provider === "copilot") return { ok: true, modelId: "auto" };
+  if (input.apiUrl === null || input.apiUrl.trim().length === 0 || input.apiKey === null || input.apiKey.length === 0) {
+    return { ok: false, error: { kind: "unsupported", provider: input.provider } };
   }
-  return out.length > 0 ? out : defaultChain;
+
+  const dependencies = input.dependencies ?? {};
+  const signal = discoverySignal(dependencies);
+  if (signal?.aborted === true) return { ok: false, error: { kind: "aborted" } };
+  const headers = input.provider === "anthropic"
+    ? { accept: "application/json", "anthropic-version": "2023-06-01", "x-api-key": input.apiKey }
+    : { accept: "application/json", authorization: `Bearer ${input.apiKey}` };
+
+  let response: Response;
+  try {
+    response = await (dependencies.fetchImpl ?? globalThis.fetch)(modelsUrl(input.apiUrl), {
+      method: "GET",
+      headers,
+      ...(signal === undefined ? {} : { signal }),
+    });
+  } catch (error) {
+    return isAbortError(error)
+      ? { ok: false, error: { kind: "aborted" } }
+      : { ok: false, error: { kind: "network", reason: redactNetworkReason(error) } };
+  }
+
+  if (response.status === 401 || response.status === 403) {
+    return { ok: false, error: { kind: "unauthorized", status: response.status } };
+  }
+  if (!response.ok) {
+    return { ok: false, error: { kind: "network", reason: `model discovery returned HTTP ${response.status}` } };
+  }
+
+  let body: unknown;
+  try {
+    body = await response.json();
+  } catch {
+    return { ok: false, error: { kind: "malformed", reason: "response body is not JSON" } };
+  }
+  const parsed = parseModelIds(body);
+  if (!parsed.ok) return { ok: false, error: parsed.error };
+  const modelId = parsed.ids[0];
+  return modelId === undefined
+    ? { ok: false, error: { kind: "empty" } }
+    : { ok: true, modelId };
 }

@@ -1,66 +1,51 @@
-import { readFile } from "node:fs/promises";
+import { access, readFile } from "node:fs/promises";
 import { describe, expect, it } from "vitest";
 
-import { expectNotImplementedExport } from "../helpers/assert-red-module.js";
-import { REVIEW_MARKER } from "../../src/util/marker.js";
+import { REVIEW_MARKER, commentBodyHasMarker } from "../../src/util/marker.js";
 
-type ReviewCompatibilityInput = {
-  readonly existingCommentsJson: string;
-  readonly providerResponsesJson: string;
-  readonly chatFallbackJson: string;
-  readonly diffText: string;
-};
+const compatibilityPath = new URL("../../src/review/compatibility.ts", import.meta.url);
+const priorMarker = `<!-- ${["auto", "pr", "review"].join("-")} -->`;
 
-type ReviewCompatibilityReport = {
-  readonly recognizesLegacyMarker: true;
-  readonly recognizesCurrentMarker: true;
-  readonly providerFallbackOrder: readonly ["responses", "chat"];
-  readonly invalidDiffCommentSuppressed: true;
-};
+describe("current review marker contract", () => {
+  it("GH-S1-001 recognizes only the current marker in untrusted comment bodies", () => {
+    // Given: external comments containing either the current marker or only the prior marker.
+    const currentMarkerBody = `${REVIEW_MARKER}\nCurrent review body.`;
+    const priorMarkerBody = `${priorMarker}\nPrior review body.`;
 
-type VerifyReviewCompatibility = (input: ReviewCompatibilityInput) => Promise<ReviewCompatibilityReport>;
+    // When: the runtime marker detector evaluates each body.
+    const recognizesCurrentMarker = commentBodyHasMarker(currentMarkerBody);
+    const recognizesPriorMarker = commentBodyHasMarker(priorMarkerBody);
 
-const compatibilityModule = "../../src/review/compatibility.js";
-const compatibilityPath = "src/review/compatibility.ts";
+    // Then: only the current marker participates in deduplication.
+    expect(recognizesCurrentMarker).toBe(true);
+    expect(recognizesPriorMarker).toBe(false);
+  });
 
-function isVerifyReviewCompatibility(value: unknown): value is VerifyReviewCompatibility {
-  return typeof value === "function";
-}
-
-describe("reference behavior RED unit contract", () => {
-  it("GH-S1-RED-001 preserves idempotency markers, provider fallback shape, and diff-position suppression", async () => {
-    // Given: legacy/current review markers, provider Responses/chat payloads, and a full diff position surface.
-    const existingCommentsJson = await readFile(new URL("../fixtures/github/existing-review-comments.json", import.meta.url), "utf8");
-    const providerResponsesJson = await readFile(new URL("../fixtures/provider/responses-success.json", import.meta.url), "utf8");
-    const chatFallbackJson = await readFile(new URL("../fixtures/provider/chat-fallback-success.json", import.meta.url), "utf8");
-    const diffText = await readFile(new URL("../fixtures/github/full-pr.diff", import.meta.url), "utf8");
-    expect(existingCommentsJson).toContain("<!-- auto-pr-review -->");
-    expect(existingCommentsJson).toContain(REVIEW_MARKER);
-    expect(providerResponsesJson).toContain("output_text");
-    expect(chatFallbackJson).toContain("choices");
-
-    // When: the future compatibility verifier evaluates idempotency, provider fallback, and diff-line contracts.
-    const verifyReviewCompatibility = await expectNotImplementedExport(
-      compatibilityModule,
-      compatibilityPath,
-      "verifyReviewCompatibility",
+  it("GH-S1-002 keeps the existing-review fixture current-marker-only", async () => {
+    // Given: the external GitHub comments fixture.
+    const existingCommentsJson = await readFile(
+      new URL("../fixtures/github/existing-review-comments.json", import.meta.url),
+      "utf8",
     );
-    if (!isVerifyReviewCompatibility(verifyReviewCompatibility)) {
-      expect.fail("RED: src/review/compatibility.ts must export verifyReviewCompatibility(input)");
-    }
-    const result = await verifyReviewCompatibility({
-      existingCommentsJson,
-      providerResponsesJson,
-      chatFallbackJson,
-      diffText,
-    });
 
-    // Then: duplicate detection, provider fallback, and off-diff suppression are stable contracts.
-    expect(result).toEqual({
-      recognizesLegacyMarker: true,
-      recognizesCurrentMarker: true,
-      providerFallbackOrder: ["responses", "chat"],
-      invalidDiffCommentSuppressed: true,
-    });
+    // When: fixture bodies are inspected through their machine-consumed markers.
+    const containsCurrentMarker = existingCommentsJson.includes(REVIEW_MARKER);
+    const containsPriorMarker = existingCommentsJson.includes(priorMarker);
+
+    // Then: stale fixture state cannot reintroduce prior-marker recognition.
+    expect(containsCurrentMarker).toBe(true);
+    expect(containsPriorMarker).toBe(false);
+  });
+
+  it("GH-S1-003 removes the standalone compatibility verifier", async () => {
+    // Given: the former compatibility module path.
+    // When: the filesystem is queried for that product module.
+    const compatibilityModuleExists = await access(compatibilityPath).then(
+      () => true,
+      () => false,
+    );
+
+    // Then: there is no compatibility replacement outside the marker detector.
+    expect(compatibilityModuleExists).toBe(false);
   });
 });

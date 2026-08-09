@@ -67,7 +67,7 @@ const REVIEW_FLAGS: readonly HelpFlag[] = [
   { flag: "--repo <owner/name>", appliesTo: ["review"] },
   { flag: "--api-url <url>", description: `Provider Responses API URL (default: ${DEFAULT_OPENAI_URL})`, appliesTo: ["review"] },
   { flag: "--api-key <key>", description: "Provider API key", appliesTo: ["review"] },
-  { flag: "--model <id>", description: "Provider model id (default: auto)", appliesTo: ["review"] },
+  { flag: "--model <id>", description: "Provider model id (optional; resolved at review time)", appliesTo: ["review"] },
   { flag: "--prompt <text>", description: "Inline system prompt override", appliesTo: ["review"] },
   { flag: "--prompt-file <path>", appliesTo: ["review"] },
   { flag: "--prompt-files <paths>", description: "Comma/newline-separated system prompt files (overrides defaults)", appliesTo: ["review"] },
@@ -107,7 +107,7 @@ const INIT_FLAGS: readonly HelpFlag[] = [
   { flag: "--api-key <key>", description: "Provider API key (NEVER persisted; use --non-interactive with the secret store for automation)" },
   { flag: "--github-token <token>", description: "GitHub token for Copilot routing (also: GH_TOKEN env)" },
   { flag: "--github-api-base <url>", description: "GitHub API base (default: https://api.github.com)" },
-  { flag: "--model <id>", description: "Model name (default: auto)" },
+  { flag: "--model <id>", description: "Model name (optional; resolved at review time)" },
   { flag: "--scope <global|repo>", description: "Where to persist the config (default: global)" },
   { flag: "--ci <auto|github|azure|none>", description: "Generate a CI workflow (auto-detects; default: auto)" },
   { flag: "--non-interactive", description: "Fail rather than prompt (CI mode)" },
@@ -119,7 +119,6 @@ const INIT_FLAGS: readonly HelpFlag[] = [
   { flag: "--json", description: "Emit machine-readable JSON envelope" },
 ];
 
-/** All flags, used for the legacy `CLI_HELP_TEXT` export and column-width calc. */
 const HELP_FLAGS: readonly HelpFlag[] = [...REVIEW_FLAGS];
 
 /** The full flag set for column-width calculation. */
@@ -153,12 +152,6 @@ function renderFlagLine({ flag, description }: HelpFlag): string {
 function renderFlags(flags: readonly HelpFlag[]): readonly string[] {
   return flags.map(renderFlagLine);
 }
-
-function renderCommands(commands: readonly string[]): string {
-  return ["Commands:", ...commands.map((command) => `  ${command}`), ""].join("\n");
-}
-
-// ── Top-level help (existing CLI_HELP_TEXT + Commands) ─────────────────────
 
 const TOP_LEVEL_COMMANDS: readonly HelpCommand[] = [
   { command: "review", description: "Run PR review (default)" },
@@ -198,7 +191,7 @@ export function renderCommandsTable(commands: readonly HelpCommand[]): readonly 
   return commands.map((c) => renderCommandLine(c, width));
 }
 
-export const CLI_HELP_TEXT = [
+const TOP_LEVEL_HELP_TEXT = [
   `${BRAND} — provider-agnostic PR review CLI`,
   "",
   "Commands:",
@@ -332,7 +325,7 @@ export function resolveHelpText(argv: readonly string[]): string {
     ? argv.indexOf("--help")
     : argv.indexOf("-h");
   if (helpIndex === -1) {
-    return CLI_HELP_TEXT;
+    return TOP_LEVEL_HELP_TEXT;
   }
   // Check tokens before --help for a recognized subcommand.
   for (let i = 0; i < helpIndex; i += 1) {
@@ -346,21 +339,7 @@ export function resolveHelpText(argv: readonly string[]): string {
     // Unknown positional before --help — fall through to top-level help.
     break;
   }
-  return CLI_HELP_TEXT;
-}
-
-/**
- * Print the help text to stdout. When `commands` is provided, renders the
- * top-level help with the Commands banner appended (legacy callers).
- *
- * @returns The rendered help text that was written to stdout.
- */
-export function printHelp(commands: readonly string[] = []): string {
-  const helpText = commands.length === 0
-    ? CLI_HELP_TEXT
-    : `${CLI_HELP_TEXT}\n\n${renderCommands(commands)}`;
-  process.stdout.write(helpText);
-  return helpText;
+  return TOP_LEVEL_HELP_TEXT;
 }
 
 /**

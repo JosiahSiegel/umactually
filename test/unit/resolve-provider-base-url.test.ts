@@ -29,13 +29,13 @@ describe("resolveProviderBaseUrlCandidates: try as-pasted first, fall back to or
   });
 
   it("returns [as-pasted, origin+prefix] when operator types a non-v1 path", () => {
-    // Operator typed `/anthropic` (the MiniMax-style URL from
+    // Operator typed a path-prefixed `/anthropic` URL from
     // PR #28's self-review 404). First we try it as-pasted; if it
     // 404s, we fall back to `/v1`.
-    const c = resolveProviderBaseUrlCandidates("https://api.minimax.io/anthropic");
+    const c = resolveProviderBaseUrlCandidates("https://router.example.invalid/anthropic");
     expect(c).toEqual([
-      "https://api.minimax.io/anthropic",
-      "https://api.minimax.io/v1",
+      "https://router.example.invalid/anthropic",
+      "https://router.example.invalid/v1",
     ]);
   });
 
@@ -151,9 +151,9 @@ describe("resolveProviderBaseUrl: origin + default prefix (single value)", () =>
     );
   });
 
-  it("returns origin + /v1 for an /anthropic URL (MiniMax regression)", () => {
-    expect(resolveProviderBaseUrl("https://api.minimax.io/anthropic")).toBe(
-      "https://api.minimax.io/v1",
+  it("returns origin + /v1 for a path-prefixed /anthropic URL", () => {
+    expect(resolveProviderBaseUrl("https://router.example.invalid/anthropic")).toBe(
+      "https://router.example.invalid/v1",
     );
   });
 });

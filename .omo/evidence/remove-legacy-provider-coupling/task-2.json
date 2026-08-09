@@ -1,0 +1,78 @@
+{
+  "task": "2. Simplify env loading, provenance, required-config hints, and env-focused tests",
+  "plan": ".omo/plans/remove-legacy-provider-coupling.md",
+  "status": "done-claim-corrected",
+  "commits": {
+    "implementation": "1ca1c2c refactor(config): remove legacy environment resolution",
+    "follow_up": "test(config): align removed legacy warning assertions"
+  },
+  "rejection": {
+    "artifact": "verify-task-2.json",
+    "result": "At 1ca1c2c the exact focused suite reproducibly reported 133 passed, 4 failed, 1 skipped because four tests in config-extended.test.ts still expected removed stderr warnings. The prior evidence incorrectly omitted those failures."
+  },
+  "red": {
+    "command": "npx vitest run --project unit test/unit/env-vars.test.ts test/unit/config-extended.test.ts test/unit/resolved-config-sources.test.ts test/unit/required-config.test.ts test/unit/cli-dry-run.test.ts test/unit/cli-local-files.test.ts test/unit/cli-subcommands.test.ts",
+    "result": "At exact commit 1ca1c2c: 133 passed, 4 failed, 1 skipped. All failures were stale UMACTUALLY_IGNORE_MINOR/REVIEW_IGNORE_MINOR warning assertions in test/unit/config-extended.test.ts."
+  },
+  "green": [
+    {
+      "command": "npx vitest run --project unit test/unit/env-vars.test.ts test/unit/config-extended.test.ts test/unit/resolved-config-sources.test.ts test/unit/required-config.test.ts test/unit/cli-dry-run.test.ts test/unit/cli-local-files.test.ts test/unit/cli-subcommands.test.ts",
+      "result": "PASS run 1: 7 files passed; 137 passed, 1 skipped."
+    },
+    {
+      "command": "npx vitest run --project unit test/unit/env-vars.test.ts test/unit/config-extended.test.ts test/unit/resolved-config-sources.test.ts test/unit/required-config.test.ts test/unit/cli-dry-run.test.ts test/unit/cli-local-files.test.ts test/unit/cli-subcommands.test.ts",
+      "result": "PASS run 2: 7 files passed; 137 passed, 1 skipped."
+    },
+    {
+      "command": "npm run typecheck",
+      "result": "PASS on the current branch including preserved Todo 4 commit 27e9591."
+    },
+    {
+      "command": "initial post-edit focused attempt",
+      "result": "One unrelated cli-subcommands test timed out at 5000ms while 136 passed and 1 skipped; immediate exact reruns passed twice without test or product changes. No Todo 2 assertion failed."
+    }
+  ],
+  "behavior": {
+    "UMACTUALLY_IGNORE_MINOR": "ignored; readEnvSources returns no field and writes no stderr",
+    "REVIEW_IGNORE_MINOR": "ignored; readEnvSources returns no field and writes no stderr",
+    "combined": "both removed variables are ignored while retained UMACTUALLY_API_URL resolves to providerUrl",
+    "repeated_reads": "remain silent without warning/dedupe state"
+  },
+  "scope": {
+    "changed_files": [
+      "test/unit/config-extended.test.ts",
+      ".omo/evidence/remove-legacy-provider-coupling/task-2.json"
+    ],
+    "product_code_changed": false,
+    "preserved": [
+      "27e9591 refactor(cli): remove compatibility exports and aliases",
+      "1ca1c2c refactor(config): remove legacy environment resolution",
+      "a51682c refactor(install): remove legacy distribution paths",
+      "11b70b0 refactor(config): define minimal environment contract",
+      "c3fef2a refactor(marker): remove prior marker compatibility"
+    ]
+  },
+  "DoneClaim": {
+    "task": "Todo 2 legacy environment resolution removal verification correction",
+    "changed_files": [
+      "test/unit/config-extended.test.ts",
+      ".omo/evidence/remove-legacy-provider-coupling/task-2.json"
+    ],
+    "tests": [
+      "exact focused suite passed twice: 137 passed, 1 skipped each run",
+      "npm run typecheck passed",
+      "four stale warning assertions now prove silent ignore and correct retained config"
+    ],
+    "manual_qa": [
+      ".omo/evidence/remove-legacy-provider-coupling/task-2.json"
+    ],
+    "cleanup": [
+      "no product code changed",
+      "no persistent QA process or service started",
+      "untracked verifier artifact verify-task-2.json preserved"
+    ],
+    "risks": [
+      "one unrelated cli-subcommands timeout occurred on the first post-edit attempt; two immediate exact reruns passed without changes"
+    ]
+  }
+}

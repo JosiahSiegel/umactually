@@ -10,6 +10,7 @@ import { REVIEW_MARKER } from "../../src/util/marker.js";
 
 const API_URL = "https://provider.invalid/v1";
 const API_KEY = "standalone-test-key";
+const MODEL_ID = "test-model";
 const REVIEW = {
   summary: "No actionable findings.",
   verdict: "APPROVED",
@@ -73,7 +74,7 @@ describe("runStandalone", () => {
   it("returns ok and writes the default artifact after a valid provider response", async () => {
     const fetchImpl = vi.fn<typeof fetch>(async () => providerResponse());
     const parsed = parseCliArgs([
-      "--api-url", API_URL, "--api-key", API_KEY, "--event", eventPath, "--diff", diffPath,
+      "--api-url", API_URL, "--api-key", API_KEY, "--model", MODEL_ID, "--event", eventPath, "--diff", diffPath,
     ]);
 
     const result = await runStandalone({ parsed, cwd, env: {}, fetchImpl });
@@ -91,7 +92,7 @@ describe("runStandalone", () => {
   it("writes the standalone artifact contract with the canonical marker", async () => {
     const fetchImpl = vi.fn<typeof fetch>(async () => providerResponse());
     const parsed = parseCliArgs([
-      "--api-url", API_URL, "--api-key", API_KEY, "--event", eventPath, "--diff", diffPath,
+      "--api-url", API_URL, "--api-key", API_KEY, "--model", MODEL_ID, "--event", eventPath, "--diff", diffPath,
     ]);
 
     await runStandalone({ parsed, cwd, env: {}, fetchImpl });
@@ -113,7 +114,7 @@ describe("runStandalone", () => {
   it("returns provider-error with exit code 1 when the provider rejects the request", async () => {
     const fetchImpl = vi.fn<typeof fetch>(() => Promise.reject(new Error("401 unauthorized")));
     const parsed = parseCliArgs([
-      "--api-url", API_URL, "--api-key", API_KEY, "--event", eventPath, "--diff", diffPath,
+      "--api-url", API_URL, "--api-key", API_KEY, "--model", MODEL_ID, "--event", eventPath, "--diff", diffPath,
     ]);
 
     const result = await runStandalone({ parsed, cwd, env: {}, fetchImpl });
@@ -125,7 +126,7 @@ describe("runStandalone", () => {
     writeFileSync(diffPath, "", "utf8");
     const fetchImpl = vi.fn<typeof fetch>(async () => providerResponse());
     const parsed = parseCliArgs([
-      "--api-url", API_URL, "--api-key", API_KEY, "--event", eventPath, "--diff", diffPath,
+      "--api-url", API_URL, "--api-key", API_KEY, "--model", MODEL_ID, "--event", eventPath, "--diff", diffPath,
     ]);
 
     const result = await runStandalone({ parsed, cwd, env: {}, fetchImpl });
@@ -141,7 +142,7 @@ describe("runStandalone", () => {
   it("writes the 'standalone review wrote' stdout banner after a successful provider response", async () => {
     const fetchImpl = vi.fn<typeof fetch>(async () => providerResponse());
     const parsed = parseCliArgs([
-      "--api-url", API_URL, "--api-key", API_KEY, "--event", eventPath, "--diff", diffPath,
+      "--api-url", API_URL, "--api-key", API_KEY, "--model", MODEL_ID, "--event", eventPath, "--diff", diffPath,
     ]);
 
     const stdoutSpy = vi.spyOn(process.stdout, "write").mockImplementation(() => true);
@@ -160,7 +161,7 @@ describe("runStandalone", () => {
     writeFileSync(diffPath, "", "utf8");
     const fetchImpl = vi.fn<typeof fetch>(async () => providerResponse());
     const parsed = parseCliArgs([
-      "--api-url", API_URL, "--api-key", API_KEY, "--event", eventPath, "--diff", diffPath,
+      "--api-url", API_URL, "--api-key", API_KEY, "--model", MODEL_ID, "--event", eventPath, "--diff", diffPath,
     ]);
 
     const stdoutSpy = vi.spyOn(process.stdout, "write").mockImplementation(() => true);

@@ -12,7 +12,7 @@ import {
 import type { LiveProviderOutcome } from "../../src/cli/live-shared.js";
 
 /**
- * Grader unit tests for the MiniMax ground-truth review eval (Part C).
+ * Grader unit tests for deterministic ground-truth review fixtures.
  *
  * The grader is a pure function: it takes a `LiveProviderOutcome` and a
  * `ReviewFixture`, computes several metrics (counts, fabrication rate,
@@ -107,7 +107,7 @@ function makeOutcome(parts: {
     },
     endpoint: "responses",
     provider: "openai-compatible",
-    modelId: "MiniMax-M3",
+    modelId: "opaque-review-model",
     severityWarnings: [],
     parseWarnings: (parts.parseWarnings ?? []).map((w, index) => ({
       reason: w.reason,

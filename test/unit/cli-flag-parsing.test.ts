@@ -281,15 +281,18 @@ describe("CLI flag parsing: action.yml inputs coverage", () => {
     expect(parsed.dryRun).toBe(false);
   });
 
-  it("--platform accepts github|azure|auto (and azure-devops as azure alias)", async () => {
+  it("--platform accepts only github|azure|auto", async () => {
+    // Given: the canonical parser export and supported platform values.
     const parseCliArgs = await expectNotImplementedExport(cliModule, cliPath, "parseCliArgs");
     if (!isParseCliArgs(parseCliArgs)) {
       expect.fail("RED: src/cli.ts must export parseCliArgs(args)");
     }
+
+    // When / Then: canonical values parse, while the removed alias is rejected.
     expect(parseCliArgs(["--platform", "github"]).platform).toBe("github");
     expect(parseCliArgs(["--platform", "azure"]).platform).toBe("azure");
     expect(parseCliArgs(["--platform", "auto"]).platform).toBe("auto");
-    expect(parseCliArgs(["--platform", "azure-devops"]).platform).toBe("azure");
+    expect(() => parseCliArgs(["--platform", "azure-devops"])).toThrow(CliUsageError);
   });
 
   it("--no-walkthrough / --no-diagnostic / --no-debug-raw-response / --no-include-sonarqube flip the matching booleans off", async () => {

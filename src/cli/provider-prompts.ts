@@ -14,7 +14,6 @@ import {
   collectVerifiedFacts,
   renderVerifiedFactsBlock,
 } from "../review/verified-facts.js";
-import { ENV_KEYS } from "../util/env-keys.js";
 import type { LivePlatform } from "./live-shared.js";
 import type { ParsedCliArgs } from "./parse-args.js";
 
@@ -324,20 +323,12 @@ async function pickSystemPrompt(input: {
   //      AGENTS.md, .github/copilot-instructions.md, .cursorrules,
   //      GEMINI.md). Files that do not exist are skipped.
   //   4. Built-in `buildDefaultSystemPrompt()`.
-  const promptFilesRaw = resolveField(
-    input.parsed.promptFiles,
-    input.env[ENV_KEYS.UMACTUALLY_PROMPT_FILES],
-    "",
-  );
+  const promptFilesRaw = resolveField(input.parsed.promptFiles, undefined, "");
   const promptFilesList = splitPromptFileList(promptFilesRaw);
   if (promptFilesList.length > 0) {
     return readPromptFiles(promptFilesList, DEFAULT_PROMPT_BYTE_CAP, { cwd: input.cwd });
   }
-  const filePath = resolveField(
-    input.parsed.promptFile,
-    input.env[ENV_KEYS.UMACTUALLY_PROMPT_FILE],
-    "",
-  );
+  const filePath = resolveField(input.parsed.promptFile, undefined, "");
   if (filePath.length > 0) {
     return readPromptFiles([filePath], DEFAULT_PROMPT_BYTE_CAP, { cwd: input.cwd });
   }
@@ -427,20 +418,12 @@ async function readAdditionalPrompt(input: {
   }
   // Precedence mirrors `pickSystemPrompt`: array overrides defaults,
   // single-file is the legacy path, then default-lookup, then empty.
-  const filesRaw = resolveField(
-    input.parsed.additionalPromptFiles,
-    input.env[ENV_KEYS.UMACTUALLY_ADDITIONAL_PROMPT_FILES],
-    "",
-  );
+  const filesRaw = resolveField(input.parsed.additionalPromptFiles, undefined, "");
   const filesList = splitPromptFileList(filesRaw);
   if (filesList.length > 0) {
     return readPromptFiles(filesList, DEFAULT_PROMPT_BYTE_CAP, { cwd: input.cwd });
   }
-  const filePath = resolveField(
-    input.parsed.additionalPromptFile,
-    input.env[ENV_KEYS.UMACTUALLY_ADDITIONAL_PROMPT_FILE],
-    "",
-  );
+  const filePath = resolveField(input.parsed.additionalPromptFile, undefined, "");
   if (filePath.length > 0) {
     return readPromptFiles([filePath], DEFAULT_PROMPT_BYTE_CAP, { cwd: input.cwd });
   }

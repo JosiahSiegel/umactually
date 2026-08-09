@@ -73,7 +73,7 @@ export async function runStandalone(input: {
       note,
       provider: {
         name: input.parsed.provider ?? "openai-compatible",
-        modelId: input.parsed.model ?? "auto",
+        modelId: input.parsed.model ?? "(auto)",
         endpoint: input.parsed.apiUrl ?? "",
       },
       review: { summary: note, verdict: "COMMENT", comments: [] },
@@ -108,7 +108,7 @@ export async function runStandalone(input: {
       note,
       provider: {
         name: input.parsed.provider ?? "openai-compatible",
-        modelId: input.parsed.model ?? "auto",
+        modelId: input.parsed.model ?? "(auto)",
         endpoint: input.parsed.apiUrl ?? "",
       },
       review: { summary: note, verdict: "COMMENT", comments: [] },

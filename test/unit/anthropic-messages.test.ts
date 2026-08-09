@@ -392,20 +392,6 @@ describe("anthropic-messages provider client — RED contract", () => {
   });
 });
 
-describe("auto-model resolver — anthropic provider", () => {
-  it("ANTH-AUTO-001 returns claude-sonnet-4.6 for provider=anthropic regardless of apiUrl", async () => {
-    const autoMod = (await expectFutureModule("../../src/cli/auto-model.js")) as {
-      readonly resolveAutoModel: (input: {
-        readonly provider: "openai-compatible" | "copilot" | "anthropic";
-        readonly apiUrl: string | null;
-        readonly env: NodeJS.ProcessEnv;
-      }) => string;
-    };
-    expect(autoMod.resolveAutoModel({ provider: "anthropic", apiUrl: null, env: {} })).toBe("claude-sonnet-4.6");
-    expect(autoMod.resolveAutoModel({ provider: "anthropic", apiUrl: "https://example.com", env: {} })).toBe("claude-sonnet-4.6");
-  });
-});
-
 describe("cli/parse-args — anthropic provider value", () => {
   it("ANTH-CLI-001 --provider anthropic is accepted by parseCliArgs", async () => {
     const parseMod = (await expectFutureModule("../../src/cli/parse-args.js")) as {
@@ -435,7 +421,7 @@ describe("anthropic-messages wire-shape helpers", () => {
     // branch used to silently drop --effort because the call config
     // had no `reasoningEffort` field. We now forward the value as
     // `reasoning_effort` on the wire so dual-protocol gateways
-    // (MiniMax etc.) that honor it get the operator's hint. Native
+    // that honor it get the operator's hint. Native
     // Anthropic.com ignores unknown fields per its API spec, so the
     // worst case is a no-op, not a wire-shape error.
     const mod = (await expectFutureModule("../../src/provider/anthropic-messages.js")) as {

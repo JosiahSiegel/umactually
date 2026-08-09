@@ -4,6 +4,13 @@ import { runJsonReview } from "../../src/cli/dispatch.js";
 
 const TRACKED_ENV = [
   "UMACTUALLY_API_KEY",
+  "UMACTUALLY_API_URL",
+  "UMACTUALLY_GITHUB_API_BASE",
+  "UMACTUALLY_MODEL",
+  "UMACTUALLY_PROVIDER",
+  "UMACTUALLY_IGNORE_MINOR",
+  "REVIEW_IGNORE_MINOR",
+  "REVIEW_PROVIDER_URL",
   "UMACTUALLY_PROMPT_FILES",
   "UMACTUALLY_STRICT_SCHEMA",
 ] as const;
@@ -56,7 +63,11 @@ function sourceFor(config: Record<string, unknown>, field: string): Record<strin
   return source;
 }
 
-describe("resolvedConfig source provenance", () => {
+// Per-file timeout bump: these tests call runJsonReview which
+// dispatches into runCli → deriveContextFromGit (spawns `git diff`
+// against HEAD). On machines where the local git diff is large the
+// round-trip is slower than vitest's default 5s timeout.
+describe("resolvedConfig source provenance", { timeout: 30_000 }, () => {
   it("reports an object of field sources", async () => {
     const config = await resolvedConfig(["--dry-run"]);
 
@@ -64,13 +75,44 @@ describe("resolvedConfig source provenance", () => {
     expect(config["sources"]).not.toBeNull();
   });
 
-  it("reports strictSchema from its environment variable", async () => {
-    process.env["UMACTUALLY_STRICT_SCHEMA"] = "false";
+  it("reports only current public environment names in provenance", async () => {
+    process.env["UMACTUALLY_API_KEY"] = "current-key";
+    process.env["UMACTUALLY_API_URL"] = "https://canonical.example/v1";
+    process.env["UMACTUALLY_GITHUB_API_BASE"] = "https://github.example/api/v3";
+    process.env["UMACTUALLY_MODEL"] = "current-model";
+    process.env["UMACTUALLY_PROVIDER"] = "anthropic";
+    process.env["UMACTUALLY_IGNORE_MINOR"] = "true";
+    process.env["REVIEW_IGNORE_MINOR"] = "true";
+    const stderr = vi.spyOn(process.stderr, "write").mockImplementation(() => true);
 
-    const source = sourceFor(await resolvedConfig(["--dry-run"]), "strictSchema");
+    let config: Record<string, unknown>;
+    let warningOutput = "";
+    try {
+      config = await resolvedConfig(["--dry-run"]);
+      warningOutput = stderr.mock.calls.flatMap((call) => call).join("");
+    } finally {
+      stderr.mockRestore();
+    }
+    const sources = config["sources"];
+    if (typeof sources !== "object" || sources === null) {
+      throw new TypeError("Expected resolvedConfig.sources object");
+    }
 
-    expect(source["source"]).toBe("env");
-    expect(source["envName"]).toBe("UMACTUALLY_STRICT_SCHEMA");
+    const envNames = Object.values(sources)
+      .filter((source): source is Record<string, unknown> => typeof source === "object" && source !== null)
+      .map((source) => source["envName"])
+      .filter((envName): envName is string => typeof envName === "string")
+      .sort();
+
+    expect(envNames).toEqual([
+      "UMACTUALLY_API_KEY",
+      "UMACTUALLY_API_URL",
+      "UMACTUALLY_GITHUB_API_BASE",
+      "UMACTUALLY_MODEL",
+      "UMACTUALLY_PROVIDER",
+    ]);
+    expect(warningOutput).not.toContain("UMACTUALLY_IGNORE_MINOR");
+    expect(warningOutput).not.toContain("REVIEW_IGNORE_MINOR");
   });
 
   it("reports strictSchema from an explicit flag", async () => {
@@ -115,21 +157,24 @@ describe("resolvedConfig source provenance", () => {
     expect(JSON.stringify(source)).not.toContain(secret);
   });
 
-  it("reports prompt file list presence from the environment", async () => {
+  it("does not report removed environment variables as provenance", async () => {
+    process.env["REVIEW_PROVIDER_URL"] = "https://legacy.example/v1";
     process.env["UMACTUALLY_PROMPT_FILES"] = "CLAUDE.md,AGENTS.md";
-
-    const config = await resolvedConfig(["--dry-run"]);
-
-    expect(config["promptFilesPresent"]).toBe(true);
-  });
-
-  it("keeps existing sanitized resolvedConfig fields alongside provenance", async () => {
-    process.env["UMACTUALLY_API_KEY"] = "additive-secret";
     process.env["UMACTUALLY_STRICT_SCHEMA"] = "false";
 
     const config = await resolvedConfig(["--dry-run"]);
 
-    expect(config["strictSchema"]).toBe(false);
+    expect(sourceFor(config, "apiUrl")["source"]).toBe("default");
+    expect(sourceFor(config, "strictSchema")["source"]).toBe("default");
+    expect(config["promptFilesPresent"]).toBe(false);
+  });
+
+  it("keeps existing sanitized resolvedConfig fields alongside provenance", async () => {
+    process.env["UMACTUALLY_API_KEY"] = "additive-secret";
+
+    const config = await resolvedConfig(["--dry-run"]);
+
+    expect(config["strictSchema"]).toBe(true);
     expect(config["apiKeyPresent"]).toBe(true);
     expect(config["dryRun"]).toBe(true);
   });

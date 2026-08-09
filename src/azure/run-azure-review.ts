@@ -109,11 +109,7 @@ function countCommentsMatchingExistingThread(comments: readonly ReviewComment[],
 }
 
 function mapVerdictToStatus(verdict: ReviewVerdict): AzureMockedRun["postedStatusState"] {
-  // Use the legacy policy (NEEDS_FIX → "failed") to preserve the S4 RED contract;
-  // the live CLI uses the "current" policy (NEEDS_FIX → "pending") via
-  // src/util/verdict.ts. The two are intentionally divergent — the live CLI
-  // considers NEEDS_FIX a "finding", not a merge-blocking check.
-  return mapVerdictToAzureStatus(verdict, "legacy");
+  return mapVerdictToAzureStatus(verdict);
 }
 
 function readRecord(value: unknown, label: string): Record<string, unknown> {

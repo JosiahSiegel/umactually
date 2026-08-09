@@ -341,7 +341,9 @@ function renderShowConfig(config: SavedConfig, path: string): string {
     `  provider: ${config.provider}`,
   ];
   if (config.apiUrl !== undefined) lines.push(`  apiUrl:   ${config.apiUrl}`);
-  if (config.model !== undefined) lines.push(`  model:    ${config.model}`);
+  lines.push(
+    `  model:    ${config.model ?? "auto (resolved at review time)"}`,
+  );
   return lines.join("\n") + "\n";
 }
 
@@ -542,13 +544,12 @@ async function runUninstallBranch(args: readonly string[]): Promise<DispatchResu
   // follow-ups would leave the user confused about what was
   // actually changed on disk.
   //
-  // Honors the same env vars that shouldPrompt honors:
+  // Honors the env var that shouldPrompt honors:
   //   - UMACTUALLY_UNINSTALL_YES=1
-  //   - UMACTUALLY_YES=true
   // so a CI job with `UMACTUALLY_UNINSTALL_YES=1 umactually uninstall
   // --purge-config` works without also passing --yes on the command
   // line.
-  const yesEnv = deps.env["UMACTUALLY_UNINSTALL_YES"] ?? deps.env["UMACTUALLY_YES"];
+  const yesEnv = deps.env["UMACTUALLY_UNINSTALL_YES"];
   const envAffirmed = yesEnv === "1" || yesEnv === "true";
   if (
     !deps.isTTY &&

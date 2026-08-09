@@ -1,0 +1,96 @@
+{
+  "task": 6,
+  "claim": "hardcoded auto-model routing tables were replaced by typed provider-contract discovery",
+  "baseline": {
+    "focused": {
+      "command": "node_modules/.bin/vitest run --project unit test/unit/auto-model.test.ts",
+      "result": "1 file passed; 27 tests passed"
+    },
+    "typecheck": {
+      "command": "node_modules/.bin/tsc --noEmit -p tsconfig.test.json",
+      "result": "passed"
+    }
+  },
+  "failingFirst": {
+    "command": "node_modules/.bin/vitest run --project unit test/unit/auto-model.test.ts",
+    "result": "1 file failed; 18 tests failed",
+    "expectedFailure": "TypeError: discoverAutoModel is not a function before production implementation"
+  },
+  "changes": [
+    "removed branded default-model constants, HOST_ROUTES, provider and URL fallback tables, and fallback-model parsing",
+    "added typed success and empty, ambiguous, unauthorized, malformed, unsupported, aborted, and network results",
+    "added authenticated OpenAI-compatible and Anthropic GET /v1/models discovery accepting opaque nonblank IDs",
+    "selection succeeds only for exactly one valid ID; zero and multiple IDs fail explicitly",
+    "Copilot returns provider-native auto without a wire call or SDK dependency",
+    "threaded fetch implementation, abort signal, and timeout through typed dependencies",
+    "redacted URL query and fragment data from transport error reasons",
+    "removed the obsolete Anthropic hardcoded-auto assertion",
+    "left live discovery integration and operator-visible --model failures to plan Todo 7"
+  ],
+  "verification": {
+    "typecheckFirst": {
+      "command": "npm run typecheck",
+      "result": "passed"
+    },
+    "typecheckSecond": {
+      "command": "npm run typecheck",
+      "result": "passed"
+    },
+    "focusedTestsFirst": {
+      "command": "node_modules/.bin/vitest run --project unit test/unit/auto-model.test.ts",
+      "result": "1 file passed; 12 tests passed"
+    },
+    "focusedTestsSecond": {
+      "command": "node_modules/.bin/vitest run --project unit test/unit/auto-model.test.ts",
+      "result": "1 file passed; 12 tests passed"
+    },
+    "integrationSafety": {
+      "command": "node_modules/.bin/vitest run --project unit test/unit/auto-model.test.ts test/unit/anthropic-messages.test.ts test/unit/live-provider-cross-protocol-dispatch.test.ts",
+      "result": "3 files passed; 38 tests passed"
+    },
+    "manualImportQa": {
+      "command": "node_modules/.bin/vitest run --project unit test/unit/auto-model.test.ts -t 'returns Copilot provider-native auto without fetching'",
+      "result": "module imported through project transform; Copilot auto contract passed; raw Node experimental strip-types was inapplicable because project TS uses NodeNext .js specifiers"
+    },
+    "sourceAudit": {
+      "forbidden": [
+        "HOST_ROUTES",
+        "URL_SPECIFIC_FALLBACKS",
+        "DEFAULT_FALLBACK_MODELS",
+        "parseFallbackModels",
+        "fallbackModelsFor",
+        "MiniMax",
+        "gpt-5-mini",
+        "claude-sonnet-4.6",
+        "gemini-2.5-flash"
+      ],
+      "result": "no forbidden production discovery symbols or branded model literals remain"
+    },
+    "pureLoc": {
+      "src/cli/auto-model.ts": 101,
+      "test/unit/auto-model.test.ts": 145,
+      "result": "both changed TypeScript units are below the 250 pure-LOC ceiling"
+    }
+  },
+  "scope": {
+    "unchanged": [
+      "env schema",
+      "marker",
+      "verdict",
+      "installer",
+      "docs",
+      "dist",
+      "CHANGELOG",
+      "package dependencies"
+    ],
+    "preservedCommits": [
+      "11b70b0",
+      "c3fef2a",
+      "a51682c",
+      "1ca1c2c",
+      "770f442",
+      "27e9591",
+      "b55297f"
+    ]
+  }
+}

@@ -6,7 +6,6 @@ import { describe, expect, it } from "vitest";
 import {
   buildReviewBody,
   buildInlineCommentBody,
-  countBySeverityFromLiveShared,
   type LiveReview,
 } from "../../src/cli/live-shared.js";
 import { countBySeverity } from "../../src/util/severity.js";
@@ -503,22 +502,14 @@ describe("buildReviewBody — severity-tally filter marker", () => {
 
 });
 
-// DRY-SHIM-001: Pins the @deprecated re-export shim that lives in
-// cli/live-shared.ts. The original re-export carried a JSDoc that
-// explicitly warned "Do not remove without updating all callers."
-// When a future refactor wants to actually delete it, this test
-// must be updated to assert the removal — that's the audit trail.
-describe("countBySeverityFromLiveShared (deprecated re-export shim)", () => {
-  it("still resolves to the canonical util/severity.ts function", () => {
-    expect(countBySeverityFromLiveShared).toBe(countBySeverity);
-    // Sanity: the underlying function still works through the shim.
-    const counts = countBySeverityFromLiveShared([
-      { severity: "high" },
-      { severity: "high" },
-      { severity: "low" },
-    ]);
-    expect(counts["high"]).toBe(2);
-    expect(counts["low"]).toBe(1);
+describe("live-shared module exports", () => {
+  it("does not expose the removed severity-count compatibility alias", async () => {
+    // Given / When: the live-shared public module is loaded.
+    const liveShared = await import("../../src/cli/live-shared.js");
+
+    // Then: callers must import the canonical utility directly.
+    expect("countBySeverityFromLiveShared" in liveShared).toBe(false);
+    expect(countBySeverity([{ severity: "high" }])).toEqual({ high: 1 });
   });
 });
 

@@ -2,9 +2,9 @@
 // exit non-zero so CI fails instead of silently passing.
 //
 // Two bugs are covered here:
-//   1. Provider errors (Manifest M101, zero-usage, error envelopes)
-//      were indistinguishable from genuine parse failures → posted a
-//      COMMENT review → exit 0 → CI green.
+//   1. Provider errors (router /docs/errors/R101 zero-usage, error
+//      envelopes) were indistinguishable from genuine parse failures →
+//      posted a COMMENT review → exit 0 → CI green.
 //   2. Even genuine parse failures posted a COMMENT review → exit 0 →
 //      CI green.
 //

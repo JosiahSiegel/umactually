@@ -205,6 +205,16 @@ export async function runGithubCli(apiUrl: string): Promise<CliResult> {
     GITHUB_EVENT_PATH: eventPath,
     GITHUB_REPOSITORY: "example/umactually-fixture",
     GITHUB_API_URL: apiUrl,
+    // The shim resolves `parsed.model` via flag > UMACTUALLY_MODEL >
+    // savedConfig > default (empty string). After Plan §10 dropped the
+    // literal `"auto"` fallback, an empty model no longer auto-resolves;
+    // the live provider would invoke `GET /v1/models` discovery and fail
+    // before inference because this HTTP fixture does not serve that
+    // route. Seed an explicit opaque model id via the env tier so the
+    // review reaches `runProviderRequest` unchanged — the live dispatch
+    // contract (flag/env/savedConfig/default precedence) is unchanged,
+    // only the fixture is supplying the env value a real CI runner would.
+    UMACTUALLY_MODEL: "review-model-test",
   };
 
   try {

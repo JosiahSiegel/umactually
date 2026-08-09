@@ -207,7 +207,7 @@ describe("runLive Azure partial-failure rollback (RED gap)", () => {
 
     // When: runLive is invoked on Azure with no dry-run.
     const result = await runLive({
-      parsed: parseCliArgs(["--platform", "azure", "--no-dry-run"]),
+      parsed: parseCliArgs(["--platform", "azure", "--no-dry-run", "--model", "review-model-synthetic"]),
       cwd: process.cwd(),
       env: azureEnv(),
       fetchImpl: recorder.fetchImpl,
@@ -274,7 +274,7 @@ describe("runLive Azure partial-failure rollback (RED gap)", () => {
 
     // When: runLive is invoked on Azure with no dry-run.
     const result = await runLive({
-      parsed: parseCliArgs(["--platform", "azure", "--no-dry-run"]),
+      parsed: parseCliArgs(["--platform", "azure", "--no-dry-run", "--model", "review-model-synthetic"]),
       cwd: process.cwd(),
       env: azureEnv(),
       fetchImpl: recorder.fetchImpl,

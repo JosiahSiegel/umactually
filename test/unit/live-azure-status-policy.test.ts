@@ -255,7 +255,7 @@ describe("Azure PR status policy: verdict mapping + delete-then-post dedup", () 
     const recorder = makeFetchRecorder(routes);
 
     const result = await runLive({
-      parsed: parseCliArgs(["--platform", "azure", "--no-dry-run"]),
+      parsed: parseCliArgs(["--platform", "azure", "--no-dry-run", "--model", "review-model-synthetic"]),
       cwd: process.cwd(),
       env: azureEnv(),
       fetchImpl: recorder.fetchImpl,
@@ -333,7 +333,7 @@ describe("Azure PR status policy: verdict mapping + delete-then-post dedup", () 
     const recorder = makeFetchRecorder(routes);
 
     const result = await runLive({
-      parsed: parseCliArgs(["--platform", "azure", "--no-dry-run"]),
+      parsed: parseCliArgs(["--platform", "azure", "--no-dry-run", "--model", "review-model-synthetic"]),
       cwd: process.cwd(),
       env: azureEnv(),
       fetchImpl: recorder.fetchImpl,
@@ -433,7 +433,7 @@ describe("Azure PR status policy: verdict mapping + delete-then-post dedup", () 
     const recorder = makeFetchRecorder(routes);
 
     await runLive({
-      parsed: parseCliArgs(["--platform", "azure", "--no-dry-run"]),
+      parsed: parseCliArgs(["--platform", "azure", "--no-dry-run", "--model", "review-model-synthetic"]),
       cwd: process.cwd(),
       env: azureEnv(),
       fetchImpl: recorder.fetchImpl,

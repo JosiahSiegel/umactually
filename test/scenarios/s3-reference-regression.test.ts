@@ -2,6 +2,7 @@ import { readFile } from "node:fs/promises";
 import { describe, expect, it } from "vitest";
 
 import { expectNotImplementedExport } from "../helpers/assert-red-module.js";
+import { REVIEW_MARKER } from "../../src/util/marker.js";
 
 type ReferenceRegressionInput = {
   readonly inlineQuoteReference: string;
@@ -14,7 +15,6 @@ type ReferenceRegressionReport = {
   readonly artifactPath: string;
   readonly preservesInlineQuoteEscaping: true;
   readonly preventsRawJsonLeak: true;
-  readonly supportsLegacyMarker: true;
   readonly supportsCurrentMarker: true;
 };
 
@@ -28,10 +28,10 @@ const referencePath = "src/reference/verify-reference-regressions.ts";
 // fresh implementation rather than a vendored copy). The canonical behaviors
 // they describe — wrap_inline_code in the inline-quote reference, and the
 // FenceClosureGuardTests class in the raw-JSON-leak reference — are pinned
-// below so the S3 contract still asserts the same compatibility surface.
+// below with the current marker.
 const INLINE_QUOTE_REFERENCE_FRAGMENT = [
   "# round-1 oracle PR review action",
-  "# idempotency marker (legacy): <!-- auto-pr-review -->",
+  `# idempotency marker: ${REVIEW_MARKER}`,
   "def wrap_inline_code(value):",
   "    return _safe_inline_code(value)",
   "def _safe_inline_code(value):",
@@ -41,7 +41,7 @@ const INLINE_QUOTE_REFERENCE_FRAGMENT = [
 
 const RAW_JSON_LEAK_REFERENCE_FRAGMENT = [
   "import unittest",
-  "# idempotency marker (legacy): <!-- auto-pr-review -->",
+  `# idempotency marker: ${REVIEW_MARKER}`,
   "class FenceClosureGuardTests(unittest.TestCase):",
   "    def test_truncates_at_first_run_of_four_backticks(self):",
   "        # the raw-output renderer must truncate at the first fence",
@@ -53,8 +53,8 @@ function isVerifyReferenceRegressions(value: unknown): value is VerifyReferenceR
   return typeof value === "function";
 }
 
-describe("S3 reference compatibility RED contract", () => {
-  it("REF-S3-RED-001 preserves inline quote, raw-output, and idempotency reference behavior", async () => {
+describe("S3 reference regression contract", () => {
+  it("REF-S3-001 preserves inline quote, raw-output, and current-marker reference behavior", async () => {
     // Given: the round-1 reference describes prior markdown escaping and raw JSON leak fixes.
     const inlineQuoteReference = INLINE_QUOTE_REFERENCE_FRAGMENT;
     const rawJsonLeakReference = RAW_JSON_LEAK_REFERENCE_FRAGMENT;
@@ -63,7 +63,7 @@ describe("S3 reference compatibility RED contract", () => {
     expect(rawJsonLeakReference).toContain("FenceClosureGuardTests");
     expect(rawFencedJson).toContain("```json");
 
-    // When: the future TypeScript compatibility verifier evaluates the references without executing Bash or Python.
+    // When: the TypeScript regression verifier evaluates the references without executing Bash or Python.
     const verifyReferenceRegressions = await expectNotImplementedExport(
       referenceModule,
       referencePath,
@@ -79,12 +79,11 @@ describe("S3 reference compatibility RED contract", () => {
       expectedArtifact: "artifacts/manual/s3-reference-compatibility.md",
     });
 
-    // Then: old and new markers remain compatible while raw JSON and fence leakage stay blocked.
+    // Then: the current marker remains supported while raw JSON and fence leakage stay blocked.
     expect(result).toEqual({
       artifactPath: "artifacts/manual/s3-reference-compatibility.md",
       preservesInlineQuoteEscaping: true,
       preventsRawJsonLeak: true,
-      supportsLegacyMarker: true,
       supportsCurrentMarker: true,
     });
   });

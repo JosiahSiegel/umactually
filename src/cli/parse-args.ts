@@ -1,16 +1,8 @@
 import { FIELDS } from "../config/field-schema.js";
-import { ENV_KEYS } from "../util/env-keys.js";
 import { didYouMean, parseStrictInt, readEnum } from "../util/cli-args.js";
 import type { Severity } from "../config/types.js";
 import { parseSeverityFromUnknown } from "../config/parsers.js";
 
-/**
- * CLI-side normalized platform union. The CLI parser accepts `"azure-devops"`
- * as an input alias for `"azure"`, then normalizes it before returning
- * `ParsedCliArgs`, so this type intentionally exposes only the canonical
- * downstream variants. Distinct from `Platform` in `src/config/types.ts`
- * (which is the config-side canonical set).
- */
 export type CliPlatform = "auto" | "github" | "azure";
 export type CliMinimumSeverity = "low" | "medium" | "high";
 export type CliEffort = "low" | "medium" | "high";
@@ -481,15 +473,9 @@ export function parseCliArgs(args: readonly string[]): ParsedCliArgs {
     githubApiBase,
     includeSonarqube,
     includePrSonarFindings,
-    // Sonar fields fall back to the UMACTUALLY_SONAR_* env vars when
-    // the CLI flag was not supplied. The standard env-var path goes
-    // through `resolveFromSchema` (config-loader), but `--include-pr-
-    // sonar-findings` is consumed inside the live path BEFORE the
-    // loader runs, so we resolve here to keep parity with the
-    // `field > env > null` precedence every other field uses.
-    sonarHostUrl: sonarHostUrl ?? process.env[ENV_KEYS.UMACTUALLY_SONAR_HOST_URL] ?? null,
-    sonarToken: sonarToken ?? process.env[ENV_KEYS.UMACTUALLY_SONAR_TOKEN] ?? null,
-    sonarProjectKey: sonarProjectKey ?? process.env[ENV_KEYS.UMACTUALLY_SONAR_PROJECT_KEY] ?? null,
+    sonarHostUrl,
+    sonarToken,
+    sonarProjectKey,
     sonarTimeoutSeconds,
     minimumSeverity,
     minimumSeverityInternal: minimumSeverity === null
@@ -579,11 +565,6 @@ function readMinimumSeverity(args: readonly string[], index: number): CliMinimum
 }
 
 function readPlatform(value: string): CliPlatform {
-  // Accept "azure-devops" as a CLI-only alias for "azure" so callers
-  // familiar with the older name keep working.
-  if (value === "azure-devops") {
-    return "azure";
-  }
   return readEnum<CliPlatform>("--platform", value, FIELDS.platform.enumValues as readonly CliPlatform[], CliUsageError);
 }
 

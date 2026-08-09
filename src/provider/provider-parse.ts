@@ -358,7 +358,7 @@ export function extractTextPayload(endpoint: ProviderEndpoint, rawText: string):
         // strict-empty-fields check downstream classifies it as
         // a parse failure.
         if (output.length > 0) {
-          // Reasoning-fallback: some providers (notably MiniMax-M3)
+          // Reasoning-fallback: some reasoning-capable providers
           // write a draft of the final review JSON inside their
           // reasoning block, then run out of output budget before
           // emitting it as the formal `output_text` answer. The
@@ -806,7 +806,7 @@ function joinOutputText(output: readonly unknown[]): string {
 }
 
 /**
- * Some providers (notably MiniMax-M3) write a draft of the final
+ * Some reasoning-capable providers write a draft of the final
  * review JSON inside their reasoning block — the model narrates
  * "let me write the JSON: ```json\n{...}\n```" as part of its
  * chain-of-thought — then runs out of the output budget before the
@@ -1057,7 +1057,7 @@ export function normalizeProviderSeverity(
 }
 
 /**
- * Some providers (e.g. Manifest, MiniMax) ignore `stream: false` and always
+ * Some OpenAI-compatible gateways ignore `stream: false` and always
  * return Server-Sent Events. Detect the SSE format and concatenate text
  * fragments from all chunks into a single string.
  *
@@ -1082,7 +1082,7 @@ export function normalizeProviderSeverity(
 function tryExtractSse(rawText: string): string | null {
   const trimmed = rawText.trim();
   // Detect SSE format: either starts with "data:" or "event:" (some providers
-  // like Manifest prepend event: lines before data: lines).
+  // prepend event: lines before data: lines).
   if (!trimmed.startsWith("data:") && !trimmed.startsWith("event:")) {
     return null;
   }
@@ -1141,8 +1141,8 @@ function tryExtractSse(rawText: string): string | null {
     const wrappedResponse = readRecordField(parsed, "response");
     if (wrappedResponse !== null) {
       const eventType = readStringField(parsed, "type");
-      // Skip reasoning-text deltas entirely. Some providers (e.g.
-      // MiniMax-M3) emit `response.reasoning_text.delta` events
+      // Skip reasoning-text deltas entirely. Some providers emit
+      // `response.reasoning_text.delta` events
       // alongside the final answer. Concat-ing them into `fragments`
       // would prepend 100+ KB of chain-of-thought prose ahead of the
       // JSON review, breaking `parseReviewPayload` (the first
@@ -1209,8 +1209,7 @@ function tryExtractSse(rawText: string): string | null {
   // Prefer the completed-response text (full output) over accumulated
   // fragments — but ONLY if the completed text looks like real content.
   //
-  // Some providers (notably MiniMax-M3 observed in Azure DevOps PR #43
-  // thread 589) emit a `response.completed` event whose `output[]` carries
+  // Some providers emit a `response.completed` event whose `output[]` carries
   // a stub/placeholder string (e.g. "placeholder", the model wrapper
   // metadata, or just the prompt echo) — and the real review text only
   // appears in the per-fragment `response.output_text.delta` events.
@@ -1247,8 +1246,8 @@ function tryExtractSse(rawText: string): string | null {
  * This is intentionally permissive: false positives (treating a real
  * short review as a stub) are rare because real reviews always contain
  * `{`. The test suite in `test/unit/azure-thread-589-repro.test.ts`
- * pins the behavior end-to-end with the production failure mode
- * (MiniMax-M3 `response.completed` stub "placeholder").
+ * pins the behavior end-to-end with a captured production failure mode
+ * (`response.completed` stub "placeholder").
  */
 function isStubCompletedText(text: string): boolean {
   if (text.length === 0) return true;
@@ -1284,9 +1283,9 @@ function isStubCompletedText(text: string): boolean {
  *
  *   2. **Error-doc-URL signal**: The response text contains a
  *      documentation URL with an error-code path
- *      (`/docs/errors/M101`, `/docs/errors/`, `/help/error/`). This
- *      is universal across LLM routers (Manifest, LiteLLM, OpenRouter,
- *      custom gateways) — they all link to their error documentation.
+ *      (`/docs/errors/R101`, `/docs/errors/`, `/help/error/`). This
+ *      is common across LLM routers and custom gateways, which link to
+ *      their error documentation.
  *
  *   3. **Error-envelope signal**: The response JSON has an `error`
  *      object or `errors` array at the top level with `type`/`message`/
@@ -1301,8 +1300,8 @@ function isStubCompletedText(text: string): boolean {
  *      envelope but with no actual model output — the "connected but
  *      no providers" case.
  *
- * IMPORTANT: The function intentionally does NOT match on substrings
- * like "Manifest M101" or "model not supported" — those are
+ * IMPORTANT: The function intentionally does NOT match on branded
+ * error labels or phrases like "model not supported" — those are
  * provider-specific and would miss new providers. The four signals
  * above are structural and work for any provider.
  *
@@ -1499,7 +1498,7 @@ function checkHasReviewContent(parsed: Record<string, unknown>): boolean {
  * across LLM routers and gateways — they all link to their error docs.
  *
  * Matches patterns like:
- *   - `/docs/errors/M101`
+ *   - `/docs/errors/R101`
  *   - `/docs/errors/`
  *   - `/help/error/`
  *   - `/docs/error-codes#`
@@ -1508,8 +1507,8 @@ function checkHasReviewContent(parsed: Record<string, unknown>): boolean {
  * responses.
  */
 function checkErrorDocUrl(rawText: string): ProviderErrorDetails | null {
-  // Match `/docs/errors/` (Manifest, generic), `/help/error/` (some
-  // enterprise gateways), `/docs/error-codes` (Azure-style).
+  // Match `/docs/errors/`, `/help/error/` (some enterprise gateways),
+  // and `/docs/error-codes` (Azure-style).
   const ERROR_DOC_PATTERN = /\/(?:docs|help)\/errors?[-_/a-z0-9]*/iu;
   if (ERROR_DOC_PATTERN.test(rawText)) {
     // Extract the matched substring for the detail field so the

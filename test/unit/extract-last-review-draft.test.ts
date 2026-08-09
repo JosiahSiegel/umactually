@@ -2,7 +2,7 @@
 // of reasoning prose alongside an empty `output_text` field, the
 // parser scans the reasoning for the LAST valid review-shaped JSON
 // and uses it as the extracted text. Without this fallback, the
-// MiniMax-M3 model's parse-fail surface balloons because the model
+// The parse-fail surface balloons because the model
 // writes a JSON draft inside its reasoning, runs out of budget, and
 // never emits the final answer.
 import { describe, expect, it } from "vitest";

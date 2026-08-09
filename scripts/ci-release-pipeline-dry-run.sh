@@ -236,7 +236,6 @@ export UMACTUALLY_NO_PATH_UPDATE=1
 # INSTALL_RELEASE_TAG is also explicitly set.
 export INSTALL_RELEASE_BASE="${FIXTURE_BASE}/releases/download/v0.5.0"
 export INSTALL_RELEASE_TAG="v0.5.0"
-export INSTALL_ASSET_CONTRACT="archive"
 export HOME="${FAKE_HOME}"
 export PLATFORM_OVERRIDE="linux"
 export ARCH_OVERRIDE="x64"
@@ -301,7 +300,6 @@ INSTALL_LOG="$(mktemp -t umactually-ci-bad-install.XXXXXX.log)"
 # rejected as expected.
 INSTALL_RELEASE_BASE="${BAD_FIXTURE_BASE}/releases/download/v0.5.0" \
 INSTALL_RELEASE_TAG="v0.5.0" \
-INSTALL_ASSET_CONTRACT="archive" \
 PLATFORM_OVERRIDE="linux" \
 ARCH_OVERRIDE="x64" \
 UMACTUALLY_NO_PATH_UPDATE=1 \
