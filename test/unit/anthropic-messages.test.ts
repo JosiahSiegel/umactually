@@ -421,7 +421,7 @@ describe("anthropic-messages wire-shape helpers", () => {
     // branch used to silently drop --effort because the call config
     // had no `reasoningEffort` field. We now forward the value as
     // `reasoning_effort` on the wire so dual-protocol gateways
-    // (MiniMax etc.) that honor it get the operator's hint. Native
+    // that honor it get the operator's hint. Native
     // Anthropic.com ignores unknown fields per its API spec, so the
     // worst case is a no-op, not a wire-shape error.
     const mod = (await expectFutureModule("../../src/provider/anthropic-messages.js")) as {

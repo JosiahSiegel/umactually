@@ -41,6 +41,6 @@ describe("redactUrlForLog: drop query/fragment for safe CI logging", () => {
   });
 
   it("REDACT-007: path-prefixed URLs preserve the prefix in the redacted output", () => {
-    expect(redactUrlForLog("https://api.minimax.io/anthropic?session=abc")).toBe("https://api.minimax.io/anthropic");
+    expect(redactUrlForLog("https://gateway.example.invalid/anthropic?session=abc")).toBe("https://gateway.example.invalid/anthropic");
   });
 });

@@ -61,7 +61,7 @@ describe("CLI help text", () => {
     // adapt it for their own endpoint without crossing into README.md.
     // The compact banner (Wave 3) uses literal placeholders (`<url>`,
     // `<key>`) instead of the previous vendor URL
-    // (`https://api.minimax.io/v1`) and shell-quoted env var
+    // (`https://router.example.invalid/v1`) and shell-quoted env var
     // (`$UMACTUALLY_API_KEY`) because the placeholder form is more
     // useful for new operators — they fill in their own values
     // rather than copying a vendor-specific URL and an env-var name

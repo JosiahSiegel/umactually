@@ -24,7 +24,7 @@ describe("PR-9 SSE→payload→parse trace", () => {
     // The SSE stream: a response.output_text.delta event whose `delta`
     // value carries the real review as a JSON-encoded string. The
     // response.completed event's output[] carries a STUB "placeholder"
-    // (the MiniMax-M3 failure mode fixed by 937cdc4).
+    // (the SSE failure mode fixed by 937cdc4).
     const deltaEnvelope = JSON.stringify({
       type: "response.output_text.delta",
       delta: realReviewJson,

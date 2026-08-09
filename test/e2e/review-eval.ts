@@ -1,5 +1,5 @@
 /**
- * Grader for MiniMax-M3 ground-truth review-quality fixtures (Part C).
+ * Grader for deterministic ground-truth review-quality fixtures.
  *
  * Pure functions — no I/O, no fetching. The fixture is a static TypeScript
  * export; the outcome is a `LiveProviderOutcome` captured from a live

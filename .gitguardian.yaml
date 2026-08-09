@@ -23,7 +23,7 @@
 # -------------------
 # All synthetic test API keys in this repo use one of these sentinels:
 #   - the literal `do-not-leak` suffix (e.g. `sk-anthropic-v2-do-not-leak`,
-#     `sk-test-openai-do-not-leak`, `sk-minimax-smoke-test-do-not-leak`)
+#     `sk-test-openai-do-not-leak`)
 #   - the literal `synthetic` or `EXAMPLE-` prefix in their value
 #   - short obviously-fake values like `sk-test`, `sk-ant-test`, `test-key`,
 #     `gho_test`, `gho_token`, `ghp_x`, `sk-abc123`
@@ -159,8 +159,6 @@ secret:
       match: 063222337b3184b287338487db12638685e26906d0166f65126c282883b0fc29  # sk-no-fallback-do-not-leak
     - name: 'synthetic API key fixture (cross-protocol dispatch, incident 34696725)'
       match: 47ca29c0ccce5bc1a5d29c7b5c44ccbbade67a00a9b1045418e90c2c04e0fa88  # sk-both-fail-do-not-leak
-    - name: 'synthetic API key fixture (cross-protocol dispatch, incident 34696725)'
-      match: 45a93c1629f0f09083add2e456af57a12c9be6b8ddc893d42b6b520b5bde268a  # sk-minimax-smoke-test-do-not-leak
     - name: 'synthetic API key fixture (cross-protocol dispatch, incident 34696725)'
       match: 70a298ec773ce21562a4770210a55c1197dc1fd9696952322457dfc81c031688  # sk-test-llm-anthropic-do-not-leak
     - name: 'synthetic API key fixture (cross-protocol dispatch, incident 34696725)'

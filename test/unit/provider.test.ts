@@ -532,7 +532,7 @@ describe("openai-compatible provider client", () => {
   });
 
   it("PROV-UNIT-020: parses Responses API SSE stream with response.output_text.delta events", async () => {
-    // This is the exact format that the opencode/MiniMax model used on
+    // This is the exact format captured from a compatible gateway on
     // PR #3 — fragments wrapped in {type, delta} envelopes with
     // type="response.output_text.delta". The previous parser didn't
     // know about this shape and silently fell through to a 0-finding
@@ -647,7 +647,7 @@ describe("openai-compatible provider client", () => {
   });
 
   it("PROV-UNIT-022b: self-healing retry DROPS the strict response_format constraint", async () => {
-    // Some providers (notably MiniMax) silently reject the wire
+    // Some compatible providers silently reject the wire
     // `response_format: { type: "json_schema" }` constraint and
     // produce prose instead of JSON. The retry path detects this
     // (parse fails) and retries WITHOUT the wire schema — letting

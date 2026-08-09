@@ -3,10 +3,7 @@
 // Pins: when the operator's chosen provider fails with a routing-level
 // failure (404), the live-provider dispatcher should automatically
 // try the OTHER protocol at the same URL. This makes `--provider`
-// advisory on Anthropic-protocol-capable gateways like MiniMax
-// (https://platform.minimax.io/docs/token-plan/claude-code +
-// https://platform.minimax.io/docs/token-plan/codex) where the same
-// base URL serves BOTH Anthropic and OpenAI protocols.
+// advisory on gateways where the same base URL serves both protocols.
 //
 // These tests stub fetch and pick paths that reproduce realistic
 // operator setups so they're robust to refactors of how the dispatcher
@@ -64,7 +61,7 @@ const SUCCESS_TEXT_ANTH = JSON.stringify({
 function openaiSuccessResponses(text: string): string {
   return JSON.stringify({
     id: "resp_openai",
-    model: "MiniMax-M3",
+    model: "opaque-model-cross-protocol",
     output: [{ type: "message", content: [{ type: "output_text", text }] }],
   });
 }
@@ -212,11 +209,9 @@ describe("cross-protocol fallback: openai-compatible falls back to anthropic-pro
 
 describe("cross-protocol fallback: anthropic falls back to openai-protocol at /v1/responses", () => {
   it("DISPATCH-ANTH-FALLBACK-001: anthropic against bare /v1 falls back to openai protocol when /v1/messages 404s", async () => {
-    // Operator typed --api-url https://api.minimax.io/v1 and
-    // --provider anthropic. Anthropic-protocol at /v1/messages 404s
-    // on MiniMax (the Anthropic-protocol endpoint is at /anthropic/,
-    // not /v1/). The dispatcher should fall back to OpenAI at
-    // /v1/responses.
+    // Operator typed --api-url https://router.example.invalid/v1 and
+    // --provider anthropic. Anthropic-protocol at /v1/messages 404s,
+    // so the dispatcher should fall back to OpenAI at /v1/responses.
     //
     // Wire stubs: /v1/messages (404), /v1/responses (200).
     // The OpenAI client may try /v1/responses THEN
@@ -231,7 +226,7 @@ describe("cross-protocol fallback: anthropic falls back to openai-protocol at /v
     const dispatcher = await loadDispatcher();
     const parsed = makeBase({
       provider: "anthropic",
-      apiUrl: "https://api.minimax.io/v1",
+      apiUrl: "https://router.example.invalid/v1",
       apiKey: "sk-openai-fallback-secret-do-not-leak",
       fetchImpl: stub.fetch,
       env: {},
@@ -251,7 +246,7 @@ describe("cross-protocol fallback: anthropic falls back to openai-protocol at /v
     expect(outcome.endpoint).toBe("responses");
     expect(outcome.provider).toBe("openai-compatible");
     const fallbackCall = stub.calls.find(c =>
-      c.url === "https://api.minimax.io/v1/responses"
+      c.url === "https://router.example.invalid/v1/responses"
     );
     expect(fallbackCall, "expected a call to /v1/responses").toBeDefined();
     expect(fallbackCall?.headers["authorization"]).toBe("Bearer sk-openai-fallback-secret-do-not-leak");
@@ -271,7 +266,7 @@ describe("cross-protocol fallback should NOT trigger when named provider succeed
     const dispatcher = await loadDispatcher();
     const parsed = makeBase({
       provider: "openai-compatible",
-      apiUrl: "https://api.minimax.io/v1",
+      apiUrl: "https://router.example.invalid/v1",
       apiKey: "sk-no-fallback-do-not-leak",
       fetchImpl: stub.fetch,
       env: {},
@@ -287,7 +282,7 @@ describe("cross-protocol fallback should NOT trigger when named provider succeed
     });
     expect(outcome.endpoint).toBe("responses");
     expect(stub.calls.length).toBe(1);
-    expect(stub.calls[0]!.url).toBe("https://api.minimax.io/v1/responses");
+    expect(stub.calls[0]!.url).toBe("https://router.example.invalid/v1/responses");
   });
 });
 
@@ -316,7 +311,7 @@ describe("cross-protocol fallback dual-failure surface", () => {
     const dispatcher = await loadDispatcher();
     const parsed = makeBase({
       provider: "anthropic",
-      apiUrl: "https://api.minimax.io/v1",
+      apiUrl: "https://router.example.invalid/v1",
       apiKey: "sk-both-fail-do-not-leak",
       fetchImpl: stub.fetch,
       env: {},
@@ -345,11 +340,10 @@ describe("cross-protocol fallback dual-failure surface", () => {
 });
 
 describe("path-prefix heuristic: /anthropic URL commits to Anthropic protocol even when --provider=openai-compatible", () => {
-  it("HEURISTIC-DISPATCH-001: provider=openai-compatible + URL=https://api.minimax.io/anthropic posts to /anthropic/v1/messages with x-api-key (NOT OpenAI /v1/responses)", async () => {
+  it("HEURISTIC-DISPATCH-001: provider=openai-compatible + URL=https://router.example.invalid/anthropic posts to /anthropic/v1/messages with x-api-key (NOT OpenAI /v1/responses)", async () => {
     // Regression: previously the openai-compatible client's URL
     // candidate loop downgraded the URL to /v1 (origin+/v1) and
-    // MiniMax serves OpenAI there too, so the action silently
-    // posted a /v1/responses OpenAI-Responses call. With the
+    // silently posted a /v1/responses OpenAI-Responses call. With the
     // path-prefix heuristic, the dispatcher should commit to
     // the Anthropic Messages API client. Stub the Anthropic
     // endpoint returning 200 and confirm the dispatcher POSTs
@@ -360,8 +354,8 @@ describe("path-prefix heuristic: /anthropic URL commits to Anthropic protocol ev
     const dispatcher = await loadDispatcher();
     const parsed = makeBase({
       provider: "openai-compatible",
-      apiUrl: "https://api.minimax.io/anthropic",
-      apiKey: "sk-minimax-smoke-test-do-not-leak",
+      apiUrl: "https://router.example.invalid/anthropic",
+      apiKey: "sk-router-smoke-test-do-not-leak",
       fetchImpl: stub.fetch,
       env: {},
     });
@@ -390,7 +384,7 @@ describe("path-prefix heuristic: /anthropic URL commits to Anthropic protocol ev
     expect(outcome.endpoint).toBe("anthropic");
     // The Anthropic-protocol call was made with the right auth headers.
     const anthropicCall = stub.calls.find((c) => c.url.endsWith("/anthropic/v1/messages"));
-    expect(anthropicCall?.headers["x-api-key"]).toBe("sk-minimax-smoke-test-do-not-leak");
+    expect(anthropicCall?.headers["x-api-key"]).toBe("sk-router-smoke-test-do-not-leak");
     expect(anthropicCall?.headers["anthropic-version"]).toBe("2023-06-01");
   });
 
@@ -453,7 +447,7 @@ describe("path-prefix heuristic: /anthropic URL commits to Anthropic protocol ev
     expect(outcome.endpoint).toBe("responses");
   });
 
-  it("HEURISTIC-DISPATCH-004: provider=anthropic + URL=https://api.minimax.io/anthropic still commits to Anthropic (heuristic is a no-op when explicit)", async () => {
+  it("HEURISTIC-DISPATCH-004: provider=anthropic + URL=https://router.example.invalid/anthropic still commits to Anthropic (heuristic is a no-op when explicit)", async () => {
     // The explicit --provider=anthropic branch already handles this case.
     // Sanity check: with explicit anthropic, the dispatcher hits the
     // Anthropic endpoint via the normal anthropic-client path, not via
@@ -464,7 +458,7 @@ describe("path-prefix heuristic: /anthropic URL commits to Anthropic protocol ev
     const dispatcher = await loadDispatcher();
     const parsed = makeBase({
       provider: "anthropic",
-      apiUrl: "https://api.minimax.io/anthropic",
+      apiUrl: "https://router.example.invalid/anthropic",
       apiKey: "sk-explicit-anthropic-do-not-leak",
       fetchImpl: stub.fetch,
       env: {},
@@ -479,7 +473,7 @@ describe("path-prefix heuristic: /anthropic URL commits to Anthropic protocol ev
       platformToken: "gh-token",
     });
     expect(stub.calls.some((c) => c.url.endsWith("/anthropic/v1/messages"))).toBe(true);
-    expect(stub.calls.some((c) => c.url === "https://api.minimax.io/anthropic/v1/messages")).toBe(true);
+    expect(stub.calls.some((c) => c.url === "https://router.example.invalid/anthropic/v1/messages")).toBe(true);
     expect(outcome.provider).toBe("anthropic-messages");
   });
 

@@ -8,17 +8,15 @@
  *   - Unconditional infinite loop (critical — DoS risk)
  *   - console.log left in production code (low — style/hygiene)
  *
- * The diff adds 4 problematic lines so MiniMax-M3 has unambiguous
- * signals to grade. Calibrated thresholds:
+ * The diff adds 4 problematic lines with unambiguous signals to grade.
+ * Thresholds:
  *   - minComments=1: at least one finding expected
- *   - maxComments=8: MiniMax-M3 sometimes splits findings; tolerate up to 8
+ *   - maxComments=8: reviewers may split findings; tolerate up to 8
  *   - minHighSeverity=1: at least one high/critical finding expected
  *   - maxFabricationRate=0.5: fabrication tolerance
  *
  * Note: this fixture does NOT assert exact category. The model's
  * category label is free-form; only severity is graded.
- *
- * Calibrated for MiniMax-M3 (api.minimax.io).
  */
 import type { ReviewFixture } from "../../e2e/review-eval.js";
 

@@ -3,7 +3,7 @@
 // `type = "reasoning_text"`) AND the final answer (`output[].type =
 // "message"`, parts with `type = "output_text"`).
 //
-// Regression: MiniMax-M3 self-review on PR #29 emitted a 100+ KB
+// Regression: a self-review emitted a 100+ KB
 // response whose `output[]` carried a reasoning block followed by the
 // truncated final message. `joinOutputText` previously concatenated
 // EVERY `part.text` regardless of part type, so the text payload

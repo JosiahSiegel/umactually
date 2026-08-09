@@ -8,12 +8,11 @@
 //     Otherwise, append `/v1/messages` to the existing path.
 //
 // Why this matters: Anthropic-compatible gateways (NOT just anthropic.com)
-// commonly mount the protocol under a path prefix. The documented
-// example is `https://api.minimax.io/anthropic` (per
-// https://platform.minimax.io/docs/token-plan/claude-code), which
-// resolves to `https://api.minimax.io/anthropic/v1/messages` — NOT
-// `https://api.minimax.io/v1/messages`. The previous "always strip the
-// path" version of this helper silently 404'd MiniMax. Anthropic.com
+// commonly mount the protocol under a path prefix. For example,
+// `https://gateway.example.invalid/anthropic` resolves to
+// `https://gateway.example.invalid/anthropic/v1/messages` — NOT
+// `https://gateway.example.invalid/v1/messages`. A resolver that always strips
+// the path silently routes to the wrong endpoint. Anthropic.com
 // itself only serves `/v1/messages` at the bare host, but operators may
 // also point --api-url at a self-hosted gateway under a path prefix.
 //
@@ -48,13 +47,11 @@ describe("Anthropic Messages URL: preserve operator path, append /v1/messages", 
     );
   });
 
-  it("ANTH-URL-003: a host with /anthropic path appends /v1/messages to the existing path (MiniMax-style)", () => {
-    // This is the regression case the user fixed: MiniMax's Anthropic
-    // compatibility lives at https://api.minimax.io/anthropic/v1/messages
-    // (per https://platform.minimax.io/docs/token-plan/claude-code).
-    // The previous "always strip path" version silently 404'd MiniMax.
-    expect(anthropicMessagesBase("https://api.minimax.io/anthropic")).toBe(
-      "https://api.minimax.io/anthropic/v1/messages",
+  it("ANTH-URL-003: a host with /anthropic path appends /v1/messages to the existing path", () => {
+    // This regression case proves a gateway's routing prefix is preserved.
+    // The previous "always strip path" version silently used the wrong route.
+    expect(anthropicMessagesBase("https://gateway.example.invalid/anthropic")).toBe(
+      "https://gateway.example.invalid/anthropic/v1/messages",
     );
   });
 
@@ -89,8 +86,8 @@ describe("Anthropic Messages URL: preserve operator path, append /v1/messages", 
   });
 
   it("ANTH-URL-008: trims trailing slash on a path-prefixed URL (no //v1)", () => {
-    expect(anthropicMessagesBase("https://api.minimax.io/anthropic/")).toBe(
-      "https://api.minimax.io/anthropic/v1/messages",
+    expect(anthropicMessagesBase("https://gateway.example.invalid/anthropic/")).toBe(
+      "https://gateway.example.invalid/anthropic/v1/messages",
     );
   });
 

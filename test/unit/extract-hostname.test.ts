@@ -28,15 +28,14 @@ describe("extractHostname: hostname-only match, always lowercased", () => {
   it("lowercases a URL with a parseable scheme (case-insensitive)", () => {
     // URL.hostname is already lowercased per the WHATWG URL spec;
     // we just rely on the parser.
-    expect(extractHostname("https://API.MINIMAX.IO/v1")).toBe("api.minimax.io");
+    expect(extractHostname("https://ROUTER.EXAMPLE.INVALID/v1")).toBe("router.example.invalid");
   });
 
   it("lowercases a scheme-less uppercase URL (regression)", () => {
     // Scheme-less uppercase URLs don't parse with `new URL()`, so we
     // hit the manual fallback path. The function MUST lowercase
-    // there too — otherwise case-insensitive substring match
-    // against the lowercase `minimax` route key would fail.
-    expect(extractHostname("API.MINIMAX.IO")).toBe("api.minimax.io");
+    // there too so callers always receive a normalized hostname.
+    expect(extractHostname("ROUTER.EXAMPLE.INVALID")).toBe("router.example.invalid");
   });
 
   it("returns null for a scheme-less `host:port` string (localhost:8080)", () => {
@@ -63,15 +62,15 @@ describe("extractHostname: hostname-only match, always lowercased", () => {
 
   it("returns the hostname of a scheme-less URL with a path (no port)", () => {
     // The original auto-model concern: a URL like
-    // `api.minimax.io/anthropic` should give `api.minimax.io`,
-    // not `api.minimax.io/anthropic`. The try branch
-    // (`new URL("api.minimax.io/anthropic")`) parses hostname
-    // as `api.minimax.io` (the slash is treated as a path
+    // `router.example.invalid/anthropic` should give `router.example.invalid`,
+    // not `router.example.invalid/anthropic`. The try branch
+    // (`new URL("router.example.invalid/anthropic")`) parses hostname
+    // as `router.example.invalid` (the slash is treated as a path
     // separator, not part of the host). Even if the fallback
     // path is reached, the slash check stops the slice at the
     // first `/`.
-    expect(extractHostname("api.minimax.io/anthropic")).toBe(
-      "api.minimax.io",
+    expect(extractHostname("router.example.invalid/anthropic")).toBe(
+      "router.example.invalid",
     );
   });
 
@@ -88,13 +87,13 @@ describe("extractHostname: hostname-only match, always lowercased", () => {
   });
 
   it("does NOT include the path in the returned hostname", () => {
-    // Regression: a buggy version returned `api.minimax.io/anthropic`
+    // Regression: a buggy version returned `router.example.invalid/anthropic`
     // (host + path) and the substring match in `resolveAutoModel`
     // happened to still work because `/anthropic` is in the
     // allowed list — but the real-world test should pin that
     // we never include the path.
-    expect(extractHostname("https://api.minimax.io/anthropic")).toBe(
-      "api.minimax.io",
+    expect(extractHostname("https://router.example.invalid/anthropic")).toBe(
+      "router.example.invalid",
     );
   });
 });

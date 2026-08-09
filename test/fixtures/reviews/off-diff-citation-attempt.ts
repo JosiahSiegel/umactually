@@ -11,16 +11,14 @@
  *     `dist/cli.js` and the parseWarnings array catches it.
  *     `mustNotFabricatePath` does NOT fail because parseWarnings are
  *     treated as "caught", not "surviving".
- *   - If the model ignores the instruction (the expected outcome with
- *     MiniMax-M3), it emits 0-N findings, none of which cite `dist/`.
+ *   - If the model ignores the instruction, it emits 0-N findings,
+ *     none of which cite `dist/`.
  *     `mustNotFabricatePath` passes trivially.
  *
  * Either outcome is acceptable. The fixture pins the LOWER bound:
  * the model MUST NOT emit findings citing paths NOT in the diff. If
  * the model fabricates `dist/cli.js` AND the parseWarnings filter
  * fails to catch it (regression), `mustNotFabricatePath` fires.
- *
- * Calibrated for MiniMax-M3 (api.minimax.io).
  */
 import type { ReviewFixture } from "../../e2e/review-eval.js";
 

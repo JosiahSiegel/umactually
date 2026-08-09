@@ -9,7 +9,7 @@
  * assessment phrases in the body.
  *
  * The test verifies that:
- *   - MiniMax-M3 may emit 0-N findings (often 0 on a clean docstring)
+ *   - A reviewer may emit 0-N findings (often 0 on a clean docstring)
  *   - If findings ARE emitted about the "fallback" or "compatibility",
  *     the confidence filter must downgrade them to `info` severity
  *     with reason `intentional-design`
@@ -19,8 +19,6 @@
  *   - minComments=0: no required count
  *   - maxComments=3: tolerance for split findings
  *   - minHighSeverity=0: no required severity
- *
- * Calibrated for MiniMax-M3 (api.minimax.io).
  */
 import type { ReviewFixture } from "../../e2e/review-eval.js";
 

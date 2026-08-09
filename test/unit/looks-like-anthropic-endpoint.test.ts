@@ -2,8 +2,7 @@
 // looks like an Anthropic-protocol gateway. The dispatcher uses this to
 // commit to the Anthropic-protocol client even when `--provider` defaults
 // to `openai-compatible`, so operators who type
-// `--api-url https://api.minimax.io/anthropic` (per the MiniMax docs at
-// https://platform.minimax.io/docs/token-plan/claude-code) get the
+// `--api-url https://gateway.example.invalid/anthropic` get the
 // Anthropic Messages API wire shape rather than the OpenAI client silently
 // downgrading to origin+`/v1` and posting to /v1/responses.
 //
@@ -30,15 +29,15 @@ describe("looksLikeAnthropicEndpoint: path-prefix heuristic for protocol selecti
   });
 
   it("HEURISTIC-002: URL ending in /anthropic returns true", () => {
-    // MiniMax's Anthropic-protocol base URL exactly.
-    expect(looksLikeAnthropicEndpoint("https://api.minimax.io/anthropic")).toBe(true);
+    // A path-prefixed Anthropic-protocol gateway base URL.
+    expect(looksLikeAnthropicEndpoint("https://gateway.example.invalid/anthropic")).toBe(true);
     // Custom self-hosted gateway with /anthropic suffix.
     expect(looksLikeAnthropicEndpoint("https://gateway.example.com/anthropic")).toBe(true);
   });
 
   it("HEURISTIC-003: URL with /anthropic/<segment> path returns true", () => {
     // Anthropic-protocol prefixed gateway with a sub-path.
-    expect(looksLikeAnthropicEndpoint("https://api.minimax.io/anthropic/v1")).toBe(true);
+    expect(looksLikeAnthropicEndpoint("https://gateway.example.invalid/anthropic/v1")).toBe(true);
     expect(looksLikeAnthropicEndpoint("https://gateway.example.com/anthropic/foo/bar")).toBe(true);
   });
 
@@ -69,8 +68,8 @@ describe("looksLikeAnthropicEndpoint: path-prefix heuristic for protocol selecti
     // types a `?token=…` parameter, query is dropped, path is inspected.
     // Fragment is naturally separated by `?`/`#` in the URL parser so it
     // never reaches pathname at all (it lives in parsed.hash).
-    expect(looksLikeAnthropicEndpoint("https://api.minimax.io/anthropic?token=secret-leak")).toBe(true);
-    expect(looksLikeAnthropicEndpoint("https://api.minimax.io/?token=x")).toBe(false);
+    expect(looksLikeAnthropicEndpoint("https://gateway.example.invalid/anthropic?token=secret-leak")).toBe(true);
+    expect(looksLikeAnthropicEndpoint("https://gateway.example.invalid/?token=x")).toBe(false);
     expect(looksLikeAnthropicEndpoint("https://api.example.com/anthropic?token=x#fragment")).toBe(true);
   });
 
@@ -91,7 +90,7 @@ describe("looksLikeAnthropicEndpoint: path-prefix heuristic for protocol selecti
   });
 
   it("HEURISTIC-010: trailing slash is normalized before segment matching", () => {
-    expect(looksLikeAnthropicEndpoint("https://api.minimax.io/anthropic/")).toBe(true);
+    expect(looksLikeAnthropicEndpoint("https://gateway.example.invalid/anthropic/")).toBe(true);
     expect(looksLikeAnthropicEndpoint("https://api.example.com/")).toBe(false);
   });
 

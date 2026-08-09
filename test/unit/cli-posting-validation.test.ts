@@ -69,13 +69,13 @@ async function collectPostingValidationErrors(
 
 const GH_POSTING_ARGS = [
   "--platform", "github",
-  "--api-url", "https://api.minimax.io/v1",
+  "--api-url", "https://router.example.invalid/v1",
   "--api-key", "sk-test-do-not-leak",
 ] as const;
 
 const AZURE_POSTING_ARGS = [
   "--platform", "azure",
-  "--api-url", "https://api.minimax.io/v1",
+  "--api-url", "https://router.example.invalid/v1",
   "--api-key", "sk-test-do-not-leak",
 ] as const;
 
@@ -137,7 +137,7 @@ describe("validation: posting-capability matrix", () => {
     const a = parseCliArgs([
       "--platform", "github",
       "--dry-run",
-      "--api-url", "https://api.minimax.io/v1",
+      "--api-url", "https://router.example.invalid/v1",
     ]);
     const postingErrors = await collectPostingValidationErrors(a);
     expect(postingErrors).toEqual([]);
@@ -153,7 +153,7 @@ describe("validation: posting-capability matrix", () => {
   it("CV-R2: live mode with NO --review and missing plumbing fields → no posting errors (operator did not post)", async () => {
     const a = parseCliArgs([
       "--platform", "github",
-      "--api-url", "https://api.minimax.io/v1",
+      "--api-url", "https://router.example.invalid/v1",
       "--api-key", "sk-test-do-not-leak",
     ]);
     const postingErrors = await collectPostingValidationErrors(a);
@@ -203,7 +203,7 @@ describe("validation: posting-capability matrix", () => {
     // They did NOT request posting. The posting validator must not flag.
     const a = parseCliArgs([
       "--platform", "azure",
-      "--api-url", "https://api.minimax.io/v1",
+      "--api-url", "https://router.example.invalid/v1",
       "--api-key", "sk-test-do-not-leak",
       "--event", "/tmp/evt.json",
       "--diff", "/tmp/diff.patch",
@@ -265,7 +265,7 @@ describe("validation: posting-validator is composable into collectValidationErro
   it("CV-COMP-2: collectValidationErrors = alwaysErrors (when not posting)", async () => {
     const a = parseCliArgs([
       "--platform", "github",
-      "--api-url", "https://api.minimax.io/v1",
+      "--api-url", "https://router.example.invalid/v1",
       "--api-key", "sk-test-do-not-leak",
     ]);
     const all = await collectValidationErrors(a);

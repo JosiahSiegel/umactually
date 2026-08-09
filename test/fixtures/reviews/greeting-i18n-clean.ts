@@ -5,8 +5,7 @@
  * lines: a TODO comment and a single ternary helper. No secrets, no
  * destructive operations, no security concerns.
  *
- * Calibrated for MiniMax-M3 (api.minimax.io). The fixture does NOT
- * claim the model MUST emit zero findings — MiniMax-M3 may legitimately
+ * The fixture does NOT require zero findings; a reviewer may legitimately
  * emit 0-3 minor findings on a clean diff. The thresholds are:
  *   - minComments=0: a clean review may emit zero findings
  *   - maxComments=3: even if it finds something, it's a small diff

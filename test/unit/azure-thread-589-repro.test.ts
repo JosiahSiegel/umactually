@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MIT
 // Reproduces the parse-fail surface seen in Azure DevOps PR #43 thread 589:
-//   - MiniMax-M3 SSE stream with `response.output_text.delta` events
+//   - opaque-sse-model SSE stream with `response.output_text.delta` events
 //   - Followed by a `response.completed` event whose `response.output[0].content[0].text`
 //     contains a TRUNCATED version of the review (e.g. "placeholder" instead of the full text)
 //   - The deltas themselves, concatenated, form a complete valid JSON review
@@ -23,14 +23,14 @@ function buildSseStream(deltas: readonly string[], completedText: string): strin
   lines.push("");
   for (const d of deltas) {
     lines.push("event: response.output_text.delta");
-    // Note: MiniMax emits the JSON-encoded delta value with embedded newlines
+    // The captured stream encodes the delta value with embedded newlines
     // because the SSE encoder doesn't pre-split on literal `\n`. We must
     // JSON.stringify so the test fixture mirrors the actual transport.
     lines.push(`data: {"type":"response.output_text.delta","item_id":"msg_1","output_index":0,"content_index":0,"delta":${JSON.stringify(d)}}`);
     lines.push("");
   }
   // The response.completed event has a SHORT placeholder — mirrors the
-  // MiniMax-M3 behavior of returning an output[] with the model wrapper
+  // opaque-sse-model behavior of returning an output[] with the model wrapper
   // metadata but NOT the full text. The deltas carry the real text.
   lines.push("event: response.completed");
   lines.push(`data: {"type":"response.completed","response":{"id":"resp_1","output":[{"type":"message","content":[{"type":"output_text","text":${JSON.stringify(completedText)}}]}]}}`);
@@ -54,7 +54,7 @@ describe("Azure DevOps thread 589 reproduction — SSE delta concatenation", () 
     expect(extracted).not.toBe("placeholder");
   });
 
-  it("parseReviewPayload returns a real review from SSE-wrapped MiniMax-M3 response with stub completed text", () => {
+  it("parseReviewPayload returns a real review from SSE-wrapped opaque-sse-model response with stub completed text", () => {
     const review = {
       summary: "Valid review after SSE unwrap",
       verdict: "NEEDS_FIX",

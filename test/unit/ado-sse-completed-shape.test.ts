@@ -1,5 +1,5 @@
 // Reproduce the SSE→review extraction with the EXACT log the user pasted.
-// The stream shape is from `created_at:1783376859` (a real MiniMax-M3 run).
+// The stream shape is from `created_at:1783376859` (a real opaque-sse-model run).
 import { describe, expect, it } from "vitest";
 import { extractTextPayload, parseReviewPayload } from "../../src/provider/provider-parse.js";
 
@@ -30,7 +30,7 @@ function buildStream(): string {
   }
   const lines: string[] = [];
   lines.push("event: response.created");
-  lines.push(`data: {"type":"response.created","response":{"id":"resp_x","object":"response","status":"in_progress","model":"MiniMax-M3","output":[]}}`);
+  lines.push(`data: {"type":"response.created","response":{"id":"resp_x","object":"response","status":"in_progress","model":"opaque-sse-model","output":[]}}`);
   lines.push("");
   lines.push("event: response.in_progress");
   lines.push(`data: {"type":"response.in_progress","response":{"id":"resp_x","status":"in_progress"}}`);
