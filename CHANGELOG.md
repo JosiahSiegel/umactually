@@ -11,7 +11,23 @@ ship a tag).
 ## [Unreleased]
 
 
-_No pending changes — last release: v0.7.0 (SonarCloud PR-comment ingestion, dedup, and verdict reconciliation)._
+_No pending changes — last release: v0.8.0 (simplify public surface + coverage floor)._
+
+
+## [0.8.0] - 2026-08-09
+
+### Changed
+
+- **Removed all legacy/backward-compatibility paths; public env surface is now exactly 5 `UMACTUALLY_*` vars + runner metadata; model is genuinely optional via contract-based discovery**. `umactually init` now writes a simpler saved config (no legacy REVIEW_* aliases, no required `model` field), and the post-init bare-`umactually` quickstart + `umactually --show-config` both reflect the simplified surface. Affects the same discoverability surfaces (bare-invocation quickstart leading with `umactually init`, `umactually --help`, `umactually --show-config`) that have always surfaced the wizard, so existing discoverability contracts are preserved. `[src/cli/load-saved-config.ts]` `[src/cli/apply-saved-config.ts]` `[src/cli/dispatch.ts]`
+
+### Added
+
+- **Added coverage floor enforcement in CI for the unit suite**
+- **`umactually tui` subcommand replaces 19 comparison layouts** with a single interactive terminal UI for review, config, and debug (`umactually tui`). The legacy comparison-layout surface (one shape per result size / provider / verdict combination) is removed.
+
+### Fixed
+
+- **Self-review workflow now passes an explicit model to bypass discovery, restoring the bot's ability to post a review on PRs that omit `--model`**
 
 
 ## [0.7.0] - 2026-08-06
