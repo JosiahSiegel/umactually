@@ -207,10 +207,11 @@ Every subcommand that emits output (`review`, `doctor`, `uninstall`, `check-revi
 
 ### How it works
 
-1. Fetches the PR diff from the platform API.
-2. Redacts known secret patterns and cross-checks finding paths against the diff.
-3. Sends it to the configured model provider with the review prompt.
-4. Posts findings as inline review comments under a stable marker.
+1. Auto-loads AI agent and human instruction files from the target repo (CLAUDE.md, AGENTS.md, README.md, …) so the model sees the project's conventions.
+2. Fetches the PR diff from the platform API.
+3. Redacts known secret patterns and cross-checks finding paths against the diff.
+4. Sends it to the configured model provider with the review prompt.
+5. Posts findings as inline review comments under a stable marker.
 
 Invalid review output fails the same invocation with a non-zero exit code — no partial posts. See [`docs/exit-codes.md`](docs/exit-codes.md).
 
