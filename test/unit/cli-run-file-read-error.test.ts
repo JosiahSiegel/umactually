@@ -160,13 +160,28 @@ describe("Bundled CLI surfaces `hint:` for file-read failures (PR #2)", () => {
     );
     expect(result.status).toBe(2);
     const combined = `${result.stdout ?? ""}${result.stderr ?? ""}`;
-    // The first non-empty line must still start with `cli: ` so existing
-    // log scrapers and CI greps keep working byte-identically.
-    const firstLine = combined.split("\n").find((line) => line.length > 0) ?? "";
-    expect(firstLine.startsWith("cli: ")).toBe(true);
-    // And the message text must reference --event so the operator can
-    // see which flag's file failed to read.
-    expect(firstLine).toMatch(/--event/u);
+    // The CLI's stderr handler must still emit `cli: failed to read --event ...`
+    // as the file-read-error line PR #2 fixes. We deliberately look for
+    // *that specific line* (by prefix) rather than the first non-empty line
+    // of the combined stream, because unrelated earlier output (e.g. an
+    // `ENOTEMPTY: ...` from another test's leftover `.umactually-auto-ctx/`
+    // directory reaching the auto-context cleanup) could otherwise appear
+    // first and poison the assertion without any change in PR #2 behavior.
+    const lines = combined.split("\n");
+    const fileReadLine = lines.find((line) => line.startsWith("cli: failed to read --event ")) ?? "";
+    // The file-read-error line must exist and reference --event byte-identically
+    // so existing log scrapers and CI greps keep working.
+    expect(fileReadLine.length).toBeGreaterThan(0);
+    expect(fileReadLine.startsWith("cli: failed to read --event ")).toBe(true);
+    expect(fileReadLine).toMatch(/--event/u);
+    // The legacy `cli: <msg>` byte shape is preserved exactly: every `cli:`
+    // line in the captured stream must start with `cli: ` (no leading
+    // whitespace, no intermediate transformation).
+    for (const line of lines) {
+      if (line.startsWith("cli:")) {
+        expect(line.startsWith("cli: ")).toBe(true);
+      }
+    }
   });
 
   it("dist/cli.js bundle reflects the source fix (sanity check after npm run bundle)", () => {
