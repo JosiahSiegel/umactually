@@ -411,6 +411,17 @@ jobs:
         # We use `set +e` because the guard's exit code may be non-zero
         # on a parse-fail sentinel — but we still want to capture the
         # annotations emitted on stdout before the failure.
+        #
+        # Parse-fail is a STRONGER signal than the per-warning telemetry
+        # the CLI emits (sub-3s duration, zero provider round-trips).
+        # A parse-fail means the model never produced a usable review at
+        # all — the operator's PR is unblocked but the review itself is
+        # missing, which is qualitatively different from "review was
+        # suspiciously fast". Surface that as `::error::` (red, visible
+        # in the PR's checks view) instead of letting it stay buried
+        # in raw logs or only show up as one of many `::warning::`
+        # annotations. Still exit 0 (advisory) so the overall job stays
+        # green; the error annotation is the loud signal, not a CI gate.
         if: always()
         run: |
           set +e
@@ -419,14 +430,46 @@ jobs:
             echo "Artifact not found at ${ARTIFACT}; check-review-artifact guard skipped."
             exit 0
           fi
-          node bin/umactually.mjs check-review-artifact "${ARTIFACT}"
-          # Always exit 0 — this step is advisory. Annotations already
-          # emitted by the CLI on stdout become GitHub Actions warnings.
-          # We intentionally do NOT export guard-exit to GITHUB_OUTPUT:
-          # no downstream step references it, and `${GITHUB_OUTPUT:-/dev/null}`
-          # would silently swallow the echo on self-hosted runners where
-          # the env var is unset (addresses self-review inline finding
-          # on PR #144 round 2).
+          # Capture stdout/stderr separately so we can inspect the
+          # classification text for the parse-fail sentinel without
+          # losing the CLI's existing `::warning::` annotations.
+          # The CLI writes warnings to stdout (per src/cli/dispatch.ts:
+          # process.stdout.write(`::warning::${warning}\n`)) and the
+          # human-readable classification to stderr. Splitting them
+          # lets us re-emit the warnings verbatim AND inject a
+          # `::error::` annotation when the classification is
+          # parse-fail, all in one GitHub Actions step log.
+          GUARD_STDOUT_FILE="$(mktemp)"
+          GUARD_STDERR_FILE="$(mktemp)"
+          trap 'rm -f "${GUARD_STDOUT_FILE}" "${GUARD_STDERR_FILE}"' EXIT
+          node bin/umactually.mjs check-review-artifact "${ARTIFACT}" \
+            >"${GUARD_STDOUT_FILE}" 2>"${GUARD_STDERR_FILE}" || true
+          GUARD_EXIT=$?
+          # Forward the CLI's existing stdout (warnings as `::warning::`
+          # annotations) verbatim so the per-warning telemetry still
+          # surfaces in the step log / PR checks view.
+          if [ -s "${GUARD_STDOUT_FILE}" ]; then
+            cat "${GUARD_STDOUT_FILE}"
+          fi
+          # The CLI's stderr line for a parse-fail starts with
+          # `umactually: <path>: parse-fail: <reason>` (see
+          # src/cli/dispatch.ts:444 — `process.stderr.write(${message})`
+          # where message is the parse-fail `reason`). Treat any stderr
+          # line containing the literal `parse-fail` as the parse-fail
+          # signal; the CLI is the source of truth for the exact
+          # classification text, so matching on its prefix keeps the
+          # workflow in lockstep with src/cli/check-review-artifact.ts
+          # without duplicating the classifier here.
+          if [ -s "${GUARD_STDERR_FILE}" ] && grep -qF "parse-fail" "${GUARD_STDERR_FILE}"; then
+            echo "::error::Parse-fail detected (guard exit=${GUARD_EXIT}): the self-review did not produce a usable artifact. Check the artifact at ${ARTIFACT} and the upstream 'Run UmActually self review' step log."
+          fi
+          # Always exit 0 — this step is advisory. The `::error::`
+          # annotation above is a SURFACE-level signal for PR reviewers;
+          # it does NOT fail the job. We intentionally do NOT export
+          # guard-exit to GITHUB_OUTPUT: no downstream step references
+          # it, and `${GITHUB_OUTPUT:-/dev/null}` would silently swallow
+          # the echo on self-hosted runners where the env var is unset
+          # (addresses self-review inline finding on PR #144 round 2).
           exit 0
 
       - name: Summarise self-review outcome
@@ -483,8 +526,14 @@ jobs:
 #    (sub-3s duration, zero provider round-trips, rubber-stamp verdict),
 #    emits one or more `::warning::` annotations. This is the hardening
 #    for the rubber-stamp concern surfaced after PR #141-#143 returned
-#    consecutive clean self-reviews with no inline findings. The step
-#    always exits 0; the warnings are advisory and do not block the PR.
+#    consecutive clean self-reviews with no inline findings. When the
+#    guard classifies the artifact as `parse-fail` (the model never
+#    produced a usable review at all — qualitatively different from
+#    "review was suspiciously fast"), the step emits a `::error::`
+#    annotation on top of the `::warning::` annotations so the failure
+#    is visually distinct on the PR's checks view. The step always
+#    exits 0; both warning and error annotations are advisory and do
+#    not block the PR.
 # 6. The local artifact at `artifacts/manual/s1-github-self-review.md`
 #    captures {posted, parseFailed, message, inlineThreadCount, verdict,
 #    note} even on failure (see src/cli/run.ts writeLiveArtifact), so
