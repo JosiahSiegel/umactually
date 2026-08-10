@@ -1,11 +1,12 @@
 // allow: SIZE_OK — single GitHub live orchestration suite sharing endpoint recorder, diff fixtures, and marker-review cases
+import { Buffer } from "node:buffer";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import { parseCliArgs } from "../../src/cli.js";
+import { parseCliArgs, runCli } from "../../src/cli.js";
 import { runLive } from "../../src/cli/orchestrator.js";
 import { clearCopilotTokenCache } from "../../src/provider/copilot-token.js";
 import { REVIEW_MARKER } from "../../src/util/marker.js";
@@ -160,6 +161,18 @@ function readProviderUserPrompt(call: RecordedCall): string {
     }
   }
   throw new TypeError("provider request must include a user prompt");
+}
+
+function readProviderSystemPrompt(call: RecordedCall): string {
+  const body = readRecord(call.body, "provider request");
+  const input = readArray(body["input"], "provider request input");
+  for (const entry of input) {
+    const record = readRecord(entry, "provider input entry");
+    if (record["role"] === "system" && typeof record["content"] === "string") {
+      return record["content"];
+    }
+  }
+  throw new TypeError("provider request must include a system prompt");
 }
 
 function githubRoutes(providerBody: string): readonly FetchRoute[] {
@@ -853,6 +866,170 @@ describe("runLive GitHub orchestration", () => {
     const postBody = readRecord(reviewPosts[0]!.body as Record<string, unknown>, "review request");
     const postedComments = readArray(postBody["comments"], "review comments");
     expect(postedComments).toHaveLength(1);
+  });
+
+  // ---------------------------------------------------------------------------
+  // Base-branch instruction-files fetch path
+  //
+  // These tests lock the wiring between `dispatchLivePlatform` and
+  // `buildProviderPrompts` for the new `instructionFilesByBaseBranch` field
+  // populated by `fetchGithubPrInstructions` / `fetchAzurePrInstructions`.
+  // The field is consulted by `buildProviderPrompts` to populate the
+  // provider's system prompt (NOT the cwd-read branch), so the system
+  // prompt is the load-bearing assertion surface.
+  // ---------------------------------------------------------------------------
+
+  it("fetches GitHub base-branch instruction files and forwards them to the provider prompt", async () => {
+    // Given: GitHub returns base64-encoded content for one of the
+    // default-lookup paths from the PR's base SHA. The same path is
+    // also written to cwd so the user-prompt's "Additional
+    // instructions" branch (which still reads from cwd) does not
+    // throw `not-found` and abort the run.
+    workspace = await mkdtemp(join(tmpdir(), "umactually-live-base-branch-github-"));
+    const eventPath = join(workspace, "event.json");
+    await writeFile(eventPath, EVENT_JSON, "utf8");
+    await writeFile(join(workspace, "CLAUDE.md"), "INSTRUCTION_FROM_CWD\n", "utf8");
+    const baseBranchPayload = "BASE_BRANCH_GITHUB_INSTRUCTION_TOKEN";
+    const baseBranchB64 = Buffer.from(baseBranchPayload, "utf8").toString("base64");
+    const baseBranchContentsRoutes: readonly FetchRoute[] = [
+      {
+        match: (url, method) =>
+          method === "GET"
+          && url.includes("/contents/CLAUDE.md?ref=2222222222222222222222222222222222222222"),
+        response: new Response(
+          JSON.stringify({ content: baseBranchB64, encoding: "base64" }),
+          { status: 200, headers: { "content-type": "application/json" } },
+        ),
+      },
+      {
+        // Every other DEFAULT_PROMPT_FILE_PATHS entry pinned to the base SHA 404s.
+        match: (url, method) =>
+          method === "GET"
+          && url.includes("/repos/octo-org/octo-repo/contents/")
+          && url.includes("?ref=2222222222222222222222222222222222222222"),
+        response: new Response(JSON.stringify({ message: "Not Found" }), { status: 404 }),
+      },
+    ];
+    const recorder = makeFetchRecorder([...baseBranchContentsRoutes, ...githubRoutes(PROVIDER_REVIEW)]);
+
+    // When: live orchestration runs on GitHub.
+    const result = await runLive({
+      parsed: parseCliArgs(["--platform", "github", "--no-dry-run", "--model", "review-model-synthetic"]),
+      cwd: workspace,
+      env: githubEnv(eventPath),
+      fetchImpl: recorder.fetchImpl,
+    });
+
+    // Then: the review posts successfully and the provider's system
+    // prompt contains the base-branch content forwarded by
+    // `fetchGithubPrInstructions` (NOT a cwd read — the path the
+    // orchestrator chose is the new base-branch fetch path).
+    expect(result.exitCode).toBe(0);
+    expect(result.posted).toBe(true);
+    const providerCall = findCall(recorder.calls, "POST", "/v1/responses");
+    const systemPrompt = readProviderSystemPrompt(providerCall);
+    expect(systemPrompt).toContain(baseBranchPayload);
+
+    // Then: the request body uses the baseSha, not the headSha, so the
+    // PR cannot rewrite its own reviewer instructions.
+    const baseBranchCalls = recorder.calls.filter(
+      (call) =>
+        call.method === "GET"
+        && call.url.includes("/contents/")
+        && call.url.includes("?ref=2222222222222222222222222222222222222222"),
+    );
+    // Sanity: the fan-out actually issued at least one base-branch fetch.
+    expect(recorder.calls.some((call) =>
+      call.method === "GET"
+      && call.url.includes("/contents/CLAUDE.md?ref=2222222222222222222222222222222222222222"),
+    )).toBe(true);
+    expect(baseBranchCalls.every((call) => !call.url.includes("?ref=1111111111111111111111111111111111111111"))).toBe(true);
+  });
+
+  it("falls back to cwd lookup when GitHub base-branch instruction fetch fails", async () => {
+    // Given: the GitHub `contents` API is unreachable (500 on every
+    // path). `fetchGithubPrInstructions` throws and the orchestrator
+    // must log a warning and proceed with the run.
+    workspace = await mkdtemp(join(tmpdir(), "umactually-live-base-branch-github-fail-"));
+    const eventPath = join(workspace, "event.json");
+    await writeFile(eventPath, EVENT_JSON, "utf8");
+    const recorder = makeFetchRecorder([
+      {
+        match: (url, method) =>
+          method === "GET"
+          && url.includes("/repos/octo-org/octo-repo/contents/")
+          && url.includes("?ref=2222222222222222222222222222222222222222"),
+        response: new Response(JSON.stringify({ message: "boom" }), { status: 500 }),
+      },
+      ...githubRoutes(PROVIDER_REVIEW),
+    ]);
+
+    // Capture stderr so the assertion can pin the warning log shape.
+    // NOTE: vitest sets `VITEST` so `logWarning` emits a plain
+    // brand-prefixed line (no `::warning::` workflow annotation) — see
+    // `isQuietAnnotationMode` in src/util/log.ts.
+    const stderrLines: string[] = [];
+    const stderrSpy = vi.spyOn(process.stderr, "write").mockImplementation((chunk) => {
+      stderrLines.push(String(chunk));
+      return true;
+    });
+
+    // When: live orchestration runs.
+    const result = await runLive({
+      parsed: parseCliArgs(["--platform", "github", "--no-dry-run", "--model", "review-model-synthetic"]),
+      cwd: workspace,
+      env: githubEnv(eventPath),
+      fetchImpl: recorder.fetchImpl,
+    });
+    stderrSpy.mockRestore();
+
+    // Then: the run still posts successfully (cwd fallback).
+    expect(result.exitCode).toBe(0);
+    expect(result.posted).toBe(true);
+
+    // Then: a warning log was emitted explaining the fallback.
+    const allStderr = stderrLines.join("");
+    expect(allStderr).toContain("failed to fetch GitHub base-branch instruction files");
+    expect(allStderr).toContain("falling back to cwd lookup");
+
+    // Then: the provider prompt is still sent (i.e. we did not
+    // short-circuit out of the review because instructions failed).
+    const providerCall = findCall(recorder.calls, "POST", "/v1/responses");
+    expect(readProviderSystemPrompt(providerCall).length).toBeGreaterThan(0);
+  });
+
+  it("does NOT call base-branch fetchers in standalone mode (run-cli with --files --dry-run)", async () => {
+    // Given: a `runCli` invocation of --files + --dry-run (no CI env,
+    // no PR, no provider call). The local-files path must NOT call
+    // `fetchGithubPrInstructions` / `fetchAzurePrInstructions` — there
+    // is no base branch to read from. We replace globalThis.fetch with
+    // a spy that throws on any call so the assertion bites if the
+    // standalone path ever reaches the orchestrator's base-branch
+    // fetch branch.
+    workspace = await mkdtemp(join(tmpdir(), "umactually-standalone-no-fetch-"));
+    const reviewFile = join(workspace, "review-target.ts");
+    await writeFile(reviewFile, "export const keep = true;\n", "utf8");
+    const fetchSpy = vi.fn<typeof fetch>(async () => {
+      throw new Error("fetch should not be called in standalone --files mode");
+    });
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = fetchSpy;
+    try {
+      // When: --files --dry-run runs through the public CLI entry.
+      // The --dry-run shortcut exits before the provider call so the
+      // test does not need real provider credentials.
+      const result = await runCli(
+        ["--files", reviewFile, "--api-url", "https://provider.example/v1", "--api-key", "provider-key-secret", "--dry-run"],
+        workspace,
+      );
+
+      // Then: the CLI completed without invoking fetch — the standalone
+      // path never reaches the orchestrator's base-branch fetch branch.
+      expect(result.exitCode).toBe(0);
+      expect(fetchSpy).not.toHaveBeenCalled();
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
   });
 });
 

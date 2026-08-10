@@ -6,6 +6,10 @@ import { parseItemContent, parseIterationChanges, parseLatestIterationId, parseS
 import { authHeaders } from "../../util/http.js";
 import type { FetchImpl } from "../../util/http.js";
 import { commentBodyHasMarker } from "../../util/marker.js";
+import {
+  decodeInstructionResponseBody,
+  fetchPlatformInstructionFiles,
+} from "../../util/platform-instructions.js";
 import { filterBuildArtifacts } from "../../diff/filter-build-artifacts.js";
 import {
   AZURE_API_VERSION,
@@ -47,6 +51,77 @@ export async function fetchAzurePrDiff(context: AzureContext, fetchImpl: FetchIm
   }
 
   return filtered;
+}
+
+/** Azure DevOps Git API version pinned by the `items` endpoint we use here. The repository-level preview namespace is required for the `versionDescriptor.*` query string. */
+const AZURE_GIT_ITEMS_API_VERSION = "7.1-preview.1";
+
+/**
+ * Fetch the contents of instruction files from the PR's base commit.
+ * Reads each path via the Azure DevOps Git `items` API pinned to
+ * `baseCommit` (not `sourceCommit`) so a PR cannot rewrite its own
+ * reviewer instructions. Per-path: 2xx decodes the JSON `content`
+ * field; 404 is silently skipped; any other failure throws
+ * `AzureApiError` with code `"AZURE_FETCH_FAILED"` so the caller can
+ * fall back to cwd reading. Concurrency is bounded by the shared
+ * `fetchPlatformInstructionFiles` worker pool (4 by default).
+ */
+export async function fetchAzurePrInstructions(
+  context: AzureContext,
+  paths: readonly string[],
+  fetchImpl: FetchImpl = fetch,
+): Promise<Map<string, string>> {
+  return fetchPlatformInstructionFiles(paths, fetchImpl, (path, impl) =>
+    fetchAzurePrInstruction(context, path, impl),
+  );
+}
+
+async function fetchAzurePrInstruction(
+  context: AzureContext,
+  path: string,
+  fetchImpl: FetchImpl,
+): Promise<string | null> {
+  const url = buildInstructionItemUrl(context, path);
+  const response = await fetchImpl(url, buildAzureRequestInit(context));
+
+  // Azure requires the empty-body guard BEFORE JSON.parse — the
+  // shared `decodeInstructionResponseBody` helper assumes JSON-shaped
+  // bodies, so we add the empty-body check here for parity with the
+  // pre-decode shape (the GitHub adapter never sees an empty body
+  // because the contents endpoint always returns either a JSON object
+  // or 404).
+  const payload = await decodeInstructionResponseBody(
+    response,
+    path,
+    "Azure DevOps",
+    AzureApiError,
+    "AZURE_FETCH_FAILED",
+    async (resp) => {
+      const bodyText = await resp.text();
+      if (bodyText.length === 0) {
+        throw new AzureApiError(
+          "AZURE_FETCH_FAILED",
+          resp.status,
+          `Azure DevOps PR instructions response for '${path}' was empty.`,
+        );
+      }
+      try {
+        return JSON.parse(bodyText);
+      } catch (error) {
+        if (error instanceof SyntaxError) {
+          throw new AzureApiError(
+            "AZURE_FETCH_FAILED",
+            resp.status,
+            `Azure DevOps PR instructions response for '${path}' was not valid JSON.`,
+            { cause: error },
+          );
+        }
+        throw error;
+      }
+    },
+  );
+  if (payload === null) return null;
+  return parseItemContent(payload);
 }
 
 async function reconstructUnifiedDiff(
@@ -185,6 +260,27 @@ function parseItemBaseUrl(value: string | null): URL | null {
 function azureRepositoryBaseUrl(context: AzureContext): string {
   const projectSegment = encodeURIComponent(context.project);
   return `${AZURE_DEVOPS_BASE_URL}/${context.org}/${projectSegment}/_apis/git/repositories/${context.repoId}`;
+}
+
+function buildInstructionItemUrl(context: AzureContext, path: string): string {
+  const url = new URL(`${azureRepositoryBaseUrl(context)}/items`);
+  url.searchParams.set("path", path);
+  // The orchestrator gates the fetch on `baseCommit !== undefined` (see
+  // src/cli/orchestrator.ts) so this branch is unreachable at runtime;
+  // the assert narrows the type for the URLSearchParams.set call below.
+  if (context.baseCommit === undefined) {
+    throw new AzureApiError(
+      "AZURE_FETCH_FAILED",
+      0,
+      "Azure DevOps base-branch fetch requires SYSTEM_PULLREQUEST_MERGECOMMITID to be set; falling back to cwd lookup.",
+    );
+  }
+  url.searchParams.set("versionDescriptor.version", context.baseCommit);
+  url.searchParams.set("versionDescriptor.versionType", "commit");
+  url.searchParams.set("includeContent", "true");
+  url.searchParams.set("api-version", AZURE_GIT_ITEMS_API_VERSION);
+
+  return url.toString();
 }
 
 /** Active Azure thread statuses — a thread still in flight. */

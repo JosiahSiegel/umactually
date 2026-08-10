@@ -3,6 +3,9 @@ import { FIELDS } from "./field-schema.js";
 /** Canonical prompt-file byte cap shared by config loading and live prompt assembly. */
 export const DEFAULT_PROMPT_BYTE_CAP = FIELDS.promptByteCap.defaultValue as number;
 
+/** Canonical human-facing file byte cap (e.g. AGENTS.md equivalents) loaded by the default-lookup convention. */
+export const DEFAULT_HUMAN_FILE_BYTE_CAP = 16_384;
+
 /** Canonical cap for posted review comments when no CLI/input override is supplied. */
 export const DEFAULT_MAX_COMMENTS = FIELDS.maxComments.defaultValue as number;
 

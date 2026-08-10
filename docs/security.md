@@ -125,6 +125,7 @@ The action treats the following inputs as **untrusted**:
 - `prompt-file` contents (if the file path passes the path safety checks).
 - Anything in the event JSON except the small allow-list (PR number, repository name, head SHA).
 - The `api-url` string (and any query parameters it carries).
+- Instruction files (CLAUDE.md, AGENTS.md, .github/copilot-instructions.md, README.md, …) are UNTRUSTED repo-supplied content. In PR mode, umactually reads them from the PR's base branch (not the PR head) to defeat attacker-injected instructions.
 
 The action treats the following inputs as **trusted**:
 

@@ -82,6 +82,7 @@ export type ParsedCliArgs = {
   readonly maxComments: number | null;
   readonly reviewFileLimit: number | null;
   readonly detectLeaks: boolean;
+  readonly instructionFiles: boolean;
   readonly walkthrough: boolean;
   readonly diagnostic: boolean;
   readonly debugRawResponse: boolean;
@@ -165,6 +166,7 @@ export function parseCliArgs(args: readonly string[]): ParsedCliArgs {
   let maxComments: number | null = null;
   let reviewFileLimit: number | null = null;
   let detectLeaks = true;
+  let instructionFiles = true;
   let walkthrough = false;
   let diagnostic = false;
   let debugRawResponse = false;
@@ -335,6 +337,9 @@ export function parseCliArgs(args: readonly string[]): ParsedCliArgs {
       case "--no-include-pr-sonar-findings":
         includePrSonarFindings = false;
         break;
+      case "--no-instruction-files":
+        instructionFiles = false;
+        break;
       case "--sonar-host-url":
         sonarHostUrl = readValue(args, index, "sonar-host-url");
         index += 1;
@@ -484,6 +489,7 @@ export function parseCliArgs(args: readonly string[]): ParsedCliArgs {
     maxComments,
     reviewFileLimit,
     detectLeaks,
+    instructionFiles,
     walkthrough,
     diagnostic,
     debugRawResponse,

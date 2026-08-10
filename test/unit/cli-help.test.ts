@@ -150,6 +150,16 @@ describe("Contextual help (per-command)", () => {
     expect(REVIEW_HELP).not.toContain("Node.js >= 24");
   });
 
+  it("review --help documents the --no-instruction-files opt-out flag", () => {
+    // The new instruction-file loader auto-reads CLAUDE.md, AGENTS.md,
+    // README.md, etc. from the target repo. The opt-out is the single
+    // negative flag `--no-instruction-files`; operators reading
+    // `umactually review --help` must be able to discover it without
+    // grepping the source. A future edit that drops the flag from
+    // REVIEW_HELP would silently remove the discoverability surface.
+    expect(REVIEW_HELP).toContain("--no-instruction-files");
+  });
+
   // REV_HELP-CFG-* — REVIEW_HELP mirrors the same saved-config
   // resolution-order lines so `umactually review --help` is also
   // self-documenting. These cases pin REVIEW_HELP coverage even though

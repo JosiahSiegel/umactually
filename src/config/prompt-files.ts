@@ -1,7 +1,9 @@
+import { readdirSync as fsReaddirSync, realpathSync as fsRealpathSync } from "node:fs";
 import { realpath as fsRealpath, stat as fsStat, readFile as fsReadFile } from "node:fs/promises";
 import { isAbsolute, join as pathJoin, resolve as pathResolve, sep as pathSep, posix } from "node:path";
 
 import { InvalidConfigError, PromptFileError } from "./errors.js";
+import { DEFAULT_HUMAN_FILE_BYTE_CAP, DEFAULT_PROMPT_BYTE_CAP } from "./defaults.js";
 
 const PROMPT_SEPARATOR = "\n\n---\n\n";
 
@@ -116,6 +118,107 @@ export async function readPromptFiles(
 }
 
 /**
+ * Read the six human-convention files (`README.md`, `CONTRIBUTING.md`,
+ * `CODE_OF_CONDUCT.md`, `SECURITY.md`, `CHANGELOG.md`, `LICENSE`) under
+ * `cwd` and return their concatenated contents joined by
+ * `"\n\n---\n\n"`. These files give the model the project context a
+ * human contributor would read on day one — they are NOT AI-instruction
+ * files, but they share the default-lookup pipeline so the review has
+ * the same "first day on the project" framing as the auto-loaded
+ * `CLAUDE.md` / `AGENTS.md` umbrella conventions.
+ *
+ * Behavior mirrors `readPromptFiles` for everything except the
+ * error-handling contract: every file is processed independently, and
+ * per-file failures (missing, not-a-file, over-cap, read-failed) are
+ * SILENTLY SKIPPED rather than thrown. Long READMEs / LICENSES are
+ * common, and we explicitly do not want one oversized file to abort
+ * the review — that would force users to disable the human-file
+ * loading entirely instead of just trimming the over-cap entry.
+ *
+ * Two byte caps govern the loader:
+ * - **Per-file cap** = `DEFAULT_HUMAN_FILE_BYTE_CAP` (16 KiB). Each
+ *   file is checked against this individually; over-cap files are
+ *   silently skipped.
+ * - **Aggregate cap** = `DEFAULT_PROMPT_BYTE_CAP` (65 KiB), shared
+ *   with the umbrella-convention loader. Once the running total of
+ *   included files exceeds the aggregate cap, the next file is
+ *   silently skipped (NOT thrown — see "silent skip" above).
+ *
+ * The same security boundary as `readPromptFiles` is enforced: any
+ * path whose resolved realpath escapes `cwd` is silently skipped (a
+ * prompt-file path that resolves outside the repo is not a "missing
+ * file" — but for human files there is no `prompt-files` override
+ * surface, so the same guard is the simplest defense and keeps the
+ * two readers behaviorally aligned).
+ */
+export async function readHumanConventionFiles(
+  options: { readonly cwd: string; readonly fs?: PromptFileSystem },
+): Promise<string> {
+  const fs = options.fs ?? nodePromptFileSystem;
+  const cwdReal = await fs.realpath(options.cwd);
+
+  const parts: string[] = [];
+  let aggregateBytes = 0;
+
+  for (const rawPath of HUMAN_CONVENTION_FILE_PATHS) {
+    if (typeof rawPath !== "string" || rawPath.length === 0) {
+      continue;
+    }
+    if (isAbsolute(rawPath)) {
+      continue;
+    }
+    let resolved: { readonly absolute: string; readonly withinCwd: boolean };
+    try {
+      resolved = await fs.realpathWithinCwd(rawPath, cwdReal, fs);
+    } catch {
+      continue;
+    }
+    if (!resolved.withinCwd) {
+      continue;
+    }
+    let stat: { readonly isFile: boolean; readonly size: number };
+    try {
+      stat = await fs.stat(resolved.absolute);
+    } catch {
+      continue;
+    }
+    if (!stat.isFile) {
+      continue;
+    }
+    if (stat.size > DEFAULT_HUMAN_FILE_BYTE_CAP) {
+      // Long READMEs / LICENSES are common; an over-cap human file
+      // must not abort the review — skip it instead of throwing.
+      continue;
+    }
+    if (aggregateBytes + stat.size > DEFAULT_PROMPT_BYTE_CAP) {
+      // Same rationale as the per-file cap: a single oversized entry
+      // must not consume the aggregate budget for the rest of the
+      // human-file load. Skip rather than throw.
+      continue;
+    }
+    let text: string;
+    try {
+      text = await fs.readFile(resolved.absolute);
+    } catch {
+      continue;
+    }
+    parts.push(text);
+    aggregateBytes += stat.size;
+  }
+
+  return parts.join(PROMPT_SEPARATOR);
+}
+
+const HUMAN_CONVENTION_FILE_PATHS: readonly string[] = [
+  "README.md",
+  "CONTRIBUTING.md",
+  "CODE_OF_CONDUCT.md",
+  "SECURITY.md",
+  "CHANGELOG.md",
+  "LICENSE",
+];
+
+/**
  * Split a newline- or comma-separated list of paths into a deduplicated,
  * ordered, trimmed array of non-empty strings. Empty input yields an
  * empty array. Order is preserved by first-occurrence.
@@ -143,16 +246,22 @@ export function splitPromptFileList(raw: string | null | undefined): readonly st
 }
 
 /**
- * Repository-relative filenames UmActually auto-discovers when no explicit
- * prompt-file or prompt-files override is supplied. Each entry is checked
- * with `fs.stat`; missing files are silently skipped so repos that lack
- * any of these files fall through to the built-in default system prompt
- * (or empty additional prompt).
+ * Repository-relative filenames (and glob patterns) UmActually
+ * auto-discovers when no explicit prompt-file or prompt-files override
+ * is supplied. Each entry is checked with `fs.stat`; missing files
+ * (and glob patterns that match nothing) are silently skipped so repos
+ * that lack any of these files fall through to the built-in default
+ * system prompt (or empty additional prompt).
  *
  * Order matters: files are concatenated in the listed order. The
- * recognized conventions are:
+ * recognized conventions are organized across three tiers:
  *
- * - `CLAUDE.md` — Anthropic Claude Code / Cowork repo-level instructions.
+ * **Tier 1 — cross-tool "umbrella" conventions** (the five entries at
+ * the top are the legacy short list; the three local/override variants
+ * below extend the same families):
+ *
+ * - `CLAUDE.md` — Anthropic Claude Code / Cowork repo-level
+ *   instructions.
  * - `AGENTS.md` — emerging agent-agnostic convention (also adopted by
  *   Cursor, aider, and OpenAI Codex).
  * - `.github/copilot-instructions.md` — GitHub Copilot Coding Agent
@@ -160,19 +269,103 @@ export function splitPromptFileList(raw: string | null | undefined): readonly st
  *   https://docs.github.com/en/copilot/customizing-copilot/adding-custom-instructions-for-github-copilot).
  * - `.cursorrules` — Cursor legacy single-file rules format.
  * - `GEMINI.md` — Google Gemini CLI repo-level instructions.
+ * - `AGENTS.local.md` — local-machine override of `AGENTS.md`
+ *   (gitignored personal preferences).
+ * - `AGENTS.override.md` — workspace-level override of `AGENTS.md`
+ *   (committed team override).
+ * - `CLAUDE.local.md` — local-machine override of `CLAUDE.md`.
  *
- * Excluded by design (deferred to a future iteration that needs glob
- * support): `.github/instructions/*.md` (Copilot multi-file mode) and
- * `.clinerules/*.md` (Cline). Glob support requires an allowlist-aware
- * directory read; the current `readPromptFiles` API only accepts a flat
- * list of paths.
+ * **Tier 3 — IDE/tool-specific single-file rules** (legacy flat-file
+ * formats that the auto-discovery layer still honors for backwards
+ * compatibility):
+ *
+ * - `.windsurfrules` — Windsurf legacy single-file rules.
+ * - `.clinerules` — Cline legacy single-file rules.
+ * - `.roorules` — Roo Code legacy single-file rules.
+ * - `.kilocoderules` — Kilo Code legacy single-file rules.
+ * - `.github/git-commit-instructions.md` — GitHub Copilot
+ *   commit-message conventions.
+ * - `.opencode/AGENTS.md` — OpenCode agent instructions file.
+ *
+ * **Glob patterns** — the recursive `.rules/`-directory formats
+ * adopted by the same tools when they outgrew the single-file
+ * variants. Each glob is anchored at the repo root and must match
+ * a regular file; the resolver expands globs safely (the
+ * call site that consumes this list enforces an allowlist-aware
+ * directory read):
+ *
+ * - `.github/instructions/*.instructions.md` — GitHub Copilot
+ *   multi-file instructions mode.
+ * - `.cursor/rules/*.mdc` — Cursor modern `.mdc` rule files.
+ * - `.clinerules/**​/*.md` — Cline recursive rules.
+ * - `.roo/rules/**​/*.md` — Roo Code recursive rules.
+ * - `.roo/rules-*​/**​/*.md` — Roo Code scoped rules variants.
+ * - `.kilocode/rules/**​/*.md` — Kilo Code recursive rules.
+ * - `.kilocode/rules-*​/**​/*.md` — Kilo Code scoped rules variants.
+ * - `.continue/rules/*.md` — Continue assistant rules.
+ * - `.windsurf/rules/**​/*.md` — Windsurf recursive rules.
+ * - `.claude/rules/**​/*.md` — Claude Code path-scoped rules.
+ *
+ * **Human convention files** — README, CONTRIBUTING, the codes of
+ * conduct, etc. These are not AI-instruction files; they are
+ * appended so the model has the project context a human contributor
+ * would read on day one. They share this array but are loaded with
+ * a smaller per-file cap (`DEFAULT_HUMAN_FILE_BYTE_CAP`, 16 KiB) at
+ * the call site: files that exceed the cap are silently skipped so
+ * a long LICENSE / CHANGELOG does not abort the review or consume
+ * the aggregate byte budget.
+ *
+ * - `README.md`
+ * - `CONTRIBUTING.md`
+ * - `CODE_OF_CONDUCT.md`
+ * - `SECURITY.md`
+ * - `CHANGELOG.md`
+ * - `LICENSE`
+ *
+ * Excluded by design (out of scope for this iteration):
+ * Tier 5 product-config files (`.aider.conf.yml`, `opencode.json`,
+ * `kilo.jsonc`) — those are parsed by the tools themselves, not
+ * surfaced as prompt text. Subdirectory walking (e.g. `docs/AGENTS.md`)
+ * is also excluded; this list stays anchored at the repo root plus
+ * the explicitly-listed leading subdirectories (`.github/`,
+ * `.cursor/`, `.clinerules/`, `.roo/`, `.kilocode/`,
+ * `.continue/`, `.windsurf/`, `.claude/`, `.opencode/`).
  */
 export const DEFAULT_PROMPT_FILE_PATHS: readonly string[] = [
+  // Tier 1 — cross-tool umbrella conventions (legacy top-5 + local/override variants)
   "CLAUDE.md",
   "AGENTS.md",
   ".github/copilot-instructions.md",
   ".cursorrules",
   "GEMINI.md",
+  "AGENTS.local.md",
+  "AGENTS.override.md",
+  "CLAUDE.local.md",
+  // Tier 3 — IDE/tool-specific single-file rules
+  ".windsurfrules",
+  ".clinerules",
+  ".roorules",
+  ".kilocoderules",
+  ".github/git-commit-instructions.md",
+  ".opencode/AGENTS.md",
+  // Glob patterns — recursive `.rules/` directory formats
+  ".github/instructions/*.instructions.md",
+  ".cursor/rules/*.mdc",
+  ".clinerules/**/*.md",
+  ".roo/rules/**/*.md",
+  ".roo/rules-*/**/*.md",
+  ".kilocode/rules/**/*.md",
+  ".kilocode/rules-*/**/*.md",
+  ".continue/rules/*.md",
+  ".windsurf/rules/**/*.md",
+  ".claude/rules/**/*.md",
+  // Human convention files (loaded with a smaller per-file cap at the call site)
+  "README.md",
+  "CONTRIBUTING.md",
+  "CODE_OF_CONDUCT.md",
+  "SECURITY.md",
+  "CHANGELOG.md",
+  "LICENSE",
 ];
 
 /**
@@ -210,4 +403,135 @@ export async function resolveDefaultPromptFiles(
     }
   }
   return existing;
+}
+
+/**
+ * Returns true when `pattern` contains any of the glob metacharacters
+ * the rest of this module treats as "needs expansion": `*`, `?`, `[`, `{`.
+ * Brace expansion (`{a,b}`) is detected at this gate but intentionally
+ * NOT supported by the matcher below — it is grouped with the other
+ * metacharacters so callers can fail fast / reject braces uniformly.
+ */
+function isGlobPattern(pattern: string): boolean {
+  return /[*?[{]/u.test(pattern);
+}
+
+/**
+ * Translate a single glob segment (`*`, `**`, `?`, `[abc]`, or literal)
+ * into the corresponding regex source fragment. `/` is treated as a path
+ * separator and never matches `*` or `?`; only `**` may span `/`. Char
+ * classes are passed through verbatim so `[abc]` and `[^abc]` both work.
+ */
+function globToRegexSource(pattern: string): string {
+  let out = "";
+  for (let i = 0; i < pattern.length; i++) {
+    const ch = pattern[i];
+    if (ch === undefined) continue;
+    if (ch === "*") {
+      // `**` → match anything including `/`; `*` → match anything except `/`.
+      if (pattern[i + 1] === "*") {
+        out += ".*";
+        i++;
+        // Consume an immediately following `/` so `**/foo` and `foo/**/bar`
+        // both compile cleanly without an awkward `.*/foo` prefix.
+        if (pattern[i + 1] === "/") i++;
+      } else {
+        out += "[^/]*";
+      }
+    } else if (ch === "?") {
+      out += "[^/]";
+    } else if (ch === "[") {
+      // Pass char class through verbatim up to the closing `]`.
+      const end = pattern.indexOf("]", i + 1);
+      if (end === -1) {
+        out += "\\[";
+      } else {
+        out += pattern.slice(i, end + 1);
+        i = end;
+      }
+    } else {
+      // Regex-escape any literal so `.`, `+`, `(`, `{`, etc. don't
+      // break out. Brace-expansion patterns (`{a,b}`) are detected at
+      // the gate but never expanded here — the braces are treated as
+      // literal regex characters.
+      out += ch.replace(/[\\^$.+()|{}]/gu, "\\$&");
+    }
+  }
+  return out;
+}
+
+function globToRegExp(pattern: string): RegExp {
+  // Anchor to the whole string; the path is fully-resolved when we test it.
+  return new RegExp(`^${globToRegexSource(pattern)}$`, "u");
+}
+
+/**
+ * Synchronously expand glob patterns into a flat list of file paths that
+ * exist under `cwd`. Non-glob entries are passed through unchanged so the
+ * caller can mix flat paths and patterns in a single argument list.
+ *
+ * Order contract: matches from each glob are returned in the order
+ * `fs.readdirSync({ recursive: true })` yields them; the outer result
+ * concatenates per-glob in `paths` order. This preserves the
+ * "concatenate in the listed order" property that `readPromptFiles`
+ * relies on.
+ *
+ * Symlink safety: every matched path is resolved with `realpathSync`
+ * and silently dropped if it escapes `cwd`. This mirrors the
+ * `readPromptFiles` boundary so a glob can never smuggle a file from
+ * outside the repo root.
+ *
+ * Brace expansion (`{a,b}`) is detected (so callers see the same
+ * metacharacter surface as `picomatch`) but intentionally NOT
+ * supported — those entries expand to zero matches.
+ */
+export function resolveGlobs(paths: readonly string[], cwd: string): readonly string[] {
+  const cwdReal = fsRealpathSync(cwd);
+  const cwdRealWithSep = cwdReal.endsWith(pathSep) ? cwdReal : cwdReal + pathSep;
+  // Walk the cwd tree once. `readdirSync` with `recursive: true` returns
+  // Dirent objects tagged with their parent path. `Dirent.parentPath` is
+  // ABSOLUTE (not relative to the readdir root), so we strip the cwd
+  // prefix to reconstruct the repo-relative path used by the matcher.
+  // We use the unresolved `cwd` here (not `cwdReal`) because
+  // `parentPath` was produced by the same kernel walk that produced
+  // the entries — they share the same unresolved spelling.
+  const cwdWithSep = cwd.endsWith(pathSep) ? cwd : cwd + pathSep;
+  const entries = fsReaddirSync(cwd, { recursive: true, withFileTypes: true });
+  const out: string[] = [];
+  for (const raw of paths) {
+    if (!isGlobPattern(raw)) {
+      out.push(raw);
+      continue;
+    }
+    const re = globToRegExp(raw);
+    for (const entry of entries) {
+      if (!entry.isFile()) continue;
+      // `Dirent.parentPath` is absolute (e.g. `/repo/.cursor/rules`).
+      // An entry whose parent is exactly `cwd` sits at the cwd root;
+      // anything deeper gets its cwd-prefix stripped.
+      const parent = entry.parentPath;
+      const rel =
+        parent === undefined || parent === null || parent === cwd
+          ? entry.name
+          : parent.startsWith(cwdWithSep)
+            ? `${parent.slice(cwdWithSep.length)}/${entry.name}`
+            : null;
+      if (rel === null) continue;
+      if (!re.test(rel)) continue;
+      // Realpath guard: skip anything that resolves outside cwd. We
+      // resolve against `cwdReal` (the symlink-free root) so that a
+      // symlink that points back into cwd is still accepted, matching
+      // the semantic `readPromptFiles` enforces.
+      const absolute = pathJoin(cwdReal, rel);
+      let real: string;
+      try {
+        real = fsRealpathSync(absolute);
+      } catch {
+        continue;
+      }
+      if (!(real === cwdReal || real.startsWith(cwdRealWithSep))) continue;
+      out.push(rel);
+    }
+  }
+  return out;
 }

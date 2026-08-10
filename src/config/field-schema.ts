@@ -272,6 +272,14 @@ export const FIELDS = {
     type: "boolean",
     defaultValue: true,
   },
+  instructionFiles: {
+    field: "instructionFiles",
+    flag: "--instruction-files",
+    input: "instruction-files",
+    env: ["UMACTUALLY_INSTRUCTION_FILES"],
+    type: "boolean",
+    defaultValue: true,
+  },
   platform: {
     field: "platform",
     flag: "--platform",

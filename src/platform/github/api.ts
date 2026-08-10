@@ -3,6 +3,11 @@ import { PlatformApiError } from "../../util/platform-error.js";
 import type { FetchImpl } from "../../util/http.js";
 import { fetchTextOrThrow, githubHeaders } from "../../util/http.js";
 import { filterBuildArtifacts } from "../../diff/filter-build-artifacts.js";
+import {
+  decodeInstructionResponseBody,
+  fetchPlatformInstructionFiles,
+  parsePlatformJsonBody,
+} from "../../util/platform-instructions.js";
 import { DEFAULT_GITHUB_API_BASE } from "../../util/provider-defaults.js";
 
 /**
@@ -70,4 +75,82 @@ export async function fetchGithubPrDiff(context: GithubContext, fetchImpl: Fetch
 function buildPullUrl(context: GithubContext): string {
   const repositorySegment = `${context.repo.owner}/${context.repo.name}`;
   return `${GITHUB_API_BASE_URL}/repos/${repositorySegment}/pulls/${context.prNumber}`;
+}
+
+/**
+ * Fetch the contents of instruction files from the PR's base branch.
+ * Reads each path via the GitHub `contents` API pinned to `baseSha`
+ * (not `headSha`) so a PR cannot rewrite its own reviewer
+ * instructions. Per-path: 2xx decodes base64 `content` to UTF-8; 404
+ * is silently skipped; any other failure throws `GithubApiError`
+ * with code `"GITHUB_FETCH_FAILED"` so the caller can fall back to
+ * cwd reading. Concurrency is bounded by the shared
+ * `fetchPlatformInstructionFiles` worker pool (4 by default).
+ */
+export async function fetchGithubPrInstructions(
+  context: GithubContext,
+  paths: readonly string[],
+  fetchImpl: FetchImpl = fetch,
+): Promise<Map<string, string>> {
+  return fetchPlatformInstructionFiles(paths, fetchImpl, (path, impl) =>
+    fetchGithubPrInstruction(context, path, impl),
+  );
+}
+
+async function fetchGithubPrInstruction(
+  context: GithubContext,
+  path: string,
+  fetchImpl: FetchImpl,
+): Promise<string | null> {
+  const url = `${GITHUB_API_BASE_URL}/repos/${context.repo.owner}/${context.repo.name}/contents/${path}?ref=${context.baseSha}`;
+  const response = await fetchImpl(url, {
+    method: "GET",
+    headers: githubHeaders(context.token),
+  });
+
+  const payload = await decodeInstructionResponseBody(
+    response,
+    path,
+    "GitHub",
+    GithubApiError,
+    "GITHUB_FETCH_FAILED",
+    (resp) => parsePlatformJsonBody(resp, path, "GitHub", GithubApiError, "GITHUB_FETCH_FAILED"),
+  );
+  if (payload === null) return null;
+
+  if (!isObject(payload)) {
+    throw new GithubApiError(
+      "GITHUB_FETCH_FAILED",
+      response.status,
+      `GitHub PR instructions response for '${path}' was not a JSON object.`,
+    );
+  }
+
+  const content = payload["content"];
+  if (typeof content !== "string" || content.length === 0) {
+    throw new GithubApiError(
+      "GITHUB_FETCH_FAILED",
+      response.status,
+      `GitHub PR instructions response for '${path}' did not include a 'content' field.`,
+    );
+  }
+
+  // Buffer.from(..., "base64") tolerates GitHub's line-wrapped base64,
+  // so the embedded newlines do not need to be stripped.
+  try {
+    return Buffer.from(content, "base64").toString("utf8");
+  } catch (error) {
+    throw new GithubApiError(
+      "GITHUB_FETCH_FAILED",
+      response.status,
+      `GitHub PR instructions payload for '${path}' could not be base64-decoded.`,
+      { cause: error },
+    );
+  }
+}
+
+type GithubContentsPayload = Readonly<Record<string, unknown>>;
+
+function isObject(value: unknown): value is GithubContentsPayload {
+  return typeof value === "object" && value !== null;
 }

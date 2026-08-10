@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import { CliUsageError } from "../../src/cli/parse-args.js";
+import { resolveFromSchema } from "../../src/config/field-resolution.js";
 import { expectNotImplementedExport } from "../helpers/assert-red-module.js";
 
 type CliPlatform = "auto" | "github" | "azure";
@@ -36,6 +37,7 @@ type ParsedCliArgs = {
   readonly minimumSeverity: CliMinimumSeverity | null;
   readonly maxComments: number | null;
   readonly detectLeaks: boolean;
+  readonly instructionFiles: boolean;
   readonly walkthrough: boolean;
   readonly diagnostic: boolean;
   readonly debugRawResponse: boolean;
@@ -125,6 +127,7 @@ describe("CLI flag parsing RED contract", () => {
       githubApiBase: null,
       includeSonarqube: true,
       includePrSonarFindings: false,
+      instructionFiles: true,
       sonarHostUrl: "https://sonar.example.test",
       sonarToken: "sonar-token",
       sonarProjectKey: "umactually",
@@ -314,6 +317,58 @@ describe("CLI flag parsing: action.yml inputs coverage", () => {
     expect(parsed.diagnostic).toBe(false);
     expect(parsed.debugRawResponse).toBe(false);
     expect(parsed.includeSonarqube).toBe(false);
+  });
+
+  it("--no-instruction-files flips the parsed instructionFiles boolean to false", async () => {
+    // Mirrors the `--no-include-sonarqube` toggle pattern: a single
+    // negative boolean flag must flip the parsed value from its
+    // default (true) to false. The default-on design (no positive
+    // `--instruction-files` form) matches `--no-strict-schema` /
+    // `--no-verify-findings`.
+    const parseCliArgs = await expectNotImplementedExport(cliModule, cliPath, "parseCliArgs");
+    if (!isParseCliArgs(parseCliArgs)) {
+      expect.fail("RED: src/cli.ts must export parseCliArgs(args)");
+    }
+    const parsed = parseCliArgs(["--no-instruction-files"]);
+    expect(parsed.instructionFiles).toBe(false);
+  });
+
+  it("default parsed.instructionFiles is true when no flag or env var is supplied", async () => {
+    // The opt-out flag is `--no-instruction-files`; the default
+    // (no flag, no env) is on, so an empty argv must surface
+    // `instructionFiles: true`. This pins the default so a future
+    // refactor that flips the default to off (or that requires an
+    // explicit `--instruction-files` opt-in) regresses here rather
+    // than silently changing behavior.
+    const parseCliArgs = await expectNotImplementedExport(cliModule, cliPath, "parseCliArgs");
+    if (!isParseCliArgs(parseCliArgs)) {
+      expect.fail("RED: src/cli.ts must export parseCliArgs(args)");
+    }
+    const parsed = parseCliArgs([]);
+    expect(parsed.instructionFiles).toBe(true);
+  });
+
+  it("UMACTUALLY_INSTRUCTION_FILES=false env var resolves to parsed.instructionFiles=false", async () => {
+    // The precedence chain is flag > env > default. With no flag set,
+    // the canonical env var (`UMACTUALLY_INSTRUCTION_FILES`, declared
+    // on FIELDS.instructionFiles.env) must drive the resolved value.
+    // `resolveFromSchema` is the function that merges parseCliArgs
+    // output with process.env via the field-schema precedence; this
+    // test pins the end-to-end contract: env "false" → false.
+    const parseCliArgs = await expectNotImplementedExport(cliModule, cliPath, "parseCliArgs");
+    if (!isParseCliArgs(parseCliArgs)) {
+      expect.fail("RED: src/cli.ts must export parseCliArgs(args)");
+    }
+    // The local ParsedCliArgs type is a hand-maintained subset of the
+    // real one (it intentionally omits fields added by other workers
+    // like includePrSonarFindings / strictSchema / verifyFindings so
+    // this test file is stable across unrelated edits). The cast is
+    // safe because the runtime shape of parseCliArgs's return is the
+    // real ParsedCliArgs from src/cli/parse-args.ts — the local type
+    // is a TypeScript-only narrowing for these test cases.
+    const parsed = parseCliArgs([]) as unknown as Parameters<typeof resolveFromSchema>[0];
+    const resolved = resolveFromSchema(parsed, { UMACTUALLY_INSTRUCTION_FILES: "false" });
+    expect(resolved.instructionFiles).toBe(false);
   });
 
   it("--ignore-minor throws CliUsageError with minimum-severity migration guidance", async () => {

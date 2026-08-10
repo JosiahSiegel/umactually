@@ -101,6 +101,7 @@ function parsed(model: string | null): ParsedCliArgs {
     outputArtifact: null,
     strictSchema: true,
     verifyFindings: true,
+    instructionFiles: true,
   };
 }
 

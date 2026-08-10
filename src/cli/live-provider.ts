@@ -77,6 +77,7 @@ export async function requestLiveReview(input: {
   readonly platform: LivePlatform;
   readonly diffText: string;
   readonly platformToken: string;
+  readonly instructionFilesByBaseBranch?: Map<string, string>;
   readonly sonarContext?: string;
   readonly signal?: AbortSignal;
 }): Promise<LiveProviderOutcome> {
@@ -98,7 +99,12 @@ export async function requestLiveReview(input: {
     ...(input.signal === undefined ? {} : { signal: input.signal }),
     timeoutMs: readRequestTimeoutMs(input.parsed),
   });
-  const prompts = await buildProviderPrompts(input);
+  const prompts = await buildProviderPrompts({
+    ...input,
+    ...(input.instructionFilesByBaseBranch !== undefined
+      ? { instructionFilesByBaseBranch: input.instructionFilesByBaseBranch }
+      : {}),
+  });
 
   // Install an ambient severity-warning sink for the duration of this
   // request. Any `parseReviewPayload` call inside `runCopilotRequest` /

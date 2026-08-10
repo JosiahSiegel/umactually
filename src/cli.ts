@@ -296,6 +296,7 @@ export type SanitizedResolvedConfig = {
   readonly simulateFindings: boolean;
   readonly detectLeaks: boolean;
   readonly includeSonarqube: boolean;
+  readonly instructionFiles: boolean;
   readonly apiUrlPresent: boolean;
   readonly apiKeyPresent: boolean;
   readonly filesPresent: boolean;
@@ -339,6 +340,7 @@ export function buildSanitizedResolvedConfig(
     simulateFindings: resolved.simulateFindings,
     detectLeaks: resolved.detectLeaks,
     includeSonarqube: resolved.includeSonarqube,
+    instructionFiles: resolved["instructionFiles"] as boolean,
     apiUrlPresent: resolved.apiUrl !== null && resolved.apiUrl.length > 0,
     apiKeyPresent: resolved.apiKey !== null && resolved.apiKey.length > 0,
     filesPresent: resolved.files !== null && resolved.files.length > 0,

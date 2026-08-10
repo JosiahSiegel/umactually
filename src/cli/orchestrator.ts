@@ -1,11 +1,11 @@
 import { DEFAULT_MAX_COMMENTS_MERGE, DEFAULT_REVIEW_FILE_LIMIT } from "../config/defaults.js";
 import { resolveField } from "../config/field-resolution.js";
-import { fetchAzurePrDiff } from "../platform/azure/api.js";
+import { fetchAzurePrDiff, fetchAzurePrInstructions } from "../platform/azure/api.js";
 import { chunkDiffByFile, countDiffFiles } from "../platform/azure/chunk.js";
 import { AzureContextError, readAzureContext } from "../platform/azure/context.js";
 import { GithubContextError, readGithubContext } from "../platform/github/context.js";
 import { detectPlatform, PlatformDetectionError } from "../platform/detect.js";
-import { fetchGithubPrDiff } from "../platform/github/api.js";
+import { fetchGithubPrDiff, fetchGithubPrInstructions } from "../platform/github/api.js";
 import { BRAND_PREFIX } from "../util/brand.js";
 import { ENV_KEYS } from "../util/env-keys.js";
 import { formatError } from "../util/error.js";
@@ -27,7 +27,7 @@ import {
 } from "./live-shared.js";
 import { requestLiveReview } from "./live-provider.js";
 import { readLiveSonarContext } from "./sonar-context.js";
-import { resetDefaultPromptFilesCache } from "./provider-prompts.js";
+import { DEFAULT_PROMPT_FILE_PATHS, resetDefaultPromptFilesCache } from "./provider-prompts.js";
 import type { ParsedCliArgs } from "./parse-args.js";
 import { applySimulateFindings } from "./simulate-findings.js";
 
@@ -303,6 +303,16 @@ async function dispatchLivePlatform(input: {
   switch (platform) {
     case "github": {
       const context = await readGithubContext(env);
+      let instructionFilesByBaseBranch: Map<string, string> | undefined;
+      try {
+        instructionFilesByBaseBranch = await fetchGithubPrInstructions(
+          context,
+          DEFAULT_PROMPT_FILE_PATHS,
+          fetchImpl,
+        );
+      } catch (error) {
+        logWarning("", `failed to fetch GitHub base-branch instruction files (${formatError(error)}); falling back to cwd lookup.`);
+      }
       const diffText = await fetchGithubPrDiff(context, fetchImpl);
       const leakGate = await evaluateLeakGate({
         diffText,
@@ -320,6 +330,7 @@ async function dispatchLivePlatform(input: {
         platform: "github",
         diffText,
         platformToken: context.token,
+        ...(instructionFilesByBaseBranch !== undefined ? { instructionFilesByBaseBranch } : {}),
         ...(sonarContext !== undefined ? { sonarContext } : {}),
       });
       const finalOutcome = applySimulateFindings({
@@ -375,6 +386,23 @@ async function dispatchLivePlatform(input: {
         azurePrNumberOverride = candidate;
       }
       const context = readAzureContext(env, { prNumber: azurePrNumberOverride });
+      let instructionFilesByBaseBranch: Map<string, string> | undefined;
+      if (context.baseCommit === undefined) {
+        logWarning(
+          "",
+          "Azure base-branch fetch skipped (SYSTEM_PULLREQUEST_MERGECOMMITID not set); falling back to cwd lookup.",
+        );
+      } else {
+        try {
+          instructionFilesByBaseBranch = await fetchAzurePrInstructions(
+            context,
+            DEFAULT_PROMPT_FILE_PATHS,
+            fetchImpl,
+          );
+        } catch (error) {
+          logWarning("", `failed to fetch Azure base-branch instruction files (${formatError(error)}); falling back to cwd lookup.`);
+        }
+      }
       const diffText = await fetchAzurePrDiff(context, fetchImpl);
       const leakGate = await evaluateLeakGate({
         diffText,
@@ -426,6 +454,7 @@ async function dispatchLivePlatform(input: {
             platform: "azure",
             diffText,
             platformToken: context.token,
+            ...(instructionFilesByBaseBranch !== undefined ? { instructionFilesByBaseBranch } : {}),
             ...(sonarContext !== undefined ? { sonarContext } : {}),
           });
         } else {
@@ -441,6 +470,7 @@ async function dispatchLivePlatform(input: {
             platform: "azure",
             chunks,
             platformToken: context.token,
+            ...(instructionFilesByBaseBranch !== undefined ? { instructionFilesByBaseBranch } : {}),
             ...(sonarContext !== undefined ? { sonarContext } : {}),
           });
         }
