@@ -143,6 +143,69 @@ describe("buildProviderPrompts", () => {
     expect(prompts.user).toContain("Be terse");
     expect(prompts.system).not.toContain("Be terse");
   });
+
+  // Regression test for the second byte-cap failure path in the
+  // base-branch content pipeline: PR #200 fixed the system-prompt path
+  // (`readResolvedDefaultPromptFiles`) but `readAdditionalPrompt` still
+  // called `readPromptFiles(defaultPaths, ...)` against cwd, where
+  // `defaultPaths` were base-branch KEYS. That tripped
+  // `PromptFileError(..., "byte-cap-exceeded")` / `"not-found"` for any
+  // base-branch instruction file larger than the cap or missing from
+  // cwd. After the fix, `readAdditionalPrompt` short-circuits to the
+  // shared `formatBaseBranchContent` helper when `instructionFilesByBaseBranch`
+  // is supplied, mirroring the system-prompt path.
+  it("uses base-branch content for the additional prompt instead of reading base paths from cwd", async () => {
+    // The base-branch map contains one key whose name is a cwd-relative
+    // path that does NOT exist in cwd (we never wrote it). The old code
+    // would have called `readPromptFiles(["CLAUDE.md"], ...)` against
+    // cwd and thrown `PromptFileError("CLAUDE.md", "not-found")`.
+    const baseBranchContent = "BASE_BRANCH_ADDITIONAL_PROMPT_TOKEN";
+    const prompts = await buildProviderPrompts({
+      parsed: parsedArgsForTest(),
+      cwd,
+      env: {},
+      platform: "github",
+      diffText: SOURCE_DIFF,
+      instructionFilesByBaseBranch: new Map([["CLAUDE.md", baseBranchContent]]),
+    });
+    // The additional prompt block now embeds the base-branch content
+    // rather than tripping the cwd read. (System-prompt inclusion via
+    // `pickSystemPrompt` / `readResolvedDefaultPromptFiles` is covered
+    // by PR #200's existing tests in run-live-orchestration.test.ts.)
+    expect(prompts.user).toContain(baseBranchContent);
+  });
+
+  // Pinned contract for `formatBaseBranchContent`'s over-cap branch.
+  // PR #200 fixed the under-cap branch via the umbrella-instruction-files
+  // live-orchestration test, but the truncation branch (`joined.length > DEFAULT_PROMPT_BYTE_CAP`)
+  // was not exercised by any test — SonarCloud flagged 78.6% coverage on
+  // new code (8 lines to cover, 2 uncovered). This test pins the
+  // truncation marker so a future refactor that drops it (or breaks
+  // the byte-boundary logic) is caught.
+  it("truncates the joined base-branch content and appends the byte-cap marker when over cap", async () => {
+    // One file whose content alone exceeds DEFAULT_PROMPT_BYTE_CAP
+    // (65,536 chars per `FIELDS.promptByteCap.defaultValue`).
+    const overCapBody = "X".repeat(70_000);
+    const prompts = await buildProviderPrompts({
+      parsed: parsedArgsForTest(),
+      cwd,
+      env: {},
+      platform: "github",
+      diffText: SOURCE_DIFF,
+      instructionFilesByBaseBranch: new Map([
+        ["CLAUDE.md", "small CLAUDE.md\n"],
+        ["AGENTS.md", overCapBody],
+      ]),
+    });
+    // The over-cap body must NOT appear verbatim (would blow past the cap).
+    expect(prompts.user).not.toContain(overCapBody);
+    // The first under-cap fragment of the over-cap body must be present
+    // (proves the joined content reached the user prompt at all).
+    expect(prompts.user).toContain(overCapBody.slice(0, 1024));
+    // The truncation marker is appended to the additional prompt when
+    // the joined content exceeds the byte cap.
+    expect(prompts.user).toContain("[... truncated at 65536-byte cap ...]");
+  });
 });
 
 function parsedArgsForTest(overrides: {
