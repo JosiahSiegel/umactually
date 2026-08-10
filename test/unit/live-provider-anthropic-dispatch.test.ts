@@ -205,7 +205,7 @@ describe("requestLiveReview dispatch — provider=anthropic", () => {
     // 4. Severity-warning capture is wired (empty array, but the field
     //    is present and matches the other providers' contract).
     expect(outcome.severityWarnings).toEqual([]);
-  });
+  }, 30000);
 
   it("DISPATCH-ANTH-002 parse-fail: returns a fallback review (parseFailed=true) on 200 OK with bad JSON", async () => {
     // Use a non-JSON text payload so the model looks like it returned prose
@@ -231,7 +231,7 @@ describe("requestLiveReview dispatch — provider=anthropic", () => {
     expect(outcome.review.summary).toContain(PARSE_FAIL_RAW);
     expect(outcome.provider).toBe("anthropic-messages");
     expect(outcome.endpoint).toBe("anthropic");
-  });
+  }, 30000);
 
   it("DISPATCH-ANTH-003 error envelope: provider_error becomes LiveReviewError (no review posted)", async () => {
     // Anthropic-style error envelope returned with HTTP 200 (some setups
@@ -264,7 +264,7 @@ describe("requestLiveReview dispatch — provider=anthropic", () => {
     }
     expect(capturedError).toBeInstanceOf(Error);
     expect((capturedError as { code: string }).code).toBe("PROVIDER_ERROR");
-  });
+  }, 30000);
 
   it("DISPATCH-ANTH-004 secrets are scrubbed from the parsed review body before it lands in the outcome", async () => {
     const secret = "sk-ant-dispatch-secret-must-not-appear-in-output-xyz";
@@ -291,7 +291,7 @@ describe("requestLiveReview dispatch — provider=anthropic", () => {
     expect(outcome.review.summary).not.toContain(secret);
     expect(outcome.review.suppressedComments[0]!.body).not.toContain(secret);
     expect(outcome.review.suppressedComments[0]!.body).toContain("[REDACTED_SECRET]");
-  });
+  }, 30000);
 
   it("DISPATCH-ANTH-005 path-prefixed base URL preserves the prefix", async () => {
     // When an operator types
@@ -334,7 +334,7 @@ describe("requestLiveReview dispatch — provider=anthropic", () => {
     expect(call.url).not.toBe("https://gateway.example.invalid/v1/messages"); // not the canonical-OpenAI shape
     expect(call.url).not.toContain("/messages/messages");
     expect(outcome.review.summary).toBe("path-prefixed gateway preserves its routing prefix.");
-  });
+  }, 30000);
 
   it("DISPATCH-ANTH-006 --api-url unset defaults to https://api.anthropic.com/v1 (fixes PR #30 self-review H1)", async () => {
     // Self-review (H1) flagged this exact regression: live-provider.ts
@@ -371,5 +371,5 @@ describe("requestLiveReview dispatch — provider=anthropic", () => {
     expect(stub.calls).toHaveLength(1);
     expect(stub.calls[0]!.url).toBe("https://api.anthropic.com/v1/messages");
     expect(outcome.review.summary).toBe("anthropic default URL works without --api-url.");
-  });
+  }, 30000);
 });

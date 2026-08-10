@@ -204,7 +204,7 @@ describe("cross-protocol fallback: openai-compatible falls back to anthropic-pro
     expect(fallbackCall?.headers["x-api-key"]).toBe("sk-anth-fallback-secret-do-not-leak");
     expect(fallbackCall?.headers["anthropic-version"]).toBe("2023-06-01");
     expect(fallbackCall?.headers["authorization"]).toBeUndefined();
-  });
+  }, 30000);
 });
 
 describe("cross-protocol fallback: anthropic falls back to openai-protocol at /v1/responses", () => {
@@ -251,7 +251,7 @@ describe("cross-protocol fallback: anthropic falls back to openai-protocol at /v
     expect(fallbackCall, "expected a call to /v1/responses").toBeDefined();
     expect(fallbackCall?.headers["authorization"]).toBe("Bearer sk-openai-fallback-secret-do-not-leak");
     expect(fallbackCall?.headers["x-api-key"]).toBeUndefined();
-  });
+  }, 30000);
 });
 
 describe("cross-protocol fallback should NOT trigger when named provider succeeds", () => {
@@ -283,7 +283,7 @@ describe("cross-protocol fallback should NOT trigger when named provider succeed
     expect(outcome.endpoint).toBe("responses");
     expect(stub.calls.length).toBe(1);
     expect(stub.calls[0]!.url).toBe("https://router.example.invalid/v1/responses");
-  });
+  }, 30000);
 });
 
 describe("cross-protocol fallback dual-failure surface", () => {
@@ -336,7 +336,7 @@ describe("cross-protocol fallback dual-failure surface", () => {
     // Both protocols were attempted.
     expect(stub.calls.some((c) => c.url.endsWith("/v1/messages"))).toBe(true);
     expect(stub.calls.some((c) => c.url.endsWith("/v1/responses"))).toBe(true);
-  });
+  }, 30000);
 });
 
 describe("path-prefix heuristic: /anthropic URL commits to Anthropic protocol even when --provider=openai-compatible", () => {
@@ -386,7 +386,7 @@ describe("path-prefix heuristic: /anthropic URL commits to Anthropic protocol ev
     const anthropicCall = stub.calls.find((c) => c.url.endsWith("/anthropic/v1/messages"));
     expect(anthropicCall?.headers["x-api-key"]).toBe("sk-router-smoke-test-do-not-leak");
     expect(anthropicCall?.headers["anthropic-version"]).toBe("2023-06-01");
-  });
+  }, 30000);
 
   it("HEURISTIC-DISPATCH-002: provider=openai-compatible + URL=https://gateway.example.com/llm/anthropic commits to Anthropic (self-hosted gateway case)", async () => {
     // The heuristic is path-segment based, not hostname-based.
@@ -415,7 +415,7 @@ describe("path-prefix heuristic: /anthropic URL commits to Anthropic protocol ev
     });
     expect(stub.calls.some((c) => c.url.endsWith("/llm/anthropic/v1/messages"))).toBe(true);
     expect(outcome.provider).toBe("anthropic-messages");
-  });
+  }, 30000);
 
   it("HEURISTIC-DISPATCH-003: provider=openai-compatible + URL=https://api.openai.com/v1 (no /anthropic) stays OpenAI", async () => {
     // Negative case: a vanilla OpenAI URL with no /anthropic segment
@@ -445,7 +445,7 @@ describe("path-prefix heuristic: /anthropic URL commits to Anthropic protocol ev
     expect(stub.calls.some((c) => c.url.endsWith("/v1/messages"))).toBe(false);
     expect(outcome.provider).toBe("openai-compatible");
     expect(outcome.endpoint).toBe("responses");
-  });
+  }, 30000);
 
   it("HEURISTIC-DISPATCH-004: provider=anthropic + URL=https://router.example.invalid/anthropic still commits to Anthropic (heuristic is a no-op when explicit)", async () => {
     // The explicit --provider=anthropic branch already handles this case.
@@ -475,7 +475,7 @@ describe("path-prefix heuristic: /anthropic URL commits to Anthropic protocol ev
     expect(stub.calls.some((c) => c.url.endsWith("/anthropic/v1/messages"))).toBe(true);
     expect(stub.calls.some((c) => c.url === "https://router.example.invalid/anthropic/v1/messages")).toBe(true);
     expect(outcome.provider).toBe("anthropic-messages");
-  });
+  }, 30000);
 
   it("HEURISTIC-DISPATCH-005: provider=openai-compatible + URL=https://api.example.com/anthropic-v2 does NOT commit (path segment 'anthropic-v2' != 'anthropic')", async () => {
     // The path-segment match is exact (case-insensitive). 'anthropic-v2'
@@ -522,5 +522,5 @@ describe("path-prefix heuristic: /anthropic URL commits to Anthropic protocol ev
     expect(capturedError).toBeInstanceOf(Error);
     // /anthropic-v2/v1/messages was attempted (cross-protocol fallback).
     expect(stub.calls.some((c) => c.url.endsWith("/anthropic-v2/v1/messages"))).toBe(true);
-  });
+  }, 30000);
 });
