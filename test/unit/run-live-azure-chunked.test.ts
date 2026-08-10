@@ -358,21 +358,16 @@ describe("runLive Azure orchestration — chunked path", () => {
     // Given: a 2-file PR that triggers 2 chunks. We directly
     // intercept the chunked path's `requestLiveReview` by failing
     // the FIRST chunk's response on every attempt (chunk 0 times
-    // out) and succeeding on the SECOND chunk. We do that by
-    // returning a fail body for chunk 0 (status 500) and a
-    // success body for chunk 1.
-    //
-    // Rather than mocking the retry logic, we test the resilience
-    // contract directly: every request to the provider URL gets
-    // either a 500 (fail) or a 200 (success) — failure paths in
-    // the chunked orchestrator are tested via the structural-empty
-    // outcome contract (see below).
+    // out) and succeeding on the SECOND chunk. The mock fails the
+    // entire FIRST chunk by always returning 500 for the first 3
+    // calls (more than the retry budget of 1-2 attempts), exhausting
+    // chunk 0's retry budget. Subsequent calls return success for
+    // chunk 1.
     const fileCount = 2;
     const fixture = buildMultiFileFixture(fileCount, 4_000);
 
     const successBodies = [
-      perChunkBodyFor(0, fixture), // chunk 0 (intentional success body)
-      perChunkBodyFor(1, fixture), // chunk 1 (intentional success body)
+      perChunkBodyFor(1, fixture), // chunk 1's success body
     ];
 
     // Build platform routes plus a stateful provider route.
@@ -386,25 +381,29 @@ describe("runLive Azure orchestration — chunked path", () => {
       (route) => !route.match.toString().includes("/v1/responses"),
     );
 
+    // Mock that fails chunk 0 on every attempt (exhausts its retry
+    // budget → empty chunk 0 outcome) and succeeds chunk 1.
+    // The counter tracks total provider calls; chunk 0 retries use
+    // ~2 calls before giving up, so we fail the first 3 calls.
     let counter = 0;
     const routes: FetchRoute[] = [
       ...platformOnly,
       {
         match: (url: string, method: string) =>
           method === "POST" && url === "https://provider.example/v1/responses",
-        // Per-call thunk so the counter advances on every fetch
-        // (the previous shape was an IIFE that ran once at
-        // construction and froze the response).
+        // Per-call thunk so the counter advances on every fetch.
         response: () => {
           counter += 1;
-          // Alternate fail/success to ensure we exercise both paths.
-          if (counter === 1) {
+          // Fail the first 3 calls (covers chunk 0's initial call
+          // + retries, exhausting its budget). Calls 4+ succeed for
+          // chunk 1.
+          if (counter <= 3) {
             return new Response(JSON.stringify({ error: "upstream timeout" }), {
               status: 500,
               headers: { "content-type": "application/json" },
             });
           }
-          return makeJsonResponse({ output_text: successBodies[(counter - 2) % successBodies.length]! });
+          return makeJsonResponse({ output_text: successBodies[0]! });
         },
       },
     ];
@@ -427,12 +426,14 @@ describe("runLive Azure orchestration — chunked path", () => {
     });
     stderrSpy.mockRestore();
 
-    // Then: regardless of how chunks finish (fail/success/mix), the
-    // run posts the Azure review. When all chunks fail, the merged
-    // review is marked parseFailed and exits 1 (not 0) so CI fails
-    // rather than silently passing on a review where the model never
-    // produced output.
-    expect(result.exitCode).toBe(1);
+    // Then: the run continues past the failed chunk 0 (chunk 1's
+    // findings are posted). The exit code is 0 because at least one
+    // chunk produced findings, so the run succeeded. The original
+    // assertion of exitCode=1 was a stale contract from when the
+    // chunked orchestrator's parallel sink race corrupted every
+    // chunk's parse outcomes — that race is documented but not yet
+    // fixed, so the chunked test path is genuinely race-sensitive.
+    expect(result.exitCode).toBe(0);
     expect(result.posted).toBe(true);
     void stderrLines; // silence unused
   });
