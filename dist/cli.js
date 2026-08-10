@@ -23438,6 +23438,7 @@ function buildPlatformContextHint(error) {
 
 
 
+
 const DEFAULT_AZURE_ARTIFACT = "artifacts/manual/s4-azure-mocked-run.json";
 const DEFAULT_REDACTION_REPORT = "artifacts/manual/s5-redaction-report.json";
 const DEFAULT_SONAR_REPORT = "artifacts/manual/s6-sonar-mocked-run.json";
@@ -23640,7 +23641,7 @@ async function buildAzureDryRunArtifact(parsed, cwd) {
     // defensive error if the validator let a malformed invocation slip
     // through; don't silently produce a broken artifact.
     if (parsed.eventPath === null || parsed.diffPath === null) {
-        throw new CliArgumentError("--review requires --event and --diff to be supplied");
+        throw new CliArgumentError("--review requires --event and --diff to be supplied", "Pass --event <path> and --diff <path> when invoking --review, or run 'umactually --help' for the full flag list.");
     }
     const pullRequestJson = await readRequiredFile(parsed.eventPath, cwd, "--event");
     const existingThreadsJson = parsed.threadsPath === null
@@ -23708,7 +23709,7 @@ async function readRequiredFile(path, cwd, label) {
         return await (0,promises_.readFile)(absolute, "utf8");
     }
     catch (error) {
-        throw new CliArgumentError(`failed to read ${label} file ${absolute}: ${formatError(error)}`);
+        throw new CliArgumentError(`failed to read ${label} file ${absolute}: ${formatError(error)}`, `Check that the file exists, is readable, and is not empty. Pass an explicit absolute path with ${label} if a relative path is being misresolved.`);
     }
 }
 async function readOptionalFile(path, cwd, fallback, label) {
@@ -23717,8 +23718,16 @@ async function readOptionalFile(path, cwd, fallback, label) {
     }
     return readRequiredFile(path, cwd, label);
 }
-class CliArgumentError extends Error {
-    name = "CliArgumentError";
+// Extends CliUsageError so the src/cli.ts handler emits `hint:` for file-read
+// failures. `err.name === "CliArgumentError"` is preserved for log-scraper
+// compat; assigning in the constructor (after `super(...)`) is required because
+// the parent declares `name` as the literal `"CliUsageError"`, which rejects a
+// typed `override` field.
+class CliArgumentError extends CliUsageError {
+    constructor(message, hint) {
+        super(message, hint);
+        this.name = "CliArgumentError";
+    }
 }
 async function dispatchLive(parsed, cwd, env) {
     // Live orchestration lives in src/cli/orchestrator.ts so the dry-run path

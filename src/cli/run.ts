@@ -12,6 +12,7 @@ import { withDebugRawEnv } from "../util/debug-raw.js";
 import { formatError } from "../util/error.js";
 import { REVIEW_MARKER } from "../util/marker.js";
 import type { ParsedCliArgs } from "./parse-args.js";
+import { CliUsageError } from "./parse-args.js";
 import { resetDefaultPromptFilesCache } from "./provider-prompts.js";
 import { resolvePlatform, type ResolvedPlatform } from "./validate.js";
 import { runLive as runOrchestrator } from "./orchestrator.js";
@@ -266,7 +267,10 @@ async function buildAzureDryRunArtifact(parsed: ParsedCliArgs, cwd: string): Pro
   // defensive error if the validator let a malformed invocation slip
   // through; don't silently produce a broken artifact.
   if (parsed.eventPath === null || parsed.diffPath === null) {
-    throw new CliArgumentError("--review requires --event and --diff to be supplied");
+    throw new CliArgumentError(
+      "--review requires --event and --diff to be supplied",
+      "Pass --event <path> and --diff <path> when invoking --review, or run 'umactually --help' for the full flag list.",
+    );
   }
 
   const pullRequestJson = await readRequiredFile(parsed.eventPath, cwd, "--event");
@@ -349,7 +353,10 @@ async function readRequiredFile(path: string, cwd: string, label: string): Promi
   try {
     return await readFile(absolute, "utf8");
   } catch (error) {
-    throw new CliArgumentError(`failed to read ${label} file ${absolute}: ${formatError(error)}`);
+    throw new CliArgumentError(
+      `failed to read ${label} file ${absolute}: ${formatError(error)}`,
+      `Check that the file exists, is readable, and is not empty. Pass an explicit absolute path with ${label} if a relative path is being misresolved.`,
+    );
   }
 }
 
@@ -365,8 +372,16 @@ async function readOptionalFile(
   return readRequiredFile(path, cwd, label);
 }
 
-export class CliArgumentError extends Error {
-  override readonly name = "CliArgumentError";
+// Extends CliUsageError so the src/cli.ts handler emits `hint:` for file-read
+// failures. `err.name === "CliArgumentError"` is preserved for log-scraper
+// compat; assigning in the constructor (after `super(...)`) is required because
+// the parent declares `name` as the literal `"CliUsageError"`, which rejects a
+// typed `override` field.
+export class CliArgumentError extends CliUsageError {
+  constructor(message: string, hint?: string) {
+    super(message, hint);
+    (this as { name: string }).name = "CliArgumentError";
+  }
 }
 
 export async function dispatchLive(parsed: ParsedCliArgs, cwd: string, env: NodeJS.ProcessEnv): Promise<CliRunResult> {
