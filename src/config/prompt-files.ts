@@ -309,10 +309,11 @@ export function splitPromptFileList(raw: string | null | undefined): readonly st
  * **Human convention files** — README, CONTRIBUTING, the codes of
  * conduct, etc. These are not AI-instruction files; they are
  * appended so the model has the project context a human contributor
- * would read on day one. They share this array for now but are
- * loaded with a smaller per-file cap at the call site (TODO part 5)
- * to avoid the aggregate byte budget being consumed by long
- * LICENSE/CHANGELOG files.
+ * would read on day one. They share this array but are loaded with
+ * a smaller per-file cap (`DEFAULT_HUMAN_FILE_BYTE_CAP`, 16 KiB) at
+ * the call site: files that exceed the cap are silently skipped so
+ * a long LICENSE / CHANGELOG does not abort the review or consume
+ * the aggregate byte budget.
  *
  * - `README.md`
  * - `CONTRIBUTING.md`

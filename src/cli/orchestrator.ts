@@ -387,14 +387,21 @@ async function dispatchLivePlatform(input: {
       }
       const context = readAzureContext(env, { prNumber: azurePrNumberOverride });
       let instructionFilesByBaseBranch: Map<string, string> | undefined;
-      try {
-        instructionFilesByBaseBranch = await fetchAzurePrInstructions(
-          context,
-          DEFAULT_PROMPT_FILE_PATHS,
-          fetchImpl,
+      if (context.baseCommit === undefined) {
+        logWarning(
+          "",
+          "Azure base-branch fetch skipped (SYSTEM_PULLREQUEST_MERGECOMMITID not set); falling back to cwd lookup.",
         );
-      } catch (error) {
-        logWarning("", `failed to fetch Azure base-branch instruction files (${formatError(error)}); falling back to cwd lookup.`);
+      } else {
+        try {
+          instructionFilesByBaseBranch = await fetchAzurePrInstructions(
+            context,
+            DEFAULT_PROMPT_FILE_PATHS,
+            fetchImpl,
+          );
+        } catch (error) {
+          logWarning("", `failed to fetch Azure base-branch instruction files (${formatError(error)}); falling back to cwd lookup.`);
+        }
       }
       const diffText = await fetchAzurePrDiff(context, fetchImpl);
       const leakGate = await evaluateLeakGate({

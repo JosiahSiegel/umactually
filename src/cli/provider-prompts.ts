@@ -344,10 +344,9 @@ async function pickSystemPrompt(input: {
   }
   // Opt-out: `--no-instruction-files` (or UMACTUALLY_INSTRUCTION_FILES=false)
   // suppresses the AI-files default-lookup entirely and falls through to the
-  // built-in default. Read via `Reflect.get` so the file compiles whether or
-  // not the sibling parse-args type-declaration commit has landed; only the
-  // literal `false` value is treated as the opt-out (a missing field, `null`,
-  // `undefined`, or `true` is opt-in, matching the schema default).
+  // built-in default. Only the literal `false` value is treated as the
+  // opt-out (a missing field, `null`, `undefined`, or `true` is opt-in,
+  // matching the schema default).
   if (isInstructionFilesExplicitlyFalse(input.parsed)) {
     return buildDefaultSystemPrompt();
   }
@@ -358,20 +357,14 @@ async function pickSystemPrompt(input: {
 }
 
 /**
- * Read the `instructionFiles` opt-out flag from `parsed` without
- * requiring the field to be declared on the `ParsedCliArgs` type.
- * The runtime wiring in `parseCliArgs` populates the field as a
- * boolean (`true` by default, `false` only when the operator passes
- * `--no-instruction-files`); a sibling commit is expected to add the
- * corresponding `readonly instructionFiles: boolean` field on the
- * `ParsedCliArgs` type. `Reflect.get` lets this file compile against
- * either version of the type. Returns true ONLY when the field is the
- * literal `false` value — a missing or non-boolean field is treated
- * as "opt-in" (the default).
+ * Returns true only when the operator has explicitly opted out of the
+ * default instruction-file lookup via `--no-instruction-files` (or the
+ * `UMACTUALLY_INSTRUCTION_FILES=false` env var). The flag is declared
+ * as a boolean on `ParsedCliArgs`; the literal `false` is the opt-out
+ * signal, anything else (`true`, missing) means "use the defaults".
  */
 function isInstructionFilesExplicitlyFalse(parsed: ParsedCliArgs): boolean {
-  const value = Reflect.get(parsed, "instructionFiles");
-  return value === false;
+  return parsed.instructionFiles === false;
 }
 
 function readResolvedDefaultPromptFiles(

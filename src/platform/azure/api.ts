@@ -265,6 +265,16 @@ function azureRepositoryBaseUrl(context: AzureContext): string {
 function buildInstructionItemUrl(context: AzureContext, path: string): string {
   const url = new URL(`${azureRepositoryBaseUrl(context)}/items`);
   url.searchParams.set("path", path);
+  // The orchestrator gates the fetch on `baseCommit !== undefined` (see
+  // src/cli/orchestrator.ts) so this branch is unreachable at runtime;
+  // the assert narrows the type for the URLSearchParams.set call below.
+  if (context.baseCommit === undefined) {
+    throw new AzureApiError(
+      "AZURE_FETCH_FAILED",
+      0,
+      "Azure DevOps base-branch fetch requires SYSTEM_PULLREQUEST_MERGECOMMITID to be set; falling back to cwd lookup.",
+    );
+  }
   url.searchParams.set("versionDescriptor.version", context.baseCommit);
   url.searchParams.set("versionDescriptor.versionType", "commit");
   url.searchParams.set("includeContent", "true");
