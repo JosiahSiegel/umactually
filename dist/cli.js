@@ -69,7 +69,7 @@ module.exports = { cursor, scroll, erase, beep };
 /***/ 28:
 /***/ ((module, __unused_webpack_exports, __nccwpck_require__) => {
 
-module.exports = __nccwpck_require__.p + "2d93e8e877dc4ef29106.ts";
+module.exports = __nccwpck_require__.p + "7f5bc0b4ff7db750334f.ts";
 
 /***/ }),
 
@@ -486,6 +486,14 @@ const FIELDS = {
         type: "boolean",
         defaultValue: true,
     },
+    instructionFiles: {
+        field: "instructionFiles",
+        flag: "--instruction-files",
+        input: "instruction-files",
+        env: ["UMACTUALLY_INSTRUCTION_FILES"],
+        type: "boolean",
+        defaultValue: true,
+    },
     platform: {
         field: "platform",
         flag: "--platform",
@@ -622,79 +630,9 @@ const ALL_FIELDS = Object.values(FIELDS);
  */
 const KNOWN_ENV_VAR_NAMES = new Set(ALL_FIELDS.flatMap((def) => def.env));
 
-;// CONCATENATED MODULE: ./src/util/brand.ts
-/**
- * Canonical brand string used across CLI, platform, and provider code.
- *
- * NOT a generic brand concept: this is the specific string "umactually"
- * that downstream consumers (PR comments, HTTP User-Agent headers, GitHub
- * agents) match on. Renamed from "umactually" in v0.1.0 because
- * the project ships under the bare name `umactually` and never launched
- * with the longer string — no installed copies depend on the old value.
- */
-/** Canonical review brand string; eliminates the 50+ inline "umactually" literals across CLI, platform, and provider code. */
-const BRAND = "umactually";
-/** Log prefix shared by annotation helpers; eliminates hand-built "umactually: " prefixes in stderr diagnostics. */
-const BRAND_PREFIX = `${BRAND}: `;
-/** HTTP User-Agent token shared by provider and platform clients; eliminates duplicated header literals. */
-const USER_AGENT = BRAND;
-/** Azure DevOps PR status context name; prevents status updates from drifting away from the review brand. */
-const AZURE_STATUS_CONTEXT_NAME = `${BRAND}-status`;
-/** Azure DevOps PR status context genre; the discriminator that keeps our status updates distinct from any other tool's. */
-const AZURE_STATUS_CONTEXT_GENRE = "pr-review";
-/**
- * Redaction token emitted by secret scanners and runtime sanitizers
- * when a high-confidence secret or per-secret value is replaced. The
- * runtime sanitizer (`live-shared.ts:sanitizeForPost`) and the
- * scanner (`scan-review-secrets.ts`) must emit the SAME token so the
- * downstream log-filter and dedup heuristics agree on what counts as
- * "already-redacted". Single source of truth — any future rename must
- * touch this constant only.
- */
-const REDACTED_SECRET_TOKEN = "[REDACTED_SECRET]";
-/**
- * Placeholder string substituted into config-parse error messages instead of
- * leaking values. Re-exported from `src/config/errors.ts` as `REDACTED` to
- * preserve the existing import surface in that module (the parser chain in
- * `src/config/parsers.ts` already imports `REDACTED` from `errors.ts`).
- */
-const REDACTED_PLACEHOLDER = "[REDACTED]";
-/** Replaces an entire `Authorization: ...` header value in logged request bodies. */
-const REDACTED_AUTHORIZATION_HEADER = "[REDACTED_AUTHORIZATION_HEADER]";
-/** Replaces a `Bearer <token>` segment inside a logged request body. */
-const REDACTED_BEARER_TOKEN = "[REDACTED_BEARER_TOKEN]";
-
-;// CONCATENATED MODULE: ./src/config/errors.ts
-class errors_InvalidConfigError extends Error {
-    field;
-    reason;
-    name = "InvalidConfigError";
-    constructor(field, reason, options) {
-        super(`Invalid config for '${field}': ${reason}`, options);
-        this.field = field;
-        this.reason = reason;
-    }
-}
-class PromptFileError extends Error {
-    path;
-    reason;
-    name = "PromptFileError";
-    constructor(path, reason, options) {
-        super(`Prompt file error: ${reason}`, options);
-        this.path = path;
-        this.reason = reason;
-    }
-}
-/**
- * Marker used in error messages to replace any user-supplied value
- * (URLs, tokens, prompt content). Never echo the raw value.
- */
-
-
 ;// CONCATENATED MODULE: ./src/util/strict-integer.ts
-
 /**
- * Strict-integer parsing helpers — leaf module that breaks the
+ * Strict-integer parsing helper — leaf module that breaks the
  * `cli/parse-args.ts ↔ config/parsers.ts` circular-import cycle.
  *
  * This module's only upstream is `src/config/errors.ts`, which is itself
@@ -703,8 +641,8 @@ class PromptFileError extends Error {
  * → config/errors.ts` and `parsers.ts → strict-integer.ts →
  * config/errors.ts`, with `config/errors.ts` as a sink. No cycle is
  * re-introduced. Both call sites (`src/util/cli-args.ts` and
- * `src/config/parsers.ts`) consume the helper below; neither needs to
- * import the other through this path.
+ * `src/config/parsers.ts`) consume `tryParseStrictInt` below; neither
+ * needs to import the other through this path.
  *
  * ## Sign tolerance
  *
@@ -764,39 +702,9 @@ function tryParseStrictInt(raw) {
         return null;
     return Number.parseInt(raw, 10);
 }
-/**
- * Throwing variant of {@link tryParseStrictInt}. Used by the config
- * loader (and any future strict-integer surface that wants a hard
- * failure) to convert a malformed input into a typed `InvalidConfigError`
- * that carries the offending `field` name. Throws `InvalidConfigError`
- * (from `src/config/errors.ts`) so error-handling code can
- * catch by class without re-parsing the message.
- *
- * The caller is still responsible for the safe-integer bound; this
- * helper only throws on a malformed string. Add a `Number.isSafeInteger`
- * guard at the call site when the bound matters.
- */
-function parseStrictIntegerOrThrow(field, raw) {
-    const parsed = tryParseStrictInt(raw);
-    if (parsed === null) {
-        throw new InvalidConfigError(field, `expected integer string, received not-a-strict-integer`);
-    }
-    return parsed;
-}
 
 ;// CONCATENATED MODULE: ./src/util/cli-args.ts
 
-/**
- * Default error class thrown by `readEnum` when an enum value is invalid.
- * The class lives here so `readEnum` can throw it without circular
- * imports between `cli-args.ts` and `parse-args.ts` (the parse-args.ts
- * file defines its own `CliUsageError` separately for parse-time
- * errors; callers that want the CLI to recognize the error can pass
- * their own constructor via `readEnum(..., { errorClass: CliUsageError })`).
- */
-class CliArgError extends Error {
-    name = "CliArgError";
-}
 /**
  * Strict decimal-integer parser that REJECTS partial numeric garbage.
  * `Number.parseInt("12abc", 10)` returns 12; this helper returns null for
@@ -851,19 +759,17 @@ function parseStrictInt(raw) {
  * Single source of truth — changing the canonical `enumValues` array
  * updates both surfaces.
  *
- * The error class is injectable via the 4th argument so callers that
- * need a typed error (e.g. `CliUsageError` in `parse-args.ts`) can
- * preserve their outer-handler contract; without an explicit class,
- * `readEnum` falls back to `CliArgError` (also exported from this
- * module). The message format matches the original hand-coded parsers
- * (`invalid --flag value: X`) so existing tests and user-facing
+ * The error class is **required** and is passed in by the caller so it
+ * can preserve its outer-handler contract (e.g. `CliUsageError` in
+ * `parse-args.ts`). The message format matches the original hand-coded
+ * parsers (`invalid --flag value: X`) so existing tests and user-facing
  * diagnostics stay byte-identical.
  *
  * The accepted set is typed `readonly T[]` so the literal union narrows
  * naturally without an explicit cast: `readEnum<CliPlatform>("--platform",
  * v, FIELDS.platform.enumValues as readonly CliPlatform[], CliUsageError)`.
  */
-function readEnum(flag, value, accepted, errorClass = CliArgError) {
+function readEnum(flag, value, accepted, errorClass) {
     for (const candidate of accepted) {
         if (candidate === value) {
             return candidate;
@@ -945,6 +851,75 @@ function levenshtein(a, b) {
     }
     return previous[b.length] ?? 0;
 }
+
+;// CONCATENATED MODULE: ./src/util/brand.ts
+/**
+ * Canonical brand string used across CLI, platform, and provider code.
+ *
+ * NOT a generic brand concept: this is the specific string "umactually"
+ * that downstream consumers (PR comments, HTTP User-Agent headers, GitHub
+ * agents) match on. Renamed from "umactually" in v0.1.0 because
+ * the project ships under the bare name `umactually` and never launched
+ * with the longer string — no installed copies depend on the old value.
+ */
+/** Canonical review brand string; eliminates the 50+ inline "umactually" literals across CLI, platform, and provider code. */
+const BRAND = "umactually";
+/** Log prefix shared by annotation helpers; eliminates hand-built "umactually: " prefixes in stderr diagnostics. */
+const BRAND_PREFIX = `${BRAND}: `;
+/** HTTP User-Agent token shared by provider and platform clients; eliminates duplicated header literals. */
+const USER_AGENT = BRAND;
+/** Azure DevOps PR status context name; prevents status updates from drifting away from the review brand. */
+const AZURE_STATUS_CONTEXT_NAME = `${BRAND}-status`;
+/** Azure DevOps PR status context genre; the discriminator that keeps our status updates distinct from any other tool's. */
+const AZURE_STATUS_CONTEXT_GENRE = "pr-review";
+/**
+ * Redaction token emitted by secret scanners and runtime sanitizers
+ * when a high-confidence secret or per-secret value is replaced. The
+ * runtime sanitizer (`live-shared.ts:sanitizeForPost`) and the
+ * scanner (`scan-review-secrets.ts`) must emit the SAME token so the
+ * downstream log-filter and dedup heuristics agree on what counts as
+ * "already-redacted". Single source of truth — any future rename must
+ * touch this constant only.
+ */
+const REDACTED_SECRET_TOKEN = "[REDACTED_SECRET]";
+/**
+ * Placeholder string substituted into config-parse error messages instead of
+ * leaking values. Re-exported from `src/config/errors.ts` as `REDACTED` to
+ * preserve the existing import surface in that module (the parser chain in
+ * `src/config/parsers.ts` already imports `REDACTED` from `errors.ts`).
+ */
+const REDACTED_PLACEHOLDER = "[REDACTED]";
+/** Replaces an entire `Authorization: ...` header value in logged request bodies. */
+const REDACTED_AUTHORIZATION_HEADER = "[REDACTED_AUTHORIZATION_HEADER]";
+/** Replaces a `Bearer <token>` segment inside a logged request body. */
+const REDACTED_BEARER_TOKEN = "[REDACTED_BEARER_TOKEN]";
+
+;// CONCATENATED MODULE: ./src/config/errors.ts
+class errors_InvalidConfigError extends Error {
+    field;
+    reason;
+    name = "InvalidConfigError";
+    constructor(field, reason, options) {
+        super(`Invalid config for '${field}': ${reason}`, options);
+        this.field = field;
+        this.reason = reason;
+    }
+}
+class PromptFileError extends Error {
+    path;
+    reason;
+    name = "PromptFileError";
+    constructor(path, reason, options) {
+        super(`Prompt file error: ${reason}`, options);
+        this.path = path;
+        this.reason = reason;
+    }
+}
+/**
+ * Marker used in error messages to replace any user-supplied value
+ * (URLs, tokens, prompt content). Never echo the raw value.
+ */
+
 
 ;// CONCATENATED MODULE: ./src/config/parsers.ts
 
@@ -1177,6 +1152,7 @@ function parseCliArgs(args) {
     let maxComments = null;
     let reviewFileLimit = null;
     let detectLeaks = true;
+    let instructionFiles = true;
     let walkthrough = false;
     let diagnostic = false;
     let debugRawResponse = false;
@@ -1344,6 +1320,9 @@ function parseCliArgs(args) {
             case "--no-include-pr-sonar-findings":
                 includePrSonarFindings = false;
                 break;
+            case "--no-instruction-files":
+                instructionFiles = false;
+                break;
             case "--sonar-host-url":
                 sonarHostUrl = readValue(args, index, "sonar-host-url");
                 index += 1;
@@ -1489,6 +1468,7 @@ function parseCliArgs(args) {
         maxComments,
         reviewFileLimit,
         detectLeaks,
+        instructionFiles,
         walkthrough,
         diagnostic,
         debugRawResponse,
@@ -2806,6 +2786,7 @@ const REVIEW_FLAGS = [
     { flag: "--github-api-base <url>", description: `GitHub API base URL (Copilot token exchange; default: ${DEFAULT_GITHUB_API_BASE})`, appliesTo: ["review"] },
     { flag: "--include-sonarqube", appliesTo: ["review"] },
     { flag: "--include-pr-sonar-findings | --no-include-pr-sonar-findings", description: "Merge SonarCloud PR inline comments into the review (default: no)", appliesTo: ["review"] },
+    { flag: "--no-instruction-files", description: "Disable auto-loading of AI agent and human instruction files (CLAUDE.md, AGENTS.md, README.md, …) from the target repo.", appliesTo: ["review"] },
     { flag: "--sonar-host-url <url>", appliesTo: ["review"] },
     { flag: "--sonar-token <token>", appliesTo: ["review"] },
     { flag: "--sonar-project-key <key>", appliesTo: ["review"] },
@@ -12462,6 +12443,7 @@ const ENV_KEYS = {
     UMACTUALLY_MODEL: "UMACTUALLY_MODEL",
     UMACTUALLY_PROVIDER: "UMACTUALLY_PROVIDER",
     UMACTUALLY_GITHUB_API_BASE: "UMACTUALLY_GITHUB_API_BASE",
+    UMACTUALLY_INSTRUCTION_FILES: "UMACTUALLY_INSTRUCTION_FILES",
     // GitHub runner metadata
     GITHUB_ACTIONS: "GITHUB_ACTIONS",
     GITHUB_EVENT_PATH: "GITHUB_EVENT_PATH",
@@ -12599,6 +12581,8 @@ function addLine(linesByPath, path, line) {
 
 /** Canonical prompt-file byte cap shared by config loading and live prompt assembly. */
 const DEFAULT_PROMPT_BYTE_CAP = FIELDS.promptByteCap.defaultValue;
+/** Canonical human-facing file byte cap (e.g. AGENTS.md equivalents) loaded by the default-lookup convention. */
+const DEFAULT_HUMAN_FILE_BYTE_CAP = 16_384;
 /** Canonical cap for posted review comments when no CLI/input override is supplied. */
 const DEFAULT_MAX_COMMENTS = FIELDS.maxComments.defaultValue;
 /** Canonical merge fallback cap for chunked live reviews. */
@@ -14441,6 +14425,8 @@ async function discoverAutoModel(input) {
 
 
 
+
+
 const PROMPT_SEPARATOR = "\n\n---\n\n";
 const nodePromptFileSystem = {
     realpath(cwd) {
@@ -14533,6 +14519,103 @@ async function readPromptFiles(paths, byteCap, options) {
     return parts.join(PROMPT_SEPARATOR);
 }
 /**
+ * Read the six human-convention files (`README.md`, `CONTRIBUTING.md`,
+ * `CODE_OF_CONDUCT.md`, `SECURITY.md`, `CHANGELOG.md`, `LICENSE`) under
+ * `cwd` and return their concatenated contents joined by
+ * `"\n\n---\n\n"`. These files give the model the project context a
+ * human contributor would read on day one — they are NOT AI-instruction
+ * files, but they share the default-lookup pipeline so the review has
+ * the same "first day on the project" framing as the auto-loaded
+ * `CLAUDE.md` / `AGENTS.md` umbrella conventions.
+ *
+ * Behavior mirrors `readPromptFiles` for everything except the
+ * error-handling contract: every file is processed independently, and
+ * per-file failures (missing, not-a-file, over-cap, read-failed) are
+ * SILENTLY SKIPPED rather than thrown. Long READMEs / LICENSES are
+ * common, and we explicitly do not want one oversized file to abort
+ * the review — that would force users to disable the human-file
+ * loading entirely instead of just trimming the over-cap entry.
+ *
+ * Two byte caps govern the loader:
+ * - **Per-file cap** = `DEFAULT_HUMAN_FILE_BYTE_CAP` (16 KiB). Each
+ *   file is checked against this individually; over-cap files are
+ *   silently skipped.
+ * - **Aggregate cap** = `DEFAULT_PROMPT_BYTE_CAP` (65 KiB), shared
+ *   with the umbrella-convention loader. Once the running total of
+ *   included files exceeds the aggregate cap, the next file is
+ *   silently skipped (NOT thrown — see "silent skip" above).
+ *
+ * The same security boundary as `readPromptFiles` is enforced: any
+ * path whose resolved realpath escapes `cwd` is silently skipped (a
+ * prompt-file path that resolves outside the repo is not a "missing
+ * file" — but for human files there is no `prompt-files` override
+ * surface, so the same guard is the simplest defense and keeps the
+ * two readers behaviorally aligned).
+ */
+async function readHumanConventionFiles(options) {
+    const fs = options.fs ?? nodePromptFileSystem;
+    const cwdReal = await fs.realpath(options.cwd);
+    const parts = [];
+    let aggregateBytes = 0;
+    for (const rawPath of HUMAN_CONVENTION_FILE_PATHS) {
+        if (typeof rawPath !== "string" || rawPath.length === 0) {
+            continue;
+        }
+        if ((0,external_node_path_namespaceObject.isAbsolute)(rawPath)) {
+            continue;
+        }
+        let resolved;
+        try {
+            resolved = await fs.realpathWithinCwd(rawPath, cwdReal, fs);
+        }
+        catch {
+            continue;
+        }
+        if (!resolved.withinCwd) {
+            continue;
+        }
+        let stat;
+        try {
+            stat = await fs.stat(resolved.absolute);
+        }
+        catch {
+            continue;
+        }
+        if (!stat.isFile) {
+            continue;
+        }
+        if (stat.size > DEFAULT_HUMAN_FILE_BYTE_CAP) {
+            // Long READMEs / LICENSES are common; an over-cap human file
+            // must not abort the review — skip it instead of throwing.
+            continue;
+        }
+        if (aggregateBytes + stat.size > DEFAULT_PROMPT_BYTE_CAP) {
+            // Same rationale as the per-file cap: a single oversized entry
+            // must not consume the aggregate budget for the rest of the
+            // human-file load. Skip rather than throw.
+            continue;
+        }
+        let text;
+        try {
+            text = await fs.readFile(resolved.absolute);
+        }
+        catch {
+            continue;
+        }
+        parts.push(text);
+        aggregateBytes += stat.size;
+    }
+    return parts.join(PROMPT_SEPARATOR);
+}
+const HUMAN_CONVENTION_FILE_PATHS = [
+    "README.md",
+    "CONTRIBUTING.md",
+    "CODE_OF_CONDUCT.md",
+    "SECURITY.md",
+    "CHANGELOG.md",
+    "LICENSE",
+];
+/**
  * Split a newline- or comma-separated list of paths into a deduplicated,
  * ordered, trimmed array of non-empty strings. Empty input yields an
  * empty array. Order is preserved by first-occurrence.
@@ -14562,16 +14645,22 @@ function splitPromptFileList(raw) {
     return out;
 }
 /**
- * Repository-relative filenames UmActually auto-discovers when no explicit
- * prompt-file or prompt-files override is supplied. Each entry is checked
- * with `fs.stat`; missing files are silently skipped so repos that lack
- * any of these files fall through to the built-in default system prompt
- * (or empty additional prompt).
+ * Repository-relative filenames (and glob patterns) UmActually
+ * auto-discovers when no explicit prompt-file or prompt-files override
+ * is supplied. Each entry is checked with `fs.stat`; missing files
+ * (and glob patterns that match nothing) are silently skipped so repos
+ * that lack any of these files fall through to the built-in default
+ * system prompt (or empty additional prompt).
  *
  * Order matters: files are concatenated in the listed order. The
- * recognized conventions are:
+ * recognized conventions are organized across three tiers:
  *
- * - `CLAUDE.md` — Anthropic Claude Code / Cowork repo-level instructions.
+ * **Tier 1 — cross-tool "umbrella" conventions** (the five entries at
+ * the top are the legacy short list; the three local/override variants
+ * below extend the same families):
+ *
+ * - `CLAUDE.md` — Anthropic Claude Code / Cowork repo-level
+ *   instructions.
  * - `AGENTS.md` — emerging agent-agnostic convention (also adopted by
  *   Cursor, aider, and OpenAI Codex).
  * - `.github/copilot-instructions.md` — GitHub Copilot Coding Agent
@@ -14579,19 +14668,103 @@ function splitPromptFileList(raw) {
  *   https://docs.github.com/en/copilot/customizing-copilot/adding-custom-instructions-for-github-copilot).
  * - `.cursorrules` — Cursor legacy single-file rules format.
  * - `GEMINI.md` — Google Gemini CLI repo-level instructions.
+ * - `AGENTS.local.md` — local-machine override of `AGENTS.md`
+ *   (gitignored personal preferences).
+ * - `AGENTS.override.md` — workspace-level override of `AGENTS.md`
+ *   (committed team override).
+ * - `CLAUDE.local.md` — local-machine override of `CLAUDE.md`.
  *
- * Excluded by design (deferred to a future iteration that needs glob
- * support): `.github/instructions/*.md` (Copilot multi-file mode) and
- * `.clinerules/*.md` (Cline). Glob support requires an allowlist-aware
- * directory read; the current `readPromptFiles` API only accepts a flat
- * list of paths.
+ * **Tier 3 — IDE/tool-specific single-file rules** (legacy flat-file
+ * formats that the auto-discovery layer still honors for backwards
+ * compatibility):
+ *
+ * - `.windsurfrules` — Windsurf legacy single-file rules.
+ * - `.clinerules` — Cline legacy single-file rules.
+ * - `.roorules` — Roo Code legacy single-file rules.
+ * - `.kilocoderules` — Kilo Code legacy single-file rules.
+ * - `.github/git-commit-instructions.md` — GitHub Copilot
+ *   commit-message conventions.
+ * - `.opencode/AGENTS.md` — OpenCode agent instructions file.
+ *
+ * **Glob patterns** — the recursive `.rules/`-directory formats
+ * adopted by the same tools when they outgrew the single-file
+ * variants. Each glob is anchored at the repo root and must match
+ * a regular file; the resolver expands globs safely (the
+ * call site that consumes this list enforces an allowlist-aware
+ * directory read):
+ *
+ * - `.github/instructions/*.instructions.md` — GitHub Copilot
+ *   multi-file instructions mode.
+ * - `.cursor/rules/*.mdc` — Cursor modern `.mdc` rule files.
+ * - `.clinerules/**​/*.md` — Cline recursive rules.
+ * - `.roo/rules/**​/*.md` — Roo Code recursive rules.
+ * - `.roo/rules-*​/**​/*.md` — Roo Code scoped rules variants.
+ * - `.kilocode/rules/**​/*.md` — Kilo Code recursive rules.
+ * - `.kilocode/rules-*​/**​/*.md` — Kilo Code scoped rules variants.
+ * - `.continue/rules/*.md` — Continue assistant rules.
+ * - `.windsurf/rules/**​/*.md` — Windsurf recursive rules.
+ * - `.claude/rules/**​/*.md` — Claude Code path-scoped rules.
+ *
+ * **Human convention files** — README, CONTRIBUTING, the codes of
+ * conduct, etc. These are not AI-instruction files; they are
+ * appended so the model has the project context a human contributor
+ * would read on day one. They share this array but are loaded with
+ * a smaller per-file cap (`DEFAULT_HUMAN_FILE_BYTE_CAP`, 16 KiB) at
+ * the call site: files that exceed the cap are silently skipped so
+ * a long LICENSE / CHANGELOG does not abort the review or consume
+ * the aggregate byte budget.
+ *
+ * - `README.md`
+ * - `CONTRIBUTING.md`
+ * - `CODE_OF_CONDUCT.md`
+ * - `SECURITY.md`
+ * - `CHANGELOG.md`
+ * - `LICENSE`
+ *
+ * Excluded by design (out of scope for this iteration):
+ * Tier 5 product-config files (`.aider.conf.yml`, `opencode.json`,
+ * `kilo.jsonc`) — those are parsed by the tools themselves, not
+ * surfaced as prompt text. Subdirectory walking (e.g. `docs/AGENTS.md`)
+ * is also excluded; this list stays anchored at the repo root plus
+ * the explicitly-listed leading subdirectories (`.github/`,
+ * `.cursor/`, `.clinerules/`, `.roo/`, `.kilocode/`,
+ * `.continue/`, `.windsurf/`, `.claude/`, `.opencode/`).
  */
 const DEFAULT_PROMPT_FILE_PATHS = [
+    // Tier 1 — cross-tool umbrella conventions (legacy top-5 + local/override variants)
     "CLAUDE.md",
     "AGENTS.md",
     ".github/copilot-instructions.md",
     ".cursorrules",
     "GEMINI.md",
+    "AGENTS.local.md",
+    "AGENTS.override.md",
+    "CLAUDE.local.md",
+    // Tier 3 — IDE/tool-specific single-file rules
+    ".windsurfrules",
+    ".clinerules",
+    ".roorules",
+    ".kilocoderules",
+    ".github/git-commit-instructions.md",
+    ".opencode/AGENTS.md",
+    // Glob patterns — recursive `.rules/` directory formats
+    ".github/instructions/*.instructions.md",
+    ".cursor/rules/*.mdc",
+    ".clinerules/**/*.md",
+    ".roo/rules/**/*.md",
+    ".roo/rules-*/**/*.md",
+    ".kilocode/rules/**/*.md",
+    ".kilocode/rules-*/**/*.md",
+    ".continue/rules/*.md",
+    ".windsurf/rules/**/*.md",
+    ".claude/rules/**/*.md",
+    // Human convention files (loaded with a smaller per-file cap at the call site)
+    "README.md",
+    "CONTRIBUTING.md",
+    "CODE_OF_CONDUCT.md",
+    "SECURITY.md",
+    "CHANGELOG.md",
+    "LICENSE",
 ];
 /**
  * Resolve `DEFAULT_PROMPT_FILE_PATHS` against `cwd` and return only the
@@ -14624,6 +14797,144 @@ async function resolveDefaultPromptFiles(cwd, fs) {
         }
     }
     return existing;
+}
+/**
+ * Returns true when `pattern` contains any of the glob metacharacters
+ * the rest of this module treats as "needs expansion": `*`, `?`, `[`, `{`.
+ * Brace expansion (`{a,b}`) is detected at this gate but intentionally
+ * NOT supported by the matcher below — it is grouped with the other
+ * metacharacters so callers can fail fast / reject braces uniformly.
+ */
+function isGlobPattern(pattern) {
+    return /[*?[{]/u.test(pattern);
+}
+/**
+ * Translate a single glob segment (`*`, `**`, `?`, `[abc]`, or literal)
+ * into the corresponding regex source fragment. `/` is treated as a path
+ * separator and never matches `*` or `?`; only `**` may span `/`. Char
+ * classes are passed through verbatim so `[abc]` and `[^abc]` both work.
+ */
+function globToRegexSource(pattern) {
+    let out = "";
+    for (let i = 0; i < pattern.length; i++) {
+        const ch = pattern[i];
+        if (ch === undefined)
+            continue;
+        if (ch === "*") {
+            // `**` → match anything including `/`; `*` → match anything except `/`.
+            if (pattern[i + 1] === "*") {
+                out += ".*";
+                i++;
+                // Consume an immediately following `/` so `**/foo` and `foo/**/bar`
+                // both compile cleanly without an awkward `.*/foo` prefix.
+                if (pattern[i + 1] === "/")
+                    i++;
+            }
+            else {
+                out += "[^/]*";
+            }
+        }
+        else if (ch === "?") {
+            out += "[^/]";
+        }
+        else if (ch === "[") {
+            // Pass char class through verbatim up to the closing `]`.
+            const end = pattern.indexOf("]", i + 1);
+            if (end === -1) {
+                out += "\\[";
+            }
+            else {
+                out += pattern.slice(i, end + 1);
+                i = end;
+            }
+        }
+        else {
+            // Regex-escape any literal so `.`, `+`, `(`, `{`, etc. don't
+            // break out. Brace-expansion patterns (`{a,b}`) are detected at
+            // the gate but never expanded here — the braces are treated as
+            // literal regex characters.
+            out += ch.replace(/[\\^$.+()|{}]/gu, "\\$&");
+        }
+    }
+    return out;
+}
+function globToRegExp(pattern) {
+    // Anchor to the whole string; the path is fully-resolved when we test it.
+    return new RegExp(`^${globToRegexSource(pattern)}$`, "u");
+}
+/**
+ * Synchronously expand glob patterns into a flat list of file paths that
+ * exist under `cwd`. Non-glob entries are passed through unchanged so the
+ * caller can mix flat paths and patterns in a single argument list.
+ *
+ * Order contract: matches from each glob are returned in the order
+ * `fs.readdirSync({ recursive: true })` yields them; the outer result
+ * concatenates per-glob in `paths` order. This preserves the
+ * "concatenate in the listed order" property that `readPromptFiles`
+ * relies on.
+ *
+ * Symlink safety: every matched path is resolved with `realpathSync`
+ * and silently dropped if it escapes `cwd`. This mirrors the
+ * `readPromptFiles` boundary so a glob can never smuggle a file from
+ * outside the repo root.
+ *
+ * Brace expansion (`{a,b}`) is detected (so callers see the same
+ * metacharacter surface as `picomatch`) but intentionally NOT
+ * supported — those entries expand to zero matches.
+ */
+function resolveGlobs(paths, cwd) {
+    const cwdReal = (0,external_node_fs_.realpathSync)(cwd);
+    const cwdRealWithSep = cwdReal.endsWith(external_node_path_namespaceObject.sep) ? cwdReal : cwdReal + external_node_path_namespaceObject.sep;
+    // Walk the cwd tree once. `readdirSync` with `recursive: true` returns
+    // Dirent objects tagged with their parent path. `Dirent.parentPath` is
+    // ABSOLUTE (not relative to the readdir root), so we strip the cwd
+    // prefix to reconstruct the repo-relative path used by the matcher.
+    // We use the unresolved `cwd` here (not `cwdReal`) because
+    // `parentPath` was produced by the same kernel walk that produced
+    // the entries — they share the same unresolved spelling.
+    const cwdWithSep = cwd.endsWith(external_node_path_namespaceObject.sep) ? cwd : cwd + external_node_path_namespaceObject.sep;
+    const entries = (0,external_node_fs_.readdirSync)(cwd, { recursive: true, withFileTypes: true });
+    const out = [];
+    for (const raw of paths) {
+        if (!isGlobPattern(raw)) {
+            out.push(raw);
+            continue;
+        }
+        const re = globToRegExp(raw);
+        for (const entry of entries) {
+            if (!entry.isFile())
+                continue;
+            // `Dirent.parentPath` is absolute (e.g. `/repo/.cursor/rules`).
+            // An entry whose parent is exactly `cwd` sits at the cwd root;
+            // anything deeper gets its cwd-prefix stripped.
+            const parent = entry.parentPath;
+            const rel = parent === undefined || parent === null || parent === cwd
+                ? entry.name
+                : parent.startsWith(cwdWithSep)
+                    ? `${parent.slice(cwdWithSep.length)}/${entry.name}`
+                    : null;
+            if (rel === null)
+                continue;
+            if (!re.test(rel))
+                continue;
+            // Realpath guard: skip anything that resolves outside cwd. We
+            // resolve against `cwdReal` (the symlink-free root) so that a
+            // symlink that points back into cwd is still accepted, matching
+            // the semantic `readPromptFiles` enforces.
+            const absolute = (0,external_node_path_namespaceObject.join)(cwdReal, rel);
+            let real;
+            try {
+                real = (0,external_node_fs_.realpathSync)(absolute);
+            }
+            catch {
+                continue;
+            }
+            if (!(real === cwdReal || real.startsWith(cwdRealWithSep)))
+                continue;
+            out.push(rel);
+        }
+    }
+    return out;
 }
 
 ;// CONCATENATED MODULE: ./src/diff/filter-build-artifacts.ts
@@ -14722,7 +15033,7 @@ function toPosixPath(path) {
  * new patterns should be added to `DEFAULT_BUILD_ARTIFACT_PATTERNS` and
  * covered by tests in `test/unit/diff-filter.test.ts`.
  */
-function globToRegExp(glob) {
+function filter_build_artifacts_globToRegExp(glob) {
     // Build the RegExp by walking the glob character-by-character.
     // The naive `.replace` approach had a subtle bug: escaping slashes
     // and ordering `**` before `*` is easy to get wrong. The
@@ -14784,7 +15095,7 @@ function globToRegExp(glob) {
 function isBuildArtifactPath(path, patterns = DEFAULT_BUILD_ARTIFACT_PATTERNS) {
     const normalized = toPosixPath(path);
     for (const pattern of patterns) {
-        if (globToRegExp(pattern).test(normalized)) {
+        if (filter_build_artifacts_globToRegExp(pattern).test(normalized)) {
             return true;
         }
     }
@@ -15623,7 +15934,10 @@ async function buildProviderPrompts(input) {
     // single-threaded sink assumption that `setActiveSeveritySink`
     // relies on. Implementation: synchronous stat() so we do NOT add a
     // new `await` boundary at the top of buildProviderPrompts.
-    const defaultPaths = resolveDefaultPromptFilesOnce(input.cwd);
+    const defaultPaths = input.instructionFilesByBaseBranch !== undefined
+        && input.instructionFilesByBaseBranch.size > 0
+        ? [...input.instructionFilesByBaseBranch.keys()]
+        : resolveDefaultPromptFilesOnce(input.cwd);
     const additionalPrompt = await readAdditionalPrompt(input, defaultPaths);
     const userParts = [
         `Platform: ${input.platform}`,
@@ -15649,8 +15963,31 @@ async function buildProviderPrompts(input) {
     // string the post-filter then validates against this list.
     userParts.push(buildFilesInDiffBlock(input.diffText));
     userParts.push("Diff:", input.diffText);
+    // Human convention files (README, CONTRIBUTING, LICENSE, …) layer:
+    // loaded AFTER pickSystemPrompt so they precede every other system
+    // content the model sees. The labelled separator + header makes the
+    // boundary explicit so the model treats the human docs as a distinct
+    // "ground-truth repo contract" layer (vs. the AI instruction files
+    // layered behind it). Read is silent on per-file failures by design
+    // (see `readHumanConventionFiles` doc), so a missing README never
+    // aborts the review — the system prompt simply degrades to the
+    // pickSystemPrompt-only content.
+    //
+    // The opt-out (`--no-instruction-files`) suppresses the AI-files
+    // lookup inside `pickSystemPrompt`; this gate mirrors it for the
+    // human-files load so the entire default-lookup surface (AI + human)
+    // is skipped in one shot. Inline + --prompt-files + --prompt-file
+    // overrides inside `pickSystemPrompt` still take precedence (those
+    // branches early-return BEFORE this code runs).
+    const baseSystem = await pickSystemPrompt(input, defaultPaths);
+    const humanConventionFiles = isInstructionFilesExplicitlyFalse(input.parsed)
+        ? ""
+        : await readHumanConventionFiles({ cwd: input.cwd });
+    const system = humanConventionFiles.length > 0
+        ? `\n---\nHuman convention files (README, CONTRIBUTING, …):\n${humanConventionFiles}\n${baseSystem}`
+        : baseSystem;
     return {
-        system: await pickSystemPrompt(input, defaultPaths),
+        system,
         user: userParts.join("\n\n"),
     };
 }
@@ -15706,24 +16043,28 @@ function resolveDefaultPromptFilesOnce(cwd) {
     const cached = DEFAULT_PROMPT_FILES_CACHE.get(cwd);
     if (cached !== undefined)
         return cached;
+    // Expand DEFAULT_PROMPT_FILE_PATHS through `resolveGlobs` so glob
+    // patterns (e.g. `.cursor/rules/*.md`) yield their matches alongside
+    // the flat-path entries. `resolveGlobs` enforces the same realpath
+    // boundary as `readPromptFiles` (drops anything that escapes cwd)
+    // and only emits cwd-relative paths, so the per-candidate defensive
+    // check that lived here before is now redundant.
+    const expanded = resolveGlobs(DEFAULT_PROMPT_FILE_PATHS, cwd);
     const out = [];
-    for (const candidate of DEFAULT_PROMPT_FILE_PATHS) {
-        // Defense in depth: every entry in DEFAULT_PROMPT_FILE_PATHS is a
-        // hardcoded relative path with no `..` segments and no leading
-        // `/`, but `path.join` would silently swallow an absolute candidate
-        // (e.g. `/etc/passwd`) and turn it into an absolute path under
-        // cwd. Reject anything that is not a plain relative path here so
-        // a future change that adds a non-conforming entry surfaces a
-        // loud failure instead of silently expanding the security
-        // boundary.
-        if (!isSafeRelativeCandidate(candidate)) {
-            throw new Error(`DEFAULT_PROMPT_FILE_PATHS contains an unsafe entry: ${JSON.stringify(candidate)}. ` +
-                `Entries must be relative paths with no '..' segments and no leading '/' or drive letter.`);
-        }
+    for (const candidate of expanded) {
         try {
             const s = (0,external_node_fs_.statSync)((0,external_node_path_namespaceObject.join)(cwd, candidate));
-            if (s.isFile())
-                out.push(candidate);
+            if (!s.isFile())
+                continue;
+            // Auto-discovery skips over-cap files silently: throwing here
+            // would abort the review for any repo whose own auto-discovered
+            // files (e.g. CHANGELOG.md) exceed the per-file cap. The
+            // explicit --prompt-files override still throws via
+            // readPromptFiles — the loud failure is reserved for the
+            // operator-controlled surface, not the auto-discovery surface.
+            if (s.size > DEFAULT_PROMPT_BYTE_CAP)
+                continue;
+            out.push(candidate);
         }
         catch {
             // ENOENT (or any other stat failure): silently skip.
@@ -15732,31 +16073,6 @@ function resolveDefaultPromptFilesOnce(cwd) {
     const frozen = Object.freeze(out);
     DEFAULT_PROMPT_FILES_CACHE.set(cwd, frozen);
     return frozen;
-}
-/**
- * Returns true iff the candidate is a safe relative path: no leading
- * `/`, no leading drive letter (Windows `C:` etc.), no `..` segments,
- * and at least one non-separator character.
- *
- * This is defense in depth — DEFAULT_PROMPT_FILE_PATHS is hardcoded
- * with safe entries today. The check exists so a future maintainer
- * who adds an entry with `..` (e.g. `../sibling/CLAUDE.md`) sees a
- * loud failure rather than silently allowing the action to read a
- * path outside cwd.
- */
-function isSafeRelativeCandidate(candidate) {
-    if (typeof candidate !== "string" || candidate.length === 0)
-        return false;
-    if (candidate.startsWith("/") || candidate.startsWith("\\"))
-        return false;
-    // Windows drive-letter prefix: "C:" or "C:\" or "C:/". Reject.
-    if (/^[a-zA-Z]:[\\/]?/u.test(candidate))
-        return false;
-    // No `..` segments (handles both POSIX and Windows separators).
-    const segments = candidate.split(/[\\/]/u);
-    if (segments.some((seg) => seg === ".."))
-        return false;
-    return true;
 }
 /**
  * Test-only hook to clear the per-cwd default-prompt cache. Used by
@@ -15836,10 +16152,57 @@ async function pickSystemPrompt(input, defaultPaths) {
     if (filePath.length > 0) {
         return readPromptFiles([filePath], DEFAULT_PROMPT_BYTE_CAP, { cwd: input.cwd });
     }
+    // Opt-out: `--no-instruction-files` (or UMACTUALLY_INSTRUCTION_FILES=false)
+    // suppresses the AI-files default-lookup entirely and falls through to the
+    // built-in default. Only the literal `false` value is treated as the
+    // opt-out (a missing field, `null`, `undefined`, or `true` is opt-in,
+    // matching the schema default).
+    if (isInstructionFilesExplicitlyFalse(input.parsed)) {
+        return buildDefaultSystemPrompt();
+    }
     if (defaultPaths.length > 0) {
-        return readPromptFiles(defaultPaths, DEFAULT_PROMPT_BYTE_CAP, { cwd: input.cwd });
+        return readResolvedDefaultPromptFiles(input, defaultPaths);
     }
     return buildDefaultSystemPrompt();
+}
+/**
+ * Returns true only when the operator has explicitly opted out of the
+ * default instruction-file lookup via `--no-instruction-files` (or the
+ * `UMACTUALLY_INSTRUCTION_FILES=false` env var). The flag is declared
+ * as a boolean on `ParsedCliArgs`; the literal `false` is the opt-out
+ * signal, anything else (`true`, missing) means "use the defaults".
+ */
+function isInstructionFilesExplicitlyFalse(parsed) {
+    return parsed.instructionFiles === false;
+}
+/**
+ * Join the base-branch instruction-file map into a single string and
+ * truncate to the shared byte cap. Used by both `readResolvedDefaultPromptFiles`
+ * (system prompt) and `readAdditionalPrompt` so the cap-truncation
+ * semantics stay identical between the two paths.
+ *
+ * Rationale for truncation: the base-branch fetch joins multiple files
+ * with no per-file cap (unlike the cwd path's `readPromptFiles`
+ * aggregate guard). Truncating here keeps the model contract uniform
+ * across both surfaces. `slice` respects UTF-16 boundaries, which is
+ * good enough for our UTF-8 content because every UTF-8 codepoint
+ * occupies 1-3 UTF-16 code units and a partial codepoint at the
+ * boundary just renders as a replacement char — same outcome as the
+ * cwd path's per-file cap, which also slices at byte boundaries.
+ */
+function formatBaseBranchContent(map) {
+    const joined = [...map.values()].join("\n\n");
+    if (joined.length <= DEFAULT_PROMPT_BYTE_CAP)
+        return joined;
+    const truncated = joined.slice(0, DEFAULT_PROMPT_BYTE_CAP);
+    return `${truncated}\n\n[... truncated at ${DEFAULT_PROMPT_BYTE_CAP}-byte cap ...]`;
+}
+function readResolvedDefaultPromptFiles(input, defaultPaths) {
+    const baseBranch = input.instructionFilesByBaseBranch;
+    if (baseBranch !== undefined && baseBranch.size > 0) {
+        return Promise.resolve(formatBaseBranchContent(baseBranch));
+    }
+    return readPromptFiles(defaultPaths, DEFAULT_PROMPT_BYTE_CAP, { cwd: input.cwd });
 }
 /**
  * The built-in default system prompt. Rewritten in PR #26 (the
@@ -15924,6 +16287,20 @@ async function readAdditionalPrompt(input, defaultPaths) {
     const filePath = resolveField(input.parsed.additionalPromptFile, undefined, "");
     if (filePath.length > 0) {
         return readPromptFiles([filePath], DEFAULT_PROMPT_BYTE_CAP, { cwd: input.cwd });
+    }
+    // Opt-out mirrors `pickSystemPrompt`: with `--no-instruction-files` the
+    // additional prompt's default-lookup is suppressed and the function
+    // returns `""` so the user message renders "Additional instructions: none".
+    // Inline + array + single-file overrides above still take precedence.
+    if (isInstructionFilesExplicitlyFalse(input.parsed))
+        return "";
+    // Base-branch mirror: when the base-branch Map is supplied the keys
+    // are base-branch paths and may not exist in cwd; reuse the joined
+    // + cap-truncated content rather than reading those paths from cwd
+    // (which would trip `byte-cap-exceeded` / `not-found`).
+    const baseBranch = input.instructionFilesByBaseBranch;
+    if (baseBranch !== undefined && baseBranch.size > 0) {
+        return formatBaseBranchContent(baseBranch);
     }
     if (defaultPaths.length === 0)
         return "";
@@ -16856,7 +17233,12 @@ async function requestLiveReview(input) {
         ...(input.signal === undefined ? {} : { signal: input.signal }),
         timeoutMs: readRequestTimeoutMs(input.parsed),
     });
-    const prompts = await buildProviderPrompts(input);
+    const prompts = await buildProviderPrompts({
+        ...input,
+        ...(input.instructionFilesByBaseBranch !== undefined
+            ? { instructionFilesByBaseBranch: input.instructionFilesByBaseBranch }
+            : {}),
+    });
     // Install an ambient severity-warning sink for the duration of this
     // request. Any `parseReviewPayload` call inside `runCopilotRequest` /
     // `runProviderRequest` will push warnings into the captured array
@@ -18877,6 +19259,106 @@ function readOptionalString(value) {
     return typeof value === "string" && value.length > 0 ? value : null;
 }
 
+;// CONCATENATED MODULE: ./src/util/platform-instructions.ts
+/**
+ * Concurrency cap for `fetchPlatformInstructionFiles`. Four parallel
+ * fetches is enough to hide platform `contents` / `items` API latency on
+ * a typical repo without tripping the per-token rate-limit bucket. Used
+ * by both `fetchGithubPrInstructions` and `fetchAzurePrInstructions` so
+ * the two providers share a single documented fan-out budget.
+ */
+const PLATFORM_INSTRUCTIONS_FETCH_CONCURRENCY = 4;
+/**
+ * Decode a 2xx response body for a per-path platform instruction fetch.
+ * The two adapters (GitHub `contents` API + Azure DevOps `items` API)
+ * share the same shape after the per-path fetch resolves:
+ *
+ *   - 404 → `null` (silently dropped by the orchestrator)
+ *   - other non-2xx → `throw` with the platform-specific error class
+ *   - 2xx → parse JSON body, hand the parsed value to the caller via
+ *     `parseJson`
+ *
+ * Extracted into a shared helper so the GitHub + Azure per-path
+ * fetchers don't carry the same 6-line "if status / if ok / JSON.parse"
+ * boilerplate twice. The caller still owns the platform-specific
+ * payload decoder (base64 → utf8 for GitHub, `parseItemContent` for
+ * Azure) — `parseJson` is the seam.
+ */
+async function decodeInstructionResponseBody(response, path, platformLabel, ctor, code, parseJson) {
+    if (response.status === 404) {
+        return null;
+    }
+    if (!response.ok) {
+        throw new ctor(code, response.status, `${platformLabel} PR instructions fetch failed for '${path}' with status ${response.status}.`);
+    }
+    return parseJson(response);
+}
+/**
+ * Shared JSON-body parser used by {@link decodeInstructionResponseBody}
+ * for platforms whose per-path fetch resolves to a JSON body (GitHub
+ * `contents` and Azure DevOps `items` both qualify). Wraps the
+ * `JSON.parse` + `SyntaxError → typed-error` translation that the two
+ * adapters each had to write by hand.
+ */
+async function parsePlatformJsonBody(response, path, platformLabel, ctor, code) {
+    let payload;
+    try {
+        payload = await response.json();
+    }
+    catch (error) {
+        if (error instanceof SyntaxError) {
+            throw new ctor(code, response.status, `${platformLabel} PR instructions response for '${path}' was not valid JSON.`, { cause: error });
+        }
+        throw error;
+    }
+    return payload;
+}
+/**
+ * Shared orchestrator for "fetch a batch of instruction files from the
+ * PR's base ref on a platform API" — used by the GitHub and Azure
+ * platform adapters. Pulls every `path` through the supplied
+ * `fetchOne` callback with a bounded worker pool (so the action never
+ * stampedes a per-token rate-limit bucket), silently drops 404s
+ * (mapped to `null` by the callback), and surfaces everything else
+ * unchanged. The callback is responsible for the platform-specific URL
+ * shape + body decoding; this helper is platform-agnostic.
+ *
+ * Worker-pool implementation: a small shared-cursor pool is enough
+ * here. The fetch work is naturally I/O-bound so each await yields to
+ * the event loop and the cursor increments atomically. A `p-limit`-style
+ * helper would add a dependency for no behavior change.
+ */
+async function fetchPlatformInstructionFiles(paths, fetchImpl, fetchOne) {
+    const results = new Map();
+    if (paths.length === 0) {
+        return results;
+    }
+    const tasks = paths.map((path) => () => fetchOne(path, fetchImpl));
+    // Workers share a single monotonically advancing cursor; JS single-
+    // threadedness makes the increment atomic at each `await` boundary.
+    let cursor = 0;
+    const worker = async () => {
+        while (true) {
+            const index = cursor++;
+            if (index >= tasks.length) {
+                return;
+            }
+            const value = await tasks[index]();
+            if (value !== null) {
+                const path = paths[index];
+                results.set(path, value);
+            }
+        }
+    };
+    const workers = [];
+    const poolSize = Math.min(PLATFORM_INSTRUCTIONS_FETCH_CONCURRENCY, tasks.length);
+    for (let i = 0; i < poolSize; i++) {
+        workers.push(worker());
+    }
+    await Promise.all(workers);
+    return results;
+}
+
 ;// CONCATENATED MODULE: ./src/platform/azure/urls.ts
 /** Canonical Azure DevOps REST API version. Bump in one place to update every endpoint. */
 const AZURE_API_VERSION = "7.1";
@@ -18905,6 +19387,7 @@ function azurePrBaseUrlWithVersion(context) {
 
 
 
+
 const AZURE_FETCH_TIMEOUT_MS = 30_000;
 const ZERO_OBJECT_ID_PATTERN = /^0+$/u;
 async function fetchAzurePrDiff(context, fetchImpl = fetch) {
@@ -18923,6 +19406,49 @@ async function fetchAzurePrDiff(context, fetchImpl = fetch) {
         throw new AzureApiError("AZURE_DIFF_EMPTY", AZURE_EMPTY_DIFF_STATUS, "Azure DevOps PR diff response body was empty.");
     }
     return filtered;
+}
+/** Azure DevOps Git API version pinned by the `items` endpoint we use here. The repository-level preview namespace is required for the `versionDescriptor.*` query string. */
+const AZURE_GIT_ITEMS_API_VERSION = "7.1-preview.1";
+/**
+ * Fetch the contents of instruction files from the PR's base commit.
+ * Reads each path via the Azure DevOps Git `items` API pinned to
+ * `baseCommit` (not `sourceCommit`) so a PR cannot rewrite its own
+ * reviewer instructions. Per-path: 2xx decodes the JSON `content`
+ * field; 404 is silently skipped; any other failure throws
+ * `AzureApiError` with code `"AZURE_FETCH_FAILED"` so the caller can
+ * fall back to cwd reading. Concurrency is bounded by the shared
+ * `fetchPlatformInstructionFiles` worker pool (4 by default).
+ */
+async function fetchAzurePrInstructions(context, paths, fetchImpl = fetch) {
+    return fetchPlatformInstructionFiles(paths, fetchImpl, (path, impl) => fetchAzurePrInstruction(context, path, impl));
+}
+async function fetchAzurePrInstruction(context, path, fetchImpl) {
+    const url = buildInstructionItemUrl(context, path);
+    const response = await fetchImpl(url, buildAzureRequestInit(context));
+    // Azure requires the empty-body guard BEFORE JSON.parse — the
+    // shared `decodeInstructionResponseBody` helper assumes JSON-shaped
+    // bodies, so we add the empty-body check here for parity with the
+    // pre-decode shape (the GitHub adapter never sees an empty body
+    // because the contents endpoint always returns either a JSON object
+    // or 404).
+    const payload = await decodeInstructionResponseBody(response, path, "Azure DevOps", AzureApiError, "AZURE_FETCH_FAILED", async (resp) => {
+        const bodyText = await resp.text();
+        if (bodyText.length === 0) {
+            throw new AzureApiError("AZURE_FETCH_FAILED", resp.status, `Azure DevOps PR instructions response for '${path}' was empty.`);
+        }
+        try {
+            return JSON.parse(bodyText);
+        }
+        catch (error) {
+            if (error instanceof SyntaxError) {
+                throw new AzureApiError("AZURE_FETCH_FAILED", resp.status, `Azure DevOps PR instructions response for '${path}' was not valid JSON.`, { cause: error });
+            }
+            throw error;
+        }
+    });
+    if (payload === null)
+        return null;
+    return parseItemContent(payload);
 }
 async function reconstructUnifiedDiff(client, sourceCommitId, changes) {
     const fileDiffs = [];
@@ -19032,6 +19558,21 @@ function parseItemBaseUrl(value) {
 function azureRepositoryBaseUrl(context) {
     const projectSegment = encodeURIComponent(context.project);
     return `${AZURE_DEVOPS_BASE_URL}/${context.org}/${projectSegment}/_apis/git/repositories/${context.repoId}`;
+}
+function buildInstructionItemUrl(context, path) {
+    const url = new URL(`${azureRepositoryBaseUrl(context)}/items`);
+    url.searchParams.set("path", path);
+    // The orchestrator gates the fetch on `baseCommit !== undefined` (see
+    // src/cli/orchestrator.ts) so this branch is unreachable at runtime;
+    // the assert narrows the type for the URLSearchParams.set call below.
+    if (context.baseCommit === undefined) {
+        throw new AzureApiError("AZURE_FETCH_FAILED", 0, "Azure DevOps base-branch fetch requires SYSTEM_PULLREQUEST_MERGECOMMITID to be set; falling back to cwd lookup.");
+    }
+    url.searchParams.set("versionDescriptor.version", context.baseCommit);
+    url.searchParams.set("versionDescriptor.versionType", "commit");
+    url.searchParams.set("includeContent", "true");
+    url.searchParams.set("api-version", AZURE_GIT_ITEMS_API_VERSION);
+    return url.toString();
 }
 /** Active Azure thread statuses — a thread still in flight. */
 const AZURE_OPEN_STATUSES = new Set(["active", "pending"]);
@@ -20202,6 +20743,7 @@ function readAzureContext(env, overrides) {
     const prNumber = readAzurePrNumber(env, overrides?.prNumber);
     const sourceCommit = readAzureSha(env);
     const targetBranch = readAzureTargetBranch(env);
+    const baseCommit = readAzureBaseCommit(env);
     return {
         token,
         org,
@@ -20210,6 +20752,7 @@ function readAzureContext(env, overrides) {
         prNumber,
         sourceCommit,
         targetBranch,
+        baseCommit,
     };
 }
 function readAzureToken(env) {
@@ -20327,6 +20870,23 @@ function readAzureTargetBranch(env) {
         throw new AzureContextError("AZURE_TARGET_BRANCH_MISSING", "Azure Pipelines SYSTEM_PULLREQUEST_TARGETBRANCHNAME must be set.");
     }
     return value;
+}
+function readAzureBaseCommit(env) {
+    // Azure Pipelines does not expose a dedicated "base commit" env var.
+    // Operators who want the umbrella-instruction-files fetch to read from
+    // the PR's base SHA (so a PR cannot rewrite its own reviewer
+    // instructions) should set SYSTEM_PULLREQUEST_MERGECOMMITID to the
+    // tip of the target branch as resolved at PR creation time. When the
+    // var is missing we deliberately return `undefined` rather than
+    // falling back to `sourceCommit` (the PR HEAD) — falling back would
+    // re-open the attacker-injected AGENTS.md vector this whole feature
+    // exists to close. The orchestrator treats `undefined` as "skip the
+    // base-branch fetch and fall back to cwd lookup".
+    const explicit = env["SYSTEM_PULLREQUEST_MERGECOMMITID"];
+    if (typeof explicit === "string" && explicit.length > 0) {
+        return explicit;
+    }
+    return undefined;
 }
 
 ;// CONCATENATED MODULE: ./src/platform/github/context.ts
@@ -20486,6 +21046,7 @@ function readString(value) {
 
 
 
+
 /**
  * API-layer error for the GitHub platform adapter. Inherits the
  * `PlatformApiError` shape from `src/util/platform-error.ts` so it shares
@@ -20534,6 +21095,47 @@ async function fetchGithubPrDiff(context, fetchImpl = fetch) {
 function buildPullUrl(context) {
     const repositorySegment = `${context.repo.owner}/${context.repo.name}`;
     return `${GITHUB_API_BASE_URL}/repos/${repositorySegment}/pulls/${context.prNumber}`;
+}
+/**
+ * Fetch the contents of instruction files from the PR's base branch.
+ * Reads each path via the GitHub `contents` API pinned to `baseSha`
+ * (not `headSha`) so a PR cannot rewrite its own reviewer
+ * instructions. Per-path: 2xx decodes base64 `content` to UTF-8; 404
+ * is silently skipped; any other failure throws `GithubApiError`
+ * with code `"GITHUB_FETCH_FAILED"` so the caller can fall back to
+ * cwd reading. Concurrency is bounded by the shared
+ * `fetchPlatformInstructionFiles` worker pool (4 by default).
+ */
+async function fetchGithubPrInstructions(context, paths, fetchImpl = fetch) {
+    return fetchPlatformInstructionFiles(paths, fetchImpl, (path, impl) => fetchGithubPrInstruction(context, path, impl));
+}
+async function fetchGithubPrInstruction(context, path, fetchImpl) {
+    const url = `${GITHUB_API_BASE_URL}/repos/${context.repo.owner}/${context.repo.name}/contents/${path}?ref=${context.baseSha}`;
+    const response = await fetchImpl(url, {
+        method: "GET",
+        headers: githubHeaders(context.token),
+    });
+    const payload = await decodeInstructionResponseBody(response, path, "GitHub", GithubApiError, "GITHUB_FETCH_FAILED", (resp) => parsePlatformJsonBody(resp, path, "GitHub", GithubApiError, "GITHUB_FETCH_FAILED"));
+    if (payload === null)
+        return null;
+    if (!isObject(payload)) {
+        throw new GithubApiError("GITHUB_FETCH_FAILED", response.status, `GitHub PR instructions response for '${path}' was not a JSON object.`);
+    }
+    const content = payload["content"];
+    if (typeof content !== "string" || content.length === 0) {
+        throw new GithubApiError("GITHUB_FETCH_FAILED", response.status, `GitHub PR instructions response for '${path}' did not include a 'content' field.`);
+    }
+    // Buffer.from(..., "base64") tolerates GitHub's line-wrapped base64,
+    // so the embedded newlines do not need to be stripped.
+    try {
+        return Buffer.from(content, "base64").toString("utf8");
+    }
+    catch (error) {
+        throw new GithubApiError("GITHUB_FETCH_FAILED", response.status, `GitHub PR instructions payload for '${path}' could not be base64-decoded.`, { cause: error });
+    }
+}
+function isObject(value) {
+    return typeof value === "object" && value !== null;
 }
 
 ;// CONCATENATED MODULE: ./src/cli/live-azure.ts
@@ -22572,6 +23174,13 @@ async function dispatchLivePlatform(input) {
     switch (platform) {
         case "github": {
             const context = await readGithubContext(env);
+            let instructionFilesByBaseBranch;
+            try {
+                instructionFilesByBaseBranch = await fetchGithubPrInstructions(context, DEFAULT_PROMPT_FILE_PATHS, fetchImpl);
+            }
+            catch (error) {
+                logWarning("", `failed to fetch GitHub base-branch instruction files (${formatError(error)}); falling back to cwd lookup.`);
+            }
             const diffText = await fetchGithubPrDiff(context, fetchImpl);
             const leakGate = await evaluateLeakGate({
                 diffText,
@@ -22589,6 +23198,7 @@ async function dispatchLivePlatform(input) {
                 platform: "github",
                 diffText,
                 platformToken: context.token,
+                ...(instructionFilesByBaseBranch !== undefined ? { instructionFilesByBaseBranch } : {}),
                 ...(sonarContext !== undefined ? { sonarContext } : {}),
             });
             const finalOutcome = applySimulateFindings({
@@ -22638,6 +23248,18 @@ async function dispatchLivePlatform(input) {
                 azurePrNumberOverride = candidate;
             }
             const context = readAzureContext(env, { prNumber: azurePrNumberOverride });
+            let instructionFilesByBaseBranch;
+            if (context.baseCommit === undefined) {
+                logWarning("", "Azure base-branch fetch skipped (SYSTEM_PULLREQUEST_MERGECOMMITID not set); falling back to cwd lookup.");
+            }
+            else {
+                try {
+                    instructionFilesByBaseBranch = await fetchAzurePrInstructions(context, DEFAULT_PROMPT_FILE_PATHS, fetchImpl);
+                }
+                catch (error) {
+                    logWarning("", `failed to fetch Azure base-branch instruction files (${formatError(error)}); falling back to cwd lookup.`);
+                }
+            }
             const diffText = await fetchAzurePrDiff(context, fetchImpl);
             const leakGate = await evaluateLeakGate({
                 diffText,
@@ -22690,6 +23312,7 @@ async function dispatchLivePlatform(input) {
                         platform: "azure",
                         diffText,
                         platformToken: context.token,
+                        ...(instructionFilesByBaseBranch !== undefined ? { instructionFilesByBaseBranch } : {}),
                         ...(sonarContext !== undefined ? { sonarContext } : {}),
                     });
                 }
@@ -22706,6 +23329,7 @@ async function dispatchLivePlatform(input) {
                         platform: "azure",
                         chunks,
                         platformToken: context.token,
+                        ...(instructionFilesByBaseBranch !== undefined ? { instructionFilesByBaseBranch } : {}),
                         ...(sonarContext !== undefined ? { sonarContext } : {}),
                     });
                 }
@@ -24013,6 +24637,7 @@ function buildSanitizedResolvedConfig(resolved) {
         simulateFindings: resolved.simulateFindings,
         detectLeaks: resolved.detectLeaks,
         includeSonarqube: resolved.includeSonarqube,
+        instructionFiles: resolved["instructionFiles"],
         apiUrlPresent: resolved.apiUrl !== null && resolved.apiUrl.length > 0,
         apiKeyPresent: resolved.apiKey !== null && resolved.apiKey.length > 0,
         filesPresent: resolved.files !== null && resolved.files.length > 0,
