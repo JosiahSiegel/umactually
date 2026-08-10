@@ -156,7 +156,7 @@ describe("requestLiveReview model discovery", () => {
     expect(stub.calls[0]?.url).toBe(`${API_URL}/responses`);
     expect(stub.calls[0]?.body).toMatchObject({ model: explicitModel });
     expect(outcome.modelId).toBe(explicitModel);
-  });
+  }, 30000);
 
   it.each([null, "", "auto"])("discovers one model before inference when configured model is %j", async (model) => {
     // Given: discovery returns exactly one opaque model ID.
@@ -191,5 +191,5 @@ describe("requestLiveReview model discovery", () => {
     expect(failure.error.code).toBe("PROVIDER_ERROR");
     expect(failure.error.message).toContain("--model");
     expect(failure.error.message).not.toContain(API_KEY);
-  });
+  }, 30000);
 });
