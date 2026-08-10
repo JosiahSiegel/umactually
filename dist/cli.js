@@ -73,7 +73,7 @@ module.exports = __nccwpck_require__.p + "7f5bc0b4ff7db750334f.ts";
 
 /***/ }),
 
-/***/ 421:
+/***/ 802:
 /***/ ((module) => {
 
 module.exports = __WEBPACK_EXTERNAL_createRequire(import.meta.url)("node:child_process");
@@ -921,7 +921,17 @@ class PromptFileError extends Error {
  */
 
 
+;// CONCATENATED MODULE: ./src/util/normalize.ts
+/**
+ * Normalize raw user input for case-insensitive enum lookups.
+ * Leaf module — zero imports.
+ */
+function normalizeEnumInput(raw) {
+    return raw.trim().toLowerCase();
+}
+
 ;// CONCATENATED MODULE: ./src/config/parsers.ts
+
 
 
 
@@ -946,7 +956,7 @@ function parseBooleanFromUnknown(value, field) {
         throw new errors_InvalidConfigError(field, `expected boolean, received number ${REDACTED_PLACEHOLDER}`);
     }
     if (typeof value === "string") {
-        const normalized = value.trim().toLowerCase();
+        const normalized = normalizeEnumInput(value);
         if (TRUTHY_STRINGS.has(normalized))
             return true;
         if (FALSY_STRINGS.has(normalized))
@@ -1018,7 +1028,7 @@ function parseSeverityFromUnknown(value, field) {
     if (typeof value !== "string") {
         throw new errors_InvalidConfigError(field, `expected severity string, received ${typeof value}`);
     }
-    const normalized = value.trim().toLowerCase();
+    const normalized = normalizeEnumInput(value);
     const alias = SEVERITY_ALIASES[normalized];
     if (alias !== undefined)
         return alias;
@@ -1035,7 +1045,7 @@ function parsePlatformFromUnknown(value, field) {
     if (typeof value !== "string") {
         throw new errors_InvalidConfigError(field, `expected platform string, received ${typeof value}`);
     }
-    const normalized = value.trim().toLowerCase();
+    const normalized = normalizeEnumInput(value);
     if (!VALID_PLATFORMS.has(normalized)) {
         throw new errors_InvalidConfigError(field, `unknown platform ${REDACTED_PLACEHOLDER}`);
     }
@@ -1573,7 +1583,7 @@ function unknownFlagUsageError(token, argv) {
 }
 
 // EXTERNAL MODULE: external "node:child_process"
-var external_node_child_process_ = __nccwpck_require__(421);
+var external_node_child_process_ = __nccwpck_require__(802);
 ;// CONCATENATED MODULE: external "node:os"
 const external_node_os_namespaceObject = __WEBPACK_EXTERNAL_createRequire(import.meta.url)("node:os");
 ;// CONCATENATED MODULE: external "node:url"
@@ -3075,7 +3085,7 @@ class FlockUnavailableError extends Error {
 }
 function tryFlockNonBlocking(lockPath) {
     try {
-        const { spawnSync } = __nccwpck_require__(421);
+        const { spawnSync } = __nccwpck_require__(802);
         const r = spawnSync("flock", ["-n", lockPath, "true"], { stdio: "ignore", timeout: 1000 });
         return r.status === 0;
     }
@@ -3954,6 +3964,7 @@ function detectCiTarget(input) {
 // every interactive prompt (≤15s per-prompt), wraps the whole wizard in a
 // 60s global `Promise.race` budget, and threads the saved config through
 // `writeSavedConfig` from `saved-config.ts` for atomic + 0o600 persistence.
+
 
 
 
@@ -4988,7 +4999,7 @@ async function promptCi(input) {
             const answer = await safePrompt(reader, isTTY, "? Generate CI workflow? (1) github  (2) azure  (3) none  [default: 3]: ", "none");
             if (answer === null)
                 return { outcome: "aborted" };
-            const trimmed = answer.trim().toLowerCase();
+            const trimmed = normalizeEnumInput(answer);
             if (trimmed === "github" || trimmed === "azure")
                 chosen = trimmed;
             else
@@ -5067,7 +5078,7 @@ async function safePrompt(reader, isTTY, prompt, defaultValue) {
  * any unrecognized value (case-insensitive match).
  */
 function parseProviderChoice(answer) {
-    const t = answer.trim().toLowerCase();
+    const t = normalizeEnumInput(answer);
     if (t === "openai-compatible" || t === "openai" || t === "1") {
         return "openai-compatible";
     }
@@ -11849,6 +11860,7 @@ function shouldFallback(error) {
 
 
 
+
 /**
  * Resolve a config field through the canonical precedence chain: parsed > env > fallback.
  *
@@ -11954,7 +11966,7 @@ function parseEnumField(field, raw) {
     if (typeof raw !== "string") {
         throw new errors_InvalidConfigError(field.field, `expected enum string, received ${typeof raw}`);
     }
-    const normalized = raw.trim().toLowerCase();
+    const normalized = normalizeEnumInput(raw);
     if (!(field.enumValues ?? []).includes(normalized)) {
         throw new errors_InvalidConfigError(field.field, `unknown enum value ${REDACTED_PLACEHOLDER}`);
     }
