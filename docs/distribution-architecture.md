@@ -83,3 +83,7 @@ The original v0.5.x release used Bun's `--compile` to produce the single-file bi
 - v0.7.0: consider publishing a Homebrew tap, a Scoop bucket, and an apt repository for the binary path. (Out of scope for v0.6.0.)
 - v0.8.0: re-evaluate binary adoption via GitHub Releases download counts. If npm install accounts for >95% of installs, drop the binary path. (Unlikely — corporate users still need it.)
 - v1.0.0: pin the bundle Node version to whatever's LTS at the time. SEA backports to Node 24 LTS are tracked in nodejs/node#53605.
+
+## See also
+
+For the operator-facing install instructions and the four-row install-path table (npm, curl-pipe smart-router, npx/bunx, direct binary), see the README's [Install](README.md#install) and [Quickstart](README.md#quickstart) sections. The install-path table in this doc is the rationale behind the choices; the README's table is the one to follow when picking an install method.

@@ -217,3 +217,7 @@ Before adding a new provider, check that:
 If all three pass, the new family should follow the same pattern as `src/provider/anthropic-messages.ts`: a dedicated `run<X>Request` exported from the provider module, a wire-shape-only contract, and the dispatcher in `src/cli/live-provider.ts` is updated with one more "if errored, route to the OTHER protocol" branch.
 
 If only (1) holds but the rest are negative, route through the existing OpenAI client with a request-body adapter (see `src/provider/openai-compatible.ts:buildChatBody` for how the wire body is currently adapted). Avoid adding new families when a thin adapter suffices.
+
+## See also
+
+The README's [Provider](README.md#provider) section surfaces the three families as a scannable table and links here for the per-family wire shape. The README's [Quickstart](README.md#quickstart) walks an operator through picking a family interactively; this doc is the canonical reference for the wire contract and dispatcher. Cross-reference the [Common operations](README.md#common-operations) section for the day-to-day command surface.
