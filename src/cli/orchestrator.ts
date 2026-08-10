@@ -447,6 +447,7 @@ async function dispatchLivePlatform(input: {
             platform: "azure",
             diffText,
             platformToken: context.token,
+            ...(instructionFilesByBaseBranch !== undefined ? { instructionFilesByBaseBranch } : {}),
             ...(sonarContext !== undefined ? { sonarContext } : {}),
           });
         } else {

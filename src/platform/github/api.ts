@@ -3,6 +3,11 @@ import { PlatformApiError } from "../../util/platform-error.js";
 import type { FetchImpl } from "../../util/http.js";
 import { fetchTextOrThrow, githubHeaders } from "../../util/http.js";
 import { filterBuildArtifacts } from "../../diff/filter-build-artifacts.js";
+import {
+  decodeInstructionResponseBody,
+  fetchPlatformInstructionFiles,
+  parsePlatformJsonBody,
+} from "../../util/platform-instructions.js";
 import { DEFAULT_GITHUB_API_BASE } from "../../util/provider-defaults.js";
 
 /**
@@ -73,58 +78,23 @@ function buildPullUrl(context: GithubContext): string {
 }
 
 /**
- * Concurrency cap for `fetchGithubPrInstructions`. Four parallel
- * fetches is enough to hide GitHub `contents` API latency on a typical
- * repo without tripping the per-token rate-limit bucket.
- */
-const INSTRUCTIONS_FETCH_CONCURRENCY = 4;
-
-/**
  * Fetch the contents of instruction files from the PR's base branch.
  * Reads each path via the GitHub `contents` API pinned to `baseSha`
  * (not `headSha`) so a PR cannot rewrite its own reviewer
  * instructions. Per-path: 2xx decodes base64 `content` to UTF-8; 404
  * is silently skipped; any other failure throws `GithubApiError`
  * with code `"GITHUB_FETCH_FAILED"` so the caller can fall back to
- * cwd reading. Concurrency 4 via a manual pool (no `p-limit`
- * dependency in this project).
+ * cwd reading. Concurrency is bounded by the shared
+ * `fetchPlatformInstructionFiles` worker pool (4 by default).
  */
 export async function fetchGithubPrInstructions(
   context: GithubContext,
   paths: readonly string[],
   fetchImpl: FetchImpl = fetch,
 ): Promise<Map<string, string>> {
-  const results = new Map<string, string>();
-  if (paths.length === 0) {
-    return results;
-  }
-
-  const tasks = paths.map((path) => (): Promise<string | null> => fetchGithubPrInstruction(context, path, fetchImpl));
-
-  // Workers share a single monotonically advancing cursor; JS single-
-  // threadedness makes the increment atomic at each `await` boundary.
-  let cursor = 0;
-  const worker = async (): Promise<void> => {
-    while (true) {
-      const index = cursor++;
-      if (index >= tasks.length) {
-        return;
-      }
-      const value = await tasks[index]!();
-      if (value !== null) {
-        const path = paths[index]!;
-        results.set(path, value);
-      }
-    }
-  };
-
-  const workers: Promise<void>[] = [];
-  const poolSize = Math.min(INSTRUCTIONS_FETCH_CONCURRENCY, tasks.length);
-  for (let i = 0; i < poolSize; i++) {
-    workers.push(worker());
-  }
-  await Promise.all(workers);
-  return results;
+  return fetchPlatformInstructionFiles(paths, fetchImpl, (path, impl) =>
+    fetchGithubPrInstruction(context, path, impl),
+  );
 }
 
 async function fetchGithubPrInstruction(
@@ -138,32 +108,15 @@ async function fetchGithubPrInstruction(
     headers: githubHeaders(context.token),
   });
 
-  if (response.status === 404) {
-    return null;
-  }
-
-  if (!response.ok) {
-    throw new GithubApiError(
-      "GITHUB_FETCH_FAILED",
-      response.status,
-      `GitHub PR instructions fetch failed for '${path}' with status ${response.status}.`,
-    );
-  }
-
-  let payload: unknown;
-  try {
-    payload = await response.json();
-  } catch (error) {
-    if (error instanceof SyntaxError) {
-      throw new GithubApiError(
-        "GITHUB_FETCH_FAILED",
-        response.status,
-        `GitHub PR instructions response for '${path}' was not valid JSON.`,
-        { cause: error },
-      );
-    }
-    throw error;
-  }
+  const payload = await decodeInstructionResponseBody(
+    response,
+    path,
+    "GitHub",
+    GithubApiError,
+    "GITHUB_FETCH_FAILED",
+    (resp) => parsePlatformJsonBody(resp, path, "GitHub", GithubApiError, "GITHUB_FETCH_FAILED"),
+  );
+  if (payload === null) return null;
 
   if (!isObject(payload)) {
     throw new GithubApiError(
