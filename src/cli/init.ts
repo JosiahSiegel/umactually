@@ -1203,6 +1203,7 @@ type PerBranchPrompt = {
  */
 export function buildPerBranchPrompts(
   provider: InitProvider,
+  // eslint-disable-next-line @typescript-eslint/no-unused-vars -- env arg reserved for future env-driven providers
   _env: Readonly<Record<string, string | undefined>>,
 ): readonly PerBranchPrompt[] {
   switch (provider) {
@@ -1413,6 +1414,7 @@ async function promptCi(input: {
  * is bounded by the per-prompt timeout and surfaces SmartPromptUnavailable
  * as a clean decline (null).
  */
+// eslint-disable-next-line @typescript-eslint/no-unused-vars -- isTTY arg reserved for future TTY-aware defaults
 async function defaultStdinReader(prompt: string, _isTTY: boolean): Promise<string | null> {
   try {
     return await readInteractiveLine({ prompt, timeoutMs: PER_PROMPT_TIMEOUT_MS });

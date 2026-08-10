@@ -98,6 +98,7 @@ function readGithubPrNumber(env: NodeJS.ProcessEnv, fallback: number | null): nu
   );
 }
 
+// eslint-disable-next-line @typescript-eslint/no-unused-vars -- env arg reserved for future env-driven parsing
 function parsePrNumber(raw: string, _env: NodeJS.ProcessEnv): number {
   // Use the strict helper so "42abc" cannot be silently coerced to 42.
   // The previous Number.parseInt would have returned 42 from "42abc"

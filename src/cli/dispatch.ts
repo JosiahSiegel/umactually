@@ -311,6 +311,7 @@ export function renderLoadedConfigQuickstart(config: SavedConfig): string {
 
 function runLoadedConfigQuickstart(
   config: SavedConfig,
+  // eslint-disable-next-line @typescript-eslint/no-unused-vars -- path param reserved for future telemetry
   _path: string,
 ): Promise<DispatchResult> {
   process.stdout.write(`${BRAND_PREFIX}${renderLoadedConfigQuickstart(config)}`);

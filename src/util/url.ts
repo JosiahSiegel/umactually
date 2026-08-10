@@ -1,3 +1,5 @@
+import type { webcrypto } from "node:crypto";
+
 /** Join provider base URLs consistently; eliminates duplicated slash trimming across provider clients. */
 export function joinUrl(baseUrl: string, path: string): string {
   const trimmedBase = stripTrailingSlash(baseUrl);
@@ -407,10 +409,7 @@ export function pathToFileUrl(value: string): string {
 
 /** Create request correlation IDs consistently; eliminates duplicated UUID fallback logic across providers. */
 export function createRequestId(): string {
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const cryptoApi = (globalThis as any).crypto as
-    | { randomUUID?: () => string; getRandomValues?: (buf: Uint8Array) => Uint8Array }
-    | undefined;
+  const cryptoApi: { readonly randomUUID?: () => string; readonly getRandomValues?: (buf: Uint8Array) => Uint8Array } | undefined = (globalThis as { readonly crypto?: webcrypto.Crypto }).crypto;
   if (cryptoApi?.randomUUID !== undefined) {
     return cryptoApi.randomUUID();
   }

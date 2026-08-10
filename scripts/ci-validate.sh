@@ -48,6 +48,9 @@ command -v npm >/dev/null 2>&1 || {
 echo "==> typecheck"
 npm run typecheck
 
+echo "==> lint"
+npm run lint
+
 echo "==> test"
 npm test -- --run
 

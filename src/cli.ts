@@ -93,6 +93,7 @@ export function isVersionFlag(argv: readonly string[]): boolean {
  * `${version}\n` on stdout — no brand prefix, no banner, no colour —
  * to match the contract pinned by CLI-VERSION-001.
  */
+// eslint-disable-next-line @typescript-eslint/no-unused-vars -- stable entry-point signature
 export function runVersion(_argv: readonly string[]): { readonly exitCode: 0; readonly stdout: string } {
   const version = readPackageVersion();
   const stdout = `${version}\n`;

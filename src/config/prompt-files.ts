@@ -22,6 +22,7 @@ const nodePromptFileSystem: PromptFileSystem = {
   realpath(cwd) {
     return fsRealpath(cwd);
   },
+  // eslint-disable-next-line @typescript-eslint/no-unused-vars -- this binding kept for interface parity
   async realpathWithinCwd(path, cwdReal, _self) {
     const absolute = pathResolve(cwdReal, path);
     let real: string;

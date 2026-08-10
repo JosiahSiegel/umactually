@@ -69,7 +69,7 @@ module.exports = { cursor, scroll, erase, beep };
 /***/ 28:
 /***/ ((module, __unused_webpack_exports, __nccwpck_require__) => {
 
-module.exports = __nccwpck_require__.p + "7f5bc0b4ff7db750334f.ts";
+module.exports = __nccwpck_require__.p + "8acd7a20bbb3e9830007.ts";
 
 /***/ }),
 
@@ -4880,7 +4880,9 @@ async function runInteractiveInit({ args, deps, }) {
  *   anthropic         → api-key, model
  *   copilot           → github-api-base, model
  */
-function buildPerBranchPrompts(provider, _env) {
+function buildPerBranchPrompts(provider, 
+// eslint-disable-next-line @typescript-eslint/no-unused-vars -- env arg reserved for future env-driven providers
+_env) {
     switch (provider) {
         case "openai-compatible":
             return [
@@ -5048,6 +5050,7 @@ async function promptCi(input) {
  * is bounded by the per-prompt timeout and surfaces SmartPromptUnavailable
  * as a clean decline (null).
  */
+// eslint-disable-next-line @typescript-eslint/no-unused-vars -- isTTY arg reserved for future TTY-aware defaults
 async function init_defaultStdinReader(prompt, _isTTY) {
     try {
         return await readInteractiveLine({ prompt, timeoutMs: PER_PROMPT_TIMEOUT_MS });
@@ -9089,6 +9092,7 @@ function setActiveSeveritySink(sink) {
         // caller is overwriting it without clearing the previous one first.
         // Log + warn loudly so the regression class surfaces in CI logs
         // rather than silently corrupting telemetry.
+        // eslint-disable-next-line no-console -- provider parse-fail diagnostic
         console.warn("[provider-parse] setActiveSeveritySink: overwriting a non-null ambient sink. " +
             "This usually means two requestLiveReview calls are running concurrently " +
             "(Promise.all) — the second's sink will be cleared by the first's finally, " +
@@ -9111,6 +9115,7 @@ function emitSeverityWarning(rawValue, normalizedFallback, context, sink) {
     const message = `provider ${providerLabel} emitted unrecognized severity ${safeRaw} ` +
         `at comment index ${context.commentIndex}; falling back to "${normalizedFallback}". ` +
         `Expected one of: info, low, medium, high, critical.`;
+    // eslint-disable-next-line no-console -- provider parse-fail diagnostic
     console.warn(message, context);
     if (sink !== undefined) {
         sink(rawValue, normalizedFallback, context);
@@ -11237,7 +11242,6 @@ function pathToFileUrl(value) {
 }
 /** Create request correlation IDs consistently; eliminates duplicated UUID fallback logic across providers. */
 function createRequestId() {
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const cryptoApi = globalThis.crypto;
     if (cryptoApi?.randomUUID !== undefined) {
         return cryptoApi.randomUUID();
@@ -14444,6 +14448,7 @@ const nodePromptFileSystem = {
     realpath(cwd) {
         return (0,promises_.realpath)(cwd);
     },
+    // eslint-disable-next-line @typescript-eslint/no-unused-vars -- this binding kept for interface parity
     async realpathWithinCwd(path, cwdReal, _self) {
         const absolute = (0,external_node_path_namespaceObject.resolve)(cwdReal, path);
         let real;
@@ -15149,6 +15154,8 @@ function filterBuildArtifacts(diffText, patterns = DEFAULT_BUILD_ARTIFACT_PATTER
     const retained = [];
     let retainedBytes = 0;
     let droppedBlocks = 0;
+    // eslint-disable-next-line @typescript-eslint/no-unused-vars -- count reserved for future telemetry
+    droppedBlocks += 1;
     for (const block of blocks) {
         const { a, b } = extractTargetPaths(block);
         // Test the artifact filter against BOTH sides so renames across
@@ -15159,10 +15166,12 @@ function filterBuildArtifacts(diffText, patterns = DEFAULT_BUILD_ARTIFACT_PATTER
         const matchesArtifact = (a !== null && isBuildArtifactPath(a, patterns)) ||
             (b !== null && isBuildArtifactPath(b, patterns));
         if (matchesArtifact) {
+            // eslint-disable-next-line @typescript-eslint/no-unused-vars -- counter reserved for future telemetry
             droppedBlocks += 1;
             continue;
         }
         retained.push(block);
+        // eslint-disable-next-line @typescript-eslint/no-unused-vars -- byte-count counter reserved for future telemetry
         retainedBytes += block.length;
     }
     // Avoid returning an empty string when every block was filtered; downstream
@@ -18322,6 +18331,7 @@ async function runHub(opts) {
 
 
 
+// eslint-disable-next-line @typescript-eslint/no-unused-vars -- entry-point signature parity
 async function runTui(_argv) {
     intro("umactually tui");
     const result = await runHub({
@@ -18721,7 +18731,9 @@ function renderLoadedConfigQuickstart(config) {
         "",
     ].join("\n");
 }
-function runLoadedConfigQuickstart(config, _path) {
+function runLoadedConfigQuickstart(config, 
+// eslint-disable-next-line @typescript-eslint/no-unused-vars -- path param reserved for future telemetry
+_path) {
     process.stdout.write(`${BRAND_PREFIX}${renderLoadedConfigQuickstart(config)}`);
     return Promise.resolve({ exitCode: 0 });
 }
@@ -20969,6 +20981,7 @@ function readGithubPrNumber(env, fallback) {
     }
     throw new GithubContextError("GITHUB_PR_NUMBER_INVALID", "GitHub pull request number must be provided via PR_NUMBER input, GITHUB_PR_NUMBER env, or the pull_request event payload.");
 }
+// eslint-disable-next-line @typescript-eslint/no-unused-vars -- env arg reserved for future env-driven parsing
 function parsePrNumber(raw, _env) {
     // Use the strict helper so "42abc" cannot be silently coerced to 42.
     // The previous Number.parseInt would have returned 42 from "42abc"
@@ -23926,6 +23939,7 @@ async function candidatePaths(inputPath, cwd) {
         info = await promises_.lstat(absolute);
     }
     catch (error) {
+        // eslint-disable-next-line no-console -- surface skipped local paths to CLI users
         console.error(`${BRAND_PREFIX}--files: skipped ${inputPath} (${reasonFor(error)})`);
         return [];
     }
@@ -23942,6 +23956,7 @@ async function candidatePaths(inputPath, cwd) {
             .map((entry) => (0,external_node_path_namespaceObject.resolve)(entry.parentPath, entry.name));
     }
     catch (error) {
+        // eslint-disable-next-line no-console -- surface skipped directory scans to CLI users
         console.error(`${BRAND_PREFIX}--files: skipped ${inputPath} (${reasonFor(error)})`);
         return [];
     }
@@ -23979,10 +23994,12 @@ async function collectFiles(paths, cwd) {
             binary = await isBinary(absolute);
         }
         catch (error) {
+            // eslint-disable-next-line no-console -- surface unreadable local files to CLI users
             console.error(`${BRAND_PREFIX}--files: skipped ${relativePath} (${reasonFor(error)})`);
             continue;
         }
         if (binary) {
+            // eslint-disable-next-line no-console -- explain binary-file exclusions to CLI users
             console.error(`${BRAND_PREFIX}--files: skipped ${relativePath} (binary)`);
             continue;
         }
@@ -24296,6 +24313,7 @@ function resolveDefaultBranch(cwd) {
 // bans persisting credentials to disk. The `SavedConfig` type excludes
 // `apiKey`, so there is no value to read even if a caller passes one.
 // `apiKey` resolves via flag > `UMACTUALLY_API_KEY` env > error.
+// eslint-disable-next-line @typescript-eslint/no-unused-vars -- field ordering kept for parity with future fields
 const SAVED_CONFIG_FIELDS = (/* unused pure expression or super */ null && (["provider", "apiUrl", "model"]));
 /**
  * Pure resolver. Returns a NEW `SchemaResolvedCliArgs` with `provider` /
@@ -24461,6 +24479,7 @@ function isVersionFlag(argv) {
  * `${version}\n` on stdout — no brand prefix, no banner, no colour —
  * to match the contract pinned by CLI-VERSION-001.
  */
+// eslint-disable-next-line @typescript-eslint/no-unused-vars -- stable entry-point signature
 function runVersion(_argv) {
     const version = readPackageVersion();
     const stdout = `${version}\n`;
