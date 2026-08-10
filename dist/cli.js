@@ -9089,6 +9089,7 @@ function setActiveSeveritySink(sink) {
         // caller is overwriting it without clearing the previous one first.
         // Log + warn loudly so the regression class surfaces in CI logs
         // rather than silently corrupting telemetry.
+        // eslint-disable-next-line no-console -- provider parse-fail diagnostic
         console.warn("[provider-parse] setActiveSeveritySink: overwriting a non-null ambient sink. " +
             "This usually means two requestLiveReview calls are running concurrently " +
             "(Promise.all) — the second's sink will be cleared by the first's finally, " +
@@ -9111,6 +9112,7 @@ function emitSeverityWarning(rawValue, normalizedFallback, context, sink) {
     const message = `provider ${providerLabel} emitted unrecognized severity ${safeRaw} ` +
         `at comment index ${context.commentIndex}; falling back to "${normalizedFallback}". ` +
         `Expected one of: info, low, medium, high, critical.`;
+    // eslint-disable-next-line no-console -- provider parse-fail diagnostic
     console.warn(message, context);
     if (sink !== undefined) {
         sink(rawValue, normalizedFallback, context);
@@ -11237,7 +11239,6 @@ function pathToFileUrl(value) {
 }
 /** Create request correlation IDs consistently; eliminates duplicated UUID fallback logic across providers. */
 function createRequestId() {
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const cryptoApi = globalThis.crypto;
     if (cryptoApi?.randomUUID !== undefined) {
         return cryptoApi.randomUUID();
@@ -23926,6 +23927,7 @@ async function candidatePaths(inputPath, cwd) {
         info = await promises_.lstat(absolute);
     }
     catch (error) {
+        // eslint-disable-next-line no-console -- surface skipped local paths to CLI users
         console.error(`${BRAND_PREFIX}--files: skipped ${inputPath} (${reasonFor(error)})`);
         return [];
     }
@@ -23942,6 +23944,7 @@ async function candidatePaths(inputPath, cwd) {
             .map((entry) => (0,external_node_path_namespaceObject.resolve)(entry.parentPath, entry.name));
     }
     catch (error) {
+        // eslint-disable-next-line no-console -- surface skipped directory scans to CLI users
         console.error(`${BRAND_PREFIX}--files: skipped ${inputPath} (${reasonFor(error)})`);
         return [];
     }
@@ -23979,10 +23982,12 @@ async function collectFiles(paths, cwd) {
             binary = await isBinary(absolute);
         }
         catch (error) {
+            // eslint-disable-next-line no-console -- surface unreadable local files to CLI users
             console.error(`${BRAND_PREFIX}--files: skipped ${relativePath} (${reasonFor(error)})`);
             continue;
         }
         if (binary) {
+            // eslint-disable-next-line no-console -- explain binary-file exclusions to CLI users
             console.error(`${BRAND_PREFIX}--files: skipped ${relativePath} (binary)`);
             continue;
         }

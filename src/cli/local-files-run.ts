@@ -48,6 +48,7 @@ async function candidatePaths(inputPath: string, cwd: string): Promise<readonly 
   try {
     info = await fsPromises.lstat(absolute);
   } catch (error) {
+    // eslint-disable-next-line no-console -- surface skipped local paths to CLI users
     console.error(`${BRAND_PREFIX}--files: skipped ${inputPath} (${reasonFor(error)})`);
     return [];
   }
@@ -63,6 +64,7 @@ async function candidatePaths(inputPath: string, cwd: string): Promise<readonly 
       .filter((entry) => entry.isFile() && !entry.isSymbolicLink())
       .map((entry) => pathResolve(entry.parentPath, entry.name));
   } catch (error) {
+    // eslint-disable-next-line no-console -- surface skipped directory scans to CLI users
     console.error(`${BRAND_PREFIX}--files: skipped ${inputPath} (${reasonFor(error)})`);
     return [];
   }
@@ -100,10 +102,12 @@ async function collectFiles(paths: readonly string[], cwd: string): Promise<read
     try {
       binary = await isBinary(absolute);
     } catch (error) {
+      // eslint-disable-next-line no-console -- surface unreadable local files to CLI users
       console.error(`${BRAND_PREFIX}--files: skipped ${relativePath} (${reasonFor(error)})`);
       continue;
     }
     if (binary) {
+      // eslint-disable-next-line no-console -- explain binary-file exclusions to CLI users
       console.error(`${BRAND_PREFIX}--files: skipped ${relativePath} (binary)`);
       continue;
     }

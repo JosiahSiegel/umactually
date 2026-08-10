@@ -99,6 +99,7 @@ export function setActiveSeveritySink(sink: SeverityWarningSink | null): void {
     // caller is overwriting it without clearing the previous one first.
     // Log + warn loudly so the regression class surfaces in CI logs
     // rather than silently corrupting telemetry.
+    // eslint-disable-next-line no-console -- provider parse-fail diagnostic
     console.warn(
       "[provider-parse] setActiveSeveritySink: overwriting a non-null ambient sink. " +
         "This usually means two requestLiveReview calls are running concurrently " +
@@ -142,6 +143,7 @@ function emitSeverityWarning(
     `provider ${providerLabel} emitted unrecognized severity ${safeRaw} ` +
     `at comment index ${context.commentIndex}; falling back to "${normalizedFallback}". ` +
     `Expected one of: info, low, medium, high, critical.`;
+  // eslint-disable-next-line no-console -- provider parse-fail diagnostic
   console.warn(message, context);
   if (sink !== undefined) {
     sink(rawValue, normalizedFallback, context);
