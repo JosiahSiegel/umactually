@@ -21,7 +21,6 @@ import type {
 } from "../config/field-resolution.js";
 import type { SavedConfig } from "../config/saved-config.js";
 
-// eslint-disable-next-line @typescript-eslint/no-unused-vars -- field ordering kept for parity with future fields
 const SAVED_CONFIG_FIELDS = ["provider", "apiUrl", "model"] as const;
 type SavedConfigField = (typeof SAVED_CONFIG_FIELDS)[number];
 

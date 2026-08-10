@@ -217,8 +217,6 @@ export function filterBuildArtifacts(
   const retained: string[] = [];
   let retainedBytes = 0;
   let droppedBlocks = 0;
-  // eslint-disable-next-line @typescript-eslint/no-unused-vars -- count reserved for future telemetry
-  droppedBlocks += 1;
   for (const block of blocks) {
     const { a, b } = extractTargetPaths(block);
     // Test the artifact filter against BOTH sides so renames across
@@ -230,12 +228,10 @@ export function filterBuildArtifacts(
       (a !== null && isBuildArtifactPath(a, patterns)) ||
       (b !== null && isBuildArtifactPath(b, patterns));
     if (matchesArtifact) {
-      // eslint-disable-next-line @typescript-eslint/no-unused-vars -- counter reserved for future telemetry
       droppedBlocks += 1;
       continue;
     }
     retained.push(block);
-    // eslint-disable-next-line @typescript-eslint/no-unused-vars -- byte-count counter reserved for future telemetry
     retainedBytes += block.length;
   }
 

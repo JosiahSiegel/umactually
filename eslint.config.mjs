@@ -62,6 +62,7 @@ export default tseslint.config(
       "@typescript-eslint/prefer-as-const": "off",
       "@typescript-eslint/no-floating-promises": "off",
       "@typescript-eslint/no-unnecessary-type-assertion": "off",
+      "@typescript-eslint/no-unused-vars": "off",
       "no-console": "warn",
       "no-empty": "off",
       "no-useless-escape": "off",
@@ -77,7 +78,6 @@ export default tseslint.config(
     files: ["test/**/*.ts", "test/**/*.mts"],
     rules: {
       "no-console": "off",
-      "@typescript-eslint/no-unused-vars": "off",
       "no-unused-vars": "off",
       "@typescript-eslint/no-require-imports": "off",
       "no-template-curly-in-string": "off",

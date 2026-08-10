@@ -10,7 +10,6 @@ import { runHub, type FlowResult, type HubFlowKind } from "./hub.js";
 
 export type TuiExit = { exitCode: number };
 
-// eslint-disable-next-line @typescript-eslint/no-unused-vars -- entry-point signature parity
 export async function runTui(_argv: readonly string[]): Promise<TuiExit> {
   intro("umactually tui");
   const result: FlowResult = await runHub({
