@@ -367,23 +367,35 @@ function isInstructionFilesExplicitlyFalse(parsed: ParsedCliArgs): boolean {
   return parsed.instructionFiles === false;
 }
 
+/**
+ * Join the base-branch instruction-file map into a single string and
+ * truncate to the shared byte cap. Used by both `readResolvedDefaultPromptFiles`
+ * (system prompt) and `readAdditionalPrompt` so the cap-truncation
+ * semantics stay identical between the two paths.
+ *
+ * Rationale for truncation: the base-branch fetch joins multiple files
+ * with no per-file cap (unlike the cwd path's `readPromptFiles`
+ * aggregate guard). Truncating here keeps the model contract uniform
+ * across both surfaces. `slice` respects UTF-16 boundaries, which is
+ * good enough for our UTF-8 content because every UTF-8 codepoint
+ * occupies 1-3 UTF-16 code units and a partial codepoint at the
+ * boundary just renders as a replacement char — same outcome as the
+ * cwd path's per-file cap, which also slices at byte boundaries.
+ */
+function formatBaseBranchContent(map: Map<string, string>): string {
+  const joined = [...map.values()].join("\n\n");
+  if (joined.length <= DEFAULT_PROMPT_BYTE_CAP) return joined;
+  const truncated = joined.slice(0, DEFAULT_PROMPT_BYTE_CAP);
+  return `${truncated}\n\n[... truncated at ${DEFAULT_PROMPT_BYTE_CAP}-byte cap ...]`;
+}
+
 function readResolvedDefaultPromptFiles(
   input: { readonly cwd: string; readonly instructionFilesByBaseBranch?: Map<string, string> },
   defaultPaths: readonly string[],
 ): Promise<string> {
   const baseBranch = input.instructionFilesByBaseBranch;
   if (baseBranch !== undefined && baseBranch.size > 0) {
-    // Base-branch fetch joins multiple files with no cap (unlike the
-    // cwd path's readPromptFiles aggregate guard). Truncate to keep
-    // the model contract uniform. `slice` respects UTF-16 boundaries.
-    const joined = [...baseBranch.values()].join("\n\n");
-    if (joined.length <= DEFAULT_PROMPT_BYTE_CAP) {
-      return Promise.resolve(joined);
-    }
-    const truncated = joined.slice(0, DEFAULT_PROMPT_BYTE_CAP);
-    return Promise.resolve(
-      `${truncated}\n\n[... truncated at ${DEFAULT_PROMPT_BYTE_CAP}-byte cap ...]`,
-    );
+    return Promise.resolve(formatBaseBranchContent(baseBranch));
   }
   return readPromptFiles(defaultPaths, DEFAULT_PROMPT_BYTE_CAP, { cwd: input.cwd });
 }
@@ -461,6 +473,7 @@ async function readAdditionalPrompt(input: {
   readonly parsed: ParsedCliArgs;
   readonly cwd: string;
   readonly env: NodeJS.ProcessEnv;
+  readonly instructionFilesByBaseBranch?: Map<string, string>;
 }, defaultPaths: readonly string[]): Promise<string> {
   const inline = input.parsed.additionalPrompt;
   if (typeof inline === "string" && inline.length > 0) {
@@ -482,6 +495,14 @@ async function readAdditionalPrompt(input: {
   // returns `""` so the user message renders "Additional instructions: none".
   // Inline + array + single-file overrides above still take precedence.
   if (isInstructionFilesExplicitlyFalse(input.parsed)) return "";
+  // Base-branch mirror: when the base-branch Map is supplied the keys
+  // are base-branch paths and may not exist in cwd; reuse the joined
+  // + cap-truncated content rather than reading those paths from cwd
+  // (which would trip `byte-cap-exceeded` / `not-found`).
+  const baseBranch = input.instructionFilesByBaseBranch;
+  if (baseBranch !== undefined && baseBranch.size > 0) {
+    return formatBaseBranchContent(baseBranch);
+  }
   if (defaultPaths.length === 0) return "";
   return readPromptFiles(defaultPaths, DEFAULT_PROMPT_BYTE_CAP, { cwd: input.cwd });
 }
