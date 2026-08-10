@@ -1,18 +1,6 @@
 import { tryParseStrictInt } from "./strict-integer.js";
 
 /**
- * Default error class thrown by `readEnum` when an enum value is invalid.
- * The class lives here so `readEnum` can throw it without circular
- * imports between `cli-args.ts` and `parse-args.ts` (the parse-args.ts
- * file defines its own `CliUsageError` separately for parse-time
- * errors; callers that want the CLI to recognize the error can pass
- * their own constructor via `readEnum(..., { errorClass: CliUsageError })`).
- */
-export class CliArgError extends Error {
-  override readonly name = "CliArgError";
-}
-
-/**
  * Strict decimal-integer parser that REJECTS partial numeric garbage.
  * `Number.parseInt("12abc", 10)` returns 12; this helper returns null for
  * the same input so callers can fall back or throw a typed error.
@@ -67,12 +55,10 @@ export function parseStrictInt(raw: string): number | null {
  * Single source of truth — changing the canonical `enumValues` array
  * updates both surfaces.
  *
- * The error class is injectable via the 4th argument so callers that
- * need a typed error (e.g. `CliUsageError` in `parse-args.ts`) can
- * preserve their outer-handler contract; without an explicit class,
- * `readEnum` falls back to `CliArgError` (also exported from this
- * module). The message format matches the original hand-coded parsers
- * (`invalid --flag value: X`) so existing tests and user-facing
+ * The error class is **required** and is passed in by the caller so it
+ * can preserve its outer-handler contract (e.g. `CliUsageError` in
+ * `parse-args.ts`). The message format matches the original hand-coded
+ * parsers (`invalid --flag value: X`) so existing tests and user-facing
  * diagnostics stay byte-identical.
  *
  * The accepted set is typed `readonly T[]` so the literal union narrows
@@ -83,7 +69,7 @@ export function readEnum<T extends string>(
   flag: string,
   value: string,
   accepted: readonly T[],
-  errorClass: new (message: string, hint?: string) => Error = CliArgError,
+  errorClass: new (message: string, hint?: string) => Error,
 ): T {
   for (const candidate of accepted) {
     if (candidate === value) {

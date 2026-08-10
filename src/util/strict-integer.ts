@@ -1,7 +1,5 @@
-import { InvalidConfigError } from "../config/errors.js";
-
 /**
- * Strict-integer parsing helpers — leaf module that breaks the
+ * Strict-integer parsing helper — leaf module that breaks the
  * `cli/parse-args.ts ↔ config/parsers.ts` circular-import cycle.
  *
  * This module's only upstream is `src/config/errors.ts`, which is itself
@@ -10,8 +8,8 @@ import { InvalidConfigError } from "../config/errors.js";
  * → config/errors.ts` and `parsers.ts → strict-integer.ts →
  * config/errors.ts`, with `config/errors.ts` as a sink. No cycle is
  * re-introduced. Both call sites (`src/util/cli-args.ts` and
- * `src/config/parsers.ts`) consume the helper below; neither needs to
- * import the other through this path.
+ * `src/config/parsers.ts`) consume `tryParseStrictInt` below; neither
+ * needs to import the other through this path.
  *
  * ## Sign tolerance
  *
@@ -70,24 +68,4 @@ export function tryParseStrictInt(raw: string): number | null {
   if (raw.length === 0) return null;
   if (!STRICT_INTEGER_RE.test(raw)) return null;
   return Number.parseInt(raw, 10);
-}
-
-/**
- * Throwing variant of {@link tryParseStrictInt}. Used by the config
- * loader (and any future strict-integer surface that wants a hard
- * failure) to convert a malformed input into a typed `InvalidConfigError`
- * that carries the offending `field` name. Throws `InvalidConfigError`
- * (from `src/config/errors.ts`) so error-handling code can
- * catch by class without re-parsing the message.
- *
- * The caller is still responsible for the safe-integer bound; this
- * helper only throws on a malformed string. Add a `Number.isSafeInteger`
- * guard at the call site when the bound matters.
- */
-export function parseStrictIntegerOrThrow(field: string, raw: string): number {
-  const parsed = tryParseStrictInt(raw);
-  if (parsed === null) {
-    throw new InvalidConfigError(field, `expected integer string, received not-a-strict-integer`);
-  }
-  return parsed;
 }

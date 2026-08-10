@@ -630,79 +630,9 @@ const ALL_FIELDS = Object.values(FIELDS);
  */
 const KNOWN_ENV_VAR_NAMES = new Set(ALL_FIELDS.flatMap((def) => def.env));
 
-;// CONCATENATED MODULE: ./src/util/brand.ts
-/**
- * Canonical brand string used across CLI, platform, and provider code.
- *
- * NOT a generic brand concept: this is the specific string "umactually"
- * that downstream consumers (PR comments, HTTP User-Agent headers, GitHub
- * agents) match on. Renamed from "umactually" in v0.1.0 because
- * the project ships under the bare name `umactually` and never launched
- * with the longer string — no installed copies depend on the old value.
- */
-/** Canonical review brand string; eliminates the 50+ inline "umactually" literals across CLI, platform, and provider code. */
-const BRAND = "umactually";
-/** Log prefix shared by annotation helpers; eliminates hand-built "umactually: " prefixes in stderr diagnostics. */
-const BRAND_PREFIX = `${BRAND}: `;
-/** HTTP User-Agent token shared by provider and platform clients; eliminates duplicated header literals. */
-const USER_AGENT = BRAND;
-/** Azure DevOps PR status context name; prevents status updates from drifting away from the review brand. */
-const AZURE_STATUS_CONTEXT_NAME = `${BRAND}-status`;
-/** Azure DevOps PR status context genre; the discriminator that keeps our status updates distinct from any other tool's. */
-const AZURE_STATUS_CONTEXT_GENRE = "pr-review";
-/**
- * Redaction token emitted by secret scanners and runtime sanitizers
- * when a high-confidence secret or per-secret value is replaced. The
- * runtime sanitizer (`live-shared.ts:sanitizeForPost`) and the
- * scanner (`scan-review-secrets.ts`) must emit the SAME token so the
- * downstream log-filter and dedup heuristics agree on what counts as
- * "already-redacted". Single source of truth — any future rename must
- * touch this constant only.
- */
-const REDACTED_SECRET_TOKEN = "[REDACTED_SECRET]";
-/**
- * Placeholder string substituted into config-parse error messages instead of
- * leaking values. Re-exported from `src/config/errors.ts` as `REDACTED` to
- * preserve the existing import surface in that module (the parser chain in
- * `src/config/parsers.ts` already imports `REDACTED` from `errors.ts`).
- */
-const REDACTED_PLACEHOLDER = "[REDACTED]";
-/** Replaces an entire `Authorization: ...` header value in logged request bodies. */
-const REDACTED_AUTHORIZATION_HEADER = "[REDACTED_AUTHORIZATION_HEADER]";
-/** Replaces a `Bearer <token>` segment inside a logged request body. */
-const REDACTED_BEARER_TOKEN = "[REDACTED_BEARER_TOKEN]";
-
-;// CONCATENATED MODULE: ./src/config/errors.ts
-class errors_InvalidConfigError extends Error {
-    field;
-    reason;
-    name = "InvalidConfigError";
-    constructor(field, reason, options) {
-        super(`Invalid config for '${field}': ${reason}`, options);
-        this.field = field;
-        this.reason = reason;
-    }
-}
-class PromptFileError extends Error {
-    path;
-    reason;
-    name = "PromptFileError";
-    constructor(path, reason, options) {
-        super(`Prompt file error: ${reason}`, options);
-        this.path = path;
-        this.reason = reason;
-    }
-}
-/**
- * Marker used in error messages to replace any user-supplied value
- * (URLs, tokens, prompt content). Never echo the raw value.
- */
-
-
 ;// CONCATENATED MODULE: ./src/util/strict-integer.ts
-
 /**
- * Strict-integer parsing helpers — leaf module that breaks the
+ * Strict-integer parsing helper — leaf module that breaks the
  * `cli/parse-args.ts ↔ config/parsers.ts` circular-import cycle.
  *
  * This module's only upstream is `src/config/errors.ts`, which is itself
@@ -711,8 +641,8 @@ class PromptFileError extends Error {
  * → config/errors.ts` and `parsers.ts → strict-integer.ts →
  * config/errors.ts`, with `config/errors.ts` as a sink. No cycle is
  * re-introduced. Both call sites (`src/util/cli-args.ts` and
- * `src/config/parsers.ts`) consume the helper below; neither needs to
- * import the other through this path.
+ * `src/config/parsers.ts`) consume `tryParseStrictInt` below; neither
+ * needs to import the other through this path.
  *
  * ## Sign tolerance
  *
@@ -772,39 +702,9 @@ function tryParseStrictInt(raw) {
         return null;
     return Number.parseInt(raw, 10);
 }
-/**
- * Throwing variant of {@link tryParseStrictInt}. Used by the config
- * loader (and any future strict-integer surface that wants a hard
- * failure) to convert a malformed input into a typed `InvalidConfigError`
- * that carries the offending `field` name. Throws `InvalidConfigError`
- * (from `src/config/errors.ts`) so error-handling code can
- * catch by class without re-parsing the message.
- *
- * The caller is still responsible for the safe-integer bound; this
- * helper only throws on a malformed string. Add a `Number.isSafeInteger`
- * guard at the call site when the bound matters.
- */
-function parseStrictIntegerOrThrow(field, raw) {
-    const parsed = tryParseStrictInt(raw);
-    if (parsed === null) {
-        throw new InvalidConfigError(field, `expected integer string, received not-a-strict-integer`);
-    }
-    return parsed;
-}
 
 ;// CONCATENATED MODULE: ./src/util/cli-args.ts
 
-/**
- * Default error class thrown by `readEnum` when an enum value is invalid.
- * The class lives here so `readEnum` can throw it without circular
- * imports between `cli-args.ts` and `parse-args.ts` (the parse-args.ts
- * file defines its own `CliUsageError` separately for parse-time
- * errors; callers that want the CLI to recognize the error can pass
- * their own constructor via `readEnum(..., { errorClass: CliUsageError })`).
- */
-class CliArgError extends Error {
-    name = "CliArgError";
-}
 /**
  * Strict decimal-integer parser that REJECTS partial numeric garbage.
  * `Number.parseInt("12abc", 10)` returns 12; this helper returns null for
@@ -859,19 +759,17 @@ function parseStrictInt(raw) {
  * Single source of truth — changing the canonical `enumValues` array
  * updates both surfaces.
  *
- * The error class is injectable via the 4th argument so callers that
- * need a typed error (e.g. `CliUsageError` in `parse-args.ts`) can
- * preserve their outer-handler contract; without an explicit class,
- * `readEnum` falls back to `CliArgError` (also exported from this
- * module). The message format matches the original hand-coded parsers
- * (`invalid --flag value: X`) so existing tests and user-facing
+ * The error class is **required** and is passed in by the caller so it
+ * can preserve its outer-handler contract (e.g. `CliUsageError` in
+ * `parse-args.ts`). The message format matches the original hand-coded
+ * parsers (`invalid --flag value: X`) so existing tests and user-facing
  * diagnostics stay byte-identical.
  *
  * The accepted set is typed `readonly T[]` so the literal union narrows
  * naturally without an explicit cast: `readEnum<CliPlatform>("--platform",
  * v, FIELDS.platform.enumValues as readonly CliPlatform[], CliUsageError)`.
  */
-function readEnum(flag, value, accepted, errorClass = CliArgError) {
+function readEnum(flag, value, accepted, errorClass) {
     for (const candidate of accepted) {
         if (candidate === value) {
             return candidate;
@@ -953,6 +851,75 @@ function levenshtein(a, b) {
     }
     return previous[b.length] ?? 0;
 }
+
+;// CONCATENATED MODULE: ./src/util/brand.ts
+/**
+ * Canonical brand string used across CLI, platform, and provider code.
+ *
+ * NOT a generic brand concept: this is the specific string "umactually"
+ * that downstream consumers (PR comments, HTTP User-Agent headers, GitHub
+ * agents) match on. Renamed from "umactually" in v0.1.0 because
+ * the project ships under the bare name `umactually` and never launched
+ * with the longer string — no installed copies depend on the old value.
+ */
+/** Canonical review brand string; eliminates the 50+ inline "umactually" literals across CLI, platform, and provider code. */
+const BRAND = "umactually";
+/** Log prefix shared by annotation helpers; eliminates hand-built "umactually: " prefixes in stderr diagnostics. */
+const BRAND_PREFIX = `${BRAND}: `;
+/** HTTP User-Agent token shared by provider and platform clients; eliminates duplicated header literals. */
+const USER_AGENT = BRAND;
+/** Azure DevOps PR status context name; prevents status updates from drifting away from the review brand. */
+const AZURE_STATUS_CONTEXT_NAME = `${BRAND}-status`;
+/** Azure DevOps PR status context genre; the discriminator that keeps our status updates distinct from any other tool's. */
+const AZURE_STATUS_CONTEXT_GENRE = "pr-review";
+/**
+ * Redaction token emitted by secret scanners and runtime sanitizers
+ * when a high-confidence secret or per-secret value is replaced. The
+ * runtime sanitizer (`live-shared.ts:sanitizeForPost`) and the
+ * scanner (`scan-review-secrets.ts`) must emit the SAME token so the
+ * downstream log-filter and dedup heuristics agree on what counts as
+ * "already-redacted". Single source of truth — any future rename must
+ * touch this constant only.
+ */
+const REDACTED_SECRET_TOKEN = "[REDACTED_SECRET]";
+/**
+ * Placeholder string substituted into config-parse error messages instead of
+ * leaking values. Re-exported from `src/config/errors.ts` as `REDACTED` to
+ * preserve the existing import surface in that module (the parser chain in
+ * `src/config/parsers.ts` already imports `REDACTED` from `errors.ts`).
+ */
+const REDACTED_PLACEHOLDER = "[REDACTED]";
+/** Replaces an entire `Authorization: ...` header value in logged request bodies. */
+const REDACTED_AUTHORIZATION_HEADER = "[REDACTED_AUTHORIZATION_HEADER]";
+/** Replaces a `Bearer <token>` segment inside a logged request body. */
+const REDACTED_BEARER_TOKEN = "[REDACTED_BEARER_TOKEN]";
+
+;// CONCATENATED MODULE: ./src/config/errors.ts
+class errors_InvalidConfigError extends Error {
+    field;
+    reason;
+    name = "InvalidConfigError";
+    constructor(field, reason, options) {
+        super(`Invalid config for '${field}': ${reason}`, options);
+        this.field = field;
+        this.reason = reason;
+    }
+}
+class PromptFileError extends Error {
+    path;
+    reason;
+    name = "PromptFileError";
+    constructor(path, reason, options) {
+        super(`Prompt file error: ${reason}`, options);
+        this.path = path;
+        this.reason = reason;
+    }
+}
+/**
+ * Marker used in error messages to replace any user-supplied value
+ * (URLs, tokens, prompt content). Never echo the raw value.
+ */
+
 
 ;// CONCATENATED MODULE: ./src/config/parsers.ts
 
