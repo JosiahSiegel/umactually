@@ -38,6 +38,7 @@ import {
   type CiTarget,
 } from "./init-templates.js";
 import { BRAND_PREFIX, REDACTED_SECRET_TOKEN } from "../util/brand.js";
+import { normalizeEnumInput } from "../util/normalize.js";
 import { lstatSync, realpathSync } from "node:fs";
 
 /**
@@ -1360,7 +1361,7 @@ async function promptCi(input: {
         "none",
       );
       if (answer === null) return { outcome: "aborted" };
-      const trimmed = answer.trim().toLowerCase();
+      const trimmed = normalizeEnumInput(answer);
       if (trimmed === "github" || trimmed === "azure") chosen = trimmed;
       else chosen = "none";
     }
@@ -1445,7 +1446,7 @@ async function safePrompt(
  * any unrecognized value (case-insensitive match).
  */
 function parseProviderChoice(answer: string): InitProvider | null {
-  const t = answer.trim().toLowerCase();
+  const t = normalizeEnumInput(answer);
   if (t === "openai-compatible" || t === "openai" || t === "1") {
     return "openai-compatible";
   }

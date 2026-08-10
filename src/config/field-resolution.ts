@@ -8,6 +8,7 @@ import {
   parsePlatformFromUnknown,
   parseSeverityFromUnknown,
 } from "./parsers.js";
+import { normalizeEnumInput } from "../util/normalize.js";
 
 export type FieldProvenance = {
   readonly source: "flag" | "env" | "savedConfig" | "default";
@@ -147,7 +148,7 @@ function parseEnumField(field: FieldDef<FieldType>, raw: unknown): string {
   if (typeof raw !== "string") {
     throw new InvalidConfigError(field.field, `expected enum string, received ${typeof raw}`);
   }
-  const normalized = raw.trim().toLowerCase();
+  const normalized = normalizeEnumInput(raw);
   if (!(field.enumValues ?? []).includes(normalized)) {
     throw new InvalidConfigError(field.field, `unknown enum value ${REDACTED}`);
   }

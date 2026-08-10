@@ -3,6 +3,7 @@ import { InvalidConfigError, REDACTED } from "./errors.js";
 import { FIELDS } from "./field-schema.js";
 import { tryParseStrictInt } from "../util/strict-integer.js";
 import { stripTrailingSlash } from "../util/url.js";
+import { normalizeEnumInput } from "../util/normalize.js";
 
 const TRUTHY_STRINGS: ReadonlySet<string> = new Set(["1", "true", "yes", "on", "y"]);
 const FALSY_STRINGS: ReadonlySet<string> = new Set(["0", "false", "no", "off", "n", ""]);
@@ -22,7 +23,7 @@ export function parseBooleanFromUnknown(value: unknown, field: string): boolean 
     throw new InvalidConfigError(field, `expected boolean, received number ${REDACTED}`);
   }
   if (typeof value === "string") {
-    const normalized = value.trim().toLowerCase();
+    const normalized = normalizeEnumInput(value);
     if (TRUTHY_STRINGS.has(normalized)) return true;
     if (FALSY_STRINGS.has(normalized)) return false;
     throw new InvalidConfigError(field, `expected boolean string, received ${REDACTED}`);
@@ -102,7 +103,7 @@ export function parseSeverityFromUnknown(value: unknown, field: string): Severit
   if (typeof value !== "string") {
     throw new InvalidConfigError(field, `expected severity string, received ${typeof value}`);
   }
-  const normalized = value.trim().toLowerCase();
+  const normalized = normalizeEnumInput(value);
   const alias = SEVERITY_ALIASES[normalized];
   if (alias !== undefined) return alias;
   if (!VALID_SEVERITIES.has(normalized as Severity)) {
@@ -122,7 +123,7 @@ export function parsePlatformFromUnknown(value: unknown, field: string): Platfor
   if (typeof value !== "string") {
     throw new InvalidConfigError(field, `expected platform string, received ${typeof value}`);
   }
-  const normalized = value.trim().toLowerCase();
+  const normalized = normalizeEnumInput(value);
   if (!VALID_PLATFORMS.has(normalized)) {
     throw new InvalidConfigError(field, `unknown platform ${REDACTED}`);
   }
