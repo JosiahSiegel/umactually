@@ -373,7 +373,17 @@ function readResolvedDefaultPromptFiles(
 ): Promise<string> {
   const baseBranch = input.instructionFilesByBaseBranch;
   if (baseBranch !== undefined && baseBranch.size > 0) {
-    return Promise.resolve([...baseBranch.values()].join("\n\n"));
+    // Base-branch fetch joins multiple files with no cap (unlike the
+    // cwd path's readPromptFiles aggregate guard). Truncate to keep
+    // the model contract uniform. `slice` respects UTF-16 boundaries.
+    const joined = [...baseBranch.values()].join("\n\n");
+    if (joined.length <= DEFAULT_PROMPT_BYTE_CAP) {
+      return Promise.resolve(joined);
+    }
+    const truncated = joined.slice(0, DEFAULT_PROMPT_BYTE_CAP);
+    return Promise.resolve(
+      `${truncated}\n\n[... truncated at ${DEFAULT_PROMPT_BYTE_CAP}-byte cap ...]`,
+    );
   }
   return readPromptFiles(defaultPaths, DEFAULT_PROMPT_BYTE_CAP, { cwd: input.cwd });
 }
