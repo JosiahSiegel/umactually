@@ -372,24 +372,14 @@ async function readOptionalFile(
   return readRequiredFile(path, cwd, label);
 }
 
-// PR #2: extends CliUsageError so the src/cli.ts:715 handler (which gates
-// on `instanceof CliUsageError`) emits the `hint:` line for file-read and
-// defensive-validator failures instead of falling through to the generic
-// `cli: unexpected error:` branch. The `name` field is preserved so JSON
-// envelopes + log scrapers that key on it stay byte-identical.
-// `name` is assigned in the constructor (not via a class-field override)
-// because `CliUsageError.name` is declared as the literal type
-// `"CliUsageError"`, which would reject a typed `override` to a different
-// literal. Assigning in the constructor (after `super(...)` runs) sets
-// the own-property to `"CliArgumentError"` at runtime without violating
-// the parent's declared type.
+// Extends CliUsageError so the src/cli.ts handler emits `hint:` for file-read
+// failures. `err.name === "CliArgumentError"` is preserved for log-scraper
+// compat; assigning in the constructor (after `super(...)`) is required because
+// the parent declares `name` as the literal `"CliUsageError"`, which rejects a
+// typed `override` field.
 export class CliArgumentError extends CliUsageError {
   constructor(message: string, hint?: string) {
     super(message, hint);
-    // `name` is declared `readonly` on the parent, so a direct assignment
-    // is a TS2540 error. Cast through `unknown` to write the same string
-    // property to a new value (the runtime behavior is identical to the
-    // pre-PR-#2 `override readonly name = "CliArgumentError"` field).
     (this as { name: string }).name = "CliArgumentError";
   }
 }

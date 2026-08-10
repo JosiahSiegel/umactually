@@ -68,11 +68,12 @@ describe("CliArgumentError extends CliUsageError (PR #2)", () => {
 // fallback `unexpected error:` line. This is the regression that PR #2 fixes.
 describe("Bundled CLI surfaces `hint:` for file-read failures (PR #2)", () => {
   it("dist/cli.js exists (npm run bundle has been run)", () => {
-    if (!existsSync(DIST_PATH)) {
-      throw new Error(
-        `dist/cli.js missing at ${DIST_PATH}. Run 'npm run bundle' before this test.`,
-      );
-    }
+    // S2699: real assertion. Without the bundle, downstream tests would
+    // silently pass — point the developer at the fix via the hint arg.
+    expect(
+      existsSync(DIST_PATH),
+      `dist/cli.js missing at ${DIST_PATH}. Run 'npm run bundle' before this test.`,
+    ).toBe(true);
   });
 
   it("writes the hint line and skips the 'unexpected error:' fallback for a missing --event file", () => {
