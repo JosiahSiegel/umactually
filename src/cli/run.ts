@@ -12,6 +12,7 @@ import { withDebugRawEnv } from "../util/debug-raw.js";
 import { formatError } from "../util/error.js";
 import { REVIEW_MARKER } from "../util/marker.js";
 import type { ParsedCliArgs } from "./parse-args.js";
+import { CliUsageError } from "./parse-args.js";
 import { resetDefaultPromptFilesCache } from "./provider-prompts.js";
 import { resolvePlatform, type ResolvedPlatform } from "./validate.js";
 import { runLive as runOrchestrator } from "./orchestrator.js";
@@ -266,7 +267,10 @@ async function buildAzureDryRunArtifact(parsed: ParsedCliArgs, cwd: string): Pro
   // defensive error if the validator let a malformed invocation slip
   // through; don't silently produce a broken artifact.
   if (parsed.eventPath === null || parsed.diffPath === null) {
-    throw new CliArgumentError("--review requires --event and --diff to be supplied");
+    throw new CliArgumentError(
+      "--review requires --event and --diff to be supplied",
+      "Pass --event <path> and --diff <path> when invoking --review, or run 'umactually --help' for the full flag list.",
+    );
   }
 
   const pullRequestJson = await readRequiredFile(parsed.eventPath, cwd, "--event");
@@ -349,7 +353,10 @@ async function readRequiredFile(path: string, cwd: string, label: string): Promi
   try {
     return await readFile(absolute, "utf8");
   } catch (error) {
-    throw new CliArgumentError(`failed to read ${label} file ${absolute}: ${formatError(error)}`);
+    throw new CliArgumentError(
+      `failed to read ${label} file ${absolute}: ${formatError(error)}`,
+      `Check that the file exists, is readable, and is not empty. Pass an explicit absolute path with ${label} if a relative path is being misresolved.`,
+    );
   }
 }
 
@@ -365,8 +372,26 @@ async function readOptionalFile(
   return readRequiredFile(path, cwd, label);
 }
 
-export class CliArgumentError extends Error {
-  override readonly name = "CliArgumentError";
+// PR #2: extends CliUsageError so the src/cli.ts:715 handler (which gates
+// on `instanceof CliUsageError`) emits the `hint:` line for file-read and
+// defensive-validator failures instead of falling through to the generic
+// `cli: unexpected error:` branch. The `name` field is preserved so JSON
+// envelopes + log scrapers that key on it stay byte-identical.
+// `name` is assigned in the constructor (not via a class-field override)
+// because `CliUsageError.name` is declared as the literal type
+// `"CliUsageError"`, which would reject a typed `override` to a different
+// literal. Assigning in the constructor (after `super(...)` runs) sets
+// the own-property to `"CliArgumentError"` at runtime without violating
+// the parent's declared type.
+export class CliArgumentError extends CliUsageError {
+  constructor(message: string, hint?: string) {
+    super(message, hint);
+    // `name` is declared `readonly` on the parent, so a direct assignment
+    // is a TS2540 error. Cast through `unknown` to write the same string
+    // property to a new value (the runtime behavior is identical to the
+    // pre-PR-#2 `override readonly name = "CliArgumentError"` field).
+    (this as { name: string }).name = "CliArgumentError";
+  }
 }
 
 export async function dispatchLive(parsed: ParsedCliArgs, cwd: string, env: NodeJS.ProcessEnv): Promise<CliRunResult> {
