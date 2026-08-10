@@ -4880,9 +4880,7 @@ async function runInteractiveInit({ args, deps, }) {
  *   anthropic         → api-key, model
  *   copilot           → github-api-base, model
  */
-function buildPerBranchPrompts(provider, 
-// eslint-disable-next-line @typescript-eslint/no-unused-vars -- env arg reserved for future env-driven providers
-_env) {
+function buildPerBranchPrompts(provider, _env) {
     switch (provider) {
         case "openai-compatible":
             return [
@@ -5050,7 +5048,6 @@ async function promptCi(input) {
  * is bounded by the per-prompt timeout and surfaces SmartPromptUnavailable
  * as a clean decline (null).
  */
-// eslint-disable-next-line @typescript-eslint/no-unused-vars -- isTTY arg reserved for future TTY-aware defaults
 async function init_defaultStdinReader(prompt, _isTTY) {
     try {
         return await readInteractiveLine({ prompt, timeoutMs: PER_PROMPT_TIMEOUT_MS });
