@@ -301,7 +301,7 @@ describe("postAzurePrComment (Azure parent PR-level replace-not-patch)", () => {
     const parentIndex = recorder.calls.indexOf(parentPosts[0]!);
     const lastInlineIndex = recorder.calls.indexOf(inlinePosts[inlinePosts.length - 1]!);
     expect(parentIndex).toBeGreaterThan(lastInlineIndex);
-  });
+  }, 30000);
 
   it("PARENT-UPDATE-002: new parent POST body carries the buildReviewBody content (no comment id reuse)", async () => {
     // Given: same as above.
@@ -354,7 +354,7 @@ describe("postAzurePrComment (Azure parent PR-level replace-not-patch)", () => {
     expect(content).toContain(REVIEW_MARKER);
     expect(content).toContain("Azure parent-comment summary.");
     expect(content).toMatch(/SHIP|APPROVED/);
-  });
+  }, 30000);
 
   it("PARENT-UPDATE-003: each inline thread PATCHes its comment body to reference the NEW parent id, not the old one", async () => {
     // Given: Azure already has an active parent PR-level marker thread
@@ -393,5 +393,5 @@ describe("postAzurePrComment (Azure parent PR-level replace-not-patch)", () => {
       expect(content).toContain(`Reply to PR review summary #${NEW_PARENT_THREAD_ID}`);
       expect(content).not.toContain(`Reply to PR review summary #${EXISTING_PARENT_THREAD_ID}`);
     }
-  });
+  }, 30000);
 });

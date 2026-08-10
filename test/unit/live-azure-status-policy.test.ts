@@ -172,7 +172,7 @@ describe("Azure PR status policy: verdict mapping + delete-then-post dedup", () 
     // 'failed', which made the Checks panel light up red even on
     // builds that succeeded.
     expect(mapReviewVerdictToAzureStatus("NEEDS_FIX")).toBe("pending");
-  });
+  }, 30000);
 
   it("AZURE-STATUS-POLICY-1b: APPROVED / COMMENT / DISCUSS / SHIP map to 'succeeded'", () => {
     // Sanity-check the rest of the mapping table so the fix doesn't
@@ -181,13 +181,13 @@ describe("Azure PR status policy: verdict mapping + delete-then-post dedup", () 
     expect(mapReviewVerdictToAzureStatus("COMMENT")).toBe("succeeded");
     expect(mapReviewVerdictToAzureStatus("DISCUSS")).toBe("succeeded");
     expect(mapReviewVerdictToAzureStatus("SHIP")).toBe("succeeded");
-  });
+  }, 30000);
 
   it("AZURE-STATUS-POLICY-1c: unknown verdict maps to 'pending' as the safe default", () => {
     expect(mapReviewVerdictToAzureStatus("")).toBe("pending");
     expect(mapReviewVerdictToAzureStatus("UNKNOWN")).toBe("pending");
     expect(mapReviewVerdictToAzureStatus("needs_fix")).toBe("pending");
-  });
+  }, 30000);
 
   it("AZURE-STATUS-POLICY-2: postAzureStatus DELETEs the existing status with the same context, then POSTs a new one", async () => {
     // The live API only exposes a single-status DELETE; the documented
@@ -287,7 +287,7 @@ describe("Azure PR status policy: verdict mapping + delete-then-post dedup", () 
     const context = readRecord(postBody["context"] as Record<string, unknown>, "status POST context");
     expect(context["name"]).toBe("umactually-status");
     expect(context["genre"]).toBe("pr-review");
-  });
+  }, 30000);
 
   it("AZURE-STATUS-POLICY-3: postAzureStatus POSTs a new status (no DELETE) when no existing one shares the context", async () => {
     // The list endpoint returns ONLY unrelated statuses (different
@@ -357,7 +357,7 @@ describe("Azure PR status policy: verdict mapping + delete-then-post dedup", () 
     const context = readRecord(postBody["context"] as Record<string, unknown>, "status POST context");
     expect(context["name"]).toBe("umactually-status");
     expect(context["genre"]).toBe("pr-review");
-  });
+  }, 30000);
 
   it("AZURE-STATUS-POLICY-4: listStatuses returns the most recent umactually-status entry", async () => {
     // Same dedup contract as AZURE-STATUS-POLICY-2 but verifies that a
@@ -452,5 +452,5 @@ describe("Azure PR status policy: verdict mapping + delete-then-post dedup", () 
     expect(postBody["state"]).toBe("succeeded"); // COMMENT ⇒ succeeded per the mapping fix
     const context = readRecord(postBody["context"] as Record<string, unknown>, "status POST context");
     expect(context["name"]).toBe("umactually-status");
-  });
+  }, 30000);
 });

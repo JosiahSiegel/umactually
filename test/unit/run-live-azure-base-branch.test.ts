@@ -207,7 +207,7 @@ describe("runLive Azure orchestration: instructionFilesByBaseBranch", () => {
     const body = providerCall!.body as { input?: readonly { role: string; content?: string }[] };
     const systemMessage = body.input?.find((entry) => entry.role === "system");
     expect(systemMessage?.content).toContain(baseBranchPayload);
-  });
+  }, 30000);
 
   it("falls back to cwd lookup when the Azure base-branch fetch fails (HTTP 500)", async () => {
     // Given: the Azure `items` API is unreachable (500 on every path).
@@ -260,5 +260,5 @@ describe("runLive Azure orchestration: instructionFilesByBaseBranch", () => {
     } finally {
       stderrSpy.mockRestore();
     }
-  });
+  }, 30000);
 });

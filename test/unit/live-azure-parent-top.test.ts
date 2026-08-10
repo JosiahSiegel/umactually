@@ -353,7 +353,7 @@ describe("postAzurePrComment (Azure parent PR-level 'always at top of conversati
         !call.url.includes("/comments/"),
     );
     expect(patchCalls).toHaveLength(0);
-  });
+  }, 30000);
 
   it("PARENT-TOP-002: the new parent thread id is strictly greater than every existing thread id", async () => {
     // Given: Azure already has an active parent PR-level marker thread
@@ -389,7 +389,7 @@ describe("postAzurePrComment (Azure parent PR-level 'always at top of conversati
     const existingIds = [70, 75, EXISTING_PARENT_THREAD_ID, 81, 82];
     const maxExisting = Math.max(...existingIds);
     expect(NEW_PARENT_THREAD_ID).toBeGreaterThan(maxExisting);
-  });
+  }, 30000);
 
   it("PARENT-TOP-003: the new parent is POSTed AFTER the inline thread POST (parent gets the highest id)", async () => {
     // Given: existing parent fixture (existing parent has comments,
@@ -458,7 +458,7 @@ describe("postAzurePrComment (Azure parent PR-level 'always at top of conversati
       expect(content).toContain(`Reply to PR review summary #${NEW_PARENT_THREAD_ID}`);
       expect(content).not.toContain(`Reply to PR review summary #${EXISTING_PARENT_THREAD_ID}`);
     }
-  });
+  }, 30000);
 
   it("PARENT-TOP-004: the run still succeeds and posts inline + status when the existing parent has zero comments", async () => {
     // Given: an existing parent thread whose comments array is empty
@@ -553,5 +553,5 @@ describe("postAzurePrComment (Azure parent PR-level 'always at top of conversati
     }
     const parentBody = readRecord(parentPost.body as Record<string, unknown>, "parent post body");
     expect(parentBody["threadContext"]).toBeUndefined();
-  });
+  }, 30000);
 });

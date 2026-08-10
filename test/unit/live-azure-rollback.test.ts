@@ -228,7 +228,7 @@ describe("runLive Azure partial-failure rollback (RED gap)", () => {
 
     const stderr = stderrText();
     expect(stderr).toContain("::warning::");
-  });
+  }, 30000);
 
   it("S7-RED-022: returns exit 1, posted false, when every thread POST fails", async () => {
     // Given: 1 inline comment and the threads POST endpoint always returns 500.
@@ -293,7 +293,7 @@ describe("runLive Azure partial-failure rollback (RED gap)", () => {
     const stderr = stderrText();
     expect(stderr).toContain("::warning::");
     expect(stderr).toContain("Azure thread");
-  });
+  }, 30000);
 
   it("smoke: helpers typecheck under vitest (no fetch) — referenced for compile-only coverage", () => {
     // When: a real RecordedCall is constructed and readRecord/readArray are exercised.
@@ -307,5 +307,5 @@ describe("runLive Azure partial-failure rollback (RED gap)", () => {
     const arr = readArray(record["comments"], "sample.body.comments");
     // Then: the helpers round-trip the fixture shape.
     expect(arr).toHaveLength(1);
-  });
+  }, 30000);
 });

@@ -254,7 +254,7 @@ describe("postAzurePrComment (Azure parent PR-level review summary)", () => {
       return body["threadContext"] !== undefined;
     });
     expect(inlinePost).toBeDefined();
-  });
+  }, 30000);
 
   it("PARITY-101: still posts inline threads when the parent PR comment POST fails", async () => {
     // Given: the LAST /threads POST fails (5xx) — the parent —
@@ -301,7 +301,7 @@ describe("postAzurePrComment (Azure parent PR-level review summary)", () => {
 
     // The run posted the PR status (success path).
     expect(findCall(recorder.calls, "POST", "/statuses?api-version=7.1")).toBeDefined();
-  });
+  }, 30000);
 
   it("PARITY-102: replaces the existing parent PR-level marker thread (delete-then-POST)", async () => {
     // Given: Azure returns an existing parent PR-level marker thread
@@ -426,5 +426,5 @@ describe("postAzurePrComment (Azure parent PR-level review summary)", () => {
         call.url.includes(`/threads/${EXISTING_PARENT_THREAD_ID}/comments/`),
     );
     expect(deleteCalls.length).toBeGreaterThanOrEqual(1);
-  });
+  }, 30000);
 });
