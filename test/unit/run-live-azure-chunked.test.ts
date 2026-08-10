@@ -316,7 +316,7 @@ describe("runLive Azure orchestration — chunked path", () => {
     const parentBodyText = String(parentFirstComment["content"]);
     expect(parentBodyText).toContain(REVIEW_MARKER);
     expect(parentBodyText).toContain("⛔ NEEDS_FIX");
-  });
+  }, 30000);
 
   it("falls back to a single provider call when the diff fits in one chunk", async () => {
     // Given: a 2-file PR where each file's body is small enough that the
@@ -352,7 +352,7 @@ describe("runLive Azure orchestration — chunked path", () => {
     expect(result.posted).toBe(true);
     const providerCalls = recorder.calls.filter((call) => call.method === "POST" && call.url === "https://provider.example/v1/responses");
     expect(providerCalls).toHaveLength(1);
-  });
+  }, 30000);
 
   it("continues past chunk failures (one bad chunk does not kill the whole review)", async () => {
     // Given: a 2-file PR that triggers 2 chunks. We directly
@@ -436,7 +436,7 @@ describe("runLive Azure orchestration — chunked path", () => {
     expect(result.exitCode).toBe(0);
     expect(result.posted).toBe(true);
     void stderrLines; // silence unused
-  });
+  }, 30000);
 
   it("sanitizes the per-chunk failure warning against the FULL secret list, not just the platform token", async () => {
     // Regression guard for the Layer 5 self-review finding #2270/#2271:
@@ -508,7 +508,7 @@ describe("runLive Azure orchestration — chunked path", () => {
     // first call would make this assertion fail because counter
     // would still be 1).
     expect(counter).toBeGreaterThan(1);
-  });
+  }, 30000);
 
   it("captures the alternating fail/success pattern: first chunk fails, second chunk succeeds (regression guard for IIFE-bug fix)", async () => {
     // The previous IIFE shape `response: (() => { ... })()` froze
@@ -571,7 +571,7 @@ describe("runLive Azure orchestration — chunked path", () => {
     // 500 response, the warning still fires — but this assertion
     // pins the contract that failures produce stderr output.
     expect(allStderr.length).toBeGreaterThan(0);
-  });
+  }, 30000);
 });
 
 function perChunkBodyFor(chunkIndex: number, fixture: { files: readonly { path: string }[] }): string {

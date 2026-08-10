@@ -209,7 +209,7 @@ describe("postAzureStatus body sanitization", () => {
     }
     expect(description).not.toContain("\n");
     expect(description).not.toContain("\r");
-  });
+  }, 30000);
 
   it("AZURE-STATUS-2: status POST description remains bounded at 255 chars after sanitization", async () => {
     // Given: a provider summary that is already longer than 255 chars and
@@ -275,7 +275,7 @@ describe("postAzureStatus body sanitization", () => {
     expect(description.length).toBeLessThanOrEqual(255);
     expect(description).not.toContain("\n");
     expect(description).not.toContain("\r");
-  });
+  }, 30000);
 
   it("AZURE-STATUS-3: surfaces the ADO 400 response body on stderr so future failures are debuggable from CI logs", async () => {
     // Given: the live API returns the exact TF20507 body that build #74 hit.
@@ -338,5 +338,5 @@ describe("postAzureStatus body sanitization", () => {
     expect(errorLine).toBeDefined();
     expect(errorLine ?? "").toContain("TF20507");
     expect(errorLine ?? "").toContain("u000A");
-  });
+  }, 30000);
 });

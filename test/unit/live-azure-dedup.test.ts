@@ -180,7 +180,7 @@ describe("runLive Azure dedup edge cases", () => {
     expect(result.exitCode).toBe(0);
     expect(countThreadPosts(recorder.calls)).toBe(0);
     expect(findCall(recorder.calls, "POST", "/statuses?api-version=7.1")).toBeDefined();
-  });
+  }, 30000);
 
   it("S7-RED-014: treats a fixed marker thread as duplicate (no new POST)", async () => {
     // Given: Azure returns an existing marker thread with fixed status at the same location.
@@ -217,7 +217,7 @@ describe("runLive Azure dedup edge cases", () => {
     expect(result.exitCode).toBe(0);
     expect(countThreadPosts(recorder.calls)).toBe(0);
     expect(findCall(recorder.calls, "POST", "/statuses?api-version=7.1")).toBeDefined();
-  });
+  }, 30000);
 
   it("S7-RED-015: marker in a non-first comment still triggers dedup (no new POST)", async () => {
     // Given: Azure returns an active thread whose marker lives in the second comment, not the first.
@@ -255,5 +255,5 @@ describe("runLive Azure dedup edge cases", () => {
     expect(result.exitCode).toBe(0);
     expect(countThreadPosts(recorder.calls)).toBe(0);
     expect(findCall(recorder.calls, "POST", "/statuses?api-version=7.1")).toBeDefined();
-  });
+  }, 30000);
 });

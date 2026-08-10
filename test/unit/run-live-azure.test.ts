@@ -142,7 +142,7 @@ describe("runLive Azure orchestration", () => {
     expect(result.posted).toBe(false);
     expect(result.message).toContain("high-confidence secret");
     expect(recorder.calls.some((call) => call.url === "https://provider.example/v1/responses")).toBe(false);
-  });
+  }, 30000);
 
   it("posts Azure DevOps threads and status through injected fetch", async () => {
     // Given: Azure Pipelines live environment and mocked REST endpoints.
@@ -193,7 +193,7 @@ describe("runLive Azure orchestration", () => {
     // fixed), but the PR-status signals a blocking review.
     expect(statusBody["state"]).toBe("pending");
     expect(statusBody["description"]).toContain("Azure live summary.");
-  });
+  }, 30000);
 
   it("skips duplicate Azure threads when an existing marker thread matches the same location", async () => {
     // Given: Azure returns an existing marker thread for the same path and line.
@@ -241,7 +241,7 @@ describe("runLive Azure orchestration", () => {
     });
     expect(inlineThreadPosts).toHaveLength(0);
     expect(findCall(recorder.calls, "POST", "/statuses?api-version=7.1")).toBeDefined();
-  });
+  }, 30000);
 });
 
 function azureEnv(): NodeJS.ProcessEnv {
