@@ -15,6 +15,31 @@ The runtime resolves configurable review options through a four-tier precedence 
 
 The `apiKey` field is deliberately omitted from tiers 3 and 4 — the [S6 contract](#api-key-handling) bans persisting secrets to disk. It always comes from tier 1 (`--api-key`) or tier 2 (`UMACTUALLY_API_KEY`); if both are missing the CLI surfaces a `cli: --api-key is required` validation error with an S6-compliant remediation hint, never writes the key to disk. The saved config is loaded via `readSavedConfig()` in `src/config/saved-config.ts` and overlaid on the resolved schema via `applySavedConfig()` (`src/cli/apply-saved-config.ts`). Empty-string env is treated as missing so operators can `unset` a setting without deleting the file. See [docs/security.md#trust-model-init](security.md#trust-model-init) for what is and isn't persisted.
 
+## Committed review policy (separate surface)
+
+`umactually.review.json` is the committed team-policy surface, **separate from** `umactually.config.json`. The two files are a security boundary: `umactually.config.json` is for non-secret provider connection defaults; `umactually.review.json` is for non-secret review-behavior rules committed alongside the rest of the team's source.
+
+Fields accepted: `schemaVersion` (must be `1`), `pathRules` (array of `{ pattern, effort? }`), `excludes`, `effort` (`low|medium|high`), `triggers` (`opened|synchronize|reopened`), `reReviewCap`, `budgets` (`{ contextTokens, maxOutputTokens, latencyMs }`), `minimumSeverity` (`info|warning|error`), `suggestionMode` (`off|validated`), `gateMode` (`off|warn|block`).
+
+Validation runs BEFORE any provider or platform call and refuses:
+
+- Unknown keys (e.g. a typo'd `efort`)
+- Unsupported `schemaVersion` values (future versions)
+- Duplicate or conflicting path rule patterns
+- Invalid globs (unbalanced braces / brackets / parens)
+- Unsafe paths (absolute paths or any `..` segment)
+- Secret-shaped literals (API keys, GitHub tokens, etc.) — the same `SECRET_REGEX` used by the saved-config scanner
+
+A failing validation returns exit code `2` and writes no files. The error message is redacted (the literal value is never echoed).
+
+The policy is OPT-IN. `umactually init` never creates or overwrites `umactually.review.json`. To materialize one explicitly, run:
+
+```bash
+umactually init --policy-template
+```
+
+The template is rendered as a JSON document with comments disabled (the JSON spec doesn't allow comments) and the canonical defaults; it contains no secrets.
+
 Inspect what the loader actually resolved at runtime:
 
 ```bash
@@ -22,6 +47,8 @@ umactually --show-config
 ```
 
 Prints `provider`, optional `apiUrl?`, optional `model?`, the file path the loader used, and the schema version. Field-by-field rendered (not JSON) so adding a future secret field to `SavedConfig` would not silently leak it through `--show-config`. Read-only; never opens a network connection; never prompts; exits 0 (or 1 with a stderr warning if the file is corrupt). Matches the convention of `kubectl config view`, `aws configure get`, and `git config --list --show-origin`.
+
+When `umactually.review.json` is present, the output also prints the policy path, `schemaVersion`, and a `sha256` hash of the canonical serialized bytes so you can verify which committed policy was in effect for the run.
 
 The CLI natively honors every documented `UMACTUALLY_*` env var. In CI, set them as GitHub Actions env/secrets or Azure pipeline variables and they flow through without shell translation. Boolean env vars accept `true|false|1|0|yes|no|on|off|y|n`, case-insensitively after trimming. Invalid values fail configuration with a redacted error: secret values are never echoed.
 

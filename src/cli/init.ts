@@ -40,6 +40,7 @@ import {
 import { BRAND_PREFIX, REDACTED_SECRET_TOKEN } from "../util/brand.js";
 import { normalizeEnumInput } from "../util/normalize.js";
 import { lstatSync, realpathSync } from "node:fs";
+import { renderPolicyTemplate, REVIEW_POLICY_PATH } from "../config/review-policy.js";
 
 /**
  * Global budget for the entire wizard. Per-prompt budget is
@@ -52,7 +53,7 @@ export const WIZARD_PROMPT_TIMEOUT_MS = 60_000;
 
 const PER_PROMPT_TIMEOUT_MS = 15_000;
 
-export type InitMode = "interactive" | "non-interactive" | "dry-run" | "show";
+export type InitMode = "interactive" | "non-interactive" | "dry-run" | "show" | "policy-template";
 
 export type InitOutcome = "ok" | "aborted" | "error";
 
@@ -86,7 +87,8 @@ export type InitCheck = {
     | "secret-redaction"
     | "scope-choice"
     | "provider-choice"
-    | "non-interactive-validation";
+    | "non-interactive-validation"
+    | "policy-template-write";
   readonly status: "ok" | "warn" | "fail" | "skip";
   readonly message: string;
   readonly hint?: string;
@@ -173,6 +175,7 @@ export type ParsedInitArgs = {
   readonly dryRun: boolean;
   readonly show: boolean;
   readonly nonInteractive: boolean;
+  readonly policyTemplate: boolean;
 };
 /**
  * Parse argv into typed fields. Unknown flags → errors[]. Missing
@@ -202,6 +205,7 @@ const FLAG_HANDLERS: Readonly<Record<string, FlagHandler>> = {
   "--yes": { consume: false, apply: (state) => { state.yes = true; } },
   "--apply": { consume: false, apply: (state) => { state.apply = true; } },
   "--non-interactive": { consume: false, apply: (state) => { state.nonInteractive = true; } },
+  "--policy-template": { consume: false, apply: (state) => { state.policyTemplate = true; } },
   "--dry-run": { consume: false, apply: (state) => { state.dryRun = true; } },
   "--show": { consume: false, apply: (state) => { state.show = true; } },
   "--ci": { consume: true, validate: parseCi, apply: (state, value) => { state.ci = value as "auto" | CiTarget | "none"; } },
@@ -283,6 +287,7 @@ type ParsedInitState = {
   dryRun: boolean;
   show: boolean;
   nonInteractive: boolean;
+  policyTemplate: boolean;
 };
 
 function createParsedInitState(): ParsedInitState {
@@ -302,6 +307,7 @@ function createParsedInitState(): ParsedInitState {
     dryRun: false,
     show: false,
     nonInteractive: false,
+    policyTemplate: false,
   };
 }
 
@@ -419,6 +425,7 @@ function applyEnvDefaults(
  * precedence; --json implies non-interactive.
  */
 function resolveInitMode(state: ParsedInitState): InitMode {
+  if (state.policyTemplate) return "policy-template";
   if (state.show) return "show";
   if (state.dryRun) return "dry-run";
   if (state.nonInteractive || state.json) return "non-interactive";
@@ -453,6 +460,7 @@ export const INIT_HELP_TEXT = [
   "  --force                    Overwrite an existing saved config without prompting",
   "  --yes                      Skip all confirmation prompts",
   "  --dry-run                  Compute the plan; no filesystem writes",
+  "  --policy-template          Write umactually.review.json template (opt-in; explicit)",
   "  --show                     Print the resolved saved config and exit",
   "  --json                     Emit machine-readable JSON envelope",
   "  --help, -h                 Show this help",
@@ -639,6 +647,10 @@ async function runInitImpl({
     return runShowInit({ deps });
   }
 
+  if (mode === "policy-template") {
+    return runPolicyTemplateInit({ deps });
+  }
+
   if (mode === "dry-run") {
     return runDryRunInit({ args, deps });
   }
@@ -720,6 +732,89 @@ async function runShowInit({ deps }: { deps: InitDeps }): Promise<InitResult> {
       ...(result.config.apiUrl !== undefined ? { apiUrl: { source: "savedConfig" } } : {}),
       ...(result.config.model !== undefined ? { model: { source: "savedConfig" } } : {}),
     },
+  };
+}
+
+// ---------------------------------------------------------------------------
+// --policy-template: render the committed-policy template to stdout and
+// the target file (if requested). Explicit opt-in — NEVER auto-created by
+// the default init flow. The operator must pass --policy-template (or
+// equivalent) to receive a `umactually.review.json` file.
+// ---------------------------------------------------------------------------
+
+async function runPolicyTemplateInit({
+  deps,
+}: {
+  deps: InitDeps;
+}): Promise<InitResult> {
+  const fs = deps.fsAdapter ?? defaultFsAdapter;
+  const policyPath = REVIEW_POLICY_PATH(deps.cwd);
+  const rendered = renderPolicyTemplate();
+  const bytes = Buffer.byteLength(rendered, "utf8");
+
+  if (fs.exists(policyPath)) {
+    return {
+      mode: "policy-template",
+      outcome: "error",
+      exitCode: 1,
+      savedConfigPath: null,
+      savedConfigBytes: null,
+      ciGenerated: [],
+      checks: [
+        {
+          id: "policy-template-write",
+          status: "fail",
+          message: `refusing to overwrite existing policy at ${policyPath}`,
+        },
+      ],
+      hints: [`pass --force to overwrite, or rm ${policyPath} first`],
+      sources: {},
+    };
+  }
+
+  try {
+    fs.writeFileAtomic(policyPath, rendered);
+  } catch (err) {
+    return {
+      mode: "policy-template",
+      outcome: "error",
+      exitCode: 1,
+      savedConfigPath: null,
+      savedConfigBytes: null,
+      ciGenerated: [],
+      checks: [
+        {
+          id: "policy-template-write",
+          status: "fail",
+          message: `cannot write policy at ${policyPath}: ${err instanceof Error ? err.message : String(err)}`,
+        },
+      ],
+      hints: [`ensure ${deps.cwd} is writable`],
+      sources: {},
+    };
+  }
+
+  return {
+    mode: "policy-template",
+    outcome: "ok",
+    exitCode: 0,
+    savedConfigPath: null,
+    savedConfigBytes: null,
+    ciGenerated: [],
+    checks: [
+      {
+        id: "policy-template-write",
+        status: "ok",
+        message: `wrote policy template (${bytes} bytes) at ${policyPath}`,
+      },
+      {
+        id: "secret-redaction",
+        status: "ok",
+        message: "template contains no secrets",
+      },
+    ],
+    hints: [`edit ${policyPath} to customize effort, triggers, and budgets`],
+    sources: {},
   };
 }
 

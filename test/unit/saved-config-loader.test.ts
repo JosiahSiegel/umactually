@@ -421,6 +421,36 @@ describe("saved-config safe-write contract (symlinks, mode, dir, prompt)", () =>
     expect(bytes.indexOf('"schemaVersion"')).toBeLessThan(bytes.indexOf('"provider"'));
   });
 
+  it("Task 6 boundary: provider config serialization is byte-identical and rejects policy keys", () => {
+    // The SavedConfig type excludes every policy field. Even if a future
+    // change tries to inject policy keys via a cast, the serializer MUST
+    // NOT emit them (security boundary: provider config is separate from
+    // the committed review policy). Byte-identical means two consecutive
+    // serializeSavedConfig calls produce the exact same string.
+    const baseConfig = {
+      schemaVersion: 1 as const,
+      provider: "openai-compatible" as const,
+      apiUrl: "https://api.example.com/v1",
+      model: "review-model",
+    };
+    const a = serializeSavedConfig(baseConfig);
+    const b = serializeSavedConfig(baseConfig);
+    expect(a).toBe(b);
+
+    // Belt-and-suspenders: assert no policy key ever leaks through the
+    // serialization even via a cast.
+    const evil = baseConfig as unknown as Record<string, unknown>;
+    evil["effort"] = "high";
+    evil["pathRules"] = [{ pattern: "src/**/*.ts" }];
+    evil["gateMode"] = "block";
+    evil["minimumSeverity"] = "warning";
+    const serialized = serializeSavedConfig(baseConfig);
+    expect(serialized).not.toContain("effort");
+    expect(serialized).not.toContain("pathRules");
+    expect(serialized).not.toContain("gateMode");
+    expect(serialized).not.toContain("minimumSeverity");
+  });
+
   it("write-path prefix stays beneath <homeDir>/.umactually", async () => {
     const { homeDir, cwd } = sandbox();
     const result = await writeSavedConfig(fixture, { homeDir, cwd, scope: "global" });

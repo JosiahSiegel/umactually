@@ -19,6 +19,7 @@ import {
 } from "./config/field-resolution.js";
 import { tryReadSavedConfig } from "./cli/load-saved-config.js";
 import { applySavedConfig } from "./cli/apply-saved-config.js";
+import { loadReviewPolicy } from "./config/review-policy.js";
 import { BRAND_PREFIX } from "./util/brand.js";
 import { formatError } from "./util/error.js";
 import { pathToFileUrl } from "./util/url.js";
@@ -308,10 +309,20 @@ export type SanitizedResolvedConfig = {
   readonly promptPresent: boolean;
   readonly additionalPromptPresent: boolean;
   readonly sources: FieldProvenanceMap;
+  readonly reviewPolicy: {
+    readonly path: string | null;
+    readonly hash: string | null;
+    readonly schemaVersion: number | null;
+  };
 };
 
 export function buildSanitizedResolvedConfig(
   resolved: ResolvedCliArgs,
+  reviewPolicy: { readonly path: string | null; readonly hash: string | null; readonly schemaVersion: number | null } = {
+    path: null,
+    hash: null,
+    schemaVersion: null,
+  },
 ): SanitizedResolvedConfig {
   return {
     platform: resolved.platform,
@@ -352,6 +363,7 @@ export function buildSanitizedResolvedConfig(
     promptPresent: resolved.prompt !== null && resolved.prompt.length > 0,
     additionalPromptPresent: resolved.additionalPrompt !== null && resolved.additionalPrompt.length > 0,
     sources: resolved.fieldProvenance,
+    reviewPolicy,
   };
 }
 
@@ -507,6 +519,22 @@ export async function runCli(args: readonly string[], cwd: string): Promise<CliE
     process.env,
   );
 
+  // Stage 3.5: load committed review policy for the sanitized config
+  // envelope. The policy is OPTIONAL — a missing/corrupt policy does
+  // not abort the review; the warning is captured for the envelope.
+  // Strict validation already ran inside loadReviewPolicy, so any
+  // failure means the file is untrusted and we drop it silently (the
+  // defaults layer applies). Surface the warning when present.
+  const policyRead = loadReviewPolicy({ cwd });
+  if (policyRead.warning !== null) {
+    process.stderr.write(`umactually: ${policyRead.warning}\n`);
+  }
+  const policyMeta = {
+    path: policyRead.policy !== null ? policyRead.path : null,
+    hash: policyRead.policy !== null ? policyRead.hash : null,
+    schemaVersion: policyRead.policy !== null ? policyRead.policy.schemaVersion : null,
+  };
+
   try {
     // Stage 4: validate the resolved (post-derivation) args.
     let errors = collectValidationErrors(resolved);
@@ -545,6 +573,7 @@ export async function runCli(args: readonly string[], cwd: string): Promise<CliE
           cwd,
           env: process.env,
           generatedArtifacts,
+          policyMeta,
         });
       }
       // Some required values still missing after the prompt. Re-render
@@ -553,7 +582,7 @@ export async function runCli(args: readonly string[], cwd: string): Promise<CliE
       process.stderr.write(renderValidationErrors(errors));
       return {
         exitCode: 2,
-        resolvedConfig: buildSanitizedResolvedConfig(augmented as unknown as ResolvedCliArgs),
+        resolvedConfig: buildSanitizedResolvedConfig(augmented as unknown as ResolvedCliArgs, policyMeta),
       };
     }
     if (errors.length > 0) {
@@ -572,7 +601,7 @@ export async function runCli(args: readonly string[], cwd: string): Promise<CliE
       }
       return {
         exitCode: 2,
-        resolvedConfig: buildSanitizedResolvedConfig(resolved),
+        resolvedConfig: buildSanitizedResolvedConfig(resolved, policyMeta),
       };
     }
 
@@ -581,6 +610,7 @@ export async function runCli(args: readonly string[], cwd: string): Promise<CliE
       cwd,
       env: process.env,
       generatedArtifacts,
+      policyMeta,
     });
   } finally {
     await cleanupGeneratedArtifacts(generatedArtifacts, cwd);
@@ -599,8 +629,9 @@ async function runAfterValidation(input: {
   readonly cwd: string;
   readonly env: NodeJS.ProcessEnv;
   readonly generatedArtifacts: readonly string[];
+  readonly policyMeta: { readonly path: string | null; readonly hash: string | null; readonly schemaVersion: number | null };
 }): Promise<CliExecutionResult> {
-  const { resolved, cwd, env } = input;
+  const { resolved, cwd, env, policyMeta } = input;
   if (resolved.files !== null) {
     const result: LocalFilesRunResult = await runLocalFilesReview({
       parsed: resolved,
@@ -612,20 +643,20 @@ async function runAfterValidation(input: {
       case "ok":
         return {
           exitCode: 0,
-          resolvedConfig: buildSanitizedResolvedConfig(resolved),
+          resolvedConfig: buildSanitizedResolvedConfig(resolved, policyMeta),
         };
       case "ok-no-files":
         process.stdout.write(`${BRAND_PREFIX}${result.note}\n`);
         return {
           exitCode: 0,
-          resolvedConfig: buildSanitizedResolvedConfig(resolved),
+          resolvedConfig: buildSanitizedResolvedConfig(resolved, policyMeta),
         };
       case "provider-error": {
         const hintLine = result.hint === undefined ? "" : `\n${BRAND_PREFIX}hint: ${result.hint}`;
         process.stdout.write(`${result.sanitizedForLog}${hintLine}\n`);
         return {
           exitCode: 1,
-          resolvedConfig: buildSanitizedResolvedConfig(resolved),
+          resolvedConfig: buildSanitizedResolvedConfig(resolved, policyMeta),
         };
       }
       default: {
@@ -647,12 +678,12 @@ async function runAfterValidation(input: {
       process.stdout.write(`${result.sanitizedForLog}${hintLine}\n`);
       return {
         exitCode: 1,
-        resolvedConfig: buildSanitizedResolvedConfig(resolved),
+        resolvedConfig: buildSanitizedResolvedConfig(resolved, policyMeta),
       };
     }
     return {
       exitCode: 0,
-      resolvedConfig: buildSanitizedResolvedConfig(resolved),
+      resolvedConfig: buildSanitizedResolvedConfig(resolved, policyMeta),
     };
   }
 
@@ -661,7 +692,7 @@ async function runAfterValidation(input: {
     : await dispatchLive(resolved, cwd, env);
   return {
     ...result,
-    resolvedConfig: buildSanitizedResolvedConfig(resolved),
+    resolvedConfig: buildSanitizedResolvedConfig(resolved, policyMeta),
   };
 }
 

@@ -158,6 +158,19 @@ Never expose trusted inputs to untrusted strings. In particular, do not interpol
 - Azure DevOps: Pipelines → Library → Variable group → secret variable `UMACTUALLY_API_KEY` (and `SYSTEM_ACCESSTOKEN`, mapped from `$(System.AccessToken)`).
 - Local shell: `export UMACTUALLY_API_KEY=...` — never committed, never in shell history.
 
+### Committed review policy (separate surface)
+
+`umactually.review.json` is the committed team-policy surface. It is **strictly separate** from `umactually.config.json`:
+
+- `umactually.config.json` — non-secret provider connection defaults (`provider`, optional `apiUrl`, optional `model`).
+- `umactually.review.json` — non-secret review-behavior rules committed alongside the rest of the team's source (`pathRules`, `excludes`, `effort`, `triggers`, `reReviewCap`, `budgets`, `minimumSeverity`, `suggestionMode`, `gateMode`).
+
+The two files never carry each other's fields. `serializeSavedConfig` (provider config) rejects any policy key by type; `serializeReviewPolicy` (policy) only emits policy keys. A future field added to either schema must be explicitly added to both the serializer and the consumer — there is no implicit bleed.
+
+Validation runs strictly BEFORE any provider or platform call. The scanner refuses unknown keys, unsupported `schemaVersion`, duplicate or conflicting path rules, invalid globs, unsafe paths (anything with `..` or an absolute prefix), and any secret-shaped literal — the same `SECRET_REGEX` used by the saved-config scanner. Failure returns exit code `2` and writes no files.
+
+The wizard's `umactually init --policy-template` writes a template file but only when explicitly requested. The default `umactually init` flow does NOT create or modify `umactually.review.json`.
+
 ### Rotation guidance
 
 1. Generate a new key in the upstream provider console.

@@ -15,6 +15,7 @@ import { formatDoctorHuman, formatDoctorJson, runDoctor } from "./doctor.js";
 import { type HelpCommand, printContextualHelp, renderCommandsTable } from "./help.js";
 import { tryReadSavedConfig } from "./load-saved-config.js";
 import type { SavedConfig } from "../config/saved-config.js";
+import { loadReviewPolicy } from "../config/review-policy.js";
 import {
   formatInitHuman,
   formatInitJson,
@@ -97,7 +98,7 @@ export async function dispatch(argv: readonly string[]): Promise<DispatchResult 
   // `firstPositionalToken(argv)` short-circuits on the flag presence
   // before any command routing.
   if (argv.includes("--show-config")) {
-    return runShowConfig();
+    return runShowConfig(process.cwd());
   }
 
   const command = firstPositionalToken(argv);
@@ -319,7 +320,8 @@ function runLoadedConfigQuickstart(
 
 /**
  * `umactually --show-config` — print the effective saved config and
- * exit 0. Read-only; never opens a network connection; never prompts.
+ * review policy, then exit 0. Read-only; never opens a network
+ * connection; never prompts.
  *
  * The output is a field-by-field rendered multiline string so future
  * secret fields on `SavedConfig` (the schema is intentionally future-
@@ -329,37 +331,79 @@ function runLoadedConfigQuickstart(
  * rule, which is exactly the trust-model property the S6 contract
  * requires.
  *
+ * Review-policy fields are rendered with sanitized path/hash/version
+ * so the operator can verify exactly which committed policy (if any)
+ * is in effect. The committed policy itself lives in
+ * `umactually.review.json` and is the team's documented source of
+ * truth for non-secret review rules.
+ *
  * Decision: lives at the dispatch layer (not under `umactually doctor`)
  * because every other "what's currently effective" tool (`kubectl
  * config view`, `aws configure get`, `git config --list --show-origin`)
  * is top-level, not under a verification subcommand. Operators look
  * for `--show-config` at the root.
  */
-function renderShowConfig(config: SavedConfig, path: string): string {
-  const lines: string[] = [
-    `saved config: ${path}`,
-    `  provider: ${config.provider}`,
-  ];
-  if (config.apiUrl !== undefined) lines.push(`  apiUrl:   ${config.apiUrl}`);
-  lines.push(
-    `  model:    ${config.model ?? "auto (resolved at review time)"}`,
-  );
+function renderShowConfig(
+  config: SavedConfig | null,
+  path: string,
+  policyResult: ReturnType<typeof loadReviewPolicy>,
+): string {
+  const lines: string[] = [];
+  if (config !== null) {
+    lines.push(`saved config: ${path}`);
+    lines.push(`  provider: ${config.provider}`);
+    if (config.apiUrl !== undefined) lines.push(`  apiUrl:   ${config.apiUrl}`);
+    lines.push(
+      `  model:    ${config.model ?? "auto (resolved at review time)"}`,
+    );
+  } else {
+    lines.push("saved config: none (run `umactually init` to create one)");
+  }
+  // Review policy surface
+  if (policyResult.policy !== null) {
+    lines.push("");
+    lines.push(`review policy: ${policyResult.path}`);
+    lines.push(`  schemaVersion: ${policyResult.policy.schemaVersion}`);
+    if (policyResult.hash !== null) {
+      lines.push(`  hash:          ${policyResult.hash}`);
+    }
+    if (policyResult.policy.effort !== undefined) {
+      lines.push(`  effort:        ${policyResult.policy.effort}`);
+    }
+    if (policyResult.policy.minimumSeverity !== undefined) {
+      lines.push(`  minimumSeverity: ${policyResult.policy.minimumSeverity}`);
+    }
+    if (policyResult.policy.gateMode !== undefined) {
+      lines.push(`  gateMode:      ${policyResult.policy.gateMode}`);
+    }
+    if (policyResult.policy.suggestionMode !== undefined) {
+      lines.push(`  suggestionMode: ${policyResult.policy.suggestionMode}`);
+    }
+    if (policyResult.policy.reReviewCap !== undefined) {
+      lines.push(`  reReviewCap:   ${policyResult.policy.reReviewCap}`);
+    }
+    if (policyResult.policy.triggers !== undefined) {
+      lines.push(`  triggers:      ${policyResult.policy.triggers.join(", ")}`);
+    }
+  } else {
+    lines.push("");
+    lines.push(`review policy: none (run \`umactually init --policy-template\` to create one)`);
+  }
   return lines.join("\n") + "\n";
 }
 
-function runShowConfig(): Promise<DispatchResult> {
-  const savedRead = tryReadSavedConfig();
+function runShowConfig(cwd: string): Promise<DispatchResult> {
+  const savedRead = tryReadSavedConfig({ cwd });
+  const policyResult = loadReviewPolicy({ cwd });
   if (savedRead.warning !== null) {
     process.stderr.write(`umactually: ${savedRead.warning}\n`);
     return Promise.resolve({ exitCode: 1 });
   }
-  if (savedRead.config === null) {
-    process.stdout.write(
-      `${BRAND_PREFIX}no saved config (run \`umactually init\` to create one)\n`,
-    );
-    return Promise.resolve({ exitCode: 0 });
+  if (policyResult.warning !== null) {
+    process.stderr.write(`umactually: ${policyResult.warning}\n`);
+    return Promise.resolve({ exitCode: 1 });
   }
-  process.stdout.write(renderShowConfig(savedRead.config, savedRead.path));
+  process.stdout.write(renderShowConfig(savedRead.config, savedRead.path, policyResult));
   return Promise.resolve({ exitCode: 0 });
 }
 
