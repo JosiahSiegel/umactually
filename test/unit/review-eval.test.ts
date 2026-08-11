@@ -289,7 +289,7 @@ describe("aggregateReviewEvalResults", () => {
   it("aggregates pass/fail counts and per-fixture results", () => {
     const passing = gradeReviewFixture(FIXTURE_PASSING, makeOutcome({}));
     const failing = gradeReviewFixture(FIXTURE_TIGHT, makeOutcome({}));
-    const report = aggregateReviewEvalResults([passing, failing]);
+    const report = aggregateReviewEvalResults([passing, failing], 0);
     expect(report.fixtureCount).toBe(2);
     expect(report.passedCount).toBe(1);
     expect(report.failedCount).toBe(1);
@@ -311,7 +311,7 @@ describe("writeReviewEvalReport", () => {
       const { readFile } = await import("node:fs/promises");
       const content = await readFile(artifactPath, "utf8");
       const parsed = JSON.parse(content) as { schemaVersion: number; results: unknown[] };
-      expect(parsed.schemaVersion).toBe(1);
+      expect(parsed.schemaVersion).toBe(2);
       expect(parsed.results).toHaveLength(1);
     } finally {
       await rm(dir, { recursive: true, force: true });

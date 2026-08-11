@@ -45,5 +45,22 @@ export const greetingI18nCleanFixture: ReviewFixture = {
     maxFabricationRate: 0.5,
     mustNotContain: ["unused variable", "sql injection", "hardcoded secret"],
     mustNotFabricatePath: "dist/",
+    forbiddenPathPrefixes: ["dist/", "build/", "node_modules/"],
+    hardInvariants: ["identity-fields-present", "surviving-fabrication-zero"],
+    mockReviewOverride: {
+      review: {
+        summary: "Clean i18n helper addition. One minor suggestion about TODO hygiene.",
+        verdict: "comment",
+        comments: [
+          {
+            path: "src/example.ts",
+            line: 2,
+            body: "TODO comment is fine for now, but link it to a tracked issue so it does not rot.",
+            severity: "info",
+            category: "style",
+          },
+        ],
+      },
+    },
   },
 };

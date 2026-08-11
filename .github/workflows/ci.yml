@@ -46,6 +46,16 @@ jobs:
       - name: Typecheck
         run: npm run typecheck
 
+      # Task 3 — release-gated review quality (hermetic). Exercises the real
+      # prompt → provider transport → parser → verification/filter →
+      # durable-finding pipeline against the bundled mock LLM server.
+      # MUST run exactly once on every PR / push; the hermetic gate is
+      # the load-bearing release quality bar (precision ≥ 0.90, recall ≥
+      # 0.85, F1 ≥ 0.87, surviving fabrication = 0, secret leakage = 0,
+      # parse-fail-not-clean = 0).
+      - name: Review-eval gate (hermetic)
+        run: npm run test:review-eval
+
       - name: Test
         run: npm test -- --run
 
