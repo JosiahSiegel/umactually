@@ -10,8 +10,10 @@ import {
 } from "../util/json-guards.js";
 import type { ProviderEndpoint, ProviderErrorDetails, ProviderUsage } from "./provider-error.js";
 import type { DurableFindingIdentity } from "../review/fingerprint.js";
+import type { ValidatedSuggestion, RemediationInstruction, RawSuggestion, RemediationBuildInput } from "../review/suggestion.js";
 
 export type { ProviderEndpoint, ProviderErrorDetails, ProviderUsage };
+export type { ValidatedSuggestion, RemediationInstruction };
 
 export type ProviderComment = {
   readonly path: string;
@@ -20,6 +22,14 @@ export type ProviderComment = {
   readonly severity: string;
   readonly category: string;
   readonly durableIdentity?: DurableFindingIdentity;
+  /** Validated suggestion — rendered to platform surfaces ONLY when present. */
+  readonly validatedSuggestion?: ValidatedSuggestion;
+  /** Serialized to JSON artifact ONLY — never to comment bodies. */
+  readonly remediationInstruction?: RemediationInstruction;
+  /** Internal: raw unvalidated suggestion from provider JSON. Consumed by the validation boundary. */
+  readonly rawSuggestion?: RawSuggestion;
+  /** Internal: raw remediation input from provider JSON. Consumed by the validation boundary. */
+  readonly rawRemediation?: RemediationBuildInput;
 };
 
 export type ProviderReviewPayload = {
@@ -878,6 +888,49 @@ function extractLastReviewDraftFromReasoning(
   return lastDraft;
 }
 
+/** Defensively parse a raw suggestion object from provider JSON. Returns undefined on any structural issue. */
+function parseRawSuggestion(value: unknown): { readonly rawSuggestion?: import("../review/suggestion.js").RawSuggestion } {
+  if (value === undefined || value === null || typeof value !== "object" || Array.isArray(value)) {
+    return {};
+  }
+  const obj = value as Record<string, unknown>;
+  const replacement = obj["replacement"];
+  const originalTextHash = obj["originalTextHash"];
+  const endLine = obj["endLine"];
+  if (typeof replacement !== "string" || typeof originalTextHash !== "string") {
+    return {};
+  }
+  const raw: import("../review/suggestion.js").RawSuggestion = {
+    replacement,
+    originalTextHash,
+    ...(typeof endLine === "number" ? { endLine } : {}),
+  };
+  return { rawSuggestion: raw };
+}
+
+/** Defensively parse a raw remediation object from provider JSON. Returns undefined on any structural issue. */
+function parseRawRemediation(value: unknown): { readonly rawRemediation?: import("../review/suggestion.js").RemediationBuildInput } {
+  if (value === undefined || value === null || typeof value !== "object" || Array.isArray(value)) {
+    return {};
+  }
+  const obj = value as Record<string, unknown>;
+  const objective = obj["objective"];
+  const targetPath = obj["targetPath"];
+  const targetAnchor = obj["targetAnchor"];
+  if (typeof objective !== "string" || typeof targetPath !== "string" || typeof targetAnchor !== "string") {
+    return {};
+  }
+  const constraints = Array.isArray(obj["constraints"])
+    ? (obj["constraints"] as unknown[]).filter((v): v is string => typeof v === "string")
+    : [];
+  const verificationCommands = Array.isArray(obj["verificationCommands"])
+    ? (obj["verificationCommands"] as unknown[]).filter((v): v is string => typeof v === "string")
+    : [];
+  return {
+    rawRemediation: { objective, targetPath, targetAnchor, constraints, verificationCommands },
+  };
+}
+
 function readCommentArray(
   value: unknown,
   context?: ParseContext,
@@ -928,6 +981,8 @@ function readCommentArray(
             : { commentIndex: index },
         ),
         category: readStringField(entry, "category") ?? "general",
+        ...(parseRawSuggestion(entry["suggestion"]) ?? {}),
+        ...(parseRawRemediation(entry["remediation"]) ?? {}),
       });
     }
   });

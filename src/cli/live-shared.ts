@@ -17,8 +17,11 @@ import { normalizeProviderSeverity } from "../provider/provider-parse.js";
 import type { ProviderComment } from "../provider/provider-parse.js";
 import type { ParsedCliArgs } from "./parse-args.js";
 import { computeDurableFindingIdentity, type CanonicalFindingInput, type DurableFindingIdentity } from "../review/fingerprint.js";
+import { validateSuggestion, buildRemediationInstruction, renderGithubSuggestionFence, type ValidatedSuggestion, type RemediationInstruction, type SuggestionRejection } from "../review/suggestion.js";
+import { readDiffLine } from "../review/diff-line-utils.js";
 
 export type { FetchImpl };
+export type { ValidatedSuggestion, RemediationInstruction, SuggestionRejection };
 
 /** Live-path platform (after auto-resolution). Mirrors `Platform` minus "auto". */
 export type LivePlatform = Exclude<Platform, "auto">;
@@ -237,6 +240,21 @@ export type LiveProviderOutcome = {
 };
 
 /**
+ * Per-comment suggestion validation summary. Carries the count of
+ * suggestions that passed validation (and were rendered to the
+ * platform surface) and the typed rejections that were recorded
+ * without rendering. Surfaced on `PreparedPostedReview` so the JSON
+ * artifact can audit what the pipeline accepted vs. rejected.
+ */
+export type SuggestionValidationSummary = {
+  readonly mode: "off" | "validated";
+  readonly validatedCount: number;
+  readonly rejections: readonly { readonly path: string; readonly line: number; readonly kind: SuggestionRejection["kind"]; readonly message: string }[];
+  readonly remediationInstructionsBuilt: number;
+  readonly remediationRejections: readonly { readonly kind: string; readonly message: string }[];
+};
+
+/**
  * The shape returned by {@link preparePostedReview}: the in-diff comments
  * eligible for inline posting, the off-diff comments that surface only in
  * the manifest, the suppressed count, the severity tally, the rendered
@@ -274,6 +292,13 @@ export interface PreparedPostedReview {
    * model verdict and the effective verdict agree).
    */
   readonly verdictEscalatedFrom?: string;
+  /**
+   * Summary of suggestion validation for the artifact. Always present
+   * (defaults to mode="off" when the caller did not opt in). Records
+   * every typed rejection so the JSON artifact can audit which
+   * provider suggestions were accepted vs. rejected — and why.
+   */
+  readonly suggestionValidation: SuggestionValidationSummary;
 }
 
 export class LiveReviewError extends Error {
@@ -502,7 +527,22 @@ export function buildInlineCommentBody(input: {
     isPositiveSafeInteger(input.parentThreadId)
       ? `> Reply to PR review summary #${input.parentThreadId}\n\n`
       : "";
-  return `${marker}${parentRef}\`${safeSeverity}\` \`${safeCategory}\`\n\n${safeBody}`;
+  // Validated suggestion fence — appended AFTER the body text when
+  // present. Both GitHub (native ```suggestion block) and Azure
+  // (rendered as a code block with the suggested text) interpret this
+  // same fence, so a single rendering produces the right output for
+  // both platforms. The `validatedSuggestion` field is ONLY populated
+  // by `validateSuggestion` (in this same module) after passing every
+  // defensive check — so a fence here always represents a validated,
+  // sanitized, diff-anchored suggestion.
+  //
+  // remediationInstruction is NEVER rendered into the comment body —
+  // it is serialized ONLY to the JSON artifact.
+  const validated = input.comment.validatedSuggestion;
+  const suggestionBlock = validated !== undefined
+    ? `\n\n${renderGithubSuggestionFence(validated)}`
+    : "";
+  return `${marker}${parentRef}\`${safeSeverity}\` \`${safeCategory}\`\n\n${safeBody}${suggestionBlock}`;
 }
 
 /**
@@ -852,7 +892,18 @@ export function preparePostedReview(input: {
   readonly diffText: string;
   readonly parsed: ParsedCliArgs;
   readonly secrets: readonly string[];
+  /**
+   * Policy-controlled suggestion mode. `"off"` (default) skips
+   * suggestion validation entirely — no raw suggestion fields are
+   * read, no validated suggestions are emitted, no remediation
+   * instructions are built. `"validated"` runs `validateSuggestion`
+   * against every raw suggestion on every postable comment, recording
+   * typed rejections for any that fail. Threaded from the resolved
+   * `umactually.review.json` policy (`suggestionMode`).
+   */
+  readonly suggestionMode?: "off" | "validated";
 }): PreparedPostedReview {
+  const suggestionMode = input.suggestionMode ?? "off";
   // Parse the diff ONCE and pass the index to all three selectors.
   // Each of the public selectors (`selectPostableComments`,
   // `selectOffDiffComments`, `countSuppressedComments`) was
@@ -866,6 +917,17 @@ export function preparePostedReview(input: {
     parsed: input.parsed,
     secrets: input.secrets,
   });
+  // Validate provider suggestions against the diff + sanitization rules
+  // when policy permits. Runs ONLY for postable comments so an off-diff
+  // or severity-filtered comment never gets a validated suggestion
+  // even if the provider attached one.
+  const validatedCommentsResult = validateSuggestionsForComments({
+    comments: postableComments,
+    diffText: input.diffText,
+    positions,
+    mode: suggestionMode,
+  });
+  const suggestionValidation: SuggestionValidationSummary = validatedCommentsResult.summary;
   // The off-diff comments array is needed for the manifest payload
   // (so reviewers can see which findings the post-filter dropped
   // and why). The suppressed count is also displayed. Both are
@@ -879,7 +941,7 @@ export function preparePostedReview(input: {
   // the count inline rather than calling the helper.
   const offDiffFromComments = selectOffDiffCommentsWithPositions(input.review, positions);
   const suppressedCommentCount = input.review.suppressedComments.length + offDiffFromComments.length;
-  const severityCounts = countBySeverity(postableComments);
+  const severityCounts = countBySeverity(validatedCommentsResult.comments);
   // Reconcile the model's raw verdict against the postable severity
   // counts. The body would render a `⛔ NEEDS_FIX` headline against a
   // `📊 0 inline findings` count for a review with nothing to act on
@@ -897,11 +959,11 @@ export function preparePostedReview(input: {
     review: { ...input.review, verdict: effectiveVerdict },
     provider: input.provider,
     modelId: input.modelId,
-    validCommentCount: postableComments.length,
+    validCommentCount: validatedCommentsResult.comments.length,
     suppressedCommentCount,
     offDiffFromComments,
     severityCounts,
-    postedComments: postableComments,
+    postedComments: validatedCommentsResult.comments,
     secrets: input.secrets,
     // Threshold context — forwarded so the rendered `🏷️ …` tally can
     // append `*` when the active `--minimum-severity` setting hides one
@@ -912,14 +974,120 @@ export function preparePostedReview(input: {
   });
 
   return {
-    postableComments,
+    postableComments: validatedCommentsResult.comments,
     offDiffFromComments,
     suppressedCommentCount,
     severityCounts,
     body,
     postedComments: postableComments,
     effectiveVerdict,
+    suggestionValidation,
     ...(verdictEscalatedFrom !== undefined ? { verdictEscalatedFrom } : {}),
+  };
+}
+
+/**
+ * Validate raw provider suggestions + remediation instructions on a
+ * set of postable comments. Returns a summary suitable for the JSON
+ * artifact. NEVER mutates the input comments in place — produces
+ * NEW comments with `validatedSuggestion` and `remediationInstruction`
+ * fields populated.
+ *
+ * Hard contract:
+ *   - When `mode === "off"`, returns an empty summary without touching
+ *     any raw suggestion field. Zero side effects.
+ *   - When `mode === "validated"`, validates every raw suggestion
+ *     against the diff positions; records typed rejections without
+ *     rendering. Builds remediation instructions ONLY when the
+ *     comment's raw suggestion validated successfully (a remediation
+ *     without a validated suggestion is non-sensical).
+ *   - remediationInstructions are serialized ONLY to the JSON
+ *     artifact; the renderers NEVER include them in comment bodies.
+ */
+function validateSuggestionsForComments(input: {
+  readonly comments: readonly LiveReviewComment[];
+  readonly diffText: string;
+  readonly positions: ReturnType<typeof parseDiffPositions>;
+  readonly mode: "off" | "validated";
+}): { readonly comments: readonly LiveReviewComment[]; readonly summary: SuggestionValidationSummary } {
+  if (input.mode === "off") {
+    return {
+      comments: input.comments,
+      summary: {
+        mode: "off",
+        validatedCount: 0,
+        rejections: [],
+        remediationInstructionsBuilt: 0,
+        remediationRejections: [],
+      },
+    };
+  }
+
+  const enriched: LiveReviewComment[] = [];
+  const rejections: Array<{ readonly path: string; readonly line: number; readonly kind: SuggestionRejection["kind"]; readonly message: string }> = [];
+  const remediationRejections: Array<{ readonly kind: string; readonly message: string }> = [];
+  let validatedCount = 0;
+  let remediationInstructionsBuilt = 0;
+
+  for (const comment of input.comments) {
+    const rawSuggestion = comment.rawSuggestion;
+    if (rawSuggestion === undefined) {
+      enriched.push(comment);
+      continue;
+    }
+    const originalLineText = readDiffLine(input.diffText, { path: comment.path, line: comment.line });
+    const result = validateSuggestion({
+      rawSuggestion,
+      path: comment.path,
+      line: comment.line,
+      diffPositions: input.positions,
+      originalLineText,
+    });
+    if (result.rejection !== undefined) {
+      rejections.push({
+        path: comment.path,
+        line: comment.line,
+        kind: result.rejection.kind,
+        message: result.rejection.message,
+      });
+      enriched.push(comment);
+      continue;
+    }
+    // Build remediation instruction if the provider attached a raw
+    // remediation. The remediation MUST succeed (otherwise the finding
+    // gets a validated suggestion WITHOUT an artifact-side remediation,
+    // which is OK — the suggestion is the primary signal).
+    const rawRemediation = comment.rawRemediation;
+    let remediation: RemediationInstruction | undefined;
+    if (rawRemediation !== undefined) {
+      const built = buildRemediationInstruction(rawRemediation);
+      if (built.ok) {
+        remediation = built.instruction;
+        remediationInstructionsBuilt += 1;
+      } else {
+        remediationRejections.push({ kind: built.error.kind, message: built.error.message });
+      }
+    }
+    validatedCount += 1;
+    const enrichedComment: LiveReviewComment = result.validated !== undefined
+      ? {
+        ...comment,
+        validatedSuggestion: result.validated,
+        ...(remediation !== undefined ? { remediationInstruction: remediation } : {}),
+      }
+      : comment;
+    enriched.push(enrichedComment);
+  }
+
+  return {
+    comments: enriched,
+    summary: {
+      mode: "validated",
+      validatedCount,
+      rejections,
+      remediationInstructionsBuilt,
+      remediationRejections,
+    },
   };
 }
 
