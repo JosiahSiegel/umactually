@@ -12,6 +12,8 @@ import { BRAND_PREFIX } from "../util/brand.js";
 import { readPackageVersion, runCli, runVersion } from "../cli.js";
 import { classifyReviewArtifact } from "./check-review-artifact.js";
 import { formatDoctorHuman, formatDoctorJson, runDoctor } from "./doctor.js";
+import { runFullDoctor, type DoctorCheckResult } from "./doctor-full.js";
+import { formatCheckLines } from "../util/check-format.js";
 import { type HelpCommand, printContextualHelp, renderCommandsTable } from "./help.js";
 import { tryReadSavedConfig } from "./load-saved-config.js";
 import type { SavedConfig } from "../config/saved-config.js";
@@ -518,6 +520,7 @@ async function runTuiBranch(args: readonly string[]): Promise<DispatchResult> {
 
 async function runDoctorBranch(args: readonly string[]): Promise<DispatchResult> {
   const json = args.includes("--json");
+  const full = args.includes("--full");
   // In a Bun --compile binary, import.meta.url resolves to Bun's virtual
   // filesystem and process.execPath is the real binary. In Node (npm install
   // or dev), process.execPath is the node binary itself, so use import.meta.url.
@@ -529,15 +532,42 @@ async function runDoctorBranch(args: readonly string[]): Promise<DispatchResult>
   const packageRoot = isCompiledBinary
     ? dirname(process.execPath)
     : resolve(dirname(fileURLToPath(import.meta.url)), "..");
+  const execFileFn = async (file: string, fileArgs: readonly string[], options: { readonly cwd: string }) => {
+    const output = await execFile(file, fileArgs, options);
+    return { stdout: output.stdout, stderr: output.stderr };
+  };
+
+  if (full) {
+    const fullResult = await runFullDoctor({
+      cwd: process.cwd(),
+      isTTY: process.stdout.isTTY === true,
+      env: process.env,
+      fsAdapter: { stat },
+      fsAdapterSync: defaultFsAdapter,
+      execFile: execFileFn,
+      packageRoot,
+    });
+    let stdout: string;
+    if (json) {
+      const envelope = createEnvelope(
+        "doctor",
+        fullResult.json as unknown as EnvelopeData,
+        { exitCode: fullResult.exitCode },
+      );
+      stdout = `${JSON.stringify(envelope)}\n`;
+    } else {
+      stdout = formatFullDoctorHuman(fullResult.checks);
+    }
+    process.stdout.write(stdout);
+    return { exitCode: fullResult.exitCode, stdout };
+  }
+
   const result = await runDoctor({
     cwd: process.cwd(),
     isTTY: process.stdout.isTTY === true,
     env: process.env,
     fsAdapter: { stat },
-    execFile: async (file, fileArgs, options) => {
-      const output = await execFile(file, fileArgs, options);
-      return { stdout: output.stdout, stderr: output.stderr };
-    },
+    execFile: execFileFn,
     packageRoot,
   });
   let stdout: string;
@@ -553,6 +583,10 @@ async function runDoctorBranch(args: readonly string[]): Promise<DispatchResult>
   }
   process.stdout.write(stdout);
   return { exitCode: result.exitCode, stdout };
+}
+
+function formatFullDoctorHuman(checks: readonly DoctorCheckResult[]): string {
+  return formatCheckLines(checks, { emojiPrefix: false });
 }
 
 async function runUninstallBranch(args: readonly string[]): Promise<DispatchResult> {
