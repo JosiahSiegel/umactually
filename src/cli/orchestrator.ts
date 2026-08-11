@@ -30,6 +30,7 @@ import { readLiveSonarContext } from "./sonar-context.js";
 import { DEFAULT_PROMPT_FILE_PATHS, resetDefaultPromptFilesCache } from "./provider-prompts.js";
 import type { ParsedCliArgs } from "./parse-args.js";
 import { applySimulateFindings } from "./simulate-findings.js";
+import { buildReviewMetrics, finalizeReviewMetrics, type ReviewMetricsBuilder } from "./review-metrics.js";
 
 /**
  * Number of chunks to process concurrently when the chunked path is
@@ -176,10 +177,16 @@ export async function runLive(input: RunLiveInput): Promise<LiveRunResult> {
   const env = input.env ?? process.env;
   const fetchImpl = input.fetchImpl ?? globalThis.fetch.bind(globalThis);
   const platform = detectLivePlatform(env);
+  // The metrics builder is created up-front so every pre-review
+  // exit path (missing platform, missing config) can still freeze
+  // a partial record for the artifact writer. Frozen records on a
+  // failed pre-review path carry zeros for every phase + the
+  // redaction summary the operator recorded via `metrics.recordSecret`.
+  const metrics = buildReviewMetrics();
   if (platform === null) {
     const message = "Live review requires GitHub Actions (GITHUB_ACTIONS=true) or Azure Pipelines (TF_BUILD=True).";
     process.stdout.write(`${BRAND_PREFIX}${message}\n`);
-    return failedResult(message);
+    return { ...failedResult(message), metrics: finalizeReviewMetrics(metrics) };
   }
 
   // Copilot + Anthropic-native providers don't need UMACTUALLY_API_URL:
@@ -210,7 +217,7 @@ export async function runLive(input: RunLiveInput): Promise<LiveRunResult> {
       // the CLI without contacting the provider.
       const hintLine = error.hint === undefined ? "" : `\n${BRAND_PREFIX}hint: ${error.hint}`;
       process.stdout.write(`${BRAND_PREFIX}${message}${hintLine}\n`);
-      return failedResult(message);
+      return { ...failedResult(message), metrics: finalizeReviewMetrics(metrics) };
     }
     throw error;
   }
@@ -245,6 +252,7 @@ export async function runLive(input: RunLiveInput): Promise<LiveRunResult> {
       env,
       fetchImpl: countingFetch,
       ...(sonarContext !== undefined ? { sonarContext } : {}),
+      metrics,
     });
   } catch (error) {
     const message = formatError(error);
@@ -264,12 +272,24 @@ export async function runLive(input: RunLiveInput): Promise<LiveRunResult> {
     }
     const hintLine = hint === undefined ? "" : `\n${BRAND_PREFIX}hint: ${hint}`;
     process.stdout.write(`${BRAND_PREFIX}${sanitized}${hintLine}\n`);
-    return failedResult(sanitized);
+    metrics.endContext();
+    const frozen = finalizeReviewMetrics(metrics);
+    return { ...failedResult(sanitized), metrics: frozen };
   }
 
   if (result.posted) {
     process.stdout.write(`${BRAND_PREFIX}${result.message}\n`);
   }
+  // Mark the verification phase. The provider phase ended inside
+  // `dispatchLivePlatform` so the round-trip duration is scoped to
+  // the actual provider call window. Verification is a no-op slot
+  // in the current architecture (the verified-facts and confidence
+  // filters run inline with the provider call). The posting phase
+  // was also started/ended inside `dispatchLivePlatform` so the
+  // platform round-trip duration is captured there.
+  metrics.beginVerification();
+  metrics.endVerification();
+  const frozenMetrics = finalizeReviewMetrics(metrics);
   // Attach scope-limited telemetry for the artifact writer. Failed
   // pre-review paths return early via failedResult, so they never
   // reach this point — the suspicious-signal guard only fires on
@@ -279,6 +299,7 @@ export async function runLive(input: RunLiveInput): Promise<LiveRunResult> {
     ...result,
     providerRoundTrips: counter.providerRoundTrips,
     reviewDurationMs: Date.now() - startedAt,
+    metrics: frozenMetrics,
   };
 }
 
@@ -298,8 +319,13 @@ async function dispatchLivePlatform(input: {
   readonly env: NodeJS.ProcessEnv;
   readonly fetchImpl: FetchImpl;
   readonly sonarContext?: string;
+  readonly metrics: ReviewMetricsBuilder;
 }): Promise<LiveRunResult> {
-  const { platform, parsed, cwd, env, fetchImpl, sonarContext } = input;
+  const { platform, parsed, cwd, env, fetchImpl, sonarContext, metrics } = input;
+  // The "context" phase covers every pre-provider call: PR / diff /
+  // instruction-file fetch, leak-gate, SonarQube wait, and the
+  // platform-context read. End the phase just before `requestLiveReview`.
+  metrics.beginContext();
   switch (platform) {
     case "github": {
       const context = await readGithubContext(env);
@@ -320,8 +346,11 @@ async function dispatchLivePlatform(input: {
       });
       if (!leakGate.ok) {
         logError("", leakGate.message);
-        return failedResult(leakGate.message);
+        metrics.endContext();
+        return { ...failedResult(leakGate.message), metrics: finalizeReviewMetrics(metrics) };
       }
+      metrics.endContext();
+      metrics.beginProvider();
       const liveOutcome = await requestLiveReview({
         parsed,
         cwd,
@@ -333,6 +362,8 @@ async function dispatchLivePlatform(input: {
         ...(instructionFilesByBaseBranch !== undefined ? { instructionFilesByBaseBranch } : {}),
         ...(sonarContext !== undefined ? { sonarContext } : {}),
       });
+      metrics.endProvider();
+      attachUsageToMetrics(metrics, liveOutcome);
       const finalOutcome = applySimulateFindings({
         outcome: liveOutcome,
         simulateFindings: parsed.simulateFindings === true,
@@ -342,13 +373,17 @@ async function dispatchLivePlatform(input: {
         diffText,
         secrets: [context.token],
       });
-      return runGithubLive({
+      attachConsideredCountsToMetrics(metrics, finalOutcome);
+      metrics.beginPosting();
+      const result = await runGithubLive({
         context,
         diffText,
         provider: finalOutcome,
         parsed,
         fetchImpl,
       });
+      metrics.endPosting();
+      return result;
     }
     case "azure": {
       // Forward --pr-number (when supplied) to the Azure context reader so
@@ -410,8 +445,10 @@ async function dispatchLivePlatform(input: {
       });
       if (!leakGate.ok) {
         logError("", leakGate.message);
-        return failedResult(leakGate.message);
+        metrics.endContext();
+        return { ...failedResult(leakGate.message), metrics: finalizeReviewMetrics(metrics) };
       }
+      metrics.endContext();
       // Gate the live review on the configured file count. The default
       // 200-file cap is a quality choice: chunked LLM reviews of an
       // arbitrarily-large initial-import diff produce hallucinated
@@ -420,6 +457,7 @@ async function dispatchLivePlatform(input: {
       const reviewFileLimit = parsed.reviewFileLimit ?? DEFAULT_REVIEW_FILE_LIMIT;
       const fileCount = countDiffFiles(diffText);
       let liveOutcome: LiveProviderOutcome;
+      metrics.beginProvider();
       if (reviewFileLimit > 0 && fileCount > reviewFileLimit) {
         process.stdout.write(`${BRAND_PREFIX}skipping live review — PR changes ${fileCount} files, exceeds --review-file-limit=${reviewFileLimit}. Use --review-file-limit 0 to disable.\n`);
         liveOutcome = {
@@ -440,6 +478,7 @@ async function dispatchLivePlatform(input: {
           verifiedFactsFilter: { kept: [], downgraded: [], downgradeReasons: [] },
             confidenceFilter: { kept: [], downgraded: [], reasons: [] },
         };
+        metrics.endProvider();
       } else {
         const chunks = chunkDiffByFile(diffText);
         if (chunks.length <= 1) {
@@ -474,7 +513,9 @@ async function dispatchLivePlatform(input: {
             ...(sonarContext !== undefined ? { sonarContext } : {}),
           });
         }
+        metrics.endProvider();
       }
+      attachUsageToMetrics(metrics, liveOutcome);
       const finalOutcome = applySimulateFindings({
         outcome: liveOutcome,
         simulateFindings: parsed.simulateFindings === true,
@@ -484,16 +525,54 @@ async function dispatchLivePlatform(input: {
         diffText,
         secrets: [context.token],
       });
-      return runAzureLive({
+      attachConsideredCountsToMetrics(metrics, finalOutcome);
+      metrics.beginPosting();
+      const azureResult = await runAzureLive({
         context,
         diffText,
         provider: finalOutcome,
         parsed,
         fetchImpl,
       });
+      metrics.endPosting();
+      return azureResult;
     }
     default:
       return assertNever(platform);
+  }
+}
+
+/**
+ * Attach the provider's `usage` block (when present) to the metrics
+ * builder. NEUTRAL on absence: the builder simply leaves `usage`
+ * undefined so the final record omits the field entirely (the
+ * NEVER-zero-invented contract).
+ */
+function attachUsageToMetrics(metrics: ReviewMetricsBuilder, outcome: LiveProviderOutcome): void {
+  if (outcome.usage !== undefined) {
+    metrics.setUsage({ ...outcome.usage, roundTrips: 0 });
+  }
+}
+
+/**
+ * Translate the `LiveProviderOutcome`'s considered/kept/downgraded/
+ * suppressed/off-diff counts into the closed-enum reason histogram
+ * so the audit artifact can render "this review suppressed N
+ * findings because of M reason-K" without re-plumbing the parser.
+ */
+function attachConsideredCountsToMetrics(metrics: ReviewMetricsBuilder, outcome: LiveProviderOutcome): void {
+  const considered = outcome.review.comments.length;
+  const suppressed = outcome.review.suppressedComments.length;
+  const offDiff = outcome.parseWarnings.length;
+  const downgraded = (outcome.verifiedFactsFilter?.downgraded.length ?? 0)
+    + (outcome.confidenceFilter?.downgraded.length ?? 0);
+  const kept = Math.max(0, considered - downgraded - offDiff - suppressed);
+  metrics.setCounts({ considered, kept, downgraded, suppressed, offDiff });
+  if (offDiff > 0) {
+    metrics.incrementReason("off-diff", offDiff);
+  }
+  if (outcome.review.parseFailed === true) {
+    metrics.incrementReason("parse-failed", 1);
   }
 }
 

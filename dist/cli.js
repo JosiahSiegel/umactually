@@ -69,7 +69,7 @@ module.exports = { cursor, scroll, erase, beep };
 /***/ 28:
 /***/ ((module, __unused_webpack_exports, __nccwpck_require__) => {
 
-module.exports = __nccwpck_require__.p + "03fd2840000f132e9174.ts";
+module.exports = __nccwpck_require__.p + "e4d8e99f5c736c9d7a6e.ts";
 
 /***/ }),
 
@@ -3874,6 +3874,528 @@ function tryReadSavedConfig(deps = {}) {
     };
 }
 
+;// CONCATENATED MODULE: external "node:crypto"
+const external_node_crypto_namespaceObject = __WEBPACK_EXTERNAL_createRequire(import.meta.url)("node:crypto");
+;// CONCATENATED MODULE: ./src/config/review-policy.ts
+// SPDX-License-Identifier: MIT
+// Committed review-policy as code: `umactually.review.json`.
+//
+// This is the committed team-policy surface — separate from
+// `umactually.config.json` (provider connection defaults) and from the
+// CLI flag / env var surfaces. The provider connection config is a
+// separate security boundary; policy fields MUST NOT mix into the
+// provider config serialization.
+//
+// Resolution order (4-tier precedence):
+//   1. CLI flags                 → source = "flag"
+//   2. Env vars (where public)   → source = "env"
+//   3. Committed review policy   → source = "reviewPolicy"
+//   4. Built-in defaults         → source = "default"
+//
+// Every resolved field carries provenance: source, path (when from a
+// file), hash (the sha256 of the canonical serialized policy bytes),
+// and version (the policy's schemaVersion).
+//
+// Strict validation BEFORE any provider/platform call. Order:
+//   schema-version → schema-shape → glob/path safety → secret scan →
+//   semantic conflicts.
+//
+// Unknown keys, duplicate/conflicting path rules, invalid globs,
+// unsafe paths, secrets, and unsupported versions all fail with typed
+// errors and exit code 2 BEFORE any fetch/post and create NO files.
+
+
+
+
+
+// ---------------------------------------------------------------------------
+// Schema version
+// ---------------------------------------------------------------------------
+const REVIEW_POLICY_SCHEMA_VERSION = 1;
+// ---------------------------------------------------------------------------
+// Allowed keys (for unknown-key rejection)
+// ---------------------------------------------------------------------------
+const ALLOWED_TOP_LEVEL_KEYS = new Set([
+    "schemaVersion",
+    "pathRules",
+    "excludes",
+    "effort",
+    "triggers",
+    "reReviewCap",
+    "budgets",
+    "minimumSeverity",
+    "suggestionMode",
+    "gateMode",
+]);
+const ALLOWED_PATH_RULE_KEYS = new Set([
+    "pattern",
+    "effort",
+]);
+const ALLOWED_BUDGET_KEYS = new Set([
+    "contextTokens",
+    "maxOutputTokens",
+    "latencyMs",
+]);
+const VALID_EFFORTS = new Set(["low", "medium", "high"]);
+const VALID_TRIGGERS = new Set(["opened", "synchronize", "reopened"]);
+const VALID_MINIMUM_SEVERITIES = new Set(["info", "warning", "error"]);
+const VALID_SUGGESTION_MODES = new Set(["off", "validated"]);
+const VALID_GATE_MODES = new Set(["off", "warn", "block"]);
+// ---------------------------------------------------------------------------
+// Path
+// ---------------------------------------------------------------------------
+const REVIEW_POLICY_PATH = (cwd) => (0,external_node_path_namespaceObject.join)(cwd, "umactually.review.json");
+// ---------------------------------------------------------------------------
+// Built-in defaults
+// ---------------------------------------------------------------------------
+const DEFAULT_REVIEW_POLICY = Object.freeze({
+    schemaVersion: REVIEW_POLICY_SCHEMA_VERSION,
+    pathRules: Object.freeze([]),
+    excludes: Object.freeze([]),
+    effort: "medium",
+    triggers: Object.freeze(["opened", "synchronize", "reopened"]),
+    reReviewCap: 0,
+    budgets: Object.freeze({ contextTokens: null, maxOutputTokens: null, latencyMs: null }),
+    minimumSeverity: "warning",
+    suggestionMode: "off",
+    gateMode: "off",
+});
+// ---------------------------------------------------------------------------
+// Glob validation (without compiling — structural check only)
+// ---------------------------------------------------------------------------
+function isValidGlob(pattern) {
+    if (typeof pattern !== "string" || pattern.length === 0)
+        return false;
+    let braces = 0;
+    let brackets = 0;
+    let parens = 0;
+    for (const ch of pattern) {
+        if (ch === "{")
+            braces += 1;
+        if (ch === "}")
+            braces -= 1;
+        if (ch === "[")
+            brackets += 1;
+        if (ch === "]")
+            brackets -= 1;
+        if (ch === "(")
+            parens += 1;
+        if (ch === ")")
+            parens -= 1;
+        if (braces < 0 || brackets < 0 || parens < 0)
+            return false;
+    }
+    return braces === 0 && brackets === 0 && parens === 0;
+}
+function isUnsafePath(pattern) {
+    if (pattern.startsWith("/"))
+        return true;
+    if (/^[A-Za-z]:[\\/]/.test(pattern))
+        return true;
+    const segments = pattern.split(/[\\/]/);
+    if (segments.some((s) => s === ".."))
+        return true;
+    return false;
+}
+function containsSecret(value) {
+    if (typeof value !== "string")
+        return false;
+    const result = SECRET_REGEX.test(value);
+    SECRET_REGEX.lastIndex = 0;
+    return result;
+}
+// ---------------------------------------------------------------------------
+// Validation
+// ---------------------------------------------------------------------------
+function validateReviewPolicy(raw, filePath) {
+    if (raw === null || typeof raw !== "object" || Array.isArray(raw)) {
+        return fail("invalid-type", `policy at ${filePath}: expected object, received ${raw === null ? "null" : Array.isArray(raw) ? "array" : typeof raw}`);
+    }
+    const obj = raw;
+    // 1. Schema version
+    if (obj["schemaVersion"] === undefined) {
+        return fail("missing-schema-version", `policy at ${filePath}: missing required field "schemaVersion"`);
+    }
+    if (typeof obj["schemaVersion"] !== "number" || !Number.isInteger(obj["schemaVersion"])) {
+        return fail("unsupported-schema-version", `policy at ${filePath}: schemaVersion must be an integer, received ${REDACTED_PLACEHOLDER}`);
+    }
+    if (obj["schemaVersion"] !== REVIEW_POLICY_SCHEMA_VERSION) {
+        return fail("unsupported-schema-version", `policy at ${filePath}: unsupported schemaVersion ${obj["schemaVersion"]} (expected ${REVIEW_POLICY_SCHEMA_VERSION})`);
+    }
+    // 2. Unknown keys
+    for (const key of Object.keys(obj)) {
+        if (!ALLOWED_TOP_LEVEL_KEYS.has(key)) {
+            return fail("unknown-key", `policy at ${filePath}: unknown key "${key}"`);
+        }
+    }
+    // 3. Secret scan over all string values (BEFORE semantic validation
+    //    so a secret-shaped literal is rejected as "secret-detected"
+    //    rather than as an invalid enum value).
+    for (const [key, value] of Object.entries(obj)) {
+        if (typeof value === "string" && containsSecret(value)) {
+            return fail("secret-detected", `policy at ${filePath}: secret-shaped value detected in field "${key}"`);
+        }
+    }
+    // 4. Type-check and validate each field (semantic conflicts)
+    const policy = { schemaVersion: REVIEW_POLICY_SCHEMA_VERSION };
+    if (obj["effort"] !== undefined) {
+        if (typeof obj["effort"] !== "string" || !VALID_EFFORTS.has(obj["effort"])) {
+            return fail("invalid-effort", `policy at ${filePath}: invalid effort ${REDACTED_PLACEHOLDER} (expected one of low, medium, high)`);
+        }
+        policy.effort = obj["effort"];
+    }
+    if (obj["triggers"] !== undefined) {
+        if (!Array.isArray(obj["triggers"])) {
+            return fail("invalid-trigger", `policy at ${filePath}: triggers must be an array`);
+        }
+        const triggers = [];
+        for (const t of obj["triggers"]) {
+            if (typeof t !== "string" || !VALID_TRIGGERS.has(t)) {
+                return fail("invalid-trigger", `policy at ${filePath}: invalid trigger ${REDACTED_PLACEHOLDER} (expected one of opened, synchronize, reopened)`);
+            }
+            triggers.push(t);
+        }
+        policy.triggers = triggers;
+    }
+    if (obj["minimumSeverity"] !== undefined) {
+        if (typeof obj["minimumSeverity"] !== "string" || !VALID_MINIMUM_SEVERITIES.has(obj["minimumSeverity"])) {
+            return fail("invalid-minimum-severity", `policy at ${filePath}: invalid minimumSeverity ${REDACTED_PLACEHOLDER} (expected one of info, warning, error)`);
+        }
+        policy.minimumSeverity = obj["minimumSeverity"];
+    }
+    if (obj["suggestionMode"] !== undefined) {
+        if (typeof obj["suggestionMode"] !== "string" || !VALID_SUGGESTION_MODES.has(obj["suggestionMode"])) {
+            return fail("invalid-suggestion-mode", `policy at ${filePath}: invalid suggestionMode ${REDACTED_PLACEHOLDER} (expected one of off, validated)`);
+        }
+        policy.suggestionMode = obj["suggestionMode"];
+    }
+    if (obj["gateMode"] !== undefined) {
+        if (typeof obj["gateMode"] !== "string" || !VALID_GATE_MODES.has(obj["gateMode"])) {
+            return fail("invalid-gate-mode", `policy at ${filePath}: invalid gateMode ${REDACTED_PLACEHOLDER} (expected one of off, warn, block)`);
+        }
+        policy.gateMode = obj["gateMode"];
+    }
+    if (obj["reReviewCap"] !== undefined) {
+        if (typeof obj["reReviewCap"] !== "number" || !Number.isInteger(obj["reReviewCap"]) || obj["reReviewCap"] < 0) {
+            return fail("invalid-re-review-cap", `policy at ${filePath}: reReviewCap must be a non-negative integer`);
+        }
+        policy.reReviewCap = obj["reReviewCap"];
+    }
+    if (obj["budgets"] !== undefined) {
+        if (obj["budgets"] === null || typeof obj["budgets"] !== "object" || Array.isArray(obj["budgets"])) {
+            return fail("invalid-budget", `policy at ${filePath}: budgets must be an object`);
+        }
+        const rawBudgets = obj["budgets"];
+        for (const key of Object.keys(rawBudgets)) {
+            if (!ALLOWED_BUDGET_KEYS.has(key)) {
+                return fail("unknown-key", `policy at ${filePath}: unknown budget key "${key}"`);
+            }
+        }
+        const budgets = {
+            contextTokens: null,
+            maxOutputTokens: null,
+            latencyMs: null,
+        };
+        if (rawBudgets["contextTokens"] !== undefined && rawBudgets["contextTokens"] !== null) {
+            if (typeof rawBudgets["contextTokens"] !== "number" || !Number.isInteger(rawBudgets["contextTokens"]) || rawBudgets["contextTokens"] < 0) {
+                return fail("invalid-budget", `policy at ${filePath}: contextTokens must be a non-negative integer`);
+            }
+            budgets.contextTokens = rawBudgets["contextTokens"];
+        }
+        if (rawBudgets["maxOutputTokens"] !== undefined && rawBudgets["maxOutputTokens"] !== null) {
+            if (typeof rawBudgets["maxOutputTokens"] !== "number" || !Number.isInteger(rawBudgets["maxOutputTokens"]) || rawBudgets["maxOutputTokens"] < 0) {
+                return fail("invalid-budget", `policy at ${filePath}: maxOutputTokens must be a non-negative integer`);
+            }
+            budgets.maxOutputTokens = rawBudgets["maxOutputTokens"];
+        }
+        if (rawBudgets["latencyMs"] !== undefined && rawBudgets["latencyMs"] !== null) {
+            if (typeof rawBudgets["latencyMs"] !== "number" || !Number.isInteger(rawBudgets["latencyMs"]) || rawBudgets["latencyMs"] < 0) {
+                return fail("invalid-budget", `policy at ${filePath}: latencyMs must be a non-negative integer`);
+            }
+            budgets.latencyMs = rawBudgets["latencyMs"];
+        }
+        policy.budgets = budgets;
+    }
+    if (obj["pathRules"] !== undefined) {
+        if (!Array.isArray(obj["pathRules"])) {
+            return fail("invalid-glob", `policy at ${filePath}: pathRules must be an array`);
+        }
+        const seenPatterns = new Set();
+        const pathRules = [];
+        for (const rule of obj["pathRules"]) {
+            if (rule === null || typeof rule !== "object" || Array.isArray(rule)) {
+                return fail("invalid-glob", `policy at ${filePath}: pathRule must be an object`);
+            }
+            const r = rule;
+            for (const key of Object.keys(r)) {
+                if (!ALLOWED_PATH_RULE_KEYS.has(key)) {
+                    return fail("unknown-key", `policy at ${filePath}: unknown pathRule key "${key}"`);
+                }
+            }
+            if (typeof r["pattern"] !== "string") {
+                return fail("invalid-glob", `policy at ${filePath}: pathRule.pattern must be a string`);
+            }
+            const pattern = r["pattern"];
+            if (!isValidGlob(pattern)) {
+                return fail("invalid-glob", `policy at ${filePath}: invalid glob pattern ${REDACTED_PLACEHOLDER}`);
+            }
+            if (isUnsafePath(pattern)) {
+                return fail("unsafe-path", `policy at ${filePath}: pathRule pattern escapes repo root`);
+            }
+            if (seenPatterns.has(pattern)) {
+                return fail("duplicate-path-rule", `policy at ${filePath}: duplicate path rule pattern detected`);
+            }
+            seenPatterns.add(pattern);
+            let effort;
+            if (r["effort"] !== undefined) {
+                if (typeof r["effort"] !== "string" || !VALID_EFFORTS.has(r["effort"])) {
+                    return fail("invalid-effort", `policy at ${filePath}: invalid pathRule effort ${REDACTED_PLACEHOLDER}`);
+                }
+                effort = r["effort"];
+            }
+            pathRules.push({ pattern, ...(effort !== undefined ? { effort } : {}) });
+        }
+        policy.pathRules = pathRules;
+    }
+    if (obj["excludes"] !== undefined) {
+        if (!Array.isArray(obj["excludes"])) {
+            return fail("invalid-glob", `policy at ${filePath}: excludes must be an array`);
+        }
+        const excludes = [];
+        for (const ex of obj["excludes"]) {
+            if (typeof ex !== "string") {
+                return fail("invalid-glob", `policy at ${filePath}: exclude entry must be a string`);
+            }
+            if (!isValidGlob(ex)) {
+                return fail("invalid-glob", `policy at ${filePath}: invalid exclude glob ${REDACTED_PLACEHOLDER}`);
+            }
+            if (isUnsafePath(ex)) {
+                return fail("unsafe-path", `policy at ${filePath}: exclude pattern escapes repo root`);
+            }
+            excludes.push(ex);
+        }
+        policy.excludes = excludes;
+    }
+    // Secret scan for pathRules patterns and excludes
+    if (policy.pathRules !== undefined) {
+        for (const rule of policy.pathRules) {
+            if (containsSecret(rule.pattern)) {
+                return fail("secret-detected", `policy at ${filePath}: secret-shaped value detected in pathRule pattern`);
+            }
+        }
+    }
+    if (policy.excludes !== undefined) {
+        for (const ex of policy.excludes) {
+            if (containsSecret(ex)) {
+                return fail("secret-detected", `policy at ${filePath}: secret-shaped value detected in exclude pattern`);
+            }
+        }
+    }
+    return { ok: true, policy: policy };
+}
+function fail(kind, message) {
+    return { ok: false, error: { kind, message }, exitCode: 2, message };
+}
+function loadReviewPolicy(deps) {
+    const fs = deps.fs ?? defaultFsAdapter;
+    const path = REVIEW_POLICY_PATH(deps.cwd);
+    if (!fs.exists(path)) {
+        return { policy: null, path, hash: null, warning: null, error: null, exitCode: null };
+    }
+    if (fs.isSymlink(path)) {
+        return {
+            policy: null,
+            path,
+            hash: null,
+            warning: `refusing to read review policy: ${path} is a symlink; remove it and re-run`,
+            error: { kind: "unsafe-path", message: `refusing to read review policy: ${path} is a symlink` },
+            exitCode: 2,
+        };
+    }
+    if (!fs.isFile(path)) {
+        return {
+            policy: null,
+            path,
+            hash: null,
+            warning: `refusing to read review policy: ${path} is not a regular file`,
+            error: { kind: "unsafe-path", message: `refusing to read review policy: ${path} is not a regular file` },
+            exitCode: 2,
+        };
+    }
+    let raw;
+    try {
+        raw = fs.readFile(path);
+    }
+    catch {
+        return {
+            policy: null,
+            path,
+            hash: null,
+            warning: `corrupt review policy at ${path}: read failed; rm ${path} to recover`,
+            error: { kind: "corrupt-json", message: `read failed at ${path}` },
+            exitCode: 2,
+        };
+    }
+    let parsed;
+    try {
+        parsed = JSON.parse(raw);
+    }
+    catch {
+        return {
+            policy: null,
+            path,
+            hash: null,
+            warning: `corrupt review policy at ${path}: invalid JSON; rm ${path} to recover`,
+            error: { kind: "corrupt-json", message: `invalid JSON at ${path}` },
+            exitCode: 2,
+        };
+    }
+    const result = validateReviewPolicy(parsed, path);
+    if (!result.ok) {
+        return {
+            policy: null,
+            path,
+            hash: null,
+            warning: result.message,
+            error: result.error,
+            exitCode: 2,
+        };
+    }
+    const hash = sha256Bytes(serializeReviewPolicy(result.policy));
+    return {
+        policy: result.policy,
+        path,
+        hash,
+        warning: null,
+        error: null,
+        exitCode: null,
+    };
+}
+// ---------------------------------------------------------------------------
+// Serialization (deterministic key order)
+// ---------------------------------------------------------------------------
+function serializeReviewPolicy(policy) {
+    const ordered = {
+        schemaVersion: policy.schemaVersion,
+    };
+    if (policy.pathRules !== undefined)
+        ordered["pathRules"] = policy.pathRules;
+    if (policy.excludes !== undefined)
+        ordered["excludes"] = policy.excludes;
+    if (policy.effort !== undefined)
+        ordered["effort"] = policy.effort;
+    if (policy.triggers !== undefined)
+        ordered["triggers"] = policy.triggers;
+    if (policy.reReviewCap !== undefined)
+        ordered["reReviewCap"] = policy.reReviewCap;
+    if (policy.budgets !== undefined)
+        ordered["budgets"] = policy.budgets;
+    if (policy.minimumSeverity !== undefined)
+        ordered["minimumSeverity"] = policy.minimumSeverity;
+    if (policy.suggestionMode !== undefined)
+        ordered["suggestionMode"] = policy.suggestionMode;
+    if (policy.gateMode !== undefined)
+        ordered["gateMode"] = policy.gateMode;
+    return JSON.stringify(ordered, null, 2) + "\n";
+}
+function applyReviewPolicy(input) {
+    const { policy, policyPath, policyHash, flagValues, envValues, defaults } = input;
+    const version = policy?.schemaVersion ?? null;
+    const FIELDS_TO_RESOLVE = [
+        "effort",
+        "triggers",
+        "reReviewCap",
+        "budgets",
+        "minimumSeverity",
+        "suggestionMode",
+        "gateMode",
+        "pathRules",
+        "excludes",
+    ];
+    const resolved = {};
+    const provenance = {};
+    for (const field of FIELDS_TO_RESOLVE) {
+        const flagValue = flagValues[field];
+        if (flagValue !== undefined) {
+            resolved[field] = flagValue;
+            provenance[field] = { source: "flag" };
+            continue;
+        }
+        const envValue = envValues[field];
+        if (envValue !== undefined) {
+            resolved[field] = envValue;
+            provenance[field] = { source: "env", envName: policyEnvName(field) };
+            continue;
+        }
+        if (policy !== null) {
+            const policyValue = policy[field];
+            if (policyValue !== undefined) {
+                resolved[field] = policyValue;
+                provenance[field] = {
+                    source: "reviewPolicy",
+                    path: policyPath,
+                    ...(policyHash !== null ? { hash: policyHash } : {}),
+                };
+                continue;
+            }
+        }
+        resolved[field] = defaults[field];
+        provenance[field] = { source: "default" };
+    }
+    const result = {
+        schemaVersion: REVIEW_POLICY_SCHEMA_VERSION,
+        ...(resolved["effort"] !== undefined ? { effort: resolved["effort"] } : {}),
+        ...(resolved["triggers"] !== undefined ? { triggers: resolved["triggers"] } : {}),
+        ...(resolved["reReviewCap"] !== undefined ? { reReviewCap: resolved["reReviewCap"] } : {}),
+        ...(resolved["budgets"] !== undefined ? { budgets: resolved["budgets"] } : {}),
+        ...(resolved["minimumSeverity"] !== undefined ? { minimumSeverity: resolved["minimumSeverity"] } : {}),
+        ...(resolved["suggestionMode"] !== undefined ? { suggestionMode: resolved["suggestionMode"] } : {}),
+        ...(resolved["gateMode"] !== undefined ? { gateMode: resolved["gateMode"] } : {}),
+        ...(resolved["pathRules"] !== undefined ? { pathRules: resolved["pathRules"] } : {}),
+        ...(resolved["excludes"] !== undefined ? { excludes: resolved["excludes"] } : {}),
+    };
+    return {
+        resolved: result,
+        provenance,
+        policyMeta: {
+            path: policy !== null ? policyPath : null,
+            hash: policy !== null ? policyHash : null,
+            version,
+        },
+    };
+}
+function policyEnvName(field) {
+    return `UMACTUALLY_REVIEW_${field.replace(/[A-Z]/g, (c) => `_${c}`).toUpperCase()}`;
+}
+// ---------------------------------------------------------------------------
+// Policy template (opt-in)
+// ---------------------------------------------------------------------------
+function renderPolicyTemplate() {
+    const template = {
+        schemaVersion: REVIEW_POLICY_SCHEMA_VERSION,
+        effort: "medium",
+        triggers: ["opened", "synchronize", "reopened"],
+        minimumSeverity: "warning",
+        suggestionMode: "off",
+        gateMode: "off",
+        reReviewCap: 0,
+        pathRules: [{ pattern: "src/**/*.ts" }],
+        excludes: ["node_modules/**", "vendor/**"],
+        budgets: {
+            contextTokens: 8000,
+            maxOutputTokens: 16000,
+            latencyMs: 30000,
+        },
+    };
+    return JSON.stringify(template, null, 2) + "\n";
+}
+// ---------------------------------------------------------------------------
+// Hashing
+// ---------------------------------------------------------------------------
+function sha256Bytes(data) {
+    return (0,external_node_crypto_namespaceObject.createHash)("sha256").update(data, "utf8").digest("hex");
+}
+
 ;// CONCATENATED MODULE: ./src/cli/smart-prompt.ts
 // SPDX-License-Identifier: MIT
 /**
@@ -4210,6 +4732,7 @@ function detectCiTarget(input) {
 
 
 
+
 /**
  * Global budget for the entire wizard. Per-prompt budget is
  * `PER_PROMPT_TIMEOUT_MS` (15s) and is enforced by `smartPromptForValue`.
@@ -4266,6 +4789,7 @@ const FLAG_HANDLERS = {
     "--yes": { consume: false, apply: (state) => { state.yes = true; } },
     "--apply": { consume: false, apply: (state) => { state.apply = true; } },
     "--non-interactive": { consume: false, apply: (state) => { state.nonInteractive = true; } },
+    "--policy-template": { consume: false, apply: (state) => { state.policyTemplate = true; } },
     "--dry-run": { consume: false, apply: (state) => { state.dryRun = true; } },
     "--show": { consume: false, apply: (state) => { state.show = true; } },
     "--ci": { consume: true, validate: parseCi, apply: (state, value) => { state.ci = value; } },
@@ -4325,6 +4849,7 @@ function createParsedInitState() {
         dryRun: false,
         show: false,
         nonInteractive: false,
+        policyTemplate: false,
     };
 }
 function flagValue() {
@@ -4415,6 +4940,8 @@ function applyEnvDefaults(state, env) {
  * precedence; --json implies non-interactive.
  */
 function resolveInitMode(state) {
+    if (state.policyTemplate)
+        return "policy-template";
     if (state.show)
         return "show";
     if (state.dryRun)
@@ -4451,6 +4978,7 @@ const init_INIT_HELP_TEXT = [
     "  --force                    Overwrite an existing saved config without prompting",
     "  --yes                      Skip all confirmation prompts",
     "  --dry-run                  Compute the plan; no filesystem writes",
+    "  --policy-template          Write umactually.review.json template (opt-in; explicit)",
     "  --show                     Print the resolved saved config and exit",
     "  --json                     Emit machine-readable JSON envelope",
     "  --help, -h                 Show this help",
@@ -4624,6 +5152,9 @@ async function runInitImpl({ args, deps, }) {
     if (mode === "show") {
         return runShowInit({ deps });
     }
+    if (mode === "policy-template") {
+        return runPolicyTemplateInit({ deps });
+    }
     if (mode === "dry-run") {
         return runDryRunInit({ args, deps });
     }
@@ -4701,6 +5232,81 @@ async function runShowInit({ deps }) {
             ...(result.config.apiUrl !== undefined ? { apiUrl: { source: "savedConfig" } } : {}),
             ...(result.config.model !== undefined ? { model: { source: "savedConfig" } } : {}),
         },
+    };
+}
+// ---------------------------------------------------------------------------
+// --policy-template: render the committed-policy template to stdout and
+// the target file (if requested). Explicit opt-in — NEVER auto-created by
+// the default init flow. The operator must pass --policy-template (or
+// equivalent) to receive a `umactually.review.json` file.
+// ---------------------------------------------------------------------------
+async function runPolicyTemplateInit({ deps, }) {
+    const fs = deps.fsAdapter ?? defaultFsAdapter;
+    const policyPath = REVIEW_POLICY_PATH(deps.cwd);
+    const rendered = renderPolicyTemplate();
+    const bytes = Buffer.byteLength(rendered, "utf8");
+    if (fs.exists(policyPath)) {
+        return {
+            mode: "policy-template",
+            outcome: "error",
+            exitCode: 1,
+            savedConfigPath: null,
+            savedConfigBytes: null,
+            ciGenerated: [],
+            checks: [
+                {
+                    id: "policy-template-write",
+                    status: "fail",
+                    message: `refusing to overwrite existing policy at ${policyPath}`,
+                },
+            ],
+            hints: [`pass --force to overwrite, or rm ${policyPath} first`],
+            sources: {},
+        };
+    }
+    try {
+        fs.writeFileAtomic(policyPath, rendered);
+    }
+    catch (err) {
+        return {
+            mode: "policy-template",
+            outcome: "error",
+            exitCode: 1,
+            savedConfigPath: null,
+            savedConfigBytes: null,
+            ciGenerated: [],
+            checks: [
+                {
+                    id: "policy-template-write",
+                    status: "fail",
+                    message: `cannot write policy at ${policyPath}: ${err instanceof Error ? err.message : String(err)}`,
+                },
+            ],
+            hints: [`ensure ${deps.cwd} is writable`],
+            sources: {},
+        };
+    }
+    return {
+        mode: "policy-template",
+        outcome: "ok",
+        exitCode: 0,
+        savedConfigPath: null,
+        savedConfigBytes: null,
+        ciGenerated: [],
+        checks: [
+            {
+                id: "policy-template-write",
+                status: "ok",
+                message: `wrote policy template (${bytes} bytes) at ${policyPath}`,
+            },
+            {
+                id: "secret-redaction",
+                status: "ok",
+                message: "template contains no secrets",
+            },
+        ],
+        hints: [`edit ${policyPath} to customize effort, triggers, and budgets`],
+        sources: {},
     };
 }
 // ---------------------------------------------------------------------------
@@ -11452,7 +12058,7 @@ function url_stripTrailingSlash(value) {
  *   - `https://api.example.com?token=secret`      → `https://api.example.com`
  *   - `https://api.example.com/v1#anchor`         → `https://api.example.com/v1`
  */
-function redactUrlForLog(value) {
+function url_redactUrlForLog(value) {
     if (value.length === 0)
         return value;
     try {
@@ -11604,7 +12210,14 @@ async function runChatCall(config, fetchImpl, requestId, session) {
     // catches chat-format responses fed to the responses endpoint and
     // similar misconfigurations.
     if (isNonEmptyReview(review)) {
-        return { ok: true, endpoint: ENDPOINT_CHAT, review, requestId };
+        const usage = parseProviderUsage(rawText);
+        return {
+            ok: true,
+            endpoint: ENDPOINT_CHAT,
+            review,
+            requestId,
+            ...(usage !== undefined ? { usage } : {}),
+        };
     }
     // Provider-error detection: check for router/proxy misconfiguration
     // before the self-healing retry. See openai-compatible.ts for the
@@ -11813,11 +12426,11 @@ async function runProviderRequest(config) {
     // annotations are visible in the GitHub Actions log and survive
     // even if the action's `process.stderr.write` is captured.
     if (baseUrlCandidates.length > 1) {
-        process.stderr.write(`::notice::${BRAND_PREFIX}Resolving provider base URL: trying ${baseUrlCandidates.length} candidates in order: ${baseUrlCandidates.map(redactUrlForLog).join(", ")}\n`);
+        process.stderr.write(`::notice::${BRAND_PREFIX}Resolving provider base URL: trying ${baseUrlCandidates.length} candidates in order: ${baseUrlCandidates.map(url_redactUrlForLog).join(", ")}\n`);
     }
     let lastAttempt = { ok: false, error: new ProviderError("network", ENDPOINT_RESPONSES, null, requestId, "No base URL candidates resolved.") };
     for (const candidate of baseUrlCandidates) {
-        process.stderr.write(`::notice::${BRAND_PREFIX}Trying base URL: ${redactUrlForLog(candidate)}\n`);
+        process.stderr.write(`::notice::${BRAND_PREFIX}Trying base URL: ${url_redactUrlForLog(candidate)}\n`);
         const firstAttempt = await runWithRetryLoop(config, fetchImpl, requestId, ENDPOINT_RESPONSES, candidate);
         if (firstAttempt.ok) {
             return firstAttempt;
@@ -11835,7 +12448,7 @@ async function runProviderRequest(config) {
             if (!isRoutableFailureForUrlCandidate(chatAttempt.error)) {
                 return chatAttempt;
             }
-            process.stderr.write(`::notice::${BRAND_PREFIX}Base URL ${redactUrlForLog(candidate)} returned routable failure (status=${chatAttempt.error.status}); advancing to next candidate.\n`);
+            process.stderr.write(`::notice::${BRAND_PREFIX}Base URL ${url_redactUrlForLog(candidate)} returned routable failure (status=${chatAttempt.error.status}); advancing to next candidate.\n`);
             lastAttempt = chatAttempt;
             continue;
         }
@@ -11844,7 +12457,7 @@ async function runProviderRequest(config) {
         if (!isRoutableFailureForUrlCandidate(firstAttempt.error)) {
             return firstAttempt;
         }
-        process.stderr.write(`::notice::${BRAND_PREFIX}Base URL ${redactUrlForLog(candidate)} returned routable failure (status=${firstAttempt.error.status}); advancing to next candidate.\n`);
+        process.stderr.write(`::notice::${BRAND_PREFIX}Base URL ${url_redactUrlForLog(candidate)} returned routable failure (status=${firstAttempt.error.status}); advancing to next candidate.\n`);
         lastAttempt = firstAttempt;
     }
     return lastAttempt;
@@ -11939,7 +12552,14 @@ async function callEndpoint(config, fetchImpl, requestId, endpoint, baseUrl) {
     // fed to the responses endpoint can otherwise pass as a 0-finding
     // "empty review" — see CLARITY-10.
     if (isNonEmptyReview(review)) {
-        return { ok: true, endpoint, review, requestId };
+        const usage = parseProviderUsage(rawText);
+        return {
+            ok: true,
+            endpoint,
+            review,
+            requestId,
+            ...(usage !== undefined ? { usage } : {}),
+        };
     }
     // Provider-error detection: before attempting the self-healing
     // retry, check whether the raw response is a provider error (router
@@ -12532,7 +13152,23 @@ async function runOnce(config, fetchImpl, requestId, url) {
     }
     const review = parseReviewPayload(textPayload);
     if (isNonEmptyReview(review)) {
-        return { ok: true, endpoint: ENDPOINT, review, requestId };
+        // Try to read usage from the response body even on the success
+        // path so the local audit artifact can compute cost estimates.
+        let successUsage;
+        try {
+            const parsedRaw = JSON.parse(rawText);
+            successUsage = readUsage(parsedRaw);
+        }
+        catch {
+            // rawText wasn't JSON; no usage to surface.
+        }
+        return {
+            ok: true,
+            endpoint: ENDPOINT,
+            review,
+            requestId,
+            ...(successUsage !== undefined ? { usage: successUsage } : {}),
+        };
     }
     // Empty JSON or "truncated stream" parse-fail path. We check
     // `stop_reason === "max_tokens"` AND `rawText.length > 16K` to
@@ -13855,8 +14491,6 @@ function shouldKeepFinding(controls, finding) {
     return isSeverityAtLeast(controls.minimum, finding);
 }
 
-;// CONCATENATED MODULE: external "node:crypto"
-const external_node_crypto_namespaceObject = __WEBPACK_EXTERNAL_createRequire(import.meta.url)("node:crypto");
 ;// CONCATENATED MODULE: ./src/review/fingerprint.ts
 // SPDX-License-Identifier: MIT
 //
@@ -14962,7 +15596,7 @@ function modelsUrl(apiUrl) {
 function redactNetworkReason(error) {
     if (!(error instanceof Error))
         return "model discovery request failed";
-    return error.message.replace(/https?:\/\/\S+/gu, (url) => redactUrlForLog(url));
+    return error.message.replace(/https?:\/\/\S+/gu, (url) => url_redactUrlForLog(url));
 }
 function parseModelIds(body) {
     if (typeof body !== "object" || body === null || !("data" in body) || !Array.isArray(body.data)) {
@@ -17929,7 +18563,11 @@ async function requestLiveReview(input) {
             verifiedFactsFilter: verifyFilterResult.verifiedFactsFilter,
             confidenceFilter: verifyFilterResult.confidenceFilter,
         });
-        return { ...preVerifyOutcome, review: verifyFilterResult.review };
+        return {
+            ...preVerifyOutcome,
+            review: verifyFilterResult.review,
+            ...(result.usage !== undefined ? { usage: result.usage } : {}),
+        };
     }
     /**
      * Parse-failure path shared by all three provider families.
@@ -18320,7 +18958,7 @@ async function runWithCrossProtocolFallback(args) {
     // query string) so the notice identifies which URL produced the
     // fallback without leaking any `?token=`-style session id into
     // the persisted action log.
-    process.stderr.write(`::notice::${BRAND_PREFIX}Named provider "${args.namedProvider}" returned status=${args.namedResult.error.status} at ${redactUrlForLog(args.baseUrl)} — retrying with cross-protocol fallback "${args.fallbackProvider}".\n`);
+    process.stderr.write(`::notice::${BRAND_PREFIX}Named provider "${args.namedProvider}" returned status=${args.namedResult.error.status} at ${url_redactUrlForLog(args.baseUrl)} — retrying with cross-protocol fallback "${args.fallbackProvider}".\n`);
     // The named provider couldn't route at this base URL. Try the other
     // protocol at the SAME base URL — no URL transformation here, the
     // fallback provider's resolver (resolveProviderBaseUrlCandidates /
@@ -18374,7 +19012,7 @@ async function runWithCrossProtocolFallback(args) {
     // alone failed with 404" from "named AND fallback failed at this
     // URL" without needing to enable DEBUG mode.
     if (!fallbackResult.ok) {
-        process.stderr.write(`::notice::${BRAND_PREFIX}Cross-protocol fallback "${args.fallbackProvider}" returned status=${fallbackResult.error.status} at ${redactUrlForLog(args.baseUrl)} — surfacing named protocol's error.\n`);
+        process.stderr.write(`::notice::${BRAND_PREFIX}Cross-protocol fallback "${args.fallbackProvider}" returned status=${fallbackResult.error.status} at ${url_redactUrlForLog(args.baseUrl)} — surfacing named protocol's error.\n`);
     }
     return fallbackResult;
 }
@@ -19090,6 +19728,7 @@ function emitJsonEnvelope(envelope, out = process.stdout) {
 
 
 
+
 const GLOBAL_ONLY_FLAGS = new Set(["--json", "--no-color"]);
 const dispatch_execFile = (0,external_node_util_namespaceObject.promisify)(external_node_child_process_.execFile);
 function firstPositionalToken(argv) {
@@ -19129,7 +19768,7 @@ async function dispatch(argv) {
     // `firstPositionalToken(argv)` short-circuits on the flag presence
     // before any command routing.
     if (argv.includes("--show-config")) {
-        return runShowConfig();
+        return runShowConfig(process.cwd());
     }
     const command = firstPositionalToken(argv);
     if (command === null) {
@@ -19333,7 +19972,8 @@ function runLoadedConfigQuickstart(config, _path) {
 }
 /**
  * `umactually --show-config` — print the effective saved config and
- * exit 0. Read-only; never opens a network connection; never prompts.
+ * review policy, then exit 0. Read-only; never opens a network
+ * connection; never prompts.
  *
  * The output is a field-by-field rendered multiline string so future
  * secret fields on `SavedConfig` (the schema is intentionally future-
@@ -19343,33 +19983,75 @@ function runLoadedConfigQuickstart(config, _path) {
  * rule, which is exactly the trust-model property the S6 contract
  * requires.
  *
+ * Review-policy fields are rendered with sanitized path/hash/version
+ * so the operator can verify exactly which committed policy (if any)
+ * is in effect. The committed policy itself lives in
+ * `umactually.review.json` and is the team's documented source of
+ * truth for non-secret review rules.
+ *
  * Decision: lives at the dispatch layer (not under `umactually doctor`)
  * because every other "what's currently effective" tool (`kubectl
  * config view`, `aws configure get`, `git config --list --show-origin`)
  * is top-level, not under a verification subcommand. Operators look
  * for `--show-config` at the root.
  */
-function renderShowConfig(config, path) {
-    const lines = [
-        `saved config: ${path}`,
-        `  provider: ${config.provider}`,
-    ];
-    if (config.apiUrl !== undefined)
-        lines.push(`  apiUrl:   ${config.apiUrl}`);
-    lines.push(`  model:    ${config.model ?? "auto (resolved at review time)"}`);
+function renderShowConfig(config, path, policyResult) {
+    const lines = [];
+    if (config !== null) {
+        lines.push(`saved config: ${path}`);
+        lines.push(`  provider: ${config.provider}`);
+        if (config.apiUrl !== undefined)
+            lines.push(`  apiUrl:   ${config.apiUrl}`);
+        lines.push(`  model:    ${config.model ?? "auto (resolved at review time)"}`);
+    }
+    else {
+        lines.push("saved config: none (run `umactually init` to create one)");
+    }
+    // Review policy surface
+    if (policyResult.policy !== null) {
+        lines.push("");
+        lines.push(`review policy: ${policyResult.path}`);
+        lines.push(`  schemaVersion: ${policyResult.policy.schemaVersion}`);
+        if (policyResult.hash !== null) {
+            lines.push(`  hash:          ${policyResult.hash}`);
+        }
+        if (policyResult.policy.effort !== undefined) {
+            lines.push(`  effort:        ${policyResult.policy.effort}`);
+        }
+        if (policyResult.policy.minimumSeverity !== undefined) {
+            lines.push(`  minimumSeverity: ${policyResult.policy.minimumSeverity}`);
+        }
+        if (policyResult.policy.gateMode !== undefined) {
+            lines.push(`  gateMode:      ${policyResult.policy.gateMode}`);
+        }
+        if (policyResult.policy.suggestionMode !== undefined) {
+            lines.push(`  suggestionMode: ${policyResult.policy.suggestionMode}`);
+        }
+        if (policyResult.policy.reReviewCap !== undefined) {
+            lines.push(`  reReviewCap:   ${policyResult.policy.reReviewCap}`);
+        }
+        if (policyResult.policy.triggers !== undefined) {
+            lines.push(`  triggers:      ${policyResult.policy.triggers.join(", ")}`);
+        }
+    }
+    else {
+        lines.push("");
+        lines.push(`review policy: none (run \`umactually init --policy-template\` to create one)`);
+    }
     return lines.join("\n") + "\n";
 }
-function runShowConfig() {
-    const savedRead = tryReadSavedConfig();
+function runShowConfig(cwd) {
+    const savedRead = tryReadSavedConfig({ cwd });
+    const policyResult = loadReviewPolicy({ cwd });
     if (savedRead.warning !== null) {
         process.stderr.write(`umactually: ${savedRead.warning}\n`);
         return Promise.resolve({ exitCode: 1 });
     }
-    if (savedRead.config === null) {
-        process.stdout.write(`${BRAND_PREFIX}no saved config (run \`umactually init\` to create one)\n`);
-        return Promise.resolve({ exitCode: 0 });
+    if (policyResult.warning !== null) {
+        process.stderr.write(`umactually: ${policyResult.warning}\n`);
+        return Promise.resolve({ exitCode: 1 });
     }
-    process.stdout.write(renderShowConfig(savedRead.config, savedRead.path));
+    process.stdout.write(renderShowConfig(savedRead.config, savedRead.path, policyResult));
     return Promise.resolve({ exitCode: 0 });
 }
 async function runReviewBranch(args) {
@@ -23539,7 +24221,457 @@ function sanitizeComments(comments, secrets) {
     }));
 }
 
+;// CONCATENATED MODULE: ./src/cli/review-metrics.ts
+// SPDX-License-Identifier: MIT
+//
+// Task 7 — Local-only review audit and cost metrics.
+//
+// The module owns the artifact-side data model for the Wave-2 observability
+// surface (per the `first-class-product` plan, Task 7 § Acceptance criteria):
+//
+//   * Monotonic phase durations (context, provider, verification, posting, total).
+//   * Provider usage + round-trip counts on BOTH successful and failed paths.
+//     Absent usage is OMITTED — never zero-invented.
+//   * Considered / kept / downgraded / suppressed / off-diff counts and a
+//     closed reason-histogram enum so the artifact shape stays bounded.
+//   * Full / incremental decision and policy / context hashes for cross-run
+//     auditability.
+//   * Optional local cost estimates ONLY from explicit user-configured
+//     per-token prices. Absent price yields no cost field. Configured
+//     price yields an exact decimal estimate marked `estimated` with
+//     currency + source. Pricing is NEVER inferred from the model name.
+//   * Additive JSON envelope versioning: the audit block carries its own
+//     `auditSchemaVersion: 2` discriminator so existing v1 readers
+//     (whose envelopes have `schemaVersion: 1`) keep parsing unchanged.
+//   * Redaction: secrets and URLs (query string + fragment stripped) are
+//     scrubbed from the serialized artifact. No telemetry is sent.
+//
+// The module is intentionally pure (no I/O, no clock side-effects) so
+// tests can drive every code path with deterministic inputs and no
+// real wall-clock measurement.
+
+
+const REASON_KIND_VALUES = [
+    "off-diff",
+    "truncation",
+    "parse-failure",
+    "budget-exhausted",
+    "secret-bearing",
+    "unsupported-language",
+    "parse-failed",
+    "below-threshold",
+    "carried-over",
+    "unchanged",
+    "manual-full",
+];
+const ALL_REASON_KINDS = (/* unused pure expression or super */ null && (REASON_KIND_VALUES));
+/** Return a fresh histogram object with every reason set to zero. */
+function emptyReasonHistogram() {
+    const h = {
+        "off-diff": 0,
+        "truncation": 0,
+        "parse-failure": 0,
+        "budget-exhausted": 0,
+        "secret-bearing": 0,
+        "unsupported-language": 0,
+        "parse-failed": 0,
+        "below-threshold": 0,
+        "carried-over": 0,
+        "unchanged": 0,
+        "manual-full": 0,
+    };
+    return h;
+}
+/** Empty counts (all zeros) — useful as a default and in tests. */
+function emptyConsideredCounts() {
+    return { considered: 0, kept: 0, downgraded: 0, suppressed: 0, offDiff: 0 };
+}
+/**
+ * Translate a wire-shape `ProviderUsage` into the audit-side
+ * camelCase `ProviderUsageRecord`. The `roundTrips` field is the
+ * orchestrator-side count, not a wire field — the caller passes it
+ * in explicitly so this helper stays purely declarative.
+ *
+ * Round-trip propagation rule:
+ *   - Provider emitted a wire usage block → caller has likely
+ *     incremented `recordRoundTrip()` at the provider boundary.
+ *     Pass that count in so the final audit record carries the
+ *     observed HTTP round-trip count even if the provider's wire
+ *     usage block was empty.
+ *   - No wire usage block → caller still passes the round-trip
+ *     count so the audit can attribute the round-trip separately.
+ */
+function normalizeProviderUsage(wire, roundTrips) {
+    const out = { roundTrips };
+    if (wire === undefined)
+        return out;
+    if (typeof wire.input_tokens === "number")
+        out.inputTokens = wire.input_tokens;
+    if (typeof wire.output_tokens === "number")
+        out.outputTokens = wire.output_tokens;
+    if (typeof wire.total_tokens === "number")
+        out.totalTokens = wire.total_tokens;
+    return out;
+}
+// ---------------------------------------------------------------------------
+// Envelope versioning
+// ---------------------------------------------------------------------------
+/**
+ * Additive audit schema version. The audit block lives under
+ * `envelope.data.audit` (or `envelope.audit` for the live-artifact
+ * writer — see the artifact adapter). v1 readers that do not know
+ * about the audit block keep parsing the v1 envelope unchanged;
+ * v2 readers (this module's consumers) get the additional fields.
+ *
+ * Bumping this number is a deliberate decision: it means the audit
+ * shape has changed incompatibly. Additive field additions stay
+ * under v2; breaking renames or removals require a new version.
+ */
+const AUDIT_SCHEMA_VERSION = 2;
+/**
+ * Build a fresh review-metrics builder. The builder is single-use: once
+ * `finalize` is called the captured state freezes and any subsequent
+ * call to a `begin*` / `end*` / `set*` method becomes a no-op. This
+ * matches the "one metrics object per run" contract the orchestrator
+ * relies on.
+ */
+function buildReviewMetrics(opts = {}) {
+    const now = opts.now ?? (() => Date.now());
+    const state = {
+        phaseStartedAt: { context: null, provider: null, verification: null, posting: null },
+        phaseEndedAt: { context: null, provider: null, verification: null, posting: null },
+        runStartedAt: now(),
+        counts: emptyConsideredCounts(),
+        reasons: emptyReasonHistogram(),
+        usage: undefined,
+        pricing: undefined,
+        decision: undefined,
+        policyHash: undefined,
+        contextHash: undefined,
+        secrets: [],
+        urls: [],
+        roundTrips: 0,
+    };
+    let finalized = false;
+    const guard = () => {
+        if (finalized)
+            return false;
+        return true;
+    };
+    const stamp = (which, end) => {
+        if (!guard())
+            return;
+        const bucket = (end ? state.phaseEndedAt : state.phaseStartedAt);
+        bucket[which] = now();
+    };
+    const builder = {
+        beginContext: () => stamp("context", false),
+        endContext: () => stamp("context", true),
+        beginProvider: () => stamp("provider", false),
+        endProvider: () => stamp("provider", true),
+        beginVerification: () => stamp("verification", false),
+        endVerification: () => stamp("verification", true),
+        beginPosting: () => stamp("posting", false),
+        endPosting: () => stamp("posting", true),
+        setUsage: (usage) => {
+            if (!guard())
+                return;
+            state.usage = usage;
+        },
+        recordRoundTrip: () => {
+            if (!guard())
+                return;
+            state.roundTrips += 1;
+        },
+        setCounts: (counts) => {
+            if (!guard())
+                return;
+            state.counts = counts;
+        },
+        incrementReason: (kind, by = 1) => {
+            if (!guard())
+                return;
+            if (!REASON_KIND_VALUES.includes(kind)) {
+                // Defensive: an unknown reason must NEVER silently grow the
+                // histogram. The contract is that the histogram is closed.
+                // Throwing here surfaces the offending call site loudly.
+                throw new RangeError(`incrementReason: unknown kind "${kind}". Expected one of: ${REASON_KIND_VALUES.join(", ")}`);
+            }
+            const current = state.reasons[kind] ?? 0;
+            const next = {
+                "off-diff": state.reasons["off-diff"],
+                "truncation": state.reasons["truncation"],
+                "parse-failure": state.reasons["parse-failure"],
+                "budget-exhausted": state.reasons["budget-exhausted"],
+                "secret-bearing": state.reasons["secret-bearing"],
+                "unsupported-language": state.reasons["unsupported-language"],
+                "parse-failed": state.reasons["parse-failed"],
+                "below-threshold": state.reasons["below-threshold"],
+                "carried-over": state.reasons["carried-over"],
+                "unchanged": state.reasons["unchanged"],
+                "manual-full": state.reasons["manual-full"],
+            };
+            next[kind] = current + by;
+            state.reasons = next;
+        },
+        setDecision: (decision) => {
+            if (!guard())
+                return;
+            state.decision = decision;
+        },
+        setPolicyHash: (hash) => {
+            if (!guard())
+                return;
+            state.policyHash = hash;
+        },
+        setContextHash: (hash) => {
+            if (!guard())
+                return;
+            state.contextHash = hash;
+        },
+        setPricing: (pricing) => {
+            if (!guard())
+                return;
+            state.pricing = pricing;
+        },
+        recordSecret: (secret) => {
+            if (!guard())
+                return;
+            if (secret.length > 0 && !state.secrets.includes(secret)) {
+                state.secrets.push(secret);
+            }
+        },
+        recordUrl: (url) => {
+            if (!guard())
+                return;
+            if (url.length > 0 && !state.urls.includes(url)) {
+                state.urls.push(url);
+            }
+        },
+        finalize: () => {
+            finalized = true;
+            return finalizeFromState(state, now());
+        },
+    };
+    return builder;
+}
+/**
+ * Freeze the builder's captured state into a `ReviewMetrics` record.
+ * Performs the duration arithmetic, the cost estimate (if applicable),
+ * and the OMIT-when-absent contract.
+ */
+function finalizeReviewMetrics(builder) {
+    return builder.finalize();
+}
+/**
+ * Build a `ReviewMetrics` record from a pre-validated internal state.
+ * Public so tests and the live orchestrator can produce the same
+ * record directly without going through the builder's `begin*` /
+ * `end*` lifecycle (e.g. when reading a pre-captured metrics object
+ * off the wire).
+ */
+function finalizeFromState(state, nowMs) {
+    const duration = (started, ended) => {
+        if (started === null || ended === null)
+            return 0;
+        const delta = ended - started;
+        return delta < 0 ? 0 : delta;
+    };
+    const contextMs = duration(state.phaseStartedAt.context, state.phaseEndedAt.context);
+    const providerMs = duration(state.phaseStartedAt.provider, state.phaseEndedAt.provider);
+    const verificationMs = duration(state.phaseStartedAt.verification, state.phaseEndedAt.verification);
+    const postingMs = duration(state.phaseStartedAt.posting, state.phaseEndedAt.posting);
+    // totalMs is anchored on run start (captured at `buildReviewMetrics`
+    // time) and `now`. This guarantees totalMs >= sum of phases even
+    // when the orchestrator's pre/post timing diverges from a
+    // per-phase begin/end pair.
+    const totalMs = Math.max(0, nowMs - state.runStartedAt);
+    // The provider usage record carries the round-trip count even when
+    // the provider emitted no usage block. We split the two so callers
+    // can read round-trips on the failed-path even if `usage` itself is
+    // undefined.
+    const usage = state.usage;
+    const roundTrips = state.roundTrips + (usage?.roundTrips ?? 0);
+    let cost;
+    if (usage !== undefined && state.pricing !== undefined) {
+        const p = state.pricing;
+        if (typeof p.inputPricePer1kTokens === "number" &&
+            typeof p.outputPricePer1kTokens === "number" &&
+            Number.isFinite(p.inputPricePer1kTokens) &&
+            Number.isFinite(p.outputPricePer1kTokens) &&
+            p.inputPricePer1kTokens >= 0 &&
+            p.outputPricePer1kTokens >= 0) {
+            // Only compute the estimate when BOTH sides of the price table
+            // are present. Missing one side is a configuration error and the
+            // estimate is omitted so the operator is not misled by a partial
+            // price assumption. Also require the corresponding usage field
+            // so a price + missing tokens case does not silently fabricate
+            // zero usage.
+            const inputTokens = usage.inputTokens;
+            const outputTokens = usage.outputTokens;
+            if (typeof inputTokens === "number" && typeof outputTokens === "number") {
+                const inputCost = (inputTokens / 1000) * p.inputPricePer1kTokens;
+                const outputCost = (outputTokens / 1000) * p.outputPricePer1kTokens;
+                const total = inputCost + outputCost;
+                if (Number.isFinite(total)) {
+                    cost = {
+                        total,
+                        currency: p.currency,
+                        source: p.source,
+                        estimate: "estimated",
+                    };
+                }
+            }
+        }
+    }
+    const out = {
+        durations: { contextMs, providerMs, verificationMs, postingMs, totalMs },
+        counts: state.counts,
+        reasons: state.reasons,
+        ...(usage !== undefined
+            ? { usage: { ...usage, roundTrips } }
+            : {}),
+        ...(roundTrips > 0 ? { usageRoundTrips: roundTrips } : {}),
+        ...(cost !== undefined ? { cost } : {}),
+        ...(state.decision !== undefined ? { decision: state.decision } : {}),
+        ...(state.policyHash !== undefined ? { policyHash: state.policyHash } : {}),
+        ...(state.contextHash !== undefined ? { contextHash: state.contextHash } : {}),
+        redactions: {
+            secrets: state.secrets.length,
+            urls: state.urls.length,
+        },
+    };
+    return out;
+}
+// ---------------------------------------------------------------------------
+// Hashing — policy + context
+// ---------------------------------------------------------------------------
+/**
+ * Stable canonicalization for JSON object inputs: sort keys
+ * deterministically. Recurses into nested objects and arrays. Used by
+ * the policy + context hashers so two callers that build the same
+ * logical policy in different property-order produce the same hash.
+ */
+function canonicalizeJson(value) {
+    if (value === null || typeof value !== "object")
+        return value;
+    if (Array.isArray(value))
+        return value.map(canonicalizeJson);
+    const obj = value;
+    const sorted = {};
+    for (const k of Object.keys(obj).sort()) {
+        sorted[k] = canonicalizeJson(obj[k]);
+    }
+    return sorted;
+}
+/**
+ * Redact every secret the operator asked us to remember, AND strip
+ * any URL query string + fragment, before hashing. This is the
+ * "no token leaks into the audit hash" guarantee: even if the
+ * caller accidentally passes a struct that contains
+ * `{ token: "abc" }` or `"https://x?token=abc"`, the hash is taken
+ * over the redacted form so a leak in one run does not propagate
+ * to all downstream comparison consumers.
+ */
+function redactForHash(value) {
+    if (typeof value === "string") {
+        return redactUrlForLog(value);
+    }
+    if (Array.isArray(value)) {
+        return value.map(redactForHash);
+    }
+    if (value !== null && typeof value === "object") {
+        const obj = value;
+        const out = {};
+        for (const k of Object.keys(obj)) {
+            out[k] = redactForHash(obj[k]);
+        }
+        return out;
+    }
+    return value;
+}
+/**
+ * SHA-256 hex digest of the canonicalized + redacted JSON of the
+ * policy. Two policies with the same logical contents (modulo key
+ * order, secret literals, or query-string parameters) hash equal.
+ *
+ * Format: lowercase hex, 64 chars.
+ */
+function computePolicyHash(policy) {
+    const redacted = redactForHash(policy);
+    const canonical = JSON.stringify(canonicalizeJson(redacted));
+    return createHash("sha256").update(canonical).digest("hex");
+}
+/** Same contract as `computePolicyHash`, applied to the context input. */
+function computeContextHash(context) {
+    const redacted = redactForHash(context);
+    const canonical = JSON.stringify(canonicalizeJson(redacted));
+    return createHash("sha256").update(canonical).digest("hex");
+}
+// ---------------------------------------------------------------------------
+// Redaction
+// ---------------------------------------------------------------------------
+/**
+ * Redact a URL's query string and fragment. Thin re-export of the
+ * canonical URL redaction helper in `src/util/url.ts` so audit-block
+ * consumers do not have to import the URL utility directly.
+ *
+ * Always returns a string; never throws. Unparseable input is
+ * substring-stripped, never silently accepted.
+ */
+function redactUrl(value) {
+    return redactUrlForLog(value);
+}
+// ---------------------------------------------------------------------------
+// Serialization
+// ---------------------------------------------------------------------------
+/**
+ * Serialize a `ReviewMetrics` record to a single-line JSON string.
+ * Performs the secret + URL redaction pass before stringifying so the
+ * artifact never contains a token, query string, or fragment.
+ *
+ * The audit block carries its own `auditSchemaVersion: 2` marker so
+ * v1 readers can detect "this is the new audit format" without
+ * breaking on unknown top-level fields.
+ *
+ * Callers that want a stable, byte-for-byte artifact (e.g. evidence
+ * snapshots) should use this helper rather than `JSON.stringify` so
+ * the redaction pass is not bypassed.
+ */
+function serializeReviewAudit(metrics) {
+    return JSON.stringify(wrapAuditEnvelope(metrics));
+}
+// ---------------------------------------------------------------------------
+// Audit envelope wrapping
+// ---------------------------------------------------------------------------
+/**
+ * Wrap a `ReviewMetrics` record under the additive `audit` envelope
+ * shape that gets attached to either the v1 CLI envelope's `data`
+ * block or the live-artifact body's `audit` field. The wrapper is
+ * additive: existing envelope consumers that do not know about the
+ * audit block ignore it; new consumers that do can detect the
+ * schema version from `auditSchemaVersion`.
+ */
+function wrapAuditEnvelope(metrics) {
+    return {
+        audit: {
+            auditSchemaVersion: AUDIT_SCHEMA_VERSION,
+            durations: metrics.durations,
+            counts: metrics.counts,
+            reasons: metrics.reasons,
+            ...(metrics.usage !== undefined ? { usage: metrics.usage } : {}),
+            ...(metrics.usageRoundTrips !== undefined ? { usageRoundTrips: metrics.usageRoundTrips } : {}),
+            ...(metrics.cost !== undefined ? { cost: metrics.cost } : {}),
+            ...(metrics.decision !== undefined ? { decision: metrics.decision } : {}),
+            ...(metrics.policyHash !== undefined ? { policyHash: metrics.policyHash } : {}),
+            ...(metrics.contextHash !== undefined ? { contextHash: metrics.contextHash } : {}),
+            redactions: metrics.redactions,
+        },
+    };
+}
+
 ;// CONCATENATED MODULE: ./src/cli/orchestrator.ts
+
 
 
 
@@ -23679,10 +24811,16 @@ async function runLive(input) {
     const env = input.env ?? process.env;
     const fetchImpl = input.fetchImpl ?? globalThis.fetch.bind(globalThis);
     const platform = detectLivePlatform(env);
+    // The metrics builder is created up-front so every pre-review
+    // exit path (missing platform, missing config) can still freeze
+    // a partial record for the artifact writer. Frozen records on a
+    // failed pre-review path carry zeros for every phase + the
+    // redaction summary the operator recorded via `metrics.recordSecret`.
+    const metrics = buildReviewMetrics();
     if (platform === null) {
         const message = "Live review requires GitHub Actions (GITHUB_ACTIONS=true) or Azure Pipelines (TF_BUILD=True).";
         process.stdout.write(`${BRAND_PREFIX}${message}\n`);
-        return failedResult(message);
+        return { ...failedResult(message), metrics: finalizeReviewMetrics(metrics) };
     }
     // Copilot + Anthropic-native providers don't need UMACTUALLY_API_URL:
     //   - Copilot uses the GitHub Copilot token exchange endpoint.
@@ -23707,7 +24845,7 @@ async function runLive(input) {
             // the CLI without contacting the provider.
             const hintLine = error.hint === undefined ? "" : `\n${BRAND_PREFIX}hint: ${error.hint}`;
             process.stdout.write(`${BRAND_PREFIX}${message}${hintLine}\n`);
-            return failedResult(message);
+            return { ...failedResult(message), metrics: finalizeReviewMetrics(metrics) };
         }
         throw error;
     }
@@ -23740,6 +24878,7 @@ async function runLive(input) {
             env,
             fetchImpl: countingFetch,
             ...(sonarContext !== undefined ? { sonarContext } : {}),
+            metrics,
         });
     }
     catch (error) {
@@ -23762,11 +24901,23 @@ async function runLive(input) {
         }
         const hintLine = hint === undefined ? "" : `\n${BRAND_PREFIX}hint: ${hint}`;
         process.stdout.write(`${BRAND_PREFIX}${sanitized}${hintLine}\n`);
-        return failedResult(sanitized);
+        metrics.endContext();
+        const frozen = finalizeReviewMetrics(metrics);
+        return { ...failedResult(sanitized), metrics: frozen };
     }
     if (result.posted) {
         process.stdout.write(`${BRAND_PREFIX}${result.message}\n`);
     }
+    // Mark the verification phase. The provider phase ended inside
+    // `dispatchLivePlatform` so the round-trip duration is scoped to
+    // the actual provider call window. Verification is a no-op slot
+    // in the current architecture (the verified-facts and confidence
+    // filters run inline with the provider call). The posting phase
+    // was also started/ended inside `dispatchLivePlatform` so the
+    // platform round-trip duration is captured there.
+    metrics.beginVerification();
+    metrics.endVerification();
+    const frozenMetrics = finalizeReviewMetrics(metrics);
     // Attach scope-limited telemetry for the artifact writer. Failed
     // pre-review paths return early via failedResult, so they never
     // reach this point — the suspicious-signal guard only fires on
@@ -23776,6 +24927,7 @@ async function runLive(input) {
         ...result,
         providerRoundTrips: counter.providerRoundTrips,
         reviewDurationMs: Date.now() - startedAt,
+        metrics: frozenMetrics,
     };
 }
 /**
@@ -23788,7 +24940,11 @@ async function runLive(input) {
  * off-diff count regardless of what the live API actually returned.
  */
 async function dispatchLivePlatform(input) {
-    const { platform, parsed, cwd, env, fetchImpl, sonarContext } = input;
+    const { platform, parsed, cwd, env, fetchImpl, sonarContext, metrics } = input;
+    // The "context" phase covers every pre-provider call: PR / diff /
+    // instruction-file fetch, leak-gate, SonarQube wait, and the
+    // platform-context read. End the phase just before `requestLiveReview`.
+    metrics.beginContext();
     switch (platform) {
         case "github": {
             const context = await readGithubContext(env);
@@ -23806,8 +24962,11 @@ async function dispatchLivePlatform(input) {
             });
             if (!leakGate.ok) {
                 logError("", leakGate.message);
-                return failedResult(leakGate.message);
+                metrics.endContext();
+                return { ...failedResult(leakGate.message), metrics: finalizeReviewMetrics(metrics) };
             }
+            metrics.endContext();
+            metrics.beginProvider();
             const liveOutcome = await requestLiveReview({
                 parsed,
                 cwd,
@@ -23819,6 +24978,8 @@ async function dispatchLivePlatform(input) {
                 ...(instructionFilesByBaseBranch !== undefined ? { instructionFilesByBaseBranch } : {}),
                 ...(sonarContext !== undefined ? { sonarContext } : {}),
             });
+            metrics.endProvider();
+            attachUsageToMetrics(metrics, liveOutcome);
             const finalOutcome = applySimulateFindings({
                 outcome: liveOutcome,
                 simulateFindings: parsed.simulateFindings === true,
@@ -23828,13 +24989,17 @@ async function dispatchLivePlatform(input) {
                 diffText,
                 secrets: [context.token],
             });
-            return runGithubLive({
+            attachConsideredCountsToMetrics(metrics, finalOutcome);
+            metrics.beginPosting();
+            const result = await runGithubLive({
                 context,
                 diffText,
                 provider: finalOutcome,
                 parsed,
                 fetchImpl,
             });
+            metrics.endPosting();
+            return result;
         }
         case "azure": {
             // Forward --pr-number (when supplied) to the Azure context reader so
@@ -23885,8 +25050,10 @@ async function dispatchLivePlatform(input) {
             });
             if (!leakGate.ok) {
                 logError("", leakGate.message);
-                return failedResult(leakGate.message);
+                metrics.endContext();
+                return { ...failedResult(leakGate.message), metrics: finalizeReviewMetrics(metrics) };
             }
+            metrics.endContext();
             // Gate the live review on the configured file count. The default
             // 200-file cap is a quality choice: chunked LLM reviews of an
             // arbitrarily-large initial-import diff produce hallucinated
@@ -23895,6 +25062,7 @@ async function dispatchLivePlatform(input) {
             const reviewFileLimit = parsed.reviewFileLimit ?? DEFAULT_REVIEW_FILE_LIMIT;
             const fileCount = countDiffFiles(diffText);
             let liveOutcome;
+            metrics.beginProvider();
             if (reviewFileLimit > 0 && fileCount > reviewFileLimit) {
                 process.stdout.write(`${BRAND_PREFIX}skipping live review — PR changes ${fileCount} files, exceeds --review-file-limit=${reviewFileLimit}. Use --review-file-limit 0 to disable.\n`);
                 liveOutcome = {
@@ -23915,6 +25083,7 @@ async function dispatchLivePlatform(input) {
                     verifiedFactsFilter: { kept: [], downgraded: [], downgradeReasons: [] },
                     confidenceFilter: { kept: [], downgraded: [], reasons: [] },
                 };
+                metrics.endProvider();
             }
             else {
                 const chunks = chunkDiffByFile(diffText);
@@ -23951,7 +25120,9 @@ async function dispatchLivePlatform(input) {
                         ...(sonarContext !== undefined ? { sonarContext } : {}),
                     });
                 }
+                metrics.endProvider();
             }
+            attachUsageToMetrics(metrics, liveOutcome);
             const finalOutcome = applySimulateFindings({
                 outcome: liveOutcome,
                 simulateFindings: parsed.simulateFindings === true,
@@ -23961,16 +25132,52 @@ async function dispatchLivePlatform(input) {
                 diffText,
                 secrets: [context.token],
             });
-            return runAzureLive({
+            attachConsideredCountsToMetrics(metrics, finalOutcome);
+            metrics.beginPosting();
+            const azureResult = await runAzureLive({
                 context,
                 diffText,
                 provider: finalOutcome,
                 parsed,
                 fetchImpl,
             });
+            metrics.endPosting();
+            return azureResult;
         }
         default:
             return orchestrator_assertNever(platform);
+    }
+}
+/**
+ * Attach the provider's `usage` block (when present) to the metrics
+ * builder. NEUTRAL on absence: the builder simply leaves `usage`
+ * undefined so the final record omits the field entirely (the
+ * NEVER-zero-invented contract).
+ */
+function attachUsageToMetrics(metrics, outcome) {
+    if (outcome.usage !== undefined) {
+        metrics.setUsage({ ...outcome.usage, roundTrips: 0 });
+    }
+}
+/**
+ * Translate the `LiveProviderOutcome`'s considered/kept/downgraded/
+ * suppressed/off-diff counts into the closed-enum reason histogram
+ * so the audit artifact can render "this review suppressed N
+ * findings because of M reason-K" without re-plumbing the parser.
+ */
+function attachConsideredCountsToMetrics(metrics, outcome) {
+    const considered = outcome.review.comments.length;
+    const suppressed = outcome.review.suppressedComments.length;
+    const offDiff = outcome.parseWarnings.length;
+    const downgraded = (outcome.verifiedFactsFilter?.downgraded.length ?? 0)
+        + (outcome.confidenceFilter?.downgraded.length ?? 0);
+    const kept = Math.max(0, considered - downgraded - offDiff - suppressed);
+    metrics.setCounts({ considered, kept, downgraded, suppressed, offDiff });
+    if (offDiff > 0) {
+        metrics.incrementReason("off-diff", offDiff);
+    }
+    if (outcome.review.parseFailed === true) {
+        metrics.incrementReason("parse-failed", 1);
     }
 }
 function detectLivePlatform(env) {
@@ -24041,6 +25248,7 @@ function buildPlatformContextHint(error) {
 }
 
 ;// CONCATENATED MODULE: ./src/cli/run.ts
+
 
 
 
@@ -24420,6 +25628,15 @@ async function writeLiveArtifact(parsed, cwd, platform, result) {
     // an empty artifact directory.
     const artifactPath = resolveArtifactPath(parsed.outputArtifact, platform, cwd);
     await (0,promises_.mkdir)((0,external_node_path_namespaceObject.dirname)(artifactPath), { recursive: true });
+    // Wrap the optional metrics record under the additive `audit`
+    // envelope. The wrapper is versioned (`auditSchemaVersion: 2`) so
+    // existing v1 readers that look at the top-level fields keep
+    // parsing the artifact unchanged. The audit block is the single
+    // place that carries the local review metrics (durations, usage,
+    // reason histogram, decision, hashes, cost estimate, redactions).
+    const auditEnvelope = result.metrics !== undefined
+        ? { audit: wrapAuditEnvelope(result.metrics).audit }
+        : {};
     if (!result.posted) {
         const body = {
             artifactPath,
@@ -24430,6 +25647,7 @@ async function writeLiveArtifact(parsed, cwd, platform, result) {
             suppressedCommentCount: 0,
             blockedRawOutput: false,
             parseFailed: true,
+            ...auditEnvelope,
             note: "Live review did not post anything via the GitHub/Azure API. Inspect the action log for the underlying parser/network error.",
         };
         await (0,promises_.writeFile)(artifactPath, `${JSON.stringify(body, null, 2)}\n`, "utf8");
@@ -24453,6 +25671,7 @@ async function writeLiveArtifact(parsed, cwd, platform, result) {
         ...(result.verdict !== undefined ? { verdict: result.verdict } : {}),
         ...(result.reviewDurationMs !== undefined ? { reviewDurationMs: result.reviewDurationMs } : {}),
         ...(result.providerRoundTrips !== undefined ? { providerRoundTrips: result.providerRoundTrips } : {}),
+        ...auditEnvelope,
         note: "Live review posted successfully; counts reflect what the GitHub/Azure API saw.",
     };
     await (0,promises_.writeFile)(artifactPath, `${JSON.stringify(body, null, 2)}\n`, "utf8");
@@ -25011,6 +26230,7 @@ function maybeOverride(current, field, value, path) {
 
 
 
+
 /**
  * Read the package version.
  *
@@ -25238,7 +26458,11 @@ function runVersion(_argv) {
     }
     return { exitCode: 0, stdout };
 }
-function buildSanitizedResolvedConfig(resolved) {
+function buildSanitizedResolvedConfig(resolved, reviewPolicy = {
+    path: null,
+    hash: null,
+    schemaVersion: null,
+}) {
     return {
         platform: resolved.platform,
         dryRun: resolved.dryRun,
@@ -25278,6 +26502,7 @@ function buildSanitizedResolvedConfig(resolved) {
         promptPresent: resolved.prompt !== null && resolved.prompt.length > 0,
         additionalPromptPresent: resolved.additionalPrompt !== null && resolved.additionalPrompt.length > 0,
         sources: resolved.fieldProvenance,
+        reviewPolicy,
     };
 }
 /**
@@ -25397,6 +26622,21 @@ async function runCli(args, cwd) {
     const { resolved: savedResolved } = applySavedConfig(envResolved, savedRead.config, savedRead.path);
     // Stage 3: resolve missing flags from cwd (when applicable).
     const { resolved, generatedArtifacts } = resolveContext(savedResolved, cwd, process.env);
+    // Stage 3.5: load committed review policy for the sanitized config
+    // envelope. The policy is OPTIONAL — a missing/corrupt policy does
+    // not abort the review; the warning is captured for the envelope.
+    // Strict validation already ran inside loadReviewPolicy, so any
+    // failure means the file is untrusted and we drop it silently (the
+    // defaults layer applies). Surface the warning when present.
+    const policyRead = loadReviewPolicy({ cwd });
+    if (policyRead.warning !== null) {
+        process.stderr.write(`umactually: ${policyRead.warning}\n`);
+    }
+    const policyMeta = {
+        path: policyRead.policy !== null ? policyRead.path : null,
+        hash: policyRead.policy !== null ? policyRead.hash : null,
+        schemaVersion: policyRead.policy !== null ? policyRead.policy.schemaVersion : null,
+    };
     try {
         // Stage 4: validate the resolved (post-derivation) args.
         let errors = collectValidationErrors(resolved);
@@ -25433,6 +26673,7 @@ async function runCli(args, cwd) {
                     cwd,
                     env: process.env,
                     generatedArtifacts,
+                    policyMeta,
                 });
             }
             // Some required values still missing after the prompt. Re-render
@@ -25441,7 +26682,7 @@ async function runCli(args, cwd) {
             process.stderr.write(renderValidationErrors(errors));
             return {
                 exitCode: 2,
-                resolvedConfig: buildSanitizedResolvedConfig(augmented),
+                resolvedConfig: buildSanitizedResolvedConfig(augmented, policyMeta),
             };
         }
         if (errors.length > 0) {
@@ -25458,7 +26699,7 @@ async function runCli(args, cwd) {
             }
             return {
                 exitCode: 2,
-                resolvedConfig: buildSanitizedResolvedConfig(resolved),
+                resolvedConfig: buildSanitizedResolvedConfig(resolved, policyMeta),
             };
         }
         return await runAfterValidation({
@@ -25466,6 +26707,7 @@ async function runCli(args, cwd) {
             cwd,
             env: process.env,
             generatedArtifacts,
+            policyMeta,
         });
     }
     finally {
@@ -25480,7 +26722,7 @@ async function runCli(args, cwd) {
  * config so callers can inspect what the operator actually provided.
  */
 async function runAfterValidation(input) {
-    const { resolved, cwd, env } = input;
+    const { resolved, cwd, env, policyMeta } = input;
     if (resolved.files !== null) {
         const result = await runLocalFilesReview({
             parsed: resolved,
@@ -25492,20 +26734,20 @@ async function runAfterValidation(input) {
             case "ok":
                 return {
                     exitCode: 0,
-                    resolvedConfig: buildSanitizedResolvedConfig(resolved),
+                    resolvedConfig: buildSanitizedResolvedConfig(resolved, policyMeta),
                 };
             case "ok-no-files":
                 process.stdout.write(`${BRAND_PREFIX}${result.note}\n`);
                 return {
                     exitCode: 0,
-                    resolvedConfig: buildSanitizedResolvedConfig(resolved),
+                    resolvedConfig: buildSanitizedResolvedConfig(resolved, policyMeta),
                 };
             case "provider-error": {
                 const hintLine = result.hint === undefined ? "" : `\n${BRAND_PREFIX}hint: ${result.hint}`;
                 process.stdout.write(`${result.sanitizedForLog}${hintLine}\n`);
                 return {
                     exitCode: 1,
-                    resolvedConfig: buildSanitizedResolvedConfig(resolved),
+                    resolvedConfig: buildSanitizedResolvedConfig(resolved, policyMeta),
                 };
             }
             default: {
@@ -25526,12 +26768,12 @@ async function runAfterValidation(input) {
             process.stdout.write(`${result.sanitizedForLog}${hintLine}\n`);
             return {
                 exitCode: 1,
-                resolvedConfig: buildSanitizedResolvedConfig(resolved),
+                resolvedConfig: buildSanitizedResolvedConfig(resolved, policyMeta),
             };
         }
         return {
             exitCode: 0,
-            resolvedConfig: buildSanitizedResolvedConfig(resolved),
+            resolvedConfig: buildSanitizedResolvedConfig(resolved, policyMeta),
         };
     }
     const result = resolved.dryRun
@@ -25539,7 +26781,7 @@ async function runAfterValidation(input) {
         : await dispatchLive(resolved, cwd, env);
     return {
         ...result,
-        resolvedConfig: buildSanitizedResolvedConfig(resolved),
+        resolvedConfig: buildSanitizedResolvedConfig(resolved, policyMeta),
     };
 }
 /**

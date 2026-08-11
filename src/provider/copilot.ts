@@ -5,6 +5,7 @@ import {
   extractTextPayload,
   isNonEmptyReview,
   PARSE_FAIL_RETRY_PROMPT,
+  parseProviderUsage,
   parseReviewPayload,
   type ProviderReviewPayload,
 } from "./provider-parse.js";
@@ -12,6 +13,7 @@ import {
   ProviderError,
   sanitizeHttpStatus,
 } from "./provider-error.js";
+import type { ProviderUsage } from "./provider-error.js";
 import { bailIfAborted, buildParseFailError, computeBumpedMaxOutput } from "./provider-retry.js";
 import { performProviderFetch, readResponseText } from "./http.js";
 import {
@@ -55,6 +57,14 @@ export type CopilotCallSuccess = {
   readonly endpoint: "chat";
   readonly review: ProviderReviewPayload;
   readonly requestId: string;
+  /**
+   * Token usage block the Copilot provider emitted on the response.
+   * Surfaced to the local audit artifact (Task 7) so a downstream
+   * consumer can compute cost estimates from explicit per-token
+   * prices. NEVER zero-invented: when the provider did not emit a
+   * usage block, this field is omitted entirely.
+   */
+  readonly usage?: ProviderUsage;
 };
 
 export type CopilotCallResult =
@@ -179,7 +189,14 @@ async function runChatCall(
   // catches chat-format responses fed to the responses endpoint and
   // similar misconfigurations.
   if (isNonEmptyReview(review)) {
-    return { ok: true, endpoint: ENDPOINT_CHAT, review, requestId };
+    const usage = parseProviderUsage(rawText);
+    return {
+      ok: true,
+      endpoint: ENDPOINT_CHAT,
+      review,
+      requestId,
+      ...(usage !== undefined ? { usage } : {}),
+    };
   }
 
   // Provider-error detection: check for router/proxy misconfiguration

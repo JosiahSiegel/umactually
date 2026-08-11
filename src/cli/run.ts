@@ -17,6 +17,7 @@ import { resetDefaultPromptFilesCache } from "./provider-prompts.js";
 import { resolvePlatform, type ResolvedPlatform } from "./validate.js";
 import { runLive as runOrchestrator } from "./orchestrator.js";
 import { classifyReviewArtifact } from "./check-review-artifact.js";
+import { wrapAuditEnvelope, type ReviewMetrics } from "./review-metrics.js";
 
 export type CliJsonOutcome = {
   readonly postedToPlatform?: boolean;
@@ -470,6 +471,7 @@ async function writeLiveArtifact(
     readonly parseWarnings?: readonly import("./parse-warnings.js").ParseWarning[];
     readonly reviewDurationMs?: number;
     readonly providerRoundTrips?: number;
+    readonly metrics?: ReviewMetrics;
   },
 ): Promise<void> {
   // Use the same default path resolution as the dry-run path so the
@@ -479,6 +481,15 @@ async function writeLiveArtifact(
   // an empty artifact directory.
   const artifactPath = resolveArtifactPath(parsed.outputArtifact, platform, cwd);
   await mkdir(dirname(artifactPath), { recursive: true });
+  // Wrap the optional metrics record under the additive `audit`
+  // envelope. The wrapper is versioned (`auditSchemaVersion: 2`) so
+  // existing v1 readers that look at the top-level fields keep
+  // parsing the artifact unchanged. The audit block is the single
+  // place that carries the local review metrics (durations, usage,
+  // reason histogram, decision, hashes, cost estimate, redactions).
+  const auditEnvelope = result.metrics !== undefined
+    ? { audit: wrapAuditEnvelope(result.metrics).audit }
+    : {};
   if (!result.posted) {
     const body = {
       artifactPath,
@@ -489,6 +500,7 @@ async function writeLiveArtifact(
       suppressedCommentCount: 0,
       blockedRawOutput: false,
       parseFailed: true,
+      ...auditEnvelope,
       note: "Live review did not post anything via the GitHub/Azure API. Inspect the action log for the underlying parser/network error.",
     };
     await writeFile(artifactPath, `${JSON.stringify(body, null, 2)}\n`, "utf8");
@@ -512,6 +524,7 @@ async function writeLiveArtifact(
     ...(result.verdict !== undefined ? { verdict: result.verdict } : {}),
     ...(result.reviewDurationMs !== undefined ? { reviewDurationMs: result.reviewDurationMs } : {}),
     ...(result.providerRoundTrips !== undefined ? { providerRoundTrips: result.providerRoundTrips } : {}),
+    ...auditEnvelope,
     note: "Live review posted successfully; counts reflect what the GitHub/Azure API saw.",
   };
   await writeFile(artifactPath, `${JSON.stringify(body, null, 2)}\n`, "utf8");

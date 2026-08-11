@@ -6,6 +6,7 @@ import {
   extractTextPayload,
   isNonEmptyReview,
   PARSE_FAIL_RETRY_PROMPT,
+  parseProviderUsage,
   parseReviewPayload,
   type ProviderEndpoint,
   type ProviderReviewPayload,
@@ -15,6 +16,7 @@ import {
   ProviderError,
   sanitizeHttpStatus,
 } from "./provider-error.js";
+import type { ProviderUsage } from "./provider-error.js";
 import { buildParseFailError, computeBumpedMaxOutput, runWithRetry } from "./provider-retry.js";
 import { performProviderFetch, readResponseText } from "./http.js";
 import { composeSignal } from "../util/async.js";
@@ -36,6 +38,14 @@ type ProviderCallSuccess = {
   readonly endpoint: ProviderEndpoint;
   readonly review: ProviderReviewPayload;
   readonly requestId: string;
+  /**
+   * Token usage block the provider emitted on the response.completed
+   * event. Surfaced to the local audit artifact (Task 7) so a
+   * downstream consumer can compute cost estimates from explicit
+   * per-token prices. NEVER zero-invented: when the provider did
+   * not emit a usage block, this field is omitted entirely.
+   */
+  readonly usage?: ProviderUsage;
 };
 
 type ProviderCallFailure = {
@@ -305,7 +315,14 @@ async function callEndpoint(
   // fed to the responses endpoint can otherwise pass as a 0-finding
   // "empty review" — see CLARITY-10.
   if (isNonEmptyReview(review)) {
-    return { ok: true, endpoint, review, requestId };
+    const usage = parseProviderUsage(rawText);
+    return {
+      ok: true,
+      endpoint,
+      review,
+      requestId,
+      ...(usage !== undefined ? { usage } : {}),
+    };
   }
 
   // Provider-error detection: before attempting the self-healing
