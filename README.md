@@ -1,6 +1,6 @@
 # umactually
 
-AI-powered PR review that posts inline comments directly to your pull requests. Works with any model provider (OpenAI, Anthropic, Copilot) and both GitHub and Azure DevOps.
+A Node.js 24 CLI for auditable, policy-aware pull-request review. It posts validated inline findings to GitHub (including documented GHES support) and Azure DevOps through an operator-selected OpenAI-compatible, Anthropic, or Copilot provider.
 
 [![GitHub release](https://img.shields.io/github/v/release/JosiahSiegel/umactually)](https://github.com/JosiahSiegel/umactually/releases/tag/v0.8.0)
 [![npm](https://img.shields.io/npm/v/umactually)](https://www.npmjs.com/package/umactually)
@@ -10,7 +10,7 @@ AI-powered PR review that posts inline comments directly to your pull requests. 
 Latest release: **[v0.8.0](https://github.com/JosiahSiegel/umactually/releases/tag/v0.8.0)** — see [all releases](https://github.com/JosiahSiegel/umactually/releases).
 ## Quickstart
 
-The guided setup wizard writes your choices to `~/.umactually/config.json` (mode `0o600`; never contains secrets). After that, every `umactually review` reads the saved config. Per-flag reference: [`docs/configuration.md`](docs/configuration.md). Exit codes at [`docs/exit-codes.md`](docs/exit-codes.md#umactually-init-exit-codes).
+Use `umactually init` as the single current-version first-run path after installing the CLI. The wizard writes non-secret choices to `~/.umactually/config.json` (mode `0o600`); every later `umactually review` reads them. Per-flag reference: [`docs/configuration.md`](docs/configuration.md). Exit codes: [`docs/exit-codes.md`](docs/exit-codes.md#umactually-init-exit-codes).
 
 1. **Run the wizard** — interactive on a TTY, non-interactive in CI.
 
@@ -103,6 +103,8 @@ umactually uninstall --purge-config     # also remove ~/.umactually/ and ~/.cach
 | `docs/troubleshooting.md` | `docs/azure-devops.md` | `docs/security.md` | CHANGELOG.md |
 | — | — | `docs/exit-codes.md` | CONTRIBUTING.md |
 | — | — | `docs/distribution-architecture.md` | — |
+
+Benchmark methodology and results, including the schema-versioned artifact contract and exact reproduction command, are in [`docs/benchmark.md`](docs/benchmark.md). Architecture, context/policy provenance, incremental behavior, suggestions, local metrics/privacy, `doctor`, TUI, limitations, and rollback are in [`docs/architecture.md`](docs/architecture.md). Security reporting is in [`SECURITY.md`](SECURITY.md) and the detailed trust model in [`docs/security.md`](docs/security.md); contributor operations are in [`CONTRIBUTING.md`](CONTRIBUTING.md). Deferred—not shipped—surfaces are a hosted control plane, GitLab, Bitbucket, opaque learning, and auto-commit behavior.
 
 ## License
 

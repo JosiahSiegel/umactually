@@ -1,6 +1,6 @@
 # Troubleshooting
 
-Operator-side answers for the failure modes documented across [`README.md`](../README.md), [`docs/configuration.md`](configuration.md), [`docs/azure-devops.md`](azure-devops.md), and [`docs/gh-actions.md`](gh-actions.md). Every section below is intentionally platform-agnostic so both GH Actions and Azure Pipelines maintainers can share the same runbook.
+Operator-side answers for the failure modes documented across [`README.md`](../README.md), [`docs/configuration.md`](configuration.md), [`docs/azure-devops.md`](azure-devops.md), and [`docs/gh-actions.md`](gh-actions.md). Every section below is intentionally platform-agnostic so both GH Actions and Azure Pipelines maintainers can share the same runbook. For architecture, privacy, rollback, and deferred scope see [`docs/architecture.md`](architecture.md); for private vulnerability reporting see [`SECURITY.md`](../SECURITY.md).
 
 ## Auto-artifact validation
 

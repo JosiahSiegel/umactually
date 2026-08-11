@@ -226,4 +226,6 @@ If you add a new test fixture that looks like an API key, append the `do-not-lea
 
 ## Reporting issues
 
-If you find a security issue in UmActually, open a private security advisory on the repository rather than a public issue. Include the input or fixture that triggered the issue, the version, and a minimal reproduction.
+If you find a security issue in UmActually, follow the root [`SECURITY.md`](../SECURITY.md) and open a [private security advisory](https://github.com/JosiahSiegel/umactually/security/advisories/new) rather than a public issue. Include the input or fixture that triggered the issue, the version, and a minimal reproduction. Questions and non-sensitive support belong in [GitHub Discussions](https://github.com/JosiahSiegel/umactually/discussions).
+
+For architecture, context/policy provenance, incremental state, suggestions, local metrics/privacy, rollback, and deferred scope, see [`docs/architecture.md`](architecture.md). Reproducible evaluation methodology and evidence rules are in [`docs/benchmark.md`](benchmark.md).

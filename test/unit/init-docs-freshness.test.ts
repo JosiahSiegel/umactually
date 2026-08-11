@@ -31,6 +31,10 @@ const exitCodes = loadDoc("docs/exit-codes.md");
 const providers = loadDoc("docs/providers.md");
 const security = loadDoc("docs/security.md");
 const changelog = loadDoc("CHANGELOG.md");
+const benchmark = loadDoc("docs/benchmark.md");
+const architecture = loadDoc("docs/architecture.md");
+const rootSecurity = loadDoc("SECURITY.md");
+const issueConfig = loadDoc(".github/ISSUE_TEMPLATE/config.yml");
 
 function precedenceSection(docBody: string): string {
   return docBody
@@ -184,6 +188,30 @@ describe("docs/security.md (Trust model: init)", () => {
     // pick the right nesting level.
     expect(security.exists, "docs/security.md must exist").toBe(true);
     expect(security.body).toMatch(/^#{1,6}\s+Trust model:\s+init\b/mu);
+  });
+});
+
+describe("Task 14 product trust surfaces", () => {
+  it("DOCS-TRUST: benchmark artifact and exact reproduction command are documented", () => {
+    expect(benchmark.exists, "docs/benchmark.md must exist").toBe(true);
+    expect(benchmark.body).toMatch(/schemaVersion/u);
+    expect(benchmark.body).toMatch(/test:review-eval/u);
+    expect(benchmark.body).toMatch(/claims inventory/i);
+  });
+
+  it("DOCS-TRUST: architecture maps supported surfaces and deferred boundaries", () => {
+    expect(architecture.exists, "docs/architecture.md must exist").toBe(true);
+    for (const term of ["GitLab", "Bitbucket", "hosted control plane", "opaque learning", "auto-commit"]) {
+      expect(architecture.body).toContain(term);
+    }
+  });
+
+  it("DOCS-TRUST: private advisory and support routes exist", () => {
+    expect(rootSecurity.exists, "SECURITY.md must exist").toBe(true);
+    expect(rootSecurity.body).toContain("/security/advisories/new");
+    expect(issueConfig.exists, ".github/ISSUE_TEMPLATE/config.yml must exist").toBe(true);
+    expect(issueConfig.body).toContain("/security/advisories/new");
+    expect(issueConfig.body).toContain("/discussions");
   });
 });
 
