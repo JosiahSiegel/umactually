@@ -817,8 +817,6 @@ function resolveSameProjectImport(cwd, fromFile, spec) {
         const fromDir = posixDirname(toPosix(fromFile));
         const joined = posixResolve(fromDir, spec);
         const slashed = joined.startsWith("/") ? joined : `${cwd}/${joined}`;
-        void cwd;
-        void fromFile;
         if (slashed.startsWith(`${cwd}/`) || slashed === `${cwd}`) {
             const rel = slashed.slice(`${cwd}/`.length);
             return rel;
@@ -4003,23 +4001,24 @@ function validateEnumAndTypeFields(raw, filePath) {
 function validatePathSafetyAndGlobs(_raw, _filePath) {
     return { ok: true, policy: DEFAULT_REVIEW_POLICY };
 }
-function validateSecretScanPatterns(raw, filePath) {
-    const obj = raw;
-    if (obj["pathRules"] !== undefined && Array.isArray(obj["pathRules"])) {
-        for (const rule of obj["pathRules"]) {
-            if (review_policy_isRecord(rule) && typeof rule["pattern"] === "string" && containsSecret(rule["pattern"])) {
-                return fail("secret-detected", `policy at ${filePath}: secret-shaped value detected in pathRule pattern`);
-            }
-        }
-    }
-    if (obj["excludes"] !== undefined && Array.isArray(obj["excludes"])) {
-        for (const ex of obj["excludes"]) {
-            if (typeof ex === "string" && containsSecret(ex)) {
-                return fail("secret-detected", `policy at ${filePath}: secret-shaped value detected in exclude pattern`);
-            }
+/** `extract` returns null for entries that carry no scannable string. */
+function scanForSecrets(value, filePath, fieldLabel, extract) {
+    if (value === undefined || !Array.isArray(value))
+        return { ok: true, policy: DEFAULT_REVIEW_POLICY };
+    for (const entry of value) {
+        const candidate = extract(entry);
+        if (candidate !== null && containsSecret(candidate)) {
+            return fail("secret-detected", `policy at ${filePath}: secret-shaped value detected in ${fieldLabel}`);
         }
     }
     return { ok: true, policy: DEFAULT_REVIEW_POLICY };
+}
+function validateSecretScanPatterns(raw, filePath) {
+    const obj = raw;
+    const pathRules = scanForSecrets(obj["pathRules"], filePath, "pathRule pattern", (rule) => review_policy_isRecord(rule) && typeof rule["pattern"] === "string" ? rule["pattern"] : null);
+    if (!pathRules.ok)
+        return pathRules;
+    return scanForSecrets(obj["excludes"], filePath, "exclude pattern", (ex) => typeof ex === "string" ? ex : null);
 }
 function validateEffort(obj, filePath) {
     if (obj["effort"] === undefined)
@@ -5880,21 +5879,44 @@ async function checkGithubPermissions(env, fetchImpl, timeoutMs) {
         latencyMs: probe.latencyMs,
     });
 }
-async function checkGithubGhesCapability(env, fetchImpl, timeoutMs) {
-    let apiBase;
+function ghesInstalledVersion(body) {
+    let parsed;
     try {
-        apiBase = buildGithubApiBaseFromEnv(env);
+        parsed = JSON.parse(body);
     }
-    catch (error) {
-        return makeResult("github-ghes", "fail", `GITHUB_API_URL is not usable: ${error instanceof Error ? error.message : String(error)}`, {
-            remediation: "Set GITHUB_API_URL to an HTTPS URL with no userinfo or query string, or unset it to use github.com.",
+    catch {
+        return null;
+    }
+    if (parsed === null || typeof parsed !== "object")
+        return null;
+    const version = parsed["installed_version"];
+    return typeof version === "string" ? version : null;
+}
+function classifyGhesProbeStatus(result, metaUrl, latencyMs) {
+    if (result.status === 200) {
+        const version = ghesInstalledVersion(result.body);
+        return makeResult("github-ghes", "ok", `GHES meta probe returned HTTP 200${version !== null ? ` (installed_version=${version})` : ""}`, {
+            latencyMs,
         });
     }
-    if (isGithubComBase(apiBase)) {
-        return makeResult("github-ghes", "skip", "github.com default — GitHub Enterprise Server capability probe not applicable", {
-            remediation: "Set GITHUB_API_URL to a GHES host (e.g. https://ghe.example.com/api/v3) to probe GHES capability.",
+    if (result.status === 401 || result.status === 403) {
+        return makeResult("github-ghes", "warn", `GHES meta probe returned HTTP ${result.status} (capability probe is unauthenticated; some installs require a token)`, {
+            remediation: "GitHub Enterprise Server's /api/v3/meta endpoint is unauthenticated on most installs but token-gated on others. If the install requires auth, supply a token with `site_admin: read` or use the GHES admin REST API directly to confirm the version.",
+            latencyMs,
         });
     }
+    if (result.status === 404) {
+        return makeResult("github-ghes", "fail", "GHES /api/v3/meta returned HTTP 404 — explicit API capability unsupported", {
+            remediation: "This GHES install does not expose /api/v3/meta. umactually cannot determine version/capability; review posting will continue but version-specific features (e.g. newer inline suggestion formats) are unsupported.",
+            latencyMs,
+        });
+    }
+    return makeResult("github-ghes", "warn", `GHES meta probe returned HTTP ${result.status}`, {
+        remediation: `Verify reachability of ${url_redactUrlForLog(metaUrl)} and that the GHES instance exposes /api/v3/meta.`,
+        latencyMs,
+    });
+}
+async function runGhesProbe(apiBase, fetchImpl, timeoutMs) {
     const metaUrl = buildGithubRestUrl(apiBase, "/meta");
     const probe = await timeProbe(async () => {
         const controller = new AbortController();
@@ -5924,37 +5946,24 @@ async function checkGithubGhesCapability(env, fetchImpl, timeoutMs) {
             latencyMs: probe.latencyMs,
         });
     }
-    if (result.status === 200) {
-        let parsedVersion = null;
-        try {
-            parsedVersion = JSON.parse(result.body);
-        }
-        catch {
-            parsedVersion = null;
-        }
-        const version = parsedVersion !== null && typeof parsedVersion === "object" && parsedVersion !== null
-            ? parsedVersion["installed_version"]
-            : null;
-        return makeResult("github-ghes", "ok", `GHES meta probe returned HTTP 200${typeof version === "string" ? ` (installed_version=${version})` : ""}`, {
-            latencyMs: probe.latencyMs,
+    return classifyGhesProbeStatus(result, metaUrl, probe.latencyMs);
+}
+async function checkGithubGhesCapability(env, fetchImpl, timeoutMs) {
+    let apiBase;
+    try {
+        apiBase = buildGithubApiBaseFromEnv(env);
+    }
+    catch (error) {
+        return makeResult("github-ghes", "fail", `GITHUB_API_URL is not usable: ${error instanceof Error ? error.message : String(error)}`, {
+            remediation: "Set GITHUB_API_URL to an HTTPS URL with no userinfo or query string, or unset it to use github.com.",
         });
     }
-    if (result.status === 401 || result.status === 403) {
-        return makeResult("github-ghes", "warn", `GHES meta probe returned HTTP ${result.status} (capability probe is unauthenticated; some installs require a token)`, {
-            remediation: "GitHub Enterprise Server's /api/v3/meta endpoint is unauthenticated on most installs but token-gated on others. If the install requires auth, supply a token with `site_admin: read` or use the GHES admin REST API directly to confirm the version.",
-            latencyMs: probe.latencyMs,
+    if (isGithubComBase(apiBase)) {
+        return makeResult("github-ghes", "skip", "github.com default — GitHub Enterprise Server capability probe not applicable", {
+            remediation: "Set GITHUB_API_URL to a GHES host (e.g. https://ghe.example.com/api/v3) to probe GHES capability.",
         });
     }
-    if (result.status === 404) {
-        return makeResult("github-ghes", "fail", "GHES /api/v3/meta returned HTTP 404 — explicit API capability unsupported", {
-            remediation: "This GHES install does not expose /api/v3/meta. umactually cannot determine version/capability; review posting will continue but version-specific features (e.g. newer inline suggestion formats) are unsupported.",
-            latencyMs: probe.latencyMs,
-        });
-    }
-    return makeResult("github-ghes", "warn", `GHES meta probe returned HTTP ${result.status}`, {
-        remediation: `Verify reachability of ${url_redactUrlForLog(metaUrl)} and that the GHES instance exposes /api/v3/meta.`,
-        latencyMs: probe.latencyMs,
-    });
+    return runGhesProbe(apiBase, fetchImpl, timeoutMs);
 }
 async function checkAzurePermissions(env, fetchImpl, timeoutMs) {
     const token = env["AZURE_DEVOPS_TOKEN"] ?? env["SYSTEM_ACCESSTOKEN"];

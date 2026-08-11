@@ -332,6 +332,134 @@ function findFingerprintMatch(
  *     runId) → `preserve-other-run` (NEVER close threads from another
  *     run / config hash).
  */
+function groupPriorByFingerprint(
+  priorClassified: readonly ClassifiedPriorThread[],
+): Map<string, ClassifiedPriorThread[]> {
+  const priorByFingerprint = new Map<string, ClassifiedPriorThread[]>();
+  for (const prior of priorClassified) {
+    if (prior.fingerprint === null) continue;
+    const list = priorByFingerprint.get(prior.fingerprint);
+    if (list === undefined) priorByFingerprint.set(prior.fingerprint, [prior]);
+    else list.push(prior);
+  }
+  return priorByFingerprint;
+}
+
+function humanUnmarkedAction(prior: ClassifiedPriorThread): ThreadAction | null {
+  if (prior.threadId === undefined) return null;
+  return { kind: "preserve-human", threadId: prior.threadId };
+}
+
+function staleCloseRepairAction(prior: ClassifiedPriorThread): ThreadAction | null {
+  if (prior.fingerprint === null) return null;
+  if (!prior.reopenedFromStaleClose) return null;
+  if (!prior.fingerprintMatch || !prior.identityMatch) return null;
+  if (prior.threadId === undefined) return null;
+  return { kind: "native-reopen", threadId: prior.threadId, fingerprint: prior.fingerprint };
+}
+
+function carriedMatchAction(
+  prior: ClassifiedPriorThread,
+  assignedFingerprints: Set<string>,
+): ThreadAction | null {
+  if (!prior.fingerprintMatch || !prior.identityMatch) return null;
+  if (prior.threadId === undefined || prior.fingerprint === null) return null;
+  if (assignedFingerprints.has(prior.fingerprint)) {
+    return { kind: "mark-superseded", threadId: prior.threadId, fingerprint: prior.fingerprint };
+  }
+  return { kind: "skip-unchanged", fingerprint: prior.fingerprint, threadId: prior.threadId };
+}
+
+function reconsideredAction(
+  prior: ClassifiedPriorThread,
+  currentFindings: readonly DurableFindingWithIdentity[],
+): ThreadAction | null {
+  if (!prior.fingerprintMatch || prior.identityMatch) return null;
+  if (prior.fingerprint === null) return null;
+  const currentMatch = currentFindings.find((f) => f.fingerprint === prior.fingerprint);
+  if (currentMatch === undefined || prior.threadId === undefined || prior.commentId === undefined) return null;
+  return {
+    kind: "patch-body",
+    threadId: prior.threadId,
+    commentId: prior.commentId,
+    fingerprint: prior.fingerprint,
+    comment: currentMatch.comment,
+  };
+}
+
+function deferredAction(
+  prior: ClassifiedPriorThread,
+  resolutionMode: ResolutionMode,
+): ThreadAction | null {
+  if (prior.fingerprint === null || prior.fingerprintMatch) return null;
+  if (prior.threadId === undefined) return null;
+  return resolutionMode === "native-best-effort"
+    ? { kind: "native-close", threadId: prior.threadId, fingerprint: prior.fingerprint }
+    : { kind: "logical-resolve", threadId: prior.threadId, fingerprint: prior.fingerprint };
+}
+
+function resolvePriorAction(
+  prior: ClassifiedPriorThread,
+  input: {
+    readonly currentFindings: readonly DurableFindingWithIdentity[];
+    readonly currentRunId: string;
+    readonly resolutionMode: ResolutionMode;
+  },
+  assignedFingerprints: Set<string>,
+): ThreadAction | null {
+  if (!prior.carriedByUs) return humanUnmarkedAction(prior);
+
+  const staleClose = staleCloseRepairAction(prior);
+  if (staleClose !== null) {
+    if (prior.fingerprint !== null) assignedFingerprints.add(prior.fingerprint);
+    return staleClose;
+  }
+
+  if (prior.runId !== null && prior.runId !== input.currentRunId) {
+    if (prior.fingerprint !== null) {
+      const currentMatch = input.currentFindings.find((f) => f.fingerprint === prior.fingerprint);
+      if (currentMatch !== undefined && prior.threadId !== undefined) {
+        return { kind: "mark-superseded", threadId: prior.threadId, fingerprint: prior.fingerprint };
+      }
+    }
+    if (prior.threadId === undefined) return null;
+    return { kind: "preserve-other-run", threadId: prior.threadId };
+  }
+
+  const carried = carriedMatchAction(prior, assignedFingerprints);
+  if (carried !== null) {
+    if (prior.fingerprint !== null) assignedFingerprints.add(prior.fingerprint);
+    return carried;
+  }
+
+  const reconsidered = reconsideredAction(prior, input.currentFindings);
+  if (reconsidered !== null) {
+    if (prior.fingerprint !== null) assignedFingerprints.add(prior.fingerprint);
+    return reconsidered;
+  }
+
+  return deferredAction(prior, input.resolutionMode);
+}
+
+function buildUnmatchedFindingActions(
+  currentFindings: readonly DurableFindingWithIdentity[],
+  assignedFingerprints: Set<string>,
+  parentThreadId: number | undefined,
+): ThreadAction[] {
+  const actions: ThreadAction[] = [];
+  for (const finding of currentFindings) {
+    if (assignedFingerprints.has(finding.fingerprint)) continue;
+    actions.push({
+      kind: "create-new",
+      fingerprint: finding.fingerprint,
+      comment: finding.comment,
+      ...(parentThreadId !== undefined ? { parentThreadId } : {}),
+    });
+    assignedFingerprints.add(finding.fingerprint);
+  }
+  return actions;
+}
+
 export function transitionRules(input: {
   readonly priorClassified: readonly ClassifiedPriorThread[];
   readonly currentFindings: readonly DurableFindingWithIdentity[];
@@ -342,152 +470,27 @@ export function transitionRules(input: {
   readonly resolutionMode: ResolutionMode;
   readonly parentThreadId?: number;
 }): readonly ThreadAction[] {
-  const actions: ThreadAction[] = [];
-
-  // Track which current findings have already been assigned to a prior
-  // thread, so a fingerprint shared by multiple prior threads converges
-  // to ONE canonical action.
   const assignedFingerprints = new Set<string>();
+  groupPriorByFingerprint(input.priorClassified);
 
-  // Group prior threads by fingerprint so duplicate-bot detection works.
-  const priorByFingerprint = new Map<string, ClassifiedPriorThread[]>();
+  const actions: ThreadAction[] = [];
   for (const prior of input.priorClassified) {
-    if (prior.fingerprint === null) continue;
-    const list = priorByFingerprint.get(prior.fingerprint);
-    if (list === undefined) priorByFingerprint.set(prior.fingerprint, [prior]);
-    else list.push(prior);
+    const action = resolvePriorAction(
+      prior,
+      {
+        currentFindings: input.currentFindings,
+        currentRunId: input.currentRunId,
+        resolutionMode: input.resolutionMode,
+      },
+      assignedFingerprints,
+    );
+    if (action === null) continue;
+    actions.push(action);
   }
 
-  // PASS 1: walk priorClassified and classify each prior thread against
-  // the current findings. The priorList is consumed in document order so
-  // the transition is deterministic across runs.
-  for (const prior of input.priorClassified) {
-    // 1. Human / unmarked: NO marker → never mutate.
-    if (!prior.carriedByUs) {
-      if (prior.threadId === undefined) continue;
-      actions.push({ kind: "preserve-human", threadId: prior.threadId });
-      continue;
-    }
-
-    // 2. Stale-close repair: prior thread is in a "closed" status
-    // (status=closed/fixed/wontFix/byDesign) but the current review still
-    // produces the same fingerprint → current-head run reopens.
-    //
-    // This MUST run BEFORE the runId check: a stale close from an older
-    // run is still a stale close that the current-head run repairs
-    // (Task 9 semantics). Reopening is NOT the same as closing — we
-    // never close other-run threads but we may reopen a stale-closed
-    // bot thread to bring it back to canonical.
-    if (
-      prior.fingerprint !== null
-      && prior.reopenedFromStaleClose
-      && prior.fingerprintMatch
-      && prior.identityMatch
-    ) {
-      if (prior.threadId === undefined) continue;
-      actions.push({ kind: "native-reopen", threadId: prior.threadId, fingerprint: prior.fingerprint });
-      assignedFingerprints.add(prior.fingerprint);
-      continue;
-    }
-
-    // 3. Different runId: NEVER close another run's threads.
-    if (prior.runId !== null && prior.runId !== input.currentRunId) {
-      // BUT: if this prior thread is for a fingerprint the CURRENT run
-      // also produced, the older run's thread is superseded (still no
-      // close — we mark it superseded via PATCH-status). This is the
-      // convergence path: concurrent / older bot threads with the same
-      // fingerprint dedup to ONE canonical marker thread under the
-      // current run's identity, regardless of which prior thread is
-      // already in `assignedFingerprints`.
-      if (prior.fingerprint !== null) {
-        const currentMatch = input.currentFindings.find((f) => f.fingerprint === prior.fingerprint);
-        if (currentMatch !== undefined) {
-          actions.push({ kind: "mark-superseded", threadId: prior.threadId, fingerprint: prior.fingerprint });
-          continue;
-        }
-      }
-      if (prior.threadId === undefined) continue;
-      actions.push({ kind: "preserve-other-run", threadId: prior.threadId });
-      continue;
-    }
-
-    // 4. Same fingerprint + same identityDigest → carried, skip.
-    if (prior.fingerprintMatch && prior.identityMatch) {
-      if (prior.threadId === undefined || prior.fingerprint === null) continue;
-      // If two prior threads claim the same fingerprint + identityDigest
-      // (concurrent duplicate posts), the first wins, the second is
-      // marked superseded.
-      if (assignedFingerprints.has(prior.fingerprint)) {
-        actions.push({ kind: "mark-superseded", threadId: prior.threadId, fingerprint: prior.fingerprint });
-        continue;
-      }
-      actions.push({ kind: "skip-unchanged", fingerprint: prior.fingerprint, threadId: prior.threadId });
-      assignedFingerprints.add(prior.fingerprint);
-      continue;
-    }
-
-    // 5. Same fingerprint + DIFFERENT identityDigest → reconsidered →
-    // PATCH body. The fingerprint is durable across category / anchor
-    // / ruleKey churn, but the identity changed → we update the marker
-    // and the body, do NOT close.
-    if (prior.fingerprintMatch && !prior.identityMatch) {
-      if (prior.fingerprint === null) continue;
-      const currentMatch = input.currentFindings.find((f) => f.fingerprint === prior.fingerprint);
-      if (currentMatch === undefined || prior.threadId === undefined || prior.commentId === undefined) continue;
-      actions.push({
-        kind: "patch-body",
-        threadId: prior.threadId,
-        commentId: prior.commentId,
-        fingerprint: prior.fingerprint,
-        comment: currentMatch.comment,
-      });
-      assignedFingerprints.add(prior.fingerprint);
-      continue;
-    }
-
-    // 6. Prior thread carries our marker but the fingerprint is not in
-    // the current findings → DEFERRED / RESOLVED.
-    if (prior.fingerprint !== null && !prior.fingerprintMatch) {
-      if (prior.threadId === undefined) continue;
-      if (input.resolutionMode === "native-best-effort") {
-        actions.push({ kind: "native-close", threadId: prior.threadId, fingerprint: prior.fingerprint });
-      } else {
-        actions.push({ kind: "logical-resolve", threadId: prior.threadId, fingerprint: prior.fingerprint });
-      }
-      continue;
-    }
-
-    // Unreachable: every carriedByUs thread has a fingerprint.
-    if (prior.threadId !== undefined) {
-      actions.push({ kind: "preserve-human", threadId: prior.threadId });
-    }
-  }
-
-  // PASS 2: walk currentFindings and emit `create-new` for any
-  // fingerprint that did not match a prior carried thread. A finding
-  // with a fingerprint that ALSO appears as a different-identityDigest
-  // match above (reconsidered) is NOT created (it was patched). A
-  // finding whose fingerprint was matched by a different-runId prior is
-  // NOT created either (the older thread is being superseded, the newer
-  // run creates a fresh canonical thread for the same fingerprint).
-  //
-  // Edge case: a current finding whose fingerprint ALSO appears in the
-  // prior list as a DIFFERENT runId. The older run's thread is marked
-  // superseded above; the current run creates a fresh canonical thread.
-  // This is the desired behavior — convergence to ONE canonical thread
-  // per fingerprint under the current run's identity.
-  for (const finding of input.currentFindings) {
-    if (assignedFingerprints.has(finding.fingerprint)) continue;
-    actions.push({
-      kind: "create-new",
-      fingerprint: finding.fingerprint,
-      comment: finding.comment,
-      ...(input.parentThreadId !== undefined ? { parentThreadId: input.parentThreadId } : {}),
-    });
-    assignedFingerprints.add(finding.fingerprint);
-  }
-
-  return actions;
+  return actions.concat(
+    buildUnmatchedFindingActions(input.currentFindings, assignedFingerprints, input.parentThreadId),
+  );
 }
 
 // ---------------------------------------------------------------------------
@@ -914,6 +917,7 @@ import {
   preparePostedReview,
   mapReviewVerdictToAzureStatus,
 } from "./live-shared.js";
+import type { ParseWarning } from "./parse-warnings.js";
 import { AZURE_STATUS_CONTEXT_NAME, AZURE_STATUS_CONTEXT_GENRE } from "../util/brand.js";
 import { REVIEW_MARKER } from "../util/marker.js";
 import type { ParsedCliArgs } from "./parse-args.js";
@@ -937,30 +941,27 @@ export type RunAzureReconcileOptions = {
  * findings are LOGICALLY resolved without native close. Pass
  * `"native-best-effort"` to opt in to ADO thread status updates.
  */
-export async function runAzureLiveWithReconcile(input: {
-  readonly context: AzureContext;
-  readonly diffText: string;
-  readonly provider: LiveProviderOutcome;
-  readonly parsed: ParsedCliArgs;
-  readonly fetchImpl: FetchImpl;
-  readonly options?: RunAzureReconcileOptions;
-  readonly signal?: AbortSignal;
-}): Promise<LiveRunResult> {
-  const { context, diffText, provider, parsed, fetchImpl } = input;
-  const callerSignal = input.signal ?? new AbortController().signal;
+type InlinePostResult = { readonly threadId: number; readonly commentId: number; readonly fingerprint: string };
+
+function preflightReconcileSignal(
+  callerSignal: AbortSignal,
+  provider: LiveProviderOutcome,
+): { readonly reconcileSignal: AbortSignal } | { readonly aborted: LiveRunResult } {
   const reconcileSignal = AbortSignal.any([
     callerSignal,
     AbortSignal.timeout(60_000),
   ]);
-  if (callerSignal.aborted) {
-    const rawReason = callerSignal.reason;
-    const abortReason =
-      rawReason === undefined || rawReason === ""
-        ? "aborted"
-        : rawReason instanceof Error
-        ? rawReason.message
-        : String(rawReason);
-    return {
+  if (!callerSignal.aborted) return { reconcileSignal };
+
+  const rawReason = callerSignal.reason;
+  const abortReason =
+    rawReason === undefined || rawReason === ""
+      ? "aborted"
+      : rawReason instanceof Error
+      ? rawReason.message
+      : String(rawReason);
+  return {
+    aborted: {
       exitCode: 1,
       posted: false,
       reviewId: undefined,
@@ -968,39 +969,41 @@ export async function runAzureLiveWithReconcile(input: {
       inlineThreadCount: 0,
       suppressedCommentCount: 0,
       parseWarnings: provider.parseWarnings,
-    };
-  }
-  const resolutionMode: ResolutionMode = input.options?.resolutionMode ?? "logical";
+    },
+  };
+}
 
-  const prepared = preparePostedReview({
-    review: provider.review,
-    provider: provider.provider,
-    modelId: provider.modelId,
-    diffText,
-    parsed,
-    secrets: [context.token],
-  });
-  const { postableComments: comments, body } = prepared;
+function assertNoCommentsCollision(
+  comments: readonly LiveReviewComment[],
+  parseWarnings: readonly ParseWarning[],
+): LiveRunResult | null {
   try {
     assertNoFingerprintCollision(
       comments.flatMap((comment) => comment.durableIdentity === undefined ? [] : [{ identity: comment.durableIdentity, body: comment.body }]),
     );
+    return null;
   } catch (error) {
-    if (error instanceof FingerprintCollisionError) {
-      return {
-        exitCode: 1,
-        posted: false,
-        reviewId: undefined,
-        message: `FINGERPRINT_COLLISION: fingerprint ${error.fingerprintDigest} (${error.collisionType}); reconcile aborted, no platform mutation, no state mutation.`,
-        inlineThreadCount: 0,
-        suppressedCommentCount: 0,
-        parseWarnings: provider.parseWarnings,
-      };
-    }
-    throw error;
+    if (!(error instanceof FingerprintCollisionError)) throw error;
+    return {
+      exitCode: 1,
+      posted: false,
+      reviewId: undefined,
+      message: `FINGERPRINT_COLLISION: fingerprint ${error.fingerprintDigest} (${error.collisionType}); reconcile aborted, no platform mutation, no state mutation.`,
+      inlineThreadCount: 0,
+      suppressedCommentCount: 0,
+      parseWarnings: parseWarnings,
+    };
   }
+}
 
-  // Fencing token (Task 9): runId + attemptId + currentHeadSha.
+function buildFencingContext(
+  context: AzureContext,
+  provider: LiveProviderOutcome,
+): {
+  readonly currentHeadSha: string;
+  readonly currentRunId: string;
+  readonly currentAttemptId: string;
+} {
   const currentHeadSha = context.sourceCommit;
   const currentAttemptId = randomAttemptId();
   const currentRunId = computeRunIdFromContext({
@@ -1010,37 +1013,23 @@ export async function runAzureLiveWithReconcile(input: {
     policyHash: "policy-pending",
     providerModelHash: hashString(`${provider.provider}|${provider.modelId}`),
   });
+  return { currentHeadSha, currentRunId, currentAttemptId };
+}
 
-  // Build durable findings for each postable comment.
-  const findings: DurableFindingWithIdentity[] = comments.map(buildDurableFindingForComment);
-
-  // 1. List prior threads (best-effort; empty list on failure).
-  const priorThreads = await listPriorThreads(context, fetchImpl, reconcileSignal);
-
-  // 2. Classify + transition rules.
-  const classified = classifyPriorThreads({
-    threads: priorThreads,
-    currentFindings: findings,
-    currentHeadSha,
-  });
-  const actions = transitionRules({
-    priorClassified: classified,
-    currentFindings: findings,
-    currentHeadSha,
-    priorHeadSha: "",
-    currentRunId,
-    currentAttemptId,
-    resolutionMode,
-  });
-
-  // 3. Parent-replace semantics — find existing parent marker thread
-  // and delete every comment on it so ADO flips it to `isDeleted: true`.
+async function executeReconcileActions(
+  context: AzureContext,
+  fetchImpl: FetchImpl,
+  priorThreads: readonly AzureThreadRecord[],
+  actions: readonly ThreadAction[],
+  currentRunId: string,
+  currentAttemptId: string,
+  currentHeadSha: string,
+  reconcileSignal: AbortSignal,
+): Promise<void> {
   const oldParent = findParentMarkerThread(priorThreads);
   if (oldParent !== null && typeof oldParent.thread.id === "number") {
     await deleteParentComments(context, fetchImpl, oldParent.thread.id, parentCommentIds(oldParent.thread), reconcileSignal);
   }
-
-  // 4. Execute reconcile actions on existing threads.
   await reconcileAzureThreads({
     context: { kind: "azure-context", context },
     fetchImpl,
@@ -1050,14 +1039,17 @@ export async function runAzureLiveWithReconcile(input: {
     currentAttemptId,
     currentHeadSha,
   });
+}
 
-  // 5. POST create-new actions (only those — skip/patch/etc. already ran).
-  type InlinePostResult = { readonly threadId: number; readonly commentId: number; readonly fingerprint: string };
+async function postCreateNewActions(
+  context: AzureContext,
+  fetchImpl: FetchImpl,
+  created: readonly Extract<ThreadAction, { kind: "create-new" }>[],
+  currentRunId: string,
+  currentAttemptId: string,
+): Promise<{ readonly postedInlines: readonly InlinePostResult[]; readonly failedIndices: readonly number[] }> {
   const postedInlines: InlinePostResult[] = [];
   const failedIndices: number[] = [];
-  const created = actions.filter(
-    (a): a is Extract<ThreadAction, { kind: "create-new" }> => a.kind === "create-new",
-  );
   for (let i = 0; i < created.length; i += 1) {
     const action = created[i]!;
     try {
@@ -1082,17 +1074,130 @@ export async function runAzureLiveWithReconcile(input: {
       );
     }
   }
+  return { postedInlines, failedIndices };
+}
 
-  // 6. POST the parent LAST so it gets the highest thread id.
+async function postParentAndPatchInlines(
+  context: AzureContext,
+  fetchImpl: FetchImpl,
+  body: string,
+  postedInlines: readonly InlinePostResult[],
+  created: readonly Extract<ThreadAction, { kind: "create-new" }>[],
+  reconcileSignal: AbortSignal,
+): Promise<number | undefined> {
   const parentThread = await postParentPrComment(context, fetchImpl, body, reconcileSignal);
   const parentThreadId = parentThread?.id;
-
-  // 7. PATCH each newly-created inline comment to inject the parent-ref text.
-  if (parentThreadId !== undefined) {
-    for (const inline of postedInlines) {
-      await patchInlineForParentRef(context, fetchImpl, inline.threadId, inline.commentId, parentThreadId, created.find((a) => a.fingerprint === inline.fingerprint)?.comment, reconcileSignal);
-    }
+  if (parentThreadId === undefined) return undefined;
+  const createdByFingerprint = new Map(created.map((a) => [a.fingerprint, a]));
+  for (const inline of postedInlines) {
+    await patchInlineForParentRef(
+      context,
+      fetchImpl,
+      inline.threadId,
+      inline.commentId,
+      parentThreadId,
+      createdByFingerprint.get(inline.fingerprint)?.comment,
+      reconcileSignal,
+    );
   }
+  return parentThreadId;
+}
+
+function finalizeRunResult(
+  prepared: ReturnType<typeof preparePostedReview>,
+  provider: LiveProviderOutcome,
+  parentThreadId: number | undefined,
+  postedInlines: readonly InlinePostResult[],
+  failedIndices: readonly number[],
+): LiveRunResult {
+  const reviewId = parentThreadId ?? postedInlines[0]?.threadId;
+  const parseFailed = provider.review.parseFailed === true;
+  const successMessage = failedIndices.length > 0
+    ? `posted Azure review (${postedInlines.length} threads, ${failedIndices.length} failed)${parseFailed ? " (parse failed)" : ""}`
+    : `posted Azure review (${postedInlines.length} threads)${parseFailed ? " (parse failed)" : ""}`;
+  return {
+    exitCode: parseFailed ? 1 : 0,
+    posted: true,
+    reviewId,
+    message: successMessage,
+    inlineThreadCount: postedInlines.length,
+    verdict: prepared.effectiveVerdict,
+    parseFailed,
+    parseWarnings: provider.parseWarnings,
+  };
+}
+
+export async function runAzureLiveWithReconcile(input: {
+  readonly context: AzureContext;
+  readonly diffText: string;
+  readonly provider: LiveProviderOutcome;
+  readonly parsed: ParsedCliArgs;
+  readonly fetchImpl: FetchImpl;
+  readonly options?: RunAzureReconcileOptions;
+  readonly signal?: AbortSignal;
+}): Promise<LiveRunResult> {
+  const { context, diffText, provider, parsed, fetchImpl } = input;
+  const callerSignal = input.signal ?? new AbortController().signal;
+
+  const preflight = preflightReconcileSignal(callerSignal, provider);
+  if ("aborted" in preflight) return preflight.aborted;
+  const reconcileSignal = preflight.reconcileSignal;
+
+  const resolutionMode: ResolutionMode = input.options?.resolutionMode ?? "logical";
+
+  const prepared = preparePostedReview({
+    review: provider.review,
+    provider: provider.provider,
+    modelId: provider.modelId,
+    diffText,
+    parsed,
+    secrets: [context.token],
+  });
+  const { postableComments: comments, body } = prepared;
+
+  const collision = assertNoCommentsCollision(comments, provider.parseWarnings);
+  if (collision !== null) return collision;
+
+  const { currentHeadSha, currentRunId, currentAttemptId } = buildFencingContext(context, provider);
+  const findings: DurableFindingWithIdentity[] = comments.map(buildDurableFindingForComment);
+
+  const priorThreads = await listPriorThreads(context, fetchImpl, reconcileSignal);
+  const classified = classifyPriorThreads({
+    threads: priorThreads,
+    currentFindings: findings,
+    currentHeadSha,
+  });
+  const actions = transitionRules({
+    priorClassified: classified,
+    currentFindings: findings,
+    currentHeadSha,
+    priorHeadSha: "",
+    currentRunId,
+    currentAttemptId,
+    resolutionMode,
+  });
+
+  await executeReconcileActions(
+    context,
+    fetchImpl,
+    priorThreads,
+    actions,
+    currentRunId,
+    currentAttemptId,
+    currentHeadSha,
+    reconcileSignal,
+  );
+
+  const created = actions.filter(
+    (a): a is Extract<ThreadAction, { kind: "create-new" }> => a.kind === "create-new",
+  );
+  const { postedInlines, failedIndices } = await postCreateNewActions(
+    context,
+    fetchImpl,
+    created,
+    currentRunId,
+    currentAttemptId,
+  );
 
   if (postedInlines.length === 0 && failedIndices.length > 0) {
     const message = `Azure review failed: 0 threads posted, ${failedIndices.length} failed`;
@@ -1106,25 +1211,24 @@ export async function runAzureLiveWithReconcile(input: {
     };
   }
 
-  // 8. PR status POST.
-  await postPrStatus(context, fetchImpl, mapReviewVerdictToAzureStatus(prepared.effectiveVerdict), provider.review.summary, reconcileSignal);
+  const parentThreadId = await postParentAndPatchInlines(
+    context,
+    fetchImpl,
+    body,
+    postedInlines,
+    created,
+    reconcileSignal,
+  );
 
-  const reviewId = parentThreadId ?? postedInlines[0]?.threadId;
-  const parseFailed = provider.review.parseFailed === true;
-  const successMessage = failedIndices.length > 0
-    ? `posted Azure review (${postedInlines.length} threads, ${failedIndices.length} failed)${parseFailed ? " (parse failed)" : ""}`
-    : `posted Azure review (${postedInlines.length} threads)${parseFailed ? " (parse failed)" : ""}`;
+  await postPrStatus(
+    context,
+    fetchImpl,
+    mapReviewVerdictToAzureStatus(prepared.effectiveVerdict),
+    provider.review.summary,
+    reconcileSignal,
+  );
 
-  return {
-    exitCode: parseFailed ? 1 : 0,
-    posted: true,
-    reviewId,
-    message: successMessage,
-    inlineThreadCount: postedInlines.length,
-    verdict: prepared.effectiveVerdict,
-    parseFailed,
-    parseWarnings: provider.parseWarnings,
-  };
+  return finalizeRunResult(prepared, provider, parentThreadId, postedInlines, failedIndices);
 }
 
 // ---------------------------------------------------------------------------

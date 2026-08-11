@@ -302,23 +302,32 @@ function validatePathSafetyAndGlobs(_raw: unknown, _filePath: string): ValidateR
   return { ok: true, policy: DEFAULT_REVIEW_POLICY };
 }
 
-function validateSecretScanPatterns(raw: unknown, filePath: string): ValidateReviewPolicyResult {
-  const obj = raw as Record<string, unknown>;
-  if (obj["pathRules"] !== undefined && Array.isArray(obj["pathRules"])) {
-    for (const rule of obj["pathRules"]) {
-      if (isRecord(rule) && typeof rule["pattern"] === "string" && containsSecret(rule["pattern"])) {
-        return fail("secret-detected", `policy at ${filePath}: secret-shaped value detected in pathRule pattern`);
-      }
-    }
-  }
-  if (obj["excludes"] !== undefined && Array.isArray(obj["excludes"])) {
-    for (const ex of obj["excludes"]) {
-      if (typeof ex === "string" && containsSecret(ex)) {
-        return fail("secret-detected", `policy at ${filePath}: secret-shaped value detected in exclude pattern`);
-      }
+/** `extract` returns null for entries that carry no scannable string. */
+function scanForSecrets(
+  value: unknown,
+  filePath: string,
+  fieldLabel: string,
+  extract: (entry: unknown) => string | null,
+): ValidateReviewPolicyResult {
+  if (value === undefined || !Array.isArray(value)) return { ok: true, policy: DEFAULT_REVIEW_POLICY };
+  for (const entry of value) {
+    const candidate = extract(entry);
+    if (candidate !== null && containsSecret(candidate)) {
+      return fail("secret-detected", `policy at ${filePath}: secret-shaped value detected in ${fieldLabel}`);
     }
   }
   return { ok: true, policy: DEFAULT_REVIEW_POLICY };
+}
+
+function validateSecretScanPatterns(raw: unknown, filePath: string): ValidateReviewPolicyResult {
+  const obj = raw as Record<string, unknown>;
+  const pathRules = scanForSecrets(obj["pathRules"], filePath, "pathRule pattern", (rule) =>
+    isRecord(rule) && typeof rule["pattern"] === "string" ? rule["pattern"] : null,
+  );
+  if (!pathRules.ok) return pathRules;
+  return scanForSecrets(obj["excludes"], filePath, "exclude pattern", (ex) =>
+    typeof ex === "string" ? ex : null,
+  );
 }
 
 function validateEffort(obj: Record<string, unknown>, filePath: string): ValidateReviewPolicyResult {

@@ -460,8 +460,7 @@ export function measureEncodedSize(state: ReviewState): number {
  *   - Persistence unavailable → full, non-resolving, warning.
  *   - Collision (same fingerprint, different identityDigest) → full, non-resolving, collision error.
  */
-export function evaluateTransition(input: TransitionInput): TransitionResult {
-  // Persistence unavailable → full non-resolving.
+function preStateTransition(input: TransitionInput): TransitionResult | null {
   if (input.persistenceUnavailable === true) {
     return {
       decision: "full",
@@ -470,8 +469,6 @@ export function evaluateTransition(input: TransitionInput): TransitionResult {
       warning: "STATE_UNAVAILABLE: persistence is unavailable; running full non-resolving review.",
     };
   }
-
-  // Corrupt state → full with warning.
   if (input.corruptState === true) {
     return {
       decision: "full",
@@ -479,108 +476,99 @@ export function evaluateTransition(input: TransitionInput): TransitionResult {
       warning: "STATE_CORRUPT: prior state is corrupt; running full review.",
     };
   }
-
-  // Manual full.
   if (input.manualFull) {
     return {
       decision: "full",
       reason: "manual full mode requested",
     };
   }
+  return null;
+}
 
-  // First run (no prior state) → full.
-  if (input.priorState === null) {
+function collisionTransition(
+  prior: ReviewState,
+  newFindings: TransitionInput["newFindings"],
+): TransitionResult | null {
+  if (newFindings === undefined) return null;
+  const priorById = new Map<string, string>();
+  for (const entry of prior.collisionLedger) {
+    priorById.set(entry.fingerprint, entry.identityDigest);
+  }
+  for (const finding of newFindings) {
+    const priorId = priorById.get(finding.fingerprint);
+    if (priorId !== undefined && priorId !== finding.identityDigest) {
+      return {
+        decision: "full",
+        reason: `FINGERPRINT_COLLISION: fingerprint ${finding.fingerprint} has divergent identityDigest`,
+        nonResolving: true,
+        collisionError: `FINGERPRINT_COLLISION: fingerprint ${finding.fingerprint} maps to divergent identity digests.`,
+      };
+    }
+  }
+  return null;
+}
+
+function hashDriftTransition(prior: ReviewState, current: TransitionInput["current"]): TransitionResult | null {
+  if (prior.lastPolicyHash !== current.policyHash) {
+    return { decision: "full", reason: "policy hash drift" };
+  }
+  if (prior.lastProviderModelHash !== current.providerModelHash) {
+    return { decision: "full", reason: "provider/model hash drift" };
+  }
+  if (prior.lastContextHash !== current.contextHash) {
+    return { decision: "full", reason: "context hash drift" };
+  }
+  return null;
+}
+
+/** Force-push must precede rebase: force-push requires unchanged base, rebase moves it. */
+function lineageDriftTransition(prior: ReviewState, current: TransitionInput["current"]): TransitionResult | null {
+  const headChanged = prior.lastHeadSha !== "" && prior.lastHeadSha !== current.headSha;
+  const mergeBaseMoved = prior.lastMergeBaseSha !== "" && prior.lastMergeBaseSha !== current.mergeBaseSha;
+  if (headChanged && mergeBaseMoved && prior.lastBaseSha === current.baseSha) {
+    return {
+      decision: "full",
+      reason: "force-push: head replaced (same base, different merge-base lineage)",
+    };
+  }
+  if (mergeBaseMoved) {
+    return { decision: "full", reason: "rebase: merge-base moved" };
+  }
+  if (prior.lastBaseSha !== "" && prior.lastBaseSha !== current.baseSha) {
+    return { decision: "full", reason: "base drift" };
+  }
+  return null;
+}
+
+export function evaluateTransition(input: TransitionInput): TransitionResult {
+  const preState = preStateTransition(input);
+  if (preState !== null) return preState;
+
+  const prior = input.priorState;
+  if (prior === null) {
     return {
       decision: "full",
       reason: "first run on PR",
     };
   }
-
-  // Future schema → full.
-  if (input.priorState.schemaVersion !== STATE_SCHEMA_VERSION) {
+  if (prior.schemaVersion !== STATE_SCHEMA_VERSION) {
     return {
       decision: "full",
-      reason: `schema version mismatch (prior=${input.priorState.schemaVersion}, current=${STATE_SCHEMA_VERSION})`,
-      warning: `STATE_FUTURE_SCHEMA: prior state schemaVersion ${input.priorState.schemaVersion} is unsupported.`,
+      reason: `schema version mismatch (prior=${prior.schemaVersion}, current=${STATE_SCHEMA_VERSION})`,
+      warning: `STATE_FUTURE_SCHEMA: prior state schemaVersion ${prior.schemaVersion} is unsupported.`,
     };
   }
-
-  const prior = input.priorState;
   const current = input.current;
 
-  // Check for collision: same fingerprint + different identityDigest.
-  if (input.newFindings !== undefined) {
-    const priorById = new Map<string, string>();
-    for (const entry of prior.collisionLedger) {
-      priorById.set(entry.fingerprint, entry.identityDigest);
-    }
-    for (const finding of input.newFindings) {
-      const priorId = priorById.get(finding.fingerprint);
-      if (priorId !== undefined && priorId !== finding.identityDigest) {
-        return {
-          decision: "full",
-          reason: `FINGERPRINT_COLLISION: fingerprint ${finding.fingerprint} has divergent identityDigest`,
-          nonResolving: true,
-          collisionError: `FINGERPRINT_COLLISION: fingerprint ${finding.fingerprint} maps to divergent identity digests.`,
-        };
-      }
-    }
-  }
+  const collision = collisionTransition(prior, input.newFindings);
+  if (collision !== null) return collision;
 
-  // Hash drift checks → full.
-  if (prior.lastPolicyHash !== current.policyHash) {
-    return {
-      decision: "full",
-      reason: "policy hash drift",
-    };
-  }
-  if (prior.lastProviderModelHash !== current.providerModelHash) {
-    return {
-      decision: "full",
-      reason: "provider/model hash drift",
-    };
-  }
-  if (prior.lastContextHash !== current.contextHash) {
-    return {
-      decision: "full",
-      reason: "context hash drift",
-    };
-  }
+  const hashDrift = hashDriftTransition(prior, current);
+  if (hashDrift !== null) return hashDrift;
 
-  // Force-push: head changed AND merge-base changed AND same base.
-  // Must be checked BEFORE rebase/base-drift because force-push has the
-  // extra constraint that base is unchanged (rebase = base also moved).
-  if (prior.lastHeadSha !== "" && prior.lastHeadSha !== current.headSha) {
-    if (
-      prior.lastMergeBaseSha !== "" &&
-      prior.lastMergeBaseSha !== current.mergeBaseSha &&
-      prior.lastBaseSha === current.baseSha
-    ) {
-      return {
-        decision: "full",
-        reason: "force-push: head replaced (same base, different merge-base lineage)",
-      };
-    }
-  }
+  const lineageDrift = lineageDriftTransition(prior, current);
+  if (lineageDrift !== null) return lineageDrift;
 
-  // Rebase: merge-base moved (and it's not a force-push because base also changed,
-  // or the head didn't change).
-  if (prior.lastMergeBaseSha !== "" && prior.lastMergeBaseSha !== current.mergeBaseSha) {
-    return {
-      decision: "full",
-      reason: "rebase: merge-base moved",
-    };
-  }
-
-  // Base drift → full (baseSha changed but merge-base did not).
-  if (prior.lastBaseSha !== "" && prior.lastBaseSha !== current.baseSha) {
-    return {
-      decision: "full",
-      reason: "base drift",
-    };
-  }
-
-  // Same head SHA → incremental (reuse).
   if (prior.lastHeadSha === current.headSha) {
     return {
       decision: "incremental",
@@ -589,8 +577,6 @@ export function evaluateTransition(input: TransitionInput): TransitionResult {
     };
   }
 
-  // Adjacent head SHA → incremental.
-  // (We've already ruled out force-push/rebase above.)
   return {
     decision: "incremental",
     reason: "adjacent head SHA; incremental review",

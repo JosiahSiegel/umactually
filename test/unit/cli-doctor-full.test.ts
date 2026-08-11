@@ -35,6 +35,7 @@ type DoctorCheckId =
   | "context-budgets"
   | "ci-platform"
   | "github-permissions"
+  | "github-ghes"
   | "azure-permissions";
 
 type DoctorCheckResult = {
@@ -560,5 +561,136 @@ describe("CLI doctor --full (Task 8)", () => {
     // implementation chooses a subset. The contract is the union of
     // every named check, not a subset.
     expect(expected.sort()).toEqual([...ALL_FULL_IDS].sort());
+  });
+});
+
+describe("CLI doctor --full — GHES capability check (ITER-2e)", () => {
+  it("DOCTOR-FULL-GHES-1: defaults to a skip when GITHUB_API_URL is unset (github.com)", async () => {
+    const runFullDoctor = await loadRunFullDoctor();
+    const result = await runFullDoctor({
+      cwd: "/repo",
+      isTTY: false,
+      env: healthyEnv,
+      fsAdapter: healthyFs,
+      fsAdapterSync: missingSyncFs,
+      execFile: insideGit,
+      packageRoot: "/repo",
+      nodeVersion: "24.0.0",
+      fetchImpl: async () => new Response("", { status: 404 }),
+    });
+    const ghes = result.checks.find((c) => c.id === "github-ghes");
+    expect(ghes).toBeDefined();
+    expect(ghes?.status).toBe("skip");
+    expect(ghes?.message).toContain("github.com");
+  });
+
+  it("DOCTOR-FULL-GHES-2: returns fail when GITHUB_API_URL is not a usable URL", async () => {
+    const runFullDoctor = await loadRunFullDoctor();
+    const result = await runFullDoctor({
+      cwd: "/repo",
+      isTTY: false,
+      env: { ...healthyEnv, GITHUB_API_URL: "not-a-real-url" },
+      fsAdapter: healthyFs,
+      fsAdapterSync: missingSyncFs,
+      execFile: insideGit,
+      packageRoot: "/repo",
+      nodeVersion: "24.0.0",
+      fetchImpl: async () => new Response("", { status: 404 }),
+    });
+    const ghes = result.checks.find((c) => c.id === "github-ghes");
+    expect(ghes?.status).toBe("fail");
+    expect(ghes?.message).toContain("GITHUB_API_URL");
+    expect(ghes?.remediation).toBeDefined();
+  });
+
+  it("DOCTOR-FULL-GHES-3: probes GHES host /api/v3/meta and reports ok on HTTP 200 with version", async () => {
+    const fetchImpl: typeof fetch = vi.fn<typeof fetch>(async (input) => {
+      const url = typeof input === "string" ? input : (input as URL).toString();
+      if (url.includes("/meta")) {
+        return new Response(JSON.stringify({ installed_version: "3.14.2" }), {
+          status: 200,
+          headers: { "content-type": "application/json" },
+        });
+      }
+      return new Response("", { status: 404 });
+    }) as typeof fetch;
+    const runFullDoctor = await loadRunFullDoctor();
+    const result = await runFullDoctor({
+      cwd: "/repo",
+      isTTY: false,
+      env: { ...healthyEnv, GITHUB_API_URL: "https://ghe.example.com/api/v3" },
+      fsAdapter: healthyFs,
+      fsAdapterSync: missingSyncFs,
+      execFile: insideGit,
+      packageRoot: "/repo",
+      nodeVersion: "24.0.0",
+      fetchImpl,
+    });
+    const ghes = result.checks.find((c) => c.id === "github-ghes");
+    expect(ghes?.status).toBe("ok");
+    expect(ghes?.message).toContain("installed_version=3.14.2");
+  });
+
+  it("DOCTOR-FULL-GHES-4: surfaces warn on 401/403 from the probe (token-gated install)", async () => {
+    const fetchImpl: typeof fetch = vi.fn<typeof fetch>(async () =>
+      new Response("Forbidden", { status: 403 }),
+    ) as typeof fetch;
+    const runFullDoctor = await loadRunFullDoctor();
+    const result = await runFullDoctor({
+      cwd: "/repo",
+      isTTY: false,
+      env: { ...healthyEnv, GITHUB_API_URL: "https://ghe.example.com/api/v3" },
+      fsAdapter: healthyFs,
+      fsAdapterSync: missingSyncFs,
+      execFile: insideGit,
+      packageRoot: "/repo",
+      nodeVersion: "24.0.0",
+      fetchImpl,
+    });
+    const ghes = result.checks.find((c) => c.id === "github-ghes");
+    expect(ghes?.status).toBe("warn");
+    expect(ghes?.message).toContain("HTTP 403");
+  });
+
+  it("DOCTOR-FULL-GHES-5: surfaces fail on 404 (no /api/v3/meta endpoint)", async () => {
+    const fetchImpl: typeof fetch = vi.fn<typeof fetch>(async () =>
+      new Response("Not Found", { status: 404 }),
+    ) as typeof fetch;
+    const runFullDoctor = await loadRunFullDoctor();
+    const result = await runFullDoctor({
+      cwd: "/repo",
+      isTTY: false,
+      env: { ...healthyEnv, GITHUB_API_URL: "https://ghe.example.com/api/v3" },
+      fsAdapter: healthyFs,
+      fsAdapterSync: missingSyncFs,
+      execFile: insideGit,
+      packageRoot: "/repo",
+      nodeVersion: "24.0.0",
+      fetchImpl,
+    });
+    const ghes = result.checks.find((c) => c.id === "github-ghes");
+    expect(ghes?.status).toBe("fail");
+    expect(ghes?.message).toContain("HTTP 404");
+  });
+
+  it("DOCTOR-FULL-GHES-6: handles malformed JSON body from /api/v3/meta gracefully", async () => {
+    const fetchImpl: typeof fetch = vi.fn<typeof fetch>(async () =>
+      new Response("not-json", { status: 200 }),
+    ) as typeof fetch;
+    const runFullDoctor = await loadRunFullDoctor();
+    const result = await runFullDoctor({
+      cwd: "/repo",
+      isTTY: false,
+      env: { ...healthyEnv, GITHUB_API_URL: "https://ghe.example.com/api/v3" },
+      fsAdapter: healthyFs,
+      fsAdapterSync: missingSyncFs,
+      execFile: insideGit,
+      packageRoot: "/repo",
+      nodeVersion: "24.0.0",
+      fetchImpl,
+    });
+    const ghes = result.checks.find((c) => c.id === "github-ghes");
+    expect(ghes?.status).toBe("ok");
+    expect(ghes?.message).not.toContain("installed_version");
   });
 });

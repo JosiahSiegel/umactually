@@ -896,7 +896,6 @@ function resolveSameProjectImport(cwd: string, fromFile: string, spec: string): 
     const fromDir = posixDirname(toPosix(fromFile));
     const joined = posixResolve(fromDir, spec);
     const slashed = joined.startsWith("/") ? joined : `${cwd}/${joined}`;
-    void cwd; void fromFile;
     if (slashed.startsWith(`${cwd}/`) || slashed === `${cwd}`) {
       const rel = slashed.slice(`${cwd}/`.length);
       return rel;

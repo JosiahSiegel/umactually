@@ -38,6 +38,7 @@ import { DEFAULT_OPENAI_URL } from "../util/provider-defaults.js";
 import {
   buildGithubApiBaseFromEnv,
   buildGithubRestUrl,
+  type GithubApiBase,
   isGithubComBase,
 } from "../platform/github/api-base.js";
 import { ENV_KEYS } from "../util/env-keys.js";
@@ -776,35 +777,74 @@ async function checkGithubPermissions(
   );
 }
 
-async function checkGithubGhesCapability(
-  env: FullDoctorDeps["env"],
-  fetchImpl: SafeFetch,
-  timeoutMs: number,
-): Promise<DoctorCheckResult> {
-  let apiBase;
+function ghesInstalledVersion(body: string): string | null {
+  let parsed: unknown;
   try {
-    apiBase = buildGithubApiBaseFromEnv(env);
-  } catch (error) {
+    parsed = JSON.parse(body);
+  } catch {
+    return null;
+  }
+  if (parsed === null || typeof parsed !== "object") return null;
+  const version = (parsed as Record<string, unknown>)["installed_version"];
+  return typeof version === "string" ? version : null;
+}
+
+function classifyGhesProbeStatus(
+  result: { readonly status: number; readonly body: string },
+  metaUrl: string,
+  latencyMs: number,
+): DoctorCheckResult {
+  if (result.status === 200) {
+    const version = ghesInstalledVersion(result.body);
+    return makeResult(
+      "github-ghes",
+      "ok",
+      `GHES meta probe returned HTTP 200${version !== null ? ` (installed_version=${version})` : ""}`,
+      {
+        latencyMs,
+      },
+    );
+  }
+  if (result.status === 401 || result.status === 403) {
+    return makeResult(
+      "github-ghes",
+      "warn",
+      `GHES meta probe returned HTTP ${result.status} (capability probe is unauthenticated; some installs require a token)`,
+      {
+        remediation:
+          "GitHub Enterprise Server's /api/v3/meta endpoint is unauthenticated on most installs but token-gated on others. If the install requires auth, supply a token with `site_admin: read` or use the GHES admin REST API directly to confirm the version.",
+        latencyMs,
+      },
+    );
+  }
+  if (result.status === 404) {
     return makeResult(
       "github-ghes",
       "fail",
-      `GITHUB_API_URL is not usable: ${error instanceof Error ? error.message : String(error)}`,
+      "GHES /api/v3/meta returned HTTP 404 — explicit API capability unsupported",
       {
         remediation:
-          "Set GITHUB_API_URL to an HTTPS URL with no userinfo or query string, or unset it to use github.com.",
+          "This GHES install does not expose /api/v3/meta. umactually cannot determine version/capability; review posting will continue but version-specific features (e.g. newer inline suggestion formats) are unsupported.",
+        latencyMs,
       },
     );
   }
-  if (isGithubComBase(apiBase)) {
-    return makeResult(
-      "github-ghes",
-      "skip",
-      "github.com default — GitHub Enterprise Server capability probe not applicable",
-      {
-        remediation: "Set GITHUB_API_URL to a GHES host (e.g. https://ghe.example.com/api/v3) to probe GHES capability.",
-      },
-    );
-  }
+  return makeResult(
+    "github-ghes",
+    "warn",
+    `GHES meta probe returned HTTP ${result.status}`,
+    {
+      remediation: `Verify reachability of ${redactUrlForLog(metaUrl)} and that the GHES instance exposes /api/v3/meta.`,
+      latencyMs,
+    },
+  );
+}
+
+async function runGhesProbe(
+  apiBase: GithubApiBase,
+  fetchImpl: SafeFetch,
+  timeoutMs: number,
+): Promise<DoctorCheckResult> {
   const metaUrl = buildGithubRestUrl(apiBase, "/meta");
   const probe = await timeProbe(async () => {
     const controller = new AbortController();
@@ -838,59 +878,39 @@ async function checkGithubGhesCapability(
       latencyMs: probe.latencyMs,
     });
   }
-  if (result.status === 200) {
-    let parsedVersion: unknown = null;
-    try {
-      parsedVersion = JSON.parse(result.body);
-    } catch {
-      parsedVersion = null;
-    }
-    const version =
-      parsedVersion !== null && typeof parsedVersion === "object" && parsedVersion !== null
-        ? (parsedVersion as Record<string, unknown>)["installed_version"]
-        : null;
-    return makeResult(
-      "github-ghes",
-      "ok",
-      `GHES meta probe returned HTTP 200${typeof version === "string" ? ` (installed_version=${version})` : ""}`,
-      {
-        latencyMs: probe.latencyMs,
-      },
-    );
-  }
-  if (result.status === 401 || result.status === 403) {
-    return makeResult(
-      "github-ghes",
-      "warn",
-      `GHES meta probe returned HTTP ${result.status} (capability probe is unauthenticated; some installs require a token)`,
-      {
-        remediation:
-          "GitHub Enterprise Server's /api/v3/meta endpoint is unauthenticated on most installs but token-gated on others. If the install requires auth, supply a token with `site_admin: read` or use the GHES admin REST API directly to confirm the version.",
-        latencyMs: probe.latencyMs,
-      },
-    );
-  }
-  if (result.status === 404) {
+  return classifyGhesProbeStatus(result, metaUrl, probe.latencyMs);
+}
+
+async function checkGithubGhesCapability(
+  env: FullDoctorDeps["env"],
+  fetchImpl: SafeFetch,
+  timeoutMs: number,
+): Promise<DoctorCheckResult> {
+  let apiBase;
+  try {
+    apiBase = buildGithubApiBaseFromEnv(env);
+  } catch (error) {
     return makeResult(
       "github-ghes",
       "fail",
-      "GHES /api/v3/meta returned HTTP 404 — explicit API capability unsupported",
+      `GITHUB_API_URL is not usable: ${error instanceof Error ? error.message : String(error)}`,
       {
         remediation:
-          "This GHES install does not expose /api/v3/meta. umactually cannot determine version/capability; review posting will continue but version-specific features (e.g. newer inline suggestion formats) are unsupported.",
-        latencyMs: probe.latencyMs,
+          "Set GITHUB_API_URL to an HTTPS URL with no userinfo or query string, or unset it to use github.com.",
       },
     );
   }
-  return makeResult(
-    "github-ghes",
-    "warn",
-    `GHES meta probe returned HTTP ${result.status}`,
-    {
-      remediation: `Verify reachability of ${redactUrlForLog(metaUrl)} and that the GHES instance exposes /api/v3/meta.`,
-      latencyMs: probe.latencyMs,
-    },
-  );
+  if (isGithubComBase(apiBase)) {
+    return makeResult(
+      "github-ghes",
+      "skip",
+      "github.com default — GitHub Enterprise Server capability probe not applicable",
+      {
+        remediation: "Set GITHUB_API_URL to a GHES host (e.g. https://ghe.example.com/api/v3) to probe GHES capability.",
+      },
+    );
+  }
+  return runGhesProbe(apiBase, fetchImpl, timeoutMs);
 }
 
 async function checkAzurePermissions(

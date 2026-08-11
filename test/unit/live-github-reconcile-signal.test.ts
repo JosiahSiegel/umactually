@@ -281,3 +281,16 @@ describe("runGithubReconcile — fingerprint-collision short-circuit", () => {
     expect(fetch.calls).toHaveLength(0);
   });
 });
+
+describe("runGithubReconcile — empty-prior coverage (ITER-2e)", () => {
+  it("returns kind: ok with empty transitions when no new and no prior findings", async () => {
+    const fetch = new CountingFetch();
+    const result = await runGithubReconcile(
+      buildInput({ fetchImpl: fetch.fetchImpl }),
+    );
+    expect(result.kind).toBe("ok");
+    if (result.kind === "ok") {
+      expect(result.transitions).toEqual([]);
+    }
+  });
+});
