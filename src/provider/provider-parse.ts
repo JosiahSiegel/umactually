@@ -9,6 +9,7 @@ import {
   tryParseJson,
 } from "../util/json-guards.js";
 import type { ProviderEndpoint, ProviderErrorDetails, ProviderUsage } from "./provider-error.js";
+import type { DurableFindingIdentity } from "../review/fingerprint.js";
 
 export type { ProviderEndpoint, ProviderErrorDetails, ProviderUsage };
 
@@ -18,6 +19,7 @@ export type ProviderComment = {
   readonly body: string;
   readonly severity: string;
   readonly category: string;
+  readonly durableIdentity?: DurableFindingIdentity;
 };
 
 export type ProviderReviewPayload = {

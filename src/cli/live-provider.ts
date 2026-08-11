@@ -27,6 +27,7 @@ import { requireLiveConfig } from "../util/required-config.js";
 import { looksLikeAnthropicEndpoint, redactUrlForLog } from "../util/url.js";
 import {
   buildMalformedProviderFallback,
+  enrichWithDurableIdentity,
   LiveReviewError,
   sanitizeForPost,
   type FetchImpl,
@@ -554,13 +555,14 @@ function normalizeProviderComment(
   comment: ProviderReviewPayload["comments"][number],
   secrets: readonly string[],
 ): LiveReviewComment {
-  return {
+  const sanitized: LiveReviewComment = {
     path: comment.path,
     line: comment.line,
     body: sanitizeForPost(comment.body, secrets),
     severity: sanitizeForPost(comment.severity, secrets),
     category: sanitizeForPost(comment.category, secrets),
   };
+  return enrichWithDurableIdentity(sanitized);
 }
 
 function resolveProviderUrl(parsed: ParsedCliArgs, env: NodeJS.ProcessEnv): string | null {

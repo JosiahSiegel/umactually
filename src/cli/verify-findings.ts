@@ -27,6 +27,9 @@
 import { parseDiffPositions } from "../diff/parse-positions.js";
 import { collectVerifiedFacts } from "../review/verified-facts.js";
 import type { LiveReviewComment, LiveReview } from "./live-shared.js";
+import type { DurableFindingIdentity } from "../review/fingerprint.js";
+
+export type { DurableFindingIdentity };
 
 export type VerifiedFinding = {
   readonly original: LiveReviewComment;

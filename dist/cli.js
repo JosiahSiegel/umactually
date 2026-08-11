@@ -73,7 +73,7 @@ module.exports = __nccwpck_require__.p + "03fd2840000f132e9174.ts";
 
 /***/ }),
 
-/***/ 802:
+/***/ 421:
 /***/ ((module) => {
 
 module.exports = __WEBPACK_EXTERNAL_createRequire(import.meta.url)("node:child_process");
@@ -1584,15 +1584,245 @@ function unknownFlagUsageError(token, argv) {
 }
 
 // EXTERNAL MODULE: external "node:child_process"
-var external_node_child_process_ = __nccwpck_require__(802);
+var external_node_child_process_ = __nccwpck_require__(421);
 ;// CONCATENATED MODULE: external "node:os"
 const external_node_os_namespaceObject = __WEBPACK_EXTERNAL_createRequire(import.meta.url)("node:os");
 ;// CONCATENATED MODULE: external "node:url"
 const external_node_url_namespaceObject = __WEBPACK_EXTERNAL_createRequire(import.meta.url)("node:url");
 ;// CONCATENATED MODULE: external "node:util"
 const external_node_util_namespaceObject = __WEBPACK_EXTERNAL_createRequire(import.meta.url)("node:util");
+;// CONCATENATED MODULE: ./src/review/artifact-schema.ts
+// SPDX-License-Identifier: MIT
+//
+// Task 4 — Schema-versioned review artifact parser.
+//
+// Accepts BOTH the legacy sample format (schemaVersion absent or 0)
+// and the new v1 schema (schemaVersion: 1). Unknown future versions
+// produce a typed error. Malformed JSON, invalid shapes, and missing
+// fingerprint fields all produce typed errors.
+//
+// The parser is the boundary contract shared by provider parsing,
+// filters, renderers, platform adapters, evals, and artifacts.
+// ---------------------------------------------------------------------------
+// Constants
+// ---------------------------------------------------------------------------
+const ARTIFACT_SCHEMA_VERSION = 1;
+// ---------------------------------------------------------------------------
+// Parser
+// ---------------------------------------------------------------------------
+/**
+ * Parse a JSON string into a schema-versioned review artifact.
+ *
+ * Accepts:
+ *   - Legacy format (no `schemaVersion` or `schemaVersion: 0`): comments
+ *     do not carry fingerprint fields. Parsed as LegacyReviewArtifact.
+ *   - v1 format (`schemaVersion: 1`): every comment MUST carry the full
+ *     fingerprint identity. Parsed as DurableReviewArtifact.
+ *
+ * Rejects with typed errors:
+ *   - malformed-json: invalid JSON syntax.
+ *   - invalid-shape: top-level value is not an object, or required fields missing.
+ *   - unsupported-schema-version: schemaVersion > ARTIFACT_SCHEMA_VERSION.
+ *   - missing-fingerprint-fields: v1 comment missing fingerprint identity.
+ */
+function parseReviewArtifact(jsonText) {
+    let parsed;
+    try {
+        parsed = JSON.parse(jsonText);
+    }
+    catch (error) {
+        return {
+            ok: false,
+            error: {
+                kind: "malformed-json",
+                message: error instanceof Error ? error.message : String(error),
+            },
+        };
+    }
+    if (!isRecord(parsed)) {
+        return {
+            ok: false,
+            error: {
+                kind: "invalid-shape",
+                message: "expected a JSON object at the top level",
+            },
+        };
+    }
+    const rawSchemaVersion = parsed["schemaVersion"];
+    const schemaVersion = typeof rawSchemaVersion === "number" ? rawSchemaVersion : 0;
+    if (schemaVersion > ARTIFACT_SCHEMA_VERSION) {
+        return {
+            ok: false,
+            error: {
+                kind: "unsupported-schema-version",
+                supportedVersion: ARTIFACT_SCHEMA_VERSION,
+                unsupportedVersion: schemaVersion,
+            },
+        };
+    }
+    // v1 artifacts must have summary, verdict, and comments fields. Legacy
+    // (unversioned) artifacts are more permissive.
+    const hasSummary = typeof parsed["summary"] === "string";
+    const hasVerdict = typeof parsed["verdict"] === "string";
+    const hasComments = parsed["comments"] !== undefined && parsed["comments"] !== null;
+    if (schemaVersion >= 1 && (!hasSummary || !hasVerdict || !hasComments)) {
+        return {
+            ok: false,
+            error: {
+                kind: "invalid-shape",
+                message: `v1 artifact missing required field(s):${!hasSummary ? " summary" : ""}${!hasVerdict ? " verdict" : ""}${!hasComments ? " comments" : ""}`,
+            },
+        };
+    }
+    const summary = typeof parsed["summary"] === "string" ? parsed["summary"] : "";
+    const verdict = typeof parsed["verdict"] === "string" ? parsed["verdict"] : "";
+    // Read comments from either "comments" (legacy) or "comments" (v1).
+    // Legacy artifacts use "suppressed_comments" (snake_case); v1 uses
+    // "suppressedComments" (camelCase). Accept both.
+    const rawComments = readArray(parsed["comments"]);
+    const rawSuppressed = readArray(parsed["suppressedComments"] ?? parsed["suppressed_comments"]);
+    if (schemaVersion === 0) {
+        // Legacy format — no fingerprint fields required.
+        const comments = rawComments.map(readLegacyComment);
+        const suppressedComments = rawSuppressed.map(readLegacyComment);
+        return {
+            ok: true,
+            artifact: {
+                schemaVersion: 0,
+                summary,
+                verdict,
+                comments,
+                suppressedComments,
+            },
+        };
+    }
+    // v1 format — every comment must carry the full fingerprint identity.
+    const commentsResult = rawComments.map((c) => readDurableComment(c));
+    const suppressedResult = rawSuppressed.map((c) => readDurableComment(c));
+    for (const r of [...commentsResult, ...suppressedResult]) {
+        if (!r.ok) {
+            return r;
+        }
+    }
+    return {
+        ok: true,
+        artifact: {
+            schemaVersion: 1,
+            summary,
+            verdict,
+            comments: commentsResult.map((r) => r.comment),
+            suppressedComments: suppressedResult.map((r) => r.comment),
+        },
+    };
+}
+// ---------------------------------------------------------------------------
+// Serializer
+// ---------------------------------------------------------------------------
+/**
+ * Serialize a DurableReviewArtifact to JSON. The output is parseable
+ * by `parseReviewArtifact` (round-trip).
+ */
+function serializeReviewArtifact(artifact) {
+    return JSON.stringify(artifact, null, 2);
+}
+// ---------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------
+function isRecord(value) {
+    return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+function readArray(value) {
+    if (!Array.isArray(value))
+        return [];
+    return value;
+}
+function readString(value, key) {
+    const v = value[key];
+    return typeof v === "string" ? v : "";
+}
+function readNumber(value, key) {
+    const v = value[key];
+    return typeof v === "number" ? v : 0;
+}
+function readDurableComment(raw) {
+    if (!isRecord(raw)) {
+        return {
+            ok: false,
+            error: { kind: "missing-fingerprint-fields", message: "comment is not an object" },
+        };
+    }
+    const required = [
+        "fingerprintVersion",
+        "fingerprintDigest",
+        "identityDigest",
+        "canonicalPath",
+        "anchorKind",
+        "canonicalAnchor",
+        "normalizedCategory",
+        "normalizedRuleKey",
+    ];
+    for (const field of required) {
+        if (raw[field] === undefined || raw[field] === null) {
+            return {
+                ok: false,
+                error: {
+                    kind: "missing-fingerprint-fields",
+                    message: `comment is missing required fingerprint field "${String(field)}"`,
+                },
+            };
+        }
+    }
+    const anchorKind = raw["anchorKind"];
+    if (anchorKind !== "symbol" && anchorKind !== "hunk") {
+        return {
+            ok: false,
+            error: {
+                kind: "missing-fingerprint-fields",
+                message: `anchorKind must be "symbol" or "hunk" (got "${String(anchorKind)}")`,
+            },
+        };
+    }
+    const comment = {
+        path: readString(raw, "path"),
+        line: typeof raw["line"] === "number" ? raw["line"] : 0,
+        body: readString(raw, "body"),
+        severity: readString(raw, "severity"),
+        category: readString(raw, "category"),
+        fingerprintVersion: raw["fingerprintVersion"],
+        fingerprintDigest: raw["fingerprintDigest"],
+        identityDigest: raw["identityDigest"],
+        canonicalPath: raw["canonicalPath"],
+        anchorKind,
+        canonicalAnchor: raw["canonicalAnchor"],
+        normalizedCategory: raw["normalizedCategory"],
+        normalizedRuleKey: raw["normalizedRuleKey"],
+        ...(raw["provenance"] !== undefined
+            ? { provenance: raw["provenance"] }
+            : {}),
+        ...(raw["suggestion"] !== undefined
+            ? { suggestion: raw["suggestion"] }
+            : {}),
+    };
+    return { ok: true, comment };
+}
+function readLegacyComment(raw) {
+    if (!isRecord(raw)) {
+        return { path: "", line: 0, body: "", severity: "", category: "" };
+    }
+    return {
+        path: readString(raw, "path"),
+        line: typeof raw["line"] === "number" ? raw["line"] : 0,
+        body: readString(raw, "body"),
+        severity: readString(raw, "severity"),
+        category: readString(raw, "category"),
+    };
+}
+// Suppress unused warning for readNumber (kept for potential indexed access).
+void readNumber;
+
 ;// CONCATENATED MODULE: ./src/cli/check-review-artifact.ts
 // SPDX-License-Identifier: MIT
+
 
 const PARSE_FAIL_MARKERS = [
     "Provider response did not contain a valid JSON review payload",
@@ -1650,8 +1880,16 @@ function classifyReviewArtifact(path) {
         }
         throw error;
     }
-    if (!isRecord(parsed)) {
+    if (!check_review_artifact_isRecord(parsed)) {
         return { ok: false, reason: "invalid artifact: expected a JSON object", warnings: [] };
+    }
+    const rawSchemaVersion = parsed["schemaVersion"];
+    if (typeof rawSchemaVersion === "number" && rawSchemaVersion > ARTIFACT_SCHEMA_VERSION) {
+        return {
+            ok: false,
+            reason: `unsupported-schema-version: artifact declares schemaVersion ${rawSchemaVersion}, supported max is ${ARTIFACT_SCHEMA_VERSION}`,
+            warnings: [],
+        };
     }
     const event = stringField(parsed, "event");
     const verdict = stringField(parsed, "verdict");
@@ -1731,7 +1969,7 @@ function detectSuspiciousSignals(input) {
     }
     return warnings;
 }
-function isRecord(value) {
+function check_review_artifact_isRecord(value) {
     return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 function isNodeError(error) {
@@ -3086,7 +3324,7 @@ class FlockUnavailableError extends Error {
 }
 function tryFlockNonBlocking(lockPath) {
     try {
-        const { spawnSync } = __nccwpck_require__(802);
+        const { spawnSync } = __nccwpck_require__(421);
         const r = spawnSync("flock", ["-n", lockPath, "true"], { stdio: "ignore", timeout: 1000 });
         return r.status === 0;
     }
@@ -13617,6 +13855,337 @@ function shouldKeepFinding(controls, finding) {
     return isSeverityAtLeast(controls.minimum, finding);
 }
 
+;// CONCATENATED MODULE: external "node:crypto"
+const external_node_crypto_namespaceObject = __WEBPACK_EXTERNAL_createRequire(import.meta.url)("node:crypto");
+;// CONCATENATED MODULE: ./src/review/fingerprint.ts
+// SPDX-License-Identifier: MIT
+//
+// Task 4 — Durable finding fingerprint + identity contract (v1).
+//
+// This module owns the canonical v1 fingerprint algorithm, the
+// length-prefixed UTF-8 serializer for the pre-hash canonical fields,
+// and the hard FINGERPRINT_COLLISION check.
+//
+// The fingerprint is stable across line shifts (because raw line
+// numbers are never inputs) and changes when category, anchor, path,
+// or ruleKey change. Two findings with the same fingerprint and the
+// same identityDigest dedup; the same fingerprint with a different
+// identityDigest is a hard collision that short-circuits posting and
+// writes no new state.
+
+// ---------------------------------------------------------------------------
+// Constants
+// ---------------------------------------------------------------------------
+const FINGERPRINT_V1_PREFIX = "umactually-finding-v1";
+const IDENTITY_V1_PREFIX = "umactually-identity-v1";
+// ---------------------------------------------------------------------------
+// Typed error: FingerprintCollisionError
+// ---------------------------------------------------------------------------
+/**
+ * Hard failure raised when two findings share the same fingerprint
+ * digest but have different identityDigests. This is a
+ * FINGERPRINT_COLLISION: the semantic anchor collides but the
+ * canonical fields differ, meaning the fingerprinting scheme cannot
+ * distinguish the two findings.
+ *
+ * The caller MUST short-circuit: post nothing, resolve nothing, write
+ * no new state.
+ */
+class FingerprintCollisionError extends Error {
+    fingerprintDigest;
+    collisionType;
+    constructor(fingerprintDigest, collisionType, detail) {
+        super(`FINGERPRINT_COLLISION: fingerprint ${fingerprintDigest} maps to divergent identity digests${detail !== undefined ? ` (${detail})` : ""}. ` +
+            "Posting, resolution, and state mutation are suppressed.");
+        this.name = "FingerprintCollisionError";
+        this.fingerprintDigest = fingerprintDigest;
+        this.collisionType = collisionType;
+    }
+}
+// ---------------------------------------------------------------------------
+// Path normalization
+// ---------------------------------------------------------------------------
+/**
+ * Normalize a path to its canonical form for fingerprinting:
+ *   1. Replace backslashes with POSIX forward slashes.
+ *   2. Strip a single leading `a/` or `b/` (diff prefix).
+ *   3. Reject absolute paths (`/...` on Unix, `C:\...` / `C:/...` on Windows).
+ *   4. Reject `.` and `..` path components.
+ *   5. Case-fold to lowercase ONLY when `caseInsensitive` is true.
+ *
+ * Default is case-sensitive (no case-folding).
+ */
+function normalizeCanonicalPath(rawPath, opts = {}) {
+    let p = rawPath.replace(/\\/gu, "/");
+    // Reject absolute paths before any other processing.
+    if (p.startsWith("/") || /^[a-zA-Z]:\//u.test(p)) {
+        throw new Error(`normalizeCanonicalPath: absolute paths are not allowed (got "${rawPath}")`);
+    }
+    // Strip a single leading "a/" or "b/" diff prefix.
+    if (p.startsWith("a/") || p.startsWith("b/")) {
+        p = p.slice(2);
+    }
+    // Reject "." and ".." components.
+    const segments = p.split("/");
+    for (const seg of segments) {
+        if (seg === "." || seg === "..") {
+            throw new Error(`normalizeCanonicalPath: path traversal components ("." or "..") are not allowed (got "${rawPath}")`);
+        }
+    }
+    if (opts.caseInsensitive === true) {
+        return p.toLowerCase();
+    }
+    return p;
+}
+// ---------------------------------------------------------------------------
+// Category normalization
+// ---------------------------------------------------------------------------
+/**
+ * Normalize a category: lowercase, trim, collapse internal whitespace
+ * and hyphens to a single underscore.
+ */
+function normalizeCategory(rawCategory) {
+    return rawCategory
+        .trim()
+        .toLowerCase()
+        .replace(/[\s-]+/gu, "_");
+}
+// ---------------------------------------------------------------------------
+// Rule key normalization
+// ---------------------------------------------------------------------------
+/**
+ * Normalize the rule key. Returns the provider-supplied stable rule id
+ * when present. When absent, synthesizes a deterministic SHA-256 from
+ * the lowercased category + the normalized first sentence (numbers,
+ * paths, quoted identifiers, and whitespace variance removed).
+ */
+function normalizeRuleKey(category, ruleKey, bodyFirstSentence) {
+    if (ruleKey !== undefined && ruleKey.length > 0) {
+        return ruleKey;
+    }
+    // Synthesize: SHA-256 of lowercase(category) + normalizedFirstSentence
+    const normalizedCategory = category.trim().toLowerCase();
+    const normalizedSentence = normalizeFirstSentence(bodyFirstSentence ?? "");
+    return (0,external_node_crypto_namespaceObject.createHash)("sha256")
+        .update(normalizedCategory + normalizedSentence)
+        .digest("hex");
+}
+/**
+ * Normalize the first sentence for synthetic rule key derivation:
+ *   - Remove numbers (digit sequences).
+ *   - Remove path-like tokens (contain `/` or start with `./`).
+ *   - Remove quoted identifiers (single/double/backtick quoted).
+ *   - Collapse whitespace variance to single spaces.
+ */
+function normalizeFirstSentence(raw) {
+    return raw
+        // Take only the first sentence (up to first period followed by space/end).
+        .replace(/\..*$/su, "")
+        // Remove quoted identifiers: 'foo', "foo", `foo`
+        .replace(/(['"`])[^'"`]*\1/gu, "")
+        // Remove path-like tokens (anything containing a forward slash).
+        .replace(/\b[\w.-]+\/[\w./-]+\b/gu, "")
+        // Remove digit sequences.
+        .replace(/\d+/gu, "")
+        // Collapse whitespace.
+        .replace(/\s+/gu, " ")
+        .trim()
+        .toLowerCase();
+}
+// ---------------------------------------------------------------------------
+// Hunk anchor normalization
+// ---------------------------------------------------------------------------
+/**
+ * Compute the hunk anchor: SHA-256 of the whitespace-normalized
+ * three-line preimage/context with line numbers removed.
+ *
+ * "Whitespace-normalized" means: collapse runs of whitespace to a
+ * single space, trim each line, and join lines with `\n`. This makes
+ * the anchor robust against indentation changes and trailing whitespace.
+ */
+function computeHunkAnchor(hunkPreimage) {
+    const normalized = hunkPreimage
+        .split("\n")
+        .map((line) => 
+    // Remove leading line-number prefixes (e.g. "42\t" or "42: ").
+    line
+        .replace(/^\d+[\t:]?\s*/u, "")
+        .replace(/\s+/gu, " ")
+        .trim())
+        .join("\n");
+    return (0,external_node_crypto_namespaceObject.createHash)("sha256").update(normalized).digest("hex");
+}
+// ---------------------------------------------------------------------------
+// Length-prefixed UTF-8 serialization
+// ---------------------------------------------------------------------------
+/**
+ * Serialize the five canonical pre-hash fields using length-prefixed
+ * UTF-8: `uint32be byteLength || bytes` for each field, concatenated.
+ *
+ * NEVER use JSON.stringify for canonical fields — the field order and
+ * encoding must be deterministic and independent of key insertion order.
+ */
+function serializeCanonicalFields(fields) {
+    const parts = [];
+    for (const field of fields) {
+        const buf = Buffer.from(field, "utf8");
+        const len = Buffer.allocUnsafe(4);
+        len.writeUInt32BE(buf.length, 0);
+        parts.push(len, buf);
+    }
+    return new Uint8Array(Buffer.concat(parts));
+}
+// ---------------------------------------------------------------------------
+// Core: computeDurableFindingIdentity
+// ---------------------------------------------------------------------------
+/**
+ * Compute the durable finding identity (fingerprint + identityDigest)
+ * for a single finding input.
+ *
+ * Algorithm (v1):
+ *   fingerprintDigest = sha256(
+ *     "umactually-finding-v1\0"
+ *     + canonicalPath + "\0"
+ *     + anchorKind + "\0"
+ *     + canonicalAnchor + "\0"
+ *     + normalizedCategory + "\0"
+ *     + normalizedRuleKey
+ *   )
+ *
+ *   identityDigest = sha256(
+ *     "umactually-identity-v1\0"
+ *     + serializeCanonicalFields([
+ *         canonicalPath, anchorKind, canonicalAnchor,
+ *         normalizedCategory, normalizedRuleKey
+ *       ])
+ *   )
+ *
+ * The fingerprint uses simple null-joined fields; the identityDigest
+ * uses length-prefixed serialization for collision-resistant identity.
+ * Both are stable across line shifts because raw line numbers are
+ * never inputs.
+ */
+function computeDurableFindingIdentity(input) {
+    // 1. Canonical path (with rename mapping applied).
+    let resolvedPath = input.path;
+    if (input.pathRewrites !== undefined) {
+        for (const rewrite of input.pathRewrites) {
+            if (resolvedPath === rewrite.from) {
+                resolvedPath = rewrite.to;
+                break;
+            }
+        }
+    }
+    const canonicalPath = normalizeCanonicalPath(resolvedPath, {
+        caseInsensitive: input.caseInsensitive,
+    });
+    // 2. Anchor.
+    const anchorKind = input.anchorKind;
+    let canonicalAnchor;
+    if (anchorKind === "symbol") {
+        const name = input.symbolName ?? "";
+        const kind = input.symbolKind ?? "";
+        canonicalAnchor = `${name}:${kind}`;
+    }
+    else {
+        // hunk
+        canonicalAnchor = computeHunkAnchor(input.hunkPreimage ?? "");
+    }
+    // 3. Category.
+    const normalizedCategory = normalizeCategory(input.category);
+    // 4. Rule key.
+    const normalizedRuleKey = normalizeRuleKey(input.category, input.ruleKey, input.bodyFirstSentence);
+    // 5. Fingerprint digest (null-joined, prefixed).
+    const fingerprintInput = [
+        FINGERPRINT_V1_PREFIX,
+        canonicalPath,
+        anchorKind,
+        canonicalAnchor,
+        normalizedCategory,
+        normalizedRuleKey,
+    ].join("\0");
+    const fingerprintDigest = (0,external_node_crypto_namespaceObject.createHash)("sha256").update(fingerprintInput).digest("hex");
+    // 6. Identity digest (length-prefixed serialization, prefixed).
+    const serialized = serializeCanonicalFields([
+        canonicalPath,
+        anchorKind,
+        canonicalAnchor,
+        normalizedCategory,
+        normalizedRuleKey,
+    ]);
+    const identityInput = Buffer.concat([
+        Buffer.from(IDENTITY_V1_PREFIX + "\0", "utf8"),
+        Buffer.from(serialized),
+    ]);
+    const identityDigest = (0,external_node_crypto_namespaceObject.createHash)("sha256").update(identityInput).digest("hex");
+    return {
+        fingerprintVersion: 1,
+        fingerprintDigest,
+        identityDigest,
+        canonicalPath,
+        anchorKind,
+        canonicalAnchor,
+        normalizedCategory,
+        normalizedRuleKey,
+    };
+}
+// ---------------------------------------------------------------------------
+// Collision check
+// ---------------------------------------------------------------------------
+/**
+ * Assert that no fingerprint collision exists among the given findings,
+ * optionally also checking against prior persisted state.
+ *
+ * A collision is: same fingerprintDigest + different identityDigest.
+ * Same fingerprint + same identityDigest is a dedup (allowed).
+ *
+ * Throws FingerprintCollisionError on the first collision found.
+ * The caller MUST short-circuit on throw: post nothing, resolve
+ * nothing, write no new state.
+ */
+function assertNoFingerprintCollision(current, persisted = []) {
+    // Build a map: fingerprintDigest -> { identityDigest, body }
+    const seen = new Map();
+    // Check within current findings, and against persisted state.
+    // Persisted state is checked first so we can report "against-persisted-state".
+    for (const entry of persisted) {
+        const fp = entry.identity.fingerprintDigest;
+        const existing = seen.get(fp);
+        if (existing !== undefined) {
+            if (existing.identityDigest !== entry.identity.identityDigest) {
+                throw new FingerprintCollisionError(fp, "against-persisted-state", `persisted "${existing.body.slice(0, 60)}" vs persisted "${entry.body.slice(0, 60)}"`);
+            }
+        }
+        else {
+            seen.set(fp, {
+                identityDigest: entry.identity.identityDigest,
+                body: entry.body,
+                source: "persisted",
+            });
+        }
+    }
+    for (const entry of current) {
+        const fp = entry.identity.fingerprintDigest;
+        const existing = seen.get(fp);
+        if (existing !== undefined) {
+            if (existing.identityDigest !== entry.identity.identityDigest) {
+                const collisionType = existing.source === "persisted"
+                    ? "against-persisted-state"
+                    : "within-review";
+                throw new FingerprintCollisionError(fp, collisionType, `"${existing.body.slice(0, 60)}" vs "${entry.body.slice(0, 60)}"`);
+            }
+            // Same fingerprint + same identityDigest → dedup, allowed.
+        }
+        else {
+            seen.set(fp, {
+                identityDigest: entry.identity.identityDigest,
+                body: entry.body,
+                source: "current",
+            });
+        }
+    }
+}
+
 ;// CONCATENATED MODULE: ./src/cli/live-shared.ts
 
 
@@ -13631,6 +14200,40 @@ function shouldKeepFinding(controls, finding) {
 
 
 
+
+/**
+ * Compute the durable finding identity for a provider comment and return
+ * a new comment carrying the identity. Called at the boundary where raw
+ * provider output enters the live pipeline (live-provider.ts
+ * `normalizeProviderComment`), so every downstream consumer (filters,
+ * renderers, platform adapters, evals, artifacts) sees the same typed
+ * finding shape.
+ *
+ * The identity is stable across line shifts because raw line numbers
+ * are never fingerprint inputs. Mutable full prose, secrets, absolute
+ * paths, tokens, and raw line numbers are excluded by construction.
+ */
+function enrichWithDurableIdentity(comment, opts = {}) {
+    const firstSentence = extractFirstSentence(comment.body);
+    const input = {
+        path: comment.path,
+        anchorKind: "symbol",
+        symbolName: undefined,
+        symbolKind: undefined,
+        hunkPreimage: undefined,
+        category: comment.category,
+        ruleKey: undefined,
+        bodyFirstSentence: firstSentence,
+        pathRewrites: opts.pathRewrites,
+        caseInsensitive: opts.caseInsensitive,
+    };
+    const identity = computeDurableFindingIdentity(input);
+    return { ...comment, durableIdentity: identity };
+}
+function extractFirstSentence(body) {
+    const match = body.match(/^[^.!?]*[.!?]/u);
+    return match !== null ? match[0] : body;
+}
 /**
  * A provider outcome is structurally empty when it carries no inline comments
  * AND no suppressed comments. Used by `simulate-findings` to decide whether
@@ -17625,13 +18228,14 @@ function normalizeProviderReview(payload, secrets) {
     };
 }
 function normalizeProviderComment(comment, secrets) {
-    return {
+    const sanitized = {
         path: comment.path,
         line: comment.line,
         body: sanitizeForPost(comment.body, secrets),
         severity: sanitizeForPost(comment.severity, secrets),
         category: sanitizeForPost(comment.category, secrets),
     };
+    return enrichWithDurableIdentity(sanitized);
 }
 function resolveProviderUrl(parsed, env) {
     if (parsed.provider === "copilot")
@@ -21008,8 +21612,8 @@ async function readGithubPullRequestPayload(env) {
     const repository = context_readRecord(parsed, "repository");
     return {
         isDraft: readBoolean(pullRequest["draft"]),
-        title: readString(pullRequest["title"]),
-        body: readString(pullRequest["body"]),
+        title: context_readString(pullRequest["title"]),
+        body: context_readString(pullRequest["body"]),
         prNumber: readOptionalNumber(pullRequest["number"]),
         headSha: readSha(pullRequest, "head"),
         baseSha: readSha(pullRequest, "base"),
@@ -21051,7 +21655,7 @@ function context_readRecord(value, label) {
 function readBoolean(value) {
     return value === true;
 }
-function readString(value) {
+function context_readString(value) {
     return typeof value === "string" ? value : "";
 }
 
@@ -23892,8 +24496,6 @@ async function writeParseWarningsArtifact(primaryArtifactPath, warnings) {
     await (0,promises_.writeFile)(path, `${JSON.stringify(body, null, 2)}\n`, "utf8");
 }
 
-;// CONCATENATED MODULE: external "node:crypto"
-const external_node_crypto_namespaceObject = __WEBPACK_EXTERNAL_createRequire(import.meta.url)("node:crypto");
 ;// CONCATENATED MODULE: ./src/cli/local-files-run.ts
 /**
  * Runs a provider-only review over local files/directories for the

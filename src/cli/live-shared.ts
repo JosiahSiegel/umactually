@@ -16,6 +16,7 @@ import type { Severity } from "../config/types.js";
 import { normalizeProviderSeverity } from "../provider/provider-parse.js";
 import type { ProviderComment } from "../provider/provider-parse.js";
 import type { ParsedCliArgs } from "./parse-args.js";
+import { computeDurableFindingIdentity, type CanonicalFindingInput, type DurableFindingIdentity } from "../review/fingerprint.js";
 
 export type { FetchImpl };
 
@@ -73,6 +74,49 @@ export type LiveRunResult = {
 };
 
 export type LiveReviewComment = ProviderComment;
+
+export type { DurableFindingIdentity };
+
+/**
+ * Compute the durable finding identity for a provider comment and return
+ * a new comment carrying the identity. Called at the boundary where raw
+ * provider output enters the live pipeline (live-provider.ts
+ * `normalizeProviderComment`), so every downstream consumer (filters,
+ * renderers, platform adapters, evals, artifacts) sees the same typed
+ * finding shape.
+ *
+ * The identity is stable across line shifts because raw line numbers
+ * are never fingerprint inputs. Mutable full prose, secrets, absolute
+ * paths, tokens, and raw line numbers are excluded by construction.
+ */
+export function enrichWithDurableIdentity(
+  comment: LiveReviewComment,
+  opts: {
+    readonly pathRewrites?: CanonicalFindingInput["pathRewrites"];
+    readonly caseInsensitive?: CanonicalFindingInput["caseInsensitive"];
+  } = {},
+): LiveReviewComment {
+  const firstSentence = extractFirstSentence(comment.body);
+  const input: CanonicalFindingInput = {
+    path: comment.path,
+    anchorKind: "symbol",
+    symbolName: undefined,
+    symbolKind: undefined,
+    hunkPreimage: undefined,
+    category: comment.category,
+    ruleKey: undefined,
+    bodyFirstSentence: firstSentence,
+    pathRewrites: opts.pathRewrites,
+    caseInsensitive: opts.caseInsensitive,
+  };
+  const identity = computeDurableFindingIdentity(input);
+  return { ...comment, durableIdentity: identity };
+}
+
+function extractFirstSentence(body: string): string {
+  const match = body.match(/^[^.!?]*[.!?]/u);
+  return match !== null ? match[0] : body;
+}
 
 export type LiveReview = {
   readonly summary: string;
