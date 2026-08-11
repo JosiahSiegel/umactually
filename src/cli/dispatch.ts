@@ -9,7 +9,7 @@ import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 
 import { BRAND_PREFIX } from "../util/brand.js";
-import { runCli, runVersion } from "../cli.js";
+import { readPackageVersion, runCli, runVersion } from "../cli.js";
 import { classifyReviewArtifact } from "./check-review-artifact.js";
 import { formatDoctorHuman, formatDoctorJson, runDoctor } from "./doctor.js";
 import { type HelpCommand, printContextualHelp, renderCommandsTable } from "./help.js";
@@ -657,7 +657,7 @@ async function runInitBranch(args: readonly string[]): Promise<DispatchResult> {
       cwd: process.cwd(),
       homeDir: homedir(),
       platform: process.platform,
-      packageVersion: process.env["UMACTUALLY_VERSION"] ?? "0.6.21",
+      packageVersion: readPackageVersion(),
     },
   });
   const stdout = json ? formatInitJson(result) : formatInitHuman(result);

@@ -83,6 +83,7 @@ function runRenderCheck() {
 // value that does not equal v<currentVersion> is drift.
 function scanForHistoricalVersions(currentVersion) {
   const tagValue = `v${currentVersion}`;
+  const npmPinValue = `umactually@${currentVersion}`;
   // Match a literal `vX.Y.Z` (without a SemVer pre-release/build suffix)
   // that is a *standalone token* in the prose: preceded and followed by
   // an end-of-token boundary. Crucially the boundary excludes URL path
@@ -106,6 +107,7 @@ function scanForHistoricalVersions(currentVersion) {
   //   - [-+] — SemVer pre-release / build suffix
   const tagRe =
     /(?<![/.:?\w])(?:v\d+\.\d+\.\d+)(?![-+0-9A-Za-z.])(?![/.:?\w])/g;
+  const npmPinRe = /\bumactually@\d+\.\d+\.\d+(?![-+0-9A-Za-z.])/g;
   const drift = [];
   for (const rel of collectTargets(packageRoot, TARGETS, SKIP_DIRS)) {
     const abs = isAbsolute(rel) ? rel : join(packageRoot, rel);
@@ -114,6 +116,9 @@ function scanForHistoricalVersions(currentVersion) {
     const found = new Set();
     for (const match of content.matchAll(tagRe)) {
       if (match[0] !== tagValue) found.add(match[0]);
+    }
+    for (const match of content.matchAll(npmPinRe)) {
+      if (match[0] !== npmPinValue) found.add(match[0]);
     }
     if (found.size > 0) drift.push({ rel, hits: [...found].sort() });
   }
@@ -150,7 +155,7 @@ function main() {
       process.stderr.write(`  ${rel}: ${hits.join(", ")}\n`);
     }
     process.stderr.write(
-      `  Expected every vX.Y.Z form to equal v${currentVersion}. Re-run \`node scripts/render-versions.mjs\` or manually update any reference the tokens do not cover.\n`,
+      `  Expected every vX.Y.Z form to equal v${currentVersion} and every umactually@X.Y.Z pin to equal umactually@${currentVersion}. Re-run \`node scripts/render-versions.mjs\` or manually update any reference the tokens do not cover.\n`,
     );
   } else if (!quiet) {
     process.stdout.write("check-version-alignment: no historical version pins found\n");

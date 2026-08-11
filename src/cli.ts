@@ -50,7 +50,7 @@ export { parseCliArgs, CliUsageError };
  * single source of truth — both the Bun --define path and the
  * tsdown `define` path land at this same typeof check.
  */
-function readPackageVersion(): string {
+export function readPackageVersion(): string {
   // Bun --compile injects this via --define. tsdown's `define` config
   // (in tsdown.config.ts) does the same via rolldown. The bare
   // identifier is replaced at compile time — using
