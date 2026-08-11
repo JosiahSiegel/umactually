@@ -176,3 +176,7 @@ SONAR_TOKEN=<your-token> \
 - See [`docs/troubleshooting.md`](troubleshooting.md) for parse-fail triage, automatic artifact validation, and concurrency notes.
 - See [`docs/providers.md`](providers.md) for the per-family wire shape, the cross-protocol dispatcher, model discovery per family, and the `/anthropic` path-prefix heuristic.
 - See [`docs/security.md`](security.md) for redaction, leak detection, the `minimum-severity` carve-out for `security` / `leak` findings, prompt-file path safety, and the trust model.
+
+## See also
+
+The README's [Quickstart](README.md#quickstart) section walks an operator through the wizard that writes the saved config described in the §Precedence table above. The README's [Configuration](README.md#documentation) row points operators to this doc as the canonical reference; the README's [Verify](README.md#verify) section explains how to inspect the resolved config with `--show-config` after `umactually init` has run.
