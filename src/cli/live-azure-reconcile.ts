@@ -39,7 +39,7 @@ import { azureHeaders, type FetchImpl } from "../util/http.js";
 import { isRecord, isSafeInteger, isUnknownArray, readStringFieldOrThrow } from "../util/json-guards.js";
 import { writeBrandedAnnotation } from "../util/log.js";
 import { formatError } from "../util/error.js";
-import type { LiveReviewComment } from "./live-shared.js";
+import { LiveReviewError, type LiveReviewComment } from "./live-shared.js";
 import { buildInlineCommentBody } from "./live-shared.js";
 
 // ---------------------------------------------------------------------------
@@ -516,6 +516,7 @@ export type ReconcileContext =
 export async function reconcileAzureThreads(input: {
   readonly context: ReconcileContext;
   readonly fetchImpl: FetchImpl;
+  readonly signal?: AbortSignal;
   readonly actions: readonly ThreadAction[];
   readonly currentRunId: string;
   readonly currentAttemptId: string;
@@ -550,6 +551,7 @@ async function applyAction(
     readonly currentAttemptId: string;
     readonly currentHeadSha: string;
     readonly secrets?: readonly string[];
+    readonly signal?: AbortSignal;
   },
   action: ThreadAction,
 ): Promise<ReconcileOutcome> {
@@ -559,6 +561,7 @@ async function applyAction(
         const result = await postAzureInlineThread({
           context: ctx.context,
           fetchImpl: ctx.fetchImpl,
+           ...(ctx.signal === undefined ? {} : { signal: ctx.signal }),
           comment: action.comment,
           currentRunId: ctx.currentRunId,
           currentAttemptId: ctx.currentAttemptId,
@@ -801,6 +804,7 @@ async function postAzureInlineThread(input: {
   readonly fingerprint: string;
   readonly parentThreadId?: number;
   readonly secrets?: readonly string[];
+  readonly signal?: AbortSignal;
 }): Promise<{ readonly threadId: number; readonly commentId: number } | undefined> {
   // Reuse the existing inline-body builder, but augment with the
   // fingerprint marker block so the next reconcile pass can recover the
@@ -818,7 +822,8 @@ async function postAzureInlineThread(input: {
   const response = await input.fetchImpl(url, {
     method: "POST",
     headers,
-    body: JSON.stringify({
+    ...(input.signal === undefined ? {} : { signal: input.signal }),
+     body: JSON.stringify({
       comments: [
         {
           parentCommentId: 0,
@@ -837,7 +842,7 @@ async function postAzureInlineThread(input: {
   if (!response.ok) {
     const message = `HTTP ${response.status}`;
     writeBrandedAnnotation("warning", `Azure reconcile POST thread failed (${message}); retryable.`);
-    throw new Error(message);
+     throw new LiveReviewError("HTTP_RESPONSE_FAILED", `Azure reconcile POST thread failed with HTTP ${response.status}.`);
   }
   const json = await readJsonSafe(response);
   if (!isRecord(json)) return undefined;
@@ -897,7 +902,10 @@ export { readStringFieldOrThrow };
 // ---------------------------------------------------------------------------
 
 import { createHash } from "node:crypto";
-import { computeDurableFindingIdentity } from "../review/fingerprint.js";
+import {
+  assertNoFingerprintCollision,
+  computeDurableFindingIdentity,
+} from "../review/fingerprint.js";
 import {
   type LiveProviderOutcome,
   type LiveRunResult,
@@ -934,8 +942,13 @@ export async function runAzureLiveWithReconcile(input: {
   readonly parsed: ParsedCliArgs;
   readonly fetchImpl: FetchImpl;
   readonly options?: RunAzureReconcileOptions;
+  readonly signal?: AbortSignal;
 }): Promise<LiveRunResult> {
   const { context, diffText, provider, parsed, fetchImpl } = input;
+  const reconcileSignal = AbortSignal.any([
+    input.signal ?? new AbortController().signal,
+    AbortSignal.timeout(60_000),
+  ]);
   const resolutionMode: ResolutionMode = input.options?.resolutionMode ?? "logical";
 
   const prepared = preparePostedReview({
@@ -947,6 +960,9 @@ export async function runAzureLiveWithReconcile(input: {
     secrets: [context.token],
   });
   const { postableComments: comments, body } = prepared;
+  assertNoFingerprintCollision(
+    comments.flatMap((comment) => comment.durableIdentity === undefined ? [] : [{ identity: comment.durableIdentity, body: comment.body }]),
+  );
 
   // Fencing token (Task 9): runId + attemptId + currentHeadSha.
   const currentHeadSha = context.sourceCommit;
@@ -963,7 +979,7 @@ export async function runAzureLiveWithReconcile(input: {
   const findings: DurableFindingWithIdentity[] = comments.map(buildDurableFindingForComment);
 
   // 1. List prior threads (best-effort; empty list on failure).
-  const priorThreads = await listPriorThreads(context, fetchImpl);
+  const priorThreads = await listPriorThreads(context, fetchImpl, reconcileSignal);
 
   // 2. Classify + transition rules.
   const classified = classifyPriorThreads({
@@ -985,13 +1001,14 @@ export async function runAzureLiveWithReconcile(input: {
   // and delete every comment on it so ADO flips it to `isDeleted: true`.
   const oldParent = findParentMarkerThread(priorThreads);
   if (oldParent !== null && typeof oldParent.thread.id === "number") {
-    await deleteParentComments(context, fetchImpl, oldParent.thread.id, parentCommentIds(oldParent.thread));
+    await deleteParentComments(context, fetchImpl, oldParent.thread.id, parentCommentIds(oldParent.thread), reconcileSignal);
   }
 
   // 4. Execute reconcile actions on existing threads.
   await reconcileAzureThreads({
     context: { kind: "azure-context", context },
     fetchImpl,
+    signal: reconcileSignal,
     actions,
     currentRunId,
     currentAttemptId,
@@ -1031,13 +1048,13 @@ export async function runAzureLiveWithReconcile(input: {
   }
 
   // 6. POST the parent LAST so it gets the highest thread id.
-  const parentThread = await postParentPrComment(context, fetchImpl, body);
+  const parentThread = await postParentPrComment(context, fetchImpl, body, reconcileSignal);
   const parentThreadId = parentThread?.id;
 
   // 7. PATCH each newly-created inline comment to inject the parent-ref text.
   if (parentThreadId !== undefined) {
     for (const inline of postedInlines) {
-      await patchInlineForParentRef(context, fetchImpl, inline.threadId, inline.commentId, parentThreadId, created.find((a) => a.fingerprint === inline.fingerprint)?.comment);
+      await patchInlineForParentRef(context, fetchImpl, inline.threadId, inline.commentId, parentThreadId, created.find((a) => a.fingerprint === inline.fingerprint)?.comment, reconcileSignal);
     }
   }
 
@@ -1054,7 +1071,7 @@ export async function runAzureLiveWithReconcile(input: {
   }
 
   // 8. PR status POST.
-  await postPrStatus(context, fetchImpl, mapReviewVerdictToAzureStatus(prepared.effectiveVerdict), provider.review.summary);
+  await postPrStatus(context, fetchImpl, mapReviewVerdictToAzureStatus(prepared.effectiveVerdict), provider.review.summary, reconcileSignal);
 
   const reviewId = parentThreadId ?? postedInlines[0]?.threadId;
   const parseFailed = provider.review.parseFailed === true;
@@ -1108,10 +1125,11 @@ function extractFirstSentence(body: string): string {
   return match !== null ? match[0] : body;
 }
 
-async function listPriorThreads(context: AzureContext, fetchImpl: FetchImpl): Promise<readonly AzureThreadRecord[]> {
+async function listPriorThreads(context: AzureContext, fetchImpl: FetchImpl, signal: AbortSignal): Promise<readonly AzureThreadRecord[]> {
   const response = await fetchImpl(`${azurePrBaseUrl(context)}/threads?api-version=${AZURE_API_VERSION}`, {
     method: "GET",
     headers: azureHeaders(context.token),
+    ...(signal === undefined ? {} : { signal }),
   });
   if (!response.ok) return [];
   const json = await readJsonSafe(response);
@@ -1191,11 +1209,12 @@ async function deleteParentComments(
   fetchImpl: FetchImpl,
   threadId: number,
   commentIds: readonly number[],
+  signal: AbortSignal,
 ): Promise<void> {
   for (const commentId of commentIds) {
     const url = `${azurePrBaseUrl(context)}/threads/${threadId}/comments/${commentId}?api-version=${AZURE_API_VERSION}`;
     try {
-      const response = await fetchImpl(url, { method: "DELETE", headers: azureHeaders(context.token) });
+       const response = await fetchImpl(url, { method: "DELETE", headers: azureHeaders(context.token), signal });
       if (!response.ok && response.status !== 204) {
         writeBrandedAnnotation("warning", `Azure reconcile delete parent ${threadId}/${commentId} HTTP ${response.status}; continuing.`);
       }
@@ -1209,11 +1228,13 @@ async function postParentPrComment(
   context: AzureContext,
   fetchImpl: FetchImpl,
   body: string,
+  signal: AbortSignal,
 ): Promise<{ readonly id: number } | undefined> {
   try {
     const response = await fetchImpl(`${azurePrBaseUrl(context)}/threads?api-version=${AZURE_API_VERSION}`, {
       method: "POST",
       headers: azureHeaders(context.token),
+      ...(signal === undefined ? {} : { signal }),
       body: JSON.stringify({
         comments: [{ parentCommentId: 0, content: body, commentType: 1 }],
         status: 1,
@@ -1238,6 +1259,7 @@ async function patchInlineForParentRef(
   commentId: number,
   parentThreadId: number,
   comment: LiveReviewComment | undefined,
+  signal: AbortSignal,
 ): Promise<void> {
   if (comment === undefined) return;
   const content = buildInlineCommentBody({
@@ -1251,6 +1273,7 @@ async function patchInlineForParentRef(
     const response = await fetchImpl(url, {
       method: "PATCH",
       headers: azureHeaders(context.token),
+      ...(signal === undefined ? {} : { signal }),
       body: JSON.stringify({ content }),
     });
     if (!response.ok) {
@@ -1266,6 +1289,7 @@ async function postPrStatus(
   fetchImpl: FetchImpl,
   state: "succeeded" | "failed" | "pending",
   description: string,
+  signal: AbortSignal,
 ): Promise<void> {
   const safeDescription = description
     .replace(/[\u000A\u000D]/gu, " ")
@@ -1276,6 +1300,7 @@ async function postPrStatus(
     const response = await fetchImpl(`${azurePrBaseUrl(context)}/statuses?api-version=${AZURE_API_VERSION}`, {
       method: "POST",
       headers: azureHeaders(context.token),
+      ...(signal === undefined ? {} : { signal }),
       body: JSON.stringify({
         state,
         description: safeDescription,

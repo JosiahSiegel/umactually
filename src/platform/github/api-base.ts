@@ -90,8 +90,9 @@ export class GithubApiBaseError extends Error {
        | "GITHUB_API_URL_CREDENTIALED"
       | "GITHUB_API_URL_HAS_QUERY",
     message: string,
+    options?: ErrorOptions,
   ) {
-    super(message);
+    super(message, options);
   }
 }
 
@@ -138,7 +139,7 @@ export function normalizeGithubApiBase(rawUrl: string): GithubApiBase {
   let parsed: URL;
   try {
     parsed = new URL(trimmed);
-  } catch {
+  } catch (error) {
     throw new GithubApiBaseError(
       "GITHUB_API_URL_MALFORMED",
       `GITHUB_API_URL is not a parseable URL: '${rawUrl}'.`,

@@ -5071,8 +5071,8 @@ const DEFAULT_GITHUB_API_BASE = "https://api.github.com";
 class GithubApiBaseError extends Error {
     code;
     name = "GithubApiBaseError";
-    constructor(code, message) {
-        super(message);
+    constructor(code, message, options) {
+        super(message, options);
         this.code = code;
     }
 }
@@ -5116,7 +5116,7 @@ function normalizeGithubApiBase(rawUrl) {
     try {
         parsed = new URL(trimmed);
     }
-    catch {
+    catch (error) {
         throw new GithubApiBaseError("GITHUB_API_URL_MALFORMED", `GITHUB_API_URL is not a parseable URL: '${rawUrl}'.`);
     }
     // WHATWG URL normalizes scheme and hostname to lowercase; `protocol`
@@ -16583,9 +16583,9 @@ const IDENTITY_V1_PREFIX = "umactually-identity-v1";
 class FingerprintCollisionError extends Error {
     fingerprintDigest;
     collisionType;
-    constructor(fingerprintDigest, collisionType, detail) {
+    constructor(fingerprintDigest, collisionType, detail, options) {
         super(`FINGERPRINT_COLLISION: fingerprint ${fingerprintDigest} maps to divergent identity digests${detail !== undefined ? ` (${detail})` : ""}. ` +
-            "Posting, resolution, and state mutation are suppressed.");
+            "Posting, resolution, and state mutation are suppressed.", options);
         this.name = "FingerprintCollisionError";
         this.fingerprintDigest = fingerprintDigest;
         this.collisionType = collisionType;

@@ -132,11 +132,13 @@ export class FingerprintCollisionError extends Error {
     fingerprintDigest: string,
     collisionType: "within-review" | "against-persisted-state",
     detail?: string,
+    options?: ErrorOptions,
   ) {
     super(
       `FINGERPRINT_COLLISION: fingerprint ${fingerprintDigest} maps to divergent identity digests${detail !== undefined ? ` (${detail})` : ""}. ` +
-        "Posting, resolution, and state mutation are suppressed.",
-    );
+         "Posting, resolution, and state mutation are suppressed.",
+       options,
+     );
     this.name = "FingerprintCollisionError";
     this.fingerprintDigest = fingerprintDigest;
     this.collisionType = collisionType;

@@ -37,7 +37,11 @@ import {
   type GithubApiBase,
 } from "../platform/github/api-base.js";
 import { writeBrandedAnnotation } from "../util/log.js";
-import { computeDurableFindingIdentity, type CanonicalFindingInput } from "../review/fingerprint.js";
+import {
+  assertNoFingerprintCollision,
+  computeDurableFindingIdentity,
+  type CanonicalFindingInput,
+} from "../review/fingerprint.js";
 import type { ContextProvenanceResult } from "./context-provenance.js";
 import { isRecord, isSafeInteger } from "../util/json-guards.js";
 import type { LiveRunResult, LiveProviderOutcome } from "./live-shared.js";
@@ -108,6 +112,7 @@ export type ReconcileInput = {
   readonly policyHash: string;
   readonly resolutionMode: ResolutionMode;
   readonly fetchImpl: FetchImpl;
+  readonly signal?: AbortSignal;
   readonly decision?: ReconcileDecision;
 };
 
@@ -188,14 +193,50 @@ function extractFingerprint(body: string): string | null {
   return match !== null ? match[1]! : null;
 }
 
-export async function runGithubReconcile(input: ReconcileInput): Promise<ReconcileResult> {
+export async function runGithubReconcile(
+  input: ReconcileInput,
+  signal?: AbortSignal,
+): Promise<ReconcileResult> {
+  const reconcileSignal = AbortSignal.any([
+    signal ?? input.signal ?? new AbortController().signal,
+    AbortSignal.timeout(60_000),
+  ]);
+  assertNoFingerprintCollision(
+    input.newFindings.map((finding) => ({
+      identity: {
+        fingerprintVersion: 1,
+        fingerprintDigest: finding.fingerprint,
+        identityDigest: finding.identityDigest,
+        canonicalPath: finding.path,
+        anchorKind: "hunk",
+        canonicalAnchor: "",
+        normalizedCategory: finding.category ?? "",
+        normalizedRuleKey: finding.fingerprint,
+      },
+      body: finding.body,
+    })),
+    input.priorFindings.map((finding) => ({
+      identity: {
+        fingerprintVersion: 1,
+        fingerprintDigest: finding.fingerprint,
+        identityDigest: finding.identityDigest,
+        canonicalPath: finding.path,
+        anchorKind: "hunk",
+        canonicalAnchor: "",
+        normalizedCategory: "",
+        normalizedRuleKey: finding.fingerprint,
+      },
+      body: finding.fingerprint,
+    })),
+  );
+  const fetchInput: ReconcileInput = { ...input, signal: reconcileSignal };
   const warnings: string[] = [];
   const transitions: ReconcileTransition[] = [];
   const postedThreadIds: number[] = [];
   const updatedThreadIds: number[] = [];
   let partialFailure = false;
 
-  const priorComments = await listPriorMarkerComments(input);
+  const priorComments = await listPriorMarkerComments(fetchInput);
   if (priorComments.kind === "error") {
     warnings.push(...priorComments.warnings);
     partialFailure = true;
@@ -212,7 +253,7 @@ export async function runGithubReconcile(input: ReconcileInput): Promise<Reconci
     };
   }
 
-  const reviewsOutcome = await listReviews(input);
+  const reviewsOutcome = await listReviews(fetchInput);
   let reviews: readonly GithubReview[] = [];
   if (reviewsOutcome.kind === "error") {
     warnings.push(...reviewsOutcome.warnings);
@@ -230,7 +271,7 @@ export async function runGithubReconcile(input: ReconcileInput): Promise<Reconci
   }
 
   for (const candidate of classification.reconsidered) {
-    const transition = await processReconsidered(input, {
+    const transition = await processReconsidered(fetchInput, {
       candidate,
       newByFingerprint,
       warnings,
@@ -259,7 +300,7 @@ export async function runGithubReconcile(input: ReconcileInput): Promise<Reconci
   for (const newFinding of input.newFindings) {
     const alreadyTransitioned = transitions.some((t) => t.fingerprint === newFinding.fingerprint);
     if (alreadyTransitioned) continue;
-    const posted = await postNewFinding(input, { finding: newFinding, warnings });
+    const posted = await postNewFinding(fetchInput, { finding: newFinding, warnings });
     if (posted !== null) {
       postedThreadIds.push(posted);
       transitions.push({
@@ -299,6 +340,7 @@ async function listPriorMarkerComments(input: ReconcileInput): Promise<ListOutco
     const response = await input.fetchImpl(reviewCommentsListUrl(input.context), {
       method: "GET",
       headers: githubHeaders(input.context.token),
+      ...(input.signal === undefined ? {} : { signal: input.signal }),
     });
     if (response.status === 403 || response.status === 404 || response.status === 422) {
       return {
@@ -337,6 +379,7 @@ async function listReviews(input: ReconcileInput): Promise<ListOutcome<GithubRev
     const response = await input.fetchImpl(reviewsListUrl(input.context), {
       method: "GET",
       headers: githubHeaders(input.context.token),
+      ...(input.signal === undefined ? {} : { signal: input.signal }),
     });
     if (response.status === 403 || response.status === 404) {
       return {
@@ -636,6 +679,7 @@ async function verifyAnchorRemoved(input: ReconcileInput, opts: {
     const response = await input.fetchImpl(fileContentsUrl(input.context, opts.path, input.currentHeadSha), {
       method: "GET",
       headers: githubHeaders(input.context.token),
+      ...(input.signal === undefined ? {} : { signal: input.signal }),
     });
     if (response.status === 404) {
       return { kind: "ok", removed: true };
@@ -690,6 +734,7 @@ async function patchExistingThread(input: ReconcileInput, opts: {
     const response = await input.fetchImpl(reviewCommentUrl(input.context, opts.threadId), {
       method: "PATCH",
       headers: githubHeaders(input.context.token),
+      ...(input.signal === undefined ? {} : { signal: input.signal }),
       body: JSON.stringify({ body: opts.newBody }),
     });
     if (response.status === 403 || response.status === 404 || response.status === 422) {
@@ -717,6 +762,7 @@ async function nativelyCloseThread(input: ReconcileInput, opts: {
     const response = await input.fetchImpl(reviewCommentUrl(input.context, opts.threadId), {
       method: "PATCH",
       headers: githubHeaders(input.context.token),
+      ...(input.signal === undefined ? {} : { signal: input.signal }),
       body: JSON.stringify({
         body: `<!-- umactually:resolved-by-replay -->\nResolution: anchor verified removed by reconcile.`,
       }),
@@ -744,6 +790,7 @@ async function postReopenMarker(input: ReconcileInput, opts: {
     const response = await input.fetchImpl(reviewCommentsListUrl(input.context), {
       method: "POST",
       headers: githubHeaders(input.context.token),
+      ...(input.signal === undefined ? {} : { signal: input.signal }),
       body: JSON.stringify({ body: opts.newBody }),
     });
     if (!response.ok) {
@@ -770,6 +817,7 @@ async function postNewFinding(input: ReconcileInput, opts: {
     const response = await input.fetchImpl(reviewCommentsListUrl(input.context), {
       method: "POST",
       headers: githubHeaders(input.context.token),
+      ...(input.signal === undefined ? {} : { signal: input.signal }),
       body: JSON.stringify({
         commit_id: input.currentHeadSha,
         path: opts.finding.path,
