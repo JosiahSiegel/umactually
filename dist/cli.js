@@ -12856,6 +12856,47 @@ function extractLastReviewDraftFromReasoning(output) {
     }
     return lastDraft;
 }
+/** Defensively parse a raw suggestion object from provider JSON. Returns undefined on any structural issue. */
+function parseRawSuggestion(value) {
+    if (value === undefined || value === null || typeof value !== "object" || Array.isArray(value)) {
+        return {};
+    }
+    const obj = value;
+    const replacement = obj["replacement"];
+    const originalTextHash = obj["originalTextHash"];
+    const endLine = obj["endLine"];
+    if (typeof replacement !== "string" || typeof originalTextHash !== "string") {
+        return {};
+    }
+    const raw = {
+        replacement,
+        originalTextHash,
+        ...(typeof endLine === "number" ? { endLine } : {}),
+    };
+    return { rawSuggestion: raw };
+}
+/** Defensively parse a raw remediation object from provider JSON. Returns undefined on any structural issue. */
+function parseRawRemediation(value) {
+    if (value === undefined || value === null || typeof value !== "object" || Array.isArray(value)) {
+        return {};
+    }
+    const obj = value;
+    const objective = obj["objective"];
+    const targetPath = obj["targetPath"];
+    const targetAnchor = obj["targetAnchor"];
+    if (typeof objective !== "string" || typeof targetPath !== "string" || typeof targetAnchor !== "string") {
+        return {};
+    }
+    const constraints = Array.isArray(obj["constraints"])
+        ? obj["constraints"].filter((v) => typeof v === "string")
+        : [];
+    const verificationCommands = Array.isArray(obj["verificationCommands"])
+        ? obj["verificationCommands"].filter((v) => typeof v === "string")
+        : [];
+    return {
+        rawRemediation: { objective, targetPath, targetAnchor, constraints, verificationCommands },
+    };
+}
 function readCommentArray(value, context) {
     if (!isUnknownArray(value)) {
         return [];
@@ -12900,6 +12941,8 @@ function readCommentArray(value, context) {
                     }
                     : { commentIndex: index }),
                 category: readStringField(entry, "category") ?? "general",
+                ...(parseRawSuggestion(entry["suggestion"]) ?? {}),
+                ...(parseRawRemediation(entry["remediation"]) ?? {}),
             });
         }
     });
@@ -16482,7 +16525,792 @@ function assertNoFingerprintCollision(current, persisted = []) {
     }
 }
 
+;// CONCATENATED MODULE: ./src/diff/filter-build-artifacts.ts
+/**
+ * Centralized exclusion of build-artifact / generated paths from review diffs.
+ *
+ * Background — what this solves
+ * -----------------------------
+ * LLMs have strong training-data priors for paths like `dist/cli.js`,
+ * `dist/index.js`, `build/`, `node_modules/`, and lockfiles. When a review
+ * prompt carries these paths in the diff (or — worse — emits them in the
+ * model's response), the model "recognizes" them from training and starts
+ * fabricating content about what they contain, even when those paths are
+ * not in the supplied diff. PR #56 surfaced this in production: an
+ * `auto`-model review of a 122-line source-only diff still produced 8
+ * findings citing `dist/cli.js:N` and `dist/index.js:N` line numbers.
+ *
+ * The production-tool survey (CodeRabbit, Sourcery, Greptile, Ellipsis)
+ * converges on the same defense: strip these paths from the diff
+ * upstream AND surface them as negative examples in the prompt.
+ *
+ * Why this lives in its own module
+ * --------------------------------
+ * Until now, exclusion happened in two places that could drift:
+ *   1. `scripts/prepare-azure-pr-inputs.sh` — shell-side `':!dist'`
+ *   2. `.github/workflows/self-review.yml` — no exclusion at all (REST diff)
+ *
+ * A single TypeScript filter applied uniformly:
+ *   - on the GitHub REST-diff path (`src/platform/github/api.ts`)
+ *   - on the Azure REST-reconstruction path (`src/platform/azure/api.ts`)
+ *   - on the local `git diff` path (defense in depth, since the shell
+ *     already excludes — the script's `':!dist'` and our filter should
+ *     agree)
+ *   - on the CLI `--diff <path>` reader (so a user-supplied diff that
+ *     still contains dist/ — e.g. from a non-standard pipeline — gets
+ *     filtered too)
+ *
+ * Patterns are minimatch-style globs (directory, wildcard, ext). They
+ * match against the forward-slash normalized path so the filter is
+ * OS-agnostic.
+ */
+/** Build-artifact / generated path globs that should never enter a review prompt. */
+const DEFAULT_BUILD_ARTIFACT_PATTERNS = [
+    // Output directories (match the dir and anything under it)
+    "dist/",
+    "build/",
+    "out/",
+    "target/", // Rust/Java
+    "_build/", // Elixir
+    ".next/",
+    ".nuxt/",
+    ".output/",
+    // Compiled / minified / bundled (double-star so we match at any depth)
+    "**/*.min.js",
+    "**/*.min.css",
+    "**/*.bundle.js",
+    "**/*.bundle.css",
+    "**/*.chunk.js",
+    // Source maps (match at any depth)
+    "**/*.map",
+    // Test coverage
+    "coverage/",
+    ".nyc_output/",
+    // Dependencies
+    "node_modules/",
+    "vendor/",
+    // Lockfiles (match at any depth, including monorepo subdirs)
+    "**/package-lock.json",
+    "**/yarn.lock",
+    "**/pnpm-lock.yaml",
+    "**/bun.lockb",
+    "**/Gemfile.lock",
+    "**/Cargo.lock",
+    "**/poetry.lock",
+    "**/composer.lock",
+    // TypeScript build info (at any depth)
+    "**/*.tsbuildinfo",
+];
+/** Normalize a path to forward-slashes for matching. */
+function toPosixPath(path) {
+    return path.replace(/\\/gu, "/");
+}
+/**
+ * Convert a single minimatch-ish glob to a RegExp anchored at both ends.
+ *
+ * Supports:
+ *   - directory pattern (ending in slash) — matches the dir itself or anything under it
+ *   - double-star — matches any number of path segments
+ *   - single-star — matches any number of non-slash characters
+ *   - exact path — no wildcards, anchored match only
+ *   - `*.ext`              — matches any path ending in `.ext`
+ *   - `name.ext`           — exact match (no wildcards)
+ *
+ * Does NOT support full minimatch syntax — the goal is a small, predictable
+ * filter, not a general-purpose matcher. Excluded files are an allowlist;
+ * new patterns should be added to `DEFAULT_BUILD_ARTIFACT_PATTERNS` and
+ * covered by tests in `test/unit/diff-filter.test.ts`.
+ */
+function globToRegExp(glob) {
+    // Build the RegExp by walking the glob character-by-character.
+    // The naive `.replace` approach had a subtle bug: escaping slashes
+    // and ordering `**` before `*` is easy to get wrong. The
+    // character-by-character walk is more verbose but unambiguous.
+    let pattern = "";
+    let i = 0;
+    while (i < glob.length) {
+        const ch = glob[i];
+        if (ch === "*") {
+            if (glob[i + 1] === "*") {
+                pattern += ".*";
+                i += 2;
+                continue;
+            }
+            pattern += "[^/]*";
+            i += 1;
+            continue;
+        }
+        if (ch === "?") {
+            pattern += "[^/]";
+            i += 1;
+            continue;
+        }
+        if (ch === "." || ch === "+" || ch === "(" || ch === ")" ||
+            ch === "|" || ch === "^" || ch === "$" || ch === "{" ||
+            ch === "}" || ch === "[" || ch === "]" || ch === "\\") {
+            pattern += `\\${ch}`;
+            i += 1;
+            continue;
+        }
+        pattern += ch;
+        i += 1;
+    }
+    if (glob.endsWith("/")) {
+        // Directory pattern (e.g. `dist/`, `node_modules/`).
+        // Strip the trailing `/` for matching: `dist/` becomes `dist`,
+        // then we match either the dir itself (`dist`) or the dir followed
+        // by `/<anything>` (`dist/cli.js`, `dist/nested/file.js`).
+        // For monorepo cases (`packages/api/dist/x.js`), we also match
+        // when the dir appears as a non-leading path segment.
+        const dirPattern = pattern.slice(0, -1);
+        return new RegExp(`(?:^${dirPattern}$|^${dirPattern}/|(?:^|.*/)${dirPattern}(?:/|$))`, "u");
+    }
+    // For patterns like `**/*.map`, the leading `**/` should match zero
+    // or more path segments. The greedy `.*` does that for us, but
+    // anchored to start we need to also allow the prefix to be empty.
+    // E.g. `app.js.map` should match `**/*.map`. We replace the leading
+    // `^.*?/` with `^(?:.*/)?` to make the prefix optional.
+    const finalPattern = pattern.startsWith(".*/") ? `(?:.*/)?${pattern.slice(3)}` : pattern;
+    return new RegExp(`^${finalPattern}$`, "u");
+}
+/**
+ * Check whether a path matches any of the given patterns.
+ *
+ * The path is normalized to forward-slashes before matching, so
+ * Windows-style `dist\cli.js` and POSIX `dist/cli.js` are treated
+ * identically.
+ */
+function isBuildArtifactPath(path, patterns = DEFAULT_BUILD_ARTIFACT_PATTERNS) {
+    const normalized = toPosixPath(path);
+    for (const pattern of patterns) {
+        if (globToRegExp(pattern).test(normalized)) {
+            return true;
+        }
+    }
+    return false;
+}
+function cli_isExcludedPath(path) {
+    return isBuildArtifactPath(path);
+}
+/**
+ * Strip every diff block for a path matching a build-artifact pattern.
+ *
+ * The input is expected to be a unified diff (`diff --git a/... b/...`
+ * blocks separated by blank lines or file headers). Each block is dropped
+ * entirely — including its `index` line, `--- a/`, `+++ b/`, hunks, and
+ * any trailing context. Whitespace between blocks is preserved so the
+ * remaining diff is still well-formed.
+ *
+ * Lines that are not part of any block (e.g. a leading comment or
+ * garbage) are preserved verbatim. The function never throws on a
+ * malformed input; if no `diff --git` headers are found, the input is
+ * returned unchanged.
+ */
+function filterBuildArtifacts(diffText, patterns = DEFAULT_BUILD_ARTIFACT_PATTERNS) {
+    if (diffText.length === 0) {
+        return diffText;
+    }
+    // Split into blocks on diff --git headers. We use `String.split` with
+    // a multiline regex rather than `String.match` because the latter
+    // pattern's `(?=^diff --git |$)` lookahead matches the end of every
+    // line (the `m` flag makes `$` mean end-of-line), which truncated
+    // each block at the first `--- a/...` line. Splitting on the header
+    // itself and prepending it to each subsequent piece is unambiguous.
+    const parts = diffText.split(/^diff --git /um);
+    if (parts.length <= 1) {
+        // No `diff --git ` headers — input is either empty or not a diff.
+        return diffText;
+    }
+    const blocks = parts.slice(1).map((p) => `diff --git ${p}`);
+    const retained = [];
+    let retainedBytes = 0;
+    let droppedBlocks = 0;
+    for (const block of blocks) {
+        const { a, b } = extractTargetPaths(block);
+        // Test the artifact filter against BOTH sides so renames across
+        // the filter boundary are caught. A file moved FROM dist/ TO
+        // src/ is reported by the `a` side as `dist/x.js`; a file moved
+        // FROM src/ TO dist/ is reported by the `b` side as `dist/x.js`.
+        // Either side matching means the block touches a build artifact.
+        const matchesArtifact = (a !== null && isBuildArtifactPath(a, patterns)) ||
+            (b !== null && isBuildArtifactPath(b, patterns));
+        if (matchesArtifact) {
+            droppedBlocks += 1;
+            continue;
+        }
+        retained.push(block);
+        retainedBytes += block.length;
+    }
+    // Avoid returning an empty string when every block was filtered; downstream
+    // callers (e.g. `parseDiffPositions`) treat empty diffs as "no review
+    // surface" and produce a parse-fail. Surface that with a one-line marker
+    // so the model at least sees something meaningful.
+    if (retained.length === 0) {
+        return "";
+    }
+    // Join with a single newline so consecutive `diff --git` blocks are
+    // separated. The split stripped the leading `diff --git ` marker from
+    // every block (we re-prepended it), but the inter-block separator
+    // (the trailing newline of the previous block) was discarded by
+    // String.split's separator semantics. Re-inserting `\n` here keeps
+    // the output parseable as a unified diff.
+    return retained.join("\n");
+}
+/**
+ * Extract the target paths from a diff block. Returns both the
+ * `a/` (old) and `b/` (new) sides so the caller can test the
+ * artifact-pattern filter against BOTH paths of a rename. A file
+ * moved across the filter boundary (e.g. `dist/x.js` → `src/x.js`)
+ * is correctly filtered by testing the old path; a file moved INTO
+ * a non-artifact path (e.g. `src/x.js` → `dist/x.js`) is correctly
+ * filtered by testing the new path.
+ *
+ * Either side may be null (file add: only `b/`, file delete: only
+ * `a/`, malformed: neither).
+ */
+function extractTargetPaths(block) {
+    const lines = block.split(/\r?\n/u);
+    return {
+        a: readPathLine(lines, "--- "),
+        b: readPathLine(lines, "+++ "),
+    };
+}
+function readPathLine(lines, prefix) {
+    for (const line of lines) {
+        if (!line.startsWith(prefix)) {
+            continue;
+        }
+        const rawPath = line.slice(prefix.length).split("\t")[0]?.trim() ?? "";
+        if (rawPath === "" || rawPath === "/dev/null") {
+            return null;
+        }
+        return rawPath.startsWith("a/") || rawPath.startsWith("b/")
+            ? rawPath.slice(2)
+            : rawPath;
+    }
+    return null;
+}
+/**
+ * Return the list of paths that appear in a diff (both `a/` and `b/`
+ * sides, deduplicated, forward-slash normalized). Used by the prompt
+ * builder to enumerate the diff's file list as a path enum in the
+ * JSON-schema + system-prompt path.
+ *
+ * Skips `/dev/null` on either side (file adds/dels). Order matches
+ * the diff's first appearance.
+ */
+function cli_listDiffPaths(diffText) {
+    const seen = new Set();
+    const ordered = [];
+    const lines = diffText.split(/\r?\n/u);
+    for (const line of lines) {
+        if (!line.startsWith("+++ ") && !line.startsWith("--- ")) {
+            continue;
+        }
+        const rawPath = line.slice(4).split("\t")[0]?.trim() ?? "";
+        if (rawPath === "" || rawPath === "/dev/null") {
+            continue;
+        }
+        const stripped = rawPath.startsWith("a/") || rawPath.startsWith("b/")
+            ? rawPath.slice(2)
+            : rawPath;
+        const normalized = toPosixPath(stripped);
+        if (seen.has(normalized)) {
+            continue;
+        }
+        seen.add(normalized);
+        ordered.push(normalized);
+    }
+    return ordered;
+}
+
+;// CONCATENATED MODULE: ./src/review/suggestion.ts
+// SPDX-License-Identifier: MIT
+//
+// Task 12 — Validated developer-controlled suggestions + agent-ready
+// remediation instructions WITHOUT auto-commit.
+//
+// This module is the single owner of:
+//   1. validateSuggestion — the defensive validator that runs path,
+//      side, range, original-content hash, diff anchoring, size,
+//      secret scan, generated-file exclusion, binary, and multiline
+//      boundary checks BEFORE marking a suggestion valid.
+//   2. RemediationInstruction — the structured { schemaVersion, objective,
+//      targetPath, targetAnchor, constraints[], verificationCommands[] }
+//      schema, with 8 KiB total serialized cap, per-string sanitization,
+//      closed-set constraints, allowlisted verification commands.
+//
+// Hard contract (enforced by tests + downstream boundary):
+//   - `validatedSuggestion` is rendered to GitHub suggestion fences or
+//     Azure suggestion representation ONLY when validation passes.
+//   - `remediationInstruction` (including verificationCommands[]) is
+//     serialized ONLY to the sanitized JSON/review artifact and NEVER
+//     to any platform comment body.
+//   - Each string in both structures is sanitized.
+//   - targetPath/anchor must already exist in the durable finding.
+//   - constraints are selected from a closed policy/context provenance
+//     label set.
+//   - verification commands come ONLY from an allowlisted repository-
+//     policy list.
+//   - Total serialized RemediationInstruction size capped at 8 KiB.
+//   - NO raw context/source/prompt is copied into either structure.
+//   - The module NEVER emits free-form agent prompt text, runs git
+//     apply/commit/push, creates PRs, or requests contents write.
+
+
+
+// ---------------------------------------------------------------------------
+// Constants
+// ---------------------------------------------------------------------------
+/** Total serialized size cap for a RemediationInstruction (8 KiB). */
+const MAX_REMEDIATION_SIZE_BYTES = 8192;
+/** Schema version for RemediationInstruction. */
+const REMEDIATION_INSTRUCTION_SCHEMA_VERSION = 1;
+/**
+ * Closed set of allowed constraint labels. Constraints are selected
+ * from policy/context provenance labels — operators can extend the
+ * policy file, but every wire value MUST be on this allowlist so a
+ * provider prompt cannot inject arbitrary constraint text.
+ */
+const ALLOWED_CONSTRAINT_LABELS = Object.freeze([
+    "policy:style",
+    "policy:security",
+    "policy:performance",
+    "policy:correctness",
+    "policy:maintainability",
+    "policy:tests",
+    "policy:documentation",
+    "context:provenance",
+    "context:diff-anchor",
+]);
+/**
+ * Closed allowlist of verification commands. These are the ONLY commands
+ * that may appear in `verificationCommands[]`. They come from a
+ * repository-policy allowlist (hard-coded here) — a provider prompt
+ * cannot inject arbitrary shell commands.
+ *
+ * The list intentionally contains only safe, read-only repository
+ * validation commands. No git mutation, no network egress, no file
+ * writes.
+ */
+const ALLOWED_VERIFICATION_COMMANDS = Object.freeze([
+    "npm test",
+    "npm run typecheck",
+    "npm run lint",
+    "npm run build",
+    "npm run test:unit",
+    "npm run test:scenario",
+    "npm run test:e2e",
+    "npm run check:dist-freshness",
+    "npm run render-docs:check",
+    "npm run check:version-alignment",
+]);
+/**
+ * High-confidence secret patterns for replacement scanning. Mirrors
+ * the patterns in `src/security/scan-review-secrets.ts` so a secret-
+ * shaped literal in a suggestion replacement is caught here BEFORE it
+ * can reach the platform comment body. A separate copy (rather than an
+ * import) keeps this module's validation pure — it does not depend on
+ * the async scanner's artifact-path contract.
+ */
+const SECRET_PATTERNS = [
+    /\bsk_test_[a-z_]+\b/u,
+    /\b(?:AKIA|ASIA)[A-Z0-9]{16}\b/u,
+    /\bghp_[A-Za-z0-9]{36}\b/u,
+    /\bgithub_pat_[A-Za-z0-9_]{82}\b/u,
+    /\bxox[baprs]-[A-Za-z0-9-]+\b/u,
+    /\b-----BEGIN (?:RSA |EC |OPENSSH |DSA )?PRIVATE KEY-----/u,
+];
+// ---------------------------------------------------------------------------
+// validateSuggestion
+// ---------------------------------------------------------------------------
+/**
+ * Defensive validator for a raw provider suggestion. Runs ALL of these
+ * checks BEFORE marking the suggestion valid:
+ *
+ *   1. malformed-input: rawSuggestion present, replacement non-empty,
+ *      originalTextHash non-empty.
+ *   2. generated-file: path must NOT match build-artifact / generated
+ *      patterns (dist/, build/, *.min.js, lockfiles, etc.).
+ *   3. off-diff-line: (path, line) must exist in the diff position index.
+ *   4. range-mismatch: when endLine is provided, endLine >= line.
+ *   5. stale-hash: SHA-256 of originalLineText must match originalTextHash.
+ *   6. multiline-boundary-escape: replacement must not contain ``` (the
+ *      markdown fence closer) which would escape the suggestion block.
+ *   7. binary: replacement must not contain null bytes or other control
+ *      characters characteristic of binary content.
+ *   8. oversized: replacement must not exceed the 8 KiB cap.
+ *   9. secret-bearing: replacement must not contain high-confidence
+ *      secret patterns.
+ *
+ * The replacement is sanitized (secrets redacted via the shared scanner)
+ * in the returned ValidatedSuggestion so downstream rendering never
+ * leaks a secret through the suggestion body.
+ */
+function validateSuggestion(input) {
+    const { rawSuggestion, path, line, diffPositions, originalLineText } = input;
+    // 1. Malformed input.
+    if (rawSuggestion === undefined || rawSuggestion === null) {
+        return reject("malformed-input", "suggestion is absent");
+    }
+    if (typeof rawSuggestion.replacement !== "string" || rawSuggestion.replacement.length === 0) {
+        return reject("malformed-input", "replacement must be a non-empty string");
+    }
+    if (typeof rawSuggestion.originalTextHash !== "string" || rawSuggestion.originalTextHash.length === 0) {
+        return reject("malformed-input", "originalTextHash must be a non-empty string");
+    }
+    // 2. Generated-file exclusion.
+    if (isBuildArtifactPath(path)) {
+        return reject("generated-file", `suggestion targets a generated/build-artifact path: ${path}`);
+    }
+    // 3. Off-diff line.
+    if (!diffPositions.hasPosition({ path, line })) {
+        return reject("off-diff-line", `suggestion anchor ${path}:${line} is not in the diff`);
+    }
+    // 4. Range mismatch.
+    const endLine = rawSuggestion.endLine ?? line;
+    if (endLine < line) {
+        return reject("range-mismatch", `endLine (${endLine}) < line (${line})`);
+    }
+    // 5. Stale hash.
+    const computedHash = sha256Hex(originalLineText);
+    if (computedHash !== rawSuggestion.originalTextHash) {
+        return reject("stale-hash", "originalTextHash does not match the actual line content");
+    }
+    // 6. Multiline boundary escape — replacement must not contain a
+    //    closing fence that would break out of the suggestion block.
+    if (rawSuggestion.replacement.includes("```")) {
+        return reject("multiline-boundary-escape", "replacement contains a markdown fence delimiter");
+    }
+    // 7. Binary — reject null bytes or a high concentration of control
+    //    characters (a strong signal of binary content, not source code).
+    if (containsBinaryContent(rawSuggestion.replacement)) {
+        return reject("binary", "replacement contains binary/control characters");
+    }
+    // 8. Oversized.
+    if (rawSuggestion.replacement.length > MAX_REMEDIATION_SIZE_BYTES) {
+        return reject("oversized", `replacement exceeds ${MAX_REMEDIATION_SIZE_BYTES} bytes`);
+    }
+    // 9. Secret-bearing.
+    if (suggestion_containsSecret(rawSuggestion.replacement)) {
+        return reject("secret-bearing", "replacement contains a high-confidence secret pattern");
+    }
+    // All checks passed — sanitize and return.
+    const sanitizedReplacement = sanitizeSuggestionText(rawSuggestion.replacement);
+    return {
+        validated: {
+            path,
+            line,
+            endLine,
+            side: "RIGHT",
+            replacement: sanitizedReplacement,
+            originalTextHash: rawSuggestion.originalTextHash,
+        },
+    };
+}
+// ---------------------------------------------------------------------------
+// buildRemediationInstruction
+// ---------------------------------------------------------------------------
+/**
+ * Build a validated RemediationInstruction from typed input. Every
+ * string is sanitized; constraints must be on the closed allowlist;
+ * verification commands must be on the allowlisted repository-policy
+ * list; total serialized size must be <= 8 KiB.
+ *
+ * Returns `{ ok: false, error }` with a typed error kind on any
+ * violation — the caller decides how to surface (typically: serialize
+ * the typed error into the artifact, keep the explanatory finding).
+ */
+function buildRemediationInstruction(input) {
+    // Objective.
+    if (typeof input.objective !== "string" || input.objective.length === 0) {
+        return remediationFail("invalid-objective", "objective must be a non-empty string");
+    }
+    // targetPath / targetAnchor — must be non-empty strings. The caller
+    // (pipeline boundary) MUST verify they exist in the durable finding
+    // BEFORE calling this builder; this function only checks structural
+    // validity (non-empty, no secret).
+    if (typeof input.targetPath !== "string" || input.targetPath.length === 0) {
+        return remediationFail("invalid-objective", "targetPath must be a non-empty string");
+    }
+    if (typeof input.targetAnchor !== "string" || input.targetAnchor.length === 0) {
+        return remediationFail("invalid-objective", "targetAnchor must be a non-empty string");
+    }
+    // Constraints — closed set.
+    if (!Array.isArray(input.constraints)) {
+        return remediationFail("invalid-constraint", "constraints must be an array");
+    }
+    for (const c of input.constraints) {
+        if (typeof c !== "string" || !ALLOWED_CONSTRAINT_LABELS.includes(c)) {
+            return remediationFail("invalid-constraint", `constraint "${String(c)}" is not on the allowlist`);
+        }
+    }
+    // Verification commands — allowlist.
+    if (!Array.isArray(input.verificationCommands)) {
+        return remediationFail("invalid-verification-command", "verificationCommands must be an array");
+    }
+    for (const v of input.verificationCommands) {
+        if (typeof v !== "string" || !ALLOWED_VERIFICATION_COMMANDS.includes(v)) {
+            return remediationFail("invalid-verification-command", `verification command "${String(v)}" is not on the allowlist`);
+        }
+    }
+    // Secret scan over every string field.
+    const allStrings = [
+        input.objective,
+        input.targetPath,
+        input.targetAnchor,
+        ...input.constraints,
+        ...input.verificationCommands,
+    ];
+    for (const s of allStrings) {
+        if (suggestion_containsSecret(s)) {
+            return remediationFail("secret-detected", "a RemediationInstruction string contains a secret-shaped literal");
+        }
+    }
+    // Sanitize every string.
+    const instruction = {
+        schemaVersion: REMEDIATION_INSTRUCTION_SCHEMA_VERSION,
+        objective: sanitizeSuggestionText(input.objective),
+        targetPath: sanitizeSuggestionText(input.targetPath),
+        targetAnchor: sanitizeSuggestionText(input.targetAnchor),
+        constraints: input.constraints.map(sanitizeSuggestionText),
+        verificationCommands: input.verificationCommands.map(sanitizeSuggestionText),
+    };
+    // Size cap — check the serialized size.
+    const serialized = serializeRemediationInstruction(instruction);
+    if (serialized.length > MAX_REMEDIATION_SIZE_BYTES) {
+        return remediationFail("oversized", `serialized RemediationInstruction exceeds ${MAX_REMEDIATION_SIZE_BYTES} bytes`);
+    }
+    return { ok: true, instruction };
+}
+// ---------------------------------------------------------------------------
+// validateRemediationInput — defensive parse from unknown
+// ---------------------------------------------------------------------------
+/**
+ * Parse an unknown raw value into a typed RemediationBuildInput. Used
+ * at the boundary where untrusted provider output first enters the
+ * remediation pipeline. Returns a typed error on any structural issue.
+ */
+function validateRemediationInput(raw) {
+    if (raw === null || typeof raw !== "object" || Array.isArray(raw)) {
+        return remediationInputFail("malformed-input", "remediation input must be an object");
+    }
+    const obj = raw;
+    const objective = obj["objective"];
+    const targetPath = obj["targetPath"];
+    const targetAnchor = obj["targetAnchor"];
+    const constraints = obj["constraints"];
+    const verificationCommands = obj["verificationCommands"];
+    if (typeof objective !== "string" || typeof targetPath !== "string" || typeof targetAnchor !== "string") {
+        return remediationInputFail("malformed-input", "objective, targetPath, targetAnchor must be strings");
+    }
+    if (constraints !== undefined && !Array.isArray(constraints)) {
+        return remediationInputFail("malformed-input", "constraints must be an array");
+    }
+    if (verificationCommands !== undefined && !Array.isArray(verificationCommands)) {
+        return remediationInputFail("malformed-input", "verificationCommands must be an array");
+    }
+    return {
+        ok: true,
+        input: {
+            objective,
+            targetPath,
+            targetAnchor,
+            constraints: Array.isArray(constraints) ? constraints.filter((v) => typeof v === "string") : [],
+            verificationCommands: Array.isArray(verificationCommands) ? verificationCommands.filter((v) => typeof v === "string") : [],
+        },
+    };
+}
+// ---------------------------------------------------------------------------
+// serializeRemediationInstruction
+// ---------------------------------------------------------------------------
+/**
+ * Deterministic serialization of a RemediationInstruction for the JSON
+ * artifact. Keys are in fixed order; secrets were already sanitized at
+ * build time. The output MUST stay under MAX_REMEDIATION_SIZE_BYTES.
+ */
+function serializeRemediationInstruction(instruction) {
+    const ordered = {
+        schemaVersion: instruction.schemaVersion,
+        objective: instruction.objective,
+        targetPath: instruction.targetPath,
+        targetAnchor: instruction.targetAnchor,
+        constraints: instruction.constraints,
+        verificationCommands: instruction.verificationCommands,
+    };
+    return JSON.stringify(ordered);
+}
+// ---------------------------------------------------------------------------
+// Rendering — GitHub suggestion fence
+// ---------------------------------------------------------------------------
+/**
+ * Render a validated suggestion as a GitHub suggestion fence. The
+ * GitHub native suggestion block uses ```suggestion … ``` so a reviewer
+ * can click "Commit suggestion" directly. ONLY a ValidatedSuggestion
+ * (produced by `validateSuggestion`) may be passed here.
+ *
+ * Contract:
+ *   - Opens with ```suggestion and closes with ```.
+ *   - No remediationInstruction content is ever included.
+ *   - The replacement was already sanitized at validation time.
+ */
+function renderGithubSuggestionFence(suggestion) {
+    return "```suggestion\n" + suggestion.replacement + "\n```";
+}
+// ---------------------------------------------------------------------------
+// Rendering — Azure suggestion representation
+// ---------------------------------------------------------------------------
+/**
+ * Render a validated suggestion for Azure DevOps. Azure DevOps does not
+ * have a native "suggestion" button like GitHub, but it DOES support
+ * the same ```suggestion markdown fence inside inline thread comments
+ * (rendered as a code block with the suggested text). The thread's
+ * `threadContext` (filePath + rightFileStart/end) carries the anchor,
+ * not the body — so the body just needs the fence.
+ *
+ * Contract: same as the GitHub fence — no remediationInstruction content.
+ */
+function renderAzureSuggestionBlock(suggestion) {
+    return "```suggestion\n" + suggestion.replacement + "\n```";
+}
+// ---------------------------------------------------------------------------
+// Internal helpers
+// ---------------------------------------------------------------------------
+function reject(kind, message) {
+    return { rejection: { kind, message } };
+}
+function remediationFail(kind, message) {
+    return { ok: false, error: { kind, message } };
+}
+function remediationInputFail(kind, message) {
+    return { ok: false, error: { kind, message } };
+}
+function sha256Hex(text) {
+    return (0,external_node_crypto_.createHash)("sha256").update(text, "utf8").digest("hex");
+}
+/**
+ * Detect binary content: null bytes or a high ratio of control
+ * characters. Source-code replacements should contain only printable
+ * ASCII/UTF-8, whitespace, and standard line endings.
+ */
+function containsBinaryContent(text) {
+    if (text.includes("\x00"))
+        return true;
+    // Count control characters (excluding common whitespace: \t \n \r).
+    let controlCount = 0;
+    for (const ch of text) {
+        const code = ch.charCodeAt(0);
+        if (code < 0x20 && code !== 0x09 && code !== 0x0a && code !== 0x0d) {
+            controlCount += 1;
+        }
+        if (code === 0x7f) {
+            controlCount += 1;
+        }
+    }
+    // Binary if >10% control characters and at least 2.
+    return controlCount >= 2 && controlCount / text.length > 0.1;
+}
+/**
+ * Scan text for high-confidence secret patterns. Mirrors the patterns
+ * in `src/security/scan-review-secrets.ts`.
+ */
+function suggestion_containsSecret(text) {
+    for (const pattern of SECRET_PATTERNS) {
+        if (pattern.test(text))
+            return true;
+    }
+    return false;
+}
+/**
+ * Sanitize suggestion/remediation text. Redacts any literal secret
+ * patterns with the canonical REDACTED token. The `secrets` array
+ * (per-run known secrets) is empty here because suggestion validation
+ * is a pre-posting boundary — the platform-specific secrets list is
+ * applied later by `sanitizeForPost` in the renderer.
+ */
+function sanitizeSuggestionText(text) {
+    // Redact high-confidence secret patterns with the REDACTED token.
+    let out = text;
+    for (const pattern of SECRET_PATTERNS) {
+        out = out.replace(new RegExp(pattern.source, pattern.flags.includes("g") ? pattern.flags : `${pattern.flags}g`), "REDACTED");
+    }
+    // Also run through the literal replace with an empty secrets list —
+    // identity when no per-run secrets are known.
+    return replaceSecretsLiterally(out, []);
+}
+
+;// CONCATENATED MODULE: ./src/review/diff-line-utils.ts
+
+/**
+ * Walk the diff text and return the raw line content for the first
+ * `+` or ` ` row at the given right-side position. Falls back to an empty
+ * string when the diff has no hunk header reachable for the file path.
+ *
+ * Exposed so the simulated-findings fixture can build context-aware bodies
+ * that reference a representative token from the actual diff line.
+ */
+function readDiffLine(diffText, position) {
+    const targetPath = `b/${position.path}`;
+    const diffLines = diffText.split(/\r?\n/u);
+    let currentPath = null;
+    let nextNewLine = null;
+    for (const rawLine of diffLines) {
+        if (rawLine.startsWith("diff --git ")) {
+            currentPath = null;
+            nextNewLine = null;
+            continue;
+        }
+        if (currentPath === null) {
+            const parsedPath = parseNewFilePath(rawLine);
+            if (parsedPath !== null) {
+                currentPath = parsedPath === position.path ? targetPath : parsedPath;
+            }
+            continue;
+        }
+        if (currentPath !== targetPath) {
+            continue;
+        }
+        if (rawLine.startsWith("@@ ")) {
+            const start = parseHunkStart(rawLine);
+            nextNewLine = start;
+            continue;
+        }
+        if (nextNewLine === null) {
+            continue;
+        }
+        if (rawLine.startsWith("+") || rawLine.startsWith(" ")) {
+            if (nextNewLine === position.line) {
+                return rawLine.slice(1).trim();
+            }
+            nextNewLine += 1;
+        }
+    }
+    return "";
+}
+/**
+ * Pull a meaningful token out of the diff line for context-aware bodies.
+ * Falls back to a path-derived identifier when the line is blank.
+ */
+function extractRepresentativeToken(lineContent, path) {
+    const identifierMatch = lineContent.match(/\b([A-Za-z_$][\w$]*)\s*\(/u);
+    if (identifierMatch !== null && identifierMatch[1] !== undefined) {
+        return identifierMatch[1];
+    }
+    const declarationMatch = lineContent.match(/\b(?:const|let|var|function|class|interface|type|export)\s+([A-Za-z_$][\w$]*)/u);
+    if (declarationMatch !== null && declarationMatch[1] !== undefined) {
+        return declarationMatch[1];
+    }
+    const genericMatch = lineContent.match(/\b([A-Za-z_$][\w$]{3,})\b/u);
+    if (genericMatch !== null && genericMatch[1] !== undefined) {
+        return genericMatch[1];
+    }
+    const fallback = path.replace(/[^\w]+/gu, "_").replace(/^_+|_+$/gu, "");
+    return fallback.length > 0 ? fallback : "this change";
+}
+
 ;// CONCATENATED MODULE: ./src/cli/live-shared.ts
+
+
 
 
 
@@ -16685,7 +17513,22 @@ function buildInlineCommentBody(input) {
     const parentRef = isPositiveSafeInteger(input.parentThreadId)
         ? `> Reply to PR review summary #${input.parentThreadId}\n\n`
         : "";
-    return `${marker}${parentRef}\`${safeSeverity}\` \`${safeCategory}\`\n\n${safeBody}`;
+    // Validated suggestion fence — appended AFTER the body text when
+    // present. Both GitHub (native ```suggestion block) and Azure
+    // (rendered as a code block with the suggested text) interpret this
+    // same fence, so a single rendering produces the right output for
+    // both platforms. The `validatedSuggestion` field is ONLY populated
+    // by `validateSuggestion` (in this same module) after passing every
+    // defensive check — so a fence here always represents a validated,
+    // sanitized, diff-anchored suggestion.
+    //
+    // remediationInstruction is NEVER rendered into the comment body —
+    // it is serialized ONLY to the JSON artifact.
+    const validated = input.comment.validatedSuggestion;
+    const suggestionBlock = validated !== undefined
+        ? `\n\n${renderGithubSuggestionFence(validated)}`
+        : "";
+    return `${marker}${parentRef}\`${safeSeverity}\` \`${safeCategory}\`\n\n${safeBody}${suggestionBlock}`;
 }
 /**
  * Hard upper bound on the raw provider text we include in a parse-fail
@@ -16958,6 +17801,7 @@ function countSuppressedComments(review, diffText) {
  * which was the previous source of drift between the two platforms.
  */
 function preparePostedReview(input) {
+    const suggestionMode = input.suggestionMode ?? "off";
     // Parse the diff ONCE and pass the index to all three selectors.
     // Each of the public selectors (`selectPostableComments`,
     // `selectOffDiffComments`, `countSuppressedComments`) was
@@ -16971,6 +17815,17 @@ function preparePostedReview(input) {
         parsed: input.parsed,
         secrets: input.secrets,
     });
+    // Validate provider suggestions against the diff + sanitization rules
+    // when policy permits. Runs ONLY for postable comments so an off-diff
+    // or severity-filtered comment never gets a validated suggestion
+    // even if the provider attached one.
+    const validatedCommentsResult = validateSuggestionsForComments({
+        comments: postableComments,
+        diffText: input.diffText,
+        positions,
+        mode: suggestionMode,
+    });
+    const suggestionValidation = validatedCommentsResult.summary;
     // The off-diff comments array is needed for the manifest payload
     // (so reviewers can see which findings the post-filter dropped
     // and why). The suppressed count is also displayed. Both are
@@ -16984,7 +17839,7 @@ function preparePostedReview(input) {
     // the count inline rather than calling the helper.
     const offDiffFromComments = selectOffDiffCommentsWithPositions(input.review, positions);
     const suppressedCommentCount = input.review.suppressedComments.length + offDiffFromComments.length;
-    const severityCounts = countBySeverity(postableComments);
+    const severityCounts = countBySeverity(validatedCommentsResult.comments);
     // Reconcile the model's raw verdict against the postable severity
     // counts. The body would render a `⛔ NEEDS_FIX` headline against a
     // `📊 0 inline findings` count for a review with nothing to act on
@@ -17002,11 +17857,11 @@ function preparePostedReview(input) {
         review: { ...input.review, verdict: effectiveVerdict },
         provider: input.provider,
         modelId: input.modelId,
-        validCommentCount: postableComments.length,
+        validCommentCount: validatedCommentsResult.comments.length,
         suppressedCommentCount,
         offDiffFromComments,
         severityCounts,
-        postedComments: postableComments,
+        postedComments: validatedCommentsResult.comments,
         secrets: input.secrets,
         // Threshold context — forwarded so the rendered `🏷️ …` tally can
         // append `*` when the active `--minimum-severity` setting hides one
@@ -17016,14 +17871,112 @@ function preparePostedReview(input) {
         ...(verdictEscalatedFrom !== undefined ? { verdictEscalatedFrom } : {}),
     });
     return {
-        postableComments,
+        postableComments: validatedCommentsResult.comments,
         offDiffFromComments,
         suppressedCommentCount,
         severityCounts,
         body,
         postedComments: postableComments,
         effectiveVerdict,
+        suggestionValidation,
         ...(verdictEscalatedFrom !== undefined ? { verdictEscalatedFrom } : {}),
+    };
+}
+/**
+ * Validate raw provider suggestions + remediation instructions on a
+ * set of postable comments. Returns a summary suitable for the JSON
+ * artifact. NEVER mutates the input comments in place — produces
+ * NEW comments with `validatedSuggestion` and `remediationInstruction`
+ * fields populated.
+ *
+ * Hard contract:
+ *   - When `mode === "off"`, returns an empty summary without touching
+ *     any raw suggestion field. Zero side effects.
+ *   - When `mode === "validated"`, validates every raw suggestion
+ *     against the diff positions; records typed rejections without
+ *     rendering. Builds remediation instructions ONLY when the
+ *     comment's raw suggestion validated successfully (a remediation
+ *     without a validated suggestion is non-sensical).
+ *   - remediationInstructions are serialized ONLY to the JSON
+ *     artifact; the renderers NEVER include them in comment bodies.
+ */
+function validateSuggestionsForComments(input) {
+    if (input.mode === "off") {
+        return {
+            comments: input.comments,
+            summary: {
+                mode: "off",
+                validatedCount: 0,
+                rejections: [],
+                remediationInstructionsBuilt: 0,
+                remediationRejections: [],
+            },
+        };
+    }
+    const enriched = [];
+    const rejections = [];
+    const remediationRejections = [];
+    let validatedCount = 0;
+    let remediationInstructionsBuilt = 0;
+    for (const comment of input.comments) {
+        const rawSuggestion = comment.rawSuggestion;
+        if (rawSuggestion === undefined) {
+            enriched.push(comment);
+            continue;
+        }
+        const originalLineText = readDiffLine(input.diffText, { path: comment.path, line: comment.line });
+        const result = validateSuggestion({
+            rawSuggestion,
+            path: comment.path,
+            line: comment.line,
+            diffPositions: input.positions,
+            originalLineText,
+        });
+        if (result.rejection !== undefined) {
+            rejections.push({
+                path: comment.path,
+                line: comment.line,
+                kind: result.rejection.kind,
+                message: result.rejection.message,
+            });
+            enriched.push(comment);
+            continue;
+        }
+        // Build remediation instruction if the provider attached a raw
+        // remediation. The remediation MUST succeed (otherwise the finding
+        // gets a validated suggestion WITHOUT an artifact-side remediation,
+        // which is OK — the suggestion is the primary signal).
+        const rawRemediation = comment.rawRemediation;
+        let remediation;
+        if (rawRemediation !== undefined) {
+            const built = buildRemediationInstruction(rawRemediation);
+            if (built.ok) {
+                remediation = built.instruction;
+                remediationInstructionsBuilt += 1;
+            }
+            else {
+                remediationRejections.push({ kind: built.error.kind, message: built.error.message });
+            }
+        }
+        validatedCount += 1;
+        const enrichedComment = result.validated !== undefined
+            ? {
+                ...comment,
+                validatedSuggestion: result.validated,
+                ...(remediation !== undefined ? { remediationInstruction: remediation } : {}),
+            }
+            : comment;
+        enriched.push(enrichedComment);
+    }
+    return {
+        comments: enriched,
+        summary: {
+            mode: "validated",
+            validatedCount,
+            rejections,
+            remediationInstructionsBuilt,
+            remediationRejections,
+        },
     };
 }
 /**
@@ -17685,7 +18638,7 @@ function globToRegexSource(pattern) {
     }
     return out;
 }
-function globToRegExp(pattern) {
+function prompt_files_globToRegExp(pattern) {
     // Anchor to the whole string; the path is fully-resolved when we test it.
     return new RegExp(`^${globToRegexSource(pattern)}$`, "u");
 }
@@ -17727,7 +18680,7 @@ function resolveGlobs(paths, cwd) {
             out.push(raw);
             continue;
         }
-        const re = globToRegExp(raw);
+        const re = prompt_files_globToRegExp(raw);
         for (const entry of entries) {
             if (!entry.isFile())
                 continue;
@@ -17762,305 +18715,6 @@ function resolveGlobs(paths, cwd) {
         }
     }
     return out;
-}
-
-;// CONCATENATED MODULE: ./src/diff/filter-build-artifacts.ts
-/**
- * Centralized exclusion of build-artifact / generated paths from review diffs.
- *
- * Background — what this solves
- * -----------------------------
- * LLMs have strong training-data priors for paths like `dist/cli.js`,
- * `dist/index.js`, `build/`, `node_modules/`, and lockfiles. When a review
- * prompt carries these paths in the diff (or — worse — emits them in the
- * model's response), the model "recognizes" them from training and starts
- * fabricating content about what they contain, even when those paths are
- * not in the supplied diff. PR #56 surfaced this in production: an
- * `auto`-model review of a 122-line source-only diff still produced 8
- * findings citing `dist/cli.js:N` and `dist/index.js:N` line numbers.
- *
- * The production-tool survey (CodeRabbit, Sourcery, Greptile, Ellipsis)
- * converges on the same defense: strip these paths from the diff
- * upstream AND surface them as negative examples in the prompt.
- *
- * Why this lives in its own module
- * --------------------------------
- * Until now, exclusion happened in two places that could drift:
- *   1. `scripts/prepare-azure-pr-inputs.sh` — shell-side `':!dist'`
- *   2. `.github/workflows/self-review.yml` — no exclusion at all (REST diff)
- *
- * A single TypeScript filter applied uniformly:
- *   - on the GitHub REST-diff path (`src/platform/github/api.ts`)
- *   - on the Azure REST-reconstruction path (`src/platform/azure/api.ts`)
- *   - on the local `git diff` path (defense in depth, since the shell
- *     already excludes — the script's `':!dist'` and our filter should
- *     agree)
- *   - on the CLI `--diff <path>` reader (so a user-supplied diff that
- *     still contains dist/ — e.g. from a non-standard pipeline — gets
- *     filtered too)
- *
- * Patterns are minimatch-style globs (directory, wildcard, ext). They
- * match against the forward-slash normalized path so the filter is
- * OS-agnostic.
- */
-/** Build-artifact / generated path globs that should never enter a review prompt. */
-const DEFAULT_BUILD_ARTIFACT_PATTERNS = [
-    // Output directories (match the dir and anything under it)
-    "dist/",
-    "build/",
-    "out/",
-    "target/", // Rust/Java
-    "_build/", // Elixir
-    ".next/",
-    ".nuxt/",
-    ".output/",
-    // Compiled / minified / bundled (double-star so we match at any depth)
-    "**/*.min.js",
-    "**/*.min.css",
-    "**/*.bundle.js",
-    "**/*.bundle.css",
-    "**/*.chunk.js",
-    // Source maps (match at any depth)
-    "**/*.map",
-    // Test coverage
-    "coverage/",
-    ".nyc_output/",
-    // Dependencies
-    "node_modules/",
-    "vendor/",
-    // Lockfiles (match at any depth, including monorepo subdirs)
-    "**/package-lock.json",
-    "**/yarn.lock",
-    "**/pnpm-lock.yaml",
-    "**/bun.lockb",
-    "**/Gemfile.lock",
-    "**/Cargo.lock",
-    "**/poetry.lock",
-    "**/composer.lock",
-    // TypeScript build info (at any depth)
-    "**/*.tsbuildinfo",
-];
-/** Normalize a path to forward-slashes for matching. */
-function toPosixPath(path) {
-    return path.replace(/\\/gu, "/");
-}
-/**
- * Convert a single minimatch-ish glob to a RegExp anchored at both ends.
- *
- * Supports:
- *   - directory pattern (ending in slash) — matches the dir itself or anything under it
- *   - double-star — matches any number of path segments
- *   - single-star — matches any number of non-slash characters
- *   - exact path — no wildcards, anchored match only
- *   - `*.ext`              — matches any path ending in `.ext`
- *   - `name.ext`           — exact match (no wildcards)
- *
- * Does NOT support full minimatch syntax — the goal is a small, predictable
- * filter, not a general-purpose matcher. Excluded files are an allowlist;
- * new patterns should be added to `DEFAULT_BUILD_ARTIFACT_PATTERNS` and
- * covered by tests in `test/unit/diff-filter.test.ts`.
- */
-function filter_build_artifacts_globToRegExp(glob) {
-    // Build the RegExp by walking the glob character-by-character.
-    // The naive `.replace` approach had a subtle bug: escaping slashes
-    // and ordering `**` before `*` is easy to get wrong. The
-    // character-by-character walk is more verbose but unambiguous.
-    let pattern = "";
-    let i = 0;
-    while (i < glob.length) {
-        const ch = glob[i];
-        if (ch === "*") {
-            if (glob[i + 1] === "*") {
-                pattern += ".*";
-                i += 2;
-                continue;
-            }
-            pattern += "[^/]*";
-            i += 1;
-            continue;
-        }
-        if (ch === "?") {
-            pattern += "[^/]";
-            i += 1;
-            continue;
-        }
-        if (ch === "." || ch === "+" || ch === "(" || ch === ")" ||
-            ch === "|" || ch === "^" || ch === "$" || ch === "{" ||
-            ch === "}" || ch === "[" || ch === "]" || ch === "\\") {
-            pattern += `\\${ch}`;
-            i += 1;
-            continue;
-        }
-        pattern += ch;
-        i += 1;
-    }
-    if (glob.endsWith("/")) {
-        // Directory pattern (e.g. `dist/`, `node_modules/`).
-        // Strip the trailing `/` for matching: `dist/` becomes `dist`,
-        // then we match either the dir itself (`dist`) or the dir followed
-        // by `/<anything>` (`dist/cli.js`, `dist/nested/file.js`).
-        // For monorepo cases (`packages/api/dist/x.js`), we also match
-        // when the dir appears as a non-leading path segment.
-        const dirPattern = pattern.slice(0, -1);
-        return new RegExp(`(?:^${dirPattern}$|^${dirPattern}/|(?:^|.*/)${dirPattern}(?:/|$))`, "u");
-    }
-    // For patterns like `**/*.map`, the leading `**/` should match zero
-    // or more path segments. The greedy `.*` does that for us, but
-    // anchored to start we need to also allow the prefix to be empty.
-    // E.g. `app.js.map` should match `**/*.map`. We replace the leading
-    // `^.*?/` with `^(?:.*/)?` to make the prefix optional.
-    const finalPattern = pattern.startsWith(".*/") ? `(?:.*/)?${pattern.slice(3)}` : pattern;
-    return new RegExp(`^${finalPattern}$`, "u");
-}
-/**
- * Check whether a path matches any of the given patterns.
- *
- * The path is normalized to forward-slashes before matching, so
- * Windows-style `dist\cli.js` and POSIX `dist/cli.js` are treated
- * identically.
- */
-function isBuildArtifactPath(path, patterns = DEFAULT_BUILD_ARTIFACT_PATTERNS) {
-    const normalized = toPosixPath(path);
-    for (const pattern of patterns) {
-        if (filter_build_artifacts_globToRegExp(pattern).test(normalized)) {
-            return true;
-        }
-    }
-    return false;
-}
-function cli_isExcludedPath(path) {
-    return isBuildArtifactPath(path);
-}
-/**
- * Strip every diff block for a path matching a build-artifact pattern.
- *
- * The input is expected to be a unified diff (`diff --git a/... b/...`
- * blocks separated by blank lines or file headers). Each block is dropped
- * entirely — including its `index` line, `--- a/`, `+++ b/`, hunks, and
- * any trailing context. Whitespace between blocks is preserved so the
- * remaining diff is still well-formed.
- *
- * Lines that are not part of any block (e.g. a leading comment or
- * garbage) are preserved verbatim. The function never throws on a
- * malformed input; if no `diff --git` headers are found, the input is
- * returned unchanged.
- */
-function filterBuildArtifacts(diffText, patterns = DEFAULT_BUILD_ARTIFACT_PATTERNS) {
-    if (diffText.length === 0) {
-        return diffText;
-    }
-    // Split into blocks on diff --git headers. We use `String.split` with
-    // a multiline regex rather than `String.match` because the latter
-    // pattern's `(?=^diff --git |$)` lookahead matches the end of every
-    // line (the `m` flag makes `$` mean end-of-line), which truncated
-    // each block at the first `--- a/...` line. Splitting on the header
-    // itself and prepending it to each subsequent piece is unambiguous.
-    const parts = diffText.split(/^diff --git /um);
-    if (parts.length <= 1) {
-        // No `diff --git ` headers — input is either empty or not a diff.
-        return diffText;
-    }
-    const blocks = parts.slice(1).map((p) => `diff --git ${p}`);
-    const retained = [];
-    let retainedBytes = 0;
-    let droppedBlocks = 0;
-    for (const block of blocks) {
-        const { a, b } = extractTargetPaths(block);
-        // Test the artifact filter against BOTH sides so renames across
-        // the filter boundary are caught. A file moved FROM dist/ TO
-        // src/ is reported by the `a` side as `dist/x.js`; a file moved
-        // FROM src/ TO dist/ is reported by the `b` side as `dist/x.js`.
-        // Either side matching means the block touches a build artifact.
-        const matchesArtifact = (a !== null && isBuildArtifactPath(a, patterns)) ||
-            (b !== null && isBuildArtifactPath(b, patterns));
-        if (matchesArtifact) {
-            droppedBlocks += 1;
-            continue;
-        }
-        retained.push(block);
-        retainedBytes += block.length;
-    }
-    // Avoid returning an empty string when every block was filtered; downstream
-    // callers (e.g. `parseDiffPositions`) treat empty diffs as "no review
-    // surface" and produce a parse-fail. Surface that with a one-line marker
-    // so the model at least sees something meaningful.
-    if (retained.length === 0) {
-        return "";
-    }
-    // Join with a single newline so consecutive `diff --git` blocks are
-    // separated. The split stripped the leading `diff --git ` marker from
-    // every block (we re-prepended it), but the inter-block separator
-    // (the trailing newline of the previous block) was discarded by
-    // String.split's separator semantics. Re-inserting `\n` here keeps
-    // the output parseable as a unified diff.
-    return retained.join("\n");
-}
-/**
- * Extract the target paths from a diff block. Returns both the
- * `a/` (old) and `b/` (new) sides so the caller can test the
- * artifact-pattern filter against BOTH paths of a rename. A file
- * moved across the filter boundary (e.g. `dist/x.js` → `src/x.js`)
- * is correctly filtered by testing the old path; a file moved INTO
- * a non-artifact path (e.g. `src/x.js` → `dist/x.js`) is correctly
- * filtered by testing the new path.
- *
- * Either side may be null (file add: only `b/`, file delete: only
- * `a/`, malformed: neither).
- */
-function extractTargetPaths(block) {
-    const lines = block.split(/\r?\n/u);
-    return {
-        a: readPathLine(lines, "--- "),
-        b: readPathLine(lines, "+++ "),
-    };
-}
-function readPathLine(lines, prefix) {
-    for (const line of lines) {
-        if (!line.startsWith(prefix)) {
-            continue;
-        }
-        const rawPath = line.slice(prefix.length).split("\t")[0]?.trim() ?? "";
-        if (rawPath === "" || rawPath === "/dev/null") {
-            return null;
-        }
-        return rawPath.startsWith("a/") || rawPath.startsWith("b/")
-            ? rawPath.slice(2)
-            : rawPath;
-    }
-    return null;
-}
-/**
- * Return the list of paths that appear in a diff (both `a/` and `b/`
- * sides, deduplicated, forward-slash normalized). Used by the prompt
- * builder to enumerate the diff's file list as a path enum in the
- * JSON-schema + system-prompt path.
- *
- * Skips `/dev/null` on either side (file adds/dels). Order matches
- * the diff's first appearance.
- */
-function cli_listDiffPaths(diffText) {
-    const seen = new Set();
-    const ordered = [];
-    const lines = diffText.split(/\r?\n/u);
-    for (const line of lines) {
-        if (!line.startsWith("+++ ") && !line.startsWith("--- ")) {
-            continue;
-        }
-        const rawPath = line.slice(4).split("\t")[0]?.trim() ?? "";
-        if (rawPath === "" || rawPath === "/dev/null") {
-            continue;
-        }
-        const stripped = rawPath.startsWith("a/") || rawPath.startsWith("b/")
-            ? rawPath.slice(2)
-            : rawPath;
-        const normalized = toPosixPath(stripped);
-        if (seen.has(normalized)) {
-            continue;
-        }
-        seen.add(normalized);
-        ordered.push(normalized);
-    }
-    return ordered;
 }
 
 ;// CONCATENATED MODULE: ./src/review/verified-facts.ts
@@ -25562,75 +26216,6 @@ function formatSonarContext(report) {
         `Waited for terminal quality gate: ${report.waitedForTerminalQualityGate}`,
         `Timeout handled: ${report.timeoutHandled}`,
     ].join("\n");
-}
-
-;// CONCATENATED MODULE: ./src/review/diff-line-utils.ts
-
-/**
- * Walk the diff text and return the raw line content for the first
- * `+` or ` ` row at the given right-side position. Falls back to an empty
- * string when the diff has no hunk header reachable for the file path.
- *
- * Exposed so the simulated-findings fixture can build context-aware bodies
- * that reference a representative token from the actual diff line.
- */
-function readDiffLine(diffText, position) {
-    const targetPath = `b/${position.path}`;
-    const diffLines = diffText.split(/\r?\n/u);
-    let currentPath = null;
-    let nextNewLine = null;
-    for (const rawLine of diffLines) {
-        if (rawLine.startsWith("diff --git ")) {
-            currentPath = null;
-            nextNewLine = null;
-            continue;
-        }
-        if (currentPath === null) {
-            const parsedPath = parseNewFilePath(rawLine);
-            if (parsedPath !== null) {
-                currentPath = parsedPath === position.path ? targetPath : parsedPath;
-            }
-            continue;
-        }
-        if (currentPath !== targetPath) {
-            continue;
-        }
-        if (rawLine.startsWith("@@ ")) {
-            const start = parseHunkStart(rawLine);
-            nextNewLine = start;
-            continue;
-        }
-        if (nextNewLine === null) {
-            continue;
-        }
-        if (rawLine.startsWith("+") || rawLine.startsWith(" ")) {
-            if (nextNewLine === position.line) {
-                return rawLine.slice(1).trim();
-            }
-            nextNewLine += 1;
-        }
-    }
-    return "";
-}
-/**
- * Pull a meaningful token out of the diff line for context-aware bodies.
- * Falls back to a path-derived identifier when the line is blank.
- */
-function extractRepresentativeToken(lineContent, path) {
-    const identifierMatch = lineContent.match(/\b([A-Za-z_$][\w$]*)\s*\(/u);
-    if (identifierMatch !== null && identifierMatch[1] !== undefined) {
-        return identifierMatch[1];
-    }
-    const declarationMatch = lineContent.match(/\b(?:const|let|var|function|class|interface|type|export)\s+([A-Za-z_$][\w$]*)/u);
-    if (declarationMatch !== null && declarationMatch[1] !== undefined) {
-        return declarationMatch[1];
-    }
-    const genericMatch = lineContent.match(/\b([A-Za-z_$][\w$]{3,})\b/u);
-    if (genericMatch !== null && genericMatch[1] !== undefined) {
-        return genericMatch[1];
-    }
-    const fallback = path.replace(/[^\w]+/gu, "_").replace(/^_+|_+$/gu, "");
-    return fallback.length > 0 ? fallback : "this change";
 }
 
 ;// CONCATENATED MODULE: ./src/review/simulated-findings.ts
