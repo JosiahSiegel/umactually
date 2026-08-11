@@ -27,6 +27,15 @@ type ProviderPromptsInput = {
   readonly diffText: string;
   readonly instructionFilesByBaseBranch?: Map<string, string>;
   readonly sonarContext?: string;
+  /**
+   * Optional Task 5 typed context-provenance result. When supplied,
+   * the user message embeds the rendered (typed) context block AND the
+   * content-free manifest; when omitted, the prompt renders exactly as
+   * it did before this task. Process-scoped memory via
+   * `getLastContextProvenanceForTests()` lets the artifact writer
+   * observe the last value without growing the live API shape.
+   */
+  readonly contextProvenance?: import("./context-provenance.js").ContextProvenanceResult;
 };
 
 export type ProviderPrompts = {
@@ -122,10 +131,29 @@ export async function buildProviderPrompts(input: ProviderPromptsInput): Promise
     ? [...input.instructionFilesByBaseBranch.keys()]
     : resolveDefaultPromptFilesOnce(input.cwd);
   const additionalPrompt = await readAdditionalPrompt(input, defaultPaths);
-  const userParts = [
+  const userParts: string[] = [
     `Platform: ${input.platform}`,
     additionalPrompt.length > 0 ? `Additional instructions:\n${additionalPrompt}` : "Additional instructions: none",
   ];
+  // Task 5 — when the orchestrator supplies typed context provenance,
+  // remember it for the artifact writer (test-only hook), and embed
+  // the rendered (typed) block + content-free manifest in the user
+  // message ABOVE the diff so the model sees the context overlay
+  // before it grounds citations. A render failure MUST NOT abort the
+  // review; we surface a fallback line and continue.
+  if (input.contextProvenance !== undefined) {
+    __setLastContextProvenanceForTests(input.contextProvenance);
+    try {
+      const { renderContextBlock } = await import("./context-provenance.js");
+      const renderedBlock = renderContextBlock(input.contextProvenance);
+      const manifestBlock = renderContextBlock(input.contextProvenance, { asManifest: true });
+      userParts.push(renderedBlock.text);
+      userParts.push(manifestBlock.text);
+    } catch (error) {
+      void error;
+      userParts.push("Repository context: (unavailable — render failed; review continues without)");
+    }
+  }
   if (input.sonarContext !== undefined && input.sonarContext.length > 0) {
     userParts.push(input.sonarContext);
   }
@@ -266,6 +294,36 @@ function resolveDefaultPromptFilesOnce(cwd: string): readonly string[] {
  */
 export function __resetDefaultPromptFilesCacheForTests(): void {
   DEFAULT_PROMPT_FILES_CACHE.clear();
+}
+
+/**
+ * Process-scoped memory for the last `contextProvenance` value passed
+ * to `buildProviderPrompts`. The artifact-writing path (Task 12) can
+ * observe this without growing the public `buildProviderPrompts`
+ * return shape or threading the value through every caller.
+ *
+ * Test-only entry points live here; production code should pass the
+ * result via `input.contextProvenance` and read it via the public
+ * API surface (no direct reads from production code).
+ */
+const LAST_CONTEXT_PROVENANCE: {
+  readonly value: import("./context-provenance.js").ContextProvenanceResult | null;
+} = { value: null };
+
+export function __setLastContextProvenanceForTests(
+  next: import("./context-provenance.js").ContextProvenanceResult,
+): void {
+  (LAST_CONTEXT_PROVENANCE as { value: typeof next }).value = next;
+}
+
+export function getLastContextProvenanceForTests():
+  | import("./context-provenance.js").ContextProvenanceResult
+  | null {
+  return LAST_CONTEXT_PROVENANCE.value;
+}
+
+export function __resetLastContextProvenanceForTests(): void {
+  (LAST_CONTEXT_PROVENANCE as { value: null }).value = null;
 }
 
 /**
