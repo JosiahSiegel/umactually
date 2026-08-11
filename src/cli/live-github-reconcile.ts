@@ -31,7 +31,11 @@
 import { githubHeaders } from "../util/http.js";
 import type { FetchImpl } from "../util/http.js";
 import type { GithubContext } from "../platform/github/context.js";
-import { DEFAULT_GITHUB_API_BASE } from "../util/provider-defaults.js";
+import {
+  buildGithubApiBaseFromEnv,
+  buildGithubRestUrl,
+  type GithubApiBase,
+} from "../platform/github/api-base.js";
 import { writeBrandedAnnotation } from "../util/log.js";
 import { computeDurableFindingIdentity, type CanonicalFindingInput } from "../review/fingerprint.js";
 import type { ContextProvenanceResult } from "./context-provenance.js";
@@ -39,7 +43,6 @@ import { isRecord, isSafeInteger } from "../util/json-guards.js";
 import type { LiveRunResult, LiveProviderOutcome } from "./live-shared.js";
 import type { ParsedCliArgs } from "./parse-args.js";
 
-const GITHUB_API_BASE_URL = process.env["GITHUB_API_URL"]?.replace(/\/$/u, "") || DEFAULT_GITHUB_API_BASE;
 const REVIEW_MARKER = "<!-- umactually -->";
 const FINGERPRINT_LINE_PATTERN = /<!-- fingerprint:\s*([a-f0-9]+)\s*-->/u;
 
@@ -134,14 +137,12 @@ type GithubReview = {
   readonly body: string;
 };
 
-function apiBase(): string {
-  return GITHUB_API_BASE_URL;
+function apiBase(): GithubApiBase {
+  return buildGithubApiBaseFromEnv();
 }
 
 function reviewCommentsListUrl(context: GithubContext): string {
-  const owner = encodeURIComponent(context.repo.owner);
-  const repo = encodeURIComponent(context.repo.name);
-  return `${apiBase()}/repos/${owner}/${repo}/pulls/${context.prNumber}/comments`;
+  return buildGithubRestUrl(apiBase(), `/repos/${context.repo.owner}/${context.repo.name}/pulls/${context.prNumber}/comments`);
 }
 
 function reviewCommentUrl(context: GithubContext, id: number): string {
@@ -149,15 +150,12 @@ function reviewCommentUrl(context: GithubContext, id: number): string {
 }
 
 function reviewsListUrl(context: GithubContext): string {
-  const owner = encodeURIComponent(context.repo.owner);
-  const repo = encodeURIComponent(context.repo.name);
-  return `${apiBase()}/repos/${owner}/${repo}/pulls/${context.prNumber}/reviews`;
+  return buildGithubRestUrl(apiBase(), `/repos/${context.repo.owner}/${context.repo.name}/pulls/${context.prNumber}/reviews`);
 }
 
 function fileContentsUrl(context: GithubContext, path: string, headSha: string): string {
-  const owner = encodeURIComponent(context.repo.owner);
-  const repo = encodeURIComponent(context.repo.name);
-  return `${apiBase()}/repos/${owner}/${repo}/contents/${encodeURIComponent(path)}?ref=${encodeURIComponent(headSha)}`;
+  const base = buildGithubRestUrl(apiBase(), `/repos/${context.repo.owner}/${context.repo.name}/contents/${encodeURIComponent(path)}`);
+  return `${base}?ref=${encodeURIComponent(headSha)}`;
 }
 
 function parseReviewComment(value: unknown): GithubReviewComment | null {

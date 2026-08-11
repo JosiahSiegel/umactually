@@ -39,6 +39,7 @@ export async function fetchAndCacheSessionToken(
 ): Promise<SessionTokenResult> {
   let response: Response;
   try {
+    assertCopilotTokenEndpointAllowed(tokenUrl);
     response = await fetchImpl(tokenUrl, {
       method: "GET",
       headers: tokenHeaders,
@@ -157,4 +158,52 @@ export function clearCopilotTokenCache(): void {
 
 function buildCacheKey(githubToken: string): string {
   return githubToken;
+}
+
+/**
+ * Reject an obviously unsafe token endpoint before the network call.
+ * Catches the misconfiguration where a GHES-issued token is sent to
+ * a github.com endpoint (or vice versa): HTTPS-only, no userinfo,
+ * no query/fragment.
+ */
+export function assertCopilotTokenEndpointAllowed(tokenUrl: string): void {
+  let parsed: URL;
+  try {
+    parsed = new URL(tokenUrl);
+  } catch {
+    throw new ProviderError(
+      "parse",
+      "chat",
+      null,
+      "no-request-id",
+      `Copilot token endpoint URL is not parseable: '${tokenUrl}'.`,
+    );
+  }
+  if (parsed.protocol !== "https:") {
+    throw new ProviderError(
+      "parse",
+      "chat",
+      null,
+      "no-request-id",
+      `Copilot token endpoint must use HTTPS (got '${parsed.protocol}'); refusing to send the GitHub token over an insecure channel.`,
+    );
+  }
+  if (parsed.username.length > 0 || parsed.password.length > 0) {
+    throw new ProviderError(
+      "parse",
+      "chat",
+      null,
+      "no-request-id",
+      "Copilot token endpoint must NOT carry userinfo; refusing to embed credentials in the URL.",
+    );
+  }
+  if (parsed.search.length > 0 || parsed.hash.length > 0) {
+    throw new ProviderError(
+      "parse",
+      "chat",
+      null,
+      "no-request-id",
+      "Copilot token endpoint must NOT carry query strings or fragments.",
+    );
+  }
 }

@@ -5009,6 +5009,236 @@ const DEFAULT_ANTHROPIC_URL = "https://api.anthropic.com/v1";
 /** GitHub API default base URL. Used by Copilot token exchange (`provider/copilot.ts`) and Copilot routing in `cli/live-provider.ts`. */
 const DEFAULT_GITHUB_API_BASE = "https://api.github.com";
 
+;// CONCATENATED MODULE: ./src/platform/github/api-base.ts
+// SPDX-License-Identifier: MIT
+//
+// Task 13 — GitHub Enterprise Server (GHES) API-base resolution +
+// normalization. Single source of truth for the review-platform API
+// base; provider/Copilot base resolution is intentionally NOT in this
+// module (see `src/provider/copilot.ts` and `src/provider/copilot-token.ts`
+// for the Copilot side).
+//
+// Three responsibilities:
+//
+//   1. `normalizeGithubApiBase(rawUrl)` — shape + validate an
+//      operator-supplied base URL into a `GithubApiBase` record.
+//      Rejects: non-HTTPS, userinfo (credentials), query/fragment
+//      strings, malformed input, empty/whitespace.
+//
+//   2. `buildGithubApiBaseFromEnv(env)` — read `GITHUB_API_URL` at
+//      CALL time (NOT module-load time — that's the whole point of
+//      the Task 13 refactor; the previous module-level constant
+//      captured the env once at import and tests couldn't override
+//      it) and return the normalized base, defaulting to
+//      `https://api.github.com` when unset.
+//
+//   3. `buildGithubRestUrl(base, path)` / `buildGithubGraphqlUrl(base)`
+//      — compose REST and GraphQL endpoints from the resolved base.
+//      github.com uses bare `/graphql` and `/repos/...` paths;
+//      GHES uses `/api/v3` and `/api/graphql`. The composition rules
+//      are pinned by the URL matrix tests in
+//      `test/unit/github-api-base.test.ts`.
+//
+// Separation from the provider/Copilot base:
+//
+//   The Copilot token-exchange path uses its own base URL (driven by
+//   `--github-api-base` / `UMACTUALLY_GITHUB_API_BASE`); that base is
+//   intentionally NEVER read here. This module only resolves the
+//   REVIEW-PLATFORM base (REST + GraphQL endpoints for posting
+//   reviews, reading PR metadata, fetching instruction files, etc.).
+//   When an operator points the review platform at GHES but keeps the
+//   Copilot base on github.com, both stay independent — no silent
+//   token leakage either direction.
+//
+// Why pre-network validation matters:
+//
+//   A malformed `GITHUB_API_URL` would otherwise reach the network
+//   layer where a typo (`http://`, missing scheme, userinfo with a
+//   leaked token, query string with a token) leaks a credential to
+//   the wrong host or surfaces as a confusing 4xx with the token
+//   embedded in the diagnostic. Catching every shape at the
+//   `normalizeGithubApiBase` boundary means the first error the
+//   operator sees is a typed message identifying which input was
+//   wrong, and ZERO network requests cross the wire.
+
+
+/**
+ * Thrown when a `GITHUB_API_URL` value is malformed, non-HTTPS,
+ * carries userinfo/credentials, has a query string or fragment, or
+ * is empty. Carries the typed `code` so callers can surface a precise
+ * remediation hint without a network round-trip.
+ */
+class GithubApiBaseError extends Error {
+    code;
+    name = "GithubApiBaseError";
+    constructor(code, message) {
+        super(message);
+        this.code = code;
+    }
+}
+const GITHUB_COM_CANONICAL = "https://api.github.com";
+const GITHUB_GRAPHQL_PATH_COM = "/graphql";
+const GITHUB_GRAPHQL_PATH_ENTERPRISE = "/api/graphql";
+/**
+ * Normalize an operator-supplied base URL into a `GithubApiBase`.
+ *
+ * Accepts:
+ *   - `https://api.github.com` (or with trailing slash)
+ *   - `https://<host>/api/v3` (GHES — the canonical pattern)
+ *   - `https://<host>` (GHES — bare host; REST goes to root, GraphQL
+ *     at `/api/graphql`)
+ *   - `https://<host>/<custom-prefix>` (operator-configured namespace)
+ *
+ * Rejects:
+ *   - non-HTTPS schemes (`http://`, `ftp://`, …) → `GITHUB_API_URL_INSECURE`
+ *   - URLs with userinfo (`https://user:pass@host/...`) →
+ *     `GITHUB_API_URL_CREDENTIALED`
+ *   - URLs with query strings or fragments →
+ *     `GITHUB_API_URL_HAS_QUERY`
+ *   - Empty/whitespace → `GITHUB_API_URL_EMPTY`
+ *   - Anything that does not parse as a URL → `GITHUB_API_URL_MALFORMED`
+ *
+ * The rejection set is intentionally exhaustive: every failure mode
+ * either leaks a credential, sends data to the wrong host, or
+ * otherwise changes the security posture. A pre-network validation
+ * pass keeps the operator's first error clear and typed.
+ *
+ * @param rawUrl Operator-supplied `GITHUB_API_URL` value.
+ */
+function normalizeGithubApiBase(rawUrl) {
+    const trimmed = rawUrl.trim();
+    if (trimmed.length === 0) {
+        throw new GithubApiBaseError("GITHUB_API_URL_EMPTY", "GITHUB_API_URL is empty; provide an HTTPS URL or unset the variable to use github.com.");
+    }
+    let parsed;
+    try {
+        parsed = new URL(trimmed);
+    }
+    catch {
+        throw new GithubApiBaseError("GITHUB_API_URL_MALFORMED", `GITHUB_API_URL is not a parseable URL: '${rawUrl}'.`);
+    }
+    // WHATWG URL normalizes scheme to lowercase; `protocol` ends with ":" —
+    // check on `protocol` (or on the URL directly via `.protocol`).
+    if (parsed.protocol !== "https:") {
+        throw new GithubApiBaseError("GITHUB_API_URL_INSECURE", `GITHUB_API_URL must use HTTPS (got '${parsed.protocol}'); non-HTTPS schemes risk credential and PR-data exposure.`);
+    }
+    // WHATWG URL parses userinfo into `username` / `password` fields.
+    // We reject any URL that carried userinfo, including username-only
+    // forms. The previous module-level `replace(/\/$/u, "")` regex
+    // would have happily passed `https://token@host/api/v3` through
+    // and the resulting fetch would have embedded the token in the
+    // `Authorization` header derivation chain on the server side.
+    if (parsed.username.length > 0 || parsed.password.length > 0) {
+        throw new GithubApiBaseError("GITHUB_API_URL_CREDENTIALED", "GITHUB_API_URL must NOT carry userinfo (https://user:pass@host/...); put credentials in the Authorization header, not the URL.");
+    }
+    if (parsed.search.length > 0 || parsed.hash.length > 0) {
+        throw new GithubApiBaseError("GITHUB_API_URL_HAS_QUERY", `GITHUB_API_URL must NOT carry a query string or fragment (got '${parsed.search}${parsed.hash}'); pass query parameters as request bodies or headers.`);
+    }
+    const origin = parsed.origin;
+    const pathSegment = url_stripTrailingSlash(parsed.pathname);
+    const isEnterprise = !isGithubComOrigin(origin);
+    // REST path prefix: any non-empty path the operator typed becomes
+    // the prefix. Empty path on an enterprise host means REST goes to
+    // the bare origin (GHES supports root + `/api/v3` interchangeably;
+    // many installs mount `/api/v3` only on the v3 subpath).
+    const pathPrefix = pathSegment;
+    return {
+        origin,
+        pathPrefix,
+        graphqlPath: isEnterprise ? GITHUB_GRAPHQL_PATH_ENTERPRISE : GITHUB_GRAPHQL_PATH_COM,
+        isEnterprise,
+    };
+}
+/**
+ * Resolve the review-platform API base from `env` at CALL time. Reads
+ * `process.env["GITHUB_API_URL"]` (when `env` is omitted) or the
+ * supplied `env` snapshot.
+ *
+ * The call-time read is intentional: the previous module-level
+ * `const GITHUB_API_BASE_URL = process.env[...]` captured the env
+ * once at import time, so tests that mutated the env mid-test could
+ * not override the base. Threading the env through `buildGithubApiBaseFromEnv(env)`
+ * lets the live tests in `test/unit/evidence-task-13.test.ts`
+ * exercise the GHES path by mutating the env between calls.
+ *
+ * Defaults to `https://api.github.com` when `GITHUB_API_URL` is
+ * unset or empty (matches the prior behavior).
+ */
+function buildGithubApiBaseFromEnv(env = process.env) {
+    const raw = env["GITHUB_API_URL"];
+    if (raw === undefined || raw.length === 0) {
+        return {
+            origin: DEFAULT_GITHUB_API_BASE,
+            pathPrefix: "",
+            graphqlPath: GITHUB_GRAPHQL_PATH_COM,
+            isEnterprise: false,
+        };
+    }
+    return normalizeGithubApiBase(raw);
+}
+/**
+ * Identity check: returns true when `base` points at the canonical
+ * github.com origin. Used by callers that want to keep the legacy
+ * github.com defaults (`/graphql`, no `/api/v3`) without depending
+ * on the literal URL.
+ */
+function isGithubComBase(base) {
+    return !base.isEnterprise && base.origin === GITHUB_COM_CANONICAL;
+}
+/**
+ * Compose a REST URL from the resolved base. Path segments are
+ * percent-encoded via `URL` to prevent operator input from slipping
+ * unencoded slashes or spaces into the wire path. A leading slash is
+ * always inserted between the prefix and the segments.
+ *
+ * Examples:
+ *   - github.com base + `/repos/foo/bar/pulls/42` →
+ *     `https://api.github.com/repos/foo/bar/pulls/42`
+ *   - GHES `/api/v3` base + `/repos/foo/bar/pulls/42` →
+ *     `https://ghe.example.com/api/v3/repos/foo/bar/pulls/42`
+ *   - GHES bare-host base + `/repos/foo/bar/pulls/42` →
+ *     `https://ghe.example.com/repos/foo/bar/pulls/42`
+ *
+ * @param base  Normalized base returned by `normalizeGithubApiBase`.
+ * @param path  Path segments starting with `/`. URL-encoded per
+ *              segment; trailing `/` collapsed.
+ */
+function buildGithubRestUrl(base, path) {
+    // Re-parse through URL to apply percent-encoding consistently.
+    // `URL` rejects inputs that don't have a host; using the base as
+    // the base of `new URL(relative, base)` enforces absolute path
+    // resolution.
+    const composed = new URL(
+    // Strip the leading slash so `URL` treats the path as relative
+    // to the base, but preserve the path segment shape.
+    path.replace(/^\/+/u, ""), 
+    // Compose against the origin + prefix; trailing slash on the
+    // base keeps `URL` from collapsing the prefix into the hostname.
+    `${base.origin}${base.pathPrefix}/`);
+    return composed.toString();
+}
+/**
+ * Compose the GraphQL endpoint URL from the resolved base.
+ *
+ *   - github.com → `https://api.github.com/graphql`
+ *   - GHES (with or without `/api/v3` prefix) →
+ *     `https://<host>/api/graphql`
+ *
+ * The `/api/graphql` path is the GHES-canonical GraphQL endpoint
+ * regardless of whether the operator mounted `/api/v3` (REST lives
+ * at `/api/v3` while GraphQL lives at `/api/graphql` — these are
+ * independent mounts in GHES).
+ */
+function buildGithubGraphqlUrl(base) {
+    return new URL(base.graphqlPath.replace(/^\/+/u, ""), `${base.origin}/`).toString();
+}
+// Internal helper: test whether the origin is the canonical
+// github.com API host. Case-insensitive comparison via WHATWG URL
+// lowercasing (already done by `URL.origin`).
+function isGithubComOrigin(origin) {
+    return origin === GITHUB_COM_CANONICAL;
+}
+
 ;// CONCATENATED MODULE: ./src/util/env-keys.ts
 /** Centralized registry for supported user configuration and runner-owned environment keys. */
 const ENV_KEYS = {
@@ -5083,6 +5313,7 @@ const ENV_KEYS = {
 
 
 
+
 // ---------------------------------------------------------------------------
 // Closed enum of DoctorCheckId (full-mode additions + the default IDs)
 // ---------------------------------------------------------------------------
@@ -5099,6 +5330,7 @@ const DOCTOR_CHECK_IDS = (/* unused pure expression or super */ null && ([
     "context-budgets",
     "ci-platform",
     "github-permissions",
+    "github-ghes",
     "azure-permissions",
 ]));
 // ---------------------------------------------------------------------------
@@ -5486,8 +5718,16 @@ async function checkGithubPermissions(env, fetchImpl, timeoutMs) {
             remediation: "Set GITHUB_TOKEN in the CI environment to prove the read-only endpoint permission; never embed the token in commit history.",
         });
     }
-    const apiBase = (env["GITHUB_API_URL"] ?? DEFAULT_GITHUB_API_BASE).replace(/\/$/u, "");
-    const url = `${apiBase}/octocat`;
+    let apiBase;
+    try {
+        apiBase = buildGithubApiBaseFromEnv(env);
+    }
+    catch (error) {
+        return makeResult("github-permissions", "fail", `GITHUB_API_URL is not usable: ${error instanceof Error ? error.message : String(error)}`, {
+            remediation: "Fix GITHUB_API_URL (must be an HTTPS URL with no userinfo or query string) or unset it to use github.com.",
+        });
+    }
+    const url = buildGithubRestUrl(apiBase, "/octocat");
     const probe = await timeProbe(async () => {
         const controller = new AbortController();
         const timer = setTimeout(() => controller.abort(), timeoutMs);
@@ -5526,6 +5766,82 @@ async function checkGithubPermissions(env, fetchImpl, timeoutMs) {
     }
     return makeResult("github-permissions", "warn", `github read-only probe returned HTTP ${result.status}`, {
         remediation: "Verify the API base URL is correct; the probe is GET-only and never sends a body.",
+        latencyMs: probe.latencyMs,
+    });
+}
+async function checkGithubGhesCapability(env, fetchImpl, timeoutMs) {
+    let apiBase;
+    try {
+        apiBase = buildGithubApiBaseFromEnv(env);
+    }
+    catch (error) {
+        return makeResult("github-ghes", "fail", `GITHUB_API_URL is not usable: ${error instanceof Error ? error.message : String(error)}`, {
+            remediation: "Set GITHUB_API_URL to an HTTPS URL with no userinfo or query string, or unset it to use github.com.",
+        });
+    }
+    if (isGithubComBase(apiBase)) {
+        return makeResult("github-ghes", "skip", "github.com default — GitHub Enterprise Server capability probe not applicable", {
+            remediation: "Set GITHUB_API_URL to a GHES host (e.g. https://ghe.example.com/api/v3) to probe GHES capability.",
+        });
+    }
+    const metaUrl = buildGithubRestUrl(apiBase, "/meta");
+    const probe = await timeProbe(async () => {
+        const controller = new AbortController();
+        const timer = setTimeout(() => controller.abort(), timeoutMs);
+        try {
+            const response = await fetchImpl(metaUrl, {
+                method: "GET",
+                headers: { accept: "application/vnd.github+json" },
+                signal: controller.signal,
+            });
+            const text = await response.text();
+            return { status: response.status, body: text };
+        }
+        finally {
+            clearTimeout(timer);
+        }
+    });
+    if (probe.error !== null) {
+        return makeResult("github-ghes", "fail", `GHES meta endpoint probe failed: ${redactNetworkError(probe.error)}`, {
+            remediation: `Verify reachability of ${url_redactUrlForLog(metaUrl)} and that the GHES instance exposes /api/v3/meta.`,
+            latencyMs: probe.latencyMs,
+        });
+    }
+    const result = probe.value;
+    if (result === null) {
+        return makeResult("github-ghes", "skip", "no github context", {
+            latencyMs: probe.latencyMs,
+        });
+    }
+    if (result.status === 200) {
+        let parsedVersion = null;
+        try {
+            parsedVersion = JSON.parse(result.body);
+        }
+        catch {
+            parsedVersion = null;
+        }
+        const version = parsedVersion !== null && typeof parsedVersion === "object" && parsedVersion !== null
+            ? parsedVersion["installed_version"]
+            : null;
+        return makeResult("github-ghes", "ok", `GHES meta probe returned HTTP 200${typeof version === "string" ? ` (installed_version=${version})` : ""}`, {
+            latencyMs: probe.latencyMs,
+        });
+    }
+    if (result.status === 401 || result.status === 403) {
+        return makeResult("github-ghes", "warn", `GHES meta probe returned HTTP ${result.status} (capability probe is unauthenticated; some installs require a token)`, {
+            remediation: "GitHub Enterprise Server's /api/v3/meta endpoint is unauthenticated on most installs but token-gated on others. If the install requires auth, supply a token with `site_admin: read` or use the GHES admin REST API directly to confirm the version.",
+            latencyMs: probe.latencyMs,
+        });
+    }
+    if (result.status === 404) {
+        return makeResult("github-ghes", "fail", "GHES /api/v3/meta returned HTTP 404 — explicit API capability unsupported", {
+            remediation: "This GHES install does not expose /api/v3/meta. umactually cannot determine version/capability; review posting will continue but version-specific features (e.g. newer inline suggestion formats) are unsupported.",
+            latencyMs: probe.latencyMs,
+        });
+    }
+    return makeResult("github-ghes", "warn", `GHES meta probe returned HTTP ${result.status}`, {
+        remediation: `Verify reachability of ${url_redactUrlForLog(metaUrl)} and that the GHES instance exposes /api/v3/meta.`,
         latencyMs: probe.latencyMs,
     });
 }
@@ -5618,6 +5934,7 @@ async function runFullDoctor(deps) {
         checkContextBudgets(),
         checkCiPlatform(deps),
         await checkGithubPermissions(deps.env, safeFetch, timeoutMs),
+        await checkGithubGhesCapability(deps.env, safeFetch, timeoutMs),
         await checkAzurePermissions(deps.env, safeFetch, timeoutMs),
     ];
     const exitCode = checks.some((c) => c.status === "fail") ? 1 : 0;
@@ -13778,6 +14095,7 @@ const tokenCache = new Map();
 async function fetchAndCacheSessionToken(githubToken, tokenUrl, tokenHeaders, fetchImpl, endpoint, requestId) {
     let response;
     try {
+        assertCopilotTokenEndpointAllowed(tokenUrl);
         response = await fetchImpl(tokenUrl, {
             method: "GET",
             headers: tokenHeaders,
@@ -13849,6 +14167,30 @@ function clearCopilotTokenCache() {
 }
 function buildCacheKey(githubToken) {
     return githubToken;
+}
+/**
+ * Reject an obviously unsafe token endpoint before the network call.
+ * Catches the misconfiguration where a GHES-issued token is sent to
+ * a github.com endpoint (or vice versa): HTTPS-only, no userinfo,
+ * no query/fragment.
+ */
+function assertCopilotTokenEndpointAllowed(tokenUrl) {
+    let parsed;
+    try {
+        parsed = new URL(tokenUrl);
+    }
+    catch {
+        throw new ProviderError("parse", "chat", null, "no-request-id", `Copilot token endpoint URL is not parseable: '${tokenUrl}'.`);
+    }
+    if (parsed.protocol !== "https:") {
+        throw new ProviderError("parse", "chat", null, "no-request-id", `Copilot token endpoint must use HTTPS (got '${parsed.protocol}'); refusing to send the GitHub token over an insecure channel.`);
+    }
+    if (parsed.username.length > 0 || parsed.password.length > 0) {
+        throw new ProviderError("parse", "chat", null, "no-request-id", "Copilot token endpoint must NOT carry userinfo; refusing to embed credentials in the URL.");
+    }
+    if (parsed.search.length > 0 || parsed.hash.length > 0) {
+        throw new ProviderError("parse", "chat", null, "no-request-id", "Copilot token endpoint must NOT carry query strings or fragments.");
+    }
 }
 
 ;// CONCATENATED MODULE: ./src/provider/copilot.ts
@@ -24657,7 +24999,6 @@ class GithubApiError extends PlatformApiError {
         super(code, status, message, options);
     }
 }
-const GITHUB_API_BASE_URL = process.env["GITHUB_API_URL"]?.replace(/\/$/u, "") || DEFAULT_GITHUB_API_BASE;
 const PULL_DIFF_MEDIA_TYPE = "application/vnd.github.v3.diff";
 async function fetchGithubPrDiff(context, fetchImpl = fetch) {
     // GitHub's REST `/pulls/{n}` endpoint returns the server-side diff
@@ -24666,7 +25007,7 @@ async function fetchGithubPrDiff(context, fetchImpl = fetch) {
     // before they reach the LLM — see `src/diff/filter-build-artifacts.ts`
     // for the full rationale.
     const raw = await fetchTextOrThrow(fetchImpl, {
-        url: buildPullUrl(context),
+        url: buildPullUrl(context, buildGithubApiBaseFromEnv()),
         headers: {
             ...githubHeaders(context.token),
             Accept: PULL_DIFF_MEDIA_TYPE,
@@ -24690,9 +25031,8 @@ async function fetchGithubPrDiff(context, fetchImpl = fetch) {
     }
     return filtered;
 }
-function buildPullUrl(context) {
-    const repositorySegment = `${context.repo.owner}/${context.repo.name}`;
-    return `${GITHUB_API_BASE_URL}/repos/${repositorySegment}/pulls/${context.prNumber}`;
+function buildPullUrl(context, base) {
+    return buildGithubRestUrl(base, `/repos/${context.repo.owner}/${context.repo.name}/pulls/${context.prNumber}`);
 }
 /**
  * Fetch the contents of instruction files from the PR's base branch.
@@ -24708,7 +25048,7 @@ async function fetchGithubPrInstructions(context, paths, fetchImpl = fetch) {
     return fetchPlatformInstructionFiles(paths, fetchImpl, (path, impl) => fetchGithubPrInstruction(context, path, impl));
 }
 async function fetchGithubPrInstruction(context, path, fetchImpl) {
-    const url = `${GITHUB_API_BASE_URL}/repos/${context.repo.owner}/${context.repo.name}/contents/${path}?ref=${context.baseSha}`;
+    const url = `${buildGithubRestUrl(buildGithubApiBaseFromEnv(), `/repos/${context.repo.owner}/${context.repo.name}/contents/${path}`)}?ref=${context.baseSha}`;
     const response = await fetchImpl(url, {
         method: "GET",
         headers: githubHeaders(context.token),
@@ -25664,7 +26004,6 @@ async function fetchSonarPrIssues(input) {
 
 
 
-const live_github_GITHUB_API_BASE_URL = process.env["GITHUB_API_URL"]?.replace(/\/$/u, "") || DEFAULT_GITHUB_API_BASE;
 async function runGithubLive(input) {
     const { context, diffText, provider, parsed, fetchImpl } = input;
     // Fetch SonarCloud PR issues (when the flag is set) directly from the
@@ -25820,7 +26159,7 @@ async function runGithubLive(input) {
     };
 }
 async function findExistingMarkerReview(context, fetchImpl) {
-    const response = await fetchImpl(githubReviewsUrl(context), {
+    const response = await fetchImpl(githubReviewsUrl(context, buildGithubApiBaseFromEnv()), {
         method: "GET",
         headers: githubHeaders(context.token),
     });
@@ -25839,7 +26178,7 @@ async function findExistingMarkerReview(context, fetchImpl) {
 }
 async function updateExistingReview(input) {
     try {
-        const response = await input.fetchImpl(`${githubReviewsUrl(input.context)}/${input.review.id}`, {
+        const response = await input.fetchImpl(`${githubReviewsUrl(input.context, buildGithubApiBaseFromEnv())}/${input.review.id}`, {
             method: "PUT",
             headers: githubHeaders(input.context.token),
             body: JSON.stringify({ body: input.body }),
@@ -25856,7 +26195,7 @@ async function updateExistingReview(input) {
     }
 }
 async function deleteExistingReview(input) {
-    const response = await input.fetchImpl(`${githubReviewsUrl(input.context)}/${input.review.id}`, {
+    const response = await input.fetchImpl(`${githubReviewsUrl(input.context, buildGithubApiBaseFromEnv())}/${input.review.id}`, {
         method: "DELETE",
         headers: githubHeaders(input.context.token),
     });
@@ -25872,7 +26211,7 @@ async function createGithubReview(input) {
         event: input.event,
         comments: input.comments,
     };
-    const response = await input.fetchImpl(githubReviewsUrl(input.context), {
+    const response = await input.fetchImpl(githubReviewsUrl(input.context, buildGithubApiBaseFromEnv()), {
         method: "POST",
         headers: githubHeaders(input.context.token),
         body: JSON.stringify(request),
@@ -25894,10 +26233,8 @@ function parseExistingReview(value) {
     }
     return null;
 }
-function githubReviewsUrl(context) {
-    const owner = encodeURIComponent(context.repo.owner);
-    const repo = encodeURIComponent(context.repo.name);
-    return `${live_github_GITHUB_API_BASE_URL}/repos/${owner}/${repo}/pulls/${context.prNumber}/reviews`;
+function githubReviewsUrl(context, base) {
+    return buildGithubRestUrl(base, `/repos/${context.repo.owner}/${context.repo.name}/pulls/${context.prNumber}/reviews`);
 }
 
 ;// CONCATENATED MODULE: ./src/cli/live-merge.ts

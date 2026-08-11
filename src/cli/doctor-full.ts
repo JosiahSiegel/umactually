@@ -34,7 +34,12 @@ import { BUDGET_DEFAULTS } from "./context-provenance.js";
 import { discoverAutoModel, type ModelProvider } from "./auto-model.js";
 import { redactUrlForLog } from "../util/url.js";
 import { REDACTED_SECRET_TOKEN } from "../util/brand.js";
-import { DEFAULT_GITHUB_API_BASE, DEFAULT_OPENAI_URL } from "../util/provider-defaults.js";
+import { DEFAULT_OPENAI_URL } from "../util/provider-defaults.js";
+import {
+  buildGithubApiBaseFromEnv,
+  buildGithubRestUrl,
+  isGithubComBase,
+} from "../platform/github/api-base.js";
 import { ENV_KEYS } from "../util/env-keys.js";
 
 // ---------------------------------------------------------------------------
@@ -54,6 +59,7 @@ export const DOCTOR_CHECK_IDS = [
   "context-budgets",
   "ci-platform",
   "github-permissions",
+  "github-ghes",
   "azure-permissions",
 ] as const;
 export type DoctorCheckId = (typeof DOCTOR_CHECK_IDS)[number];
@@ -666,8 +672,8 @@ function checkCiPlatform(deps: FullDoctorDeps): DoctorCheckResult {
 }
 
 async function checkGithubPermissions(
-  env: FullDoctorDeps["env"],
-  fetchImpl: typeof fetch,
+  env: NodeJS.ProcessEnv,
+  fetchImpl: SafeFetch,
   timeoutMs: number,
 ): Promise<DoctorCheckResult> {
   const token = env["GITHUB_TOKEN"] ?? env["GH_TOKEN"];
@@ -682,8 +688,21 @@ async function checkGithubPermissions(
       },
     );
   }
-  const apiBase = (env["GITHUB_API_URL"] ?? DEFAULT_GITHUB_API_BASE).replace(/\/$/u, "");
-  const url = `${apiBase}/octocat`;
+  let apiBase;
+  try {
+    apiBase = buildGithubApiBaseFromEnv(env);
+  } catch (error) {
+    return makeResult(
+      "github-permissions",
+      "fail",
+      `GITHUB_API_URL is not usable: ${error instanceof Error ? error.message : String(error)}`,
+      {
+        remediation:
+          "Fix GITHUB_API_URL (must be an HTTPS URL with no userinfo or query string) or unset it to use github.com.",
+      },
+    );
+  }
+  const url = buildGithubRestUrl(apiBase, "/octocat");
   const probe = await timeProbe(async () => {
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), timeoutMs);
@@ -741,6 +760,123 @@ async function checkGithubPermissions(
     `github read-only probe returned HTTP ${result.status}`,
     {
       remediation: "Verify the API base URL is correct; the probe is GET-only and never sends a body.",
+      latencyMs: probe.latencyMs,
+    },
+  );
+}
+
+async function checkGithubGhesCapability(
+  env: FullDoctorDeps["env"],
+  fetchImpl: SafeFetch,
+  timeoutMs: number,
+): Promise<DoctorCheckResult> {
+  let apiBase;
+  try {
+    apiBase = buildGithubApiBaseFromEnv(env);
+  } catch (error) {
+    return makeResult(
+      "github-ghes",
+      "fail",
+      `GITHUB_API_URL is not usable: ${error instanceof Error ? error.message : String(error)}`,
+      {
+        remediation:
+          "Set GITHUB_API_URL to an HTTPS URL with no userinfo or query string, or unset it to use github.com.",
+      },
+    );
+  }
+  if (isGithubComBase(apiBase)) {
+    return makeResult(
+      "github-ghes",
+      "skip",
+      "github.com default — GitHub Enterprise Server capability probe not applicable",
+      {
+        remediation: "Set GITHUB_API_URL to a GHES host (e.g. https://ghe.example.com/api/v3) to probe GHES capability.",
+      },
+    );
+  }
+  const metaUrl = buildGithubRestUrl(apiBase, "/meta");
+  const probe = await timeProbe(async () => {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), timeoutMs);
+    try {
+      const response = await fetchImpl(metaUrl, {
+        method: "GET",
+        headers: { accept: "application/vnd.github+json" },
+        signal: controller.signal,
+      });
+      const text = await response.text();
+      return { status: response.status, body: text };
+    } finally {
+      clearTimeout(timer);
+    }
+  });
+  if (probe.error !== null) {
+    return makeResult(
+      "github-ghes",
+      "fail",
+      `GHES meta endpoint probe failed: ${redactNetworkError(probe.error)}`,
+      {
+        remediation: `Verify reachability of ${redactUrlForLog(metaUrl)} and that the GHES instance exposes /api/v3/meta.`,
+        latencyMs: probe.latencyMs,
+      },
+    );
+  }
+  const result = probe.value;
+  if (result === null) {
+    return makeResult("github-ghes", "skip", "no github context", {
+      latencyMs: probe.latencyMs,
+    });
+  }
+  if (result.status === 200) {
+    let parsedVersion: unknown = null;
+    try {
+      parsedVersion = JSON.parse(result.body);
+    } catch {
+      parsedVersion = null;
+    }
+    const version =
+      parsedVersion !== null && typeof parsedVersion === "object" && parsedVersion !== null
+        ? (parsedVersion as Record<string, unknown>)["installed_version"]
+        : null;
+    return makeResult(
+      "github-ghes",
+      "ok",
+      `GHES meta probe returned HTTP 200${typeof version === "string" ? ` (installed_version=${version})` : ""}`,
+      {
+        latencyMs: probe.latencyMs,
+      },
+    );
+  }
+  if (result.status === 401 || result.status === 403) {
+    return makeResult(
+      "github-ghes",
+      "warn",
+      `GHES meta probe returned HTTP ${result.status} (capability probe is unauthenticated; some installs require a token)`,
+      {
+        remediation:
+          "GitHub Enterprise Server's /api/v3/meta endpoint is unauthenticated on most installs but token-gated on others. If the install requires auth, supply a token with `site_admin: read` or use the GHES admin REST API directly to confirm the version.",
+        latencyMs: probe.latencyMs,
+      },
+    );
+  }
+  if (result.status === 404) {
+    return makeResult(
+      "github-ghes",
+      "fail",
+      "GHES /api/v3/meta returned HTTP 404 — explicit API capability unsupported",
+      {
+        remediation:
+          "This GHES install does not expose /api/v3/meta. umactually cannot determine version/capability; review posting will continue but version-specific features (e.g. newer inline suggestion formats) are unsupported.",
+        latencyMs: probe.latencyMs,
+      },
+    );
+  }
+  return makeResult(
+    "github-ghes",
+    "warn",
+    `GHES meta probe returned HTTP ${result.status}`,
+    {
+      remediation: `Verify reachability of ${redactUrlForLog(metaUrl)} and that the GHES instance exposes /api/v3/meta.`,
       latencyMs: probe.latencyMs,
     },
   );
@@ -874,6 +1010,7 @@ export async function runFullDoctor(deps: FullDoctorDeps): Promise<FullDoctorRes
     checkContextBudgets(),
     checkCiPlatform(deps),
     await checkGithubPermissions(deps.env, safeFetch, timeoutMs),
+    await checkGithubGhesCapability(deps.env, safeFetch, timeoutMs),
     await checkAzurePermissions(deps.env, safeFetch, timeoutMs),
   ];
 
