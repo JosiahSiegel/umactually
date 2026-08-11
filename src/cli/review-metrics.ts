@@ -482,16 +482,46 @@ export function finalizeReviewMetrics(builder: ReviewMetricsBuilder): ReviewMetr
  * `end*` lifecycle (e.g. when reading a pre-captured metrics object
  * off the wire).
  */
-export function finalizeFromState(state: InternalState, nowMs: number): ReviewMetrics {
-  const duration = (started: number | null, ended: number | null): number => {
-    if (started === null || ended === null) return 0;
-    const delta = ended - started;
-    return delta < 0 ? 0 : delta;
+function durationMs(started: number | null, ended: number | null): number {
+  if (started === null || ended === null) return 0;
+  const delta = ended - started;
+  return delta < 0 ? 0 : delta;
+}
+
+function computePhaseDurations(state: InternalState): Omit<ReviewMetrics["durations"], "totalMs"> {
+  return {
+    contextMs: durationMs(state.phaseStartedAt.context, state.phaseEndedAt.context),
+    providerMs: durationMs(state.phaseStartedAt.provider, state.phaseEndedAt.provider),
+    verificationMs: durationMs(state.phaseStartedAt.verification, state.phaseEndedAt.verification),
+    postingMs: durationMs(state.phaseStartedAt.posting, state.phaseEndedAt.posting),
   };
-  const contextMs = duration(state.phaseStartedAt.context, state.phaseEndedAt.context);
-  const providerMs = duration(state.phaseStartedAt.provider, state.phaseEndedAt.provider);
-  const verificationMs = duration(state.phaseStartedAt.verification, state.phaseEndedAt.verification);
-  const postingMs = duration(state.phaseStartedAt.posting, state.phaseEndedAt.posting);
+}
+
+function isValidPricing(pricing: PricingConfig): boolean {
+  return typeof pricing.inputPricePer1kTokens === "number" &&
+    typeof pricing.outputPricePer1kTokens === "number" &&
+    Number.isFinite(pricing.inputPricePer1kTokens) &&
+    Number.isFinite(pricing.outputPricePer1kTokens) &&
+    pricing.inputPricePer1kTokens >= 0 &&
+    pricing.outputPricePer1kTokens >= 0;
+}
+
+function computeCostEstimate(
+  usage: ProviderUsageRecord | undefined,
+  pricing: PricingConfig | undefined,
+): CostEstimate | undefined {
+  if (usage === undefined || pricing === undefined || !isValidPricing(pricing)) return undefined;
+  const inputTokens = usage.inputTokens;
+  const outputTokens = usage.outputTokens;
+  if (typeof inputTokens !== "number" || typeof outputTokens !== "number") return undefined;
+  const total = (inputTokens / 1000) * pricing.inputPricePer1kTokens! +
+    (outputTokens / 1000) * pricing.outputPricePer1kTokens!;
+  if (!Number.isFinite(total)) return undefined;
+  return { total, currency: pricing.currency, source: pricing.source, estimate: "estimated" };
+}
+
+export function finalizeFromState(state: InternalState, nowMs: number): ReviewMetrics {
+  const phaseDurations = computePhaseDurations(state);
   // totalMs is anchored on run start (captured at `buildReviewMetrics`
   // time) and `now`. This guarantees totalMs >= sum of phases even
   // when the orchestrator's pre/post timing diverges from a
@@ -505,45 +535,12 @@ export function finalizeFromState(state: InternalState, nowMs: number): ReviewMe
   const usage = state.usage;
   const roundTrips = state.roundTrips + (usage?.roundTrips ?? 0);
 
-  let cost: CostEstimate | undefined;
-  if (usage !== undefined && state.pricing !== undefined) {
-    const p = state.pricing;
-    if (
-      typeof p.inputPricePer1kTokens === "number" &&
-      typeof p.outputPricePer1kTokens === "number" &&
-      Number.isFinite(p.inputPricePer1kTokens) &&
-      Number.isFinite(p.outputPricePer1kTokens) &&
-      p.inputPricePer1kTokens >= 0 &&
-      p.outputPricePer1kTokens >= 0
-    ) {
-      // Only compute the estimate when BOTH sides of the price table
-      // are present. Missing one side is a configuration error and the
-      // estimate is omitted so the operator is not misled by a partial
-      // price assumption. Also require the corresponding usage field
-      // so a price + missing tokens case does not silently fabricate
-      // zero usage.
-      const inputTokens = usage.inputTokens;
-      const outputTokens = usage.outputTokens;
-      if (typeof inputTokens === "number" && typeof outputTokens === "number") {
-        const inputCost = (inputTokens / 1000) * p.inputPricePer1kTokens;
-        const outputCost = (outputTokens / 1000) * p.outputPricePer1kTokens;
-        const total = inputCost + outputCost;
-        if (Number.isFinite(total)) {
-          cost = {
-            total,
-            currency: p.currency,
-            source: p.source,
-            estimate: "estimated",
-          };
-        }
-      }
-    }
-  }
+  const cost = computeCostEstimate(usage, state.pricing);
 
   const out: {
     -readonly [K in keyof ReviewMetrics]: ReviewMetrics[K];
   } = {
-    durations: { contextMs, providerMs, verificationMs, postingMs, totalMs },
+    durations: { ...phaseDurations, totalMs },
     counts: state.counts,
     reasons: state.reasons,
     ...(usage !== undefined

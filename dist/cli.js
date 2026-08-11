@@ -385,53 +385,52 @@ async function parseTsFile(filePath, text) {
     walk(sf);
     return { ok: true, declarations, imports };
 }
-function extractHunks(diffText) {
-    const blocks = diffText.split(/^diff --git /um).slice(1).map((b) => `diff --git ${b}`);
-    const result = [];
-    for (const block of blocks) {
-        const lines = block.split(/\r?\n/u);
-        let target = null;
-        for (const line of lines) {
-            if (line.startsWith("+++ ")) {
-                const raw = line.slice(4).split("\t")[0]?.trim() ?? "";
-                if (raw === "" || raw === "/dev/null")
-                    break;
-                target = raw.startsWith("b/") ? raw.slice(2) : raw;
-                break;
-            }
+function parseDiffBlocks(diffText) {
+    return diffText.split(/^diff --git /um).slice(1).map((block) => `diff --git ${block}`);
+}
+function extractTargetPath(block) {
+    for (const line of block.split(/\r?\n/u)) {
+        if (!line.startsWith("+++ "))
+            continue;
+        const raw = line.slice(4).split("\t")[0]?.trim() ?? "";
+        if (raw === "" || raw === "/dev/null")
+            return null;
+        return normalizeRepoPath(raw.startsWith("b/") ? raw.slice(2) : raw);
+    }
+    return null;
+}
+function extractHunkText(block, target) {
+    const hunks = [];
+    let startedAt = null;
+    let added = null;
+    for (const line of block.split(/\r?\n/u)) {
+        const hunkHeader = /^@@\s+-\d+(?:,\d+)?\s+\+(\d+)(?:,\d+)?\s+@@/u.exec(line);
+        if (hunkHeader !== null) {
+            if (startedAt !== null)
+                hunks.push(`@@ line ${startedAt}+`);
+            startedAt = Number(hunkHeader[1]);
+            added = 0;
         }
+        if (line.startsWith("+") && !line.startsWith("+++") && startedAt !== null && added !== null) {
+            hunks.push(line);
+            added += 1;
+            if (added >= 30)
+                hunks.push("[… hunk truncated …]");
+        }
+    }
+    if (startedAt !== null)
+        hunks.push(`@@ line ${startedAt}+`);
+    return hunks.length > 0 ? { path: target, text: hunks.join("\n") } : null;
+}
+function extractHunks(diffText) {
+    const result = [];
+    for (const block of parseDiffBlocks(diffText)) {
+        const target = extractTargetPath(block);
         if (target === null)
             continue;
-        const targetNormalized = normalizeRepoPath(target);
-        // Extract added/changed lines into a hunk pseudo-text.
-        const hunks = [];
-        let startedAt = null;
-        let added = null;
-        for (const line of lines) {
-            const hunkHeader = /^@@\s+-\d+(?:,\d+)?\s+\+(\d+)(?:,\d+)?\s+@@/u.exec(line);
-            if (hunkHeader !== null) {
-                if (startedAt !== null) {
-                    hunks.push(`@@ line ${startedAt}+`);
-                }
-                startedAt = Number(hunkHeader[1]);
-                added = 0;
-            }
-            if (line.startsWith("+") &&
-                !line.startsWith("+++") &&
-                startedAt !== null &&
-                added !== null) {
-                hunks.push(line);
-                added += 1;
-                if (added >= 30) {
-                    hunks.push("[… hunk truncated …]");
-                }
-            }
-        }
-        if (startedAt !== null)
-            hunks.push(`@@ line ${startedAt}+`);
-        if (hunks.length > 0) {
-            result.push({ path: targetNormalized, text: hunks.join("\n") });
-        }
+        const hunk = extractHunkText(block, target);
+        if (hunk !== null)
+            result.push(hunk);
     }
     return result;
 }
@@ -4107,6 +4106,35 @@ function validateBudgetField(rawBudgets, field, filePath) {
     }
     return { ok: true, policy: DEFAULT_REVIEW_POLICY };
 }
+function validateOnePathRule(rule, filePath, seenPatterns) {
+    if (rule === null || typeof rule !== "object" || Array.isArray(rule)) {
+        return fail("invalid-glob", `policy at ${filePath}: pathRule must be an object`);
+    }
+    const r = rule;
+    for (const key of Object.keys(r)) {
+        if (!ALLOWED_PATH_RULE_KEYS.has(key)) {
+            return fail("unknown-key", `policy at ${filePath}: unknown pathRule key "${key}"`);
+        }
+    }
+    if (typeof r["pattern"] !== "string") {
+        return fail("invalid-glob", `policy at ${filePath}: pathRule.pattern must be a string`);
+    }
+    const pattern = r["pattern"];
+    if (!isValidGlob(pattern)) {
+        return fail("invalid-glob", `policy at ${filePath}: invalid glob pattern ${brand/* REDACTED_PLACEHOLDER */.Vj}`);
+    }
+    if (isUnsafePath(pattern)) {
+        return fail("unsafe-path", `policy at ${filePath}: pathRule pattern escapes repo root`);
+    }
+    if (seenPatterns.has(pattern)) {
+        return fail("duplicate-path-rule", `policy at ${filePath}: duplicate path rule pattern detected`);
+    }
+    seenPatterns.add(pattern);
+    if (r["effort"] !== undefined && (typeof r["effort"] !== "string" || !VALID_EFFORTS.has(r["effort"]))) {
+        return fail("invalid-effort", `policy at ${filePath}: invalid pathRule effort ${brand/* REDACTED_PLACEHOLDER */.Vj}`);
+    }
+    return { ok: true, policy: DEFAULT_REVIEW_POLICY };
+}
 function validatePathRules(obj, filePath) {
     if (obj["pathRules"] === undefined)
         return { ok: true, policy: DEFAULT_REVIEW_POLICY };
@@ -4115,32 +4143,9 @@ function validatePathRules(obj, filePath) {
     }
     const seenPatterns = new Set();
     for (const rule of obj["pathRules"]) {
-        if (rule === null || typeof rule !== "object" || Array.isArray(rule)) {
-            return fail("invalid-glob", `policy at ${filePath}: pathRule must be an object`);
-        }
-        const r = rule;
-        for (const key of Object.keys(r)) {
-            if (!ALLOWED_PATH_RULE_KEYS.has(key)) {
-                return fail("unknown-key", `policy at ${filePath}: unknown pathRule key "${key}"`);
-            }
-        }
-        if (typeof r["pattern"] !== "string") {
-            return fail("invalid-glob", `policy at ${filePath}: pathRule.pattern must be a string`);
-        }
-        const pattern = r["pattern"];
-        if (!isValidGlob(pattern)) {
-            return fail("invalid-glob", `policy at ${filePath}: invalid glob pattern ${brand/* REDACTED_PLACEHOLDER */.Vj}`);
-        }
-        if (isUnsafePath(pattern)) {
-            return fail("unsafe-path", `policy at ${filePath}: pathRule pattern escapes repo root`);
-        }
-        if (seenPatterns.has(pattern)) {
-            return fail("duplicate-path-rule", `policy at ${filePath}: duplicate path rule pattern detected`);
-        }
-        seenPatterns.add(pattern);
-        if (r["effort"] !== undefined && (typeof r["effort"] !== "string" || !VALID_EFFORTS.has(r["effort"]))) {
-            return fail("invalid-effort", `policy at ${filePath}: invalid pathRule effort ${brand/* REDACTED_PLACEHOLDER */.Vj}`);
-        }
+        const result = validateOnePathRule(rule, filePath, seenPatterns);
+        if (!result.ok)
+            return result;
     }
     return { ok: true, policy: DEFAULT_REVIEW_POLICY };
 }
@@ -16916,61 +16921,27 @@ function computeDurableFindingIdentity(input) {
         normalizedRuleKey,
     };
 }
-// ---------------------------------------------------------------------------
-// Collision check
-// ---------------------------------------------------------------------------
-/**
- * Assert that no fingerprint collision exists among the given findings,
- * optionally also checking against prior persisted state.
- *
- * A collision is: same fingerprintDigest + different identityDigest.
- * Same fingerprint + same identityDigest is a dedup (allowed).
- *
- * Throws FingerprintCollisionError on the first collision found.
- * The caller MUST short-circuit on throw: post nothing, resolve
- * nothing, write no new state.
- */
+function recordEntryOrThrow(seen, entry, defaultSource) {
+    const fp = entry.identity.fingerprintDigest;
+    const existing = seen.get(fp);
+    if (existing === undefined) {
+        seen.set(fp, { identityDigest: entry.identity.identityDigest, body: entry.body, source: defaultSource });
+        return;
+    }
+    if (existing.identityDigest === entry.identity.identityDigest)
+        return;
+    const collisionType = existing.source === "persisted" ? "against-persisted-state" : "within-review";
+    const detail = defaultSource === "persisted"
+        ? `persisted "${existing.body.slice(0, 60)}" vs persisted "${entry.body.slice(0, 60)}"`
+        : `"${existing.body.slice(0, 60)}" vs "${entry.body.slice(0, 60)}"`;
+    throw new FingerprintCollisionError(fp, collisionType, detail);
+}
 function assertNoFingerprintCollision(current, persisted = []) {
-    // Build a map: fingerprintDigest -> { identityDigest, body }
     const seen = new Map();
-    // Check within current findings, and against persisted state.
-    // Persisted state is checked first so we can report "against-persisted-state".
-    for (const entry of persisted) {
-        const fp = entry.identity.fingerprintDigest;
-        const existing = seen.get(fp);
-        if (existing !== undefined) {
-            if (existing.identityDigest !== entry.identity.identityDigest) {
-                throw new FingerprintCollisionError(fp, "against-persisted-state", `persisted "${existing.body.slice(0, 60)}" vs persisted "${entry.body.slice(0, 60)}"`);
-            }
-        }
-        else {
-            seen.set(fp, {
-                identityDigest: entry.identity.identityDigest,
-                body: entry.body,
-                source: "persisted",
-            });
-        }
-    }
-    for (const entry of current) {
-        const fp = entry.identity.fingerprintDigest;
-        const existing = seen.get(fp);
-        if (existing !== undefined) {
-            if (existing.identityDigest !== entry.identity.identityDigest) {
-                const collisionType = existing.source === "persisted"
-                    ? "against-persisted-state"
-                    : "within-review";
-                throw new FingerprintCollisionError(fp, collisionType, `"${existing.body.slice(0, 60)}" vs "${entry.body.slice(0, 60)}"`);
-            }
-            // Same fingerprint + same identityDigest → dedup, allowed.
-        }
-        else {
-            seen.set(fp, {
-                identityDigest: entry.identity.identityDigest,
-                body: entry.body,
-                source: "current",
-            });
-        }
-    }
+    for (const entry of persisted)
+        recordEntryOrThrow(seen, entry, "persisted");
+    for (const entry of current)
+        recordEntryOrThrow(seen, entry, "current");
 }
 
 ;// CONCATENATED MODULE: ./src/diff/filter-build-artifacts.ts
@@ -27141,17 +27112,43 @@ function finalizeReviewMetrics(builder) {
  * `end*` lifecycle (e.g. when reading a pre-captured metrics object
  * off the wire).
  */
-function finalizeFromState(state, nowMs) {
-    const duration = (started, ended) => {
-        if (started === null || ended === null)
-            return 0;
-        const delta = ended - started;
-        return delta < 0 ? 0 : delta;
+function durationMs(started, ended) {
+    if (started === null || ended === null)
+        return 0;
+    const delta = ended - started;
+    return delta < 0 ? 0 : delta;
+}
+function computePhaseDurations(state) {
+    return {
+        contextMs: durationMs(state.phaseStartedAt.context, state.phaseEndedAt.context),
+        providerMs: durationMs(state.phaseStartedAt.provider, state.phaseEndedAt.provider),
+        verificationMs: durationMs(state.phaseStartedAt.verification, state.phaseEndedAt.verification),
+        postingMs: durationMs(state.phaseStartedAt.posting, state.phaseEndedAt.posting),
     };
-    const contextMs = duration(state.phaseStartedAt.context, state.phaseEndedAt.context);
-    const providerMs = duration(state.phaseStartedAt.provider, state.phaseEndedAt.provider);
-    const verificationMs = duration(state.phaseStartedAt.verification, state.phaseEndedAt.verification);
-    const postingMs = duration(state.phaseStartedAt.posting, state.phaseEndedAt.posting);
+}
+function isValidPricing(pricing) {
+    return typeof pricing.inputPricePer1kTokens === "number" &&
+        typeof pricing.outputPricePer1kTokens === "number" &&
+        Number.isFinite(pricing.inputPricePer1kTokens) &&
+        Number.isFinite(pricing.outputPricePer1kTokens) &&
+        pricing.inputPricePer1kTokens >= 0 &&
+        pricing.outputPricePer1kTokens >= 0;
+}
+function computeCostEstimate(usage, pricing) {
+    if (usage === undefined || pricing === undefined || !isValidPricing(pricing))
+        return undefined;
+    const inputTokens = usage.inputTokens;
+    const outputTokens = usage.outputTokens;
+    if (typeof inputTokens !== "number" || typeof outputTokens !== "number")
+        return undefined;
+    const total = (inputTokens / 1000) * pricing.inputPricePer1kTokens +
+        (outputTokens / 1000) * pricing.outputPricePer1kTokens;
+    if (!Number.isFinite(total))
+        return undefined;
+    return { total, currency: pricing.currency, source: pricing.source, estimate: "estimated" };
+}
+function finalizeFromState(state, nowMs) {
+    const phaseDurations = computePhaseDurations(state);
     // totalMs is anchored on run start (captured at `buildReviewMetrics`
     // time) and `now`. This guarantees totalMs >= sum of phases even
     // when the orchestrator's pre/post timing diverges from a
@@ -27163,40 +27160,9 @@ function finalizeFromState(state, nowMs) {
     // undefined.
     const usage = state.usage;
     const roundTrips = state.roundTrips + (usage?.roundTrips ?? 0);
-    let cost;
-    if (usage !== undefined && state.pricing !== undefined) {
-        const p = state.pricing;
-        if (typeof p.inputPricePer1kTokens === "number" &&
-            typeof p.outputPricePer1kTokens === "number" &&
-            Number.isFinite(p.inputPricePer1kTokens) &&
-            Number.isFinite(p.outputPricePer1kTokens) &&
-            p.inputPricePer1kTokens >= 0 &&
-            p.outputPricePer1kTokens >= 0) {
-            // Only compute the estimate when BOTH sides of the price table
-            // are present. Missing one side is a configuration error and the
-            // estimate is omitted so the operator is not misled by a partial
-            // price assumption. Also require the corresponding usage field
-            // so a price + missing tokens case does not silently fabricate
-            // zero usage.
-            const inputTokens = usage.inputTokens;
-            const outputTokens = usage.outputTokens;
-            if (typeof inputTokens === "number" && typeof outputTokens === "number") {
-                const inputCost = (inputTokens / 1000) * p.inputPricePer1kTokens;
-                const outputCost = (outputTokens / 1000) * p.outputPricePer1kTokens;
-                const total = inputCost + outputCost;
-                if (Number.isFinite(total)) {
-                    cost = {
-                        total,
-                        currency: p.currency,
-                        source: p.source,
-                        estimate: "estimated",
-                    };
-                }
-            }
-        }
-    }
+    const cost = computeCostEstimate(usage, state.pricing);
     const out = {
-        durations: { contextMs, providerMs, verificationMs, postingMs, totalMs },
+        durations: { ...phaseDurations, totalMs },
         counts: state.counts,
         reasons: state.reasons,
         ...(usage !== undefined

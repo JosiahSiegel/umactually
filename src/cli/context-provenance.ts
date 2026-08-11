@@ -457,52 +457,48 @@ async function parseTsFile(
 
 type Hunk = { path: string; text: string };
 
+function parseDiffBlocks(diffText: string): string[] {
+  return diffText.split(/^diff --git /um).slice(1).map((block) => `diff --git ${block}`);
+}
+
+function extractTargetPath(block: string): string | null {
+  for (const line of block.split(/\r?\n/u)) {
+    if (!line.startsWith("+++ ")) continue;
+    const raw = line.slice(4).split("\t")[0]?.trim() ?? "";
+    if (raw === "" || raw === "/dev/null") return null;
+    return normalizeRepoPath(raw.startsWith("b/") ? raw.slice(2) : raw);
+  }
+  return null;
+}
+
+function extractHunkText(block: string, target: string): Hunk | null {
+  const hunks: string[] = [];
+  let startedAt: number | null = null;
+  let added: number | null = null;
+  for (const line of block.split(/\r?\n/u)) {
+    const hunkHeader = /^@@\s+-\d+(?:,\d+)?\s+\+(\d+)(?:,\d+)?\s+@@/u.exec(line);
+    if (hunkHeader !== null) {
+      if (startedAt !== null) hunks.push(`@@ line ${startedAt}+`);
+      startedAt = Number(hunkHeader[1]);
+      added = 0;
+    }
+    if (line.startsWith("+") && !line.startsWith("+++") && startedAt !== null && added !== null) {
+      hunks.push(line);
+      added += 1;
+      if (added >= 30) hunks.push("[… hunk truncated …]");
+    }
+  }
+  if (startedAt !== null) hunks.push(`@@ line ${startedAt}+`);
+  return hunks.length > 0 ? { path: target, text: hunks.join("\n") } : null;
+}
+
 function extractHunks(diffText: string): Hunk[] {
-  const blocks = diffText.split(/^diff --git /um).slice(1).map((b) => `diff --git ${b}`);
   const result: Hunk[] = [];
-  for (const block of blocks) {
-    const lines = block.split(/\r?\n/u);
-    let target: string | null = null;
-    for (const line of lines) {
-      if (line.startsWith("+++ ")) {
-        const raw = line.slice(4).split("\t")[0]?.trim() ?? "";
-        if (raw === "" || raw === "/dev/null") break;
-        target = raw.startsWith("b/") ? raw.slice(2) : raw;
-        break;
-      }
-    }
+  for (const block of parseDiffBlocks(diffText)) {
+    const target = extractTargetPath(block);
     if (target === null) continue;
-    const targetNormalized = normalizeRepoPath(target);
-    // Extract added/changed lines into a hunk pseudo-text.
-    const hunks: string[] = [];
-    let startedAt: number | null = null;
-    let added: number | null = null;
-    for (const line of lines) {
-      const hunkHeader = /^@@\s+-\d+(?:,\d+)?\s+\+(\d+)(?:,\d+)?\s+@@/u.exec(line);
-      if (hunkHeader !== null) {
-        if (startedAt !== null) {
-          hunks.push(`@@ line ${startedAt}+`);
-        }
-        startedAt = Number(hunkHeader[1]);
-        added = 0;
-      }
-      if (
-        line.startsWith("+") &&
-        !line.startsWith("+++") &&
-        startedAt !== null &&
-        added !== null
-      ) {
-        hunks.push(line);
-        added += 1;
-        if (added >= 30) {
-          hunks.push("[… hunk truncated …]");
-        }
-      }
-    }
-    if (startedAt !== null) hunks.push(`@@ line ${startedAt}+`);
-    if (hunks.length > 0) {
-      result.push({ path: targetNormalized, text: hunks.join("\n") });
-    }
+    const hunk = extractHunkText(block, target);
+    if (hunk !== null) result.push(hunk);
   }
   return result;
 }

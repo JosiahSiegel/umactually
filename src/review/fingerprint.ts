@@ -430,60 +430,32 @@ export function computeDurableFindingIdentity(
  * The caller MUST short-circuit on throw: post nothing, resolve
  * nothing, write no new state.
  */
+type SeenFingerprint = { readonly identityDigest: string; readonly body: string; readonly source: string };
+
+function recordEntryOrThrow(
+  seen: Map<string, SeenFingerprint>,
+  entry: FindingForCollisionCheck,
+  defaultSource: "persisted" | "current",
+): void {
+  const fp = entry.identity.fingerprintDigest;
+  const existing = seen.get(fp);
+  if (existing === undefined) {
+    seen.set(fp, { identityDigest: entry.identity.identityDigest, body: entry.body, source: defaultSource });
+    return;
+  }
+  if (existing.identityDigest === entry.identity.identityDigest) return;
+  const collisionType = existing.source === "persisted" ? "against-persisted-state" : "within-review";
+  const detail = defaultSource === "persisted"
+    ? `persisted "${existing.body.slice(0, 60)}" vs persisted "${entry.body.slice(0, 60)}"`
+    : `"${existing.body.slice(0, 60)}" vs "${entry.body.slice(0, 60)}"`;
+  throw new FingerprintCollisionError(fp, collisionType, detail);
+}
+
 export function assertNoFingerprintCollision(
   current: readonly FindingForCollisionCheck[],
   persisted: readonly FindingForCollisionCheck[] = [],
 ): void {
-  // Build a map: fingerprintDigest -> { identityDigest, body }
-  const seen = new Map<
-    string,
-    { readonly identityDigest: string; readonly body: string; readonly source: string }
-  >();
-
-  // Check within current findings, and against persisted state.
-  // Persisted state is checked first so we can report "against-persisted-state".
-  for (const entry of persisted) {
-    const fp = entry.identity.fingerprintDigest;
-    const existing = seen.get(fp);
-    if (existing !== undefined) {
-      if (existing.identityDigest !== entry.identity.identityDigest) {
-        throw new FingerprintCollisionError(
-          fp,
-          "against-persisted-state",
-          `persisted "${existing.body.slice(0, 60)}" vs persisted "${entry.body.slice(0, 60)}"`,
-        );
-      }
-    } else {
-      seen.set(fp, {
-        identityDigest: entry.identity.identityDigest,
-        body: entry.body,
-        source: "persisted",
-      });
-    }
-  }
-
-  for (const entry of current) {
-    const fp = entry.identity.fingerprintDigest;
-    const existing = seen.get(fp);
-    if (existing !== undefined) {
-      if (existing.identityDigest !== entry.identity.identityDigest) {
-        const collisionType =
-          existing.source === "persisted"
-            ? "against-persisted-state"
-            : "within-review";
-        throw new FingerprintCollisionError(
-          fp,
-          collisionType,
-          `"${existing.body.slice(0, 60)}" vs "${entry.body.slice(0, 60)}"`,
-        );
-      }
-      // Same fingerprint + same identityDigest → dedup, allowed.
-    } else {
-      seen.set(fp, {
-        identityDigest: entry.identity.identityDigest,
-        body: entry.body,
-        source: "current",
-      });
-    }
-  }
+  const seen = new Map<string, SeenFingerprint>();
+  for (const entry of persisted) recordEntryOrThrow(seen, entry, "persisted");
+  for (const entry of current) recordEntryOrThrow(seen, entry, "current");
 }

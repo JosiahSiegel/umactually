@@ -403,6 +403,40 @@ function validateBudgetField(rawBudgets: Record<string, unknown>, field: string,
   return { ok: true, policy: DEFAULT_REVIEW_POLICY };
 }
 
+function validateOnePathRule(
+  rule: unknown,
+  filePath: string,
+  seenPatterns: Set<string>,
+): ValidateReviewPolicyResult {
+  if (rule === null || typeof rule !== "object" || Array.isArray(rule)) {
+    return fail("invalid-glob", `policy at ${filePath}: pathRule must be an object`);
+  }
+  const r = rule as Record<string, unknown>;
+  for (const key of Object.keys(r)) {
+    if (!ALLOWED_PATH_RULE_KEYS.has(key)) {
+      return fail("unknown-key", `policy at ${filePath}: unknown pathRule key "${key}"`);
+    }
+  }
+  if (typeof r["pattern"] !== "string") {
+    return fail("invalid-glob", `policy at ${filePath}: pathRule.pattern must be a string`);
+  }
+  const pattern = r["pattern"];
+  if (!isValidGlob(pattern)) {
+    return fail("invalid-glob", `policy at ${filePath}: invalid glob pattern ${REDACTED}`);
+  }
+  if (isUnsafePath(pattern)) {
+    return fail("unsafe-path", `policy at ${filePath}: pathRule pattern escapes repo root`);
+  }
+  if (seenPatterns.has(pattern)) {
+    return fail("duplicate-path-rule", `policy at ${filePath}: duplicate path rule pattern detected`);
+  }
+  seenPatterns.add(pattern);
+  if (r["effort"] !== undefined && (typeof r["effort"] !== "string" || !VALID_EFFORTS.has(r["effort"]))) {
+    return fail("invalid-effort", `policy at ${filePath}: invalid pathRule effort ${REDACTED}`);
+  }
+  return { ok: true, policy: DEFAULT_REVIEW_POLICY };
+}
+
 function validatePathRules(obj: Record<string, unknown>, filePath: string): ValidateReviewPolicyResult {
   if (obj["pathRules"] === undefined) return { ok: true, policy: DEFAULT_REVIEW_POLICY };
   if (!Array.isArray(obj["pathRules"])) {
@@ -410,32 +444,8 @@ function validatePathRules(obj: Record<string, unknown>, filePath: string): Vali
   }
   const seenPatterns = new Set<string>();
   for (const rule of obj["pathRules"]) {
-    if (rule === null || typeof rule !== "object" || Array.isArray(rule)) {
-      return fail("invalid-glob", `policy at ${filePath}: pathRule must be an object`);
-    }
-    const r = rule as Record<string, unknown>;
-    for (const key of Object.keys(r)) {
-      if (!ALLOWED_PATH_RULE_KEYS.has(key)) {
-        return fail("unknown-key", `policy at ${filePath}: unknown pathRule key "${key}"`);
-      }
-    }
-    if (typeof r["pattern"] !== "string") {
-      return fail("invalid-glob", `policy at ${filePath}: pathRule.pattern must be a string`);
-    }
-    const pattern = r["pattern"];
-    if (!isValidGlob(pattern)) {
-      return fail("invalid-glob", `policy at ${filePath}: invalid glob pattern ${REDACTED}`);
-    }
-    if (isUnsafePath(pattern)) {
-      return fail("unsafe-path", `policy at ${filePath}: pathRule pattern escapes repo root`);
-    }
-    if (seenPatterns.has(pattern)) {
-      return fail("duplicate-path-rule", `policy at ${filePath}: duplicate path rule pattern detected`);
-    }
-    seenPatterns.add(pattern);
-    if (r["effort"] !== undefined && (typeof r["effort"] !== "string" || !VALID_EFFORTS.has(r["effort"]))) {
-      return fail("invalid-effort", `policy at ${filePath}: invalid pathRule effort ${REDACTED}`);
-    }
+    const result = validateOnePathRule(rule, filePath, seenPatterns);
+    if (!result.ok) return result;
   }
   return { ok: true, policy: DEFAULT_REVIEW_POLICY };
 }
