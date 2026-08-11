@@ -3,60 +3,12 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 
-import { expectFutureModule } from "../helpers/assert-red-module.js";
-
-type GithubContext = {
-  readonly token: string;
-  readonly repo: {
-    readonly owner: string;
-    readonly name: string;
-  };
-  readonly prNumber: number;
-  readonly headSha: string;
-  readonly baseSha: string;
-  readonly isDraft: boolean;
-  readonly title: string;
-  readonly body: string;
-};
-
-type ReadGithubContext = (env: NodeJS.ProcessEnv) => Promise<GithubContext>;
-type FetchGithubPrDiff = (ctx: GithubContext, fetchImpl?: typeof fetch) => Promise<string>;
-
-const githubContextModule = "../../src/platform/github/context.js";
-const githubApiModule = "../../src/platform/github/api.js";
-const githubContextPath = "src/platform/github/context.ts";
-const githubApiPath = "src/platform/github/api.ts";
-
-function isReadGithubContext(value: unknown): value is ReadGithubContext {
-  return typeof value === "function";
-}
-
-function isFetchGithubPrDiff(value: unknown): value is FetchGithubPrDiff {
-  return typeof value === "function";
-}
-
-async function loadReadGithubContext(): Promise<ReadGithubContext> {
-  const moduleNamespace = await expectFutureModule(githubContextModule);
-  const readGithubContext = moduleNamespace["readGithubContext"];
-  if (!isReadGithubContext(readGithubContext)) {
-    expect.fail(`RED: ${githubContextPath} must export readGithubContext(env)`);
-  }
-  return readGithubContext;
-}
-
-async function loadFetchGithubPrDiff(): Promise<FetchGithubPrDiff> {
-  const moduleNamespace = await expectFutureModule(githubApiModule);
-  const fetchGithubPrDiff = moduleNamespace["fetchGithubPrDiff"];
-  if (!isFetchGithubPrDiff(fetchGithubPrDiff)) {
-    expect.fail(`RED: ${githubApiPath} must export fetchGithubPrDiff(ctx, fetchImpl?)`);
-  }
-  return fetchGithubPrDiff;
-}
+import { fetchGithubPrDiff } from "../../src/platform/github/api.js";
+import { readGithubContext, type GithubContext } from "../../src/platform/github/context.js";
 
 describe("GitHub platform unit contract", () => {
-  it("GITHUB-PLATFORM-RED-001 reads pull request context from env and event payload", async () => {
+  it("GITHUB-PLATFORM-001 reads pull request context from env and event payload", async () => {
     // Given: GitHub Actions env plus the pull_request event JSON file path.
-    const readGithubContext = await loadReadGithubContext();
     const tempDirectory = await mkdtemp(join(tmpdir(), "umactually-github-"));
     const eventPath = join(tempDirectory, "event.json");
     await writeFile(
@@ -99,9 +51,8 @@ describe("GitHub platform unit contract", () => {
     });
   });
 
-  it("GITHUB-PLATFORM-RED-002 fetches the PR diff with GitHub URL, auth, and diff media type", async () => {
+  it("GITHUB-PLATFORM-002 fetches the PR diff with GitHub URL, auth, and diff media type", async () => {
     // Given: a typed GitHub PR context and a fake fetch implementation.
-    const fetchGithubPrDiff = await loadFetchGithubPrDiff();
     const context: GithubContext = {
       token: "github-token-123",
       repo: { owner: "octo-org", name: "octo-repo" },
@@ -141,7 +92,6 @@ describe("GitHub platform unit contract", () => {
     // The strict helper now refuses and the typed error carries the
     // canonical code so the runner surfaces it to stderr instead of
     // making a 404 call to /repos/.../pulls/42.
-    const readGithubContext = await loadReadGithubContext();
     const tempDirectory = await mkdtemp(join(tmpdir(), "umactually-github-"));
     const eventPath = join(tempDirectory, "event.json");
     await writeFile(

@@ -75,6 +75,16 @@ export default tseslint.config(
     },
   },
   {
+    files: ["src/**/*.ts"],
+    rules: {
+      "@typescript-eslint/only-throw-error": "error",
+      "@typescript-eslint/no-floating-promises": "error",
+      "@typescript-eslint/no-misused-promises": "error",
+      "@typescript-eslint/no-unsafe-argument": "error",
+      "@typescript-eslint/no-unsafe-call": "error",
+    },
+  },
+  {
     files: ["test/**/*.ts", "test/**/*.mts"],
     rules: {
       "no-console": "off",

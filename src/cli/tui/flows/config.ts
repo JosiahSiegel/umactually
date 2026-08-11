@@ -81,7 +81,7 @@ export async function runConfigFlow(): Promise<{ exitCode: 0 }> {
   // schema mismatch) via the clack `stream.warn` so it appears as a
   // proper warning block rather than as part of the config block.
   if (saved.warning !== null) {
-    stream.warn(saved.warning);
+    await stream.warn(saved.warning);
   }
 
   // Step 2: display the saved config OR the "no saved config" hint.

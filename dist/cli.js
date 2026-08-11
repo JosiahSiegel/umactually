@@ -69,7 +69,7 @@ module.exports = { cursor, scroll, erase, beep };
 /***/ 28:
 /***/ ((module, __unused_webpack_exports, __nccwpck_require__) => {
 
-module.exports = __nccwpck_require__.p + "7f5bc0b4ff7db750334f.ts";
+module.exports = __nccwpck_require__.p + "03fd2840000f132e9174.ts";
 
 /***/ }),
 
@@ -237,6 +237,7 @@ __nccwpck_require__.d(__webpack_exports__, {
   bV: () => (/* binding */ isVersionFlag),
   iW: () => (/* binding */ main),
   hT: () => (/* reexport */ parseCliArgs),
+  ts: () => (/* binding */ readPackageVersion),
   ak: () => (/* binding */ runCli),
   yh: () => (/* binding */ runVersion)
 });
@@ -8140,7 +8141,7 @@ async function runConfigFlow() {
     // schema mismatch) via the clack `stream.warn` so it appears as a
     // proper warning block rather than as part of the config block.
     if (saved.warning !== null) {
-        stream.warn(saved.warning);
+        await stream.warn(saved.warning);
     }
     // Step 2: display the saved config OR the "no saved config" hint.
     if (saved.config !== null) {
@@ -18078,7 +18079,7 @@ async function resolveGitDiffPath() {
     }
     catch (err) {
         const message = err instanceof Error ? err.message : String(err);
-        stream.warn(`git diff failed (${message}); no diff available, falling back to no-diff artifact.`);
+        await stream.warn(`git diff failed (${message}); no diff available, falling back to no-diff artifact.`);
         return null;
     }
     if (stdout.trim().length === 0) {
@@ -18177,7 +18178,7 @@ async function runAndHandle(parsed, diffText, apiKeyLocal) {
         await showSuccess(result, parsed, diffText);
         return { exit: true };
     }
-    stream.error(result.message);
+    await stream.error(result.message);
     const next = await dist_select({
         message: "Provider error",
         options: [
@@ -18237,7 +18238,7 @@ async function runWizardLoopIteration() {
         // a future provider bug throws, surface the message and return
         // to the hub instead of unwinding the whole TUI.
         const message = err instanceof Error ? err.message : String(err);
-        stream.error(message);
+        await stream.error(message);
         return { exit: true };
     }
     finally {
@@ -19041,7 +19042,7 @@ async function runInitBranch(args) {
             cwd: process.cwd(),
             homeDir: (0,external_node_os_namespaceObject.homedir)(),
             platform: process.platform,
-            packageVersion: process.env["UMACTUALLY_VERSION"] ?? "0.6.21",
+            packageVersion: readPackageVersion(),
         },
     });
     const stdout = json ? formatInitJson(result) : formatInitHuman(result);
@@ -25174,6 +25175,7 @@ var __webpack_exports__buildSanitizedResolvedConfig = __webpack_exports__.WB;
 var __webpack_exports__isVersionFlag = __webpack_exports__.bV;
 var __webpack_exports__main = __webpack_exports__.iW;
 var __webpack_exports__parseCliArgs = __webpack_exports__.hT;
+var __webpack_exports__readPackageVersion = __webpack_exports__.ts;
 var __webpack_exports__runCli = __webpack_exports__.ak;
 var __webpack_exports__runVersion = __webpack_exports__.yh;
-export { __webpack_exports__CliUsageError as CliUsageError, __webpack_exports__buildSanitizedResolvedConfig as buildSanitizedResolvedConfig, __webpack_exports__isVersionFlag as isVersionFlag, __webpack_exports__main as main, __webpack_exports__parseCliArgs as parseCliArgs, __webpack_exports__runCli as runCli, __webpack_exports__runVersion as runVersion };
+export { __webpack_exports__CliUsageError as CliUsageError, __webpack_exports__buildSanitizedResolvedConfig as buildSanitizedResolvedConfig, __webpack_exports__isVersionFlag as isVersionFlag, __webpack_exports__main as main, __webpack_exports__parseCliArgs as parseCliArgs, __webpack_exports__readPackageVersion as readPackageVersion, __webpack_exports__runCli as runCli, __webpack_exports__runVersion as runVersion };
