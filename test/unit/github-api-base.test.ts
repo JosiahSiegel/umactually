@@ -67,9 +67,25 @@ describe("normalizeGithubApiBase: shape + input validation", () => {
     expect(result.isEnterprise).toBe(true);
   });
 
-  it("rejects non-HTTPS schemes (http://)", () => {
-    expect(() => normalizeGithubApiBase("http://ghe.example.com/api/v3")).toThrow(
-      /non-HTTPS scheme/i,
+  it("accepts http://localhost for local fixtures", () => {
+    expect(normalizeGithubApiBase("http://localhost").origin).toBe("http://localhost");
+  });
+
+  it("accepts http://127.0.0.1:8080 for local fixtures", () => {
+    expect(normalizeGithubApiBase("http://127.0.0.1:8080").origin).toBe(
+      "http://127.0.0.1:8080",
+    );
+  });
+
+  it("accepts http://[::1]:8080 for local fixtures", () => {
+    expect(normalizeGithubApiBase("http://[::1]:8080").origin).toBe(
+      "http://[::1]:8080",
+    );
+  });
+
+  it("rejects non-HTTPS external hosts", () => {
+    expect(() => normalizeGithubApiBase("http://example.com")).toThrow(
+      /external host/i,
     );
   });
 

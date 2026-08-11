@@ -85,8 +85,9 @@ export class GithubApiBaseError extends Error {
     readonly code:
       | "GITHUB_API_URL_EMPTY"
       | "GITHUB_API_URL_MALFORMED"
-      | "GITHUB_API_URL_INSECURE"
-      | "GITHUB_API_URL_CREDENTIALED"
+       | "GITHUB_API_URL_INSECURE"
+       | "GITHUB_API_URL_INSECURE_HOST"
+       | "GITHUB_API_URL_CREDENTIALED"
       | "GITHUB_API_URL_HAS_QUERY",
     message: string,
   ) {
@@ -109,7 +110,9 @@ const GITHUB_GRAPHQL_PATH_ENTERPRISE = "/api/graphql";
  *   - `https://<host>/<custom-prefix>` (operator-configured namespace)
  *
  * Rejects:
- *   - non-HTTPS schemes (`http://`, `ftp://`, …) → `GITHUB_API_URL_INSECURE`
+ *   - non-HTTPS schemes for external hosts (`http://`, `ftp://`, …) →
+ *     `GITHUB_API_URL_INSECURE`
+ *   - `http://` for non-local hosts → `GITHUB_API_URL_INSECURE_HOST`
  *   - URLs with userinfo (`https://user:pass@host/...`) →
  *     `GITHUB_API_URL_CREDENTIALED`
  *   - URLs with query strings or fragments →
@@ -141,12 +144,18 @@ export function normalizeGithubApiBase(rawUrl: string): GithubApiBase {
       `GITHUB_API_URL is not a parseable URL: '${rawUrl}'.`,
     );
   }
-  // WHATWG URL normalizes scheme to lowercase; `protocol` ends with ":" —
-  // check on `protocol` (or on the URL directly via `.protocol`).
-  if (parsed.protocol !== "https:") {
+  // WHATWG URL normalizes scheme and hostname to lowercase; `protocol`
+  // ends with ":". For IPv6 literals, `hostname` keeps the brackets
+  // (e.g. `[::1]`); strip them before comparison. Local HTTP is
+  // allowed only for test fixtures.
+  const hostname = parsed.hostname.replace(/^\[|\]$/gu, "");
+  const isLocalhost = hostname === "localhost" || hostname === "127.0.0.1" || hostname === "::1";
+  if (parsed.protocol !== "https:" && !(parsed.protocol === "http:" && isLocalhost)) {
     throw new GithubApiBaseError(
-      "GITHUB_API_URL_INSECURE",
-      `GITHUB_API_URL must use HTTPS (got '${parsed.protocol}'); non-HTTPS schemes risk credential and PR-data exposure.`,
+      parsed.protocol === "http:" ? "GITHUB_API_URL_INSECURE_HOST" : "GITHUB_API_URL_INSECURE",
+      parsed.protocol === "http:"
+        ? `GITHUB_API_URL must use HTTPS for external hosts (got '${parsed.hostname}'); HTTP is allowed only for localhost, 127.0.0.1, or ::1.`
+        : `GITHUB_API_URL must use HTTPS (got '${parsed.protocol}'); non-HTTPS schemes risk credential and PR-data exposure.`,
     );
   }
   // WHATWG URL parses userinfo into `username` / `password` fields.
