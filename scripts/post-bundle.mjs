@@ -48,12 +48,31 @@ import {
   writeFileSync,
 } from "node:fs";
 import { dirname, join, resolve } from "node:path";
+import { createRequire } from "node:module";
 import { fileURLToPath } from "node:url";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const packageRoot = resolve(here, "..");
 const distDir = join(packageRoot, "dist");
 const rootPkg = JSON.parse(readFileSync(join(packageRoot, "package.json"), "utf8"));
+const requireHere = createRequire(import.meta.url);
+
+// Resolve the path to the npm CLI script that ships with the active Node.
+// When this script is invoked through `npm run ...`, npm sets
+// `process.env.npm_execpath` to e.g. `/usr/lib/node_modules/npm/bin/npm-cli.js`
+// (Linux) or `C:\Program Files\nodejs\node_modules\npm\bin\npm-cli.js`
+// (Windows). Executing `node` directly on that script lets us dispatch
+// `npm exec --no-install ... ncc ...` without depending on whether `npx`
+// or `npx.cmd` is on PATH — the prior `execFileSync("npx", ...)` form
+// failed on Windows with `spawnSync npx ENOENT` because Windows only
+// surfaces `npx.cmd` via cmd.exe and the bare token `npx` has no
+// extensionless binary on PATH. Falling back to `createRequire().resolve`
+// handles the rare case where this script is invoked outside of npm
+// (e.g. `node scripts/post-bundle.mjs` directly) — Node can still
+// execute npm-cli.js on every platform because it is a JS file, not
+// a shell script that needs a shebang interpreter.
+const npmCli = process.env.npm_execpath
+  ?? requireHere.resolve("npm/bin/npm-cli.js");
 
 function rebuildWithExternal() {
   // Remove every artifact emitted by the first ncc run so the rebuild
@@ -68,9 +87,18 @@ function rebuildWithExternal() {
     rmSync(join(distDir, name), { force: true, recursive: true });
   }
   execFileSync(
-    "npx",
+    // Invoke npm directly via the CLI script that ships with Node.
+    // On Windows this avoids the `spawnSync npx ENOENT` failure mode
+    // where cmd.exe cannot locate a bare `npx` (only `npx.cmd` exists).
+    // On Linux/macOS the same code path still works because Node can
+    // execute the JS file regardless of platform — no `npx` binary
+    // lookup happens at all.
+    process.execPath,
     [
+      npmCli,
+      "exec",
       "--no-install",
+      "--",
       "ncc",
       "build",
       "src/cli.ts",
