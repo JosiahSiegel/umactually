@@ -175,33 +175,48 @@ function isWithinCwdReal(real, cwdReal) {
 // ---------------------------------------------------------------------------
 // Glob → RegExp (small, predictable — mirrors prompt-files.ts scope)
 // ---------------------------------------------------------------------------
-function globToRegex(pattern) {
+const REGEX_ESCAPE_CHARS = new Set([
+    ".", "+", "(", ")", "|", "^", "$", "{", "}", "[", "]", "\\",
+]);
+function appendStarSequence(body, pattern, i) {
+    if (pattern[i + 1] !== "*") {
+        return { body: body + "[^/]*", next: i };
+    }
+    let next = i + 1;
+    if (pattern[next + 1] === "/")
+        next += 1;
+    return { body: body + ".*", next };
+}
+function appendEscapedChar(body, ch) {
+    if (REGEX_ESCAPE_CHARS.has(ch))
+        return body + `\\${ch}`;
+    return body + ch;
+}
+function appendLiteralChar(body, ch) {
+    if (ch === undefined)
+        return body;
+    return appendEscapedChar(body, ch);
+}
+function translateGlobBody(pattern) {
     let body = "";
     for (let i = 0; i < pattern.length; i += 1) {
         const ch = pattern[i];
         if (ch === "*") {
-            if (pattern[i + 1] === "*") {
-                body += ".*";
-                i += 1;
-                if (pattern[i + 1] === "/")
-                    i += 1;
-            }
-            else {
-                body += "[^/]*";
-            }
+            const r = appendStarSequence(body, pattern, i);
+            body = r.body;
+            i = r.next;
         }
         else if (ch === "?") {
             body += "[^/]";
         }
-        else if (ch === "." || ch === "+" || ch === "(" || ch === ")" ||
-            ch === "|" || ch === "^" || ch === "$" || ch === "{" ||
-            ch === "}" || ch === "[" || ch === "]" || ch === "\\") {
-            body += `\\${ch}`;
-        }
         else {
-            body += ch;
+            body = appendLiteralChar(body, ch);
         }
     }
+    return body;
+}
+function globToRegex(pattern) {
+    const body = translateGlobBody(pattern);
     if (pattern.endsWith("/")) {
         const dir = body.slice(0, -1);
         return new RegExp(`(?:^${dir}$|^${dir}/|(?:^|.*/)${dir}(?:/|$))`, "u");
@@ -5470,25 +5485,37 @@ function makeResult(id, status, message, options = {}) {
     }
     return result;
 }
+function assertMethodAllowed(method, allowedMethods) {
+    if (!allowedMethods.includes(method)) {
+        throw new Error(`full-mode fetch rejected: method "${method}" is not in allowlist ${JSON.stringify(allowedMethods)}`);
+    }
+}
+function assertBodySize(body) {
+    if (body === undefined || body === null || body === "" || body === "undefined")
+        return;
+    const bodyBytes = typeof body === "string"
+        ? body.length
+        : Array.isArray(body)
+            ? JSON.stringify(body).length
+            : 0;
+    if (bodyBytes > MAX_BODY_BYTES) {
+        throw new Error(`full-mode fetch rejected: body of ${bodyBytes} bytes exceeds MAX_BODY_BYTES (${MAX_BODY_BYTES})`);
+    }
+}
+function buildTimeoutController(timeoutMs) {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), timeoutMs);
+    return {
+        signal: controller.signal,
+        cancel: () => clearTimeout(timer),
+    };
+}
 function makeSafeFetch(fetchImpl, allowedMethods, timeoutMs) {
     return async (input, init = {}) => {
         const method = (init.method ?? "GET").toUpperCase();
-        if (!allowedMethods.includes(method)) {
-            throw new Error(`full-mode fetch rejected: method "${method}" is not in allowlist ${JSON.stringify(allowedMethods)}`);
-        }
-        const body = init.body;
-        if (body !== undefined && body !== null && body !== "" && body !== "undefined") {
-            const bodyBytes = typeof body === "string"
-                ? body.length
-                : Array.isArray(body)
-                    ? JSON.stringify(body).length
-                    : 0;
-            if (bodyBytes > MAX_BODY_BYTES) {
-                throw new Error(`full-mode fetch rejected: body of ${bodyBytes} bytes exceeds MAX_BODY_BYTES (${MAX_BODY_BYTES})`);
-            }
-        }
-        const controller = new AbortController();
-        const timer = setTimeout(() => controller.abort(), timeoutMs);
+        assertMethodAllowed(method, allowedMethods);
+        assertBodySize(init.body);
+        const timer = buildTimeoutController(timeoutMs);
         // Belt-and-suspenders: the race frees the process even if the
         // underlying fetch impl ignores the abort signal — a real-world
         // hazard for stub fetchers and misbehaving runtimes.
@@ -5498,10 +5525,10 @@ function makeSafeFetch(fetchImpl, allowedMethods, timeoutMs) {
                 fetchImpl(input, {
                     ...init,
                     method,
-                    signal: controller.signal,
+                    signal: timer.signal,
                 }),
                 new Promise((_, reject) => {
-                    controller.signal.addEventListener("abort", () => {
+                    timer.signal.addEventListener("abort", () => {
                         reject(new Error(`full-mode fetch timed out after ${timeoutMs}ms (method=${method})`));
                     });
                 }),
@@ -5513,7 +5540,7 @@ function makeSafeFetch(fetchImpl, allowedMethods, timeoutMs) {
             }
             throw new Error(`full-mode fetch rejected (method=${method}): ${error instanceof Error ? error.message : String(error)}`, { cause: error });
         }
-        clearTimeout(timer);
+        timer.cancel();
         return response;
     };
 }
@@ -22694,7 +22721,7 @@ function runLoadedConfigQuickstart(config, _path) {
  * is top-level, not under a verification subcommand. Operators look
  * for `--show-config` at the root.
  */
-function renderShowConfig(config, path, policyResult) {
+function renderSavedConfigSection(config, path) {
     const lines = [];
     if (config !== null) {
         lines.push(`saved config: ${path}`);
@@ -22706,9 +22733,11 @@ function renderShowConfig(config, path, policyResult) {
     else {
         lines.push("saved config: none (run `umactually init` to create one)");
     }
-    // Review policy surface
+    return lines;
+}
+function renderPolicySection(policyResult) {
+    const lines = [];
     if (policyResult.policy !== null) {
-        lines.push("");
         lines.push(`review policy: ${policyResult.path}`);
         lines.push(`  schemaVersion: ${policyResult.policy.schemaVersion}`);
         if (policyResult.hash !== null) {
@@ -22734,10 +22763,14 @@ function renderShowConfig(config, path, policyResult) {
         }
     }
     else {
-        lines.push("");
         lines.push(`review policy: none (run \`umactually init --policy-template\` to create one)`);
     }
-    return lines.join("\n") + "\n";
+    return lines;
+}
+function renderShowConfig(config, path, policyResult) {
+    const savedLines = renderSavedConfigSection(config, path);
+    const policyLines = renderPolicySection(policyResult);
+    return [...savedLines, "", ...policyLines].join("\n") + "\n";
 }
 function runShowConfig(cwd) {
     const savedRead = tryReadSavedConfig({ cwd });
@@ -27205,7 +27238,7 @@ function canonicalizeJson(value) {
         return value.map(canonicalizeJson);
     const obj = value;
     const sorted = {};
-    for (const k of Object.keys(obj).sort()) {
+    for (const k of Object.keys(obj).sort((a, b) => a.localeCompare(b))) {
         sorted[k] = canonicalizeJson(obj[k]);
     }
     return sorted;

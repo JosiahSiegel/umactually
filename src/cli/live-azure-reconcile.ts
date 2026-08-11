@@ -398,6 +398,28 @@ function deferredAction(
     : { kind: "logical-resolve", threadId: prior.threadId, fingerprint: prior.fingerprint };
 }
 
+function matchedInCurrentAction(
+  prior: ClassifiedPriorThread,
+  currentFindings: readonly DurableFindingWithIdentity[],
+): ThreadAction | null {
+  if (prior.fingerprint === null) return null;
+  const currentMatch = currentFindings.find((f) => f.fingerprint === prior.fingerprint);
+  if (currentMatch === undefined || prior.threadId === undefined) return null;
+  return { kind: "mark-superseded", threadId: prior.threadId, fingerprint: prior.fingerprint };
+}
+
+function differentRunAction(prior: ClassifiedPriorThread): ThreadAction | null {
+  if (prior.threadId === undefined) return null;
+  return { kind: "preserve-other-run", threadId: prior.threadId };
+}
+
+function recordAssigned(
+  prior: ClassifiedPriorThread,
+  assignedFingerprints: Set<string>,
+): void {
+  if (prior.fingerprint !== null) assignedFingerprints.add(prior.fingerprint);
+}
+
 function resolvePriorAction(
   prior: ClassifiedPriorThread,
   input: {
@@ -411,30 +433,28 @@ function resolvePriorAction(
 
   const staleClose = staleCloseRepairAction(prior);
   if (staleClose !== null) {
-    if (prior.fingerprint !== null) assignedFingerprints.add(prior.fingerprint);
+    recordAssigned(prior, assignedFingerprints);
     return staleClose;
   }
 
   if (prior.runId !== null && prior.runId !== input.currentRunId) {
-    if (prior.fingerprint !== null) {
-      const currentMatch = input.currentFindings.find((f) => f.fingerprint === prior.fingerprint);
-      if (currentMatch !== undefined && prior.threadId !== undefined) {
-        return { kind: "mark-superseded", threadId: prior.threadId, fingerprint: prior.fingerprint };
-      }
+    const superseded = matchedInCurrentAction(prior, input.currentFindings);
+    if (superseded !== null) {
+      recordAssigned(prior, assignedFingerprints);
+      return superseded;
     }
-    if (prior.threadId === undefined) return null;
-    return { kind: "preserve-other-run", threadId: prior.threadId };
+    return differentRunAction(prior);
   }
 
   const carried = carriedMatchAction(prior, assignedFingerprints);
   if (carried !== null) {
-    if (prior.fingerprint !== null) assignedFingerprints.add(prior.fingerprint);
+    recordAssigned(prior, assignedFingerprints);
     return carried;
   }
 
   const reconsidered = reconsideredAction(prior, input.currentFindings);
   if (reconsidered !== null) {
-    if (prior.fingerprint !== null) assignedFingerprints.add(prior.fingerprint);
+    recordAssigned(prior, assignedFingerprints);
     return reconsidered;
   }
 

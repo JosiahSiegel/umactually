@@ -216,30 +216,48 @@ function isWithinCwdReal(real: string, cwdReal: string): boolean {
 // Glob → RegExp (small, predictable — mirrors prompt-files.ts scope)
 // ---------------------------------------------------------------------------
 
-function globToRegex(pattern: string): RegExp {
+const REGEX_ESCAPE_CHARS = new Set([
+  ".", "+", "(", ")", "|", "^", "$", "{", "}", "[", "]", "\\",
+]);
+
+function appendStarSequence(body: string, pattern: string, i: number): { body: string; next: number } {
+  if (pattern[i + 1] !== "*") {
+    return { body: body + "[^/]*", next: i };
+  }
+  let next = i + 1;
+  if (pattern[next + 1] === "/") next += 1;
+  return { body: body + ".*", next };
+}
+
+function appendEscapedChar(body: string, ch: string): string {
+  if (REGEX_ESCAPE_CHARS.has(ch)) return body + `\\${ch}`;
+  return body + ch;
+}
+
+function appendLiteralChar(body: string, ch: string | undefined): string {
+  if (ch === undefined) return body;
+  return appendEscapedChar(body, ch);
+}
+
+function translateGlobBody(pattern: string): string {
   let body = "";
   for (let i = 0; i < pattern.length; i += 1) {
     const ch = pattern[i];
     if (ch === "*") {
-      if (pattern[i + 1] === "*") {
-        body += ".*";
-        i += 1;
-        if (pattern[i + 1] === "/") i += 1;
-      } else {
-        body += "[^/]*";
-      }
+      const r = appendStarSequence(body, pattern, i);
+      body = r.body;
+      i = r.next;
     } else if (ch === "?") {
       body += "[^/]";
-    } else if (
-      ch === "." || ch === "+" || ch === "(" || ch === ")" ||
-      ch === "|" || ch === "^" || ch === "$" || ch === "{" ||
-      ch === "}" || ch === "[" || ch === "]" || ch === "\\"
-    ) {
-      body += `\\${ch}`;
     } else {
-      body += ch;
+      body = appendLiteralChar(body, ch);
     }
   }
+  return body;
+}
+
+function globToRegex(pattern: string): RegExp {
+  const body = translateGlobBody(pattern);
   if (pattern.endsWith("/")) {
     const dir = body.slice(0, -1);
     return new RegExp(`(?:^${dir}$|^${dir}/|(?:^|.*/)${dir}(?:/|$))`, "u");

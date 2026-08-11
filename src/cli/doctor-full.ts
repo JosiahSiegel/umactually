@@ -199,6 +199,43 @@ export type LegacyDoctorCheck = {
 
 type SafeFetch = typeof fetch;
 
+function assertMethodAllowed(method: string, allowedMethods: readonly string[]): void {
+  if (!allowedMethods.includes(method)) {
+    throw new Error(
+      `full-mode fetch rejected: method "${method}" is not in allowlist ${JSON.stringify(allowedMethods)}`,
+    );
+  }
+}
+
+function assertBodySize(body: RequestInit["body"]): void {
+  if (body === undefined || body === null || body === "" || body === "undefined") return;
+  const bodyBytes =
+    typeof body === "string"
+      ? body.length
+      : Array.isArray(body)
+      ? JSON.stringify(body).length
+      : 0;
+  if (bodyBytes > MAX_BODY_BYTES) {
+    throw new Error(
+      `full-mode fetch rejected: body of ${bodyBytes} bytes exceeds MAX_BODY_BYTES (${MAX_BODY_BYTES})`,
+    );
+  }
+}
+
+interface TimeoutController {
+  readonly signal: AbortSignal;
+  cancel(): void;
+}
+
+function buildTimeoutController(timeoutMs: number): TimeoutController {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  return {
+    signal: controller.signal,
+    cancel: () => clearTimeout(timer),
+  };
+}
+
 function makeSafeFetch(
   fetchImpl: typeof fetch,
   allowedMethods: readonly string[],
@@ -206,27 +243,9 @@ function makeSafeFetch(
 ): SafeFetch {
   return async (input: URL | string | Request, init: RequestInit = {}) => {
     const method = (init.method ?? "GET").toUpperCase();
-    if (!allowedMethods.includes(method)) {
-      throw new Error(
-        `full-mode fetch rejected: method "${method}" is not in allowlist ${JSON.stringify(allowedMethods)}`,
-      );
-    }
-    const body = init.body;
-    if (body !== undefined && body !== null && body !== "" && body !== "undefined") {
-      const bodyBytes =
-        typeof body === "string"
-          ? body.length
-          : Array.isArray(body)
-          ? JSON.stringify(body).length
-          : 0;
-      if (bodyBytes > MAX_BODY_BYTES) {
-        throw new Error(
-          `full-mode fetch rejected: body of ${bodyBytes} bytes exceeds MAX_BODY_BYTES (${MAX_BODY_BYTES})`,
-        );
-      }
-    }
-    const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), timeoutMs);
+    assertMethodAllowed(method, allowedMethods);
+    assertBodySize(init.body);
+    const timer = buildTimeoutController(timeoutMs);
     // Belt-and-suspenders: the race frees the process even if the
     // underlying fetch impl ignores the abort signal — a real-world
     // hazard for stub fetchers and misbehaving runtimes.
@@ -236,10 +255,10 @@ function makeSafeFetch(
         fetchImpl(input, {
           ...init,
           method,
-          signal: controller.signal,
+          signal: timer.signal,
         }),
         new Promise<Response>((_, reject) => {
-          controller.signal.addEventListener("abort", () => {
+          timer.signal.addEventListener("abort", () => {
             reject(new Error(`full-mode fetch timed out after ${timeoutMs}ms (method=${method})`));
           });
         }),
@@ -253,7 +272,7 @@ function makeSafeFetch(
         { cause: error },
       );
     }
-    clearTimeout(timer);
+    timer.cancel();
     return response;
   };
 }

@@ -345,11 +345,10 @@ function runLoadedConfigQuickstart(
  * is top-level, not under a verification subcommand. Operators look
  * for `--show-config` at the root.
  */
-function renderShowConfig(
+function renderSavedConfigSection(
   config: SavedConfig | null,
   path: string,
-  policyResult: ReturnType<typeof loadReviewPolicy>,
-): string {
+): string[] {
   const lines: string[] = [];
   if (config !== null) {
     lines.push(`saved config: ${path}`);
@@ -361,9 +360,14 @@ function renderShowConfig(
   } else {
     lines.push("saved config: none (run `umactually init` to create one)");
   }
-  // Review policy surface
+  return lines;
+}
+
+function renderPolicySection(
+  policyResult: ReturnType<typeof loadReviewPolicy>,
+): string[] {
+  const lines: string[] = [];
   if (policyResult.policy !== null) {
-    lines.push("");
     lines.push(`review policy: ${policyResult.path}`);
     lines.push(`  schemaVersion: ${policyResult.policy.schemaVersion}`);
     if (policyResult.hash !== null) {
@@ -388,10 +392,19 @@ function renderShowConfig(
       lines.push(`  triggers:      ${policyResult.policy.triggers.join(", ")}`);
     }
   } else {
-    lines.push("");
     lines.push(`review policy: none (run \`umactually init --policy-template\` to create one)`);
   }
-  return lines.join("\n") + "\n";
+  return lines;
+}
+
+function renderShowConfig(
+  config: SavedConfig | null,
+  path: string,
+  policyResult: ReturnType<typeof loadReviewPolicy>,
+): string {
+  const savedLines = renderSavedConfigSection(config, path);
+  const policyLines = renderPolicySection(policyResult);
+  return [...savedLines, "", ...policyLines].join("\n") + "\n";
 }
 
 function runShowConfig(cwd: string): Promise<DispatchResult> {

@@ -574,7 +574,7 @@ function canonicalizeJson(value: unknown): unknown {
   if (Array.isArray(value)) return value.map(canonicalizeJson);
   const obj = value as Record<string, unknown>;
   const sorted: Record<string, unknown> = {};
-  for (const k of Object.keys(obj).sort()) {
+  for (const k of Object.keys(obj).sort((a, b) => a.localeCompare(b))) {
     sorted[k] = canonicalizeJson(obj[k]);
   }
   return sorted;
