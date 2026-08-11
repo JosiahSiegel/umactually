@@ -21,15 +21,12 @@ import { createHash } from "node:crypto";
 import { readdirSync, realpathSync, statSync } from "node:fs";
 import { readFileSync } from "node:fs";
 import { isAbsolute, sep as pathSep } from "node:path";
-import {
-  ScriptTarget,
-  createSourceFile,
-  isExportDeclaration,
-  isImportDeclaration,
-  isNamedImports,
-  isStringLiteral,
-  SyntaxKind,
-  type Node as TsNode,
+// Lazy-load the typescript compiler: it references CJS-only `__filename`
+// at module-init, which crashes inside the Node SEA ESM blob. Types are
+// erased; the value import lives inside `parseTsFile`.
+import type {
+  Node as TsNode,
+  SyntaxKind as TsSyntaxKind,
 } from "typescript";
 
 import { listDiffPaths, isExcludedPath } from "../diff/filter-build-artifacts.js";
@@ -381,15 +378,18 @@ type ParsedTsFile =
   | { readonly ok: true; readonly declarations: readonly Declaration[]; readonly imports: readonly { readonly module: string; readonly name: string }[] }
   | { readonly ok: false; readonly reason: string };
 
-function parseTsFile(
+async function parseTsFile(
   filePath: string,
   text: string,
-): ParsedTsFile {
-  let sf: ReturnType<typeof createSourceFile>;
+): Promise<ParsedTsFile> {
+  // Dynamic import — the typescript compiler module references CJS-only
+  // `__filename` at module-init. Loading it lazily keeps the SEA blob's
+  // startup path (--version, --help, doctor, init) free of that crash.
+  const ts = await import("typescript");
+  let sf: ReturnType<typeof ts.createSourceFile>;
   try {
-    sf = createSourceFile(filePath, text, ScriptTarget.Latest, /* setParentNodes */ true, /* scriptKind */ undefined);
-  } catch (error) {
-    void error;
+    sf = ts.createSourceFile(filePath, text, ts.ScriptTarget.Latest, /* setParentNodes */ true, /* scriptKind */ undefined);
+  } catch {
     return { ok: false, reason: "parse-failed" };
   }
   // TS compiler reports parse errors via parseDiagnostics even when it
@@ -404,11 +404,11 @@ function parseTsFile(
   const imports: { module: string; name: string }[] = [];
   function walk(node: TsNode): void {
     node.forEachChild(walk);
-    if (isImportDeclaration(node)) {
-      const moduleText = node.moduleSpecifier && isStringLiteral(node.moduleSpecifier) ? node.moduleSpecifier.text : "";
+    if (ts.isImportDeclaration(node)) {
+      const moduleText = node.moduleSpecifier && ts.isStringLiteral(node.moduleSpecifier) ? node.moduleSpecifier.text : "";
       const clause = node.importClause;
       const bindings = clause?.namedBindings;
-      if (bindings && isNamedImports(bindings)) {
+      if (bindings && ts.isNamedImports(bindings)) {
         for (const stmt of bindings.elements) {
           if (stmt && stmt.name && stmt.name.escapedText) {
             imports.push({ module: moduleText, name: String(stmt.name.escapedText) });
@@ -422,25 +422,25 @@ function parseTsFile(
         imports.push({ module: moduleText, name: "" });
       }
     }
-    if (isExportDeclaration(node)) {
+    if (ts.isExportDeclaration(node)) {
       // expose named exports so the model can resolve re-exports
       // (we don't pull the actual declaration; we just record the name).
     }
     const nameIdent = (node as { name?: { escapedText?: string | number } }).name;
-    if (node.kind === SyntaxKind.FunctionDeclaration && nameIdent && typeof nameIdent.escapedText === "string") {
+    if (node.kind === ts.SyntaxKind.FunctionDeclaration && nameIdent && typeof nameIdent.escapedText === "string") {
       declarations.push({ name: nameIdent.escapedText, kind: "function", line: sf.getLineAndCharacterOfPosition(node.getStart(sf)).line + 1 });
-    } else if (node.kind === SyntaxKind.ClassDeclaration && nameIdent && typeof nameIdent.escapedText === "string") {
+    } else if (node.kind === ts.SyntaxKind.ClassDeclaration && nameIdent && typeof nameIdent.escapedText === "string") {
       declarations.push({ name: nameIdent.escapedText, kind: "class", line: sf.getLineAndCharacterOfPosition(node.getStart(sf)).line + 1 });
-    } else if (node.kind === SyntaxKind.InterfaceDeclaration && nameIdent && typeof nameIdent.escapedText === "string") {
+    } else if (node.kind === ts.SyntaxKind.InterfaceDeclaration && nameIdent && typeof nameIdent.escapedText === "string") {
       declarations.push({ name: nameIdent.escapedText, kind: "interface", line: sf.getLineAndCharacterOfPosition(node.getStart(sf)).line + 1 });
-    } else if (node.kind === SyntaxKind.TypeAliasDeclaration && nameIdent && typeof nameIdent.escapedText === "string") {
+    } else if (node.kind === ts.SyntaxKind.TypeAliasDeclaration && nameIdent && typeof nameIdent.escapedText === "string") {
       declarations.push({ name: nameIdent.escapedText, kind: "type", line: sf.getLineAndCharacterOfPosition(node.getStart(sf)).line + 1 });
-    } else if (node.kind === SyntaxKind.VariableStatement) {
-      const declList = (node as { declarationList?: { declarations?: readonly { name?: { kind: SyntaxKind; escapedText?: string | number }; getStart(sf: unknown): number }[] } }).declarationList;
+    } else if (node.kind === ts.SyntaxKind.VariableStatement) {
+      const declList = (node as { declarationList?: { declarations?: readonly { name?: { kind: TsSyntaxKind; escapedText?: string | number }; getStart(sf: unknown): number }[] } }).declarationList;
       if (declList) {
         for (const decl of declList.declarations ?? []) {
           const nm = decl.name;
-          if (nm && nm.kind === SyntaxKind.Identifier && typeof nm.escapedText === "string") {
+          if (nm && nm.kind === ts.SyntaxKind.Identifier && typeof nm.escapedText === "string") {
             declarations.push({ name: nm.escapedText, kind: "const", line: sf.getLineAndCharacterOfPosition(decl.getStart(sf)).line + 1 });
           }
         }
@@ -653,7 +653,7 @@ export async function collectContextProvenance(
       continue;
     }
     counters.filesParsed += 1;
-    const parsed = parseTsFile(path, r.text);
+    const parsed = await parseTsFile(path, r.text);
     if (!parsed.ok) {
       status = "parse-failed";
       // Fallback is the diff_hunk item already added; no further action.
@@ -681,7 +681,7 @@ export async function collectContextProvenance(
     const r = readWithinCwd(cwdReal, path, budgets.perFileBytes);
     if (!r.ok) continue;
     counters.filesParsed += 1;
-    const parsed = parseTsFile(path, r.text);
+    const parsed = await parseTsFile(path, r.text);
     if (!parsed.ok) continue;
     for (const imp of parsed.imports) {
       const target = resolveSameProjectImport(input.cwd, path, imp.module);
@@ -755,7 +755,7 @@ export async function collectContextProvenance(
         continue;
       }
       counters.filesParsed += 1;
-      const parsedCaller = parseTsFile(rel, readAttempt.text);
+      const parsedCaller = await parseTsFile(rel, readAttempt.text);
       if (!parsedCaller.ok) continue;
       const hits = parsedCaller.imports.filter((imp) => {
         if (imp.module.length === 0) return false;

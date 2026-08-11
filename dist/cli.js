@@ -67,33 +67,21 @@ module.exports = { cursor, scroll, erase, beep };
 
 /***/ }),
 
-/***/ 967:
+/***/ 245:
 /***/ ((__unused_webpack_module, __webpack_exports__, __nccwpck_require__) => {
 
-
-// EXPORTS
-__nccwpck_require__.d(__webpack_exports__, {
-  td: () => (/* binding */ BUDGET_DEFAULTS),
-  renderContextBlock: () => (/* binding */ renderContextBlock)
-});
-
-// UNUSED EXPORTS: BUDGET_HARD_CAPS, _posix, collectContextProvenance
-
-// EXTERNAL MODULE: external "node:crypto"
-var external_node_crypto_ = __nccwpck_require__(598);
-// EXTERNAL MODULE: external "node:fs"
-var external_node_fs_ = __nccwpck_require__(24);
-// EXTERNAL MODULE: external "node:path"
-var external_node_path_ = __nccwpck_require__(760);
-;// CONCATENATED MODULE: external "typescript"
-var x = (y) => {
-	var x = {}; __nccwpck_require__.d(x, y); return x
-} 
-var y = (x) => (() => (x))
-const external_typescript_namespaceObject = x({  });
-// EXTERNAL MODULE: ./src/config/saved-config.ts + 1 modules
-var saved_config = __nccwpck_require__(711);
-;// CONCATENATED MODULE: ./src/cli/context-provenance.ts
+/* harmony export */ __nccwpck_require__.d(__webpack_exports__, {
+/* harmony export */   renderContextBlock: () => (/* binding */ renderContextBlock),
+/* harmony export */   td: () => (/* binding */ BUDGET_DEFAULTS)
+/* harmony export */ });
+/* unused harmony exports BUDGET_HARD_CAPS, collectContextProvenance */
+/* harmony import */ var node_crypto__WEBPACK_IMPORTED_MODULE_0__ = __nccwpck_require__(598);
+/* harmony import */ var node_crypto__WEBPACK_IMPORTED_MODULE_0___default = /*#__PURE__*/__nccwpck_require__.n(node_crypto__WEBPACK_IMPORTED_MODULE_0__);
+/* harmony import */ var node_fs__WEBPACK_IMPORTED_MODULE_1__ = __nccwpck_require__(24);
+/* harmony import */ var node_fs__WEBPACK_IMPORTED_MODULE_1___default = /*#__PURE__*/__nccwpck_require__.n(node_fs__WEBPACK_IMPORTED_MODULE_1__);
+/* harmony import */ var node_path__WEBPACK_IMPORTED_MODULE_2__ = __nccwpck_require__(760);
+/* harmony import */ var node_path__WEBPACK_IMPORTED_MODULE_2___default = /*#__PURE__*/__nccwpck_require__.n(node_path__WEBPACK_IMPORTED_MODULE_2__);
+/* harmony import */ var _config_saved_config_js__WEBPACK_IMPORTED_MODULE_3__ = __nccwpck_require__(711);
 // SPDX-License-Identifier: MIT
 //
 // Task 5 — Bounded repository context as auditable structured provenance.
@@ -112,7 +100,6 @@ var saved_config = __nccwpck_require__(711);
 // fall back to changed diff hunks + applicable instruction files and
 // record `semanticContextStatus: unsupported|parse-failed|budget-exhausted`.
 // Reviews NEVER fail because of context collection.
-
 
 
 
@@ -324,13 +311,16 @@ function truncateUtf8ToBytes(s, maxBytes) {
 function sha256Hex(content) {
     return createHash("sha256").update(content, "utf8").digest("hex");
 }
-function parseTsFile(filePath, text) {
+async function parseTsFile(filePath, text) {
+    // Dynamic import — the typescript compiler module references CJS-only
+    // `__filename` at module-init. Loading it lazily keeps the SEA blob's
+    // startup path (--version, --help, doctor, init) free of that crash.
+    const ts = await Promise.resolve(/* import() */).then(__nccwpck_require__.bind(__nccwpck_require__, 93));
     let sf;
     try {
-        sf = createSourceFile(filePath, text, ScriptTarget.Latest, /* setParentNodes */ true, /* scriptKind */ undefined);
+        sf = ts.createSourceFile(filePath, text, ts.ScriptTarget.Latest, /* setParentNodes */ true, /* scriptKind */ undefined);
     }
-    catch (error) {
-        void error;
+    catch {
         return { ok: false, reason: "parse-failed" };
     }
     // TS compiler reports parse errors via parseDiagnostics even when it
@@ -345,11 +335,11 @@ function parseTsFile(filePath, text) {
     const imports = [];
     function walk(node) {
         node.forEachChild(walk);
-        if (isImportDeclaration(node)) {
-            const moduleText = node.moduleSpecifier && isStringLiteral(node.moduleSpecifier) ? node.moduleSpecifier.text : "";
+        if (ts.isImportDeclaration(node)) {
+            const moduleText = node.moduleSpecifier && ts.isStringLiteral(node.moduleSpecifier) ? node.moduleSpecifier.text : "";
             const clause = node.importClause;
             const bindings = clause?.namedBindings;
-            if (bindings && isNamedImports(bindings)) {
+            if (bindings && ts.isNamedImports(bindings)) {
                 for (const stmt of bindings.elements) {
                     if (stmt && stmt.name && stmt.name.escapedText) {
                         imports.push({ module: moduleText, name: String(stmt.name.escapedText) });
@@ -363,29 +353,29 @@ function parseTsFile(filePath, text) {
                 imports.push({ module: moduleText, name: "" });
             }
         }
-        if (isExportDeclaration(node)) {
+        if (ts.isExportDeclaration(node)) {
             // expose named exports so the model can resolve re-exports
             // (we don't pull the actual declaration; we just record the name).
         }
         const nameIdent = node.name;
-        if (node.kind === SyntaxKind.FunctionDeclaration && nameIdent && typeof nameIdent.escapedText === "string") {
+        if (node.kind === ts.SyntaxKind.FunctionDeclaration && nameIdent && typeof nameIdent.escapedText === "string") {
             declarations.push({ name: nameIdent.escapedText, kind: "function", line: sf.getLineAndCharacterOfPosition(node.getStart(sf)).line + 1 });
         }
-        else if (node.kind === SyntaxKind.ClassDeclaration && nameIdent && typeof nameIdent.escapedText === "string") {
+        else if (node.kind === ts.SyntaxKind.ClassDeclaration && nameIdent && typeof nameIdent.escapedText === "string") {
             declarations.push({ name: nameIdent.escapedText, kind: "class", line: sf.getLineAndCharacterOfPosition(node.getStart(sf)).line + 1 });
         }
-        else if (node.kind === SyntaxKind.InterfaceDeclaration && nameIdent && typeof nameIdent.escapedText === "string") {
+        else if (node.kind === ts.SyntaxKind.InterfaceDeclaration && nameIdent && typeof nameIdent.escapedText === "string") {
             declarations.push({ name: nameIdent.escapedText, kind: "interface", line: sf.getLineAndCharacterOfPosition(node.getStart(sf)).line + 1 });
         }
-        else if (node.kind === SyntaxKind.TypeAliasDeclaration && nameIdent && typeof nameIdent.escapedText === "string") {
+        else if (node.kind === ts.SyntaxKind.TypeAliasDeclaration && nameIdent && typeof nameIdent.escapedText === "string") {
             declarations.push({ name: nameIdent.escapedText, kind: "type", line: sf.getLineAndCharacterOfPosition(node.getStart(sf)).line + 1 });
         }
-        else if (node.kind === SyntaxKind.VariableStatement) {
+        else if (node.kind === ts.SyntaxKind.VariableStatement) {
             const declList = node.declarationList;
             if (declList) {
                 for (const decl of declList.declarations ?? []) {
                     const nm = decl.name;
-                    if (nm && nm.kind === SyntaxKind.Identifier && typeof nm.escapedText === "string") {
+                    if (nm && nm.kind === ts.SyntaxKind.Identifier && typeof nm.escapedText === "string") {
                         declarations.push({ name: nm.escapedText, kind: "const", line: sf.getLineAndCharacterOfPosition(decl.getStart(sf)).line + 1 });
                     }
                 }
@@ -566,7 +556,7 @@ async function collectContextProvenance(input) {
             continue;
         }
         counters.filesParsed += 1;
-        const parsed = parseTsFile(path, r.text);
+        const parsed = await parseTsFile(path, r.text);
         if (!parsed.ok) {
             status = "parse-failed";
             // Fallback is the diff_hunk item already added; no further action.
@@ -596,7 +586,7 @@ async function collectContextProvenance(input) {
         if (!r.ok)
             continue;
         counters.filesParsed += 1;
-        const parsed = parseTsFile(path, r.text);
+        const parsed = await parseTsFile(path, r.text);
         if (!parsed.ok)
             continue;
         for (const imp of parsed.imports) {
@@ -680,7 +670,7 @@ async function collectContextProvenance(input) {
                 continue;
             }
             counters.filesParsed += 1;
-            const parsedCaller = parseTsFile(rel, readAttempt.text);
+            const parsedCaller = await parseTsFile(rel, readAttempt.text);
             if (!parsedCaller.ok)
                 continue;
             const hits = parsedCaller.imports.filter((imp) => {
@@ -1678,6 +1668,13 @@ const defaultFsAdapter = {
 /***/ ((module, __unused_webpack_exports, __nccwpck_require__) => {
 
 module.exports = __nccwpck_require__.p + "e4d8e99f5c736c9d7a6e.ts";
+
+/***/ }),
+
+/***/ 93:
+/***/ ((module) => {
+
+module.exports = __WEBPACK_EXTERNAL_MODULE_typescript__;
 
 /***/ }),
 
@@ -4371,8 +4368,8 @@ function tryReadSavedConfig(deps = {}) {
     };
 }
 
-// EXTERNAL MODULE: ./src/cli/context-provenance.ts + 1 modules
-var context_provenance = __nccwpck_require__(967);
+// EXTERNAL MODULE: ./src/cli/context-provenance.ts
+var context_provenance = __nccwpck_require__(245);
 ;// CONCATENATED MODULE: ./src/provider/provider-error.ts
 class ProviderError extends Error {
     code;
@@ -19792,7 +19789,7 @@ async function buildProviderPrompts(input) {
     if (input.contextProvenance !== undefined) {
         __setLastContextProvenanceForTests(input.contextProvenance);
         try {
-            const { renderContextBlock } = await Promise.resolve(/* import() */).then(__nccwpck_require__.bind(__nccwpck_require__, 967));
+            const { renderContextBlock } = await Promise.resolve(/* import() */).then(__nccwpck_require__.bind(__nccwpck_require__, 245));
             const renderedBlock = renderContextBlock(input.contextProvenance);
             const manifestBlock = renderContextBlock(input.contextProvenance, { asManifest: true });
             userParts.push(renderedBlock.text);
