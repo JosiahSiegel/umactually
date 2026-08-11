@@ -957,3 +957,73 @@ describe("review-policy: path", () => {
     expect(REVIEW_POLICY_PATH("/repo")).toBe(join("/repo", "umactually.review.json"));
   });
 });
+
+// ---------------------------------------------------------------------------
+// Decomposition helper coverage (ITER-2c)
+// Pin the orchestrator's short-circuit ordering and the new budget-field
+// helper, which are the structural changes from the CC decomposition.
+// ---------------------------------------------------------------------------
+
+describe("review-policy: validation step ordering", () => {
+  it("rejects array root before schema-version check", () => {
+    const result = validateReviewPolicy([], "/repo/umactually.review.json");
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.error.kind).toBe("invalid-type");
+  });
+
+  it("rejects null root before schema-version check", () => {
+    const result = validateReviewPolicy(null, "/repo/umactually.review.json");
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.error.kind).toBe("invalid-type");
+  });
+
+  it("schema-version check runs before unknown-key check", () => {
+    const result = validateReviewPolicy(
+      { schemaVersion: 999, unknownKey: true },
+      "/repo/umactually.review.json",
+    );
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.error.kind).toBe("unsupported-schema-version");
+  });
+
+  it("unknown-key check runs before secret scan", () => {
+    const result = validateReviewPolicy(
+      { schemaVersion: 1, banana: "sk-secret1234567890abcdef" },
+      "/repo/umactually.review.json",
+    );
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.error.kind).toBe("unknown-key");
+  });
+});
+
+describe("review-policy: budget field validation (decomposed)", () => {
+  it("rejects negative maxOutputTokens", () => {
+    const result = validateReviewPolicy(
+      { schemaVersion: 1, budgets: { maxOutputTokens: -5 } },
+      "/repo/umactually.review.json",
+    );
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.error.kind).toBe("invalid-budget");
+  });
+
+  it("accepts null budget fields", () => {
+    const result = validateReviewPolicy(
+      { schemaVersion: 1, budgets: { contextTokens: null, maxOutputTokens: null, latencyMs: null } },
+      "/repo/umactually.review.json",
+    );
+    expect(result.ok).toBe(true);
+  });
+
+  it("accepts partial budgets object", () => {
+    const result = validateReviewPolicy(
+      { schemaVersion: 1, budgets: { contextTokens: 8000 } },
+      "/repo/umactually.review.json",
+    );
+    expect(result.ok).toBe(true);
+  });
+});

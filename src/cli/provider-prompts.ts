@@ -149,8 +149,7 @@ export async function buildProviderPrompts(input: ProviderPromptsInput): Promise
       const manifestBlock = renderContextBlock(input.contextProvenance, { asManifest: true });
       userParts.push(renderedBlock.text);
       userParts.push(manifestBlock.text);
-    } catch (error) {
-      void error;
+    } catch {
       userParts.push("Repository context: (unavailable — render failed; review continues without)");
     }
   }

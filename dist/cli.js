@@ -3331,10 +3331,6 @@ function readString(value, key) {
     const v = value[key];
     return typeof v === "string" ? v : "";
 }
-function readNumber(value, key) {
-    const v = value[key];
-    return typeof v === "number" ? v : 0;
-}
 function readDurableComment(raw) {
     if (!isRecord(raw)) {
         return {
@@ -3408,8 +3404,6 @@ function readLegacyComment(raw) {
         category: readString(raw, "category"),
     };
 }
-// Suppress unused warning for readNumber (kept for potential indexed access).
-void readNumber;
 
 ;// CONCATENATED MODULE: ./src/cli/check-review-artifact.ts
 // SPDX-License-Identifier: MIT
@@ -3922,11 +3916,31 @@ function containsSecret(value) {
 // Validation
 // ---------------------------------------------------------------------------
 function validateReviewPolicy(raw, filePath) {
+    const steps = [
+        validateShape,
+        validateSchemaVersion,
+        validateAllowedKeys,
+        validateSecretScan,
+        validateEnumAndTypeFields,
+        validatePathSafetyAndGlobs,
+        validateSecretScanPatterns,
+    ];
+    for (const step of steps) {
+        const result = step(raw, filePath);
+        if (!result.ok)
+            return result;
+    }
+    const policy = buildPolicy(raw);
+    return { ok: true, policy };
+}
+function validateShape(raw, filePath) {
     if (raw === null || typeof raw !== "object" || Array.isArray(raw)) {
         return fail("invalid-type", `policy at ${filePath}: expected object, received ${raw === null ? "null" : Array.isArray(raw) ? "array" : typeof raw}`);
     }
+    return { ok: true, policy: DEFAULT_REVIEW_POLICY };
+}
+function validateSchemaVersion(raw, filePath) {
     const obj = raw;
-    // 1. Schema version
     if (obj["schemaVersion"] === undefined) {
         return fail("missing-schema-version", `policy at ${filePath}: missing required field "schemaVersion"`);
     }
@@ -3936,176 +3950,254 @@ function validateReviewPolicy(raw, filePath) {
     if (obj["schemaVersion"] !== REVIEW_POLICY_SCHEMA_VERSION) {
         return fail("unsupported-schema-version", `policy at ${filePath}: unsupported schemaVersion ${obj["schemaVersion"]} (expected ${REVIEW_POLICY_SCHEMA_VERSION})`);
     }
-    // 2. Unknown keys
+    return { ok: true, policy: DEFAULT_REVIEW_POLICY };
+}
+function validateAllowedKeys(raw, filePath) {
+    const obj = raw;
     for (const key of Object.keys(obj)) {
         if (!ALLOWED_TOP_LEVEL_KEYS.has(key)) {
             return fail("unknown-key", `policy at ${filePath}: unknown key "${key}"`);
         }
     }
-    // 3. Secret scan over all string values (BEFORE semantic validation
-    //    so a secret-shaped literal is rejected as "secret-detected"
-    //    rather than as an invalid enum value).
+    return { ok: true, policy: DEFAULT_REVIEW_POLICY };
+}
+function validateSecretScan(raw, filePath) {
+    const obj = raw;
     for (const [key, value] of Object.entries(obj)) {
         if (typeof value === "string" && containsSecret(value)) {
             return fail("secret-detected", `policy at ${filePath}: secret-shaped value detected in field "${key}"`);
         }
     }
-    // 4. Type-check and validate each field (semantic conflicts)
-    const policy = { schemaVersion: REVIEW_POLICY_SCHEMA_VERSION };
-    if (obj["effort"] !== undefined) {
-        if (typeof obj["effort"] !== "string" || !VALID_EFFORTS.has(obj["effort"])) {
-            return fail("invalid-effort", `policy at ${filePath}: invalid effort ${brand/* REDACTED_PLACEHOLDER */.Vj} (expected one of low, medium, high)`);
-        }
-        policy.effort = obj["effort"];
-    }
-    if (obj["triggers"] !== undefined) {
-        if (!Array.isArray(obj["triggers"])) {
-            return fail("invalid-trigger", `policy at ${filePath}: triggers must be an array`);
-        }
-        const triggers = [];
-        for (const t of obj["triggers"]) {
-            if (typeof t !== "string" || !VALID_TRIGGERS.has(t)) {
-                return fail("invalid-trigger", `policy at ${filePath}: invalid trigger ${brand/* REDACTED_PLACEHOLDER */.Vj} (expected one of opened, synchronize, reopened)`);
-            }
-            triggers.push(t);
-        }
-        policy.triggers = triggers;
-    }
-    if (obj["minimumSeverity"] !== undefined) {
-        if (typeof obj["minimumSeverity"] !== "string" || !VALID_MINIMUM_SEVERITIES.has(obj["minimumSeverity"])) {
-            return fail("invalid-minimum-severity", `policy at ${filePath}: invalid minimumSeverity ${brand/* REDACTED_PLACEHOLDER */.Vj} (expected one of info, warning, error)`);
-        }
-        policy.minimumSeverity = obj["minimumSeverity"];
-    }
-    if (obj["suggestionMode"] !== undefined) {
-        if (typeof obj["suggestionMode"] !== "string" || !VALID_SUGGESTION_MODES.has(obj["suggestionMode"])) {
-            return fail("invalid-suggestion-mode", `policy at ${filePath}: invalid suggestionMode ${brand/* REDACTED_PLACEHOLDER */.Vj} (expected one of off, validated)`);
-        }
-        policy.suggestionMode = obj["suggestionMode"];
-    }
-    if (obj["gateMode"] !== undefined) {
-        if (typeof obj["gateMode"] !== "string" || !VALID_GATE_MODES.has(obj["gateMode"])) {
-            return fail("invalid-gate-mode", `policy at ${filePath}: invalid gateMode ${brand/* REDACTED_PLACEHOLDER */.Vj} (expected one of off, warn, block)`);
-        }
-        policy.gateMode = obj["gateMode"];
-    }
-    if (obj["reReviewCap"] !== undefined) {
-        if (typeof obj["reReviewCap"] !== "number" || !Number.isInteger(obj["reReviewCap"]) || obj["reReviewCap"] < 0) {
-            return fail("invalid-re-review-cap", `policy at ${filePath}: reReviewCap must be a non-negative integer`);
-        }
-        policy.reReviewCap = obj["reReviewCap"];
-    }
-    if (obj["budgets"] !== undefined) {
-        if (obj["budgets"] === null || typeof obj["budgets"] !== "object" || Array.isArray(obj["budgets"])) {
-            return fail("invalid-budget", `policy at ${filePath}: budgets must be an object`);
-        }
-        const rawBudgets = obj["budgets"];
-        for (const key of Object.keys(rawBudgets)) {
-            if (!ALLOWED_BUDGET_KEYS.has(key)) {
-                return fail("unknown-key", `policy at ${filePath}: unknown budget key "${key}"`);
-            }
-        }
-        const budgets = {
-            contextTokens: null,
-            maxOutputTokens: null,
-            latencyMs: null,
-        };
-        if (rawBudgets["contextTokens"] !== undefined && rawBudgets["contextTokens"] !== null) {
-            if (typeof rawBudgets["contextTokens"] !== "number" || !Number.isInteger(rawBudgets["contextTokens"]) || rawBudgets["contextTokens"] < 0) {
-                return fail("invalid-budget", `policy at ${filePath}: contextTokens must be a non-negative integer`);
-            }
-            budgets.contextTokens = rawBudgets["contextTokens"];
-        }
-        if (rawBudgets["maxOutputTokens"] !== undefined && rawBudgets["maxOutputTokens"] !== null) {
-            if (typeof rawBudgets["maxOutputTokens"] !== "number" || !Number.isInteger(rawBudgets["maxOutputTokens"]) || rawBudgets["maxOutputTokens"] < 0) {
-                return fail("invalid-budget", `policy at ${filePath}: maxOutputTokens must be a non-negative integer`);
-            }
-            budgets.maxOutputTokens = rawBudgets["maxOutputTokens"];
-        }
-        if (rawBudgets["latencyMs"] !== undefined && rawBudgets["latencyMs"] !== null) {
-            if (typeof rawBudgets["latencyMs"] !== "number" || !Number.isInteger(rawBudgets["latencyMs"]) || rawBudgets["latencyMs"] < 0) {
-                return fail("invalid-budget", `policy at ${filePath}: latencyMs must be a non-negative integer`);
-            }
-            budgets.latencyMs = rawBudgets["latencyMs"];
-        }
-        policy.budgets = budgets;
-    }
-    if (obj["pathRules"] !== undefined) {
-        if (!Array.isArray(obj["pathRules"])) {
-            return fail("invalid-glob", `policy at ${filePath}: pathRules must be an array`);
-        }
-        const seenPatterns = new Set();
-        const pathRules = [];
+    return { ok: true, policy: DEFAULT_REVIEW_POLICY };
+}
+function validateEnumAndTypeFields(raw, filePath) {
+    const obj = raw;
+    const effortResult = validateEffort(obj, filePath);
+    if (!effortResult.ok)
+        return effortResult;
+    const triggersResult = validateTriggers(obj, filePath);
+    if (!triggersResult.ok)
+        return triggersResult;
+    const severityResult = validateMinimumSeverity(obj, filePath);
+    if (!severityResult.ok)
+        return severityResult;
+    const suggestionResult = validateSuggestionMode(obj, filePath);
+    if (!suggestionResult.ok)
+        return suggestionResult;
+    const gateResult = validateGateMode(obj, filePath);
+    if (!gateResult.ok)
+        return gateResult;
+    const reReviewResult = validateReReviewCap(obj, filePath);
+    if (!reReviewResult.ok)
+        return reReviewResult;
+    const budgetsResult = validateBudgets(obj, filePath);
+    if (!budgetsResult.ok)
+        return budgetsResult;
+    const pathRulesResult = validatePathRules(obj, filePath);
+    if (!pathRulesResult.ok)
+        return pathRulesResult;
+    const excludesResult = validateExcludes(obj, filePath);
+    if (!excludesResult.ok)
+        return excludesResult;
+    return { ok: true, policy: DEFAULT_REVIEW_POLICY };
+}
+function validatePathSafetyAndGlobs(_raw, _filePath) {
+    return { ok: true, policy: DEFAULT_REVIEW_POLICY };
+}
+function validateSecretScanPatterns(raw, filePath) {
+    const obj = raw;
+    if (obj["pathRules"] !== undefined && Array.isArray(obj["pathRules"])) {
         for (const rule of obj["pathRules"]) {
-            if (rule === null || typeof rule !== "object" || Array.isArray(rule)) {
-                return fail("invalid-glob", `policy at ${filePath}: pathRule must be an object`);
-            }
-            const r = rule;
-            for (const key of Object.keys(r)) {
-                if (!ALLOWED_PATH_RULE_KEYS.has(key)) {
-                    return fail("unknown-key", `policy at ${filePath}: unknown pathRule key "${key}"`);
-                }
-            }
-            if (typeof r["pattern"] !== "string") {
-                return fail("invalid-glob", `policy at ${filePath}: pathRule.pattern must be a string`);
-            }
-            const pattern = r["pattern"];
-            if (!isValidGlob(pattern)) {
-                return fail("invalid-glob", `policy at ${filePath}: invalid glob pattern ${brand/* REDACTED_PLACEHOLDER */.Vj}`);
-            }
-            if (isUnsafePath(pattern)) {
-                return fail("unsafe-path", `policy at ${filePath}: pathRule pattern escapes repo root`);
-            }
-            if (seenPatterns.has(pattern)) {
-                return fail("duplicate-path-rule", `policy at ${filePath}: duplicate path rule pattern detected`);
-            }
-            seenPatterns.add(pattern);
-            let effort;
-            if (r["effort"] !== undefined) {
-                if (typeof r["effort"] !== "string" || !VALID_EFFORTS.has(r["effort"])) {
-                    return fail("invalid-effort", `policy at ${filePath}: invalid pathRule effort ${brand/* REDACTED_PLACEHOLDER */.Vj}`);
-                }
-                effort = r["effort"];
-            }
-            pathRules.push({ pattern, ...(effort !== undefined ? { effort } : {}) });
-        }
-        policy.pathRules = pathRules;
-    }
-    if (obj["excludes"] !== undefined) {
-        if (!Array.isArray(obj["excludes"])) {
-            return fail("invalid-glob", `policy at ${filePath}: excludes must be an array`);
-        }
-        const excludes = [];
-        for (const ex of obj["excludes"]) {
-            if (typeof ex !== "string") {
-                return fail("invalid-glob", `policy at ${filePath}: exclude entry must be a string`);
-            }
-            if (!isValidGlob(ex)) {
-                return fail("invalid-glob", `policy at ${filePath}: invalid exclude glob ${brand/* REDACTED_PLACEHOLDER */.Vj}`);
-            }
-            if (isUnsafePath(ex)) {
-                return fail("unsafe-path", `policy at ${filePath}: exclude pattern escapes repo root`);
-            }
-            excludes.push(ex);
-        }
-        policy.excludes = excludes;
-    }
-    // Secret scan for pathRules patterns and excludes
-    if (policy.pathRules !== undefined) {
-        for (const rule of policy.pathRules) {
-            if (containsSecret(rule.pattern)) {
+            if (review_policy_isRecord(rule) && typeof rule["pattern"] === "string" && containsSecret(rule["pattern"])) {
                 return fail("secret-detected", `policy at ${filePath}: secret-shaped value detected in pathRule pattern`);
             }
         }
     }
-    if (policy.excludes !== undefined) {
-        for (const ex of policy.excludes) {
-            if (containsSecret(ex)) {
+    if (obj["excludes"] !== undefined && Array.isArray(obj["excludes"])) {
+        for (const ex of obj["excludes"]) {
+            if (typeof ex === "string" && containsSecret(ex)) {
                 return fail("secret-detected", `policy at ${filePath}: secret-shaped value detected in exclude pattern`);
             }
         }
     }
-    return { ok: true, policy: policy };
+    return { ok: true, policy: DEFAULT_REVIEW_POLICY };
+}
+function validateEffort(obj, filePath) {
+    if (obj["effort"] === undefined)
+        return { ok: true, policy: DEFAULT_REVIEW_POLICY };
+    if (typeof obj["effort"] !== "string" || !VALID_EFFORTS.has(obj["effort"])) {
+        return fail("invalid-effort", `policy at ${filePath}: invalid effort ${brand/* REDACTED_PLACEHOLDER */.Vj} (expected one of low, medium, high)`);
+    }
+    return { ok: true, policy: DEFAULT_REVIEW_POLICY };
+}
+function validateTriggers(obj, filePath) {
+    if (obj["triggers"] === undefined)
+        return { ok: true, policy: DEFAULT_REVIEW_POLICY };
+    if (!Array.isArray(obj["triggers"])) {
+        return fail("invalid-trigger", `policy at ${filePath}: triggers must be an array`);
+    }
+    for (const t of obj["triggers"]) {
+        if (typeof t !== "string" || !VALID_TRIGGERS.has(t)) {
+            return fail("invalid-trigger", `policy at ${filePath}: invalid trigger ${brand/* REDACTED_PLACEHOLDER */.Vj} (expected one of opened, synchronize, reopened)`);
+        }
+    }
+    return { ok: true, policy: DEFAULT_REVIEW_POLICY };
+}
+function validateMinimumSeverity(obj, filePath) {
+    if (obj["minimumSeverity"] === undefined)
+        return { ok: true, policy: DEFAULT_REVIEW_POLICY };
+    if (typeof obj["minimumSeverity"] !== "string" || !VALID_MINIMUM_SEVERITIES.has(obj["minimumSeverity"])) {
+        return fail("invalid-minimum-severity", `policy at ${filePath}: invalid minimumSeverity ${brand/* REDACTED_PLACEHOLDER */.Vj} (expected one of info, warning, error)`);
+    }
+    return { ok: true, policy: DEFAULT_REVIEW_POLICY };
+}
+function validateSuggestionMode(obj, filePath) {
+    if (obj["suggestionMode"] === undefined)
+        return { ok: true, policy: DEFAULT_REVIEW_POLICY };
+    if (typeof obj["suggestionMode"] !== "string" || !VALID_SUGGESTION_MODES.has(obj["suggestionMode"])) {
+        return fail("invalid-suggestion-mode", `policy at ${filePath}: invalid suggestionMode ${brand/* REDACTED_PLACEHOLDER */.Vj} (expected one of off, validated)`);
+    }
+    return { ok: true, policy: DEFAULT_REVIEW_POLICY };
+}
+function validateGateMode(obj, filePath) {
+    if (obj["gateMode"] === undefined)
+        return { ok: true, policy: DEFAULT_REVIEW_POLICY };
+    if (typeof obj["gateMode"] !== "string" || !VALID_GATE_MODES.has(obj["gateMode"])) {
+        return fail("invalid-gate-mode", `policy at ${filePath}: invalid gateMode ${brand/* REDACTED_PLACEHOLDER */.Vj} (expected one of off, warn, block)`);
+    }
+    return { ok: true, policy: DEFAULT_REVIEW_POLICY };
+}
+function validateReReviewCap(obj, filePath) {
+    if (obj["reReviewCap"] === undefined)
+        return { ok: true, policy: DEFAULT_REVIEW_POLICY };
+    if (typeof obj["reReviewCap"] !== "number" || !Number.isInteger(obj["reReviewCap"]) || obj["reReviewCap"] < 0) {
+        return fail("invalid-re-review-cap", `policy at ${filePath}: reReviewCap must be a non-negative integer`);
+    }
+    return { ok: true, policy: DEFAULT_REVIEW_POLICY };
+}
+function validateBudgets(obj, filePath) {
+    if (obj["budgets"] === undefined)
+        return { ok: true, policy: DEFAULT_REVIEW_POLICY };
+    if (obj["budgets"] === null || typeof obj["budgets"] !== "object" || Array.isArray(obj["budgets"])) {
+        return fail("invalid-budget", `policy at ${filePath}: budgets must be an object`);
+    }
+    const rawBudgets = obj["budgets"];
+    for (const key of Object.keys(rawBudgets)) {
+        if (!ALLOWED_BUDGET_KEYS.has(key)) {
+            return fail("unknown-key", `policy at ${filePath}: unknown budget key "${key}"`);
+        }
+    }
+    const budgetFieldResult = validateBudgetField(rawBudgets, "contextTokens", filePath);
+    if (!budgetFieldResult.ok)
+        return budgetFieldResult;
+    const maxOutputResult = validateBudgetField(rawBudgets, "maxOutputTokens", filePath);
+    if (!maxOutputResult.ok)
+        return maxOutputResult;
+    const latencyResult = validateBudgetField(rawBudgets, "latencyMs", filePath);
+    if (!latencyResult.ok)
+        return latencyResult;
+    return { ok: true, policy: DEFAULT_REVIEW_POLICY };
+}
+function validateBudgetField(rawBudgets, field, filePath) {
+    const value = rawBudgets[field];
+    if (value === undefined || value === null)
+        return { ok: true, policy: DEFAULT_REVIEW_POLICY };
+    if (typeof value !== "number" || !Number.isInteger(value) || value < 0) {
+        return fail("invalid-budget", `policy at ${filePath}: ${field} must be a non-negative integer`);
+    }
+    return { ok: true, policy: DEFAULT_REVIEW_POLICY };
+}
+function validatePathRules(obj, filePath) {
+    if (obj["pathRules"] === undefined)
+        return { ok: true, policy: DEFAULT_REVIEW_POLICY };
+    if (!Array.isArray(obj["pathRules"])) {
+        return fail("invalid-glob", `policy at ${filePath}: pathRules must be an array`);
+    }
+    const seenPatterns = new Set();
+    for (const rule of obj["pathRules"]) {
+        if (rule === null || typeof rule !== "object" || Array.isArray(rule)) {
+            return fail("invalid-glob", `policy at ${filePath}: pathRule must be an object`);
+        }
+        const r = rule;
+        for (const key of Object.keys(r)) {
+            if (!ALLOWED_PATH_RULE_KEYS.has(key)) {
+                return fail("unknown-key", `policy at ${filePath}: unknown pathRule key "${key}"`);
+            }
+        }
+        if (typeof r["pattern"] !== "string") {
+            return fail("invalid-glob", `policy at ${filePath}: pathRule.pattern must be a string`);
+        }
+        const pattern = r["pattern"];
+        if (!isValidGlob(pattern)) {
+            return fail("invalid-glob", `policy at ${filePath}: invalid glob pattern ${brand/* REDACTED_PLACEHOLDER */.Vj}`);
+        }
+        if (isUnsafePath(pattern)) {
+            return fail("unsafe-path", `policy at ${filePath}: pathRule pattern escapes repo root`);
+        }
+        if (seenPatterns.has(pattern)) {
+            return fail("duplicate-path-rule", `policy at ${filePath}: duplicate path rule pattern detected`);
+        }
+        seenPatterns.add(pattern);
+        if (r["effort"] !== undefined && (typeof r["effort"] !== "string" || !VALID_EFFORTS.has(r["effort"]))) {
+            return fail("invalid-effort", `policy at ${filePath}: invalid pathRule effort ${brand/* REDACTED_PLACEHOLDER */.Vj}`);
+        }
+    }
+    return { ok: true, policy: DEFAULT_REVIEW_POLICY };
+}
+function validateExcludes(obj, filePath) {
+    if (obj["excludes"] === undefined)
+        return { ok: true, policy: DEFAULT_REVIEW_POLICY };
+    if (!Array.isArray(obj["excludes"])) {
+        return fail("invalid-glob", `policy at ${filePath}: excludes must be an array`);
+    }
+    for (const ex of obj["excludes"]) {
+        if (typeof ex !== "string") {
+            return fail("invalid-glob", `policy at ${filePath}: exclude entry must be a string`);
+        }
+        if (!isValidGlob(ex)) {
+            return fail("invalid-glob", `policy at ${filePath}: invalid exclude glob ${brand/* REDACTED_PLACEHOLDER */.Vj}`);
+        }
+        if (isUnsafePath(ex)) {
+            return fail("unsafe-path", `policy at ${filePath}: exclude pattern escapes repo root`);
+        }
+    }
+    return { ok: true, policy: DEFAULT_REVIEW_POLICY };
+}
+function buildPolicy(obj) {
+    const policy = { schemaVersion: REVIEW_POLICY_SCHEMA_VERSION };
+    if (obj["effort"] !== undefined)
+        policy.effort = obj["effort"];
+    if (obj["triggers"] !== undefined)
+        policy.triggers = obj["triggers"];
+    if (obj["minimumSeverity"] !== undefined)
+        policy.minimumSeverity = obj["minimumSeverity"];
+    if (obj["suggestionMode"] !== undefined)
+        policy.suggestionMode = obj["suggestionMode"];
+    if (obj["gateMode"] !== undefined)
+        policy.gateMode = obj["gateMode"];
+    if (obj["reReviewCap"] !== undefined)
+        policy.reReviewCap = obj["reReviewCap"];
+    if (obj["budgets"] !== undefined) {
+        const rawBudgets = obj["budgets"];
+        policy.budgets = {
+            contextTokens: rawBudgets["contextTokens"] === undefined || rawBudgets["contextTokens"] === null ? null : rawBudgets["contextTokens"],
+            maxOutputTokens: rawBudgets["maxOutputTokens"] === undefined || rawBudgets["maxOutputTokens"] === null ? null : rawBudgets["maxOutputTokens"],
+            latencyMs: rawBudgets["latencyMs"] === undefined || rawBudgets["latencyMs"] === null ? null : rawBudgets["latencyMs"],
+        };
+    }
+    if (obj["pathRules"] !== undefined) {
+        policy.pathRules = obj["pathRules"].map((r) => {
+            const effort = r["effort"];
+            return { pattern: r["pattern"], ...(effort !== undefined ? { effort } : {}) };
+        });
+    }
+    if (obj["excludes"] !== undefined) {
+        policy.excludes = obj["excludes"];
+    }
+    return policy;
+}
+function review_policy_isRecord(value) {
+    return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 function fail(kind, message) {
     return { ok: false, error: { kind, message }, exitCode: 2, message };
@@ -19795,8 +19887,7 @@ async function buildProviderPrompts(input) {
             userParts.push(renderedBlock.text);
             userParts.push(manifestBlock.text);
         }
-        catch (error) {
-            void error;
+        catch {
             userParts.push("Repository context: (unavailable — render failed; review continues without)");
         }
     }

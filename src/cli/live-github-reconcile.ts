@@ -466,17 +466,13 @@ async function listReviews(input: ReconcileInput): Promise<ListOutcome<GithubRev
 
 function filterEligibleComments(
   comments: readonly GithubReviewComment[],
-  reviews: readonly GithubReview[],
+  _reviews: readonly GithubReview[],
   ourToken: string,
 ): readonly GithubReviewComment[] {
-  const dismissedReviewIds = new Set(
-    reviews.filter((r) => r.state === "DISMISSED").map((r) => r.id),
-  );
   if (ourToken.length === 0) return [];
   return comments.filter((c) => {
     if (!c.body.includes(REVIEW_MARKER)) return false;
     if (extractFingerprint(c.body) === null) return false;
-    void dismissedReviewIds;
     return true;
   });
 }
@@ -543,90 +539,12 @@ async function processReconsidered(input: ReconcileInput, ctx: ProcessContext): 
 
   const commentFingerprint = extractFingerprint(comment.body);
   if (commentFingerprint === null || commentFingerprint !== finding.fingerprint) {
-    return {
-      fingerprint: finding.fingerprint,
-      disposition: "deferred",
-      priorPath: finding.path,
-      priorLine: finding.line,
-      priorThreadId: finding.threadId,
-      path: null,
-      line: null,
-      note: "marker fingerprint mismatch; defer",
-    };
+    return deferredTransition(finding, "marker fingerprint mismatch; defer");
   }
 
   const matching = newByFingerprint.get(finding.fingerprint);
   if (matching !== undefined) {
-    if (comment.body.includes("<!-- umactually:resolved-by-replay -->")) {
-      const reopened = await postReopenMarker(input, {
-        threadId: finding.threadId,
-        newBody: matching.body,
-        warnings,
-        postedThreadIds: ctx.postedThreadIds,
-      });
-      if (reopened) {
-        return {
-          fingerprint: finding.fingerprint,
-          disposition: "updated",
-          priorPath: finding.path,
-          priorLine: finding.line,
-          priorThreadId: finding.threadId,
-          path: finding.path,
-          line: finding.line,
-          note: "stale native close detected; posted fresh canonical reopen thread",
-        };
-      }
-      return {
-        fingerprint: finding.fingerprint,
-        disposition: "deferred",
-        priorPath: finding.path,
-        priorLine: finding.line,
-        priorThreadId: finding.threadId,
-        path: null,
-        line: null,
-        note: "stale close reopen failed; defer",
-      };
-    }
-    if (normalizeEvidenceText(comment.body) === normalizeEvidenceText(matching.body)) {
-      return {
-        fingerprint: finding.fingerprint,
-        disposition: "unchanged",
-        priorPath: finding.path,
-        priorLine: finding.line,
-        priorThreadId: finding.threadId,
-        path: finding.path,
-        line: finding.line,
-        note: "matching fingerprint, unchanged body",
-      };
-    }
-    const updated = await patchExistingThread(input, {
-      threadId: finding.threadId,
-      newBody: matching.body,
-      warnings,
-      updatedThreadIds: ctx.updatedThreadIds,
-    });
-    if (updated) {
-      return {
-        fingerprint: finding.fingerprint,
-        disposition: "updated",
-        priorPath: finding.path,
-        priorLine: finding.line,
-        priorThreadId: finding.threadId,
-        path: finding.path,
-        line: finding.line,
-        note: "matching fingerprint, body changed → PATCH",
-      };
-    }
-    return {
-      fingerprint: finding.fingerprint,
-      disposition: "deferred",
-      priorPath: finding.path,
-      priorLine: finding.line,
-      priorThreadId: finding.threadId,
-      path: null,
-      line: null,
-      note: "PATCH failed; defer",
-    };
+    return processMatchingFinding(input, ctx, matching);
   }
 
   const verification = await verifyAnchorRemoved(input, {
@@ -635,76 +553,124 @@ async function processReconsidered(input: ReconcileInput, ctx: ProcessContext): 
     fingerprint: finding.fingerprint,
     priorEvidenceText: extractEvidenceText(comment.body),
   });
-  const isFullDecision = (input.decision ?? classifyDecision(input)) === "full";
-
   if (verification.kind === "error") {
     warnings.push(...verification.warnings);
-    return {
-      fingerprint: finding.fingerprint,
-      disposition: "deferred",
-      priorPath: finding.path,
-      priorLine: finding.line,
-      priorThreadId: finding.threadId,
-      path: null,
-      line: null,
-      note: "verification failed; defer",
-    };
+    return deferredTransition(finding, "verification failed; defer");
+  }
+  return processResolvedAnchor(input, finding, verification.removed, warnings);
+}
+
+async function processMatchingFinding(
+  input: ReconcileInput,
+  ctx: ProcessContext,
+  matching: NewProviderFinding,
+): Promise<ReconcileTransition> {
+  const { finding, comment } = ctx.candidate;
+  const { warnings } = ctx;
+
+  if (comment.body.includes("<!-- umactually:resolved-by-replay -->")) {
+    const reopened = await postReopenMarker(input, {
+      threadId: finding.threadId,
+      newBody: matching.body,
+      warnings,
+      postedThreadIds: ctx.postedThreadIds,
+    });
+    if (reopened) {
+      return { ...findingTransition(finding, finding.path, finding.line),
+        disposition: "updated",
+        note: "stale native close detected; posted fresh canonical reopen thread" };
+    }
+    return deferredTransition(finding, "stale close reopen failed; defer");
   }
 
-  if (verification.removed) {
-    if (isFullDecision) {
-      return {
-        fingerprint: finding.fingerprint,
-        disposition: "superseded",
-        priorPath: finding.path,
-        priorLine: finding.line,
-        priorThreadId: finding.threadId,
-        path: null,
-        line: null,
-        note: "full review replaces prior run; prior finding superseded",
-      };
-    }
-    if (input.resolutionMode === "native-best-effort") {
-      const closed = await nativelyCloseThread(input, {
-        threadId: finding.threadId,
-        warnings,
-      });
-      if (!closed) {
-        return {
-          fingerprint: finding.fingerprint,
-          disposition: "deferred",
-          priorPath: finding.path,
-          priorLine: finding.line,
-          priorThreadId: finding.threadId,
-          path: null,
-          line: null,
-          note: "native close failed; defer",
-        };
-      }
-    }
-    return {
-      fingerprint: finding.fingerprint,
-      disposition: "resolved",
-      priorPath: finding.path,
-      priorLine: finding.line,
-      priorThreadId: finding.threadId,
-      path: null,
-      line: null,
-      note: "anchor no longer exists; logically resolved" +
-        (input.resolutionMode === "native-best-effort" ? " (native-best-effort)" : ""),
-    };
+  if (normalizeEvidenceText(comment.body) === normalizeEvidenceText(matching.body)) {
+    return { ...findingTransition(finding, finding.path, finding.line),
+      disposition: "unchanged",
+      note: "matching fingerprint, unchanged body" };
   }
 
+  const updated = await patchExistingThread(input, {
+    threadId: finding.threadId,
+    newBody: matching.body,
+    warnings,
+    updatedThreadIds: ctx.updatedThreadIds,
+  });
+  if (updated) {
+    return { ...findingTransition(finding, finding.path, finding.line),
+      disposition: "updated",
+      note: "matching fingerprint, body changed → PATCH" };
+  }
+  return deferredTransition(finding, "PATCH failed; defer");
+}
+
+async function processResolvedAnchor(
+  input: ReconcileInput,
+  finding: ReconciledFinding,
+  removed: boolean,
+  warnings: string[],
+): Promise<ReconcileTransition> {
+  if (!removed) {
+    return { ...findingTransition(finding, finding.path, finding.line),
+      disposition: "carried",
+      note: "verification did not confirm removal; carried" };
+  }
+  const isFullDecision = (input.decision ?? classifyDecision(input)) === "full";
+  if (isFullDecision) {
+    return { ...deferredTransitionBase(finding),
+      disposition: "superseded",
+      note: "full review replaces prior run; prior finding superseded" };
+  }
+  if (input.resolutionMode === "native-best-effort") {
+    const closed = await nativelyCloseThread(input, {
+      threadId: finding.threadId,
+      warnings,
+    });
+    if (!closed) {
+      return deferredTransition(finding, "native close failed; defer");
+    }
+  }
+  return { ...deferredTransitionBase(finding),
+    disposition: "resolved",
+    note: "anchor no longer exists; logically resolved" +
+      (input.resolutionMode === "native-best-effort" ? " (native-best-effort)" : "") };
+}
+
+type TransitionBase = {
+  readonly fingerprint: string;
+  readonly priorPath: string;
+  readonly priorLine: number;
+  readonly priorThreadId: number;
+  readonly path: string | null;
+  readonly line: number | null;
+  readonly note: string;
+};
+
+function findingTransition(finding: ReconciledFinding, path: string, line: number): TransitionBase {
   return {
     fingerprint: finding.fingerprint,
-    disposition: "carried",
     priorPath: finding.path,
     priorLine: finding.line,
     priorThreadId: finding.threadId,
-    path: finding.path,
-    line: finding.line,
-    note: "verification did not confirm removal; carried",
+    path,
+    line,
+    note: "",
   };
+}
+
+function deferredTransitionBase(finding: ReconciledFinding): TransitionBase {
+  return {
+    fingerprint: finding.fingerprint,
+    priorPath: finding.path,
+    priorLine: finding.line,
+    priorThreadId: finding.threadId,
+    path: null,
+    line: null,
+    note: "",
+  };
+}
+
+function deferredTransition(finding: ReconciledFinding, note: string): ReconcileTransition {
+  return { ...deferredTransitionBase(finding), disposition: "deferred", note };
 }
 
 type VerifyOutcome =
@@ -841,7 +807,6 @@ async function postReopenMarker(input: ReconcileInput, opts: {
   readonly warnings: string[];
   readonly postedThreadIds: number[];
 }): Promise<boolean> {
-  void opts.threadId;
   try {
     const response = await input.fetchImpl(reviewCommentsListUrl(input.context), {
       method: "POST",

@@ -268,11 +268,6 @@ function readString(value: unknown, key: string): string {
   return typeof v === "string" ? v : "";
 }
 
-function readNumber(value: unknown, key: number): number {
-  const v = (value as unknown as readonly unknown[])[key];
-  return typeof v === "number" ? v : 0;
-}
-
 type ReadDurableResult =
   | { readonly ok: true; readonly comment: DurableReviewComment }
   | { readonly ok: false; readonly error: ReviewArtifactParseError };
@@ -356,6 +351,3 @@ function readLegacyComment(raw: unknown): LegacyReviewComment {
     category: readString(raw, "category"),
   };
 }
-
-// Suppress unused warning for readNumber (kept for potential indexed access).
-void readNumber;

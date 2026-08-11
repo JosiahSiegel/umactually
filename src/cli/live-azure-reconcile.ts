@@ -251,51 +251,52 @@ export function classifyPriorThreads(input: {
 }): readonly ClassifiedPriorThread[] {
   const out: ClassifiedPriorThread[] = [];
   for (const thread of input.threads) {
-    if (thread.id === undefined || thread.threadContext === null) {
-      // Parent PR-level thread (no threadContext) is not an inline
-      // finding; skip. The parent is replaced via the existing
-      // delete-then-POST path in `live-azure.ts`.
-      continue;
-    }
-    const firstComment = thread.comments[0];
-    const content = firstComment?.content ?? "";
-    const parsed = parseFingerprintMarkers(content);
-    const carriedByUs = parsed.fingerprint !== null;
-
-    let fingerprintMatch = false;
-    let identityMatch = false;
-    if (carriedByUs) {
-      for (const finding of input.currentFindings) {
-        if (finding.fingerprint === parsed.fingerprint) {
-          fingerprintMatch = true;
-          if (finding.identityDigest === parsed.identityDigest) {
-            identityMatch = true;
-          }
-          break;
-        }
-      }
-    }
-
-    const threadStatus = thread.status;
-    const reopenedFromStaleClose = threadStatus === "closed" || threadStatus === "fixed";
-
-    out.push({
-      threadId: thread.id,
-      commentId: firstComment?.id,
-      fingerprint: parsed.fingerprint,
-      identityDigest: parsed.identityDigest,
-      runId: parsed.runId,
-      attemptId: parsed.attemptId,
-      currentLine: thread.threadContext.rightFileStart.line,
-      path: thread.threadContext.filePath,
-      threadStatus,
-      carriedByUs,
-      fingerprintMatch,
-      identityMatch,
-      reopenedFromStaleClose,
-    });
+    const classified = classifyOneThread(thread, input.currentFindings);
+    if (classified !== null) out.push(classified);
   }
   return out;
+}
+
+function classifyOneThread(
+  thread: AzureThreadRecord,
+  currentFindings: readonly DurableFindingWithIdentity[],
+): ClassifiedPriorThread | null {
+  if (thread.id === undefined || thread.threadContext === null) return null;
+  const firstComment = thread.comments[0];
+  const content = firstComment?.content ?? "";
+  const parsed = parseFingerprintMarkers(content);
+  const carriedByUs = parsed.fingerprint !== null;
+  const match = carriedByUs ? findFingerprintMatch(currentFindings, parsed.fingerprint!, parsed.identityDigest) : null;
+  const threadStatus = thread.status;
+  const reopenedFromStaleClose = threadStatus === "closed" || threadStatus === "fixed";
+  return {
+    threadId: thread.id,
+    commentId: firstComment?.id,
+    fingerprint: parsed.fingerprint,
+    identityDigest: parsed.identityDigest,
+    runId: parsed.runId,
+    attemptId: parsed.attemptId,
+    currentLine: thread.threadContext.rightFileStart.line,
+    path: thread.threadContext.filePath,
+    threadStatus,
+    carriedByUs,
+    fingerprintMatch: match?.fingerprintMatch ?? false,
+    identityMatch: match?.identityMatch ?? false,
+    reopenedFromStaleClose,
+  };
+}
+
+function findFingerprintMatch(
+  currentFindings: readonly DurableFindingWithIdentity[],
+  fingerprint: string,
+  identityDigest: string | null,
+): { readonly fingerprintMatch: true; readonly identityMatch: boolean } | null {
+  for (const finding of currentFindings) {
+    if (finding.fingerprint === fingerprint) {
+      return { fingerprintMatch: true, identityMatch: finding.identityDigest === identityDigest };
+    }
+  }
+  return null;
 }
 
 // ---------------------------------------------------------------------------
