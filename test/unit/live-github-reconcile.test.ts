@@ -8,6 +8,15 @@ import type { ReconciledFinding, ReconcileInput, ReconcileResult } from "../../s
 import type { GithubContext } from "../../src/platform/github/context.js";
 import type { FetchImpl } from "../../src/util/http.js";
 
+function assertOk(result: ReconcileResult): Extract<ReconcileResult, { kind: "ok" }> {
+  if (result.kind !== "ok") {
+    throw new Error(
+      `expected runGithubReconcile to return kind: "ok"; got kind: "${result.kind}"`,
+    );
+  }
+  return result;
+}
+
 const TOKEN = "github-token";
 const OWNER = "octo-org";
 const REPO = "octo-repo";
@@ -204,7 +213,7 @@ describe("live-github-reconcile — request-contract", () => {
       ],
     });
 
-    const result = await runGithubReconcile({ ...input, fetchImpl: fetch.fetchImpl });
+    const result = assertOk(await runGithubReconcile({ ...input, fetchImpl: fetch.fetchImpl }));
 
     expect(result.transitions).toHaveLength(1);
     expect(result.transitions[0]!.disposition).toBe("unchanged");
@@ -262,7 +271,7 @@ describe("live-github-reconcile — request-contract", () => {
       ],
     });
 
-    const result = await runGithubReconcile({ ...input, fetchImpl: fetch.fetchImpl });
+    const result = assertOk(await runGithubReconcile({ ...input, fetchImpl: fetch.fetchImpl }));
 
     expect(result.transitions).toHaveLength(1);
     expect(result.transitions[0]!.disposition).toBe("updated");
@@ -329,7 +338,7 @@ describe("live-github-reconcile — request-contract", () => {
       newFindings: [],
     });
 
-    const result = await runGithubReconcile({ ...input, fetchImpl: fetch.fetchImpl });
+    const result = assertOk(await runGithubReconcile({ ...input, fetchImpl: fetch.fetchImpl }));
 
     const fixedDisposition = result.transitions.find((t) => t.fingerprint === fp)?.disposition;
     const carriedDisposition = result.transitions.find((t) => t.fingerprint === fpCarried)?.disposition;
@@ -385,7 +394,7 @@ describe("live-github-reconcile — request-contract", () => {
       newFindings: [],
     });
 
-    const result = await runGithubReconcile({ ...input, fetchImpl: fetch.fetchImpl });
+    const result = assertOk(await runGithubReconcile({ ...input, fetchImpl: fetch.fetchImpl }));
 
     const touchedHuman = fetch.requests.filter((r) => /\/comments\/(4001|4002)/u.test(r.url));
     expect(touchedHuman).toHaveLength(0);
@@ -440,7 +449,7 @@ describe("live-github-reconcile — request-contract", () => {
       ],
     });
 
-    const result = await runGithubReconcile({ ...input, fetchImpl: fetch.fetchImpl });
+    const result = assertOk(await runGithubReconcile({ ...input, fetchImpl: fetch.fetchImpl }));
 
     expect(result.decision).toBe("full");
     expect(result.boundToHeadSha).toBe(HEAD3);
@@ -471,7 +480,7 @@ describe("live-github-reconcile — request-contract", () => {
       newFindings: [],
     });
 
-    const result = await runGithubReconcile({ ...input, fetchImpl: fetch.fetchImpl });
+    const result = assertOk(await runGithubReconcile({ ...input, fetchImpl: fetch.fetchImpl }));
 
     expect(result.transitions).toHaveLength(0);
     expect(result.warnings.some((w) => /403|forbidden/i.test(w))).toBe(true);
@@ -498,7 +507,7 @@ describe("live-github-reconcile — request-contract", () => {
       ],
     });
 
-    const result = await runGithubReconcile({ ...input, fetchImpl: fetch.fetchImpl });
+    const result = assertOk(await runGithubReconcile({ ...input, fetchImpl: fetch.fetchImpl }));
 
     const posts = fetch.requests.filter((r) => r.method === "POST" && r.url.endsWith("/comments"));
     expect(posts).toHaveLength(1);
@@ -553,7 +562,7 @@ describe("live-github-reconcile — failure scenario", () => {
       newFindings: [],
     });
 
-    const result = await runGithubReconcile({ ...input, fetchImpl: fetch.fetchImpl });
+    const result = assertOk(await runGithubReconcile({ ...input, fetchImpl: fetch.fetchImpl }));
 
     const mutations = fetch.requests.filter((r) => r.method !== "GET");
     expect(mutations).toHaveLength(0);
@@ -617,7 +626,7 @@ describe("live-github-reconcile — failure scenario", () => {
       newFindings: [],
     });
 
-    const result = await runGithubReconcile({ ...input, fetchImpl: fetch.fetchImpl });
+    const result = assertOk(await runGithubReconcile({ ...input, fetchImpl: fetch.fetchImpl }));
 
     const mutations = fetch.requests.filter((r) => r.method !== "GET");
     expect(mutations).toHaveLength(0);
@@ -676,7 +685,7 @@ describe("live-github-reconcile — failure scenario", () => {
       ],
     });
 
-    const result = await runGithubReconcile({ ...input, fetchImpl: fetch.fetchImpl });
+    const result = assertOk(await runGithubReconcile({ ...input, fetchImpl: fetch.fetchImpl }));
 
     const posts = fetch.requests.filter((r) => r.method === "POST" && r.url.endsWith("/comments"));
     expect(posts).toHaveLength(1);
@@ -731,7 +740,7 @@ describe("live-github-reconcile — failure scenario", () => {
       ],
     });
 
-    const result = await runGithubReconcile({ ...input, fetchImpl: fetch.fetchImpl });
+    const result = assertOk(await runGithubReconcile({ ...input, fetchImpl: fetch.fetchImpl }));
 
     const mutations = fetch.requests.filter((r) => r.method !== "GET");
     expect(mutations).toHaveLength(0);
@@ -761,6 +770,7 @@ describe("live-github-reconcile — public API shape", () => {
 
   it("ReconcileResult carries decision + transitions + warnings + boundToHeadSha", () => {
     const r: ReconcileResult = {
+      kind: "ok",
       decision: "incremental",
       reason: "test",
       transitions: [],
@@ -770,7 +780,9 @@ describe("live-github-reconcile — public API shape", () => {
       resolutionMode: "logical",
       postedThreadIds: [],
       updatedThreadIds: [],
+      signalAborted: false,
     };
+    expect(r.kind).toBe("ok");
     expect(r.decision).toBe("incremental");
     expect(r.boundToHeadSha).toBe(HEAD2);
   });

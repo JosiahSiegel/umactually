@@ -905,6 +905,7 @@ import { createHash } from "node:crypto";
 import {
   assertNoFingerprintCollision,
   computeDurableFindingIdentity,
+  FingerprintCollisionError,
 } from "../review/fingerprint.js";
 import {
   type LiveProviderOutcome,
@@ -945,10 +946,29 @@ export async function runAzureLiveWithReconcile(input: {
   readonly signal?: AbortSignal;
 }): Promise<LiveRunResult> {
   const { context, diffText, provider, parsed, fetchImpl } = input;
+  const callerSignal = input.signal ?? new AbortController().signal;
   const reconcileSignal = AbortSignal.any([
-    input.signal ?? new AbortController().signal,
+    callerSignal,
     AbortSignal.timeout(60_000),
   ]);
+  if (callerSignal.aborted) {
+    const rawReason = callerSignal.reason;
+    const abortReason =
+      rawReason === undefined || rawReason === ""
+        ? "aborted"
+        : rawReason instanceof Error
+        ? rawReason.message
+        : String(rawReason);
+    return {
+      exitCode: 1,
+      posted: false,
+      reviewId: undefined,
+      message: `reconcile aborted before any network I/O (reason: ${abortReason}); state preserved, no platform mutation.`,
+      inlineThreadCount: 0,
+      suppressedCommentCount: 0,
+      parseWarnings: provider.parseWarnings,
+    };
+  }
   const resolutionMode: ResolutionMode = input.options?.resolutionMode ?? "logical";
 
   const prepared = preparePostedReview({
@@ -960,9 +980,24 @@ export async function runAzureLiveWithReconcile(input: {
     secrets: [context.token],
   });
   const { postableComments: comments, body } = prepared;
-  assertNoFingerprintCollision(
-    comments.flatMap((comment) => comment.durableIdentity === undefined ? [] : [{ identity: comment.durableIdentity, body: comment.body }]),
-  );
+  try {
+    assertNoFingerprintCollision(
+      comments.flatMap((comment) => comment.durableIdentity === undefined ? [] : [{ identity: comment.durableIdentity, body: comment.body }]),
+    );
+  } catch (error) {
+    if (error instanceof FingerprintCollisionError) {
+      return {
+        exitCode: 1,
+        posted: false,
+        reviewId: undefined,
+        message: `FINGERPRINT_COLLISION: fingerprint ${error.fingerprintDigest} (${error.collisionType}); reconcile aborted, no platform mutation, no state mutation.`,
+        inlineThreadCount: 0,
+        suppressedCommentCount: 0,
+        parseWarnings: provider.parseWarnings,
+      };
+    }
+    throw error;
+  }
 
   // Fencing token (Task 9): runId + attemptId + currentHeadSha.
   const currentHeadSha = context.sourceCommit;

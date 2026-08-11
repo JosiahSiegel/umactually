@@ -17,6 +17,32 @@ import { computeRunId } from "../../src/review/state-machine.js";
 import { runGithubReconcile } from "../../src/cli/live-github-reconcile.js";
 import type { GithubContext } from "../../src/platform/github/context.js";
 import type { FetchImpl } from "../../src/util/http.js";
+import type {
+  ReconcileResult,
+  ReconcileTransition,
+} from "../../src/cli/live-github-reconcile.js";
+
+function okTransitions(r: ReconcileResult): readonly ReconcileTransition[] {
+  return r.kind === "ok" ? r.transitions : [];
+}
+function okDecision(r: ReconcileResult): string {
+  return r.kind === "ok" ? r.decision : "collision";
+}
+function okBound(r: ReconcileResult): string {
+  return r.kind === "ok" ? r.boundToHeadSha : "";
+}
+function okPosted(r: ReconcileResult): readonly number[] {
+  return r.kind === "ok" ? r.postedThreadIds : [];
+}
+function okUpdated(r: ReconcileResult): readonly number[] {
+  return r.kind === "ok" ? r.updatedThreadIds : [];
+}
+function okWarnings(r: ReconcileResult): readonly string[] {
+  return r.kind === "ok" ? r.warnings : [];
+}
+function okPartialFailure(r: ReconcileResult): boolean {
+  return r.kind === "ok" ? r.partialFailure : false;
+}
 
 
 const here = dirname(fileURLToPath(import.meta.url));
@@ -252,55 +278,55 @@ describe("Task 10 evidence — happy path", () => {
         head4: fetch4.requests,
       },
       transitions: {
-        head1: initialResult.transitions,
-        head2: unchangedResult.transitions,
-        head3: fixedResult.transitions,
-        head4: newFindingResult.transitions,
+        head1: okTransitions(initialResult),
+        head2: okTransitions(unchangedResult),
+        head3: okTransitions(fixedResult),
+        head4: okTransitions(newFindingResult),
       },
       decisions: {
-        head1: initialResult.decision,
-        head2: unchangedResult.decision,
-        head3: fixedResult.decision,
-        head4: newFindingResult.decision,
+        head1: okDecision(initialResult),
+        head2: okDecision(unchangedResult),
+        head3: okDecision(fixedResult),
+        head4: okDecision(newFindingResult),
       },
       boundToHeadSha: {
-        head1: initialResult.boundToHeadSha,
-        head2: unchangedResult.boundToHeadSha,
-        head3: fixedResult.boundToHeadSha,
-        head4: newFindingResult.boundToHeadSha,
+        head1: okBound(initialResult),
+        head2: okBound(unchangedResult),
+        head3: okBound(fixedResult),
+        head4: okBound(newFindingResult),
       },
       postedThreadIds: {
-        head1: initialResult.postedThreadIds,
-        head4: newFindingResult.postedThreadIds,
+        head1: okPosted(initialResult),
+        head4: okPosted(newFindingResult),
       },
       updatedThreadIds: {
-        head2: unchangedResult.updatedThreadIds,
-        head4: newFindingResult.updatedThreadIds,
+        head2: okUpdated(unchangedResult),
+        head4: okUpdated(newFindingResult),
       },
       warnings: {
-        head1: initialResult.warnings,
-        head2: unchangedResult.warnings,
-        head3: fixedResult.warnings,
-        head4: newFindingResult.warnings,
+        head1: okWarnings(initialResult),
+        head2: okWarnings(unchangedResult),
+        head3: okWarnings(fixedResult),
+        head4: okWarnings(newFindingResult),
       },
       partialFailure: {
-        head1: initialResult.partialFailure,
-        head2: unchangedResult.partialFailure,
-        head3: fixedResult.partialFailure,
-        head4: newFindingResult.partialFailure,
+        head1: okPartialFailure(initialResult),
+        head2: okPartialFailure(unchangedResult),
+        head3: okPartialFailure(fixedResult),
+        head4: okPartialFailure(newFindingResult),
       },
       invariants: {
         "head2-unchanged-no-mutation": fetch2.requests.filter((r) => r.method !== "GET").length === 0,
         "head3-fixed-no-mutation-logical": fetch3.requests.filter((r) => r.method !== "GET").length === 0,
         "head1-new-finding-single-post": fetch1.requests.filter((r) => r.method === "POST" && r.url.endsWith("/comments")).length === 1,
         "head4-new-finding-single-post": fetch4.requests.filter((r) => r.method === "POST" && r.url.endsWith("/comments")).length === 1,
-        "head2-bound-current-head": unchangedResult.boundToHeadSha === HEAD2,
-        "head3-bound-current-head": fixedResult.boundToHeadSha === HEAD3,
-        "head4-bound-current-head": newFindingResult.boundToHeadSha === HEAD4,
-        "head3-resolution-logical": fixedResult.transitions.find((t) => t.fingerprint === fpInitial)?.disposition === "resolved",
-        "head2-unchanged-disposition": unchangedResult.transitions.find((t) => t.fingerprint === fpInitial)?.disposition === "unchanged",
-        "head4-new-finding-posted": newFindingResult.transitions.find((t) => t.fingerprint === fpNew)?.disposition === "posted",
-        "head1-new-finding-posted": initialResult.transitions.find((t) => t.fingerprint === fpInitial)?.disposition === "posted",
+        "head2-bound-current-head": okBound(unchangedResult) === HEAD2,
+        "head3-bound-current-head": okBound(fixedResult) === HEAD3,
+        "head4-bound-current-head": okBound(newFindingResult) === HEAD4,
+        "head3-resolution-logical": okTransitions(fixedResult).find((t) => t.fingerprint === fpInitial)?.disposition === "resolved",
+        "head2-unchanged-disposition": okTransitions(unchangedResult).find((t) => t.fingerprint === fpInitial)?.disposition === "unchanged",
+        "head4-new-finding-posted": okTransitions(newFindingResult).find((t) => t.fingerprint === fpNew)?.disposition === "posted",
+        "head1-new-finding-posted": okTransitions(initialResult).find((t) => t.fingerprint === fpInitial)?.disposition === "posted",
       },
     });
   });
@@ -410,39 +436,39 @@ describe("Task 10 evidence — failure scenario", () => {
       attemptId,
       scenarios: {
         resolve403: {
-          warnings: resultA.warnings,
-          partialFailure: resultA.partialFailure,
-          transitionsCount: resultA.transitions.length,
+          warnings: okWarnings(resultA),
+          partialFailure: okPartialFailure(resultA),
+          transitionsCount: okTransitions(resultA).length,
           mutations: fetchA.requests.filter((r) => r.method !== "GET").length,
-          preserveState: fetchA.requests.filter((r) => r.method !== "GET").length === 0 && resultA.transitions.length === 0,
+          preserveState: fetchA.requests.filter((r) => r.method !== "GET").length === 0 && okTransitions(resultA).length === 0,
         },
         staleDuplicatesRepair: {
           requests: fetchB.requests.map((r) => `${r.method} ${r.url}`),
           mutations: fetchB.requests.filter((r) => r.method !== "GET").length,
-          transitions: resultB.transitions,
-          duplicatesPreserved: resultB.transitions.length === 2,
+          transitions: okTransitions(resultB),
+          duplicatesPreserved: okTransitions(resultB).length === 2,
         },
         staleCloseReopen: {
           requests: fetchC.requests.map((r) => `${r.method} ${r.url}`),
           mutations: fetchC.requests.filter((r) => r.method !== "GET").length,
-          postedThreadIds: resultC.postedThreadIds,
-          transition: resultC.transitions.find((t) => t.fingerprint === fp),
+          postedThreadIds: okPosted(resultC),
+          transition: okTransitions(resultC).find((t) => t.fingerprint === fp),
         },
         humanThreadUntouched: {
           humanThreadTouched: fetchD.requests.filter((r) => /\/comments\/(7002)/u.test(r.url)).length > 0,
-          botThreadUnchanged: resultD.transitions.find((t) => t.priorThreadId === 7001)?.disposition === "unchanged",
+          botThreadUnchanged: okTransitions(resultD).find((t) => t.priorThreadId === 7001)?.disposition === "unchanged",
         },
       },
       invariants: {
         "A-403-preserve-state": fetchA.requests.filter((r) => r.method !== "GET").length === 0,
-        "A-403-no-resolutions": resultA.transitions.length === 0,
-        "A-403-warning-recorded": resultA.warnings.some((w) => /403|forbidden/i.test(w)),
+        "A-403-no-resolutions": okTransitions(resultA).length === 0,
+        "A-403-warning-recorded": okWarnings(resultA).some((w) => /403|forbidden/i.test(w)),
         "B-stale-duplicates-no-mutation": fetchB.requests.filter((r) => r.method !== "GET").length === 0,
-        "B-stale-duplicates-both-audited": resultB.transitions.length === 2,
+        "B-stale-duplicates-both-audited": okTransitions(resultB).length === 2,
         "C-stale-close-reopens": fetchC.requests.filter((r) => r.method === "POST" && r.url.endsWith("/comments")).length === 1,
-        "C-stale-close-fresh-canonical": resultC.transitions.find((t) => t.fingerprint === fp)?.disposition !== undefined,
+        "C-stale-close-fresh-canonical": okTransitions(resultC).find((t) => t.fingerprint === fp)?.disposition !== undefined,
         "D-human-thread-untouched": fetchD.requests.filter((r) => /\/comments\/(7002)/u.test(r.url)).length === 0,
-        "D-bot-thread-unchanged": resultD.transitions.find((t) => t.priorThreadId === 7001)?.disposition === "unchanged",
+        "D-bot-thread-unchanged": okTransitions(resultD).find((t) => t.priorThreadId === 7001)?.disposition === "unchanged",
       },
     });
   });

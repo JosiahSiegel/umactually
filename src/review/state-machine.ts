@@ -405,9 +405,16 @@ export function decodeStateEnvelope(envelope: string): ReviewState {
 
   const payloadB64url = envelope.slice(prefixStr.length, envelope.length - suffixStr.length);
   const compressed = Buffer.from(payloadB64url, "base64url");
-  const inflated = inflateSync(compressed);
-  const jsonStr = inflated.toString("utf8");
-  const parsed = JSON.parse(jsonStr) as ReviewState;
+  let parsed: ReviewState;
+  try {
+    const inflated = inflateSync(compressed);
+    parsed = JSON.parse(inflated.toString("utf8")) as ReviewState;
+  } catch (decodeError) {
+    throw new Error(
+      `state-codec: failed to decode envelope payload (expected schemaVersion ${STATE_SCHEMA_VERSION}).`,
+      { cause: decodeError },
+    );
+  }
 
   // Validate schema version.
   if (parsed.schemaVersion !== STATE_SCHEMA_VERSION) {

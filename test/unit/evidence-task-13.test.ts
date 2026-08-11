@@ -358,10 +358,10 @@ describe("Task 13 evidence — happy path (GHES review)", () => {
         graphQLOperationUrl: `${GHE_HOST}/api/graphql`,
       },
       reconcile: {
-        transitions: reconcileResult.transitions,
-        decision: reconcileResult.decision,
-        boundToHeadSha: reconcileResult.boundToHeadSha,
-        partialFailure: reconcileResult.partialFailure,
+        transitions: reconcileResult.kind === "ok" ? reconcileResult.transitions : [],
+        decision: reconcileResult.kind === "ok" ? reconcileResult.decision : "collision",
+        boundToHeadSha: reconcileResult.kind === "ok" ? reconcileResult.boundToHeadSha : "",
+        partialFailure: reconcileResult.kind === "ok" ? reconcileResult.partialFailure : false,
       },
       live: {
         posted: liveResult.posted,

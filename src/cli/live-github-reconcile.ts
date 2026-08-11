@@ -40,6 +40,7 @@ import { writeBrandedAnnotation } from "../util/log.js";
 import {
   assertNoFingerprintCollision,
   computeDurableFindingIdentity,
+  FingerprintCollisionError,
   type CanonicalFindingInput,
 } from "../review/fingerprint.js";
 import type { ContextProvenanceResult } from "./context-provenance.js";
@@ -116,17 +117,46 @@ export type ReconcileInput = {
   readonly decision?: ReconcileDecision;
 };
 
-export type ReconcileResult = {
-  readonly decision: ReconcileDecision;
-  readonly reason: string;
-  readonly transitions: readonly ReconcileTransition[];
-  readonly warnings: readonly string[];
-  readonly boundToHeadSha: string;
-  readonly partialFailure: boolean;
-  readonly resolutionMode: ResolutionMode;
-  readonly postedThreadIds: readonly number[];
-  readonly updatedThreadIds: readonly number[];
-};
+/**
+ * Discriminated-union return for `runGithubReconcile`. Three terminal
+ * branches:
+ *   - `{ kind: "ok" }` — normal completion with mutations recorded
+ *     in `transitions` / `postedThreadIds` / `updatedThreadIds`.
+ *   - `{ kind: "collision" }` — the durable-fingerprint guard refused
+ *     to post because the new finding set collides with prior findings;
+ *     `assertNoFingerprintCollision` throws `FingerprintCollisionError`
+ *     and we translate it into a typed result so the orchestrator
+ *     (downstream callers) can react with a `FINGERPRINT_COLLISION`
+ *     warning instead of seeing an uncaught exception escape the
+ *     reconcile boundary.
+ *   - `{ kind: "aborted" }` — the caller's `AbortSignal` was already
+ *     aborted before the first network I/O fired. Reconcile short-
+ *     circuits to preserve state; the reason field carries the abort
+ *     reason text when the caller supplied one.
+ */
+export type ReconcileResult =
+  | {
+    readonly kind: "ok";
+    readonly decision: ReconcileDecision;
+    readonly reason: string;
+    readonly transitions: readonly ReconcileTransition[];
+    readonly warnings: readonly string[];
+    readonly boundToHeadSha: string;
+    readonly partialFailure: boolean;
+    readonly resolutionMode: ResolutionMode;
+    readonly postedThreadIds: readonly number[];
+    readonly updatedThreadIds: readonly number[];
+    readonly signalAborted: boolean;
+  }
+  | {
+    readonly kind: "collision";
+    readonly fingerprint: string;
+    readonly collisionType: "within-review" | "against-persisted-state";
+  }
+  | {
+    readonly kind: "aborted";
+    readonly reason: string;
+  };
 
 type GithubReviewComment = {
   readonly id: number;
@@ -197,38 +227,60 @@ export async function runGithubReconcile(
   input: ReconcileInput,
   signal?: AbortSignal,
 ): Promise<ReconcileResult> {
+  const callerSignal = signal ?? input.signal ?? new AbortController().signal;
   const reconcileSignal = AbortSignal.any([
-    signal ?? input.signal ?? new AbortController().signal,
+    callerSignal,
     AbortSignal.timeout(60_000),
   ]);
-  assertNoFingerprintCollision(
-    input.newFindings.map((finding) => ({
-      identity: {
-        fingerprintVersion: 1,
-        fingerprintDigest: finding.fingerprint,
-        identityDigest: finding.identityDigest,
-        canonicalPath: finding.path,
-        anchorKind: "hunk",
-        canonicalAnchor: "",
-        normalizedCategory: finding.category ?? "",
-        normalizedRuleKey: finding.fingerprint,
-      },
-      body: finding.body,
-    })),
-    input.priorFindings.map((finding) => ({
-      identity: {
-        fingerprintVersion: 1,
-        fingerprintDigest: finding.fingerprint,
-        identityDigest: finding.identityDigest,
-        canonicalPath: finding.path,
-        anchorKind: "hunk",
-        canonicalAnchor: "",
-        normalizedCategory: "",
-        normalizedRuleKey: finding.fingerprint,
-      },
-      body: finding.fingerprint,
-    })),
-  );
+  if (callerSignal.aborted) {
+    const rawReason = callerSignal.reason;
+    const abortReason =
+      rawReason === undefined || rawReason === ""
+        ? "aborted"
+        : rawReason instanceof Error
+        ? rawReason.message
+        : String(rawReason);
+    return { kind: "aborted", reason: abortReason };
+  }
+  try {
+    assertNoFingerprintCollision(
+      input.newFindings.map((finding) => ({
+        identity: {
+          fingerprintVersion: 1,
+          fingerprintDigest: finding.fingerprint,
+          identityDigest: finding.identityDigest,
+          canonicalPath: finding.path,
+          anchorKind: "hunk",
+          canonicalAnchor: "",
+          normalizedCategory: finding.category ?? "",
+          normalizedRuleKey: finding.fingerprint,
+        },
+        body: finding.body,
+      })),
+      input.priorFindings.map((finding) => ({
+        identity: {
+          fingerprintVersion: 1,
+          fingerprintDigest: finding.fingerprint,
+          identityDigest: finding.identityDigest,
+          canonicalPath: finding.path,
+          anchorKind: "hunk",
+          canonicalAnchor: "",
+          normalizedCategory: "",
+          normalizedRuleKey: finding.fingerprint,
+        },
+        body: finding.fingerprint,
+      })),
+    );
+  } catch (error) {
+    if (error instanceof FingerprintCollisionError) {
+      return {
+        kind: "collision",
+        fingerprint: error.fingerprintDigest,
+        collisionType: error.collisionType,
+      };
+    }
+    throw error;
+  }
   const fetchInput: ReconcileInput = { ...input, signal: reconcileSignal };
   const warnings: string[] = [];
   const transitions: ReconcileTransition[] = [];
@@ -241,6 +293,7 @@ export async function runGithubReconcile(
     warnings.push(...priorComments.warnings);
     partialFailure = true;
     return {
+      kind: "ok",
       decision: input.decision ?? classifyDecision(input),
       reason: classifyDecisionReason(input, input.decision ?? classifyDecision(input)),
       transitions: [],
@@ -250,6 +303,7 @@ export async function runGithubReconcile(
       resolutionMode: input.resolutionMode,
       postedThreadIds,
       updatedThreadIds,
+      signalAborted: reconcileSignal.aborted,
     };
   }
 
@@ -319,6 +373,7 @@ export async function runGithubReconcile(
   }
 
   return {
+    kind: "ok",
     decision: input.decision ?? classifyDecision(input),
     reason: classifyDecisionReason(input, input.decision ?? classifyDecision(input)),
     transitions,
@@ -328,6 +383,7 @@ export async function runGithubReconcile(
     resolutionMode: input.resolutionMode,
     postedThreadIds,
     updatedThreadIds,
+    signalAborted: reconcileSignal.aborted,
   };
 }
 
@@ -903,6 +959,20 @@ export function fingerprintFromProviderComment(input: {
 }
 
 export function summarizeReconcileForLog(result: ReconcileResult): void {
+  if (result.kind === "collision") {
+    writeBrandedAnnotation(
+      "warning",
+      `FINGERPRINT_COLLISION: fingerprint ${result.fingerprint} (${result.collisionType}); reconcile aborted, no platform mutation, no state mutation.`,
+    );
+    return;
+  }
+  if (result.kind === "aborted") {
+    writeBrandedAnnotation(
+      "warning",
+      `reconcile aborted before any network I/O (reason: ${result.reason}); state preserved, no platform mutation.`,
+    );
+    return;
+  }
   if (result.partialFailure) {
     writeBrandedAnnotation(
       "warning",

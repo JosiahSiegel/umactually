@@ -5117,7 +5117,7 @@ function normalizeGithubApiBase(rawUrl) {
         parsed = new URL(trimmed);
     }
     catch (error) {
-        throw new GithubApiBaseError("GITHUB_API_URL_MALFORMED", `GITHUB_API_URL is not a parseable URL: '${rawUrl}'.`);
+        throw new GithubApiBaseError("GITHUB_API_URL_MALFORMED", `GITHUB_API_URL is not a parseable URL: '${rawUrl}'.`, { cause: error });
     }
     // WHATWG URL normalizes scheme and hostname to lowercase; `protocol`
     // ends with ":". For IPv6 literals, `hostname` keeps the brackets
@@ -5399,18 +5399,27 @@ function makeSafeFetch(fetchImpl, allowedMethods, timeoutMs) {
         // Belt-and-suspenders: the race frees the process even if the
         // underlying fetch impl ignores the abort signal — a real-world
         // hazard for stub fetchers and misbehaving runtimes.
-        const response = await Promise.race([
-            fetchImpl(input, {
-                ...init,
-                method,
-                signal: controller.signal,
-            }),
-            new Promise((_, reject) => {
-                controller.signal.addEventListener("abort", () => {
-                    reject(new Error(`full-mode fetch timed out after ${timeoutMs}ms (method=${method})`));
-                });
-            }),
-        ]);
+        let response;
+        try {
+            response = await Promise.race([
+                fetchImpl(input, {
+                    ...init,
+                    method,
+                    signal: controller.signal,
+                }),
+                new Promise((_, reject) => {
+                    controller.signal.addEventListener("abort", () => {
+                        reject(new Error(`full-mode fetch timed out after ${timeoutMs}ms (method=${method})`));
+                    });
+                }),
+            ]);
+        }
+        catch (error) {
+            if (error instanceof Error && error.message.startsWith("full-mode fetch timed out")) {
+                throw error;
+            }
+            throw new Error(`full-mode fetch rejected (method=${method}): ${error instanceof Error ? error.message : String(error)}`, { cause: error });
+        }
         clearTimeout(timer);
         return response;
     };

@@ -143,6 +143,7 @@ export function normalizeGithubApiBase(rawUrl: string): GithubApiBase {
     throw new GithubApiBaseError(
       "GITHUB_API_URL_MALFORMED",
       `GITHUB_API_URL is not a parseable URL: '${rawUrl}'.`,
+      { cause: error },
     );
   }
   // WHATWG URL normalizes scheme and hostname to lowercase; `protocol`

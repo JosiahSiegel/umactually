@@ -229,18 +229,29 @@ function makeSafeFetch(
     // Belt-and-suspenders: the race frees the process even if the
     // underlying fetch impl ignores the abort signal — a real-world
     // hazard for stub fetchers and misbehaving runtimes.
-    const response = await Promise.race([
-      fetchImpl(input, {
-        ...init,
-        method,
-        signal: controller.signal,
-      }),
-      new Promise<Response>((_, reject) => {
-        controller.signal.addEventListener("abort", () => {
-          reject(new Error(`full-mode fetch timed out after ${timeoutMs}ms (method=${method})`));
-        });
-      }),
-    ]);
+    let response: Response;
+    try {
+      response = await Promise.race([
+        fetchImpl(input, {
+          ...init,
+          method,
+          signal: controller.signal,
+        }),
+        new Promise<Response>((_, reject) => {
+          controller.signal.addEventListener("abort", () => {
+            reject(new Error(`full-mode fetch timed out after ${timeoutMs}ms (method=${method})`));
+          });
+        }),
+      ]);
+    } catch (error) {
+      if (error instanceof Error && error.message.startsWith("full-mode fetch timed out")) {
+        throw error;
+      }
+      throw new Error(
+        `full-mode fetch rejected (method=${method}): ${error instanceof Error ? error.message : String(error)}`,
+        { cause: error },
+      );
+    }
     clearTimeout(timer);
     return response;
   };
