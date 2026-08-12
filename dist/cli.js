@@ -685,56 +685,63 @@ async function collectReverseImporters(input, init, state) {
     ];
     const seenCallerFiles = new Set();
     for (const seed of callerSeeds) {
-        if (state.counters.filesParsed >= init.budgets.maxFilesParsed)
+        if (isBudgetOrWallTimeExhausted(init, state))
             break;
-        if (performance.now() - init.start > init.budgets.wallTimeMs)
-            break;
-        const entries = readdirSafe(init.cwdReal, seed);
-        if (entries === null)
-            continue;
-        for (const rel of entries) {
-            if (state.counters.filesParsed >= init.budgets.maxFilesParsed)
-                break;
-            if (!isTsLike(rel))
-                continue;
-            if (init.tsLikeChanged.includes(rel))
-                continue;
-            if (seenCallerFiles.has(rel))
-                continue;
-            seenCallerFiles.add(rel);
-            const readAttempt = readWithinCwd(init.cwdReal, rel, init.budgets.perFileBytes);
-            if (!readAttempt.ok) {
-                recordExclusion(state, rel, readAttempt.reason);
-                continue;
-            }
-            state.counters.filesParsed += 1;
-            const parsedCaller = await parseTsFile(rel, readAttempt.text);
-            if (!parsedCaller.ok)
-                continue;
-            const hits = parsedCaller.imports.filter((imp) => {
-                if (imp.module.length === 0)
-                    return false;
-                if (!imp.module.startsWith("."))
-                    return false;
-                const target = resolveSameProjectImport(input.cwd, rel, imp.module);
-                if (target === null)
-                    return false;
-                const bn = basenameOf(target).replace(/\.[jt]sx?$/u, "");
-                return changedBaseNames.has(bn);
-            });
-            if (hits.length === 0)
-                continue;
-            const symbols = [...new Set(hits.map((h) => h.name).filter((n) => n.length > 0))];
-            const header = `// caller: imports { ${symbols.join(", ") || "*"} } from "${rel}"`;
-            maybeAddCandidate(init, state, {
-                kind: "direct_caller_or_callee",
-                path: rel,
-                pathScope: rel,
-                text: `${header}\n${readAttempt.text}`,
-                trust: "base",
-            });
-        }
+        await scanCallerSeed(input, init, state, seed, changedBaseNames, seenCallerFiles);
     }
+}
+async function scanCallerSeed(input, init, state, seed, changedBaseNames, seenCallerFiles) {
+    const entries = readdirSafe(init.cwdReal, seed);
+    if (entries === null)
+        return;
+    for (const rel of entries) {
+        if (isBudgetOrWallTimeExhausted(init, state))
+            break;
+        if (!isTsLike(rel))
+            continue;
+        if (init.tsLikeChanged.includes(rel))
+            continue;
+        if (seenCallerFiles.has(rel))
+            continue;
+        seenCallerFiles.add(rel);
+        await tryImportCallerFile(input, init, state, rel, changedBaseNames);
+    }
+}
+async function tryImportCallerFile(input, init, state, rel, changedBaseNames) {
+    const readAttempt = readWithinCwd(init.cwdReal, rel, init.budgets.perFileBytes);
+    if (!readAttempt.ok) {
+        recordExclusion(state, rel, readAttempt.reason);
+        return;
+    }
+    state.counters.filesParsed += 1;
+    const parsedCaller = await parseTsFile(rel, readAttempt.text);
+    if (!parsedCaller.ok)
+        return;
+    const hits = filterChangedBaseImports(input, rel, parsedCaller.imports, changedBaseNames);
+    if (hits.length === 0)
+        return;
+    const symbols = [...new Set(hits.map((h) => h.name).filter((n) => n.length > 0))];
+    const header = `// caller: imports { ${symbols.join(", ") || "*"} } from "${rel}"`;
+    maybeAddCandidate(init, state, {
+        kind: "direct_caller_or_callee",
+        path: rel,
+        pathScope: rel,
+        text: `${header}\n${readAttempt.text}`,
+        trust: "base",
+    });
+}
+function filterChangedBaseImports(input, rel, imports, changedBaseNames) {
+    return imports.filter((imp) => {
+        if (imp.module.length === 0)
+            return false;
+        if (!imp.module.startsWith("."))
+            return false;
+        const target = resolveSameProjectImport(input.cwd, rel, imp.module);
+        if (target === null)
+            return false;
+        const bn = basenameOf(target).replace(/\.[jt]sx?$/u, "");
+        return changedBaseNames.has(bn);
+    });
 }
 function readdirSafe(cwdReal, seed) {
     const seedAbs = `${cwdReal}${seed.startsWith("/") ? "" : "/"}${seed}`;
@@ -4440,7 +4447,7 @@ function serializeReviewPolicy(policy) {
     return JSON.stringify(ordered, null, 2) + "\n";
 }
 function applyReviewPolicy(input) {
-    const { policy, policyPath, policyHash, flagValues, envValues, defaults } = input;
+    const { policy, policyPath, policyHash } = input;
     const version = policy?.schemaVersion ?? null;
     const FIELDS_TO_RESOLVE = [
         "effort",
@@ -4456,32 +4463,9 @@ function applyReviewPolicy(input) {
     const resolved = {};
     const provenance = {};
     for (const field of FIELDS_TO_RESOLVE) {
-        const flagValue = flagValues[field];
-        if (flagValue !== undefined) {
-            resolved[field] = flagValue;
-            provenance[field] = { source: "flag" };
-            continue;
-        }
-        const envValue = envValues[field];
-        if (envValue !== undefined) {
-            resolved[field] = envValue;
-            provenance[field] = { source: "env", envName: policyEnvName(field) };
-            continue;
-        }
-        if (policy !== null) {
-            const policyValue = policy[field];
-            if (policyValue !== undefined) {
-                resolved[field] = policyValue;
-                provenance[field] = {
-                    source: "reviewPolicy",
-                    path: policyPath,
-                    ...(policyHash !== null ? { hash: policyHash } : {}),
-                };
-                continue;
-            }
-        }
-        resolved[field] = defaults[field];
-        provenance[field] = { source: "default" };
+        const outcome = resolveOneField(field, input);
+        resolved[field] = outcome.value;
+        provenance[field] = outcome.provenance;
     }
     const result = {
         schemaVersion: REVIEW_POLICY_SCHEMA_VERSION,
@@ -4504,6 +4488,31 @@ function applyReviewPolicy(input) {
             version,
         },
     };
+}
+function resolveOneField(field, input) {
+    const { policy, policyPath, policyHash, flagValues, envValues, defaults } = input;
+    const flagValue = flagValues[field];
+    if (flagValue !== undefined) {
+        return { value: flagValue, provenance: { source: "flag" } };
+    }
+    const envValue = envValues[field];
+    if (envValue !== undefined) {
+        return { value: envValue, provenance: { source: "env", envName: policyEnvName(field) } };
+    }
+    if (policy !== null) {
+        const policyValue = policy[field];
+        if (policyValue !== undefined) {
+            return {
+                value: policyValue,
+                provenance: {
+                    source: "reviewPolicy",
+                    path: policyPath,
+                    ...(policyHash !== null ? { hash: policyHash } : {}),
+                },
+            };
+        }
+    }
+    return { value: defaults[field], provenance: { source: "default" } };
 }
 function policyEnvName(field) {
     return `UMACTUALLY_REVIEW_${field.replace(/[A-Z]/g, (c) => `_${c}`).toUpperCase()}`;
@@ -18490,54 +18499,16 @@ function validateSuggestionsForComments(input) {
     let validatedCount = 0;
     let remediationInstructionsBuilt = 0;
     for (const comment of input.comments) {
-        const rawSuggestion = comment.rawSuggestion;
-        if (rawSuggestion === undefined) {
-            enriched.push(comment);
-            continue;
-        }
-        const originalLineText = readDiffLine(input.diffText, { path: comment.path, line: comment.line });
-        const result = validateSuggestion({
-            rawSuggestion,
-            path: comment.path,
-            line: comment.line,
-            diffPositions: input.positions,
-            originalLineText,
-        });
+        const result = validateOneCommentSuggestion(comment, input.diffText, input.positions);
         if (result.rejection !== undefined) {
-            rejections.push({
-                path: comment.path,
-                line: comment.line,
-                kind: result.rejection.kind,
-                message: result.rejection.message,
-            });
-            enriched.push(comment);
-            continue;
+            rejections.push(result.rejection);
         }
-        // Build remediation instruction if the provider attached a raw
-        // remediation. The remediation MUST succeed (otherwise the finding
-        // gets a validated suggestion WITHOUT an artifact-side remediation,
-        // which is OK — the suggestion is the primary signal).
-        const rawRemediation = comment.rawRemediation;
-        let remediation;
-        if (rawRemediation !== undefined) {
-            const built = buildRemediationInstruction(rawRemediation);
-            if (built.ok) {
-                remediation = built.instruction;
-                remediationInstructionsBuilt += 1;
-            }
-            else {
-                remediationRejections.push({ kind: built.error.kind, message: built.error.message });
-            }
+        if (result.remediationRejection !== undefined) {
+            remediationRejections.push(result.remediationRejection);
         }
-        validatedCount += 1;
-        const enrichedComment = result.validated !== undefined
-            ? {
-                ...comment,
-                validatedSuggestion: result.validated,
-                ...(remediation !== undefined ? { remediationInstruction: remediation } : {}),
-            }
-            : comment;
-        enriched.push(enrichedComment);
+        validatedCount += result.validatedDelta;
+        remediationInstructionsBuilt += result.remediationDelta;
+        enriched.push(result.comment);
     }
     return {
         comments: enriched,
@@ -18549,6 +18520,59 @@ function validateSuggestionsForComments(input) {
             remediationRejections,
         },
     };
+}
+function validateOneCommentSuggestion(comment, diffText, positions) {
+    const rawSuggestion = comment.rawSuggestion;
+    if (rawSuggestion === undefined) {
+        return { comment, rejection: undefined, remediationRejection: undefined, validatedDelta: 0, remediationDelta: 0 };
+    }
+    const originalLineText = readDiffLine(diffText, { path: comment.path, line: comment.line });
+    const result = validateSuggestion({
+        rawSuggestion,
+        path: comment.path,
+        line: comment.line,
+        diffPositions: positions,
+        originalLineText,
+    });
+    if (result.rejection !== undefined) {
+        return {
+            comment,
+            rejection: {
+                path: comment.path,
+                line: comment.line,
+                kind: result.rejection.kind,
+                message: result.rejection.message,
+            },
+            remediationRejection: undefined,
+            validatedDelta: 0,
+            remediationDelta: 0,
+        };
+    }
+    const built = tryBuildRemediation(comment.rawRemediation);
+    const enrichedComment = result.validated !== undefined
+        ? {
+            ...comment,
+            validatedSuggestion: result.validated,
+            ...(built.instruction !== undefined ? { remediationInstruction: built.instruction } : {}),
+        }
+        : comment;
+    return {
+        comment: enrichedComment,
+        rejection: undefined,
+        remediationRejection: built.rejection,
+        validatedDelta: 1,
+        remediationDelta: built.delta,
+    };
+}
+function tryBuildRemediation(rawRemediation) {
+    if (rawRemediation === undefined) {
+        return { instruction: undefined, rejection: undefined, delta: 0 };
+    }
+    const built = buildRemediationInstruction(rawRemediation);
+    if (built.ok) {
+        return { instruction: built.instruction, rejection: undefined, delta: 1 };
+    }
+    return { instruction: undefined, rejection: { kind: built.error.kind, message: built.error.message }, delta: 0 };
 }
 /**
  * Map a review verdict to a GitHub review-submission event. Delegates to

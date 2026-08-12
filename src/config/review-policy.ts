@@ -718,7 +718,7 @@ export type ApplyReviewPolicyInput = {
 };
 
 export function applyReviewPolicy(input: ApplyReviewPolicyInput): SchemaResolvedPolicy {
-  const { policy, policyPath, policyHash, flagValues, envValues, defaults } = input;
+  const { policy, policyPath, policyHash } = input;
   const version = policy?.schemaVersion ?? null;
 
   const FIELDS_TO_RESOLVE: readonly ReviewPolicyField[] = [
@@ -737,35 +737,9 @@ export function applyReviewPolicy(input: ApplyReviewPolicyInput): SchemaResolved
   const provenance: Record<string, PolicyProvenance> = {};
 
   for (const field of FIELDS_TO_RESOLVE) {
-    const flagValue = flagValues[field];
-    if (flagValue !== undefined) {
-      resolved[field] = flagValue;
-      provenance[field] = { source: "flag" };
-      continue;
-    }
-
-    const envValue = envValues[field];
-    if (envValue !== undefined) {
-      resolved[field] = envValue;
-      provenance[field] = { source: "env", envName: policyEnvName(field) };
-      continue;
-    }
-
-    if (policy !== null) {
-      const policyValue = policy[field];
-      if (policyValue !== undefined) {
-        resolved[field] = policyValue;
-        provenance[field] = {
-          source: "reviewPolicy",
-          path: policyPath,
-          ...(policyHash !== null ? { hash: policyHash } : {}),
-        };
-        continue;
-      }
-    }
-
-    resolved[field] = defaults[field];
-    provenance[field] = { source: "default" };
+    const outcome = resolveOneField(field, input);
+    resolved[field] = outcome.value;
+    provenance[field] = outcome.provenance;
   }
 
   const result: ReviewPolicy = {
@@ -790,6 +764,44 @@ export function applyReviewPolicy(input: ApplyReviewPolicyInput): SchemaResolved
       version,
     },
   };
+}
+
+type FieldResolution = {
+  readonly value: unknown;
+  readonly provenance: PolicyProvenance;
+};
+
+function resolveOneField(
+  field: ReviewPolicyField,
+  input: ApplyReviewPolicyInput,
+): FieldResolution {
+  const { policy, policyPath, policyHash, flagValues, envValues, defaults } = input;
+
+  const flagValue = flagValues[field];
+  if (flagValue !== undefined) {
+    return { value: flagValue, provenance: { source: "flag" } };
+  }
+
+  const envValue = envValues[field];
+  if (envValue !== undefined) {
+    return { value: envValue, provenance: { source: "env", envName: policyEnvName(field) } };
+  }
+
+  if (policy !== null) {
+    const policyValue = policy[field];
+    if (policyValue !== undefined) {
+      return {
+        value: policyValue,
+        provenance: {
+          source: "reviewPolicy",
+          path: policyPath,
+          ...(policyHash !== null ? { hash: policyHash } : {}),
+        },
+      };
+    }
+  }
+
+  return { value: defaults[field], provenance: { source: "default" } };
 }
 
 function policyEnvName(field: ReviewPolicyField): string {

@@ -1030,53 +1030,16 @@ function validateSuggestionsForComments(input: {
   let remediationInstructionsBuilt = 0;
 
   for (const comment of input.comments) {
-    const rawSuggestion = comment.rawSuggestion;
-    if (rawSuggestion === undefined) {
-      enriched.push(comment);
-      continue;
-    }
-    const originalLineText = readDiffLine(input.diffText, { path: comment.path, line: comment.line });
-    const result = validateSuggestion({
-      rawSuggestion,
-      path: comment.path,
-      line: comment.line,
-      diffPositions: input.positions,
-      originalLineText,
-    });
+    const result = validateOneCommentSuggestion(comment, input.diffText, input.positions);
     if (result.rejection !== undefined) {
-      rejections.push({
-        path: comment.path,
-        line: comment.line,
-        kind: result.rejection.kind,
-        message: result.rejection.message,
-      });
-      enriched.push(comment);
-      continue;
+      rejections.push(result.rejection);
     }
-    // Build remediation instruction if the provider attached a raw
-    // remediation. The remediation MUST succeed (otherwise the finding
-    // gets a validated suggestion WITHOUT an artifact-side remediation,
-    // which is OK — the suggestion is the primary signal).
-    const rawRemediation = comment.rawRemediation;
-    let remediation: RemediationInstruction | undefined;
-    if (rawRemediation !== undefined) {
-      const built = buildRemediationInstruction(rawRemediation);
-      if (built.ok) {
-        remediation = built.instruction;
-        remediationInstructionsBuilt += 1;
-      } else {
-        remediationRejections.push({ kind: built.error.kind, message: built.error.message });
-      }
+    if (result.remediationRejection !== undefined) {
+      remediationRejections.push(result.remediationRejection);
     }
-    validatedCount += 1;
-    const enrichedComment: LiveReviewComment = result.validated !== undefined
-      ? {
-        ...comment,
-        validatedSuggestion: result.validated,
-        ...(remediation !== undefined ? { remediationInstruction: remediation } : {}),
-      }
-      : comment;
-    enriched.push(enrichedComment);
+    validatedCount += result.validatedDelta;
+    remediationInstructionsBuilt += result.remediationDelta;
+    enriched.push(result.comment);
   }
 
   return {
@@ -1089,6 +1052,75 @@ function validateSuggestionsForComments(input: {
       remediationRejections,
     },
   };
+}
+
+type CommentValidationResult = {
+  readonly comment: LiveReviewComment;
+  readonly rejection: { readonly path: string; readonly line: number; readonly kind: SuggestionRejection["kind"]; readonly message: string } | undefined;
+  readonly remediationRejection: { readonly kind: string; readonly message: string } | undefined;
+  readonly validatedDelta: 0 | 1;
+  readonly remediationDelta: 0 | 1;
+};
+
+function validateOneCommentSuggestion(
+  comment: LiveReviewComment,
+  diffText: string,
+  positions: ReturnType<typeof parseDiffPositions>,
+): CommentValidationResult {
+  const rawSuggestion = comment.rawSuggestion;
+  if (rawSuggestion === undefined) {
+    return { comment, rejection: undefined, remediationRejection: undefined, validatedDelta: 0, remediationDelta: 0 };
+  }
+  const originalLineText = readDiffLine(diffText, { path: comment.path, line: comment.line });
+  const result = validateSuggestion({
+    rawSuggestion,
+    path: comment.path,
+    line: comment.line,
+    diffPositions: positions,
+    originalLineText,
+  });
+  if (result.rejection !== undefined) {
+    return {
+      comment,
+      rejection: {
+        path: comment.path,
+        line: comment.line,
+        kind: result.rejection.kind,
+        message: result.rejection.message,
+      },
+      remediationRejection: undefined,
+      validatedDelta: 0,
+      remediationDelta: 0,
+    };
+  }
+  const built = tryBuildRemediation(comment.rawRemediation);
+  const enrichedComment: LiveReviewComment = result.validated !== undefined
+    ? {
+      ...comment,
+      validatedSuggestion: result.validated,
+      ...(built.instruction !== undefined ? { remediationInstruction: built.instruction } : {}),
+    }
+    : comment;
+  return {
+    comment: enrichedComment,
+    rejection: undefined,
+    remediationRejection: built.rejection,
+    validatedDelta: 1,
+    remediationDelta: built.delta,
+  };
+}
+
+function tryBuildRemediation(
+  rawRemediation: LiveReviewComment["rawRemediation"],
+): { readonly instruction: RemediationInstruction | undefined; readonly rejection: { readonly kind: string; readonly message: string } | undefined; readonly delta: 0 | 1 } {
+  if (rawRemediation === undefined) {
+    return { instruction: undefined, rejection: undefined, delta: 0 };
+  }
+  const built = buildRemediationInstruction(rawRemediation);
+  if (built.ok) {
+    return { instruction: built.instruction, rejection: undefined, delta: 1 };
+  }
+  return { instruction: undefined, rejection: { kind: built.error.kind, message: built.error.message }, delta: 0 };
 }
 
 /**

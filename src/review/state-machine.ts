@@ -342,7 +342,7 @@ function sortKeysDeep(value: unknown): unknown {
   if (typeof value !== "object") return value;
   if (Array.isArray(value)) return value.map(sortKeysDeep);
   const obj = value as Record<string, unknown>;
-  const sortedKeys = Object.keys(obj).sort();
+  const sortedKeys = Object.keys(obj).sort((a, b) => a.localeCompare(b));
   const result: Record<string, unknown> = {};
   for (const key of sortedKeys) {
     result[key] = sortKeysDeep(obj[key]);

@@ -838,44 +838,73 @@ async function collectReverseImporters(
   ];
   const seenCallerFiles = new Set<string>();
   for (const seed of callerSeeds) {
-    if (state.counters.filesParsed >= init.budgets.maxFilesParsed) break;
-    if (performance.now() - init.start > init.budgets.wallTimeMs) break;
-    const entries = readdirSafe(init.cwdReal, seed);
-    if (entries === null) continue;
-    for (const rel of entries) {
-      if (state.counters.filesParsed >= init.budgets.maxFilesParsed) break;
-      if (!isTsLike(rel)) continue;
-      if (init.tsLikeChanged.includes(rel)) continue;
-      if (seenCallerFiles.has(rel)) continue;
-      seenCallerFiles.add(rel);
-      const readAttempt = readWithinCwd(init.cwdReal, rel, init.budgets.perFileBytes);
-      if (!readAttempt.ok) {
-        recordExclusion(state, rel, readAttempt.reason);
-        continue;
-      }
-      state.counters.filesParsed += 1;
-      const parsedCaller = await parseTsFile(rel, readAttempt.text);
-      if (!parsedCaller.ok) continue;
-      const hits = parsedCaller.imports.filter((imp) => {
-        if (imp.module.length === 0) return false;
-        if (!imp.module.startsWith(".")) return false;
-        const target = resolveSameProjectImport(input.cwd, rel, imp.module);
-        if (target === null) return false;
-        const bn = basenameOf(target).replace(/\.[jt]sx?$/u, "");
-        return changedBaseNames.has(bn);
-      });
-      if (hits.length === 0) continue;
-      const symbols = [...new Set(hits.map((h) => h.name).filter((n) => n.length > 0))];
-      const header = `// caller: imports { ${symbols.join(", ") || "*"} } from "${rel}"`;
-      maybeAddCandidate(init, state, {
-        kind: "direct_caller_or_callee",
-        path: rel,
-        pathScope: rel,
-        text: `${header}\n${readAttempt.text}`,
-        trust: "base",
-      });
-    }
+    if (isBudgetOrWallTimeExhausted(init, state)) break;
+    await scanCallerSeed(input, init, state, seed, changedBaseNames, seenCallerFiles);
   }
+}
+
+async function scanCallerSeed(
+  input: ContextProvenanceInput,
+  init: CollectInit,
+  state: CollectState,
+  seed: string,
+  changedBaseNames: Set<string>,
+  seenCallerFiles: Set<string>,
+): Promise<void> {
+  const entries = readdirSafe(init.cwdReal, seed);
+  if (entries === null) return;
+  for (const rel of entries) {
+    if (isBudgetOrWallTimeExhausted(init, state)) break;
+    if (!isTsLike(rel)) continue;
+    if (init.tsLikeChanged.includes(rel)) continue;
+    if (seenCallerFiles.has(rel)) continue;
+    seenCallerFiles.add(rel);
+    await tryImportCallerFile(input, init, state, rel, changedBaseNames);
+  }
+}
+
+async function tryImportCallerFile(
+  input: ContextProvenanceInput,
+  init: CollectInit,
+  state: CollectState,
+  rel: string,
+  changedBaseNames: Set<string>,
+): Promise<void> {
+  const readAttempt = readWithinCwd(init.cwdReal, rel, init.budgets.perFileBytes);
+  if (!readAttempt.ok) {
+    recordExclusion(state, rel, readAttempt.reason);
+    return;
+  }
+  state.counters.filesParsed += 1;
+  const parsedCaller = await parseTsFile(rel, readAttempt.text);
+  if (!parsedCaller.ok) return;
+  const hits = filterChangedBaseImports(input, rel, parsedCaller.imports, changedBaseNames);
+  if (hits.length === 0) return;
+  const symbols = [...new Set(hits.map((h) => h.name).filter((n) => n.length > 0))];
+  const header = `// caller: imports { ${symbols.join(", ") || "*"} } from "${rel}"`;
+  maybeAddCandidate(init, state, {
+    kind: "direct_caller_or_callee",
+    path: rel,
+    pathScope: rel,
+    text: `${header}\n${readAttempt.text}`,
+    trust: "base",
+  });
+}
+
+function filterChangedBaseImports(
+  input: ContextProvenanceInput,
+  rel: string,
+  imports: readonly { readonly module: string; readonly name: string }[],
+  changedBaseNames: Set<string>,
+): readonly { readonly module: string; readonly name: string }[] {
+  return imports.filter((imp) => {
+    if (imp.module.length === 0) return false;
+    if (!imp.module.startsWith(".")) return false;
+    const target = resolveSameProjectImport(input.cwd, rel, imp.module);
+    if (target === null) return false;
+    const bn = basenameOf(target).replace(/\.[jt]sx?$/u, "");
+    return changedBaseNames.has(bn);
+  });
 }
 
 function readdirSafe(cwdReal: string, seed: string): readonly string[] | null {

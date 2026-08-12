@@ -580,238 +580,270 @@ async function applyAction(
   action: ThreadAction,
 ): Promise<ReconcileOutcome> {
   switch (action.kind) {
-    case "create-new": {
-      try {
-        const result = await postAzureInlineThread({
-          context: ctx.context,
-          fetchImpl: ctx.fetchImpl,
-           ...(ctx.signal === undefined ? {} : { signal: ctx.signal }),
-          comment: action.comment,
-          currentRunId: ctx.currentRunId,
-          currentAttemptId: ctx.currentAttemptId,
-          fingerprint: action.fingerprint,
-          ...(ctx.secrets !== undefined ? { secrets: ctx.secrets } : {}),
-          ...(action.parentThreadId !== undefined ? { parentThreadId: action.parentThreadId } : {}),
-        });
-        if (result === undefined) {
-          return {
-            kind: "patch-failed",
-            threadId: 0,
-            fingerprint: action.fingerprint,
-            retryable: true,
-            error: "POST /threads returned no id",
-          };
-        }
-        return {
-          kind: "created",
-          threadId: result.threadId,
-          commentId: result.commentId,
-          fingerprint: action.fingerprint,
-        };
-      } catch (error) {
-        const message = formatError(error);
-        writeBrandedAnnotation("warning", `Azure reconcile create failed (${message}); retryable.`);
-        return {
-          kind: "patch-failed",
-          threadId: 0,
-          fingerprint: action.fingerprint,
-          retryable: true,
-          error: message,
-        };
-      }
-    }
-
-    case "patch-body": {
-      try {
-        const content = buildAzureInlineBody({
-          comment: action.comment,
-          secrets: getSecrets(ctx.context, ctx.secrets),
-          fingerprint: action.fingerprint,
-          identityDigest: action.comment.durableIdentity?.identityDigest ?? "",
-          runId: ctx.currentRunId,
-          attemptId: ctx.currentAttemptId,
-        });
-        const url = `${buildPrBaseUrl(ctx.context)}/threads/${action.threadId}/comments/${action.commentId}?api-version=${AZURE_API_VERSION}`;
-        const headers = ctx.context.kind === "azure-context" ? azureHeaders(ctx.context.context.token) : { "content-type": "application/json" };
-        const response = await ctx.fetchImpl(url, {
-          method: "PATCH",
-          headers,
-          body: JSON.stringify({ content }),
-        });
-        if (!response.ok) {
-          const retryable = response.status === 409 || response.status === 403 || response.status >= 500;
-          const message = `HTTP ${response.status}`;
-          writeBrandedAnnotation(
-            "warning",
-            `Azure reconcile PATCH thread ${action.threadId} comment ${action.commentId} failed (${message}); retryable=${retryable}.`,
-          );
-          return {
-            kind: "patch-failed",
-            threadId: action.threadId,
-            fingerprint: action.fingerprint,
-            retryable,
-            error: message,
-          };
-        }
-        return { kind: "patched", threadId: action.threadId, fingerprint: action.fingerprint };
-      } catch (error) {
-        const message = formatError(error);
-        writeBrandedAnnotation(
-          "warning",
-          `Azure reconcile PATCH thread ${action.threadId} comment ${action.commentId} threw (${message}); retryable.`,
-        );
-        return {
-          kind: "patch-failed",
-          threadId: action.threadId,
-          fingerprint: action.fingerprint,
-          retryable: true,
-          error: message,
-        };
-      }
-    }
-
-    case "native-close": {
-      try {
-        const url = `${buildPrBaseUrl(ctx.context)}/threads/${action.threadId}?api-version=${AZURE_API_VERSION}`;
-        const headers = ctx.context.kind === "azure-context" ? azureHeaders(ctx.context.context.token) : { "content-type": "application/json" };
-        const response = await ctx.fetchImpl(url, {
-          method: "PATCH",
-          headers,
-          body: JSON.stringify({ status: "closed" }),
-        });
-        if (!response.ok) {
-          const retryable = response.status === 409 || response.status === 403 || response.status >= 500;
-          const message = `HTTP ${response.status}`;
-          writeBrandedAnnotation(
-            "warning",
-            `Azure reconcile close thread ${action.threadId} failed (${message}); retryable=${retryable}.`,
-          );
-          return {
-            kind: "native-close-failed",
-            threadId: action.threadId,
-            fingerprint: action.fingerprint,
-            retryable,
-            error: message,
-          };
-        }
-        return { kind: "native-closed", threadId: action.threadId, fingerprint: action.fingerprint };
-      } catch (error) {
-        const message = formatError(error);
-        writeBrandedAnnotation(
-          "warning",
-          `Azure reconcile close thread ${action.threadId} threw (${message}); retryable.`,
-        );
-        return {
-          kind: "native-close-failed",
-          threadId: action.threadId,
-          fingerprint: action.fingerprint,
-          retryable: true,
-          error: message,
-        };
-      }
-    }
-
-    case "native-reopen": {
-      try {
-        const url = `${buildPrBaseUrl(ctx.context)}/threads/${action.threadId}?api-version=${AZURE_API_VERSION}`;
-        const headers = ctx.context.kind === "azure-context" ? azureHeaders(ctx.context.context.token) : { "content-type": "application/json" };
-        const response = await ctx.fetchImpl(url, {
-          method: "PATCH",
-          headers,
-          body: JSON.stringify({ status: "active" }),
-        });
-        if (!response.ok) {
-          const retryable = response.status === 409 || response.status === 403 || response.status >= 500;
-          const message = `HTTP ${response.status}`;
-          writeBrandedAnnotation(
-            "warning",
-            `Azure reconcile reopen thread ${action.threadId} failed (${message}); retryable=${retryable}.`,
-          );
-          return {
-            kind: "patch-failed",
-            threadId: action.threadId,
-            fingerprint: action.fingerprint,
-            retryable,
-            error: message,
-          };
-        }
-        return { kind: "reopened", threadId: action.threadId, fingerprint: action.fingerprint };
-      } catch (error) {
-        const message = formatError(error);
-        writeBrandedAnnotation(
-          "warning",
-          `Azure reconcile reopen thread ${action.threadId} threw (${message}); retryable.`,
-        );
-        return {
-          kind: "patch-failed",
-          threadId: action.threadId,
-          fingerprint: action.fingerprint,
-          retryable: true,
-          error: message,
-        };
-      }
-    }
-
-    case "mark-superseded": {
-      try {
-        const url = `${buildPrBaseUrl(ctx.context)}/threads/${action.threadId}?api-version=${AZURE_API_VERSION}`;
-        const headers = ctx.context.kind === "azure-context" ? azureHeaders(ctx.context.context.token) : { "content-type": "application/json" };
-        const response = await ctx.fetchImpl(url, {
-          method: "PATCH",
-          headers,
-          body: JSON.stringify({ status: "closed" }),
-        });
-        if (!response.ok) {
-          const retryable = response.status === 409 || response.status === 403 || response.status >= 500;
-          const message = `HTTP ${response.status}`;
-          writeBrandedAnnotation(
-            "warning",
-            `Azure reconcile supersede thread ${action.threadId} failed (${message}); retryable=${retryable}.`,
-          );
-          return {
-            kind: "patch-failed",
-            threadId: action.threadId,
-            fingerprint: action.fingerprint,
-            retryable,
-            error: message,
-          };
-        }
-        return {
-          kind: "marked-superseded",
-          threadId: action.threadId,
-          fingerprint: action.fingerprint,
-        };
-      } catch (error) {
-        const message = formatError(error);
-        writeBrandedAnnotation(
-          "warning",
-          `Azure reconcile supersede thread ${action.threadId} threw (${message}); retryable.`,
-        );
-        return {
-          kind: "patch-failed",
-          threadId: action.threadId,
-          fingerprint: action.fingerprint,
-          retryable: true,
-          error: message,
-        };
-      }
-    }
-
+    case "create-new":
+      return applyCreateNewAction(ctx, action);
+    case "patch-body":
+      return applyPatchBodyAction(ctx, action);
+    case "native-close":
+      return applyNativeCloseAction(ctx, action);
+    case "native-reopen":
+      return applyNativeReopenAction(ctx, action);
+    case "mark-superseded":
+      return applyMarkSupersededAction(ctx, action);
     case "skip-unchanged":
       return { kind: "skipped", threadId: action.threadId, fingerprint: action.fingerprint };
-
     case "logical-resolve":
       return {
         kind: "logical-resolved",
         threadId: action.threadId,
         fingerprint: action.fingerprint,
       };
-
     case "preserve-human":
       return { kind: "preserved", threadId: action.threadId };
-
     case "preserve-other-run":
       return { kind: "preserved-other-run", threadId: action.threadId };
+  }
+}
+
+type ApplyActionContext = {
+  readonly context: ReconcileContext;
+  readonly fetchImpl: FetchImpl;
+  readonly currentRunId: string;
+  readonly currentAttemptId: string;
+  readonly currentHeadSha: string;
+  readonly secrets?: readonly string[];
+  readonly signal?: AbortSignal;
+};
+
+async function applyCreateNewAction(
+  ctx: ApplyActionContext,
+  action: Extract<ThreadAction, { readonly kind: "create-new" }>,
+): Promise<ReconcileOutcome> {
+  try {
+    const result = await postAzureInlineThread({
+      context: ctx.context,
+      fetchImpl: ctx.fetchImpl,
+      ...(ctx.signal === undefined ? {} : { signal: ctx.signal }),
+      comment: action.comment,
+      currentRunId: ctx.currentRunId,
+      currentAttemptId: ctx.currentAttemptId,
+      fingerprint: action.fingerprint,
+      ...(ctx.secrets !== undefined ? { secrets: ctx.secrets } : {}),
+      ...(action.parentThreadId !== undefined ? { parentThreadId: action.parentThreadId } : {}),
+    });
+    if (result === undefined) {
+      return {
+        kind: "patch-failed",
+        threadId: 0,
+        fingerprint: action.fingerprint,
+        retryable: true,
+        error: "POST /threads returned no id",
+      };
+    }
+    return {
+      kind: "created",
+      threadId: result.threadId,
+      commentId: result.commentId,
+      fingerprint: action.fingerprint,
+    };
+  } catch (error) {
+    const message = formatError(error);
+    writeBrandedAnnotation("warning", `Azure reconcile create failed (${message}); retryable.`);
+    return {
+      kind: "patch-failed",
+      threadId: 0,
+      fingerprint: action.fingerprint,
+      retryable: true,
+      error: message,
+    };
+  }
+}
+
+async function applyPatchBodyAction(
+  ctx: ApplyActionContext,
+  action: Extract<ThreadAction, { readonly kind: "patch-body" }>,
+): Promise<ReconcileOutcome> {
+  try {
+    const content = buildAzureInlineBody({
+      comment: action.comment,
+      secrets: getSecrets(ctx.context, ctx.secrets),
+      fingerprint: action.fingerprint,
+      identityDigest: action.comment.durableIdentity?.identityDigest ?? "",
+      runId: ctx.currentRunId,
+      attemptId: ctx.currentAttemptId,
+    });
+    const url = `${buildPrBaseUrl(ctx.context)}/threads/${action.threadId}/comments/${action.commentId}?api-version=${AZURE_API_VERSION}`;
+    const headers = ctx.context.kind === "azure-context" ? azureHeaders(ctx.context.context.token) : { "content-type": "application/json" };
+    const response = await ctx.fetchImpl(url, {
+      method: "PATCH",
+      headers,
+      body: JSON.stringify({ content }),
+    });
+    if (!response.ok) {
+      const retryable = response.status === 409 || response.status === 403 || response.status >= 500;
+      const message = `HTTP ${response.status}`;
+      writeBrandedAnnotation(
+        "warning",
+        `Azure reconcile PATCH thread ${action.threadId} comment ${action.commentId} failed (${message}); retryable=${retryable}.`,
+      );
+      return {
+        kind: "patch-failed",
+        threadId: action.threadId,
+        fingerprint: action.fingerprint,
+        retryable,
+        error: message,
+      };
+    }
+    return { kind: "patched", threadId: action.threadId, fingerprint: action.fingerprint };
+  } catch (error) {
+    const message = formatError(error);
+    writeBrandedAnnotation(
+      "warning",
+      `Azure reconcile PATCH thread ${action.threadId} comment ${action.commentId} threw (${message}); retryable.`,
+    );
+    return {
+      kind: "patch-failed",
+      threadId: action.threadId,
+      fingerprint: action.fingerprint,
+      retryable: true,
+      error: message,
+    };
+  }
+}
+
+async function applyNativeCloseAction(
+  ctx: ApplyActionContext,
+  action: Extract<ThreadAction, { readonly kind: "native-close" }>,
+): Promise<ReconcileOutcome> {
+  try {
+    const url = `${buildPrBaseUrl(ctx.context)}/threads/${action.threadId}?api-version=${AZURE_API_VERSION}`;
+    const headers = ctx.context.kind === "azure-context" ? azureHeaders(ctx.context.context.token) : { "content-type": "application/json" };
+    const response = await ctx.fetchImpl(url, {
+      method: "PATCH",
+      headers,
+      body: JSON.stringify({ status: "closed" }),
+    });
+    if (!response.ok) {
+      const retryable = response.status === 409 || response.status === 403 || response.status >= 500;
+      const message = `HTTP ${response.status}`;
+      writeBrandedAnnotation(
+        "warning",
+        `Azure reconcile close thread ${action.threadId} failed (${message}); retryable=${retryable}.`,
+      );
+      return {
+        kind: "native-close-failed",
+        threadId: action.threadId,
+        fingerprint: action.fingerprint,
+        retryable,
+        error: message,
+      };
+    }
+    return { kind: "native-closed", threadId: action.threadId, fingerprint: action.fingerprint };
+  } catch (error) {
+    const message = formatError(error);
+    writeBrandedAnnotation(
+      "warning",
+      `Azure reconcile close thread ${action.threadId} threw (${message}); retryable.`,
+    );
+    return {
+      kind: "native-close-failed",
+      threadId: action.threadId,
+      fingerprint: action.fingerprint,
+      retryable: true,
+      error: message,
+    };
+  }
+}
+
+async function applyNativeReopenAction(
+  ctx: ApplyActionContext,
+  action: Extract<ThreadAction, { readonly kind: "native-reopen" }>,
+): Promise<ReconcileOutcome> {
+  try {
+    const url = `${buildPrBaseUrl(ctx.context)}/threads/${action.threadId}?api-version=${AZURE_API_VERSION}`;
+    const headers = ctx.context.kind === "azure-context" ? azureHeaders(ctx.context.context.token) : { "content-type": "application/json" };
+    const response = await ctx.fetchImpl(url, {
+      method: "PATCH",
+      headers,
+      body: JSON.stringify({ status: "active" }),
+    });
+    if (!response.ok) {
+      const retryable = response.status === 409 || response.status === 403 || response.status >= 500;
+      const message = `HTTP ${response.status}`;
+      writeBrandedAnnotation(
+        "warning",
+        `Azure reconcile reopen thread ${action.threadId} failed (${message}); retryable=${retryable}.`,
+      );
+      return {
+        kind: "patch-failed",
+        threadId: action.threadId,
+        fingerprint: action.fingerprint,
+        retryable,
+        error: message,
+      };
+    }
+    return { kind: "reopened", threadId: action.threadId, fingerprint: action.fingerprint };
+  } catch (error) {
+    const message = formatError(error);
+    writeBrandedAnnotation(
+      "warning",
+      `Azure reconcile reopen thread ${action.threadId} threw (${message}); retryable.`,
+    );
+    return {
+      kind: "patch-failed",
+      threadId: action.threadId,
+      fingerprint: action.fingerprint,
+      retryable: true,
+      error: message,
+    };
+  }
+}
+
+async function applyMarkSupersededAction(
+  ctx: ApplyActionContext,
+  action: Extract<ThreadAction, { readonly kind: "mark-superseded" }>,
+): Promise<ReconcileOutcome> {
+  try {
+    const url = `${buildPrBaseUrl(ctx.context)}/threads/${action.threadId}?api-version=${AZURE_API_VERSION}`;
+    const headers = ctx.context.kind === "azure-context" ? azureHeaders(ctx.context.context.token) : { "content-type": "application/json" };
+    const response = await ctx.fetchImpl(url, {
+      method: "PATCH",
+      headers,
+      body: JSON.stringify({ status: "closed" }),
+    });
+    if (!response.ok) {
+      const retryable = response.status === 409 || response.status === 403 || response.status >= 500;
+      const message = `HTTP ${response.status}`;
+      writeBrandedAnnotation(
+        "warning",
+        `Azure reconcile supersede thread ${action.threadId} failed (${message}); retryable=${retryable}.`,
+      );
+      return {
+        kind: "patch-failed",
+        threadId: action.threadId,
+        fingerprint: action.fingerprint,
+        retryable,
+        error: message,
+      };
+    }
+    return {
+      kind: "marked-superseded",
+      threadId: action.threadId,
+      fingerprint: action.fingerprint,
+    };
+  } catch (error) {
+    const message = formatError(error);
+    writeBrandedAnnotation(
+      "warning",
+      `Azure reconcile supersede thread ${action.threadId} threw (${message}); retryable.`,
+    );
+    return {
+      kind: "patch-failed",
+      threadId: action.threadId,
+      fingerprint: action.fingerprint,
+      retryable: true,
+      error: message,
+    };
   }
 }
 
@@ -925,7 +957,7 @@ export { readStringFieldOrThrow };
 // Integration: runAzureLiveWithReconcile
 // ---------------------------------------------------------------------------
 
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import {
   assertNoFingerprintCollision,
   computeDurableFindingIdentity,
@@ -1452,7 +1484,7 @@ async function postPrStatus(
   signal: AbortSignal,
 ): Promise<void> {
   const safeDescription = description
-    .replace(/[\u000A\u000D]/gu, " ")
+    .replace(/[\n\r]/gu, " ")
     .replace(/\s{2,}/gu, " ")
     .trim()
     .slice(0, 255);
@@ -1496,7 +1528,8 @@ function computeRunIdFromContext(input: {
 }
 
 function randomAttemptId(): string {
-  const c = (globalThis as { crypto?: { randomUUID?: () => string } }).crypto;
-  if (c?.randomUUID !== undefined) return c.randomUUID();
-  return `att-${Date.now()}-${Math.floor(Math.random() * 0xffff_ffff).toString(16)}`;
+  // attemptId is a fencing token, not proof of exclusive ownership
+  // (per state-machine invariants). crypto.randomUUID provides the
+  // collision-resistant identifier without a weak PRNG fallback.
+  return randomUUID();
 }
