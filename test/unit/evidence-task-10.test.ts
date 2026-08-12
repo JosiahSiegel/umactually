@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT
 //
 // Task 10 evidence tests — emits the two evidence JSON files
-// (.omo/evidence/task-10-first-class-product.json + ...-failure.json)
+// (task-10-first-class-product.json + ...-failure.json)
 // by exercising the runGithubReconcile contract across the happy +
 // failure scenarios the plan requires.
 
