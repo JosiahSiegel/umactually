@@ -244,3 +244,89 @@ describe("Copilot provider RED contract", () => {
     });
   });
 });
+
+describe("Copilot provider — retry-after-parse-fail recovery paths", () => {
+  beforeEach(() => {
+    clearCopilotTokenCache();
+  });
+
+  it("succeeds when the self-healing retry emits a parseable JSON review", async () => {
+    // Given: the first chat response is plain prose; the retry response is a
+    // proper JSON review payload. Recovery MUST surface ok=true on the retry.
+    const RETRY_SUCCESS_BODY = JSON.stringify({
+      id: "chatcmpl_retry_001",
+      model: "gpt-5",
+      choices: [
+        {
+          message: {
+            role: "assistant",
+            content: '{"summary":"retry won","verdict":"SHIP","comments":[],"suppressed_comments":[]}',
+          },
+          finish_reason: "stop",
+        },
+      ],
+    });
+    const stub = makeFetchStub([
+      { status: 200, body: TOKEN_ENVELOPE_DEFAULT },
+      { status: 200, body: "not json yet", contentType: "text/plain" },
+      { status: 200, body: RETRY_SUCCESS_BODY },
+    ]);
+    const runCopilotRequest = await loadRunCopilotRequest();
+    const result = await runCopilotRequest({ ...BASE_INPUT, fetchImpl: stub.fetch });
+    expect(result).toMatchObject({
+      ok: true,
+      endpoint: "chat",
+      review: { verdict: "SHIP", summary: "retry won" },
+    });
+  });
+
+  it("emits a parse failure when the retry still produces a non-review payload", async () => {
+    // Given: BOTH the initial chat response AND the self-healing retry
+    // response are unparseable as a review. The result MUST carry the
+    // typed parse failure with the ORIGINAL rawText pinned.
+    const stub = makeFetchStub([
+      { status: 200, body: TOKEN_ENVELOPE_DEFAULT },
+      { status: 200, body: "garbage initial", contentType: "text/plain" },
+      { status: 200, body: "still garbage", contentType: "text/plain" },
+    ]);
+    const runCopilotRequest = await loadRunCopilotRequest();
+    const result = await runCopilotRequest({ ...BASE_INPUT, fetchImpl: stub.fetch });
+    expect(result).toMatchObject({
+      ok: false,
+      error: {
+        code: "parse",
+        rawText: "garbage initial",
+        message: expect.stringMatching(/self-healing retry/i) as unknown as string,
+      },
+    });
+  });
+
+  it("preserves the ORIGINAL parse-failure when the retry HTTP call itself throws", async () => {
+    // Given: the first chat response is unparseable, and the self-healing
+    // retry fetch rejects synchronously. The orchestrator MUST surface the
+    // ORIGINAL parse error, not the network failure of the retry.
+    let retryInvocationCount = 0;
+    const stub = makeFetchStub([
+      { status: 200, body: TOKEN_ENVELOPE_DEFAULT },
+      { status: 200, body: "garbage initial", contentType: "text/plain" },
+    ]);
+    // Wrap the stub so the THIRD call (retry) throws.
+    const wrappedFetch: typeof fetch = async (input, init) => {
+      retryInvocationCount += 1;
+      if (retryInvocationCount === 3) {
+        throw new Error("synthetic_retry_network_outage");
+      }
+      return stub.fetch(input, init);
+    };
+    const runCopilotRequest = await loadRunCopilotRequest();
+    const result = await runCopilotRequest({ ...BASE_INPUT, fetchImpl: wrappedFetch });
+    expect(result).toMatchObject({
+      ok: false,
+      error: {
+        code: "parse",
+        rawText: "garbage initial",
+        message: "Provider response did not contain a JSON review payload.",
+      },
+    });
+  });
+});

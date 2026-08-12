@@ -506,6 +506,124 @@ describe("collectContextProvenance (typed ContextItem + selection + budget)", ()
     ).rejects.toThrow(/hard cap|budget/i);
   });
 
+  it("rejects perFileBytes that exceeds hard cap", async () => {
+    await expect(
+      collectContextProvenance({
+        cwd,
+        diffText: SIMPLE_DIFF,
+        baseRef: "main",
+        headRef: "feature",
+        applicableInstructions: [],
+        budgets: { ...BUDGET_DEFAULTS, perFileBytes: 999_999_999 },
+      }),
+    ).rejects.toThrow(/perFileBytes.*hard cap/i);
+  });
+
+  it("rejects maxItems that exceeds hard cap", async () => {
+    await expect(
+      collectContextProvenance({
+        cwd,
+        diffText: SIMPLE_DIFF,
+        baseRef: "main",
+        headRef: "feature",
+        applicableInstructions: [],
+        budgets: { ...BUDGET_DEFAULTS, maxItems: 999_999_999 },
+      }),
+    ).rejects.toThrow(/maxItems.*hard cap/i);
+  });
+
+  it("rejects maxFilesParsed that exceeds hard cap", async () => {
+    await expect(
+      collectContextProvenance({
+        cwd,
+        diffText: SIMPLE_DIFF,
+        baseRef: "main",
+        headRef: "feature",
+        applicableInstructions: [],
+        budgets: { ...BUDGET_DEFAULTS, maxFilesParsed: 999_999_999 },
+      }),
+    ).rejects.toThrow(/maxFilesParsed.*hard cap/i);
+  });
+
+  it("rejects wallTimeMs that exceeds hard cap", async () => {
+    await expect(
+      collectContextProvenance({
+        cwd,
+        diffText: SIMPLE_DIFF,
+        baseRef: "main",
+        headRef: "feature",
+        applicableInstructions: [],
+        budgets: { ...BUDGET_DEFAULTS, wallTimeMs: 999_999_999 },
+      }),
+    ).rejects.toThrow(/wallTimeMs.*hard cap/i);
+  });
+
+  it("falls back to the input cwd when realpathSync throws (permissive cwd resolver)", async () => {
+    // Given: a cwd path that does not exist on disk so realpathSync throws.
+    const phantom = "/this/path/does/not/exist/__uma_ctxprov_phantom__";
+    // When: collectContextProvenance runs against the phantom cwd with a no-op diff.
+    // Then: it does NOT throw — it falls through to `input.cwd` per the resolver.
+    // Items may be empty, but the call MUST resolve cleanly.
+    const result = await collectContextProvenance({
+      cwd: phantom,
+      diffText: "",
+      baseRef: "main",
+      headRef: "feature",
+      applicableInstructions: [],
+    });
+    expect(Array.isArray(result.items)).toBe(true);
+    expect(Array.isArray(result.excluded)).toBe(true);
+    expect(result.budgets).toBeDefined();
+  });
+
+  it("records excluded.items as a separate list (not merged into items)", async () => {
+    // Build a repo where the diff hunk points at a generated file (dist/*) so
+    // recordExclusion runs twice for the same path: once from the diff_hunk
+    // path and once from the readWithinCwd path.
+    await mkdir(join(cwd, "dist"), { recursive: true });
+    await writeFile(join(cwd, "dist", "cli.js"), "// built\n", "utf8");
+    const diff = [
+      "diff --git a/dist/cli.js b/dist/cli.js",
+      "--- a/dist/cli.js",
+      "+++ b/dist/cli.js",
+      "@@ -1,1 +1,1 @@",
+      "-// built",
+      "+// built v2",
+      "",
+    ].join("\n");
+    const result = await collectContextProvenance({
+      cwd,
+      diffText: diff,
+      baseRef: "main",
+      headRef: "feature",
+      applicableInstructions: [],
+    });
+    // Generated-path exclusion reasons appear exactly once (deduped by path+reason).
+    const reasons = result.excluded.map((e) => e.reason);
+    const generatedCount = reasons.filter((r) => /generated|build/i.test(r)).length;
+    expect(generatedCount).toBeGreaterThan(0);
+    // The dist/cli.js path itself is NOT in items.
+    const items = result.items.map((it) => it.path);
+    expect(items).not.toContain("dist/cli.js");
+  });
+
+  it("marks `semanticContextStatus: budget-exhausted` when the byte cap is hit during item emission", async () => {
+    const result = await collectContextProvenance({
+      cwd,
+      diffText: SIMPLE_DIFF,
+      baseRef: "main",
+      headRef: "feature",
+      applicableInstructions: [],
+      // totalBytes below any single hunk forces maybeAddCandidate to take
+      // the "exceeds budget" branch and flip state.status to
+      // "budget-exhausted". Without that transition the test would only
+      // see "ready".
+      budgets: { ...BUDGET_DEFAULTS, totalBytes: 1, perFileBytes: 1 },
+    });
+    expect(result.semanticContextStatus).toBe("budget-exhausted");
+    expect(result.items.length).toBe(0);
+  });
+
   it("two-language diff includes both languages (TS source items + non-TS hunk fallback)", async () => {
     const result = await collectContextProvenance({
       cwd,

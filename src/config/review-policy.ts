@@ -173,15 +173,34 @@ function isValidGlob(pattern: string): boolean {
   let brackets = 0;
   let parens = 0;
   for (const ch of pattern) {
-    if (ch === "{") braces += 1;
-    if (ch === "}") braces -= 1;
-    if (ch === "[") brackets += 1;
-    if (ch === "]") brackets -= 1;
-    if (ch === "(") parens += 1;
-    if (ch === ")") parens -= 1;
-    if (braces < 0 || brackets < 0 || parens < 0) return false;
+    braces = updateBraceCount(ch, braces);
+    brackets = updateBracketCount(ch, brackets);
+    parens = updateParenCount(ch, parens);
+    if (areAnyCountersNegative(braces, brackets, parens)) return false;
   }
   return braces === 0 && brackets === 0 && parens === 0;
+}
+
+function updateBraceCount(ch: string, count: number): number {
+  if (ch === "{") return count + 1;
+  if (ch === "}") return count - 1;
+  return count;
+}
+
+function updateBracketCount(ch: string, count: number): number {
+  if (ch === "[") return count + 1;
+  if (ch === "]") return count - 1;
+  return count;
+}
+
+function updateParenCount(ch: string, count: number): number {
+  if (ch === "(") return count + 1;
+  if (ch === ")") return count - 1;
+  return count;
+}
+
+function areAnyCountersNegative(braces: number, brackets: number, parens: number): boolean {
+  return braces < 0 || brackets < 0 || parens < 0;
 }
 
 function isUnsafePath(pattern: string): boolean {

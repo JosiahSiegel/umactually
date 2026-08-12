@@ -456,18 +456,24 @@ function diffPaths(diffText) {
     return listDiffPaths(diffText).map((p) => normalizeRepoPath(p));
 }
 async function collectContextProvenance(input) {
+    const init = await clampAndInitBudgets(input);
+    const state = {
+        selected: [],
+        excluded: [],
+        counters: { filesParsed: 0, budgetBytes: 0 },
+        status: "ready",
+        budgetByteTotal: 0,
+    };
+    await collectFromChangedDeclarations(input, init, state);
+    await collectFromCallers(input, init, state);
+    await collectFromTestReferences(init, state);
+    collectExcludedItems(input, init, state);
+    return finalizeContextResult(init, state.selected, state.excluded, state.budgetByteTotal, state.status);
+}
+async function clampAndInitBudgets(input) {
     const start = performance.now();
     const budgets = clampBudgets(input.budgets);
-    const cwdReal = (() => {
-        try {
-            return realpathSync(input.cwd);
-        }
-        catch {
-            return input.cwd;
-        }
-    })();
-    const baseRef = input.baseRef;
-    const headRef = input.headRef;
+    const cwdReal = resolveCwdReal(input.cwd);
     const diffPathsList = diffPaths(input.diffText);
     const changedPaths = input.changedPaths !== undefined
         ? input.changedPaths.map(normalizeRepoPath).filter((p) => diffPathsList.includes(p) || true)
@@ -483,68 +489,94 @@ async function collectContextProvenance(input) {
     for (const rule of input.pathScopedInstructionRules ?? []) {
         pathScopes.set(normalizeRepoPath(rule.path), rule.scope);
     }
-    const excluded = [];
-    const selected = [];
-    const counters = { filesParsed: 0, budgetBytes: 0 };
-    let status = "ready";
-    let budgetByteTotal = 0;
-    function maybeAddCandidate(candidate) {
-        if (selected.length >= budgets.maxItems)
-            return false;
-        if (performance.now() - start > budgets.wallTimeMs) {
-            status = "budget-exhausted";
-            return false;
-        }
-        const bytes = Buffer.byteLength(candidate.text, "utf8");
-        if (budgetByteTotal + bytes > budgets.totalBytes) {
-            status = "budget-exhausted";
-            return false;
-        }
-        selected.push({
-            sourceKind: candidate.kind,
-            baseRef,
-            headRef,
-            path: candidate.path,
-            pathScope: candidate.pathScope,
-            trust: candidate.trust,
-            bytes,
-            contentHash: sha256Hex(candidate.text),
-            text: candidate.text,
-        });
-        budgetByteTotal += bytes;
+    return {
+        start,
+        budgets,
+        cwdReal,
+        baseRef: input.baseRef,
+        headRef: input.headRef,
+        changedPaths,
+        tsLikeChanged: changedPaths.filter(isTsLike),
+        instructionsByPath,
+        pathScopes,
+    };
+}
+function resolveCwdReal(cwd) {
+    try {
+        return realpathSync(cwd);
+    }
+    catch {
+        return cwd;
+    }
+}
+function maybeAddCandidate(init, state, candidate) {
+    if (state.selected.length >= init.budgets.maxItems)
+        return false;
+    if (performance.now() - init.start > init.budgets.wallTimeMs) {
+        state.status = "budget-exhausted";
+        return false;
+    }
+    const bytes = Buffer.byteLength(candidate.text, "utf8");
+    if (state.budgetByteTotal + bytes > init.budgets.totalBytes) {
+        state.status = "budget-exhausted";
+        return false;
+    }
+    state.selected.push({
+        sourceKind: candidate.kind,
+        baseRef: init.baseRef,
+        headRef: init.headRef,
+        path: candidate.path,
+        pathScope: candidate.pathScope,
+        trust: candidate.trust,
+        bytes,
+        contentHash: sha256Hex(candidate.text),
+        text: candidate.text,
+    });
+    state.budgetByteTotal += bytes;
+    return true;
+}
+function recordExclusion(state, path, reason) {
+    state.excluded.push({ path, reason });
+    // Mirror the user-facing exclusion list with a fast-lookup set so
+    // we can scrub items whose underlying file is unsafe (escapes
+    // cwd, oversized, secret-bearing, parse-failed). Step 2's
+    // readWithinCwd call always records a reason; if the file later
+    // appeared as a `diff_hunk` from Step 1, the hunk has to be
+    // scrubbed from `selected` AND its bytes refunded from the budget
+    // total. This is what keeps malicious/oversized content out of
+    // the provider prompt even though the diff text was already
+    // accepted in Step 1.
+    const i = state.selected.findIndex((it) => it.path === path);
+    if (i !== -1) {
+        state.budgetByteTotal = Math.max(0, state.budgetByteTotal - state.selected[i].bytes);
+        state.selected.splice(i, 1);
+    }
+}
+function isBudgetOrWallTimeExhausted(init, state) {
+    if (state.counters.filesParsed >= init.budgets.maxFilesParsed) {
+        state.status = "budget-exhausted";
         return true;
     }
-    function recordExclusion(path, reason) {
-        excluded.push({ path, reason });
-        // Mirror the user-facing exclusion list with a fast-lookup set so
-        // we can scrub items whose underlying file is unsafe (escapes
-        // cwd, oversized, secret-bearing, parse-failed). Step 2's
-        // readWithinCwd call always records a reason; if the file later
-        // appeared as a `diff_hunk` from Step 1, the hunk has to be
-        // scrubbed from `selected` AND its bytes refunded from the budget
-        // total. This is what keeps malicious/oversized content out of
-        // the provider prompt even though the diff text was already
-        // accepted in Step 1.
-        const i = selected.findIndex((it) => it.path === path);
-        if (i !== -1) {
-            budgetByteTotal = Math.max(0, budgetByteTotal - selected[i].bytes);
-            selected.splice(i, 1);
-        }
+    if (performance.now() - init.start > init.budgets.wallTimeMs) {
+        state.status = "budget-exhausted";
+        return true;
     }
+    return false;
+}
+async function collectFromChangedDeclarations(input, init, state) {
     // Step 1 — diff hunks for every changed path (always present as fallback).
     const hunks = extractHunks(input.diffText);
-    const tsLikeChanged = changedPaths.filter(isTsLike);
-    if (tsLikeChanged.length === 0 && changedPaths.length > 0) {
-        status = "unsupported";
+    if (init.tsLikeChanged.length === 0 && init.changedPaths.length > 0) {
+        state.status = "unsupported";
     }
     for (const hunk of hunks) {
-        if (selected.length >= budgets.maxItems)
+        if (state.selected.length >= init.budgets.maxItems)
             break;
         if (isExcludedPath(hunk.path)) {
-            recordExclusion(hunk.path, "generated-or-build-artifact");
+            recordExclusion(state, hunk.path, "generated-or-build-artifact");
             continue;
         }
-        const added = maybeAddCandidate({
+        const added = maybeAddCandidate(init, state, {
             kind: "diff_hunk",
             path: hunk.path,
             pathScope: "<diff>",
@@ -555,30 +587,24 @@ async function collectContextProvenance(input) {
             break;
     }
     // Step 2 — TS declarations for changed TS files.
-    for (const path of tsLikeChanged) {
-        if (counters.filesParsed >= budgets.maxFilesParsed) {
-            status = "budget-exhausted";
+    for (const path of init.tsLikeChanged) {
+        if (isBudgetOrWallTimeExhausted(init, state))
             break;
-        }
-        if (performance.now() - start > budgets.wallTimeMs) {
-            status = "budget-exhausted";
-            break;
-        }
-        const r = readWithinCwd(cwdReal, path, budgets.perFileBytes);
+        const r = readWithinCwd(init.cwdReal, path, init.budgets.perFileBytes);
         if (!r.ok) {
-            recordExclusion(path, r.reason);
+            recordExclusion(state, path, r.reason);
             continue;
         }
-        counters.filesParsed += 1;
+        state.counters.filesParsed += 1;
         const parsed = await parseTsFile(path, r.text);
         if (!parsed.ok) {
-            status = "parse-failed";
+            state.status = "parse-failed";
             // Fallback is the diff_hunk item already added; no further action.
             continue;
         }
         // Emit one `changed_declaration` per declared function/class/etc.
         for (const decl of parsed.declarations) {
-            if (!maybeAddCandidate({
+            if (!maybeAddCandidate(init, state, {
                 kind: "changed_declaration",
                 path,
                 pathScope: path,
@@ -588,18 +614,25 @@ async function collectContextProvenance(input) {
                 break;
         }
     }
-    // Step 3 — resolve same-project imports as direct callers/callees.
-    for (const path of tsLikeChanged) {
-        if (counters.filesParsed >= budgets.maxFilesParsed)
+}
+async function collectFromCallers(input, init, state) {
+    // Same-project imports + reverse-import scan over standard test/source
+    // directories. Both write caller/callee items.
+    await collectResolvedImportTargets(input, init, state);
+    await collectReverseImporters(input, init, state);
+}
+async function collectResolvedImportTargets(input, init, state) {
+    for (const path of init.tsLikeChanged) {
+        if (state.counters.filesParsed >= init.budgets.maxFilesParsed)
             break;
-        if (performance.now() - start > budgets.wallTimeMs) {
-            status = "budget-exhausted";
+        if (performance.now() - init.start > init.budgets.wallTimeMs) {
+            state.status = "budget-exhausted";
             break;
         }
-        const r = readWithinCwd(cwdReal, path, budgets.perFileBytes);
+        const r = readWithinCwd(init.cwdReal, path, init.budgets.perFileBytes);
         if (!r.ok)
             continue;
-        counters.filesParsed += 1;
+        state.counters.filesParsed += 1;
         const parsed = await parseTsFile(path, r.text);
         if (!parsed.ok)
             continue;
@@ -607,22 +640,22 @@ async function collectContextProvenance(input) {
             const target = resolveSameProjectImport(input.cwd, path, imp.module);
             if (target === null)
                 continue;
-            if (counters.filesParsed >= budgets.maxFilesParsed)
+            if (state.counters.filesParsed >= init.budgets.maxFilesParsed)
                 break;
             if (isExcludedPath(target)) {
-                recordExclusion(target, "generated-or-build-artifact");
+                recordExclusion(state, target, "generated-or-build-artifact");
                 continue;
             }
-            const targetRead = readWithinCwd(cwdReal, target, budgets.perFileBytes);
+            const targetRead = readWithinCwd(init.cwdReal, target, init.budgets.perFileBytes);
             if (!targetRead.ok) {
-                recordExclusion(target, targetRead.reason);
+                recordExclusion(state, target, targetRead.reason);
                 continue;
             }
-            counters.filesParsed += 1;
+            state.counters.filesParsed += 1;
             // Emit a "direct caller / callee" item; include the imported symbols.
             const listed = imp.name.length > 0 ? imp.name : "*";
             const header = `// callee: imports { ${listed} } from "${target}"`;
-            maybeAddCandidate({
+            maybeAddCandidate(init, state, {
                 kind: "direct_caller_or_callee",
                 path: target,
                 pathScope: path,
@@ -631,7 +664,9 @@ async function collectContextProvenance(input) {
             });
         }
     }
-    const changedBaseNames = new Set(tsLikeChanged.map((p) => basenameOf(p).replace(/\.[jt]sx?$/u, "")));
+}
+async function collectReverseImporters(input, init, state) {
+    const changedBaseNames = new Set(init.tsLikeChanged.map((p) => basenameOf(p).replace(/\.[jt]sx?$/u, "")));
     const callerSeeds = [
         "src",
         "lib",
@@ -641,49 +676,29 @@ async function collectContextProvenance(input) {
     ];
     const seenCallerFiles = new Set();
     for (const seed of callerSeeds) {
-        if (counters.filesParsed >= budgets.maxFilesParsed)
+        if (state.counters.filesParsed >= init.budgets.maxFilesParsed)
             break;
-        if (performance.now() - start > budgets.wallTimeMs)
+        if (performance.now() - init.start > init.budgets.wallTimeMs)
             break;
-        const seedAbs = `${cwdReal}${seed.startsWith("/") ? "" : "/"}${seed}`;
-        let entries;
-        try {
-            entries = readdirSync(seedAbs, { recursive: true, withFileTypes: true }).map((d) => {
-                // Include both regular files and symlinks so the per-entry
-                // realpath guard in `readWithinCwd` can record an explicit
-                // exclusion for an escape. Without this, a symlink targeting
-                // outside cwd would be silently invisible to the caller scan.
-                const isRegular = d.isFile();
-                const isSymlink = d.isSymbolicLink();
-                if (!isRegular && !isSymlink)
-                    return null;
-                const parent = d.parentPath
-                    ?? d.path
-                    ?? "";
-                const name = d.name;
-                const full = parent ? `${parent}/${name}` : name;
-                return full.startsWith(`${cwdReal}/`) ? full.slice(`${cwdReal}/`.length) : full;
-            }).filter((v) => v !== null);
-        }
-        catch {
+        const entries = readdirSafe(init.cwdReal, seed);
+        if (entries === null)
             continue;
-        }
         for (const rel of entries) {
-            if (counters.filesParsed >= budgets.maxFilesParsed)
+            if (state.counters.filesParsed >= init.budgets.maxFilesParsed)
                 break;
             if (!isTsLike(rel))
                 continue;
-            if (tsLikeChanged.includes(rel))
+            if (init.tsLikeChanged.includes(rel))
                 continue;
             if (seenCallerFiles.has(rel))
                 continue;
             seenCallerFiles.add(rel);
-            const readAttempt = readWithinCwd(cwdReal, rel, budgets.perFileBytes);
+            const readAttempt = readWithinCwd(init.cwdReal, rel, init.budgets.perFileBytes);
             if (!readAttempt.ok) {
-                recordExclusion(rel, readAttempt.reason);
+                recordExclusion(state, rel, readAttempt.reason);
                 continue;
             }
-            counters.filesParsed += 1;
+            state.counters.filesParsed += 1;
             const parsedCaller = await parseTsFile(rel, readAttempt.text);
             if (!parsedCaller.ok)
                 continue;
@@ -702,7 +717,7 @@ async function collectContextProvenance(input) {
                 continue;
             const symbols = [...new Set(hits.map((h) => h.name).filter((n) => n.length > 0))];
             const header = `// caller: imports { ${symbols.join(", ") || "*"} } from "${rel}"`;
-            maybeAddCandidate({
+            maybeAddCandidate(init, state, {
                 kind: "direct_caller_or_callee",
                 path: rel,
                 pathScope: rel,
@@ -711,38 +726,64 @@ async function collectContextProvenance(input) {
             });
         }
     }
+}
+function readdirSafe(cwdReal, seed) {
+    const seedAbs = `${cwdReal}${seed.startsWith("/") ? "" : "/"}${seed}`;
+    try {
+        return readdirSync(seedAbs, { recursive: true, withFileTypes: true }).map((d) => {
+            // Include both regular files and symlinks so the per-entry
+            // realpath guard in `readWithinCwd` can record an explicit
+            // exclusion for an escape. Without this, a symlink targeting
+            // outside cwd would be silently invisible to the caller scan.
+            const isRegular = d.isFile();
+            const isSymlink = d.isSymbolicLink();
+            if (!isRegular && !isSymlink)
+                return null;
+            const parent = d.parentPath
+                ?? d.path
+                ?? "";
+            const name = d.name;
+            const full = parent ? `${parent}/${name}` : name;
+            return full.startsWith(`${cwdReal}/`) ? full.slice(`${cwdReal}/`.length) : full;
+        }).filter((v) => v !== null);
+    }
+    catch {
+        return null;
+    }
+}
+async function collectFromTestReferences(init, state) {
     // Step 4 — Test references (basename/import match).
-    for (const path of tsLikeChanged) {
-        if (counters.filesParsed >= budgets.maxFilesParsed)
+    const TEST_CANDIDATES = [
+        (base) => `src/${base}.test.ts`,
+        (base) => `src/${base}.spec.ts`,
+        (base) => `src/${base}.test.tsx`,
+        (base) => `src/${base}.spec.tsx`,
+        (base) => `tests/${base}.test.ts`,
+        (base) => `tests/${base}.spec.ts`,
+        (base) => `__tests__/${base}.test.ts`,
+        (base) => `__tests__/${base}.spec.ts`,
+    ];
+    for (const path of init.tsLikeChanged) {
+        if (state.counters.filesParsed >= init.budgets.maxFilesParsed)
             break;
-        if (performance.now() - start > budgets.wallTimeMs)
+        if (performance.now() - init.start > init.budgets.wallTimeMs)
             break;
         const base = basenameOf(path).replace(/\.[jt]sx?$/u, "");
         if (base.length === 0)
             continue;
-        // Heuristic 1: try `*.test.ts`, `*.spec.ts`, `*.test.tsx`, etc.
-        const testCandidates = [
-            `src/${base}.test.ts`,
-            `src/${base}.spec.ts`,
-            `src/${base}.test.tsx`,
-            `src/${base}.spec.tsx`,
-            `tests/${base}.test.ts`,
-            `tests/${base}.spec.ts`,
-            `__tests__/${base}.test.ts`,
-            `__tests__/${base}.spec.ts`,
-        ];
-        for (const cand of testCandidates) {
-            if (counters.filesParsed >= budgets.maxFilesParsed)
+        for (const mkCand of TEST_CANDIDATES) {
+            const cand = mkCand(base);
+            if (state.counters.filesParsed >= init.budgets.maxFilesParsed)
                 break;
             if (isExcludedPath(cand)) {
-                recordExclusion(cand, "generated-or-build-artifact");
+                recordExclusion(state, cand, "generated-or-build-artifact");
                 continue;
             }
-            const r = readWithinCwd(cwdReal, cand, budgets.perFileBytes);
+            const r = readWithinCwd(init.cwdReal, cand, init.budgets.perFileBytes);
             if (!r.ok)
                 continue;
-            counters.filesParsed += 1;
-            maybeAddCandidate({
+            state.counters.filesParsed += 1;
+            maybeAddCandidate(init, state, {
                 kind: "test_reference",
                 path: cand,
                 pathScope: path,
@@ -752,22 +793,24 @@ async function collectContextProvenance(input) {
             break;
         }
     }
+}
+function collectExcludedItems(input, init, state) {
     // Step 5 — Applicable instructions, path-scoped rules applied.
-    for (const [path, text] of instructionsByPath) {
+    for (const [path, text] of init.instructionsByPath) {
         if (text === null)
             continue;
-        if (selected.length >= budgets.maxItems)
+        if (state.selected.length >= init.budgets.maxItems)
             break;
         if (isExcludedPath(path)) {
-            recordExclusion(path, "generated-or-build-artifact");
+            recordExclusion(state, path, "generated-or-build-artifact");
             continue;
         }
-        const scope = pathScopes.get(path) ?? "*";
-        if (!changedPaths.some((p) => matchesGlob(p, scope))) {
-            recordExclusion(path, "outside-path-scope");
+        const scope = init.pathScopes.get(path) ?? "*";
+        if (!init.changedPaths.some((p) => matchesGlob(p, scope))) {
+            recordExclusion(state, path, "outside-path-scope");
             continue;
         }
-        maybeAddCandidate({
+        maybeAddCandidate(init, state, {
             kind: "instruction",
             path,
             pathScope: scope,
@@ -779,37 +822,30 @@ async function collectContextProvenance(input) {
         for (const path of input.headBranchInstructionTexts.keys()) {
             const norm = normalizeRepoPath(path);
             if (input.applicableInstructions.includes(norm) || input.applicableInstructions.includes(path)) {
-                if (!excluded.some((e) => e.path === norm && e.reason === "head-branch-ignored-trust")) {
-                    excluded.push({ path: norm, reason: "head-branch-ignored-trust" });
+                if (!state.excluded.some((e) => e.path === norm && e.reason === "head-branch-ignored-trust")) {
+                    state.excluded.push({ path: norm, reason: "head-branch-ignored-trust" });
                 }
             }
         }
     }
-    // Step 6 — Always record non-TS-languages as `diff_hunk` fallback.
-    // Handled by Step 1; nothing extra to do.
-    // Step 7 — After all items are gathered, apply selection-order rules
-    // (already enforced by the kind-priority above) and exact-byte
-    // truncation. Items are already at-or-under per-file bytes because
-    // `readWithinCwd` truncated them at read time. Sort lexicographically
-    // for stable ordering across the kinds.
+}
+function finalizeContextResult(init, selectedRaw, excludedRaw, budgetByteTotal, collectedStatus) {
+    const selected = [...selectedRaw];
     selected.sort(compareContextItem);
-    // Step 8 — Strict trust policy: re-stamp every item's trust. Head-branch
-    // instruction content is NEVER trusted in PR mode.
+    // PR-mode trust policy: head-branch instruction content is NEVER trusted.
     for (let i = 0; i < selected.length; i += 1) {
         const it = selected[i];
         selected[i] = { ...it, trust: it.trust === "head" ? "untrusted" : it.trust };
     }
-    // Step 9 — Compute a budget hash for the manifest.
-    const budgetHash = sha256Hex(JSON.stringify(budgets) + `\n${selected.length}\n${budgetByteTotal}`);
-    const result = {
+    const budgetHash = sha256Hex(JSON.stringify(init.budgets) + `\n${selected.length}\n${budgetByteTotal}`);
+    return {
         items: Object.freeze(selected),
-        excluded: Object.freeze(excluded),
-        budgets,
-        semanticContextStatus: status,
+        excluded: Object.freeze(excludedRaw),
+        budgets: init.budgets,
+        semanticContextStatus: collectedStatus,
         budgetHash,
         bytesUsed: budgetByteTotal,
     };
-    return result;
 }
 // ---------------------------------------------------------------------------
 // Instruction text helper
@@ -3890,22 +3926,37 @@ function isValidGlob(pattern) {
     let brackets = 0;
     let parens = 0;
     for (const ch of pattern) {
-        if (ch === "{")
-            braces += 1;
-        if (ch === "}")
-            braces -= 1;
-        if (ch === "[")
-            brackets += 1;
-        if (ch === "]")
-            brackets -= 1;
-        if (ch === "(")
-            parens += 1;
-        if (ch === ")")
-            parens -= 1;
-        if (braces < 0 || brackets < 0 || parens < 0)
+        braces = updateBraceCount(ch, braces);
+        brackets = updateBracketCount(ch, brackets);
+        parens = updateParenCount(ch, parens);
+        if (areAnyCountersNegative(braces, brackets, parens))
             return false;
     }
     return braces === 0 && brackets === 0 && parens === 0;
+}
+function updateBraceCount(ch, count) {
+    if (ch === "{")
+        return count + 1;
+    if (ch === "}")
+        return count - 1;
+    return count;
+}
+function updateBracketCount(ch, count) {
+    if (ch === "[")
+        return count + 1;
+    if (ch === "]")
+        return count - 1;
+    return count;
+}
+function updateParenCount(ch, count) {
+    if (ch === "(")
+        return count + 1;
+    if (ch === ")")
+        return count - 1;
+    return count;
+}
+function areAnyCountersNegative(braces, brackets, parens) {
+    return braces < 0 || brackets < 0 || parens < 0;
 }
 function isUnsafePath(pattern) {
     if (pattern.startsWith("/"))
