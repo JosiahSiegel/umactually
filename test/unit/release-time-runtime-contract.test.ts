@@ -1,7 +1,11 @@
 // SPDX-License-Identifier: MIT
 // Regression tests for v0.5.0 release-time runtime contract.
 //
-// Run history (see .omo/notepads/release-binary-download-size/learnings.md):
+// Run history: release run 29616796148 surfaced three orthogonal v0.5.0 release-CI failures that
+// static-only contract tests did NOT catch. The full per-run breakdown (Hotfix commits 8082ef7, 302a100,
+// etc.) is in the local-only notepad trail used during the work; the three bugs
+// (pwsh `${X}` mis-expansion, mktemp .ps1 suffix loss, bad-checksum residue search dir mismatch) are
+// documented inline below.
 //
 // Run 29616796148 surfaced three orthogonal v0.5.0 release-CI failures
 // that static-only contract tests did NOT catch. All three were real

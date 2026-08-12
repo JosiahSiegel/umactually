@@ -1,6 +1,7 @@
 // Evidence gatherer for Task 5 — runs fixture scenarios against the
 // collector and dumps the captured provider body + manifest. Used by
-// the agent to produce `.omo/evidence/task-5-*.json`.
+// the agent to produce the task-5 evidence JSON artifacts under
+// the local artifacts directory.
 
 import { mkdir, mkdtemp, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";

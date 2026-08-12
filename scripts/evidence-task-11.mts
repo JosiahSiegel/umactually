@@ -3,8 +3,8 @@
 //
 // Run with: npx tsx scripts/evidence/task-11-azure-reconcile-evidence.mts
 // (or via the simpler `npx tsx` invocation). Output:
-//   .omo/evidence/task-11-first-class-product.json
-//   .omo/evidence/task-11-first-class-product-failure.json
+//   artifacts/evidence/task-11-first-class-product.json
+//   artifacts/evidence/task-11-first-class-product-failure.json
 
 import { writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
@@ -23,7 +23,7 @@ import {
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
-const EVIDENCE_DIR = join(__dirname, "..", ".omo", "evidence");
+const EVIDENCE_DIR = join(__dirname, "..", "artifacts", "evidence");
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -340,7 +340,7 @@ async function generateHappyEvidence(): Promise<void> {
     },
   };
   writeFileSync(join(EVIDENCE_DIR, "task-11-first-class-product.json"), JSON.stringify(evidence, null, 2));
-  process.stderr.write("Wrote .omo/evidence/task-11-first-class-product.json\n");
+  process.stderr.write("Wrote artifacts/evidence/task-11-first-class-product.json\n");
 }
 
 type ReconcileRunResult = {
@@ -608,7 +608,7 @@ async function generateFailureEvidence(): Promise<void> {
     },
   };
   writeFileSync(join(EVIDENCE_DIR, "task-11-first-class-product-failure.json"), JSON.stringify(evidence, null, 2));
-  process.stderr.write("Wrote .omo/evidence/task-11-first-class-product-failure.json\n");
+  process.stderr.write("Wrote artifacts/evidence/task-11-first-class-product-failure.json\n");
 }
 
 async function main(): Promise<void> {

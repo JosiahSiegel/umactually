@@ -1,8 +1,9 @@
 // SPDX-License-Identifier: MIT
 //
 // Task 9 evidence tests — emits the two evidence JSON files
-// (.omo/evidence/task-9-first-class-product.json + ...-failure.json)
-// plus the regression transcript (.omo/evidence/task-9-first-class-product-regression.txt).
+// (task-9-first-class-product.json + ...-failure.json)
+// plus the regression transcript (task-9-first-class-product-regression.txt),
+// written under the local evidence directory.
 
 import { existsSync, mkdirSync, rmSync, writeFileSync, appendFileSync } from "node:fs";
 import { join } from "node:path";

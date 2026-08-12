@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: MIT
 //
 // Task 13 evidence — emits the two evidence JSON files
-// (.omo/evidence/task-13-first-class-product.json +
-//  .omo/evidence/task-13-first-class-product-failure.json)
+// (task-13-first-class-product.json +
+//  task-13-first-class-product-failure.json)
 // by exercising the GHES API-base contract end-to-end against
 // deterministic fetch stubs.
 //
