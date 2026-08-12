@@ -10,11 +10,6 @@
 // `outcome` continue to appear at the top level (so legacy consumers
 // do not break), AND the full original payload is preserved under
 // `data` for consumers that prefer the new structure.
-//
-// See `.omo/plans/cli-simplification-hyperplan-bundle.md` §1.M1 for
-// the contract spec and §1.Insight 3 + §2.inversion #11 for the
-// rationale (M1 precedes every other M-step because all later steps
-// assume a uniform envelope).
 
 import type { Writable } from "node:stream";
 
