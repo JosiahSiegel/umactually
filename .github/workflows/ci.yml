@@ -30,7 +30,7 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Setup Node
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v7
         with:
           node-version: "24"
           # Restore the npm cache that the original --cache flag used to
@@ -134,7 +134,7 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Setup Node 25
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v7
         with:
           node-version: "25.7.0"
 
@@ -278,7 +278,7 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Setup Node 25
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v7
         with:
           node-version: "25.6.0"
 
@@ -449,7 +449,7 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Setup Node
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v7
         with:
           node-version: "24.18.0"
           cache: "npm"
@@ -576,7 +576,7 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Setup Node 25
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v7
         with:
           node-version: "25.7.0"
 
@@ -648,7 +648,7 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Setup Node 25
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v7
         with:
           node-version: "25.6.0"
 
@@ -748,7 +748,7 @@ jobs:
 
       - name: Setup Node 24
         if: ${{ env.SONAR_TOKEN != '' }}
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v7
         with:
           node-version: "24"
 
@@ -856,7 +856,7 @@ jobs:
       # Node 25.7.0 is required for `node --build-sea` (added in Node
       # 25.5.0, used by tsdown's --exe pipeline). Matches release.yml.
       - name: Setup Node
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v7
         with:
           node-version: "25.7.0"
           cache: "npm"
