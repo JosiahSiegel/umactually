@@ -1515,7 +1515,7 @@ jobs:
 
       - name: Mint OIDC token for npm Trusted Publishing
         id: oidc
-        uses: actions/github-script@v7
+        uses: actions/github-script@v9
         with:
           script: |
             const token = await core.getIDToken('npm:registry.npmjs.org');
