@@ -198,18 +198,24 @@ function appendLiteralChar(body, ch) {
 }
 function translateGlobBody(pattern) {
     let body = "";
-    for (let i = 0; i < pattern.length; i += 1) {
+    let i = 0;
+    while (i < pattern.length) {
         const ch = pattern[i];
         if (ch === "*") {
             const r = appendStarSequence(body, pattern, i);
             body = r.body;
-            i = r.next;
+            // `r.next` advances past `**` or `**/` (skipping the second `*`
+            // and any trailing `/`); each branch ends with `i + 1` so the
+            // next iteration moves on past the consumed fragment.
+            i = r.next + 1;
         }
         else if (ch === "?") {
             body += "[^/]";
+            i += 1;
         }
         else {
             body = appendLiteralChar(body, ch);
+            i += 1;
         }
     }
     return body;
@@ -327,7 +333,7 @@ function sha256Hex(content) {
 }
 function createSourceFileSafely(ts, filePath, text) {
     try {
-        return ts.createSourceFile(filePath, text, ts.ScriptTarget.Latest, /* setParentNodes */ true, /* scriptKind */ undefined);
+        return ts.createSourceFile(filePath, text, ts.ScriptTarget.Latest, /* setParentNodes */ true);
     }
     catch {
         return null;
@@ -352,30 +358,45 @@ function extractImportBindings(ts, node, imports) {
         imports.push({ module: moduleText, name: "" });
     }
 }
+function recordDeclaration(declarations, name, kind, sf, positionNode) {
+    declarations.push({
+        name,
+        kind,
+        line: sf.getLineAndCharacterOfPosition(positionNode.getStart(sf)).line + 1,
+    });
+}
 function extractDeclarationsFromNode(ts, node, sf, declarations) {
-    const nameIdent = node.name;
-    if (node.kind === ts.SyntaxKind.FunctionDeclaration && nameIdent && typeof nameIdent.escapedText === "string") {
-        declarations.push({ name: nameIdent.escapedText, kind: "function", line: sf.getLineAndCharacterOfPosition(node.getStart(sf)).line + 1 });
-    }
-    else if (node.kind === ts.SyntaxKind.ClassDeclaration && nameIdent && typeof nameIdent.escapedText === "string") {
-        declarations.push({ name: nameIdent.escapedText, kind: "class", line: sf.getLineAndCharacterOfPosition(node.getStart(sf)).line + 1 });
-    }
-    else if (node.kind === ts.SyntaxKind.InterfaceDeclaration && nameIdent && typeof nameIdent.escapedText === "string") {
-        declarations.push({ name: nameIdent.escapedText, kind: "interface", line: sf.getLineAndCharacterOfPosition(node.getStart(sf)).line + 1 });
-    }
-    else if (node.kind === ts.SyntaxKind.TypeAliasDeclaration && nameIdent && typeof nameIdent.escapedText === "string") {
-        declarations.push({ name: nameIdent.escapedText, kind: "type", line: sf.getLineAndCharacterOfPosition(node.getStart(sf)).line + 1 });
-    }
-    else if (node.kind === ts.SyntaxKind.VariableStatement) {
+    if (node.kind === ts.SyntaxKind.VariableStatement) {
         const declList = node.declarationList;
-        if (declList) {
-            for (const decl of declList.declarations ?? []) {
-                const nm = decl.name;
-                if (nm && nm.kind === ts.SyntaxKind.Identifier && typeof nm.escapedText === "string") {
-                    declarations.push({ name: nm.escapedText, kind: "const", line: sf.getLineAndCharacterOfPosition(decl.getStart(sf)).line + 1 });
-                }
+        if (!declList)
+            return;
+        for (const decl of declList.declarations ?? []) {
+            const nm = decl.name;
+            if (nm && nm.kind === ts.SyntaxKind.Identifier && typeof nm.escapedText === "string") {
+                recordDeclaration(declarations, nm.escapedText, "const", sf, decl);
             }
         }
+        return;
+    }
+    const nameIdent = node.name;
+    if (!nameIdent || typeof nameIdent.escapedText !== "string")
+        return;
+    const name = nameIdent.escapedText;
+    switch (node.kind) {
+        case ts.SyntaxKind.FunctionDeclaration:
+            recordDeclaration(declarations, name, "function", sf, node);
+            return;
+        case ts.SyntaxKind.ClassDeclaration:
+            recordDeclaration(declarations, name, "class", sf, node);
+            return;
+        case ts.SyntaxKind.InterfaceDeclaration:
+            recordDeclaration(declarations, name, "interface", sf, node);
+            return;
+        case ts.SyntaxKind.TypeAliasDeclaration:
+            recordDeclaration(declarations, name, "type", sf, node);
+            return;
+        default:
+            return;
     }
 }
 async function parseTsFile(filePath, text) {
@@ -956,6 +977,13 @@ function basenameOf(p) {
 // ---------------------------------------------------------------------------
 // Comparison
 // ---------------------------------------------------------------------------
+function comparePaths(a, b) {
+    if (a < b)
+        return -1;
+    if (a > b)
+        return 1;
+    return 0;
+}
 function compareContextItem(a, b) {
     const ORDER = {
         changed_declaration: 0,
@@ -968,7 +996,7 @@ function compareContextItem(a, b) {
     const ord = ORDER[a.sourceKind] - ORDER[b.sourceKind];
     if (ord !== 0)
         return ord;
-    return a.path < b.path ? -1 : a.path > b.path ? 1 : 0;
+    return comparePaths(a.path, b.path);
 }
 // ---------------------------------------------------------------------------
 // Renderer
@@ -4265,9 +4293,16 @@ function validateReviewPolicy(raw, filePath) {
     const policy = buildPolicy(raw);
     return { ok: true, policy };
 }
+function receivedKind(raw) {
+    if (raw === null)
+        return "null";
+    if (Array.isArray(raw))
+        return "array";
+    return typeof raw;
+}
 function validateShape(raw, filePath) {
     if (raw === null || typeof raw !== "object" || Array.isArray(raw)) {
-        return fail("invalid-type", `policy at ${filePath}: expected object, received ${raw === null ? "null" : Array.isArray(raw) ? "array" : typeof raw}`);
+        return fail("invalid-type", `policy at ${filePath}: expected object, received ${receivedKind(raw)}`);
     }
     return { ok: true, policy: DEFAULT_REVIEW_POLICY };
 }
@@ -5815,14 +5850,17 @@ function assertMethodAllowed(method, allowedMethods) {
         throw new Error(`full-mode fetch rejected: method "${method}" is not in allowlist ${JSON.stringify(allowedMethods)}`);
     }
 }
+function computeBodyBytes(body) {
+    if (typeof body === "string")
+        return body.length;
+    if (Array.isArray(body))
+        return JSON.stringify(body).length;
+    return 0;
+}
 function assertBodySize(body) {
     if (body === undefined || body === null || body === "" || body === "undefined")
         return;
-    const bodyBytes = typeof body === "string"
-        ? body.length
-        : Array.isArray(body)
-            ? JSON.stringify(body).length
-            : 0;
+    const bodyBytes = computeBodyBytes(body);
     if (bodyBytes > MAX_BODY_BYTES) {
         throw new Error(`full-mode fetch rejected: body of ${bodyBytes} bytes exceeds MAX_BODY_BYTES (${MAX_BODY_BYTES})`);
     }
@@ -19515,22 +19553,31 @@ function isGlobPattern(pattern) {
  */
 function globToRegexSource(pattern) {
     let out = "";
-    for (let i = 0; i < pattern.length; i++) {
+    let i = 0;
+    while (i < pattern.length) {
         const ch = pattern[i];
-        if (ch === undefined)
+        if (ch === undefined) {
+            i += 1;
             continue;
+        }
         if (ch === "*") {
             const starResult = translateStar(pattern, i);
             out += starResult.fragment;
-            i = starResult.nextIndex;
+            // `nextIndex` skips past `**` or `**/`; the `+ 1` advances past
+            // the consumed fragment so the next iteration starts on the
+            // character after the matched metacharacter.
+            i = starResult.nextIndex + 1;
         }
         else if (ch === "?") {
             out += "[^/]";
+            i += 1;
         }
         else if (ch === "[") {
             const classResult = translateCharClass(pattern, i);
             out += classResult.fragment;
-            i = classResult.nextIndex;
+            // `nextIndex` points at the closing `]` (or the unmatched `[`
+            // itself); the `+ 1` advances past the consumed char class.
+            i = classResult.nextIndex + 1;
         }
         else {
             // Regex-escape any literal so `.`, `+`, `(`, `{`, etc. don't
@@ -19538,6 +19585,7 @@ function globToRegexSource(pattern) {
             // the gate but never expanded here — the braces are treated as
             // literal regex characters.
             out += ch.replace(/[\\^$.+()|{}]/gu, String.raw `\$&`);
+            i += 1;
         }
     }
     return out;

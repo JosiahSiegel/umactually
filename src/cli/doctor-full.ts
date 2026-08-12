@@ -207,14 +207,15 @@ function assertMethodAllowed(method: string, allowedMethods: readonly string[]):
   }
 }
 
+function computeBodyBytes(body: RequestInit["body"]): number {
+  if (typeof body === "string") return body.length;
+  if (Array.isArray(body)) return JSON.stringify(body).length;
+  return 0;
+}
+
 function assertBodySize(body: RequestInit["body"]): void {
   if (body === undefined || body === null || body === "" || body === "undefined") return;
-  const bodyBytes =
-    typeof body === "string"
-      ? body.length
-      : Array.isArray(body)
-      ? JSON.stringify(body).length
-      : 0;
+  const bodyBytes = computeBodyBytes(body);
   if (bodyBytes > MAX_BODY_BYTES) {
     throw new Error(
       `full-mode fetch rejected: body of ${bodyBytes} bytes exceeds MAX_BODY_BYTES (${MAX_BODY_BYTES})`,

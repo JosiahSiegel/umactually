@@ -1177,9 +1177,11 @@ function finalizeRunResult(
 ): LiveRunResult {
   const reviewId = parentThreadId ?? postedInlines[0]?.threadId;
   const parseFailed = provider.review.parseFailed === true;
-  const successMessage = failedIndices.length > 0
-    ? `posted Azure review (${postedInlines.length} threads, ${failedIndices.length} failed)${parseFailed ? " (parse failed)" : ""}`
-    : `posted Azure review (${postedInlines.length} threads)${parseFailed ? " (parse failed)" : ""}`;
+  const parseFailedSuffix = parseFailed ? " (parse failed)" : "";
+  const threadSummary = failedIndices.length > 0
+    ? `${postedInlines.length} threads, ${failedIndices.length} failed`
+    : `${postedInlines.length} threads`;
+  const successMessage = `posted Azure review (${threadSummary})${parseFailedSuffix}`;
   return {
     exitCode: parseFailed ? 1 : 0,
     posted: true,

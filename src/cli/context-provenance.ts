@@ -240,16 +240,22 @@ function appendLiteralChar(body: string, ch: string | undefined): string {
 
 function translateGlobBody(pattern: string): string {
   let body = "";
-  for (let i = 0; i < pattern.length; i += 1) {
+  let i = 0;
+  while (i < pattern.length) {
     const ch = pattern[i];
     if (ch === "*") {
       const r = appendStarSequence(body, pattern, i);
       body = r.body;
-      i = r.next;
+      // `r.next` advances past `**` or `**/` (skipping the second `*`
+      // and any trailing `/`); each branch ends with `i + 1` so the
+      // next iteration moves on past the consumed fragment.
+      i = r.next + 1;
     } else if (ch === "?") {
       body += "[^/]";
+      i += 1;
     } else {
       body = appendLiteralChar(body, ch);
+      i += 1;
     }
   }
   return body;
@@ -401,7 +407,7 @@ function createSourceFileSafely(
   text: string,
 ): ReturnType<typeof ts.createSourceFile> | null {
   try {
-    return ts.createSourceFile(filePath, text, ts.ScriptTarget.Latest, /* setParentNodes */ true, /* scriptKind */ undefined);
+    return ts.createSourceFile(filePath, text, ts.ScriptTarget.Latest, /* setParentNodes */ true);
   } catch {
     return null;
   }
@@ -431,31 +437,55 @@ function extractImportBindings(
   }
 }
 
+function recordDeclaration(
+  declarations: Declaration[],
+  name: string,
+  kind: Declaration["kind"],
+  sf: ReturnType<typeof import("typescript").createSourceFile>,
+  positionNode: { getStart(sf: ReturnType<typeof import("typescript").createSourceFile>): number },
+): void {
+  declarations.push({
+    name,
+    kind,
+    line: sf.getLineAndCharacterOfPosition(positionNode.getStart(sf)).line + 1,
+  });
+}
+
 function extractDeclarationsFromNode(
   ts: typeof import("typescript"),
   node: TsNode,
   sf: ReturnType<typeof ts.createSourceFile>,
   declarations: Declaration[],
 ): void {
-  const nameIdent = (node as { name?: { escapedText?: string | number } }).name;
-  if (node.kind === ts.SyntaxKind.FunctionDeclaration && nameIdent && typeof nameIdent.escapedText === "string") {
-    declarations.push({ name: nameIdent.escapedText, kind: "function", line: sf.getLineAndCharacterOfPosition(node.getStart(sf)).line + 1 });
-  } else if (node.kind === ts.SyntaxKind.ClassDeclaration && nameIdent && typeof nameIdent.escapedText === "string") {
-    declarations.push({ name: nameIdent.escapedText, kind: "class", line: sf.getLineAndCharacterOfPosition(node.getStart(sf)).line + 1 });
-  } else if (node.kind === ts.SyntaxKind.InterfaceDeclaration && nameIdent && typeof nameIdent.escapedText === "string") {
-    declarations.push({ name: nameIdent.escapedText, kind: "interface", line: sf.getLineAndCharacterOfPosition(node.getStart(sf)).line + 1 });
-  } else if (node.kind === ts.SyntaxKind.TypeAliasDeclaration && nameIdent && typeof nameIdent.escapedText === "string") {
-    declarations.push({ name: nameIdent.escapedText, kind: "type", line: sf.getLineAndCharacterOfPosition(node.getStart(sf)).line + 1 });
-  } else if (node.kind === ts.SyntaxKind.VariableStatement) {
-    const declList = (node as { declarationList?: { declarations?: readonly { name?: { kind: TsSyntaxKind; escapedText?: string | number }; getStart(sf: unknown): number }[] } }).declarationList;
-    if (declList) {
-      for (const decl of declList.declarations ?? []) {
-        const nm = decl.name;
-        if (nm && nm.kind === ts.SyntaxKind.Identifier && typeof nm.escapedText === "string") {
-          declarations.push({ name: nm.escapedText, kind: "const", line: sf.getLineAndCharacterOfPosition(decl.getStart(sf)).line + 1 });
-        }
+  if (node.kind === ts.SyntaxKind.VariableStatement) {
+    const declList = (node as { declarationList?: { declarations?: readonly { name?: { kind: TsSyntaxKind; escapedText?: string | number }; getStart(sf: ReturnType<typeof ts.createSourceFile>): number }[] } }).declarationList;
+    if (!declList) return;
+    for (const decl of declList.declarations ?? []) {
+      const nm = decl.name;
+      if (nm && nm.kind === ts.SyntaxKind.Identifier && typeof nm.escapedText === "string") {
+        recordDeclaration(declarations, nm.escapedText, "const", sf, decl);
       }
     }
+    return;
+  }
+  const nameIdent = (node as { name?: { escapedText?: string | number } }).name;
+  if (!nameIdent || typeof nameIdent.escapedText !== "string") return;
+  const name = nameIdent.escapedText;
+  switch (node.kind) {
+    case ts.SyntaxKind.FunctionDeclaration:
+      recordDeclaration(declarations, name, "function", sf, node);
+      return;
+    case ts.SyntaxKind.ClassDeclaration:
+      recordDeclaration(declarations, name, "class", sf, node);
+      return;
+    case ts.SyntaxKind.InterfaceDeclaration:
+      recordDeclaration(declarations, name, "interface", sf, node);
+      return;
+    case ts.SyntaxKind.TypeAliasDeclaration:
+      recordDeclaration(declarations, name, "type", sf, node);
+      return;
+    default:
+      return;
   }
 }
 
@@ -1182,6 +1212,12 @@ function basenameOf(p: string): string {
 // Comparison
 // ---------------------------------------------------------------------------
 
+function comparePaths(a: string, b: string): number {
+  if (a < b) return -1;
+  if (a > b) return 1;
+  return 0;
+}
+
 function compareContextItem(a: ContextItem, b: ContextItem): number {
   const ORDER: Record<ContextItemKind, number> = {
     changed_declaration: 0,
@@ -1193,7 +1229,7 @@ function compareContextItem(a: ContextItem, b: ContextItem): number {
   };
   const ord = ORDER[a.sourceKind] - ORDER[b.sourceKind];
   if (ord !== 0) return ord;
-  return a.path < b.path ? -1 : a.path > b.path ? 1 : 0;
+  return comparePaths(a.path, b.path);
 }
 
 // ---------------------------------------------------------------------------

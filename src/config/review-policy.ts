@@ -243,9 +243,15 @@ export function validateReviewPolicy(
   return { ok: true, policy };
 }
 
+function receivedKind(raw: unknown): string {
+  if (raw === null) return "null";
+  if (Array.isArray(raw)) return "array";
+  return typeof raw;
+}
+
 function validateShape(raw: unknown, filePath: string): ValidateReviewPolicyResult {
   if (raw === null || typeof raw !== "object" || Array.isArray(raw)) {
-    return fail("invalid-type", `policy at ${filePath}: expected object, received ${raw === null ? "null" : Array.isArray(raw) ? "array" : typeof raw}`);
+    return fail("invalid-type", `policy at ${filePath}: expected object, received ${receivedKind(raw)}`);
   }
   return { ok: true, policy: DEFAULT_REVIEW_POLICY };
 }

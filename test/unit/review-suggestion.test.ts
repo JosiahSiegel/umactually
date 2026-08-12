@@ -220,12 +220,28 @@ describe("validateSuggestion — rejection classes", () => {
     expect(result.rejection?.kind).toBe(expectedErrorKind);
   });
 
-  it("rejects binary replacement (null bytes)", () => {
+  it.each([
+    {
+      name: "binary replacement (null bytes)",
+      replacement: "const x = 2;\x00\x01binary",
+      expectedKind: "binary",
+    },
+    {
+      name: "secret-bearing replacement (AWS key pattern)",
+      replacement: "const key = 'AKIAIOSFODNN7EXAMPLE';",
+      expectedKind: "secret-bearing",
+    },
+    {
+      name: "secret-bearing replacement (GitHub PAT)",
+      replacement: "const t = 'ghp_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa';",
+      expectedKind: "secret-bearing",
+    },
+  ])("rejects $name", ({ replacement, expectedKind }) => {
     const originalText = "const x = 0;";
     const positions = makePositions([{ path: "a.ts", line: 1 }]);
     const result = validateSuggestion({
       rawSuggestion: {
-        replacement: "const x = 2;\x00\x01binary",
+        replacement,
         originalTextHash: sha256(originalText),
       },
       path: "a.ts",
@@ -233,39 +249,7 @@ describe("validateSuggestion — rejection classes", () => {
       diffPositions: positions,
       originalLineText: originalText,
     });
-    expect(result.rejection?.kind).toBe("binary");
-  });
-
-  it("rejects secret-bearing replacement (AWS key pattern)", () => {
-    const originalText = "const x = 0;";
-    const positions = makePositions([{ path: "a.ts", line: 1 }]);
-    const result = validateSuggestion({
-      rawSuggestion: {
-        replacement: "const key = 'AKIAIOSFODNN7EXAMPLE';",
-        originalTextHash: sha256(originalText),
-      },
-      path: "a.ts",
-      line: 1,
-      diffPositions: positions,
-      originalLineText: originalText,
-    });
-    expect(result.rejection?.kind).toBe("secret-bearing");
-  });
-
-  it("rejects secret-bearing replacement (GitHub PAT)", () => {
-    const originalText = "const x = 0;";
-    const positions = makePositions([{ path: "a.ts", line: 1 }]);
-    const result = validateSuggestion({
-      rawSuggestion: {
-        replacement: "const t = 'ghp_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa';",
-        originalTextHash: sha256(originalText),
-      },
-      path: "a.ts",
-      line: 1,
-      diffPositions: positions,
-      originalLineText: originalText,
-    });
-    expect(result.rejection?.kind).toBe("secret-bearing");
+    expect(result.rejection?.kind).toBe(expectedKind);
   });
 
   it("rejects malformed input (missing replacement)", () => {

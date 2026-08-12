@@ -433,25 +433,36 @@ function isGlobPattern(pattern: string): boolean {
  */
 function globToRegexSource(pattern: string): string {
   let out = "";
-  for (let i = 0; i < pattern.length; i++) {
+  let i = 0;
+  while (i < pattern.length) {
     const ch = pattern[i];
-    if (ch === undefined) continue;
+    if (ch === undefined) {
+      i += 1;
+      continue;
+    }
     if (ch === "*") {
       const starResult = translateStar(pattern, i);
       out += starResult.fragment;
-      i = starResult.nextIndex;
+      // `nextIndex` skips past `**` or `**/`; the `+ 1` advances past
+      // the consumed fragment so the next iteration starts on the
+      // character after the matched metacharacter.
+      i = starResult.nextIndex + 1;
     } else if (ch === "?") {
       out += "[^/]";
+      i += 1;
     } else if (ch === "[") {
       const classResult = translateCharClass(pattern, i);
       out += classResult.fragment;
-      i = classResult.nextIndex;
+      // `nextIndex` points at the closing `]` (or the unmatched `[`
+      // itself); the `+ 1` advances past the consumed char class.
+      i = classResult.nextIndex + 1;
     } else {
       // Regex-escape any literal so `.`, `+`, `(`, `{`, etc. don't
       // break out. Brace-expansion patterns (`{a,b}`) are detected at
       // the gate but never expanded here — the braces are treated as
       // literal regex characters.
       out += ch.replace(/[\\^$.+()|{}]/gu, String.raw`\$&`);
+      i += 1;
     }
   }
   return out;
