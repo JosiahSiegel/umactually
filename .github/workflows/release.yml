@@ -221,7 +221,7 @@ jobs:
           # 4 path entries, each a single directory or file under the
           # shared `release/` ancestor that the upload action strips.
           # The merger (build-package) downloads this artifact via
-          # actions/download-artifact@v4, which extracts the same
+          # actions/download-artifact@v8, which extracts the same
           # `public/...`, `internal/...`, `internal/raw/...` layout
           # the existing publish + smoke jobs expect.
           path: |
@@ -448,14 +448,14 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Download non-Windows candidate bundle
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: umactually-non-windows-candidate
           path: non-windows
           github-token: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Download Windows candidate bundle
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: umactually-windows-candidate
           path: windows
@@ -539,7 +539,7 @@ jobs:
           mkdir -p candidate
           unzip -q candidate-transport.zip -d candidate
       - name: Download exact candidate artifact with pinned action
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           artifact-ids: ${{ needs.build-package.outputs.artifact_id }}
           path: candidate
@@ -601,7 +601,7 @@ jobs:
           mkdir -p candidate
           unzip -q candidate-transport.zip -d candidate
       - name: Download exact candidate artifact with pinned action
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           artifact-ids: ${{ needs.build-package.outputs.artifact_id }}
           path: candidate
@@ -663,7 +663,7 @@ jobs:
           mkdir -p candidate
           unzip -q candidate-transport.zip -d candidate
       - name: Download exact candidate artifact with pinned action
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           artifact-ids: ${{ needs.build-package.outputs.artifact_id }}
           path: candidate
@@ -726,7 +726,7 @@ jobs:
           mkdir -p candidate
           unzip -q candidate-transport.zip -d candidate
       - name: Download exact candidate artifact with pinned action
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           artifact-ids: ${{ needs.build-package.outputs.artifact_id }}
           path: candidate
@@ -815,7 +815,7 @@ jobs:
           mkdir -p candidate
           unzip -q candidate-transport.zip -d candidate
       - name: Download exact candidate artifact with pinned action
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           artifact-ids: ${{ needs.build-package.outputs.artifact_id }}
           path: candidate
@@ -881,7 +881,7 @@ jobs:
           mkdir -p candidate
           unzip -q candidate-transport.zip -d candidate
       - name: Download exact candidate artifact with pinned action
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           artifact-ids: ${{ needs.build-package.outputs.artifact_id }}
           path: candidate

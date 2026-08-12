@@ -47,7 +47,7 @@ describe("init CI templates drift contract", () => {
     expect(body).toMatch(/cancel-in-progress:\s*true/u);
     expect(body).toMatch(/contents:\s*read/u);
     expect(body).toMatch(/pull-requests:\s*write/u);
-    expect(body).toMatch(/actions\/setup-node@v4/u);
+    expect(body).toMatch(/actions\/setup-node@v7/u);
     expect(body).toMatch(/node-version:\s*"24"/u);
     expect(body).toMatch(/GITHUB_TOKEN:\s*\$\{\{\s*github\.token\s*\}\}/u);
     expect(body).toMatch(/UMACTUALLY_API_URL:\s*\$\{\{\s*secrets\.UMACTUALLY_API_URL\s*\}\}/u);

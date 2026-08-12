@@ -341,7 +341,7 @@ describe("release workflow action pins", () => {
       offenders,
       `actions/download-artifact@${BUGGY_DOWNLOAD_SHA} appeared in ${offenders.length} place(s): ${offenders.map((o) => `${o.file}:${o.line}`).join(", ")}. ` +
         `That SHA exists in actions/upload-artifact (a commit dated 2026-04-10) but does NOT exist in actions/download-artifact. ` +
-        `Use actions/download-artifact@v4 (the floating major tag) or a SHA that actually exists in the download-artifact repo.`,
+        `Use actions/download-artifact@v8 (the floating major tag) or a SHA that actually exists in the download-artifact repo.`,
     ).toEqual([]);
   });
 

@@ -1221,7 +1221,7 @@ describe("Release workflow contract — RED against current workflow (Todo 9 fix
       // Then: it retrieves the producer artifact ID, verifies transport and
       // inner checksums, serves localhost, pins the candidate tag/base, invokes
       // the real installer, and exercises all installed CLI surfaces.
-      expect(text, `${id} must use download-artifact@v4`).toContain("actions/download-artifact@v4");
+      expect(text, `${id} must use download-artifact@v8`).toContain("actions/download-artifact@v8");
       expect(text).toContain("needs.build-package.outputs.artifact_id");
       expect(text).toContain("needs.build-package.outputs.artifact_digest");
       expect(text).toMatch(/sha256sum|shasum -a 256|Get-FileHash/u);
@@ -1458,7 +1458,7 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
       - name: Setup Node
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v7
         with:
           node-version: "25"
       - name: Install dependencies
@@ -1487,7 +1487,7 @@ jobs:
     runs-on: ubuntu-24.04
     steps:
       - name: Download candidate
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: umactually-release-candidate
           path: candidate
@@ -1499,7 +1499,7 @@ jobs:
     runs-on: ubuntu-24.04-arm
     steps:
       - name: Download candidate
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: umactually-release-candidate
           path: candidate
@@ -1511,7 +1511,7 @@ jobs:
     runs-on: macos-15
     steps:
       - name: Download candidate
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: umactually-release-candidate
           path: candidate
@@ -1523,7 +1523,7 @@ jobs:
     runs-on: windows-2025
     steps:
       - name: Download candidate
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: umactually-release-candidate
           path: candidate
@@ -1985,9 +1985,9 @@ describe("Post-release e2e workflow contract", () => {
     ).not.toMatch(/\${{ inputs\.tag }}/);
   });
 
-  it("POST-RELEASE-WORKFLOW-UPLOADS-ARTIFACTS: review artifacts are uploaded with actions/upload-artifact@v4 (v3 is deprecated)", () => {
+  it("POST-RELEASE-WORKFLOW-UPLOADS-ARTIFACTS: review artifacts are uploaded with actions/upload-artifact@v7 (v3 is deprecated)", () => {
     const text = readFileSync(join(REPO_ROOT, POST_RELEASE_WORKFLOW), "utf8");
-    expect(text).toMatch(/actions\/upload-artifact@v4/);
+    expect(text).toMatch(/actions\/upload-artifact@v7/);
     // Explicit negative: v3 is deprecated and must NOT be used.
     expect(text).not.toMatch(/actions\/upload-artifact@v3[^0-9]/);
   });

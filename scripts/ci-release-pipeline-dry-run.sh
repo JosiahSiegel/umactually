@@ -97,7 +97,7 @@ log() { printf '[dry-run] %s\n' "$*" >&2; }
 fail() { printf '[dry-run] FAIL: %s\n' "$*" >&2; exit 1; }
 
 if ! command -v node >/dev/null 2>&1; then
-  fail "node not on PATH; CI installs actions/setup-node@v4 with node-version 25.7.0"
+  fail "node not on PATH; CI installs actions/setup-node@v7 with node-version 25.7.0"
 fi
 NODE_VERSION="$(node --version)"
 NODE_MAJOR="${NODE_VERSION#v}"
@@ -120,11 +120,11 @@ NODE_MAJOR="${NODE_MAJOR%%.*}"
 NODE_MINOR_PATCH="${NODE_VERSION#v}"
 NODE_MINOR_PATCH="${NODE_MINOR_PATCH#*.}"
 if [[ ! "${NODE_MINOR_PATCH%%.*}" =~ ^[0-9]+$ ]] || [[ ! "${NODE_MINOR_PATCH#*.}" =~ ^[0-9]+$ ]]; then
-  fail "expected node >= 25.7.0 (numeric minor.patch), got ${NODE_VERSION}. CI pins via actions/setup-node@v4 with node-version 25.7.0."
+  fail "expected node >= 25.7.0 (numeric minor.patch), got ${NODE_VERSION}. CI pins via actions/setup-node@v7 with node-version 25.7.0."
 fi
 NODE_MINOR_PATCH_NUM=$(( ${NODE_MINOR_PATCH%%.*} * 100 + ${NODE_MINOR_PATCH#*.} ))
 if [[ "${NODE_MAJOR}" != "25" ]] || [[ "${NODE_MINOR_PATCH_NUM}" -lt 700 ]]; then
-  fail "expected node >= 25.7.0, got ${NODE_VERSION}. CI pins via actions/setup-node@v4 with node-version 25.7.0."
+  fail "expected node >= 25.7.0, got ${NODE_VERSION}. CI pins via actions/setup-node@v7 with node-version 25.7.0."
 fi
 log "node ${NODE_VERSION}"
 
