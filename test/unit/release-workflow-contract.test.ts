@@ -12,7 +12,12 @@ const REPO_ROOT = resolve(import.meta.dirname, "..", "..");
 // harder to audit.
 
 // ===========================================================================
-// Workflow contract: Todo 4 of .omo/plans/release-binary-download-size.md
+// Workflow contract: Todo 4 of the release-binary-download-size plan (workflow-contract suite).
+// Asserts build/package uploads one candidate bundle; native/installer/structural checks depend on it;
+// publish depends on every required gate; no release action runs in build/package; only publish
+// receives `contents: write`; publish downloads the tested bundle; public files are exactly six
+// archive names plus `checksums.txt`; raw executables and `release-size-report.json` are not public
+// assets; post-publication canary depends on publish.
 //
 // These tests express the pre-publication graph contract that the release
 // workflow MUST satisfy once Todo 9 ships. They are deliberately RED against
@@ -1044,9 +1049,10 @@ function probeContract(workflow: Workflow): readonly Violation[] {
 describe("Release workflow contract — RED against current workflow (Todo 9 fix)", () => {
   // Self-attestation comment (mandatory per task brief):
   // The current `.github/workflows/release.yml` ships raw `.exe` artifacts
-  // and conflates build + publish inside one job. Todo 9 of
-  // `.omo/plans/release-binary-download-size.md` rewrites the workflow to
-  // satisfy this contract. The tests below must FAIL today and PASS after
+  // and conflates build + publish inside one job. Todo 9 of the
+  // release-binary-download-size plan (workflow split: candidate build/package,
+  // required verification, least-privilege publication) rewrites the workflow
+  // to satisfy this contract. The tests below must FAIL today and PASS after
   // that rewrite.
 
   it("RELEASE-WORKFLOW-CONTRACT: the release.yml satisfies every pre-publication graph contract rule", () => {

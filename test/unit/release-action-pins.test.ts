@@ -1,7 +1,10 @@
 // SPDX-License-Identifier: MIT
 // Regression tests for v0.5.0 release.yml hotfixes.
 //
-// Bug history (see `.omo/notepads/release-binary-download-size/learnings.md`):
+// Bug history: v0.5.0 release.yml shipped seven hotfixes that this file nails as regression contracts.
+// The historically-recorded hotfix trail covers (a) hotfix #2 SHA-typo where `actions/download-artifact`
+// was pinned to the upload-artifact SHA (commit 8082ef7), and (b) hotfix #3 `GH_TOKEN` env gap across
+// all smoke jobs. The full notepad trail is local-only context now (see commit history for provenance).
 //
 // Hotfix #2 (commit 8082ef7): .github/workflows/release.yml pinned
 // `actions/download-artifact` to the same 40-char SHA as
@@ -442,8 +445,10 @@ describe("release workflow action pins", () => {
   // yet. The fix is a tight retry loop (curl / Invoke-WebRequest) that
   // polls until the server returns 200 on checksums.txt.
   //
-  // Bug history (see `.omo/notepads/release-binary-download-size/
-  // learnings.md`, Hotfix 4):
+  // Bug history (Hotfix 4): release run 29607329886 surfaced a class of bugs across every smoke job that
+  // hosts the candidate bundle via `python3 -m http.server` before invoking the installer. The 0ms
+  // "Failed to connect" is the deterministic signature: curl gets a RST/ECONNREFUSED before the
+  // kernel's listen queue is wired up.
   //
   // Release run 29607329886 surfaced this as a class of bugs across
   // every smoke job that hosts the candidate bundle via
