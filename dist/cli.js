@@ -1141,7 +1141,7 @@ const DEFAULT_ANTHROPIC_URL = "https://api.anthropic.com/v1";
  * recognizes. Exported so callers (tests, log filters) can use the exact same
  * pattern.
  */
-const SECRET_REGEX = /gh[pousr]_[A-Za-z0-9]+|glpat-[A-Za-z0-9]+|s\.r[A-Za-z0-9]+|sk-[A-Za-z0-9]+|eyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+/gu;
+const SECRET_REGEX = /gh[pousr]_\w+|glpat-\w+|s\.r\w+|sk-\w+|eyJ[\w-]+\.[\w-]+/gu;
 const VALID_PROVIDERS = new Set([
     "openai-compatible",
     "anthropic",
@@ -1171,52 +1171,91 @@ function readSavedConfig(deps) {
     for (const candidate of [SAVED_CONFIG_REPO_PATH(deps.cwd), SAVED_CONFIG_GLOBAL_PATH(deps.homeDir)]) {
         if (!fs.exists(candidate))
             continue;
-        if (fs.isSymlink(candidate)) {
-            return {
-                ok: false,
-                path: candidate,
-                exitCode: 1,
-                message: `refusing to read saved config: ${candidate} is a symlink; remove it and re-run init`,
-            };
-        }
-        if (!fs.isFile(candidate)) {
-            return {
-                ok: false,
-                path: candidate,
-                exitCode: 1,
-                message: `refusing to read saved config: ${candidate} is not a regular file`,
-            };
-        }
-        let raw;
-        try {
-            raw = fs.readFile(candidate);
-        }
-        catch (err) {
-            return {
-                ok: false,
-                path: candidate,
-                exitCode: 2,
-                message: `corrupt saved config at ${candidate}: ${err instanceof Error ? err.message : String(err)}; rm ${candidate} and re-run init to recover`,
-            };
-        }
-        let parsed;
-        try {
-            parsed = JSON.parse(raw);
-        }
-        catch (err) {
-            return {
-                ok: false,
-                path: candidate,
-                exitCode: 2,
-                message: `corrupt saved config at ${candidate}: ${err instanceof Error ? err.message : String(err)}; rm ${candidate} and re-run init to recover`,
-            };
-        }
-        const validated = validateSavedConfig(parsed, candidate);
-        if (!validated.ok)
-            return validated;
-        return { ok: true, config: validated.config, path: candidate };
+        const result = readCandidate(candidate, fs);
+        if (result !== null)
+            return result;
     }
     return { ok: true, config: null, path: SAVED_CONFIG_GLOBAL_PATH(deps.homeDir) };
+}
+/**
+ * Try to read and validate one candidate saved-config path. Returns
+ * `null` when the candidate is missing (the caller advances to the
+ * next candidate) and a fully-formed `ReadSavedConfigResult`
+ * otherwise (success OR hard failure).
+ */
+function readCandidate(candidate, fs) {
+    if (!fs.exists(candidate))
+        return null;
+    if (fs.isSymlink(candidate))
+        return readSymlinkFail(candidate);
+    if (!fs.isFile(candidate))
+        return readNotFileFail(candidate);
+    const raw = readCandidateRaw(candidate, fs);
+    if ("ok" in raw)
+        return raw;
+    const parsed = parseCandidateJson(candidate, raw.value);
+    if ("ok" in parsed)
+        return parsed;
+    const validated = validateSavedConfig(parsed.value, candidate);
+    if (!validated.ok)
+        return validated;
+    return { ok: true, config: validated.config, path: candidate };
+}
+/**
+ * Read the raw bytes of one candidate file; wraps the IO failure
+ * in the canonical `corrupt saved config` envelope.
+ */
+function readCandidateRaw(candidate, fs) {
+    try {
+        return { value: fs.readFile(candidate) };
+    }
+    catch (err) {
+        return {
+            ok: false,
+            path: candidate,
+            exitCode: 2,
+            message: `corrupt saved config at ${candidate}: ${err instanceof Error ? err.message : String(err)}; rm ${candidate} and re-run init to recover`,
+        };
+    }
+}
+/**
+ * Parse one candidate file's raw bytes as JSON; wraps the parse
+ * failure in the canonical `corrupt saved config` envelope.
+ */
+function parseCandidateJson(candidate, raw) {
+    try {
+        return { value: JSON.parse(raw) };
+    }
+    catch (err) {
+        return {
+            ok: false,
+            path: candidate,
+            exitCode: 2,
+            message: `corrupt saved config at ${candidate}: ${err instanceof Error ? err.message : String(err)}; rm ${candidate} and re-run init to recover`,
+        };
+    }
+}
+/**
+ * Build the "refusing to read saved config: symlink" envelope.
+ */
+function readSymlinkFail(candidate) {
+    return {
+        ok: false,
+        path: candidate,
+        exitCode: 1,
+        message: `refusing to read saved config: ${candidate} is a symlink; remove it and re-run init`,
+    };
+}
+/**
+ * Build the "refusing to read saved config: not a regular file" envelope.
+ */
+function readNotFileFail(candidate) {
+    return {
+        ok: false,
+        path: candidate,
+        exitCode: 1,
+        message: `refusing to read saved config: ${candidate} is not a regular file`,
+    };
 }
 function validateSavedConfig(parsed, candidate) {
     if (parsed === null || typeof parsed !== "object") {
@@ -1315,230 +1354,320 @@ async function writeSavedConfig(config, deps) {
         ? SAVED_CONFIG_REPO_PATH(deps.cwd)
         : SAVED_CONFIG_GLOBAL_PATH(deps.homeDir);
     const targetDir = deps.scope === "repo" ? deps.cwd : SAVED_CONFIG_GLOBAL_DIR(deps.homeDir);
-    // -- Acquire flock (advisory; non-blocking) -----------------------------
     const lockPath = SAVED_CONFIG_GLOBAL_LOCK(deps.homeDir);
     let lockFd = null;
     try {
-        if (isPosix) {
-            // Ensure the lock dir exists so we can open the lock file even on a
-            // first-run machine. mkdirSync is a no-op if the dir already exists.
-            try {
-                (0,external_node_fs_.mkdirSync)(SAVED_CONFIG_GLOBAL_DIR(deps.homeDir), { recursive: true, mode: 0o700 });
-            }
-            catch {
-                // mkdir failure here will resurface at the target-dir ensure below.
-            }
-            // Open the lock file (creates it if missing) so flock(1) has a real
-            // inode to lock against — the file itself carries no payload, only
-            // the inode carries the lock.
-            try {
-                lockFd = (0,external_node_fs_.openSync)(lockPath, "w");
-            }
-            catch {
-                return {
-                    ok: false,
-                    exitCode: 1,
-                    message: `cannot acquire init lock at ${lockPath}; another init may be in progress; rm ${lockPath} if stale`,
-                };
-            }
-            // Non-blocking try-lock via `flock(1) -n <lockPath> true`. We pass
-            // the PATH (not the fd number — see saved-config-flock.ts for why
-            // the fd-number form silently no-ops in vite-node / CI sandboxes).
-            //
-            // Flock availability:
-            //   - flock(1) is in coreutils on every Linux and macOS (via brew
-            //     install coreutils). When it is present, status=0 means lock
-            //     acquired; status≠0 means another init holds it (contention).
-            //   - On hosts without flock(1) (macOS without coreutils, alpine
-            //     without busybox flock, restricted CI sandboxes), the wrapper
-            //     throws `FlockUnavailableError`. We MUST surface this so the
-            //     operator knows the init-time concurrency lock is NOT
-            //     enforced: writes can still race. The atomic-rename primitive
-            //     keeps the file corruption-safe (last-writer-wins on a per-
-            //     inode basis), but a parallel `umactually init` could clobber
-            //     a half-written sibling temp file if the lock is genuinely
-            //     missing. The check below records the unavailability; the
-            //     `lockUnavailable` flag is surfaced via the WriteSavedConfigResult
-            //     so the wizard can emit a hint to the user.
-            let flockResult = true;
-            let lockUnavailable = false;
-            try {
-                flockResult = tryFlockNonBlocking(lockPath);
-            }
-            catch (err) {
-                if (err instanceof FlockUnavailableError) {
-                    // flock(1) is missing on this host. Atomic-rename still prevents
-                    // file corruption; we lose only the "second init declines"
-                    // guarantee. Surface a hint to the operator so they understand
-                    // the weakened contract — see WriteSavedConfigResult.lockUnavailable.
-                    lockUnavailable = true;
-                }
-                else {
-                    throw err;
-                }
-            }
-            if (!flockResult) {
-                try {
-                    (0,external_node_fs_.closeSync)(lockFd);
-                    lockFd = null;
-                }
-                catch {
-                    // ignore
-                }
-                return {
-                    ok: false,
-                    exitCode: 1,
-                    message: `another init is in progress; rm ${lockPath} if stale`,
-                    lockUnavailable: false,
-                };
-            }
-            // Stash `lockUnavailable` on the active function scope — the
-            // success-return branch below reads it. We use a tiny mutable
-            // holder rather than a let inside the try block so the success
-            // path at the end of writeSavedConfig() can read it without
-            // threading it through every early return.
-            writeSavedConfigFlockUnavailable.flag = lockUnavailable;
-        }
-        // Windows: best-effort serialization via shared-lock semantics on the
-        // lock file's existence + the atomic-rename primitive. Documented above.
-        // -- Ensure target directory + 0o700 on POSIX ------------------------
-        try {
-            (0,external_node_fs_.mkdirSync)(targetDir, { recursive: true, mode: 0o700 });
-            if (isPosix && deps.scope === "global") {
-                // Re-stat the directory; root + restrictive umask can mask the mode
-                // arg. Best-effort: chmod and swallow the error (E-⚠8).
-                try {
-                    const st = (0,external_node_fs_.statSync)(targetDir);
-                    if ((st.mode & 0o777) !== 0o700) {
-                        (0,fs_atomic/* setMode */.iY)(targetDir, 0o700);
-                    }
-                }
-                catch {
-                    // ignore — chmod failure on a dir the user can already write to
-                    // is non-fatal; we still chmod the FILE to 0o600 below.
-                }
-            }
-        }
-        catch (err) {
-            return {
-                ok: false,
-                exitCode: 1,
-                message: `cannot create saved-config directory ${targetDir}: ${err instanceof Error ? err.message : String(err)}`,
-            };
-        }
-        // -- Refuse symlinks at the target -----------------------------------
+        const lock = acquireInitLock({
+            isPosix,
+            homeDir: deps.homeDir,
+            lockPath,
+        });
+        if ("error" in lock)
+            return lock.error;
+        lockFd = lock.fd;
+        writeSavedConfigFlockUnavailable.flag = lock.lockUnavailable;
+        const dirErr = ensureTargetDir(targetDir, isPosix, deps.scope);
+        if (dirErr !== null)
+            return dirErr;
         if (fs.isSymlink(targetPath)) {
-            return {
-                ok: false,
-                exitCode: 1,
-                message: `refusing to overwrite: ${targetPath} is a symlink; remove it and re-run init`,
-            };
+            return targetSymlinkFail(targetPath);
         }
-        // -- Existing-file handling ------------------------------------------
-        if (fs.exists(targetPath) && !fs.isSymlink(targetPath)) {
-            let existingIsCorrupt = false;
-            try {
-                const existingRaw = fs.readFile(targetPath);
-                JSON.parse(existingRaw); // throws on malformed JSON
-            }
-            catch {
-                existingIsCorrupt = true;
-            }
-            if (existingIsCorrupt) {
-                // Corrupt JSON: move aside instead of clobbering. The backup
-                // preserves operator history for forensics; the wizard surfaces
-                // the backup path in its C-7 envelope.
-                const mtime = (deps.now ?? Date.now)();
-                const backupPath = `${targetPath}.bak-${Math.floor(mtime)}`;
-                try {
-                    (0,external_node_fs_.renameSync)(targetPath, backupPath);
-                }
-                catch (err) {
-                    return {
-                        ok: false,
-                        exitCode: 1,
-                        message: `refusing to clobber corrupt saved config at ${targetPath} and could not move it aside: ${err instanceof Error ? err.message : String(err)}; rm ${targetPath} manually`,
-                    };
-                }
-            }
-            else if (!deps.force) {
-                // Valid JSON existing file: prompt for overwrite (unless --force).
-                if (deps.overwriteReader === undefined) {
-                    return {
-                        ok: false,
-                        exitCode: 1,
-                        message: `refusing to overwrite existing saved config at ${targetPath}; pass --force to bypass or answer 'y' to the overwrite prompt`,
-                    };
-                }
-                const answer = await deps.overwriteReader();
-                if (answer !== true) {
-                    return {
-                        ok: false,
-                        exitCode: 1,
-                        message: `refusing to overwrite existing saved config at ${targetPath}; nothing was written`,
-                    };
-                }
-            }
-        }
-        // -- Serialize with deterministic key order (schemaVersion, provider, apiUrl, model) -----
+        const existingErr = await handleExistingTarget(targetPath, fs, deps);
+        if (existingErr !== null)
+            return existingErr;
         const serialized = serializeSavedConfig(config);
-        // -- Defensive secret-regex scan -------------------------------------
-        if (SECRET_REGEX.test(serialized)) {
-            SECRET_REGEX.lastIndex = 0;
-            return {
-                ok: false,
-                exitCode: 1,
-                message: "internal: writer produced an unintended secret literal; refusing to persist",
-            };
-        }
-        SECRET_REGEX.lastIndex = 0;
-        // -- Atomic write + chmod 0o600 --------------------------------------
-        try {
-            (0,fs_atomic/* writeFileAtomic */.Zf)(targetPath, serialized);
-        }
-        catch (err) {
-            return {
-                ok: false,
-                exitCode: 1,
-                message: `cannot write saved config at ${targetPath}: ${err instanceof Error ? err.message : String(err)}`,
-            };
-        }
-        if (isPosix) {
-            try {
-                (0,fs_atomic/* setMode */.iY)(targetPath, 0o600);
-            }
-            catch {
-                // Non-fatal: the file is on disk; chmod may fail under restrictive
-                // mount options. The wizard surfaces a warn check in T12 but does
-                // not abort the write (E-⚠8).
-            }
-        }
-        // -- Verify mode round-tripped to 0o600 on POSIX ----------------------
-        if (isPosix) {
-            const mode = (0,fs_atomic/* getMode */.Wi)(targetPath);
-            if (mode !== null && (mode & 0o777) !== 0o600) {
-                return {
-                    ok: false,
-                    exitCode: 1,
-                    message: `saved config written but mode is ${(mode & 0o777).toString(8)} (expected 0o600); check filesystem mount options`,
-                };
-            }
-        }
-        return { ok: true, path: targetPath, bytes: Buffer.byteLength(serialized, "utf8"), lockUnavailable: writeSavedConfigFlockUnavailable.flag };
+        const secretErr = scanForSecretLiteral(serialized);
+        if (secretErr !== null)
+            return secretErr;
+        const writeErr = writeAndChmod(targetPath, serialized, isPosix);
+        if (writeErr !== null)
+            return writeErr;
+        const verifyErr = verifyFileMode(targetPath, isPosix);
+        if (verifyErr !== null)
+            return verifyErr;
+        return {
+            ok: true,
+            path: targetPath,
+            bytes: Buffer.byteLength(serialized, "utf8"),
+            lockUnavailable: writeSavedConfigFlockUnavailable.flag,
+        };
     }
     finally {
-        // -- Release flock ---------------------------------------------------
-        // flock(1) is a wrapper around flock(2); closing the fd releases the lock.
-        if (isPosix && lockFd !== null) {
-            try {
-                (0,external_node_fs_.closeSync)(lockFd);
-            }
-            catch {
-                // ignore — the lock is advisory; a stuck release on process exit
-                // does not break the file write.
-            }
+        releaseInitLock(lockFd, isPosix);
+    }
+}
+/**
+ * POSIX-only advisory flock acquisition. On Windows the writer
+ * relies on the atomic-rename primitive + the lock file's existence
+ * for best-effort serialization, so this stage is a no-op there.
+ *
+ * On success returns `{ fd, lockUnavailable }` so the caller can
+ * release the fd in `finally` and surface the
+ * `flock(1)-unavailable` hint when relevant. On failure returns
+ * `{ error }` carrying the canonical lock-acquisition envelope.
+ */
+function acquireInitLock(input) {
+    if (!input.isPosix) {
+        // Windows: best-effort serialization via shared-lock semantics on
+        // the lock file's existence + the atomic-rename primitive.
+        return { fd: null, lockUnavailable: false };
+    }
+    // Ensure the lock dir exists so we can open the lock file even on a
+    // first-run machine. mkdirSync is a no-op if the dir already exists.
+    try {
+        (0,external_node_fs_.mkdirSync)(SAVED_CONFIG_GLOBAL_DIR(input.homeDir), { recursive: true, mode: 0o700 });
+    }
+    catch {
+        // mkdir failure here will resurface at the target-dir ensure below.
+    }
+    // Open the lock file (creates it if missing) so flock(1) has a real
+    // inode to lock against — the file itself carries no payload, only
+    // the inode carries the lock.
+    let fd;
+    try {
+        fd = (0,external_node_fs_.openSync)(input.lockPath, "w");
+    }
+    catch {
+        return {
+            error: {
+                ok: false,
+                exitCode: 1,
+                message: `cannot acquire init lock at ${input.lockPath}; another init may be in progress; rm ${input.lockPath} if stale`,
+            },
+        };
+    }
+    // Non-blocking try-lock via `flock(1) -n <lockPath> true`. We pass
+    // the PATH (not the fd number — see saved-config-flock.ts for why
+    // the fd-number form silently no-ops in vite-node / CI sandboxes).
+    //
+    // Flock availability:
+    //   - flock(1) is in coreutils on every Linux and macOS (via brew
+    //     install coreutils). When it is present, status=0 means lock
+    //     acquired; status≠0 means another init holds it (contention).
+    //   - On hosts without flock(1) (macOS without coreutils, alpine
+    //     without busybox flock, restricted CI sandboxes), the wrapper
+    //     throws `FlockUnavailableError`. We MUST surface this so the
+    //     operator knows the init-time concurrency lock is NOT
+    //     enforced: writes can still race. The atomic-rename primitive
+    //     keeps the file corruption-safe (last-writer-wins on a per-
+    //     inode basis), but a parallel `umactually init` could clobber
+    //     a half-written sibling temp file if the lock is genuinely
+    //     missing. The check below records the unavailability; the
+    //     `lockUnavailable` flag is surfaced via the WriteSavedConfigResult
+    //     so the wizard can emit a hint to the user.
+    let flockResult = true;
+    let lockUnavailable = false;
+    try {
+        flockResult = tryFlockNonBlocking(input.lockPath);
+    }
+    catch (err) {
+        if (err instanceof FlockUnavailableError) {
+            // flock(1) is missing on this host. Atomic-rename still prevents
+            // file corruption; we lose only the "second init declines"
+            // guarantee. Surface a hint to the operator so they understand
+            // the weakened contract — see WriteSavedConfigResult.lockUnavailable.
+            lockUnavailable = true;
+        }
+        else {
+            throw err;
         }
     }
+    if (!flockResult) {
+        try {
+            (0,external_node_fs_.closeSync)(fd);
+        }
+        catch {
+            // ignore
+        }
+        return {
+            error: {
+                ok: false,
+                exitCode: 1,
+                message: `another init is in progress; rm ${input.lockPath} if stale`,
+                lockUnavailable: false,
+            },
+        };
+    }
+    return { fd, lockUnavailable };
+}
+/**
+ * flock(1) is a wrapper around flock(2); closing the fd releases
+ * the lock. Best-effort — a stuck release on process exit does
+ * not break the file write.
+ */
+function releaseInitLock(lockFd, isPosix) {
+    if (!isPosix || lockFd === null)
+        return;
+    try {
+        (0,external_node_fs_.closeSync)(lockFd);
+    }
+    catch {
+        // ignore — the lock is advisory
+    }
+}
+/**
+ * Ensure the target directory exists with mode 0o700 on POSIX. On
+ * POSIX + global scope, re-stat and chmod to mask off any umask
+ * effects (root + restrictive umask can mask the mode arg).
+ * Returns `null` on success or a `WriteSavedConfigResult` error.
+ */
+function ensureTargetDir(targetDir, isPosix, scope) {
+    try {
+        (0,external_node_fs_.mkdirSync)(targetDir, { recursive: true, mode: 0o700 });
+        if (isPosix && scope === "global") {
+            try {
+                const st = (0,external_node_fs_.statSync)(targetDir);
+                if ((st.mode & 0o777) !== 0o700) {
+                    (0,fs_atomic/* setMode */.iY)(targetDir, 0o700);
+                }
+            }
+            catch {
+                // ignore — chmod failure on a dir the user can already write to
+                // is non-fatal; we still chmod the FILE to 0o600 below.
+            }
+        }
+        return null;
+    }
+    catch (err) {
+        return {
+            ok: false,
+            exitCode: 1,
+            message: `cannot create saved-config directory ${targetDir}: ${err instanceof Error ? err.message : String(err)}`,
+        };
+    }
+}
+/**
+ * Build the "refusing to overwrite symlink at target" envelope.
+ */
+function targetSymlinkFail(targetPath) {
+    return {
+        ok: false,
+        exitCode: 1,
+        message: `refusing to overwrite: ${targetPath} is a symlink; remove it and re-run init`,
+    };
+}
+/**
+ * Existing-file handling: when a regular file already lives at the
+ * target path, either (a) back it up if the existing JSON is
+ * corrupt, or (b) prompt the operator before overwriting (unless
+ * `--force` bypassed the prompt). Symlinks are rejected by the
+ * caller (see `targetSymlinkFail`). Returns `null` when it's safe
+ * to proceed, or a `WriteSavedConfigResult` error otherwise.
+ */
+async function handleExistingTarget(targetPath, fs, deps) {
+    if (!fs.exists(targetPath))
+        return null;
+    let existingIsCorrupt = false;
+    try {
+        const existingRaw = fs.readFile(targetPath);
+        JSON.parse(existingRaw); // throws on malformed JSON
+    }
+    catch {
+        existingIsCorrupt = true;
+    }
+    if (existingIsCorrupt) {
+        // Corrupt JSON: move aside instead of clobbering. The backup
+        // preserves operator history for forensics; the wizard surfaces
+        // the backup path in its C-7 envelope.
+        const mtime = (deps.now ?? Date.now)();
+        const backupPath = `${targetPath}.bak-${Math.floor(mtime)}`;
+        try {
+            (0,external_node_fs_.renameSync)(targetPath, backupPath);
+        }
+        catch (err) {
+            return {
+                ok: false,
+                exitCode: 1,
+                message: `refusing to clobber corrupt saved config at ${targetPath} and could not move it aside: ${err instanceof Error ? err.message : String(err)}; rm ${targetPath} manually`,
+            };
+        }
+        return null;
+    }
+    if (deps.force)
+        return null;
+    // Valid JSON existing file: prompt for overwrite (unless --force).
+    if (deps.overwriteReader === undefined) {
+        return {
+            ok: false,
+            exitCode: 1,
+            message: `refusing to overwrite existing saved config at ${targetPath}; pass --force to bypass or answer 'y' to the overwrite prompt`,
+        };
+    }
+    const answer = await deps.overwriteReader();
+    if (answer !== true) {
+        return {
+            ok: false,
+            exitCode: 1,
+            message: `refusing to overwrite existing saved config at ${targetPath}; nothing was written`,
+        };
+    }
+    return null;
+}
+/**
+ * Defensive secret-regex scan over the FINAL serialized bytes. If
+ * the canonical SECRET_REGEX matches anywhere in the payload the
+ * write is refused — the SavedConfig type excludes `apiKey`, so
+ * this only catches a future field that silently regresses the
+ * no-secrets-at-rest guarantee.
+ */
+function scanForSecretLiteral(serialized) {
+    if (SECRET_REGEX.test(serialized)) {
+        SECRET_REGEX.lastIndex = 0;
+        return {
+            ok: false,
+            exitCode: 1,
+            message: "internal: writer produced an unintended secret literal; refusing to persist",
+        };
+    }
+    SECRET_REGEX.lastIndex = 0;
+    return null;
+}
+/**
+ * Atomic write + chmod 0o600 on POSIX. The chmod is best-effort
+ * (non-fatal) — the file is on disk; chmod may fail under
+ * restrictive mount options. Returns `null` on success or a
+ * `WriteSavedConfigResult` error.
+ */
+function writeAndChmod(targetPath, serialized, isPosix) {
+    try {
+        (0,fs_atomic/* writeFileAtomic */.Zf)(targetPath, serialized);
+    }
+    catch (err) {
+        return {
+            ok: false,
+            exitCode: 1,
+            message: `cannot write saved config at ${targetPath}: ${err instanceof Error ? err.message : String(err)}`,
+        };
+    }
+    if (isPosix) {
+        try {
+            (0,fs_atomic/* setMode */.iY)(targetPath, 0o600);
+        }
+        catch {
+            // Non-fatal: the file is on disk; chmod may fail under restrictive
+            // mount options. The wizard surfaces a warn check in T12 but does
+            // not abort the write (E-⚠8).
+        }
+    }
+    return null;
+}
+/**
+ * Verify the written file's mode round-tripped to 0o600 on POSIX.
+ * Returns `null` on success or a `WriteSavedConfigResult` error
+ * when the mode didn't stick.
+ */
+function verifyFileMode(targetPath, isPosix) {
+    if (!isPosix)
+        return null;
+    const mode = (0,fs_atomic/* getMode */.Wi)(targetPath);
+    if (mode !== null && (mode & 0o777) !== 0o600) {
+        return {
+            ok: false,
+            exitCode: 1,
+            message: `saved config written but mode is ${(mode & 0o777).toString(8)} (expected 0o600); check filesystem mount options`,
+        };
+    }
+    return null;
 }
 // ---------------------------------------------------------------------------
 // Serialization (deterministic key order)
@@ -1768,7 +1897,7 @@ const defaultFsAdapter = {
 /***/ 28:
 /***/ ((module, __unused_webpack_exports, __nccwpck_require__) => {
 
-module.exports = __nccwpck_require__.p + "fed19f4d7cca36d9477b.ts";
+module.exports = __nccwpck_require__.p + "b23252427c484ce0121d.ts";
 
 /***/ }),
 
@@ -3011,21 +3140,6 @@ function parseCliArgs(args) {
                 }
                 break;
             }
-            case "--include-sonarqube":
-                includeSonarqube = true;
-                break;
-            case "--no-include-sonarqube":
-                includeSonarqube = false;
-                break;
-            case "--include-pr-sonar-findings":
-                includePrSonarFindings = true;
-                break;
-            case "--no-include-pr-sonar-findings":
-                includePrSonarFindings = false;
-                break;
-            case "--no-instruction-files":
-                instructionFiles = false;
-                break;
             case "--sonar-host-url":
                 sonarHostUrl = readValue(args, index, "sonar-host-url");
                 index += 1;
@@ -3057,36 +3171,6 @@ function parseCliArgs(args) {
                 reviewFileLimit = readIntValue(args, index, "review-file-limit");
                 index += 1;
                 break;
-            case "--detect-leaks":
-                detectLeaks = true;
-                break;
-            case "--no-detect-leaks":
-                detectLeaks = false;
-                break;
-            case "--walkthrough":
-                walkthrough = true;
-                break;
-            case "--no-walkthrough":
-                walkthrough = false;
-                break;
-            case "--diagnostic":
-                diagnostic = true;
-                break;
-            case "--no-diagnostic":
-                diagnostic = false;
-                break;
-            case "--debug-raw-response":
-                debugRawResponse = true;
-                break;
-            case "--no-debug-raw-response":
-                debugRawResponse = false;
-                break;
-            case "--simulate-findings":
-                simulateFindings = true;
-                break;
-            case "--no-simulate-findings":
-                simulateFindings = false;
-                break;
             case "--review-timeout-seconds":
                 reviewTimeoutSeconds = readIntValue(args, index, "review-timeout-seconds");
                 index += 1;
@@ -3103,27 +3187,9 @@ function parseCliArgs(args) {
                 maxOutputTokens = readIntValue(args, index, "max-output-tokens");
                 index += 1;
                 break;
-            case "--dry-run":
-                dryRun = true;
-                break;
-            case "--no-dry-run":
-                dryRun = false;
-                break;
             case "--output-artifact":
                 outputArtifact = readValue(args, index, "output-artifact");
                 index += 1;
-                break;
-            case "--strict-schema":
-                strictSchema = true;
-                break;
-            case "--no-strict-schema":
-                strictSchema = false;
-                break;
-            case "--verify-findings":
-                verifyFindings = true;
-                break;
-            case "--no-verify-findings":
-                verifyFindings = false;
                 break;
             case "--help":
             case "-h": {
@@ -3133,8 +3199,38 @@ function parseCliArgs(args) {
                 const commandToken = args.slice(0, index).find((t) => !t.startsWith("-"));
                 throw new CliHelpSignal(commandToken ?? null);
             }
-            default:
+            default: {
+                const boolFlags = {
+                    includeSonarqube,
+                    includePrSonarFindings,
+                    instructionFiles,
+                    detectLeaks,
+                    walkthrough,
+                    diagnostic,
+                    debugRawResponse,
+                    simulateFindings,
+                    dryRun,
+                    strictSchema,
+                    verifyFindings,
+                };
+                if (applyBooleanFlag(token, boolFlags)) {
+                    ({
+                        includeSonarqube,
+                        includePrSonarFindings,
+                        instructionFiles,
+                        detectLeaks,
+                        walkthrough,
+                        diagnostic,
+                        debugRawResponse,
+                        simulateFindings,
+                        dryRun,
+                        strictSchema,
+                        verifyFindings,
+                    } = boolFlags);
+                    break;
+                }
                 throw unknownFlagUsageError(token, args);
+            }
         }
     }
     const parsed = {
@@ -3273,6 +3369,81 @@ function unknownFlagUsageError(token, argv) {
             ? `Run \`umactually review --help\` for every flag the \`review\` subcommand accepts.`
             : `Run \`umactually --help\` for a flag list, or \`umactually review --api-url <url> --api-key <key>\` for the standard standalone invocation.`;
     return new CliUsageError(message, hint);
+}
+/**
+ * Apply a `--name` / `--no-name` boolean flag mutation. Returns
+ * `true` when `token` is recognized and `state` was mutated in
+ * place; returns `false` so the caller can fall through to the
+ * unknown-flag error path.
+ */
+function applyBooleanFlag(token, state) {
+    switch (token) {
+        case "--include-sonarqube":
+            state.includeSonarqube = true;
+            return true;
+        case "--no-include-sonarqube":
+            state.includeSonarqube = false;
+            return true;
+        case "--include-pr-sonar-findings":
+            state.includePrSonarFindings = true;
+            return true;
+        case "--no-include-pr-sonar-findings":
+            state.includePrSonarFindings = false;
+            return true;
+        case "--no-instruction-files":
+            state.instructionFiles = false;
+            return true;
+        case "--detect-leaks":
+            state.detectLeaks = true;
+            return true;
+        case "--no-detect-leaks":
+            state.detectLeaks = false;
+            return true;
+        case "--walkthrough":
+            state.walkthrough = true;
+            return true;
+        case "--no-walkthrough":
+            state.walkthrough = false;
+            return true;
+        case "--diagnostic":
+            state.diagnostic = true;
+            return true;
+        case "--no-diagnostic":
+            state.diagnostic = false;
+            return true;
+        case "--debug-raw-response":
+            state.debugRawResponse = true;
+            return true;
+        case "--no-debug-raw-response":
+            state.debugRawResponse = false;
+            return true;
+        case "--simulate-findings":
+            state.simulateFindings = true;
+            return true;
+        case "--no-simulate-findings":
+            state.simulateFindings = false;
+            return true;
+        case "--dry-run":
+            state.dryRun = true;
+            return true;
+        case "--no-dry-run":
+            state.dryRun = false;
+            return true;
+        case "--strict-schema":
+            state.strictSchema = true;
+            return true;
+        case "--no-strict-schema":
+            state.strictSchema = false;
+            return true;
+        case "--verify-findings":
+            state.verifyFindings = true;
+            return true;
+        case "--no-verify-findings":
+            state.verifyFindings = false;
+            return true;
+        default:
+            return false;
+    }
 }
 
 // EXTERNAL MODULE: external "node:child_process"
@@ -7556,7 +7727,7 @@ steps:
 `;
 function renderCiTemplate(input) {
     const template = input.target === "github" ? GITHUB_WORKFLOW_TEMPLATE : AZURE_PIPELINE_TEMPLATE;
-    const body = template.replace(/__UMACTUALLY_VERSION__/gu, input.packageVersion);
+    const body = template.replaceAll("__UMACTUALLY_VERSION__", input.packageVersion);
     const filename = input.target === "github" ? GITHUB_WORKFLOW_FILENAME : AZURE_PIPELINE_FILENAME;
     const relativePath = input.target === "github"
         ? (0,external_node_path_.join)(input.paths?.githubDir ?? ".github/workflows", filename)
@@ -8106,46 +8277,64 @@ async function runPolicyTemplateInit({ deps, }) {
     const rendered = renderPolicyTemplate();
     const bytes = Buffer.byteLength(rendered, "utf8");
     if (fs.exists(policyPath)) {
-        return {
-            mode: "policy-template",
-            outcome: "error",
-            exitCode: 1,
-            savedConfigPath: null,
-            savedConfigBytes: null,
-            ciGenerated: [],
-            checks: [
-                {
-                    id: "policy-template-write",
-                    status: "fail",
-                    message: `refusing to overwrite existing policy at ${policyPath}`,
-                },
-            ],
-            hints: [`pass --force to overwrite, or rm ${policyPath} first`],
-            sources: {},
-        };
+        return policyAlreadyExistsResult(policyPath);
     }
     try {
         fs.writeFileAtomic(policyPath, rendered);
     }
     catch (err) {
-        return {
-            mode: "policy-template",
-            outcome: "error",
-            exitCode: 1,
-            savedConfigPath: null,
-            savedConfigBytes: null,
-            ciGenerated: [],
-            checks: [
-                {
-                    id: "policy-template-write",
-                    status: "fail",
-                    message: `cannot write policy at ${policyPath}: ${err instanceof Error ? err.message : String(err)}`,
-                },
-            ],
-            hints: [`ensure ${deps.cwd} is writable`],
-            sources: {},
-        };
+        return policyWriteErrorResult(policyPath, err, deps.cwd);
     }
+    return policyWriteOkResult(policyPath, bytes);
+}
+/**
+ * Build the "policy file already exists — refuse to overwrite" envelope.
+ */
+function policyAlreadyExistsResult(policyPath) {
+    return {
+        mode: "policy-template",
+        outcome: "error",
+        exitCode: 1,
+        savedConfigPath: null,
+        savedConfigBytes: null,
+        ciGenerated: [],
+        checks: [
+            {
+                id: "policy-template-write",
+                status: "fail",
+                message: `refusing to overwrite existing policy at ${policyPath}`,
+            },
+        ],
+        hints: [`pass --force to overwrite, or rm ${policyPath} first`],
+        sources: {},
+    };
+}
+/**
+ * Build the "policy write failed" envelope (filesystem write threw).
+ */
+function policyWriteErrorResult(policyPath, err, cwd) {
+    return {
+        mode: "policy-template",
+        outcome: "error",
+        exitCode: 1,
+        savedConfigPath: null,
+        savedConfigBytes: null,
+        ciGenerated: [],
+        checks: [
+            {
+                id: "policy-template-write",
+                status: "fail",
+                message: `cannot write policy at ${policyPath}: ${err instanceof Error ? err.message : String(err)}`,
+            },
+        ],
+        hints: [`ensure ${cwd} is writable`],
+        sources: {},
+    };
+}
+/**
+ * Build the "policy written successfully" envelope.
+ */
+function policyWriteOkResult(policyPath, bytes) {
     return {
         mode: "policy-template",
         outcome: "ok",
@@ -8239,46 +8428,103 @@ async function runNonInteractiveInit({ args, deps, }) {
     // Validate required flags. Missing provider is a hard fail.
     const provider = args.provider;
     if (provider === undefined) {
-        return {
-            mode: "non-interactive",
-            outcome: "error",
-            exitCode: 2,
-            savedConfigPath: null,
-            savedConfigBytes: null,
-            ciGenerated: [],
-            checks: [
-                {
-                    id: "non-interactive-validation",
-                    status: "fail",
-                    message: "--provider is required in --non-interactive mode",
-                },
-            ],
-            hints: ["--non-interactive requires --provider; e.g. --provider openai-compatible"],
-            sources: {},
-        };
+        return missingProviderResult();
     }
     // Per-provider required fields. apiKey is NEVER persisted so it's
     // validated only as "present" (consumed for the live HEAD probe).
-    // We intentionally do NOT retain `apiKey` / `githubApiBase` after
-    // validation — they are write-side blacklisted and don't enter the
-    // `writeSavedConfig` call below (bundle §1.1 S6). The copilot branch
-    // only validates that the operator passed a github-api-base OR
-    // accepts the canonical default; we don't store it because the
-    // saved config schema is provider/apiUrl/model only.
+    const perProvider = perProviderValidation(args, provider);
+    if ("outcome" in perProvider)
+        return perProvider;
+    const { apiUrl, model } = perProvider;
+    // Path safety: cwd must not be unsafe (no .., not absolute).
+    if (containsUnsafePathSegment(deps.cwd)) {
+        return unsafeCwdResult(deps.cwd);
+    }
+    const scope = args.scope ?? "global";
+    const config = buildConfig(provider, apiUrl ?? saved_config/* DEFAULT_OPENAI_URL */.Nx, model);
+    // apiKey and githubApiBase were validated for presence only and
+    // intentionally dropped before reaching writeSavedConfig (S6).
+    const writeResult = await (0,saved_config/* writeSavedConfig */.rn)(config, {
+        homeDir: deps.homeDir,
+        cwd: deps.cwd,
+        scope,
+        force: args.force,
+        platform: deps.platform,
+        ...(deps.fsAdapter !== undefined ? { fs: deps.fsAdapter } : {}),
+        ...(deps.now !== undefined ? { now: deps.now } : {}),
+    });
+    if (!writeResult.ok) {
+        return nonInteractiveWriteFail(writeResult);
+    }
+    // CI generation. Honors --ci flag (or --yes if auto-detected).
+    const ciGenerated = await generateCiForResult({
+        args,
+        deps,
+        fs: deps.fsAdapter ?? fs_atomic/* defaultFsAdapter */.aO,
+        packageVersion: deps.packageVersion,
+    });
+    return {
+        mode: "non-interactive",
+        outcome: "ok",
+        exitCode: 0,
+        savedConfigPath: writeResult.path,
+        savedConfigBytes: writeResult.bytes,
+        ciGenerated,
+        checks: nonInteractiveSuccessChecks(deps, writeResult, ciGenerated),
+        hints: [],
+        sources: {
+            provider: { source: "flag" },
+            ...(config.apiUrl !== undefined ? { apiUrl: { source: "flag" } } : {}),
+            ...(config.model !== undefined ? { model: { source: "flag" } } : {}),
+        },
+    };
+}
+/**
+ * Build the "missing --provider" envelope for `runNonInteractiveInit`.
+ */
+function missingProviderResult() {
+    return {
+        mode: "non-interactive",
+        outcome: "error",
+        exitCode: 2,
+        savedConfigPath: null,
+        savedConfigBytes: null,
+        ciGenerated: [],
+        checks: [
+            {
+                id: "non-interactive-validation",
+                status: "fail",
+                message: "--provider is required in --non-interactive mode",
+            },
+        ],
+        hints: ["--non-interactive requires --provider; e.g. --provider openai-compatible"],
+        sources: {},
+    };
+}
+/**
+ * Per-provider required-fields check for `runNonInteractiveInit`.
+ * `apiKey` is NEVER persisted so it is validated only as "present"
+ * (consumed for the live HEAD probe). We intentionally do NOT retain
+ * `apiKey` / `githubApiBase` after validation — they are write-side
+ * blacklisted and don't enter the `writeSavedConfig` call below
+ * (bundle §1.1 S6). The copilot branch only validates that the
+ * operator passed a github-api-base OR accepts the canonical default;
+ * we don't store it because the saved config schema is
+ * provider/apiUrl/model only.
+ */
+function perProviderValidation(args, provider) {
     const pendingPrompts = [];
     let apiUrl = args.apiUrl;
     let model = args.model;
     if (provider === "openai-compatible") {
-        if (apiUrl === undefined)
-            apiUrl = saved_config/* DEFAULT_OPENAI_URL */.Nx;
+        apiUrl ??= saved_config/* DEFAULT_OPENAI_URL */.Nx;
         if (args.apiKey === undefined)
             pendingPrompts.push("--api-key");
     }
     else if (provider === "anthropic") {
         if (args.apiKey === undefined)
             pendingPrompts.push("--api-key");
-        if (apiUrl === undefined)
-            apiUrl = saved_config/* DEFAULT_ANTHROPIC_URL */.Tq;
+        apiUrl ??= saved_config/* DEFAULT_ANTHROPIC_URL */.Tq;
     }
     else {
         // copilot — no apiKey prompt; githubApiBase presence is acknowledged
@@ -8303,111 +8549,89 @@ async function runNonInteractiveInit({ args, deps, }) {
             sources: {},
         };
     }
-    // Path safety: cwd must not be unsafe (no .., not absolute). The
-    // saved config path is derived from `cwd` and `homeDir`; we never
-    // accept user-supplied paths so the input surface is fixed.
-    if (containsUnsafePathSegment(deps.cwd)) {
-        return {
-            mode: "non-interactive",
-            outcome: "error",
-            exitCode: 2,
-            savedConfigPath: null,
-            savedConfigBytes: null,
-            ciGenerated: [],
-            checks: [
-                {
-                    id: "non-interactive-validation",
-                    status: "fail",
-                    message: `cwd contains an unsafe segment: ${deps.cwd}`,
-                },
-            ],
-            hints: ["--non-interactive requires a safe cwd (no '..', not absolute)."],
-            sources: {},
-        };
-    }
-    const scope = args.scope ?? "global";
-    const config = buildConfig(provider, apiUrl ?? saved_config/* DEFAULT_OPENAI_URL */.Nx, model);
-    // apiKey and githubApiBase were validated for presence only and
-    // intentionally dropped before reaching writeSavedConfig (S6).
-    // Note that the SavedConfig type excludes apiKey, so the writer
-    // can't accidentally persist it. See buildConfig + bundle §1.6.
-    const writeResult = await (0,saved_config/* writeSavedConfig */.rn)(config, {
-        homeDir: deps.homeDir,
-        cwd: deps.cwd,
-        scope,
-        force: args.force,
-        platform: deps.platform,
-        ...(deps.fsAdapter !== undefined ? { fs: deps.fsAdapter } : {}),
-        ...(deps.now !== undefined ? { now: deps.now } : {}),
-    });
-    if (!writeResult.ok) {
-        return {
-            mode: "non-interactive",
-            outcome: "error",
-            exitCode: writeResult.exitCode,
-            savedConfigPath: null,
-            savedConfigBytes: null,
-            ciGenerated: [],
-            checks: [
-                {
-                    id: "config-atomic-write",
-                    status: "fail",
-                    message: (0,saved_config/* redactSecretsInString */.$K)(writeResult.message),
-                },
-            ],
-            hints: [writeResult.message],
-            sources: {},
-        };
-    }
-    // CI generation. Honors --ci flag (or --yes if auto-detected).
-    const ciGenerated = await generateCiForResult({
-        args,
-        deps,
-        fs: deps.fsAdapter ?? fs_atomic/* defaultFsAdapter */.aO,
-        packageVersion: deps.packageVersion,
-    });
+    return { apiUrl, model };
+}
+/**
+ * Build the "unsafe cwd" envelope for `runNonInteractiveInit`. The
+ * saved config path is derived from `cwd` and `homeDir`; we never
+ * accept user-supplied paths so the input surface is fixed.
+ */
+function unsafeCwdResult(cwd) {
     return {
         mode: "non-interactive",
-        outcome: "ok",
-        exitCode: 0,
-        savedConfigPath: writeResult.path,
-        savedConfigBytes: writeResult.bytes,
-        ciGenerated,
+        outcome: "error",
+        exitCode: 2,
+        savedConfigPath: null,
+        savedConfigBytes: null,
+        ciGenerated: [],
+        checks: [
+            {
+                id: "non-interactive-validation",
+                status: "fail",
+                message: `cwd contains an unsafe segment: ${cwd}`,
+            },
+        ],
+        hints: ["--non-interactive requires a safe cwd (no '..', not absolute)."],
+        sources: {},
+    };
+}
+/**
+ * Build the "writeSavedConfig failed" envelope for
+ * `runNonInteractiveInit`.
+ */
+function nonInteractiveWriteFail(writeResult) {
+    return {
+        mode: "non-interactive",
+        outcome: "error",
+        exitCode: writeResult.exitCode,
+        savedConfigPath: null,
+        savedConfigBytes: null,
+        ciGenerated: [],
         checks: [
             {
                 id: "config-atomic-write",
-                status: "ok",
-                message: `wrote saved config (${writeResult.bytes} bytes) at ${writeResult.path}`,
+                status: "fail",
+                message: (0,saved_config/* redactSecretsInString */.$K)(writeResult.message),
             },
-            {
-                id: "config-file-mode",
-                status: deps.platform === "win32" ? "skip" : "ok",
-                message: deps.platform === "win32"
-                    ? "Windows inherits parent ACL"
-                    : "mode 0o600 verified",
-            },
-            {
-                id: "secret-redaction",
-                status: "ok",
-                message: `api key placeholder: ${brand/* REDACTED_SECRET_TOKEN */.uq}`,
-            },
-            ...(ciGenerated.length > 0
-                ? [
-                    {
-                        id: "ci-generation",
-                        status: "ok",
-                        message: `generated ${ciGenerated.join(", ")} workflow`,
-                    },
-                ]
-                : []),
         ],
-        hints: [],
-        sources: {
-            provider: { source: "flag" },
-            ...(config.apiUrl !== undefined ? { apiUrl: { source: "flag" } } : {}),
-            ...(config.model !== undefined ? { model: { source: "flag" } } : {}),
-        },
+        hints: [writeResult.message],
+        sources: {},
     };
+}
+/**
+ * Build the success-checks array for `runNonInteractiveInit`. The
+ * optional CI-generation check is appended only when at least one CI
+ * target was generated.
+ */
+function nonInteractiveSuccessChecks(deps, writeResult, ciGenerated) {
+    return [
+        {
+            id: "config-atomic-write",
+            status: "ok",
+            message: `wrote saved config (${writeResult.bytes} bytes) at ${writeResult.path}`,
+        },
+        {
+            id: "config-file-mode",
+            status: deps.platform === "win32" ? "skip" : "ok",
+            message: deps.platform === "win32"
+                ? "Windows inherits parent ACL"
+                : "mode 0o600 verified",
+        },
+        {
+            id: "secret-redaction",
+            status: "ok",
+            message: `api key placeholder: ${brand/* REDACTED_SECRET_TOKEN */.uq}`,
+        },
+        ...(ciGenerated.length > 0
+            ? [
+                {
+                    id: "ci-generation",
+                    status: "ok",
+                    message: `generated ${ciGenerated.join(", ")} workflow`,
+                },
+            ]
+            : []),
+    ];
 }
 // ---------------------------------------------------------------------------
 // Interactive path: 5-base-prompt sequence with per-branch sub-prompts.
@@ -8416,23 +8640,7 @@ async function runNonInteractiveInit({ args, deps, }) {
 async function runInteractiveInit({ args, deps, }) {
     const isTTY = deps.isTTY ?? canPromptInteractively();
     if (!isTTY) {
-        return {
-            mode: "interactive",
-            outcome: "error",
-            exitCode: 2,
-            savedConfigPath: null,
-            savedConfigBytes: null,
-            ciGenerated: [],
-            checks: [
-                {
-                    id: "non-interactive-validation",
-                    status: "fail",
-                    message: "interactive init requires a TTY; re-run with --non-interactive",
-                },
-            ],
-            hints: ["--non-interactive requires --provider; e.g. --provider openai-compatible"],
-            sources: {},
-        };
+        return nottyResult();
     }
     const reader = deps.stdinReader ?? init_defaultStdinReader;
     // Q1 — scope (default global)
@@ -8446,23 +8654,7 @@ async function runInteractiveInit({ args, deps, }) {
         return abortedResult(args.mode);
     const provider = parseProviderChoice(providerAnswer);
     if (provider === null) {
-        return {
-            mode: args.mode,
-            outcome: "error",
-            exitCode: 2,
-            savedConfigPath: null,
-            savedConfigBytes: null,
-            ciGenerated: [],
-            checks: [
-                {
-                    id: "provider-choice",
-                    status: "fail",
-                    message: `unknown provider family: ${(0,saved_config/* redactSecretsInString */.$K)(providerAnswer)}`,
-                },
-            ],
-            hints: ["expected one of: openai-compatible, anthropic, copilot"],
-            sources: {},
-        };
+        return unknownProviderResult(providerAnswer, args.mode);
     }
     // Q3 — per-branch sub-prompts
     const branch = await promptBranch({ provider, env: deps.env });
@@ -8484,9 +8676,7 @@ async function runInteractiveInit({ args, deps, }) {
         return ciChoice.result;
     // Q5 — Confirm save
     const confirmAnswer = await safePrompt(reader, isTTY, "? Save these settings? [y/N]: ", "");
-    if (confirmAnswer === null)
-        return abortedResult(args.mode);
-    if (!/^y(es)?$/i.test(confirmAnswer.trim())) {
+    if (!isSaveConfirmed(confirmAnswer)) {
         return abortedResult(args.mode);
     }
     // Persist. The apiKey from branch.apiKey is consumed for the live
@@ -8502,23 +8692,7 @@ async function runInteractiveInit({ args, deps, }) {
         ...(deps.now !== undefined ? { now: deps.now } : {}),
     });
     if (!writeResult.ok) {
-        return {
-            mode: args.mode,
-            outcome: "error",
-            exitCode: writeResult.exitCode,
-            savedConfigPath: null,
-            savedConfigBytes: null,
-            ciGenerated: [],
-            checks: [
-                {
-                    id: "config-atomic-write",
-                    status: "fail",
-                    message: (0,saved_config/* redactSecretsInString */.$K)(writeResult.message),
-                },
-            ],
-            hints: [writeResult.message],
-            sources: {},
-        };
+        return interactiveWriteFail(writeResult, args.mode);
     }
     return {
         mode: args.mode,
@@ -8527,44 +8701,7 @@ async function runInteractiveInit({ args, deps, }) {
         savedConfigPath: writeResult.path,
         savedConfigBytes: writeResult.bytes,
         ciGenerated: ciChoice.generated,
-        checks: [
-            {
-                id: "config-atomic-write",
-                status: "ok",
-                message: `wrote saved config (${writeResult.bytes} bytes) at ${writeResult.path}`,
-            },
-            {
-                id: "config-file-mode",
-                status: deps.platform === "win32" ? "skip" : "ok",
-                message: deps.platform === "win32"
-                    ? "Windows inherits parent ACL"
-                    : "mode 0o600 verified",
-            },
-            {
-                id: "secret-redaction",
-                status: "ok",
-                message: `api key placeholder: ${brand/* REDACTED_SECRET_TOKEN */.uq}`,
-            },
-            {
-                id: "provider-choice",
-                status: "ok",
-                message: `selected provider: ${provider}`,
-            },
-            {
-                id: "scope-choice",
-                status: "ok",
-                message: `selected scope: ${scopeChoice}`,
-            },
-            ...(ciChoice.generated.length > 0
-                ? [
-                    {
-                        id: "ci-generation",
-                        status: "ok",
-                        message: `generated ${ciChoice.generated.join(", ")} workflow`,
-                    },
-                ]
-                : []),
-        ],
+        checks: interactiveSuccessChecks(deps, writeResult, provider, scopeChoice, ciChoice.generated),
         hints: [],
         sources: {
             provider: { source: "default" },
@@ -8572,6 +8709,130 @@ async function runInteractiveInit({ args, deps, }) {
             ...(config.model !== undefined ? { model: { source: "default" } } : {}),
         },
     };
+}
+/**
+ * Build the "interactive requires a TTY" envelope for
+ * `runInteractiveInit`.
+ */
+function nottyResult() {
+    return {
+        mode: "interactive",
+        outcome: "error",
+        exitCode: 2,
+        savedConfigPath: null,
+        savedConfigBytes: null,
+        ciGenerated: [],
+        checks: [
+            {
+                id: "non-interactive-validation",
+                status: "fail",
+                message: "interactive init requires a TTY; re-run with --non-interactive",
+            },
+        ],
+        hints: ["--non-interactive requires --provider; e.g. --provider openai-compatible"],
+        sources: {},
+    };
+}
+/**
+ * Build the "unknown provider family" envelope for
+ * `runInteractiveInit` (Q2 parse failure).
+ */
+function unknownProviderResult(providerAnswer, mode) {
+    return {
+        mode,
+        outcome: "error",
+        exitCode: 2,
+        savedConfigPath: null,
+        savedConfigBytes: null,
+        ciGenerated: [],
+        checks: [
+            {
+                id: "provider-choice",
+                status: "fail",
+                message: `unknown provider family: ${(0,saved_config/* redactSecretsInString */.$K)(providerAnswer)}`,
+            },
+        ],
+        hints: ["expected one of: openai-compatible, anthropic, copilot"],
+        sources: {},
+    };
+}
+/**
+ * Q5 — confirm-save prompt parse. True when the operator typed `y`
+ * or `yes` (case-insensitive); null (EOF/timeout) and any other
+ * input are treated as a decline. Returns `false` on null so the
+ * caller maps it to `abortedResult`.
+ */
+function isSaveConfirmed(confirmAnswer) {
+    if (confirmAnswer === null)
+        return false;
+    return /^y(es)?$/i.test(confirmAnswer.trim());
+}
+/**
+ * Build the "writeSavedConfig failed" envelope for `runInteractiveInit`.
+ */
+function interactiveWriteFail(writeResult, mode) {
+    return {
+        mode,
+        outcome: "error",
+        exitCode: writeResult.exitCode,
+        savedConfigPath: null,
+        savedConfigBytes: null,
+        ciGenerated: [],
+        checks: [
+            {
+                id: "config-atomic-write",
+                status: "fail",
+                message: (0,saved_config/* redactSecretsInString */.$K)(writeResult.message),
+            },
+        ],
+        hints: [writeResult.message],
+        sources: {},
+    };
+}
+/**
+ * Build the success-checks array for `runInteractiveInit`. The
+ * optional CI-generation check is appended only when at least one
+ * CI target was generated.
+ */
+function interactiveSuccessChecks(deps, writeResult, provider, scopeChoice, ciGenerated) {
+    return [
+        {
+            id: "config-atomic-write",
+            status: "ok",
+            message: `wrote saved config (${writeResult.bytes} bytes) at ${writeResult.path}`,
+        },
+        {
+            id: "config-file-mode",
+            status: deps.platform === "win32" ? "skip" : "ok",
+            message: deps.platform === "win32"
+                ? "Windows inherits parent ACL"
+                : "mode 0o600 verified",
+        },
+        {
+            id: "secret-redaction",
+            status: "ok",
+            message: `api key placeholder: ${brand/* REDACTED_SECRET_TOKEN */.uq}`,
+        },
+        {
+            id: "provider-choice",
+            status: "ok",
+            message: `selected provider: ${provider}`,
+        },
+        {
+            id: "scope-choice",
+            status: "ok",
+            message: `selected scope: ${scopeChoice}`,
+        },
+        ...(ciGenerated.length > 0
+            ? [
+                {
+                    id: "ci-generation",
+                    status: "ok",
+                    message: `generated ${ciGenerated.join(", ")} workflow`,
+                },
+            ]
+            : []),
+    ];
 }
 /**
  * Build the ordered list of sub-prompts for `provider`. The `env`
@@ -8801,7 +9062,7 @@ function parseProviderChoice(answer) {
  */
 function containsUnsafePathSegment(p) {
     const segments = p.split(/[\\/]/);
-    if (segments.some((s) => s === ".."))
+    if (segments.includes(".."))
         return true;
     try {
         const canonicalCwd = (0,external_node_fs_.realpathSync)(p);
@@ -8845,16 +9106,17 @@ function detectCiTargetHelper(fs) {
     return detectCiTarget({ exists: (p) => fs.exists(p) });
 }
 async function generateCiForResult(input) {
-    if (input.args.ci === "github" || input.args.ci === "azure") {
+    const ci = input.args.ci;
+    if (isExplicitCiTarget(ci)) {
         const r = await generateCi({
-            target: input.args.ci,
+            target: ci,
             fs: input.fs,
             deps: input.deps,
             packageVersion: input.packageVersion,
         });
-        return r.ok ? [input.args.ci] : [];
+        return r.ok ? [ci] : [];
     }
-    if (input.args.ci === "auto") {
+    if (ci === "auto") {
         const target = detectCiTargetHelper(input.fs);
         if (target === null)
             return [];
@@ -8867,6 +9129,15 @@ async function generateCiForResult(input) {
         return r.ok ? [target] : [];
     }
     return [];
+}
+/**
+ * True when `ci` is one of the explicit, operator-selected CI targets
+ * (`github` / `azure`) — i.e. NOT the `auto` (auto-detect) or `none`
+ * (decline) sentinels. Acts as a TypeScript type guard so the caller
+ * can pass the narrowed value to functions expecting `CiTarget`.
+ */
+function isExplicitCiTarget(ci) {
+    return ci === "github" || ci === "azure";
 }
 /**
  * Generate the canonical CI workflow file. Refuses to clobber an
@@ -8929,7 +9200,7 @@ async function generateCi(input) {
  */
 function joinRelativeCwd(cwd, relative) {
     const segments = relative.split(/[\\/]/).filter((s) => s.length > 0 && s !== ".");
-    if (segments.some((s) => s === "..")) {
+    if (segments.includes("..")) {
         throw new Error(`unsafe relative path: ${relative}`);
     }
     const targetPath = `${cwd.replace(/[\\/]+$/, "")}/${segments.join("/")}`;
@@ -18978,54 +19249,62 @@ async function readHumanConventionFiles(options) {
     const parts = [];
     let aggregateBytes = 0;
     for (const rawPath of HUMAN_CONVENTION_FILE_PATHS) {
-        if (typeof rawPath !== "string" || rawPath.length === 0) {
+        const loaded = await loadHumanFile(rawPath, cwdReal, fs, aggregateBytes);
+        if (loaded === null)
             continue;
-        }
-        if ((0,external_node_path_.isAbsolute)(rawPath)) {
-            continue;
-        }
-        let resolved;
-        try {
-            resolved = await fs.realpathWithinCwd(rawPath, cwdReal, fs);
-        }
-        catch {
-            continue;
-        }
-        if (!resolved.withinCwd) {
-            continue;
-        }
-        let stat;
-        try {
-            stat = await fs.stat(resolved.absolute);
-        }
-        catch {
-            continue;
-        }
-        if (!stat.isFile) {
-            continue;
-        }
-        if (stat.size > DEFAULT_HUMAN_FILE_BYTE_CAP) {
-            // Long READMEs / LICENSES are common; an over-cap human file
-            // must not abort the review — skip it instead of throwing.
-            continue;
-        }
-        if (aggregateBytes + stat.size > DEFAULT_PROMPT_BYTE_CAP) {
-            // Same rationale as the per-file cap: a single oversized entry
-            // must not consume the aggregate budget for the rest of the
-            // human-file load. Skip rather than throw.
-            continue;
-        }
-        let text;
-        try {
-            text = await fs.readFile(resolved.absolute);
-        }
-        catch {
-            continue;
-        }
-        parts.push(text);
-        aggregateBytes += stat.size;
+        parts.push(loaded.text);
+        aggregateBytes += loaded.size;
     }
     return parts.join(PROMPT_SEPARATOR);
+}
+/**
+ * Try to load one human-convention file. Returns `{ text, size }` on
+ * success or `null` when the file should be silently skipped (missing,
+ * outside-cwd, over the per-file cap, would exceed the aggregate cap,
+ * or read failed).
+ */
+async function loadHumanFile(rawPath, cwdReal, fs, aggregateBytes) {
+    if (typeof rawPath !== "string" || rawPath.length === 0)
+        return null;
+    if ((0,external_node_path_.isAbsolute)(rawPath))
+        return null;
+    let resolved;
+    try {
+        resolved = await fs.realpathWithinCwd(rawPath, cwdReal, fs);
+    }
+    catch {
+        return null;
+    }
+    if (!resolved.withinCwd)
+        return null;
+    let stat;
+    try {
+        stat = await fs.stat(resolved.absolute);
+    }
+    catch {
+        return null;
+    }
+    if (!stat.isFile)
+        return null;
+    if (stat.size > DEFAULT_HUMAN_FILE_BYTE_CAP) {
+        // Long READMEs / LICENSES are common; an over-cap human file
+        // must not abort the review — skip it instead of throwing.
+        return null;
+    }
+    if (aggregateBytes + stat.size > DEFAULT_PROMPT_BYTE_CAP) {
+        // Same rationale as the per-file cap: a single oversized entry
+        // must not consume the aggregate budget for the rest of the
+        // human-file load. Skip rather than throw.
+        return null;
+    }
+    let text;
+    try {
+        text = await fs.readFile(resolved.absolute);
+    }
+    catch {
+        return null;
+    }
+    return { text, size: stat.size };
 }
 const HUMAN_CONVENTION_FILE_PATHS = [
     "README.md",
@@ -19241,42 +19520,66 @@ function globToRegexSource(pattern) {
         if (ch === undefined)
             continue;
         if (ch === "*") {
-            // `**` → match anything including `/`; `*` → match anything except `/`.
-            if (pattern[i + 1] === "*") {
-                out += ".*";
-                i++;
-                // Consume an immediately following `/` so `**/foo` and `foo/**/bar`
-                // both compile cleanly without an awkward `.*/foo` prefix.
-                if (pattern[i + 1] === "/")
-                    i++;
-            }
-            else {
-                out += "[^/]*";
-            }
+            const starResult = translateStar(pattern, i);
+            out += starResult.fragment;
+            i = starResult.nextIndex;
         }
         else if (ch === "?") {
             out += "[^/]";
         }
         else if (ch === "[") {
-            // Pass char class through verbatim up to the closing `]`.
-            const end = pattern.indexOf("]", i + 1);
-            if (end === -1) {
-                out += "\\[";
-            }
-            else {
-                out += pattern.slice(i, end + 1);
-                i = end;
-            }
+            const classResult = translateCharClass(pattern, i);
+            out += classResult.fragment;
+            i = classResult.nextIndex;
         }
         else {
             // Regex-escape any literal so `.`, `+`, `(`, `{`, etc. don't
             // break out. Brace-expansion patterns (`{a,b}`) are detected at
             // the gate but never expanded here — the braces are treated as
             // literal regex characters.
-            out += ch.replace(/[\\^$.+()|{}]/gu, "\\$&");
+            out += ch.replace(/[\\^$.+()|{}]/gu, String.raw `\$&`);
         }
     }
     return out;
+}
+/**
+ * Translate a single `*` / `**` glob fragment at `pattern[i]`. Returns
+ * the regex fragment to append and the next index the caller should
+ * continue scanning from (the for-loop's natural `i++` will advance
+ * from there).
+ *
+ * Behavior:
+ *   `**` (with or without a trailing `/`) → `.*`
+ *   `*`                                   → `[^/]*`
+ */
+function translateStar(pattern, i) {
+    if (pattern[i + 1] !== "*") {
+        return { fragment: "[^/]*", nextIndex: i };
+    }
+    // `**` → match anything including `/`; consume an immediately
+    // following `/` so `**/foo` and `foo/**/bar` both compile cleanly
+    // without an awkward `.*/foo` prefix.
+    let nextIndex = i + 1;
+    if (pattern[nextIndex + 1] === "/")
+        nextIndex += 1;
+    return { fragment: ".*", nextIndex };
+}
+/**
+ * Translate a `[abc]` char-class fragment at `pattern[i]`. Returns
+ * the regex fragment to append and the next index the caller should
+ * continue scanning from. If the closing `]` is missing, the `[` is
+ * emitted as a literal regex-escaped bracket so the produced regex
+ * stays valid.
+ */
+function translateCharClass(pattern, i) {
+    const closeIdx = pattern.indexOf("]", i + 1);
+    if (closeIdx === -1) {
+        return { fragment: String.raw `\[`, nextIndex: i };
+    }
+    return {
+        fragment: pattern.slice(i, closeIdx + 1),
+        nextIndex: closeIdx,
+    };
 }
 function prompt_files_globToRegExp(pattern) {
     // Anchor to the whole string; the path is fully-resolved when we test it.
@@ -19322,39 +19625,60 @@ function resolveGlobs(paths, cwd) {
         }
         const re = prompt_files_globToRegExp(raw);
         for (const entry of entries) {
-            if (!entry.isFile())
-                continue;
-            // `Dirent.parentPath` is absolute (e.g. `/repo/.cursor/rules`).
-            // An entry whose parent is exactly `cwd` sits at the cwd root;
-            // anything deeper gets its cwd-prefix stripped.
-            const parent = entry.parentPath;
-            const rel = parent === undefined || parent === null || parent === cwd
-                ? entry.name
-                : parent.startsWith(cwdWithSep)
-                    ? `${parent.slice(cwdWithSep.length)}/${entry.name}`
-                    : null;
-            if (rel === null)
-                continue;
-            if (!re.test(rel))
-                continue;
-            // Realpath guard: skip anything that resolves outside cwd. We
-            // resolve against `cwdReal` (the symlink-free root) so that a
-            // symlink that points back into cwd is still accepted, matching
-            // the semantic `readPromptFiles` enforces.
-            const absolute = (0,external_node_path_.join)(cwdReal, rel);
-            let real;
-            try {
-                real = (0,external_node_fs_.realpathSync)(absolute);
-            }
-            catch {
-                continue;
-            }
-            if (!(real === cwdReal || real.startsWith(cwdRealWithSep)))
-                continue;
-            out.push(rel);
+            const rel = matchDirent(entry, re, cwd, cwdWithSep, cwdReal, cwdRealWithSep);
+            if (rel !== null)
+                out.push(rel);
         }
     }
     return out;
+}
+/**
+ * Decide whether `entry` matches `re` (a compiled glob regex) AND
+ * resolves inside `cwd` after symlink-following. Returns the
+ * repo-relative path on success or `null` to skip the entry.
+ */
+function matchDirent(entry, re, cwd, cwdWithSep, cwdReal, cwdRealWithSep) {
+    if (!entry.isFile())
+        return null;
+    // `Dirent.parentPath` is absolute (e.g. `/repo/.cursor/rules`).
+    // An entry whose parent is exactly `cwd` sits at the cwd root;
+    // anything deeper gets its cwd-prefix stripped.
+    const rel = direntRelPath(entry, cwd, cwdWithSep);
+    if (rel === null)
+        return null;
+    if (!re.test(rel))
+        return null;
+    // Realpath guard: skip anything that resolves outside cwd. We
+    // resolve against `cwdReal` (the symlink-free root) so that a
+    // symlink that points back into cwd is still accepted, matching
+    // the semantic `readPromptFiles` enforces.
+    const absolute = (0,external_node_path_.join)(cwdReal, rel);
+    let real;
+    try {
+        real = (0,external_node_fs_.realpathSync)(absolute);
+    }
+    catch {
+        return null;
+    }
+    if (!(real === cwdReal || real.startsWith(cwdRealWithSep)))
+        return null;
+    return rel;
+}
+/**
+ * Compute the repo-relative path for a single `Dirent` walked by
+ * `resolveGlobs`. Returns `null` when the entry's parent path does
+ * not live under `cwd` (out-of-tree walks should be silently dropped
+ * — the caller treats `null` as "skip").
+ */
+function direntRelPath(entry, cwd, cwdWithSep) {
+    const parent = entry.parentPath;
+    if (parent === undefined || parent === null || parent === cwd) {
+        return entry.name;
+    }
+    if (!parent.startsWith(cwdWithSep)) {
+        return null;
+    }
+    return `${parent.slice(cwdWithSep.length)}/${entry.name}`;
 }
 
 ;// CONCATENATED MODULE: ./src/review/verified-facts.ts
@@ -22982,7 +23306,7 @@ async function runJsonReview(argv) {
             resolvedConfig: result.resolvedConfig ?? {},
             outcome: {
                 ok: result.exitCode === 0,
-                ...(result.jsonOutcome ?? {}),
+                ...result.jsonOutcome,
             },
         };
         const envelope = createEnvelope("review", legacyData, { exitCode: result.exitCode });
@@ -29306,7 +29630,7 @@ function runVersion(_argv) {
             // because runVersion returns and the auto-invoke will exit
             // the process, which flushes the stream. The 'error' listener
             // above catches the worst-case early-close case.
-            void process.stdout.once?.("drain", () => undefined);
+            process.stdout.once?.("drain", () => undefined);
         }
         if (tier3Error === null) {
             written = true;
@@ -29507,57 +29831,15 @@ async function runCli(args, cwd) {
         // The interactive prompt is opt-in: set UMACTUALLY_INTERACTIVE=1.
         // The old default (prompt on any TTY) froze the install smoke-test
         // waiting for stdin that never came.
-        if (errors.length > 0 &&
-            canPromptInteractively() &&
-            !resolved.dryRun &&
-            everyErrorIsApiConfig(errors) &&
-            process.env["UMACTUALLY_NO_INTERACTIVE"] === undefined &&
-            process.env["UMACTUALLY_INTERACTIVE"] === "1") {
-            const promptForUrl = errors.some((e) => e.flag === "--api-url");
-            const prompted = await smartPromptForApiConfig({ promptForUrl });
-            // SchemaResolvedCliArgs extends ParsedCliArgs, so the same
-            // applyPromptedConfig helper works on both.
-            const augmented = applyPromptedConfig(resolved, prompted);
-            errors = collectValidationErrors(augmented);
-            if (errors.length === 0) {
-                // Validation now passes — re-resolve and proceed without
-                // printing the bare-invocation modes banner (the operator
-                // clearly knows the standalone shape; they just needed
-                // credentials).
-                process.stdout.write(`${brand/* BRAND_PREFIX */.rc}received credentials from interactive prompt; continuing.\n`);
-                return await runAfterValidation({
-                    resolved: augmented,
-                    cwd,
-                    env: process.env,
-                    generatedArtifacts,
-                    policyMeta,
-                });
-            }
-            // Some required values still missing after the prompt. Re-render
-            // the structured errors below so the operator sees what's still
-            // outstanding. Falls through to the standard error path.
-            process.stderr.write(renderValidationErrors(errors));
-            return {
-                exitCode: 2,
-                resolvedConfig: buildSanitizedResolvedConfig(augmented, policyMeta),
-            };
+        if (shouldOfferInteractiveCredentials(resolved, errors)) {
+            const recovery = await tryInteractiveCredentialsRecovery(resolved, errors, cwd, generatedArtifacts, policyMeta);
+            if (recovery !== null)
+                return recovery;
+            // Recovery failed to satisfy validation — fall through to the
+            // standard error path below.
         }
         if (errors.length > 0) {
-            process.stderr.write(renderValidationErrors(errors));
-            // Bare-invocation banner: when the operator ran the CLI with no
-            // provider flags AND validation rejected because of missing
-            // --api-url/--api-key, the actionable next step is "pick a mode"
-            // rather than reading --help. Print the modes banner so the
-            // user can copy-paste the right invocation.
-            if (args.length === 0 &&
-                !envResolved.dryRun &&
-                errors.some((e) => e.flag === "--api-url" || e.flag === "--api-key")) {
-                process.stderr.write(`\n${brand/* BRAND_PREFIX */.rc}pick a mode:\n\n${CLI_MODES_TEXT}`);
-            }
-            return {
-                exitCode: 2,
-                resolvedConfig: buildSanitizedResolvedConfig(resolved, policyMeta),
-            };
+            return renderValidationErrorFallback(resolved, errors, args, envResolved, policyMeta);
         }
         return await runAfterValidation({
             resolved,
@@ -29570,6 +29852,79 @@ async function runCli(args, cwd) {
     finally {
         await cleanupGeneratedArtifacts(generatedArtifacts, cwd);
     }
+}
+/**
+ * Gate for the interactive-credentials safety net. True when:
+ *   - validation produced at least one error
+ *   - we're attached to a TTY (not piped stdin / CI)
+ *   - dry-run is NOT set (the prompt is wasted on a dry-run)
+ *   - every error is an api-config error (NOT a usage / arg error)
+ *   - operator has NOT opted out via UMACTUALLY_NO_INTERACTIVE
+ *   - operator has explicitly opted in via UMACTUALLY_INTERACTIVE=1
+ */
+function shouldOfferInteractiveCredentials(resolved, errors) {
+    return (errors.length > 0 &&
+        canPromptInteractively() &&
+        !resolved.dryRun &&
+        everyErrorIsApiConfig(errors) &&
+        process.env["UMACTUALLY_NO_INTERACTIVE"] === undefined &&
+        process.env["UMACTUALLY_INTERACTIVE"] === "1");
+}
+/**
+ * Try to recover from missing api-url/api-key by prompting
+ * interactively. Returns a fully-formed `CliExecutionResult` on
+ * success OR when the prompt collected values that still failed
+ * validation; returns `null` when the safety-net gate was not met
+ * (caller falls back to the standard error path).
+ */
+async function tryInteractiveCredentialsRecovery(resolved, initialErrors, cwd, generatedArtifacts, policyMeta) {
+    const promptForUrl = initialErrors.some((e) => e.flag === "--api-url");
+    const prompted = await smartPromptForApiConfig({ promptForUrl });
+    // SchemaResolvedCliArgs extends ParsedCliArgs, so the same
+    // applyPromptedConfig helper works on both.
+    const augmented = applyPromptedConfig(resolved, prompted);
+    const errorsAfter = collectValidationErrors(augmented);
+    if (errorsAfter.length === 0) {
+        // Validation now passes — re-resolve and proceed without
+        // printing the bare-invocation modes banner (the operator
+        // clearly knows the standalone shape; they just needed
+        // credentials).
+        process.stdout.write(`${brand/* BRAND_PREFIX */.rc}received credentials from interactive prompt; continuing.\n`);
+        return await runAfterValidation({
+            resolved: augmented,
+            cwd,
+            env: process.env,
+            generatedArtifacts,
+            policyMeta,
+        });
+    }
+    // Some required values still missing after the prompt. Re-render
+    // the structured errors so the operator sees what's still
+    // outstanding.
+    process.stderr.write(renderValidationErrors(errorsAfter));
+    return {
+        exitCode: 2,
+        resolvedConfig: buildSanitizedResolvedConfig(augmented, policyMeta),
+    };
+}
+/**
+ * Render the standard validation-error envelope. When the operator
+ * ran the CLI with no provider flags AND validation rejected because
+ * of missing --api-url/--api-key, the actionable next step is "pick a
+ * mode" rather than reading --help — print the modes banner so the
+ * user can copy-paste the right invocation.
+ */
+function renderValidationErrorFallback(resolved, errors, args, envResolved, policyMeta) {
+    process.stderr.write(renderValidationErrors(errors));
+    if (args.length === 0 &&
+        !envResolved.dryRun &&
+        errors.some((e) => e.flag === "--api-url" || e.flag === "--api-key")) {
+        process.stderr.write(`\n${brand/* BRAND_PREFIX */.rc}pick a mode:\n\n${CLI_MODES_TEXT}`);
+    }
+    return {
+        exitCode: 2,
+        resolvedConfig: buildSanitizedResolvedConfig(resolved, policyMeta),
+    };
 }
 /**
  * Dispatch the post-validation run path. Extracted so the smart-prompt

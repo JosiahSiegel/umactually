@@ -477,7 +477,7 @@ describe("DEFAULT_PROMPT_FILE_PATHS", () => {
     // count changes, the README / CHANGELOG / action.yml all need a
     // matching update — pin it here so a casual add surfaces a test
     // failure.
-    expect(DEFAULT_PROMPT_FILE_PATHS.length).toBe(30);
+    expect(DEFAULT_PROMPT_FILE_PATHS).toHaveLength(30);
   });
 });
 

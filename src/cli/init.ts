@@ -753,47 +753,68 @@ async function runPolicyTemplateInit({
   const bytes = Buffer.byteLength(rendered, "utf8");
 
   if (fs.exists(policyPath)) {
-    return {
-      mode: "policy-template",
-      outcome: "error",
-      exitCode: 1,
-      savedConfigPath: null,
-      savedConfigBytes: null,
-      ciGenerated: [],
-      checks: [
-        {
-          id: "policy-template-write",
-          status: "fail",
-          message: `refusing to overwrite existing policy at ${policyPath}`,
-        },
-      ],
-      hints: [`pass --force to overwrite, or rm ${policyPath} first`],
-      sources: {},
-    };
+    return policyAlreadyExistsResult(policyPath);
   }
 
   try {
     fs.writeFileAtomic(policyPath, rendered);
   } catch (err) {
-    return {
-      mode: "policy-template",
-      outcome: "error",
-      exitCode: 1,
-      savedConfigPath: null,
-      savedConfigBytes: null,
-      ciGenerated: [],
-      checks: [
-        {
-          id: "policy-template-write",
-          status: "fail",
-          message: `cannot write policy at ${policyPath}: ${err instanceof Error ? err.message : String(err)}`,
-        },
-      ],
-      hints: [`ensure ${deps.cwd} is writable`],
-      sources: {},
-    };
+    return policyWriteErrorResult(policyPath, err, deps.cwd);
   }
 
+  return policyWriteOkResult(policyPath, bytes);
+}
+
+/**
+ * Build the "policy file already exists — refuse to overwrite" envelope.
+ */
+function policyAlreadyExistsResult(policyPath: string): InitResult {
+  return {
+    mode: "policy-template",
+    outcome: "error",
+    exitCode: 1,
+    savedConfigPath: null,
+    savedConfigBytes: null,
+    ciGenerated: [],
+    checks: [
+      {
+        id: "policy-template-write",
+        status: "fail",
+        message: `refusing to overwrite existing policy at ${policyPath}`,
+      },
+    ],
+    hints: [`pass --force to overwrite, or rm ${policyPath} first`],
+    sources: {},
+  };
+}
+
+/**
+ * Build the "policy write failed" envelope (filesystem write threw).
+ */
+function policyWriteErrorResult(policyPath: string, err: unknown, cwd: string): InitResult {
+  return {
+    mode: "policy-template",
+    outcome: "error",
+    exitCode: 1,
+    savedConfigPath: null,
+    savedConfigBytes: null,
+    ciGenerated: [],
+    checks: [
+      {
+        id: "policy-template-write",
+        status: "fail",
+        message: `cannot write policy at ${policyPath}: ${err instanceof Error ? err.message : String(err)}`,
+      },
+    ],
+    hints: [`ensure ${cwd} is writable`],
+    sources: {},
+  };
+}
+
+/**
+ * Build the "policy written successfully" envelope.
+ */
+function policyWriteOkResult(policyPath: string, bytes: number): InitResult {
   return {
     mode: "policy-template",
     outcome: "ok",
@@ -904,43 +925,117 @@ async function runNonInteractiveInit({
   // Validate required flags. Missing provider is a hard fail.
   const provider: InitProvider | undefined = args.provider;
   if (provider === undefined) {
-    return {
-      mode: "non-interactive",
-      outcome: "error",
-      exitCode: 2,
-      savedConfigPath: null,
-      savedConfigBytes: null,
-      ciGenerated: [],
-      checks: [
-        {
-          id: "non-interactive-validation",
-          status: "fail",
-          message: "--provider is required in --non-interactive mode",
-        },
-      ],
-      hints: ["--non-interactive requires --provider; e.g. --provider openai-compatible"],
-      sources: {},
-    };
+    return missingProviderResult();
   }
 
   // Per-provider required fields. apiKey is NEVER persisted so it's
   // validated only as "present" (consumed for the live HEAD probe).
-  // We intentionally do NOT retain `apiKey` / `githubApiBase` after
-  // validation — they are write-side blacklisted and don't enter the
-  // `writeSavedConfig` call below (bundle §1.1 S6). The copilot branch
-  // only validates that the operator passed a github-api-base OR
-  // accepts the canonical default; we don't store it because the
-  // saved config schema is provider/apiUrl/model only.
+  const perProvider = perProviderValidation(args, provider);
+  if ("outcome" in perProvider) return perProvider;
+  const { apiUrl, model } = perProvider;
+
+  // Path safety: cwd must not be unsafe (no .., not absolute).
+  if (containsUnsafePathSegment(deps.cwd)) {
+    return unsafeCwdResult(deps.cwd);
+  }
+
+  const scope: "global" | "repo" = args.scope ?? "global";
+  const config: SavedConfig = buildConfig(
+    provider,
+    apiUrl ?? DEFAULT_OPENAI_URL,
+    model,
+  );
+
+  // apiKey and githubApiBase were validated for presence only and
+  // intentionally dropped before reaching writeSavedConfig (S6).
+
+  const writeResult = await writeSavedConfig(config, {
+    homeDir: deps.homeDir,
+    cwd: deps.cwd,
+    scope,
+    force: args.force,
+    platform: deps.platform,
+    ...(deps.fsAdapter !== undefined ? { fs: deps.fsAdapter } : {}),
+    ...(deps.now !== undefined ? { now: deps.now } : {}),
+  });
+  if (!writeResult.ok) {
+    return nonInteractiveWriteFail(writeResult);
+  }
+
+  // CI generation. Honors --ci flag (or --yes if auto-detected).
+  const ciGenerated = await generateCiForResult({
+    args,
+    deps,
+    fs: deps.fsAdapter ?? defaultFsAdapter,
+    packageVersion: deps.packageVersion,
+  });
+
+  return {
+    mode: "non-interactive",
+    outcome: "ok",
+    exitCode: 0,
+    savedConfigPath: writeResult.path,
+    savedConfigBytes: writeResult.bytes,
+    ciGenerated,
+    checks: nonInteractiveSuccessChecks(deps, writeResult, ciGenerated),
+    hints: [],
+    sources: {
+      provider: { source: "flag" },
+      ...(config.apiUrl !== undefined ? { apiUrl: { source: "flag" as const } } : {}),
+      ...(config.model !== undefined ? { model: { source: "flag" as const } } : {}),
+    },
+  };
+}
+
+/**
+ * Build the "missing --provider" envelope for `runNonInteractiveInit`.
+ */
+function missingProviderResult(): InitResult {
+  return {
+    mode: "non-interactive",
+    outcome: "error",
+    exitCode: 2,
+    savedConfigPath: null,
+    savedConfigBytes: null,
+    ciGenerated: [],
+    checks: [
+      {
+        id: "non-interactive-validation",
+        status: "fail",
+        message: "--provider is required in --non-interactive mode",
+      },
+    ],
+    hints: ["--non-interactive requires --provider; e.g. --provider openai-compatible"],
+    sources: {},
+  };
+}
+
+type PerProviderOutcome =
+  | { readonly apiUrl: string | undefined; readonly model: string | undefined }
+  | InitResult;
+
+/**
+ * Per-provider required-fields check for `runNonInteractiveInit`.
+ * `apiKey` is NEVER persisted so it is validated only as "present"
+ * (consumed for the live HEAD probe). We intentionally do NOT retain
+ * `apiKey` / `githubApiBase` after validation — they are write-side
+ * blacklisted and don't enter the `writeSavedConfig` call below
+ * (bundle §1.1 S6). The copilot branch only validates that the
+ * operator passed a github-api-base OR accepts the canonical default;
+ * we don't store it because the saved config schema is
+ * provider/apiUrl/model only.
+ */
+function perProviderValidation(args: ParsedInitArgs, provider: InitProvider): PerProviderOutcome {
   const pendingPrompts: string[] = [];
   let apiUrl = args.apiUrl;
   let model = args.model;
 
   if (provider === "openai-compatible") {
-    if (apiUrl === undefined) apiUrl = DEFAULT_OPENAI_URL;
+    apiUrl ??= DEFAULT_OPENAI_URL;
     if (args.apiKey === undefined) pendingPrompts.push("--api-key");
   } else if (provider === "anthropic") {
     if (args.apiKey === undefined) pendingPrompts.push("--api-key");
-    if (apiUrl === undefined) apiUrl = DEFAULT_ANTHROPIC_URL;
+    apiUrl ??= DEFAULT_ANTHROPIC_URL;
   } else {
     // copilot — no apiKey prompt; githubApiBase presence is acknowledged
     // but not persisted (saved config schema lacks the field).
@@ -965,121 +1060,96 @@ async function runNonInteractiveInit({
       sources: {},
     };
   }
+  return { apiUrl, model };
+}
 
-  // Path safety: cwd must not be unsafe (no .., not absolute). The
-  // saved config path is derived from `cwd` and `homeDir`; we never
-  // accept user-supplied paths so the input surface is fixed.
-  if (containsUnsafePathSegment(deps.cwd)) {
-    return {
-      mode: "non-interactive",
-      outcome: "error",
-      exitCode: 2,
-      savedConfigPath: null,
-      savedConfigBytes: null,
-      ciGenerated: [],
-      checks: [
-        {
-          id: "non-interactive-validation",
-          status: "fail",
-          message: `cwd contains an unsafe segment: ${deps.cwd}`,
-        },
-      ],
-      hints: ["--non-interactive requires a safe cwd (no '..', not absolute)."],
-      sources: {},
-    };
-  }
-
-  const scope: "global" | "repo" = args.scope ?? "global";
-  const config: SavedConfig = buildConfig(
-    provider,
-    apiUrl ?? DEFAULT_OPENAI_URL,
-    model,
-  );
-
-  // apiKey and githubApiBase were validated for presence only and
-  // intentionally dropped before reaching writeSavedConfig (S6).
-  // Note that the SavedConfig type excludes apiKey, so the writer
-  // can't accidentally persist it. See buildConfig + bundle §1.6.
-
-  const writeResult = await writeSavedConfig(config, {
-    homeDir: deps.homeDir,
-    cwd: deps.cwd,
-    scope,
-    force: args.force,
-    platform: deps.platform,
-    ...(deps.fsAdapter !== undefined ? { fs: deps.fsAdapter } : {}),
-    ...(deps.now !== undefined ? { now: deps.now } : {}),
-  });
-  if (!writeResult.ok) {
-    return {
-      mode: "non-interactive",
-      outcome: "error",
-      exitCode: writeResult.exitCode,
-      savedConfigPath: null,
-      savedConfigBytes: null,
-      ciGenerated: [],
-      checks: [
-        {
-          id: "config-atomic-write",
-          status: "fail",
-          message: redactSecretsInString(writeResult.message),
-        },
-      ],
-      hints: [writeResult.message],
-      sources: {},
-    };
-  }
-
-  // CI generation. Honors --ci flag (or --yes if auto-detected).
-  const ciGenerated = await generateCiForResult({
-    args,
-    deps,
-    fs: deps.fsAdapter ?? defaultFsAdapter,
-    packageVersion: deps.packageVersion,
-  });
-
+/**
+ * Build the "unsafe cwd" envelope for `runNonInteractiveInit`. The
+ * saved config path is derived from `cwd` and `homeDir`; we never
+ * accept user-supplied paths so the input surface is fixed.
+ */
+function unsafeCwdResult(cwd: string): InitResult {
   return {
     mode: "non-interactive",
-    outcome: "ok",
-    exitCode: 0,
-    savedConfigPath: writeResult.path,
-    savedConfigBytes: writeResult.bytes,
-    ciGenerated,
+    outcome: "error",
+    exitCode: 2,
+    savedConfigPath: null,
+    savedConfigBytes: null,
+    ciGenerated: [],
+    checks: [
+      {
+        id: "non-interactive-validation",
+        status: "fail",
+        message: `cwd contains an unsafe segment: ${cwd}`,
+      },
+    ],
+    hints: ["--non-interactive requires a safe cwd (no '..', not absolute)."],
+    sources: {},
+  };
+}
+
+/**
+ * Build the "writeSavedConfig failed" envelope for
+ * `runNonInteractiveInit`.
+ */
+function nonInteractiveWriteFail(writeResult: { readonly ok: false; readonly exitCode: 1 | 2; readonly message: string }): InitResult {
+  return {
+    mode: "non-interactive",
+    outcome: "error",
+    exitCode: writeResult.exitCode,
+    savedConfigPath: null,
+    savedConfigBytes: null,
+    ciGenerated: [],
     checks: [
       {
         id: "config-atomic-write",
-        status: "ok",
-        message: `wrote saved config (${writeResult.bytes} bytes) at ${writeResult.path}`,
+        status: "fail",
+        message: redactSecretsInString(writeResult.message),
       },
-      {
-        id: "config-file-mode",
-        status: deps.platform === "win32" ? "skip" : "ok",
-        message: deps.platform === "win32"
-          ? "Windows inherits parent ACL"
-          : "mode 0o600 verified",
-      },
-      {
-        id: "secret-redaction",
-        status: "ok",
-        message: `api key placeholder: ${REDACTED_SECRET_TOKEN}`,
-      },
-      ...(ciGenerated.length > 0
-        ? [
-            {
-              id: "ci-generation" as const,
-              status: "ok" as const,
-              message: `generated ${ciGenerated.join(", ")} workflow`,
-            },
-          ]
-        : []),
     ],
-    hints: [],
-    sources: {
-      provider: { source: "flag" },
-      ...(config.apiUrl !== undefined ? { apiUrl: { source: "flag" as const } } : {}),
-      ...(config.model !== undefined ? { model: { source: "flag" as const } } : {}),
-    },
+    hints: [writeResult.message],
+    sources: {},
   };
+}
+
+/**
+ * Build the success-checks array for `runNonInteractiveInit`. The
+ * optional CI-generation check is appended only when at least one CI
+ * target was generated.
+ */
+function nonInteractiveSuccessChecks(
+  deps: InitDeps,
+  writeResult: { readonly ok: true; readonly path: string; readonly bytes: number },
+  ciGenerated: readonly CiTarget[],
+): readonly InitCheck[] {
+  return [
+    {
+      id: "config-atomic-write",
+      status: "ok",
+      message: `wrote saved config (${writeResult.bytes} bytes) at ${writeResult.path}`,
+    },
+    {
+      id: "config-file-mode",
+      status: deps.platform === "win32" ? "skip" : "ok",
+      message: deps.platform === "win32"
+        ? "Windows inherits parent ACL"
+        : "mode 0o600 verified",
+    },
+    {
+      id: "secret-redaction",
+      status: "ok",
+      message: `api key placeholder: ${REDACTED_SECRET_TOKEN}`,
+    },
+    ...(ciGenerated.length > 0
+      ? [
+          {
+            id: "ci-generation" as const,
+            status: "ok" as const,
+            message: `generated ${ciGenerated.join(", ")} workflow`,
+          },
+        ]
+      : []),
+  ];
 }
 
 // ---------------------------------------------------------------------------
@@ -1096,23 +1166,7 @@ async function runInteractiveInit({
 }): Promise<InitResult> {
   const isTTY = deps.isTTY ?? canPromptInteractively();
   if (!isTTY) {
-    return {
-      mode: "interactive",
-      outcome: "error",
-      exitCode: 2,
-      savedConfigPath: null,
-      savedConfigBytes: null,
-      ciGenerated: [],
-      checks: [
-        {
-          id: "non-interactive-validation",
-          status: "fail",
-          message: "interactive init requires a TTY; re-run with --non-interactive",
-        },
-      ],
-      hints: ["--non-interactive requires --provider; e.g. --provider openai-compatible"],
-      sources: {},
-    };
+    return nottyResult();
   }
 
   const reader: (prompt: string, isTTY: boolean) => Promise<string | null> =
@@ -1138,23 +1192,7 @@ async function runInteractiveInit({
   if (providerAnswer === null) return abortedResult(args.mode);
   const provider = parseProviderChoice(providerAnswer);
   if (provider === null) {
-    return {
-      mode: args.mode,
-      outcome: "error",
-      exitCode: 2,
-      savedConfigPath: null,
-      savedConfigBytes: null,
-      ciGenerated: [],
-      checks: [
-        {
-          id: "provider-choice",
-          status: "fail",
-          message: `unknown provider family: ${redactSecretsInString(providerAnswer)}`,
-        },
-      ],
-      hints: ["expected one of: openai-compatible, anthropic, copilot"],
-      sources: {},
-    };
+    return unknownProviderResult(providerAnswer, args.mode);
   }
 
   // Q3 — per-branch sub-prompts
@@ -1175,8 +1213,7 @@ async function runInteractiveInit({
 
   // Q5 — Confirm save
   const confirmAnswer = await safePrompt(reader, isTTY, "? Save these settings? [y/N]: ", "");
-  if (confirmAnswer === null) return abortedResult(args.mode);
-  if (!/^y(es)?$/i.test(confirmAnswer.trim())) {
+  if (!isSaveConfirmed(confirmAnswer)) {
     return abortedResult(args.mode);
   }
 
@@ -1193,23 +1230,7 @@ async function runInteractiveInit({
     ...(deps.now !== undefined ? { now: deps.now } : {}),
   });
   if (!writeResult.ok) {
-    return {
-      mode: args.mode,
-      outcome: "error",
-      exitCode: writeResult.exitCode,
-      savedConfigPath: null,
-      savedConfigBytes: null,
-      ciGenerated: [],
-      checks: [
-        {
-          id: "config-atomic-write",
-          status: "fail",
-          message: redactSecretsInString(writeResult.message),
-        },
-      ],
-      hints: [writeResult.message],
-      sources: {},
-    };
+    return interactiveWriteFail(writeResult, args.mode);
   }
 
   return {
@@ -1219,44 +1240,7 @@ async function runInteractiveInit({
     savedConfigPath: writeResult.path,
     savedConfigBytes: writeResult.bytes,
     ciGenerated: ciChoice.generated,
-    checks: [
-      {
-        id: "config-atomic-write",
-        status: "ok",
-        message: `wrote saved config (${writeResult.bytes} bytes) at ${writeResult.path}`,
-      },
-      {
-        id: "config-file-mode",
-        status: deps.platform === "win32" ? "skip" : "ok",
-        message: deps.platform === "win32"
-          ? "Windows inherits parent ACL"
-          : "mode 0o600 verified",
-      },
-      {
-        id: "secret-redaction",
-        status: "ok",
-        message: `api key placeholder: ${REDACTED_SECRET_TOKEN}`,
-      },
-      {
-        id: "provider-choice",
-        status: "ok",
-        message: `selected provider: ${provider}`,
-      },
-      {
-        id: "scope-choice",
-        status: "ok",
-        message: `selected scope: ${scopeChoice}`,
-      },
-      ...(ciChoice.generated.length > 0
-        ? [
-            {
-              id: "ci-generation" as const,
-              status: "ok" as const,
-              message: `generated ${ciChoice.generated.join(", ")} workflow`,
-            },
-          ]
-        : []),
-    ],
+    checks: interactiveSuccessChecks(deps, writeResult, provider, scopeChoice, ciChoice.generated),
     hints: [],
     sources: {
       provider: { source: "default" },
@@ -1264,6 +1248,143 @@ async function runInteractiveInit({
       ...(config.model !== undefined ? { model: { source: "default" as const } } : {}),
     },
   };
+}
+
+/**
+ * Build the "interactive requires a TTY" envelope for
+ * `runInteractiveInit`.
+ */
+function nottyResult(): InitResult {
+  return {
+    mode: "interactive",
+    outcome: "error",
+    exitCode: 2,
+    savedConfigPath: null,
+    savedConfigBytes: null,
+    ciGenerated: [],
+    checks: [
+      {
+        id: "non-interactive-validation",
+        status: "fail",
+        message: "interactive init requires a TTY; re-run with --non-interactive",
+      },
+    ],
+    hints: ["--non-interactive requires --provider; e.g. --provider openai-compatible"],
+    sources: {},
+  };
+}
+
+/**
+ * Build the "unknown provider family" envelope for
+ * `runInteractiveInit` (Q2 parse failure).
+ */
+function unknownProviderResult(providerAnswer: string, mode: InitMode): InitResult {
+  return {
+    mode,
+    outcome: "error",
+    exitCode: 2,
+    savedConfigPath: null,
+    savedConfigBytes: null,
+    ciGenerated: [],
+    checks: [
+      {
+        id: "provider-choice",
+        status: "fail",
+        message: `unknown provider family: ${redactSecretsInString(providerAnswer)}`,
+      },
+    ],
+    hints: ["expected one of: openai-compatible, anthropic, copilot"],
+    sources: {},
+  };
+}
+
+/**
+ * Q5 — confirm-save prompt parse. True when the operator typed `y`
+ * or `yes` (case-insensitive); null (EOF/timeout) and any other
+ * input are treated as a decline. Returns `false` on null so the
+ * caller maps it to `abortedResult`.
+ */
+function isSaveConfirmed(confirmAnswer: string | null): boolean {
+  if (confirmAnswer === null) return false;
+  return /^y(es)?$/i.test(confirmAnswer.trim());
+}
+
+/**
+ * Build the "writeSavedConfig failed" envelope for `runInteractiveInit`.
+ */
+function interactiveWriteFail(
+  writeResult: { readonly ok: false; readonly exitCode: 1 | 2; readonly message: string },
+  mode: InitMode,
+): InitResult {
+  return {
+    mode,
+    outcome: "error",
+    exitCode: writeResult.exitCode,
+    savedConfigPath: null,
+    savedConfigBytes: null,
+    ciGenerated: [],
+    checks: [
+      {
+        id: "config-atomic-write",
+        status: "fail",
+        message: redactSecretsInString(writeResult.message),
+      },
+    ],
+    hints: [writeResult.message],
+    sources: {},
+  };
+}
+
+/**
+ * Build the success-checks array for `runInteractiveInit`. The
+ * optional CI-generation check is appended only when at least one
+ * CI target was generated.
+ */
+function interactiveSuccessChecks(
+  deps: InitDeps,
+  writeResult: { readonly ok: true; readonly path: string; readonly bytes: number },
+  provider: InitProvider,
+  scopeChoice: "global" | "repo",
+  ciGenerated: readonly CiTarget[],
+): readonly InitCheck[] {
+  return [
+    {
+      id: "config-atomic-write",
+      status: "ok",
+      message: `wrote saved config (${writeResult.bytes} bytes) at ${writeResult.path}`,
+    },
+    {
+      id: "config-file-mode",
+      status: deps.platform === "win32" ? "skip" : "ok",
+      message: deps.platform === "win32"
+        ? "Windows inherits parent ACL"
+        : "mode 0o600 verified",
+    },
+    {
+      id: "secret-redaction",
+      status: "ok",
+      message: `api key placeholder: ${REDACTED_SECRET_TOKEN}`,
+    },
+    {
+      id: "provider-choice",
+      status: "ok",
+      message: `selected provider: ${provider}`,
+    },
+    {
+      id: "scope-choice",
+      status: "ok",
+      message: `selected scope: ${scopeChoice}`,
+    },
+    ...(ciGenerated.length > 0
+      ? [
+          {
+            id: "ci-generation" as const,
+            status: "ok" as const,
+            message: `generated ${ciGenerated.join(", ")} workflow`,
+          },
+        ]
+      : []),
+  ];
 }
 
 // ---------------------------------------------------------------------------
@@ -1558,7 +1679,7 @@ function parseProviderChoice(answer: string): InitProvider | null {
  */
 function containsUnsafePathSegment(p: string): boolean {
   const segments = p.split(/[\\/]/);
-  if (segments.some((s) => s === "..")) return true;
+  if (segments.includes("..")) return true;
   try {
     const canonicalCwd = realpathSync(p);
     return canonicalCwd !== realpathSync(p);
@@ -1617,16 +1738,17 @@ async function generateCiForResult(input: {
   readonly fs: FsAdapter;
   readonly packageVersion: string;
 }): Promise<readonly CiTarget[]> {
-  if (input.args.ci === "github" || input.args.ci === "azure") {
+  const ci = input.args.ci;
+  if (isExplicitCiTarget(ci)) {
     const r = await generateCi({
-      target: input.args.ci,
+      target: ci,
       fs: input.fs,
       deps: input.deps,
       packageVersion: input.packageVersion,
     });
-    return r.ok ? [input.args.ci] : [];
+    return r.ok ? [ci] : [];
   }
-  if (input.args.ci === "auto") {
+  if (ci === "auto") {
     const target = detectCiTargetHelper(input.fs);
     if (target === null) return [];
     const r = await generateCi({
@@ -1638,6 +1760,16 @@ async function generateCiForResult(input: {
     return r.ok ? [target] : [];
   }
   return [];
+}
+
+/**
+ * True when `ci` is one of the explicit, operator-selected CI targets
+ * (`github` / `azure`) — i.e. NOT the `auto` (auto-detect) or `none`
+ * (decline) sentinels. Acts as a TypeScript type guard so the caller
+ * can pass the narrowed value to functions expecting `CiTarget`.
+ */
+function isExplicitCiTarget(ci: ParsedInitArgs["ci"]): ci is CiTarget {
+  return ci === "github" || ci === "azure";
 }
 
 /**
@@ -1709,7 +1841,7 @@ async function generateCi(input: {
  */
 function joinRelativeCwd(cwd: string, relative: string): string {
   const segments = relative.split(/[\\/]/).filter((s) => s.length > 0 && s !== ".");
-  if (segments.some((s) => s === "..")) {
+  if (segments.includes("..")) {
     throw new Error(`unsafe relative path: ${relative}`);
   }
   const targetPath = `${cwd.replace(/[\\/]+$/, "")}/${segments.join("/")}`;

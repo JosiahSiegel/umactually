@@ -126,6 +126,30 @@ export class CliUsageError extends Error {
   }
 }
 
+/**
+ * Mutable container for the boolean-flag fields handled by
+ * `applyBooleanFlag`. Each entry pairs a positive/negative flag
+ * (e.g. `--detect-leaks` / `--no-detect-leaks`) with the field on
+ * the resulting `ParsedCliArgs` that the flag controls. Mirroring
+ * the canonical contract: positive form sets `true`, negative form
+ * sets `false`. The one-sided `--no-instruction-files` has no
+ * positive counterpart (the field defaults to `true`) so only the
+ * negative form maps.
+ */
+type BooleanFlagState = {
+  includeSonarqube: boolean;
+  includePrSonarFindings: boolean;
+  instructionFiles: boolean;
+  detectLeaks: boolean;
+  walkthrough: boolean;
+  diagnostic: boolean;
+  debugRawResponse: boolean;
+  simulateFindings: boolean;
+  dryRun: boolean;
+  strictSchema: boolean;
+  verifyFindings: boolean;
+};
+
 export function parseCliArgs(args: readonly string[]): ParsedCliArgs {
   const explicitlySet = new Set<string>();
   let platform: CliPlatform = "auto";
@@ -325,21 +349,6 @@ export function parseCliArgs(args: readonly string[]): ParsedCliArgs {
         }
         break;
       }
-      case "--include-sonarqube":
-        includeSonarqube = true;
-        break;
-      case "--no-include-sonarqube":
-        includeSonarqube = false;
-        break;
-      case "--include-pr-sonar-findings":
-        includePrSonarFindings = true;
-        break;
-      case "--no-include-pr-sonar-findings":
-        includePrSonarFindings = false;
-        break;
-      case "--no-instruction-files":
-        instructionFiles = false;
-        break;
       case "--sonar-host-url":
         sonarHostUrl = readValue(args, index, "sonar-host-url");
         index += 1;
@@ -374,36 +383,6 @@ export function parseCliArgs(args: readonly string[]): ParsedCliArgs {
         reviewFileLimit = readIntValue(args, index, "review-file-limit");
         index += 1;
         break;
-      case "--detect-leaks":
-        detectLeaks = true;
-        break;
-      case "--no-detect-leaks":
-        detectLeaks = false;
-        break;
-      case "--walkthrough":
-        walkthrough = true;
-        break;
-      case "--no-walkthrough":
-        walkthrough = false;
-        break;
-      case "--diagnostic":
-        diagnostic = true;
-        break;
-      case "--no-diagnostic":
-        diagnostic = false;
-        break;
-      case "--debug-raw-response":
-        debugRawResponse = true;
-        break;
-      case "--no-debug-raw-response":
-        debugRawResponse = false;
-        break;
-      case "--simulate-findings":
-        simulateFindings = true;
-        break;
-      case "--no-simulate-findings":
-        simulateFindings = false;
-        break;
       case "--review-timeout-seconds":
         reviewTimeoutSeconds = readIntValue(args, index, "review-timeout-seconds");
         index += 1;
@@ -420,27 +399,9 @@ export function parseCliArgs(args: readonly string[]): ParsedCliArgs {
         maxOutputTokens = readIntValue(args, index, "max-output-tokens");
         index += 1;
         break;
-      case "--dry-run":
-        dryRun = true;
-        break;
-      case "--no-dry-run":
-        dryRun = false;
-        break;
       case "--output-artifact":
         outputArtifact = readValue(args, index, "output-artifact");
         index += 1;
-        break;
-      case "--strict-schema":
-        strictSchema = true;
-        break;
-      case "--no-strict-schema":
-        strictSchema = false;
-        break;
-      case "--verify-findings":
-        verifyFindings = true;
-        break;
-      case "--no-verify-findings":
-        verifyFindings = false;
         break;
       case "--help":
       case "-h": {
@@ -450,8 +411,38 @@ export function parseCliArgs(args: readonly string[]): ParsedCliArgs {
         const commandToken = args.slice(0, index).find((t) => !t.startsWith("-"));
         throw new CliHelpSignal(commandToken ?? null);
       }
-      default:
+      default: {
+        const boolFlags: BooleanFlagState = {
+          includeSonarqube,
+          includePrSonarFindings,
+          instructionFiles,
+          detectLeaks,
+          walkthrough,
+          diagnostic,
+          debugRawResponse,
+          simulateFindings,
+          dryRun,
+          strictSchema,
+          verifyFindings,
+        };
+        if (applyBooleanFlag(token, boolFlags)) {
+          ({
+            includeSonarqube,
+            includePrSonarFindings,
+            instructionFiles,
+            detectLeaks,
+            walkthrough,
+            diagnostic,
+            debugRawResponse,
+            simulateFindings,
+            dryRun,
+            strictSchema,
+            verifyFindings,
+          } = boolFlags);
+          break;
+        }
         throw unknownFlagUsageError(token, args);
+      }
     }
   }
 
@@ -611,4 +602,80 @@ function unknownFlagUsageError(token: string, argv: readonly string[]): CliUsage
       ? `Run \`umactually review --help\` for every flag the \`review\` subcommand accepts.`
       : `Run \`umactually --help\` for a flag list, or \`umactually review --api-url <url> --api-key <key>\` for the standard standalone invocation.`;
   return new CliUsageError(message, hint);
+}
+
+/**
+ * Apply a `--name` / `--no-name` boolean flag mutation. Returns
+ * `true` when `token` is recognized and `state` was mutated in
+ * place; returns `false` so the caller can fall through to the
+ * unknown-flag error path.
+ */
+function applyBooleanFlag(token: string, state: BooleanFlagState): boolean {
+  switch (token) {
+    case "--include-sonarqube":
+      state.includeSonarqube = true;
+      return true;
+    case "--no-include-sonarqube":
+      state.includeSonarqube = false;
+      return true;
+    case "--include-pr-sonar-findings":
+      state.includePrSonarFindings = true;
+      return true;
+    case "--no-include-pr-sonar-findings":
+      state.includePrSonarFindings = false;
+      return true;
+    case "--no-instruction-files":
+      state.instructionFiles = false;
+      return true;
+    case "--detect-leaks":
+      state.detectLeaks = true;
+      return true;
+    case "--no-detect-leaks":
+      state.detectLeaks = false;
+      return true;
+    case "--walkthrough":
+      state.walkthrough = true;
+      return true;
+    case "--no-walkthrough":
+      state.walkthrough = false;
+      return true;
+    case "--diagnostic":
+      state.diagnostic = true;
+      return true;
+    case "--no-diagnostic":
+      state.diagnostic = false;
+      return true;
+    case "--debug-raw-response":
+      state.debugRawResponse = true;
+      return true;
+    case "--no-debug-raw-response":
+      state.debugRawResponse = false;
+      return true;
+    case "--simulate-findings":
+      state.simulateFindings = true;
+      return true;
+    case "--no-simulate-findings":
+      state.simulateFindings = false;
+      return true;
+    case "--dry-run":
+      state.dryRun = true;
+      return true;
+    case "--no-dry-run":
+      state.dryRun = false;
+      return true;
+    case "--strict-schema":
+      state.strictSchema = true;
+      return true;
+    case "--no-strict-schema":
+      state.strictSchema = false;
+      return true;
+    case "--verify-findings":
+      state.verifyFindings = true;
+      return true;
+    case "--no-verify-findings":
+      state.verifyFindings = false;
+      return true;
+    default:
+      return false;
+  }
 }

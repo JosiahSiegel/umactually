@@ -160,8 +160,11 @@ describe("init wizard — C-* saved-config safety contract", () => {
     expect(orphans).toEqual([]);
   });
 
-  it("C-2 writes the saved config with mode 0600 on POSIX", async () => {
-    if (process.platform === "win32") return;
+  it("C-2 writes the saved config with mode 0600 on POSIX", async (ctx) => {
+    if (process.platform === "win32") {
+      ctx.skip();
+      return;
+    }
     const { homeDir, cwd } = sandbox();
     const result = await writeSavedConfig(fixture, { homeDir, cwd, scope: "global" });
     expect(result.ok).toBe(true);
@@ -171,8 +174,11 @@ describe("init wizard — C-* saved-config safety contract", () => {
     expect(mode).toBe(0o600);
   });
 
-  it("C-3 on Windows, does not call POSIX-only chmod (no exception)", async () => {
-    if (process.platform !== "win32") return;
+  it("C-3 on Windows, does not call POSIX-only chmod (no exception)", async (ctx) => {
+    if (process.platform !== "win32") {
+      ctx.skip();
+      return;
+    }
     const { homeDir, cwd } = sandbox();
     const result = await writeSavedConfig(fixture, { homeDir, cwd, scope: "global" });
     expect(result.ok).toBe(true);
@@ -184,8 +190,11 @@ describe("init wizard — C-* saved-config safety contract", () => {
     expect(existsSync(result.path)).toBe(true);
   });
 
-  it("C-4 creates ~/.umactually with mode 0700 on POSIX", async () => {
-    if (process.platform === "win32") return;
+  it("C-4 creates ~/.umactually with mode 0700 on POSIX", async (ctx) => {
+    if (process.platform === "win32") {
+      ctx.skip();
+      return;
+    }
     const { homeDir, cwd } = sandbox();
     const result = await writeSavedConfig(fixture, { homeDir, cwd, scope: "global" });
     expect(result.ok).toBe(true);
@@ -389,9 +398,12 @@ describe("init wizard — C-* saved-config safety contract", () => {
 
 describe("init wizard — saved-config read-side invariants (P-*, S-6)", () => {
   it("P-1 precedence chain (text pin): flag > canonical env > legacy REVIEW_* env > saved config > default", () => {
-    expect(
-      "flag > canonical env > legacy REVIEW_* env > saved config > default",
-    ).toBe("flag > canonical env > legacy REVIEW_* env > saved config > default");
+    const chain =
+      "flag > canonical env > legacy REVIEW_* env > saved config > default";
+    const tiers = chain.split(" > ");
+    expect(tiers).toHaveLength(5);
+    expect(tiers[0]).toBe("flag");
+    expect(tiers[4]).toBe("default");
   });
 
   it("P-2 lets an empty canonical env value win over saved config (loader-level concern)", async () => {

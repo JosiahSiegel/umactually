@@ -208,7 +208,7 @@ describe("wire-shape conformance: OpenAI Responses fixture", () => {
     const review = parseReviewPayload(extractTextPayload("responses", fixtureWithEverySeverity));
     expect(review).not.toBeNull();
     const r = review as ProviderReviewPayload;
-    expect(r.comments.length).toBe(12);
+    expect(r.comments).toHaveLength(12);
     for (const c of r.comments) {
       expect(CANONICAL_SEVERITIES.has(c.severity)).toBe(true);
     }

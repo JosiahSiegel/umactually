@@ -109,7 +109,7 @@ describe("truncateBodyForLog", () => {
     const text = "x".repeat(20);
     const truncated = truncateBodyForLog(text, 10);
     expect(truncated).toBe("xxxxxxxxxx…(truncated)");
-    expect(truncated.length).toBe(10 + "…(truncated)".length);
+    expect(truncated).toHaveLength(10 + "…(truncated)".length);
   });
 
   it("defaults maxLen to 500 when no max is supplied", () => {

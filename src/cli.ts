@@ -253,7 +253,7 @@ export function runVersion(_argv: readonly string[]): { readonly exitCode: 0; re
       // because runVersion returns and the auto-invoke will exit
       // the process, which flushes the stream. The 'error' listener
       // above catches the worst-case early-close case.
-      void process.stdout.once?.("drain", () => undefined);
+      process.stdout.once?.("drain", () => undefined);
     }
     if (tier3Error === null) {
       written = true;
@@ -558,61 +558,20 @@ export async function runCli(args: readonly string[], cwd: string): Promise<CliE
     // The interactive prompt is opt-in: set UMACTUALLY_INTERACTIVE=1.
     // The old default (prompt on any TTY) froze the install smoke-test
     // waiting for stdin that never came.
-    if (
-      errors.length > 0 &&
-      canPromptInteractively() &&
-      !resolved.dryRun &&
-      everyErrorIsApiConfig(errors) &&
-      process.env["UMACTUALLY_NO_INTERACTIVE"] === undefined &&
-      process.env["UMACTUALLY_INTERACTIVE"] === "1"
-    ) {
-      const promptForUrl = errors.some((e) => e.flag === "--api-url");
-      const prompted = await smartPromptForApiConfig({ promptForUrl });
-      // SchemaResolvedCliArgs extends ParsedCliArgs, so the same
-      // applyPromptedConfig helper works on both.
-      const augmented = applyPromptedConfig(resolved as unknown as ParsedCliArgs, prompted);
-      errors = collectValidationErrors(augmented);
-      if (errors.length === 0) {
-        // Validation now passes — re-resolve and proceed without
-        // printing the bare-invocation modes banner (the operator
-        // clearly knows the standalone shape; they just needed
-        // credentials).
-        process.stdout.write(`${BRAND_PREFIX}received credentials from interactive prompt; continuing.\n`);
-        return await runAfterValidation({
-          resolved: augmented as unknown as ResolvedCliArgs,
-          cwd,
-          env: process.env,
-          generatedArtifacts,
-          policyMeta,
-        });
-      }
-      // Some required values still missing after the prompt. Re-render
-      // the structured errors below so the operator sees what's still
-      // outstanding. Falls through to the standard error path.
-      process.stderr.write(renderValidationErrors(errors));
-      return {
-        exitCode: 2,
-        resolvedConfig: buildSanitizedResolvedConfig(augmented as unknown as ResolvedCliArgs, policyMeta),
-      };
+    if (shouldOfferInteractiveCredentials(resolved, errors)) {
+      const recovery = await tryInteractiveCredentialsRecovery(
+        resolved,
+        errors,
+        cwd,
+        generatedArtifacts,
+        policyMeta,
+      );
+      if (recovery !== null) return recovery;
+      // Recovery failed to satisfy validation — fall through to the
+      // standard error path below.
     }
     if (errors.length > 0) {
-      process.stderr.write(renderValidationErrors(errors));
-      // Bare-invocation banner: when the operator ran the CLI with no
-      // provider flags AND validation rejected because of missing
-      // --api-url/--api-key, the actionable next step is "pick a mode"
-      // rather than reading --help. Print the modes banner so the
-      // user can copy-paste the right invocation.
-      if (
-        args.length === 0 &&
-        !envResolved.dryRun &&
-        errors.some((e) => e.flag === "--api-url" || e.flag === "--api-key")
-      ) {
-        process.stderr.write(`\n${BRAND_PREFIX}pick a mode:\n\n${CLI_MODES_TEXT}`);
-      }
-      return {
-        exitCode: 2,
-        resolvedConfig: buildSanitizedResolvedConfig(resolved, policyMeta),
-      };
+      return renderValidationErrorFallback(resolved, errors, args, envResolved, policyMeta);
     }
 
     return await runAfterValidation({
@@ -625,6 +584,101 @@ export async function runCli(args: readonly string[], cwd: string): Promise<CliE
   } finally {
     await cleanupGeneratedArtifacts(generatedArtifacts, cwd);
   }
+}
+
+/**
+ * Gate for the interactive-credentials safety net. True when:
+ *   - validation produced at least one error
+ *   - we're attached to a TTY (not piped stdin / CI)
+ *   - dry-run is NOT set (the prompt is wasted on a dry-run)
+ *   - every error is an api-config error (NOT a usage / arg error)
+ *   - operator has NOT opted out via UMACTUALLY_NO_INTERACTIVE
+ *   - operator has explicitly opted in via UMACTUALLY_INTERACTIVE=1
+ */
+function shouldOfferInteractiveCredentials(
+  resolved: ResolvedCliArgs,
+  errors: readonly ValidationError[],
+): boolean {
+  return (
+    errors.length > 0 &&
+    canPromptInteractively() &&
+    !resolved.dryRun &&
+    everyErrorIsApiConfig(errors) &&
+    process.env["UMACTUALLY_NO_INTERACTIVE"] === undefined &&
+    process.env["UMACTUALLY_INTERACTIVE"] === "1"
+  );
+}
+
+/**
+ * Try to recover from missing api-url/api-key by prompting
+ * interactively. Returns a fully-formed `CliExecutionResult` on
+ * success OR when the prompt collected values that still failed
+ * validation; returns `null` when the safety-net gate was not met
+ * (caller falls back to the standard error path).
+ */
+async function tryInteractiveCredentialsRecovery(
+  resolved: ResolvedCliArgs,
+  initialErrors: readonly ValidationError[],
+  cwd: string,
+  generatedArtifacts: readonly string[],
+  policyMeta: { readonly path: string | null; readonly hash: string | null; readonly schemaVersion: number | null },
+): Promise<CliExecutionResult | null> {
+  const promptForUrl = initialErrors.some((e) => e.flag === "--api-url");
+  const prompted = await smartPromptForApiConfig({ promptForUrl });
+  // SchemaResolvedCliArgs extends ParsedCliArgs, so the same
+  // applyPromptedConfig helper works on both.
+  const augmented = applyPromptedConfig(resolved as unknown as ParsedCliArgs, prompted);
+  const errorsAfter = collectValidationErrors(augmented);
+  if (errorsAfter.length === 0) {
+    // Validation now passes — re-resolve and proceed without
+    // printing the bare-invocation modes banner (the operator
+    // clearly knows the standalone shape; they just needed
+    // credentials).
+    process.stdout.write(`${BRAND_PREFIX}received credentials from interactive prompt; continuing.\n`);
+    return await runAfterValidation({
+      resolved: augmented as unknown as ResolvedCliArgs,
+      cwd,
+      env: process.env,
+      generatedArtifacts,
+      policyMeta,
+    });
+  }
+  // Some required values still missing after the prompt. Re-render
+  // the structured errors so the operator sees what's still
+  // outstanding.
+  process.stderr.write(renderValidationErrors(errorsAfter));
+  return {
+    exitCode: 2,
+    resolvedConfig: buildSanitizedResolvedConfig(augmented as unknown as ResolvedCliArgs, policyMeta),
+  };
+}
+
+/**
+ * Render the standard validation-error envelope. When the operator
+ * ran the CLI with no provider flags AND validation rejected because
+ * of missing --api-url/--api-key, the actionable next step is "pick a
+ * mode" rather than reading --help — print the modes banner so the
+ * user can copy-paste the right invocation.
+ */
+function renderValidationErrorFallback(
+  resolved: ResolvedCliArgs,
+  errors: readonly ValidationError[],
+  args: readonly string[],
+  envResolved: SchemaResolvedCliArgs,
+  policyMeta: { readonly path: string | null; readonly hash: string | null; readonly schemaVersion: number | null },
+): CliExecutionResult {
+  process.stderr.write(renderValidationErrors(errors));
+  if (
+    args.length === 0 &&
+    !envResolved.dryRun &&
+    errors.some((e) => e.flag === "--api-url" || e.flag === "--api-key")
+  ) {
+    process.stderr.write(`\n${BRAND_PREFIX}pick a mode:\n\n${CLI_MODES_TEXT}`);
+  }
+  return {
+    exitCode: 2,
+    resolvedConfig: buildSanitizedResolvedConfig(resolved, policyMeta),
+  };
 }
 
 /**

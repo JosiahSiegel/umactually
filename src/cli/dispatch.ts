@@ -441,7 +441,7 @@ export async function runJsonReview(argv: readonly string[]): Promise<DispatchRe
       resolvedConfig: result.resolvedConfig ?? {},
       outcome: {
         ok: result.exitCode === 0,
-        ...(result.jsonOutcome ?? {}),
+        ...result.jsonOutcome,
       },
     };
     const envelope = createEnvelope("review", legacyData, { exitCode: result.exitCode });

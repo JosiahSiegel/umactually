@@ -112,7 +112,7 @@ describe("fetchPlatformInstructionFiles (shared orchestrator)", () => {
     await fetchPlatformInstructionFiles(["a.md", "b.md", "c.md"], fetchImpl, fetchOne);
     // Then: every fetchOne call received the SAME fetchImpl reference
     // (proves the orchestrator does NOT swap implementations per path).
-    expect(receivedImpls.length).toBe(3);
+    expect(receivedImpls).toHaveLength(3);
     for (const impl of receivedImpls) expect(impl).toBe(fetchImpl);
   });
 });

@@ -84,7 +84,7 @@ export function renderCiTemplate(input: {
   readonly body: string;
 } {
   const template = input.target === "github" ? GITHUB_WORKFLOW_TEMPLATE : AZURE_PIPELINE_TEMPLATE;
-  const body = template.replace(/__UMACTUALLY_VERSION__/gu, input.packageVersion);
+  const body = template.replaceAll("__UMACTUALLY_VERSION__", input.packageVersion);
   const filename = input.target === "github" ? GITHUB_WORKFLOW_FILENAME : AZURE_PIPELINE_FILENAME;
   const relativePath = input.target === "github"
     ? join(input.paths?.githubDir ?? ".github/workflows", filename)
