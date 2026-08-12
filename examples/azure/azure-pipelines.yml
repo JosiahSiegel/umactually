@@ -16,7 +16,7 @@ steps:
     inputs:
       versionSpec: "24.x"
   # Pin the npm version for reproducibility (never track `latest`).
-  - script: npm install -g umactually@0.8.0
+  - script: npm install -g umactually@0.8.2
     displayName: Install umactually
   - script: umactually review --platform azure
     displayName: Run umactually PR review
