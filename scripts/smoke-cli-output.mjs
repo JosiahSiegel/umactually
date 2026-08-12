@@ -6,11 +6,11 @@
 // and the bare-invocation quickstart banners.
 //
 // Usage (from worktree root):
-//   npx tsx scripts/smoke-cli-output.mjs                   > .omo/smoke-help-output.txt
-//   npx tsx scripts/smoke-cli-output.mjs --review          > .omo/smoke-review-help.txt
-//   npx tsx scripts/smoke-cli-output.mjs --doctor          > .omo/smoke-doctor-help.txt
-//   npx tsx scripts/smoke-cli-output.mjs --first-run       > .omo/smoke-first-run.txt
-//   npx tsx scripts/smoke-cli-output.mjs --loaded-config  > .omo/smoke-loaded-config.txt
+//   npx tsx scripts/smoke-cli-output.mjs                   > artifacts/smoke-help-output.txt
+//   npx tsx scripts/smoke-cli-output.mjs --review          > artifacts/smoke-review-help.txt
+//   npx tsx scripts/smoke-cli-output.mjs --doctor          > artifacts/smoke-doctor-help.txt
+//   npx tsx scripts/smoke-cli-output.mjs --first-run       > artifacts/smoke-first-run.txt
+//   npx tsx scripts/smoke-cli-output.mjs --loaded-config  > artifacts/smoke-loaded-config.txt
 //
 // The .mjs extension is intentional — the runtime is TypeScript via tsx,
 // and the .ts imports are resolved by tsx's loader, not by Node's ESM.
