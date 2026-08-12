@@ -2,12 +2,12 @@
 
 A Node.js 24 CLI for auditable, policy-aware pull-request review. It posts validated inline findings to GitHub (including documented GHES support) and Azure DevOps through an operator-selected OpenAI-compatible, Anthropic, or Copilot provider.
 
-[![GitHub release](https://img.shields.io/github/v/release/JosiahSiegel/umactually)](https://github.com/JosiahSiegel/umactually/releases/tag/v0.8.0)
+[![GitHub release](https://img.shields.io/github/v/release/JosiahSiegel/umactually)](https://github.com/JosiahSiegel/umactually/releases/tag/v0.8.2)
 [![npm](https://img.shields.io/npm/v/umactually)](https://www.npmjs.com/package/umactually)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 [![Node.js >=24](https://img.shields.io/badge/node-%3E%3D24-339933.svg)](https://nodejs.org/)
 
-Latest release: **[v0.8.0](https://github.com/JosiahSiegel/umactually/releases/tag/v0.8.0)** — see [all releases](https://github.com/JosiahSiegel/umactually/releases).
+Latest release: **[v0.8.2](https://github.com/JosiahSiegel/umactually/releases/tag/v0.8.2)** — see [all releases](https://github.com/JosiahSiegel/umactually/releases).
 ## Quickstart
 
 Use `umactually init` as the single current-version first-run path after installing the CLI. The wizard writes non-secret choices to `~/.umactually/config.json` (mode `0o600`); every later `umactually review` reads them. Per-flag reference: [`docs/configuration.md`](docs/configuration.md). Exit codes: [`docs/exit-codes.md`](docs/exit-codes.md#umactually-init-exit-codes).
@@ -72,7 +72,7 @@ Full per-family wire shape and the cross-protocol dispatcher at [`docs/providers
 
 ## CI
 
-CI must use Node.js 24 and a version-pinned install. Pin to [`v0.8.0`](https://github.com/JosiahSiegel/umactually/releases/tag/v0.8.0) — never track `main`.
+CI must use Node.js 24 and a version-pinned install. Pin to [`v0.8.2`](https://github.com/JosiahSiegel/umactually/releases/tag/v0.8.2) — never track `main`.
 
 ### GitHub Actions
 
