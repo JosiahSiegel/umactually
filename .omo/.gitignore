@@ -1,0 +1,5 @@
+# OMO runtime data — local to each machine, not for committing.
+# Ignore everything in .omo/ except this file itself, so transient
+# files (boulder.json, plans, evidence, notepads, drafts) never show up in git.
+*
+!.gitignore
