@@ -138,33 +138,71 @@ export type ReviewArtifactParseError =
  *   - missing-fingerprint-fields: v1 comment missing fingerprint identity.
  */
 export function parseReviewArtifact(jsonText: string): ReviewArtifactParseResult {
+  const parsed = tryParseJsonObject(jsonText);
+  if (parsed.kind === "error") return parsed.error;
+  return buildReviewArtifactFromRecord(parsed.value);
+}
+
+type JsonObjectOk = { readonly kind: "ok"; readonly value: Record<string, unknown> };
+type JsonObjectErr = { readonly kind: "error"; readonly error: ReviewArtifactParseResult };
+
+function tryParseJsonObject(jsonText: string): JsonObjectOk | JsonObjectErr {
   let parsed: unknown;
   try {
     parsed = JSON.parse(jsonText);
   } catch (error) {
     return {
-      ok: false,
+      kind: "error",
       error: {
-        kind: "malformed-json",
-        message: error instanceof Error ? error.message : String(error),
+        ok: false,
+        error: {
+          kind: "malformed-json",
+          message: error instanceof Error ? error.message : String(error),
+        },
       },
     };
   }
-
   if (!isRecord(parsed)) {
     return {
-      ok: false,
+      kind: "error",
       error: {
-        kind: "invalid-shape",
-        message: "expected a JSON object at the top level",
+        ok: false,
+        error: {
+          kind: "invalid-shape",
+          message: "expected a JSON object at the top level",
+        },
       },
     };
   }
+  return { kind: "ok", value: parsed };
+}
 
+function buildReviewArtifactFromRecord(parsed: Record<string, unknown>): ReviewArtifactParseResult {
+  const schemaVersionResult = parseSchemaVersion(parsed);
+  if (!schemaVersionResult.ok) {
+    return {
+      ok: false,
+      error: schemaVersionResult.error,
+    };
+  }
+  const schemaVersion = schemaVersionResult.value;
+  const shapeResult = validateShapeIfV1(parsed, schemaVersion);
+  if (!shapeResult.ok) return shapeResult;
+
+  const rawComments = readArray(parsed["comments"]);
+  const rawSuppressed = readArray(
+    parsed["suppressedComments"] ?? parsed["suppressed_comments"],
+  );
+
+  if (schemaVersion === 0) {
+    return buildLegacyArtifact(parsed, rawComments, rawSuppressed);
+  }
+  return buildDurableArtifact(parsed, rawComments, rawSuppressed);
+}
+
+function parseSchemaVersion(parsed: Record<string, unknown>): { readonly ok: false; readonly error: ReviewArtifactParseError } | { readonly ok: true; readonly value: number } {
   const rawSchemaVersion = parsed["schemaVersion"];
-  const schemaVersion =
-    typeof rawSchemaVersion === "number" ? rawSchemaVersion : 0;
-
+  const schemaVersion = typeof rawSchemaVersion === "number" ? rawSchemaVersion : 0;
   if (schemaVersion > ARTIFACT_SCHEMA_VERSION) {
     return {
       ok: false,
@@ -175,67 +213,83 @@ export function parseReviewArtifact(jsonText: string): ReviewArtifactParseResult
       },
     };
   }
+  return { ok: true, value: schemaVersion };
+}
 
-  // v1 artifacts must have summary, verdict, and comments fields. Legacy
-  // (unversioned) artifacts are more permissive.
+function validateShapeIfV1(
+  parsed: Record<string, unknown>,
+  schemaVersion: number,
+): ReviewArtifactParseResult {
+  if (schemaVersion < 1) {
+    return { ok: true, artifact: undefined as unknown as ParsedReviewArtifact };
+  }
   const hasSummary = typeof parsed["summary"] === "string";
   const hasVerdict = typeof parsed["verdict"] === "string";
-  const hasComments =
-    parsed["comments"] !== undefined && parsed["comments"] !== null;
-  if (schemaVersion >= 1 && (!hasSummary || !hasVerdict || !hasComments)) {
-    return {
-      ok: false,
-      error: {
-        kind: "invalid-shape",
-        message: `v1 artifact missing required field(s):${!hasSummary ? " summary" : ""}${!hasVerdict ? " verdict" : ""}${!hasComments ? " comments" : ""}`,
-      },
-    };
+  const hasComments = parsed["comments"] !== undefined && parsed["comments"] !== null;
+  if (hasSummary && hasVerdict && hasComments) {
+    return { ok: true, artifact: undefined as unknown as ParsedReviewArtifact };
   }
+  const missing = describeMissingShapeFields(hasSummary, hasVerdict, hasComments);
+  return {
+    ok: false,
+    error: {
+      kind: "invalid-shape",
+      message: `v1 artifact missing required field(s):${missing}`,
+    },
+  };
+}
 
-  const summary = typeof parsed["summary"] === "string" ? parsed["summary"] : "";
-  const verdict = typeof parsed["verdict"] === "string" ? parsed["verdict"] : "";
+function describeMissingShapeFields(hasSummary: boolean, hasVerdict: boolean, hasComments: boolean): string {
+  const parts: string[] = [];
+  if (!hasSummary) parts.push(" summary");
+  if (!hasVerdict) parts.push(" verdict");
+  if (!hasComments) parts.push(" comments");
+  return parts.join("");
+}
 
-  // Read comments from either "comments" (legacy) or "comments" (v1).
-  // Legacy artifacts use "suppressed_comments" (snake_case); v1 uses
-  // "suppressedComments" (camelCase). Accept both.
-  const rawComments = readArray(parsed["comments"]);
-  const rawSuppressed = readArray(parsed["suppressedComments"] ?? parsed["suppressed_comments"]);
+function buildLegacyArtifact(
+  parsed: Record<string, unknown>,
+  rawComments: readonly unknown[],
+  rawSuppressed: readonly unknown[],
+): ReviewArtifactParseResult {
+  const comments: LegacyReviewComment[] = rawComments.map(readLegacyComment);
+  const suppressedComments: LegacyReviewComment[] = rawSuppressed.map(readLegacyComment);
+  return {
+    ok: true,
+    artifact: {
+      schemaVersion: 0,
+      summary: readStringField(parsed, "summary"),
+      verdict: readStringField(parsed, "verdict"),
+      comments,
+      suppressedComments,
+    },
+  };
+}
 
-  if (schemaVersion === 0) {
-    // Legacy format — no fingerprint fields required.
-    const comments: LegacyReviewComment[] = rawComments.map(readLegacyComment);
-    const suppressedComments: LegacyReviewComment[] = rawSuppressed.map(readLegacyComment);
-    return {
-      ok: true,
-      artifact: {
-        schemaVersion: 0,
-        summary,
-        verdict,
-        comments,
-        suppressedComments,
-      },
-    };
-  }
-
-  // v1 format — every comment must carry the full fingerprint identity.
+function buildDurableArtifact(
+  parsed: Record<string, unknown>,
+  rawComments: readonly unknown[],
+  rawSuppressed: readonly unknown[],
+): ReviewArtifactParseResult {
   const commentsResult = rawComments.map((c) => readDurableComment(c));
   const suppressedResult = rawSuppressed.map((c) => readDurableComment(c));
   for (const r of [...commentsResult, ...suppressedResult]) {
-    if (!r.ok) {
-      return r;
-    }
+    if (!r.ok) return r;
   }
-
   return {
     ok: true,
     artifact: {
       schemaVersion: 1,
-      summary,
-      verdict,
+      summary: readStringField(parsed, "summary"),
+      verdict: readStringField(parsed, "verdict"),
       comments: commentsResult.map((r) => (r as { ok: true; comment: DurableReviewComment }).comment),
       suppressedComments: suppressedResult.map((r) => (r as { ok: true; comment: DurableReviewComment }).comment),
     },
   };
+}
+
+function readStringField(parsed: Record<string, unknown>, key: string): string {
+  return typeof parsed[key] === "string" ? (parsed[key] as string) : "";
 }
 
 // ---------------------------------------------------------------------------

@@ -471,6 +471,17 @@ describe("Task 10 evidence — failure scenario", () => {
         "D-bot-thread-unchanged": okTransitions(resultD).find((t) => t.priorThreadId === 7001)?.disposition === "unchanged",
       },
     });
+
+    expect(okWarnings(resultA).some((w) => /403|forbidden/i.test(w))).toBe(true);
+    expect(okTransitions(resultA)).toHaveLength(0);
+    expect(okPartialFailure(resultA)).toBe(true);
+    expect(okTransitions(resultB)).toHaveLength(2);
+    expect(fetchB.requests.filter((r) => r.method !== "GET")).toHaveLength(0);
+    expect(okPosted(resultC)).toHaveLength(1);
+    expect(fetchC.requests.filter((r) => r.method === "POST" && r.url.endsWith("/comments"))).toHaveLength(1);
+    expect(fetchD.requests.filter((r) => /\/comments\/(7002)/u.test(r.url))).toHaveLength(0);
+    const botThreadTransition = okTransitions(resultD).find((t) => t.priorThreadId === 7001);
+    expect(botThreadTransition?.disposition).toBe("unchanged");
   });
 });
 

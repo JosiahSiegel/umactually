@@ -623,47 +623,56 @@ async function collectFromCallers(input, init, state) {
 }
 async function collectResolvedImportTargets(input, init, state) {
     for (const path of init.tsLikeChanged) {
-        if (state.counters.filesParsed >= init.budgets.maxFilesParsed)
+        if (markBudgetOrWallTimeExhausted(init, state))
             break;
-        if (performance.now() - init.start > init.budgets.wallTimeMs) {
-            state.status = "budget-exhausted";
-            break;
-        }
-        const r = readWithinCwd(init.cwdReal, path, init.budgets.perFileBytes);
-        if (!r.ok)
-            continue;
-        state.counters.filesParsed += 1;
-        const parsed = await parseTsFile(path, r.text);
-        if (!parsed.ok)
+        const parsed = await readAndParseBudgetedFile(init, state, path);
+        if (parsed === null || !parsed.ok)
             continue;
         for (const imp of parsed.imports) {
-            const target = resolveSameProjectImport(input.cwd, path, imp.module);
-            if (target === null)
-                continue;
             if (state.counters.filesParsed >= init.budgets.maxFilesParsed)
                 break;
-            if (isExcludedPath(target)) {
-                recordExclusion(state, target, "generated-or-build-artifact");
-                continue;
-            }
-            const targetRead = readWithinCwd(init.cwdReal, target, init.budgets.perFileBytes);
-            if (!targetRead.ok) {
-                recordExclusion(state, target, targetRead.reason);
-                continue;
-            }
-            state.counters.filesParsed += 1;
-            // Emit a "direct caller / callee" item; include the imported symbols.
-            const listed = imp.name.length > 0 ? imp.name : "*";
-            const header = `// callee: imports { ${listed} } from "${target}"`;
-            maybeAddCandidate(init, state, {
-                kind: "direct_caller_or_callee",
-                path: target,
-                pathScope: path,
-                text: `${header}\n${targetRead.text}`,
-                trust: "base",
-            });
+            await emitCalleeForImport(input, init, state, path, imp);
         }
     }
+}
+function markBudgetOrWallTimeExhausted(init, state) {
+    if (state.counters.filesParsed >= init.budgets.maxFilesParsed)
+        return true;
+    if (performance.now() - init.start <= init.budgets.wallTimeMs)
+        return false;
+    state.status = "budget-exhausted";
+    return true;
+}
+async function readAndParseBudgetedFile(init, state, path) {
+    const r = readWithinCwd(init.cwdReal, path, init.budgets.perFileBytes);
+    if (!r.ok)
+        return null;
+    state.counters.filesParsed += 1;
+    return await parseTsFile(path, r.text);
+}
+async function emitCalleeForImport(input, init, state, path, imp) {
+    const target = resolveSameProjectImport(input.cwd, path, imp.module);
+    if (target === null)
+        return;
+    if (isExcludedPath(target)) {
+        recordExclusion(state, target, "generated-or-build-artifact");
+        return;
+    }
+    const targetRead = readWithinCwd(init.cwdReal, target, init.budgets.perFileBytes);
+    if (!targetRead.ok) {
+        recordExclusion(state, target, targetRead.reason);
+        return;
+    }
+    state.counters.filesParsed += 1;
+    const listed = imp.name.length > 0 ? imp.name : "*";
+    const header = `// callee: imports { ${listed} } from "${target}"`;
+    maybeAddCandidate(init, state, {
+        kind: "direct_caller_or_callee",
+        path: target,
+        pathScope: path,
+        text: `${header}\n${targetRead.text}`,
+        trust: "base",
+    });
 }
 async function collectReverseImporters(input, init, state) {
     const changedBaseNames = new Set(init.tsLikeChanged.map((p) => basenameOf(p).replace(/\.[jt]sx?$/u, "")));
@@ -751,48 +760,59 @@ function readdirSafe(cwdReal, seed) {
         return null;
     }
 }
+const TEST_CANDIDATE_BUILDERS = [
+    (base) => `src/${base}.test.ts`,
+    (base) => `src/${base}.spec.ts`,
+    (base) => `src/${base}.test.tsx`,
+    (base) => `src/${base}.spec.tsx`,
+    (base) => `tests/${base}.test.ts`,
+    (base) => `tests/${base}.spec.ts`,
+    (base) => `__tests__/${base}.test.ts`,
+    (base) => `__tests__/${base}.spec.ts`,
+];
 async function collectFromTestReferences(init, state) {
-    // Step 4 — Test references (basename/import match).
-    const TEST_CANDIDATES = [
-        (base) => `src/${base}.test.ts`,
-        (base) => `src/${base}.spec.ts`,
-        (base) => `src/${base}.test.tsx`,
-        (base) => `src/${base}.spec.tsx`,
-        (base) => `tests/${base}.test.ts`,
-        (base) => `tests/${base}.spec.ts`,
-        (base) => `__tests__/${base}.test.ts`,
-        (base) => `__tests__/${base}.spec.ts`,
-    ];
     for (const path of init.tsLikeChanged) {
+        if (isTestReferenceBudgetExhausted(init, state))
+            break;
+        await tryEmitFirstTestCandidateForPath(init, state, path);
+    }
+}
+function isTestReferenceBudgetExhausted(init, state) {
+    if (state.counters.filesParsed >= init.budgets.maxFilesParsed)
+        return true;
+    if (performance.now() - init.start > init.budgets.wallTimeMs)
+        return true;
+    return false;
+}
+async function tryEmitFirstTestCandidateForPath(init, state, path) {
+    const base = basenameOf(path).replace(/\.[jt]sx?$/u, "");
+    if (base.length === 0)
+        return;
+    for (const mkCand of TEST_CANDIDATE_BUILDERS) {
         if (state.counters.filesParsed >= init.budgets.maxFilesParsed)
             break;
-        if (performance.now() - init.start > init.budgets.wallTimeMs)
-            break;
-        const base = basenameOf(path).replace(/\.[jt]sx?$/u, "");
-        if (base.length === 0)
-            continue;
-        for (const mkCand of TEST_CANDIDATES) {
-            const cand = mkCand(base);
-            if (state.counters.filesParsed >= init.budgets.maxFilesParsed)
-                break;
-            if (isExcludedPath(cand)) {
-                recordExclusion(state, cand, "generated-or-build-artifact");
-                continue;
-            }
-            const r = readWithinCwd(init.cwdReal, cand, init.budgets.perFileBytes);
-            if (!r.ok)
-                continue;
-            state.counters.filesParsed += 1;
-            maybeAddCandidate(init, state, {
-                kind: "test_reference",
-                path: cand,
-                pathScope: path,
-                text: `// test for ${base}\n${r.text}`,
-                trust: "base",
-            });
-            break;
-        }
+        const cand = mkCand(base);
+        if (tryEmitTestCandidate(init, state, path, base, cand))
+            return;
     }
+}
+function tryEmitTestCandidate(init, state, sourcePath, base, cand) {
+    if (isExcludedPath(cand)) {
+        recordExclusion(state, cand, "generated-or-build-artifact");
+        return false;
+    }
+    const r = readWithinCwd(init.cwdReal, cand, init.budgets.perFileBytes);
+    if (!r.ok)
+        return false;
+    state.counters.filesParsed += 1;
+    maybeAddCandidate(init, state, {
+        kind: "test_reference",
+        path: cand,
+        pathScope: sourcePath,
+        text: `// test for ${base}\n${r.text}`,
+        trust: "base",
+    });
+    return true;
 }
 function collectExcludedItems(input, init, state) {
     // Step 5 — Applicable instructions, path-scoped rules applied.
@@ -3265,28 +3285,62 @@ const ARTIFACT_SCHEMA_VERSION = 1;
  *   - missing-fingerprint-fields: v1 comment missing fingerprint identity.
  */
 function parseReviewArtifact(jsonText) {
+    const parsed = tryParseJsonObject(jsonText);
+    if (parsed.kind === "error")
+        return parsed.error;
+    return buildReviewArtifactFromRecord(parsed.value);
+}
+function tryParseJsonObject(jsonText) {
     let parsed;
     try {
         parsed = JSON.parse(jsonText);
     }
     catch (error) {
         return {
-            ok: false,
+            kind: "error",
             error: {
-                kind: "malformed-json",
-                message: error instanceof Error ? error.message : String(error),
+                ok: false,
+                error: {
+                    kind: "malformed-json",
+                    message: error instanceof Error ? error.message : String(error),
+                },
             },
         };
     }
     if (!isRecord(parsed)) {
         return {
-            ok: false,
+            kind: "error",
             error: {
-                kind: "invalid-shape",
-                message: "expected a JSON object at the top level",
+                ok: false,
+                error: {
+                    kind: "invalid-shape",
+                    message: "expected a JSON object at the top level",
+                },
             },
         };
     }
+    return { kind: "ok", value: parsed };
+}
+function buildReviewArtifactFromRecord(parsed) {
+    const schemaVersionResult = parseSchemaVersion(parsed);
+    if (!schemaVersionResult.ok) {
+        return {
+            ok: false,
+            error: schemaVersionResult.error,
+        };
+    }
+    const schemaVersion = schemaVersionResult.value;
+    const shapeResult = validateShapeIfV1(parsed, schemaVersion);
+    if (!shapeResult.ok)
+        return shapeResult;
+    const rawComments = readArray(parsed["comments"]);
+    const rawSuppressed = readArray(parsed["suppressedComments"] ?? parsed["suppressed_comments"]);
+    if (schemaVersion === 0) {
+        return buildLegacyArtifact(parsed, rawComments, rawSuppressed);
+    }
+    return buildDurableArtifact(parsed, rawComments, rawSuppressed);
+}
+function parseSchemaVersion(parsed) {
     const rawSchemaVersion = parsed["schemaVersion"];
     const schemaVersion = typeof rawSchemaVersion === "number" ? rawSchemaVersion : 0;
     if (schemaVersion > ARTIFACT_SCHEMA_VERSION) {
@@ -3299,60 +3353,71 @@ function parseReviewArtifact(jsonText) {
             },
         };
     }
-    // v1 artifacts must have summary, verdict, and comments fields. Legacy
-    // (unversioned) artifacts are more permissive.
+    return { ok: true, value: schemaVersion };
+}
+function validateShapeIfV1(parsed, schemaVersion) {
+    if (schemaVersion < 1) {
+        return { ok: true, artifact: undefined };
+    }
     const hasSummary = typeof parsed["summary"] === "string";
     const hasVerdict = typeof parsed["verdict"] === "string";
     const hasComments = parsed["comments"] !== undefined && parsed["comments"] !== null;
-    if (schemaVersion >= 1 && (!hasSummary || !hasVerdict || !hasComments)) {
-        return {
-            ok: false,
-            error: {
-                kind: "invalid-shape",
-                message: `v1 artifact missing required field(s):${!hasSummary ? " summary" : ""}${!hasVerdict ? " verdict" : ""}${!hasComments ? " comments" : ""}`,
-            },
-        };
+    if (hasSummary && hasVerdict && hasComments) {
+        return { ok: true, artifact: undefined };
     }
-    const summary = typeof parsed["summary"] === "string" ? parsed["summary"] : "";
-    const verdict = typeof parsed["verdict"] === "string" ? parsed["verdict"] : "";
-    // Read comments from either "comments" (legacy) or "comments" (v1).
-    // Legacy artifacts use "suppressed_comments" (snake_case); v1 uses
-    // "suppressedComments" (camelCase). Accept both.
-    const rawComments = readArray(parsed["comments"]);
-    const rawSuppressed = readArray(parsed["suppressedComments"] ?? parsed["suppressed_comments"]);
-    if (schemaVersion === 0) {
-        // Legacy format — no fingerprint fields required.
-        const comments = rawComments.map(readLegacyComment);
-        const suppressedComments = rawSuppressed.map(readLegacyComment);
-        return {
-            ok: true,
-            artifact: {
-                schemaVersion: 0,
-                summary,
-                verdict,
-                comments,
-                suppressedComments,
-            },
-        };
-    }
-    // v1 format — every comment must carry the full fingerprint identity.
+    const missing = describeMissingShapeFields(hasSummary, hasVerdict, hasComments);
+    return {
+        ok: false,
+        error: {
+            kind: "invalid-shape",
+            message: `v1 artifact missing required field(s):${missing}`,
+        },
+    };
+}
+function describeMissingShapeFields(hasSummary, hasVerdict, hasComments) {
+    const parts = [];
+    if (!hasSummary)
+        parts.push(" summary");
+    if (!hasVerdict)
+        parts.push(" verdict");
+    if (!hasComments)
+        parts.push(" comments");
+    return parts.join("");
+}
+function buildLegacyArtifact(parsed, rawComments, rawSuppressed) {
+    const comments = rawComments.map(readLegacyComment);
+    const suppressedComments = rawSuppressed.map(readLegacyComment);
+    return {
+        ok: true,
+        artifact: {
+            schemaVersion: 0,
+            summary: readStringField(parsed, "summary"),
+            verdict: readStringField(parsed, "verdict"),
+            comments,
+            suppressedComments,
+        },
+    };
+}
+function buildDurableArtifact(parsed, rawComments, rawSuppressed) {
     const commentsResult = rawComments.map((c) => readDurableComment(c));
     const suppressedResult = rawSuppressed.map((c) => readDurableComment(c));
     for (const r of [...commentsResult, ...suppressedResult]) {
-        if (!r.ok) {
+        if (!r.ok)
             return r;
-        }
     }
     return {
         ok: true,
         artifact: {
             schemaVersion: 1,
-            summary,
-            verdict,
+            summary: readStringField(parsed, "summary"),
+            verdict: readStringField(parsed, "verdict"),
             comments: commentsResult.map((r) => r.comment),
             suppressedComments: suppressedResult.map((r) => r.comment),
         },
     };
+}
+function readStringField(parsed, key) {
+    return typeof parsed[key] === "string" ? parsed[key] : "";
 }
 // ---------------------------------------------------------------------------
 // Serializer
@@ -12095,7 +12160,7 @@ function isSafeInteger(value) {
  * Replaces the byte-identical local copies in `src/provider/provider-parse.ts`
  * and `src/provider/copilot-token.ts` (one definition, many call sites).
  */
-function readStringField(record, key) {
+function json_guards_readStringField(record, key) {
     const value = record[key];
     return typeof value === "string" ? value : null;
 }
@@ -12862,7 +12927,7 @@ function extractTextPayload(endpoint, rawText) {
     const parsed = tryParseJson(rawText);
     if (parsed !== undefined && json_guards_isRecord(parsed)) {
         if (endpoint === "responses") {
-            const direct = readStringField(parsed, "output_text");
+            const direct = json_guards_readStringField(parsed, "output_text");
             if (direct !== null && direct.length > 0) {
                 return direct;
             }
@@ -12911,7 +12976,7 @@ function extractTextPayload(endpoint, rawText) {
                     const message = readRecordField(choice, "message");
                     if (message === null)
                         continue;
-                    const content = readStringField(message, "content");
+                    const content = json_guards_readStringField(message, "content");
                     if (content !== null && content.length > 0) {
                         return content;
                     }
@@ -12948,8 +13013,8 @@ function parseReviewPayload(text, context) {
     if (!json_guards_isRecord(candidate)) {
         return null;
     }
-    const summary = readStringField(candidate, "summary") ?? "";
-    const verdict = readStringField(candidate, "verdict") ?? "";
+    const summary = json_guards_readStringField(candidate, "summary") ?? "";
+    const verdict = json_guards_readStringField(candidate, "verdict") ?? "";
     const comments = readCommentArray(candidate["comments"], context);
     const suppressed_comments = readCommentArray(candidate["suppressed_comments"], context);
     // Soft parse-fail detector (CLARITY-10b): some providers/models return
@@ -13429,7 +13494,7 @@ function readCommentArray(value, context) {
         const path = entry["path"];
         const line = readSafeIntegerField(entry, "line");
         if (typeof path === "string" && line !== null) {
-            const body = readStringField(entry, "body") ?? "";
+            const body = json_guards_readStringField(entry, "body") ?? "";
             comments.push({
                 path,
                 line,
@@ -13442,7 +13507,7 @@ function readCommentArray(value, context) {
                 // The sink + providerName + commentIndex options let the caller
                 // (live-provider.ts via the ambient sink; tests via explicit
                 // options) observe malformed severity values per-comment.
-                severity: normalizeProviderSeverity(readStringField(entry, "severity"), body, 
+                severity: normalizeProviderSeverity(json_guards_readStringField(entry, "severity"), body, 
                 // exactOptionalPropertyTypes: omit undefined keys so the call
                 // is assignable to the strict optional types in
                 // `normalizeProviderSeverity`'s third parameter.
@@ -13455,7 +13520,7 @@ function readCommentArray(value, context) {
                         commentIndex: index,
                     }
                     : { commentIndex: index }),
-                category: readStringField(entry, "category") ?? "general",
+                category: json_guards_readStringField(entry, "category") ?? "general",
                 ...(parseRawSuggestion(entry["suggestion"]) ?? {}),
                 ...(parseRawRemediation(entry["remediation"]) ?? {}),
             });
@@ -13655,7 +13720,7 @@ function tryExtractSse(rawText) {
         // the canonical OpenAI Responses API shape.
         const wrappedResponse = readRecordField(parsed, "response");
         if (wrappedResponse !== null) {
-            const eventType = readStringField(parsed, "type");
+            const eventType = json_guards_readStringField(parsed, "type");
             // Skip reasoning-text deltas entirely. Some providers emit
             // `response.reasoning_text.delta` events
             // alongside the final answer. Concat-ing them into `fragments`
@@ -13669,7 +13734,7 @@ function tryExtractSse(rawText) {
             }
             if (eventType === "response.completed" || eventType === "response.done") {
                 // Final event: prefer the full response payload if it has output_text.
-                const outText = readStringField(wrappedResponse, "output_text");
+                const outText = json_guards_readStringField(wrappedResponse, "output_text");
                 if (outText !== null && outText.length > 0) {
                     completedResponseText = outText;
                 }
@@ -13686,7 +13751,7 @@ function tryExtractSse(rawText) {
                 continue;
             }
             if (eventType === "response.output_text.delta" || eventType === "response.delta") {
-                const deltaText = readStringField(parsed, "delta");
+                const deltaText = json_guards_readStringField(parsed, "delta");
                 if (deltaText !== null) {
                     fragments.push(deltaText);
                 }
@@ -13699,7 +13764,7 @@ function tryExtractSse(rawText) {
             for (const choice of choices) {
                 const delta = readRecordField(choice, "delta");
                 if (delta !== null) {
-                    const content = readStringField(delta, "content");
+                    const content = json_guards_readStringField(delta, "content");
                     if (content !== null) {
                         fragments.push(content);
                     }
@@ -13710,11 +13775,11 @@ function tryExtractSse(rawText) {
         // /responses streaming (alternative non-OpenAI variant): top-level delta
         // string directly on the JSON object. Skip reasoning deltas — they
         // are chain-of-thought prose, not part of the final review payload.
-        const topLevelType = readStringField(parsed, "type");
+        const topLevelType = json_guards_readStringField(parsed, "type");
         if (typeof topLevelType === "string" && topLevelType.includes("reasoning")) {
             continue;
         }
-        const deltaText = readStringField(parsed, "delta");
+        const deltaText = json_guards_readStringField(parsed, "delta");
         if (deltaText !== null) {
             fragments.push(deltaText);
         }
@@ -13872,15 +13937,15 @@ function checkErrorEnvelope(parsed) {
     // Single `error` object (RFC 7807 / common shape).
     const errorField = parsed["error"];
     if (json_guards_isRecord(errorField)) {
-        const message = readStringField(errorField, "message") ??
-            readStringField(errorField, "type") ??
-            readStringField(errorField, "code") ??
+        const message = json_guards_readStringField(errorField, "message") ??
+            json_guards_readStringField(errorField, "type") ??
+            json_guards_readStringField(errorField, "code") ??
             "Provider returned an error envelope.";
         return {
             kind: "error-envelope",
             message,
-            ...(readStringField(errorField, "type") !== null
-                ? { detail: `type: ${readStringField(errorField, "type")}` }
+            ...(json_guards_readStringField(errorField, "type") !== null
+                ? { detail: `type: ${json_guards_readStringField(errorField, "type")}` }
                 : {}),
         };
     }
@@ -13889,9 +13954,9 @@ function checkErrorEnvelope(parsed) {
     if (isUnknownArray(errorsField) && errorsField.length > 0) {
         const first = errorsField[0];
         if (json_guards_isRecord(first)) {
-            const message = readStringField(first, "message") ??
-                readStringField(first, "detail") ??
-                readStringField(first, "title") ??
+            const message = json_guards_readStringField(first, "message") ??
+                json_guards_readStringField(first, "detail") ??
+                json_guards_readStringField(first, "title") ??
                 "Provider returned an errors array.";
             return {
                 kind: "error-envelope",
@@ -13967,11 +14032,11 @@ function readUsageBlock(parsed) {
  * responses that DO contain a valid review.
  */
 function checkHasReviewContent(parsed) {
-    const summary = readStringField(parsed, "summary");
+    const summary = json_guards_readStringField(parsed, "summary");
     if (summary !== null && summary.length > 0) {
         return true;
     }
-    const verdict = readStringField(parsed, "verdict");
+    const verdict = json_guards_readStringField(parsed, "verdict");
     if (verdict !== null && verdict.length > 0) {
         return true;
     }
@@ -14334,10 +14399,10 @@ async function fetchAndCacheSessionToken(githubToken, tokenUrl, tokenHeaders, fe
             error: new ProviderError("parse", endpoint, response.status, requestId, "Copilot session token response was not a JSON object."),
         };
     }
-    const token = readStringField(envelope, "token");
+    const token = json_guards_readStringField(envelope, "token");
     const expiresAt = readSafeIntegerField(envelope, "expires_at");
     const endpoints = readRecordField(envelope, "endpoints");
-    const chatApiBase = endpoints === null ? null : readStringField(endpoints, "api");
+    const chatApiBase = endpoints === null ? null : json_guards_readStringField(endpoints, "api");
     if (token === null || expiresAt === null || chatApiBase === null) {
         return {
             ok: false,
@@ -15274,10 +15339,10 @@ function extractAnthropicTextPayload(rawText) {
     for (const block of content) {
         if (!json_guards_isRecord(block))
             continue;
-        const type = readStringField(block, "type");
+        const type = json_guards_readStringField(block, "type");
         if (type !== "text")
             continue;
-        const text = readStringField(block, "text");
+        const text = json_guards_readStringField(block, "text");
         if (text !== null && text.length > 0)
             fragments.push(text);
     }
@@ -15292,7 +15357,7 @@ function extractAnthropicTextPayload(rawText) {
 function readStopReason(parsed) {
     if (!json_guards_isRecord(parsed))
         return null;
-    const stopReason = readStringField(parsed, "stop_reason");
+    const stopReason = json_guards_readStringField(parsed, "stop_reason");
     if (stopReason === null || stopReason.length === 0)
         return null;
     return stopReason;

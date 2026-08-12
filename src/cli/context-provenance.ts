@@ -763,42 +763,62 @@ async function collectResolvedImportTargets(
   state: CollectState,
 ): Promise<void> {
   for (const path of init.tsLikeChanged) {
-    if (state.counters.filesParsed >= init.budgets.maxFilesParsed) break;
-    if (performance.now() - init.start > init.budgets.wallTimeMs) {
-      state.status = "budget-exhausted";
-      break;
-    }
-    const r = readWithinCwd(init.cwdReal, path, init.budgets.perFileBytes);
-    if (!r.ok) continue;
-    state.counters.filesParsed += 1;
-    const parsed = await parseTsFile(path, r.text);
-    if (!parsed.ok) continue;
+    if (markBudgetOrWallTimeExhausted(init, state)) break;
+    const parsed = await readAndParseBudgetedFile(init, state, path);
+    if (parsed === null || !parsed.ok) continue;
     for (const imp of parsed.imports) {
-      const target = resolveSameProjectImport(input.cwd, path, imp.module);
-      if (target === null) continue;
       if (state.counters.filesParsed >= init.budgets.maxFilesParsed) break;
-      if (isExcludedPath(target)) {
-        recordExclusion(state, target, "generated-or-build-artifact");
-        continue;
-      }
-      const targetRead = readWithinCwd(init.cwdReal, target, init.budgets.perFileBytes);
-      if (!targetRead.ok) {
-        recordExclusion(state, target, targetRead.reason);
-        continue;
-      }
-      state.counters.filesParsed += 1;
-      // Emit a "direct caller / callee" item; include the imported symbols.
-      const listed = imp.name.length > 0 ? imp.name : "*";
-      const header = `// callee: imports { ${listed} } from "${target}"`;
-      maybeAddCandidate(init, state, {
-        kind: "direct_caller_or_callee",
-        path: target,
-        pathScope: path,
-        text: `${header}\n${targetRead.text}`,
-        trust: "base",
-      });
+      await emitCalleeForImport(input, init, state, path, imp);
     }
   }
+}
+
+function markBudgetOrWallTimeExhausted(init: CollectInit, state: CollectState): boolean {
+  if (state.counters.filesParsed >= init.budgets.maxFilesParsed) return true;
+  if (performance.now() - init.start <= init.budgets.wallTimeMs) return false;
+  state.status = "budget-exhausted";
+  return true;
+}
+
+async function readAndParseBudgetedFile(
+  init: CollectInit,
+  state: CollectState,
+  path: string,
+): Promise<ParsedTsFile | null> {
+  const r = readWithinCwd(init.cwdReal, path, init.budgets.perFileBytes);
+  if (!r.ok) return null;
+  state.counters.filesParsed += 1;
+  return await parseTsFile(path, r.text);
+}
+
+async function emitCalleeForImport(
+  input: ContextProvenanceInput,
+  init: CollectInit,
+  state: CollectState,
+  path: string,
+  imp: { readonly module: string; readonly name: string },
+): Promise<void> {
+  const target = resolveSameProjectImport(input.cwd, path, imp.module);
+  if (target === null) return;
+  if (isExcludedPath(target)) {
+    recordExclusion(state, target, "generated-or-build-artifact");
+    return;
+  }
+  const targetRead = readWithinCwd(init.cwdReal, target, init.budgets.perFileBytes);
+  if (!targetRead.ok) {
+    recordExclusion(state, target, targetRead.reason);
+    return;
+  }
+  state.counters.filesParsed += 1;
+  const listed = imp.name.length > 0 ? imp.name : "*";
+  const header = `// callee: imports { ${listed} } from "${target}"`;
+  maybeAddCandidate(init, state, {
+    kind: "direct_caller_or_callee",
+    path: target,
+    pathScope: path,
+    text: `${header}\n${targetRead.text}`,
+    trust: "base",
+  });
 }
 
 async function collectReverseImporters(
@@ -881,47 +901,69 @@ function readdirSafe(cwdReal: string, seed: string): readonly string[] | null {
   }
 }
 
+const TEST_CANDIDATE_BUILDERS: readonly ((base: string) => string)[] = [
+  (base) => `src/${base}.test.ts`,
+  (base) => `src/${base}.spec.ts`,
+  (base) => `src/${base}.test.tsx`,
+  (base) => `src/${base}.spec.tsx`,
+  (base) => `tests/${base}.test.ts`,
+  (base) => `tests/${base}.spec.ts`,
+  (base) => `__tests__/${base}.test.ts`,
+  (base) => `__tests__/${base}.spec.ts`,
+];
+
 async function collectFromTestReferences(
   init: CollectInit,
   state: CollectState,
 ): Promise<void> {
-  // Step 4 — Test references (basename/import match).
-  const TEST_CANDIDATES = [
-    (base: string): string => `src/${base}.test.ts`,
-    (base: string): string => `src/${base}.spec.ts`,
-    (base: string): string => `src/${base}.test.tsx`,
-    (base: string): string => `src/${base}.spec.tsx`,
-    (base: string): string => `tests/${base}.test.ts`,
-    (base: string): string => `tests/${base}.spec.ts`,
-    (base: string): string => `__tests__/${base}.test.ts`,
-    (base: string): string => `__tests__/${base}.spec.ts`,
-  ];
-
   for (const path of init.tsLikeChanged) {
-    if (state.counters.filesParsed >= init.budgets.maxFilesParsed) break;
-    if (performance.now() - init.start > init.budgets.wallTimeMs) break;
-    const base = basenameOf(path).replace(/\.[jt]sx?$/u, "");
-    if (base.length === 0) continue;
-    for (const mkCand of TEST_CANDIDATES) {
-      const cand = mkCand(base);
-      if (state.counters.filesParsed >= init.budgets.maxFilesParsed) break;
-      if (isExcludedPath(cand)) {
-        recordExclusion(state, cand, "generated-or-build-artifact");
-        continue;
-      }
-      const r = readWithinCwd(init.cwdReal, cand, init.budgets.perFileBytes);
-      if (!r.ok) continue;
-      state.counters.filesParsed += 1;
-      maybeAddCandidate(init, state, {
-        kind: "test_reference",
-        path: cand,
-        pathScope: path,
-        text: `// test for ${base}\n${r.text}`,
-        trust: "base",
-      });
-      break;
-    }
+    if (isTestReferenceBudgetExhausted(init, state)) break;
+    await tryEmitFirstTestCandidateForPath(init, state, path);
   }
+}
+
+function isTestReferenceBudgetExhausted(init: CollectInit, state: CollectState): boolean {
+  if (state.counters.filesParsed >= init.budgets.maxFilesParsed) return true;
+  if (performance.now() - init.start > init.budgets.wallTimeMs) return true;
+  return false;
+}
+
+async function tryEmitFirstTestCandidateForPath(
+  init: CollectInit,
+  state: CollectState,
+  path: string,
+): Promise<void> {
+  const base = basenameOf(path).replace(/\.[jt]sx?$/u, "");
+  if (base.length === 0) return;
+  for (const mkCand of TEST_CANDIDATE_BUILDERS) {
+    if (state.counters.filesParsed >= init.budgets.maxFilesParsed) break;
+    const cand = mkCand(base);
+    if (tryEmitTestCandidate(init, state, path, base, cand)) return;
+  }
+}
+
+function tryEmitTestCandidate(
+  init: CollectInit,
+  state: CollectState,
+  sourcePath: string,
+  base: string,
+  cand: string,
+): boolean {
+  if (isExcludedPath(cand)) {
+    recordExclusion(state, cand, "generated-or-build-artifact");
+    return false;
+  }
+  const r = readWithinCwd(init.cwdReal, cand, init.budgets.perFileBytes);
+  if (!r.ok) return false;
+  state.counters.filesParsed += 1;
+  maybeAddCandidate(init, state, {
+    kind: "test_reference",
+    path: cand,
+    pathScope: sourcePath,
+    text: `// test for ${base}\n${r.text}`,
+    trust: "base",
+  });
+  return true;
 }
 
 function collectExcludedItems(

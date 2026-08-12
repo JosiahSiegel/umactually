@@ -232,16 +232,61 @@ export async function runGithubReconcile(
     callerSignal,
     AbortSignal.timeout(60_000),
   ]);
-  if (callerSignal.aborted) {
-    const rawReason = callerSignal.reason;
-    const abortReason =
-      rawReason === undefined || rawReason === ""
-        ? "aborted"
-        : rawReason instanceof Error
-        ? rawReason.message
-        : String(rawReason);
-    return { kind: "aborted", reason: abortReason };
+
+  const aborted = buildAbortedResultIfCancelled(callerSignal);
+  if (aborted !== null) return aborted;
+
+  const collision = checkFingerprintCollisions(input);
+  if (collision !== null) return collision;
+
+  const fetchInput: ReconcileInput = { ...input, signal: reconcileSignal };
+  const state = createReconcileState();
+
+  const priorCommentsOutcome = await listPriorMarkerComments(fetchInput);
+  if (priorCommentsOutcome.kind === "error") {
+    state.warnings.push(...priorCommentsOutcome.warnings);
+    state.partialFailure = true;
+    return buildOkResult(input, state, reconcileSignal);
   }
+
+  const reviews = await listReviewsOrEmpty(fetchInput, state);
+  await processAllPriorActions(fetchInput, input, priorCommentsOutcome.value, reviews, state);
+  await processAllNewFindings(fetchInput, input, state);
+
+  return buildOkResult(input, state, reconcileSignal);
+}
+
+type ReconcileState = {
+  warnings: string[];
+  transitions: ReconcileTransition[];
+  postedThreadIds: number[];
+  updatedThreadIds: number[];
+  partialFailure: boolean;
+};
+
+function createReconcileState(): ReconcileState {
+  return {
+    warnings: [],
+    transitions: [],
+    postedThreadIds: [],
+    updatedThreadIds: [],
+    partialFailure: false,
+  };
+}
+
+function buildAbortedResultIfCancelled(callerSignal: AbortSignal): Extract<ReconcileResult, { kind: "aborted" }> | null {
+  if (!callerSignal.aborted) return null;
+  const rawReason = callerSignal.reason;
+  const abortReason =
+    rawReason === undefined || rawReason === ""
+      ? "aborted"
+      : rawReason instanceof Error
+      ? rawReason.message
+      : String(rawReason);
+  return { kind: "aborted", reason: abortReason };
+}
+
+function checkFingerprintCollisions(input: ReconcileInput): Extract<ReconcileResult, { kind: "collision" }> | null {
   try {
     assertNoFingerprintCollision(
       input.newFindings.map((finding) => ({
@@ -271,6 +316,7 @@ export async function runGithubReconcile(
         body: finding.fingerprint,
       })),
     );
+    return null;
   } catch (error) {
     if (error instanceof FingerprintCollisionError) {
       return {
@@ -281,108 +327,118 @@ export async function runGithubReconcile(
     }
     throw error;
   }
-  const fetchInput: ReconcileInput = { ...input, signal: reconcileSignal };
-  const warnings: string[] = [];
-  const transitions: ReconcileTransition[] = [];
-  const postedThreadIds: number[] = [];
-  const updatedThreadIds: number[] = [];
-  let partialFailure = false;
+}
 
-  const priorComments = await listPriorMarkerComments(fetchInput);
-  if (priorComments.kind === "error") {
-    warnings.push(...priorComments.warnings);
-    partialFailure = true;
-    return {
-      kind: "ok",
-      decision: input.decision ?? classifyDecision(input),
-      reason: classifyDecisionReason(input, input.decision ?? classifyDecision(input)),
-      transitions: [],
-      warnings,
-      boundToHeadSha: input.currentHeadSha,
-      partialFailure,
-      resolutionMode: input.resolutionMode,
-      postedThreadIds,
-      updatedThreadIds,
-      signalAborted: reconcileSignal.aborted,
-    };
-  }
-
+async function listReviewsOrEmpty(
+  fetchInput: ReconcileInput,
+  state: ReconcileState,
+): Promise<readonly GithubReview[]> {
   const reviewsOutcome = await listReviews(fetchInput);
-  let reviews: readonly GithubReview[] = [];
   if (reviewsOutcome.kind === "error") {
-    warnings.push(...reviewsOutcome.warnings);
-  } else {
-    reviews = reviewsOutcome.value;
+    state.warnings.push(...reviewsOutcome.warnings);
+    return [];
   }
+  return reviewsOutcome.value;
+}
 
-  const eligibleComments = filterEligibleComments(priorComments.value, reviews, input.context.token);
+async function processAllPriorActions(
+  fetchInput: ReconcileInput,
+  input: ReconcileInput,
+  priorComments: readonly GithubReviewComment[],
+  reviews: readonly GithubReview[],
+  state: ReconcileState,
+): Promise<void> {
+  const eligibleComments = filterEligibleComments(priorComments, reviews, input.context.token);
   const deltaTouched = computeDeltaTouchedPaths(input.deltaDiffText);
   const classification = classifyPriorFindings(input.priorFindings, eligibleComments, deltaTouched);
-
-  const newByFingerprint = new Map<string, NewProviderFinding>();
-  for (const finding of input.newFindings) {
-    newByFingerprint.set(finding.fingerprint, finding);
-  }
+  const newByFingerprint = buildNewFindingsIndex(input.newFindings);
 
   for (const candidate of classification.reconsidered) {
     const transition = await processReconsidered(fetchInput, {
       candidate,
       newByFingerprint,
-      warnings,
-      postedThreadIds,
-      updatedThreadIds,
+      warnings: state.warnings,
+      postedThreadIds: state.postedThreadIds,
+      updatedThreadIds: state.updatedThreadIds,
     });
-    transitions.push(transition);
+    state.transitions.push(transition);
     if (transition.disposition === "deferred") {
-      partialFailure = true;
+      state.partialFailure = true;
     }
   }
-
   for (const carried of classification.carried) {
-    transitions.push({
-      fingerprint: carried.fingerprint,
-      disposition: "carried",
-      priorPath: carried.path,
-      priorLine: carried.line,
-      priorThreadId: carried.threadId,
-      path: carried.path,
-      line: carried.line,
-      note: "anchor untouched by delta; carried unchanged",
-    });
+    state.transitions.push(buildCarriedTransition(carried));
   }
+}
 
+function buildNewFindingsIndex(newFindings: readonly NewProviderFinding[]): ReadonlyMap<string, NewProviderFinding> {
+  const m = new Map<string, NewProviderFinding>();
+  for (const finding of newFindings) {
+    m.set(finding.fingerprint, finding);
+  }
+  return m;
+}
+
+function buildCarriedTransition(carried: ReconciledFinding): ReconcileTransition {
+  return {
+    fingerprint: carried.fingerprint,
+    disposition: "carried",
+    priorPath: carried.path,
+    priorLine: carried.line,
+    priorThreadId: carried.threadId,
+    path: carried.path,
+    line: carried.line,
+    note: "anchor untouched by delta; carried unchanged",
+  };
+}
+
+async function processAllNewFindings(
+  fetchInput: ReconcileInput,
+  input: ReconcileInput,
+  state: ReconcileState,
+): Promise<void> {
   for (const newFinding of input.newFindings) {
-    const alreadyTransitioned = transitions.some((t) => t.fingerprint === newFinding.fingerprint);
-    if (alreadyTransitioned) continue;
-    const posted = await postNewFinding(fetchInput, { finding: newFinding, warnings });
+    if (state.transitions.some((t) => t.fingerprint === newFinding.fingerprint)) continue;
+    const posted = await postNewFinding(fetchInput, { finding: newFinding, warnings: state.warnings });
     if (posted !== null) {
-      postedThreadIds.push(posted);
-      transitions.push({
-        fingerprint: newFinding.fingerprint,
-        disposition: "posted",
-        priorPath: "",
-        priorLine: 0,
-        priorThreadId: 0,
-        path: newFinding.path,
-        line: newFinding.line,
-        note: "new finding posted",
-      });
+      state.postedThreadIds.push(posted);
+      state.transitions.push(buildPostedTransition(newFinding));
     } else {
-      partialFailure = true;
+      state.partialFailure = true;
     }
   }
+}
 
+function buildPostedTransition(newFinding: NewProviderFinding): ReconcileTransition {
+  return {
+    fingerprint: newFinding.fingerprint,
+    disposition: "posted",
+    priorPath: "",
+    priorLine: 0,
+    priorThreadId: 0,
+    path: newFinding.path,
+    line: newFinding.line,
+    note: "new finding posted",
+  };
+}
+
+function buildOkResult(
+  input: ReconcileInput,
+  state: ReconcileState,
+  reconcileSignal: AbortSignal,
+): Extract<ReconcileResult, { kind: "ok" }> {
+  const decision = input.decision ?? classifyDecision(input);
   return {
     kind: "ok",
-    decision: input.decision ?? classifyDecision(input),
-    reason: classifyDecisionReason(input, input.decision ?? classifyDecision(input)),
-    transitions,
-    warnings,
+    decision,
+    reason: classifyDecisionReason(input, decision),
+    transitions: state.transitions,
+    warnings: state.warnings,
     boundToHeadSha: input.currentHeadSha,
-    partialFailure,
+    partialFailure: state.partialFailure,
     resolutionMode: input.resolutionMode,
-    postedThreadIds,
-    updatedThreadIds,
+    postedThreadIds: state.postedThreadIds,
+    updatedThreadIds: state.updatedThreadIds,
     signalAborted: reconcileSignal.aborted,
   };
 }
