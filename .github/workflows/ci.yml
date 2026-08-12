@@ -92,7 +92,7 @@ jobs:
 
       - name: Upload artifacts
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: manual-artifacts
           path: artifacts/manual/
@@ -613,7 +613,7 @@ jobs:
 
       - name: Upload e2e artifacts
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: e2e-pr-linux-x64
           path: ${{ runner.temp }}/e2e-pr/
@@ -681,7 +681,7 @@ jobs:
 
       - name: Upload e2e artifacts
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: e2e-pr-windows-x64
           path: ${{ runner.temp }}/e2e-pr/
@@ -839,7 +839,7 @@ jobs:
 
       - name: Upload coverage artifact
         if: ${{ always() && env.SONAR_TOKEN != '' }}
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: sonar-coverage
           path: coverage/
@@ -882,7 +882,7 @@ jobs:
 
       - name: Upload dry-run logs on failure
         if: failure()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: release-pipeline-dry-run-failure
           path: |
