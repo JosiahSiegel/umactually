@@ -157,7 +157,7 @@ describe("collectContextProvenance (typed ContextItem + selection + budget)", ()
       expect(["base", "head", "trusted", "untrusted"].includes(item.trust)).toBe(true);
       expect(Number.isInteger(item.bytes)).toBe(true);
       expect(typeof item.contentHash).toBe("string");
-      expect(item.contentHash.length).toBe(64); // sha256 hex
+      expect(item.contentHash).toHaveLength(64); // sha256 hex
       expect(typeof item.text).toBe("string");
     }
   });
@@ -621,7 +621,7 @@ describe("collectContextProvenance (typed ContextItem + selection + budget)", ()
       budgets: { ...BUDGET_DEFAULTS, totalBytes: 1, perFileBytes: 1 },
     });
     expect(result.semanticContextStatus).toBe("budget-exhausted");
-    expect(result.items.length).toBe(0);
+    expect(result.items).toHaveLength(0);
   });
 
   it("two-language diff includes both languages (TS source items + non-TS hunk fallback)", async () => {

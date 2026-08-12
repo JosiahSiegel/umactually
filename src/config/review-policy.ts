@@ -207,7 +207,7 @@ function isUnsafePath(pattern: string): boolean {
   if (pattern.startsWith("/")) return true;
   if (/^[A-Za-z]:[\\/]/.test(pattern)) return true;
   const segments = pattern.split(/[\\/]/);
-  if (segments.some((s) => s === "..")) return true;
+  if (segments.includes("..")) return true;
   return false;
 }
 
@@ -804,8 +804,12 @@ function resolveOneField(
   return { value: defaults[field], provenance: { source: "default" } };
 }
 
+function prefixUppercase(c: string): string {
+  return `_${c}`;
+}
+
 function policyEnvName(field: ReviewPolicyField): string {
-  return `UMACTUALLY_REVIEW_${field.replace(/[A-Z]/g, (c) => `_${c}`).toUpperCase()}`;
+  return `UMACTUALLY_REVIEW_${field.replace(/[A-Z]/g, prefixUppercase).toUpperCase()}`;
 }
 
 // ---------------------------------------------------------------------------

@@ -684,11 +684,11 @@ describe("state-machine: collision ledger", () => {
       effectiveCap: DEFAULT_STATE_CAPACITY_BYTES,
     });
 
-    expect(finalized.state.runSummaries.length).toBe(10);
+    expect(finalized.state.runSummaries).toHaveLength(10);
     expect(finalized.state.collisionLedger).toContainEqual(entry);
 
     const decoded = decodeStateEnvelope(finalized.encoded);
-    expect(decoded.runSummaries.length).toBe(10);
+    expect(decoded.runSummaries).toHaveLength(10);
     expect(decoded.collisionLedger).toContainEqual(entry);
   });
 
@@ -711,7 +711,7 @@ describe("state-machine: collision ledger", () => {
 
     const encoded = encodeReviewState(state, { effectiveCap: DEFAULT_STATE_CAPACITY_BYTES });
     const decoded = decodeStateEnvelope(encoded);
-    expect(decoded.collisionLedger.length).toBe(1);
+    expect(decoded.collisionLedger).toHaveLength(1);
     expect(decoded.collisionLedger[0]!.fingerprint).toBe(fingerprint);
   });
 
@@ -1157,7 +1157,7 @@ describe("state-machine: finalize", () => {
       collisionLedger: [],
       effectiveCap: DEFAULT_STATE_CAPACITY_BYTES,
     });
-    expect(result.state.runSummaries.length).toBe(10);
+    expect(result.state.runSummaries).toHaveLength(10);
   });
 
   it("finalize never removes open findings or collision entries for compaction", () => {

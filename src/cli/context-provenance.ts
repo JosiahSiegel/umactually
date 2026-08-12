@@ -18,8 +18,7 @@
 // Reviews NEVER fail because of context collection.
 
 import { createHash } from "node:crypto";
-import { readdirSync, realpathSync, statSync } from "node:fs";
-import { readFileSync } from "node:fs";
+import { readdirSync, readFileSync, realpathSync, statSync } from "node:fs";
 import { isAbsolute, sep as pathSep } from "node:path";
 // Lazy-load the typescript compiler: it references CJS-only `__filename`
 // at module-init, which crashes inside the Node SEA ESM blob. Types are
@@ -190,7 +189,7 @@ function clampBudgets(input: Partial<ContextBudgets> | undefined): ContextBudget
 // ---------------------------------------------------------------------------
 
 function toPosix(p: string): string {
-  return p.replace(/\\/gu, "/");
+  return p.replaceAll(/\\/gu, "/");
 }
 
 function isUnsafeRepoPath(p: string): boolean {
@@ -396,6 +395,70 @@ type ParsedTsFile =
   | { readonly ok: true; readonly declarations: readonly Declaration[]; readonly imports: readonly { readonly module: string; readonly name: string }[] }
   | { readonly ok: false; readonly reason: string };
 
+function createSourceFileSafely(
+  ts: typeof import("typescript"),
+  filePath: string,
+  text: string,
+): ReturnType<typeof ts.createSourceFile> | null {
+  try {
+    return ts.createSourceFile(filePath, text, ts.ScriptTarget.Latest, /* setParentNodes */ true, /* scriptKind */ undefined);
+  } catch {
+    return null;
+  }
+}
+
+function extractImportBindings(
+  ts: typeof import("typescript"),
+  node: TsNode,
+  imports: { module: string; name: string }[],
+): void {
+  const importNode = node as unknown as import("typescript").ImportDeclaration;
+  const moduleText = importNode.moduleSpecifier && ts.isStringLiteral(importNode.moduleSpecifier) ? importNode.moduleSpecifier.text : "";
+  const clause = importNode.importClause;
+  const bindings = clause?.namedBindings;
+  if (bindings && ts.isNamedImports(bindings)) {
+    for (const stmt of bindings.elements) {
+      if (stmt && stmt.name && stmt.name.escapedText) {
+        imports.push({ module: moduleText, name: String(stmt.name.escapedText) });
+      }
+    }
+  }
+  if (clause && clause.name) {
+    imports.push({ module: moduleText, name: String(clause.name.escapedText) });
+  }
+  if (!clause) {
+    imports.push({ module: moduleText, name: "" });
+  }
+}
+
+function extractDeclarationsFromNode(
+  ts: typeof import("typescript"),
+  node: TsNode,
+  sf: ReturnType<typeof ts.createSourceFile>,
+  declarations: Declaration[],
+): void {
+  const nameIdent = (node as { name?: { escapedText?: string | number } }).name;
+  if (node.kind === ts.SyntaxKind.FunctionDeclaration && nameIdent && typeof nameIdent.escapedText === "string") {
+    declarations.push({ name: nameIdent.escapedText, kind: "function", line: sf.getLineAndCharacterOfPosition(node.getStart(sf)).line + 1 });
+  } else if (node.kind === ts.SyntaxKind.ClassDeclaration && nameIdent && typeof nameIdent.escapedText === "string") {
+    declarations.push({ name: nameIdent.escapedText, kind: "class", line: sf.getLineAndCharacterOfPosition(node.getStart(sf)).line + 1 });
+  } else if (node.kind === ts.SyntaxKind.InterfaceDeclaration && nameIdent && typeof nameIdent.escapedText === "string") {
+    declarations.push({ name: nameIdent.escapedText, kind: "interface", line: sf.getLineAndCharacterOfPosition(node.getStart(sf)).line + 1 });
+  } else if (node.kind === ts.SyntaxKind.TypeAliasDeclaration && nameIdent && typeof nameIdent.escapedText === "string") {
+    declarations.push({ name: nameIdent.escapedText, kind: "type", line: sf.getLineAndCharacterOfPosition(node.getStart(sf)).line + 1 });
+  } else if (node.kind === ts.SyntaxKind.VariableStatement) {
+    const declList = (node as { declarationList?: { declarations?: readonly { name?: { kind: TsSyntaxKind; escapedText?: string | number }; getStart(sf: unknown): number }[] } }).declarationList;
+    if (declList) {
+      for (const decl of declList.declarations ?? []) {
+        const nm = decl.name;
+        if (nm && nm.kind === ts.SyntaxKind.Identifier && typeof nm.escapedText === "string") {
+          declarations.push({ name: nm.escapedText, kind: "const", line: sf.getLineAndCharacterOfPosition(decl.getStart(sf)).line + 1 });
+        }
+      }
+    }
+  }
+}
+
 async function parseTsFile(
   filePath: string,
   text: string,
@@ -404,10 +467,8 @@ async function parseTsFile(
   // `__filename` at module-init. Loading it lazily keeps the SEA blob's
   // startup path (--version, --help, doctor, init) free of that crash.
   const ts = await import("typescript");
-  let sf: ReturnType<typeof ts.createSourceFile>;
-  try {
-    sf = ts.createSourceFile(filePath, text, ts.ScriptTarget.Latest, /* setParentNodes */ true, /* scriptKind */ undefined);
-  } catch {
+  const sf = createSourceFileSafely(ts, filePath, text);
+  if (sf === null) {
     return { ok: false, reason: "parse-failed" };
   }
   // TS compiler reports parse errors via parseDiagnostics even when it
@@ -420,52 +481,19 @@ async function parseTsFile(
   }
   const declarations: Declaration[] = [];
   const imports: { module: string; name: string }[] = [];
+  const sourceFile: ReturnType<typeof ts.createSourceFile> = sf;
   function walk(node: TsNode): void {
     node.forEachChild(walk);
     if (ts.isImportDeclaration(node)) {
-      const moduleText = node.moduleSpecifier && ts.isStringLiteral(node.moduleSpecifier) ? node.moduleSpecifier.text : "";
-      const clause = node.importClause;
-      const bindings = clause?.namedBindings;
-      if (bindings && ts.isNamedImports(bindings)) {
-        for (const stmt of bindings.elements) {
-          if (stmt && stmt.name && stmt.name.escapedText) {
-            imports.push({ module: moduleText, name: String(stmt.name.escapedText) });
-          }
-        }
-      }
-      if (clause && clause.name) {
-        imports.push({ module: moduleText, name: String(clause.name.escapedText) });
-      }
-      if (!clause) {
-        imports.push({ module: moduleText, name: "" });
-      }
+      extractImportBindings(ts, node, imports);
     }
     if (ts.isExportDeclaration(node)) {
       // expose named exports so the model can resolve re-exports
       // (we don't pull the actual declaration; we just record the name).
     }
-    const nameIdent = (node as { name?: { escapedText?: string | number } }).name;
-    if (node.kind === ts.SyntaxKind.FunctionDeclaration && nameIdent && typeof nameIdent.escapedText === "string") {
-      declarations.push({ name: nameIdent.escapedText, kind: "function", line: sf.getLineAndCharacterOfPosition(node.getStart(sf)).line + 1 });
-    } else if (node.kind === ts.SyntaxKind.ClassDeclaration && nameIdent && typeof nameIdent.escapedText === "string") {
-      declarations.push({ name: nameIdent.escapedText, kind: "class", line: sf.getLineAndCharacterOfPosition(node.getStart(sf)).line + 1 });
-    } else if (node.kind === ts.SyntaxKind.InterfaceDeclaration && nameIdent && typeof nameIdent.escapedText === "string") {
-      declarations.push({ name: nameIdent.escapedText, kind: "interface", line: sf.getLineAndCharacterOfPosition(node.getStart(sf)).line + 1 });
-    } else if (node.kind === ts.SyntaxKind.TypeAliasDeclaration && nameIdent && typeof nameIdent.escapedText === "string") {
-      declarations.push({ name: nameIdent.escapedText, kind: "type", line: sf.getLineAndCharacterOfPosition(node.getStart(sf)).line + 1 });
-    } else if (node.kind === ts.SyntaxKind.VariableStatement) {
-      const declList = (node as { declarationList?: { declarations?: readonly { name?: { kind: TsSyntaxKind; escapedText?: string | number }; getStart(sf: unknown): number }[] } }).declarationList;
-      if (declList) {
-        for (const decl of declList.declarations ?? []) {
-          const nm = decl.name;
-          if (nm && nm.kind === ts.SyntaxKind.Identifier && typeof nm.escapedText === "string") {
-            declarations.push({ name: nm.escapedText, kind: "const", line: sf.getLineAndCharacterOfPosition(decl.getStart(sf)).line + 1 });
-          }
-        }
-      }
-    }
+    extractDeclarationsFromNode(ts, node, sourceFile, declarations);
   }
-  walk(sf);
+  walk(sourceFile);
   return { ok: true, declarations, imports };
 }
 
@@ -690,18 +718,11 @@ function isBudgetOrWallTimeExhausted(init: CollectInit, state: CollectState): bo
   return false;
 }
 
-async function collectFromChangedDeclarations(
-  input: ContextProvenanceInput,
+async function emitDiffHunkCandidates(
   init: CollectInit,
   state: CollectState,
+  hunks: readonly ReturnType<typeof extractHunks>[number][],
 ): Promise<void> {
-  // Step 1 — diff hunks for every changed path (always present as fallback).
-  const hunks = extractHunks(input.diffText);
-
-  if (init.tsLikeChanged.length === 0 && init.changedPaths.length > 0) {
-    state.status = "unsupported";
-  }
-
   for (const hunk of hunks) {
     if (state.selected.length >= init.budgets.maxItems) break;
     if (isExcludedPath(hunk.path)) {
@@ -717,32 +738,55 @@ async function collectFromChangedDeclarations(
     });
     if (!added) break;
   }
+}
+
+async function emitChangedDeclarationsForPath(
+  init: CollectInit,
+  state: CollectState,
+  path: string,
+): Promise<void> {
+  const r = readWithinCwd(init.cwdReal, path, init.budgets.perFileBytes);
+  if (!r.ok) {
+    recordExclusion(state, path, r.reason);
+    return;
+  }
+  state.counters.filesParsed += 1;
+  const parsed = await parseTsFile(path, r.text);
+  if (!parsed.ok) {
+    state.status = "parse-failed";
+    // Fallback is the diff_hunk item already added; no further action.
+    return;
+  }
+  // Emit one `changed_declaration` per declared function/class/etc.
+  for (const decl of parsed.declarations) {
+    if (!maybeAddCandidate(init, state, {
+      kind: "changed_declaration",
+      path,
+      pathScope: path,
+      text: `${decl.kind} ${decl.name} (line ${decl.line})`,
+      trust: "base",
+    })) break;
+  }
+}
+
+async function collectFromChangedDeclarations(
+  input: ContextProvenanceInput,
+  init: CollectInit,
+  state: CollectState,
+): Promise<void> {
+  // Step 1 — diff hunks for every changed path (always present as fallback).
+  const hunks = extractHunks(input.diffText);
+
+  if (init.tsLikeChanged.length === 0 && init.changedPaths.length > 0) {
+    state.status = "unsupported";
+  }
+
+  await emitDiffHunkCandidates(init, state, hunks);
 
   // Step 2 — TS declarations for changed TS files.
   for (const path of init.tsLikeChanged) {
     if (isBudgetOrWallTimeExhausted(init, state)) break;
-    const r = readWithinCwd(init.cwdReal, path, init.budgets.perFileBytes);
-    if (!r.ok) {
-      recordExclusion(state, path, r.reason);
-      continue;
-    }
-    state.counters.filesParsed += 1;
-    const parsed = await parseTsFile(path, r.text);
-    if (!parsed.ok) {
-      state.status = "parse-failed";
-      // Fallback is the diff_hunk item already added; no further action.
-      continue;
-    }
-    // Emit one `changed_declaration` per declared function/class/etc.
-    for (const decl of parsed.declarations) {
-      if (!maybeAddCandidate(init, state, {
-        kind: "changed_declaration",
-        path,
-        pathScope: path,
-        text: `${decl.kind} ${decl.name} (line ${decl.line})`,
-        trust: "base",
-      })) break;
-    }
+    await emitChangedDeclarationsForPath(init, state, path);
   }
 }
 
@@ -995,8 +1039,7 @@ function tryEmitTestCandidate(
   return true;
 }
 
-function collectExcludedItems(
-  input: ContextProvenanceInput,
+function emitInstructionCandidates(
   init: CollectInit,
   state: CollectState,
 ): void {
@@ -1021,7 +1064,12 @@ function collectExcludedItems(
       trust: "base",
     });
   }
+}
 
+function recordIgnoredHeadBranchInstructions(
+  input: ContextProvenanceInput,
+  state: CollectState,
+): void {
   if (input.headBranchInstructionTexts !== undefined) {
     for (const path of input.headBranchInstructionTexts.keys()) {
       const norm = normalizeRepoPath(path);
@@ -1032,6 +1080,15 @@ function collectExcludedItems(
       }
     }
   }
+}
+
+function collectExcludedItems(
+  input: ContextProvenanceInput,
+  init: CollectInit,
+  state: CollectState,
+): void {
+  emitInstructionCandidates(init, state);
+  recordIgnoredHeadBranchInstructions(input, state);
 }
 
 function finalizeContextResult(
@@ -1093,7 +1150,7 @@ function resolveSameProjectImport(cwd: string, fromFile: string, spec: string): 
 }
 
 function posixDirname(p: string): string {
-  const t = p.replace(/\\/gu, "/");
+  const t = p.replaceAll(/\\/gu, "/");
   const slash = t.lastIndexOf("/");
   return slash === -1 ? "" : t.slice(0, slash);
 }
@@ -1155,12 +1212,16 @@ export function renderContextBlock(
 ): RenderedContextBlock {
   if (opts.asManifest === true) {
     const lines: string[] = [];
-    lines.push("Context manifest (content-free):");
-    lines.push(`semanticContextStatus: ${result.semanticContextStatus}`);
-    lines.push(`budgets: ${JSON.stringify(result.budgets)}`);
-    lines.push(`budgetHash: ${result.budgetHash}`);
-    lines.push(`bytesUsed: ${result.bytesUsed}`);
-    lines.push(`items: ${result.items.length} included, ${result.excluded.length} excluded`);
+    lines.push(
+      ...[
+        "Context manifest (content-free):",
+        `semanticContextStatus: ${result.semanticContextStatus}`,
+        `budgets: ${JSON.stringify(result.budgets)}`,
+        `budgetHash: ${result.budgetHash}`,
+        `bytesUsed: ${result.bytesUsed}`,
+        `items: ${result.items.length} included, ${result.excluded.length} excluded`,
+      ],
+    );
     for (const it of result.items) {
       lines.push(`- ${it.sourceKind} ${it.path} (scope=${it.pathScope} trust=${it.trust} bytes=${it.bytes} sha256=${it.contentHash})`);
     }

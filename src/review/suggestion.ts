@@ -99,7 +99,7 @@ const SECRET_PATTERNS: readonly RegExp[] = [
   /\bsk_test_[a-z_]+\b/u,
   /\b(?:AKIA|ASIA)[A-Z0-9]{16}\b/u,
   /\bghp_[A-Za-z0-9]{36}\b/u,
-  /\bgithub_pat_[A-Za-z0-9_]{82}\b/u,
+  /\bgithub_pat_\w{82}\b/u,
   /\bxox[baprs]-[A-Za-z0-9-]+\b/u,
   /\b-----BEGIN (?:RSA |EC |OPENSSH |DSA )?PRIVATE KEY-----/u,
 ];
@@ -539,7 +539,7 @@ function containsBinaryContent(text: string): boolean {
   // Count control characters (excluding common whitespace: \t \n \r).
   let controlCount = 0;
   for (const ch of text) {
-    const code = ch.charCodeAt(0);
+    const code = ch.codePointAt(0) ?? -1;
     if (code < 0x20 && code !== 0x09 && code !== 0x0a && code !== 0x0d) {
       controlCount += 1;
     }

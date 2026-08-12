@@ -972,10 +972,8 @@ function readCommentArray(
           // `normalizeProviderSeverity`'s third parameter.
           effectiveSink !== undefined || effectiveProviderName !== undefined
             ? {
-                ...(effectiveSink !== undefined ? { sink: effectiveSink } : {}),
-                ...(effectiveProviderName !== undefined
-                  ? { providerName: effectiveProviderName }
-                  : {}),
+                ...(effectiveSink !== undefined && { sink: effectiveSink }),
+                ...(effectiveProviderName !== undefined && { providerName: effectiveProviderName }),
                 commentIndex: index,
               }
             : { commentIndex: index },

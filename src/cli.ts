@@ -316,13 +316,23 @@ export type SanitizedResolvedConfig = {
   };
 };
 
+const DEFAULT_REVIEW_POLICY: {
+  readonly path: string | null;
+  readonly hash: string | null;
+  readonly schemaVersion: number | null;
+} = {
+  path: null,
+  hash: null,
+  schemaVersion: null,
+};
+
 export function buildSanitizedResolvedConfig(
   resolved: ResolvedCliArgs,
-  reviewPolicy: { readonly path: string | null; readonly hash: string | null; readonly schemaVersion: number | null } = {
-    path: null,
-    hash: null,
-    schemaVersion: null,
-  },
+  reviewPolicy: {
+    readonly path: string | null;
+    readonly hash: string | null;
+    readonly schemaVersion: number | null;
+  } = DEFAULT_REVIEW_POLICY,
 ): SanitizedResolvedConfig {
   return {
     platform: resolved.platform,

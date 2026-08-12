@@ -386,80 +386,6 @@ describe("Task 13 evidence — failure (pre-network redaction)", () => {
     process.env = savedEnv;
   });
 
-  it("rejects HTTP GITHUB_API_URL before any fetchImpl call fires", async () => {
-    process.env["GITHUB_API_URL"] = "http://ghe.example/api/v3";
-    const fetch = new RecordingFetch();
-    fetch.program("GET", "https://api.github.com/repos/owner/repo/pulls/1", 200, DIFF_TEXT);
-    let caught: unknown = null;
-    try {
-      await fetchGithubPrDiff(makeContext(), fetch.fetchImpl);
-    } catch (error) {
-      caught = error;
-    }
-    expect(caught).toBeInstanceOf(GithubApiBaseError);
-    expect(fetch.calls.length).toBe(0);
-  });
-
-  it("rejects credentialed GITHUB_API_URL before any fetchImpl call fires", async () => {
-    process.env["GITHUB_API_URL"] = "https://user:token_sentinel_xyz@ghe.example/api/v3";
-    const fetch = new RecordingFetch();
-    fetch.program("GET", "https://api.github.com/repos/owner/repo/pulls/1", 200, DIFF_TEXT);
-    let caught: unknown = null;
-    try {
-      await fetchGithubPrDiff(makeContext(), fetch.fetchImpl);
-    } catch (error) {
-      caught = error;
-    }
-    expect(caught).toBeInstanceOf(GithubApiBaseError);
-    expect(fetch.calls.length).toBe(0);
-  });
-
-  it("rejects GITHUB_API_URL with a query string", async () => {
-    process.env["GITHUB_API_URL"] = "https://ghe.example/api/v3?token=leak";
-    const fetch = new RecordingFetch();
-    let caught: unknown = null;
-    try {
-      await fetchGithubPrDiff(makeContext(), fetch.fetchImpl);
-    } catch (error) {
-      caught = error;
-    }
-    expect(caught).toBeInstanceOf(GithubApiBaseError);
-    expect(fetch.calls.length).toBe(0);
-  });
-
-  it("the GHES rejection is pre-network; zero github.com calls observed", async () => {
-    const failureCalls: RecordedCall[] = [];
-    const fetch: FetchImpl = async () => {
-      failureCalls.push({ url: "https://api.github.com/repos/owner/repo/pulls/1", method: "GET", authorization: "" });
-      return new Response(DIFF_TEXT, { status: 200 });
-    };
-    let caught: unknown = null;
-    try {
-      process.env["GITHUB_API_URL"] = "https://gho_token_sentinel@ghe.example/api/v3";
-      await fetchGithubPrDiff(makeContext(), fetch);
-    } catch (error) {
-      caught = error;
-    } finally {
-      delete process.env["GITHUB_API_URL"];
-    }
-    expect(caught).toBeInstanceOf(GithubApiBaseError);
-    expect(failureCalls.length).toBe(0);
-  });
-
-  it("assertCopilotTokenEndpointAllowed rejects HTTP Copilot URL", () => {
-    expect(() => assertCopilotTokenEndpointAllowed("http://api.github.com/copilot_internal/v2/token"))
-      .toThrow(ProviderError);
-  });
-
-  it("assertCopilotTokenEndpointAllowed rejects credentialed Copilot URL", () => {
-    expect(() => assertCopilotTokenEndpointAllowed("https://gho_token_sentinel@api.github.com/copilot_internal/v2/token"))
-      .toThrow(ProviderError);
-  });
-
-  it("assertCopilotTokenEndpointAllowed accepts the GHES-shaped token URL", () => {
-    expect(() => assertCopilotTokenEndpointAllowed("https://ghe.example/api/copilot_internal/v2/token")).not.toThrow();
-  });
-
   afterAll(() => {
     Object.assign(failureEvidence, {
       schema: "task-13-evidence/v1",
@@ -508,5 +434,79 @@ describe("Task 13 evidence — failure (pre-network redaction)", () => {
       },
       recordedAt: new Date().toISOString(),
     });
+  });
+
+  it("rejects HTTP GITHUB_API_URL before any fetchImpl call fires", async () => {
+    process.env["GITHUB_API_URL"] = "http://ghe.example/api/v3";
+    const fetch = new RecordingFetch();
+    fetch.program("GET", "https://api.github.com/repos/owner/repo/pulls/1", 200, DIFF_TEXT);
+    let caught: unknown = null;
+    try {
+      await fetchGithubPrDiff(makeContext(), fetch.fetchImpl);
+    } catch (error) {
+      caught = error;
+    }
+    expect(caught).toBeInstanceOf(GithubApiBaseError);
+    expect(fetch.calls).toHaveLength(0);
+  });
+
+  it("rejects credentialed GITHUB_API_URL before any fetchImpl call fires", async () => {
+    process.env["GITHUB_API_URL"] = "https://user:token_sentinel_xyz@ghe.example/api/v3";
+    const fetch = new RecordingFetch();
+    fetch.program("GET", "https://api.github.com/repos/owner/repo/pulls/1", 200, DIFF_TEXT);
+    let caught: unknown = null;
+    try {
+      await fetchGithubPrDiff(makeContext(), fetch.fetchImpl);
+    } catch (error) {
+      caught = error;
+    }
+    expect(caught).toBeInstanceOf(GithubApiBaseError);
+    expect(fetch.calls).toHaveLength(0);
+  });
+
+  it("rejects GITHUB_API_URL with a query string", async () => {
+    process.env["GITHUB_API_URL"] = "https://ghe.example/api/v3?token=leak";
+    const fetch = new RecordingFetch();
+    let caught: unknown = null;
+    try {
+      await fetchGithubPrDiff(makeContext(), fetch.fetchImpl);
+    } catch (error) {
+      caught = error;
+    }
+    expect(caught).toBeInstanceOf(GithubApiBaseError);
+    expect(fetch.calls).toHaveLength(0);
+  });
+
+  it("the GHES rejection is pre-network; zero github.com calls observed", async () => {
+    const failureCalls: RecordedCall[] = [];
+    const fetch: FetchImpl = async () => {
+      failureCalls.push({ url: "https://api.github.com/repos/owner/repo/pulls/1", method: "GET", authorization: "" });
+      return new Response(DIFF_TEXT, { status: 200 });
+    };
+    let caught: unknown = null;
+    try {
+      process.env["GITHUB_API_URL"] = "https://gho_token_sentinel@ghe.example/api/v3";
+      await fetchGithubPrDiff(makeContext(), fetch);
+    } catch (error) {
+      caught = error;
+    } finally {
+      delete process.env["GITHUB_API_URL"];
+    }
+    expect(caught).toBeInstanceOf(GithubApiBaseError);
+    expect(failureCalls).toHaveLength(0);
+  });
+
+  it("assertCopilotTokenEndpointAllowed rejects HTTP Copilot URL", () => {
+    expect(() => assertCopilotTokenEndpointAllowed("http://api.github.com/copilot_internal/v2/token"))
+      .toThrow(ProviderError);
+  });
+
+  it("assertCopilotTokenEndpointAllowed rejects credentialed Copilot URL", () => {
+    expect(() => assertCopilotTokenEndpointAllowed("https://gho_token_sentinel@api.github.com/copilot_internal/v2/token"))
+      .toThrow(ProviderError);
+  });
+
+  it("assertCopilotTokenEndpointAllowed accepts the GHES-shaped token URL", () => {
+    expect(() => assertCopilotTokenEndpointAllowed("https://ghe.example/api/copilot_internal/v2/token")).not.toThrow();
   });
 });

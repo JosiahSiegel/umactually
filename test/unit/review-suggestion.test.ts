@@ -175,69 +175,49 @@ describe("validateSuggestion — rejection classes", () => {
     expect(result.rejection?.kind).toBe("off-diff-line");
   });
 
-  it("rejects multiline boundary escape (replacement contains ```)", () => {
-    const originalText = "const x = 1;";
-    const positions = makePositions([{ path: "a.ts", line: 1 }]);
-    const result = validateSuggestion({
-      rawSuggestion: {
-        replacement: "const x = 2; ```evil",
-        originalTextHash: sha256(originalText),
-      },
+  it.each([
+    {
+      name: "multiline boundary escape (replacement contains ```)",
       path: "a.ts",
-      line: 1,
-      diffPositions: positions,
-      originalLineText: originalText,
-    });
-    expect(result.rejection?.kind).toBe("multiline-boundary-escape");
-  });
-
-  it("rejects generated file (dist/)", () => {
-    const originalText = "var x = 0;";
-    const positions = makePositions([{ path: "dist/cli.js", line: 1 }]);
-    const result = validateSuggestion({
-      rawSuggestion: {
-        replacement: "var x = 1;",
-        originalTextHash: sha256(originalText),
-      },
+      originalText: "const x = 1;",
+      replacement: "const x = 2; ```evil",
+      expectedErrorKind: "multiline-boundary-escape",
+    },
+    {
+      name: "generated file (dist/)",
       path: "dist/cli.js",
-      line: 1,
-      diffPositions: positions,
-      originalLineText: originalText,
-    });
-    expect(result.rejection?.kind).toBe("generated-file");
-  });
-
-  it("rejects generated file (minified)", () => {
-    const originalText = "var x = 0;";
-    const positions = makePositions([{ path: "lib/bundle.min.js", line: 1 }]);
-    const result = validateSuggestion({
-      rawSuggestion: {
-        replacement: "var x = 1;",
-        originalTextHash: sha256(originalText),
-      },
+      originalText: "var x = 0;",
+      replacement: "var x = 1;",
+      expectedErrorKind: "generated-file",
+    },
+    {
+      name: "generated file (minified)",
       path: "lib/bundle.min.js",
-      line: 1,
-      diffPositions: positions,
-      originalLineText: originalText,
-    });
-    expect(result.rejection?.kind).toBe("generated-file");
-  });
-
-  it("rejects oversized replacement (> 8 KiB)", () => {
-    const originalText = "const x = 0;";
-    const positions = makePositions([{ path: "a.ts", line: 1 }]);
-    const huge = "x".repeat(MAX_REMEDIATION_SIZE_BYTES + 1);
+      originalText: "var x = 0;",
+      replacement: "var x = 1;",
+      expectedErrorKind: "generated-file",
+    },
+    {
+      name: "oversized replacement (> 8 KiB)",
+      path: "a.ts",
+      originalText: "const x = 0;",
+      replacement: () => "x".repeat(MAX_REMEDIATION_SIZE_BYTES + 1),
+      expectedErrorKind: "oversized",
+    },
+  ])("rejects $name", ({ path, originalText, replacement, expectedErrorKind }) => {
+    const replacementText = typeof replacement === "function" ? replacement() : replacement;
+    const positions = makePositions([{ path, line: 1 }]);
     const result = validateSuggestion({
       rawSuggestion: {
-        replacement: huge,
+        replacement: replacementText,
         originalTextHash: sha256(originalText),
       },
-      path: "a.ts",
+      path,
       line: 1,
       diffPositions: positions,
       originalLineText: originalText,
     });
-    expect(result.rejection?.kind).toBe("oversized");
+    expect(result.rejection?.kind).toBe(expectedErrorKind);
   });
 
   it("rejects binary replacement (null bytes)", () => {

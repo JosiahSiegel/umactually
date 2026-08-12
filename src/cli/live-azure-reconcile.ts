@@ -36,11 +36,19 @@
 import type { AzureContext } from "../platform/azure/context.js";
 import { AZURE_API_VERSION, azurePrBaseUrl } from "../platform/azure/urls.js";
 import { azureHeaders, type FetchImpl } from "../util/http.js";
-import { isRecord, isSafeInteger, isUnknownArray, readStringFieldOrThrow } from "../util/json-guards.js";
+import { isRecord, isSafeInteger, isUnknownArray } from "../util/json-guards.js";
 import { writeBrandedAnnotation } from "../util/log.js";
 import { formatError } from "../util/error.js";
-import { LiveReviewError, type LiveReviewComment } from "./live-shared.js";
-import { buildInlineCommentBody } from "./live-shared.js";
+import {
+  buildInlineCommentBody,
+  LiveReviewError,
+  formatAbortReason,
+  type LiveProviderOutcome,
+  type LiveReviewComment,
+  type LiveRunResult,
+  mapReviewVerdictToAzureStatus,
+  preparePostedReview,
+} from "./live-shared.js";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -951,7 +959,7 @@ export function buildAzureInlineBody(input: {
 
 // Re-export `readStringFieldOrThrow` so the existing `LiveReviewComment`
 // builder does not regress when callers consume this module alone.
-export { readStringFieldOrThrow };
+export { readStringFieldOrThrow } from "../util/json-guards.js";
 
 // ---------------------------------------------------------------------------
 // Integration: runAzureLiveWithReconcile
@@ -963,12 +971,6 @@ import {
   computeDurableFindingIdentity,
   FingerprintCollisionError,
 } from "../review/fingerprint.js";
-import {
-  type LiveProviderOutcome,
-  type LiveRunResult,
-  preparePostedReview,
-  mapReviewVerdictToAzureStatus,
-} from "./live-shared.js";
 import type { ParseWarning } from "./parse-warnings.js";
 import { AZURE_STATUS_CONTEXT_NAME, AZURE_STATUS_CONTEXT_GENRE } from "../util/brand.js";
 import { REVIEW_MARKER } from "../util/marker.js";
@@ -1006,12 +1008,7 @@ function preflightReconcileSignal(
   if (!callerSignal.aborted) return { reconcileSignal };
 
   const rawReason = callerSignal.reason;
-  const abortReason =
-    rawReason === undefined || rawReason === ""
-      ? "aborted"
-      : rawReason instanceof Error
-      ? rawReason.message
-      : String(rawReason);
+  const abortReason = formatAbortReason(rawReason);
   return {
     aborted: {
       exitCode: 1,
@@ -1068,28 +1065,44 @@ function buildFencingContext(
   return { currentHeadSha, currentRunId, currentAttemptId };
 }
 
-async function executeReconcileActions(
-  context: AzureContext,
-  fetchImpl: FetchImpl,
-  priorThreads: readonly AzureThreadRecord[],
-  actions: readonly ThreadAction[],
-  currentRunId: string,
-  currentAttemptId: string,
-  currentHeadSha: string,
-  reconcileSignal: AbortSignal,
-): Promise<void> {
-  const oldParent = findParentMarkerThread(priorThreads);
+/**
+ * Parameter object for {@link executeReconcileActions}. The function
+ * used to take 8 positional parameters, which Sonar flagged as a
+ * readability hazard (callers had to line up arguments by name to
+ * spot a mistake). Bundling into a typed object makes the call site
+ * self-documenting and keeps the parameter list stable when new
+ * fields are added (e.g. a future `dryRun` flag).
+ */
+type ReconcileActionsParams = {
+  context: AzureContext;
+  fetchImpl: FetchImpl;
+  priorThreads: readonly AzureThreadRecord[];
+  actions: readonly ThreadAction[];
+  currentRunId: string;
+  currentAttemptId: string;
+  currentHeadSha: string;
+  reconcileSignal: AbortSignal;
+};
+
+async function executeReconcileActions(params: ReconcileActionsParams): Promise<void> {
+  const oldParent = findParentMarkerThread(params.priorThreads);
   if (oldParent !== null && typeof oldParent.thread.id === "number") {
-    await deleteParentComments(context, fetchImpl, oldParent.thread.id, parentCommentIds(oldParent.thread), reconcileSignal);
+    await deleteParentComments(
+      params.context,
+      params.fetchImpl,
+      oldParent.thread.id,
+      parentCommentIds(oldParent.thread),
+      params.reconcileSignal,
+    );
   }
   await reconcileAzureThreads({
-    context: { kind: "azure-context", context },
-    fetchImpl,
-    signal: reconcileSignal,
-    actions,
-    currentRunId,
-    currentAttemptId,
-    currentHeadSha,
+    context: { kind: "azure-context", context: params.context },
+    fetchImpl: params.fetchImpl,
+    signal: params.reconcileSignal,
+    actions: params.actions,
+    currentRunId: params.currentRunId,
+    currentAttemptId: params.currentAttemptId,
+    currentHeadSha: params.currentHeadSha,
   });
 }
 
@@ -1229,7 +1242,7 @@ export async function runAzureLiveWithReconcile(input: {
     resolutionMode,
   });
 
-  await executeReconcileActions(
+  await executeReconcileActions({
     context,
     fetchImpl,
     priorThreads,
@@ -1238,7 +1251,7 @@ export async function runAzureLiveWithReconcile(input: {
     currentAttemptId,
     currentHeadSha,
     reconcileSignal,
-  );
+  });
 
   const created = actions.filter(
     (a): a is Extract<ThreadAction, { kind: "create-new" }> => a.kind === "create-new",
@@ -1313,7 +1326,7 @@ function buildDurableFindingForComment(comment: LiveReviewComment): DurableFindi
 }
 
 function extractFirstSentence(body: string): string {
-  const match = body.match(/^[^.!?]*[.!?]/u);
+  const match = /^[^.!?]*[.!?]/u.exec(body);
   return match !== null ? match[0] : body;
 }
 

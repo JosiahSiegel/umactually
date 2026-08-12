@@ -46,6 +46,7 @@ import {
 import type { ContextProvenanceResult } from "./context-provenance.js";
 import { isRecord, isSafeInteger } from "../util/json-guards.js";
 import type { LiveRunResult, LiveProviderOutcome } from "./live-shared.js";
+import { formatAbortReason } from "./live-shared.js";
 import type { ParsedCliArgs } from "./parse-args.js";
 
 const REVIEW_MARKER = "<!-- umactually -->";
@@ -277,12 +278,7 @@ function createReconcileState(): ReconcileState {
 function buildAbortedResultIfCancelled(callerSignal: AbortSignal): Extract<ReconcileResult, { kind: "aborted" }> | null {
   if (!callerSignal.aborted) return null;
   const rawReason = callerSignal.reason;
-  const abortReason =
-    rawReason === undefined || rawReason === ""
-      ? "aborted"
-      : rawReason instanceof Error
-      ? rawReason.message
-      : String(rawReason);
+  const abortReason = formatAbortReason(rawReason);
   return { kind: "aborted", reason: abortReason };
 }
 

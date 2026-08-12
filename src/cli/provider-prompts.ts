@@ -147,8 +147,7 @@ export async function buildProviderPrompts(input: ProviderPromptsInput): Promise
       const { renderContextBlock } = await import("./context-provenance.js");
       const renderedBlock = renderContextBlock(input.contextProvenance);
       const manifestBlock = renderContextBlock(input.contextProvenance, { asManifest: true });
-      userParts.push(renderedBlock.text);
-      userParts.push(manifestBlock.text);
+      userParts.push(...[renderedBlock.text, manifestBlock.text]);
     } catch {
       userParts.push("Repository context: (unavailable — render failed; review continues without)");
     }

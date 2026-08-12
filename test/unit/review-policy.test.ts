@@ -415,56 +415,22 @@ describe("review-policy: pathRules", () => {
     expect(result.error.kind).toBe("duplicate-path-rule");
   });
 
-  it("rejects empty pattern string", () => {
+  it.each([
+    { name: "empty pattern string", pattern: "", expectedErrorKind: "invalid-glob" },
+    { name: "path traversal glob (..)", pattern: "../secret/**/*.ts", expectedErrorKind: "unsafe-path" },
+    { name: "absolute path glob", pattern: "/etc/passwd", expectedErrorKind: "unsafe-path" },
+    { name: "invalid glob with unbalanced braces", pattern: "src/{invalid.ts", expectedErrorKind: "invalid-glob" },
+  ])("rejects $name", ({ pattern, expectedErrorKind }) => {
     const result = validateReviewPolicy(
       {
         schemaVersion: 1,
-        pathRules: [{ pattern: "" }],
+        pathRules: [{ pattern }],
       },
       "/repo/umactually.review.json",
     );
     expect(result.ok).toBe(false);
     if (result.ok) return;
-    expect(result.error.kind).toBe("invalid-glob");
-  });
-
-  it("rejects path traversal glob (..)", () => {
-    const result = validateReviewPolicy(
-      {
-        schemaVersion: 1,
-        pathRules: [{ pattern: "../secret/**/*.ts" }],
-      },
-      "/repo/umactually.review.json",
-    );
-    expect(result.ok).toBe(false);
-    if (result.ok) return;
-    expect(result.error.kind).toBe("unsafe-path");
-  });
-
-  it("rejects absolute path glob", () => {
-    const result = validateReviewPolicy(
-      {
-        schemaVersion: 1,
-        pathRules: [{ pattern: "/etc/passwd" }],
-      },
-      "/repo/umactually.review.json",
-    );
-    expect(result.ok).toBe(false);
-    if (result.ok) return;
-    expect(result.error.kind).toBe("unsafe-path");
-  });
-
-  it("rejects invalid glob with unbalanced braces", () => {
-    const result = validateReviewPolicy(
-      {
-        schemaVersion: 1,
-        pathRules: [{ pattern: "src/{invalid.ts" }],
-      },
-      "/repo/umactually.review.json",
-    );
-    expect(result.ok).toBe(false);
-    if (result.ok) return;
-    expect(result.error.kind).toBe("invalid-glob");
+    expect(result.error.kind).toBe(expectedErrorKind);
   });
 });
 

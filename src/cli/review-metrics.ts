@@ -484,8 +484,7 @@ export function finalizeReviewMetrics(builder: ReviewMetricsBuilder): ReviewMetr
  */
 function durationMs(started: number | null, ended: number | null): number {
   if (started === null || ended === null) return 0;
-  const delta = ended - started;
-  return delta < 0 ? 0 : delta;
+  return Math.max(0, ended - started);
 }
 
 function computePhaseDurations(state: InternalState): Omit<ReviewMetrics["durations"], "totalMs"> {

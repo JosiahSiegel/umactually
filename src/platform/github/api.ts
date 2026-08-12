@@ -104,7 +104,8 @@ async function fetchGithubPrInstruction(
   path: string,
   fetchImpl: FetchImpl,
 ): Promise<string | null> {
-  const url = `${buildGithubRestUrl(buildGithubApiBaseFromEnv(), `/repos/${context.repo.owner}/${context.repo.name}/contents/${path}`)}?ref=${context.baseSha}`;
+  const pathSegment = `/repos/${context.repo.owner}/${context.repo.name}/contents/${path}`;
+  const url = `${buildGithubRestUrl(buildGithubApiBaseFromEnv(), pathSegment)}?ref=${context.baseSha}`;
   const response = await fetchImpl(url, {
     method: "GET",
     headers: githubHeaders(context.token),

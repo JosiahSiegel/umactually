@@ -25,7 +25,7 @@
 //
 // If the binary is missing (e.g. CI runs `npm run bundle && node
 // scripts/build-sea.mjs linux-x64` BEFORE the test via vitest
-// globalSetup, OR this test detects the binary and `it.skip()`s), the
+// globalSetup, OR this suite uses `describe.skipIf(!BINARY_PRESENT)`), the
 // test skips cleanly. On a developer's local worktree the binary is
 // built by `npm run bundle && node scripts/build-sea.mjs linux-x64`.
 
@@ -52,23 +52,13 @@ function binaryExists(): boolean {
 const BINARY_PRESENT = binaryExists();
 const PACKAGE_VERSION = loadPackageVersion();
 
-// Deterministic skip reason — vitest's `it.skipIf(...)` would be cleaner
-// but the per-`describe`/`it` skip propagation through test reporters
-// loses detail. A descriptive `it.skip(reason, fn)` is the documented
-// pattern for test reporters that surface skipped test reasons.
+// Skip the entire suite when the SEA binary is absent. The
+// `release/umactually-linux-x64` artifact is built by
+// `npm run bundle && node scripts/build-sea.mjs linux-x64` and may not
+// exist on a fresh checkout, in CI before the bundle step, or on
+// non-linux runners.
 
-describe("SEA typescript lazy-load", () => {
-  if (!BINARY_PRESENT) {
-    it.skip(
-      `release/umactually-linux-x64 not built; run \`npm run bundle && node scripts/build-sea.mjs linux-x64\` first`,
-      () => {
-        // unreachable; .skip short-circuits the body
-        expect(BINARY_PRESENT, "binary must exist to run SEA regression").toBe(true);
-      },
-    );
-    return;
-  }
-
+describe.skipIf(!BINARY_PRESENT)("SEA typescript lazy-load", () => {
   it("SEA-VERSION-NO-TS-CRASH: --version exits 0 without ReferenceError", { timeout: 30_000 }, () => {
     const result = spawnSync(BINARY, ["--version"], {
       cwd: REPO_ROOT,

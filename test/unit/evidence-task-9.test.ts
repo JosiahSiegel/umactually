@@ -318,14 +318,14 @@ describe("evidence/task-9", () => {
       1,
     );
     expect(ledgerMerge.collision).toBeNull();
-    expect(ledgerMerge.ledger.length).toBe(1);
+    expect(ledgerMerge.ledger).toHaveLength(1);
     const ledgerMergeAgain = mergeIntoCollisionLedger(
       ledgerMerge.ledger,
       [],
       "run-2",
       2,
     );
-    expect(ledgerMergeAgain.ledger.length).toBe(1);
+    expect(ledgerMergeAgain.ledger).toHaveLength(1);
 
     // 5. Exact-limit envelope at 49_152 succeeds.
     const smallState: ReviewState = {

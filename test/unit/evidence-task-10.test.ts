@@ -265,6 +265,22 @@ describe("Task 10 evidence — happy path", () => {
       fetchImpl: fetch4.fetchImpl,
     });
 
+    expect(initialResult.kind).toBe("ok");
+    expect(unchangedResult.kind).toBe("ok");
+    expect(fixedResult.kind).toBe("ok");
+    expect(newFindingResult.kind).toBe("ok");
+    expect(fetch2.requests.filter((r) => r.method !== "GET")).toHaveLength(0);
+    expect(fetch3.requests.filter((r) => r.method !== "GET")).toHaveLength(0);
+    expect(fetch1.requests.filter((r) => r.method === "POST" && r.url.endsWith("/comments"))).toHaveLength(1);
+    expect(fetch4.requests.filter((r) => r.method === "POST" && r.url.endsWith("/comments"))).toHaveLength(1);
+    expect(okBound(unchangedResult)).toBe(HEAD2);
+    expect(okBound(fixedResult)).toBe(HEAD3);
+    expect(okBound(newFindingResult)).toBe(HEAD4);
+    expect(okTransitions(fixedResult).find((t) => t.fingerprint === fpInitial)?.disposition).toBe("resolved");
+    expect(okTransitions(unchangedResult).find((t) => t.fingerprint === fpInitial)?.disposition).toBe("unchanged");
+    expect(okTransitions(newFindingResult).find((t) => t.fingerprint === fpNew)?.disposition).toBe("posted");
+    expect(okTransitions(initialResult).find((t) => t.fingerprint === fpInitial)?.disposition).toBe("posted");
+
     Object.assign(happyEvidence, {
       schema: "task-10-evidence/v1",
       runId,

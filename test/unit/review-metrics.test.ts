@@ -250,7 +250,7 @@ describe("review-metrics: considered/kept/downgraded/suppressed/off-diff counts 
   });
 
   it("exports the full closed enum so test code can iterate over it", () => {
-    expect(ALL_REASON_KINDS.length).toBe(11);
+    expect(ALL_REASON_KINDS).toHaveLength(11);
     expect(REASON_KIND_VALUES).toContain("off-diff");
     expect(REASON_KIND_VALUES).toContain("truncation");
     expect(REASON_KIND_VALUES).toContain("parse-failure");

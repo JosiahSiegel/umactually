@@ -16,12 +16,12 @@ import type { Severity } from "../config/types.js";
 import { normalizeProviderSeverity } from "../provider/provider-parse.js";
 import type { ProviderComment } from "../provider/provider-parse.js";
 import type { ParsedCliArgs } from "./parse-args.js";
-import { computeDurableFindingIdentity, type CanonicalFindingInput, type DurableFindingIdentity } from "../review/fingerprint.js";
-import { validateSuggestion, buildRemediationInstruction, renderGithubSuggestionFence, type ValidatedSuggestion, type RemediationInstruction, type SuggestionRejection } from "../review/suggestion.js";
+import { computeDurableFindingIdentity, type CanonicalFindingInput } from "../review/fingerprint.js";
+import { validateSuggestion, buildRemediationInstruction, renderGithubSuggestionFence, type RemediationInstruction, type SuggestionRejection } from "../review/suggestion.js";
 import { readDiffLine } from "../review/diff-line-utils.js";
 
 export type { FetchImpl };
-export type { ValidatedSuggestion, RemediationInstruction, SuggestionRejection };
+export type { ValidatedSuggestion, RemediationInstruction, SuggestionRejection } from "../review/suggestion.js";
 
 /** Live-path platform (after auto-resolution). Mirrors `Platform` minus "auto". */
 export type LivePlatform = Exclude<Platform, "auto">;
@@ -87,7 +87,7 @@ export type LiveRunResult = {
 
 export type LiveReviewComment = ProviderComment;
 
-export type { DurableFindingIdentity };
+export type { DurableFindingIdentity } from "../review/fingerprint.js";
 
 /**
  * Compute the durable finding identity for a provider comment and return
@@ -126,7 +126,7 @@ export function enrichWithDurableIdentity(
 }
 
 function extractFirstSentence(body: string): string {
-  const match = body.match(/^[^.!?]*[.!?]/u);
+  const match = /^[^.!?]*[.!?]/u.exec(body);
   return match !== null ? match[0] : body;
 }
 
@@ -333,6 +333,20 @@ export function getLiveReviewHint(error: unknown): string | undefined {
   }
   const hint = (error as unknown as { hint?: unknown }).hint;
   return typeof hint === "string" ? hint : undefined;
+}
+
+/**
+ * Format the `reason` field of an `AbortSignal` for inclusion in a
+ * user-facing message. The four cases mirror the inline ternaries that
+ * previously lived in the Azure / GitHub reconcile preflight paths:
+ *   - `undefined` or empty string → the generic `"aborted"`
+ *   - `Error` instance → its `.message`
+ *   - everything else → `String(value)`
+ */
+export function formatAbortReason(rawReason: unknown): string {
+  if (rawReason === undefined || rawReason === "") return "aborted";
+  if (rawReason instanceof Error) return rawReason.message;
+  return String(rawReason);
 }
 
 export type LeakGateResult =

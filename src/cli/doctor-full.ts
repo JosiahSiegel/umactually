@@ -608,9 +608,10 @@ async function checkProviderLatency(
     return makeResult("provider-latency", "skip", "copilot routing required github-token check; see github-permissions");
   }
   const apiUrl = env["UMACTUALLY_API_URL"] ?? DEFAULT_OPENAI_URL;
-  const url = apiUrl.replace(/\/+$/u, "").endsWith("/v1")
-    ? `${apiUrl.replace(/\/+$/u, "")}/models`
-    : `${apiUrl.replace(/\/+$/u, "")}/v1/models`;
+  const normalizedApiUrl = apiUrl.replace(/\/+$/u, "");
+  const url = normalizedApiUrl.endsWith("/v1")
+    ? `${normalizedApiUrl}/models`
+    : `${normalizedApiUrl}/v1/models`;
   const probe = await timeProbe(async () => {
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), timeoutMs);
@@ -815,10 +816,11 @@ function classifyGhesProbeStatus(
 ): DoctorCheckResult {
   if (result.status === 200) {
     const version = ghesInstalledVersion(result.body);
+    const versionSuffix = version !== null ? ` (installed_version=${version})` : "";
     return makeResult(
       "github-ghes",
       "ok",
-      `GHES meta probe returned HTTP 200${version !== null ? ` (installed_version=${version})` : ""}`,
+      `GHES meta probe returned HTTP 200${versionSuffix}`,
       {
         latencyMs,
       },

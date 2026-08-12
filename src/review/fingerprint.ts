@@ -134,8 +134,9 @@ export class FingerprintCollisionError extends Error {
     detail?: string,
     options?: ErrorOptions,
   ) {
+    const detailSuffix = detail !== undefined ? ` (${detail})` : "";
     super(
-      `FINGERPRINT_COLLISION: fingerprint ${fingerprintDigest} maps to divergent identity digests${detail !== undefined ? ` (${detail})` : ""}. ` +
+      `FINGERPRINT_COLLISION: fingerprint ${fingerprintDigest} maps to divergent identity digests${detailSuffix}. ` +
          "Posting, resolution, and state mutation are suppressed.",
        options,
      );
@@ -163,7 +164,7 @@ export function normalizeCanonicalPath(
   rawPath: string,
   opts: { readonly caseInsensitive?: boolean | undefined } = {},
 ): string {
-  let p = rawPath.replace(/\\/gu, "/");
+  let p = rawPath.replaceAll(/\\/gu, "/");
 
   // Reject absolute paths before any other processing.
   if (p.startsWith("/") || /^[a-zA-Z]:\//u.test(p)) {
@@ -245,7 +246,7 @@ export function normalizeRuleKey(
 function normalizeFirstSentence(raw: string): string {
   return raw
     // Take only the first sentence (up to first period followed by space/end).
-    .replace(/\..*$/su, "")
+    .replace(/\.[^.]*$/u, "")
     // Remove quoted identifiers: 'foo', "foo", `foo`
     .replace(/(['"`])[^'"`]*\1/gu, "")
     // Remove path-like tokens (anything containing a forward slash).

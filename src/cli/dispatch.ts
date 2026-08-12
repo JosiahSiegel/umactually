@@ -351,8 +351,12 @@ function renderSavedConfigSection(
 ): string[] {
   const lines: string[] = [];
   if (config !== null) {
-    lines.push(`saved config: ${path}`);
-    lines.push(`  provider: ${config.provider}`);
+    lines.push(
+      ...[
+        `saved config: ${path}`,
+        `  provider: ${config.provider}`,
+      ],
+    );
     if (config.apiUrl !== undefined) lines.push(`  apiUrl:   ${config.apiUrl}`);
     lines.push(
       `  model:    ${config.model ?? "auto (resolved at review time)"}`,
@@ -363,6 +367,12 @@ function renderSavedConfigSection(
   return lines;
 }
 
+function pushFieldIfDefined<T>(lines: string[], value: T | undefined, label: string): void {
+  if (value !== undefined) {
+    lines.push(`  ${label}: ${String(value)}`);
+  }
+}
+
 function renderPolicySection(
   policyResult: ReturnType<typeof loadReviewPolicy>,
 ): string[] {
@@ -370,27 +380,13 @@ function renderPolicySection(
   if (policyResult.policy !== null) {
     lines.push(`review policy: ${policyResult.path}`);
     lines.push(`  schemaVersion: ${policyResult.policy.schemaVersion}`);
-    if (policyResult.hash !== null) {
-      lines.push(`  hash:          ${policyResult.hash}`);
-    }
-    if (policyResult.policy.effort !== undefined) {
-      lines.push(`  effort:        ${policyResult.policy.effort}`);
-    }
-    if (policyResult.policy.minimumSeverity !== undefined) {
-      lines.push(`  minimumSeverity: ${policyResult.policy.minimumSeverity}`);
-    }
-    if (policyResult.policy.gateMode !== undefined) {
-      lines.push(`  gateMode:      ${policyResult.policy.gateMode}`);
-    }
-    if (policyResult.policy.suggestionMode !== undefined) {
-      lines.push(`  suggestionMode: ${policyResult.policy.suggestionMode}`);
-    }
-    if (policyResult.policy.reReviewCap !== undefined) {
-      lines.push(`  reReviewCap:   ${policyResult.policy.reReviewCap}`);
-    }
-    if (policyResult.policy.triggers !== undefined) {
-      lines.push(`  triggers:      ${policyResult.policy.triggers.join(", ")}`);
-    }
+    pushFieldIfDefined(lines, policyResult.hash, "hash          ");
+    pushFieldIfDefined(lines, policyResult.policy.effort, "effort        ");
+    pushFieldIfDefined(lines, policyResult.policy.minimumSeverity, "minimumSeverity");
+    pushFieldIfDefined(lines, policyResult.policy.gateMode, "gateMode      ");
+    pushFieldIfDefined(lines, policyResult.policy.suggestionMode, "suggestionMode");
+    pushFieldIfDefined(lines, policyResult.policy.reReviewCap, "reReviewCap   ");
+    pushFieldIfDefined(lines, policyResult.policy.triggers?.join(", "), "triggers      ");
   } else {
     lines.push(`review policy: none (run \`umactually init --policy-template\` to create one)`);
   }
